@@ -19,6 +19,8 @@ operaciones de versión y la cascada) ni nada que la importe: solo :mod:`.model`
 - :func:`version_figures`: las cifras vigentes de una versión, las de su última revisión
   congelada (D-9), o las «en curso» (RF-009-20).
 - :func:`snapshot_index`: el inventario de lo congelado para la cabecera (``manifest.json``).
+- :func:`frozen_location`: dónde leer un dato congelado en una revisión (la copia de su
+  instantánea, o lo inmutable del proyecto en su sitio; spec 011, T11).
 - :func:`has_versions` y :func:`latest_revisions` (T18; RF-009-10, plan A11): si la base tiene
   versiones (un proyecto del esquema 2 abierto en solo lectura, no) y la revisión que se enseña
   con cada versión («● V10.r2»: la abierta o, si ya no tiene, la última).
@@ -32,6 +34,8 @@ from typing import TYPE_CHECKING, Any
 
 from .model import (
     SNAPSHOT_MANIFEST,
+    FrozenLocation,
+    ItemPart,
     Revision,
     RevisionState,
     Version,
@@ -198,6 +202,47 @@ def version_figures(conn: sqlite3.Connection, version_uid: str, *,
         return ()
     rows = conn.execute(_FROZEN_FIGURES.format(columns=records.RECORD_COLUMNS), (revision.uid,))
     return tuple(records.FigureRecord.from_row(row) for row in rows)
+
+
+_FROZEN_ITEM = (  # por el índice único de (revision_uid, item_kind, item_uid)
+    "SELECT i.part, i.content_sha256, i.snapshot_path, i.snapshot_layer, d.locator, d.reader, "
+    "d.normalizer FROM gb_revision_item AS i CROSS JOIN gb_dataset AS d ON d.uid = i.item_uid "
+    "WHERE i.revision_uid = ? AND i.item_kind = 'dataset' AND i.item_uid = ?"
+)
+_COPIED_ELSEWHERE = (  # por gb_revision_item_copy: el contenido copiado en otra congelada
+    "SELECT i.snapshot_path, i.snapshot_layer FROM gb_revision_item AS i "
+    "CROSS JOIN gb_revision AS r ON r.uid = i.revision_uid "
+    "CROSS JOIN gb_dataset AS d ON d.uid = i.item_uid "
+    "WHERE i.content_sha256 = ? AND i.copied AND i.item_kind = 'dataset' "
+    "AND r.state = 'frozen' AND r.altered_at IS NULL AND d.reader = ? AND d.normalizer = ? "
+    "ORDER BY i.fid LIMIT 1"
+)
+
+
+def frozen_location(conn: sqlite3.Connection, revision_uid: str,
+                    dataset_uid: str) -> FrozenLocation | None:
+    """Dónde leer el dato ``dataset_uid`` tal como lo congeló la revisión ``revision_uid``
+    (contrato del plan 009 §5.3.1, D-27; spec 011, RF-011-02): la copia de su instantánea (en
+    esta o en otra, ``gb_revision_item.snapshot_path`` y ``snapshot_layer``); lo inmutable del
+    proyecto, sin copia (``path`` ``None``: se lee en su ``locator``); lo que esta revisión
+    anotó sin ruta, la copia de otra congelada no alterada con el mismo contenido, el mismo
+    lector y el mismo normalizador (como ``core.versions.reproduce``). ``None`` si la revisión
+    no lo congeló o no hay copia en ninguna parte. No comprueba la revisión (congelada, no
+    alterada, la de partida): eso lo hace quien la usa (``Use(frozen=…)``, D-27)."""
+    row = conn.execute(_FROZEN_ITEM, (revision_uid, dataset_uid)).fetchone()
+    if row is None or row[1] is None:
+        return None
+    part, content, path, layer, locator, reader, normalizer = row
+    if path is None and part != ItemPart.IMMUTABLE.value:
+        found = conn.execute(_COPIED_ELSEWHERE, (content, reader, normalizer)).fetchone()
+        if found is None:
+            return None
+        path, layer = found
+    return FrozenLocation(
+        revision_uid=revision_uid, dataset_uid=dataset_uid,
+        path=None if path is None else str(path), layer=None if layer is None else str(layer),
+        locator=str(locator), reader=str(reader), normalizer=str(normalizer),
+        content_sha256=str(content))
 
 
 _FROZEN_REVISIONS = (  # por el índice único de gb_version.uid; las congeladas son pocas

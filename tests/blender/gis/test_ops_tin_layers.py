@@ -17,6 +17,7 @@ Con el proyecto y las fuentes de ``test_ops_dtm`` (``DtmOperatorsCase``) y la ca
   después en el informe; la densificación tecleada es un ajuste y no se consume; las
   tolerancias, las pasadas y el umbral de planos del proyecto, sí.
 - RF-006-17: el MDT importado → TIN es el de ``raster_to_tin``.
+- RF-011-07 (spec 011, T18; D-32): una capa con el papel «Dominios» queda en ``gis_dom_``.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -108,6 +109,41 @@ class LayerTinTest(TinOperatorsCase):
         self.assertIn("planos", message)
         self.assertIn("pure@1", message)
         del report
+
+    def test_domain_layer_with_its_fields(self) -> None:
+        """RF-011-07, RF-006-12, RF-008-52 (spec 011, T18; D-32): «Capas vectoriales…» con el
+        papel «Dominios» (con su español en el diálogo) importa el ``contorno`` de
+        ``capas.gpkg`` como ``gis_dom_fases``: su entrada con el papel ``domains`` y lo
+        importado, inmutable, con su campo ``nombre`` y sus anillos bit a bit
+        (``load_domains``); el informe lo nombra."""
+        project = self.open()
+        store = _module("gis.store")
+        vector = _module("gis.vector")
+        gis_ops = _module("bl.ops.gis")
+        i18n = _module("core.i18n")
+        self.assertEqual(gis_ops.LAYER_ROLES["DOMAINS"], "domains")
+        self.assertEqual(i18n.translate("es", "Domains"), "Dominios")
+        path = self.source("gpkg/capas.gpkg", "fases/capas.gpkg")
+        uid = self.launch(IMPORT_VECTOR, filepath=str(path), layer="contorno", role="DOMAINS",
+                          vertical="PROJECT", name="Fases")
+        op_type, status, _reason, message, *_ = self.operation(uid)
+        self.assertEqual((op_type, status), ("gis.import_vector", "done"))
+        self.assertIn("gis_dom_fases", message)
+        self.assertIn("dominios", message)
+        ((settings,),) = self.rows("SELECT settings FROM gb_input")
+        self.assertEqual(json.loads(settings)["values"], {"layer": "contorno", "role": "domains"})
+        _uid, locator, input_uid, _sha, operation_uid = self.dataset("gis_dom_fases")
+        self.assertEqual((locator.startswith("gis_dom_fases_"), operation_uid), (True, uid))
+        self.assertEqual(self.rows("SELECT immutable FROM gb_dataset WHERE input_uid = ?",
+                                   input_uid), [(1,)])
+        source = vector.read_layer(vector.copy_source(path, self.tmp / "copia"), "contorno")
+        (feature,) = store.load_domains(project, "gis_dom_fases")
+        self.assertEqual((feature.fid, dict(feature.attributes)),
+                         (source.fids[0], {"nombre": source.attributes["nombre"][0]}))
+        expected = [ring[:, :2] for polygon in source.geometries[0].coords for ring in polygon]
+        self.assertEqual(len(feature.rings), len(expected))
+        for got, ring in zip(feature.rings, expected, strict=True):
+            self.assertTrue(np.array_equal(got, ring))
 
     def test_ed50_contours_give_a_tin_in_the_project_crs(self) -> None:
         """HU-006-5, RF-006-05, RF-006-16: las curvas declaradas en ED50 (EPSG:23030) se

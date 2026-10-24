@@ -419,6 +419,10 @@ BOOM_WORKER = "gbtest_boom"
 BOOM_LABEL = "Cálculo que falla"
 BOOM_ERROR = "fallo interno del cálculo de prueba"
 TICK_SLEEP_S = 0.05
+# Lo que tarda, como poco, la comprobación de los resultados en JobStatusFieldTest: tres
+# sondeos, para que alguno la vea siempre (con la CPU llena, una comprobación más rápida que
+# un sondeo podía no verse; spec 011, T30).
+VERIFY_AT_LEAST_S = 3 * TICK_SLEEP_S
 SCENARIO_DEADLINE_S = 30.0
 NOTICE_S = 10.0
 ACTIVE_ICON = "SORTTIME"
@@ -538,7 +542,14 @@ class JobStatusFieldTest(unittest.TestCase):
         cls.timer_calls = [call.kwargs for call in register.call_args_list
                            if call.args and call.args[0] is cls.ops.tick]
         cls.registered_after_submit = bpy.app.timers.is_registered(cls.ops.tick)
-        cls._run_scenario()
+        real_verify = runner.verify_outputs
+
+        def slow_verify(*args, **kwargs):
+            time.sleep(VERIFY_AT_LEAST_S)
+            return real_verify(*args, **kwargs)
+
+        with mock.patch.object(runner, "verify_outputs", side_effect=slow_verify):
+            cls._run_scenario()
 
     @classmethod
     def _run_scenario(cls) -> None:

@@ -17,6 +17,10 @@ esperado. MB = 10⁶ B (los tamaños de la spec son decimales).
 - Un **año** (``yr``) no se convierte a días ni a segundos: cuántos días tiene el año de una
   explotación lo decide su calendario de trabajo, no el catálogo. Por eso ``t/yr`` y
   ``m3/yr`` son también magnitudes propias.
+- Las relaciones estéril/útil de la cubicación (spec 011; RF-011-18) son dos magnitudes
+  propias: ``m3/m3`` («m³/m³», una relación entre volúmenes in situ) y ``t/t`` («t/t», entre
+  masas). Ninguna se convierte a la otra ni a ``%`` o ``-``: 2,5 m³/m³ no son 2,5 t/t ni un
+  250 % (una ley o un porcentaje).
 - Entre magnitudes distintas no hay conversión, y NaN o infinito nunca son un valor.
 
 Los errores son :class:`UnitError` (un ``ValueError``) con un ``code`` estable en inglés
@@ -55,6 +59,8 @@ _DIMENSION_NAMES_ES: Mapping[str, str] = MappingProxyType({
     "mass_per_year": "una masa por año",
     "volume_per_year": "un volumen por año",
     "data": "un tamaño de datos",
+    "volume_ratio": "una relación entre volúmenes",
+    "mass_ratio": "una relación entre masas",
 })
 """Lo que mide cada magnitud, para los mensajes («la t mide una masa»)."""
 
@@ -127,6 +133,8 @@ _CATALOG: tuple[Unit, ...] = (
     _unit("B", "B", "data"),
     _unit("MB", "MB", "data", 10**6),
     _unit("GB", "GB", "data", 10**9),
+    _unit("m3/m3", "m³/m³", "volume_ratio"),
+    _unit("t/t", "t/t", "mass_ratio"),
 )
 
 UNITS: Mapping[str, Unit] = MappingProxyType({unit.code: unit for unit in _CATALOG})

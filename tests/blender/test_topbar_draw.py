@@ -40,7 +40,7 @@ from tests.support.blender_ext import fingerprint_diff, module_name, ui_snapshot
 from tests.support.fake_layout import FakeLayout, Item, draw
 
 TOGGLE = "geoblender.ui_toggle_mode"
-VOLUME = "geoblender.res_compute_volume_between_surfaces"
+RESERVES = "geoblender.res_compute_reserves"  # R-51, aún provisional
 
 
 def _module(name: str) -> ModuleType:
@@ -178,7 +178,7 @@ class TopbarDrawTest(unittest.TestCase):
         disponible» no se dibuja dentro de los menús, y los 13 menús de la barra siguen."""
         volumetrics = bpy.types.GEOBLENDER_MT_ui_volumetrics
         items = [i for i in draw(volumetrics, context(geoblender=True)).items
-                 if i.target == VOLUME]
+                 if i.target == RESERVES]
         self.assertEqual([i.enabled for i in items], [False])
         save = [i for i in draw(bpy.types.GEOBLENDER_MT_ui_project, context(geoblender=True)).items
                 if i.target == "geoblender.core_save_project"]
@@ -187,7 +187,7 @@ class TopbarDrawTest(unittest.TestCase):
         preferences.hide_unavailable = True
         try:
             hidden = draw(volumetrics, context(geoblender=True))
-            self.assertNotIn(VOLUME, [i.target for i in hidden.items])
+            self.assertNotIn(RESERVES, [i.target for i in hidden.items])
             bar = draw_topbar(context(geoblender=True))
             shown = [t for _k, t in controls(bar) if t in self.cat.top_menus]
             self.assertEqual(shown, list(self.cat.top_menus))
@@ -251,13 +251,13 @@ class TopbarDrawTest(unittest.TestCase):
         """RF-003-02, RF-003-06, RF-003-07 (T41, D1): recorriendo los menús desde
         ``TOPBAR_MT_editor_menus`` como F3 (con el área de una Vista 3D) se llega en los
         dos modos a los 13 menús de la barra, a «Conmutar Geoblender ⇄ Blender» y a
-        «Cubicar» (no disponible, desactivado); con el área de la barra superior, a
-        ninguno de Geoblender."""
+        «Reservas por fase y año…» (no disponible, desactivado); con el área de la barra
+        superior, a ninguno de Geoblender."""
         for geoblender in (False, True):
             reached, operators = walk_search(context(geoblender=geoblender, area="VIEW_3D"))
             self.assertLessEqual(set(self.cat.top_menus), reached, geoblender)
             self.assertIn(True, operators[TOGGLE], geoblender)
-            self.assertEqual(operators[VOLUME], {False}, geoblender)
+            self.assertEqual(operators[RESERVES], {False}, geoblender)
             self.assertGreater(len(operators), 300)
             reached, operators = walk_search(context(geoblender=geoblender))
             self.assertEqual((reached, operators), (set(), {}), geoblender)

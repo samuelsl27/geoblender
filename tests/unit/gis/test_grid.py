@@ -280,6 +280,36 @@ class GridTest(unittest.TestCase):
                 self.assertFalse(self.grid.same_geometry(other))
         self.assertFalse(self.grid.same_geometry(self.grid.extent))  # type: ignore[arg-type]
 
+    def test_geometry_mismatch(self) -> None:
+        """Spec 011, T11 (RF-011-03; plan 011 §5.3.2): la comparación de ``gis.grid_mismatch``,
+        pública y sin leer celdas: la primera diferencia (campo, valor de la segunda y detalle
+        en español) de la rejilla bit a bit, el CRS o la referencia vertical; sin referencias
+        verticales (una rejilla de espesores, plan 011 R7), solo la rejilla y el CRS."""
+        catalog = georef.load_catalog()
+        crs, other_crs = catalog.horizontal(25830), catalog.horizontal(25829)
+        vertical, local = catalog.vertical(5782), catalog.local_vertical("NP-0 del plano 3")
+        same = grid.Grid(700000.0, 4400048.0, 0.5, 0.5, 6, 4)
+        self.assertIsNone(grid.geometry_mismatch(self.grid, same, crs, crs, vertical, vertical))
+        cases = (
+            (grid.Grid(700000.5, 4400048.0, 0.5, 0.5, 6, 4), crs, vertical,
+             ("west", 700000.5, "oeste 700000 frente a 700000,5")),
+            (grid.Grid(700000.0, 4400048.0, 1.0, 1.0, 6, 4), crs, vertical,
+             ("dx", 1.0, "paso en X 0,5 frente a 1")),
+            (grid.Grid(700000.0, 4400048.0, 0.5, 0.5, 6, 5), crs, vertical,
+             ("nrows", 5, "filas 4 frente a 5")),
+            (same, other_crs, vertical, ("crs", 25829, "CRS EPSG:25830 frente a EPSG:25829")),
+            (same, crs, local, ("vertical", "Referencia local (NP-0 del plano 3)",
+                                "referencia vertical EPSG:5782 frente a Referencia local "
+                                "(NP-0 del plano 3)")),
+        )
+        for other, other_crs_ref, other_vertical, expected in cases:
+            with self.subTest(expected=expected[0]):
+                self.assertEqual(grid.geometry_mismatch(self.grid, other, crs, other_crs_ref,
+                                                        vertical, other_vertical), expected)
+        self.assertIsNone(grid.geometry_mismatch(self.grid, same, crs, crs, None, None))
+        self.assertEqual(grid.geometry_mismatch(self.grid, same, crs, other_crs, None, None)[0],
+                         "crs")
+
     def test_immutable_float64(self) -> None:
         """Inmutable; las coordenadas y los pasos, en float de Python (float64)."""
         made = grid.Grid(700000, 4400048, 1, 1, 2, 3)

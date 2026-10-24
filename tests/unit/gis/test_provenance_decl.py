@@ -12,7 +12,8 @@ procedencia de la 008, sin registrar nada (lo registra ``bl/ops/gis.py``):
   catálogo de la 003 y sus bibliotecas, ``pyproj`` y el triangulador;
 - el **lector de cada importación** (los de ``gis.content``) y el ``ImporterDef`` de cada uno;
 - los **nombres de los datos** (``gis_src_``, ``gis_dtm_``, ``gis_tin_``, ``gis_pts_``,
-  ``gis_brk_``, ``gis_cnt_`` y ``gis_bnd_`` + el nombre de la orden en minúsculas) y la
+  ``gis_brk_``, ``gis_cnt_``, ``gis_bnd_`` y, de la spec 011 (D-32), ``gis_dom_``, los
+  dominios de una capa importada + el nombre de la orden en minúsculas) y la
   ``DatasetSpec`` de cada uno (RF-008-17): tipo, almacén, ubicación (lo importado, con el uid
   corto de su entrada, D22), lector y, lo importado, inmutable con su entrada y sin selector
   (una tabla por dato, D8);
@@ -47,13 +48,14 @@ i18n = import_geoblender("core.i18n")
 
 SPANISH_LETTERS = frozenset("áéíóúüñÁÉÍÓÚÜÑ¿¡")
 
-# Plan 006 §5.6.3, copiado: tipo → (repetible, órdenes, consume, produce, bibliotecas).
+# Plan 006 §5.6.3, copiado: tipo → (repetible, órdenes, consume, produce, bibliotecas); una
+# capa importada da también los dominios de una cubicación («dom»: plan 011 D-32, T18).
 PLAN: dict[str, tuple[bool, tuple[str, ...], tuple[str, ...], tuple[str, ...],
                       tuple[str, ...]]] = {
     "gis.import_dtm": (False, ("geoblender.gis_import_dtm",), (), ("src",), ()),
     "gis.import_points": (False, ("geoblender.gis_import_points",), (), ("pts", "brk"), ()),
     "gis.import_vector": (False, ("geoblender.gis_import_vector",), (),
-                          ("pts", "brk", "cnt", "bnd"), ()),
+                          ("pts", "brk", "cnt", "bnd", "dom"), ()),
     "gis.resample": (True, ("geoblender.gis_resample_to_grid",), ("source",), ("dtm",),
                      ("pyproj",)),
     "gis.tin_from_points": (True, ("geoblender.gis_create_tin_from_points",),
@@ -85,6 +87,7 @@ FAMILIES = {
     "brk": ("vector", "gpkg", "core.gpkg_layer@1", True, False, ""),
     "cnt": ("vector", "gpkg", "core.gpkg_layer@1", True, True, ""),
     "bnd": ("vector", "gpkg", "core.gpkg_layer@1", True, False, ""),
+    "dom": ("vector", "gpkg", "core.gpkg_layer@1", True, False, ""),  # plan 011 D-32
 }
 INPUT_UID = "3f2b9c1d-8e7a-4b6c-9d0e-1a2b3c4d5e6f"
 TAG = "3f2b9c1d"
@@ -347,11 +350,12 @@ class ImportersTest(_RegistryCase):
             provenance.importer_def("gis.geotiff", None)
 
     def test_layer_roles(self) -> None:
-        """RF-006-12 (plan §5.6.3): una capa importada da ``gis_pts_``, ``gis_brk_``,
-        ``gis_cnt_`` o ``gis_bnd_`` según su papel; otro papel es ``ValueError``."""
+        """RF-006-12 (plan §5.6.3), RF-011-07 (plan 011 D-32): una capa importada da
+        ``gis_pts_``, ``gis_brk_``, ``gis_cnt_``, ``gis_bnd_`` o ``gis_dom_`` (los dominios de
+        una cubicación) según su papel; otro papel es ``ValueError``."""
         self.assertEqual(dict(provenance.LAYER_ROLES),
                          {"points": "pts", "breaklines": "brk", "contours": "cnt",
-                          "boundary": "bnd"})
+                          "boundary": "bnd", "domains": "dom"})
         self.assertEqual(tuple(provenance.LAYER_ROLES.values()),
                          provenance.OPERATION_TYPES_BY_NAME["gis.import_vector"].outputs)
         for role, family in provenance.LAYER_ROLES.items():
@@ -433,7 +437,8 @@ class DatasetSpecsTest(_RegistryCase):
         return found
 
     def test_families(self) -> None:
-        """RF-008-17 (plan §5.2.4 y §5.6.3): las siete familias de datos con su tipo, su
+        """RF-008-17 (plan §5.2.4 y §5.6.3): las siete familias de datos (y los dominios de la
+        011, D-32) con su tipo, su
         almacén, su lector, si son lo importado o lo calculado y su extensión; un papel de
         salida distinto por familia (el sucesor de lo sustituido se busca por su papel), y
         cada tipo de operación produce familias declaradas, compatibles con su origen."""
@@ -474,6 +479,7 @@ class DatasetSpecsTest(_RegistryCase):
             ("cnt", True): "gis_cnt_topo_2026_3f2b9c1d",
             ("cnt", False): "gis_cnt_topo_2026",
             ("bnd", True): "gis_bnd_topo_2026_3f2b9c1d",
+            ("dom", True): "gis_dom_topo_2026_3f2b9c1d",
         }
         specs = self._specs()
         self.assertEqual([(family, imported) for family, imported, _spec in specs],
@@ -521,11 +527,11 @@ class DatasetSpecsTest(_RegistryCase):
             provenance.dataset_spec("tin", "Topo 2026", content=digest)
 
     def test_origin_rules(self) -> None:
-        """RF-008-52 (plan §5.6.3): lo importado (``src``, ``pts``, ``brk``, ``bnd``) necesita
-        su entrada; lo calculado (``dtm``, ``tin``) no la tiene; ``cnt`` es de los dos (una
-        capa importada o las curvas de una superficie); una familia que no es de la 006 es
+        """RF-008-52 (plan §5.6.3): lo importado (``src``, ``pts``, ``brk``, ``bnd``, ``dom``)
+        necesita su entrada; lo calculado (``dtm``, ``tin``) no la tiene; ``cnt`` es de los dos
+        (una capa importada o las curvas de una superficie); una familia que no es de la 006 es
         ``ValueError``."""
-        for family in ("src", "pts", "brk", "bnd"):
+        for family in ("src", "pts", "brk", "bnd", "dom"):
             with self.subTest(family=family, input_uid=None):
                 with self.assertRaisesRegex(ValueError, f"gis_{family}_"):
                     provenance.dataset_spec(family, "Topo 2026")

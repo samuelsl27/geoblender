@@ -80,11 +80,21 @@ sesión).
 Ningún error del disco llega como ``OSError`` a la transacción del proyecto (lo pasaría a solo
 lectura): es ``gis.raster_target_locked`` o ``gis.raster_write_failed``.
 
+**Dominios** (spec 011, T18; RF-011-07; plan 011 D-32): una capa importada con el papel
+«dominios» (:meth:`ResultWriter.domains`) es la tabla ``gis_dom_<nombre>_<entrada8>``:
+``MULTIPOLYGON`` sin Z, una fila por entidad con su número en la capa (``fid``) y sus atributos
+de texto, enteros y reales como columnas (:data:`TABLE_LAYOUTS` sin columnas fijas: las de la
+capa, ``gis.vector.field_columns``, con el nombre original de cada una como su título),
+inmutable con su entrada como lo demás importado; :func:`load_domains` la lee para la
+cubicación.
+
 Para leer lo guardado: :func:`list_gis_datasets` (desde ``gb_dataset``), :func:`load_raster`,
 :func:`load_tin` y, de una tabla de puntos, líneas de rotura o curvas, :func:`load_features`
 (T27, para la vista: sus geometrías absolutas tal como están guardadas y sus atributos); para
 un TIN (T29), :func:`load_points`, :func:`load_lines` y :func:`load_regions` (el contorno y
-los huecos de una tabla ``gis_bnd_``). Las
+los huecos de una tabla ``gis_bnd_``); para una cubicación, :func:`load_domains` (y, de una
+tabla en una conexión cualquiera, la copia congelada al reproducir, :func:`read_domains` y
+:func:`read_regions`; spec 011, T32). Las
 referencias de un dato (:func:`dataset_references`: lo importado, las que declaró su entrada;
 lo calculado, las del proyecto) y su comprobación antes de mostrarlo en la vista, que no
 transforma coordenadas (:func:`require_project_references`, ``gis.view_references_mismatch``;
@@ -100,7 +110,7 @@ import sqlite3
 import struct
 import sys
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType, TracebackType
 from typing import Any, Protocol
@@ -121,7 +131,13 @@ from ..core.datasets.model import (
 )
 from ..core.errors import GeoblenderError
 from ..core.georef import CrsCatalog, CrsRef, VerticalRef, load_catalog
-from ..core.gpkg.base import ColumnDef, create_base, create_feature_table
+from ..core.gpkg.base import (
+    DATA_COLUMNS_TABLE,
+    ColumnDef,
+    create_base,
+    create_feature_table,
+    set_column_titles,
+)
 from ..core.gpkg.wkb import (
     MAGIC,
     VERSION,
@@ -185,6 +201,7 @@ from .provenance import (
     BOUNDARY,
     BREAKLINES,
     CONTOUR_LINES,
+    DOMAINS,
     FAMILIES_BY_CODE,
     IMPORTS,
     MODULE,
@@ -208,7 +225,7 @@ from .raster import Raster
 from .styles import CONTOUR_STYLE, LayerStyle
 from .tin import Tin, meta_vertical, save_tin
 from .tin import load_tin as read_tin_file
-from .vector import StoredLayer, z_description
+from .vector import DomainSet, StoredLayer, z_description
 
 __all__ = [
     "BACKUP_MARK",
@@ -217,6 +234,7 @@ __all__ = [
     "ELLIPSOIDAL_EPSG",
     "TABLE_LAYOUTS",
     "TEMPORARY_MARK",
+    "DomainFeature",
     "ResultWriter",
     "StoreProject",
     "StoredFeatures",
@@ -233,8 +251,11 @@ __all__ = [
     "dataset_references",
     "declared_crs",
     "declared_vertical",
+    "domain_fields",
+    "domain_rows",
     "export_layer",
     "list_gis_datasets",
+    "load_domains",
     "load_features",
     "load_lines",
     "load_points",
@@ -243,6 +264,9 @@ __all__ = [
     "load_tin",
     "point_rows",
     "project_references",
+    "read_domain_fields",
+    "read_domains",
+    "read_regions",
     "require_project_references",
     "session_tag",
     "source_declarations",
@@ -294,12 +318,22 @@ class StoreProject(OperationProject, Protocol):
 class TableLayout:
     """La tabla de una familia vectorial (plan §5.2.3): el nombre GeoPackage de su tipo de
     geometría (``POINT``, ``LINESTRING``, ``MULTIPOLYGON``), si lleva Z, sus columnas (además
-    de ``fid`` y ``geom``) y cómo empieza su identificador en ``gpkg_contents``."""
+    de ``fid`` y ``geom``), cómo empieza su identificador en ``gpkg_contents`` y si cada fila
+    lleva su ``fid`` (``keeps_fid``: el número de la entidad en su capa, en los dominios; si
+    no, lo pone SQLite)."""
 
     geometry_type: str
     has_z: bool
     columns: tuple[ColumnDef, ...]
     label: str
+    keeps_fid: bool = False
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """Las columnas de cada fila, en su orden: ``fid`` (si la lleva), ``geom`` y las
+        demás."""
+        head = ("fid",) if self.keeps_fid else ()
+        return (*head, _GEOMETRY_COLUMN, *(column.name for column in self.columns))
 
 
 TABLE_LAYOUTS: Mapping[str, TableLayout] = MappingProxyType({
@@ -340,10 +374,12 @@ TABLE_LAYOUTS: Mapping[str, TableLayout] = MappingProxyType({
         (ColumnDef("role", "TEXT", not_null=True),),
         "Contornos",
     ),
+    DOMAINS: TableLayout("MULTIPOLYGON", False, (), "Dominios", keeps_fid=True),
 })
 """Las tablas de las familias vectoriales, por familia (plan §5.2.3). El ``CHECK`` del papel
 de un contorno (:data:`BOUNDARY_ROLES`) lo comprueba :meth:`ResultWriter.boundary`: la
-``ColumnDef`` de la 002 no lo escribe."""
+``ColumnDef`` de la 002 no lo escribe. Los dominios (spec 011, D-32) no tienen columnas fijas:
+las de cada capa (``DomainSet.column_defs``), y cada fila, el número de su entidad."""
 
 DIGEST_TABLE = "tabla"
 """El nombre de la tabla en el GeoPackage en memoria de :func:`table_digest` (no es contenido:
@@ -660,7 +696,8 @@ class _Table:
     """Una tabla de ``project.gpkg``: su dato (nombre, familia y nombre de la orden), su
     forma, sus filas ya codificadas (geometría y columnas), su extensión, el CRS de sus
     coordenadas, la referencia de sus Z, el hash que dio su trabajo (``None``: lo calcula el
-    registro al escribirla) y, cuando se conocen (lo importado, al registrar su entrada), su
+    registro al escribirla), el título de las columnas que lo llevan (los dominios: el nombre
+    del campo en su capa) y, cuando se conocen (lo importado, al registrar su entrada), su
     ``DatasetSpec``, su identificador y su descripción."""
 
     dataset: str
@@ -672,6 +709,7 @@ class _Table:
     crs: CrsRef
     vertical: VerticalRef
     content: ContentDigest | None = None
+    titles: Mapping[str, str] | None = None
     spec: DatasetSpec | None = None
     identifier: str | None = None
     description: str | None = None
@@ -837,6 +875,46 @@ def boundary_rows(polygons: Iterable[Any], holes: Iterable[Any],
     return _boundary_table(polygons, holes, srs)[0]
 
 
+def _domain_table(domains: DomainSet,
+                  srs: int) -> tuple[list[tuple[Any, ...]], list[np.ndarray]]:
+    """Las filas de los dominios y sus anillos."""
+    if not isinstance(domains, DomainSet):
+        raise TypeError(f"los dominios son un DomainSet de gis.vector, no {domains!r}")
+    layout = TABLE_LAYOUTS[DOMAINS]
+    srs = _srs_id(srs)
+    names = [column.column for column in domains.columns]
+    rows: list[tuple[Any, ...]] = []
+    rings: list[np.ndarray] = []
+    for index, (fid, polygons) in enumerate(zip(domains.fids, domains.polygons, strict=True)):
+        parts = [[_ring(ring) for ring in polygon] for polygon in polygons]
+        rows.append((fid, encode_geometry(layout.geometry_type, parts, srs, layout.has_z),
+                     *(domains.values[name][index] for name in names)))
+        rings += [ring for polygon in parts for ring in polygon]
+    return rows, rings
+
+
+def domain_rows(domains: DomainSet, srs: int) -> list[tuple[Any, ...]]:
+    """Las filas de la tabla de dominios (spec 011, D-32): por entidad, su número en la capa,
+    un ``MULTIPOLYGON`` sin Z con sus anillos tal como llegan (cada uno, cerrado) y el valor de
+    cada columna de ``domains.columns``, en su orden."""
+    return _domain_table(domains, srs)[0]
+
+
+def _layout(family: str, columns: Sequence[ColumnDef] | None) -> TableLayout:
+    """La forma de la tabla de ``family`` (:data:`TABLE_LAYOUTS`); la de unos dominios, con las
+    ``columns`` de los atributos de su capa."""
+    layout = TABLE_LAYOUTS[family]
+    if columns is None:
+        return layout
+    if family != DOMAINS:
+        raise ValueError(f"solo una tabla de dominios lleva las columnas de su capa, no la de "
+                         f"«{family}»")
+    chosen = tuple(columns)
+    if not all(isinstance(column, ColumnDef) for column in chosen):
+        raise TypeError("las columnas de los atributos son ColumnDef de core.gpkg")
+    return replace(layout, columns=chosen)
+
+
 def insert_rows(conn: sqlite3.Connection, table: str, names: Sequence[str],
                 rows: Sequence[tuple[Any, ...]]) -> None:
     """Inserta ``rows`` (en su orden) en las columnas ``names`` de ``table`` con sentencias de
@@ -858,12 +936,14 @@ def table_digest(
     rows: Sequence[tuple[Any, ...]],
     crs: CrsRef,
     *,
+    columns: Sequence[ColumnDef] | None = None,
     progress: Progress | None = None,
     cancelled: Cancelled | None = None,
 ) -> ContentDigest:
     """El ``ContentDigest`` (``core.gpkg_layer@1``, sin declaraciones: el de un dato) de la
     tabla de la familia ``family`` (:data:`TABLE_LAYOUTS`) con las filas ``rows`` (las de
-    :func:`point_rows`, :func:`breakline_rows`, :func:`contour_rows` o :func:`boundary_rows`)
+    :func:`point_rows`, :func:`breakline_rows`, :func:`contour_rows`, :func:`boundary_rows` o
+    :func:`domain_rows`, con las ``columns`` de sus atributos: ``DomainSet.column_defs``)
     y las coordenadas en ``crs``, sin escribirla en el proyecto: las filas van a un GeoPackage
     en memoria con la misma estructura que la tabla del proyecto (``create_base`` con su CRS y
     ``create_feature_table`` con la de su familia) y se leen con
@@ -877,15 +957,14 @@ def table_digest(
                          f"{', '.join(TABLE_LAYOUTS)}")
     if not isinstance(crs, CrsRef):
         raise TypeError(f"el CRS de las coordenadas es un CrsRef del catálogo, no {crs!r}")
-    layout = TABLE_LAYOUTS[family]
+    layout = _layout(family, columns)
     text = f"Calculando el hash de contenido de la tabla de {layout.label.lower()}…"
     conn = sqlite3.connect(":memory:")
     try:
         create_base(conn, crs)
         create_feature_table(conn, DIGEST_TABLE, layout.geometry_type, crs.epsg, layout.has_z,
                              layout.columns, DIGEST_TABLE)
-        insert_rows(conn, DIGEST_TABLE,
-                    [_GEOMETRY_COLUMN, *(column.name for column in layout.columns)], rows)
+        insert_rows(conn, DIGEST_TABLE, layout.names, rows)
         request = core_builtin.GPKG_LAYER.request(
             FAMILIES_BY_CODE[family].kind, DATASET_DECLARATIONS, {"main": Path(DIGEST_TABLE)},
             {"layer": DIGEST_TABLE}, normalizer=NORMALIZER)
@@ -1271,17 +1350,22 @@ class ResultWriter:
 
     def _plan_table(self, family: str, name: str, rows: list[tuple[Any, ...]],
                     extent: tuple[float, float, float, float] | None,
-                    imported: bool, content: ContentDigest | None = None) -> DatasetSpec | None:
+                    imported: bool, content: ContentDigest | None = None, *,
+                    layout: TableLayout | None = None,
+                    titles: Mapping[str, str] | None = None) -> DatasetSpec | None:
         """Prepara la tabla de ``family``: lo calculado, con su ubicación ya comprobada; lo
         importado, en el CRS y la referencia declarados, con su ubicación al registrar su
         entrada. ``content``: el hash que dio su trabajo (:func:`table_digest`), o ``None``
-        (lo calcula el registro al escribirla)."""
-        layout = TABLE_LAYOUTS[family]
+        (lo calcula el registro al escribirla). ``layout``: su forma, si no es la de
+        :data:`TABLE_LAYOUTS` (los dominios, con sus columnas); ``titles``, el título de sus
+        columnas (columna → título)."""
+        layout = TABLE_LAYOUTS[family] if layout is None else layout
         dataset = self._dataset(family, name)
         if imported:
             assert self._declared is not None
             self._outputs.append(_Table(dataset, family, name, layout, tuple(rows), extent,
-                                        self._declared.crs, self._declared.vertical, content))
+                                        self._declared.crs, self._declared.vertical, content,
+                                        titles))
             return None
         spec = dataset_spec(family, name, crs_epsg=self._crs.epsg, content=content)
         identifier = f"{layout.label}: {name} ({spec.locator})"
@@ -1294,8 +1378,8 @@ class ResultWriter:
             self._check_place(conn, spec)
         description = f"{layout.label} de Geoblender; {_z_description(self._vertical)}"
         self._outputs.append(_Table(dataset, family, name, layout, tuple(rows), extent,
-                                    self._crs, self._vertical, content, spec, identifier,
-                                    description))
+                                    self._crs, self._vertical, content, titles, spec,
+                                    identifier, description))
         return spec
 
     def _srs(self, imported: bool) -> int:
@@ -1375,6 +1459,27 @@ class ResultWriter:
         imported = self._imported(BOUNDARY)
         rows, rings = _boundary_table(chosen, chosen_holes, self._srs(imported))
         return self._plan_table(BOUNDARY, name, rows, _extent(rings), imported, content)
+
+    def domains(self, name: str, domains: DomainSet, *,
+                content: ContentDigest | None = None) -> DatasetSpec | None:
+        """Prepara los dominios importados ``domains`` (``gis.vector.domains_from_features``:
+        una capa con el papel «dominios», spec 011, D-32) como la tabla
+        ``gis_dom_<nombre>_<entrada8>``: una fila por entidad con su número en la capa
+        (``fid``), un ``MULTIPOLYGON`` sin Z con sus X e Y tal como llegan (cada anillo,
+        cerrado) y sus atributos como columnas (:func:`domain_rows`), con el nombre del campo
+        en la capa como título de la columna que no se llama igual. ``content``: el hash que dio
+        su trabajo (:func:`table_digest` con sus columnas); sin él, lo calcula el registro. Lo
+        importado de la entrada declarada: devuelve ``None`` (su ubicación, al registrarla);
+        fuera de una importación, ``ValueError``."""
+        if not isinstance(domains, DomainSet):
+            raise TypeError(f"los dominios son un DomainSet de gis.vector, no {domains!r}")
+        _content_digest(content)
+        self._check_open()
+        imported = self._imported(DOMAINS)
+        rows, rings = _domain_table(domains, self._srs(imported))
+        return self._plan_table(DOMAINS, name, rows, _extent(rings), imported, content,
+                                layout=_layout(DOMAINS, domains.column_defs),
+                                titles=domains.titles)
 
     def export(
         self,
@@ -1544,11 +1649,12 @@ class ResultWriter:
             create_feature_table(conn, spec.locator, layout.geometry_type, table.crs.epsg,
                                  layout.has_z, layout.columns, table.identifier,
                                  table.description or "")
-        insert_rows(conn, spec.locator,
-                    [_GEOMETRY_COLUMN, *(column.name for column in layout.columns)], table.rows)
+        insert_rows(conn, spec.locator, layout.names, table.rows)
         conn.execute("UPDATE gpkg_contents SET min_x = ?, min_y = ?, max_x = ?, max_y = ? "
                      "WHERE table_name = ?",
                      (*(table.extent or (None, None, None, None)), spec.locator))
+        if table.titles:
+            set_column_titles(conn, spec.locator, table.titles)
 
     def commit(
         self,
@@ -2019,12 +2125,24 @@ def load_regions(project: StoreProject, ref: DatasetRecord | str,
     región por hueco). Los mismos errores que :func:`load_features`."""
     record = _resolve(project, ref, (BOUNDARY,))
     with project.read() as conn:
-        if not _table_exists(conn, record.locator):
-            raise GisError("gis.dataset_file_missing", obj=f"{_OBJ} «{record.name}»",
-                           field=_FIELD_LOCATION, value=record.locator, file=record.locator,
-                           name=record.name)
-        rows = conn.execute(f'SELECT "{_GEOMETRY_COLUMN}", role FROM "{record.locator}" '
-                            "ORDER BY fid").fetchall()
+        _require_table(conn, record)
+        return read_regions(conn, record.locator)
+
+
+def _require_table(conn: sqlite3.Connection, record: DatasetRecord) -> None:
+    if not _table_exists(conn, record.locator):
+        raise GisError("gis.dataset_file_missing", obj=f"{_OBJ} «{record.name}»",
+                       field=_FIELD_LOCATION, value=record.locator, file=record.locator,
+                       name=record.name)
+
+
+def read_regions(conn: sqlite3.Connection, table: str,
+                 ) -> tuple[list[list[np.ndarray]], list[list[list[np.ndarray]]]]:
+    """Lo que da :func:`load_regions` de la tabla de contornos ``table`` de la conexión
+    ``conn``: la del proyecto o la de una copia congelada de la tabla (spec 011, T32: el ámbito
+    de una cubicación al reproducirla). Solo lee."""
+    rows = conn.execute(f'SELECT "{_GEOMETRY_COLUMN}", role FROM "{table}" '
+                        "ORDER BY fid").fetchall()
     polygons: list[list[np.ndarray]] = []
     holes: list[list[list[np.ndarray]]] = []
     for blob, role in rows:
@@ -2038,6 +2156,86 @@ def load_regions(project: StoreProject, ref: DatasetRecord | str,
         else:
             polygons.extend(found)
     return polygons, holes
+
+
+# --- Para una cubicación (spec 011, T18) -----------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class DomainFeature:
+    """Una entidad guardada de una tabla de dominios (spec 011, D-32): su número en la capa
+    importada (``fid``), el valor de cada atributo por su columna (``attributes``, tal como lo
+    da SQLite: ``None``, texto, entero o real) y sus polígonos (``polygons``: de cada uno, sus
+    anillos en planta, X e Y ABSOLUTOS en float64 tal como están guardados, cerrados; el
+    primero, el exterior)."""
+
+    fid: int
+    attributes: Mapping[str, Any]
+    polygons: tuple[tuple[np.ndarray, ...], ...]
+
+    @property
+    def rings(self) -> tuple[np.ndarray, ...]:
+        """Todos sus anillos, polígono a polígono."""
+        return tuple(ring for polygon in self.polygons for ring in polygon)
+
+
+def load_domains(project: StoreProject, ref: DatasetRecord | str) -> tuple[DomainFeature, ...]:
+    """Las entidades del dato ``ref`` (su registro, su uid o su nombre: ``gis_dom_``), en el
+    orden de su número, para repartir una cubicación (spec 011, RF-011-07): cada una con su
+    número, sus atributos (por columna) y sus anillos bit a bit (:class:`DomainFeature`). Solo
+    lee. ``GisError`` ``gis.dataset_unknown`` si no hay un dato de ``gis`` así y
+    ``gis.dataset_file_missing`` si falta su tabla; ``ValueError`` si es de otra familia."""
+    record = _resolve(project, ref, (DOMAINS,))
+    with project.read() as conn:
+        _require_table(conn, record)
+        return read_domains(conn, record.locator)
+
+
+def read_domains(conn: sqlite3.Connection, table: str) -> tuple[DomainFeature, ...]:
+    """Lo que da :func:`load_domains` de la tabla de dominios ``table`` de la conexión ``conn``:
+    la del proyecto o la de una copia congelada de la tabla, con sus mismas columnas (spec 011,
+    T32: los dominios de una cubicación al reproducirla). Solo lee."""
+    names = [str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')
+             if str(row[1]).lower() not in ("fid", _GEOMETRY_COLUMN)]
+    selected = ", ".join(f'"{name}"' for name in ("fid", _GEOMETRY_COLUMN, *names))
+    rows = conn.execute(f'SELECT {selected} FROM "{table}" ORDER BY fid').fetchall()
+    found: list[DomainFeature] = []
+    for fid, blob, *values in rows:
+        geometry = decode_geometry(blob)
+        parts = ([geometry.coords] if geometry.geometry_type == "POLYGON"
+                 else list(geometry.coords))
+        polygons = tuple(tuple(np.ascontiguousarray(np.asarray(ring, dtype=np.float64)[:, :2])
+                               for ring in polygon) for polygon in parts)
+        found.append(DomainFeature(int(fid), MappingProxyType(dict(zip(names, values,
+                                                                       strict=True))),
+                                   polygons))
+    return tuple(found)
+
+
+def domain_fields(project: StoreProject,
+                  ref: DatasetRecord | str) -> tuple[tuple[str, str], ...]:
+    """Los campos del dato ``ref`` (su registro, su uid o su nombre: ``gis_dom_``) que pueden
+    nombrar los dominios de una cubicación (spec 011, RF-011-07; T23: el «Campo» de su diálogo):
+    cada columna de atributos de su tabla, en su orden, con su título (el nombre del campo en la
+    capa importada, el de ``gpkg_data_columns``; sin él, la columna). Solo lee. Los mismos
+    errores que :func:`load_domains`."""
+    record = _resolve(project, ref, (DOMAINS,))
+    with project.read() as conn:
+        _require_table(conn, record)
+        return read_domain_fields(conn, record.locator)
+
+
+def read_domain_fields(conn: sqlite3.Connection, table: str) -> tuple[tuple[str, str], ...]:
+    """Lo que da :func:`domain_fields` de la tabla de dominios ``table`` de ``conn``: (columna,
+    título) de cada columna que no es ``fid`` ni la geometría. Solo lee."""
+    names = [str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')
+             if str(row[1]).lower() not in ("fid", _GEOMETRY_COLUMN)]
+    titles: dict[str, str] = {}
+    if _table_exists(conn, DATA_COLUMNS_TABLE):
+        titles = {str(column): str(title) for column, title in conn.execute(
+            f"SELECT column_name, name FROM {DATA_COLUMNS_TABLE} WHERE table_name = ?",
+            (table,)) if title}
+    return tuple((name, titles.get(name, name)) for name in names)
 
 
 def dataset_references(project: StoreProject,

@@ -272,7 +272,7 @@ class ContextMenuTest(unittest.TestCase):
         """RF-003-17: el mismo menú del tipo en la fila 1 (con sus dos iconos y la
         chincheta), en el clic derecho y con Mayús+Alt+B."""
         kinds = [kind for kind in self.catalog.contexts if kind not in ("SELECTION", "VERSION")]
-        self.assertEqual(len(kinds), 12)
+        self.assertEqual(len(kinds), 13)  # con la rejilla de diferencias (spec 011, T22)
         for kind in kinds:
             spec = self.catalog.contexts[kind]
             obj = self.make(f"Sintético {kind}", kind)

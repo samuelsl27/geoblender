@@ -156,7 +156,14 @@ from ..inputs.model import (
     InputRecord,
     InputStatus,
 )
-from ..params import DEFINITIONS, DefinitionChange, ParamDef, ParameterStore
+from ..params import (
+    DEFINITIONS,
+    FAMILIES,
+    DefinitionChange,
+    ParamDef,
+    ParameterStore,
+    ParamFamily,
+)
 from ..paths import ABSOLUTE_PATH
 from ..project.events import EventKind, record_event
 from ..project.lock import decode_lock, lock_path
@@ -323,13 +330,16 @@ class OpenCheckProject(Protocol):
 @dataclass(frozen=True, eq=True)
 class Registries:
     """Lo que declara el Geoblender que abre el proyecto (sus módulos activos): la versión
-    «M.m» del algoritmo de cada tipo de operación (``versions``) y las definiciones de los
-    parámetros por clave (``definitions``). Es una copia: lo que se registre después no cambia
-    la comprobación en curso. :class:`TypeError` o :class:`ValueError` si una versión no es
-    «M.m» o una definición no es un ``ParamDef`` con su clave."""
+    «M.m» del algoritmo de cada tipo de operación (``versions``), las definiciones de los
+    parámetros por clave (``definitions``) y sus familias por patrón (``families``; ADR-0027:
+    la clave concreta de una familia está declarada; un ``Mapping`` o una secuencia). Es una
+    copia: lo que se registre después no cambia la comprobación en curso. :class:`TypeError`
+    o :class:`ValueError` si una versión no es «M.m», una definición no es un ``ParamDef`` con
+    su clave o una familia no es una ``ParamFamily`` con su patrón."""
 
     versions: Mapping[str, str]
     definitions: Mapping[str, ParamDef]
+    families: Mapping[str, ParamFamily] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.versions, Mapping):
@@ -352,13 +362,35 @@ class Registries:
             definitions[key] = defn
         object.__setattr__(self, "versions", MappingProxyType(versions))
         object.__setattr__(self, "definitions", MappingProxyType(definitions))
+        object.__setattr__(self, "families", MappingProxyType(_families(self.families)))
 
     __hash__ = None  # type: ignore[assignment]
 
     @classmethod
     def installed(cls) -> Registries:
-        """Lo registrado ahora (``core.provenance.OPERATIONS`` y ``core.params.DEFINITIONS``)."""
-        return cls(installed_versions(), DEFINITIONS)
+        """Lo registrado ahora (``core.provenance.OPERATIONS``, ``core.params.DEFINITIONS`` y
+        ``core.params.FAMILIES``)."""
+        return cls(installed_versions(), DEFINITIONS, FAMILIES)
+
+
+def _families(given: object) -> dict[str, ParamFamily]:
+    """Las familias de :class:`Registries` por patrón, desde un ``Mapping`` patrón →
+    familia o una secuencia de familias."""
+    if isinstance(given, Mapping):
+        pairs = list(given.items())
+    elif isinstance(given, str | bytes) or not isinstance(given, Iterable):
+        raise TypeError(f"las familias son un diccionario patrón → ParamFamily, no {given!r}")
+    else:
+        pairs = [(getattr(family, "pattern", None), family) for family in given]
+    families: dict[str, ParamFamily] = {}
+    for pattern, family in pairs:
+        if not isinstance(family, ParamFamily):
+            raise TypeError(f"la familia «{pattern}» no es una ParamFamily: {family!r}")
+        if pattern != family.pattern or pattern in families:
+            raise ValueError(f"la familia «{family.pattern}» está con el patrón «{pattern}» o "
+                             "repetida")
+        families[pattern] = family
+    return families
 
 
 # --- Lo que se encuentra ------------------------------------------------------------------------
@@ -959,7 +991,7 @@ def _survey(project: OpenCheckProject, registries: Registries, writing: bool, bu
     algorithms: list[AlgorithmChange] = []
     yield from _algorithm_steps(project, registries, algorithms, pacer, meter)
     definitions = tuple(ParameterStore(project).definition_changes(  # type: ignore[arg-type]
-        registries.definitions))
+        registries.definitions, families=registries.families))
     outcome = OpenCheckOutcome(
         writing=writing,
         started_at_ns=photo.started_at_ns,
@@ -1811,7 +1843,8 @@ class _Settlement:
             orphans = record_orphans(conn, project,  # type: ignore[arg-type]
                                      survey.outcome.orphans)
             store = ParameterStore(project)  # type: ignore[arg-type]
-            definitions = tuple(store.mark_definition_changes(conn, registries.definitions))
+            definitions = tuple(store.mark_definition_changes(
+                conn, registries.definitions, families=registries.families))
             for change in definitions:
                 record_event(conn, EventKind.DEFINITION_CHANGED,
                              change.text or render("core.definition_redeclared", key=change.key),

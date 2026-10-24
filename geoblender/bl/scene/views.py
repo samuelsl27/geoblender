@@ -135,6 +135,9 @@ BRANCHES: dict[str, tuple[tuple[str, str], ...]] = {
     "CONTOURS": _TOPOGRAPHY,
     "BOUNDARY": _TOPOGRAPHY,
     "DRILLHOLES": (("drillholes", "Drillholes"),),
+    # La rejilla de diferencias de una cubicación (spec 011, T22): siempre de una versión, va
+    # en la colección de su versión; sin ella, en «Cubicación».
+    "VOLUME_DIFFERENCE": (("volumetrics", "Volumetrics"),),
 }
 # El estado de un dato vivo en su nombre generado y en Object.geoblender.status.
 STATUS_TEXT: dict[DatasetStatus, str] = {

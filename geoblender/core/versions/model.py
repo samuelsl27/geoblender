@@ -14,7 +14,8 @@ ADR-0013).
   (dato, entrada, parámetro, operación o cifra), :class:`ItemPart` (lo producido por la
   versión, lo de aguas arriba, lo inmutable del proyecto o lo heredado de la padre),
   :class:`ItemState` (el estado que tenía al congelarse y cómo se lee, ``ItemState.text``,
-  T37) y :class:`RevisionItem`, una fila.
+  T37) y :class:`RevisionItem`, una fila; :class:`FrozenLocation`, dónde leer un dato
+  congelado (spec 011, T11).
 - Dónde van las instantáneas: :data:`SNAPSHOTS_DIR`, :data:`FREEZING_MARK` (la carpeta
   temporal de una congelación en curso) y :data:`SNAPSHOT_MANIFEST`; el manifiesto, compacto
   al escribirlo (:func:`compact_manifest`: sin lo que vale lo de por defecto,
@@ -295,6 +296,26 @@ class RevisionItem:
     file_sha256: str | None
     file_size: int | None
     state: ItemState
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenLocation:
+    """Dónde leer un dato congelado en una revisión (``core.versions.read.frozen_location``;
+    contrato del plan 009 §5.3.1; spec 011, RF-011-02): la revisión y el dato; la ruta de su
+    copia (``path``, relativa al proyecto con «/», en esta instantánea o en otra) y su capa en
+    el GeoPackage de la instantánea (``layer``; ``None`` en un fichero), o ``path`` ``None`` si
+    es lo inmutable del proyecto, que no se copia y se lee en su ubicación del proyecto
+    (``locator``); su lector y su normalizador (los del dato, ADR-0024 §6) y el hash de
+    contenido congelado."""
+
+    revision_uid: str
+    dataset_uid: str
+    path: str | None
+    layer: str | None
+    locator: str
+    reader: str
+    normalizer: str
+    content_sha256: str
 
 
 # --- El manifiesto de una instantánea, compacto (009/T33) ------------------------------------

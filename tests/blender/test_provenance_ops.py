@@ -293,12 +293,13 @@ def _core_preferences() -> object:
 
 def _core_declarations() -> dict[str, tuple[str, ...]]:
     """Lo declarado por ``core`` en los registros de la extensión: tipos de operación,
-    importadores, lectores de contenido y parámetros."""
+    importadores, lectores de contenido, parámetros y familias de parámetros (ADR-0027)."""
     contract = _module("core.provenance.contract")
     readers = _module("core.content.readers")
     params = _module("core.params")
     found = {"operations": contract.OPERATIONS, "importers": contract.IMPORTERS,
-             "readers": readers.READERS, "parameters": params.DEFINITIONS}
+             "readers": readers.READERS, "parameters": params.DEFINITIONS,
+             "families": params.FAMILIES}
     return {name: tuple(sorted(key for key in view if key.startswith("core.")))
             for name, view in found.items()}
 
@@ -352,7 +353,7 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         project_session = _module("bl.scene.project_session")
         self.assertEqual(_core_declarations(), {
             "operations": CORE_OPERATIONS, "importers": CORE_IMPORTERS,
-            "readers": CORE_READERS, "parameters": CORE_PARAMETERS})
+            "readers": CORE_READERS, "parameters": CORE_PARAMETERS, "families": ()})
         self.assertIn(session.on_project_changed, project_session.listeners())
         jobs_ops = _module("bl.ops.jobs")
         job_list = _module("bl.ui.jobs")
@@ -398,7 +399,7 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         self.assertEqual([cls.__name__ for cls in classes if cls.is_registered], [])
         self.assertFalse(bpy.app.timers.is_registered(session.warn_read_only_dirs))
         self.assertEqual(_core_declarations(), {
-            "operations": (), "importers": (), "readers": (), "parameters": ()})
+            "operations": (), "importers": (), "readers": (), "parameters": (), "families": ()})
         self.assertNotIn(session.on_project_changed, project_session.listeners())
         self.assertNotIn(session.on_jobs_removed, jobs_ops.removal_listeners())
         self.assertIsNone(job_list.note_provider())

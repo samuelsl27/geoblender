@@ -23,7 +23,10 @@ Sobre la copia:
   las vacías o nulas omitidas con aviso y las que no se pueden leer (curvas, colecciones,
   otro SRS) rechazadas con su número de entidad y su motivo.
 
-El papel que declara el usuario (puntos, líneas de rotura) lo aplica ``gis.points``.
+El papel que declara el usuario (puntos, líneas de rotura) lo aplica ``gis.points``; el de
+«dominios» (spec 011, T18; D-32), :func:`domains_from_features`: de cada Polygon o MultiPolygon,
+su número, sus anillos y sus atributos (:class:`DomainSet`), con los campos de texto, enteros
+y reales de la capa como columnas de la tabla del proyecto (:func:`field_columns`).
 
 **Entregables** (T31; RF-006-25; plan §5.3.2 y A18; D15): :func:`write_layers` escribe capas
 (:class:`LayerToWrite`: puntos, líneas de rotura, curvas, contornos o un TIN como triángulos,
@@ -46,8 +49,9 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+import unicodedata
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
@@ -738,3 +742,194 @@ def _rtree(conn: sqlite3.Connection, table: str, boxes: np.ndarray) -> None:
     conn.execute("INSERT INTO gpkg_extensions (table_name, column_name, extension_name, "
                  "definition, scope) VALUES (?, ?, ?, ?, 'write-only')",
                  (table, GEOMETRY_COLUMN, RTREE_EXTENSION, RTREE_DEFINITION))
+
+
+# --- Capa de dominios (spec 011, T18; RF-011-07; plan 011 D-32) ---------------------------------
+
+DOMAIN_TYPES: tuple[str, ...] = ("POLYGON", "MULTIPOLYGON")
+"""Las geometrías de una entidad de una capa de dominios (otra se rechaza con su número)."""
+DOMAIN_COLUMN_TYPES: tuple[str, ...] = ("TEXT", "INTEGER", "DOUBLE")
+"""Los tipos de las columnas de los atributos de una capa de dominios en el proyecto."""
+COLUMN_CHARS = 63
+"""El largo máximo del nombre de una columna (un identificador de ``core.gpkg``)."""
+_SPECIAL_TYPES: Mapping[str, str] = MappingProxyType(
+    {"BOOLEAN": "INTEGER", "DATE": "TEXT", "DATETIME": "TEXT"})
+_TYPE_SIZE = re.compile(r"\s*\(.*\)\s*$")
+_NON_COLUMN = re.compile(r"[^a-z0-9]+")
+_RESERVED_COLUMNS = frozenset({"fid", GEOMETRY_COLUMN})
+_BINARY = (bytes, bytearray, memoryview)
+
+
+@dataclass(frozen=True, slots=True)
+class FieldColumn:
+    """Un campo de una capa de dominios como columna de su tabla en el proyecto: su nombre en
+    la capa (``field``, tal cual: el título de la columna), su columna (``column``: un
+    identificador de GeoPackage en minúsculas, :func:`column_name`) y su tipo (``sql_type``,
+    uno de :data:`DOMAIN_COLUMN_TYPES`)."""
+
+    field: str
+    column: str
+    sql_type: str
+
+    def __post_init__(self) -> None:
+        if self.sql_type not in DOMAIN_COLUMN_TYPES:
+            raise ValueError(f"el tipo de la columna «{self.column}» es uno de "
+                             f"{', '.join(DOMAIN_COLUMN_TYPES)}, no {self.sql_type!r}")
+
+
+def column_type(declared: str) -> str | None:
+    """El tipo de la columna de un campo declarado como ``declared`` en su capa (por la
+    afinidad de SQLite y los nombres de GeoPackage): ``INTEGER`` (los enteros, como el
+    ``MEDIUMINT`` de QGIS, y el lógico), ``TEXT`` (el texto, con o sin largo, y las fechas) o
+    ``DOUBLE`` (los reales y los numéricos); ``None`` si es binario o no declara tipo (no se
+    importa)."""
+    kind = _TYPE_SIZE.sub("", str(declared)).strip().upper()
+    if kind in _SPECIAL_TYPES:
+        return _SPECIAL_TYPES[kind]
+    if "INT" in kind:
+        return "INTEGER"
+    if any(text in kind for text in ("CHAR", "CLOB", "TEXT")):
+        return "TEXT"
+    if not kind or "BLOB" in kind:
+        return None
+    return "DOUBLE"
+
+
+def column_name(field_name: str, taken: Iterable[str] = ()) -> str:
+    """El nombre de la columna del campo ``field_name``: en minúsculas, sin tildes y con un «_»
+    por cada tramo que no es una letra o una cifra ASCII (un nombre ya así no cambia), con
+    «f_» delante si no empieza por una letra y :data:`COLUMN_CHARS` caracteres como mucho; si
+    es ``fid`` o ``geom`` (las de la tabla) o está en ``taken``, con «_2», «_3»…"""
+    plain = "".join(char for char in unicodedata.normalize("NFKD", str(field_name))
+                    if not unicodedata.combining(char)).lower()
+    slug = _NON_COLUMN.sub("_", plain).strip("_")
+    if not slug[:1].isalpha():
+        slug = f"f_{slug}".rstrip("_")
+    slug = slug[:COLUMN_CHARS].rstrip("_")
+    used = set(taken) | _RESERVED_COLUMNS
+    found, number = slug, 2
+    while found in used:
+        suffix = f"_{number}"
+        found = slug[:COLUMN_CHARS - len(suffix)] + suffix
+        number += 1
+    return found
+
+
+def field_columns(fields: Iterable[tuple[str, str]],
+                  ) -> tuple[tuple[FieldColumn, ...], tuple[tuple[str, str], ...]]:
+    """Los campos ``(nombre, tipo declarado)`` de una capa (``LayerInfo.fields``) como columnas
+    de su tabla de dominios, en su orden (:func:`column_type`, :func:`column_name`), y los que
+    no se importan (los binarios y los que no declaran tipo), con su tipo."""
+    columns: list[FieldColumn] = []
+    skipped: list[tuple[str, str]] = []
+    for name, declared in fields:
+        sql_type = column_type(declared)
+        if sql_type is None:
+            skipped.append((str(name), str(declared)))
+            continue
+        columns.append(FieldColumn(str(name), column_name(name, (c.column for c in columns)),
+                                   sql_type))
+    return tuple(columns), tuple(skipped)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class DomainSet:
+    """Las entidades de una capa de dominios (spec 011, D-32): su número en la capa
+    (``fids``), sus polígonos (de cada entidad, sus polígonos y, de cada uno, sus anillos en
+    planta, X e Y ABSOLUTOS en float64 tal como llegan; el primero, el exterior), sus campos
+    como columnas (``columns``, :class:`FieldColumn`) y el valor de cada uno por entidad
+    (``values``, por columna: ``None``, texto, entero o real). ``ValueError`` si no casan."""
+
+    fids: tuple[int, ...]
+    polygons: tuple[tuple[tuple[np.ndarray, ...], ...], ...]
+    columns: tuple[FieldColumn, ...]
+    values: Mapping[str, tuple[Any, ...]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "fids", tuple(int(fid) for fid in self.fids))
+        object.__setattr__(self, "polygons", tuple(
+            tuple(tuple(ring for ring in polygon) for polygon in feature)
+            for feature in self.polygons))
+        object.__setattr__(self, "columns", tuple(self.columns))
+        count = len(self.fids)
+        if len(self.polygons) != count or len(set(self.fids)) != count:
+            raise ValueError(f"{count} números de entidad (sin repetir) y {len(self.polygons)} "
+                             "entidades con sus polígonos")
+        names = [column.column for column in self.columns]
+        if set(self.values) != set(names) or len(set(names)) != len(names):
+            raise ValueError(f"los valores son de {sorted(self.values)} y las columnas, "
+                             f"{names} (sin repetir)")
+        values = {name: tuple(self.values[name]) for name in names}
+        if any(len(found) != count for found in values.values()):
+            raise ValueError(f"cada columna tiene un valor por cada una de las {count} "
+                             "entidades")
+        object.__setattr__(self, "values", MappingProxyType(values))
+
+    def __len__(self) -> int:
+        return len(self.fids)
+
+    @property
+    def column_defs(self) -> tuple[ColumnDef, ...]:
+        """Las columnas de los atributos en su tabla del proyecto (``core.gpkg.ColumnDef``)."""
+        return tuple(ColumnDef(column.column, column.sql_type) for column in self.columns)
+
+    @property
+    def titles(self) -> dict[str, str]:
+        """El nombre en la capa de cada columna que no se llama igual (columna → título)."""
+        return {column.column: column.field for column in self.columns
+                if column.column != column.field}
+
+
+def domains_from_features(features: FeatureSet) -> tuple[DomainSet, TopoReport]:
+    """Los dominios de una capa con ese papel (spec 011, T18; RF-011-07; D-32): de cada Polygon
+    o MultiPolygon, su número de entidad, sus polígonos y sus anillos en planta tal como llegan
+    (float64; la Z, si la hay, no cuenta) y sus atributos de texto, enteros y reales
+    (:func:`field_columns`). Una entidad de otra geometría (``gis.feature_role_mismatch``) o
+    con un anillo de menos de tres vértices (``gis.feature_geometry_invalid``) se rechaza con
+    su número; un campo binario, o con algún valor binario, no se importa
+    (``gis.domain_field_skipped``, un aviso). El informe conserva los rechazos y avisos de la
+    lectura; la validez de los polígonos como dominios (solapes, sin área, sin valor) la
+    comprueba la cubicación (RF-011-08)."""
+    info = features.layer
+    found_columns, skipped = field_columns(info.fields)
+    columns: list[FieldColumn] = []
+    omitted = list(skipped)
+    for column in found_columns:
+        if any(isinstance(value, _BINARY) for value in features.attributes[column.field]):
+            omitted.append((column.field, "BLOB"))
+        else:
+            columns.append(column)
+    rejected: list[Rejection] = []
+    fids: list[int] = []
+    polygons: list[tuple[tuple[np.ndarray, ...], ...]] = []
+    kept: list[int] = []
+    for index, fid in enumerate(features.fids):
+        geometry = features.geometries[index]
+        if geometry.geometry_type not in DOMAIN_TYPES:
+            code = "gis.feature_role_mismatch"
+            text = render(code, layer=info.name, row=fid, value=geometry.geometry_type,
+                          role="dominios", expected=" y ".join(DOMAIN_TYPES))
+            rejected.append(Rejection(fid, text, code))
+            continue
+        parts = ([geometry.coords] if geometry.geometry_type == "POLYGON"
+                 else list(geometry.coords))
+        rings = tuple(tuple(np.ascontiguousarray(np.asarray(ring, dtype=np.float64)[:, :2])
+                            for ring in polygon) for polygon in parts)
+        if not rings or any(not polygon or any(len(ring) < 3 for ring in polygon)
+                            for polygon in rings):
+            code = "gis.feature_geometry_invalid"
+            text = render(code, layer=info.name, file=info.file, row=fid,
+                          detail="un anillo tiene menos de 3 vértices")
+            rejected.append(Rejection(fid, text, code))
+            continue
+        fids.append(fid)
+        polygons.append(rings)
+        kept.append(index)
+    values = {column.column: tuple(features.attributes[column.field][index] for index in kept)
+              for column in columns}
+    warnings = tuple(render("gis.domain_field_skipped", layer=info.name, value=name, kind=kind)
+                     for name, kind in omitted)
+    every = sorted((*features.report.rejected, *rejected), key=lambda item: item.row)
+    report = replace(features.report, rejected=tuple(every),
+                     warnings=(*features.report.warnings, *warnings))
+    return DomainSet(tuple(fids), tuple(polygons), tuple(columns), values), report

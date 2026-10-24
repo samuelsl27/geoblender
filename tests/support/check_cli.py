@@ -47,15 +47,16 @@ INSTALL = BlenderInstall(
 )
 # Los pasos obligatorios en el orden de la tabla, que es el del resumen (RF-001-06).
 MANDATORY = ["unitarias", "referencia", "licencias", "iconos", "manifiesto", "blender"]
-# Los que van a la vez que «blender», tras «manifiesto» (RF-001-06, spec 001 0.8; tarea
-# 009/T34), en el orden de la tabla; con --completo, también «motor».
-WITH_BLENDER = ("referencia", "licencias", "iconos")
-# El orden en que se ejecutan los obligatorios (FakeRunner.steps): los que van a la vez que
-# «blender», en su lugar y, entre ellos, en el orden de la tabla, con «blender» al final.
-EXECUTED = ["unitarias", "manifiesto", *WITH_BLENDER, "blender"]
+# Los que van a la vez que «blender», tras «manifiesto» (RF-001-06, spec 001 0.8, tarea
+# 009/T34; «unitarias» desde la 0.10, tarea 011/T30), en el orden de la tabla; «motor»
+# (--completo) va solo, después de ellos (tarea 011/T36).
+WITH_BLENDER = ("unitarias", "referencia", "licencias", "iconos")
+# El orden en que se ejecutan los obligatorios (FakeRunner.steps): «manifiesto», el primero,
+# y después los que van a la vez que «blender», en el orden de la tabla, con «blender» al final.
+EXECUTED = ["manifiesto", *WITH_BLENDER, "blender"]
 _WITH_BLENDER_BLOCK = (*WITH_BLENDER, "blender")
 # El paso de la spec 004 (T30): las pruebas de dominio con el numpy del motor de cálculo de
-# pruebas, a la vez que «blender», con --completo (spec 004 0.4; spec 005, T50). Salvo en
+# pruebas, tras «blender» (desde la tarea 011/T36; antes, a la vez que él), con --completo (spec 004 0.4; spec 005, T50). Salvo en
 # RuntimeStepTest, el motor es este, simulado.
 RUNTIME = "motor"
 FAKE_SITE = Path(tempfile.gettempdir()) / "geoblender-falso" / "motor" / "site"
@@ -341,8 +342,7 @@ class FakeRunner:
         spec 001 0.8) se mezclan: las seguidas cuentan como un bloque, que da sus pasos en el
         orden de :data:`EXECUTED` (los que van con él y «blender» al final); el bloque acaba en
         una orden de otro paso o en una que ya tiene (la misma parte de un paso, o un paso sin
-        partes). El paso «motor» no cuenta: también va a la vez que «blender» (se mira aparte,
-        con ``calls_of``)."""
+        partes). El paso «motor» no cuenta (se mira aparte, con ``calls_of``)."""
         found: list[str] = []
         block: dict[str, set[tuple[int, int] | None]] = {}
 

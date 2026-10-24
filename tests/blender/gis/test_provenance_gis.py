@@ -55,8 +55,8 @@ CONTOUR_PARAMS = ["gis.contours.index_every_m", "gis.contours.index_offset_m",
                   "gis.contours.min_length_m", "gis.contours.simplify_m"]
 OURS = ("gis.", "gis_")  # las claves de la 006 en los registros de core
 TABLE_READER = "lector de tablas"
-COUNTS = {"parámetros": 17, "lectores": 5, TABLE_READER: 0, "trabajos": 13, "operaciones": 11,
-          "grupos": 0, "cifras": 0, "importadores": 5}
+COUNTS = {"parámetros": 17, "familias": 0, "lectores": 5, TABLE_READER: 0, "trabajos": 13,
+          "operaciones": 11, "grupos": 0, "cifras": 0, "importadores": 5}
 
 
 def _other_table_reader(*args: Any, **kwargs: Any) -> Any:
@@ -88,6 +88,7 @@ class GisProvenanceTest(TinOperatorsCase):
         """Los registros de ``core`` que amplía la 006, por nombre (copias)."""
         return {
             "parámetros": dict(self.params.DEFINITIONS),
+            "familias": dict(self.params.FAMILIES),  # ADR-0027: la 006 no tiene ninguna
             "lectores": dict(self.readers.READERS),
             TABLE_READER: {"": self.content.table_reader()},
             "trabajos": dict(self.catalog.WORKERS),
@@ -257,10 +258,11 @@ class GisProvenanceTest(TinOperatorsCase):
         """ADR-0025 §2, principio 8 (RF-006-26, RF-008-09): con la extensión habilitada, la 006
         tiene en ``core`` sus 17 definiciones de parámetros, sus 5 lectores y el lector de
         tablas de ``interop``, sus 13 tipos de trabajo, sus 11 operaciones y sus 5
-        importadores (ni grupos ni cifras). ``bl/ops/gis.py`` lo quita todo (dos veces: nada
-        más cambia) y lo vuelve a poner (dos veces) con los mismos objetos. Con lo que «otro»
-        registró antes con las mismas claves, registrar pone solo lo que falta (lo de otro se
-        queda) y desregistrar deja los registros exactamente como estaban."""
+        importadores (ni familias de parámetros, ni grupos ni cifras). ``bl/ops/gis.py`` lo
+        quita todo (dos veces: nada más cambia) y lo vuelve a poner (dos veces) con los mismos
+        objetos. Con lo que «otro» registró antes con las mismas claves, registrar pone solo lo
+        que falta (lo de otro se queda) y desregistrar deja los registros exactamente como
+        estaban."""
         enabled = self.registries()
         ours = {name: sorted(key for key in found if key.startswith(OURS))
                 for name, found in enabled.items()}

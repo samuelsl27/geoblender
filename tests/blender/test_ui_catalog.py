@@ -153,7 +153,7 @@ class UiCatalogTest(unittest.TestCase):
         Geoblender pasa la puerta de modo con el espacio de trabajo sin marcar."""
         self.assertFalse(bpy.context.window.workspace.geoblender_mode)
         self.assertIsNone(bpy.context.area)
-        self.assertTrue(bpy.ops.geoblender.res_compute_volume_between_surfaces.poll())
+        self.assertTrue(bpy.ops.geoblender.res_compute_reserves.poll())
         self.assertTrue(bpy.ops.geoblender.ui_set_view.poll())
 
     def test_provenance_commands_in_008(self) -> None:

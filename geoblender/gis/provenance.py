@@ -34,9 +34,12 @@ minúsculas con «_» (:func:`dataset_slug`); su :class:`~..core.datasets.Datase
   ``core.npz_mesh@1``; ``pts``, ``brk``, ``cnt`` y ``bnd`` (puntos, líneas de rotura, curvas
   de nivel y contornos): ``vector`` en ``project.gpkg``, una tabla por dato (D8), con
   ``core.gpkg_layer@1`` (el registro de la 008 lee las tablas del proyecto con ese lector).
-- **Lo importado** (``src``, ``pts``, ``brk``, ``bnd`` y las curvas de una capa importada,
-  RF-008-52) es inmutable, con su entrada y sin selector, y su ubicación lleva el uid corto de
-  la entrada (:func:`input_tag`, D22: ``rasters/gis_src_<nombre>_<entrada8>.tif``,
+- ``dom`` (spec 011, D-32): los dominios de una capa importada con el papel «dominios»
+  (polígonos con sus atributos que reparten una cubicación: fases, zonas o sectores), también
+  ``vector`` en ``project.gpkg``; lo lee la cubicación (``gis.store.load_domains``).
+- **Lo importado** (``src``, ``pts``, ``brk``, ``bnd``, ``dom`` y las curvas de una capa
+  importada, RF-008-52) es inmutable, con su entrada y sin selector, y su ubicación lleva el uid
+  corto de la entrada (:func:`input_tag`, D22: ``rasters/gis_src_<nombre>_<entrada8>.tif``,
   ``gis_pts_<nombre>_<entrada8>``), porque la 008 no reutiliza nunca una ubicación y lo
   importado de una entrada sustituida se conserva. **Lo calculado** (``dtm``, ``tin`` y las
   curvas de una superficie) no tiene entrada: ``rasters/gis_dtm_<nombre>.tif``,
@@ -119,6 +122,8 @@ POINTS = "pts"
 BREAKLINES = "brk"
 CONTOUR_LINES = "cnt"
 BOUNDARY = "bnd"
+DOMAINS = "dom"
+"""Los dominios de una capa importada (spec 011, D-32)."""
 
 _GIS_PREFIX = f"{MODULE}_"
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
@@ -175,7 +180,7 @@ OPERATION_TYPES: tuple[OperationType, ...] = (
                   readers=(POINTS_TEXT.id,)),
     OperationType(IMPORT_VECTOR, "Import of a vector layer", False,
                   ("geoblender.gis_import_vector",),
-                  outputs=(POINTS, BREAKLINES, CONTOUR_LINES, BOUNDARY),
+                  outputs=(POINTS, BREAKLINES, CONTOUR_LINES, BOUNDARY, DOMAINS),
                   readers=(GPKG_LAYER.id,)),
     OperationType(RESAMPLE, "Resampling to the project grid", True,
                   ("geoblender.gis_resample_to_grid",), inputs=("source",),
@@ -331,8 +336,10 @@ FAMILIES: tuple[DatasetFamily, ...] = (
                   True, ""),
     DatasetFamily(BOUNDARY, "vector", Store.GPKG, CORE_GPKG_LAYER.id, "boundary", True, False,
                   ""),
+    DatasetFamily(DOMAINS, "vector", Store.GPKG, CORE_GPKG_LAYER.id, "domains", True, False,
+                  ""),
 )
-"""Las familias de datos de la 006 (plan §5.2.4 y §5.6.3)."""
+"""Las familias de datos de la 006 (plan §5.2.4 y §5.6.3) y los dominios de la 011 (D-32)."""
 FAMILIES_BY_CODE: Mapping[str, DatasetFamily] = MappingProxyType(
     {family.code: family for family in FAMILIES})
 """Las familias por código (solo lectura)."""
@@ -341,8 +348,10 @@ LAYER_ROLES: Mapping[str, str] = MappingProxyType({
     "breaklines": BREAKLINES,
     "contours": CONTOUR_LINES,
     "boundary": BOUNDARY,
+    "domains": DOMAINS,
 })
-"""El papel de una capa importada (ajuste ``role``) → la familia de su dato."""
+"""El papel de una capa importada (ajuste ``role``) → la familia de su dato (``domains``: los
+dominios de una cubicación, spec 011, D-32)."""
 
 
 def _family(code: object) -> DatasetFamily:

@@ -159,12 +159,13 @@ class CatalogContentTest(unittest.TestCase):
                     self.assertTrue(item.width_text, "el texto que se pliega a solo icono")
 
     def test_pies_contexts_layouts(self) -> None:
-        """RF-003-06, RF-003-16, RF-003-17: 4 menús circulares de 8 ranuras, 14 menús
-        contextuales con dos iconos y 7 disposiciones, una principal."""
+        """RF-003-06, RF-003-16, RF-003-17: 4 menús circulares de 8 ranuras, 15 menús
+        contextuales con dos iconos (el de la rejilla de diferencias, de la spec 011, T22) y 7
+        disposiciones, una principal."""
         self.assertEqual(len(self.cat.pies), 4)
         for pie in self.cat.pies.values():
             self.assertEqual(len(pie.slots), 8, pie.id)
-        self.assertEqual(len(self.cat.contexts), 14)
+        self.assertEqual(len(self.cat.contexts), 15)
         self.assertIn("SELECTION", self.cat.contexts)
         for context in self.cat.contexts.values():
             self.assertEqual(len(context.icons), 2, context.id)
@@ -312,7 +313,7 @@ class CatalogAgainstDocsTest(unittest.TestCase):
                 with self.subTest(menu=menu_id):
                     self.assertLessEqual(set(bs_tables.identifiers(cells[1])), have)
                 found += 1
-        self.assertEqual(found, 13)
+        self.assertEqual(found, 14)  # la 14.ª, «Diferencia ▾» (spec 011, T31)
 
     def test_layouts_match_cw(self) -> None:
         """RF-003-16 (CW §6.1 y §6.2): la principal «Geoblender» y las 6 opcionales con su

@@ -3,9 +3,10 @@
 RNF-003-07; plan 003 §5.4, punto 10; HU-003-7).
 
 - Encuentra un comando por su nombre en español o en inglés, su alias (también los de
-  Datamine), un término de otro programa (RecMin) o su entrada (``R-38``, ``r38``,
-  ``005``): «cubicar», «volume», «R-38» y «r38» dan la cubicación entre superficies entre
-  los 3 primeros, y «T3», el TIN desde puntos (en RecMin, T3).
+  Datamine), un término de otro programa (RecMin) o su entrada (``R-51``, ``r51``,
+  ``005``): «cubicar» y «volume» dan la cubicación entre superficies entre los 3 primeros,
+  «R-51» y «r51», las reservas por fase y año, y «T3», el TIN desde puntos (en RecMin,
+  T3).
 - Tildes, mayúsculas y los signos de los menús («…», «▸») dan igual.
 - Los comandos no disponibles salen también, marcados y con su «Disponible en …»; los
   auxiliares internos, no.
@@ -22,6 +23,7 @@ catalog = import_geoblender("core.catalog")
 search_mod = import_geoblender("core.catalog.search")
 
 VOLUME = "geoblender.res_compute_volume_between_surfaces"
+RESERVES = "geoblender.res_compute_reserves"  # R-51, aún provisional
 TIN = "geoblender.gis_create_tin_from_points"
 
 
@@ -40,13 +42,14 @@ class SearchTest(unittest.TestCase):
         return [hit.key for hit in hits]
 
     def test_examples_of_the_task(self) -> None:
-        """RF-003-26, HU-003-7: «cubicar», «volume», «R-38» y «r38» llevan a la cubicación
-        entre superficies, y «T3» al TIN desde puntos, entre los 3 primeros, en los dos
-        idiomas de la interfaz."""
+        """RF-003-26, HU-003-7: «cubicar» y «volume» llevan a la cubicación entre
+        superficies, «R-51» y «r51» a las reservas por fase y año y «T3» al TIN desde puntos,
+        entre los 3 primeros, en los dos idiomas de la interfaz."""
         for language in ("es", "en"):
-            for query in ("cubicar", "volume", "R-38", "r38"):
+            for query, key in (("cubicar", VOLUME), ("volume", VOLUME), ("R-51", RESERVES),
+                               ("r51", RESERVES)):
                 with self.subTest(query=query, language=language):
-                    self.assertIn(VOLUME, self.keys(query, language))
+                    self.assertIn(key, self.keys(query, language))
             with self.subTest(query="T3", language=language):
                 self.assertIn(TIN, self.keys("T3", language))
 
@@ -79,17 +82,16 @@ class SearchTest(unittest.TestCase):
         self.assertTrue(new.available)
         self.assertEqual(new.unavailable_text, "")
         self.assertEqual(new.label, "Nuevo proyecto…")
-        volume = [hit for hit in search_mod.search(self.cat, "cubicar", language="es",
-                                                   is_available=only_new_project)
-                  if hit.key == VOLUME][0]
-        self.assertFalse(volume.available)
-        self.assertEqual(volume.unavailable_text,
-                         "Disponible en R-38 · Cubicación entre superficies")
-        (english,) = search_mod.search(self.cat, "volume between", language="en",
+        reserves = [hit for hit in search_mod.search(self.cat, "reservas", language="es",
+                                                     is_available=only_new_project)
+                    if hit.key == RESERVES][0]
+        self.assertFalse(reserves.available)
+        self.assertEqual(reserves.unavailable_text, "Disponible en R-51 · Reservas")
+        (english,) = search_mod.search(self.cat, "reserves by phase", language="en",
                                        is_available=only_new_project, limit=1)
-        self.assertEqual((english.key, english.label), (VOLUME, "Volume between two surfaces…"))
-        self.assertEqual(english.unavailable_text,
-                         "Available in R-38 · Volumetrics between surfaces")
+        self.assertEqual((english.key, english.label),
+                         (RESERVES, "Reserves by phase and year…"))
+        self.assertEqual(english.unavailable_text, "Available in R-51 · Reserves")
 
     def test_ranking_rules(self) -> None:
         """Plan 003 §5.4 (10): exacto > prefijo > prefijo de palabra > palabras > subcadena
@@ -102,11 +104,11 @@ class SearchTest(unittest.TestCase):
         self.assertEqual(score("ntana", "ventana"), 40)
         self.assertAlmostEqual(score("vtn", "ventana"), 20 * 3 / 7)
         self.assertEqual(score("xyz", "ventana"), 0)
-        hits = search_mod.search(self.cat, "R-38", language="es", is_available=nothing_available)
-        r38 = [hit for hit in hits if hit.entry == "R-38"]
-        self.assertGreater(len(r38), 3)
-        self.assertEqual([hit.frequency for hit in r38],
-                         sorted((hit.frequency for hit in r38), reverse=True))
+        hits = search_mod.search(self.cat, "R-57", language="es", is_available=nothing_available)
+        r57 = [hit for hit in hits if hit.entry == "R-57"]
+        self.assertGreater(len(r57), 3)
+        self.assertEqual([hit.frequency for hit in r57],
+                         sorted((hit.frequency for hit in r57), reverse=True))
 
     def test_scope_and_limit(self) -> None:
         """RF-003-26: sin auxiliares internos; como mucho ``limit`` resultados; una consulta
@@ -155,8 +157,8 @@ class SearchTest(unittest.TestCase):
         hit = self.first("T3")
         self.assertEqual(hit.field, "jargon")
         self.assertIn(hit.matched, [term for _program, term in self.cat.commands[hit.key].jargon])
-        hit = self.first("r38")
-        self.assertEqual((hit.field, hit.matched), ("entry", "R-38"))
+        hit = self.first("r51")
+        self.assertEqual((hit.field, hit.matched), ("entry", "R-51"))
         hits = search_mod.search(self.cat, "cubicar", language="en",
                                  is_available=nothing_available)
         volume = next(hit for hit in hits if hit.key == VOLUME)

@@ -87,8 +87,8 @@ class GEOBLENDER_OT_geo_set_clip_mode(bpy.types.Operator):
         from ..ui import commands, provisional, views
 
         if self.mode not in DELIVERED_MODES:
-            self.report({"INFO"}, provisional.message(commands.catalog(), self.bl_idname,
-                                                      self.properties))
+            self.report({"INFO"}, provisional.message(
+                commands.catalog(), commands.command_idname(self.bl_idname), self.properties))
             return {"CANCELLED"}
         target = views.target_view3d(context)
         if target is None:

@@ -2328,6 +2328,12 @@ es = "Las líneas de rotura solo aportan sus puntos"
 ["Boundary and holes of a TIN"]
 es = "Contorno y huecos de un TIN"
 
+["Domains"]
+es = "Dominios"
+
+["Polygons that divide a cubication (phases, zones or sectors), with their fields"]
+es = "Polígonos que reparten una cubicación (fases, zonas o sectores), con sus campos"
+
 ["Encoding"]
 es = "Codificación"
 
@@ -2408,6 +2414,9 @@ es = "curvas de nivel"
 
 ["boundaries"]
 es = "contornos"
+
+["domains"]
+es = "dominios"
 
 ["Layer «{layer}» of «{file}» imported as {dataset}: {count} {what} of {read} features read, {rejected} rejected"]
 es = "Capa «{layer}» de «{file}» importada como {dataset}: {count} {what} de {read} entidades leídas, {rejected} rechazadas"
@@ -5237,3 +5246,778 @@ es = "Cifras congeladas de {revision}"
 
 ["No revision of {version} has been frozen yet"]
 es = "Aún no hay ninguna revisión congelada de {version}"
+
+# Parámetros de la cubicación (spec 011, T03; RF-011-04, RF-011-09, RF-011-14, RF-011-19; plan
+# 011 §5.2.2): la etiqueta (label_msgid) de cada definición de reserves/params.py en el panel de
+# parámetros y en los ajustes de una cubicación (la altura de banco).
+
+["Minimum thickness of cut and fill"]
+es = "Espesor mínimo de desmonte y terraplén"
+
+["Presence threshold of anthropic units"]
+es = "Umbral de presencia de las unidades antrópicas"
+
+["Tolerance of the extraction stages"]
+es = "Tolerancia de los momentos de extracción"
+
+["Bench height"]
+es = "Altura de banco"
+
+# Familias de parámetros de la columna de materiales (spec 011, T09; RF-011-11, RF-011-15; plan
+# 011 §5.2.2; ADR-0027): la etiqueta de cada familia de reserves/params.py; el nombre visible de
+# una clave concreta le añade los códigos de su unidad y de su componente.
+
+["In-situ density"]
+es = "Densidad in situ"
+
+["Swell factor"]
+es = "Esponjamiento K"
+
+["Share of the component"]
+es = "Porcentaje del componente"
+
+# Procedencia de la cubicación (spec 011, T14; RF-011-20, RF-011-22; plan 011 §5.2.3): el nombre
+# de cada tipo de operación, de cada cifra y de cada ajuste que enseña su procedencia
+# (reserves/provenance.py).
+
+["Volumetrics between surfaces"]
+es = "Cubicación entre superficies"
+
+["Tonnage of a cubication"]
+es = "Toneladas de una cubicación"
+
+["Difference between surfaces"]
+es = "Diferencia entre superficies"
+
+["Volumetrics by extraction stages"]
+es = "Cubicación por momentos de extracción"
+
+["Edit of the materials column"]
+es = "Edición de la columna de materiales"
+
+["Cut volume"]
+es = "Desmonte"
+
+["Fill volume"]
+es = "Terraplén"
+
+["Net volume"]
+es = "Volumen neto"
+
+["Area with data in both surfaces"]
+es = "Área con dato en las dos superficies"
+
+["Area without data"]
+es = "Área sin dato"
+
+["Area without movement"]
+es = "Área sin movimiento"
+
+["Volume of the unit"]
+es = "Volumen de la unidad"
+
+["Combined scale factor"]
+es = "Factor combinado"
+
+["Effect of the combined scale factor"]
+es = "Efecto del factor combinado"
+
+["Swollen volume of the unit"]
+es = "Volumen esponjado de la unidad"
+
+["Tonnage of the unit"]
+es = "Toneladas de la unidad"
+
+["Total tonnage"]
+es = "Toneladas totales"
+
+["Useful volume in situ"]
+es = "Volumen útil in situ"
+
+["Waste volume in situ"]
+es = "Volumen de estéril in situ"
+
+["Useful tonnage"]
+es = "Toneladas útiles"
+
+["Waste tonnage"]
+es = "Toneladas de estéril"
+
+["Waste to useful ratio by volume"]
+es = "Relación estéril/útil en volumen"
+
+["Waste to useful ratio by mass"]
+es = "Relación estéril/útil en peso"
+
+["Intrinsic ratio by volume"]
+es = "Relación intrínseca en volumen"
+
+["Intrinsic ratio by mass"]
+es = "Relación intrínseca en peso"
+
+["Sum of the extraction stages"]
+es = "Suma de los momentos de extracción"
+
+["Difference between the stages and the direct cubication"]
+es = "Diferencia de los momentos con la cubicación directa"
+
+["Relative difference between the stages and the direct cubication"]
+es = "Diferencia relativa de los momentos con la cubicación directa"
+
+["Constant start elevation"]
+es = "Cota constante de partida"
+
+["Constant final elevation"]
+es = "Cota constante final"
+
+["Bench anchor elevation"]
+es = "Cota de anclaje de los bancos"
+
+["Difference grid"]
+es = "Rejilla de diferencias"
+
+["Projection scale factor"]
+es = "Factor de escala de la proyección"
+
+# Los datos de las tablas de la cubicación (spec 011, T17; RF-011-23, RF-011-24; plan 011
+# §5.2.1): el nombre visible (label) de cada dato de reserves/table.py que no es una cifra, en
+# el CSV y en el panel (los demás llevan el de su cifra).
+
+["Area where the unit is absent"]
+es = "Área donde falta la unidad"
+
+["Area where the unit has no data"]
+es = "Área donde la unidad no tiene dato"
+
+["Area where the base of the unit rises above the one above"]
+es = "Área donde la base de la unidad sube por encima de la de encima"
+
+["Mean elevation"]
+es = "Cota media"
+
+["Volume of the unit in situ"]
+es = "Volumen in situ de la unidad"
+
+["Cut: sum of the extraction stages"]
+es = "Desmonte: suma de los momentos de extracción"
+
+["Cut: direct cubication"]
+es = "Desmonte: cubicación directa"
+
+["Cut: difference between the stages and the direct cubication"]
+es = "Desmonte: diferencia de los momentos con la cubicación directa"
+
+["Cut: relative difference between the stages and the direct cubication"]
+es = "Desmonte: diferencia relativa de los momentos con la cubicación directa"
+
+["Fill: sum of the extraction stages"]
+es = "Terraplén: suma de los momentos de extracción"
+
+["Fill: direct cubication"]
+es = "Terraplén: cubicación directa"
+
+["Fill: difference between the stages and the direct cubication"]
+es = "Terraplén: diferencia de los momentos con la cubicación directa"
+
+["Fill: relative difference between the stages and the direct cubication"]
+es = "Terraplén: diferencia relativa de los momentos con la cubicación directa"
+
+# La cola de los pasos del recálculo de la cubicación (spec 011, T19; RF-011-20; plan 011 D-19):
+# lo que dice la barra de estado mientras «Recalcular lo obsoleto» espera a una operación de res
+# (bl/ops/res.py).
+
+["Recomputing «{name}»… {percent} %"]
+es = "Recalculando «{name}»… {percent} %"
+
+# Materiales y densidades… (spec 011, T20; RF-011-11, RF-011-15, RF-011-21; plan 011 §5.5): la
+# ventana de la columna de materiales y sus diálogos (bl/props/res.py, bl/ui/res_panels.py y
+# bl/ops/res.py).
+
+["Natural"]
+es = "Natural"
+
+["Anthropic"]
+es = "Antrópica"
+
+["Compound"]
+es = "Compuesta"
+
+["Not chosen"]
+es = "Sin elegir"
+
+["Useful"]
+es = "Útil"
+
+["Waste"]
+es = "Estéril"
+
+["In situ"]
+es = "In situ"
+
+["Loose"]
+es = "Suelto"
+
+["Constant elevation"]
+es = "Cota constante"
+
+["Add a unit"]
+es = "Añadir una unidad"
+
+["Add a unit at the bottom of the column"]
+es = "Añade una unidad al final de la columna"
+
+["Remove the unit"]
+es = "Quitar la unidad"
+
+["Remove the chosen unit from the column"]
+es = "Quita de la columna la unidad elegida"
+
+["Move the unit up"]
+es = "Subir la unidad"
+
+["Move the chosen unit one place up"]
+es = "Sube un puesto la unidad elegida"
+
+["Move the unit down"]
+es = "Bajar la unidad"
+
+["Move the chosen unit one place down"]
+es = "Baja un puesto la unidad elegida"
+
+["Add a component"]
+es = "Añadir un componente"
+
+["Add a component to the chosen compound unit"]
+es = "Añade un componente a la unidad compuesta elegida"
+
+["Remove the component"]
+es = "Quitar el componente"
+
+["Remove the chosen component of its unit"]
+es = "Quita de su unidad el componente elegido"
+
+["Component"]
+es = "Componente"
+
+["Base elevation of «{unit}»"]
+es = "Cota de la base de «{unit}»"
+
+["the project"]
+es = "el proyecto"
+
+["New unit"]
+es = "Unidad nueva"
+
+["The column has no unit yet: add one first"]
+es = "La columna aún no tiene ninguna unidad: añada antes una"
+
+["Only a compound unit has components: choose «Compound» first"]
+es = "Solo una unidad compuesta tiene componentes: elija antes «Compuesta»"
+
+["New component"]
+es = "Componente nuevo"
+
+["Materials column saved: {count} units"]
+es = "Columna de materiales guardada: {count} unidades"
+
+["Declare the swell factor K of this unit first (K…)"]
+es = "Declare antes el esponjamiento K de esta unidad (K…)"
+
+["Swell factor K to apply to every unit: {value}"]
+es = "Esponjamiento K que se pone en todas las unidades: {value}"
+
+["Swell factor K = {value} {kind} in {count} units ({scope})"]
+es = "Esponjamiento K = {value} {kind} en {count} unidades ({scope})"
+
+["«{unit}» is not a compound unit of the saved column"]
+es = "«{unit}» no es una unidad compuesta de la columna guardada"
+
+["Percentages of «{unit}»"]
+es = "Porcentajes de «{unit}»"
+
+["The percentages of the components of «{unit}» add up to {value} %, not 100 % (to two decimals): none has changed"]
+es = "Los porcentajes de los componentes de «{unit}» suman {value} %, no 100 % (con dos decimales): no ha cambiado ninguno"
+
+["Percentages of «{unit}»: {values} {kind} ({scope})"]
+es = "Porcentajes de «{unit}»: {values} {kind} ({scope})"
+
+["Materials and densities"]
+es = "Materiales y densidades"
+
+["{version}: {value} · project: {project}"]
+es = "{version}: {value} · proyecto: {project}"
+
+["In-situ density: {value}"]
+es = "Densidad in situ: {value}"
+
+["Density…"]
+es = "Densidad…"
+
+["K: {value}"]
+es = "K: {value}"
+
+["K…"]
+es = "K…"
+
+["Components"]
+es = "Componentes"
+
+["Share: {value}"]
+es = "Porcentaje: {value}"
+
+["Save the column to declare its parameters"]
+es = "Guarde la columna para declarar sus parámetros"
+
+["No base: it is the last unit"]
+es = "Sin base: es la última unidad"
+
+["Base"]
+es = "Base"
+
+["Base elevation (m)"]
+es = "Cota de la base (m)"
+
+["Thickness grid"]
+es = "Rejilla de espesores"
+
+["Anthropic presence: {value}"]
+es = "Presencia de lo antrópico: {value}"
+
+["Change…"]
+es = "Cambiar…"
+
+["Units, from top to bottom"]
+es = "Unidades, de arriba abajo"
+
+["No unit yet: add the units from top to bottom"]
+es = "Aún no hay ninguna unidad: añada las unidades de arriba abajo"
+
+# Entre dos superficies… (spec 011, T21; RF-011-01 a 06, RF-011-20, RF-011-25, RF-011-26; plan
+# 011 §5.5, D-30, D-31): el diálogo, sus listas, el avance y lo que dice al terminar
+# (bl/ops/res.py y bl/ui/res_panels.py).
+
+["A constant elevation (m), typed below"]
+es = "Una cota constante (m), que se escribe debajo"
+
+["No scope"]
+es = "Sin ámbito"
+
+["The whole grid of the surfaces"]
+es = "Toda la rejilla de las superficies"
+
+["Frozen in {revision}, the revision the active version starts from"]
+es = "Congelada en {revision}, la revisión de la que parte la versión activa"
+
+["A grid of the active version"]
+es = "Una rejilla de la versión activa"
+
+["A grid of the project"]
+es = "Una rejilla del proyecto"
+
+["Boundary layer"]
+es = "Capa de contornos"
+
+["Domain layer (their union)"]
+es = "Capa de dominios (su unión)"
+
+["Constant elevation {value} m"]
+es = "Cota constante {value} m"
+
+["Compute"]
+es = "Cubicar"
+
+["Minimum thickness: {value} (it is changed in {path})"]
+es = "Espesor mínimo: {value} (se cambia en {path})"
+
+["Start surface"]
+es = "Superficie de partida"
+
+["Final surface"]
+es = "Superficie final"
+
+["Start elevation"]
+es = "Cota de partida"
+
+["Final elevation"]
+es = "Cota final"
+
+["Start elevation (m)"]
+es = "Cota de partida (m)"
+
+["Final elevation (m)"]
+es = "Cota final (m)"
+
+["Invert"]
+es = "Invertir"
+
+["Scope (optional)"]
+es = "Ámbito (opcional)"
+
+["Replace the cubication"]
+es = "Sustituir la cubicación"
+
+["There is already a cubication «{name}» in {version}: replace it?"]
+es = "Ya hay una cubicación «{name}» en {version}: ¿sustituirla?"
+
+["There is already a cubication «{name}» in {version}"]
+es = "Ya hay una cubicación «{name}» en {version}"
+
+["There is already a cubication «{name}» in {version}: to replace it, repeat the order with «Replace» (replace=True)"]
+es = "Ya hay una cubicación «{name}» en {version}: para sustituirla, repita la orden con «Sustituir» (replace=True)"
+
+["{name} ({revision}, in progress): cut {cut} m³, fill {fill} m³, net {net} m³"]
+es = "{name} ({revision}, en curso): desmonte {cut} m³, terraplén {fill} m³, neto {net} m³"
+
+["Computing «{name}»: checking… {percent} % · Esc: cancel"]
+es = "Cubicando «{name}»: comprobando… {percent} % · Esc: cancelar"
+
+["Computing «{name}»: reading… {percent} % · Esc: cancel"]
+es = "Cubicando «{name}»: leyendo… {percent} % · Esc: cancelar"
+
+["Computing «{name}»: writing the difference grid… {percent} % · Esc: cancel"]
+es = "Cubicando «{name}»: escribiendo la rejilla de diferencias… {percent} % · Esc: cancelar"
+
+["Computing «{name}»: saving… {percent} % · Esc: cancel"]
+es = "Cubicando «{name}»: guardando… {percent} % · Esc: cancelar"
+
+["«{name}» has been computed; its difference grid has not been loaded into the view"]
+es = "«{name}» está cubicada; su rejilla de diferencias no se ha cargado en la vista"
+
+["Volumetrics cancelled: nothing has been left half-done"]
+es = "Cubicación cancelada: no ha quedado nada a medias"
+
+["The project was closed while «{name}» was being computed: nothing has been left half-done"]
+es = "Se cerró el proyecto mientras se cubicaba «{name}»: no ha quedado nada a medias"
+
+["Name of the cubication, unique in the active version (empty: «<final> − <start>»)"]
+es = "Nombre de la cubicación, único en la versión activa (vacío: «<final> − <partida>»)"
+
+["Surface before the works (the higher one): a grid of the project or of the active version, one frozen in the revision it starts from, or a constant elevation"]
+es = "Superficie de antes de los trabajos (la más alta): una rejilla del proyecto o de la versión activa, una congelada en la revisión de la que parte o una cota constante"
+
+["Surface after the works: a grid of the project or of the active version, one frozen in the revision it starts from, or a constant elevation"]
+es = "Superficie de después de los trabajos: una rejilla del proyecto o de la versión activa, una congelada en la revisión de la que parte o una cota constante"
+
+["Constant elevation of the start surface, m"]
+es = "Cota constante de la superficie de partida, m"
+
+["Constant elevation of the final surface, m"]
+es = "Cota constante de la superficie final, m"
+
+["Swap the start and the final surfaces"]
+es = "Cambia la superficie de partida por la final"
+
+["Polygons outside which nothing is measured: a boundary layer or the union of a domain layer (none: the whole grid)"]
+es = "Polígonos fuera de los cuales no se cubica nada: una capa de contornos o la unión de una de dominios (ninguna: toda la rejilla)"
+
+["Write the grid of differences (final − start, m) as data of the version and load it into the view"]
+es = "Escribe la rejilla de diferencias (final − partida, m) como dato de la versión y la carga en la vista"
+
+["Replace the cubication of the same name of the active version"]
+es = "Sustituye la cubicación del mismo nombre de la versión activa"
+
+# Diferencia entre superficies… y la vista de su rejilla (spec 011, T22; RF-011-05, RF-011-23;
+# plan 011 A15, D-25, D-29): el tipo VOLUME_DIFFERENCE de Object.geoblender, su rama «Cubicación»,
+# el nombre que comparten una cubicación y una diferencia y Exportar a GeoTIFF… («Difference
+# grid», «File», «Replace» y su descripción ya están arriba).
+
+["Volumetrics"]
+es = "Cubicación"
+
+["The grid of differences between two surfaces of a cubication, drawn on the final one"]
+es = "La rejilla de diferencias entre dos superficies de una cubicación, dibujada sobre la final"
+
+["There is already a difference grid «{name}» in {version}, of «{other}»: give this one another name"]
+es = "Ya hay una rejilla de diferencias «{name}» en {version}, de «{other}»: dé otro nombre a esta"
+
+["Uid or name of the difference grid (empty: the active one in the view)"]
+es = "Uid o nombre de la rejilla de diferencias (vacío: la activa en la vista)"
+
+["Choose the difference grid: select it in the view"]
+es = "Elija la rejilla de diferencias: selecciónela en la vista"
+
+["Exporting «{file}»… {percent} % · Esc: cancel"]
+es = "Exportando «{file}»… {percent} % · Esc: cancelar"
+
+["Export cancelled: nothing has been written"]
+es = "Exportación cancelada: no se ha escrito nada"
+
+["Difference grid exported to «{file}»"]
+es = "Rejilla de diferencias exportada a «{file}»"
+
+# Por unidad, fase y banco… (spec 011, T23; RF-011-07 a RF-011-10, RF-011-12 a RF-011-18; plan 011
+# §5.5, D-16): la capa de dominios y su campo, los bancos, «Por unidades» y las toneladas
+# encadenadas («Field», «Bench height», «Scope», «Difference grid» y sus descripciones ya están
+# arriba).
+
+["No domains"]
+es = "Sin dominios"
+
+["Do not split the cubication by domains"]
+es = "No repartir la cubicación por dominios"
+
+["Choose a domain layer first"]
+es = "Elija antes una capa de dominios"
+
+["Field «{field}» of the layer"]
+es = "Campo «{field}» de la capa"
+
+["Domain layer"]
+es = "Capa de dominios"
+
+["Layer of polygons imported with the role «domains» that splits the cubication into phases, zones or sectors (none: no split)"]
+es = "Capa de polígonos importada con el papel «dominios» que reparte la cubicación en fases, zonas o sectores (ninguna: sin repartir)"
+
+["Field of the domain layer that names each domain"]
+es = "Campo de la capa de dominios que nombra cada dominio"
+
+["Height of the benches, m, with the anchor elevation (empty: no benches)"]
+es = "Altura de los bancos, m, con la cota de anclaje (vacía: sin bancos)"
+
+["Anchor elevation"]
+es = "Cota de anclaje"
+
+["An absolute elevation where a bench starts, m"]
+es = "Una cota absoluta donde empieza un banco, m"
+
+["List of elevations"]
+es = "Lista de cotas"
+
+["Or an increasing list of bench elevations, m, separated by «;»"]
+es = "O una lista creciente de cotas de los bancos, m, separadas por «;»"
+
+["By units"]
+es = "Por unidades"
+
+["Split the cut by the units of the materials column of the project and weigh it (its tonnage, a second operation)"]
+es = "Repartir el desmonte por las unidades de la columna de materiales del proyecto y pesarlo (sus toneladas, una segunda operación)"
+
+["Benches: height and anchor elevation, or a list of elevations"]
+es = "Bancos: altura y cota de anclaje, o una lista de cotas"
+
+["Bench height (m)"]
+es = "Altura de banco (m)"
+
+["Anchor elevation (m)"]
+es = "Cota de anclaje (m)"
+
+["List of elevations (m)"]
+es = "Lista de cotas (m)"
+
+["Choose the field that names each domain of «{layer}»"]
+es = "Elija el campo que nombra cada dominio de «{layer}»"
+
+["Computing «{name}»: weighing… {percent} % · Esc: cancel"]
+es = "Cubicando «{name}»: pesando… {percent} % · Esc: cancelar"
+
+["Tonnage of «{name}» ({revision}, in progress): {total} t"]
+es = "Toneladas de «{name}» ({revision}, en curso): {total} t"
+
+["Tonnage of «{name}» ({revision}, in progress): no total tonnage"]
+es = "Toneladas de «{name}» ({revision}, en curso): sin total de toneladas"
+
+["Tonnage of «{name}» cancelled: its volumes are already saved; nothing has been left half-done"]
+es = "Toneladas de «{name}» canceladas: sus volúmenes ya están guardados; no ha quedado nada a medias"
+
+# Spec 011, T24: Por momentos de extracción… y Ratios…
+["Name of the cubication by stages, unique in the active version (empty: «<direct> by stages»)"]
+es = "Nombre de la cubicación por momentos, único en la versión activa (vacío: «<directa> por momentos»)"
+
+["Extraction stages"]
+es = "Momentos de extracción"
+
+["Cubications of the active version that are the extraction stages (operation, splitting, stock…), in their order"]
+es = "Cubicaciones de la versión activa que son los momentos de extracción (explotación, desdoblado, stock…), en su orden"
+
+["Direct cubication"]
+es = "Cubicación directa"
+
+["Cubication of the active version of the whole extraction, which the sum of the stages is compared with"]
+es = "Cubicación de la versión activa de toda la extracción, con la que se compara la suma de los momentos"
+
+["Replace the cubication by stages of the same name of the active version"]
+es = "Sustituir la cubicación por momentos del mismo nombre de la versión activa"
+
+["Tolerance of the stages: {value} (it is changed in {path})"]
+es = "Tolerancia de los momentos: {value} (se cambia en {path})"
+
+["There are fewer than two cubications in {version}: compute the extraction stages and the direct cubication first ({path})"]
+es = "Hay menos de dos cubicaciones en {version}: cubique antes los momentos de extracción y la cubicación directa ({path})"
+
+["Compare"]
+es = "Comparar"
+
+["Extraction stages (at most {count})"]
+es = "Momentos de extracción (como mucho {count})"
+
+["Choose the direct cubication"]
+es = "Elija la cubicación directa"
+
+["Choose at least one extraction stage"]
+es = "Elija al menos un momento de extracción"
+
+["At most {count} extraction stages can be compared, not {number}"]
+es = "Se pueden comparar como mucho {count} momentos de extracción, no {number}"
+
+["«{name}» is chosen twice as an extraction stage"]
+es = "«{name}» se ha elegido dos veces como momento de extracción"
+
+["The direct cubication «{name}» cannot also be an extraction stage"]
+es = "La cubicación directa «{name}» no puede ser también un momento de extracción"
+
+["{direct} by stages"]
+es = "{direct} por momentos"
+
+["There is already a cubication by stages «{name}» in {version}: replace it?"]
+es = "Ya hay una cubicación por momentos «{name}» en {version}: ¿sustituirla?"
+
+["There is already a cubication by stages «{name}» in {version}"]
+es = "Ya hay una cubicación por momentos «{name}» en {version}"
+
+["There is already a cubication by stages «{name}» in {version}: to replace it, repeat the order with «Replace» (replace=True)"]
+es = "Ya hay una cubicación por momentos «{name}» en {version}: para sustituirla, repita la orden con «Sustituir» (replace=True)"
+
+["«{name}» ({revision}, in progress): sum of the stages {sum} m³, direct «{direct}» {direct_volume} m³, difference {difference} m³ ({percent})"]
+es = "«{name}» ({revision}, en curso): suma de los momentos {sum} m³, directa «{direct}» {direct_volume} m³, diferencia {difference} m³ ({percent})"
+
+["Comparing «{name}»… {percent} % · Esc: cancel"]
+es = "Comparando «{name}»… {percent} % · Esc: cancelar"
+
+["Cubication by stages cancelled: nothing has been left half-done"]
+es = "Cubicación por momentos cancelada: no ha quedado nada a medias"
+
+["Cubication"]
+es = "Cubicación"
+
+["Cubication of the active version whose ratios are shown (empty: the one chosen in the panel or the last one by units)"]
+es = "Cubicación de la versión activa cuyas relaciones se enseñan (vacía: la elegida en el panel o la última por unidades)"
+
+["There are no cubications in {version}: compute one first ({path})"]
+es = "No hay cubicaciones en {version}: cubique antes una ({path})"
+
+["«{name}» was computed without units: it has no waste to useful ratios (compute it by units: {path})"]
+es = "«{name}» se cubicó sin unidades: no tiene relaciones estéril/útil (cubíquela por unidades: {path})"
+
+["«{name}» has no tonnage: its ratios come with it (compute it again by units: {path})"]
+es = "«{name}» no tiene toneladas: sus relaciones salen con ellas (cubíquela otra vez por unidades: {path})"
+
+["Waste to useful ratio of «{name}»: {volume} · {mass}"]
+es = "Relación estéril/útil de «{name}»: {volume} · {mass}"
+
+["All the data"]
+es = "Todos los datos"
+
+["Waste to useful ratios"]
+es = "Relaciones estéril/útil"
+
+# La ventana de la cubicación y Exportar CSV… (spec 011, T25; RF-011-23, RF-011-24; plan 011 §5.5,
+# D-29, D-37): N ▸ Proyecto ▸ Cubicaciones, su lista, sus filtros, su tabla y la exportación
+# (bl/ui/res_panels.py, bl/props/res.py y bl/ops/res.py; «Cubication», «File», «Replace», «Data»,
+# «Unit» y lo de sustituir el fichero ya están arriba).
+["Cubications"]
+es = "Cubicaciones"
+
+["{revision} in progress"]
+es = "{revision} en curso"
+
+["{version} current: {revision}"]
+es = "{version} vigente: {revision}"
+
+["{version} frozen: {revision}"]
+es = "{version} congelada: {revision}"
+
+["{version} closed ({revision})"]
+es = "{version} cerrada ({revision})"
+
+["below {elevation} m"]
+es = "por debajo de {elevation} m"
+
+["above {elevation} m"]
+es = "por encima de {elevation} m"
+
+["Outside the domains"]
+es = "Fuera de los dominios"
+
+["{name}: {value}"]
+es = "{name}: {value}"
+
+["{name}: {value} · {scope}"]
+es = "{name}: {value} · {scope}"
+
+["{operation} ({revision})"]
+es = "{operation} ({revision})"
+
+["Any domain"]
+es = "Cualquier dominio"
+
+["All the domains (total)"]
+es = "Todos los dominios (total)"
+
+["Any bench"]
+es = "Cualquier banco"
+
+["All the benches (total)"]
+es = "Todos los bancos (total)"
+
+["Any unit"]
+es = "Cualquier unidad"
+
+["All the units (total)"]
+es = "Todas las unidades (total)"
+
+["Reading the cubications…"]
+es = "Leyendo las cubicaciones…"
+
+["Choose a cubication in the list"]
+es = "Elija una cubicación de la lista"
+
+["Reading «{name}»…"]
+es = "Leyendo «{name}»…"
+
+["Domain"]
+es = "Dominio"
+
+["Bench"]
+es = "Banco"
+
+["No row matches the filters"]
+es = "Ninguna fila pasa los filtros"
+
+["Parameters used"]
+es = "Parámetros usados"
+
+["All the data or only the ratios"]
+es = "Todos los datos o solo las relaciones"
+
+["Cubication of the active version whose table is shown"]
+es = "Cubicación de la versión activa cuya tabla se enseña"
+
+["Only the rows of this domain"]
+es = "Solo las filas de este dominio"
+
+["Only the rows of this bench"]
+es = "Solo las filas de este banco"
+
+["Only the rows of this unit (and its components)"]
+es = "Solo las filas de esta unidad (y de sus componentes)"
+
+["Cubication of the active version that is shown (empty: the one chosen in the panel)"]
+es = "Cubicación de la versión activa que se enseña (vacía: la elegida en el panel)"
+
+["Cubication of the active version that is exported (empty: the one chosen in the panel)"]
+es = "Cubicación de la versión activa que se exporta (vacía: la elegida en el panel)"
+
+["Choose the cubication in the window of the cubications"]
+es = "Elija la cubicación en la ventana de las cubicaciones"
+
+["Cubication «{name}» exported to «{file}»"]
+es = "Cubicación «{name}» exportada a «{file}»"
+
+["Cubications of the active version, with their revision"]
+es = "Cubicaciones de la versión activa, con su revisión"
+
+["Rows of the table of the chosen cubication: one value each, with its unit, its type and its marks"]
+es = "Filas de la tabla de la cubicación elegida: un valor cada una, con su unidad, su tipo y sus marcas"
+
+["Cubications of the active version: each one with its revision and its table, filtered by domain, bench and unit, with its marks"]
+es = "Cubicaciones de la versión activa: cada una con su revisión y su tabla, filtrada por dominio, banco y unidad, con sus marcas"

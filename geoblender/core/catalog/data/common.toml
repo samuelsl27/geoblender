@@ -301,3 +301,87 @@ description.es = "Registra una decisión de la propiedad (quién decide, cuándo
 entry = "009"
 action = "D"
 frequency = 1
+
+# Órdenes internas de la cubicación (spec 011, plan §5.3.4, D-36): las abre la ventana de
+# Materiales y densidades… (T20) y el menú «Diferencia ▾» de una rejilla de diferencias
+# (T22: Exportar a GeoTIFF…), no un menú de la barra.
+
+[[command]]
+key = "geoblender.res_edit_column"
+kind = "internal"
+label.en = "Edit the materials column"
+label.es = "Editar la columna de materiales"
+description.en = "Add, remove or move a unit or a component of the materials column being edited (nothing is written until it is saved)"
+description.es = "Añade, quita o mueve una unidad o un componente de la columna de materiales en edición (no se escribe nada hasta guardarla)"
+entry = "011"
+action = "A"
+frequency = 2
+
+[[command]]
+key = "geoblender.res_save_materials"
+kind = "internal"
+label.en = "Save the column"
+label.es = "Guardar la columna"
+description.en = "Save the materials column being edited as the column of the project, with its record"
+description.es = "Guarda la columna de materiales en edición como la del proyecto, con su registro"
+entry = "011"
+action = "A"
+frequency = 2
+
+[[command]]
+key = "geoblender.res_apply_swell"
+kind = "internal"
+label.en = "Apply to all"
+label.es = "Aplicar a todas"
+description.en = "Give the swell factor K of this unit to every unit and component of the column, in one transaction"
+description.es = "Pone el esponjamiento K de esta unidad en todas las unidades y componentes de la columna, en una transacción"
+entry = "011"
+action = "D"
+frequency = 1
+
+[[command]]
+key = "geoblender.res_set_percentages"
+kind = "internal"
+label.en = "Percentages…"
+label.es = "Porcentajes…"
+description.en = "Percentages of the components of a compound unit, declared together: they must add up to 100 %"
+description.es = "Porcentajes de los componentes de una unidad compuesta, declarados juntos: tienen que sumar 100 %"
+entry = "011"
+action = "D"
+frequency = 1
+
+[[command]]
+key = "geoblender.res_export_difference"
+kind = "internal"
+label.en = "Export to GeoTIFF…"
+label.es = "Exportar a GeoTIFF…"
+description.en = "Write the registered difference grid as a deliverable GeoTIFF (it is not an operation: also from a superseded version and, outside the project, in read-only)"
+description.es = "Escribe la rejilla de diferencias registrada como GeoTIFF entregable (no es una operación: también de una versión superada y, fuera del proyecto, en solo lectura)"
+entry = "011"
+action = "D"
+frequency = 2
+
+# La ventana de la cubicación y su exportación (T25; plan §5.3.4, D-29, D-37): las abren N ▸
+# Proyecto ▸ Cubicaciones y la propia ventana, no un menú de la barra.
+
+[[command]]
+key = "geoblender.res_show_volumetrics"
+kind = "internal"
+label.en = "Cubications window"
+label.es = "Ventana de las cubicaciones"
+description.en = "Open the window of the cubications of the active version with the table of the chosen one (it reads what is registered: also in read-only and from a superseded version)"
+description.es = "Abre la ventana de las cubicaciones de la versión activa con la tabla de la elegida (lee lo registrado: también en solo lectura y de una versión superada)"
+entry = "011"
+action = "P"
+frequency = 2
+
+[[command]]
+key = "geoblender.res_export_csv"
+kind = "internal"
+label.en = "Export CSV…"
+label.es = "Exportar CSV…"
+description.en = "Write the registered cubication as a CSV for Excel in Spanish (it is not an operation: also from a superseded version and, outside the project, in read-only)"
+description.es = "Escribe la cubicación registrada como CSV para Excel en español (no es una operación: también de una versión superada y, fuera del proyecto, en solo lectura)"
+entry = "011"
+action = "D"
+frequency = 2

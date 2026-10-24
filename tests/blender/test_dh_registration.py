@@ -43,8 +43,8 @@ from tests.support.fake_layout import draw
 
 ENTRY = "005"
 OURS = ("dh.", "dh_", "io.")  # las claves de la 005 en los registros de core y de la vista
-COUNTS = {"parámetros": 8, "lectores": 3, "trabajos": 7, "operaciones": 6, "grupos": 0,
-          "cifras": 0, "importadores": 3, "cargadores": 1}
+COUNTS = {"parámetros": 8, "familias": 0, "lectores": 3, "trabajos": 7, "operaciones": 6,
+          "grupos": 0, "cifras": 0, "importadores": 3, "cargadores": 1}
 PANELS = ("GEOBLENDER_PT_dh_pending", "GEOBLENDER_PT_dh_validation",
           "GEOBLENDER_PT_dh_display")
 LIST = "GEOBLENDER_UL_dh_issues"
@@ -89,6 +89,7 @@ class _Modules:
         """Los registros de ``core`` y de la vista que amplía la 005, por nombre (copias)."""
         return {
             "parámetros": dict(self.params.DEFINITIONS),
+            "familias": dict(self.params.FAMILIES),  # ADR-0027: la 005 no tiene ninguna
             "lectores": dict(self.readers.READERS),
             "trabajos": dict(self.catalog.WORKERS),
             "operaciones": dict(self.contract.OPERATIONS),
@@ -371,10 +372,10 @@ class DrillholesRegisteredTest(unittest.TestCase):
     def test_register_and_unregister_leave_core_as_it_was(self) -> None:
         """ADR-0025 §2, principio 8 (RF-005-12, RF-005-26, RF-008-01, RF-008-09): con la
         extensión habilitada, la 005 tiene en ``core`` sus 8 definiciones de parámetros, sus 3
-        lectores, sus 7 tipos de trabajo, sus 6 operaciones y sus 3 importadores (ni grupos ni
-        cifras), y en la vista el cargador ``dh_trace`` con su marca en vivo y lo que no se
-        guarda en el ``.blend`` (spec 010, T09; RF-010-02, RF-010-03: ``LiveHook`` y
-        ``SessionParts``). ``bl/ops/dh.py`` y ``bl/scene/dh_view.py`` lo quitan todo (dos
+        lectores, sus 7 tipos de trabajo, sus 6 operaciones y sus 3 importadores (ni familias de
+        parámetros, ni grupos ni cifras), y en la vista el cargador ``dh_trace`` con su marca en
+        vivo y lo que no se guarda en el ``.blend`` (spec 010, T09; RF-010-02, RF-010-03:
+        ``LiveHook`` y ``SessionParts``). ``bl/ops/dh.py`` y ``bl/scene/dh_view.py`` lo quitan todo (dos
         veces: nada más cambia) y lo vuelven a poner (dos veces) con los mismos objetos. Con lo
         que «otro» registró antes con las mismas claves, registrar pone solo lo que falta (lo
         de otro se queda, sin declarar nada en su cargador) y desregistrar deja los registros

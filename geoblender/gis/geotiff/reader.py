@@ -31,7 +31,9 @@ en el fichero (desplazamiento y tamaño 0) quedan NaN. Devuelve un
 El lector de contenido ``gis.geotiff@1`` (``gis.content``, T40) usa las mismas piezas sin
 cargar la rejilla entera: :func:`read_header` (la cabecera comprobada, con la referencia de la
 celda del noroeste tal como la da el fichero) y :func:`read_bands` (las celdas por bandas de
-filas, con el sin dato y los bloques que faltan en NaN, como :func:`read_geotiff`).
+filas, con el sin dato y los bloques que faltan en NaN, como :func:`read_geotiff`). La
+cubicación de la 011 lee además unas filas sueltas (:func:`read_rows`, solo los bloques que las
+tocan) y la rejilla de la cabecera (``GeoTiffHeader.grid``).
 """
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ from ..raster import RasterSource
 from . import geokeys, tiff
 from .codecs import COMPRESSIONS, CodecError, compression_name, decode_block
 
-__all__ = ["GeoTiffHeader", "read_bands", "read_geotiff", "read_header"]
+__all__ = ["GeoTiffHeader", "read_bands", "read_geotiff", "read_header", "read_rows"]
 
 MAX_CELLS_KEY = "gis.import.max_cells"
 
@@ -139,6 +141,16 @@ class GeoTiffHeader:
         """Las filas de la rejilla (``ImageLength``)."""
         return self.layout.height
 
+    @property
+    def grid(self) -> Grid:
+        """La rejilla de sus celdas (la de :func:`read_geotiff`): con *PixelIsPoint*, la
+        esquina noroeste medio paso al noroeste del centro que da el fichero."""
+        corner_x, corner_y = self.x0, self.y0
+        if self.pixel_is_point:
+            corner_x -= self.dx / 2.0
+            corner_y += self.dy / 2.0
+        return Grid(corner_x, corner_y, self.dx, self.dy, self.width, self.height)
+
 
 def read_header(
     stream: BinaryIO, size: int, name: str, *, catalog: CrsCatalog | None = None
@@ -199,6 +211,28 @@ def read_bands(
             yield (index + 1) / total, done
 
 
+def read_rows(stream: BinaryIO, header: GeoTiffHeader, top: int, stop: int) -> np.ndarray:
+    """Las filas ``[top, stop)`` del GeoTIFF de ``header`` (0, la del norte) en float64, con
+    NaN en el sin dato y en los bloques que no están en el fichero (como :func:`read_bands`),
+    leyendo **solo** los bloques que las tocan (cada uno se decodifica entero): un array nuevo
+    de ``stop − top`` filas. Unas filas vacías o fuera de la imagen son un error del programa
+    (``ValueError``); ``GisError`` si un bloque está dañado."""
+    layout = header.layout
+    for value in (top, stop):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"las filas se indican con enteros, no {value!r}")
+    if not 0 <= top < stop <= layout.height:
+        raise ValueError(f"las filas [{top}, {stop}) no están en las {layout.height} de "
+                         f"«{header.name}»")
+    match = _nodata_sample(layout.dtype, header.nodata)
+    band = np.empty((stop - top, layout.width), np.float64)
+    for first, left, rows, cols, part in _blocks(stream, header, within=(top, stop)):
+        upper, lower = max(first, top), min(first + rows, stop)
+        piece = None if part is None else part[upper - first : lower - first]
+        _place(band[upper - top : lower - top, left : left + cols], piece, match)
+    return band
+
+
 def read_geotiff(
     path: Path | str,
     *,
@@ -233,14 +267,11 @@ def read_geotiff(
         values = _read_values(stream, header, progress, cancelled)
     if np.isnan(values).all():
         raise GisError("gis.raster_empty", obj=name, field="valores", file=name)
-    corner_x, corner_y, dx, dy = header.x0, header.y0, header.dx, header.dy
     notes = header.notes
     if header.pixel_is_point:
-        corner_x -= dx / 2.0
-        corner_y += dy / 2.0
         notes = (render("gis.pixel_is_point", file=name), *notes)
     return RasterSource(
-        grid=Grid(corner_x, corner_y, dx, dy, header.width, header.height),
+        grid=header.grid,
         values=values,
         source_dtype=header.layout.dtype.name,
         nodata_value=header.nodata,
@@ -531,12 +562,17 @@ def _nodata_sample(dtype: np.dtype, nodata: float | None) -> np.generic | None:
 
 
 def _blocks(
-    stream: BinaryIO, header: GeoTiffHeader, cancelled: Cancelled | None = None
+    stream: BinaryIO,
+    header: GeoTiffHeader,
+    cancelled: Cancelled | None = None,
+    within: tuple[int, int] | None = None,
 ) -> Iterator[tuple[int, int, int, int, np.ndarray | None]]:
     """Los bloques (tiras o teselas) en el orden del fichero: su fila y su columna de
     arriba a la izquierda, sus filas y columnas dentro de la imagen y sus muestras en el tipo
     del fichero, recortadas a ellas, o ``None`` si el bloque no está en el fichero
-    (``SPARSE_OK`` de GDAL: sin dato). ``cancelled`` se consulta antes de cada bloque."""
+    (``SPARSE_OK`` de GDAL: sin dato). ``cancelled`` se consulta antes de cada bloque;
+    ``within`` (filas ``[desde, hasta)``): solo los bloques que las tocan, sin leer los
+    demás."""
     layout = header.layout
     name = header.name
     across = -(-layout.width // layout.block_w)
@@ -551,6 +587,8 @@ def _blocks(
             top, left = index * layout.block_h, 0
             coded = min(layout.block_h, layout.height - top)
         rows = min(layout.block_h, layout.height - top)
+        if within is not None and (top + rows <= within[0] or top >= within[1]):
+            continue
         cols = min(layout.block_w, layout.width - left)
         part = None
         if count != 0:

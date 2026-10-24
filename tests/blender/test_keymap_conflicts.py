@@ -145,8 +145,9 @@ class KeymapConflictTest(unittest.TestCase):
     def test_gate_on_3d_view_shortcuts(self) -> None:
         """RF-003-19: cada operador con atajo en «3D View» falla su ``poll`` sobre una
         Vista 3D en modo Blender y lo pasa en modo Geoblender y desde fuera de la Vista 3D
-        (la barra superior). Con un proyecto abierto con ventana de trabajo (sintético):
-        lo que un comando necesita además del modo (encuadrar, T22) no cuenta aquí."""
+        (la barra superior). Con un proyecto abierto con ventana de trabajo (sintético) y en
+        escritura: lo que un comando necesita además del modo (encuadrar, T22; la puerta de la
+        procedencia de Cubicar entre dos superficies…, spec 011, T21) no cuenta aquí."""
         window = bpy.context.window_manager.windows[0]
         area = next(a for a in window.screen.areas if a.type == "VIEW_3D")
         region = next(r for r in area.regions if r.type == "WINDOW")
@@ -160,6 +161,11 @@ class KeymapConflictTest(unittest.TestCase):
         patch = mock.patch.object(session, "current", return_value=project)
         patch.start()
         self.addCleanup(patch.stop)
+        for gate in ("write_unavailable", "version_unavailable"):  # la de la procedencia
+            writable = mock.patch.object(_module("bl.ops.core_provenance"), gate,
+                                         return_value=None)
+            writable.start()
+            self.addCleanup(writable.stop)
         for idname in idnames:
             module, _, name = idname.partition(".")
             operator = getattr(getattr(bpy.ops, module), name)

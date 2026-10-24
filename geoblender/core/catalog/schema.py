@@ -68,6 +68,7 @@ PIE_SLOTS: tuple[str, ...] = ("W", "E", "S", "N", "NW", "NE", "SW", "SE")  # ord
 CONTEXT_KINDS: tuple[str, ...] = (
     "DRILLHOLES", "SECTION", "SURFACE", "POINTS", "POLYLINE", "CONSTRAINT", "SOLID",
     "BLOCK_MODEL", "DESIGN", "DESIGN_ENTITY", "PHASE", "VERSION", "DRAWING", "SELECTION",
+    "VOLUME_DIFFERENCE",  # la rejilla de diferencias de una cubicación (spec 011, T22)
 )
 ENTRY_RE = re.compile(r"^(\d{3}|R-\d{2}|Blender)$")
 OWN_ICON_RE = re.compile(r"^gb_(logo|menu|branch|qat|state|kind|type)(_[a-z0-9]+)*$")

@@ -247,7 +247,7 @@ from ..props.dh import (
 from ..scene import dh_view, project_session, undo_watch, views
 from ..ui import context as ui_context
 from ..ui import labels
-from ..ui.commands import UNDELIVERED_FLAG, unavailable_note
+from ..ui.commands import UNDELIVERED_FLAG, command_idname, unavailable_note
 from ..ui.commands import catalog as command_catalog
 from . import core_provenance
 from . import jobs as jobs_ops
@@ -521,7 +521,7 @@ class _DrillholesCommand:
         return True
 
     def execute(self, context: Any) -> set[str]:
-        reason = unavailable_reason(self.bl_idname)  # type: ignore[attr-defined]
+        reason = unavailable_reason(command_idname(self.bl_idname))  # type: ignore[attr-defined]
         self.report({"INFO"}, reason or "")  # type: ignore[attr-defined]
         return {"CANCELLED"}
 

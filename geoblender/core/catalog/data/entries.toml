@@ -58,6 +58,15 @@ title.en = "Regenerable views"
 title.es = "Vistas regenerables"
 delivered = true
 
+# La spec 011 (cubicación entre superficies) es R-38 (plan 011 D-36) y entrega sus órdenes tarea a
+# tarea: cada orden de Cubicación pasa de R-38 a la 011 al llegar su clase real (T20 a T25), y sus
+# internas (res_show_volumetrics, res_export_csv, res_export_difference y las de la ventana de los
+# materiales, common.toml) llegan ya en la 011.
+["011"]
+title.en = "Volumetrics between surfaces"
+title.es = "Cubicación entre superficies"
+delivered = true
+
 ["R-07"]
 title.en = "Versions and provenance"
 title.es = "Versiones y procedencia"
