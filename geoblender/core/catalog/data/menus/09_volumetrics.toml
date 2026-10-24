@@ -83,7 +83,7 @@ label.en = "Materials and densities…"
 label.es = "Materiales y densidades…"
 description.en = "In-situ and loose density, swell factor K and role of each material"
 description.es = "Densidad in situ y suelta, esponjamiento K y papel de cada material"
-entry = "R-38"
+entry = "011"
 action = "P"
 frequency = 2
 

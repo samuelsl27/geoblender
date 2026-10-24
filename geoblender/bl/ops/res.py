@@ -42,29 +42,74 @@ empezado lo cancelan sus pasos sin dejar nada a medias (RF-011-25) y lo que no e
 ``reserves.reproduce`` (``res.volume`` y ``res.difference``, la misma), importadas al usarlas
 (como ``core.versions.reproduce`` en ``bl.ops.versions``): habilitar no carga la reproducción.
 
-**Las órdenes** (D-36): aún ninguna (:data:`classes` vacío). Las seis de Cubicación de R-38 siguen
-siendo las provisionales del catálogo hasta que llega la clase real de cada una (T20 a T25), que
-la pasa a la entrada «011» de ``core/catalog/data/entries.toml``.
+**Las órdenes** (D-36): las de Cubicación de R-38 siguen siendo las provisionales del catálogo
+hasta que llega la clase real de cada una (T20 a T25), que la pasa a la entrada «011» de
+``core/catalog/data/entries.toml``. Ya están (:data:`classes`):
+
+- **Materiales y densidades…** (T20; RF-011-11, RF-011-15, RF-011-21; plan §5.3.4, §5.5, D-9,
+  D-12, D-18): :class:`GEOBLENDER_OT_res_edit_materials` lee la columna del proyecto en la vista
+  (``bl.ui.res_panels.fill_materials``) y abre su ventana (``GEOBLENDER_PT_res_materials``);
+  ``geoblender.res_edit_column`` añade, quita, sube y baja unidades y componentes de la columna
+  en edición (sin escribir nada); ``geoblender.res_save_materials`` la guarda con
+  ``res.edit_materials`` (``reserves.store.save_materials``) y registra sin valor, «sin
+  confirmar», los parámetros de sus unidades que el proyecto aún no tiene
+  (:func:`ensure_parameters`; ninguna densidad ni K por defecto, D-8). La densidad y el K de cada
+  unidad se declaran con
+  «Cambiar parámetro…» de la 008 (``geoblender.core_set_parameter``, con el ámbito de la 009);
+  ``geoblender.res_apply_swell`` («Aplicar a todas») pone el K de una unidad en todas las demás
+  en una transacción, y ``geoblender.res_set_percentages`` («Porcentajes…»), los de los
+  componentes de una compuesta juntos, que tienen que sumar 100 % (RF-011-15). En solo lectura,
+  ninguna está disponible y dicen por qué (RF-011-26).
 """
 
 from __future__ import annotations
 
 import functools
 import logging
+import math
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
+import bpy
+from bpy.props import CollectionProperty, EnumProperty, StringProperty
+
 from ...core import i18n
 from ...core import params as core_params
 from ...core.errors import GeoblenderError
+from ...core.i18n import format_number, tr
+from ...core.params.store import DEFAULT_SOURCE_PREFIX, shown_value
 from ...core.provenance import contract
 from ...core.provenance.operations import CANCEL_REASON_PREFIX, failure_reason
+from ...core.provenance.undo import UndoKind
+from ...core.units import UnitError, convert, parse_quantity
+from ...reserves import materials
 from ...reserves import messages as res_messages
 from ...reserves import params as res_params
 from ...reserves import provenance
+from ...reserves.messages import ResError
+from ...reserves.surfaces import SurfaceRef
+from ...reserves.tonnage import PERCENT_TOLERANCE
+from ..props import res as res_props
+from ..scene import undo_watch
+from ..scene import versions as scene_versions
+from ..ui import provenance as ui_provenance
+from ..ui import res_panels
+from ..ui.commands import catalog, text
 from . import jobs as jobs_ops
+from .core_provenance import (
+    KIND_ITEMS,
+    PARAMETER_SCOPE_ITEMS,
+    SESSION,
+    SET_PARAMETER_WIDTH,
+    SOURCE_KIND_ITEMS,
+    ProvenanceAwareOperator,
+    error_text,
+    scope_choice,
+    typed_value,
+    write_unavailable,
+)
 from .incorporation import StepQueue
 
 if TYPE_CHECKING:
@@ -325,5 +370,641 @@ def _unregister_families(ours: tuple[core_params.ParamFamily, ...]) -> None:
         core_params.register_families(others)
 
 
-classes: tuple[type, ...] = ()
-"""Las órdenes reales de la cubicación: aún ninguna (llegan de la T20 a la T25)."""
+# --- Materiales y densidades… (T20; RF-011-11, RF-011-15, RF-011-21) ---------------------------
+
+TRANSLATION_CONTEXT = "Geoblender"
+EDIT_MATERIALS = "geoblender.res_edit_materials"
+SAVE_MATERIALS = "geoblender.res_save_materials"
+EDIT_COLUMN = "geoblender.res_edit_column"
+APPLY_SWELL = "geoblender.res_apply_swell"
+SET_PERCENTAGES = "geoblender.res_set_percentages"
+_HIDDEN = {"HIDDEN", "SKIP_SAVE"}  # las pone quien la lanza (la fila de la ventana)
+_FIELD = {"SKIP_SAVE"}  # las rellena el diálogo: nunca las de la vez anterior
+_METRE = "m"
+
+COLUMN_ACTION_ITEMS = [
+    ("ADD_UNIT", "Add a unit", "Add a unit at the bottom of the column"),
+    ("REMOVE_UNIT", "Remove the unit", "Remove the chosen unit from the column"),
+    ("MOVE_UP", "Move the unit up", "Move the chosen unit one place up"),
+    ("MOVE_DOWN", "Move the unit down", "Move the chosen unit one place down"),
+    ("ADD_COMPONENT", "Add a component", "Add a component to the chosen compound unit"),
+    ("REMOVE_COMPONENT", "Remove the component", "Remove the chosen component of its unit"),
+]
+"""Lo que cambia ``geoblender.res_edit_column`` en la columna en edición."""
+
+
+def _call_panel(name: str) -> set[str]:
+    """Abre la ventana emergente ``name`` con ``wm.call_panel``; sigue abierta aunque el ratón
+    salga de ella (``keep_open``), hasta pulsar fuera o Esc."""
+    return bpy.ops.wm.call_panel(name=name, keep_open=True)
+
+
+def _write_poll(cls: type) -> bool:
+    """El ``poll`` de lo que escribe en el proyecto: dice por qué no se puede."""
+    reason = write_unavailable()
+    if reason is not None:
+        cls.poll_message_set(reason)  # type: ignore[attr-defined]
+        return False
+    return True
+
+
+def _view() -> Any:
+    found = res_panels.view()
+    if found is None:  # inalcanzable con la extensión registrada
+        raise RuntimeError("la vista de la cubicación no está registrada")
+    return found
+
+
+def _saved_column(project: Any) -> materials.MaterialColumn | None:
+    """La columna guardada en el proyecto (``res_materials``), o ``None``."""
+    with project.read() as conn:
+        return materials.read_column(conn)
+
+
+def column_parameters(column: materials.MaterialColumn | None) -> tuple[str, ...]:
+    """Los parámetros que lee una cubicación con ``column`` (RF-011-21): el umbral de presencia
+    de lo antrópico y la densidad, el K y el porcentaje de cada unidad y componente."""
+    found = (res_params.ANTHROPIC_PRESENCE,)
+    return found if column is None else found + provenance.tonnage_params(column)
+
+
+def ensure_parameters(project: Any, column: materials.MaterialColumn | None) -> tuple[str, ...]:
+    """Registra en ``project`` los parámetros de :func:`column_parameters` que aún no tiene con
+    su valor por defecto «sin confirmar» (RF-008-04; la densidad, el K y los porcentajes, **sin
+    valor**: D-8), en una transacción, para que se puedan declarar con «Cambiar parámetro…»;
+    devuelve las claves que registró (ninguna si ya estaban). No los anota ninguna operación:
+    los lee cada cubicación (como la regla bajo el límite de detección de la 005)."""
+    store = core_params.ParameterStore(project)
+    keys = column_parameters(column)
+    with project.read() as conn:
+        missing = tuple(key for key in keys if store.get(key, conn=conn) is None)
+    if missing:
+        with project.write_transaction() as conn:
+            for key in missing:
+                store.ensure_default(conn, key,
+                                     geoblender_version=project.session.geoblender_version)
+    return missing
+
+
+def _elevation(item: Any) -> SurfaceRef | None:
+    """La cota constante tecleada de la base de ``item`` (m, float64; ``None`` sin nada).
+    ``ResError`` (``res.bench_value_not_number``) si no es un número de metros."""
+    typed = item.base_elevation.strip()
+    if not typed:
+        return None
+    try:
+        number, unit = parse_quantity(typed)
+        return SurfaceRef(elevation=float(convert(number, unit or _METRE, _METRE)))
+    except UnitError:
+        name = item.name.strip()
+        raise ResError("res.bench_value_not_number", obj=f"Unidad «{name}»",
+                       field="base_elevation", value=typed,
+                       label=tr("Base elevation of «{unit}»", unit=name)) from None
+
+
+def _base(item: Any) -> SurfaceRef | None:
+    """La base de la unidad en edición ``item``: una rejilla del proyecto (por su nombre de
+    dato) o una cota constante (D-24); sin nada, ``None``."""
+    if item.base_kind == res_props.BASE_ELEVATION:
+        return _elevation(item)
+    dataset = item.base_dataset.strip()
+    return SurfaceRef(dataset=dataset) if dataset else None
+
+
+def _role(identifier: str) -> materials.Role | None:
+    return None if identifier == res_props.ROLE_NONE else materials.Role(identifier.lower())
+
+
+def edited_column(view: Any) -> materials.MaterialColumn:
+    """La columna en edición de la vista ``view`` (``WindowManager.geoblender_res_panels``)
+    como ``reserves.materials.MaterialColumn``, sin validarla: cada unidad o componente nuevo
+    recibe su código de su nombre (``reserves.materials.unit_code``, D-18; los de las que ya
+    estaban guardadas no cambian), la última unidad va sin base y solo una antrópica lleva su
+    rejilla de espesores. ``ResError`` si una cota constante no es un número de metros."""
+    taken = {item.code for item in view.units if item.code}
+    last = len(view.units) - 1
+    units = []
+    for position, item in enumerate(view.units):
+        code = item.code or materials.unit_code(item.name, taken)
+        taken.add(code)
+        kind = materials.Kind(item.kind.lower())
+        components = []
+        if kind is materials.Kind.COMPOUND:
+            inside = {row.code for row in item.components if row.code}
+            for row in item.components:
+                component_code = row.code or materials.unit_code(row.name, inside)
+                inside.add(component_code)
+                components.append(materials.Component(component_code, row.name.strip(),
+                                                      _role(row.role)))
+        thickness = item.thickness_dataset.strip()
+        units.append(materials.Unit(
+            code, item.name.strip(), kind,
+            None if kind is materials.Kind.COMPOUND else _role(item.role),
+            materials.State(item.state.lower()),
+            None if position == last else _base(item),
+            SurfaceRef(dataset=thickness)
+            if kind is materials.Kind.ANTHROPIC and thickness else None,
+            tuple(components),
+        ))
+    return materials.MaterialColumn(tuple(units))
+
+
+def _parameters_written(project: Any) -> None:
+    """Tras escribir parámetros: la lista de Parámetros del proyecto, los indicadores (lo que
+    dependía de ellos puede quedar obsoleto) y los valores de la ventana de los materiales."""
+    try:
+        ui_provenance.fill_parameters()
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.warning("No se pudo volver a leer la lista de parámetros", exc_info=True)
+    if ui_provenance.refresh(force=True):
+        ui_provenance.redraw()
+    res_panels.on_project_read(project)
+
+
+def _shown_scope(version: Any) -> str:
+    return tr("the project") if version is None else version.code
+
+
+class GEOBLENDER_OT_res_edit_materials(ProvenanceAwareOperator, bpy.types.Operator):
+    """In-situ and loose density, swell factor K and role of each material"""
+
+    bl_idname = "geoblender.res_edit_materials"
+    bl_label = "Materials and densities…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.EDIT_MATERIALS
+
+    def execute(self, context: Any) -> set[str]:
+        """Lee la columna del proyecto en la vista (con sus parámetros registrados: los que
+        falten, sin valor y «sin confirmar») y abre su ventana; desde un guion sin ventana,
+        solo la vista."""
+        project = SESSION.project
+        try:
+            ensure_parameters(project, _saved_column(project))
+            res_panels.fill_materials(project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if getattr(context, "window", None) is None:
+            return {"FINISHED"}
+        return _call_panel(res_panels.MATERIALS_PANEL)
+
+
+class GEOBLENDER_OT_res_edit_column(bpy.types.Operator):
+    """Add, remove or move a unit or a component of the materials column being edited (nothing
+    is written until it is saved)"""
+
+    bl_idname = "geoblender.res_edit_column"
+    bl_label = "Edit the materials column"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    action: EnumProperty(  # type: ignore[valid-type]
+        name="Action", items=COLUMN_ACTION_ITEMS, default="ADD_UNIT", options=_HIDDEN,
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+    @classmethod
+    def description(cls, context: Any, properties: Any) -> str:
+        found = {identifier: about for identifier, _name, about in COLUMN_ACTION_ITEMS}
+        return i18n.translate(i18n.language(), found.get(properties.action, ""))
+
+    def execute(self, context: Any) -> set[str]:
+        view = _view()
+        count = len(view.units)
+        index = min(max(view.unit_index, 0), count - 1) if count else -1
+        action = self.action
+        if action == "ADD_UNIT":
+            view.units.add().name = tr("New unit")
+            view.unit_index = len(view.units) - 1
+            return {"FINISHED"}
+        if index < 0:
+            self.report({"WARNING"}, tr("The column has no unit yet: add one first"))
+            return {"CANCELLED"}
+        if action == "REMOVE_UNIT":
+            view.units.remove(index)
+            view.unit_index = max(0, min(index, len(view.units) - 1))
+        elif action in ("MOVE_UP", "MOVE_DOWN"):
+            target = index - 1 if action == "MOVE_UP" else index + 1
+            if 0 <= target < count:
+                view.units.move(index, target)
+                view.unit_index = target
+        else:
+            return self._component(view.units[index], action)
+        return {"FINISHED"}
+
+    def _component(self, unit: Any, action: str) -> set[str]:
+        if unit.kind != res_panels.COMPOUND:
+            self.report({"WARNING"}, tr("Only a compound unit has components: choose "
+                                        "«Compound» first"))
+            return {"CANCELLED"}
+        if action == "ADD_COMPONENT":
+            unit.components.add().name = tr("New component")
+            unit.component_index = len(unit.components) - 1
+            return {"FINISHED"}
+        if not len(unit.components):
+            return {"CANCELLED"}
+        index = min(max(unit.component_index, 0), len(unit.components) - 1)
+        unit.components.remove(index)
+        unit.component_index = max(0, min(index, len(unit.components) - 1))
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_res_save_materials(ProvenanceAwareOperator, bpy.types.Operator):
+    """Save the materials column being edited as the column of the project, with its record"""
+
+    bl_idname = "geoblender.res_save_materials"
+    bl_label = "Save the column"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+    provenance_op_type = provenance.EDIT_MATERIALS
+
+    def execute(self, context: Any) -> set[str]:
+        """Guarda la columna en edición con ``res.edit_materials`` (si no vale, la lista de lo
+        que falla, sin escribir nada) y registra, sin valor, los parámetros nuevos."""
+        project = SESSION.project
+        try:
+            column = edited_column(_view())
+            column.validate()
+        except GeoblenderError as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        handle = self.begin(context)
+        if handle is None:
+            return {"CANCELLED"}
+        from ...reserves import store  # al usarlo: habilitar no lo carga
+
+        try:
+            store.save_materials(project, handle, column)
+            ensure_parameters(project, column)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        res_panels.mark_saved(project, column)
+        self.report({"INFO"}, tr("Materials column saved: {count} units",
+                                 count=len(column.units)))
+        return {"FINISHED"}
+
+
+def _scope_records(store: core_params.ParameterStore, conn: sqlite3.Connection, key: str,
+                   version: Any) -> tuple[Any, Any]:
+    """El valor de ``key`` del proyecto y el propio de ``version`` (``None`` sin versión)."""
+    own = None if version is None else store.get(key, version=version.uid, conn=conn)
+    return store.get(key, conn=conn), own
+
+
+def _proposed_scope(operator: Any, choice: Any, has_own: bool) -> None:
+    """El ámbito que propone el diálogo (RF-009-29): la versión activa si ya tiene valor propio
+    y, si no, el proyecto; con la activa no editable, el proyecto."""
+    if choice is None or choice.refusal is not None:
+        operator.scope = "PROJECT"
+    elif not operator.properties.is_property_set("scope"):
+        operator.scope = "VERSION" if has_own else "PROJECT"
+
+
+def _draw_scope(layout: Any, operator: Any, key: str) -> None:
+    """«¿Para el proyecto o solo para V01?» de un parámetro de versión, como Cambiar
+    parámetro… de la 008 (``bl.ops.core_provenance``)."""
+    choice = scope_choice(key)
+    if choice is None:
+        return
+    layout.label(text=tr("For the project or only for {version}?", version=choice.code),
+                 translate=False)
+    row = layout.row(align=True)
+    row.use_property_split = False
+    row.prop_enum(operator, "scope", "PROJECT", text=tr("The project"), translate=False)
+    only = row.row(align=True)
+    only.enabled = choice.refusal is None
+    only.prop_enum(operator, "scope", "VERSION",
+                   text=tr("Only {version}", version=choice.code), translate=False)
+    if choice.refusal is not None:
+        refused = layout.row()
+        refused.alert = True
+        refused.label(text=choice.refusal, icon="ERROR", translate=False)
+
+
+def _chosen_version(operator: Any) -> tuple[Any, str | None]:
+    """La versión del cambio (la activa si el ámbito es la versión; si no, ``None``) o el
+    texto de por qué no se puede."""
+    if operator.scope != "VERSION":
+        return None, None
+    version = scene_versions.active()
+    if version is None:
+        return None, tr("Choose the active version first: Project ▸ Versions ▸ Active version")
+    return version, None
+
+
+class GEOBLENDER_OT_res_apply_swell(bpy.types.Operator):
+    """Give the swell factor K of this unit to every unit and component of the column, in one
+    transaction"""
+
+    bl_idname = "geoblender.res_apply_swell"
+    bl_label = "Apply to all"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    unit: StringProperty(name="Unit", options=_HIDDEN)  # type: ignore[valid-type]
+    component: StringProperty(name="Component", options=_HIDDEN)  # type: ignore[valid-type]
+    scope: EnumProperty(  # type: ignore[valid-type]
+        name="Scope",
+        description="Whether the change is for the project or only for the active version (a "
+                    "parameter that its module admits by version)",
+        items=PARAMETER_SCOPE_ITEMS, default="PROJECT", options=_FIELD,
+    )
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the parameter changes (recorded in its history)",
+        options=_FIELD,
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+    def _key(self) -> str:
+        return res_params.swell_key(self.unit, self.component or None)
+
+    def _source(self, project: Any, version: Any) -> Any:
+        """El K de esta unidad en el ámbito del cambio (en la versión, el suyo o, sin él, el
+        del proyecto) o ``None`` si no tiene valor."""
+        store = core_params.ParameterStore(project)
+        with project.read() as conn:
+            record, own = _scope_records(store, conn, self._key(), version)
+        found = own or record
+        return found if found is not None and found.value is not None else None
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Propone el ámbito (el de la versión activa si la unidad tiene allí su K) y abre el
+        diálogo con el K que se aplicará; sin K, lo dice y no abre nada."""
+        project = SESSION.project
+        key = self._key()
+        choice = scope_choice(key)
+        try:
+            store = core_params.ParameterStore(project)
+            with project.read() as conn:
+                _record, own = _scope_records(
+                    store, conn, key, None if choice is None else scene_versions.active())
+            _proposed_scope(self, choice, own is not None and own.value is not None)
+            version, refusal = _chosen_version(self)
+            source = None if refusal else self._source(project, version)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if source is None:
+            self.report({"ERROR"}, tr("Declare the swell factor K of this unit first (K…)"))
+            return {"CANCELLED"}
+        self._shown = shown_value(source.value, source.unit, i18n.language())
+        return context.window_manager.invoke_props_dialog(
+            self, width=SET_PARAMETER_WIDTH, translate=False,
+            title=text(catalog().commands[APPLY_SWELL].label))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.label(text=tr("Swell factor K to apply to every unit: {value}",
+                             value=getattr(self, "_shown", "")), translate=False)
+        _draw_scope(layout, self, self._key())
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version, refusal = _chosen_version(self)
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        key = self._key()
+        store = core_params.ParameterStore(project)
+        try:
+            source = self._source(project, version)
+            if source is None:
+                self.report({"ERROR"}, tr("Declare the swell factor K of this unit first (K…)"))
+                return {"CANCELLED"}
+            targets = [found for found in column_parameters(_saved_column(project))
+                       if found.endswith(".swell") and found != key]
+            changed = []
+            with project.write_transaction() as conn:  # todas o ninguna (D-9)
+                for target in targets:
+                    if store.get(target, conn=conn) is None:
+                        store.ensure_default(
+                            conn, target, geoblender_version=project.session.geoblender_version)
+                    try:
+                        store.change(conn, target, value=source.value, kind=source.kind,
+                                     source=source.source, source_kind=source.source_kind,
+                                     decided_by=source.decided_by,
+                                     decided_at=source.decided_at, reason=self.reason,
+                                     version=None if version is None else version.uid)
+                    except core_params.ParamError as exc:
+                        if exc.code != "core.param_unchanged":
+                            raise
+                        continue
+                    changed.append(target)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        for target in changed:
+            undo_watch.record(UndoKind.PARAMETER, target)  # Ctrl+Z no lo deshace
+        _parameters_written(project)
+        shown = shown_value(source.value, source.unit, i18n.language())
+        self.report({"INFO"}, tr("Swell factor K = {value} {kind} in {count} units ({scope})",
+                                 value=shown, kind=ui_provenance.badge(source.kind),
+                                 count=len(changed), scope=_shown_scope(version)))
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_res_set_percentages(bpy.types.Operator):
+    """Percentages of the components of a compound unit, declared together: they must add up
+    to 100 %"""
+
+    bl_idname = "geoblender.res_set_percentages"
+    bl_label = "Percentages…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    unit: StringProperty(name="Unit", options=_HIDDEN)  # type: ignore[valid-type]
+    values: CollectionProperty(  # type: ignore[valid-type]
+        type=res_props.GEOBLENDER_PG_res_percent, options=_FIELD,
+    )
+    kind: EnumProperty(  # type: ignore[valid-type]
+        name="Type",
+        description="Type of the value: measured, calculated (only by adopting a figure), "
+                    "adopted or hypothesis",
+        items=KIND_ITEMS, default="HIPOTESIS", options=_FIELD,
+    )
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Source",
+        description="Document, standard, person, operation or algorithm the value comes from",
+        options=_FIELD,
+    )
+    source_kind: EnumProperty(  # type: ignore[valid-type]
+        name="Source type", items=SOURCE_KIND_ITEMS, default="DOCUMENT", options=_FIELD,
+    )
+    decided_by: StringProperty(  # type: ignore[valid-type]
+        name="Decided by",
+        description="Who decided the value (the owner, a laboratory, a person)",
+        options=_FIELD,
+    )
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the parameter changes (recorded in its history)",
+        options=_FIELD,
+    )
+    scope: EnumProperty(  # type: ignore[valid-type]
+        name="Scope",
+        description="Whether the change is for the project or only for the active version (a "
+                    "parameter that its module admits by version)",
+        items=PARAMETER_SCOPE_ITEMS, default="PROJECT", options=_FIELD,
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+    def _compound(self, project: Any) -> materials.Unit | None:
+        """La unidad compuesta guardada de código :attr:`unit`; si no lo es, lo dice."""
+        column = _saved_column(project)
+        found = None
+        if column is not None and self.unit in column.codes:
+            found = column.unit(self.unit)
+        if found is None or found.kind is not materials.Kind.COMPOUND or not found.components:
+            self.report({"ERROR"}, tr("«{unit}» is not a compound unit of the saved column",
+                                      unit=self.unit))
+            return None
+        return found
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Rellena el diálogo con el porcentaje de cada componente en el ámbito que propone
+        (el de la versión activa si ya tiene valores propios) y su tipo, origen y decisor."""
+        project = SESSION.project
+        language = i18n.language()
+        try:
+            unit = self._compound(project)
+            if unit is None:
+                return {"CANCELLED"}
+            keys = [res_params.percent_key(unit.code, item.code) for item in unit.components]
+            choice = scope_choice(keys[0])
+            version = None if choice is None else scene_versions.active()
+            store = core_params.ParameterStore(project)
+            with project.read() as conn:
+                found = [_scope_records(store, conn, key, version) for key in keys]
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        _proposed_scope(self, choice, any(own is not None for _record, own in found))
+        chosen = [own if self.scope == "VERSION" and own is not None else record
+                  for record, own in found]
+        self.values.clear()
+        for component, record in zip(unit.components, chosen, strict=True):
+            row = self.values.add()
+            row.code, row.name = component.code, component.name.strip() or component.code
+            row.value = "" if record is None else typed_value(record.value, language)
+        first = next((record for record in chosen if record is not None), None)
+        if first is not None:
+            self.kind = first.kind.name
+            default = first.source.startswith(DEFAULT_SOURCE_PREFIX)
+            self.source = "" if default else first.source
+            self.source_kind = first.source_kind.name
+            self.decided_by = project.session.user_host \
+                if first.decided_by == core_params.DEFAULT_DECIDER else first.decided_by
+        self._shown = unit.shown
+        return context.window_manager.invoke_props_dialog(
+            self, width=SET_PARAMETER_WIDTH, translate=False,
+            title=tr("Percentages of «{unit}»", unit=unit.shown))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.label(text=tr("Percentages of «{unit}»", unit=getattr(self, "_shown", self.unit)),
+                     translate=False)
+        if len(self.values):
+            _draw_scope(layout, self, res_params.percent_key(self.unit, self.values[0].code))
+        for row in self.values:
+            layout.prop(row, "value", text=row.name, translate=False)
+        layout.prop(self, "kind", text=tr("Type"), translate=False)
+        layout.prop(self, "source", text=tr("Source"), translate=False)
+        layout.prop(self, "source_kind", text=tr("Source type"), translate=False)
+        layout.prop(self, "decided_by", text=tr("Decided by"), translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def _typed(self, unit: materials.Unit) -> tuple[list[tuple[str, float | None]], float]:
+        """Lo tecleado de cada componente de ``unit`` (en %; ``None`` lo que falta) y la suma
+        de lo tecleado. ``ParamError`` si un valor no vale (su rango, su unidad)."""
+        typed = {row.code: row.value for row in self.values}
+        decimal = "," if i18n.language() == "es" else "."
+        found: list[tuple[str, float | None]] = []
+        for component in unit.components:
+            key = res_params.percent_key(unit.code, component.code)
+            value = typed.get(component.code, "").strip()
+            definition = core_params.definition(key)
+            found.append((key, None if not value or definition is None
+                          else core_params.parse_value(definition, value, None,
+                                                       decimal=decimal)))
+        return found, math.fsum(value for _key, value in found if value is not None)
+
+    def execute(self, context: Any) -> set[str]:
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version, refusal = _chosen_version(self)
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        store = core_params.ParameterStore(project)
+        try:
+            unit = self._compound(project)
+            if unit is None:
+                return {"CANCELLED"}
+            found, total = self._typed(unit)
+            if any(value is None for _key, value in found) or \
+                    not abs(total - 100.0) < PERCENT_TOLERANCE:  # RF-011-15
+                self.report({"ERROR"}, tr(
+                    "The percentages of the components of «{unit}» add up to {value} %, not "
+                    "100 % (to two decimals): none has changed", unit=unit.shown,
+                    value=format_number(total, 2)))
+                return {"CANCELLED"}
+            changed = []
+            with project.write_transaction() as conn:  # todos o ninguno
+                for key, value in found:
+                    if store.get(key, conn=conn) is None:
+                        store.ensure_default(
+                            conn, key, geoblender_version=project.session.geoblender_version)
+                    try:
+                        store.change(conn, key, value=value,
+                                     kind=core_params.ParamKind[self.kind], source=self.source,
+                                     source_kind=core_params.SourceKind[self.source_kind],
+                                     decided_by=self.decided_by, reason=self.reason,
+                                     version=None if version is None else version.uid)
+                    except core_params.ParamError as exc:
+                        if exc.code != "core.param_unchanged":
+                            raise
+                        continue
+                    changed.append(key)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        for key in changed:
+            undo_watch.record(UndoKind.PARAMETER, key)  # Ctrl+Z no lo deshace
+        _parameters_written(project)
+        language = i18n.language()
+        values = "; ".join(shown_value(value, "%", language) for _key, value in found)
+        self.report({"INFO"}, tr("Percentages of «{unit}»: {values} {kind} ({scope})",
+                                 unit=unit.shown, values=values,
+                                 kind=ui_provenance.badge(core_params.ParamKind[self.kind]),
+                                 scope=_shown_scope(version)))
+        return {"FINISHED"}
+
+
+classes: tuple[type, ...] = (
+    GEOBLENDER_OT_res_edit_materials,
+    GEOBLENDER_OT_res_edit_column,
+    GEOBLENDER_OT_res_save_materials,
+    GEOBLENDER_OT_res_apply_swell,
+    GEOBLENDER_OT_res_set_percentages,
+)
+"""Las órdenes reales de la cubicación (las demás llegan de la T21 a la T25)."""

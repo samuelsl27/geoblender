@@ -11,8 +11,9 @@
   tipo con su versión 1.0, su ámbito (los cuatro de la versión y la columna, del proyecto: la
   versión no editable desactiva sus órdenes), sus órdenes en el catálogo y, si se repite solo, su
   recálculo, su reproducción (la de ``reserves.reproduce``) y la tolerancia de sus cifras; sus
-  textos, en español. La entrada «011» del catálogo (D-36), y sus órdenes, aún las provisionales
-  de R-38 hasta que llegue la clase real de cada una (T20 a T25).
+  textos, en español. La entrada «011» del catálogo (D-36), con las órdenes que ya tienen su clase
+  real (T20: Materiales y densidades…); las demás, aún las provisionales de R-38 hasta que llegue
+  la de cada una (T21 a T25).
 - D-19 (RF-011-20, RF-008-26): «Recalcular lo obsoleto» de una cubicación obsoleta por un
   parámetro empieza la operación nueva y deja sus pasos en la cola de ``res``, que avanza su
   temporizador (``res_tick``, a mano: en ``blender -b`` no corren los temporizadores) mientras
@@ -62,6 +63,8 @@ REASON = "Prueba del registro de la cubicación"
 STATUS_MSGID = "Recomputing «{name}»… {percent} %"
 STATUS = "Recalculando «{name}»… {percent} %"
 DROPPED = "cancelada durante la operación: se desactivó Geoblender antes de empezar"
+DELIVERED = frozenset({"geoblender.res_edit_materials"})  # T20
+"""Las órdenes de Cubicación que ya tienen su clase real (de la entrada «011»)."""
 
 
 def _module(name: str) -> ModuleType:
@@ -284,7 +287,8 @@ class ResRegisteredTest(unittest.TestCase):
         ``reserves.reproduce`` y la tolerancia de sus cifras (10⁻⁹), y la columna, ninguno.
         Lo registrado son las declaraciones del módulo, construidas una vez; sus cifras, las de
         ``reserves.provenance``; los textos de todo ello, en español. La entrada «011» está en
-        el catálogo y las órdenes de Cubicación siguen siendo las provisionales de R-38."""
+        el catálogo con las órdenes que ya tienen su clase real, que lanzan su tipo; las demás
+        órdenes de Cubicación siguen siendo las provisionales de R-38."""
         res_ops = self.m.res_ops
         declared = self.m.provenance
         session = _module("bl.ops.core_provenance")
@@ -337,14 +341,23 @@ class ResRegisteredTest(unittest.TestCase):
 
         entry = self.cat.entries[ENTRY]
         self.assertEqual((entry.title, entry.title_es, entry.delivered), (*ENTRY_TITLE, True))
-        later = sorted({idname for defn in res_ops.OPERATION_DEFS for idname in defn.commands})
-        self.assertEqual(len(later), 5)
-        for idname in later:  # T20 a T25 las pasan a la 011 con su clase real
+        launched = {idname: defn.op_type for defn in res_ops.OPERATION_DEFS
+                    for idname in defn.commands}
+        self.assertEqual(len(launched), 5)
+        self.assertLessEqual(DELIVERED, set(launched))
+        aware = session.ProvenanceAwareOperator
+        for idname, op_type in sorted(launched.items()):
             with self.subTest(orden=idname):
+                cls = self.m.commands.registered_class(idname)
+                if idname in DELIVERED:
+                    self.assertEqual(self.cat.commands[idname].entry, ENTRY)
+                    self.assertIn(cls, res_ops.classes)
+                    self.assertTrue(issubclass(cls, aware))
+                    self.assertEqual(cls.provenance_op_type, op_type)
+                    continue
+                # T21 a T25 las pasan a la 011 con su clase real
                 self.assertEqual(self.cat.commands[idname].entry, "R-38")
-                self.assertTrue(self.m.commands.is_provisional(
-                    self.m.commands.registered_class(idname)))
-        self.assertEqual(res_ops.classes, ())
+                self.assertTrue(self.m.commands.is_provisional(cls))
 
     def test_recompute_a_stale_cubication_by_its_queue(self) -> None:
         """D-19, RF-011-20, RF-011-21, RF-008-24, RF-008-26 (plan A12): una cubicación de V01

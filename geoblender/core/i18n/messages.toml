@@ -5428,3 +5428,166 @@ es = "Terraplén: diferencia relativa de los momentos con la cubicación directa
 
 ["Recomputing «{name}»… {percent} %"]
 es = "Recalculando «{name}»… {percent} %"
+
+# Materiales y densidades… (spec 011, T20; RF-011-11, RF-011-15, RF-011-21; plan 011 §5.5): la
+# ventana de la columna de materiales y sus diálogos (bl/props/res.py, bl/ui/res_panels.py y
+# bl/ops/res.py).
+
+["Natural"]
+es = "Natural"
+
+["Anthropic"]
+es = "Antrópica"
+
+["Compound"]
+es = "Compuesta"
+
+["Not chosen"]
+es = "Sin elegir"
+
+["Useful"]
+es = "Útil"
+
+["Waste"]
+es = "Estéril"
+
+["In situ"]
+es = "In situ"
+
+["Loose"]
+es = "Suelto"
+
+["Constant elevation"]
+es = "Cota constante"
+
+["Add a unit"]
+es = "Añadir una unidad"
+
+["Add a unit at the bottom of the column"]
+es = "Añade una unidad al final de la columna"
+
+["Remove the unit"]
+es = "Quitar la unidad"
+
+["Remove the chosen unit from the column"]
+es = "Quita de la columna la unidad elegida"
+
+["Move the unit up"]
+es = "Subir la unidad"
+
+["Move the chosen unit one place up"]
+es = "Sube un puesto la unidad elegida"
+
+["Move the unit down"]
+es = "Bajar la unidad"
+
+["Move the chosen unit one place down"]
+es = "Baja un puesto la unidad elegida"
+
+["Add a component"]
+es = "Añadir un componente"
+
+["Add a component to the chosen compound unit"]
+es = "Añade un componente a la unidad compuesta elegida"
+
+["Remove the component"]
+es = "Quitar el componente"
+
+["Remove the chosen component of its unit"]
+es = "Quita de su unidad el componente elegido"
+
+["Component"]
+es = "Componente"
+
+["Base elevation of «{unit}»"]
+es = "Cota de la base de «{unit}»"
+
+["the project"]
+es = "el proyecto"
+
+["New unit"]
+es = "Unidad nueva"
+
+["The column has no unit yet: add one first"]
+es = "La columna aún no tiene ninguna unidad: añada antes una"
+
+["Only a compound unit has components: choose «Compound» first"]
+es = "Solo una unidad compuesta tiene componentes: elija antes «Compuesta»"
+
+["New component"]
+es = "Componente nuevo"
+
+["Materials column saved: {count} units"]
+es = "Columna de materiales guardada: {count} unidades"
+
+["Declare the swell factor K of this unit first (K…)"]
+es = "Declare antes el esponjamiento K de esta unidad (K…)"
+
+["Swell factor K to apply to every unit: {value}"]
+es = "Esponjamiento K que se pone en todas las unidades: {value}"
+
+["Swell factor K = {value} {kind} in {count} units ({scope})"]
+es = "Esponjamiento K = {value} {kind} en {count} unidades ({scope})"
+
+["«{unit}» is not a compound unit of the saved column"]
+es = "«{unit}» no es una unidad compuesta de la columna guardada"
+
+["Percentages of «{unit}»"]
+es = "Porcentajes de «{unit}»"
+
+["The percentages of the components of «{unit}» add up to {value} %, not 100 % (to two decimals): none has changed"]
+es = "Los porcentajes de los componentes de «{unit}» suman {value} %, no 100 % (con dos decimales): no ha cambiado ninguno"
+
+["Percentages of «{unit}»: {values} {kind} ({scope})"]
+es = "Porcentajes de «{unit}»: {values} {kind} ({scope})"
+
+["Materials and densities"]
+es = "Materiales y densidades"
+
+["{version}: {value} · project: {project}"]
+es = "{version}: {value} · proyecto: {project}"
+
+["In-situ density: {value}"]
+es = "Densidad in situ: {value}"
+
+["Density…"]
+es = "Densidad…"
+
+["K: {value}"]
+es = "K: {value}"
+
+["K…"]
+es = "K…"
+
+["Components"]
+es = "Componentes"
+
+["Share: {value}"]
+es = "Porcentaje: {value}"
+
+["Save the column to declare its parameters"]
+es = "Guarde la columna para declarar sus parámetros"
+
+["No base: it is the last unit"]
+es = "Sin base: es la última unidad"
+
+["Base"]
+es = "Base"
+
+["Base elevation (m)"]
+es = "Cota de la base (m)"
+
+["Thickness grid"]
+es = "Rejilla de espesores"
+
+["Anthropic presence: {value}"]
+es = "Presencia de lo antrópico: {value}"
+
+["Change…"]
+es = "Cambiar…"
+
+["Units, from top to bottom"]
+es = "Unidades, de arriba abajo"
+
+["No unit yet: add the units from top to bottom"]
+es = "Aún no hay ninguna unidad: añada las unidades de arriba abajo"

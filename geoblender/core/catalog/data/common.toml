@@ -301,3 +301,50 @@ description.es = "Registra una decisión de la propiedad (quién decide, cuándo
 entry = "009"
 action = "D"
 frequency = 1
+
+# Órdenes internas de la cubicación (spec 011, plan §5.3.4, D-36): las abre la ventana de
+# Materiales y densidades… (T20), no un menú de la barra.
+
+[[command]]
+key = "geoblender.res_edit_column"
+kind = "internal"
+label.en = "Edit the materials column"
+label.es = "Editar la columna de materiales"
+description.en = "Add, remove or move a unit or a component of the materials column being edited (nothing is written until it is saved)"
+description.es = "Añade, quita o mueve una unidad o un componente de la columna de materiales en edición (no se escribe nada hasta guardarla)"
+entry = "011"
+action = "A"
+frequency = 2
+
+[[command]]
+key = "geoblender.res_save_materials"
+kind = "internal"
+label.en = "Save the column"
+label.es = "Guardar la columna"
+description.en = "Save the materials column being edited as the column of the project, with its record"
+description.es = "Guarda la columna de materiales en edición como la del proyecto, con su registro"
+entry = "011"
+action = "A"
+frequency = 2
+
+[[command]]
+key = "geoblender.res_apply_swell"
+kind = "internal"
+label.en = "Apply to all"
+label.es = "Aplicar a todas"
+description.en = "Give the swell factor K of this unit to every unit and component of the column, in one transaction"
+description.es = "Pone el esponjamiento K de esta unidad en todas las unidades y componentes de la columna, en una transacción"
+entry = "011"
+action = "D"
+frequency = 1
+
+[[command]]
+key = "geoblender.res_set_percentages"
+kind = "internal"
+label.en = "Percentages…"
+label.es = "Porcentajes…"
+description.en = "Percentages of the components of a compound unit, declared together: they must add up to 100 %"
+description.es = "Porcentajes de los componentes de una unidad compuesta, declarados juntos: tienen que sumar 100 %"
+entry = "011"
+action = "D"
+frequency = 1
