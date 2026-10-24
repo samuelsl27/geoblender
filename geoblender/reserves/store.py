@@ -1261,7 +1261,12 @@ class Cubication:
     """Una cubicación de una versión (su tabla de volúmenes ``res_vol_`` viva): su nombre (el de
     los ajustes de la ``res.volume`` que la escribió), el registro de esa tabla, esa operación y
     cuándo terminó, si reparte por unidades y el registro de su tabla de toneladas
-    (``res_ton_``) viva, o ``None``."""
+    (``res_ton_``) viva, o ``None``. Lo que enseña el panel de la cubicación (T25; RF-011-23,
+    RF-009-20, RF-008-31): la revisión de esa operación («V01.r1»; vacía en una cubicación sin
+    revisión), su estado (``RevisionState``: «open», lo «en curso»; «frozen»; «closed», la
+    cerrada al superarse o descartarse su versión), el número de la última revisión congelada
+    de la versión («r1»; vacío si no tiene ninguna) y si su tabla de volúmenes o la de sus
+    toneladas está obsoleta (la caché ``gb_stale`` de la 008)."""
 
     name: str
     record: DatasetRecord
@@ -1269,6 +1274,10 @@ class Cubication:
     finished_at: str
     units: bool
     tonnage: DatasetRecord | None
+    revision: str = ""
+    revision_state: str = ""
+    current: str = ""
+    stale: bool = False
 
 
 def _version_of(conn: sqlite3.Connection, version: str) -> Any:
@@ -1288,11 +1297,28 @@ def _live(conn: sqlite3.Connection, family: str, name: str,
     return record if record is not None and record.name == dataset else None
 
 
+_STALE_CHUNK = 500
+"""Cuántos datos se preguntan a la caché de la obsolescencia en cada consulta."""
+
+
+def _stale_datasets(conn: sqlite3.Connection, uids: Sequence[str]) -> frozenset[str]:
+    """Los de ``uids`` que la caché de la obsolescencia de la 008 (``gb_stale``) da por
+    obsoletos (RF-008-24)."""
+    found: set[str] = set()
+    for start in range(0, len(uids), _STALE_CHUNK):
+        part = list(uids[start:start + _STALE_CHUNK])
+        found.update(str(uid) for (uid,) in conn.execute(
+            "SELECT DISTINCT item_uid FROM gb_stale WHERE item_kind = 'dataset' AND item_uid IN "
+            f"({', '.join('?' for _ in part)})", part))
+    return frozenset(found)
+
+
 def cubications(project: StoreProject, *, version: str) -> tuple[Cubication, ...]:
     """Las cubicaciones de la versión ``version`` (uid o código), por nombre: las que tienen su
     tabla de volúmenes viva (no una diferencia entre superficies ni una cubicación por
     momentos), lo que ofrecen «Por momentos de extracción…» como momentos y directa y «Ratios…»
-    (T24). ``VersionError`` si la versión no existe."""
+    (T24), con su revisión y si están obsoletas (T25). ``VersionError`` si la versión no
+    existe."""
     live = tuple(str(status) for status in LIVE_STATUSES)
     volumes_prefix = declared.FAMILIES_BY_CODE[declared.VOLUMES].prefix
     with project.read() as conn:
@@ -1302,21 +1328,31 @@ def cubications(project: StoreProject, *, version: str) -> tuple[Cubication, ...
             f"module = ? AND status IN ({', '.join('?' for _ in live)})",
             (found.uid, declared.MODULE, *live)).fetchall()
         records = {record.name: record for record in map(DatasetRecord.from_row, rows)}
+        frozen = versions_read.last_frozen(conn, found.uid)
+        current = "" if frozen is None else f"r{frozen.number}"
         listed: list[Cubication] = []
         for record in records.values():
             if not record.name.startswith(volumes_prefix):
                 continue
-            row = conn.execute("SELECT settings, finished_at FROM gb_operation WHERE uid = ? "
-                               "AND op_type = ?", (record.operation_uid,
-                                                   declared.VOLUME)).fetchone()
+            row = conn.execute("SELECT settings, finished_at, revision_uid FROM gb_operation "
+                               "WHERE uid = ? AND op_type = ?",
+                               (record.operation_uid, declared.VOLUME)).fetchone()
             if row is None:  # inalcanzable: una tabla de volúmenes es de su res.volume
                 continue
             settings = json.loads(row[0])
             name = str(settings.get("name") or record.name)
+            revision = versions_read.revision(conn, str(row[2])) if row[2] else None
             listed.append(Cubication(
                 name, record, record.operation_uid, str(row[1] or ""),
                 bool(settings.get("units")),
-                records.get(declared.dataset_name(declared.TONNES, name))))
+                records.get(declared.dataset_name(declared.TONNES, name)),
+                revision="" if revision is None else revision.label(found.code),
+                revision_state="" if revision is None else str(revision.state),
+                current=current))
+        stale = _stale_datasets(conn, [record.uid for item in listed for record in (
+            item.record, item.tonnage) if record is not None])
+    listed = [replace(item, stale=item.record.uid in stale or (
+        item.tonnage is not None and item.tonnage.uid in stale)) for item in listed]
     return tuple(sorted(listed, key=lambda item: (item.name.casefold(), item.name)))
 
 

@@ -72,7 +72,7 @@ la entrada «011» de ``core/catalog/data/entries.toml``. Ya están las seis (:d
   interfaz, por pasos en su modal (``bl.ops.core._StepsModal``, con el avance en la barra de
   estado y Esc, que no deja nada a medias, RF-011-25); desde un guion, de una vez. Al terminar
   dice sus totales, carga la rejilla de diferencias en la vista (con el cargador de
-  ``res_dif_``, ``bl.scene.res_views``) y abre la ventana de la cubicación (T25).
+  ``res_dif_``, ``bl.scene.res_views``) y abre la ventana de la cubicación.
 - **Diferencia entre superficies…** (T22; RF-011-05, RF-011-20, RF-011-23; plan §5.3.4, A15,
   D-25, D-29): :class:`GEOBLENDER_OT_res_compute_surface_difference`, el mismo diálogo y los
   mismos pasos que la anterior (lo común, en ``_SurfacesCommand``) sin ámbito y siempre con la
@@ -106,7 +106,18 @@ la entrada «011» de ``core/catalog/data/entries.toml``. Ya están las seis (:d
   acción directa; no es una operación) deja elegida la tabla de una cubicación de la versión
   activa (la pedida, la elegida en el panel o la última por unidades) con el filtro de relaciones
   (``bl.ui.res_panels.show_cubication``), dice su relación estéril/útil del total y abre la
-  ventana de la cubicación (T25); sin unidades, lo dice.
+  ventana de la cubicación; sin unidades, lo dice.
+
+**La ventana de la cubicación y Exportar CSV…** (T25; RF-011-23, RF-011-24; plan §5.3.4, D-29,
+D-37): :class:`GEOBLENDER_OT_res_show_volumetrics` (interna) lee las cubicaciones de la versión
+activa, deja elegida la pedida con su tabla y abre la ventana (``GEOBLENDER_PT_res_volumetrics``,
+la misma que N ▸ Proyecto ▸ Cubicaciones); las órdenes que cubican la abren al terminar con la
+suya elegida (la ventana lee su tabla al dibujarse, no la última llamada del modal).
+:class:`GEOBLENDER_OT_res_export_csv` (interna; no es una operación) escribe el CSV de lo
+registrado (``reserves.export``) en ``exports/<cubicación>_<V01.r1>.csv`` o donde se elija,
+también en solo lectura (fuera del proyecto) y desde una versión no editable; si el fichero ya
+existe, desde la interfaz pregunta si se sustituye y desde un guion lo rechaza (sin
+``overwrite``).
 """
 
 from __future__ import annotations
@@ -457,8 +468,8 @@ COLUMN_ACTION_ITEMS = [
 
 def _call_panel(name: str) -> set[str]:
     """Abre la ventana emergente ``name`` con ``wm.call_panel``; sigue abierta aunque el ratón
-    salga de ella (``keep_open``), hasta pulsar fuera o Esc. Una que aún no está registrada (la
-    de la cubicación llega con la T25), nada."""
+    salga de ella (``keep_open``), hasta pulsar fuera o Esc. Una que no está registrada,
+    nada."""
     if getattr(bpy.types, name, None) is None:
         return {"CANCELLED"}
     return bpy.ops.wm.call_panel(name=name, keep_open=True)
@@ -1695,10 +1706,13 @@ class _SurfacesCommand:
             self._report({"WARNING"}, message)
 
     def _show_window(self, context: Any) -> None:
-        """La ventana de la cubicación, desde la interfaz (``_call_panel``; T25)."""
+        """La ventana de la cubicación con la que acaba de cubicar elegida, desde la interfaz
+        (``_call_panel``; T25): su tabla la lee la ventana al dibujarse
+        (``bl.ui.res_panels.show_later``), no esta llamada del modal (RNF-011-04)."""
         if (not self.OPENS_WINDOW or not self.in_steps
                 or getattr(context, "window", None) is None):
             return
+        res_panels.show_later(getattr(self, "_name", ""))
         try:
             _call_panel(res_panels.VOLUMETRICS_PANEL)
         except RuntimeError:
@@ -2575,7 +2589,11 @@ class GEOBLENDER_OT_res_compute_ratios(ProvenanceAwareOperator, bpy.types.Operat
                 "«{name}» has no tonnage: its ratios come with it (compute it again by units: "
                 "{path})", name=chosen.name, path=path))
             return {"CANCELLED"}
-        res_panels.show_cubication(chosen.name, quantities=res_props.QUANTITIES_RATIOS)
+        try:
+            res_panels.show_cubication(chosen.name, quantities=res_props.QUANTITIES_RATIOS)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
         self.report({"INFO"}, tr("Waste to useful ratio of «{name}»: {volume} · {mass}",
                                  name=chosen.name, volume=_total_ratio(rows, "waste_ratio_m3"),
                                  mass=_total_ratio(rows, "waste_ratio_t")))
@@ -2584,6 +2602,199 @@ class GEOBLENDER_OT_res_compute_ratios(ProvenanceAwareOperator, bpy.types.Operat
                 _call_panel(res_panels.VOLUMETRICS_PANEL)
             except RuntimeError:
                 LOGGER.warning("No se pudo abrir la ventana de la cubicación", exc_info=True)
+        return {"FINISHED"}
+
+
+# --- La ventana de la cubicación y Exportar CSV… (T25; RF-011-23, RF-011-24; D-29, D-37) -------
+
+SHOW_VOLUMETRICS = res_panels.SHOW_VOLUMETRICS
+EXPORT_CSV = res_panels.EXPORT_CSV
+CSV_FILTER = "*.csv"
+
+
+def _project_poll(cls: type) -> bool:
+    """El ``poll`` de lo que solo lee lo registrado (D-29): con un proyecto abierto, también en
+    solo lectura y con la versión activa no editable."""
+    reason = SESSION.unavailable()
+    if reason is not None:
+        cls.poll_message_set(reason)  # type: ignore[attr-defined]
+        return False
+    return True
+
+
+def _active_version_uid() -> str:
+    """La versión activa de la sesión (su uid); sin ella, ``ValueError`` con lo que hay que
+    hacer."""
+    version_uid = scene_versions.active_version()
+    if not version_uid:
+        raise ValueError(tr("Choose the active version first: Project ▸ Versions ▸ Active "
+                            "version"))
+    return version_uid
+
+
+def _chosen_cubication(typed: str) -> str:
+    """La cubicación pedida (``typed``) o, sin ella, la elegida en la ventana; ninguna,
+    ``ValueError``."""
+    shown = res_panels.view()
+    name = typed.strip() or ("" if shown is None else str(shown.cubication))
+    if not name:
+        raise ValueError(tr("Choose the cubication in the window of the cubications"))
+    return name
+
+
+class GEOBLENDER_OT_res_show_volumetrics(bpy.types.Operator):
+    """Open the window of the cubications of the active version with the table of the chosen
+    one (it reads what is registered: also in read-only and from a superseded version)"""
+
+    bl_idname = SHOW_VOLUMETRICS
+    bl_label = "Cubications window"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    cubication: StringProperty(  # type: ignore[valid-type]
+        name="Cubication",
+        description="Cubication of the active version that is shown (empty: the one chosen in "
+                    "the panel)",
+        options=_FIELD,
+    )
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _project_poll(cls)
+
+    def execute(self, context: Any) -> set[str]:
+        """Lee las cubicaciones de la versión activa, deja elegida la pedida (o la que ya lo
+        estaba) con su tabla y abre la ventana de la cubicación (RF-011-23). No escribe en el
+        proyecto."""
+        blocked = SESSION.unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active()
+        try:
+            version_uid = _active_version_uid()
+            found = res_panels.fill_volumetrics(project, version_uid)
+            shown = res_panels.view()
+            name = self.cubication.strip() or ("" if shown is None else str(shown.cubication))
+            if name and name not in {item.name for item in found}:
+                raise _unknown(name, "" if version is None else version.code)
+            res_panels.show_cubication(name)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if getattr(context, "window", None) is not None:
+            try:
+                _call_panel(res_panels.VOLUMETRICS_PANEL)
+            except RuntimeError:
+                LOGGER.warning("No se pudo abrir la ventana de la cubicación", exc_info=True)
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_res_export_csv(bpy.types.Operator):
+    """Write the registered cubication as a CSV for Excel in Spanish (it is not an operation:
+    also from a superseded version and, outside the project, in read-only)"""
+
+    bl_idname = EXPORT_CSV
+    bl_label = "Export CSV…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    cubication: StringProperty(  # type: ignore[valid-type]
+        name="Cubication",
+        description="Cubication of the active version that is exported (empty: the one chosen "
+                    "in the panel)",
+        options=_FIELD,
+    )
+    filepath: StringProperty(  # type: ignore[valid-type]
+        name="File", subtype="FILE_PATH", options={"SKIP_SAVE"},
+    )
+    filter_glob: StringProperty(  # type: ignore[valid-type]
+        default=CSV_FILTER, options={"HIDDEN"},
+    )
+    check_existing: BoolProperty(  # type: ignore[valid-type]
+        default=True, options={"HIDDEN", "SKIP_SAVE"},
+    )
+    overwrite: BoolProperty(  # type: ignore[valid-type]
+        name="Replace", description="Replace the file if it already exists", options=_FIELD,
+    )
+    # La confirmación de sustituir el fichero (D-29) y si se lanzó desde la interfaz (entonces,
+    # sobre uno que ya existe, se pregunta): los pone invoke.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    interactive: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _project_poll(cls)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """El diálogo de fichero con el destino que propone (D-29): ``exports/<cubicación>_
+        <V01.r1>.csv`` del proyecto o, en solo lectura, ese nombre en la carpeta personal (en
+        el proyecto no se puede); con ``confirm``, la confirmación de sustituir el que ya
+        existe."""
+        from ...reserves import export  # al usarlo: habilitar no lo carga
+
+        self.interactive = getattr(context, "window", None) is not None
+        if self.confirm:
+            self.overwrite = True
+            return context.window_manager.invoke_confirm(
+                self, event, title=tr("Replace the file"),
+                message=tr("«{file}» already exists: replace it?",
+                           file=Path(self.filepath).name),
+                confirm_text=tr("Replace"), translate=False)
+        project = SESSION.project
+        try:
+            name = _chosen_cubication(self.cubication)
+            found = export.cubication_export(project, name, version=_active_version_uid())
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self.cubication = name
+        if not self.filepath:
+            folder = (Path(project.root, gis_provenance.EXPORTS_FOLDER) if project.writable
+                      else Path.home())
+            self.filepath = str(folder / found.default_name)
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def draw(self, context: Any) -> None:
+        self.layout.prop(self, "overwrite", text=tr("Replace"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Escribe el CSV de lo registrado de la cubicación en la versión activa
+        (``reserves.export``: la cabecera con la procedencia y una fila por valor, para Excel
+        en español; RF-011-24), de una vez; sobre un fichero que ya existe, solo con
+        ``overwrite`` (desde la interfaz, lo pregunta); nunca sobre una entrada del proyecto ni,
+        en solo lectura, dentro de él (RF-008-15)."""
+        from ...reserves import export  # al usarlo: habilitar no lo carga
+
+        blocked = SESSION.unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project = SESSION.project
+        shown = self.filepath.strip()
+        try:
+            name = _chosen_cubication(self.cubication)
+            if not shown:
+                raise ValueError(tr("Choose the file to export to"))
+            found = export.cubication_export(project, name, version=_active_version_uid())
+            target = export.write_csv(found, Path(bpy.path.abspath(shown)), project=project,
+                                      read_only=read_only_dirs(),
+                                      overwrite=bool(self.overwrite))
+        except GisError as exc:
+            asking = self.interactive and getattr(context, "window", None) is not None
+            if exc.code == "gis.export_target_exists" and asking:
+                self.report({"WARNING"}, error_text(exc))
+                _confirm_later({"cubication": name, "filepath": shown}, idname=EXPORT_CSV)
+            else:
+                self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Cubication «{name}» exported to «{file}»", name=name,
+                                 file=target.name))
         return {"FINISHED"}
 
 
@@ -2599,6 +2810,8 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_res_compute_volume_breakdown,
     GEOBLENDER_OT_res_compute_extraction_stages,
     GEOBLENDER_OT_res_compute_ratios,
+    GEOBLENDER_OT_res_show_volumetrics,
+    GEOBLENDER_OT_res_export_csv,
 )
-"""Las órdenes reales de la cubicación (las de la ventana de la cubicación llegan con la
-T25)."""
+"""Las órdenes reales de la cubicación: las seis de Cubicación y sus internas (la ventana de los
+materiales, la de la cubicación y las exportaciones)."""

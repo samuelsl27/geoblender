@@ -29,6 +29,10 @@ exponente: el decimal más corto que vuelve al mismo float64 (el valor exacto, `
   (CALCULADO) y las marcas de su operación de hoy (RF-008-31: «depende de una hipótesis»,
   «depende de un valor sin confirmar», «obsoleta»), y sus notas («sin densidad»…).
 
+**El panel de la cubicación** (T25; RF-011-23) lee lo mismo (:func:`cubication_export` con el
+idioma de Geoblender) y enseña sus filas sin las de las toneladas que repiten los m³ in situ de
+la tabla de volúmenes (:func:`shown_rows`).
+
 **La rejilla de diferencias** (:func:`export_difference_steps`, :func:`export_difference`;
 RF-011-05, RF-006-24): la registrada (``rasters/res_dif_…``, Float64 con NaN) como GeoTIFF del
 perfil ``deliverable`` de la 006 (Float32, −9999), con ``gis.geotiff.writer.write_steps`` (un
@@ -104,6 +108,7 @@ __all__ = [
     "cubication_export",
     "export_difference",
     "export_difference_steps",
+    "shown_rows",
     "write_csv",
 ]
 
@@ -134,7 +139,11 @@ _EXTENSION = "extensión"
 _DOMAINS = {ALL_DOMAINS: "Todos los dominios", OUTSIDE_DOMAINS: OUTSIDE_SCOPE}
 _REVISION_STATES = {"open": "abierta", "frozen": "congelada", "closed": "cerrada"}
 _UNCONFIRMED = "sin confirmar"
-_PROJECT_SCOPE = "proyecto"
+_PROJECT_SCOPES = {"es": "proyecto", "en": "project"}
+"""El ámbito «proyecto» de un parámetro, en cada idioma de Geoblender."""
+REPEATED_TOLERANCE = 1e-12
+"""Cuánto (relativo) puede diferir de la de volúmenes la fila de toneladas que la repite: el
+redondeo de sumar los m³ de los componentes de una compuesta (``reserves.tonnage``)."""
 _YES_NO = ("no", "sí")
 _LOCAL = "%d/%m/%Y %H:%M"
 _ROLES = {
@@ -303,19 +312,25 @@ def _constant(settings: Mapping[str, Any], role: str) -> UsedInput | None:
     return UsedInput(role, _ROLES[role], text, "")
 
 
-def _operation_label(op_type: str) -> str:
+def _operation_label(op_type: str, language: str = LANGUAGE) -> str:
     found = declared.OPERATION_TYPES_BY_NAME.get(op_type)
-    return op_type if found is None else translate(LANGUAGE, found.label_msgid)
+    return op_type if found is None else translate(language, found.label_msgid)
 
 
-def cubication_export(project: ExportProject, name: str, *, version: str) -> CubicationExport:
+def cubication_export(project: ExportProject, name: str, *, version: str,
+                      language: str = LANGUAGE) -> CubicationExport:
     """Lo que escribe el CSV de la cubicación ``name`` de la versión ``version`` (uid o
     código): lo registrado (véase el módulo), leído en una instantánea sin escribir nada. Con
     unidades (los ajustes de su ``res.volume``), también su tabla de toneladas, si la hay.
     ``ResError`` ``res.cubication_unknown`` si esa versión no tiene la cubicación;
-    ``VersionError`` ``core.version_unknown`` si la versión no existe."""
+    ``VersionError`` ``core.version_unknown`` si la versión no existe. Las marcas, el nombre de
+    cada operación y de cada parámetro y el ámbito «proyecto», en ``language`` (el del CSV, el
+    español; el panel de la cubicación lo lee en el de Geoblender, T25)."""
     if not isinstance(name, str) or not name.strip():
         raise TypeError(f"una cubicación se indica por su nombre, no {name!r}")
+    if language not in _PROJECT_SCOPES:
+        raise ValueError(f"el idioma «{language}» no es de Geoblender: "
+                         f"{', '.join(_PROJECT_SCOPES)}")
     with project.read() as conn:
         found = _version(conn, version)
         volume = _record(conn, declared.VOLUMES, name, found)
@@ -327,20 +342,20 @@ def cubication_export(project: ExportProject, name: str, *, version: str) -> Cub
         parts = {} if column is None else {(unit.code, item.code): item.name
                                            for unit in column.units for item in unit.components}
         tables: list[tuple[str, DatasetRecord, OperationLink, tuple[str, ...]]] = []
-        root, marks = _producer(project, conn, volume)
+        root, marks = _producer(project, conn, volume, language)
         tables.append((declared.FAMILIES_BY_CODE[declared.VOLUMES].label, volume, root, marks))
         if root.settings.get("units"):
             tonnage = _record(conn, declared.TONNES, name, found)
             if tonnage is not None:
                 tables.append((declared.FAMILIES_BY_CODE[declared.TONNES].label, tonnage,
-                               *_producer(project, conn, tonnage)))
+                               *_producer(project, conn, tonnage, language)))
         operations: list[UsedOperation] = []
         rows: list[ExportRow] = []
         for label, record, link, marks in tables:
             revision = _revision_of(conn, link.uid)
             shown = "" if revision is None else revision.label(found.code)
             operations.append(UsedOperation(
-                link.uid, link.op_type, _operation_label(link.op_type), shown,
+                link.uid, link.op_type, _operation_label(link.op_type, language), shown,
                 link.finished_at, link.geoblender_version, marks))
             for item in read_rows(conn, record.locator):
                 if item.component is not None:
@@ -359,19 +374,45 @@ def cubication_export(project: ExportProject, name: str, *, version: str) -> Cub
                                                                    str(own.state)),
         operations=tuple(operations),
         inputs=_inputs([item[2] for item in tables], units),
-        parameters=_parameters([item[2] for item in tables], found.code),
+        parameters=_parameters([item[2] for item in tables], found.code, language),
         exported_at=format_utc(project.clock.now()),
         geoblender_version=str(project.session.geoblender_version),
     )
     return CubicationExport(header, tuple(rows))
 
 
-def _producer(project: ExportProject, conn: sqlite3.Connection,
-              record: DatasetRecord) -> tuple[OperationLink, tuple[str, ...]]:
+def shown_rows(export: CubicationExport) -> tuple[ExportRow, ...]:
+    """Las filas de ``export`` que enseña el panel de la cubicación (T25; RF-011-23, D-16): todas
+    menos las de la tabla de toneladas que repiten los m³ in situ de una unidad entera de la de
+    volúmenes (su ``volume_m3`` y, de lo in situ, su ``in_situ_m3``: el mismo valor, salvo el
+    redondeo de sumar los componentes de una compuesta, :data:`REPEATED_TOLERANCE`, en el mismo
+    dominio y la misma rodaja). Los m³ in situ son los de ``res.volume``, con sus marcas: un K
+    HIPÓTESIS marca las toneladas, no esos m³. En su orden."""
+    tonnes = declared.FAMILIES_BY_CODE[declared.TONNES].label
+    volumes = {(row.domain, row.bench_z0, row.bench_z1, row.unit): row.value
+               for row in (item.row for item in export.rows if item.table != tonnes)
+               if row.quantity == "volume_m3" and row.unit is not None and row.component is None}
+
+    def repeated(item: ExportRow) -> bool:
+        row = item.row
+        if item.table != tonnes or row.unit is None or row.component is not None:
+            return False
+        if row.quantity not in ("volume_m3", "in_situ_m3"):
+            return False
+        key = (row.domain, row.bench_z0, row.bench_z1, row.unit)
+        volume = volumes.get(key)
+        return volume is not None and row.value is not None and math.isclose(
+            row.value, volume, rel_tol=REPEATED_TOLERANCE, abs_tol=0.0)
+
+    return tuple(item for item in export.rows if not repeated(item))
+
+
+def _producer(project: ExportProject, conn: sqlite3.Connection, record: DatasetRecord,
+              language: str = LANGUAGE) -> tuple[OperationLink, tuple[str, ...]]:
     """La operación que escribió el contenido actual de ``record``, con su procedencia, y sus
-    marcas de hoy (RF-008-31), en español."""
-    tree = lineage(project, record.operation_uid, conn=conn, language=LANGUAGE)
-    return tree.operations[tree.root], tree.marks.texts(language=LANGUAGE)
+    marcas de hoy (RF-008-31), en ``language``."""
+    tree = lineage(project, record.operation_uid, conn=conn, language=language)
+    return tree.operations[tree.root], tree.marks.texts(language=language)
 
 
 def _inputs(links: Sequence[OperationLink], units: Mapping[str, str]) -> tuple[UsedInput, ...]:
@@ -390,7 +431,8 @@ def _inputs(links: Sequence[OperationLink], units: Mapping[str, str]) -> tuple[U
     return tuple(found.values())
 
 
-def _parameters(links: Sequence[OperationLink], version_code: str) -> tuple[UsedParameter, ...]:
+def _parameters(links: Sequence[OperationLink], version_code: str,
+                language: str = LANGUAGE) -> tuple[UsedParameter, ...]:
     """Los parámetros que leyeron las operaciones ``links``, en su orden y una vez cada uno."""
     found: dict[str, UsedParameter] = {}
     for link in links:
@@ -398,9 +440,9 @@ def _parameters(links: Sequence[OperationLink], version_code: str) -> tuple[Used
             if used.key in found:
                 continue
             found[used.key] = UsedParameter(
-                used.key, parameter_label(used.key, LANGUAGE) or used.key, used.value,
+                used.key, parameter_label(used.key, language) or used.key, used.value,
                 used.unit, used.kind, used.unconfirmed,
-                _PROJECT_SCOPE if used.scope == "project" else version_code)
+                _PROJECT_SCOPES[language] if used.scope == "project" else version_code)
     return tuple(found.values())
 
 

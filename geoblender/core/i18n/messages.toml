@@ -5909,3 +5909,115 @@ es = "Todos los datos"
 
 ["Waste to useful ratios"]
 es = "Relaciones estéril/útil"
+
+# La ventana de la cubicación y Exportar CSV… (spec 011, T25; RF-011-23, RF-011-24; plan 011 §5.5,
+# D-29, D-37): N ▸ Proyecto ▸ Cubicaciones, su lista, sus filtros, su tabla y la exportación
+# (bl/ui/res_panels.py, bl/props/res.py y bl/ops/res.py; «Cubication», «File», «Replace», «Data»,
+# «Unit» y lo de sustituir el fichero ya están arriba).
+["Cubications"]
+es = "Cubicaciones"
+
+["{revision} in progress"]
+es = "{revision} en curso"
+
+["{version} current: {revision}"]
+es = "{version} vigente: {revision}"
+
+["{version} frozen: {revision}"]
+es = "{version} congelada: {revision}"
+
+["{version} closed ({revision})"]
+es = "{version} cerrada ({revision})"
+
+["below {elevation} m"]
+es = "por debajo de {elevation} m"
+
+["above {elevation} m"]
+es = "por encima de {elevation} m"
+
+["Outside the domains"]
+es = "Fuera de los dominios"
+
+["{name}: {value}"]
+es = "{name}: {value}"
+
+["{name}: {value} · {scope}"]
+es = "{name}: {value} · {scope}"
+
+["{operation} ({revision})"]
+es = "{operation} ({revision})"
+
+["Any domain"]
+es = "Cualquier dominio"
+
+["All the domains (total)"]
+es = "Todos los dominios (total)"
+
+["Any bench"]
+es = "Cualquier banco"
+
+["All the benches (total)"]
+es = "Todos los bancos (total)"
+
+["Any unit"]
+es = "Cualquier unidad"
+
+["All the units (total)"]
+es = "Todas las unidades (total)"
+
+["Reading the cubications…"]
+es = "Leyendo las cubicaciones…"
+
+["Choose a cubication in the list"]
+es = "Elija una cubicación de la lista"
+
+["Reading «{name}»…"]
+es = "Leyendo «{name}»…"
+
+["Domain"]
+es = "Dominio"
+
+["Bench"]
+es = "Banco"
+
+["No row matches the filters"]
+es = "Ninguna fila pasa los filtros"
+
+["Parameters used"]
+es = "Parámetros usados"
+
+["All the data or only the ratios"]
+es = "Todos los datos o solo las relaciones"
+
+["Cubication of the active version whose table is shown"]
+es = "Cubicación de la versión activa cuya tabla se enseña"
+
+["Only the rows of this domain"]
+es = "Solo las filas de este dominio"
+
+["Only the rows of this bench"]
+es = "Solo las filas de este banco"
+
+["Only the rows of this unit (and its components)"]
+es = "Solo las filas de esta unidad (y de sus componentes)"
+
+["Cubication of the active version that is shown (empty: the one chosen in the panel)"]
+es = "Cubicación de la versión activa que se enseña (vacía: la elegida en el panel)"
+
+["Cubication of the active version that is exported (empty: the one chosen in the panel)"]
+es = "Cubicación de la versión activa que se exporta (vacía: la elegida en el panel)"
+
+["Choose the cubication in the window of the cubications"]
+es = "Elija la cubicación en la ventana de las cubicaciones"
+
+["Cubication «{name}» exported to «{file}»"]
+es = "Cubicación «{name}» exportada a «{file}»"
+
+["Cubications of the active version, with their revision"]
+es = "Cubicaciones de la versión activa, con su revisión"
+
+["Rows of the table of the chosen cubication: one value each, with its unit, its type and its marks"]
+es = "Filas de la tabla de la cubicación elegida: un valor cada una, con su unidad, su tipo y sus marcas"
+
+["Cubications of the active version: each one with its revision and its table, filtered by domain, bench and unit, with its marks"]
+es = "Cubicaciones de la versión activa: cada una con su revisión y su tabla, filtrada por dominio, banco y unidad, con sus marcas"

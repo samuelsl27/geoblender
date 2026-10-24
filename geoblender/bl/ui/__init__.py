@@ -69,8 +69,8 @@ from . import help as help_pages
 # contrato 2): los menús y la pestaña «Proyecto» de core (spec 002) con los paneles de la
 # vista regenerable que van en ella (spec 010: Elemento activo), los paneles reales de
 # la interfaz (spec 003), la lista de trabajos (spec 004), lo obsoleto (spec 008), la ventana y
-# el menú de la versión activa (spec 009), la pestaña «Sondeos» (spec 005) y la ventana de los
-# materiales de la cubicación (spec 011).
+# el menú de la versión activa (spec 009), la pestaña «Sondeos» (spec 005), la ventana de los
+# materiales de la cubicación y N ▸ Proyecto ▸ Cubicaciones, que es también su ventana (spec 011).
 classes: tuple[type, ...] = (
     *core_menus.classes,
     *core_panel.classes,
@@ -92,6 +92,7 @@ def _register_classes() -> None:
     core_panel.localize()
     view_panels.localize()
     dh_panels.localize()
+    res_panels.localize()
     register_classes(classes)
 
 

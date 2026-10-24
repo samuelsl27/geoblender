@@ -24,10 +24,18 @@ antrópico. Lo que se edita no se escribe hasta «Guardar la columna» (``bl.ops
 :attr:`~GEOBLENDER_PG_res_panels.cubications` (:class:`GEOBLENDER_PG_res_cubication`: su nombre,
 si reparte por unidades y si tiene toneladas), la elegida
 (:attr:`~GEOBLENDER_PG_res_panels.cubication`, su nombre) y el filtro de datos de su tabla
-(:attr:`~GEOBLENDER_PG_res_panels.quantities`: todos o las relaciones, D-35). La T25 añade lo
-demás de cada una (revisión, «vigente» o «en curso», obsoleta) y sus filas.
+(:attr:`~GEOBLENDER_PG_res_panels.quantities`: todos o las relaciones, D-35).
 :class:`GEOBLENDER_PG_res_moment` es un momento de «Por momentos de extracción…» (su nombre) y
 :class:`GEOBLENDER_PG_res_moment_choice`, una fila de su diálogo (una cubicación y si es momento).
+
+**La ventana de la cubicación** (T25; RF-011-23, D-37): de cada cubicación, también su revisión,
+cómo se lee («V01.r1 en curso», «V01 vigente: r1») y si está obsoleta; la elegida en la lista
+(:attr:`~GEOBLENDER_PG_res_panels.cubication_index`: elegirla lee su tabla), sus filas ya
+presentadas (:class:`GEOBLENDER_PG_res_row`, como mucho las que caben, con cuántas más hay) con
+sus filtros (dominio, banco y unidad: enumerados dinámicos de lo leído, con «cualquiera» y «el
+total», :data:`FILTER_TOTAL`, el de por defecto; cambiar un filtro solo vuelve a filtrar lo
+leído) y lo que dice de ella (:class:`GEOBLENDER_PG_res_line`: su revisión, cada operación con
+sus marcas, el factor combinado y los parámetros que leyó).
 
 Ninguna propiedad es una coordenada ni una cota en ``FloatProperty`` (ADR-0005; la cota
 constante de una base, en ``StringProperty``: ``docs/trampas.md`` §1). Las propiedades de las
@@ -150,10 +158,72 @@ class GEOBLENDER_PG_res_moment_choice(bpy.types.PropertyGroup):
 
 class GEOBLENDER_PG_res_cubication(bpy.types.PropertyGroup):
     """Una cubicación de la versión activa ya leída (T24; ``name``: su nombre; si reparte por
-    unidades y si tiene su tabla de toneladas)."""
+    unidades y si tiene su tabla de toneladas) y, ya presentado (T25), su revisión («V01.r1»),
+    cómo se lee («V01.r1 en curso», «V01 vigente: r1»…) y si está obsoleta."""
 
     units: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
     tonnage: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+    revision: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    status: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    stale: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+
+
+class GEOBLENDER_PG_res_row(bpy.types.PropertyGroup):
+    """Una fila de la tabla de la cubicación elegida, ya presentada (T25; RF-011-23): el nombre
+    de su dato (``name``) y su clave (``quantity``), su ámbito («Fase 2 · [100,5; 101,5) m ·
+    Capa útil»; vacío, el total), su valor con su unidad, la insignia de su tipo («[CAL]»), las
+    marcas de su operación («depende de una hipótesis»…) y sus notas («sin densidad»…)."""
+
+    quantity: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    scope: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    value: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    badge: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    marks: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    notes: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+
+
+class GEOBLENDER_PG_res_line(bpy.types.PropertyGroup):
+    """Una línea de lo que dice la ventana de la cubicación elegida, ya presentada (T25;
+    ``name``: su texto; en alerta, una marca o «obsoleta»)."""
+
+    alert: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+
+
+def _cubication_chosen(_view: object, _context: object) -> None:
+    """Se eligió otra cubicación en la lista del panel: se lee su tabla (T25)."""
+    from ..ui import res_panels  # al usarlo: bl/ui importa bl/props
+
+    res_panels.cubication_chosen()
+
+
+def _rows_filtered(_view: object, _context: object) -> None:
+    """Cambió un filtro de la tabla: se vuelve a filtrar lo leído, sin leer el proyecto."""
+    from ..ui import res_panels  # al usarlo: bl/ui importa bl/props
+
+    res_panels.rows_filtered()
+
+
+def _domain_items(view: object, context: object) -> list[tuple[str, str, str, int]]:
+    from ..ui import res_panels  # al usarlo: bl/ui importa bl/props
+
+    return res_panels.domain_filter_items(view, context)
+
+
+def _bench_items(view: object, context: object) -> list[tuple[str, str, str, int]]:
+    from ..ui import res_panels  # al usarlo: bl/ui importa bl/props
+
+    return res_panels.bench_filter_items(view, context)
+
+
+def _unit_items(view: object, context: object) -> list[tuple[str, str, str, int]]:
+    from ..ui import res_panels  # al usarlo: bl/ui importa bl/props
+
+    return res_panels.unit_filter_items(view, context)
+
+
+FILTER_TOTAL = 1
+"""El número del elemento «el total» de los filtros de la tabla (``bl.ui.res_panels``): el
+elegido por defecto."""
 
 
 class GEOBLENDER_PG_res_panels(bpy.types.PropertyGroup):
@@ -173,14 +243,45 @@ class GEOBLENDER_PG_res_panels(bpy.types.PropertyGroup):
     )
     cubication: StringProperty(options=_STATIC)  # type: ignore[valid-type]
     quantities: EnumProperty(items=QUANTITY_ITEMS,  # type: ignore[valid-type]
-                             default=QUANTITIES_ALL, options=_STATIC)
+                             default=QUANTITIES_ALL, options=_STATIC, update=_rows_filtered,
+                             name="Data", description="All the data or only the ratios")
+    # La ventana de la cubicación (T25; RF-011-23).
+    cubication_index: IntProperty(  # type: ignore[valid-type]
+        default=-1, min=-1, options=_STATIC, update=_cubication_chosen, name="Cubication",
+        description="Cubication of the active version whose table is shown",
+    )
+    domain_filter: EnumProperty(  # type: ignore[valid-type]
+        items=_domain_items, default=FILTER_TOTAL, options=_STATIC, update=_rows_filtered,
+        name="Domain", description="Only the rows of this domain",
+    )
+    bench_filter: EnumProperty(  # type: ignore[valid-type]
+        items=_bench_items, default=FILTER_TOTAL, options=_STATIC, update=_rows_filtered,
+        name="Bench", description="Only the rows of this bench",
+    )
+    unit_filter: EnumProperty(  # type: ignore[valid-type]
+        items=_unit_items, default=FILTER_TOTAL, options=_STATIC, update=_rows_filtered,
+        name="Unit", description="Only the rows of this unit (and its components)",
+    )
+    rows: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_res_row, options=_STATIC,
+    )
+    row_index: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
+    rows_more: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
+    rows_of: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    lines: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_res_line, options=_STATIC,
+    )
+    parameters: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_res_line, options=_STATIC,
+    )
 
 
 # En orden de registro: cada grupo, después de los que contiene.
 classes: tuple[type, ...] = (GEOBLENDER_PG_res_surface, GEOBLENDER_PG_res_component,
                              GEOBLENDER_PG_res_unit, GEOBLENDER_PG_res_percent,
                              GEOBLENDER_PG_res_moment, GEOBLENDER_PG_res_moment_choice,
-                             GEOBLENDER_PG_res_cubication, GEOBLENDER_PG_res_panels)
+                             GEOBLENDER_PG_res_cubication, GEOBLENDER_PG_res_row,
+                             GEOBLENDER_PG_res_line, GEOBLENDER_PG_res_panels)
 
 
 def register() -> None:

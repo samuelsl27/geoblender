@@ -66,7 +66,7 @@ from tests.support import blender_ext
 from tests.support import views_fixtures as vf
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
-from tests.support.fake_layout import operator_self
+from tests.support.fake_layout import FakeLayout, draw, operator_self
 from tests.support.trees import remove_tree
 
 ENTRY = "011"
@@ -129,6 +129,12 @@ STAGE_CUBICATIONS = {DIRECT: None, "Explotación": "scope", "Resto": "rest"}
 directa, sin ámbito, y dos momentos que la parten (el ámbito y lo que queda fuera)."""
 WITHOUT_UNITS = "Sin unidades"
 """Una cubicación sin unidades (el ámbito): un momento que deja un hueco."""
+SHOW = "geoblender.res_show_volumetrics"
+EXPORT_CSV = "geoblender.res_export_csv"
+UNCONFIRMED = "depende de un valor sin confirmar"
+HYPOTHESIS = "depende de una hipótesis"
+BENCHES = "Fases y bancos"
+"""Una cubicación sin unidades por la capa «Fases» y bancos de 1 m anclados a 100,5 m."""
 
 
 class _Collection(list):
@@ -1096,6 +1102,228 @@ class ResBetweenSurfacesTest(unittest.TestCase):
                       text)
         self.assertEqual(view.cubication, "Explotación")
         self.panel.assert_not_called()
+
+    # --- La ventana de la cubicación y Exportar CSV… (T25) -------------------------------------
+
+    def filtered(self, **chosen: str) -> list[Any]:
+        """Las filas presentadas tras elegir en los filtros del panel (``domain``, ``bench`` o
+        ``unit``) el elemento con ese texto."""
+        view = self.panels.view()
+        for name, text in chosen.items():
+            items = getattr(self.panels, f"{name}_filter_items")(view, None)
+            (identifier,) = [item[0] for item in items if item[1] == text]
+            setattr(view, f"{name}_filter", identifier)
+        return list(view.rows)
+
+    @staticmethod
+    def by_scope(rows: list[Any]) -> dict[tuple[str, str], Any]:
+        """Las filas presentadas por (ámbito, dato)."""
+        return {(row.scope, row.quantity): row for row in rows}
+
+    def choose(self, name: str) -> None:
+        """Elige la cubicación ``name`` en la lista del panel (como al pulsarla)."""
+        view = self.panels.view()
+        view.cubication_index = [item.name for item in view.cubications].index(name)
+        self.assertEqual(view.cubication, name)
+
+    def test_volumetrics_panel_lists_filters_and_marks(self) -> None:
+        """RF-011-23 (RF-008-31, RF-009-20; plan §5.5, D-16, D-26, D-27, D-37; RNF-011-05): N ▸
+        Proyecto ▸ Cubicaciones (plegado al empezar) lista las cubicaciones de la versión activa
+        con su revisión («V01.r1 en curso») y, si lo está, «obsoleta»; elegida una, su tabla: un
+        valor por fila con su unidad, [CAL] y sus marcas («depende de un valor sin confirmar»
+        en todas, por el espesor mínimo por defecto; «depende de una hipótesis» en las t y los
+        m³ esponjados, por la densidad y el K, HIPÓTESIS, no en los m³ in situ, que no se
+        repiten de la tabla de toneladas); filtrada por dominio, banco y unidad (por defecto,
+        los totales) y por las relaciones, sin leer el proyecto; los parámetros que usó con su
+        valor, su tipo y su ámbito, y el factor combinado. Dibujar no lee el proyecto: cuando
+        cambia, el panel pide leerlo en un temporizador."""
+        self.stage_cubications()
+        self.assertEqual(bpy.ops.geoblender.res_compute_volume_breakdown(
+            name=BENCHES, start=START, final=FINAL, domains_layer=self.phases,
+            domains_field="fase", bench_height="1", bench_anchor="100,5"), {"FINISHED"})
+        panel = getattr(bpy.types, PANEL)
+        self.assertEqual((panel.bl_space_type, panel.bl_region_type, panel.bl_category,
+                          panel.bl_label, panel.bl_options),
+                         ("VIEW_3D", "UI", "Proyecto", "Cubicaciones", {"DEFAULT_CLOSED"}))
+        view = self.panels.view()
+        found = self.panels.fill_volumetrics(self.project, self.v01.uid)
+        listed = {item.name: item for item in view.cubications}
+        self.assertEqual(list(listed), [item.name for item in found])
+        self.assertLessEqual({*STAGE_CUBICATIONS, WITHOUT_UNITS, BENCHES}, set(listed))
+        self.assertEqual({(item.status, item.revision, item.stale) for item in listed.values()},
+                         {("V01.r1 en curso", "V01.r1", False)})
+        for state, revision, editable, expected in (  # con revisiones congeladas (RF-009-20)
+                ("open", "V01.r2", True, "V01.r2 en curso · vigente: r1"),
+                ("frozen", "V01.r1", True, "V01 vigente: r1"),
+                ("frozen", "V01.r1", False, "V01 congelada: r1")):
+            with self.subTest(estado=state, editable=editable):
+                item = SimpleNamespace(revision=revision, revision_state=state, current="r1")
+                self.assertEqual(self.panels.status_text(item, editable=editable), expected)
+        self.panels.show_cubication("")  # ninguna elegida
+        with mock.patch.object(self.project, "read", side_effect=AssertionError("al dibujar")):
+            layout = draw(panel, bpy.context, is_popover=False)
+        self.assertEqual([item.target for item in layout.of_kind("template_list")],
+                         ["GEOBLENDER_UL_res_cubications"])
+
+        self.choose(DIRECT)  # los totales: todos los dominios, todas las rodajas y unidades
+        rows = self.by_scope(list(view.rows))
+        cut = rows[("", "cut_m3")]
+        self.assertEqual((cut.name, cut.value, cut.badge, cut.marks),
+                         ("Desmonte", "20 m³", "[CAL]", UNCONFIRMED))
+        self.assertEqual(rows[("", "waste_ratio_m3")].value, "1,5 m³/m³")
+        self.assertIn(HYPOTHESIS, rows[("", "total_t")].marks)
+        self.assertIn(UNCONFIRMED, rows[("", "total_t")].marks)
+        unit = self.by_scope(self.filtered(unit="Capa útil"))
+        self.assertEqual((unit[("Capa útil", "volume_m3")].value,
+                          unit[("Capa útil", "volume_m3")].marks), ("8 m³", UNCONFIRMED))
+        self.assertEqual(sum(row.quantity in ("volume_m3", "in_situ_m3") for row in view.rows), 1)
+        for quantity, value in (("mass_t", "16 t"), ("swell_m3", "12 m³")):
+            with self.subTest(dato=quantity):
+                self.assertEqual(unit[("Capa útil", quantity)].value, value)
+                self.assertIn(HYPOTHESIS, unit[("Capa útil", quantity)].marks)
+        self.assertGreater(len(self.filtered(unit="Cualquier unidad")), len(unit))
+        lines = [line.name for line in view.lines]
+        self.assertEqual(lines[0], f"{DIRECT} · V01.r1 en curso")
+        self.assertIn(f"Cubicación entre superficies (V01.r1) · {UNCONFIRMED}", lines)
+        self.assertTrue(any(line.startswith("Toneladas de una cubicación (V01.r1) · ")
+                            and HYPOTHESIS in line for line in lines), lines)
+        self.assertTrue(any(line.startswith("Factor combinado: ") for line in lines), lines)
+        label = _module("core.params").parameter_label
+        parameters = [line.name for line in view.parameters]
+        self.assertIn("Espesor mínimo de desmonte y terraplén: 0 m [ADO] sin confirmar · "
+                      "proyecto", parameters)
+        self.assertIn(f"{label('res.unit.capa_util.swell', 'es')}: 1,5 [HIP] · proyecto",
+                      parameters)
+        self.panels.show_cubication(DIRECT, quantities="RATIOS")  # lo que deja «Ratios…»
+        ratios = {row.quantity for row in view.rows}
+        self.assertIn("waste_ratio_m3", ratios)
+        self.assertLessEqual(ratios, set(_module("reserves.table").RATIO_QUANTITIES))
+
+        self.choose(BENCHES)
+        self.assertEqual([item[1] for item in self.panels.domain_filter_items(view, None)],
+                         ["Cualquier dominio", "Todos los dominios (total)", "Fase 1", "Fase 2",
+                          "Fuera de los dominios"])
+        shown = self.filtered(domain="Fase 2", bench="[100,5; 101,5) m")
+        self.assertTrue(shown)
+        self.assertTrue(all(row.scope == "Fase 2 · [100,5; 101,5) m" for row in shown), shown)
+        (stored,) = [row for row in self.table("res_vol_fases_y_bancos")
+                     if (row.domain, row.bench_z0, row.unit, row.quantity)
+                     == ("Fase 2", ANCHOR_M, None, "cut_m3")]
+        self.assertAlmostEqual(stored.value, sum(
+            value for (domain, low, _unit), value in _breakdown_expected().items()
+            if (domain, low) == ("Fase 2", ANCHOR_M)), delta=1e-9)
+        shown_value = _module("core.params.store").shown_value
+        self.assertEqual(self.by_scope(shown)[("Fase 2 · [100,5; 101,5) m", "cut_m3")].value,
+                         shown_value(stored.value, "m3", "es"))
+        with mock.patch.object(self.project, "read", side_effect=AssertionError("al filtrar")):
+            self.assertTrue(self.filtered(domain="Cualquier dominio"))
+            layout = draw(panel, bpy.context, is_popover=False)
+        self.assertEqual([item.target for item in layout.of_kind("template_list")],
+                         ["GEOBLENDER_UL_res_cubications", "GEOBLENDER_UL_res_rows"])
+        self.assertIn(EXPORT_CSV, [item.target for item in layout.of_kind("operator")])
+
+        self.addCleanup(self.declare, {"res.unit.montera.density": DENSITY["montera"]})
+        self.declare({"res.unit.montera.density": 1.9})  # las toneladas, obsoletas
+        self.panels.on_project_read(self.project)
+        if bpy.app.timers.is_registered(self.panels.volumetrics_tick):  # sin correr, en -b
+            bpy.app.timers.unregister(self.panels.volumetrics_tick)
+        with mock.patch.object(bpy.app.timers, "register") as timer:
+            draw(panel, bpy.context, is_popover=False)
+        timer.assert_called_once_with(self.panels.volumetrics_tick, first_interval=0.0)
+        self.assertIsNone(self.panels.volumetrics_tick())
+        listed = {item.name: item for item in view.cubications}
+        self.assertEqual((listed[DIRECT].stale, listed[WITHOUT_UNITS].stale), (True, False))
+        layout = FakeLayout()
+        _module("bl.ui.res_panels").GEOBLENDER_UL_res_cubications.draw_item(
+            None, bpy.context, layout, view, listed[DIRECT], 0, view, "cubication_index")
+        self.assertIn("obsoleta", [item.text for item in layout.of_kind("label") if item.alert])
+
+    def test_volumetrics_csv_window_read_only_and_superseded(self) -> None:
+        """RF-011-23, RF-011-24 (D-29; RF-008-15): «Exportar CSV…» propone
+        ``exports/<cubicación>_<revisión>.csv``, deja allí el CSV de lo registrado (con su BOM,
+        para Excel en español) y, si ya existe, desde un guion lo rechaza y desde la interfaz
+        pregunta si se sustituye; la ventana de la cubicación (``res_show_volumetrics``) deja
+        elegida la pedida. Con el proyecto en solo lectura se ve igual y se exporta fuera del
+        proyecto (en él, no); con la versión activa SUPERADO, también (su revisión, «cerrada»)."""
+        self.stage_cubications()
+        view = self.panels.view()
+        self.panel.reset_mock()
+        self.assertEqual(bpy.ops.geoblender.res_show_volumetrics(cubication=DIRECT),
+                         {"FINISHED"})
+        self.panel.assert_called_once_with(PANEL)
+        self.assertEqual(view.cubication, DIRECT)
+        self.assertTrue(len(view.rows))
+        cls = self.commands.registered_class(EXPORT_CSV)
+        self.assertEqual((cls.bl_options, self.commands.catalog().commands[EXPORT_CSV].entry),
+                         ({"REGISTER"}, ENTRY))
+        fake = operator_self(cls, report=lambda kind, text: None, cubication=DIRECT,
+                             filepath="", overwrite=False, confirm=False)
+        manager = SimpleNamespace(fileselect_add=mock.Mock())
+        self.assertEqual(cls.invoke(fake, SimpleNamespace(window_manager=manager, window=None),
+                                    None), {"RUNNING_MODAL"})
+        target = Path(fake.filepath)
+        self.assertEqual(target, self.project.root / "exports" / "directa_V01.r1.csv")
+        self.assertEqual(bpy.ops.geoblender.res_export_csv(cubication=DIRECT,
+                                                           filepath=str(target)), {"FINISHED"})
+        self.assertTrue(target.read_bytes().startswith("﻿Cubicación;Directa".encode()))
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.res_export_csv(cubication=DIRECT, filepath=str(target))
+        self.assertIn("Ya existe «directa_V01.r1.csv»", str(caught.exception))
+        asking = operator_self(cls, report=lambda kind, text: None, cubication=DIRECT,
+                               filepath=str(target), overwrite=False, confirm=False,
+                               interactive=True)
+        with mock.patch.object(self.res_ops, "_confirm_later") as later:
+            self.assertEqual(cls.execute(asking, SimpleNamespace(window=object())),
+                             {"CANCELLED"})
+        later.assert_called_once_with({"cubication": DIRECT, "filepath": str(target)},
+                                      idname=EXPORT_CSV)
+        self.assertEqual(bpy.ops.geoblender.res_export_csv(
+            cubication=DIRECT, filepath=str(target), overwrite=True), {"FINISHED"})
+
+        outside = Path(tempfile.mkdtemp(prefix="gb-r25-"))
+        self.addCleanup(remove_tree, outside)
+        project = self.project
+        with mock.patch.object(project, "_status", project.status):
+            project.set_read_only(_module("core.project").ReadOnlyCode.REQUESTED, "prueba")
+            self.assertEqual([item.name for item in self.panels.fill_volumetrics(
+                project, self.v01.uid)], [item.name for item in view.cubications])
+            self.panels.show_cubication(DIRECT)
+            self.assertTrue(len(view.rows))
+            text = self.refused(command=EXPORT_CSV, cubication=DIRECT,
+                                filepath=str(project.root / "exports" / "otra.csv"))
+            self.assertIn("solo lectura", text)
+            self.assertEqual(bpy.ops.geoblender.res_export_csv(
+                cubication=DIRECT, filepath=str(outside / "directa.csv")), {"FINISHED"})
+        self.assertTrue((outside / "directa.csv").is_file())
+
+        store = _module("core.versions.store")
+        with project.write_transaction() as conn:
+            v03, _revision = store.create_version(conn, project, feature="norte",
+                                                  title="Fase norte", reason=REASON)
+        project.refresh_header()
+        self.set_active(v03)
+        self.addCleanup(self.set_active, self.v01)
+        self.assertEqual(bpy.ops.geoblender.res_compute_volume_between_surfaces(
+            name="Norte", start=START, final=FINAL, difference_grid=False), {"FINISHED"})
+        with project.write_transaction() as conn:  # SUPERADO, con su revisión cerrada
+            conn.execute("UPDATE gb_revision SET state = 'closed', closed_at = ?, closed_by = ? "
+                         "WHERE version_uid = ? AND state = 'open'",
+                         ("2026-10-24T10:00:00Z", "prueba", v03.uid))
+            conn.execute("UPDATE gb_version SET status = 'VIGENTE' WHERE uid = ?", (v03.uid,))
+            conn.execute("UPDATE gb_version SET status = 'SUPERADO', reason_closed = ? WHERE "
+                         "uid = ?", (REASON, v03.uid))
+        self.set_active(v03)
+        self.panels.fill_volumetrics(project, v03.uid)
+        self.assertEqual([(item.name, item.status) for item in view.cubications],
+                         [("Norte", "V03 cerrada (r1)")])
+        self.assertEqual(bpy.ops.geoblender.res_show_volumetrics(cubication="Norte"),
+                         {"FINISHED"})
+        self.assertEqual(self.by_scope(list(view.rows))[("", "cut_m3")].value,
+                         _module("core.params.store").shown_value(
+                             _expected(_start_values(), _final_values())["res.cut_m3"], "m3",
+                             "es"))
+        self.assertEqual(bpy.ops.geoblender.res_export_csv(
+            cubication="Norte", filepath=str(outside / "norte.csv")), {"FINISHED"})
 
 
 if __name__ == "__main__":

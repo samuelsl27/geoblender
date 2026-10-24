@@ -230,6 +230,11 @@ class StoreTest(fx.ResProjectCase):
         self.assertEqual((listed[name].record.uid, listed[name].operation_uid,
                           listed[name].units, listed[name].tonnage.uid),
                          (record.uid, handle.uid, True, weighed_record.uid))
+        # T25 (RF-011-23, RF-009-20): su revisión, la abierta («en curso»), sin ninguna
+        # congelada en V01, y al día
+        self.assertEqual((listed[name].revision, listed[name].revision_state,
+                          listed[name].current, listed[name].stale),
+                         ("V01.r1", "open", "", False))
         self.assertNotIn("Diferencia octubre", listed)  # res.difference: sin tabla
         self.assertEqual(list(listed), sorted(listed, key=str.casefold))
         ratios = store.cubication_ratios(self.project, name, version=self.v1.uid)

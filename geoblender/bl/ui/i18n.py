@@ -35,7 +35,7 @@ import bpy
 
 from ...core import i18n
 from ..props.ui import LANGUAGES, remember_language
-from . import commands, core_panel, registry, view_panels
+from . import commands, core_panel, registry, res_panels, view_panels
 
 
 class _State:
@@ -63,15 +63,16 @@ def install() -> str:
 
 
 def _relabel_core_panel() -> None:
-    """La pestaña y el título de «Proyecto» (spec 002) y de los paneles de la vista regenerable
-    que van en ella (spec 010: Elemento activo e Inventario; su lista y la ventana de «Cifras de
-    la selección» no tienen pestaña), registrados otra vez si cambian (si no, tras cambiar el
-    idioma quedarían en otra pestaña)."""
-    panels = [cls for cls in (*core_panel.classes, *view_panels.classes)
+    """La pestaña y el título de «Proyecto» (spec 002) y de los paneles que van en ella (spec
+    010: Elemento activo e Inventario; spec 011: Cubicaciones; las listas y las ventanas sin
+    pestaña, no), registrados otra vez si cambian (si no, tras cambiar el idioma quedarían en
+    otra pestaña)."""
+    panels = [cls for cls in (*core_panel.classes, *view_panels.classes, *res_panels.classes)
               if issubclass(cls, bpy.types.Panel) and hasattr(cls, "bl_category")]
     before = {cls: (cls.bl_category, cls.bl_label) for cls in panels}
     core_panel.localize()
     view_panels.localize()
+    res_panels.localize()
     for cls in panels:
         if (cls.bl_category, cls.bl_label) == before[cls] or not getattr(cls, "is_registered",
                                                                          False):

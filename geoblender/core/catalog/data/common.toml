@@ -360,3 +360,28 @@ description.es = "Escribe la rejilla de diferencias registrada como GeoTIFF entr
 entry = "011"
 action = "D"
 frequency = 2
+
+# La ventana de la cubicación y su exportación (T25; plan §5.3.4, D-29, D-37): las abren N ▸
+# Proyecto ▸ Cubicaciones y la propia ventana, no un menú de la barra.
+
+[[command]]
+key = "geoblender.res_show_volumetrics"
+kind = "internal"
+label.en = "Cubications window"
+label.es = "Ventana de las cubicaciones"
+description.en = "Open the window of the cubications of the active version with the table of the chosen one (it reads what is registered: also in read-only and from a superseded version)"
+description.es = "Abre la ventana de las cubicaciones de la versión activa con la tabla de la elegida (lee lo registrado: también en solo lectura y de una versión superada)"
+entry = "011"
+action = "P"
+frequency = 2
+
+[[command]]
+key = "geoblender.res_export_csv"
+kind = "internal"
+label.en = "Export CSV…"
+label.es = "Exportar CSV…"
+description.en = "Write the registered cubication as a CSV for Excel in Spanish (it is not an operation: also from a superseded version and, outside the project, in read-only)"
+description.es = "Escribe la cubicación registrada como CSV para Excel en español (no es una operación: también de una versión superada y, fuera del proyecto, en solo lectura)"
+entry = "011"
+action = "D"
+frequency = 2

@@ -283,6 +283,44 @@ class ExportTest(fx.ResProjectCase):
             with self.subTest(quantity=name):
                 self.assertNotEqual(i18n.translate("es", quantity.label), quantity.label)
 
+    def test_rows_of_the_panel_in_the_language_of_geoblender(self) -> None:
+        """RF-011-23 (T25; D-16): lo que lee el panel de la cubicación, en el idioma de
+        Geoblender (en inglés, las operaciones, las marcas y el ámbito «project» de un
+        parámetro), y sus filas: las del CSV sin las de las toneladas que repiten los m³ in situ
+        de una unidad entera de la tabla de volúmenes (así no llevan «depende de una
+        hipótesis»); lo suelto, con su m³ in situ (V/K), se queda."""
+        found = export.cubication_export(self.project, NAME, version=self.v1.code,
+                                         language="en")
+        self.assertEqual([item.label for item in found.header.operations],
+                         ["Volumetrics between surfaces", "Tonnage of a cubication"])
+        marks = {mark for item in found.header.operations for mark in item.marks}
+        self.assertTrue(marks)
+        self.assertFalse(marks & {UNCONFIRMED, HYPOTHESIS})
+        self.assertEqual({item.key: item.scope for item in found.header.parameters}[
+            "res.min_thickness_m"], "project")
+        with self.assertRaises(ValueError):
+            export.cubication_export(self.project, NAME, version=self.v1.code, language="fr")
+
+        tonnes = "Toneladas de la cubicación"
+        rows = export.shown_rows(self.export)
+        kept = {id(item) for item in rows}
+        dropped = [item for item in self.export.rows if id(item) not in kept]
+        volumes = {(row.domain, row.bench, row.unit): row.value for label, row
+                   in self.stored_rows() if label == "Cubicación" and row.quantity == "volume_m3"
+                   and row.unit is not None}
+        self.assertTrue(dropped)
+        for item in dropped:
+            with self.subTest(fila=item.row):
+                self.assertEqual((item.table, item.row.component), (tonnes, None))
+                self.assertIn(item.row.quantity, ("volume_m3", "in_situ_m3"))
+                self.assertAlmostEqual(
+                    item.row.value, volumes[(item.row.domain, item.row.bench, item.row.unit)],
+                    delta=1e-9)
+        self.assertFalse([item for item in rows if item.table == tonnes
+                          and item.row.quantity == "volume_m3" and item.row.component is None])
+        self.assertTrue([item for item in rows if item.table == tonnes
+                         and item.row.quantity == "in_situ_m3" and item.row.component is None])
+
     def test_never_over_an_input_nor_inside_the_project(self) -> None:
         """RF-011-24, RF-008-15 (D-29): la guarda de la 008 rechaza el CSV en la carpeta de la
         fuente de una entrada (fuera del proyecto) y en una carpeta de solo lectura; dentro
