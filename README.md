@@ -23,7 +23,9 @@ de minas, para su propio trabajo de proyectos de explotación y restauración.
 > litología y análisis desde CSV, XLSX o una base de RecMin (en solo lectura), con sus convenios
 > declarados, validarlos, calcular sus trazas y verlos en 3D con litología y leyes, también en
 > QGIS. Además, la vista de Blender se pone al día desde el proyecto (spec 010) y el proyecto
-> tiene versiones con su estado y revisiones congeladas que se pueden reproducir (spec 009).
+> tiene versiones con su estado y revisiones congeladas que se pueden reproducir (spec 009). Y
+> cubica entre dos superficies, por fase, banco y unidad, con el escombro en su sitio y cada
+> material pesado según su estado, y entrega el CSV (spec 011).
 > La 002, la 003, la 004, la 006 y la 005 están comprobadas con Blender 5.2.1 (la
 > interfaz, los trabajos, la topografía y los sondeos, en la pantalla de referencia de IMGA), y
 > la 002, la 006 y la 005 también con QGIS 4.2 sin su interfaz (PyQGIS); la 002, en la red con
