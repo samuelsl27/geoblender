@@ -33,7 +33,9 @@ la misma superficie de partida y final, ceros y el aviso ``res.same_surface``.
 
 :func:`tonnage_outputs` es el cálculo de ``res.tonnage`` (D-16): de la tabla de volúmenes
 (``table.unit_volumes``, sin releer las superficies) a las toneladas, su tabla, sus cifras y sus
-avisos.
+avisos; :func:`tonnage_work`, lo mismo por unidades de trabajo (T33: con la tabla de RNF-011-02,
+de 28 712 filas, son 0,14 s de una vez). :func:`paced` agrupa unidades de trabajo en pasos de un
+presupuesto (como los de :func:`volume_steps`).
 
 **Cifras** (``FigureSpec`` CALCULADO, nunca NaN ni infinitas; ámbito ``{"cubication": nombre}``
 más ``domain`` —el valor del dominio, o ``outside`` = :data:`OUTSIDE_SCOPE` para «Fuera de los
@@ -63,6 +65,7 @@ from ..core.datasets.model import DATASET_DECLARATIONS
 from ..core.i18n import format_number
 from ..core.project.model import Progress
 from ..core.provenance.figures import FigureSpec, ScopeValue
+from ..core.provenance.graph import drain
 from ..gis.content import GEOTIFF, raster_header
 from ..gis.geotiff import writer
 from ..gis.grid import Grid
@@ -74,7 +77,7 @@ from .messages import ResError, render
 from .polygons import DomainsError, Polygon, domain_edges, problem_steps, scope_edges, weights
 from .slices import Slices
 from .surfaces import BAND_ROWS, SurfaceRef, SurfaceSource, band_reader, check_pair
-from .table import ALL_DOMAINS, OUTSIDE_DOMAINS, QUANTITIES, Row, row, tonnage_rows, unit_volumes
+from .table import ALL_DOMAINS, OUTSIDE_DOMAINS, QUANTITIES, Row, row, tonnage_parts, unit_volumes
 from .tonnage import TonnageResult, tonnage
 
 __all__ = [
@@ -91,8 +94,11 @@ __all__ = [
     "VolumeRequest",
     "VolumeResult",
     "base_role",
+    "paced",
+    "step_budget",
     "thickness_role",
     "tonnage_outputs",
+    "tonnage_work",
     "volume_steps",
 ]
 
@@ -311,12 +317,38 @@ class _Pacer:
         return now - self.start + self.slowest > self.target
 
 
-def _budget(value: object) -> float:
+def step_budget(value: object) -> float:
+    """El presupuesto de un paso ``value`` (s) como ``float``: ``TypeError`` si no es un
+    número, ``ValueError`` si no es positivo."""
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise TypeError(f"el presupuesto de un paso es un número de segundos, no {value!r}")
     if not value > 0:
         raise ValueError(f"el presupuesto de un paso es positivo, no {value!r}")
     return float(value)
+
+
+def paced[T, R](work: Generator[T, None, R],
+                budget_s: float = STEP_BUDGET_S) -> Generator[T, None, R]:
+    """Agrupa las unidades de trabajo de ``work`` (cada ``next`` hace una y da lo que quiera;
+    lo que devuelve es su resultado) en pasos de ``budget_s`` como mucho (se planea la mitad,
+    :data:`WORK_FRACTION`; un paso hace siempre al menos una): da lo último que dio ``work`` en
+    cada paso y devuelve lo que devuelve ``work``. Cerrarlo cierra ``work``. El presupuesto se
+    comprueba al llamar (:func:`step_budget`)."""
+    return _grouped(work, step_budget(budget_s))
+
+
+def _grouped[T, R](work: Generator[T, None, R], budget_s: float) -> Generator[T, None, R]:
+    pacer = _Pacer(budget_s)
+    with closing(work):  # cerrar los pasos (Esc) cierra el trabajo
+        while True:
+            pacer.restart()
+            try:
+                item = next(work)
+                while not pacer.lap():
+                    item = next(work)
+            except StopIteration as stop:
+                return stop.value
+            yield item
 
 
 def volume_steps(request: VolumeRequest, sources: Mapping[str, SurfaceSource], *,
@@ -353,20 +385,16 @@ def volume_steps(request: VolumeRequest, sources: Mapping[str, SurfaceSource], *
                None if difference_path is None else Path(difference_path),
                None if difference_temporary is None else Path(difference_temporary),
                writer.TILE_SIZE)
-    return _paced(run, _budget(budget_s))
+    return _paced(run, step_budget(budget_s))
 
 
 def _paced(run: _Run, budget_s: float) -> Iterator[Progress]:
     """Agrupa las unidades de trabajo de ``run`` en pasos de ``budget_s`` como mucho."""
-    pacer = _Pacer(budget_s)
-    work = run.work()
-    with closing(work):  # cerrar los pasos (Esc) cierra el trabajo: lectores y temporal
+    steps = paced(run.work(), budget_s)
+    with closing(steps):  # cerrar los pasos (Esc) cierra el trabajo: lectores y temporal
         while True:
-            pacer.restart()
             try:
-                phase = next(work)
-                while not pacer.lap():
-                    phase = next(work)
+                phase = next(steps)
             except StopIteration as stop:
                 result: VolumeResult = stop.value
                 break
@@ -724,15 +752,10 @@ def _group_scope(name: str, domain: str, bench: Any) -> dict[str, ScopeValue] | 
     return {**base, "bench": float(bench[0])}
 
 
-def tonnage_outputs(rows: Sequence[Row], column: MaterialColumn,
-                    params: Mapping[str, Any], *, name: str) -> TonnageOutputs:
-    """El cálculo de ``res.tonnage`` de la cubicación ``name`` (D-16; A8, A9): los m³ de cada
-    unidad de su tabla de volúmenes ``rows`` (sin releer las superficies), con la columna
-    ``column`` y sus parámetros ``params`` (clave → número, ``ResolvedParam`` o ``None``; véase
-    ``reserves.tonnage.tonnage``): la tabla ``res_ton_``, las cifras (cada unidad y componente
-    en total; los totales, lo útil y lo estéril y las relaciones en total, por dominio y por
-    rodaja; la intrínseca de cada compuesta) y el aviso de cada parámetro que falta."""
-    result = tonnage(unit_volumes(rows), column, params)
+def _tonnage_figures(result: TonnageResult, name: str) -> tuple[FigureSpec, ...]:
+    """Las cifras de las toneladas de la cubicación ``name``: cada unidad y componente en
+    total; los totales, lo útil y lo estéril y las relaciones en total, por dominio y por
+    rodaja; la intrínseca de cada compuesta."""
     figures: list[FigureSpec] = []
     base: dict[str, ScopeValue] = {"cubication": name}
     for item in result.rows:
@@ -762,6 +785,35 @@ def tonnage_outputs(rows: Sequence[Row], column: MaterialColumn,
                                 ("intrinsic_ratio_t", intrinsic.ratio_t)):
             if ratio.value is not None:
                 figures.append(_quantity_figure(quantity, ratio.value, scope))
+    return tuple(figures)
+
+
+def tonnage_work(rows: Sequence[Row], column: MaterialColumn, params: Mapping[str, Any], *,
+                 name: str) -> Generator[float, None, TonnageOutputs]:
+    """:func:`tonnage_outputs` por unidades de trabajo (RNF-011-04; T33), para llevarlas por
+    pasos con :func:`paced`: pesar (``reserves.tonnage.tonnage``), cada parte de la tabla
+    ``res_ton_`` (``table.tonnage_parts``) y, al terminar, las cifras y los avisos. Cada unidad
+    da la parte hecha (0–1); devuelve lo mismo que :func:`tonnage_outputs`, bit a bit. Los
+    rechazos de pesar (la columna, los parámetros), en la primera."""
+    result = tonnage(unit_volumes(rows), column, params)
+    units = len(result.rows) + len(result.groups) + len(result.intrinsic) + 2
+    yield 1 / units
+    found: list[Row] = []
+    for done, part in enumerate(tonnage_parts(result), start=2):
+        found.extend(part)
+        yield done / units
     warnings = tuple(Notice("res.density_missing", {"unit": item.shown, "value": item.key})
                      for item in result.missing)
-    return TonnageOutputs(result, tonnage_rows(result), tuple(figures), warnings)
+    return TonnageOutputs(result, tuple(found), _tonnage_figures(result, name), warnings)
+
+
+def tonnage_outputs(rows: Sequence[Row], column: MaterialColumn,
+                    params: Mapping[str, Any], *, name: str) -> TonnageOutputs:
+    """El cálculo de ``res.tonnage`` de la cubicación ``name`` (D-16; A8, A9): los m³ de cada
+    unidad de su tabla de volúmenes ``rows`` (sin releer las superficies), con la columna
+    ``column`` y sus parámetros ``params`` (clave → número, ``ResolvedParam`` o ``None``; véase
+    ``reserves.tonnage.tonnage``): la tabla ``res_ton_``, las cifras (cada unidad y componente
+    en total; los totales, lo útil y lo estéril y las relaciones en total, por dominio y por
+    rodaja; la intrínseca de cada compuesta) y el aviso de cada parámetro que falta. De una
+    vez; por pasos, :func:`tonnage_work`."""
+    return drain(tonnage_work(rows, column, params, name=name))

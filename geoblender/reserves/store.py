@@ -22,7 +22,7 @@ curso» de ``begin_operation``) sigue A11 como ``gis.store.ResultWriter``:
    dato; su temporal ``<fichero>.tmp-<sesión>``, el destino y la copia del anterior, reclamados
    con ``claim_paths``) antes de cubicar; después, la rejilla escrita
    (:meth:`~ResultWriter.grid`) y las filas de cada tabla con su hash (:meth:`~ResultWriter.table`,
-   :meth:`~ResultWriter.materials`).
+   o por pasos, :meth:`~ResultWriter.table_steps`; :meth:`~ResultWriter.materials`).
 2. **Poner en su sitio** (:meth:`~ResultWriter.install`): el fichero anterior del mismo dato se
    aparta y el temporal pasa a su sitio con ``os.replace``; si otro programa tiene abierto el
    destino (QGIS), ``gis.raster_target_locked`` y el anterior queda intacto.
@@ -39,12 +39,12 @@ paradas) o «fallida», con su motivo; ni cifra, ni tabla, ni rejilla.
 :func:`volume_run` (``res.volume`` y ``res.difference``: lee las superficies del proyecto o lo
 congelado, ``reserves.surfaces.surface_source``, cubica por pasos y guarda), :func:`tonnage_run`
 (``res.tonnage``: de la tabla de volúmenes y la columna que consumió, con los parámetros que
-leyó al empezar, D-16), :func:`stages_run` (``res.stages``: de las tablas de volúmenes de sus
-momentos y de la directa, con la tolerancia que leyó, A13) y :func:`save_materials`
-(``res.edit_materials``). Repetir el nombre de
-una cubicación de la versión la sustituye (D-30): :func:`previous_operation` da la operación a
-la que sustituye la nueva (``begin_operation(…, supersedes=…)``), que escribe contenido nuevo
-de los mismos datos. **Las capas** de una cubicación (D-32, T32): el ámbito
+leyó al empezar, D-16; pesa y calcula el hash de su tabla por pasos de su presupuesto, T33),
+:func:`stages_run` (``res.stages``: de las tablas de volúmenes de sus momentos y de la
+directa, con la tolerancia que leyó, A13) y :func:`save_materials` (``res.edit_materials``).
+Repetir el nombre de una cubicación de la versión la sustituye (D-30):
+:func:`previous_operation` da la operación a la que sustituye la nueva
+(``begin_operation(…, supersedes=…)``), que escribe contenido nuevo de los mismos datos. **Las capas** de una cubicación (D-32, T32): el ámbito
 (:func:`load_scope`, :func:`read_scope`: una capa de contornos o la unión de una de dominios) y
 los dominios (:func:`load_domain_layer`, :func:`read_domain_layer`), del proyecto o de una tabla
 en una conexión (su copia congelada, al reproducir). **Recalcular** (A12, T15):
@@ -57,7 +57,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -82,6 +82,7 @@ from ..core.i18n import format_number
 from ..core.paths import check_path_length
 from ..core.project.model import Progress
 from ..core.provenance.figures import FigureSpec
+from ..core.provenance.graph import drain
 from ..core.provenance.operations import (
     CANCEL_REASON_PREFIX,
     NOT_COMPLETED_REASON,
@@ -144,19 +145,24 @@ from .volumes import (
     VolumeRequest,
     VolumeResult,
     base_role,
+    paced,
+    step_budget,
     thickness_role,
-    tonnage_outputs,
+    tonnage_work,
     volume_steps,
 )
 
 __all__ = [
     "CANCELLATIONS",
     "CANCELLED_REASON",
+    "DIGEST_ROWS",
     "DIGEST_TABLE",
     "RECOMPUTED",
     "SAVE_STEPS",
     "STAGE_TABLE_COLUMNS",
     "TABLE_COLUMNS",
+    "TONNAGE_PHASES",
+    "TONNAGE_TICKS",
     "ResultWriter",
     "StoredStages",
     "StoredTonnage",
@@ -187,6 +193,19 @@ DIGEST_TABLE = "tabla"
 el hash de ``core.gpkg_layer@1`` no lleva el nombre de la tabla)."""
 SAVE_STEPS = 2
 """Los pasos que añade guardar a los de calcular: preparar las tablas y confirmar."""
+DIGEST_ROWS = 2_000
+"""Las filas de cada unidad de trabajo al copiar una tabla al GeoPackage en memoria de su hash
+(T33; leerla con su lector va por los trozos de ``core.content.builtin.layer_steps``)."""
+TONNAGE_PHASES = ("read", "weigh", "hash", "save")
+"""Las fases de los pasos de :func:`tonnage_run`, en su orden: leer la tabla de volúmenes y la
+columna, pesar y hacer la tabla de las toneladas, su hash y confirmar."""
+TONNAGE_TICKS = 1_000
+"""El total del avance de los pasos de :func:`tonnage_run` (milésimas: cuántos pasos da depende
+de lo que tarda cada uno)."""
+_INSERT_SHARE = 0.2  # la parte del hash de una tabla que es copiar sus filas (el resto, leerla)
+_TONNAGE_SPANS = {"read": (0.0, 0.05), "weigh": (0.05, 0.5), "hash": (0.5, 0.95)}
+_TONNAGE_TEXTS = {"weigh": "Pesando «{name}»: las toneladas de cada unidad, dominio y rodaja…",
+                  "hash": "Pesando «{name}»: la huella de la tabla de las toneladas…"}
 
 
 def _column_def(sql: str, name: str) -> ColumnDef:
@@ -234,30 +253,42 @@ def _create_materials(conn: sqlite3.Connection, name: str, identifier: str,
                  "VALUES (?, 'attributes', ?, ?)", (name, identifier, description))
 
 
-def _digest(create: Callable[[sqlite3.Connection, str, str, str], None], layer: str,
-            names: Sequence[str], rows: Sequence[Sequence[Any]]) -> ContentDigest:
+def _digest_steps(create: Callable[[sqlite3.Connection, str, str, str], None], layer: str,
+                  names: Sequence[str], rows: Sequence[Sequence[Any]]
+                  ) -> Generator[float, None, ContentDigest]:
     """El ``ContentDigest`` (``core.gpkg_layer@1``, sin declaraciones) de una tabla que crea
     ``create`` con las filas ``rows`` (valores de las columnas ``names``), sin escribirla en el
     proyecto: en un GeoPackage en memoria con la misma estructura, leída con
     ``core.content.builtin.layer_steps``, la función con que el registro de la 008 hashea una
-    tabla del proyecto (ADR-0024 §5)."""
+    tabla del proyecto (ADR-0024 §5). Por unidades de trabajo (T33): copiar cada trozo de
+    :data:`DIGEST_ROWS` filas y leer cada trozo de ``layer_steps``; cada una da la parte hecha
+    (0–1). Cerrarlo antes cierra el GeoPackage en memoria."""
     conn = sqlite3.connect(":memory:")
     try:
         create_structure(conn)
         create(conn, layer, layer, "")
-        insert_rows(conn, layer, names, [tuple(row) for row in rows])
+        values = [tuple(row) for row in rows]
+        for first in range(0, len(values), DIGEST_ROWS):
+            insert_rows(conn, layer, names, values[first:first + DIGEST_ROWS])
+            yield _INSERT_SHARE * min(first + DIGEST_ROWS, len(values)) / len(values)
         request = core_builtin.GPKG_LAYER.request(
             "table", DATASET_DECLARATIONS, {"main": Path(layer)}, {"layer": layer},
             normalizer=NORMALIZER)
         steps = core_builtin.layer_steps(conn, request)
         try:
-            for _done in steps:
-                pass
+            for done in steps:
+                yield _INSERT_SHARE + (1.0 - _INSERT_SHARE) * done
         finally:
             steps.close()
         return request.hasher.digest()
     finally:
         conn.close()
+
+
+def _digest(create: Callable[[sqlite3.Connection, str, str, str], None], layer: str,
+            names: Sequence[str], rows: Sequence[Sequence[Any]]) -> ContentDigest:
+    """:func:`_digest_steps` de una vez."""
+    return drain(_digest_steps(create, layer, names, rows))
 
 
 def table_digest(rows: Sequence[Row]) -> ContentDigest:
@@ -502,7 +533,16 @@ class ResultWriter:
         """Prepara la tabla ``report`` de la familia ``family`` (``vol``, ``ton`` o ``stg``) de
         la cubicación ``name`` con las filas ``rows`` (``reserves.table.Row``; en la de los
         momentos, ``StageRow``) y su hash, que se calcula aquí, fuera de la transacción (R4).
-        Devuelve su ``DatasetSpec``. ``GisError`` si su sitio es de otro."""
+        Devuelve su ``DatasetSpec``. ``GisError`` si su sitio es de otro. De una vez; por pasos,
+        :meth:`table_steps`."""
+        return drain(self.table_steps(family, name, rows))
+
+    def table_steps(self, family: str, name: str, rows: Sequence[Row] | Sequence[StageRow]
+                    ) -> Generator[float, None, DatasetSpec]:
+        """:meth:`table` por unidades de trabajo (RNF-011-04; T33): la familia y las filas se
+        comprueban al llamar; cada unidad copia un trozo de las filas al GeoPackage en memoria
+        de su hash o lee un trozo con su lector y da la parte hecha (0–1); la última prepara la
+        tabla y devuelve su ``DatasetSpec``. Cerrarlo antes no prepara nada."""
         self._check_open()
         if family not in _REPORTS:
             raise ValueError(f"«{family}» no es una tabla de la cubicación: es una de "
@@ -515,9 +555,16 @@ class ResultWriter:
             if not isinstance(row, kind):
                 raise TypeError(f"una fila de una tabla «{family}» de res es una "
                                 f"{kind.__name__}, no {row!r}")
-        digest = (stages_digest(chosen) if staged  # type: ignore[arg-type]
-                  else table_digest(chosen))  # type: ignore[arg-type]
-        spec =declared.dataset_spec(family, name, self.version_code, content=digest)
+        return self._table_steps(family, name, chosen, staged)
+
+    def _table_steps(self, family: str, name: str, chosen: tuple[Row, ...] | tuple[StageRow, ...],
+                     staged: bool) -> Generator[float, None, DatasetSpec]:
+        create, names, titles = ((_create_stages, STAGE_COLUMN_NAMES, STAGE_TITLES) if staged
+                                 else (_create_report, COLUMN_NAMES, TITLES))
+        values = tuple(row.values() for row in chosen)
+        digest = yield from _digest_steps(create, DIGEST_TABLE, names, values)
+        self._check_open()
+        spec = declared.dataset_spec(family, name, self.version_code, content=digest)
         if any(other.name == spec.name for other in self._specs):
             raise ValueError(f"una operación escribe cada dato una vez: «{spec.name}» se repite")
         with self.project.read() as conn:
@@ -527,10 +574,7 @@ class ResultWriter:
         description = (f"{label} «{name}» de la versión {self.version_code}, de Geoblender: una "
                        f"fila por valor ({'momento, ' if staged else ''}dominio, rodaja, unidad, "
                        "componente, dato, valor, unidad de medida y nota)")
-        create, names, titles = ((_create_stages, STAGE_COLUMN_NAMES, STAGE_TITLES) if staged
-                                 else (_create_report, COLUMN_NAMES, TITLES))
-        self._tables.append(_Table(spec, identifier, description, create, names,
-                                   tuple(row.values() for row in chosen), titles))
+        self._tables.append(_Table(spec, identifier, description, create, names, values, titles))
         self._specs.append(spec)
         return spec
 
@@ -897,13 +941,17 @@ def _tonnage_summary(name: str, outputs: TonnageOutputs) -> str:
     return f"«{name}»: {format_number(total, 1)} t"
 
 
-def tonnage_run(project: StoreProject, handle: OperationHandle) -> Iterator[Progress]:
+def tonnage_run(project: StoreProject, handle: OperationHandle, *,
+                budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
     """Los pasos de ``res.tonnage`` (``handle``, «en curso», con los ajustes de
     ``reserves.provenance.tonnage_settings``) en ``project`` (D-16, A8, A9): la tabla de
     volúmenes y la columna que consumió (sin releer las superficies), los parámetros que leyó al
     empezar (versión → proyecto, RF-011-21) y la tabla ``res_ton_`` con sus cifras, confirmadas
-    en una transacción. El último ``Progress`` lleva el :class:`StoredTonnage`. Un fallo o
-    cerrar los pasos antes no dejan nada (RF-011-25)."""
+    en una transacción. Fases (:data:`TONNAGE_PHASES`; avance en :data:`TONNAGE_TICKS`): leer
+    (un paso), pesar y hacer la tabla y su hash (pasos de ``budget_s`` como mucho:
+    ``reserves.volumes.tonnage_work`` y :meth:`ResultWriter.table_steps`; RNF-011-04, T33) y
+    confirmar (un paso: la transacción no se trocea, R4). El último ``Progress`` lleva el
+    :class:`StoredTonnage`. Un fallo o cerrar los pasos antes no dejan nada (RF-011-25)."""
     if not isinstance(handle, OperationHandle):
         raise TypeError(f"las toneladas son de un OperationHandle, no {handle!r}")
     if handle.op_type != declared.TONNAGE:
@@ -911,12 +959,38 @@ def tonnage_run(project: StoreProject, handle: OperationHandle) -> Iterator[Prog
     name = handle.settings.get("name")
     if not isinstance(name, str) or not name.strip():
         raise ValueError("los ajustes de res.tonnage llevan el nombre de su cubicación")
-    return _tonnage_run(project, handle, name)
+    return _tonnage_run(project, handle, name, step_budget(budget_s))
 
 
-def _tonnage_run(project: StoreProject, handle: OperationHandle,
-                 name: str) -> Iterator[Progress]:
-    total = 3
+def _ticks(phase: str, fraction: float) -> int:
+    """El avance (de :data:`TONNAGE_TICKS`) de ``fraction`` (0–1) de la fase ``phase``."""
+    low, high = _TONNAGE_SPANS[phase]
+    return round(TONNAGE_TICKS * (low + (high - low) * fraction))
+
+
+def _labelled[T](phase: str, work: Generator[float, None, T]
+                 ) -> Generator[tuple[str, float], None, T]:
+    """Las unidades de trabajo de ``work`` (cada una da su parte hecha) con su fase."""
+    with closing(work):
+        while True:
+            try:
+                fraction = next(work)
+            except StopIteration as stop:
+                return stop.value
+            yield phase, fraction
+
+
+def _tonnage_work(out: ResultWriter, rows: Sequence[Row], column: MaterialColumn,
+                  params: Mapping[str, Any], name: str
+                  ) -> Generator[tuple[str, float], None, TonnageOutputs]:
+    """Las unidades de trabajo de pesar y de preparar la tabla ``res_ton_`` con su hash."""
+    outputs = yield from _labelled("weigh", tonnage_work(rows, column, params, name=name))
+    yield from _labelled("hash", out.table_steps(declared.TONNES, name, outputs.rows))
+    return outputs
+
+
+def _tonnage_run(project: StoreProject, handle: OperationHandle, name: str,
+                 budget_s: float) -> Iterator[Progress]:
     with ResultWriter(project, handle) as out:
         with project.read() as conn:
             rows = read_rows(conn, _input(conn, handle, declared.VOLUMES_ROLE).locator)
@@ -924,14 +998,25 @@ def _tonnage_run(project: StoreProject, handle: OperationHandle,
         if column is None:
             raise ResError("res.materials_missing", obj="Columna de materiales", field="units",
                            value=0)
-        yield Progress("read", 1, total, f"Pesando «{name}»: la tabla de volúmenes leída…")
-        outputs = tonnage_outputs(rows, column, {param.key: param for param in handle.params},
-                                  name=name)
-        out.table(declared.TONNES, name, outputs.rows)
-        yield Progress("save", 2, total, f"Guardando las toneladas de «{name}»…")
+        yield Progress("read", _ticks("read", 1.0), TONNAGE_TICKS,
+                       f"Pesando «{name}»: la tabla de volúmenes leída…")
+        params = {param.key: param for param in handle.params}
+        steps = paced(_tonnage_work(out, rows, column, params, name), budget_s)
+        with closing(steps):  # cerrar los pasos (Esc) cierra el hash a medias
+            while True:
+                try:
+                    phase, fraction = next(steps)
+                except StopIteration as stop:
+                    outputs: TonnageOutputs = stop.value
+                    break
+                yield Progress(phase, _ticks(phase, fraction), TONNAGE_TICKS,
+                               _TONNAGE_TEXTS[phase].format(name=name))
+        yield Progress("save", _ticks("hash", 1.0), TONNAGE_TICKS,
+                       f"Guardando las toneladas de «{name}»…")
         message = _tonnage_summary(name, outputs)
         records = out.commit(figures=outputs.figures, message=message)
-    yield Progress("save", total, total, message, result=StoredTonnage(outputs, records))
+    yield Progress("save", TONNAGE_TICKS, TONNAGE_TICKS, message,
+                   result=StoredTonnage(outputs, records))
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -1138,7 +1223,7 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         if request.op_type == declared.STAGES:
             return handle, stages_run(project, handle)
         if volume is None:
-            return handle, tonnage_run(project, handle)
+            return handle, tonnage_run(project, handle, budget_s=budget_s)
         return handle, volume_run(project, handle, volume, budget_s=budget_s,
                                   band_rows=band_rows)
     except BaseException as error:

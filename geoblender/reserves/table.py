@@ -16,7 +16,8 @@ Así la tabla no cambia de columnas con los repartos, solo de filas.
   :func:`insert_sql`, las sentencias de una tabla ``res_vol_``, ``res_ton_`` o ``res_stg_``.
 - :func:`read_rows`, :func:`filter_rows` y :func:`choices`: leerla y filtrarla para el panel.
 - :func:`unit_volumes`: los m³ por unidad de la tabla de volúmenes, lo que lee ``res.tonnage``
-  (D-16: sin releer las superficies); :func:`tonnage_rows`, la tabla de las toneladas.
+  (D-16: sin releer las superficies); :func:`tonnage_rows`, la tabla de las toneladas (por
+  partes, :func:`tonnage_parts`).
 - :class:`StageRow`, :data:`STAGE_COLUMNS` y :func:`read_stage_rows`: la tabla de los momentos
   de extracción (``res_stg_``; plan §5.2.1, A13), con las mismas columnas y una más, ``stage``
   (el nombre del momento; ``NULL`` en las filas que comparan su suma con la directa).
@@ -30,7 +31,7 @@ import math
 import numbers
 import re
 import sqlite3
-from collections.abc import Hashable, Iterable, Mapping, Sequence
+from collections.abc import Hashable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final
@@ -63,6 +64,7 @@ __all__ = [
     "read_rows",
     "read_stage_rows",
     "row",
+    "tonnage_parts",
     "tonnage_rows",
     "unit_volumes",
 ]
@@ -393,20 +395,25 @@ def _bench_of(bench: Hashable) -> Bench:
     return (low, high)
 
 
-def tonnage_rows(result: TonnageResult) -> tuple[Row, ...]:
-    """La tabla de las toneladas (``res_ton_``): por unidad y componente, su volumen, su
-    volumen in situ, su esponjado (solo lo in situ) y sus toneladas; por dominio y rodaja, el
-    total de toneladas, lo útil y lo estéril (m³ in situ y t) y las relaciones; por compuesta,
-    su relación intrínseca. Lo que no se puede dar, sin valor y con su nota."""
-    found: list[Row] = []
+def tonnage_parts(result: TonnageResult) -> Iterator[tuple[Row, ...]]:
+    """Las filas de :func:`tonnage_rows` por partes, en su orden: una parte por cada fila de
+    ``result.rows`` (una unidad o un componente en un dominio y una rodaja), otra por los totales
+    de cada dominio y rodaja y otra por cada relación intrínseca. Así se hace la tabla por pasos
+    (RNF-011-04); juntas, en su orden, son la tabla entera."""
     lacking: dict[tuple[str, Hashable, object], dict[str, None]] = {}
     for item in result.rows:  # las notas de lo que pesa por sí mismo sin toneladas, por papel
         if item.role is not None and item.mass_t is None:
             lacking.setdefault((item.domain, item.bench, item.role), {}).update(
                 dict.fromkeys(item.notes))
+    found: list[Row] = []
 
     def add(quantity: str, value: float | None, notes: Iterable[str], **where: Any) -> None:
         found.append(row(quantity, value, notes=() if value is not None else notes, **where))
+
+    def part() -> tuple[Row, ...]:
+        done = tuple(found)
+        found.clear()
+        return done
 
     for item in result.rows:
         where = {"domain": item.domain, "bench": _bench_of(item.bench), "unit": item.unit,
@@ -416,6 +423,7 @@ def tonnage_rows(result: TonnageResult) -> tuple[Row, ...]:
         if item.state is State.IN_SITU:
             add("swell_m3", item.swell_m3, item.notes, **where)
         add("mass_t", item.mass_t, item.notes, **where)
+        yield part()
     for group in result.groups:
         where = {"domain": group.domain, "bench": _bench_of(group.bench)}
         add("total_t", group.total_t, group.total_notes, **where)
@@ -426,9 +434,19 @@ def tonnage_rows(result: TonnageResult) -> tuple[Row, ...]:
             add(quantity, value, lacking.get((group.domain, group.bench, role), {}), **where)
         add("waste_ratio_m3", group.ratio_m3.value, group.ratio_m3.notes, **where)
         add("waste_ratio_t", group.ratio_t.value, group.ratio_t.notes, **where)
+        yield part()
     for intrinsic in result.intrinsic:
         add("intrinsic_ratio_m3", intrinsic.ratio_m3.value, intrinsic.ratio_m3.notes,
             unit=intrinsic.unit)
         add("intrinsic_ratio_t", intrinsic.ratio_t.value, intrinsic.ratio_t.notes,
             unit=intrinsic.unit)
-    return tuple(found)
+        yield part()
+
+
+def tonnage_rows(result: TonnageResult) -> tuple[Row, ...]:
+    """La tabla de las toneladas (``res_ton_``): por unidad y componente, su volumen, su
+    volumen in situ, su esponjado (solo lo in situ) y sus toneladas; por dominio y rodaja, el
+    total de toneladas, lo útil y lo estéril (m³ in situ y t) y las relaciones; por compuesta,
+    su relación intrínseca. Lo que no se puede dar, sin valor y con su nota. De una vez; por
+    partes, :func:`tonnage_parts`."""
+    return tuple(found for part in tonnage_parts(result) for found in part)
