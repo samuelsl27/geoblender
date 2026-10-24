@@ -3,9 +3,10 @@
 a la vez que «blender» (spec 001 0.8, tarea 009/T34; 0.10, tarea 011/T30; RNF-001-01).
 
 - RF-001-06 (0.8, 0.10): «unitarias», «referencia», «licencias» e «iconos» se ejecutan a la vez
-  que «blender» (y
-  que «motor», con ``--completo``), tras «manifiesto»: empiezan antes de que acabe ninguno, y
-  el paso siguiente («arnés», con ``--completo``) espera a todos. Sus líneas del resumen van en
+  que «blender», tras «manifiesto»: empiezan antes de que acabe ninguno, y el paso siguiente
+  espera a todos. Con ``--completo``, «motor» va solo, después de ellos y antes de «arnés»
+  (tarea 011/T36: a la vez, con las unitarias, llenaba los procesadores y fallaban los plazos
+  de ``tests/unit/jobs`` y ``workers``). Sus líneas del resumen van en
   su lugar de la tabla y con la duración de cada uno, aunque acaben en otro orden; el fallo de
   uno no para a los demás y el código es 1; con Ctrl+C se paran todos (RF-001-09: y se borra
   la carpeta temporal).
@@ -80,12 +81,13 @@ class TogetherTest(unittest.TestCase):
     la vez que «blender»."""
 
     def test_table(self) -> None:
-        """RF-001-06 (0.8, 0.10): en la tabla de pasos, «unitarias», «referencia», «licencias»,
-        «iconos» y «motor» van a la vez que «blender» (``Step.alongside``), y ningún otro paso va a la vez
-        que otro; «manifiesto» sigue solo."""
+        """RF-001-06 (0.8, 0.10): en la tabla de pasos, «unitarias», «referencia», «licencias»
+        e «iconos» van a la vez que «blender» (``Step.alongside``), y ningún otro paso va a la
+        vez que otro; «manifiesto» sigue solo, y «motor» también (tarea 011/T36)."""
         alongside = {step.name: step.alongside for step in check.STEPS}
         self.assertEqual({name for name, other in alongside.items() if other == "blender"},
-                         {*WITH_BLENDER, RUNTIME})
+                         set(WITH_BLENDER))
+        self.assertIsNone(alongside[RUNTIME])
         self.assertEqual({name for name, other in alongside.items()
                           if other not in (None, "blender")}, set())
         self.assertIsNone(alongside["manifiesto"])
@@ -93,13 +95,13 @@ class TogetherTest(unittest.TestCase):
 
     def test_they_start_before_any_ends(self) -> None:
         """RF-001-06 (0.8, 0.10): la primera orden de «unitarias», «referencia», «licencias»,
-        «iconos» y «blender» (con ``--completo``, también la de «motor») llegan a una barrera:
-        empiezan antes de que termine ninguna. Todas sus órdenes empiezan después de que
-        terminen las de «manifiesto», el primer paso; con ``--completo``, «arnés» empieza
-        cuando han terminado todas."""
+        «iconos» y «blender» llegan a una barrera: empiezan antes de que termine ninguna.
+        Todas sus órdenes empiezan después de que terminen las de «manifiesto», el primer
+        paso. Con ``--completo`` (tarea 011/T36), las de «motor» empiezan cuando han terminado
+        todas ellas, y las de «arnés», cuando han terminado las de «motor»."""
         for args in ((), ("--completo",)):
             with self.subTest(opciones=args):
-                steps = [*GROUP, *([RUNTIME] if args else [])]
+                steps = list(GROUP)
                 barrier = threading.Barrier(len(steps), timeout=15)
                 runner = FakeRunner(on_call=first_of_each(steps, barrier))
                 with many_cpus():
@@ -113,7 +115,11 @@ class TogetherTest(unittest.TestCase):
                 manifest_end = max(call.ended for call in manifest)
                 self.assertLessEqual(manifest_end, min(call.started for call in together))
                 if args:
+                    runtime = runner.calls_of(RUNTIME)
+                    self.assertTrue(runtime)
                     self.assertLessEqual(max(call.ended for call in together),
+                                         min(call.started for call in runtime))
+                    self.assertLessEqual(max(call.ended for call in runtime),
                                          min(call.started for call in runner.calls_of(HARNESS)))
                     self.assertEqual(runner.steps(), [*EXECUTED, HARNESS])
                 else:

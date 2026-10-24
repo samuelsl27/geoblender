@@ -300,8 +300,8 @@ class CompleteStepTest(unittest.TestCase):
         self.assertEqual(lines[-2], self._note_lines(result.out)[0])
 
     def test_completo_runs_harness_after_blender(self) -> None:
-        """RF-001-06, RF-004-28: con ``--completo``, «motor» a la vez que «blender», con su
-        línea tras la de él, y el paso «arnés» justo después (y antes de los opcionales
+        """RF-001-06, RF-004-28: con ``--completo``, «motor» tras «blender» (solo, desde la
+        tarea 011/T36), con su línea tras la de él, y el paso «arnés» justo después (y antes de los opcionales
         pedidos), con ``unittest discover -v`` de ``tests/arnes`` como «unitarias», desde la
         raíz; su línea lleva el número de pruebas, la cabecera nombra la opción y el resumen
         ya no dice que falten."""

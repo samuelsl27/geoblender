@@ -47,14 +47,15 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    un perfil temporal en ``%TEMP%``, que se borra al terminar.
 
    Los pasos se ejecutan uno tras otro, en ese orden (RF-001-06), salvo los que van a la
-   vez que «blender» (``Step.alongside``): «motor» (spec 004, T30: después de él no cabría
-   en RNF-001-01; a la vez que «unitarias» no compensa, spec 006, T38) y, desde la spec
-   001 0.8 (tarea 009/T34; RNF-001-01), «referencia», «licencias» e «iconos», y desde la
-   0.10 (tarea 011/T30; RNF-001-01), «unitarias»: se ejecutan con él, tras «manifiesto»,
+   vez que «blender» (``Step.alongside``): desde la spec 001 0.8 (tarea 009/T34;
+   RNF-001-01), «referencia», «licencias» e «iconos», y desde la 0.10 (tarea 011/T30;
+   RNF-001-01), «unitarias»: se ejecutan con él, tras «manifiesto»,
    que pasa a ser el primero. Empiezan a la vez, cada uno en su hilo y con su
    duración, el fallo de uno no para a los demás y el paso siguiente espera a todos; sus
    líneas del resumen van en su lugar de la tabla, aunque acaben en otro orden: las de
-   «unitarias» a «blender» salen cuando han terminado todos. Dentro de un paso,
+   «unitarias» a «blender» salen cuando han terminado todos. «motor» (``--completo``) iba
+   también con ellos (spec 004, T30), y desde la tarea 011/T36 va solo, después de «blender»
+   (ver ``STEPS``). Dentro de un paso,
    «unitarias», «referencia» (spec 006, T59) y «blender» reparten sus pruebas en partes que
    se ejecutan a la vez (spec 003,
    T40; RNF-007-01: ≤ 45 s, ≤ 40 s hasta la spec 007 0.6, sin quitar ninguna prueba): hasta ``UNIT_PARTS`` y
@@ -313,7 +314,8 @@ DOMAIN_TESTS = "tests/unit"  # tests/unit/<paquete de dominio> (imports.LEVELS)
 # A la vez que «unitarias» no compensa: las alarga lo mismo (≈ 2,5 s) que a «blender».
 # Con las pruebas de la 006 y de la 008 juntas, tests/unit/core suma ≈ 62 s de módulos y,
 # con 4, «motor» tarda ≈ 18,5 s, más que «blender» (≈ 16,5 s): con 6, ≈ 15,4 s (con 5,
-# ≈ 16,8 s), y el suelo vuelve a ser «blender», que tarda lo mismo.
+# ≈ 16,8 s), y el suelo vuelve a ser «blender», que tarda lo mismo. Desde la tarea 011/T36,
+# «motor» va solo, después de «blender» (ver STEPS): las partes no cambian (≈ 19–22 s).
 RUNTIME_PARTS = 6
 # Con las duraciones medidas de los módulos de todas las carpetas de dominio, «motor» no
 # reparte RUNTIME_PARTS por carpeta sino, como mucho, RUNTIME_PROCESSES entre todas, por su
@@ -900,7 +902,7 @@ def runtime_parts(ctx: Context) -> dict[str, int]:
 
 def _runtime(ctx: Context) -> list[Run]:
     """Paso «motor» (spec 004, T30; RF-004-28, Silvestre REN-01; solo con ``--completo``,
-    spec 004 0.4): con el motor de cálculo
+    spec 004 0.4; solo, tras «blender», desde la tarea 011/T36): con el motor de cálculo
     de pruebas, ``tests/unit`` de cada paquete de dominio con su numpy (el mismo código,
     probado también con el numpy de Blender en «unitarias»), cada carpeta en las partes de
     :func:`runtime_parts`. Las carpetas en una sola parte van después de todas las partes:
@@ -980,9 +982,16 @@ def _docs_omit(ctx: Context) -> str | None:
 # también «unitarias»: con la 011, uno tras otro, la mediana en reposo era 44,4 s (≈ 25 s
 # «unitarias» y ≈ 18 s «blender»); a la vez, 39,3 s. Los opcionales se ejecutan siempre
 # después de los obligatorios (RF-001-10), en el orden de la tabla: los de --completo los
-# primeros, tras «blender»: «motor» (a la vez que él; spec 004 0.4, RF-004-28: con la CPU
-# llena, la comprobación de cada tarea tardaba ≈ 42 s con él, frente a ≤ 40 s de RNF-001-01, hoy ≤ 45 s;
+# primeros, tras «blender»: «motor» (spec 004 0.4, RF-004-28: con la CPU llena, la
+# comprobación de cada tarea tardaba ≈ 42 s con él, frente a ≤ 40 s de RNF-001-01, hoy ≤ 45 s;
 # spec 005, T50) y «arnés» (spec 001 0.6); «documentación» (spec 007, RF-007-14), el último.
+# «motor» iba a la vez que «blender» (spec 004, T30) y, desde la tarea 011/T36, va solo,
+# después de él: con «unitarias» también a la vez (0.10), corrían juntas 12 partes de
+# «unitarias», 7 de «blender», 3 de «referencia» y hasta 16 de «motor» en 24 procesadores, y
+# fallaban los plazos de tests/unit/jobs y workers (cancelar ≤ 2 s, colas, huérfanos) en las
+# dos suites: --completo NO VERDE 6 de 6 en reposo (119–202 s). Solo, después: VERDE 3 de 3
+# seguidas en reposo (128,7 / 125,4 / 123,4 s; «motor» 19–22 s, sin presupuesto: RNF-001-01)
+# y la comprobación de cada tarea, igual (mediana 37,5 s frente a 37,4 / 38,1 s).
 STEPS: tuple[Step, ...] = (
     Step("unitarias", _unit, alongside="blender"),
     Step("referencia", _reference, alongside="blender"),
@@ -996,7 +1005,6 @@ STEPS: tuple[Step, ...] = (
         option=OPTION_COMPLETE,
         omit=_runtime_omit,
         resource=RUNTIME_RESOURCE,
-        alongside="blender",
         empty=NO_CASES,
     ),
     Step(HARNESS_STEP, _harness, option=OPTION_COMPLETE),

@@ -338,18 +338,17 @@ class PartsTest(unittest.TestCase):
         orden de la tabla: ninguna orden de un paso empieza antes de que terminen todas
         las del anterior, y el resumen da sus líneas en ese orden. La excepción son
         «referencia», «licencias» e «iconos» (spec 001 0.8, tarea 009/T34), «unitarias» (0.10,
-        tarea 011/T30) y «motor» (spec 004, RF-004-28), que van a la vez que «blender»: empiezan
-        después de «manifiesto», el primero, el
-        paso siguiente («arnés») espera a que terminen todos, y sus líneas van en su lugar
-        de la tabla (``test_check_cli_together``)."""
+        tarea 011/T30), que van a la vez que «blender»: empiezan después de «manifiesto», el
+        primero, el paso siguiente («motor», solo desde la tarea 011/T36) espera a que terminen
+        todos, y sus líneas van en su lugar de la tabla (``test_check_cli_together``)."""
         with many_cpus():
             result = run_check("--completo", "--rendimiento", "--banco")
         self.assertEqual(result.code, 0, result.out)
         runner = result.runner
         order = runner.steps()
         self.assertEqual(order, [*EXECUTED, HARNESS, *OPTIONAL])
-        together = {*WITH_BLENDER, "blender", RUNTIME}
-        sequence = ["manifiesto", "blender", HARNESS, *OPTIONAL]
+        together = {*WITH_BLENDER, "blender"}
+        sequence = ["manifiesto", "blender", RUNTIME, HARNESS, *OPTIONAL]
         groups = [
             [c for c in runner.calls if (c.step in together if step == "blender" else c.step == step)]
             for step in sequence
@@ -613,9 +612,10 @@ class RuntimeStepTest(unittest.TestCase):
         """RF-004-28: con el motor de pruebas, «motor» ejecuta ``tests/unit`` de cada
         paquete de dominio (los de ``imports.LEVELS`` con carpeta) en partes, con el Python
         de Blender sin su site-packages (``-S``: ni su numpy) y la carpeta ``site`` del
-        motor al principio de ``PYTHONPATH``, a la vez que «blender» (sus partes y las de
-        «blender» llegan a una barrera); su línea va tras la de «blender» y suma sus
-        pruebas; si una parte falla, el paso falla y el código es 1."""
+        motor al principio de ``PYTHONPATH``, sus partes a la vez (llegan a una barrera) y,
+        desde la tarea 011/T36 (RF-001-06), después de «blender» y de los que van con él, y
+        no con ellos; su línea va tras la de «blender» y suma sus pruebas; si una parte
+        falla, el paso falla y el código es 1."""
         self.assertIn("tests/unit/core", DOMAIN_FOLDERS)
         self.assertIn("tests/unit/jobs", DOMAIN_FOLDERS)
         counts = runtime_counts()
@@ -623,10 +623,10 @@ class RuntimeStepTest(unittest.TestCase):
         # Una carpeta en una sola parte (con un solo módulo) va después, como toda orden
         # sin partes: no llega a la barrera.
         parted = sum(count for count in counts.values() if count > 1)
-        together = threading.Barrier(check.BLENDER_PARTS + parted, timeout=15)
+        together = threading.Barrier(parted, timeout=15)
 
         def meet(call: Call) -> None:
-            if call.step in ("blender", RUNTIME) and call.part is not None:
+            if call.step == RUNTIME and call.part is not None:
                 together.wait()
 
         with many_cpus():
@@ -636,6 +636,9 @@ class RuntimeStepTest(unittest.TestCase):
         runner = result.runner
         self.assertEqual(runner.steps(), [*EXECUTED, HARNESS])
         calls = runner.calls_of(RUNTIME)
+        before = [call for call in runner.calls if call.step in (*WITH_BLENDER, "blender")]
+        self.assertLessEqual(max(call.ended for call in before),
+                             min(call.started for call in calls))
         expected = [runtime_part_cmd(folder, i, count)
                     for folder, count in counts.items() for i in range(1, count + 1)]
         self.assertCountEqual([call.cmd for call in calls], expected)
