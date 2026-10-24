@@ -67,7 +67,8 @@ DROPPED = "cancelada durante la operación: se desactivó Geoblender antes de em
 DELIVERED = frozenset({"geoblender.res_edit_materials",  # T20
                        "geoblender.res_compute_volume_between_surfaces",  # T21
                        "geoblender.res_compute_surface_difference",  # T22
-                       "geoblender.res_compute_volume_breakdown"})  # T23
+                       "geoblender.res_compute_volume_breakdown",  # T23
+                       "geoblender.res_compute_extraction_stages"})  # T24
 """Las órdenes de Cubicación que ya tienen su clase real (de la entrada «011»)."""
 
 

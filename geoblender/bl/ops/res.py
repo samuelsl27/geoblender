@@ -42,9 +42,8 @@ empezado lo cancelan sus pasos sin dejar nada a medias (RF-011-25) y lo que no e
 ``reserves.reproduce`` (``res.volume`` y ``res.difference``, la misma), importadas al usarlas
 (como ``core.versions.reproduce`` en ``bl.ops.versions``): habilitar no carga la reproducción.
 
-**Las órdenes** (D-36): las de Cubicación de R-38 siguen siendo las provisionales del catálogo
-hasta que llega la clase real de cada una (T20 a T25), que la pasa a la entrada «011» de
-``core/catalog/data/entries.toml``. Ya están (:data:`classes`):
+**Las órdenes** (D-36): la clase real de cada orden de Cubicación de R-38 (T20 a T24) la pasa a
+la entrada «011» de ``core/catalog/data/entries.toml``. Ya están las seis (:data:`classes`):
 
 - **Materiales y densidades…** (T20; RF-011-11, RF-011-15, RF-011-21; plan §5.3.4, §5.5, D-9,
   D-12, D-18): :class:`GEOBLENDER_OT_res_edit_materials` lee la columna del proyecto en la vista
@@ -93,6 +92,21 @@ hasta que llega la clase real de cada una (T20 a T25), que la pasa a la entrada 
   RF-011-08) y, por unidades, la orden encadena ``res.tonnage`` de su tabla de volúmenes
   (D-16: ``ProvenanceAwareOperator.begin`` con su tipo) en el mismo modal, con sus avisos de lo
   que falta (RF-011-17); desde un guion, las dos de una vez.
+- **Por momentos de extracción…** (T24; RF-011-19, RF-011-20, RF-011-22, RF-011-25; plan A13,
+  D-30, D-33): :class:`GEOBLENDER_OT_res_compute_extraction_stages` ofrece en su diálogo las
+  cubicaciones de la versión activa (``reserves.store.cubications``, en la vista:
+  ``bl.ui.res_panels.fill_volumetrics``) como momentos, en su orden, y como directa, con la
+  tolerancia y su tipo; comprueba lo elegido sin escribir nada (:func:`check_stages`: de 1 a 10
+  momentos, ninguno dos veces ni la directa entre ellos, todas de la versión; el nombre
+  repetido, que pregunta si se sustituye) y lanza ``res.stages`` (``reserves.store.stages_run``,
+  de sus tablas de volúmenes) por pasos en su modal, o de una vez desde un guion; al terminar,
+  la suma, la directa y la diferencia en m³ y en %, y el aviso de lo que pasa de la tolerancia
+  (ninguna cifra se ajusta).
+- **Ratios…** (T24; RF-011-18, RF-011-23; D-35): :class:`GEOBLENDER_OT_res_compute_ratios` (una
+  acción directa; no es una operación) deja elegida la tabla de una cubicación de la versión
+  activa (la pedida, la elegida en el panel o la última por unidades) con el filtro de relaciones
+  (``bl.ui.res_panels.show_cubication``), dice su relación estéril/útil del total y abre la
+  ventana de la cubicación (T25); sin unidades, lo dice.
 """
 
 from __future__ import annotations
@@ -122,6 +136,7 @@ from ...core.provenance import contract
 from ...core.provenance.operations import CANCEL_REASON_PREFIX, failure_reason
 from ...core.provenance.undo import UndoKind
 from ...core.units import UnitError, convert, parse_quantity
+from ...core.units import symbol as unit_symbol
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
 from ...gis.crs import crs_service_status, reference_label
@@ -1272,6 +1287,27 @@ def _difference_record(stored: Any) -> Any:
                  if record.name.startswith(prefix)), None)
 
 
+def _drained(operator: Any, steps: Iterator[Progress]) -> Any:
+    """Los pasos ``steps`` de una orden de una vez (desde un guion): el resultado del último o,
+    si fallan, ``None`` (ya dicho con el ``_report`` de ``operator``; sus pasos no dejan nada a
+    medias)."""
+    found = None
+    try:
+        for step in steps:
+            if step.result is not None:
+                found = step.result
+    except GeoblenderError as exc:
+        operator._report({"ERROR"}, error_text(exc))
+        return None
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        LOGGER.error("«%s» se ha parado", getattr(operator, "_name", ""), exc_info=exc)
+        operator._report({"ERROR"}, error_text(exc))
+        return None
+    if found is None:  # pragma: no cover - los pasos acaban siempre con su resultado
+        operator._report({"ERROR"}, tr("The operation did not finish with its result"))
+    return found
+
+
 def _confirm_later(values: Mapping[str, Any], idname: str = BETWEEN) -> None:
     """Pide confirmar que se sustituye la cubicación del mismo nombre (D-30) o el fichero que ya
     existe (D-29): la misma orden ``idname`` con ``confirm`` (su confirmación) en cuanto acaba
@@ -1592,23 +1628,8 @@ class _SurfacesCommand:
         return {"FINISHED"}
 
     def _drain(self, steps: Iterator[Progress]) -> Any:
-        """Unos pasos de una vez: el resultado del último o, si fallan, ``None`` (ya dicho; sus
-        pasos no dejan nada a medias)."""
-        found = None
-        try:
-            for step in steps:
-                if step.result is not None:
-                    found = step.result
-        except GeoblenderError as exc:
-            self._report({"ERROR"}, error_text(exc))
-            return None
-        except (sqlite3.Error, OSError, ValueError) as exc:
-            LOGGER.error("«%s» se ha parado", self._name, exc_info=exc)
-            self._report({"ERROR"}, error_text(exc))
-            return None
-        if found is None:  # pragma: no cover - los pasos acaban siempre con su resultado
-            self._report({"ERROR"}, tr("The operation did not finish with its result"))
-        return found
+        """Unos pasos de una vez (:func:`_drained`)."""
+        return _drained(self, steps)
 
     def _follow_up(self, context: Any, stored: Any) -> Iterator[Progress] | None:
         """Las toneladas encadenadas a una cubicación por unidades (D-16; RF-011-15 a
@@ -2134,6 +2155,438 @@ class GEOBLENDER_OT_res_export_difference(_StepsModal, bpy.types.Operator):
             return self._fail(context, error_text(exc))
 
 
+# --- Por momentos de extracción… y Ratios… (T24; RF-011-18, RF-011-19, RF-011-20, RF-011-25) ---
+
+STAGES_COMMAND = "geoblender.res_compute_extraction_stages"
+RATIOS = "geoblender.res_compute_ratios"
+_CUBICATION_FIELD = "cubicación"
+
+
+def tolerance_text(project: Any) -> str:
+    """La tolerancia de los momentos con su valor y su tipo, y dónde se cambia (RF-011-19)."""
+    record = core_params.ParameterStore(project).get(res_params.STAGES_TOLERANCE)
+    return tr("Tolerance of the stages: {value} (it is changed in {path})",
+              value=res_panels.record_text(record, res_params.STAGES_TOLERANCE),
+              path=path_text(catalog(), PARAMETERS, i18n.language()))
+
+
+def _unknown(name: str, version_code: str) -> ResError:
+    return ResError("res.cubication_unknown", obj=name, field=_CUBICATION_FIELD, value=name,
+                    version=version_code)
+
+
+def check_stages(moments: list[str], direct: str, listed: Mapping[str, Any],
+                 version_code: str) -> None:
+    """Los momentos ``moments`` y la directa ``direct`` elegidos, entre las cubicaciones
+    ``listed`` de la versión (por nombre): la directa, de 1 a ``reserves.stages.MAX_STAGES``
+    momentos, ninguno dos veces ni la directa entre ellos (``ValueError`` con el texto para la
+    persona: el diálogo no deja pedirlo, un guion sí) y todas de la versión
+    (``res.cubication_unknown``)."""
+    from ...reserves.stages import MAX_STAGES
+
+    if not direct:
+        raise ValueError(tr("Choose the direct cubication"))
+    if not moments:
+        raise ValueError(tr("Choose at least one extraction stage"))
+    if len(moments) > MAX_STAGES:
+        raise ValueError(tr("At most {count} extraction stages can be compared, not {number}",
+                            count=MAX_STAGES, number=len(moments)))
+    seen: set[str] = set()
+    for name in moments:
+        if name in seen:
+            raise ValueError(tr("«{name}» is chosen twice as an extraction stage", name=name))
+        seen.add(name)
+    if direct in seen:
+        raise ValueError(tr("The direct cubication «{name}» cannot also be an extraction stage",
+                            name=direct))
+    for name in (*moments, direct):
+        if name not in listed:
+            raise _unknown(name, version_code)
+
+
+@dataclass(eq=False)
+class _StagesPlan:
+    """Una cubicación por momentos lista para empezar: su nombre, los momentos (en su orden),
+    la directa, la operación a la que sustituiría (D-30) y el código de la versión activa."""
+
+    name: str
+    moments: tuple[str, ...]
+    direct: str
+    previous: str | None
+    version: str
+
+
+class GEOBLENDER_OT_res_compute_extraction_stages(ProvenanceAwareOperator, _StepsModal,
+                                                 bpy.types.Operator):
+    """Volumes by the stages of the extraction"""
+
+    bl_idname = STAGES_COMMAND
+    bl_label = "By extraction stages…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.STAGES
+    STEP_BUDGET_S = 0.05  # cada evento del temporizador (RNF-011-04: ninguna llamada de > 0,2 s)
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name",
+        description="Name of the cubication by stages, unique in the active version (empty: "
+                    "«<direct> by stages»)",
+        options=_FIELD,
+    )
+    moments: CollectionProperty(  # type: ignore[valid-type]
+        type=res_props.GEOBLENDER_PG_res_moment, name="Extraction stages",
+        description="Cubications of the active version that are the extraction stages "
+                    "(operation, splitting, stock…), in their order",
+        options=_FIELD,
+    )
+    # Las filas del diálogo (cada cubicación de la versión y si es un momento): sin momentos
+    # dados, los elegidos aquí, en su orden.
+    choices: CollectionProperty(  # type: ignore[valid-type]
+        type=res_props.GEOBLENDER_PG_res_moment_choice, options=_HIDDEN,
+    )
+    direct: StringProperty(  # type: ignore[valid-type]
+        name="Direct cubication",
+        description="Cubication of the active version of the whole extraction, which the sum "
+                    "of the stages is compared with",
+        options=_FIELD,
+    )
+    replace: BoolProperty(  # type: ignore[valid-type]
+        name="Replace",
+        description="Replace the cubication by stages of the same name of the active version",
+        default=False, options=_HIDDEN,
+    )
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    def provenance_inputs(self, context: Any) -> tuple[Any, ...]:
+        return tuple(getattr(self, "_inputs", ()))
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el
+        porqué. Si no, las cubicaciones de la versión activa leídas de nuevo (como momentos,
+        ninguno elegido, y como directa) y la tolerancia, y el diálogo: Intro compara."""
+        self.provenance_dialog = True
+        if self.confirm:
+            return self._confirm(context, event)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            found = res_panels.fill_volumetrics(project, scene_versions.active_version())
+            self._tolerance = tolerance_text(project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if len(found) < 2:
+            version = scene_versions.active()
+            self.report({"ERROR"}, tr(
+                "There are fewer than two cubications in {version}: compute the extraction "
+                "stages and the direct cubication first ({path})",
+                version="" if version is None else version.code,
+                path=path_text(catalog(), BETWEEN, i18n.language())))
+            return {"CANCELLED"}
+        self.choices.clear()
+        given = {str(item.name).strip() for item in self.moments}
+        for item in found:
+            row = self.choices.add()
+            row.name, row.chosen = item.name, item.name in given
+        self.moments.clear()  # los del diálogo
+        self.in_steps = getattr(context, "window", None) is not None
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=text(catalog().commands[self.bl_idname].label), confirm_text=tr("Compare"))
+
+    def draw(self, context: Any) -> None:
+        from ...reserves.stages import MAX_STAGES
+
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.label(text=tr("Extraction stages (at most {count})", count=MAX_STAGES),
+                     translate=False)
+        column = layout.column(align=True)
+        for row in self.choices:
+            column.prop(row, "chosen", text=row.name, translate=False)
+        shown = res_panels.view()
+        if shown is not None:
+            layout.prop_search(data=self, property="direct", search_data=shown,
+                               search_property="cubications", text=tr("Direct cubication"),
+                               translate=False)
+        tolerance = getattr(self, "_tolerance", "")
+        if tolerance:
+            layout.label(text=tolerance, translate=False)
+
+    def _confirm(self, context: Any, event: Any) -> set[str]:
+        """La confirmación de sustituir la cubicación por momentos del mismo nombre (D-30): si
+        se acepta, la orden sigue con ``replace``."""
+        self.replace = True
+        self.in_steps = getattr(context, "window", None) is not None
+        version = scene_versions.active()
+        return context.window_manager.invoke_confirm(
+            self, event, title=tr("Replace the cubication"),
+            message=tr("There is already a cubication by stages «{name}» in {version}: replace "
+                       "it?", name=self.name, version="" if version is None else version.code),
+            confirm_text=tr("Replace"), translate=False)
+
+    # --- Comparar -----------------------------------------------------------------------------
+
+    def _plan(self, project: Any, version_uid: str) -> _StagesPlan:
+        """Lo que se compara, comprobado antes de escribir nada (:func:`check_stages`), su
+        nombre (por defecto, «<directa> por momentos») y la operación a la que sustituiría."""
+        from ...reserves import store  # al usarlo: habilitar no lo carga
+
+        version = scene_versions.active()
+        code = "" if version is None else version.code
+        listed = {item.name: item for item in store.cubications(project, version=version_uid)}
+        moments = [str(item.name).strip() for item in self.moments] or [
+            str(item.name).strip() for item in self.choices if item.chosen]
+        direct = str(self.direct).strip()
+        check_stages(moments, direct, listed, code)
+        name = self.name.strip() or tr("{direct} by stages", direct=direct)
+        gis_provenance.dataset_slug(name)  # un nombre sin letras ni cifras no vale
+        previous = store.previous_operation(project, provenance.STAGES, name,
+                                            version=version_uid)
+        return _StagesPlan(name, tuple(moments), direct, previous, code)
+
+    def _ask_replace(self, plan: _StagesPlan) -> set[str]:
+        """La cubicación por momentos ya está en la versión activa (D-30): desde la interfaz,
+        pregunta si se sustituye; desde un guion, se rechaza (con ``replace``, se sustituye)."""
+        if self.provenance_dialog:
+            self.report({"WARNING"}, tr("There is already a cubication by stages «{name}» in "
+                                        "{version}", name=plan.name, version=plan.version))
+            _confirm_later({"name": plan.name, "direct": plan.direct,
+                            "moments": [{"name": item} for item in plan.moments]},
+                           idname=STAGES_COMMAND)
+        else:
+            self.report({"ERROR"}, tr(
+                "There is already a cubication by stages «{name}» in {version}: to replace it, "
+                "repeat the order with «Replace» (replace=True)", name=plan.name,
+                version=plan.version))
+        return {"CANCELLED"}
+
+    def execute(self, context: Any) -> set[str]:
+        """Comprueba (sin escribir nada si no vale), empieza ``res.stages`` en la revisión
+        abierta de la versión activa con las tablas de volúmenes de los momentos y de la
+        directa (A13, D-33) y compara: desde la interfaz, por pasos con el avance y Esc; desde
+        un guion, de una vez. Al terminar, la suma, la directa y la diferencia, y los avisos
+        (lo que pasa de la tolerancia; RF-011-19)."""
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version_uid = scene_versions.active_version() or ""
+        try:
+            plan = self._plan(project, version_uid)
+            if plan.previous is not None and not self.replace:
+                return self._ask_replace(plan)
+            self._inputs = provenance.stages_inputs(plan.moments, plan.direct)
+            settings = provenance.stages_settings(plan.name, plan.moments, plan.direct)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        handle = self.begin(context, settings=settings, params=provenance.stages_params(),
+                            supersedes=plan.previous)
+        if handle is None:
+            return {"CANCELLED"}
+        from ...reserves import store  # al usarlo: habilitar no lo carga
+
+        try:
+            steps = _Guarded(handle, store.stages_run(project, handle))
+        except (TypeError, ValueError) as exc:  # inalcanzable: los ajustes son de res.stages
+            _end(handle.fail, failure_reason(exc))
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self._project, self._name = project, plan.name
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, steps)
+            return {"RUNNING_MODAL"}
+        self.report_log: list[str] = []
+        stored = _drained(self, steps)
+        if stored is None:
+            return {"CANCELLED"}
+        self._report_result(stored)
+        return {"FINISHED"}
+
+    def _report_result(self, stored: Any) -> None:
+        """Lo que dice la orden al terminar: «Fases (V01.r1, en curso): suma de los momentos
+        …, directa «Proyecto» …, diferencia … (… %)» y los avisos (``res.stages_mismatch`` de
+        lo que pasa de la tolerancia, ``res.stages_materials_differ``)."""
+        result = stored.result
+        cut = result.comparison()
+        version = scene_versions.active()
+        percent = res_panels.NOT_SHOWN if cut.diff_pct is None \
+            else f"{format_number(cut.diff_pct, 2)} %"
+        self._report({"INFO"}, tr(
+            "«{name}» ({revision}, in progress): sum of the stages {sum} m³, direct «{direct}» "
+            "{direct_volume} m³, difference {difference} m³ ({percent})", name=result.name,
+            revision="" if version is None else version.revision,
+            sum=format_number(cut.sum_m3, 1), direct=result.direct,
+            direct_volume=format_number(cut.direct_m3, 1),
+            difference=format_number(cut.diff_m3, 1), percent=percent))
+        for notice in result.warnings:
+            self._report({"WARNING"}, notice.text(i18n.language()))
+
+    # --- En pasos (_StepsModal) ---------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Comparing «{name}»… {percent} % · Esc: cancel",
+                  name=getattr(self, "_name", ""), percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Cubication by stages cancelled: nothing has been left half-done")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return error_text(exc)
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        if step.result is None:
+            if project_session.current() is not getattr(self, "_project", None):
+                return self._fail(context, tr(
+                    "The project was closed while «{name}» was being computed: nothing has been "
+                    "left half-done", name=getattr(self, "_name", "")))
+            return None
+        self._report_result(step.result)
+        self._done(context)
+        return {"FINISHED"}
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except Exception as exc:  # noqa: BLE001 - los pasos cerrados no dejan nada a medias
+            LOGGER.error("«%s» se ha parado", getattr(self, "_name", ""), exc_info=exc)
+            return self._fail(context, error_text(exc))
+
+
+def _total_ratio(rows: tuple[Any, ...], quantity: str) -> str:
+    """La relación ``quantity`` del total (todos los dominios y rodajas) de las filas ``rows``
+    como la lee una persona: «1,50 m³/m³» o, sin valor, su nota («sin material útil»)."""
+    from ...reserves.table import ALL_DOMAINS, NOTE_SEPARATOR
+
+    found = next((item for item in rows if item.quantity == quantity
+                  and item.domain == ALL_DOMAINS and item.bench is None and item.unit is None
+                  and item.component is None), None)
+    if found is None:
+        return res_panels.NOT_SHOWN
+    if found.value is None:
+        notes = [code for code in (found.note or "").split(NOTE_SEPARATOR) if code]
+        if not notes:
+            return res_panels.NOT_SHOWN
+        return res_messages.render(notes[0], language=i18n.language())
+    return f"{format_number(found.value, 2)} {unit_symbol(found.unit_code)}"
+
+
+def _ratios_cubication(found: tuple[Any, ...], typed: str, chosen: str,
+                       version_code: str) -> Any:
+    """La cubicación de «Ratios…» entre las de la versión ``found``: la tecleada (``typed``;
+    si no está, ``res.cubication_unknown``), la elegida en el panel (``chosen``) o la última
+    que terminó por unidades (o, sin ninguna, la última); sin cubicaciones, ``ValueError``."""
+    by_name = {item.name: item for item in found}
+    if typed:
+        if typed not in by_name:
+            raise _unknown(typed, version_code)
+        return by_name[typed]
+    if chosen in by_name:
+        return by_name[chosen]
+    if not found:
+        raise ValueError(tr("There are no cubications in {version}: compute one first ({path})",
+                            version=version_code,
+                            path=path_text(catalog(), BETWEEN, i18n.language())))
+    candidates = [item for item in found if item.units] or list(found)
+    return max(candidates, key=lambda item: item.finished_at)
+
+
+class GEOBLENDER_OT_res_compute_ratios(ProvenanceAwareOperator, bpy.types.Operator):
+    """Waste to ore ratios"""
+
+    bl_idname = RATIOS
+    bl_label = "Ratios…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    # No lanza ninguna operación (D-35): enseña las relaciones de las tablas de res.tonnage; su
+    # tipo da la puerta de las seis órdenes de Cubicación (RF-011-26).
+    provenance_op_type = provenance.TONNAGE
+
+    cubication: StringProperty(  # type: ignore[valid-type]
+        name="Cubication",
+        description="Cubication of the active version whose ratios are shown (empty: the one "
+                    "chosen in the panel or the last one by units)",
+        options=_FIELD,
+    )
+
+    def draw(self, context: Any) -> None:
+        """Lo que se ajusta después con F9: la cubicación, entre las de la versión activa."""
+        layout = self.layout
+        layout.use_property_split = True
+        shown = res_panels.view()
+        if shown is not None:
+            layout.prop_search(data=self, property="cubication", search_data=shown,
+                               search_property="cubications", text=tr("Cubication"),
+                               translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Deja elegida en la ventana de la cubicación la tabla de la cubicación con el filtro
+        de relaciones (D-35; RF-011-18, RF-011-23), dice su relación estéril/útil del total
+        (m³/m³ y t/t) y abre la ventana; sin unidades (o sin sus toneladas), lo dice y no abre
+        nada. Lee lo registrado: no escribe en el proyecto."""
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        from ...reserves import store  # al usarlo: habilitar no lo carga
+
+        project = SESSION.project
+        version_uid = scene_versions.active_version() or ""
+        version = scene_versions.active()
+        code = "" if version is None else version.code
+        try:
+            found = res_panels.fill_volumetrics(project, version_uid)
+            shown = res_panels.view()
+            chosen = _ratios_cubication(found, self.cubication.strip(),
+                                        "" if shown is None else shown.cubication, code)
+            rows = store.cubication_ratios(project, chosen.name, version=version_uid) \
+                if chosen.units else ()
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self.cubication = chosen.name
+        path = path_text(catalog(), BREAKDOWN, i18n.language())
+        if not chosen.units:
+            self.report({"WARNING"}, tr(
+                "«{name}» was computed without units: it has no waste to useful ratios (compute "
+                "it by units: {path})", name=chosen.name, path=path))
+            return {"CANCELLED"}
+        if not rows:
+            self.report({"WARNING"}, tr(
+                "«{name}» has no tonnage: its ratios come with it (compute it again by units: "
+                "{path})", name=chosen.name, path=path))
+            return {"CANCELLED"}
+        res_panels.show_cubication(chosen.name, quantities=res_props.QUANTITIES_RATIOS)
+        self.report({"INFO"}, tr("Waste to useful ratio of «{name}»: {volume} · {mass}",
+                                 name=chosen.name, volume=_total_ratio(rows, "waste_ratio_m3"),
+                                 mass=_total_ratio(rows, "waste_ratio_t")))
+        if getattr(context, "window", None) is not None:
+            try:
+                _call_panel(res_panels.VOLUMETRICS_PANEL)
+            except RuntimeError:
+                LOGGER.warning("No se pudo abrir la ventana de la cubicación", exc_info=True)
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_res_edit_materials,
     GEOBLENDER_OT_res_edit_column,
@@ -2144,5 +2597,8 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_res_compute_surface_difference,
     GEOBLENDER_OT_res_export_difference,
     GEOBLENDER_OT_res_compute_volume_breakdown,
+    GEOBLENDER_OT_res_compute_extraction_stages,
+    GEOBLENDER_OT_res_compute_ratios,
 )
-"""Las órdenes reales de la cubicación (las demás llegan de la T23 a la T25)."""
+"""Las órdenes reales de la cubicación (las de la ventana de la cubicación llegan con la
+T25)."""

@@ -20,6 +20,15 @@ dato) y, ya presentados, la densidad, el K y el porcentaje de cada una con su ti
 antrópico. Lo que se edita no se escribe hasta «Guardar la columna» (``bl.ops.res``).
 :class:`GEOBLENDER_PG_res_percent` es una fila del diálogo «Porcentajes…».
 
+**Las cubicaciones de la versión activa** (T24; RF-011-18, RF-011-19, RF-011-23):
+:attr:`~GEOBLENDER_PG_res_panels.cubications` (:class:`GEOBLENDER_PG_res_cubication`: su nombre,
+si reparte por unidades y si tiene toneladas), la elegida
+(:attr:`~GEOBLENDER_PG_res_panels.cubication`, su nombre) y el filtro de datos de su tabla
+(:attr:`~GEOBLENDER_PG_res_panels.quantities`: todos o las relaciones, D-35). La T25 añade lo
+demás de cada una (revisión, «vigente» o «en curso», obsoleta) y sus filas.
+:class:`GEOBLENDER_PG_res_moment` es un momento de «Por momentos de extracción…» (su nombre) y
+:class:`GEOBLENDER_PG_res_moment_choice`, una fila de su diálogo (una cubicación y si es momento).
+
 Ninguna propiedad es una coordenada ni una cota en ``FloatProperty`` (ADR-0005; la cota
 constante de una base, en ``StringProperty``: ``docs/trampas.md`` §1). Las propiedades de las
 filas no tienen nombre ni descripción: las dibuja la ventana con sus textos.
@@ -67,6 +76,14 @@ BASE_ITEMS = [
     (BASE_ELEVATION, "Constant elevation", ""),
 ]
 """De qué es la base de una unidad (D-24): una rejilla del proyecto o una cota constante."""
+QUANTITIES_ALL = "ALL"
+QUANTITIES_RATIOS = "RATIOS"
+QUANTITY_ITEMS = [
+    (QUANTITIES_ALL, "All the data", ""),
+    (QUANTITIES_RATIOS, "Waste to useful ratios", ""),
+]
+"""El filtro de datos de la tabla de la cubicación elegida (T24, D-35): todos o solo las
+relaciones (``reserves.table.RATIO_QUANTITIES``), el que pone «Ratios…»."""
 
 
 class GEOBLENDER_PG_res_surface(bpy.types.PropertyGroup):
@@ -118,6 +135,27 @@ class GEOBLENDER_PG_res_percent(bpy.types.PropertyGroup):
     value: StringProperty(options=_STATIC)  # type: ignore[valid-type]
 
 
+class GEOBLENDER_PG_res_moment(bpy.types.PropertyGroup):
+    """Un momento de «Por momentos de extracción…» (T24; ``name``: el nombre de su cubicación;
+    desde un guion, ``moments=[{"name": …}, …]``: Blender pide todas las propiedades de cada
+    elemento, así que no tiene más)."""
+
+
+class GEOBLENDER_PG_res_moment_choice(bpy.types.PropertyGroup):
+    """Una cubicación de la versión activa en el diálogo «Por momentos de extracción…» (T24;
+    ``name``: su nombre; ``chosen``: si es uno de los momentos)."""
+
+    chosen: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+
+
+class GEOBLENDER_PG_res_cubication(bpy.types.PropertyGroup):
+    """Una cubicación de la versión activa ya leída (T24; ``name``: su nombre; si reparte por
+    unidades y si tiene su tabla de toneladas)."""
+
+    units: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+    tonnage: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+
+
 class GEOBLENDER_PG_res_panels(bpy.types.PropertyGroup):
     """Lo que dibujan los paneles de la cubicación (una vista; véase el módulo)."""
 
@@ -130,12 +168,19 @@ class GEOBLENDER_PG_res_panels(bpy.types.PropertyGroup):
     )
     presence: StringProperty(options=_STATIC)  # type: ignore[valid-type]
     materials_project: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    cubications: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_res_cubication, options=_STATIC,
+    )
+    cubication: StringProperty(options=_STATIC)  # type: ignore[valid-type]
+    quantities: EnumProperty(items=QUANTITY_ITEMS,  # type: ignore[valid-type]
+                             default=QUANTITIES_ALL, options=_STATIC)
 
 
 # En orden de registro: cada grupo, después de los que contiene.
 classes: tuple[type, ...] = (GEOBLENDER_PG_res_surface, GEOBLENDER_PG_res_component,
                              GEOBLENDER_PG_res_unit, GEOBLENDER_PG_res_percent,
-                             GEOBLENDER_PG_res_panels)
+                             GEOBLENDER_PG_res_moment, GEOBLENDER_PG_res_moment_choice,
+                             GEOBLENDER_PG_res_cubication, GEOBLENDER_PG_res_panels)
 
 
 def register() -> None:

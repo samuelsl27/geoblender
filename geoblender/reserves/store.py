@@ -51,7 +51,11 @@ en una conexión (su copia congelada, al reproducir). **La rejilla de diferencia
 (T22; A15, D-29): :func:`stored_difference` dice de qué cubicación, versión y revisión es, su
 superficie final y el espesor mínimo que leyó su operación, y :func:`difference_sources` da
 lo que lee su vista; :func:`grid_writer`, de qué tipo es la operación que la escribió (una
-cubicación y una diferencia no comparten una rejilla). **Recalcular** (A12, T15):
+cubicación y una diferencia no comparten una rejilla). **Las cubicaciones de una versión** (T24):
+:func:`cubications` (su tabla de volúmenes viva, si reparte por unidades y su tabla de
+toneladas: lo que ofrecen los momentos de extracción y «Ratios…») y
+:func:`cubication_ratios` (las filas del filtro de relaciones de sus toneladas, D-35).
+**Recalcular** (A12, T15):
 :func:`recompute_run` empieza la operación que sustituye a una obsoleta (en la revisión abierta
 de su versión, con la columna vigente, las capas que consumió y sus parámetros resueltos de
 nuevo) y da sus pasos, que avanza la cola de ``res`` en ``bl``. Python puro (nivel 9).
@@ -76,6 +80,7 @@ from ..core.datasets import registry as dataset_registry
 from ..core.datasets.model import (
     DATASET_DECLARATIONS,
     LIVE_STATUSES,
+    RECORD_COLUMNS,
     DatasetRecord,
     DatasetSpec,
     Store,
@@ -138,6 +143,7 @@ from .table import (
     TITLES,
     Row,
     StageRow,
+    ratio_rows,
     read_rows,
 )
 from .volumes import (
@@ -168,11 +174,14 @@ __all__ = [
     "TABLE_COLUMNS",
     "TONNAGE_PHASES",
     "TONNAGE_TICKS",
+    "Cubication",
     "ResultWriter",
     "StoredDifference",
     "StoredStages",
     "StoredTonnage",
     "StoredVolume",
+    "cubication_ratios",
+    "cubications",
     "difference_figures",
     "difference_sources",
     "grid_writer",
@@ -1242,6 +1251,91 @@ def grid_writer(project: StoreProject, name: str, *, version: str) -> str | None
         row = conn.execute("SELECT op_type FROM gb_operation WHERE uid = ?",
                            (record.operation_uid,)).fetchone()
     return None if row is None else str(row[0])
+
+
+# --- Las cubicaciones de una versión (T24; RF-011-18, RF-011-19, RF-011-23) --------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Cubication:
+    """Una cubicación de una versión (su tabla de volúmenes ``res_vol_`` viva): su nombre (el de
+    los ajustes de la ``res.volume`` que la escribió), el registro de esa tabla, esa operación y
+    cuándo terminó, si reparte por unidades y el registro de su tabla de toneladas
+    (``res_ton_``) viva, o ``None``."""
+
+    name: str
+    record: DatasetRecord
+    operation_uid: str
+    finished_at: str
+    units: bool
+    tonnage: DatasetRecord | None
+
+
+def _version_of(conn: sqlite3.Connection, version: str) -> Any:
+    found = versions_read.version(conn, version)
+    if found is None:
+        raise VersionError("core.version_unknown", field="versión", value=version,
+                           version=version)
+    return found
+
+
+def _live(conn: sqlite3.Connection, family: str, name: str,
+          version_uid: str) -> DatasetRecord | None:
+    """El dato vivo de la familia ``family`` de la cubicación ``name`` en la versión
+    ``version_uid``, o ``None``."""
+    dataset = declared.dataset_name(family, name)
+    record = dataset_registry.get(conn, dataset, version_uid=version_uid)
+    return record if record is not None and record.name == dataset else None
+
+
+def cubications(project: StoreProject, *, version: str) -> tuple[Cubication, ...]:
+    """Las cubicaciones de la versión ``version`` (uid o código), por nombre: las que tienen su
+    tabla de volúmenes viva (no una diferencia entre superficies ni una cubicación por
+    momentos), lo que ofrecen «Por momentos de extracción…» como momentos y directa y «Ratios…»
+    (T24). ``VersionError`` si la versión no existe."""
+    live = tuple(str(status) for status in LIVE_STATUSES)
+    volumes_prefix = declared.FAMILIES_BY_CODE[declared.VOLUMES].prefix
+    with project.read() as conn:
+        found = _version_of(conn, version)
+        rows = conn.execute(
+            f"SELECT {', '.join(RECORD_COLUMNS)} FROM gb_dataset WHERE version_uid = ? AND "
+            f"module = ? AND status IN ({', '.join('?' for _ in live)})",
+            (found.uid, declared.MODULE, *live)).fetchall()
+        records = {record.name: record for record in map(DatasetRecord.from_row, rows)}
+        listed: list[Cubication] = []
+        for record in records.values():
+            if not record.name.startswith(volumes_prefix):
+                continue
+            row = conn.execute("SELECT settings, finished_at FROM gb_operation WHERE uid = ? "
+                               "AND op_type = ?", (record.operation_uid,
+                                                   declared.VOLUME)).fetchone()
+            if row is None:  # inalcanzable: una tabla de volúmenes es de su res.volume
+                continue
+            settings = json.loads(row[0])
+            name = str(settings.get("name") or record.name)
+            listed.append(Cubication(
+                name, record, record.operation_uid, str(row[1] or ""),
+                bool(settings.get("units")),
+                records.get(declared.dataset_name(declared.TONNES, name))))
+    return tuple(sorted(listed, key=lambda item: (item.name.casefold(), item.name)))
+
+
+def cubication_ratios(project: StoreProject, name: str, *, version: str) -> tuple[Row, ...]:
+    """Las filas del filtro de relaciones (``reserves.table.ratio_rows``; RF-011-18, D-35) de la
+    tabla de toneladas viva de la cubicación ``name`` de la versión ``version`` (uid o código):
+    vacías si no tiene (sin unidades, o sus toneladas no llegaron a guardarse).
+    ``res.cubication_unknown`` si la versión no tiene esa cubicación; ``VersionError`` si la
+    versión no existe."""
+    with project.read() as conn:
+        found = _version_of(conn, version)
+        volume, tonnage = (_live(conn, family, name, found.uid)
+                           for family in (declared.VOLUMES, declared.TONNES))
+        if volume is None:
+            raise ResError("res.cubication_unknown", obj=name, field="cubicación", value=name,
+                           version=found.code)
+        if tonnage is None:
+            return ()
+        return ratio_rows(read_rows(conn, tonnage.locator))
 
 
 # --- Recalcular (A12) -------------------------------------------------------------------------

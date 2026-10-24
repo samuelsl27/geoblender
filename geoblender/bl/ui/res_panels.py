@@ -36,6 +36,11 @@ y dominios) y, para «Por unidad, fase y banco…» (T23), las capas de dominios
 listas vivas del módulo (Blender guarda punteros a sus cadenas), del proyecto de
 la sesión, su versión activa y el idioma de Geoblender: la orden las vuelve a leer al abrir su
 diálogo (:func:`refresh_choices`) y la escucha de los indicadores, cuando cambia el proyecto.
+
+**Las cubicaciones de la versión activa** (T24): :func:`fill_volumetrics` las deja en la vista
+(lo que ofrece «Por momentos de extracción…» como momentos y directa) y :func:`show_cubication`
+deja elegida una con el filtro de datos de su tabla (todos o, desde «Ratios…», las relaciones;
+D-35), la que dibujará la ventana de la cubicación (T25).
 """
 
 from __future__ import annotations
@@ -62,6 +67,7 @@ from ..props.res import (
     BASE_ITEMS,
     BASE_SURFACE,
     KIND_ITEMS,
+    QUANTITIES_ALL,
     ROLE_ITEMS,
     ROLE_NONE,
     STATE_ITEMS,
@@ -418,6 +424,40 @@ def surface_choice(identifier: str) -> res_surfaces.SurfaceChoice | None:
 def forget_choices() -> None:
     """Olvida las listas leídas (al desregistrar)."""
     _CHOICES.key, _CHOICES.by_id = None, {}
+
+
+# --- Las cubicaciones de la versión activa (T24; RF-011-18, RF-011-19, RF-011-23) --------------
+
+
+def fill_volumetrics(project: Any, version_uid: str | None) -> tuple[Any, ...]:
+    """Vuelve a leer de ``project`` las cubicaciones de la versión activa ``version_uid``
+    (``reserves.store.cubications``; sin versión, ninguna) y las deja en la vista
+    (``cubications``: su nombre, si reparte por unidades y si tiene toneladas); si la elegida ya
+    no está, ninguna. Devuelve las leídas. Si no se puede leer, el error sigue y la vista queda
+    como estaba. La T25 le añade lo demás de cada una."""
+    from ...reserves import store  # al usarlo: habilitar no lo carga
+
+    found = () if not version_uid else store.cubications(project, version=version_uid)
+    shown = view()
+    if shown is None:
+        return found
+    shown.cubications.clear()
+    for item in found:
+        row = shown.cubications.add()
+        row.name, row.units, row.tonnage = item.name, item.units, item.tonnage is not None
+    if shown.cubication not in {item.name for item in found}:
+        shown.cubication = ""
+    return found
+
+
+def show_cubication(name: str, *, quantities: str = QUANTITIES_ALL) -> None:
+    """Deja elegida en la vista la cubicación ``name`` con el filtro de datos ``quantities``
+    (``bl.props.res.QUANTITY_ITEMS``: todos o las relaciones, D-35): la que dibuja la ventana
+    de la cubicación (T25)."""
+    shown = view()
+    if shown is None:  # inalcanzable con la extensión registrada
+        return
+    shown.cubication, shown.quantities = name, quantities
 
 
 # --- Dibujo --------------------------------------------------------------------------------------

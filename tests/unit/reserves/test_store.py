@@ -150,7 +150,9 @@ class StoreTest(fx.ResProjectCase):
         operaciones encadenadas de la revisión abierta de V01, con sus entradas (con su hash y
         su papel), sus parámetros anotados (ámbito y revisión: el K de la montera, de V01; el
         del muro y las densidades, del proyecto), su tabla de la versión con sus títulos y sus
-        cifras CALCULADO con su ámbito; las entradas no cambian de hash."""
+        cifras CALCULADO con su ámbito; las entradas no cambian de hash. RF-011-18, RF-011-19
+        (T24, D-35): la cubicación sale entre las de V01 (por nombre, con unidades y sus
+        toneladas) y sus filas de relaciones son las de su tabla de toneladas."""
         name = "Mensual octubre"
         inputs = [*fx.PROJECT_GRIDS, provenance.MATERIALS]
         before = self.hashes(inputs)
@@ -221,6 +223,24 @@ class StoreTest(fx.ResProjectCase):
         self.assertEqual(len(found), len(expected.figures))
         self.assertEqual(found[("res.total_t", whole)][0], expected.result.total.total_t)
         self.assertEqual(self.hashes(inputs), before)
+
+        # T24 (RF-011-18, RF-011-19, D-35): las cubicaciones de la versión (sus tablas de
+        # volúmenes vivas, no una diferencia) y las filas de relaciones de su tabla de toneladas
+        listed = {item.name: item for item in store.cubications(self.project, version="V01")}
+        self.assertEqual((listed[name].record.uid, listed[name].operation_uid,
+                          listed[name].units, listed[name].tonnage.uid),
+                         (record.uid, handle.uid, True, weighed_record.uid))
+        self.assertNotIn("Diferencia octubre", listed)  # res.difference: sin tabla
+        self.assertEqual(list(listed), sorted(listed, key=str.casefold))
+        ratios = store.cubication_ratios(self.project, name, version=self.v1.uid)
+        self.assertEqual(ratios, table.ratio_rows(expected.rows))
+        self.assertEqual({item.quantity for item in ratios}, set(table.RATIO_QUANTITIES))
+        (total,) = table.filter_rows(ratios, domain="*", bench=None, unit=None,
+                                     quantity="waste_ratio_m3")
+        self.assertEqual(total.value, expected.result.total.ratio_m3.value)
+        with self.assertRaises(import_geoblender("reserves.messages").ResError) as caught:
+            store.cubication_ratios(self.project, "Ninguna", version=self.v1.uid)
+        self.assertEqual(caught.exception.code, "res.cubication_unknown")
 
     def test_difference_grid_of_the_version(self) -> None:
         """RF-011-05, RF-011-20, RF-011-22: ``res.difference`` deja la rejilla de V01

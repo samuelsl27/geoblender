@@ -32,6 +32,16 @@ RF-011-18; plan §5.3.4, D-16, D-35, D-37):
   y ningún total de toneladas;
 - una capa con solapes o sin valor, el rechazo con la lista de sus polígonos (RF-011-08).
 
+**Por momentos de extracción… y Ratios…** (T24; HU-011-4, HU-011-3; RF-011-19, RF-011-18; plan
+A13, D-33, D-35):
+
+- el diálogo ofrece las cubicaciones de la versión activa como momentos y como directa; dos
+  momentos que parten la directa suman lo mismo (diferencia 0) y uno que deja un hueco da la
+  diferencia en m³ y en % y el aviso de la tolerancia (``res.stages``, por pasos); los momentos
+  mal elegidos, rechazados;
+- «Ratios…» deja elegida la tabla de la cubicación con el filtro de relaciones y la abre; sin
+  unidades, lo dice.
+
 Un proyecto para toda la clase (V01 activa y V02), rejillas de 8 × 8 celdas de 1 m y la extensión
 sin importar otra vez (``blender_ext.release``; RNF-001-01). Se ejecuta con
 ``tools/run_blender_tests.py``.
@@ -106,6 +116,28 @@ DENSITY = {"montera": 1.8, "capa_util": 2.0}
 SWELL = 1.5
 """La densidad (t/m³) y el K de la capa útil (valores sintéticos de prueba, HIPÓTESIS)."""
 MISSING_DENSITY = "«Montera» tiene volumen y le falta el parámetro «res.unit.montera.density»"
+STAGES = "geoblender.res_compute_extraction_stages"
+RATIOS = "geoblender.res_compute_ratios"
+STAGES_DIALOG = {"name": "", "direct": "", "replace": False, "confirm": False,
+                 "in_steps": False}
+"""Los valores por defecto del diálogo de «Por momentos de extracción…» abierto a mano."""
+REST = ((vf.WEST - 1.0, vf.WEST + 1.5), (vf.WEST + 6.0, vf.WEST + 9.0))
+"""La capa de contornos «Resto»: lo que queda fuera de :data:`SCOPE_RING`, en dos franjas."""
+DIRECT = "Directa"
+STAGE_CUBICATIONS = {DIRECT: None, "Explotación": "scope", "Resto": "rest"}
+"""Las cubicaciones por unidades de los momentos (septiembre − octubre; su ámbito): la
+directa, sin ámbito, y dos momentos que la parten (el ámbito y lo que queda fuera)."""
+WITHOUT_UNITS = "Sin unidades"
+"""Una cubicación sin unidades (el ámbito): un momento que deja un hueco."""
+
+
+class _Collection(list):
+    """Una ``CollectionProperty`` simulada para el ``self`` de un diálogo abierto a mano."""
+
+    def add(self) -> SimpleNamespace:
+        item = SimpleNamespace(name="", chosen=False)
+        self.append(item)
+        return item
 
 
 def _module(name: str) -> ModuleType:
@@ -219,6 +251,11 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         sources.mkdir()
         cls.scope = cls.import_layer(sources, "ambito", "Ámbito", [(1, None, [SCOPE_RING])],
                                      role="boundary")
+        cls.rest = cls.import_layer(
+            sources, "resto", "Resto",
+            [(fid, None, [cls.strip_ring(west, east)])
+             for fid, (west, east) in enumerate(REST, start=1)], role="boundary")
+        cls.cubicated: set[str] = set()
         cls.phases = cls.import_layer(
             sources, "fases", "Fases",
             [(fid, name, [cls.strip_ring(west, east)])
@@ -386,7 +423,10 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         simulado) y lo dibuja: el ``self``, lo dibujado y el diálogo pedido."""
         names = frozenset(given)
         cls = self.commands.registered_class(command)
-        defaults = BREAKDOWN_DIALOG if command == BREAKDOWN else DIALOG
+        defaults = {BREAKDOWN: BREAKDOWN_DIALOG, STAGES: STAGES_DIALOG}.get(command, DIALOG)
+        if command == STAGES:
+            given.setdefault("moments", _Collection())
+            given.setdefault("choices", _Collection())
         fake = operator_self(cls, report=lambda kind, text: None,
                              properties=SimpleNamespace(is_property_set=names.__contains__),
                              **{**defaults, **given})
@@ -445,6 +485,54 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         store.save_materials(self.project, handle, column)
         self.declare({"res.unit.capa_util.density": DENSITY["capa_util"],
                       "res.unit.capa_util.swell": SWELL})
+
+    def stage_cubications(self) -> None:
+        """Las cubicaciones de los momentos en V01, una vez por clase, desde un guion: las de
+        :data:`STAGE_CUBICATIONS` por unidades (con la columna de la prueba y la densidad de la
+        montera; ``res.volume`` y ``res.tonnage``) y :data:`WITHOUT_UNITS`, sin ellas."""
+        materials = _module("reserves.materials")
+        with self.project.read() as conn:
+            saved = materials.read_column(conn) is not None
+        if not saved:
+            self.save_column()
+        density = _module("core.params").ParameterStore(self.project).get(
+            "res.unit.montera.density")
+        if density is None or density.value != DENSITY["montera"]:
+            self.declare({"res.unit.montera.density": DENSITY["montera"]})
+        layers = {None: "NONE", "scope": self.scope, "rest": self.rest}
+        for name, layer in STAGE_CUBICATIONS.items():
+            if name not in self.cubicated:
+                self.assertEqual(bpy.ops.geoblender.res_compute_volume_breakdown(
+                    name=name, start=START, final=FINAL, scope_layer=layers[layer],
+                    by_units=True), {"FINISHED"})
+                self.cubicated.add(name)
+        if WITHOUT_UNITS not in self.cubicated:
+            self.assertEqual(bpy.ops.geoblender.res_compute_volume_between_surfaces(
+                name=WITHOUT_UNITS, start=START, final=FINAL, scope_layer=self.scope,
+                difference_grid=False), {"FINISHED"})
+            self.cubicated.add(WITHOUT_UNITS)
+
+    def stage_figures(self, op_uid: str, name: str, **scope: Any) -> dict[str, float]:
+        """Las cifras de la operación ``op_uid`` con el ámbito de la cubicación por momentos
+        ``name`` (y ``volume``, ``unit``)."""
+        found = _module("core.provenance.figures").scope_json({"stages": name, **scope})
+        return dict(self.rows("SELECT key, value FROM gb_figure WHERE operation_uid = ? AND "
+                              "scope = ?", op_uid, found))
+
+    def compare(self, name: str, moments: list[str]) -> tuple[Any, str]:
+        """«Por momentos de extracción…» de ``name`` (los momentos ``moments`` frente a
+        :data:`DIRECT`) por pasos, un evento cada vez (ninguna llamada de más de 0,2 s): la
+        orden, ya terminada, y el uid de su operación."""
+        self.assertEqual(bpy.ops.geoblender.res_compute_extraction_stages(
+            "EXEC_DEFAULT", name=name, moments=[{"name": item} for item in moments],
+            direct=DIRECT, in_steps=True), {"RUNNING_MODAL"})
+        operator = self.running(STAGES)
+        state, calls = self.drive(operator)
+        self.assertEqual(state, {"FINISHED"})
+        self.assertLessEqual(max(calls), CALL_LIMIT_S, calls)
+        ((uid, status, _old, _new),) = self.operations(name, "res.stages")
+        self.assertEqual(status, "done")
+        return operator, uid
 
     def declare(self, values: dict[str, float]) -> None:
         """Declara en el proyecto cada parámetro de ``values`` como HIPÓTESIS (lo da de alta o,
@@ -508,7 +596,7 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         self.assertEqual([item[0] for item in self.panels.surface_items(None, None)],
                          [FINAL, OTHER, START, ELEVATION])
         self.assertEqual([item[0] for item in self.panels.scope_items(None, None)],
-                         ["NONE", self.scope, self.phases, self.overlaps])
+                         ["NONE", self.scope, self.rest, self.phases, self.overlaps])
         self.assertEqual([item.target for item in layout.of_kind("prop")],
                          ["name", "start", "invert", "final", "scope_layer", "difference_grid"])
         labels = [item.text for item in layout.of_kind("label")]
@@ -856,6 +944,158 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         text = self.refused(command=BREAKDOWN, name="Dos maneras", start=START, final=FINAL,
                             bench_height="10", bench_anchor="0", bench_levels="100; 110")
         self.assertIn("no las dos cosas", text)
+
+    # --- Por momentos de extracción… y Ratios… (T24) -------------------------------------------
+
+    def test_extraction_stages_against_the_direct(self) -> None:
+        """RF-011-19, RF-011-20, RF-011-22, RF-011-25 (A13, D-30, D-33, D-36; RNF-011-04): «Por
+        momentos de extracción…» es la orden real de la entrada «011»; su diálogo ofrece las
+        cubicaciones de V01 como momentos (ninguno elegido) y como directa, y dice la
+        tolerancia con su tipo. Dos momentos que parten la directa (el ámbito y lo que queda
+        fuera, por unidades), por pasos: ``res.stages`` en V01.r1 con sus tablas de volúmenes
+        como entradas, la tabla por momento y unidad, la suma igual a la directa (diferencia 0
+        m³ y 0 %) en el desmonte, el terraplén y cada unidad, y ningún aviso. Un momento que
+        deja un hueco y no tiene unidades: la diferencia en m³ y en % y el aviso de cada
+        comparación que pasa de la tolerancia y el de la columna; ninguna cifra se ajusta. Los
+        momentos mal elegidos y el nombre repetido (desde un guion), rechazados sin escribir
+        nada."""
+        self.assertEqual(self.commands.catalog().commands[STAGES].entry, ENTRY)
+        cls = self.commands.registered_class(STAGES)
+        self.assertFalse(self.commands.is_provisional(cls))
+        self.assertIn(cls, self.res_ops.classes)
+        self.assertTrue(issubclass(cls, self.session.ProvenanceAwareOperator))
+        self.assertTrue(issubclass(cls, _module("bl.ops.core")._StepsModal))
+        self.assertEqual((cls.provenance_op_type, cls.bl_options),
+                         (self.provenance.STAGES, {"REGISTER"}))
+        self.stage_cubications()
+        fake, layout, manager = self.dialog(command=STAGES)
+        self.assertEqual(manager.invoke_props_dialog.call_args.kwargs["title"],
+                         "Por momentos de extracción…")
+        names = [item.name for item in fake.choices]
+        self.assertLessEqual({*STAGE_CUBICATIONS, WITHOUT_UNITS}, set(names))
+        self.assertEqual(names, sorted(names, key=str.casefold))
+        self.assertFalse(any(item.chosen for item in fake.choices))
+        self.assertEqual(list(fake.moments), [])
+        self.assertEqual([item.target for item in layout.of_kind("prop")],
+                         ["name", *["chosen"] * len(names)])
+        self.assertEqual([(item.options["property"], item.options["search_property"])
+                          for item in layout.of_kind("prop_search")],
+                         [("direct", "cubications")])
+        self.assertEqual([item.name for item in self.panels.view().cubications], names)
+        labels = [item.text for item in layout.of_kind("label")]
+        self.assertIn("Tolerancia de los momentos: 1 % [ADO] sin confirmar (se cambia en "
+                      "Proyecto ▸ Control ▸ Parámetros del proyecto…)", labels)
+
+        name = "Por momentos"
+        operator, uid = self.compare(name, ["Explotación", "Resto"])
+        roles = dict(self.rows(
+            "SELECT io.role, d.name FROM gb_operation_io AS io JOIN gb_dataset AS d ON "
+            "d.uid = io.item_uid WHERE io.operation_uid = ? AND io.direction = 'in'", uid))
+        self.assertEqual(roles, {"stage_1": "res_vol_explotacion", "stage_2": "res_vol_resto",
+                                 "direct": "res_vol_directa"})
+        ((revision,),) = self.rows("SELECT revision_uid FROM gb_operation WHERE uid = ?", uid)
+        self.assertEqual(self.rows("SELECT version_uid FROM gb_revision WHERE uid = ?",
+                                   revision), [(self.v01.uid,)])
+        for scope, total in (({"volume": "Desmonte"}, 20.0), ({"volume": "Terraplén"}, 11.25),
+                             ({"volume": "Desmonte", "unit": "montera"}, 12.0),
+                             ({"volume": "Desmonte", "unit": "capa_util"}, 8.0)):
+            with self.subTest(**scope):
+                self.assertEqual(self.stage_figures(uid, name, **scope),
+                                 {"res.stages_sum_m3": total, "res.stages_diff_m3": 0.0,
+                                  "res.stages_diff_pct": 0.0})
+        ((locator,),) = self.rows("SELECT locator FROM gb_dataset WHERE name = ? AND status = "
+                                  "'current'", "res_stg_por_momentos")
+        with self.project.read() as conn:
+            rows = _module("reserves.table").read_stage_rows(conn, locator)
+        found = {(item.stage, item.row.quantity, item.row.unit): item.row.value for item in rows
+                 if item.stage is not None}
+        self.assertEqual(found, {
+            ("Explotación", "cut_m3", None): 6.0, ("Explotación", "fill_m3", None): 4.0,
+            ("Explotación", "volume_m3", "montera"): 2.0,
+            ("Explotación", "volume_m3", "capa_util"): 4.0,
+            ("Resto", "cut_m3", None): 14.0, ("Resto", "fill_m3", None): 7.25,
+            ("Resto", "volume_m3", "montera"): 10.0, ("Resto", "volume_m3", "capa_util"): 4.0})
+        self.assertIn(f"«{name}» (V01.r1, en curso): suma de los momentos 20,0 m³, directa "
+                      "«Directa» 20,0 m³, diferencia 0,0 m³ (0,00 %)", operator.report_log)
+        self.assertEqual(len(operator.report_log), 1, operator.report_log)  # ningún aviso
+
+        operator, uid = self.compare("Con hueco", [WITHOUT_UNITS])
+        self.assertEqual(self.stage_figures(uid, "Con hueco", volume="Desmonte"),
+                         {"res.stages_sum_m3": 6.0, "res.stages_diff_m3": -14.0,
+                          "res.stages_diff_pct": -70.0})
+        warnings = operator.report_log[1:]
+        self.assertEqual(len(warnings), 5, warnings)  # la columna, el desmonte, el terraplén y
+        self.assertIn("«Sin unidades» no usa la misma columna de materiales que «Directa»: sus "
+                      "unidades no son comparables.", warnings)  # las dos unidades
+        self.assertTrue(any(text.startswith(
+            "Desmonte: la suma de los momentos (6,0 m³) difiere de la cubicación directa "
+            "«Directa» (20,0 m³) en -14,0 m³ (-70,00 %), más que la tolerancia de 1 %")
+            for text in warnings), warnings)
+
+        values = {"name": "Mal elegidos", "direct": DIRECT}
+        for moments, expected in (
+                ([], "Elija al menos un momento de extracción"),
+                ([DIRECT], "La cubicación directa «Directa» no puede ser también un momento"),
+                (["Resto", "Resto"], "«Resto» se ha elegido dos veces como momento"),
+                (["Resto", "Ninguna"], "No hay ninguna cubicación «Ninguna» en V01"),
+                ([f"M{index}" for index in range(11)], "como mucho 10 momentos")):
+            with self.subTest(momentos=moments):
+                text = self.refused(command=STAGES, moments=[{"name": item} for item in moments],
+                                    **values)
+                self.assertIn(expected, text)
+        text = self.refused(command=STAGES, name="Sin directa", moments=[{"name": "Resto"}])
+        self.assertIn("Elija la cubicación directa", text)
+        text = self.refused(command=STAGES, name=name, direct=DIRECT,
+                            moments=[{"name": "Explotación"}, {"name": "Resto"}])
+        self.assertIn(f"Ya hay una cubicación por momentos «{name}» en V01", text)
+        self.assertEqual(self.operations("Mal elegidos", "res.stages"), [])
+
+    def test_ratios_open_the_table_of_the_cubication(self) -> None:
+        """RF-011-18, RF-011-23 (D-35, D-36): «Ratios…» es la orden real de la entrada «011»:
+        con una cubicación por unidades de V01, deja elegida su tabla en la ventana de la
+        cubicación con el filtro de relaciones (las filas de relaciones de sus toneladas: la
+        estéril/útil del total, 12 m³ de montera frente a 8 m³ de capa útil) y la abre, y dice
+        su relación en m³/m³ y en t/t; sin decir cuál, la elegida en el panel. Con una sin
+        unidades, lo dice y no abre nada."""
+        self.assertEqual(self.commands.catalog().commands[RATIOS].entry, ENTRY)
+        cls = self.commands.registered_class(RATIOS)
+        self.assertFalse(self.commands.is_provisional(cls))
+        self.assertIn(cls, self.res_ops.classes)
+        self.assertEqual(cls.bl_options, {"REGISTER"})
+        self.stage_cubications()
+        view = self.panels.view()
+        view.cubication, view.quantities = "", "ALL"
+        reports: list[tuple[str, str]] = []
+        fake = operator_self(cls, report=lambda kind, text: reports.append((min(kind), text)),
+                             cubication=DIRECT)
+        self.panel.reset_mock()
+        self.assertEqual(cls.execute(fake, bpy.context), {"FINISHED"})
+        self.assertEqual((view.cubication, view.quantities), (DIRECT, "RATIOS"))
+        self.panel.assert_called_once_with(PANEL)
+        listed = {item.name: (item.units, item.tonnage) for item in view.cubications}
+        self.assertEqual((listed[DIRECT], listed[WITHOUT_UNITS]), ((True, True), (False, False)))
+        ratios = _module("reserves.store").cubication_ratios(self.project, DIRECT,
+                                                             version=self.v01.uid)
+        (total,) = [item for item in ratios if item.quantity == "waste_ratio_m3"
+                    and item.domain == "*" and item.bench is None]
+        self.assertEqual(total.value, 12.0 / 8.0)
+        self.assertEqual(reports, [("INFO", "Relación estéril/útil de «Directa»: 1,50 m³/m³ · "
+                                            "1,35 t/t")])
+
+        view.cubication = "Explotación"
+        fake.cubication, reports[:] = "", []
+        self.assertEqual(cls.execute(fake, bpy.context), {"FINISHED"})
+        self.assertEqual((fake.cubication, view.cubication), ("Explotación", "Explotación"))
+
+        self.panel.reset_mock()
+        fake.cubication, reports[:] = WITHOUT_UNITS, []
+        self.assertEqual(cls.execute(fake, bpy.context), {"CANCELLED"})
+        ((kind, text),) = reports
+        self.assertEqual(kind, "WARNING")
+        self.assertIn("«Sin unidades» se cubicó sin unidades: no tiene relaciones estéril/útil",
+                      text)
+        self.assertEqual(view.cubication, "Explotación")
+        self.panel.assert_not_called()
 
 
 if __name__ == "__main__":

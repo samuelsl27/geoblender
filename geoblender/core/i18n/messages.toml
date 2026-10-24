@@ -5818,3 +5818,94 @@ es = "Toneladas de «{name}» ({revision}, en curso): sin total de toneladas"
 
 ["Tonnage of «{name}» cancelled: its volumes are already saved; nothing has been left half-done"]
 es = "Toneladas de «{name}» canceladas: sus volúmenes ya están guardados; no ha quedado nada a medias"
+
+# Spec 011, T24: Por momentos de extracción… y Ratios…
+["Name of the cubication by stages, unique in the active version (empty: «<direct> by stages»)"]
+es = "Nombre de la cubicación por momentos, único en la versión activa (vacío: «<directa> por momentos»)"
+
+["Extraction stages"]
+es = "Momentos de extracción"
+
+["Cubications of the active version that are the extraction stages (operation, splitting, stock…), in their order"]
+es = "Cubicaciones de la versión activa que son los momentos de extracción (explotación, desdoblado, stock…), en su orden"
+
+["Direct cubication"]
+es = "Cubicación directa"
+
+["Cubication of the active version of the whole extraction, which the sum of the stages is compared with"]
+es = "Cubicación de la versión activa de toda la extracción, con la que se compara la suma de los momentos"
+
+["Replace the cubication by stages of the same name of the active version"]
+es = "Sustituir la cubicación por momentos del mismo nombre de la versión activa"
+
+["Tolerance of the stages: {value} (it is changed in {path})"]
+es = "Tolerancia de los momentos: {value} (se cambia en {path})"
+
+["There are fewer than two cubications in {version}: compute the extraction stages and the direct cubication first ({path})"]
+es = "Hay menos de dos cubicaciones en {version}: cubique antes los momentos de extracción y la cubicación directa ({path})"
+
+["Compare"]
+es = "Comparar"
+
+["Extraction stages (at most {count})"]
+es = "Momentos de extracción (como mucho {count})"
+
+["Choose the direct cubication"]
+es = "Elija la cubicación directa"
+
+["Choose at least one extraction stage"]
+es = "Elija al menos un momento de extracción"
+
+["At most {count} extraction stages can be compared, not {number}"]
+es = "Se pueden comparar como mucho {count} momentos de extracción, no {number}"
+
+["«{name}» is chosen twice as an extraction stage"]
+es = "«{name}» se ha elegido dos veces como momento de extracción"
+
+["The direct cubication «{name}» cannot also be an extraction stage"]
+es = "La cubicación directa «{name}» no puede ser también un momento de extracción"
+
+["{direct} by stages"]
+es = "{direct} por momentos"
+
+["There is already a cubication by stages «{name}» in {version}: replace it?"]
+es = "Ya hay una cubicación por momentos «{name}» en {version}: ¿sustituirla?"
+
+["There is already a cubication by stages «{name}» in {version}"]
+es = "Ya hay una cubicación por momentos «{name}» en {version}"
+
+["There is already a cubication by stages «{name}» in {version}: to replace it, repeat the order with «Replace» (replace=True)"]
+es = "Ya hay una cubicación por momentos «{name}» en {version}: para sustituirla, repita la orden con «Sustituir» (replace=True)"
+
+["«{name}» ({revision}, in progress): sum of the stages {sum} m³, direct «{direct}» {direct_volume} m³, difference {difference} m³ ({percent})"]
+es = "«{name}» ({revision}, en curso): suma de los momentos {sum} m³, directa «{direct}» {direct_volume} m³, diferencia {difference} m³ ({percent})"
+
+["Comparing «{name}»… {percent} % · Esc: cancel"]
+es = "Comparando «{name}»… {percent} % · Esc: cancelar"
+
+["Cubication by stages cancelled: nothing has been left half-done"]
+es = "Cubicación por momentos cancelada: no ha quedado nada a medias"
+
+["Cubication"]
+es = "Cubicación"
+
+["Cubication of the active version whose ratios are shown (empty: the one chosen in the panel or the last one by units)"]
+es = "Cubicación de la versión activa cuyas relaciones se enseñan (vacía: la elegida en el panel o la última por unidades)"
+
+["There are no cubications in {version}: compute one first ({path})"]
+es = "No hay cubicaciones en {version}: cubique antes una ({path})"
+
+["«{name}» was computed without units: it has no waste to useful ratios (compute it by units: {path})"]
+es = "«{name}» se cubicó sin unidades: no tiene relaciones estéril/útil (cubíquela por unidades: {path})"
+
+["«{name}» has no tonnage: its ratios come with it (compute it again by units: {path})"]
+es = "«{name}» no tiene toneladas: sus relaciones salen con ellas (cubíquela otra vez por unidades: {path})"
+
+["Waste to useful ratio of «{name}»: {volume} · {mass}"]
+es = "Relación estéril/útil de «{name}»: {volume} · {mass}"
+
+["All the data"]
+es = "Todos los datos"
+
+["Waste to useful ratios"]
+es = "Relaciones estéril/útil"

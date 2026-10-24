@@ -14,7 +14,8 @@ Así la tabla no cambia de columnas con los repartos, solo de filas.
 - :class:`Row` y :func:`row`: una fila (con la unidad de su dato); :data:`COLUMNS`, sus columnas
   tipadas con su título (``gpkg_data_columns``, :data:`TITLES`); :func:`create_table` e
   :func:`insert_sql`, las sentencias de una tabla ``res_vol_``, ``res_ton_`` o ``res_stg_``.
-- :func:`read_rows`, :func:`filter_rows` y :func:`choices`: leerla y filtrarla para el panel.
+- :func:`read_rows`, :func:`filter_rows` y :func:`choices`: leerla y filtrarla para el panel;
+  :func:`ratio_rows`, las filas del filtro de relaciones (:data:`RATIO_QUANTITIES`, T24).
 - :func:`unit_volumes`: los m³ por unidad de la tabla de volúmenes, lo que lee ``res.tonnage``
   (D-16: sin releer las superficies); :func:`tonnage_rows`, la tabla de las toneladas (por
   partes, :func:`tonnage_parts`).
@@ -48,6 +49,7 @@ __all__ = [
     "NOTE_SEPARATOR",
     "OUTSIDE_DOMAINS",
     "QUANTITIES",
+    "RATIO_QUANTITIES",
     "STAGE_COLUMNS",
     "STAGE_COLUMN_NAMES",
     "STAGE_TITLES",
@@ -61,6 +63,7 @@ __all__ = [
     "create_table",
     "filter_rows",
     "insert_sql",
+    "ratio_rows",
     "read_rows",
     "read_stage_rows",
     "row",
@@ -175,6 +178,12 @@ QUANTITIES: Mapping[str, Quantity] = MappingProxyType({item.name: item for item 
     Quantity("stages_fill_diff_pct", "%", "res.stages_diff_pct", _FILL + _STAGES_PCT),
 )})
 """Los datos de las tablas de ``res`` por nombre."""
+RATIO_QUANTITIES: tuple[str, ...] = ("useful_m3", "waste_m3", "waste_ratio_m3", "useful_t",
+                                     "waste_t", "waste_ratio_t", "intrinsic_ratio_m3",
+                                     "intrinsic_ratio_t")
+"""Los datos del filtro de relaciones (T24; RF-011-18, D-35): la relación estéril/útil en m³/m³
+(in situ) y en t/t con lo útil y lo estéril que relaciona, y la intrínseca de cada compuesta;
+salen de la tabla de toneladas (``res_ton_``)."""
 
 
 def _optional_text(value: object, what: str) -> str | None:
@@ -344,6 +353,13 @@ def filter_rows(rows: Iterable[Row], *, domain: object = ANY, bench: object = AN
         ("quantity", quantity)) if value is not ANY]
     return tuple(item for item in rows
                  if all(getattr(item, name) == value for name, value in wanted))
+
+
+def ratio_rows(rows: Iterable[Row]) -> tuple[Row, ...]:
+    """Las filas de ``rows`` del filtro de relaciones (:data:`RATIO_QUANTITIES`), en su
+    orden (T24; RF-011-18, D-35)."""
+    wanted = frozenset(RATIO_QUANTITIES)
+    return tuple(item for item in rows if item.quantity in wanted)
 
 
 @dataclass(frozen=True, slots=True)

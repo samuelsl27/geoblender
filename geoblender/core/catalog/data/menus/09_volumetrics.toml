@@ -65,7 +65,7 @@ label.en = "By extraction stages…"
 label.es = "Por momentos de extracción…"
 description.en = "Volumes by the stages of the extraction"
 description.es = "Volúmenes por los momentos de la extracción"
-entry = "R-38"
+entry = "011"
 action = "D"
 frequency = 2
 
@@ -93,7 +93,7 @@ label.en = "Ratios…"
 label.es = "Ratios…"
 description.en = "Waste to ore ratios"
 description.es = "Ratios estéril/mineral"
-entry = "R-38"
+entry = "011"
 action = "A"
 frequency = 2
 
