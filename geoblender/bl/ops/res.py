@@ -103,7 +103,8 @@ la entrada «011» de ``core/catalog/data/entries.toml``. Ya están las seis (:d
   repetido, que pregunta si se sustituye) y lanza ``res.stages`` (``reserves.store.stages_run``,
   de sus tablas de volúmenes) por pasos en su modal, o de una vez desde un guion; al terminar,
   la suma, la directa y la diferencia en m³ y en %, y el aviso de lo que pasa de la tolerancia
-  (ninguna cifra se ajusta).
+  (ninguna cifra se ajusta); desde la interfaz, la ventana de la cubicación con su tabla por
+  momento y unidad (T38). Su diálogo no ofrece las cubicaciones por momentos.
 - **Ratios…** (T24; RF-011-18, RF-011-23; D-35): :class:`GEOBLENDER_OT_res_compute_ratios` (una
   acción directa; no es una operación) deja elegida la tabla de una cubicación de la versión
   activa (la pedida, la elegida en el panel o la última por unidades) con el filtro de relaciones
@@ -1742,14 +1743,8 @@ class _SurfacesCommand:
         """La ventana de la cubicación con la que acaba de cubicar elegida, desde la interfaz
         (``_call_panel``; T25): su tabla la lee la ventana al dibujarse
         (``bl.ui.res_panels.show_later``), no esta llamada del modal (RNF-011-04)."""
-        if (not self.OPENS_WINDOW or not self.in_steps
-                or getattr(context, "window", None) is None):
-            return
-        res_panels.show_later(getattr(self, "_name", ""))
-        try:
-            _call_panel(res_panels.VOLUMETRICS_PANEL)
-        except RuntimeError:
-            LOGGER.warning("No se pudo abrir la ventana de la cubicación", exc_info=True)
+        if self.OPENS_WINDOW and self.in_steps:
+            _open_volumetrics(context, getattr(self, "_name", ""))
 
     # --- En pasos (_StepsModal) ---------------------------------------------------------------
 
@@ -1832,6 +1827,20 @@ class _SurfacesCommand:
         except Exception as exc:  # noqa: BLE001 - los pasos cerrados no dejan nada a medias
             LOGGER.error("«%s» se ha parado", getattr(self, "_name", ""), exc_info=exc)
             return self._fail(context, error_text(exc))
+
+
+def _open_volumetrics(context: Any, name: str) -> None:
+    """Desde la interfaz (con ventana), la ventana de la cubicación con ``name`` elegida, la que
+    acaba de terminar una orden por pasos (``_call_panel``; T25, T38): su tabla la lee la
+    ventana al dibujarse (``bl.ui.res_panels.show_later``), no la última llamada del modal
+    (RNF-011-04)."""
+    if getattr(context, "window", None) is None:
+        return
+    res_panels.show_later(name)
+    try:
+        _call_panel(res_panels.VOLUMETRICS_PANEL)
+    except RuntimeError:
+        LOGGER.warning("No se pudo abrir la ventana de la cubicación", exc_info=True)
 
 
 class GEOBLENDER_OT_res_compute_volume_between_surfaces(_SurfacesCommand, ProvenanceAwareOperator,
@@ -2324,7 +2333,8 @@ class GEOBLENDER_OT_res_compute_extraction_stages(ProvenanceAwareOperator, _Step
             return {"CANCELLED"}
         project = SESSION.project
         try:
-            found = res_panels.fill_volumetrics(project, scene_versions.active_version())
+            found = _volumes_only(res_panels.fill_volumetrics(
+                project, scene_versions.active_version()))
             self._tolerance = tolerance_text(project)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, error_text(exc))
@@ -2360,11 +2370,9 @@ class GEOBLENDER_OT_res_compute_extraction_stages(ProvenanceAwareOperator, _Step
         column = layout.column(align=True)
         for row in self.choices:
             column.prop(row, "chosen", text=row.name, translate=False)
-        shown = res_panels.view()
-        if shown is not None:
-            layout.prop_search(data=self, property="direct", search_data=shown,
-                               search_property="cubications", text=tr("Direct cubication"),
-                               translate=False)
+        layout.prop_search(data=self, property="direct", search_data=self,
+                           search_property="choices", text=tr("Direct cubication"),
+                           translate=False)
         tolerance = getattr(self, "_tolerance", "")
         if tolerance:
             layout.label(text=tolerance, translate=False)
@@ -2506,6 +2514,7 @@ class GEOBLENDER_OT_res_compute_extraction_stages(ProvenanceAwareOperator, _Step
             return None
         self._report_result(step.result)
         self._done(context)
+        _open_volumetrics(context, getattr(self, "_name", ""))  # su tabla, en la ventana (T38)
         return {"FINISHED"}
 
     def modal(self, context: Any, event: Any) -> set[str]:
@@ -2514,6 +2523,12 @@ class GEOBLENDER_OT_res_compute_extraction_stages(ProvenanceAwareOperator, _Step
         except Exception as exc:  # noqa: BLE001 - los pasos cerrados no dejan nada a medias
             LOGGER.error("«%s» se ha parado", getattr(self, "_name", ""), exc_info=exc)
             return self._fail(context, error_text(exc))
+
+
+def _volumes_only(found: tuple[Any, ...]) -> tuple[Any, ...]:
+    """Las cubicaciones de ``found`` (``reserves.store.Cubication``) sin las cubicaciones por
+    momentos (T38): lo que se compara por momentos y de lo que «Ratios…» da relaciones."""
+    return tuple(item for item in found if not item.stages)
 
 
 def _total_ratio(rows: tuple[Any, ...], quantity: str) -> str:
@@ -2602,7 +2617,7 @@ class GEOBLENDER_OT_res_compute_ratios(ProvenanceAwareOperator, bpy.types.Operat
         version = scene_versions.active()
         code = "" if version is None else version.code
         try:
-            found = res_panels.fill_volumetrics(project, version_uid)
+            found = _volumes_only(res_panels.fill_volumetrics(project, version_uid))
             shown = res_panels.view()
             chosen = _ratios_cubication(found, self.cubication.strip(),
                                         "" if shown is None else shown.cubication, code)

@@ -38,7 +38,9 @@ la sesión, su versión activa y el idioma de Geoblender: la orden las vuelve a 
 diálogo (:func:`refresh_choices`) y la escucha de los indicadores, cuando cambia el proyecto.
 
 **Las cubicaciones de la versión activa** (T24): :func:`fill_volumetrics` las deja en la vista
-(lo que ofrece «Por momentos de extracción…» como momentos y directa) y :func:`show_cubication`
+(lo que ofrece «Por momentos de extracción…» como momentos y directa; desde la T38 también las
+cubicaciones por momentos, con su tabla por momento y unidad, que esos diálogos no ofrecen; F-3)
+y :func:`show_cubication`
 deja elegida una con el filtro de datos de su tabla (todos o, desde «Ratios…», las relaciones;
 D-35).
 
@@ -619,14 +621,17 @@ def stale_text() -> str:
 
 def fill_volumetrics(project: Any, version_uid: str | None) -> tuple[Any, ...]:
     """Vuelve a leer de ``project`` las cubicaciones de la versión activa ``version_uid``
-    (``reserves.store.cubications``; sin versión, ninguna) y las deja en la vista
-    (``cubications``: su nombre, si reparte por unidades, si tiene toneladas, su revisión como
-    se lee, :func:`status_text`, y si está obsoleta); la elegida sigue elegida si sigue en la
+    (``reserves.store.cubications``, también las cubicaciones por momentos, T38; sin versión,
+    ninguna) y las deja en la vista (``cubications``: su nombre, si reparte por unidades, si
+    tiene toneladas, si es por momentos, su revisión como se lee, :func:`status_text`, y si
+    está obsoleta); quien ofrece solo las cubicaciones (los momentos y la directa, «Ratios…»)
+    deja fuera las de ``stages``. La elegida sigue elegida si sigue en la
     lista y, si no, ninguna (y su tabla se olvida). No lee ninguna tabla. Devuelve las leídas.
     Si no se puede leer, el error sigue y la vista queda como estaba."""
     from ...reserves import store  # al usarlo: habilitar no lo carga
 
-    found = () if not version_uid else store.cubications(project, version=version_uid)
+    found = () if not version_uid else store.cubications(project, version=version_uid,
+                                                         stages=True)
     shown = view()
     if shown is None:
         return found
@@ -636,6 +641,7 @@ def fill_volumetrics(project: Any, version_uid: str | None) -> tuple[Any, ...]:
         for item in found:
             row = shown.cubications.add()
             row.name, row.units, row.tonnage = item.name, item.units, item.tonnage is not None
+            row.stages = item.stages
             row.revision, row.stale = item.revision, item.stale
             row.status = status_text(item, editable=editable)
         names = [item.name for item in found]
@@ -731,7 +737,7 @@ def read_table(project: Any, version_uid: str, name: str) -> CubicationTable:
     for item in items:
         row = item.row
         bench = row.bench
-        where: list[str] = []
+        where: list[str] = [] if item.stage is None else [item.stage]
         if row.domain != res_table.ALL_DOMAINS:
             where.append(_domain_text(row.domain))
         if bench is not None:

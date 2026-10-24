@@ -159,10 +159,12 @@ class GEOBLENDER_PG_res_moment_choice(bpy.types.PropertyGroup):
 class GEOBLENDER_PG_res_cubication(bpy.types.PropertyGroup):
     """Una cubicación de la versión activa ya leída (T24; ``name``: su nombre; si reparte por
     unidades y si tiene su tabla de toneladas) y, ya presentado (T25), su revisión («V01.r1»),
-    cómo se lee («V01.r1 en curso», «V01 vigente: r1»…) y si está obsoleta."""
+    cómo se lee («V01.r1 en curso», «V01 vigente: r1»…) y si está obsoleta; ``stages``, si es
+    una cubicación por momentos (T38)."""
 
     units: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
     tonnage: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
+    stages: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
     revision: StringProperty(options=_STATIC)  # type: ignore[valid-type]
     status: StringProperty(options=_STATIC)  # type: ignore[valid-type]
     stale: BoolProperty(options=_STATIC)  # type: ignore[valid-type]

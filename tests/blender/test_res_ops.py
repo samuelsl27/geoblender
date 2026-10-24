@@ -1045,8 +1045,9 @@ class ResBetweenSurfacesTest(unittest.TestCase):
                          ["name", *["chosen"] * len(names)])
         self.assertEqual([(item.options["property"], item.options["search_property"])
                           for item in layout.of_kind("prop_search")],
-                         [("direct", "cubications")])
-        self.assertEqual([item.name for item in self.panels.view().cubications], names)
+                         [("direct", "choices")])  # sin las cubicaciones por momentos (T38)
+        self.assertEqual([item.name for item in self.panels.view().cubications
+                          if not item.stages], names)
         labels = [item.text for item in layout.of_kind("label")]
         self.assertIn("Tolerancia de los momentos: 1 % [ADO] sin confirmar (se cambia en "
                       "Proyecto ▸ Control ▸ Parámetros del proyecto…)", labels)
@@ -1114,6 +1115,100 @@ class ResBetweenSurfacesTest(unittest.TestCase):
                             moments=[{"name": "Explotación"}, {"name": "Resto"}])
         self.assertIn(f"Ya hay una cubicación por momentos «{name}» en V01", text)
         self.assertEqual(self.operations("Mal elegidos", "res.stages"), [])
+
+    def test_stages_table_in_the_panel_and_in_the_csv(self) -> None:
+        """RF-011-19, RF-011-23, RF-011-24 (F-3 de la verificación de la 011; revisa la decisión
+        de la T25): «Por momentos de extracción…» abre al terminar la ventana de la cubicación con
+        la suya elegida, que la lista de la versión activa enseña con su revisión; su tabla, la
+        de cada momento y unidad, con su suma, la directa y su diferencia en m³ y en % (con la
+        nota de la tolerancia y sus marcas), se filtra por unidad sin leer el proyecto, y
+        «Exportar CSV…» la escribe con una cabecera con los momentos y la directa (sus datos y
+        sus hashes) y la tolerancia, y una columna «Momento». Los momentos y la directa del
+        diálogo siguen siendo solo las cubicaciones, no las cubicaciones por momentos."""
+        self.stage_cubications()
+        name = "Momentos con solape"
+        view = self.panels.view()
+        self.panel.reset_mock()
+        _operator, uid = self.compare(name, ["Explotación", "Resto", WITHOUT_UNITS])
+        self.panel.assert_called_once_with(PANEL)
+        self.assertEqual(view.cubication, name)
+        if bpy.app.timers.is_registered(self.panels.volumetrics_tick):  # sin correr, en -b
+            bpy.app.timers.unregister(self.panels.volumetrics_tick)
+        self.assertIsNone(self.panels.volumetrics_tick())  # lo que lee la ventana al dibujarse
+        listed = {item.name: item for item in view.cubications}
+        self.assertEqual((listed[name].status, listed[name].units, listed[name].tonnage),
+                         ("V01.r1 en curso", False, False))
+        self.assertTrue(listed[name].stages)
+        self.assertFalse(listed[DIRECT].stages)
+        self.assertEqual(view.cubication_index, list(listed).index(name))
+
+        rows = self.by_scope(list(view.rows))  # los totales de cada momento y su comparación
+        self.assertEqual({key: row.value for key, row in rows.items()}, {
+            ("Explotación", "cut_m3"): "6 m³", ("Explotación", "fill_m3"): "4 m³",
+            ("Resto", "cut_m3"): "14 m³", ("Resto", "fill_m3"): "7 m³",
+            (WITHOUT_UNITS, "cut_m3"): "6 m³", (WITHOUT_UNITS, "fill_m3"): "4 m³",
+            ("", "stages_sum_m3"): "26 m³", ("", "stages_direct_m3"): "20 m³",
+            ("", "stages_diff_m3"): "6 m³", ("", "stages_diff_pct"): "30,00 %",
+            ("", "stages_fill_sum_m3"): "15 m³", ("", "stages_fill_direct_m3"): "11 m³",
+            ("", "stages_fill_diff_m3"): "4 m³", ("", "stages_fill_diff_pct"): "35,56 %"})
+        pct = rows[("", "stages_diff_pct")]
+        self.assertEqual((pct.name, pct.badge, pct.notes),
+                         ("Desmonte: diferencia relativa de los momentos con la cubicación "
+                          "directa", "[CAL]", "más que la tolerancia"))
+        self.assertTrue(all(UNCONFIRMED in row.marks for row in rows.values()), rows)
+        with mock.patch.object(self.project, "read", side_effect=AssertionError("al filtrar")):
+            unit = self.by_scope(self.filtered(unit="Capa útil"))
+        self.assertEqual({key: row.value for key, row in unit.items()}, {
+            ("Explotación · Capa útil", "volume_m3"): "4 m³",
+            ("Resto · Capa útil", "volume_m3"): "4 m³",
+            ("Capa útil", "stages_sum_m3"): "8 m³", ("Capa útil", "stages_direct_m3"): "8 m³",
+            ("Capa útil", "stages_diff_m3"): "0 m³", ("Capa útil", "stages_diff_pct"): "0,00 %"})
+        self.assertEqual(unit[("Capa útil", "stages_diff_pct")].notes, "")
+        lines = [line.name for line in view.lines]
+        self.assertEqual(lines[0], f"{name} · V01.r1 en curso")
+        self.assertIn(f"Cubicación por momentos de extracción (V01.r1) · {UNCONFIRMED}", lines)
+        label = _module("core.params").parameter_label("res.stages_tolerance_pct", "es")
+        self.assertEqual([line.name for line in view.parameters],
+                         [f"{label}: 1 % [ADO] sin confirmar · proyecto"])
+
+        outside = Path(tempfile.mkdtemp(prefix="gb-011-t38-"))
+        self.addCleanup(remove_tree, outside)
+        target = outside / "momentos.csv"
+        self.assertEqual(bpy.ops.geoblender.res_export_csv(cubication=name,
+                                                           filepath=str(target)), {"FINISHED"})
+        data = target.read_bytes()
+        self.assertTrue(data.startswith(f"﻿Cubicación;{name}\r\n".encode()))
+        written = [line.split(";") for line in data.decode("utf-8-sig").split("\r\n")]
+        inputs = {row[1]: (row[2], row[3]) for row in written if row[0] == "Entrada"}
+        self.assertEqual({key: dataset for key, (dataset, _sha) in inputs.items()}, {
+            "Momento 1 «Explotación»": "res_vol_explotacion",
+            "Momento 2 «Resto»": "res_vol_resto",
+            f"Momento 3 «{WITHOUT_UNITS}»": "res_vol_sin_unidades",
+            f"Cubicación directa «{DIRECT}»": "res_vol_directa"})
+        self.assertTrue(all(re.fullmatch("[0-9a-f]{64}", sha) for _d, sha in inputs.values()))
+        (parameter,) = [row for row in written if row[0] == "Parámetro"]
+        self.assertEqual(parameter[2:8], ["res.stages_tolerance_pct", "1", "%", "ADOPTADO",
+                                          "sin confirmar", "proyecto"])
+        (operation,) = [row for row in written if row[0] == "Operación"]
+        self.assertEqual(operation[1:3], ["Cubicación por momentos de extracción", "V01.r1"])
+        header = written.index(["Tabla", "Momento", "Dominio", "Cota inferior de la rodaja (m)",
+                                "Cota superior de la rodaja (m)", "Unidad", "Componente",
+                                "Nombre", "Clave del dato", "Dato", "Valor", "Unidad de medida",
+                                "Tipo", "Marcas", "Nota"])
+        table = [row for row in written[header + 1:] if row != [""]]
+        values = {(row[1], row[5], row[8]): (row[10], row[14]) for row in table}
+        self.assertEqual(len(values), len(table))
+        self.assertEqual(values[("Resto", "", "fill_m3")], ("7,25", ""))
+        self.assertEqual(values[("Resto", "capa_util", "volume_m3")], ("4", ""))
+        self.assertEqual(values[("", "", "stages_diff_pct")], ("30", "más que la tolerancia"))
+        self.assertEqual(values[("", "", "stages_fill_diff_pct")][0], "35,55555555555556")
+        self.assertTrue(all(row[0] == "Cubicación por momentos" and row[12] == "CALCULADO"
+                            and UNCONFIRMED in row[13] for row in table), table)
+
+        fake, _layout, _manager = self.dialog(command=STAGES)
+        self.assertNotIn(name, [item.name for item in fake.choices])
+        self.assertIn(DIRECT, [item.name for item in fake.choices])
+        self.assertEqual(len(self.operations(name, "res.stages")), 1, uid)
 
     def test_ratios_open_the_table_of_the_cubication(self) -> None:
         """RF-011-18, RF-011-23 (D-35, D-36): «Ratios…» es la orden real de la entrada «011»:

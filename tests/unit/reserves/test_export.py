@@ -283,6 +283,28 @@ class ExportTest(fx.ResProjectCase):
             with self.subTest(quantity=name):
                 self.assertNotEqual(i18n.translate("es", quantity.label), quantity.label)
 
+    def test_csv_of_a_cubication_by_stages_has_the_stage_column(self) -> None:
+        """RF-011-19, RF-011-24 (T38; F-3 de la verificación): la tabla del CSV de una
+        cubicación por momentos lleva «Momento» tras «Tabla»: el momento de cada fila y, vacío,
+        en las que comparan la suma con la directa (con su nota de la tolerancia); la de una
+        cubicación, no. Los papeles de los momentos y de la directa, en español."""
+        label = "Cubicación por momentos"
+        rows = (export.ExportRow(label, table.row("cut_m3", 6.0), "", (UNCONFIRMED,),
+                                 "Explotación"),
+                export.ExportRow(label, table.row(
+                    "stages_diff_pct", 30.0, notes=("res.note_stages_over_tolerance",)), "",
+                    (UNCONFIRMED,)))
+        found = dataclasses.replace(self.export, rows=rows, stages=True)
+        _head, lines = _read_csv(export.csv_bytes(found))
+        self.assertEqual(lines[0], [TABLE_HEADER[0], "Momento", *TABLE_HEADER[1:]])
+        self.assertEqual(lines[1][:2] + lines[1][8:11], [label, "Explotación", "cut_m3",
+                                                         "Desmonte", "6"])
+        self.assertEqual(lines[2][:2] + [lines[2][10], lines[2][-1]],
+                         [label, "", "30", "más que la tolerancia"])
+        self.assertEqual(_read_csv(export.csv_bytes(self.export))[1][0], TABLE_HEADER)
+        self.assertEqual((export._role_label("stage_2", {}), export._role_label("direct", {})),
+                         ("Momento 2", "Cubicación directa"))
+
     def test_rows_of_the_panel_in_the_language_of_geoblender(self) -> None:
         """RF-011-23 (T25; D-16): lo que lee el panel de la cubicación, en el idioma de
         Geoblender (en inglés, las operaciones, las marcas y el ámbito «project» de un

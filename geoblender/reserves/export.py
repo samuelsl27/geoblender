@@ -28,6 +28,11 @@ exponente: el decimal más corto que vuelve al mismo float64 (el valor exacto, `
   (``reserves.table.QUANTITIES``), el valor (vacío si no se puede dar), su unidad, su tipo
   (CALCULADO) y las marcas de su operación de hoy (RF-008-31: «depende de una hipótesis»,
   «depende de un valor sin confirmar», «obsoleta»), y sus notas («sin densidad»…).
+- **Una cubicación por momentos** (T38; RF-011-19, F-3 de la verificación): su tabla
+  (``res_stg_``) con una columna más tras «Tabla», «Momento» (:data:`STAGE_TABLE_HEADER`: el
+  momento de cada fila; vacío en las que comparan su suma con la directa), y en la cabecera su
+  ``res.stages``, cada momento y la directa («Momento 1 «Explotación»», «Cubicación directa
+  «Directa»»: su tabla de volúmenes y el hash consumido) y la tolerancia que leyó.
 
 **El panel de la cubicación** (T25; RF-011-23) lee lo mismo (:func:`cubication_export` con el
 idioma de Geoblender) y enseña sus filas sin las de las toneladas que repiten los m³ in situ de
@@ -86,7 +91,7 @@ from ..gis.store import project_references
 from . import provenance as declared
 from .materials import read_column
 from .messages import MESSAGES, ResError, render
-from .table import ALL_DOMAINS, OUTSIDE_DOMAINS, QUANTITIES, Row, read_rows
+from .table import ALL_DOMAINS, OUTSIDE_DOMAINS, QUANTITIES, Row, read_rows, read_stage_rows
 from .volumes import FINAL, OUTSIDE_SCOPE, START
 
 __all__ = [
@@ -95,6 +100,7 @@ __all__ = [
     "DIFFERENCE_SUFFIXES",
     "ENCODING",
     "SEPARATOR",
+    "STAGE_TABLE_HEADER",
     "TABLE_HEADER",
     "CubicationExport",
     "ExportHeader",
@@ -133,6 +139,8 @@ TABLE_HEADER: tuple[str, ...] = (
     "Tipo", "Marcas", "Nota",
 )
 """Los títulos de la tabla del CSV, en su orden."""
+STAGE_TABLE_HEADER: tuple[str, ...] = (TABLE_HEADER[0], "Momento", *TABLE_HEADER[1:])
+"""Los de la tabla de una cubicación por momentos: «Momento» tras «Tabla» (T38)."""
 
 _TARGET = "destino"
 _EXTENSION = "extensión"
@@ -153,8 +161,11 @@ _ROLES = {
     declared.VOLUMES_ROLE: "Tabla de volúmenes",
     declared.SCOPE_ROLE: "Ámbito",
     declared.DOMAINS_ROLE: "Capa de dominios",
+    declared.DIRECT_ROLE: "Cubicación directa",
 }
 _UNIT_ROLES = (("base_", "Base de"), ("thickness_", "Espesor de"))
+_STAGE_ROLE = "stage_"
+"""El comienzo del papel de la tabla de un momento (``reserves.provenance.stage_role``)."""
 
 
 class ExportProject(GuardProject, Protocol):
@@ -242,20 +253,25 @@ class ExportHeader:
 @dataclass(frozen=True, slots=True)
 class ExportRow:
     """Una fila de la tabla del CSV: la tabla de la que sale (su nombre en español), la fila
-    registrada, el nombre de su unidad o componente y las marcas de su operación."""
+    registrada, el nombre de su unidad o componente, las marcas de su operación y, en una
+    cubicación por momentos, su momento (``None``: las que comparan la suma con la directa, o
+    no es de momentos)."""
 
     table: str
     row: Row
     name: str
     marks: tuple[str, ...]
+    stage: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class CubicationExport:
-    """Lo que escribe el CSV de una cubicación: su cabecera y sus filas."""
+    """Lo que escribe el CSV de una cubicación: su cabecera, sus filas y si es una cubicación
+    por momentos (su tabla lleva la columna «Momento», T38)."""
 
     header: ExportHeader
     rows: tuple[ExportRow, ...]
+    stages: bool = False
 
     @property
     def default_name(self) -> str:
@@ -296,6 +312,8 @@ def _role_label(role: str | None, names: Mapping[str, str]) -> str:
         return ""
     if role in _ROLES:
         return _ROLES[role]
+    if role.startswith(_STAGE_ROLE) and role.removeprefix(_STAGE_ROLE).isdigit():
+        return f"Momento {role.removeprefix(_STAGE_ROLE)}"
     for prefix, label in _UNIT_ROLES:
         if role.startswith(prefix):
             code = role.removeprefix(prefix)
@@ -321,7 +339,9 @@ def cubication_export(project: ExportProject, name: str, *, version: str,
                       language: str = LANGUAGE) -> CubicationExport:
     """Lo que escribe el CSV de la cubicación ``name`` de la versión ``version`` (uid o
     código): lo registrado (véase el módulo), leído en una instantánea sin escribir nada. Con
-    unidades (los ajustes de su ``res.volume``), también su tabla de toneladas, si la hay.
+    unidades (los ajustes de su ``res.volume``), también su tabla de toneladas, si la hay. Si
+    ``name`` no es una cubicación de la versión pero sí una cubicación por momentos, su tabla
+    ``res_stg_`` (T38; la de volúmenes manda si se llaman igual).
     ``ResError`` ``res.cubication_unknown`` si esa versión no tiene la cubicación;
     ``VersionError`` ``core.version_unknown`` si la versión no existe. Las marcas, el nombre de
     cada operación y de cada parámetro y el ámbito «proyecto», en ``language`` (el del CSV, el
@@ -334,7 +354,10 @@ def cubication_export(project: ExportProject, name: str, *, version: str,
     with project.read() as conn:
         found = _version(conn, version)
         volume = _record(conn, declared.VOLUMES, name, found)
-        if volume is None:
+        staged = None if volume is not None else _record(conn, declared.STAGE_TABLE, name,
+                                                         found)
+        first = volume if volume is not None else staged
+        if first is None:
             raise ResError("res.cubication_unknown", obj=name, field="cubicación", value=name,
                            version=found.code)
         column = read_column(conn)
@@ -342,9 +365,10 @@ def cubication_export(project: ExportProject, name: str, *, version: str,
         parts = {} if column is None else {(unit.code, item.code): item.name
                                            for unit in column.units for item in unit.components}
         tables: list[tuple[str, DatasetRecord, OperationLink, tuple[str, ...]]] = []
-        root, marks = _producer(project, conn, volume, language)
-        tables.append((declared.FAMILIES_BY_CODE[declared.VOLUMES].label, volume, root, marks))
-        if root.settings.get("units"):
+        root, marks = _producer(project, conn, first, language)
+        family = declared.VOLUMES if staged is None else declared.STAGE_TABLE
+        tables.append((declared.FAMILIES_BY_CODE[family].label, first, root, marks))
+        if staged is None and root.settings.get("units"):
             tonnage = _record(conn, declared.TONNES, name, found)
             if tonnage is not None:
                 tables.append((declared.FAMILIES_BY_CODE[declared.TONNES].label, tonnage,
@@ -357,12 +381,16 @@ def cubication_export(project: ExportProject, name: str, *, version: str,
             operations.append(UsedOperation(
                 link.uid, link.op_type, _operation_label(link.op_type, language), shown,
                 link.finished_at, link.geoblender_version, marks))
-            for item in read_rows(conn, record.locator):
+            found_rows = ([(None, item) for item in read_rows(conn, record.locator)]
+                          if staged is None else
+                          [(item.stage, item.row)
+                           for item in read_stage_rows(conn, record.locator)])
+            for stage, item in found_rows:
                 if item.component is not None:
                     named = parts.get((item.unit or "", item.component), "")
                 else:
                     named = units.get(item.unit or "", "")
-                rows.append(ExportRow(label, item, named, marks))
+                rows.append(ExportRow(label, item, named, marks, stage))
         own = _revision_of(conn, root.uid)
     header = ExportHeader(
         cubication=name,
@@ -378,7 +406,7 @@ def cubication_export(project: ExportProject, name: str, *, version: str,
         exported_at=format_utc(project.clock.now()),
         geoblender_version=str(project.session.geoblender_version),
     )
-    return CubicationExport(header, tuple(rows))
+    return CubicationExport(header, tuple(rows), stages=staged is not None)
 
 
 def shown_rows(export: CubicationExport) -> tuple[ExportRow, ...]:
@@ -424,11 +452,29 @@ def _inputs(links: Sequence[OperationLink], units: Mapping[str, str]) -> tuple[U
             constant = _constant(link.settings, role)
             if constant is not None:
                 found.setdefault((role, constant.dataset, ""), constant)
+        compared = _compared(link)
         for item in link.consumed:
             role = item.role or ""
+            label = _role_label(item.role, units)
+            if role in compared:
+                label = f"{label} «{compared[role]}»"
             found.setdefault((role, item.name, item.content_sha256), UsedInput(
-                role, _role_label(item.role, units), item.name, item.content_sha256))
+                role, label, item.name, item.content_sha256))
     return tuple(found.values())
+
+
+def _compared(link: OperationLink) -> dict[str, str]:
+    """Las cubicaciones que compara una ``res.stages`` por papel (``stage_1``…, ``direct``),
+    de sus ajustes; de otra operación, ninguna."""
+    if link.op_type != declared.STAGES:
+        return {}
+    moments, direct = link.settings.get("moments"), link.settings.get("direct")
+    found = {declared.stage_role(position): str(moment)
+             for position, moment in enumerate(moments if isinstance(moments, list) else (),
+                                               start=1)}
+    if isinstance(direct, str):
+        found[declared.DIRECT_ROLE] = direct
+    return found
 
 
 def _parameters(links: Sequence[OperationLink], version_code: str,
@@ -517,7 +563,8 @@ def csv_rows(export: CubicationExport) -> list[tuple[str, ...]]:
                str(item.kind), _UNCONFIRMED if item.unconfirmed else "", item.scope)
               for item in header.parameters]
     found += [("Fecha de la exportación", _local(header.exported_at)),
-              ("Versión de Geoblender", header.geoblender_version), (), TABLE_HEADER]
+              ("Versión de Geoblender", header.geoblender_version), (),
+              STAGE_TABLE_HEADER if export.stages else TABLE_HEADER]
     labels = {key: translate(LANGUAGE, quantity.label) if quantity.label else key
               for key, quantity in QUANTITIES.items()}
     symbols: dict[str, str] = {}
@@ -530,12 +577,14 @@ def csv_rows(export: CubicationExport) -> list[tuple[str, ...]]:
         note = notes.get(row.note)
         if note is None:
             note = notes[row.note] = JOIN.join(_note(code) for code in row.notes)
-        found.append((
-            item.table, _DOMAINS.get(row.domain, row.domain), _optional(row.bench_z0),
+        cells = (
+            _DOMAINS.get(row.domain, row.domain), _optional(row.bench_z0),
             _optional(row.bench_z1), row.unit or "", row.component or "", item.name,
             row.quantity, labels.get(row.quantity, row.quantity), _optional(row.value), unit,
             CALCULATED, JOIN.join(item.marks), note,
-        ))
+        )
+        found.append((item.table, item.stage or "", *cells) if export.stages
+                     else (item.table, *cells))
     return found
 
 

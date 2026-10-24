@@ -1266,7 +1266,9 @@ class Cubication:
     revisión), su estado (``RevisionState``: «open», lo «en curso»; «frozen»; «closed», la
     cerrada al superarse o descartarse su versión), el número de la última revisión congelada
     de la versión («r1»; vacío si no tiene ninguna) y si su tabla de volúmenes o la de sus
-    toneladas está obsoleta (la caché ``gb_stale`` de la 008)."""
+    toneladas está obsoleta (la caché ``gb_stale`` de la 008). Con ``stages``, una cubicación
+    por momentos (T38; F-3): ``record`` es su tabla ``res_stg_`` y ``operation_uid``, su
+    ``res.stages``; sin unidades ni toneladas."""
 
     name: str
     record: DatasetRecord
@@ -1278,6 +1280,7 @@ class Cubication:
     revision_state: str = ""
     current: str = ""
     stale: bool = False
+    stages: bool = False
 
 
 def _version_of(conn: sqlite3.Connection, version: str) -> Any:
@@ -1313,14 +1316,18 @@ def _stale_datasets(conn: sqlite3.Connection, uids: Sequence[str]) -> frozenset[
     return frozenset(found)
 
 
-def cubications(project: StoreProject, *, version: str) -> tuple[Cubication, ...]:
+def cubications(project: StoreProject, *, version: str,
+                stages: bool = False) -> tuple[Cubication, ...]:
     """Las cubicaciones de la versión ``version`` (uid o código), por nombre: las que tienen su
-    tabla de volúmenes viva (no una diferencia entre superficies ni una cubicación por
-    momentos), lo que ofrecen «Por momentos de extracción…» como momentos y directa y «Ratios…»
-    (T24), con su revisión y si están obsoletas (T25). ``VersionError`` si la versión no
-    existe."""
+    tabla de volúmenes viva (no una diferencia entre superficies), lo que ofrecen «Por momentos
+    de extracción…» como momentos y directa y «Ratios…» (T24), con su revisión y si están
+    obsoletas (T25). Con ``stages``, también las cubicaciones por momentos (su tabla
+    ``res_stg_`` viva; ``Cubication.stages``), lo que lista el panel de la cubicación (T38;
+    RF-011-19, RF-011-23); una con el nombre de una cubicación no se lista (el panel las elige
+    por su nombre: la de volúmenes manda). ``VersionError`` si la versión no existe."""
     live = tuple(str(status) for status in LIVE_STATUSES)
     volumes_prefix = declared.FAMILIES_BY_CODE[declared.VOLUMES].prefix
+    stages_prefix = declared.FAMILIES_BY_CODE[declared.STAGE_TABLE].prefix
     with project.read() as conn:
         found = _version_of(conn, version)
         rows = conn.execute(
@@ -1331,24 +1338,32 @@ def cubications(project: StoreProject, *, version: str) -> tuple[Cubication, ...
         frozen = versions_read.last_frozen(conn, found.uid)
         current = "" if frozen is None else f"r{frozen.number}"
         listed: list[Cubication] = []
+        staged: list[Cubication] = []
         for record in records.values():
-            if not record.name.startswith(volumes_prefix):
+            if record.name.startswith(volumes_prefix):
+                op_type, target = declared.VOLUME, listed
+            elif stages and record.name.startswith(stages_prefix):
+                op_type, target = declared.STAGES, staged
+            else:
                 continue
             row = conn.execute("SELECT settings, finished_at, revision_uid FROM gb_operation "
                                "WHERE uid = ? AND op_type = ?",
-                               (record.operation_uid, declared.VOLUME)).fetchone()
-            if row is None:  # inalcanzable: una tabla de volúmenes es de su res.volume
+                               (record.operation_uid, op_type)).fetchone()
+            if row is None:  # inalcanzable: una tabla de res es de su operación
                 continue
             settings = json.loads(row[0])
             name = str(settings.get("name") or record.name)
             revision = versions_read.revision(conn, str(row[2])) if row[2] else None
-            listed.append(Cubication(
+            target.append(Cubication(
                 name, record, record.operation_uid, str(row[1] or ""),
-                bool(settings.get("units")),
-                records.get(declared.dataset_name(declared.TONNES, name)),
+                op_type == declared.VOLUME and bool(settings.get("units")),
+                (records.get(declared.dataset_name(declared.TONNES, name))
+                 if op_type == declared.VOLUME else None),
                 revision="" if revision is None else revision.label(found.code),
                 revision_state="" if revision is None else str(revision.state),
-                current=current))
+                current=current, stages=op_type == declared.STAGES))
+        names = {item.name for item in listed}
+        listed += [item for item in staged if item.name not in names]
         stale = _stale_datasets(conn, [record.uid for item in listed for record in (
             item.record, item.tonnage) if record is not None])
     listed = [replace(item, stale=item.record.uid in stale or (
