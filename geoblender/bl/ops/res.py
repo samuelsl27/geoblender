@@ -60,6 +60,20 @@ hasta que llega la clase real de cada una (T20 a T25), que la pasa a la entrada 
   en una transacción, y ``geoblender.res_set_percentages`` («Porcentajes…»), los de los
   componentes de una compuesta juntos, que tienen que sumar 100 % (RF-011-15). En solo lectura,
   ninguna está disponible y dicen por qué (RF-011-26).
+- **Cubicar entre dos superficies…** (Mayús+Alt+M; T21; RF-011-01 a 06, RF-011-20, RF-011-25,
+  RF-011-26; plan §5.3.4, §5.5, A10, A11, D-25, D-30, D-31):
+  :class:`GEOBLENDER_OT_res_compute_volume_between_surfaces` propone en su diálogo las dos
+  superficies seleccionadas en la vista (de partida, la de mayor cota media,
+  :func:`ordered_surfaces`; «Invertir», :func:`invert_surfaces`) entre las de las listas de
+  ``bl.ui.res_panels`` (rejillas del proyecto y de la versión activa, congeladas en la revisión
+  de la que parte y la cota constante), con su ámbito opcional y la rejilla de diferencias;
+  comprueba lo pedido sin escribir nada (A1, la capa del ámbito en el CRS del proyecto, el
+  nombre repetido, que pregunta si se sustituye: D-30) y lanza ``res.volume``
+  (``reserves.store.volume_run``) en la revisión abierta de la versión activa: desde la
+  interfaz, por pasos en su modal (``bl.ops.core._StepsModal``, con el avance en la barra de
+  estado y Esc, que no deja nada a medias, RF-011-25); desde un guion, de una vez. Al terminar
+  dice sus totales, carga la rejilla de diferencias en la vista (con el cargador de
+  ``res_dif_``, si lo hay: T22) y abre la ventana de la cubicación (T25).
 """
 
 from __future__ import annotations
@@ -69,35 +83,47 @@ import logging
 import math
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import bpy
-from bpy.props import CollectionProperty, EnumProperty, StringProperty
+import numpy as np
+from bpy.props import BoolProperty, CollectionProperty, EnumProperty, StringProperty
 
 from ...core import i18n
 from ...core import params as core_params
+from ...core.catalog.search import path_text
 from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, tr
 from ...core.params.store import DEFAULT_SOURCE_PREFIX, shown_value
+from ...core.project.model import Progress
 from ...core.provenance import contract
 from ...core.provenance.operations import CANCEL_REASON_PREFIX, failure_reason
 from ...core.provenance.undo import UndoKind
 from ...core.units import UnitError, convert, parse_quantity
+from ...gis import provenance as gis_provenance
+from ...gis import store as gis_store
+from ...gis.crs import crs_service_status, reference_label
+from ...gis.messages import GisError
 from ...reserves import materials
 from ...reserves import messages as res_messages
 from ...reserves import params as res_params
 from ...reserves import provenance
+from ...reserves import scale as res_scale
 from ...reserves.messages import ResError
-from ...reserves.surfaces import SurfaceRef
+from ...reserves.surfaces import SurfaceRef, check_pair, propose_order, surface_source
 from ...reserves.tonnage import PERCENT_TOLERANCE
+from ...reserves.volumes import FINAL, START, VolumeRequest
 from ..props import res as res_props
-from ..scene import undo_watch
+from ..props.core import OBJECT_PROPERTY
+from ..scene import project_session, undo_watch, views
 from ..scene import versions as scene_versions
+from ..ui import gate, res_panels
 from ..ui import provenance as ui_provenance
-from ..ui import res_panels
 from ..ui.commands import catalog, text
 from . import jobs as jobs_ops
+from .core import _StepsModal
 from .core_provenance import (
     KIND_ITEMS,
     PARAMETER_SCOPE_ITEMS,
@@ -113,7 +139,6 @@ from .core_provenance import (
 from .incorporation import StepQueue
 
 if TYPE_CHECKING:
-    from ...core.project.model import Progress
     from ...core.provenance.operations import OperationHandle
     from ...core.provenance.recompute import RecomputeRequest
     from ...core.versions.reproduce import ReproduceRequest
@@ -395,7 +420,10 @@ COLUMN_ACTION_ITEMS = [
 
 def _call_panel(name: str) -> set[str]:
     """Abre la ventana emergente ``name`` con ``wm.call_panel``; sigue abierta aunque el ratón
-    salga de ella (``keep_open``), hasta pulsar fuera o Esc."""
+    salga de ella (``keep_open``), hasta pulsar fuera o Esc. Una que aún no está registrada (la
+    de la cubicación llega con la T25), nada."""
+    if getattr(bpy.types, name, None) is None:
+        return {"CANCELLED"}
     return bpy.ops.wm.call_panel(name=name, keep_open=True)
 
 
@@ -1000,11 +1028,594 @@ class GEOBLENDER_OT_res_set_percentages(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# --- Entre dos superficies… (T21; RF-011-01 a 06, RF-011-20, RF-011-25, RF-011-26) -------------
+
+BETWEEN = "geoblender.res_compute_volume_between_surfaces"
+PARAMETERS = "geoblender.core_show_parameters"
+DIALOG_WIDTH = 440
+_SURFACES_OBJ = "Superficies de la cubicación"
+_SURFACE_KINDS = ("DTM", "TIN")  # Object.geoblender.kind de un objeto que muestra una superficie
+
+
+def _short(identifier: str, typed: str) -> str:
+    """Una superficie de la lista en el nombre por defecto de una cubicación: el nombre de su
+    dato sin su familia («octubre» de ``gis_dtm_octubre``) o la cota tecleada («100,5 m»)."""
+    if identifier == res_panels.ELEVATION:
+        return f"{typed.strip()} m" if typed.strip() else tr("Constant elevation")
+    name = identifier.removeprefix(res_panels.FROZEN)
+    for family in gis_provenance.FAMILIES:
+        if name.startswith(family.prefix):
+            return name.removeprefix(family.prefix)
+    return name
+
+
+def default_name(operator: Any) -> str:
+    """El nombre que propone la orden: «<final> − <partida>» (plan §5.5)."""
+    return (f"{_short(operator.final, operator.final_elevation)} − "
+            f"{_short(operator.start, operator.start_elevation)}")
+
+
+def invert_surfaces(operator: Any, _context: Any) -> None:
+    """«Invertir» (RF-011-06): cambia la superficie de partida por la final (y sus cotas
+    tecleadas) y, si el nombre era el propuesto, propone el nuevo; el botón vuelve a su sitio."""
+    if not operator.invert:
+        return
+    proposed = default_name(operator)
+    operator.start, operator.final = operator.final, operator.start
+    operator.start_elevation, operator.final_elevation = (operator.final_elevation,
+                                                          operator.start_elevation)
+    if not operator.name.strip() or operator.name == proposed:
+        operator.name = default_name(operator)
+    operator.invert = False
+
+
+def _typed_elevation(typed: str, *, field: str, label: str) -> float:
+    """La cota constante tecleada (m, float64); ``res.bench_value_not_number`` si no es un
+    número de metros."""
+    try:
+        number, unit = parse_quantity(typed)  # vacía: UnitError
+        return float(convert(number, unit or _METRE, _METRE))
+    except UnitError:
+        raise ResError("res.bench_value_not_number", obj="Cubicación", field=field,
+                       value=typed, label=label) from None
+
+
+def _elevation_shown(value: float) -> str:
+    text = str(int(value)) if float(value).is_integer() else repr(float(value))
+    return text.replace(".", ",") if i18n.language() == "es" else text
+
+
+def _surface_ref(identifier: str, typed: str, *, field: str, label: str
+                 ) -> tuple[SurfaceRef, Any]:
+    """La superficie elegida en la lista (``identifier``; la cota constante, ``typed``) y su
+    fila de la lista (``None`` en la cota). ``gis.dataset_unknown`` si ya no está."""
+    if identifier == res_panels.ELEVATION:
+        value = _typed_elevation(typed, field=field, label=label)
+        return SurfaceRef(elevation=value, label=tr("Constant elevation {value} m",
+                                                    value=_elevation_shown(value))), None
+    choice = res_panels.surface_choice(identifier)
+    if choice is None:
+        raise GisError("gis.dataset_unknown", obj=_SURFACES_OBJ, field=field, value=identifier)
+    return replace(choice.ref, label=choice.name), choice
+
+
+def _point_scale(project: Any, grid: Any, scope: Any) -> float | None:
+    """El factor de escala de la proyección en el centro del ámbito o de la rejilla (A14, D-34:
+    se informa, no se aplica); sin el servicio de CRS, ``None`` («no disponible»)."""
+    from . import gis as gis_ops
+
+    try:
+        status = crs_service_status(gis_ops.crs_resolver)
+        if status.service is None or grid is None:
+            return None
+        x, y = res_scale.center(grid, scope)
+        crs, _vertical = gis_store.project_references(project)
+        value = float(np.asarray(status.service.scale_factor(
+            crs, np.array([[x, y]], dtype=np.float64)), dtype=np.float64).reshape(-1)[0])
+    except Exception:  # noqa: BLE001 - sin factor combinado, la cubicación sigue (A14)
+        LOGGER.warning("No se pudo calcular el factor de escala de la proyección", exc_info=True)
+        return None
+    return value if math.isfinite(value) and value > 0.0 else None
+
+
+def _scope(project: Any, identifier: str) -> tuple[str | None, Any]:
+    """La capa del ámbito elegida (su nombre y sus polígonos; ``None`` sin ámbito), en el CRS del
+    proyecto (``res.scope_references_mismatch`` si no lo está)."""
+    if not identifier or identifier == res_panels.NO_SCOPE:
+        return None, None
+    from ...reserves import store  # al usarlo: habilitar no lo carga
+
+    polygons = store.load_scope(project, identifier)
+    found = gis_store.dataset_references(project, identifier)
+    expected = gis_store.project_references(project)
+    if found[0] != expected[0]:
+        raise ResError("res.scope_references_mismatch", obj=f"Capa «{identifier}»",
+                       field="CRS", value=reference_label(*found), layer=identifier,
+                       expected=reference_label(*expected))
+    return identifier, polygons
+
+
+@dataclass(eq=False)
+class _Plan:
+    """Una cubicación lista para empezar: lo pedido, sus superficies leídas (cabeceras), la capa
+    del ámbito, la revisión de lo congelado, la cubicación a la que sustituiría (D-30) y el
+    código de la versión activa."""
+
+    request: VolumeRequest
+    sources: dict[str, Any]
+    scope: str | None
+    frozen: str | None
+    previous: str | None
+    version: str
+
+
+class _Guarded:
+    """Los pasos de una cubicación de la orden: si se cierran antes del primero (Esc enseguida,
+    desactivar Geoblender), la operación queda «cancelada» (sus pasos no han empezado: nada más
+    la cerraría); si no, los cierran ellos (RF-011-25)."""
+
+    def __init__(self, handle: OperationHandle, steps: Iterator[Progress]) -> None:
+        self._handle = handle
+        self._steps = steps
+        self._started = False
+
+    def __iter__(self) -> _Guarded:
+        return self
+
+    def __next__(self) -> Progress:
+        self._started = True
+        return next(self._steps)
+
+    def close(self) -> None:
+        if not self._started:
+            from ...reserves import store
+
+            self._started = True
+            _end(self._handle.cancel, store.CANCELLED_REASON)
+        close = getattr(self._steps, "close", None)
+        if callable(close):
+            close()
+
+
+def ordered_surfaces(project: Any, first: str, second: str) -> tuple[str, str]:
+    """``(partida, final)`` de dos superficies de la lista de la orden (RF-011-06, D-31:
+    ``reserves.surfaces.propose_order``, de partida la de mayor cota media en sus celdas
+    comunes); si no se pueden leer, en el orden dado (la cubicación dirá por qué)."""
+    version_uid = scene_versions.active_version() or ""
+    choices = [res_panels.surface_choice(item) for item in (first, second)]
+    if any(choice is None for choice in choices):
+        return first, second
+    try:
+        sources = [surface_source(project, choice.ref, version_uid=version_uid)
+                   for choice in choices]
+        start, _final = propose_order(*sources)
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.info("No se pudo proponer el orden de las superficies", exc_info=True)
+        return first, second
+    return (first, second) if start is sources[0] else (second, first)
+
+
+def thickness_text(project: Any) -> str:
+    """El espesor mínimo con su valor y su tipo, y dónde se cambia (plan §5.5)."""
+    record = core_params.ParameterStore(project).get(res_params.MIN_THICKNESS)
+    return tr("Minimum thickness: {value} (it is changed in {path})",
+              value=res_panels.record_text(record, res_params.MIN_THICKNESS),
+              path=path_text(catalog(), PARAMETERS, i18n.language()))
+
+
+def _difference_record(stored: Any) -> Any:
+    """La rejilla de diferencias que guardó una cubicación (``res_dif_``), o ``None``."""
+    prefix = provenance.FAMILIES_BY_CODE[provenance.DIFFERENCE_GRID].prefix
+    return next((record for record in getattr(stored, "records", ())
+                 if record.name.startswith(prefix)), None)
+
+
+def _confirm_later(values: Mapping[str, Any]) -> None:
+    """Pide confirmar que se sustituye la cubicación del mismo nombre (D-30): la misma orden
+    con ``confirm`` (su confirmación) en cuanto acaba esta; sin ventana, nada (lo dice el
+    aviso)."""
+    manager = getattr(bpy.context, "window_manager", None)
+    windows = list(getattr(manager, "windows", ()) or ())
+    if not windows:
+        return
+
+    def call() -> None:
+        try:
+            with bpy.context.temp_override(window=windows[0]):
+                bpy.ops.geoblender.res_compute_volume_between_surfaces(
+                    "INVOKE_DEFAULT", confirm=True, **values)
+        except (RuntimeError, TypeError, AttributeError, ReferenceError):
+            LOGGER.warning("No se pudo pedir confirmación para sustituir la cubicación",
+                           exc_info=True)
+
+    bpy.app.timers.register(call, first_interval=0.0)
+
+
+class GEOBLENDER_OT_res_compute_volume_between_surfaces(ProvenanceAwareOperator, _StepsModal,
+                                                         bpy.types.Operator):
+    """Volume and tonnage between a base surface and a top surface, with their type and
+    provenance"""
+
+    bl_idname = BETWEEN
+    bl_label = "Volume between two surfaces…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.VOLUME
+
+    # Como Nueva revisión… (009): cada evento del temporizador avanza pasos durante, como mucho,
+    # este tiempo (cada paso, ≤ 0,05 s: ninguna llamada de más de 0,2 s, RNF-011-04).
+    STEP_BUDGET_S = 0.05
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name",
+        description="Name of the cubication, unique in the active version (empty: «<final> − "
+                    "<start>»)",
+        options=_FIELD,
+    )
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Surface before the works (the higher one): a grid of the project or of "
+                    "the active version, one frozen in the revision it starts from, or a "
+                    "constant elevation",
+        items=res_panels.surface_items, options=_FIELD,
+    )
+    final: EnumProperty(  # type: ignore[valid-type]
+        name="Final surface",
+        description="Surface after the works: a grid of the project or of the active version, "
+                    "one frozen in the revision it starts from, or a constant elevation",
+        items=res_panels.surface_items, options=_FIELD,
+    )
+    start_elevation: StringProperty(  # type: ignore[valid-type]
+        name="Start elevation", description="Constant elevation of the start surface, m",
+        options=_FIELD,
+    )
+    final_elevation: StringProperty(  # type: ignore[valid-type]
+        name="Final elevation", description="Constant elevation of the final surface, m",
+        options=_FIELD,
+    )
+    invert: BoolProperty(  # type: ignore[valid-type]
+        name="Invert", description="Swap the start and the final surfaces", default=False,
+        options=_FIELD, update=invert_surfaces,
+    )
+    scope_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Scope",
+        description="Polygons outside which nothing is measured: a boundary layer or the union "
+                    "of a domain layer (none: the whole grid)",
+        items=res_panels.scope_items, options=_FIELD,
+    )
+    difference_grid: BoolProperty(  # type: ignore[valid-type]
+        name="Difference grid",
+        description="Write the grid of differences (final − start, m) as data of the version "
+                    "and load it into the view",
+        default=True, options=_FIELD,
+    )
+    replace: BoolProperty(  # type: ignore[valid-type]
+        name="Replace",
+        description="Replace the cubication of the same name of the active version",
+        default=False, options=_HIDDEN,
+    )
+    # La confirmación de sustituir (D-30) y los pasos con el temporizador de la ventana, con el
+    # avance y Esc: los pone invoke; desde un guion, sin ellos, de una vez.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        """La puerta de modo de la Vista 3D (su atajo, Mayús+Alt+M) y la de la procedencia: sin
+        proyecto, en solo lectura o con la versión activa no editable, dice por qué
+        (RF-011-26)."""
+        return gate.poll(cls, context) and super().poll(context)
+
+    def provenance_inputs(self, context: Any) -> tuple[Any, ...]:
+        return tuple(getattr(self, "_inputs", ()))
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el
+        porqué. Si no, las listas de superficies y capas leídas de nuevo, la propuesta de las
+        dos superficies seleccionadas en la vista (RF-011-06, D-31: de partida, la de mayor
+        cota media), el nombre propuesto y el espesor mínimo, y el diálogo: Intro cubica."""
+        self.provenance_dialog = True
+        if self.confirm:
+            return self._confirm(context, event)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            res_panels.refresh_choices(project, scene_versions.active_version())
+            self._propose(context, project)
+            self._thickness = thickness_text(project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self.in_steps = getattr(context, "window", None) is not None
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=text(catalog().commands[BETWEEN].label), confirm_text=tr("Compute"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """Las superficies del diálogo: las dos seleccionadas en la vista, en el orden de D-31
+        (o la única, de partida); sin selección, las dos primeras de la lista (o la cota
+        constante de final). Lo que pasó quien la lanza no cambia."""
+        items = [identifier for identifier, _name, _about in res_panels.surface_items(None,
+                                                                                      None)]
+        chosen = []
+        by_uid = {res_panels.surface_choice(identifier).uid: identifier
+                  for identifier in items if res_panels.surface_choice(identifier) is not None}
+        for obj in getattr(context, "selected_objects", None) or ():
+            marks = getattr(obj, OBJECT_PROPERTY, None)
+            found = None if marks is None or marks.kind not in _SURFACE_KINDS \
+                else by_uid.get(str(marks.dataset_uid))
+            if found is not None and found not in chosen:
+                chosen.append(found)
+        given = self.properties.is_property_set
+        if not (given("start") or given("final")):
+            surfaces = [item for item in items if item != res_panels.ELEVATION]
+            if len(chosen) >= 2:
+                self.start, self.final = ordered_surfaces(project, chosen[0], chosen[1])
+            elif chosen:
+                self.start = chosen[0]
+                self.final = next((item for item in items if item != chosen[0]),
+                                  res_panels.ELEVATION)
+            elif surfaces:
+                self.start = surfaces[0]
+                self.final = surfaces[1] if len(surfaces) > 1 else res_panels.ELEVATION
+        if not self.name.strip():
+            self.name = default_name(self)
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "start", text=tr("Start surface"), translate=False)
+        if self.start == res_panels.ELEVATION:
+            layout.prop(self, "start_elevation", text=tr("Start elevation (m)"), translate=False)
+        layout.prop(self, "invert", text=tr("Invert"), toggle=True, icon="ARROW_LEFTRIGHT",
+                    translate=False)
+        layout.prop(self, "final", text=tr("Final surface"), translate=False)
+        if self.final == res_panels.ELEVATION:
+            layout.prop(self, "final_elevation", text=tr("Final elevation (m)"), translate=False)
+        layout.prop(self, "scope_layer", text=tr("Scope (optional)"), translate=False)
+        layout.prop(self, "difference_grid", text=tr("Difference grid"), translate=False)
+        thickness = getattr(self, "_thickness", "")
+        if thickness:
+            layout.label(text=thickness, translate=False)
+
+    def _confirm(self, context: Any, event: Any) -> set[str]:
+        """La confirmación de sustituir la cubicación del mismo nombre (D-30): si se acepta,
+        la orden sigue con ``replace``."""
+        self.replace = True
+        self.in_steps = getattr(context, "window", None) is not None
+        version = scene_versions.active()
+        return context.window_manager.invoke_confirm(
+            self, event, title=tr("Replace the cubication"),
+            message=tr("There is already a cubication «{name}» in {version}: replace it?",
+                       name=self.name, version="" if version is None else version.code),
+            confirm_text=tr("Replace"), translate=False)
+
+    # --- Cubicar ------------------------------------------------------------------------------
+
+    def _plan(self, project: Any, version_uid: str) -> _Plan:
+        """Lo que se cubica, comprobado antes de escribir nada: las dos superficies (A1:
+        ``res.surfaces_mismatch``, sin leer celdas), el ámbito, el nombre y la cubicación a la
+        que sustituiría (D-30)."""
+        from ...reserves import store  # al usarlo: habilitar no lo carga
+
+        start, start_choice = _surface_ref(self.start, self.start_elevation,
+                                           field="start", label=tr("Start elevation"))
+        final, final_choice = _surface_ref(self.final, self.final_elevation,
+                                           field="final", label=tr("Final elevation"))
+        name = self.name.strip() or default_name(self)
+        gis_provenance.dataset_slug(name)  # un nombre sin letras ni cifras no vale
+        scope_name, scope = _scope(project, self.scope_layer)
+        sources = {START: surface_source(project, start, version_uid=version_uid),
+                   FINAL: surface_source(project, final, version_uid=version_uid)}
+        check_pair(sources[START], sources[FINAL])
+        grid = sources[START].grid if sources[START].grid is not None else sources[FINAL].grid
+        request = VolumeRequest(name, start, final, scope=scope,
+                                difference_grid=bool(self.difference_grid),
+                                point_scale=_point_scale(project, grid, scope))
+        frozen = next((choice.revision_uid for choice in (start_choice, final_choice)
+                       if choice is not None and choice.revision_uid is not None), None)
+        previous = store.previous_operation(project, provenance.VOLUME, name,
+                                            version=version_uid)
+        version = scene_versions.active()
+        return _Plan(request, sources, scope_name, frozen, previous,
+                     "" if version is None else version.code)
+
+    def _values(self, name: str) -> dict[str, Any]:
+        """Lo pedido, para volver a lanzarla (la confirmación de D-30)."""
+        return {"name": name, "start": self.start, "final": self.final,
+                "start_elevation": self.start_elevation,
+                "final_elevation": self.final_elevation, "scope_layer": self.scope_layer,
+                "difference_grid": bool(self.difference_grid)}
+
+    def _ask_replace(self, plan: _Plan) -> set[str]:
+        """La cubicación ya está en la versión activa (D-30): desde la interfaz, pregunta si se
+        sustituye; desde un guion, se rechaza (con ``replace``, se sustituye)."""
+        name = plan.request.name
+        if self.provenance_dialog:
+            self._report({"WARNING"}, tr("There is already a cubication «{name}» in {version}",
+                                         name=name, version=plan.version))
+            _confirm_later(self._values(name))
+        else:
+            self._report({"ERROR"}, tr(
+                "There is already a cubication «{name}» in {version}: to replace it, repeat the "
+                "order with «Replace» (replace=True)", name=name, version=plan.version))
+        return {"CANCELLED"}
+
+    def execute(self, context: Any) -> set[str]:
+        """Comprueba (sin escribir nada si no vale), empieza ``res.volume`` en la revisión
+        abierta de la versión activa y cubica: desde la interfaz, por pasos con el avance y Esc;
+        desde un guion, de una vez. Al terminar, la rejilla de diferencias en la vista y la
+        ventana de la cubicación."""
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version_uid = scene_versions.active_version() or ""
+        try:
+            plan = self._plan(project, version_uid)
+            if plan.previous is not None and not self.replace:
+                return self._ask_replace(plan)
+            request = plan.request
+            self._inputs = provenance.volume_inputs(request, scope=plan.scope,
+                                                    frozen=plan.frozen)
+            settings = provenance.volume_settings(request, scope=plan.scope)
+            params = provenance.volume_params(request)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        handle = self.begin(context, settings=settings, params=params,
+                            supersedes=plan.previous)
+        if handle is None:
+            return {"CANCELLED"}
+        from ...reserves import store  # al usarlo: habilitar no lo carga
+
+        try:
+            steps = _Guarded(handle, store.volume_run(project, handle, request,
+                                                      sources=plan.sources,
+                                                      budget_s=self.STEP_BUDGET_S))
+        except (TypeError, ValueError) as exc:  # inalcanzable: lo pedido es de res.volume
+            _end(handle.fail, failure_reason(exc))
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self._project, self._name, self._loading = project, request.name, False
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, steps)
+            return {"RUNNING_MODAL"}
+        return self._run_all(context, steps)
+
+    def _run_all(self, context: Any, steps: Iterator[Progress]) -> set[str]:
+        """Los pasos de una vez (desde un guion)."""
+        self.report_log: list[str] = []
+        stored = None
+        try:
+            for step in steps:
+                if step.result is not None:
+                    stored = step.result
+        except GeoblenderError as exc:
+            self._report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            LOGGER.error("«%s» se ha parado", self._name, exc_info=exc)
+            self._report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if stored is None:  # pragma: no cover - volume_run acaba siempre con su resultado
+            self._report({"ERROR"}, tr("The operation did not finish with its result"))
+            return {"CANCELLED"}
+        self._report_result(stored)
+        record = _difference_record(stored)
+        if record is not None and views.loader_for(record.name) is not None:
+            self._loaded(views.load_datasets(context, self._project, [record.uid]))
+        return {"FINISHED"}
+
+    def _report_result(self, stored: Any) -> None:
+        """Lo que dice la orden al terminar (plan §5.5): «Mensual octubre (V03.r1, en curso):
+        desmonte …, terraplén …, neto …» y los avisos de la cubicación."""
+        result = stored.result
+        version = scene_versions.active()
+        self._report({"INFO"}, tr(
+            "{name} ({revision}, in progress): cut {cut} m³, fill {fill} m³, net {net} m³",
+            name=result.name, revision="" if version is None else version.revision,
+            cut=format_number(result.cut_m3, 1), fill=format_number(result.fill_m3, 1),
+            net=format_number(result.net_m3, 1)))
+        for notice in result.warnings:
+            self._report({"WARNING"}, notice.text(i18n.language()))
+
+    def _loaded(self, outcome: Any) -> None:
+        """Lo que dice la carga de la rejilla de diferencias en la vista (avisos y errores)."""
+        for message in (*outcome.notes, *outcome.errors):
+            self._report({"WARNING"}, message)
+
+    def _show_window(self, context: Any) -> None:
+        """La ventana de la cubicación, desde la interfaz (``_call_panel``; T25)."""
+        if not self.in_steps or getattr(context, "window", None) is None:
+            return
+        try:
+            _call_panel(res_panels.VOLUMETRICS_PANEL)
+        except RuntimeError:
+            LOGGER.warning("No se pudo abrir la ventana de la cubicación", exc_info=True)
+
+    # --- En pasos (_StepsModal) ---------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado (plan §5.5): «Cubicando «Mensual octubre»:
+        leyendo… 40 % · Esc: cancelar»; después, la carga de la rejilla en la vista."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        name = getattr(self, "_name", "")
+        if getattr(self, "_loading", False):
+            return tr("Loading «{name}» into the view… {percent} %", name=name, percent=percent)
+        if step.phase == "bands":
+            return tr("Computing «{name}»: reading… {percent} % · Esc: cancel", name=name,
+                      percent=percent)
+        if step.phase == "grid":
+            return tr("Computing «{name}»: writing the difference grid… {percent} % · Esc: "
+                      "cancel", name=name, percent=percent)
+        if step.phase in ("result", "save"):
+            return tr("Computing «{name}»: saving… {percent} % · Esc: cancel", name=name,
+                      percent=percent)
+        return tr("Computing «{name}»: checking… {percent} % · Esc: cancel", name=name,
+                  percent=percent)
+
+    def _cancelled_text(self) -> str:
+        if getattr(self, "_loading", False):
+            return tr("«{name}» has been computed; its difference grid has not been loaded into "
+                      "the view", name=getattr(self, "_name", ""))
+        return tr("Volumetrics cancelled: nothing has been left half-done")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return error_text(exc)
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        if step.result is None:
+            if project_session.current() is not getattr(self, "_project", None):
+                return self._fail(context, tr(
+                    "The project was closed while «{name}» was being computed: nothing has been "
+                    "left half-done", name=getattr(self, "_name", "")))
+            return None
+        if self._loading:
+            self._loaded(step.result)
+            return self._finish(context)
+        self._report_result(step.result)
+        record = _difference_record(step.result)
+        if record is None or views.loader_for(record.name) is None:
+            return self._finish(context)
+        finished, self._steps = self._steps, views.load_steps(context, self._project,
+                                                              [record.uid])
+        self._loading = True
+        if finished is not None:
+            finished.close()
+        return None
+
+    def _finish(self, context: Any) -> set[str]:
+        self._done(context)
+        self._show_window(context)
+        return {"FINISHED"}
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except Exception as exc:  # noqa: BLE001 - los pasos cerrados no dejan nada a medias
+            LOGGER.error("«%s» se ha parado", getattr(self, "_name", ""), exc_info=exc)
+            return self._fail(context, error_text(exc))
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_res_edit_materials,
     GEOBLENDER_OT_res_edit_column,
     GEOBLENDER_OT_res_save_materials,
     GEOBLENDER_OT_res_apply_swell,
     GEOBLENDER_OT_res_set_percentages,
+    GEOBLENDER_OT_res_compute_volume_between_surfaces,
 )
-"""Las órdenes reales de la cubicación (las demás llegan de la T21 a la T25)."""
+"""Las órdenes reales de la cubicación (las demás llegan de la T22 a la T25)."""

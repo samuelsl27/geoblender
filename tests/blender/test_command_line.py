@@ -34,7 +34,7 @@ from mathutils import Vector
 from tests.support import blender_ext
 from tests.support.blender_ext import module_name
 
-VOLUME = "geoblender.res_compute_volume_between_surfaces"
+RESERVES = "geoblender.res_compute_reserves"  # R-51, aún provisional
 PLAN = "geoblender.ui_set_view?view=PLAN"
 SEPARATOR = "  ·  "
 
@@ -104,7 +104,7 @@ class CommandLineTest(unittest.TestCase):
         """RF-003-26: la lista es la de ``search()``, en su orden, con la etiqueta en
         español, dónde está y, en los no disponibles, su «Disponible en …» en el mismo
         texto (T45)."""
-        for query in ("cubicar", "volume", "R-38", "planta", "ns"):
+        for query in ("cubicar", "volume", "reservas", "R-51", "planta", "ns"):
             with self.subTest(query=query):
                 hits = self.search.search(self.cat, query, language="es",
                                           is_available=self.commands.is_available)
@@ -117,18 +117,18 @@ class CommandLineTest(unittest.TestCase):
                         self.assertNotIn("Disponible en", text)
                     else:
                         self.assertTrue(text.endswith(SEPARATOR + hit.unavailable_text), text)
-        text = self.command_line.suggestions("cubicar")[0]
-        self.assertEqual(self.command_line.resolve(text).key, VOLUME)
-        self.assertEqual(text, "Cubicar entre dos superficies…  ·  Cubicación ▸ Cubicar  ·  "
-                               "Disponible en R-38 · Cubicación entre superficies")
+        text = self.command_line.suggestions("reservas")[0]
+        self.assertEqual(self.command_line.resolve(text).key, RESERVES)
+        self.assertEqual(text, "Reservas por fase y año…  ·  Cubicación ▸ Reservas  ·  "
+                               "Disponible en R-51 · Reservas")
 
     def test_suggestions_follow_the_language(self) -> None:
         """RF-003-21, RF-003-26: en inglés, las etiquetas y el «Available in …» en inglés."""
         self.i18n.set_language("en")
-        text = self.command_line.suggestions("volume")[0]
-        self.assertEqual(self.command_line.resolve(text).key, VOLUME)
-        self.assertTrue(text.startswith("Volume between two surfaces"), text)
-        self.assertIn("Available in R-38 · ", text)
+        text = self.command_line.suggestions("reserves")[0]
+        self.assertEqual(self.command_line.resolve(text).key, RESERVES)
+        self.assertTrue(text.startswith("Reserves by phase and year"), text)
+        self.assertIn("Available in R-51 · ", text)
 
     def test_what_matched_is_seen(self) -> None:
         """RF-003-26 (T45): Blender 5.2 solo deja en la lista lo que su búsqueda difusa
@@ -142,8 +142,8 @@ class CommandLineTest(unittest.TestCase):
         se ve ya. Lo que coincidió solo como subcadena o subsecuencia lo decide la
         búsqueda de Blender."""
         cases = (("es", "volume between"), ("es", "new project"), ("es", "ns"),
-                 ("es", "evw"), ("es", "T3"), ("es", "R-38"), ("es", "005"),
-                 ("es", "planta"), ("en", "cubicar"), ("en", "R-38"))
+                 ("es", "evw"), ("es", "T3"), ("es", "R-51"), ("es", "005"),
+                 ("es", "planta"), ("en", "cubicar"), ("en", "R-51"))
         for language, query in cases:
             self.i18n.set_language(language)
             with self.subTest(language=language, query=query):
@@ -162,8 +162,8 @@ class CommandLineTest(unittest.TestCase):
         self.assertTrue(new.startswith("Nuevo proyecto… — New project…  ·  "), new)
         plain = self.command_line.suggestions("nuevo proyecto")[0]
         self.assertTrue(plain.startswith("Nuevo proyecto…  ·  "), plain)
-        r38 = self.command_line.suggestions("R-38")[0]
-        self.assertNotIn("— R-38", r38)  # ya lo dice su «Disponible en R-38 · …»
+        r51 = self.command_line.suggestions("R-51")[0]
+        self.assertNotIn("— R-51", r51)  # ya lo dice su «Disponible en R-51 · …»
 
     def test_empty_query(self) -> None:
         """RF-003-26 (T45): con la consulta vacía, la lista no está vacía: los comandos
@@ -208,18 +208,18 @@ class CommandLineTest(unittest.TestCase):
         self.assertTrue(outcome.available)
 
     def test_unavailable_command_informs_and_changes_nothing(self) -> None:
-        """RF-003-26, RF-003-07: «cubicar» informa «Disponible en R-38 · …» y no cambia
+        """RF-003-26, RF-003-07: «reservas» informa «Disponible en R-51 · …» y no cambia
         nada; un texto sin coincidencias lo dice."""
         before = data_counts()
         scene = bpy.context.scene.name
         with in_view():
-            outcome = self.command_line.run(bpy.context, "cubicar")
-            result = bpy.ops.geoblender.ui_open_command_line(query="cubicar")
+            outcome = self.command_line.run(bpy.context, "reservas")
+            result = bpy.ops.geoblender.ui_open_command_line(query="reservas")
         self.assertEqual(result, {"CANCELLED"})
         self.assertEqual(outcome.status, {"CANCELLED"})
-        self.assertEqual(outcome.key, VOLUME)
+        self.assertEqual(outcome.key, RESERVES)
         self.assertEqual(outcome.level, "INFO")
-        self.assertTrue(outcome.message.startswith("Disponible en R-38 · "), outcome.message)
+        self.assertTrue(outcome.message.startswith("Disponible en R-51 · "), outcome.message)
         self.assertEqual(data_counts(), before)
         self.assertEqual(bpy.context.scene.name, scene)
         with in_view():

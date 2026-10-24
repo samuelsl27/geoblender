@@ -32,7 +32,7 @@ import bpy
 from tests.support import blender_ext
 from tests.support.blender_ext import fingerprint_diff, module_name, ui_snapshot
 
-VOLUME = "geoblender.res_compute_volume_between_surfaces"  # R-38, aún provisional
+RESERVES = "geoblender.res_compute_reserves"  # R-51, aún provisional
 SAVE = "geoblender.core_save_project"  # real (spec 002)
 
 
@@ -115,20 +115,20 @@ class EnabledUiTest(unittest.TestCase):
         self.assertIn(cls, self.ops.classes)
         self.assertFalse(self.commands.is_provisional(cls))
         self.assertTrue(self.commands.is_available(SAVE))
-        volume = self.commands.registered_class(VOLUME)
-        self.assertTrue(self.commands.is_provisional(volume))
-        self.assertFalse(self.commands.is_available(VOLUME))
+        reserves = self.commands.registered_class(RESERVES)
+        self.assertTrue(self.commands.is_provisional(reserves))
+        self.assertFalse(self.commands.is_available(RESERVES))
         self.assertTrue(self.commands.is_available("view3d.view_all"))
 
     def test_provisional_by_script(self) -> None:
         """RF-003-07: invocado por script, un provisional devuelve ``{'CANCELLED'}`` y no
-        cambia ``bpy.data``; informa «Disponible en R-38 · …» y su descripción lo dice."""
+        cambia ``bpy.data``; informa «Disponible en R-51 · …» y su descripción lo dice."""
         before = _data_state()
-        self.assertEqual(bpy.ops.geoblender.res_compute_volume_between_surfaces(),
+        self.assertEqual(bpy.ops.geoblender.res_compute_reserves(),
                          {"CANCELLED"})
         self.assertEqual(bpy.ops.geoblender.geo_new_section(mode="NORTH_SOUTH"), {"CANCELLED"})
         self.assertEqual(_data_state(), before)
-        cls = self.commands.registered_class(VOLUME)
+        cls = self.commands.registered_class(RESERVES)
         reports: list[tuple[set[str], str]] = []
         fake = SimpleNamespace(properties=SimpleNamespace(),
                                report=lambda kind, text: reports.append((kind, text)))
@@ -136,10 +136,10 @@ class EnabledUiTest(unittest.TestCase):
         self.assertEqual(len(reports), 1)
         kind, text = reports[0]
         self.assertEqual(kind, {"INFO"})
-        self.assertTrue(text.startswith("Disponible en R-38 · "), text)
+        self.assertTrue(text.startswith("Disponible en R-51 · "), text)
         description = cls.description(bpy.context, SimpleNamespace())
         self.assertIn(text, description)
-        self.assertIn(self.cat.commands[VOLUME].description_es, description)
+        self.assertIn(self.cat.commands[RESERVES].description_es, description)
 
     def test_variant_message(self) -> None:
         """RF-003-07: el texto es el de la variante pedida (D-1: «Sin recorte» es de la
@@ -154,7 +154,7 @@ class EnabledUiTest(unittest.TestCase):
         """Contrato 1, RF-003-20: con la extensión habilitada, Blender muestra la etiqueta
         del catálogo en español (contexto de traducción propio), tanto de un real como de
         un provisional."""
-        for idname in (SAVE, VOLUME):
+        for idname in (SAVE, RESERVES):
             cmd = self.cat.commands[idname]
             module, _, name = idname.partition(".")
             rna = getattr(getattr(bpy.ops, module), name).get_rna_type()
@@ -179,13 +179,13 @@ class EnabledUiTest(unittest.TestCase):
         workspace = window.workspace
         self.assertFalse(workspace.geoblender_mode)
         with bpy.context.temp_override(window=window, area=area, region=region):
-            self.assertFalse(bpy.ops.geoblender.res_compute_volume_between_surfaces.poll())
+            self.assertFalse(bpy.ops.geoblender.res_compute_reserves.poll())
             workspace.geoblender_mode = True
             try:
-                self.assertTrue(bpy.ops.geoblender.res_compute_volume_between_surfaces.poll())
+                self.assertTrue(bpy.ops.geoblender.res_compute_reserves.poll())
             finally:
                 workspace.geoblender_mode = False
-        self.assertTrue(bpy.ops.geoblender.res_compute_volume_between_surfaces.poll())
+        self.assertTrue(bpy.ops.geoblender.res_compute_reserves.poll())
 
 
 class UiRegisterCycleTest(unittest.TestCase):

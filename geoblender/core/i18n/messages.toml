@@ -5591,3 +5591,127 @@ es = "Unidades, de arriba abajo"
 
 ["No unit yet: add the units from top to bottom"]
 es = "Aún no hay ninguna unidad: añada las unidades de arriba abajo"
+
+# Entre dos superficies… (spec 011, T21; RF-011-01 a 06, RF-011-20, RF-011-25, RF-011-26; plan
+# 011 §5.5, D-30, D-31): el diálogo, sus listas, el avance y lo que dice al terminar
+# (bl/ops/res.py y bl/ui/res_panels.py).
+
+["A constant elevation (m), typed below"]
+es = "Una cota constante (m), que se escribe debajo"
+
+["No scope"]
+es = "Sin ámbito"
+
+["The whole grid of the surfaces"]
+es = "Toda la rejilla de las superficies"
+
+["Frozen in {revision}, the revision the active version starts from"]
+es = "Congelada en {revision}, la revisión de la que parte la versión activa"
+
+["A grid of the active version"]
+es = "Una rejilla de la versión activa"
+
+["A grid of the project"]
+es = "Una rejilla del proyecto"
+
+["Boundary layer"]
+es = "Capa de contornos"
+
+["Domain layer (their union)"]
+es = "Capa de dominios (su unión)"
+
+["Constant elevation {value} m"]
+es = "Cota constante {value} m"
+
+["Compute"]
+es = "Cubicar"
+
+["Minimum thickness: {value} (it is changed in {path})"]
+es = "Espesor mínimo: {value} (se cambia en {path})"
+
+["Start surface"]
+es = "Superficie de partida"
+
+["Final surface"]
+es = "Superficie final"
+
+["Start elevation"]
+es = "Cota de partida"
+
+["Final elevation"]
+es = "Cota final"
+
+["Start elevation (m)"]
+es = "Cota de partida (m)"
+
+["Final elevation (m)"]
+es = "Cota final (m)"
+
+["Invert"]
+es = "Invertir"
+
+["Scope (optional)"]
+es = "Ámbito (opcional)"
+
+["Replace the cubication"]
+es = "Sustituir la cubicación"
+
+["There is already a cubication «{name}» in {version}: replace it?"]
+es = "Ya hay una cubicación «{name}» en {version}: ¿sustituirla?"
+
+["There is already a cubication «{name}» in {version}"]
+es = "Ya hay una cubicación «{name}» en {version}"
+
+["There is already a cubication «{name}» in {version}: to replace it, repeat the order with «Replace» (replace=True)"]
+es = "Ya hay una cubicación «{name}» en {version}: para sustituirla, repita la orden con «Sustituir» (replace=True)"
+
+["{name} ({revision}, in progress): cut {cut} m³, fill {fill} m³, net {net} m³"]
+es = "{name} ({revision}, en curso): desmonte {cut} m³, terraplén {fill} m³, neto {net} m³"
+
+["Computing «{name}»: checking… {percent} % · Esc: cancel"]
+es = "Cubicando «{name}»: comprobando… {percent} % · Esc: cancelar"
+
+["Computing «{name}»: reading… {percent} % · Esc: cancel"]
+es = "Cubicando «{name}»: leyendo… {percent} % · Esc: cancelar"
+
+["Computing «{name}»: writing the difference grid… {percent} % · Esc: cancel"]
+es = "Cubicando «{name}»: escribiendo la rejilla de diferencias… {percent} % · Esc: cancelar"
+
+["Computing «{name}»: saving… {percent} % · Esc: cancel"]
+es = "Cubicando «{name}»: guardando… {percent} % · Esc: cancelar"
+
+["«{name}» has been computed; its difference grid has not been loaded into the view"]
+es = "«{name}» está cubicada; su rejilla de diferencias no se ha cargado en la vista"
+
+["Volumetrics cancelled: nothing has been left half-done"]
+es = "Cubicación cancelada: no ha quedado nada a medias"
+
+["The project was closed while «{name}» was being computed: nothing has been left half-done"]
+es = "Se cerró el proyecto mientras se cubicaba «{name}»: no ha quedado nada a medias"
+
+["Name of the cubication, unique in the active version (empty: «<final> − <start>»)"]
+es = "Nombre de la cubicación, único en la versión activa (vacío: «<final> − <partida>»)"
+
+["Surface before the works (the higher one): a grid of the project or of the active version, one frozen in the revision it starts from, or a constant elevation"]
+es = "Superficie de antes de los trabajos (la más alta): una rejilla del proyecto o de la versión activa, una congelada en la revisión de la que parte o una cota constante"
+
+["Surface after the works: a grid of the project or of the active version, one frozen in the revision it starts from, or a constant elevation"]
+es = "Superficie de después de los trabajos: una rejilla del proyecto o de la versión activa, una congelada en la revisión de la que parte o una cota constante"
+
+["Constant elevation of the start surface, m"]
+es = "Cota constante de la superficie de partida, m"
+
+["Constant elevation of the final surface, m"]
+es = "Cota constante de la superficie final, m"
+
+["Swap the start and the final surfaces"]
+es = "Cambia la superficie de partida por la final"
+
+["Polygons outside which nothing is measured: a boundary layer or the union of a domain layer (none: the whole grid)"]
+es = "Polígonos fuera de los cuales no se cubica nada: una capa de contornos o la unión de una de dominios (ninguna: toda la rejilla)"
+
+["Write the grid of differences (final − start, m) as data of the version and load it into the view"]
+es = "Escribe la rejilla de diferencias (final − partida, m) como dato de la versión y la carga en la vista"
+
+["Replace the cubication of the same name of the active version"]
+es = "Sustituye la cubicación del mismo nombre de la versión activa"

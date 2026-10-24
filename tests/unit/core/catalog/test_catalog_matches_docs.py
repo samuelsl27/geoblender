@@ -43,7 +43,8 @@ PENDING_REFS: frozenset[str] = frozenset()
 # propiedad…, de R-07 a 009), desde la T31 de la 009. Las de Cubicación de la 011 (plan 011 D-36:
 # de R-38 a 011 al llegar su clase real; BS §8.9 lo dirá en la T31 de la 011). identificador →
 # entrada.
-APPROVED_ENTRIES: dict[str, str] = {"res_edit_materials": "011"}
+APPROVED_ENTRIES: dict[str, str] = {"res_edit_materials": "011",
+                                    "res_compute_volume_between_surfaces": "011"}
 
 # Filas ↗ de BS que no dicen lo mismo que la casa de su comando (manda la casa: un comando,
 # una definición): ninguna (la T37 corrigió el «D·2p» de ``io_import_block_model`` en

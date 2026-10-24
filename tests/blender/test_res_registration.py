@@ -12,8 +12,8 @@
   versión no editable desactiva sus órdenes), sus órdenes en el catálogo y, si se repite solo, su
   recálculo, su reproducción (la de ``reserves.reproduce``) y la tolerancia de sus cifras; sus
   textos, en español. La entrada «011» del catálogo (D-36), con las órdenes que ya tienen su clase
-  real (T20: Materiales y densidades…); las demás, aún las provisionales de R-38 hasta que llegue
-  la de cada una (T21 a T25).
+  real (T20: Materiales y densidades…; T21: Cubicar entre dos superficies…); las demás, aún las
+  provisionales de R-38 hasta que llegue la de cada una (T22 a T25).
 - D-19 (RF-011-20, RF-008-26): «Recalcular lo obsoleto» de una cubicación obsoleta por un
   parámetro empieza la operación nueva y deja sus pasos en la cola de ``res``, que avanza su
   temporizador (``res_tick``, a mano: en ``blender -b`` no corren los temporizadores) mientras
@@ -63,7 +63,8 @@ REASON = "Prueba del registro de la cubicación"
 STATUS_MSGID = "Recomputing «{name}»… {percent} %"
 STATUS = "Recalculando «{name}»… {percent} %"
 DROPPED = "cancelada durante la operación: se desactivó Geoblender antes de empezar"
-DELIVERED = frozenset({"geoblender.res_edit_materials"})  # T20
+DELIVERED = frozenset({"geoblender.res_edit_materials",  # T20
+                       "geoblender.res_compute_volume_between_surfaces"})  # T21
 """Las órdenes de Cubicación que ya tienen su clase real (de la entrada «011»)."""
 
 

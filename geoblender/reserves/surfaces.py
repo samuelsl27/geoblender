@@ -29,6 +29,9 @@
   ``reserves.kernel``).
 - :func:`propose_order` (RF-011-06, D-31): de partida, la de mayor cota media en las celdas
   comunes de una fila de teselas de cada cuatro.
+- :func:`surface_choices` (RF-011-02; T21): las superficies que ofrece la orden de una
+  cubicación (:class:`SurfaceChoice`): las rejillas vivas del proyecto y de la versión activa y
+  las de versión congeladas en la revisión de la que parte.
 
 Python puro (nivel 9).
 """
@@ -62,6 +65,7 @@ from .messages import ResError
 __all__ = [
     "BAND_ROWS",
     "SAMPLE_EVERY",
+    "SurfaceChoice",
     "SurfaceHeader",
     "SurfaceRef",
     "SurfaceSource",
@@ -71,6 +75,7 @@ __all__ = [
     "grid_source",
     "lockstep_bands",
     "propose_order",
+    "surface_choices",
     "surface_source",
 ]
 
@@ -93,6 +98,17 @@ _OWNER = (  # el índice de nombres vivos por versión; las versiones son pocas
     "SELECT v.code FROM gb_dataset AS d JOIN gb_version AS v ON v.uid = d.version_uid "
     "WHERE d.name = ? AND d.version_uid <> '' AND d.status IN ({marks}) "
     "ORDER BY CAST(substr(v.code, 2) AS INTEGER), v.code LIMIT 1"
+)
+_OWN_MODULE = "res"  # las rejillas de diferencias de la cubicación no son superficies
+_LIVE_GRIDS = (
+    "SELECT uid, name, version_uid FROM gb_dataset WHERE kind = 'raster' AND module <> ? "
+    "AND status IN ({marks}) AND version_uid IN ('', ?) ORDER BY name, version_uid = ''"
+)
+_FROZEN_GRIDS = (  # las de versión: lo del proyecto se usa vivo
+    "SELECT d.uid, d.name FROM gb_revision_item AS i JOIN gb_dataset AS d "
+    "ON d.uid = i.item_uid WHERE i.revision_uid = ? AND i.item_kind = 'dataset' "
+    "AND i.content_sha256 IS NOT NULL AND d.version_uid <> '' AND d.kind = 'raster' "
+    "AND d.module <> ? ORDER BY d.name, d.uid"
 )
 
 
@@ -328,6 +344,53 @@ def surface_source(project: StoreProject, ref: SurfaceRef, *, version_uid: str =
         raise GisError("gis.dataset_file_missing", obj=f"{_OBJ}: «{ref.shown}»",
                        field="ubicación", value=relative, file=path.name, name=record.name)
     return grid_source(path, name=ref.shown, crs=crs, vertical=vertical, catalog=catalog)
+
+
+@dataclass(frozen=True, slots=True)
+class SurfaceChoice:
+    """Una superficie que ofrece la orden de una cubicación (RF-011-02): su referencia
+    (``ref``: el dato por su nombre, o lo congelado), el uid y el nombre de su dato, la versión
+    del dato vivo (``version_uid``: ``''`` del proyecto) y, de lo congelado, la revisión
+    (``revision``, «V01.r1», y su uid)."""
+
+    ref: SurfaceRef
+    uid: str
+    name: str
+    version_uid: str = ""
+    revision: str | None = None
+    revision_uid: str | None = None
+
+
+def surface_choices(project: StoreProject, *, version_uid: str = "") -> tuple[SurfaceChoice, ...]:
+    """Las superficies que puede cubicar la orden con la versión activa ``version_uid`` (``''``:
+    sin versión) (RF-011-02; T21), por nombre: las rejillas vivas del proyecto y las de la
+    versión activa (de un nombre en las dos, la de la versión, la que lee
+    :func:`surface_source`) y, si la versión parte de una revisión congelada que no está
+    alterada, las rejillas de versión congeladas en ella (lo del proyecto se usa vivo). Ni un
+    TIN, ni una rejilla de diferencias, ni lo de otra versión. Solo lee."""
+    marks = ", ".join("?" for _ in LIVE_STATUSES)
+    found: dict[str, SurfaceChoice] = {}
+    frozen: list[SurfaceChoice] = []
+    with project.read() as conn:
+        rows = conn.execute(_LIVE_GRIDS.format(marks=marks),
+                            (_OWN_MODULE, *(str(status) for status in LIVE_STATUSES),
+                             version_uid)).fetchall()
+        for uid, name, owner in rows:
+            found.setdefault(str(name), SurfaceChoice(SurfaceRef(dataset=str(name)), str(uid),
+                                                      str(name), str(owner or "")))
+        version = versions_read.version(conn, version_uid) if version_uid else None
+        parent = (None if version is None or version.parent_revision_uid is None
+                  else versions_read.revision(conn, version.parent_revision_uid))
+        if parent is not None and parent.state is RevisionState.FROZEN and not parent.altered:
+            label = parent.label(_code(conn, parent.version_uid))
+            names: set[str] = set()
+            for uid, name in conn.execute(_FROZEN_GRIDS, (parent.uid, _OWN_MODULE)):
+                if str(name) not in names:
+                    names.add(str(name))
+                    frozen.append(SurfaceChoice(SurfaceRef(frozen=str(name)), str(uid),
+                                                str(name), revision=label,
+                                                revision_uid=parent.uid))
+    return (*found.values(), *frozen)
 
 
 # --- Comprobar ------------------------------------------------------------------------------

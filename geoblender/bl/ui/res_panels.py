@@ -27,12 +27,20 @@ En solo lectura dice por qué y dibuja desactivado lo que escribe. **Nada se lee
 cambiar un parámetro: :func:`on_project_read` escucha los indicadores de la procedencia,
 ``bl.ui.provenance.add_change_listener``). Los textos pasan por ``core.i18n`` y se dibujan con
 ``translate=False``.
+
+**Las listas de los diálogos de la cubicación** (T21; plan §2.1, §5.3.4): las superficies que se
+pueden cubicar (:func:`surface_items`: las de ``reserves.surfaces.surface_choices`` y «Cota
+constante») y las capas que pueden ser su ámbito (:func:`scope_items`: «Sin ámbito», contornos
+y dominios), en listas vivas del módulo (Blender guarda punteros a sus cadenas), del proyecto de
+la sesión, su versión activa y el idioma de Geoblender: la orden las vuelve a leer al abrir su
+diálogo (:func:`refresh_choices`) y la escucha de los indicadores, cuando cambia el proyecto.
 """
 
 from __future__ import annotations
 
 import logging
 import sqlite3
+from dataclasses import dataclass, field
 from typing import Any
 
 import bpy
@@ -46,6 +54,7 @@ from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
 from ...reserves import materials as res_materials
 from ...reserves import params as res_params
+from ...reserves import surfaces as res_surfaces
 from ..props.res import (
     BASE_ELEVATION,
     BASE_ITEMS,
@@ -56,6 +65,7 @@ from ..props.res import (
     STATE_ITEMS,
     WINDOW_MANAGER_PROPERTY,
 )
+from ..scene import project_session
 from ..scene import versions as scene_versions
 from . import provenance
 from .commands import catalog, text
@@ -232,12 +242,133 @@ def refresh_parameters(project: Any) -> None:
 def on_project_read(project: Any) -> None:
     """Lo que hace la escucha de los indicadores de la procedencia cada vez que el proyecto
     cambió (``bl.ui.provenance.add_change_listener``): los valores de los parámetros de la
-    vista, al día (:func:`refresh_parameters`). Si no se puede leer, lo deja en el registro
-    técnico."""
+    vista, al día (:func:`refresh_parameters`), y las listas de los diálogos de la cubicación,
+    si ya se leyeron para él (:func:`refresh_choices`). Si no se puede leer, lo deja en el
+    registro técnico."""
     try:
         refresh_parameters(project)
     except (GeoblenderError, sqlite3.Error, OSError):
         LOGGER.warning("No se pudieron leer los parámetros de los materiales", exc_info=True)
+    key = _CHOICES.key
+    if key is not None and key[0] == project.uid:
+        try:
+            refresh_choices(project, key[1])
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+            LOGGER.warning("No se pudieron leer las superficies de la cubicación", exc_info=True)
+
+
+# --- Las listas de los diálogos de la cubicación (T21; plan §2.1, §5.3.4) -----------------------
+
+ELEVATION = "ELEVATION"
+"""El elemento «Cota constante» de las listas de superficies (su cota se teclea aparte)."""
+FROZEN = "frozen:"
+"""El comienzo del identificador de una superficie congelada en la revisión de la que parte la
+versión activa (``frozen:<nombre del dato>``); el de una viva es el nombre de su dato."""
+NO_SCOPE = "NONE"
+"""El elemento «Sin ámbito» de la lista de capas del ámbito."""
+VOLUMETRICS_PANEL = "GEOBLENDER_PT_res_volumetrics"
+"""La ventana de la cubicación (T25): la abre la orden al terminar."""
+
+
+@dataclass
+class _Choices:
+    """Las listas vivas de los diálogos (plan §2.1: Blender guarda punteros a sus cadenas): de
+    qué proyecto, versión activa e idioma son, las superficies (``EnumProperty``), las capas del
+    ámbito y cada superficie por su identificador."""
+
+    key: tuple[str, str, str] | None = None
+    surfaces: list[tuple[str, str, str]] = field(default_factory=list)
+    layers: list[tuple[str, str, str]] = field(default_factory=list)
+    by_id: dict[str, res_surfaces.SurfaceChoice] = field(default_factory=dict)
+
+
+_CHOICES = _Choices()
+
+
+def surface_id(choice: res_surfaces.SurfaceChoice) -> str:
+    """El identificador de ``choice`` en las listas: el nombre de su dato o, de lo congelado,
+    :data:`FROZEN` y su nombre."""
+    return choice.name if choice.revision is None else FROZEN + choice.name
+
+
+def _fixed_items() -> tuple[tuple[str, str, str], tuple[str, str, str]]:
+    return ((ELEVATION, tr("Constant elevation"), tr("A constant elevation (m), typed below")),
+            (NO_SCOPE, tr("No scope"), tr("The whole grid of the surfaces")))
+
+
+def refresh_choices(project: Any, version_uid: str | None) -> None:
+    """Vuelve a leer de ``project``, con la versión activa ``version_uid``, las superficies que
+    ofrece la orden (``reserves.surfaces.surface_choices``: las rejillas del proyecto y de la
+    versión activa y las congeladas en la revisión de la que parte) y las capas que pueden ser
+    su ámbito (contornos y dominios, D-32), en el idioma de Geoblender. Si no se puede leer, el
+    error sigue y las listas quedan como estaban."""
+    found = res_surfaces.surface_choices(project, version_uid=version_uid or "")
+    layers = gis_store.list_gis_datasets(project, families=(gis_provenance.BOUNDARY,
+                                                            gis_provenance.DOMAINS))
+    elevation, no_scope = _fixed_items()
+    surfaces: list[tuple[str, str, str]] = []
+    for choice in found:
+        if choice.revision is not None:
+            surfaces.append((surface_id(choice), f"{choice.name} · {choice.revision}",
+                             tr("Frozen in {revision}, the revision the active version starts "
+                                "from", revision=choice.revision)))
+        else:
+            surfaces.append((choice.name, choice.name,
+                             tr("A grid of the active version") if choice.version_uid
+                             else tr("A grid of the project")))
+    boundary = gis_provenance.FAMILIES_BY_CODE[gis_provenance.BOUNDARY].prefix
+    _CHOICES.surfaces = [*surfaces, elevation]
+    _CHOICES.layers = [no_scope, *((record.name, record.name,
+                                    tr("Boundary layer") if record.name.startswith(boundary)
+                                    else tr("Domain layer (their union)"))
+                                   for record in layers)]
+    _CHOICES.by_id = {surface_id(choice): choice for choice in found}
+    _CHOICES.key = (project.uid, version_uid or "", language())
+
+
+def _ensure_choices() -> None:
+    """Las listas del proyecto de la sesión y su versión activa (las lee si son de otro, una
+    vez: ``invoke`` las vuelve a leer siempre); sin proyecto, solo la cota constante."""
+    project = project_session.current()
+    if project is None:
+        if not _CHOICES.surfaces:
+            elevation, no_scope = _fixed_items()
+            _CHOICES.surfaces, _CHOICES.layers = [elevation], [no_scope]
+        return
+    key = (project.uid, scene_versions.active_version() or "", language())
+    if key == _CHOICES.key:
+        return
+    try:
+        refresh_choices(project, key[1])
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.warning("No se pudieron leer las superficies de la cubicación", exc_info=True)
+        elevation, no_scope = _fixed_items()
+        _CHOICES.surfaces, _CHOICES.layers, _CHOICES.by_id = [elevation], [no_scope], {}
+        _CHOICES.key = key  # sin volver a intentarlo en cada dibujo: invoke lo relee
+
+
+def surface_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las opciones de las listas de superficies de los diálogos (``EnumProperty``): las de
+    :func:`refresh_choices` y «Cota constante», en una lista viva del módulo."""
+    _ensure_choices()
+    return _CHOICES.surfaces
+
+
+def scope_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las opciones de la lista de capas del ámbito: «Sin ámbito» y las capas de contornos y de
+    dominios del proyecto (una lista viva del módulo)."""
+    _ensure_choices()
+    return _CHOICES.layers
+
+
+def surface_choice(identifier: str) -> res_surfaces.SurfaceChoice | None:
+    """La superficie de identificador ``identifier`` de las listas leídas, o ``None``."""
+    return _CHOICES.by_id.get(identifier)
+
+
+def forget_choices() -> None:
+    """Olvida las listas leídas (al desregistrar)."""
+    _CHOICES.key, _CHOICES.by_id = None, {}
 
 
 # --- Dibujo --------------------------------------------------------------------------------------
@@ -420,8 +551,9 @@ def install() -> None:
 
 
 def uninstall() -> None:
-    """Quita lo que puso :func:`install`."""
+    """Quita lo que puso :func:`install` y olvida las listas de los diálogos."""
     provenance.remove_change_listener(on_project_read)
+    forget_choices()
 
 # En orden de registro (las listas, antes de la ventana que las dibuja).
 classes: tuple[type, ...] = (GEOBLENDER_UL_res_units, GEOBLENDER_UL_res_components,

@@ -365,14 +365,15 @@ def _revision(conn: sqlite3.Connection, version: str, number: int, *,
 
 
 def _dataset(conn: sqlite3.Connection, name: str, locator: str, *, version: str = "",
-             kind: str = "raster", store: str = "rasters", content: str = "") -> str:
+             kind: str = "raster", store: str = "rasters", content: str = "",
+             module: str = "gis") -> str:
     uid = f"d-{name}-{version or 'proyecto'}"
     conn.execute(
         "INSERT INTO gb_dataset (uid, name, module, kind, store, locator, reader, normalizer, "
         "content_sha256, operation_uid, created_at, modified_at, version_uid) VALUES "
-        "(?, ?, 'gis', ?, ?, ?, ?, ?, ?, 'op', ?, ?, ?)",
-        (uid, name, kind, store, locator, READER, NORMALIZER, content or f"h-{uid}", NOW, NOW,
-         version))
+        "(?, ?, ?, ?, ?, ?, ?, ?, ?, 'op', ?, ?, ?)",
+        (uid, name, module, kind, store, locator, READER, NORMALIZER, content or f"h-{uid}",
+         NOW, NOW, version))
     return uid
 
 
@@ -425,7 +426,9 @@ class ProjectSourceTest(unittest.TestCase):
                 _dataset(conn, "gis_tin_puntos", "meshes/gis_tin_puntos.npz", kind="mesh",
                          store="meshes")
                 cls.final_v1 = _dataset(conn, "gis_dtm_final", files["final_v01"], version=v1)
-                _dataset(conn, "gis_dtm_final", files["final_v02"], version=v2)
+                cls.final_v2 = _dataset(conn, "gis_dtm_final", files["final_v02"], version=v2)
+                _dataset(conn, "res_dif_mensual", "rasters/res_dif_mensual_v01.tif",
+                         version=v1, module="res")  # una rejilla de diferencias: no se ofrece
                 _item(conn, cls.v1_r1, cls.final_v1, "produced",
                       path=files["final_v01_r1"], copied=True)
                 _item(conn, cls.v1_r1, cls.september, "immutable")
@@ -526,6 +529,40 @@ class ProjectSourceTest(unittest.TestCase):
                 with self.assertRaises(versions_model.VersionError) as caught:
                     self.source(SurfaceRef(frozen="gis_dtm_final"), "V03")
                 self.assertEqual(caught.exception.code, "core.version_frozen_altered")
+            finally:
+                with conn:
+                    conn.execute("UPDATE gb_revision SET altered_at = NULL WHERE uid = ?",
+                                 (self.v1_r1,))
+
+    def test_choices_of_the_command(self) -> None:
+        """RF-011-02, RF-011-06 (T21): las superficies que ofrece la orden
+        (``surface_choices``), por nombre: las rejillas vivas del proyecto y las de la versión
+        activa (no un TIN, una rejilla de diferencias ni las de otra versión) y, de una versión
+        que parte de una revisión congelada, las rejillas de versión congeladas en ella, con su
+        revisión (lo del proyecto se usa vivo); con esa revisión alterada, ninguna congelada."""
+        def shown(version: str) -> list[tuple[Any, str, str | None]]:
+            return [(choice.ref, choice.uid, choice.revision) for choice in
+                    surfaces.surface_choices(self.project,
+                                             version_uid=self.versions.get(version, ""))]
+
+        october = (SurfaceRef(dataset="gis_dtm_octubre"), self.october, None)
+        september = (SurfaceRef(dataset="gis_src_septiembre"), self.september, None)
+        self.assertEqual(shown(""), [october, september])
+        self.assertEqual(shown("V01"), [(SurfaceRef(dataset="gis_dtm_final"), self.final_v1,
+                                         None), october, september])
+        self.assertEqual(shown("V02"), [(SurfaceRef(dataset="gis_dtm_final"), self.final_v2,
+                                         None), october, september])
+        frozen = (SurfaceRef(frozen="gis_dtm_final"), self.final_v1, "V01.r1")
+        self.assertEqual(shown("V03"), [october, september, frozen])
+        (choice,) = [item for item in surfaces.surface_choices(
+            self.project, version_uid=self.versions["V03"]) if item.revision]
+        self.assertEqual((choice.name, choice.revision_uid), ("gis_dtm_final", self.v1_r1))
+        with contextlib.closing(sqlite3.connect(self.project.root / "project.gpkg")) as conn:
+            with conn:
+                conn.execute("UPDATE gb_revision SET altered_at = ? WHERE uid = ?",
+                             (NOW, self.v1_r1))
+            try:
+                self.assertEqual(shown("V03"), [october, september])
             finally:
                 with conn:
                     conn.execute("UPDATE gb_revision SET altered_at = NULL WHERE uid = ?",

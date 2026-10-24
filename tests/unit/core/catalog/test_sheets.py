@@ -80,7 +80,7 @@ class SheetsTest(unittest.TestCase):
         self.assertEqual(by_combo["Mayús+Alt+M"].key,
                          "geoblender.res_compute_volume_between_surfaces")
         self.assertIn("Cubicación ▸ Cubicar", by_combo["Mayús+Alt+M"].columns[2])
-        self.assertEqual(by_combo["Mayús+Alt+M"].columns[3], "R-38")
+        self.assertEqual(by_combo["Mayús+Alt+M"].columns[3], "011")
         self.assertEqual(by_combo["Mayús+RePág"].columns[1], "Medio paso adelante")
         self.assertEqual(by_combo["Alt+Num −"].columns[1], "Estrechar la banda de la sección")
         self.assertEqual(by_combo["Ctrl+Mayús+F5"].columns[1], "Guardar vista 1")
