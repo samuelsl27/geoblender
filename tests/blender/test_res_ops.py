@@ -452,8 +452,11 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         if command == STAGES:
             given.setdefault("moments", _Collection())
             given.setdefault("choices", _Collection())
+        # En un operador vivo, ``self.bl_idname`` es «GEOBLENDER_OT_…», no la orden (H3 de la
+        # 011: Mayús+Alt+M lanzaba un KeyError del catálogo).
         fake = operator_self(cls, report=lambda kind, text: None,
                              properties=SimpleNamespace(is_property_set=names.__contains__),
+                             bl_idname=self.commands.operator_class_name(command),
                              **{**defaults, **given})
         manager = SimpleNamespace(invoke_props_dialog=mock.Mock(return_value={"RUNNING_MODAL"}),
                                   invoke_confirm=mock.Mock(return_value={"RUNNING_MODAL"}))
@@ -834,10 +837,12 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         self.assertIn("Ya hay una cubicación «Repetida» en V01", text)
 
         fake = operator_self(self.cls, report=lambda kind, text: None, provenance_dialog=True,
+                             bl_idname=self.commands.operator_class_name(BETWEEN),
                              **{**DIALOG, **values})
         with mock.patch.object(self.res_ops, "_confirm_later") as later:
             self.assertEqual(self.cls.execute(fake, bpy.context), {"CANCELLED"})
-        (asked,), _kw = later.call_args
+        (asked,), kw = later.call_args
+        self.assertEqual(kw["idname"], BETWEEN)
         self.assertEqual({key: asked[key] for key in values}, values)
         self.assertEqual(len(self.operations(name)), 1)
         _fake, _layout, manager = self.dialog(confirm=True, **values)
