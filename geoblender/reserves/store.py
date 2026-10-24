@@ -44,10 +44,13 @@ momentos y de la directa, con la tolerancia que leyó, A13) y :func:`save_materi
 (``res.edit_materials``). Repetir el nombre de
 una cubicación de la versión la sustituye (D-30): :func:`previous_operation` da la operación a
 la que sustituye la nueva (``begin_operation(…, supersedes=…)``), que escribe contenido nuevo
-de los mismos datos. **Recalcular** (A12, T15): :func:`recompute_run` empieza la operación que
-sustituye a una obsoleta (en la revisión abierta de su versión, con la columna vigente y sus
-parámetros resueltos de nuevo) y da sus pasos, que avanza la cola de ``res`` en ``bl``. Python
-puro (nivel 9).
+de los mismos datos. **Las capas** de una cubicación (D-32, T32): el ámbito
+(:func:`load_scope`, :func:`read_scope`: una capa de contornos o la unión de una de dominios) y
+los dominios (:func:`load_domain_layer`, :func:`read_domain_layer`), del proyecto o de una tabla
+en una conexión (su copia congelada, al reproducir). **Recalcular** (A12, T15):
+:func:`recompute_run` empieza la operación que sustituye a una obsoleta (en la revisión abierta
+de su versión, con la columna vigente, las capas que consumió y sus parámetros resueltos de
+nuevo) y da sus pasos, que avanza la cola de ``res`` en ``bl``. Python puro (nivel 9).
 """
 
 from __future__ import annotations
@@ -95,7 +98,21 @@ from ..core.versions import read as versions_read
 from ..core.versions.model import VersionError
 from ..gis.geotiff.writer import target_locked, write_failed
 from ..gis.messages import GisError
-from ..gis.store import StoreProject, backup_path, insert_rows, project_references, temporary_path
+from ..gis.provenance import BOUNDARY as GIS_BOUNDARY
+from ..gis.provenance import DOMAINS as GIS_DOMAINS
+from ..gis.provenance import FAMILIES_BY_CODE as GIS_FAMILIES
+from ..gis.store import (
+    DomainFeature,
+    StoreProject,
+    backup_path,
+    insert_rows,
+    load_domains,
+    load_regions,
+    project_references,
+    read_domains,
+    read_regions,
+    temporary_path,
+)
 from . import provenance as declared
 from .materials import COLUMNS as MATERIAL_COLUMNS
 from .materials import CREATE_TABLE as MATERIALS_DDL
@@ -103,6 +120,7 @@ from .materials import TABLE as MATERIALS_TABLE
 from .materials import MaterialColumn, column_rows, read_column
 from .messages import ResError
 from .params import ANTHROPIC_PRESENCE, MIN_THICKNESS, STAGES_TOLERANCE
+from .polygons import Polygon, domain_polygons
 from .stages import StagesResult, StageTable, stages
 from .surfaces import BAND_ROWS, SurfaceSource, surface_source
 from .table import (
@@ -121,6 +139,7 @@ from .volumes import (
     START,
     STEP_BUDGET_S,
     DifferenceGrid,
+    DomainLayer,
     TonnageOutputs,
     VolumeRequest,
     VolumeResult,
@@ -143,9 +162,13 @@ __all__ = [
     "StoredTonnage",
     "StoredVolume",
     "difference_figures",
+    "load_domain_layer",
+    "load_scope",
     "materials_digest",
     "previous_operation",
     "project_sources",
+    "read_domain_layer",
+    "read_scope",
     "recompute_run",
     "save_materials",
     "stages_digest",
@@ -675,6 +698,96 @@ def project_sources(project: StoreProject, request: VolumeRequest, *,
     return found
 
 
+# --- Las capas de una cubicación: el ámbito y los dominios (D-32, T32) ------------------------
+
+_LAYER_OBJ = "Capa de la cubicación"
+
+
+def _layer_family(name: str) -> str:
+    """La familia de la capa ``name``: contornos (``bnd``) o dominios (``dom``)."""
+    for code in (GIS_BOUNDARY, GIS_DOMAINS):
+        if name.startswith(GIS_FAMILIES[code].prefix):
+            return code
+    raise ValueError(f"«{name}» no es una capa de contornos (gis_bnd_) ni de dominios "
+                     "(gis_dom_): no es el ámbito ni los dominios de una cubicación")
+
+
+def _contour_scope(name: str, contours: Sequence[Sequence[Any]],
+                   holes: Sequence[Any]) -> tuple[Polygon, ...]:
+    """El ámbito de los contornos de una capa ``gis_bnd_``: cada polígono con sus huecos."""
+    if holes:
+        raise ValueError(f"la capa de contornos «{name}» tiene huecos sueltos (entidades "
+                         "«hole»): aún no sirve de ámbito de una cubicación")
+    if not contours:
+        raise ValueError(f"la capa «{name}» no tiene polígonos: no sirve de ámbito")
+    return tuple(Polygon(fid, "", tuple(rings)) for fid, rings in enumerate(contours, start=1))
+
+
+def _domains_scope(name: str, features: Sequence[DomainFeature]) -> tuple[Polygon, ...]:
+    """El ámbito de una capa de dominios: la unión de sus polígonos (cada parte, uno)."""
+    found = tuple(Polygon(feature.fid, "", tuple(rings)) for feature in features
+                  for rings in feature.polygons)
+    if not found:
+        raise ValueError(f"la capa «{name}» no tiene polígonos: no sirve de ámbito")
+    return found
+
+
+def read_scope(conn: sqlite3.Connection, table: str, name: str) -> tuple[Polygon, ...]:
+    """El ámbito de una cubicación de la capa ``name`` (el nombre de su dato) en su tabla
+    ``table`` de ``conn`` (la del proyecto o su copia congelada, al reproducirla): de una capa
+    de contornos (``gis_bnd_``), cada contorno con sus huecos; de una de dominios
+    (``gis_dom_``), la unión de sus polígonos (plan D-32). Polígonos sin valor, con sus anillos
+    tal como están guardados. ``ValueError`` si no es una de esas capas, si no tiene polígonos
+    o si tiene huecos sueltos (entidades «hole» de una capa de contornos)."""
+    if _layer_family(name) == GIS_BOUNDARY:
+        return _contour_scope(name, *read_regions(conn, table))
+    return _domains_scope(name, read_domains(conn, table))
+
+
+def read_domain_layer(conn: sqlite3.Connection, table: str, name: str,
+                      field: str) -> DomainLayer:
+    """La capa de dominios ``name`` (``gis_dom_``) de su tabla ``table`` en ``conn`` (la del
+    proyecto o su copia congelada) para repartir por su columna ``field`` (RF-011-07):
+    ``reserves.polygons.domain_polygons``. ``ValueError`` si no es una capa de dominios, si no
+    tiene la columna o si no tiene polígonos."""
+    if _layer_family(name) != GIS_DOMAINS:
+        raise ValueError(f"«{name}» no es una capa de dominios (gis_dom_)")
+    return DomainLayer(name, field, domain_polygons(read_domains(conn, table), field))
+
+
+def _layer_record(project: StoreProject, ref: str) -> DatasetRecord:
+    if not isinstance(ref, str):
+        raise TypeError(f"una capa se indica por su nombre o su uid, no {ref!r}")
+    with project.read() as conn:
+        record = dataset_registry.get(conn, ref)
+    if record is None:
+        raise GisError("gis.dataset_unknown", obj=_LAYER_OBJ, field="dato", value=ref)
+    _layer_family(record.name)
+    return record
+
+
+def load_scope(project: StoreProject, ref: str) -> tuple[Polygon, ...]:
+    """El ámbito de la capa ``ref`` del proyecto (su nombre o su uid; :func:`read_scope`), lo
+    que consume una cubicación con el papel ``scope`` (``reserves.provenance.SCOPE_ROLE``).
+    Además de los de :func:`read_scope`, ``gis.dataset_unknown`` si no hay tal dato y
+    ``gis.dataset_file_missing`` si falta su tabla."""
+    record = _layer_record(project, ref)
+    if _layer_family(record.name) == GIS_BOUNDARY:
+        return _contour_scope(record.name, *load_regions(project, record))
+    return _domains_scope(record.name, load_domains(project, record))
+
+
+def load_domain_layer(project: StoreProject, ref: str, field: str) -> DomainLayer:
+    """La capa de dominios ``ref`` del proyecto (su nombre o su uid) para repartir por su
+    columna ``field`` (:func:`read_domain_layer`): la que consume una cubicación con el papel
+    ``domains``, con el nombre de su dato. Los mismos errores que :func:`load_scope`."""
+    record = _layer_record(project, ref)
+    if _layer_family(record.name) != GIS_DOMAINS:
+        raise ValueError(f"«{record.name}» no es una capa de dominios (gis_dom_)")
+    return DomainLayer(record.name, field,
+                       domain_polygons(load_domains(project, record), field))
+
+
 def _param_m(handle: OperationHandle, key: str) -> float:
     """El parámetro ``key`` (m) que leyó la operación al empezar."""
     return _param(handle, key, "m")
@@ -960,6 +1073,15 @@ def _current_column(project: StoreProject) -> MaterialColumn:
     return column
 
 
+def _consumed(request: RecomputeRequest, role: str) -> str:
+    """Lo que consumió la operación de ``request`` con el papel ``role`` (su uid vigente)."""
+    found = [use.item for use in request.inputs if use.role == role]
+    if len(found) != 1:
+        raise ValueError(f"la operación «{request.op_type}» ({request.operation_uid}) no "
+                         f"consumió un dato «{role}»: no se puede repetir")
+    return found[0]
+
+
 def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
                   band_rows: int = BAND_ROWS) -> tuple[OperationHandle, Iterator[Progress]]:
     """Repite la operación de ``res`` de ``request`` (``RecomputeRequest`` de «Recalcular lo
@@ -967,14 +1089,15 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
     que sustituye a la anterior en la revisión abierta de **su** versión, con sus mismos
     ajustes y con lo que lee hoy —la columna de materiales vigente y, de ella, sus entradas
     (las bases y los espesores de cada unidad) y sus parámetros, resueltos de nuevo al empezar:
-    un K cambiado solo en V01 se lee de V01— y devuelve su ``OperationHandle`` «en curso» y sus
-    pasos (:func:`volume_run`, :func:`tonnage_run` o :func:`stages_run`, que relee las tablas
-    vigentes de sus momentos), que avanza quien la llama (en Blender, la cola de ``res``; la
-    operación sigue «en curso» hasta el último).
+    un K cambiado solo en V01 se lee de V01; la capa de su ámbito y la de sus dominios, las
+    vigentes que consumió (:func:`load_scope`, :func:`load_domain_layer`; T32)— y devuelve su
+    ``OperationHandle`` «en curso» y sus pasos (:func:`volume_run`, :func:`tonnage_run` o
+    :func:`stages_run`, que relee las tablas vigentes de sus momentos), que avanza quien la
+    llama (en Blender, la cola de ``res``; la operación sigue «en curso» hasta el último).
 
     Al llamar, sin empezar nada: ``ValueError`` si el tipo no es de :data:`RECOMPUTED` o sus
     ajustes no son los de su tipo; ``res.materials_missing`` si reparte por unidades y no hay
-    columna; los rechazos de ``begin_operation``."""
+    columna; los rechazos de leer sus capas; los rechazos de ``begin_operation``."""
     if not isinstance(request, RecomputeRequest):
         raise TypeError(f"se recalcula una RecomputeRequest, no {request!r}")
     if request.op_type not in RECOMPUTED:
@@ -995,7 +1118,15 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         params = declared.tonnage_params(_current_column(project))
     else:
         column = _current_column(project) if settings.get("units") else None
-        volume = declared.volume_request(settings, column=column)
+        scope = domains = None
+        if settings.get("scope") is not None:
+            scope = load_scope(project, _consumed(request, declared.SCOPE_ROLE))
+        field = settings.get("domains_field")
+        if field is not None:
+            domains = load_domain_layer(project, _consumed(request, declared.DOMAINS_ROLE),
+                                        field)
+        volume = declared.volume_request(settings, column=column, scope=scope,
+                                         domains=domains)
         frozen = next((use.frozen for use in request.inputs if use.frozen is not None), None)
         inputs = declared.volume_inputs(volume, scope=settings.get("scope"), frozen=frozen)
         params = declared.volume_params(volume)

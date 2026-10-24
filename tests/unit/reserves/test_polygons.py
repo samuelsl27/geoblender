@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -209,6 +210,26 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(found[0].text(FIELD, "en"), "polygon 2 («Fase 2») intersects itself")
         self.assertEqual(found[2].text(FIELD, "en"), "polygon 4 has an empty «fase»")
         self.assertIsNone(polygons.validate(layer[:1] + layer[4:5], field=FIELD, layer=LAYER))
+
+    def test_the_domains_of_a_layer_one_polygon_per_part(self) -> None:
+        """RF-011-07, RF-011-08, RF-011-20 (T32): las entidades de una capa de dominios
+        (``gis.store.DomainFeature``) dan un polígono por parte, con su número y el valor de su
+        campo como texto (un entero, sus cifras; sin valor, vacío: lo rechaza la validación);
+        un campo que la capa no tiene, ``ValueError``."""
+        square, hole = _rect(0.0, 0.0, 10.0, 10.0), _rect(2.0, 2.0, 4.0, 4.0)[::-1]
+        other = _rect(20.0, 0.0, 30.0, 10.0)
+        features = (SimpleNamespace(fid=4, attributes={FIELD: 7, "n": "a"},
+                                    polygons=((square, hole), (other,))),
+                    SimpleNamespace(fid=9, attributes={FIELD: None, "n": "b"},
+                                    polygons=((_rect(40.0, 0.0, 50.0, 10.0),),)))
+        found = polygons.domain_polygons(features, FIELD)
+        self.assertEqual([(p.fid, p.value, len(p.rings)) for p in found],
+                         [(4, "7", 2), (4, "7", 1), (9, "", 1)])
+        self.assertIs(found[0].rings[1], hole)
+        self.assertEqual([p.code for p in polygons.problems(found)], ["res.domain_value_empty"])
+        self.assertEqual(polygons.domain_polygons(features, "n")[2].value, "b")
+        with self.assertRaises(ValueError):
+            polygons.domain_polygons(features, "fase_2")
 
     def test_other_invalid_geometries(self) -> None:
         """RF-011-08, A6: también se cortan a sí mismos uno con un pico que vuelve sobre su lado,

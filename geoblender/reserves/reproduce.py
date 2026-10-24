@@ -12,11 +12,13 @@ mismo que la orden** sin recibir el proyecto ni escribir en él:
 
 - ``res.volume`` y ``res.difference`` (:func:`reproduce_volume`): la cubicación de sus ajustes
   (``reserves.provenance.volume_request``) con la columna, el espesor mínimo y el umbral de
-  presencia congelados y las superficies congeladas (cada papel, su GeoTIFF; una cota constante,
-  en el CRS y el datum del proyecto), por los mismos pasos (``reserves.volumes.volume_steps``,
-  con las bandas por defecto); en su carpeta de trabajo, la tabla ``res_vol_`` (en un GeoPackage
-  propio, con sus títulos) y la rejilla de diferencias, cada una con el papel con que la anotó la
-  operación, y sus cifras (las de ``res.difference``, con el ámbito de la diferencia);
+  presencia congelados, las capas congeladas de su ámbito y de sus dominios (sus tablas copiadas
+  en ``entradas.gpkg``; ``reserves.store.read_scope`` y ``read_domain_layer``, T32) y las
+  superficies congeladas (cada papel, su GeoTIFF; una cota constante, en el CRS y el datum del
+  proyecto), por los mismos pasos (``reserves.volumes.volume_steps``, con las bandas por
+  defecto); en su carpeta de trabajo, la tabla ``res_vol_`` (en un GeoPackage propio, con sus
+  títulos) y la rejilla de diferencias, cada una con el papel con que la anotó la operación, y
+  sus cifras (las de ``res.difference``, con el ámbito de la diferencia);
 - ``res.tonnage`` (:func:`reproduce_tonnage`): de la tabla de volúmenes y la columna congeladas,
   con los parámetros congelados (D-16), la tabla ``res_ton_`` y sus cifras;
 - ``res.stages`` (:func:`reproduce_stages`): de las tablas de volúmenes congeladas de sus
@@ -60,7 +62,13 @@ from .materials import MaterialColumn, read_column
 from .messages import ResError
 from .params import ANTHROPIC_PRESENCE, MIN_THICKNESS, STAGES_TOLERANCE
 from .stages import StageTable, stages
-from .store import STAGE_TABLE_COLUMNS, TABLE_COLUMNS, difference_figures
+from .store import (
+    STAGE_TABLE_COLUMNS,
+    TABLE_COLUMNS,
+    difference_figures,
+    read_domain_layer,
+    read_scope,
+)
 from .surfaces import BAND_ROWS, SurfaceRef, SurfaceSource, constant_source, grid_source
 from .table import (
     COLUMN_NAMES,
@@ -204,7 +212,17 @@ def _volume_steps(request: ReproduceRequest, budget_s: float,
                   band_rows: int) -> Iterator[Progress]:
     crs, vertical = request.references()
     column = _column(request) if request.settings.get("units") else None
-    volume = declared.volume_request(request.settings, column=column)
+    scope = domains = None
+    if request.settings.get("scope") is not None:
+        item = request.input(declared.SCOPE_ROLE)
+        scope = _read(item, lambda conn, layer: read_scope(conn, layer, item.name))
+    field = request.settings.get("domains_field")
+    if field is not None:
+        found = request.input(declared.DOMAINS_ROLE)
+        domains = _read(found, lambda conn, layer: read_domain_layer(conn, layer, found.name,
+                                                                     field))
+    volume = declared.volume_request(request.settings, column=column, scope=scope,
+                                     domains=domains)
     presence = volume.presence_m if column is None else _param_m(request, ANTHROPIC_PRESENCE)
     volume = replace(volume, min_thickness_m=_param_m(request, MIN_THICKNESS),
                      presence_m=presence)

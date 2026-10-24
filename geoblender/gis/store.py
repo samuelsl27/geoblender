@@ -92,7 +92,9 @@ Para leer lo guardado: :func:`list_gis_datasets` (desde ``gb_dataset``), :func:`
 :func:`load_tin` y, de una tabla de puntos, líneas de rotura o curvas, :func:`load_features`
 (T27, para la vista: sus geometrías absolutas tal como están guardadas y sus atributos); para
 un TIN (T29), :func:`load_points`, :func:`load_lines` y :func:`load_regions` (el contorno y
-los huecos de una tabla ``gis_bnd_``); para una cubicación, :func:`load_domains`. Las
+los huecos de una tabla ``gis_bnd_``); para una cubicación, :func:`load_domains` (y, de una
+tabla en una conexión cualquiera, la copia congelada al reproducir, :func:`read_domains` y
+:func:`read_regions`; spec 011, T32). Las
 referencias de un dato (:func:`dataset_references`: lo importado, las que declaró su entrada;
 lo calculado, las del proyecto) y su comprobación antes de mostrarlo en la vista, que no
 transforma coordenadas (:func:`require_project_references`, ``gis.view_references_mismatch``;
@@ -255,6 +257,8 @@ __all__ = [
     "load_tin",
     "point_rows",
     "project_references",
+    "read_domains",
+    "read_regions",
     "require_project_references",
     "session_tag",
     "source_declarations",
@@ -2113,12 +2117,24 @@ def load_regions(project: StoreProject, ref: DatasetRecord | str,
     región por hueco). Los mismos errores que :func:`load_features`."""
     record = _resolve(project, ref, (BOUNDARY,))
     with project.read() as conn:
-        if not _table_exists(conn, record.locator):
-            raise GisError("gis.dataset_file_missing", obj=f"{_OBJ} «{record.name}»",
-                           field=_FIELD_LOCATION, value=record.locator, file=record.locator,
-                           name=record.name)
-        rows = conn.execute(f'SELECT "{_GEOMETRY_COLUMN}", role FROM "{record.locator}" '
-                            "ORDER BY fid").fetchall()
+        _require_table(conn, record)
+        return read_regions(conn, record.locator)
+
+
+def _require_table(conn: sqlite3.Connection, record: DatasetRecord) -> None:
+    if not _table_exists(conn, record.locator):
+        raise GisError("gis.dataset_file_missing", obj=f"{_OBJ} «{record.name}»",
+                       field=_FIELD_LOCATION, value=record.locator, file=record.locator,
+                       name=record.name)
+
+
+def read_regions(conn: sqlite3.Connection, table: str,
+                 ) -> tuple[list[list[np.ndarray]], list[list[list[np.ndarray]]]]:
+    """Lo que da :func:`load_regions` de la tabla de contornos ``table`` de la conexión
+    ``conn``: la del proyecto o la de una copia congelada de la tabla (spec 011, T32: el ámbito
+    de una cubicación al reproducirla). Solo lee."""
+    rows = conn.execute(f'SELECT "{_GEOMETRY_COLUMN}", role FROM "{table}" '
+                        "ORDER BY fid").fetchall()
     polygons: list[list[np.ndarray]] = []
     holes: list[list[list[np.ndarray]]] = []
     for blob, role in rows:
@@ -2163,14 +2179,18 @@ def load_domains(project: StoreProject, ref: DatasetRecord | str) -> tuple[Domai
     ``gis.dataset_file_missing`` si falta su tabla; ``ValueError`` si es de otra familia."""
     record = _resolve(project, ref, (DOMAINS,))
     with project.read() as conn:
-        if not _table_exists(conn, record.locator):
-            raise GisError("gis.dataset_file_missing", obj=f"{_OBJ} «{record.name}»",
-                           field=_FIELD_LOCATION, value=record.locator, file=record.locator,
-                           name=record.name)
-        names = [str(row[1]) for row in conn.execute(f'PRAGMA table_info("{record.locator}")')
-                 if str(row[1]).lower() not in ("fid", _GEOMETRY_COLUMN)]
-        selected = ", ".join(f'"{name}"' for name in ("fid", _GEOMETRY_COLUMN, *names))
-        rows = conn.execute(f'SELECT {selected} FROM "{record.locator}" ORDER BY fid').fetchall()
+        _require_table(conn, record)
+        return read_domains(conn, record.locator)
+
+
+def read_domains(conn: sqlite3.Connection, table: str) -> tuple[DomainFeature, ...]:
+    """Lo que da :func:`load_domains` de la tabla de dominios ``table`` de la conexión ``conn``:
+    la del proyecto o la de una copia congelada de la tabla, con sus mismas columnas (spec 011,
+    T32: los dominios de una cubicación al reproducirla). Solo lee."""
+    names = [str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')
+             if str(row[1]).lower() not in ("fid", _GEOMETRY_COLUMN)]
+    selected = ", ".join(f'"{name}"' for name in ("fid", _GEOMETRY_COLUMN, *names))
+    rows = conn.execute(f'SELECT {selected} FROM "{table}" ORDER BY fid').fetchall()
     found: list[DomainFeature] = []
     for fid, blob, *values in rows:
         geometry = decode_geometry(blob)

@@ -56,7 +56,9 @@ de operación con las funciones de reproducir de ``reserves.reproduce`` y de rec
 y cifras; como ``tests/support/versions_demo.py``) y los lectores de contenido con que se
 congela y se reproduce (:func:`content_readers`). :func:`project_column` es la columna con esas
 rejillas como bases y espesores; :func:`write_grids` vuelve a escribir una rejilla del proyecto
-(otra superficie, T15). Solo fuera de Blender.
+(otra superficie, T15). Las capas del ámbito y de los dominios (T32): :func:`write_layer` (un
+GeoPackage de polígonos fuera del proyecto) e :func:`import_layer` (importado con su papel, con
+:func:`layers_registered`). Solo fuera de Blender.
 """
 
 from __future__ import annotations
@@ -64,6 +66,7 @@ from __future__ import annotations
 import atexit
 import math
 import shutil
+import sqlite3
 import tempfile
 import unittest
 from collections.abc import Iterator, Mapping, Sequence
@@ -844,3 +847,99 @@ class ResProjectCase(unittest.TestCase):
             for key, value in values.items():
                 store.create(conn, key, value, kind="HIPÓTESIS", **PARAMS_BY_HAND,
                              reason="Prueba de la cubicación", version=code)
+
+
+# Capas importadas: el ámbito y los dominios (T32; plan D-32) ----------------------------------
+
+
+def write_layer(path: Path, layer: str, field: str,
+                features: Sequence[tuple[int, str, Sequence[np.ndarray]]]) -> None:
+    """Un GeoPackage como los de QGIS en ``path`` con la capa de polígonos ``layer`` (EPSG:25830,
+    sin Z) y el campo de texto ``field``: cada entidad, ``(fid, valor, anillos ABSOLUTOS
+    cerrados; el primero, el exterior)``."""
+    base = import_geoblender("core.gpkg.base")
+    wkb = import_geoblender("core.gpkg.wkb")
+    conn = sqlite3.connect(path)
+    try:
+        base.create_base(conn, CRS)
+        conn.execute(f'CREATE TABLE "{layer}" (fid INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, '
+                     f'geom GEOMETRY, "{field}" TEXT)')
+        conn.execute("INSERT INTO gpkg_contents (table_name, data_type, identifier, "
+                     "description, srs_id) VALUES (?, 'features', ?, '', 25830)", (layer, layer))
+        conn.execute("INSERT INTO gpkg_geometry_columns VALUES (?, 'geom', 'POLYGON', 25830, "
+                     "0, 0)", (layer,))
+        for fid, value, rings in features:
+            conn.execute(f'INSERT INTO "{layer}" VALUES (?, ?, ?)',
+                         (fid, wkb.encode_geometry("POLYGON", list(rings), 25830, False), value))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@contextmanager
+def layers_registered() -> Iterator[None]:
+    """Registra lo que necesita importar una capa (:func:`import_layer`) que aún no lo esté:
+    los tipos de importación de la 006, sus lectores de contenido y los parámetros de ``core``
+    y de ``gis`` (los registra ``bl``). Al salir, quita lo que registró."""
+    gis_provenance = import_geoblender("gis.provenance")
+    gis_content = import_geoblender("gis.content")
+    gis_params = import_geoblender("gis.params")
+    readers = import_geoblender("core.content.readers")
+    params = import_geoblender("core.params")
+    core_defs = import_geoblender("core.params.core_defs")
+    with ExitStack() as stack:
+        stack.enter_context(registered(*gis_provenance.operation_defs(
+            {}, op_types=gis_provenance.IMPORTS)))
+        for reader in gis_content.CONTENT_READERS:
+            if reader.id not in readers.READERS:
+                readers.register_reader(reader)
+                stack.callback(readers.unregister_reader, reader.id)
+        for module, definitions in (("core", core_defs.DEFINITIONS),
+                                    ("gis", gis_params.DEFINITIONS)):
+            if definitions[0].key not in params.DEFINITIONS:
+                params.register_definitions(definitions)
+                stack.callback(params.unregister_definitions, module)
+        yield
+
+
+def import_layer(project: Any, userdata: Any, path: Path, layer: str, name: str, *,
+                 role: str) -> Any:
+    """«Capas vectoriales…» de la 006 sin el trabajo (como el HITO H1): la capa ``layer`` del
+    GeoPackage ``path`` (fuera del proyecto) con el papel ``role`` (``"domains"`` o
+    ``"boundary"``) y el nombre ``name``: su entrada, con el hash del lector, y lo importado
+    (``gis_dom_`` o ``gis_bnd_``) en una operación ``gis.import_vector``. Devuelve el registro de
+    lo importado. Con :func:`layers_registered`."""
+    operations = import_geoblender("core.provenance.operations")
+    inputs = import_geoblender("core.inputs")
+    input_model = import_geoblender("core.inputs.model")
+    hashing = import_geoblender("core.hashing")
+    readers = import_geoblender("core.content.readers")
+    gis_provenance = import_geoblender("gis.provenance")
+    gis_content = import_geoblender("gis.content")
+    gis_store = import_geoblender("gis.store")
+    vector = import_geoblender("gis.vector")
+    copies = path.parent / f"copia_{path.stem}"
+    copies.mkdir(exist_ok=True)
+    features = vector.read_layer(vector.copy_source(path, copies), layer)
+    reader = gis_content.GPKG_LAYER
+    settings = {"layer": layer, "role": role}
+    anchors = [inputs.locate_source(path, project, userdata, role="main")]
+    prints = [input_model.SourcePrint(hashing.sha256_file(path), size=path.stat().st_size,
+                                      mtime_ns=path.stat().st_mtime_ns)]
+    declarations = gis_store.source_declarations(reader.id, CRS, VERTICAL, settings)
+    request = reader.request(reader.kinds[0], declarations,
+                             dict(zip(inputs.reader_roles(anchors), [path], strict=True)),
+                             settings)
+    spec = gis_store.source_input(reader.id, name, files=anchors, file_prints=prints,
+                                  digest=readers.read_content(reader, request), crs=CRS,
+                                  vertical=VERTICAL, settings=settings)
+    handle = operations.begin_operation(project, gis_provenance.IMPORT_VECTOR,
+                                        settings={"nombre": name}, executor="blender")
+    with gis_store.ResultWriter(project, handle) as out:
+        out.declare_input(spec)
+        if role == "domains":
+            out.domains(name, vector.domains_from_features(features)[0])
+        else:
+            out.boundary(name, features.geometries)
+        (record,) = out.commit(message=f"Capa «{layer}» importada")
+    return record

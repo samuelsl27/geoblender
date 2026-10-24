@@ -48,8 +48,9 @@ resueltos versión → proyecto, RF-011-21); :func:`stages_inputs`, :func:`stage
 :func:`stages_settings` (``res.stages``: las tablas de sus momentos con los papeles
 ``stage_1``… —:func:`stage_role`— y la de la directa, ``direct``, y la tolerancia del proyecto;
 A13). :func:`volume_request` es lo contrario de :func:`volume_settings`: la cubicación que
-repiten sus ajustes al recalcularla (``reserves.store.recompute_run``) y al reproducirla
-(``reserves.reproduce``; A12). Las funciones de reproducir de los tipos que se repiten son las de
+repiten sus ajustes, con su columna y las capas de su ámbito y de sus dominios, al recalcularla
+(``reserves.store.recompute_run``, con las vivas) y al reproducirla (``reserves.reproduce``, con
+las congeladas; A12, T32). Las funciones de reproducir de los tipos que se repiten son las de
 ``reserves.reproduce.REPRODUCE``. Python puro (nivel 9).
 """
 
@@ -85,10 +86,11 @@ from .params import (
     percent_key,
     swell_key,
 )
+from .polygons import Polygon
 from .slices import Slices
 from .stages import check_names
 from .surfaces import SurfaceRef
-from .volumes import FINAL, START, VolumeRequest, base_role, thickness_role
+from .volumes import FINAL, START, DomainLayer, VolumeRequest, base_role, thickness_role
 
 __all__ = [
     "DIFFERENCE",
@@ -528,31 +530,44 @@ def _slices(settings: Mapping[str, Any]) -> Slices | None:
 
 
 def volume_request(settings: Mapping[str, Any], *,
-                   column: MaterialColumn | None = None) -> VolumeRequest:
+                   column: MaterialColumn | None = None,
+                   scope: Sequence[Polygon] | None = None,
+                   domains: DomainLayer | None = None) -> VolumeRequest:
     """La cubicación que repiten los ajustes ``settings`` de una operación ``res.volume`` o
-    ``res.difference`` (los de :func:`volume_settings`), con la columna ``column`` que consume
-    si reparte por unidades: lo que la vuelve a pedir igual al recalcularla y al reproducirla
-    (A12). El espesor mínimo y el umbral de presencia no son ajustes: los de la operación
-    (``reserves.store.volume_run``) o los congelados (``reserves.reproduce``).
+    ``res.difference`` (los de :func:`volume_settings`), con lo que consume y lee quien la
+    repite (A12; RF-011-20): la columna ``column`` si reparte por unidades, el ámbito ``scope``
+    si sus ajustes lo nombran y la capa de dominios ``domains`` si repartía por su campo (las
+    capas de sus papeles :data:`SCOPE_ROLE` y :data:`DOMAINS_ROLE`, D-32: las vivas al
+    recalcularla, ``reserves.store.recompute_run``; las congeladas al reproducirla,
+    ``reserves.reproduce``). El espesor mínimo y el umbral de presencia no son ajustes: los de
+    la operación (``reserves.store.volume_run``) o los congelados (``reserves.reproduce``).
 
-    ``ValueError`` si los ajustes no son los de una cubicación, si la columna sobra o falta, o
-    si tiene ámbito o dominios: sus capas (D-32) aún no se leen para repetirla."""
+    ``ValueError`` si los ajustes no son los de una cubicación o si la columna, el ámbito o la
+    capa de dominios sobran o faltan (la capa, con el campo de sus ajustes)."""
     if not isinstance(settings, Mapping):
         raise TypeError(f"los ajustes de una cubicación son un diccionario, no {settings!r}")
     name = settings.get("name")
     if not isinstance(name, str):
         raise ValueError(f"los ajustes de una cubicación llevan su nombre, no {name!r}")
-    if settings.get("scope") is not None or settings.get("domains_field") is not None:
-        raise ValueError(f"la cubicación «{name}» tiene ámbito o dominios: sus capas aún no se "
-                         "leen para repetirla")
     units = settings.get("units", False)
     if not isinstance(units, bool) or units != (column is not None):
         raise ValueError(f"la cubicación «{name}» {'' if units else 'no '}reparte por unidades: "
                          f"{'falta' if units else 'sobra'} la columna de materiales")
+    if (settings.get("scope") is None) != (scope is None):
+        raise ValueError(f"la cubicación «{name}» {'no ' if scope is not None else ''}tiene "
+                         f"ámbito: {'sobra' if scope is not None else 'falta'} el de su capa")
+    field = settings.get("domains_field")
+    if (field is None) != (domains is None):
+        raise ValueError(f"la cubicación «{name}» {'no ' if domains is not None else ''}reparte "
+                         f"por dominios: {'sobra' if domains is not None else 'falta'} su capa")
+    if domains is not None and domains.field != field:
+        raise ValueError(f"la cubicación «{name}» reparte por «{field}», no por "
+                         f"«{domains.field}»")
     grid = settings.get("difference_grid", False)
     return VolumeRequest(name, _surface_ref(settings.get(START), START),
-                         _surface_ref(settings.get(FINAL), FINAL), slices=_slices(settings),
-                         column=column, difference_grid=grid,
+                         _surface_ref(settings.get(FINAL), FINAL),
+                         scope=None if scope is None else tuple(scope), domains=domains,
+                         slices=_slices(settings), column=column, difference_grid=grid,
                          point_scale=settings.get("point_scale"))
 
 

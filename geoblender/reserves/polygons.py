@@ -10,7 +10,8 @@ sustituye por su **recorte exacto** (D-21); con esas aristas, la fracción exact
 dominios».
 
 - :class:`Polygon`: un polígono de la capa (``fid``, el valor de su campo y sus anillos
-  ABSOLUTOS; el primero, el exterior).
+  ABSOLUTOS; el primero, el exterior); :func:`domain_polygons`, los de las entidades de una capa
+  de dominios del proyecto (``gis.store.DomainFeature``), uno por parte (T32).
 - :func:`problems` y :func:`validate`: cada polígono **simple** (dos aristas no contiguas que se
   cortan o se tocan a ≤ :data:`TOLERANCE_M`, o un lado que vuelve sobre el anterior: «se corta a
   sí mismo»), **con área** (más de :data:`AREA_TOLERANCE_M2`), con sus huecos dentro del exterior
@@ -61,6 +62,7 @@ from .messages import ResError, render
 
 if TYPE_CHECKING:
     from ..gis.grid import Grid
+    from ..gis.store import DomainFeature
 
 __all__ = [
     "AREA_TOLERANCE_M2",
@@ -73,6 +75,7 @@ __all__ = [
     "Weights",
     "clip_to_scope",
     "domain_edges",
+    "domain_polygons",
     "overlaps",
     "problem_steps",
     "problems",
@@ -193,6 +196,25 @@ class Weights:
     def outside(self) -> int:
         """El índice de la fila «Fuera de los dominios» en ``domain``."""
         return self.count
+
+
+def domain_polygons(features: Sequence[DomainFeature], field: str) -> tuple[Polygon, ...]:
+    """Los polígonos de la capa de dominios ``features`` (sus entidades,
+    ``gis.store.DomainFeature``: número, atributos por columna y polígonos) para repartir por su
+    columna ``field``
+    (RF-011-07; plan D-32): uno por parte de cada entidad, en su orden, con el número de la
+    entidad y el valor de su campo como texto (un número, sus cifras; sin valor, ``""``, que
+    rechaza :func:`validate`: RF-011-08) y sus anillos tal como llegan (no se copian).
+    ``ValueError`` si alguna entidad no tiene la columna ``field``."""
+    found: list[Polygon] = []
+    for feature in features:
+        if field not in feature.attributes:
+            raise ValueError(f"la entidad {feature.fid} de la capa de dominios no tiene el campo "
+                             f"«{field}»: tiene {', '.join(map(str, feature.attributes))}")
+        value = feature.attributes[field]
+        text = "" if value is None else str(value)
+        found.extend(Polygon(int(feature.fid), text, tuple(part)) for part in feature.polygons)
+    return tuple(found)
 
 
 # Validación y solapes (RF-011-08) --------------------------------------------------------------
