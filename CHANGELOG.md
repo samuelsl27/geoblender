@@ -61,11 +61,12 @@ con QGIS 4.2 sin su interfaz y en `Z:`; falta verlo en la pantalla de referencia
 la versión activa, el avance de congelar, los colores del Outliner, el renombrado y los
 diálogos). Lo de la spec 011 está comprobado con Blender 5.2.1 sin su interfaz, con las órdenes
 reales y un proyecto sintético (sus cinco escenarios de principio a fin, dos veces, con las mismas
-cifras), con casos de referencia analíticos, con datos del tamaño de un proyecto real y en `Z:`;
-falta verlo en la pantalla de referencia (los diálogos, el avance y Esc, los colores de la rejilla
-de diferencias, el panel y el CSV en Excel), que un ingeniero de IMGA entregue sin ayuda la
-cubicación de un levantamiento y la comparación con el proyecto de referencia, que se ejecuta a
-petición.
+cifras), con casos de referencia analíticos, con datos del tamaño de un proyecto real y en `Z:`,
+y en la pantalla de referencia el 24/10/2026 con la escala 1,0 (los diálogos, el avance y Esc, la
+rejilla de diferencias en la vista y el panel; lo que salió se corrigió después, con sus
+pruebas); faltan la pantalla con la escala 1,25, el CSV abierto en Excel y el GeoTIFF en QGIS,
+que un ingeniero de IMGA entregue sin ayuda la cubicación de un levantamiento y la comparación
+con el proyecto de referencia, que se ejecuta a petición.
 
 ### Añadido
 
@@ -79,7 +80,8 @@ petición.
     superficies seleccionadas, las propone (de partida, la más alta; «Invertir» las cambia) e Intro
     cubica. Da desmonte, terraplén y neto (m³) y el área con dato, sin dato y sin movimiento (m²),
     celda a celda con el **área real de celda**, opcionalmente dentro de un ámbito (con la fracción
-    exacta de cada celda). Superficies: rejillas del proyecto o de la versión activa, las congeladas
+    exacta de cada celda; un ámbito con polígonos que se solapan, que se cortan a sí mismos o sin
+    área se rechaza con la lista antes de cubicar, para no contar nada dos veces). Superficies: rejillas del proyecto o de la versión activa, las congeladas
     en la revisión de la que parte o una cota constante; **ninguna se remuestrea**: dos que no
     están en la misma rejilla, sistema o datum vertical se rechazan nombrando la diferencia y la
     orden que lo arregla. El espesor mínimo es un umbral (0 m por defecto). La pirámide de
@@ -106,18 +108,20 @@ petición.
     m³/m³ y en t/t, en total y por fase, y la intrínseca de las compuestas (**Ratios…**).
   - **Por momentos de extracción…**: la suma de unas cubicaciones (explotación, desdoblado,
     stock…) frente a la directa, en m³ y en %, con aviso por encima de la tolerancia (1 %); ninguna
-    cifra se ajusta.
-  - **El panel** (N ▸ Proyecto ▸ Cubicaciones, y la misma tabla en una ventana al terminar): las
-    cubicaciones de la versión activa con su revisión («V03.r1 en curso», «V03 vigente: r1»), la
+    cifra se ajusta. Su tabla (momento × unidad, la suma y la diferencia) está en el panel y en el
+    CSV, con la columna «Momento».
+  - **El panel** (N ▸ Proyecto ▸ Cubicaciones, y la misma tabla en una ventana al terminar de
+    cubicar, por unidades o por momentos, o con Ratios…): las cubicaciones de la versión activa con su revisión («V03.r1 en curso», «V03 vigente: r1»), la
     tabla filtrable por fase, banco y unidad, cada valor con su unidad, su tipo y sus marcas, los
     parámetros usados y el factor combinado (la escala de la proyección por la de la elevación y
     su efecto en %, informado y no aplicado: los volúmenes son «de cuadrícula»). Las cifras se ven
     con los decimales de su unidad (91 451 m³; 1,57 m³/m³).
-  - **Exportar CSV…**: para Excel en español (tildes, «;» y coma decimal), con una cabecera de
+  - **Exportar CSV…**: para Excel en español (UTF-8 con BOM para las tildes, «;» y coma decimal), con una cabecera de
     procedencia (proyecto, versión, revisión, superficies con su hash, parámetros con su tipo,
     fecha y versión de Geoblender) y una fila por valor, con el **valor completo**.
   - **Son las primeras operaciones de versión**: sus cifras son de la versión activa, quedan
-    obsoletas cuando cambia lo que usaron (un K cambiado solo rehace las toneladas, no los m³), se
+    obsoletas cuando cambia lo que usaron (un K cambiado solo rehace las toneladas y el in situ de
+    lo suelto, no los m³ de la cubicación), se
     recalculan con «Recalcular lo obsoleto», se congelan con su revisión y se reproducen con las
     mismas cifras. Sin versión activa se pide una; con la versión SUPERADO o en solo lectura, las
     órdenes salen desactivadas con su motivo. Esc a mitad no deja nada. El formato del proyecto no
@@ -128,10 +132,10 @@ petición.
   con identidad propia, como la V10 de Silvestre, sin que cambiar de estado rompa nada y sin las
   carpetas `_previo_N`: lo que pasó con la V10 (211 capas de QGIS rotas al renombrar su carpeta,
   sus reservas cambiadas tres veces en un día y cuatro estados que restaurar para rehacerla) no se
-  puede repetir. **Hoy ningún módulo tiene operaciones de versión** (la topografía y los sondeos
-  son del proyecto, comunes a todas): las versiones se llenarán con la cubicación y el diseño;
-  hasta entonces se crean, cambian de estado, se anotan las decisiones de la propiedad y sus
-  revisiones se congelan vacías. Guía de uso: `docs/usuario/versiones.md` de la documentación.
+  puede repetir. La topografía y los sondeos son del proyecto, comunes a todas las versiones; las
+  primeras operaciones de versión son las de la cubicación (spec 011), y el diseño vendrá después.
+  Las versiones se crean, cambian de estado, se anotan las decisiones de la propiedad y sus
+  revisiones se congelan con lo que tengan. Guía de uso: `docs/usuario/versiones.md` de la documentación.
   - **Versiones con su estado** (Proyecto ▸ Versiones, el control 8 del acceso rápido y el menú
     «Versión ▾» de la colección de una versión): Nueva versión… (rasgo, título, motivo, de cuál
     parte y el encargo) le da el código siguiente (V01, V02…, que no cambia nunca), en BORRADOR y
@@ -238,8 +242,9 @@ petición.
     guion), sus filas se ponen al día sin volver a leer el proyecto.
   - **Cifras de la selección** (control 29; Herramientas ▸ Consulta): las cifras registradas de
     los datos de los objetos seleccionados, con su insignia de tipo, su unidad y sus marcas
-    («depende de una hipótesis», «obsoleta»). No mide nada; hasta que la cubicación registre las
-    primeras, dice «Sin cifras registradas». Cada objeto guarda además, en texto de solo
+    («depende de una hipótesis», «obsoleta»), como las de una rejilla de diferencias de la
+    cubicación (spec 011). No mide nada; sin cifras registradas en lo seleccionado, dice «Sin
+    cifras registradas». Cada objeto guarda además, en texto de solo
     lectura, las cifras de su dato, puestas al día al cargarlo y en cada Refrescar; ningún
     cálculo las lee.
   - Medido con Blender 5.2.1 en el PC de referencia: Refrescar una vista con 200 datos de los

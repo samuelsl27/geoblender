@@ -15,7 +15,8 @@ estas pruebas avisan de que se separan:
   de las tablas de una cubicación, de sus toneladas y de sus momentos, una vez cada una en un
   bloque ``sql``, igual que lo crea el código salvo los comentarios, los espacios y las comillas
   (las de una cubicación, con un nombre de ejemplo: ``res_vol_<nombre>_<vNN>``); §4.2, el nombre
-  de la rejilla de diferencias, y §3.3, cada familia de parámetros.
+  de la rejilla de diferencias, y §3.3, cada familia de parámetros; y cada clave ``'res.…'`` de
+  sus ejemplos existe en la cubicación (T39).
 
 Sin la carpeta de la documentación, se omiten (recurso ``docs``).
 """
@@ -44,6 +45,7 @@ FORMAT_RELPATH = "docs/arquitectura/datos/formato-proyecto.md"
 RES_NAME = re.compile(r"^reserves(?:\.[A-Za-z_]\w*)+$")
 SQL_FENCE = re.compile(r"^```sql\n(.*?)^```", re.MULTILINE | re.DOTALL)
 COMMENT = re.compile(r"--[^\n]*")
+RES_KEY = re.compile(r"'(res\.[\w.{}]+)'")
 CREATE = re.compile(r"^\s*CREATE\s+TABLE\s+\"?(res_\w+)\"?", re.IGNORECASE)
 # Las tablas de res, por su comienzo: la columna del proyecto y las tres de una cubicación.
 TABLE_PREFIXES = ("res_materials", "res_vol_", "res_ton_", "res_stg_")
@@ -174,6 +176,19 @@ class ProjectFormatDocTest(unittest.TestCase):
         for family in params.FAMILIES:
             with self.subTest(family=family.pattern):
                 self.assertIn(family.pattern, parameters)
+
+    def test_res_keys_of_the_examples_exist(self) -> None:
+        """RF-011-21, RF-011-22 (plan 011 §5.2.2 y §5.2.3; T39, verificación F-4): cada clave
+        ``'res.…'`` de los ejemplos del formato (los comentarios del SQL de ``gb_parameter``,
+        ``gb_figure``…) es un parámetro, una familia de parámetros, una cifra o un tipo de
+        operación de la cubicación: no una clave que no existe (``'res.swell_factor'``)."""
+        known = {definition.key for definition in (*params.DEFINITIONS,
+                                                   params.BENCH_HEIGHT_DEF)}
+        known |= {family.pattern for family in params.FAMILIES}
+        known |= {figure.key for figure in provenance.FIGURES}
+        known |= {declared.op_type for declared in provenance.OPERATION_TYPES}
+        quoted = set(RES_KEY.findall(self.text))
+        self.assertEqual(sorted(quoted - known), [])
 
 
 if __name__ == "__main__":
