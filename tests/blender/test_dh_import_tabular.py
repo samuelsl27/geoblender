@@ -388,7 +388,10 @@ class ImportTabularTest(DrillholeImportCase):
         described = bpy.ops.geoblender.dh_import_drillholes.get_rna_type().properties
         for name in ("crs", "date_format"):
             with self.subTest(propiedad=name):
-                description = i18n.translate("es", described[name].description)
+                # Ya traducida por Blender, ``translate`` la anotaría como un msgid sin
+                # traducción, que vería otra prueba del mismo proceso (spec 011, T30).
+                raw = described[name].description
+                description = raw if i18n.untranslated([raw]) else i18n.translate("es", raw)
                 self.assertIn("vacío: sin declarar", description)
                 self.assertNotIn("ISO", description)
 

@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """La comprobación completa, ``tools/check.py``, con un ejecutor simulado: los pasos que van
-a la vez que «blender» (spec 001 0.8, tarea 009/T34; RNF-001-01).
+a la vez que «blender» (spec 001 0.8, tarea 009/T34; 0.10, tarea 011/T30; RNF-001-01).
 
-- RF-001-06 (0.8): «referencia», «licencias» e «iconos» se ejecutan a la vez que «blender» (y
+- RF-001-06 (0.8, 0.10): «unitarias», «referencia», «licencias» e «iconos» se ejecutan a la vez
+  que «blender» (y
   que «motor», con ``--completo``), tras «manifiesto»: empiezan antes de que acabe ninguno, y
   el paso siguiente («arnés», con ``--completo``) espera a todos. Sus líneas del resumen van en
   su lugar de la tabla y con la duración de cada uno, aunque acaben en otro orden; el fallo de
@@ -62,6 +63,12 @@ def first_of_each(steps: Sequence[str], barrier: threading.Barrier) -> Callable[
     return meet
 
 
+def unit_parts() -> int:
+    """Las partes de «unitarias» con 24 procesadores en el repositorio real."""
+    modules = discovery.expected_modules(ROOT / "tests" / "unit", "test*.py", ROOT)
+    return check.part_count(check.UNIT_PARTS, len(modules), 24)
+
+
 def reference_parts() -> int:
     """Las partes de «referencia» con 24 procesadores en el repositorio real."""
     modules = discovery.expected_modules(ROOT / "tests" / "referencia", "test*.py", ROOT)
@@ -69,12 +76,12 @@ def reference_parts() -> int:
 
 
 class TogetherTest(unittest.TestCase):
-    """RF-001-06 (spec 001 0.8): «referencia», «licencias» e «iconos», a la vez que
-    «blender»."""
+    """RF-001-06 (spec 001 0.8 y 0.10): «unitarias», «referencia», «licencias» e «iconos», a
+    la vez que «blender»."""
 
     def test_table(self) -> None:
-        """RF-001-06 (0.8): en la tabla de pasos, «referencia», «licencias», «iconos» y
-        «motor» van a la vez que «blender» (``Step.alongside``), y ningún otro paso va a la vez
+        """RF-001-06 (0.8, 0.10): en la tabla de pasos, «unitarias», «referencia», «licencias»,
+        «iconos» y «motor» van a la vez que «blender» (``Step.alongside``), y ningún otro paso va a la vez
         que otro; «manifiesto» sigue solo."""
         alongside = {step.name: step.alongside for step in check.STEPS}
         self.assertEqual({name for name, other in alongside.items() if other == "blender"},
@@ -85,11 +92,11 @@ class TogetherTest(unittest.TestCase):
         self.assertIsNone(alongside["blender"])
 
     def test_they_start_before_any_ends(self) -> None:
-        """RF-001-06 (0.8): la primera orden de «referencia», «licencias», «iconos» y
-        «blender» (con ``--completo``, también la de «motor») llegan a una barrera: empiezan
-        antes de que termine ninguna. Todas sus órdenes empiezan después de que terminen las de
-        «manifiesto», que empiezan después de las de «unitarias»; con ``--completo``, «arnés»
-        empieza cuando han terminado todas."""
+        """RF-001-06 (0.8, 0.10): la primera orden de «unitarias», «referencia», «licencias»,
+        «iconos» y «blender» (con ``--completo``, también la de «motor») llegan a una barrera:
+        empiezan antes de que termine ninguna. Todas sus órdenes empiezan después de que
+        terminen las de «manifiesto», el primer paso; con ``--completo``, «arnés» empieza
+        cuando han terminado todas."""
         for args in ((), ("--completo",)):
             with self.subTest(opciones=args):
                 steps = [*GROUP, *([RUNTIME] if args else [])]
@@ -101,9 +108,8 @@ class TogetherTest(unittest.TestCase):
                 self.assertFalse(barrier.broken)
                 together = [call for call in runner.calls if call.step in steps]
                 self.assertEqual({call.step for call in together}, set(steps))
-                units_end = max(call.ended for call in runner.calls_of("unitarias"))
                 manifest = runner.calls_of("manifiesto")
-                self.assertLessEqual(units_end, min(call.started for call in manifest))
+                self.assertEqual(runner.calls[0].step, "manifiesto")
                 manifest_end = max(call.ended for call in manifest)
                 self.assertLessEqual(manifest_end, min(call.started for call in together))
                 if args:
@@ -173,12 +179,12 @@ class TogetherTest(unittest.TestCase):
                          r"^RESULTADO: NO VERDE \(\d+,\d s\): fallan «referencia», «blender»$")
 
     def test_ctrl_c_stops_them_all(self) -> None:
-        """RF-001-06 (0.8), RF-001-09: con Ctrl+C cuando ya están en marcha todas las órdenes
+        """RF-001-06 (0.8, 0.10), RF-001-09: con Ctrl+C cuando ya están en marcha todas las órdenes
         de «blender» y de los que van a la vez que él (la última en empezar la provoca), se
         paran todas (``blender.stop_all``): ninguna había terminado antes de la interrupción,
         no queda ningún hilo de la comprobación, la carpeta temporal (con los perfiles) se
         borra y la interrupción sigue su camino."""
-        total = check.BLENDER_PARTS + reference_parts() + 2
+        total = check.BLENDER_PARTS + unit_parts() + reference_parts() + 2
         stopped = threading.Event()
         lock = threading.Lock()
         begun: list[Call] = []

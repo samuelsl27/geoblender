@@ -49,11 +49,12 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    Los pasos se ejecutan uno tras otro, en ese orden (RF-001-06), salvo los que van a la
    vez que «blender» (``Step.alongside``): «motor» (spec 004, T30: después de él no cabría
    en RNF-001-01; a la vez que «unitarias» no compensa, spec 006, T38) y, desde la spec
-   001 0.8 (tarea 009/T34; RNF-001-01), «referencia», «licencias» e «iconos», que se
-   ejecutan con él, tras «manifiesto». Empiezan a la vez, cada uno en su hilo y con su
+   001 0.8 (tarea 009/T34; RNF-001-01), «referencia», «licencias» e «iconos», y desde la
+   0.10 (tarea 011/T30; RNF-001-01), «unitarias»: se ejecutan con él, tras «manifiesto»,
+   que pasa a ser el primero. Empiezan a la vez, cada uno en su hilo y con su
    duración, el fallo de uno no para a los demás y el paso siguiente espera a todos; sus
    líneas del resumen van en su lugar de la tabla, aunque acaben en otro orden: las de
-   «referencia» a «blender» salen cuando han terminado todos. Dentro de un paso,
+   «unitarias» a «blender» salen cuando han terminado todos. Dentro de un paso,
    «unitarias», «referencia» (spec 006, T59) y «blender» reparten sus pruebas en partes que
    se ejecutan a la vez (spec 003,
    T40; RNF-007-01: ≤ 45 s, ≤ 40 s hasta la spec 007 0.6, sin quitar ninguna prueba): hasta ``UNIT_PARTS`` y
@@ -263,8 +264,13 @@ PART_RELPATH = "tools/unittest_part.py"  # una parte de «unittest discover» (T
 # las bases de RecMin se crean una vez (tests.support.recmin.shared_bases): cada parte
 # importa en ≈ 1 s en vez de ≈ 1,4 s y el equipo va menos cargado, y 18 partes tardan
 # ≈ 18,8 s frente a ≈ 19,5 s con 16 (con 20, igual que con 18), sin fallos en las 11 veces
-# que se midió.
-UNIT_PARTS = 18
+# que se midió. Desde la spec 001 0.10 (tarea 011/T30), «unitarias» va a la vez que
+# «blender»: con 18 partes, más las 7 de «blender» y las 3 de «referencia», los 24
+# procesadores se llenan y fallaron pruebas de plazos (las cancelaciones en ≤ 2 s de la 008 y
+# la 006, el cierre de los huérfanos en ≤ 3 s, el avance cada 0,5 s) en 5 de 6 vueltas; con 12
+# (12 + 7 + 3 ≈ los procesadores, menos el hilo de Blender), ninguna de unitarias en 3 vueltas, y
+# la comprobación, 37–39 s.
+UNIT_PARTS = 12
 BLENDER_PARTS = 7
 # Partes de «referencia» (spec 006, T59; RNF-001-01): el paso iba solo, con el equipo casi
 # libre, y en una orden tardaba ≈ 2,0 s con sus 28 casos (dos de ellos lanzan el Python de
@@ -970,13 +976,15 @@ def _docs_omit(ctx: Context) -> str | None:
 # ≈ 2,7 s (la referencia, ≈ 2,4 s, con su caso de QGIS como suelo) a una comprobación de
 # ≈ 42–43 s; a la vez que «blender», la comprobación tarda ≈ 2,2 s menos (009/T30), y
 # «manifiesto» y «blender» juntos, con ellos, ≈ 20 s con el equipo cargado: lo que tardaban de
-# «referencia» a «blender» en el código de partida. Los opcionales se ejecutan siempre
+# «referencia» a «blender» en el código de partida. Desde la 0.10 (tarea 011/T30; RNF-001-01),
+# también «unitarias»: con la 011, uno tras otro, la mediana en reposo era 44,4 s (≈ 25 s
+# «unitarias» y ≈ 18 s «blender»); a la vez, 39,3 s. Los opcionales se ejecutan siempre
 # después de los obligatorios (RF-001-10), en el orden de la tabla: los de --completo los
 # primeros, tras «blender»: «motor» (a la vez que él; spec 004 0.4, RF-004-28: con la CPU
 # llena, la comprobación de cada tarea tardaba ≈ 42 s con él, frente a ≤ 40 s de RNF-001-01, hoy ≤ 45 s;
 # spec 005, T50) y «arnés» (spec 001 0.6); «documentación» (spec 007, RF-007-14), el último.
 STEPS: tuple[Step, ...] = (
-    Step("unitarias", _unit),
+    Step("unitarias", _unit, alongside="blender"),
     Step("referencia", _reference, alongside="blender"),
     Step("licencias", _licenses, advice=_licenses_advice, alongside="blender"),
     Step("iconos", _icons, alongside="blender"),
@@ -1693,7 +1701,8 @@ def run_steps(
     """Los resultados de los pasos ``selected``, en su orden (el de la tabla: RF-001-06).
     Se ejecutan uno tras otro, salvo los que van a la vez que otro (``Step.alongside``),
     que se ejecutan con él cuando le toca a él, aunque estén antes en la tabla (spec 001
-    0.8: «referencia», «licencias» e «iconos», con «blender», tras «manifiesto»); un
+    0.8 y 0.10: «unitarias», «referencia», «licencias» e «iconos», con «blender», tras
+    «manifiesto»); un
     paso solo va a la vez que otro que se ejecuta y va solo, y si no, va solo, en su lugar.
     Cada resultado sale cuando han salido los de los pasos anteriores: el de un paso que
     va con otro posterior, y los que hay entre ellos, cuando ha terminado ese otro."""

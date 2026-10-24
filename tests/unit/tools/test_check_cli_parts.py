@@ -337,8 +337,9 @@ class PartsTest(unittest.TestCase):
         """RF-001-06: los pasos, también los opcionales, siguen uno tras otro y en el
         orden de la tabla: ninguna orden de un paso empieza antes de que terminen todas
         las del anterior, y el resumen da sus líneas en ese orden. La excepción son
-        «referencia», «licencias» e «iconos» (spec 001 0.8, tarea 009/T34) y «motor» (spec
-        004, RF-004-28), que van a la vez que «blender»: empiezan después de «manifiesto», el
+        «referencia», «licencias» e «iconos» (spec 001 0.8, tarea 009/T34), «unitarias» (0.10,
+        tarea 011/T30) y «motor» (spec 004, RF-004-28), que van a la vez que «blender»: empiezan
+        después de «manifiesto», el primero, el
         paso siguiente («arnés») espera a que terminen todos, y sus líneas van en su lugar
         de la tabla (``test_check_cli_together``)."""
         with many_cpus():
@@ -348,12 +349,12 @@ class PartsTest(unittest.TestCase):
         order = runner.steps()
         self.assertEqual(order, [*EXECUTED, HARNESS, *OPTIONAL])
         together = {*WITH_BLENDER, "blender", RUNTIME}
-        sequence = ["unitarias", "manifiesto", "blender", HARNESS, *OPTIONAL]
+        sequence = ["manifiesto", "blender", HARNESS, *OPTIONAL]
         groups = [
             [c for c in runner.calls if (c.step in together if step == "blender" else c.step == step)]
             for step in sequence
         ]
-        self.assertEqual({c.step for c in groups[2]}, together)
+        self.assertEqual({c.step for c in groups[1]}, together)
         for before, after in zip(groups, groups[1:]):
             with self.subTest(paso=after[0].step):
                 self.assertLessEqual(max(c.ended for c in before), min(c.started for c in after))
