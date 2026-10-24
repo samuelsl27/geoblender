@@ -149,7 +149,6 @@ from ...core.provenance import contract
 from ...core.provenance.operations import CANCEL_REASON_PREFIX, failure_reason
 from ...core.provenance.undo import UndoKind
 from ...core.units import UnitError, convert, parse_quantity
-from ...core.units import symbol as unit_symbol
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
 from ...gis.crs import crs_service_status, reference_label
@@ -159,6 +158,7 @@ from ...reserves import messages as res_messages
 from ...reserves import params as res_params
 from ...reserves import provenance
 from ...reserves import scale as res_scale
+from ...reserves import table as res_table
 from ...reserves.messages import ResError
 from ...reserves.slices import slices_from_text
 from ...reserves.surfaces import SurfaceRef, check_pair, propose_order, surface_source
@@ -1702,7 +1702,7 @@ class _SurfacesCommand:
 
     def _report_tonnage(self, stored: Any) -> None:
         """Lo que dice la orden al pesar (RF-011-17): «Toneladas de «Proyecto» (V03.r1, en
-        curso): 12 345,6 t» o «… sin total de toneladas», y el aviso de cada parámetro que
+        curso): 12 346 t» o «… sin total de toneladas», y el aviso de cada parámetro que
         falta a una unidad con volumen."""
         outputs = stored.outputs
         total = next((group.total_t for group in outputs.result.groups
@@ -1715,7 +1715,7 @@ class _SurfacesCommand:
         else:
             self._report({"INFO"}, tr("Tonnage of «{name}» ({revision}, in progress): {total} t",
                                       name=self._name, revision=revision,
-                                      total=format_number(total, 1)))
+                                      total=res_table.number_text(total, "t")))
         for notice in outputs.warnings:
             self._report({"WARNING"}, notice.text(i18n.language()))
 
@@ -1727,8 +1727,9 @@ class _SurfacesCommand:
         self._report({"INFO"}, tr(
             "{name} ({revision}, in progress): cut {cut} m³, fill {fill} m³, net {net} m³",
             name=result.name, revision="" if version is None else version.revision,
-            cut=format_number(result.cut_m3, 1), fill=format_number(result.fill_m3, 1),
-            net=format_number(result.net_m3, 1)))
+            cut=res_table.number_text(result.cut_m3, "m3"),
+            fill=res_table.number_text(result.fill_m3, "m3"),
+            net=res_table.number_text(result.net_m3, "m3")))
         for notice in result.warnings:
             self._report({"WARNING"}, notice.text(i18n.language()))
 
@@ -2471,14 +2472,14 @@ class GEOBLENDER_OT_res_compute_extraction_stages(ProvenanceAwareOperator, _Step
         cut = result.comparison()
         version = scene_versions.active()
         percent = res_panels.NOT_SHOWN if cut.diff_pct is None \
-            else f"{format_number(cut.diff_pct, 2)} %"
+            else res_table.quantity_text(cut.diff_pct, "%")
         self._report({"INFO"}, tr(
             "«{name}» ({revision}, in progress): sum of the stages {sum} m³, direct «{direct}» "
             "{direct_volume} m³, difference {difference} m³ ({percent})", name=result.name,
             revision="" if version is None else version.revision,
-            sum=format_number(cut.sum_m3, 1), direct=result.direct,
-            direct_volume=format_number(cut.direct_m3, 1),
-            difference=format_number(cut.diff_m3, 1), percent=percent))
+            sum=res_table.number_text(cut.sum_m3, "m3"), direct=result.direct,
+            direct_volume=res_table.number_text(cut.direct_m3, "m3"),
+            difference=res_table.number_text(cut.diff_m3, "m3"), percent=percent))
         for notice in result.warnings:
             self._report({"WARNING"}, notice.text(i18n.language()))
 
@@ -2529,7 +2530,7 @@ def _total_ratio(rows: tuple[Any, ...], quantity: str) -> str:
         if not notes:
             return res_panels.NOT_SHOWN
         return res_messages.render(notes[0], language=i18n.language())
-    return f"{format_number(found.value, 2)} {unit_symbol(found.unit_code)}"
+    return res_table.quantity_text(found.value, found.unit_code)
 
 
 def _ratios_cubication(found: tuple[Any, ...], typed: str, chosen: str,

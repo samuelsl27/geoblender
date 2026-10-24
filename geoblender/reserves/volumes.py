@@ -62,7 +62,6 @@ import numpy as np
 
 from ..core.content.encoder import NORMALIZER, ContentDigest, ContentHasher
 from ..core.datasets.model import DATASET_DECLARATIONS
-from ..core.i18n import format_number
 from ..core.project.model import Progress
 from ..core.provenance.figures import FigureSpec, ScopeValue
 from ..core.provenance.graph import drain
@@ -77,7 +76,16 @@ from .messages import ResError, render
 from .polygons import DomainsError, Polygon, domain_edges, problem_steps, scope_edges, weights
 from .slices import Slices
 from .surfaces import BAND_ROWS, SurfaceRef, SurfaceSource, band_reader, check_pair
-from .table import ALL_DOMAINS, OUTSIDE_DOMAINS, QUANTITIES, Row, row, tonnage_parts, unit_volumes
+from .table import (
+    ALL_DOMAINS,
+    OUTSIDE_DOMAINS,
+    QUANTITIES,
+    Row,
+    number_text,
+    row,
+    tonnage_parts,
+    unit_volumes,
+)
 from .tonnage import TonnageResult, tonnage
 
 __all__ = [
@@ -403,8 +411,9 @@ def _paced(run: _Run, budget_s: float) -> Iterator[Progress]:
 
 
 def _summary(result: VolumeResult) -> str:
-    return (f"«{result.name}»: desmonte {format_number(result.cut_m3, 1)} m³, terraplén "
-            f"{format_number(result.fill_m3, 1)} m³, neto {format_number(result.net_m3, 1)} m³")
+    return (f"«{result.name}»: desmonte {number_text(result.cut_m3, 'm3')} m³, terraplén "
+            f"{number_text(result.fill_m3, 'm3')} m³, neto "
+            f"{number_text(result.net_m3, 'm3')} m³")
 
 
 def _discard(path: Path) -> None:

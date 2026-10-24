@@ -38,9 +38,8 @@ import numbers
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from ..core.i18n import format_number
 from ..core.provenance.figures import FigureSpec, ScopeValue
-from .table import ALL_DOMAINS, Row, StageRow, row
+from .table import ALL_DOMAINS, Row, StageRow, number_text, row
 from .volumes import Notice
 
 __all__ = [
@@ -280,10 +279,10 @@ def stages(moments: Sequence[StageTable], direct: StageTable, *, name: str,
     warnings = [Notice(_MATERIALS, {"name": item.name, "direct": direct.name})
                 for item in tables if item.materials != direct.materials]
     warnings += [Notice(_MISMATCH, {
-        "quantity": _label(item, names), "sum": format_number(item.sum_m3, 1),
-        "direct": direct.name, "direct_volume": format_number(item.direct_m3, 1),
-        "difference": format_number(item.diff_m3, 1),
-        "value": None if item.diff_pct is None else format_number(item.diff_pct, 2),
+        "quantity": _label(item, names), "sum": number_text(item.sum_m3, "m3"),
+        "direct": direct.name, "direct_volume": number_text(item.direct_m3, "m3"),
+        "difference": number_text(item.diff_m3, "m3"),
+        "value": None if item.diff_pct is None else number_text(item.diff_pct, "%"),
         "tolerance": tolerance,
     }) for item in comparisons if item.over]
     return StagesResult(name, tuple(item.name for item in tables), direct.name, tolerance,

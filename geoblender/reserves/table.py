@@ -16,6 +16,8 @@ Así la tabla no cambia de columnas con los repartos, solo de filas.
   :func:`insert_sql`, las sentencias de una tabla ``res_vol_``, ``res_ton_`` o ``res_stg_``.
 - :func:`read_rows`, :func:`filter_rows` y :func:`choices`: leerla y filtrarla para el panel;
   :func:`ratio_rows`, las filas del filtro de relaciones (:data:`RATIO_QUANTITIES`, T24).
+- :func:`quantity_text` y :func:`number_text`: un valor como se lee en el panel y en lo que
+  dicen las órdenes, con los decimales de su unidad (:data:`DECIMALS`; RF-011-23, T34).
 - :func:`unit_volumes`: los m³ por unidad de la tabla de volúmenes, lo que lee ``res.tonnage``
   (D-16: sin releer las superficies); :func:`tonnage_rows`, la tabla de las toneladas (por
   partes, :func:`tonnage_parts`).
@@ -37,7 +39,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final
 
-from ..core.units import UNITS
+from ..core.i18n import format_number
+from ..core.units import DIMENSIONLESS, UNITS, symbol
 from .materials import Role, State
 from .tonnage import ALL_DOMAINS, NO_SWELL, OUTSIDE_DOMAINS, TonnageResult, UnitVolume
 
@@ -46,6 +49,7 @@ __all__ = [
     "ANY",
     "COLUMNS",
     "COLUMN_NAMES",
+    "DECIMALS",
     "NOTE_SEPARATOR",
     "OUTSIDE_DOMAINS",
     "QUANTITIES",
@@ -63,6 +67,8 @@ __all__ = [
     "create_table",
     "filter_rows",
     "insert_sql",
+    "number_text",
+    "quantity_text",
     "ratio_rows",
     "read_rows",
     "read_stage_rows",
@@ -184,6 +190,40 @@ RATIO_QUANTITIES: tuple[str, ...] = ("useful_m3", "waste_m3", "waste_ratio_m3", 
 """Los datos del filtro de relaciones (T24; RF-011-18, D-35): la relación estéril/útil en m³/m³
 (in situ) y en t/t con lo útil y lo estéril que relaciona, y la intrínseca de cada compuesta;
 salen de la tabla de toneladas (``res_ton_``)."""
+
+DECIMALS: Mapping[str, int] = MappingProxyType({
+    "m3": 0, "m2": 0, "t": 0,  # volúmenes, áreas y toneladas
+    "m3/m3": 2, "t/t": 2, "%": 2,  # las relaciones y los porcentajes
+    "m": 2,  # la cota media de lo cubicado (al cm)
+    "-": 6,  # el factor combinado (D-34; «1,000182»)
+})
+"""Con cuántos decimales se lee un valor de cada unidad de las tablas (por el código de
+``core.units``) en el panel de la cubicación, en lo que dicen sus órdenes y en sus avisos
+(RF-011-23; T34). El catálogo de unidades de la 008 no fija decimales; el CSV escribe el valor
+completo (RF-011-24, D-29) y las cifras guardadas no se redondean."""
+
+
+def number_text(value: float, unit: str) -> str:
+    """``value`` (en la unidad ``unit``, una de :data:`DECIMALS`) como se lee, sin la unidad:
+    con los decimales de su unidad, el separador de miles y la coma decimal del idioma de
+    Geoblender (``core.i18n.format_number``: «91 451» en español, «91,451» en inglés), sin
+    «-0». Un valor que no es un número finito o una unidad que no es de las tablas:
+    :class:`ValueError` (un fallo del programa: las tablas no los tienen, RF-011-22)."""
+    decimals = DECIMALS.get(unit)
+    if decimals is None:
+        raise ValueError(f"«{unit}» no es una unidad de las tablas de res: "
+                         f"{', '.join(DECIMALS)}")
+    number = _optional_number(value, "el valor")
+    if number is None:
+        raise ValueError("el valor es un número finito, no None")
+    return format_number(number, decimals)
+
+
+def quantity_text(value: float, unit: str) -> str:
+    """:func:`number_text` con el símbolo de su unidad («91 451 m³», «1,57 m³/m³»; lo
+    adimensional, sin él: «1,000182»)."""
+    text = number_text(value, unit)
+    return text if unit == DIMENSIONLESS else f"{text} {symbol(unit)}"
 
 
 def _optional_text(value: object, what: str) -> str | None:

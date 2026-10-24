@@ -215,7 +215,8 @@ class StagesTest(unittest.TestCase):
         """RF-011-19: un momento que solapa a otro da el aviso con la diferencia en m³ y en %
         (sobre la directa), por encima de la tolerancia; ninguna cifra se ajusta (cada momento,
         tal cual; la suma, la de los momentos). Con la tolerancia justo en la diferencia, no
-        hay aviso (solo si la pasa)."""
+        hay aviso (solo si la pasa). El aviso da los m³ sin decimales y el %, con dos
+        (RF-011-23, T34)."""
         result = self.compare("first", "overlap", "third")
         stock = _totals(self.tables["third"])
         direct = _totals(self.tables["direct"])
@@ -236,11 +237,11 @@ class StagesTest(unittest.TestCase):
         mismatch = [item for item in result.warnings if item.code == "res.stages_mismatch"]
         self.assertEqual([item.values["quantity"] for item in mismatch],
                          ["Desmonte", "Terraplén", "Desmonte de «Capa útil»"])
-        number = i18n.format_number
+        number = i18n.format_number  # con los decimales de su unidad (RF-011-23, T34)
         self.assertEqual(mismatch[0].text(), (
-            f"Desmonte: la suma de los momentos ({number(cut.sum_m3, 1)} m³) difiere de la "
-            f"cubicación directa «Directa» ({number(cut.direct_m3, 1)} m³) en "
-            f"{number(cut.diff_m3, 1)} m³ ({number(cut.diff_pct, 2)} %), más que la tolerancia "
+            f"Desmonte: la suma de los momentos ({number(cut.sum_m3, 0)} m³) difiere de la "
+            f"cubicación directa «Directa» ({number(cut.direct_m3, 0)} m³) en "
+            f"{number(cut.diff_m3, 0)} m³ ({number(cut.diff_pct, 2)} %), más que la tolerancia "
             "de 1 %; no se ha ajustado ninguna cifra."))
         self.assertEqual(_figures(result.figures)[("res.stages_diff_m3", _scope("Desmonte"))],
                          stock[(CUT, None)])

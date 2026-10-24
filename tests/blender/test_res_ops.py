@@ -63,6 +63,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -708,11 +709,11 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         self.assertEqual(sorted(inputs.split(",")), ["final", "start"])
         self.assertEqual(sorted(self.datasets(name)),
                          ["res_dif_mensual_octubre", "res_vol_mensual_octubre"])
-        format_number = _module("core.i18n").format_number
+        number_text = _module("reserves.table").number_text  # sin decimales (RF-011-23, T34)
         self.assertIn(f"{name} (V01.r1, en curso): desmonte "
-                      f"{format_number(expected['res.cut_m3'], 1)} m³, terraplén "
-                      f"{format_number(expected['res.fill_m3'], 1)} m³, neto "
-                      f"{format_number(expected['res.net_m3'], 1)} m³", operator.report_log)
+                      f"{number_text(expected['res.cut_m3'], 'm3')} m³, terraplén "
+                      f"{number_text(expected['res.fill_m3'], 'm3')} m³, neto "
+                      f"{number_text(expected['res.net_m3'], 'm3')} m³", operator.report_log)
         (grid_uid,) = [found for (found,) in self.rows(
             "SELECT uid FROM gb_dataset WHERE name = 'res_dif_mensual_octubre'")]
         self.assertEqual(len([obj for obj in bpy.data.objects
@@ -1055,8 +1056,8 @@ class ResBetweenSurfacesTest(unittest.TestCase):
             ("Explotación", "volume_m3", "capa_util"): 4.0,
             ("Resto", "cut_m3", None): 14.0, ("Resto", "fill_m3", None): 7.25,
             ("Resto", "volume_m3", "montera"): 10.0, ("Resto", "volume_m3", "capa_util"): 4.0})
-        self.assertIn(f"«{name}» (V01.r1, en curso): suma de los momentos 20,0 m³, directa "
-                      "«Directa» 20,0 m³, diferencia 0,0 m³ (0,00 %)", operator.report_log)
+        self.assertIn(f"«{name}» (V01.r1, en curso): suma de los momentos 20 m³, directa "
+                      "«Directa» 20 m³, diferencia 0 m³ (0,00 %)", operator.report_log)
         self.assertEqual(len(operator.report_log), 1, operator.report_log)  # ningún aviso
 
         operator, uid = self.compare("Con hueco", [WITHOUT_UNITS])
@@ -1068,8 +1069,8 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         self.assertIn("«Sin unidades» no usa la misma columna de materiales que «Directa»: sus "
                       "unidades no son comparables.", warnings)  # las dos unidades
         self.assertTrue(any(text.startswith(
-            "Desmonte: la suma de los momentos (6,0 m³) difiere de la cubicación directa "
-            "«Directa» (20,0 m³) en -14,0 m³ (-70,00 %), más que la tolerancia de 1 %")
+            "Desmonte: la suma de los momentos (6 m³) difiere de la cubicación directa "
+            "«Directa» (20 m³) en -14 m³ (-70,00 %), más que la tolerancia de 1 %")
             for text in warnings), warnings)
 
         values = {"name": "Mal elegidos", "direct": DIRECT}
@@ -1204,7 +1205,7 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         cut = rows[("", "cut_m3")]
         self.assertEqual((cut.name, cut.value, cut.badge, cut.marks),
                          ("Desmonte", "20 m³", "[CAL]", UNCONFIRMED))
-        self.assertEqual(rows[("", "waste_ratio_m3")].value, "1,5 m³/m³")
+        self.assertEqual(rows[("", "waste_ratio_m3")].value, "1,50 m³/m³")  # dos decimales
         self.assertIn(HYPOTHESIS, rows[("", "total_t")].marks)
         self.assertIn(UNCONFIRMED, rows[("", "total_t")].marks)
         unit = self.by_scope(self.filtered(unit="Capa útil"))
@@ -1246,9 +1247,8 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         self.assertAlmostEqual(stored.value, sum(
             value for (domain, low, _unit), value in _breakdown_expected().items()
             if (domain, low) == ("Fase 2", ANCHOR_M)), delta=1e-9)
-        shown_value = _module("core.params.store").shown_value
         self.assertEqual(self.by_scope(shown)[("Fase 2 · [100,5; 101,5) m", "cut_m3")].value,
-                         shown_value(stored.value, "m3", "es"))
+                         _module("reserves.table").quantity_text(stored.value, "m3"))
         with mock.patch.object(self.project, "read", side_effect=AssertionError("al filtrar")):
             self.assertTrue(self.filtered(domain="Cualquier dominio"))
             layout = draw(panel, bpy.context, is_popover=False)
@@ -1353,11 +1353,82 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         self.assertEqual(bpy.ops.geoblender.res_show_volumetrics(cubication="Norte"),
                          {"FINISHED"})
         self.assertEqual(self.by_scope(list(view.rows))[("", "cut_m3")].value,
-                         _module("core.params.store").shown_value(
-                             _expected(_start_values(), _final_values())["res.cut_m3"], "m3",
-                             "es"))
+                         _module("reserves.table").quantity_text(
+                             _expected(_start_values(), _final_values())["res.cut_m3"], "m3"))
         self.assertEqual(bpy.ops.geoblender.res_export_csv(
             cubication="Norte", filepath=str(outside / "norte.csv")), {"FINISHED"})
+
+    def test_volumetrics_shown_rounded_and_the_csv_complete(self) -> None:
+        """RF-011-23, RF-011-24 (T34; regresión del H2, donde el panel enseñaba «91
+        450,50000000001 m³» y «1,5675253987838387 m³/m³»): la tabla del panel y sus líneas (el
+        factor combinado) dan cada cifra con los decimales de su unidad (m³, m² y t, sin
+        decimales; las relaciones y los %, dos; el factor, seis) y el espacio fino de miles; lo
+        mismo lo que dicen al terminar «Entre dos superficies…» (desmonte, terraplén y neto),
+        las toneladas encadenadas y «Por momentos de extracción…». El CSV de la misma tabla
+        lleva el valor completo."""
+        self.stage_cubications()
+        res_export, res_table = _module("reserves.export"), _module("reserves.table")
+        thin = _module("core.i18n").THIN_SPACE
+        long_m3 = 91_450.50000000001
+        long = {"cut_m3": long_m3, "net_m3": -0.4, "area_m2": 2_812_345.678,
+                "total_t": 12_345.678, "waste_ratio_m3": 1.5675253987838387,
+                "grid_scale_factor": 1.0001823456, "ground_effect_pct": 0.018234}
+        real = res_export.cubication_export(self.project, DIRECT, version=self.v01.uid)
+        total = (res_table.ALL_DOMAINS, None, None, None)
+
+        def longer(item: Any) -> Any:
+            row = item.row
+            if row.quantity not in long or (row.domain, row.bench, row.unit,
+                                            row.component) != total:
+                return item
+            return replace(item, row=replace(row, value=long[row.quantity], note=None))
+
+        found = replace(real, rows=tuple(longer(item) for item in real.rows))
+        self.assertEqual(sum(item is not other for item, other in zip(found.rows, real.rows,
+                                                                       strict=True)), len(long))
+        with mock.patch.object(res_export, "cubication_export", return_value=found):
+            shown = self.panels.read_table(self.project, self.v01.uid, DIRECT)
+        totals = {quantity: value for (_d, _b, _u, quantity, where, _l, value, _m, _n)
+                  in shown.rows if not where}
+        self.assertEqual({quantity: totals[quantity] for quantity in long}, {
+            "cut_m3": f"91{thin}451 m³", "net_m3": "0 m³", "area_m2": f"2{thin}812{thin}346 m²",
+            "total_t": f"12{thin}346 t", "waste_ratio_m3": "1,57 m³/m³",
+            "grid_scale_factor": "1,000182", "ground_effect_pct": "0,02 %"})
+        lines = [text for text, _alert in shown.lines]
+        self.assertIn("Factor combinado: 1,000182", lines)
+        self.assertTrue(any(text.endswith(": 0,02 %") for text in lines), lines)
+        for (_d, _b, _u, quantity, where, _l, value, _m, _n) in shown.rows:
+            decimals = re.search(r",(\d+)", value)
+            with self.subTest(dato=quantity, ambito=where):
+                self.assertLessEqual(0 if decimals is None else len(decimals.group(1)),
+                                     res_table.DECIMALS[res_table.QUANTITIES[quantity].unit])
+        csv_values = {row[7]: row[9] for row in res_export.csv_rows(found)[-len(found.rows):]
+                      if row[1] == "Todos los dominios" and not any(row[2:6])}
+        self.assertEqual((csv_values["cut_m3"], csv_values["waste_ratio_m3"]),
+                         ("91450,50000000001", "1,5675253987838387"))  # RF-011-24, D-29
+
+        reports: list[str] = []
+        operator = SimpleNamespace(_report=lambda _level, text: reports.append(text),
+                                   _name="Larga")
+        between = self.commands.registered_class(BETWEEN)
+        between._report_result(operator, SimpleNamespace(result=SimpleNamespace(
+            name="Larga", cut_m3=long_m3, fill_m3=12.25, net_m3=long_m3 - 12.25, warnings=())))
+        between._report_tonnage(operator, SimpleNamespace(outputs=SimpleNamespace(
+            result=SimpleNamespace(groups=(SimpleNamespace(domain=res_table.ALL_DOMAINS,
+                                                           bench=None, total_t=12_345.678),)),
+            warnings=())))
+        comparison = SimpleNamespace(sum_m3=long_m3, direct_m3=90_000.0,
+                                     diff_m3=long_m3 - 90_000.0,
+                                     diff_pct=100.0 * (long_m3 - 90_000.0) / 90_000.0)
+        self.commands.registered_class(STAGES)._report_result(operator, SimpleNamespace(
+            result=SimpleNamespace(name="Larga", direct=DIRECT, warnings=(),
+                                   comparison=lambda: comparison)))
+        self.assertEqual(reports, [
+            f"Larga (V01.r1, en curso): desmonte 91{thin}451 m³, terraplén 12 m³, neto "
+            f"91{thin}438 m³",
+            f"Toneladas de «Larga» (V01.r1, en curso): 12{thin}346 t",
+            f"«Larga» (V01.r1, en curso): suma de los momentos 91{thin}451 m³, directa "
+            f"«{DIRECT}» 90{thin}000 m³, diferencia 1{thin}451 m³ (1,61 %)"])
 
     # --- E5: congelar, K solo en V01 y recalcular (T26) ---------------------------------------
 

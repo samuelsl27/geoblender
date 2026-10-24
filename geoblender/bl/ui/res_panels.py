@@ -672,10 +672,15 @@ def _note_text(codes: tuple[str, ...], shown: str) -> str:
 
 
 def _value_text(row: Any, shown: str) -> str:
-    """El valor de una fila con su unidad («20 m³», «1,5 m³/m³»; sin valor, «sin valor» y su
-    nota)."""
-    text = shown_value(row.value, row.unit_code, shown)
-    if row.value is None and row.notes:
+    """El valor de una fila con su unidad y los decimales de ella («20 m³», «1,50 m³/m³»;
+    ``reserves.table.quantity_text``, RF-011-23, T34: el valor completo va al CSV); sin valor,
+    «sin valor» y su nota. Una unidad que no es de las tablas (de otro Geoblender), tal cual."""
+    if row.value is not None:
+        if row.unit_code in res_table.DECIMALS:
+            return res_table.quantity_text(row.value, row.unit_code)
+        return shown_value(row.value, row.unit_code, shown)
+    text = shown_value(None, row.unit_code, shown)
+    if row.notes:
         text = f"{text} ({_note_text(row.notes, shown)})"
     return text
 

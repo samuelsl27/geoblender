@@ -88,7 +88,6 @@ from ..core.datasets.model import (
 from ..core.errors import GeoblenderError
 from ..core.gpkg.base import ColumnDef, create_attribute_table, create_structure, set_column_titles
 from ..core.hashing import HashCancelled
-from ..core.i18n import format_number
 from ..core.paths import check_path_length
 from ..core.project.model import Progress
 from ..core.provenance.figures import FigureSpec
@@ -143,6 +142,7 @@ from .table import (
     TITLES,
     Row,
     StageRow,
+    number_text,
     ratio_rows,
     read_rows,
 )
@@ -1032,7 +1032,7 @@ def _tonnage_summary(name: str, outputs: TonnageOutputs) -> str:
     if total is None:
         return (f"«{name}»: sin total de toneladas ({len(outputs.result.missing)} parámetros "
                 "sin valor)")
-    return f"«{name}»: {format_number(total, 1)} t"
+    return f"«{name}»: {number_text(total, 't')} t"
 
 
 def tonnage_run(project: StoreProject, handle: OperationHandle, *,
@@ -1186,10 +1186,10 @@ def _stages_run(project: StoreProject, handle: OperationHandle, name: str,
         out.table(declared.STAGE_TABLE, name, result.rows)
         yield Progress("save", 2, total, f"Guardando «{name}»…")
         cut = result.comparison()
-        shown = "—" if cut.diff_pct is None else f"{format_number(cut.diff_pct, 2)} %"
-        message = (f"«{name}»: suma de los momentos {format_number(cut.sum_m3, 1)} m³, directa "
-                   f"{format_number(cut.direct_m3, 1)} m³, diferencia "
-                   f"{format_number(cut.diff_m3, 1)} m³ ({shown})")
+        shown = "—" if cut.diff_pct is None else f"{number_text(cut.diff_pct, '%')} %"
+        message = (f"«{name}»: suma de los momentos {number_text(cut.sum_m3, 'm3')} m³, "
+                   f"directa {number_text(cut.direct_m3, 'm3')} m³, diferencia "
+                   f"{number_text(cut.diff_m3, 'm3')} m³ ({shown})")
         records = out.commit(figures=result.figures, message=message)
     yield Progress("save", total, total, message, result=StoredStages(result, records))
 
