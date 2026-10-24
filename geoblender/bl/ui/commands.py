@@ -112,6 +112,18 @@ def operator_class_name(idname: str) -> str:
     return f"{module.upper()}_OT_{name}"
 
 
+def command_idname(idname: str) -> str:
+    """La orden de un ``bl_idname`` (``GEOBLENDER_OT_ui_toggle_mode`` →
+    ``geoblender.ui_toggle_mode``), la inversa de :func:`operator_class_name`; una orden se
+    devuelve igual. En ``execute``, ``invoke`` y ``draw`` de un operador vivo,
+    ``self.bl_idname`` es el nombre de su clase en Blender, que ni el catálogo ni ``bpy.ops``
+    conocen como orden (spec 011, T35 y T40); ``cls.bl_idname`` sí es la orden."""
+    if "." in idname:
+        return idname
+    group, separator, name = idname.partition("_OT_")
+    return f"{group.lower()}.{name}" if separator else idname
+
+
 def registered_class(idname: str) -> type | None:
     """La clase registrada de un operador (``bl_idname``) o de un menú o un panel (su
     clase); ``None`` si no hay ninguna registrada."""

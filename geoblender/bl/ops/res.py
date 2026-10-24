@@ -170,7 +170,7 @@ from ..scene import project_session, res_views, undo_watch, views
 from ..scene import versions as scene_versions
 from ..ui import gate, res_panels
 from ..ui import provenance as ui_provenance
-from ..ui.commands import catalog, text, with_note
+from ..ui.commands import catalog, command_idname, text, with_note
 from . import jobs as jobs_ops
 from .core import _StepsModal
 from .core_provenance import (
@@ -1351,14 +1351,6 @@ def _drained(operator: Any, steps: Iterator[Progress]) -> Any:
     return found
 
 
-def _command(operator: Any) -> str:
-    """La orden de ``operator`` (``geoblender.res_…``): en un operador vivo, ``bl_idname`` es
-    el nombre de su clase en Blender («GEOBLENDER_OT_res_…»), que el catálogo no conoce."""
-    idname = str(operator.bl_idname)
-    group, separator, name = idname.partition("_OT_")
-    return f"{group.lower()}.{name}" if separator else idname
-
-
 def _confirm_later(values: Mapping[str, Any], idname: str = BETWEEN) -> None:
     """Pide confirmar que se sustituye la cubicación del mismo nombre (D-30) o el fichero que ya
     existe (D-29): la misma orden ``idname`` con ``confirm`` (su confirmación) en cuanto acaba
@@ -1474,7 +1466,8 @@ class _SurfacesCommand:
         self.in_steps = getattr(context, "window", None) is not None
         return context.window_manager.invoke_props_dialog(
             self, width=DIALOG_WIDTH, translate=False,
-            title=text(catalog().commands[_command(self)].label), confirm_text=tr("Compute"))
+            title=text(catalog().commands[command_idname(self.bl_idname)].label),
+            confirm_text=tr("Compute"))
 
     def _propose(self, context: Any, project: Any) -> None:
         """Las superficies del diálogo: las dos seleccionadas en la vista, en el orden de D-31
@@ -1604,7 +1597,7 @@ class _SurfacesCommand:
         if self.provenance_dialog:
             self._report({"WARNING"}, tr("There is already a cubication «{name}» in {version}",
                                          name=name, version=plan.version))
-            _confirm_later(self._values(name), idname=_command(self))
+            _confirm_later(self._values(name), idname=command_idname(self.bl_idname))
         else:
             self._report({"ERROR"}, tr(
                 "There is already a cubication «{name}» in {version}: to replace it, repeat the "
@@ -2353,7 +2346,8 @@ class GEOBLENDER_OT_res_compute_extraction_stages(ProvenanceAwareOperator, _Step
         self.in_steps = getattr(context, "window", None) is not None
         return context.window_manager.invoke_props_dialog(
             self, width=DIALOG_WIDTH, translate=False,
-            title=text(catalog().commands[_command(self)].label), confirm_text=tr("Compare"))
+            title=text(catalog().commands[command_idname(self.bl_idname)].label),
+            confirm_text=tr("Compare"))
 
     def draw(self, context: Any) -> None:
         from ...reserves.stages import MAX_STAGES

@@ -223,6 +223,7 @@ from ..props.gis import (
 from ..scene import project_session
 from ..scene import triangulator as cdt_blender
 from ..ui.commands import catalog as command_catalog
+from ..ui.commands import command_idname
 from ..ui.provenance import badge
 from ..ui.views import no_work_window_message
 from . import core_provenance
@@ -3785,7 +3786,9 @@ def _existing(operator: Any, target: Path, values: Mapping[str, Any]) -> set[str
                      value=target.name, file=target.name)
     if operator.provenance_dialog:
         operator.report({"WARNING"}, error_text(error))
-        _open_confirm(operator.bl_idname, {"filepath": str(target), **values})
+        # En un operador vivo, ``bl_idname`` es «GEOBLENDER_OT_…» (011, T40): la orden.
+        _open_confirm(command_idname(operator.bl_idname),
+                      {"filepath": str(target), **values})
     else:
         operator.report({"ERROR"}, error_text(error))
     return {"CANCELLED"}

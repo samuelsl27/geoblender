@@ -563,8 +563,8 @@ class GEOBLENDER_OT_ui_add_layout(bpy.types.Operator):
         from ..ui import commands, layouts, provisional
 
         if not commands.is_available(layouts.add_key(self.layout)):
-            self.report({"INFO"}, provisional.message(commands.catalog(), self.bl_idname,
-                                                      self.properties))
+            self.report({"INFO"}, provisional.message(
+                commands.catalog(), commands.command_idname(self.bl_idname), self.properties))
             return {"CANCELLED"}
         name, appended = layouts.activate_layout(context.window, self.layout)
         if appended and name == layouts.main_name():
@@ -726,11 +726,13 @@ class _HelpSheet:
         return context.window_manager.invoke_popup(self, width=1000)
 
     def draw(self, context: Any) -> None:
+        from ..ui import commands
         from ..ui import help as ui_help
 
         layout = self.layout
         ui_help.draw_sheet(layout, self.kind)
-        props = layout.operator(self.bl_idname, text=tr("Printable version…"),
+        props = layout.operator(commands.command_idname(self.bl_idname),
+                                text=tr("Printable version…"),
                                 icon="FILE_TEXT", translate=False)
         props.printable = True
 
@@ -785,11 +787,13 @@ class GEOBLENDER_OT_ui_run_diagnostics(bpy.types.Operator):
         return context.window_manager.invoke_popup(self, width=720)
 
     def draw(self, context: Any) -> None:
+        from ..ui import commands
         from ..ui import help as ui_help
 
         layout = self.layout
         ui_help.draw_rows(layout, self.bl_label, ui_help.diagnostics())
-        props = layout.operator(self.bl_idname, text=tr("Copy to the clipboard"),
+        props = layout.operator(commands.command_idname(self.bl_idname),
+                                text=tr("Copy to the clipboard"),
                                 icon="COPYDOWN", translate=False)
         props.copy = True
 
