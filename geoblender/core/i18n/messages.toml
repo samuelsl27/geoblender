@@ -5421,3 +5421,10 @@ es = "Terraplén: diferencia de los momentos con la cubicación directa"
 
 ["Fill: relative difference between the stages and the direct cubication"]
 es = "Terraplén: diferencia relativa de los momentos con la cubicación directa"
+
+# La cola de los pasos del recálculo de la cubicación (spec 011, T19; RF-011-20; plan 011 D-19):
+# lo que dice la barra de estado mientras «Recalcular lo obsoleto» espera a una operación de res
+# (bl/ops/res.py).
+
+["Recomputing «{name}»… {percent} %"]
+es = "Recalculando «{name}»… {percent} %"
