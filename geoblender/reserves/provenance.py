@@ -576,7 +576,8 @@ def volume_request(settings: Mapping[str, Any], *,
                          _surface_ref(settings.get(FINAL), FINAL),
                          scope=None if scope is None else tuple(scope), domains=domains,
                          slices=_slices(settings), column=column, difference_grid=grid,
-                         point_scale=settings.get("point_scale"))
+                         point_scale=settings.get("point_scale"),
+                         scope_layer=str(settings.get("scope") or ""))
 
 
 def tonnage_inputs(name: str) -> tuple[Use, ...]:

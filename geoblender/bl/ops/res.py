@@ -1567,7 +1567,7 @@ class _SurfacesCommand:
                    FINAL: surface_source(project, final, version_uid=version_uid)}
         check_pair(sources[START], sources[FINAL])
         grid = sources[START].grid if sources[START].grid is not None else sources[FINAL].grid
-        request = VolumeRequest(name, start, final, scope=scope,
+        request = VolumeRequest(name, start, final, scope=scope, scope_layer=scope_name or "",
                                 difference_grid=self._wants_grid(),
                                 point_scale=_point_scale(project, grid, scope),
                                 **self._breakdown(project))

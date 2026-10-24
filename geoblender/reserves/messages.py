@@ -208,6 +208,38 @@ CATALOG: tuple[Message, ...] = (
         "{area} m²",
         "note",
     ),
+    # El ámbito (RF-011-01, con la regla de RF-011-08; T37) ------------------------------------
+    Message(
+        "res.scope_invalid",
+        "Layer «{layer}» cannot be used as the scope: {problems}. Correct it and import it "
+        "again; nothing has been computed.",
+        "La capa «{layer}» no sirve de ámbito: {problems}. Corríjala y vuelva a importarla; no "
+        "se ha cubicado nada.",
+    ),
+    Message(
+        "res.scope_self_intersecting",
+        "polygon {fid} intersects itself",
+        "el polígono {fid} se corta a sí mismo",
+        "note",
+    ),
+    Message(
+        "res.scope_no_area",
+        "polygon {fid} has no area",
+        "el polígono {fid} no tiene área",
+        "note",
+    ),
+    Message(
+        "res.scope_hole_outside",
+        "polygon {fid} has a hole outside its outer ring or inside another hole",
+        "el polígono {fid} tiene un hueco fuera de su contorno o dentro de otro hueco",
+        "note",
+    ),
+    Message(
+        "res.scope_overlap",
+        "polygons {fid} and {other_fid} overlap over {area} m²",
+        "los polígonos {fid} y {other_fid} se solapan en {area} m²",
+        "note",
+    ),
     # La columna de materiales (RF-011-11; D-18, D-23, D-24) ----------------------------------
     Message(
         "res.materials_invalid",

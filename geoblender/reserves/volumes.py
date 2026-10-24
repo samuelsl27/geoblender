@@ -12,8 +12,10 @@ lleva el :class:`VolumeResult`. Fases (A10):
 
 1. ``check``: las superficies (A1: ``check_pair``, también las bases y los espesores de la
    columna, estos sin el datum vertical) y la columna de materiales (``validate``);
-2. ``domains``: validar los dominios (``polygons.problem_steps``: un paso por polígono y por par
-   que recortar; ``res.domains_invalid``) y recortarlos por el ámbito, un polígono por paso;
+2. ``domains``: validar el ámbito (``polygons.scope_problem_steps``: un paso por polígono y
+   por par; ``res.scope_invalid``, RF-011-01, T37) y los dominios (``polygons.problem_steps``: un
+   paso por polígono y por par que recortar; ``res.domains_invalid``) y recortarlos por el
+   ámbito, un polígono por paso;
 3. ``bands``: por cada banda de filas, leer la banda de cada superficie (un paso por superficie,
    todas al paso: ninguna se remuestrea), sus pesos de ámbito y dominios (A5), el núcleo (A2, A3,
    A7; troceado por unidades: los totales y después una unidad por paso) y, si se pide la rejilla
@@ -73,7 +75,16 @@ from . import scale
 from .kernel import ALL, Accumulators, BandValues, KernelResult, NegativeThickness, band_step
 from .materials import MaterialColumn, negative_thickness
 from .messages import ResError, render
-from .polygons import DomainsError, Polygon, domain_edges, problem_steps, scope_edges, weights
+from .polygons import (
+    DomainsError,
+    Polygon,
+    ScopeError,
+    domain_edges,
+    problem_steps,
+    scope_edges,
+    scope_problem_steps,
+    weights,
+)
 from .slices import Slices
 from .surfaces import BAND_ROWS, SurfaceRef, SurfaceSource, band_reader, check_pair
 from .table import (
@@ -185,8 +196,10 @@ class VolumeRequest:
     la rejilla), los dominios, las rodajas, la columna de materiales (``None``: sin repartir por
     unidades), el espesor mínimo y el umbral de presencia de lo antrópico (m, los parámetros del
     proyecto), si se escribe la rejilla de diferencias (D-25) y el factor de escala de la
-    proyección en :func:`reserves.scale.center` (``None``: no disponible, D-34). Una petición mal
-    formada es un error del programa (:class:`TypeError` o :class:`ValueError`)."""
+    proyección en :func:`reserves.scale.center` (``None``: no disponible, D-34) y el nombre de la
+    capa del ámbito (``scope_layer``: solo para nombrarla si no sirve, ``res.scope_invalid``;
+    no es un ajuste). Una petición mal formada es un error del programa (:class:`TypeError` o
+    :class:`ValueError`)."""
 
     name: str
     start: SurfaceRef
@@ -199,6 +212,7 @@ class VolumeRequest:
     presence_m: float = 0.0
     difference_grid: bool = False
     point_scale: float | None = None
+    scope_layer: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -222,6 +236,8 @@ class VolumeRequest:
                            _non_negative(self.presence_m, "el umbral de presencia"))
         if not isinstance(self.difference_grid, bool):
             raise TypeError("difference_grid es verdadero o falso")
+        if not isinstance(self.scope_layer, str):
+            raise TypeError(f"scope_layer es el nombre de una capa, no {self.scope_layer!r}")
         if self.point_scale is not None:
             scale.combined_factor(self.point_scale, 0.0)
             object.__setattr__(self, "point_scale", float(self.point_scale))
@@ -485,6 +501,7 @@ class _Run:
         self.done += 1
         yield "check"
 
+        yield from self._scope_check()
         names, edges = yield from self._domains(grid)
         scope = None
         if request.scope is not None:
@@ -535,6 +552,23 @@ class _Run:
             if written is not None:
                 _discard(written)  # nada a medias (RF-011-25)
             raise
+
+    def _scope_check(self) -> Generator[str, None, None]:
+        """Valida el ámbito antes de recortar nada con él (RF-011-01; T37): un paso por polígono
+        y por par, como los dominios; con algún problema, ``res.scope_invalid`` con la lista."""
+        scope = self.request.scope
+        if scope is None:
+            return
+        steps = scope_problem_steps(scope)
+        while True:
+            try:
+                next(steps)
+            except StopIteration as stop:
+                found = stop.value
+                break
+            yield "domains"
+        if found:
+            raise ScopeError(found, layer=self.request.scope_layer or "—")
 
     def _domains(self, grid: Grid) -> Generator[str, None, tuple[tuple[str, ...],
                                                                   list[np.ndarray]]]:

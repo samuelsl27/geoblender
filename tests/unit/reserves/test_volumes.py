@@ -366,6 +366,44 @@ class PyramidTest(_Folder):
         with self.assertRaises(ValueError):
             volumes.volume_steps(self.request(), {volumes.START: self.sources[volumes.START]})
 
+    def test_an_invalid_scope_is_refused_before_computing(self) -> None:
+        """RF-011-01 (regresión de la T37): un ámbito de dos partes que se solapan (contaría dos
+        veces el solape) o uno que se corta a sí mismo (pesos con signo y «sin celdas
+        comunes») se rechazan con ``res.scope_invalid``, que nombra la capa, sin escribir nada;
+        el mismo ámbito partido en dos que solo comparten un lado da las mismas cifras que el
+        polígono entero (≤ 10⁻⁹)."""
+        path, temporary = self.difference()
+        west, south = 735_100.0, 4_434_100.0
+
+        def rect(x0: float, y0: float, x1: float, y1: float) -> np.ndarray:
+            return np.array([[west + x0, south + y0], [west + x1, south + y0],
+                             [west + x1, south + y1], [west + x0, south + y1]])
+
+        bowtie = np.array([[west, south], [west + 60, south + 60], [west + 60, south],
+                           [west, south + 60]])
+        for label, scope, text in (
+                ("solape", (polygons.Polygon(1, "", (rect(0, 0, 60, 60),)),
+                            polygons.Polygon(2, "", (rect(30, 30, 90, 90),))),
+                 "los polígonos 1 y 2 se solapan en 900,00 m²"),
+                ("pajarita", (polygons.Polygon(1, "", (bowtie,)),),
+                 "el polígono 1 se corta a sí mismo")):
+            request = self.request(domains=None, scope=scope, scope_layer="Ámbito",
+                                   difference_grid=True)
+            with self.subTest(label), self.assertRaises(res_messages.ResError) as caught:
+                _run(request, self.sources, difference_path=path, difference_temporary=temporary)
+            self.assertEqual(caught.exception.code, "res.scope_invalid")
+            self.assertIn("La capa «Ámbito» no sirve de ámbito", str(caught.exception))
+            self.assertIn(text, str(caught.exception))
+            self.assertNothingLeft()
+        whole = (polygons.Polygon(1, "", (rect(0, 0, 90, 60),)),)
+        halves = (polygons.Polygon(1, "", (rect(0, 0, 45, 60),)),
+                  polygons.Polygon(2, "", (rect(45, 0, 90, 60),)))
+        _seen, one = _run(self.request(domains=None, scope=whole), self.sources)
+        _seen, two = _run(self.request(domains=None, scope=halves), self.sources)
+        self.assertGreater(one.cut_m3, 0.0)
+        self.assertLessEqual(abs(two.cut_m3 - one.cut_m3), CLOSURE * one.cut_m3)
+        self.assertEqual(two.kernel.area_m2[kernel.ALL], one.kernel.area_m2[kernel.ALL])
+
 
 class ColumnTest(_Folder):
     """La columna sintética de materiales (CE-011-02, CE-011-03) sobre ficheros."""

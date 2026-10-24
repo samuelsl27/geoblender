@@ -823,6 +823,25 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         self.assertIn(("scope",), self.rows("SELECT role FROM gb_operation_io WHERE "
                                             "operation_uid = ? AND direction = 'in'", uid))
 
+    def test_an_overlapping_scope_layer_is_refused(self) -> None:
+        """RF-011-01 (regresión de la T37; verificación 011, F-2): la capa de dominios
+        «Solapes», que el diálogo ofrece como ámbito, tiene dos polígonos que se solapan en
+        10 m²: antes contaba dos veces el solape (22 m³ y 71 m² frente a 20 m³ y 63 m²); ahora
+        se rechaza con la capa y sus polígonos (su campo vacío no importa a un ámbito) y la
+        operación queda fallida sin cifras, tablas ni rejillas."""
+        name = "Ámbito con solapes"
+        with self.assertRaises(RuntimeError) as caught:
+            bpy.ops.geoblender.res_compute_volume_between_surfaces(
+                name=name, start=START, final=FINAL, scope_layer=self.overlaps)
+        text = str(caught.exception)
+        self.assertIn(f"La capa «{self.overlaps}» no sirve de ámbito: los polígonos 1 y 2 se "
+                      "solapan en 10,00 m². Corríjala", text)
+        self.assertNotIn("vacío", text)
+        ((uid, status, _old, _new),) = self.operations(name)
+        self.assertEqual(status, "failed")
+        self.assertEqual(self.figures(uid, name), {})
+        self.assertEqual(self.datasets(name), [])
+
     def test_repeated_name_asks_before_replacing(self) -> None:
         """D-30 (RF-011-20): repetir el nombre de una cubicación de la versión activa, desde un
         guion, se rechaza sin escribir nada; desde la interfaz, pregunta si se sustituye

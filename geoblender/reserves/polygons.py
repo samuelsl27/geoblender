@@ -20,6 +20,10 @@ dominios».
   (:class:`Problem`); :func:`validate` la lanza como ``res.domains_invalid``
   (:class:`DomainsError`), y :func:`problem_steps` la busca por pasos (uno por polígono y por
   par que recortar: los de una cubicación, A10).
+- :func:`scope_problems`, :func:`scope_problem_steps` y :func:`validate_scope`: lo mismo para
+  un **ámbito** (RF-011-01; T37), sin el campo (no lo tiene), con los códigos ``res.scope_*``
+  y el error ``res.scope_invalid`` (:class:`ScopeError`): dos partes que se solapan contarían
+  dos veces el solape, y una que se corta a sí misma daría pesos con signo.
 - :func:`overlaps`: los pares que se solapan, con el área del solape.
 - :func:`clip_to_scope`: las aristas orientadas de ``polígono ∩ ámbito``.
 - :func:`domain_edges` y :func:`scope_edges`: las aristas de cada dominio (los polígonos con el
@@ -72,6 +76,7 @@ __all__ = [
     "Overlap",
     "Polygon",
     "Problem",
+    "ScopeError",
     "Weights",
     "clip_to_scope",
     "domain_edges",
@@ -80,7 +85,10 @@ __all__ = [
     "problem_steps",
     "problems",
     "scope_edges",
+    "scope_problem_steps",
+    "scope_problems",
     "validate",
+    "validate_scope",
     "weights",
 ]
 
@@ -162,6 +170,18 @@ class DomainsError(ResError):
         self.problems = found
 
 
+class ScopeError(ResError):
+    """``res.scope_invalid``: el ámbito no sirve (RF-011-01; T37); ``problems`` es la lista
+    (:class:`Problem`, códigos ``res.scope_*``) y el valor del error, cuántos problemas hay."""
+
+    def __init__(self, found: Sequence[Problem], *, layer: str) -> None:
+        found = tuple(found)
+        super().__init__("res.scope_invalid", obj=f"Capa del ámbito «{layer}»", field="ámbito",
+                         value=len(found), layer=layer,
+                         problems="; ".join(problem.text("") for problem in found))
+        self.problems = found
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class DomainEdges:
     """Un dominio (el valor del campo) y las aristas orientadas de sus polígonos, recortados por
@@ -232,23 +252,43 @@ def problem_steps(polygons: Sequence[Polygon]) -> Generator[None, None, tuple[Pr
     """:func:`problems` por pasos (plan 011 A10; RNF-011-04): un paso por polígono y otro por
     cada par de polígonos cuyas cajas se tocan (recortar un par es lo más lento: unos 11 ms con
     miles de vértices); lo mismo que :func:`problems` en ``StopIteration.value``."""
+    return (yield from _problem_steps(polygons, domains=True))
+
+
+def scope_problems(polygons: Sequence[Polygon]) -> tuple[Problem, ...]:
+    """Los problemas de un ámbito (RF-011-01, con la regla de RF-011-08; T37): los de
+    :func:`problems` salvo el campo vacío (un ámbito no tiene campo), con los códigos
+    ``res.scope_*``. Dos partes que se solapan contarían dos veces el solape, y una que se corta
+    a sí misma daría pesos con signo."""
+    return _drain(scope_problem_steps(polygons))
+
+
+def scope_problem_steps(polygons: Sequence[Polygon]
+                        ) -> Generator[None, None, tuple[Problem, ...]]:
+    """:func:`scope_problems` por pasos, como :func:`problem_steps`."""
+    return (yield from _problem_steps(polygons, domains=False))
+
+
+def _problem_steps(polygons: Sequence[Polygon], *, domains: bool
+                   ) -> Generator[None, None, tuple[Problem, ...]]:
+    prefix = "res.domain_" if domains else "res.scope_"
     origin = _origin(polygons)
     found: list[Problem] = []
     valid: list[tuple[int, list[np.ndarray]]] = []
     for index, polygon in enumerate(polygons):
         value = _value(polygon)
-        if not value.strip():
+        if domains and not value.strip():
             found.append(Problem("res.domain_value_empty", polygon.fid, value))
         rings = _local_rings(polygon.rings, origin)
         code = _geometry_problem(rings)
         if code is None:
             valid.append((index, rings))
         else:
-            found.append(Problem(code, polygon.fid, value))
+            found.append(Problem(code.replace("res.domain_", prefix), polygon.fid, value))
         yield
     for overlap in (yield from _overlap_steps(valid)):
         first, second = polygons[overlap.first], polygons[overlap.second]
-        found.append(Problem("res.domain_overlap", first.fid, _value(first), second.fid,
+        found.append(Problem(prefix + "overlap", first.fid, _value(first), second.fid,
                              _value(second), overlap.area_m2))
     return tuple(found)
 
@@ -260,6 +300,14 @@ def validate(polygons: Sequence[Polygon], *, field: str, layer: str) -> None:
     found = problems(polygons)
     if found:
         raise DomainsError(found, field=field, layer=layer)
+
+
+def validate_scope(polygons: Sequence[Polygon], *, layer: str) -> None:
+    """Comprueba el ámbito de la capa ``layer`` (:func:`scope_problems`): con algún problema,
+    :class:`ScopeError` (``res.scope_invalid``, con la lista) y no se cubica con él."""
+    found = scope_problems(polygons)
+    if found:
+        raise ScopeError(found, layer=layer)
 
 
 def overlaps(polygons: Sequence[Polygon]) -> tuple[Overlap, ...]:

@@ -211,6 +211,39 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(found[2].text(FIELD, "en"), "polygon 4 has an empty «fase»")
         self.assertIsNone(polygons.validate(layer[:1] + layer[4:5], field=FIELD, layer=LAYER))
 
+    def test_an_invalid_scope_is_listed_and_rejected(self) -> None:
+        """RF-011-01 (regresión de la T37; como RF-011-08): un ámbito con partes que se solapan
+        contaría dos veces el solape, y uno que se corta a sí mismo daría pesos con signo; se
+        rechaza con ``res.scope_invalid``, que nombra la capa, cada polígono, su problema y el
+        área del solape. Sus polígonos no tienen valor: no es un problema. Partes que solo
+        comparten un lado sí valen."""
+        scope = [
+            _polygon(1, "", _rect(0, 0, 10, 10)),
+            _polygon(2, "", _ring([[20, 0], [30, 0], [20, 10], [30, 10]])),  # pajarita
+            _polygon(3, "", _ring([[40, 0], [50, 0], [45, 0]])),             # sin área
+            _polygon(4, "", _rect(5, 5, 15, 15)),                            # 5 × 5 = 25 m²
+        ]
+        found = polygons.scope_problems(scope)
+        self.assertEqual([(p.code, p.fid, p.other_fid, p.area_m2) for p in found],
+                         [("res.scope_self_intersecting", 2, None, None),
+                          ("res.scope_no_area", 3, None, None),
+                          ("res.scope_overlap", 1, 4, 25.0)])
+        with self.assertRaises(ResError) as caught:
+            polygons.validate_scope(scope, layer="Ámbito sur")
+        error = caught.exception
+        self.assertEqual(error.code, "res.scope_invalid")
+        self.assertEqual(error.value, 3)
+        self.assertEqual(error.problems, found)
+        self.assertEqual(
+            str(error),
+            "La capa «Ámbito sur» no sirve de ámbito: el polígono 2 se corta a sí mismo; el "
+            "polígono 3 no tiene área; los polígonos 1 y 4 se solapan en 25,00 m². Corríjala y "
+            "vuelva a importarla; no se ha cubicado nada.")
+        self.assertEqual(found[-1].text("", "en")[:30], "polygons 1 and 4 overlap over ")
+        side_by_side = [_polygon(1, "", _rect(0, 0, 10, 10)), _polygon(2, "", _rect(10, 0, 20, 10))]
+        self.assertEqual(polygons.scope_problems(side_by_side), ())
+        self.assertIsNone(polygons.validate_scope(side_by_side, layer="Ámbito sur"))
+
     def test_the_domains_of_a_layer_one_polygon_per_part(self) -> None:
         """RF-011-07, RF-011-08, RF-011-20 (T32): las entidades de una capa de dominios
         (``gis.store.DomainFeature``) dan un polígono por parte, con su número y el valor de su
