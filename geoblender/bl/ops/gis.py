@@ -1404,9 +1404,12 @@ LAYER_ROLE_ITEMS = [
     ("BREAKLINES", "Breaklines", ""),
     ("CONTOURS", "Contour lines", ""),
     ("BOUNDARY", "Boundary", "Boundary and holes of a TIN"),
+    ("DOMAINS", "Domains",
+     "Polygons that divide a cubication (phases, zones or sectors), with their fields"),
 ]
 LAYER_ROLES: Mapping[str, str] = {"POINTS": "points", "BREAKLINES": "breaklines",
-                                  "CONTOURS": "contours", "BOUNDARY": "boundary"}
+                                  "CONTOURS": "contours", "BOUNDARY": "boundary",
+                                  "DOMAINS": "domains"}
 _GUESSES: Mapping[str, tuple[str, ...]] = {
     "point_id": ("p", "punto", "id", "point", "pt", "num", "numero", "nombre", "name"),
     "x": ("x", "este", "easting", "e", "coordx"),
@@ -1720,6 +1723,8 @@ def _survey_tables(out: store.ResultWriter, plan: _Survey, outcome: Any,
             out.breaklines(plan.name, jobs.read_lines(path), content=contents.get(output))
         elif count and role == "contours":
             out.contours(plan.name, jobs.read_contours(path), content=contents.get(output))
+        elif count and role == "domains":  # spec 011, T18 (D-32)
+            out.domains(plan.name, jobs.read_domains(path), content=contents.get(output))
         elif count:
             out.boundary(plan.name, jobs.read_boundary(path, jobs.crs_of(summary["crs"]).epsg),
                          content=contents.get(output))
@@ -1762,7 +1767,8 @@ def _survey_report(plan: _Survey, summary: Mapping[str, Any], outcome: Any) -> s
         role = str(summary["role"])
         family = provenance.layer_family(role)
         what = {"points": tr("points"), "breaklines": tr("breaklines"),
-                "contours": tr("contour lines"), "boundary": tr("boundaries")}[role]
+                "contours": tr("contour lines"), "boundary": tr("boundaries"),
+                "domains": tr("domains")}[role]
         head = tr("Layer «{layer}» of «{file}» imported as {dataset}: {count} {what} of {read} "
                   "features read, {rejected} rejected", layer=summary["layer"],
                   file=plan.path.name, dataset=provenance.dataset_name(family, plan.name),

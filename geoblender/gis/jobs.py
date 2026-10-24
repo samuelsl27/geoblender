@@ -92,7 +92,8 @@ Los que añade la T29 (RF-006-12, RF-006-16, RF-006-17):
   ``vertical``, ``size`` y, en puntos, ``tol_xy`` y ``tol_z``; ``source_main`` (copiado a
   ``in/`` con su ``-wal`` o su diario y leído sobre una copia consolidada,
   ``gis.vector.copy_source``) → según el papel, ``points.npz``, ``lines.npz``,
-  ``contours.npz`` o ``polygons.npz`` (:data:`LAYER_OUTPUTS`), y ``report.json``.
+  ``contours.npz``, ``polygons.npz`` o, una capa de dominios (spec 011, D-32),
+  ``domains.npz`` (:data:`LAYER_OUTPUTS`, :func:`write_domains`), y ``report.json``.
 - ``gis_import_points`` admite además ``tol_xy`` y ``tol_z``: su informe dice los puntos
   duplicados (RF-006-12).
 - ``gis_tin_contours``: ``name``, ``origin``, ``crs``, ``vertical``, ``densify_m``,
@@ -214,7 +215,16 @@ from .tin import (
 )
 from .tin_contours import tin_from_contours
 from .validate import validate_raster, validate_tin
-from .vector import StoredLayer, copy_source, read_layer, tin_layer, write_layers
+from .vector import (
+    DomainSet,
+    FieldColumn,
+    StoredLayer,
+    copy_source,
+    domains_from_features,
+    read_layer,
+    tin_layer,
+    write_layers,
+)
 from .xyz_grid import read_xyz_grid
 
 __all__ = [
@@ -240,6 +250,7 @@ __all__ = [
     "read_boundary",
     "read_conflicts",
     "read_contours",
+    "read_domains",
     "read_lines",
     "read_mesh",
     "read_points",
@@ -253,6 +264,7 @@ __all__ = [
     "vertical_json",
     "vertical_of",
     "write_contours",
+    "write_domains",
     "write_export_layers",
     "write_lines",
     "write_mesh",
@@ -342,15 +354,17 @@ OUT_EXPORT = JobOutput("export.tif", "export")
 OUT_EXPORT_GPKG = JobOutput("export.gpkg", "export")
 OUT_MESH = JobOutput("mesh.npz", "mesh")
 OUT_POLYGONS = JobOutput("polygons.npz", "boundary")
+OUT_DOMAINS = JobOutput("domains.npz", "domains")
 OUT_SAMPLES = JobOutput("samples.npy", "samples")
 LAYER_OUTPUTS: Mapping[str, JobOutput] = MappingProxyType({
     "points": OUT_POINTS,
     "breaklines": OUT_LINES,
     "contours": OUT_CONTOURS,
     "boundary": OUT_POLYGONS,
+    "domains": OUT_DOMAINS,
 })
 """El resultado de ``gis_import_vector`` según el papel de la capa (los de
-``gis.provenance.LAYER_ROLES``)."""
+``gis.provenance.LAYER_ROLES``; ``domains``, spec 011, D-32)."""
 
 COPYING_TEXT = "Copiando la fuente…"
 READING_TEXT = "Leyendo la fuente…"
@@ -864,15 +878,48 @@ def read_boundary(path: Path | str, epsg: int) -> list[Geometry]:
             for polygons in read_polygons(path)]
 
 
+def write_domains(path: Path | str, domains: DomainSet) -> None:
+    """Los dominios de una capa (``gis.vector.DomainSet``, spec 011, D-32) en el npz ``path``:
+    los anillos como en :func:`write_polygons`, el número de cada entidad y, en JSON, sus
+    columnas (campo, columna y tipo) y sus valores por columna."""
+    rings = [ring for feature in domains.polygons for polygon in feature for ring in polygon]
+    polygons = [polygon for feature in domains.polygons for polygon in feature]
+    _save_npz(Path(path), xy=_xyz_rows(rings, 2), ring_offsets=_offsets([len(r) for r in rings]),
+              polygon_offsets=_offsets([len(polygon) for polygon in polygons]),
+              feature_offsets=_offsets([len(feature) for feature in domains.polygons]),
+              fids=np.asarray(domains.fids, dtype=np.int64),
+              columns=_text_array([[c.field, c.column, c.sql_type] for c in domains.columns]),
+              values=_text_array({name: list(found) for name, found in domains.values.items()}))
+
+
+def read_domains(path: Path | str) -> DomainSet:
+    """Los dominios de :func:`write_domains` (anillos bit a bit, los mismos valores)."""
+    data = _load_npz(Path(path), ("xy", "ring_offsets", "polygon_offsets", "feature_offsets",
+                                  "fids", "columns", "values"))
+    xy = np.ascontiguousarray(data["xy"], dtype=np.float64).reshape(-1, 2)
+    rings, polygons, features = (data["ring_offsets"], data["polygon_offsets"],
+                                 data["feature_offsets"])
+    found = tuple(
+        tuple(tuple(np.ascontiguousarray(xy[int(rings[r]):int(rings[r + 1])])
+                    for r in range(int(polygons[p]), int(polygons[p + 1])))
+              for p in range(int(features[feature]), int(features[feature + 1])))
+        for feature in range(len(features) - 1))
+    columns = tuple(FieldColumn(*map(str, item)) for item in _json_of(data["columns"]))
+    return DomainSet(tuple(int(fid) for fid in data["fids"].tolist()), found, columns,
+                     _json_of(data["values"]))
+
+
 def imported_rows(family: str, path: Path | str, epsg: int) -> list[tuple[Any, ...]]:
     """Las filas de la tabla de ``family`` (``gis.provenance``: puntos, líneas de rotura,
-    curvas o contornos) con lo importado que dejó un trabajo en ``path`` (``points.npz``,
-    ``lines.npz``, ``contours.npz`` o ``polygons.npz``) y las coordenadas en ``epsg``: las que
-    escribe la orden al incorporarlo (``gis.store.point_rows`` y las demás). Con ellas calcula
-    el trabajo el hash de la tabla (T50; RNF-006-09)."""
-    from .provenance import BOUNDARY, BREAKLINES, CONTOUR_LINES, POINTS
-    from .store import boundary_rows, breakline_rows, contour_rows, point_rows
+    curvas, contornos o dominios) con lo importado que dejó un trabajo en ``path``
+    (``points.npz``, ``lines.npz``, ``contours.npz``, ``polygons.npz`` o ``domains.npz``) y las
+    coordenadas en ``epsg``: las que escribe la orden al incorporarlo (``gis.store.point_rows``
+    y las demás). Con ellas calcula el trabajo el hash de la tabla (T50; RNF-006-09)."""
+    from .provenance import BOUNDARY, BREAKLINES, CONTOUR_LINES, DOMAINS, POINTS
+    from .store import boundary_rows, breakline_rows, contour_rows, domain_rows, point_rows
 
+    if family == DOMAINS:
+        return domain_rows(read_domains(path), epsg)
     if family == POINTS:
         return point_rows(read_points(path), epsg)
     if family == BREAKLINES:
@@ -882,7 +929,7 @@ def imported_rows(family: str, path: Path | str, epsg: int) -> list[tuple[Any, .
     if family == BOUNDARY:
         return boundary_rows(read_boundary(path, epsg), (), epsg)
     raise ValueError(f"{family!r} no es lo importado en una tabla (puntos, líneas de rotura, "
-                     "curvas o contornos)")
+                     "curvas, contornos o dominios)")
 
 
 def write_contours(path: Path | str, lines: Sequence[ContourLine]) -> None:
@@ -1210,7 +1257,8 @@ def _table_digests(ctx: _Context, crs: CrsRef, tables: Sequence[tuple[JobOutput,
     (``gis.store.table_digest``), por su papel, con el avance repartido en [``low``,
     ``high``] por el tamaño de cada fichero y la cancelación entre trozos. Así el hilo de
     Blender no vuelve a leer una tabla de 300.000 puntos al incorporarla."""
-    from .store import table_digest  # importa la procedencia: solo al usarlo
+    from .provenance import DOMAINS
+    from .store import domain_rows, table_digest  # importa la procedencia: solo al usarlo
 
     paths = [ctx.output_path(output.file) for output, _family in tables]
     sizes = [max(1, _size(path)) for path in paths]
@@ -1220,9 +1268,14 @@ def _table_digests(ctx: _Context, crs: CrsRef, tables: Sequence[tuple[JobOutput,
     for (output, family), path, size in zip(tables, paths, sizes, strict=True):
         end = start + (high - low) * size / total
         ctx.progress(start, TABLE_HASH_TEXT)
-        rows = imported_rows(family, path, crs.epsg)
-        digest = table_digest(family, rows, crs, progress=_span(ctx, start, end),
-                              cancelled=_cancelled(ctx))
+        columns = None
+        if family == DOMAINS:  # con las columnas de su capa (spec 011, D-32)
+            domains = read_domains(path)
+            rows, columns = domain_rows(domains, crs.epsg), domains.column_defs
+        else:
+            rows = imported_rows(family, path, crs.epsg)
+        digest = table_digest(family, rows, crs, columns=columns,
+                              progress=_span(ctx, start, end), cancelled=_cancelled(ctx))
         found[output.role] = digest_json(digest)
         start = end
     return found
@@ -1988,8 +2041,9 @@ def run_import_vector(ctx: _Context) -> dict[str, Any]:
     """``gis_import_vector``: una capa de un GeoPackage (``gis.gpkg_layer@1``) con el papel
     que declara la persona (RF-006-12): el GeoPackage, copiado a ``in/`` con su ``-wal`` o su
     diario y leído sobre una copia consolidada (nunca el de la persona, RF-006-10), da los
-    puntos, las líneas de rotura (duras), las curvas de nivel (con su cota) o el contorno con
-    las coordenadas de la capa bit a bit, el informe (entidades leídas, rechazadas con su
+    puntos, las líneas de rotura (duras), las curvas de nivel (con su cota), el contorno o los
+    dominios (con sus atributos; spec 011, D-32) con las coordenadas de la capa bit a bit, el
+    informe (entidades leídas, rechazadas con su
     número y motivo y, en puntos, duplicados), el hash de la fuente (RF-006-26) y el de la
     tabla que será lo importado (T50: :func:`_table_digests`; RNF-006-09). Su CRS, el de la
     petición o el de la capa; el datum, el de la petición (RF-006-04)."""
@@ -2035,6 +2089,10 @@ def run_import_vector(ctx: _Context) -> dict[str, Any]:
             raise request.invalid(str(error)) from None
         write_contours(path, contours)
         count = len(contours)
+    elif role == "domains":  # spec 011, T18 (D-32)
+        domains, report = domains_from_features(features)
+        write_domains(path, domains)
+        count = len(domains)
     else:
         polygons, report = polygons_from_features(features)
         write_polygons(path, polygons)

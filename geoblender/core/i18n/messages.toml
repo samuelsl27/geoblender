@@ -2328,6 +2328,12 @@ es = "Las líneas de rotura solo aportan sus puntos"
 ["Boundary and holes of a TIN"]
 es = "Contorno y huecos de un TIN"
 
+["Domains"]
+es = "Dominios"
+
+["Polygons that divide a cubication (phases, zones or sectors), with their fields"]
+es = "Polígonos que reparten una cubicación (fases, zonas o sectores), con sus campos"
+
 ["Encoding"]
 es = "Codificación"
 
@@ -2408,6 +2414,9 @@ es = "curvas de nivel"
 
 ["boundaries"]
 es = "contornos"
+
+["domains"]
+es = "dominios"
 
 ["Layer «{layer}» of «{file}» imported as {dataset}: {count} {what} of {read} features read, {rejected} rejected"]
 es = "Capa «{layer}» de «{file}» importada como {dataset}: {count} {what} de {read} entidades leídas, {rejected} rechazadas"

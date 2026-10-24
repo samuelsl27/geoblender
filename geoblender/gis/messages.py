@@ -420,6 +420,14 @@ CATALOG: tuple[Message, ...] = (
         "Capa «{layer}», entidad {row}: es un {value} y como {role} solo se importan "
         "{expected}.",
     ),
+    Message(  # spec 011, T18 (D-32): los atributos de una capa de dominios
+        "gis.domain_field_skipped",
+        "Layer «{layer}»: field «{value}» ({kind}) is not imported: a domain layer keeps its "
+        "text, integer and real fields.",
+        "Capa «{layer}»: el campo «{value}» ({kind}) no se importa: una capa de dominios "
+        "guarda sus campos de texto, enteros y reales.",
+        "warning",
+    ),
     Message(
         "gis.feature_without_z",
         "Layer «{layer}», feature {row}: it has no elevation (Z) and a geometry without "
