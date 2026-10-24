@@ -40,15 +40,10 @@ PENDING_REFS: frozenset[str] = frozenset()
 # Refrescar y Cifras de la selección, de R-07 a 010) las dice BS desde la T19 de la 010; las
 # órdenes de Proyecto ▸ Control de la 008 (plan 008 §5.1 y §5.5, T44: de R-07 a 008) y las de
 # las versiones de la 009 (plan 009 D-38: Proyecto ▸ Versiones y Encargos y decisiones de la
-# propiedad…, de R-07 a 009), desde la T31 de la 009. Las de Cubicación de la 011 (plan 011 D-36:
-# de R-38 a 011 al llegar su clase real; BS §8.9 lo dirá en la T31 de la 011). identificador →
-# entrada.
-APPROVED_ENTRIES: dict[str, str] = {"res_edit_materials": "011",
-                                    "res_compute_volume_between_surfaces": "011",
-                                    "res_compute_surface_difference": "011",
-                                    "res_compute_volume_breakdown": "011",
-                                    "res_compute_extraction_stages": "011",
-                                    "res_compute_ratios": "011"}
+# propiedad…, de R-07 a 009), desde la T31 de la 009; las de Cubicación de la 011 (plan 011 D-36:
+# de R-38 a 011 al llegar su clase real), desde la T31 de la 011 (BS §8.9 y §8.4). identificador
+# → entrada.
+APPROVED_ENTRIES: dict[str, str] = {}
 
 # Filas ↗ de BS que no dicen lo mismo que la casa de su comando (manda la casa: un comando,
 # una definición): ninguna (la T37 corrigió el «D·2p» de ``io_import_block_model`` en

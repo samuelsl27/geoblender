@@ -12,9 +12,10 @@ por su nombre (este paquete no importa ninguno):
 - ``messages``: los rechazos, avisos y notas ``res.*`` en los dos idiomas (``ResError``);
 - ``params``: los parámetros del proyecto (espesor mínimo, umbral de presencia de lo antrópico,
   tolerancia de los momentos) y la comprobación de la altura de banco;
-- y, en las tareas siguientes, ``slices``, ``coverage``, ``polygons``, ``kernel``,
-  ``materials``, ``tonnage``, ``surfaces``, ``volumes``, ``table``, ``scale``, ``provenance``,
-  ``store``, ``reproduce``, ``stages`` y ``export``.
+- ``slices``, ``coverage``, ``polygons``, ``kernel``, ``materials``, ``tonnage``,
+  ``surfaces``, ``volumes``, ``table``, ``scale``, ``provenance``, ``store``, ``reproduce``,
+  ``stages`` y ``export``: los algoritmos, la cubicación en el proyecto y lo que se exporta
+  (cada uno, en la ficha ``docs/arquitectura/modulos/res.md`` de la documentación).
 
 Dominio puro: solo importa paquetes de nivel menor (``core`` y ``gis``; ARQ-07); lo de Blender
 está en ``bl/`` (``bl/ops/res.py`` registra lo que declara este paquete).

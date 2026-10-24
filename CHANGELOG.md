@@ -20,7 +20,9 @@ se pone al día desde el proyecto: marca lo que ya no está al día, lo vuelve a
 ofrece abrir el proyecto de una vista y enseña la ficha del objeto activo, el inventario del
 proyecto y las cifras de la selección (spec 010). Y el proyecto tiene versiones con su estado y
 sus revisiones, que se congelan en instantáneas que no cambian y se pueden reproducir meses
-después, y las decisiones de la propiedad (spec 009). Lo de
+después, y las decisiones de la propiedad (spec 009). Y cubica: entre dos superficies, por fase,
+banco y unidad, con el escombro en su sitio y cada material pesado según su estado, con sus
+cifras de la versión (spec 011). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
@@ -57,9 +59,70 @@ sesión y los paneles a 1920 px. Lo de la spec 009 está comprobado con Blender 
 interfaz, con las órdenes reales y un proyecto sintético (sus dos escenarios de principio a fin),
 con QGIS 4.2 sin su interfaz y en `Z:`; falta verlo en la pantalla de referencia (el control de
 la versión activa, el avance de congelar, los colores del Outliner, el renombrado y los
-diálogos).
+diálogos). Lo de la spec 011 está comprobado con Blender 5.2.1 sin su interfaz, con las órdenes
+reales y un proyecto sintético (sus cinco escenarios de principio a fin, dos veces, con las mismas
+cifras), con casos de referencia analíticos, con datos del tamaño de un proyecto real y en `Z:`;
+falta verlo en la pantalla de referencia (los diálogos, el avance y Esc, los colores de la rejilla
+de diferencias, el panel y el CSV en Excel), que un ingeniero de IMGA entregue sin ayuda la
+cubicación de un levantamiento y la comparación con el proyecto de referencia, que se ejecuta a
+petición.
 
 ### Añadido
+
+- **Cubicación entre superficies** (spec 011). El número que se entrega —la cubicación mensual de
+  una cantera, la de un proyecto o un plan de labores— sale de un solo cálculo, con tipo y
+  procedencia, y no de un script por versión: lo que pasó en Silvestre (el escombro descontado «en
+  proporción» de todas las unidades, 19.600 t vendibles; un umbral de escombro distinto en cada
+  script; un acopio pesado con la densidad in situ, un 23 % de más; cifras pasadas a mano) no se
+  puede repetir. Guía de uso: `docs/usuario/cubicacion.md` de la documentación.
+  - **Cubicar entre dos superficies…** (menú Cubicación, el control 28 y **Mayús+Alt+M**): con dos
+    superficies seleccionadas, las propone (de partida, la más alta; «Invertir» las cambia) e Intro
+    cubica. Da desmonte, terraplén y neto (m³) y el área con dato, sin dato y sin movimiento (m²),
+    celda a celda con el **área real de celda**, opcionalmente dentro de un ámbito (con la fracción
+    exacta de cada celda). Superficies: rejillas del proyecto o de la versión activa, las congeladas
+    en la revisión de la que parte o una cota constante; **ninguna se remuestrea**: dos que no
+    están en la misma rejilla, sistema o datum vertical se rechazan nombrando la diferencia y la
+    orden que lo arregla. El espesor mínimo es un umbral (0 m por defecto). La pirámide de
+    referencia da su volumen con error ≤ 0,1 % con celdas de 2, 1 y 0,5 m. Dos superficies de 2,8
+    millones de celdas, en menos de 1 s (en `Z:`, unos 1,1 s).
+  - **Diferencia entre superficies…**: la rejilla final − partida como dato de la versión, en la
+    vista sobre la superficie final, en rojos (desmonte), azules (terraplén) y gris (sin
+    movimiento); su menú «Diferencia ▾» la exporta a GeoTIFF para el cliente y QGIS.
+  - **Por unidad, fase y banco…**: por las fases o zonas de una capa importada con el papel nuevo
+    **«Dominios»** (cada polígono, con la fracción exacta de cada celda; los que se solapan o no
+    valen se rechazan con la lista y el área de cada solape), por **bancos** anclados a cotas
+    absolutas (o una lista de cotas) y por las **unidades** de la columna de materiales, todo en
+    un solo cálculo que cuadra con el total. Con 8 unidades, 20 fases y 30 bancos, unos 4–5 s.
+  - **Materiales y densidades…**: la columna del proyecto de arriba abajo (natural, antrópica con
+    su rejilla de espesores, compuesta con sus componentes y porcentajes), útil o estéril, in situ
+    o suelto. **El escombro va en su sitio**: presente donde su espesor pasa de **un único umbral**
+    (0,30 m), con su volumen desde su base hacia arriba, y las unidades de debajo cortadas en esa
+    base; nunca se descuenta en proporción. Las densidades, los K y los porcentajes son parámetros
+    con tipo e historial, **sin valor por defecto**; el K y los porcentajes, también solo para una
+    versión.
+  - **Toneladas y relaciones**: lo in situ, V · densidad (y su volumen esponjado, V · K); lo
+    suelto (un acopio), **V · densidad / K**. Lo que no tiene densidad sale sin toneladas, con su
+    aviso, y la cubicación sin total de toneladas: nada se supone. Relaciones estéril/útil en
+    m³/m³ y en t/t, en total y por fase, y la intrínseca de las compuestas (**Ratios…**).
+  - **Por momentos de extracción…**: la suma de unas cubicaciones (explotación, desdoblado,
+    stock…) frente a la directa, en m³ y en %, con aviso por encima de la tolerancia (1 %); ninguna
+    cifra se ajusta.
+  - **El panel** (N ▸ Proyecto ▸ Cubicaciones, y la misma tabla en una ventana al terminar): las
+    cubicaciones de la versión activa con su revisión («V03.r1 en curso», «V03 vigente: r1»), la
+    tabla filtrable por fase, banco y unidad, cada valor con su unidad, su tipo y sus marcas, los
+    parámetros usados y el factor combinado (la escala de la proyección por la de la elevación y
+    su efecto en %, informado y no aplicado: los volúmenes son «de cuadrícula»). Las cifras se ven
+    con los decimales de su unidad (91 451 m³; 1,57 m³/m³).
+  - **Exportar CSV…**: para Excel en español (tildes, «;» y coma decimal), con una cabecera de
+    procedencia (proyecto, versión, revisión, superficies con su hash, parámetros con su tipo,
+    fecha y versión de Geoblender) y una fila por valor, con el **valor completo**.
+  - **Son las primeras operaciones de versión**: sus cifras son de la versión activa, quedan
+    obsoletas cuando cambia lo que usaron (un K cambiado solo rehace las toneladas, no los m³), se
+    recalculan con «Recalcular lo obsoleto», se congelan con su revisión y se reproducen con las
+    mismas cifras. Sin versión activa se pide una; con la versión SUPERADO o en solo lectura, las
+    órdenes salen desactivadas con su motivo. Esc a mitad no deja nada. El formato del proyecto no
+    cambia (sigue el 3): sus tablas (`res_materials`, `res_vol_…`, `res_ton_…`, `res_stg_…`) y su
+    rejilla (`rasters/res_dif_…`) se crean al usarse.
 
 - **Versiones, revisiones e instantáneas** (spec 009). El proyecto guarda alternativas de diseño
   con identidad propia, como la V10 de Silvestre, sin que cambiar de estado rompa nada y sin las

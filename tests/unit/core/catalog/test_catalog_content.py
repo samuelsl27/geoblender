@@ -313,7 +313,7 @@ class CatalogAgainstDocsTest(unittest.TestCase):
                 with self.subTest(menu=menu_id):
                     self.assertLessEqual(set(bs_tables.identifiers(cells[1])), have)
                 found += 1
-        self.assertEqual(found, 13)
+        self.assertEqual(found, 14)  # la 14.ª, «Diferencia ▾» (spec 011, T31)
 
     def test_layouts_match_cw(self) -> None:
         """RF-003-16 (CW §6.1 y §6.2): la principal «Geoblender» y las 6 opcionales con su
