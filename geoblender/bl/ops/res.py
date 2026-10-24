@@ -58,7 +58,9 @@ la entrada «011» de ``core/catalog/data/entries.toml``. Ya están las seis (:d
   ``geoblender.res_apply_swell`` («Aplicar a todas») pone el K de una unidad en todas las demás
   en una transacción, y ``geoblender.res_set_percentages`` («Porcentajes…»), los de los
   componentes de una compuesta juntos, que tienen que sumar 100 % (RF-011-15). En solo lectura,
-  ninguna está disponible y dicen por qué (RF-011-26).
+  ninguna está disponible y dicen por qué (RF-011-26); con la versión activa no editable,
+  tampoco la orden (T26), como las otras cinco, aunque la columna sea del proyecto
+  (:func:`volumetrics_unavailable`).
 - **Cubicar entre dos superficies…** (Mayús+Alt+M; T21; RF-011-01 a 06, RF-011-20, RF-011-25,
   RF-011-26; plan §5.3.4, §5.5, A10, A11, D-25, D-30, D-31):
   :class:`GEOBLENDER_OT_res_compute_volume_between_surfaces` propone en su diálogo las dos
@@ -168,7 +170,7 @@ from ..scene import project_session, res_views, undo_watch, views
 from ..scene import versions as scene_versions
 from ..ui import gate, res_panels
 from ..ui import provenance as ui_provenance
-from ..ui.commands import catalog, text
+from ..ui.commands import catalog, text, with_note
 from . import jobs as jobs_ops
 from .core import _StepsModal
 from .core_provenance import (
@@ -475,6 +477,17 @@ def _call_panel(name: str) -> set[str]:
     return bpy.ops.wm.call_panel(name=name, keep_open=True)
 
 
+def volumetrics_unavailable() -> str | None:
+    """Por qué no están disponibles ahora las seis órdenes de Cubicación (RF-011-26), en el
+    idioma de Geoblender: sin proyecto, sin la procedencia o en solo lectura («Proyecto en solo
+    lectura: …»), o con la versión activa SUPERADO o DESCARTADO («V02 está en estado SUPERADO:
+    cree una versión nueva a partir de ella»); ``None`` si se puede, también sin versión activa
+    (la orden que cubica la pide al lanzarla, RF-011-20). Las cinco de un tipo de versión lo
+    dicen con el ``poll`` de ``ProvenanceAwareOperator``; «Materiales y densidades…», con
+    esto."""
+    return write_unavailable() or scene_versions.not_editable_text()
+
+
 def _write_poll(cls: type) -> bool:
     """El ``poll`` de lo que escribe en el proyecto: dice por qué no se puede."""
     reason = write_unavailable()
@@ -609,6 +622,25 @@ class GEOBLENDER_OT_res_edit_materials(ProvenanceAwareOperator, bpy.types.Operat
     bl_translation_context = TRANSLATION_CONTEXT
     bl_options = {"REGISTER"}
     provenance_op_type = provenance.EDIT_MATERIALS
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        """Como las otras cinco órdenes de Cubicación (RF-011-26): sin proyecto, en solo lectura
+        o con la versión activa no editable, no está disponible y dice por qué, aunque la
+        columna sea del proyecto (su tipo, ``res.edit_materials``, no es de versión)."""
+        reason = volumetrics_unavailable()
+        if reason is not None:
+            cls.poll_message_set(reason)  # type: ignore[attr-defined]
+            return False
+        return True
+
+    @classmethod
+    def description(cls, context: Any, properties: Any) -> str:
+        """La de :class:`ProvenanceAwareOperator` y, con la versión activa no editable, el
+        porqué (RF-011-26, RF-009-21)."""
+        about = super().description(context, properties)
+        note = scene_versions.not_editable_text()
+        return about if note is None else with_note(about, note)
 
     def execute(self, context: Any) -> set[str]:
         """Lee la columna del proyecto en la vista (con sus parámetros registrados: los que

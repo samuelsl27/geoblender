@@ -42,6 +42,15 @@ A13, D-33, D-35):
 - «Ratios…» deja elegida la tabla de la cubicación con el filtro de relaciones y la abre; sin
   unidades, lo dice.
 
+**Versión no editable, solo lectura y recalcular** (T26; HU-011-5; RF-011-20, RF-011-21,
+RF-011-26; E5; plan A12, D-16, D-19):
+
+- las seis órdenes de Cubicación, activas con el proyecto en escritura y la versión activa
+  editable o sin ninguna; con la activa SUPERADO o en solo lectura, desactivadas con su motivo;
+- E5: congelada V01.r1, un K cambiado solo en V01 deja obsoletas las toneladas de la cubicación de
+  la revisión abierta (no sus m³ ni lo congelado en V01.r1); «Recalcular lo obsoleto» las rehace
+  en V01.r2 por la cola de ``res``, con su avance, y las cifras de V01.r1 siguen iguales.
+
 Un proyecto para toda la clase (V01 activa y V02), rejillas de 8 × 8 celdas de 1 m y la extensión
 sin importar otra vez (``blender_ext.release``; RNF-001-01). Se ejecuta con
 ``tools/run_blender_tests.py``.
@@ -135,6 +144,15 @@ UNCONFIRMED = "depende de un valor sin confirmar"
 HYPOTHESIS = "depende de una hipótesis"
 BENCHES = "Fases y bancos"
 """Una cubicación sin unidades por la capa «Fases» y bancos de 1 m anclados a 100,5 m."""
+DIFFERENCE = "geoblender.res_compute_surface_difference"
+MATERIALS = "geoblender.res_edit_materials"
+SIX = (BETWEEN, DIFFERENCE, BREAKDOWN, STAGES, MATERIALS, RATIOS)
+"""Las seis órdenes de Cubicación (RF-011-26; BS §8.9)."""
+NOT_EDITABLE = "V02 está en estado SUPERADO: cree una versión nueva a partir de ella"
+RECOMPUTE = "geoblender.core_recompute_stale"
+SWELL_KEY = "res.unit.capa_util.swell"
+SWELL_V01 = 1.6
+"""El K de la capa útil solo en V01 (el del proyecto, :data:`SWELL`)."""
 
 
 class _Collection(list):
@@ -728,13 +746,34 @@ class ResBetweenSurfacesTest(unittest.TestCase):
         for refused in ("Otra rejilla", "Dos cotas", "Sin cota"):
             self.assertEqual(self.operations(refused), [])
 
+    def assertSixUnavailable(self, reason: str) -> None:  # noqa: N802
+        """Las seis órdenes de Cubicación, desactivadas: su ``poll`` dice ``reason`` (y, la
+        versión no editable, también su descripción)."""
+        for idname in SIX:
+            cls = self.commands.registered_class(idname)
+            with self.subTest(orden=idname), mock.patch.object(cls, "poll_message_set") as message:
+                self.assertFalse(cls.poll(bpy.context))
+                message.assert_called_once_with(reason)
+                if reason == NOT_EDITABLE:
+                    self.assertIn(reason, cls.description(bpy.context, None))
+
+    def assertSixAvailable(self) -> None:  # noqa: N802
+        for idname in SIX:
+            with self.subTest(orden=idname):
+                self.assertTrue(self.commands.registered_class(idname).poll(bpy.context))
+
     def test_needs_an_editable_version_and_writing(self) -> None:
-        """RF-011-20, RF-011-26 (RF-009-05, RF-009-21): sin versión activa, lanzada desde la
-        interfaz abre la ventana de elegir o crear una y no hace nada más; con la activa
-        SUPERADO o el proyecto en solo lectura, no está disponible y dice por qué."""
+        """RF-011-20, RF-011-26 (RF-009-05, RF-009-21; plan §5.3.4): las seis órdenes de
+        Cubicación (las cuatro que cubican, Materiales y densidades… y Ratios…), activas con el
+        proyecto en escritura y la versión activa editable o sin ninguna (sin ella, «Cubicar
+        entre dos superficies…» lanzada desde la interfaz abre la ventana de elegir o crear una
+        y no hace nada más); con la activa SUPERADO, desactivadas con «V02 está en estado
+        SUPERADO: cree una versión nueva a partir de ella» (también en su descripción), y con el
+        proyecto en solo lectura, con «Proyecto en solo lectura: …»."""
         cls = self.cls
         self.set_active(None)
         self.addCleanup(self.set_active, self.v01)
+        self.assertSixAvailable()
         fake = operator_self(cls, report=lambda kind, text: None, **DIALOG)
         with mock.patch.object(self.session, "open_version_dialog") as opened:
             self.assertEqual(cls.invoke(fake, SimpleNamespace(window=None), None),
@@ -747,22 +786,17 @@ class ResBetweenSurfacesTest(unittest.TestCase):
             conn.execute("UPDATE gb_version SET status = 'SUPERADO', reason_closed = ? "
                          "WHERE uid = ?", (REASON, self.v02.uid))
         self.set_active(self.v02)
-        with mock.patch.object(cls, "poll_message_set") as message:
-            self.assertFalse(cls.poll(bpy.context))
-        message.assert_called_once_with("V02 está en estado SUPERADO: cree una versión nueva a "
-                                        "partir de ella")
+        self.assertSixUnavailable(NOT_EDITABLE)
         self.set_active(self.v01)
-        self.assertTrue(cls.poll(bpy.context))
+        self.assertSixAvailable()
 
         project = self.project
         with mock.patch.object(project, "_status", project.status):
             project.set_read_only(_module("core.project").ReadOnlyCode.REQUESTED, "prueba")
             reason = self.session.write_unavailable()
             self.assertTrue(reason.startswith("Proyecto en solo lectura: "), reason)
-            with mock.patch.object(cls, "poll_message_set") as message:
-                self.assertFalse(cls.poll(bpy.context))
-            message.assert_called_once_with(reason)
-        self.assertTrue(cls.poll(bpy.context))
+            self.assertSixUnavailable(reason)
+        self.assertSixAvailable()
 
     def test_scope_layer_limits_the_cubication(self) -> None:
         """RF-011-01, RF-011-20 (D-32): con un ámbito (una capa de contornos importada), solo
@@ -1324,6 +1358,115 @@ class ResBetweenSurfacesTest(unittest.TestCase):
                              "es"))
         self.assertEqual(bpy.ops.geoblender.res_export_csv(
             cubication="Norte", filepath=str(outside / "norte.csv")), {"FINISHED"})
+
+    # --- E5: congelar, K solo en V01 y recalcular (T26) ---------------------------------------
+
+    def stale(self) -> dict[str, frozenset[Any]]:
+        """Las operaciones obsoletas sin sustituir con sus causas (``deduce`` de la 008)."""
+        graph = _module("core.provenance.graph")
+        with self.project.read() as conn:
+            return dict(graph.deduce(graph.load_graph(conn)).operations)
+
+    def revision_figures(self, revision_uid: str) -> dict[str, float]:
+        """Las cifras congeladas en la revisión ``revision_uid``: uid → valor."""
+        return dict(self.rows(
+            "SELECT f.uid, f.value FROM gb_revision_item AS i JOIN gb_figure AS f ON f.uid = "
+            "i.item_uid WHERE i.revision_uid = ? AND i.item_kind = 'figure'", revision_uid))
+
+    def listed(self, name: str) -> tuple[str, bool]:
+        """La revisión como se lee y si está obsoleta la cubicación ``name`` de V01 en la lista
+        del panel, leída de nuevo."""
+        self.panels.fill_volumetrics(self.project, self.v01.uid)
+        (found,) = [item for item in self.panels.view().cubications if item.name == name]
+        return found.status, found.stale
+
+    def test_with_v01_r1_frozen_k_only_in_v01_is_recomputed(self) -> None:
+        """E5, RF-011-20, RF-011-21 (RF-008-24, RF-008-26, RF-009-07, RF-009-24, RF-009-29; plan
+        A12, D-16, D-19): congelada V01.r1 con «Directa» (por unidades), «Cambiar parámetro…»
+        con el K de la capa útil solo para V01 deja obsoletas las toneladas de las cubicaciones
+        de V01 (ningún ``res.volume``) y el panel la marca «obsoleta» («V01 vigente: r1»).
+        «Recalcular lo obsoleto» las rehace por la cola de ``res``, con su avance en la barra de
+        estado: la nueva de «Directa», en la revisión abierta V01.r2, sustituye a la de V01.r1,
+        lee el K de V01 y cambia sus m³ esponjados; nada queda obsoleto ni en la cola, y las
+        cifras congeladas en V01.r1 siguen iguales. Va la última (orden alfabético): congela
+        V01.r1 del proyecto de la clase."""
+        self.stage_cubications()
+        ((volume, _s, _o, _n),) = [item for item in self.operations(DIRECT) if item[3] is None]
+        ((first, _s, _o, _n),) = [item for item in self.operations(DIRECT, "res.tonnage")
+                                  if item[3] is None]
+        freeze = _module("core.versions.freeze")
+        plan = freeze.freeze_plan(self.project, self.v01.uid)
+        outcome = None
+        for step in freeze.freeze_steps(self.project, self.v01.uid, reason=REASON,
+                                        accepted=freeze.Acceptance.of(plan)):
+            outcome = step.result or outcome
+        self.assertFalse(outcome.cancelled)
+        r1 = str(outcome.frozen.uid)
+        self.set_active(self.v01)  # la sesión lee la revisión abierta, V01.r2
+        ((r2,),) = self.rows("SELECT uid FROM gb_revision WHERE version_uid = ? AND state = "
+                             "'open'", self.v01.uid)
+        frozen = self.revision_figures(r1)
+        self.assertTrue({uid for (uid,) in self.rows(
+            "SELECT uid FROM gb_figure WHERE operation_uid = ?", first)} <= set(frozen))
+        self.assertNotIn(first, self.stale())
+        self.assertEqual(self.listed(DIRECT), ("V01 vigente: r1", False))
+
+        self.assertEqual(bpy.ops.geoblender.core_set_parameter(
+            key=SWELL_KEY, value="1,6", scope="VERSION", reason=REASON), {"FINISHED"})
+        found = self.stale()
+        ((own,),) = self.rows("SELECT uid FROM gb_parameter WHERE key = ? AND scope_uid = ?",
+                              SWELL_KEY, self.v01.uid)
+        graph = _module("core.provenance.graph")
+        self.assertEqual(found[first], {graph.Cause(graph.CauseKind.PARAMETER_CHANGED, own)})
+        self.assertNotIn(volume, found)  # D-16: los m³ in situ no dependen del K
+        ((kinds,),) = self.rows("SELECT group_concat(DISTINCT op_type) FROM gb_operation WHERE "
+                                f"uid IN ({', '.join('?' for _ in found)})", *found)
+        self.assertEqual(kinds, "res.tonnage")
+        self.assertEqual(self.listed(DIRECT), ("V01 vigente: r1", True))
+
+        self.assertEqual(bpy.ops.geoblender.core_recompute_stale("EXEC_DEFAULT"),
+                         {"RUNNING_MODAL"})
+        operator = self.running(RECOMPUTE)
+        self.addCleanup(lambda: operator._steps is None or operator.cancel(bpy.context))
+        with mock.patch.object(_module("bl.ops.incorporation"), "status_text") as status:
+            for _ in range(MAX_EVENTS):
+                if operator.modal(bpy.context, TIMER) != {"RUNNING_MODAL"}:
+                    break
+                self.res_ops.res_tick()  # el temporizador de la cola (en blender -b, a mano)
+        self.assertEqual({str(result.status) for result in operator.result.results}, {"done"})
+        self.assertTrue(operator.progress_log)
+        shown = [call.args[0] for call in status.call_args_list]
+        self.assertIn(f"Recalculando «{DIRECT}»… 100 %", shown)
+        self.assertEqual(self.res_ops.pending_runs(), [])
+        self.assertEqual(self.stale(), {})
+
+        weighed = self.operations(DIRECT, "res.tonnage")
+        ((new, done, _o, _n),) = [item for item in weighed if item[2] == first]
+        self.assertEqual((done, [item[3] for item in weighed if item[0] == first]),
+                         ("done", [new]))
+        self.assertEqual(self.rows("SELECT revision_uid FROM gb_operation WHERE uid = ?", new),
+                         [(r2,)])
+        ((scope, version_uid, value),) = self.rows(
+            "SELECT p.scope, g.scope_uid, p.value FROM gb_operation_param AS p JOIN "
+            "gb_parameter AS g ON g.uid = p.parameter_uid WHERE p.operation_uid = ? AND "
+            "p.key = ?", new, SWELL_KEY)
+        self.assertEqual((scope, version_uid, json.loads(value)),
+                         ("version", self.v01.uid, SWELL_V01))
+        unit = {"unit": "capa_util"}
+        useful = self.figures(volume, DIRECT, **unit)["res.unit_volume_m3"]
+        self.assertGreater(useful, 0.0)
+        self.assertAlmostEqual(self.figures(first, DIRECT, **unit)["res.unit_swell_m3"],
+                               useful * SWELL, delta=1e-9)
+        self.assertAlmostEqual(self.figures(new, DIRECT, **unit)["res.unit_swell_m3"],
+                               useful * SWELL_V01, delta=1e-9)
+        self.assertEqual(self.revision_figures(r1), frozen)
+        self.assertEqual(self.listed(DIRECT), ("V01 vigente: r1", False))
+        self.panels.show_cubication(DIRECT)
+        lines = [line.name for line in self.panels.view().lines]
+        self.assertTrue(any(line.startswith("Toneladas de una cubicación (V01.r2)")
+                            for line in lines), lines)
+        self.assertTrue(any(line.startswith("Cubicación entre superficies (V01.r1)")
+                            for line in lines), lines)
 
 
 if __name__ == "__main__":
