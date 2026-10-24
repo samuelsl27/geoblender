@@ -113,53 +113,64 @@ STAGE_TITLES: Mapping[str, str] = MappingProxyType(
 
 @dataclass(frozen=True, slots=True)
 class Quantity:
-    """Un dato de las tablas: su nombre, el código de su unidad (``core.units``) y la clave de
-    su cifra (``None``: solo fila de la tabla)."""
+    """Un dato de las tablas: su nombre, el código de su unidad (``core.units``), la clave de
+    su cifra (``None``: solo fila de la tabla) y su nombre visible (``label``: un ``msgid`` en
+    inglés con su español en ``core/i18n/messages.toml``; el del CSV y del panel, T17)."""
 
     name: str
     unit: str
     figure: str | None = None
+    label: str = ""
 
+
+_CUT, _FILL = "Cut: ", "Fill: "
+_STAGES_SUM = "sum of the extraction stages"
+_STAGES_DIRECT = "direct cubication"
+_STAGES_DIFF = "difference between the stages and the direct cubication"
+_STAGES_PCT = "relative difference between the stages and the direct cubication"
 
 QUANTITIES: Mapping[str, Quantity] = MappingProxyType({item.name: item for item in (
     # res_vol_: totales y áreas (RF-011-01, RF-011-04), unidades (RF-011-12, RF-011-13)
-    Quantity("cut_m3", "m3", "res.cut_m3"),
-    Quantity("fill_m3", "m3", "res.fill_m3"),
-    Quantity("net_m3", "m3", "res.net_m3"),
-    Quantity("area_m2", "m2", "res.area_m2"),
-    Quantity("nodata_area_m2", "m2", "res.nodata_area_m2"),
-    Quantity("still_area_m2", "m2", "res.still_area_m2"),
-    Quantity("volume_m3", "m3", "res.unit_volume_m3"),
-    Quantity("absent_area_m2", "m2"),
-    Quantity("absent_nodata_area_m2", "m2"),
-    Quantity("crossed_area_m2", "m2"),
+    Quantity("cut_m3", "m3", "res.cut_m3", "Cut volume"),
+    Quantity("fill_m3", "m3", "res.fill_m3", "Fill volume"),
+    Quantity("net_m3", "m3", "res.net_m3", "Net volume"),
+    Quantity("area_m2", "m2", "res.area_m2", "Area with data in both surfaces"),
+    Quantity("nodata_area_m2", "m2", "res.nodata_area_m2", "Area without data"),
+    Quantity("still_area_m2", "m2", "res.still_area_m2", "Area without movement"),
+    Quantity("volume_m3", "m3", "res.unit_volume_m3", "Volume of the unit"),
+    Quantity("absent_area_m2", "m2", None, "Area where the unit is absent"),
+    Quantity("absent_nodata_area_m2", "m2", None, "Area where the unit has no data"),
+    Quantity("crossed_area_m2", "m2", None,
+             "Area where the base of the unit rises above the one above"),
     # el factor combinado (D-34)
-    Quantity("mean_elevation_m", "m"),
-    Quantity("grid_scale_factor", "-", "res.grid_scale_factor"),
-    Quantity("ground_effect_pct", "%", "res.ground_effect_pct"),
+    Quantity("mean_elevation_m", "m", None, "Mean elevation"),
+    Quantity("grid_scale_factor", "-", "res.grid_scale_factor", "Combined scale factor"),
+    Quantity("ground_effect_pct", "%", "res.ground_effect_pct",
+             "Effect of the combined scale factor"),
     # res_ton_ (RF-011-15 a RF-011-18)
-    Quantity("in_situ_m3", "m3"),
-    Quantity("swell_m3", "m3", "res.unit_swell_m3"),
-    Quantity("mass_t", "t", "res.unit_t"),
-    Quantity("total_t", "t", "res.total_t"),
-    Quantity("useful_m3", "m3", "res.useful_m3"),
-    Quantity("waste_m3", "m3", "res.waste_m3"),
-    Quantity("useful_t", "t", "res.useful_t"),
-    Quantity("waste_t", "t", "res.waste_t"),
-    Quantity("waste_ratio_m3", "m3/m3", "res.waste_ratio_m3"),
-    Quantity("waste_ratio_t", "t/t", "res.waste_ratio_t"),
-    Quantity("intrinsic_ratio_m3", "m3/m3", "res.intrinsic_ratio_m3"),
-    Quantity("intrinsic_ratio_t", "t/t", "res.intrinsic_ratio_t"),
+    Quantity("in_situ_m3", "m3", None, "Volume of the unit in situ"),
+    Quantity("swell_m3", "m3", "res.unit_swell_m3", "Swollen volume of the unit"),
+    Quantity("mass_t", "t", "res.unit_t", "Tonnage of the unit"),
+    Quantity("total_t", "t", "res.total_t", "Total tonnage"),
+    Quantity("useful_m3", "m3", "res.useful_m3", "Useful volume in situ"),
+    Quantity("waste_m3", "m3", "res.waste_m3", "Waste volume in situ"),
+    Quantity("useful_t", "t", "res.useful_t", "Useful tonnage"),
+    Quantity("waste_t", "t", "res.waste_t", "Waste tonnage"),
+    Quantity("waste_ratio_m3", "m3/m3", "res.waste_ratio_m3", "Waste to useful ratio by volume"),
+    Quantity("waste_ratio_t", "t/t", "res.waste_ratio_t", "Waste to useful ratio by mass"),
+    Quantity("intrinsic_ratio_m3", "m3/m3", "res.intrinsic_ratio_m3",
+             "Intrinsic ratio by volume"),
+    Quantity("intrinsic_ratio_t", "t/t", "res.intrinsic_ratio_t", "Intrinsic ratio by mass"),
     # res_stg_ (RF-011-19): la suma de los momentos, la directa y su diferencia, del desmonte
     # (con unidad: el de esa unidad) y del terraplén (D-33)
-    Quantity("stages_sum_m3", "m3", "res.stages_sum_m3"),
-    Quantity("stages_direct_m3", "m3"),
-    Quantity("stages_diff_m3", "m3", "res.stages_diff_m3"),
-    Quantity("stages_diff_pct", "%", "res.stages_diff_pct"),
-    Quantity("stages_fill_sum_m3", "m3", "res.stages_sum_m3"),
-    Quantity("stages_fill_direct_m3", "m3"),
-    Quantity("stages_fill_diff_m3", "m3", "res.stages_diff_m3"),
-    Quantity("stages_fill_diff_pct", "%", "res.stages_diff_pct"),
+    Quantity("stages_sum_m3", "m3", "res.stages_sum_m3", _CUT + _STAGES_SUM),
+    Quantity("stages_direct_m3", "m3", None, _CUT + _STAGES_DIRECT),
+    Quantity("stages_diff_m3", "m3", "res.stages_diff_m3", _CUT + _STAGES_DIFF),
+    Quantity("stages_diff_pct", "%", "res.stages_diff_pct", _CUT + _STAGES_PCT),
+    Quantity("stages_fill_sum_m3", "m3", "res.stages_sum_m3", _FILL + _STAGES_SUM),
+    Quantity("stages_fill_direct_m3", "m3", None, _FILL + _STAGES_DIRECT),
+    Quantity("stages_fill_diff_m3", "m3", "res.stages_diff_m3", _FILL + _STAGES_DIFF),
+    Quantity("stages_fill_diff_pct", "%", "res.stages_diff_pct", _FILL + _STAGES_PCT),
 )})
 """Los datos de las tablas de ``res`` por nombre."""
 

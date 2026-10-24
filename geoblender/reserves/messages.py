@@ -318,6 +318,26 @@ CATALOG: tuple[Message, ...] = (
         "Factor combinado: no disponible",
         "note",
     ),
+    # Exportar (D-29; RF-011-24, RF-011-05) --------------------------------------------------
+    Message(
+        "res.cubication_unknown",
+        "There is no cubication «{value}» in {version}: compute it first (Volumetrics ▸ "
+        "Volume between two surfaces…); nothing has been written.",
+        "No hay ninguna cubicación «{value}» en {version}: cubíquela antes (Cubicación ▸ "
+        "Cubicar entre dos superficies…); no se ha escrito nada.",
+    ),
+    Message(
+        "res.difference_unknown",
+        "There is no difference grid «{value}» in {version}; nothing has been written.",
+        "No hay ninguna rejilla de diferencias «{value}» en {version}; no se ha escrito nada.",
+    ),
+    Message(
+        "res.export_read_only_project",
+        "The project «{project}» is open read-only: export «{value}» outside the project; "
+        "nothing has been written.",
+        "El proyecto «{project}» está abierto en solo lectura: exporte «{value}» fuera del "
+        "proyecto; no se ha escrito nada.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

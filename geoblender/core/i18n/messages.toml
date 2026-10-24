@@ -5369,3 +5369,46 @@ es = "Rejilla de diferencias"
 
 ["Projection scale factor"]
 es = "Factor de escala de la proyección"
+
+# Los datos de las tablas de la cubicación (spec 011, T17; RF-011-23, RF-011-24; plan 011
+# §5.2.1): el nombre visible (label) de cada dato de reserves/table.py que no es una cifra, en
+# el CSV y en el panel (los demás llevan el de su cifra).
+
+["Area where the unit is absent"]
+es = "Área donde falta la unidad"
+
+["Area where the unit has no data"]
+es = "Área donde la unidad no tiene dato"
+
+["Area where the base of the unit rises above the one above"]
+es = "Área donde la base de la unidad sube por encima de la de encima"
+
+["Mean elevation"]
+es = "Cota media"
+
+["Volume of the unit in situ"]
+es = "Volumen in situ de la unidad"
+
+["Cut: sum of the extraction stages"]
+es = "Desmonte: suma de los momentos de extracción"
+
+["Cut: direct cubication"]
+es = "Desmonte: cubicación directa"
+
+["Cut: difference between the stages and the direct cubication"]
+es = "Desmonte: diferencia de los momentos con la cubicación directa"
+
+["Cut: relative difference between the stages and the direct cubication"]
+es = "Desmonte: diferencia relativa de los momentos con la cubicación directa"
+
+["Fill: sum of the extraction stages"]
+es = "Terraplén: suma de los momentos de extracción"
+
+["Fill: direct cubication"]
+es = "Terraplén: cubicación directa"
+
+["Fill: difference between the stages and the direct cubication"]
+es = "Terraplén: diferencia de los momentos con la cubicación directa"
+
+["Fill: relative difference between the stages and the direct cubication"]
+es = "Terraplén: diferencia relativa de los momentos con la cubicación directa"
