@@ -18,6 +18,10 @@ módulo; ``reserves.polygons`` los convierte en los suyos (``res.domain_*``, ``r
 - :func:`overlaps`: los pares que se solapan, con el área del solape (:class:`Overlap`).
 - :func:`clip`: las aristas orientadas de ``polígono ∩ recorte``; :func:`local_edges`, las de
   un polígono con la misma copia de trabajo, relativas a un origen.
+- :func:`overlay` (plan 012 A4): unión, intersección o diferencia de dos conjuntos de polígonos
+  con huecos, con el mismo recorte por clasificación de aristas; la :class:`Region` resultante,
+  con sus partes (:class:`Part`: área y centro absoluto), encadenando las aristas en anillos.
+- :func:`segment_distance` (plan 012 A6): la distancia entre pares de segmentos.
 
 **Recorte por clasificación de aristas** (A6 de la 011). En coordenadas locales float64 (restar
 un origen cercano es exacto, lema de Sterbenz): (1) cada vértice de un polígono a ≤
@@ -49,17 +53,22 @@ from .coverage import signed_area
 
 __all__ = [
     "AREA_TOLERANCE_M2",
+    "OPERATIONS",
     "PROBLEMS",
     "TOLERANCE_M",
     "Overlap",
+    "Part",
     "PolygonProblem",
+    "Region",
     "Rings",
     "clip",
     "drain",
     "local_edges",
     "overlaps",
+    "overlay",
     "problem_steps",
     "problems",
+    "segment_distance",
 ]
 
 Rings = Sequence[np.ndarray]
@@ -67,6 +76,9 @@ Rings = Sequence[np.ndarray]
 
 PROBLEMS = ("self_intersecting", "no_area", "hole_outside", "overlap")
 """Los problemas que da :func:`problems`."""
+
+OPERATIONS = ("union", "intersection", "difference")
+"""Las operaciones de :func:`overlay`."""
 
 TOLERANCE_M = 1e-3
 """Distancia (m) a la que un vértice está sobre otro vértice o sobre una arista, y dos aristas no
@@ -112,6 +124,26 @@ class PolygonProblem:
     problem: str
     area_m2: float | None = None
     other: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Part:
+    """Una parte de una :class:`Region` (un exterior con sus huecos): su área (m², > 0) y el
+    centro de su área en coordenadas ABSOLUTAS ``(x, y)``."""
+
+    area_m2: float
+    centroid: tuple[float, float]
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Region:
+    """El resultado de :func:`overlay`: las aristas orientadas ``(n, 2, 2)`` de su borde
+    (relativas al origen dado; lo de dentro, a la izquierda), sus partes (de mayor a menor
+    área) y su área (m², la suma con signo de las aristas)."""
+
+    edges_local: np.ndarray
+    parts: tuple[Part, ...]
+    area_m2: float
 
 
 # Validación y solapes ------------------------------------------------------------------------
@@ -269,19 +301,185 @@ def local_edges(rings: Rings, origin: Sequence[float]) -> np.ndarray:
     return _ring_edges(_local_rings(rings, corner))
 
 
+# Superposición (A4 de la 012) ----------------------------------------------------------------
+
+
+def overlay(a: Sequence[Rings], b: Sequence[Rings], op: str, *,
+            origin: Sequence[float]) -> Region:
+    """La superposición ``A <op> B`` de dos conjuntos de polígonos (cada uno, sus anillos
+    ABSOLUTOS con sus huecos; válidos, :func:`problems` vacío), con ``op`` en
+    :data:`OPERATIONS`: ``"union"``, ``"intersection"`` o ``"difference"`` (``A ∖ B``). Cada
+    conjunto es la unión de sus polígonos (dos contiguos, sin el lado común). El resultado
+    (:class:`Region`) son sus aristas orientadas relativas a ``origin`` (``(x, y)`` absolutos),
+    su área y sus partes con su área y su centro absoluto (plan 012 A4; RF-012-05, RF-012-06)."""
+    if op not in OPERATIONS:
+        raise ValueError(f"Operación de superposición desconocida: {op!r} (una de {OPERATIONS})")
+    corner = np.asarray(origin, dtype=np.float64).reshape(2)
+    first = _union_all([_local_rings(rings, corner) for rings in a])
+    second = _union_all([_local_rings(rings, corner) for rings in b])
+    edges = _combine(first, second, op) if op != "union" or (first and second) else (
+        _ring_edges(first or second))
+    return _region(edges, corner)
+
+
+def segment_distance(p: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """La distancia (m) entre cada par de segmentos ``p[k]`` y ``q[k]`` (arrays ``(n, 2, 2)``:
+    inicio y fin; uno de longitud nula es un punto): 0 si se cortan; si no, la menor de las
+    cuatro distancias de un extremo al otro segmento (plan 012 A6). En coordenadas locales."""
+    p = np.asarray(p, dtype=np.float64).reshape(-1, 2, 2)
+    q = np.asarray(q, dtype=np.float64).reshape(-1, 2, 2)
+    a, b, c, d = p[:, 0], p[:, 1], q[:, 0], q[:, 1]
+    distance = np.minimum.reduce([_point_segment(a, c, d), _point_segment(b, c, d),
+                                  _point_segment(c, a, b), _point_segment(d, a, b)])
+    r, s = b - a, d - c
+    crossing = ((_cross(r, c - a) * _cross(r, d - a) < 0.0)
+                & (_cross(s, a - c) * _cross(s, b - c) < 0.0))
+    return np.where(crossing, 0.0, distance)
+
+
+def _point_segment(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """La distancia de cada punto ``p`` al segmento ``a–b`` (si es nulo, al punto ``a``)."""
+    d, w = b - a, p - a
+    length2 = d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1]
+    dot = w[:, 0] * d[:, 0] + w[:, 1] * d[:, 1]
+    t = np.clip(np.divide(dot, length2, out=np.zeros_like(dot), where=length2 > 0.0), 0.0, 1.0)
+    return np.hypot(w[:, 0] - t * d[:, 0], w[:, 1] - t * d[:, 1])
+
+
+def _union_all(sets: list[list[np.ndarray]]) -> list[np.ndarray]:
+    """La unión de los polígonos (anillos locales orientados), como anillos orientados."""
+    rings: list[np.ndarray] = []
+    for polygon in sets:
+        if not polygon:
+            continue
+        rings = polygon if not rings else _chain(_combine(rings, polygon, "union"))
+    return rings
+
+
+def _region(edges: np.ndarray, origin: np.ndarray) -> Region:
+    """La región del borde orientado ``edges`` (relativo a ``origin``): sus partes."""
+    rings = _chain(edges)
+    moments = [_ring_moments(ring) for ring in rings]
+    outer = [k for k, (area, _, _) in enumerate(moments) if area > 0.0]
+    holes = [k for k, (area, _, _) in enumerate(moments) if area <= 0.0]
+    totals = {k: list(moments[k]) for k in outer}
+    by_size = sorted(outer, key=lambda k: moments[k][0])
+    for k in holes:
+        owner = _hole_owner(rings[k], [rings[o] for o in by_size])
+        if owner is not None:
+            target = totals[by_size[owner]]
+            for m in range(3):
+                target[m] += moments[k][m]
+    parts = []
+    for k in outer:
+        area, mx, my = totals[k]
+        if area > AREA_TOLERANCE_M2:
+            parts.append(Part(area, (float(origin[0] + mx / area),
+                                     float(origin[1] + my / area))))
+    parts.sort(key=lambda part: (-part.area_m2, part.centroid))
+    return Region(edges, tuple(parts), _edges_area(edges))
+
+
+def _ring_moments(ring: np.ndarray) -> tuple[float, float, float]:
+    """(área con signo, momento en X, momento en Y) del anillo local ``ring`` (polígono)."""
+    x, y = ring[:, 0], ring[:, 1]
+    xn, yn = np.roll(x, -1), np.roll(y, -1)
+    cross = x * yn - xn * y
+    return (0.5 * math.fsum(cross), math.fsum((x + xn) * cross) / 6.0,
+            math.fsum((y + yn) * cross) / 6.0)
+
+
+def _hole_owner(hole: np.ndarray, outers: list[np.ndarray]) -> int | None:
+    """El exterior (de ``outers``, de menor a mayor área) que contiene el hueco: el primero que
+    tiene dentro más de la mitad de sus vértices y de los puntos medios de sus lados (un hueco
+    puede tocar su exterior o una isla en un punto)."""
+    probes = np.concatenate([hole, 0.5 * (hole + np.roll(hole, -1, axis=0))])
+    for index, outer in enumerate(outers):
+        inside = _inside(probes, outer, np.roll(outer, -1, axis=0))
+        if 2 * int(inside.sum()) > len(probes):
+            return index
+    return None
+
+
+def _chain(edges: np.ndarray) -> list[np.ndarray]:
+    """Las aristas orientadas ``edges`` encadenadas en anillos por sus extremos (los mismos
+    números). En un vértice con varias salidas, la que más gira a la izquierda (el anillo más
+    ceñido: dos partes que se tocan en un vértice quedan separadas)."""
+    if not len(edges):
+        return []
+    starts = edges[:, 0].tolist()
+    ends = edges[:, 1].tolist()
+    leaving: dict[tuple[float, float], list[int]] = {}
+    for index, (x, y) in enumerate(starts):
+        leaving.setdefault((x + 0.0, y + 0.0), []).append(index)
+    used = [False] * len(starts)
+    rings: list[np.ndarray] = []
+    for first in range(len(starts)):
+        if used[first]:
+            continue
+        used[first] = True
+        ring = [first]
+        home = (starts[first][0] + 0.0, starts[first][1] + 0.0)
+        current = first
+        while True:
+            node = (ends[current][0] + 0.0, ends[current][1] + 0.0)
+            options = [k for k in leaving.get(node, ()) if not used[k]]
+            if node == home:
+                options.append(first)
+            if not options:
+                break
+            following = options[0] if len(options) == 1 else _leftmost(
+                starts[current], ends[current], options, ends)
+            if following == first:
+                break
+            used[following] = True
+            ring.append(following)
+            current = following
+        if len(ring) >= 3:
+            rings.append(np.ascontiguousarray(edges[ring, 0]))
+    return rings
+
+
+def _leftmost(start: list[float], node: list[float], options: list[int],
+              ends: list[list[float]]) -> int:
+    """De las aristas ``options`` que salen de ``node``, la que más gira a la izquierda
+    viniendo de ``start`` (volver atrás, la última)."""
+    dx, dy = node[0] - start[0], node[1] - start[1]
+    best, best_angle = options[0], -math.inf
+    for option in options:
+        ex, ey = ends[option][0] - node[0], ends[option][1] - node[1]
+        angle = math.atan2(dx * ey - dy * ex, dx * ex + dy * ey)
+        if angle >= math.pi - 1e-12:
+            angle = -math.pi
+        if angle > best_angle:
+            best, best_angle = option, angle
+    return best
+
+
 def _intersection(first: list[np.ndarray], second: list[np.ndarray]) -> np.ndarray:
     """Las aristas orientadas del borde de ``first ∩ second`` (anillos locales normalizados)."""
+    return _combine(first, second, "intersection")
+
+
+def _combine(first: list[np.ndarray], second: list[np.ndarray], op: str) -> np.ndarray:
+    """Las aristas orientadas del borde de ``first <op> second`` (anillos locales orientados:
+    lo de dentro, a la izquierda), con ``op`` en :data:`OPERATIONS` (plan 012 A4)."""
     if not first or not second:
-        return _no_edges()
+        if op == "intersection" or not first:
+            return _ring_edges(second) if op == "union" else _no_edges()
+        return _ring_edges(first)
     p, p_ring = _flatten(first)
     q, q_ring = _flatten(second)
     low, high = q.min(axis=0) - TOLERANCE_M, q.max(axis=0) + TOLERANCE_M
     if np.any(p.max(axis=0) < low) or np.any(p.min(axis=0) > high):
-        return _no_edges()
+        if op == "intersection":
+            return _no_edges()
+        return _concatenate([_ring_edges(first), _ring_edges(second)] if op == "union"
+                            else [_ring_edges(first)])
     # (1) vértices a ≤ 1 mm de otro, el del otro; (2) vértices sobre aristas, insertados.
     p, p_ring = _dedupe(_snap(p, q), p_ring)
     if not p.size:
-        return _no_edges()
+        return _ring_edges(second) if op == "union" else _no_edges()
     p_vertices, q_vertices = p, q
     p, p_ring = _insert_near(p, p_ring, q_vertices)
     q, q_ring = _insert_near(q, q_ring, p_vertices)
@@ -294,13 +492,27 @@ def _intersection(first: list[np.ndarray], second: list[np.ndarray]) -> np.ndarr
     qs, qe = _pieces(q_cut, q_cut_ring)
     # (4) trozos comunes; (5) los demás, por su punto medio.
     p_same = _matches(ps, pe, qs, qe)
-    p_rest = ~(p_same | _matches(ps, pe, qe, qs))
+    p_opposite = _matches(ps, pe, qe, qs)
+    p_rest = ~(p_same | p_opposite)
     q_rest = ~(_matches(qs, qe, ps, pe) | _matches(qe, qs, ps, pe))
     p_in = _inside(0.5 * (ps[p_rest] + pe[p_rest]), q, q_next)
     q_in = _inside(0.5 * (qs[q_rest] + qe[q_rest]), p, p_next)
-    starts = np.concatenate([ps[p_same], ps[p_rest][p_in], qs[q_rest][q_in]])
-    ends = np.concatenate([pe[p_same], pe[p_rest][p_in], qe[q_rest][q_in]])
-    return np.ascontiguousarray(np.stack([starts, ends], axis=1))
+    if op == "intersection":
+        # Comunes en el mismo sentido, una vez; los de cada uno dentro del otro.
+        starts = [ps[p_same], ps[p_rest][p_in], qs[q_rest][q_in]]
+        ends = [pe[p_same], pe[p_rest][p_in], qe[q_rest][q_in]]
+    elif op == "union":
+        # Comunes en el mismo sentido, una vez (en sentidos opuestos, el lado es interior); los
+        # de cada uno fuera del otro.
+        starts = [ps[p_same], ps[p_rest][~p_in], qs[q_rest][~q_in]]
+        ends = [pe[p_same], pe[p_rest][~p_in], qe[q_rest][~q_in]]
+    else:
+        # Diferencia: comunes en sentidos opuestos, el de ``first``; los de ``first`` fuera de
+        # ``second`` y los de ``second`` dentro de ``first``, invertidos.
+        starts = [ps[p_opposite], ps[p_rest][~p_in], qe[q_rest][q_in]]
+        ends = [pe[p_opposite], pe[p_rest][~p_in], qs[q_rest][q_in]]
+    return np.ascontiguousarray(np.stack([np.concatenate(starts), np.concatenate(ends)],
+                                         axis=1))
 
 
 def _snap(points: np.ndarray, others: np.ndarray) -> np.ndarray:
