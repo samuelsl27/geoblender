@@ -19,7 +19,9 @@ su fichero, su paso a rejilla y desde ella y su muestreo (``gis.tin``), el TIN d
 nivel con la corrección de triángulos planos (``gis.tin_contours``), las curvas de nivel de
 una rejilla o de un TIN (``gis.contours``) y las mallas de una superficie para la vista, con
 su comprobación y sus niveles de detalle (``gis.mesh``). Cada tarea de la 006 añade aquí lo
-suyo.
+suyo. La fracción exacta de celda (``gis.coverage``) y la validación y el recorte de polígonos
+(``gis.polygons``), bajados de ``reserves`` en la spec 012, no se reexportan: se importan de su
+módulo.
 """
 
 from .breaklines import PreparedInput, prepare_constraints
