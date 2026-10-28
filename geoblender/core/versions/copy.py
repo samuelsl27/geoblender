@@ -414,7 +414,9 @@ class _Table:
                 continue
             parts.append(" ".join([_quote(name), *([kind] if kind else []),
                                    *(["NOT NULL"] if not_null else []),
-                                   *([f"DEFAULT {default}"] if default is not None else [])]))
+                                   # entre paréntesis: una expresión (como el uid
+                                   # aleatorio de las capas de la 012) lo exige
+                                   *([f"DEFAULT ({default})"] if default is not None else [])]))
         conn.execute(f"CREATE TABLE {_quote(self.layer)} ({', '.join(parts)})")
         data_type, identifier, description, last_change, *extent, srs_id = self.contents
         for srs in {srs_id, None if self.geometry is None else self.geometry[2]} - {None}:

@@ -6116,3 +6116,36 @@ es = "Restricción activa"
 
 ["Search distance for untouchables"]
 es = "Distancia de búsqueda de intocables"
+
+["Compilation of the constraints"]
+es = "Compilación de las restricciones"
+
+["Area of the legal limit"]
+es = "Área del límite legal"
+
+["Area of the action perimeter"]
+es = "Área del perímetro de actuación"
+
+["Area of the perimeter within the legal limit"]
+es = "Área del perímetro dentro del límite legal"
+
+["Area of the fill-only strip"]
+es = "Área de la franja de solo relleno"
+
+["Area of the default domain"]
+es = "Área del dominio por defecto"
+
+["Area where cutting is allowed"]
+es = "Área con corte admitido"
+
+["Area where filling is allowed"]
+es = "Área con relleno admitido"
+
+["Area without possible movement"]
+es = "Área sin movimiento posible"
+
+["Area of the zone of the constraint"]
+es = "Área de la zona de la restricción"
+
+["Area of the zone outside the grid"]
+es = "Área de la zona fuera de la rejilla"
