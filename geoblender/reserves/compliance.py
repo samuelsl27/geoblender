@@ -27,8 +27,9 @@ Una superficie final frente a la de partida, celda a celda, en la rejilla de las
   (búsqueda binaria) y etiquetas por saltos de puntero (Shiloach–Vishkin, 1982). Cada grupo
   (:class:`Group`) con su recinto, su área (m²), su volumen (m³), su espesor máximo (m), su centro
   absoluto (media de los centros de sus celdas, de igual área) y su caja, para «Ir a».
-- :func:`check`: una final de una vez (:class:`FinalCheck`); la misma superficie como partida y
-  final da ceros y el aviso ``res.same_surface``.
+- :func:`check`: una final de una vez (:class:`FinalCheck`, con las celdas que incumplen y su
+  ``final − partida``, D-42); la misma superficie como partida y final da ceros y el aviso
+  ``res.same_surface``.
 - :class:`ComplianceRequest`: lo que pide una verificación (la partida, de 1 a
   :data:`MAX_FINALS` finales, las máscaras de la versión y el espesor mínimo); la lee la
   operación ``res.verify_constraints`` (``reserves.compliance_store``, T17).
@@ -236,12 +237,18 @@ class Group:
 class FinalCheck:
     """La verificación de una final: lo de cada recinto en su orden, los grupos que incumplen
     (por recinto y, en cada uno, por su primera celda de norte a sur y de oeste a este), si la
-    final es la misma superficie que la partida, y los avisos."""
+    final es la misma superficie que la partida, los avisos y las celdas que incumplen con su
+    espesor con signo (:attr:`violations`)."""
 
     totals: tuple[ZoneTotals, ...]
     groups: tuple[Group, ...]
     same_surface: bool
     notices: tuple[Notice, ...]
+    violations: tuple[np.ndarray, np.ndarray, np.ndarray] | None = field(default=None,
+                                                                          repr=False)
+    """Las celdas que incumplen en algún recinto (filas, columnas y ``final − partida``, m; una
+    celda en dos recintos sale dos veces con el mismo valor): la rejilla de incumplimientos
+    (D-42). ``None`` si ninguna incumple."""
 
     @property
     def fails(self) -> bool:
@@ -378,7 +385,7 @@ class Checker:
             inside = (np.cumsum(mask, axis=1)[:, :grid.ncols] > 0) & wanted
             cell_rows, cell_cols = np.nonzero(inside)
             self._violations[position].append(
-                (cell_rows + top, cell_cols, np.abs(difference[cell_rows, cell_cols])))
+                (cell_rows + top, cell_cols, difference[cell_rows, cell_cols]))
 
     def result(self, *, start_name: str = "") -> FinalCheck:
         """Lo de cada recinto y los grupos que incumplen (:class:`FinalCheck`)."""
@@ -404,14 +411,20 @@ class Checker:
             if self._violations[position]:
                 groups.extend(self._groups(zone.code, self._violations[position]))
         notices = (Notice("res.same_surface", {"surface": start_name}),) if self._same else ()
-        return FinalCheck(tuple(totals), tuple(groups), self._same, notices)
+        parts = [part for found in self._violations for part in found]
+        violations = None
+        if parts:  # final − partida = −d
+            violations = (_readonly(np.concatenate([part[0] for part in parts])),
+                          _readonly(np.concatenate([part[1] for part in parts])),
+                          _frozen(-np.concatenate([part[2] for part in parts])))
+        return FinalCheck(tuple(totals), tuple(groups), self._same, notices, violations)
 
     def _groups(self, code: str, parts: list[tuple[np.ndarray, np.ndarray, np.ndarray]]
                 ) -> list[Group]:
         grid = self.grid
         rows = np.concatenate([part[0] for part in parts])
         cols = np.concatenate([part[1] for part in parts])
-        values = np.concatenate([part[2] for part in parts])
+        values = np.abs(np.concatenate([part[2] for part in parts]))
         labels, count = label_groups(rows, cols)
         order = np.lexsort((cols, rows, labels))
         rows, cols, values, labels = rows[order], cols[order], values[order], labels[order]
@@ -453,6 +466,12 @@ def _counted(counts: Counts, cut: np.ndarray, fill: np.ndarray, cut_cells: float
 
 def _readonly(values: np.ndarray) -> np.ndarray:
     values = np.ascontiguousarray(values, dtype=np.int64)
+    values.flags.writeable = False
+    return values
+
+
+def _frozen(values: np.ndarray) -> np.ndarray:
+    values = np.ascontiguousarray(values, dtype=np.float64)
     values.flags.writeable = False
     return values
 

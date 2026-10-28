@@ -6149,3 +6149,24 @@ es = "Área de la zona de la restricción"
 
 ["Area of the zone outside the grid"]
 es = "Área de la zona fuera de la rejilla"
+
+["Compliance check by zone"]
+es = "Verificación por recinto"
+
+["Minimum thickness of the compliance check"]
+es = "Espesor mínimo de la verificación por recinto"
+
+["Cut volume in the zone"]
+es = "Volumen de corte en el recinto"
+
+["Fill volume in the zone"]
+es = "Volumen de relleno en el recinto"
+
+["Area with movement in the zone"]
+es = "Área con movimiento en el recinto"
+
+["Area without data in the zone"]
+es = "Área sin dato en el recinto"
+
+["Weighted volume in the area to avoid"]
+es = "Volumen ponderado en la zona preferible no afectar"

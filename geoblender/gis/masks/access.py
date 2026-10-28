@@ -102,7 +102,8 @@ class MaskSet:
     """Las máscaras de una versión al día, como las recibe un operador (ADR-0028 §4): la
     rejilla, la versión, la compilación de la que salen, su estado, los sectores sin búsqueda
     vigente (códigos; ``""`` = el perímetro como sector único) y sus nombres, y la rejilla de
-    clases (``uint16``, bits de :class:`~.combine.ClassBit`, fila 0 al norte)."""
+    clases (``uint16``, bits de :class:`~.combine.ClassBit`, fila 0 al norte); además, sus zonas,
+    los pesos, lo que se consume y el tipo de cada restricción con zona."""
 
     grid: Grid
     version_uid: str
@@ -114,6 +115,9 @@ class MaskSet:
     zones: Mapping[str, Runs] = field(default_factory=lambda: MappingProxyType({}), repr=False)
     weights: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
     used: tuple[_Use, ...] = field(default=(), repr=False)
+    ctypes: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    """El tipo de cada restricción con zona (código → valor de ``ConstraintType``), del
+    informe: lo que necesita quien verifica por recinto (``reserves.compliance``)."""
 
     def _bit(self, bit: ClassBit) -> np.ndarray:
         return (self.classes & np.uint16(int(bit))) != 0
@@ -243,9 +247,11 @@ def load_masks(project: StoreProject, version_uid: str) -> MaskSet:
         (settings,) = conn.execute("SELECT settings FROM gb_operation WHERE uid = ?",
                                    (found.operation_uid,)).fetchone()
         zones = read_zone_runs(conn, records[declared.ZONES].locator)
-        weights = {code: float(value) for code, quantity, value, _unit, _note
-                   in read_report(conn, records[declared.REPORT].locator)
-                   if quantity == "weight" and value is not None}
+        report = read_report(conn, records[declared.REPORT].locator)
+    weights = {code: float(value) for code, quantity, value, _unit, _note in report
+               if quantity == "weight" and value is not None}
+    ctypes = {code: str(note) for code, quantity, _value, _unit, note in report
+              if quantity == "zone_area" and note is not None}
     grid = declared.grid_of(json.loads(settings))
     raster = records[declared.CLASSES]
     source = read_geotiff(Path(project.root, *raster.locator.split("/")), max_cells=sys.maxsize)
@@ -258,7 +264,7 @@ def load_masks(project: StoreProject, version_uid: str) -> MaskSet:
                  for family, record in records.items())
     return MaskSet(grid, found.version.uid, found.operation_uid, MaskState.CURRENT,
                    found.pending, classes, found.names, MappingProxyType(zones),
-                   MappingProxyType(weights), used)
+                   MappingProxyType(weights), used, MappingProxyType(ctypes))
 
 
 def ensure_masks_steps(project: StoreProject, version_uid: str, *,
