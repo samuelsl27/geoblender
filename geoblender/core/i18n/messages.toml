@@ -6021,3 +6021,89 @@ es = "Filas de la tabla de la cubicación elegida: un valor cada una, con su uni
 
 ["Cubications of the active version: each one with its revision and its table, filtered by domain, bench and unit, with its marks"]
 es = "Cubicaciones de la versión activa: cada una con su revisión y su tabla, filtrada por dominio, banco y unidad, con sus marcas"
+
+# Límites legales y restricciones (spec 012, T05): tipos, geometrías, roles y parámetros ---
+
+["Legal limit"]
+es = "Límite legal"
+
+["Action perimeter"]
+es = "Perímetro de actuación"
+
+["Untouchable"]
+es = "Intocable"
+
+["Exclusion"]
+es = "Exclusión"
+
+["No cut"]
+es = "Sin corte"
+
+["Fill only"]
+es = "Solo relleno"
+
+["Restoration only"]
+es = "Solo restauración"
+
+["Setback band"]
+es = "Banda de resguardo"
+
+["No fill"]
+es = "Sin relleno"
+
+["Preferably avoid"]
+es = "Preferible no afectar"
+
+["Requires access"]
+es = "Requiere acceso"
+
+["no type"]
+es = "sin tipo"
+
+["Unnamed ({layer}, fid {fid})"]
+es = "Sin nombre ({layer}, fid {fid})"
+
+["Polygon"]
+es = "Polígono"
+
+["a polygon"]
+es = "un polígono"
+
+["a line"]
+es = "una línea"
+
+["a point"]
+es = "un punto"
+
+["Protect"]
+es = "Proteger"
+
+["Fill"]
+es = "Rellenar"
+
+["Mine to an elevation"]
+es = "Explotar a una cota"
+
+["Keep as it is"]
+es = "Conservar como está"
+
+["Platform"]
+es = "Plataforma"
+
+["Slope to treat"]
+es = "Talud a tratar"
+
+["Outward buffer"]
+es = "Resguardo hacia fuera"
+
+["Inward buffer of the limit"]
+es = "Resguardo hacia dentro del límite"
+
+["Weight of the area to avoid"]
+es = "Peso de la zona preferible no afectar"
+
+["Constraint active"]
+es = "Restricción activa"
+
+["Search distance for untouchables"]
+es = "Distancia de búsqueda de intocables"
