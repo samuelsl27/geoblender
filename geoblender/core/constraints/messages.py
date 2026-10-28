@@ -294,6 +294,47 @@ CATALOG: tuple[Message, ...] = (
         "{value} cambió después de la búsqueda de {sector}; vuelva a buscar antes de "
         "cerrarla.",
     ),
+    # Crear restricciones desde una capa (RF-012-01; core.constraints.provenance) ----------------
+    Message(
+        "core.constraint_source_no_geometry",
+        "entity {fid} of «{layer}»: its geometry is empty",
+        "entidad {fid} de «{layer}»: su geometría está vacía",
+    ),
+    Message(
+        "core.constraint_source_type_unknown",
+        "entity {fid} of «{layer}»: the field «{field}» says «{value}», which is not a "
+        "constraint type of the correspondence",
+        "entidad {fid} de «{layer}»: el campo «{field}» dice «{value}», que no es un tipo de "
+        "restricción de la correspondencia",
+    ),
+    Message(
+        "core.constraint_source_field_empty",
+        "entity {fid} of «{layer}»: the field «{field}» is empty",
+        "entidad {fid} de «{layer}»: el campo «{field}» está vacío",
+    ),
+    Message(
+        "core.constraint_source_kind_not_accepted",
+        "entity {fid} of «{layer}»: a constraint «{ctype}» cannot be {kind}",
+        "entidad {fid} de «{layer}»: una restricción «{ctype}» no puede ser {kind}",
+    ),
+    Message(
+        "core.constraint_source_date_invalid",
+        "entity {fid} of «{layer}»: the field «{field}» says «{value}», which is not a date "
+        "(YYYY-MM-DD)",
+        "entidad {fid} de «{layer}»: el campo «{field}» dice «{value}», que no es una fecha "
+        "(AAAA-MM-DD)",
+    ),
+    Message(
+        "core.constraint_source_nothing",
+        "No constraint was created from «{layer}» ({value} entities rejected): {problems}.",
+        "No se creó ninguna restricción desde «{layer}» ({value} entidades rechazadas): "
+        "{problems}.",
+    ),
+    Message(
+        "core.constraint_source_field_unknown",
+        "The layer «{layer}» has no field «{value}»: its fields are {fields}.",
+        "La capa «{layer}» no tiene el campo «{value}»: sus campos son {fields}.",
+    ),
 )
 """Todos los mensajes de las restricciones."""
 

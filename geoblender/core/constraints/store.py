@@ -75,6 +75,7 @@ __all__ = [
     "replace_sectors",
     "sector_sha256",
     "sector_states",
+    "taken_codes",
     "write_constraints",
     "write_intentions",
     "write_sectors",
@@ -360,6 +361,15 @@ def _codes(conn: sqlite3.Connection) -> dict[str, set[str]]:
         for uid, code in conn.execute(f"SELECT uid, code FROM {table} WHERE code <> ''"):
             taken.setdefault(str(code), set()).add(str(uid))
     return taken
+
+
+def taken_codes(conn: sqlite3.Connection) -> set[str]:
+    """Los códigos que ya usan las restricciones de las tres capas (sin los vacíos); ninguno si
+    no existen las tablas."""
+    present = _existing(conn)
+    return {code for table in CONSTRAINT_LAYERS.values() if table in present
+            for code in (str(row[0]) for row in conn.execute(
+                f"SELECT code FROM {table} WHERE code <> ''"))}
 
 
 def write_constraints(conn: sqlite3.Connection, rows: Iterable[Constraint], *,
