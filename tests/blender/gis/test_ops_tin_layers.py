@@ -18,6 +18,8 @@ Con el proyecto y las fuentes de ``test_ops_dtm`` (``DtmOperatorsCase``) y la ca
   tolerancias, las pasadas y el umbral de planos del proyecto, sí.
 - RF-006-17: el MDT importado → TIN es el de ``raster_to_tin``.
 - RF-011-07 (spec 011, T18; D-32): una capa con el papel «Dominios» queda en ``gis_dom_``.
+- RF-012-01 (spec 012, T07; D-27): una capa en ED50 con el papel «Entidades» queda en
+  ``gis_fea_``, transformada al CRS del proyecto.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
@@ -144,6 +146,47 @@ class LayerTinTest(TinOperatorsCase):
         self.assertEqual(len(feature.rings), len(expected))
         for got, ring in zip(feature.rings, expected, strict=True):
             self.assertTrue(np.array_equal(got, ring))
+
+    def test_ed50_features_layer_in_the_project_crs(self) -> None:
+        """RF-012-01, RF-006-05, RF-008-52 (spec 012, T07; D-27): «Capas vectoriales…» con el
+        papel «Entidades» (con su español en el diálogo) importa el ``contorno`` de
+        ``capas.gpkg`` declarado en ED50 como ``gis_fea_zonas``: su entrada en EPSG:23030 con
+        el papel ``features`` y lo importado, inmutable y en el CRS del proyecto, transformado
+        con la 006 (``load_features``, bit a bit con ``transform_features``); el informe lo dice."""
+        project = self.open()
+        store = _module("gis.store")
+        vector = _module("gis.vector")
+        gis_crs = _module("gis.crs")
+        gis_ops = _module("bl.ops.gis")
+        i18n = _module("core.i18n")
+        self.assertEqual(gis_ops.LAYER_ROLES["FEATURES"], "features")
+        self.assertEqual(i18n.translate("es", "Features"), "Entidades")
+        path = self.source("gpkg/capas.gpkg", "zonas/capas.gpkg")
+        uid = self.launch(IMPORT_VECTOR, filepath=str(path), layer="contorno", role="FEATURES",
+                          crs="EPSG:23030", vertical="PROJECT", name="Zonas")
+        op_type, status, reason, message, *_ = self.operation(uid)
+        self.assertEqual((op_type, status), ("gis.import_vector", "done"), reason)
+        self.assertIn("gis_fea_zonas", message)
+        self.assertIn("entidades", message)
+        self.assertIn("«Zonas» transformado de EPSG:23030", message)
+        self.assertEqual(self.rows("SELECT crs_h FROM gb_input"), [('{"epsg":23030}',)])
+        _uid, locator, input_uid, _sha, operation_uid = self.dataset("gis_fea_zonas")
+        self.assertEqual((locator.startswith("gis_fea_zonas_"), operation_uid), (True, uid))
+        self.assertEqual(self.rows("SELECT immutable, crs_epsg FROM gb_dataset WHERE "
+                                   "input_uid = ?", input_uid), [(1, 25830)])
+        crs, vertical = store.project_references(project)
+        source = vector.read_layer(vector.copy_source(path, self.tmp / "copia"), "contorno")
+        expected, _report = vector.features_from_layer(source)
+        transform = gis_crs.transformation_for(gis_crs.Declaration(
+            "Zonas", _module("core.georef").load_catalog().horizontal(23030), vertical), crs,
+            vertical, resolver=gis_ops.crs_resolver)
+        expected = vector.transform_features(expected, transform)
+        loaded = store.load_features(project, "gis_fea_zonas")
+        self.assertEqual((loaded.kind, loaded.fids), (expected.kind, expected.fids))
+        for got, wanted in zip(loaded.parts, expected.parts, strict=True):
+            for got_ring, ring in zip((a for p in got for a in p), (a for p in wanted for a in p),
+                                      strict=True):
+                self.assertTrue(np.array_equal(got_ring, ring))
 
     def test_ed50_contours_give_a_tin_in_the_project_crs(self) -> None:
         """HU-006-5, RF-006-05, RF-006-16: las curvas declaradas en ED50 (EPSG:23030) se

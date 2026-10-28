@@ -428,6 +428,14 @@ CATALOG: tuple[Message, ...] = (
         "guarda sus campos de texto, enteros y reales.",
         "warning",
     ),
+    Message(  # spec 012, T07 (D-27): los atributos de una capa de entidades
+        "gis.feature_field_skipped",
+        "Layer «{layer}»: field «{value}» ({kind}) is not imported: a features layer keeps its "
+        "text, integer and real fields.",
+        "Capa «{layer}»: el campo «{value}» ({kind}) no se importa: una capa de entidades "
+        "guarda sus campos de texto, enteros y reales.",
+        "warning",
+    ),
     Message(
         "gis.feature_without_z",
         "Layer «{layer}», feature {row}: it has no elevation (Z) and a geometry without "

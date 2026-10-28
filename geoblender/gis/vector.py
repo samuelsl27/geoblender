@@ -26,7 +26,10 @@ Sobre la copia:
 El papel que declara el usuario (puntos, líneas de rotura) lo aplica ``gis.points``; el de
 «dominios» (spec 011, T18; D-32), :func:`domains_from_features`: de cada Polygon o MultiPolygon,
 su número, sus anillos y sus atributos (:class:`DomainSet`), con los campos de texto, enteros
-y reales de la capa como columnas de la tabla del proyecto (:func:`field_columns`).
+y reales de la capa como columnas de la tabla del proyecto (:func:`field_columns`); el de
+«entidades» (spec 012, T07; D-27), :func:`features_from_layer`: puntos, líneas o polígonos en
+planta con sus atributos (:class:`FeatureLayer`), llevados al CRS del proyecto con
+:func:`transform_features` si la capa está en otro.
 
 **Entregables** (T31; RF-006-25; plan §5.3.2 y A18; D15): :func:`write_layers` escribe capas
 (:class:`LayerToWrite`: puntos, líneas de rotura, curvas, contornos o un TIN como triángulos,
@@ -72,6 +75,7 @@ from .reports import Rejection, TopoReport
 from .styles import LayerStyle
 
 if TYPE_CHECKING:
+    from .ports import Transform
     from .tin import Tin
 
 IMPORT_DIR = "import"
@@ -933,3 +937,181 @@ def domains_from_features(features: FeatureSet) -> tuple[DomainSet, TopoReport]:
     report = replace(features.report, rejected=tuple(every),
                      warnings=(*features.report.warnings, *warnings))
     return DomainSet(tuple(fids), tuple(polygons), tuple(columns), values), report
+
+
+# --- Capa de entidades (spec 012, T07; RF-012-01, RF-012-08, RF-012-26; plan 012 D-27) ---------
+
+FEATURE_KINDS: Mapping[str, str] = MappingProxyType({
+    "POINT": "point", "MULTIPOINT": "point",
+    "LINESTRING": "line", "MULTILINESTRING": "line",
+    "POLYGON": "polygon", "MULTIPOLYGON": "polygon",
+})
+"""La geometría (``point``, ``line`` o ``polygon``, los valores de
+``core.constraints.GeometryKind``) de cada tipo de entidad de GeoPackage."""
+FEATURE_TABLE_TYPES: Mapping[str, str] = MappingProxyType(
+    {"point": "MULTIPOINT", "line": "MULTILINESTRING", "polygon": "MULTIPOLYGON"})
+"""El tipo de la tabla del proyecto de una capa de entidades, por su geometría."""
+_MIN_VERTICES: Mapping[str, int] = MappingProxyType({"point": 1, "line": 2, "polygon": 3})
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Feature:
+    """Una entidad de una capa de entidades: su número en la capa, sus atributos (columna →
+    valor) y sus partes (de cada una, sus anillos, su camino o su punto ``(1, 2)``, X e Y
+    ABSOLUTAS en float64)."""
+
+    fid: int
+    attributes: Mapping[str, Any]
+    parts: tuple[tuple[np.ndarray, ...], ...]
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class FeatureLayer:
+    """Las entidades de una capa con el papel «entidades» (spec 012, D-27): su geometría
+    (``kind``: ``point``, ``line`` o ``polygon``, :data:`FEATURE_KINDS`), el número de cada una
+    en la capa (``fids``), sus partes (``parts``: por entidad, por parte, sus anillos —el
+    primero, el exterior—, su camino o su punto ``(1, 2)``, en planta, X e Y ABSOLUTAS en
+    float64), sus campos como columnas (``columns``, :class:`FieldColumn`) y el valor de cada
+    uno por entidad (``values``, por columna). ``ValueError`` si no casan."""
+
+    kind: str
+    fids: tuple[int, ...]
+    parts: tuple[tuple[tuple[np.ndarray, ...], ...], ...]
+    columns: tuple[FieldColumn, ...]
+    values: Mapping[str, tuple[Any, ...]]
+
+    def __post_init__(self) -> None:
+        if self.kind not in FEATURE_TABLE_TYPES:
+            raise ValueError(f"la geometría de una capa de entidades es una de "
+                             f"{', '.join(FEATURE_TABLE_TYPES)}, no {self.kind!r}")
+        # Las mismas comprobaciones que unos dominios (números, partes y columnas que casan).
+        checked = DomainSet(self.fids, self.parts, self.columns, self.values)
+        object.__setattr__(self, "fids", checked.fids)
+        object.__setattr__(self, "parts", checked.polygons)
+        object.__setattr__(self, "columns", checked.columns)
+        object.__setattr__(self, "values", checked.values)
+
+    def __len__(self) -> int:
+        return len(self.fids)
+
+    @property
+    def geometry_type(self) -> str:
+        """El tipo de su tabla en el proyecto (``MULTIPOINT``, ``MULTILINESTRING`` o
+        ``MULTIPOLYGON``)."""
+        return FEATURE_TABLE_TYPES[self.kind]
+
+    @property
+    def column_defs(self) -> tuple[ColumnDef, ...]:
+        """Las columnas de los atributos en su tabla del proyecto (``core.gpkg.ColumnDef``)."""
+        return tuple(ColumnDef(column.column, column.sql_type) for column in self.columns)
+
+    @property
+    def titles(self) -> dict[str, str]:
+        """El nombre en la capa de cada columna que no se llama igual (columna → título)."""
+        return {column.column: column.field for column in self.columns
+                if column.column != column.field}
+
+    def feature(self, index: int) -> Feature:
+        """La entidad ``index`` (en el orden de ``fids``) con sus atributos y sus partes."""
+        return Feature(self.fids[index], MappingProxyType(
+            {name: found[index] for name, found in self.values.items()}), self.parts[index])
+
+
+def _plan_xy(coords: Any) -> np.ndarray:
+    """Las X e Y de unas coordenadas leídas, ``(k, 2)`` float64 contiguas (la Z no cuenta)."""
+    values = np.asarray(coords, dtype=np.float64)
+    return np.ascontiguousarray(values.reshape(-1, values.shape[-1])[:, :2])
+
+
+def feature_parts(geometry_type: str, coords: Any) -> tuple[tuple[np.ndarray, ...], ...]:
+    """Las partes en planta de una geometría de GeoPackage (``POINT``…``MULTIPOLYGON``): un
+    punto ``(1, 2)`` por parte, un camino por parte o los anillos de cada polígono."""
+    if geometry_type in ("POINT", "MULTIPOINT"):
+        return tuple((np.ascontiguousarray(point[None, :]),) for point in _plan_xy(coords))
+    if geometry_type == "LINESTRING":
+        return ((_plan_xy(coords),),)
+    if geometry_type == "MULTILINESTRING":
+        return tuple((_plan_xy(line),) for line in coords)
+    if geometry_type == "POLYGON":
+        return (tuple(_plan_xy(ring) for ring in coords),)
+    if geometry_type == "MULTIPOLYGON":
+        return tuple(tuple(_plan_xy(ring) for ring in polygon) for polygon in coords)
+    raise ValueError(f"{geometry_type!r} no es la geometría de una entidad: es una de "
+                     f"{', '.join(FEATURE_KINDS)}")
+
+
+def features_from_layer(features: FeatureSet) -> tuple[FeatureLayer, TopoReport]:
+    """Las entidades de una capa con el papel «entidades» (spec 012, T07; RF-012-01,
+    RF-012-08, RF-012-26; D-27): su geometría es la de la capa (o, si es ``GEOMETRY``, la de su
+    primera entidad que la tenga; sin ninguna, ``polygon``); de cada entidad de esa geometría,
+    simple o múltiple, su número, sus partes en planta tal como llegan (:func:`feature_parts`;
+    la Z no cuenta) y sus atributos de texto, enteros y reales (la fecha, como texto:
+    :func:`field_columns`). Una entidad de otra geometría (``gis.feature_role_mismatch``) o sin
+    los vértices de la suya (``gis.feature_geometry_invalid``) se rechaza con su número; un
+    campo binario, o con algún valor binario, no se importa (``gis.feature_field_skipped``, un
+    aviso). El informe conserva los rechazos y avisos de la lectura."""
+    info = features.layer
+    kind = FEATURE_KINDS.get(info.geometry_type) or next(
+        (FEATURE_KINDS[g.geometry_type] for g in features.geometries
+         if g.geometry_type in FEATURE_KINDS), "polygon")
+    found_columns, skipped = field_columns(info.fields)
+    columns: list[FieldColumn] = []
+    omitted = list(skipped)
+    for column in found_columns:
+        if any(isinstance(value, _BINARY) for value in features.attributes[column.field]):
+            omitted.append((column.field, "BLOB"))
+        else:
+            columns.append(column)
+    expected = [name for name, found in FEATURE_KINDS.items() if found == kind]
+    rejected: list[Rejection] = []
+    fids: list[int] = []
+    parts: list[tuple[tuple[np.ndarray, ...], ...]] = []
+    kept: list[int] = []
+    for index, fid in enumerate(features.fids):
+        geometry = features.geometries[index]
+        if FEATURE_KINDS.get(geometry.geometry_type) != kind:
+            code = "gis.feature_role_mismatch"
+            text = render(code, layer=info.name, row=fid, value=geometry.geometry_type,
+                          role="entidades", expected=" y ".join(expected))
+            rejected.append(Rejection(fid, text, code))
+            continue
+        found = feature_parts(geometry.geometry_type, geometry.coords)
+        if not found or any(not part or any(len(item) < _MIN_VERTICES[kind] for item in part)
+                            for part in found):
+            code = "gis.feature_geometry_invalid"
+            text = render(code, layer=info.name, file=info.file, row=fid,
+                          detail=f"tiene menos de {_MIN_VERTICES[kind]} vértices")
+            rejected.append(Rejection(fid, text, code))
+            continue
+        fids.append(fid)
+        parts.append(found)
+        kept.append(index)
+    values = {column.column: tuple(features.attributes[column.field][index] for index in kept)
+              for column in columns}
+    warnings = tuple(render("gis.feature_field_skipped", layer=info.name, value=name,
+                            kind=declared) for name, declared in omitted)
+    every = sorted((*features.report.rejected, *rejected), key=lambda item: item.row)
+    report = replace(features.report, rejected=tuple(every),
+                     warnings=(*features.report.warnings, *warnings))
+    return FeatureLayer(kind, tuple(fids), tuple(parts), tuple(columns), values), report
+
+
+def transform_features(layer: FeatureLayer, transform: Transform) -> FeatureLayer:
+    """Las entidades ``layer`` en el CRS de destino de ``transform`` (la de la 006,
+    ``gis.crs.transformation_for``; RF-006-05, D-27): cada vértice, con su X y su Y
+    transformadas (la cota, cero, no cuenta), en una sola llamada; la geometría, los números,
+    las partes y los atributos, los mismos. ``layer`` no cambia; ``ValueError`` si algún
+    vértice no tiene una posición finita en el destino."""
+    arrays = [array for feature in layer.parts for part in feature for array in part]
+    if not arrays:
+        return layer
+    xy = np.concatenate(arrays)
+    moved = np.asarray(transform.apply(np.column_stack(
+        [xy, np.zeros(len(xy), dtype=np.float64)])), dtype=np.float64)
+    if moved.shape != (len(xy), 3) or not np.all(np.isfinite(moved[:, :2])):
+        raise ValueError("la transformación no da una posición finita para cada vértice")
+    ends = np.cumsum([len(array) for array in arrays])[:-1]
+    pieces = iter(np.split(moved[:, :2], ends))
+    parts = tuple(tuple(tuple(np.ascontiguousarray(next(pieces)) for _array in part)
+                        for part in feature) for feature in layer.parts)
+    return FeatureLayer(layer.kind, layer.fids, parts, layer.columns, layer.values)

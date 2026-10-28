@@ -1407,10 +1407,13 @@ LAYER_ROLE_ITEMS = [
     ("BOUNDARY", "Boundary", "Boundary and holes of a TIN"),
     ("DOMAINS", "Domains",
      "Polygons that divide a cubication (phases, zones or sectors), with their fields"),
+    ("FEATURES", "Features",
+     "Points, lines or polygons with their fields (constraints, infrastructures, client "
+     "marks), in the project CRS"),
 ]
 LAYER_ROLES: Mapping[str, str] = {"POINTS": "points", "BREAKLINES": "breaklines",
                                   "CONTOURS": "contours", "BOUNDARY": "boundary",
-                                  "DOMAINS": "domains"}
+                                  "DOMAINS": "domains", "FEATURES": "features"}
 _GUESSES: Mapping[str, tuple[str, ...]] = {
     "point_id": ("p", "punto", "id", "point", "pt", "num", "numero", "nombre", "name"),
     "x": ("x", "este", "easting", "e", "coordx"),
@@ -1497,6 +1500,8 @@ def _start_survey(plan: _Survey, launch: Callable[..., Any]) -> Any:
               "crs": jobs.crs_json(plan.crs), "vertical": jobs.vertical_json(plan.vertical),
               "size": plan.path.stat().st_size, "tol_xy": plan.control.get(DUP_XY_KEY),
               "tol_z": plan.control.get(DUP_Z_KEY)}
+    if plan.settings.get("role") == "features":  # al CRS del proyecto (spec 012, D-27)
+        params["target_crs"] = jobs.crs_json(store.project_references(plan.handle.project)[0])
     label = (tr("Import of the points «{name}»", name=plan.name) if points
              else tr("Import of the layer «{name}»", name=plan.name))
     return launch(plan.handle, jobs.IMPORT_POINTS if points else jobs.IMPORT_VECTOR,
@@ -1726,6 +1731,12 @@ def _survey_tables(out: store.ResultWriter, plan: _Survey, outcome: Any,
             out.contours(plan.name, jobs.read_contours(path), content=contents.get(output))
         elif count and role == "domains":  # spec 011, T18 (D-32)
             out.domains(plan.name, jobs.read_domains(path), content=contents.get(output))
+        elif count and role == "features":  # spec 012, T07 (D-27)
+            layer = jobs.read_features(path)
+            transform = _features_transform(plan, summary)
+            if transform is not None:
+                layer = vector.transform_features(layer, transform)
+            out.features(plan.name, layer, content=contents.get(output))
         elif count:
             out.boundary(plan.name, jobs.read_boundary(path, jobs.crs_of(summary["crs"]).epsg),
                          content=contents.get(output))
@@ -1734,6 +1745,16 @@ def _survey_tables(out: store.ResultWriter, plan: _Survey, outcome: Any,
                        value=0, name=plan.name, file=plan.path.name,
                        rejected=int(summary.get("rejected", 0)))
     yield 0.6
+
+
+def _features_transform(plan: _Survey, summary: Mapping[str, Any]) -> Transform | None:
+    """La transformación de la 006 de las entidades de una capa (spec 012, D-27) de su CRS al
+    del proyecto, en planta (la referencia vertical del proyecto a los dos lados: la cota no
+    cuenta), o ``None`` si es el mismo; ``GisError`` sin una de precisión conocida (RF-006-05)
+    o sin servicio de CRS (RF-006-31)."""
+    crs, vertical = store.project_references(plan.handle.project)
+    return transformation_for(Declaration(plan.name, jobs.crs_of(summary["crs"]), vertical),
+                              crs, vertical, resolver=crs_resolver)
 
 
 def _rejections(outcome: Any) -> list[str]:
@@ -1769,7 +1790,7 @@ def _survey_report(plan: _Survey, summary: Mapping[str, Any], outcome: Any) -> s
         family = provenance.layer_family(role)
         what = {"points": tr("points"), "breaklines": tr("breaklines"),
                 "contours": tr("contour lines"), "boundary": tr("boundaries"),
-                "domains": tr("domains")}[role]
+                "domains": tr("domains"), "features": tr("features")}[role]
         head = tr("Layer «{layer}» of «{file}» imported as {dataset}: {count} {what} of {read} "
                   "features read, {rejected} rejected", layer=summary["layer"],
                   file=plan.path.name, dataset=provenance.dataset_name(family, plan.name),
@@ -1779,6 +1800,14 @@ def _survey_report(plan: _Survey, summary: Mapping[str, Any], outcome: Any) -> s
         if role == "points":
             head += "; " + tr("duplicates {duplicates}", duplicates=format_number(
                 int(summary.get("duplicates", 0)), 0))
+        transform = _features_transform(plan, summary) if role == "features" else None
+        if transform is not None:  # spec 012, D-27
+            crs, vertical = store.project_references(plan.handle.project)
+            head += "\n" + tr("«{name}» transformed from {source} to {target}: {transform}",
+                              name=plan.name,
+                              source=reference_label(jobs.crs_of(summary["crs"]), vertical),
+                              target=reference_label(crs, vertical),
+                              transform=transform_summary(transform.info))
     return "\n".join([head, *_rejections(outcome)])
 
 

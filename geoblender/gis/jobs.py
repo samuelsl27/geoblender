@@ -93,7 +93,12 @@ Los que añade la T29 (RF-006-12, RF-006-16, RF-006-17):
   ``in/`` con su ``-wal`` o su diario y leído sobre una copia consolidada,
   ``gis.vector.copy_source``) → según el papel, ``points.npz``, ``lines.npz``,
   ``contours.npz``, ``polygons.npz`` o, una capa de dominios (spec 011, D-32),
-  ``domains.npz`` (:data:`LAYER_OUTPUTS`, :func:`write_domains`), y ``report.json``.
+  ``domains.npz`` (:data:`LAYER_OUTPUTS`, :func:`write_domains`), y ``report.json``. Una capa
+  de entidades (spec 012, D-27; papel ``features``) deja ``features.npz``
+  (:func:`write_features`) con las coordenadas de la capa; con ``target_crs`` (el del
+  proyecto) distinto del suyo, el resumen lo dice (``reprojects``) y no lleva el hash de su
+  tabla: ``bl`` la transforma con la 006 al incorporarla (RF-006-05, como las curvas de un TIN)
+  y la hashea su registro.
 - ``gis_import_points`` admite además ``tol_xy`` y ``tol_z``: su informe dice los puntos
   duplicados (RF-006-12).
 - ``gis_tin_contours``: ``name``, ``origin``, ``crs``, ``vertical``, ``densify_m``,
@@ -217,10 +222,12 @@ from .tin_contours import tin_from_contours
 from .validate import validate_raster, validate_tin
 from .vector import (
     DomainSet,
+    FeatureLayer,
     FieldColumn,
     StoredLayer,
     copy_source,
     domains_from_features,
+    features_from_layer,
     read_layer,
     tin_layer,
     write_layers,
@@ -251,6 +258,7 @@ __all__ = [
     "read_conflicts",
     "read_contours",
     "read_domains",
+    "read_features",
     "read_lines",
     "read_mesh",
     "read_points",
@@ -265,6 +273,7 @@ __all__ = [
     "vertical_of",
     "write_contours",
     "write_domains",
+    "write_features",
     "write_export_layers",
     "write_lines",
     "write_mesh",
@@ -355,6 +364,7 @@ OUT_EXPORT_GPKG = JobOutput("export.gpkg", "export")
 OUT_MESH = JobOutput("mesh.npz", "mesh")
 OUT_POLYGONS = JobOutput("polygons.npz", "boundary")
 OUT_DOMAINS = JobOutput("domains.npz", "domains")
+OUT_FEATURES = JobOutput("features.npz", "features")
 OUT_SAMPLES = JobOutput("samples.npy", "samples")
 LAYER_OUTPUTS: Mapping[str, JobOutput] = MappingProxyType({
     "points": OUT_POINTS,
@@ -362,6 +372,7 @@ LAYER_OUTPUTS: Mapping[str, JobOutput] = MappingProxyType({
     "contours": OUT_CONTOURS,
     "boundary": OUT_POLYGONS,
     "domains": OUT_DOMAINS,
+    "features": OUT_FEATURES,
 })
 """El resultado de ``gis_import_vector`` según el papel de la capa (los de
 ``gis.provenance.LAYER_ROLES``; ``domains``, spec 011, D-32)."""
@@ -909,6 +920,39 @@ def read_domains(path: Path | str) -> DomainSet:
                      _json_of(data["values"]))
 
 
+def write_features(path: Path | str, layer: FeatureLayer) -> None:
+    """Las entidades de una capa (``gis.vector.FeatureLayer``, spec 012, D-27) en el npz
+    ``path``: las X e Y de cada anillo, camino o punto, seguidas, con sus ``offsets`` por
+    array, por parte y por entidad, su geometría, el número de cada entidad y, en JSON, sus
+    columnas (campo, columna y tipo) y sus valores por columna."""
+    arrays = [array for feature in layer.parts for part in feature for array in part]
+    parts = [part for feature in layer.parts for part in feature]
+    _save_npz(Path(path), xy=_xyz_rows(arrays, 2),
+              array_offsets=_offsets([len(array) for array in arrays]),
+              part_offsets=_offsets([len(part) for part in parts]),
+              feature_offsets=_offsets([len(feature) for feature in layer.parts]),
+              kind=np.array(layer.kind), fids=np.asarray(layer.fids, dtype=np.int64),
+              columns=_text_array([[c.field, c.column, c.sql_type] for c in layer.columns]),
+              values=_text_array({name: list(found) for name, found in layer.values.items()}))
+
+
+def read_features(path: Path | str) -> FeatureLayer:
+    """Las entidades de :func:`write_features` (coordenadas bit a bit, los mismos valores)."""
+    data = _load_npz(Path(path), ("xy", "array_offsets", "part_offsets", "feature_offsets",
+                                  "kind", "fids", "columns", "values"))
+    xy = np.ascontiguousarray(data["xy"], dtype=np.float64).reshape(-1, 2)
+    arrays, parts, features = (data["array_offsets"], data["part_offsets"],
+                               data["feature_offsets"])
+    found = tuple(
+        tuple(tuple(np.ascontiguousarray(xy[int(arrays[a]):int(arrays[a + 1])])
+                    for a in range(int(parts[p]), int(parts[p + 1])))
+              for p in range(int(features[feature]), int(features[feature + 1])))
+        for feature in range(len(features) - 1))
+    columns = tuple(FieldColumn(*map(str, item)) for item in _json_of(data["columns"]))
+    return FeatureLayer(str(data["kind"].item()), tuple(int(f) for f in data["fids"].tolist()),
+                        found, columns, _json_of(data["values"]))
+
+
 def imported_rows(family: str, path: Path | str, epsg: int) -> list[tuple[Any, ...]]:
     """Las filas de la tabla de ``family`` (``gis.provenance``: puntos, líneas de rotura,
     curvas, contornos o dominios) con lo importado que dejó un trabajo en ``path``
@@ -1257,8 +1301,8 @@ def _table_digests(ctx: _Context, crs: CrsRef, tables: Sequence[tuple[JobOutput,
     (``gis.store.table_digest``), por su papel, con el avance repartido en [``low``,
     ``high``] por el tamaño de cada fichero y la cancelación entre trozos. Así el hilo de
     Blender no vuelve a leer una tabla de 300.000 puntos al incorporarla."""
-    from .provenance import DOMAINS
-    from .store import domain_rows, table_digest  # importa la procedencia: solo al usarlo
+    from .provenance import DOMAINS, FEATURES
+    from .store import domain_rows, feature_rows, table_digest  # importa la procedencia
 
     paths = [ctx.output_path(output.file) for output, _family in tables]
     sizes = [max(1, _size(path)) for path in paths]
@@ -1268,13 +1312,17 @@ def _table_digests(ctx: _Context, crs: CrsRef, tables: Sequence[tuple[JobOutput,
     for (output, family), path, size in zip(tables, paths, sizes, strict=True):
         end = start + (high - low) * size / total
         ctx.progress(start, TABLE_HASH_TEXT)
-        columns = None
+        columns = geometry_type = None
         if family == DOMAINS:  # con las columnas de su capa (spec 011, D-32)
             domains = read_domains(path)
             rows, columns = domain_rows(domains, crs.epsg), domains.column_defs
+        elif family == FEATURES:  # con sus columnas y su geometría (spec 012, D-27)
+            layer = read_features(path)
+            rows, columns = feature_rows(layer, crs.epsg), layer.column_defs
+            geometry_type = layer.geometry_type
         else:
             rows = imported_rows(family, path, crs.epsg)
-        digest = table_digest(family, rows, crs, columns=columns,
+        digest = table_digest(family, rows, crs, columns=columns, geometry_type=geometry_type,
                               progress=_span(ctx, start, end), cancelled=_cancelled(ctx))
         found[output.role] = digest_json(digest)
         start = end
@@ -2042,7 +2090,8 @@ def run_import_vector(ctx: _Context) -> dict[str, Any]:
     que declara la persona (RF-006-12): el GeoPackage, copiado a ``in/`` con su ``-wal`` o su
     diario y leído sobre una copia consolidada (nunca el de la persona, RF-006-10), da los
     puntos, las líneas de rotura (duras), las curvas de nivel (con su cota), el contorno o los
-    dominios (con sus atributos; spec 011, D-32) con las coordenadas de la capa bit a bit, el
+    dominios (con sus atributos; spec 011, D-32) o las entidades (con sus atributos; spec 012,
+    D-27) con las coordenadas de la capa bit a bit, el
     informe (entidades leídas, rechazadas con su
     número y motivo y, en puntos, duplicados), el hash de la fuente (RF-006-26) y el de la
     tabla que será lo importado (T50: :func:`_table_digests`; RNF-006-09). Su CRS, el de la
@@ -2093,12 +2142,19 @@ def run_import_vector(ctx: _Context) -> dict[str, Any]:
         domains, report = domains_from_features(features)
         write_domains(path, domains)
         count = len(domains)
+    elif role == "features":  # spec 012, T07 (D-27)
+        entities, report = features_from_layer(features)
+        write_features(path, entities)
+        count = len(entities)
+        target_crs = request.crs("target_crs")
+        extra["reprojects"] = target_crs is not None and target_crs.epsg != crs.epsg
     else:
         polygons, report = polygons_from_features(features)
         write_polygons(path, polygons)
         count = len(polygons)
     _write_report(ctx, report)
-    digests = _table_digests(ctx, crs, [(output, layer_family(role))] if count else [],
+    hashed = count and not extra.get("reprojects")  # transformada, la hashea su registro
+    digests = _table_digests(ctx, crs, [(output, layer_family(role))] if hashed else [],
                              0.75, 0.99)
     summary = {
         "source": _source_summary(reader, digest, prints, declarations, settings),

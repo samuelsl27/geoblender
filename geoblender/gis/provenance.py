@@ -37,7 +37,11 @@ minúsculas con «_» (:func:`dataset_slug`); su :class:`~..core.datasets.Datase
 - ``dom`` (spec 011, D-32): los dominios de una capa importada con el papel «dominios»
   (polígonos con sus atributos que reparten una cubicación: fases, zonas o sectores), también
   ``vector`` en ``project.gpkg``; lo lee la cubicación (``gis.store.load_domains``).
-- **Lo importado** (``src``, ``pts``, ``brk``, ``bnd``, ``dom`` y las curvas de una capa
+- ``fea`` (spec 012, D-27): las entidades de una capa importada con el papel «entidades»
+  (puntos, líneas o polígonos con sus atributos: restricciones, infraestructuras, marcas del
+  cliente), ``vector`` en ``project.gpkg`` en el CRS del proyecto (transformadas al importar,
+  RF-006-05); las lee ``gis.store.load_features``.
+- **Lo importado** (``src``, ``pts``, ``brk``, ``bnd``, ``dom``, ``fea`` y las curvas de una capa
   importada, RF-008-52) es inmutable, con su entrada y sin selector, y su ubicación lleva el uid
   corto de la entrada (:func:`input_tag`, D22: ``rasters/gis_src_<nombre>_<entrada8>.tif``,
   ``gis_pts_<nombre>_<entrada8>``), porque la 008 no reutiliza nunca una ubicación y lo
@@ -124,6 +128,8 @@ CONTOUR_LINES = "cnt"
 BOUNDARY = "bnd"
 DOMAINS = "dom"
 """Los dominios de una capa importada (spec 011, D-32)."""
+FEATURES = "fea"
+"""Las entidades de una capa importada (spec 012, D-27)."""
 
 _GIS_PREFIX = f"{MODULE}_"
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
@@ -180,7 +186,7 @@ OPERATION_TYPES: tuple[OperationType, ...] = (
                   readers=(POINTS_TEXT.id,)),
     OperationType(IMPORT_VECTOR, "Import of a vector layer", False,
                   ("geoblender.gis_import_vector",),
-                  outputs=(POINTS, BREAKLINES, CONTOUR_LINES, BOUNDARY, DOMAINS),
+                  outputs=(POINTS, BREAKLINES, CONTOUR_LINES, BOUNDARY, DOMAINS, FEATURES),
                   readers=(GPKG_LAYER.id,)),
     OperationType(RESAMPLE, "Resampling to the project grid", True,
                   ("geoblender.gis_resample_to_grid",), inputs=("source",),
@@ -338,8 +344,11 @@ FAMILIES: tuple[DatasetFamily, ...] = (
                   ""),
     DatasetFamily(DOMAINS, "vector", Store.GPKG, CORE_GPKG_LAYER.id, "domains", True, False,
                   ""),
+    DatasetFamily(FEATURES, "vector", Store.GPKG, CORE_GPKG_LAYER.id, "features", True, False,
+                  ""),
 )
-"""Las familias de datos de la 006 (plan §5.2.4 y §5.6.3) y los dominios de la 011 (D-32)."""
+"""Las familias de datos de la 006 (plan §5.2.4 y §5.6.3), los dominios de la 011 (D-32) y las
+entidades de la 012 (D-27)."""
 FAMILIES_BY_CODE: Mapping[str, DatasetFamily] = MappingProxyType(
     {family.code: family for family in FAMILIES})
 """Las familias por código (solo lectura)."""
@@ -349,9 +358,11 @@ LAYER_ROLES: Mapping[str, str] = MappingProxyType({
     "contours": CONTOUR_LINES,
     "boundary": BOUNDARY,
     "domains": DOMAINS,
+    "features": FEATURES,
 })
 """El papel de una capa importada (ajuste ``role``) → la familia de su dato (``domains``: los
-dominios de una cubicación, spec 011, D-32)."""
+dominios de una cubicación, spec 011, D-32; ``features``: puntos, líneas o polígonos con sus
+atributos, en el CRS del proyecto, spec 012, D-27)."""
 
 
 def _family(code: object) -> DatasetFamily:

@@ -55,7 +55,7 @@ PLAN: dict[str, tuple[bool, tuple[str, ...], tuple[str, ...], tuple[str, ...],
     "gis.import_dtm": (False, ("geoblender.gis_import_dtm",), (), ("src",), ()),
     "gis.import_points": (False, ("geoblender.gis_import_points",), (), ("pts", "brk"), ()),
     "gis.import_vector": (False, ("geoblender.gis_import_vector",), (),
-                          ("pts", "brk", "cnt", "bnd", "dom"), ()),
+                          ("pts", "brk", "cnt", "bnd", "dom", "fea"), ()),
     "gis.resample": (True, ("geoblender.gis_resample_to_grid",), ("source",), ("dtm",),
                      ("pyproj",)),
     "gis.tin_from_points": (True, ("geoblender.gis_create_tin_from_points",),
@@ -88,6 +88,7 @@ FAMILIES = {
     "cnt": ("vector", "gpkg", "core.gpkg_layer@1", True, True, ""),
     "bnd": ("vector", "gpkg", "core.gpkg_layer@1", True, False, ""),
     "dom": ("vector", "gpkg", "core.gpkg_layer@1", True, False, ""),  # plan 011 D-32
+    "fea": ("vector", "gpkg", "core.gpkg_layer@1", True, False, ""),  # plan 012 D-27
 }
 INPUT_UID = "3f2b9c1d-8e7a-4b6c-9d0e-1a2b3c4d5e6f"
 TAG = "3f2b9c1d"
@@ -355,7 +356,7 @@ class ImportersTest(_RegistryCase):
         una cubicación) según su papel; otro papel es ``ValueError``."""
         self.assertEqual(dict(provenance.LAYER_ROLES),
                          {"points": "pts", "breaklines": "brk", "contours": "cnt",
-                          "boundary": "bnd", "domains": "dom"})
+                          "boundary": "bnd", "domains": "dom", "features": "fea"})
         self.assertEqual(tuple(provenance.LAYER_ROLES.values()),
                          provenance.OPERATION_TYPES_BY_NAME["gis.import_vector"].outputs)
         for role, family in provenance.LAYER_ROLES.items():
@@ -480,6 +481,7 @@ class DatasetSpecsTest(_RegistryCase):
             ("cnt", False): "gis_cnt_topo_2026",
             ("bnd", True): "gis_bnd_topo_2026_3f2b9c1d",
             ("dom", True): "gis_dom_topo_2026_3f2b9c1d",
+            ("fea", True): "gis_fea_topo_2026_3f2b9c1d",
         }
         specs = self._specs()
         self.assertEqual([(family, imported) for family, imported, _spec in specs],
@@ -531,7 +533,7 @@ class DatasetSpecsTest(_RegistryCase):
         necesita su entrada; lo calculado (``dtm``, ``tin``) no la tiene; ``cnt`` es de los dos
         (una capa importada o las curvas de una superficie); una familia que no es de la 006 es
         ``ValueError``."""
-        for family in ("src", "pts", "brk", "bnd", "dom"):
+        for family in ("src", "pts", "brk", "bnd", "dom", "fea"):
             with self.subTest(family=family, input_uid=None):
                 with self.assertRaisesRegex(ValueError, f"gis_{family}_"):
                     provenance.dataset_spec(family, "Topo 2026")
