@@ -46,6 +46,7 @@ from ...core.constraints.model import (
     is_code,
 )
 from ...core.constraints.params import param_key
+from ...core.constraints.provenance import SECTOR_ROLE
 from ...core.content import builtin as core_builtin
 from ...core.content.encoder import NORMALIZER, ContentDigest
 from ...core.datasets import registry as dataset_registry
@@ -112,10 +113,13 @@ __all__ = [
     "live_searches",
     "pending_sectors",
     "perimeter_of",
+    "perimeter_sector",
     "read_report",
     "read_shapes",
     "read_zone_runs",
     "reproduce_compile",
+    "search_sectors",
+    "sector_states_now",
 ]
 
 CANCELLED_REASON = CANCEL_REASON_PREFIX + "la persona la paró antes de terminar (Esc)"
@@ -260,16 +264,31 @@ def pending_sectors(sectors: Sequence[Sector], searches: Sequence[Any],
 
 
 def live_searches(conn: sqlite3.Connection, searches: Sequence[Any]) -> tuple[Any, ...]:
-    """Las búsquedas de ``searches`` cuya operación no está obsoleta (A12: no cambió ninguna
-    capa consultada; la caché ``gb_stale`` de la 008)."""
+    """Las búsquedas de ``searches`` cuya operación no está obsoleta (A12: la caché
+    ``gb_stale`` de la 008), salvo por lo que viene **solo del sector**: una causa cuyo sujeto
+    es el dato del sector (su entrada ``sector``: ``core_sector`` o la capa del perímetro) o algo
+    de lo que sale (la capa de la que se declararon los sectores…) no cuenta, porque el sector lo
+    decide su huella (``sector_sha256``, RF-012-09): declarar de nuevo los sectores o editar otra
+    restricción no deja pendiente la búsqueda de un sector que no cambió. Una causa en una capa
+    consultada (``layer_n``) o en lo que sale de ella siempre cuenta."""
     uids = sorted({record.operation_uid for record in searches})
     stale: set[str] = set()
     for start in range(0, len(uids), 500):
         chunk = uids[start:start + 500]
         marks = ", ".join("?" for _ in chunk)
         stale.update(str(row[0]) for row in conn.execute(
-            "SELECT DISTINCT item_uid FROM gb_stale WHERE item_kind = 'operation' AND "
-            f"item_uid IN ({marks})", chunk))
+            "WITH RECURSIVE up(op, item, side) AS ("
+            " SELECT operation_uid, item_uid, role = ? FROM gb_operation_io WHERE"
+            f"  direction = 'in' AND operation_uid IN ({marks})"
+            " UNION"
+            " SELECT up.op, i.item_uid, up.side FROM up JOIN gb_operation_io AS o ON"
+            "  o.direction = 'out' AND o.item_uid = up.item JOIN gb_operation_io AS i ON"
+            "  i.operation_uid = o.operation_uid AND i.direction = 'in')"
+            " SELECT DISTINCT s.item_uid FROM gb_stale AS s WHERE s.item_kind = 'operation' AND"
+            f" s.item_uid IN ({marks}) AND (NOT EXISTS (SELECT 1 FROM up WHERE"
+            "  up.op = s.item_uid AND up.item = s.subject_uid AND up.side) OR EXISTS (SELECT 1"
+            "  FROM up WHERE up.op = s.item_uid AND up.item = s.subject_uid AND NOT up.side))",
+            (SECTOR_ROLE, *chunk, *chunk)))
     return tuple(record for record in searches if record.operation_uid not in stale)
 
 
@@ -303,9 +322,45 @@ PERIMETER_SECTOR_NAME = "el perímetro de actuación"
 """Cómo se nombra el sector único cuando no hay capa de sectores (D-26)."""
 
 
+def perimeter_sector(constraints: Sequence[Constraint], resolved: Mapping[str, object]
+                     ) -> tuple[Sector, str] | None:
+    """El perímetro como único sector (sin capa de sectores, D-26): el sector ``""`` con los
+    anillos de :func:`perimeter_of` y el dato del que sale (su capa); ``None`` sin perímetro
+    ni límite legal activos."""
+    found = perimeter_of(constraints, resolved)
+    rings = tuple(ring for item in found for part in item.parts for ring in part)
+    if not rings:
+        return None
+    return Sector("", "", PERIMETER_SECTOR_NAME, rings), cstore.layer_of(found[0].kind)
+
+
+def search_sectors(conn: sqlite3.Connection, project: StoreProject, version_uid: str | None
+                   ) -> tuple[tuple[Sector, str], ...]:
+    """Los sectores de búsqueda ahora, con el dato del que sale cada uno: los declarados
+    (``core_sector``) o, sin ninguno, el perímetro (:func:`perimeter_sector`, resuelto en la
+    versión ``version_uid`` o, sin ella, en el proyecto)."""
+    sectors = cstore.read_sectors(conn)
+    if sectors:
+        return tuple((sector, cstore.SECTOR_TABLE) for sector in sectors)
+    constraints = cstore.read_constraints(conn)
+    found = perimeter_sector(constraints, _resolved(conn, project, constraints, version_uid))
+    return () if found is None else (found,)
+
+
+def sector_states_now(conn: sqlite3.Connection, project: StoreProject,
+                      version_uid: str | None) -> tuple[cstore.SectorState, ...]:
+    """El estado de cada sector de :func:`search_sectors`, calculado al vuelo con las búsquedas
+    vigentes (:func:`live_searches`, A12)."""
+    sectors = tuple(sector for sector, _ in search_sectors(conn, project, version_uid))
+    return cstore.sector_states(sectors, live_searches(conn, cstore.read_searches(conn)))
+
+
 def _resolved(conn: sqlite3.Connection, project: StoreProject,
-              constraints: Sequence[Constraint], version_uid: str) -> dict[str, object]:
+              constraints: Sequence[Constraint], version_uid: str | None) -> dict[str, object]:
+    """Los parámetros de las restricciones resueltos versión → proyecto (sin versión, los del
+    proyecto)."""
     store = ParameterStore(project)
+    chain = (PROJECT_SCOPE,) if version_uid is None else (VERSION_SCOPE, PROJECT_SCOPE)
     found: dict[str, object] = {}
     for item in constraints:
         if not is_code(item.code):
@@ -313,8 +368,7 @@ def _resolved(conn: sqlite3.Connection, project: StoreProject,
         for param in ConstraintParam:
             key = param_key(item.code, param)
             try:
-                found[key] = store.resolve(conn, key, (VERSION_SCOPE, PROJECT_SCOPE),
-                                           version=version_uid)
+                found[key] = store.resolve(conn, key, chain, version=version_uid)
             except ParamError:
                 continue
     return found

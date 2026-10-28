@@ -408,20 +408,20 @@ def is_code(code: object) -> bool:
     return isinstance(code, str) and _CODE.fullmatch(code) is not None
 
 
-def constraint_code(name: str, taken: Collection[str]) -> str:
+def constraint_code(name: str, taken: Collection[str], *, prefix: str = _CODE_PREFIX) -> str:
     """El código de una restricción nueva o que se completa (D-22): su nombre en ASCII y en
     minúsculas, sin tildes y con «_» en lugar de lo demás (``Torre 132 kV`` → ``torre_132_kv``),
     con ``r_`` delante si no empieza por una letra (``r`` si no queda nada), de como mucho
     :data:`CODE_MAX_LENGTH` caracteres, y ``_2``, ``_3``… si ya está en ``taken`` (los códigos
-    de las tres capas)."""
+    de las tres capas). El de un sector de búsqueda (T13), con ``prefix`` ``"s"``."""
     plain = "".join(char for char in unicodedata.normalize("NFKD", name)
                     if not unicodedata.combining(char))
     base = _NOT_CODE.sub("_", plain.lower().encode("ascii", "ignore").decode("ascii"))
     base = base.strip("_")
     if not base:
-        base = _CODE_PREFIX
+        base = prefix
     elif not base[0].isalpha():
-        base = f"{_CODE_PREFIX}_{base}"
+        base = f"{prefix}_{base}"
     base = base[:CODE_MAX_LENGTH].rstrip("_")
     candidate, number = base, 2
     while candidate in taken:

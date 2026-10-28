@@ -226,6 +226,74 @@ CATALOG: tuple[Message, ...] = (
         "{name}: su código es «{old}» y no puede pasar a ser «{value}»; los parámetros de una "
         "restricción cuelgan de su código.",
     ),
+    # Sectores de búsqueda (RF-012-07, con la regla de RF-011-08; gis.masks.sectors) ----------
+    Message(
+        "core.constraint_sectors_invalid",
+        "The sector layer «{layer}» cannot be used ({value} problems): {problems}. Correct it, "
+        "import it again and declare the sectors again.",
+        "La capa de sectores «{layer}» no sirve ({value} problemas): {problems}. Corríjala, "
+        "vuelva a importarla y declare de nuevo los sectores.",
+    ),
+    Message(
+        "core.constraint_sector_name_empty",
+        "entity {fid}: the field «{attribute}» is empty",
+        "entidad {fid}: el campo «{attribute}» está vacío",
+    ),
+    Message(
+        "core.constraint_sector_self_intersecting",
+        "entity {fid} («{sector}»): it intersects itself",
+        "entidad {fid} («{sector}»): se corta a sí misma",
+    ),
+    Message(
+        "core.constraint_sector_no_area",
+        "entity {fid} («{sector}»): it has no area",
+        "entidad {fid} («{sector}»): no tiene área",
+    ),
+    Message(
+        "core.constraint_sector_hole_outside",
+        "entity {fid} («{sector}»): a hole is outside its outline or inside another hole",
+        "entidad {fid} («{sector}»): un hueco está fuera de su contorno o dentro de otro hueco",
+    ),
+    Message(
+        "core.constraint_sector_overlap",
+        "entities {fid} («{sector}») and {other_fid} («{other_sector}») overlap in {area} m²",
+        "las entidades {fid} («{sector}») y {other_fid} («{other_sector}») se solapan en "
+        "{area} m²",
+    ),
+    Message(
+        "core.constraint_sectors_not_polygons",
+        "The layer «{layer}» has {value}: the search sectors are polygons.",
+        "La capa «{layer}» tiene {value}: los sectores de búsqueda son polígonos.",
+    ),
+    Message(
+        "core.constraint_sectors_field_unknown",
+        "The layer «{layer}» has no field «{value}»: its fields are {fields}.",
+        "La capa «{layer}» no tiene el campo «{value}»: sus campos son {fields}.",
+    ),
+    Message(
+        "core.constraint_sector_unknown",
+        "There is no search sector «{value}»: declare the sectors again.",
+        "No hay ningún sector de búsqueda «{value}»: declare de nuevo los sectores.",
+    ),
+    # Búsquedas de intocables (RF-012-08, RF-012-09; gis.masks.sectors) -------------------------
+    Message(
+        "core.constraint_search_layers",
+        "A search of untouchables consults between 1 and {max} layers, not {value}.",
+        "Una búsqueda de intocables consulta entre 1 y {max} capas, no {value}.",
+    ),
+    Message(
+        "core.constraint_search_undecided",
+        "{value} entities found have no decision: {items}. Convert each one into an "
+        "untouchable or discard it with a reason before closing the search.",
+        "{value} entidades halladas no tienen decisión: {items}. Convierta cada una en "
+        "intocable o descártela con un motivo antes de cerrar la búsqueda.",
+    ),
+    Message(
+        "core.constraint_search_outdated",
+        "{value} changed after the search of {sector}; search again before closing it.",
+        "{value} cambió después de la búsqueda de {sector}; vuelva a buscar antes de "
+        "cerrarla.",
+    ),
 )
 """Todos los mensajes de las restricciones."""
 

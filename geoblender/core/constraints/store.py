@@ -14,7 +14,9 @@ RF-012-09, RF-012-26, RF-012-27; plan 012 §5.2.1, §5.3.1, D-20, D-21, D-22, D-
 - Filas: :func:`read_constraints` / :func:`write_constraints` (el código, único en las tres
   capas al escribir e inmutable, D-22; al leer, un repetido se lee y lo marca ``checks``),
   :func:`read_intentions` / :func:`write_intentions`, :func:`read_sectors` /
-  :func:`write_sectors` (con :func:`sector_sha256`, la huella de su geometría, D-26) y
+  :func:`write_sectors` (con :func:`sector_sha256`, la huella de su geometría, D-26;
+  :func:`replace_sectors` al declararlos de nuevo y :func:`sector_states`, el estado de cada
+  uno según sus búsquedas, A12) y
   :func:`append_search`, :func:`read_searches` y :func:`read_hits` (solo se añaden filas).
   La geometría, **absoluta en float64**, con ``core.gpkg.wkb``: vuelve bit a bit.
 - :func:`dataset_specs`: los datos del proyecto de las siete tablas (``core``; las tres capas,
@@ -29,6 +31,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date
 from types import MappingProxyType
 from typing import Any
@@ -59,6 +62,7 @@ __all__ = [
     "SEARCH_TABLE",
     "SECTOR_TABLE",
     "TABLES",
+    "SectorState",
     "append_search",
     "create_tables",
     "dataset_specs",
@@ -68,7 +72,9 @@ __all__ = [
     "read_intentions",
     "read_searches",
     "read_sectors",
+    "replace_sectors",
     "sector_sha256",
+    "sector_states",
     "write_constraints",
     "write_intentions",
     "write_sectors",
@@ -521,6 +527,48 @@ def write_sectors(conn: sqlite3.Connection, sectors: Iterable[Sector], *,
             (blob, sector.uid, sector.code, sector.name, sha256_bytes(geometry_wkb(blob))))
         fids.append(int(cursor.lastrowid or 0))
     return tuple(fids)
+
+
+def replace_sectors(conn: sqlite3.Connection, sectors: Iterable[Sector], *,
+                    srs_id: int) -> tuple[int, ...]:
+    """Sustituye los sectores guardados por ``sectors`` (declararlos de nuevo, RF-012-07): borra
+    los anteriores y añade estos con :func:`write_sectors`; sin ninguno, el perímetro de
+    actuación queda como único sector (D-26). Las búsquedas cerradas se quedan: la de un
+    sector con el mismo código y la misma huella sigue vigente (A12)."""
+    conn.execute(f"DELETE FROM {SECTOR_TABLE}")
+    return write_sectors(conn, sectors, srs_id=srs_id)
+
+
+@dataclass(frozen=True, slots=True)
+class SectorState:
+    """El estado de un sector de búsqueda (RF-012-09, RF-012-10; A12): su código (``""``: el
+    perímetro como único sector), su nombre, la huella de su geometría y su búsqueda vigente
+    (la última cerrada con esa huella), o ``None`` si está **pendiente**."""
+
+    code: str
+    name: str
+    sha256: str
+    search: SearchRecord | None
+
+    @property
+    def current(self) -> bool:
+        """Si tiene una búsqueda vigente."""
+        return self.search is not None
+
+
+def sector_states(sectors: Sequence[Sector], searches: Sequence[SearchRecord]
+                  ) -> tuple[SectorState, ...]:
+    """El estado de cada sector de ``sectors``, en su orden, con las búsquedas ``searches`` que
+    no están obsoletas (las de una operación obsoleta las quita antes quien llama: A12): la
+    vigente es la última de su código con la huella actual del sector (:func:`sector_sha256`)."""
+    last: dict[tuple[str, str], SearchRecord] = {}
+    for record in searches:
+        last[(record.sector_code, record.sector_sha256)] = record
+    states = []
+    for sector in sectors:
+        sha = sector_sha256(sector)
+        states.append(SectorState(sector.code, sector.name, sha, last.get((sector.code, sha))))
+    return tuple(states)
 
 
 # --- Búsquedas --------------------------------------------------------------------------------

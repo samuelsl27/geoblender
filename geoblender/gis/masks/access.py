@@ -20,6 +20,8 @@ Un operador de otro módulo (diseño, verificación…) pide las máscaras **sol
   ``gis.compile_constraints`` propia y da sus pasos; el último ``Progress`` lleva el
   :class:`MaskSet`. Si no se pueden compilar, se rechaza con lo mismo que la compilación
   (``gis.masks.store.begin_compile``), antes de dar ningún paso y sin registrar nada.
+- :func:`sector_states` (T13): el estado de cada sector de búsqueda ahora (el perímetro si no
+  hay sectores), con su búsqueda vigente o pendiente (``core.constraints.store.SectorState``).
 
 Negarse a diseñar en un sector pendiente es cosa de cada operador (D-9; ADR-0028 §5).
 
@@ -41,6 +43,7 @@ from types import MappingProxyType
 import numpy as np
 
 from ...core.constraints.messages import ConstraintError
+from ...core.constraints.store import SectorState
 from ...core.datasets import registry as dataset_registry
 from ...core.datasets.model import DatasetRecord, DatasetStatus
 from ...core.project.model import Progress
@@ -54,6 +57,7 @@ from . import provenance as declared
 from .combine import ClassBit
 from .compile import STEP_BUDGET_S
 from .store import begin_compile, compile_run, current_pending, read_report, read_zone_runs
+from .store import sector_states_now
 from .zones import Runs
 
 __all__ = [
@@ -65,6 +69,7 @@ __all__ = [
     "load_masks",
     "mask_state",
     "mask_uses",
+    "sector_states",
 ]
 
 MASK_FAMILIES: tuple[str, ...] = (declared.CLASSES, declared.ZONES, declared.REPORT)
@@ -282,3 +287,13 @@ def _ensure(project: StoreProject, version_uid: str,
                 yield Progress(step.phase, step.done, total, step.message)
     masks = load_masks(project, version_uid)
     yield Progress("masks", total, total, "Máscaras al día", result=masks)
+
+
+def sector_states(project: StoreProject, version_uid: str | None = None
+                  ) -> tuple[SectorState, ...]:
+    """El estado de cada sector de búsqueda ahora (RF-012-09, RF-012-10; A12, D-26), en su
+    orden: los declarados o, sin ellos, el perímetro (código ``""``, «el perímetro de
+    actuación», con el perímetro activo en la versión ``version_uid``, uid o código, o en el
+    proyecto); cada uno con su búsqueda vigente o pendiente. Solo lee."""
+    with project.read() as conn:
+        return sector_states_now(conn, project, version_uid)
