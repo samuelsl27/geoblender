@@ -454,6 +454,95 @@ def set_column_titles(
     )
 
 
+def _registered_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    """Las columnas de ``table``, que existe y está en ``gpkg_contents``."""
+    columns = _existing_table(conn, table)
+    registered = conn.execute(
+        "SELECT 1 FROM gpkg_contents WHERE table_name = ?", (table,)
+    ).fetchone()
+    if registered is None:
+        reason = "no es una capa ni una tabla registrada en gpkg_contents"
+        raise _invalid("table_unregistered", reason, "tabla", table)
+    return columns
+
+
+def _enum_values(values: Sequence[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Los pares (código, texto) de una lista de valores, comprobados."""
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in values:
+        if isinstance(item, str) or not isinstance(item, Sequence) or len(item) != 2:
+            reason = "cada valor es un par (código, texto)"
+            raise _invalid("enum_invalid", reason, "valor de la lista", item)
+        code, text = item
+        if not isinstance(code, str) or not code.strip():
+            reason = "un código es un texto con algo escrito"
+            raise _invalid("enum_invalid", reason, "código de la lista", code)
+        if not isinstance(text, str) or not text.strip():
+            reason = "el texto de un código es un texto con algo escrito"
+            raise _invalid("enum_invalid", reason, f"texto de «{code}»", text)
+        if code in seen:
+            raise _invalid("enum_invalid", "está repetido en la lista", "código de la lista",
+                           code)
+        seen.add(code)
+        pairs.append((code, text))
+    if not pairs:
+        raise _invalid("enum_invalid", "una lista de valores tiene al menos uno",
+                       "lista de valores", "vacía")
+    return pairs
+
+
+def set_column_enum(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    values: Sequence[tuple[str, str]],
+    *,
+    name: str | None = None,
+) -> str:
+    """Pone a la columna ``column`` de la capa o tabla ``table`` (registrada en
+    ``gpkg_contents``) la lista de valores ``values`` (pares código → texto para las personas)
+    y devuelve el nombre de la lista (spec 012, D-35; RF-012-03).
+
+    La lista va a ``gpkg_data_column_constraints`` (extensión «schema» de GeoPackage 1.4) como
+    filas ``enum``: el código en ``value`` y su texto en ``description``, en su orden; la
+    columna la nombra en ``gpkg_data_columns.constraint_name`` sin tocar su título. El GDAL la
+    lee como dominio de campo y QGIS la ofrece como lista. ``name`` (un identificador; por
+    defecto ``<tabla>_<columna>``) permite que varias columnas compartan una lista; volver a
+    llamarla con el mismo nombre la sustituye entera.
+
+    Rechaza sin escribir nada, con ``ValidationError``: una tabla que no existe o no está
+    registrada, una columna que no tiene, un nombre que no es un identificador
+    (``core.gpkg_name_invalid``) y una lista vacía, con un par mal formado, un código o un
+    texto vacíos o un código repetido (``core.gpkg_enum_invalid``); ``TypeError`` si
+    ``values`` es un texto o un diccionario y no una lista de pares."""
+    if isinstance(values, str | Mapping) or not isinstance(values, Sequence):
+        raise TypeError(f"la lista de valores es una secuencia de pares (código, texto), no "
+                        f"{values!r}")
+    columns = _registered_columns(conn, table)
+    _known_column(columns, table, column)
+    list_name = _check_name(f"{table}_{column}" if name is None else name, "lista de valores")
+    pairs = _enum_values(values)
+    _create_schema_tables(conn)
+    conn.execute(
+        f"DELETE FROM {DATA_COLUMN_CONSTRAINTS_TABLE} "
+        "WHERE constraint_name = ? AND constraint_type = 'enum'",
+        (list_name,),
+    )
+    conn.executemany(
+        f"INSERT INTO {DATA_COLUMN_CONSTRAINTS_TABLE} (constraint_name, constraint_type, "
+        "value, description) VALUES (?, 'enum', ?, ?)",
+        [(list_name, code, text) for code, text in pairs],
+    )
+    conn.execute(
+        f"INSERT INTO {DATA_COLUMNS_TABLE} (table_name, column_name, constraint_name) "
+        "VALUES (?, ?, ?) ON CONFLICT (table_name, column_name) "
+        "DO UPDATE SET constraint_name = excluded.constraint_name",
+        (table, column, list_name),
+    )
+    return list_name
+
+
 def index_name(table: str, columns: Sequence[str]) -> str:
     """El nombre del índice de las columnas ``columns`` de ``table`` que crea
     :func:`create_index`: ``idx_<tabla>_<columna>[_<columna>…]``."""

@@ -118,6 +118,21 @@ CATALOG: tuple[Message, ...] = (
         "{name} ({ctype}) es {geometry} con un resguardo hacia fuera de {value} m: una línea o "
         "un punto necesita un resguardo mayor que 0 m, o no ocupa ninguna celda.",
     ),
+    # Al escribir las filas (D-22; store.py) ---------------------------------------------------
+    Message(
+        "core.constraint_code_taken",
+        "{name}: the code «{value}» is already used by another constraint; a code is unique in "
+        "the three constraint layers.",
+        "{name}: el código «{value}» ya lo usa otra restricción; un código es único en las "
+        "tres capas de restricciones.",
+    ),
+    Message(
+        "core.constraint_code_immutable",
+        "{name}: its code is «{old}» and cannot become «{value}»; the parameters of a "
+        "constraint hang from its code.",
+        "{name}: su código es «{old}» y no puede pasar a ser «{value}»; los parámetros de una "
+        "restricción cuelgan de su código.",
+    ),
 )
 """Todos los mensajes de las restricciones."""
 
