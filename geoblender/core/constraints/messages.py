@@ -335,6 +335,67 @@ CATALOG: tuple[Message, ...] = (
         "The layer «{layer}» has no field «{value}»: its fields are {fields}.",
         "La capa «{layer}» no tiene el campo «{value}»: sus campos son {fields}.",
     ),
+    # Intenciones del cliente (RF-012-26, RF-012-27; T15) -----------------------------------
+    Message(
+        "core.constraint_source_role_unknown",
+        "entity {fid} of «{layer}»: the field «{field}» says «{value}», which is not a role "
+        "of the correspondence",
+        "entidad {fid} de «{layer}»: el campo «{field}» dice «{value}», que no es un rol de la "
+        "correspondencia",
+    ),
+    Message(
+        "core.constraint_source_elevation_missing",
+        "entity {fid} of «{layer}»: a mark «Mine to an elevation» needs its elevation (m) and "
+        "the field «{field}» is empty",
+        "entidad {fid} de «{layer}»: una marca «Explotar a una cota» pide su cota (m) y el "
+        "campo «{field}» está vacío",
+    ),
+    Message(
+        "core.constraint_source_elevation_invalid",
+        "entity {fid} of «{layer}»: the field «{field}» says «{value}», which is not an "
+        "elevation (m)",
+        "entidad {fid} de «{layer}»: el campo «{field}» dice «{value}», que no es una cota (m)",
+    ),
+    Message(
+        "core.constraint_source_elevation_unexpected",
+        "entity {fid} of «{layer}»: the field «{field}» gives an elevation ({value}), and only "
+        "a mark «Mine to an elevation» has one",
+        "entidad {fid} de «{layer}»: el campo «{field}» da una cota ({value}), y solo la lleva "
+        "una marca «Explotar a una cota»",
+    ),
+    Message(
+        "core.constraint_intention_nothing",
+        "No client intention was saved from «{layer}» ({value} entities rejected): "
+        "{problems}.",
+        "No se guardó ninguna intención del cliente desde «{layer}» ({value} entidades "
+        "rechazadas): {problems}.",
+    ),
+    Message(
+        "core.constraint_intention_document_unknown",
+        "The source document «{value}» is not an input of the project: register it first "
+        "as an input of type document.",
+        "El documento de origen «{value}» no es una entrada del proyecto: regístralo antes "
+        "como entrada de tipo documento.",
+    ),
+    Message(
+        "core.constraint_intention_document_kind",
+        "The input «{input}» is of type «{kind}»: the source of a client intention is an "
+        "input of type document.",
+        "La entrada «{input}» es de tipo «{kind}»: el origen de una intención del cliente es "
+        "una entrada de tipo documento.",
+    ),
+    Message(
+        "core.constraint_intention_decision_unknown",
+        "The decision «{value}» is not registered in the project.",
+        "La decisión «{value}» no está registrada en el proyecto.",
+    ),
+    Message(
+        "core.constraint_intention_kind_not_accepted",
+        "The intention «{intention}» is {kind}, and a constraint «{ctype}» cannot be: choose "
+        "another type.",
+        "La intención «{intention}» es {kind}, y una restricción «{ctype}» no puede serlo: "
+        "elige otro tipo.",
+    ),
 )
 """Todos los mensajes de las restricciones."""
 

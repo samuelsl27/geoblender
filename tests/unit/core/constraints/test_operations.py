@@ -42,11 +42,26 @@ Crear, completar y editar en QGIS (T14; HU-012-1, HU-012-2; plan 012 §5.2.2, D-
   parámetros; cambiar un atributo no toca el código ni los parámetros, y el código no cambia.
 - **RF-012-06 (CE-012-04)**: el perímetro redibujado en QGIS (+1,43 ha) deja obsoletas las
   máscaras con la causa y, al compilar, el área ganada de su polígono es 1,43 ha (≤ 10⁻⁹ ha).
+
+Intenciones del cliente (T15; HU-012-6; plan 012 D-8):
+
+- **RF-012-26**: las marcas de una capa «entidades» importada (``gis_fea_marcas``, con su
+  entrada) se guardan como intenciones (``core.edit_intentions``, con la capa y el documento de
+  origen como entradas) con su rol, su cota si la pide, su fecha, su documento (una entrada de
+  tipo documento) y la decisión enlazada; «explotar a una cota» sin cota, un rol desconocido,
+  una cota en otro rol, una cota o una fecha que no lo son se rechazan con su entidad y su
+  motivo; un documento que no es de tipo documento o una decisión que no existe, sin registrar
+  nada. Una marca encima de un recinto **no cambia ninguna máscara**: las de V01 siguen al día
+  y, compiladas de nuevo, la rejilla de clases y las zonas son bit a bit iguales.
+- **RF-012-27**: convertida en restricción (``core.edit_constraints`` con la intención como
+  entrada), la restricción queda enlazada a la intención con el tipo, el motivo y el decisor
+  declarados, las máscaras cambian, y la intención no (sus filas, iguales).
 """
 
 from __future__ import annotations
 
 import sqlite3
+import unittest
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from datetime import date
@@ -56,6 +71,7 @@ import numpy as np
 
 from tests.support import constraints_fixtures as fx
 from tests.support import constraints_project as cp
+from tests.support import provenance_data
 from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
 
@@ -81,6 +97,13 @@ external = import_geoblender("core.datasets.external")
 stale = import_geoblender("core.provenance.stale")
 graph = import_geoblender("core.provenance.graph")
 wkb = import_geoblender("core.gpkg.wkb")
+inputs_model = import_geoblender("core.inputs.model")
+inputs_registry = import_geoblender("core.inputs.registry")
+readers = import_geoblender("core.content.readers")
+hashing = import_geoblender("core.hashing")
+userdata_mod = import_geoblender("core.userdata")
+decisions = import_geoblender("core.versions.decisions")
+mask_store = import_geoblender("gis.masks.store")
 
 LAYERS_TYPE = "gis.test_layers"
 """La operación de prueba de ``gis`` que escribe las capas «entidades»."""
@@ -164,9 +187,9 @@ class _LayersCase(cp.ConstraintsProjectCase):
     # --- Ayudas -----------------------------------------------------------------------------
 
     @classmethod
-    def write_layer(cls, name: str, layer: Any) -> None:
+    def write_layer(cls, name: str, layer: Any, input_uid: str | None = None) -> None:
         """:data:`LAYERS_TYPE`: escribe (o vuelve a escribir) la capa ``name`` y la registra
-        como dato del proyecto."""
+        como dato del proyecto (con ``input_uid``, como lo importado de esa entrada)."""
         srs = cls.project.record.crs_epsg
         cls.clock.advance(minutes=1)
         handle = operations.begin_operation(cls.project, LAYERS_TYPE, settings={"name": name},
@@ -191,7 +214,8 @@ class _LayersCase(cp.ConstraintsProjectCase):
             conn.executemany(f'INSERT INTO "{name}" (fid, geom{names}) VALUES ({marks})', rows)
             handle.complete(conn, outputs=(datasets.DatasetSpec(
                 name, "gis", "vector", datasets.Store.GPKG, name, reader=builtin.GPKG_LAYER.id,
-                role="features", crs_epsg=srs),), message="Capa de prueba")
+                role="features", crs_epsg=srs, input_uid=input_uid,
+                immutable=input_uid is not None),), message="Capa de prueba")
 
     def io(self, operation_uid: str, direction: str) -> dict[str, tuple[str, str]]:
         """Papel → (nombre del dato, hash anotado) de lo que consume o produce una operación."""
@@ -645,7 +669,279 @@ class EditOutsideTest(_LayersCase):
         self.assertEqual(values[("perimetro", "polygon_lost")], 0.0)
 
 
-if __name__ == "__main__":
-    import unittest
+# --- Intenciones del cliente (T15) ---------------------------------------------------------------
 
+
+IMPORT_TYPE = "gis.test_import"
+"""La importación de prueba de las entradas (el documento y la capa de las marcas)."""
+MARKS = "gis_fea_marcas"
+MARK_COLUMNS = ("rol", "nombre", "cota", "fecha")
+BY_MARK_FIELDS = cprov.IntentionMapping(role_field="rol", name_field="nombre",
+                                        elevation_field="cota", date_field="fecha")
+MARK_DATE = date(2025, 9, 12)
+NOT_APPLICABLE = {"not_applicable": True}
+
+
+def _marks(items: Sequence[tuple[int, str, str, str | None, tuple[float, ...]]]) -> Any:
+    """Una capa de polígonos de marcas: (número, rol, nombre, cota en texto, caja local)."""
+    return vector.FeatureLayer(
+        "polygon", tuple(item[0] for item in items),
+        tuple(((fx.rectangle(*item[4]),),) for item in items),
+        tuple(vector.FieldColumn(column, column, "TEXT") for column in MARK_COLUMNS),
+        {"rol": tuple(item[1] for item in items), "nombre": tuple(item[2] for item in items),
+         "cota": tuple(item[3] for item in items),
+         "fecha": tuple(MARK_DATE.isoformat() for _ in items)})
+
+
+MARK_ITEMS = (
+    (2, fx.INTENTION_ROLES["fill"], "Hondonada", None, (30.0, 60.0, 50.0, 80.0)),
+    (3, fx.INTENTION_ROLES["mine_to_elevation"], "Plaza de cantera", "612.5",
+     (140.0, 90.0, 170.0, 110.0)),
+    (5, fx.INTENTION_ROLES["platform"], "Plataforma de acopio", None,
+     (200.0, 160.0, 240.0, 190.0)),
+    (7, fx.INTENTION_ROLES["mine_to_elevation"], "Corta sin cota", "  ",
+     (100.0, 30.0, 120.0, 50.0)),
+    (8, "Vallar", "Desconocida", None, (100.0, 60.0, 110.0, 70.0)),
+    (9, fx.INTENTION_ROLES["protect"], "Balsa a proteger", None, fx.POND_LOCAL),
+)
+"""Las marcas de la capa: cuatro buenas (la última, encima de la balsa) y dos malas."""
+
+
+def _entity(feature: Any) -> Any:
+    """Una marca de las fuentes sintéticas como entidad de origen (cota como número)."""
+    kind = {"POINT": "point", "LINESTRING": "line", "POLYGON": "polygon"}[
+        feature.geometry_type]
+    coords = feature.coords
+    parts = ((np.asarray(coords, dtype=np.float64).reshape(1, 2),),) if kind == "point" else (
+        ((coords,),) if kind == "line" else (tuple(coords),))
+    return cprov.SourceEntity(feature.fid, cmodel.GeometryKind(kind), parts,
+                              dict(feature.attributes))
+
+
+class IntentionsFromEntitiesTest(unittest.TestCase):
+    """RF-012-26 en el núcleo: las seis marcas de las fuentes, una por rol, y los rechazos."""
+
+    def test_six_roles_and_rejections(self) -> None:
+        """RF-012-26: las seis marcas (puntos, líneas y polígonos) con su rol del español, la
+        cota solo en «explotar a una cota», su fecha, el documento y la decisión; cada entidad
+        mala, rechazada con su motivo."""
+        marks = [_entity(item) for item in fx.source_features()[fx.LAYER_MARKS]]
+        rows, rejected = cprov.intentions_from_entities(
+            marks, BY_MARK_FIELDS, layer="marcas", source_input="entrada-marcas",
+            document_input="entrada-acta", decision_uid="decision-1")
+        self.assertEqual(rejected, ())
+        self.assertEqual([(row.source_fid, row.role.value, row.name, row.elevation_m,
+                           row.kind.value) for row in rows],
+                         [(1, "protect", "Ermita", None, "point"),
+                          (2, "fill", "Hondonada", None, "polygon"),
+                          (3, "mine_to_elevation", "Plaza de cantera", fx.MINE_ELEVATION_M,
+                           "polygon"),
+                          (4, "keep_as_is", "Muro de piedra", None, "line"),
+                          (5, "platform", "Plataforma de acopio", None, "polygon"),
+                          (6, "slope_to_treat", "Talud norte", None, "line")])
+        for row in rows:
+            self.assertEqual((row.stated_on, row.document_input, row.decision_uid,
+                              row.source_input, row.fid),
+                             (MARK_DATE, "entrada-acta", "decision-1", "entrada-marcas", 0))
+        point = marks[0]
+        bad = [
+            replace(point, fid=11, parts=()),
+            replace(point, fid=12, attributes={**point.attributes, "cota": 400.0}),
+            replace(point, fid=13, attributes={**point.attributes, "rol": "Explotar a una cota",
+                                               "cota": "alta"}),
+            replace(point, fid=14, attributes={**point.attributes, "fecha": "ayer"}),
+            replace(point, fid=15, attributes={**point.attributes, "nombre": " "}),
+            replace(point, fid=16, attributes={**point.attributes, "rol": "Explotar a una cota",
+                                               "cota": float("nan")}),
+        ]
+        rows, rejected = cprov.intentions_from_entities(
+            bad, BY_MARK_FIELDS, layer="marcas", source_input="e", document_input="d",
+            decision_uid=None)
+        self.assertEqual(rows, ())
+        self.assertEqual([(item.fid, item.problem, item.field) for item in rejected],
+                         [(11, "no_geometry", None), (12, "elevation_unexpected", "cota"),
+                          (13, "elevation_invalid", "cota"), (14, "date_invalid", "fecha"),
+                          (15, "field_empty", "nombre"), (16, "elevation_invalid", "cota")])
+        for item in rejected:
+            self.assertIn(f"entidad {item.fid} de «marcas»", item.text())
+        self.assertIn("«alta»", rejected[2].text())
+        with self.assertRaises(ValueError):
+            cprov.IntentionMapping(role_field="rol")  # sin fecha
+        with self.assertRaises(ValueError):
+            cprov.IntentionMapping(role=cmodel.IntentionRole.FILL, role_field="rol",
+                                   stated_on=MARK_DATE)
+
+
+class IntentionsTest(_LayersCase):
+    """RF-012-26, RF-012-27: guardar las marcas de una capa importada, que no cambian ninguna
+    máscara, y convertir una en restricción."""
+
+    document: str
+    marks_input: str
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.enterClassContext(registered(contract.OperationDef(
+            IMPORT_TYPE, "1.0", "gis", "Imports of the tests", False)))
+        sources_folder = cls.root / "fuentes"
+        gpkg = fx.write_sources(cls.root)
+        pdf = sources_folder / "acta_cliente.pdf"
+        pdf.write_bytes(provenance_data.report_pdf())
+        user = userdata_mod.UserData(cls.root.parents[1] / "u")
+        no_crs = inputs_model.input_declarations(NOT_APPLICABLE, NOT_APPLICABLE, {})
+        etrs = {"epsg": cls.project.record.crs_epsg}
+
+        def located(path: Any) -> dict[str, Any]:
+            found = path.stat()
+            return {"files": [inputs_registry.locate_source(path, cls.project, user)],
+                    "file_prints": [inputs_model.SourcePrint(
+                        hashing.sha256_file(path), size=found.st_size,
+                        mtime_ns=found.st_mtime_ns)]}
+
+        document = inputs_model.InputSpec(
+            "Acta_cliente", "document", "gis", builtin.DOCUMENT.id, **located(pdf),
+            digest=readers.read_content(builtin.DOCUMENT, builtin.DOCUMENT.request(
+                "document", no_crs, {"main": pdf})),
+            crs_h=NOT_APPLICABLE, crs_v=NOT_APPLICABLE)
+        request = builtin.GPKG_LAYER.request(
+            "vector", inputs_model.input_declarations(etrs, NOT_APPLICABLE, {}),
+            {"main": gpkg}, {"layer": fx.LAYER_MARKS})
+        marks = inputs_model.InputSpec(
+            "Marcas_cliente", "vector", "gis", builtin.GPKG_LAYER.id, **located(gpkg),
+            digest=readers.read_content(builtin.GPKG_LAYER, request), crs_h=etrs,
+            crs_v=NOT_APPLICABLE, layer=fx.LAYER_MARKS, settings={"layer": fx.LAYER_MARKS})
+        cls.clock.advance(minutes=1)
+        handle = operations.begin_operation(cls.project, IMPORT_TYPE, settings={},
+                                            executor="blender")
+        with cls.project.write_transaction() as conn:
+            cls.document = str(inputs_registry.register_input(
+                conn, cls.project, document, operation_uid=handle.uid).uid)
+            cls.marks_input = str(inputs_registry.register_input(
+                conn, cls.project, marks, operation_uid=handle.uid).uid)
+            handle.complete(conn)
+        cls.write_layer(MARKS, _marks(MARK_ITEMS), cls.marks_input)
+
+    def masks_now(self) -> tuple[str, Any]:
+        """El hash de la rejilla de clases de V01 y sus máscaras."""
+        return (self.record("gis_msk", self.v1).content_sha256,
+                access.load_masks(self.project, self.v1.uid))
+
+    def recompile(self) -> None:
+        """Compila de nuevo las máscaras de V01 (aunque estén al día)."""
+        self.clock.advance(minutes=1)
+        handle = mask_store.begin_compile(self.project, version=self.v1.uid)
+        _last(mask_store.compile_run(self.project, handle, budget_s=BUDGET_S))
+
+    def assertSameMasks(self, first: Any, second: Any) -> None:  # noqa: N802
+        self.assertEqual(first[0], second[0])
+        self.assertTrue(np.array_equal(first[1].classes, second[1].classes))
+        self.assertEqual(dict(first[1].zones), dict(second[1].zones))
+
+    def test_saved_never_in_masks_and_converted(self) -> None:
+        """RF-012-26, RF-012-27 (véase el módulo)."""
+        srs = self.project.record.crs_epsg
+        _last(access.ensure_masks_steps(self.project, self.v1.uid, budget_s=BUDGET_S))
+        before = self.masks_now()
+        self.clock.advance(minutes=1)
+        with self.project.write_transaction() as conn:
+            decision = decisions.record_decision(
+                conn, self.project, decided_by=PERSON, decided_at="2025-09-15",
+                what="Marcas del cliente para el diseño", source_input_uid=self.document)
+
+        # Lo que no se registra: un documento que no lo es, uno que no existe, una decisión
+        # que no existe.
+        count = self.query("SELECT count(*) FROM gb_operation")
+        for code, document, decision_uid in (
+                ("core.constraint_intention_document_kind", self.marks_input, None),
+                ("core.constraint_intention_document_unknown", "no-existe", None),
+                ("core.constraint_intention_decision_unknown", self.document, "no-existe")):
+            with self.assertRaises(cmessages.ConstraintError) as caught:
+                sources.create_intentions(self.project, MARKS, BY_MARK_FIELDS,
+                                          document=document, decision_uid=decision_uid)
+            self.assertEqual(caught.exception.code, code)
+        self.assertEqual(self.query("SELECT count(*) FROM gb_operation"), count)
+
+        # Guardar las marcas (RF-012-26).
+        self.clock.advance(minutes=1)
+        saved = sources.create_intentions(self.project, MARKS, BY_MARK_FIELDS,
+                                          document=self.document, decision_uid=decision.uid)
+        self.assertEqual([(item.fid, item.problem, item.field) for item in saved.rejected],
+                         [(7, "elevation_missing", "cota"), (8, "role_unknown", "rol")])
+        self.assertIn("«Vallar»", saved.rejected[1].text())
+        with self.project.read() as conn:
+            stored = cstore.read_intentions(conn)
+        self.assertEqual([item.uid for item in stored], [item.uid for item in saved.intentions])
+        layer = gstore.load_features(self.project, MARKS)
+        parts = dict(zip(layer.fids, layer.parts, strict=True))
+        self.assertEqual([(item.source_fid, item.role.value, item.name, item.elevation_m)
+                          for item in stored],
+                         [(2, "fill", "Hondonada", None),
+                          (3, "mine_to_elevation", "Plaza de cantera", 612.5),
+                          (5, "platform", "Plataforma de acopio", None),
+                          (9, "protect", "Balsa a proteger", None)])
+        for item in stored:
+            self.assertEqual((item.stated_on, item.document_input, item.decision_uid,
+                              item.source_input, item.kind.value),
+                             (MARK_DATE, self.document, decision.uid, self.marks_input,
+                              "polygon"))
+            self.assertTrue(cp.same_parts(item.parts, parts[item.source_fid]), item.name)
+        (op_type,), = self.query("SELECT op_type FROM gb_operation WHERE uid = ?",
+                                 saved.operation_uid)
+        self.assertEqual(op_type, cprov.EDIT_INTENTIONS)
+        self.assertEqual(self.io(saved.operation_uid, "in"),
+                         {cprov.SOURCE_ROLE: (MARKS, self.record(MARKS).content_sha256)})
+        self.assertEqual(self.query(
+            "SELECT item_uid FROM gb_operation_io WHERE operation_uid = ? AND role = ?",
+            saved.operation_uid, cprov.DOCUMENT_ROLE), [(self.document,)])
+        self.assertEqual({name for name, _ in self.io(saved.operation_uid, "out").values()},
+                         {cstore.INTENTION_TABLE})
+
+        # Ninguna máscara cambia (error 30): al día y, compiladas otra vez, bit a bit iguales.
+        self.assertEqual(access.mask_state(self.project, self.v1.uid)[0],
+                         access.MaskState.CURRENT)
+        self.recompile()
+        self.assertSameMasks(before, self.masks_now())
+
+        # Convertir la de la balsa en restricción (RF-012-27).
+        intention_rows = self.query(f"SELECT * FROM {cstore.INTENTION_TABLE} ORDER BY fid")
+        (pond,) = [item for item in stored if item.name == "Balsa a proteger"]
+        (hollow,) = [item for item in stored if item.name == "Hondonada"]
+        with self.assertRaises(cmessages.ConstraintError) as caught:
+            cprov.constraint_from_intention(
+                replace(pond, kind=cmodel.GeometryKind.LINE,
+                        parts=((fx.absolute([(0.0, 0.0), (1.0, 0.0)]),),)),
+                ctype=cmodel.ConstraintType.LEGAL_LIMIT, reason="?", decided_by=PERSON,
+                decided_on=None)
+        self.assertEqual(caught.exception.code, "core.constraint_intention_kind_not_accepted")
+        self.clock.advance(minutes=1)
+        converted = cprov.convert_intention(
+            self.project, hollow, ctype=cmodel.ConstraintType.FILL_ONLY,
+            reason="La propiedad pide rellenar la hondonada", decided_by=PERSON,
+            decided_on=date(2025, 9, 20), params=DECLARED, srs_id=srs)
+        (row,) = converted.constraints
+        (kept,) = [item for item in self.stored_constraints() if item.uid == row.uid]
+        self.assertEqual((kept.code, kept.name, kept.ctype, kept.reason, kept.decided_by,
+                          kept.intention_uid, kept.source_input, kept.source_fid),
+                         ("hondonada", "Hondonada", cmodel.ConstraintType.FILL_ONLY,
+                          "La propiedad pide rellenar la hondonada", PERSON, hollow.uid,
+                          self.marks_input, 2))
+        self.assertTrue(cp.same_parts(kept.parts, hollow.parts))
+        inputs = self.io(converted.operation_uid, "in")
+        self.assertEqual(inputs, {cprov.INTENTION_ROLE: (
+            cstore.INTENTION_TABLE, self.record(cstore.INTENTION_TABLE).content_sha256)})
+        self.assertEqual(self.query(f"SELECT * FROM {cstore.INTENTION_TABLE} ORDER BY fid"),
+                         intention_rows)
+
+        # Convertida, sí cambia las máscaras.
+        self.assertEqual(access.mask_state(self.project, self.v1.uid)[0],
+                         access.MaskState.STALE)
+        _last(access.ensure_masks_steps(self.project, self.v1.uid, budget_s=BUDGET_S))
+        after = self.masks_now()
+        self.assertNotEqual(after[0], before[0])
+        self.assertIn("hondonada", after[1].zones)
+        self.assertFalse(np.array_equal(after[1].cut_allowed(), before[1].cut_allowed()))
+
+
+if __name__ == "__main__":
     unittest.main()

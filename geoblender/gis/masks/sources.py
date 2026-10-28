@@ -9,7 +9,8 @@ resuelve los campos que elige la persona (por su columna o su título) y pide a
 ``core.constraints.provenance.create_constraints`` que las cree con ``core.edit_constraints``
 (con la capa como entrada ``source``), con su origen (la entrada de la capa y la entidad) y los
 parámetros que declara la persona; las entidades que no sirven quedan rechazadas con su motivo.
-Python puro con numpy (nivel 2).
+:func:`create_intentions` (T15; RF-012-26) guarda igual las marcas del cliente como
+intenciones (``core.edit_intentions``), que no entran en ninguna máscara. Python puro con numpy (nivel 2).
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from ..provenance import DOMAINS, FAMILIES_BY_CODE, FEATURES
 from ..store import StoreProject
 from ..vector import FeatureLayer
 
-__all__ = ["create_constraints", "source_entities"]
+__all__ = ["create_constraints", "create_intentions", "source_entities"]
 
 
 def _family(name: str) -> str | None:
@@ -62,8 +63,8 @@ def source_entities(project: StoreProject, source: str
     return entities, fields
 
 
-def _columns(mapping: cprov.LayerMapping, fields: Sequence[tuple[str, str]],
-             layer: str) -> dict[str, str]:
+def _columns(mapping: cprov.LayerMapping | cprov.IntentionMapping,
+             fields: Sequence[tuple[str, str]], layer: str) -> dict[str, str]:
     """Campo elegido → su columna (por la columna o por su título)."""
     found: dict[str, str] = {}
     for wanted in mapping.fields():
@@ -92,3 +93,26 @@ def create_constraints(project: StoreProject, source: str, mapping: cprov.LayerM
     return cprov.create_constraints(
         project, entities, mapping.with_fields(columns), layer=source, source=source,
         source_input=source_input, params=params, srs_id=int(project.record.crs_epsg))
+
+
+def create_intentions(project: StoreProject, source: str, mapping: cprov.IntentionMapping, *,
+                      document: str, decision_uid: str | None = None) -> Any:
+    """Guarda como intenciones del cliente las marcas de la capa ``source`` (RF-012-26; una
+    capa importada del proyecto: su entrada es el origen de cada intención) según ``mapping``,
+    con el documento de origen ``document`` (el uid de una entrada de tipo documento) y la
+    decisión enlazada, y devuelve lo que dejó ``core.edit_intentions`` (``EditedIntentions``).
+    Nunca entran en una máscara (error 30). ``ConstraintError``
+    ``core.constraint_source_field_unknown`` si un campo elegido no está en la capa, y los de
+    ``core.edit_intentions``, antes de registrar nada; ``ValueError`` si la capa no viene de
+    una entrada."""
+    entities, fields = source_entities(project, source)
+    columns = _columns(mapping, fields, source)
+    with project.read() as conn:
+        record = dataset_registry.get(conn, source)
+    if record is None or record.input_uid is None:
+        raise ValueError(f"las intenciones salen de una capa importada (con su entrada), no "
+                         f"de «{source}»")
+    return cprov.create_intentions(
+        project, entities, mapping.with_fields(columns), layer=source, source=source,
+        source_input=str(record.input_uid), document=document, decision_uid=decision_uid,
+        srs_id=int(project.record.crs_epsg))

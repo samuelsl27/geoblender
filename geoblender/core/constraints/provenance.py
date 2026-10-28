@@ -24,8 +24,15 @@
   valores y los campos de nombre, motivo, decisor y fecha (:class:`LayerMapping`): las que no
   sirven se rechazan con su entidad y su motivo (:class:`Rejected`), y la capa de origen solo
   se lee. Una edición en QGIS no pasa por aquí: es una ``core.external_edit`` de la 008.
+  Una restricción que sale de una intención del cliente (:func:`convert_intention`,
+  RF-012-27) lleva su enlace y ``core_intention`` como entrada ``intention``.
+- :data:`EDIT_INTENTIONS` (``core.edit_intentions``): guardar las marcas del cliente como
+  intenciones (RF-012-26; D-8). Entradas ``source`` (la capa) y ``document`` (la entrada de
+  tipo documento de origen); salida ``core_intention``, que solo crece. :func:`create_intentions`
+  las lee de las entidades con su rol, su cota, su fecha y su nombre
+  (:class:`IntentionMapping`). Ninguna máscara ni ninguna verificación las lee (error 30).
 
-Las tres son de proyecto y no se repiten solas (una búsqueda es una decisión de una persona,
+Las cuatro son de proyecto y no se repiten solas (una búsqueda es una decisión de una persona,
 D-26). Importar este módulo no registra nada: lo registra ``bl`` (:data:`OPERATIONS`); las
 pruebas, a mano. La geometría (validar la capa, el área sin sector, la búsqueda) y la lectura
 de las capas la hace ``gis.masks`` (``sectors``, ``sources``), que llama a estas funciones.
@@ -48,13 +55,16 @@ from ..datasets.model import DatasetSpec
 from ..i18n import translate
 from ..params.store import ParameterStore
 from ..provenance.contract import OperationDef
-from ..provenance.operations import OperationProject, Use, begin_operation
+from ..inputs.model import INACTIVE_STATUSES
+from ..provenance.operations import ItemKind, OperationProject, Use, begin_operation
 from .messages import ConstraintError, render
 from .model import (
     Constraint,
     ConstraintParam,
     ConstraintType,
     GeometryKind,
+    Intention,
+    IntentionRole,
     SearchHit,
     SearchRecord,
     Sector,
@@ -63,6 +73,7 @@ from .model import (
 from .params import SEARCH_DISTANCE, family, param_key
 from .store import (
     HIT_TABLE,
+    INTENTION_TABLE,
     SEARCH_TABLE,
     SECTOR_TABLE,
     append_search,
@@ -72,12 +83,17 @@ from .store import (
     replace_sectors,
     taken_codes,
     write_constraints,
+    write_intentions,
 )
 
 __all__ = [
     "DECLARE_SECTORS",
+    "DOCUMENT_ROLE",
     "EDIT_COMMAND",
     "EDIT_CONSTRAINTS",
+    "EDIT_INTENTIONS",
+    "INTENTIONS_COMMAND",
+    "INTENTION_ROLE",
     "FIND_COMMAND",
     "FIND_UNTOUCHABLES",
     "MAX_LAYERS",
@@ -87,16 +103,24 @@ __all__ = [
     "SECTOR_ROLE",
     "SOURCE_ROLE",
     "EditedConstraints",
+    "EditedIntentions",
+    "IntentionMapping",
     "LayerMapping",
     "ParamDeclaration",
     "Rejected",
     "SourceEntity",
     "close_search",
+    "constraint_from_intention",
     "constraints_from_entities",
+    "convert_intention",
     "create_constraints",
+    "create_intentions",
     "declare_sectors",
+    "default_role_values",
     "default_type_values",
     "edit_constraints",
+    "edit_intentions",
+    "intentions_from_entities",
     "layer_role",
 ]
 
@@ -111,7 +135,15 @@ EDIT_COMMAND = "geoblender.core_edit_constraints"
 """La ventana Restricciones (plan §5.3.4), que crea, completa y edita (sus diálogos internos
 ``core_create_constraints`` y ``core_complete_constraint`` se añadirán con su clase real)."""
 _EDIT_COMMANDS = (EDIT_COMMAND,)
+EDIT_INTENTIONS = "core.edit_intentions"
+INTENTIONS_COMMAND = "geoblender.core_edit_client_marks"
+"""La orden «Intenciones del cliente…» del catálogo (R-32)."""
 SOURCE_ROLE = "source"
+DOCUMENT_ROLE = "document"
+"""El papel del documento de origen de las intenciones (una entrada de tipo documento)."""
+INTENTION_ROLE = "intention"
+"""El papel de ``core_intention`` en una ``core.edit_constraints`` que convierte una."""
+DOCUMENT_KIND = "document"
 SECTOR_ROLE = "sector"
 MAX_LAYERS = 10
 """Las capas que consulta una búsqueda, como mucho (plan §5.2.3)."""
@@ -123,6 +155,8 @@ OPERATIONS: tuple[OperationDef, ...] = (
                  False, commands=(FIND_COMMAND,)),
     OperationDef(EDIT_CONSTRAINTS, OP_VERSION, MODULE, "Edition of the constraints", False,
                  commands=_EDIT_COMMANDS),
+    OperationDef(EDIT_INTENTIONS, OP_VERSION, MODULE, "Client intentions", False,
+                 commands=(INTENTIONS_COMMAND,)),
 )
 """Las operaciones de este módulo, de proyecto y sin repetición."""
 
@@ -496,7 +530,9 @@ def edit_constraints(project: OperationProject, rows: Sequence[Constraint], *,
     pide su tipo según ``params`` (RF-012-02), en la misma transacción; las que ya tenían código
     no tocan sus parámetros (se cambian en Parámetros, con su ámbito, RF-009-24). ``source``: el
     dato de la capa de la que salen (su entrada ``source``); ``settings`` y ``rejected``, lo que
-    se anota en los ajustes; ``srs_id``, el CRS del proyecto.
+    se anota en los ajustes; ``srs_id``, el CRS del proyecto. Si alguna sale de una intención
+    del cliente (``intention_uid``, RF-012-27), ``core_intention`` es la entrada
+    ``intention`` (una intención que no está: ``ValueError``, sin registrar nada).
 
     Los rechazos de ``store.write_constraints`` (``core.constraint_code_taken``,
     ``core.constraint_code_immutable``) y de los parámetros (``ParamError``) no dejan nada
@@ -512,8 +548,19 @@ def edit_constraints(project: OperationProject, rows: Sequence[Constraint], *,
         "completed": sum(1 for row in rows if row.fid > 0 and not row.code),
         "rejected": [[item.fid, item.problem, item.field] for item in rejected],
     })
-    handle = begin_operation(project, EDIT_CONSTRAINTS, settings=noted,
-                             inputs=() if source is None else (Use(source, SOURCE_ROLE),),
+    intentions = sorted({row.intention_uid for row in rows if row.intention_uid})
+    inputs = [] if source is None else [Use(source, SOURCE_ROLE)]
+    if intentions:
+        with project.read() as conn:
+            known = {uid for (uid,) in conn.execute(
+                f"SELECT uid FROM {INTENTION_TABLE}")} if INTENTION_TABLE in _tables(conn) \
+                else set()
+        missing = [uid for uid in intentions if uid not in known]
+        if missing:
+            raise ValueError(f"intenciones que no están en el proyecto: {missing!r}")
+        noted["intentions"] = intentions
+        inputs.append(Use(INTENTION_TABLE, INTENTION_ROLE))
+    handle = begin_operation(project, EDIT_CONSTRAINTS, settings=noted, inputs=tuple(inputs),
                              executor="blender")
     try:
         with project.write_transaction() as conn:
@@ -560,3 +607,316 @@ def create_constraints(project: OperationProject, entities: Sequence[SourceEntit
     return edit_constraints(project, rows, params=params, source=source,
                             settings={"mapping": mapping.settings()}, rejected=rejected,
                             srs_id=srs_id)
+
+
+
+# --- Intenciones del cliente (RF-012-26, RF-012-27; D-8) ---------------------------------------
+
+
+def _tables(conn: Any) -> set[str]:
+    return {str(name) for (name,) in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+
+@dataclass(frozen=True, slots=True)
+class IntentionMapping:
+    """Cómo se leen las intenciones de las entidades de una capa (RF-012-26): un rol para todas
+    (``role``) o el campo que lo da (``role_field``) con su correspondencia de valores
+    (``role_values``, valor → rol, sin distinguir mayúsculas ni los espacios de los extremos;
+    sin ella, :func:`default_role_values`); el campo del nombre; la cota de «explotar a una
+    cota» (m), de un campo o fija; y la fecha, de un campo o fija (una de las dos)."""
+
+    role: IntentionRole | None = None
+    role_field: str | None = None
+    role_values: Mapping[str, IntentionRole] | None = None
+    name_field: str | None = None
+    elevation_field: str | None = None
+    elevation_m: float | None = None
+    date_field: str | None = None
+    stated_on: date | None = None
+
+    def __post_init__(self) -> None:
+        if (self.role is None) == (self.role_field is None):
+            raise ValueError("el rol es uno para todas (role) o el de un campo (role_field)")
+        if self.role is not None:
+            object.__setattr__(self, "role", IntentionRole(self.role))
+        if self.elevation_field is not None and self.elevation_m is not None:
+            raise ValueError("la cota sale de un campo o es fija, no las dos cosas")
+        if (self.date_field is None) == (self.stated_on is None):
+            raise ValueError("la fecha de las marcas sale de un campo o es fija (una de las "
+                             "dos)")
+        if self.elevation_m is not None and _elevation(self.elevation_m) is None:
+            raise ValueError(f"la cota fija no es un número finito: {self.elevation_m!r}")
+        if self.role_values is not None:
+            object.__setattr__(self, "role_values", MappingProxyType(
+                {_key(value): IntentionRole(role) for value, role in self.role_values.items()}))
+
+    def fields(self) -> tuple[str, ...]:
+        """Los campos de la capa que usa, en su orden y sin repetir."""
+        chosen = (self.role_field, self.name_field, self.elevation_field, self.date_field)
+        return tuple(dict.fromkeys(name for name in chosen if name is not None))
+
+    def with_fields(self, columns: Mapping[str, str]) -> IntentionMapping:
+        """La misma con cada campo cambiado por ``columns[campo]`` (su columna)."""
+        def column(name: str | None) -> str | None:
+            return None if name is None else columns[name]
+
+        return replace(self, role_field=column(self.role_field),
+                       name_field=column(self.name_field),
+                       elevation_field=column(self.elevation_field),
+                       date_field=column(self.date_field))
+
+    def settings(self) -> dict[str, Any]:
+        """Sus ajustes en JSON (los de la operación)."""
+        values = None if self.role_values is None else {
+            value: role.value for value, role in sorted(self.role_values.items())}
+        return {"role": None if self.role is None else self.role.value,
+                "role_field": self.role_field, "role_values": values,
+                "name_field": self.name_field, "elevation_field": self.elevation_field,
+                "elevation_m": self.elevation_m, "date_field": self.date_field,
+                "stated_on": None if self.stated_on is None else self.stated_on.isoformat()}
+
+
+@dataclass(frozen=True, slots=True)
+class EditedIntentions:
+    """Lo que dejó ``core.edit_intentions``: su operación, las intenciones guardadas (con su
+    ``fid``, en su orden) y las entidades rechazadas."""
+
+    operation_uid: str
+    intentions: tuple[Intention, ...]
+    rejected: tuple[Rejected, ...] = ()
+
+
+def default_role_values() -> Mapping[str, IntentionRole]:
+    """La correspondencia por defecto del campo del rol: cada código (``protect``), su nombre
+    en español («Proteger») y su ``msgid`` en inglés («Protect»)."""
+    found: dict[str, IntentionRole] = {}
+    for role in IntentionRole:
+        for value in (role.value, role.label("es"), role.label_msgid):
+            found[_key(value)] = role
+    return MappingProxyType(found)
+
+
+def _elevation(value: object) -> float | None:
+    """La cota de ``value`` (número o texto exacto, con punto o coma decimal) en float64;
+    ``None`` si no es un número finito."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float | np.floating | np.integer):
+        number = float(value)
+    else:
+        try:
+            number = float(str(value).strip().replace(",", "."))
+        except ValueError:
+            return None
+    return number if math.isfinite(number) else None
+
+
+_NO_INTENTION: tuple[None, None, None] = (None, None, None)
+
+
+def _intention_rejection(entity: SourceEntity, mapping: IntentionMapping,
+                         values: Mapping[str, IntentionRole]
+                         ) -> tuple[IntentionRole | None, float | None, date | None,
+                                    tuple[str, str | None, object]]:
+    """El rol, la cota y la fecha de ``entity``, o lo que la rechaza: (problema, campo,
+    valor)."""
+    if not entity.parts:
+        return (*_NO_INTENTION, ("no_geometry", None, None))
+    role = mapping.role
+    if mapping.role_field is not None:
+        raw = entity.attributes.get(mapping.role_field)
+        if _text(raw) is None:
+            return (*_NO_INTENTION, ("field_empty", mapping.role_field, None))
+        role = values.get(_key(raw))
+        if role is None:
+            return (*_NO_INTENTION, ("role_unknown", mapping.role_field, _text(raw)))
+    assert role is not None
+    if mapping.name_field is not None and _text(
+            entity.attributes.get(mapping.name_field)) is None:
+        return (*_NO_INTENTION, ("field_empty", mapping.name_field, None))
+    elevation = mapping.elevation_m
+    if mapping.elevation_field is not None:
+        raw_elevation = entity.attributes.get(mapping.elevation_field)
+        given = _text(raw_elevation)
+        elevation = None
+        if given is not None:
+            elevation = _elevation(raw_elevation)
+            if elevation is None:
+                return (*_NO_INTENTION, ("elevation_invalid", mapping.elevation_field, given))
+            if not role.requires_elevation:
+                return (*_NO_INTENTION, ("elevation_unexpected", mapping.elevation_field,
+                                         given))
+    if not role.requires_elevation:
+        elevation = None
+    elif elevation is None:
+        return (*_NO_INTENTION, ("elevation_missing", mapping.elevation_field, None))
+    stated_on = mapping.stated_on
+    if mapping.date_field is not None:
+        raw = entity.attributes.get(mapping.date_field)
+        if _text(raw) is None:
+            return (*_NO_INTENTION, ("field_empty", mapping.date_field, None))
+        try:
+            stated_on = _when(raw)
+        except ValueError:
+            return (*_NO_INTENTION, ("date_invalid", mapping.date_field, _text(raw)))
+    return role, elevation, stated_on, ("", None, None)
+
+
+def intentions_from_entities(entities: Sequence[SourceEntity], mapping: IntentionMapping, *,
+                             layer: str, source_input: str, document_input: str,
+                             decision_uid: str | None
+                             ) -> tuple[tuple[Intention, ...], tuple[Rejected, ...]]:
+    """Las intenciones nuevas (``fid`` 0) de ``entities`` de la capa ``layer`` según
+    ``mapping`` (con los campos ya como columnas), con su origen (``source_input``, la entrada
+    de la capa, y la entidad), su documento (``document_input``, una entrada de tipo
+    documento), la decisión enlazada y su geometría tal cual; y las entidades rechazadas con su
+    motivo, en su orden: geometría vacía, rol vacío o fuera de la correspondencia, nombre o
+    fecha vacíos, una cota que no es un número, una cota en otro rol, «explotar a una cota» sin
+    cota y una fecha que no lo es (RF-012-26)."""
+    values = default_role_values() if mapping.role_values is None else mapping.role_values
+    rows: list[Intention] = []
+    rejected: list[Rejected] = []
+    for entity in entities:
+        kind = GeometryKind(entity.kind)
+        entity = replace(entity, kind=kind)
+        role, elevation, stated_on, (problem, name, value) = _intention_rejection(
+            entity, mapping, values)
+        if role is None:
+            rejected.append(Rejected(layer, int(entity.fid), problem, name,
+                                     None if value is None else str(value)))
+            continue
+        assert stated_on is not None
+        shown = (None if mapping.name_field is None
+                 else _text(entity.attributes.get(mapping.name_field)))
+        rows.append(Intention(
+            uid=uuid.uuid4().hex, name=shown or "", role=role, kind=kind, parts=entity.parts,
+            elevation_m=elevation, stated_on=stated_on, document_input=document_input,
+            decision_uid=decision_uid, source_input=source_input,
+            source_fid=int(entity.fid), fid=0))
+    return tuple(rows), tuple(rejected)
+
+
+def _check_document(conn: Any, document: str) -> None:
+    """Que ``document`` sea una entrada activa de tipo documento del proyecto."""
+    row = conn.execute("SELECT name, kind, status FROM gb_input WHERE uid = ?",
+                       (document,)).fetchone() if "gb_input" in _tables(conn) else None
+    if row is None or str(row[2]) in {str(status) for status in INACTIVE_STATUSES}:
+        raise ConstraintError("core.constraint_intention_document_unknown", field="documento",
+                              value=document)
+    if str(row[1]) != DOCUMENT_KIND:
+        raise ConstraintError("core.constraint_intention_document_kind", field="documento",
+                              value=document, input=str(row[0]), kind=str(row[1]))
+
+
+def _check_decision(conn: Any, decision_uid: str) -> None:
+    found = conn.execute("SELECT 1 FROM gb_decision WHERE uid = ?",
+                         (decision_uid,)).fetchone() if "gb_decision" in _tables(conn) else None
+    if found is None:
+        raise ConstraintError("core.constraint_intention_decision_unknown", field="decisión",
+                              value=decision_uid)
+
+
+def edit_intentions(project: OperationProject, rows: Sequence[Intention], *, source: str,
+                    settings: Mapping[str, Any] | None = None,
+                    rejected: Sequence[Rejected] = (), srs_id: int) -> EditedIntentions:
+    """Registra ``core.edit_intentions``: añade las intenciones ``rows`` a ``core_intention``
+    (una intención no se cambia ni se borra, RF-012-27) y devuelve lo guardado. Entradas: la
+    capa de la que salen (``source``, su dato) y cada documento de origen (``document``, la
+    entrada de tipo documento). Las intenciones no entran en ninguna máscara ni en ninguna
+    verificación (RF-012-26; error 30): ninguna compilación las lee.
+
+    :class:`~.messages.ConstraintError`, sin registrar nada: un documento que no es una
+    entrada activa del proyecto (``core.constraint_intention_document_unknown``) o no es de
+    tipo documento (``_document_kind``), y una decisión que no está
+    (``_decision_unknown``); ``ValueError`` sin filas."""
+    rows = tuple(rows)
+    if not rows:
+        raise ValueError("una edición de las intenciones guarda al menos una")
+    documents = list(dict.fromkeys(row.document_input for row in rows))
+    decisions = sorted({row.decision_uid for row in rows if row.decision_uid})
+    with project.read() as conn:
+        for document in documents:
+            _check_document(conn, document)
+        for decision in decisions:
+            _check_decision(conn, decision)
+    srs = int(srs_id)
+    noted = dict(settings or {})
+    noted.update({"source": source, "count": len(rows), "documents": documents,
+                  "decisions": decisions,
+                  "rejected": [[item.fid, item.problem, item.field] for item in rejected]})
+    inputs = (Use(source, SOURCE_ROLE),
+              *(Use(document, DOCUMENT_ROLE, kind=ItemKind.INPUT) for document in documents))
+    handle = begin_operation(project, EDIT_INTENTIONS, settings=noted, inputs=inputs,
+                             executor="blender")
+    try:
+        with project.write_transaction() as conn:
+            created = create_tables(conn, srs)
+            fids = write_intentions(conn, rows, srs_id=srs)
+            written = tuple(replace(row, fid=fid) for row, fid in zip(rows, fids, strict=True))
+            handle.complete(conn, outputs=_outputs(created, (INTENTION_TABLE,), srs),
+                            message=f"{len(written)} intenciones del cliente guardadas")
+    except Exception as error:
+        handle.fail(str(error) or type(error).__name__)
+        raise
+    return EditedIntentions(handle.uid, written, tuple(rejected))
+
+
+def create_intentions(project: OperationProject, entities: Sequence[SourceEntity],
+                      mapping: IntentionMapping, *, layer: str, source: str,
+                      source_input: str, document: str, decision_uid: str | None,
+                      srs_id: int) -> EditedIntentions:
+    """Guarda como intenciones las marcas de la capa ``layer`` (RF-012-26) según ``mapping``
+    (con los campos ya como columnas) con :func:`edit_intentions`, anotando la
+    correspondencia y las rechazadas. :class:`~.messages.ConstraintError`
+    ``core.constraint_intention_nothing`` (con la lista) si no sirve ninguna, sin registrar
+    nada."""
+    rows, rejected = intentions_from_entities(
+        entities, mapping, layer=layer, source_input=source_input, document_input=document,
+        decision_uid=decision_uid)
+    if not rows:
+        raise ConstraintError("core.constraint_intention_nothing", field="capa",
+                              value=len(rejected), layer=layer,
+                              problems="; ".join(item.text() for item in rejected) or "—")
+    return edit_intentions(project, rows, source=source,
+                           settings={"mapping": mapping.settings()}, rejected=rejected,
+                           srs_id=srs_id)
+
+
+def constraint_from_intention(intention: Intention, *, ctype: ConstraintType, reason: str,
+                              decided_by: str, decided_on: date | None,
+                              name: str | None = None, priority: int = 0) -> Constraint:
+    """La restricción nueva (``fid`` 0, sin código) que sale de ``intention`` con el tipo, el
+    motivo y el decisor que declara la persona (RF-012-27): su geometría, su nombre (o
+    ``name``), el origen de la intención y el enlace a ella. La intención no cambia.
+    :class:`~.messages.ConstraintError` ``core.constraint_intention_kind_not_accepted`` si el
+    tipo no cabe en su geometría (un límite que no es un polígono)."""
+    ctype = ConstraintType(ctype)
+    if not ctype.accepts(intention.kind):
+        raise ConstraintError("core.constraint_intention_kind_not_accepted", field="tipo",
+                              value=ctype.value, intention=intention.name,
+                              kind=translate("es", intention.kind.article_msgid),
+                              ctype=ctype.label("es"))
+    return Constraint(
+        uid=uuid.uuid4().hex, code="", name=intention.name if name is None else name,
+        ctype=ctype, kind=intention.kind, parts=intention.parts, priority=priority,
+        reason=_text(reason), decided_by=_text(decided_by), decided_on=decided_on,
+        decision_uid=None, intention_uid=intention.uid,
+        source_input=intention.source_input, source_fid=intention.source_fid,
+        layer=layer_of(intention.kind), fid=0)
+
+
+def convert_intention(project: OperationProject, intention: Intention, *,
+                      ctype: ConstraintType, reason: str, decided_by: str,
+                      decided_on: date | None, params: ParamDeclaration | None,
+                      name: str | None = None, priority: int = 0,
+                      srs_id: int) -> EditedConstraints:
+    """Convierte ``intention`` en restricción (RF-012-27) con
+    :func:`constraint_from_intention` y :func:`edit_constraints` (con ``core_intention`` como
+    entrada ``intention`` y los parámetros ``params`` de su tipo); la intención no cambia ni se
+    borra."""
+    row = constraint_from_intention(intention, ctype=ctype, reason=reason,
+                                    decided_by=decided_by, decided_on=decided_on, name=name,
+                                    priority=priority)
+    return edit_constraints(project, [row], params=params,
+                            settings={"intention": intention.uid}, srs_id=srs_id)
