@@ -196,6 +196,21 @@ CATALOG: tuple[Message, ...] = (
         "Parte del perímetro de actuación fuera del límite legal: {area} m² ({hectares} ha) "
         "con centro en X {x}, Y {y}; allí solo se admite relleno.",
     ),
+    # Pedir las máscaras (RF-012-17; gis.masks.access) -----------------------------------------
+    Message(
+        "core.constraint_masks_missing",
+        "The masks of {version} have not been compiled; compile them in Design ▸ Legal limits "
+        "and constraints ▸ Constraints… ({command}).",
+        "Las máscaras de {version} no se han compilado; compílelas en Diseño ▸ Límites y "
+        "restricciones ▸ Restricciones… ({command}).",
+    ),
+    Message(
+        "core.constraint_masks_stale",
+        "The masks of {version} are stale: a constraint, a sector, a search or a parameter "
+        "changed after compiling them; compile them again ({command}).",
+        "Las máscaras de {version} están obsoletas: cambió una restricción, un sector, una "
+        "búsqueda o un parámetro después de compilarlas; compílelas de nuevo ({command}).",
+    ),
     # Al escribir las filas (D-22; store.py) ---------------------------------------------------
     Message(
         "core.constraint_code_taken",

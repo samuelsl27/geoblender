@@ -107,8 +107,11 @@ __all__ = [
     "StoredMasks",
     "begin_compile",
     "compile_run",
+    "current_pending",
     "gather",
+    "live_searches",
     "pending_sectors",
+    "perimeter_of",
     "read_report",
     "read_shapes",
     "read_zone_runs",
@@ -243,8 +246,9 @@ class CompileInputs:
 
 def pending_sectors(sectors: Sequence[Sector], searches: Sequence[Any],
                     perimeter: Sequence[Constraint]) -> tuple[str, ...]:
-    """Los sectores sin una búsqueda de su misma geometría (``""``: sin sectores, el perímetro
-    como único sector; D-26). Que la búsqueda no esté obsoleta lo mira la T11/T13."""
+    """Los sectores sin una búsqueda de su misma geometría entre ``searches`` (``""``: sin
+    sectores, el perímetro como único sector; D-26). Que la búsqueda no esté obsoleta lo filtra
+    antes :func:`live_searches` (A12)."""
     done = {(record.sector_code, record.sector_sha256) for record in searches}
     if not sectors:
         rings = tuple(ring for item in perimeter for part in item.parts for ring in part)
@@ -253,6 +257,50 @@ def pending_sectors(sectors: Sequence[Sector], searches: Sequence[Any],
         sectors = (Sector("", "", "", rings),)
     return tuple(sector.code for sector in sectors
                  if (sector.code, cstore.sector_sha256(sector)) not in done)
+
+
+def live_searches(conn: sqlite3.Connection, searches: Sequence[Any]) -> tuple[Any, ...]:
+    """Las búsquedas de ``searches`` cuya operación no está obsoleta (A12: no cambió ninguna
+    capa consultada; la caché ``gb_stale`` de la 008)."""
+    uids = sorted({record.operation_uid for record in searches})
+    stale: set[str] = set()
+    for start in range(0, len(uids), 500):
+        chunk = uids[start:start + 500]
+        marks = ", ".join("?" for _ in chunk)
+        stale.update(str(row[0]) for row in conn.execute(
+            "SELECT DISTINCT item_uid FROM gb_stale WHERE item_kind = 'operation' AND "
+            f"item_uid IN ({marks})", chunk))
+    return tuple(record for record in searches if record.operation_uid not in stale)
+
+
+def perimeter_of(constraints: Sequence[Constraint], resolved: Mapping[str, object]
+                 ) -> list[Constraint]:
+    """Los perímetros de actuación activos o, sin ninguno, los límites legales activos (el
+    sector único cuando no hay capa de sectores; D-26)."""
+    found = [item for item in constraints
+             if item.ctype is ConstraintType.ACTION_PERIMETER and is_active(item, resolved)]
+    if not found:
+        found = [item for item in constraints
+                 if item.ctype is ConstraintType.LEGAL_LIMIT and is_active(item, resolved)]
+    return found
+
+
+def current_pending(conn: sqlite3.Connection, project: StoreProject, version_uid: str
+                    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Los sectores sin búsqueda vigente ahora en la versión ``version_uid`` (A12, D-26),
+    calculados al vuelo: (códigos, nombres). El perímetro como sector único se nombra
+    «el perímetro de actuación»."""
+    constraints = cstore.read_constraints(conn)
+    resolved = _resolved(conn, project, constraints, version_uid)
+    sectors = cstore.read_sectors(conn)
+    searches = live_searches(conn, cstore.read_searches(conn))
+    codes = pending_sectors(sectors, searches, perimeter_of(constraints, resolved))
+    names = {sector.code: sector.name for sector in sectors}
+    return codes, tuple(names.get(code) or PERIMETER_SECTOR_NAME for code in codes)
+
+
+PERIMETER_SECTOR_NAME = "el perímetro de actuación"
+"""Cómo se nombra el sector único cuando no hay capa de sectores (D-26)."""
 
 
 def _resolved(conn: sqlite3.Connection, project: StoreProject,
@@ -325,20 +373,17 @@ def gather(project: StoreProject, *, version: str) -> CompileInputs:
         resolved = _resolved(conn, project, constraints, found.uid)
         sectors = cstore.read_sectors(conn)
         searches = cstore.read_searches(conn)
+        live = live_searches(conn, searches)
         available = frozenset(table for table in cstore.TABLES
                               if dataset_registry.get(conn, table) is not None)
         grid = project_grid(record.window, float(record.grid_step_m))
         request = CompileRequest(constraints, MappingProxyType(resolved), sectors, searches,
                                  grid)
         previous, supersedes = _previous(conn, found.uid, request)
-    perimeter = [item for item in constraints
-                 if item.ctype is ConstraintType.ACTION_PERIMETER and is_active(item, resolved)]
-    if not perimeter:
-        perimeter = [item for item in constraints if item.ctype is ConstraintType.LEGAL_LIMIT
-                     and is_active(item, resolved)]
+    perimeter = perimeter_of(constraints, resolved)
     request = CompileRequest(constraints, request.resolved, sectors, searches, grid, previous)
     return CompileInputs(found.uid, request, available, supersedes,
-                         pending_sectors(sectors, searches, perimeter))
+                         pending_sectors(sectors, live, perimeter))
 
 
 def begin_compile(project: StoreProject, *, version: str | None,
