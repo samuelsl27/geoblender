@@ -740,14 +740,19 @@ def _with_files(plan: FreezePlan, own: list[SnapshotFile]) -> tuple[RevisionItem
 
 def acceptance(plan: FreezePlan, *, reason: str) -> dict[str, Any] | None:
     """Lo aceptado al congelar (RF-009-08), como va al manifiesto: el motivo y lo que había que
-    aceptar (``FreezePlan.accept``: qué es, su uid, su nombre, su estado y su texto); ``None``
-    si no había nada que aceptar."""
+    aceptar (``FreezePlan.accept``: qué es, su uid, su nombre, su estado y su texto y, si lo
+    tiene, la nota de un módulo, ``finding``: spec 012, RF-012-25); ``None`` si no había nada
+    que aceptar."""
     if not plan.accept:
         return None
-    return {"reason": reason, "items": [
-        {"item_kind": str(entry.item_kind), "item_uid": entry.item_uid, "name": entry.name,
-         "state": str(entry.state), "text": entry.text}
-        for entry in plan.accept]}
+    items: list[dict[str, Any]] = []
+    for entry in plan.accept:
+        item = {"item_kind": str(entry.item_kind), "item_uid": entry.item_uid,
+                "name": entry.name, "state": str(entry.state), "text": entry.text}
+        if entry.finding is not None:
+            item["finding"] = entry.finding
+        items.append(item)
+    return {"reason": reason, "items": items}
 
 
 def write_manifest(temporary: Path, body: Mapping[str, Any]) -> str:

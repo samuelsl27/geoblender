@@ -384,6 +384,54 @@ CATALOG: tuple[Message, ...] = (
         "El proyecto «{project}» está abierto en solo lectura: exporte «{value}» fuera del "
         "proyecto; no se ha escrito nada.",
     ),
+    # Congelar con lo que no cumple (spec 012, RF-012-25; D-29) -----------------------------
+    Message(
+        "res.freeze_fails",
+        "The check «{check}» does not comply in the final surface «{final}»: {zones}.",
+        "La verificación «{check}» no cumple en la final «{final}»: {zones}.",
+        "note",
+    ),
+    Message(
+        "res.freeze_stale",
+        "The check «{check}» is stale: something it uses has changed and it has to be run "
+        "again.",
+        "La verificación «{check}» está obsoleta: cambió algo de lo que usa y hay que repetirla.",
+        "note",
+    ),
+    Message(
+        "res.freeze_pending",
+        "The check «{check}» was run with the search for untouchables pending in {sectors}.",
+        "La verificación «{check}» se hizo con la búsqueda de intocables pendiente en "
+        "{sectors}.",
+        "note",
+    ),
+    Message(
+        "res.freeze_unreadable",
+        "The table of the check «{check}» could not be read: it is not known whether it "
+        "complies.",
+        "No se ha podido leer la tabla de la verificación «{check}»: no se sabe si cumple.",
+        "note",
+    ),
+    Message(
+        "res.freeze_surface_unchecked",
+        "«{surface}» is a design surface without an up-to-date check: no current check "
+        "includes it.",
+        "«{surface}» es una superficie de diseño sin verificación al día: ninguna verificación "
+        "vigente la incluye.",
+        "note",
+    ),
+    Message("res.freeze_cut", "{zone}: {volume} m³ of cut", "{zone}: {volume} m³ de corte",
+            "note"),
+    Message("res.freeze_fill", "{zone}: {volume} m³ of fill", "{zone}: {volume} m³ de relleno",
+            "note"),
+    Message("res.freeze_any", "{zone}: {volume} m³ moved", "{zone}: {volume} m³ de movimiento",
+            "note"),
+    Message("res.freeze_zone_outside_perimeter", "outside the action perimeter",
+            "fuera del perímetro de actuación", "note"),
+    Message("res.freeze_zone_outside_legal", "outside the legal limit",
+            "fuera del límite legal", "note"),
+    Message("res.freeze_zone_inner", "«{zone}» (inward band)", "«{zone}» (banda hacia dentro)",
+            "note"),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

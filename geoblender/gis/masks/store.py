@@ -304,11 +304,13 @@ def perimeter_of(constraints: Sequence[Constraint], resolved: Mapping[str, objec
     return found
 
 
-def current_pending(conn: sqlite3.Connection, project: StoreProject, version_uid: str
+def current_pending(conn: sqlite3.Connection, project: StoreProject | None, version_uid: str
                     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Los sectores sin búsqueda vigente ahora en la versión ``version_uid`` (A12, D-26),
     calculados al vuelo: (códigos, nombres). El perímetro como sector único se nombra
-    «el perímetro de actuación»."""
+    «el perímetro de actuación». ``project`` puede ser ``None`` si solo se tiene la conexión
+    (la instantánea de congelar, ``reserves.compliance_store.freeze_findings``): resolver un
+    parámetro con una conexión no usa el proyecto."""
     constraints = cstore.read_constraints(conn)
     resolved = _resolved(conn, project, constraints, version_uid)
     sectors = cstore.read_sectors(conn)
@@ -355,11 +357,12 @@ def sector_states_now(conn: sqlite3.Connection, project: StoreProject,
     return cstore.sector_states(sectors, live_searches(conn, cstore.read_searches(conn)))
 
 
-def _resolved(conn: sqlite3.Connection, project: StoreProject,
+def _resolved(conn: sqlite3.Connection, project: StoreProject | None,
               constraints: Sequence[Constraint], version_uid: str | None) -> dict[str, object]:
     """Los parámetros de las restricciones resueltos versión → proyecto (sin versión, los del
-    proyecto)."""
-    store = ParameterStore(project)
+    proyecto). ``ParameterStore.resolve`` lee la conexión que se le da y no usa el proyecto:
+    ``None`` vale si solo se tiene la conexión."""
+    store = ParameterStore(project)  # type: ignore[arg-type]
     chain = (PROJECT_SCOPE,) if version_uid is None else (VERSION_SCOPE, PROJECT_SCOPE)
     found: dict[str, object] = {}
     for item in constraints:

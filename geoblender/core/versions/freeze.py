@@ -33,7 +33,13 @@ la confirmación (A7, al final de este docstring).
    que solo dejan cifras y las que esperan revisión a mano (las de la 008: «! n obsoletos») y las
    entradas no localizables, con su estado y su texto. Cada elemento lleva el estado que tiene
    (:class:`ItemState`); una operación que consumió un contenido que ya no existe ni está
-   congelado en ninguna revisión (ni copiado aquí), «no reproducible» (spec §8).
+   congelado en ninguna revisión (ni copiado aquí), «no reproducible» (spec §8). A eso se suman
+   los **hallazgos de los módulos** (spec 012, RF-012-25, D-7, D-29): otro módulo registra con
+   :func:`register_freeze_check` una función que lee la base (la misma instantánea) y da
+   :class:`FreezeFinding`; cada hallazgo se acepta como lo demás, con su nota en
+   :attr:`AcceptItem.finding` y el estado real del elemento (sin esquema nuevo: el estado de
+   ``gb_revision_item`` sigue siendo uno de los cinco; la nota va en el ``accepted`` de la
+   revisión). Sin comprobaciones registradas, el plan es el de la 009.
 4. **Lo que lo impide** (:attr:`FreezePlan.blockers`, sin aceptación posible; D-40): el proyecto
    en solo lectura, la comprobación de apertura sin terminar, otra congelación en curso (su
    carpeta temporal ``snapshots/<revisión>.congelando-<8 hex>``), una operación de la versión en
@@ -69,9 +75,9 @@ import math
 import os
 import sqlite3
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -240,13 +246,81 @@ class AcceptItem:
     obsoleta que solo deja cifras o que espera revisión a mano, o una entrada no localizable,
     con su nombre (el del dato, el tipo de la operación o el nombre lógico de la entrada), su
     estado (:class:`ItemState`) y su texto («Obsoleto: cambió …», «No se encuentra la fuente
-    …»)."""
+    …»). ``finding`` es la nota de un módulo (spec 012, RF-012-25: lo que incumple una
+    verificación, una superficie sin verificar…), de uno o de varios
+    :class:`FreezeFinding` de este elemento; ``None`` si no tiene (lo de la 009). El estado es el
+    que tiene el elemento (un hallazgo de un dato al día es ``CURRENT``) y ``text`` solo dice lo
+    obsoleto."""
 
     item_kind: ItemKind
     item_uid: str
     name: str
     state: ItemState
     text: str
+    finding: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FreezeFinding:
+    """Lo que un módulo pide aceptar al congelar (spec 012, RF-012-25; D-29): su módulo, el
+    elemento (``item_kind``: normalmente un dato o una operación de la versión; ``item_uid``),
+    su nombre tal como se lo enseña a la persona y la nota en español («no cumple: «torre»
+    6.384 m³»). Es un error del programa un elemento sin clase, uid o nombre, o una nota vacía
+    (``ValueError``)."""
+
+    module: str
+    item_kind: ItemKind
+    item_uid: str
+    name: str
+    text: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "item_kind", ItemKind(self.item_kind))
+        for field in ("module", "item_uid", "name", "text"):
+            value = getattr(self, field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"un hallazgo de congelar lleva «{field}» (un texto), "
+                                 f"no {value!r}")
+
+
+FreezeCheck = Callable[[sqlite3.Connection, str], Sequence[FreezeFinding]]
+"""Una comprobación de un módulo: recibe la conexión del plan (una instantánea de lectura de la
+base del proyecto) y el uid de la versión que se congela, y da sus hallazgos; no escribe."""
+_CHECKS: list[tuple[str, FreezeCheck]] = []
+
+
+def register_freeze_check(module: str, check: FreezeCheck) -> None:
+    """Registra la comprobación ``check`` del módulo ``module`` (el código del módulo que la
+    declara, ``"res"``): :func:`freeze_plan` la llama con cada plan y lo que da va a lo que hay
+    que aceptar (:attr:`FreezePlan.accept`). Registrar otra vez la misma función del mismo
+    módulo no hace nada; un módulo puede tener varias y se llaman en el orden en que se
+    registraron. ``TypeError``/``ValueError`` con un argumento mal dado."""
+    _check_module(module)
+    if not callable(check):
+        raise TypeError(f"una comprobación de congelar es una función, no {check!r}")
+    if (module, check) not in _CHECKS:
+        _CHECKS.append((module, check))
+
+
+def unregister_freeze_checks(module: str) -> int:
+    """Quita las comprobaciones del módulo ``module``; cuántas quitó (0 si no había ninguna)."""
+    _check_module(module)
+    kept = [entry for entry in _CHECKS if entry[0] != module]
+    removed = len(_CHECKS) - len(kept)
+    _CHECKS[:] = kept
+    return removed
+
+
+def freeze_checks() -> tuple[tuple[str, FreezeCheck], ...]:
+    """Las comprobaciones registradas, (módulo, función), en el orden en que se registraron."""
+    return tuple(_CHECKS)
+
+
+def _check_module(module: object) -> None:
+    if not isinstance(module, str):
+        raise TypeError(f"el módulo de una comprobación es su código (un texto), no {module!r}")
+    if not module.strip():
+        raise ValueError("el módulo de una comprobación de congelar no puede estar vacío")
 
 
 @dataclass(frozen=True)
@@ -430,6 +504,11 @@ def _quote(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _joined_notes(findings: Iterable[FreezeFinding]) -> str:
+    """Las notas de los hallazgos de un elemento, en su orden y sin repetir una igual."""
+    return " ".join(dict.fromkeys(finding.text.strip() for finding in findings))
+
+
 class _Planner:
     """Una pasada del plan sobre la instantánea ``conn`` (véase el módulo)."""
 
@@ -603,6 +682,7 @@ class _Planner:
                                 op_states.get(figure.operation_uid, ItemState.CURRENT))
                      for figure in figures)
 
+        accept = self._with_findings(items, accept)
         referenced = tuple(item for item in items if item.item_kind is ItemKind.DATASET
                            and not item.copied and item.snapshot_path is not None
                            and item.part is not ItemPart.INHERITED)
@@ -614,6 +694,38 @@ class _Planner:
             to_copy=tuple(to_copy), referenced=referenced, accept=tuple(accept),
             blockers=self._blockers(changed), bytes_to_copy=size, space_needed=_with_margin(size),
         )
+
+    def _with_findings(self, items: list[RevisionItem],
+                       accept: list[AcceptItem]) -> list[AcceptItem]:
+        """Lo que hay que aceptar más los hallazgos de las comprobaciones registradas (RF-012-25,
+        D-29), que leen esta instantánea: el de un elemento que ya pide aceptar va en su entrada
+        (con su estado y su texto) y el de cualquier otro es una entrada nueva, al final, con el
+        estado que tiene en el plan (al día si no está en él). Varios hallazgos de un elemento,
+        una sola entrada con las notas en el orden de registro, sin repetir una igual."""
+        found: dict[tuple[ItemKind, str], list[FreezeFinding]] = {}
+        for _module, check in freeze_checks():
+            for finding in check(self.conn, self.version.uid):
+                if not isinstance(finding, FreezeFinding):
+                    raise TypeError(f"una comprobación de congelar da FreezeFinding, no "
+                                    f"{finding!r}")
+                found.setdefault((finding.item_kind, finding.item_uid), []).append(finding)
+        if not found:
+            return accept
+        states = {(item.item_kind, item.item_uid): item.state for item in items}
+        merged: list[AcceptItem] = []
+        for entry in accept:
+            notes = found.pop((entry.item_kind, entry.item_uid), None)
+            merged.append(entry if notes is None
+                          else replace(entry, finding=_joined_notes(notes)))
+        for (kind, uid), notes in found.items():
+            state = states.get((kind, uid), ItemState.CURRENT)
+            text = ""
+            if kind in (ItemKind.DATASET, ItemKind.OPERATION) and state in (
+                    ItemState.STALE, ItemState.REVIEW):
+                text = self._stale_text(str(kind), uid)
+            merged.append(AcceptItem(kind, uid, notes[0].name, state, text,
+                                     _joined_notes(notes)))
+        return merged
 
     def _read_staleness(self, ordered: list[str], datasets: list[str]) -> None:
         """Lo obsoleto de lo del plan según la caché de la 008: las operaciones y los datos

@@ -26,12 +26,17 @@ RF-012-28; plan 012 §5.2.3, A11, D-15, D-28, D-40, D-42, D-43).
   las cifras y ``complete``. Cerrar los pasos o un fallo: nada (RF-012-28).
 - :func:`reproduce_verify` (:data:`REPRODUCE`): con las máscaras, las superficies y el espesor
   congelados, sin el proyecto.
+- :func:`freeze_findings` (T18; RF-012-25; D-7, D-29): la comprobación de ``res`` al congelar,
+  que ``bl`` registra con ``core.versions.freeze.register_freeze_check``: las verificaciones de
+  la versión obsoletas, con recintos que no cumplen (m³ por recinto) o con la marca de
+  RF-012-10, y las superficies de diseño sin verificación al día.
 
 Python puro (nivel 9).
 """
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import sqlite3
@@ -56,6 +61,7 @@ from ..core.georef import CrsRef, VerticalRef
 from ..core.gpkg.base import ColumnDef, create_attribute_table, create_base, create_feature_table
 from ..core.gpkg.connection import GpkgConnection
 from ..core.gpkg.wkb import decode_geometry, encode_geometry
+from ..core.i18n import THIN_SPACE
 from ..core.params import ParamDef
 from ..core.paths import check_path_length
 from ..core.project.model import Progress
@@ -81,7 +87,8 @@ from ..core.provenance.operations import (
 from ..core.units import convert
 from ..core.versions import read as versions_read
 from ..core.versions import store as versions_store
-from ..core.versions.model import VersionError, version_locator
+from ..core.versions.freeze import FreezeFinding
+from ..core.versions.model import ItemKind, VersionError, version_locator
 from ..core.versions.reproduce import ReproducedOutput, ReproducedResult, ReproduceRequest
 from ..gis.content import GEOTIFF
 from ..gis.geotiff.reader import read_geotiff
@@ -90,12 +97,24 @@ from ..gis.grid import Grid, project_grid
 from ..gis.masks.access import MaskSet, MaskState, ensure_masks_steps, load_masks
 from ..gis.masks.compile import ClassesGrid
 from ..gis.masks.compile import _classes_steps as _raster_steps
-from ..gis.masks.store import read_report, read_zone_runs
+from ..gis.masks.store import current_pending, read_report, read_zone_runs
 from ..gis.messages import GisError
 from ..gis.provenance import dataset_slug
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, backup_path, insert_rows, project_references, temporary_path
-from .compliance import MAX_FINALS, Checker, ComplianceRequest, FinalCheck, check_zones
+from .compliance import (
+    INNER_SUFFIX,
+    MAX_FINALS,
+    OUTSIDE_LEGAL,
+    OUTSIDE_PERIMETER,
+    Checker,
+    ComplianceRequest,
+    Counts,
+    FinalCheck,
+    Verdict,
+    check_zones,
+)
+from .messages import render
 from .surfaces import (
     BAND_ROWS,
     SurfaceHeader,
@@ -117,6 +136,7 @@ __all__ = [
     "GROUPS",
     "MIN_THICKNESS",
     "MIN_THICKNESS_DEF",
+    "MODULE",
     "REPRODUCE",
     "START_ROLE",
     "STEP_BUDGET_S",
@@ -132,6 +152,7 @@ __all__ = [
     "dataset_name",
     "dataset_spec",
     "final_role",
+    "freeze_findings",
     "operation_def",
     "previous_check",
     "project_sources",
@@ -1082,3 +1103,137 @@ def _reproduce(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]
 
 REPRODUCE: Mapping[str, Any] = MappingProxyType({VERIFY: reproduce_verify})
 """La función de reproducir de la verificación (la que registra ``bl``)."""
+
+
+# --- Congelar con lo que no cumple (RF-012-25; D-7, D-29) ---------------------------------------
+
+_VERIFICATIONS = (  # por gb_operation_revision: las verificaciones hechas de cualquier revisión
+    "SELECT o.uid, o.superseded_by IS NOT NULL, o.settings FROM gb_operation AS o "
+    "JOIN gb_revision AS r ON r.uid = o.revision_uid "
+    "WHERE o.op_type = ? AND o.status = 'done' AND r.version_uid = ? ORDER BY o.fid"
+)
+_FINALS = (  # por el índice único de (operation_uid, direction, …)
+    "SELECT item_uid FROM gb_operation_io WHERE operation_uid = ? AND direction = 'in' "
+    "AND item_kind = 'dataset' AND role GLOB 'final_[0-9]*' ORDER BY fid"
+)
+_STALE = "SELECT 1 FROM gb_stale WHERE item_kind = 'operation' AND item_uid = ? LIMIT 1"
+_DATASET = "SELECT name, version_uid, status FROM gb_dataset WHERE uid = ?"
+_COUNTS_MESSAGE = {Counts.CUT.value: "res.freeze_cut", Counts.FILL.value: "res.freeze_fill",
+                   Counts.ANY.value: "res.freeze_any"}
+"""Qué se cuenta en un recinto (la nota de su fila ``counted_m3``) → su mensaje."""
+_LIVE = frozenset(str(status) for status in LIVE_STATUSES)
+
+
+def _volume_text(value: float | None) -> str:
+    """Un volumen (m³) en español, con espacio fino de miles y coma decimal (sin depender del
+    idioma activo: la nota se guarda en la revisión): sin decimales desde 100 m³ y con uno por
+    debajo."""
+    number = 0.0 if value is None or not math.isfinite(value) else float(value)
+    text = f"{number:,.{0 if abs(number) >= 100 else 1}f}"
+    return text.translate(str.maketrans({",": THIN_SPACE, ".": ","}))
+
+
+def _zone_label(zone: str) -> str:
+    """Cómo se nombra un recinto de la tabla en una nota: «torre»; los dos de fuera, con
+    palabras; la banda hacia dentro de un límite, «concesion» (banda hacia dentro)."""
+    if zone == OUTSIDE_PERIMETER:
+        return render("res.freeze_zone_outside_perimeter")
+    if zone == OUTSIDE_LEGAL:
+        return render("res.freeze_zone_outside_legal")
+    if zone.endswith(INNER_SUFFIX):
+        return render("res.freeze_zone_inner", zone=zone.removesuffix(INNER_SUFFIX))
+    return f"«{zone}»"
+
+
+def _failures(rows: Sequence[tuple[str, int, str, float | None, str | None, str | None]],
+              check: str) -> list[str]:
+    """Una nota por final con recintos que no cumplen (``res.freeze_fails``): cada recinto con
+    lo que cuenta en él (m³ de corte, de relleno o de movimiento), en el orden de la tabla."""
+    shown = {final: str(note) for zone, final, quantity, _v, _u, note in rows
+             if quantity == "surface" and not zone}
+    counted = {(final, zone): (value, note) for zone, final, quantity, value, _u, note in rows
+               if quantity == "counted_m3"}
+    failing: dict[int, list[str]] = {}
+    for zone, final, quantity, _value, _unit, note in rows:
+        if quantity != "verdict" or note != Verdict.FAILS.value:
+            continue
+        value, counts = counted.get((final, zone), (None, None))
+        code = _COUNTS_MESSAGE.get(counts or "", "res.freeze_any")
+        failing.setdefault(final, []).append(
+            render(code, zone=_zone_label(zone), volume=_volume_text(value)))
+    return [render("res.freeze_fails", check=check, final=shown.get(final, str(final)),
+                   zones="; ".join(zones)) for final, zones in sorted(failing.items())]
+
+
+def _verification_findings(conn: sqlite3.Connection, version_uid: str, uid: str,
+                           settings: Mapping[str, Any], pending: Sequence[str]
+                           ) -> list[FreezeFinding]:
+    """Los hallazgos de una verificación vigente: obsoleta, los recintos que no cumplen (con
+    sus m³; o la tabla que no se pudo leer) y la marca de búsqueda pendiente (RF-012-10) con los
+    sectores que ``pending`` dice sin búsqueda vigente ahora, todos sobre su operación."""
+    check = str(settings.get("name") or uid[:8])
+    notes: list[str] = []
+    if conn.execute(_STALE, (uid,)).fetchone() is not None:
+        notes.append(render("res.freeze_stale", check=check))
+    try:
+        table = dataset_registry.get(conn, dataset_name(TABLE, check), version_uid=version_uid)
+    except ValueError:
+        table = None
+    if table is not None and table.operation_uid == uid:
+        try:
+            notes += _failures(read_table(conn, table.locator), check)
+        except sqlite3.Error:
+            notes.append(render("res.freeze_unreadable", check=check))
+    if pending:
+        notes.append(render("res.freeze_pending", check=check,
+                            sectors=", ".join(f"«{name}»" for name in pending)))
+    return [FreezeFinding(MODULE, ItemKind.OPERATION, uid, check, note) for note in notes]
+
+
+def freeze_findings(conn: sqlite3.Connection, version_uid: str) -> tuple[FreezeFinding, ...]:
+    """Lo que ``res`` pide aceptar al congelar la revisión abierta de la versión ``version_uid``
+    (RF-012-25; D-7, D-29): la comprobación que registra ``bl`` con
+    ``core.versions.freeze.register_freeze_check``. Lee ``conn`` (una instantánea de lectura) y
+    no escribe. Por cada verificación **vigente** de la versión (hecha, sin sustituir, de
+    cualquiera de sus revisiones), sobre su operación y con su nombre:
+
+    - obsoleta (``gb_stale``, la caché de la 008): hay que repetirla;
+    - con recintos que no cumplen: por cada final que incumple, sus recintos con lo que cuenta
+      en ellos en m³ (de la tabla ``res_chk_``, tal como se guardó);
+    - con la marca de RF-012-10: hay sectores sin búsqueda de intocables vigente **ahora**
+      (calculados al vuelo, D-26: ``gis.masks.store.current_pending``, no los que anotó al
+      hacerse; una búsqueda cerrada después, sin cambiar las máscaras, la quita).
+
+    Y por cada **superficie de diseño sin verificación al día** (D-29: hasta R-33, la que fue
+    final de una verificación de la versión; un módulo que las declare por un papel de su
+    ``DatasetSpec`` lo añadirá en su comprobación), sobre su dato: la que fue final de una
+    verificación sustituida y ya no lo es de ninguna vigente (una vigente obsoleta ya se lista
+    por obsoleta), si sigue viva y es del proyecto o de la versión. Una verificación cuya tabla
+    no se puede leer no se da por buena (``res.freeze_unreadable``)."""
+    found: list[FreezeFinding] = []
+    current: set[str] = set()
+    replaced: dict[str, None] = {}
+    pending: tuple[str, ...] | None = None
+    for uid, superseded, text in conn.execute(_VERIFICATIONS, (VERIFY, version_uid)).fetchall():
+        finals = [str(row[0]) for row in conn.execute(_FINALS, (str(uid),))]
+        if superseded:
+            replaced.update(dict.fromkeys(finals))
+            continue
+        current.update(finals)
+        if pending is None:  # una vez, y solo si hay alguna verificación vigente
+            pending = current_pending(conn, None, version_uid)[1]
+        settings = json.loads(str(text))
+        found += _verification_findings(conn, version_uid, str(uid),
+                                        settings if isinstance(settings, Mapping) else {},
+                                        pending)
+    surfaces: list[FreezeFinding] = []
+    for uid in replaced:
+        row = conn.execute(_DATASET, (uid,)).fetchone()
+        if (uid in current or row is None or str(row[2]) not in _LIVE
+                or str(row[1]) not in ("", version_uid)):
+            continue
+        surfaces.append(FreezeFinding(MODULE, ItemKind.DATASET, uid, str(row[0]),
+                                      render("res.freeze_surface_unchecked",
+                                             surface=str(row[0]))))
+    surfaces.sort(key=lambda item: (item.name, item.item_uid))
+    return tuple(found + surfaces)

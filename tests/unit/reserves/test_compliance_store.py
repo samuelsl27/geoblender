@@ -23,6 +23,11 @@ la torre (no cumple):
 - **RF-012-28**: cada paso, ≤ 0,05 s; Esc o un fallo a mitad no dejan nada (ni cifras, ni tablas,
   ni rejillas, ni temporales).
 - Reproducir V01.r1 congelada da las mismas salidas y las mismas cifras, bit a bit.
+- **RF-012-25 (D-7, D-29; T18)**: congelar con lo que no cumple. Con la comprobación de ``res``
+  registrada (``freeze_findings``), ``freeze_plan`` lista la verificación con zonas que no
+  cumplen (con los m³ por zona), la que tiene la marca de búsqueda pendiente, la obsoleta y la
+  superficie de diseño sin verificación al día; no congela sin aceptarlas, con un motivo que
+  queda en la revisión.
 """
 
 from __future__ import annotations
@@ -52,6 +57,11 @@ operations = import_geoblender("core.provenance.operations")
 registry = import_geoblender("core.datasets.registry")
 figures_mod = import_geoblender("core.provenance.figures")
 freeze = import_geoblender("core.versions.freeze")
+copy_mod = import_geoblender("core.versions.copy")
+versions_model = import_geoblender("core.versions.model")
+i18n = import_geoblender("core.i18n")
+cmodel = import_geoblender("core.constraints.model")
+constraints_store = import_geoblender("core.constraints.store")
 reproduce = import_geoblender("core.versions.reproduce")
 masks_provenance = import_geoblender("gis.masks.provenance")
 access = import_geoblender("gis.masks.access")
@@ -68,6 +78,8 @@ del límite, lejos de la torre, la balsa y la cuneta: 150 · 4 · 2 = 1.200 m³.
 DIG_M = 2.0
 DIG_M3 = 150 * fx.SITE_GRID.cell_area * DIG_M
 V = compliance.Verdict
+ItemKind = versions_model.ItemKind
+ItemState = versions_model.ItemState
 
 
 def _last(steps: Iterator[Any]) -> Any:
@@ -78,11 +90,11 @@ def _last(steps: Iterator[Any]) -> Any:
     return result
 
 
-def _dig() -> Any:
+def _dig(depth_m: float = DIG_M) -> Any:
     x, y = fx.site_centers()
     left, bottom, right, top = DIG_LOCAL
     inside = (x > left) & (x < right) & (y > bottom) & (y < top)
-    return gis.Raster(fx.SITE_GRID, np.where(inside, fx.START_Z - DIG_M, fx.START_Z), fx.CRS,
+    return gis.Raster(fx.SITE_GRID, np.where(inside, fx.START_Z - depth_m, fx.START_Z), fx.CRS,
                       fx.VERTICAL)
 
 
@@ -349,6 +361,165 @@ class RejectCancelStaleTest(_VerifyCase):
         before = stored.result.finals[1].zone("torre").cut_m3
         after = again.result.finals[1].zone("torre").cut_m3
         self.assertGreater(after, before)
+
+
+class FreezeFindingsTest(_VerifyCase):
+    """RF-012-25 (D-7, D-29): lo que ``res`` pide aceptar al congelar V01, en el orden de las
+    pruebas (el proyecto es de la clase): una verificación con zonas que no cumplen y la marca de
+    búsqueda pendiente; la obsoleta (cerrar las búsquedas) y la que cumple, sin nada; la
+    superficie de diseño cuya verificación se sustituyó; y congelar."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        freeze.register_freeze_check(cstore.MODULE, cstore.freeze_findings)
+        cls.addClassCleanup(freeze.unregister_freeze_checks, cstore.MODULE)
+        cls.clock.advance(minutes=1)
+        write_grids(cls.project, [("temporal", _dig(1.0)), ("otra", _dig(3.0))],
+                    message="Más superficies")
+        cls.temporary = surfaces.SurfaceRef(dataset="gis_dtm_temporal", label="Temporal")
+        cls.other = surfaces.SurfaceRef(dataset="gis_dtm_otra", label="Otra")
+
+    def plan(self, version: Any = None) -> Any:
+        return freeze.freeze_plan(self.project, (version or self.v1).uid)
+
+    def findings(self, plan: Any = None) -> dict[str, Any]:
+        """Las entradas con nota del plan de V01, por nombre."""
+        return {entry.name: entry for entry in (plan or self.plan()).accept if entry.finding}
+
+    def verify(self, name: str, finals: Any) -> str:
+        """Verifica en V01 la partida frente a ``finals`` y da el uid de la operación."""
+        _last(self.steps(finals=finals, name=name))
+        return self.ops(cstore.VERIFY)[-1]
+
+    def close_searches(self) -> None:
+        """Cierra la búsqueda de cada sector (operación de prueba de las restricciones)."""
+        for index, sector in enumerate(cp.sectors(), start=1):
+            self.clock.advance(minutes=1)
+            handle = operations.begin_operation(self.project, cp.EDIT_TYPE,
+                                                settings={"count": 0}, executor="blender")
+            record = cmodel.SearchRecord(f"search{index}{'0' * 25}", handle.uid, sector.code,
+                                         constraints_store.sector_sha256(sector),
+                                         fx.SEARCH_DISTANCE_M, "Samuel (IMGA)",
+                                         "2026-10-28T10:00:00Z")
+            with self.project.write_transaction() as conn:
+                constraints_store.append_search(conn, record, ())
+                handle.complete(conn, outputs=constraints_store.dataset_specs(
+                    crs_epsg=self.project.record.crs_epsg), message="Búsqueda de prueba")
+
+    def test_a_failing_zones_with_cubic_metres_and_the_pending_mark(self) -> None:
+        """RF-012-25: sin verificaciones no hay nada que listar (ni en V01 ni en V02); la
+        verificación con la torre sin cumplir se lista con sus m³ por zona (6.384 m³ de movimiento,
+        los de la tabla, y solo de la final que incumple) y, como se hizo con los dos sectores
+        sin búsqueda, con sus nombres; es la operación, al día, y lo único que pide aceptar."""
+        self.assertEqual((self.plan().accept, self.plan(self.v2).accept), ((), ()))
+        uid = self.verify(NAME, self.finals)
+        plan = self.plan()
+        (entry,) = plan.accept
+        self.assertEqual((entry.item_kind, entry.item_uid, entry.name, entry.state, entry.text),
+                         (ItemKind.OPERATION, uid, NAME, ItemState.CURRENT, ""))
+        self.assertEqual(self.plan(self.v2).accept, ())
+        sectors = ", ".join(f"«{name}»" for name in fx.SECTORS_LOCAL)
+        self.assertIn(f"La verificación «{NAME}» se hizo con la búsqueda de intocables "
+                      f"pendiente en {sectors}.", entry.finding)
+        self.assertIn(f"La verificación «{NAME}» no cumple en la final «Torre rebajada»: "
+                      f"«torre»: 6{i18n.THIN_SPACE}384 m³ de movimiento", entry.finding)
+        self.assertNotIn("Excavación", entry.finding)
+        self.assertNotIn("obsoleta", entry.finding)
+        with self.project.read() as conn:
+            rows = cstore.read_table(conn, self.record(self.names()[0], self.v1).locator)
+        failing = [zone for zone, final, quantity, _v, _u, note in rows
+                   if final == 2 and quantity == "verdict" and note == V.FAILS.value]
+        self.assertIn("torre", failing)
+        self.assertEqual(entry.finding.count(" m³ de "), len(failing))
+        self.assertTrue(plan.needs_acceptance)
+
+    def test_b_closed_searches_stale_and_the_one_that_complies(self) -> None:
+        """RF-012-25 (D-26): cerradas las búsquedas, la verificación sigue (sus máscaras no
+        cambian) pero sin la marca, que se calcula al vuelo; cambiado el resguardo de la torre
+        en V01, queda obsoleta (estado y texto de lo obsoleto, y la nota); la que cumple, hecha
+        con las máscaras al día y sin sectores pendientes, no se lista y la obsoleta sigue,
+        ahora «no reproducible» (consumió unas máscaras que ya no existen: el estado real);
+        repetida la primera (sustituye a la obsoleta), sale al día, sin la marca y con lo que
+        no cumple."""
+        self.close_searches()
+        entries = self.findings()
+        self.assertEqual(set(entries), {NAME})
+        self.assertIn("no cumple en la final «Torre rebajada»", entries[NAME].finding)
+        self.assertNotIn("pendiente", entries[NAME].finding)
+        self.clock.advance(minutes=1)
+        with self.project.write_transaction() as conn:
+            params.ParameterStore(self.project).change(
+                conn, cparams.buffer_out_key("torre"), value=10.0, reason="Prueba de la 012",
+                version=self.v1.code)
+        stale = self.findings()[NAME]
+        self.assertEqual(stale.state, ItemState.STALE)
+        self.assertTrue(stale.text.startswith("Obsoleto"), stale.text)
+        self.assertIn(f"La verificación «{NAME}» está obsoleta", stale.finding)
+        clean = self.verify("Limpia", self.finals[:1])  # compila antes: las máscaras cambiaron
+        entries = self.findings()
+        self.assertEqual(set(entries), {NAME})
+        self.assertNotIn(clean, {entry.item_uid for entry in entries.values()})
+        # Consumió unas máscaras que ya no existen: el estado real de la 009 es otro.
+        self.assertEqual(entries[NAME].state, ItemState.NOT_REPRODUCIBLE)
+        self.assertIn("obsoleta", entries[NAME].finding)
+        again = self.verify(NAME, self.finals)
+        entries = self.findings()
+        self.assertEqual(set(entries), {NAME})
+        entry = entries[NAME]
+        self.assertEqual((entry.item_uid, entry.state, entry.text),
+                         (again, ItemState.CURRENT, ""))
+        self.assertIn("no cumple en la final «Torre rebajada»", entry.finding)
+        self.assertNotIn("obsoleta", entry.finding)
+        self.assertNotIn("pendiente", entry.finding)
+
+    def test_c_design_surface_without_an_up_to_date_check(self) -> None:
+        """RF-012-25 (D-29): una superficie que fue final de una verificación de la versión y
+        cuya verificación se sustituyó por otra que ya no la incluye, se lista sin verificación
+        al día; las que están en una verificación vigente (y esta, que cumple), no."""
+        self.verify("Reemplazada", (self.other, self.temporary))
+        self.assertEqual(set(self.findings()), {NAME})
+        self.verify("Reemplazada", (self.temporary,))
+        entries = self.findings()
+        self.assertEqual(set(entries), {NAME, "gis_dtm_otra"})
+        entry = entries["gis_dtm_otra"]
+        self.assertEqual((entry.item_kind, entry.item_uid, entry.state, entry.text),
+                         (ItemKind.DATASET, self.record("gis_dtm_otra").uid,
+                          ItemState.CURRENT, ""))
+        self.assertEqual(entry.finding, "«gis_dtm_otra» es una superficie de diseño sin "
+                                        "verificación al día: ninguna verificación vigente la "
+                                        "incluye.")
+
+    def test_d_not_frozen_without_accepting_and_the_reason_stays(self) -> None:
+        """RF-012-25, RF-009-08 (D-7): sin aceptar no se congela (el rechazo nombra lo que
+        falta y no escribe nada), ni aceptando solo una parte; aceptado todo, V01.r1 queda
+        congelada con el motivo y, en lo aceptado, cada elemento con su nota; V01.r2, abierta,
+        sigue listando lo mismo (los datos son de la versión)."""
+        plan = self.plan()
+        self.assertEqual(set(self.findings(plan)), {NAME, "gis_dtm_otra"})
+        before = files(self.root, skip=(), skip_dirs=("cache",)), change_counter(self.root)
+        self.clock.advance(minutes=1)
+        for accepted in (None, freeze.Acceptance(frozenset(
+                {("dataset", self.record("gis_dtm_otra").uid)}))):
+            with self.assertRaises(versions_model.VersionError) as caught:
+                freeze.freeze_steps(self.project, self.v1.uid, reason="Entrega",
+                                    accepted=accepted)
+            self.assertEqual(caught.exception.code, "core.version_freeze_accept")
+            self.assertIn(NAME, str(caught.exception))
+            self.assertIn("gis_dtm_otra", str(caught.exception))
+        self.assertEqual((files(self.root, skip=(), skip_dirs=("cache",)),
+                          change_counter(self.root)), before)
+        reason = "Se entrega con la torre pendiente de corregir"
+        outcome = _last(freeze.freeze_steps(self.project, self.v1.uid, reason=reason,
+                                            accepted=freeze.Acceptance.of(plan)))
+        accepted = json.loads(str(outcome.frozen.accepted))
+        self.assertEqual(accepted, copy_mod.acceptance(plan, reason=reason))
+        self.assertEqual(accepted["reason"], reason)
+        notes = {item["name"]: item["finding"] for item in accepted["items"]
+                 if "finding" in item}
+        self.assertEqual(set(notes), {NAME, "gis_dtm_otra"})
+        self.assertIn("«torre»", notes[NAME])
+        self.assertEqual(set(self.findings()), {NAME, "gis_dtm_otra"})
 
 
 if __name__ == "__main__":
