@@ -6589,3 +6589,182 @@ es = "Se cerró el proyecto mientras se compilaban las máscaras: no ha quedado 
 
 ["Masks of {version} exported to «{file}»"]
 es = "Máscaras de {version} exportadas a «{file}»"
+
+# Buscar elementos intocables por sector… (spec 012, T24)
+
+["Search sectors"]
+es = "Sectores de búsqueda"
+
+["the action perimeter"]
+es = "el perímetro de actuación"
+
+["Search pending"]
+es = "Búsqueda pendiente"
+
+["Search in force, closed by {who} on {date}"]
+es = "Búsqueda vigente, cerrada por {who} el {date}"
+
+["There is no action perimeter or legal limit and no sectors are declared: declare the legal limit first with {path}"]
+es = "No hay perímetro de actuación ni límite legal ni sectores declarados: declare primero el límite legal con {path}"
+
+["Declare the sectors from a layer of polygons"]
+es = "Declarar los sectores desde una capa de polígonos"
+
+["Layer of the sectors"]
+es = "Capa de los sectores"
+
+["Field of the name"]
+es = "Campo del nombre"
+
+["Use the action perimeter"]
+es = "Usar el perímetro de actuación"
+
+["Layers to consult (up to {max})"]
+es = "Capas que se consultan (hasta {max})"
+
+["The project has no layers of features: import them first with {path}, as Features"]
+es = "El proyecto no tiene capas de entidades: impórtelas antes con {path}, como Entidades"
+
+["Search distance: {value}"]
+es = "Distancia de búsqueda: {value}"
+
+["Nothing found: close the search to leave a record of what was checked"]
+es = "No se halló nada: cierre la búsqueda para dejar constancia de lo revisado"
+
+["Who closes the search"]
+es = "Quién cierra la búsqueda"
+
+["{layer} · {kind}"]
+es = "{layer} · {kind}"
+
+["{layer} · {distance} m"]
+es = "{layer} · {distance} m"
+
+["{name} · {layer} · {distance} m"]
+es = "{name} · {layer} · {distance} m"
+
+["Geometry: {value}"]
+es = "Geometría: {value}"
+
+["Without a decision"]
+es = "Sin decidir"
+
+["Converted into «{code}»"]
+es = "Convertida en «{code}»"
+
+["Discarded"]
+es = "Descartada"
+
+["Convert"]
+es = "Convertir"
+
+["Found in {sector}: {found} within {distance} m, {pending} without a decision"]
+es = "Hallado en {sector}: {found} a ≤ {distance} m, {pending} sin decidir"
+
+["Search in «{sector}» (layers: {layers}; up to {distance} m): entities found: {found}"]
+es = "Búsqueda en «{sector}» (capas: {layers}; hasta {distance} m): entidades halladas: {found}"
+
+["{count} entities converted before are no longer found: their constraints stay in the project"]
+es = "{count} entidades convertidas antes ya no se hallan: sus restricciones quedan en el proyecto"
+
+["Searching in «{sector}»… {percent} % · Esc: cancel"]
+es = "Buscando en «{sector}»… {percent} % · Esc: cancelar"
+
+["Search cancelled: nothing has been left half-done"]
+es = "Búsqueda cancelada: no ha quedado nada a medias"
+
+["The project was closed while the search was running: nothing has been left half-done"]
+es = "Se cerró el proyecto mientras corría la búsqueda: no ha quedado nada a medias"
+
+["Choose the sector to search"]
+es = "Elija el sector en el que buscar"
+
+["Choose the layers to consult: from 1 to {max}"]
+es = "Elija las capas que se consultan: de 1 a {max}"
+
+["Close the search of «{sector}» first: it has converted entities"]
+es = "Cierre antes la búsqueda de «{sector}»: tiene entidades convertidas"
+
+["Choose the layer of polygons that gives the sectors"]
+es = "Elija la capa de polígonos de la que salen los sectores"
+
+["Write the field of that layer that names each sector"]
+es = "Escriba el campo de esa capa que nombra cada sector"
+
+["No sectors are declared: the action perimeter is the only sector"]
+es = "Sin sectores declarados: el perímetro de actuación es el único sector"
+
+["Sectors declared: {count}"]
+es = "Sectores declarados: {count}"
+
+["Sectors declared: {count}; area of the perimeter without a sector: {area} m²"]
+es = "Sectores declarados: {count}; área del perímetro sin sector: {area} m²"
+
+["The open search of «{sector}» was dropped: its sector changed. What was converted stays in the project"]
+es = "Se olvidó la búsqueda abierta de «{sector}»: su sector cambió. Lo que se convirtió queda en el proyecto"
+
+["There is no open search: search first"]
+es = "No hay ninguna búsqueda abierta: busque primero"
+
+["The entity is not among the ones found: search again"]
+es = "La entidad no está entre las halladas: busque de nuevo"
+
+["The entity was already converted into «{code}»: it is not decided again"]
+es = "La entidad ya se convirtió en «{code}»: no se decide de nuevo"
+
+["Write the outward setback of the untouchable in metres"]
+es = "Escriba el resguardo hacia fuera del intocable en metros"
+
+["Write the outward setback in metres: an untouchable that is a point or a line needs more than 0"]
+es = "Escriba el resguardo hacia fuera en metros: un intocable que es un punto o una línea necesita más de 0"
+
+["Write the reason why the entity is an untouchable"]
+es = "Escriba el motivo por el que la entidad es un intocable"
+
+["Write who decides that the entity is an untouchable"]
+es = "Escriba quién decide que la entidad es un intocable"
+
+["Write the reason why the entity is discarded"]
+es = "Escriba el motivo por el que se descarta la entidad"
+
+["Write who closes the search"]
+es = "Escriba quién cierra la búsqueda"
+
+["Entity converted: «{name}» is now an untouchable with {buffer} m of setback"]
+es = "Entidad convertida: «{name}» es ahora un intocable con {buffer} m de resguardo"
+
+["Entity discarded: «{name}»"]
+es = "Entidad descartada: «{name}»"
+
+["Search of «{sector}» closed (found: {found}, converted: {converted}, discarded: {discarded})"]
+es = "Búsqueda de «{sector}» cerrada (halladas: {found}, convertidas: {converted}, descartadas: {discarded})"
+
+["Declare no sectors: the action perimeter is the only sector"]
+es = "No declara sectores: el perímetro de actuación es el único sector"
+
+["Layer of the project the entity found belongs to"]
+es = "Capa del proyecto a la que pertenece la entidad hallada"
+
+["Number of the entity found in its layer"]
+es = "Número de la entidad hallada en su capa"
+
+["Name of the untouchable (empty: the name of the entity)"]
+es = "Nombre del intocable (vacío: el nombre de la entidad)"
+
+["Distance in metres, outside the entity, that the untouchable also protects (more than 0 for a point or a line)"]
+es = "Distancia en metros, fuera de la entidad, que el intocable también protege (más de 0 para un punto o una línea)"
+
+["Why the entity is an untouchable"]
+es = "Por qué la entidad es un intocable"
+
+["Who decides that the entity is an untouchable"]
+es = "Quién decide que la entidad es un intocable"
+
+["Why the entity does not limit the design"]
+es = "Por qué la entidad no limita el diseño"
+
+["Layer of polygons of the project that gives the search sectors"]
+es = "Capa de polígonos del proyecto de la que salen los sectores de búsqueda"
+
+["Field of that layer that names each sector"]
+es = "Campo de esa capa que nombra cada sector"

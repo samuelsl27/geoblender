@@ -49,8 +49,7 @@ ENTRY = "012"
 EDIT = "geoblender.core_edit_limits"
 DECLARE = "geoblender.core_declare_limits"
 GO_TO = "geoblender.core_go_to_place"
-OTHERS = ("geoblender.core_find_untouchables", "geoblender.core_edit_client_marks",
-          "geoblender.res_verify_constraints")
+OTHERS = ("geoblender.core_edit_client_marks", "geoblender.res_verify_constraints")
 PANEL = "GEOBLENDER_PT_core_limits"
 WM_PROPERTY = "geoblender_constraints"
 WEST = 700_000.0

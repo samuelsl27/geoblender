@@ -446,3 +446,61 @@ description.es = "Escribe la rejilla de clases de las máscaras de la versión a
 entry = "012"
 action = "D"
 frequency = 1
+
+# Órdenes internas de la búsqueda de intocables (spec 012, T24, plan §5.3.4): las abre la ventana
+# de Buscar elementos intocables por sector…, no un menú de la barra.
+
+[[command]]
+key = "geoblender.core_declare_sectors"
+kind = "internal"
+label.en = "Declare the sectors"
+label.es = "Declarar los sectores"
+description.en = "Declare the search sectors from a layer of polygons of the project and the field that names them, or use the action perimeter as the only sector"
+description.es = "Declara los sectores de búsqueda desde una capa de polígonos del proyecto y el campo que los nombra, o usa el perímetro de actuación como único sector"
+entry = "012"
+action = "A"
+frequency = 2
+
+[[command]]
+key = "geoblender.core_search_untouchables"
+kind = "internal"
+label.en = "Search"
+label.es = "Buscar"
+description.en = "Search the untouchable elements within the search distance of the chosen sector, in the chosen layers, in steps"
+description.es = "Busca los elementos intocables a la distancia de búsqueda del sector elegido, en las capas elegidas, por pasos"
+entry = "012"
+action = "A"
+frequency = 3
+
+[[command]]
+key = "geoblender.core_convert_hit"
+kind = "internal"
+label.en = "Convert into untouchable…"
+label.es = "Convertir en intocable…"
+description.en = "Create an untouchable constraint from the entity found, with its setback and its reason"
+description.es = "Crea una restricción intocable desde la entidad hallada, con su resguardo y su motivo"
+entry = "012"
+action = "D"
+frequency = 2
+
+[[command]]
+key = "geoblender.core_discard_hit"
+kind = "internal"
+label.en = "Discard…"
+label.es = "Descartar…"
+description.en = "Discard the entity found with a reason: it stays in the record of the search"
+description.es = "Descarta la entidad hallada con un motivo: queda en la constancia de la búsqueda"
+entry = "012"
+action = "D"
+frequency = 2
+
+[[command]]
+key = "geoblender.core_close_search"
+kind = "internal"
+label.en = "Close the search"
+label.es = "Cerrar la búsqueda"
+description.en = "Record the search of the sector as in force, with what was found, converted and discarded, who closed it and when"
+description.es = "Registra la búsqueda del sector como vigente, con lo hallado, lo convertido y lo descartado, quién la cierra y cuándo"
+entry = "012"
+action = "A"
+frequency = 2

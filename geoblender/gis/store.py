@@ -264,6 +264,7 @@ __all__ = [
     "declared_vertical",
     "domain_fields",
     "domain_rows",
+    "feature_at",
     "feature_pieces",
     "feature_rows",
     "feature_source",
@@ -2500,6 +2501,17 @@ def feature_sources(project: StoreProject,
 def feature_source(project: StoreProject, ref: DatasetRecord | str) -> FeatureSource:
     """:func:`feature_sources` de una sola capa."""
     return feature_sources(project, [ref])[0]
+
+
+def feature_at(project: StoreProject, source: FeatureSource, fid: int) -> FeatureLayer | None:
+    """La entidad número ``fid`` de ``source`` como una capa de esa sola entidad (su geometría y
+    sus atributos, bit a bit los de :func:`read_features`), o ``None`` si ya no está: lo que
+    hace falta para convertir una entidad hallada por una búsqueda (spec 012, T24; RF-012-08) sin
+    leer la capa entera (con 10.000 entidades serían 0,2 s). Una lectura; solo lee."""
+    query = f"{_feature_select(source.table, source.columns)} WHERE fid = ?"
+    with project.read() as conn:
+        got = conn.execute(query, (int(fid),)).fetchall()
+    return _feature_layer(source.kind, source.columns, got) if got else None
 
 
 def _outside(blobs: Sequence[bytes], window: tuple[float, float, float, float]) -> np.ndarray:

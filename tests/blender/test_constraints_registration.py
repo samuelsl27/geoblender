@@ -77,7 +77,11 @@ COMMANDS = {
 }
 DELIVERED: frozenset[str] = frozenset({"geoblender.core_edit_limits",
                                        "geoblender.core_edit_constraints",
-                                       "geoblender.gis_compile_constraints"})
+                                       "geoblender.gis_compile_constraints",
+                                       "geoblender.core_find_untouchables"})
+SEARCH_TYPES = ("core.declare_sectors", "core.find_untouchables")
+"""Los dos tipos que lanza la misma orden del catálogo: la ventana de la búsqueda
+(``core.find_untouchables``); declarar los sectores tiene su orden interna."""
 """Las órdenes de la 012 que ya tienen su clase real (de la entrada «012») y lanzan alguna de
 las operaciones de :data:`COMMANDS`: cada una pasa del R-32 a la 012 con la suya (T22 a T28; la
 de los límites, ``core_edit_limits``, no es la orden de su tipo, que es la de las restricciones:
@@ -390,6 +394,9 @@ class ConstraintsRegisteredTest(unittest.TestCase):
                 if idname in DELIVERED:
                     self.assertEqual(self.cat.commands[idname].entry, ENTRY)
                     self.assertTrue(issubclass(cls, aware))
+                    if op_type in SEARCH_TYPES:  # la ventana lanza uno; el otro, su interna
+                        self.assertEqual(cls.provenance_op_type, "core.find_untouchables")
+                        continue
                     self.assertEqual(cls.provenance_op_type, op_type)
                     continue
                 # T22 a T28 las pasan a la 012 con su clase real

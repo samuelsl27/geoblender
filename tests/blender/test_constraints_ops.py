@@ -57,8 +57,7 @@ COMPILE = "geoblender.gis_compile_constraints"
 EXPORT = "geoblender.gis_export_constraint_masks"
 SET_PARAMETER = "geoblender.core_set_parameter"
 REAL = (EDIT, CREATE, COMPLETE, COMPILE, EXPORT)
-STILL_PROVISIONAL = ("geoblender.core_find_untouchables", "geoblender.core_edit_client_marks",
-                     "geoblender.res_verify_constraints")
+STILL_PROVISIONAL = ("geoblender.core_edit_client_marks", "geoblender.res_verify_constraints")
 PANEL = "GEOBLENDER_PT_core_constraints"
 LIST = "GEOBLENDER_UL_core_constraints"
 WM_PROPERTY = "geoblender_constraints"
@@ -600,6 +599,12 @@ class ConstraintsOpsTest(unittest.TestCase):
         self.assertEqual(shown, ["poste_14_2"])
         self.assertFalse(order)
         view.only_problems = False
+        # La elegida con problemas se dibuja con cada uno de ellos en alerta (T24: la línea de
+        # un problema no tenía el atributo «x» de las filas de la vista y fallaba al dibujar).
+        view.item_index = [item.code for item in view.constraints].index("poste_14_2")
+        layout = draw(getattr(bpy.types, PANEL), bpy.context)
+        self.assertTrue(any("«Resguardo hacia fuera»" in item.text and item.alert
+                            for item in layout.of_kind("label")), layout.texts())
 
     def test_i_complete_the_one_drawn_in_qgis(self) -> None:
         """RF-012-03, RF-012-04: la restricción dibujada en QGIS (la geometría y nada más) sale

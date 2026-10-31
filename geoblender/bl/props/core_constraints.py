@@ -23,6 +23,14 @@ parámetros con su valor en la versión y en el proyecto, :class:`GEOBLENDER_PG_
 elegida, el filtro de las que tienen problemas, las capas de las que se pueden crear y el último
 resultado de crear, compilar o exportar (``report_lines``).
 
+**Buscar elementos intocables por sector…** (T24): los sectores de búsqueda con su estado
+(:class:`GEOBLENDER_PG_core_sector_item`: vigente o pendiente), el elegido, la capa de
+polígonos y el campo con que se declaran, las capas «entidades» que se pueden consultar con su
+casilla (:class:`GEOBLENDER_PG_core_search_layer`), la distancia de búsqueda tal como se lee, lo
+hallado por la búsqueda abierta con la decisión de cada entidad
+(:class:`GEOBLENDER_PG_core_hit_item`), quién cierra la búsqueda y su último resultado
+(``search_lines``).
+
 Ninguna propiedad es una coordenada ni una distancia en ``FloatProperty`` (ADR-0005; los
 resguardos, los pesos, las distancias y los espesores de los diálogos, en ``StringProperty``:
 ``docs/trampas.md`` §1; las coordenadas absolutas de «Ir a», también en texto).
@@ -104,6 +112,41 @@ class GEOBLENDER_PG_core_constraint_item(bpy.types.PropertyGroup):
         type=GEOBLENDER_PG_core_param_line)
 
 
+class GEOBLENDER_PG_core_sector_item(bpy.types.PropertyGroup):
+    """Un sector de búsqueda de intocables (RF-012-07, RF-012-09): su nombre (``name``), su
+    código (vacío: el perímetro de actuación como único sector), si tiene una búsqueda vigente y
+    lo que se dice de ella (``text``: «Búsqueda pendiente» o «Búsqueda vigente, cerrada por …»)."""
+
+    code: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    current: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+    text: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+
+
+class GEOBLENDER_PG_core_search_layer(bpy.types.PropertyGroup):
+    """Una capa «entidades» del proyecto que se puede consultar en una búsqueda (``name``: su
+    dato), su geometría (``kind``: ``point``, ``line`` o ``polygon``) y si se consulta."""
+
+    kind: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    use: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+
+
+class GEOBLENDER_PG_core_hit_item(bpy.types.PropertyGroup):
+    """Una entidad hallada por la búsqueda abierta (RF-012-08): cómo se nombra (``name``), su
+    capa (el dato) y su número, su geometría, su distancia al sector (m, en texto), sus
+    atributos (``details``, un campo por línea), su decisión (``state``: ``pending``,
+    ``converted`` o ``discarded``), el motivo de esa decisión y, si se convirtió, el código de la
+    restricción. Todo en texto o entero: ninguna coordenada (ADR-0005)."""
+
+    layer: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    fid: IntProperty(default=0, options=_STATIC)  # type: ignore[valid-type]
+    kind: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    distance: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    details: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    state: StringProperty(default="pending", options=_STATIC)  # type: ignore[valid-type]
+    reason: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    constraint: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+
+
 class GEOBLENDER_PG_core_constraints(bpy.types.PropertyGroup):
     """Lo que dibujan las ventanas de las restricciones (una vista; véase el módulo)."""
 
@@ -135,11 +178,36 @@ class GEOBLENDER_PG_core_constraints(bpy.types.PropertyGroup):
         description="Distance in metres, inside the legal limit, where cutting is not allowed")
     limit_lines: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_core_report_line)
+    # Buscar elementos intocables por sector… (T24)
+    sectors: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_sector_item)
+    sector_index: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
+    sector_sources: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_layer_choice)
+    sector_layer: StringProperty(  # type: ignore[valid-type]
+        default="", options=_STATIC,
+        description="Layer of polygons of the project that gives the search sectors")
+    sector_field: StringProperty(  # type: ignore[valid-type]
+        default="", options=_STATIC,
+        description="Field of that layer that names each sector")
+    search_layers: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_search_layer)
+    search_distance: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    search_distance_set: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+    hits: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_hit_item)
+    hit_index: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
+    search_title: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    search_decided_by: StringProperty(  # type: ignore[valid-type]
+        default="", options=_STATIC, description="Who closes the search")
+    search_lines: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_report_line)
 
 
 classes: tuple[type, ...] = (GEOBLENDER_PG_core_layer_choice, GEOBLENDER_PG_core_report_line,
                              GEOBLENDER_PG_core_param_line, GEOBLENDER_PG_core_constraint_item,
-                             GEOBLENDER_PG_core_constraints)
+                             GEOBLENDER_PG_core_sector_item, GEOBLENDER_PG_core_search_layer,
+                             GEOBLENDER_PG_core_hit_item, GEOBLENDER_PG_core_constraints)
 
 
 def register() -> None:

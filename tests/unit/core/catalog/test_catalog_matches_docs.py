@@ -45,7 +45,8 @@ PENDING_REFS: frozenset[str] = frozenset()
 # → entrada. Las de Diseño ▸ Límites y restricciones de la 012 (plan 012 D-38: de R-32 a 012 al
 # llegar su clase real, T22 a T28), hasta que BS §8.7 las diga (T34 de la 012).
 APPROVED_ENTRIES: dict[str, str] = {"core_edit_limits": "012", "core_edit_constraints": "012",
-                                    "gis_compile_constraints": "012"}
+                                    "gis_compile_constraints": "012",
+                                    "core_find_untouchables": "012"}
 
 # Filas ↗ de BS que no dicen lo mismo que la casa de su comando (manda la casa: un comando,
 # una definición): ninguna (la T37 corrigió el «D·2p» de ``io_import_block_model`` en

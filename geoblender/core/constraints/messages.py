@@ -343,6 +343,13 @@ CATALOG: tuple[Message, ...] = (
         "The layer «{layer}» has no field «{value}»: its fields are {fields}.",
         "La capa «{layer}» no tiene el campo «{value}»: sus campos son {fields}.",
     ),
+    Message(
+        "core.constraint_source_entity_missing",
+        "The entity {value} is no longer in the layer «{layer}»: search again before "
+        "converting it.",
+        "La entidad {value} ya no está en la capa «{layer}»: busque de nuevo antes de "
+        "convertirla.",
+    ),
     # Intenciones del cliente (RF-012-26, RF-012-27; T15) -----------------------------------
     Message(
         "core.constraint_source_role_unknown",

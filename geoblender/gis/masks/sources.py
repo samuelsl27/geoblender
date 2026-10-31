@@ -9,8 +9,10 @@ resuelve los campos que elige la persona (por su columna o su título) y pide a
 ``core.constraints.provenance.create_constraints`` que las cree con ``core.edit_constraints``
 (con la capa como entrada ``source``), con su origen (la entrada de la capa y la entidad) y los
 parámetros que declara la persona; las entidades que no sirven quedan rechazadas con su motivo.
-:func:`create_intentions` (T15; RF-012-26) guarda igual las marcas del cliente como
-intenciones (``core.edit_intentions``), que no entran en ninguna máscara. Python puro con numpy (nivel 2).
+:func:`create_from_entity` (T24; RF-012-08) hace lo mismo con UNA sola entidad (la que halló una
+búsqueda de intocables), leyendo solo esa. :func:`create_intentions` (T15; RF-012-26) guarda igual
+las marcas del cliente como intenciones (``core.edit_intentions``), que no entran en ninguna
+máscara. Python puro con numpy (nivel 2).
 """
 
 from __future__ import annotations
@@ -27,7 +29,8 @@ from ..provenance import DOMAINS, FAMILIES_BY_CODE, FEATURES
 from ..store import StoreProject
 from ..vector import FeatureLayer
 
-__all__ = ["check_constraints", "create_constraints", "create_intentions", "source_entities"]
+__all__ = ["check_constraints", "create_constraints", "create_from_entity", "create_intentions",
+           "source_entities"]
 
 
 def _family(name: str) -> str | None:
@@ -113,6 +116,38 @@ def create_constraints(project: StoreProject, source: str, mapping: cprov.LayerM
     return cprov.create_constraints(
         project, entities, resolved, layer=source, source=source, source_input=source_input,
         params=params, srs_id=int(project.record.crs_epsg), default_name=default_name)
+
+
+def create_from_entity(project: StoreProject, source: str, fid: int, mapping: cprov.LayerMapping,
+                       *, params: cprov.ParamDeclaration | None = None,
+                       default_name: str | None = None) -> Any:
+    """Crea la restricción de UNA entidad de la capa ``source`` (RF-012-08, T24): la entidad
+    ``fid`` que halló una búsqueda de intocables, según ``mapping`` y con los parámetros
+    ``params``, y devuelve lo que dejó ``core.edit_constraints`` (``EditedConstraints``). Lee solo
+    esa entidad (``gis.store.feature_at``), no la capa entera, y no toca las demás ni la capa de
+    origen. ``default_name`` da el nombre si ``mapping`` no tiene campo del nombre.
+    ``ConstraintError`` ``core.constraint_source_entity_missing`` si la entidad ya no está,
+    ``core.constraint_source_field_unknown`` si un campo elegido no está en la capa y
+    ``core.constraint_source_nothing`` si no sirve; ``ValueError`` si ``source`` no es una capa
+    «entidades»; todos, antes de registrar nada."""
+    if _family(source) != FEATURES:
+        raise ValueError(f"se convierte una entidad de una capa «entidades» del proyecto, no de "
+                         f"«{source}»")
+    feature = gstore.feature_source(project, source)
+    layer = gstore.feature_at(project, feature, fid)
+    if layer is None:
+        raise ConstraintError("core.constraint_source_entity_missing", field="entidad",
+                              value=int(fid), layer=source)
+    fields = tuple((column.column, column.field) for column in layer.columns)
+    entity = cprov.SourceEntity(int(fid), GeometryKind(layer.kind), layer.parts[0],
+                                {name: layer.values[name][0] for name, _ in fields})
+    resolved = mapping.with_fields(_columns(mapping, fields, source))
+    with project.read() as conn:
+        record = dataset_registry.get(conn, source)
+    return cprov.create_constraints(
+        project, [entity], resolved, layer=source, source=source,
+        source_input=None if record is None else record.input_uid, params=params,
+        srs_id=int(project.record.crs_epsg), default_name=default_name)
 
 
 def create_intentions(project: StoreProject, source: str, mapping: cprov.IntentionMapping, *,

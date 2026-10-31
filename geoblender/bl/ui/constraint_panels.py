@@ -35,6 +35,20 @@ y «Exportar las máscaras…» (``geoblender.gis_export_constraint_masks``); ab
 resultado de cada una (lo creado y lo rechazado, el informe de compilar con lo ganado y lo
 perdido y la búsqueda pendiente: :func:`compile_lines`). :func:`fill_constraints` regenera la
 vista desde el proyecto, sin escribir (``gis.masks.store.listed_constraints``).
+
+**Buscar elementos intocables por sector…** (T24; HU-012-3; RF-012-07 a RF-012-10, RF-012-28): la
+ventana ``GEOBLENDER_PT_core_search`` (la abre ``geoblender.core_find_untouchables``) dibuja los
+**sectores** de búsqueda con el estado de su búsqueda (``GEOBLENDER_UL_core_sectors``: «Búsqueda
+pendiente» o «Búsqueda vigente, cerrada por … el …», A12) y el formulario para declararlos desde
+una capa de polígonos y su campo (``geoblender.core_declare_sectors``) o quitarlos (el perímetro es
+el único sector); las **capas** «entidades» del proyecto con su casilla (hasta diez), la distancia
+de búsqueda con su valor y su tipo y «Buscar» (``geoblender.core_search_untouchables``, por pasos);
+y la **búsqueda abierta**: lo hallado (``GEOBLENDER_UL_core_hits``: cada entidad con su capa, su
+distancia y su decisión), de la elegida sus atributos con «Convertir en intocable…»
+(``geoblender.core_convert_hit``) y «Descartar…» (``geoblender.core_discard_hit``), quién cierra la
+búsqueda y «Cerrar la búsqueda» (``geoblender.core_close_search``). :func:`fill_search` regenera
+los sectores, las capas y la distancia desde el proyecto y :func:`show_hits` lo hallado, de lo que
+guarda ``bl.ops.core_constraints``.
 """
 
 from __future__ import annotations
@@ -49,14 +63,16 @@ import bpy
 
 from ...core.catalog.search import path_text
 from ...core.constraints import checks as constraint_checks
-from ...core.constraints.model import ConstraintType, is_code
-from ...core.constraints.params import family, param_key
+from ...core.constraints import provenance as constraint_provenance
+from ...core.constraints.model import ConstraintType, GeometryKind, is_code
+from ...core.constraints.params import SEARCH_DISTANCE, family, param_key
 from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, language, translate, tr
 from ...core.params.model import format_value
 from ...core.params.store import ParameterStore
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
+from ...gis.masks import access as mask_access
 from ...gis.masks import store as mask_store
 from .. import compat
 from ..props.core_constraints import WINDOW_MANAGER_PROPERTY
@@ -95,6 +111,29 @@ NAME_FACTOR = 0.6
 """Cómo reparte la fila de la lista su ancho: la insignia del tipo, el nombre y el estado."""
 MAX_CONFLICT_LINES = 5
 """Cuántos conflictos (zonas sin movimiento posible) enseña el informe de compilar."""
+EDIT_LIMITS = "geoblender.core_edit_limits"
+SEARCH_PANEL = "GEOBLENDER_PT_core_search"
+SECTORS_LIST = "GEOBLENDER_UL_core_sectors"
+HITS_LIST = "GEOBLENDER_UL_core_hits"
+DECLARE_SECTORS = "geoblender.core_declare_sectors"
+SEARCH_UNTOUCHABLES = "geoblender.core_search_untouchables"
+CONVERT_HIT = "geoblender.core_convert_hit"
+DISCARD_HIT = "geoblender.core_discard_hit"
+CLOSE_SEARCH = "geoblender.core_close_search"
+SEARCH_PANEL_UNITS = 44
+SEARCH_WIDTH_PX = SEARCH_PANEL_UNITS * compat.UI_UNIT_PX
+"""El ancho de la ventana de la búsqueda de intocables (44 unidades)."""
+SECTOR_ROWS = 3
+SECTOR_NAME_FACTOR = 0.3
+HIT_ROWS = 5
+HIT_NAME_FACTOR = 0.4
+HIT_WHERE_FACTOR = 0.55
+"""Cómo reparte la fila de una entidad hallada su ancho: su nombre, su capa con su distancia y su
+decisión."""
+PENDING = "pending"
+CONVERTED = "converted"
+DISCARDED = "discarded"
+"""Las decisiones de una entidad hallada (``GEOBLENDER_PG_core_hit_item.state``)."""
 
 
 def view() -> Any | None:
@@ -261,8 +300,9 @@ def fill_limits(project: Any) -> Any:
 
 
 def _draw_line(layout: Any, line: Any, width: float) -> None:
-    """Una línea del informe: su texto (en alerta, si lo está) y, si lleva un lugar, «Ir a»."""
-    if line.x:
+    """Una línea del informe (una fila de la vista o un :class:`Line` que aún no está en ella): su
+    texto (en alerta, si lo está) y, si lleva un lugar, «Ir a»."""
+    if getattr(line, "x", ""):
         row = layout.row(align=True)
         row.label(text=line.text, translate=False)
         button = row.operator(GO_TO_PLACE, text=_label(GO_TO_PLACE), translate=False)
@@ -620,6 +660,344 @@ class GEOBLENDER_PT_core_constraints(bpy.types.Panel):
         draw_constraints(self.layout, context)
 
 
-# En orden de registro (la lista, antes de la ventana que la dibuja).
+# --- Buscar elementos intocables por sector… (T24; RF-012-07 a RF-012-10, RF-012-28) ------------
+
+
+def layer_label(dataset: str) -> str:
+    """El nombre de una capa «entidades» o «dominios» sin el prefijo de su familia
+    (``gis_fea_torres`` → ``torres``)."""
+    for prefix in ("gis_fea_", "gis_dom_"):
+        if dataset.startswith(prefix):
+            return dataset.removeprefix(prefix) or dataset
+    return dataset
+
+
+def metres(value: float) -> str:
+    """Una distancia en metros como se lee: sin decimales si es entera («25»), con uno si no
+    («6,5»)."""
+    return format_number(float(value), 0 if float(value).is_integer() else 1)
+
+
+def search_layers(project: Any) -> tuple[tuple[str, str], ...]:
+    """Las capas «entidades» del proyecto que se pueden consultar en una búsqueda (RF-012-08:
+    puntos, líneas o polígonos): (nombre del dato, su geometría), por nombre. Una cuya tabla
+    falta no se ofrece."""
+    records = gis_store.list_gis_datasets(project, families=(gis_provenance.FEATURES,))
+    found: list[tuple[str, str]] = []
+    for record in records:
+        try:
+            source = gis_store.feature_source(project, record)
+        except (GeoblenderError, ValueError):
+            LOGGER.warning("La capa «%s» no se ofrece a la búsqueda de intocables", record.name,
+                           exc_info=True)
+            continue
+        found.append((source.name, source.kind))
+    return tuple(sorted(found))
+
+
+def sector_name(code: str, name: str) -> str:
+    """El nombre de un sector como se lee: el perímetro de actuación (código vacío), en el idioma
+    de Geoblender."""
+    return name if code else tr("the action perimeter")
+
+
+def sector_text(search: Any) -> str:
+    """El estado de la búsqueda de un sector (``core.constraints.model.SearchRecord`` o
+    ``None``; RF-012-09, A12): «Búsqueda pendiente», o «Búsqueda vigente, cerrada por … el …»."""
+    if search is None:
+        return tr("Search pending")
+    closed = str(search.closed_at)
+    try:
+        day = dt.date.fromisoformat(closed[:10]).strftime(DATE_FORMAT)
+    except ValueError:
+        day = closed
+    return tr("Search in force, closed by {who} on {date}", who=search.closed_by, date=day)
+
+
+def fill_search(project: Any) -> int:
+    """Regenera de ``project`` lo que dibuja la ventana de la búsqueda de intocables, sin escribir
+    nada: los sectores con el estado de su búsqueda (``gis.masks.access.sector_states``, en la
+    versión activa; conserva el elegido), las capas «entidades» que se pueden consultar (conserva
+    las marcadas), las de polígonos de las que se pueden declarar sectores y la distancia de
+    búsqueda con su valor y su tipo (RF-012-07, RF-012-08, RF-012-10); quién cierra la búsqueda,
+    con la persona de la sesión si no hay otra. Devuelve cuántos sectores hay. Si no se puede
+    leer, el error sigue y la vista queda como estaba."""
+    shown = view()
+    if shown is None:  # inalcanzable con la extensión registrada
+        raise RuntimeError("la vista de la búsqueda de intocables no está registrada")
+    version = scene_versions.active()
+    states = mask_access.sector_states(project, None if version is None else version.uid)
+    layers = search_layers(project)
+    polygons = polygon_layers(project)
+    store = ParameterStore(project)
+    with project.read() as conn:
+        record = store.get(SEARCH_DISTANCE.key, conn=conn)
+    old = shown.sectors
+    chosen = old[shown.sector_index].code if 0 <= shown.sector_index < len(old) else None
+    marked = {item.name: bool(item.use) for item in shown.search_layers}
+    shown.sectors.clear()
+    for state in states:
+        item = shown.sectors.add()
+        item.name = sector_name(state.code, state.name)
+        item.code, item.current = state.code, state.search is not None
+        item.text = sector_text(state.search)
+    shown.sector_index = next((index for index, item in enumerate(shown.sectors)
+                               if item.code == chosen), 0)
+    shown.search_layers.clear()
+    for name, kind in layers:
+        item = shown.search_layers.add()
+        item.name, item.kind, item.use = name, kind, marked.get(name, False)
+    shown.sector_sources.clear()
+    for name in polygons:
+        shown.sector_sources.add().name = name
+    shown.search_distance = res_panels.record_text(record, SEARCH_DISTANCE.key)
+    shown.search_distance_set = record is not None
+    if not shown.search_decided_by.strip():
+        shown.search_decided_by = project.session.user_host
+    return len(shown.sectors)
+
+
+@dataclass(frozen=True, slots=True)
+class HitLine:
+    """Una entidad hallada como se enseña (RF-012-08): cómo se nombra, su capa (el dato) y su
+    número, su geometría (``point``, ``line`` o ``polygon``), su distancia al sector en texto
+    (m), sus atributos (un campo por línea), su decisión (:data:`PENDING`, :data:`CONVERTED` o
+    :data:`DISCARDED`), el motivo de esa decisión y el código de la restricción en que se
+    convirtió."""
+
+    name: str
+    layer: str
+    fid: int
+    kind: str
+    distance: str
+    details: str
+    state: str = PENDING
+    reason: str = ""
+    constraint: str = ""
+
+
+def show_hits(title: str, hits: Sequence[HitLine]) -> None:
+    """Deja ``hits`` como lo hallado por la búsqueda abierta, con su ``title`` (vacío: no hay
+    búsqueda abierta); conserva la elegida (por su capa y su número)."""
+    shown = view()
+    if shown is None:
+        return
+    old = shown.hits
+    chosen = ((old[shown.hit_index].layer, old[shown.hit_index].fid)
+              if 0 <= shown.hit_index < len(old) else None)
+    shown.hits.clear()
+    for line in hits:
+        item = shown.hits.add()
+        item.name, item.layer, item.fid, item.kind = line.name, line.layer, line.fid, line.kind
+        item.distance, item.details, item.state = line.distance, line.details, line.state
+        item.reason, item.constraint = line.reason, line.constraint
+    shown.hit_index = next((index for index, item in enumerate(shown.hits)
+                            if (item.layer, item.fid) == chosen), 0)
+    shown.search_title = title
+
+
+def update_hit(layer: str, fid: int, state: str, reason: str, constraint: str,
+               title: str) -> bool:
+    """Cambia la decisión de una entidad hallada que ya está en la lista (la capa ``layer`` y el
+    número ``fid``) y el título, sin volver a llenarla (con miles de entidades, una llamada
+    de más de 0,1 s); mira primero la elegida, que es la que se decide desde la ventana.
+    ``False`` si la entidad no está en la lista."""
+    shown = view()
+    if shown is None:
+        return False
+    items = shown.hits
+    item = None
+    if 0 <= shown.hit_index < len(items):
+        chosen = items[shown.hit_index]
+        if (chosen.layer, chosen.fid) == (layer, fid):
+            item = chosen
+    if item is None:
+        item = next((entry for entry in items if (entry.layer, entry.fid) == (layer, fid)), None)
+    if item is None:
+        return False
+    item.state, item.reason, item.constraint = state, reason, constraint
+    shown.search_title = title
+    return True
+
+
+def show_search_report(lines: Sequence[Line]) -> None:
+    """Deja ``lines`` como el último resultado de la ventana de la búsqueda (sectores
+    declarados, lo buscado, lo decidido, lo cerrado)."""
+    shown = view()
+    if shown is not None:
+        _put_lines(shown.search_lines, lines)
+
+
+def hit_state_text(item: Any) -> str:
+    """La decisión de una entidad hallada como se lee: «Sin decidir», «Convertida en
+    «torre_14»» o «Descartada»."""
+    if item.state == CONVERTED:
+        return tr("Converted into «{code}»", code=item.constraint)
+    if item.state == DISCARDED:
+        return tr("Discarded")
+    return tr("Without a decision")
+
+
+def hit_where(item: Any) -> str:
+    """La capa de una entidad hallada y su distancia al sector: «torres · 6,0 m»."""
+    return tr("{layer} · {distance} m", layer=layer_label(item.layer), distance=item.distance)
+
+
+class GEOBLENDER_UL_core_sectors(bpy.types.UIList):
+    """Search sectors with the state of their search"""
+
+    bl_idname = SECTORS_LIST
+
+    def draw_item(self, context: Any, layout: Any, data: Any, item: Any, icon: int,
+                  active_data: Any, active_propname: str, index: int = 0,
+                  flt_flag: int = 0) -> None:
+        split = layout.split(factor=SECTOR_NAME_FACTOR, align=True)
+        split.label(text=item.name, translate=False)
+        cell = split.row(align=True)
+        cell.alert = not item.current
+        cell.label(text=item.text, icon="CHECKMARK" if item.current else "ERROR",
+                   translate=False)
+
+
+class GEOBLENDER_UL_core_hits(bpy.types.UIList):
+    """Entities found by the open search with their decision"""
+
+    bl_idname = HITS_LIST
+
+    def draw_item(self, context: Any, layout: Any, data: Any, item: Any, icon: int,
+                  active_data: Any, active_propname: str, index: int = 0,
+                  flt_flag: int = 0) -> None:
+        split = layout.split(factor=HIT_NAME_FACTOR, align=True)
+        split.label(text=item.name, translate=False)
+        rest = split.split(factor=HIT_WHERE_FACTOR, align=True)
+        rest.label(text=hit_where(item), translate=False)
+        cell = rest.row(align=True)
+        cell.alert = item.state == PENDING
+        cell.label(text=hit_state_text(item), translate=False)
+
+
+def _draw_hit(layout: Any, item: Any, width: float, writable: bool) -> None:
+    """La entidad hallada elegida: su nombre, su capa y su distancia, sus atributos, su
+    decisión con su motivo y «Convertir en intocable…» y «Descartar…» (RF-012-08)."""
+    box = layout.box()
+    title = tr("{name} · {layer} · {distance} m", name=item.name, layer=layer_label(item.layer),
+               distance=item.distance)
+    box.label(text=title, translate=False)
+    shown_kind = tr("Geometry: {value}", value=GeometryKind(item.kind).label(language()))
+    box.label(text=shown_kind, translate=False)
+    column = box.column(align=True)
+    for line in item.details.splitlines():
+        column.label(text=line, translate=False)
+    state = box.row()
+    state.alert = item.state == PENDING
+    state.label(text=hit_state_text(item), translate=False)
+    if item.reason:
+        _draw_line(box, Line(tr("Reason: {value}", value=item.reason)), width)
+    row = box.row(align=True)
+    row.enabled = writable and item.state != CONVERTED
+    for target, icon in ((CONVERT_HIT, "CHECKMARK"), (DISCARD_HIT, "X")):
+        button = row.operator(target, text=_label(target), icon=icon, translate=False)
+        button.layer, button.fid = item.layer, item.fid
+
+
+def draw_search(layout: Any, context: Any) -> None:
+    """La ventana de Buscar elementos intocables por sector… (véase el módulo), de lo ya
+    leído."""
+    shown = view()
+    if shown is None:
+        return
+    blocked = _write_unavailable()
+    writable = blocked is None
+    if blocked is not None:  # se ve y no se cambia (RF-012-28)
+        note = layout.row()
+        note.alert = True
+        note.label(text=blocked, icon="LOCKED", translate=False)
+    width = labels.dialog_width(SEARCH_WIDTH_PX)
+    sectors = layout.box()
+    sectors.label(text=tr("Search sectors"), translate=False)
+    if not len(shown.sectors):
+        labels.draw_wrapped(sectors, tr(
+            "There is no action perimeter or legal limit and no sectors are declared: declare "
+            "the legal limit first with {path}",
+            path=path_text(catalog(), EDIT_LIMITS, language())), width, icon="INFO")
+    else:
+        sectors.template_list(SECTORS_LIST, "", shown, "sectors", shown, "sector_index",
+                              rows=SECTOR_ROWS)
+    form = sectors.column()
+    form.enabled = writable
+    form.label(text=tr("Declare the sectors from a layer of polygons"), translate=False)
+    form.prop_search(shown, "sector_layer", shown, "sector_sources",
+                     text=tr("Layer of the sectors"), translate=False)
+    form.prop(shown, "sector_field", text=tr("Field of the name"), translate=False)
+    buttons = form.row(align=True)
+    buttons.operator(DECLARE_SECTORS, text=_label(DECLARE_SECTORS), icon="CHECKMARK",
+                     translate=False)
+    button = buttons.operator(DECLARE_SECTORS, text=tr("Use the action perimeter"),
+                              translate=False)
+    button.perimeter = True
+    layers = layout.box()
+    layers.label(text=tr("Layers to consult (up to {max})",
+                         max=constraint_provenance.MAX_LAYERS), translate=False)
+    if not len(shown.search_layers):
+        labels.draw_wrapped(layers, tr(
+            "The project has no layers of features: import them first with {path}, as "
+            "Features", path=path_text(catalog(), IMPORT_VECTOR, language())), width,
+            icon="INFO")
+    for item in shown.search_layers:
+        row_text = tr("{layer} · {kind}", layer=layer_label(item.name),
+                      kind=GeometryKind(item.kind).label(language()))
+        layers.prop(item, "use", text=row_text, translate=False)
+    distance = layers.row(align=True)
+    distance.label(text=tr("Search distance: {value}", value=shown.search_distance),
+                   translate=False)
+    if shown.search_distance_set:
+        change = distance.operator(SET_PARAMETER, text=tr("Change…"), translate=False)
+        change.key = SEARCH_DISTANCE.key
+    search = layers.row()
+    search.enabled = writable
+    search.operator(SEARCH_UNTOUCHABLES, text=_label(SEARCH_UNTOUCHABLES), icon="VIEWZOOM",
+                    translate=False)
+    if shown.search_title:
+        found = layout.box()
+        found.label(text=shown.search_title, translate=False)
+        if not len(shown.hits):
+            labels.draw_wrapped(found, tr(
+                "Nothing found: close the search to leave a record of what was checked"),
+                width, icon="INFO")
+        else:
+            found.template_list(HITS_LIST, "", shown, "hits", shown, "hit_index",
+                                rows=HIT_ROWS)
+            index = min(max(shown.hit_index, 0), len(shown.hits) - 1)
+            _draw_hit(found, shown.hits[index], width, writable)
+        closing = found.column()
+        closing.enabled = writable
+        closing.prop(shown, "search_decided_by", text=tr("Who closes the search"),
+                     translate=False)
+        closing.operator(CLOSE_SEARCH, text=_label(CLOSE_SEARCH), icon="CHECKMARK",
+                         translate=False)
+    if len(shown.search_lines):
+        box = layout.box()
+        box.label(text=tr("Last result"), translate=False)
+        for line in shown.search_lines:
+            _draw_line(box, line, width)
+
+
+class GEOBLENDER_PT_core_search(bpy.types.Panel):
+    """Search sectors, layers to consult and what a search of untouchable elements finds, with
+    the order to convert, discard and close it"""
+
+    bl_idname = SEARCH_PANEL
+    bl_label = "Find untouchable elements by sector…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_space_type = "TOPBAR"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = SEARCH_PANEL_UNITS
+
+    def draw(self, context: Any) -> None:
+        draw_search(self.layout, context)
+
+
+# En orden de registro (las listas, antes de la ventana que las dibuja).
 classes: tuple[type, ...] = (GEOBLENDER_PT_core_limits, GEOBLENDER_UL_core_constraints,
-                             GEOBLENDER_PT_core_constraints)
+                             GEOBLENDER_PT_core_constraints, GEOBLENDER_UL_core_sectors,
+                             GEOBLENDER_UL_core_hits, GEOBLENDER_PT_core_search)

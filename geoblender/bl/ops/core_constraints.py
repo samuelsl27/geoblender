@@ -64,6 +64,25 @@ parámetros a la dibujada en QGIS, guarda lo que cambia de una con código y da 
 parámetros que su tipo pide y le faltan. Los parámetros que ya existen se cambian con «Cambiar
 parámetro…» de la 008 (``geoblender.core_set_parameter``) y su ámbito de la 009. «Compilar las
 máscaras» y «Exportar las máscaras…» (``bl.ops.gis``) las lanza la misma ventana.
+
+**Buscar elementos intocables por sector…** (T24; HU-012-3; RF-012-07 a RF-012-10, RF-012-28; plan
+§5.3.4, §5.5, A6, A12, D-26): :class:`GEOBLENDER_OT_core_find_untouchables` lee los sectores con el
+estado de su búsqueda (vigente o pendiente), las capas que se pueden consultar y la distancia de
+búsqueda, enseña la búsqueda abierta y abre su ventana (``bl.ui.constraint_panels``). Desde ella,
+:class:`GEOBLENDER_OT_core_declare_sectors` declara los sectores de una capa de polígonos y su campo
+(``core.declare_sectors``) o los quita (el perímetro es el único sector);
+:class:`GEOBLENDER_OT_core_search_untouchables` busca por pasos (modal con avance y Esc, ninguna
+llamada de más de 0,2 s: ``gis.masks.sectors.search_steps``) en el sector y las capas elegidos y
+deja la búsqueda **abierta** (:class:`OpenSearch`, en memoria: lo hallado con la decisión de
+cada entidad); :class:`GEOBLENDER_OT_core_convert_hit` convierte una entidad hallada en un
+intocable con su resguardo y su motivo (``core.edit_constraints`` solo de esa entidad:
+``gis.masks.sources.create_from_entity``) y :class:`GEOBLENDER_OT_core_discard_hit` la descarta con
+un motivo; :class:`GEOBLENDER_OT_core_close_search` registra la búsqueda
+(``core.find_untouchables``: ``gis.masks.sectors.close_search``) y deja vigente el sector. Una
+búsqueda abierta con algo convertido no se deja por buscar en otro sector (se perdería su
+constancia); si se vuelve a buscar en el mismo, conserva las decisiones de lo que se vuelve a
+hallar. Todas quedan desactivadas, con su motivo, sin proyecto, en solo lectura o con la versión
+activa no editable (:func:`constraints_unavailable`).
 """
 
 from __future__ import annotations
@@ -74,7 +93,7 @@ import logging
 import math
 import sqlite3
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import bpy
@@ -92,15 +111,20 @@ from ...core.constraints.model import (
     ConstraintParam,
     ConstraintType,
     GeometryKind,
+    HitDecision,
     is_code,
 )
 from ...core.errors import GeoblenderError
-from ...core.i18n import tr
+from ...core.i18n import format_number, tr
+from ...core.project.model import Progress
 from ...core.provenance import contract
 from ...core.provenance.operations import Use
 from ...core.provenance.undo import UndoKind
 from ...core.units import convert, parse_quantity
 from ...core.versions import freeze
+from ...gis import store as gis_store
+from ...gis.masks import access as mask_access
+from ...gis.masks import sectors as mask_sectors
 from ...gis.masks import sources
 from ...gis.masks import store as mask_store
 from ...reserves import compliance_store
@@ -109,7 +133,9 @@ from ..scene import versions as scene_versions
 from ..ui import constraint_panels
 from ..ui import views as ui_views
 from ..ui.commands import catalog as command_catalog
-from ..ui.commands import text, with_note
+from ..ui.commands import command_idname, text, with_note
+from ..ui.res_panels import NOT_SHOWN
+from .core import _StepsModal
 from .core_provenance import (
     SESSION,
     ProvenanceAwareOperator,
@@ -172,6 +198,7 @@ def unregister() -> None:
     suyo); las traducciones instaladas se quedan; idempotente."""
     while _UNDO:
         _UNDO.pop()()
+    drop_search()  # la búsqueda abierta vive en memoria: no sobrevive a Geoblender
 
 
 def _unregister_if(view: Mapping[str, Any], key: str, item: object,
@@ -341,10 +368,7 @@ def limits_request(limits: Any) -> LimitsRequest:
 def _layer_label(dataset: str) -> str:
     """El nombre de una capa para nombrar sus límites cuando no hay campo del nombre: el de su
     dato sin el prefijo de su familia (``gis_fea_concesion`` → ``concesion``)."""
-    for prefix in ("gis_fea_", "gis_dom_"):
-        if dataset.startswith(prefix):
-            return dataset.removeprefix(prefix) or dataset
-    return dataset
+    return constraint_panels.layer_label(dataset)
 
 
 class GEOBLENDER_OT_core_edit_limits(ProvenanceAwareOperator, bpy.types.Operator):
@@ -1122,8 +1146,723 @@ class GEOBLENDER_OT_core_complete_constraint(ProvenanceAwareOperator, bpy.types.
         return created
 
 
+# --- Buscar elementos intocables por sector… (T24; HU-012-3; RF-012-07 a RF-012-10, RF-012-28) --
+
+FIND_COMMAND = constraint_provenance.FIND_COMMAND
+DECLARE_SECTORS = constraint_panels.DECLARE_SECTORS
+SEARCH_UNTOUCHABLES = constraint_panels.SEARCH_UNTOUCHABLES
+CONVERT_HIT = constraint_panels.CONVERT_HIT
+DISCARD_HIT = constraint_panels.DISCARD_HIT
+CLOSE_SEARCH = constraint_panels.CLOSE_SEARCH
+_HIT_STATES = {HitDecision.CONVERTED: constraint_panels.CONVERTED,
+               HitDecision.DISCARDED: constraint_panels.DISCARDED}
+
+
+class SearchFormError(ConstraintFormError):
+    """Lo que impide buscar, convertir, descartar o cerrar con lo escrito en la ventana de la
+    búsqueda (ya en el idioma de Geoblender)."""
+
+
+@dataclass(slots=True)
+class OpenSearch:
+    """La búsqueda abierta de esta sesión: hallada y sin cerrar (RF-012-08, RF-012-09). Lo
+    hallado (``searched``: el sector con su huella, las capas con su hash, la distancia y las
+    entidades), la versión en que se buscó (el perímetro como sector se lee en ella), la
+    geometría y los títulos de los campos de cada capa consultada, el nombre con que se enseña
+    cada entidad y la decisión que se lleva de cada una. Vive en memoria: se cierra con
+    «Cerrar la búsqueda» (que la registra) y se pierde al cerrar el proyecto o desactivar
+    Geoblender; lo convertido ya creó su restricción y queda aunque se pierda."""
+
+    project: Any
+    searched: mask_sectors.Searched
+    version_uid: str | None
+    kinds: dict[str, str]
+    titles: dict[str, dict[str, str]]
+    names: dict[tuple[str, int], str]
+    decisions: dict[tuple[str, int], mask_sectors.Decision] = field(default_factory=dict)
+
+    def converted(self) -> int:
+        """Cuántas entidades convertidas lleva."""
+        return sum(1 for item in self.decisions.values()
+                   if item.decision is HitDecision.CONVERTED)
+
+    def sector(self) -> str:
+        """El sector buscado como se nombra (el perímetro de actuación, en el idioma de
+        Geoblender)."""
+        return constraint_panels.sector_name(self.searched.sector_code,
+                                             self.searched.sector_name)
+
+
+_OPEN: OpenSearch | None = None
+
+
+def open_search() -> OpenSearch | None:
+    """La búsqueda abierta de esta sesión, o ``None`` si no hay ninguna o es de otro proyecto
+    (el proyecto se cerró o se cambió: se pierde)."""
+    global _OPEN
+    if _OPEN is not None and _OPEN.project is not SESSION.project:
+        _OPEN = None
+    return _OPEN
+
+
+def drop_search() -> None:
+    """Olvida la búsqueda abierta (la registrada o la que ya no vale)."""
+    global _OPEN
+    _OPEN = None
+
+
+def _hit_name(found: Any) -> str:
+    """Cómo se enseña una entidad hallada: el primer atributo de texto con algo escrito o, sin
+    él, su capa y su número."""
+    for value in found.attributes.values():
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return f"{constraint_panels.layer_label(str(found.layer))} {found.fid}"
+
+
+def _hit_details(found: Any, titles: Mapping[str, str]) -> str:
+    """Los atributos de una entidad hallada, uno por línea («nombre: Torre 14»)."""
+    lines = []
+    for column, value in found.attributes.items():
+        shown = NOT_SHOWN if value is None or value == "" else str(value)
+        lines.append(f"{titles.get(column, column)}: {shown}")
+    return "\n".join(lines)
+
+
+def _hit_lines(opened: OpenSearch) -> list[constraint_panels.HitLine]:
+    lines = []
+    for found in opened.searched.found:
+        key = (str(found.layer), int(found.fid))
+        decision = opened.decisions.get(key)
+        lines.append(constraint_panels.HitLine(
+            name=opened.names[key], layer=key[0], fid=key[1],
+            kind=opened.kinds.get(key[0], "point"),
+            distance=format_number(float(found.distance_m), 1),
+            details=_hit_details(found, opened.titles.get(key[0], {})),
+            state=constraint_panels.PENDING if decision is None else _HIT_STATES[
+                decision.decision],
+            reason="" if decision is None else decision.reason,
+            constraint=(decision.constraint_code or "") if decision is not None else ""))
+    return lines
+
+
+def _title(opened: OpenSearch) -> str:
+    """El título de lo hallado: el sector, cuántas entidades a ≤ qué distancia y cuántas
+    siguen sin decidir."""
+    undecided = len(opened.searched.found) - len(opened.decisions)
+    return tr("Found in {sector}: {found} within {distance} m, {pending} without a decision",
+              sector=opened.sector(), found=len(opened.searched.found),
+              distance=constraint_panels.metres(opened.searched.distance_m), pending=undecided)
+
+
+def _put_hits(opened: OpenSearch | None) -> None:
+    """Deja en la ventana lo hallado por ``opened`` con las decisiones de ahora (o nada)."""
+    if opened is None:
+        constraint_panels.show_hits("", ())
+        return
+    constraint_panels.show_hits(_title(opened), _hit_lines(opened))
+
+
+def _put_decision(opened: OpenSearch, key: tuple[str, int]) -> None:
+    """Deja en la ventana la decisión nueva de la entidad ``key`` (su capa y su número) sin volver
+    a llenar toda la lista (con miles de entidades hallados, cada decisión sería una llamada de
+    más de 0,1 s; RNF-012-06)."""
+    decision = opened.decisions[key]
+    if not constraint_panels.update_hit(key[0], key[1], _HIT_STATES[decision.decision],
+                                        decision.reason, decision.constraint_code or "",
+                                        _title(opened)):
+        _put_hits(opened)
+
+
+def _find_hit(opened: OpenSearch, layer: str, fid: int) -> Any:
+    """La entidad hallada de la capa ``layer`` y el número ``fid``; ``SearchFormError`` si no
+    está entre las halladas."""
+    for found in opened.searched.found:
+        if str(found.layer) == layer and int(found.fid) == int(fid):
+            return found
+    raise SearchFormError(tr("The entity is not among the ones found: search again"))
+
+
+def _undecided(opened: OpenSearch | None, layer: str, fid: int) -> tuple[OpenSearch, Any]:
+    """La búsqueda abierta y la entidad ``layer``/``fid`` de ella, para decidir de nuevo
+    o por primera vez: ``SearchFormError`` si no hay búsqueda abierta, la entidad no está entre
+    las halladas o ya se convirtió (su restricción existe y no se deshace)."""
+    if opened is None:
+        raise SearchFormError(tr("There is no open search: search first"))
+    found = _find_hit(opened, layer, fid)
+    decision = opened.decisions.get((str(found.layer), int(found.fid)))
+    if decision is not None and decision.decision is HitDecision.CONVERTED:
+        raise SearchFormError(tr("The entity was already converted into «{code}»: it is not "
+                                 "decided again", code=decision.constraint_code or ""))
+    return opened, found
+
+
+def _set_open(opened: OpenSearch | None) -> None:
+    """Deja ``opened`` como la búsqueda abierta de la sesión."""
+    global _OPEN
+    _OPEN = opened
+
+
+class _Writes:
+    """El ``poll`` de lo que escribe: sin proyecto, en solo lectura o con la versión activa no
+    editable, no está disponible y dice por qué (RF-012-28)."""
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return _write_poll(cls)
+
+
+class _WritesAware(_Writes):
+    """Lo de :class:`_Writes` y, en una orden de :class:`ProvenanceAwareOperator`, su descripción
+    con el porqué si la versión activa no es editable (RF-012-28, RF-009-21)."""
+
+    @classmethod
+    def description(cls, context: Any, properties: Any) -> str:
+        about = super().description(context, properties)  # type: ignore[misc]
+        note = scene_versions.not_editable_text()
+        return about if note is None else with_note(about, note)
+
+
+class GEOBLENDER_OT_core_find_untouchables(_WritesAware, ProvenanceAwareOperator,
+                                           bpy.types.Operator):
+    """Mandatory search of the untouchable elements before designing"""
+
+    bl_idname = FIND_COMMAND
+    bl_label = "Find untouchable elements by sector…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = constraint_provenance.FIND_UNTOUCHABLES
+
+    def execute(self, context: Any) -> set[str]:
+        """Lee los sectores con el estado de su búsqueda, las capas que se pueden consultar y la
+        distancia de búsqueda, enseña la búsqueda abierta (si la hay) y abre su ventana; desde
+        un guion sin ventana, solo la vista."""
+        try:
+            constraint_panels.fill_search(SESSION.project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        _put_hits(open_search())
+        if getattr(context, "window", None) is None:
+            return {"FINISHED"}
+        return _call_panel(constraint_panels.SEARCH_PANEL)
+
+
+def _declared_lines(declared: Any, perimeter: bool) -> list[constraint_panels.Line]:
+    """El informe de declarar los sectores (RF-012-07, D-3)."""
+    if perimeter:
+        return [constraint_panels.Line(tr("No sectors are declared: the action perimeter is the "
+                                          "only sector"))]
+    if declared.uncovered_m2 is None:
+        return [constraint_panels.Line(tr("Sectors declared: {count}",
+                                          count=len(declared.sectors)))]
+    return [constraint_panels.Line(tr(
+        "Sectors declared: {count}; area of the perimeter without a sector: {area} m²",
+        count=len(declared.sectors), area=format_number(declared.uncovered_m2, 0)))]
+
+
+class GEOBLENDER_OT_core_declare_sectors(_WritesAware, ProvenanceAwareOperator,
+                                         bpy.types.Operator):
+    """Declare the search sectors from a layer of polygons of the project and the field that
+    names them, or use the action perimeter as the only sector"""
+
+    bl_idname = DECLARE_SECTORS
+    bl_label = "Declare the sectors"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+    provenance_op_type = constraint_provenance.DECLARE_SECTORS
+
+    perimeter: BoolProperty(  # type: ignore[valid-type]
+        name="Action perimeter", description="Declare no sectors: the action perimeter is the "
+        "only sector", default=False, options=_HIDDEN)
+
+    def execute(self, context: Any) -> set[str]:
+        """Declara los sectores de la capa de polígonos y el campo de la ventana (o ninguno:
+        «Usar el perímetro»), con ``core.declare_sectors`` (la capa es su entrada); dice cuántos y
+        el área del perímetro que no cubre ningún sector (RF-012-07); una capa que no sirve se
+        rechaza sin escribir nada. Una búsqueda abierta de un sector que ya no es el mismo se
+        olvida."""
+        view = constraint_panels.view()
+        project = SESSION.project
+        layer = field_name = None
+        if not self.perimeter:
+            layer, field_name = view.sector_layer.strip(), view.sector_field.strip()
+            if not layer:
+                self.report({"ERROR"}, tr("Choose the layer of polygons that gives the sectors"))
+                return {"CANCELLED"}
+            if not field_name:
+                self.report({"ERROR"}, tr("Write the field of that layer that names each "
+                                          "sector"))
+                return {"CANCELLED"}
+        version = scene_versions.active_version()
+        inputs = [] if layer is None else [Use(layer, constraint_provenance.SOURCE_ROLE)]
+        ready = ensure_ready(self.provenance_op_type, inputs, report=self.report,
+                             dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        try:
+            declared = mask_sectors.declare_sectors(project, layer, field_name, version=version)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, constraint_provenance.DECLARE_SECTORS)
+        lines = _declared_lines(declared, self.perimeter)
+        try:
+            constraint_panels.fill_search(project)
+            self._forget_outdated(project, version, lines)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+            LOGGER.warning("No se pudo volver a leer los sectores", exc_info=True)
+        constraint_panels.show_search_report(lines)
+        for line in lines:
+            self.report({"WARNING" if line.alert else "INFO"}, line.text)
+        return {"FINISHED"}
+
+    @staticmethod
+    def _forget_outdated(project: Any, version: str | None,
+                         lines: list[constraint_panels.Line]) -> None:
+        """Olvida la búsqueda abierta si su sector ya no existe o es otro (otra huella): ya no se
+        podría cerrar. Lo convertido queda (su restricción ya existe); lo dice."""
+        opened = open_search()
+        if opened is None:
+            return
+        states = mask_access.sector_states(project, version)
+        same = any(state.code == opened.searched.sector_code
+                   and state.sha256 == opened.searched.sector_sha256 for state in states)
+        if same:
+            return
+        drop_search()
+        _put_hits(None)
+        lines.append(constraint_panels.Line(tr(
+            "The open search of «{sector}» was dropped: its sector changed. What was converted "
+            "stays in the project", sector=opened.sector()), alert=True))
+
+
+@dataclass(frozen=True, slots=True)
+class SearchRequest:
+    """Lo que pide la ventana para buscar, ya comprobado: el sector (código y nombre) y las capas
+    (nombres de datos ``gis_fea_``, de 1 a 10)."""
+
+    code: str
+    name: str
+    layers: tuple[str, ...]
+
+
+def search_request(view: Any) -> SearchRequest:
+    """El sector elegido y las capas marcadas de la ventana de la búsqueda, sin leer ni escribir
+    nada. :class:`SearchFormError` si no hay sector elegido o las capas no son de 1 a 10."""
+    if not 0 <= view.sector_index < len(view.sectors):
+        raise SearchFormError(tr("Choose the sector to search"))
+    sector = view.sectors[view.sector_index]
+    layers = tuple(item.name for item in view.search_layers if item.use)
+    if not 1 <= len(layers) <= constraint_provenance.MAX_LAYERS:
+        raise SearchFormError(tr("Choose the layers to consult: from 1 to {max}",
+                                 max=constraint_provenance.MAX_LAYERS))
+    return SearchRequest(sector.code, sector.name, layers)
+
+
+def _drain_search(operator: Any, steps: Any) -> Any:
+    """Los pasos de la búsqueda de una vez (desde un guion): el resultado del último o, si
+    fallan, ``None`` (ya dicho; no dejan nada a medias)."""
+    found = None
+    try:
+        for step in steps:
+            if step.result is not None:
+                found = step.result
+    except GeoblenderError as exc:
+        operator._report({"ERROR"}, error_text(exc))
+        return None
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        LOGGER.error("«%s» se ha parado", command_idname(operator.bl_idname), exc_info=exc)
+        operator._report({"ERROR"}, error_text(exc))
+        return None
+    if found is None:  # pragma: no cover - los pasos acaban siempre con su resultado
+        operator._report({"ERROR"}, tr("The operation did not finish with its result"))
+    return found
+
+
+class GEOBLENDER_OT_core_search_untouchables(_Writes, _StepsModal, bpy.types.Operator):
+    """Search the untouchable elements within the search distance of the chosen sector, in the
+    chosen layers, in steps"""
+
+    bl_idname = SEARCH_UNTOUCHABLES
+    bl_label = "Search"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+    STEP_BUDGET_S = 0.05  # cada evento del temporizador (RNF-012-06: ninguna llamada de > 0,2 s)
+
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Desde la interfaz, por pasos con el avance y Esc."""
+        self.in_steps = getattr(context, "window", None) is not None
+        return self.execute(context)
+
+    def execute(self, context: Any) -> set[str]:
+        """Busca en el sector y las capas de la ventana las entidades a ≤ la distancia de
+        búsqueda (RF-012-08): por pasos desde la interfaz, de una vez desde un guion. Solo lee.
+        No busca en otro sector mientras la búsqueda abierta lleve algo convertido: se perdería
+        su constancia."""
+        project = SESSION.project
+        try:
+            request = search_request(constraint_panels.view())
+            opened = open_search()
+            if opened is not None and opened.searched.sector_code != request.code \
+                    and opened.converted():
+                raise SearchFormError(tr(
+                    "Close the search of «{sector}» first: it has converted entities",
+                    sector=opened.sector()))
+            version = scene_versions.active_version()
+            sources_found = gis_store.feature_sources(project, request.layers)
+            steps = mask_sectors.search_steps(project, request.code, request.layers,
+                                              version=version, budget_s=self.STEP_BUDGET_S)
+        except SearchFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self._project = project
+        self._request = request
+        self._version = version
+        self._sources = {item.name: item for item in sources_found}
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, steps)
+            return {"RUNNING_MODAL"}
+        self.report_log: list[str] = []
+        searched = _drain_search(self, steps)
+        if searched is None:
+            return {"CANCELLED"}
+        return self._finished(searched)
+
+    def _shown_sector(self) -> str:
+        request = self._request
+        return constraint_panels.sector_name(request.code, request.name)
+
+    def _finished(self, searched: mask_sectors.Searched) -> set[str]:
+        """Deja la búsqueda abierta, con las decisiones de la anterior del mismo sector que
+        siguen hallándose, y enseña lo hallado en la ventana y en el informe de Blender."""
+        previous = open_search()
+        titles = {name: {column.column: column.field for column in source.columns}
+                  for name, source in self._sources.items()}
+        kinds = {name: source.kind for name, source in self._sources.items()}
+        names = {(str(found.layer), int(found.fid)): _hit_name(found)
+                 for found in searched.found}
+        opened = OpenSearch(self._project, searched, self._version, kinds, titles, names)
+        lost = 0
+        if previous is not None and previous.searched.sector_code == searched.sector_code:
+            for key, decision in previous.decisions.items():
+                if key in names:
+                    opened.decisions[key] = decision
+                elif decision.decision is HitDecision.CONVERTED:
+                    lost += 1
+        _set_open(opened)
+        _put_hits(opened)
+        lines = [constraint_panels.Line(tr(
+            "Search in «{sector}» (layers: {layers}; up to {distance} m): entities found: "
+            "{found}", sector=self._shown_sector(),
+            layers=", ".join(constraint_panels.layer_label(name) for name in searched.layers),
+            distance=constraint_panels.metres(searched.distance_m),
+            found=len(searched.found)))]
+        if lost:
+            lines.append(constraint_panels.Line(tr(
+                "{count} entities converted before are no longer found: their constraints stay "
+                "in the project", count=lost), alert=True))
+        constraint_panels.show_search_report(lines)
+        for line in lines:  # lo hallado, en la lista de la ventana (pueden ser miles)
+            self._report({"WARNING" if line.alert else "INFO"}, line.text)
+        return {"FINISHED"}
+
+    # --- En pasos (_StepsModal) ---------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Searching in «{sector}»… {percent} % · Esc: cancel",
+                  sector=self._shown_sector(), percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Search cancelled: nothing has been left half-done")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return error_text(exc)
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        if step.result is None:
+            if project_session.current() is not getattr(self, "_project", None):
+                return self._fail(context, tr(
+                    "The project was closed while the search was running: nothing has been "
+                    "left half-done"))
+            return None
+        self._done(context)
+        finished = self._finished(step.result)
+        if not bpy.app.background:  # la ventana con lo hallado (en blender -b, call_panel cierra)
+            try:
+                _call_panel(constraint_panels.SEARCH_PANEL)
+            except RuntimeError:
+                LOGGER.warning("No se pudo reabrir la ventana de la búsqueda", exc_info=True)
+        return finished
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except (sqlite3.Error, OSError, ValueError) as exc:  # los pasos cerrados no dejan nada
+            LOGGER.error("«%s» se ha parado", command_idname(self.bl_idname), exc_info=exc)
+            return self._fail(context, error_text(exc))
+
+
+def _metres_text(value: float) -> str:
+    """Un resguardo en metros como se dice («8», «2,5»)."""
+    return constraint_panels.metres(value)
+
+
+class GEOBLENDER_OT_core_convert_hit(_WritesAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Create an untouchable constraint from the entity found, with its setback and its reason"""
+
+    bl_idname = CONVERT_HIT
+    bl_label = "Convert into untouchable…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+    provenance_op_type = constraint_provenance.EDIT_CONSTRAINTS
+
+    layer: StringProperty(  # type: ignore[valid-type]
+        name="Layer", description="Layer of the project the entity found belongs to",
+        options=_HIDDEN)
+    fid: IntProperty(  # type: ignore[valid-type]
+        name="Entity", description="Number of the entity found in its layer", options=_HIDDEN)
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the untouchable (empty: the name of the entity)",
+        options=_FIELD)
+    buffer_out: StringProperty(  # type: ignore[valid-type]
+        name="Outward setback (m)", description="Distance in metres, outside the entity, that "
+        "the untouchable also protects (more than 0 for a point or a line)", options=_FIELD)
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the entity is an untouchable", options=_FIELD)
+    decided_by: StringProperty(  # type: ignore[valid-type]
+        name="Decided by", description="Who decides that the entity is an untouchable",
+        options=_FIELD)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo con el nombre de la entidad y quien cierra la búsqueda como decisor."""
+        self.provenance_dialog = True
+        try:
+            opened, found = _undecided(open_search(), self.layer, self.fid)
+        except SearchFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        view = constraint_panels.view()
+        self.name = opened.names[(str(found.layer), int(found.fid))]
+        self.decided_by = (view.search_decided_by if view is not None else "").strip() \
+            or SESSION.project.session.user_host
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=text(command_catalog().commands[CONVERT_HIT].label),
+            confirm_text=tr("Convert"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        opened = open_search()
+        if opened is not None:
+            try:
+                found = _find_hit(opened, self.layer, self.fid)
+            except SearchFormError:
+                found = None
+            if found is not None:
+                layout.label(text=tr("{name} · {layer} · {distance} m",
+                                     name=opened.names[(str(found.layer), int(found.fid))],
+                                     layer=constraint_panels.layer_label(str(found.layer)),
+                                     distance=format_number(float(found.distance_m), 1)),
+                             translate=False)
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "buffer_out", text=tr("Outward setback (m)"), translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+        layout.prop(self, "decided_by", text=tr("Decided by"), translate=False)
+
+    def _buffer(self, kind: str) -> float:
+        """El resguardo hacia fuera escrito (m): obligatorio, y más de 0 en un punto o una
+        línea (RF-012-04: sin él no ocupan nada)."""
+        typed = _typed_metres(self.buffer_out, ConstraintParam.BUFFER_OUT, tr(
+            "Write the outward setback in metres (0 or more): «{value}» does not fit",
+            value="{value}"))
+        if typed is None:
+            raise SearchFormError(tr("Write the outward setback of the untouchable in metres"))
+        if typed <= 0.0 and kind != GeometryKind.POLYGON.value:
+            raise SearchFormError(tr("Write the outward setback in metres: an untouchable that "
+                                     "is a point or a line needs more than 0"))
+        return typed
+
+    def execute(self, context: Any) -> set[str]:
+        """Crea el intocable de la entidad (``core.edit_constraints`` con la capa como entrada,
+        solo de esa entidad): su geometría tal cual, su origen, su motivo, su decisor, hoy como
+        fecha y su resguardo como parámetro del proyecto; lo anota como convertido (RF-012-08).
+        Si algo no vale, nada se escribe."""
+        project = SESSION.project
+        try:
+            opened, found = _undecided(open_search(), self.layer, self.fid)
+            kind = opened.kinds.get(str(found.layer), "point")
+            reason, decider = self.reason.strip(), self.decided_by.strip()
+            if not reason:
+                raise SearchFormError(tr("Write the reason why the entity is an untouchable"))
+            if not decider:
+                raise SearchFormError(tr("Write who decides that the entity is an untouchable"))
+            buffer_m = self._buffer(kind)
+        except ConstraintFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        name = self.name.strip() or opened.names[(str(found.layer), int(found.fid))]
+        layer = str(found.layer)
+        ready = ensure_ready(self.provenance_op_type,
+                             [Use(layer, constraint_provenance.SOURCE_ROLE)],
+                             report=self.report, dialog=self.provenance_dialog,
+                             version=scene_versions.active_version())
+        if ready is None:
+            return {"CANCELLED"}
+        mapping = constraint_provenance.LayerMapping(
+            ctype=ConstraintType.UNTOUCHABLE, reason=reason, decided_by=decider,
+            decided_on=dt.date.today())
+        declaration = constraint_provenance.ParamDeclaration(
+            values={ConstraintParam.BUFFER_OUT: buffer_m, ConstraintParam.ACTIVE: True},
+            source=layer, source_kind="document", decided_by=decider, reason=reason)
+        try:
+            edited = sources.create_from_entity(project, layer, int(found.fid), mapping,
+                                                params=declaration, default_name=name)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, constraint_provenance.EDIT_CONSTRAINTS)
+        made = edited.constraints[0]
+        opened.decisions[(layer, int(found.fid))] = mask_sectors.Decision(
+            layer, int(found.fid), HitDecision.CONVERTED, reason, made.code)
+        _put_decision(opened, (layer, int(found.fid)))
+        lines = [constraint_panels.Line(tr(
+            "Entity converted: «{name}» is now an untouchable with {buffer} m of setback",
+            name=made.name, buffer=_metres_text(buffer_m)))]
+        constraint_panels.show_search_report(lines)
+        self.report({"INFO"}, lines[0].text)
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_core_discard_hit(_Writes, bpy.types.Operator):
+    """Discard the entity found with a reason: it stays in the record of the search"""
+
+    bl_idname = DISCARD_HIT
+    bl_label = "Discard…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    layer: StringProperty(  # type: ignore[valid-type]
+        name="Layer", description="Layer of the project the entity found belongs to",
+        options=_HIDDEN)
+    fid: IntProperty(  # type: ignore[valid-type]
+        name="Entity", description="Number of the entity found in its layer", options=_HIDDEN)
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the entity does not limit the design", options=_FIELD)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        try:
+            _undecided(open_search(), self.layer, self.fid)
+        except SearchFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=text(command_catalog().commands[DISCARD_HIT].label),
+            confirm_text=tr("Discard"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Descarta la entidad con su motivo (RF-012-08): queda anotada en la constancia de la
+        búsqueda al cerrarla. Sin motivo, se rechaza."""
+        try:
+            opened, found = _undecided(open_search(), self.layer, self.fid)
+            reason = self.reason.strip()
+            if not reason:
+                raise SearchFormError(tr("Write the reason why the entity is discarded"))
+        except SearchFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        key = (str(found.layer), int(found.fid))
+        opened.decisions[key] = mask_sectors.Decision(key[0], key[1], HitDecision.DISCARDED,
+                                                      reason)
+        _put_decision(opened, key)
+        line = constraint_panels.Line(tr("Entity discarded: «{name}»", name=opened.names[key]))
+        constraint_panels.show_search_report([line])
+        self.report({"INFO"}, line.text)
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_core_close_search(_WritesAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Record the search of the sector as in force, with what was found, converted and
+    discarded, who closed it and when"""
+
+    bl_idname = CLOSE_SEARCH
+    bl_label = "Close the search"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+    provenance_op_type = constraint_provenance.FIND_UNTOUCHABLES
+
+    def execute(self, context: Any) -> set[str]:
+        """Cierra la búsqueda abierta (RF-012-09): la registra (``core.find_untouchables``) con
+        el sector y su huella, las capas con su hash, lo hallado con su decisión y su motivo,
+        quién la cierra y cuándo. Se rechaza, sin registrar nada, si algo queda sin decidir o el
+        sector o una capa cambió después de buscar. El sector queda con la búsqueda vigente."""
+        project = SESSION.project
+        opened = open_search()
+        if opened is None:
+            self.report({"ERROR"}, tr("There is no open search: search first"))
+            return {"CANCELLED"}
+        view = constraint_panels.view()
+        closer = view.search_decided_by.strip()
+        if not closer:
+            self.report({"ERROR"}, tr("Write who closes the search"))
+            return {"CANCELLED"}
+        searched = opened.searched
+        inputs = [Use(searched.sector_dataset, constraint_provenance.SECTOR_ROLE),
+                  *(Use(name, constraint_provenance.layer_role(index))
+                    for index, name in enumerate(searched.layers, start=1))]
+        ready = ensure_ready(self.provenance_op_type, inputs, report=self.report,
+                             dialog=self.provenance_dialog,
+                             version=scene_versions.active_version())
+        if ready is None:
+            return {"CANCELLED"}
+        try:
+            mask_sectors.close_search(project, searched, list(opened.decisions.values()),
+                                      closed_by=closer, version=opened.version_uid)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, constraint_provenance.FIND_UNTOUCHABLES)
+        drop_search()
+        _put_hits(None)
+        converted = sum(1 for item in opened.decisions.values()
+                        if item.decision is HitDecision.CONVERTED)
+        lines = [constraint_panels.Line(tr(
+            "Search of «{sector}» closed (found: {found}, converted: {converted}, discarded: "
+            "{discarded})", sector=opened.sector(), found=len(searched.found),
+            converted=converted, discarded=len(searched.found) - converted))]
+        try:
+            constraint_panels.fill_search(project)
+            pending = [item.name for item in view.sectors if not item.current]
+            if pending:
+                lines.append(constraint_panels.Line(tr(
+                    "Search for untouchable elements pending in: {names}",
+                    names="; ".join(pending)), alert=True))
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+            LOGGER.warning("No se pudo volver a leer los sectores", exc_info=True)
+        constraint_panels.show_search_report(lines)
+        for line in lines:
+            self.report({"WARNING" if line.alert else "INFO"}, line.text)
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_edit_limits, GEOBLENDER_OT_core_declare_limits,
     GEOBLENDER_OT_core_go_to_place, GEOBLENDER_OT_core_edit_constraints,
-    GEOBLENDER_OT_core_create_constraints, GEOBLENDER_OT_core_complete_constraint)
+    GEOBLENDER_OT_core_create_constraints, GEOBLENDER_OT_core_complete_constraint,
+    GEOBLENDER_OT_core_find_untouchables, GEOBLENDER_OT_core_declare_sectors,
+    GEOBLENDER_OT_core_search_untouchables, GEOBLENDER_OT_core_convert_hit,
+    GEOBLENDER_OT_core_discard_hit, GEOBLENDER_OT_core_close_search)
 """Los operadores de la 012 que ya tienen su clase real (de la T22 a la T28)."""
