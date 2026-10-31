@@ -6215,3 +6215,120 @@ es = "Búsqueda de elementos intocables"
 
 ["Client intentions"]
 es = "Intenciones del cliente"
+
+# Límites… (spec 012, T22): la ventana de los límites y sus órdenes (bl/ui/constraint_panels.py,
+# bl/ops/core_constraints.py).
+
+["Limits in force"]
+es = "Límites en vigor"
+
+["No active legal limit: choose its layers below"]
+es = "No hay ningún límite legal activo: elija sus capas más abajo"
+
+["Legal limit {hectares} ha ({area} m²)"]
+es = "Límite legal {hectares} ha ({area} m²)"
+
+["Inward setback of the legal limit: {value} m"]
+es = "Resguardo hacia dentro del límite legal: {value} m"
+
+["No action perimeter: the legal limit is taken as the perimeter"]
+es = "No hay perímetro de actuación: se toma como perímetro el límite legal"
+
+["Action perimeter {hectares} ha ({area} m²)"]
+es = "Perímetro de actuación {hectares} ha ({area} m²)"
+
+["Intersection {hectares} ha ({area} m²)"]
+es = "Intersección {hectares} ha ({area} m²)"
+
+["No fill-only strip: the action perimeter is inside the legal limit"]
+es = "Sin franja de solo relleno: el perímetro de actuación está dentro del límite legal"
+
+["Fill-only strip {hectares} ha ({area} m²) in {count} part"]
+es = "Franja de solo relleno {hectares} ha ({area} m²) en {count} parte"
+
+["Fill-only strip {hectares} ha ({area} m²) in {count} parts"]
+es = "Franja de solo relleno {hectares} ha ({area} m²) en {count} partes"
+
+["{area} m² at ({x}; {y})"]
+es = "{area} m² en ({x}; {y})"
+
+["{name}: {area} m² outside the project grid"]
+es = "{name}: {area} m² fuera de la rejilla del proyecto"
+
+["«{name}» ({ctype}) is not active in {where}"]
+es = "«{name}» ({ctype}) no está activo en {where}"
+
+["Polygon layers of the project"]
+es = "Capas de polígonos del proyecto"
+
+["The project has no polygon layers: import them first with {path}, as Features"]
+es = "El proyecto no tiene capas de polígonos: impórtelas antes con {path}, con el papel «Entidades»"
+
+["Name field (optional)"]
+es = "Campo del nombre (opcional)"
+
+["Date (DD/MM/YYYY)"]
+es = "Fecha (DD/MM/AAAA)"
+
+["Inward setback of the legal limit (m)"]
+es = "Resguardo hacia dentro del límite legal (m)"
+
+["Choose the layers of the legal limit or of the action perimeter"]
+es = "Elija las capas del límite legal o del perímetro de actuación"
+
+["«{layer}» cannot be the legal limit and the action perimeter at once"]
+es = "«{layer}» no puede ser a la vez el límite legal y el perímetro de actuación"
+
+["Choose a single action perimeter: {count} layers are chosen"]
+es = "Elija un solo perímetro de actuación: hay {count} capas elegidas"
+
+["Write the reason of the limits"]
+es = "Escriba el motivo de los límites"
+
+["Write who decides the limits"]
+es = "Escriba quién decide los límites"
+
+["Write the date of the decision as DD/MM/YYYY"]
+es = "Escriba la fecha de la decisión como DD/MM/AAAA"
+
+["«{value}» is not a date: write it as DD/MM/YYYY"]
+es = "«{value}» no es una fecha: escríbala como DD/MM/AAAA"
+
+["Write the inward setback of the legal limit in metres (0 or more)"]
+es = "Escriba el resguardo hacia dentro del límite legal en metros (0 o más)"
+
+["Write the inward setback of the legal limit in metres (0 or more): «{value}» does not fit"]
+es = "Escriba el resguardo hacia dentro del límite legal en metros (0 o más): «{value}» no vale"
+
+["Limits declared: {count} constraints created from {layers} layers"]
+es = "Límites declarados: {count} restricciones creadas desde {layers} capas"
+
+["«{value}» is not a number: «Go to» needs coordinates and a radius in metres"]
+es = "«{value}» no es un número: «Ir a» necesita coordenadas y un radio en metros"
+
+["Limits"]
+es = "Límites"
+
+["Use this layer as (part of) the legal limit"]
+es = "Usa esta capa como (parte del) límite legal"
+
+["Use this layer as the action perimeter"]
+es = "Usa esta capa como el perímetro de actuación"
+
+["Field of the layers that gives the name of each limit; without it, the name of the layer"]
+es = "Campo de las capas que da el nombre de cada límite; sin él, el nombre de la capa"
+
+["Why these limits are the ones in force (title, concession, decision)"]
+es = "Por qué estos son los límites en vigor (título, concesión, decisión)"
+
+["Who decides that these are the limits"]
+es = "Quién decide que estos son los límites"
+
+["Date of the decision, as DD/MM/YYYY"]
+es = "Fecha de la decisión, como DD/MM/AAAA"
+
+["Distance in metres, inside the legal limit, where cutting is not allowed"]
+es = "Distancia en metros, dentro del límite legal, donde no se puede cortar"
+
+["«{layer}» is already declared as {ctype}: choose another layer"]
+es = "«{layer}» ya está declarada como {ctype}: elija otra capa"

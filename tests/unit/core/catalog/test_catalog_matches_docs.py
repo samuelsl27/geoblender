@@ -42,8 +42,9 @@ PENDING_REFS: frozenset[str] = frozenset()
 # las versiones de la 009 (plan 009 D-38: Proyecto ▸ Versiones y Encargos y decisiones de la
 # propiedad…, de R-07 a 009), desde la T31 de la 009; las de Cubicación de la 011 (plan 011 D-36:
 # de R-38 a 011 al llegar su clase real), desde la T31 de la 011 (BS §8.9 y §8.4). identificador
-# → entrada.
-APPROVED_ENTRIES: dict[str, str] = {}
+# → entrada. Las de Diseño ▸ Límites y restricciones de la 012 (plan 012 D-38: de R-32 a 012 al
+# llegar su clase real, T22 a T28), hasta que BS §8.7 las diga (T34 de la 012).
+APPROVED_ENTRIES: dict[str, str] = {"core_edit_limits": "012"}
 
 # Filas ↗ de BS que no dicen lo mismo que la casa de su comando (manda la casa: un comando,
 # una definición): ninguna (la T37 corrigió el «D·2p» de ``io_import_block_model`` en

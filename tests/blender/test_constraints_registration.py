@@ -75,9 +75,11 @@ COMMANDS = {
     "gis.compile_constraints": "geoblender.gis_compile_constraints",
     "res.verify_constraints": "geoblender.res_verify_constraints",
 }
-DELIVERED: frozenset[str] = frozenset()
-"""Las órdenes de la 012 que ya tienen su clase real (de la entrada «012»): ninguna aún; cada una
-pasa del R-32 a la 012 con la suya (T22 a T28)."""
+DELIVERED: frozenset[str] = frozenset({"geoblender.core_edit_limits"})
+"""Las órdenes de la 012 que ya tienen su clase real (de la entrada «012») y lanzan alguna de
+las operaciones de :data:`COMMANDS`: cada una pasa del R-32 a la 012 con la suya (T22 a T28; la
+de los límites, ``core_edit_limits``, no es la orden de su tipo, que es la de las restricciones:
+su prueba es ``test_constraints_limits``)."""
 
 
 def _module(name: str) -> ModuleType:

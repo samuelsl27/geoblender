@@ -17,6 +17,9 @@ RF-012-16, RF-012-28; plan 012 §5.2.3, A5, A11, D-24).
   0,05 s), ``os.replace`` a ``rasters/`` y **una** transacción con las cuatro tablas, las cifras
   y ``complete`` (lo único que no se trocea, R4). Si se cierra o falla, nada (ni cifras, ni
   tablas, ni rejilla, ni temporal) y la operación «cancelada» o «fallida».
+- :func:`declared_limits` (T22; RF-012-05, RF-012-15) lee los límites declarados que están activos
+  en una versión (o en el proyecto) y da su informe (áreas, franja y lo que queda fuera de la
+  rejilla) o los problemas que lo impiden, sin escribir nada y por pasos.
 - :func:`recompute_run` (T21; RF-008-26, D-19) repite una compilación obsoleta: la operación
   nueva sustituye a la anterior en la revisión abierta de su versión, con lo que se lee hoy; la
   llama «Recalcular lo obsoleto» desde ``bl`` y avanza sus pasos la cola de las máscaras.
@@ -40,6 +43,7 @@ from typing import Any
 import numpy as np
 
 from ...core.constraints import store as cstore
+from ...core.constraints.checks import Incomplete
 from ...core.constraints.messages import ConstraintError
 from ...core.constraints.model import (
     Constraint,
@@ -66,7 +70,7 @@ from ...core.gpkg.base import (
 from ...core.gpkg.connection import GpkgConnection
 from ...core.gpkg.wkb import decode_geometry, encode_geometry
 from ...core.params import PROJECT_SCOPE, VERSION_SCOPE
-from ...core.params.store import ParameterStore
+from ...core.params.store import ParameterStore, ResolvedParam
 from ...core.paths import check_path_length
 from ...core.project.model import Progress
 from ...core.provenance.figures import FigureSpec
@@ -91,7 +95,14 @@ from ..messages import GisError
 from ..polygons import drain
 from ..store import StoreProject, backup_path, insert_rows, project_references, temporary_path
 from . import provenance as declared
-from .combine import LEGAL_COMMAND, IncompleteConstraints, check
+from .combine import (
+    LEGAL_COMMAND,
+    IncompleteConstraints,
+    Outside,
+    check,
+    check_steps,
+    limit_outside,
+)
 from .compile import (
     STEP_BUDGET_S,
     CompileRequest,
@@ -106,17 +117,21 @@ from .compile import (
     pace_units,
     planned_steps,
 )
+from .overlay import LimitsReport, limits_report_steps
 from .zones import Runs
 
 __all__ = [
     "CANCELLED_REASON",
     "REPRODUCE",
     "CompileInputs",
+    "DeclaredLimits",
     "MaskWriter",
     "StoredMasks",
     "begin_compile",
     "compile_run",
     "current_pending",
+    "declared_limits",
+    "declared_limits_steps",
     "gather",
     "live_searches",
     "pending_sectors",
@@ -523,6 +538,83 @@ def begin_compile(project: StoreProject, *, version: str | None,
                                                           request.resolved),
                            executor=executor, supersedes=inputs.supersedes,
                            version=inputs.version_uid)
+
+
+# --- Los límites declarados (T22; RF-012-05, RF-012-15) ----------------------------------------
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class DeclaredLimits:
+    """Los límites declarados ahora, en la versión ``version_uid`` (``None``: en el proyecto): los
+    límites legales y los perímetros de actuación activos, los declarados que ahí están
+    desactivados, los problemas que impiden compilarlos (RF-012-04), el mayor resguardo hacia
+    dentro de los límites legales (el de la banda, m; ``None`` sin ninguno) y su informe
+    (:class:`~.overlay.LimitsReport`: ``None`` sin límite legal activo o con problemas, cuyas
+    áreas no valdrían)."""
+
+    version_uid: str | None
+    legal: tuple[Constraint, ...]
+    perimeter: tuple[Constraint, ...]
+    inactive: tuple[Constraint, ...]
+    problems: tuple[Incomplete, ...]
+    inward_m: float | None
+    report: LimitsReport | None
+
+
+def _number(resolved: Mapping[str, object], item: Constraint) -> float | None:
+    """El resguardo hacia dentro resuelto de ``item``, si lo tiene."""
+    found = resolved.get(param_key(item.code, ConstraintParam.BUFFER_IN))
+    value = found.value if isinstance(found, ResolvedParam) else found
+    return None if isinstance(value, bool) or not isinstance(value, int | float) else float(value)
+
+
+def declared_limits_steps(project: StoreProject, *, version: str | None = None
+                          ) -> Generator[None, None, DeclaredLimits]:
+    """Los límites declarados en la versión ``version`` (su uid; ``None``: los valores del
+    proyecto) con su informe (:class:`DeclaredLimits`), por pasos (uno por lectura, comprobación,
+    límite y superposición: RNF-012-06). Solo lee la capa de polígonos, que es donde caben los
+    límites (D-23). Una sin código (dibujada en QGIS) cuenta como activa: la comprobación la lista.
+    El informe es el de :func:`~.overlay.limits_report_steps` sobre la unión de los límites de
+    cada clase (sin perímetro, el límite legal hace de perímetro, D-14) con lo que queda fuera de
+    la rejilla de cada uno (``limit_outside``, RF-012-15)."""
+    record = project.record
+    if record is None:
+        raise ValueError(f"el proyecto «{project.name}» se abrió solo con su cabecera")
+    polygons = {GeometryKind.POLYGON: cstore.CONSTRAINT_LAYERS[GeometryKind.POLYGON]}
+    with project.read() as conn:
+        limits = [item for item in cstore.read_constraints(conn, polygons)
+                  if item.ctype is not None and item.ctype.is_limit]
+        resolved = _resolved(conn, project, limits, version)
+    yield
+    live = [item for item in limits if not is_code(item.code) or is_active(item, resolved)]
+    kept = {id(item) for item in live}
+    inactive = tuple(item for item in limits if id(item) not in kept)
+    legal = tuple(item for item in live if item.ctype is ConstraintType.LEGAL_LIMIT)
+    perimeter = tuple(item for item in live if item.ctype is ConstraintType.ACTION_PERIMETER)
+    problems = yield from check_steps(live, resolved)
+    inwards = [found for item in legal if is_code(item.code)
+               if (found := _number(resolved, item)) is not None]
+    inward = max(inwards) if inwards else None
+    if problems or not legal:
+        return DeclaredLimits(version, legal, perimeter, inactive, problems, inward, None)
+    grid = project_grid(record.window, float(record.grid_step_m))
+    outside: list[Outside] = []
+    for item in (*legal, *perimeter):
+        assert item.ctype is not None
+        area = limit_outside(item, grid)
+        yield
+        if area > 0.0:
+            outside.append(Outside(item.code, item.shown_name(), item.ctype, area))
+    report = yield from limits_report_steps(
+        tuple(part for item in legal for part in item.parts),
+        tuple(part for item in perimeter for part in item.parts) or None,
+        origin=(grid.west, grid.extent.ymin), outside=outside)
+    return DeclaredLimits(version, legal, perimeter, inactive, problems, inward, report)
+
+
+def declared_limits(project: StoreProject, *, version: str | None = None) -> DeclaredLimits:
+    """:func:`declared_limits_steps` de una vez."""
+    return drain(declared_limits_steps(project, version=version))
 
 
 # --- Escribir el resultado (A11) ---------------------------------------------------------------

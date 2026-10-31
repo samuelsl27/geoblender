@@ -84,6 +84,7 @@ __all__ = [
     "combine",
     "combine_steps",
     "geometry_sha256",
+    "limit_outside",
     "prepare",
     "prepare_steps",
 ]
@@ -388,7 +389,7 @@ def _outside_cells(item: Constraint, grid: Grid, outward: float
     return shifted.cells - shifted.intersection(window).cells
 
 
-def _limit_outside(item: Constraint, grid: Grid) -> float:
+def limit_outside(item: Constraint, grid: Grid) -> float:
     """El área exacta (m²) del polígono de un límite fuera de ``grid``."""
     box = grid.extent
     window = np.array([[box.xmin, box.ymin], [box.xmax, box.ymin], [box.xmax, box.ymax],
@@ -447,7 +448,7 @@ def prepare_steps(constraints: Iterable[Constraint], resolved: Mapping[str, obje
             runs = perimeter_runs if item.ctype is ConstraintType.ACTION_PERIMETER else (
                 legal_runs.inside)
             outward = 0.0
-            outside = _limit_outside(item, grid)
+            outside = limit_outside(item, grid)
             yield
         else:
             outward = _number(resolved, item, ConstraintParam.BUFFER_OUT)

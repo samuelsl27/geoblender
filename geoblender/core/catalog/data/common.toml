@@ -385,3 +385,28 @@ description.es = "Escribe la cubicación registrada como CSV para Excel en espa�
 entry = "011"
 action = "D"
 frequency = 2
+
+# Órdenes internas de los límites y las restricciones (spec 012, plan §5.3.4, D-38): las abre la
+# ventana de Límites… (T22), no un menú de la barra.
+
+[[command]]
+key = "geoblender.core_declare_limits"
+kind = "internal"
+label.en = "Declare the limits"
+label.es = "Declarar los límites"
+description.en = "Declare the legal limit and the action perimeter from polygon layers of the project, with their reason, decider, date and inward setback"
+description.es = "Declara el límite legal y el perímetro de actuación desde capas de polígonos del proyecto, con su motivo, su decisor, su fecha y su resguardo hacia dentro"
+entry = "012"
+action = "A"
+frequency = 2
+
+[[command]]
+key = "geoblender.core_go_to_place"
+kind = "internal"
+label.en = "Go to"
+label.es = "Ir a"
+description.en = "Frame the 3D View on a place of the report (absolute coordinates)"
+description.es = "Encuadra la Vista 3D en un lugar del informe (coordenadas absolutas)"
+entry = "012"
+action = "A"
+frequency = 1

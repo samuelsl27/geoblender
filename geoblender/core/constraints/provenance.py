@@ -115,6 +115,7 @@ __all__ = [
     "ParamDeclaration",
     "Rejected",
     "SourceEntity",
+    "check_entities",
     "close_search",
     "constraint_from_intention",
     "constraints_from_entities",
@@ -604,24 +605,47 @@ def edit_constraints(project: OperationProject, rows: Sequence[Constraint], *,
     return EditedConstraints(handle.uid, written, tuple(rejected))
 
 
-def create_constraints(project: OperationProject, entities: Sequence[SourceEntity],
-                       mapping: LayerMapping, *, layer: str, source: str | None,
-                       source_input: str | None, params: ParamDeclaration | None,
-                       srs_id: int) -> EditedConstraints:
-    """Crea las restricciones de las entidades de la capa ``layer`` (RF-012-01) según
-    ``mapping`` (con los campos ya como columnas) con :func:`edit_constraints`, anotando la
-    correspondencia y las rechazadas. :class:`~.messages.ConstraintError`
-    ``core.constraint_source_nothing`` (con la lista) si no sirve ninguna, sin registrar
-    nada."""
+def _named(rows: Sequence[Constraint], base: str) -> tuple[Constraint, ...]:
+    """``rows`` con ``base`` de nombre en las que no lo tienen: ``base`` si es la única
+    restricción y «``base`` <número en la capa>» si son varias."""
+    only = len(rows) == 1
+    return tuple(row if row.name else replace(
+        row, name=base if only else f"{base} {row.source_fid}") for row in rows)
+
+
+def check_entities(entities: Sequence[SourceEntity], mapping: LayerMapping, *, layer: str,
+                   source_input: str | None
+                   ) -> tuple[tuple[Constraint, ...], tuple[Rejected, ...]]:
+    """:func:`constraints_from_entities` que rechaza la capa entera si no sirve ninguna entidad:
+    :class:`~.messages.ConstraintError` ``core.constraint_source_nothing`` (con la lista de las
+    rechazadas). No escribe nada: es lo que comprueba :func:`create_constraints` antes de
+    registrar, para que una orden con varias capas lo mire todo antes de crear nada."""
     rows, rejected = constraints_from_entities(entities, mapping, layer=layer,
                                                source_input=source_input)
     if not rows:
         raise ConstraintError("core.constraint_source_nothing", field="capa",
                               value=len(rejected), layer=layer,
                               problems="; ".join(item.text() for item in rejected) or "—")
-    return edit_constraints(project, rows, params=params, source=source,
-                            settings={"mapping": mapping.settings()}, rejected=rejected,
-                            srs_id=srs_id)
+    return rows, rejected
+
+
+def create_constraints(project: OperationProject, entities: Sequence[SourceEntity],
+                       mapping: LayerMapping, *, layer: str, source: str | None,
+                       source_input: str | None, params: ParamDeclaration | None,
+                       srs_id: int, default_name: str | None = None) -> EditedConstraints:
+    """Crea las restricciones de las entidades de la capa ``layer`` (RF-012-01) según
+    ``mapping`` (con los campos ya como columnas) con :func:`edit_constraints`, anotando la
+    correspondencia y las rechazadas. ``default_name`` (T22: los límites de una capa sin campo
+    del nombre) da nombre a las que no lo tienen (:func:`_named`), y queda en los ajustes.
+    :class:`~.messages.ConstraintError` ``core.constraint_source_nothing`` (con la lista) si no
+    sirve ninguna, sin registrar nada (:func:`check_entities`)."""
+    rows, rejected = check_entities(entities, mapping, layer=layer, source_input=source_input)
+    settings: dict[str, Any] = {"mapping": mapping.settings()}
+    if default_name:
+        rows = _named(rows, default_name)
+        settings["default_name"] = default_name
+    return edit_constraints(project, rows, params=params, source=source, settings=settings,
+                            rejected=rejected, srs_id=srs_id)
 
 
 

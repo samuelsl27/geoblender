@@ -27,7 +27,7 @@ from ..provenance import DOMAINS, FAMILIES_BY_CODE, FEATURES
 from ..store import StoreProject
 from ..vector import FeatureLayer
 
-__all__ = ["create_constraints", "create_intentions", "source_entities"]
+__all__ = ["check_constraints", "create_constraints", "create_intentions", "source_entities"]
 
 
 def _family(name: str) -> str | None:
@@ -77,22 +77,42 @@ def _columns(mapping: cprov.LayerMapping | cprov.IntentionMapping,
     return found
 
 
-def create_constraints(project: StoreProject, source: str, mapping: cprov.LayerMapping, *,
-                       params: cprov.ParamDeclaration | None = None) -> Any:
-    """Crea las restricciones de la capa ``source`` (RF-012-01) según ``mapping`` y con los
-    parámetros ``params`` (RF-012-02), y devuelve lo que dejó ``core.edit_constraints``
-    (``EditedConstraints``: su operación, las creadas y las rechazadas con su motivo).
-    ``ConstraintError`` ``core.constraint_source_field_unknown`` si un campo elegido no está en
-    la capa y ``core.constraint_source_nothing`` si no sirve ninguna entidad; los dos, antes de
-    registrar nada."""
+def _read(project: StoreProject, source: str, mapping: cprov.LayerMapping
+          ) -> tuple[tuple[cprov.SourceEntity, ...], cprov.LayerMapping, str | None]:
+    """Las entidades de la capa ``source``, ``mapping`` con sus campos ya como columnas y la
+    entrada de la capa. ``ConstraintError`` ``core.constraint_source_field_unknown`` si un campo
+    elegido no está en la capa."""
     entities, fields = source_entities(project, source)
     columns = _columns(mapping, fields, source)
     with project.read() as conn:
         record = dataset_registry.get(conn, source)
-    source_input = None if record is None else record.input_uid
+    return entities, mapping.with_fields(columns), None if record is None else record.input_uid
+
+
+def check_constraints(project: StoreProject, source: str, mapping: cprov.LayerMapping
+                      ) -> tuple[tuple[Any, ...], tuple[cprov.Rejected, ...]]:
+    """Lo que crearía :func:`create_constraints` de la capa ``source`` según ``mapping``
+    (las restricciones nuevas y las entidades rechazadas con su motivo), sin escribir nada: los
+    mismos rechazos (``core.constraint_source_field_unknown`` y
+    ``core.constraint_source_nothing``), para mirar varias capas antes de crear ninguna (T22)."""
+    entities, resolved, source_input = _read(project, source, mapping)
+    return cprov.check_entities(entities, resolved, layer=source, source_input=source_input)
+
+
+def create_constraints(project: StoreProject, source: str, mapping: cprov.LayerMapping, *,
+                       params: cprov.ParamDeclaration | None = None,
+                       default_name: str | None = None) -> Any:
+    """Crea las restricciones de la capa ``source`` (RF-012-01) según ``mapping`` y con los
+    parámetros ``params`` (RF-012-02), y devuelve lo que dejó ``core.edit_constraints``
+    (``EditedConstraints``: su operación, las creadas y las rechazadas con su motivo).
+    ``default_name`` nombra las que el campo del nombre no nombra (los límites de una capa sin
+    él, T22). ``ConstraintError`` ``core.constraint_source_field_unknown`` si un campo elegido
+    no está en la capa y ``core.constraint_source_nothing`` si no sirve ninguna entidad; los
+    dos, antes de registrar nada."""
+    entities, resolved, source_input = _read(project, source, mapping)
     return cprov.create_constraints(
-        project, entities, mapping.with_fields(columns), layer=source, source=source,
-        source_input=source_input, params=params, srs_id=int(project.record.crs_epsg))
+        project, entities, resolved, layer=source, source=source, source_input=source_input,
+        params=params, srs_id=int(project.record.crs_epsg), default_name=default_name)
 
 
 def create_intentions(project: StoreProject, source: str, mapping: cprov.IntentionMapping, *,

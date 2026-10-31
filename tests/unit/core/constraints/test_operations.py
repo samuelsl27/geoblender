@@ -539,6 +539,69 @@ class CreateFromLayerTest(_LayersCase):
         self.assertEqual((after.uid, after.content_sha256), (before.uid, before.content_sha256))
         self.assertEqual(self.query(f'SELECT * FROM "{POLYGONS}" ORDER BY fid'), rows_before)
 
+    def test_default_name_for_a_layer_without_a_name_field(self) -> None:
+        """RF-012-01, RF-012-02 (T22): sin campo del nombre, ``default_name`` nombra las
+        entidades con el de la capa: ese nombre si es una sola y «<nombre> <número>» si son
+        varias; un campo del nombre manda sobre él, y sin él las restricciones quedan sin
+        nombre como antes. Queda en los ajustes de la operación."""
+        mapping = cprov.LayerMapping(ctype=cmodel.ConstraintType.UNTOUCHABLE,
+                                     reason="Inventario", decided_by=PERSON)
+        entities, _fields = sources.source_entities(self.project, POINTS)
+        srs = self.project.record.crs_epsg
+        self.clock.advance(minutes=1)
+        one = cprov.create_constraints(
+            self.project, entities[:1], mapping, layer=POINTS, source=POINTS, source_input=None,
+            params=DECLARED, srs_id=srs, default_name="pozos")
+        self.assertEqual([(row.name, row.code) for row in one.constraints],
+                         [("pozos", "pozos")])
+        self.clock.advance(minutes=1)
+        several = sources.create_constraints(self.project, POINTS, mapping, params=DECLARED,
+                                             default_name="pozos")
+        self.assertEqual([row.name for row in several.constraints],
+                         ["pozos 1", "pozos 2", "pozos 3"])
+        self.assertEqual([row.source_fid for row in several.constraints], [1, 2, 3])
+        codes = [row.code for row in several.constraints]
+        self.assertEqual(codes, ["pozos_1", "pozos_2", "pozos_3"])
+        (settings,) = self.query("SELECT settings FROM gb_operation WHERE uid = ?",
+                                 several.operation_uid)
+        self.assertIn('"default_name":"pozos"', settings[0].replace(" ", ""))
+        # Un campo del nombre manda sobre él; sin ninguno de los dos, sin nombre (código «r»).
+        self.clock.advance(minutes=1)
+        named = sources.create_constraints(
+            self.project, POINTS, cprov.LayerMapping(
+                ctype=cmodel.ConstraintType.UNTOUCHABLE, name_field="nombre",
+                reason="Inventario", decided_by=PERSON), params=DECLARED,
+            default_name="pozos")
+        self.assertEqual([row.name for row in named.constraints],
+                         ["Pozo", "Árbol singular", "Vértice geodésico"])
+        self.clock.advance(minutes=1)
+        bare = sources.create_constraints(self.project, POINTS, mapping, params=DECLARED)
+        self.assertEqual([row.name for row in bare.constraints], ["", "", ""])
+        (settings,) = self.query("SELECT settings FROM gb_operation WHERE uid = ?",
+                                 bare.operation_uid)
+        self.assertNotIn("default_name", settings[0])
+
+    def test_check_writes_nothing_and_refuses_like_create(self) -> None:
+        """RF-012-01 (T22): ``check_constraints`` da lo que crearía ``create_constraints``
+        (las once válidas y las dos rechazadas de la capa de polígonos) con los mismos rechazos
+        —un límite en líneas, un campo que no existe— y sin registrar ni escribir nada, para mirar
+        varias capas antes de crear ninguna."""
+        operations_before = self.query("SELECT count(*) FROM gb_operation")
+        stored_before = len(self.stored_constraints())
+        rows, rejected = sources.check_constraints(self.project, POLYGONS, BY_FIELDS)
+        self.assertEqual((len(rows), [item.fid for item in rejected]), (11, [13, 14]))
+        limit = cprov.LayerMapping(ctype=cmodel.ConstraintType.LEGAL_LIMIT, name_field="nombre",
+                                   reason="Concesión", decided_by=PERSON)
+        with self.assertRaises(cmessages.ConstraintError) as caught:
+            sources.check_constraints(self.project, CONSTRAINT_LINES, limit)
+        self.assertEqual(caught.exception.code, "core.constraint_source_nothing")
+        with self.assertRaises(cmessages.ConstraintError) as caught:
+            sources.check_constraints(self.project, POINTS, cprov.LayerMapping(
+                type_field="no_existe", reason="x", decided_by=PERSON))
+        self.assertEqual(caught.exception.code, "core.constraint_source_field_unknown")
+        self.assertEqual(self.query("SELECT count(*) FROM gb_operation"), operations_before)
+        self.assertEqual(len(self.stored_constraints()), stored_before)
+
     def test_one_type_for_all_and_layers_that_give_nothing(self) -> None:
         """RF-012-01: con un tipo para todas y el motivo y el decisor fijos, las tres de
         puntos; un límite en líneas, ninguna (rechazadas por su geometría, sin registrar nada);

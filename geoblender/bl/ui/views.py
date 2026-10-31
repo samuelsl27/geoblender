@@ -26,6 +26,9 @@ AR §3.1 y §4).
   (distancia + 2 r) (en ortográfica Blender recorta de −clip_end/2 a clip_end/2 desde el
   ojo) y ``clip_start`` = máx(0,01; clip_end / 10⁵), una relación ≤ 10⁵ que no agota el
   búfer de profundidad (:func:`clip_range`). Sin proyecto o sin ventana, no aplica.
+- **Ir a un lugar** (:func:`go_to`; spec 012, T22): el mismo encuadre (:func:`frame_box`) de un
+  cuadrado alrededor de un punto absoluto (el centro de una parte de la franja de los límites,
+  un grupo que no cumple…), con las cotas de lo visible en él.
 - **Vistas guardadas** (:func:`store_view`, :func:`recall_view`; RF-003-14): la ranura 1–4
   de ``Scene.geoblender_views`` con la orientación, el centro (local), la distancia y la
   proyección. Recuperar una ranura vacía no aplica (:func:`recall_check`, registrada con
@@ -281,12 +284,10 @@ def clip_range(current_end: float, distance: float, radius: float) -> tuple[floa
     return start, end
 
 
-def frame_work_window(target: View3DTarget, context: Any) -> bool:
-    """Encuadra en la Vista 3D de destino la ventana de trabajo con las cotas de lo
-    visible en ella y ajusta su recorte (RF-003-13); falso sin ventana de trabajo."""
-    xy = work_window_local()
-    if xy is None:
-        return False
+def frame_box(target: View3DTarget, context: Any, xy: tuple[float, float, float, float]) -> None:
+    """Encuadra en la Vista 3D de destino el rectángulo local ``xy`` (xmin, ymin, xmax, ymax)
+    con las cotas de lo visible en él y ajusta su recorte (RF-003-13; es también lo que hace
+    «Ir a» de los informes de la 012, :func:`go_to`)."""
     z = visible_z_range(context, xy)
     if z is None:
         scene = getattr(context, "scene", None) or bpy.context.scene
@@ -308,6 +309,29 @@ def frame_work_window(target: View3DTarget, context: Any) -> bool:
     space.clip_start = start
     target.area.tag_redraw()
     mark_used(target)
+
+
+def frame_work_window(target: View3DTarget, context: Any) -> bool:
+    """Encuadra en la Vista 3D de destino la ventana de trabajo con las cotas de lo
+    visible en ella y ajusta su recorte (RF-003-13); falso sin ventana de trabajo."""
+    xy = work_window_local()
+    if xy is None:
+        return False
+    frame_box(target, context, xy)
+    return True
+
+
+def go_to(target: View3DTarget, context: Any, x: float, y: float, radius_m: float) -> bool:
+    """Encuadra en la Vista 3D de destino el cuadrado de semilado ``radius_m`` (m) centrado en el
+    punto ABSOLUTO ``(x, y)`` (float64; el «Ir a» de los informes de la 012): lo pasa a local con
+    el GeoOrigin del proyecto y lo encuadra como :func:`frame_box`. Falso sin proyecto."""
+    project = project_session.current()
+    if project is None:
+        return False
+    origin = project.origin
+    local = world_to_local(np.array([[x, y, origin.z0]], dtype=np.float64), origin)
+    cx, cy = float(local[0, 0]), float(local[0, 1])
+    frame_box(target, context, (cx - radius_m, cy - radius_m, cx + radius_m, cy + radius_m))
     return True
 
 

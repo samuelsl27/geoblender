@@ -31,7 +31,7 @@ label.en = "Limits…"
 label.es = "Límites…"
 description.en = "Concession, perimeter of the works and fill-only strip"
 description.es = "Concesión, perímetro de actuación y franja de solo relleno"
-entry = "R-32"
+entry = "012"
 action = "P"
 frequency = 2
 

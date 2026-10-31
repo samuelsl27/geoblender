@@ -17,7 +17,8 @@ modos) → la procedencia (``provenance``, spec 008: sus campos de la barra de e
 número del control 7 y la escucha del proyecto, con su temporizador) → la versión activa
 (``version_panels``, spec 009: el texto del control 8, la escucha de los indicadores y las
 comprobaciones de sus órdenes; redibujar las barras lo pide ``bars``, T35 y T41) → los
-materiales de la cubicación (``res_panels``, spec 011: la escucha de los indicadores) → vistas
+materiales de la cubicación (``res_panels``, spec 011: la escucha de los indicadores; la ventana de
+los límites, ``constraint_panels``, spec 012, solo trae clases) → vistas
 (``views``: el manejador ``load_post`` que olvida su estado de sesión) → Elemento activo
 (``view_panels``, spec 010: la suscripción de ``msgbus`` al objeto activo, renovada en
 ``load_post``, y las escuchas del proyecto y de sus indicadores) → disposiciones
@@ -41,6 +42,7 @@ from ..registry import register_classes, unregister_classes
 from . import (
     command_line,
     commands,
+    constraint_panels,
     context,
     core_menus,
     core_panel,
@@ -70,7 +72,8 @@ from . import help as help_pages
 # vista regenerable que van en ella (spec 010: Elemento activo), los paneles reales de
 # la interfaz (spec 003), la lista de trabajos (spec 004), lo obsoleto (spec 008), la ventana y
 # el menú de la versión activa (spec 009), la pestaña «Sondeos» (spec 005), la ventana de los
-# materiales de la cubicación y N ▸ Proyecto ▸ Cubicaciones, que es también su ventana (spec 011).
+# materiales de la cubicación y N ▸ Proyecto ▸ Cubicaciones, que es también su ventana (spec 011) y
+# la ventana de los límites (spec 012).
 classes: tuple[type, ...] = (
     *core_menus.classes,
     *core_panel.classes,
@@ -83,6 +86,7 @@ classes: tuple[type, ...] = (
     *version_panels.classes,
     *dh_panels.classes,
     *res_panels.classes,
+    *constraint_panels.classes,
 )
 
 _UNDO: list[Callable[[], None]] = []
