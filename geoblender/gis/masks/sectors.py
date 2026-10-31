@@ -18,7 +18,9 @@ La geometría que ``core`` no puede hacer (nivel 0) y que pide registrar sus ope
   de hasta diez capas «entidades» a ≤ la distancia de búsqueda (el parámetro
   ``core.constraints.search_distance_m`` del proyecto; ``gis.search``, A6), por pasos; el último
   ``Progress`` lleva lo buscado (:class:`Searched`, con la huella del sector y el hash de cada
-  capa).
+  capa). Las capas no se cargan enteras (T37): cada paso lee de la tabla de la capa un trozo de
+  entidades (``gis.store.feature_pieces``, por rangos de ``fid`` y solo las de la caja del
+  sector) y lo busca; la llamada de la orden solo comprueba que las capas existen.
 - :func:`close_search`: con una decisión por entidad hallada (:class:`Decision`: convertida en
   la restricción que se creó, o descartada, siempre con su motivo), registra la búsqueda
   (``core.find_untouchables``). Se niega si queda alguna sin decidir o si el sector o una capa
@@ -326,18 +328,27 @@ def search_steps(project: StoreProject, sector_code: str, layers: Sequence[str],
     if len(set(layers)) != len(layers):
         raise ValueError(f"una búsqueda no consulta dos veces la misma capa: {layers!r}")
     sector, dataset = _sector(project, sector_code, version)
-    loaded: dict[str, FeatureLayer] = {}
     for name in layers:
         if _family(name) != FEATURES:
             raise ValueError(f"una búsqueda consulta capas «entidades» (gis_fea_), no «{name}»")
-        layer = gstore.load_features(project, name)
-        assert isinstance(layer, FeatureLayer)
-        loaded[name] = layer
+    # Sin leer ninguna entidad y con una sola lectura (cada una cuesta un milisegundo).
+    sources = dict(zip(layers, gstore.feature_sources(project, layers), strict=True))
     distance = _distance(project)
-    steps = finder.search_steps(sector.rings, loaded, distance, budget_s=budget_s)
+    window = finder.search_window(sector.rings, distance)
+    steps = finder.search_pieces_steps(sector.rings, _pieces(project, sources, window), distance,
+                                       budget_s=budget_s)
     searched = Searched(sector.code, sector.name, cstore.sector_sha256(sector), dataset, layers,
                         _hashes(project, layers), distance)
     return _steps(steps, searched)
+
+
+def _pieces(project: StoreProject, sources: Mapping[str, gstore.FeatureSource],
+            window: tuple[float, float, float, float]) -> Iterator[finder.Piece]:
+    """Los trozos de las capas, una tras otra y en el orden pedido: de cada una, las entidades de
+    la caja del sector (``window``), que se leen cuando los pasos los piden."""
+    for name, source in sources.items():
+        for piece in gstore.feature_pieces(project, source, window=window):
+            yield finder.Piece(name, piece.layer, piece.scanned)
 
 
 def _steps(steps: Iterator[Progress], searched: Searched) -> Iterator[Progress]:

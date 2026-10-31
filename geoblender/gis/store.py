@@ -244,6 +244,8 @@ __all__ = [
     "TABLE_LAYOUTS",
     "TEMPORARY_MARK",
     "DomainFeature",
+    "FeaturePiece",
+    "FeatureSource",
     "ResultWriter",
     "StoreProject",
     "StoredFeatures",
@@ -262,7 +264,10 @@ __all__ = [
     "declared_vertical",
     "domain_fields",
     "domain_rows",
+    "feature_pieces",
     "feature_rows",
+    "feature_source",
+    "feature_sources",
     "export_layer",
     "list_gis_datasets",
     "load_domains",
@@ -1970,11 +1975,16 @@ def list_gis_datasets(
 
 
 def _resolve(project: StoreProject, ref: DatasetRecord | str,
-             allowed: Sequence[str]) -> DatasetRecord:
+             allowed: Sequence[str], *, conn: sqlite3.Connection | None = None) -> DatasetRecord:
+    """El dato ``ref`` de ``gis`` (de una de las familias ``allowed``); con ``conn``, lo busca
+    en esa lectura en vez de abrir otra."""
     if isinstance(ref, DatasetRecord):
         record: DatasetRecord | None = ref
     elif isinstance(ref, str):
-        with project.read() as conn:
+        if conn is None:
+            with project.read() as own:
+                record = dataset_registry.get(own, ref)
+        else:
             record = dataset_registry.get(conn, ref)
         if record is not None and record.module != MODULE:
             record = None
@@ -2369,12 +2379,10 @@ def require_project_references(project: StoreProject, ref: DatasetRecord | str) 
 # --- Capas de entidades (spec 012, T07; D-27) ---------------------------------------------------
 
 
-def read_features(conn: sqlite3.Connection, table: str) -> FeatureLayer:
-    """La capa de entidades de la tabla ``table`` de la conexión ``conn`` (la del proyecto o
-    una copia congelada), en el orden de su número: su geometría (la de
-    ``gpkg_geometry_columns``), sus columnas (con el título de ``gpkg_data_columns``, si lo
-    tienen), sus valores tal como los da SQLite y sus partes, X e Y ABSOLUTAS bit a bit. Solo
-    lee; ``ValueError`` si no es una tabla de entidades."""
+def _feature_columns(conn: sqlite3.Connection, table: str) -> tuple[str, tuple[FieldColumn, ...]]:
+    """La geometría (``point``, ``line`` o ``polygon``, la de ``gpkg_geometry_columns``) y las
+    columnas de atributos (con el título de ``gpkg_data_columns``, si lo tienen) de la tabla de
+    entidades ``table``; ``ValueError`` si no lo es."""
     found = conn.execute("SELECT geometry_type_name FROM gpkg_geometry_columns WHERE "
                          "table_name = ?", (table,)).fetchone()
     kind = None if found is None else FEATURE_KINDS.get(str(found[0]).upper())
@@ -2387,12 +2395,170 @@ def read_features(conn: sqlite3.Connection, table: str) -> FeatureLayer:
                                 str(row[2]).upper())
                     for row in conn.execute(f'PRAGMA table_info("{table}")')
                     if str(row[1]).lower() not in ("fid", _GEOMETRY_COLUMN))
-    names = [column.column for column in columns]
-    selected = ", ".join(f'"{name}"' for name in ("fid", _GEOMETRY_COLUMN, *names))
-    rows = conn.execute(f'SELECT {selected} FROM "{table}" ORDER BY fid').fetchall()
+    return kind, columns
+
+
+def _feature_select(table: str, columns: Sequence[FieldColumn]) -> str:
+    """La consulta de las filas de una tabla de entidades: número, geometría y atributos."""
+    selected = ", ".join(f'"{name}"' for name in
+                         ("fid", _GEOMETRY_COLUMN, *(column.column for column in columns)))
+    return f'SELECT {selected} FROM "{table}"'
+
+
+def _feature_layer(kind: str, columns: tuple[FieldColumn, ...],
+                   rows: Sequence[Sequence[Any]]) -> FeatureLayer:
+    """La capa de unas filas de :func:`_feature_select` (número, geometría y atributos)."""
     parts = []
     for row in rows:
         geometry = decode_geometry(row[1])
         parts.append(feature_parts(geometry.geometry_type, geometry.coords))
-    values = {name: tuple(row[index + 2] for row in rows) for index, name in enumerate(names)}
+    values = {column.column: tuple(row[index + 2] for row in rows)
+              for index, column in enumerate(columns)}
     return FeatureLayer(kind, tuple(int(row[0]) for row in rows), tuple(parts), columns, values)
+
+
+def read_features(conn: sqlite3.Connection, table: str) -> FeatureLayer:
+    """La capa de entidades de la tabla ``table`` de la conexión ``conn`` (la del proyecto o
+    una copia congelada), en el orden de su número: su geometría (la de
+    ``gpkg_geometry_columns``), sus columnas (con el título de ``gpkg_data_columns``, si lo
+    tienen), sus valores tal como los da SQLite y sus partes, X e Y ABSOLUTAS bit a bit. Solo
+    lee; ``ValueError`` si no es una tabla de entidades."""
+    kind, columns = _feature_columns(conn, table)
+    rows = conn.execute(f"{_feature_select(table, columns)} ORDER BY fid").fetchall()
+    return _feature_layer(kind, columns, rows)
+
+
+# --- Capas de entidades por trozos (spec 012, T37; RNF-012-04, RNF-012-06) -------------------
+
+FEATURE_FIRST_ROWS = 256
+"""Las filas de la primera lectura de una capa por trozos (las siguientes se ajustan al tamaño
+de lo leído)."""
+FEATURE_READ_ROWS = 2048
+"""Las filas de una lectura, como mucho."""
+FEATURE_READ_BYTES = 1024 * 1024
+"""Lo que se lee de una vez, aproximadamente (con geometrías grandes se leen menos filas)."""
+FEATURE_MIN_ROWS = 16
+"""Las filas de una lectura, como mínimo."""
+FEATURE_PIECE_FEATURES = 256
+"""Las entidades de un trozo, como mucho."""
+FEATURE_PIECE_BYTES = 64 * 1024
+"""Los bytes de geometría de un trozo, aproximadamente (un trozo cierra al pasarlos): unos
+4.000 vértices, lo que se descodifica en pocos milisegundos."""
+_FIRST_FID = -(2**63)
+_ENVELOPE_HEAD = 8 + 4 * 8
+"""Bytes de la cabecera de un blob GeoPackage con la envolvente XY (``encode_geometry`` de
+lo que no es un punto): ``GP``, versión, banderas, SRS y mínimo y máximo de X y de Y."""
+_ENVELOPE_FLAGS = 0b0000_0011
+"""Las banderas de esa cabecera: *little endian*, envolvente XY, no vacía ni extendida."""
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureSource:
+    """Una capa de entidades del proyecto (``gis_fea_``) lista para leerla por trozos
+    (:func:`feature_pieces`): el nombre del dato, su tabla, su geometría (``point``, ``line`` o
+    ``polygon``) y sus columnas de atributos."""
+
+    name: str
+    table: str
+    kind: str
+    columns: tuple[FieldColumn, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FeaturePiece:
+    """Un trozo de una capa leída por trozos: ``scanned`` filas de su tabla que este trozo da
+    por leídas (las que quedaron fuera de la caja también cuentan; solo el primer trozo de cada
+    lectura las lleva) y ``layer``, las entidades que se descodificaron (``None`` si de esas
+    filas ninguna pasó)."""
+
+    scanned: int
+    layer: FeatureLayer | None
+
+
+def feature_sources(project: StoreProject,
+                    refs: Sequence[DatasetRecord | str]) -> tuple[FeatureSource, ...]:
+    """Las capas de entidades ``refs`` (el nombre, el uid o el registro de un dato ``gis_fea_``)
+    para leerlas por trozos, con una sola lectura: lo que comprueba :func:`load_features` antes
+    de leerlas, sin leer ninguna entidad (abrir una lectura cuesta un milisegundo por el
+    esquema del proyecto: con diez capas, la llamada de la orden no cabe en 50 ms si cada una
+    abre la suya). Salen en el orden de ``refs`` y el primer rechazo corta: ``GisError``
+    ``gis.dataset_unknown`` si no hay un dato de ``gis`` así y ``gis.dataset_file_missing`` si
+    falta su tabla; ``ValueError`` si no es una capa de entidades."""
+    found = []
+    with project.read() as conn:
+        for ref in refs:
+            record = _resolve(project, ref, (FEATURES,), conn=conn)
+            if not _table_exists(conn, record.locator):
+                raise GisError("gis.dataset_file_missing", obj=f"{_OBJ} «{record.name}»",
+                               field=_FIELD_LOCATION, value=record.locator,
+                               file=record.locator, name=record.name)
+            kind, columns = _feature_columns(conn, record.locator)
+            found.append(FeatureSource(record.name, record.locator, kind, columns))
+    return tuple(found)
+
+
+def feature_source(project: StoreProject, ref: DatasetRecord | str) -> FeatureSource:
+    """:func:`feature_sources` de una sola capa."""
+    return feature_sources(project, [ref])[0]
+
+
+def _outside(blobs: Sequence[bytes], window: tuple[float, float, float, float]) -> np.ndarray:
+    """Qué geometrías ``blobs`` (GeoPackage) quedan fuera de ``window`` (x0, y0, x1, y1
+    absolutas), por la envolvente de su cabecera, sin descodificarlas. Una cabecera que no es
+    la que escribe ``encode_geometry`` (sin envolvente, con Z, corta, de otro orden de bytes)
+    no se juzga: queda dentro y se descodifica entera."""
+    count = len(blobs)
+    heads = [blob[:_ENVELOPE_HEAD] for blob in blobs]
+    sized = np.fromiter((len(head) == _ENVELOPE_HEAD for head in heads), dtype=bool, count=count)
+    raw = np.frombuffer(b"".join(head.ljust(_ENVELOPE_HEAD, b"\0") for head in heads),
+                        dtype=np.uint8).reshape(count, _ENVELOPE_HEAD)
+    standard = (sized & (raw[:, 0] == MAGIC[0]) & (raw[:, 1] == MAGIC[1])
+                & (raw[:, 2] == VERSION) & (raw[:, 3] == _ENVELOPE_FLAGS))
+    envelope = np.ascontiguousarray(raw[:, 8:]).view("<f8")  # mín. X, máx. X, mín. Y, máx. Y
+    x0, y0, x1, y1 = window
+    apart = ((envelope[:, 0] > x1) | (envelope[:, 1] < x0)
+             | (envelope[:, 2] > y1) | (envelope[:, 3] < y0))
+    return standard & apart  # con NaN, las comparaciones dan falso: dentro
+
+
+def feature_pieces(project: StoreProject, source: FeatureSource, *,
+                   window: tuple[float, float, float, float] | None = None,
+                   rows: int = FEATURE_READ_ROWS, features: int = FEATURE_PIECE_FEATURES,
+                   piece_bytes: int = FEATURE_PIECE_BYTES) -> Iterator[FeaturePiece]:
+    """Las entidades de ``source`` por trozos, en el orden de su número y sin tener la capa
+    entera en memoria: lee las filas por rangos de ``fid`` (``rows`` como mucho y menos con
+    geometrías grandes), cada lectura con su propia conexión, y descodifica en trozos de
+    ``features`` entidades o ``piece_bytes`` bytes de geometría, uno por cada ``next``. Con
+    ``window`` (x0, y0, x1, y1, absolutas) no descodifica las entidades cuya envolvente, la de la
+    cabecera de su geometría, queda fuera de ella: las demás, bit a bit las que da
+    :func:`read_features`. Solo lee."""
+    for name, value in (("rows", rows), ("features", features), ("piece_bytes", piece_bytes)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{name} es un número entero positivo, no {value!r}")
+    query = f"{_feature_select(source.table, source.columns)} WHERE fid > ? ORDER BY fid LIMIT ?"
+    last, size = _FIRST_FID, min(rows, FEATURE_FIRST_ROWS)
+    while True:
+        with project.read() as conn:
+            got = conn.execute(query, (last, size)).fetchall()
+        if not got:
+            return
+        last = int(got[-1][0])
+        outside = None if window is None else _outside([row[1] for row in got], window)
+        chosen = (list(range(len(got))) if outside is None
+                  else np.flatnonzero(~outside).tolist())
+        scanned, start = len(got), 0
+        while start < len(chosen):
+            stop, volume = start, 0
+            while stop < len(chosen) and stop - start < features and volume < piece_bytes:
+                volume += len(got[chosen[stop]][1])
+                stop += 1
+            layer = _feature_layer(source.kind, source.columns,
+                                   [got[index] for index in chosen[start:stop]])
+            yield FeaturePiece(scanned, layer)
+            scanned, start = 0, stop
+        if scanned:  # ninguna pasó: las filas leídas cuentan igual
+            yield FeaturePiece(scanned, None)
+        if len(got) < size:
+            return
+        average = sum(len(row[1]) for row in got) / len(got) + 64.0
+        size = min(rows, max(FEATURE_MIN_ROWS, int(FEATURE_READ_BYTES / average)))

@@ -16,6 +16,13 @@ que rodea el sector no lo contiene). Las parejas de segmentos se filtran por sus
 la distancia (por cubetas), y, con ``prefilter`` (por defecto), las entidades por su caja frente
 a la del sector agrandada la distancia: el prefiltro solo ahorra trabajo, no cambia el resultado.
 
+**Por trozos (T37).** Las capas del proyecto no se cargan enteras: :func:`search_pieces_steps`
+recibe trozos de entidades (:class:`Piece`) que se piden uno a uno, dentro de los pasos, y no
+tiene más de uno en memoria; :func:`search_window` da la caja fuera de la cual nada puede estar
+a la distancia del sector, para que quien lee los trozos (``gis.store.feature_pieces``) no
+descodifique lo que queda fuera. El resultado es el mismo, bit a bit, que con las capas enteras
+(:func:`search_steps` es :func:`search_pieces_steps` con un trozo por capa).
+
 Todo en coordenadas locales float64 respecto a la esquina suroeste del sector (restar un origen
 cercano es exacto). Las entradas solo se leen. Python puro con numpy (nivel 2).
 """
@@ -24,7 +31,7 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -40,9 +47,13 @@ __all__ = [
     "FEATURES_PER_STEP",
     "STEP_BUDGET_S",
     "VERTICES_PER_STEP",
+    "WINDOW_SLACK_M",
     "Found",
+    "Piece",
     "search",
+    "search_pieces_steps",
     "search_steps",
+    "search_window",
 ]
 
 STEP_BUDGET_S = 0.05
@@ -57,6 +68,10 @@ VERTICES_PER_STEP = 4096
 _WORK_FRACTION = 0.5
 """Fracción del presupuesto que se llena de trozos antes de ceder el paso."""
 
+WINDOW_SLACK_M = 1e-3
+"""Holgura (m) de la caja de :func:`search_window`: mucho más que el redondeo de las coordenadas
+absolutas (≈ 10⁻⁹ m a 4,4 Mm), para que la caja nunca deje fuera lo que el prefiltro deja dentro."""
+
 _PHASE = "search"
 
 
@@ -69,6 +84,18 @@ class Found:
     fid: int
     distance_m: float
     attributes: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class Piece:
+    """Un trozo de una capa que se busca (:func:`search_pieces_steps`): la clave de su capa
+    (``Found.layer``), las entidades que se buscan (``layer``; ``None`` si ninguna) y cuántas
+    entidades de la capa da por vistas (``scanned``, también las que quedaron fuera de la caja
+    del sector y no se descodificaron: suman el «de N entidades» del mensaje final)."""
+
+    key: str | int
+    layer: FeatureLayer | None
+    scanned: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,19 +116,44 @@ def search_steps(sector_rings: Sequence[np.ndarray],
     entidades se nombran por su posición), las entidades a ≤ ``distance_m`` (m) del sector de
     anillos absolutos ``sector_rings`` (véase el módulo), de ``budget_s`` como mucho. El último
     ``Progress`` lleva ``tuple[Found, ...]``. ``ValueError`` si un argumento no vale."""
-    if isinstance(distance_m, bool) or not isinstance(distance_m, int | float) or not (
-            math.isfinite(distance_m) and distance_m >= 0.0):
-        raise ValueError(f"la distancia de búsqueda es un número finito ≥ 0 m, no {distance_m!r}")
-    if isinstance(budget_s, bool) or not isinstance(budget_s, int | float) or not budget_s > 0:
-        raise ValueError(f"el presupuesto de un paso es un número positivo, no {budget_s!r}")
-    if isinstance(features_per_step, bool) or not isinstance(features_per_step, int) or (
-            features_per_step < 1):
-        raise ValueError(f"un trozo tiene al menos una entidad, no {features_per_step!r}")
+    _check(distance_m, budget_s, features_per_step)
     named = _named(layers)
+    return search_pieces_steps(
+        sector_rings, (Piece(key, found, len(found)) for key, found in named), distance_m,
+        budget_s=budget_s, features_per_step=features_per_step, prefilter=prefilter)
+
+
+def search_pieces_steps(sector_rings: Sequence[np.ndarray], pieces: Iterable[Piece],
+                        distance_m: float, *, budget_s: float = STEP_BUDGET_S,
+                        features_per_step: int = FEATURES_PER_STEP,
+                        prefilter: bool = True) -> Iterator[Progress]:
+    """Los pasos de buscar a ≤ ``distance_m`` (m) del sector ``sector_rings`` las entidades de
+    unos trozos de capas (:class:`Piece`), en el orden en que llegan, de ``budget_s`` como mucho.
+    Los trozos se piden uno a uno, dentro de los pasos (no hay más de uno en memoria), de modo
+    que quien los lee también cuenta en el presupuesto de cada paso; cerrar los pasos cierra el
+    iterador de trozos. El último ``Progress`` lleva ``tuple[Found, ...]`` y su mensaje cuenta
+    las entidades que dan por vistas todos los trozos (:attr:`Piece.scanned`). Lo mismo, bit a
+    bit, que :func:`search_steps` con las capas enteras. ``ValueError`` si un argumento no
+    vale; ``TypeError`` si ``pieces`` no es iterable o trae algo que no es un :class:`Piece`."""
+    _check(distance_m, budget_s, features_per_step)
     sector = _sector(sector_rings)
-    work = _work(sector, named, float(distance_m), features_per_step, bool(prefilter))
-    total = sum(len(found) for _, found in named)
-    return _paced(work, float(budget_s), total)
+    work = _work(sector, iter(pieces), float(distance_m), features_per_step, bool(prefilter))
+    return _paced(work, float(budget_s))
+
+
+def search_window(sector_rings: Sequence[np.ndarray],
+                  distance_m: float) -> tuple[float, float, float, float]:
+    """La caja ``(x0, y0, x1, y1)`` ABSOLUTA, en m, de la que ninguna entidad puede salir a ≤
+    ``distance_m`` del sector: la del sector agrandada la distancia y :data:`WINDOW_SLACK_M`. Una
+    entidad cuya caja queda fuera de ella está más lejos que ``distance_m``: no hace falta
+    descodificarla. ``ValueError`` si la distancia o el sector no valen."""
+    _check_distance(distance_m)
+    sector = _sector(sector_rings)
+    low = sector.origin + sector.box[:2]
+    high = sector.origin + sector.box[2:]
+    reach = float(distance_m) + WINDOW_SLACK_M
+    return (float(low[0]) - reach, float(low[1]) - reach,
+            float(high[0]) + reach, float(high[1]) + reach)
 
 
 def search(sector_rings: Sequence[np.ndarray],
@@ -116,6 +168,21 @@ def search(sector_rings: Sequence[np.ndarray],
 
 
 # --- Preparación ------------------------------------------------------------------------------
+
+
+def _check_distance(distance_m: object) -> None:
+    if isinstance(distance_m, bool) or not isinstance(distance_m, int | float) or not (
+            math.isfinite(distance_m) and distance_m >= 0.0):
+        raise ValueError(f"la distancia de búsqueda es un número finito ≥ 0 m, no {distance_m!r}")
+
+
+def _check(distance_m: object, budget_s: object, features_per_step: object) -> None:
+    _check_distance(distance_m)
+    if isinstance(budget_s, bool) or not isinstance(budget_s, int | float) or not budget_s > 0:
+        raise ValueError(f"el presupuesto de un paso es un número positivo, no {budget_s!r}")
+    if isinstance(features_per_step, bool) or not isinstance(features_per_step, int) or (
+            features_per_step < 1):
+        raise ValueError(f"un trozo tiene al menos una entidad, no {features_per_step!r}")
 
 
 def _named(layers: Mapping[str, FeatureLayer] | Sequence[FeatureLayer]
@@ -162,27 +229,44 @@ def _sector(sector_rings: Sequence[np.ndarray]) -> _Sector:
 # --- El trabajo -------------------------------------------------------------------------------
 
 
-def _work(sector: _Sector, layers: list[tuple[str | int, FeatureLayer]], distance: float,
-          features_per_step: int, prefilter: bool) -> Generator[None, None, tuple[Found, ...]]:
+def _work(sector: _Sector, pieces: Iterator[Piece], distance: float, features_per_step: int,
+          prefilter: bool) -> Generator[None, None, tuple[tuple[Found, ...], int]]:
+    """Cada unidad es un trozo de ``features_per_step`` entidades como mucho o el que se pide
+    del iterador de trozos (que lo lee dentro de su unidad). Devuelve lo hallado y las entidades
+    que dieron por vistas los trozos."""
     found: list[Found] = []
-    for key, layer in layers:
-        start, count = 0, len(layer)
-        while start < count:
-            stop, vertices = start, 0
-            while stop < count and stop - start < features_per_step and (
-                    vertices < VERTICES_PER_STEP):
-                vertices += sum(len(path) for part in layer.parts[stop] for path in part)
-                stop += 1
-            distances = _chunk(sector, layer, range(start, stop), distance, prefilter)
-            for offset, value in enumerate(distances.tolist()):
-                if value <= distance:
-                    index = start + offset
-                    found.append(Found(key, layer.fids[index], float(value),
-                                       MappingProxyType({name: column[index] for name, column
-                                                         in layer.values.items()})))
-            start = stop
-            yield None
-    return tuple(found)
+    seen = 0
+    try:
+        for piece in pieces:
+            if not isinstance(piece, Piece):
+                raise TypeError(f"los trozos son Piece, no {type(piece).__name__}")
+            seen += int(piece.scanned)
+            layer = piece.layer
+            if layer is None:
+                yield None  # solo se leyeron filas: también tardó
+                continue
+            key = piece.key
+            start, count = 0, len(layer)
+            while start < count:
+                stop, vertices = start, 0
+                while stop < count and stop - start < features_per_step and (
+                        vertices < VERTICES_PER_STEP):
+                    vertices += sum(len(path) for part in layer.parts[stop] for path in part)
+                    stop += 1
+                distances = _chunk(sector, layer, range(start, stop), distance, prefilter)
+                for offset, value in enumerate(distances.tolist()):
+                    if value <= distance:
+                        index = start + offset
+                        found.append(Found(key, layer.fids[index], float(value),
+                                           MappingProxyType({name: column[index] for name, column
+                                                             in layer.values.items()})))
+                start = stop
+                yield None
+    finally:
+        close = getattr(pieces, "close", None)  # Esc: el iterador de trozos también se cierra
+        if close is not None:
+            close()
+    return tuple(found), seen
 
 
 def _chunk(sector: _Sector, layer: FeatureLayer, indices: range, distance: float,
@@ -283,8 +367,8 @@ def _segments(kind: str, vertices: np.ndarray, owner: np.ndarray, path: np.ndarr
 # --- Los pasos --------------------------------------------------------------------------------
 
 
-def _paced(work: Generator[None, None, tuple[Found, ...]], budget_s: float,
-           total: int) -> Iterator[Progress]:
+def _paced(work: Generator[None, None, tuple[tuple[Found, ...], int]],
+           budget_s: float) -> Iterator[Progress]:
     target = budget_s * _WORK_FRACTION
     steps = 0
     with closing(work):  # cerrar los pasos cierra el trabajo
@@ -301,7 +385,7 @@ def _paced(work: Generator[None, None, tuple[Found, ...]], budget_s: float,
                     if now - start + slowest > target:
                         break
             except StopIteration as stop:
-                result: tuple[Found, ...] = stop.value
+                result, total = stop.value
                 break
             yield Progress(_PHASE, steps, max(steps + 1, 1), "Buscando intocables…")
     yield Progress(_PHASE, max(steps, 1), max(steps, 1),

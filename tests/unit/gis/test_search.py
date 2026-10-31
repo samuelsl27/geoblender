@@ -10,6 +10,10 @@
 - **A6**: la caja como prefiltro no cambia nada (lo mismo sin él); por pasos de una entidad, lo
   mismo que de una vez; cada paso ≤ 0,05 s; y, con capas aleatorias, la misma distancia que una
   fuerza bruta (cada par de segmentos y el par-impar de cada vértice) hasta 10⁻⁹ m.
+- **T37 (RNF-012-04, RNF-012-06)**: buscar por trozos de entidades (``search_pieces_steps``, que
+  pide los trozos uno a uno dentro de los pasos) da, bit a bit, lo de buscar en las capas enteras,
+  con trozos de tamaño al azar y vacíos de por medio; el mensaje final cuenta las filas leídas;
+  ``search_window`` da la caja que deja dentro a todo lo que se puede hallar.
 """
 
 import math
@@ -256,6 +260,135 @@ class BruteForceTest(unittest.TestCase):
         self.assertIsNotNone(progress.result)
         self.assertLessEqual(slowest, 0.05)
         self.assertGreaterEqual(count, 1)
+
+
+# Por trozos (T37) ---------------------------------------------------------------------------
+
+
+def sub(found, start, stop):
+    """Las entidades ``start`` a ``stop`` (sin incluir) de una capa, como una capa."""
+    return vector.FeatureLayer(
+        found.kind, found.fids[start:stop], found.parts[start:stop], found.columns,
+        {name: values[start:stop] for name, values in found.values.items()})
+
+
+def split(layers, rng, *, empty_every=3):
+    """Las capas cortadas en trozos de tamaño al azar (``search.Piece``), con un trozo sin
+    entidades (``layer`` ``None``, con filas que se dieron por leídas) cada ``empty_every``."""
+    pieces = []
+    for name, found in layers.items():
+        start = 0
+        while start < len(found):
+            stop = min(len(found), start + int(rng.integers(1, 40)))
+            pieces.append(search.Piece(name, sub(found, start, stop), stop - start))
+            if len(pieces) % empty_every == 0:
+                pieces.append(search.Piece(name, None, 5))
+            start = stop
+    return pieces
+
+
+def run_pieces(sector, pieces, **kwargs):
+    *_, last = search.search_pieces_steps(sector, pieces, DISTANCE, **kwargs)
+    return last
+
+
+class PiecesTest(unittest.TestCase):
+    """T37 (RNF-012-04, RNF-012-06): buscar por trozos de entidades da, bit a bit, lo de buscar
+    en las capas enteras."""
+
+    def test_pieces_give_the_same_as_whole_layers(self):
+        """RF-012-08: las mismas entidades, con las mismas distancias (bit a bit), atributos y
+        orden, cortando las capas en trozos de tamaño al azar y con trozos vacíos de por medio."""
+        rng = np.random.default_rng(31)
+        sector = (absolute([(0, 0), (100, 0), (100, 60), (40, 60), (40, 100), (0, 100)]),
+                  absolute([(10, 10), (10, 30), (30, 30), (30, 10)]))
+        layers = random_layers(rng, 120)
+        wanted = run(sector, layers, DISTANCE)
+        self.assertGreater(len(wanted), 100)
+        for features in (1, 7, 256):
+            pieces = split(layers, rng)
+            got = run_pieces(sector, pieces, features_per_step=features).result
+            self.assertEqual(got, wanted, features)
+            self.assertEqual([float(f.distance_m).hex() for f in got],
+                             [float(f.distance_m).hex() for f in wanted])
+
+    def test_the_message_counts_every_row_that_was_read(self):
+        """La línea final dice «de N entidades» con las filas leídas, también las que quedaron
+        fuera de la caja y no llegaron a descodificarse; igual que con las capas enteras."""
+        whole = run_last(SECTOR, LAYERS)
+        self.assertIn(f"{len(whole.result)} de 12 entidades", whole.message)
+        pieces = [search.Piece("torres", sub(POINTS, 0, 3), 3),
+                  search.Piece("torres", None, 1),  # la entidad 4, lejos de la caja
+                  search.Piece("lineas", sub(LINES, 0, 4), 4),
+                  search.Piece("zonas", sub(POLYGONS, 0, 4), 4)]
+        last = run_pieces(SECTOR, pieces)
+        self.assertEqual(last.message, whole.message)
+        self.assertEqual(last.result, whole.result)
+
+    def test_pieces_are_taken_one_step_at_a_time(self):
+        """Un trozo se pide cuando hace falta: tras el primer paso no se ha pedido todo, y
+        cerrar los pasos (Esc) cierra el generador de trozos."""
+        taken, closed = [], []
+
+        def pieces():
+            try:
+                for index in range(1000):
+                    taken.append(index)
+                    yield search.Piece("p", sub(POINTS, 0, 1), 1)
+            finally:
+                closed.append(True)
+
+        steps = search.search_pieces_steps(SECTOR, pieces(), DISTANCE, budget_s=1e-9)
+        self.assertEqual(taken, [])  # nada al llamar
+        next(steps)
+        self.assertLessEqual(len(taken), 2)
+        steps.close()
+        self.assertEqual(closed, [True])
+
+    def test_the_window_keeps_everything_that_can_be_found(self):
+        """La caja de ``search_window`` (la del sector y la distancia, con una holgura de
+        1 mm) deja dentro a toda entidad que se halla: con capas al azar, ninguna de las
+        halladas por la fuerza bruta tiene su caja fuera de ella; una entidad con el borde a
+        justo la distancia está dentro."""
+        rng = np.random.default_rng(5)
+        sector = (absolute([(0, 0), (100, 0), (100, 60), (40, 60), (40, 100), (0, 100)]),)
+        layers = random_layers(rng, 90)
+        x0, y0, x1, y1 = search.search_window(sector, DISTANCE)
+        base = np.asarray(sector[0])
+        self.assertAlmostEqual(x0, base[:, 0].min() - DISTANCE - search.WINDOW_SLACK_M, places=9)
+        self.assertAlmostEqual(y1, base[:, 1].max() + DISTANCE + search.WINDOW_SLACK_M, places=9)
+        self.assertAlmostEqual(x1, base[:, 0].max() + DISTANCE + search.WINDOW_SLACK_M, places=9)
+        self.assertAlmostEqual(y0, base[:, 1].min() - DISTANCE - search.WINDOW_SLACK_M, places=9)
+        for (name, fid) in brute(sector, layers, DISTANCE):
+            found = layers[name]
+            index = found.fids.index(fid)
+            points = np.vstack([path for part in found.parts[index] for path in part])
+            self.assertTrue(points[:, 0].max() >= x0 and points[:, 0].min() <= x1
+                            and points[:, 1].max() >= y0 and points[:, 1].min() <= y1,
+                            (name, fid))
+        edge = layer("point", [(1, "justo", [(100.0 + DISTANCE, 50.0)])])
+        point = edge.parts[0][0][0][0]
+        self.assertTrue(x0 <= point[0] <= x1 and y0 <= point[1] <= y1)
+
+    def test_rejects_bad_arguments(self):
+        """Como ``search_steps``: una distancia, un presupuesto o un sector que no valen salen
+        al llamar, antes del primer paso."""
+        for bad in (-1.0, math.nan, math.inf, True):
+            with self.assertRaises(ValueError, msg=bad):
+                search.search_pieces_steps(SECTOR, [], bad)
+            with self.assertRaises(ValueError, msg=bad):
+                search.search_window(SECTOR, bad)
+        with self.assertRaises(ValueError):
+            search.search_pieces_steps((), [], DISTANCE)
+        with self.assertRaises(ValueError):
+            search.search_window((), DISTANCE)
+        with self.assertRaises(ValueError):
+            search.search_pieces_steps(SECTOR, [], DISTANCE, budget_s=0)
+
+
+def run_last(*args, **kwargs):
+    *_, last = search.search_steps(*args, DISTANCE, **kwargs)
+    return last
 
 
 if __name__ == "__main__":
