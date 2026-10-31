@@ -841,6 +841,9 @@ def _same_decision(old: _State, new: _State, *, dated: bool) -> bool:
 
 # --- SQL ------------------------------------------------------------------------------------
 
+_RESOLVE_KEYS_PER_QUERY = 400
+"""Las claves de cada consulta de :meth:`ParameterStore.resolve_many` (por debajo del límite de
+variables de SQLite)."""
 _PARAMETER_COLUMNS = (
     "uid, key, scope, scope_uid, module, value_type, value, unit, kind, source, source_kind, "
     "decided_by, decided_at, reason, operation_uid, unconfirmed, review, def_sha256, "
@@ -1119,6 +1122,57 @@ class ParameterStore:
             if record is not None:
                 return _resolved(record)
         raise ParamError("core.param_not_registered", key=key)
+
+    def resolve_many(self, conn: sqlite3.Connection, keys: Iterable[str],
+                     scope_chain: Iterable[str] = (PROJECT_SCOPE,), *,
+                     version: str | None = None) -> dict[str, ResolvedParam]:
+        """:meth:`resolve` de muchas claves a la vez (T36 de la spec 012: con 500 restricciones,
+        2.000 llamadas a :meth:`resolve` eran 0,2 s): lee la versión una vez y las filas de cada
+        trozo de claves con una sola consulta. Lo devuelto, en el orden de ``keys`` (sin
+        repetirlas), es lo que daría :meth:`resolve` de cada una; **las que ningún ámbito de la
+        cadena tiene no salen** (donde :meth:`resolve` lanza ``core.param_not_registered``). Los
+        mismos rechazos de la cadena, de la clave y de la versión que :meth:`resolve`."""
+        wanted = list(dict.fromkeys(keys))
+        for key in wanted:
+            _check_key(key)
+        if isinstance(scope_chain, str):
+            raise TypeError("scope_chain es una secuencia de ámbitos, no un texto")
+        chain = tuple(scope_chain)
+        if not chain:
+            raise ValueError("scope_chain no tiene ningún ámbito")
+        for scope in chain:
+            _check_scope(scope)
+        if len(set(chain)) != len(chain):
+            raise ValueError(f"scope_chain repite un ámbito: {chain!r}")
+        if (VERSION_SCOPE in chain) != (version is not None):
+            raise ValueError(
+                f"scope_chain {chain!r} con version={version!r}: el ámbito de versión de la "
+                "cadena y la versión (version=) van juntos"
+            )
+        version_uid = "" if version is None else _find_version(conn, version).uid
+        rows: dict[tuple[str, str], Sequence[Any]] = {}
+        for first in range(0, len(wanted), _RESOLVE_KEYS_PER_QUERY):
+            part = wanted[first:first + _RESOLVE_KEYS_PER_QUERY]
+            marks = ", ".join("?" for _ in part)
+            for row in conn.execute(
+                f"SELECT {_PARAMETER_COLUMNS} FROM gb_parameter WHERE key IN ({marks}) "
+                "AND scope_uid IN ('', ?)", (*part, version_uid),
+            ):
+                if row[2] == _scope_of(row[3]):
+                    rows[(row[1], row[3])] = row
+        found: dict[str, ResolvedParam] = {}
+        for key in wanted:
+            for scope in chain:
+                if scope == VERSION_SCOPE:
+                    if not _admits_version(key):
+                        continue
+                    row = rows.get((key, version_uid))
+                else:
+                    row = rows.get((key, ""))
+                if row is not None:
+                    found[key] = _resolved(_record(row))
+                    break
+        return found
 
     # --- Escritura --------------------------------------------------------------------------
 

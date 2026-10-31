@@ -328,13 +328,27 @@ class RejectCancelStaleTest(_VerifyCase):
         _last(access.ensure_masks_steps(self.project, self.v1.uid))
         before = set(files(self.root, skip=(), skip_dirs=("cache",)))
         count = self.query("SELECT count(*) FROM gb_figure")[0][0]
-        steps = self.steps(budget_s=0.0005)
-        for _ in range(3):
-            next(steps)
-        steps.close()
-        self.assertEqual(self.query("SELECT status FROM gb_operation WHERE uid = ?",
-                                    self.ops(cstore.VERIFY)[-1]), [("cancelled",)])
-        self.assertNothing(before, count)
+        # En cada fase: sumar y agrupar, y el primer y el último paso de guardar (T36).
+        for stop in (3, 9, "save", "last save"):
+            known = len(self.ops(cstore.VERIFY))
+            steps = self.steps(budget_s=0.0005)
+            while len(self.ops(cstore.VERIFY)) == known:  # cargar las máscaras son varios pasos
+                next(steps)
+            if isinstance(stop, int):
+                for _ in range(stop):
+                    next(steps)
+            else:
+                seen = [next(steps) for _ in range(3)]
+                while seen[-1].phase != "save":
+                    seen.append(next(steps))
+                if stop == "last save":
+                    while seen[-1].done < seen[-1].total - 1:
+                        seen.append(next(steps))
+            steps.close()
+            with self.subTest(stop=stop):
+                self.assertEqual(self.query("SELECT status FROM gb_operation WHERE uid = ?",
+                                            self.ops(cstore.VERIFY)[-1]), [("cancelled",)])
+                self.assertNothing(before, count)
         with mock.patch.object(operations.OperationHandle, "complete",
                                side_effect=RuntimeError("fallo de prueba")):
             with self.assertRaises(RuntimeError):

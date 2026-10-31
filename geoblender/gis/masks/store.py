@@ -62,7 +62,7 @@ from ...core.gpkg.base import (
 )
 from ...core.gpkg.connection import GpkgConnection
 from ...core.gpkg.wkb import decode_geometry, encode_geometry
-from ...core.params import PROJECT_SCOPE, VERSION_SCOPE, ParamError
+from ...core.params import PROJECT_SCOPE, VERSION_SCOPE
 from ...core.params.store import ParameterStore
 from ...core.paths import check_path_length
 from ...core.project.model import Progress
@@ -124,6 +124,7 @@ __all__ = [
     "reproduce_compile",
     "search_sectors",
     "sector_states_now",
+    "zone_runs_steps",
 ]
 
 CANCELLED_REASON = CANCEL_REASON_PREFIX + "la persona la paró antes de terminar (Esc)"
@@ -228,6 +229,39 @@ def read_zone_runs(conn: sqlite3.Connection, table: str) -> dict[str, Runs]:
     for zone, items in found.items():
         values = np.asarray(items, dtype=np.int64).reshape(-1, 3)
         result[zone] = Runs(values[:, 0], values[:, 1], values[:, 2])
+    return result
+
+
+_ZONE_ROWS_PER_UNIT = 10_000
+"""Las filas de ``gis_mskz_`` que lee cada unidad de :func:`zone_runs_steps`."""
+_ZONES_PER_UNIT = 40
+"""Las zonas cuyos tramos se normalizan en cada unidad de :func:`zone_runs_steps`."""
+
+
+def zone_runs_steps(project: StoreProject, table: str) -> Generator[None, None, dict[str, Runs]]:
+    """:func:`read_zone_runs` por pasos (T36): cada unidad abre su lectura, lee
+    :data:`_ZONE_ROWS_PER_UNIT` filas por su clave y la cierra (sin sostener una lectura entre
+    unidades), y después normaliza los tramos de :data:`_ZONES_PER_UNIT` zonas por unidad.
+    Devuelve las zonas en el mismo orden que :func:`read_zone_runs`."""
+    found: dict[str, list[tuple[int, int, int]]] = {}
+    last = 0
+    while True:
+        with project.read() as conn:
+            rows = conn.execute(
+                f'SELECT fid, zone, "row", col0, col1 FROM "{table}" WHERE fid > ? '
+                "ORDER BY fid LIMIT ?", (last, _ZONE_ROWS_PER_UNIT)).fetchall()
+        for _fid, zone, row, col0, col1 in rows:
+            found.setdefault(str(zone), []).append((int(row), int(col0), int(col1)))
+        yield None
+        if len(rows) < _ZONE_ROWS_PER_UNIT:
+            break
+        last = int(rows[-1][0])
+    result: dict[str, Runs] = {}
+    for count, (zone, items) in enumerate(found.items(), start=1):
+        values = np.asarray(items, dtype=np.int64).reshape(-1, 3)
+        result[zone] = Runs(values[:, 0], values[:, 1], values[:, 2])
+        if count % _ZONES_PER_UNIT == 0:
+            yield None
     return result
 
 
@@ -382,17 +416,13 @@ def _resolved(conn: sqlite3.Connection, project: StoreProject | None,
     ``None`` vale si solo se tiene la conexión."""
     store = ParameterStore(project)  # type: ignore[arg-type]
     chain = (PROJECT_SCOPE,) if version_uid is None else (VERSION_SCOPE, PROJECT_SCOPE)
-    found: dict[str, object] = {}
-    for item in constraints:
-        if not is_code(item.code):
-            continue
-        for param in ConstraintParam:
-            key = param_key(item.code, param)
-            try:
-                found[key] = store.resolve(conn, key, chain, version=version_uid)
-            except ParamError:
-                continue
-    return found
+    keys = [param_key(item.code, param) for item in constraints if is_code(item.code)
+            for param in ConstraintParam]
+    if not keys:
+        return {}
+    # Todos de una vez (T36): con 500 restricciones, 2.000 ``resolve`` eran 0,2 s; el mismo
+    # resultado, sin las claves que ningún ámbito tiene.
+    return dict(store.resolve_many(conn, keys, chain, version=version_uid))
 
 
 def _live_operation(conn: sqlite3.Connection, record: Any) -> str | None:

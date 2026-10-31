@@ -12,7 +12,11 @@ Se generan aquí y no se versionan (semilla :data:`SEED`, ningún dato de client
 
 :func:`scale_project` los deja escritos en un proyecto en disco local, con V01 y V02, los
 parámetros dados de alta y lo que registrará ``bl`` (las pruebas de compilar y de verificar lo
-miden de ``begin`` a las cifras). Python de Blender (su numpy 2.3.4) y biblioteca estándar.
+miden de ``begin`` a las cifras). Para verificar (T36): :func:`write_surfaces` escribe en él la
+superficie de partida y tres finales, de las dos formas de §2.2 (:data:`WINDOW`, que cambian en
+toda la ventana, y :data:`LOCAL`, que cambian en unos abultamientos) y :func:`verify_registered`
+registra lo que hará ``bl`` para verificar. Python de Blender (su numpy 2.3.4) y biblioteca
+estándar.
 """
 
 from __future__ import annotations
@@ -22,14 +26,16 @@ from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from tests.support import constraints_fixtures as fx
 from tests.support import constraints_project as cp
 from tests.support.core_fixtures import FakeClock, make_session, make_settings, project_tmp
 from tests.support.package import import_geoblender
+from tests.support.provenance_contract import registered
+from tests.support.res_fixtures import write_grids
 
 cmodel = import_geoblender("core.constraints.model")
 cparams = import_geoblender("core.constraints.params")
@@ -38,6 +44,9 @@ userdata_mod = import_geoblender("core.userdata")
 versions_store = import_geoblender("core.versions.store")
 create = import_geoblender("core.project.create")
 gis = import_geoblender("gis")
+params_mod = import_geoblender("core.params")
+cstore_v = import_geoblender("reserves.compliance_store")
+surfaces_mod = import_geoblender("reserves.surfaces")
 
 T = cmodel.ConstraintType
 G = cmodel.GeometryKind
@@ -211,3 +220,97 @@ def scale_project(constraints: ScaleConstraints | None = None) -> Iterator[Scale
         clock.advance(minutes=1)
         yield ScaleProject(project, clock, (versions[0], versions[1]),
                            int(project.record.crs_epsg), made)
+
+
+# --- Las superficies de verificar ----------------------------------------------------------------
+
+WINDOW = "window"
+"""Las finales que cambian en toda la ventana (ondas de 3 m): pocos grupos grandes por recinto."""
+LOCAL = "local"
+"""Las finales que cambian solo en 8 abultamientos de ±3 m: muchos grupos pequeños."""
+FINALS = 3
+"""Las superficies finales de cada forma."""
+
+
+def _plane() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    x = np.arange(COLS)[None, :].astype(np.float64)
+    y = np.arange(ROWS)[:, None].astype(np.float64)
+    return x, y, 650.0 + 0.02 * x + 0.01 * y
+
+
+def surface(rng: np.random.Generator, kind: int) -> Any:
+    """La partida (``kind`` 0, el plano inclinado) y las finales (1 a 3) de la forma
+    :data:`WINDOW`: el plano con una onda de 3 m en toda la ventana y 5 mm de ruido."""
+    x, y, base = _plane()
+    if kind:
+        base = base + 3.0 * np.sin(x / (150.0 + 40 * kind)) * np.cos(y / (170.0 + 30 * kind))
+        base = base + (rng.random((ROWS, COLS)) - 0.5) * 0.01
+    return gis.Raster(grid(), base, fx.CRS, fx.VERTICAL)
+
+
+def local_surface(rng: np.random.Generator) -> Any:
+    """Una superficie de la forma :data:`LOCAL`: el plano con 8 abultamientos de ±3 m (σ de 25
+    m) y 5 mm de ruido en toda la ventana (la partida y cada final, con otro azar)."""
+    x, y, base = _plane()
+    for _ in range(8):
+        cx, cy = rng.uniform(150, COLS - 150), rng.uniform(150, ROWS - 150)
+        amplitude = rng.choice([-3.0, 3.0])
+        base = base + amplitude * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * 25.0**2))
+    base = base + (rng.random((ROWS, COLS)) - 0.5) * 0.01
+    return gis.Raster(grid(), base, fx.CRS, fx.VERTICAL)
+
+
+@dataclass(frozen=True, slots=True)
+class ScaleSurfaces:
+    """Las superficies de una forma (:data:`WINDOW` o :data:`LOCAL`) escritas en el proyecto:
+    la partida y las :data:`FINALS` finales, como ``SurfaceRef``."""
+
+    shape: str
+    start: Any
+    finals: tuple[Any, ...]
+
+
+def write_surfaces(data: ScaleProject, shape: str) -> ScaleSurfaces:
+    """Escribe en ``data.project`` la partida y las tres finales de la forma ``shape`` como
+    rejillas del proyecto (``gis_dtm_partida_<forma>``, ``gis_dtm_final_<forma>_<k>``)."""
+    if shape not in (WINDOW, LOCAL):
+        raise ValueError(f"la forma de las finales es «{WINDOW}» o «{LOCAL}», no {shape!r}")
+    seed = SEED + (0 if shape == WINDOW else 100)
+    if shape == WINDOW:
+        rng = np.random.default_rng(seed)
+        rasters = [surface(rng, kind) for kind in range(FINALS + 1)]
+    else:
+        rasters = [local_surface(np.random.default_rng(seed + kind)) for kind in range(FINALS + 1)]
+    names = [f"partida_{shape}", *(f"final_{shape}_{k}" for k in range(1, FINALS + 1))]
+    data.clock.advance(minutes=1)
+    write_grids(data.project, list(zip(names, rasters, strict=True)),
+                message=f"Superficies de escala ({shape})")
+    ref = surfaces_mod.SurfaceRef
+    return ScaleSurfaces(
+        shape, ref(dataset=f"gis_dtm_{names[0]}", label="Partida"),
+        tuple(ref(dataset=f"gis_dtm_{name}", label=f"Final {k}")
+              for k, name in enumerate(names[1:], start=1)))
+
+
+def _no_recompute(request: Any) -> Any:
+    raise AssertionError("las pruebas de escala no recalculan con la función de bl")
+
+
+@contextmanager
+def verify_registered() -> Iterator[None]:
+    """Registra lo que hará ``bl`` para verificar: ``res.verify_constraints`` (con su función
+    de reproducir), sus cifras y su espesor mínimo. Al salir, lo quita."""
+    with ExitStack() as stack:
+        stack.enter_context(registered(
+            cstore_v.operation_def(_no_recompute, cstore_v.REPRODUCE[cstore_v.VERIFY]),
+            *cstore_v.FIGURES))
+        if cstore_v.MIN_THICKNESS not in params_mod.DEFINITIONS:
+            kept = [item for item in params_mod.DEFINITIONS.values() if item.module == "res"]
+            params_mod.register_definitions(cstore_v.DEFINITIONS)
+
+            def restore() -> None:
+                params_mod.unregister_definitions("res")
+                params_mod.register_definitions(kept)
+
+            stack.callback(restore)
+        yield

@@ -15,15 +15,21 @@ RF-012-28; plan 012 §5.2.3, A11, D-15, D-28, D-40, D-42, D-43).
 - :func:`verify_steps`: el cálculo por pasos de una :class:`~.compliance.ComplianceRequest` con
   sus superficies (``reserves.surfaces``, **en la rejilla de las máscaras**: si no, el rechazo de
   RF-011-03 al llamar), por bandas de filas al paso, con las rejillas de incumplimientos en sus
-  temporales con su hash. Sin el proyecto: lo usan la orden y la reproducción.
+  temporales con su hash. Sin el proyecto: lo usan la orden y la reproducción. **A escala (T36;
+  RNF-012-02, RNF-012-03, RNF-012-06)** cada unidad es corta (leer una superficie de una banda,
+  sumar una final en una banda, unas decenas de grupos, una tesela de una rejilla: ≤ 20 ms) y
+  :func:`_paced` las agrupa en pasos de ≈ ``budget_s``; lo que comparten las finales se hace una
+  vez (``compliance.zone_index_steps``) y la rejilla de incumplimientos de cada una se va
+  rellenando por bandas (no se guardan las celdas de cada recinto).
 - En el proyecto: :func:`verify_project_steps` (lo que lanza la orden): comprueba las superficies
   y la versión al llamar, encadena una ``gis.compile_constraints`` propia si las máscaras no
   están al día (D-15, D-43: ``gis.masks.access.ensure_masks_steps``), empieza la operación
   (:func:`begin_verify`: las máscaras y las superficies como entradas, el espesor mínimo anotado,
   la marca de RF-012-10 en sus ajustes) y da sus pasos (:func:`verify_run`), que guarda el
   resultado con :class:`CheckWriter` (A11): las rejillas en su temporal, los hashes de las tablas
-  fuera de la transacción, ``os.replace`` a ``rasters/`` y **una** transacción con las dos tablas,
-  las cifras y ``complete``. Cerrar los pasos o un fallo: nada (RF-012-28).
+  fuera de la transacción (por tramos de filas, T36), ``os.replace`` a ``rasters/`` y **una**
+  transacción con las dos tablas, las cifras y ``complete`` (lo único que no se trocea, R4).
+  Cerrar los pasos o un fallo: nada (RF-012-28).
 - :func:`reproduce_verify` (:data:`REPRODUCE`): con las máscaras, las superficies y el espesor
   congelados, sin el proyecto.
 - :func:`freeze_findings` (T18; RF-012-25; D-7, D-29): la comprobación de ``res`` al congelar,
@@ -97,6 +103,7 @@ from ..gis.grid import Grid, project_grid
 from ..gis.masks.access import MaskSet, MaskState, ensure_masks_steps, load_masks
 from ..gis.masks.compile import ClassesGrid
 from ..gis.masks.compile import _classes_steps as _raster_steps
+from ..gis.masks.compile import pace_units
 from ..gis.masks.store import current_pending, read_report, read_zone_runs
 from ..gis.messages import GisError
 from ..gis.provenance import dataset_slug
@@ -112,7 +119,8 @@ from .compliance import (
     Counts,
     FinalCheck,
     Verdict,
-    check_zones,
+    check_zones_steps,
+    zone_index_steps,
 )
 from .messages import render
 from .surfaces import (
@@ -120,10 +128,10 @@ from .surfaces import (
     SurfaceHeader,
     SurfaceRef,
     SurfaceSource,
+    band_reader,
     check_pair,
     constant_source,
     grid_source,
-    lockstep_bands,
     surface_source,
 )
 
@@ -154,6 +162,7 @@ __all__ = [
     "final_role",
     "freeze_findings",
     "operation_def",
+    "planned_units",
     "previous_check",
     "project_sources",
     "read_groups",
@@ -313,26 +322,52 @@ def _create(conn: sqlite3.Connection, family: str, table: str, srs_id: int,
                              description)
 
 
-def _digest(family: str, rows: Sequence[tuple[Any, ...]], crs: CrsRef) -> ContentDigest:
+_DIGEST_ROWS_PER_UNIT = 1000
+"""Las filas que se insertan en cada unidad de :func:`_digest_steps` (un múltiplo de las 500 de
+cada sentencia de ``insert_rows``)."""
+_DIGEST_CHUNK_BYTES = 1 << 16
+"""Lo que lee el hasher de una tabla entre dos unidades de :func:`_digest_steps` (una
+dieciseisava parte del trozo por defecto: con él, un trozo de 32.768 filas del cierre del hash
+tardaba unos 60 ms)."""
+_GROUPS_PER_UNIT = 1500
+"""Los grupos cuyo punto se codifica en cada unidad de :meth:`CheckWriter.prepare_steps`."""
+
+
+def _digest_steps(family: str, rows: Sequence[tuple[Any, ...]], crs: CrsRef
+                  ) -> Generator[None, None, ContentDigest]:
     """El hash (``core.gpkg_layer@1``) de la tabla ``family`` con ``rows``, en un GeoPackage en
-    memoria con la misma estructura (R4: fuera de la transacción)."""
+    memoria con la misma estructura (R4: fuera de la transacción), por pasos: una unidad por
+    cada trozo de filas que se inserta y por cada trozo que se lee y se hashea (T36)."""
     conn = sqlite3.connect(":memory:")
     try:
         create_base(conn, crs)
         _create(conn, family, "digest", crs.epsg, "digest")
-        insert_rows(conn, "digest", _names(family), rows)
+        names = _names(family)
+        for first in range(0, len(rows), _DIGEST_ROWS_PER_UNIT):
+            insert_rows(conn, "digest", names, rows[first:first + _DIGEST_ROWS_PER_UNIT])
+            yield None
         request = GPKG_LAYER.request(_family(family).kind, DATASET_DECLARATIONS,
                                      {"main": Path("digest")}, {"layer": "digest"},
-                                     normalizer=NORMALIZER)
+                                     normalizer=NORMALIZER, chunk_bytes=_DIGEST_CHUNK_BYTES)
         steps = core_builtin.layer_steps(conn, request)
         try:
             for _done in steps:
-                pass
+                yield None
         finally:
             steps.close()
         return request.hasher.digest()
     finally:
         conn.close()
+
+
+def _digest(family: str, rows: Sequence[tuple[Any, ...]], crs: CrsRef) -> ContentDigest:
+    """:func:`_digest_steps` de una vez."""
+    steps = _digest_steps(family, rows, crs)
+    while True:
+        try:
+            next(steps)
+        except StopIteration as stop:
+            return stop.value  # type: ignore[no-any-return]
 
 
 def read_table(conn: sqlite3.Connection, table: str
@@ -457,9 +492,21 @@ def verify_steps(request: ComplianceRequest, sources: Mapping[str, SurfaceSource
     ordered = [sources[role] for role in roles]
     check_sources(dict(zip(roles, ordered, strict=True)), request.masks, references)
     work = _work(request, ordered, references, dict(grid_paths or {}), band_rows)
-    bands = -(-request.masks.grid.nrows // band_rows)
-    return _paced(work, float(budget_s), bands * len(request.finals) + 2 * len(request.finals)
-                  + 2)
+    return _paced(work, float(budget_s),
+                  planned_units(request.masks.grid, len(ordered), len(request.finals), band_rows))
+
+
+def planned_units(grid: Grid, surfaces: int, finals: int, band_rows: int = BAND_ROWS) -> int:
+    """Las unidades que se prevén al empezar a verificar ``finals`` finales de ``surfaces``
+    superficies en ``grid`` (crece si hacen falta más; el total del primer aviso de avance):
+    leer cada superficie y sumar cada final en cada banda; de cada final, los grupos (tres
+    modos de contar por cada 64 filas y unas 120 más entre vueltas y trozos de celdas) y las
+    unidades de su rejilla de incumplimientos (hash y teselas); y lo que se prepara al guardar."""
+    bands = -(-grid.nrows // band_rows)
+    cells = grid.nrows * grid.ncols
+    tiles = -(-grid.nrows // 256) * -(-grid.ncols // 256) + -(-cells // (1 << 18))
+    groups = 3 * -(-grid.nrows // 64) + 120
+    return bands * (surfaces + finals) + finals * (groups + tiles) + 180
 
 
 def _work(request: ComplianceRequest, ordered: Sequence[SurfaceSource],
@@ -468,30 +515,34 @@ def _work(request: ComplianceRequest, ordered: Sequence[SurfaceSource],
           ) -> Generator[None, None, VerifyResult]:
     masks = request.masks
     grid = masks.grid
-    zones = check_zones(masks.classes, masks.zones, masks.ctypes, masks.weights)
-    yield None
-    checkers = [Checker(grid, zones, request.min_thickness_m) for _ in request.finals]
-    bands = lockstep_bands(ordered, grid, rows=band_rows)
-    with closing(bands):  # cerrar los pasos cierra los ficheros
-        for top, values in bands:
+    zones = yield from check_zones_steps(masks.classes, masks.zones, masks.ctypes, masks.weights)
+    index = yield from zone_index_steps(grid, zones)  # una vez, para todas las finales
+    checkers = [Checker(grid, zones, request.min_thickness_m, index=index)
+                for _ in request.finals]
+    readers = [band_reader(source, grid, rows=band_rows) for source in ordered]
+    try:  # cerrar los pasos cierra los ficheros
+        for top in range(0, grid.nrows, band_rows):
+            values = []
+            for reader in readers:  # cada superficie, una unidad
+                values.append(next(reader)[1])
+                yield None
             for position, checker in enumerate(checkers, start=1):
                 checker.add(top, values[0], values[position])
                 yield None
+    finally:
+        for reader in readers:
+            reader.close()
     finals = []
     for checker in checkers:
-        finals.append(checker.result(start_name=ordered[0].name))
-        yield None
+        finals.append((yield from checker.result_steps(start_name=ordered[0].name)))
     written: dict[int, ClassesGrid] = {}
     try:
         for position, found in enumerate(finals, start=1):
             if found.violations is None or position not in grid_paths:
                 continue
-            rows, cols, values = found.violations
-            cells = np.full(grid.shape, np.nan, dtype=np.float64)
-            cells[rows, cols] = values
             path, temporary = grid_paths[position]
-            written[position] = yield from _raster_steps(Raster(grid, cells, *references),
-                                                         Path(path), temporary)
+            written[position] = yield from _raster_steps(
+                Raster(grid, found.violations, *references), Path(path), temporary)
         return VerifyResult(request.name, tuple(item.shown for item in request.finals),
                             tuple(finals), MappingProxyType(written), masks.pending_names,
                             _figures(request.name, finals))
@@ -817,26 +868,44 @@ class CheckWriter:
             found[position] = (final, temporary)
         return found
 
-    def prepare(self, result: VerifyResult) -> None:
-        """Las rejillas escritas y las dos tablas con su hash (fuera de la transacción)."""
+    def prepare_steps(self, result: VerifyResult) -> Generator[None, None, None]:
+        """Las rejillas escritas y las dos tablas con su hash (fuera de la transacción), por
+        pasos (T36): una unidad por cada trozo de grupos cuyo punto se codifica y por cada trozo
+        de filas que se inserta y se hashea (sin sostener una lectura abierta entre unidades)."""
         for position, written in result.grids.items():
             entry = self._grids.get(position)
             if entry is None or Path(written.path) != entry.temporary:
                 raise ValueError(f"la rejilla del final {position} no está en su temporal")
             entry.spec = dataset_spec(VIOLATIONS, result.name, self.version_code, final=position,
                                       content=written.digest, crs_epsg=self.crs.epsg)
+        yield None
         srs = self.crs.epsg
-        tables = ((TABLE, result.table_rows()),
-                  (GROUPS, [(encode_geometry("POINT", np.array([x, y]), srs, False), *values)
-                            for *values, x, y in result.group_rows()]))
-        with self.project.read() as conn:
-            for family, rows in tables:
-                rows = tuple(tuple(row) for row in rows)
-                spec = dataset_spec(family, result.name, self.version_code,
-                                    content=_digest(family, rows, self.crs),
-                                    crs_epsg=srs if family == GROUPS else None)
+        table_rows = tuple(tuple(row) for row in result.table_rows())
+        yield None
+        points = result.group_rows()
+        yield None
+        group_rows: list[tuple[Any, ...]] = []
+        for first in range(0, len(points), _GROUPS_PER_UNIT):
+            group_rows += [(encode_geometry("POINT", np.array([x, y]), srs, False), *values)
+                           for *values, x, y in points[first:first + _GROUPS_PER_UNIT]]
+            yield None
+        for family, rows in ((TABLE, table_rows), (GROUPS, tuple(group_rows))):
+            content = yield from _digest_steps(family, rows, self.crs)
+            spec = dataset_spec(family, result.name, self.version_code, content=content,
+                                crs_epsg=srs if family == GROUPS else None)
+            with self.project.read() as conn:
                 self._check_place(conn, spec)
-                self._tables.append(_Table(spec, family, rows))
+            self._tables.append(_Table(spec, family, rows))
+            yield None
+
+    def prepare(self, result: VerifyResult) -> None:
+        """:meth:`prepare_steps` de una vez."""
+        steps = self.prepare_steps(result)
+        while True:
+            try:
+                next(steps)
+            except StopIteration:
+                return
 
     @property
     def specs(self) -> tuple[DatasetSpec, ...]:
@@ -987,7 +1056,18 @@ def _run(project: StoreProject, handle: OperationHandle, budget_s: float,
         assert last is not None and isinstance(last.result, VerifyResult)
         result: VerifyResult = last.result
         total = last.total + 2
-        out.prepare(result)
+        done = last.total
+        yield Progress("save", done, total, f"Guardando «{name}»…")  # el cierre del cálculo, aparte
+        saving = pace_units(out.prepare_steps(result), budget_s)
+        while True:  # los hashes de las tablas por tramos (fuera de la transacción, R4)
+            try:
+                next(saving)
+            except StopIteration:
+                break
+            done += 1
+            total = max(total, done + 1)
+            yield Progress("save", done, total, f"Guardando «{name}»…")
+        total = max(total, done + 2)
         yield Progress("save", total - 1, total, f"Guardando «{name}»…")
         records = out.commit(figures=result.figures, message=last.message)
     yield Progress("save", total, total, last.message, result=StoredCheck(result, records))

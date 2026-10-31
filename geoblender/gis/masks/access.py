@@ -32,8 +32,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Iterator, Mapping
 from contextlib import closing
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -50,14 +49,14 @@ from ...core.project.model import Progress
 from ...core.provenance.operations import OperationStatus, Use
 from ...core.versions import read as versions_read
 from ...core.versions.model import Version, VersionError
-from ..geotiff.reader import read_geotiff
+from ..geotiff.reader import read_header, read_rows
 from ..grid import Grid
 from ..store import StoreProject
 from . import provenance as declared
 from .combine import ClassBit
-from .compile import STEP_BUDGET_S
-from .store import begin_compile, compile_run, current_pending, read_report, read_zone_runs
-from .store import sector_states_now
+from .compile import STEP_BUDGET_S, pace_units
+from .store import begin_compile, compile_run, current_pending, read_report, sector_states_now
+from .store import zone_runs_steps
 from .zones import Runs
 
 __all__ = [
@@ -67,6 +66,7 @@ __all__ = [
     "MaskState",
     "ensure_masks_steps",
     "load_masks",
+    "load_masks_steps",
     "mask_state",
     "mask_uses",
     "sector_states",
@@ -75,6 +75,8 @@ __all__ = [
 MASK_FAMILIES: tuple[str, ...] = (declared.CLASSES, declared.ZONES, declared.REPORT)
 """Las familias de datos que lee un :class:`MaskSet` (y que consume quien lo usa)."""
 _ROLE_PREFIX = "masks_"
+_READ_ROWS = 256
+"""Las filas de la rejilla de clases que se leen en cada unidad de :func:`load_masks_steps`."""
 
 
 class MaskState(StrEnum):
@@ -239,26 +241,47 @@ def _refuse(found: _Found) -> MaskError:
 def load_masks(project: StoreProject, version_uid: str) -> MaskSet:
     """El :class:`MaskSet` de la versión ``version_uid`` (uid o código) si sus máscaras están
     al día; si no, :class:`MaskError` (RF-012-17). Solo lee."""
+    steps = load_masks_steps(project, version_uid)
+    while True:
+        try:
+            next(steps)
+        except StopIteration as stop:
+            return stop.value  # type: ignore[no-any-return]
+
+
+def load_masks_steps(project: StoreProject, version_uid: str) -> Generator[None, None, MaskSet]:
+    """:func:`load_masks` por pasos (T36; RNF-012-06): una unidad por el estado de las máscaras,
+    por cada trozo de filas de sus zonas (cada una con su propia lectura, sin sostener ninguna
+    entre unidades), por cada banda de la rejilla de clases y por cada trozo de zonas que se
+    normaliza. Devuelve el mismo :class:`MaskSet`; cerrarlo a mitad no deja nada."""
     found = _find(project, version_uid)
     if found.state is not MaskState.CURRENT or found.operation_uid is None:
         raise _refuse(found)
+    yield None
     records = found.records
     with project.read() as conn:
         (settings,) = conn.execute("SELECT settings FROM gb_operation WHERE uid = ?",
                                    (found.operation_uid,)).fetchone()
-        zones = read_zone_runs(conn, records[declared.ZONES].locator)
         report = read_report(conn, records[declared.REPORT].locator)
     weights = {code: float(value) for code, quantity, value, _unit, _note in report
                if quantity == "weight" and value is not None}
     ctypes = {code: str(note) for code, quantity, _value, _unit, note in report
               if quantity == "zone_area" and note is not None}
     grid = declared.grid_of(json.loads(settings))
+    yield None
+    zones = yield from zone_runs_steps(project, records[declared.ZONES].locator)
     raster = records[declared.CLASSES]
-    source = read_geotiff(Path(project.root, *raster.locator.split("/")), max_cells=sys.maxsize)
-    values = np.asarray(source.values, dtype=np.float64)
-    if values.shape != grid.shape:
-        raise _refuse(_Found(found.version, MaskState.STALE, records, None, (), ()))
-    classes = np.where(np.isfinite(values), values, 0.0).astype(np.uint16)
+    path = Path(project.root, *raster.locator.split("/"))
+    classes = np.empty(grid.shape, dtype=np.uint16)
+    with path.open("rb") as stream:
+        header = read_header(stream, path.stat().st_size, path.name)
+        if (header.height, header.width) != grid.shape:
+            raise _refuse(_Found(found.version, MaskState.STALE, records, None, (), ()))
+        for top in range(0, grid.nrows, _READ_ROWS):
+            stop = min(top + _READ_ROWS, grid.nrows)
+            values = read_rows(stream, header, top, stop)
+            classes[top:stop] = np.where(np.isfinite(values), values, 0.0).astype(np.uint16)
+            yield None
     used = tuple(_Use(record.uid, record.name,
                       _ROLE_PREFIX + declared.FAMILIES_BY_CODE[family].role)
                  for family, record in records.items())
@@ -278,11 +301,11 @@ def ensure_masks_steps(project: StoreProject, version_uid: str, *,
     if state is not MaskState.CURRENT:
         handle = begin_compile(project, version=version_uid)
         steps = compile_run(project, handle, budget_s=budget_s)
-    return _ensure(project, version_uid, steps)
+    return _ensure(project, version_uid, steps, budget_s)
 
 
-def _ensure(project: StoreProject, version_uid: str,
-            steps: Iterator[Progress] | None) -> Iterator[Progress]:
+def _ensure(project: StoreProject, version_uid: str, steps: Iterator[Progress] | None,
+            budget_s: float) -> Iterator[Progress]:
     total = 1
     if steps is not None:
         with closing(steps):
@@ -291,7 +314,17 @@ def _ensure(project: StoreProject, version_uid: str,
                 if step.result is not None:
                     break
                 yield Progress(step.phase, step.done, total, step.message)
-    masks = load_masks(project, version_uid)
+    loading = pace_units(load_masks_steps(project, version_uid), budget_s)
+    done = total
+    while True:  # cargar las máscaras, en pasos cortos
+        try:
+            next(loading)
+        except StopIteration as stop:
+            masks = stop.value
+            break
+        done += 1
+        total = max(total, done + 1)
+        yield Progress("masks", done, total, "Cargando las máscaras…")
     yield Progress("masks", total, total, "Máscaras al día", result=masks)
 
 
