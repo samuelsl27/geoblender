@@ -21,12 +21,17 @@ su zona de entonces (``None``: no estaba). Viaja en los ajustes de la operación
 Polígono ganado ``área(A ∖ A')`` y perdido ``área(A' ∖ A)`` con ``gis.polygons.overlay``
 (líneas y puntos: 0); zona ganada y perdida, celdas × área de celda.
 
+**Pasos cortos** (RNF-012-06; T35): cada fase (comprobar, zonas, combinar, informe, rejilla de
+clases) cede el control entre unidades de unos 20 ms como mucho, y :func:`pace_units` y
+``_Pacer`` las juntan en pasos de ``budget_s``; con las 500 restricciones de §2.2 ninguna
+llamada pasa de 0,05 s salvo la transacción final de ``gis.masks.store`` (R4). Lo calculado es,
+bit a bit, lo de antes.
+
 Python puro con numpy (nivel 2).
 """
 
 from __future__ import annotations
 
-import hashlib
 import time
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import closing
@@ -52,13 +57,13 @@ from ...core.georef import CrsRef, VerticalRef
 from ...core.params.store import ResolvedParam
 from ...core.project.model import Progress
 from ...core.provenance.figures import FigureSpec
-from ..content import DIGEST_BLOCK_CELLS, GEOTIFF, raster_header
+from ..content import GEOTIFF, raster_header
 from ..geotiff import writer
 from ..grid import Grid
 from ..polygons import overlay
 from ..raster import Raster
-from .combine import Masks, Notice, Prepared, combine, prepare_steps
-from .overlay import M2_PER_HA, LimitsReport, report_of
+from .combine import Masks, Notice, Prepared, combine_steps, geometry_sha256, prepare_steps
+from .overlay import M2_PER_HA, LimitsReport, report_steps
 from .zones import ROWS_PER_STEP, SEGMENTS_PER_STEP, Runs
 
 __all__ = [
@@ -74,6 +79,8 @@ __all__ = [
     "fingerprint",
     "fingerprint_kind",
     "geometry_sha256",
+    "pace_units",
+    "planned_steps",
     "resolved_values",
 ]
 
@@ -81,6 +88,9 @@ STEP_BUDGET_S = 0.05
 """Lo que dura un paso como mucho (s; RNF-012-06)."""
 _WORK_FRACTION = 0.5
 """La parte del presupuesto que se planea (la otra mitad, para lo más lento del paso)."""
+_HASH_BLOCK_CELLS = 1 << 18
+"""Celdas por banda de filas al hashear la rejilla de clases: 2 MiB, unos 12 ms de hash (con
+``DIGEST_BLOCK_CELLS``, unos 50 ms, que no caben en un paso de RNF-012-06). El hash es el mismo."""
 _PHASE = "compile"
 _TEXT = "Compilando las restricciones…"
 
@@ -257,19 +267,6 @@ def resolved_values(resolved: Mapping[str, object]) -> dict[str, object]:
     return {key: _value(value) for key, value in resolved.items()}
 
 
-def geometry_sha256(item: Constraint) -> str:
-    """La huella de la geometría de una restricción (su tipo de geometría y sus coordenadas
-    float64, parte a parte y anillo a anillo)."""
-    digest = hashlib.sha256(item.kind.value.encode("ascii"))
-    for part in item.parts:
-        digest.update(b"P%d" % len(part))
-        for ring in part:
-            values = np.ascontiguousarray(ring, dtype="<f8")
-            digest.update(b"R%d" % values.shape[0])
-            digest.update(values.tobytes())
-    return digest.hexdigest()
-
-
 def buffer_of(item: Constraint, resolved: Mapping[str, object]) -> float:
     """El resguardo que da su zona: hacia dentro del límite legal; 0 en el perímetro; hacia
     fuera en las demás."""
@@ -384,6 +381,24 @@ class _Pacer:
         return now - self.start + self.slowest > self.target
 
 
+def pace_units[T](work: Generator[object, None, T], budget_s: float
+                  ) -> Generator[None, None, T]:
+    """Agrupa las unidades de ``work`` en pasos de ``budget_s`` como mucho (RNF-012-06): cede una
+    vez por paso, con al menos una unidad en cada uno, y devuelve lo que devuelve ``work``.
+    Cerrarlo cierra ``work``."""
+    pacer = _Pacer(budget_s)
+    with closing(work):
+        while True:
+            pacer.restart()
+            try:
+                next(work)
+                while not pacer.lap():
+                    next(work)
+            except StopIteration as stop:
+                return stop.value  # type: ignore[no-any-return]
+            yield
+
+
 def _classes_steps(raster: Raster, path: Path, temporary: Path | None
                    ) -> Generator[None, None, ClassesGrid]:
     """La rejilla de clases en su temporal (una tesela por unidad) y su hash por bandas."""
@@ -391,7 +406,7 @@ def _classes_steps(raster: Raster, path: Path, temporary: Path | None
                            normalizer=NORMALIZER)
     feed = hasher.begin_grid(raster_header(raster))
     rows, columns = raster.grid.shape
-    band = max(1, DIGEST_BLOCK_CELLS // max(1, columns))
+    band = max(1, _HASH_BLOCK_CELLS // max(1, columns))
     for start in range(0, rows, band):
         feed.update(raster.values[start:start + band])
         yield None
@@ -418,22 +433,23 @@ def _work(request: CompileRequest, segments_per_step: int, rows_per_step: int,
                                         segments_per_step=segments_per_step,
                                         rows_per_step=rows_per_step)
     assert grid is not None
-    masks = combine(prepared.zones, prepared.limits, grid)
-    yield None
-    report = report_of(prepared, grid)
-    yield None
+    masks = yield from combine_steps(prepared.zones, prepared.limits, grid)
+    report = yield from report_steps(prepared, grid)
     changes = yield from _changes(request, prepared, grid)
     notices = (*prepared.notices, *(n for n in report.notices()
                                     if n.code == "core.constraint_strip_part"))
+    yield None
     buffers = {item.code: buffer_of(item, request.resolved) for item in request.constraints
                if item.code in prepared.zones}
     fingerprints = {item.code: fingerprint(item, request.resolved)
                     for item in request.constraints if item.code in prepared.zones}
+    yield None
     classes = None
     if classes_path is not None:
         if references is None:
             raise ValueError("la rejilla de clases necesita el CRS y la referencia vertical")
         raster = Raster(grid, masks.classes.astype(np.float64), *references)
+        yield None
         classes = yield from _classes_steps(raster, Path(classes_path),
                                             None if classes_temporary is None
                                             else Path(classes_temporary))
@@ -468,10 +484,16 @@ def compile_steps(request: CompileRequest, *, budget_s: float = STEP_BUDGET_S,
     return _paced(work, float(budget_s), len(request.constraints))
 
 
+def planned_steps(count: int) -> int:
+    """Los pasos que se prevén al empezar a compilar ``count`` restricciones (crece si hacen
+    falta más): el total del primer aviso de avance."""
+    return max(8, 4 * count + 8)
+
+
 def _paced(work: Generator[None, None, CompileResult], budget_s: float,
            count: int) -> Iterator[Progress]:
     pacer = _Pacer(budget_s)
-    done, total = 0, max(8, 4 * count + 8)
+    done, total = 0, planned_steps(count)
     with closing(work):  # cerrar los pasos (Esc) cierra el trabajo
         while True:
             pacer.restart()

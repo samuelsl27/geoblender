@@ -81,6 +81,18 @@ _EMPTY = np.zeros(0, dtype=np.int64)
 # --- Tramos de fila ----------------------------------------------------------------------------
 
 
+def _order(row: np.ndarray, col: np.ndarray) -> np.ndarray:
+    """El orden estable por fila y columna: el de ``np.lexsort((col, row))``, con una sola
+    ordenación de una clave compuesta (dos veces y media más rápida; T35). Si la clave no cabe
+    en 62 bits, ``lexsort``."""
+    low, high = int(col.min()), int(col.max())
+    first, last = int(row.min()), int(row.max())
+    width = high - low + 1
+    if (last - first + 1) * width >= 1 << 62:
+        return np.lexsort((col, row))
+    return np.argsort((row - first) * width + (col - low), kind="stable")
+
+
 def _normalize(row: np.ndarray, col0: np.ndarray, col1: np.ndarray
                ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Los tramos sin vacíos, ordenados por fila y columna, con los que se solapan o se tocan
@@ -89,7 +101,7 @@ def _normalize(row: np.ndarray, col0: np.ndarray, col1: np.ndarray
     row, col0, col1 = row[keep], col0[keep], col1[keep]
     if row.size == 0:
         return _EMPTY, _EMPTY, _EMPTY
-    order = np.lexsort((col0, row))
+    order = _order(row, col0)
     row, col0, col1 = row[order], col0[order], col1[order]
     # El final más a la derecha de los tramos anteriores de la misma fila: un máximo acumulado
     # de ``fila·W + col1`` (las filas crecen), con W mayor que cualquier columna.
@@ -203,7 +215,7 @@ class Runs:
                                np.zeros(2 * len(other), np.int64)])
         theirs = np.concatenate([np.zeros(2 * len(self), np.int64),
                                  np.ones(len(other), np.int64), -np.ones(len(other), np.int64)])
-        order = np.lexsort((col, row))
+        order = _order(row, col)
         row, col = row[order], col[order]
         in_mine = np.cumsum(mine[order]) > 0
         in_theirs = np.cumsum(theirs[order]) > 0
@@ -211,6 +223,13 @@ class Runs:
         keep = keep[:-1] & (row[1:] == row[:-1])
         index = np.flatnonzero(keep)
         return Runs(row[index], col[index], col[index + 1])
+
+    def between_rows(self, first: int, last: int) -> Runs:
+        """Los tramos de las filas ``first`` a ``last`` (ambas incluidas); las demás celdas
+        no están. Cuesta lo que sus tramos, no los de todo el conjunto (RNF-012-06)."""
+        begin = int(np.searchsorted(self.row, first, side="left"))
+        end = int(np.searchsorted(self.row, last, side="right"))
+        return Runs(self.row[begin:end], self.col0[begin:end], self.col1[begin:end])
 
     def mask(self, shape: tuple[int, int], offset: tuple[int, int] = (0, 0)) -> np.ndarray:
         """Las celdas como máscara booleana de forma ``shape`` (filas de norte a sur), cuya celda
@@ -221,10 +240,13 @@ class Runs:
         col1 = np.clip(self.col1 - offset[1], 0, width)
         keep = (row >= 0) & (row < height) & (col1 > col0)
         row, col0, col1 = row[keep], col0[keep], col1[keep]
-        marks = np.zeros((height, width + 1), dtype=np.int64)
-        np.add.at(marks, (row, col0), 1)
-        np.add.at(marks, (row, col1), -1)
-        return np.cumsum(marks, axis=1)[:, :width] > 0
+        # Los tramos no se solapan ni se tocan (ni recortados): los 2n bordes son sitios
+        # distintos, así que basta asignar (+1 al empezar, −1 al acabar) y sumar por filas; en
+        # int8, que cabe (la suma es 0 o 1) y mueve una octava parte de memoria.
+        marks = np.zeros((height, width + 1), dtype=np.int8)
+        marks[row, col0] = 1
+        marks[row, col1] = -1
+        return np.cumsum(marks, axis=1, dtype=np.int8)[:, :width] > 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,8 +492,20 @@ def _near_steps(segments: np.ndarray, radius_m: float, grid: Grid, size: int,
 def _inside_steps(edges: np.ndarray, grid: Grid, size: int, whole: bool,
                   found: list[Runs]) -> Generator[None]:
     size = max(int(size), 1)
-    for begin in range(0, grid.nrows, size):
-        found.append(inside_runs(edges, grid, whole=whole, rows=slice(begin, begin + size)))
+    nrows = grid.nrows
+    # Una banda que las aristas no tocan no tiene celdas (``gis.coverage.band_coverage`` la da
+    # vacía): ni se calcula (T35). Unas aristas no finitas o ninguna, sí, para que fallen o se
+    # traten como siempre.
+    reach: tuple[float, float] | None = None
+    if edges.ndim == 3 and edges.size:
+        v = edges[..., 1] / grid.dy
+        low_v, high_v = float(v.min()), float(v.max())
+        if math.isfinite(low_v) and math.isfinite(high_v):
+            reach = (low_v, high_v)
+    for begin in range(0, nrows, size):
+        stop = min(begin + size, nrows)
+        if reach is None or (reach[1] >= nrows - stop and reach[0] <= nrows - begin):
+            found.append(inside_runs(edges, grid, whole=whole, rows=slice(begin, begin + size)))
         yield
 
 

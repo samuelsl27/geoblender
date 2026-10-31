@@ -14,16 +14,17 @@ Python puro con numpy (nivel 2).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 
 import numpy as np
 
 from ..grid import Grid
-from ..polygons import Part, overlay
+from ..polygons import Part, drain, overlay
 from .combine import Notice, Outside, Prepared
 
-__all__ = ["M2_PER_HA", "LimitsReport", "limits_report", "report_of"]
+__all__ = ["M2_PER_HA", "LimitsReport", "limits_report", "limits_report_steps", "report_of",
+           "report_steps"]
 
 M2_PER_HA = 10_000.0
 """Metros cuadrados de una hectárea."""
@@ -77,26 +78,41 @@ def _positive(area: float) -> float:
     return area if area > 0.0 else 0.0
 
 
+def limits_report_steps(legal: Sequence[Rings], perimeter: Sequence[Rings] | None, *,
+                        origin: Sequence[float], outside: Sequence[Outside] = ()
+                        ) -> Generator[None, None, LimitsReport]:
+    """:func:`limits_report` por pasos: uno por superposición (RNF-012-06; T35)."""
+    from_legal = not perimeter
+    used = legal if from_legal else perimeter
+    legal_m2 = _positive(overlay(legal, [], "union", origin=origin).area_m2)
+    yield
+    if from_legal:
+        return LimitsReport(legal_m2, legal_m2, legal_m2, 0.0, (), True, tuple(outside))
+    perimeter_m2 = _positive(overlay(used, [], "union", origin=origin).area_m2)
+    yield
+    both = _positive(overlay(used, legal, "intersection", origin=origin).area_m2)
+    yield
+    strip = overlay(used, legal, "difference", origin=origin)
+    return LimitsReport(legal_m2, perimeter_m2, both, _positive(strip.area_m2), strip.parts,
+                        False, tuple(outside))
+
+
 def limits_report(legal: Sequence[Rings], perimeter: Sequence[Rings] | None, *,
                   origin: Sequence[float], outside: Sequence[Outside] = ()) -> LimitsReport:
     """El informe de los límites legales ``legal`` y del perímetro ``perimeter`` (cada uno, sus
     polígonos con sus anillos ABSOLUTOS; ``None`` o vacío: sin perímetro, el límite legal) con
     las superposiciones relativas a ``origin`` (``(x, y)`` absolutos cercanos, p. ej. la esquina
     suroeste de la rejilla)."""
-    from_legal = not perimeter
-    used = legal if from_legal else perimeter
-    legal_m2 = _positive(overlay(legal, [], "union", origin=origin).area_m2)
-    if from_legal:
-        return LimitsReport(legal_m2, legal_m2, legal_m2, 0.0, (), True, tuple(outside))
-    perimeter_m2 = _positive(overlay(used, [], "union", origin=origin).area_m2)
-    both = _positive(overlay(used, legal, "intersection", origin=origin).area_m2)
-    strip = overlay(used, legal, "difference", origin=origin)
-    return LimitsReport(legal_m2, perimeter_m2, both, _positive(strip.area_m2), strip.parts,
-                        False, tuple(outside))
+    return drain(limits_report_steps(legal, perimeter, origin=origin, outside=outside))
+
+
+def report_steps(prepared: Prepared, grid: Grid) -> Generator[None, None, LimitsReport]:
+    """:func:`report_of` por pasos."""
+    perimeter = None if prepared.limits.perimeter_from_legal else prepared.perimeter
+    return limits_report_steps(prepared.legal, perimeter, origin=(grid.west, grid.extent.ymin),
+                               outside=prepared.outside)
 
 
 def report_of(prepared: Prepared, grid: Grid) -> LimitsReport:
     """:func:`limits_report` de lo preparado para combinar, en ``grid``."""
-    perimeter = None if prepared.limits.perimeter_from_legal else prepared.perimeter
-    return limits_report(prepared.legal, perimeter, origin=(grid.west, grid.extent.ymin),
-                         outside=prepared.outside)
+    return drain(report_steps(prepared, grid))

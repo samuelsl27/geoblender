@@ -13,9 +13,10 @@ RF-012-16, RF-012-28; plan 012 §5.2.3, A5, A11, D-24).
   anterior) con sus entradas, sus parámetros y sus ajustes.
 - :func:`compile_run` da sus pasos (``gis.masks.compile.compile_steps``) y guarda el resultado
   con :class:`MaskWriter` (A11): la rejilla de clases por teselas en su temporal con su hash, los
-  hashes de las tablas fuera de la transacción, ``os.replace`` a ``rasters/`` y **una**
-  transacción con las cuatro tablas, las cifras y ``complete``. Si se cierra o falla, nada (ni
-  cifras, ni tablas, ni rejilla, ni temporal) y la operación «cancelada» o «fallida».
+  hashes de las tablas fuera de la transacción (por tramos de filas, T35: ningún paso pasa de
+  0,05 s), ``os.replace`` a ``rasters/`` y **una** transacción con las cuatro tablas, las cifras
+  y ``complete`` (lo único que no se trocea, R4). Si se cierra o falla, nada (ni cifras, ni
+  tablas, ni rejilla, ni temporal) y la operación «cancelada» o «fallida».
 - :func:`reproduce_compile` (:data:`REPRODUCE`) reproduce una compilación congelada con sus
   entradas y sus parámetros congelados y sus ajustes, sin el proyecto.
 
@@ -26,7 +27,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,6 +84,7 @@ from ...core.versions.reproduce import ReproducedOutput, ReproducedResult, Repro
 from ..geotiff.writer import target_locked, write_failed
 from ..grid import Grid, project_grid
 from ..messages import GisError
+from ..polygons import drain
 from ..store import StoreProject, backup_path, insert_rows, project_references, temporary_path
 from . import provenance as declared
 from .combine import LEGAL_COMMAND, IncompleteConstraints, check
@@ -97,6 +99,8 @@ from .compile import (
     fingerprint,
     fingerprint_kind,
     is_active,
+    pace_units,
+    planned_steps,
 )
 from .zones import Runs
 
@@ -127,6 +131,10 @@ _OBJ = "Máscaras de las restricciones"
 _FIELD = "ubicación"
 CLASSES_FILE = "clases.tif"
 """La rejilla de clases reproducida, en la carpeta de trabajo."""
+_COMPILE_PHASE = "compile"
+_COMPILE_TEXT = "Compilando las restricciones…"
+_SAVE_PHASE = "save"
+_SAVE_TEXT = "Guardando las máscaras…"
 
 # --- Las tablas (D-24) -------------------------------------------------------------------------
 
@@ -177,14 +185,24 @@ def _rows(family: str, result: CompileResult, constraints: Sequence[Constraint],
     return found
 
 
-def _digest(family: str, rows: Sequence[tuple[Any, ...]], crs: CrsRef) -> ContentDigest:
+_DIGEST_ROWS_PER_UNIT = 4000
+"""Las filas que se insertan en cada unidad de :func:`_digest_steps` (un múltiplo de las 500 de
+cada sentencia de ``insert_rows``)."""
+
+
+def _digest_steps(family: str, rows: Sequence[tuple[Any, ...]], crs: CrsRef
+                  ) -> Generator[None, None, ContentDigest]:
     """El hash (``core.gpkg_layer@1``) de la tabla ``family`` con ``rows``, en un GeoPackage en
-    memoria con la misma estructura (R4: fuera de la transacción)."""
+    memoria con la misma estructura (R4: fuera de la transacción), por pasos: una unidad por
+    cada trozo de filas que se inserta y por cada trozo que se lee y se hashea (T35)."""
     conn = sqlite3.connect(":memory:")
     try:
         create_base(conn, crs)
         _create(conn, family, "digest", crs.epsg, "digest")
-        insert_rows(conn, "digest", _names(family), rows)
+        names = _names(family)
+        for first in range(0, len(rows), _DIGEST_ROWS_PER_UNIT):
+            insert_rows(conn, "digest", names, rows[first:first + _DIGEST_ROWS_PER_UNIT])
+            yield
         kind = declared.FAMILIES_BY_CODE[family].kind
         request = core_builtin.GPKG_LAYER.request(kind, DATASET_DECLARATIONS,
                                                   {"main": Path("digest")}, {"layer": "digest"},
@@ -192,7 +210,7 @@ def _digest(family: str, rows: Sequence[tuple[Any, ...]], crs: CrsRef) -> Conten
         steps = core_builtin.layer_steps(conn, request)
         try:
             for _done in steps:
-                pass
+                yield
         finally:
             steps.close()
         return request.hasher.digest()
@@ -575,9 +593,11 @@ class MaskWriter:
         self.final, self.temporary, self.backup = final, temporary, backup
         return final, temporary
 
-    def prepare(self, result: CompileResult, constraints: Sequence[Constraint]) -> None:
+    def prepare_steps(self, result: CompileResult, constraints: Sequence[Constraint]
+                      ) -> Generator[None, None, None]:
         """La rejilla de clases escrita y las cuatro tablas con su hash (fuera de la
-        transacción)."""
+        transacción), por pasos: una unidad por trozo de filas de cada tabla (T35; sin sostener
+        una lectura abierta entre unidades)."""
         if result.classes is None or self.temporary is None:
             raise ValueError("la rejilla de clases no se preparó (classes_paths)")
         if Path(result.classes.path) != self.temporary:
@@ -585,15 +605,22 @@ class MaskWriter:
         self._classes = declared.dataset_spec(declared.CLASSES, self.version_code,
                                               content=result.classes.digest,
                                               crs_epsg=self.crs.epsg)
-        with self.project.read() as conn:
-            for family in (declared.ZONES, declared.REPORT, declared.PARTS, declared.SHAPES):
-                rows = tuple(_rows(family, result, constraints, self.crs.epsg))
-                kind = declared.FAMILIES_BY_CODE[family].kind
-                spec = declared.dataset_spec(family, self.version_code,
-                                             content=_digest(family, rows, self.crs),
-                                             crs_epsg=self.crs.epsg if kind == "vector" else None)
+        yield
+        for family in (declared.ZONES, declared.REPORT, declared.PARTS, declared.SHAPES):
+            rows = tuple(_rows(family, result, constraints, self.crs.epsg))
+            yield
+            kind = declared.FAMILIES_BY_CODE[family].kind
+            content = yield from _digest_steps(family, rows, self.crs)
+            spec = declared.dataset_spec(family, self.version_code, content=content,
+                                         crs_epsg=self.crs.epsg if kind == "vector" else None)
+            with self.project.read() as conn:
                 self._check_place(conn, spec)
-                self._tables.append(_Table(spec, family, rows))
+            self._tables.append(_Table(spec, family, rows))
+            yield
+
+    def prepare(self, result: CompileResult, constraints: Sequence[Constraint]) -> None:
+        """:meth:`prepare_steps` de una vez."""
+        drain(self.prepare_steps(result, constraints))
 
     @property
     def specs(self) -> tuple[DatasetSpec, ...]:
@@ -722,6 +749,7 @@ def _run(project: StoreProject, handle: OperationHandle, budget_s: float
     with MaskWriter(project, handle) as out:
         with project.read() as conn:
             constraints = cstore.read_constraints(conn)
+        yield Progress(_COMPILE_PHASE, 0, planned_steps(len(constraints)) + 2, _COMPILE_TEXT)
         resolved = {param.key: param for param in handle.params}
         request = _request(handle, constraints, resolved, declared.grid_of(handle.settings))
         final, temporary = out.classes_paths()
@@ -737,11 +765,20 @@ def _run(project: StoreProject, handle: OperationHandle, budget_s: float
                 yield Progress(step.phase, step.done, step.total + 2, step.message)
         assert last is not None and isinstance(last.result, CompileResult)
         result: CompileResult = last.result
-        total = last.total + 2
-        out.prepare(result, constraints)
-        yield Progress("save", total - 1, total, "Guardando las máscaras…")
+        done, total = last.total, last.total + 2
+        saving = pace_units(out.prepare_steps(result, constraints), budget_s)
+        while True:  # hashes de las tablas por tramos (fuera de la transacción, R4)
+            try:
+                next(saving)
+            except StopIteration:
+                break
+            done += 1
+            total = max(total, done + 1)
+            yield Progress(_SAVE_PHASE, done, total, _SAVE_TEXT)
+        total = max(total, done + 2)
+        yield Progress(_SAVE_PHASE, total - 1, total, _SAVE_TEXT)
         records = out.commit(figures=result.figures, message=last.message)
-    yield Progress("save", total, total, last.message, result=StoredMasks(result, records))
+    yield Progress(_SAVE_PHASE, total, total, last.message, result=StoredMasks(result, records))
 
 
 # --- Reproducir --------------------------------------------------------------------------------

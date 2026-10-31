@@ -24,10 +24,16 @@ Dos pasos:
    por código). La **rejilla de clases** lleva los bits de D-25 (:class:`ClassBit`).
 
 Las máscaras son tramos de fila (:class:`~.zones.Runs`). Python puro con numpy (nivel 2).
+
+**Por pasos** (RNF-012-06; spec 012, T35): :func:`check_steps` (un paso por restricción y por
+polígono), :func:`prepare_steps` y :func:`combine_steps` (un paso por operación entre máscaras y
+por causa de los conflictos) ceden el control entre unidades de pocos milisegundos; :func:`check`,
+:func:`prepare` y :func:`combine` son lo mismo de una vez y dan el mismo resultado bit a bit.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -49,7 +55,7 @@ from ...core.constraints.model import (
 from ...core.constraints.params import param_key
 from ...core.params.store import ResolvedParam
 from ..grid import Grid
-from ..polygons import TOLERANCE_M, drain, overlay, problems
+from ..polygons import TOLERANCE_M, drain, overlay, problem_steps
 from .zones import (
     ROWS_PER_STEP,
     SEGMENTS_PER_STEP,
@@ -74,7 +80,10 @@ __all__ = [
     "Runs",
     "Zone",
     "check",
+    "check_steps",
     "combine",
+    "combine_steps",
+    "geometry_sha256",
     "prepare",
     "prepare_steps",
 ]
@@ -252,31 +261,60 @@ def _active(item: Constraint, resolved: Mapping[str, object]) -> bool:
             and _value(resolved.get(param_key(item.code, ConstraintParam.ACTIVE))) is True)
 
 
-def _geometry_problems(item: Constraint) -> list[str]:
+def geometry_sha256(item: Constraint) -> str:
+    """La huella de la geometría de una restricción (su tipo de geometría y sus coordenadas
+    float64, parte a parte y anillo a anillo)."""
+    digest = hashlib.sha256(item.kind.value.encode("ascii"))
+    for part in item.parts:
+        digest.update(b"P%d" % len(part))
+        for ring in part:
+            values = np.ascontiguousarray(ring, dtype="<f8")
+            digest.update(b"R%d" % values.shape[0])
+            digest.update(values.tobytes())
+    return digest.hexdigest()
+
+
+_PROBLEMS_MEMO: dict[str, tuple[str, ...]] = {}
+"""Los problemas de geometría ya calculados, por huella de la geometría (véase
+:func:`_geometry_problems_steps`)."""
+_PROBLEMS_MEMO_MAX = 8192
+
+
+def _geometry_problems_steps(item: Constraint) -> Generator[None, None, tuple[str, ...]]:
+    """Los códigos de los problemas de la geometría de ``item`` (en su orden y sin repetir). Lo
+    caro, la comprobación de polígonos que se cortan a sí mismos, es una función de la geometría
+    sola: se recuerda por su huella, para que comprobar al empezar a compilar (``begin_compile``)
+    y otra vez en los pasos, o compilar de nuevo, cueste una vez (T35; el resultado es el mismo)."""
     if not item.parts:
-        return ["core.constraint_no_geometry"]
+        return ("core.constraint_no_geometry",)
     if item.kind is GeometryKind.POLYGON:
-        found = []
-        for problem in problems(item.parts):
+        key = geometry_sha256(item)
+        known = _PROBLEMS_MEMO.get(key)
+        if known is not None:
+            return known
+        found: list[str] = []
+        for problem in (yield from problem_steps(item.parts)):
             code = _GEOMETRY_PROBLEMS[problem.problem]
             if code not in found:
                 found.append(code)
-        return found
+        if len(_PROBLEMS_MEMO) >= _PROBLEMS_MEMO_MAX:
+            _PROBLEMS_MEMO.clear()
+        _PROBLEMS_MEMO[key] = tuple(found)
+        return tuple(found)
     if item.kind is GeometryKind.LINE:
         length = math.fsum(float(np.sum(np.hypot(*np.diff(path, axis=0).T)))
                            for part in item.parts for path in part)
         if length <= TOLERANCE_M:
-            return ["core.constraint_no_length"]
-    return []
+            return ("core.constraint_no_length",)
+    return ()
 
 
-def check(constraints: Iterable[Constraint],
-          resolved: Mapping[str, object]) -> tuple[Incomplete, ...]:
-    """Lo que impide combinar ``constraints`` (RF-012-04): lo incompleto de
-    ``core.constraints.checks`` y la geometría no válida de las que no están desactivadas, por
-    restricción en su orden."""
+def check_steps(constraints: Iterable[Constraint], resolved: Mapping[str, object]
+                ) -> Generator[None, None, tuple[Incomplete, ...]]:
+    """:func:`check` por pasos: uno por restricción y por polígono de cada una (RNF-012-06)."""
     constraints = tuple(constraints)
     base = incomplete(constraints, resolved)
+    yield
     by_item: dict[int, list[Incomplete]] = {}
     position = {(item.layer, item.fid): index for index, item in enumerate(constraints)}
     for found in base:
@@ -285,15 +323,24 @@ def check(constraints: Iterable[Constraint],
         if is_code(item.code) and _value(resolved.get(
                 param_key(item.code, ConstraintParam.ACTIVE))) is False:
             continue
-        for code in _geometry_problems(item):
+        for code in (yield from _geometry_problems_steps(item)):
             geometry = by_item.setdefault(index, [])
             # La geometría, antes de los parámetros y después de los datos de la restricción.
             geometry.append(Incomplete(item.code, item.name, item.ctype, code, "geometry",
                                        item.kind.value, item.layer, item.fid, item.kind))
+        yield
     ordered: list[Incomplete] = []
     for index in sorted(by_item):
         ordered.extend(sorted(by_item[index], key=_problem_order))
     return tuple(ordered)
+
+
+def check(constraints: Iterable[Constraint],
+          resolved: Mapping[str, object]) -> tuple[Incomplete, ...]:
+    """Lo que impide combinar ``constraints`` (RF-012-04): lo incompleto de
+    ``core.constraints.checks`` y la geometría no válida de las que no están desactivadas, por
+    restricción en su orden."""
+    return drain(check_steps(constraints, resolved))
 
 
 _ORDER = (
@@ -363,7 +410,7 @@ def prepare_steps(constraints: Iterable[Constraint], resolved: Mapping[str, obje
     constraints = tuple(constraints)
     if grid is None:
         raise ConstraintError("core.constraint_no_grid", command=GRID_COMMAND)
-    found = check(constraints, resolved)
+    found = yield from check_steps(constraints, resolved)
     if found:
         raise IncompleteConstraints(found)
     active = [item for item in constraints if _active(item, resolved)]
@@ -378,10 +425,12 @@ def prepare_steps(constraints: Iterable[Constraint], resolved: Mapping[str, obje
     legal_parts = tuple(part for item in legal for part in item.parts)
     inward = max(_number(resolved, item, ConstraintParam.BUFFER_IN) for item in legal)
     edges = overlay(legal_parts, [], "union", origin=corner).edges_local
+    yield
     legal_runs = yield from limit_steps(edges, grid, inward, **steps)
     if perimeter:
         perimeter_parts = tuple(part for item in perimeter for part in item.parts)
         edges = overlay(perimeter_parts, [], "union", origin=corner).edges_local
+        yield
         perimeter_runs = (yield from limit_steps(edges, grid, None, **steps)).inside
     else:
         perimeter_parts = legal_parts
@@ -399,6 +448,7 @@ def prepare_steps(constraints: Iterable[Constraint], resolved: Mapping[str, obje
                 legal_runs.inside)
             outward = 0.0
             outside = _limit_outside(item, grid)
+            yield
         else:
             outward = _number(resolved, item, ConstraintParam.BUFFER_OUT)
             if item.ctype is ConstraintType.AVOID:
@@ -439,19 +489,30 @@ def _cells(runs: Runs) -> tuple[np.ndarray, np.ndarray]:
     return runs.row[owner], runs.col0[owner] + offset
 
 
-def _conflicts(blocked: Runs, candidates: list[tuple[str, Runs]], grid: Grid,
-               zones: Mapping[str, Zone]) -> tuple[Conflict, ...]:
+_GROUPS_PER_UNIT = 32
+"""Conflictos que arma cada unidad de :func:`_conflicts_steps` (cada uno cuesta unas decenas de
+microsegundos)."""
+
+
+def _conflicts_steps(blocked: Runs, candidates: list[tuple[str, Runs]], grid: Grid,
+                     zones: Mapping[str, Zone]) -> Generator[None, None, tuple[Conflict, ...]]:
+    """Los conflictos de las celdas ``blocked`` por las causas ``candidates`` (código, celdas),
+    una unidad por causa y por grupo de conflictos (T35)."""
     if len(blocked) == 0:
         return ()
     rows, cols = _cells(blocked)
     keys = rows * grid.ncols + cols  # ascendentes: las celdas salen por fila y columna
     # Las celdas con las mismas causas, por refinamiento de grupos: cada causa parte los grupos
     # que toca en lo que está dentro y lo que no. Cuesta lo que suman las intersecciones, no
-    # celdas bloqueadas × causas (la matriz celda × causa tardaba 8 s con 500 recintos).
+    # celdas bloqueadas × causas (la matriz celda × causa tardaba 8 s con 500 recintos). Cada
+    # intersección es con las filas que toca la causa, no con todas las bloqueadas (mismo resultado).
     label = np.zeros(keys.size, dtype=np.int64)
     causes_of: list[tuple[int, ...]] = [()]
     for index, (_, runs) in enumerate(candidates):
-        r, c = _cells(runs.intersection(blocked))
+        if len(runs) == 0:
+            continue
+        near = blocked.between_rows(int(runs.row[0]), int(runs.row[-1]))
+        r, c = _cells(runs.intersection(near))
         if r.size == 0:
             continue
         at = np.searchsorted(keys, r * grid.ncols + c)  # lo que cruza está en lo bloqueado
@@ -459,53 +520,86 @@ def _conflicts(blocked: Runs, candidates: list[tuple[str, Runs]], grid: Grid,
         first = len(causes_of)
         causes_of.extend((*causes_of[old], index) for old in touched.tolist())
         label[at] = first + inverse.ravel()
+        yield
     order = np.argsort(label, kind="stable")  # dentro de un grupo, sus celdas siguen en orden
     starts = np.flatnonzero(np.diff(label[order], prepend=-1))
     found = []
-    for begin, end in zip(starts.tolist(), [*starts[1:].tolist(), order.size], strict=True):
+    for count, (begin, end) in enumerate(zip(starts.tolist(),
+                                             [*starts[1:].tolist(), order.size], strict=True)):
         mine = order[begin:end]
         causes = _by_priority((candidates[k][0] for k in causes_of[int(label[mine[0]])]), zones)
         runs = Runs(rows[mine], cols[mine], cols[mine] + 1)
         found.append(Conflict(causes, runs, runs.area(grid)))
+        if count % _GROUPS_PER_UNIT == _GROUPS_PER_UNIT - 1:
+            yield
     found.sort(key=lambda c: (-c.runs.cells, c.causes))
     return tuple(found)
 
 
-def combine(zones: Mapping[str, Zone], limits: Limits, grid: Grid) -> Masks:
-    """**A3** (RF-012-13, RF-012-14; D-13, D-25): las máscaras de ``zones`` y ``limits`` en
-    ``grid``."""
+def _conflicts(blocked: Runs, candidates: list[tuple[str, Runs]], grid: Grid,
+               zones: Mapping[str, Zone]) -> tuple[Conflict, ...]:
+    return drain(_conflicts_steps(blocked, candidates, grid, zones))
+
+
+def _paint(classes: np.ndarray, runs: Runs, bit: ClassBit) -> None:
+    """Pone ``bit`` en las celdas de ``runs`` de la rejilla de clases."""
+    if len(runs):
+        np.bitwise_or(classes, np.uint16(int(bit)), out=classes, where=runs.mask(classes.shape))
+
+
+def combine_steps(zones: Mapping[str, Zone], limits: Limits, grid: Grid
+                  ) -> Generator[None, None, Masks]:
+    """:func:`combine` por pasos (RNF-012-06; T35): una unidad por operación entre máscaras, por
+    causa de los conflictos y por bit de la rejilla de clases."""
     items = [zone for zone in zones.values() if not zone.ctype.is_limit]
     perimeter, legal = limits.perimeter, limits.legal
     untouchable = _union(items, lambda t: t.removes_from_domain)
+    yield
     no_cut = _union(items, lambda t: t.forbids_cut and not t.removes_from_domain)
     no_fill = _union(items, lambda t: t.forbids_fill and not t.removes_from_domain)
+    yield
     domain = perimeter.intersection(legal.inside).difference(untouchable)
+    yield
     cut = domain.difference(legal.band).difference(no_cut)
+    yield
     fill = domain.difference(no_fill)
     strip = perimeter.difference(legal.inside).difference(untouchable).difference(no_fill)
+    yield
     restoration = _union(items, lambda t: t is ConstraintType.RESTORATION_ONLY)
     access = _union(items, lambda t: t is ConstraintType.REQUIRES_ACCESS)
     avoid_runs = _union(items, lambda t: t is ConstraintType.AVOID)
     avoid = MappingProxyType({z.code: float(z.weight) for z in items  # type: ignore[arg-type]
                               if z.ctype is ConstraintType.AVOID})
+    yield
 
     blocked = (perimeter.difference(untouchable).difference(cut).difference(fill)
                .difference(strip))
+    yield
     outside_core = blocked.difference(legal.core)
     candidates = [(code, outside_core) for code in limits.legal_codes]
     candidates += [(z.code, z.runs) for z in items
                    if (z.ctype.forbids_cut or z.ctype.forbids_fill)
                    and not z.ctype.removes_from_domain]
-    conflicts = _conflicts(blocked, candidates, grid, zones)
+    yield
+    conflicts = yield from _conflicts_steps(blocked, candidates, grid, zones)
+    conflict_runs = Runs.union_all(c.runs for c in conflicts)
+    yield
 
     classes = np.zeros(grid.shape, dtype=np.uint16)
+    yield
     for bit, runs in ((ClassBit.CUT_ALLOWED, cut), (ClassBit.FILL_ALLOWED, fill),
                       (ClassBit.FILL_STRIP, strip), (ClassBit.PERIMETER, perimeter),
                       (ClassBit.LEGAL, legal.inside), (ClassBit.INNER_BAND, legal.band),
                       (ClassBit.UNTOUCHABLE, untouchable), (ClassBit.AVOID, avoid_runs),
                       (ClassBit.RESTORATION, restoration), (ClassBit.ACCESS, access),
-                      (ClassBit.CONFLICT, Runs.union_all(c.runs for c in conflicts))):
-        if len(runs):
-            classes[runs.mask(grid.shape)] |= np.uint16(int(bit))
+                      (ClassBit.CONFLICT, conflict_runs)):
+        _paint(classes, runs, bit)
+        yield
     return Masks(perimeter, legal, untouchable, domain, cut, fill, strip, avoid, restoration,
                  access, conflicts, classes)
+
+
+def combine(zones: Mapping[str, Zone], limits: Limits, grid: Grid) -> Masks:
+    """**A3** (RF-012-13, RF-012-14; D-13, D-25): las máscaras de ``zones`` y ``limits`` en
+    ``grid``."""
+    return drain(combine_steps(zones, limits, grid))
