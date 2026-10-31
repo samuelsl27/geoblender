@@ -30,7 +30,12 @@ Registra lo que la topografía declara a las specs 004 y 008:
   ``blender -b`` no corre: las pruebas lo llaman a mano), con su avance en la barra de estado;
   unos pasos que fallan dejan la operación «fallida», los avisos de la compilación van al
   registro de Blender y desregistrar cierra lo que espera como Esc (lo que no empezó, «cancelado»).
-  Su orden (``geoblender.gis_compile_constraints``) llega en la T23.
+  Sus órdenes (T23; RF-012-04, RF-012-06, RF-012-11, RF-012-20, RF-012-28): «Compilar las
+  máscaras» (``geoblender.gis_compile_constraints``, :class:`GEOBLENDER_OT_gis_compile_constraints`:
+  la puerta de la 008, los pasos de ``gis.masks.store.begin_compile_steps`` y ``compile_run`` en
+  un modal con su avance y Esc, y el informe de ganado y perdido y de la búsqueda pendiente) y
+  «Exportar las máscaras…» (``geoblender.gis_export_constraint_masks``: la rejilla de clases a
+  GeoTIFF con su leyenda; no es una operación).
 
 (T44) Las declaraciones de procedencia son constantes del módulo, construidas una vez:
 :data:`OPERATION_DEFS` (los once tipos de ``gis.provenance.OPERATION_TYPES``, cada repetible con
@@ -143,6 +148,7 @@ import logging
 import math
 import re
 import shutil
+import sqlite3
 import sys
 import unicodedata
 import uuid
@@ -172,7 +178,9 @@ from ...core.inputs.registry import Reuse, Substitute
 from ...core.numbers import parse_decimal
 from ...core.provenance import contract
 from ...core.provenance.messages import ProvenanceError
-from ...core.provenance.operations import Use, begin_operation, ingest_job
+from ...core.project.model import Progress
+from ...core.provenance.operations import Use, begin_operation, failure_reason, ingest_job
+from ...core.provenance.undo import UndoKind
 from ...core.units import DIMENSIONLESS
 from ...gis import content, jobs, provenance, store, vector
 from ...gis import params as gis_params
@@ -231,20 +239,22 @@ from ..props.gis import (
     GEOBLENDER_PG_gis_column,
     GEOBLENDER_PG_gis_export_item,
 )
-from ..scene import project_session
+from ..scene import project_session, undo_watch
+from ..scene import versions as scene_versions
 from ..scene import triangulator as cdt_blender
+from ..ui import constraint_panels
 from ..ui.commands import catalog as command_catalog
 from ..ui.commands import command_idname
 from ..ui.provenance import badge
 from ..ui.views import no_work_window_message
 from . import core_provenance, incorporation
+from .core import _StepsModal
 from . import jobs as jobs_ops
 from .core_provenance import ProvenanceAwareOperator, error_text, write_unavailable
 
 if TYPE_CHECKING:
     from ...core.datasets.model import DatasetRecord
     from ...core.georef import CrsRef, VerticalRef
-    from ...core.project.model import Progress
     from ...core.provenance.contract import ReimportRequest
     from ...core.provenance.operations import OperationHandle
     from ...core.provenance.recompute import RecomputeRequest
@@ -4346,13 +4356,333 @@ MASKS_OPERATION_DEF: contract.OperationDef = masks_provenance.operation_def(
 cifras (10⁻⁹, D-37)."""
 
 
+# --- Compilar las máscaras y exportarlas (spec 012, T23; RF-012-04, RF-012-06, RF-012-11,
+# RF-012-15, RF-012-16, RF-012-20, RF-012-28; plan 012 §5.3.4, §5.5, D-31) -------------------------
+
+COMPILE_CONSTRAINTS = masks_provenance.COMMAND
+EXPORT_MASKS = "geoblender.gis_export_constraint_masks"
+PREPARE_PHASE = "prepare"
+"""La fase de los pasos de antes de empezar la operación (leer y comprobar las restricciones)."""
+EXPORT_TICKS = 1000
+_HIDDEN = {"HIDDEN", "SKIP_SAVE"}  # las pone quien la lanza (la ventana)
+
+
+def _compile_steps(owner: Any, project: Any, version_uid: str) -> Iterator[Progress]:
+    """Los pasos de la orden «Compilar las máscaras» de la versión ``version_uid``: los de antes
+    de empezar la operación (``gis.masks.store.begin_compile_steps``: la lectura y la
+    comprobación de cada restricción y de cada polígono, ninguno de más de 0,05 s en frío:
+    RNF-012-06) como ``Progress`` sin avance, la operación «en curso» (queda en ``owner.handle``)
+    y los de ``compile_run``, el último con lo guardado. Cerrarlos antes de la operación no
+    deja nada; cerrarlos después, la deja «cancelada» (``compile_run`` lo hace al cerrarse) y no
+    deja nada en el proyecto."""
+    begin = masks_store.begin_compile_steps(project, version=version_uid)
+    handle = None
+    try:
+        while handle is None:
+            try:
+                next(begin)
+            except StopIteration as stop:
+                handle = stop.value
+                break
+            yield Progress(PREPARE_PHASE, 0, 1, tr("Compiling the constraints…"))
+    finally:
+        begin.close()
+    owner.handle = handle
+    try:
+        run = masks_store.compile_run(project, handle)
+    except BaseException as error:  # noqa: BLE001 - la operación empezada queda fallida
+        incorporation.end_operation(handle.fail, failure_reason(error))
+        raise
+    yield from run
+
+
+def _drained(operator: Any, steps: Iterator[Progress]) -> Any:
+    """Los pasos ``steps`` de una orden de una vez (desde un guion): el resultado del último o,
+    si fallan, ``None`` (ya dicho con el ``_report`` de ``operator``; sus pasos no dejan nada a
+    medias)."""
+    found = None
+    try:
+        for step in steps:
+            if step.result is not None:
+                found = step.result
+    except GeoblenderError as exc:
+        operator._report({"ERROR"}, error_text(exc))
+        return None
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        LOGGER.error("«%s» se ha parado", operator.bl_idname, exc_info=exc)
+        operator._report({"ERROR"}, error_text(exc))
+        return None
+    if found is None:  # pragma: no cover - los pasos acaban siempre con su resultado
+        operator._report({"ERROR"}, tr("The operation did not finish with its result"))
+    return found
+
+
+class GEOBLENDER_OT_gis_compile_constraints(ProvenanceAwareOperator, _StepsModal,
+                                            bpy.types.Operator):
+    """Compile the constraints into the masks the design operators read"""
+
+    bl_idname = COMPILE_CONSTRAINTS
+    bl_label = "Compile the masks"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = masks_provenance.COMPILE
+    STEP_BUDGET_S = 0.05  # cada evento del temporizador (RNF-012-06: ninguna llamada de > 0,2 s)
+
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    handle: Any = None
+    """La operación que empezó (``None`` hasta que empieza)."""
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Desde la interfaz, por pasos con el avance y Esc (sin versión activa, la ventana que
+        pide una, RF-009-05)."""
+        self.in_steps = getattr(context, "window", None) is not None
+        return super().invoke(context, event)
+
+    def execute(self, context: Any) -> set[str]:
+        """Compila las restricciones de la versión activa (RF-012-11): la puerta de la 008 con
+        las capas como entradas, y los pasos de ``gis.compile_constraints``. Desde la interfaz,
+        por pasos con el avance y Esc; desde un guion, de una vez. Si no se puede (versión no
+        editable, restricciones incompletas o no válidas, sin límite legal), lo dice y no
+        registra nada."""
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = core_provenance.SESSION.project
+        version_uid = scene_versions.active_version() or ""
+        try:
+            inputs = masks_provenance.compile_inputs(masks_store.available_tables(project))
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        ready = core_provenance.ensure_ready(
+            self.provenance_op_type, inputs, report=self.report,
+            dialog=self.provenance_dialog, version=version_uid)
+        if ready is None:
+            return {"CANCELLED"}
+        self.handle = None
+        self._project = project
+        steps = _compile_steps(self, project, version_uid)
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, steps)
+            return {"RUNNING_MODAL"}
+        self.report_log: list[str] = []
+        stored = _drained(self, steps)
+        if stored is None:
+            return {"CANCELLED"}
+        self._finished(stored)
+        return {"FINISHED"}
+
+    def _finished(self, stored: Any) -> None:
+        """Lo que dice la orden al terminar (RF-012-05, 06, 10, 11, 14): el informe de
+        ``constraint_panels.compile_lines`` en la ventana y en el informe de Blender. La lista de
+        la ventana no se vuelve a leer: compilar no cambia las restricciones ni su estado, y leerla
+        con 500 restricciones tarda más de los 0,2 s de una llamada (RNF-012-06)."""
+        project, handle = self._project, self.handle
+        undo_watch.record(UndoKind.OPERATION, masks_provenance.COMPILE)
+        names: tuple[str, ...] = ()
+        try:
+            with project.read() as conn:
+                names = tuple(masks_store.current_pending(conn, project, handle.version_uid)[1])
+        except (GeoblenderError, sqlite3.Error, OSError):
+            LOGGER.warning("No se pudo leer la búsqueda de intocables pendiente", exc_info=True)
+        shown = scene_versions.active()
+        revision = shown.revision if shown is not None and shown.uid == handle.version_uid \
+            else ""
+        lines = constraint_panels.compile_lines(stored, revision, names)
+        constraint_panels.show_report(lines)
+        for line in lines:
+            self._report({"WARNING" if line.alert else "INFO"}, line.text)
+
+    # --- En pasos (_StepsModal) ---------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Compiling the constraints… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Compilation cancelled: nothing has been left half-done")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return error_text(exc)
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        if step.result is None:
+            if project_session.current() is not getattr(self, "_project", None):
+                return self._fail(context, tr(
+                    "The project was closed while the masks were being compiled: nothing has "
+                    "been left half-done"))
+            return None
+        self._done(context)
+        self._finished(step.result)
+        return {"FINISHED"}
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except Exception as exc:  # noqa: BLE001 - los pasos cerrados no dejan nada a medias
+            LOGGER.error("«%s» se ha parado", self.bl_idname, exc_info=exc)
+            return self._fail(context, error_text(exc))
+
+
+def _export_progress(steps: Iterator[float], name: str) -> Iterator[Progress]:
+    """Los pasos de ``gis.masks.export.export_classes_steps`` (su avance, 0–1) como ``Progress``
+    (fase ``export``, en milésimas); el último lleva el fichero escrito. Cerrarlos cierra los de
+    la exportación, que no dejan nada a medias."""
+    try:
+        while True:
+            try:
+                done = next(steps)
+            except StopIteration as stop:
+                yield Progress("export", EXPORT_TICKS, EXPORT_TICKS, name, result=stop.value)
+                return
+            yield Progress("export", int(EXPORT_TICKS * min(max(float(done), 0.0), 1.0)),
+                           EXPORT_TICKS, name)
+    finally:
+        close = getattr(steps, "close", None)
+        if callable(close):
+            close()
+
+
+class GEOBLENDER_OT_gis_export_constraint_masks(_StepsModal, bpy.types.Operator):
+    """Write the class grid of the masks of the active version as a deliverable GeoTIFF with its
+    legend (it is not an operation: also from a superseded version and, outside the project, in
+    read-only)"""
+
+    bl_idname = EXPORT_MASKS
+    bl_label = "Export the masks…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+    STEP_BUDGET_S = 0.05
+
+    filepath: StringProperty(  # type: ignore[valid-type]
+        name="File", subtype="FILE_PATH", options={"SKIP_SAVE"})
+    filter_glob: StringProperty(  # type: ignore[valid-type]
+        default="*.tif;*.tiff", options={"HIDDEN"})
+    check_existing: BoolProperty(  # type: ignore[valid-type]
+        default=True, options=_HIDDEN)
+    overwrite: BoolProperty(  # type: ignore[valid-type]
+        name="Replace", description="Replace the file if it already exists",
+        options={"SKIP_SAVE"})
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        """Con un proyecto abierto (no es una operación: en solo lectura, fuera de él)."""
+        reason = core_provenance.SESSION.unavailable()
+        if reason is not None:
+            cls.poll_message_set(reason)  # type: ignore[attr-defined]
+            return False
+        return True
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """El diálogo de fichero, con el destino que propone (``exports/<versión>_mascaras.tif``
+        del proyecto)."""
+        self.in_steps = getattr(context, "window", None) is not None
+        shown = scene_versions.active()
+        if shown is None:
+            self.report({"ERROR"}, tr("Choose the active version first: Project ▸ Versions ▸ "
+                                      "Active version"))
+            return {"CANCELLED"}
+        if not self.filepath:
+            stem = store.provenance.dataset_slug(f"{shown.code}_masks") \
+                if hasattr(store, "provenance") else f"{shown.code}_masks"
+            self.filepath = str(Path(core_provenance.SESSION.project.root,
+                                     provenance.EXPORTS_FOLDER, f"{stem}.tif"))
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context: Any) -> set[str]:
+        """Escribe el GeoTIFF de clases de la versión activa y su leyenda
+        (``gis.masks.export``): desde la interfaz, por pasos con el avance y Esc; desde un guion,
+        de una vez. Se niega, sin escribir nada, con las máscaras obsoletas o sin compilar, sobre
+        un fichero que ya existe (salvo ``overwrite``) y dentro del proyecto fuera de sus
+        entregables."""
+        from ...gis.masks import export  # al usarlo: habilitar no lo carga
+
+        blocked = core_provenance.SESSION.unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        shown = scene_versions.active()
+        if shown is None:
+            self.report({"ERROR"}, tr("Choose the active version first: Project ▸ Versions ▸ "
+                                      "Active version"))
+            return {"CANCELLED"}
+        typed = self.filepath.strip()
+        if not typed:
+            self.report({"ERROR"}, tr("Choose the file to export to"))
+            return {"CANCELLED"}
+        target = Path(bpy.path.abspath(typed))
+        project = core_provenance.SESSION.project
+        try:
+            steps = export.export_classes_steps(
+                project, shown.uid, target, read_only=core_provenance.read_only_dirs(),
+                overwrite=bool(self.overwrite))
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self._file, self._version = target.name, shown.code
+        progress = _export_progress(steps, target.name)
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, progress)
+            return {"RUNNING_MODAL"}
+        self.report_log: list[str] = []
+        stored = _drained(self, progress)
+        if stored is None:
+            return {"CANCELLED"}
+        return self._exported()
+
+    def _exported(self) -> set[str]:
+        line = constraint_panels.Line(tr("Masks of {version} exported to «{file}»",
+                                         version=getattr(self, "_version", ""),
+                                         file=getattr(self, "_file", "")))
+        constraint_panels.show_report([line])
+        self._report({"INFO"}, line.text)
+        return {"FINISHED"}
+
+    # --- En pasos (_StepsModal) ---------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Exporting «{file}»… {percent} % · Esc: cancel",
+                  file=getattr(self, "_file", ""), percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Export cancelled: nothing has been written")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return error_text(exc)
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        if step.result is None:
+            return None
+        self._done(context)
+        return self._exported()
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except OSError as exc:  # los pasos cerrados no dejan nada a medias
+            LOGGER.error("La exportación de «%s» se ha parado", getattr(self, "_file", ""),
+                         exc_info=exc)
+            return self._fail(context, error_text(exc))
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_gis_import_dtm, GEOBLENDER_OT_gis_resample_to_grid,
                              GEOBLENDER_OT_gis_import_points, GEOBLENDER_OT_gis_import_vector,
                              GEOBLENDER_OT_gis_create_tin_from_points,
                              GEOBLENDER_OT_gis_create_tin_from_contours,
                              GEOBLENDER_OT_gis_convert_dtm_tin, GEOBLENDER_OT_gis_create_contours,
                              GEOBLENDER_OT_gis_validate_surface, GEOBLENDER_OT_gis_export_raster,
-                             GEOBLENDER_OT_gis_export_gpkg)
+                             GEOBLENDER_OT_gis_export_gpkg,
+                             GEOBLENDER_OT_gis_compile_constraints,
+                             GEOBLENDER_OT_gis_export_constraint_masks)
 """Los operadores de ``gis`` (T28: las órdenes de un MDT; T29: puntos, capas, TIN y MDT ⇄
 TIN; T30: curvas de nivel y validar una superficie; T31: exportar a GeoTIFF y a
 GeoPackage)."""

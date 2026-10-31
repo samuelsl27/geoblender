@@ -10,7 +10,12 @@ RF-012-16, RF-012-28; plan 012 §5.2.3, A5, A11, D-24).
 - :func:`begin_compile` rechaza antes de registrar nada lo que no se puede compilar (sin versión
   activa o en una no editable, RF-012-16; restricciones incompletas o no válidas, RF-012-04; sin
   límite legal, RF-012-15) y empieza ``gis.compile_constraints`` «en curso» (sustituyendo a la
-  anterior) con sus entradas, sus parámetros y sus ajustes.
+  anterior) con sus entradas, sus parámetros y sus ajustes. :func:`begin_compile_steps` (T23) es
+  lo mismo en varios pasos (la lectura, la comprobación de cada restricción y de cada polígono, la
+  operación): la comprobación en frío de 500 restricciones tarda 0,45 s de una vez, y ninguna
+  llamada del hilo de Blender pasa de 0,2 s mientras compila (RNF-012-06).
+- :func:`listed_constraints` (T23; RF-012-04, RF-012-19) lista las restricciones con su estado en
+  una versión (incompleta, no válida, activa o inactiva) y lo que les falta.
 - :func:`compile_run` da sus pasos (``gis.masks.compile.compile_steps``) y guarda el resultado
   con :class:`MaskWriter` (A11): la rejilla de clases por teselas en su temporal con su hash, los
   hashes de las tablas fuera de la transacción (por tramos de filas, T35: ningún paso pasa de
@@ -99,7 +104,6 @@ from .combine import (
     LEGAL_COMMAND,
     IncompleteConstraints,
     Outside,
-    check,
     check_steps,
     limit_outside,
 )
@@ -126,13 +130,19 @@ __all__ = [
     "CompileInputs",
     "DeclaredLimits",
     "MaskWriter",
+    "STATES",
+    "ListedConstraint",
     "StoredMasks",
+    "available_tables",
     "begin_compile",
+    "begin_compile_steps",
     "compile_run",
     "current_pending",
     "declared_limits",
     "declared_limits_steps",
     "gather",
+    "listed_constraints",
+    "listed_constraints_steps",
     "live_searches",
     "pending_sectors",
     "perimeter_of",
@@ -486,6 +496,19 @@ def _previous(conn: sqlite3.Connection, version_uid: str, request: CompileReques
     return PreviousMasks(operation, MappingProxyType(changed)), operation
 
 
+def _available(conn: sqlite3.Connection) -> frozenset[str]:
+    """Las tablas de las restricciones, los sectores y las búsquedas que son datos registrados."""
+    return frozenset(table for table in cstore.TABLES
+                     if dataset_registry.get(conn, table) is not None)
+
+
+def available_tables(project: StoreProject) -> frozenset[str]:
+    """Los nombres de los datos que consumiría una compilación (:func:`_available`), sin leer
+    las restricciones: lo que la puerta de la 008 comprueba antes de empezar (T23)."""
+    with project.read() as conn:
+        return _available(conn)
+
+
 def gather(project: StoreProject, *, version: str) -> CompileInputs:
     """Lo que se compila en la versión ``version`` (uid o código), sin escribir nada
     (véase el módulo). ``VersionError`` si no existe o no es editable."""
@@ -499,8 +522,7 @@ def gather(project: StoreProject, *, version: str) -> CompileInputs:
         sectors = cstore.read_sectors(conn)
         searches = cstore.read_searches(conn)
         live = live_searches(conn, searches)
-        available = frozenset(table for table in cstore.TABLES
-                              if dataset_registry.get(conn, table) is not None)
+        available = _available(conn)
         grid = project_grid(record.window, float(record.grid_step_m))
         request = CompileRequest(constraints, MappingProxyType(resolved), sectors, searches,
                                  grid)
@@ -511,18 +533,23 @@ def gather(project: StoreProject, *, version: str) -> CompileInputs:
                          pending_sectors(sectors, live, perimeter))
 
 
-def begin_compile(project: StoreProject, *, version: str | None,
-                  executor: str = "blender") -> OperationHandle:
-    """Empieza ``gis.compile_constraints`` «en curso» en la versión ``version`` (véase el
-    módulo). Rechazos sin registrar nada: ``VersionError`` (``core.version_required``,
-    ``core.version_unknown``, ``core.version_not_editable``), ``IncompleteConstraints``
-    (RF-012-04) y ``ConstraintError`` sin límite legal activo (RF-012-15)."""
+def begin_compile_steps(project: StoreProject, *, version: str | None,
+                        executor: str = "blender") -> Generator[None, None, OperationHandle]:
+    """Empieza ``gis.compile_constraints`` «en curso» en la versión ``version`` en varios pasos
+    (T23; RNF-012-06): uno tras leer lo que se compila (:func:`gather`), uno por restricción y
+    por polígono de la comprobación (``combine.check_steps``) y uno antes de registrar la
+    operación; devuelve su ``OperationHandle`` (``StopIteration.value``). Lo rechaza como
+    :func:`begin_compile`, al avanzar (no al llamar) y sin registrar nada: ``VersionError``
+    (``core.version_required``, ``core.version_unknown``, ``core.version_not_editable``),
+    ``IncompleteConstraints`` (RF-012-04) y ``ConstraintError`` sin límite legal activo
+    (RF-012-15). Cerrarlo antes del último paso no deja nada."""
     if version is None or not str(version).strip():
         raise VersionError("core.version_required", field="versión activa", value=version,
                            op_type=declared.COMPILE)
     inputs = gather(project, version=str(version))
+    yield
     request = inputs.request
-    problems = check(request.constraints, request.resolved)
+    problems = yield from check_steps(request.constraints, request.resolved)
     if problems:
         raise IncompleteConstraints(problems)
     if not any(item.ctype is ConstraintType.LEGAL_LIMIT and is_active(item, request.resolved)
@@ -532,12 +559,23 @@ def begin_compile(project: StoreProject, *, version: str | None,
     settings = declared.compile_settings(
         request.grid, previous=None if request.previous is None else request.previous.settings(),
         pending_sectors=inputs.pending_sectors)
+    yield
     return begin_operation(project, declared.COMPILE, settings=settings,
                            inputs=declared.compile_inputs(inputs.available),
                            params=declared.compile_params(request.constraints,
                                                           request.resolved),
                            executor=executor, supersedes=inputs.supersedes,
                            version=inputs.version_uid)
+
+
+def begin_compile(project: StoreProject, *, version: str | None,
+                  executor: str = "blender") -> OperationHandle:
+    """Empieza ``gis.compile_constraints`` «en curso» en la versión ``version`` (véase el
+    módulo). Rechazos sin registrar nada: ``VersionError`` (``core.version_required``,
+    ``core.version_unknown``, ``core.version_not_editable``), ``IncompleteConstraints``
+    (RF-012-04) y ``ConstraintError`` sin límite legal activo (RF-012-15). De una vez:
+    :func:`begin_compile_steps` es lo mismo en varios pasos."""
+    return drain(begin_compile_steps(project, version=version, executor=executor))
 
 
 # --- Los límites declarados (T22; RF-012-05, RF-012-15) ----------------------------------------
@@ -615,6 +653,73 @@ def declared_limits_steps(project: StoreProject, *, version: str | None = None
 def declared_limits(project: StoreProject, *, version: str | None = None) -> DeclaredLimits:
     """:func:`declared_limits_steps` de una vez."""
     return drain(declared_limits_steps(project, version=version))
+
+
+# --- La lista de las restricciones (T23; RF-012-04, RF-012-19) ----------------------------------
+
+STATES: tuple[str, ...] = ("incomplete", "invalid", "active", "inactive")
+"""El estado de una restricción en una versión: le falta algo que su tipo pide
+(``incomplete``), su geometría no vale (``invalid``), activa o desactivada en ella
+(``inactive``)."""
+_INVALID_PROBLEMS = frozenset({
+    "core.constraint_no_geometry", "core.constraint_self_intersecting",
+    "core.constraint_no_area", "core.constraint_hole_outside", "core.constraint_parts_overlap",
+    "core.constraint_no_length"})
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ListedConstraint:
+    """Una restricción de la lista: la fila del proyecto, su estado (:data:`STATES`) y los
+    problemas que la hacen incompleta o no válida (vacíos si está activa o desactivada)."""
+
+    constraint: Constraint
+    state: str
+    problems: tuple[Incomplete, ...]
+
+
+def _switched_off(item: Constraint, resolved: Mapping[str, object]) -> bool:
+    """Si la «activa» resuelta de ``item`` es falsa (sin código no hay parámetros)."""
+    if not is_code(item.code):
+        return False
+    found = resolved.get(param_key(item.code, ConstraintParam.ACTIVE))
+    return (found.value if isinstance(found, ResolvedParam) else found) is False
+
+
+def listed_constraints_steps(project: StoreProject, *, version: str | None = None
+                             ) -> Generator[None, None, tuple[ListedConstraint, ...]]:
+    """Las restricciones del proyecto (las tres capas, en su orden) con su estado en la versión
+    ``version`` (su uid; ``None``: los valores del proyecto) y lo que les falta, por pasos (uno
+    por la lectura y uno por restricción y polígono de la comprobación: RNF-012-06). Una
+    desactivada en la versión no se comprueba (``inactive``); una con un problema de geometría
+    es ``invalid``, una con cualquier otro, ``incomplete`` (la dibujada en QGIS, sin código, tipo,
+    motivo ni decisor); lo demás, ``active``. Solo lee."""
+    with project.read() as conn:
+        constraints = cstore.read_constraints(conn)
+        resolved = _resolved(conn, project, constraints, version)
+    yield
+    problems = yield from check_steps(constraints, resolved)
+    by_item: dict[tuple[str, int], list[Incomplete]] = {}
+    for found in problems:
+        by_item.setdefault((found.layer, found.fid), []).append(found)
+    listed: list[ListedConstraint] = []
+    for item in constraints:
+        found_here = tuple(by_item.get((item.layer, item.fid), ()))
+        if _switched_off(item, resolved):
+            state = "inactive"
+        elif any(problem.problem in _INVALID_PROBLEMS for problem in found_here):
+            state = "invalid"
+        elif found_here:
+            state = "incomplete"
+        else:
+            state = "active"
+        listed.append(ListedConstraint(item, state, found_here))
+    return tuple(listed)
+
+
+def listed_constraints(project: StoreProject, *, version: str | None = None
+                       ) -> tuple[ListedConstraint, ...]:
+    """:func:`listed_constraints_steps` de una vez."""
+    return drain(listed_constraints_steps(project, version=version))
 
 
 # --- Escribir el resultado (A11) ---------------------------------------------------------------

@@ -41,7 +41,7 @@ label.en = "Constraints…"
 label.es = "Restricciones…"
 description.en = "Untouchable, no cut, no fill, buffer and the other constraints of the design"
 description.es = "Intocable, sin corte, sin relleno, resguardo y las demás restricciones del diseño"
-entry = "R-32"
+entry = "012"
 action = "P"
 frequency = 3
 
@@ -94,7 +94,7 @@ label.en = "Compile the masks"
 label.es = "Compilar las máscaras"
 description.en = "Compile the constraints into the masks the design operators read"
 description.es = "Compila las restricciones en las máscaras que leen los operadores de diseño"
-entry = "R-32"
+entry = "012"
 action = "A"
 frequency = 2
 

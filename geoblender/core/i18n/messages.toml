@@ -6332,3 +6332,260 @@ es = "Distancia en metros, dentro del límite legal, donde no se puede cortar"
 
 ["«{layer}» is already declared as {ctype}: choose another layer"]
 es = "«{layer}» ya está declarada como {ctype}: elija otra capa"
+
+# Restricciones…, crear, completar, compilar y exportar (spec 012, T23).
+
+["Constraints"]
+es = "Restricciones"
+
+["Incomplete"]
+es = "Incompleta"
+
+["Not valid"]
+es = "No válida"
+
+["Active"]
+es = "Activa"
+
+["Inactive in {version}"]
+es = "Inactiva en {version}"
+
+["Reason: {value}"]
+es = "Motivo: {value}"
+
+["Decided by: {value}"]
+es = "Decidida por: {value}"
+
+["Date of the decision: {value}"]
+es = "Fecha de la decisión: {value}"
+
+["Priority: {value}"]
+es = "Prioridad: {value}"
+
+["Linked decision: {value}"]
+es = "Decisión enlazada: {value}"
+
+["Edit…"]
+es = "Editar…"
+
+["There are no constraints yet: create them from a layer of the project"]
+es = "Todavía no hay ninguna restricción: créelas desde una capa del proyecto"
+
+["Constraints in {where}: {count}"]
+es = "Restricciones en {where}: {count}"
+
+["Only incomplete or not valid"]
+es = "Solo las incompletas o no válidas"
+
+["Last result"]
+es = "Último resultado"
+
+["Show only the constraints that are incomplete or not valid"]
+es = "Enseña solo las restricciones incompletas o no válidas"
+
+["Constraints of the project with their type and their state in the active version"]
+es = "Restricciones del proyecto con su tipo y su estado en la versión activa"
+
+["Constraints of the project: their type, state and parameters in the active version, and the order to create, complete, compile and export them"]
+es = "Restricciones del proyecto: su tipo, su estado y sus parámetros en la versión activa, y la orden de crearlas, completarlas, compilarlas y exportarlas"
+
+["Masks of {revision} up to date: domain {domain} ha, cut {cut} ha, fill {fill} ha, strip {strip} ha"]
+es = "Máscaras de {revision} al día: dominio {domain} ha, corte {cut} ha, relleno {fill} ha, franja {strip} ha"
+
+["No movement is possible in {area} m²"]
+es = "No cabe ningún movimiento en {area} m²"
+
+["{causes}: {area} m²"]
+es = "{causes}: {area} m²"
+
+["{name}: polygon +{gained} m² −{lost} m², zone +{zone_gained} m² −{zone_lost} m²"]
+es = "{name}: polígono +{gained} m² −{lost} m², zona +{zone_gained} m² −{zone_lost} m²"
+
+["Search for untouchable elements pending in: {names}"]
+es = "Búsqueda de elementos intocables pendiente en: {names}"
+
+["From a field of the layer"]
+es = "Desde un campo de la capa"
+
+["Choose the type"]
+es = "Elija el tipo"
+
+["Write the outward setback in metres (0 or more): «{value}» does not fit"]
+es = "Escriba el resguardo hacia fuera en metros (0 o más): «{value}» no vale"
+
+["Write the weight as a number of 1 or more: «{value}» does not fit"]
+es = "Escriba el peso como un número de 1 o más: «{value}» no vale"
+
+["«{value}» is not «value = type»: write the type by its name, as in «Hydrant = Untouchable; Pond = No cut»"]
+es = "«{value}» no es «valor = tipo»: escriba el tipo por su nombre, como en «Hidrante = Intocable; Charca = Sin corte»"
+
+["Choose the layer the constraints are created from"]
+es = "Elija la capa de la que se crean las restricciones"
+
+["«{layer}» is not a layer of the project that gives constraints: import it as Features or Domains"]
+es = "«{layer}» no es una capa del proyecto de la que salgan restricciones: impórtela como Entidades o Dominios"
+
+["Write the field of the type: the one of the layer that says which type each constraint is"]
+es = "Escriba el campo del tipo: el de la capa que dice de qué tipo es cada restricción"
+
+["Write the reason of the constraints, or the field of the layer that gives it"]
+es = "Escriba el motivo de las restricciones, o el campo de la capa que lo da"
+
+["Write who decides the constraints, or the field of the layer that gives it"]
+es = "Escriba quién decide las restricciones, o el campo de la capa que lo da"
+
+["Write the date of the decision as DD/MM/YYYY, or the field of the layer that gives it"]
+es = "Escriba la fecha de la decisión como DD/MM/AAAA, o el campo de la capa que la da"
+
+["Created from the layer «{layer}»"]
+es = "Creada desde la capa «{layer}»"
+
+["The project has no layers to create constraints from: import them first with {path}, as Features"]
+es = "El proyecto no tiene capas de las que crear restricciones: impórtelas antes con {path}, con el papel «Entidades»"
+
+["Create"]
+es = "Crear"
+
+["Type field"]
+es = "Campo del tipo"
+
+["Values of the type"]
+es = "Valores del tipo"
+
+["Name field"]
+es = "Campo del nombre"
+
+["Reason field"]
+es = "Campo del motivo"
+
+["Decider field"]
+es = "Campo del decisor"
+
+["Date field"]
+es = "Campo de la fecha"
+
+["Outward setback (m)"]
+es = "Resguardo hacia fuera (m)"
+
+["Inward setback (m)"]
+es = "Resguardo hacia dentro (m)"
+
+["Weight"]
+es = "Peso"
+
+["Constraints created from «{layer}»: {created}; entities rejected: {rejected}"]
+es = "Restricciones creadas desde «{layer}»: {created}; entidades rechazadas: {rejected}"
+
+["The constraint is no longer in the project: open the list again"]
+es = "La restricción ya no está en el proyecto: abra la lista de nuevo"
+
+["Choose the type of the constraint"]
+es = "Elija el tipo de la restricción"
+
+["A «{ctype}» cannot be {kind}: choose another type"]
+es = "Una restricción «{ctype}» no puede ser {kind}: elija otro tipo"
+
+["Write the name of the constraint"]
+es = "Escriba el nombre de la restricción"
+
+["Write the reason of the constraint"]
+es = "Escriba el motivo de la restricción"
+
+["Write who decides the constraint"]
+es = "Escriba quién decide la restricción"
+
+["Completed in the list of constraints"]
+es = "Completada en la lista de restricciones"
+
+["Nothing to change in «{name}»"]
+es = "Nada que cambiar en «{name}»"
+
+["Constraint «{name}» saved with the code «{code}»"]
+es = "Restricción «{name}» guardada con el código «{code}»"
+
+["Layer of the project, as Features or Domains, the constraints are created from"]
+es = "Capa del proyecto, como Entidades o Dominios, de la que se crean las restricciones"
+
+["The type for all the entities of the layer, or the field that gives it"]
+es = "El tipo de todas las entidades de la capa, o el campo que lo da"
+
+["Field of the layer that says the type of each entity"]
+es = "Campo de la capa que dice el tipo de cada entidad"
+
+["Which type each value of the field means, as «value = type; value = type» (empty: the value is the name of the type)"]
+es = "Qué tipo es cada valor del campo, como «valor = tipo; valor = tipo» (vacío: el valor es el nombre del tipo)"
+
+["Field of the layer that gives the name of each constraint"]
+es = "Campo de la capa que da el nombre de cada restricción"
+
+["Field of the layer that gives the reason of each constraint (empty: the reason written below)"]
+es = "Campo de la capa que da el motivo de cada restricción (vacío: el motivo escrito abajo)"
+
+["Why these constraints limit the design"]
+es = "Por qué estas restricciones limitan el diseño"
+
+["Field of the layer that says who decided each constraint (empty: the decider written below)"]
+es = "Campo de la capa que dice quién decidió cada restricción (vacío: el decisor escrito abajo)"
+
+["Who decided that these constraints limit the design"]
+es = "Quién decidió que estas restricciones limitan el diseño"
+
+["Field of the layer that gives the date of each decision, as YYYY-MM-DD (empty: the date written below)"]
+es = "Campo de la capa que da la fecha de cada decisión, como AAAA-MM-DD (vacío: la fecha escrita abajo)"
+
+["Order of the constraints that cover the same cells: it only orders their causes, never lifts a prohibition"]
+es = "Orden de las restricciones que cubren las mismas celdas: solo ordena sus causas, nunca levanta una prohibición"
+
+["Distance in metres, outside the geometry, that the constraint also protects (empty: it is declared later)"]
+es = "Distancia en metros, fuera de la geometría, que la restricción también protege (vacío: se declara después)"
+
+["Distance in metres, inside a legal limit, where cutting is not allowed (empty: it is declared later)"]
+es = "Distancia en metros, dentro de un límite legal, donde no se puede cortar (vacío: se declara después)"
+
+["Weight of an area to avoid, 1 or more (empty: it is declared later)"]
+es = "Peso de una zona que conviene no afectar, 1 o más (vacío: se declara después)"
+
+["Whether the new constraints are in force"]
+es = "Si las restricciones nuevas están en vigor"
+
+["Constraint"]
+es = "Restricción"
+
+["Type of the constraint"]
+es = "Tipo de la restricción"
+
+["Name of the constraint (a constraint without a code receives it from its name)"]
+es = "Nombre de la restricción (una sin código lo recibe de su nombre)"
+
+["Why the constraint limits the design"]
+es = "Por qué la restricción limita el diseño"
+
+["Who decided that the constraint limits the design"]
+es = "Quién decidió que la restricción limita el diseño"
+
+["Distance in metres, outside the geometry, that the constraint also protects (only if it does not have one yet)"]
+es = "Distancia en metros, fuera de la geometría, que la restricción también protege (solo si todavía no la tiene)"
+
+["Distance in metres, inside a legal limit, where cutting is not allowed (only if it does not have one yet)"]
+es = "Distancia en metros, dentro de un límite legal, donde no se puede cortar (solo si todavía no la tiene)"
+
+["Weight of an area to avoid, 1 or more (only if it does not have one yet)"]
+es = "Peso de una zona que conviene no afectar, 1 o más (solo si todavía no lo tiene)"
+
+["Whether the constraint is in force (only if it does not have it yet)"]
+es = "Si la restricción está en vigor (solo si todavía no lo tiene)"
+
+["Compiling the constraints…"]
+es = "Compilando las restricciones…"
+
+["Compiling the constraints… {percent} % · Esc: cancel"]
+es = "Compilando las restricciones… {percent} % · Esc: cancelar"
+
+["Compilation cancelled: nothing has been left half-done"]
+es = "Compilación cancelada: no ha quedado nada a medias"
+
+["The project was closed while the masks were being compiled: nothing has been left half-done"]
+es = "Se cerró el proyecto mientras se compilaban las máscaras: no ha quedado nada a medias"
+
+["Masks of {version} exported to «{file}»"]
+es = "Máscaras de {version} exportadas a «{file}»"

@@ -20,6 +20,21 @@ En solo lectura o con la versión activa no editable dice por qué y dibuja desa
 escribe (RF-012-28). **Nada se lee al dibujar**: :func:`fill_limits` regenera la vista desde el
 proyecto (al abrir la ventana y tras declarar). Los textos pasan por ``core.i18n`` y se dibujan
 con ``translate=False``; las coordenadas absolutas, en texto (ADR-0005).
+
+**Restricciones…** (T23; HU-012-2, HU-012-4; RF-012-02, RF-012-04, RF-012-19, RF-012-28): la
+ventana ``GEOBLENDER_PT_core_constraints`` (la abre ``geoblender.core_edit_constraints``) dibuja la
+lista de las restricciones del proyecto (``GEOBLENDER_UL_core_constraints``: la insignia del tipo,
+el nombre y el estado en la versión activa: incompleta, no válida, activa o inactiva en ella, con
+el filtro de las que tienen problemas) y, de la elegida, su motivo, decisor, fecha, decisión
+enlazada, lo que le falta y sus parámetros con su valor en la versión y en el proyecto («V01: 8 m
+[ADO] · proyecto: —», :func:`parameter_text`), cada uno con «Cambiar…» (el diálogo de la 008 con el
+ámbito de la 009, ``geoblender.core_set_parameter``) y «Completar…» o «Editar…»
+(``geoblender.core_complete_constraint``). Arriba, «Desde una capa…»
+(``geoblender.core_create_constraints``), «Compilar las máscaras» (``geoblender.gis_compile_constraints``)
+y «Exportar las máscaras…» (``geoblender.gis_export_constraint_masks``); abajo, el último
+resultado de cada una (lo creado y lo rechazado, el informe de compilar con lo ganado y lo
+perdido y la búsqueda pendiente: :func:`compile_lines`). :func:`fill_constraints` regenera la
+vista desde el proyecto, sin escribir (``gis.masks.store.listed_constraints``).
 """
 
 from __future__ import annotations
@@ -33,16 +48,20 @@ from typing import Any
 import bpy
 
 from ...core.catalog.search import path_text
+from ...core.constraints import checks as constraint_checks
+from ...core.constraints.model import ConstraintType, is_code
+from ...core.constraints.params import family, param_key
 from ...core.errors import GeoblenderError
-from ...core.i18n import format_number, language, tr
+from ...core.i18n import format_number, language, translate, tr
 from ...core.params.model import format_value
+from ...core.params.store import ParameterStore
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
 from ...gis.masks import store as mask_store
 from .. import compat
 from ..props.core_constraints import WINDOW_MANAGER_PROPERTY
 from ..scene import versions as scene_versions
-from . import labels
+from . import labels, res_panels
 from .commands import catalog, text
 
 LOGGER = logging.getLogger("geoblender.bl.ui")
@@ -60,6 +79,22 @@ PLACE_AREA_FACTOR = 1.5
 veces la raíz de su área, y como poco ``PLACE_MIN_RADIUS_M`` m."""
 DATE_FORMAT = "%d/%m/%Y"
 """Cómo se teclea la fecha de la decisión (DD/MM/AAAA, como en la 008)."""
+CONSTRAINTS_PANEL = "GEOBLENDER_PT_core_constraints"
+CONSTRAINTS_LIST = "GEOBLENDER_UL_core_constraints"
+CREATE_CONSTRAINTS = "geoblender.core_create_constraints"
+COMPLETE_CONSTRAINT = "geoblender.core_complete_constraint"
+COMPILE_CONSTRAINTS = "geoblender.gis_compile_constraints"
+EXPORT_MASKS = "geoblender.gis_export_constraint_masks"
+SET_PARAMETER = "geoblender.core_set_parameter"
+CONSTRAINTS_PANEL_UNITS = 40
+CONSTRAINTS_WIDTH_PX = CONSTRAINTS_PANEL_UNITS * compat.UI_UNIT_PX
+"""El ancho de la ventana Restricciones (40 unidades)."""
+CONSTRAINT_ROWS = 6
+BADGE_FACTOR = 0.28
+NAME_FACTOR = 0.6
+"""Cómo reparte la fila de la lista su ancho: la insignia del tipo, el nombre y el estado."""
+MAX_CONFLICT_LINES = 5
+"""Cuántos conflictos (zonas sin movimiento posible) enseña el informe de compilar."""
 
 
 def view() -> Any | None:
@@ -298,5 +333,293 @@ class GEOBLENDER_PT_core_limits(bpy.types.Panel):
         draw_limits(self.layout, context)
 
 
-# En orden de registro.
-classes: tuple[type, ...] = (GEOBLENDER_PT_core_limits,)
+# --- Restricciones… (T23; RF-012-02, RF-012-04, RF-012-19, RF-012-28) ----------------------------
+
+
+def source_layers(project: Any) -> tuple[str, ...]:
+    """Los datos del proyecto de los que se pueden crear restricciones, por nombre: las capas
+    «entidades» (``gis_fea_``: puntos, líneas o polígonos) y las de «dominios» (``gis_dom_``,
+    polígonos; D-27)."""
+    records = gis_store.list_gis_datasets(project, families=(gis_provenance.FEATURES,
+                                                             gis_provenance.DOMAINS))
+    return tuple(sorted(record.name for record in records))
+
+
+def type_label(ctype: str) -> str:
+    """El nombre en el idioma de Geoblender del tipo de restricción ``ctype`` (el valor de
+    ``ConstraintType``); vacío, «sin tipo»."""
+    if not ctype:
+        return translate(language(), constraint_checks.NO_TYPE_MSGID)
+    return ConstraintType(ctype).label(language())
+
+
+def state_text(state: str, where: str) -> str:
+    """El estado de una restricción como se lee (RF-012-19): «Incompleta», «No válida»,
+    «Activa» o «Inactiva en V01» (``where``, la versión activa o «el proyecto»)."""
+    if state == "incomplete":
+        return tr("Incomplete")
+    if state == "invalid":
+        return tr("Not valid")
+    if state == "inactive":
+        return tr("Inactive in {version}", version=where)
+    return tr("Active")
+
+
+def _where() -> str:
+    shown = scene_versions.active()
+    return tr("the project") if shown is None else shown.code
+
+
+def parameter_text(store: ParameterStore, conn: Any, key: str, version: Any
+                   ) -> tuple[str, bool]:
+    """El parámetro ``key`` de una restricción como se lee en la versión activa ``version`` (la
+    que se enseña; ``None``: el proyecto): su valor propio de la versión y el del proyecto, cada
+    uno con su unidad y su insignia de tipo («V01: 8 m [ADO] · proyecto: —», RF-009-29) y si está
+    registrado en alguno de los dos."""
+    project_record = store.get(key, conn=conn)
+    own = None if version is None else store.get(key, version=version.uid, conn=conn)
+    project_text = (res_panels.NOT_SHOWN if project_record is None
+                    else res_panels.record_text(project_record))
+    registered = project_record is not None or own is not None
+    if version is None:
+        return project_text, registered
+    own_text = res_panels.NOT_SHOWN if own is None else res_panels.record_text(own)
+    return tr("{version}: {value} · project: {project}", version=version.code, value=own_text,
+              project=project_text), registered
+
+
+def _put_constraint(target: Any, entry: Any, store: ParameterStore, conn: Any,
+                    version: Any) -> None:
+    """Una restricción de la lista (``gis.masks.store.ListedConstraint``) en la fila ``target``
+    de la vista, con lo que le falta y, de cada parámetro que pide su tipo, su valor en la
+    versión y en el proyecto."""
+    shown = language()
+    row = entry.constraint
+    target.name = row.shown_name(shown)
+    target.uid, target.code = row.uid, row.code
+    target.ctype = "" if row.ctype is None else row.ctype.value
+    target.kind, target.layer, target.fid = row.kind.value, row.layer, int(row.fid)
+    target.state = entry.state
+    target.problems = "\n".join(problem.text(shown) for problem in entry.problems)
+    target.priority = int(row.priority)
+    target.reason, target.decided_by = row.reason or "", row.decided_by or ""
+    target.decided_on = "" if row.decided_on is None else row.decided_on.strftime(DATE_FORMAT)
+    target.decision = row.decision_uid or ""
+    target.parameters.clear()
+    if not is_code(row.code):
+        return
+    wanted = () if row.ctype is None else row.ctype.requires
+    for param in wanted:
+        key = param_key(row.code, param)
+        line = target.parameters.add()
+        line.key = key
+        line.name = translate(shown, family(param).template.label_msgid)
+        line.text, line.registered = parameter_text(store, conn, key, version)
+
+
+def fill_constraints(project: Any) -> int:
+    """Regenera la lista de Restricciones… desde ``project`` (RF-012-19): todas las restricciones
+    con su estado en la versión activa (``gis.masks.store.listed_constraints``, que no escribe
+    nada) y sus parámetros; conserva la elegida (por su ``uid``) y las capas de origen que se
+    pueden ofrecer. Devuelve cuántas hay. Si no se puede leer, el error sigue y la vista queda
+    como estaba."""
+    shown = view()
+    if shown is None:  # inalcanzable con la extensión registrada
+        raise RuntimeError("la vista de las restricciones no está registrada")
+    version = scene_versions.active()
+    listed = mask_store.listed_constraints(project, version=None if version is None
+                                           else version.uid)
+    layers = source_layers(project)
+    old = shown.constraints
+    chosen = old[shown.item_index].uid if 0 <= shown.item_index < len(old) else ""
+    store = ParameterStore(project)
+    shown.constraints.clear()
+    with project.read() as conn:
+        for entry in listed:
+            _put_constraint(shown.constraints.add(), entry, store, conn, version)
+    shown.item_index = next((index for index, item in enumerate(shown.constraints)
+                             if item.uid == chosen), 0)
+    shown.source_layers.clear()
+    for name in layers:
+        shown.source_layers.add().name = name
+    return len(shown.constraints)
+
+
+def show_report(lines: Sequence[Line]) -> None:
+    """Deja ``lines`` como el último resultado de Restricciones… (lo creado y lo rechazado, lo
+    compilado, lo exportado)."""
+    shown = view()
+    if shown is not None:
+        _put_lines(shown.report_lines, lines)
+
+
+def compile_lines(stored: Any, revision: str, pending: Sequence[str]) -> list[Line]:
+    """El informe de una compilación (``gis.masks.store.StoredMasks``) en la revisión
+    ``revision`` (RF-012-05, RF-012-06, RF-012-10, RF-012-11, RF-012-14, RF-012-15): el dominio,
+    el corte, el relleno y la franja en ha; los avisos (el límite legal que hace de perímetro,
+    una zona fuera de la rejilla…); el área en la que no cabe ningún movimiento; de cada
+    restricción que cambió desde la compilación anterior, el polígono y la zona ganados y
+    perdidos en m² (A5); y, en alerta, los sectores sin búsqueda de intocables vigente
+    (``pending``: sus nombres)."""
+    result = stored.result
+    grid, masks = result.grid, result.masks
+
+    def hectares(runs: Any) -> str:
+        return format_number(runs.area(grid) / 10_000.0, 2)
+
+    lines = [Line(tr("Masks of {revision} up to date: domain {domain} ha, cut {cut} ha, fill "
+                     "{fill} ha, strip {strip} ha", revision=revision,
+                     domain=hectares(masks.default_domain), cut=hectares(masks.cut_allowed),
+                     fill=hectares(masks.fill_allowed), strip=hectares(masks.fill_strip)))]
+    shown = language()
+    for notice in result.notices:
+        lines.append(Line(notice.text(shown),
+                          alert=notice.code == "core.constraint_zone_outside_grid"))
+    if masks.no_movement_m2 > 0.0:
+        lines.append(Line(tr("No movement is possible in {area} m²",
+                             area=format_number(masks.no_movement_m2, 0)), alert=True))
+        for conflict in masks.conflicts[:MAX_CONFLICT_LINES]:
+            lines.append(Line(tr("{causes}: {area} m²", causes=", ".join(conflict.causes),
+                                 area=format_number(conflict.area_m2, 0))))
+    for change in result.changes:
+        lines.append(Line(tr(
+            "{name}: polygon +{gained} m² −{lost} m², zone +{zone_gained} m² −{zone_lost} m²",
+            name=change.name or change.code,
+            gained=format_number(change.polygon_gained_m2, 0),
+            lost=format_number(change.polygon_lost_m2, 0),
+            zone_gained=format_number(change.zone_gained_m2, 0),
+            zone_lost=format_number(change.zone_lost_m2, 0))))
+    if pending:
+        lines.append(Line(tr("Search for untouchable elements pending in: {names}",
+                             names="; ".join(pending)), alert=True))
+    return lines
+
+
+class GEOBLENDER_UL_core_constraints(bpy.types.UIList):
+    """Constraints of the project with their type and their state in the active version"""
+
+    bl_idname = CONSTRAINTS_LIST
+
+    def draw_item(self, context: Any, layout: Any, data: Any, item: Any, icon: int,
+                  active_data: Any, active_propname: str, index: int = 0,
+                  flt_flag: int = 0) -> None:
+        split = layout.split(factor=BADGE_FACTOR, align=True)
+        split.label(text=type_label(item.ctype), translate=False)
+        names = split.split(factor=NAME_FACTOR, align=True)
+        names.label(text=item.name, translate=False)
+        bad = item.state in ("incomplete", "invalid")
+        cell = names.row(align=True)
+        cell.alert = bad
+        cell.label(text=state_text(item.state, _where()), icon="ERROR" if bad else "NONE",
+                   translate=False)
+
+    def filter_items(self, context: Any, data: Any, propname: str
+                     ) -> tuple[list[int], list[int]]:
+        """Con «solo las incompletas o no válidas», solo esas."""
+        items = getattr(data, propname)
+        flags = [self.bitflag_filter_item] * len(items)
+        if getattr(data, "only_problems", False):
+            for index, item in enumerate(items):
+                if item.state not in ("incomplete", "invalid"):
+                    flags[index] = 0
+        return flags, []
+
+
+def _draw_chosen(layout: Any, item: Any, width: float, writable: bool) -> None:
+    """La restricción elegida de la lista: tipo y nombre, estado y lo que le falta, motivo,
+    decisor, fecha, decisión enlazada, sus parámetros (cada uno con «Cambiar…», la 008, de
+    ámbito la 009) y «Completar…» o «Editar…» (RF-012-19, RF-012-03)."""
+    box = layout.box()
+    title = f"{type_label(item.ctype)} · {item.name}"
+    box.label(text=title, translate=False)
+    bad = item.state in ("incomplete", "invalid")
+    state = box.row()
+    state.alert = bad
+    state.label(text=state_text(item.state, _where()), icon="ERROR" if bad else "NONE",
+                translate=False)
+    for problem in item.problems.splitlines():
+        _draw_line(box, Line(problem, alert=True), width)
+    details = box.column(align=True)
+    for msgid_text in (
+            tr("Reason: {value}", value=item.reason or res_panels.NOT_SHOWN),
+            tr("Decided by: {value}", value=item.decided_by or res_panels.NOT_SHOWN),
+            tr("Date of the decision: {value}", value=item.decided_on or res_panels.NOT_SHOWN),
+            tr("Priority: {value}", value=item.priority)):
+        details.label(text=msgid_text, translate=False)
+    if item.decision:
+        details.label(text=tr("Linked decision: {value}", value=item.decision), translate=False)
+    if len(item.parameters):
+        box.label(text=tr("Parameters"), translate=False)
+    for line in item.parameters:
+        row = box.row(align=True)
+        row.enabled = writable
+        shown = f"{line.name}: {line.text}"
+        row.label(text=shown, translate=False)
+        if line.registered:
+            button = row.operator(SET_PARAMETER, text=tr("Change…"), translate=False)
+            button.key = line.key
+    edit = box.row()
+    edit.enabled = writable
+    button = edit.operator(
+        COMPLETE_CONSTRAINT, text=_label(COMPLETE_CONSTRAINT) if item.state == "incomplete"
+        else tr("Edit…"), icon="GREASEPENCIL", translate=False)
+    button.uid = item.uid
+
+
+def draw_constraints(layout: Any, context: Any) -> None:
+    """La ventana de Restricciones… (véase el módulo), de lo ya leído."""
+    shown = view()
+    if shown is None:
+        return
+    blocked = _write_unavailable()
+    writable = blocked is None
+    if blocked is not None:  # se ve y no se cambia (RF-012-28)
+        note = layout.row()
+        note.alert = True
+        note.label(text=blocked, icon="LOCKED", translate=False)
+    width = labels.dialog_width(CONSTRAINTS_WIDTH_PX)
+    buttons = layout.row(align=True)
+    writes = buttons.row(align=True)
+    writes.enabled = writable
+    writes.operator(CREATE_CONSTRAINTS, text=_label(CREATE_CONSTRAINTS), icon="ADD",
+                    translate=False)
+    writes.operator(COMPILE_CONSTRAINTS, text=_label(COMPILE_CONSTRAINTS), icon="PLAY",
+                    translate=False)
+    buttons.operator(EXPORT_MASKS, text=_label(EXPORT_MASKS), icon="EXPORT", translate=False)
+    if not len(shown.constraints):
+        labels.draw_wrapped(layout, tr("There are no constraints yet: create them from a layer "
+                                       "of the project"), width, icon="INFO")
+    else:
+        layout.label(text=tr("Constraints in {where}: {count}", where=_where(),
+                             count=len(shown.constraints)), translate=False)
+        layout.prop(shown, "only_problems", text=tr("Only incomplete or not valid"),
+                    translate=False)
+        layout.template_list(CONSTRAINTS_LIST, "", shown, "constraints", shown, "item_index",
+                             rows=CONSTRAINT_ROWS)
+        index = min(max(shown.item_index, 0), len(shown.constraints) - 1)
+        _draw_chosen(layout, shown.constraints[index], width, writable)
+    if len(shown.report_lines):
+        box = layout.box()
+        box.label(text=tr("Last result"), translate=False)
+        for line in shown.report_lines:
+            _draw_line(box, line, width)
+
+
+class GEOBLENDER_PT_core_constraints(bpy.types.Panel):
+    """Constraints of the project: their type, state and parameters in the active version, and
+    the order to create, complete, compile and export them"""
+
+    bl_idname = CONSTRAINTS_PANEL
+    bl_label = "Constraints"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_space_type = "TOPBAR"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = CONSTRAINTS_PANEL_UNITS
+
+    def draw(self, context: Any) -> None:
+        draw_constraints(self.layout, context)
+
+
+# En orden de registro (la lista, antes de la ventana que la dibuja).
+classes: tuple[type, ...] = (GEOBLENDER_PT_core_limits, GEOBLENDER_UL_core_constraints,
+                             GEOBLENDER_PT_core_constraints)

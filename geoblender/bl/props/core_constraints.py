@@ -17,6 +17,12 @@ todos en texto) y las líneas del informe de los límites
 (:class:`GEOBLENDER_PG_core_report_line`: cada una con su texto ya traducido y, la de una parte
 de la franja, el lugar al que lleva «Ir a»).
 
+**Restricciones…** (T23): las restricciones ya leídas (:class:`GEOBLENDER_PG_core_constraint_item`:
+su nombre, tipo, estado en la versión activa, lo que le falta, motivo, decisor, fecha y sus
+parámetros con su valor en la versión y en el proyecto, :class:`GEOBLENDER_PG_core_param_line`), la
+elegida, el filtro de las que tienen problemas, las capas de las que se pueden crear y el último
+resultado de crear, compilar o exportar (``report_lines``).
+
 Ninguna propiedad es una coordenada ni una distancia en ``FloatProperty`` (ADR-0005; los
 resguardos, los pesos, las distancias y los espesores de los diálogos, en ``StringProperty``:
 ``docs/trampas.md`` §1; las coordenadas absolutas de «Ir a», también en texto).
@@ -25,7 +31,13 @@ resguardos, los pesos, las distancias y los espesores de los diálogos, en ``Str
 from __future__ import annotations
 
 import bpy
-from bpy.props import BoolProperty, CollectionProperty, PointerProperty, StringProperty
+from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
+    IntProperty,
+    PointerProperty,
+    StringProperty,
+)
 
 WINDOW_MANAGER_PROPERTY = "geoblender_constraints"
 """El nombre de la propiedad de ``WindowManager`` (la usan las ventanas de las restricciones)."""
@@ -55,9 +67,56 @@ class GEOBLENDER_PG_core_report_line(bpy.types.PropertyGroup):
     radius: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
 
 
+class GEOBLENDER_PG_core_param_line(bpy.types.PropertyGroup):
+    """Un parámetro de una restricción en la versión activa: su clave (``key``), su valor en la
+    versión y en el proyecto ya como se lee (``text``: «V01: 8 m [ADO] · proyecto: —») y si está
+    registrado (``registered``: sin registrar no se puede cambiar, se completa). El nombre del
+    parámetro, en ``name``."""
+
+    key: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    text: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    registered: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+
+
+class GEOBLENDER_PG_core_constraint_item(bpy.types.PropertyGroup):
+    """Una restricción de la lista de Restricciones… (RF-012-19), ya leída del proyecto: su nombre
+    (``name``), su ``uid`` y su código, el tipo (``ctype``, el valor de ``ConstraintType``;
+    vacío si no tiene), la geometría (``kind``) y la capa y el ``fid`` donde está, su estado en
+    la versión activa (``state``: ``incomplete``, ``invalid``, ``active`` o ``inactive``) con lo
+    que le falta (``problems``, un texto por línea), la prioridad, el motivo, el decisor, la fecha
+    (DD/MM/AAAA) y la decisión enlazada, y sus parámetros. Todo en texto o entero: ninguna
+    coordenada (ADR-0005)."""
+
+    uid: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    code: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    ctype: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    kind: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    layer: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    fid: IntProperty(default=0, options=_STATIC)  # type: ignore[valid-type]
+    state: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    problems: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    priority: IntProperty(default=0, options=_STATIC)  # type: ignore[valid-type]
+    reason: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    decided_by: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    decided_on: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    decision: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    parameters: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_param_line)
+
+
 class GEOBLENDER_PG_core_constraints(bpy.types.PropertyGroup):
     """Lo que dibujan las ventanas de las restricciones (una vista; véase el módulo)."""
 
+    constraints: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_constraint_item)
+    item_index: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
+    only_problems: BoolProperty(  # type: ignore[valid-type]
+        default=False, options=_STATIC,
+        description="Show only the constraints that are incomplete or not valid")
+    report_lines: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_report_line)
+    source_layers: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_layer_choice)
     limit_layers: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_core_layer_choice)
     limit_name_field: StringProperty(  # type: ignore[valid-type]
@@ -79,6 +138,7 @@ class GEOBLENDER_PG_core_constraints(bpy.types.PropertyGroup):
 
 
 classes: tuple[type, ...] = (GEOBLENDER_PG_core_layer_choice, GEOBLENDER_PG_core_report_line,
+                             GEOBLENDER_PG_core_param_line, GEOBLENDER_PG_core_constraint_item,
                              GEOBLENDER_PG_core_constraints)
 
 

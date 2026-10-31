@@ -410,3 +410,39 @@ description.es = "Encuadra la Vista 3D en un lugar del informe (coordenadas abso
 entry = "012"
 action = "A"
 frequency = 1
+
+# Órdenes internas de las restricciones (spec 012, T23, plan §5.3.4, D-31): las abre la ventana de
+# Restricciones…, no un menú de la barra.
+
+[[command]]
+key = "geoblender.core_create_constraints"
+kind = "internal"
+label.en = "From a layer…"
+label.es = "Desde una capa…"
+description.en = "Create constraints from a layer of the project: a type for all of its entities or the field that gives it, with their name, reason, decider, date and setbacks"
+description.es = "Crea restricciones desde una capa del proyecto: un tipo para todas sus entidades o el campo que lo da, con su nombre, su motivo, su decisor, su fecha y sus resguardos"
+entry = "012"
+action = "D"
+frequency = 2
+
+[[command]]
+key = "geoblender.core_complete_constraint"
+kind = "internal"
+label.en = "Complete…"
+label.es = "Completar…"
+description.en = "Complete or edit a constraint: its type, name, reason, decider, date and the setbacks it lacks (a constraint drawn in QGIS receives its code)"
+description.es = "Completa o edita una restricción: su tipo, su nombre, su motivo, su decisor, su fecha y los resguardos que le faltan (una dibujada en QGIS recibe su código)"
+entry = "012"
+action = "D"
+frequency = 2
+
+[[command]]
+key = "geoblender.gis_export_constraint_masks"
+kind = "internal"
+label.en = "Export the masks…"
+label.es = "Exportar las máscaras…"
+description.en = "Write the class grid of the masks of the active version as a deliverable GeoTIFF with its legend (it is not an operation: also from a superseded version and, outside the project, in read-only)"
+description.es = "Escribe la rejilla de clases de las máscaras de la versión activa como un GeoTIFF entregable con su leyenda (no es una operación: también desde una versión superada y, fuera del proyecto, en solo lectura)"
+entry = "012"
+action = "D"
+frequency = 1
