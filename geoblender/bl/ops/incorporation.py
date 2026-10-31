@@ -13,17 +13,26 @@ trabajo, con su avance y su cancelación.
 objeto siempre: Blender reconoce un temporizador por su función). Los sondeos tienen la suya
 (``bl/ops/dh.py``), aparte de la de la topografía (``bl/ops/gis.py``), que no cambia; el que
 la crea la vacía al desregistrar (:meth:`StepQueue.drop`).
+
+:class:`RecomputeSteps` son los pasos de lo que recalcula «Recalcular lo obsoleto» (spec 008,
+RF-008-26) en la cola de un módulo: la cubicación y la verificación (``bl/ops/res.py``) y las
+máscaras de las restricciones (``bl/ops/gis.py``, spec 012, T21).
 """
 
 from __future__ import annotations
 
 import logging
+import sqlite3
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import bpy
 
+from ...core.errors import GeoblenderError
 from ...core.i18n import language, translate
+from ...core.project.model import Progress
+from ...core.provenance.operations import CANCEL_REASON_PREFIX, failure_reason
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
 TICK_S = 0.0
@@ -132,3 +141,73 @@ def _close(item: _Incorporation) -> None:
     close = getattr(item.steps, "close", None)
     if callable(close):
         close()
+
+
+# --- Los pasos de un recálculo (spec 011, T19; spec 012, T21: D-19) ------------------------------
+
+RECOMPUTING = "Recomputing «{name}»… {percent} %"
+"""Lo que dice la barra de estado de unos pasos de recálculo (``msgid`` con ``name`` y
+``percent``)."""
+DROPPED_REASON = CANCEL_REASON_PREFIX + "se desactivó Geoblender antes de empezar"
+"""El motivo de una operación cuyos pasos esperaban en la cola sin haber empezado al
+desactivar Geoblender."""
+
+
+def end_operation(stop: Callable[[str], None], reason: str) -> None:
+    """Deja la operación terminada con ``stop`` (``fail`` o ``cancel`` de su ``OperationHandle``)
+    y ``reason``; si ya terminó (sus pasos lo hicieron) o no se puede escribir, lo deja en el
+    registro técnico."""
+    try:
+        stop(reason)
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.debug("La operación ya había terminado o no se pudo registrar cómo terminó",
+                     exc_info=True)
+
+
+class RecomputeSteps:
+    """Los pasos de una operación que recalcula «Recalcular lo obsoleto» en la cola de un módulo
+    (``res``, ``gis``): cada uno da su avance (0–1). Si fallan, la operación queda «fallida» con
+    el motivo y se acaban; al cerrarlos (desregistrar), los empezados se cierran (su operación la
+    cancelan ellos) y, si no empezaron, la operación queda «cancelada» con
+    :data:`DROPPED_REASON`. ``report`` recibe el resultado del último paso (el que lleva uno) y
+    lleva sus avisos al registro de Blender."""
+
+    def __init__(self, handle: Any, name: str, steps: Iterator[Progress], *,
+                 report: Callable[[object], None] | None = None) -> None:
+        self._handle = handle
+        self._name = name
+        self._steps = steps
+        self._report = report
+        self._started = False
+        self._finished = False
+
+    def __iter__(self) -> RecomputeSteps:
+        return self
+
+    def __next__(self) -> float:
+        if self._finished:
+            raise StopIteration
+        self._started = True
+        try:
+            step = next(self._steps)
+        except StopIteration:
+            self._finished = True
+            raise
+        except Exception as error:  # noqa: BLE001 - la operación queda fallida, sigue la cola
+            self._finished = True
+            LOGGER.exception("El recálculo de «%s» (%s) se ha parado", self._name,
+                             self._handle.uid)
+            end_operation(self._handle.fail, failure_reason(error))
+            raise StopIteration from None
+        if step.result is not None and self._report is not None:
+            self._report(step.result)
+        return step.done / step.total if step.total else 0.0
+
+    def close(self) -> None:
+        """Cierra los pasos (desregistrar): véase la clase."""
+        if not self._started and not self._finished:
+            end_operation(self._handle.cancel, DROPPED_REASON)
+        self._finished = True
+        close = getattr(self._steps, "close", None)
+        if callable(close):
+            close()

@@ -22,6 +22,15 @@ Registra lo que la topografía declara a las specs 004 y 008:
   ``gis.gpkg_layer``; al quitarlo todo, también el temporizador de las triangulaciones;
 - (T30) el de ``gis.contours`` con su recálculo, y (T31) los de ``gis.export_raster`` y
   ``gis.export_gpkg`` (no se repiten solas: sin recálculo).
+- (spec 012, T21; RF-012-16) el de ``gis.compile_constraints`` (:data:`MASKS_OPERATION_DEF`, de la
+  versión, con su recálculo :func:`recompute_compile` y la reproducción de ``gis.masks.store``) y
+  sus diez cifras: «Recalcular lo obsoleto» empieza la compilación nueva con
+  ``gis.masks.store.recompute_run`` y deja sus pasos en la cola de las máscaras
+  (:data:`MASKS_RUNS`, :func:`queue_mask_steps`, su temporizador :func:`masks_tick`, que en
+  ``blender -b`` no corre: las pruebas lo llaman a mano), con su avance en la barra de estado;
+  unos pasos que fallan dejan la operación «fallida», los avisos de la compilación van al
+  registro de Blender y desregistrar cierra lo que espera como Esc (lo que no empezó, «cancelado»).
+  Su orden (``geoblender.gis_compile_constraints``) llega en la T23.
 
 (T44) Las declaraciones de procedencia son constantes del módulo, construidas una vez:
 :data:`OPERATION_DEFS` (los once tipos de ``gis.provenance.OPERATION_TYPES``, cada repetible con
@@ -201,6 +210,8 @@ from ...gis.contours import (
     ContourLine,
 )
 from ...gis.grid import Grid, project_grid
+from ...gis.masks import provenance as masks_provenance
+from ...gis.masks import store as masks_store
 from ...gis.messages import GisError
 from ...gis.placement import extent_in, outside_window
 from ...gis.points import DUP_XY_KEY, DUP_Z_KEY, Breakline, PointSet
@@ -226,13 +237,14 @@ from ..ui.commands import catalog as command_catalog
 from ..ui.commands import command_idname
 from ..ui.provenance import badge
 from ..ui.views import no_work_window_message
-from . import core_provenance
+from . import core_provenance, incorporation
 from . import jobs as jobs_ops
 from .core_provenance import ProvenanceAwareOperator, error_text, write_unavailable
 
 if TYPE_CHECKING:
     from ...core.datasets.model import DatasetRecord
     from ...core.georef import CrsRef, VerticalRef
+    from ...core.project.model import Progress
     from ...core.provenance.contract import ReimportRequest
     from ...core.provenance.operations import OperationHandle
     from ...core.provenance.recompute import RecomputeRequest
@@ -326,11 +338,16 @@ def register() -> None:
             job_catalog.register_worker(info)
             _UNDO.append(_unregister_if(job_catalog.WORKERS, info.name, info,
                                         job_catalog.unregister_worker))
-    for definition in OPERATION_DEFS:
+    for definition in (*OPERATION_DEFS, MASKS_OPERATION_DEF):
         if definition.op_type not in contract.OPERATIONS:
             contract.register_operation(definition)
             _UNDO.append(_unregister_if(contract.OPERATIONS, definition.op_type, definition,
                                         contract.unregister_operation))
+    for figure in masks_provenance.FIGURES:
+        if figure.key not in contract.FIGURES:
+            contract.register_figure(figure)
+            _UNDO.append(_unregister_if(contract.FIGURES, figure.key, figure,
+                                        contract.unregister_figure))
     for importer in IMPORTER_DEFS:
         if importer.reader_id not in contract.IMPORTERS:
             contract.register_importer(importer)
@@ -343,6 +360,7 @@ def unregister() -> None:
     suyo), y olvida las importaciones que esperaban una decisión; idempotente."""
     _WAITING.clear()
     _TRIANGULATIONS.clear()
+    MASKS_RUNS.drop()
     if bpy.app.timers.is_registered(triangulation_tick):
         bpy.app.timers.unregister(triangulation_tick)
     _drop_incorporations()
@@ -4268,6 +4286,64 @@ IMPORTER_DEFS: tuple[contract.ImporterDef, ...] = tuple(
     for reader_id in provenance.IMPORT_READERS)
 """Los ``ImporterDef`` de los lectores de importación de la 006 (``KeyError`` al cargar el
 módulo si a uno le falta su reimportación)."""
+
+
+# --- Las máscaras de las restricciones (spec 012, T21; RF-012-16; plan 012 §5.3.3, D-19) --------
+
+MASKS_RUNS = incorporation.StepQueue()
+"""Los pasos de las compilaciones de las restricciones que recalcula «Recalcular lo obsoleto»,
+por orden de llegada (la cola es suya, aparte de las de la topografía, los sondeos y la
+cubicación)."""
+masks_tick: Callable[[], float | None] = MASKS_RUNS.timer
+"""El temporizador de la cola de las máscaras: un paso de la primera por llamada (el mismo
+objeto siempre: Blender reconoce un temporizador por su función)."""
+
+
+def pending_mask_runs() -> list[str]:
+    """Las compilaciones cuyos pasos esperan en la cola de las máscaras, en orden."""
+    return MASKS_RUNS.pending()
+
+
+def _report_mask_notices(result: object) -> None:
+    """Los avisos de una compilación (``StoredMasks``: el perímetro tomado del límite legal, una
+    zona fuera de la rejilla…), al registro de Blender en el idioma de Geoblender."""
+    found = getattr(result, "result", None)
+    for notice in getattr(found, "notices", None) or ():
+        jobs_ops.report_later("WARNING", notice.text(i18n.language()))
+
+
+def _mask_name(handle: Any) -> str:
+    """Lo que enseña la barra de estado de una compilación: el nombre de su tipo de operación en
+    el idioma de Geoblender o, si no está registrado, el tipo."""
+    definition = contract.OPERATIONS.get(handle.op_type)
+    return (i18n.translate(i18n.language(), definition.label_msgid)
+            if definition is not None else str(handle.op_type))
+
+
+def queue_mask_steps(handle: OperationHandle, steps: Iterator[Progress]) -> None:
+    """Pone en la cola de las máscaras los pasos ``steps`` (``Progress``) de la compilación
+    ``handle``, «en curso», y registra su temporizador si no lo estaba."""
+    name = _mask_name(handle)
+    MASKS_RUNS.add(handle.uid, name,
+                   incorporation.RecomputeSteps(handle, name, steps,
+                                                report=_report_mask_notices),
+                   status=incorporation.RECOMPUTING)
+
+
+def recompute_compile(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``gis.compile_constraints`` (RF-008-26; RF-012-16; D-19): la compilación
+    nueva (``gis.masks.store.recompute_run``, con las restricciones y los parámetros de hoy),
+    «en curso», con sus pasos en la cola de las máscaras."""
+    handle, steps = masks_store.recompute_run(request)
+    queue_mask_steps(handle, steps)
+    return handle
+
+
+MASKS_OPERATION_DEF: contract.OperationDef = masks_provenance.operation_def(
+    recompute_compile, masks_store.REPRODUCE[masks_provenance.COMPILE])
+"""El ``OperationDef`` de ``gis.compile_constraints``: de la versión, repetible, con
+:func:`recompute_compile`, la reproducción de ``gis.masks.store`` y la tolerancia de sus
+cifras (10⁻⁹, D-37)."""
 
 
 classes: tuple[type, ...] = (GEOBLENDER_OT_gis_import_dtm, GEOBLENDER_OT_gis_resample_to_grid,

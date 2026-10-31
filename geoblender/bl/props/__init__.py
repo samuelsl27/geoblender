@@ -23,6 +23,8 @@
   su menú (spec 009, T18; una vista que no se guarda en el ``.blend``);
 - ``res``: ``WindowManager.geoblender_res_panels``, lo que dibujan los paneles de la cubicación
   (spec 011, T19; una vista que no se guarda en el ``.blend``);
+- ``core_constraints``: ``WindowManager.geoblender_constraints``, lo que dibujan las ventanas de
+  los límites y las restricciones (spec 012, T21; una vista que no se guarda en el ``.blend``);
 - ``preferences``: la única ``GeoblenderPreferences``, con un grupo por módulo.
 
 Antes de registrar las clases, sus propiedades (nombre, descripción y elementos de los
@@ -36,13 +38,26 @@ from __future__ import annotations
 
 from ...core import i18n
 from ..registry import PropertyTranslator, register_classes, unregister_classes
-from . import core, dh, gis, jobs, preferences, provenance, res, ui, versions, views
+from . import (
+    core,
+    core_constraints,
+    dh,
+    gis,
+    jobs,
+    preferences,
+    provenance,
+    res,
+    ui,
+    versions,
+    views,
+)
 
 # Clases de los módulos de este subpaquete, en orden de registro (plan 001 §5.3,
 # contrato 2): los grupos antes de quien los usa.
 classes: tuple[type, ...] = (
     *core.classes, *gis.classes, *provenance.classes, *dh.classes, *views.classes,
-    *versions.classes, *res.classes, *ui.classes, *jobs.classes, *preferences.classes
+    *versions.classes, *res.classes, *core_constraints.classes, *ui.classes, *jobs.classes,
+    *preferences.classes
 )
 
 _PROPERTIES = PropertyTranslator()
@@ -61,8 +76,9 @@ def register() -> None:
     ``WindowManager.geoblender_provenance``, las de los sondeos (``dh``),
     ``WindowManager.geoblender_view_panels``, ``Collection.geoblender``,
     ``WindowManager.geoblender_version_panels``, ``WindowManager.geoblender_res_panels``,
-    ``WorkSpace.geoblender_mode`` y ``WindowManager.geoblender_redraw``; si ya lo están, no hace
-    nada. Si algo falla, deshace lo hecho antes de propagar el error."""
+    ``WindowManager.geoblender_constraints``, ``WorkSpace.geoblender_mode`` y
+    ``WindowManager.geoblender_redraw``; si ya lo están, no hace nada. Si algo falla, deshace lo
+    hecho antes de propagar el error."""
     _localize()
     try:
         register_classes(classes)
@@ -76,9 +92,11 @@ def register() -> None:
         views.register()
         versions.register()
         res.register()
+        core_constraints.register()
         ui.register()
     except BaseException:
         ui.unregister()
+        core_constraints.unregister()
         res.unregister()
         versions.unregister()
         views.unregister()
@@ -92,11 +110,12 @@ def register() -> None:
 
 def unregister() -> None:
     """Quita ``WindowManager.geoblender_redraw``, ``WorkSpace.geoblender_mode``,
-    ``WindowManager.geoblender_res_panels``, ``WindowManager.geoblender_version_panels``,
+    ``WindowManager.geoblender_constraints``, ``WindowManager.geoblender_res_panels``, ``WindowManager.geoblender_version_panels``,
     ``Collection.geoblender``, ``WindowManager.geoblender_view_panels``, las de los sondeos,
     ``WindowManager.geoblender_provenance``, ``Object.geoblender`` y ``Scene.geoblender`` y
     desregistra ``classes`` en orden inverso; omite lo que no está registrado."""
     ui.unregister()
+    core_constraints.unregister()
     res.unregister()
     versions.unregister()
     views.unregister()

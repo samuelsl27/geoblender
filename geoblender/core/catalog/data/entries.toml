@@ -67,6 +67,16 @@ title.en = "Volumetrics between surfaces"
 title.es = "Cubicación entre superficies"
 delivered = true
 
+# La spec 012 (límites legales y restricciones) es R-32 (plan 012 D-38) y entrega sus órdenes tarea a
+# tarea: cada orden de Diseño ▸ Límites y restricciones pasa de R-32 a la 012 al llegar su clase real
+# (T22 a T28: Límites…, Restricciones…, Buscar intocables…, Intenciones…, Ver restricciones y límites,
+# Compilar las máscaras y Verificar un diseño por recinto…, y sus internas, en common.toml).
+# «Cuadrículas mineras…» sigue en R-32: es de la segunda spec (D-2).
+["012"]
+title.en = "Legal limits and constraints"
+title.es = "Límites legales y restricciones"
+delivered = true
+
 ["R-07"]
 title.en = "Versions and provenance"
 title.es = "Versiones y procedencia"

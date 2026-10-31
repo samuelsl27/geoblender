@@ -175,10 +175,17 @@ EMPTY_TEXT = ("No hay ninguna carpeta de solo lectura: ni la variable GEOBLENDER
               "clientes no están protegidos de las escrituras de Geoblender.")
 IGNORED_TEXT = ("No se tiene en cuenta la carpeta de solo lectura «relativa»: no es una ruta "
                 "completa, con su unidad o de red.")
-CORE_OPERATIONS = ("core.accept_review", "core.external_edit", "core.import_layer")
+CORE_OPERATIONS = ("core.accept_review", "core.declare_sectors", "core.edit_constraints",
+                   "core.edit_intentions", "core.external_edit", "core.find_untouchables",
+                   "core.import_layer")
+"""Las operaciones de ``core`` registradas: las de la 008 y, con la 012 (T21), las cuatro de las
+restricciones (``bl/ops/core_constraints.py``; su registro, en ``test_constraints_registration``)."""
 CORE_READERS = ("core.document@1", "core.gpkg_layer@1", "core.npz_mesh@1")
 CORE_IMPORTERS = ("core.gpkg_layer",)
-CORE_PARAMETERS = ("core.original_copy_limit",)
+CORE_PARAMETERS = ("core.constraints.search_distance_m", "core.original_copy_limit")
+CORE_FAMILIES = ("core.constraint.{c}.active", "core.constraint.{c}.buffer_in_m",
+                 "core.constraint.{c}.buffer_out_m", "core.constraint.{c}.weight")
+"""Las familias de parámetros de ``core``: las de una restricción (spec 012, ADR-0027)."""
 MIGRATE_TEXT = "Proyecto de esquema 1: migre el proyecto para usar la procedencia"
 MAX_TICKS = 200  # un proyecto vacío se comprueba en una decena de pasos
 HASH_WORKER = "core_content_hash"
@@ -353,7 +360,8 @@ class ProvenanceRegistrationTest(unittest.TestCase):
         project_session = _module("bl.scene.project_session")
         self.assertEqual(_core_declarations(), {
             "operations": CORE_OPERATIONS, "importers": CORE_IMPORTERS,
-            "readers": CORE_READERS, "parameters": CORE_PARAMETERS, "families": ()})
+            "readers": CORE_READERS, "parameters": CORE_PARAMETERS,
+            "families": CORE_FAMILIES})
         self.assertIn(session.on_project_changed, project_session.listeners())
         jobs_ops = _module("bl.ops.jobs")
         job_list = _module("bl.ui.jobs")

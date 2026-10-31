@@ -30,6 +30,10 @@ RF-012-28; plan 012 §5.2.3, A11, D-15, D-28, D-40, D-42, D-43).
   fuera de la transacción (por tramos de filas, T36), ``os.replace`` a ``rasters/`` y **una**
   transacción con las dos tablas, las cifras y ``complete`` (lo único que no se trocea, R4).
   Cerrar los pasos o un fallo: nada (RF-012-28).
+- :func:`recompute_run` (T21; RF-008-26, D-19): repite una verificación obsoleta —la operación
+  nueva sustituye a la anterior en la revisión abierta de su versión, con el nombre y las
+  superficies de sus ajustes, las máscaras de hoy y el espesor mínimo resuelto de nuevo—; la
+  llama «Recalcular lo obsoleto» desde ``bl`` y avanza sus pasos la cola de ``res``.
 - :func:`reproduce_verify` (:data:`REPRODUCE`): con las máscaras, las superficies y el espesor
   congelados, sin el proyecto.
 - :func:`freeze_findings` (T18; RF-012-25; D-7, D-29): la comprobación de ``res`` al congelar,
@@ -90,6 +94,7 @@ from ..core.provenance.operations import (
     cancel_reason,
     failure_reason,
 )
+from ..core.provenance.recompute import RecomputeRequest
 from ..core.units import convert
 from ..core.versions import read as versions_read
 from ..core.versions import store as versions_store
@@ -167,6 +172,7 @@ __all__ = [
     "project_sources",
     "read_groups",
     "read_table",
+    "recompute_run",
     "reproduce_verify",
     "verify_project_steps",
     "verify_run",
@@ -754,6 +760,40 @@ def _project_steps(project: StoreProject, masks_steps: Iterator[Progress], name:
     with closing(steps):  # type: ignore[type-var]
         yield Progress(_PHASE, 0, 1, _TEXT)  # empezar la operación es un paso
         yield from steps
+
+
+def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
+                  ) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Repite :data:`VERIFY` de ``request`` (``RecomputeRequest`` de «Recalcular lo obsoleto»,
+    RF-008-26; RF-012-16, RF-012-24; plan A12, D-19): empieza la verificación nueva, que
+    sustituye a la anterior en la revisión abierta de **su** versión, con el nombre, la partida
+    y las finales de sus ajustes (las superficies vigentes que designan), las máscaras de hoy
+    de esa versión (:func:`~..gis.masks.access.load_masks`) y el espesor mínimo resuelto de
+    nuevo, y devuelve su ``OperationHandle`` «en curso» y sus pasos (:func:`verify_run`), que
+    avanza quien la llama (en Blender, la cola de ``res``; la operación sigue «en curso» hasta
+    el último). Las máscaras han de estar al día: si se recalculan también, «Recalcular lo
+    obsoleto» las compila antes (son su entrada) y esta las lee ya nuevas.
+
+    Al llamar, sin empezar nada: ``TypeError``/``ValueError`` si no es una petición de este tipo
+    de operación o sus ajustes no llevan lo que pide; ``VersionError`` sin versión o en una no
+    editable; ``MaskError`` si las máscaras no están al día; los rechazos de las superficies
+    (RF-011-03)."""
+    if not isinstance(request, RecomputeRequest):
+        raise TypeError(f"se recalcula una RecomputeRequest, no {request!r}")
+    if request.op_type != VERIFY:
+        raise ValueError(f"recompute_run repite {VERIFY}, no «{request.op_type}»")
+    if request.version is None or not str(request.version).strip():
+        raise VersionError("core.version_required", field="versión activa",
+                           value=request.version, op_type=VERIFY)
+    project: StoreProject = request.project  # type: ignore[assignment]
+    name, start, finals = _settings_request(request.settings)
+    masks = load_masks(project, request.version)
+    handle = begin_verify(project, masks, name=name, start=start, finals=finals)
+    try:
+        return handle, verify_run(project, handle, budget_s=budget_s, masks=masks)
+    except BaseException as error:
+        handle.fail(failure_reason(error))
+        raise
 
 
 # --- Escribir el resultado (A11) ---------------------------------------------------------------

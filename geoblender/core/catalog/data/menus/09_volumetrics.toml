@@ -121,6 +121,9 @@ label.en = "Figure control"
 label.es = "Control de cifras"
 
 [[menu.group.item]]
+ref = "geoblender.res_verify_constraints"
+
+[[menu.group.item]]
 key = "geoblender.res_show_sensitivity"
 label.en = "Sensitivity of the assumptions…"
 label.es = "Sensibilidad de las hipótesis…"

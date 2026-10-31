@@ -17,6 +17,9 @@ RF-012-16, RF-012-28; plan 012 §5.2.3, A5, A11, D-24).
   0,05 s), ``os.replace`` a ``rasters/`` y **una** transacción con las cuatro tablas, las cifras
   y ``complete`` (lo único que no se trocea, R4). Si se cierra o falla, nada (ni cifras, ni
   tablas, ni rejilla, ni temporal) y la operación «cancelada» o «fallida».
+- :func:`recompute_run` (T21; RF-008-26, D-19) repite una compilación obsoleta: la operación
+  nueva sustituye a la anterior en la revisión abierta de su versión, con lo que se lee hoy; la
+  llama «Recalcular lo obsoleto» desde ``bl`` y avanza sus pasos la cola de las máscaras.
 - :func:`reproduce_compile` (:data:`REPRODUCE`) reproduce una compilación congelada con sus
   entradas y sus parámetros congelados y sus ajustes, sin el proyecto.
 
@@ -77,6 +80,7 @@ from ...core.provenance.operations import (
     cancel_reason,
     failure_reason,
 )
+from ...core.provenance.recompute import RecomputeRequest
 from ...core.versions import read as versions_read
 from ...core.versions import store as versions_store
 from ...core.versions.model import VersionError
@@ -121,6 +125,7 @@ __all__ = [
     "read_report",
     "read_shapes",
     "read_zone_runs",
+    "recompute_run",
     "reproduce_compile",
     "search_sectors",
     "sector_states_now",
@@ -772,6 +777,33 @@ def compile_run(project: StoreProject, handle: OperationHandle, *,
     if not isinstance(handle, OperationHandle) or handle.op_type != declared.COMPILE:
         raise ValueError(f"compile_run es de {declared.COMPILE}")
     return _run(project, handle, budget_s)
+
+
+def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
+                  ) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Repite ``gis.compile_constraints`` de ``request`` (``RecomputeRequest`` de «Recalcular lo
+    obsoleto», RF-008-26; RF-012-16; plan A12, D-19): empieza la compilación nueva, que
+    sustituye a la anterior en la revisión abierta de **su** versión, con lo que lee hoy
+    (:func:`begin_compile`: las restricciones, sus parámetros resueltos de nuevo versión →
+    proyecto, los sectores, las búsquedas vigentes y, de lo que cambió, lo anterior para lo
+    ganado y lo perdido), y devuelve su ``OperationHandle`` «en curso» y sus pasos
+    (:func:`compile_run`), que avanza quien la llama (en Blender, la cola de ``gis``; la
+    operación sigue «en curso» hasta el último).
+
+    Al llamar, sin empezar nada: ``TypeError``/``ValueError`` si no es una petición de este tipo
+    de operación; los rechazos de :func:`begin_compile` (``VersionError`` sin versión o en una
+    no editable, restricciones incompletas, sin límite legal)."""
+    if not isinstance(request, RecomputeRequest):
+        raise TypeError(f"se recalcula una RecomputeRequest, no {request!r}")
+    if request.op_type != declared.COMPILE:
+        raise ValueError(f"recompute_run repite {declared.COMPILE}, no «{request.op_type}»")
+    project: StoreProject = request.project  # type: ignore[assignment]
+    handle = begin_compile(project, version=request.version)
+    try:
+        return handle, compile_run(project, handle, budget_s=budget_s)
+    except BaseException as error:
+        handle.fail(failure_reason(error))
+        raise
 
 
 def _run(project: StoreProject, handle: OperationHandle, budget_s: float

@@ -88,6 +88,26 @@ frequency = 3
 icon = "gb_qat_constraints"
 icon_fallback = "MOD_MASK"
 
+[[menu.group.item]]
+key = "geoblender.gis_compile_constraints"
+label.en = "Compile the masks"
+label.es = "Compilar las máscaras"
+description.en = "Compile the constraints into the masks the design operators read"
+description.es = "Compila las restricciones en las máscaras que leen los operadores de diseño"
+entry = "R-32"
+action = "A"
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.res_verify_constraints"
+label.en = "Verify a design by zone…"
+label.es = "Verificar un diseño por recinto…"
+description.en = "Cut and fill of a design surface inside each constraint zone, in cubic metres"
+description.es = "Corte y relleno de una superficie de diseño dentro de cada recinto, en metros cúbicos"
+entry = "R-32"
+action = "D"
+frequency = 3
+
 # Parámetros ----------------------------------------------------------------------------
 [[menu.group]]
 label.en = "Parameters"

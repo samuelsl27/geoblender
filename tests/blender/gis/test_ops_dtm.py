@@ -303,7 +303,9 @@ class DtmImportTest(DtmOperatorsCase):
                      "gis.xyz_grid"])
 
         def ours() -> tuple[list[str], list[str]]:
-            return (sorted(key for key in contract.OPERATIONS if key.startswith("gis.")),
+            # La compilación de las restricciones (spec 012, T21) es de la 012: se prueba aparte.
+            return (sorted(key for key in contract.OPERATIONS if key.startswith("gis.")
+                           and key != "gis.compile_constraints"),
                     sorted(key for key in contract.IMPORTERS if key.startswith("gis.")))
 
         self.assertEqual(ours(), expected)

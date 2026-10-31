@@ -58,8 +58,9 @@ class LayerTinTest(TinOperatorsCase):
                 self.assertIsNotNone(cls)
                 self.assertFalse(commands.is_provisional(cls))
                 self.assertTrue(commands.is_available(idname))
-        self.assertEqual(sorted(key for key in contract.OPERATIONS if key.startswith("gis.")),
-                         OPERATIONS)
+        # La compilación de las restricciones (spec 012, T21) es de la 012: se prueba aparte.
+        self.assertEqual(sorted(key for key in contract.OPERATIONS if key.startswith("gis.")
+                                and key != "gis.compile_constraints"), OPERATIONS)
         self.assertEqual(sorted(key for key in contract.IMPORTERS if key.startswith("gis.")),
                          IMPORTERS)
         for op_type in OPERATIONS:

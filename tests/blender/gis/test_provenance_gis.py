@@ -54,9 +54,12 @@ CDT_MAX_S = "gis.tin.blender_cdt_max_s"
 CONTOUR_PARAMS = ["gis.contours.index_every_m", "gis.contours.index_offset_m",
                   "gis.contours.min_length_m", "gis.contours.simplify_m"]
 OURS = ("gis.", "gis_")  # las claves de la 006 en los registros de core
+COMPILE_CONSTRAINTS = "gis.compile_constraints"  # la de la 012 (T21), con sus pruebas aparte
 TABLE_READER = "lector de tablas"
 COUNTS = {"parámetros": 17, "familias": 0, "lectores": 5, TABLE_READER: 0, "trabajos": 13,
-          "operaciones": 11, "grupos": 0, "cifras": 0, "importadores": 5}
+          "operaciones": 12, "grupos": 0, "cifras": 10, "importadores": 5}
+"""Lo de ``gis`` en ``core``: con la 012 (T21), la compilación de las restricciones
+(``gis.compile_constraints``, 12.ª operación) y sus 10 cifras."""
 
 
 def _other_table_reader(*args: Any, **kwargs: Any) -> Any:
@@ -257,8 +260,9 @@ class GisProvenanceTest(TinOperatorsCase):
     def test_register_and_unregister_leave_core_as_it_was(self) -> None:
         """ADR-0025 §2, principio 8 (RF-006-26, RF-008-09): con la extensión habilitada, la 006
         tiene en ``core`` sus 17 definiciones de parámetros, sus 5 lectores y el lector de
-        tablas de ``interop``, sus 13 tipos de trabajo, sus 11 operaciones y sus 5
-        importadores (ni familias de parámetros, ni grupos ni cifras). ``bl/ops/gis.py`` lo
+        tablas de ``interop``, sus 13 tipos de trabajo, sus 12 operaciones (la 12.ª, la
+        compilación de las restricciones de la 012, T21) y sus 5 importadores y 10 cifras (las
+        de esa compilación; ni familias de parámetros ni grupos). ``bl/ops/gis.py`` lo
         quita todo (dos veces: nada más cambia) y lo vuelve a poner (dos veces) con los mismos
         objetos. Con lo que «otro» registró antes con las mismas claves, registrar pone solo lo
         que falta (lo de otro se queda) y desregistrar deja los registros exactamente como
@@ -305,7 +309,7 @@ class GisProvenanceTest(TinOperatorsCase):
         cat = commands.catalog()
         aware = self.session.ProvenanceAwareOperator
         found = {op_type: defn for op_type, defn in self.contract.OPERATIONS.items()
-                 if defn.module == "gis"}
+                 if defn.module == "gis" and op_type != COMPILE_CONSTRAINTS}  # la 012, aparte
         self.assertEqual(sorted(found),
                          sorted(declared.op_type for declared in self.provenance.OPERATION_TYPES))
         launched: dict[str, set[str]] = {}

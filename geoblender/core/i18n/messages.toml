@@ -6200,3 +6200,18 @@ es = "Intocable o excluido"
 
 ["No movement possible"]
 es = "Sin movimiento posible"
+
+# Límites legales y restricciones (spec 012, T21): el nombre de los tipos de operación de core
+# (bl/ops/core_constraints.py); los de gis y res ya están con sus cifras.
+
+["Edition of the constraints"]
+es = "Edición de las restricciones"
+
+["Declaration of the search sectors"]
+es = "Declaración de los sectores de búsqueda"
+
+["Search of untouchable elements"]
+es = "Búsqueda de elementos intocables"
+
+["Client intentions"]
+es = "Intenciones del cliente"

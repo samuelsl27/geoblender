@@ -50,7 +50,11 @@ from tests.support.trees import temp_folder
 ENTRY = "011"
 ENTRY_TITLE = ("Volumetrics between surfaces", "Cubicación entre superficies")
 OURS = ("res.", "res_")  # las claves de la 011 en los registros de core
-COUNTS = {"parámetros": 3, "familias": 5, "operaciones": 5, "grupos": 0, "cifras": 23}
+VERIFY_CONSTRAINTS = "res.verify_constraints"  # la de la 012 (T21), con sus pruebas aparte
+COUNTS = {"parámetros": 4, "familias": 5, "operaciones": 6, "grupos": 0, "cifras": 28}
+"""Lo de ``res`` en ``core``: la cubicación (3 parámetros, 5 familias, 5 operaciones, 23 cifras) y,
+con la 012 (T21), la verificación por recinto (el espesor mínimo, ``res.verify_constraints`` y sus
+5 cifras)."""
 VERSION_TYPES = ("res.volume", "res.tonnage", "res.difference", "res.stages")
 REPRODUCED = {"res.volume": "reproduce_volume", "res.difference": "reproduce_volume",
               "res.tonnage": "reproduce_tonnage", "res.stages": "reproduce_stages"}
@@ -250,7 +254,8 @@ class ResRegisteredTest(unittest.TestCase):
     def test_register_and_unregister_leave_core_as_it_was(self) -> None:
         """ADR-0025 §2, ADR-0027, principio 8 (RF-011-20): habilitada, la 011 tiene en ``core``
         sus 3 definiciones de parámetros, sus 5 familias, sus 5 tipos de operación y sus 23
-        cifras (ningún grupo acoplado). ``bl/ops/res.py`` lo quita todo (dos veces: nada más
+        cifras (ningún grupo acoplado), y la verificación por recinto de la 012 (T21), su
+        espesor mínimo, su tipo de operación y sus 5 cifras. ``bl/ops/res.py`` lo quita todo (dos veces: nada más
         cambia) y lo vuelve a poner (dos veces) con los mismos objetos. Con lo que «otro»
         registró antes con las mismas claves, registrar pone solo lo que falta (lo de otro se
         queda) y desregistrar deja los registros exactamente como estaban."""
@@ -305,7 +310,7 @@ class ResRegisteredTest(unittest.TestCase):
         self.enterContext(mock.patch.object(_module("reserves"), "reproduce", reproduce,
                                             create=True))
         found = {op_type: defn for op_type, defn in self.m.contract.OPERATIONS.items()
-                 if defn.module == "res"}
+                 if defn.module == "res" and op_type != VERIFY_CONSTRAINTS}  # la 012, aparte
         self.assertEqual(sorted(found), sorted(t.op_type for t in declared.OPERATION_TYPES))
         self.assertEqual(sorted(res_ops.RECOMPUTE), sorted(declared.REPRODUCIBLE))
         self.assertEqual(sorted(res_ops.REPRODUCE), sorted(declared.REPRODUCIBLE))

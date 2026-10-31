@@ -23,6 +23,10 @@ la torre (no cumple):
 - **RF-012-28**: cada paso, ≤ 0,05 s; Esc o un fallo a mitad no dejan nada (ni cifras, ni tablas,
   ni rejillas, ni temporales).
 - Reproducir V01.r1 congelada da las mismas salidas y las mismas cifras, bit a bit.
+- **RF-012-16, RF-008-26 (D-19; T21)**: «Recalcular lo obsoleto» (``recompute_run`` de las máscaras
+  y de la verificación): con las máscaras obsoletas, repetir la verificación se rechaza sin
+  registrar nada; repetidas las máscaras y después la verificación, cada operación nueva sustituye
+  a la anterior y da lo de hoy.
 - **RF-012-25 (D-7, D-29; T18)**: congelar con lo que no cumple. Con la comprobación de ``res``
   registrada (``freeze_findings``), ``freeze_plan`` lista la verificación con zonas que no
   cumplen (con los m³ por zona), la que tiene la marca de búsqueda pendiente, la obsoleta y la
@@ -64,7 +68,9 @@ cmodel = import_geoblender("core.constraints.model")
 constraints_store = import_geoblender("core.constraints.store")
 reproduce = import_geoblender("core.versions.reproduce")
 masks_provenance = import_geoblender("gis.masks.provenance")
+masks_store = import_geoblender("gis.masks.store")
 access = import_geoblender("gis.masks.access")
+recompute_mod = import_geoblender("core.provenance.recompute")
 surfaces = import_geoblender("reserves.surfaces")
 compliance = import_geoblender("reserves.compliance")
 cstore = import_geoblender("reserves.compliance_store")
@@ -294,7 +300,7 @@ class VerifyTest(_VerifyCase):
 
 
 class RejectCancelStaleTest(_VerifyCase):
-    """RF-011-03, RF-012-28, RF-012-24 y D-15 con las máscaras obsoletas."""
+    """RF-011-03, RF-012-28, RF-012-24 y D-15 con las máscaras obsoletas, y su recálculo (T21)."""
 
     def assertNothing(self, before: Any, figures: int) -> None:  # noqa: N802
         self.assertEqual(self.query("SELECT count(*) FROM gb_figure")[0][0], figures)
@@ -375,6 +381,61 @@ class RejectCancelStaleTest(_VerifyCase):
         before = stored.result.finals[1].zone("torre").cut_m3
         after = again.result.finals[1].zone("torre").cut_m3
         self.assertGreater(after, before)
+
+    def request(self, op_type: str, uid: str) -> Any:
+        """La petición de «Recalcular lo obsoleto» de la operación ``uid`` de V01: su tipo y sus
+        ajustes."""
+        (settings,) = self.query("SELECT settings FROM gb_operation WHERE uid = ?", uid)[0]
+        return recompute_mod.RecomputeRequest(
+            self.project, uid, op_type, json.loads(settings), (), (), version=self.v1.uid)
+
+    def test_d_recompute_repeats_the_masks_and_then_the_check(self) -> None:
+        """RF-012-16, RF-008-26, D-19 (A12): cambiar otra vez el resguardo de la torre en V01
+        deja obsoletas las máscaras y la verificación; repetir la verificación antes que las
+        máscaras se rechaza (``MaskError``) sin registrar nada; repetir las máscaras
+        (``gis.masks.store.recompute_run``) y, después, la verificación
+        (``reserves.compliance_store.recompute_run``) empieza cada operación nueva, que sustituye
+        a la anterior en V01 con el nombre y las superficies de sus ajustes, y da lo de hoy: la
+        zona de la torre con 12 m es mayor que con 10 m. Una petición de otro tipo o que no es una
+        petición se rechaza al llamar."""
+        previous = _last(self.steps()).result.finals[1].zone("torre").cut_m3
+        first, compiled = self.ops(cstore.VERIFY)[-1], self.ops(masks_provenance.COMPILE)[-1]
+        self.clock.advance(minutes=1)
+        with self.project.write_transaction() as conn:
+            params.ParameterStore(self.project).change(
+                conn, cparams.buffer_out_key("torre"), value=12.0, reason="Prueba de la 012",
+                version=self.v1.code)
+        verify_request = self.request(cstore.VERIFY, first)
+        operations_before = self.query("SELECT count(*) FROM gb_operation")
+        with self.assertRaises(access.MaskError) as caught:
+            cstore.recompute_run(verify_request)
+        self.assertEqual(caught.exception.code, "core.constraint_masks_stale")
+        self.assertEqual(self.query("SELECT count(*) FROM gb_operation"), operations_before)
+        for function, request in ((cstore.recompute_run, self.request(masks_provenance.COMPILE,
+                                                                       compiled)),
+                                  (masks_store.recompute_run, verify_request)):
+            with self.subTest(function=function.__module__):
+                with self.assertRaises(ValueError):
+                    function(request)
+        for function in (cstore.recompute_run, masks_store.recompute_run):
+            with self.subTest(sin_petición=function.__module__):
+                with self.assertRaises(TypeError):
+                    function(object())  # type: ignore[arg-type]
+
+        handle, steps = masks_store.recompute_run(self.request(masks_provenance.COMPILE,
+                                                               compiled))
+        self.assertEqual(handle.supersedes, compiled)
+        _last(steps)
+        self.assertEqual(access.mask_state(self.project, self.v1.uid)[0],
+                         access.MaskState.CURRENT)
+        handle, steps = cstore.recompute_run(verify_request)
+        self.assertEqual(handle.supersedes, first)
+        again = _last(steps)
+        self.assertEqual(self.query("SELECT status, supersedes_uid FROM gb_operation WHERE "
+                                    "uid = ?", handle.uid), [("done", first)])
+        self.assertEqual(self.ops(cstore.VERIFY)[-1], handle.uid)
+        self.assertEqual(again.result.name, NAME)
+        self.assertGreater(again.result.finals[1].zone("torre").cut_m3, previous)
 
 
 class FreezeFindingsTest(_VerifyCase):

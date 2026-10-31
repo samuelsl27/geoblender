@@ -13,7 +13,11 @@ constantes del módulo construidas una vez:
   ``res.difference`` y ``res.stages``, de la versión, cada uno con su función de recálculo de
   :data:`RECOMPUTE` y la de reproducción de :data:`REPRODUCE`, y ``res.edit_materials``, del
   proyecto) y sus **cifras** (``reserves.provenance.FIGURES``) en ``core.provenance.contract``;
-- sus textos (``reserves.messages``) en ``core.i18n``.
+- sus textos (``reserves.messages``) en ``core.i18n``;
+- (spec 012, T21; RF-012-16) la **verificación por recinto**: el espesor mínimo
+  (``reserves.compliance_store.DEFINITIONS``), el tipo ``res.verify_constraints``
+  (:data:`VERIFY_OPERATION_DEF`, de la versión, con :func:`recompute_verify` y la reproducción de
+  ``reserves.compliance_store``) y sus cinco cifras; su orden llega en la T28.
 
 :func:`register` pone lo que falta y apunta cómo quitarlo; :func:`unregister` quita solo eso, en
 orden inverso: lo que otro registró antes con la misma clave, o puso después en su lugar, es
@@ -147,7 +151,7 @@ from ...core.i18n import format_number, tr
 from ...core.params.store import DEFAULT_SOURCE_PREFIX, shown_value
 from ...core.project.model import Progress
 from ...core.provenance import contract
-from ...core.provenance.operations import CANCEL_REASON_PREFIX, failure_reason
+from ...core.provenance.operations import failure_reason
 from ...core.provenance.undo import UndoKind
 from ...core.units import UnitError, convert, parse_quantity
 from ...gis import provenance as gis_provenance
@@ -155,6 +159,7 @@ from ...gis import store as gis_store
 from ...gis.crs import crs_service_status, reference_label
 from ...gis.messages import GisError
 from ...reserves import materials
+from ...reserves import compliance_store
 from ...reserves import messages as res_messages
 from ...reserves import params as res_params
 from ...reserves import provenance
@@ -172,6 +177,7 @@ from ..scene import versions as scene_versions
 from ..ui import gate, res_panels
 from ..ui import provenance as ui_provenance
 from ..ui.commands import catalog, command_idname, text, with_note
+from . import incorporation
 from . import jobs as jobs_ops
 from .core import _StepsModal
 from .core_provenance import (
@@ -199,14 +205,17 @@ MODULE = provenance.MODULE
 """El módulo de las definiciones, las familias, los tipos y las cifras de la cubicación
 (``res``)."""
 
-RECOMPUTING = "Recomputing «{name}»… {percent} %"
+RECOMPUTING = incorporation.RECOMPUTING
 """Lo que dice la barra de estado de unos pasos de la cola (``msgid`` con ``name`` y
 ``percent``)."""
-DROPPED_REASON = CANCEL_REASON_PREFIX + "se desactivó Geoblender antes de empezar"
+DROPPED_REASON = incorporation.DROPPED_REASON
 """El motivo de una operación cuyos pasos esperaban en la cola sin haber empezado al
 desactivar Geoblender."""
 
 _UNDO: list[Callable[[], None]] = []
+_end = incorporation.end_operation
+"""Deja una operación terminada con ``fail`` o ``cancel`` de su ``OperationHandle`` y un motivo
+(también los modales de las órdenes de esta cubicación)."""
 
 
 # --- La cola de los pasos del recálculo (D-19) ---------------------------------------------------
@@ -225,81 +234,33 @@ def pending_runs() -> list[str]:
 
 
 def _shown_name(handle: Any) -> str:
-    """El nombre de la cubicación de ``handle`` (sus ajustes) o, sin él, su tipo."""
+    """El nombre de la cubicación o de la verificación de ``handle`` (sus ajustes) o, sin él, su
+    tipo."""
     name = (getattr(handle, "settings", None) or {}).get("name")
     return name.strip() if isinstance(name, str) and name.strip() else str(handle.op_type)
 
 
-def _end(stop: Callable[[str], None], reason: str) -> None:
-    """Deja la operación terminada con ``stop`` (``fail`` o ``cancel``) y ``reason``; si ya
-    terminó (sus pasos lo hicieron) o no se puede escribir, lo deja en el registro técnico."""
-    try:
-        stop(reason)
-    except (GeoblenderError, sqlite3.Error, OSError):
-        LOGGER.debug("La operación ya había terminado o no se pudo registrar cómo terminó",
-                     exc_info=True)
-
-
 def _report_warnings(result: object) -> None:
-    """Los avisos del resultado de unos pasos (``StoredVolume``, ``StoredTonnage`` o
-    ``StoredStages``), al registro de Blender en el idioma de Geoblender."""
+    """Los avisos del resultado de unos pasos (``StoredVolume``, ``StoredTonnage``,
+    ``StoredStages`` o ``StoredCheck``, este con los de cada final), al registro de Blender en
+    el idioma de Geoblender."""
     found = getattr(result, "result", None)
     if found is None:
         found = getattr(result, "outputs", None)
-    for notice in getattr(found, "warnings", None) or ():
+    notices = list(getattr(found, "warnings", None) or ())
+    for final in getattr(found, "finals", None) or ():
+        notices += getattr(final, "notices", None) or ()
+    for notice in notices:
         jobs_ops.report_later("WARNING", notice.text(i18n.language()))
-
-
-class _Steps:
-    """Los pasos de una operación de ``res`` en la cola: cada uno da su avance (0–1). Si fallan,
-    la operación queda «fallida» con el motivo y se acaban; al cerrarlos (desregistrar), los
-    empezados se cierran (su operación la cancelan ellos) y, si no empezaron, la operación
-    queda «cancelada» con :data:`DROPPED_REASON`."""
-
-    def __init__(self, handle: OperationHandle, name: str, steps: Iterator[Progress]) -> None:
-        self._handle = handle
-        self._name = name
-        self._steps = steps
-        self._started = False
-        self._finished = False
-
-    def __iter__(self) -> _Steps:
-        return self
-
-    def __next__(self) -> float:
-        if self._finished:
-            raise StopIteration
-        self._started = True
-        try:
-            step = next(self._steps)
-        except StopIteration:
-            self._finished = True
-            raise
-        except Exception as error:  # noqa: BLE001 - la operación queda fallida, sigue la cola
-            self._finished = True
-            LOGGER.exception("El recálculo de «%s» (%s) se ha parado", self._name,
-                             self._handle.uid)
-            _end(self._handle.fail, failure_reason(error))
-            raise StopIteration from None
-        if step.result is not None:
-            _report_warnings(step.result)
-        return step.done / step.total if step.total else 0.0
-
-    def close(self) -> None:
-        """Cierra los pasos (desregistrar): véase la clase."""
-        if not self._started and not self._finished:
-            _end(self._handle.cancel, DROPPED_REASON)
-        self._finished = True
-        close = getattr(self._steps, "close", None)
-        if callable(close):
-            close()
 
 
 def queue_steps(handle: OperationHandle, steps: Iterator[Progress]) -> None:
     """Pone en la cola de ``res`` los pasos ``steps`` (``Progress``) de la operación ``handle``,
     «en curso», y registra su temporizador si no lo estaba."""
     name = _shown_name(handle)
-    RUNS.add(handle.uid, name, _Steps(handle, name, steps), status=RECOMPUTING)
+    RUNS.add(handle.uid, name,
+             incorporation.RecomputeSteps(handle, name, steps, report=_report_warnings),
+             status=RECOMPUTING)
 
 
 def _recompute(request: RecomputeRequest) -> OperationHandle:
@@ -353,6 +314,15 @@ def reproduce_stages(request: ReproduceRequest) -> Iterator[Progress]:
     return reproduce.reproduce_stages(request)
 
 
+def recompute_verify(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``res.verify_constraints`` (RF-008-26; RF-012-16, RF-012-24; D-19): la
+    verificación nueva (``reserves.compliance_store.recompute_run``, con las máscaras de hoy de su
+    versión), «en curso», con sus pasos en la cola de ``res``."""
+    handle, steps = compliance_store.recompute_run(request)
+    queue_steps(handle, steps)
+    return handle
+
+
 # --- Declaraciones de la procedencia (ADR-0025 §2; plan §5.2.3) ---------------------------------
 
 RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = MappingProxyType({
@@ -371,8 +341,19 @@ REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]] = Mapp
 """La función de reproducción de cada tipo de ``res`` que se repite solo (RF-009-11)."""
 OPERATION_DEFS: tuple[contract.OperationDef, ...] = provenance.operation_defs(RECOMPUTE,
                                                                               REPRODUCE)
-"""Los ``OperationDef`` de los cinco tipos de ``res``, en el orden de
+"""Los ``OperationDef`` de los cinco tipos de ``res`` de la cubicación (spec 011), en el orden de
 ``reserves.provenance.OPERATION_TYPES``."""
+VERIFY_OPERATION_DEF: contract.OperationDef = compliance_store.operation_def(
+    recompute_verify, compliance_store.REPRODUCE[compliance_store.VERIFY])
+"""El ``OperationDef`` de ``res.verify_constraints`` (spec 012, T21; RF-012-16): de la versión,
+repetible, con :func:`recompute_verify`, la reproducción de ``reserves.compliance_store`` y la
+tolerancia de sus cifras. Su orden (``geoblender.res_verify_constraints``) llega en la T28."""
+DEFINITIONS: tuple[core_params.ParamDef, ...] = (*res_params.DEFINITIONS,
+                                                 *compliance_store.DEFINITIONS)
+"""Las definiciones de parámetros del proyecto de ``res``: las de la cubicación y el espesor
+mínimo de la verificación por recinto (spec 012)."""
+FIGURES: tuple[contract.FigureDef, ...] = (*provenance.FIGURES, *compliance_store.FIGURES)
+"""Las cifras de ``res``: las de la cubicación y las de la verificación por recinto."""
 
 
 # --- Registro --------------------------------------------------------------------------------
@@ -380,11 +361,11 @@ OPERATION_DEFS: tuple[contract.OperationDef, ...] = provenance.operation_defs(RE
 
 def register() -> None:
     """Instala los textos de la cubicación en ``core.i18n`` y registra sus definiciones de
-    parámetros, sus familias, sus tipos de operación (:data:`OPERATION_DEFS`) y sus cifras que
+    parámetros (:data:`DEFINITIONS`), sus familias, sus tipos de operación
+    (:data:`OPERATION_DEFS` y :data:`VERIFY_OPERATION_DEF`) y sus cifras (:data:`FIGURES`) que
     aún no están; idempotente."""
     i18n.install(res_messages.CATALOG_ES)
-    missing = tuple(defn for defn in res_params.DEFINITIONS
-                    if defn.key not in core_params.DEFINITIONS)
+    missing = tuple(defn for defn in DEFINITIONS if defn.key not in core_params.DEFINITIONS)
     if missing:
         core_params.register_definitions(missing)
         _UNDO.append(functools.partial(_unregister_definitions, missing))
@@ -393,12 +374,12 @@ def register() -> None:
     if families:
         core_params.register_families(families)
         _UNDO.append(functools.partial(_unregister_families, families))
-    for definition in OPERATION_DEFS:
+    for definition in (*OPERATION_DEFS, VERIFY_OPERATION_DEF):
         if definition.op_type not in contract.OPERATIONS:
             contract.register_operation(definition)
             _UNDO.append(_unregister_if(contract.OPERATIONS, definition.op_type, definition,
                                         contract.unregister_operation))
-    for figure in provenance.FIGURES:
+    for figure in FIGURES:
         if figure.key not in contract.FIGURES:
             contract.register_figure(figure)
             _UNDO.append(_unregister_if(contract.FIGURES, figure.key, figure,
