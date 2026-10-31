@@ -13,8 +13,8 @@ TOP-05), con ``GDAL_PAM_ENABLED=NO`` (sin ``.aux.xml``) y sin escribir ``__pycac
 Las pruebas de la 002 solo leen con GDAL. Las de la 008 editan con él, como QGIS, un
 GeoPackage de una carpeta temporal (una fuente o el proyecto de la prueba): :func:`edit_gpkg`
 aplica en un solo proceso del Python de QGIS las ediciones de :func:`resave_layer`,
-:func:`move_vertex`, :func:`set_field` y :func:`change_field_type`, cada una abriendo y
-cerrando el GeoPackage, y dice de cada una si GDAL la dio por buena o el error con que falló.
+:func:`move_vertex`, :func:`set_field`, :func:`change_field_type` y :func:`set_geometry`, cada
+una abriendo y cerrando el GeoPackage, y dice de cada una si GDAL la dio por buena o el error con que falló.
 
 El recurso ``qgis`` (:data:`QGIS`, ``tests.support.resources``) está disponible si la
 variable apunta a una carpeta con ``bin\\ogrinfo.exe`` y un Python en ``apps\\Python3*``
@@ -358,8 +358,15 @@ def change_field_type(dataset, edit):
     layer.AlterFieldDefn(index, field, ogr.ALTER_TYPE_FLAG)
 
 
+def set_geometry(dataset, edit):
+    layer = dataset.GetLayerByName(edit["layer"])
+    feature = find(layer, edit["where"])
+    feature.SetGeometry(ogr.CreateGeometryFromWkt(edit["wkt"]))
+    layer.SetFeature(feature)
+
+
 EDITS = {name: globals()[name] for name in ("resave_layer", "move_vertex", "set_field",
-                                            "change_field_type")}
+                                            "change_field_type", "set_geometry")}
 results = []
 for edit in json.loads(sys.argv[1]):
     try:
@@ -426,10 +433,17 @@ def change_field_type(path: str | os.PathLike[str], layer: str, field: str,
     return _edit("change_field_type", path, layer, field=field, type=field_type)
 
 
+def set_geometry(path: str | os.PathLike[str], layer: str, where: tuple[str, Any],
+                 wkt: str) -> dict[str, Any]:
+    """Sustituye la geometría de la entidad cuyo campo ``where[0]`` vale ``where[1]`` por la del
+    texto WKT ``wkt`` (spec 012, T20: redibujar un perímetro en QGIS), con el SRS de la capa."""
+    return _edit("set_geometry", path, layer, where=list(where), wkt=wkt)
+
+
 def edit_gpkg(*edits: Mapping[str, Any]) -> EditOutcome:
-    """Aplica ``edits`` (de :func:`resave_layer`, :func:`move_vertex`, :func:`set_field` y
-    :func:`change_field_type`) en su orden con el GDAL de QGIS, en un solo proceso de su
-    Python; cada una abre el GeoPackage en escritura y lo cierra. :class:`RuntimeError` si el
+    """Aplica ``edits`` (de :func:`resave_layer`, :func:`move_vertex`, :func:`set_field`,
+    :func:`change_field_type` y :func:`set_geometry`) en su orden con el GDAL de QGIS, en un
+    solo proceso de su Python; cada una abre el GeoPackage en escritura y lo cierra. :class:`RuntimeError` si el
     proceso no termina bien (una edición que GDAL rechaza no lo es: queda en su resultado)."""
     result = run_python("-c", EDIT_SCRIPT, json.dumps([dict(edit) for edit in edits]))
     if result.returncode != 0:

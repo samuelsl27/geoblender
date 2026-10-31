@@ -45,6 +45,7 @@ from tests.support.provenance_contract import registered
 model = import_geoblender("core.constraints.model")
 cparams = import_geoblender("core.constraints.params")
 cstore = import_geoblender("core.constraints.store")
+cstyles = import_geoblender("core.constraints.styles")
 
 T = model.ConstraintType
 G = model.GeometryKind
@@ -160,9 +161,11 @@ def edit_constraints(project: Any, rows: Sequence[Any], *, sector_rows: Sequence
                                         executor="blender")
     with project.write_transaction() as conn:
         cstore.create_tables(conn, srs)
+        styled = cstyles.write_styles(conn, cstore.CONSTRAINT_LAYERS.values())
         cstore.write_constraints(conn, rows, srs_id=srs)
         cstore.write_sectors(conn, sector_rows, srs_id=srs)
-        handle.complete(conn, outputs=cstore.dataset_specs(crs_epsg=srs),
+        handle.complete(conn, outputs=(*cstore.dataset_specs(crs_epsg=srs),
+                                       *(cstyles.dataset_spec() for _ in styled)),
                         message="Restricciones de prueba")
     return handle.uid
 

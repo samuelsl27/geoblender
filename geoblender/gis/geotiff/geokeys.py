@@ -15,8 +15,13 @@ RF-006-08, RF-006-09; ADR-0020), con biblioteca estándar.
 - :func:`parse_gdal_metadata`: escala, offset y unidad de las cotas de la banda 1 en
   ``GDAL_METADATA`` (42112, XML), leídos con expresiones regulares: sin analizador XML, sin
   entidades que expandir.
+- :func:`parse_gdal_items`: los elementos de texto del propio fichero (``<Item name="…">``
+  sin ``sample`` ni ``role``) de ``GDAL_METADATA``, como los lee GDAL en su dominio por
+  defecto (spec 012, T20: la leyenda de la rejilla de clases).
 - Para el escritor: :func:`encode_geokeys` (el ``GeoKeyDirectory`` de claves con un valor
-  entero, ordenadas) y :func:`format_nodata` (el texto de ``GDAL_NODATA``).
+  entero, ordenadas), :func:`format_nodata` (el texto de ``GDAL_NODATA``) y
+  :func:`format_gdal_metadata` (el XML de ``GDAL_METADATA`` con elementos de texto, en ASCII
+  puro: lo que no es ASCII va como referencia numérica de XML, ``&#225;``).
 
 Un directorio mal formado (corto, de otra versión o que apunta fuera de su etiqueta) es
 :class:`GeoKeyError` (``ValueError``), y un sin dato que no es un número, ``ValueError``;
@@ -25,10 +30,12 @@ el lector los convierte en errores para el usuario con el fichero.
 
 from __future__ import annotations
 
+import html
 import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from xml.sax.saxutils import escape
 
 __all__ = [
     "GEOGRAPHIC_TYPE",
@@ -48,7 +55,9 @@ __all__ = [
     "GeoKeyError",
     "GeoKeyValue",
     "encode_geokeys",
+    "format_gdal_metadata",
     "format_nodata",
+    "parse_gdal_items",
     "parse_gdal_metadata",
     "parse_geokeys",
     "parse_nodata",
@@ -83,6 +92,9 @@ type GeoKeyValue = int | str | tuple[float, ...] | tuple[int, ...]
 
 _ITEM = re.compile(r"<Item\b([^>]*)>([^<]*)</Item>", re.IGNORECASE)
 _ATTRIBUTE = re.compile(r"""(\w+)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+_ITEM_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*\Z")
+_XML_FORBIDDEN = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]")
+"""Los caracteres que XML 1.0 no admite ni como referencia."""
 
 
 class GeoKeyError(ValueError):
@@ -173,6 +185,48 @@ def format_nodata(value: float) -> str:
     if value.is_integer() and abs(value) <= _EXACT_INTEGER:
         return str(int(value))
     return repr(value)
+
+
+def format_gdal_metadata(items: Mapping[str, str]) -> str:
+    """El XML de ``GDAL_METADATA`` con un elemento de texto por entrada de ``items`` (nombre →
+    texto), en su orden y en ASCII puro: ``<`` y ``>`` escapados y todo lo que no es ASCII (o es
+    un retorno de carro) como referencia numérica, que GDAL y :func:`parse_gdal_items`
+    devuelven igual. ``ValueError`` si un nombre no es un identificador
+    (``[A-Za-z_][A-Za-z0-9_.]*``) o un texto lleva un carácter que XML no admite o un ``&``
+    (GDAL 3.13 desescapa dos veces los valores y corta el texto en el primero: ``docs/trampas.md``
+    §6); ``TypeError`` si un texto no es un ``str``."""
+    lines = ["<GDALMetadata>"]
+    for name, value in items.items():
+        if not isinstance(name, str) or _ITEM_NAME.match(name) is None:
+            raise ValueError(
+                f"el nombre de un metadato es un identificador ([A-Za-z_][A-Za-z0-9_.]*), "
+                f"no {name!r}"
+            )
+        if not isinstance(value, str):
+            raise TypeError(f"el metadato «{name}» es un texto, no {value!r}")
+        if _XML_FORBIDDEN.search(value):
+            raise ValueError(f"el metadato «{name}» lleva un carácter de control que XML no admite")
+        if "&" in value:
+            raise ValueError(f"el metadato «{name}» lleva un «&», que GDAL lee mal: escriba «y» o "
+                             "«+»")
+        text = escape(value).replace("\r", "&#13;")
+        lines.append(f'  <Item name="{name}">{text.encode("ascii", "xmlcharrefreplace").decode()}'
+                     "</Item>")
+    lines.append("</GDALMetadata>")
+    return "\n".join(lines) + "\n"
+
+
+def parse_gdal_items(text: str) -> dict[str, str]:
+    """Los elementos de texto del propio fichero de ``GDAL_METADATA`` (los ``<Item name="…">``
+    sin ``sample`` ni ``role``: los de la banda o con función, como la escala, no), nombre →
+    texto sin escapar, en su orden."""
+    found: dict[str, str] = {}
+    for attributes, content in _ITEM.findall(text):
+        attrs = {m[0].lower(): m[1] or m[2] for m in _ATTRIBUTE.findall(attributes)}
+        if "sample" in attrs or "role" in attrs or "name" not in attrs:
+            continue
+        found[attrs["name"]] = html.unescape(content)
+    return found
 
 
 @dataclass(frozen=True, slots=True)

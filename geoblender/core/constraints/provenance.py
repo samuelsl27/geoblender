@@ -33,8 +33,10 @@
   (:class:`IntentionMapping`). Ninguna máscara ni ninguna verificación las lee (error 30).
 
 Las cuatro son de proyecto y no se repiten solas (una búsqueda es una decisión de una persona,
-D-26). Importar este módulo no registra nada: lo registra ``bl`` (:data:`OPERATIONS`); las
-pruebas, a mano. La geometría (validar la capa, el área sin sector, la búsqueda) y la lectura
+D-26). Las que crean las tablas (todas, la primera vez) escriben además el estilo por defecto de
+las tres capas de restricciones en ``layer_styles`` y lo declaran como salida
+(``core_layer_styles``, :mod:`.styles`; D-32, RF-012-20). Importar este módulo no registra
+nada: lo registra ``bl`` (:data:`OPERATIONS`); las pruebas, a mano. La geometría (validar la capa, el área sin sector, la búsqueda) y la lectura
 de las capas la hace ``gis.masks`` (``sectors``, ``sources``), que llama a estas funciones.
 Python puro (``core``).
 """
@@ -42,6 +44,7 @@ Python puro (``core``).
 from __future__ import annotations
 
 import math
+import sqlite3
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -72,6 +75,7 @@ from .model import (
 )
 from .params import SEARCH_DISTANCE, family, param_key
 from .store import (
+    CONSTRAINT_LAYERS,
     HIT_TABLE,
     INTENTION_TABLE,
     SEARCH_TABLE,
@@ -85,6 +89,8 @@ from .store import (
     write_constraints,
     write_intentions,
 )
+from .styles import dataset_spec as styles_spec
+from .styles import write_styles
 
 __all__ = [
     "DECLARE_SECTORS",
@@ -169,11 +175,20 @@ def layer_role(position: int) -> str:
     return f"layer_{position}"
 
 
+def _create_tables(conn: sqlite3.Connection, srs: int) -> tuple[str, ...]:
+    """Crea las tablas que faltan y escribe el estilo por defecto de las capas de restricciones
+    que no lo tengan (D-32; también si las capas ya estaban: así no queda ninguna sin él).
+    Devuelve lo creado: las tablas y, si escribió estilos, el dato ``core_layer_styles``."""
+    created = create_tables(conn, srs)
+    return (*created, *write_styles(conn, CONSTRAINT_LAYERS.values()))
+
+
 def _outputs(created: Sequence[str], written: Sequence[str], srs: int) -> tuple[DatasetSpec, ...]:
     """Los datos que registra la operación: los que escribe y las tablas que acaba de crear
-    (vacías, para que no queden sin registrar)."""
+    (vacías, para que no queden sin registrar), con los estilos de las capas si los escribió."""
     chosen = set(created) | set(written)
-    return tuple(spec for spec in dataset_specs(crs_epsg=srs) if spec.name in chosen)
+    return tuple(spec for spec in (*dataset_specs(crs_epsg=srs), styles_spec())
+                 if spec.name in chosen)
 
 
 def declare_sectors(project: OperationProject, sectors: Sequence[Sector], *,
@@ -199,7 +214,7 @@ def declare_sectors(project: OperationProject, sectors: Sequence[Sector], *,
                              executor="blender")
     try:
         with project.write_transaction() as conn:
-            created = create_tables(conn, srs)
+            created = _create_tables(conn, srs)
             replace_sectors(conn, sectors, srs_id=srs)
             handle.complete(conn, outputs=_outputs(created, (SECTOR_TABLE,), srs),
                             message=f"{len(sectors)} sectores de búsqueda declarados")
@@ -251,7 +266,7 @@ def close_search(project: OperationProject, *, sector_code: str, sector_sha256: 
                           float(distance_m), closed_by.strip(), handle.started_at)
     try:
         with project.write_transaction() as conn:
-            created = create_tables(conn, srs)
+            created = _create_tables(conn, srs)
             append_search(conn, record, [replace(hit, search_uid=record.uid) for hit in hits])
             handle.complete(conn, outputs=_outputs(created, (SEARCH_TABLE, HIT_TABLE), srs),
                             message=f"Búsqueda de intocables cerrada: {len(hits)} halladas")
@@ -564,7 +579,7 @@ def edit_constraints(project: OperationProject, rows: Sequence[Constraint], *,
                              executor="blender")
     try:
         with project.write_transaction() as conn:
-            created = create_tables(conn, srs)
+            created = _create_tables(conn, srs)
             taken = taken_codes(conn)
             coded: list[Constraint] = []
             fresh: set[str] = set()
@@ -851,7 +866,7 @@ def edit_intentions(project: OperationProject, rows: Sequence[Intention], *, sou
                              executor="blender")
     try:
         with project.write_transaction() as conn:
-            created = create_tables(conn, srs)
+            created = _create_tables(conn, srs)
             fids = write_intentions(conn, rows, srs_id=srs)
             written = tuple(replace(row, fid=fid) for row, fid in zip(rows, fids, strict=True))
             handle.complete(conn, outputs=_outputs(created, (INTENTION_TABLE,), srs),

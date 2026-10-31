@@ -11,6 +11,9 @@ A1–A5; ADR-0028). Dominio puro (nivel 2): numpy y la geometría 2D propia de `
 - ``gis.masks.overlay``: el informe de los límites (áreas en m² y ha, la franja con sus partes y
   lo que queda fuera de la rejilla; A4).
 
+- ``gis.masks.export`` (no se reexporta aquí): la rejilla de clases registrada como GeoTIFF
+  entregable con su leyenda en español, en sus metadatos y en un ``.qml`` paletado (RF-012-20).
+
 Los demás módulos (compilar, guardar y la interfaz de los operadores) los
 añaden las tareas siguientes de la 012.
 """

@@ -211,6 +211,14 @@ CATALOG: tuple[Message, ...] = (
         "Las máscaras de {version} están obsoletas: cambió una restricción, un sector, una "
         "búsqueda o un parámetro después de compilarlas; compílelas de nuevo ({command}).",
     ),
+    # Exportar las máscaras (RF-012-20; gis.masks.export) --------------------------------------
+    Message(
+        "core.constraint_export_read_only",
+        "The project «{project}» is open read-only: export «{value}» outside the project; "
+        "nothing has been written.",
+        "El proyecto «{project}» está abierto en solo lectura: exporte «{value}» fuera del "
+        "proyecto; no se ha escrito nada.",
+    ),
     # Al escribir las filas (D-22; store.py) ---------------------------------------------------
     Message(
         "core.constraint_code_taken",

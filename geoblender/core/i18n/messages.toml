@@ -6170,3 +6170,33 @@ es = "Área sin dato en el recinto"
 
 ["Weighted volume in the area to avoid"]
 es = "Volumen ponderado en la zona preferible no afectar"
+
+# Límites legales y restricciones (spec 012, T20): la leyenda de la rejilla de clases (D-25) ---
+# («Preferably avoid», «Restoration only» y «Requires access» ya están, con los tipos)
+
+["No class"]
+es = "Sin clase"
+
+["Cut allowed"]
+es = "Corte admitido"
+
+["Fill allowed"]
+es = "Relleno admitido"
+
+["Fill-only strip"]
+es = "Franja de solo relleno"
+
+["Inside the action perimeter"]
+es = "Dentro del perímetro de actuación"
+
+["Inside the legal limit"]
+es = "Dentro del límite legal"
+
+["Inward buffer band of the legal limit"]
+es = "Banda de resguardo hacia dentro del límite legal"
+
+["Untouchable or excluded"]
+es = "Intocable o excluido"
+
+["No movement possible"]
+es = "Sin movimiento posible"

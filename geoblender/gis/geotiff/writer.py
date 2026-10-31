@@ -20,6 +20,11 @@ oeste, norte, 0) con los float64 de la rejilla; claves 1024 = 1 (proyectado), 10
 tiene (una referencia local no se escribe: el proyecto la guarda con el dataset). Sin
 ``DateTime`` ni ``Software``: el mismo ráster da los mismos bytes.
 
+Con ``metadata`` (spec 012, T20: la leyenda de la rejilla de clases) se añade la etiqueta
+``GDAL_METADATA`` (42112) con un elemento de texto por entrada (``geokeys.format_gdal_metadata``:
+ASCII puro; lo que no lo es va como referencia numérica de XML); sin ella (omitida, ``None`` o
+vacía), el fichero es el mismo, bit a bit, que antes.
+
 Disposición: cabecera (:data:`DATA_OFFSET` bytes reservados, los de una de BigTIFF), las
 teselas comprimidas una tras otra y, al final, el IFD con sus valores. Los desplazamientos se
 calculan en dos pasadas: primero las teselas y después el IFD; así se sabe el tamaño total
@@ -47,7 +52,7 @@ from __future__ import annotations
 
 import math
 import os
-from collections.abc import Generator, Iterator
+from collections.abc import Generator, Iterator, Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -147,6 +152,7 @@ def write_geotiff(
     temporary: Path | str | None = None,
     replace: bool = True,
     bigtiff_threshold: int = BIGTIFF_THRESHOLD,
+    metadata: Mapping[str, str] | None = None,
     progress: Progress | None = None,
     cancelled: Cancelled | None = None,
 ) -> Path:
@@ -156,10 +162,11 @@ def write_geotiff(
     ``path`` no se toca (lo pone en su sitio quien llama). Devuelve lo escrito: ``path`` o,
     sin ``replace``, el temporal. ``GisError`` si una cota no se puede entregar en float32, si
     el destino está bloqueado o si falla el disco; ``JobCancelled`` si ``cancelled()`` pide
-    parar (se pregunta antes de cada tesela). ``raster`` no se modifica. Recorre de una vez
-    los pasos de :func:`write_steps`."""
+    parar (se pregunta antes de cada tesela). ``raster`` no se modifica. ``metadata``: textos
+    del fichero (nombre → texto; véase el módulo). Recorre de una vez los pasos de
+    :func:`write_steps`."""
     steps = write_steps(raster, path, profile=profile, temporary=temporary, replace=replace,
-                        bigtiff_threshold=bigtiff_threshold)
+                        bigtiff_threshold=bigtiff_threshold, metadata=metadata)
     name = Path(path).name
     total = _tile_count(raster, TILE_SIZE)
     index = 0
@@ -186,6 +193,7 @@ def write_steps(
     temporary: Path | str | None = None,
     replace: bool = True,
     bigtiff_threshold: int = BIGTIFF_THRESHOLD,
+    metadata: Mapping[str, str] | None = None,
 ) -> Generator[float, None, Path]:
     """:func:`write_geotiff` por pasos (plan 011 T4 y A10; RNF-011-04): **los mismos bytes**,
     el mismo temporal y el mismo renombrado, con **un paso por tesela**. Cada ``next()``
@@ -195,10 +203,10 @@ def write_steps(
     (``path`` o, sin ``replace``, el temporal): ``escrito = yield from write_steps(...)``.
 
     Lo que no se puede escribir (otro objeto, otro perfil, el destino como temporal, una cota
-    que no se puede entregar en float32) se rechaza **al llamar**, antes de ningún paso y sin
-    crear nada. Cerrar el generador a mitad (``close()``: Esc) o un fallo en un paso borran el
-    temporal y dejan el destino anterior intacto; el destino bloqueado es
-    ``gis.raster_target_locked`` y un fallo del disco, ``gis.raster_write_failed``, como en
+    que no se puede entregar en float32, un metadato mal formado) se rechaza **al llamar**,
+    antes de ningún paso y sin crear nada. Cerrar el generador a mitad (``close()``: Esc) o un
+    fallo en un paso borran el temporal y dejan el destino anterior intacto; el destino bloqueado
+    es ``gis.raster_target_locked`` y un fallo del disco, ``gis.raster_write_failed``, como en
     :func:`write_geotiff`. El lado de las teselas es el de :data:`TILE_SIZE` al llamar.
     ``raster`` no se modifica, y no debe cambiar mientras duran los pasos."""
     if not isinstance(raster, Raster):
@@ -207,6 +215,7 @@ def write_steps(
         raise TypeError(f"«replace» es verdadero o falso, no {replace!r}")
     chosen = _PROFILES[WriteProfile(profile)]
     threshold = check_bigtiff_threshold(bigtiff_threshold)
+    text = geokeys.format_gdal_metadata(metadata) if metadata else None
     path = Path(path)
     name = path.name
     if chosen.dtype == np.float32:
@@ -215,7 +224,8 @@ def write_steps(
     if temporary == path:
         raise ValueError(f"el temporal de «{name}» no puede ser el propio destino")
     check_path_length(temporary, obj=name)
-    return _steps(raster, path, temporary, replace, _Layout(chosen, threshold, TILE_SIZE))
+    return _steps(raster, path, temporary, replace,
+                  _Layout(chosen, threshold, TILE_SIZE, text))
 
 
 def target_locked(name: str) -> GisError:
@@ -284,12 +294,14 @@ def _check_deliverable(values: np.ndarray, name: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class _Layout:
-    """Lo que fija los bytes además del ráster: el perfil, el umbral de BigTIFF y el lado de
-    las teselas (el de :data:`TILE_SIZE` al empezar)."""
+    """Lo que fija los bytes además del ráster: el perfil, el umbral de BigTIFF, el lado de
+    las teselas (el de :data:`TILE_SIZE` al empezar) y el XML de ``GDAL_METADATA`` (``None``:
+    sin la etiqueta)."""
 
     profile: _Profile
     threshold: int
     tile: int
+    metadata: str | None = None
 
 
 def _tile_count(raster: Raster, size: int) -> int:
@@ -386,6 +398,9 @@ def _entries(
     grid = raster.grid
     profile = layout.profile
     pointer = tiff.LONG8 if bigtiff else tiff.LONG
+    described: list[tiff.IfdEntry] = (
+        [] if layout.metadata is None else [(tiff.GDAL_METADATA, tiff.ASCII, layout.metadata)]
+    )
     return [
         (tiff.IMAGE_WIDTH, tiff.LONG, [grid.ncols]),
         (tiff.IMAGE_LENGTH, tiff.LONG, [grid.nrows]),
@@ -403,6 +418,7 @@ def _entries(
         (tiff.MODEL_PIXEL_SCALE, tiff.DOUBLE, [grid.dx, grid.dy, 0.0]),
         (tiff.MODEL_TIEPOINT, tiff.DOUBLE, [0.0, 0.0, 0.0, grid.west, grid.north, 0.0]),
         (tiff.GEO_KEY_DIRECTORY, tiff.SHORT, geokeys.encode_geokeys(_keys(raster))),
+        *described,
         (tiff.GDAL_NODATA, tiff.ASCII, geokeys.format_nodata(profile.nodata)),
     ]
 
