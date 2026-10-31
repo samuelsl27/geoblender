@@ -444,17 +444,27 @@ def _conflicts(blocked: Runs, candidates: list[tuple[str, Runs]], grid: Grid,
     if len(blocked) == 0:
         return ()
     rows, cols = _cells(blocked)
-    keys = rows * grid.ncols + cols
-    member = np.zeros((keys.size, len(candidates)), dtype=bool)
+    keys = rows * grid.ncols + cols  # ascendentes: las celdas salen por fila y columna
+    # Las celdas con las mismas causas, por refinamiento de grupos: cada causa parte los grupos
+    # que toca en lo que está dentro y lo que no. Cuesta lo que suman las intersecciones, no
+    # celdas bloqueadas × causas (la matriz celda × causa tardaba 8 s con 500 recintos).
+    label = np.zeros(keys.size, dtype=np.int64)
+    causes_of: list[tuple[int, ...]] = [()]
     for index, (_, runs) in enumerate(candidates):
         r, c = _cells(runs.intersection(blocked))
-        member[:, index] = np.isin(keys, r * grid.ncols + c)
-    groups, inverse = np.unique(member, axis=0, return_inverse=True)
-    inverse = inverse.ravel()
+        if r.size == 0:
+            continue
+        at = np.searchsorted(keys, r * grid.ncols + c)  # lo que cruza está en lo bloqueado
+        touched, inverse = np.unique(label[at], return_inverse=True)
+        first = len(causes_of)
+        causes_of.extend((*causes_of[old], index) for old in touched.tolist())
+        label[at] = first + inverse.ravel()
+    order = np.argsort(label, kind="stable")  # dentro de un grupo, sus celdas siguen en orden
+    starts = np.flatnonzero(np.diff(label[order], prepend=-1))
     found = []
-    for group, flags in enumerate(groups):
-        mine = inverse == group
-        causes = _by_priority((candidates[k][0] for k in np.flatnonzero(flags)), zones)
+    for begin, end in zip(starts.tolist(), [*starts[1:].tolist(), order.size], strict=True):
+        mine = order[begin:end]
+        causes = _by_priority((candidates[k][0] for k in causes_of[int(label[mine[0]])]), zones)
         runs = Runs(rows[mine], cols[mine], cols[mine] + 1)
         found.append(Conflict(causes, runs, runs.area(grid)))
     found.sort(key=lambda c: (-c.runs.cells, c.causes))

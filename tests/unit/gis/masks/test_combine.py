@@ -18,6 +18,7 @@ RF-012-14, RF-012-15; plan 012 A2, A3, D-11, D-13, D-14 y D-25).
   longitud, un punto sin resguardo o un código repetido impiden combinar, con la lista de todas.
 """
 
+import time
 import unittest
 from datetime import date
 
@@ -25,6 +26,7 @@ import numpy as np
 
 from tests.support import constraints_fixtures as fx
 from tests.support.package import import_geoblender
+from tests.support.timing import least_of
 
 gis = import_geoblender("gis")
 model = import_geoblender("core.constraints.model")
@@ -340,6 +342,107 @@ class InvalidConstraintsTest(unittest.TestCase):
         prepared = combine.prepare(items, resolved_for(
             items, active={"r_vacia": False, "r_lazo": False}), GRID)
         self.assertEqual(list(prepared.zones), ["r_concesion"])
+
+
+def _dense_conflicts(blocked, candidates, grid, zones):
+    """La referencia: los conflictos con una matriz celda × causa y ``np.unique`` por filas (como
+    se hacían antes del HITO H1; tarda lo que cuestan K celdas × C causas)."""
+    if len(blocked) == 0:
+        return ()
+    rows, cols = combine._cells(blocked)
+    keys = rows * grid.ncols + cols
+    member = np.zeros((keys.size, len(candidates)), dtype=bool)
+    for index, (_, runs) in enumerate(candidates):
+        r, c = combine._cells(runs.intersection(blocked))
+        member[:, index] = np.isin(keys, r * grid.ncols + c)
+    groups, inverse = np.unique(member, axis=0, return_inverse=True)
+    inverse = inverse.ravel()
+    found = []
+    for group, flags in enumerate(groups):
+        mine = inverse == group
+        causes = combine._by_priority((candidates[k][0] for k in np.flatnonzero(flags)), zones)
+        runs = combine.Runs(rows[mine], cols[mine], cols[mine] + 1)
+        found.append(combine.Conflict(causes, runs, runs.area(grid)))
+    found.sort(key=lambda c: (-c.runs.cells, c.causes))
+    return tuple(found)
+
+
+def _rectangle_runs(top, left, rows, cols, shape):
+    """Los tramos de un rectángulo de celdas (recortado a ``shape``), sin pasar por una máscara."""
+    bottom, right = min(top + rows, shape[0]), min(left + cols, shape[1])
+    count = bottom - top
+    return combine.Runs(np.arange(top, bottom), np.full(count, left), np.full(count, right))
+
+
+def _zone(code, priority, runs):
+    return combine.Zone(code, code, T.NO_CUT, G.POLYGON, priority, runs, 0.0, None, 0.0)
+
+
+class ConflictsTest(unittest.TestCase):
+    """RF-012-14 (HITO H1 de la 012; RNF-012-01, RNF-012-06): los conflictos salen igual que con
+    la matriz celda × causa, y sin que su coste crezca con celdas bloqueadas × causas: con 500
+    recintos solapados tardaban 8 s en un solo paso."""
+
+    def candidates(self, rng, shape, count, *, boxes=(2, 14)):
+        items, zones = [], {}
+        for index in range(count):
+            runs = _rectangle_runs(int(rng.integers(0, shape[0] - boxes[1])),
+                                   int(rng.integers(0, shape[1] - boxes[1])),
+                                   int(rng.integers(*boxes)), int(rng.integers(*boxes)), shape)
+            code = f"r_{index:03d}"
+            zones[code] = _zone(code, int(rng.integers(0, 3)), runs)
+            items.append((code, runs))
+        return items, zones
+
+    def assertSame(self, got, wanted):  # noqa: N802
+        self.assertEqual([(c.causes, c.area_m2) for c in got],
+                         [(c.causes, c.area_m2) for c in wanted])
+        for a, b in zip(got, wanted, strict=True):
+            self.assertEqual(a.runs, b.runs)
+
+    def test_same_conflicts_as_the_dense_matrix(self) -> None:
+        """RF-012-14: en 30 casos al azar (celdas bloqueadas con una, varias y ninguna causa,
+        prioridades repetidas) los grupos, sus causas en orden de prioridad, sus celdas y su
+        área son los de la matriz celda × causa."""
+        shape = (40, 50)
+        grid = gis.Grid(fx.BASE[0], fx.BASE[1] + shape[0], 1.0, 1.0, shape[1], shape[0])
+        rng = np.random.default_rng(12)
+        cases = 0
+        for case in range(30):
+            blocked = combine.Runs.union_all(
+                _rectangle_runs(int(rng.integers(0, 25)), int(rng.integers(0, 30)),
+                                int(rng.integers(5, 15)), int(rng.integers(5, 20)), shape)
+                for _ in range(int(rng.integers(1, 4))))
+            items, zones = self.candidates(rng, shape, int(rng.integers(1, 12)))
+            # Alguna causa que no toca lo bloqueado y alguna celda bloqueada sin causa.
+            items.append(("r_lejos", _rectangle_runs(35, 45, 4, 4, shape)))
+            zones["r_lejos"] = _zone("r_lejos", 1, items[-1][1])
+            if case % 3 == 0:
+                items = items[:1]
+            got = combine._conflicts(blocked, items, grid, zones)
+            self.assertSame(got, _dense_conflicts(blocked, items, grid, zones))
+            cases += len(got)
+        self.assertGreater(cases, 60)
+        self.assertEqual(combine._conflicts(combine.Runs.empty(), [], grid, {}), ())
+
+    def test_cost_does_not_grow_with_blocked_cells_times_causes(self) -> None:
+        """RNF-012-01, RNF-012-06: 150 causas sobre 95.000 celdas bloqueadas se resuelven en
+        menos de 1 s (con la matriz de 95.000 × 150, unos 2 s); los grupos reparten todas
+        las celdas bloqueadas."""
+        shape = (300, 400)
+        grid = gis.Grid(fx.BASE[0], fx.BASE[1] + shape[0], 1.0, 1.0, shape[1], shape[0])
+        rng = np.random.default_rng(99)
+        blocked = _rectangle_runs(10, 10, 250, 380, shape)
+        items, zones = self.candidates(rng, shape, 150, boxes=(30, 100))
+
+        def measure() -> float:
+            started = time.perf_counter()
+            found = combine._conflicts(blocked, items, grid, zones)
+            self.assertGreater(len(found), 50)
+            self.assertEqual(sum(c.runs.cells for c in found), blocked.cells)
+            return time.perf_counter() - started
+
+        self.assertLess(least_of(measure, 1.0, max_attempts=3), 1.0)
 
 
 if __name__ == "__main__":
