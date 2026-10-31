@@ -206,6 +206,33 @@ class RecordTest(FiguresCase):
                          ("", _scope_key({"bench": 125, "phase": "1"})))
         self.assertEqual(self.divergences(handle.uid), [])
 
+    def test_repeated_figures_are_checked_with_one_read_of_the_table(self) -> None:
+        """RF-008-30, RNF-012-02 (HITO H1 de la 012): comprobar que ninguna cifra (clave y ámbito)
+        se repite en la operación lee ``gb_figure`` una sola vez, no una por cifra: sin índice por
+        operación cada lectura recorre la tabla entera y repetir una verificación con 7.500
+        cifras tardaba más cada vez (13 s, 47 s…). Con 300 cifras las lecturas son 2 o menos y
+        todas quedan escritas."""
+        handle = self.begin()
+        self.tick()
+        specs = [FigureSpec("res.sellable_t", float(index), "t", scope={"phase": str(index)})
+                 for index in range(300)]
+        statements: list[str] = []
+
+        def work(conn: sqlite3.Connection) -> None:
+            _write_table(conn, "res_balance", [1.0])
+            conn.set_trace_callback(statements.append)
+            try:
+                handle.complete(conn, outputs=[_table_spec("res_balance", "balance")],
+                                figures=specs, software=SOFTWARE)
+            finally:
+                conn.set_trace_callback(None)
+
+        self.write(work)
+        reads = [text for text in statements
+                 if text.lstrip().upper().startswith("SELECT") and "FROM gb_figure" in text]
+        self.assertLessEqual(len(reads), 2, f"{len(reads)} lecturas de gb_figure para 300 cifras")
+        self.assertEqual(len(self.figure_rows(handle.uid)), 300)
+
 
 class RejectTest(FiguresCase):
     def test_rejected_naming_key_and_operation(self) -> None:

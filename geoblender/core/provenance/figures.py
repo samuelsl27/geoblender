@@ -536,14 +536,15 @@ def prepare_figures(conn: sqlite3.Connection, handle: FigureOperation,
         return ()
     checked = _check_operation(conn, handle, specs)
     prepared = tuple(_prepare(conn, checked, spec) for spec in specs)
+    # Una sola lectura de lo ya escrito por la operación: la tabla no tiene índice por operación
+    # y leerla una vez por cifra la recorría entera cada vez (con 7.500 cifras, de 13 s a 47 s
+    # al repetir una verificación).
+    stored = {(str(key), str(scope)) for key, scope in conn.execute(
+        "SELECT key, scope FROM gb_figure WHERE operation_uid = ?", (checked.uid,))}
     seen: set[tuple[str, str]] = set()
     for item in prepared:
         pair = (item.definition.key, item.scope)
-        stored = conn.execute(
-            "SELECT 1 FROM gb_figure WHERE operation_uid = ? AND key = ? AND scope = ?",
-            (checked.uid, *pair),
-        ).fetchone()
-        if pair in seen or stored is not None:
+        if pair in seen or pair in stored:
             raise ValueError(f"la operación «{checked.op_type}» registra la cifra «{pair[0]}» "
                              f"con el ámbito {pair[1]} una sola vez")
         seen.add(pair)
