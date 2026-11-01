@@ -679,6 +679,21 @@ def _typed_declared(buffer_out: str, buffer_in: str, weight: str,
     return values
 
 
+def _typed_decision(project: Any, typed: str) -> str | None:
+    """La decisión de la propiedad elegida en un diálogo (T41; RF-012-02): el ``uid`` de la que
+    se llama ``typed`` entre las del proyecto (:func:`constraint_panels.decision_choices`);
+    vacío, ``None`` (ninguna). :class:`ConstraintFormError` si no es una de las registradas."""
+    shown = typed.strip()
+    if not shown:
+        return None
+    found = next((uid for uid, name in constraint_panels.decision_choices(project)
+                  if name == shown), None)
+    if found is None:
+        raise ConstraintFormError(tr("«{value}» is not a decision registered in the project",
+                                     value=shown))
+    return found
+
+
 def _typed_values(typed: str) -> dict[str, ConstraintType] | None:
     """La correspondencia de los valores del campo del tipo tecleada («valor = tipo; valor =
     tipo»; cada tipo por su código, su nombre en español o en inglés); vacía, ``None`` (la de
@@ -701,12 +716,14 @@ def _typed_values(typed: str) -> dict[str, ConstraintType] | None:
 
 @dataclass(frozen=True, slots=True)
 class CreateRequest:
-    """Lo que pide «Desde una capa…» ya comprobado: la capa, cómo se leen sus entidades y los
-    parámetros que se declaran de las restricciones que se creen (RF-012-01, RF-012-02)."""
+    """Lo que pide «Desde una capa…» ya comprobado: la capa, cómo se leen sus entidades, los
+    parámetros que se declaran de las restricciones que se creen y la decisión de la propiedad
+    que las respalda, si se eligió una (RF-012-01, RF-012-02)."""
 
     layer: str
     mapping: constraint_provenance.LayerMapping
     declaration: constraint_provenance.ParamDeclaration
+    decision: str | None = None
 
 
 def _fixed_or_field(field: str, fixed: str, message: str) -> tuple[str | None, str | None]:
@@ -723,7 +740,8 @@ def create_request(form: Any, project: Any) -> CreateRequest:
     leer ni escribir nada de la capa. :class:`ConstraintFormError` si no se eligió una capa del
     proyecto de la que se puedan crear restricciones, falta el campo del tipo, el motivo, el
     decisor o la fecha (un campo de la capa o un valor para todas), la fecha no lo es, un
-    resguardo o el peso no valen, o la correspondencia de los valores del tipo no se lee."""
+    resguardo o el peso no valen, la correspondencia de los valores del tipo no se lee o la
+    decisión de la propiedad que se elige no es una de las del proyecto (T41)."""
     layer = form.layer.strip()
     if not layer:
         raise ConstraintFormError(tr("Choose the layer the constraints are created from"))
@@ -761,7 +779,7 @@ def create_request(form: Any, project: Any) -> CreateRequest:
         values=values, source=layer, source_kind="document",
         decided_by=decided_by or project.session.user_host,
         reason=reason or tr("Created from the layer «{layer}»", layer=layer))
-    return CreateRequest(layer, mapping, declaration)
+    return CreateRequest(layer, mapping, declaration, _typed_decision(project, form.decision))
 
 
 class GEOBLENDER_OT_core_edit_constraints(ProvenanceAwareOperator, bpy.types.Operator):
@@ -871,6 +889,9 @@ class GEOBLENDER_OT_core_create_constraints(ProvenanceAwareOperator, bpy.types.O
     active: BoolProperty(  # type: ignore[valid-type]
         name="Active", description="Whether the new constraints are in force", default=True,
         options=_FIELD)
+    decision: StringProperty(  # type: ignore[valid-type]
+        name="Decision of the owner", description="The decision of the owner that backs these "
+        "constraints, one of those recorded in the project (empty: none)", options=_FIELD)
 
     @classmethod
     def poll(cls, context: Any) -> bool:
@@ -883,12 +904,14 @@ class GEOBLENDER_OT_core_create_constraints(ProvenanceAwareOperator, bpy.types.O
         return about if note is None else with_note(about, note)
 
     def invoke(self, context: Any, event: Any) -> set[str]:
-        """Lee las capas de las que se pueden crear restricciones y abre el diálogo con la
-        fecha de hoy; sin capas, dice cómo importarlas."""
+        """Lee las capas de las que se pueden crear restricciones y las decisiones de la
+        propiedad que se pueden elegir y abre el diálogo con la fecha de hoy; sin capas, dice
+        cómo importarlas."""
         self.provenance_dialog = True
         project = SESSION.project
         try:
             constraint_panels.fill_constraints(project)
+            constraint_panels.fill_decisions(project)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
@@ -936,12 +959,14 @@ class GEOBLENDER_OT_core_create_constraints(ProvenanceAwareOperator, bpy.types.O
         layout.prop(self, "buffer_in", text=tr("Inward setback (m)"), translate=False)
         layout.prop(self, "weight", text=tr("Weight"), translate=False)
         layout.prop(self, "active", text=tr("Active"), translate=False)
+        constraint_panels.draw_decision(layout, self, DIALOG_WIDTH)
 
     def execute(self, context: Any) -> set[str]:
         """Comprueba lo escrito y la puerta de la 008 (la capa es la entrada), crea las
         restricciones de la capa con ``core.edit_constraints`` (sin tocar la capa de origen),
-        con los parámetros que pide su tipo y se declaran, y deja en la ventana el informe de las
-        creadas y de las entidades rechazadas con su motivo (RF-012-01, RF-012-02)."""
+        con los parámetros que pide su tipo y se declaran y la decisión de la propiedad que se
+        elige (la misma para todas), y deja en la ventana el informe de las creadas y de las
+        entidades rechazadas con su motivo (RF-012-01, RF-012-02)."""
         project = SESSION.project
         try:
             request = create_request(self, project)
@@ -959,7 +984,7 @@ class GEOBLENDER_OT_core_create_constraints(ProvenanceAwareOperator, bpy.types.O
         try:
             edited = sources.create_constraints(
                 project, request.layer, request.mapping, params=request.declaration,
-                default_name=_layer_label(request.layer))
+                default_name=_layer_label(request.layer), decision_uid=request.decision)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
@@ -978,7 +1003,7 @@ class GEOBLENDER_OT_core_create_constraints(ProvenanceAwareOperator, bpy.types.O
 def _differs(row: Constraint, other: Constraint) -> bool:
     """Si ``other`` cambia algo de ``row`` que se guarda en su fila (no la geometría)."""
     return any(getattr(row, name) != getattr(other, name) for name in (
-        "ctype", "name", "reason", "decided_by", "decided_on", "priority"))
+        "ctype", "name", "reason", "decided_by", "decided_on", "priority", "decision_uid"))
 
 
 class GEOBLENDER_OT_core_complete_constraint(ProvenanceAwareOperator, bpy.types.Operator):
@@ -1021,6 +1046,10 @@ class GEOBLENDER_OT_core_complete_constraint(ProvenanceAwareOperator, bpy.types.
     active: BoolProperty(  # type: ignore[valid-type]
         name="Active", description="Whether the constraint is in force (only if it does not "
         "have it yet)", default=True, options=_FIELD)
+    decision: StringProperty(  # type: ignore[valid-type]
+        name="Decision of the owner", description="The decision of the owner that backs the "
+        "constraint, one of those recorded in the project (empty: it stays as it is)",
+        options=_FIELD)
 
     @classmethod
     def poll(cls, context: Any) -> bool:
@@ -1045,16 +1074,21 @@ class GEOBLENDER_OT_core_complete_constraint(ProvenanceAwareOperator, bpy.types.
 
     def invoke(self, context: Any, event: Any) -> set[str]:
         """Abre el diálogo con lo que tiene la restricción (y, de sus parámetros, lo que ya vale
-        en el proyecto: solo se dan de alta los que faltan)."""
+        en el proyecto: solo se dan de alta los que faltan) y las decisiones de la propiedad
+        que se pueden elegir, con la suya si la tiene (T41)."""
         self.provenance_dialog = True
         project = SESSION.project
         try:
             row = self._row(project)
+            constraint_panels.fill_decisions(project)
         except (ConstraintFormError, GeoblenderError, sqlite3.Error, OSError) as exc:
             self.report({"ERROR"}, str(exc) if isinstance(exc, ConstraintFormError)
                         else error_text(exc))
             return {"CANCELLED"}
         shown = i18n.language()
+        view = constraint_panels.view()
+        names = {} if view is None else {item.uid: item.name for item in view.mark_decisions}
+        self.decision = names.get(row.decision_uid or "", "")
         self.ctype = NO_TYPE if row.ctype is None else row.ctype.name
         self.name = row.shown_name(shown) if row.name else ""
         self.reason = row.reason or ""
@@ -1084,11 +1118,13 @@ class GEOBLENDER_OT_core_complete_constraint(ProvenanceAwareOperator, bpy.types.
         layout.prop(self, "buffer_in", text=tr("Inward setback (m)"), translate=False)
         layout.prop(self, "weight", text=tr("Weight"), translate=False)
         layout.prop(self, "active", text=tr("Active"), translate=False)
+        constraint_panels.draw_decision(layout, self, DIALOG_WIDTH)
 
     def _updated(self, row: Constraint) -> Constraint:
-        """``row`` con lo que se completa: lo escrito manda y lo vacío se queda como estaba;
-        :class:`ConstraintFormError` si no tiene tipo, un tipo que cabe en su geometría, nombre,
-        motivo, decisor o fecha."""
+        """``row`` con lo que se completa: lo escrito manda y lo vacío se queda como estaba (también
+        la decisión de la propiedad, T41); :class:`ConstraintFormError` si no tiene tipo, un tipo
+        que cabe en su geometría, nombre, motivo, decisor o fecha, o si la decisión no es una
+        de las del proyecto."""
         if self.ctype == NO_TYPE and row.ctype is None:
             raise ConstraintFormError(tr("Choose the type of the constraint"))
         ctype = row.ctype if self.ctype == NO_TYPE else ConstraintType[self.ctype]
@@ -1111,8 +1147,10 @@ class GEOBLENDER_OT_core_complete_constraint(ProvenanceAwareOperator, bpy.types.
         decided_on = _typed_date(typed_on) if typed_on else row.decided_on
         if decided_on is None:
             raise ConstraintFormError(tr("Write the date of the decision as DD/MM/YYYY"))
+        decision_uid = _typed_decision(SESSION.project, self.decision) or row.decision_uid
         return replace(row, ctype=ctype, name=name, reason=reason, decided_by=decided_by,
-                       decided_on=decided_on, priority=int(self.priority))
+                       decided_on=decided_on, priority=int(self.priority),
+                       decision_uid=decision_uid)
 
     def _declaration(self, row: Constraint
                      ) -> constraint_provenance.ParamDeclaration:

@@ -405,6 +405,13 @@ CATALOG: tuple[Message, ...] = (
         "La decisión «{value}» no está registrada en el proyecto.",
     ),
     Message(
+        "core.constraint_decision_unknown",
+        "The decision «{value}» is not registered in the project: a constraint rests only on a "
+        "decision of the owner that is.",
+        "La decisión «{value}» no está registrada en el proyecto: una restricción solo se "
+        "respalda en una decisión de la propiedad que lo esté.",
+    ),
+    Message(
         "core.constraint_intention_kind_not_accepted",
         "The intention «{intention}» is {kind}, and a constraint «{ctype}» cannot be: choose "
         "another type.",

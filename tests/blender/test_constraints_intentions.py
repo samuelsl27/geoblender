@@ -14,7 +14,13 @@
 - RF-012-27 (``geoblender.core_convert_intention``): «Convertir en restricción…» crea la
   restricción con el tipo, el motivo y el decisor que se declaran, enlazada a la intención, que no
   cambia (sus filas, iguales); las máscaras, que no cambiaban, pasan a obsoletas y, compiladas, la
-  cambian.
+  cambian. La restricción hereda la decisión de la propiedad de la intención (T41).
+- RF-012-02, RF-012-19 (T41; ``geoblender.core_create_constraints`` y
+  ``geoblender.core_complete_constraint``): un campo opcional «Decisión de la propiedad» (entre las
+  del proyecto, como en «Intenciones del cliente…») en «Desde una capa…» (la misma para todas las
+  que crea) y en «Completar…» (vacío: se queda la que tiene); una que no está en el proyecto se
+  rechaza sin escribir nada; la ventana y la barra N «Restricción» la enseñan como se lee
+  («15/09/2025 · quién: qué») y no por su identificador.
 - RF-012-28: sin proyecto, en solo lectura o con la versión activa SUPERADO las órdenes están
   desactivadas con su motivo; «Intenciones del cliente…» pasa a la entrada «012».
 
@@ -39,7 +45,7 @@ import numpy as np
 from tests.support import blender_ext
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
-from tests.support.fake_layout import FakeLayout, draw
+from tests.support.fake_layout import FakeLayout, draw, operator_self
 from tests.support.trees import remove_tree
 
 ENTRY = "012"
@@ -686,6 +692,9 @@ class ConstraintsIntentionsTest(unittest.TestCase):
                          ("Hondonada", "fill_only", "polygon", CONVERT_REASON, PERSON,
                           dt.date(2025, 9, 20), hollow.uid, hollow.source_input,
                           hollow.source_fid, 0))
+        # La decisión de la propiedad de la intención pasa a la restricción (T41, RF-012-02).
+        self.assertEqual((hollow.decision_uid, made.decision_uid),
+                         (self.decision.uid, self.decision.uid))
         self.assertTrue(self.cmodel.GeometryKind(made.kind) is hollow.kind)
         for ring, wanted in zip(made.parts[0], hollow.parts[0], strict=True):
             self.assertTrue(np.array_equal(ring, wanted))
@@ -722,6 +731,130 @@ class ConstraintsIntentionsTest(unittest.TestCase):
         taken = masks.cut_allowed() ^ self.masks.cut_allowed()
         self.assertGreater(int(np.count_nonzero(taken)), 0)
         self.assertEqual(self.stored()["Hondonada"].role.value, "fill")  # la intención, igual
+
+    def constraints_window(self) -> Any:
+        """«Restricciones…» con su ventana sustituida: la vista, leída del proyecto."""
+        with mock.patch.object(self.core_ops, "_call_panel", return_value={"FINISHED"}):
+            self.assertEqual(bpy.ops.geoblender.core_edit_constraints(), {"FINISHED"})
+        return self.view()
+
+    def choose(self, code: str) -> Any:
+        """La restricción ``code`` elegida en la lista de la ventana (la barra N la sigue)."""
+        view = self.constraints_window()
+        view.item_index = [item.code for item in view.constraints].index(code)
+        return view
+
+    def selected_texts(self) -> list[str]:
+        return draw(getattr(bpy.types, "GEOBLENDER_PT_core_constraint"), bpy.context).texts()
+
+    def test_ia_create_from_a_layer_with_the_decision_of_the_owner(self) -> None:
+        """RF-012-02, RF-012-19 (T41): «Desde una capa…» con una decisión de la propiedad la
+        fija en la restricción que crea, y la barra N «Restricción» la enseña con su fecha,
+        quién y qué; sin decisión (la otra capa) no la tiene ni la barra dibuja la línea; una
+        decisión que no está en el proyecto se rechaza con su valor, sin escribir nada."""
+        create = bpy.ops.geoblender.core_create_constraints
+        good = {"layer": self.names["Ermitas"], "ctype": "UNTOUCHABLE", "name_field": "nombre",
+                "reason": REASON, "decided_by": PERSON, "decided_on": DATE_TEXT,
+                "buffer_out": "10"}
+        self.assertIn("«Una decisión que no existe»",
+                      self.refused(create, **good, decision="Una decisión que no existe"))
+        self.assertEqual(create(**good, decision=DECISION_TEXT), {"FINISHED"})
+        self.assertEqual(create(**{**good, "layer": self.names["Muros"], "ctype": "NO_CUT",
+                                   "buffer_out": "4"}), {"FINISHED"})
+        found = self.constraints()
+        self.assertEqual(found["ermita_de_san_roque"].decision_uid, self.decision.uid)
+        self.assertEqual([found[code].decision_uid for code in ("muro_de_piedra", "talud_norte")],
+                         [None, None])
+        ((settings,),) = self.rows(
+            "SELECT json_extract(settings, '$.decisions') FROM gb_operation WHERE op_type = ? "
+            "AND json_extract(settings, '$.mapping.ctype') = 'untouchable'", CONSTRAINT_TYPE)
+        self.assertEqual(settings, f'["{self.decision.uid}"]')
+        # La ventana y la barra N lo enseñan como se lee la decisión, no como su uid.
+        view = self.choose("ermita_de_san_roque")
+        self.assertEqual(view.constraints[view.item_index].decision, DECISION_TEXT)
+        self.assertEqual(view.selected.decision, DECISION_TEXT)
+        self.assertIn(f"Decisión enlazada: {DECISION_TEXT}", self.selected_texts())
+        self.assertNotIn(self.decision.uid, " ".join(self.selected_texts()))
+        self.choose("talud_norte")
+        self.assertEqual(self.view().selected.decision, "")
+        self.assertFalse([text for text in self.selected_texts()
+                          if text.startswith("Decisión enlazada")])
+
+    def test_ib_complete_with_the_decision_of_the_owner(self) -> None:
+        """RF-012-02, RF-012-19 (T41): «Completar…» una restricción sin decisión con una la fija
+        y la barra N la enseña; completar sin elegir ninguna la deja como estaba; una que no está
+        en el proyecto se rechaza sin escribir nada. El diálogo ofrece las decisiones del
+        proyecto y propone la que ya tiene."""
+        complete = bpy.ops.geoblender.core_complete_constraint
+        row = self.constraints()["muro_de_piedra"]
+        self.assertIsNone(row.decision_uid)
+        before = self.count()
+        self.assertIn("«Una decisión que no existe»", self.refused(
+            complete, uid=row.uid, ctype="NO_CUT", decision="Una decisión que no existe"))
+        self.assertEqual(complete(uid=row.uid, ctype="NO_CUT", decision=DECISION_TEXT),
+                         {"FINISHED"})
+        self.assertEqual(self.count(), (before[0] + 1, before[1], before[2]))
+        self.assertEqual(self.constraints()["muro_de_piedra"].decision_uid, self.decision.uid)
+        self.choose("muro_de_piedra")
+        self.assertIn(f"Decisión enlazada: {DECISION_TEXT}", self.selected_texts())
+        # Sin elegir decisión, el resto cambia y la decisión se queda.
+        self.assertEqual(complete(uid=row.uid, ctype="NO_CUT", priority=2), {"FINISHED"})
+        kept = self.constraints()["muro_de_piedra"]
+        self.assertEqual((kept.priority, kept.decision_uid), (2, self.decision.uid))
+        # El diálogo: ofrece las decisiones del proyecto y propone la de la restricción.
+        cls = self.commands.registered_class("geoblender.core_complete_constraint")
+        dialog = mock.Mock(return_value={"RUNNING_MODAL"})
+        context = SimpleNamespace(window=None, selected_objects=[],
+                                  window_manager=SimpleNamespace(invoke_props_dialog=dialog))
+        for code, wanted in (("muro_de_piedra", DECISION_TEXT), ("talud_norte", "")):
+            with self.subTest(restriccion=code):
+                fake = operator_self(
+                    cls, report=lambda kind, text: None, uid=self.constraints()[code].uid,
+                    ctype="NONE", name="", reason="", decided_by="", decided_on="", priority=0,
+                    buffer_out="", buffer_in="", weight="", active=True, decision="")
+                self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+                self.assertEqual(fake.decision, wanted)
+                self.assertEqual([(item.name, item.uid) for item in self.view().mark_decisions],
+                                 [(DECISION_TEXT, self.decision.uid)])
+                cls.draw(fake, bpy.context)
+                fields = [item.text for item in fake.layout.of_kind("prop_search")]
+                self.assertEqual(fields, ["Decisión de la propiedad"])
+
+    def test_ic_the_dialog_of_create_offers_the_decisions_and_says_how_to_record_one(
+            self) -> None:
+        """RF-012-02 (T41): el diálogo de «Desde una capa…» ofrece las decisiones del proyecto
+        para elegir una (la misma para todas las restricciones que crea), igual en inglés; sin
+        ninguna registrada, dice con qué orden se registra."""
+        cls = self.commands.registered_class("geoblender.core_create_constraints")
+        dialog = mock.Mock(return_value={"RUNNING_MODAL"})
+        context = SimpleNamespace(window=None, selected_objects=[],
+                                  window_manager=SimpleNamespace(invoke_props_dialog=dialog))
+
+        def opened() -> Any:
+            fake = operator_self(
+                cls, report=lambda kind, text: None, layer="", ctype="FIELD", type_field="",
+                type_values="", name_field="", reason_field="", reason="", decider_field="",
+                decided_by="", date_field="", decided_on="", priority=0, buffer_out="",
+                buffer_in="", weight="", active=True, decision="", provenance_dialog=False)
+            self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+            cls.draw(fake, bpy.context)
+            return fake
+
+        fake = opened()
+        self.assertEqual([item.name for item in self.view().mark_decisions], [DECISION_TEXT])
+        self.assertEqual([item.text for item in fake.layout.of_kind("prop_search")],
+                         ["Capa", "Decisión de la propiedad"])
+        self.assertNotIn("regístrela antes", " ".join(fake.layout.texts()))
+        i18n = _module("core.i18n")
+        i18n.set_language("en")
+        self.assertEqual([item.text for item in opened().layout.of_kind("prop_search")],
+                         ["Layer", "Decision of the owner"])
+        i18n.set_language("es")
+        # Sin decisiones registradas: el diálogo dice cómo registrar una.
+        with mock.patch.object(self.panels.versions_decisions, "decisions", return_value=()):
+            empty = opened()
+        self.assertEqual(len(self.view().mark_decisions), 0)
+        self.assertIn("regístrela antes con", " ".join(empty.layout.texts()))
 
     def test_j_unavailable_without_a_project_read_only_or_superseded(self) -> None:
         """RF-012-28: sin proyecto, en solo lectura o con la versión activa SUPERADO las órdenes

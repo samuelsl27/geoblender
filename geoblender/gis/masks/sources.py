@@ -104,18 +104,22 @@ def check_constraints(project: StoreProject, source: str, mapping: cprov.LayerMa
 
 def create_constraints(project: StoreProject, source: str, mapping: cprov.LayerMapping, *,
                        params: cprov.ParamDeclaration | None = None,
-                       default_name: str | None = None) -> Any:
+                       default_name: str | None = None,
+                       decision_uid: str | None = None) -> Any:
     """Crea las restricciones de la capa ``source`` (RF-012-01) según ``mapping`` y con los
     parámetros ``params`` (RF-012-02), y devuelve lo que dejó ``core.edit_constraints``
     (``EditedConstraints``: su operación, las creadas y las rechazadas con su motivo).
     ``default_name`` nombra las que el campo del nombre no nombra (los límites de una capa sin
-    él, T22). ``ConstraintError`` ``core.constraint_source_field_unknown`` si un campo elegido
-    no está en la capa y ``core.constraint_source_nothing`` si no sirve ninguna entidad; los
-    dos, antes de registrar nada."""
+    él, T22). ``decision_uid`` (T41): la decisión de la propiedad que respalda a todas las que
+    se crean. ``ConstraintError`` ``core.constraint_source_field_unknown`` si un campo elegido
+    no está en la capa, ``core.constraint_source_nothing`` si no sirve ninguna entidad y
+    ``core.constraint_decision_unknown`` si la decisión no está en el proyecto; todos, antes de
+    registrar nada."""
     entities, resolved, source_input = _read(project, source, mapping)
     return cprov.create_constraints(
         project, entities, resolved, layer=source, source=source, source_input=source_input,
-        params=params, srs_id=int(project.record.crs_epsg), default_name=default_name)
+        params=params, srs_id=int(project.record.crs_epsg), default_name=default_name,
+        decision_uid=decision_uid)
 
 
 def create_from_entity(project: StoreProject, source: str, fid: int, mapping: cprov.LayerMapping,

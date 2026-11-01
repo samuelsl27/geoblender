@@ -25,7 +25,10 @@
   sirven se rechazan con su entidad y su motivo (:class:`Rejected`), y la capa de origen solo
   se lee. Una edición en QGIS no pasa por aquí: es una ``core.external_edit`` de la 008.
   Una restricción que sale de una intención del cliente (:func:`convert_intention`,
-  RF-012-27) lleva su enlace y ``core_intention`` como entrada ``intention``.
+  RF-012-27) lleva su enlace, la decisión de la propiedad de la intención y ``core_intention``
+  como entrada ``intention``. La decisión que respalda a una restricción (``decision_uid``,
+  RF-012-02; T41) se elige entre las de ``gb_decision``: una que no está se rechaza
+  (``core.constraint_decision_unknown``) y las escritas quedan anotadas en los ajustes.
 - :data:`EDIT_INTENTIONS` (``core.edit_intentions``): guardar las marcas del cliente como
   intenciones (RF-012-26; D-8). Entradas ``source`` (la capa) y ``document`` (la entrada de
   tipo documento de origen); salida ``core_intention``, que solo crece. :func:`create_intentions`
@@ -479,14 +482,17 @@ def _rejection(entity: SourceEntity, mapping: LayerMapping,
 
 
 def constraints_from_entities(entities: Sequence[SourceEntity], mapping: LayerMapping, *,
-                              layer: str, source_input: str | None
+                              layer: str, source_input: str | None,
+                              decision_uid: str | None = None
                               ) -> tuple[tuple[Constraint, ...], tuple[Rejected, ...]]:
     """Las restricciones nuevas (``fid`` 0, sin código: lo reciben al escribirse) de
     ``entities`` de la capa ``layer`` según ``mapping`` (con los campos ya como columnas), con
-    su origen (``source_input``, la entrada de la capa, y la entidad) y su geometría tal cual,
-    y las entidades rechazadas con su motivo, en su orden: geometría vacía, tipo vacío o fuera
-    de la correspondencia, un tipo que no cabe en esa geometría (un límite que no es un
-    polígono), un campo de nombre, motivo o decisor vacío y una fecha que no lo es."""
+    su origen (``source_input``, la entrada de la capa, y la entidad), la decisión de la
+    propiedad que las respalda (``decision_uid``, la misma para todas; T41, RF-012-02) y su
+    geometría tal cual, y las entidades rechazadas con su motivo, en su orden: geometría vacía,
+    tipo vacío o fuera de la correspondencia, un tipo que no cabe en esa geometría (un límite
+    que no es un polígono), un campo de nombre, motivo o decisor vacío y una fecha que no lo
+    es."""
     values = default_type_values() if mapping.type_values is None else mapping.type_values
     rows: list[Constraint] = []
     rejected: list[Rejected] = []
@@ -512,7 +518,7 @@ def constraints_from_entities(entities: Sequence[SourceEntity], mapping: LayerMa
             ctype=ctype, kind=kind, parts=entity.parts, priority=mapping.priority,
             reason=chosen(mapping.reason_field, mapping.reason),
             decided_by=chosen(mapping.decider_field, mapping.decided_by),
-            decided_on=decided_on, decision_uid=None, intention_uid=None,
+            decided_on=decided_on, decision_uid=decision_uid, intention_uid=None,
             source_input=source_input, source_fid=int(entity.fid), layer=layer_of(kind),
             fid=0))
     return tuple(rows), tuple(rejected)
@@ -548,11 +554,14 @@ def edit_constraints(project: OperationProject, rows: Sequence[Constraint], *,
     dato de la capa de la que salen (su entrada ``source``); ``settings`` y ``rejected``, lo que
     se anota en los ajustes; ``srs_id``, el CRS del proyecto. Si alguna sale de una intención
     del cliente (``intention_uid``, RF-012-27), ``core_intention`` es la entrada
-    ``intention`` (una intención que no está: ``ValueError``, sin registrar nada).
+    ``intention`` (una intención que no está: ``ValueError``, sin registrar nada). La decisión
+    de la propiedad que respalda a una restricción (``decision_uid``, RF-012-02) tiene que estar
+    en ``gb_decision``: las que se escriben quedan anotadas en los ajustes (``decisions``).
 
     Los rechazos de ``store.write_constraints`` (``core.constraint_code_taken``,
     ``core.constraint_code_immutable``) y de los parámetros (``ParamError``) no dejan nada
-    escrito (la operación queda fallida); ``ValueError`` sin filas."""
+    escrito (la operación queda fallida); ``core.constraint_decision_unknown``, sin registrar
+    nada, si una decisión no está en el proyecto; ``ValueError`` sin filas."""
     rows = tuple(rows)
     if not rows:
         raise ValueError("una edición de las restricciones escribe al menos una")
@@ -565,15 +574,21 @@ def edit_constraints(project: OperationProject, rows: Sequence[Constraint], *,
         "rejected": [[item.fid, item.problem, item.field] for item in rejected],
     })
     intentions = sorted({row.intention_uid for row in rows if row.intention_uid})
+    linked = sorted({row.decision_uid for row in rows if row.decision_uid})
     inputs = [] if source is None else [Use(source, SOURCE_ROLE)]
-    if intentions:
+    if intentions or linked:
         with project.read() as conn:
+            for decision in linked:
+                _check_decision(conn, decision, "core.constraint_decision_unknown")
             known = {uid for (uid,) in conn.execute(
-                f"SELECT uid FROM {INTENTION_TABLE}")} if INTENTION_TABLE in _tables(conn) \
-                else set()
+                f"SELECT uid FROM {INTENTION_TABLE}")} if intentions and INTENTION_TABLE in \
+                _tables(conn) else set()
         missing = [uid for uid in intentions if uid not in known]
         if missing:
             raise ValueError(f"intenciones que no están en el proyecto: {missing!r}")
+    if linked:
+        noted["decisions"] = linked
+    if intentions:
         noted["intentions"] = intentions
         inputs.append(Use(INTENTION_TABLE, INTENTION_ROLE))
     handle = begin_operation(project, EDIT_CONSTRAINTS, settings=noted, inputs=tuple(inputs),
@@ -614,14 +629,15 @@ def _named[T: (Constraint, Intention)](rows: Sequence[T], base: str) -> tuple[T,
 
 
 def check_entities(entities: Sequence[SourceEntity], mapping: LayerMapping, *, layer: str,
-                   source_input: str | None
+                   source_input: str | None, decision_uid: str | None = None
                    ) -> tuple[tuple[Constraint, ...], tuple[Rejected, ...]]:
     """:func:`constraints_from_entities` que rechaza la capa entera si no sirve ninguna entidad:
     :class:`~.messages.ConstraintError` ``core.constraint_source_nothing`` (con la lista de las
     rechazadas). No escribe nada: es lo que comprueba :func:`create_constraints` antes de
     registrar, para que una orden con varias capas lo mire todo antes de crear nada."""
     rows, rejected = constraints_from_entities(entities, mapping, layer=layer,
-                                               source_input=source_input)
+                                               source_input=source_input,
+                                               decision_uid=decision_uid)
     if not rows:
         raise ConstraintError("core.constraint_source_nothing", field="capa",
                               value=len(rejected), layer=layer,
@@ -632,14 +648,18 @@ def check_entities(entities: Sequence[SourceEntity], mapping: LayerMapping, *, l
 def create_constraints(project: OperationProject, entities: Sequence[SourceEntity],
                        mapping: LayerMapping, *, layer: str, source: str | None,
                        source_input: str | None, params: ParamDeclaration | None,
-                       srs_id: int, default_name: str | None = None) -> EditedConstraints:
+                       srs_id: int, default_name: str | None = None,
+                       decision_uid: str | None = None) -> EditedConstraints:
     """Crea las restricciones de las entidades de la capa ``layer`` (RF-012-01) según
     ``mapping`` (con los campos ya como columnas) con :func:`edit_constraints`, anotando la
     correspondencia y las rechazadas. ``default_name`` (T22: los límites de una capa sin campo
     del nombre) da nombre a las que no lo tienen (:func:`_named`), y queda en los ajustes.
-    :class:`~.messages.ConstraintError` ``core.constraint_source_nothing`` (con la lista) si no
-    sirve ninguna, sin registrar nada (:func:`check_entities`)."""
-    rows, rejected = check_entities(entities, mapping, layer=layer, source_input=source_input)
+    ``decision_uid`` (T41, RF-012-02): la decisión de la propiedad que respalda a todas las que
+    se crean, si la hay. :class:`~.messages.ConstraintError` ``core.constraint_source_nothing``
+    (con la lista) si no sirve ninguna y ``core.constraint_decision_unknown`` si la decisión no
+    está en el proyecto, sin registrar nada (:func:`check_entities`, :func:`edit_constraints`)."""
+    rows, rejected = check_entities(entities, mapping, layer=layer, source_input=source_input,
+                                    decision_uid=decision_uid)
     settings: dict[str, Any] = {"mapping": mapping.settings()}
     if default_name:
         rows = _named(rows, default_name)
@@ -852,12 +872,14 @@ def _check_document(conn: Any, document: str) -> None:
                               value=document, input=str(row[0]), kind=str(row[1]))
 
 
-def _check_decision(conn: Any, decision_uid: str) -> None:
+def _check_decision(conn: Any, decision_uid: str,
+                    code: str = "core.constraint_intention_decision_unknown") -> None:
+    """Que ``decision_uid`` sea una decisión de la propiedad del proyecto (``gb_decision``);
+    si no, el error ``code`` (el de las intenciones o el de las restricciones)."""
     found = conn.execute("SELECT 1 FROM gb_decision WHERE uid = ?",
                          (decision_uid,)).fetchone() if "gb_decision" in _tables(conn) else None
     if found is None:
-        raise ConstraintError("core.constraint_intention_decision_unknown", field="decisión",
-                              value=decision_uid)
+        raise ConstraintError(code, field="decisión", value=decision_uid)
 
 
 def edit_intentions(project: OperationProject, rows: Sequence[Intention], *, source: str,
@@ -934,7 +956,8 @@ def constraint_from_intention(intention: Intention, *, ctype: ConstraintType, re
                               name: str | None = None, priority: int = 0) -> Constraint:
     """La restricción nueva (``fid`` 0, sin código) que sale de ``intention`` con el tipo, el
     motivo y el decisor que declara la persona (RF-012-27): su geometría, su nombre (o
-    ``name``), el origen de la intención y el enlace a ella. La intención no cambia.
+    ``name``), el origen de la intención, el enlace a ella y la decisión de la propiedad que
+    respaldaba a la intención, si la tenía (T41, RF-012-02). La intención no cambia.
     :class:`~.messages.ConstraintError` ``core.constraint_intention_kind_not_accepted`` si el
     tipo no cabe en su geometría (un límite que no es un polígono)."""
     ctype = ConstraintType(ctype)
@@ -947,7 +970,7 @@ def constraint_from_intention(intention: Intention, *, ctype: ConstraintType, re
         uid=uuid.uuid4().hex, code="", name=intention.name if name is None else name,
         ctype=ctype, kind=intention.kind, parts=intention.parts, priority=priority,
         reason=_text(reason), decided_by=_text(decided_by), decided_on=decided_on,
-        decision_uid=None, intention_uid=intention.uid,
+        decision_uid=intention.decision_uid, intention_uid=intention.uid,
         source_input=intention.source_input, source_fid=intention.source_fid,
         layer=layer_of(intention.kind), fid=0)
 

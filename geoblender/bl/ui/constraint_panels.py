@@ -38,7 +38,10 @@ vista desde el proyecto, sin escribir (``gis.masks.store.listed_constraints``). 
 botones, «Ver restricciones y límites» (el control 30,
 ``geoblender.core_toggle_constraints_overlay``, pulsado mientras está activa) y la superficie de
 las rejillas del proyecto sobre la que se dibuja (T26; RF-012-18; ``overlay_surface``: vacía, la
-más reciente).
+más reciente). Los diálogos de «Desde una capa…» y «Completar…» ofrecen el campo opcional
+«Decisión de la propiedad» (T41; RF-012-02: :func:`fill_decisions` y :func:`draw_decision`, entre las
+del proyecto como en las intenciones); la decisión enlazada se lee como «15/09/2025 · quién: qué» en
+la ventana y en la barra N (:func:`_linked_decisions`), no por su identificador.
 
 **Buscar elementos intocables por sector…** (T24; HU-012-3; RF-012-07 a RF-012-10, RF-012-28): la
 ventana ``GEOBLENDER_PT_core_search`` (la abre ``geoblender.core_find_untouchables``) dibuja los
@@ -102,7 +105,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -539,10 +542,11 @@ def parameter_text(store: ParameterStore, conn: Any, key: str, version: Any
 
 
 def _put_constraint(target: Any, entry: Any, store: ParameterStore, conn: Any,
-                    version: Any) -> None:
+                    version: Any, decisions: Mapping[str, str]) -> None:
     """Una restricción de la lista (``gis.masks.store.ListedConstraint``) en la fila ``target``
-    de la vista, con lo que le falta y, de cada parámetro que pide su tipo, su valor en la
-    versión y en el proyecto."""
+    de la vista, con lo que le falta, su decisión de la propiedad como se lee (``decisions``:
+    ``uid`` → nombre; sin ella, su identificador) y, de cada parámetro que pide su tipo, su
+    valor en la versión y en el proyecto."""
     shown = language()
     row = entry.constraint
     target.name = row.shown_name(shown)
@@ -554,7 +558,7 @@ def _put_constraint(target: Any, entry: Any, store: ParameterStore, conn: Any,
     target.priority = int(row.priority)
     target.reason, target.decided_by = row.reason or "", row.decided_by or ""
     target.decided_on = "" if row.decided_on is None else row.decided_on.strftime(DATE_FORMAT)
-    target.decision = row.decision_uid or ""
+    target.decision = decisions.get(row.decision_uid, row.decision_uid) if row.decision_uid else ""
     target.parameters.clear()
     if not is_code(row.code):
         return
@@ -587,8 +591,10 @@ def fill_constraints(project: Any) -> int:
     store = ParameterStore(project)
     shown.constraints.clear()
     with project.read() as conn:
+        named = (_linked_decisions(conn)
+                 if any(entry.constraint.decision_uid for entry in listed) else {})
         for entry in listed:
-            _put_constraint(shown.constraints.add(), entry, store, conn, version)
+            _put_constraint(shown.constraints.add(), entry, store, conn, version, named)
     shown.item_index = next((index for index, item in enumerate(shown.constraints)
                              if item.uid == chosen), 0)
     shown.source_layers.clear()
@@ -1141,6 +1147,73 @@ def _decision_name(decision: Any) -> str:
     return f"{decision.day} · {decision.decided_by}: {' '.join(str(decision.what).split())}"
 
 
+def _decision_names(decisions: Sequence[Any]) -> list[tuple[str, str]]:
+    """Las decisiones de la propiedad como se eligen en una lista: (``uid``, nombre), con
+    « (2)», « (3)»… las que se leen igual."""
+    taken: dict[str, int] = {}
+    found: list[tuple[str, str]] = []
+    for decision in decisions:
+        name = _decision_name(decision)
+        taken[name] = taken.get(name, 0) + 1
+        found.append((str(decision.uid), name if taken[name] == 1 else f"{name} ({taken[name]})"))
+    return found
+
+
+def decision_choices(project: Any) -> tuple[tuple[str, str], ...]:
+    """Las decisiones de la propiedad del proyecto que se pueden elegir (T41; RF-012-02,
+    RF-012-26): (``uid``, nombre) de cada una, por su día. Solo lee."""
+    with project.read() as conn:
+        return tuple(_decision_names(versions_decisions.decisions(conn)))
+
+
+def _linked_decisions(conn: Any) -> dict[str, str]:
+    """El nombre de cada decisión de la propiedad por su ``uid``, como se lee en la ventana y en
+    la barra N (T41)."""
+    return dict(_decision_names(versions_decisions.decisions(conn)))
+
+
+def _fill_decisions(shown: Any, choices: Sequence[tuple[str, str]]) -> None:
+    """Pone ``choices`` en ``mark_decisions`` y olvida la elegida (``mark_decision``) si ya no
+    está."""
+    kept = shown.mark_decision
+    shown.mark_decisions.clear()
+    for uid, name in choices:
+        item = shown.mark_decisions.add()
+        item.name, item.uid = name, uid
+    if kept not in {name for _uid, name in choices}:
+        shown.mark_decision = ""
+
+
+def fill_decisions(project: Any) -> int:
+    """Regenera de ``project`` las decisiones de la propiedad que ofrecen los diálogos de crear
+    y completar restricciones (T41; RF-012-02): las pone en ``mark_decisions``, como hace
+    :func:`fill_intentions`. Devuelve cuántas hay. No escribe nada."""
+    shown = view()
+    if shown is None:  # inalcanzable con la extensión registrada
+        raise RuntimeError("la vista de las restricciones no está registrada")
+    choices = decision_choices(project)
+    _fill_decisions(shown, choices)
+    return len(choices)
+
+
+def draw_decision(layout: Any, owner: Any, dialog_px: float) -> None:
+    """El campo opcional «Decisión de la propiedad» de los diálogos de crear y completar
+    restricciones (T41; RF-012-02): se elige entre las del proyecto (``mark_decisions``, que
+    llena :func:`fill_decisions`), como en «Intenciones del cliente…»; sin ninguna registrada,
+    dice con qué orden se registra. ``owner``: el operador del diálogo (su propiedad
+    ``decision``); ``dialog_px``: el ancho del diálogo (``invoke_props_dialog``)."""
+    shown = view()
+    if shown is None:
+        return
+    layout.prop_search(owner, "decision", shown, "mark_decisions",
+                       text=tr("Decision of the owner"), translate=False)
+    if not len(shown.mark_decisions):
+        labels.draw_wrapped(layout, tr(
+            "To link a decision of the owner, record it first with {path}",
+            path=path_text(catalog(), ADD_DECISION, language())),
+            labels.dialog_width(dialog_px), icon="INFO")
+
+
 def fill_intentions(project: Any) -> int:
     """Regenera de ``project`` lo que dibuja la ventana de las intenciones, sin escribir nada:
     las intenciones guardadas con su documento, su capa, su decisión y las restricciones que
@@ -1186,17 +1259,7 @@ def fill_intentions(project: Any) -> int:
         item.name, item.uid = name, uid
     if kept not in {name for _uid, name in documents}:
         shown.mark_document = ""
-    kept = shown.mark_decision
-    shown.mark_decisions.clear()
-    taken: dict[str, int] = {}
-    for decision in decisions:
-        name = _decision_name(decision)
-        taken[name] = taken.get(name, 0) + 1
-        item = shown.mark_decisions.add()
-        item.name = name if taken[name] == 1 else f"{name} ({taken[name]})"
-        item.uid = decision.uid
-    if kept not in {item.name for item in shown.mark_decisions}:
-        shown.mark_decision = ""
+    _fill_decisions(shown, _decision_names(decisions))
     if not shown.mark_date.strip():
         shown.mark_date = dt.date.today().strftime(DATE_FORMAT)
     return len(shown.intentions)
@@ -1494,7 +1557,8 @@ def read_selected(context: Any = None) -> bool:
             else:
                 store = ParameterStore(project)
                 with project.read() as conn:
-                    _put_constraint(shown.selected, entry, store, conn, version)
+                    named = (_linked_decisions(conn) if entry.constraint.decision_uid else {})
+                    _put_constraint(shown.selected, entry, store, conn, version, named)
                     lines = _zone_lines(project, conn, entry.constraint.code)
                 _put_lines(shown.selected_lines, [Line(line.text, line.alert) for line in lines])
                 # Mientras hay una restricción en la barra N, la versión activa la cambia; sin

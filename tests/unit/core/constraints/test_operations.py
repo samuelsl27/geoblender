@@ -55,7 +55,13 @@ Intenciones del cliente (T15; HU-012-6; plan 012 D-8):
   y, compiladas de nuevo, la rejilla de clases y las zonas son bit a bit iguales.
 - **RF-012-27**: convertida en restricción (``core.edit_constraints`` con la intención como
   entrada), la restricción queda enlazada a la intención con el tipo, el motivo y el decisor
-  declarados, las máscaras cambian, y la intención no (sus filas, iguales).
+  declarados, las máscaras cambian, y la intención no (sus filas, iguales); hereda su decisión
+  de la propiedad (T41).
+
+La decisión de la propiedad de una restricción (T41; RF-012-02, RF-012-19, RF-012-27): crear desde
+una capa con una decisión la fija en todas las que crea; completar con una la fija (o la cambia);
+una que no está en ``gb_decision`` se rechaza con ``core.constraint_decision_unknown`` antes de
+registrar nada.
 
 La ventana de las intenciones (T25; ``bl.ui.constraint_panels``): sin campo del nombre, las marcas
 toman el de su capa (``default_name``), y ``core.constraints.store.listed_intentions`` las lee con
@@ -641,6 +647,118 @@ class CreateFromLayerTest(_LayersCase):
         self.assertEqual(self.query("SELECT count(*) FROM gb_operation"), count)
 
 
+class DecisionLinkTest(_LayersCase):
+    """RF-012-02, RF-012-19, RF-012-27 (T41): la decisión de la propiedad de una restricción."""
+
+    decision: Any
+    other: Any
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.write_layer(POINTS, constraints_layer(fx.LAYER_POINTS))
+        with cls.project.write_transaction() as conn:
+            cls.decision = decisions.record_decision(
+                conn, cls.project, decided_by=PERSON, decided_at="2025-09-15",
+                what="La propiedad respeta los pozos", source_text="Acta de la reunión")
+            cls.other = decisions.record_decision(
+                conn, cls.project, decided_by=PERSON, decided_at="2025-09-20",
+                what="La propiedad respeta los árboles", source_text="Acta de la reunión")
+
+    def test_create_from_a_layer_with_a_decision_for_all_of_them(self) -> None:
+        """RF-012-02: crear desde una capa con una decisión de la propiedad la fija en todas las
+        restricciones que crea (la misma), queda anotada en la operación y las que se crean sin
+        decisión siguen sin ella."""
+        mapping = cprov.LayerMapping(ctype=cmodel.ConstraintType.UNTOUCHABLE,
+                                     name_field="nombre", reason="Inventario de pozos",
+                                     decided_by=PERSON)
+        self.clock.advance(minutes=1)
+        edited = sources.create_constraints(self.project, POINTS, mapping, params=DECLARED,
+                                            decision_uid=self.decision.uid)
+        self.assertEqual([row.decision_uid for row in edited.constraints],
+                         [self.decision.uid] * 3)
+        self.assertEqual([row.decision_uid for row in edited.constraints],
+                         [row.decision_uid for row in self.stored_constraints()
+                          if row.uid in {made.uid for made in edited.constraints}])
+        (settings,) = self.query("SELECT settings FROM gb_operation WHERE uid = ?",
+                                 edited.operation_uid)
+        self.assertIn(f'"decisions":["{self.decision.uid}"]', settings[0].replace(" ", ""))
+        # Sin decisión, como antes: ninguna.
+        self.clock.advance(minutes=1)
+        plain = sources.create_constraints(
+            self.project, POINTS, cprov.LayerMapping(
+                ctype=cmodel.ConstraintType.UNTOUCHABLE, reason="Inventario", decided_by=PERSON,
+                name_field="nombre"), params=DECLARED)
+        self.assertEqual([row.decision_uid for row in plain.constraints], [None] * 3)
+        (settings,) = self.query("SELECT settings FROM gb_operation WHERE uid = ?",
+                                 plain.operation_uid)
+        self.assertNotIn("decisions", settings[0])
+
+    def test_complete_with_a_decision_and_one_that_does_not_exist_is_refused(self) -> None:
+        """RF-012-02: completar una restricción con una decisión la fija, y cambiarla por otra
+        también; una decisión que no está en el proyecto se rechaza con un error claro (código,
+        objeto, campo y valor) sin registrar nada y sin tocar la fila."""
+        mapping = cprov.LayerMapping(ctype=cmodel.ConstraintType.NO_CUT, name_field="nombre",
+                                     reason="Sin decisión", decided_by=PERSON)
+        self.clock.advance(minutes=1)
+        made = sources.create_constraints(self.project, POINTS, mapping, params=DECLARED)
+        row = made.constraints[0]
+        self.assertIsNone(row.decision_uid)
+        srs = self.project.record.crs_epsg
+        self.clock.advance(minutes=1)
+        fixed = cprov.edit_constraints(self.project, [replace(row, decision_uid=self.decision.uid)],
+                                       srs_id=srs)
+        (kept,) = [item for item in self.stored_constraints() if item.uid == row.uid]
+        self.assertEqual((fixed.constraints[0].decision_uid, kept.decision_uid, kept.code),
+                         (self.decision.uid, self.decision.uid, row.code))
+        (settings,) = self.query("SELECT settings FROM gb_operation WHERE uid = ?",
+                                 fixed.operation_uid)
+        self.assertIn(f'"decisions":["{self.decision.uid}"]', settings[0].replace(" ", ""))
+        self.clock.advance(minutes=1)
+        cprov.edit_constraints(self.project, [replace(kept, decision_uid=self.other.uid)],
+                               srs_id=srs)
+        (again,) = [item for item in self.stored_constraints() if item.uid == row.uid]
+        self.assertEqual(again.decision_uid, self.other.uid)
+        # Una decisión que no existe: error claro, nada registrado, la fila como estaba.
+        operations_before = self.query("SELECT count(*) FROM gb_operation")
+        self.clock.advance(minutes=1)
+        with self.assertRaises(cmessages.ConstraintError) as caught:
+            cprov.edit_constraints(self.project, [replace(again, decision_uid="no-existe")],
+                                   srs_id=srs)
+        self.assertEqual(caught.exception.code, "core.constraint_decision_unknown")
+        self.assertEqual((caught.exception.field, caught.exception.value),
+                         ("decisión", "no-existe"))
+        self.assertIn("«no-existe»", str(caught.exception))
+        self.assertEqual(self.query("SELECT count(*) FROM gb_operation"), operations_before)
+        (still,) = [item for item in self.stored_constraints() if item.uid == row.uid]
+        self.assertEqual(still.decision_uid, self.other.uid)
+        # Crear desde una capa con una que no existe: igual, antes de registrar nada.
+        with self.assertRaises(cmessages.ConstraintError) as caught:
+            sources.create_constraints(self.project, POINTS, mapping, params=DECLARED,
+                                       decision_uid="no-existe")
+        self.assertEqual(caught.exception.code, "core.constraint_decision_unknown")
+        self.assertEqual(self.query("SELECT count(*) FROM gb_operation"), operations_before)
+
+    def test_a_converted_intention_keeps_the_decision_of_the_intention(self) -> None:
+        """RF-012-27, RF-012-02: la restricción que sale de una intención hereda su decisión
+        enlazada (la de la intención, sin elegir otra) y, si la intención no tiene, ninguna."""
+        polygon = fx.rectangle(30.0, 60.0, 50.0, 80.0)
+        intention = cmodel.Intention(
+            uid="intencion-1", name="Hondonada", role=cmodel.IntentionRole.FILL,
+            kind=cmodel.GeometryKind.POLYGON, parts=((polygon,),), elevation_m=None,
+            stated_on=date(2025, 9, 12), document_input="documento", decision_uid=self.decision.uid,
+            source_input="capa", source_fid=2, fid=1)
+        made = cprov.constraint_from_intention(
+            intention, ctype=cmodel.ConstraintType.FILL_ONLY, reason="Rellenar",
+            decided_by=PERSON, decided_on=date(2025, 9, 20))
+        self.assertEqual((made.decision_uid, made.intention_uid),
+                         (self.decision.uid, "intencion-1"))
+        bare = cprov.constraint_from_intention(
+            replace(intention, decision_uid=None), ctype=cmodel.ConstraintType.FILL_ONLY,
+            reason="Rellenar", decided_by=PERSON, decided_on=date(2025, 9, 20))
+        self.assertIsNone(bare.decision_uid)
+
+
 class EditOutsideTest(_LayersCase):
     """RF-012-03, RF-012-06 (CE-012-04): editar las capas en QGIS, completar y compilar."""
 
@@ -1015,6 +1133,9 @@ class IntentionsTest(_LayersCase):
                          ("hondonada", "Hondonada", cmodel.ConstraintType.FILL_ONLY,
                           "La propiedad pide rellenar la hondonada", PERSON, hollow.uid,
                           self.marks_input, 2))
+        # La decisión de la propiedad de la intención pasa a la restricción (T41, RF-012-02).
+        self.assertEqual((hollow.decision_uid, kept.decision_uid),
+                         (decision.uid, decision.uid))
         self.assertTrue(cp.same_parts(kept.parts, hollow.parts))
         inputs = self.io(converted.operation_uid, "in")
         self.assertEqual(inputs, {cprov.INTENTION_ROLE: (

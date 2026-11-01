@@ -6835,6 +6835,15 @@ es = "Documento del cliente"
 ["Decision of the owner (optional)"]
 es = "Decisión de la propiedad (opcional)"
 
+["Decision of the owner"]
+es = "Decisión de la propiedad"
+
+["The decision of the owner that backs these constraints, one of those recorded in the project (empty: none)"]
+es = "La decisión de la propiedad que respalda estas restricciones, una de las registradas en el proyecto (vacío: ninguna)"
+
+["The decision of the owner that backs the constraint, one of those recorded in the project (empty: it stays as it is)"]
+es = "La decisión de la propiedad que respalda la restricción, una de las registradas en el proyecto (vacío: se queda como está)"
+
 ["The project has no document registered as an input: the marks rest on one (the minutes, the letter or the plan of the client)"]
 es = "El proyecto no tiene ningún documento registrado como entrada: las marcas se apoyan en uno (el acta, la carta o el plano del cliente)"
 
