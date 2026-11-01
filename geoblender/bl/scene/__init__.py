@@ -20,6 +20,8 @@ coordenadas locales respecto al GeoOrigin (ADR-0005).
   barras de leyes, en pasos, con el trabajo ``dh_view_arrays``), después;
 - ``res_views``: el cargador de las rejillas de diferencias de la cubicación (spec 011, T22:
   la superficie final coloreada por desmonte, terraplén y sin movimiento), después;
+- ``constraint_views``: los cargadores de los límites y las restricciones (spec 012; T25: las
+  intenciones del cliente, un objeto por intención con su estilo), después;
 - ``live``: la marca en vivo de la vista (spec 010, T08): lo cargado, al día de lo que dice el
   proyecto sin volver a cargarlo, tras cada lectura de los indicadores de la procedencia y tras
   deshacer, rehacer, abrir un ``.blend``, cargar o descargar (``undo_post``, ``redo_post``,
@@ -41,6 +43,7 @@ from __future__ import annotations
 
 from ..registry import register_classes, unregister_classes
 from . import (
+    constraint_views,
     dh_view,
     georef,
     gis_views,
@@ -69,11 +72,13 @@ def register() -> None:
         gis_views.register()
         dh_view.register()
         res_views.register()
+        constraint_views.register()
         live.register()
         versions.register()
     except BaseException:
         versions.unregister()
         live.unregister()
+        constraint_views.unregister()
         res_views.unregister()
         dh_view.unregister()
         gis_views.unregister()
@@ -92,6 +97,7 @@ def unregister() -> None:
     try:
         versions.unregister()
         live.unregister()
+        constraint_views.unregister()
         res_views.unregister()
         dh_view.unregister()
         gis_views.unregister()

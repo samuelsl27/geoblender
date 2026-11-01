@@ -62,11 +62,13 @@ __all__ = [
     "SEARCH_TABLE",
     "SECTOR_TABLE",
     "TABLES",
+    "ListedIntention",
     "SectorState",
     "append_search",
     "create_tables",
     "dataset_specs",
     "layer_of",
+    "listed_intentions",
     "read_constraints",
     "read_hits",
     "read_intentions",
@@ -461,6 +463,59 @@ def write_intentions(conn: sqlite3.Connection, rows: Iterable[Intention], *,
              row.source_input, row.source_fid))
         fids.append(int(cursor.lastrowid or 0))
     return tuple(fids)
+
+
+@dataclass(frozen=True, slots=True)
+class ListedIntention:
+    """Una intención para enseñarla en una lista (T25; RF-012-26, RF-012-27): la intención,
+    el nombre de la entrada de su documento (``document``) y de la de su capa de origen
+    (``source``; vacíos si la entrada ya no está), su decisión enlazada como se lee
+    («15/09/2025 · quién: qué»; vacía si no la tiene) y los códigos de las restricciones que
+    salieron de ella (``converted``, por su capa y su fid)."""
+
+    intention: Intention
+    document: str
+    source: str
+    decision: str
+    converted: tuple[str, ...]
+
+
+def _input_names(conn: sqlite3.Connection, tables: set[str]) -> dict[str, str]:
+    if "gb_input" not in tables:
+        return {}
+    return {str(uid): str(name) for uid, name in conn.execute("SELECT uid, name FROM gb_input")}
+
+
+def _decision_texts(conn: sqlite3.Connection, tables: set[str]) -> dict[str, str]:
+    if "gb_decision" not in tables:
+        return {}
+    found: dict[str, str] = {}
+    for uid, who, day, what in conn.execute(
+            "SELECT uid, decided_by, decided_at, what FROM gb_decision"):
+        year, month, number = str(day)[:10].split("-")
+        found[str(uid)] = f"{number}/{month}/{year} · {who}: {' '.join(str(what).split())}"
+    return found
+
+
+def listed_intentions(conn: sqlite3.Connection) -> tuple[ListedIntention, ...]:
+    """Las intenciones del cliente (:func:`read_intentions`) con el nombre de su documento y de
+    su capa, su decisión y las restricciones que salieron de ellas (:class:`ListedIntention`);
+    ninguna sin la tabla. Solo lee."""
+    intentions = read_intentions(conn)
+    if not intentions:
+        return ()
+    tables = {str(row[0]) for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    names = _input_names(conn, tables)
+    decisions = _decision_texts(conn, tables)
+    made: dict[str, list[str]] = {}
+    for row in read_constraints(conn):
+        if row.intention_uid:
+            made.setdefault(row.intention_uid, []).append(row.code)
+    return tuple(ListedIntention(
+        item, names.get(item.document_input, ""), names.get(item.source_input, ""),
+        "" if item.decision_uid is None else decisions.get(item.decision_uid, ""),
+        tuple(made.get(item.uid, ()))) for item in intentions)
 
 
 # --- Sectores ---------------------------------------------------------------------------------

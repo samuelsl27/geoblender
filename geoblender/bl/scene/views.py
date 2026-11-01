@@ -138,6 +138,8 @@ BRANCHES: dict[str, tuple[tuple[str, str], ...]] = {
     # La rejilla de diferencias de una cubicación (spec 011, T22): siempre de una versión, va
     # en la colección de su versión; sin ella, en «Cubicación».
     "VOLUME_DIFFERENCE": (("volumetrics", "Volumetrics"),),
+    # Las intenciones del cliente (spec 012, T25; RF-012-26): datos del proyecto, no de una versión.
+    "CLIENT_INTENTION": (("constraints", "Constraints"),),
 }
 # El estado de un dato vivo en su nombre generado y en Object.geoblender.status.
 STATUS_TEXT: dict[DatasetStatus, str] = {

@@ -49,6 +49,19 @@ distancia y su decisión), de la elegida sus atributos con «Convertir en intoca
 búsqueda y «Cerrar la búsqueda» (``geoblender.core_close_search``). :func:`fill_search` regenera
 los sectores, las capas y la distancia desde el proyecto y :func:`show_hits` lo hallado, de lo que
 guarda ``bl.ops.core_constraints``.
+
+**Intenciones del cliente…** (T25; HU-012-6; RF-012-26, RF-012-27, RF-012-28): la ventana
+``GEOBLENDER_PT_core_marks`` (la abre ``geoblender.core_edit_client_marks``) dibuja las
+**intenciones guardadas** (``GEOBLENDER_UL_core_intentions``: nombre, papel y fecha) y, de la
+elegida, su papel, su geometría, su cota, su fecha, su documento, su capa, su decisión y las
+restricciones que salieron de ella, con «Convertir en restricción…»
+(``geoblender.core_convert_intention``) y «Cargar en la vista…» (``geoblender.core_load_into_view``
+con ``core_intention``: las ve con su estilo, ``bl.scene.constraint_views``); y el **formulario**
+para guardar las marcas de una capa «entidades» (``geoblender.core_save_client_marks``): la capa,
+el papel (uno para todas o el campo con su correspondencia), el campo del nombre, la cota y la
+fecha (de un campo o una para todas), el documento de origen y la decisión de la propiedad.
+:func:`fill_intentions` regenera todo desde el proyecto, sin escribir
+(``core.constraints.store.listed_intentions``).
 """
 
 from __future__ import annotations
@@ -64,18 +77,20 @@ import bpy
 from ...core.catalog.search import path_text
 from ...core.constraints import checks as constraint_checks
 from ...core.constraints import provenance as constraint_provenance
-from ...core.constraints.model import ConstraintType, GeometryKind, is_code
+from ...core.constraints import store as constraint_store
+from ...core.constraints.model import ConstraintType, GeometryKind, IntentionRole, is_code
 from ...core.constraints.params import SEARCH_DISTANCE, family, param_key
 from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, language, translate, tr
 from ...core.params.model import format_value
 from ...core.params.store import ParameterStore
+from ...core.versions import decisions as versions_decisions
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
 from ...gis.masks import access as mask_access
 from ...gis.masks import store as mask_store
 from .. import compat
-from ..props.core_constraints import WINDOW_MANAGER_PROPERTY
+from ..props.core_constraints import MARK_FIELD, MARK_ROLE_ITEMS, WINDOW_MANAGER_PROPERTY
 from ..scene import versions as scene_versions
 from . import labels, res_panels
 from .commands import catalog, text
@@ -134,6 +149,21 @@ PENDING = "pending"
 CONVERTED = "converted"
 DISCARDED = "discarded"
 """Las decisiones de una entidad hallada (``GEOBLENDER_PG_core_hit_item.state``)."""
+MARKS_PANEL = "GEOBLENDER_PT_core_marks"
+INTENTIONS_LIST = "GEOBLENDER_UL_core_intentions"
+SAVE_MARKS = "geoblender.core_save_client_marks"
+CONVERT_INTENTION = "geoblender.core_convert_intention"
+LOAD_INTO_VIEW = "geoblender.core_load_into_view"
+ADD_DECISION = "geoblender.core_add_decision"
+INTENTIONS_DATASET = constraint_store.INTENTION_TABLE
+"""El dato que se carga en la vista para ver las intenciones (``core_intention``)."""
+MARKS_PANEL_UNITS = 44
+MARKS_WIDTH_PX = MARKS_PANEL_UNITS * compat.UI_UNIT_PX
+"""El ancho de la ventana de las intenciones (44 unidades)."""
+INTENTION_ROWS = 5
+INTENTION_NAME_FACTOR = 0.45
+INTENTION_ROLE_FACTOR = 0.6
+"""Cómo reparte la fila de una intención su ancho: su nombre, su papel y su fecha."""
 
 
 def view() -> Any | None:
@@ -997,7 +1027,226 @@ class GEOBLENDER_PT_core_search(bpy.types.Panel):
         draw_search(self.layout, context)
 
 
+# --- Intenciones del cliente… (T25; RF-012-26, RF-012-27, RF-012-28) -----------------------------
+
+
+def role_text(value: str) -> str:
+    """El nombre de un papel de una intención (el valor de ``IntentionRole``) en el idioma de
+    Geoblender: «Rellenar»."""
+    return IntentionRole(value).label(language())
+
+
+def elevation_text(value: float) -> str:
+    """Una cota en metros como se lee: con los decimales que tiene (hasta tres) y ninguno de
+    más («612,5»)."""
+    for decimals in range(3):
+        if round(value, decimals) == value:
+            return format_number(value, decimals)
+    return format_number(value, 3)
+
+
+def _decision_name(decision: Any) -> str:
+    """Una decisión de la propiedad como se elige en la lista: «15/09/2025 · quién: qué»."""
+    return f"{decision.day} · {decision.decided_by}: {' '.join(str(decision.what).split())}"
+
+
+def fill_intentions(project: Any) -> int:
+    """Regenera de ``project`` lo que dibuja la ventana de las intenciones, sin escribir nada:
+    las intenciones guardadas con su documento, su capa, su decisión y las restricciones que
+    salieron de ellas (``core.constraints.store.listed_intentions``; conserva la elegida), las
+    capas «entidades» que se pueden guardar como marcas, los documentos (entradas de tipo
+    documento) y las decisiones de la propiedad que se pueden elegir (conserva lo elegido que
+    sigue ahí) y la fecha de hoy si no hay otra (RF-012-26). Devuelve cuántas intenciones hay. Si
+    no se puede leer, el error sigue y la vista queda como estaba."""
+    shown = view()
+    if shown is None:  # inalcanzable con la extensión registrada
+        raise RuntimeError("la vista de las intenciones no está registrada")
+    layers = search_layers(project)
+    with project.read() as conn:
+        listed = constraint_store.listed_intentions(conn)
+        documents = versions_decisions.documents(conn)
+        decisions = versions_decisions.decisions(conn)
+    old = shown.intentions
+    chosen = old[shown.intention_index].uid if 0 <= shown.intention_index < len(old) else None
+    shown.intentions.clear()
+    for entry in listed:
+        item = shown.intentions.add()
+        intention = entry.intention
+        item.name, item.uid, item.role = intention.name, intention.uid, intention.role.value
+        item.kind = intention.kind.value
+        item.elevation = ("" if intention.elevation_m is None
+                          else elevation_text(intention.elevation_m))
+        item.stated_on = intention.stated_on.strftime(DATE_FORMAT)
+        item.document, item.source, item.decision = entry.document, entry.source, entry.decision
+        item.converted = ", ".join(entry.converted)
+    shown.intention_index = next((index for index, item in enumerate(shown.intentions)
+                                  if item.uid == chosen), 0)
+    kept = shown.mark_layer
+    shown.mark_layers.clear()
+    for name, kind in layers:
+        item = shown.mark_layers.add()
+        item.name, item.kind = name, kind
+    if kept not in {name for name, _kind in layers}:
+        shown.mark_layer = ""
+    kept = shown.mark_document
+    shown.mark_documents.clear()
+    for uid, name in documents:
+        item = shown.mark_documents.add()
+        item.name, item.uid = name, uid
+    if kept not in {name for _uid, name in documents}:
+        shown.mark_document = ""
+    kept = shown.mark_decision
+    shown.mark_decisions.clear()
+    taken: dict[str, int] = {}
+    for decision in decisions:
+        name = _decision_name(decision)
+        taken[name] = taken.get(name, 0) + 1
+        item = shown.mark_decisions.add()
+        item.name = name if taken[name] == 1 else f"{name} ({taken[name]})"
+        item.uid = decision.uid
+    if kept not in {item.name for item in shown.mark_decisions}:
+        shown.mark_decision = ""
+    if not shown.mark_date.strip():
+        shown.mark_date = dt.date.today().strftime(DATE_FORMAT)
+    return len(shown.intentions)
+
+
+def show_marks_report(lines: Sequence[Line]) -> None:
+    """Deja ``lines`` como el último resultado de la ventana de las intenciones (lo guardado y lo
+    rechazado, lo convertido)."""
+    shown = view()
+    if shown is not None:
+        _put_lines(shown.mark_lines, lines)
+
+
+class GEOBLENDER_UL_core_intentions(bpy.types.UIList):
+    """Client intentions saved in the project, with their role and date"""
+
+    bl_idname = INTENTIONS_LIST
+
+    def draw_item(self, context: Any, layout: Any, data: Any, item: Any, icon: int,
+                  active_data: Any, active_propname: str, index: int = 0,
+                  flt_flag: int = 0) -> None:
+        split = layout.split(factor=INTENTION_NAME_FACTOR, align=True)
+        split.label(text=item.name, translate=False)
+        rest = split.split(factor=INTENTION_ROLE_FACTOR, align=True)
+        rest.label(text=role_text(item.role), translate=False)
+        rest.label(text=item.stated_on, translate=False)
+
+
+def _draw_intention(layout: Any, item: Any, width: float, writable: bool) -> None:
+    """La intención elegida: su papel, su geometría, su cota, su fecha, su documento, su capa,
+    su decisión y las restricciones que salieron de ella, con «Convertir en restricción…»
+    (RF-012-26, RF-012-27)."""
+    box = layout.box()
+    box.label(text=item.name, translate=False)
+    details = [tr("Role: {value}", value=role_text(item.role)),
+               tr("Geometry: {value}", value=GeometryKind(item.kind).label(language()))]
+    if item.elevation:
+        details.append(tr("Elevation: {value} m", value=item.elevation))
+    details.append(tr("Date: {value}", value=item.stated_on))
+    details.append(tr("Document: {value}", value=item.document or "—"))
+    details.append(tr("Layer: {value}", value=item.source or "—"))
+    if item.decision:
+        details.append(tr("Decision: {value}", value=item.decision))
+    details.append(tr("Converted into: {value}", value=item.converted) if item.converted
+                   else tr("Not converted into a constraint"))
+    for detail in details:
+        _draw_line(box, Line(detail), width)
+    row = box.row()
+    row.enabled = writable
+    button = row.operator(CONVERT_INTENTION, text=_label(CONVERT_INTENTION), icon="CHECKMARK",
+                          translate=False)
+    button.uid = item.uid
+
+
+def draw_marks(layout: Any, context: Any) -> None:
+    """La ventana de Intenciones del cliente… (véase el módulo), de lo ya leído."""
+    shown = view()
+    if shown is None:
+        return
+    blocked = _write_unavailable()
+    writable = blocked is None
+    if blocked is not None:  # se ve y no se cambia (RF-012-28)
+        note = layout.row()
+        note.alert = True
+        note.label(text=blocked, icon="LOCKED", translate=False)
+    width = labels.dialog_width(MARKS_WIDTH_PX)
+    saved = layout.box()
+    saved.label(text=tr("Saved intentions"), translate=False)
+    if not len(shown.intentions):
+        labels.draw_wrapped(saved, tr("There are no client intentions yet: save the marks of a "
+                                      "layer below"), width, icon="INFO")
+    else:
+        saved.template_list(INTENTIONS_LIST, "", shown, "intentions", shown, "intention_index",
+                            rows=INTENTION_ROWS)
+        index = min(max(shown.intention_index, 0), len(shown.intentions) - 1)
+        _draw_intention(saved, shown.intentions[index], width, writable)
+        load = saved.operator(LOAD_INTO_VIEW, text=_label(LOAD_INTO_VIEW), icon="HIDE_OFF",
+                              translate=False)
+        load.datasets = INTENTIONS_DATASET
+    form = layout.box()
+    form.label(text=tr("Save the marks of a layer of the client"), translate=False)
+    writes = form.column()
+    writes.enabled = writable
+    if not len(shown.mark_layers):
+        labels.draw_wrapped(writes, tr(
+            "The project has no layers of features: import them first with {path}, as "
+            "Features", path=path_text(catalog(), IMPORT_VECTOR, language())), width,
+            icon="INFO")
+    writes.prop_search(shown, "mark_layer", shown, "mark_layers", text=tr("Layer of the marks"),
+                       translate=False)
+    writes.label(text=tr("Role of the marks"), translate=False)
+    grid = writes.grid_flow(columns=2, align=True)
+    for identifier, msgid, _about in MARK_ROLE_ITEMS:
+        grid.prop_enum(shown, "mark_role", identifier,
+                       text=tr("From a field of the layer") if identifier == MARK_FIELD
+                       else translate(language(), msgid), translate=False)
+    if shown.mark_role == MARK_FIELD:
+        writes.prop(shown, "mark_role_field", text=tr("Role field"), translate=False)
+        writes.prop(shown, "mark_role_values", text=tr("Values of the role"), translate=False)
+    writes.prop(shown, "mark_name_field", text=tr("Name field (optional)"), translate=False)
+    writes.prop(shown, "mark_elevation_field", text=tr("Elevation field"), translate=False)
+    writes.prop(shown, "mark_elevation", text=tr("Elevation (m)"), translate=False)
+    writes.prop(shown, "mark_date_field", text=tr("Date field"), translate=False)
+    writes.prop(shown, "mark_date", text=tr("Date (DD/MM/YYYY)"), translate=False)
+    if not len(shown.mark_documents):
+        labels.draw_wrapped(writes, tr(
+            "The project has no document registered as an input: the marks rest on one (the "
+            "minutes, the letter or the plan of the client)"), width, icon="INFO")
+    writes.prop_search(shown, "mark_document", shown, "mark_documents",
+                       text=tr("Document of the client"), translate=False)
+    writes.prop_search(shown, "mark_decision", shown, "mark_decisions",
+                       text=tr("Decision of the owner (optional)"), translate=False)
+    if not len(shown.mark_decisions):
+        labels.draw_wrapped(writes, tr(
+            "To link a decision of the owner, record it first with {path}",
+            path=path_text(catalog(), ADD_DECISION, language())), width, icon="INFO")
+    writes.operator(SAVE_MARKS, text=_label(SAVE_MARKS), icon="CHECKMARK", translate=False)
+    if len(shown.mark_lines):
+        result = layout.box()
+        result.label(text=tr("Last result"), translate=False)
+        for line in shown.mark_lines:
+            _draw_line(result, line, width)
+
+
+class GEOBLENDER_PT_core_marks(bpy.types.Panel):
+    """Client intentions saved in the project, their conversion into constraints and the form to
+    save the marks of a layer"""
+
+    bl_idname = MARKS_PANEL
+    bl_label = "Client intentions…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_space_type = "TOPBAR"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = MARKS_PANEL_UNITS
+
+    def draw(self, context: Any) -> None:
+        draw_marks(self.layout, context)
+
+
 # En orden de registro (las listas, antes de la ventana que las dibuja).
 classes: tuple[type, ...] = (GEOBLENDER_PT_core_limits, GEOBLENDER_UL_core_constraints,
                              GEOBLENDER_PT_core_constraints, GEOBLENDER_UL_core_sectors,
-                             GEOBLENDER_UL_core_hits, GEOBLENDER_PT_core_search)
+                             GEOBLENDER_UL_core_hits, GEOBLENDER_PT_core_search,
+                             GEOBLENDER_UL_core_intentions, GEOBLENDER_PT_core_marks)

@@ -504,3 +504,25 @@ description.es = "Registra la búsqueda del sector como vigente, con lo hallado,
 entry = "012"
 action = "A"
 frequency = 2
+
+[[command]]
+key = "geoblender.core_save_client_marks"
+kind = "internal"
+label.en = "Save the marks"
+label.es = "Guardar las marcas"
+description.en = "Save the entities of a layer of the project as client intentions, with their role, date, document and decision: they never enter a mask"
+description.es = "Guarda las entidades de una capa del proyecto como intenciones del cliente, con su papel, fecha, documento y decisión: nunca entran en una máscara"
+entry = "012"
+action = "A"
+frequency = 2
+
+[[command]]
+key = "geoblender.core_convert_intention"
+kind = "internal"
+label.en = "Convert into constraint…"
+label.es = "Convertir en restricción…"
+description.en = "Create a constraint from a client intention, with the type, reason and decider that are declared: the intention does not change"
+description.es = "Crea una restricción desde una intención del cliente, con el tipo, el motivo y el decisor que se declaran: la intención no cambia"
+entry = "012"
+action = "D"
+frequency = 2

@@ -200,6 +200,9 @@ OBJECT_KINDS: list[tuple[str, str, str]] = [
     # Spec 011 (T22; RF-011-05; plan 011 §5.2.4, A15): la rejilla de diferencias de una cubicación.
     ("VOLUME_DIFFERENCE", "Difference grid",
      "The grid of differences between two surfaces of a cubication, drawn on the final one"),
+    # Spec 012 (T25; RF-012-26; plan 012 §5.2.4): una marca del cliente guardada como intención.
+    ("CLIENT_INTENTION", "Client intention",
+     "A mark of the client saved as an intention: it never limits the design on its own"),
 ]
 # El estado del dato al cargarlo (gb_dataset.status de un dato vivo, en mayúsculas).
 OBJECT_STATUSES: list[tuple[str, str, str]] = [

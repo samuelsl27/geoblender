@@ -151,11 +151,13 @@ def create_from_entity(project: StoreProject, source: str, fid: int, mapping: cp
 
 
 def create_intentions(project: StoreProject, source: str, mapping: cprov.IntentionMapping, *,
-                      document: str, decision_uid: str | None = None) -> Any:
+                      document: str, decision_uid: str | None = None,
+                      default_name: str | None = None) -> Any:
     """Guarda como intenciones del cliente las marcas de la capa ``source`` (RF-012-26; una
     capa importada del proyecto: su entrada es el origen de cada intención) según ``mapping``,
     con el documento de origen ``document`` (el uid de una entrada de tipo documento) y la
     decisión enlazada, y devuelve lo que dejó ``core.edit_intentions`` (``EditedIntentions``).
+    ``default_name`` (T25) nombra las marcas cuando ``mapping`` no tiene campo del nombre.
     Nunca entran en una máscara (error 30). ``ConstraintError``
     ``core.constraint_source_field_unknown`` si un campo elegido no está en la capa, y los de
     ``core.edit_intentions``, antes de registrar nada; ``ValueError`` si la capa no viene de
@@ -170,4 +172,4 @@ def create_intentions(project: StoreProject, source: str, mapping: cprov.Intenti
     return cprov.create_intentions(
         project, entities, mapping.with_fields(columns), layer=source, source=source,
         source_input=str(record.input_uid), document=document, decision_uid=decision_uid,
-        srs_id=int(project.record.crs_epsg))
+        srs_id=int(project.record.crs_epsg), default_name=default_name)

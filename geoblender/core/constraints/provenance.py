@@ -605,9 +605,9 @@ def edit_constraints(project: OperationProject, rows: Sequence[Constraint], *,
     return EditedConstraints(handle.uid, written, tuple(rejected))
 
 
-def _named(rows: Sequence[Constraint], base: str) -> tuple[Constraint, ...]:
-    """``rows`` con ``base`` de nombre en las que no lo tienen: ``base`` si es la única
-    restricción y «``base`` <número en la capa>» si son varias."""
+def _named[T: (Constraint, Intention)](rows: Sequence[T], base: str) -> tuple[T, ...]:
+    """``rows`` (restricciones o intenciones) con ``base`` de nombre en las que no lo tienen:
+    ``base`` si es la única y «``base`` <número en la capa>» si son varias."""
     only = len(rows) == 1
     return tuple(row if row.name else replace(
         row, name=base if only else f"{base} {row.source_fid}") for row in rows)
@@ -804,7 +804,7 @@ def _intention_rejection(entity: SourceEntity, mapping: IntentionMapping,
 
 def intentions_from_entities(entities: Sequence[SourceEntity], mapping: IntentionMapping, *,
                              layer: str, source_input: str, document_input: str,
-                             decision_uid: str | None
+                             decision_uid: str | None, default_name: str | None = None
                              ) -> tuple[tuple[Intention, ...], tuple[Rejected, ...]]:
     """Las intenciones nuevas (``fid`` 0) de ``entities`` de la capa ``layer`` según
     ``mapping`` (con los campos ya como columnas), con su origen (``source_input``, la entrada
@@ -812,7 +812,9 @@ def intentions_from_entities(entities: Sequence[SourceEntity], mapping: Intentio
     documento), la decisión enlazada y su geometría tal cual; y las entidades rechazadas con su
     motivo, en su orden: geometría vacía, rol vacío o fuera de la correspondencia, nombre o
     fecha vacíos, una cota que no es un número, una cota en otro rol, «explotar a una cota» sin
-    cota y una fecha que no lo es (RF-012-26)."""
+    cota y una fecha que no lo es (RF-012-26). Sin campo del nombre, ``default_name`` (T25: el
+    de la capa) nombra las marcas: ``default_name`` si es la única y «``default_name`` <número en
+    la capa>» si son varias."""
     values = default_role_values() if mapping.role_values is None else mapping.role_values
     rows: list[Intention] = []
     rejected: list[Rejected] = []
@@ -833,6 +835,8 @@ def intentions_from_entities(entities: Sequence[SourceEntity], mapping: Intentio
             elevation_m=elevation, stated_on=stated_on, document_input=document_input,
             decision_uid=decision_uid, source_input=source_input,
             source_fid=int(entity.fid), fid=0))
+    if default_name:
+        rows = list(_named(rows, default_name))
     return tuple(rows), tuple(rejected)
 
 
@@ -904,21 +908,24 @@ def edit_intentions(project: OperationProject, rows: Sequence[Intention], *, sou
 def create_intentions(project: OperationProject, entities: Sequence[SourceEntity],
                       mapping: IntentionMapping, *, layer: str, source: str,
                       source_input: str, document: str, decision_uid: str | None,
-                      srs_id: int) -> EditedIntentions:
+                      srs_id: int, default_name: str | None = None) -> EditedIntentions:
     """Guarda como intenciones las marcas de la capa ``layer`` (RF-012-26) según ``mapping``
     (con los campos ya como columnas) con :func:`edit_intentions`, anotando la
-    correspondencia y las rechazadas. :class:`~.messages.ConstraintError`
-    ``core.constraint_intention_nothing`` (con la lista) si no sirve ninguna, sin registrar
-    nada."""
+    correspondencia y las rechazadas. ``default_name`` (T25: sin campo del nombre) da nombre a
+    las marcas (:func:`intentions_from_entities`) y queda en los ajustes.
+    :class:`~.messages.ConstraintError` ``core.constraint_intention_nothing`` (con la lista) si
+    no sirve ninguna, sin registrar nada."""
     rows, rejected = intentions_from_entities(
         entities, mapping, layer=layer, source_input=source_input, document_input=document,
-        decision_uid=decision_uid)
+        decision_uid=decision_uid, default_name=default_name)
     if not rows:
         raise ConstraintError("core.constraint_intention_nothing", field="capa",
                               value=len(rejected), layer=layer,
                               problems="; ".join(item.text() for item in rejected) or "—")
-    return edit_intentions(project, rows, source=source,
-                           settings={"mapping": mapping.settings()}, rejected=rejected,
+    settings: dict[str, Any] = {"mapping": mapping.settings()}
+    if default_name:
+        settings["default_name"] = default_name
+    return edit_intentions(project, rows, source=source, settings=settings, rejected=rejected,
                            srs_id=srs_id)
 
 

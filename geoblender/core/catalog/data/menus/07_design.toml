@@ -62,7 +62,7 @@ label.en = "Client intentions…"
 label.es = "Intenciones del cliente…"
 description.en = "Layers of the client with their role; they never become limits on their own"
 description.es = "Capas del cliente con su papel; nunca pasan solas a ser límites"
-entry = "R-32"
+entry = "012"
 action = "P"
 frequency = 2
 

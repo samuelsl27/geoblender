@@ -6768,3 +6768,162 @@ es = "Capa de polígonos del proyecto de la que salen los sectores de búsqueda"
 
 ["Field of that layer that names each sector"]
 es = "Campo de esa capa que nombra cada sector"
+
+# Intenciones del cliente… (spec 012, T25; RF-012-26, RF-012-27; plan 012 §5.5): la ventana, el
+# formulario de las marcas, «Convertir en restricción…» y el tipo CLIENT_INTENTION de la vista
+# (bl/ui/constraint_panels.py, bl/ops/core_constraints.py, bl/props/core_constraints.py y
+# bl/scene/constraint_views.py; «Client intentions», «Constraints», «Type», «Name», «Reason»,
+# «Decided by», «Convert», «Last result», «Geometry: {value}» y los papeles ya están arriba).
+
+["Client intention"]
+es = "Intención del cliente"
+
+["A mark of the client saved as an intention: it never limits the design on its own"]
+es = "Una marca del cliente guardada como intención: nunca limita el diseño por sí sola"
+
+["Saved intentions"]
+es = "Intenciones guardadas"
+
+["There are no client intentions yet: save the marks of a layer below"]
+es = "Aún no hay intenciones del cliente: guarde abajo las marcas de una capa"
+
+["Role: {value}"]
+es = "Papel: {value}"
+
+["Elevation: {value} m"]
+es = "Cota: {value} m"
+
+["Date: {value}"]
+es = "Fecha: {value}"
+
+["Document: {value}"]
+es = "Documento: {value}"
+
+["Layer: {value}"]
+es = "Capa: {value}"
+
+["Decision: {value}"]
+es = "Decisión: {value}"
+
+["Converted into: {value}"]
+es = "Convertida en: {value}"
+
+["Not converted into a constraint"]
+es = "Sin convertir en restricción"
+
+["Save the marks of a layer of the client"]
+es = "Guardar las marcas de una capa del cliente"
+
+["Layer of the marks"]
+es = "Capa de las marcas"
+
+["Role of the marks"]
+es = "Papel de las marcas"
+
+["Role field"]
+es = "Campo del papel"
+
+["Values of the role"]
+es = "Valores del papel"
+
+["Elevation (m)"]
+es = "Cota (m)"
+
+["Document of the client"]
+es = "Documento del cliente"
+
+["Decision of the owner (optional)"]
+es = "Decisión de la propiedad (opcional)"
+
+["The project has no document registered as an input: the marks rest on one (the minutes, the letter or the plan of the client)"]
+es = "El proyecto no tiene ningún documento registrado como entrada: las marcas se apoyan en uno (el acta, la carta o el plano del cliente)"
+
+["To link a decision of the owner, record it first with {path}"]
+es = "Para enlazar una decisión de la propiedad, regístrela antes con {path}"
+
+["Choose the layer the marks of the client come from"]
+es = "Elija la capa de la que salen las marcas del cliente"
+
+["«{layer}» is not a layer of features of the project: import it first as Features"]
+es = "«{layer}» no es una capa de entidades del proyecto: impórtela antes con el papel «Entidades»"
+
+["Write the role field: the field of the layer that says the role of each mark, or choose a role for all of them"]
+es = "Escriba el campo del papel: el de la capa que dice qué papel tiene cada marca, o elija un papel para todas"
+
+["«{value}» is not «value = role»: write the role by its name, as in «Pond = Protect; Dump = Fill»"]
+es = "«{value}» no es «valor = papel»: escriba el papel por su nombre, como en «Balsa = Proteger; Escombrera = Rellenar»"
+
+["Write the elevation in metres: «{value}» is not a number"]
+es = "Escriba la cota en metros: «{value}» no es un número"
+
+["Write the elevation as a field of the layer or as a value for all the marks, not both"]
+es = "Escriba la cota como un campo de la capa o como un valor para todas las marcas, no los dos"
+
+["Write the date of the marks as DD/MM/YYYY, or the field of the layer that gives it"]
+es = "Escriba la fecha de las marcas como DD/MM/AAAA, o el campo de la capa que la da"
+
+["Choose the document the marks come from"]
+es = "Elija el documento del que salen las marcas"
+
+["«{value}» is not a document registered as an input of the project"]
+es = "«{value}» no es un documento registrado como entrada del proyecto"
+
+["«{value}» is not a decision registered in the project"]
+es = "«{value}» no es una decisión registrada en el proyecto"
+
+["Client intentions saved from «{layer}»: {saved}; entities rejected: {rejected}"]
+es = "Intenciones del cliente guardadas de «{layer}»: {saved}; entidades rechazadas: {rejected}"
+
+["The intention is no longer in the project: open the window again"]
+es = "La intención ya no está en el proyecto: abra la ventana de nuevo"
+
+["Intention «{name}» converted into the constraint «{code}»"]
+es = "Intención «{name}» convertida en la restricción «{code}»"
+
+["{name} · {role} · {kind}"]
+es = "{name} · {role} · {kind}"
+
+["Intention"]
+es = "Intención"
+
+["The client intention that becomes a constraint"]
+es = "La intención del cliente que pasa a ser una restricción"
+
+["Name of the constraint (empty: the name of the intention)"]
+es = "Nombre de la restricción (vacío: el de la intención)"
+
+["Whether the new constraint is in force"]
+es = "Si la restricción nueva está en vigor"
+
+["Layer of features of the project whose entities are the marks of the client"]
+es = "Capa de entidades del proyecto cuyas entidades son las marcas del cliente"
+
+["The role of all the marks, or the field of the layer that gives the role of each one"]
+es = "El papel de todas las marcas, o el campo de la capa que da el de cada una"
+
+["Field of the layer that says the role of each mark"]
+es = "Campo de la capa que dice el papel de cada marca"
+
+["Which role each value of the field means, as «value = role; value = role» (empty: the value is the name of the role)"]
+es = "Qué papel significa cada valor del campo, como «valor = papel; valor = papel» (vacío: el valor es el nombre del papel)"
+
+["Field of the layer that gives the name of each mark (empty: the name of the layer)"]
+es = "Campo de la capa que da el nombre de cada marca (vacío: el de la capa)"
+
+["Field of the layer that gives the elevation of the marks «Mine to an elevation»"]
+es = "Campo de la capa que da la cota de las marcas «Explotar a una cota»"
+
+["Elevation in metres of all the marks «Mine to an elevation» (empty: the field gives it)"]
+es = "Cota en metros de todas las marcas «Explotar a una cota» (vacío: la da el campo)"
+
+["Field of the layer that gives the date of each mark, as YYYY-MM-DD"]
+es = "Campo de la capa que da la fecha de cada marca, como AAAA-MM-DD"
+
+["Date of all the marks, as DD/MM/YYYY (empty: the field gives it)"]
+es = "Fecha de todas las marcas, como DD/MM/AAAA (vacío: la da el campo)"
+
+["The document of the client the marks come from, registered as an input of type document"]
+es = "El documento del cliente del que salen las marcas, registrado como entrada de tipo documento"
+
+["The decision of the owner the marks rest on (optional)"]
+es = "La decisión de la propiedad en la que se apoyan las marcas (opcional)"

@@ -83,6 +83,25 @@ búsqueda abierta con algo convertido no se deja por buscar en otro sector (se p
 constancia); si se vuelve a buscar en el mismo, conserva las decisiones de lo que se vuelve a
 hallar. Todas quedan desactivadas, con su motivo, sin proyecto, en solo lectura o con la versión
 activa no editable (:func:`constraints_unavailable`).
+
+**Intenciones del cliente…** (T25; HU-012-6; RF-012-26, RF-012-27, RF-012-28; plan §5.3.4, §5.5,
+D-8):
+:class:`GEOBLENDER_OT_core_edit_client_marks` lee las intenciones guardadas, las capas «entidades»,
+los documentos y las decisiones de la propiedad y abre su ventana (``bl.ui.constraint_panels``).
+Desde ella, :class:`GEOBLENDER_OT_core_save_client_marks` (interna, «Guardar las marcas»)
+comprueba el formulario (:func:`marks_request`: la capa, el papel de un campo con su
+correspondencia o uno para todas, el nombre, la cota y la fecha de un campo o una para todas, el
+documento y la decisión) y guarda las marcas de la capa como intenciones (``core.edit_intentions``:
+``gis.masks.sources.create_intentions``, con la capa y el documento como entradas); las entidades
+que no sirven quedan rechazadas con su motivo y nada cambia en las máscaras (error 30).
+:class:`GEOBLENDER_OT_core_convert_intention` (interna, «Convertir en restricción…») crea la
+restricción de una intención con el tipo, el motivo, el decisor, la fecha y los parámetros que se
+declaran (``core.edit_constraints`` con ``core_intention`` como entrada:
+``core.constraints.provenance.convert_intention``): la intención no cambia ni se borra y las
+máscaras pasan a obsoletas. Las intenciones se ven en la vista con ``core_intention``
+(``bl.scene.constraint_views``, que registra ``bl.scene``). Las tres quedan desactivadas, con su
+motivo, sin proyecto, en solo lectura o con la versión activa no editable
+(:func:`constraints_unavailable`).
 """
 
 from __future__ import annotations
@@ -112,13 +131,14 @@ from ...core.constraints.model import (
     ConstraintType,
     GeometryKind,
     HitDecision,
+    IntentionRole,
     is_code,
 )
 from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, tr
 from ...core.project.model import Progress
 from ...core.provenance import contract
-from ...core.provenance.operations import Use
+from ...core.provenance.operations import ItemKind, Use
 from ...core.provenance.undo import UndoKind
 from ...core.units import convert, parse_quantity
 from ...core.versions import freeze
@@ -128,6 +148,7 @@ from ...gis.masks import sectors as mask_sectors
 from ...gis.masks import sources
 from ...gis.masks import store as mask_store
 from ...reserves import compliance_store
+from ..props.core_constraints import MARK_FIELD
 from ..scene import project_session, undo_watch
 from ..scene import versions as scene_versions
 from ..ui import constraint_panels
@@ -614,6 +635,27 @@ def _typed_weight(typed: str) -> float | None:
     return checked
 
 
+def _typed_declared(buffer_out: str, buffer_in: str, weight: str,
+                    active: bool) -> dict[ConstraintParam, Any]:
+    """Los parámetros que se declaran de unas restricciones con lo tecleado en un diálogo (T23,
+    T25): «activa» y, de los resguardos y el peso, los que se escribieron (los vacíos se declaran
+    después). :class:`ConstraintFormError` si alguno no vale."""
+    values: dict[ConstraintParam, Any] = {ConstraintParam.ACTIVE: bool(active)}
+    for param, found in (
+            (ConstraintParam.BUFFER_OUT, _typed_metres(
+                buffer_out, ConstraintParam.BUFFER_OUT,
+                tr("Write the outward setback in metres (0 or more): «{value}» does not fit",
+                   value="{value}"))),
+            (ConstraintParam.BUFFER_IN, _typed_metres(
+                buffer_in, ConstraintParam.BUFFER_IN,
+                tr("Write the inward setback of the legal limit in metres (0 or more): "
+                   "«{value}» does not fit", value="{value}"))),
+            (ConstraintParam.WEIGHT, _typed_weight(weight))):
+        if found is not None:
+            values[param] = found
+    return values
+
+
 def _typed_values(typed: str) -> dict[str, ConstraintType] | None:
     """La correspondencia de los valores del campo del tipo tecleada («valor = tipo; valor =
     tipo»; cada tipo por su código, su nombre en español o en inglés); vacía, ``None`` (la de
@@ -691,19 +733,7 @@ def create_request(form: Any, project: Any) -> CreateRequest:
         name_field=form.name_field.strip() or None, reason_field=reason_field, reason=reason,
         decider_field=decider_field, decided_by=decided_by, date_field=date_field,
         decided_on=decided_on, priority=int(form.priority), **kinds)
-    values: dict[ConstraintParam, Any] = {ConstraintParam.ACTIVE: bool(form.active)}
-    for param, found in (
-            (ConstraintParam.BUFFER_OUT, _typed_metres(
-                form.buffer_out, ConstraintParam.BUFFER_OUT,
-                tr("Write the outward setback in metres (0 or more): «{value}» does not fit",
-                   value="{value}"))),
-            (ConstraintParam.BUFFER_IN, _typed_metres(
-                form.buffer_in, ConstraintParam.BUFFER_IN,
-                tr("Write the inward setback of the legal limit in metres (0 or more): "
-                   "«{value}» does not fit", value="{value}"))),
-            (ConstraintParam.WEIGHT, _typed_weight(form.weight))):
-        if found is not None:
-            values[param] = found
+    values = _typed_declared(form.buffer_out, form.buffer_in, form.weight, form.active)
     declaration = constraint_provenance.ParamDeclaration(
         values=values, source=layer, source_kind="document",
         decided_by=decided_by or project.session.user_host,
@@ -1060,19 +1090,7 @@ class GEOBLENDER_OT_core_complete_constraint(ProvenanceAwareOperator, bpy.types.
     def _declaration(self, row: Constraint
                      ) -> constraint_provenance.ParamDeclaration:
         """Los parámetros que se declaran: los tecleados (y «activa»)."""
-        values: dict[ConstraintParam, Any] = {ConstraintParam.ACTIVE: bool(self.active)}
-        for param, found in (
-                (ConstraintParam.BUFFER_OUT, _typed_metres(
-                    self.buffer_out, ConstraintParam.BUFFER_OUT,
-                    tr("Write the outward setback in metres (0 or more): «{value}» does not "
-                       "fit", value="{value}"))),
-                (ConstraintParam.BUFFER_IN, _typed_metres(
-                    self.buffer_in, ConstraintParam.BUFFER_IN,
-                    tr("Write the inward setback of the legal limit in metres (0 or more): "
-                       "«{value}» does not fit", value="{value}"))),
-                (ConstraintParam.WEIGHT, _typed_weight(self.weight))):
-            if found is not None:
-                values[param] = found
+        values = _typed_declared(self.buffer_out, self.buffer_in, self.weight, self.active)
         decider = row.decided_by or SESSION.project.session.user_host
         return constraint_provenance.ParamDeclaration(
             values=values, source=decider, source_kind="person", decided_by=decider,
@@ -1858,11 +1876,378 @@ class GEOBLENDER_OT_core_close_search(_WritesAware, ProvenanceAwareOperator, bpy
         return {"FINISHED"}
 
 
+# --- Intenciones del cliente… (T25; HU-012-6; RF-012-26, RF-012-27, RF-012-28) -------------------
+
+EDIT_MARKS = constraint_provenance.INTENTIONS_COMMAND
+SAVE_MARKS = constraint_panels.SAVE_MARKS
+CONVERT_INTENTION = constraint_panels.CONVERT_INTENTION
+
+
+class MarksFormError(ConstraintFormError):
+    """Lo que impide guardar las marcas del cliente con lo escrito en la ventana (ya en el
+    idioma de Geoblender)."""
+
+
+@dataclass(frozen=True, slots=True)
+class MarksRequest:
+    """Lo que pide el formulario de las marcas ya comprobado: la capa «entidades», la entrada del
+    documento de origen, la decisión enlazada (si la hay), cómo se leen las marcas de la capa y el
+    nombre que toman las que no tienen campo del nombre (RF-012-26)."""
+
+    layer: str
+    document: str
+    decision: str | None
+    mapping: constraint_provenance.IntentionMapping
+    default_name: str
+
+
+def _typed_roles(typed: str) -> dict[str, IntentionRole] | None:
+    """La correspondencia de los valores del campo del papel tecleada («valor = papel; valor =
+    papel»; cada papel por su código, su nombre en español o en inglés); vacía, ``None`` (la de
+    por defecto: los papeles por su nombre)."""
+    shown = typed.strip()
+    if not shown:
+        return None
+    known = constraint_provenance.default_role_values()
+    found: dict[str, IntentionRole] = {}
+    for pair in (part for part in shown.split(";") if part.strip()):
+        value, _, kind = pair.partition("=")
+        role = known.get(kind.strip().casefold())
+        if not value.strip() or role is None:
+            raise MarksFormError(tr(
+                "«{value}» is not «value = role»: write the role by its name, as in «Pond = "
+                "Protect; Dump = Fill»", value=pair.strip()))
+        found[value.strip()] = role
+    return found
+
+
+def _typed_elevation(typed: str) -> float | None:
+    """La cota tecleada en metros (float64, finita; «612,5», «612.5 m»); vacía, ``None``."""
+    shown = typed.strip()
+    if not shown:
+        return None
+    message = tr("Write the elevation in metres: «{value}» is not a number", value=shown)
+    try:
+        number, unit = parse_quantity(shown)
+        value = float(convert(number, unit or _METRE, _METRE))
+    except (GeoblenderError, ValueError):
+        raise MarksFormError(message) from None
+    if not math.isfinite(value):
+        raise MarksFormError(message)
+    return value
+
+
+def marks_request(form: Any) -> MarksRequest:
+    """Lo que pide el formulario de las marcas (``form``: ``WindowManager.geoblender_constraints``)
+    comprobado, sin leer ni escribir nada. :class:`MarksFormError` si no se eligió una capa del
+    proyecto, falta el campo del papel, la correspondencia no se lee, la cota se da de un campo y
+    de un valor a la vez o no es un número, falta la fecha o no lo es, falta el documento o no es
+    uno de los registrados, o la decisión no es una de las registradas (RF-012-26)."""
+    layer = form.mark_layer.strip()
+    if not layer:
+        raise MarksFormError(tr("Choose the layer the marks of the client come from"))
+    if layer not in {item.name for item in form.mark_layers}:
+        raise MarksFormError(tr(
+            "«{layer}» is not a layer of features of the project: import it first as Features",
+            layer=layer))
+    role: IntentionRole | None = None
+    role_field: str | None = None
+    values: dict[str, IntentionRole] | None = None
+    if form.mark_role == MARK_FIELD:
+        role_field = form.mark_role_field.strip()
+        if not role_field:
+            raise MarksFormError(tr(
+                "Write the role field: the field of the layer that says the role of each mark, "
+                "or choose a role for all of them"))
+        values = _typed_roles(form.mark_role_values)
+    else:
+        role = IntentionRole[form.mark_role]
+    elevation_field = form.mark_elevation_field.strip() or None
+    elevation = _typed_elevation(form.mark_elevation)
+    if elevation_field is not None and elevation is not None:
+        raise MarksFormError(tr("Write the elevation as a field of the layer or as a value for "
+                                "all the marks, not both"))
+    date_field = form.mark_date_field.strip() or None
+    stated_on = None
+    if date_field is None:
+        typed = form.mark_date.strip()
+        if not typed:
+            raise MarksFormError(tr("Write the date of the marks as DD/MM/YYYY, or the field of "
+                                    "the layer that gives it"))
+        stated_on = _typed_date(typed)
+    document = form.mark_document.strip()
+    if not document:
+        raise MarksFormError(tr("Choose the document the marks come from"))
+    document_uid = next((item.uid for item in form.mark_documents if item.name == document),
+                        None)
+    if document_uid is None:
+        raise MarksFormError(tr(
+            "«{value}» is not a document registered as an input of the project", value=document))
+    decision = form.mark_decision.strip()
+    decision_uid = None
+    if decision:
+        decision_uid = next((item.uid for item in form.mark_decisions if item.name == decision),
+                            None)
+        if decision_uid is None:
+            raise MarksFormError(tr("«{value}» is not a decision registered in the project",
+                                    value=decision))
+    mapping = constraint_provenance.IntentionMapping(
+        role=role, role_field=role_field, role_values=values,
+        name_field=form.mark_name_field.strip() or None, elevation_field=elevation_field,
+        elevation_m=elevation, date_field=date_field, stated_on=stated_on)
+    return MarksRequest(layer, document_uid, decision_uid, mapping,
+                        constraint_panels.layer_label(layer))
+
+
+class GEOBLENDER_OT_core_edit_client_marks(_WritesAware, ProvenanceAwareOperator,
+                                           bpy.types.Operator):
+    """Layers of the client with their role; they never become limits on their own"""
+
+    bl_idname = EDIT_MARKS
+    bl_label = "Client intentions…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = constraint_provenance.EDIT_INTENTIONS
+
+    def execute(self, context: Any) -> set[str]:
+        """Lee las intenciones guardadas, las capas «entidades», los documentos y las decisiones
+        del proyecto y abre su ventana; desde un guion sin ventana, solo la vista."""
+        try:
+            constraint_panels.fill_intentions(SESSION.project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        if getattr(context, "window", None) is None:
+            return {"FINISHED"}
+        return _call_panel(constraint_panels.MARKS_PANEL)
+
+
+class GEOBLENDER_OT_core_save_client_marks(_WritesAware, ProvenanceAwareOperator,
+                                           bpy.types.Operator):
+    """Save the entities of a layer of the project as client intentions, with their role, date,
+    document and decision: they never enter a mask"""
+
+    bl_idname = SAVE_MARKS
+    bl_label = "Save the marks"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+    provenance_op_type = constraint_provenance.EDIT_INTENTIONS
+
+    def execute(self, context: Any) -> set[str]:
+        """Guarda las marcas de la capa de la ventana como intenciones (``core.edit_intentions``,
+        con la capa y el documento como entradas): su papel, su cota, su fecha, su documento y su
+        decisión, y deja el informe de las guardadas y de las rechazadas con su motivo
+        (RF-012-26). Lo que no vale se rechaza sin escribir nada; ninguna máscara cambia."""
+        project = SESSION.project
+        try:
+            request = marks_request(constraint_panels.view())
+        except ConstraintFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(
+            self.provenance_op_type,
+            [Use(request.layer, constraint_provenance.SOURCE_ROLE),
+             Use(request.document, constraint_provenance.DOCUMENT_ROLE, kind=ItemKind.INPUT)],
+            report=self.report, dialog=self.provenance_dialog,
+            version=scene_versions.active_version())
+        if ready is None:
+            return {"CANCELLED"}
+        try:
+            edited = sources.create_intentions(
+                project, request.layer, request.mapping, document=request.document,
+                decision_uid=request.decision, default_name=request.default_name)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, constraint_provenance.EDIT_INTENTIONS)
+        shown = i18n.language()
+        lines = [constraint_panels.Line(tr(
+            "Client intentions saved from «{layer}»: {saved}; entities rejected: {rejected}",
+            layer=request.default_name, saved=len(edited.intentions),
+            rejected=len(edited.rejected)))]
+        lines += [constraint_panels.Line(item.text(shown), alert=True)
+                  for item in edited.rejected]
+        _show_marks_result(project, lines, self.report)
+        return {"FINISHED"}
+
+
+def _show_marks_result(project: Any, lines: list[constraint_panels.Line], report: Any) -> None:
+    """Deja ``lines`` como el último resultado de la ventana de las intenciones y lo dice con
+    ``report`` (los de alerta, como aviso); vuelve a leer la lista. Un fallo al leer queda en el
+    registro."""
+    try:
+        constraint_panels.fill_intentions(project)
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.warning("No se pudo volver a leer la lista de intenciones", exc_info=True)
+    constraint_panels.show_marks_report(lines)
+    for line in lines:
+        report({"WARNING" if line.alert else "INFO"}, line.text)
+
+
+class GEOBLENDER_OT_core_convert_intention(_WritesAware, ProvenanceAwareOperator,
+                                           bpy.types.Operator):
+    """Create a constraint from a client intention, with the type, reason and decider that are
+    declared: the intention does not change"""
+
+    bl_idname = CONVERT_INTENTION
+    bl_label = "Convert into constraint…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+    provenance_op_type = constraint_provenance.EDIT_CONSTRAINTS
+
+    uid: StringProperty(  # type: ignore[valid-type]
+        name="Intention", description="The client intention that becomes a constraint",
+        options=_HIDDEN)
+    ctype: EnumProperty(  # type: ignore[valid-type]
+        name="Type", description="Type of the constraint", items=COMPLETE_TYPE_ITEMS,
+        default=NO_TYPE, options=_FIELD)
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the constraint (empty: the name of the intention)",
+        options=_FIELD)
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the constraint limits the design", options=_FIELD)
+    decided_by: StringProperty(  # type: ignore[valid-type]
+        name="Decided by", description="Who decided that the constraint limits the design",
+        options=_FIELD)
+    decided_on: StringProperty(  # type: ignore[valid-type]
+        name="Date", description="Date of the decision, as DD/MM/YYYY", options=_FIELD)
+    priority: IntProperty(  # type: ignore[valid-type]
+        name="Priority", description="Order of the constraints that cover the same cells: it "
+        "only orders their causes, never lifts a prohibition", default=0, options=_FIELD)
+    buffer_out: StringProperty(  # type: ignore[valid-type]
+        name="Outward setback (m)", description="Distance in metres, outside the geometry, "
+        "that the constraint also protects (empty: it is declared later)", options=_FIELD)
+    buffer_in: StringProperty(  # type: ignore[valid-type]
+        name="Inward setback (m)", description="Distance in metres, inside a legal limit, "
+        "where cutting is not allowed (empty: it is declared later)", options=_FIELD)
+    weight: StringProperty(  # type: ignore[valid-type]
+        name="Weight", description="Weight of an area to avoid, 1 or more (empty: it is "
+        "declared later)", options=_FIELD)
+    active: BoolProperty(  # type: ignore[valid-type]
+        name="Active", description="Whether the new constraint is in force", default=True,
+        options=_FIELD)
+
+    def _entry(self, project: Any) -> constraint_store.ListedIntention:
+        """La intención de :attr:`uid` en el proyecto; :class:`ConstraintFormError` si ya no
+        está."""
+        with project.read() as conn:
+            found = [item for item in constraint_store.listed_intentions(conn)
+                     if item.intention.uid == self.uid]
+        if not found:
+            raise ConstraintFormError(tr("The intention is no longer in the project: open the "
+                                         "window again"))
+        return found[0]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo con el nombre de la intención, la persona de la sesión como decisor y
+        hoy como fecha; nada cambia hasta aceptarlo."""
+        self.provenance_dialog = True
+        project = SESSION.project
+        try:
+            entry = self._entry(project)
+        except ConstraintFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self.ctype = NO_TYPE
+        self.name = entry.intention.name
+        self.decided_by = project.session.user_host
+        self.decided_on = dt.date.today().strftime(constraint_panels.DATE_FORMAT)
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=text(command_catalog().commands[CONVERT_INTENTION].label),
+            confirm_text=tr("Convert"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        view = constraint_panels.view()
+        shown = None if view is None else next(
+            (item for item in view.intentions if item.uid == self.uid), None)
+        kind = None if shown is None else GeometryKind(shown.kind)
+        if shown is not None:
+            layout.label(text=tr("{name} · {role} · {kind}", name=shown.name,
+                                 role=constraint_panels.role_text(shown.role),
+                                 kind=kind.label(i18n.language())), translate=False)
+        layout.label(text=tr("Type"), translate=False)
+        grid = layout.grid_flow(columns=2, align=True)
+        for identifier, msgid, _about in COMPLETE_TYPE_ITEMS[1:]:
+            if kind is not None and not ConstraintType[identifier].accepts(kind):
+                continue  # un tipo que no cabe en su geometría no se ofrece
+            grid.prop_enum(self, "ctype", identifier,
+                           text=i18n.translate(i18n.language(), msgid), translate=False)
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+        layout.prop(self, "decided_by", text=tr("Decided by"), translate=False)
+        layout.prop(self, "decided_on", text=tr("Date (DD/MM/YYYY)"), translate=False)
+        layout.prop(self, "priority", text=tr("Priority"), translate=False)
+        layout.prop(self, "buffer_out", text=tr("Outward setback (m)"), translate=False)
+        layout.prop(self, "buffer_in", text=tr("Inward setback (m)"), translate=False)
+        layout.prop(self, "weight", text=tr("Weight"), translate=False)
+        layout.prop(self, "active", text=tr("Active"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Convierte la intención en una restricción (``core.edit_constraints`` con
+        ``core_intention`` como entrada): su geometría y su origen, el tipo, el motivo, el decisor
+        y la fecha que se declaran, su nombre (el de la intención si no se escribe otro) y los
+        parámetros que se escriben (RF-012-27). La intención no cambia ni se borra; si algo no
+        vale, nada se escribe. Las máscaras pasan a obsoletas: compilarlas las rehace."""
+        project = SESSION.project
+        try:
+            entry = self._entry(project)
+            if self.ctype == NO_TYPE:
+                raise ConstraintFormError(tr("Choose the type of the constraint"))
+            ctype = ConstraintType[self.ctype]
+            reason, decider = self.reason.strip(), self.decided_by.strip()
+            if not reason:
+                raise ConstraintFormError(tr("Write the reason of the constraint"))
+            if not decider:
+                raise ConstraintFormError(tr("Write who decides the constraint"))
+            decided_on = _typed_date(self.decided_on)
+            values = _typed_declared(self.buffer_out, self.buffer_in, self.weight, self.active)
+        except ConstraintFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(
+            self.provenance_op_type,
+            [Use(constraint_store.INTENTION_TABLE, constraint_provenance.INTENTION_ROLE)],
+            report=self.report, dialog=self.provenance_dialog,
+            version=scene_versions.active_version())
+        if ready is None:
+            return {"CANCELLED"}
+        source = entry.document or decider
+        declaration = constraint_provenance.ParamDeclaration(
+            values=values, source=source, source_kind="document" if entry.document else "person",
+            decided_by=decider, reason=reason)
+        try:
+            edited = constraint_provenance.convert_intention(
+                project, entry.intention, ctype=ctype, reason=reason, decided_by=decider,
+                decided_on=decided_on, params=declaration, name=self.name.strip() or None,
+                priority=int(self.priority), srs_id=int(project.record.crs_epsg))
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, constraint_provenance.EDIT_CONSTRAINTS)
+        made = edited.constraints[0]
+        lines = [constraint_panels.Line(tr(
+            "Intention «{name}» converted into the constraint «{code}»",
+            name=entry.intention.name, code=made.code))]
+        _show_marks_result(project, lines, self.report)
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_edit_limits, GEOBLENDER_OT_core_declare_limits,
     GEOBLENDER_OT_core_go_to_place, GEOBLENDER_OT_core_edit_constraints,
     GEOBLENDER_OT_core_create_constraints, GEOBLENDER_OT_core_complete_constraint,
     GEOBLENDER_OT_core_find_untouchables, GEOBLENDER_OT_core_declare_sectors,
     GEOBLENDER_OT_core_search_untouchables, GEOBLENDER_OT_core_convert_hit,
-    GEOBLENDER_OT_core_discard_hit, GEOBLENDER_OT_core_close_search)
+    GEOBLENDER_OT_core_discard_hit, GEOBLENDER_OT_core_close_search,
+    GEOBLENDER_OT_core_edit_client_marks, GEOBLENDER_OT_core_save_client_marks,
+    GEOBLENDER_OT_core_convert_intention)
 """Los operadores de la 012 que ya tienen su clase real (de la T22 a la T28)."""

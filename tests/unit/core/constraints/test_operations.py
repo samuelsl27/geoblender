@@ -56,6 +56,11 @@ Intenciones del cliente (T15; HU-012-6; plan 012 D-8):
 - **RF-012-27**: convertida en restricción (``core.edit_constraints`` con la intención como
   entrada), la restricción queda enlazada a la intención con el tipo, el motivo y el decisor
   declarados, las máscaras cambian, y la intención no (sus filas, iguales).
+
+La ventana de las intenciones (T25; ``bl.ui.constraint_panels``): sin campo del nombre, las marcas
+toman el de su capa (``default_name``), y ``core.constraints.store.listed_intentions`` las lee con
+el nombre de su documento y de su capa, su decisión y los códigos de las restricciones que salieron
+de ellas.
 """
 
 from __future__ import annotations
@@ -834,6 +839,27 @@ class IntentionsFromEntitiesTest(unittest.TestCase):
             cprov.IntentionMapping(role=cmodel.IntentionRole.FILL, role_field="rol",
                                    stated_on=MARK_DATE)
 
+    def test_default_name_for_marks_without_a_name_field(self) -> None:
+        """RF-012-26 (T25): sin campo del nombre, las marcas toman ``default_name`` (el de su
+        capa) y su número, o solo el nombre si es la única; el campo del nombre manda."""
+        marks = [_entity(item) for item in fx.source_features()[fx.LAYER_MARKS]]
+        nameless = replace(BY_MARK_FIELDS, name_field=None)
+        rows, rejected = cprov.intentions_from_entities(
+            marks, nameless, layer="marcas", source_input="entrada-marcas",
+            document_input="entrada-acta", decision_uid=None, default_name="Marcas del cliente")
+        self.assertEqual(rejected, ())
+        self.assertEqual([row.name for row in rows],
+                         [f"Marcas del cliente {row.source_fid}" for row in rows])
+        self.assertEqual([row.source_fid for row in rows], [1, 2, 3, 4, 5, 6])
+        (only,), _ = cprov.intentions_from_entities(
+            marks[:1], nameless, layer="marcas", source_input="entrada-marcas",
+            document_input="entrada-acta", decision_uid=None, default_name="Marcas del cliente")
+        self.assertEqual(only.name, "Marcas del cliente")
+        named, _ = cprov.intentions_from_entities(
+            marks, BY_MARK_FIELDS, layer="marcas", source_input="entrada-marcas",
+            document_input="entrada-acta", decision_uid=None, default_name="Marcas del cliente")
+        self.assertEqual([row.name for row in named][:2], ["Ermita", "Hondonada"])
+
 
 class IntentionsTest(_LayersCase):
     """RF-012-26, RF-012-27: guardar las marcas de una capa importada, que no cambian ninguna
@@ -1004,6 +1030,28 @@ class IntentionsTest(_LayersCase):
         self.assertNotEqual(after[0], before[0])
         self.assertIn("hondonada", after[1].zones)
         self.assertFalse(np.array_equal(after[1].cut_allowed(), before[1].cut_allowed()))
+
+        # La ventana de las intenciones (T25): cada una con su documento, su capa, su decisión y
+        # los códigos de las restricciones que salieron de ella.
+        with self.project.read() as conn:
+            listed = cstore.listed_intentions(conn)
+        self.assertEqual([item.intention.uid for item in listed], [item.uid for item in stored])
+        self.assertEqual(
+            [(item.intention.name, item.document, item.source, item.decision, item.converted)
+             for item in listed],
+            [("Hondonada", "Acta_cliente", "Marcas_cliente",
+              f"15/09/2025 · {PERSON}: Marcas del cliente para el diseño", ("hondonada",)),
+             ("Plaza de cantera", "Acta_cliente", "Marcas_cliente",
+              f"15/09/2025 · {PERSON}: Marcas del cliente para el diseño", ()),
+             ("Plataforma de acopio", "Acta_cliente", "Marcas_cliente",
+              f"15/09/2025 · {PERSON}: Marcas del cliente para el diseño", ()),
+             ("Balsa a proteger", "Acta_cliente", "Marcas_cliente",
+              f"15/09/2025 · {PERSON}: Marcas del cliente para el diseño", ())])
+        empty = sqlite3.connect(":memory:")  # un proyecto sin la tabla: ninguna
+        try:
+            self.assertEqual(cstore.listed_intentions(empty), ())
+        finally:
+            empty.close()
 
 
 if __name__ == "__main__":

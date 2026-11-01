@@ -78,7 +78,8 @@ COMMANDS = {
 DELIVERED: frozenset[str] = frozenset({"geoblender.core_edit_limits",
                                        "geoblender.core_edit_constraints",
                                        "geoblender.gis_compile_constraints",
-                                       "geoblender.core_find_untouchables"})
+                                       "geoblender.core_find_untouchables",
+                                       "geoblender.core_edit_client_marks"})
 SEARCH_TYPES = ("core.declare_sectors", "core.find_untouchables")
 """Los dos tipos que lanza la misma orden del catálogo: la ventana de la búsqueda
 (``core.find_untouchables``); declarar los sectores tiene su orden interna."""
