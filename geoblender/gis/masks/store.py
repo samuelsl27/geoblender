@@ -6,14 +6,17 @@ RF-012-16, RF-012-28; plan 012 §5.2.3, A5, A11, D-24).
   parámetros resueltos versión → proyecto, los sectores, las búsquedas, la rejilla del proyecto,
   los datos registrados que se consumen y **lo de la compilación anterior vigente** de la versión
   (A5): de cada restricción cuya huella cambió (``gis.masks.compile.changed_codes``), su polígono
-  (``gis_mskg_``) y su zona (``gis_mskz_``) de entonces.
+  (``gis_mskg_``) y su zona (``gis_mskz_``) de entonces. :func:`gather_steps` (T31) es lo mismo en
+  varios pasos: las zonas anteriores, 182.753 filas con 500 restricciones, se leen por trozos
+  (0,27 s de una vez; RNF-012-06).
 - :func:`begin_compile` rechaza antes de registrar nada lo que no se puede compilar (sin versión
   activa o en una no editable, RF-012-16; restricciones incompletas o no válidas, RF-012-04; sin
   límite legal, RF-012-15) y empieza ``gis.compile_constraints`` «en curso» (sustituyendo a la
   anterior) con sus entradas, sus parámetros y sus ajustes. :func:`begin_compile_steps` (T23) es
   lo mismo en varios pasos (la lectura, la comprobación de cada restricción y de cada polígono, la
   operación): la comprobación en frío de 500 restricciones tarda 0,45 s de una vez, y ninguna
-  llamada del hilo de Blender pasa de 0,2 s mientras compila (RNF-012-06).
+  llamada del hilo de Blender pasa de 0,2 s mientras compila (RNF-012-06), tampoco al compilar
+  otra vez tras cambiar un resguardo (T31).
 - :func:`listed_constraints` (T23; RF-012-04, RF-012-19) lista las restricciones con su estado en
   una versión (incompleta, no válida, activa o inactiva) y lo que les falta;
   :func:`listed_constraint` (T27) lo mismo de una sola, por su ``uid`` (la barra N «Restricción»).
@@ -142,6 +145,7 @@ __all__ = [
     "declared_limits",
     "declared_limits_steps",
     "gather",
+    "gather_steps",
     "listed_constraint",
     "listed_constraints",
     "listed_constraints_steps",
@@ -468,26 +472,38 @@ def _live_operation(conn: sqlite3.Connection, record: Any) -> str | None:
     return str(record.operation_uid)
 
 
-def _previous(conn: sqlite3.Connection, version_uid: str, request: CompileRequest
-              ) -> tuple[PreviousMasks | None, str | None]:
-    records = {family: dataset_registry.get(conn, declared.dataset_name(family),
-                                            version_uid=version_uid)
-               for family in (declared.ZONES, declared.REPORT, declared.SHAPES)}
-    if any(record is None for record in records.values()):
-        return None, None
-    operation = _live_operation(conn, records[declared.REPORT])
-    if operation is None:
-        return None, None
-    before = {row[0]: str(row[4]) for row in read_report(conn, records[declared.REPORT].locator)
+def _previous_steps(project: StoreProject, version_uid: str, request: CompileRequest
+                    ) -> Generator[None, None, tuple[PreviousMasks | None, str | None]]:
+    """Lo de la compilación anterior vigente de la versión ``version_uid`` (``(None, None)`` si
+    no hay) por pasos (T31; RNF-012-06): una lectura de lo pequeño (el informe y las huellas) y,
+    si alguna restricción cambió, las zonas anteriores por trozos de filas
+    (:func:`zone_runs_steps`: con 500 restricciones, 182.753 filas, 0,27 s de una vez) y sus
+    polígonos en otra unidad. Cada lectura es suya (no se sostiene ninguna entre pasos)."""
+    with project.read() as conn:
+        records = {family: dataset_registry.get(conn, declared.dataset_name(family),
+                                                version_uid=version_uid)
+                   for family in (declared.ZONES, declared.REPORT, declared.SHAPES)}
+        if any(record is None for record in records.values()):
+            return None, None
+        operation = _live_operation(conn, records[declared.REPORT])
+        if operation is None:
+            return None, None
+        report = read_report(conn, records[declared.REPORT].locator)
+    before = {row[0]: str(row[4]) for row in report
               if row[1] == "fingerprint" and row[4] is not None}
     now = {item.code: fingerprint(item, request.resolved) for item in request.constraints
            if is_code(item.code) and item.ctype is not None
            and is_active(item, request.resolved)}
     codes = changed_codes(now, before)
-    zones = read_zone_runs(conn, records[declared.ZONES].locator) if codes else {}
-    shapes = read_shapes(conn, records[declared.SHAPES].locator) if codes else {}
-    ctypes = {row[0]: row[4] for row in read_report(conn, records[declared.REPORT].locator)
-              if row[1] == "zone_area"}
+    zones: dict[str, Runs] = {}
+    shapes: dict[str, tuple[ConstraintType, tuple[tuple[np.ndarray, ...], ...]]] = {}
+    if codes:
+        yield
+        zones = yield from zone_runs_steps(project, records[declared.ZONES].locator)
+        yield
+        with project.read() as conn:
+            shapes = read_shapes(conn, records[declared.SHAPES].locator)
+    ctypes = {row[0]: row[4] for row in report if row[1] == "zone_area"}
     changed: dict[str, PreviousShape | None] = {}
     for code in codes:
         if code not in before:
@@ -514,7 +530,16 @@ def available_tables(project: StoreProject) -> frozenset[str]:
 
 def gather(project: StoreProject, *, version: str) -> CompileInputs:
     """Lo que se compila en la versión ``version`` (uid o código), sin escribir nada
-    (véase el módulo). ``VersionError`` si no existe o no es editable."""
+    (véase el módulo). ``VersionError`` si no existe o no es editable. De una vez:
+    :func:`gather_steps` es lo mismo en varios pasos."""
+    return drain(gather_steps(project, version=version))
+
+
+def gather_steps(project: StoreProject, *, version: str) -> Generator[None, None, CompileInputs]:
+    """:func:`gather` por pasos (T31; RNF-012-06): una unidad por la lectura de las
+    restricciones, los parámetros, los sectores y las búsquedas, y las de lo de la compilación
+    anterior (:func:`_previous_steps`: sus zonas, por trozos de filas). Devuelve lo mismo que
+    :func:`gather`; los rechazos (``VersionError``), al avanzar. Cerrarlo a mitad no deja nada."""
     record = project.record
     if record is None:
         raise ValueError(f"el proyecto «{project.name}» se abrió solo con su cabecera")
@@ -529,7 +554,8 @@ def gather(project: StoreProject, *, version: str) -> CompileInputs:
         grid = project_grid(record.window, float(record.grid_step_m))
         request = CompileRequest(constraints, MappingProxyType(resolved), sectors, searches,
                                  grid)
-        previous, supersedes = _previous(conn, found.uid, request)
+    yield
+    previous, supersedes = yield from _previous_steps(project, found.uid, request)
     perimeter = perimeter_of(constraints, resolved)
     request = CompileRequest(constraints, request.resolved, sectors, searches, grid, previous)
     return CompileInputs(found.uid, request, available, supersedes,
@@ -549,7 +575,7 @@ def begin_compile_steps(project: StoreProject, *, version: str | None,
     if version is None or not str(version).strip():
         raise VersionError("core.version_required", field="versión activa", value=version,
                            op_type=declared.COMPILE)
-    inputs = gather(project, version=str(version))
+    inputs = yield from gather_steps(project, version=str(version))
     yield
     request = inputs.request
     problems = yield from check_steps(request.constraints, request.resolved)

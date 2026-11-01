@@ -55,7 +55,8 @@ from ..store import StoreProject
 from . import provenance as declared
 from .combine import ClassBit
 from .compile import STEP_BUDGET_S, pace_units
-from .store import begin_compile, compile_run, current_pending, read_report, sector_states_now
+from .store import begin_compile_steps, compile_run, current_pending, read_report
+from .store import sector_states_now
 from .store import zone_runs_steps
 from .zones import Runs
 
@@ -293,21 +294,33 @@ def load_masks_steps(project: StoreProject, version_uid: str) -> Generator[None,
 def ensure_masks_steps(project: StoreProject, version_uid: str, *,
                        budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
     """Las máscaras de la versión ``version_uid`` al día (D-15, D-43): si no lo están, empieza
-    ya una ``gis.compile_constraints`` propia (sus rechazos, los de
-    ``gis.masks.store.begin_compile``, salen aquí, sin registrar nada) y da sus pasos; el último
-    ``Progress`` lleva el :class:`MaskSet`."""
+    una ``gis.compile_constraints`` propia y da sus pasos; el último ``Progress`` lleva el
+    :class:`MaskSet`. Al llamar solo se mira su estado; la lectura de lo que se compila y la
+    comprobación de cada restricción (``gis.masks.store.begin_compile_steps``: sus rechazos, sin
+    registrar nada) son los primeros pasos, y la operación empieza en el último de ellos (T31;
+    RNF-012-06: empezar de una vez tardaba más de 0,2 s con 500 restricciones)."""
     state, _pending = mask_state(project, version_uid)
-    steps = None
-    if state is not MaskState.CURRENT:
-        handle = begin_compile(project, version=version_uid)
-        steps = compile_run(project, handle, budget_s=budget_s)
-    return _ensure(project, version_uid, steps, budget_s)
+    return _ensure(project, version_uid, state is not MaskState.CURRENT, budget_s)
 
 
-def _ensure(project: StoreProject, version_uid: str, steps: Iterator[Progress] | None,
-            budget_s: float) -> Iterator[Progress]:
+_COMPILE_PHASE = "compile"
+_COMPILE_TEXT = "Compilando las restricciones…"
+
+
+def _ensure(project: StoreProject, version_uid: str, compile_first: bool, budget_s: float
+            ) -> Iterator[Progress]:
     total = 1
-    if steps is not None:
+    if compile_first:
+        begin = begin_compile_steps(project, version=version_uid)
+        with closing(begin):
+            while True:
+                try:
+                    next(begin)
+                except StopIteration as stop:
+                    handle = stop.value
+                    break
+                yield Progress(_COMPILE_PHASE, 0, total, _COMPILE_TEXT)
+        steps = compile_run(project, handle, budget_s=budget_s)
         with closing(steps):
             for step in steps:
                 total = step.total + 1

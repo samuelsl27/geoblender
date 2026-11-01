@@ -34,6 +34,7 @@ from typing import Any
 
 import numpy as np
 
+from tests.support import constraints_data as cdata
 from tests.support import constraints_fixtures as fx
 from tests.support import constraints_project as cp
 from tests.support.core_fixtures import FakeClock, make_session, make_settings, project_tmp
@@ -55,19 +56,17 @@ surfaces_mod = import_geoblender("reserves.surfaces")
 T = cmodel.ConstraintType
 G = cmodel.GeometryKind
 
-WEST, SOUTH = 699_000.0, 4_399_000.0
-COLS, ROWS = 1654, 1699
-STEP_M = 1.0
-EAST, NORTH = WEST + COLS * STEP_M, SOUTH + ROWS * STEP_M
-SEED = 20_261_031
-COUNT = 500
+WEST, SOUTH = cdata.WEST, cdata.SOUTH
+COLS, ROWS = cdata.COLS, cdata.ROWS
+STEP_M = cdata.STEP_M
+EAST, NORTH = cdata.EAST, cdata.NORTH
+SEED = cdata.SEED
+COUNT = cdata.COUNT
 PERSON = "Samuel (IMGA)"
 SESSION = make_session()
-
-
-def window() -> tuple[float, float, float, float]:
-    """La ventana del proyecto de escala: (oeste, sur, este, norte)."""
-    return (WEST, SOUTH, EAST, NORTH)
+star = cdata.star
+path = cdata.path
+window = cdata.window
 
 
 def grid() -> Any:
@@ -76,26 +75,8 @@ def grid() -> Any:
 
 
 # --- Las restricciones --------------------------------------------------------------------------
-
-
-def star(rng: np.random.Generator, cx: float, cy: float, radius: float, n: int,
-         jitter: float = 0.3) -> np.ndarray:
-    """Un anillo cerrado y antihorario de ``n`` vértices (simple: radio positivo a ángulos
-    crecientes)."""
-    step = 2.0 * math.pi / n
-    angles = np.arange(n) * step + (rng.random(n) - 0.5) * 0.6 * step
-    radii = radius * (1.0 + jitter * (rng.random(n) - 0.5) * 2.0)
-    ring = np.column_stack([cx + radii * np.cos(angles), cy + radii * np.sin(angles)])
-    return np.vstack([ring, ring[:1]])
-
-
-def path(rng: np.random.Generator, x: float, y: float, n: int, length: float) -> np.ndarray:
-    """Una línea de ``n`` vértices que empieza en (``x``, ``y``) y gira poco (``length`` m)."""
-    heading = rng.uniform(0, 2 * math.pi)
-    steps = length / (n - 1)
-    turns = np.cumsum((rng.random(n - 1) - 0.5) * 0.4) + heading
-    xy = np.column_stack([np.cumsum(np.cos(turns)) * steps, np.cumsum(np.sin(turns)) * steps])
-    return np.vstack([[x, y], np.array([x, y]) + xy])
+# Los datos puros (los vértices y los parámetros), en ``tests/support/constraints_data.py``,
+# que comparte con las pruebas de dentro de Blender (T31).
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,60 +93,23 @@ def build_constraints(rng: np.random.Generator | None = None) -> ScaleConstraint
     """Las 500 restricciones de §2.2 con ``rng`` (por defecto, la semilla :data:`SEED`): el
     límite legal (10 m hacia dentro) y el perímetro, 30 puntos, 30 líneas y 40 polígonos con
     resguardo de 5 a 50 m y 398 polígonos sin él."""
-    rng = np.random.default_rng(SEED) if rng is None else rng
     rows: list[Any] = []
     values: dict[str, Any] = {}
     taken: set[str] = set()
     vertices = 0
-    cx, cy = (WEST + EAST) / 2.0, (SOUTH + NORTH) / 2.0
-
-    def add(name: str, ctype: Any, kind: Any, part: np.ndarray, buffer_out: float | None,
-            buffer_in: float | None = None, weight: float | None = None) -> None:
-        nonlocal vertices
-        code = cmodel.constraint_code(name, taken)
+    for spec in cdata.build_specs(rng):
+        kind = G(spec.kind)
+        code = cmodel.constraint_code(spec.name, taken)
         taken.add(code)
         rows.append(cmodel.Constraint(
-            uid=f"{len(rows):032x}", code=code, name=name, ctype=ctype, kind=kind,
-            parts=((part,),), priority=0, reason="Restricción sintética de rendimiento",
+            uid=f"{len(rows):032x}", code=code, name=spec.name, ctype=T(spec.ctype), kind=kind,
+            parts=((spec.part,),), priority=0, reason="Restricción sintética de rendimiento",
             decided_by=PERSON, decided_on=date(2026, 10, 31), decision_uid=None,
             intention_uid=None, source_input=None, source_fid=None,
             layer=cstore.layer_of(kind), fid=0))
-        vertices += len(part)
-        values[cparams.active_key(code)] = True
-        if buffer_out is not None:
-            values[cparams.buffer_out_key(code)] = float(buffer_out)
-        if buffer_in is not None:
-            values[cparams.buffer_in_key(code)] = float(buffer_in)
-        if weight is not None and ctype is T.AVOID:
-            values[cparams.weight_key(code)] = float(weight)
-
-    add("Concesión", T.LEGAL_LIMIT, G.POLYGON, star(rng, cx, cy, 760.0, 2000, 0.06), None, 10.0)
-    add("Perímetro", T.ACTION_PERIMETER, G.POLYGON,
-        star(rng, cx + 40, cy - 30, 640.0, 2000, 0.08), None)
-    buffered = (T.UNTOUCHABLE, T.EXCLUSION, T.SETBACK, T.AVOID, T.NO_FILL)
-    plain = (T.NO_CUT, T.NO_FILL, T.FILL_ONLY, T.RESTORATION_ONLY, T.REQUIRES_ACCESS)
-
-    def at() -> tuple[float, float]:
-        return (float(rng.uniform(WEST + 120, EAST - 120)),
-                float(rng.uniform(SOUTH + 120, NORTH - 120)))
-
-    for index in range(30):
-        x, y = at()
-        add(f"Punto {index:02d}", buffered[index % 5], G.POINT, np.array([[x, y]]),
-            float(rng.uniform(5, 50)), weight=2.0)
-    for index in range(30):
-        x, y = at()
-        add(f"Línea {index:02d}", buffered[index % 5], G.LINE, path(rng, x, y, 200, 300.0),
-            float(rng.uniform(5, 50)), weight=2.0)
-    for index in range(40):
-        x, y = at()
-        add(f"Zona {index:02d}", buffered[index % 5], G.POLYGON,
-            star(rng, x, y, float(rng.uniform(30, 120)), 500), float(rng.uniform(5, 50)),
-            weight=2.0)
-    for index in range(398):
-        x, y = at()
-        add(f"Recinto {index:03d}", plain[index % 5], G.POLYGON,
-            star(rng, x, y, float(rng.uniform(10, 60)), 176), 0.0)
+        vertices += len(spec.part)
+        for param, value in spec.params:
+            values[cparams.param_key(code, param)] = value
     return ScaleConstraints(tuple(rows), values, vertices)
 
 
@@ -236,36 +180,20 @@ WINDOW = "window"
 """Las finales que cambian en toda la ventana (ondas de 3 m): pocos grupos grandes por recinto."""
 LOCAL = "local"
 """Las finales que cambian solo en 8 abultamientos de ±3 m: muchos grupos pequeños."""
-FINALS = 3
+FINALS = cdata.FINALS
 """Las superficies finales de cada forma."""
-
-
-def _plane() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    x = np.arange(COLS)[None, :].astype(np.float64)
-    y = np.arange(ROWS)[:, None].astype(np.float64)
-    return x, y, 650.0 + 0.02 * x + 0.01 * y
 
 
 def surface(rng: np.random.Generator, kind: int) -> Any:
     """La partida (``kind`` 0, el plano inclinado) y las finales (1 a 3) de la forma
     :data:`WINDOW`: el plano con una onda de 3 m en toda la ventana y 5 mm de ruido."""
-    x, y, base = _plane()
-    if kind:
-        base = base + 3.0 * np.sin(x / (150.0 + 40 * kind)) * np.cos(y / (170.0 + 30 * kind))
-        base = base + (rng.random((ROWS, COLS)) - 0.5) * 0.01
-    return gis.Raster(grid(), base, fx.CRS, fx.VERTICAL)
+    return gis.Raster(grid(), cdata.window_values(rng, kind), fx.CRS, fx.VERTICAL)
 
 
 def local_surface(rng: np.random.Generator) -> Any:
     """Una superficie de la forma :data:`LOCAL`: el plano con 8 abultamientos de ±3 m (σ de 25
     m) y 5 mm de ruido en toda la ventana (la partida y cada final, con otro azar)."""
-    x, y, base = _plane()
-    for _ in range(8):
-        cx, cy = rng.uniform(150, COLS - 150), rng.uniform(150, ROWS - 150)
-        amplitude = rng.choice([-3.0, 3.0])
-        base = base + amplitude * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * 25.0**2))
-    base = base + (rng.random((ROWS, COLS)) - 0.5) * 0.01
-    return gis.Raster(grid(), base, fx.CRS, fx.VERTICAL)
+    return gis.Raster(grid(), cdata.local_values(rng), fx.CRS, fx.VERTICAL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,12 +211,8 @@ def write_surfaces(data: ScaleProject, shape: str) -> ScaleSurfaces:
     rejillas del proyecto (``gis_dtm_partida_<forma>``, ``gis_dtm_final_<forma>_<k>``)."""
     if shape not in (WINDOW, LOCAL):
         raise ValueError(f"la forma de las finales es «{WINDOW}» o «{LOCAL}», no {shape!r}")
-    seed = SEED + (0 if shape == WINDOW else 100)
-    if shape == WINDOW:
-        rng = np.random.default_rng(seed)
-        rasters = [surface(rng, kind) for kind in range(FINALS + 1)]
-    else:
-        rasters = [local_surface(np.random.default_rng(seed + kind)) for kind in range(FINALS + 1)]
+    rasters = [gis.Raster(grid(), values, fx.CRS, fx.VERTICAL)
+               for values in cdata.shape_values(shape)]
     names = [f"partida_{shape}", *(f"final_{shape}_{k}" for k in range(1, FINALS + 1))]
     data.clock.advance(minutes=1)
     write_grids(data.project, list(zip(names, rasters, strict=True)),
