@@ -542,7 +542,7 @@ class ConvergenceDocTest(unittest.TestCase):
 
     def test_indexes_reach_the_last_task(self) -> None:
         """Definición de hecho §3.7 (F-5, punto 5): el índice de specs y el roadmap dicen que la
-        012 llega a la T43, que habilitar mide 0,45 s y que ``check.py`` tarda 40,5 s, y que la
+        012 llega a la T46, que habilitar mide 0,45 s y que ``check.py`` tarda 40,5 s, y que la
         llamada más larga de cada orden no cuenta la transacción final ni «Recalcular lo
         obsoleto» (0,40 a 0,55 s)."""
         index = docs.read(SPECS_INDEX_RELPATH)
@@ -554,11 +554,11 @@ class ConvergenceDocTest(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertIsNotNone(ledger)
         assert row is not None and ledger is not None
-        self.assertIn("43 (T01–T43)", row.group(0))
+        self.assertIn("46 (T01–T46)", row.group(0))
         for name, text in (("índice", paragraph), ("fila del índice", row.group(0)),
                            ("roadmap", ledger.group(0))):
             with self.subTest(document=name):
-                self.assertIn("T01 a T43", text)
+                self.assertIn("T01 a T46", text)
         self.assertNotIn("T01 a T37", index)
         self.assertNotIn("T01 a T37", roadmap)
         for fact in ("0,45 s", "40,5 s", "Recalcular lo obsoleto", "0,40–0,55 s", "30–160 ms"):
