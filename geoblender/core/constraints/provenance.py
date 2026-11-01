@@ -633,15 +633,19 @@ def check_entities(entities: Sequence[SourceEntity], mapping: LayerMapping, *, l
                    ) -> tuple[tuple[Constraint, ...], tuple[Rejected, ...]]:
     """:func:`constraints_from_entities` que rechaza la capa entera si no sirve ninguna entidad:
     :class:`~.messages.ConstraintError` ``core.constraint_source_nothing`` (con la lista de las
-    rechazadas). No escribe nada: es lo que comprueba :func:`create_constraints` antes de
-    registrar, para que una orden con varias capas lo mire todo antes de crear nada."""
+    rechazadas) y, si la capa no tiene ninguna entidad, ``core.constraint_source_empty`` (T42:
+    no hay lista que dar). No escribe nada: es lo que comprueba :func:`create_constraints` antes
+    de registrar, para que una orden con varias capas lo mire todo antes de crear nada."""
     rows, rejected = constraints_from_entities(entities, mapping, layer=layer,
                                                source_input=source_input,
                                                decision_uid=decision_uid)
     if not rows:
+        if not rejected:
+            raise ConstraintError("core.constraint_source_empty", field="capa", value=layer,
+                                  layer=layer)
         raise ConstraintError("core.constraint_source_nothing", field="capa",
                               value=len(rejected), layer=layer,
-                              problems="; ".join(item.text() for item in rejected) or "—")
+                              problems="; ".join(item.text() for item in rejected))
     return rows, rejected
 
 
@@ -936,14 +940,18 @@ def create_intentions(project: OperationProject, entities: Sequence[SourceEntity
     correspondencia y las rechazadas. ``default_name`` (T25: sin campo del nombre) da nombre a
     las marcas (:func:`intentions_from_entities`) y queda en los ajustes.
     :class:`~.messages.ConstraintError` ``core.constraint_intention_nothing`` (con la lista) si
-    no sirve ninguna, sin registrar nada."""
+    no sirve ninguna y ``core.constraint_intention_empty`` si la capa no tiene ninguna entidad
+    (T42), sin registrar nada."""
     rows, rejected = intentions_from_entities(
         entities, mapping, layer=layer, source_input=source_input, document_input=document,
         decision_uid=decision_uid, default_name=default_name)
     if not rows:
+        if not rejected:
+            raise ConstraintError("core.constraint_intention_empty", field="capa", value=layer,
+                                  layer=layer)
         raise ConstraintError("core.constraint_intention_nothing", field="capa",
                               value=len(rejected), layer=layer,
-                              problems="; ".join(item.text() for item in rejected) or "—")
+                              problems="; ".join(item.text() for item in rejected))
     settings: dict[str, Any] = {"mapping": mapping.settings()}
     if default_name:
         settings["default_name"] = default_name

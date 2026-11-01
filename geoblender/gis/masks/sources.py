@@ -96,8 +96,9 @@ def check_constraints(project: StoreProject, source: str, mapping: cprov.LayerMa
                       ) -> tuple[tuple[Any, ...], tuple[cprov.Rejected, ...]]:
     """Lo que crearía :func:`create_constraints` de la capa ``source`` según ``mapping``
     (las restricciones nuevas y las entidades rechazadas con su motivo), sin escribir nada: los
-    mismos rechazos (``core.constraint_source_field_unknown`` y
-    ``core.constraint_source_nothing``), para mirar varias capas antes de crear ninguna (T22)."""
+    mismos rechazos (``core.constraint_source_field_unknown``, ``core.constraint_source_nothing``
+    y, en una capa sin entidades, ``core.constraint_source_empty``), para mirar varias capas
+    antes de crear ninguna (T22)."""
     entities, resolved, source_input = _read(project, source, mapping)
     return cprov.check_entities(entities, resolved, layer=source, source_input=source_input)
 
@@ -112,7 +113,8 @@ def create_constraints(project: StoreProject, source: str, mapping: cprov.LayerM
     ``default_name`` nombra las que el campo del nombre no nombra (los límites de una capa sin
     él, T22). ``decision_uid`` (T41): la decisión de la propiedad que respalda a todas las que
     se crean. ``ConstraintError`` ``core.constraint_source_field_unknown`` si un campo elegido
-    no está en la capa, ``core.constraint_source_nothing`` si no sirve ninguna entidad y
+    no está en la capa, ``core.constraint_source_nothing`` si no sirve ninguna entidad
+    (``core.constraint_source_empty`` si la capa no tiene ninguna, T42) y
     ``core.constraint_decision_unknown`` si la decisión no está en el proyecto; todos, antes de
     registrar nada."""
     entities, resolved, source_input = _read(project, source, mapping)

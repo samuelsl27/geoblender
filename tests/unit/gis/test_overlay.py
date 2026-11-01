@@ -14,6 +14,7 @@ son independientes: áreas y centros a mano o por Sutherland–Hodgman con aritm
 from __future__ import annotations
 
 import unittest
+import warnings
 from fractions import Fraction
 
 import numpy as np
@@ -206,6 +207,54 @@ class TestRectangles(_Case):
         self.assertParts(self.overlay([[a]], [[b]], "intersection"), [])
         self.assertParts(self.overlay([[a], [b]], [[_rect(90, 10, 110, 20)]], "intersection"),
                          [(200.0, _abs_center(90, 10, 110, 20))])
+
+
+class TestPinchedSets(_Case):
+    """Un conjunto con dos polígonos que se tocan en una esquina, sobre una arista del otro
+    (RF-012-05; RNF-012-06; T42, observación O-5 de la verificación)."""
+
+    BIG = _rect(0, 0, 40, 40)
+    PINCH = ((_rect(10, 40, 20, 50),), (_rect(20, 30, 30, 40),))
+    """Dos cuadrados de 100 m² que comparten la esquina (20, 40), en mitad de la arista de
+    arriba de ``BIG``: uno queda fuera, pegado a ella, y el otro, dentro."""
+
+    def overlay_quietly(self, a, b, op):
+        """:meth:`_Case.overlay` con los ``RuntimeWarning`` de numpy convertidos en error: la
+        esquina común entra dos veces en la arista de ``BIG`` y deja una arista de longitud 0,
+        y una división entre su longitud avisaba por la consola de Blender («invalid value
+        encountered in divide»)."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            return self.overlay(a, b, op)
+
+    def test_the_pinch_on_an_edge_of_the_second_set(self) -> None:
+        """RF-012-05: ninguna operación avisa y las áreas son las exactas: unión 1.700 m²,
+        intersección 100 m² (el cuadrado de dentro) y A ∖ B 1.500 m²."""
+        big, pinch = [self.BIG], list(self.PINCH)
+        self.assertArea(self.overlay_quietly([big], pinch, "union").area_m2, 1700.0)
+        self.assertParts(self.overlay_quietly([big], pinch, "intersection"),
+                         [(100.0, _abs_center(20, 30, 30, 40))])
+        self.assertArea(self.overlay_quietly([big], pinch, "difference").area_m2, 1500.0)
+
+    def test_the_pinch_on_an_edge_of_the_first_set(self) -> None:
+        """RF-012-05: lo mismo con los papeles cambiados: el de los dos cuadrados es A (unión
+        1.700 m², intersección 100 m², A ∖ B = el cuadrado de fuera, 100 m²)."""
+        big, pinch = [self.BIG], list(self.PINCH)
+        self.assertArea(self.overlay_quietly(pinch, [big], "union").area_m2, 1700.0)
+        self.assertParts(self.overlay_quietly(pinch, [big], "intersection"),
+                         [(100.0, _abs_center(20, 30, 30, 40))])
+        self.assertParts(self.overlay_quietly(pinch, [big], "difference"),
+                         [(100.0, _abs_center(10, 40, 20, 50))])
+
+    def test_the_pinch_on_the_opposite_side(self) -> None:
+        """RF-012-05: con la esquina común en la arista de abajo (un cuadrado fuera por abajo,
+        otro dentro por arriba) pasa lo mismo: sin aviso y con las mismas áreas."""
+        big = [self.BIG]
+        pinch = [(_rect(10, -10, 20, 0),), (_rect(20, 0, 30, 10),)]
+        self.assertArea(self.overlay_quietly([big], pinch, "union").area_m2, 1700.0)
+        self.assertParts(self.overlay_quietly([big], pinch, "intersection"),
+                         [(100.0, _abs_center(20, 0, 30, 10))])
+        self.assertArea(self.overlay_quietly([big], pinch, "difference").area_m2, 1500.0)
 
 
 class TestRotatedWithHole(_Case):

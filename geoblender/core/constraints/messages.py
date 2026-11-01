@@ -339,6 +339,13 @@ CATALOG: tuple[Message, ...] = (
         "{problems}.",
     ),
     Message(
+        "core.constraint_source_empty",
+        "The layer «{layer}» has no entities, so no constraint was created: add the entities "
+        "of the constraints to the layer and try again.",
+        "La capa «{layer}» no tiene ninguna entidad, así que no se creó ninguna restricción: "
+        "añada a la capa las entidades de las restricciones y vuelva a intentarlo.",
+    ),
+    Message(
         "core.constraint_source_field_unknown",
         "The layer «{layer}» has no field «{value}»: its fields are {fields}.",
         "La capa «{layer}» no tiene el campo «{value}»: sus campos son {fields}.",
@@ -384,6 +391,13 @@ CATALOG: tuple[Message, ...] = (
         "{problems}.",
         "No se guardó ninguna intención del cliente desde «{layer}» ({value} entidades "
         "rechazadas): {problems}.",
+    ),
+    Message(
+        "core.constraint_intention_empty",
+        "The layer «{layer}» has no entities, so no client intention was saved: add the marks "
+        "of the client to the layer and try again.",
+        "La capa «{layer}» no tiene ninguna entidad, así que no se guardó ninguna intención "
+        "del cliente: añada a la capa las marcas del cliente y vuelva a intentarlo.",
     ),
     Message(
         "core.constraint_intention_document_unknown",

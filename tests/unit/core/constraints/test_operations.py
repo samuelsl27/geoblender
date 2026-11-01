@@ -647,6 +647,83 @@ class CreateFromLayerTest(_LayersCase):
         self.assertEqual(self.query("SELECT count(*) FROM gb_operation"), count)
 
 
+EMPTY_LAYER = "gis_fea_vacia"
+
+
+class EmptyLayerTest(_LayersCase):
+    """RF-012-01, RF-012-02, RF-012-26 (T42; observación O-12 de la verificación): una capa
+    «entidades» sin ninguna entidad se rechaza diciéndolo, no con una lista vacía de rechazadas
+    («… (0 entidades rechazadas): —.»), también al mirar la capa antes de crear."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        fields = [field for field, _ in fx.CONSTRAINT_FIELDS]
+        cls.write_layer(EMPTY_LAYER, vector.FeatureLayer(
+            "point", (), (), tuple(vector.FieldColumn(field, field, "TEXT") for field in fields),
+            {field: () for field in fields}))
+
+    def assertSaysEmpty(self, error: Any, code: str, what: str) -> None:  # noqa: N802
+        """El error ``code`` de la capa vacía: su código, la capa como valor y un texto que lo
+        dice, en español y en inglés, sin la lista de rechazadas."""
+        self.assertIsInstance(error, cmessages.ConstraintError)
+        self.assertEqual((error.code, error.field, error.value), (code, "capa", EMPTY_LAYER))
+        text = str(error)
+        self.assertIn(f"La capa «{EMPTY_LAYER}» no tiene ninguna entidad", text)
+        self.assertIn(what, text)
+        for ugly in ("—", "rechazadas", "()", "None"):
+            self.assertNotIn(ugly, text)
+        english = cmessages.render(code, language="en", layer=EMPTY_LAYER)
+        self.assertIn(f"The layer «{EMPTY_LAYER}» has no entities", english)
+        self.assertNotIn("rejected", english)
+
+    def test_a_layer_without_entities_says_so_when_creating_constraints(self) -> None:
+        """RF-012-01, RF-012-02: crear, y mirar la capa antes de crear (las órdenes de varias
+        capas), dicen que la capa no tiene entidades —no «0 entidades rechazadas: —»— y no
+        registran nada; los mensajes existen en los dos idiomas."""
+        operations_before = self.query("SELECT count(*) FROM gb_operation")
+        stored_before = len(self.stored_constraints())
+        mapping = cprov.LayerMapping(ctype=cmodel.ConstraintType.UNTOUCHABLE,
+                                     name_field="nombre", reason="Inventario",
+                                     decided_by=PERSON)
+        with self.assertRaises(cmessages.ConstraintError) as caught:
+            sources.check_constraints(self.project, EMPTY_LAYER, mapping)
+        self.assertSaysEmpty(caught.exception, "core.constraint_source_empty",
+                             "no se creó ninguna restricción")
+        with self.assertRaises(cmessages.ConstraintError) as caught:
+            sources.create_constraints(self.project, EMPTY_LAYER, mapping, params=DECLARED)
+        self.assertSaysEmpty(caught.exception, "core.constraint_source_empty",
+                             "no se creó ninguna restricción")
+        self.assertEqual(self.query("SELECT count(*) FROM gb_operation"), operations_before)
+        self.assertEqual(len(self.stored_constraints()), stored_before)
+
+    def test_a_layer_without_entities_says_so_when_saving_intentions(self) -> None:
+        """RF-012-26: guardar las intenciones de una capa sin entidades lo dice igual
+        (``core.constraint_intention_empty``) y no registra nada."""
+        operations_before = self.query("SELECT count(*) FROM gb_operation")
+        with self.assertRaises(cmessages.ConstraintError) as caught:
+            cprov.create_intentions(
+                self.project, [], BY_MARK_FIELDS, layer=EMPTY_LAYER, source=EMPTY_LAYER,
+                source_input="a" * 32, document="b" * 32, decision_uid=None,
+                srs_id=int(self.project.record.crs_epsg))
+        self.assertSaysEmpty(caught.exception, "core.constraint_intention_empty",
+                             "no se guardó ninguna intención del cliente")
+        self.assertEqual(self.query("SELECT count(*) FROM gb_operation"), operations_before)
+
+    def test_a_layer_whose_entities_all_fail_keeps_its_list(self) -> None:
+        """RF-012-01: la capa con entidades de las que no sirve ninguna sigue diciendo cuántas
+        y por qué se rechazaron (``core.constraint_source_nothing``), con su lista."""
+        entity = cprov.SourceEntity(1, cmodel.GeometryKind.POINT, (), {})
+        mapping = cprov.LayerMapping(ctype=cmodel.ConstraintType.UNTOUCHABLE,
+                                     name_field="nombre", reason="Inventario",
+                                     decided_by=PERSON)
+        with self.assertRaises(cmessages.ConstraintError) as caught:
+            cprov.check_entities([entity], mapping, layer=EMPTY_LAYER, source_input=None)
+        self.assertEqual(caught.exception.code, "core.constraint_source_nothing")
+        self.assertIn("(1 entidades rechazadas)", str(caught.exception))
+        self.assertNotIn("—", str(caught.exception))
+
+
 class DecisionLinkTest(_LayersCase):
     """RF-012-02, RF-012-19, RF-012-27 (T41): la decisión de la propiedad de una restricción."""
 

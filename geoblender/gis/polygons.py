@@ -563,8 +563,13 @@ def _crossings(pa: np.ndarray, pb: np.ndarray, qa: np.ndarray, qb: np.ndarray
     a, b, p, q = pa[i], pb[i], qa[j], qb[j]
     r, s = b - a, q - p
     lr, ls = np.hypot(r[:, 0], r[:, 1]), np.hypot(s[:, 0], s[:, 1])
-    side_p, side_q = _cross(r, p - a) / lr, _cross(r, q - a) / lr
-    side_a, side_b = _cross(s, a - p) / ls, _cross(s, b - p) / ls
+    # Una arista de longitud 0 (dos esquinas comunes que entran en la misma arista del otro
+    # conjunto) da 0/0 = NaN: ninguna comparación de ``_opposite`` lo deja pasar, así que no
+    # cruza nada y el resultado es el mismo; el aviso de numpy no aporta nada y saldría por la
+    # consola de Blender (T42, O-5).
+    with np.errstate(divide="ignore", invalid="ignore"):
+        side_p, side_q = _cross(r, p - a) / lr, _cross(r, q - a) / lr
+        side_a, side_b = _cross(s, a - p) / ls, _cross(s, b - p) / ls
     proper = (_opposite(side_p, side_q) & _opposite(side_a, side_b))
     i, j = i[proper], j[proper]
     side_p, side_q, side_a, side_b = side_p[proper], side_q[proper], side_a[proper], side_b[proper]
