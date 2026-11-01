@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from dataclasses import dataclass
+from typing import Any
 
 import bpy
 import numpy as np
@@ -34,12 +35,15 @@ import numpy as np
 from ...core.constraints.model import GeometryKind, Intention
 from ...core.constraints.store import INTENTION_TABLE, read_intentions
 from ...core.i18n import language
+from ...gis import store as gis_store
+from ...reserves import surfaces as res_surfaces
 from . import views
 from .gis_views import _polylines
 from .mesh import mesh_from_arrays, mesh_vertices_local
 
 __all__ = ["INTENTION_PROPERTY", "INTENTION_STYLE", "KIND", "LABEL", "MARK_ARM_M", "PREFIX",
-           "IntentionStyle", "intention_arrays", "load_intentions", "register", "unregister"]
+           "IntentionStyle", "intention_arrays", "load_intentions", "register", "terrain_choices",
+           "unregister"]
 
 KIND = "CLIENT_INTENTION"
 """El tipo (``Object.geoblender.kind``) del objeto de una intención del cliente."""
@@ -141,6 +145,19 @@ def load_intentions(request: views.ViewRequest) -> Generator[float, None, views.
         bounds = (np.min(lows, axis=0).astype(np.float64),
                   np.max(highs, axis=0).astype(np.float64))
     return views.ViewParts(tuple(objects), bounds)
+
+
+def terrain_choices(project: Any, version_uid: str | None) -> tuple[Any, ...]:
+    """Las rejillas de terreno del proyecto sobre las que se puede dibujar (véase el módulo), por
+    nombre, con la versión activa ``version_uid`` (``None``: sin versión): las superficies que
+    ofrece la cubicación (``reserves.surfaces.surface_choices``: las vivas del proyecto y de la
+    versión, no las congeladas ni las diferencias) que son un MDT importado o una rejilla del
+    proyecto. Solo lee."""
+    grids = {record.name for record in gis_store.list_gis_datasets(
+        project, families=gis_store.GRID_FAMILIES)}
+    return tuple(choice for choice in res_surfaces.surface_choices(
+        project, version_uid=version_uid or "")
+        if choice.ref.dataset is not None and choice.name in grids)
 
 
 def register() -> None:

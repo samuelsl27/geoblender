@@ -154,6 +154,7 @@ __all__ = [
     "reproduce_compile",
     "search_sectors",
     "sector_states_now",
+    "shown_constraints_steps",
     "zone_runs_steps",
 ]
 
@@ -720,6 +721,22 @@ def listed_constraints(project: StoreProject, *, version: str | None = None
                        ) -> tuple[ListedConstraint, ...]:
     """:func:`listed_constraints_steps` de una vez."""
     return drain(listed_constraints_steps(project, version=version))
+
+
+def shown_constraints_steps(project: StoreProject, *, version: str | None = None
+                            ) -> Generator[None, None, tuple[ListedConstraint, ...]]:
+    """Las restricciones del proyecto para dibujarlas (spec 012, T26; RF-012-18, RNF-012-05), las
+    mismas y en el mismo orden que :func:`listed_constraints_steps`, con su «activa» en la versión
+    ``version`` (su uid; ``None``: los valores del proyecto) y **sin comprobarlas**: ``active`` o
+    ``inactive`` (una incompleta o una no válida es ``active``, y ninguna lleva problemas). Lo que
+    cuesta una lectura y los parámetros, no la comprobación de cada polígono. Un paso (la lectura).
+    Solo lee."""
+    with project.read() as conn:
+        constraints = cstore.read_constraints(conn)
+        resolved = _resolved(conn, project, constraints, version)
+    yield
+    return tuple(ListedConstraint(item, "inactive" if _switched_off(item, resolved) else "active",
+                                  ()) for item in constraints)
 
 
 # --- Escribir el resultado (A11) ---------------------------------------------------------------

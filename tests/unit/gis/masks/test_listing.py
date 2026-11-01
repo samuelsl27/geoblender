@@ -10,6 +10,10 @@ Sobre el proyecto de ``tests.support.constraints_project`` (cinco restricciones,
   válida; la «activa» de una versión no cambia la otra.
 - **RF-012-04**: una dibujada en QGIS (sin código, sin tipo, motivo ni decisor) es incompleta
   y una que se corta a sí misma, no válida.
+- **RF-012-18 (RNF-012-05, T26)**: ``shown_constraints_steps`` da las mismas restricciones en el
+  mismo orden, con «activa» o «inactiva» en la versión según su parámetro, sin comprobarlas
+  (la dibujada a medias y la que se corta a sí misma, activas y sin problemas): lo que necesita
+  «Ver restricciones y límites» sin pagar la comprobación de cada polígono.
 - **RF-012-28 (RNF-012-06)**: ``begin_compile_steps`` parte lo que hacía ``begin_compile`` de una
   vez (la lectura, la comprobación de cada restricción y de cada polígono, la operación): da el
   mismo ``OperationHandle`` que ``begin_compile`` (mismas entradas, parámetros y ajustes), se
@@ -125,6 +129,34 @@ class ListedConstraintsTest(cp.ConstraintsProjectCase):
         project_only = {item.constraint.code or item.constraint.name: item.state
                         for item in store.listed_constraints(self.project)}
         self.assertEqual(project_only["balsa"], "active")
+
+
+    def test_shown_constraints_skip_the_checks(self) -> None:
+        """RF-012-18, RNF-012-05: para dibujarlas, las mismas siete restricciones en el mismo
+        orden que la lista, con su «activa» en la versión (V02 desactiva «balsa»; sin versión, los
+        valores del proyecto) y nada más: las incompletas y las no válidas, activas y sin
+        problemas; por pasos (la lectura y uno más) y sin escribir nada."""
+        operations = self.query("SELECT count(*) FROM gb_operation")
+        for version in (self.v1, self.v2, None):
+            uid = None if version is None else version.uid
+            listed = store.listed_constraints(self.project, version=uid)
+            steps = store.shown_constraints_steps(self.project, version=uid)
+            count = 0
+            while True:
+                try:
+                    next(steps)
+                    count += 1
+                except StopIteration as stop:
+                    shown = stop.value
+                    break
+            self.assertGreaterEqual(count, 1)
+            self.assertEqual([item.constraint.uid for item in shown],
+                             [item.constraint.uid for item in listed])
+            self.assertEqual([item.state for item in shown],
+                             ["inactive" if item.state == "inactive" else "active"
+                              for item in listed])
+            self.assertEqual([item.problems for item in shown], [()] * len(listed))
+        self.assertEqual(self.query("SELECT count(*) FROM gb_operation"), operations)
 
 
 class BeginCompileStepsTest(cp.ConstraintsProjectCase):

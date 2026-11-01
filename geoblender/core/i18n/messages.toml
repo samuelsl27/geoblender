@@ -6927,3 +6927,59 @@ es = "El documento del cliente del que salen las marcas, registrado como entrada
 
 ["The decision of the owner the marks rest on (optional)"]
 es = "La decisión de la propiedad en la que se apoyan las marcas (opcional)"
+
+# Ver restricciones y límites (spec 012, T26; RF-012-18)
+
+["Constraints and limits · {version}"]
+es = "Restricciones y límites · {version}"
+
+["{type} ({count})"]
+es = "{type} ({count})"
+
+["Without a type"]
+es = "Sin tipo"
+
+["Switched off in {version} ({count})"]
+es = "Desactivadas en {version} ({count})"
+
+["Default domain"]
+es = "Dominio por defecto"
+
+["No active version: outlines only"]
+es = "Sin versión activa: solo contornos"
+
+["Masks out of date: compile them to see the zones"]
+es = "Máscaras obsoletas: compílelas para ver las zonas"
+
+["Masks not compiled: outlines only"]
+es = "Máscaras sin compilar: solo contornos"
+
+["At the elevation of the GeoOrigin"]
+es = "A la cota del GeoOrigin"
+
+["On the surface «{name}»"]
+es = "Sobre la superficie «{name}»"
+
+["The constraints and limits could not be prepared: {detail}"]
+es = "No se pudieron preparar las restricciones y los límites: {detail}"
+
+["Constraints and limits hidden"]
+es = "Restricciones y límites ocultos"
+
+["The constraints and limits could not be shown: {detail}"]
+es = "No se pudieron mostrar las restricciones y los límites: {detail}"
+
+["Showing the constraints and limits"]
+es = "Mostrando las restricciones y los límites"
+
+["Draw on the surface"]
+es = "Dibujar sobre la superficie"
+
+["Show constraints and limits"]
+es = "Ver restricciones y límites"
+
+["Show the constraints and the limits over the 3D view while designing"]
+es = "Muestra las restricciones y los límites sobre la Vista 3D mientras se diseña"
+
+["Surface of the project the constraints are drawn on over the 3D view (empty: the most recent grid of the project)"]
+es = "Superficie del proyecto sobre la que se dibujan las restricciones en la Vista 3D (vacía: la rejilla más reciente del proyecto)"

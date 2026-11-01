@@ -24,11 +24,16 @@ teclas, complementos, escena, datos ni la pila de deshacer.
   (RF-003-23; si la asignación diferida no llega a aplicarse, queda en un espacio normal
   con las cabeceras originales) y retira el temporizador y el manejador ``load_post``, que
   olvida el estado de sesión al abrir otro fichero (CW §3.3).
+- :func:`add_blender_hook`: lo que se avisa al conmutar una ventana a la interfaz de Blender
+  (spec 012, T26: la superposición «Ver restricciones y límites» se quita al conmutar, RF-012-18),
+  desde :func:`toggle` y :func:`activate`, sin argumentos; uno que falla va al registro técnico y no
+  impide conmutar.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+import logging
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,6 +44,7 @@ from bpy.app.handlers import persistent
 from . import gate
 from .commands import catalog
 
+LOGGER = logging.getLogger("geoblender.bl.ui")
 RESOURCES = Path(__file__).resolve().parents[2] / "resources" / "geoblender_ui.blend"
 FALLBACK = "Layout"  # el espacio de Blender de respaldo (CW §3.2)
 TARGETS = ("TOGGLE", "GEOBLENDER", "BLENDER")
@@ -131,6 +137,39 @@ def forget() -> None:
     _SESSION.seen.clear()
 
 
+# Avisar de que se conmutó a Blender ------------------------------------------------------------
+
+_BLENDER_HOOKS: list[Callable[[], object]] = []
+
+
+def add_blender_hook(hook: Callable[[], object]) -> None:
+    """Apunta ``hook`` (sin argumentos) para llamarlo cada vez que una ventana se conmuta a la
+    interfaz de Blender (:func:`toggle`, :func:`activate`); si ya estaba, no hace nada."""
+    if hook not in _BLENDER_HOOKS:
+        _BLENDER_HOOKS.append(hook)
+
+
+def remove_blender_hook(hook: Callable[[], object]) -> None:
+    """Deja de avisar a ``hook``; si no estaba, no hace nada."""
+    if hook in _BLENDER_HOOKS:
+        _BLENDER_HOOKS.remove(hook)
+
+
+def blender_hooks() -> tuple[Callable[[], object], ...]:
+    """Lo apuntado con :func:`add_blender_hook`, por orden."""
+    return tuple(_BLENDER_HOOKS)
+
+
+def _entered_blender() -> None:
+    """Avisa a cada apuntado de que una ventana pasa a la interfaz de Blender; uno que falla va
+    al registro técnico y no impide conmutar ni avisar a los demás."""
+    for hook in list(_BLENDER_HOOKS):
+        try:
+            hook()
+        except Exception:  # noqa: BLE001 - conmutar no depende de quien se entera
+            LOGGER.exception("Falló lo que se quita al conmutar a la interfaz de Blender")
+
+
 # Aplicar ------------------------------------------------------------------------------
 
 
@@ -217,6 +256,8 @@ def toggle(window: Any, mode: str = "TOGGLE") -> Result:
     window.workspace = workspace
     state.pending = workspace.name
     _schedule()
+    if not choice.to_geoblender:
+        _entered_blender()
     return Result(workspace.name, appended)
 
 
@@ -235,6 +276,9 @@ def activate(window: Any, workspace: Any) -> None:
     window.workspace = workspace
     state.pending = workspace.name
     _schedule()
+    if (current is not None and gate.is_geoblender_workspace(current)
+            and not gate.is_geoblender_workspace(workspace)):
+        _entered_blender()
 
 
 def _show_tool_header(window: Any) -> None:
@@ -305,4 +349,5 @@ def unregister() -> None:
         bpy.app.timers.unregister(check_pending)
     if on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load_post)
+    _BLENDER_HOOKS.clear()
     forget()

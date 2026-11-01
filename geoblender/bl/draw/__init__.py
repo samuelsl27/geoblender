@@ -6,9 +6,15 @@
   :func:`unregister` quita.
 - ``dh_overlay``: las etiquetas, las leyendas y las marcas de las bocas de los sondeos (spec
   005, T30), con su manejador de dibujo.
+- ``constraints``: «Ver restricciones y límites» (spec 012, T26): la superposición del control 30,
+  que solo tiene sus manejadores de dibujo mientras está activa. No se importa al registrar
+  (nada pesado en ``register()``): lo importa la orden que la activa; :func:`unregister` la quita
+  si está importada y activa (principio 8).
 """
 
 from __future__ import annotations
+
+import sys
 
 from ..registry import register_classes, unregister_classes
 from . import contours, dh_overlay
@@ -17,6 +23,8 @@ from . import contours, dh_overlay
 # contrato 2); vacía hasta que una spec añada la primera.
 classes: tuple[type, ...] = ()
 _OVERLAYS = (contours, dh_overlay)
+CONSTRAINTS_MODULE = f"{__name__}.constraints"
+"""El módulo de la superposición de las restricciones (se importa al activarla)."""
 
 
 def register() -> None:
@@ -34,8 +42,12 @@ def register() -> None:
 
 
 def unregister() -> None:
-    """Quita las superposiciones y desregistra ``classes``, en orden inverso."""
+    """Quita las superposiciones (también la de las restricciones, si está activa) y desregistra
+    ``classes``, en orden inverso."""
     try:
+        constraints = sys.modules.get(CONSTRAINTS_MODULE)
+        if constraints is not None:
+            constraints.unregister()
         for overlay in reversed(_OVERLAYS):
             overlay.unregister()
     finally:

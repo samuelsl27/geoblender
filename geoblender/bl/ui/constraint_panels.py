@@ -34,7 +34,11 @@ enlazada, lo que le falta y sus parámetros con su valor en la versión y en el 
 y «Exportar las máscaras…» (``geoblender.gis_export_constraint_masks``); abajo, el último
 resultado de cada una (lo creado y lo rechazado, el informe de compilar con lo ganado y lo
 perdido y la búsqueda pendiente: :func:`compile_lines`). :func:`fill_constraints` regenera la
-vista desde el proyecto, sin escribir (``gis.masks.store.listed_constraints``).
+vista desde el proyecto, sin escribir (``gis.masks.store.listed_constraints``). Debajo de los
+botones, «Ver restricciones y límites» (el control 30,
+``geoblender.core_toggle_constraints_overlay``, pulsado mientras está activa) y la superficie de
+las rejillas del proyecto sobre la que se dibuja (T26; RF-012-18; ``overlay_surface``: vacía, la
+más reciente).
 
 **Buscar elementos intocables por sector…** (T24; HU-012-3; RF-012-07 a RF-012-10, RF-012-28): la
 ventana ``GEOBLENDER_PT_core_search`` (la abre ``geoblender.core_find_untouchables``) dibuja los
@@ -90,8 +94,14 @@ from ...gis import store as gis_store
 from ...gis.masks import access as mask_access
 from ...gis.masks import store as mask_store
 from .. import compat
-from ..props.core_constraints import MARK_FIELD, MARK_ROLE_ITEMS, WINDOW_MANAGER_PROPERTY
+from ..props.core_constraints import (
+    MARK_FIELD,
+    MARK_ROLE_ITEMS,
+    OVERLAY_PROPERTY,
+    WINDOW_MANAGER_PROPERTY,
+)
 from ..scene import versions as scene_versions
+from ..scene.constraint_views import terrain_choices
 from . import labels, res_panels
 from .commands import catalog, text
 
@@ -116,6 +126,7 @@ CREATE_CONSTRAINTS = "geoblender.core_create_constraints"
 COMPLETE_CONSTRAINT = "geoblender.core_complete_constraint"
 COMPILE_CONSTRAINTS = "geoblender.gis_compile_constraints"
 EXPORT_MASKS = "geoblender.gis_export_constraint_masks"
+TOGGLE_OVERLAY = "geoblender.core_toggle_constraints_overlay"
 SET_PARAMETER = "geoblender.core_set_parameter"
 CONSTRAINTS_PANEL_UNITS = 40
 CONSTRAINTS_WIDTH_PX = CONSTRAINTS_PANEL_UNITS * compat.UI_UNIT_PX
@@ -512,6 +523,9 @@ def fill_constraints(project: Any) -> int:
     shown.source_layers.clear()
     for name in layers:
         shown.source_layers.add().name = name
+    shown.overlay_surfaces.clear()
+    for choice in terrain_choices(project, None if version is None else version.uid):
+        shown.overlay_surfaces.add().name = choice.name
     return len(shown.constraints)
 
 
@@ -656,6 +670,11 @@ def draw_constraints(layout: Any, context: Any) -> None:
     writes.operator(COMPILE_CONSTRAINTS, text=_label(COMPILE_CONSTRAINTS), icon="PLAY",
                     translate=False)
     buttons.operator(EXPORT_MASKS, text=_label(EXPORT_MASKS), icon="EXPORT", translate=False)
+    on = bool(getattr(getattr(context, "window_manager", None), OVERLAY_PROPERTY, False))
+    layout.operator(TOGGLE_OVERLAY, text=_label(TOGGLE_OVERLAY), icon="HIDE_OFF", depress=on,
+                    translate=False)
+    layout.prop_search(shown, "overlay_surface", shown, "overlay_surfaces",
+                       text=tr("Draw on the surface"), icon="MESH_GRID", translate=False)
     if not len(shown.constraints):
         labels.draw_wrapped(layout, tr("There are no constraints yet: create them from a layer "
                                        "of the project"), width, icon="INFO")

@@ -33,10 +33,9 @@ dos son simétricos e idempotentes: registrar y desregistrar deja los registros 
 estaban (ADR-0025 §2). Nada pesado: lo que registra ya está importado con el resto de ``bl``.
 
 Las órdenes (T22 a T28: Límites…, Restricciones…, Buscar elementos intocables por sector…,
-Intenciones del cliente…, Verificar un diseño por recinto…) las pasa a la entrada «012» del
-catálogo cada una con su clase real; :data:`classes` irá creciendo con ellas. La superposición
-«Ver restricciones y límites» (T26) y los cargadores de la vista (T26 a T28) se registrarán
-aquí también.
+Intenciones del cliente…, Ver restricciones y límites, Verificar un diseño por recinto…) las pasa
+a la entrada «012» del catálogo cada una con su clase real; :data:`classes` irá creciendo con
+ellas. Los cargadores de la vista de T27 y T28 se registrarán aquí también.
 
 **Límites…** (T22; HU-012-1; RF-012-01, RF-012-02, RF-012-05, RF-012-15, RF-012-28; plan §5.3.4,
 §5.5, D-14): :class:`GEOBLENDER_OT_core_edit_limits` lee del proyecto las capas de polígonos y los
@@ -102,6 +101,12 @@ máscaras pasan a obsoletas. Las intenciones se ven en la vista con ``core_inten
 (``bl.scene.constraint_views``, que registra ``bl.scene``). Las tres quedan desactivadas, con su
 motivo, sin proyecto, en solo lectura o con la versión activa no editable
 (:func:`constraints_unavailable`).
+
+**Ver restricciones y límites** (T26; HU-012-1 a HU-012-4; RF-012-18; RNF-012-05; plan §5.3.4,
+D-30): :class:`GEOBLENDER_OT_core_toggle_constraints_overlay` (el control 30) activa o quita la
+superposición de la Vista 3D (``bl.draw.constraints``, que se importa al activarla: nada pesado al
+registrar). Solo lee y no escribe en el proyecto: sirve en solo lectura y con la versión activa no
+editable; hace falta un proyecto abierto.
 """
 
 from __future__ import annotations
@@ -2241,6 +2246,52 @@ class GEOBLENDER_OT_core_convert_intention(_WritesAware, ProvenanceAwareOperator
         return {"FINISHED"}
 
 
+# --- Ver restricciones y límites (T26; RF-012-18) ------------------------------------------------
+
+TOGGLE_OVERLAY = constraint_panels.TOGGLE_OVERLAY
+
+
+def _overlay() -> Any:
+    """El módulo de la superposición (``bl.draw.constraints``), importado al usarlo."""
+    from ..draw import constraints  # al usarlo: nada pesado al registrar
+
+    return constraints
+
+
+class GEOBLENDER_OT_core_toggle_constraints_overlay(bpy.types.Operator):
+    """Untouchables, limits and buffers over the view while designing"""
+
+    bl_idname = TOGGLE_OVERLAY
+    bl_label = "Show constraints and limits"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        """Solo lee: hace falta un proyecto abierto (también en solo lectura)."""
+        if project_session.current() is None:
+            cls.poll_message_set(tr("Open a project"))  # type: ignore[attr-defined]
+            return False
+        return True
+
+    def execute(self, context: Any) -> set[str]:
+        """Activa la superposición (se construye por pasos, sin escribir nada en el proyecto) o,
+        si ya está activa, la quita."""
+        overlay = _overlay()
+        if overlay.enabled():
+            overlay.disable()
+            self.report({"INFO"}, tr("Constraints and limits hidden"))
+            return {"FINISHED"}
+        try:
+            overlay.enable()
+        except (RuntimeError, GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, tr("The constraints and limits could not be shown: {detail}",
+                                      detail=error_text(exc)))
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Showing the constraints and limits"))
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_edit_limits, GEOBLENDER_OT_core_declare_limits,
     GEOBLENDER_OT_core_go_to_place, GEOBLENDER_OT_core_edit_constraints,
@@ -2249,5 +2300,5 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_core_search_untouchables, GEOBLENDER_OT_core_convert_hit,
     GEOBLENDER_OT_core_discard_hit, GEOBLENDER_OT_core_close_search,
     GEOBLENDER_OT_core_edit_client_marks, GEOBLENDER_OT_core_save_client_marks,
-    GEOBLENDER_OT_core_convert_intention)
+    GEOBLENDER_OT_core_convert_intention, GEOBLENDER_OT_core_toggle_constraints_overlay)
 """Los operadores de la 012 que ya tienen su clase real (de la T22 a la T28)."""

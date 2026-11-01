@@ -38,12 +38,22 @@ documento, su capa, su decisión y las restricciones que salieron de ellas), la 
 (:class:`GEOBLENDER_PG_core_pick`), los campos del formulario para guardar las marcas de una capa
 (``mark_*``, todos en texto salvo el papel) y su último resultado (``mark_lines``).
 
+**Ver restricciones y límites** (T26): ``WindowManager.geoblender_constraints_overlay`` es el
+control 30 como propiedad (se lee y se escribe: activa o quita la superposición de
+``bl.draw.constraints``, que importa al activarla); y la vista guarda la superficie sobre la que se
+dibuja (``overlay_surface``, el nombre de su dato; vacío: la rejilla más reciente del proyecto) y
+las que se pueden elegir (``overlay_surfaces``).
+
 Ninguna propiedad es una coordenada ni una distancia en ``FloatProperty`` (ADR-0005; los
 resguardos, los pesos, las distancias y los espesores de los diálogos, en ``StringProperty``:
 ``docs/trampas.md`` §1; las coordenadas absolutas de «Ir a», también en texto).
 """
 
 from __future__ import annotations
+
+import importlib
+import sys
+from typing import Any
 
 import bpy
 from bpy.props import (
@@ -59,12 +69,38 @@ from ...core.constraints.model import IntentionRole
 
 WINDOW_MANAGER_PROPERTY = "geoblender_constraints"
 """El nombre de la propiedad de ``WindowManager`` (la usan las ventanas de las restricciones)."""
+OVERLAY_PROPERTY = "geoblender_constraints_overlay"
+"""El de la propiedad de ``WindowManager`` de «Ver restricciones y límites» (control 30)."""
+_OVERLAY_MODULE = f"{__package__.rpartition('.')[0]}.draw.constraints"
 MARK_FIELD = "FIELD"
 """El valor de ``mark_role`` cuando el papel de cada marca lo da un campo de la capa."""
 MARK_ROLE_ITEMS = [(MARK_FIELD, "From a field of the layer", ""),
                    *[(role.name, role.label_msgid, "") for role in IntentionRole]]
 """Los valores de ``mark_role``: el campo de la capa o uno de los seis papeles para todas."""
 _STATIC: set[str] = set()  # ni animable ni nada más
+
+
+def _get_overlay(_self: Any) -> bool:
+    """Si la superposición de las restricciones está activa (sin importarla si no lo está)."""
+    module = sys.modules.get(_OVERLAY_MODULE)
+    return bool(module is not None and module.enabled())
+
+
+def _set_overlay(_self: Any, value: bool) -> None:
+    """Activa o quita la superposición de las restricciones (la importa al activarla)."""
+    if value:
+        importlib.import_module(_OVERLAY_MODULE).enable()
+        return
+    module = sys.modules.get(_OVERLAY_MODULE)
+    if module is not None:
+        module.disable()
+
+
+def _surface_changed(_self: Any, _context: Any) -> None:
+    """Se eligió otra superficie: con la superposición activa, la rehace."""
+    module = sys.modules.get(_OVERLAY_MODULE)
+    if module is not None:
+        module.on_surface_changed()
 
 
 class GEOBLENDER_PG_core_layer_choice(bpy.types.PropertyGroup):
@@ -298,6 +334,12 @@ class GEOBLENDER_PG_core_constraints(bpy.types.PropertyGroup):
         description="The decision of the owner the marks rest on (optional)")
     mark_lines: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_core_report_line)
+    overlay_surface: StringProperty(  # type: ignore[valid-type]
+        default="", options=_STATIC, update=_surface_changed,
+        description="Surface of the project the constraints are drawn on over the 3D view "
+                    "(empty: the most recent grid of the project)")
+    overlay_surfaces: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_pick)
 
 
 classes: tuple[type, ...] = (GEOBLENDER_PG_core_layer_choice, GEOBLENDER_PG_core_report_line,
@@ -308,13 +350,19 @@ classes: tuple[type, ...] = (GEOBLENDER_PG_core_layer_choice, GEOBLENDER_PG_core
 
 
 def register() -> None:
-    """Pone ``WindowManager.geoblender_constraints`` (las clases ya están registradas)."""
+    """Pone ``WindowManager.geoblender_constraints`` (las clases ya están registradas) y
+    ``WindowManager.geoblender_constraints_overlay`` (T26)."""
     setattr(bpy.types.WindowManager, WINDOW_MANAGER_PROPERTY,
             PointerProperty(type=GEOBLENDER_PG_core_constraints, options=_STATIC))
+    setattr(bpy.types.WindowManager, OVERLAY_PROPERTY, BoolProperty(
+        name="Show constraints and limits", get=_get_overlay, set=_set_overlay,
+        options={"SKIP_SAVE"},
+        description="Show the constraints and the limits over the 3D view while designing"))
 
 
 def unregister() -> None:
-    """Quita ``WindowManager.geoblender_constraints`` (antes de desregistrar las clases); sin
-    ella, nada."""
-    if hasattr(bpy.types.WindowManager, WINDOW_MANAGER_PROPERTY):
-        delattr(bpy.types.WindowManager, WINDOW_MANAGER_PROPERTY)
+    """Quita ``WindowManager.geoblender_constraints`` y ``geoblender_constraints_overlay`` (antes
+    de desregistrar las clases); sin ellas, nada."""
+    for name in (OVERLAY_PROPERTY, WINDOW_MANAGER_PROPERTY):
+        if hasattr(bpy.types.WindowManager, name):
+            delattr(bpy.types.WindowManager, name)
