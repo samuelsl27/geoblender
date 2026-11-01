@@ -1065,7 +1065,11 @@ def draw_search(layout: Any, context: Any) -> None:
     distance.label(text=tr("Search distance: {value}", value=shown.search_distance),
                    translate=False)
     if shown.search_distance_set:
-        change = distance.operator(SET_PARAMETER, text=tr("Change…"), translate=False)
+        # Cambiar la distancia escribe en el proyecto: como los demás botones, desactivado con
+        # el proyecto en solo lectura o la versión no editable (RF-012-28).
+        changer = distance.row()
+        changer.enabled = writable
+        change = changer.operator(SET_PARAMETER, text=tr("Change…"), translate=False)
         change.key = SEARCH_DISTANCE.key
     search = layers.row()
     search.enabled = writable

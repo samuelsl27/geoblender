@@ -757,7 +757,8 @@ class ConstraintsSearchTest(unittest.TestCase):
     def test_l_unavailable_without_a_project_read_only_or_superseded(self) -> None:
         """RF-012-28: sin proyecto, en solo lectura o con la versión activa SUPERADO las órdenes
         no están disponibles y dicen por qué (también en su descripción); la ventana abierta lo
-        dice y desactiva lo que escribe."""
+        dice y desactiva lo que escribe, también el «Cambiar…» de la distancia de búsqueda (lo
+        halló el hito H2: la ventana de la T24 lo dejaba activo)."""
         commands = (bpy.ops.geoblender.core_find_untouchables,
                     bpy.ops.geoblender.core_declare_sectors,
                     bpy.ops.geoblender.core_search_untouchables,
@@ -781,6 +782,7 @@ class ConstraintsSearchTest(unittest.TestCase):
             self.assertIn(reason, layout.texts())
             disabled = {item.target for item in layout.of_kind("operator") if not item.enabled}
             self.assertTrue({DECLARE, SEARCH} <= disabled, disabled)
+            self.assertSearchDistanceCannotBeChanged(layout)
         with self.project.write_transaction() as conn:  # V02 VIGENTE y después SUPERADO
             conn.execute("UPDATE gb_version SET status = 'VIGENTE' WHERE uid = ?",
                          (self.v02.uid,))
@@ -794,8 +796,21 @@ class ConstraintsSearchTest(unittest.TestCase):
         for idname in (FIND, DECLARE, CONVERT, CLOSE):
             cls = self.commands.registered_class(idname)
             self.assertIn(note, cls.description(bpy.context, SimpleNamespace()))
+        self.panels.fill_search(self.project)
+        layout = draw(getattr(bpy.types, PANEL), bpy.context)
+        self.assertIn(note, layout.texts())
+        self.assertSearchDistanceCannotBeChanged(layout)
         self.set_active(self.v01)
         self.assertTrue(bpy.ops.geoblender.core_find_untouchables.poll())
+
+    def assertSearchDistanceCannotBeChanged(self, layout: FakeLayout) -> None:
+        """La distancia de búsqueda ya está guardada (se cerró una búsqueda), así que la ventana
+        dibuja su «Cambiar…», y con el proyecto en solo lectura o la versión no editable ese
+        botón, que escribe, está desactivado como los demás (la prueba que lo llama cita el
+        requisito)."""
+        changes = [item for item in layout.of_kind("operator") if item.target == SET_PARAMETER]
+        self.assertEqual(len(changes), 1)
+        self.assertFalse(changes[0].enabled)
 
     def test_m_the_window_is_in_both_languages(self) -> None:
         """RF-012-28 (principio 10): la ventana, los sectores y sus estados se leen también en
