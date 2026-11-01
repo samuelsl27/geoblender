@@ -405,19 +405,19 @@ def fill_limits(project: Any) -> Any:
 
 def _draw_line(layout: Any, line: Any, width: float) -> None:
     """Una línea del informe (una fila de la vista o un :class:`Line` que aún no está en ella): su
-    texto (en alerta, si lo está) y, si lleva un lugar, «Ir a»."""
-    if getattr(line, "x", ""):
-        row = layout.row(align=True)
-        row.label(text=line.text, translate=False)
-        button = row.operator(GO_TO_PLACE, text=_label(GO_TO_PLACE), translate=False)
-        button.x, button.y, button.radius = line.x, line.y, line.radius
-        return
+    texto (en alerta, si lo está) partido al ancho de la zona (``width``) y, si lleva un lugar,
+    «Ir a» en su propia fila, debajo: una etiqueta junto a un botón se queda con la mitad del
+    ancho y Blender corta el texto por el medio con «…» (RF-012-23: el volumen, el área, el
+    espesor máximo y el sitio de cada grupo de la verificación, T46)."""
     shown = labels.wrapped(line.text, width, icon=line.alert)
     column = layout.column(align=True)
     column.alert = bool(line.alert)
     for index, part in enumerate(shown):
         icon = ("ERROR" if index == 0 else "BLANK1") if line.alert else "NONE"
         column.label(text=part, icon=icon, translate=False)
+    if getattr(line, "x", ""):
+        button = layout.row().operator(GO_TO_PLACE, text=_label(GO_TO_PLACE), translate=False)
+        button.x, button.y, button.radius = line.x, line.y, line.radius
 
 
 def _draw_blocked(layout: Any, blocked: str | None, width: float) -> None:

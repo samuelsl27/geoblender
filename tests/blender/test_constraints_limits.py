@@ -443,7 +443,11 @@ class ConstraintsLimitsTest(unittest.TestCase):
         self.assertEqual((goto.properties.x, goto.properties.y, goto.properties.radius),
                          (place.x, place.y, place.radius))
         self.assertTrue(goto.enabled)
-        outside = [item for item in layout.of_kind("label") if "fuera de la rejilla" in item.text]
+        # «Ir a» en su propia fila, y la línea de la parte entera encima de él (T46).
+        self.assertEqual([item.kind for item in layout.items if item.layout is goto.layout],
+                         ["operator"])
+        self.assertEqual(layout.items[layout.items.index(goto) - 1].text, expected[5])
+        outside =[item for item in layout.of_kind("label") if "fuera de la rejilla" in item.text]
         self.assertTrue(outside)
         self.assertTrue(all(item.alert for item in outside))
 

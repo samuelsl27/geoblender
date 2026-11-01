@@ -590,6 +590,48 @@ class VerifyTest(unittest.TestCase):
         self.assertAlmostEqual(rv3d.view_location.x, float(place[0]) - origin.x0, places=3)
         self.assertAlmostEqual(rv3d.view_location.y, float(place[1]) - origin.y0, places=3)
 
+    def test_da_the_group_line_is_read_whole_and_go_to_has_its_own_row(self) -> None:
+        """RF-012-23 (T46; hallazgo 2 del H3): en la ventana de la verificación, a escala 1,0 y
+        1,25 y también con la ventana estrecha, la línea de cada grupo («Torre 132 kV: no cumple ·
+        movimiento … m³ · … m² · espesor máx. … m · en (…; …)») se lee entera (el volumen, el área,
+        el espesor máximo y las coordenadas) en etiquetas propias, partidas al ancho de la ventana
+        (``labels.draw_wrapped``) y ninguna más ancha que él; «Ir a» va en su propia fila (ninguna
+        etiqueta comparte fila con él: Blender se quedaría con la mitad del texto) y sigue dando
+        el lugar de su grupo; ninguna cifra ni texto cambia."""
+        labels, compat = _module("bl.ui.labels"), _module("bl.compat")
+        groups = [(group.text, (group.x, group.y, group.radius))
+                  for final in self.view.verify_finals for group in final.groups]
+        self.assertEqual(len(groups), 2)
+        self.assertIn("espesor máx.", groups[0][0])  # el de la torre: volumen, área, espesor, sitio
+        wide = labels.dialog_width(self.panels.VERIFY_WIDTH_PX)
+        for scale in (1.0, 1.25):
+            for width in (wide, 300.0):  # la ventana y una estrecha, que obliga a partir
+                with (self.subTest(escala=scale, ancho=width),
+                      mock.patch.object(compat, "ui_scale", return_value=scale),
+                      mock.patch.object(labels, "dialog_width", return_value=width)):
+                    layout = draw(getattr(bpy.types, PANEL), bpy.context)
+                    buttons = [item for item in layout.of_kind("operator") if item.target == GO_TO]
+                    self.assertEqual(
+                        [(item.properties.x, item.properties.y, item.properties.radius)
+                         for item in buttons], [place for _text, place in groups])
+                    for (text, _place), button in zip(groups, buttons):
+                        at = layout.items.index(button)
+                        mine = layout.items[at - 1].layout
+                        lines = []
+                        while at and layout.items[at - 1].kind == "label" \
+                                and layout.items[at - 1].layout is mine:
+                            at -= 1
+                            lines.insert(0, layout.items[at].text)
+                        self.assertEqual(" ".join(lines), text)
+                        for line in lines:
+                            self.assertLessEqual(labels.label_px(line, scale=scale), width, line)
+                        if width < wide:
+                            self.assertGreater(len(lines), 1, text)  # no cabe: partida
+                        self.assertIsNot(button.layout, mine)
+                        self.assertEqual([item.kind for item in layout.items
+                                          if item.layout is button.layout], ["operator"])
+                        self.assertTrue(button.enabled)
+
     def test_e_the_compliance_grid_loads_over_the_final_surface_with_the_colours_of_the_011(
             self) -> None:
         """RF-012-23, D-42 (M5): la rejilla de incumplimientos de cada final que incumple se

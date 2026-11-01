@@ -57,6 +57,9 @@ class Item:
     units_x: float = 0.0  # ``ui_units_x`` de su *layout* (0: el ancho natural; spec 003)
     operator_context: str = "INVOKE_DEFAULT"  # el del *layout* raíz al dibujarlo (spec 004)
     property_split: bool = False  # su *layout* separaba etiqueta y valor (spec 009, T36)
+    # El *layout* que lo dibujó: dos elementos con el mismo iban en la misma fila o columna
+    # (spec 012, T46). Ni se muestra ni cuenta al comparar.
+    layout: Any = field(default=None, repr=False, compare=False)
 
 
 class FakeLayout:
@@ -103,6 +106,7 @@ class FakeLayout:
         item.units_x = float(self.ui_units_x)
         item.operator_context = self.operator_context
         item.property_split = bool(self.use_property_split)
+        item.layout = self
         self.items.append(item)
         return item
 
