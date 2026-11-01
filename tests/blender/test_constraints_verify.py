@@ -270,6 +270,13 @@ class VerifyTest(unittest.TestCase):
         return {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in sorted(root.rglob("*.tif"))}
 
+    def names(self) -> list[str]:
+        """Todos los ficheros de la carpeta del proyecto (sin el diario de la base): lo que una
+        verificación cancelada no deja, ni temporales."""
+        root = Path(self.project.root)
+        return sorted(str(path.relative_to(root)) for path in root.rglob("*")
+                      if path.is_file() and path.suffix != ".gpkg-journal")
+
     def operations(self, op_type: str, status: str | None = None) -> list[tuple[Any, ...]]:
         sql = "SELECT uid, status, superseded_by FROM gb_operation WHERE op_type = ?"
         if status is None:
@@ -752,11 +759,114 @@ class VerifyTest(unittest.TestCase):
         self.assertTrue(all(findings.values()))
         self.assertIn("600", findings[NAME])
 
-    def test_z_disabling_geoblender_leaves_nothing(self) -> None:
-        """Principio 8: desactivar Geoblender quita la ventana de la verificación, la orden y el
-        cargador de las rejillas de incumplimientos, y la huella de Blender vuelve a la del
-        principio de la sesión."""
-        blender_ext.release()
+    def test_h_a_superseded_version_or_a_read_only_project_still_shows_the_verification(
+            self) -> None:
+        """RF-012-28, RF-012-23 (HU-012-7; M6): con el proyecto en solo lectura o la versión
+        activa SUPERADO (V02, la de la verificación de la cota constante), «Verificar un diseño
+        por recinto…» no está disponible y dice por qué («Proyecto en solo lectura: …»; «V02 está
+        en estado SUPERADO: cree una versión nueva a partir de ella», también en su descripción);
+        la ventana de la verificación sigue enseñando el título, la tabla de cada final y los
+        grupos con «Ir a» y «Cargar la rejilla de incumplimientos» (activos), dice el motivo en
+        alerta y deja desactivado «Verificar»."""
+        enabled = draw(getattr(bpy.types, PANEL), bpy.context)
+        again = [item for item in enabled.of_kind("operator") if item.target == VERIFY]
+        self.assertEqual([item.enabled for item in again], [True])
+        self.assertFalse([item for item in enabled.of_kind("label") if item.icon == "LOCKED"])
+        self.assertTrue(bpy.ops.geoblender.res_verify_constraints.poll())
+        looking = {target: len([item for item in enabled.of_kind("operator")
+                                if item.target == target]) for target in (GO_TO, LOAD)}
+        self.assertTrue(all(looking.values()), looking)
+        cls = self.commands.registered_class(VERIFY)
+        project = self.project
+
+        def check(reason: str, buttons: dict[str, int] | None) -> None:
+            self.assertFalse(bpy.ops.geoblender.res_verify_constraints.poll())
+            title = self.view.verify_title
+            self.assertTrue(title)
+            layout = draw(getattr(bpy.types, PANEL), bpy.context)
+            texts = " ".join(layout.texts())
+            self.assertIn(reason, texts)
+            shown = [item for item in layout.of_kind("label") if item.icon == "LOCKED"]
+            self.assertEqual(len(shown), 1)
+            self.assertTrue(shown[0].alert)
+            self.assertIn(title, texts)
+            for final in self.view.verify_finals:
+                self.assertIn(final.text, texts)
+            self.assertEqual([item.enabled for item in layout.of_kind("operator")
+                              if item.target == VERIFY], [False])
+            for target in (GO_TO, LOAD):
+                found = [item for item in layout.of_kind("operator") if item.target == target]
+                self.assertTrue(found and all(item.enabled for item in found), target)
+                if buttons is not None:  # los mismos botones que con la versión editable
+                    self.assertEqual(len(found), buttons[target])
+
+        with mock.patch.object(project, "_status", project.status):
+            project.set_read_only(_module("core.project").ReadOnlyCode.REQUESTED, "prueba")
+            reason = self.session.write_unavailable()
+            self.assertTrue(reason.startswith("Proyecto en solo lectura: "), reason)
+            check(reason, looking)
+        self.assertTrue(bpy.ops.geoblender.res_verify_constraints.poll())
+
+        with project.write_transaction() as conn:  # V02 VIGENTE y después SUPERADO
+            conn.execute("UPDATE gb_version SET status = 'VIGENTE' WHERE uid = ?",
+                         (self.v02.uid,))
+            conn.execute("UPDATE gb_version SET status = 'SUPERADO', reason_closed = ? "
+                         "WHERE uid = ?", (REASON, self.v02.uid))
+        self.set_active(self.v02)
+        self.addCleanup(self.set_active, self.v01)
+        note = "V02 está en estado SUPERADO: cree una versión nueva a partir de ella"
+        self.assertEqual(self.versions.not_editable_text(), note)
+        self.panels.fill_verification(project, self.v02.uid)
+        self.assertIn("en V02", self.view.verify_title)
+        check(note, None)
+        self.assertIn(note, cls.description(bpy.context, SimpleNamespace()))
+        self.set_active(self.v01)
+        self.assertTrue(bpy.ops.geoblender.res_verify_constraints.poll())
+
+    def test_z_disabling_geoblender_midway_leaves_nothing(self) -> None:
+        """RF-012-28, RF-001-05, Principio 8 (plan 012 §2.1; M6): desactivar Geoblender con
+        «Verificar un diseño por recinto…» a mitad (la operación en curso, ya con las rutas de
+        su tabla y de sus rejillas reclamadas) la cancela como Esc antes de quitar las clases:
+        «Verificación cancelada: no ha quedado nada a medias»; la operación queda «cancelada»
+        y ninguna ruta reclamada, sin datos, cifras ni rejillas nuevos, ningún operador de
+        Geoblender vivo; quita la ventana de la verificación, la orden y el cargador de las
+        rejillas de incumplimientos, y la huella de Blender vuelve a la del principio de la
+        sesión."""
+        operations_module = _module("core.provenance.operations")
+        operations = self.rows("SELECT uid, status FROM gb_operation ORDER BY uid")
+        datasets = self.rows("SELECT name, uid, status, content_sha256 FROM gb_dataset "
+                             "ORDER BY name")
+        figures = self.rows("SELECT count(*) FROM gb_figure")
+        files = self.names()
+        cls = self.commands.registered_class(VERIFY)
+        with mock.patch.object(cls, "STEP_BUDGET_S", 1e-9), \
+                mock.patch.object(self.res_ops, "_call_panel", return_value={"FINISHED"}):
+            self.start("Interrumpida", ("Foso",))
+            operator = self.running()
+            for _ in range(MAX_EVENTS):
+                self.assertEqual(operator.modal(bpy.context, TIMER), {"RUNNING_MODAL"})
+                if operations_module.claimed_paths(self.project):
+                    break
+            else:
+                self.fail("la verificación no llega a reclamar rutas")
+        running = self.operations(VERIFY_TYPE, "running")
+        self.assertEqual(len(running), 1)
+        log = operator.report_log
+
+        blender_ext.disable()
+        self.assertEqual(log, ["Verificación cancelada: no ha quedado nada a medias"])
+        self.assertEqual(self.operations(VERIFY_TYPE, "running"), [])
+        self.assertEqual(operations_module.claimed_paths(self.project), frozenset())
+        self.assertEqual(
+            [row for row in self.rows("SELECT uid, status FROM gb_operation ORDER BY uid")
+             if row not in operations], [(running[0][0], "cancelled")])
+        self.assertEqual(self.rows("SELECT name, uid, status, content_sha256 FROM gb_dataset "
+                                   "ORDER BY name"), datasets)
+        self.assertEqual(self.rows("SELECT count(*) FROM gb_figure"), figures)
+        self.assertEqual(self.names(), [name for name in files if name != ".lock"])
+        alive = [type(op).__name__ for window in bpy.context.window_manager.windows
+                 for op in window.modal_operators if op is not None]
+        self.assertEqual([name for name in alive if name.startswith("GEOBLENDER_")], [])
         self.assertFalse(hasattr(bpy.types, PANEL))
         self.assertEqual(blender_ext.fingerprint_diff(blender_ext.session_baseline(),
                                                       blender_ext.state_fingerprint()), [])

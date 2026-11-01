@@ -418,17 +418,26 @@ def _draw_line(layout: Any, line: Any, width: float) -> None:
         column.label(text=part, icon=icon, translate=False)
 
 
+def _draw_blocked(layout: Any, blocked: str | None, width: float) -> None:
+    """Por qué la ventana se ve y no se cambia (RF-012-28): el motivo de ``blocked`` (sin proyecto,
+    solo lectura o la versión activa no editable) en alerta, con el candado y partido a
+    ``width``; si se puede escribir (``None``), nada."""
+    if blocked is None:
+        return
+    note = layout.column(align=True)
+    note.alert = True
+    for index, part in enumerate(labels.wrapped(blocked, width, icon=True)):
+        note.label(text=part, icon="LOCKED" if index == 0 else "BLANK1", translate=False)
+
+
 def draw_limits(layout: Any, context: Any) -> None:
     """La ventana de Límites… (véase el módulo), de lo ya leído."""
     limits = view()
     if limits is None:
         return
     blocked = _write_unavailable()
-    if blocked is not None:  # se ve y no se cambia (RF-012-28)
-        note = layout.row()
-        note.alert = True
-        note.label(text=blocked, icon="LOCKED", translate=False)
     width = labels.dialog_width(LIMITS_WIDTH_PX)
+    _draw_blocked(layout, blocked, width)
     box = layout.box()
     box.label(text=tr("Limits in force"), translate=False)
     for line in limits.limit_lines:
@@ -719,11 +728,8 @@ def draw_constraints(layout: Any, context: Any) -> None:
         return
     blocked = _write_unavailable()
     writable = blocked is None
-    if blocked is not None:  # se ve y no se cambia (RF-012-28)
-        note = layout.row()
-        note.alert = True
-        note.label(text=blocked, icon="LOCKED", translate=False)
     width = labels.dialog_width(CONSTRAINTS_WIDTH_PX)
+    _draw_blocked(layout, blocked, width)
     buttons = layout.row(align=True)
     writes = buttons.row(align=True)
     writes.enabled = writable
@@ -1019,11 +1025,8 @@ def draw_search(layout: Any, context: Any) -> None:
         return
     blocked = _write_unavailable()
     writable = blocked is None
-    if blocked is not None:  # se ve y no se cambia (RF-012-28)
-        note = layout.row()
-        note.alert = True
-        note.label(text=blocked, icon="LOCKED", translate=False)
     width = labels.dialog_width(SEARCH_WIDTH_PX)
+    _draw_blocked(layout, blocked, width)
     sectors = layout.box()
     sectors.label(text=tr("Search sectors"), translate=False)
     if not len(shown.sectors):
@@ -1248,11 +1251,8 @@ def draw_marks(layout: Any, context: Any) -> None:
         return
     blocked = _write_unavailable()
     writable = blocked is None
-    if blocked is not None:  # se ve y no se cambia (RF-012-28)
-        note = layout.row()
-        note.alert = True
-        note.label(text=blocked, icon="LOCKED", translate=False)
     width = labels.dialog_width(MARKS_WIDTH_PX)
+    _draw_blocked(layout, blocked, width)
     saved = layout.box()
     saved.label(text=tr("Saved intentions"), translate=False)
     if not len(shown.intentions):
@@ -1556,7 +1556,9 @@ def draw_selected(layout: Any, context: Any) -> None:
     if shown is None or not shown.selected.uid:
         return
     width = labels.sidebar_width(context)
-    _draw_chosen(layout, shown.selected, width, _write_unavailable() is None)
+    blocked = _write_unavailable()
+    _draw_blocked(layout, blocked, width)
+    _draw_chosen(layout, shown.selected, width, blocked is None)
     for line in shown.selected_lines:
         _draw_line(layout, line, width)
 
@@ -1799,6 +1801,8 @@ def draw_verification(layout: Any, context: Any) -> None:
     if shown is None:
         return
     width = labels.dialog_width(VERIFY_WIDTH_PX)
+    blocked = _write_unavailable()
+    _draw_blocked(layout, blocked, width)
     if not shown.verify_title:
         labels.draw_wrapped(layout, tr(
             "The active version has no verification yet: use {path}",
@@ -1829,7 +1833,7 @@ def draw_verification(layout: Any, context: Any) -> None:
                                       icon="OUTLINER_OB_MESH", translate=False)
                 button.datasets = final.grid
     again = layout.row()
-    again.enabled = _write_unavailable() is None
+    again.enabled = blocked is None
     again.operator(VERIFY_COMMAND, text=_label(VERIFY_COMMAND), icon="CHECKMARK",
                    translate=False)
 

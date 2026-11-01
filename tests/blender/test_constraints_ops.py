@@ -23,6 +23,10 @@ RF-012-28; plan 012 §5.3.4, §5.5, D-31, D-38).
   leyenda; no con las máscaras obsoletas ni sobre un fichero que ya existe.
 - RF-012-28, D-38: sin proyecto, en solo lectura o con la versión activa SUPERADO las órdenes que
   escriben están desactivadas con su motivo; las cinco pasan a la entrada «012».
+- RF-012-28, RF-012-16, RF-009-05, RF-001-05 (T29; HU-012-7; M6): lo mismo para las dieciséis
+  órdenes de la 012 que escriben (o), cada ventana de la 012 se sigue viendo y dice el motivo (p),
+  sin versión activa las de versión piden elegir o crear una (q) y desactivar Geoblender a mitad de
+  compilar cancela la compilación sin dejar nada (z).
 
 Un proyecto por clase (rejilla de 48 × 40 celdas de 5 m) y la extensión sin importar otra vez
 (RNF-001-01). Se ejecuta con ``tools/run_blender_tests.py``.
@@ -35,6 +39,8 @@ import tempfile
 import time
 import unittest
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -44,19 +50,38 @@ import bpy
 import numpy as np
 
 from tests.support import blender_ext
-from tests.support.blender_ext import module_name
+from tests.support.blender_ext import fingerprint_diff, module_name
 from tests.support.core_fixtures import settings_values
-from tests.support.fake_layout import FakeLayout, draw
+from tests.support.fake_layout import FakeLayout, draw, operator_self
 from tests.support.trees import remove_tree
 
 ENTRY = "012"
+VERIFY = "geoblender.res_verify_constraints"
 EDIT = "geoblender.core_edit_constraints"
 CREATE = "geoblender.core_create_constraints"
 COMPLETE = "geoblender.core_complete_constraint"
 COMPILE = "geoblender.gis_compile_constraints"
 EXPORT = "geoblender.gis_export_constraint_masks"
 SET_PARAMETER = "geoblender.core_set_parameter"
+GO_TO = "geoblender.core_go_to_place"
+OVERLAY = "geoblender.core_toggle_constraints_overlay"
+LOAD_INTO_VIEW = "geoblender.core_load_into_view"
 REAL = (EDIT, CREATE, COMPLETE, COMPILE, EXPORT)
+WRITERS = (
+    "geoblender.core_edit_limits", "geoblender.core_declare_limits", EDIT, CREATE, COMPLETE,
+    COMPILE, "geoblender.core_find_untouchables", "geoblender.core_declare_sectors",
+    "geoblender.core_search_untouchables", "geoblender.core_convert_hit",
+    "geoblender.core_discard_hit", "geoblender.core_close_search",
+    "geoblender.core_edit_client_marks", "geoblender.core_save_client_marks",
+    "geoblender.core_convert_intention", VERIFY,
+)
+"""Las órdenes de la 012 que escriben en el proyecto (RF-012-28)."""
+VIEWING = (EXPORT, GO_TO, OVERLAY, LOAD_INTO_VIEW)
+"""Las que solo miran: no dependen de la versión activa ni del modo del proyecto."""
+WINDOWS = ("GEOBLENDER_PT_core_limits", "GEOBLENDER_PT_core_constraints",
+           "GEOBLENDER_PT_core_search", "GEOBLENDER_PT_core_marks",
+           "GEOBLENDER_PT_core_constraint", "GEOBLENDER_PT_res_verification")
+NOT_EDITABLE = "V02 está en estado SUPERADO: cree una versión nueva a partir de ella"
 STILL_PROVISIONAL: tuple[str, ...] = ()  # ninguna: la T28 entregó la última provisional
 PANEL = "GEOBLENDER_PT_core_constraints"
 LIST = "GEOBLENDER_UL_core_constraints"
@@ -865,6 +890,217 @@ class ConstraintsOpsTest(unittest.TestCase):
     def open_window_quiet(self) -> None:
         """Lee la vista como lo haría la orden, sin su poll (en solo lectura)."""
         self.panels.fill_constraints(self.project)
+
+    # --- Versión no editable, solo lectura y apagar a mitad (T29) -----------------------------
+
+    @staticmethod
+    def poll_of(idname: str) -> bool:
+        return bool(getattr(bpy.ops.geoblender, idname.partition(".")[2]).poll())
+
+    @contextmanager
+    def read_only(self) -> Iterator[str]:
+        """El proyecto en solo lectura mientras dura; el motivo que dice la sesión."""
+        project = self.project
+        with mock.patch.object(project, "_status", project.status):
+            project.set_read_only(_module("core.project").ReadOnlyCode.REQUESTED, "prueba")
+            reason = self.session.write_unavailable()
+            self.assertTrue(reason.startswith("Proyecto en solo lectura: "), reason)
+            yield reason
+
+    @contextmanager
+    def superseded(self) -> Iterator[str]:
+        """V02, SUPERADO, como versión activa mientras dura (después, V01); el motivo que da la
+        versión no editable."""
+        with self.project.write_transaction() as conn:
+            found = conn.execute("SELECT status FROM gb_version WHERE uid = ?",
+                                 (self.v02.uid,)).fetchone()
+            if found[0] != "SUPERADO":
+                conn.execute("UPDATE gb_version SET status = 'VIGENTE' WHERE uid = ?",
+                             (self.v02.uid,))
+                conn.execute("UPDATE gb_version SET status = 'SUPERADO', reason_closed = ? "
+                             "WHERE uid = ?", (REASON, self.v02.uid))
+        self.set_active(self.v02)
+        try:
+            note = NOT_EDITABLE
+            self.assertEqual(self.core_ops.constraints_unavailable(), note)
+            yield note
+        finally:
+            self.set_active(self.v01)
+
+    def drawn(self) -> dict[str, FakeLayout]:
+        """Las seis ventanas de la 012 dibujadas con la vista leída como la leen sus órdenes
+        (la barra N, con la primera restricción de la lista)."""
+        project, panels = self.project, self.panels
+        panels.fill_limits(project)
+        panels.fill_constraints(project)
+        panels.fill_search(project)
+        panels.fill_intentions(project)
+        panels.fill_verification(project, _module("bl.scene.versions").active_version())
+        self.view().item_index = 0
+        self.assertTrue(panels.read_selected())
+        return {name: draw(getattr(bpy.types, name), bpy.context) for name in WINDOWS}
+
+    def test_o_every_order_of_the_012_that_writes_says_why_it_is_unavailable(self) -> None:
+        """RF-012-28, RF-009-21, D-38 (HU-012-7; M6): las dieciséis órdenes de la 012 que escriben
+        en el proyecto (los límites, las restricciones, compilar, la búsqueda de intocables, las
+        intenciones y verificar) están disponibles con el proyecto en escritura y sin versión o
+        con una editable; sin proyecto, con el proyecto en solo lectura («Proyecto en solo
+        lectura: …») o con la versión activa SUPERADO («V02 está en estado SUPERADO: cree una
+        versión nueva a partir de ella», también en la descripción de las de procedencia) no
+        lo están; las de solo ver (exportar las máscaras, «Ir a», la superposición) siguen como
+        estaban."""
+        aware = self.session.ProvenanceAwareOperator
+        for idname in WRITERS:
+            self.assertTrue(self.poll_of(idname), idname)
+        viewing = {idname: self.poll_of(idname) for idname in VIEWING}
+        self.assertTrue(viewing[EXPORT] and viewing[OVERLAY], viewing)
+
+        with mock.patch.object(self.session.SESSION, "_project", None):
+            self.assertEqual(self.session.write_unavailable(), "Abra un proyecto")
+            for idname in (*WRITERS, EXPORT):
+                self.assertFalse(self.poll_of(idname), idname)
+        with self.read_only() as reason:
+            for idname in WRITERS:
+                self.assertFalse(self.poll_of(idname), idname)
+                self.assertEqual(self.core_ops.constraints_unavailable(), reason)
+            self.assertEqual({idname: self.poll_of(idname) for idname in VIEWING}, viewing)
+        self.assertTrue(all(self.poll_of(idname) for idname in WRITERS))
+
+        with self.superseded() as note:
+            for idname in WRITERS:
+                with self.subTest(orden=idname):
+                    self.assertFalse(self.poll_of(idname))
+                    cls = self.commands.registered_class(idname)
+                    if issubclass(cls, aware):
+                        self.assertIn(note, cls.description(bpy.context, SimpleNamespace()))
+            self.assertEqual({idname: self.poll_of(idname) for idname in VIEWING}, viewing)
+        self.assertTrue(all(self.poll_of(idname) for idname in WRITERS))
+
+    def test_p_the_windows_are_still_seen_and_say_why_they_cannot_change_anything(self) -> None:
+        """RF-012-28, RF-012-19 (HU-012-7; M6): con el proyecto en solo lectura o la versión
+        activa SUPERADO, cada ventana de la 012 (Límites…, Restricciones…, Buscar intocables…,
+        Intenciones…, la barra N «Restricción» y la de la verificación) se dibuja con su lista y
+        lo que enseñaba, dice el motivo en alerta y deja desactivado todo lo que escribe (cada
+        botón de las órdenes que escriben, «Cambiar…» incluido); lo que solo mira («Ir a»,
+        exportar, la superposición, cargar en la vista) sigue activo."""
+        self.assertTrue(self.stored(), "las restricciones de la clase")
+        enabled = self.drawn()
+        for name, layout in enabled.items():
+            writes = [item for item in layout.of_kind("operator")
+                      if item.target in WRITERS or item.target == SET_PARAMETER]
+            with self.subTest(ventana=name, contexto="escritura"):
+                self.assertTrue(writes, "dibuja alguna orden que escribe")
+                self.assertTrue(all(item.enabled for item in writes), writes)
+                self.assertFalse([item for item in layout.of_kind("label")
+                                  if item.icon == "LOCKED"])
+        for scenario in (self.read_only, self.superseded):
+            with scenario() as reason:
+                shown = self.drawn()
+                for name, layout in shown.items():
+                    with self.subTest(ventana=name, contexto=reason[:20]):
+                        self.assertIn(reason, " ".join(layout.texts()))
+                        note = [item for item in layout.of_kind("label") if item.icon == "LOCKED"]
+                        self.assertEqual(len(note), 1)
+                        self.assertTrue(note[0].alert)
+                        for item in layout.of_kind("operator"):
+                            self.assertTrue(item.target in VIEWING or not item.enabled,
+                                            (item.target, item.text))
+                        self.assertEqual(
+                            [(item.kind, item.target) for item in layout.items
+                             if item.kind == "template_list"],
+                            [(item.kind, item.target) for item in enabled[name].items
+                             if item.kind == "template_list"])
+
+    def test_q_without_an_active_version_the_orders_of_a_version_ask_for_one(self) -> None:
+        """RF-012-28, RF-012-16, RF-009-05 (HU-012-7; M6): sin versión activa, las órdenes de
+        la 012 siguen disponibles; las que son de una versión (compilar las máscaras y verificar
+        un diseño) abren desde la interfaz la ventana de la 009 que pide elegir o crear una y no
+        hacen nada más, y desde un guion se niegan con su texto, sin registrar nada."""
+        self.set_active(None)
+        self.addCleanup(self.set_active, self.v01)
+        for idname in WRITERS:
+            self.assertTrue(self.poll_of(idname), idname)
+        before = (self.count(), self.mask_files())
+        needs = self.session.version_required_text()
+        self.assertIn("versión", needs)
+        # Desde la interfaz (en ``blender -b`` no hay eventos y ``INVOKE_DEFAULT`` ejecuta): el
+        # ``invoke`` de cada clase sobre un ``self`` simulado. El de compilar es el de
+        # ``ProvenanceAwareOperator`` (``super()`` no admite un ``self`` simulado).
+        reports: list[tuple[set[str], str]] = []
+        compile_cls = self.commands.registered_class(COMPILE)
+        verify_cls = self.commands.registered_class(VERIFY)
+        context = SimpleNamespace(window=None, selected_objects=[])
+        with mock.patch.object(self.session, "open_version_dialog") as asked:
+            fake = operator_self(
+                compile_cls, report=lambda kind, text: reports.append((kind, text)),
+                in_steps=False)
+            self.assertEqual(self.session.ProvenanceAwareOperator.invoke(fake, context, None),
+                             {"CANCELLED"})
+            self.assertEqual(asked.call_count, 1)
+            fake = operator_self(
+                verify_cls, report=lambda kind, text: reports.append((kind, text)), name="",
+                start="", finals="", start_elevation="", final_elevation="", in_steps=False,
+                properties=SimpleNamespace(is_property_set=lambda name: False))
+            self.assertEqual(verify_cls.invoke(fake, context, None), {"CANCELLED"})
+            self.assertEqual(asked.call_count, 2)
+            self.assertEqual(reports, [])
+            asked.reset_mock()
+            for command in (bpy.ops.geoblender.gis_compile_constraints,
+                            bpy.ops.geoblender.res_verify_constraints):
+                self.assertIn(needs, self.refused(command))
+            asked.assert_not_called()
+        self.assertEqual((self.count(), self.mask_files()), before)
+
+    def test_z_disabling_geoblender_midway_cancels_the_compilation(self) -> None:
+        """RF-012-28, RF-001-05, Principio 8 (plan 012 §2.1; M6): desactivar Geoblender con
+        «Compilar las máscaras» a mitad (la operación en curso, con rutas reclamadas) la cancela
+        como Esc antes de quitar las clases: «Compilación cancelada: no ha quedado nada a
+        medias»; la operación queda «cancelada» y ninguna ruta reclamada, sin datos, cifras ni
+        ficheros nuevos (la base y el cerrojo aparte), las máscaras de antes al día, ningún
+        operador de Geoblender vivo y la huella de Blender como al principio de la sesión."""
+        operations = self.rows("SELECT uid, status FROM gb_operation ORDER BY uid")
+        datasets = self.rows("SELECT name, uid, status, content_sha256 FROM gb_dataset "
+                             "ORDER BY name")
+        figures = self.rows("SELECT count(*) FROM gb_figure")
+        files = [name for name in self.mask_files() if name != ".lock"]
+        operations_module = _module("core.provenance.operations")
+        cls = self.commands.registered_class(COMPILE)
+        with mock.patch.object(cls, "STEP_BUDGET_S", 1e-9):  # un paso por evento
+            self.assertEqual(bpy.ops.geoblender.gis_compile_constraints(
+                "EXEC_DEFAULT", in_steps=True), {"RUNNING_MODAL"})
+            operator = self.running()
+            for _ in range(MAX_EVENTS):
+                self.assertEqual(operator.modal(bpy.context, TIMER), {"RUNNING_MODAL"})
+                if operations_module.claimed_paths(self.project):
+                    break
+            else:
+                self.fail("la compilación no llega a reclamar rutas")
+        handle = operator.handle
+        self.assertEqual(self.rows("SELECT status FROM gb_operation WHERE uid = ?", handle.uid),
+                         [("running",)])
+        log = operator.report_log
+
+        blender_ext.disable()
+        self.assertEqual(log, ["Compilación cancelada: no ha quedado nada a medias"])
+        self.assertEqual(self.rows("SELECT status FROM gb_operation WHERE uid = ?", handle.uid),
+                         [("cancelled",)])
+        self.assertEqual(operations_module.claimed_paths(self.project), frozenset())
+        self.assertEqual(
+            [row for row in self.rows("SELECT uid, status FROM gb_operation ORDER BY uid")
+             if row not in operations], [(handle.uid, "cancelled")])
+        self.assertEqual(self.rows("SELECT name, uid, status, content_sha256 FROM gb_dataset "
+                                   "ORDER BY name"), datasets)
+        self.assertEqual(self.rows("SELECT count(*) FROM gb_figure"), figures)
+        self.assertEqual(self.mask_files(), files)
+        state, _pending = self.access.mask_state(self.project, self.v01.uid)
+        self.assertEqual(state, self.access.MaskState.CURRENT)
+        alive = [type(op).__name__ for window in bpy.context.window_manager.windows
+                 for op in window.modal_operators if op is not None]
+        self.assertEqual([name for name in alive if name.startswith("GEOBLENDER_")], [])
+        after, baseline = blender_ext.state_fingerprint(), blender_ext.session_baseline()
+        if after != baseline:
+            self.fail("la huella del estado de Blender cambió:\n"
+                      + "\n".join(fingerprint_diff(baseline, after)))
 
 
 if __name__ == "__main__":
