@@ -22,6 +22,10 @@ cubierta(i'))``, una suma acumulada por filas. Es exacta salvo el redondeo de fl
 - :func:`band_coverage`: las celdas tocadas de una **banda de filas** (la fila 0 es la del
   norte), con su fracción; por bandas sale bit a bit lo mismo que de una vez.
 - :func:`signed_area`: el área con signo de un anillo (positiva si es antihorario).
+- ``band_spans`` (spec 012, T40): las celdas de una banda con una fracción mayor que un umbral
+  como **tramos de fila**, sin la matriz de la banda: las mismas celdas que :func:`band_coverage`
+  (bit a bit) para un polígono mucho mayor que la rejilla, a coste de las celdas que cruzan sus
+  aristas. No cambia el cálculo de arriba: es otra forma de sumar lo mismo.
 
 Precisión: restar la esquina suroeste a unas coordenadas de la rejilla es exacto en float64 (lema
 de Sterbenz), y en unidades de celda los números son pequeños. Cada corte de una arista con una
@@ -228,3 +232,83 @@ def band_coverage(edges: np.ndarray, grid: Grid, rows: slice) -> CoverageBand:
         (found_cols + first_col).astype(np.int64),
         np.ascontiguousarray(fraction[found]),
     )
+
+
+def _no_spans() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    return (np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64),
+            np.zeros(0, dtype=np.int64))
+
+
+def band_spans(edges: np.ndarray, grid: Grid, rows: slice, threshold: float
+               ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Las celdas de la banda de filas ``rows`` de ``grid`` con una fracción de su área dentro del
+    polígono de las aristas orientadas ``edges`` **mayor que** ``threshold`` (un número ≥
+    :data:`FRACTION_EPSILON`), como tramos de fila ``(row, col0, col1)`` (int64: la fila 0 es la del
+    norte y ``col1`` es la columna siguiente a la última del tramo; sin ordenar ni unir): las
+    mismas celdas que :func:`band_coverage` con ``fraction > threshold``, **sin la matriz de la
+    banda**.
+
+    :func:`band_coverage` construye la matriz de todas las columnas entre la primera y la última
+    celda que cruzan las aristas, de modo que una banda de un polígono de 50 km con celdas de 1 m
+    pesa 12,8 millones de celdas aunque solo cruzan sus aristas unas pocas. Aquí las columnas
+    son las que cruzan las aristas de la banda y, tras cada una, **una sola** para el hueco hasta
+    la siguiente cruzada: ahí la fracción es la misma en todas (la suma acumulada de lo cubierto
+    desde el oeste, porque ninguna arista la cambia) y el hueco entero entra o no. Se suma lo
+    mismo en el mismo orden (sumar ceros no cambia un ``float64``), así que cada fracción es, bit
+    a bit, la de la matriz; el coste es el de las celdas cruzadas y no el ancho del polígono
+    (RNF-012-06).
+
+    Unas aristas que no son ``(n, 2, 2)`` o no finitas, o una banda con paso, son un error del
+    programa (:class:`ValueError`)."""
+    edges = np.asarray(edges, dtype=np.float64)
+    if edges.ndim != 3 or edges.shape[1:] != (2, 2):
+        raise ValueError(f"Las aristas son un array (n, 2, 2), no de forma {edges.shape}")
+    if not np.all(np.isfinite(edges)):
+        raise ValueError("Las aristas tienen coordenadas no finitas")
+    start, stop, step = rows.indices(grid.nrows)
+    if step != 1:
+        raise ValueError(f"Una banda son filas seguidas, no con paso {step}")
+    if stop <= start or edges.shape[0] == 0:
+        return _no_spans()
+    ncols = grid.ncols
+    low, high = grid.nrows - stop, grid.nrows - start   # la banda, en filas desde el sur
+    u = edges[:, :, 0] / grid.dx
+    v = edges[:, :, 1] / grid.dy
+    near = np.flatnonzero((v.max(axis=1) >= low) & (v.min(axis=1) <= high))
+    if near.size == 0:
+        return _no_spans()
+    col, row, cover, area = _pieces(u[near], v[near], ncols, low, high)
+    band = (row >= low) & (row < high)
+    left = band & (col < 0)
+    right = band & (col >= ncols)
+    body = band & (col >= 0) & (col < ncols)
+    if not body.any() and not (left.any() and right.any()):
+        return _no_spans()
+    first_col = 0 if left.any() else int(col[body].min())
+    end_col = ncols if right.any() else int(col[body].max()) + 1
+    touched = row[left | right | body]
+    first_row, end_row = int(touched.min()), int(touched.max()) + 1
+    height = end_row - first_row
+    # Las columnas de la matriz comprimida: el hueco de antes de la primera cruzada (0), cada
+    # cruzada (1, 3, 5…) y el hueco de después de cada una (2, 4, 6…).
+    crossed = np.unique(col[body])
+    width = 2 * crossed.size + 1
+    index = (row[body] - first_row) * width + 2 * np.searchsorted(crossed, col[body]) + 1
+    cell_area = np.bincount(index, weights=area[body], minlength=height * width)
+    cell_cover = np.bincount(index, weights=cover[body], minlength=height * width)
+    run = np.empty((height, width), dtype=np.float64)
+    run[:, 0] = np.bincount(row[left] - first_row, weights=cover[left], minlength=height)
+    run[:, 1:] = cell_cover.reshape(height, width)[:, :-1]
+    fraction = -(cell_area.reshape(height, width) + np.cumsum(run, axis=1))
+    found_row, found_slot = np.nonzero(fraction > threshold)
+    north = grid.nrows - 1 - (first_row + found_row)   # de norte a sur, como la rejilla
+    single = (found_slot & 1) == 1
+    # El hueco ``j`` va de la columna siguiente a la cruzada ``j − 1`` a la cruzada ``j``.
+    bounds = np.concatenate(([first_col - 1], crossed, [end_col])).astype(np.int64)
+    gap = found_slot[~single] // 2
+    gap_first, gap_end = bounds[gap] + 1, bounds[gap + 1]
+    long = gap_end > gap_first
+    cells = crossed[found_slot[single] // 2]
+    return (np.concatenate([north[single], north[~single][long]]),
+            np.concatenate([cells, gap_first[long]]),
+            np.concatenate([cells + 1, gap_end[long]]))

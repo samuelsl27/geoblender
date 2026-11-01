@@ -62,7 +62,9 @@ from .zones import (
     LimitRuns,
     Runs,
     limit_steps,
+    near_runs,
     segments_of,
+    touched_runs,
     zone_steps,
 )
 
@@ -368,10 +370,18 @@ def _corner(grid: Grid) -> tuple[float, float]:
     return (grid.west, grid.extent.ymin)
 
 
-def _outside_cells(item: Constraint, grid: Grid, outward: float
-                   ) -> Generator[None, None, int]:
+def _outside_cells(item: Constraint, grid: Grid, outward: float, *,
+                   rows_per_step: int = ROWS_PER_STEP) -> Generator[None, None, int]:
     """Las celdas de la zona de ``item`` fuera de ``grid``: su zona en una rejilla con las mismas
-    líneas que cubre su caja ampliada en el resguardo (y una celda), menos las de la ventana."""
+    líneas que cubre su caja ampliada en el resguardo (y una celda), menos las de la ventana.
+
+    Esa rejilla ampliada tiene el tamaño de la restricción: con celdas de 1 m, la de un recinto de
+    50 km son 2,5·10⁹ celdas, y construir su zona (una matriz densa por banda de filas) tardaba
+    88 s en pasos de 0,5 s (RNF-012-01 y RNF-012-06; T40, hallazgo F-4). No se construye: se
+    recorre por **bandas de ``rows_per_step`` filas**, la zona de cada una **por tramos**
+    (``zones.touched_runs`` y ``near_runs``, a coste de las celdas que cruzan las aristas) y se
+    cuentan las de fuera de la ventana banda a banda, un paso por banda. Las celdas son, bit a bit,
+    las de la zona de ``zone_steps`` en esa rejilla."""
     segments = segments_of(item, grid)
     dx, dy = grid.dx, grid.dy
     c0 = math.floor((float(segments[..., 0].min()) - outward) / dx) - 1
@@ -380,13 +390,28 @@ def _outside_cells(item: Constraint, grid: Grid, outward: float
     s1 = math.ceil((float(segments[..., 1].max()) + outward) / dy) + 1
     if c0 >= 0 and s0 >= 0 and c1 <= grid.ncols and s1 <= grid.nrows:
         return 0
+    # La rejilla ampliada lleva las coordenadas absolutas reales: la tolerancia de la celda (T39)
+    # sale de ellas, como en la del proyecto.
     wide = Grid(grid.west + c0 * dx, grid.extent.ymin + s1 * dy, dx, dy, c1 - c0, s1 - s0)
-    found = yield from zone_steps(item, wide, outward)
+    polygon = getattr(item.kind, "value", item.kind) == GeometryKind.POLYGON.value
+    shape = segments_of(item, wide)
     shift = grid.nrows - s1
-    shifted = Runs(found.row + shift, found.col0 + c0, found.col1 + c0)
     rows = np.arange(max(0, shift), min(grid.nrows, grid.nrows - s0), dtype=np.int64)
     window = Runs(rows, np.zeros_like(rows), np.full_like(rows, grid.ncols))
-    return shifted.cells - shifted.intersection(window).cells
+    size = max(int(rows_per_step), 1)
+    outside = 0
+    for begin in range(0, wide.nrows, size):
+        band = slice(begin, begin + size)
+        found = [touched_runs(shape, wide, rows=band)] if polygon else []
+        if outward > 0.0:
+            found.append(near_runs(shape, outward, wide, rows=band))
+        zone = Runs.union_all(found)
+        if len(zone):
+            shifted = Runs(zone.row + shift, zone.col0 + c0, zone.col1 + c0)
+            here = window.between_rows(begin + shift, begin + size - 1 + shift)
+            outside += shifted.cells - shifted.intersection(here).cells
+        yield
+    return outside
 
 
 def limit_outside(item: Constraint, grid: Grid) -> float:
@@ -455,7 +480,8 @@ def prepare_steps(constraints: Iterable[Constraint], resolved: Mapping[str, obje
             if item.ctype is ConstraintType.AVOID:
                 weight = _number(resolved, item, ConstraintParam.WEIGHT)
             runs = yield from zone_steps(item, grid, outward, **steps)
-            outside = (yield from _outside_cells(item, grid, outward)) * grid.cell_area
+            outside = (yield from _outside_cells(
+                item, grid, outward, rows_per_step=rows_per_step)) * grid.cell_area
         zones[item.code] = Zone(item.code, item.shown_name(), item.ctype, item.kind,
                                 item.priority, runs, outward, weight, outside)
         if outside > 0.0:

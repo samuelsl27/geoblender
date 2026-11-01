@@ -51,6 +51,9 @@ cuenta: es un área de 2·10⁻⁶ de la celda.
 - :func:`limit_runs` / :func:`limit_steps`: de un límite (unas aristas orientadas, p. ej. la unión
   de varios límites legales de ``gis.polygons.overlay``), las celdas enteras dentro, su **banda
   hacia dentro** (las enteras dentro a menos del resguardo hacia dentro de su borde) y el núcleo.
+- ``touched_runs`` (T40): lo mismo que ``inside_runs(whole=False)`` por **tramos** (sin la matriz de
+  la banda de filas), para una rejilla ampliada mucho mayor que la ventana (lo que queda fuera de
+  ella, ``gis.masks.combine``).
 - :func:`area_inside`: el área exacta del polígono dentro de la rejilla (Σ fracción · área de la
   celda).
 
@@ -70,7 +73,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from ..coverage import FRACTION_EPSILON, band_coverage, polygon_edges
+from ..coverage import FRACTION_EPSILON, band_coverage, band_spans, polygon_edges
 from ..polygons import drain
 
 if TYPE_CHECKING:
@@ -546,6 +549,17 @@ def inside_runs(edges: np.ndarray, grid: Grid, *, whole: bool,
     else:
         found = band.fraction > epsilon
     return _cells_to_runs(band.rows[found], band.cols[found])
+
+
+def touched_runs(edges: np.ndarray, grid: Grid, *, rows: slice | None = None) -> Runs:
+    """Lo mismo que ``inside_runs(edges, grid, whole=False, rows=rows)`` (las celdas que toca el
+    polígono, con la ε de la rejilla), calculado **por tramos** con ``gis.coverage.band_spans``: sin
+    la matriz de la banda, a coste de las celdas que cruzan las aristas y no del ancho del polígono
+    (spec 012, T40; RNF-012-06). Para medir lo que queda fuera de la ventana con una rejilla
+    ampliada del tamaño de una restricción mucho mayor que ella."""
+    first, stop = _rows(rows, grid)
+    row, col0, col1 = band_spans(edges, grid, slice(first, stop), fraction_epsilon(grid))
+    return Runs(row, col0, col1)
 
 
 def area_inside(edges: np.ndarray, grid: Grid, *, rows: slice | None = None) -> float:
