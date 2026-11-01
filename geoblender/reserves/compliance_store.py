@@ -38,6 +38,11 @@ RF-012-28; plan 012 §5.2.3, A11, D-15, D-28, D-40, D-42, D-43).
   congelados, sin el proyecto.
 - :func:`zone_check` (T27; RF-012-19): lo que dice la última verificación vigente de una versión
   de una restricción (su veredicto y sus cifras por final), para la barra N «Restricción».
+- :func:`read_verification` (T28; RF-012-23): una verificación vigente de una versión tal como la
+  guardó (su tabla, sus grupos y sus rejillas de incumplimientos), para la ventana de la
+  verificación; :func:`verify_inputs`, las superficies como entradas de la puerta de la 008, y
+  :func:`stored_violations` con :func:`violation_sources`, lo que se lee para ver una rejilla de
+  incumplimientos en la vista.
 - :func:`freeze_findings` (T18; RF-012-25; D-7, D-29): la comprobación de ``res`` al congelar,
   que ``bl`` registra con ``core.versions.freeze.register_freeze_check``: las verificaciones de
   la versión obsoletas, con recintos que no cumplen (m³ por recinto) o con la marca de
@@ -67,7 +72,13 @@ from ..core.content import builtin as core_builtin
 from ..core.content.builtin import GPKG_LAYER
 from ..core.content.encoder import NORMALIZER, ContentDigest
 from ..core.datasets import registry as dataset_registry
-from ..core.datasets.model import DATASET_DECLARATIONS, LIVE_STATUSES, DatasetSpec, Store
+from ..core.datasets.model import (
+    DATASET_DECLARATIONS,
+    LIVE_STATUSES,
+    DatasetRecord,
+    DatasetSpec,
+    Store,
+)
 from ..core.errors import GeoblenderError
 from ..core.georef import CrsRef, VerticalRef
 from ..core.gpkg.base import ColumnDef, create_attribute_table, create_base, create_feature_table
@@ -153,6 +164,7 @@ __all__ = [
     "MIN_THICKNESS",
     "MIN_THICKNESS_DEF",
     "MODULE",
+    "PHASE",
     "REPRODUCE",
     "START_ROLE",
     "STEP_BUDGET_S",
@@ -161,6 +173,10 @@ __all__ = [
     "VIOLATIONS",
     "CheckWriter",
     "StoredCheck",
+    "StoredGroup",
+    "StoredVerification",
+    "StoredViolations",
+    "StoredZone",
     "VerifyResult",
     "ZoneCheck",
     "ZoneFinal",
@@ -177,12 +193,17 @@ __all__ = [
     "project_sources",
     "read_groups",
     "read_table",
+    "read_verification",
     "recompute_run",
     "reproduce_verify",
+    "stored_violations",
+    "verification_names",
+    "verify_inputs",
     "verify_project_steps",
     "verify_run",
     "verify_settings",
     "verify_steps",
+    "violation_sources",
     "zone_check",
 ]
 
@@ -213,7 +234,8 @@ _MASKS_NAME = "las máscaras de las restricciones"
 _OBJ = "Verificación por recinto"
 _FIELD = "ubicación"
 _WORK_FRACTION = 0.5
-_PHASE = "verify"
+PHASE = "verify"
+_PHASE = PHASE
 _TEXT = "Verificando por recinto…"
 
 
@@ -1468,3 +1490,229 @@ def zone_check(conn: sqlite3.Connection, version_uid: str, code: str) -> ZoneChe
                                 tuple(figures)))
     stale = conn.execute(_STALE, (uid,)).fetchone() is not None
     return ZoneCheck(uid, name, stale, tuple(finals))
+
+
+# --- La ventana de la verificación y la rejilla de incumplimientos (T28; RF-012-23) --------------
+
+_VERIFICATIONS_OF = (  # las vigentes de la versión, la más reciente primero
+    "SELECT o.uid, o.settings FROM gb_operation AS o "
+    "JOIN gb_revision AS r ON r.uid = o.revision_uid "
+    "WHERE o.op_type = ? AND o.status = 'done' AND o.superseded_by IS NULL "
+    "AND r.version_uid = ? ORDER BY o.fid DESC"
+)
+_SETTINGS = "SELECT settings FROM gb_operation WHERE uid = ?"
+
+
+@dataclass(frozen=True, slots=True)
+class StoredZone:
+    """Lo verificado en un recinto de un final tal como lo guardó la tabla (``res_chk_``): el
+    recinto (``zone``: el código de una restricción, su banda hacia dentro ``<código>:inner``,
+    ``outside_perimeter`` u ``outside_legal``), el final (desde 1), lo que cuenta en él
+    (``counts``: ``cut``, ``fill``, ``any``, ``nothing``, ``avoid`` o ``access``), el corte y el
+    relleno (m³), el área con movimiento y sin dato (m²), los m³ que cuentan, el peso y el
+    volumen por el peso (``None`` si no es de «preferible no afectar») y el veredicto
+    (:class:`~.compliance.Verdict`)."""
+
+    zone: str
+    final: int
+    counts: str
+    cut_m3: float
+    fill_m3: float
+    moved_m2: float
+    nodata_m2: float
+    counted_m3: float
+    weight: float | None
+    weighted_m3: float | None
+    verdict: str
+
+
+@dataclass(frozen=True, slots=True)
+class StoredGroup:
+    """Un grupo de celdas contiguas que incumplía, tal como lo guardó la capa ``res_chkg_``: el
+    final (desde 1), el recinto, las celdas, el área (m²), el volumen (m³), el espesor máximo (m)
+    y su centro absoluto (``x``, ``y``)."""
+
+    final: int
+    zone: str
+    cells: int
+    area_m2: float
+    volume_m3: float
+    max_m: float
+    x: float
+    y: float
+
+
+@dataclass(frozen=True, slots=True)
+class StoredVerification:
+    """Una verificación vigente de una versión, leída de lo que guardó (RF-012-23): su operación y
+    su nombre, si está obsoleta (``gb_stale``), la superficie de cada final (``surfaces``, desde
+    el final 1), lo de cada recinto en cada final (``zones``, en el orden de la tabla), los
+    grupos que incumplen, los sectores sin búsqueda vigente al verificar (la marca de RF-012-10,
+    sus nombres), los avisos de cada final (final, texto) y, de cada final que incumplía, el
+    ``uid`` del dato de su rejilla de incumplimientos si sigue vivo (``grids``; un dato de una
+    versión solo se indica por su uid)."""
+
+    operation_uid: str
+    name: str
+    stale: bool
+    surfaces: tuple[str, ...]
+    zones: tuple[StoredZone, ...]
+    groups: tuple[StoredGroup, ...]
+    pending: tuple[str, ...]
+    notices: tuple[tuple[int, str], ...]
+    grids: Mapping[int, str]
+
+
+def _setting_name(text: object, uid: str) -> str:
+    settings = json.loads(str(text))
+    return str((settings if isinstance(settings, Mapping) else {}).get("name") or uid[:8])
+
+
+def verification_names(conn: sqlite3.Connection, version_uid: str) -> tuple[str, ...]:
+    """Los nombres de las verificaciones vigentes (hechas y sin sustituir, de cualquier
+    revisión) de la versión ``version_uid``, la más reciente primero. Solo lee."""
+    names: dict[str, None] = {}
+    for uid, text in conn.execute(_VERIFICATIONS_OF, (VERIFY, version_uid)).fetchall():
+        names.setdefault(_setting_name(text, str(uid)))
+    return tuple(names)
+
+
+def _quantity(found: Mapping[str, tuple[float | None, str | None]], key: str) -> float:
+    value = found.get(key, (None, None))[0]
+    return 0.0 if value is None else float(value)
+
+
+def _optional(found: Mapping[str, tuple[float | None, str | None]], key: str) -> float | None:
+    value = found.get(key, (None, None))[0]
+    return None if value is None else float(value)
+
+
+def _stored_zones(rows: Sequence[tuple[str, int, str, float | None, str | None, str | None]]
+                  ) -> tuple[StoredZone, ...]:
+    by_zone: dict[tuple[str, int], dict[str, tuple[float | None, str | None]]] = {}
+    for zone, final, quantity, value, _unit, note in rows:
+        if zone:
+            by_zone.setdefault((zone, final), {})[quantity] = (value, note)
+    return tuple(StoredZone(
+        zone, final, str(found.get("counted_m3", (None, ""))[1] or ""),
+        _quantity(found, "cut_m3"), _quantity(found, "fill_m3"),
+        _quantity(found, "moved_area_m2"), _quantity(found, "nodata_area_m2"),
+        _quantity(found, "counted_m3"), _optional(found, "weight"),
+        _optional(found, "weighted_m3"), str(found.get("verdict", (None, ""))[1] or ""))
+        for (zone, final), found in by_zone.items())
+
+
+def read_verification(conn: sqlite3.Connection, version_uid: str, name: str | None = None
+                      ) -> StoredVerification | None:
+    """La verificación vigente de la versión ``version_uid`` llamada ``name`` (por defecto, la
+    más reciente) tal como la guardó (RF-012-23): su tabla, su capa de grupos y, de cada final
+    que incumplía, el dato de su rejilla de incumplimientos. ``None`` si la versión no tiene
+    esa verificación o su tabla no se puede leer. Lee ``conn`` (una instantánea) y no
+    escribe."""
+    found = None
+    for uid, text in conn.execute(_VERIFICATIONS_OF, (VERIFY, version_uid)).fetchall():
+        shown = _setting_name(text, str(uid))
+        if name is None or shown == name:
+            found = (str(uid), shown)
+            break
+    if found is None:
+        return None
+    uid, shown = found
+    try:
+        table = dataset_registry.get(conn, dataset_name(TABLE, shown), version_uid=version_uid)
+        if table is None or table.operation_uid != uid:
+            return None
+        rows = read_table(conn, table.locator)
+        groups = dataset_registry.get(conn, dataset_name(GROUPS, shown),
+                                      version_uid=version_uid)
+        stored = (read_groups(conn, groups.locator)
+                  if groups is not None and groups.operation_uid == uid else [])
+    except (ValueError, sqlite3.Error):
+        return None
+    surfaces = {final: str(note) for zone, final, quantity, _v, _u, note in rows
+                if quantity == "surface" and not zone}
+    grids: dict[int, str] = {}
+    for position in sorted(surfaces):
+        grid = dataset_registry.get(conn, dataset_name(VIOLATIONS, shown, position),
+                                    version_uid=version_uid)
+        if grid is not None and grid.operation_uid == uid and grid.live:
+            grids[position] = grid.uid
+    return StoredVerification(
+        uid, shown, conn.execute(_STALE, (uid,)).fetchone() is not None,
+        tuple(surfaces[position] for position in sorted(surfaces)), _stored_zones(rows),
+        tuple(StoredGroup(final, zone, cells, area, volume, top, x, y)
+              for final, zone, cells, area, volume, top, x, y in stored),
+        tuple(str(note) for zone, final, quantity, _v, _u, note in rows
+              if quantity == "pending_sector" and not zone),
+        tuple((final, str(note)) for zone, final, quantity, _v, _u, note in rows
+              if quantity == "notice" and not zone),
+        MappingProxyType(grids))
+
+
+def verify_inputs(project: StoreProject, version: str, start: SurfaceRef,
+                  finals: Sequence[SurfaceRef]) -> tuple[Use, ...]:
+    """Las superficies de la verificación como entradas de la operación (``Use``, por su papel:
+    :data:`START_ROLE` y :func:`final_role`), las que consume la puerta de la 008 antes de
+    empezarla; una cota constante no es entrada. ``VersionError`` si ``version`` (uid o código)
+    no existe o no es editable; ``ValueError`` si una superficie congelada no parte de una
+    revisión."""
+    with project.read() as conn:
+        found = versions_store.require_editable(conn, str(version))
+    inputs: list[Use] = []
+    for role, ref in ((START_ROLE, start),
+                      *((final_role(k), item) for k, item in enumerate(finals, start=1))):
+        use = _surface_use(ref, role, found.parent_revision_uid)
+        if use is not None:
+            inputs.append(use)
+    return tuple(inputs)
+
+
+@dataclass(frozen=True, slots=True)
+class StoredViolations:
+    """Una rejilla de incumplimientos que se quiere ver: su dato, el nombre de la verificación
+    que la escribió, su final (desde 1), la superficie final de la verificación (la de sus
+    ajustes) y la versión del dato."""
+
+    record: DatasetRecord
+    name: str
+    final: int
+    surface: SurfaceRef
+    version_uid: str
+
+
+def stored_violations(project: StoreProject, ref: str) -> StoredViolations:
+    """La rejilla de incumplimientos ``ref`` (su uid o su nombre, ``res_chkv_<nombre>_<k>``) con lo
+    que dice de ella su operación (:class:`StoredViolations`): lo que necesita su vista (D-42).
+    ``ValueError`` si no es una rejilla de incumplimientos viva del proyecto. No escribe."""
+    if not isinstance(ref, str) or not ref:
+        raise TypeError("una rejilla de incumplimientos se indica por su uid o su nombre, no "
+                        f"{ref!r}")
+    with project.read() as conn:
+        record = dataset_registry.get(conn, ref)
+        prefix = f"{MODULE}_{VIOLATIONS}_"
+        if record is None or not record.live or not record.name.startswith(prefix):
+            raise ValueError(f"«{ref}» no es una rejilla de incumplimientos del proyecto")
+        row = conn.execute(_SETTINGS, (record.operation_uid,)).fetchone()
+        version_uid = versions_read.dataset_versions(conn, [record.uid]).get(record.uid, "")
+    position = int(record.name.rpartition("_")[2])
+    settings = json.loads(str(row[0] or "{}")) if row is not None else {}
+    name, _start, finals = _settings_request(settings)
+    if not 1 <= position <= len(finals):
+        raise ValueError(f"«{record.name}» no es el final de una verificación")
+    return StoredViolations(record, name, position, finals[position - 1], version_uid)
+
+
+def violation_sources(project: StoreProject, stored: StoredViolations
+                      ) -> tuple[SurfaceSource, SurfaceSource]:
+    """Lo que se lee para ver ``stored``: su superficie final (``reserves.surfaces.surface_source``
+    en su versión: un dato, lo congelado en la revisión de la que parte o la cota constante) y la
+    propia rejilla (su GeoTIFF, en las referencias del proyecto si no las declara). Los errores de
+    ``surface_source``; ``gis.dataset_file_missing`` si falta el fichero de la rejilla."""
+    final = surface_source(project, stored.surface, version_uid=stored.version_uid)
+    record = stored.record
+    path = Path(project.root, *record.locator.split("/"))
+    if not path.is_file():
+        raise GisError("gis.dataset_file_missing", obj=f"{_OBJ}: «{record.name}»",
+                       field=_FIELD, value=record.locator, file=path.name, name=record.name)
+    crs, vertical = project_references(project)
+    return final, grid_source(path, name=record.name, crs=crs, vertical=vertical)

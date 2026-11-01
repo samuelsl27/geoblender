@@ -392,9 +392,9 @@ class ConstraintsIntentionsTest(unittest.TestCase):
             self.assertEqual(self.commands.registered_class(idname).provenance_op_type, op_type)
         loader = self.views.loader_for(PREFIX)
         self.assertEqual((loader.prefix, loader.kind), (PREFIX, KIND))
-        still = "geoblender.res_verify_constraints"
-        self.assertEqual(cat.commands[still].entry, "R-32")
-        self.assertTrue(self.commands.is_provisional(self.commands.registered_class(still)))
+        last = "geoblender.res_verify_constraints"  # la T28 la entregó: ya no es provisional
+        self.assertEqual(cat.commands[last].entry, "012")
+        self.assertFalse(self.commands.is_provisional(self.commands.registered_class(last)))
 
     def test_b_the_window_offers_the_layers_the_documents_and_the_decisions(self) -> None:
         """RF-012-26: la ventana ofrece las capas «entidades» del proyecto con su geometría, el

@@ -2,6 +2,16 @@
 """Los cargadores de vista de los límites y las restricciones (spec 012; plan 012 §5.3.3, §5.2.4;
 ADR-0005).
 
+**La rejilla de incumplimientos** (T28; HU-012-5; RF-012-23; plan 012 D-42): :func:`register`
+registra también el cargador de los datos ``res_chkv_`` (:func:`load_compliance_grid`; tipo
+:data:`COMPLIANCE_KIND`, ``COMPLIANCE_GRID``): la rejilla que escribe ``res.verify_constraints`` de
+cada final que incumple (``final − partida`` en las celdas que incumplen, NaN en las demás) se ve
+como **una cara cuadrada por celda que incumple** (dos triángulos hacia arriba) a la cota de la
+superficie final de la verificación, con el color por clase de la rejilla de diferencias de la 011
+(``bl.scene.res_views``: desmonte en rojos, terraplén en azules, por magnitud) y su material. Se
+lee por bandas de filas y se construye en pasos (cada uno, unas decenas de milisegundos); cerrados
+antes de terminar, borran lo que crearon. Cargarla no escribe nada ni cambia ninguna verificación.
+
 **Restricciones y límites** (T27; HU-012-2; RF-012-19; plan 012 §5.3.3, D-30): :func:`register`
 registra también el cargador de las tres capas ``core_constraint_polygon``, ``_line`` y ``_point``
 (:func:`load_constraints`; tipo :data:`CONSTRAINT_KIND`, ``CONSTRAINT``): un objeto por
@@ -52,16 +62,17 @@ from ...core.constraints.store import (
     read_intentions,
 )
 from ...core.constraints.styles import COLORS, ELSE_COLOR
-from ...core.i18n import language, translate
+from ...core.i18n import language, tr, translate
 from ...gis import store as gis_store
 from ...reserves import surfaces as res_surfaces
-from . import views
-from .gis_views import _polylines
-from .mesh import mesh_from_arrays, mesh_vertices_local
+from . import res_views, views
+from .gis_views import _object, _polylines, _scaled
+from .mesh import mesh_from_arrays, mesh_steps, mesh_vertices_local, set_attribute
 
-__all__ = ["CONSTRAINT_KIND", "CONSTRAINT_LABEL", "CONSTRAINT_PREFIX", "CONSTRAINT_PROPERTY",
-           "INTENTION_PROPERTY", "INTENTION_STYLE", "KIND", "LABEL", "MARK_ARM_M", "PREFIX",
-           "IntentionStyle", "constraint_arrays", "constraint_color", "intention_arrays",
+__all__ = ["COMPLIANCE_KIND", "COMPLIANCE_LABEL", "COMPLIANCE_PREFIX", "CONSTRAINT_KIND",
+           "CONSTRAINT_LABEL", "CONSTRAINT_PREFIX", "CONSTRAINT_PROPERTY", "INTENTION_PROPERTY",
+           "INTENTION_STYLE", "KIND", "LABEL", "MARK_ARM_M", "PREFIX", "IntentionStyle",
+           "constraint_arrays", "constraint_color", "intention_arrays", "load_compliance_grid",
            "load_constraints", "load_intentions", "register", "terrain_choices", "unregister"]
 
 CONSTRAINT_KIND = "CONSTRAINT"
@@ -73,6 +84,16 @@ CONSTRAINT_PREFIX = "core_constraint"
 ``_point``)."""
 CONSTRAINT_PROPERTY = "geoblender_constraint"
 """La propiedad de ID del objeto con el uid de la restricción que dibuja."""
+
+COMPLIANCE_KIND = "COMPLIANCE_GRID"
+"""El tipo (``Object.geoblender.kind``) del objeto de una rejilla de incumplimientos."""
+COMPLIANCE_LABEL = "Non-compliance grid"
+"""El ``msgid`` del tipo en el nombre generado de sus objetos («Rejilla de incumplimientos …»)."""
+COMPLIANCE_PREFIX = "res_chkv_"
+"""El comienzo del nombre de los datos que carga (``res_chkv_<verificación>_<final>``)."""
+CELLS_PER_STEP = 20_000
+"""Las celdas cuyas caras se construyen en cada paso de la carga de la rejilla de
+incumplimientos."""
 
 KIND = "CLIENT_INTENTION"
 """El tipo (``Object.geoblender.kind``) del objeto de una intención del cliente."""
@@ -252,6 +273,78 @@ def load_constraints(request: views.ViewRequest) -> Generator[float, None, views
     return views.ViewParts(tuple(objects), bounds)
 
 
+def _cell_faces(grid: Any, rows: np.ndarray, cols: np.ndarray, heights: np.ndarray,
+                start: int, stop: int, vertices: np.ndarray, faces: np.ndarray) -> None:
+    """Escribe en ``vertices`` y ``faces`` las caras de las celdas ``start`` a ``stop`` de
+    (``rows``, ``cols``): cuatro vértices ABSOLUTOS por celda (suroeste, sureste, noreste y
+    noroeste, a la cota de su centro) y dos triángulos hacia arriba."""
+    r, c = rows[start:stop], cols[start:stop]
+    west = grid.west + c * grid.dx
+    north = grid.north - r * grid.dy
+    block = vertices[4 * start:4 * stop].reshape(-1, 4, 3)
+    block[:, :, 2] = heights[r, c][:, None]
+    block[:, (0, 3), 0] = west[:, None]
+    block[:, (1, 2), 0] = (west + grid.dx)[:, None]
+    block[:, (0, 1), 1] = (north - grid.dy)[:, None]
+    block[:, (2, 3), 1] = north[:, None]
+    first = 4 * np.arange(start, stop, dtype=np.int32)
+    pairs = faces[2 * start:2 * stop].reshape(-1, 2, 3)
+    pairs[:, 0, :] = first[:, None] + np.array([0, 1, 2], dtype=np.int32)
+    pairs[:, 1, :] = first[:, None] + np.array([0, 2, 3], dtype=np.int32)
+
+
+def load_compliance_grid(request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:
+    """Los pasos que cargan la rejilla de incumplimientos ``request.record`` (``res_chkv_``): una
+    cara cuadrada por celda que incumple, a la cota de la superficie final de su verificación y con
+    el color de su clase en la 011 (véase el módulo). La superficie final y la rejilla se leen por
+    bandas de filas, un paso cada una; si se cierran o fallan a medias, borran lo que
+    crearon."""
+    from ...reserves import compliance_store  # al cargar: no al habilitar
+    from ...reserves.surfaces import BAND_ROWS, lockstep_bands
+
+    project = request.project
+    stored = compliance_store.stored_violations(project, request.record.uid)
+    final, violations = compliance_store.violation_sources(project, stored)
+    grid = violations.grid
+    assert grid is not None  # violation_sources la lee de su GeoTIFF
+    heights = np.full(grid.shape, np.nan, dtype=np.float64)
+    values = np.full(grid.shape, np.nan, dtype=np.float64)
+    yield 0.02
+    bands = lockstep_bands((final, violations), grid, rows=BAND_ROWS)
+    try:
+        for top, (height, value) in bands:
+            stop = top + np.shape(value)[0]
+            heights[top:stop] = height
+            values[top:stop] = value
+            yield 0.02 + 0.28 * stop / grid.nrows
+    finally:
+        bands.close()
+    rows, cols = np.nonzero(np.isfinite(values) & np.isfinite(heights))
+    count = len(rows)
+    if not count:
+        return views.ViewParts((), None, (tr(
+            "The grid «{name}» has no cell that does not comply", name=request.record.name),))
+    vertices = np.empty((4 * count, 3), dtype=np.float64)
+    faces = np.empty((2 * count, 3), dtype=np.int32)
+    for start in range(0, count, CELLS_PER_STEP):
+        stop = min(start + CELLS_PER_STEP, count)
+        _cell_faces(grid, rows, cols, heights, start, stop, vertices, faces)
+        yield 0.3 + 0.2 * stop / count
+    mesh = yield from _scaled(mesh_steps(request.name, vertices, faces, origin=request.origin),
+                              0.5, 0.9)
+    try:
+        classes, colors = res_views.difference_colors(np.repeat(values[rows, cols], 2), 0.0)
+        set_attribute(mesh, res_views.COLOR_ATTRIBUTE, "FACE", "FLOAT_COLOR", colors)
+        set_attribute(mesh, res_views.CLASS_ATTRIBUTE, "FACE", "INT", classes)
+        mesh.materials.append(res_views.ensure_material())
+        local = mesh_vertices_local(mesh)
+        yield 0.95
+        return _object(request.name, mesh, (), local)
+    except BaseException:
+        bpy.data.meshes.remove(mesh)
+        raise
+
+
 def terrain_choices(project: Any, version_uid: str | None) -> tuple[Any, ...]:
     """Las rejillas de terreno del proyecto sobre las que se puede dibujar (véase el módulo), por
     nombre, con la versión activa ``version_uid`` (``None``: sin versión): las superficies que
@@ -266,20 +359,21 @@ def terrain_choices(project: Any, version_uid: str | None) -> tuple[Any, ...]:
 
 
 _LOADERS = ((PREFIX, KIND, LABEL, load_intentions),
-            (CONSTRAINT_PREFIX, CONSTRAINT_KIND, CONSTRAINT_LABEL, load_constraints))
+            (CONSTRAINT_PREFIX, CONSTRAINT_KIND, CONSTRAINT_LABEL, load_constraints),
+            (COMPLIANCE_PREFIX, COMPLIANCE_KIND, COMPLIANCE_LABEL, load_compliance_grid))
 
 
 def register() -> None:
-    """Registra los cargadores de las intenciones y de las restricciones que aún no tengan uno;
-    idempotente."""
+    """Registra los cargadores de las intenciones, de las restricciones y de las rejillas de
+    incumplimientos que aún no tengan uno; idempotente."""
     for prefix, kind, label, load in _LOADERS:
         if prefix not in views.loaders():
             views.register_loader(prefix, kind, label, load)
 
 
 def unregister() -> None:
-    """Quita los cargadores de las intenciones y de las restricciones (el de otro con el mismo
-    comienzo, no); idempotente."""
+    """Quita los cargadores de las intenciones, de las restricciones y de las rejillas de
+    incumplimientos (el de otro con el mismo comienzo, no); idempotente."""
     for prefix, _kind, _label, load in _LOADERS:
         found = views.loaders().get(prefix)
         if found is not None and found.load is load:

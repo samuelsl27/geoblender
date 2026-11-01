@@ -32,7 +32,10 @@
   «Congelar V10.r2 y abrir V10.r3» con el motivo (obligatorio) que lee antes el plan de la
   congelación (``core.versions.freeze.freeze_plan``, :func:`revision_dialog`, sin escribir): si
   hay algo que aceptar (resultados obsoletos, operaciones que esperan revisión a mano, entradas no
-  localizables), lo dice con la lista y «Aceptar y congelar» (lo aceptado, en ``accept``); si algo
+  localizables y, con la spec 012 —T28, RF-012-25—, los hallazgos de las verificaciones: lo que no
+  cumple, con sus m³ por recinto, y las superficies de diseño sin verificación al día, cada uno con
+  su nota, ``AcceptItem.finding``), lo dice con la lista y «Aceptar y congelar» (lo aceptado, en
+  ``accept``); si algo
   lo impide (una entrada cambiada sin decidir, una operación de la versión en curso, la
   comprobación de apertura…), una ventana sin aceptar que lo dice. Aceptado desde la interfaz,
   ``core.versions.freeze.freeze_steps`` en un modal de pasos (``_StepsModal`` de
@@ -731,7 +734,10 @@ class RevisionDialog:
 
     def accept_text(self) -> str:
         """«Hay 3 resultados obsoletos, 1 operación que espera revisión a mano y 1 entrada no
-        localizable: si congela, quedarán anotados» (plan §5.5); "" sin nada que aceptar."""
+        localizable: si congela, quedarán anotados» (plan §5.5); "" sin nada que aceptar. Un
+        elemento al día con la nota de un módulo (spec 012, RF-012-25: lo que no cumple una
+        verificación, una superficie sin verificar) se cuenta como «hallazgo de las
+        verificaciones»; el obsoleto con nota, por su estado."""
         if not self.accept:
             return ""
         states = [item.state for item in self.accept]
@@ -748,6 +754,11 @@ class RevisionDialog:
         if missing:
             parts.append(tr("1 input that cannot be located") if missing == 1
                          else tr("{n} inputs that cannot be located", n=missing))
+        findings = sum(1 for item in self.accept
+                       if item.finding is not None and item.state not in _STATE_TEXTS)
+        if findings:
+            parts.append(tr("1 finding of the compliance checks") if findings == 1
+                         else tr("{n} findings of the compliance checks", n=findings))
         if len(self.accept) == 1:
             return tr("There is {items}: if you freeze, it will be recorded as it is",
                       items=_joined(parts))
@@ -756,10 +767,22 @@ class RevisionDialog:
 
     def accept_lines(self) -> list[str]:
         """Cada elemento que hay que aceptar, con su nombre y su estado: «des_final_v10»:
-        resultado obsoleto."""
-        return [tr("«{name}»: {state}", name=item.name,
-                   state=translate(language(), _STATE_TEXTS.get(item.state, str(item.state))))
-                for item in self.accept]
+        resultado obsoleto; con la nota de un módulo (spec 012, RF-012-25), a continuación o, si
+        está al día, sola: «Diseño»: «r_torre»: 600 m³ de movimiento."""
+        lines = []
+        for item in self.accept:
+            state = _STATE_TEXTS.get(item.state)
+            shown = None if state is None else translate(language(), state)
+            if item.finding is None:
+                lines.append(tr("«{name}»: {state}", name=item.name,
+                                state=translate(language(), str(item.state))
+                                if shown is None else shown))
+            elif shown is None:
+                lines.append(tr("«{name}»: {finding}", name=item.name, finding=item.finding))
+            else:
+                lines.append(tr("«{name}»: {state} · {finding}", name=item.name, state=shown,
+                                finding=item.finding))
+        return lines
 
     def blocker_texts(self) -> list[str]:
         """Lo que lo impide, en el idioma de Geoblender («Hay entradas aguas arriba de V10.r2

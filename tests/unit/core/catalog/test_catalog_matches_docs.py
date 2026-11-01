@@ -48,7 +48,8 @@ APPROVED_ENTRIES: dict[str, str] = {"core_edit_limits": "012", "core_edit_constr
                                     "gis_compile_constraints": "012",
                                     "core_find_untouchables": "012",
                                     "core_edit_client_marks": "012",
-                                    "core_toggle_constraints_overlay": "012"}
+                                    "core_toggle_constraints_overlay": "012",
+                                    "res_verify_constraints": "012"}
 
 # Filas ↗ de BS que no dicen lo mismo que la casa de su comando (manda la casa: un comando,
 # una definición): ninguna (la T37 corrigió el «D·2p» de ``io_import_block_model`` en

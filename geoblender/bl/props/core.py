@@ -206,6 +206,11 @@ OBJECT_KINDS: list[tuple[str, str, str]] = [
     # Spec 012 (T27; RF-012-19; plan 012 §5.2.4): una restricción o un límite del proyecto.
     ("CONSTRAINT", "Constraint",
      "A constraint or a limit of the project, shown by its edges"),
+    # Spec 012 (T28; RF-012-23; plan 012 §5.2.4, D-42): la rejilla de incumplimientos de una
+    # verificación por recinto.
+    ("COMPLIANCE_GRID", "Non-compliance grid",
+     "The cells of a final surface that do not comply with the constraints, with their thickness "
+     "(final minus start), drawn on the final surface"),
 ]
 # El estado del dato al cargarlo (gb_dataset.status de un dato vivo, en mayúsculas).
 OBJECT_STATUSES: list[tuple[str, str, str]] = [

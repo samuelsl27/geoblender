@@ -65,6 +65,7 @@ __all__ = [
     "ListedIntention",
     "SectorState",
     "append_search",
+    "constraint_names",
     "create_tables",
     "dataset_specs",
     "layer_of",
@@ -359,6 +360,25 @@ def read_constraints(conn: sqlite3.Connection,
                 source_fid=None if source_fid is None else int(source_fid),
                 layer=CONSTRAINT_LAYERS[kind], fid=int(fid)))
     return tuple(found)
+
+
+def constraint_names(conn: sqlite3.Connection) -> dict[str, tuple[str, ConstraintType | None]]:
+    """Código → (nombre, tipo) de las restricciones de las tres capas con código (sin leer su
+    geometría: lo que enseña la ventana de una verificación, spec 012, T28). Un nombre vacío
+    queda vacío y un tipo que no es uno de los once, ``None``; ninguna si no existen las
+    tablas."""
+    present = {str(row[0]) for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    found: dict[str, tuple[str, ConstraintType | None]] = {}
+    for table in CONSTRAINT_LAYERS.values():
+        if table not in present:
+            continue
+        for code, name, ctype in conn.execute(
+                f"SELECT code, name, ctype FROM \"{table}\" WHERE code <> '' ORDER BY fid"):
+            found.setdefault(str(code), (str(name or ""),
+                                         ConstraintType(ctype) if ctype in ConstraintType
+                                         else None))
+    return found
 
 
 def _codes(conn: sqlite3.Connection) -> dict[str, set[str]]:

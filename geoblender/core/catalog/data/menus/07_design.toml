@@ -104,7 +104,7 @@ label.en = "Verify a design by zone…"
 label.es = "Verificar un diseño por recinto…"
 description.en = "Cut and fill of a design surface inside each constraint zone, in cubic metres"
 description.es = "Corte y relleno de una superficie de diseño dentro de cada recinto, en metros cúbicos"
-entry = "R-32"
+entry = "012"
 action = "D"
 frequency = 3
 

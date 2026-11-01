@@ -51,6 +51,14 @@ de su última verificación) son lo que dibuja la barra N «Restricción»; la r
 versión activa, nunca al dibujar. Elegir otra fila de la lista (``item_index``) avisa a ese
 módulo.
 
+**Verificar un diseño por recinto…** (T28): las superficies que ofrece su diálogo como finales
+(:class:`GEOBLENDER_PG_core_final_choice`: el dato, cómo se lee y si se marca) y lo que dibuja la
+ventana de la verificación: su título, sus avisos, cada final con su resumen, su tabla por recinto
+(:class:`GEOBLENDER_PG_core_verify_zone`: el recinto, el veredicto y el corte, el relleno y el área
+con movimiento, ya como se leen), sus grupos que incumplen con su «Ir a» y el dato de su rejilla
+de incumplimientos (:class:`GEOBLENDER_PG_core_verify_final`), y los nombres de las verificaciones
+de la versión con la elegida (``verify_name``).
+
 Ninguna propiedad es una coordenada ni una distancia en ``FloatProperty`` (ADR-0005; los
 resguardos, los pesos, las distancias y los espesores de los diálogos, en ``StringProperty``:
 ``docs/trampas.md`` §1; las coordenadas absolutas de «Ir a», también en texto).
@@ -109,6 +117,13 @@ def _surface_changed(_self: Any, _context: Any) -> None:
     module = sys.modules.get(_OVERLAY_MODULE)
     if module is not None:
         module.on_surface_changed()
+
+
+def _verification_changed(_self: Any, _context: Any) -> None:
+    """Se eligió otra verificación en su ventana: la lee de nuevo."""
+    module = sys.modules.get(_PANELS_MODULE)
+    if module is not None:
+        module.on_verification_chosen()
 
 
 def _chosen_changed(_self: Any, _context: Any) -> None:
@@ -243,6 +258,49 @@ class GEOBLENDER_PG_core_intention_item(bpy.types.PropertyGroup):
     converted: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
 
 
+class GEOBLENDER_PG_core_final_choice(bpy.types.PropertyGroup):
+    """Una superficie que ofrece «Verificar un diseño por recinto…» como final (RF-012-21): el
+    identificador de su dato en las listas de la cubicación (``name``), cómo se lee (``text``) y
+    si se marca (``use``)."""
+
+    text: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    use: BoolProperty(  # type: ignore[valid-type]
+        default=False, options=_STATIC,
+        description="Check this surface as a final one of the verification")
+
+
+class GEOBLENDER_PG_core_verify_zone(bpy.types.PropertyGroup):
+    """Una fila de la tabla de una final de la ventana de la verificación (RF-012-21,
+    RF-012-22): cómo se nombra el recinto (``name``) y su código (``code``), el veredicto ya
+    escrito, si es «no cumple» (``alert``) y el corte, el relleno (m³) y el área con movimiento
+    (m²) como se leen."""
+
+    code: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    verdict: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    alert: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+    cut: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    fill: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    moved: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+
+
+class GEOBLENDER_PG_core_verify_final(bpy.types.PropertyGroup):
+    """Una final de la verificación que enseña la ventana (RF-012-21, RF-012-23): el nombre de
+    su superficie (``name``), su resumen (``text``: «Rebajada»: no cumple (Torre 132 kV)»), si
+    incumple (``alert``), el ``uid`` del dato de su rejilla de incumplimientos si lo hay (``grid``:
+    un dato de una versión solo se indica por su uid), su tabla por recinto y sus grupos que
+    incumplen, cada uno con su lugar para «Ir a», y lo que no cabe en la ventana (``more``: los
+    recintos y los grupos de más, que la ventana no dibuja)."""
+
+    text: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    alert: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+    grid: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    more: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    zones: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_verify_zone)
+    groups: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_report_line)
+
+
 class GEOBLENDER_PG_core_constraints(bpy.types.PropertyGroup):
     """Lo que dibujan las ventanas de las restricciones (una vista; véase el módulo)."""
 
@@ -361,13 +419,30 @@ class GEOBLENDER_PG_core_constraints(bpy.types.PropertyGroup):
                     "(empty: the most recent grid of the project)")
     overlay_surfaces: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_core_pick)
+    # Verificar un diseño por recinto… (T28)
+    verify_choices: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_final_choice)
+    verify_title: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    verify_stale: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+    verify_notes: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_report_line)
+    verify_finals: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_verify_final)
+    verify_names: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_pick)
+    verify_name: StringProperty(  # type: ignore[valid-type]
+        default="", options=_STATIC, update=_verification_changed,
+        description="The verification of the active version that the window shows (empty: the "
+                    "last one)")
 
 
 classes: tuple[type, ...] = (GEOBLENDER_PG_core_layer_choice, GEOBLENDER_PG_core_report_line,
                              GEOBLENDER_PG_core_param_line, GEOBLENDER_PG_core_constraint_item,
                              GEOBLENDER_PG_core_sector_item, GEOBLENDER_PG_core_search_layer,
                              GEOBLENDER_PG_core_hit_item, GEOBLENDER_PG_core_pick,
-                             GEOBLENDER_PG_core_intention_item, GEOBLENDER_PG_core_constraints)
+                             GEOBLENDER_PG_core_intention_item, GEOBLENDER_PG_core_final_choice,
+                             GEOBLENDER_PG_core_verify_zone, GEOBLENDER_PG_core_verify_final,
+                             GEOBLENDER_PG_core_constraints)
 
 
 def register() -> None:

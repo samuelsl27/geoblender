@@ -143,6 +143,9 @@ BRANCHES: dict[str, tuple[tuple[str, str], ...]] = {
     # Las restricciones y los límites (spec 012, T27; RF-012-19): datos del proyecto, como las
     # intenciones; con ellas en la misma rama.
     "CONSTRAINT": (("constraints", "Constraints"),),
+    # La rejilla de incumplimientos de una verificación por recinto (spec 012, T28; RF-012-23,
+    # D-42): siempre de una versión, va en la colección de su versión; sin ella, en «Cubicación».
+    "COMPLIANCE_GRID": (("volumetrics", "Volumetrics"),),
 }
 # El estado de un dato vivo en su nombre generado y en Object.geoblender.status.
 STATUS_TEXT: dict[DatasetStatus, str] = {

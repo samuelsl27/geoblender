@@ -327,6 +327,55 @@ class VerifyTest(_VerifyCase):
         self.assertEqual([final.surface for final in absent.finals],
                          ["Excavación", "Torre rebajada"])
 
+    def test_read_verification_gives_the_table_the_groups_and_the_grid(self) -> None:
+        """RF-012-23 (T28): ``read_verification`` da, de la última verificación vigente de V01 (o
+        de la que se llama así), lo que guardó: su operación y su nombre, la superficie de cada
+        final, lo de cada recinto y final (la torre no cumple en el final 2 con sus 6.384 m³), el
+        grupo de la torre (su centro, 240 m², 6.384 m³ y 26,6 m) y el ``uid`` de la rejilla de
+        incumplimientos solo del final que incumple; V02 y un nombre que no existe, ninguna;
+        ``constraint_names`` da el nombre y el tipo de cada código sin leer su geometría y
+        ``stored_violations`` con ``violation_sources``, lo que se lee para ver la rejilla."""
+        case = fx.tower_case()
+        _table, _groups, _first, second = self.names()
+        with self.project.read() as conn:
+            found = cstore.read_verification(conn, self.v1.uid)
+            named = cstore.read_verification(conn, self.v1.uid, NAME)
+            other = cstore.read_verification(conn, self.v1.uid, "No existe")
+            nothing = cstore.read_verification(conn, self.v2.uid)
+            listed = cstore.verification_names(conn, self.v1.uid)
+            names = constraints_store.constraint_names(conn)
+        self.assertEqual((found.operation_uid, found.name, found.stale), (self.again, NAME, False))
+        self.assertEqual(found, named)
+        self.assertEqual((other, nothing, listed), (None, None, (NAME,)))
+        self.assertEqual(found.surfaces, ("Excavación", "Torre rebajada"))
+        by_zone = {(item.zone, item.final): item for item in found.zones}
+        tower = by_zone[("torre", 2)]
+        self.assertEqual((tower.verdict, tower.counts), (V.FAILS.value, "any"))
+        self.assertAlmostEqual(tower.cut_m3, case.cut_m3, delta=case.cut_m3 * 1e-9)
+        self.assertEqual(by_zone[("torre", 1)].verdict, V.COMPLIES.value)
+        self.assertAlmostEqual(by_zone[("perimetro", 1)].cut_m3, DIG_M3, delta=1e-6)
+        self.assertEqual(by_zone[(compliance.OUTSIDE_LEGAL, 1)].counted_m3, 0.0)
+        (group,) = [item for item in found.groups if item.zone == "torre"]
+        self.assertEqual((group.final, group.cells, group.area_m2),
+                         (2, fx.TOWER_ZONE_CELLS, case.group_area_m2))
+        self.assertAlmostEqual(group.volume_m3, case.group_volume_m3,
+                               delta=case.group_volume_m3 * 1e-9)
+        self.assertAlmostEqual(group.max_m, fx.TOWER_DROP_M, delta=1e-9)
+        self.assertAlmostEqual(group.x, case.group_center[0], delta=1e-6)
+        self.assertAlmostEqual(group.y, case.group_center[1], delta=1e-6)
+        self.assertEqual(dict(found.grids), {2: self.records[second].uid})
+        self.assertEqual(names["torre"][1], cmodel.ConstraintType.UNTOUCHABLE)
+        self.assertEqual(set(names), {"concesion", "perimetro", "torre", "balsa", "cuneta"})
+        stored = cstore.stored_violations(self.project, self.records[second].uid)
+        self.assertEqual((stored.name, stored.final, stored.version_uid, stored.surface),
+                         (NAME, 2, self.v1.uid, self.finals[1]))
+        final, violations = cstore.violation_sources(self.project, stored)
+        self.assertEqual(violations.grid.shape, fx.SITE_GRID.shape)
+        self.assertEqual(final.grid.shape, fx.SITE_GRID.shape)
+        with self.assertRaises(ValueError):  # una tabla no es una rejilla de incumplimientos
+            cstore.stored_violations(self.project, self.records[cstore.dataset_name(
+                cstore.TABLE, NAME)].uid)
+
     def test_z_reproduce_frozen_gives_the_same(self) -> None:
         """RF-012-24 (RF-009-07): congelada V01.r1, reproducir da las mismas salidas (con su
         hash) y las mismas cifras bit a bit, sin escribir nada en el proyecto."""

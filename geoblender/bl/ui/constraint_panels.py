@@ -82,6 +82,19 @@ al cambiar el objeto activo, tras cada lectura del proyecto cambiado y tras carg
 cambiar la versión activa y al llenar la lista. Esas mismas líneas (:func:`object_lines`) las
 enseñan también «Elemento activo» y «Cifras de la selección» de la 010 (``view_panels``): el dato de
 una restricción es su capa, que no lleva las cifras de otra operación.
+
+**Verificar un diseño por recinto…** (T28; HU-012-5; RF-012-21 a RF-012-24, RF-012-28): el diálogo
+de ``geoblender.res_verify_constraints`` (``bl.ops.res``) ofrece como finales las rejillas del
+proyecto (:func:`fill_verify_choices`: las de las listas de la cubicación, no la de clases de las
+máscaras; :func:`start_items` para la partida), y la ventana ``GEOBLENDER_PT_res_verification``
+dibuja lo que dejó la verificación (:func:`fill_verification`, del proyecto, sin escribir): su
+título con la versión (y si está obsoleta), los sectores sin búsqueda de intocables vigente
+(RF-012-10), y de cada final su resumen («Rebajada»: no cumple (Torre 132 kV)»), la tabla por
+recinto (el veredicto, el corte, el relleno y el área con movimiento), cada grupo que incumple (su
+recinto, su volumen, su área, su espesor máximo y su centro) con «Ir a»
+(``geoblender.core_go_to_place``) y «Cargar la rejilla de incumplimientos»
+(``geoblender.core_load_into_view``, ``bl.scene.constraint_views``). Con más de una verificación
+en la versión, se elige por su nombre.
 """
 
 from __future__ import annotations
@@ -91,6 +104,7 @@ import logging
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import bpy
@@ -109,8 +123,10 @@ from ...core.versions import decisions as versions_decisions
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
 from ...gis.masks import access as mask_access
+from ...gis.masks import provenance as masks_provenance
 from ...gis.masks import store as mask_store
 from ...reserves import compliance_store
+from ...reserves.compliance import INNER_SUFFIX, OUTSIDE_LEGAL, OUTSIDE_PERIMETER
 from .. import compat
 from ..props.core_constraints import (
     MARK_FIELD,
@@ -209,6 +225,15 @@ VERDICT_COMPLIES = "complies"
 COUNTS_CUT = "cut"
 COUNTS_FILL = "fill"
 COUNTS_ANY = "any"
+
+VERIFY_PANEL = "GEOBLENDER_PT_res_verification"
+VERIFY_COMMAND = compliance_store.COMMAND
+VERIFY_PANEL_UNITS = 50
+VERIFY_WIDTH_PX = VERIFY_PANEL_UNITS * compat.UI_UNIT_PX
+ZONE_NAME_FACTOR = 0.34
+ZONE_VERDICT_FACTOR = 0.3
+MAX_ZONE_ROWS = 60
+MAX_GROUP_LINES = 30
 """Los valores de ``reserves.compliance`` que mira el texto de un final (el nivel de ``bl`` no
 importa su enumerado: son los de la tabla de la verificación)."""
 
@@ -1555,6 +1580,275 @@ class GEOBLENDER_PT_core_constraint(bpy.types.Panel):
         draw_selected(self.layout, context)
 
 
+# --- Verificar un diseño por recinto… (T28; RF-012-21 a RF-012-24) ------------------------------
+
+_VERIFY_ITEMS: dict[str, Any] = {"source": None, "items": []}
+"""Las superficies del diálogo sin la rejilla de clases de las máscaras: una lista viva (Blender
+guarda punteros a sus cadenas) que se rehace cuando ``res_panels`` lee otras."""
+_FILLING = {"verify": False}
+"""Si :func:`fill_verification` está cambiando ``verify_name`` (su ``update`` no la relee)."""
+
+
+def _is_classes(identifier: str) -> bool:
+    """Si ``identifier`` (un elemento de las listas de superficies) es la rejilla de clases de las
+    máscaras: es de ``gis``, pero no un terreno ni un diseño."""
+    choice = res_panels.surface_choice(identifier)
+    return choice is not None and choice.name == masks_provenance.dataset_name(
+        masks_provenance.CLASSES)
+
+
+def start_items(owner: Any, context: Any) -> list[tuple[str, str, str]]:
+    """Las opciones de la superficie de partida de «Verificar un diseño por recinto…»: las de las
+    listas de la cubicación (``res_panels.surface_items``: las rejillas del proyecto y de la
+    versión activa, las congeladas y la cota constante) menos la rejilla de clases de las
+    máscaras (una lista viva del módulo)."""
+    source = res_panels.surface_items(owner, context)
+    if _VERIFY_ITEMS["source"] is not source:
+        _VERIFY_ITEMS["items"] = [item for item in source if not _is_classes(item[0])]
+        _VERIFY_ITEMS["source"] = source
+    items: list[tuple[str, str, str]] = _VERIFY_ITEMS["items"]
+    return items
+
+
+def fill_verify_choices(marked: Sequence[str] = ()) -> int:
+    """Regenera las superficies que ofrece el diálogo como finales (``verify_choices``): las de
+    :func:`start_items` menos la cota constante (que tiene su propio campo), con marcadas las de
+    ``marked`` (identificadores); devuelve cuántas. Lee las listas de ``res_panels`` (que ``invoke``
+    acaba de leer del proyecto) y no escribe."""
+    shown = view()
+    if shown is None:  # inalcanzable con la extensión registrada
+        raise RuntimeError("la vista de la verificación no está registrada")
+    shown.verify_choices.clear()
+    for identifier, label, _about in start_items(None, None):
+        if identifier == res_panels.ELEVATION:
+            continue
+        item = shown.verify_choices.add()
+        item.name, item.text, item.use = identifier, label, identifier in marked
+    return len(shown.verify_choices)
+
+
+def zone_name(code: str, names: Any) -> str:
+    """Cómo se nombra un recinto de la tabla de una verificación (``names``: código → (nombre,
+    tipo), ``core.constraints.store.constraint_names``): el de su restricción (o su código, si ya
+    no está), «Fuera del perímetro de actuación», «Fuera del límite legal» y, de la banda hacia
+    dentro de un límite legal, «<nombre> (banda hacia dentro)»."""
+    if code == OUTSIDE_PERIMETER:
+        return tr("Outside the action perimeter")
+    if code == OUTSIDE_LEGAL:
+        return tr("Outside the legal limit")
+    base = code.removesuffix(INNER_SUFFIX)
+    name = (names.get(base) or ("", None))[0] or base
+    return tr("{name} (inward band)", name=name) if base != code else name
+
+
+def _volume(value: float) -> str:
+    return format_number(value, 1)
+
+
+def _group_text(group: Any, zone: str, counts: str) -> str:
+    """La línea de un grupo que incumple (RF-012-23): su recinto, que no cumple, lo que cuenta en
+    él con su volumen (corte, relleno o movimiento), su área, su espesor máximo y su centro."""
+    volume, area = _volume(group.volume_m3), _volume(group.area_m2)
+    thickness = _volume(group.max_m)
+    x, y = format_number(group.x, 1), format_number(group.y, 1)
+    if counts == COUNTS_CUT:
+        return tr("{zone}: does not comply · cut {volume} m³ · {area} m² · max. thickness "
+                  "{thickness} m · at ({x}; {y})", zone=zone, volume=volume, area=area,
+                  thickness=thickness, x=x, y=y)
+    if counts == COUNTS_FILL:
+        return tr("{zone}: does not comply · fill {volume} m³ · {area} m² · max. thickness "
+                  "{thickness} m · at ({x}; {y})", zone=zone, volume=volume, area=area,
+                  thickness=thickness, x=x, y=y)
+    return tr("{zone}: does not comply · movement {volume} m³ · {area} m² · max. thickness "
+              "{thickness} m · at ({x}; {y})", zone=zone, volume=volume, area=area,
+              thickness=thickness, x=x, y=y)
+
+
+def _put_final(shown: Any, found: Any, position: int, names: Any) -> Line:
+    """La final ``position`` (desde 1) de la verificación ``found`` en la vista; su resumen."""
+    zones = [item for item in found.zones if item.final == position]
+    failing: list[str] = []
+    for item in zones:
+        name = zone_name(item.zone, names)
+        if item.verdict == VERDICT_FAILS and name not in failing:
+            failing.append(name)
+    surface = found.surfaces[position - 1]
+    summary = (tr("«{surface}»: does not comply ({zones})", surface=surface,
+                  zones=", ".join(failing)) if failing
+               else tr("«{surface}»: complies", surface=surface))
+    target = shown.verify_finals.add()
+    target.name, target.text, target.alert = surface, summary, bool(failing)
+    target.grid = found.grids.get(position, "")
+    counts = {item.zone: item.counts for item in zones}
+    # Los que no cumplen primero, luego los que mueven algo y luego los demás (con cientos de
+    # restricciones la ventana no los dibuja todos: los primeros MAX_ZONE_ROWS).
+    ranked = sorted(range(len(zones)), key=lambda index: (
+        zones[index].verdict != VERDICT_FAILS,
+        not (zones[index].cut_m3 or zones[index].fill_m3 or zones[index].moved_m2), index))
+    for index in ranked[:MAX_ZONE_ROWS]:
+        item = zones[index]
+        row = target.zones.add()
+        row.name, row.code = zone_name(item.zone, names), item.zone
+        row.verdict, row.alert = _verdict_text(item.verdict), item.verdict == VERDICT_FAILS
+        row.cut, row.fill, row.moved = (_volume(item.cut_m3), _volume(item.fill_m3),
+                                        _volume(item.moved_m2))
+    mine = sorted((group for group in found.groups if group.final == position),
+                  key=lambda group: (-group.volume_m3, group.zone, group.x, group.y))
+    for group in mine[:MAX_GROUP_LINES]:
+        line = target.groups.add()
+        line.text = _group_text(group, zone_name(group.zone, names), counts.get(group.zone, ""))
+        line.alert = True
+        line.x, line.y, line.radius = place_of(group.x, group.y, group.area_m2)
+    omitted: list[str] = []
+    if len(zones) - MAX_ZONE_ROWS == 1:
+        omitted.append(tr("1 more zone"))
+    elif len(zones) > MAX_ZONE_ROWS:
+        omitted.append(tr("{count} more zones", count=len(zones) - MAX_ZONE_ROWS))
+    if len(mine) - MAX_GROUP_LINES == 1:
+        omitted.append(tr("1 more group, the smallest one"))
+    elif len(mine) > MAX_GROUP_LINES:
+        omitted.append(tr("{count} more groups, the smallest ones",
+                          count=len(mine) - MAX_GROUP_LINES))
+    target.more = tr("Not shown: {items}", items="; ".join(omitted)) if omitted else ""
+    return Line(summary, alert=bool(failing))
+
+
+def fill_verification(project: Any, version_uid: str | None, name: str | None = None
+                      ) -> list[Line]:
+    """Regenera la ventana de la verificación desde ``project`` (sin escribir): la verificación
+    vigente de la versión ``version_uid`` llamada ``name`` (por defecto, la elegida en la
+    ventana o, si no, la más reciente) con su tabla por recinto, sus grupos y sus rejillas de
+    incumplimientos, y los nombres de las verificaciones de la versión (``verify_names``). Devuelve
+    el resumen de cada final (:class:`Line`, en alerta la que no cumple); sin versión o sin
+    verificación, la ventana queda vacía y no devuelve nada."""
+    shown = view()
+    if shown is None:  # inalcanzable con la extensión registrada
+        raise RuntimeError("la vista de la verificación no está registrada")
+    shown.verify_title, shown.verify_stale = "", False
+    shown.verify_notes.clear()
+    shown.verify_finals.clear()
+    shown.verify_names.clear()
+    if not version_uid:
+        return []
+    chosen = name if name is not None else (shown.verify_name or None)
+    with project.read() as conn:
+        found = compliance_store.read_verification(conn, version_uid, chosen)
+        if found is None and chosen is not None:  # la elegida ya no está: la más reciente
+            found = compliance_store.read_verification(conn, version_uid, None)
+        listed = compliance_store.verification_names(conn, version_uid)
+        names = constraint_store.constraint_names(conn)
+    for each in listed:
+        shown.verify_names.add().name = each
+    if found is None:
+        return []
+    _FILLING["verify"] = True
+    try:
+        shown.verify_name = found.name
+    finally:
+        _FILLING["verify"] = False
+    code = next((item.code for item in scene_versions.versions() if item.uid == version_uid),
+                version_uid[:8])
+    shown.verify_title = tr("Verification «{name}» in {version}", name=found.name, version=code)
+    shown.verify_stale = found.stale
+    if found.stale:
+        shown.verify_title = f"{shown.verify_title} · {tr('out of date')}"
+    if found.pending:
+        note = shown.verify_notes.add()
+        note.text = tr("Search for untouchable elements pending in: {names}",
+                       names="; ".join(found.pending))
+        note.alert = True
+    for final, notice in found.notices:
+        note = shown.verify_notes.add()
+        note.text = (f"{found.surfaces[final - 1]}: {notice}"
+                     if 1 <= final <= len(found.surfaces) else notice)
+    return [_put_final(shown, found, position, names)
+            for position in range(1, len(found.surfaces) + 1)]
+
+
+def on_verification_chosen() -> None:
+    """Se eligió otra verificación en la ventana: la lee de nuevo del proyecto de la sesión y de
+    la versión activa (sin escribir)."""
+    if _FILLING["verify"]:
+        return
+    project = project_session.current()
+    version = scene_versions.active()
+    if project is None or version is None:
+        return
+    try:
+        fill_verification(project, version.uid)
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.warning("No se pudo leer la verificación elegida", exc_info=True)
+
+
+def _draw_zone(row: Any, item: Any) -> None:
+    """Una fila de la tabla de una final: el recinto, el veredicto, el corte, el relleno y el
+    área con movimiento (en alerta si no cumple)."""
+    row.alert = bool(item.alert)
+    first = row.split(factor=ZONE_NAME_FACTOR, align=True)
+    first.label(text=item.name, translate=False)
+    rest = first.split(factor=ZONE_VERDICT_FACTOR / (1.0 - ZONE_NAME_FACTOR), align=True)
+    rest.label(text=item.verdict, translate=False)
+    numbers = rest.row(align=True)
+    for value in (item.cut, item.fill, item.moved):
+        numbers.label(text=value, translate=False)
+
+
+def draw_verification(layout: Any, context: Any) -> None:
+    """La ventana de la verificación (véase el módulo), de lo ya leído."""
+    shown = view()
+    if shown is None:
+        return
+    width = labels.dialog_width(VERIFY_WIDTH_PX)
+    if not shown.verify_title:
+        labels.draw_wrapped(layout, tr(
+            "The active version has no verification yet: use {path}",
+            path=path_text(catalog(), VERIFY_COMMAND, language())), width, icon="INFO")
+    else:
+        if len(shown.verify_names) > 1:
+            layout.prop_search(shown, "verify_name", shown, "verify_names",
+                               text=tr("Verification"), translate=False)
+        _draw_line(layout, Line(shown.verify_title, alert=shown.verify_stale), width)
+        for line in shown.verify_notes:
+            _draw_line(layout, line, width)
+        head = SimpleNamespace(name=tr("Zone"), verdict=tr("Verdict"), cut=tr("Cut (m³)"),
+                               fill=tr("Fill (m³)"), moved=tr("Moved (m²)"), alert=False)
+        for final in shown.verify_finals:
+            box = layout.box()
+            _draw_line(box, Line(final.text, alert=final.alert), width)
+            titles = box.row()
+            titles.enabled = False
+            _draw_zone(titles, head)
+            for zone in final.zones:
+                _draw_zone(box.row(), zone)
+            for group in final.groups:
+                _draw_line(box, group, width)
+            if final.more:
+                _draw_line(box, Line(final.more), width)
+            if final.grid:
+                button = box.operator(LOAD_INTO_VIEW, text=tr("Load the non-compliance grid"),
+                                      icon="OUTLINER_OB_MESH", translate=False)
+                button.datasets = final.grid
+    again = layout.row()
+    again.enabled = _write_unavailable() is None
+    again.operator(VERIFY_COMMAND, text=_label(VERIFY_COMMAND), icon="CHECKMARK",
+                   translate=False)
+
+
+class GEOBLENDER_PT_res_verification(bpy.types.Panel):
+    """Verification of a design by zone: the table of each final surface, the groups of cells that
+    do not comply and the grid of non-compliance"""
+
+    bl_idname = VERIFY_PANEL
+    bl_label = "Verification by zone"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_space_type = "TOPBAR"
+    bl_region_type = "HEADER"
+    bl_ui_units_x = VERIFY_PANEL_UNITS
+
+    def draw(self, context: Any) -> None:
+        draw_verification(self.layout, context)
+
+
 def localize() -> None:
     """La pestaña y el título de la barra N «Restricción» en el idioma de la interfaz (antes de
     registrar, y otra vez al cambiar el idioma)."""
@@ -1588,4 +1882,4 @@ classes: tuple[type, ...] = (GEOBLENDER_PT_core_limits, GEOBLENDER_UL_core_const
                              GEOBLENDER_PT_core_constraints, GEOBLENDER_UL_core_sectors,
                              GEOBLENDER_UL_core_hits, GEOBLENDER_PT_core_search,
                              GEOBLENDER_UL_core_intentions, GEOBLENDER_PT_core_marks,
-                             GEOBLENDER_PT_core_constraint)
+                             GEOBLENDER_PT_core_constraint, GEOBLENDER_PT_res_verification)

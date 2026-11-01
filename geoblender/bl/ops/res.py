@@ -17,7 +17,8 @@ constantes del módulo construidas una vez:
 - (spec 012, T21; RF-012-16) la **verificación por recinto**: el espesor mínimo
   (``reserves.compliance_store.DEFINITIONS``), el tipo ``res.verify_constraints``
   (:data:`VERIFY_OPERATION_DEF`, de la versión, con :func:`recompute_verify` y la reproducción de
-  ``reserves.compliance_store``) y sus cinco cifras; su orden llega en la T28.
+  ``reserves.compliance_store``) y sus cinco cifras; y su orden (T28), la séptima de Cubicación:
+  **Verificar un diseño por recinto…** (abajo).
 
 :func:`register` pone lo que falta y apunta cómo quitarlo; :func:`unregister` quita solo eso, en
 orden inverso: lo que otro registró antes con la misma clave, o puso después en su lugar, es
@@ -115,6 +116,19 @@ la entrada «011» de ``core/catalog/data/entries.toml``. Ya están las seis (:d
   (``bl.ui.res_panels.show_cubication``), dice su relación estéril/útil del total y abre la
   ventana de la cubicación; sin unidades, lo dice.
 
+- **Verificar un diseño por recinto…** (T28; spec 012: HU-012-5, HU-012-7; RF-012-21 a RF-012-25,
+  RF-012-28; plan 012 §5.3.4, D-28, D-29, D-31, D-42, D-43):
+  :class:`GEOBLENDER_OT_res_verify_constraints` ofrece en su diálogo la superficie de partida y
+  las finales (hasta diez: las rejillas del proyecto y de la versión activa, marcables, y una cota
+  constante) con el nombre y el espesor mínimo de la verificación con su tipo
+  (``bl.ui.constraint_panels``), comprueba lo pedido sin escribir nada (:func:`verify_request`),
+  pasa por la puerta de la 008 (las superficies y las capas de restricciones como entradas) y lanza
+  ``res.verify_constraints`` (``reserves.compliance_store.verify_project_steps``) por pasos en su
+  modal, con el avance y Esc: si las máscaras no están al día, las compila antes (D-43) en el mismo
+  modal. Al terminar dice por final si cumple y qué recintos no (los textos del informe son los de
+  la ventana) y abre la ventana de la verificación (``GEOBLENDER_PT_res_verification``) con su
+  tabla, sus grupos con «Ir a» y «Cargar la rejilla de incumplimientos». Desde un guion, de una vez.
+
 **La ventana de la cubicación y Exportar CSV…** (T25; RF-011-23, RF-011-24; plan §5.3.4, D-29,
 D-37): :class:`GEOBLENDER_OT_res_show_volumetrics` (interna) lee las cubicaciones de la versión
 activa, deja elegida la pedida con su tabla y abre la ventana (``GEOBLENDER_PT_res_volumetrics``,
@@ -133,7 +147,7 @@ import functools
 import logging
 import math
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -157,6 +171,8 @@ from ...core.units import UnitError, convert, parse_quantity
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
 from ...gis.crs import crs_service_status, reference_label
+from ...gis.masks import provenance as masks_provenance
+from ...gis.masks import store as masks_store
 from ...gis.messages import GisError
 from ...reserves import materials
 from ...reserves import compliance_store
@@ -165,6 +181,7 @@ from ...reserves import params as res_params
 from ...reserves import provenance
 from ...reserves import scale as res_scale
 from ...reserves import table as res_table
+from ...reserves.compliance import MAX_FINALS
 from ...reserves.messages import ResError
 from ...reserves.slices import slices_from_text
 from ...reserves.surfaces import SurfaceRef, check_pair, propose_order, surface_source
@@ -174,7 +191,7 @@ from ..props import res as res_props
 from ..props.core import OBJECT_PROPERTY
 from ..scene import project_session, res_views, undo_watch, views
 from ..scene import versions as scene_versions
-from ..ui import gate, res_panels
+from ..ui import constraint_panels, gate, res_panels
 from ..ui import provenance as ui_provenance
 from ..ui.commands import catalog, command_idname, text, with_note
 from . import incorporation
@@ -187,6 +204,7 @@ from .core_provenance import (
     SET_PARAMETER_WIDTH,
     SOURCE_KIND_ITEMS,
     ProvenanceAwareOperator,
+    ensure_ready,
     error_text,
     read_only_dirs,
     scope_choice,
@@ -347,7 +365,7 @@ VERIFY_OPERATION_DEF: contract.OperationDef = compliance_store.operation_def(
     recompute_verify, compliance_store.REPRODUCE[compliance_store.VERIFY])
 """El ``OperationDef`` de ``res.verify_constraints`` (spec 012, T21; RF-012-16): de la versión,
 repetible, con :func:`recompute_verify`, la reproducción de ``reserves.compliance_store`` y la
-tolerancia de sus cifras. Su orden (``geoblender.res_verify_constraints``) llega en la T28."""
+tolerancia de sus cifras. Su orden es ``geoblender.res_verify_constraints`` (T28)."""
 DEFINITIONS: tuple[core_params.ParamDef, ...] = (*res_params.DEFINITIONS,
                                                  *compliance_store.DEFINITIONS)
 """Las definiciones de parámetros del proyecto de ``res``: las de la cubicación y el espesor
@@ -2828,6 +2846,340 @@ class GEOBLENDER_OT_res_export_csv(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# --- Verificar un diseño por recinto… (spec 012, T28; RF-012-21 a RF-012-25, RF-012-28) -----------
+
+VERIFY_COMMAND = compliance_store.COMMAND
+VERIFY_PANEL = constraint_panels.VERIFY_PANEL
+VERIFY_DIALOG_WIDTH = 520
+_FINALS_SEPARATOR = ","
+
+
+class VerifyFormError(ValueError):
+    """Lo pedido en el diálogo de «Verificar un diseño por recinto…» no vale (ya dicho en
+    español)."""
+
+
+@dataclass(frozen=True)
+class VerifyRequest:
+    """Lo que se verifica, comprobado sin escribir nada: el nombre de la verificación, la
+    superficie de partida y las finales (de 1 a :data:`MAX_FINALS`, distintas)."""
+
+    name: str
+    start: SurfaceRef
+    finals: tuple[SurfaceRef, ...]
+
+
+def verify_thickness_text(project: Any) -> str:
+    """El espesor mínimo de la verificación con su valor y su tipo, y dónde se cambia
+    (plan §5.5; RF-012-21)."""
+    record = core_params.ParameterStore(project).get(compliance_store.MIN_THICKNESS)
+    return tr("Minimum thickness of the verification: {value} (it is changed in {path})",
+              value=res_panels.record_text(record, compliance_store.MIN_THICKNESS),
+              path=path_text(catalog(), PARAMETERS, i18n.language()))
+
+
+def verify_default_name(finals: Sequence[str]) -> str:
+    """El nombre que propone la orden según las finales marcadas (sus identificadores): sin
+    ninguna, «Verificación»; con una, «Verificación de <final>»; con más, «… y <n> más»."""
+    if not finals:
+        return tr("Compliance check")
+    first = _short(finals[0], "")
+    if len(finals) == 1:
+        return tr("Verification of {surface}", surface=first)
+    return tr("Verification of {surface} and {count} more", surface=first,
+              count=len(finals) - 1)
+
+
+def verify_request(form: Any, project: Any) -> VerifyRequest:
+    """Lo pedido en ``form`` (el operador: ``name``, ``start`` con ``start_elevation``, ``finals``
+    —identificadores separados por comas— o, si está vacío, las marcadas en el diálogo, y
+    ``final_elevation``, una final más a cota constante): las superficies resueltas y comprobadas
+    (de 1 a :data:`MAX_FINALS`, distintas) y el nombre. ``VerifyFormError`` con lo que falta o
+    sobra; ``GisError`` si una superficie ya no está; ``ResError`` si una cota no vale."""
+    start, _choice = _surface_ref(form.start, form.start_elevation, field="start",
+                                  label=tr("Start elevation"))
+    shown = constraint_panels.view()
+    identifiers = [part.strip() for part in str(form.finals).split(_FINALS_SEPARATOR)
+                   if part.strip()]
+    if not identifiers and shown is not None and form.provenance_dialog:
+        identifiers = [item.name for item in shown.verify_choices if item.use]
+    finals = [_surface_ref(identifier, "", field="finals", label=tr("Final elevation"))[0]
+              for identifier in identifiers]
+    if str(form.final_elevation).strip():
+        finals.append(_surface_ref(res_panels.ELEVATION, form.final_elevation, field="finals",
+                                   label=tr("Final elevation"))[0])
+    if not finals:
+        raise VerifyFormError(tr("Choose at least one final surface to verify"))
+    if len(finals) > MAX_FINALS:
+        raise VerifyFormError(tr("At most {count} final surfaces can be verified at once",
+                                 count=MAX_FINALS))
+    if len(set(finals)) != len(finals):
+        raise VerifyFormError(tr("The same final surface is chosen twice"))
+    name = str(form.name).strip() or verify_default_name(identifiers)
+    gis_provenance.dataset_slug(name)  # un nombre sin letras ni cifras no vale
+    return VerifyRequest(name, start, tuple(finals))
+
+
+class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
+                                           bpy.types.Operator):
+    """Cut and fill of a design surface inside each constraint zone, in cubic metres"""
+
+    bl_idname = VERIFY_COMMAND
+    bl_label = "Verify a design by zone…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = compliance_store.VERIFY
+
+    # Como Compilar las máscaras: cada evento del temporizador avanza pasos durante, como mucho,
+    # este tiempo (cada paso, ≤ 0,05 s: ninguna llamada de más de 0,2 s, RNF-012-06).
+    STEP_BUDGET_S = 0.05
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name",
+        description="Name of the verification, unique in the active version (empty: «Verification "
+                    "of <final>»); a repeated name replaces the earlier verification",
+        options=_FIELD,
+    )
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Surface before the works (the higher one): a grid of the project or of "
+                    "the active version, one frozen in the revision it starts from, or a "
+                    "constant elevation",
+        items=constraint_panels.start_items, options=_FIELD,
+    )
+    start_elevation: StringProperty(  # type: ignore[valid-type]
+        name="Start elevation", description="Constant elevation of the start surface, m",
+        options=_FIELD,
+    )
+    final_elevation: StringProperty(  # type: ignore[valid-type]
+        name="Final elevation",
+        description="Constant elevation of one more final surface, m (optional)",
+        options=_FIELD,
+    )
+    # Las finales del diálogo van marcadas en la vista (constraint_panels.fill_verify_choices);
+    # desde un guion, sus identificadores separados por comas.
+    finals: StringProperty(options=_HIDDEN)  # type: ignore[valid-type]
+    # Los pasos con el temporizador de la ventana, con el avance y Esc: los pone invoke; desde un
+    # guion, sin ellos, de una vez.
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué.
+        Si no, las listas de superficies leídas de nuevo, la propuesta (las superficies
+        seleccionadas en la vista), el nombre y el espesor mínimo, y el diálogo: Intro verifica."""
+        self.provenance_dialog = True
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            res_panels.refresh_choices(project, scene_versions.active_version())
+            marked = self._propose(context, project)
+            constraint_panels.fill_verify_choices(marked)
+            if not self.name.strip():
+                self.name = verify_default_name(marked)
+            self._thickness = verify_thickness_text(project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self.in_steps = getattr(context, "window", None) is not None
+        return context.window_manager.invoke_props_dialog(
+            self, width=VERIFY_DIALOG_WIDTH, translate=False,
+            title=text(catalog().commands[command_idname(self.bl_idname)].label),
+            confirm_text=tr("Verify"))
+
+    def _propose(self, context: Any, project: Any) -> list[str]:
+        """La partida del diálogo y las finales que se marcan: de las superficies seleccionadas
+        en la vista, la de mayor cota media es la partida (D-31 de la 011) y las demás, las
+        finales; con una sola, es la final y la partida es la primera de las otras; sin
+        selección, la primera y la segunda de la lista. Lo que pasó quien la lanza no cambia.
+        Devuelve los identificadores marcados como finales."""
+        items = [identifier for identifier, _name, _about in
+                 constraint_panels.start_items(None, None) if identifier != res_panels.ELEVATION]
+        by_uid = {choice.uid: identifier for identifier in items
+                  if (choice := res_panels.surface_choice(identifier)) is not None}
+        chosen: list[str] = []
+        for obj in getattr(context, "selected_objects", None) or ():
+            marks = getattr(obj, OBJECT_PROPERTY, None)
+            found = (None if marks is None or marks.kind not in _SURFACE_KINDS
+                     else by_uid.get(str(marks.dataset_uid)))
+            if found is not None and found not in chosen:
+                chosen.append(found)
+        if self.properties.is_property_set("start"):
+            return [item for item in chosen if item != self.start]
+        start: str | None = None
+        marked: list[str] = []
+        if len(chosen) >= 2:
+            start, other = ordered_surfaces(project, chosen[0], chosen[1])
+            marked = [other, *chosen[2:]]
+        elif chosen:
+            marked = [chosen[0]]
+            start = next((item for item in items if item != chosen[0]), None)
+        elif items:
+            start, marked = items[0], items[1:2]
+        if start is not None:
+            self.start = start
+        return marked
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "start", text=tr("Start surface"), translate=False)
+        if self.start == res_panels.ELEVATION:
+            layout.prop(self, "start_elevation", text=tr("Start elevation (m)"), translate=False)
+        shown = constraint_panels.view()
+        box = layout.box()
+        box.label(text=tr("Final surfaces to check"), translate=False)
+        if shown is not None:
+            for item in shown.verify_choices:
+                box.prop(item, "use", text=item.text, translate=False)
+        layout.prop(self, "final_elevation", text=tr("Final elevation (m, optional)"),
+                    translate=False)
+        thickness = getattr(self, "_thickness", "")
+        if thickness:
+            layout.label(text=thickness, translate=False)
+
+    # --- Verificar ----------------------------------------------------------------------------
+
+    def execute(self, context: Any) -> set[str]:
+        """Comprueba (sin escribir nada si no vale), pasa por la puerta de la 008 y empieza
+        ``res.verify_constraints`` en la revisión abierta de la versión activa: compila las
+        máscaras antes si no están al día (D-43) y verifica cada final contra la partida. Desde
+        la interfaz, por pasos con el avance y Esc; desde un guion, de una vez. Al terminar,
+        dice qué finales cumplen y abre la ventana de la verificación."""
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version_uid = scene_versions.active_version() or ""
+        try:
+            res_panels.surface_items(None, None)  # las listas del proyecto, si no se leyeron
+            request = verify_request(self, project)
+            inputs = (*compliance_store.verify_inputs(project, version_uid, request.start,
+                                                      request.finals),
+                      *masks_provenance.compile_inputs(masks_store.available_tables(project)))
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, inputs, report=self.report,
+                             dialog=self.provenance_dialog, version=version_uid)
+        if ready is None:
+            return {"CANCELLED"}
+        try:
+            steps = compliance_store.verify_project_steps(
+                project, version=version_uid, name=request.name, start=request.start,
+                finals=request.finals, budget_s=self.STEP_BUDGET_S)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        self._project, self._name, self._version = project, request.name, version_uid
+        self._verifying = False
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, steps)
+            return {"RUNNING_MODAL"}
+        self.report_log: list[str] = []
+        stored = _drained(self, steps)
+        if stored is None:
+            return {"CANCELLED"}
+        self._finished(context, stored)
+        return {"FINISHED"}
+
+    def _finished(self, context: Any, stored: Any) -> None:
+        """Lo que dice la orden al terminar (RF-012-21, RF-012-22, RF-012-23): por final, si
+        cumple y qué recintos no (el resumen de la ventana, que se lee del proyecto), los sectores
+        sin búsqueda de intocables vigente (RF-012-10) y los avisos; y, desde la interfaz, abre la
+        ventana de la verificación con la tabla y los grupos."""
+        project, version = self._project, self._version
+        undo_watch.record(UndoKind.OPERATION, compliance_store.VERIFY)
+        try:
+            lines = constraint_panels.fill_verification(project, version, self._name)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+            LOGGER.warning("No se pudo leer la verificación recién hecha", exc_info=True)
+            lines = []
+        shown = scene_versions.active()
+        revision = shown.revision if shown is not None and shown.uid == version else ""
+        result = stored.result
+        failing = sum(1 for fails in result.fails if fails)
+        if failing:
+            self._report({"WARNING"}, tr(
+                "Verification «{name}» ({revision}, in progress): {fails} of {total} finals do "
+                "not comply", name=self._name, revision=revision, fails=failing,
+                total=len(result.finals)))
+        else:
+            self._report({"INFO"}, tr(
+                "Verification «{name}» ({revision}, in progress): all the finals comply",
+                name=self._name, revision=revision))
+        for line in lines:
+            self._report({"WARNING" if line.alert else "INFO"}, line.text)
+        if result.pending_names:
+            self._report({"WARNING"}, tr("Search for untouchable elements pending in: {names}",
+                                         names="; ".join(result.pending_names)))
+        for final in result.finals:
+            for notice in final.notices:
+                self._report({"WARNING"}, notice.text(i18n.language()))
+        if self.in_steps and getattr(context, "window", None) is not None:
+            try:
+                _call_panel(VERIFY_PANEL)
+            except RuntimeError:
+                LOGGER.warning("No se pudo abrir la ventana de la verificación", exc_info=True)
+
+    # --- En pasos (_StepsModal) ---------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Verificando «Prueba»: compilando las restricciones…
+        40 % · Esc: cancelar», y después cargando las máscaras, comprobando cada final y
+        guardando."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        name = getattr(self, "_name", "")
+        if step.phase == compliance_store.PHASE:
+            self._verifying = True
+        if step.phase == "masks":
+            return tr("Verifying «{name}»: loading the masks… {percent} % · Esc: cancel",
+                      name=name, percent=percent)
+        if not getattr(self, "_verifying", False):
+            return tr("Verifying «{name}»: compiling the constraints… {percent} % · Esc: cancel",
+                      name=name, percent=percent)
+        if step.phase == "save":
+            return tr("Verifying «{name}»: saving… {percent} % · Esc: cancel", name=name,
+                      percent=percent)
+        return tr("Verifying «{name}»: checking… {percent} % · Esc: cancel", name=name,
+                  percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Verification cancelled: nothing has been left half-done")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return error_text(exc)
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        if step.result is None:
+            if project_session.current() is not getattr(self, "_project", None):
+                return self._fail(context, tr(
+                    "The project was closed while «{name}» was being verified: nothing has been "
+                    "left half-done", name=getattr(self, "_name", "")))
+            return None
+        self._done(context)
+        self._finished(context, step.result)
+        return {"FINISHED"}
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except Exception as exc:  # noqa: BLE001 - los pasos cerrados no dejan nada a medias
+            LOGGER.error("«%s» se ha parado", self.bl_idname, exc_info=exc)
+            return self._fail(context, error_text(exc))
+
+
 classes: tuple[type, ...] = (
     GEOBLENDER_OT_res_edit_materials,
     GEOBLENDER_OT_res_edit_column,
@@ -2842,6 +3194,8 @@ classes: tuple[type, ...] = (
     GEOBLENDER_OT_res_compute_ratios,
     GEOBLENDER_OT_res_show_volumetrics,
     GEOBLENDER_OT_res_export_csv,
+    GEOBLENDER_OT_res_verify_constraints,
 )
 """Las órdenes reales de la cubicación: las seis de Cubicación y sus internas (la ventana de los
-materiales, la de la cubicación y las exportaciones)."""
+materiales, la de la cubicación y las exportaciones) y, de la spec 012, «Verificar un diseño por
+recinto…»."""

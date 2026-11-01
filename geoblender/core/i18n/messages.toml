@@ -7029,3 +7029,166 @@ es = "«{surface}»: {verdict} · {volume} m³ de relleno"
 
 ["«{surface}»: {verdict} · {volume} m³ of movement"]
 es = "«{surface}»: {verdict} · {volume} m³ de movimiento"
+
+# Verificar un diseño por recinto… (spec 012, T28; HU-012-5, HU-012-7; RF-012-21 a RF-012-25,
+# RF-012-28; plan 012 §5.3.4, §5.5, D-28, D-29, D-42): la orden y su diálogo (bl/ops/res.py), la
+# ventana de la verificación (bl/ui/constraint_panels.py), el tipo COMPLIANCE_GRID de la vista
+# (bl/props/core.py, bl/scene/constraint_views.py) y su propiedad (bl/props/core_constraints.py).
+
+["Non-compliance grid"]
+es = "Rejilla de incumplimientos"
+
+["The cells of a final surface that do not comply with the constraints, with their thickness (final minus start), drawn on the final surface"]
+es = "Las celdas de una superficie final que no cumplen las restricciones, con su espesor (final menos partida), dibujadas sobre la superficie final"
+
+["The grid «{name}» has no cell that does not comply"]
+es = "La rejilla «{name}» no tiene ninguna celda que incumpla"
+
+["Check this surface as a final one of the verification"]
+es = "Marca esta superficie como final de la verificación"
+
+["The verification of the active version that the window shows (empty: the last one)"]
+es = "La verificación de la versión activa que enseña la ventana (vacía: la última)"
+
+["Name of the verification, unique in the active version (empty: «Verification of <final>»); a repeated name replaces the earlier verification"]
+es = "Nombre de la verificación, único en la versión activa (vacío: «Verificación de <final>»); un nombre repetido sustituye a la verificación anterior"
+
+["Constant elevation of one more final surface, m (optional)"]
+es = "Cota constante de una superficie final más, m (opcional)"
+
+["Compliance check"]
+es = "Verificación"
+
+["Verification of {surface}"]
+es = "Verificación de {surface}"
+
+["Verification of {surface} and {count} more"]
+es = "Verificación de {surface} y {count} más"
+
+["Minimum thickness of the verification: {value} (it is changed in {path})"]
+es = "Espesor mínimo de la verificación: {value} (se cambia en {path})"
+
+["Choose at least one final surface to verify"]
+es = "Elija al menos una superficie final que verificar"
+
+["At most {count} final surfaces can be verified at once"]
+es = "Se pueden verificar a la vez, como mucho, {count} superficies finales"
+
+["The same final surface is chosen twice"]
+es = "Se ha elegido dos veces la misma superficie final"
+
+["Final surfaces to check"]
+es = "Superficies finales que verificar"
+
+["Final elevation (m, optional)"]
+es = "Cota final (m, opcional)"
+
+["Verification «{name}» ({revision}, in progress): {fails} of {total} finals do not comply"]
+es = "Verificación «{name}» ({revision}, en curso): {fails} de {total} finales no cumplen"
+
+["Verification «{name}» ({revision}, in progress): all the finals comply"]
+es = "Verificación «{name}» ({revision}, en curso): todas las finales cumplen"
+
+["Verifying «{name}»: compiling the constraints… {percent} % · Esc: cancel"]
+es = "Verificando «{name}»: compilando las restricciones… {percent} % · Esc: cancelar"
+
+["Verifying «{name}»: loading the masks… {percent} % · Esc: cancel"]
+es = "Verificando «{name}»: cargando las máscaras… {percent} % · Esc: cancelar"
+
+["Verifying «{name}»: checking… {percent} % · Esc: cancel"]
+es = "Verificando «{name}»: comprobando… {percent} % · Esc: cancelar"
+
+["Verifying «{name}»: saving… {percent} % · Esc: cancel"]
+es = "Verificando «{name}»: guardando… {percent} % · Esc: cancelar"
+
+["Verification cancelled: nothing has been left half-done"]
+es = "Verificación cancelada: no ha quedado nada a medias"
+
+["The project was closed while «{name}» was being verified: nothing has been left half-done"]
+es = "Se cerró el proyecto mientras se verificaba «{name}»: no ha quedado nada a medias"
+
+["Outside the action perimeter"]
+es = "Fuera del perímetro de actuación"
+
+["Outside the legal limit"]
+es = "Fuera del límite legal"
+
+["{name} (inward band)"]
+es = "{name} (banda hacia dentro)"
+
+["{zone}: does not comply · cut {volume} m³ · {area} m² · max. thickness {thickness} m · at ({x}; {y})"]
+es = "{zone}: no cumple · corte {volume} m³ · {area} m² · espesor máx. {thickness} m · en ({x}; {y})"
+
+["{zone}: does not comply · fill {volume} m³ · {area} m² · max. thickness {thickness} m · at ({x}; {y})"]
+es = "{zone}: no cumple · relleno {volume} m³ · {area} m² · espesor máx. {thickness} m · en ({x}; {y})"
+
+["{zone}: does not comply · movement {volume} m³ · {area} m² · max. thickness {thickness} m · at ({x}; {y})"]
+es = "{zone}: no cumple · movimiento {volume} m³ · {area} m² · espesor máx. {thickness} m · en ({x}; {y})"
+
+["«{surface}»: does not comply ({zones})"]
+es = "«{surface}»: no cumple ({zones})"
+
+["«{surface}»: complies"]
+es = "«{surface}»: cumple"
+
+["Verification «{name}» in {version}"]
+es = "Verificación «{name}» en {version}"
+
+["The active version has no verification yet: use {path}"]
+es = "La versión activa aún no tiene verificación: use {path}"
+
+["Verification"]
+es = "Verificación"
+
+["Zone"]
+es = "Recinto"
+
+["Verdict"]
+es = "Veredicto"
+
+["Cut (m³)"]
+es = "Corte (m³)"
+
+["Fill (m³)"]
+es = "Relleno (m³)"
+
+["Moved (m²)"]
+es = "Movido (m²)"
+
+["Load the non-compliance grid"]
+es = "Cargar la rejilla de incumplimientos"
+
+["Verification by zone"]
+es = "Verificación por recinto"
+
+["Verification of a design by zone: the table of each final surface, the groups of cells that do not comply and the grid of non-compliance"]
+es = "Verificación de un diseño por recinto: la tabla de cada superficie final, los grupos de celdas que no cumplen y la rejilla de incumplimientos"
+
+# Congelar con lo de la 012 (bl/ops/versions.py; RF-012-25, D-29)
+
+["1 finding of the compliance checks"]
+es = "1 hallazgo de las verificaciones"
+
+["{n} findings of the compliance checks"]
+es = "{n} hallazgos de las verificaciones"
+
+["«{name}»: {state} · {finding}"]
+es = "«{name}»: {state} · {finding}"
+
+["«{name}»: {finding}"]
+es = "«{name}»: {finding}"
+
+["{count} more zones"]
+es = "{count} recintos más"
+
+["{count} more groups, the smallest ones"]
+es = "{count} grupos más, los más pequeños"
+
+["Not shown: {items}"]
+es = "Sin enseñar: {items}"
+
+["1 more zone"]
+es = "1 recinto más"
+
+["1 more group, the smallest one"]
+es = "1 grupo más, el más pequeño"
