@@ -21,7 +21,10 @@ describe; estas pruebas avisan de que se separan:
   comillas); §3.3, cada familia de parámetros; §4.2, las rejillas de las máscaras y de los
   incumplimientos;
 - la guía de uso ``docs/usuario/limites-y-restricciones.md`` nombra los once tipos, los seis
-  roles y las órdenes de Diseño ▸ Límites y restricciones, y las guías que la citan la enlazan.
+  roles y las órdenes de Diseño ▸ Límites y restricciones, y las guías que la citan la enlazan;
+- los ocho puntos de F-5 de la verificación única (T43): la guía, el índice de specs, el roadmap,
+  las fichas de ``core``, ``gis`` y ``res``, el formato del proyecto y el ``CHANGELOG.md`` del
+  código dicen lo que el código hace tras la T38 a la T42 (``ConvergenceDocTest``).
 
 Sin la carpeta de la documentación, se omiten (recurso ``docs``).
 """
@@ -39,6 +42,7 @@ from contextlib import closing
 from tests.support import docs
 from tests.support.bs_tables import backticked, section
 from tests.support.package import import_geoblender
+from tests.support.repo import ROOT
 
 constraints = import_geoblender("core.constraints")
 cmodel = import_geoblender("core.constraints.model")
@@ -47,6 +51,9 @@ cprov = import_geoblender("core.constraints.provenance")
 cstore = import_geoblender("core.constraints.store")
 cstyles = import_geoblender("core.constraints.styles")
 gpkg_base = import_geoblender("core.gpkg.base")
+cmessages = import_geoblender("core.constraints.messages")
+i18n = import_geoblender("core.i18n")
+rprov = import_geoblender("reserves.provenance")
 masks = import_geoblender("gis.masks")
 mprov = import_geoblender("gis.masks.provenance")
 mstore = import_geoblender("gis.masks.store")
@@ -58,6 +65,9 @@ GIS_RELPATH = "docs/arquitectura/modulos/gis.md"
 RES_RELPATH = "docs/arquitectura/modulos/res.md"
 FORMAT_RELPATH = "docs/arquitectura/datos/formato-proyecto.md"
 GUIDE_RELPATH = "docs/usuario/limites-y-restricciones.md"
+SPECS_INDEX_RELPATH = docs.SPECS_INDEX_RELPATH
+ROADMAP_RELPATH = docs.ROADMAP_RELPATH
+CHANGELOG_PATH = ROOT / "CHANGELOG.md"
 CITING_RELPATHS = ("docs/usuario/topografia.md", "docs/usuario/versiones.md",
                    "docs/usuario/cubicacion.md", "README.md")
 
@@ -396,6 +406,165 @@ class GuideDocTest(unittest.TestCase):
         for relpath in CITING_RELPATHS:
             with self.subTest(document=relpath):
                 self.assertIn("limites-y-restricciones.md", docs.read(relpath))
+
+
+def one_line(text: str) -> str:
+    """``text`` con cada salto de línea y sangría reducidos a un espacio, para buscar una frase
+    que el documento parte en dos renglones."""
+    return re.sub(r"\s+", " ", text)
+
+
+@docs.requires_docs
+class ConvergenceDocTest(unittest.TestCase):
+    """Los ocho puntos de F-5 de la verificación única de la 012 (T43; definición de hecho
+    §3.7): la documentación dice lo que el código hace tras la T38 a la T42."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.guide = docs.read(GUIDE_RELPATH)
+
+    def guide_section(self, heading: str) -> str:
+        return one_line(section(self.guide, heading))
+
+    def test_guide_gives_the_budget_of_a_call_not_of_a_step(self) -> None:
+        """RNF-012-06 (F-5, punto 1): la guía no promete «pasos de menos de 0,05 s» —el
+        presupuesto de trabajo de un paso—, sino el RNF, ≤ 0,2 s por llamada (en Blender se miden
+        0,03 a 0,16 s), y dice que lo que no se trocea es la transacción final y «Recalcular lo
+        obsoleto» (0,40 a 0,55 s por llamada)."""
+        text = self.guide_section("## 13. Mientras calcula, Esc y solo lectura")
+        self.assertNotIn("pasos de menos de 0,05 s", self.guide)
+        self.assertIn("0,2 s", text)
+        self.assertIn("0,03 a 0,16 s", text)
+        self.assertIn("Recalcular lo obsoleto", text)
+        self.assertIn("0,40 a 0,55 s", text)
+
+    def test_guide_says_papel_like_the_interface(self) -> None:
+        """RF-012-26 (F-5, punto 2): la guía llama «papel» a lo que la interfaz llama «papel»
+        («Papel de las marcas», «Campo del papel», «Valores del papel») y no «rol»."""
+        text = self.guide_section("## 8. Las intenciones del cliente")
+        for msgid in ("Role of the marks", "Role field", "Values of the role"):
+            with self.subTest(msgid=msgid):
+                self.assertIn(i18n.translate("es", msgid), text)
+        self.assertIsNone(re.search(r"\brol(?:es)?\b", self.guide, re.IGNORECASE))
+
+    def test_guide_says_which_legal_limit_buffer_rules(self) -> None:
+        """RF-012-02, RF-012-13 (F-5, punto 3; observación O-6): con varios límites legales manda
+        el mayor resguardo hacia dentro, en todo el contorno de la unión, y la guía dice que hoy
+        la zona, el área y el recinto de banda de cada uno son los de la unión."""
+        limits = self.guide_section("## 4. Los límites")
+        self.assertIn("el **mayor** de los resguardos hacia dentro", limits)
+        self.assertIn("todo el contorno", limits)
+        self.assertIn("la zona de cada límite legal", limits)
+        self.assertIn("la **unión**", limits)
+        types = self.guide_section("### 5.1 Los once tipos")
+        self.assertIn("con varios límites legales manda el mayor", types)
+
+    def test_guide_says_a_constraint_without_cells_is_not_in_the_verification(self) -> None:
+        """RF-012-22 (F-5, punto 4; observación O-3): «No entra en la verificación» es lo que
+        enseña una restricción nueva y también una activa que no tiene ninguna celda en la
+        rejilla."""
+        text = self.guide_section("## 10. Verificar un diseño por recinto")
+        row = re.search(r"\| \*\*No entra en la verificación\*\* \|([^|]*)\|", text)
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertIn("ninguna celda en la rejilla", row.group(1))
+        self.assertEqual(i18n.translate("es", "Not in the verification"),
+                         "No entra en la verificación")
+
+    def test_guide_says_the_cell_tolerance_of_a_utm(self) -> None:
+        """RF-012-12 (T39; D-37): la guía dice que el redondeo de las coordenadas de un UTM no
+        añade un anillo de celdas a un límite alineado con la rejilla."""
+        text = self.guide_section("## 6. Compilar las máscaras")
+        self.assertIn("1 µm", text)
+        self.assertIn("redondeo", text)
+
+    def test_decision_link_is_told_where_it_is_set(self) -> None:
+        """RF-012-02, RF-012-19, RF-012-27 (F-5, punto 7; T41): la guía y el formato del proyecto
+        dicen que la decisión enlazada se fija en «Desde una capa…» y en «Completar…» (campo
+        «Decisión de la propiedad»), que una que no está registrada se rechaza, y que «Convertir
+        en restricción…» hereda la de la intención."""
+        label = i18n.translate("es", "Decision of the owner")
+        self.assertEqual(label, "Decisión de la propiedad")
+        code = "core.constraint_decision_unknown"
+        self.assertIn(code, cmessages.MESSAGES)
+        for heading in ("### 5.2 Crear restricciones desde una capa",
+                        "### 5.3 Completar y editar"):
+            with self.subTest(heading=heading):
+                self.assertIn(label, self.guide_section(heading))
+        converting = self.guide_section("## 8. Las intenciones del cliente")
+        self.assertIn("hereda la decisión de la propiedad de la intención", converting)
+        searched = self.guide_section("## 7. Buscar los elementos intocables por sector")
+        self.assertIn("no enlaza ninguna decisión de la propiedad", searched)
+        shown = self.guide_section("## 9. Ver las restricciones y los límites")
+        self.assertIn("«Desde una capa…» o «Completar…»", shown)
+        fmt = one_line(section(docs.read(FORMAT_RELPATH), "### 3.9 Restricciones y límites"))
+        self.assertIn(label, fmt)
+        self.assertIn(code, fmt)
+        self.assertIn("«Convertir en restricción…» hereda la de la intención", fmt)
+
+    def test_module_cards_say_where_the_registries_live(self) -> None:
+        """RNF-001-03, RF-012-25 (F-5, punto 6; T38): ``core.md`` dice que el registro de
+        comprobaciones de congelar vive en ``core.versions.freezing`` y ``res.md``, que las
+        declaraciones de la verificación están en ``reserves.provenance``."""
+        core = names_of(docs.read(CORE_RELPATH))
+        for name in ("register_freeze_check", "unregister_freeze_checks", "freeze_checks"):
+            with self.subTest(name=name):
+                self.assertIn(f"core.versions.freezing.{name}", core)
+        res = names_of(docs.read(RES_RELPATH))
+        declared = [name for name in rprov.__all__
+                    if name.startswith("VERIFY") or name == "verify_operation_def"]
+        self.assertEqual(len(declared), 8)
+        for name in declared:
+            with self.subTest(name=name):
+                self.assertIn(f"reserves.provenance.{name}", res)
+
+    def test_gis_card_names_the_cell_tolerance_and_the_bands(self) -> None:
+        """RF-012-12, RF-012-15 (T39, T40): la ficha de ``gis`` nombra la tolerancia por rejilla
+        (``noise_m``, ``fraction_epsilon``, ``distance_tau``) y lo que recorre una restricción
+        mayor que la rejilla por bandas (``touched_runs``, ``band_spans``)."""
+        api = names_of(section(docs.read(GIS_RELPATH), "## API pública"))
+        for name in ("gis.masks.zones.noise_m", "gis.masks.zones.fraction_epsilon",
+                     "gis.masks.zones.distance_tau", "gis.masks.zones.touched_runs",
+                     "gis.coverage.band_spans"):
+            with self.subTest(name=name):
+                self.assertIn(name, api)
+                self.assertTrue(resolves(name))
+
+    def test_indexes_reach_the_last_task(self) -> None:
+        """Definición de hecho §3.7 (F-5, punto 5): el índice de specs y el roadmap dicen que la
+        012 llega a la T43, que habilitar mide 0,45 s y que ``check.py`` tarda 40,5 s, y que la
+        llamada más larga de cada orden no cuenta la transacción final ni «Recalcular lo
+        obsoleto» (0,40 a 0,55 s)."""
+        index = docs.read(SPECS_INDEX_RELPATH)
+        roadmap = docs.read(ROADMAP_RELPATH)
+        start = index.index("**La 012**")
+        paragraph = one_line(index[start:index.index("- **Lo que queda de personas en la 012:**")])
+        row = re.search(r"^\| 012 \|.*$", index, re.MULTILINE)
+        ledger = re.search(r"^\| R-32 \|.*$", roadmap, re.MULTILINE)
+        self.assertIsNotNone(row)
+        self.assertIsNotNone(ledger)
+        assert row is not None and ledger is not None
+        self.assertIn("43 (T01–T43)", row.group(0))
+        for name, text in (("índice", paragraph), ("fila del índice", row.group(0)),
+                           ("roadmap", ledger.group(0))):
+            with self.subTest(document=name):
+                self.assertIn("T01 a T43", text)
+        self.assertNotIn("T01 a T37", index)
+        self.assertNotIn("T01 a T37", roadmap)
+        for fact in ("0,45 s", "40,5 s", "Recalcular lo obsoleto", "0,40–0,55 s", "30–160 ms"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, paragraph)
+
+    def test_changelog_says_the_single_verification_and_what_stays_open(self) -> None:
+        """Definición de hecho §3.7 (F-5, punto 8): el ``CHANGELOG.md`` del código dice que la 012
+        pasó su verificación única, lo que sigue abierto (varios límites legales) y las llamadas
+        largas de «Recalcular lo obsoleto»."""
+        text = one_line(CHANGELOG_PATH.read_text(encoding="utf-8"))
+        start = text.index("Lo de la spec 012 está comprobado")
+        entry = text[start:text.index("### Añadido")]
+        for fact in ("verificación única", "varios límites legales", "Recalcular lo obsoleto"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, entry)
 
 
 if __name__ == "__main__":

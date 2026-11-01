@@ -74,11 +74,14 @@ Blender 5.2.1 sin su interfaz, con las órdenes reales y un proyecto sintético 
 escenarios de principio a fin, en dos procesos, con las mismas cifras), con casos de referencia
 calculados a mano (los recuentos de celdas, la torre, el perímetro, el redibujado, la balsa y las
 versiones) y con datos del tamaño de un proyecto real (500 restricciones, 2,8 millones de celdas y
-diez capas de 10.000 entidades) en disco local; faltan verlo en la pantalla de referencia, la capa
-de restricciones editada en QGIS 4.2, las medidas en `Z:`, la comparación con el proyecto de
-referencia, que se ejecuta a petición (CE-012-08), y que un ingeniero de IMGA declare los límites y
-las restricciones de un GeoPackage sintético, busque los intocables de un sector y verifique un
-diseño en menos de 15 minutos y sin ayuda (CE-012-09).
+diez capas de 10.000 entidades) en disco local, y pasó su verificación única (01/11/2026), cuyos
+hallazgos ya están corregidos; faltan verlo en la pantalla de referencia, la capa de restricciones
+editada en QGIS 4.2, las medidas en `Z:`, la comparación con el proyecto de referencia, que se
+ejecuta a petición (CE-012-08), que un ingeniero de IMGA declare los límites y las restricciones de
+un GeoPackage sintético, busque los intocables de un sector y verifique un diseño en menos de 15
+minutos y sin ayuda (CE-012-09), y la decisión de Samuel sobre varios límites legales: hoy la zona,
+la cifra y el recinto de banda de cada uno son los de la unión (F-1). Las llamadas de «Recalcular
+lo obsoleto» tardan de 0,40 a 0,55 s, más que los 0,2 s de las demás (el contrato de la spec 008).
 
 ### Añadido
 
@@ -133,7 +136,7 @@ diseño en menos de 15 minutos y sin ayuda (CE-012-09).
     si cambia el sector o una capa consultada: las máscaras, la verificación y el diálogo de congelar
     lo dicen («Búsqueda de elementos intocables pendiente en: Sector 2»). Un sector con diez capas
     de 10.000 entidades, en 1 s.
-  - **Intenciones del cliente…**: las marcas del cliente, con su rol (proteger, rellenar, explotar a
+  - **Intenciones del cliente…**: las marcas del cliente, con su papel (proteger, rellenar, explotar a
     una cota, conservar como está, plataforma, talud a tratar), su fecha y su documento de origen,
     se guardan aparte y **no cambian ninguna máscara ni verificación**; **Convertir en
     restricción…** crea una restricción enlazada a la intención, que no cambia. En la vista, en
@@ -170,6 +173,20 @@ diseño en menos de 15 minutos y sin ayuda (CE-012-09).
     puntos, líneas o polígonos con todos sus campos, llevados al sistema del proyecto, de donde
     salen las restricciones, las infraestructuras que se buscan, las marcas del cliente y los
     sectores. Una capa que mezcla geometrías se importa en dos.
+  - **Tras la verificación única** (01/11/2026), sin cambiar ninguna cifra de los casos de
+    referencia: habilitar Geoblender vuelve a tardar 0,45 s (las órdenes de la spec 012 importan su
+    cálculo al usarlo); una zona alineada con la rejilla ya no gana un anillo de celdas por el
+    redondeo de las coordenadas de un UTM (la tolerancia de la celda sale de las coordenadas de la
+    rejilla: 1 µm con nortes de 4,4 millones de metros); una restricción mucho mayor que la rejilla
+    (50 km con celdas de 1 m) se compila en 0,15 s y no en 88 s; la **decisión de la propiedad** se
+    enlaza a una restricción en «Desde una capa…» y en «Completar…», y «Convertir en restricción…»
+    hereda la de la intención; una capa sin entidades lo dice, sin la lista vacía de rechazadas; y
+    la superposición de polígonos que se tocan en una esquina ya no escribe un aviso en la consola.
+    Sigue abierto, para decidir: con varios límites legales, **la zona, la cifra y el recinto de
+    banda de cada uno son los de la unión** (dos concesiones contiguas de 900 m² dan 1.800 m² cada
+    una y un corte en la banda sale en los dos recintos), y manda el mayor resguardo hacia dentro,
+    en todo el contorno. Las llamadas de «Recalcular lo obsoleto» tardan de 0,40 a 0,55 s, y la
+    transacción final de compilar y verificar pasa de los 0,2 s de las demás (hasta 0,5-0,6 s).
 
 - **Cubicación entre superficies** (spec 011). El número que se entrega —la cubicación mensual de
   una cantera, la de un proyecto o un plan de labores— sale de un solo cálculo, con tipo y
