@@ -22,7 +22,10 @@ proyecto y las cifras de la selección (spec 010). Y el proyecto tiene versiones
 sus revisiones, que se congelan en instantáneas que no cambian y se pueden reproducir meses
 después, y las decisiones de la propiedad (spec 009). Y cubica: entre dos superficies, por fase,
 banco y unidad, con el escombro en su sitio y cada material pesado según su estado, con sus
-cifras de la versión (spec 011). Lo de
+cifras de la versión (spec 011). Y sabe dónde no se puede cortar ni rellenar: declara el límite
+legal y el perímetro de actuación, guarda las restricciones tipadas que también se editan en QGIS,
+busca lo intocable por sector, lo compila todo a máscaras sobre la rejilla del proyecto y verifica
+en m³ por recinto cualquier superficie de diseño (spec 012). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
@@ -66,9 +69,107 @@ y en la pantalla de referencia el 24/10/2026 con la escala 1,0 (los diálogos, e
 rejilla de diferencias en la vista y el panel; lo que salió se corrigió después, con sus
 pruebas); faltan la pantalla con la escala 1,25, el CSV abierto en Excel y el GeoTIFF en QGIS,
 que un ingeniero de IMGA entregue sin ayuda la cubicación de un levantamiento y la comparación
-con el proyecto de referencia, que se ejecuta a petición.
+con el proyecto de referencia, que se ejecuta a petición. Lo de la spec 012 está comprobado con
+Blender 5.2.1 sin su interfaz, con las órdenes reales y un proyecto sintético (sus cinco
+escenarios de principio a fin, en dos procesos, con las mismas cifras), con casos de referencia
+calculados a mano (los recuentos de celdas, la torre, el perímetro, el redibujado, la balsa y las
+versiones) y con datos del tamaño de un proyecto real (500 restricciones, 2,8 millones de celdas y
+diez capas de 10.000 entidades) en disco local; faltan verlo en la pantalla de referencia, la capa
+de restricciones editada en QGIS 4.2, las medidas en `Z:`, la comparación con el proyecto de
+referencia, que se ejecuta a petición (CE-012-08), y que un ingeniero de IMGA declare los límites y
+las restricciones de un GeoPackage sintético, busque los intocables de un sector y verifique un
+diseño en menos de 15 minutos y sin ayuda (CE-012-09).
 
 ### Añadido
+
+- **Límites legales y restricciones** (spec 012). Antes de diseñar hay que saber dónde no se puede
+  cortar ni rellenar, y después hay que poder demostrarlo en m³: lo que pasó en el proyecto de
+  referencia (un perímetro de actuación sin cortar con la concesión, 1.126 m² de relleno fuera y
+  0,68 ha fuera sin listar; una copia vieja de un límite redibujado, +1,43 ha; el montículo de una
+  torre de 132 kV rebajado 26,6 m porque nadie buscó antes lo intocable; la balsa rellena un 17 %;
+  unas marcas del cliente tomadas como límites) no se puede repetir. Guía de uso:
+  `docs/usuario/limites-y-restricciones.md` de la documentación. Menú **Diseño ▸ Límites y
+  restricciones** (sus órdenes dejan de estar en gris; «Cuadrículas mineras…» sigue «Disponible en
+  R-32»: es de una segunda spec).
+  - **Límites…**: el límite legal (la concesión o la autorización; varios se unen) y el perímetro de
+    actuación, de capas de polígonos del proyecto, con su motivo, su decisor, su fecha y el
+    resguardo hacia dentro del límite legal. El informe da el área de cada uno en m² y en ha, la de
+    su intersección y la **franja de solo relleno** (el perímetro que queda fuera de la concesión)
+    parte a parte, con su área y las coordenadas de su centro, y «Ir a» la encuadra: el error de
+    los 1.126 m² de relleno fuera de la concesión no pasa desapercibido.
+  - **Restricciones…**: una capa tipada con **once tipos** —límite legal, perímetro de actuación,
+    intocable, exclusión, sin corte, solo relleno, solo restauración, banda de resguardo, sin
+    relleno, preferible no afectar y requiere acceso—, de polígonos, líneas o puntos, con resguardo,
+    peso, motivo, decisor y fecha. **Desde una capa…** crea las de todas sus entidades (un tipo
+    para todas o el campo que lo da, con su correspondencia de valores) e informa de las creadas y
+    de las rechazadas, con la entidad y el motivo; la capa de origen no se toca. Cada restricción
+    tiene un código que no cambia. Los **resguardos, el peso y «activa» no tienen valor por defecto**
+    (una distancia de seguridad por defecto acabaría en un plano) y valen **por versión**: la
+    propiedad puede liberar o endurecer una zona en una versión sin redibujarla. Una restricción
+    **incompleta** (sin motivo ni decisor, como las que se dibujan en QGIS, o sin un resguardo) o
+    **no válida** (que se corta a sí misma, sin área, una línea o un punto sin resguardo) **bloquea
+    la compilación** con la lista de todas; **Completar…** la arregla.
+  - **Editar en QGIS 4.2**: las tres capas (polígonos, líneas y puntos) están en el GeoPackage del
+    proyecto con **un estilo por tipo** y el tipo como **lista de valores en español**. Lo que se
+    dibuja, se cambia o se redibuja en QGIS se anota como edición fuera de Geoblender y deja
+    obsoletas las máscaras y las verificaciones, con la causa.
+  - **Compilar las máscaras**: las restricciones activas de la versión pasan a la rejilla del
+    proyecto con una sola regla, la del lado seguro: una celda está **dentro de una zona** si alguna
+    parte de su área queda a menos del resguardo, y **dentro de un límite** solo si toda su área
+    queda dentro. Salen el **dominio por defecto** (perímetro ∩ límite legal − intocables −
+    exclusiones, con sus resguardos), el corte y el relleno admitidos, la franja, las zonas y una
+    rejilla de clases; las prohibiciones **siempre se suman** (ninguna prioridad devuelve un
+    movimiento que otra restricción prohíbe) y se informa de dónde no cabe ningún movimiento y por
+    qué restricciones. Al compilar de nuevo, **el área ganada y perdida** de cada restricción que
+    cambió (redibujar el perímetro en QGIS, +1,43 ha, se ve). Son datos de la versión: se congelan
+    con su revisión y se reproducen. Con 500 restricciones de 100.000 vértices en una rejilla de 2,8
+    millones de celdas, unos 3 s, por pasos y con Esc. **Exportar las máscaras…** escribe la rejilla
+    de clases como GeoTIFF con su leyenda en español, que QGIS carga solo.
+  - **Buscar elementos intocables por sector…**: los sectores de una capa de polígonos (o el
+    perímetro entero), hasta diez capas de infraestructuras y una distancia de búsqueda (25 m,
+    «sin confirmar»). Lista cada entidad a esa distancia con sus atributos, para **convertirla en
+    intocable** (con su resguardo y su motivo) o **descartarla con un motivo**; **cerrar la
+    búsqueda** deja constancia de qué se revisó, quién y cuándo, y la búsqueda **vuelve a pendiente**
+    si cambia el sector o una capa consultada: las máscaras, la verificación y el diálogo de congelar
+    lo dicen («Búsqueda de elementos intocables pendiente en: Sector 2»). Un sector con diez capas
+    de 10.000 entidades, en 1 s.
+  - **Intenciones del cliente…**: las marcas del cliente, con su rol (proteger, rellenar, explotar a
+    una cota, conservar como está, plataforma, talud a tratar), su fecha y su documento de origen,
+    se guardan aparte y **no cambian ninguna máscara ni verificación**; **Convertir en
+    restricción…** crea una restricción enlazada a la intención, que no cambia. En la vista, en
+    violeta, con un estilo que ninguna restricción usa.
+  - **Ver restricciones y límites** (el **control 30** y el menú): sobre la Vista 3D, el contorno de
+    cada restricción con un color por tipo, su nombre, su zona rayada, el dominio, la franja y una
+    leyenda, sin escribir en el proyecto; se quita al conmutar a Blender. Activarla, menos de 1 s.
+    La **barra N ▸ Restricción** enseña la seleccionada: tipo, resguardos y peso con su tipo y su
+    ámbito, motivo, decisor, fecha, decisión de la propiedad, estado y las cifras de su última
+    verificación.
+  - **Verificar un diseño por recinto…** (también en Cubicación ▸ Control de cifras): una o hasta
+    diez superficies finales —**también una importada de fuera**— frente a la de partida dan, por
+    recinto (cada restricción, «Fuera del perímetro de actuación» y «Fuera del límite legal»), el
+    **corte y el relleno en m³** y el área con movimiento, con el veredicto: «no cumple» con una
+    sola celda que corta o rellena donde no se puede (0 m³ de tolerancia, por encima del espesor
+    mínimo de verificación de 0,02 m), la afección sin juicio de una «preferible no afectar» y «sin
+    comprobar» en «requiere acceso». Cada **grupo de celdas** que incumple sale con su recinto, su
+    área, su volumen, su espesor máximo y su centro (**Ir a**), y la **rejilla de incumplimientos**
+    se carga en la vista y se abre en QGIS. Tres finales en todos los recintos, de 3 a 4,2 s; Esc
+    no deja nada a medias.
+  - **Versiones y procedencia**: compilar y verificar son operaciones de la versión, con sus cifras
+    con tipo y procedencia; quedan obsoletas al cambiar una restricción, un sector, una búsqueda, una
+    superficie o un parámetro, se recalculan con «Recalcular lo obsoleto», se congelan con su
+    revisión y se reproducen con las mismas cifras. **Congelar** una revisión lista los hallazgos de
+    las verificaciones (recintos que no cumplen, verificaciones obsoletas o con la búsqueda
+    pendiente, superficies de diseño sin verificar) y pide aceptarlos con un motivo, que queda en la
+    revisión: no se bloquea, pero no pasa sin que nadie lo vea. El formato del proyecto no cambia
+    (sigue el 3): las tablas `core_constraint_polygon`, `core_constraint_line`, `core_constraint_point`,
+    `core_intention`, `core_sector`, `core_untouchable_search` y `core_untouchable_hit`, el estilo en
+    `layer_styles`, las máscaras (`gis_msk_…`, `gis_mskz_…`, `gis_mskr_…`, `gis_mskp_…`,
+    `gis_mskg_…`) y las verificaciones (`res_chk_…`, `res_chkg_…`, `rasters/res_chkv_…`) se crean al
+    usarse.
+  - **Importar capas con el papel «Entidades»** (Topografía ▸ Importar ▸ Capas vectoriales…):
+    puntos, líneas o polígonos con todos sus campos, llevados al sistema del proyecto, de donde
+    salen las restricciones, las infraestructuras que se buscan, las marcas del cliente y los
+    sectores. Una capa que mezcla geometrías se importa en dos.
 
 - **Cubicación entre superficies** (spec 011). El número que se entrega —la cubicación mensual de
   una cantera, la de un proyecto o un plan de labores— sale de un solo cálculo, con tipo y

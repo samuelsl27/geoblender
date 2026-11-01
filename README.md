@@ -25,7 +25,11 @@ de minas, para su propio trabajo de proyectos de explotación y restauración.
 > QGIS. Además, la vista de Blender se pone al día desde el proyecto (spec 010) y el proyecto
 > tiene versiones con su estado y revisiones congeladas que se pueden reproducir (spec 009). Y
 > cubica entre dos superficies, por fase, banco y unidad, con el escombro en su sitio y cada
-> material pesado según su estado, y entrega el CSV (spec 011).
+> material pesado según su estado, y entrega el CSV (spec 011). Y sabe dónde no se puede cortar ni
+> rellenar: declara el límite legal y el perímetro de actuación, guarda las restricciones tipadas
+> (también editables en QGIS), busca lo intocable por sector, lo compila todo a máscaras sobre la
+> rejilla del proyecto y verifica en m³ por recinto cualquier superficie de diseño (spec 012;
+> en `main`, sin publicar, a falta de su comprobación en pantalla).
 > La 002, la 003, la 004, la 006 y la 005 están comprobadas con Blender 5.2.1 (la
 > interfaz, los trabajos, la topografía y los sondeos, en la pantalla de referencia de IMGA), y
 > la 002, la 006 y la 005 también con QGIS 4.2 sin su interfaz (PyQGIS); la 002, en la red con
