@@ -203,7 +203,9 @@ class CompileResult:
 
     def zone_rows(self) -> list[tuple[str, int, int, int]]:
         """Las filas de ``gis_mskz_``: (zona, fila, col0, col1) de cada zona en su orden y la
-        banda hacia dentro del límite legal (``<código>:inner``)."""
+        banda hacia dentro de cada límite legal (``<código>:inner``): la suya (la de la unión ∩
+        sus celdas, ``Limits.legal_bands``), de modo que una celda de la banda sale una vez, no
+        una por límite (T44, hallazgo F-1)."""
         found: list[tuple[str, int, int, int]] = []
 
         def add(name: str, runs: Runs) -> None:
@@ -213,7 +215,7 @@ class CompileResult:
         for code, zone in self.prepared.zones.items():
             add(code, zone.runs)
         for code in self.prepared.limits.legal_codes:
-            add(f"{code}:inner", self.prepared.limits.legal.band)
+            add(f"{code}:inner", self.prepared.limits.legal_bands[code])
         return found
 
     def report_rows(self) -> list[tuple[str, str, float | None, str | None, str | None]]:

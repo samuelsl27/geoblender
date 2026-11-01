@@ -360,8 +360,10 @@ class ConstraintsRegisteredTest(unittest.TestCase):
         for op_type, defn in sorted(found.items()):
             with self.subTest(operación=op_type):
                 repeats = op_type in VERSION_TYPES
+                # La compilación sube a 1.1 en la T44 (varios límites legales: F-1); las demás, 1.0.
                 self.assertEqual((defn.version, defn.group, defn.repeatable),
-                                 ("1.0", None, repeats))
+                                 ("1.1" if op_type == "gis.compile_constraints" else "1.0",
+                                  None, repeats))
                 self.assertEqual(defn.scope, "version" if repeats else "project")
                 self.assertEqual(session.requires_version(op_type), repeats)
                 self.assertEqual(defn.commands, (COMMANDS[op_type],))

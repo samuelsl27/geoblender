@@ -448,14 +448,24 @@ class ConvergenceDocTest(unittest.TestCase):
         self.assertIsNone(re.search(r"\brol(?:es)?\b", self.guide, re.IGNORECASE))
 
     def test_guide_says_which_legal_limit_buffer_rules(self) -> None:
-        """RF-012-02, RF-012-13 (F-5, punto 3; observación O-6): con varios límites legales manda
-        el mayor resguardo hacia dentro, en todo el contorno de la unión, y la guía dice que hoy
-        la zona, el área y el recinto de banda de cada uno son los de la unión."""
+        """RF-012-02, RF-012-13 (F-5, punto 3; observación O-6; T44, hallazgo F-1): con varios
+        límites legales el límite legal es su unión y manda el mayor resguardo hacia dentro, en
+        todo el contorno; la zona de cada uno son las celdas enteras dentro de su polígono (900 m²
+        las dos concesiones del ejemplo, no 1.800 m²) y su banda hacia dentro cuenta cada celda
+        una sola vez. La guía ya no dice «Hoy, además» ni que está pendiente de decidir."""
         limits = self.guide_section("## 4. Los límites")
         self.assertIn("el **mayor** de los resguardos hacia dentro", limits)
         self.assertIn("todo el contorno", limits)
+        self.assertIn("su **unión**", limits)
         self.assertIn("la zona de cada límite legal", limits)
-        self.assertIn("la **unión**", limits)
+        self.assertIn("celdas enteras dentro de **su** polígono", limits)
+        self.assertIn("900 m² cada una", limits)
+        self.assertIn("una sola vez", limits)
+        self.assertIn("un solo recinto", limits)
+        self.assertIn("Recalcular lo obsoleto", limits)
+        for stale in ("Hoy, además", "pendiente de decidir", "1.800 m² cada una"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, limits)
         types = self.guide_section("### 5.1 Los once tipos")
         self.assertIn("con varios límites legales manda el mayor", types)
 
@@ -556,15 +566,29 @@ class ConvergenceDocTest(unittest.TestCase):
                 self.assertIn(fact, paragraph)
 
     def test_changelog_says_the_single_verification_and_what_stays_open(self) -> None:
-        """Definición de hecho §3.7 (F-5, punto 8): el ``CHANGELOG.md`` del código dice que la 012
-        pasó su verificación única, lo que sigue abierto (varios límites legales) y las llamadas
-        largas de «Recalcular lo obsoleto»."""
+        """Definición de hecho §3.7 (F-5, punto 8; T44, hallazgo F-1): el ``CHANGELOG.md`` del
+        código dice que la 012 pasó su verificación única, que con varios límites legales la
+        zona, la cifra y la banda de cada uno son las suyas (corregido, ya no «sigue abierto»),
+        la subida de versión de la compilación y las llamadas largas de «Recalcular lo
+        obsoleto»; y resume lo corregido tras ver la spec en pantalla (T45 y T46)."""
         text = one_line(CHANGELOG_PATH.read_text(encoding="utf-8"))
         start = text.index("Lo de la spec 012 está comprobado")
         entry = text[start:text.index("### Añadido")]
-        for fact in ("verificación única", "varios límites legales", "Recalcular lo obsoleto"):
+        for fact in ("verificación única", "varios límites legales", "Recalcular lo obsoleto",
+                     "las suyas y no las de la unión"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, entry)
+        self.assertNotIn("Sigue abierto, para decidir", text)
+        self.assertNotIn("la decisión de Samuel sobre varios límites legales", text)
+        bullet = text[text.index("**Varios límites legales**"):text.index("**Tras ver la spec")]
+        for fact in ("900 m² cada una", "una vez", "versión 1.1", "Recalcular lo obsoleto"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, bullet)
+        screen = text[text.index("**Tras ver la spec en pantalla**"):text.index(
+            "**Cubicación entre superficies**")]
+        for fact in ("barra N", "Restricciones", "Cambiar…", "Ir a"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, screen)
 
 
 if __name__ == "__main__":

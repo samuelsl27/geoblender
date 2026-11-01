@@ -354,7 +354,7 @@ def _check_zones(result: object) -> tuple[object, ...]:
     prepared = result.prepared
     zones = {code: zone.runs for code, zone in prepared.zones.items()}
     for code in prepared.limits.legal_codes:
-        zones[f"{code}{compliance.INNER_SUFFIX}"] = prepared.limits.legal.band
+        zones[f"{code}{compliance.INNER_SUFFIX}"] = prepared.limits.legal_bands[code]
     ctypes = {code: zone.ctype for code, zone in prepared.zones.items()}
     weights = {code: zone.weight for code, zone in prepared.zones.items()
                if zone.weight is not None}

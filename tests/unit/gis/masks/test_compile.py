@@ -30,8 +30,11 @@ from collections.abc import Iterator
 from typing import Any
 from unittest import mock
 
+import numpy as np
+
 from tests.support import constraints_fixtures as fx
 from tests.support import constraints_project as cp
+from tests.support import several_limits as sl
 from tests.support.package import import_geoblender
 from tests.support.timing import drive_steps, least_of, raised_priority
 from tests.support.versions_fixtures import change_counter, files
@@ -170,7 +173,8 @@ class CompileTest(_CompileCase):
         self.assertEqual(digest.content_sha256, classes.content_sha256)
         for code, zone in prepared.zones.items():
             self.assertEqual(zones[code], zone.runs, code)
-        self.assertEqual(zones["concesion:inner"], prepared.limits.legal.band)
+        self.assertEqual(zones["concesion:inner"], prepared.limits.legal_bands["concesion"])
+        self.assertEqual(zones["concesion:inner"], prepared.limits.legal.band)  # un solo límite
         self.assertEqual(zones["torre"].cells, fx.TOWER_ZONE_CELLS)
         self.assertEqual(parts, [(6_800.0,)])
         uid = self.handle.uid
@@ -313,6 +317,67 @@ class ReproduceTest(_CompileCase):
                       for check in report.figures if check.operation_uid == handle.uid}
         self.assertEqual(reproduced, {key: value for key, (value, _kind) in frozen.items()})
         self.assertTrue(report.matches)
+
+
+class SeveralLegalLimitsTest(unittest.TestCase):
+    """RF-012-11, RF-012-16 (hallazgo F-1, T44): compilar dos concesiones contiguas de 900 m²
+    (sin proyecto: ``compile_steps`` a secas)."""
+
+    A, B = "r_conc_a", "r_conc_b"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        items = sl.contiguous()
+        cls.result = _last(compile_mod.compile_steps(
+            compile_mod.CompileRequest(items, sl.resolved(items), grid=sl.GRID)))
+
+    def rows_of(self, zone: str) -> Any:
+        """Los tramos de ``zone`` en las filas de ``gis_mskz_`` (sin juntar)."""
+        rows = [(row, col0, col1) for name, row, col0, col1 in self.result.zone_rows()
+                if name == zone]
+        return np.asarray(rows, dtype=np.int64).reshape(-1, 3)
+
+    def test_the_figures_and_the_report_are_those_of_each_limit(self) -> None:
+        """RF-012-11 (F-1): ``gis.zone_area_m2`` y ``zone_area`` de cada concesión son los 900 m²
+        de la suya y su suma es el área del límite legal (no 2 × 1.800 m²)."""
+        areas = {dict(figure.scope)["constraint"]: figure.value
+                 for figure in self.result.figures if figure.key == "gis.zone_area_m2"}
+        self.assertEqual(areas, {self.A: 900.0, self.B: 900.0})
+        legal = {figure.key: figure.value for figure in self.result.figures}["gis.legal_area_m2"]
+        self.assertEqual(legal, 1800.0)
+        self.assertEqual(sum(areas.values()), legal)
+        report = {(code, quantity): value
+                  for code, quantity, value, _unit, _note in self.result.report_rows()}
+        self.assertEqual([report[(code, "zone_area")] for code in (self.A, self.B)],
+                         [900.0, 900.0])
+        self.assertEqual(report[("", "legal_area")], 1800.0)
+
+    def test_each_inner_band_is_written_once(self) -> None:
+        """RF-012-11, RF-012-13 (F-1): ``gis_mskz_`` lleva la zona de cada concesión (900 celdas
+        de 1 m²) y una banda ``<código>:inner`` por concesión: juntas son la banda del límite
+        legal (344 celdas de 2 m) y ninguna celda sale en las dos."""
+        for code in (self.A, self.B):
+            tramos = self.rows_of(code)
+            self.assertEqual(int((tramos[:, 2] - tramos[:, 1]).sum()), 900, code)
+        inner = [self.rows_of(f"{code}:inner") for code in (self.A, self.B)]
+        both = np.concatenate(inner)
+        merged = combine.Runs(both[:, 0], both[:, 1], both[:, 2])  # los tramos de las dos
+        self.assertEqual(merged, self.result.masks.legal.band)
+        self.assertEqual(int((both[:, 2] - both[:, 1]).sum()), merged.cells)
+        self.assertEqual(merged.cells, 344)
+        self.assertEqual([int((tramos[:, 2] - tramos[:, 1]).sum()) for tramos in inner],
+                         [172, 172])
+
+    def test_the_algorithm_version_is_raised(self) -> None:
+        """RF-012-16 (RF-008-24): la compilación sube a la versión 1.1 del algoritmo, para que
+        las máscaras calculadas con varios límites legales queden obsoletas y se recalculen."""
+        self.assertEqual(provenance.OP_VERSION, "1.1")
+
+        def nothing(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        definition = provenance.operation_def(recompute=nothing, reproduce=nothing)
+        self.assertEqual(definition.version, "1.1")
 
 
 if __name__ == "__main__":

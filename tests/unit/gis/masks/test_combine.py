@@ -16,6 +16,13 @@ RF-012-14, RF-012-15; plan 012 A2, A3, D-11, D-13, D-14 y D-25).
   D-1 frente a una fuerza bruta.
 - **RF-012-04 (D-11)**: una restricción que se corta a sí misma, sin área, una línea sin
   longitud, un punto sin resguardo o un código repetido impiden combinar, con la lista de todas.
+- **RF-012-11, RF-012-12, RF-012-13 (hallazgo F-1, T44)**: con varios límites legales, la zona de
+  cada uno son las celdas enteras dentro de **su** polígono (dos concesiones contiguas de
+  900 m² dan 900 m² cada una y su suma es la del límite legal); el dominio, el corte, el
+  relleno, la franja y la rejilla de clases siguen formándose con la **unión** (los mismos bits
+  que un solo límite con ese contorno); la banda hacia dentro de cada uno es la de la unión ∩
+  sus celdas, cada celda de la banda en un solo límite (el primero por código) aunque se
+  solapen o la celda quede a caballo de dos. Con un solo límite, nada cambia.
 """
 
 import time
@@ -25,6 +32,7 @@ from datetime import date
 import numpy as np
 
 from tests.support import constraints_fixtures as fx
+from tests.support import several_limits as sl
 from tests.support.package import import_geoblender
 from tests.support.timing import least_of
 
@@ -34,6 +42,7 @@ params = import_geoblender("core.constraints.params")
 messages = import_geoblender("core.constraints.messages")
 combine = import_geoblender("gis.masks.combine")
 zones = import_geoblender("gis.masks.zones")
+overlay = import_geoblender("gis.masks.overlay")
 
 T = model.ConstraintType
 G = model.GeometryKind
@@ -443,6 +452,156 @@ class ConflictsTest(unittest.TestCase):
             return time.perf_counter() - started
 
         self.assertLess(least_of(measure, 1.0, max_attempts=3), 1.0)
+
+
+def _block(box):
+    """Las celdas de ``sl.GRID`` con el centro dentro del rectángulo local ``box`` (las enteras
+    dentro; una celda que el borde parte por la mitad queda fuera)."""
+    x = (np.arange(sl.NCOLS) + 0.5)[None, :]
+    y = (sl.NROWS - np.arange(sl.NROWS) - 0.5)[:, None]
+    return (x > box[0]) & (x < box[2]) & (y > box[1]) & (y < box[3])
+
+
+def _mask(runs):
+    return runs.mask(sl.GRID.shape)
+
+
+class SeveralLegalLimitsTest(unittest.TestCase):
+    """RF-012-11, RF-012-12, RF-012-13 (hallazgo F-1, T44): con varios límites legales, la zona y
+    la banda hacia dentro de cada uno son las suyas; lo demás se forma con la unión."""
+
+    A, B = "r_conc_a", "r_conc_b"
+
+    def prepared(self, items, inward=2.0):
+        return combine.prepare(items, sl.resolved(items, inward), sl.GRID)
+
+    def assert_band_counted_once(self, prepared):
+        """La banda de cada límite es parte de la de la unión y entre todos no falta ni sobra
+        ninguna celda: cada celda de la banda se cuenta una vez."""
+        limits = prepared.limits
+        bands = limits.legal_bands
+        self.assertEqual(set(bands), set(limits.legal_codes))
+        merged = combine.Runs.union_all(bands.values())
+        self.assertEqual(merged, limits.legal.band, "falta alguna celda de la banda")
+        self.assertEqual(sum(band.cells for band in bands.values()), merged.cells,
+                         "alguna celda de la banda sale en dos límites")
+
+    def test_contiguous_each_zone_is_its_polygon(self) -> None:
+        """RF-012-11, RF-012-12 (F-1): dos concesiones contiguas de 30 × 30 m dan 900 m² cada
+        una, sus celdas son las de su rectángulo y la suma de las zonas es el límite legal."""
+        prepared = self.prepared(sl.contiguous())
+        a, b = prepared.zones[self.A], prepared.zones[self.B]
+        for zone, box in ((a, (0, 0, 30, 30)), (b, (30, 0, 60, 30))):
+            with self.subTest(zone=zone.code):
+                self.assertEqual(zone.runs.area(sl.GRID), 900.0)
+                np.testing.assert_array_equal(_mask(zone.runs), _block(box))
+        self.assertEqual(a.runs.intersection(b.runs).cells, 0)
+        self.assertEqual(a.runs.union(b.runs), prepared.limits.legal.inside)
+        legal_m2 = overlay.report_of(prepared, sl.GRID).legal_m2
+        self.assertEqual(legal_m2, 1800.0)
+        self.assertEqual(a.runs.area(sl.GRID) + b.runs.area(sl.GRID), legal_m2)
+
+    def test_overlapping_each_zone_is_its_polygon(self) -> None:
+        """RF-012-11, RF-012-12 (F-1): dos concesiones que se solapan 20 m: 1.200 m² cada una
+        (no los 1.800 m² de la unión); lo que comparten está en las dos y juntas dan la
+        unión."""
+        prepared = self.prepared(sl.overlapping())
+        a, b = prepared.zones[self.A], prepared.zones[self.B]
+        np.testing.assert_array_equal(_mask(a.runs), _block((0, 0, 40, 30)))
+        np.testing.assert_array_equal(_mask(b.runs), _block((20, 0, 60, 30)))
+        self.assertEqual((a.runs.area(sl.GRID), b.runs.area(sl.GRID)), (1200.0, 1200.0))
+        self.assertEqual(a.runs.intersection(b.runs).area(sl.GRID), 600.0)
+        self.assertEqual(a.runs.union(b.runs), prepared.limits.legal.inside)
+
+    def test_a_cell_across_two_limits_is_in_neither_zone(self) -> None:
+        """RF-012-12 (D-1, F-1): con el borde común a media celda, la columna 30 no está
+        entera en ninguna concesión: sale de las dos zonas, pero sigue entera dentro de la
+        unión (el límite legal)."""
+        prepared = self.prepared(sl.unaligned())
+        a, b = prepared.zones[self.A], prepared.zones[self.B]
+        self.assertEqual((a.runs.area(sl.GRID), b.runs.area(sl.GRID)), (900.0, 870.0))
+        across = _mask(prepared.limits.legal.inside) & ~_mask(a.runs) & ~_mask(b.runs)
+        self.assertEqual(np.flatnonzero(across.any(axis=0)).tolist(), [30])
+        self.assertEqual(int(across.sum()), 30)
+
+    def test_the_rest_is_formed_with_the_union(self) -> None:
+        """RF-012-13 (F-1): el dominio, el corte y el relleno admitidos, la franja, el límite
+        legal y la rejilla de clases son, bit a bit, los de un solo límite con el contorno de
+        la unión (contiguas o solapadas)."""
+        single = self.prepared(sl.union())
+        wanted = combine.combine(single.zones, single.limits, sl.GRID)
+        for name, items in (("contiguas", sl.contiguous()), ("solapadas", sl.overlapping()),
+                            ("a media celda", sl.unaligned())):
+            with self.subTest(limites=name):
+                prepared = self.prepared(items)
+                masks = combine.combine(prepared.zones, prepared.limits, sl.GRID)
+                self.assertEqual(prepared.limits.legal.inside, single.limits.legal.inside)
+                self.assertEqual(prepared.limits.legal.band, single.limits.legal.band)
+                for field in ("perimeter", "default_domain", "cut_allowed", "fill_allowed",
+                              "fill_strip"):
+                    self.assertEqual(getattr(masks, field), getattr(wanted, field), field)
+                np.testing.assert_array_equal(masks.classes, wanted.classes)
+                self.assertEqual([(c.causes, c.runs) for c in masks.conflicts],
+                                 [(c.causes, c.runs) for c in wanted.conflicts])
+
+    def test_each_band_cell_is_counted_once(self) -> None:
+        """RF-012-11, RF-012-13 (F-1): la banda de cada límite es la de la unión ∩ sus celdas:
+        contiguas (172 + 172 = 344 celdas, la banda de 2 m de un 60 × 30), solapadas (el
+        primero por código se queda con lo que comparten: 212 + 132) y a media celda (la
+        columna a caballo va al primero que la toca: 176 + 168)."""
+        for name, items, counts in (("contiguas", sl.contiguous(), (172, 172)),
+                                    ("solapadas", sl.overlapping(), (212, 132)),
+                                    ("a media celda", sl.unaligned(), (176, 168))):
+            with self.subTest(limites=name):
+                prepared = self.prepared(items)
+                self.assertEqual(prepared.limits.legal.band.cells, 344)
+                self.assert_band_counted_once(prepared)
+                bands = prepared.limits.legal_bands
+                self.assertEqual((bands[self.A].cells, bands[self.B].cells), counts)
+                for code in (self.A, self.B):  # cada banda, dentro de lo suyo
+                    mine = prepared.zones[code].runs
+                    if name == "a media celda":  # solo la columna 30 se sale de la zona
+                        mine = mine.union(combine.Runs.from_mask(_block((30, 0, 31, 30))))
+                    self.assertEqual(bands[code].difference(mine).cells, 0, code)
+
+    def test_the_first_by_code_keeps_the_shared_cells_in_any_order(self) -> None:
+        """RF-012-13 (F-1): lo que comparten dos límites va al primero por código, sea cual sea
+        el orden en que se den; el segundo no recibe ninguna celda del primero."""
+        items = sl.overlapping()
+        forward, backward = self.prepared(items), self.prepared(items[::-1])
+        self.assertEqual(forward.limits.legal_bands, backward.limits.legal_bands)
+        bands = forward.limits.legal_bands
+        shared = forward.zones[self.A].runs.intersection(forward.zones[self.B].runs)
+        self.assertGreater(bands[self.A].intersection(shared).cells, 0)
+        self.assertEqual(bands[self.B].intersection(shared).cells, 0)
+        # Dos límites iguales: todo para el primero, nada para el segundo.
+        twin = sl.several({self.A: (0, 0, 30, 30), self.B: (0, 0, 30, 30)})
+        prepared = self.prepared(twin)
+        self.assert_band_counted_once(prepared)
+        self.assertEqual(prepared.limits.legal_bands[self.B].cells, 0)
+        self.assertEqual(prepared.zones[self.A].runs, prepared.zones[self.B].runs)
+
+    def test_the_largest_inward_setback_rules_the_whole_band(self) -> None:
+        """RF-012-13 (O-6): con 0 m en una concesión y 10 m en la otra, la banda es la de la
+        unión con 10 m (la del límite único con ese contorno), repartida entre las dos."""
+        items = sl.contiguous()
+        mixed = self.prepared(items, {self.A: 0.0, self.B: 10.0})
+        single = self.prepared(sl.union(), 10.0)
+        self.assertEqual(mixed.limits.legal.band, single.limits.legal.band)
+        self.assert_band_counted_once(mixed)
+        self.assertGreater(mixed.limits.legal_bands[self.A].cells, 0)
+
+    def test_a_single_limit_changes_nothing(self) -> None:
+        """RF-012-11, RF-012-13 (F-1): con un solo límite legal, su zona son las enteras dentro
+        del límite, su banda la del límite y nada más (el caso a mano de RF-012-13)."""
+        items, resolved = site()
+        prepared = combine.prepare(items, resolved, GRID)
+        limits = prepared.limits
+        self.assertEqual(limits.legal_codes, ("r_concesion",))
+        self.assertEqual(prepared.zones["r_concesion"].runs, limits.legal.inside)
+        self.assertEqual(limits.legal_bands, {"r_concesion": limits.legal.band})
+        np.testing.assert_array_equal(mask(limits.legal.inside), centers((0, 0, 30, 30)))
+        self.assertEqual(limits.legal.band.cells, 30 * 30 - 26 * 26)
 
 
 if __name__ == "__main__":

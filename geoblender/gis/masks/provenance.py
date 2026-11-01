@@ -78,7 +78,12 @@ __all__ = [
 ]
 
 MODULE = "gis"
-OP_VERSION = "1.0"
+OP_VERSION = "1.1"
+"""La versión del algoritmo de la compilación (``M.m``; sube cuando un cambio puede mover una
+cifra, RF-008-24). **1.1** (T44, hallazgo F-1 de la 012): con varios límites legales, la zona de
+cada uno son las celdas enteras dentro de su polígono y la banda hacia dentro (``<código>:inner``),
+la de cada uno y no la de la unión repetida; con un solo límite, nada cambia. Una compilación de
+la 1.0 con varios límites legales queda obsoleta (causa «algoritmo») y se recalcula."""
 COMPILE = "gis.compile_constraints"
 COMMAND = "geoblender.gis_compile_constraints"
 FIGURE_TOLERANCE = Tolerance(relative=1e-9)

@@ -94,7 +94,7 @@ def compile_zones(items, resolved, grid):
     masks = combine.combine(prepared.zones, prepared.limits, grid)
     zones = {code: zone.runs for code, zone in prepared.zones.items()}
     for code in prepared.limits.legal_codes:
-        zones[f"{code}:inner"] = prepared.limits.legal.band
+        zones[f"{code}:inner"] = prepared.limits.legal_bands[code]
     ctypes = {code: zone.ctype for code, zone in prepared.zones.items()}
     weights = {code: zone.weight for code, zone in prepared.zones.items()
                if zone.weight is not None}

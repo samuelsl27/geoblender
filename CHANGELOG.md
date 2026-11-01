@@ -79,9 +79,10 @@ hallazgos ya están corregidos; faltan verlo en la pantalla de referencia, la ca
 editada en QGIS 4.2, las medidas en `Z:`, la comparación con el proyecto de referencia, que se
 ejecuta a petición (CE-012-08), que un ingeniero de IMGA declare los límites y las restricciones de
 un GeoPackage sintético, busque los intocables de un sector y verifique un diseño en menos de 15
-minutos y sin ayuda (CE-012-09), y la decisión de Samuel sobre varios límites legales: hoy la zona,
-la cifra y el recinto de banda de cada uno son los de la unión (F-1). Las llamadas de «Recalcular
-lo obsoleto» tardan de 0,40 a 0,55 s, más que los 0,2 s de las demás (el contrato de la spec 008).
+minutos y sin ayuda (CE-012-09). Con varios límites legales, la zona, la cifra y la banda hacia
+dentro de cada uno son las suyas y no las de la unión (el hallazgo F-1 de esa verificación, decidido
+por Samuel el 01/11/2026 y corregido). Las llamadas de «Recalcular lo obsoleto» tardan de 0,40 a
+0,55 s, más que los 0,2 s de las demás (el contrato de la spec 008).
 
 ### Añadido
 
@@ -182,11 +183,24 @@ lo obsoleto» tardan de 0,40 a 0,55 s, más que los 0,2 s de las demás (el cont
     enlaza a una restricción en «Desde una capa…» y en «Completar…», y «Convertir en restricción…»
     hereda la de la intención; una capa sin entidades lo dice, sin la lista vacía de rechazadas; y
     la superposición de polígonos que se tocan en una esquina ya no escribe un aviso en la consola.
-    Sigue abierto, para decidir: con varios límites legales, **la zona, la cifra y el recinto de
-    banda de cada uno son los de la unión** (dos concesiones contiguas de 900 m² dan 1.800 m² cada
-    una y un corte en la banda sale en los dos recintos), y manda el mayor resguardo hacia dentro,
-    en todo el contorno. Las llamadas de «Recalcular lo obsoleto» tardan de 0,40 a 0,55 s, y la
-    transacción final de compilar y verificar pasa de los 0,2 s de las demás (hasta 0,5-0,6 s).
+    Las llamadas de «Recalcular lo obsoleto» tardan de 0,40 a 0,55 s, y la transacción final de
+    compilar y verificar pasa de los 0,2 s de las demás (hasta 0,5-0,6 s).
+  - **Varios límites legales** (el hallazgo F-1 de la verificación única, decidido por Samuel el
+    01/11/2026): **la zona, la cifra y la banda hacia dentro de cada límite legal son las suyas**,
+    no las de la unión. Dos concesiones contiguas de 900 m² dan 900 m² cada una (antes, 1.800 m²
+    cada una), la suma de las zonas es el límite legal, y un corte de 2 m³ en la banda se cuenta y
+    se lista **una vez**: un solo recinto, un solo grupo y una sola línea al congelar (antes salía
+    en el recinto de cada concesión). Cada celda de la banda va a un solo límite (la que está en
+    dos concesiones que se solapan, a la primera por código). El dominio, el corte y el relleno
+    admitidos, la franja y la rejilla de clases siguen formándose con la unión, y manda el mayor
+    resguardo hacia dentro, en todo el contorno. Con un solo límite legal, las mismas cifras que
+    antes. La compilación sube a la versión 1.1 de su algoritmo: lo compilado con la anterior (y las
+    verificaciones que lo usaron) queda obsoleto y «Recalcular lo obsoleto» lo rehace.
+  - **Tras ver la spec en pantalla** (01/11/2026, a 1920 px con la escala 1,0, con ratón y
+    teclado): la barra N y la ventana de Restricciones enseñan el valor de cada parámetro («V01:
+    8 m [ADO]»), con su nombre y «Cambiar…» en líneas propias, sin cortes ni valores escondidos; y
+    la línea de cada grupo de la verificación y de cada parte de la franja del informe de límites
+    se lee entera, con «Ir a» en su propia fila. Ninguna cifra cambia.
 
 - **Cubicación entre superficies** (spec 011). El número que se entrega —la cubicación mensual de
   una cantera, la de un proyecto o un plan de labores— sale de un solo cálculo, con tipo y

@@ -25,11 +25,14 @@ from collections import deque
 import numpy as np
 
 from tests.support import constraints_fixtures as fx
+from tests.support import several_limits as sl
 from tests.support.package import import_geoblender
 
 gis = import_geoblender("gis")
 model = import_geoblender("core.constraints.model")
 combine = import_geoblender("gis.masks.combine")
+compile_mod = import_geoblender("gis.masks.compile")
+compliance_store = import_geoblender("reserves.compliance_store")
 zones_mod = import_geoblender("gis.masks.zones")
 access = import_geoblender("gis.masks.access")
 surfaces = import_geoblender("reserves.surfaces")
@@ -303,6 +306,85 @@ class RequestTest(unittest.TestCase):
             compliance.ComplianceRequest("V1", start, finals[:1], masks, 11.0)
         with self.assertRaises(ValueError):
             compliance.ComplianceRequest(" ", start, finals[:1], masks, 0.02)
+
+
+class SeveralLegalLimitsTest(unittest.TestCase):
+    """RF-012-21, RF-012-22, RF-012-23 (hallazgo F-1, T44): con varios límites legales, un corte
+    en la banda hacia dentro se cuenta y se lista una vez: en el recinto de la banda del límite
+    al que pertenece su celda, no en la de todos."""
+
+    A, B = "r_conc_a", "r_conc_b"
+    INNER_A, INNER_B = "r_conc_a:inner", "r_conc_b:inner"
+
+    def verify(self, items, cell):
+        """Compila ``items``, toma los recintos como los guarda ``gis_mskz_`` (``zone_rows``) y
+        verifica un corte de 2 m en la celda ``cell`` (fila, columna) de una partida llana."""
+        result = None
+        for step in compile_mod.compile_steps(compile_mod.CompileRequest(
+                items, sl.resolved(items), grid=sl.GRID)):
+            if step.result is not None:
+                result = step.result
+        stored: dict[str, list[tuple[int, int, int]]] = {}
+        for name, row, col0, col1 in result.zone_rows():
+            stored.setdefault(name, []).append((row, col0, col1))
+        zones = {name: Runs(*np.asarray(found, dtype=np.int64).T)
+                 for name, found in stored.items()}
+        ctypes = {code: zone.ctype for code, zone in result.prepared.zones.items()}
+        recintos = compliance.check_zones(result.masks.classes, zones, ctypes, {})
+        start = np.full(sl.GRID.shape, 100.0)
+        final = start.copy()
+        final[cell] -= 2.0
+        return result, compliance.check(sl.GRID, recintos, start, final, 0.02)
+
+    def failing(self, found):
+        return {item.code: item.counted_m3 for item in found.totals
+                if item.verdict is V.FAILS}
+
+    def freeze_notes(self, found):
+        """Las notas de «no cumple» que lista el diálogo de congelar (``freeze_findings``): una
+        por final, con cada recinto que incumple, a partir de las filas de ``res_chk_``."""
+        done = compliance_store.VerifyResult("v", ("final",), (found,), {}, (), ())
+        return compliance_store._failures(done.table_rows(), "v")
+
+    def test_a_cut_in_the_band_of_one_concession_is_counted_once(self) -> None:
+        """RF-012-22, RF-012-23 (F-1): un corte de 2 m³ en la banda de la concesión A (borde
+        oeste) con dos concesiones contiguas incumple solo en la banda de A: un recinto, un
+        grupo y una sola línea al congelar; la concesión B no ve nada."""
+        _result, found = self.verify(sl.contiguous(), (15, 0))
+        self.assertEqual(self.failing(found), {self.INNER_A: 2.0})
+        self.assertEqual(found.zone(self.INNER_B).counted_m3, 0.0)
+        self.assertEqual([(g.zone, g.volume_m3, g.cells) for g in found.groups],
+                         [(self.INNER_A, 2.0, 1)])
+        self.assertEqual((found.zone(self.A).cut_m3, found.zone(self.B).cut_m3), (2.0, 0.0))
+        (note,) = self.freeze_notes(found)
+        self.assertEqual(note.count("(banda hacia dentro)"), 1, note)
+        self.assertIn("«r_conc_a» (banda hacia dentro)", note)
+
+    def test_a_cut_in_the_other_concession_goes_to_its_own_band(self) -> None:
+        """RF-012-22 (F-1): el mismo corte en el borde este (la concesión B) incumple solo en
+        la banda de B."""
+        _result, found = self.verify(sl.contiguous(), (15, 59))
+        self.assertEqual(self.failing(found), {self.INNER_B: 2.0})
+        self.assertEqual([g.zone for g in found.groups], [self.INNER_B])
+
+    def test_a_cut_where_two_overlapping_concessions_meet_is_counted_once(self) -> None:
+        """RF-012-22 (F-1): con dos concesiones que se solapan, un corte en la banda de un
+        trozo que están en las dos (fila 0, columna 30) incumple en un solo recinto de banda
+        (el del primero por código), un grupo, un solo recinto en la nota de congelar."""
+        _result, found = self.verify(sl.overlapping(), (0, 30))
+        self.assertEqual(self.failing(found), {self.INNER_A: 2.0})
+        self.assertEqual([g.zone for g in found.groups], [self.INNER_A])
+        self.assertEqual(found.zone(self.INNER_B).counted_m3, 0.0)
+        (note,) = self.freeze_notes(found)
+        self.assertEqual(note.count("(banda hacia dentro)"), 1, note)
+
+    def test_a_cut_in_a_cell_across_two_concessions_is_still_found(self) -> None:
+        """RF-012-22 (F-1): una celda de la banda a caballo de dos concesiones (la columna 30,
+        con el borde común a media celda) no está entera en ninguna, pero su corte no se
+        pierde: incumple en la banda del primero que la toca."""
+        _result, found = self.verify(sl.unaligned(), (0, 30))
+        self.assertEqual(self.failing(found), {self.INNER_A: 2.0})
+        self.assertEqual(len(found.groups), 1)
 
 
 if __name__ == "__main__":

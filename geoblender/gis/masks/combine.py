@@ -11,8 +11,13 @@ Dos pasos:
    ``ConstraintError`` con la orden que lo resuelve; sin perímetro, el límite legal hace de
    perímetro, con su aviso (RF-012-15, D-14). Después, la zona de cada restricción activa
    (``gis.masks.zones``) con lo que queda fuera de la rejilla (m², con su aviso) y los límites:
-   los límites legales y los perímetros **se unen antes** (``gis.polygons.overlay``), y la banda
-   hacia dentro usa el mayor resguardo hacia dentro de los límites legales (del lado seguro).
+   los límites legales y los perímetros **se unen antes** (``gis.polygons.overlay``) para formar
+   el dominio, el corte, el relleno, la franja y la rejilla de clases, y la banda hacia dentro de
+   la unión usa el mayor resguardo hacia dentro de los límites legales (del lado seguro). **Con
+   varios límites legales** (T44, hallazgo F-1), lo que se da **por límite** es de cada uno: su
+   zona son las celdas enteras dentro de **su** polígono y su banda hacia dentro es la banda de la
+   unión ∩ sus celdas (:attr:`Limits.legal_bands`), con cada celda de la banda en un solo límite
+   (el primero por código) para que ni se cuente dos veces ni se pierda.
 2. :func:`combine` (**A3**): con ``P`` el perímetro (celdas enteras dentro), ``Lin`` las enteras
    dentro del límite legal, ``Lb`` su banda hacia dentro y ``U`` intocables y exclusiones:
    dominio ``D = P ∩ Lin − U``; corte ``C = D − Lb − sin corte − solo relleno − solo
@@ -145,9 +150,10 @@ class Notice:
 @dataclass(frozen=True, slots=True, eq=False)
 class Zone:
     """La zona de una restricción activa en la rejilla: su código, nombre, tipo, prioridad y
-    geometría; sus celdas (``runs``; de un límite, las enteras dentro de la unión de los de su
-    tipo); el resguardo hacia fuera con que se calculó, el peso («preferible no afectar») y el
-    área de la zona fuera de la rejilla (m²; de un límite, la exacta del polígono)."""
+    geometría; sus celdas (``runs``; de un límite legal, las enteras dentro de **su** polígono; de
+    un perímetro de actuación, las enteras dentro de la unión de los perímetros); el resguardo
+    hacia fuera con que se calculó, el peso («preferible no afectar») y el área de la zona fuera
+    de la rejilla (m²; de un límite, la exacta del polígono)."""
 
     code: str
     name: str
@@ -163,14 +169,18 @@ class Zone:
 @dataclass(frozen=True, slots=True, eq=False)
 class Limits:
     """Los límites en la rejilla: el legal (enteras dentro y su banda hacia dentro, de la unión
-    de los límites legales activos), las celdas enteras dentro del perímetro (o del límite
-    legal, ``perimeter_from_legal``) y los códigos de cada uno."""
+    de los límites legales activos: con lo que se forman el dominio y las máscaras), las celdas
+    enteras dentro del perímetro (o del límite legal, ``perimeter_from_legal``) y los códigos de
+    cada uno. ``legal_bands``: la banda hacia dentro de **cada** límite legal (por código) = la
+    de la unión ∩ sus celdas, cada celda de la banda en un solo límite (el primero por código):
+    juntas son ``legal.band`` y ninguna celda sale en dos. Con un solo límite, ``legal.band``."""
 
     legal: LimitRuns
     perimeter: Runs
     legal_codes: tuple[str, ...]
     perimeter_codes: tuple[str, ...]
     perimeter_from_legal: bool
+    legal_bands: Mapping[str, Runs]
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,6 +437,57 @@ def _by_priority(codes: Iterable[str], zones: Mapping[str, Zone]) -> tuple[str, 
     return tuple(sorted(codes, key=lambda code: (-zones[code].priority, code)))
 
 
+def _own_cells_steps(legal: Sequence[Constraint], united: LimitRuns, grid: Grid,
+                     corner: tuple[float, float], steps: Mapping[str, int]
+                     ) -> Generator[None, None, dict[str, Runs]]:
+    """Las celdas enteras dentro de **su** polígono de cada límite legal (por código; T44, F-1).
+    Con uno solo son las de la unión, sin recalcular; con varios, las de cada polígono (sus partes
+    se unen antes, como la unión de todos) y una celda que los límites reparten (a caballo de la
+    frontera común) no está entera dentro de ninguno."""
+    if len(legal) == 1:
+        return {legal[0].code: united.inside}
+    found: dict[str, Runs] = {}
+    for item in legal:
+        edges = overlay(item.parts, [], "union", origin=corner).edges_local
+        yield
+        found[item.code] = (yield from limit_steps(edges, grid, None, **steps)).inside
+    return found
+
+
+def _inner_bands_steps(legal: Sequence[Constraint], united: LimitRuns,
+                       own: Mapping[str, Runs], grid: Grid, steps: Mapping[str, int]
+                       ) -> Generator[None, None, dict[str, Runs]]:
+    """La banda hacia dentro de cada límite legal (por código; T44, F-1): la banda de la unión
+    (``united.band``, con el mayor resguardo hacia dentro de todos) ∩ las celdas de ese límite,
+    **cada celda de la banda en un solo límite**: la que está en dos límites que se solapan va al
+    primero por código (el orden alfabético de los códigos, el mismo con cualquier orden de
+    entrada). La celda de la banda a caballo de dos límites (entera dentro de la unión, no de
+    ninguno) va al primero por código que la toca. Entre todas son ``united.band``: ni se cuenta
+    una celda dos veces ni se pierde un corte en ella."""
+    order = sorted(item.code for item in legal)
+    if len(order) == 1:
+        return {order[0]: united.band}
+    bands: dict[str, Runs] = {}
+    rest = united.band
+    for code in order:
+        bands[code] = rest.intersection(own[code])
+        rest = rest.difference(bands[code])
+        yield
+    if len(rest):  # a caballo: sin celdas enteras en ningún límite, pero dentro de la unión
+        by_code = {item.code: item for item in legal}
+        for code in order:
+            touched = yield from zone_steps(by_code[code], grid, 0.0, **steps)
+            mine = rest.intersection(touched)
+            if len(mine):
+                bands[code] = bands[code].union(mine)
+                rest = rest.difference(mine)
+            if not len(rest):
+                break
+        if len(rest):  # defensa: lo que ninguno toca (por el redondeo) va al primero, no se pierde
+            bands[order[0]] = bands[order[0]].union(rest)
+    return bands
+
+
 def prepare_steps(constraints: Iterable[Constraint], resolved: Mapping[str, object],
                   grid: Grid | None, *, segments_per_step: int = SEGMENTS_PER_STEP,
                   rows_per_step: int = ROWS_PER_STEP) -> Generator[None, None, Prepared]:
@@ -453,6 +514,8 @@ def prepare_steps(constraints: Iterable[Constraint], resolved: Mapping[str, obje
     edges = overlay(legal_parts, [], "union", origin=corner).edges_local
     yield
     legal_runs = yield from limit_steps(edges, grid, inward, **steps)
+    own_cells = yield from _own_cells_steps(legal, legal_runs, grid, corner, steps)
+    inner_bands = yield from _inner_bands_steps(legal, legal_runs, own_cells, grid, steps)
     if perimeter:
         perimeter_parts = tuple(part for item in perimeter for part in item.parts)
         edges = overlay(perimeter_parts, [], "union", origin=corner).edges_local
@@ -471,7 +534,7 @@ def prepare_steps(constraints: Iterable[Constraint], resolved: Mapping[str, obje
         weight = None
         if item.ctype.is_limit:
             runs = perimeter_runs if item.ctype is ConstraintType.ACTION_PERIMETER else (
-                legal_runs.inside)
+                own_cells[item.code])
             outward = 0.0
             outside = limit_outside(item, grid)
             yield
@@ -488,9 +551,11 @@ def prepare_steps(constraints: Iterable[Constraint], resolved: Mapping[str, obje
             notices.append(Notice("core.constraint_zone_outside_grid", (
                 ("code", item.code), ("name", item.shown_name()), ("ctype", item.ctype),
                 ("area", round(outside, 2)))))
-    limits = Limits(legal_runs, perimeter_runs, _by_priority((i.code for i in legal), zones),
+    legal_codes = _by_priority((i.code for i in legal), zones)
+    limits = Limits(legal_runs, perimeter_runs, legal_codes,
                     _by_priority((i.code for i in perimeter or legal), zones),
-                    not perimeter)
+                    not perimeter, MappingProxyType({code: inner_bands[code]
+                                                     for code in legal_codes}))
     return Prepared(MappingProxyType(zones), limits, legal_parts, perimeter_parts,
                     tuple(notices))
 
