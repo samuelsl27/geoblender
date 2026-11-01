@@ -771,12 +771,14 @@ class GEOBLENDER_OT_core_edit_constraints(ProvenanceAwareOperator, bpy.types.Ope
 
     def execute(self, context: Any) -> set[str]:
         """Lee las restricciones del proyecto y sus estados en la versión activa en la vista y
-        abre su ventana; desde un guion sin ventana, solo la vista."""
+        abre su ventana, con elegida la del objeto activo si es el de una restricción (PC §3.7:
+        «Editar la restricción…»); desde un guion sin ventana, solo la vista."""
         try:
             constraint_panels.fill_constraints(SESSION.project)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
+        constraint_panels.choose_active(context)
         if getattr(context, "window", None) is None:
             return {"FINISHED"}
         return _call_panel(constraint_panels.CONSTRAINTS_PANEL)

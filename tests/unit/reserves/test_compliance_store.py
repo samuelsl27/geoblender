@@ -27,6 +27,9 @@ la torre (no cumple):
   y de la verificación): con las máscaras obsoletas, repetir la verificación se rechaza sin
   registrar nada; repetidas las máscaras y después la verificación, cada operación nueva sustituye
   a la anterior y da lo de hoy.
+- **RF-012-19 (T27)**: ``zone_check`` da, de una restricción, lo que dice la última verificación
+  vigente de la versión: de cada final su superficie, su veredicto, lo que cuenta con sus m³ y sus
+  cifras registradas (las del recinto y, en un límite legal, también las de su banda hacia dentro).
 - **RF-012-25 (D-7, D-29; T18)**: congelar con lo que no cumple. Con la comprobación de ``res``
   registrada (``freeze_findings``), ``freeze_plan`` lista la verificación con zonas que no
   cumplen (con los m³ por zona), la que tiene la marca de búsqueda pendiente, la obsoleta y la
@@ -280,6 +283,49 @@ class VerifyTest(_VerifyCase):
         self.assertEqual(self.figures_again, found)
         (row,) = self.query("SELECT supersedes_uid FROM gb_operation WHERE uid = ?", self.again)
         self.assertIsNotNone(row[0])
+
+    def test_zone_check_says_what_the_last_check_says_of_a_zone(self) -> None:
+        """RF-012-19: de la torre en V01, la verificación repetida (la que sustituyó a la primera):
+        su nombre, no obsoleta y, por final, la superficie, el veredicto (cumple con la excavación,
+        no cumple con la torre rebajada y sus 6.384 m³ de movimiento) y las cuatro cifras
+        registradas del recinto, las mismas de ``gb_figure``; el límite legal suma las de su banda
+        hacia dentro; un recinto que no entró sale sin veredicto ni cifras; V02, sin
+        verificación."""
+        case = fx.tower_case()
+        with self.project.read() as conn:
+            found = cstore.zone_check(conn, self.v1.uid, "torre")
+            legal = cstore.zone_check(conn, self.v1.uid, "concesion")
+            absent = cstore.zone_check(conn, self.v1.uid, "no_existe")
+            nothing = cstore.zone_check(conn, self.v2.uid, "torre")
+        self.assertIsNone(nothing)
+        self.assertEqual((found.operation_uid, found.name, found.stale),
+                         (self.again, NAME, False))
+        first, second = found.finals
+        self.assertEqual((first.position, first.surface, first.verdict, first.counts),
+                         (1, "Excavación", V.COMPLIES.value, "any"))
+        self.assertEqual(first.counted_m3, 0.0)
+        self.assertEqual((second.position, second.surface, second.verdict, second.counts),
+                         (2, "Torre rebajada", V.FAILS.value, "any"))
+        self.assertAlmostEqual(second.counted_m3, case.cut_m3, delta=case.cut_m3 * 1e-9)
+        keys = ["res.check_cut_m3", "res.check_fill_m3", "res.check_moved_area_m2",
+                "res.check_nodata_area_m2"]
+        for final in found.finals:
+            self.assertEqual([figure.key for figure in final.figures], keys)
+            self.assertEqual({(figure.scope["check"], figure.scope["final"], figure.scope["zone"])
+                              for figure in final.figures}, {(NAME, final.position, "torre")})
+            for figure in final.figures:
+                self.assertEqual(figure.value, self.figure(self.again, figure.key, check=NAME,
+                                                           final=final.position, zone="torre"))
+        self.assertAlmostEqual(second.figures[0].value, case.cut_m3, delta=1e-6)
+        self.assertEqual([len(final.figures) for final in legal.finals], [8, 8])
+        self.assertEqual({figure.scope["zone"] for figure in legal.finals[0].figures},
+                         {"concesion", "concesion:inner"})
+        self.assertEqual(absent.name, NAME)
+        for final in absent.finals:
+            self.assertEqual((final.verdict, final.counts, final.counted_m3, final.figures),
+                             ("", "", None, ()))
+        self.assertEqual([final.surface for final in absent.finals],
+                         ["Excavación", "Torre rebajada"])
 
     def test_z_reproduce_frozen_gives_the_same(self) -> None:
         """RF-012-24 (RF-009-07): congelada V01.r1, reproducir da las mismas salidas (con su

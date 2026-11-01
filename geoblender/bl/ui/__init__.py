@@ -72,8 +72,8 @@ from . import help as help_pages
 # vista regenerable que van en ella (spec 010: Elemento activo), los paneles reales de
 # la interfaz (spec 003), la lista de trabajos (spec 004), lo obsoleto (spec 008), la ventana y
 # el menú de la versión activa (spec 009), la pestaña «Sondeos» (spec 005), la ventana de los
-# materiales de la cubicación y N ▸ Proyecto ▸ Cubicaciones, que es también su ventana (spec 011) y
-# la ventana de los límites (spec 012).
+# materiales de la cubicación y N ▸ Proyecto ▸ Cubicaciones, que es también su ventana (spec 011),
+# las ventanas de los límites y las restricciones y la pestaña «Restricción» (spec 012).
 classes: tuple[type, ...] = (
     *core_menus.classes,
     *core_panel.classes,
@@ -97,6 +97,7 @@ def _register_classes() -> None:
     view_panels.localize()
     dh_panels.localize()
     res_panels.localize()
+    constraint_panels.localize()
     register_classes(classes)
 
 
@@ -128,6 +129,7 @@ def register() -> None:
         (res_panels.install, res_panels.uninstall),
         (views.register, views.unregister),
         (view_panels.register, view_panels.unregister),
+        (constraint_panels.install, constraint_panels.uninstall),
         (layouts.register, layouts.unregister),
         (lambda: None, context.clear),
         (lambda: None, command_line.clear),

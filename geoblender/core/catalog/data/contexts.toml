@@ -209,7 +209,7 @@ label.en = "Constraint"
 label.es = "Restricción"
 description.en = "Commands for the active constraint or limit"
 description.es = "Órdenes para la restricción o el límite activo"
-entry = "R-32"
+entry = "012"
 
 [[context.item]]
 ref = "geoblender.core_edit_constraints"

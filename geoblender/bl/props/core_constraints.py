@@ -44,6 +44,13 @@ control 30 como propiedad (se lee y se escribe: activa o quita la superposición
 dibuja (``overlay_surface``, el nombre de su dato; vacío: la rejilla más reciente del proyecto) y
 las que se pueden elegir (``overlay_surfaces``).
 
+**La restricción seleccionada** (T27; RF-012-19): ``selected`` (una
+:class:`GEOBLENDER_PG_core_constraint_item` como las de la lista) y ``selected_lines`` (las líneas
+de su última verificación) son lo que dibuja la barra N «Restricción»; la regenera
+``bl.ui.constraint_panels`` al cambiar el objeto activo, la restricción elegida en la lista o la
+versión activa, nunca al dibujar. Elegir otra fila de la lista (``item_index``) avisa a ese
+módulo.
+
 Ninguna propiedad es una coordenada ni una distancia en ``FloatProperty`` (ADR-0005; los
 resguardos, los pesos, las distancias y los espesores de los diálogos, en ``StringProperty``:
 ``docs/trampas.md`` §1; las coordenadas absolutas de «Ir a», también en texto).
@@ -72,6 +79,7 @@ WINDOW_MANAGER_PROPERTY = "geoblender_constraints"
 OVERLAY_PROPERTY = "geoblender_constraints_overlay"
 """El de la propiedad de ``WindowManager`` de «Ver restricciones y límites» (control 30)."""
 _OVERLAY_MODULE = f"{__package__.rpartition('.')[0]}.draw.constraints"
+_PANELS_MODULE = f"{__package__.rpartition('.')[0]}.ui.constraint_panels"
 MARK_FIELD = "FIELD"
 """El valor de ``mark_role`` cuando el papel de cada marca lo da un campo de la capa."""
 MARK_ROLE_ITEMS = [(MARK_FIELD, "From a field of the layer", ""),
@@ -101,6 +109,14 @@ def _surface_changed(_self: Any, _context: Any) -> None:
     module = sys.modules.get(_OVERLAY_MODULE)
     if module is not None:
         module.on_surface_changed()
+
+
+def _chosen_changed(_self: Any, _context: Any) -> None:
+    """Se eligió otra restricción en la lista de Restricciones…: la barra N la sigue (si no hay un
+    objeto de restricción activo)."""
+    module = sys.modules.get(_PANELS_MODULE)
+    if module is not None:
+        module.on_chosen_changed()
 
 
 class GEOBLENDER_PG_core_layer_choice(bpy.types.PropertyGroup):
@@ -232,7 +248,12 @@ class GEOBLENDER_PG_core_constraints(bpy.types.PropertyGroup):
 
     constraints: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_core_constraint_item)
-    item_index: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
+    item_index: IntProperty(  # type: ignore[valid-type]
+        default=0, min=0, options=_STATIC, update=_chosen_changed)
+    selected: PointerProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_constraint_item, options=_STATIC)
+    selected_lines: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_core_report_line)
     only_problems: BoolProperty(  # type: ignore[valid-type]
         default=False, options=_STATIC,
         description="Show only the constraints that are incomplete or not valid")

@@ -10,6 +10,10 @@ Sobre el proyecto de ``tests.support.constraints_project`` (cinco restricciones,
   válida; la «activa» de una versión no cambia la otra.
 - **RF-012-04**: una dibujada en QGIS (sin código, sin tipo, motivo ni decisor) es incompleta
   y una que se corta a sí misma, no válida.
+- **RF-012-19 (T27)**: ``listed_constraint`` da la de un ``uid`` con el mismo estado y los mismos
+  problemas que la lista entera, en cada versión y sin ella, leyendo solo esa (la barra N
+  «Restricción» no espera a la lista); ``None`` si el proyecto no la tiene;
+  ``read_constraints(uid=…)`` lee solo una, en su capa.
 - **RF-012-18 (RNF-012-05, T26)**: ``shown_constraints_steps`` da las mismas restricciones en el
   mismo orden, con «activa» o «inactiva» en la versión según su parámetro, sin comprobarlas
   (la dibujada a medias y la que se corta a sí misma, activas y sin problemas): lo que necesita
@@ -130,6 +134,37 @@ class ListedConstraintsTest(cp.ConstraintsProjectCase):
                         for item in store.listed_constraints(self.project)}
         self.assertEqual(project_only["balsa"], "active")
 
+
+    def test_one_constraint_by_its_uid_is_the_same_as_in_the_list(self) -> None:
+        """RF-012-19: ``listed_constraint`` de cada una de las siete (en V01, en V02 y sin versión)
+        es la de la lista: la misma fila, el mismo estado y los mismos problemas (la desactivada en
+        V02, la incompleta y la no válida también); un ``uid`` que no existe, ninguna."""
+        for version in (self.v1, self.v2, None):
+            uid = None if version is None else version.uid
+            for item in store.listed_constraints(self.project, version=uid):
+                one = store.listed_constraint(self.project, item.constraint.uid, version=uid)
+                with self.subTest(version=uid, restriccion=item.constraint.name):
+                    self.assertIsNotNone(one)
+                    self.assertEqual((one.constraint.uid, one.constraint.fid, one.state),
+                                     (item.constraint.uid, item.constraint.fid, item.state))
+                    self.assertEqual([found.text("es") for found in one.problems],
+                                     [found.text("es") for found in item.problems])
+        self.assertIsNone(store.listed_constraint(self.project, "no-existe", version=self.v1.uid))
+
+    def test_read_constraints_by_uid_reads_only_that_one(self) -> None:
+        """RF-012-19: ``read_constraints(conn, uid=…)`` da solo la de ese ``uid`` (de la capa que
+        sea, con su geometría bit a bit) y ninguna si no existe ni si no hay tablas."""
+        with self.project.read() as conn:
+            every = cstore.read_constraints(conn)
+            self.assertEqual(len(every), 7)
+            for item in every:
+                (one,) = cstore.read_constraints(conn, uid=item.uid)
+                self.assertEqual((one.uid, one.code, one.layer, one.fid, one.parts is not None),
+                                 (item.uid, item.code, item.layer, item.fid, True))
+                for ring, wanted in zip((r for part in one.parts for r in part),
+                                        (r for part in item.parts for r in part), strict=True):
+                    self.assertTrue((ring == wanted).all())
+            self.assertEqual(cstore.read_constraints(conn, uid="no-existe"), ())
 
     def test_shown_constraints_skip_the_checks(self) -> None:
         """RF-012-18, RNF-012-05: para dibujarlas, las mismas siete restricciones en el mismo

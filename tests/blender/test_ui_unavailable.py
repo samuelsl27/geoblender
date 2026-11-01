@@ -125,8 +125,9 @@ class UnavailableNoteTest(unittest.TestCase):
             self.assertGreater(available, 40, language)
             # Bajan a medida que las specs entregan sus órdenes: con la 006 entregada (T28),
             # sus menús contextuales de superficie y de puntos ya se abren (con lo que aún no
-            # está, desactivado y con su «Disponible en 006 · …»).
-            self.assertGreaterEqual(len(unavailable), 25, language)
+            # está, desactivado y con su «Disponible en 006 · …»); con la 012 (T27), también el
+            # contextual «Restricción ▾».
+            self.assertGreaterEqual(len(unavailable), 24, language)
             self.assertEqual(sorted(set(FINDING) - set(unavailable)), [], language)
 
     def test_same_format_as_operators(self) -> None:
@@ -166,8 +167,8 @@ class UnavailableNoteTest(unittest.TestCase):
                     self.assertFalse(first.enabled and first.active)
             # Los de las entradas aún no entregadas (desde la 005/T25, sin los de Sondeos; desde
             # la 009/T18, sin Versión activa ▸, que ya es real; desde la 009/T19, sin el
-            # contextual «Versión ▾», con Cambiar estado…).
-            self.assertGreaterEqual(checked, 17, language)
+            # contextual «Versión ▾», con Cambiar estado…; desde la 012/T27, sin «Restricción ▾»).
+            self.assertGreaterEqual(checked, 16, language)
 
     def drawn_menus(self, hide: bool) -> dict[str, list]:
         """Lo que dibuja cada menú generado (salvo los circulares) con «Ocultar lo no

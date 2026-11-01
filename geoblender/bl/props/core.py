@@ -203,6 +203,9 @@ OBJECT_KINDS: list[tuple[str, str, str]] = [
     # Spec 012 (T25; RF-012-26; plan 012 §5.2.4): una marca del cliente guardada como intención.
     ("CLIENT_INTENTION", "Client intention",
      "A mark of the client saved as an intention: it never limits the design on its own"),
+    # Spec 012 (T27; RF-012-19; plan 012 §5.2.4): una restricción o un límite del proyecto.
+    ("CONSTRAINT", "Constraint",
+     "A constraint or a limit of the project, shown by its edges"),
 ]
 # El estado del dato al cargarlo (gb_dataset.status de un dato vivo, en mayúsculas).
 OBJECT_STATUSES: list[tuple[str, str, str]] = [

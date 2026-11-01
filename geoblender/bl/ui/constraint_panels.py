@@ -66,12 +66,29 @@ el papel (uno para todas o el campo con su correspondencia), el campo del nombre
 fecha (de un campo o una para todas), el documento de origen y la decisión de la propiedad.
 :func:`fill_intentions` regenera todo desde el proyecto, sin escribir
 (``core.constraints.store.listed_intentions``).
+
+**La restricción seleccionada** (T27; HU-012-2; RF-012-19, RF-010-06, RF-010-08; D-30): la barra N
+«Restricción» (``GEOBLENDER_PT_core_constraint``, de la Vista 3D) enseña, de la restricción del
+objeto ``CONSTRAINT`` activo (``bl.scene.constraint_views``: lo que carga «Cargar en la vista») o,
+sin él, de la elegida en la ventana Restricciones…, lo mismo que esa ventana (:func:`_draw_chosen`:
+su tipo, su motivo, su decisor, su fecha, su prioridad, la decisión enlazada, su estado en la
+versión activa y sus parámetros con su valor en la versión y en el proyecto y su insignia de
+tipo) y las cifras de su **última verificación** (:func:`check_lines`:
+``reserves.compliance_store.zone_check``, por final su superficie, su veredicto y sus cifras
+registradas con su insignia). **Nada se lee al
+dibujar** (:func:`read_selected` rellena ``WindowManager.geoblender_constraints.selected``): lo hace
+al cambiar el objeto activo, tras cada lectura del proyecto cambiado y tras cargar un ``.blend``
+(``view_panels.add_card_listener``), al elegir otra fila de la lista (:func:`on_chosen_changed`), al
+cambiar la versión activa y al llenar la lista. Esas mismas líneas (:func:`object_lines`) las
+enseñan también «Elemento activo» y «Cifras de la selección» de la 010 (``view_panels``): el dato de
+una restricción es su capa, que no lleva las cifras de otra operación.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import logging
+import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -93,6 +110,7 @@ from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
 from ...gis.masks import access as mask_access
 from ...gis.masks import store as mask_store
+from ...reserves import compliance_store
 from .. import compat
 from ..props.core_constraints import (
     MARK_FIELD,
@@ -100,10 +118,13 @@ from ..props.core_constraints import (
     OVERLAY_PROPERTY,
     WINDOW_MANAGER_PROPERTY,
 )
+from ..scene import project_session
 from ..scene import versions as scene_versions
-from ..scene.constraint_views import terrain_choices
-from . import labels, res_panels
+from ..scene.constraint_views import CONSTRAINT_KIND, CONSTRAINT_PROPERTY, terrain_choices
+from . import labels, provenance, res_panels, view_panels
 from .commands import catalog, text
+from .context import active_object, object_kind
+from .view_panels import ROW_FIELD, ROW_FIGURE, ROW_HEADING, ROW_NONE, CardLine
 
 LOGGER = logging.getLogger("geoblender.bl.ui")
 TRANSLATION_CONTEXT = "Geoblender"
@@ -175,6 +196,21 @@ INTENTION_ROWS = 5
 INTENTION_NAME_FACTOR = 0.45
 INTENTION_ROLE_FACTOR = 0.6
 """Cómo reparte la fila de una intención su ancho: su nombre, su papel y su fecha."""
+
+
+SELECTED_PANEL = "GEOBLENDER_PT_core_constraint"
+SELECTED_TAB = "Constraint"  # msgid de la pestaña y del título de la barra N
+OBJECT_SOURCE = "object"
+WINDOW_SOURCE = "window"
+"""De dónde sale la restricción de la barra N: de su objeto activo o de la fila elegida en la
+ventana Restricciones…."""
+VERDICT_FAILS = "fails"
+VERDICT_COMPLIES = "complies"
+COUNTS_CUT = "cut"
+COUNTS_FILL = "fill"
+COUNTS_ANY = "any"
+"""Los valores de ``reserves.compliance`` que mira el texto de un final (el nivel de ``bl`` no
+importa su enumerado: son los de la tabla de la verificación)."""
 
 
 def view() -> Any | None:
@@ -526,6 +562,7 @@ def fill_constraints(project: Any) -> int:
     shown.overlay_surfaces.clear()
     for choice in terrain_choices(project, None if version is None else version.uid):
         shown.overlay_surfaces.add().name = choice.name
+    read_selected_safely()  # la barra N, si es de la elegida en la lista
     return len(shown.constraints)
 
 
@@ -1264,8 +1301,291 @@ class GEOBLENDER_PT_core_marks(bpy.types.Panel):
         draw_marks(self.layout, context)
 
 
+# --- La restricción seleccionada: la barra N «Restricción» (T27; RF-012-19) ----------------------
+
+
+def wanted(context: Any = None) -> tuple[str, str]:
+    """El ``uid`` de la restricción que enseña la barra N y de dónde sale (:data:`OBJECT_SOURCE`
+    o :data:`WINDOW_SOURCE`): la del objeto activo si es el objeto de una restricción del
+    proyecto abierto; si no, la elegida en la lista de Restricciones…, si está leída; si no,
+    ``("", "")``. No lee el proyecto."""
+    context = bpy.context if context is None else context
+    project = project_session.current()
+    if project is None:
+        return "", ""
+    obj = active_object(context)
+    if object_kind(obj) == CONSTRAINT_KIND and \
+            str(getattr(getattr(obj, "geoblender", None), "project_uid", "")) == project.uid:
+        uid = str(obj.get(CONSTRAINT_PROPERTY, "") or "")
+        if uid:
+            return uid, OBJECT_SOURCE
+    shown = view()
+    if shown is not None and 0 <= shown.item_index < len(shown.constraints):
+        return str(shown.constraints[shown.item_index].uid), WINDOW_SOURCE
+    return "", ""
+
+
+def _verdict_text(verdict: str) -> str:
+    """El veredicto de un recinto como se lee (RF-012-22): «Cumple», «No cumple», «Afectación sin
+    juicio» (preferible no afectar), «Sin comprobar (R-40)» (requiere acceso) o, sin veredicto, que
+    el recinto no entró en la verificación."""
+    if verdict == VERDICT_COMPLIES:
+        return tr("Complies")
+    if verdict == VERDICT_FAILS:
+        return tr("Does not comply")
+    if verdict == "not_judged":
+        return tr("Affected, not judged")
+    if verdict == "unchecked":
+        return tr("Not checked (R-40)")
+    return tr("Not in the verification")
+
+
+def _final_text(final: Any) -> str:
+    """La línea de un final de una verificación (``reserves.compliance_store.ZoneFinal``): su
+    superficie, el veredicto y, si algo cuenta en el recinto, los m³ de corte, de relleno o de
+    movimiento."""
+    verdict = _verdict_text(final.verdict)
+    volume = "" if final.counted_m3 is None else format_number(final.counted_m3, 0)
+    if volume and final.counts == COUNTS_CUT:
+        return tr("«{surface}»: {verdict} · {volume} m³ of cut", surface=final.surface,
+                  verdict=verdict, volume=volume)
+    if volume and final.counts == COUNTS_FILL:
+        return tr("«{surface}»: {verdict} · {volume} m³ of fill", surface=final.surface,
+                  verdict=verdict, volume=volume)
+    if volume and final.counts == COUNTS_ANY:
+        return tr("«{surface}»: {verdict} · {volume} m³ of movement", surface=final.surface,
+                  verdict=verdict, volume=volume)
+    return tr("«{surface}»: {verdict}", surface=final.surface, verdict=verdict)
+
+
+def check_lines(version: Any, found: Any) -> list[CardLine]:
+    """Las líneas de la última verificación de una restricción en la versión activa ``version``
+    (``None``: sin ella) según ``found`` (``reserves.compliance_store.ZoneCheck``, o ``None`` si
+    la versión no tiene ninguna), en el idioma de Geoblender (RF-012-19): su título con su nombre
+    (en alerta si está obsoleta) y, por final, su superficie, el veredicto (en alerta si no
+    cumple) y sus cifras registradas con su insignia de tipo, su nombre y su valor con su unidad
+    (RF-010-06, RF-010-08)."""
+    if version is None:
+        return [CardLine(ROW_NONE, tr("No active version: choose one to see its verification"))]
+    if found is None:
+        return [CardLine(ROW_NONE, tr("No verification in {version}", version=version.code))]
+    title = tr("Last verification in {version}: {name}", version=version.code, name=found.name)
+    if found.stale:
+        title = f"{title} · {tr('out of date')}"
+    shown = language()
+    lines = [CardLine(ROW_HEADING, title, alert=found.stale)]
+    for final in found.finals:
+        lines.append(CardLine(ROW_FIELD, _final_text(final),
+                              alert=final.verdict == VERDICT_FAILS))
+        lines += [CardLine(ROW_FIGURE, f"{provenance.badge(figure.kind)} "
+                                       f"{figure.text(language=shown)}", uid=figure.uid)
+                  for figure in final.figures]
+    return lines
+
+
+def _zone_lines(project: Any, conn: Any, code: str) -> list[CardLine]:
+    """:func:`check_lines` de la restricción de código ``code`` en la versión activa, leído de
+    ``conn`` (una lectura de ``project``)."""
+    version = scene_versions.active()
+    found = None
+    if version is not None and is_code(code):
+        found = compliance_store.zone_check(conn, version.uid, code)
+    return check_lines(version, found)
+
+
+def object_lines(project: Any, obj: Any) -> list[CardLine]:
+    """Las líneas más que enseñan «Elemento activo» y «Cifras de la selección» de un objeto
+    ``CONSTRAINT`` (``view_panels.register_object_lines``): la restricción con su tipo y, debajo,
+    las cifras de su última verificación (:func:`check_lines`). Ninguna si el objeto ya no tiene
+    restricción en el proyecto."""
+    uid = str(obj.get(CONSTRAINT_PROPERTY, "") or "")
+    if not uid:
+        return []
+    with project.read() as conn:
+        found = constraint_store.read_constraints(conn, uid=uid)
+        if not found:
+            return []
+        item = found[0]
+        lines = _zone_lines(project, conn, item.code)
+    title = f"{type_label('' if item.ctype is None else item.ctype.value)} · " \
+            f"{item.shown_name(language())}"
+    return [CardLine(ROW_HEADING, title), *lines]
+
+
+def _redraw() -> None:
+    manager = getattr(bpy.context, "window_manager", None)
+    for window in getattr(manager, "windows", ()):
+        for area in window.screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+
+
+def _clear_selected(shown: Any) -> bool:
+    """Olvida la restricción de la barra N; dice si había una."""
+    scene_versions.remove_listener(on_version_changed)
+    had = bool(shown.selected.uid) or len(shown.selected_lines) > 0
+    if had:
+        shown.selected.uid = ""
+        shown.selected.parameters.clear()
+        shown.selected_lines.clear()
+    return had
+
+
+def read_selected(context: Any = None) -> bool:
+    """Lee del proyecto de la sesión la restricción que enseña la barra N (:func:`wanted`) con su
+    estado y sus parámetros en la versión activa (``gis.masks.store.listed_constraint``) y las
+    cifras de su última verificación (:func:`check_lines`) y las pone en
+    ``WindowManager.geoblender_constraints.selected`` y ``selected_lines``; sin ninguna, o si la
+    restricción ya no está, las olvida. No escribe en el proyecto; mientras esta sesión escribe en
+    él o está en WAL, no lo lee (lo hará la siguiente lectura de los indicadores). Devuelve si hay
+    una restricción. Si no se puede leer, la olvida y lo anota en el registro técnico."""
+    shown = view()
+    if shown is None:
+        return False
+    uid, _source = wanted(context)
+    project = project_session.current()
+    if not uid or project is None:
+        changed, found = _clear_selected(shown), False
+    elif not view_panels.readable(project):
+        return bool(shown.selected.uid)
+    else:
+        version = scene_versions.active()
+        try:
+            entry = mask_store.listed_constraint(project, uid,
+                                                 version=None if version is None else version.uid)
+            if entry is None:
+                changed, found = _clear_selected(shown), False
+            else:
+                store = ParameterStore(project)
+                with project.read() as conn:
+                    _put_constraint(shown.selected, entry, store, conn, version)
+                    lines = _zone_lines(project, conn, entry.constraint.code)
+                _put_lines(shown.selected_lines, [Line(line.text, line.alert) for line in lines])
+                # Mientras hay una restricción en la barra N, la versión activa la cambia; sin
+                # ella, nadie escucha (habilitar Geoblender no deja ninguna escucha de versión).
+                scene_versions.add_listener(on_version_changed)
+                changed, found = True, True
+        except (GeoblenderError, sqlite3.Error, OSError):
+            LOGGER.info("No se pudo leer del proyecto la restricción seleccionada",
+                        exc_info=True)
+            changed, found = _clear_selected(shown), False
+    if changed:
+        _redraw()
+    return found
+
+
+def read_selected_safely() -> None:
+    """:func:`read_selected` para lo que llama Blender: un fallo va al registro técnico."""
+    try:
+        read_selected()
+    except Exception:  # noqa: BLE001 - lo que llama Blender no lo tumba
+        LOGGER.exception("Falló la lectura de la restricción seleccionada")
+
+
+def on_card_read() -> None:
+    """Lo que se apunta en ``view_panels.add_card_listener``: se volvió a leer la ficha del
+    objeto activo (cambió el objeto, el proyecto o el fichero), así que también esta."""
+    read_selected_safely()
+
+
+def on_chosen_changed() -> None:
+    """Se eligió otra fila de la lista de Restricciones… (``item_index``)."""
+    read_selected_safely()
+
+
+def on_version_changed() -> None:
+    """Lo que se apunta en ``bl.scene.versions``: con otra versión activa, el estado, los
+    parámetros y la verificación son los de esa."""
+    read_selected_safely()
+
+
+def on_project_changed(_project: Any) -> None:
+    """Lo que se apunta en ``project_session``: con otro proyecto (o ninguno), olvida la
+    restricción; con uno nuevo, la barra N no lee nada hasta que se selecciona algo."""
+    shown = view()
+    if shown is not None and _clear_selected(shown):
+        _redraw()
+
+
+def choose_active(context: Any = None) -> bool:
+    """Elige en la lista de Restricciones… la restricción del objeto activo (PC §3.7: «Editar la
+    restricción…» abre la ventana en la activa); dice si el objeto activo es el de una de la
+    lista. Sin ella, la lista queda como estaba."""
+    context = bpy.context if context is None else context
+    shown = view()
+    obj = active_object(context)
+    if shown is None or object_kind(obj) != CONSTRAINT_KIND:
+        return False
+    uid = str(obj.get(CONSTRAINT_PROPERTY, "") or "")
+    for index, item in enumerate(shown.constraints):
+        if uid and item.uid == uid:
+            shown.item_index = index
+            read_selected_safely()
+            return True
+    return False
+
+
+def draw_selected(layout: Any, context: Any) -> None:
+    """La barra N «Restricción» (véase el módulo), de lo ya leído."""
+    shown = view()
+    if shown is None or not shown.selected.uid:
+        return
+    width = labels.sidebar_width(context)
+    _draw_chosen(layout, shown.selected, width, _write_unavailable() is None)
+    for line in shown.selected_lines:
+        _draw_line(layout, line, width)
+
+
+class GEOBLENDER_PT_core_constraint(bpy.types.Panel):
+    """The constraint or limit selected: type, buffers, weight, priority, reason, decider, date,
+    decision, state in the active version and the figures of its last verification"""
+
+    bl_idname = SELECTED_PANEL
+    bl_label = SELECTED_TAB
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = SELECTED_TAB
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return bool(wanted(context)[0])
+
+    def draw(self, context: Any) -> None:
+        draw_selected(self.layout, context)
+
+
+def localize() -> None:
+    """La pestaña y el título de la barra N «Restricción» en el idioma de la interfaz (antes de
+    registrar, y otra vez al cambiar el idioma)."""
+    GEOBLENDER_PT_core_constraint.bl_category = tr("Constraint")
+    GEOBLENDER_PT_core_constraint.bl_label = tr("Constraint")
+
+
+def install() -> None:
+    """Apunta las escuchas de la restricción seleccionada: la ficha del objeto activo y el proyecto
+    de la sesión, y las líneas más de «Elemento activo» y «Cifras de la selección» de los objetos
+    ``CONSTRAINT`` (la de la versión activa, solo mientras hay una restricción en la barra N);
+    idempotente."""
+    view_panels.add_card_listener(on_card_read)
+    view_panels.register_object_lines(CONSTRAINT_KIND, object_lines)
+    project_session.add_listener(on_project_changed)
+
+
+def uninstall() -> None:
+    """Quita lo que puso :func:`install` y olvida la restricción de la barra N; idempotente."""
+    project_session.remove_listener(on_project_changed)
+    scene_versions.remove_listener(on_version_changed)
+    view_panels.unregister_object_lines(CONSTRAINT_KIND, object_lines)
+    view_panels.remove_card_listener(on_card_read)
+    shown = view()
+    if shown is not None:
+        _clear_selected(shown)
+
+
 # En orden de registro (las listas, antes de la ventana que las dibuja).
 classes: tuple[type, ...] = (GEOBLENDER_PT_core_limits, GEOBLENDER_UL_core_constraints,
                              GEOBLENDER_PT_core_constraints, GEOBLENDER_UL_core_sectors,
                              GEOBLENDER_UL_core_hits, GEOBLENDER_PT_core_search,
-                             GEOBLENDER_UL_core_intentions, GEOBLENDER_PT_core_marks)
+                             GEOBLENDER_UL_core_intentions, GEOBLENDER_PT_core_marks,
+                             GEOBLENDER_PT_core_constraint)

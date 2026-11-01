@@ -6983,3 +6983,49 @@ es = "Muestra las restricciones y los límites sobre la Vista 3D mientras se dis
 
 ["Surface of the project the constraints are drawn on over the 3D view (empty: the most recent grid of the project)"]
 es = "Superficie del proyecto sobre la que se dibujan las restricciones en la Vista 3D (vacía: la rejilla más reciente del proyecto)"
+
+# La restricción seleccionada (spec 012, T27; RF-012-19; plan 012 §5.3.4, D-30): el tipo CONSTRAINT
+# de la vista y la barra N «Restricción» (bl/props/core.py, bl/scene/constraint_views.py y
+# bl/ui/constraint_panels.py; «Constraint» y «Constraints» ya están arriba).
+
+["A constraint or a limit of the project, shown by its edges"]
+es = "Una restricción o un límite del proyecto, dibujado por sus aristas"
+
+["Last verification in {version}: {name}"]
+es = "Última verificación en {version}: {name}"
+
+["out of date"]
+es = "obsoleta"
+
+["No verification in {version}"]
+es = "Sin verificación en {version}"
+
+["No active version: choose one to see its verification"]
+es = "Sin versión activa: elija una para ver su verificación"
+
+["Complies"]
+es = "Cumple"
+
+["Does not comply"]
+es = "No cumple"
+
+["Affected, not judged"]
+es = "Afectación sin juicio"
+
+["Not checked (R-40)"]
+es = "Sin comprobar (R-40)"
+
+["Not in the verification"]
+es = "No entra en la verificación"
+
+["«{surface}»: {verdict}"]
+es = "«{surface}»: {verdict}"
+
+["«{surface}»: {verdict} · {volume} m³ of cut"]
+es = "«{surface}»: {verdict} · {volume} m³ de corte"
+
+["«{surface}»: {verdict} · {volume} m³ of fill"]
+es = "«{surface}»: {verdict} · {volume} m³ de relleno"
+
+["«{surface}»: {verdict} · {volume} m³ of movement"]
+es = "«{surface}»: {verdict} · {volume} m³ de movimiento"

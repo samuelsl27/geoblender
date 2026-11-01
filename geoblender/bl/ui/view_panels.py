@@ -69,6 +69,12 @@ tiene: hasta que la cubicación, R-38, registre las primeras). **No mide nada**:
 volúmenes de la geometría; y las cifras que anota cada objeto (``Object.geoblender.figures``,
 solo para mostrarlas) no son su fuente.
 
+**Con las restricciones** (spec 012, T27; RF-012-19): un módulo puede dar, de un tipo de objeto
+cuyo dato no lleva por sí mismo las cifras que le tocan (una restricción: las de su última
+verificación, que escribió otra operación), unas líneas más para la ficha y para la ventana de
+las cifras de la selección (:func:`register_object_lines`: ``provider(proyecto, objeto)`` →
+:class:`CardLine`), y avisarse de que la ficha se volvió a leer (:func:`add_card_listener`).
+
 **Con las versiones** (spec 009, T25; RF-009-20, RF-009-30, RF-009-09; plan 009 A11 y D-9):
 
 - el **inventario** tiene una fila por versión («V01 · Definitiva», con el icono de su estado,
@@ -107,6 +113,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import weakref
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -272,6 +279,12 @@ class _State:
 
 
 _STATE = _State()
+
+ObjectLines = Callable[[Any, Any], "Sequence[CardLine]"]
+"""Las líneas más de la ficha y de las cifras de la selección que da un módulo de un objeto de su
+tipo: ``provider(proyecto, objeto)``."""
+_OBJECT_LINES: dict[str, ObjectLines] = {}
+_CARD_LISTENERS: list[Callable[[], None]] = []
 
 
 class _Inventory:
@@ -518,12 +531,64 @@ def _put_lines(rows: Any, lines: Sequence[CardLine]) -> None:
         row.uid = line.uid
 
 
-def _fill(view: Any, project_uid: str, uid: str, found: ItemCard | None) -> None:
-    """Pone la ficha leída del dato ``uid`` (``None``: el proyecto ya no lo tiene)."""
+def register_object_lines(kind: str, provider: ObjectLines) -> None:
+    """Pone quien da las líneas más de los objetos de ``kind`` (``Object.geoblender.kind``) en la
+    ficha de «Elemento activo» y en las «Cifras de la selección» (RF-012-19); si ya había uno, lo
+    sustituye."""
+    _OBJECT_LINES[kind] = provider
+
+
+def unregister_object_lines(kind: str, provider: ObjectLines | None = None) -> None:
+    """Quita las líneas más de ``kind`` (si se dice ``provider``, solo si siguen siendo las de
+    ese); sin ellas, nada."""
+    if provider is None or _OBJECT_LINES.get(kind) is provider:
+        _OBJECT_LINES.pop(kind, None)
+
+
+def add_card_listener(listener: Callable[[], None]) -> None:
+    """Apunta ``listener`` para llamarlo cada vez que se vuelve a leer la ficha del objeto activo
+    (al cambiar el objeto activo, tras cada lectura del proyecto cambiado y tras cargar un
+    ``.blend``: la barra N «Restricción» se pone al día con la misma ocasión); si ya estaba, no
+    hace nada."""
+    if listener not in _CARD_LISTENERS:
+        _CARD_LISTENERS.append(listener)
+
+
+def remove_card_listener(listener: Callable[[], None]) -> None:
+    """Deja de avisar a ``listener``; si no estaba, nada."""
+    if listener in _CARD_LISTENERS:
+        _CARD_LISTENERS.remove(listener)
+
+
+def readable(project: Project) -> bool:
+    """Si ahora se puede leer ``project`` para una ficha: no mientras esta sesión escribe en él ni
+    mientras QGIS lo dejó en WAL (leerlo haría una copia privada); lo hará la siguiente lectura
+    de los indicadores."""
+    return not (getattr(project, "writing", False) or _in_wal(project))
+
+
+def _object_lines(project: Project, obj: Any) -> list[CardLine]:
+    """Las líneas más que da el módulo del tipo de ``obj`` (ninguna si no hay o si fallan: lo
+    que se lee del proyecto no tumba la ficha)."""
+    provider = _OBJECT_LINES.get(str(getattr(getattr(obj, OBJECT_PROPERTY, None), "kind", "")))
+    if provider is None:
+        return []
+    try:
+        return list(provider(project, obj))
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.info("No se pudieron leer las líneas más de «%s»", getattr(obj, "name", ""),
+                    exc_info=True)
+        return []
+
+
+def _fill(view: Any, project_uid: str, uid: str, found: ItemCard | None,
+          extra: Sequence[CardLine] = ()) -> None:
+    """Pone la ficha leída del dato ``uid`` (``None``: el proyecto ya no lo tiene), con las líneas
+    más del objeto (``extra``)."""
     view.card_uid = uid
     view.card_project = project_uid
     view.card_found = found is not None
-    _put_lines(view.card, card_lines(found) if found is not None else ())
+    _put_lines(view.card, [*card_lines(found), *extra] if found is not None else ())
 
 
 def read_card(context: Any = None) -> bool:
@@ -553,7 +618,7 @@ def read_card(context: Any = None) -> bool:
                         exc_info=True)
             changed = _clear(view)
         else:
-            _fill(view, project.uid, uid, found)
+            _fill(view, project.uid, uid, found, _object_lines(project, _active_object(context)))
             changed = True
     if changed:
         _redraw()
@@ -565,6 +630,11 @@ def _read_safely() -> None:
         read_card()
     except Exception:  # noqa: BLE001 - lo que llama Blender no lo tumba
         LOGGER.exception("Falló la lectura de la ficha del objeto activo")
+    for listener in list(_CARD_LISTENERS):
+        try:
+            listener()
+        except Exception:  # noqa: BLE001 - uno que falla no para a los demás
+            LOGGER.exception("Falló una escucha de la ficha del objeto activo")
 
 
 def _redraw() -> None:
@@ -1230,17 +1300,19 @@ def fill_selection_figures(context: Any = None) -> int:
     if view is None or project is None:
         return 0
     uids: dict[str, None] = {}
+    extra: list[CardLine] = []
     for obj in selected_objects(context):
         uid, owner = shown_by(obj)
         if uid and owner == project.uid:
             uids[uid] = None
+            extra += _object_lines(project, obj)
     # Al usarlo: registrar no carga core.provenance.importer (spec 008, T65).
     from ...core.views import card
 
     found = sorted(card.dataset_figures(project, list(uids), marks=True) if uids else (),
                    key=lambda item: (item.record.name.casefold(), item.record.name))
     view.selection_project = project.uid
-    _put_lines(view.selection, selection_lines(found))
+    _put_lines(view.selection, [*selection_lines(found), *extra])
     return len(found)
 
 

@@ -140,6 +140,9 @@ BRANCHES: dict[str, tuple[tuple[str, str], ...]] = {
     "VOLUME_DIFFERENCE": (("volumetrics", "Volumetrics"),),
     # Las intenciones del cliente (spec 012, T25; RF-012-26): datos del proyecto, no de una versión.
     "CLIENT_INTENTION": (("constraints", "Constraints"),),
+    # Las restricciones y los límites (spec 012, T27; RF-012-19): datos del proyecto, como las
+    # intenciones; con ellas en la misma rama.
+    "CONSTRAINT": (("constraints", "Constraints"),),
 }
 # El estado de un dato vivo en su nombre generado y en Object.geoblender.status.
 STATUS_TEXT: dict[DatasetStatus, str] = {

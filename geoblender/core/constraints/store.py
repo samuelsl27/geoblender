@@ -327,20 +327,25 @@ def _text_date(value: date | None) -> str | None:
 
 
 def read_constraints(conn: sqlite3.Connection,
-                     layers: Mapping[GeometryKind, str] | None = None) -> tuple[Constraint, ...]:
+                     layers: Mapping[GeometryKind, str] | None = None, *,
+                     uid: str | None = None) -> tuple[Constraint, ...]:
     """Las restricciones de las tres capas, por capa (polígonos, líneas, puntos) y fid; ninguna
     si no existen las tablas. Con ``layers`` (geometría → tabla), solo las de esas tablas (una
-    copia congelada con otro nombre, al reproducir); su ``layer`` es el de su geometría. Lo que no rellenó QGIS queda vacío: un tipo fuera de la lista
+    copia congelada con otro nombre, al reproducir); su ``layer`` es el de su geometría. Con
+    ``uid``, solo la de ese ``uid`` (ninguna, si no está; la barra N de la restricción
+    seleccionada, spec 012, T27). Lo que no rellenó QGIS queda vacío: un tipo fuera de la lista
     (no puede estar: ``CHECK``) o ``NULL`` es ``None``; una fecha que no lo es, ``None``."""
     chosen = CONSTRAINT_LAYERS if layers is None else layers
     present = {str(row[0]) for row in conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table'")}
     found: list[Constraint] = []
+    where, args = ("", ()) if uid is None else (" WHERE uid = ?", (str(uid),))
     for kind, table in chosen.items():
         if table not in present:
             continue
         columns = ", ".join(_CONSTRAINT_COLUMNS)
-        for row in conn.execute(f'SELECT fid, geom, {columns} FROM "{table}" ORDER BY fid'):
+        for row in conn.execute(f'SELECT fid, geom, {columns} FROM "{table}"{where} ORDER BY fid',
+                                args):
             fid, blob, uid, code, name, ctype, priority, reason, decided_by, decided_on, \
                 decision_uid, intention_uid, source_input, source_fid = row
             parts = () if blob is None else _read_parts(blob)[1]

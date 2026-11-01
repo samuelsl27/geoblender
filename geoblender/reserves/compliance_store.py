@@ -36,6 +36,8 @@ RF-012-28; plan 012 §5.2.3, A11, D-15, D-28, D-40, D-42, D-43).
   llama «Recalcular lo obsoleto» desde ``bl`` y avanza sus pasos la cola de ``res``.
 - :func:`reproduce_verify` (:data:`REPRODUCE`): con las máscaras, las superficies y el espesor
   congelados, sin el proyecto.
+- :func:`zone_check` (T27; RF-012-19): lo que dice la última verificación vigente de una versión
+  de una restricción (su veredicto y sus cifras por final), para la barra N «Restricción».
 - :func:`freeze_findings` (T18; RF-012-25; D-7, D-29): la comprobación de ``res`` al congelar,
   que ``bl`` registra con ``core.versions.freeze.register_freeze_check``: las verificaciones de
   la versión obsoletas, con recintos que no cumplen (m³ por recinto) o con la marca de
@@ -82,7 +84,8 @@ from ..core.provenance.contract import (
     ReproduceFunction,
     Tolerance,
 )
-from ..core.provenance.figures import FigureSpec
+from ..core.provenance.figures import RECORD_COLUMNS as FIGURE_COLUMNS
+from ..core.provenance.figures import FigureRecord, FigureSpec, scope_key
 from ..core.provenance.operations import (
     CANCEL_REASON_PREFIX,
     CANCELLATIONS,
@@ -159,6 +162,8 @@ __all__ = [
     "CheckWriter",
     "StoredCheck",
     "VerifyResult",
+    "ZoneCheck",
+    "ZoneFinal",
     "begin_verify",
     "check_sources",
     "dataset_locator",
@@ -178,6 +183,7 @@ __all__ = [
     "verify_run",
     "verify_settings",
     "verify_steps",
+    "zone_check",
 ]
 
 MODULE = "res"
@@ -1357,3 +1363,108 @@ def freeze_findings(conn: sqlite3.Connection, version_uid: str) -> tuple[FreezeF
                                              surface=str(row[0]))))
     surfaces.sort(key=lambda item: (item.name, item.item_uid))
     return tuple(found + surfaces)
+
+
+# --- La última verificación de una restricción (T27; RF-012-19) ---------------------------------
+
+_LAST_VERIFICATION = (  # por gb_operation_revision: la última hecha y vigente de la versión
+    "SELECT o.uid, o.settings FROM gb_operation AS o "
+    "JOIN gb_revision AS r ON r.uid = o.revision_uid "
+    "WHERE o.op_type = ? AND o.status = 'done' AND o.superseded_by IS NULL "
+    "AND r.version_uid = ? ORDER BY o.fid DESC LIMIT 1"
+)
+_ZONE_ROWS = (  # lo del recinto y los nombres de los finales (recinto vacío)
+    'SELECT zone, "final", quantity, value, note FROM "{table}" '
+    "WHERE zone IN (?, ?, '') ORDER BY fid"
+)
+_ZONE_FIGURES = (  # por el índice (clave, ámbito): una consulta por final y recinto
+    f"SELECT {FIGURE_COLUMNS} FROM gb_figure WHERE key IN ({{marks}}) AND scope_key = ? "
+    "AND operation_uid = ? ORDER BY fid"
+)
+_VERDICT_RANK = {"": 0, Verdict.UNCHECKED.value: 1, Verdict.NOT_JUDGED.value: 2,
+                 Verdict.COMPLIES.value: 3, Verdict.FAILS.value: 4}
+"""Cuál manda cuando una restricción tiene dos recintos (un límite legal y su banda hacia
+dentro): no cumplir manda sobre todo."""
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneFinal:
+    """Lo de una restricción en un final de una verificación: su posición (desde 1) y el nombre de
+    su superficie, el veredicto (:class:`~.compliance.Verdict`; vacío si el recinto no entró en la
+    verificación), lo que cuenta en él (:class:`~.compliance.Counts`) con sus m³ (``None`` si nada
+    cuenta) y sus cifras registradas, en su orden. Con una banda hacia dentro (un límite legal),
+    manda el peor veredicto de los dos recintos y las cifras son las de los dos."""
+
+    position: int
+    surface: str
+    verdict: str
+    counts: str
+    counted_m3: float | None
+    figures: tuple[FigureRecord, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneCheck:
+    """La última verificación vigente de una versión en lo que toca a una restricción: su
+    operación y su nombre, si está obsoleta (``gb_stale``, la caché de la 008) y lo de cada final
+    (:class:`ZoneFinal`)."""
+
+    operation_uid: str
+    name: str
+    stale: bool
+    finals: tuple[ZoneFinal, ...]
+
+
+def zone_check(conn: sqlite3.Connection, version_uid: str, code: str) -> ZoneCheck | None:
+    """Lo que dice de la restricción de código ``code`` la última verificación vigente (hecha, sin
+    sustituir, de cualquier revisión) de la versión ``version_uid`` (RF-012-19): por cada final
+    su superficie, su veredicto y sus cifras registradas (``gb_figure``, con el ámbito
+    ``{check, final, zone}`` de :func:`_figures`). ``None`` si la versión no tiene ninguna
+    verificación o su tabla no se puede leer. Lee ``conn`` (una instantánea) y no escribe; una
+    restricción que no entró en la verificación (desactivada en la versión) sale con sus finales
+    sin veredicto ni cifras."""
+    found = conn.execute(_LAST_VERIFICATION, (VERIFY, version_uid)).fetchone()
+    if found is None:
+        return None
+    uid, text = str(found[0]), json.loads(str(found[1]))
+    name = str((text if isinstance(text, Mapping) else {}).get("name") or uid[:8])
+    try:
+        table = dataset_registry.get(conn, dataset_name(TABLE, name), version_uid=version_uid)
+    except ValueError:
+        return None
+    if table is None or table.operation_uid != uid:
+        return None
+    inner = f"{code}{INNER_SUFFIX}"
+    try:
+        rows = conn.execute(_ZONE_ROWS.format(table=table.locator), (code, inner)).fetchall()
+    except sqlite3.Error:
+        return None
+    surfaces = {int(final): str(note) for zone, final, quantity, _value, note in rows
+                if quantity == "surface" and not zone}
+    verdicts: dict[tuple[int, str], str] = {}
+    counted: dict[tuple[int, str], tuple[float | None, str]] = {}
+    for zone, final, quantity, value, note in rows:
+        if not zone:
+            continue
+        if quantity == "verdict":
+            verdicts[(int(final), str(zone))] = str(note)
+        elif quantity == "counted_m3":
+            counted[(int(final), str(zone))] = (None if value is None else float(value),
+                                                str(note or ""))
+    marks = ", ".join("?" for _ in FIGURES)
+    keys = tuple(figure.key for figure in FIGURES)
+    finals: list[ZoneFinal] = []
+    for position in sorted(surfaces):
+        figures: list[FigureRecord] = []
+        for zone in (code, inner):
+            scope = {"check": name, "final": position, "zone": zone}
+            figures += [FigureRecord.from_row(row) for row in conn.execute(
+                _ZONE_FIGURES.format(marks=marks), (*keys, scope_key(scope), uid))]
+        decisive = max((code, inner), key=lambda zone: _VERDICT_RANK.get(
+            verdicts.get((position, zone), ""), 0))
+        verdict = verdicts.get((position, decisive), "")
+        value, counts = counted.get((position, decisive), (None, ""))
+        finals.append(ZoneFinal(position, surfaces[position], verdict, counts, value,
+                                tuple(figures)))
+    stale = conn.execute(_STALE, (uid,)).fetchone() is not None
+    return ZoneCheck(uid, name, stale, tuple(finals))

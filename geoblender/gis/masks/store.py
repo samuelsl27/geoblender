@@ -15,7 +15,8 @@ RF-012-16, RF-012-28; plan 012 §5.2.3, A5, A11, D-24).
   operación): la comprobación en frío de 500 restricciones tarda 0,45 s de una vez, y ninguna
   llamada del hilo de Blender pasa de 0,2 s mientras compila (RNF-012-06).
 - :func:`listed_constraints` (T23; RF-012-04, RF-012-19) lista las restricciones con su estado en
-  una versión (incompleta, no válida, activa o inactiva) y lo que les falta.
+  una versión (incompleta, no válida, activa o inactiva) y lo que les falta;
+  :func:`listed_constraint` (T27) lo mismo de una sola, por su ``uid`` (la barra N «Restricción»).
 - :func:`compile_run` da sus pasos (``gis.masks.compile.compile_steps``) y guarda el resultado
   con :class:`MaskWriter` (A11): la rejilla de clases por teselas en su temporal con su hash, los
   hashes de las tablas fuera de la transacción (por tramos de filas, T35: ningún paso pasa de
@@ -141,6 +142,7 @@ __all__ = [
     "declared_limits",
     "declared_limits_steps",
     "gather",
+    "listed_constraint",
     "listed_constraints",
     "listed_constraints_steps",
     "live_searches",
@@ -686,6 +688,21 @@ def _switched_off(item: Constraint, resolved: Mapping[str, object]) -> bool:
     return (found.value if isinstance(found, ResolvedParam) else found) is False
 
 
+def _listed(item: Constraint, resolved: Mapping[str, object],
+            problems: tuple[Incomplete, ...]) -> ListedConstraint:
+    """La restricción ``item`` con su estado, dados sus parámetros resueltos y lo que le falta
+    (``problems``, que solo cuenta si no está desactivada)."""
+    if _switched_off(item, resolved):
+        state = "inactive"
+    elif any(problem.problem in _INVALID_PROBLEMS for problem in problems):
+        state = "invalid"
+    elif problems:
+        state = "incomplete"
+    else:
+        state = "active"
+    return ListedConstraint(item, state, problems)
+
+
 def listed_constraints_steps(project: StoreProject, *, version: str | None = None
                              ) -> Generator[None, None, tuple[ListedConstraint, ...]]:
     """Las restricciones del proyecto (las tres capas, en su orden) con su estado en la versión
@@ -702,25 +719,30 @@ def listed_constraints_steps(project: StoreProject, *, version: str | None = Non
     by_item: dict[tuple[str, int], list[Incomplete]] = {}
     for found in problems:
         by_item.setdefault((found.layer, found.fid), []).append(found)
-    listed: list[ListedConstraint] = []
-    for item in constraints:
-        found_here = tuple(by_item.get((item.layer, item.fid), ()))
-        if _switched_off(item, resolved):
-            state = "inactive"
-        elif any(problem.problem in _INVALID_PROBLEMS for problem in found_here):
-            state = "invalid"
-        elif found_here:
-            state = "incomplete"
-        else:
-            state = "active"
-        listed.append(ListedConstraint(item, state, found_here))
-    return tuple(listed)
+    return tuple(_listed(item, resolved, tuple(by_item.get((item.layer, item.fid), ())))
+                 for item in constraints)
 
 
 def listed_constraints(project: StoreProject, *, version: str | None = None
                        ) -> tuple[ListedConstraint, ...]:
     """:func:`listed_constraints_steps` de una vez."""
     return drain(listed_constraints_steps(project, version=version))
+
+
+def listed_constraint(project: StoreProject, uid: str, *, version: str | None = None
+                      ) -> ListedConstraint | None:
+    """La restricción ``uid`` con su estado en la versión ``version`` (su uid; ``None``: los
+    valores del proyecto) y lo que le falta, como la da :func:`listed_constraints_steps` (el mismo
+    estado y los mismos problemas), pero leyendo y comprobando solo esa (T27; RF-012-19: la barra N
+    de la restricción seleccionada no espera a la lista entera). ``None`` si el proyecto no la
+    tiene. Solo lee."""
+    with project.read() as conn:
+        found = cstore.read_constraints(conn, uid=uid)
+        if not found:
+            return None
+        resolved = _resolved(conn, project, found, version)
+    problems = drain(check_steps(found, resolved))
+    return _listed(found[0], resolved, tuple(problems))
 
 
 def shown_constraints_steps(project: StoreProject, *, version: str | None = None
