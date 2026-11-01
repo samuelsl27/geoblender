@@ -690,7 +690,11 @@ class GEOBLENDER_UL_core_constraints(bpy.types.UIList):
 def _draw_chosen(layout: Any, item: Any, width: float, writable: bool) -> None:
     """La restricción elegida de la lista: tipo y nombre, estado y lo que le falta, motivo,
     decisor, fecha, decisión enlazada, sus parámetros (cada uno con «Cambiar…», la 008, de
-    ámbito la 009) y «Completar…» o «Editar…» (RF-012-19, RF-012-03)."""
+    ámbito la 009) y «Completar…» o «Editar…» (RF-012-19, RF-012-03). Los textos que pueden ser
+    largos (motivo, decisión enlazada, el nombre y el valor de cada parámetro: «V01: 8 m [ADO]»)
+    van en etiquetas propias partidas al ancho de la zona (``width``: el de la ventana o el de la
+    barra N, mucho menor) y el botón de un parámetro, debajo de ellos: una etiqueta de Blender no
+    parte el texto, lo corta con «…», y en una fila con un botón solo se queda con la mitad (T45)."""
     box = layout.box()
     title = f"{type_label(item.ctype)} · {item.name}"
     box.label(text=title, translate=False)
@@ -702,23 +706,23 @@ def _draw_chosen(layout: Any, item: Any, width: float, writable: bool) -> None:
     for problem in item.problems.splitlines():
         _draw_line(box, Line(problem, alert=True), width)
     details = box.column(align=True)
-    for msgid_text in (
-            tr("Reason: {value}", value=item.reason or res_panels.NOT_SHOWN),
-            tr("Decided by: {value}", value=item.decided_by or res_panels.NOT_SHOWN),
-            tr("Date of the decision: {value}", value=item.decided_on or res_panels.NOT_SHOWN),
-            tr("Priority: {value}", value=item.priority)):
-        details.label(text=msgid_text, translate=False)
+    texts = [tr("Reason: {value}", value=item.reason or res_panels.NOT_SHOWN),
+             tr("Decided by: {value}", value=item.decided_by or res_panels.NOT_SHOWN),
+             tr("Date of the decision: {value}", value=item.decided_on or res_panels.NOT_SHOWN),
+             tr("Priority: {value}", value=item.priority)]
     if item.decision:
-        details.label(text=tr("Linked decision: {value}", value=item.decision), translate=False)
+        texts.append(tr("Linked decision: {value}", value=item.decision))
+    for shown_text in texts:
+        labels.draw_wrapped(details, shown_text, width)
     if len(item.parameters):
         box.label(text=tr("Parameters"), translate=False)
     for line in item.parameters:
-        row = box.row(align=True)
-        row.enabled = writable
-        shown = f"{line.name}: {line.text}"
-        row.label(text=shown, translate=False)
+        block = box.column(align=True)
+        block.enabled = writable
+        labels.draw_wrapped(block, f"{line.name}:", width)
+        labels.draw_wrapped(block, line.text, width)
         if line.registered:
-            button = row.operator(SET_PARAMETER, text=tr("Change…"), translate=False)
+            button = block.operator(SET_PARAMETER, text=tr("Change…"), translate=False)
             button.key = line.key
     edit = box.row()
     edit.enabled = writable

@@ -773,7 +773,8 @@ class ConstraintsIntentionsTest(unittest.TestCase):
         view = self.choose("ermita_de_san_roque")
         self.assertEqual(view.constraints[view.item_index].decision, DECISION_TEXT)
         self.assertEqual(view.selected.decision, DECISION_TEXT)
-        self.assertIn(f"Decisión enlazada: {DECISION_TEXT}", self.selected_texts())
+        # Entera, aunque la barra N la parta en líneas a su ancho (T45).
+        self.assertIn(f"Decisión enlazada: {DECISION_TEXT}", " ".join(self.selected_texts()))
         self.assertNotIn(self.decision.uid, " ".join(self.selected_texts()))
         self.choose("talud_norte")
         self.assertEqual(self.view().selected.decision, "")
@@ -796,7 +797,7 @@ class ConstraintsIntentionsTest(unittest.TestCase):
         self.assertEqual(self.count(), (before[0] + 1, before[1], before[2]))
         self.assertEqual(self.constraints()["muro_de_piedra"].decision_uid, self.decision.uid)
         self.choose("muro_de_piedra")
-        self.assertIn(f"Decisión enlazada: {DECISION_TEXT}", self.selected_texts())
+        self.assertIn(f"Decisión enlazada: {DECISION_TEXT}", " ".join(self.selected_texts()))
         # Sin elegir decisión, el resto cambia y la decisión se queda.
         self.assertEqual(complete(uid=row.uid, ctype="NO_CUT", priority=2), {"FINISHED"})
         kept = self.constraints()["muro_de_piedra"]

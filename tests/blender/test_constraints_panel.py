@@ -392,13 +392,14 @@ class ConstraintPanelTest(unittest.TestCase):
         self.assertTrue(any("Intocable" in text and "Torre 132 kV" in text for text in texts),
                         texts)
         self.assertIn("Activa", texts)
-        self.assertTrue(any(text.startswith("Motivo: ") and "Torre 132 kV" in text
-                            for text in texts))
-        self.assertIn(f"Decidida por: {PERSON}", texts)
-        self.assertIn("Fecha de la decisión: 01/11/2026", texts)
-        self.assertIn("Prioridad: 3", texts)
+        # Las líneas largas se parten al ancho de la barra N (T45): enteras, en etiquetas propias.
+        joined = " ".join(texts)
+        self.assertIn(f"Motivo: {REASON}: Torre 132 kV", joined)
+        self.assertIn(f"Decidida por: {PERSON}", joined)
+        self.assertIn("Fecha de la decisión: 01/11/2026", joined)
+        self.assertIn("Prioridad: 3", joined)
         self.assertFalse(any(text.startswith("Decisión enlazada") for text in texts))
-        self.assertTrue(any(text.startswith("Resguardo hacia fuera: V01:") for text in texts))
+        self.assertIn("Resguardo hacia fuera: V01:", joined)
         edit = [item for item in layout.items if item.target == self.panels.COMPLETE_CONSTRAINT]
         self.assertEqual(len(edit), 1)
         self.assertEqual(edit[0].properties.uid, tower.uid)
@@ -547,6 +548,86 @@ class ConstraintPanelTest(unittest.TestCase):
             self.assertEqual(bpy.ops.geoblender.core_edit_constraints(), {"FINISHED"})
         self.assertEqual(view.constraints[view.item_index].ctype, "untouchable")
         self.assertEqual(view.selected.ctype, "untouchable")
+
+    def test_fb_the_parameters_the_decision_and_the_reason_are_read_whole(self) -> None:
+        """RF-012-19 (T45; hallazgo 1 del H3): en la barra N (unos 230 px de región) y en la
+        ventana Restricciones…, a escala 1,0 y 1,25, el texto de cada parámetro («V01: 8 m
+        [ADO]»), el de la decisión enlazada y el del motivo se leen enteros: cada uno en etiquetas
+        propias, partidas al ancho de la zona (``labels.draw_wrapped``), ninguna más ancha que
+        ella; el botón «Cambiar…» va debajo, entero, y sigue dando la clave de su parámetro; lo
+        que cabe en una línea no se parte; ninguna cifra ni texto cambia."""
+        labels, compat = _module("bl.ui.labels"), _module("bl.compat")
+        self.choose("untouchable")
+        view = self.view
+        sidebar = 180.0  # una región de 230 px menos sus márgenes (``labels.SIDEBAR_MARGIN_PX``)
+        reason = "Rendimiento de los límites y las restricciones con la propiedad (spec 012, T31)"
+        decision = ("15/09/2025 · Samuel (IMGA): la propiedad exige respetar la ermita para el "
+                    "diseño")
+        parameters = (
+            ("core.constraint.r_torre.buffer_out_m", "Resguardo hacia fuera", "V01: 8 m [ADO]"),
+            ("core.constraint.r_torre.buffer_in_m", "Resguardo hacia dentro del límite",
+             "V01: — · proyecto: 10 m [HIP] · cambiado por Samuel (IMGA) el 01/11/2026 para "
+             "que la torre no quede sin acceso desde el camino del norte, y otra vez después"),
+            ("core.constraint.r_torre.active", "Restricción activa", "V01: sí [ADO]"))
+
+        def put(target: Any) -> None:
+            target.reason, target.decision = reason, decision
+            target.parameters.clear()
+            for key, name, text in parameters:
+                line = target.parameters.add()
+                line.key, line.name, line.text, line.registered = key, name, text, True
+
+        def segment(texts: list[str], start: str, stop: str) -> list[str]:
+            """Las etiquetas desde la primera que empieza por ``start`` hasta la que empieza
+            por ``stop``, sin ella."""
+            first = next(i for i, text in enumerate(texts) if text.startswith(start))
+            last = next(i for i, text in enumerate(texts) if i > first and text.startswith(stop))
+            return texts[first:last]
+
+        def check(layout: Any, width: float, scale: float) -> None:
+            texts = [item.text for item in layout.items if item.kind == "label" and item.text]
+            for start, stop, wanted in (
+                    ("Motivo:", "Decidida por:", f"Motivo: {reason}"),
+                    ("Decisión enlazada:", "Parámetros", f"Decisión enlazada: {decision}")):
+                lines = segment(texts, start, stop)
+                self.assertEqual(" ".join(lines), wanted)
+                for text in lines:
+                    self.assertLessEqual(labels.label_px(text, scale=scale), width, text)
+            shown: list[tuple[str, str, str]] = []
+            pending: list[str] = []
+            started = False
+            for item in layout.items:
+                if item.kind == "label" and item.text == "Parámetros":
+                    started = True
+                elif started and item.kind == "label":
+                    pending.append(item.text)
+                elif started and item.target == self.panels.SET_PARAMETER:
+                    for text in pending:
+                        self.assertLessEqual(labels.label_px(text, scale=scale), width, text)
+                    self.assertLessEqual(labels.label_px(item.text, icon=item.icon != "NONE",
+                                                         scale=scale), width, item.text)
+                    shown.append((" ".join(pending), item.properties.key, item.text))
+                    pending = []
+            self.assertEqual(shown, [(f"{name}: {text}", key, "Cambiar…")
+                                     for key, name, text in parameters])
+            self.assertIn("V01: 8 m [ADO]", texts)  # lo corto, entero y en su etiqueta
+            self.assertTrue(any(item.target == self.panels.COMPLETE_CONSTRAINT
+                                for item in layout.items))
+
+        panel = getattr(bpy.types, PANEL)
+        window = getattr(bpy.types, "GEOBLENDER_PT_core_constraints")
+        put(view.selected)
+        put(view.constraints[view.item_index])
+        self.addCleanup(self.panels.fill_constraints, self.project)  # lo leído, de vuelta
+        for scale in (1.0, 1.25):
+            with (self.subTest(zona="barra N", escala=scale),
+                  mock.patch.object(compat, "ui_scale", return_value=scale),
+                  mock.patch.object(labels, "sidebar_width", return_value=sidebar)):
+                check(draw(panel, bpy.context), sidebar, scale)
+            with (self.subTest(zona="ventana", escala=scale),
+                  mock.patch.object(compat, "ui_scale", return_value=scale)):
+                check(draw(window, bpy.context),
+                      labels.dialog_width(self.panels.CONSTRAINTS_WIDTH_PX), scale)
 
     def test_g_unloading_the_objects_leaves_the_choice_of_the_window(self) -> None:
         """RF-012-19, D-30: descargar de la vista las tres capas quita los objetos y no escribe
