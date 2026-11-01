@@ -596,29 +596,31 @@ LAYER_SPECS: Mapping[str, tuple[str, tuple[tuple[str, str], ...]]] = {
 
 def write_gpkg_layer(path: Path, layer: str, geometry_type: str,
                      fields: Sequence[tuple[str, str]],
-                     features: Sequence[SourceFeature]) -> None:
-    """Añade al GeoPackage ``path`` (lo crea, con EPSG:25830, si no existe) la capa ``layer``
-    como las de QGIS: ``fid`` entero, ``geom`` de tipo ``geometry_type`` (2D) y los campos
-    ``fields`` (nombre, tipo SQL), con las entidades ``features``."""
+                     features: Sequence[SourceFeature], *, crs: Any = None) -> None:
+    """Añade al GeoPackage ``path`` (lo crea, con EPSG:25830 o con ``crs``, si no existe) la
+    capa ``layer`` como las de QGIS: ``fid`` entero, ``geom`` de tipo ``geometry_type`` (2D) y
+    los campos ``fields`` (nombre, tipo SQL), con las entidades ``features``. ``crs``: el
+    ``CrsRef`` de un GeoPackage nuevo y de la capa (por defecto, el de todos los casos)."""
     base = import_geoblender("core.gpkg.base")
     wkb = import_geoblender("core.gpkg.wkb")
     path = Path(path)
     new = not path.exists()
+    srs_id = SRS_ID if crs is None else int(crs.epsg)
     conn = sqlite3.connect(path)
     try:
         if new:
-            base.create_base(conn, CRS)
+            base.create_base(conn, CRS if crs is None else crs)
         columns = "".join(f', "{name}" {kind}' for name, kind in fields)
         conn.execute(f'CREATE TABLE "{layer}" (fid INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, '
                      f'geom {geometry_type}{columns})')
         conn.execute("INSERT INTO gpkg_contents (table_name, data_type, identifier, "
                      "description, srs_id) VALUES (?, 'features', ?, '', ?)",
-                     (layer, layer, SRS_ID))
+                     (layer, layer, srs_id))
         conn.execute("INSERT INTO gpkg_geometry_columns VALUES (?, 'geom', ?, ?, 0, 0)",
-                     (layer, geometry_type, SRS_ID))
+                     (layer, geometry_type, srs_id))
         marks = ", ".join("?" * (len(fields) + 2))
         for feature in features:
-            blob = wkb.encode_geometry(feature.geometry_type, feature.coords, SRS_ID, False)
+            blob = wkb.encode_geometry(feature.geometry_type, feature.coords, srs_id, False)
             values = [feature.attributes.get(name) for name, _kind in fields]
             conn.execute(f'INSERT INTO "{layer}" VALUES ({marks})',
                          (feature.fid, blob, *values))

@@ -65,40 +65,28 @@ verificación del H3.
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import math
-import os
 import re
-import sys
 import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
-
+from tests.support import bank_folder as shape
+from tests.support.bank_folder import ENV, START_PATTERN, BankShapeError  # ENV: lo lee test_res_bank
 from tests.support.package import import_geoblender
 
-gis = import_geoblender("gis")
 geotiff = import_geoblender("gis.geotiff")
-georef = import_geoblender("core.georef")
-graph = import_geoblender("core.provenance.graph")
 volumes = import_geoblender("reserves.volumes")
 surfaces = import_geoblender("reserves.surfaces")
 materials = import_geoblender("reserves.materials")
 res_params = import_geoblender("reserves.params")
 kernel = import_geoblender("reserves.kernel")
 
-ENV = "GEOBLENDER_SILVESTRE_DIR"
-
 TOLERANCE = 1e-4  # D-14 d: ±0,01 % por unidad, corregida el área de celda
 NAME = "CE-011-05"  # el nombre de la cubicación (no se guarda en ningún proyecto)
-VERSION_PATTERN = re.compile(r"(?i)^v(\d+)_.+_vigente$")
 FINAL_PATTERN = re.compile(r"(?i)superficie_excavaci[oó]n")
-START_PATTERN = re.compile(r"(?i)(?<![a-z])(mdt|dem|dtm|terreno)(?![a-z])")
-TIFF_SUFFIXES = (".tif", ".tiff")
-NPY_SUFFIX = ".npy"
 COLUMNS = ("unidad", "base", "volumen_m3", "toneladas_t")
 DENSITY = "densidad_t_m3"
 ROLE = "papel"
@@ -106,92 +94,6 @@ ROLES = {
     "útil": "useful", "util": "useful", "useful": "useful", "mineral": "useful",
     "estéril": "waste", "esteril": "waste", "waste": "waste", "": "waste",
 }
-LOCAL_VERTICAL = "cotas de las superficies del banco (no declaran su referencia vertical)"
-
-CATALOG = georef.load_catalog()
-
-
-class BankShapeError(AssertionError):
-    """El banco no tiene la forma que espera la comparación (véase el módulo)."""
-
-
-# --- Salida en español ----------------------------------------------------------------------
-
-
-def _number(value: float, digits: int = 1) -> str:
-    """Número con punto de millares y coma decimal."""
-    return f"{value:,.{digits}f}".translate(str.maketrans(",.", ".,"))
-
-
-def _percent(ratio: float, digits: int = 6) -> str:
-    """Diferencia relativa en %, con su signo."""
-    return f"{ratio * 100:+.{digits}f} %".replace(".", ",")
-
-
-def _report(text: str) -> None:
-    print(text, file=sys.stderr, flush=True)
-
-
-# --- La forma del banco ---------------------------------------------------------------------
-
-
-def _files(folder: Path) -> list[Path]:
-    """Los ficheros de ``folder`` y sus subcarpetas, sin seguir enlaces, en un orden fijo."""
-    found: list[Path] = []
-    for root, dirs, files in os.walk(folder):
-        dirs.sort()
-        found.extend(Path(root, name) for name in sorted(files))
-    return found
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _distinct(paths: list[Path]) -> list[Path]:
-    """Una de cada grupo de copias iguales (mismo sha256), en el orden de ``paths``."""
-    seen: dict[str, Path] = {}
-    for path in paths:
-        seen.setdefault(_sha256(path), path)
-    return list(seen.values())
-
-
-def _one(paths: list[Path], what: str) -> Path:
-    """La única de ``paths`` salvo copias iguales; si no, :class:`BankShapeError`."""
-    distinct = _distinct(paths)
-    if len(distinct) != 1:
-        found = "ninguna" if not distinct else f"{len(distinct)} distintas"
-        raise BankShapeError(f"{what}: se esperaba una y hay {found} (véase la forma del "
-                             "banco en el docstring de la comparación)")
-    return distinct[0]
-
-
-def find_version(folder: Path) -> Path:
-    """La carpeta de la versión vigente del banco: ``V<nn>_<rasgo>_VIGENTE`` de número mayor."""
-    found: dict[int, list[Path]] = {}
-    for root, dirs, _ in os.walk(folder):
-        dirs.sort()
-        for name in dirs:
-            match = VERSION_PATTERN.match(name)
-            if match:
-                found.setdefault(int(match.group(1)), []).append(Path(root, name))
-    if not found:
-        raise BankShapeError("el banco no tiene ninguna carpeta de versión vigente "
-                             "(V<nn>_<rasgo>_VIGENTE)")
-    candidates = found[max(found)]
-    if len(candidates) != 1:
-        raise BankShapeError(f"el banco tiene {len(candidates)} carpetas de versión vigente con "
-                             "el número mayor: no se sabe cuál es la vigente")
-    return candidates[0]
-
-
-def _tiffs(paths: list[Path], pattern: re.Pattern[str]) -> list[Path]:
-    return [path for path in paths
-            if path.suffix.lower() in TIFF_SUFFIXES and pattern.search(path.stem)]
 
 
 def _parse_number(text: str, what: str) -> float:
@@ -237,7 +139,7 @@ def read_reference(paths: list[Path]) -> tuple[ReferenceUnit, ...]:
     """La tabla de referencia de la versión: el único CSV con las columnas de :data:`COLUMNS`."""
     tables = [path for path in paths if path.suffix.lower() == ".csv"
               and set(COLUMNS) <= set(_header(path) or ())]
-    path = _one(tables, "la tabla de referencia por unidades de la versión vigente")
+    path = shape.one(tables, "la tabla de referencia por unidades de la versión vigente")
     with path.open(encoding="utf-8-sig", newline="") as stream:
         rows = list(csv.reader(io.StringIO(stream.read()), delimiter=";"))
     header = [cell.strip().casefold() for cell in rows[0]]
@@ -273,64 +175,34 @@ class _Surfaces:
     grid: object
 
 
-def _declared(source: object, what: str) -> tuple[object, object]:
-    if source.declared_crs is None:
-        raise AssertionError(f"{what} no declara su CRS, y no se supone (constitución, "
-                             "principio 6)")
-    vertical = source.declared_vertical or CATALOG.local_vertical(LOCAL_VERTICAL)
-    return source.declared_crs, vertical
-
-
-def _on_grid(path: Path, grid: object, crs: object, vertical: object, temp: Path,
-             role: str, what: str) -> Path:
-    """``path`` (GeoTIFF o ``.npy``) en la rejilla ``grid``: el mismo fichero si ya lo está; si
-    no, su copia en ``temp`` (remuestreada con el método por defecto, o el ``.npy`` tal cual)."""
-    target = temp / f"{role}.tif"
-    if path.suffix.lower() == NPY_SUFFIX:
-        values = np.load(path, allow_pickle=False)
-        if values.shape != grid.shape or values.dtype.kind not in "fiu":
-            raise BankShapeError(f"{what}: el .npy no tiene la forma de la rejilla de la final")
-        raster = gis.Raster(grid, np.asarray(values, dtype=np.float64), crs, vertical)
-    else:
-        source = geotiff.read_geotiff(path)
-        declared, _ = _declared(source, what)
-        if declared != crs:
-            raise AssertionError(f"{what}: su CRS no es el de la superficie final")
-        if source.grid.same_geometry(grid):
-            return path
-        mdt = gis.Raster(source.grid, source.values, crs, vertical)
-        raster, _ = gis.resample_to_grid(mdt, grid,
-                                         method=gis.choose_method(source.grid, grid))
-    geotiff.GeoTiffIO().write(raster, target, profile=gis.WriteProfile.PROJECT)
-    return target
-
-
 def _base_path(name: str, version: list[Path], bank: list[Path], what: str) -> Path:
     def matching(paths: list[Path]) -> list[Path]:
         return [path for path in paths if path.stem.casefold() == name.casefold()
-                and path.suffix.lower() in (*TIFF_SUFFIXES, NPY_SUFFIX)]
+                and path.suffix.lower() in (*shape.TIFF_SUFFIXES, shape.NPY_SUFFIX)]
 
-    return _one(matching(version) or matching(bank), what)
+    return shape.one(matching(version) or matching(bank), what)
 
 
 def build_sources(units: tuple[ReferenceUnit, ...], version: list[Path], bank: list[Path],
                   temp: Path) -> _Surfaces:
     """Las superficies de la cubicación (pasos 2, 3 y 5 de la forma del banco)."""
-    final_path = _one(_tiffs(version, FINAL_PATTERN), "la superficie final de la versión")
+    final_path = shape.one(shape.tiffs(version, FINAL_PATTERN),
+                           "la superficie final de la versión")
     final = geotiff.read_geotiff(final_path)
-    crs, vertical = _declared(final, "la superficie final")
+    crs, vertical = shape.declared(final, "la superficie final")
     grid = final.grid
-    start_path = _one(_tiffs(version, START_PATTERN) or _tiffs(bank, START_PATTERN),
-                      "la superficie de partida")
+    start_path = shape.one(
+        shape.tiffs(version, START_PATTERN) or shape.tiffs(bank, START_PATTERN),
+        "la superficie de partida")
     paths = {
-        volumes.START: _on_grid(start_path, grid, crs, vertical, temp, "partida",
-                                "la superficie de partida"),
+        volumes.START: shape.on_grid(start_path, grid, crs, vertical, temp, "partida",
+                                     "la superficie de partida"),
         volumes.FINAL: final_path,
     }
     for number, unit in enumerate(units, start=1):
         if unit.base:
             what = f"la base de la unidad {number}"
-            paths[volumes.base_role(f"u{number}")] = _on_grid(
+            paths[volumes.base_role(f"u{number}")] = shape.on_grid(
                 _base_path(unit.base, version, bank, what), grid, crs, vertical, temp,
                 f"base_{number}", what)
     sources = {role: surfaces.grid_source(path, name=role, crs=crs, vertical=vertical)
@@ -392,16 +264,16 @@ def nominal_area(grid: object) -> float:
 
 def compare(folder: Path) -> Comparison:
     """CE-011-05 sobre el banco ``folder`` (véase el módulo)."""
-    version_folder = find_version(folder)
-    version = _files(version_folder)
-    bank = _files(folder)
+    version_folder = shape.find_version(folder)
+    version = shape.files(version_folder)
+    everything = shape.files(folder)
     units = read_reference(version)
     column = _column(units)
     request = volumes.VolumeRequest(
         NAME, surfaces.SurfaceRef(dataset="partida"), surfaces.SurfaceRef(dataset="final"),
         column=column)
     with tempfile.TemporaryDirectory(prefix="gb-banco-011-") as temp:
-        built = build_sources(units, version, bank, Path(temp))
+        built = build_sources(units, version, everything, Path(temp))
         steps = list(volumes.volume_steps(request, built.sources))
     result = steps[-1].result
     params = {res_params.density_key(f"u{number}"): unit.density_t_m3
@@ -419,15 +291,16 @@ def compare(folder: Path) -> Comparison:
 
 
 def _line(result: Comparison, unit: UnitComparison) -> str:
-    mass = "sin toneladas" if unit.mass_t is None else f"{_number(unit.mass_t)} t"
+    mass = "sin toneladas" if unit.mass_t is None else f"{shape.number(unit.mass_t)} t"
     return (
         f"{NAME} (banco del proyecto de referencia, versión vigente, {unit.label}): "
-        f"Geoblender {_number(unit.volume_m3)} m³ y {mass}; referencia corregida "
-        f"(×{_number(result.cell_area_m2 / result.nominal_m2, 9)}: celda de "
-        f"{_number(result.cell_area_m2, 10)} m² frente a {_number(result.nominal_m2, 4)} m²) "
-        f"{_number(unit.reference_m3)} m³ ({_percent(unit.volume_difference)}) y "
-        f"{_number(unit.reference_t)} t ({_percent(unit.mass_difference)}); tolerancia "
-        f"±0,01 % (D-14 d); desmonte total {_number(result.cut_m3)} m³"
+        f"Geoblender {shape.number(unit.volume_m3)} m³ y {mass}; referencia corregida "
+        f"(×{shape.number(result.cell_area_m2 / result.nominal_m2, 9)}: celda de "
+        f"{shape.number(result.cell_area_m2, 10)} m² frente a "
+        f"{shape.number(result.nominal_m2, 4)} m²) "
+        f"{shape.number(unit.reference_m3)} m³ ({shape.percent(unit.volume_difference)}) y "
+        f"{shape.number(unit.reference_t)} t ({shape.percent(unit.mass_difference)}); "
+        f"tolerancia ±0,01 % (D-14 d); desmonte total {shape.number(result.cut_m3)} m³"
     )
 
 
@@ -439,20 +312,9 @@ class ReferenceVolumesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.result = None
-        text = os.environ.get(ENV, "").strip()
-        if not text:
-            raise unittest.SkipTest(
-                f"OMITIDO: silvestre: la variable {ENV} no está definida; defínala con la "
-                "carpeta del banco (solo lectura) y ejecute tools/check.py --banco"
-            )
-        folder = Path(text)
-        if not folder.is_dir():
-            raise unittest.SkipTest(
-                f"OMITIDO: silvestre: {ENV} no apunta a una carpeta legible"
-            )
-        result = compare(folder)
+        result = compare(shape.bank_folder())
         for unit in result.units:
-            _report(_line(result, unit))
+            shape.report(_line(result, unit))
         cls.result = result
 
     def test_units_split_the_cut(self) -> None:
