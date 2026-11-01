@@ -101,6 +101,10 @@ from ..provenance.lineage import figures_in
 from ..timeutil import format_utc
 from . import freezing as freezing_registry
 from . import read
+
+# El registro de las comprobaciones vive en el módulo ligero ``freezing`` (habilitar la extensión no
+# puede cargar este módulo: spec 012, T38); su API sigue siendo la de ``core.versions.freeze``.
+from .freezing import freeze_checks, register_freeze_check, unregister_freeze_checks
 from .model import (
     FREEZING_MARK,
     SNAPSHOTS_DIR,
@@ -286,41 +290,6 @@ class FreezeFinding:
 FreezeCheck = Callable[[sqlite3.Connection, str], Sequence[FreezeFinding]]
 """Una comprobación de un módulo: recibe la conexión del plan (una instantánea de lectura de la
 base del proyecto) y el uid de la versión que se congela, y da sus hallazgos; no escribe."""
-_CHECKS: list[tuple[str, FreezeCheck]] = []
-
-
-def register_freeze_check(module: str, check: FreezeCheck) -> None:
-    """Registra la comprobación ``check`` del módulo ``module`` (el código del módulo que la
-    declara, ``"res"``): :func:`freeze_plan` la llama con cada plan y lo que da va a lo que hay
-    que aceptar (:attr:`FreezePlan.accept`). Registrar otra vez la misma función del mismo
-    módulo no hace nada; un módulo puede tener varias y se llaman en el orden en que se
-    registraron. ``TypeError``/``ValueError`` con un argumento mal dado."""
-    _check_module(module)
-    if not callable(check):
-        raise TypeError(f"una comprobación de congelar es una función, no {check!r}")
-    if (module, check) not in _CHECKS:
-        _CHECKS.append((module, check))
-
-
-def unregister_freeze_checks(module: str) -> int:
-    """Quita las comprobaciones del módulo ``module``; cuántas quitó (0 si no había ninguna)."""
-    _check_module(module)
-    kept = [entry for entry in _CHECKS if entry[0] != module]
-    removed = len(_CHECKS) - len(kept)
-    _CHECKS[:] = kept
-    return removed
-
-
-def freeze_checks() -> tuple[tuple[str, FreezeCheck], ...]:
-    """Las comprobaciones registradas, (módulo, función), en el orden en que se registraron."""
-    return tuple(_CHECKS)
-
-
-def _check_module(module: object) -> None:
-    if not isinstance(module, str):
-        raise TypeError(f"el módulo de una comprobación es su código (un texto), no {module!r}")
-    if not module.strip():
-        raise ValueError("el módulo de una comprobación de congelar no puede estar vacío")
 
 
 @dataclass(frozen=True)

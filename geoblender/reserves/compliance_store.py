@@ -85,16 +85,8 @@ from ..core.gpkg.base import ColumnDef, create_attribute_table, create_base, cre
 from ..core.gpkg.connection import GpkgConnection
 from ..core.gpkg.wkb import decode_geometry, encode_geometry
 from ..core.i18n import THIN_SPACE
-from ..core.params import ParamDef
 from ..core.paths import check_path_length
 from ..core.project.model import Progress
-from ..core.provenance.contract import (
-    FigureDef,
-    OperationDef,
-    RecomputeFunction,
-    ReproduceFunction,
-    Tolerance,
-)
 from ..core.provenance.figures import RECORD_COLUMNS as FIGURE_COLUMNS
 from ..core.provenance.figures import FigureRecord, FigureSpec, scope_key
 from ..core.provenance.operations import (
@@ -142,6 +134,18 @@ from .compliance import (
     zone_index_steps,
 )
 from .messages import render
+from .provenance import (
+    FIGURE_TOLERANCE,
+    MODULE,
+    VERIFY,
+    VERIFY_COMMAND,
+    VERIFY_DEFINITIONS,
+    VERIFY_FIGURES,
+    VERIFY_MIN_THICKNESS,
+    VERIFY_MIN_THICKNESS_DEF,
+    VERIFY_PHASE,
+    verify_operation_def,
+)
 from .surfaces import (
     BAND_ROWS,
     SurfaceHeader,
@@ -207,24 +211,16 @@ __all__ = [
     "zone_check",
 ]
 
-MODULE = "res"
-OP_VERSION = "1.0"
-VERIFY = "res.verify_constraints"
-COMMAND = "geoblender.res_verify_constraints"
-FIGURE_TOLERANCE = Tolerance(relative=1e-9)
-"""La tolerancia de las cifras al reproducir (D-37)."""
+# Las declaraciones de la verificación viven en ``reserves.provenance`` (spec 012, T38; RNF-001-03:
+# habilitar la extensión las registra sin cargar este módulo) y se reexportan aquí con sus nombres.
+COMMAND = VERIFY_COMMAND
 STEP_BUDGET_S = 0.05
 """El presupuesto de un paso por defecto (s; RF-012-28)."""
 CANCELLED_REASON = CANCEL_REASON_PREFIX + "la persona la paró antes de terminar (Esc)"
 
-MIN_THICKNESS = "res.verify.min_thickness_m"
-"""El espesor mínimo de verificación (m): la diferencia que no pasa de él no cuenta (D-6)."""
-_D6 = ("Spec 012, D-6: 0,02 m, el umbral de la verificación por recinto (tolerancia 0 por "
-       "encima de él); propuesta de la spec, sin confirmar")
-MIN_THICKNESS_DEF = ParamDef(MIN_THICKNESS, "float", "m", 0.02, 0.0, 10.0, ("RF-012-21",), _D6,
-                             label_msgid="Minimum thickness of the compliance check")
-DEFINITIONS: tuple[ParamDef, ...] = (MIN_THICKNESS_DEF,)
-"""Los parámetros de la verificación (los registra ``bl`` con los de ``res``)."""
+MIN_THICKNESS = VERIFY_MIN_THICKNESS
+MIN_THICKNESS_DEF = VERIFY_MIN_THICKNESS_DEF
+DEFINITIONS = VERIFY_DEFINITIONS
 
 TABLE = "chk"
 GROUPS = "chkg"
@@ -234,7 +230,7 @@ _MASKS_NAME = "las máscaras de las restricciones"
 _OBJ = "Verificación por recinto"
 _FIELD = "ubicación"
 _WORK_FRACTION = 0.5
-PHASE = "verify"
+PHASE = VERIFY_PHASE
 _PHASE = PHASE
 _TEXT = "Verificando por recinto…"
 
@@ -315,23 +311,10 @@ def dataset_spec(family: str, name: str, version_code: str, *, final: int | None
                        role=role, content=content, crs_epsg=crs_epsg)
 
 
-def operation_def(recompute: RecomputeFunction | None = None,
-                  reproduce: ReproduceFunction | None = None) -> OperationDef:
-    """El ``OperationDef`` de :data:`VERIFY` con las funciones de ``bl``."""
-    return OperationDef(VERIFY, OP_VERSION, MODULE, "Compliance check by zone", True,
-                        scope="version", commands=(COMMAND,), recompute=recompute,
-                        reproduce=reproduce,
-                        figure_tolerance=FIGURE_TOLERANCE if reproduce is not None else None)
-
-
-FIGURES: tuple[FigureDef, ...] = (
-    FigureDef("res.check_cut_m3", "m3", "Cut volume in the zone"),
-    FigureDef("res.check_fill_m3", "m3", "Fill volume in the zone"),
-    FigureDef("res.check_moved_area_m2", "m2", "Area with movement in the zone"),
-    FigureDef("res.check_nodata_area_m2", "m2", "Area without data in the zone"),
-    FigureDef("res.check_avoid_weighted_m3", "m3", "Weighted volume in the area to avoid"),
-)
-"""Las cifras de la verificación (plan §5.2.3)."""
+operation_def = verify_operation_def
+"""El ``OperationDef`` de :data:`VERIFY` con las funciones de ``bl`` (``reserves.provenance``)."""
+FIGURES = VERIFY_FIGURES
+"""Las cifras de la verificación (plan §5.2.3; ``reserves.provenance``)."""
 
 _TABLE_COLUMNS = (ColumnDef("zone", "TEXT", True), ColumnDef("final", "INTEGER", True),
                   ColumnDef("quantity", "TEXT", True), ColumnDef("value", "DOUBLE", False),

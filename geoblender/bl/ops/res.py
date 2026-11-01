@@ -172,16 +172,13 @@ from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
 from ...gis.crs import crs_service_status, reference_label
 from ...gis.masks import provenance as masks_provenance
-from ...gis.masks import store as masks_store
 from ...gis.messages import GisError
 from ...reserves import materials
-from ...reserves import compliance_store
 from ...reserves import messages as res_messages
 from ...reserves import params as res_params
 from ...reserves import provenance
 from ...reserves import scale as res_scale
 from ...reserves import table as res_table
-from ...reserves.compliance import MAX_FINALS
 from ...reserves.messages import ResError
 from ...reserves.slices import slices_from_text
 from ...reserves.surfaces import SurfaceRef, check_pair, propose_order, surface_source
@@ -336,9 +333,19 @@ def recompute_verify(request: RecomputeRequest) -> OperationHandle:
     """El recálculo de ``res.verify_constraints`` (RF-008-26; RF-012-16, RF-012-24; D-19): la
     verificación nueva (``reserves.compliance_store.recompute_run``, con las máscaras de hoy de su
     versión), «en curso», con sus pasos en la cola de ``res``."""
+    from ...reserves import compliance_store  # al usarlo: habilitar no lo carga (T38)
+
     handle, steps = compliance_store.recompute_run(request)
     queue_steps(handle, steps)
     return handle
+
+
+def reproduce_verify(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``res.verify_constraints``: la de ``reserves.compliance_store``, que se
+    importa en la primera reproducción y no al habilitar Geoblender (RNF-001-03, spec 012 T38)."""
+    from ...reserves import compliance_store
+
+    return compliance_store.reproduce_verify(request)
 
 
 # --- Declaraciones de la procedencia (ADR-0025 §2; plan §5.2.3) ---------------------------------
@@ -361,16 +368,17 @@ OPERATION_DEFS: tuple[contract.OperationDef, ...] = provenance.operation_defs(RE
                                                                               REPRODUCE)
 """Los ``OperationDef`` de los cinco tipos de ``res`` de la cubicación (spec 011), en el orden de
 ``reserves.provenance.OPERATION_TYPES``."""
-VERIFY_OPERATION_DEF: contract.OperationDef = compliance_store.operation_def(
-    recompute_verify, compliance_store.REPRODUCE[compliance_store.VERIFY])
+VERIFY_OPERATION_DEF: contract.OperationDef = provenance.verify_operation_def(
+    recompute_verify, reproduce_verify)
 """El ``OperationDef`` de ``res.verify_constraints`` (spec 012, T21; RF-012-16): de la versión,
-repetible, con :func:`recompute_verify`, la reproducción de ``reserves.compliance_store`` y la
-tolerancia de sus cifras. Su orden es ``geoblender.res_verify_constraints`` (T28)."""
+repetible, con :func:`recompute_verify`, :func:`reproduce_verify` (la reproducción de
+``reserves.compliance_store``) y la tolerancia de sus cifras. Su orden es
+``geoblender.res_verify_constraints`` (T28)."""
 DEFINITIONS: tuple[core_params.ParamDef, ...] = (*res_params.DEFINITIONS,
-                                                 *compliance_store.DEFINITIONS)
+                                                 *provenance.VERIFY_DEFINITIONS)
 """Las definiciones de parámetros del proyecto de ``res``: las de la cubicación y el espesor
 mínimo de la verificación por recinto (spec 012)."""
-FIGURES: tuple[contract.FigureDef, ...] = (*provenance.FIGURES, *compliance_store.FIGURES)
+FIGURES: tuple[contract.FigureDef, ...] = (*provenance.FIGURES, *provenance.VERIFY_FIGURES)
 """Las cifras de ``res``: las de la cubicación y las de la verificación por recinto."""
 
 
@@ -2848,7 +2856,7 @@ class GEOBLENDER_OT_res_export_csv(bpy.types.Operator):
 
 # --- Verificar un diseño por recinto… (spec 012, T28; RF-012-21 a RF-012-25, RF-012-28) -----------
 
-VERIFY_COMMAND = compliance_store.COMMAND
+VERIFY_COMMAND = provenance.VERIFY_COMMAND
 VERIFY_PANEL = constraint_panels.VERIFY_PANEL
 VERIFY_DIALOG_WIDTH = 520
 _FINALS_SEPARATOR = ","
@@ -2872,9 +2880,9 @@ class VerifyRequest:
 def verify_thickness_text(project: Any) -> str:
     """El espesor mínimo de la verificación con su valor y su tipo, y dónde se cambia
     (plan §5.5; RF-012-21)."""
-    record = core_params.ParameterStore(project).get(compliance_store.MIN_THICKNESS)
+    record = core_params.ParameterStore(project).get(provenance.VERIFY_MIN_THICKNESS)
     return tr("Minimum thickness of the verification: {value} (it is changed in {path})",
-              value=res_panels.record_text(record, compliance_store.MIN_THICKNESS),
+              value=res_panels.record_text(record, provenance.VERIFY_MIN_THICKNESS),
               path=path_text(catalog(), PARAMETERS, i18n.language()))
 
 
@@ -2910,6 +2918,8 @@ def verify_request(form: Any, project: Any) -> VerifyRequest:
                                    label=tr("Final elevation"))[0])
     if not finals:
         raise VerifyFormError(tr("Choose at least one final surface to verify"))
+    from ...reserves.compliance import MAX_FINALS  # al usarlo: habilitar no lo carga (T38)
+
     if len(finals) > MAX_FINALS:
         raise VerifyFormError(tr("At most {count} final surfaces can be verified at once",
                                  count=MAX_FINALS))
@@ -2928,7 +2938,7 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
     bl_label = "Verify a design by zone…"
     bl_translation_context = TRANSLATION_CONTEXT
     bl_options = {"REGISTER"}
-    provenance_op_type = compliance_store.VERIFY
+    provenance_op_type = provenance.VERIFY
 
     # Como Compilar las máscaras: cada evento del temporizador avanza pasos durante, como mucho,
     # este tiempo (cada paso, ≤ 0,05 s: ninguna llamada de más de 0,2 s, RNF-012-06).
@@ -3062,6 +3072,9 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
             return {"CANCELLED"}
         project = SESSION.project
         version_uid = scene_versions.active_version() or ""
+        from ...gis.masks import store as masks_store  # al usarlos: habilitar no los carga (T38)
+        from ...reserves import compliance_store
+
         try:
             res_panels.surface_items(None, None)  # las listas del proyecto, si no se leyeron
             request = verify_request(self, project)
@@ -3100,7 +3113,7 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
         sin búsqueda de intocables vigente (RF-012-10) y los avisos; y, desde la interfaz, abre la
         ventana de la verificación con la tabla y los grupos."""
         project, version = self._project, self._version
-        undo_watch.record(UndoKind.OPERATION, compliance_store.VERIFY)
+        undo_watch.record(UndoKind.OPERATION, provenance.VERIFY)
         try:
             lines = constraint_panels.fill_verification(project, version, self._name)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError):
@@ -3141,7 +3154,7 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
         guardando."""
         percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
         name = getattr(self, "_name", "")
-        if step.phase == compliance_store.PHASE:
+        if step.phase == provenance.VERIFY_PHASE:
             self._verifying = True
         if step.phase == "masks":
             return tr("Verifying «{name}»: loading the masks… {percent} % · Esc: cancel",

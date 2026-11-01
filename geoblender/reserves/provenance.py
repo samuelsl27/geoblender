@@ -52,6 +52,16 @@ repiten sus ajustes, con su columna y las capas de su ámbito y de sus dominios,
 (``reserves.store.recompute_run``, con las vivas) y al reproducirla (``reserves.reproduce``, con
 las congeladas; A12, T32). Las funciones de reproducir de los tipos que se repiten son las de
 ``reserves.reproduce.REPRODUCE``. Python puro (nivel 9).
+
+**La verificación por recinto** (spec 012, T17 y T38; RNF-001-03): lo que ``bl`` registra de
+``res.verify_constraints`` al habilitar la extensión —su tipo de operación (:data:`VERIFY`,
+:func:`verify_operation_def`), su parámetro del proyecto (:data:`VERIFY_MIN_THICKNESS_DEF`, en
+:data:`VERIFY_DEFINITIONS`) y sus cinco cifras (:data:`VERIFY_FIGURES`)— se declara aquí y no en
+``reserves.compliance_store``, que lo reexporta con los nombres de siempre (``VERIFY``,
+``COMMAND``, ``MIN_THICKNESS``, ``DEFINITIONS``, ``FIGURES``, ``PHASE``, ``operation_def``):
+importar el almacén de la verificación arrastra las máscaras, los lectores de GeoTIFF y la cadena
+de versiones (unos 25 ms en frío) y habilitar Geoblender no puede pagarlos antes de la primera
+orden.
 """
 
 from __future__ import annotations
@@ -64,6 +74,7 @@ from typing import Any
 from ..core.content.builtin import GPKG_LAYER
 from ..core.content.encoder import ContentDigest
 from ..core.datasets.model import DatasetSpec, Store
+from ..core.params import ParamDef
 from ..core.provenance.contract import (
     FigureDef,
     OperationDef,
@@ -115,6 +126,13 @@ __all__ = [
     "STAGE_TABLE",
     "TONNAGE",
     "TONNES",
+    "VERIFY",
+    "VERIFY_COMMAND",
+    "VERIFY_DEFINITIONS",
+    "VERIFY_FIGURES",
+    "VERIFY_MIN_THICKNESS",
+    "VERIFY_MIN_THICKNESS_DEF",
+    "VERIFY_PHASE",
     "VERSION_TYPES",
     "VOLUME",
     "VOLUMES",
@@ -135,6 +153,7 @@ __all__ = [
     "tonnage_inputs",
     "tonnage_params",
     "tonnage_settings",
+    "verify_operation_def",
     "volume_inputs",
     "volume_params",
     "volume_request",
@@ -420,6 +439,45 @@ FIGURES: tuple[FigureDef, ...] = (
               allow_negative=True),
 )
 """Las cifras de ``res`` (plan §5.2.3; RF-011-22), cada una con su unidad del catálogo."""
+
+
+# --- La verificación por recinto (spec 012) ----------------------------------------------------
+
+VERIFY = "res.verify_constraints"
+"""La operación de **versión** de la verificación: se repite sola y se reproduce con
+:data:`FIGURE_TOLERANCE` (10⁻⁹ relativo, D-37 de la 012)."""
+VERIFY_COMMAND = "geoblender.res_verify_constraints"
+"""La orden del catálogo que la lanza."""
+VERIFY_PHASE = "verify"
+"""La fase de sus pasos (``Progress.phase``)."""
+VERIFY_MIN_THICKNESS = "res.verify.min_thickness_m"
+"""El espesor mínimo de verificación (m): la diferencia que no pasa de él no cuenta (D-6)."""
+_VERIFY_D6 = ("Spec 012, D-6: 0,02 m, el umbral de la verificación por recinto (tolerancia 0 por "
+              "encima de él); propuesta de la spec, sin confirmar")
+VERIFY_MIN_THICKNESS_DEF = ParamDef(
+    VERIFY_MIN_THICKNESS, "float", "m", 0.02, 0.0, 10.0, ("RF-012-21",), _VERIFY_D6,
+    label_msgid="Minimum thickness of the compliance check")
+VERIFY_DEFINITIONS: tuple[ParamDef, ...] = (VERIFY_MIN_THICKNESS_DEF,)
+"""Los parámetros de la verificación (los registra ``bl`` con los de ``res``)."""
+
+
+def verify_operation_def(recompute: RecomputeFunction | None = None,
+                         reproduce: ReproduceFunction | None = None) -> OperationDef:
+    """El ``OperationDef`` de :data:`VERIFY` con las funciones de ``bl``."""
+    return OperationDef(VERIFY, OP_VERSION, MODULE, "Compliance check by zone", True,
+                        scope="version", commands=(VERIFY_COMMAND,), recompute=recompute,
+                        reproduce=reproduce,
+                        figure_tolerance=FIGURE_TOLERANCE if reproduce is not None else None)
+
+
+VERIFY_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("res.check_cut_m3", "m3", "Cut volume in the zone"),
+    FigureDef("res.check_fill_m3", "m3", "Fill volume in the zone"),
+    FigureDef("res.check_moved_area_m2", "m2", "Area with movement in the zone"),
+    FigureDef("res.check_nodata_area_m2", "m2", "Area without data in the zone"),
+    FigureDef("res.check_avoid_weighted_m3", "m3", "Weighted volume in the area to avoid"),
+)
+"""Las cifras de la verificación (plan 012 §5.2.3)."""
 
 
 # --- Lo que anota una operación al empezar ---------------------------------------------------

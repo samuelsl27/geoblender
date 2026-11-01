@@ -24,14 +24,21 @@ RF-012-28; plan 012 §5.3.3, D-31, D-38; ADR-0025 §2, ADR-0027; principio 8).
 - Principio 8: deshabilitar no deja clases, propiedades, temporizadores, familias, definiciones,
   operaciones, cifras ni comprobaciones de congelar de la 012, y la huella entera de Blender
   vuelve a la del principio de la sesión.
+- RNF-001-03 (spec 001; T38): habilitar la extensión de cero no importa las máscaras, su búsqueda,
+  el motor de la verificación ni la cadena de versiones y procedencia que arrastran
+  (``LazyRegistrationTest``; las importa la primera llamada que las usa) y deja el recolector de
+  basura como estaba. Lo mide ``tests/rendimiento/blender/perf_registration.py`` y lo fija sin
+  Blender ``tests/unit/architecture/test_lazy_registration.py``.
 
 Un proyecto mínimo (24 × 24 celdas de 1 m) y uno solo por prueba que lo necesita (RNF-001-01). Se
 ejecuta con ``tools/run_blender_tests.py``.
 """
 
 import dataclasses
+import gc
 import importlib
 import json
+import sqlite3
 import unittest
 import uuid
 from collections.abc import Callable, Iterator
@@ -134,7 +141,7 @@ class _Modules:
             "grupos": set(),
             "cifras": {figure.key for figure in (*self.masks_provenance.FIGURES,
                                                  *self.verify.FIGURES)},
-            "comprobaciones": {check_key(self.verify.MODULE, self.verify.freeze_findings)},
+            "comprobaciones": {check_key(self.verify.MODULE, self.core_ops.freeze_findings)},
         }
 
     def registries(self) -> dict[str, dict[str, Any]]:
@@ -328,8 +335,8 @@ class ConstraintsRegisteredTest(unittest.TestCase):
         for name, key, item in others:
             with self.subTest(de_otro=f"{name}: {key}"):
                 self.assertIs(after[name][key], item)
-        self.assertIn(m.verify.freeze_findings, [check for _m, check
-                                                 in m.freeze.freeze_checks()])
+        self.assertIn(m.core_ops.freeze_findings, [check for _m, check
+                                                   in m.freeze.freeze_checks()])
         m.core_ops.unregister()
         self.assertSameRegistries(m.registries(), before)
 
@@ -365,11 +372,19 @@ class ConstraintsRegisteredTest(unittest.TestCase):
                 self.assertEqual(defn.figure_tolerance,
                                  m.masks_provenance.FIGURE_TOLERANCE if repeats else None)
         self.assertIs(found["gis.compile_constraints"].recompute, m.gis_ops.recompute_compile)
-        self.assertIs(found["gis.compile_constraints"].reproduce,
-                      m.masks_store.REPRODUCE["gis.compile_constraints"])
         self.assertIs(found["res.verify_constraints"].recompute, m.res_ops.recompute_verify)
-        self.assertIs(found["res.verify_constraints"].reproduce,
-                      m.verify.REPRODUCE["res.verify_constraints"])
+        # Las reproducciones que se registran son las de ``bl`` (importan el cálculo al usarse,
+        # RNF-001-03, T38) y llaman a las de ``gis.masks.store`` y ``reserves.compliance_store``.
+        self.assertIs(found["gis.compile_constraints"].reproduce, m.gis_ops.reproduce_compile)
+        self.assertIs(found["res.verify_constraints"].reproduce, m.res_ops.reproduce_verify)
+        for defn, store, name in ((found["gis.compile_constraints"], m.masks_store,
+                                   "reproduce_compile"),
+                                  (found["res.verify_constraints"], m.verify, "reproduce_verify")):
+            request, outcome = object(), iter(())
+            with mock.patch.object(store, name, return_value=outcome) as real:
+                self.assertIs(defn.reproduce(request), outcome)
+            real.assert_called_once_with(request)
+            self.assertEqual(store.REPRODUCE[defn.op_type].__name__, name)
         for figure in (*m.masks_provenance.FIGURES, *m.verify.FIGURES):
             self.assertIs(m.contract.FIGURES[figure.key], figure)
         for defn in (*m.cparams.DEFINITIONS, *m.verify.DEFINITIONS):
@@ -616,6 +631,64 @@ class ConstraintsRegisteredTest(unittest.TestCase):
         self.assertFalse(bpy.app.timers.is_registered(m.gis_ops.masks_tick))
         self.assertEqual(blender_ext.fingerprint_diff(blender_ext.session_baseline(),
                                                       blender_ext.state_fingerprint()), [])
+
+
+HEAVY: tuple[str, ...] = (
+    "gis.masks.access", "gis.masks.combine", "gis.masks.compile", "gis.masks.export",
+    "gis.masks.overlay", "gis.masks.sectors", "gis.masks.sources", "gis.masks.store",
+    "gis.masks.zones", "gis.search", "reserves.compliance", "reserves.compliance_store",
+    "core.versions.freeze", "core.versions.reproduce", "core.versions.copy",
+    "core.versions.check", "core.provenance.lineage", "core.provenance.recompute")
+"""Lo que habilitar no importa (los mismos que ``tests/unit/architecture/test_lazy_registration``)."""
+LIGHT: tuple[str, ...] = ("core.constraints.provenance", "gis.masks.provenance",
+                          "reserves.provenance", "core.versions.freezing")
+"""Lo que sí: las declaraciones que registra ``bl``."""
+
+
+class LazyRegistrationTest(unittest.TestCase):
+    """La extensión de cero (``blender_ext.fresh``), sin importar nada antes de habilitarla."""
+
+    def loaded(self) -> set[str]:
+        """Los módulos de la extensión importados ahora, sin el prefijo de la copia de pruebas."""
+        prefix = module_name() + "."
+        return {name.removeprefix(prefix) for name in blender_ext.loaded_modules()}
+
+    def test_enabling_does_not_load_the_heavy_modules(self) -> None:
+        """RNF-001-03, plan 012 §7.4: habilitar de cero registra la 012 (sus declaraciones ligeras)
+        sin importar ningún módulo de :data:`HEAVY`, y deja el recolector de basura activo."""
+        self.assertTrue(gc.isenabled())
+        with blender_ext.fresh():
+            blender_ext.enable()
+            loaded = self.loaded()
+            self.assertEqual(sorted(set(HEAVY) & loaded), [])
+            self.assertEqual(sorted(set(LIGHT) - loaded), [])
+            self.assertTrue(gc.isenabled())
+
+    def test_the_first_use_loads_what_it_needs(self) -> None:
+        """RNF-001-03: con la extensión habilitada de cero, lo que se registró importa el cálculo en
+        su primera llamada: la reproducción de la compilación carga ``gis.masks.store`` (y la
+        cadena de versiones que arrastra) y no el almacén de la verificación; la comprobación de
+        congelar de ``res`` carga ``reserves.compliance_store``; la reproducción de la verificación
+        llega a su función (su guarda rechaza lo que no es una petición de reproducir)."""
+        with blender_ext.fresh():
+            blender_ext.enable()
+            gis_ops = _module("bl.ops.gis")
+            res_ops = _module("bl.ops.res")
+            core_ops = _module("bl.ops.core_constraints")
+            freezing = _module("core.versions.freezing")
+            checks = [check for module, check in freezing.freeze_checks() if module == "res"]
+            self.assertEqual(checks, [core_ops.freeze_findings])
+            self.assertEqual(sorted({"gis.masks.store", "reserves.compliance_store"}
+                                    & self.loaded()), [])
+            with self.assertRaises(ValueError):  # la guarda de la reproducción, ya importada
+                gis_ops.reproduce_compile(object())
+            self.assertIn("gis.masks.store", self.loaded())
+            self.assertNotIn("reserves.compliance_store", self.loaded())
+            with self.assertRaises(sqlite3.OperationalError):  # la base no es un proyecto
+                checks[0](sqlite3.connect(":memory:"), "V01")
+            self.assertIn("reserves.compliance_store", self.loaded())
+            with self.assertRaises(ValueError):
+                res_ops.reproduce_verify(object())
 
 
 if __name__ == "__main__":

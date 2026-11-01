@@ -14,7 +14,12 @@ registro no puede importar ``core.versions.freeze``, que arrastra ``provenance.l
   ninguno que la comprobación de apertura (``core.provenance.checks``) no tenga ya cargado
   (``sys.modules`` antes y después);
 - el registro: lo de una sesión, solo para ella y en su proyecto (la raíz, normalizada), y
-  quitarlo dos veces no falla.
+  quitarlo dos veces no falla;
+- el registro de las comprobaciones de los módulos al congelar (spec 012, T38; RNF-001-03), que
+  vive aquí para que habilitar la extensión no cargue ``core.versions.freeze``: su API sigue
+  siendo la de ``core.versions.freeze`` (las mismas funciones), registrar dos veces lo mismo no
+  repite, se llaman en el orden en que se registraron, se quitan por módulo y un argumento mal
+  dado se rechaza.
 
 Datos solo sintéticos.
 """
@@ -149,6 +154,72 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(freezing.freezing_paths(mine), frozenset())
         freezing.unregister(temporary)
         self.assertEqual(freezing.freezing_paths(mine), frozenset())
+
+
+def _no_findings(conn: Any, version_uid: str) -> tuple[()]:
+    return ()
+
+
+class FreezeChecksRegistryTest(unittest.TestCase):
+    """El registro de las comprobaciones de congelar (RF-012-25) en ``core.versions.freezing``."""
+
+    MODULE = "tst38"
+    OTHER = "tst38b"
+
+    def setUp(self) -> None:
+        self.freezing = _freezing()
+        self.freeze = import_geoblender("core.versions.freeze")
+        self.addCleanup(self.freezing.unregister_freeze_checks, self.MODULE)
+        self.addCleanup(self.freezing.unregister_freeze_checks, self.OTHER)
+
+    def ours(self) -> list[tuple[str, Any]]:
+        return [entry for entry in self.freezing.freeze_checks()
+                if entry[0] in (self.MODULE, self.OTHER)]
+
+    def test_the_api_of_freeze_is_the_same(self) -> None:
+        """RNF-001-03, RF-012-25: ``core.versions.freeze`` reexporta las tres funciones del
+        registro (los mismos objetos): quien registra por ahí y quien lo hace por el módulo ligero
+        ven un solo registro."""
+        for name in ("register_freeze_check", "unregister_freeze_checks", "freeze_checks"):
+            with self.subTest(función=name):
+                self.assertIs(getattr(self.freeze, name), getattr(self.freezing, name))
+        self.freeze.register_freeze_check(self.MODULE, _no_findings)
+        self.assertEqual(self.ours(), [(self.MODULE, _no_findings)])
+        self.assertEqual(self.freeze.freeze_checks(), self.freezing.freeze_checks())
+
+    def test_order_idempotence_and_removal_by_module(self) -> None:
+        """RF-012-25: registrar otra vez la misma función del mismo módulo no repite; un módulo
+        puede tener varias y se llaman en el orden en que se registraron; se quitan por módulo
+        (cuántas quitó) y quitar un módulo sin ninguna da 0."""
+
+        def second(conn: Any, version_uid: str) -> tuple[()]:
+            return ()
+
+        def other(conn: Any, version_uid: str) -> tuple[()]:
+            return ()
+
+        self.freezing.register_freeze_check(self.MODULE, _no_findings)
+        self.freezing.register_freeze_check(self.OTHER, other)
+        self.freezing.register_freeze_check(self.MODULE, second)
+        self.freezing.register_freeze_check(self.MODULE, _no_findings)
+        self.assertEqual(self.ours(), [(self.MODULE, _no_findings), (self.OTHER, other),
+                                       (self.MODULE, second)])
+        self.assertEqual(self.freezing.unregister_freeze_checks(self.MODULE), 2)
+        self.assertEqual(self.ours(), [(self.OTHER, other)])
+        self.assertEqual(self.freezing.unregister_freeze_checks(self.MODULE), 0)
+
+    def test_bad_arguments(self) -> None:
+        """RF-012-25: el módulo es un texto no vacío y la comprobación, algo que se llama."""
+        for module, error in ((None, TypeError), (3, TypeError), ("", ValueError),
+                              ("  ", ValueError)):
+            with self.subTest(módulo=module):
+                with self.assertRaises(error):
+                    self.freezing.register_freeze_check(module, _no_findings)
+                with self.assertRaises(error):
+                    self.freezing.unregister_freeze_checks(module)
+        with self.assertRaises(TypeError):
+            self.freezing.register_freeze_check(self.MODULE, "no se llama")
+        self.assertEqual(self.ours(), [])
 
 
 if __name__ == "__main__":

@@ -30,7 +30,12 @@ datos del proyecto (``formato-proyecto.md`` §3.11).
 orden inverso: lo que otro registró antes con la misma clave, o puso después en su lugar, es suyo y
 se queda (también una definición, una familia o una comprobación de ``core`` o de ``res``). Los
 dos son simétricos e idempotentes: registrar y desregistrar deja los registros de ``core`` como
-estaban (ADR-0025 §2). Nada pesado: lo que registra ya está importado con el resto de ``bl``.
+estaban (ADR-0025 §2). Nada pesado: lo que registra ya está importado con el resto de ``bl``, y las
+máscaras, su búsqueda, el almacén de la verificación y la cadena de versiones que arrastran
+(``gis.masks.*``, ``gis.search``, ``reserves.compliance_store``, ``core.versions.freeze``…) se
+importan al usarlos, dentro de cada orden: habilitar Geoblender tarda ≤ 0,5 s (RNF-001-03; spec
+012, T38). La comprobación de congelar que se registra es :func:`freeze_findings`, que importa la
+de ``res`` en su primera llamada, y se registra en ``core.versions.freezing`` (el módulo ligero).
 
 Las órdenes (T22 a T28: Límites…, Restricciones…, Buscar elementos intocables por sector…,
 Intenciones del cliente…, Ver restricciones y límites, Verificar un diseño por recinto…) las pasa
@@ -116,9 +121,9 @@ import functools
 import logging
 import math
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import bpy
 from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
@@ -146,13 +151,9 @@ from ...core.provenance import contract
 from ...core.provenance.operations import ItemKind, Use
 from ...core.provenance.undo import UndoKind
 from ...core.units import convert, parse_quantity
-from ...core.versions import freeze
+from ...core.versions import freezing as freeze_registry
 from ...gis import store as gis_store
-from ...gis.masks import access as mask_access
-from ...gis.masks import sectors as mask_sectors
-from ...gis.masks import sources
-from ...gis.masks import store as mask_store
-from ...reserves import compliance_store
+from ...reserves import provenance as res_provenance
 from ..props.core_constraints import MARK_FIELD
 from ..scene import project_session, undo_watch
 from ..scene import versions as scene_versions
@@ -170,6 +171,10 @@ from .core_provenance import (
     write_unavailable,
 )
 
+if TYPE_CHECKING:  # solo para los tipos: habilitar no importa las máscaras (RNF-001-03, T38)
+    from ...core.versions.freeze import FreezeCheck, FreezeFinding
+    from ...gis.masks import sectors as mask_sectors
+
 LOGGER = logging.getLogger("geoblender.bl.ops")
 TRANSLATION_CONTEXT = "Geoblender"
 EDIT_LIMITS = "geoblender.core_edit_limits"
@@ -180,13 +185,23 @@ _METRE = "m"
 MODULE = constraint_provenance.MODULE
 """El módulo de las definiciones, las familias y los tipos de operación de las restricciones
 (``core``)."""
-FREEZE_MODULE = compliance_store.MODULE
+FREEZE_MODULE = res_provenance.MODULE
 """El módulo que declara la comprobación de congelar de la 012 (``res``)."""
 OPERATION_DEFS: tuple[contract.OperationDef, ...] = constraint_provenance.OPERATIONS
 """Los ``OperationDef`` de los cuatro tipos de ``core`` de las restricciones (de proyecto, sin
 repetición)."""
 
 _UNDO: list[Callable[[], None]] = []
+
+
+def freeze_findings(conn: sqlite3.Connection, version_uid: str) -> Sequence[FreezeFinding]:
+    """La comprobación de congelar de ``res`` (``reserves.compliance_store.freeze_findings``,
+    RF-012-25, D-29), la que registra :func:`register`: el almacén de la verificación y todo lo que
+    arrastra se importa en la primera llamada, al congelar, y no al habilitar Geoblender
+    (RNF-001-03, spec 012 T38)."""
+    from ...reserves import compliance_store  # al usarla: habilitar no carga la verificación
+
+    return compliance_store.freeze_findings(conn, version_uid)
 
 
 # --- Registro --------------------------------------------------------------------------------
@@ -213,9 +228,9 @@ def register() -> None:
             contract.register_operation(definition)
             _UNDO.append(_unregister_if(contract.OPERATIONS, definition.op_type, definition,
                                         contract.unregister_operation))
-    check = compliance_store.freeze_findings
-    if (FREEZE_MODULE, check) not in freeze.freeze_checks():
-        freeze.register_freeze_check(FREEZE_MODULE, check)
+    check = freeze_findings
+    if (FREEZE_MODULE, check) not in freeze_registry.freeze_checks():
+        freeze_registry.register_freeze_check(FREEZE_MODULE, check)
         _UNDO.append(functools.partial(_unregister_freeze_check, FREEZE_MODULE, check))
 
 
@@ -259,14 +274,14 @@ def _unregister_families(ours: tuple[core_params.ParamFamily, ...]) -> None:
         core_params.register_families(others)
 
 
-def _unregister_freeze_check(module: str, check: freeze.FreezeCheck) -> None:
+def _unregister_freeze_check(module: str, check: FreezeCheck) -> None:
     """Quita la comprobación ``check`` de ``module`` y deja las demás de ese módulo (en su
-    orden): ``core.versions.freeze`` solo las quita por módulo."""
-    others = [other for found, other in freeze.freeze_checks()
+    orden): ``core.versions.freezing`` solo las quita por módulo."""
+    others = [other for found, other in freeze_registry.freeze_checks()
               if found == module and other is not check]
-    freeze.unregister_freeze_checks(module)
+    freeze_registry.unregister_freeze_checks(module)
     for other in others:
-        freeze.register_freeze_check(module, other)
+        freeze_registry.register_freeze_check(module, other)
 
 
 # --- Disponibilidad ------------------------------------------------------------------------------
@@ -486,6 +501,9 @@ class GEOBLENDER_OT_core_declare_limits(ProvenanceAwareOperator, bpy.types.Opera
                              version=scene_versions.active_version())
         if ready is None:
             return {"CANCELLED"}
+        from ...gis.masks import sources  # al usarlas: habilitar no carga las máscaras (T38)
+        from ...gis.masks import store as mask_store
+
         try:
             declared = mask_store.declared_limits(project,
                                                   version=scene_versions.active_version())
@@ -936,6 +954,8 @@ class GEOBLENDER_OT_core_create_constraints(ProvenanceAwareOperator, bpy.types.O
                              version=scene_versions.active_version())
         if ready is None:
             return {"CANCELLED"}
+        from ...gis.masks import sources  # al usarlas: habilitar no carga las máscaras (T38)
+
         try:
             edited = sources.create_constraints(
                 project, request.layer, request.mapping, params=request.declaration,
@@ -1425,6 +1445,8 @@ class GEOBLENDER_OT_core_declare_sectors(_WritesAware, ProvenanceAwareOperator,
                              dialog=self.provenance_dialog, version=version)
         if ready is None:
             return {"CANCELLED"}
+        from ...gis.masks import sectors as mask_sectors  # al usarlo: habilitar no lo carga (T38)
+
         try:
             declared = mask_sectors.declare_sectors(project, layer, field_name, version=version)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
@@ -1450,6 +1472,8 @@ class GEOBLENDER_OT_core_declare_sectors(_WritesAware, ProvenanceAwareOperator,
         opened = open_search()
         if opened is None:
             return
+        from ...gis.masks import access as mask_access  # al usarlo: habilitar no lo carga (T38)
+
         states = mask_access.sector_states(project, version)
         same = any(state.code == opened.searched.sector_code
                    and state.sha256 == opened.searched.sector_sha256 for state in states)
@@ -1527,6 +1551,8 @@ class GEOBLENDER_OT_core_search_untouchables(_Writes, _StepsModal, bpy.types.Ope
         búsqueda (RF-012-08): por pasos desde la interfaz, de una vez desde un guion. Solo lee.
         No busca en otro sector mientras la búsqueda abierta lleve algo convertido: se perdería
         su constancia."""
+        from ...gis.masks import sectors as mask_sectors  # al usarlo: habilitar no lo carga (T38)
+
         project = SESSION.project
         try:
             request = search_request(constraint_panels.view())
@@ -1747,6 +1773,9 @@ class GEOBLENDER_OT_core_convert_hit(_WritesAware, ProvenanceAwareOperator, bpy.
         declaration = constraint_provenance.ParamDeclaration(
             values={ConstraintParam.BUFFER_OUT: buffer_m, ConstraintParam.ACTIVE: True},
             source=layer, source_kind="document", decided_by=decider, reason=reason)
+        from ...gis.masks import sectors as mask_sectors  # al usarlas: habilitar no las carga (T38)
+        from ...gis.masks import sources
+
         try:
             edited = sources.create_from_entity(project, layer, int(found.fid), mapping,
                                                 params=declaration, default_name=name)
@@ -1809,6 +1838,8 @@ class GEOBLENDER_OT_core_discard_hit(_Writes, bpy.types.Operator):
         except SearchFormError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+        from ...gis.masks import sectors as mask_sectors  # al usarlo: habilitar no lo carga (T38)
+
         key = (str(found.layer), int(found.fid))
         opened.decisions[key] = mask_sectors.Decision(key[0], key[1], HitDecision.DISCARDED,
                                                       reason)
@@ -1853,6 +1884,8 @@ class GEOBLENDER_OT_core_close_search(_WritesAware, ProvenanceAwareOperator, bpy
                              version=scene_versions.active_version())
         if ready is None:
             return {"CANCELLED"}
+        from ...gis.masks import sectors as mask_sectors  # al usarlo: habilitar no lo carga (T38)
+
         try:
             mask_sectors.close_search(project, searched, list(opened.decisions.values()),
                                       closed_by=closer, version=opened.version_uid)
@@ -2059,6 +2092,8 @@ class GEOBLENDER_OT_core_save_client_marks(_WritesAware, ProvenanceAwareOperator
             version=scene_versions.active_version())
         if ready is None:
             return {"CANCELLED"}
+        from ...gis.masks import sources  # al usarlo: habilitar no lo carga (T38)
+
         try:
             edited = sources.create_intentions(
                 project, request.layer, request.mapping, document=request.document,

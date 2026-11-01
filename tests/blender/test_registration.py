@@ -13,11 +13,14 @@
   funciones de la huella se comparan por el objeto: una envoltura con
   ``functools.wraps`` tiene el nombre de la original (convergencia, T40).
 - Contrato 1 del plan (§5.3): ``bl.ADDON_PACKAGE`` es el paquete raíz, de 3 componentes.
+- RNF-001-03 (spec 001; spec 012, T38): ``bl.register()`` pausa el recolector de basura mientras
+  registra los subpaquetes y lo deja como estaba, también si uno falla o si ya estaba en pausa.
 
 Se ejecuta con ``tools/run_blender_tests.py``, que instala la copia de pruebas.
 """
 
 import functools
+import gc
 import importlib
 import sys
 import unittest
@@ -118,6 +121,48 @@ class RegistrationTest(RegistrationTestCase):
         self.assertEqual(
             calls, [(name, "unregister") for name in reversed(EXPECTED_SUBPACKAGES)]
         )
+
+    def test_register_pauses_the_collector_and_restores_it(self) -> None:
+        """RNF-001-03: el recolector de basura está en pausa mientras se registran los seis
+        subpaquetes (no al desregistrar) y queda activo al terminar; si un subpaquete falla, se
+        deshace lo hecho y también queda activo; si ya estaba en pausa, sigue en pausa. (Los
+        subpaquetes son registradores: lo que se prueba es ``bl.register()``.)"""
+        bl = self.import_bl()
+        seen: list[tuple[str, bool]] = []
+        module = mock.Mock()
+        module.register.side_effect = lambda: seen.append(("register", gc.isenabled()))
+        module.unregister.side_effect = lambda: seen.append(("unregister", gc.isenabled()))
+        self.assertTrue(gc.isenabled())
+        with mock.patch.object(bl, "_subpackage", return_value=module):
+            bl.register()
+            self.assertEqual(seen, [("register", False)] * len(EXPECTED_SUBPACKAGES))
+            self.assertTrue(gc.isenabled())
+            seen.clear()
+            bl.unregister()
+            self.assertEqual(seen, [("unregister", True)] * len(EXPECTED_SUBPACKAGES))
+
+            seen.clear()
+
+            def third_fails() -> None:
+                seen.append(("register", gc.isenabled()))
+                if len(seen) == 3:
+                    raise RuntimeError("falla el tercero")
+
+            module.register.side_effect = third_fails
+            with self.assertRaises(RuntimeError):
+                bl.register()
+            self.assertEqual(seen, [("register", False)] * 3 + [("unregister", True)] * 2)
+            self.assertTrue(gc.isenabled())
+
+            module.register.side_effect = lambda: seen.append(("register", gc.isenabled()))
+            self.addCleanup(gc.enable)
+            gc.disable()
+            seen.clear()
+            bl.register()
+            self.assertEqual(seen, [("register", False)] * len(EXPECTED_SUBPACKAGES))
+            self.assertFalse(gc.isenabled())
+            gc.enable()
+            bl.unregister()
 
     def test_unregister_twice(self) -> None:
         """RF-001-05: un segundo desregistro no llama a los subpaquetes, no lanza

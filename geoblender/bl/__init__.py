@@ -18,7 +18,10 @@ iconos, nunca el ``__package__`` de un submódulo (plan §2.1, 14; contrato 1).
 
 from __future__ import annotations
 
+import contextlib
+import gc
 import importlib
+from collections.abc import Iterator
 from types import ModuleType
 
 ADDON_PACKAGE: str = __package__.rpartition(".")[0]
@@ -32,18 +35,38 @@ def _subpackage(name: str) -> ModuleType:
     return importlib.import_module(f".{name}", __name__)
 
 
+@contextlib.contextmanager
+def _collector_paused() -> Iterator[None]:
+    """Pausa el recolector de basura de Python mientras dura y lo deja como estaba, también si
+    falla (RNF-001-03; spec 012, T38). Registrar importa unos 270 módulos y crea miles de clases
+    y de objetos que viven hasta desactivar la extensión: ninguna pasada del recolector encuentra
+    nada que liberar, pero cada una recorre todo lo creado hasta ahora (y, con el montón de
+    Blender, a veces el de la generación más vieja): unos 15 ms de una habilitación de 0,43 s
+    y, según el estado del montón, hasta 60 ms más. Lo que se cree se recoge en la primera pasada
+    tras registrar."""
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
 def register() -> None:
     """Registra los subpaquetes en el orden de ``SUBPACKAGES``; si ya está registrado,
-    no hace nada. Si uno falla, deshace los anteriores antes de propagar el error."""
+    no hace nada. Si uno falla, deshace los anteriores antes de propagar el error. El
+    recolector de basura queda en pausa mientras se registra (:func:`_collector_paused`)."""
     global _registered
     if _registered:
         return
     done: list[ModuleType] = []
     try:
-        for name in SUBPACKAGES:
-            module = _subpackage(name)
-            module.register()
-            done.append(module)
+        with _collector_paused():
+            for name in SUBPACKAGES:
+                module = _subpackage(name)
+                module.register()
+                done.append(module)
     except BaseException:
         for module in reversed(done):
             module.unregister()

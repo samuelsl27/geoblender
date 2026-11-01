@@ -219,7 +219,6 @@ from ...gis.contours import (
 )
 from ...gis.grid import Grid, project_grid
 from ...gis.masks import provenance as masks_provenance
-from ...gis.masks import store as masks_store
 from ...gis.messages import GisError
 from ...gis.placement import extent_in, outside_window
 from ...gis.points import DUP_XY_KEY, DUP_Z_KEY, Breakline, PointSet
@@ -4344,16 +4343,27 @@ def recompute_compile(request: RecomputeRequest) -> OperationHandle:
     """El recálculo de ``gis.compile_constraints`` (RF-008-26; RF-012-16; D-19): la compilación
     nueva (``gis.masks.store.recompute_run``, con las restricciones y los parámetros de hoy),
     «en curso», con sus pasos en la cola de las máscaras."""
+    from ...gis.masks import store as masks_store  # al usarlo: habilitar no lo carga (T38)
+
     handle, steps = masks_store.recompute_run(request)
     queue_mask_steps(handle, steps)
     return handle
 
 
+def reproduce_compile(request: Any) -> Iterator[Progress]:
+    """La reproducción de ``gis.compile_constraints`` (``gis.masks.store.reproduce_compile``, la
+    de ``gis.masks.store.REPRODUCE``): ``gis.masks.store`` se importa en la primera reproducción y
+    no al habilitar Geoblender (RNF-001-03, spec 012 T38)."""
+    from ...gis.masks import store as masks_store
+
+    return masks_store.reproduce_compile(request)
+
+
 MASKS_OPERATION_DEF: contract.OperationDef = masks_provenance.operation_def(
-    recompute_compile, masks_store.REPRODUCE[masks_provenance.COMPILE])
+    recompute_compile, reproduce_compile)
 """El ``OperationDef`` de ``gis.compile_constraints``: de la versión, repetible, con
-:func:`recompute_compile`, la reproducción de ``gis.masks.store`` y la tolerancia de sus
-cifras (10⁻⁹, D-37)."""
+:func:`recompute_compile`, :func:`reproduce_compile` (la reproducción de ``gis.masks.store``) y la
+tolerancia de sus cifras (10⁻⁹, D-37)."""
 
 
 # --- Compilar las máscaras y exportarlas (spec 012, T23; RF-012-04, RF-012-06, RF-012-11,
@@ -4375,6 +4385,8 @@ def _compile_steps(owner: Any, project: Any, version_uid: str) -> Iterator[Progr
     y los de ``compile_run``, el último con lo guardado. Cerrarlos antes de la operación no
     deja nada; cerrarlos después, la deja «cancelada» (``compile_run`` lo hace al cerrarse) y no
     deja nada en el proyecto."""
+    from ...gis.masks import store as masks_store  # al usarlo: habilitar no lo carga (T38)
+
     begin = masks_store.begin_compile_steps(project, version=version_uid)
     handle = None
     try:
@@ -4455,6 +4467,8 @@ class GEOBLENDER_OT_gis_compile_constraints(ProvenanceAwareOperator, _StepsModal
             return {"CANCELLED"}
         project = core_provenance.SESSION.project
         version_uid = scene_versions.active_version() or ""
+        from ...gis.masks import store as masks_store  # al usarlo: habilitar no lo carga (T38)
+
         try:
             inputs = masks_provenance.compile_inputs(masks_store.available_tables(project))
         except (GeoblenderError, sqlite3.Error, OSError) as exc:
@@ -4486,6 +4500,8 @@ class GEOBLENDER_OT_gis_compile_constraints(ProvenanceAwareOperator, _StepsModal
         project, handle = self._project, self.handle
         undo_watch.record(UndoKind.OPERATION, masks_provenance.COMPILE)
         names: tuple[str, ...] = ()
+        from ...gis.masks import store as masks_store  # al usarlo: habilitar no lo carga (T38)
+
         try:
             with project.read() as conn:
                 names = tuple(masks_store.current_pending(conn, project, handle.version_uid)[1])

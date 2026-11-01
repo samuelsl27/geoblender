@@ -122,11 +122,8 @@ from ...core.params.store import ParameterStore
 from ...core.versions import decisions as versions_decisions
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
-from ...gis.masks import access as mask_access
 from ...gis.masks import provenance as masks_provenance
-from ...gis.masks import store as mask_store
-from ...reserves import compliance_store
-from ...reserves.compliance import INNER_SUFFIX, OUTSIDE_LEGAL, OUTSIDE_PERIMETER
+from ...reserves import provenance as res_provenance
 from .. import compat
 from ..props.core_constraints import (
     MARK_FIELD,
@@ -227,7 +224,7 @@ COUNTS_FILL = "fill"
 COUNTS_ANY = "any"
 
 VERIFY_PANEL = "GEOBLENDER_PT_res_verification"
-VERIFY_COMMAND = compliance_store.COMMAND
+VERIFY_COMMAND = res_provenance.VERIFY_COMMAND
 VERIFY_PANEL_UNITS = 50
 VERIFY_WIDTH_PX = VERIFY_PANEL_UNITS * compat.UI_UNIT_PX
 ZONE_NAME_FACTOR = 0.34
@@ -383,6 +380,8 @@ def fill_limits(project: Any) -> Any:
     if limits is None:  # inalcanzable con la extensión registrada
         raise RuntimeError("la vista de los límites no está registrada")
     shown = scene_versions.active()
+    from ...gis.masks import store as mask_store  # al usarlo: habilitar no lo carga (T38)
+
     found = mask_store.declared_limits(project, version=None if shown is None else shown.uid)
     layers = polygon_layers(project)
     chosen = {item.name: (item.legal, item.perimeter) for item in limits.limit_layers}
@@ -578,6 +577,8 @@ def fill_constraints(project: Any) -> int:
     if shown is None:  # inalcanzable con la extensión registrada
         raise RuntimeError("la vista de las restricciones no está registrada")
     version = scene_versions.active()
+    from ...gis.masks import store as mask_store  # al usarlo: habilitar no lo carga (T38)
+
     listed = mask_store.listed_constraints(project, version=None if version is None
                                            else version.uid)
     layers = source_layers(project)
@@ -843,6 +844,8 @@ def fill_search(project: Any) -> int:
     if shown is None:  # inalcanzable con la extensión registrada
         raise RuntimeError("la vista de la búsqueda de intocables no está registrada")
     version = scene_versions.active()
+    from ...gis.masks import access as mask_access  # al usarlo: habilitar no lo carga (T38)
+
     states = mask_access.sector_states(project, None if version is None else version.uid)
     layers = search_layers(project)
     polygons = polygon_layers(project)
@@ -1418,6 +1421,8 @@ def _zone_lines(project: Any, conn: Any, code: str) -> list[CardLine]:
     version = scene_versions.active()
     found = None
     if version is not None and is_code(code):
+        from ...reserves import compliance_store  # al usarlo: habilitar no lo carga (T38)
+
         found = compliance_store.zone_check(conn, version.uid, code)
     return check_lines(version, found)
 
@@ -1479,6 +1484,8 @@ def read_selected(context: Any = None) -> bool:
         return bool(shown.selected.uid)
     else:
         version = scene_versions.active()
+        from ...gis.masks import store as mask_store  # al usarlo: habilitar no lo carga (T38)
+
         try:
             entry = mask_store.listed_constraint(project, uid,
                                                  version=None if version is None else version.uid)
@@ -1638,6 +1645,12 @@ def zone_name(code: str, names: Any) -> str:
     tipo), ``core.constraints.store.constraint_names``): el de su restricción (o su código, si ya
     no está), «Fuera del perímetro de actuación», «Fuera del límite legal» y, de la banda hacia
     dentro de un límite legal, «<nombre> (banda hacia dentro)»."""
+    from ...reserves.compliance import (  # al usarlas: habilitar no las carga (T38)
+        INNER_SUFFIX,
+        OUTSIDE_LEGAL,
+        OUTSIDE_PERIMETER,
+    )
+
     if code == OUTSIDE_PERIMETER:
         return tr("Outside the action perimeter")
     if code == OUTSIDE_LEGAL:
@@ -1737,6 +1750,8 @@ def fill_verification(project: Any, version_uid: str | None, name: str | None = 
     if not version_uid:
         return []
     chosen = name if name is not None else (shown.verify_name or None)
+    from ...reserves import compliance_store  # al usarlo: habilitar no lo carga (T38)
+
     with project.read() as conn:
         found = compliance_store.read_verification(conn, version_uid, chosen)
         if found is None and chosen is not None:  # la elegida ya no está: la más reciente
