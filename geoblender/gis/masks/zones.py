@@ -4,9 +4,35 @@ RF-012-12; plan 012 A1, A2, D-1, D-19 y D-37; ADR-0028).
 
 **La regla de la celda (D-1, RF-012-12).** Una celda está en la **zona** de una geometría cuando
 alguna parte de su área queda a una distancia de ella menor que su resguardo hacia fuera ``r``
-(más que el residuo del redondeo: ``d < r − τ``, τ = :data:`TAU_M`), y **dentro de un límite** solo
-cuando está entera dentro. Así lo que una máscara prohíbe nunca deja fuera parte de una celda, y
-lo que solo toca un borde no cuenta.
+(más que el residuo del redondeo: ``d < r − τ``), y **dentro de un límite** solo cuando está
+entera dentro. Así lo que una máscara prohíbe nunca deja fuera parte de una celda, y lo que solo
+toca un borde no cuenta.
+
+**El residuo del redondeo (D-37; T39).** Con nortes de 4,4 Mm un ``float64`` redondea a 1 ulp =
+9,3·10⁻¹⁰ m, una fracción 9·10⁻¹⁰ de una celda de 1 m: mucho mayor que 10⁻¹², y una exclusión de
+12 × 12 m alineada con la rejilla pasaba de 144 celdas a 192 con ese ruido hacia fuera, y un
+límite de 30 × 30 m, de 900 a 784 hacia dentro. La tolerancia depende por eso de la rejilla:
+
+- :func:`noise_m` (``t``): lo que puede estar movida una coordenada de la rejilla por el
+  redondeo, ``NOISE_ULPS`` (2¹¹ = 2048) ulp de la mayor de sus coordenadas absolutas, **nunca más
+  de** ``NOISE_MAX_M`` (1 µm). 2048 ulp son 11 bits de margen sobre el medio ulp de un redondeo:
+  cubren las cadenas de operaciones de un diseño (cambios de CRS, giros, desplazamientos), que
+  acumulan decenas o cientos de ulp, y en un UTM (ulp de 0,9 a 1,9 nm) llegan al tope de 1 µm,
+  tres órdenes menos que el 1 mm de la superposición (006, 011) y la precisión de cualquier
+  levantamiento. Con coordenadas pequeñas la ulp es menor y ``t`` también, así que no se traga
+  nada que el redondeo no pueda mover.
+- :func:`fraction_epsilon` (ε de la celda): el área que puede perder o ganar una celda cuyo borde
+  se mueve ``t`` en cada eje, ``t·(1/dx + 1/dy)`` (de una esquina; un lado, ``t/dx`` o ``t/dy``),
+  con una ulp más por guardar ``A ± t`` en ``float64``, y nunca menos que
+  ``gis.coverage.FRACTION_EPSILON`` (10⁻¹², la de la cubicación, 011, que **no se toca**). Una
+  celda toca la zona de un polígono si la fracción de su área dentro es ``> ε``, y está dentro de
+  un límite si es ``≥ 1 − ε``.
+- :func:`distance_tau` (τ): ``√2·t`` (un desplazamiento de ``t`` en los dos ejes), nunca menos
+  que :data:`TAU_M` (10⁻⁹ m): una celda a una distancia ``< r − τ`` está en la zona.
+
+Lo que invade de verdad una celda (10 µm, 1 mm) sigue entrando: la zona es del lado seguro. Una
+esquina que se meta en una celda con catetos de ≤ √(2ε)·paso (1,4 mm con 1 m en un UTM) tampoco
+cuenta: es un área de 2·10⁻⁶ de la celda.
 
 - :func:`near_runs` (**A1**): las celdas a distancia ``< r − τ`` de unos segmentos, por
   **intervalos de fila de la cápsula**: la cápsula abierta de un segmento (los puntos a menos de
@@ -19,7 +45,7 @@ lo que solo toca un borde no cuenta.
   con celdas no cuadradas. Un punto es un segmento nulo.
 - :func:`inside_runs` (**A2**): las celdas con una fracción de su área dentro de un polígono
   ``> ε`` (las que toca) o ``≥ 1 − ε`` (las enteras dentro), con la fracción exacta de
-  ``gis.coverage`` (ε = ``FRACTION_EPSILON``, 10⁻¹²).
+  ``gis.coverage`` y la ε de la rejilla (:func:`fraction_epsilon`).
 - :func:`zone_runs` / :func:`zone_steps`: la zona de una restricción con su resguardo hacia fuera
   (un polígono, lo que toca ∪ lo cercano; una línea o un punto, lo cercano, con ``r > 0``, D-17).
 - :func:`limit_runs` / :func:`limit_steps`: de un límite (unas aristas orientadas, p. ej. la unión
@@ -51,6 +77,8 @@ if TYPE_CHECKING:
     from ..grid import Grid
 
 __all__ = [
+    "NOISE_MAX_M",
+    "NOISE_ULPS",
     "ROWS_PER_STEP",
     "SEGMENTS_PER_STEP",
     "TAU_M",
@@ -68,7 +96,14 @@ __all__ = [
 ]
 
 TAU_M = 1e-9
-"""τ (m, D-37): una celda a una distancia ≥ ``r − τ`` solo toca la zona dentro del redondeo."""
+"""τ mínimo (m, D-37): una celda a una distancia ≥ ``r − τ`` solo toca la zona dentro del
+redondeo. Con coordenadas grandes manda :func:`distance_tau`."""
+NOISE_ULPS = 2048
+"""Los ulp de la mayor coordenada de la rejilla que :func:`noise_m` da por ruido del redondeo
+(2¹¹: once bits de margen sobre el medio ulp de un redondeo)."""
+NOISE_MAX_M = 1e-6
+"""El tope de :func:`noise_m` (m): 1 µm por coordenada, tres órdenes menos que el 1 mm de la
+superposición."""
 SEGMENTS_PER_STEP = 1024
 """Segmentos de cada paso de :func:`near_runs` en :func:`zone_steps` y :func:`limit_steps`."""
 ROWS_PER_STEP = 256
@@ -76,6 +111,46 @@ ROWS_PER_STEP = 256
 
 _POLYGON, _LINE, _POINT = "polygon", "line", "point"
 _EMPTY = np.zeros(0, dtype=np.int64)
+
+
+# --- La tolerancia de la celda: el residuo del redondeo de las coordenadas -----------------------
+
+
+def _ulp_m(grid: Grid) -> float:
+    """La ulp de ``float64`` (m) de la mayor coordenada absoluta de ``grid``. Depende de la rejilla
+    y no de cada vértice: la ulp solo cambia por potencias de dos, y las restricciones de un
+    proyecto están en su CRS."""
+    box = grid.extent
+    return float(np.spacing(max(abs(box.xmin), abs(box.xmax), abs(box.ymin), abs(box.ymax))))
+
+
+def noise_m(grid: Grid) -> float:
+    """``t`` (m, D-37, T39): lo que el redondeo de ``float64`` puede haber movido una coordenada
+    absoluta de ``grid``: :data:`NOISE_ULPS` ulp de la mayor de sus coordenadas, con tope
+    :data:`NOISE_MAX_M` (1 µm)."""
+    return min(NOISE_MAX_M, NOISE_ULPS * _ulp_m(grid))
+
+
+def _moved_m(grid: Grid) -> float:
+    """Cuánto se mueve de verdad una coordenada con ruido ``t``: ``t`` más una ulp, porque
+    ``A ± t`` se guarda en el múltiplo de la ulp más cercano (un ``+ 1e-6`` a un norte de 4,4 Mm
+    queda en 1,00026 µm)."""
+    return noise_m(grid) + _ulp_m(grid)
+
+
+def fraction_epsilon(grid: Grid) -> float:
+    """ε de la celda (RF-012-12): la fracción de su área que un borde movido :func:`noise_m` en
+    cada eje puede quitarle o ponerle, ``t·(1/dx + 1/dy)`` (con la ulp de guardar ``t``), y nunca
+    menos que ``gis.coverage.FRACTION_EPSILON``. Una celda toca un polígono si su fracción dentro
+    es ``> ε`` y está entera dentro si es ``≥ 1 − ε``."""
+    return max(FRACTION_EPSILON, _moved_m(grid) * (1.0 / grid.dx + 1.0 / grid.dy))
+
+
+def distance_tau(grid: Grid) -> float:
+    """τ de la rejilla (m, RF-012-12): ``√2·t`` (un desplazamiento de :func:`noise_m` en los dos
+    ejes, con la ulp de guardarlo) y nunca menos que :data:`TAU_M`. Una celda está en la zona de
+    un resguardo ``r`` si su distancia es ``< r − τ``."""
+    return max(TAU_M, math.sqrt(2.0) * _moved_m(grid))
 
 
 # --- Tramos de fila ----------------------------------------------------------------------------
@@ -399,10 +474,10 @@ def near_runs(segments: np.ndarray, radius_m: float, grid: Grid, *,
     """**A1** (RF-012-12, D-1): las celdas de ``grid`` (o de su banda de filas ``rows``, desde el
     norte) a una distancia ``< radius_m − τ`` de alguno de los segmentos ``(n, 2, 2)`` (metros
     relativos a la esquina suroeste; un punto, un segmento nulo). Sin resguardo (``radius_m ≤
-    τ``), ninguna. Unos segmentos que no son ``(n, 2, 2)`` o no finitos son un error del programa
-    (:class:`ValueError`)."""
+    τ``), ninguna; τ es :func:`distance_tau` de ``grid`` (≥ :data:`TAU_M`). Unos segmentos que no
+    son ``(n, 2, 2)`` o no finitos son un error del programa (:class:`ValueError`)."""
     segments = _check_segments(segments)
-    reach = float(radius_m) - TAU_M
+    reach = float(radius_m) - distance_tau(grid)
     first, stop = _rows(rows, grid)
     if not reach > 0.0 or segments.shape[0] == 0 or stop <= first:
         return Runs.empty()
@@ -461,13 +536,15 @@ def inside_runs(edges: np.ndarray, grid: Grid, *, whole: bool,
     """**A2** (RF-012-12): las celdas de ``grid`` (o de su banda ``rows``) con una fracción de
     su área dentro del polígono de las aristas orientadas ``edges`` (``gis.coverage``) mayor que
     ``ε`` (las que toca, ``whole=False``) o de al menos ``1 − ε`` (las enteras dentro,
-    ``whole=True``)."""
+    ``whole=True``), con la ε de la rejilla (:func:`fraction_epsilon`: el residuo del redondeo
+    de un UTM, no el 10⁻¹² de la cubicación)."""
     first, stop = _rows(rows, grid)
     band = band_coverage(edges, grid, slice(first, stop))
+    epsilon = fraction_epsilon(grid)
     if whole:
-        found = band.fraction >= 1.0 - FRACTION_EPSILON
+        found = band.fraction >= 1.0 - epsilon
     else:
-        found = band.fraction > FRACTION_EPSILON
+        found = band.fraction > epsilon
     return _cells_to_runs(band.rows[found], band.cols[found])
 
 
