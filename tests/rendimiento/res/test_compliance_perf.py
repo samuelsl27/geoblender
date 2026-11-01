@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Rendimiento de verificar un diseño por recinto (spec 012, T36; RNF-012-02, RNF-012-03 y
+"""Rendimiento de verificar un diseño por recinto (spec 012, T36 y T30; RNF-012-02, RNF-012-03 y
 RNF-012-06; plan 012 §2.2 y §7.3, ``tests/rendimiento/res``).
 
 Se ejecuta con ``python -B -s -X utf8 -m unittest tests.rendimiento.res.test_compliance_perf -v``
@@ -24,27 +24,42 @@ abultamientos de ±3 m (más de 3.600 grupos pequeños por final).
 - RNF-012-03 (:class:`VerifyTest`): el pico de memoria adicional (``tracemalloc``) ≤ 700 MiB
   (holgura sobre el 1 GB de la spec).
 - Esc a mitad no deja nada en el proyecto (RF-012-28).
+
+**En la red** (:class:`NetworkTest`; recurso «red»: la carpeta de pruebas de
+``GEOBLENDER_NET_TEST_DIR``, nunca la de los expedientes ni la del espejo; sin ella, se omite): el
+mismo proyecto creado en una subcarpeta temporal propia que se borra al terminar, con los datos de
+usuario en disco local (como en un puesto), las máscaras al día y las tres finales de la forma
+``window`` (la dura): RNF-012-02 ≤ 12 s (mediana de 5, de la llamada de la orden a las cifras) y
+Esc ≤ 2 s. Lo que hace Geoblender en cada llamada, sin sus esperas de la red
+(``tests.support.netwaits``), y esas esperas, aparte, se anotan sin presupuesto: el de RNF-012-06
+se comprueba con las órdenes reales (T31). El proyecto ocupa unos 100 MB en la red y la prueba
+tarda unos minutos.
 """
 
 from __future__ import annotations
 
 import gc
 import statistics
+import tempfile
 import time
 import unittest
 from collections.abc import Iterator
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
 from tests.support import constraints_scale as scale
-from tests.support import gis_perf
+from tests.support import gis_perf, netwaits, network
+from tests.support import versions_perf as vperf
 from tests.support.package import import_geoblender
+from tests.support.resources import requires
 
 access = import_geoblender("gis.masks.access")
 cstore_v = import_geoblender("reserves.compliance_store")
 
 TOTAL_BUDGET_S = 5.0  # RNF-012-02
+NET_TOTAL_BUDGET_S = 12.0  # RNF-012-02, en Z:
 STEP_BUDGET_S = 0.05  # RNF-012-06 (el paso que se planea; la llamada, ≤ 0,05 s)
 MEMORY_BUDGET_BYTES = 700 * 2**20  # RNF-012-03 con holgura: 700 MiB sobre el 1 GB de la spec
 RUNS = 5  # mediana de 5
@@ -57,23 +72,33 @@ count = gis_perf.count
 
 @dataclass(frozen=True, slots=True)
 class Call:
-    """Una llamada al generador de los pasos: lo que tardó y qué paso entregó."""
+    """Una llamada al generador de los pasos: lo que tardó, qué paso entregó y, en la red, lo
+    que esperó en ella a la red (``waits_s``)."""
 
     seconds: float
     phase: str
     done: int
     total: int
     final: bool
+    waits_s: float = 0.0
+
+    @property
+    def own_s(self) -> float:
+        """Lo que hace Geoblender en la llamada: su duración sin sus esperas de la red."""
+        return self.seconds - self.waits_s
 
 
 @dataclass(frozen=True, slots=True)
 class Run:
-    """Una verificación entera: la llamada de la orden, las llamadas a los pasos y el
-    resultado."""
+    """Una verificación entera: la llamada de la orden, las llamadas a los pasos y el resultado
+    (en la red, con lo que esperó la llamada de la orden a la red y las esperas de toda la
+    verificación)."""
 
     begin_s: float
     calls: tuple[Call, ...]
     result: Any
+    begin_waits_s: float = 0.0
+    waits: netwaits.NetworkWaits | None = None
 
     @property
     def total_s(self) -> float:
@@ -86,8 +111,9 @@ class Run:
 
     @property
     def longest(self) -> Call:
-        """La llamada más larga sin contar la transacción final."""
-        return max(self.steps, key=lambda call: call.seconds)
+        """La llamada más larga sin contar la transacción final (en la red, la de más trabajo
+        propio, sin sus esperas)."""
+        return max(self.steps, key=lambda call: call.own_s)
 
     @property
     def transaction_s(self) -> float:
@@ -95,51 +121,104 @@ class Run:
         return max((call.seconds for call in self.calls if call.final), default=0.0)
 
 
-def _calls(steps: Iterator[Any]) -> tuple[tuple[Call, ...], Any]:
+def _calls(steps: Iterator[Any],
+           waits: netwaits.NetworkWaits | None = None) -> tuple[tuple[Call, ...], Any]:
+    """Cada ``next()`` de ``steps`` como una llamada; con ``waits`` (activo), también lo que
+    esperó en ella a la red."""
     calls: list[Call] = []
     result = None
     while True:
+        if waits is not None:
+            waits.begin()
         before = time.perf_counter()
         try:
             step = next(steps)
         except StopIteration:
-            calls.append(Call(time.perf_counter() - before, "end", 0, 0, False))
+            seconds = time.perf_counter() - before
+            calls.append(Call(seconds, "end", 0, 0, False, _waited(waits)))
             break
+        seconds = time.perf_counter() - before
         final = step.result is not None
-        calls.append(Call(time.perf_counter() - before, step.phase, step.done, step.total, final))
+        calls.append(Call(seconds, step.phase, step.done, step.total, final, _waited(waits)))
         if final:
             result = step.result
     return tuple(calls), result
 
 
+def _waited(waits: netwaits.NetworkWaits | None) -> float:
+    """Lo que esperó a la red la llamada que acaba (y empieza otra)."""
+    return 0.0 if waits is None else sum(waits.take().values())
+
+
+def _waits_text(waits: netwaits.NetworkWaits | None) -> str:
+    """Las esperas de la red de una verificación, por clase: cuántas y cuánto en total, y la
+    más larga."""
+    if waits is None:
+        return "sin red"
+    parts = [f"{kind} {count(waits.counts[kind])} ({number(waits.totals[kind], 2)} s)"
+             for kind in netwaits.KINDS if waits.counts[kind]]
+    kind, seconds = waits.longest
+    return f"{', '.join(parts)}; la más larga, {kind} {number(seconds * 1000, 0)} ms"
+
+
 class VerifyTest(unittest.TestCase):
-    """RNF-012-02, RNF-012-03 y RNF-012-06 con las restricciones de §2.2 en disco local."""
+    """RNF-012-02, RNF-012-03 y RNF-012-06 con las restricciones de §2.2 en disco local.
+
+    Sus atributos de clase son los de :class:`NetworkTest`, que hace lo mismo con el proyecto en
+    la red: ``remote``, la carpeta de la red del proyecto (``None``: disco local); ``budget_s``,
+    el presupuesto de RNF-012-02; ``step_limit_s``, el de cada llamada (``None``: solo se anota;
+    el de RNF-012-06 en la red se comprueba con las órdenes reales, T31); ``shapes``, las formas
+    de las finales que se miden."""
 
     data: ClassVar[scale.ScaleProject]
     forms: ClassVar[dict[str, scale.ScaleSurfaces]]
+    remote: ClassVar[Path | None] = None
+    budget_s: ClassVar[float] = TOTAL_BUDGET_S
+    step_limit_s: ClassVar[float | None] = STEP_BUDGET_S
+    where: ClassVar[str] = "en disco local"
+    shapes: ClassVar[tuple[str, ...]] = (scale.WINDOW, scale.LOCAL)
 
     @classmethod
     def setUpClass(cls) -> None:
         constraints = scale.build_constraints()
         cls.data = cls.enterClassContext(scale.scale_project(constraints))
+        cls.prepare()
+
+    @classmethod
+    def prepare(cls) -> None:
+        """Las máscaras de V01 al día y las superficies de ``shapes`` escritas en el proyecto."""
         cls.enterClassContext(scale.verify_registered())
         for _ in access.ensure_masks_steps(cls.data.project, cls.data.v1.uid, budget_s=0.05):
             pass  # las máscaras de V01 al día (no cuentan)
-        cls.forms = {shape: scale.write_surfaces(cls.data, shape)
-                     for shape in (scale.WINDOW, scale.LOCAL)}
+        cls.forms = {shape: scale.write_surfaces(cls.data, shape) for shape in cls.shapes}
+
+    def waiting(self) -> AbstractContextManager[netwaits.NetworkWaits | None]:
+        """Las esperas de la red de lo que se mide (``None`` en disco local)."""
+        if self.remote is None:
+            return nullcontext()
+        return netwaits.NetworkWaits(self.remote, projects=(self.data.project,))
+
+    def space(self) -> str:
+        """El espacio libre del disco del proyecto (y, en la red, el de los datos de usuario)."""
+        folders = [Path(self.data.project.root)]
+        if self.remote is not None:
+            folders.append(Path(tempfile.gettempdir()))
+        return "; ".join(vperf.free_space(folder) for folder in folders)
 
     def verify_once(self, shape: str, *, name: str = "Diseño de escala") -> Run:
         """``verify_project_steps`` y sus pasos de V01 con las finales de ``shape``."""
         data, surfaces = self.data, self.forms[shape]
         data.clock.advance(minutes=1)
-        before = time.perf_counter()
-        steps = cstore_v.verify_project_steps(
-            data.project, version=data.v1.uid, name=name, start=surfaces.start,
-            finals=surfaces.finals, budget_s=STEP_BUDGET_S)
-        begin_s = time.perf_counter() - before
-        calls, result = _calls(steps)
+        with self.waiting() as waits:
+            before = time.perf_counter()
+            steps = cstore_v.verify_project_steps(
+                data.project, version=data.v1.uid, name=name, start=surfaces.start,
+                finals=surfaces.finals, budget_s=STEP_BUDGET_S)
+            begin_s = time.perf_counter() - before
+            begin_waits = _waited(waits)
+            calls, result = _calls(steps, waits)
         self.assertIsInstance(result, cstore_v.StoredCheck)
-        return Run(begin_s, calls, result)
+        return Run(begin_s, calls, result, begin_waits, waits)
 
     def runs(self, shape: str) -> list[Run]:
         """La primera verificación (que no cuenta: la tabla aún no existe) y :data:`RUNS`
@@ -154,31 +233,42 @@ class VerifyTest(unittest.TestCase):
     def check_shape(self, shape: str) -> None:
         found = self.runs(shape)
         totals = [run.total_s for run in found]
-        longest = sorted(found, key=lambda run: run.longest.seconds)[len(found) // 2].longest
-        worst = max((run.longest for run in found), key=lambda call: call.seconds)
+        longest = sorted(found, key=lambda run: run.longest.own_s)[len(found) // 2].longest
+        worst = max((run.longest for run in found), key=lambda call: call.own_s)
         stored = found[-1].result.result
         gis_perf.report(
             f"RNF-012-02: verificar {len(self.forms[shape].finals)} finales frente a la partida "
             f"({shape}) en {count(len(self.data.constraints.rows))} recintos y la rejilla de "
-            f"{count(scale.COLS * scale.ROWS)} celdas de 1 m (los dos recintos de fuera, las "
-            f"cifras y los grupos: {count(sum(len(f.groups) for f in stored.finals))}; de la "
-            f"llamada de la orden a las cifras registradas, con los pasos seguidos; {MACHINE}): "
-            f"{gis_perf.median_line(totals)}; {len(found[-1].calls)} llamadas; presupuesto "
-            f"{number(TOTAL_BUDGET_S, 0)} s")
+            f"{count(scale.COLS * scale.ROWS)} celdas de 1 m {self.where} (los dos recintos de "
+            f"fuera, las cifras y los grupos: {count(sum(len(f.groups) for f in stored.finals))};"
+            f" de la llamada de la orden a las cifras registradas, con los pasos seguidos; "
+            f"{MACHINE}): {gis_perf.median_line(totals)}; {len(found[-1].calls)} llamadas; "
+            f"presupuesto {number(self.budget_s, 0)} s; {self.space()}")
+        limit = ("sin presupuesto en esta prueba (el de las órdenes reales, T31)"
+                 if self.step_limit_s is None
+                 else f"presupuesto {number(self.step_limit_s * 1000, 0)} ms")
+        waited = ("" if self.remote is None else
+                  f"; lo propio de cada llamada, sin sus esperas de la red (con ellas, la más "
+                  f"larga de la última verificación fue "
+                  f"{number(max(c.seconds for c in found[-1].steps) * 1000, 0)} ms); las "
+                  f"esperas de la red, aparte (la última verificación): "
+                  f"{_waits_text(found[-1].waits)}")
         gis_perf.report(
-            f"RNF-012-06: la llamada más larga al verificar ({shape}, sin la transacción final), "
-            f"mediana de {len(found)}: {number(longest.seconds * 1000, 0)} ms («{longest.phase}» "
-            f"{longest.done}/{longest.total}; la peor de todas, {number(worst.seconds * 1000, 0)}"
-            f" ms en «{worst.phase}» {worst.done}/{worst.total}); la transacción final, "
+            f"RNF-012-06: la llamada más larga al verificar ({shape}, {self.where}, sin la "
+            f"transacción final), mediana de {len(found)}: {number(longest.own_s * 1000, 0)} ms "
+            f"(«{longest.phase}» {longest.done}/{longest.total}; la peor de todas, "
+            f"{number(worst.own_s * 1000, 0)} ms en «{worst.phase}» {worst.done}/{worst.total}); "
+            f"la transacción final, "
             f"{number(statistics.median(run.transaction_s for run in found) * 1000, 0)} ms; la "
             f"llamada de la orden, "
-            f"{number(statistics.median(run.begin_s for run in found) * 1000, 0)} ms; "
-            f"presupuesto {number(STEP_BUDGET_S * 1000, 0)} ms ({MACHINE})")
+            f"{number(statistics.median(run.begin_s for run in found) * 1000, 0)} ms{waited}; "
+            f"{limit} ({MACHINE})")
         self.assertEqual(len(stored.finals), len(self.forms[shape].finals))
         self.assertTrue(all(stored.fails))
-        self.assertLessEqual(statistics.median(totals), TOTAL_BUDGET_S)
-        self.assertLessEqual(longest.seconds, STEP_BUDGET_S,
-                             f"{longest.phase} {longest.done}/{longest.total}")
+        self.assertLessEqual(statistics.median(totals), self.budget_s)
+        if self.step_limit_s is not None:
+            self.assertLessEqual(longest.own_s, self.step_limit_s,
+                                 f"{longest.phase} {longest.done}/{longest.total}")
 
     def test_verify_changes_in_the_whole_window(self) -> None:
         """RNF-012-02 y RNF-012-06: tres finales que cambian en toda la ventana (pocos grupos
@@ -246,7 +336,7 @@ class VerifyTest(unittest.TestCase):
         after = state()
         status = last_status()[1]
         gis_perf.report(
-            f"RNF-012-02: Esc tras {CANCEL_AFTER} pasos de verificar: cerrar tarda "
+            f"RNF-012-02: Esc tras {CANCEL_AFTER} pasos de verificar {self.where}: cerrar tarda "
             f"{number(elapsed * 1000, 1)} ms (presupuesto {number(CANCEL_BUDGET_S, 0)} s); la "
             f"operación queda «{status}»; las cifras y los ficheros de rasters/ no cambian "
             f"({MACHINE})")
@@ -254,6 +344,45 @@ class VerifyTest(unittest.TestCase):
         self.assertEqual(status, "cancelled")
         self.assertEqual(after[1:], before[1:])
         self.assertEqual({row[0]: row[1] for row in after[0]}.get("running", 0), 0)
+
+
+# --- En la red ---------------------------------------------------------------------------------
+
+
+@requires(network.NET, network.NET_HINT)
+class NetworkTest(VerifyTest):
+    """RNF-012-02 con el proyecto en la carpeta de pruebas de la red (una subcarpeta temporal
+    propia, borrada al terminar) y los datos de usuario en disco local: lo mismo que
+    :class:`VerifyTest` con las finales de la forma ``window`` (la dura), con el presupuesto de
+    la red (≤ 12 s) y las esperas de la red de cada llamada aparte. La forma ``local`` y la
+    memoria no se miden aquí (son las mismas que en disco local)."""
+
+    budget_s = NET_TOTAL_BUDGET_S
+    step_limit_s = None
+    where = "con el proyecto en la red"
+    shapes = (scale.WINDOW,)
+    test_verify_local_changes = None  # type: ignore[assignment]
+    test_memory = None  # type: ignore[assignment]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.remote = cls.enterClassContext(network.net_tmp("gb-012-"))
+        cls.data = cls.enterClassContext(
+            scale.scale_project(scale.build_constraints(), remote=cls.remote))
+        cls.prepare()
+
+    def test_verify_changes_in_the_whole_window(self) -> None:
+        """RNF-012-02 en ``Z:``: tres finales que cambian en toda la ventana, frente a la
+        partida, en las 500 zonas con el proyecto en la carpeta de pruebas de la red, de la
+        llamada de la orden a las cifras, en ≤ 12 s (mediana de 5); lo propio de cada llamada
+        y sus esperas de la red se anotan aparte."""
+        self.assertTrue(self.data.project.is_network, "el proyecto no está en una carpeta de red")
+        super().test_verify_changes_in_the_whole_window()
+
+    def test_cancel_leaves_nothing(self) -> None:
+        """RF-012-28 en ``Z:``: Esc a mitad de la verificación con el proyecto en la red se
+        atiende en ≤ 2 s y no deja nada en el proyecto."""
+        super().test_cancel_leaves_nothing()
 
 
 if __name__ == "__main__":

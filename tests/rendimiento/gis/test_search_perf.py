@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Rendimiento de buscar intocables (spec 012, T37; RNF-012-04 y RNF-012-06; plan 012 §2.2 y
-§5.2.3, A6, ``tests/rendimiento/gis``).
+"""Rendimiento de buscar intocables (spec 012, T37 y T30; RNF-012-04 y RNF-012-06; plan 012 §2.2
+y §5.2.3, A6, ``tests/rendimiento/gis``; el plan §7.3 la nombra en ``test_masks_perf.py``, pero
+vive aquí desde la T37 porque lleva sus propios datos).
 
 Se ejecuta con ``python -B -s -X utf8 -m unittest tests.rendimiento.gis.test_search_perf -v`` (o con
 ``tools/check.py --rendimiento``): el Python de Blender (su numpy 2.3.4), en el PC de referencia de
@@ -31,10 +32,12 @@ import time
 import unittest
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar
 
 from tests.support import constraints_scale as scale
 from tests.support import gis_perf
+from tests.support import versions_perf as vperf
 from tests.support.package import import_geoblender
 
 sectors = import_geoblender("gis.masks.sectors")
@@ -145,6 +148,7 @@ class SearchTest(unittest.TestCase):
         begins = [run.begin_s for run in found]
         longest = sorted(found, key=lambda run: run.longest.seconds)[len(found) // 2].longest
         worst = max((run.longest for run in found), key=lambda call: call.seconds)
+        data = self.data
         hits = len(found[-1].result.found)
         gis_perf.report(
             f"RNF-012-04: buscar intocables a {number(scale.SEARCH_DISTANCE_M, 0)} m de un sector "
@@ -152,7 +156,8 @@ class SearchTest(unittest.TestCase):
             f"{count(self.search.entities)} entidades del proyecto ({count(hits)} halladas; la "
             f"orden entera: leer las capas, buscar y devolver la lista, con los pasos seguidos; "
             f"{MACHINE}): {gis_perf.median_line(totals)}; {len(found[-1].calls)} llamadas; "
-            f"presupuesto {number(TOTAL_BUDGET_S, 0)} s")
+            f"presupuesto {number(TOTAL_BUDGET_S, 0)} s; "
+            f"{vperf.free_space(Path(data.project.root))}")
         gis_perf.report(
             f"RNF-012-06: la llamada más larga al buscar, mediana de {len(found)}: "
             f"{number(longest.seconds * 1000, 0)} ms («{longest.phase}» {longest.done}/"

@@ -18,7 +18,8 @@ toda la ventana, y :data:`LOCAL`, que cambian en unos abultamientos) y :func:`ve
 registra lo que hará ``bl`` para verificar. Para buscar intocables (T37): :func:`write_search`
 escribe en él las :data:`SEARCH_LAYERS` capas «entidades» de :data:`SEARCH_ENTITIES` entidades y
 declara un sector de 400 vértices que ocupa un cuarto de la ventana, dentro de
-:func:`search_registered`. Python de Blender (su numpy 2.3.4) y biblioteca estándar.
+:func:`search_registered`. Con la carpeta de pruebas de la red (T30, ``remote``), el mismo
+proyecto se crea dentro de ella. Python de Blender (su numpy 2.3.4) y biblioteca estándar.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -193,19 +195,23 @@ class ScaleProject:
 
 
 @contextmanager
-def scale_project(constraints: ScaleConstraints | None = None) -> Iterator[ScaleProject]:
+def scale_project(constraints: ScaleConstraints | None = None, *,
+                  remote: Path | None = None) -> Iterator[ScaleProject]:
     """Un proyecto nuevo en una carpeta temporal de disco local, con V01 y V02, las
     restricciones de §2.2 escritas (``constraints``; por defecto :func:`build_constraints`) y sus
     parámetros dados de alta en el proyecto, con lo que registrará ``bl`` para compilar. Al salir
-    lo cierra y borra la carpeta."""
+    lo cierra y borra la carpeta. Con ``remote`` (una carpeta de la red que ya existe y es de
+    quien llama, que la borra), el proyecto se crea dentro de ella y solo los datos de usuario
+    (su caché) quedan en disco local, como en un puesto."""
     made = build_constraints() if constraints is None else constraints
     with ExitStack() as stack:
         stack.enter_context(cp.constraints_registered())
         folder = stack.enter_context(project_tmp("gb-escala-"))
         clock = FakeClock()
-        (folder / "proyectos").mkdir()
+        parent = (folder if remote is None else Path(remote)) / "proyectos"
+        parent.mkdir()
         settings = make_settings(window=window(), grid_step_m=STEP_M)
-        project = create.create_project(folder / "proyectos", settings, SESSION,
+        project = create.create_project(parent, settings, SESSION,
                                         userdata_mod.UserData(folder / "u"), clock=clock).project
         stack.callback(project.close)
         versions = []
