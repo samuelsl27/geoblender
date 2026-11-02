@@ -39,18 +39,53 @@ redondeo, la propia superficie podría quedar 10⁻¹³ m del lado equivocado do
 el contrato de «por encima» y «por debajo» es exacto; las cotas de las bermas no se tocan (están a
 ``h·(1 − f)`` de ``S`` o más).
 
+**La berma impuesta** (T10; RF-013-25, D-11): un sector con talud general máximo ``β`` impuesto
+recibe la berma ``B_s = máx(B, h/tan β − h/tan α)`` (:func:`sector_berm`): la que hace que su talud
+general ``atan(h/a)`` no pase de ``β``, nunca menor que la mínima del perfil, y sin deducirla de la
+pendiente local de ninguna envolvente (error 13).
+
+**La regularización entre sectores** (T10; RF-013-26, A7): antes de escalonar un frente de sectores
+con taludes generales distintos, :func:`regularize_steps` calcula la envolvente ascendente de la
+propia envolvente (cada celda es semilla de su cota) con la tangente más empinada de los sectores
+implicados (:func:`implicated_cells`): la mayor superficie con esa pendiente por debajo de la
+envolvente, que quita las paredes del borde entre sectores (error 15). Una envolvente calculada con
+la pendiente por sectores del *chamfer* (entrar en una celda cuesta con la pendiente de la celda de
+llegada) ya es regular y no cambia.
+
+**El recorte final** (T10; RF-013-27, A9): :func:`final_trim_steps` calcula la envolvente ascendente
+del resultado escalonado con la tangente de la cara del perfil de cada celda por su factor de malla,
+para que ninguna inclinación entre vecinas pase de la cara más la tolerancia (error 14), y no deja
+el corte por debajo de ``S`` ni el relleno por encima (``máx(recorte, S)`` en el corte,
+``mín(recorte, S)`` en el relleno). Ambas son pasos de ``design`` con el mismo *chamfer* 5×5
+escalado de las envolventes (:func:`~design.envelopes.chamfer_units`).
+
 Python puro (nivel 8), con numpy, sin importar ``reserves`` ni ``bl``.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Generator, Iterator
+from dataclasses import dataclass
 
 import numpy as np
 
+from ..core.project.model import Progress
+from ..gis.grid import Grid
+from ..gis.masks.compile import STEP_BUDGET_S
+from .envelopes import CELLS_PER_UNIT, TOLERANCE_M, SlopeField, chamfer_units
+from .model import BenchProfile, BenchSense, Direction
+from .seeds import pace_progress
+
 __all__ = [
+    "Regularization",
+    "Trim",
     "bench_cut",
     "bench_fill",
+    "final_trim_steps",
+    "implicated_cells",
+    "regularize_steps",
+    "sector_berm",
 ]
 
 Number = float | np.ndarray
@@ -169,3 +204,301 @@ def bench_fill(surface: Number, height: Number, tan_face: Number, berm: Number,
     Queda por debajo de ``S`` y a menos de ``h`` de ella en toda celda, y sus bermas, en las cotas
     ``z₀ + n·h``. Es el corte en el espejo: ``bench_fill(S, …, z₀) = −bench_cut(−S, …, −z₀)``."""
     return _stairs(surface, height, tan_face, berm, anchor, fill=True)
+
+
+# --- La berma de un sector con talud impuesto (T10; RF-013-25, D-11) ------------------------------
+
+
+def sector_berm(profile: BenchProfile, imposed_deg: float | None) -> float:
+    """La berma (m) de un sector con talud general máximo ``imposed_deg`` (``β``, °; ``None`` si el
+    sector no lo tiene) para un perfil de altura ``h``, cara ``α`` y berma mínima ``B``:
+    ``B_s = máx(B, h/tan β − h/tan α)`` (RF-013-25; D-11). Es la que hace que el talud general de
+    los bancos, ``atan(h/(h/tan α + B_s))``, no pase de ``β``; si la fórmula da menos que la mínima
+    del perfil (el talud impuesto es igual o más empinado que el general del perfil), la mínima. Sin
+    talud impuesto, la mínima. **No mira ninguna superficie**: la berma no se deduce de la pendiente
+    local de la envolvente (error 13).
+
+    ``profile`` es cualquier objeto con ``height_m``, ``face_deg`` y ``berm_m`` (un
+    :class:`~design.model.BenchProfile`). Un ``imposed_deg`` que no sea un número de 0 a 90 grados
+    (ambos excluidos) es un error del programa (:class:`ValueError`): la persona lo ve antes, con
+    :func:`~design.params.check_sector_slope`."""
+    berm = float(profile.berm_m)
+    if imposed_deg is None:
+        return berm
+    beta = float(imposed_deg)
+    if not math.isfinite(beta) or not 0.0 < beta < 90.0:
+        raise ValueError("el talud general máximo impuesto debe ser un número de 0 a 90 grados "
+                         f"(ambos excluidos), no {imposed_deg!r}")
+    height = float(profile.height_m)
+    face = height / math.tan(math.radians(float(profile.face_deg)))
+    general = height / math.tan(math.radians(beta))
+    return max(berm, general - face)
+
+
+# --- Comprobaciones de las entradas de los pasos --------------------------------------------------
+
+
+def _check_surface(cells: np.ndarray, geometry: Grid, meaning: str) -> None:
+    """``ValueError`` si ``cells`` no es una rejilla de 2 dimensiones de la forma de ``geometry`` o
+    si ``geometry`` no tiene celdas cuadradas (ADR-0014)."""
+    if cells.ndim != 2 or cells.shape != geometry.shape:
+        raise ValueError(f"{meaning} {cells.shape} no es de la forma de la rejilla "
+                         f"{geometry.shape}")
+    if geometry.dx != geometry.dy:
+        raise ValueError("las envolventes se calculan en una rejilla de celdas cuadradas (la del "
+                         f"proyecto, ADR-0014), no de {geometry.dx} × {geometry.dy} m")
+
+
+def _check_units(cells_per_unit: int) -> None:
+    if cells_per_unit < 1:
+        raise ValueError("las celdas por unidad deben ser al menos 1")
+
+
+# --- La regularización entre sectores (T10; RF-013-26, A7) ----------------------------------------
+
+
+def implicated_cells(tangents: np.ndarray, domain: np.ndarray | None = None) -> np.ndarray:
+    """Qué celdas implica una frontera entre sectores (A7): las que tienen, en las cuatro
+    direcciones, una vecina con otra tangente de pendiente (``tangents``: la ``SlopeField.tan`` de
+    la pendiente por sectores). Con ``domain`` (booleano, de la forma del mapa), solo cuentan las
+    celdas del dominio de trabajo y sus vecinas del dominio. Un array booleano **nuevo**; el mapa y
+    el dominio no se tocan. ``ValueError`` si el mapa no es de 2 dimensiones o el dominio no es
+    booleano de su forma."""
+    values = np.asarray(tangents)
+    if values.ndim != 2:
+        raise ValueError(f"el mapa de pendientes es de 2 dimensiones, no de {values.ndim}")
+    inside: np.ndarray | None = None
+    if domain is not None:
+        inside = np.asarray(domain)
+        if inside.dtype != np.bool_ or inside.shape != values.shape:
+            raise ValueError("el dominio de trabajo es una máscara booleana de la forma del mapa "
+                             f"de pendientes {values.shape}")
+    found = np.zeros(values.shape, dtype=np.bool_)
+    everything = slice(None)
+    for first, second in (((everything, slice(0, -1)), (everything, slice(1, None))),
+                          ((slice(0, -1), everything), (slice(1, None), everything))):
+        differ = values[first] != values[second]
+        if inside is not None:
+            differ &= inside[first]
+            differ &= inside[second]
+        found[first] |= differ
+        found[second] |= differ
+    return found
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Regularization:
+    """Una envolvente regularizada: ``grid`` (m, float64, nueva, de la forma de la rejilla; las
+    celdas sin cota finita salen como entraron), la ``tan`` efectiva con la que se regularizó (la
+    mayor de las celdas implicadas; ``None`` si no había sectores con otra pendiente y no se hizo
+    nada), las ``cells`` implicadas, las celdas ``lowered`` (que bajaron más de
+    :data:`~design.envelopes.TOLERANCE_M`: 0 si la envolvente ya era regular), las ``iterations``
+    del barrido y su ``violation`` (m, ≤ :data:`~design.envelopes.TOLERANCE_M`)."""
+
+    grid: np.ndarray
+    tan: float | None
+    cells: int
+    lowered: int
+    iterations: int
+    violation: float
+
+
+def _regularize_units(surface: np.ndarray, geometry: Grid, slope: SlopeField,
+                      domain: np.ndarray | None, name: str, cells_per_unit: int
+                      ) -> Generator[None, None, Regularization]:
+    """Las unidades de :func:`regularize_steps`."""
+    yield None
+    count = 0
+    tan = 0.0
+    if not slope.uniform:
+        tangents = np.asarray(slope.tan)
+        involved = implicated_cells(tangents, domain)
+        count = int(np.count_nonzero(involved))
+        yield None
+        if count:
+            tan = float(tangents[involved].max())
+        del involved
+    if not count:
+        return Regularization(surface.copy(), None, 0, 0, 0, 0.0)
+    found = yield from chamfer_units(surface, geometry, SlopeField(tan), Direction.UP, name=name,
+                                     cells_per_unit=cells_per_unit)
+    grid = found.grid
+    yield None
+    np.copyto(grid, surface, where=~np.isfinite(surface))  # sin cota, como entró
+    yield None
+    with np.errstate(invalid="ignore"):
+        lowered = int(np.count_nonzero(grid < surface - TOLERANCE_M))
+    return Regularization(grid, tan, count, lowered, found.iterations, found.violation)
+
+
+def regularize_steps(surface: np.ndarray, geometry: Grid, slope: SlopeField, *,
+                     domain: np.ndarray | None = None, name: str = "",
+                     budget_s: float = STEP_BUDGET_S,
+                     cells_per_unit: int = CELLS_PER_UNIT) -> Iterator[Progress]:
+    """Regulariza la envolvente ``surface`` (m, float64; se toma como tal) entre sectores con
+    taludes distintos (RF-013-26, A7), por pasos de ``budget_s`` como mucho: la envolvente
+    ascendente (*chamfer* 5×5) de ella misma —cada celda con cota finita es semilla de la suya— con
+    la tangente más empinada de las celdas que :func:`implicated_cells` dice que están en una
+    frontera entre sectores. ``slope`` es la pendiente por celdas de la envolvente
+    (:func:`~design.envelopes.sector_slope`) y ``domain`` el dominio de trabajo (opcional: solo
+    cuentan sus celdas).
+
+    Es la mayor superficie con esa pendiente que no sube de ninguna celda: quita las paredes del
+    borde entre sectores y no cambia una envolvente que ya cumple (la del *chamfer* con la pendiente
+    por sectores). Con una pendiente igual en toda la rejilla no hay nada que regularizar. Las
+    celdas sin cota finita (sin dato, sin envolvente o fuera del alcance) salen como entraron y no
+    propagan nada. El último ``Progress`` (fase «regularize») lleva en ``result`` la
+    :class:`Regularization`. Cerrar el generador a mitad no deja nada; las entradas no se modifican.
+    Una forma que no casa, celdas no cuadradas, un dominio que no es booleano de la forma de la
+    rejilla o un mapa de pendientes de otra forma son errores del programa (:class:`ValueError`)."""
+    cells = np.asarray(surface, dtype=np.float64)
+    _check_surface(cells, geometry, "la superficie")
+    if not slope.uniform and np.shape(slope.tan) != geometry.shape:
+        raise ValueError(f"el mapa de pendientes {np.shape(slope.tan)} no es de la forma de la "
+                         f"rejilla {geometry.shape}")
+    if domain is not None:
+        domain = np.asarray(domain)
+        if domain.dtype != np.bool_ or domain.shape != geometry.shape:
+            raise ValueError("el dominio de trabajo es una máscara booleana de la forma de la "
+                             f"rejilla {geometry.shape}")
+    _check_units(cells_per_unit)
+    work = _regularize_units(cells, geometry, slope, domain, name, cells_per_unit)
+    return pace_progress(work, budget_s, phase="regularize",
+                         running="Regularizando la envolvente entre sectores…",
+                         finished="Envolvente regularizada")
+
+
+# --- El recorte final (T10; RF-013-27, A9) --------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Trim:
+    """Un escalonado recortado: ``grid`` (m, float64, nueva; sin dato donde el escalonado no lo
+    tenía), las ``iterations`` y la ``violation`` (m) del barrido, las celdas ``lowered`` por el
+    recorte (más de :data:`~design.envelopes.TOLERANCE_M` por debajo de lo escalonado) y las
+    ``clamped``: las que el recorte dejó del lado equivocado de ``S`` (el corte por debajo, el
+    relleno por encima, más de :data:`~design.envelopes.TOLERANCE_M`) y hubo que devolver a
+    ``S``."""
+
+    grid: np.ndarray
+    iterations: int
+    violation: float
+    lowered: int
+    clamped: int
+
+
+def _per_cell(value: Number, name: str, shape: tuple[int, ...]) -> np.ndarray:
+    """``value`` como array float64: un número (0 dimensiones) o un mapa de la forma de la
+    rejilla."""
+    array = np.asarray(value, dtype=np.float64)
+    if array.ndim not in (0, 2) or (array.ndim == 2 and array.shape != shape):
+        raise ValueError(f"{name} es un número o un mapa de la forma de la rejilla {shape}, "
+                         f"no de forma {array.shape}")
+    return array
+
+
+def _invalid_cells(good: np.ndarray, finite: np.ndarray, values: np.ndarray, name: str,
+                   expected: str) -> None:
+    """``ValueError`` si alguna celda con escalonado (``finite``) no cumple (``good`` es falso)."""
+    bad = finite & ~good
+    if bad.any():
+        first = tuple(int(index) for index in np.argwhere(bad)[0])
+        raise ValueError(f"{name} {expected}: falla en {int(np.count_nonzero(bad))} celdas con "
+                         f"escalonado, la primera en {first} (vale {float(values[first])!r})")
+
+
+def _trim_slope(face: np.ndarray, mesh: np.ndarray, finite: np.ndarray
+                ) -> Generator[None, None, SlopeField]:
+    """La tangente efectiva del recorte, ``tan α·factor de malla``: un escalar si los dos lo son
+    y, si no, un mapa (en las celdas sin escalonado, que el recorte no devuelve, la mayor tangente,
+    para no cortar el paso a las demás)."""
+    yield None
+    if face.ndim == 0 and mesh.ndim == 0:
+        value, factor = float(face), float(mesh)
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError("la tangente de la cara (tan_face) debe ser finita y mayor que 0, "
+                             f"no {value!r}")
+        if not math.isfinite(factor) or not 0.0 < factor <= 1.0:
+            raise ValueError("el factor de malla (mesh_factor) debe estar entre 0 (excluido) y 1, "
+                             f"no {factor!r}")
+        return SlopeField(value * factor)
+    shape = finite.shape
+    face_map = np.broadcast_to(face, shape)
+    mesh_map = np.broadcast_to(mesh, shape)
+    with np.errstate(invalid="ignore"):
+        good_face = np.isfinite(face_map) & (face_map > 0.0)
+        good_mesh = np.isfinite(mesh_map) & (mesh_map > 0.0) & (mesh_map <= 1.0)
+    _invalid_cells(good_face, finite, face_map, "la tangente de la cara (tan_face)",
+                   "debe ser finita y mayor que 0")
+    _invalid_cells(good_mesh, finite, mesh_map, "el factor de malla (mesh_factor)",
+                   "debe estar entre 0 (excluido) y 1")
+    yield None
+    good_face &= good_mesh
+    effective = np.multiply(face_map, mesh_map, where=good_face, out=np.zeros(shape))
+    yield None
+    effective[~good_face] = float(effective.max())
+    return SlopeField(effective)
+
+
+def _trim_units(stairs: np.ndarray, surface: np.ndarray, geometry: Grid, face: np.ndarray,
+                mesh: np.ndarray, way: BenchSense, name: str, cells_per_unit: int
+                ) -> Generator[None, None, Trim]:
+    """Las unidades de :func:`final_trim_steps`."""
+    yield None
+    finite = np.isfinite(stairs)
+    if not finite.any():
+        return Trim(stairs.copy(), 0, 0.0, 0, 0)
+    slope = yield from _trim_slope(face, mesh, finite)
+    found = yield from chamfer_units(stairs, geometry, slope, Direction.UP, name=name,
+                                     cells_per_unit=cells_per_unit)
+    grid = found.grid
+    yield None
+    np.copyto(grid, stairs, where=~finite)  # sin escalonado, como entró
+    both = finite & np.isfinite(surface)
+    yield None
+    cut = way is BenchSense.CUT
+    with np.errstate(invalid="ignore"):
+        wrong = grid < surface - TOLERANCE_M if cut else grid > surface + TOLERANCE_M
+        clamped = int(np.count_nonzero(wrong & both))
+    del wrong
+    yield None
+    if cut:
+        np.maximum(grid, surface, out=grid, where=both)
+    else:
+        np.minimum(grid, surface, out=grid, where=both)
+    yield None
+    with np.errstate(invalid="ignore"):
+        lowered = int(np.count_nonzero(grid < stairs - TOLERANCE_M))
+    return Trim(grid, found.iterations, found.violation, lowered, clamped)
+
+
+def final_trim_steps(stairs: np.ndarray, surface: np.ndarray, geometry: Grid,
+                     tan_face: Number, mesh_factor: Number, sense: BenchSense | str, *,
+                     name: str = "", budget_s: float = STEP_BUDGET_S,
+                     cells_per_unit: int = CELLS_PER_UNIT) -> Iterator[Progress]:
+    """El recorte final del resultado escalonado ``stairs`` (m, el de :func:`bench_cut` o
+    :func:`bench_fill`) de la superficie ``surface`` (``S``) en el sentido ``sense`` (RF-013-27,
+    A9), por pasos de ``budget_s`` como mucho: su envolvente ascendente (*chamfer* 5×5) con la
+    tangente de la cara por el factor de malla de cada celda (``tan_face`` y ``mesh_factor``: un
+    número o un mapa de la forma de la rejilla, el del perfil de cada sector), de modo que ninguna
+    inclinación entre celdas vecinas pase de la cara del perfil. Después, el corte no queda por
+    debajo de ``S`` (``máx(recorte, S)``) ni el relleno por encima (``mín(recorte, S)``); las
+    celdas devueltas a ``S`` se cuentan en ``Trim.clamped``.
+
+    Las celdas sin escalonado (sin cota finita) salen como entraron y no necesitan perfil (su
+    tangente puede ser ``NaN``); en las que sí lo tienen, una tangente que no sea finita y mayor que
+    0 o un factor de malla fuera de (0; 1] es un error del programa (:class:`ValueError`), como una
+    forma que no casa, celdas no cuadradas o un sentido desconocido. El último ``Progress`` (fase
+    «trim») lleva en ``result`` el :class:`Trim`. Cerrar el generador a mitad no deja nada; las
+    entradas no se modifican."""
+    way = BenchSense(sense)
+    laid = np.asarray(stairs, dtype=np.float64)
+    base = np.asarray(surface, dtype=np.float64)
+    _check_surface(laid, geometry, "el escalonado")
+    _check_surface(base, geometry, "la superficie")
+    face = _per_cell(tan_face, "la tangente de la cara (tan_face)", geometry.shape)
+    mesh = _per_cell(mesh_factor, "el factor de malla (mesh_factor)", geometry.shape)
+    _check_units(cells_per_unit)
+    work = _trim_units(laid, base, geometry, face, mesh, way, name, cells_per_unit)
+    return pace_progress(work, budget_s, phase="trim", running="Recortando el escalonado…",
+                         finished="Escalonado recortado")

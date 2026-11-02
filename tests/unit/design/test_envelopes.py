@@ -613,6 +613,35 @@ class StepsTest(unittest.TestCase):
         steps.close()
         self.assertTrue(np.array_equal(seed, before))
 
+    def test_units_are_the_same_work_as_the_steps(self) -> None:
+        """T10: ``chamfer_units`` es el trabajo de ``chamfer_steps`` sin ritmo (quien compone el
+        barrido con otros cálculos, como la regularización y el recorte final, lo marca él): cada
+        ``yield`` es una unidad, el valor del generador es la misma ``Envelope`` y las entradas que
+        no casan se rechazan al llamar, no al avanzar."""
+        rng = np.random.default_rng(8)
+        seed = random_seeds(rng, (30, 33))
+        geometry = dfx.grid_from(30, 33, 1.0)
+        slope = envelopes.constant_slope(35.0)
+        units = envelopes.chamfer_units(seed, geometry, slope, "down", name="e1",
+                                        cells_per_unit=100)
+        count = 0
+        while True:
+            try:
+                next(units)
+            except StopIteration as stop:
+                found = stop.value
+                break
+            count += 1
+        self.assertGreater(count, 10)
+        same = solve(seed, slope, 1.0, "down")
+        self.assertIsInstance(found, envelopes.Envelope)
+        self.assertTrue(np.array_equal(found.grid, same.grid))
+        wide = gis.Grid(0.0, 30.0, 2.0, 1.0, 33, 30)
+        with self.assertRaises(ValueError):
+            envelopes.chamfer_units(seed, wide, slope, "down")
+        with self.assertRaises(ValueError):
+            envelopes.chamfer_units(seed, geometry, slope, "down", max_iterations=0)
+
     def test_bad_input_is_a_program_error(self) -> None:
         """Una rejilla de celdas no cuadradas (la del proyecto siempre es cuadrada, ADR-0014), una
         forma que no casa, una dirección desconocida o un máximo de vueltas menor que 1 son

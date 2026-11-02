@@ -93,6 +93,7 @@ __all__ = [
     "SlopeField",
     "SlopeRule",
     "chamfer_steps",
+    "chamfer_units",
     "check_envelope",
     "check_request",
     "check_seed_set",
@@ -559,6 +560,20 @@ def _work(seed: np.ndarray, geometry: Grid, slope: SlopeField, way: Direction, n
     return Envelope(values, iterations, worst)
 
 
+def chamfer_units(seed: np.ndarray, geometry: Grid, slope: SlopeField,
+                  direction: Direction | str, *, name: str = "",
+                  max_iterations: int = MAX_ITERATIONS, cells_per_unit: int = CELLS_PER_UNIT
+                  ) -> Generator[None, None, Envelope]:
+    """Las unidades de trabajo de :func:`chamfer_steps` (cada ``yield`` es una, de ≈ 10 ms) y, al
+    terminar, la :class:`Envelope` como valor del generador: para quien compone el barrido con otros
+    cálculos por pasos (``design.benching``: la regularización y el recorte final) con su propio
+    ritmo (``pace_progress``). Las entradas se comprueban al llamar (``ValueError``, como en
+    :func:`chamfer_steps`); lo demás es de :func:`chamfer_steps`."""
+    cotas = np.asarray(seed, dtype=np.float64)
+    way = _check_inputs(cotas, geometry, slope, direction, max_iterations, cells_per_unit)
+    return _work(cotas, geometry, slope, way, name, max_iterations, cells_per_unit)
+
+
 def chamfer_steps(seed: np.ndarray, geometry: Grid, slope: SlopeField,
                   direction: Direction | str, *, name: str = "",
                   budget_s: float = STEP_BUDGET_S, max_iterations: int = MAX_ITERATIONS,
@@ -576,9 +591,8 @@ def chamfer_steps(seed: np.ndarray, geometry: Grid, slope: SlopeField,
     envolvente en esos mensajes. Una entrada que no casa (la forma, celdas no cuadradas, una
     dirección desconocida) es un error del programa (``ValueError``) al llamar. ``cells_per_unit``
     afina el tamaño de las unidades de trabajo (las pruebas lo bajan)."""
-    cotas = np.asarray(seed, dtype=np.float64)
-    way = _check_inputs(cotas, geometry, slope, direction, max_iterations, cells_per_unit)
-    work = _work(cotas, geometry, slope, way, name, max_iterations, cells_per_unit)
+    work = chamfer_units(seed, geometry, slope, direction, name=name,
+                         max_iterations=max_iterations, cells_per_unit=cells_per_unit)
     return pace_progress(work, budget_s, phase="envelope", running="Calculando la envolvente…",
                          finished="Envolvente calculada")
 
