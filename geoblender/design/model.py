@@ -267,17 +267,27 @@ class BenchProfile:
         """El talud general ``atan(h / a)`` (°; RF-013-20)."""
         return math.degrees(math.atan(self.general_tan))
 
-    def unresolved_by(self, grid: Grid, *, language: str = "es") -> str | None:
-        """``None`` si la rejilla del proyecto ``grid`` resuelve el perfil; si no, el texto de la
-        marca «no resuelto por la rejilla» (``des.profile_unresolved``, en ``language``) cuando la
-        huella horizontal de la cara o la berma (la berma de 0 m no tiene huella que resolver) es
-        menor que el paso de la rejilla, el mayor de ``dx`` y ``dy`` (RF-013-20; ADR-0014)."""
+    def unresolved_values(self, grid: Grid) -> dict[str, object] | None:
+        """``None`` si la rejilla del proyecto ``grid`` resuelve el perfil; si no, los valores de
+        la marca «no resuelto por la rejilla» (``des.profile_unresolved``: ``profile``, ``face``,
+        ``berm`` y ``step``, en metros y a dos decimales) cuando la huella horizontal de la cara o
+        la berma (la berma de 0 m no tiene huella que resolver) es menor que el paso de la
+        rejilla, el mayor de ``dx`` y ``dy`` (RF-013-20; ADR-0014)."""
         step = max(float(grid.dx), float(grid.dy))
         face = self.face_footprint_m
         if face >= step and (self.berm_m == 0.0 or self.berm_m >= step):
             return None
-        return render("des.profile_unresolved", language=language, profile=self.name,
-                      face=round(face, 2), berm=round(self.berm_m, 2), step=round(step, 2))
+        return {"profile": self.name, "face": round(face, 2), "berm": round(self.berm_m, 2),
+                "step": round(step, 2)}
+
+    def unresolved_by(self, grid: Grid, *, language: str = "es") -> str | None:
+        """``None`` si la rejilla del proyecto ``grid`` resuelve el perfil; si no, el texto de la
+        marca «no resuelto por la rejilla» (``des.profile_unresolved``, en ``language``) con los
+        valores de :meth:`unresolved_values`."""
+        values = self.unresolved_values(grid)
+        if values is None:
+            return None
+        return render("des.profile_unresolved", language=language, **values)
 
 
 def check_profiles(profiles: Iterable[BenchProfile]) -> None:

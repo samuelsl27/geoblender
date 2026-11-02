@@ -40,7 +40,8 @@ __all__ = [
 ]
 
 _HECTARE_M2 = 10_000.0
-_DECIMALS = {"hectares": 1, "coverage": 1, "low": 1, "high": 1}
+_DECIMALS = {"hectares": 1, "coverage": 1, "low": 1, "high": 1, "thickness": 3, "face": 2,
+             "berm": 2, "step": 2}
 """Los decimales de los números que no son enteros (el área, entera o con uno)."""
 
 

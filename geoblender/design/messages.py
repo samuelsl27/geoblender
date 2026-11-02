@@ -388,6 +388,69 @@ CATALOG: tuple[Message, ...] = (
         "de trabajo; se compilan de nuevo antes de calcular.",
         "warning",
     ),
+    # El informe de un diseño (RF-013-30; T12): avisos y notas, nunca se lanzan ----------------
+    Message(
+        "des.no_movement",
+        "The design does not move any cell by more than the minimum thickness of {thickness} m: "
+        "it is the start surface. Check that the seeds are on the side of the surface that the "
+        "calculation can reach (below it to cut, above it to fill) and that the work domain has "
+        "cells where moving earth is admitted.",
+        "El diseño no mueve ninguna celda más del espesor mínimo de {thickness} m: es la "
+        "superficie de partida. Compruebe que las semillas están del lado de la superficie al "
+        "que llega el cálculo (por debajo para cortar, por encima para rellenar) y que el "
+        "dominio de trabajo tiene celdas donde se admite mover tierra.",
+        "warning",
+    ),
+    Message(
+        "des.edge_movement",
+        "{cells} cells ({area} m²) with movement are on the edge of the grid, so the result is cut "
+        "off by it and would go on beyond. Widen the project grid or review the seeds and the "
+        "slope before creating the design.",
+        "{cells} celdas ({area} m²) con movimiento están en el borde de la rejilla, así que el "
+        "resultado queda cortado por ella y seguiría más allá. Amplíe la rejilla del proyecto o "
+        "revise las semillas y la pendiente antes de crear el diseño.",
+        "warning",
+    ),
+    Message(
+        "des.slope_over_face",
+        "{cells} cells with movement are steeper than the face of their profile plus the face "
+        "tolerance; the worst is {max}° against a limit of {limit}° (face + {tolerance}°), at "
+        "x = {x} m, y = {y} m. Check the profile, the mesh factor and the walls against the "
+        "forbidden areas (the edge step).",
+        "{cells} celdas con movimiento pasan de la cara de su perfil más la tolerancia de cara; "
+        "la peor, {max}° frente a un límite de {limit}° (cara + {tolerance}°), en x = {x} m, "
+        "y = {y} m. Revise el perfil, el factor de malla y las paredes contra lo prohibido (el "
+        "salto en el borde).",
+        "warning",
+    ),
+    Message(
+        "des.magnitude_cut",
+        "The cut ({current} m³) is {ratio} times the {previous} m³ of «{operation}» in the "
+        "frozen revision {revision}, above the warning threshold of {threshold} times. Check the "
+        "seeds, the slope and the work domain.",
+        "El desmonte ({current} m³) es {ratio} veces los {previous} m³ de «{operation}» en la "
+        "revisión congelada {revision}, por encima del umbral de aviso de {threshold} veces. "
+        "Revise las semillas, la pendiente y el dominio de trabajo.",
+        "warning",
+    ),
+    Message(
+        "des.magnitude_fill",
+        "The fill ({current} m³) is {ratio} times the {previous} m³ of «{operation}» in the "
+        "frozen revision {revision}, above the warning threshold of {threshold} times. Check the "
+        "seeds, the slope and the work domain.",
+        "El terraplén ({current} m³) es {ratio} veces los {previous} m³ de «{operation}» en la "
+        "revisión congelada {revision}, por encima del umbral de aviso de {threshold} veces. "
+        "Revise las semillas, la pendiente y el dominio de trabajo.",
+        "warning",
+    ),
+    Message(
+        "des.magnitude_no_reference",
+        "No frozen revision of the version has an operation like «{operation}» (same type and "
+        "name), so the cut and the fill are not compared with an earlier one.",
+        "Ninguna revisión congelada de la versión tiene una operación como «{operation}» (mismo "
+        "tipo y nombre), así que el desmonte y el terraplén no se comparan con uno anterior.",
+        "note",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})
