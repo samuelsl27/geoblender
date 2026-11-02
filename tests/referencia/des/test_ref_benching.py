@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Casos de referencia del escalonado (spec 013, T09 y T10; HU-013-5; RF-013-22 a RF-013-27;
-CE-013-03, CE-013-04, CE-013-05; plan 013 A7, A8, A9).
+"""Casos de referencia del escalonado (spec 013, T09, T10 y T11; HU-013-5; RF-013-22 a RF-013-28;
+CE-013-03, CE-013-04, CE-013-05; plan 013 A7, A8, A9, A12).
 
 - **CE-013-04 · regresión de los errores 13 y 15** (T10): un sector con talud general máximo de
   10,6° con ``REST_5_35_6`` tiene una berma de **19,5765237 m** (la spec dice «19,576 m», ese valor
@@ -11,6 +11,11 @@ CE-013-03, CE-013-04, CE-013-05; plan 013 A7, A8, A9).
 - **CE-013-05 · regresión del error 14** (T10): tras escalonar un frente de tres sectores
   (10,6°, 18° y el del perfil), la inclinación máxima entre celdas con el recorte final es ≤ la
   cara más la tolerancia (sin recorte pasaba de 60°: 69,7°), y el corte sigue por encima de ``S``.
+- **Las cotas reales de las bermas de CE-013-04 y CE-013-05** (T11, RF-013-28): la rejilla y la
+  tabla de ``design.berms`` sobre el resultado final de esos frentes: todas las bermas en cotas
+  ``z₀ + n·h`` con diferencia 0, las celdas de cada fila iguales a las que cuenta la rejilla, y las
+  anchuras medidas en columnas lejos de los bordes iguales a las de la berma de cada sector (19,58,
+  8,25 y 6 m) dentro de una celda.
 - **CE-013-03 · escalonado de referencia**: un plano inclinado de 160 × 40 celdas de 1 m
   (``z = 140 + 0,25·(columna + 0,5)``, de 140,125 a 179,875 m, exacto en binario) se escalona en
   corte y en relleno con ``EXPL_10_60_6`` y ``REST_5_35_6`` (ancla 125 m):
@@ -40,6 +45,7 @@ from tests.support import design_oracles as oracles
 from tests.support.package import import_geoblender
 
 benching = import_geoblender("design.benching")
+berms = import_geoblender("design.berms")
 envelopes = import_geoblender("design.envelopes")
 params = import_geoblender("design.params")
 design_model = import_geoblender("design.model")
@@ -420,6 +426,127 @@ class ThreeSectorsTest(unittest.TestCase):
                 self.assertGreaterEqual(len(runs), 2)
                 for width in runs:
                     self.assertLessEqual(abs(width - berm), 1.0)
+
+
+def finite_runs(column: np.ndarray) -> list[int]:
+    """Las anchuras, en celdas, de los tramos con cota de una columna de la rejilla de bermas que
+    están enteros dentro de ella (sin tocar la primera ni la última fila)."""
+    has = np.isfinite(column)
+    runs: list[int] = []
+    start: int | None = None
+    for row, value in enumerate(has):
+        if value and start is None:
+            start = row
+        elif not value and start is not None:
+            if start > 0:
+                runs.append(row - start)
+            start = None
+    return runs
+
+
+class RealBermsTest(unittest.TestCase):
+    """RF-013-28 (N-14): las cotas reales de las bermas medidas en el resultado final de los
+    frentes de sectores de CE-013-04 y CE-013-05 (envolvente, regularización, escalonado y
+    recorte)."""
+
+    def real_berms(self, case: Any) -> tuple[np.ndarray, Any]:
+        """El resultado final del frente y sus bermas, con la zona de cada sector (la 0 es el
+        perfil base y no tiene celdas)."""
+        front = Front(case, walled=False)
+        surface = front.regularized().grid
+        final = front.trimmed(front.stairs(surface), surface).grid
+        profile = case.profile
+        scopes = (berms.BermScope("", profile.code),) + tuple(
+            berms.BermScope(code, profile.code) for code in case.codes)
+        found = run(berms.berms_steps(final, case.grid, profile.height_m, profile.anchor_m,
+                                      case.labels(), scopes))
+        return final, found
+
+    def check_levels(self, case: Any, found: Any) -> None:
+        """Cada fila está en una cota ``z₀ + n·h`` con diferencia 0, es de un sector del caso y
+        sus celdas y área son las que cuenta la rejilla en esa cota y esa zona; el total es el de la
+        rejilla."""
+        profile = case.profile
+        levels = {round(level, 6) for level in dfx.hand_levels(profile, 0.0, 400.0)}
+        labels = case.labels()
+        for row in found.table:
+            with self.subTest(sector=row.sector, level=row.level_m):
+                self.assertIn(row.level_m, levels)
+                self.assertEqual((row.profile, row.anchor_diff_m), (profile.code, 0.0))
+                self.assertAlmostEqual(row.anchor_m, row.level_m, delta=TOLERANCE_M)
+                zone = case.codes.index(row.sector) + 1
+                counted = int(np.count_nonzero((labels == zone)
+                                               & (np.abs(found.grid - row.level_m) <= TOLERANCE_M)))
+                self.assertEqual(row.cells, counted)
+                self.assertEqual(row.area_m2, counted * float(case.grid.cell_area))
+        self.assertEqual(found.cells, int(np.isfinite(found.grid).sum()))
+        self.assertEqual(found.cells, sum(row.cells for row in found.table))
+
+    def check_widths(self, case: Any, final: np.ndarray, found: Any,
+                     columns: tuple[int, ...], berm_m: tuple[float, ...]) -> None:
+        """En columnas lejos de los bordes, los tramos con cota de la rejilla de bermas son los
+        tramos planos del resultado y miden la berma del sector dentro de una celda."""
+        cell = float(case.grid.dx)
+        for column, berm in zip(columns, berm_m, strict=True):
+            runs = finite_runs(found.grid[:, column])
+            with self.subTest(column=column, berm=berm):
+                self.assertGreaterEqual(len(runs), 2)
+                self.assertEqual(runs, plateau_runs(final[:, column], case.profile))
+                for width in runs:
+                    self.assertLessEqual(abs(width * cell - berm), cell)
+
+    def test_two_sectors_with_an_imposed_slope(self) -> None:
+        """CE-013-04: el sector de 10,6° tiene bermas de 19,58 m y el otro de 6 m, medidas en la
+        rejilla de bermas a ≤ 1 celda (columnas 10 y 115); las cotas son de la lista a mano, el sector
+        tendido baja menos (menos cotas) y los dos empiezan en la cresta (200 m)."""
+        case = dfx.imposed_sector_case()
+        final, found = self.real_berms(case)
+        self.check_levels(case, found)
+        self.check_widths(case, final, found, (10, 115), (case.berm_m("frente_tendido"),
+                                                          case.berm_m("frente_normal")))
+        levels = {code: [row.level_m for row in found.table if row.sector == code]
+                  for code in case.codes}
+        self.assertEqual(max(levels["frente_tendido"]), dfx.CREST_Z)
+        self.assertEqual(max(levels["frente_normal"]), dfx.CREST_Z)
+        self.assertLess(len(levels["frente_tendido"]), len(levels["frente_normal"]))
+        self.assertEqual(found.highest_m, dfx.CREST_Z)
+        self.assertEqual(found.lowest_m, min(levels["frente_normal"]))
+
+    def test_three_sectors_with_different_slopes(self) -> None:
+        """CE-013-05: las bermas de los tres sectores miden 19,58, 8,25 y 6 m dentro de una celda
+        en las columnas 10, 97 y 145 de la rejilla de bermas; la tabla sale por sector (el orden del
+        caso) y cota."""
+        case = dfx.three_sectors_case()
+        final, found = self.real_berms(case)
+        self.check_levels(case, found)
+        self.check_widths(case, final, found, (10, 97, 145),
+                          tuple(case.berm_m(code) for code in case.codes))
+        order = [case.codes.index(row.sector) for row in found.table]
+        self.assertEqual(order, sorted(order))
+        self.assertEqual(sorted(set(order)), [0, 1, 2])
+        for code in case.codes:
+            levels = [row.level_m for row in found.table if row.sector == code]
+            self.assertEqual(levels, sorted(levels))
+
+    def test_trim_does_not_move_the_berm_levels(self) -> None:
+        """RF-013-27, RF-013-28: el recorte baja las celdas de cara y de borde de berma, pero no
+        mueve ninguna cota de berma: las filas de la tabla del escalonado sin recortar y del
+        recortado tienen las mismas cotas de anclaje y la diferencia 0 (las de CE-013-05)."""
+        case = dfx.three_sectors_case()
+        front = Front(case, walled=False)
+        surface = front.regularized().grid
+        stairs = front.stairs(surface)
+        final = front.trimmed(stairs, surface).grid
+        scopes = (berms.BermScope("", case.profile.code),) + tuple(
+            berms.BermScope(code, case.profile.code) for code in case.codes)
+        profile = case.profile
+        before, after = (run(berms.berms_steps(grid, case.grid, profile.height_m,
+                                               profile.anchor_m, case.labels(), scopes))
+                         for grid in (stairs, final))
+        self.assertEqual([(row.sector, row.level_m) for row in before.table],
+                         [(row.sector, row.level_m) for row in after.table])
+        self.assertTrue(all(row.anchor_diff_m == 0.0 for row in before.table + after.table))
+        self.assertGreater(before.cells, after.cells)  # el recorte quita celdas de borde de berma
 
 
 if __name__ == "__main__":
