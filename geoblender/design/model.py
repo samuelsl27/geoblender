@@ -165,8 +165,12 @@ class EnvelopeRequest:
     (único en la versión), la ``direction``, las ``seeds``, la ``metric`` (*chamfer* 5×5 por
     defecto), la pendiente (``slope_mode`` y, si es constante, ``slope_deg`` en ° desde la
     horizontal), el ``mesh_factor`` (— entre 0 excluido y 1; 1 por defecto), el alcance ``reach_m``
-    (m; ninguno por defecto) y el acotado del dominio (``domain``). Ni la métrica ni el alcance son
-    parámetros del proyecto: son decisiones de esta operación."""
+    (m; ninguno por defecto) y el acotado del dominio (``domain``). Con la pendiente por sectores,
+    el talud general de cada sector es el máximo que impone o, si no lo tiene, el del perfil que se
+    le asigna (RF-013-13, RF-013-21): ``base_profile`` es el código del perfil de las celdas sin
+    sector y ``sector_profiles`` el de cada sector (código del sector → código del perfil; sale como
+    pares ordenados por sector), que se guardan con los ajustes para recalcular y reproducir. Ni la
+    métrica ni el alcance son parámetros del proyecto: son decisiones de esta operación."""
 
     name: str
     direction: Direction | str
@@ -177,6 +181,8 @@ class EnvelopeRequest:
     mesh_factor: float = 1.0
     reach_m: float | None = None
     domain: WorkDomain = field(default_factory=WorkDomain)
+    base_profile: str | None = None
+    sector_profiles: Mapping[str, str] | Iterable[tuple[str, str]] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "direction", Direction(self.direction))
@@ -186,6 +192,8 @@ class EnvelopeRequest:
         for name in ("slope_deg", "reach_m"):
             if getattr(self, name) is not None:
                 object.__setattr__(self, name, float(getattr(self, name)))
+        pairs: Any = self.sector_profiles
+        object.__setattr__(self, "sector_profiles", tuple(sorted(dict(pairs).items())))
 
 
 @dataclass(frozen=True, slots=True)

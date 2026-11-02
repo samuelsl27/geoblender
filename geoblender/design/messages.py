@@ -468,6 +468,25 @@ CATALOG: tuple[Message, ...] = (
         "«{value}» cambió después de empezar el cálculo, así que el resultado ya no le "
         "corresponde. Calcule de nuevo; no se registra nada.",
     ),
+    # Recalcular y reproducir con lo que dicen los ajustes (RF-013-17, RF-013-21; T15) ---------
+    Message(
+        "des.profile_unassigned",
+        "Sector {value} has no profile and imposes no slope, and the envelope uses the slope of "
+        "each sector: assign it a profile (or a base profile) in Design ▸ Envelopes and "
+        "benching…; nothing is calculated or recorded.",
+        "El sector {value} no tiene perfil ni impone ningún talud, y la envolvente usa el talud de "
+        "cada sector: asígnele un perfil (o un perfil base) en Diseño ▸ Envolventes y "
+        "escalonado…; no se calcula ni se registra nada.",
+    ),
+    Message(
+        "des.anchor_nodata",
+        "The grid of anchors «{value}» has no elevation in {cells} cells of the stepped surface; "
+        "every cell of the work domain needs an anchor. Use a grid that covers it, or the anchor "
+        "of the profile; nothing is calculated or recorded.",
+        "La rejilla de anclas «{value}» no tiene cota en {cells} celdas de la superficie que se "
+        "escalona; cada celda del dominio de trabajo necesita un ancla. Use una rejilla que lo "
+        "cubra, o el ancla del perfil; no se calcula ni se registra nada.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

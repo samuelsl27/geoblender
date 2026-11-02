@@ -393,6 +393,79 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(list(settings["sector_profiles"]), ["sector_1", "sector_2"])
         self.assertEqual(settings["envelope"], "Hueco inicial")
 
+    def test_the_profiles_and_the_touched_sectors_are_saved_to_repeat_the_operation(self) -> None:
+        """RF-013-13, RF-013-21, RF-013-06 (T15): la envolvente por sectores guarda el perfil base
+        y el de cada sector (por código de sector, en su orden), que su recálculo y su
+        reproducción necesitan para saber qué talud tiene cada sector; y las dos operaciones, los
+        sectores que tocó el dominio de trabajo, aparte de los pendientes al calcular, con los que
+        se dice «búsqueda de intocables pendiente». Los ajustes de antes de la T15, sin ellos, se
+        leen igual (sin perfiles ni sectores)."""
+        request = envelope_request(slope_mode="sectors", slope_deg=None, base_profile=PROFILE,
+                                   sector_profiles={"sector_2": OTHER, "sector_1": PROFILE})
+        settings = provenance.envelope_settings(request, ("sector_2",), ("sector_2", "sector_1"))
+        again = json.loads(json.dumps(settings))
+        self.assertEqual(again, settings)
+        self.assertEqual(provenance.envelope_request(again), request)
+        self.assertEqual((again["base_profile"], list(again["sector_profiles"])),
+                         (PROFILE, ["sector_1", "sector_2"]))
+        self.assertEqual(provenance.settings_touched(again), ("sector_2", "sector_1"))
+        self.assertEqual(provenance.settings_pending(again), ("sector_2",))
+        plain = provenance.envelope_settings(envelope_request())
+        self.assertEqual((plain["base_profile"], plain["sector_profiles"], plain["touched_sectors"]),
+                         ("", {}, []))
+        self.assertIsNone(provenance.envelope_request(plain).base_profile)
+        legacy = {key: value for key, value in again.items()
+                  if key not in ("base_profile", "sector_profiles", "touched_sectors")}
+        read = provenance.envelope_request(legacy)
+        self.assertEqual((read.base_profile, read.sector_profiles), (None, ()))
+        self.assertEqual(provenance.settings_touched(legacy), ())
+        design = provenance.design_settings(design_request(), SURFACE, (), ("sector_1",))
+        self.assertEqual(provenance.settings_touched(json.loads(json.dumps(design))),
+                         ("sector_1",))
+
+    def test_what_a_design_was_compared_with_is_saved_to_repeat_it(self) -> None:
+        """D-25, RF-013-30 (T15): el escalonado guarda con qué operación de la revisión congelada
+        comparó el desmonte y el terraplén (su nombre, la revisión y las dos cifras), para que al
+        reproducirlo salga el mismo informe; sin comparar con nada, ninguno; una forma que no es
+        esa es ``ValueError`` con el campo."""
+        previous = {"operation": "Diseño V01", "revision": "V01.r1", "cut_m3": 412_380.0,
+                    "fill_m3": 0.0}
+        settings = provenance.design_settings(design_request(), SURFACE, previous=previous)
+        again = json.loads(json.dumps(settings))
+        self.assertEqual(provenance.settings_previous(again), previous)
+        previous["cut_m3"] = 1.0
+        self.assertEqual(provenance.settings_previous(settings)["cut_m3"], 412_380.0,
+                         "lo que se dio no se guarda por referencia")
+        self.assertIsNone(provenance.settings_previous(provenance.design_settings(
+            design_request(), SURFACE)))
+        self.assertIsNone(provenance.settings_previous({}))
+        for what, bad in (("sin cifra", {"operation": "x", "revision": "V01.r1", "cut_m3": 1.0}),
+                          ("sin nombre", {"revision": "V01.r1", "cut_m3": 1.0, "fill_m3": 0.0}),
+                          ("cifra NaN", {"operation": "x", "revision": "r", "cut_m3": math.nan,
+                                         "fill_m3": 0.0}),
+                          ("lista", [1, 2])):
+            with self.subTest(what=what):
+                with self.assertRaises(ValueError):
+                    provenance.settings_previous({"previous": bad})
+                with self.assertRaises(ValueError):
+                    provenance.design_settings(design_request(), SURFACE, previous=bad)
+
+    def test_an_envelope_without_a_start_surface_has_no_volumes(self) -> None:
+        """RF-013-17 (T15): unas semillas de cota fija o de una rejilla de cotas no tienen
+        superficie de partida: la envolvente no da desmonte ni terraplén (ni los inventa); un valor
+        que no es finito sigue siendo un error del programa."""
+        figures = provenance.envelope_figures(cells=3, area_m2=12.0, min_m=1.0, max_m=2.0,
+                                              cut_m3=None, fill_m3=None)
+        self.assertEqual([figure.key for figure in figures],
+                         ["des.env_cells", "des.env_area_m2", "des.env_min_m", "des.env_max_m"])
+        both = provenance.envelope_figures(cells=3, area_m2=12.0, min_m=1.0, max_m=2.0,
+                                           cut_m3=0.0, fill_m3=5.0)
+        self.assertEqual([figure.key for figure in both][-2:],
+                         ["des.env_cut_m3", "des.env_fill_m3"])
+        with self.assertRaises(ValueError):
+            provenance.envelope_figures(cells=3, area_m2=12.0, min_m=1.0, max_m=2.0,
+                                        cut_m3=math.nan, fill_m3=None)
+
     def test_the_settings_do_not_change_what_they_were_given(self) -> None:
         """Regla 6 de AGENTS.md: las peticiones son inmutables y los ajustes que sacan son
         diccionarios nuevos; cambiarlos no cambia la petición, y la lista de pendientes que se

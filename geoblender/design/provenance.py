@@ -149,6 +149,8 @@ __all__ = [
     "profile_params",
     "sector_inputs",
     "settings_pending",
+    "settings_previous",
+    "settings_touched",
 ]
 
 MODULE = "des"
@@ -309,10 +311,12 @@ ENVELOPE_SETTINGS: tuple[SettingDef, ...] = (
     SettingDef("domain.bound", "Bound of the work domain", choices=(
         (_BOUND_ALL, "Whole work domain"), (_BOUND_SECTORS, "Bounded to sectors"),
         (_BOUND_LAYER, "Bounded to a layer"), (_BOUND_BOTH, "Bounded to sectors and a layer"))),
+    SettingDef("base_profile", "Base profile", choices=(("", "None"),)),
 )
 """Los ajustes de ``des.envelope`` que enseña su procedencia (plan §5.2.3): la dirección, la
 métrica, el alcance, el modo y el valor de la pendiente, el factor de malla, el origen de las
-semillas y el acotado del dominio. Los nombres (superficies, capas, sectores) no se declaran."""
+semillas, el acotado del dominio y el perfil base de las celdas sin sector (con la pendiente por
+sectores; su código, tal cual). Los nombres (superficies, capas, sectores) no se declaran."""
 DESIGN_SETTINGS: tuple[SettingDef, ...] = (
     SettingDef("sense", "Benching sense", choices=(
         (BenchSense.CUT.value, "Cut, face first"), (BenchSense.FILL.value, "Fill, berm first"))),
@@ -442,19 +446,22 @@ def _count(key: str, value: object) -> float:
 
 
 def envelope_figures(*, cells: int, area_m2: float, min_m: float | None, max_m: float | None,
-                     cut_m3: float, fill_m3: float) -> tuple[FigureSpec, ...]:
+                     cut_m3: float | None, fill_m3: float | None) -> tuple[FigureSpec, ...]:
     """Las cifras CALCULADO de una envolvente (RF-013-17), en el orden de
     :data:`ENVELOPE_FIGURES`: las celdas con envolvente, su área (m²), sus cotas mínima y máxima
     (m) y el desmonte y el terraplén (m³) frente a la superficie de partida. Sin celdas con
-    envolvente no hay cota mínima ni máxima (``None``): esa cifra no existe y no se da. Un valor
-    que no es finito es un error del programa (``ValueError``)."""
+    envolvente no hay cota mínima ni máxima (``None``): esa cifra no existe y no se da; y sin
+    superficie de partida (unas semillas de cota fija o de una rejilla de cotas) tampoco hay
+    desmonte ni terraplén (``None``). Un valor que no es finito es un error del programa
+    (``ValueError``)."""
     found = [FigureSpec("des.env_cells", _count("des.env_cells", cells), "-"),
              FigureSpec("des.env_area_m2", _finite("des.env_area_m2", area_m2), "m2")]
     for key, value in (("des.env_min_m", min_m), ("des.env_max_m", max_m)):
         if value is not None:
             found.append(FigureSpec(key, _finite(key, value), "m"))
-    found += [FigureSpec("des.env_cut_m3", _finite("des.env_cut_m3", cut_m3), "m3"),
-              FigureSpec("des.env_fill_m3", _finite("des.env_fill_m3", fill_m3), "m3")]
+    for key, value in (("des.env_cut_m3", cut_m3), ("des.env_fill_m3", fill_m3)):
+        if value is not None:
+            found.append(FigureSpec(key, _finite(key, value), "m3"))
     return tuple(found)
 
 
@@ -501,13 +508,17 @@ def _codes(values: Iterable[str], what: str) -> list[str]:
     return found
 
 
-def envelope_settings(request: EnvelopeRequest, pending_sectors: Iterable[str] = ()
-                      ) -> dict[str, Any]:
+def envelope_settings(request: EnvelopeRequest, pending_sectors: Iterable[str] = (),
+                      touched_sectors: Iterable[str] = ()) -> dict[str, Any]:
     """Los ajustes de ``des.envelope`` (``gb_operation.settings``; JSON sin rutas): lo que la
     vuelve a pedir igual con sus entradas —el nombre, la dirección, la métrica, el alcance (m), el
     modo y el valor de la pendiente (°), el factor de malla, el origen de las semillas con su
-    zona y el acotado del dominio— y los sectores sin búsqueda vigente al calcular
-    (``pending_sectors``: sus códigos; la marca de RF-013-06). Es un diccionario nuevo."""
+    zona, el acotado del dominio y los perfiles asignados (el base y el de cada sector, que la
+    pendiente por sectores necesita para recalcular y reproducir)— y, para la marca de RF-013-06,
+    los sectores sin búsqueda vigente al calcular (``pending_sectors``: sus códigos) y los que tocó
+    el dominio de trabajo (``touched_sectors``: con ellos y los pendientes de ahora se dice
+    «búsqueda de intocables pendiente», ``design.sectors.pending_marks``). Es un diccionario
+    nuevo."""
     seeds, domain = request.seeds, request.domain
     zone = seeds.zone
     return {
@@ -525,17 +536,25 @@ def envelope_settings(request: EnvelopeRequest, pending_sectors: Iterable[str] =
             "elevation_m": seeds.elevation_m, "grid": seeds.grid},
         "domain": {"bound": _bound(domain), "sectors": list(domain.sectors),
                    "layer": domain.layer},
+        "base_profile": request.base_profile or "",
+        "sector_profiles": dict(request.sector_profiles),
         "pending_sectors": _codes(pending_sectors, "los sectores pendientes"),
+        "touched_sectors": _codes(touched_sectors, "los sectores que toca el dominio"),
     }
 
 
-def design_settings(request: DesignRequest, surface: str, pending_sectors: Iterable[str] = ()
+def design_settings(request: DesignRequest, surface: str, pending_sectors: Iterable[str] = (),
+                    touched_sectors: Iterable[str] = (), previous: Mapping[str, Any] | None = None
                     ) -> dict[str, Any]:
     """Los ajustes de ``des.stepped_design`` (JSON sin rutas): el nombre, la envolvente que se
     escalona (el nombre de su operación), la superficie de partida ``surface`` (el nombre de su
     dato: la petición no la lleva), el sentido, el perfil base, el perfil de cada sector (por
-    código de sector, en su orden), de dónde sale el ancla y los sectores sin búsqueda vigente
-    al calcular. Es un diccionario nuevo."""
+    código de sector, en su orden), de dónde sale el ancla, los sectores sin búsqueda vigente al
+    calcular y los que tocó el dominio (RF-013-06; véase :func:`envelope_settings`) y lo
+    ``previous``: la operación del mismo tipo y nombre de la revisión congelada más reciente con
+    la que se comparó el desmonte y el terraplén (``operation``, ``revision``, ``cut_m3`` y
+    ``fill_m3``; D-25), que guarda lo que vio para repetirlo igual al reproducir. Es un
+    diccionario nuevo."""
     anchor = request.anchor_grid
     return {
         "name": request.name,
@@ -547,6 +566,8 @@ def design_settings(request: DesignRequest, surface: str, pending_sectors: Itera
         "anchor": {"source": _ANCHOR_PROFILE if anchor is None else _ANCHOR_GRID,
                    "grid": anchor},
         "pending_sectors": _codes(pending_sectors, "los sectores pendientes"),
+        "touched_sectors": _codes(touched_sectors, "los sectores que toca el dominio"),
+        "previous": None if previous is None else _previous(previous),
     }
 
 
@@ -614,6 +635,7 @@ def envelope_request(settings: Mapping[str, Any]) -> EnvelopeRequest:
     domain = _mapping(data.get("domain"), f"{what}, «domain»,")
     mesh = _number(data, "mesh_factor", what, required=True)
     assert mesh is not None
+    profiles = _profiles(data, what)
     return EnvelopeRequest(
         name=_required_text(data, "name", what),
         direction=_enum(Direction, data, "direction", what),
@@ -628,7 +650,19 @@ def envelope_request(settings: Mapping[str, Any]) -> EnvelopeRequest:
         mesh_factor=mesh,
         reach_m=_number(data, "reach_m", what),
         domain=WorkDomain(sectors=_list(domain, "sectors", f"{what}, «domain»,"),
-                          layer=_optional_text(domain, "layer", f"{what}, «domain»,")))
+                          layer=_optional_text(domain, "layer", f"{what}, «domain»,")),
+        base_profile=_optional_text(data, "base_profile", what) or None,
+        sector_profiles=profiles)
+
+
+def _profiles(data: Mapping[str, Any], what: str) -> dict[str, str]:
+    """El perfil de cada sector de unos ajustes (ninguno si no los llevan)."""
+    found = _mapping(data.get("sector_profiles", {}), f"{what}, «sector_profiles»,")
+    for sector, profile in found.items():
+        if not isinstance(sector, str) or not isinstance(profile, str):
+            raise ValueError(f"{what} llevan, por sector, el código de su perfil, no "
+                             f"{sector!r}: {profile!r}")
+    return dict(found)
 
 
 def design_request(settings: Mapping[str, Any]) -> DesignRequest:
@@ -637,11 +671,8 @@ def design_request(settings: Mapping[str, Any]) -> DesignRequest:
     ``ValueError`` si no son los de un escalonado (nombrando el campo)."""
     what = "los ajustes de un escalonado"
     data = _mapping(settings, what)
-    profiles = _mapping(data.get("sector_profiles"), f"{what}, «sector_profiles»,")
-    for sector, profile in profiles.items():
-        if not isinstance(sector, str) or not isinstance(profile, str):
-            raise ValueError(f"{what} llevan, por sector, el código de su perfil, no "
-                             f"{sector!r}: {profile!r}")
+    _mapping(data.get("sector_profiles"), f"{what}, «sector_profiles»,")
+    profiles = _profiles(data, what)
     anchor = _mapping(data.get("anchor"), f"{what}, «anchor»,")
     source = anchor.get("source")
     if source not in (_ANCHOR_PROFILE, _ANCHOR_GRID):
@@ -671,6 +702,33 @@ def settings_pending(settings: Mapping[str, Any]) -> tuple[str, ...]:
     (RF-013-06; ninguno si no los llevan). ``ValueError`` si no son una lista de textos."""
     return _list(_mapping(settings, "los ajustes de una operación del diseño"),
                  "pending_sectors", "los ajustes de una operación del diseño")
+
+
+def settings_touched(settings: Mapping[str, Any]) -> tuple[str, ...]:
+    """Los códigos de los sectores que tocó el dominio de trabajo al calcular, de unos ajustes
+    (RF-013-06; ninguno si no los llevan): con ``design.sectors.pending_marks`` y los sectores de
+    ahora dan la marca «búsqueda de intocables pendiente». ``ValueError`` si no son una lista de
+    textos."""
+    return _list(_mapping(settings, "los ajustes de una operación del diseño"),
+                 "touched_sectors", "los ajustes de una operación del diseño")
+
+
+def _previous(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Lo anterior con que se comparó un escalonado (D-25), comprobado y como diccionario nuevo."""
+    what = "lo anterior con que se comparó el escalonado"
+    data = _mapping(value, what)
+    return {"operation": _required_text(data, "operation", what),
+            "revision": _required_text(data, "revision", what),
+            "cut_m3": _number(data, "cut_m3", what, required=True),
+            "fill_m3": _number(data, "fill_m3", what, required=True)}
+
+
+def settings_previous(settings: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Lo anterior con que se comparó el escalonado de unos ajustes (``operation``, ``revision``,
+    ``cut_m3`` y ``fill_m3``; D-25), o ``None`` si no se comparó con nada. ``ValueError`` si no
+    tiene esa forma."""
+    value = _mapping(settings, "los ajustes de un escalonado").get("previous")
+    return None if value is None else _previous(value)
 
 
 # --- Lo que consume una operación ---------------------------------------------------------------

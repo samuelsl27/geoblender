@@ -20,13 +20,15 @@ prohibiciones de la 012, que van por el lado seguro, una semilla no prohíbe nad
 - :func:`constraint_cells`: las celdas de la zona de una restricción en las máscaras de la
   versión (``MaskSet.zone``: celda entera, D-1 de la 012, no pasa por A1).
 - :func:`layer_polygons` y :func:`layer_cells`: los polígonos y las celdas de una capa de
-  polígonos del proyecto (entidades de la 012 o dominios de la 011).
+  polígonos del proyecto (entidades de la 012 o dominios de la 011); :func:`frozen_polygons`, los
+  de su copia congelada (al reproducir).
 
 Ninguna entrada se modifica. Python puro (nivel 8), con numpy.
 """
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterable, Sequence
 from typing import Protocol
 
@@ -35,7 +37,7 @@ import numpy as np
 from ..gis.grid import Grid
 from ..gis.masks.access import MaskSet
 from ..gis.provenance import DOMAINS, FAMILIES_BY_CODE, FEATURES
-from ..gis.store import StoreProject, load_domains, load_features
+from ..gis.store import StoreProject, load_domains, load_features, read_domains, read_features
 from ..gis.vector import FeatureLayer
 from .messages import DesignError
 
@@ -43,6 +45,7 @@ __all__ = [
     "LABEL_LIMIT",
     "cells_inside",
     "constraint_cells",
+    "frozen_polygons",
     "layer_cells",
     "layer_polygons",
     "polygons_cells",
@@ -253,6 +256,25 @@ def layer_polygons(project: StoreProject, name: str) -> tuple[tuple[np.ndarray, 
                      for polygon in item.polygons)
     layer = load_features(project, name)
     assert isinstance(layer, FeatureLayer)
+    if layer.kind != "polygon":
+        raise DesignError("des.layer_not_polygons", obj=f"{_LAYER} «{name}»", field="geometría",
+                          value=_KINDS_ES.get(layer.kind, layer.kind), layer=name)
+    return tuple(tuple(part) for entity in layer.parts for part in entity)
+
+
+def frozen_polygons(conn: sqlite3.Connection, table: str, name: str
+                    ) -> tuple[tuple[np.ndarray, ...], ...]:
+    """Lo mismo que :func:`layer_polygons` de la tabla ``table`` de la conexión ``conn`` (la copia
+    congelada de la capa ``name``, que es el nombre de su dato), sin el proyecto: al reproducir lo
+    congelado. Solo lee."""
+    family = _family(name)
+    if family is None:
+        raise ValueError(f"las celdas de una capa salen de una capa «entidades» (gis_fea_) o "
+                         f"«dominios» (gis_dom_) del proyecto, no de «{name}»")
+    if family == DOMAINS:
+        return tuple(tuple(polygon) for item in read_domains(conn, table)
+                     for polygon in item.polygons)
+    layer = read_features(conn, table)
     if layer.kind != "polygon":
         raise DesignError("des.layer_not_polygons", obj=f"{_LAYER} «{name}»", field="geometría",
                           value=_KINDS_ES.get(layer.kind, layer.kind), layer=name)

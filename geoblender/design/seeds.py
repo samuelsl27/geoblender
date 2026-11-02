@@ -30,7 +30,7 @@ rechazo de calcular es de RF-013-16 (T07). Python puro (nivel 8), con numpy.
 from __future__ import annotations
 
 import math
-from collections.abc import Generator, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterator, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from typing import Protocol
@@ -53,10 +53,15 @@ __all__ = [
     "SectorRef",
     "SeedPlan",
     "SeedSet",
+    "assemble_units",
+    "bounded_units",
     "build_seeds_steps",
+    "check_source",
     "collect_seeds",
     "domain_of",
+    "label_of",
     "pace_progress",
+    "sector_layout",
     "seed_units",
     "work_domain_steps",
     "zone_cells",
@@ -202,21 +207,28 @@ def _unknown_sector(code: str, sectors: Sequence[SectorRef]) -> DesignError:
     return DesignError("des.sector_unknown", obj=_SECTOR, field="sector", value=code, known=known)
 
 
-def _label_of(code: str, sectors: Sequence[SectorRef]) -> int:
+def label_of(code: str, sectors: Sequence[SectorRef]) -> int:
+    """La etiqueta de celda del sector de código ``code`` en ``sectors`` (la posición más uno);
+    ``des.sector_unknown`` si no es de ellos."""
     for index, sector in enumerate(sectors, start=1):
         if sector.code == code:
             return index
     raise _unknown_sector(code, sectors)
 
 
-def zone_cells(project: StoreProject, masks: MaskSet, zone: Zone, *,
-               sectors: Sequence[SectorRef], labels: np.ndarray) -> np.ndarray:
+def zone_cells(project: StoreProject | None, masks: MaskSet, zone: Zone, *,
+               sectors: Sequence[SectorRef], labels: np.ndarray,
+               layer: Callable[[str], np.ndarray] | None = None) -> np.ndarray:
     """Las celdas de ``zone`` en la rejilla de las máscaras, como máscara nueva (RF-013-01, D-16):
     el dominio por defecto (``kind`` ``domain``); la zona de una restricción en las máscaras
     (celda entera, D-1 de la 012; ``des.zone_unknown`` si no la tiene); un sector por su código
     (``labels`` es su etiqueta ``k + 1``; ``des.sector_unknown`` si no es de ``sectors``) o una
     capa de polígonos del proyecto por su nombre (el centro dentro). Una zona con nombre sin
-    nombre es un error del programa (``ValueError``: las peticiones lo comprueban antes)."""
+    nombre es un error del programa (``ValueError``: las peticiones lo comprueban antes).
+
+    Una capa se lee del ``project`` (:func:`~design.zones.layer_cells`) o, si se da ``layer``
+    (nombre → máscara en la rejilla), de ahí: así la reproducción de una operación congelada, que
+    no tiene proyecto, usa la capa que congeló."""
     kind = ZoneKind(zone.kind)
     if kind is ZoneKind.DOMAIN:
         return masks.default_domain()
@@ -225,7 +237,11 @@ def zone_cells(project: StoreProject, masks: MaskSet, zone: Zone, *,
     if kind is ZoneKind.CONSTRAINT:
         return constraint_cells(masks, zone.name)
     if kind is ZoneKind.SECTOR:
-        return np.asarray(labels == _label_of(zone.name, sectors))
+        return np.asarray(labels == label_of(zone.name, sectors))
+    if layer is not None:
+        return layer(zone.name)
+    if project is None:
+        raise ValueError("una zona de capa necesita el proyecto o quien lea la capa")
     return layer_cells(project, zone.name, masks.grid)
 
 
@@ -253,6 +269,18 @@ def pace_progress[T](work: Generator[None, None, T], budget_s: float, *, phase: 
     yield Progress(phase, total, total, finished, result=result)
 
 
+def sector_layout(project: StoreProject, masks: MaskSet
+                  ) -> tuple[tuple[SectorRef, ...], np.ndarray]:
+    """Los sectores de búsqueda del proyecto para la versión de ``masks`` (los declarados o el
+    perímetro de actuación) y la etiqueta de cada celda de su rejilla (``int16``; el sector ``k``
+    es la etiqueta ``k + 1`` y 0, ninguno). Solo lee."""
+    with project.read() as conn:
+        found = tuple(sector for sector, _source in
+                      search_sectors(conn, project, masks.version_uid))
+    refs = tuple(SectorRef(sector.code, sector.name) for sector in found)
+    return refs, sector_labels(found, masks.grid)
+
+
 def _domain_units(project: StoreProject, bound: WorkDomain, masks: MaskSet
                   ) -> Generator[None, None, DomainSet]:
     """Las unidades de :func:`work_domain_steps`."""
@@ -260,18 +288,29 @@ def _domain_units(project: StoreProject, bound: WorkDomain, masks: MaskSet
         found = tuple(sector for sector, _source in
                       search_sectors(conn, project, masks.version_uid))
     refs = tuple(SectorRef(sector.code, sector.name) for sector in found)
-    wanted = [_label_of(code, refs) for code in bound.sectors]  # rechaza antes de nada pesado
+    wanted = [label_of(code, refs) for code in bound.sectors]  # rechaza antes de nada pesado
     yield
     labels = sector_labels(found, masks.grid)
     yield
+    mask = yield from bounded_units(
+        bound, masks, labels, wanted, lambda name: layer_cells(project, name, masks.grid))
+    return domain_of(mask, labels, refs, masks.grid.cell_area)
+
+
+def bounded_units(bound: WorkDomain, masks: MaskSet, labels: np.ndarray, wanted: Sequence[int],
+                  layer: Callable[[str], np.ndarray]) -> Generator[None, None, np.ndarray]:
+    """El dominio de trabajo como máscara nueva (unidades): el dominio por defecto de ``masks`` más
+    la franja de solo relleno, acotado —nunca ampliado— a los sectores de etiqueta ``wanted``
+    (``labels`` es la etiqueta de cada celda) y a la capa ``bound.layer`` (``layer``: su nombre →
+    máscara en la rejilla). Lo comparten el proyecto y la reproducción de lo congelado."""
     mask = masks.default_domain() | masks.fill_strip()  # una máscara nueva: se acota en ella
     if wanted:
-        mask &= np.isin(labels, wanted)
+        mask &= np.isin(labels, list(wanted))
         yield
     if bound.layer is not None:
-        mask &= layer_cells(project, bound.layer, masks.grid)
+        mask &= layer(bound.layer)
         yield
-    return domain_of(mask, labels, refs, masks.grid.cell_area)
+    return mask
 
 
 def work_domain_steps(project: StoreProject, bound: WorkDomain, masks: MaskSet, *,
@@ -290,7 +329,7 @@ def _missing(source: SeedSource, field: str) -> DesignError:
                        kind=SeedKind(source.kind).value)
 
 
-def _check_source(source: SeedSource) -> None:
+def check_source(source: SeedSource) -> None:
     """Rechaza unas semillas a medias (lo que la petición no comprueba) antes de leer nada."""
     kind = SeedKind(source.kind)
     if kind is SeedKind.SURFACE and not source.surface:
@@ -314,26 +353,41 @@ def seed_units(project: StoreProject, plan: SeedPlan, masks: MaskSet
     """Las unidades de :func:`build_seeds_steps` (cada ``yield``, una), para componerlas con otras
     en un solo generador (la vista previa, el cálculo); devuelve el :class:`SeedSet`."""
     source = plan.seeds
-    _check_source(source)
+    check_source(source)
     frame = project_frame(project)
     check_grid(ProjectFrame(masks.grid, frame.crs, frame.vertical), frame, role=_ROLE_MASKS,
                name=_MASKS)
     yield
     domain = yield from _domain_units(project, plan.domain, masks)
+    found = yield from assemble_units(
+        source, masks, domain,
+        layer=lambda name: layer_cells(project, name, masks.grid),
+        surface=lambda name, role: read_surface(
+            project, name, version_uid=masks.version_uid, expect=frame, role=role).values)
+    return found
+
+
+def assemble_units(source: SeedSource, masks: MaskSet, domain: DomainSet, *,
+                   layer: Callable[[str], np.ndarray],
+                   surface: Callable[[str, str], np.ndarray]) -> Generator[None, None, SeedSet]:
+    """Las unidades que forman el :class:`SeedSet` de ``source`` (ya comprobada con
+    :func:`check_source`) en el dominio ya formado ``domain``: la zona (``layer``: nombre de una
+    capa → máscara en la rejilla) y las cotas (``surface``: nombre y papel de una superficie o de
+    una rejilla de cotas → sus celdas). Lo comparten el proyecto y la reproducción de lo
+    congelado."""
     where = (None if source.zone is None else zone_cells(
-        project, masks, source.zone, sectors=domain.sectors, labels=domain.labels))
+        None, masks, source.zone, sectors=domain.sectors, labels=domain.labels, layer=layer))
     yield
     kind = SeedKind(source.kind)
     if kind is SeedKind.FIXED:
-        assert where is not None and source.elevation_m is not None  # _check_source
+        assert where is not None and source.elevation_m is not None  # check_source
         values = np.full(masks.grid.shape, np.inf)
         values[where] = source.elevation_m
     else:
         name, role = ((source.surface, _ROLE_SURFACE) if kind is SeedKind.SURFACE
                       else (source.grid, _ROLE_GRID))
-        assert name is not None  # _check_source
-        values = read_surface(project, name, version_uid=masks.version_uid, expect=frame,
-                              role=role).values
+        assert name is not None  # check_source
+        values = surface(name, role)
     yield
     found = collect_seeds(values, where, domain, masks.grid)
     yield

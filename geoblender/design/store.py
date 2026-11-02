@@ -25,6 +25,11 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   y completa, todo en **una** transacción de escritura (lo único que no se trocea, R4);
   :meth:`~DesignWriter.close` deshace lo puesto y borra los temporales. Con una operación que ya
   empezó (:meth:`~DesignWriter.resume`), la completa, o la deja «cancelada» o «fallida» (RF-008-19).
+- **Calcular y registrar de una vez, sin confirmar** (T15): :func:`run_envelope` y
+  :func:`run_design` empiezan la operación y dan los pasos que calculan (``design.pipeline``),
+  escriben las salidas en sus temporales y completan en una transacción; :func:`recompute_run`
+  repite con ellas lo obsoleto, con los ajustes de la operación que sustituye (RF-008-26), sin
+  pedir confirmación. La reproducción de lo congelado es de ``design.reproduce``.
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -66,6 +71,7 @@ from ..core.georef import CrsRef
 from ..core.gpkg.base import ColumnDef, create_attribute_table, create_base
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
 from ..core.paths import check_path_length
+from ..core.project.model import Progress
 from ..core.provenance.figures import FigureSpec
 from ..core.provenance.operations import (
     CANCELLATIONS,
@@ -79,21 +85,33 @@ from ..core.provenance.operations import (
     cancel_reason,
     failure_reason,
 )
+from ..core.provenance.recompute import RecomputeRequest
+from ..core.versions import read as versions_read
 from ..core.versions import store as versions_store
 from ..core.versions.model import Version, VersionError
 from ..gis.content import GEOTIFF, raster_header
 from ..gis.geotiff import writer
 from ..gis.masks import access
 from ..gis.masks import provenance as masks_declared
+from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.masks.store import CANCELLED_REASON, available_tables
 from ..gis.messages import GisError
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, backup_path, insert_rows, project_references, temporary_path
-from . import provenance
+from . import pipeline, provenance
 from .messages import DesignError
 from .model import DesignRequest, EnvelopeRequest, SlopeMode
-from .params import BenchParam, bench_key, check_bench_value
-from .sectors import DesignSector, design_sectors, slope_params
+from .params import (
+    TOLERANCE_FACE,
+    VERIFY_MIN_THICKNESS,
+    WARNING_RATIO,
+    BenchParam,
+    bench_key,
+    check_bench_value,
+)
+from .sectors import DesignSector, design_sectors, refuse_pending, slope_params, touched
+from .seeds import SectorRef, SeedSet, pace_progress, sector_layout, seed_units
+from .surfaces import project_frame, read_surface
 
 if TYPE_CHECKING:  # solo para los tipos: importarlos arrastraría los cálculos
     from .berms import Berms
@@ -109,10 +127,17 @@ __all__ = [
     "begin_design",
     "begin_envelope",
     "berm_rows",
+    "RECOMPUTED",
+    "number",
     "prepare_design",
     "prepare_envelope",
+    "previous_comparison",
+    "recompute_run",
     "report_rows",
+    "request_profiles",
     "require_version",
+    "run_design",
+    "run_envelope",
 ]
 
 _OBJ = "Envolventes y escalonado"
@@ -430,20 +455,30 @@ def _start(project: StoreProject, op_type: str, name: str, version: Version,
                           params, masks, seen, supersedes)
 
 
+def request_profiles(request: EnvelopeRequest) -> tuple[str, ...]:
+    """Los códigos de los perfiles que asigna ``request`` (el base y el de cada sector), sin
+    repetir y en su orden: los que lee una envolvente por sectores."""
+    return tuple(dict.fromkeys(
+        [*([] if request.base_profile is None else [request.base_profile]),
+         *(profile for _sector, profile in request.sector_profiles)]))
+
+
 def prepare_envelope(project: StoreProject, request: EnvelopeRequest, *, version: str | None,
                      masks: access.MaskSet | None = None,
                      sectors: Sequence[DesignSector] | None = None,
                      profiles: Iterable[str] = (), pending_sectors: Iterable[str] = (),
+                     touched_sectors: Iterable[str] = (),
                      supersedes: str | None = None) -> OperationStart:
     """Lo que anotará ``des.envelope`` para ``request`` en la versión ``version`` (uid o código)
     cuando se confirme, sin escribir nada (salvo compilar las máscaras si no están al día, que es
-    una operación propia): los ajustes (con los ``pending_sectors`` que se guardan para la marca de
-    RF-013-06), las entradas de ``design.provenance.envelope_inputs`` con las máscaras (``masks``;
-    sin ellas, las de ``access.ensure_masks_steps``) y los parámetros que lee
-    (``envelope_params``: con pendiente por sectores, el talud general de los ``profiles`` que usa y
-    los taludes impuestos de ``sectors``; por defecto, los de ``design_sectors``). ``supersedes``:
-    la operación hecha a la que sustituye (un recálculo): puede quedarse con los nombres de sus
-    datos.
+    una operación propia): los ajustes (con los ``pending_sectors`` y los ``touched_sectors`` que
+    se guardan para la marca de RF-013-06), las entradas de ``design.provenance.envelope_inputs``
+    con las máscaras (``masks``; sin ellas, las de ``access.ensure_masks_steps``) y los
+    parámetros que lee (``envelope_params``: con pendiente por sectores, el talud general de los
+    ``profiles`` que usa —por defecto, los que asigna la petición, :func:`request_profiles`— y
+    los taludes impuestos de ``sectors``; por defecto, los de ``design_sectors``).
+    ``supersedes``: la operación hecha a la que sustituye (un recálculo): puede quedarse con los
+    nombres de sus datos.
 
     Rechazos: los de :func:`require_version`, ``DesignError`` ``des.profile_value_missing`` o
     ``_range`` si un perfil de los que lee no tiene un valor válido (RF-013-19: con pendiente por
@@ -451,30 +486,34 @@ def prepare_envelope(project: StoreProject, request: EnvelopeRequest, *, version
     máscaras que se dan ya no están al día, ``DesignError`` ``des.operation_name_repeated`` y
     ``GisError`` ``gis.dataset_name_invalid`` si el nombre no se puede usar."""
     found = require_version(project, version, provenance.ENVELOPE)
+    codes = tuple(profiles) or request_profiles(request)
     if SlopeMode(request.slope_mode) is SlopeMode.SECTORS:
-        _check_profiles(project, found, profiles, provenance.ENVELOPE_PROFILE_PARAMS)
+        _check_profiles(project, found, codes, provenance.ENVELOPE_PROFILE_PARAMS)
     loaded = _loaded_masks(project, found, masks)
     chosen = design_sectors(project, found.uid) if sectors is None else tuple(sectors)
     inputs = provenance.envelope_inputs(request, loaded.uses(), available_tables(project))
-    params = provenance.envelope_params(request, profiles=profiles,
+    params = provenance.envelope_params(request, profiles=codes,
                                         sector_slopes=slope_params(chosen))
     return _start(project, provenance.ENVELOPE, request.name, found, loaded,
-                  provenance.envelope_settings(request, pending_sectors), inputs, params,
-                  supersedes)
+                  provenance.envelope_settings(request, pending_sectors, touched_sectors), inputs,
+                  params, supersedes)
 
 
 def prepare_design(project: StoreProject, request: DesignRequest, surface: str, *,
                    version: str | None, masks: access.MaskSet | None = None,
                    sectors: Sequence[DesignSector] | None = None,
-                   pending_sectors: Iterable[str] = (), supersedes: str | None = None
+                   pending_sectors: Iterable[str] = (), touched_sectors: Iterable[str] = (),
+                   previous: Mapping[str, Any] | None = None, supersedes: str | None = None
                    ) -> OperationStart:
     """Lo mismo que :func:`prepare_envelope` para ``des.stepped_design`` de ``request`` sobre la
     superficie de partida ``surface`` (el nombre de su dato): los ajustes de
     ``design_settings``, las entradas de ``design_inputs`` (la envolvente de la versión, la
     superficie, la rejilla de anclas, las máscaras, los sectores y las búsquedas) y los parámetros
     de ``design_params`` (los cinco valores de cada perfil que usa, los taludes de los sectores, las
-    tolerancias y el espesor mínimo). Un perfil sin valor, o fuera de rango, se rechaza antes de
-    registrar nada (RF-013-19; véase :func:`prepare_envelope`)."""
+    tolerancias y el espesor mínimo). ``previous``: lo que se vio de la revisión congelada más
+    reciente (:func:`previous_comparison`), que se guarda en los ajustes. Un perfil sin valor, o
+    fuera de rango, se rechaza antes de registrar nada (RF-013-19; véase
+    :func:`prepare_envelope`)."""
     found = require_version(project, version, provenance.STEPPED)
     _check_profiles(project, found, [request.base_profile,
                                      *(profile for _sector, profile in request.sector_profiles)],
@@ -484,33 +523,35 @@ def prepare_design(project: StoreProject, request: DesignRequest, surface: str, 
     inputs = provenance.design_inputs(request, surface, loaded.uses(), available_tables(project))
     params = provenance.design_params(request, sector_slopes=slope_params(chosen))
     return _start(project, provenance.STEPPED, request.name, found, loaded,
-                  provenance.design_settings(request, surface, pending_sectors), inputs, params,
-                  supersedes)
+                  provenance.design_settings(request, surface, pending_sectors, touched_sectors,
+                                             previous), inputs, params, supersedes)
 
 
 def begin_envelope(project: StoreProject, request: EnvelopeRequest, *, version: str | None,
                    masks: access.MaskSet | None = None,
                    sectors: Sequence[DesignSector] | None = None, profiles: Iterable[str] = (),
-                   pending_sectors: Iterable[str] = (), supersedes: str | None = None,
-                   executor: str = "blender") -> OperationHandle:
+                   pending_sectors: Iterable[str] = (), touched_sectors: Iterable[str] = (),
+                   supersedes: str | None = None, executor: str = "blender") -> OperationHandle:
     """Registra ``des.envelope`` «en curso» en la versión ``version`` (:func:`prepare_envelope` y
     :meth:`OperationStart.begin` en su propia transacción): el recálculo de una obsoleta
     (``supersedes``), que completa :meth:`DesignWriter.resume`. Confirmar un cálculo no pasa por
     aquí: :meth:`DesignWriter.commit` abre la operación en su transacción."""
     start = prepare_envelope(project, request, version=version, masks=masks, sectors=sectors,
                              profiles=profiles, pending_sectors=pending_sectors,
-                             supersedes=supersedes)
+                             touched_sectors=touched_sectors, supersedes=supersedes)
     return start.begin(project, executor=executor)
 
 
 def begin_design(project: StoreProject, request: DesignRequest, surface: str, *,
                  version: str | None, masks: access.MaskSet | None = None,
                  sectors: Sequence[DesignSector] | None = None,
-                 pending_sectors: Iterable[str] = (), supersedes: str | None = None,
+                 pending_sectors: Iterable[str] = (), touched_sectors: Iterable[str] = (),
+                 previous: Mapping[str, Any] | None = None, supersedes: str | None = None,
                  executor: str = "blender") -> OperationHandle:
     """Lo mismo que :func:`begin_envelope` para ``des.stepped_design`` (:func:`prepare_design`)."""
     start = prepare_design(project, request, surface, version=version, masks=masks,
                            sectors=sectors, pending_sectors=pending_sectors,
+                           touched_sectors=touched_sectors, previous=previous,
                            supersedes=supersedes)
     return start.begin(project, executor=executor)
 
@@ -878,3 +919,226 @@ class DesignWriter:
             return (f"La operación «{handle.op_type}» ({handle.uid}) sigue «en curso» en el "
                     f"proyecto: no se pudo registrar cómo terminó ({exc}).")
         return None
+
+
+# --- Recalcular lo obsoleto ---------------------------------------------------------------------
+
+RECOMPUTED: tuple[str, ...] = provenance.REPRODUCIBLE
+"""Los tipos que repite «Recalcular lo obsoleto» (los dos de ``des``)."""
+_STORE_PHASE = "store"
+
+
+def previous_comparison(conn: sqlite3.Connection, version: Version, op_type: str, name: str
+                        ) -> dict[str, Any] | None:
+    """Con qué se compara el desmonte y el terraplén de un escalonado (D-25, RF-013-30): la
+    operación ``op_type`` de nombre ``name`` de la revisión **congelada** más reciente de la versión
+    ``version`` y sus cifras ``des.cut_m3`` y ``des.fill_m3``, como ``design_settings(previous=…)``
+    (``operation``, ``revision`` —``V01.r1``—, ``cut_m3`` y ``fill_m3``); ``None`` si la versión no
+    tiene ninguna congelada, ninguna operación así o sin esas cifras. Solo lee."""
+    revision = versions_read.last_frozen(conn, version.uid)
+    if revision is None:
+        return None
+    rows = conn.execute(
+        "SELECT uid, settings FROM gb_operation WHERE revision_uid = ? AND op_type = ? "
+        "AND status = ? ORDER BY fid DESC", (revision.uid, op_type, OperationStatus.DONE.value))
+    for uid, settings in rows.fetchall():
+        if json.loads(settings).get("name") != name:
+            continue
+        figures = {str(key): value for key, value in conn.execute(
+            "SELECT key, value FROM gb_figure WHERE operation_uid = ? AND key IN (?, ?)",
+            (uid, provenance.CUT_M3, provenance.FILL_M3))}
+        cut, fill = figures.get(provenance.CUT_M3), figures.get(provenance.FILL_M3)
+        if cut is None or fill is None:
+            return None
+        return {"operation": name, "revision": f"{version.code}.r{revision.number}",
+                "cut_m3": float(cut), "fill_m3": float(fill)}
+    return None
+
+
+def _result_of[T](work: Generator[None, None, T]) -> T:
+    """Lo que devuelve ``work`` (unidades de ``seeds``) llevado hasta el final."""
+    while True:
+        try:
+            next(work)
+        except StopIteration as stop:
+            return stop.value  # type: ignore[no-any-return]
+
+
+def _values(handle: OperationHandle) -> dict[str, object]:
+    """Los parámetros que anotó la operación al empezar: clave → valor (es lo que lee el cálculo,
+    como lo leerá la reproducción de lo congelado)."""
+    return {param.key: param.value for param in handle.params}
+
+
+def number(values: Mapping[str, object], key: str) -> float:
+    """El parámetro ``key`` de ``values`` como número finito; ``ValueError`` si no lo tiene (una
+    operación de ``des`` anota siempre los tres que lee: el espesor, la tolerancia y el umbral)."""
+    value = values.get(key)
+    if isinstance(value, bool) or not isinstance(value, numbers.Real) \
+            or not math.isfinite(float(value)):
+        raise ValueError(f"la operación no anotó un valor numérico del parámetro «{key}»: "
+                         f"{value!r}")
+    return float(value)
+
+
+def _store_steps(spec_steps: Generator[None, None, Any], budget_s: float, what: str
+                 ) -> Iterator[Progress]:
+    return pace_progress(spec_steps, budget_s, phase=_STORE_PHASE,
+                         running=f"Guardando {what}…", finished=f"{what.capitalize()} guardado")
+
+
+def run_envelope(project: StoreProject, request: EnvelopeRequest, *, version: str | None,
+                 masks: access.MaskSet | None = None, supersedes: str | None = None,
+                 budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Calcula y registra ``request`` en la versión ``version`` **de una vez**, sin pedir
+    confirmación (el cálculo sin ventana: las funciones del dominio, el hito H1, y el recálculo de
+    lo obsoleto, :func:`recompute_run`; el «Crear» tras «Calcular» de la ventana, D-14, es otra
+    cosa): empieza la operación ``des.envelope`` —si ``supersedes`` es la de una anterior, la
+    sustituye, quedándose con los nombres de sus datos— con lo que lee hoy (las máscaras de la
+    versión, que compila antes si no están al día; los sectores y sus búsquedas; la superficie de
+    las semillas; los parámetros de los perfiles que asigna, resueltos versión → proyecto) y
+    devuelve su ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama: calculan
+    (``design.pipeline``), escriben la rejilla en su temporal y completan la operación en una
+    transacción; el último lleva el :class:`Stored`. Cerrarlos antes, o un fallo, no dejan nada y la
+    operación queda cancelada o fallida.
+
+    Al llamar, sin empezar nada: los rechazos de la versión (``VersionError``), del dominio y de
+    las semillas (``seed_units``), de RF-013-05 (``des.sector_pending``), del nombre
+    (``des.operation_name_repeated``) y de un perfil sin valor (RF-013-19)."""
+    found = require_version(project, version, provenance.ENVELOPE)
+    loaded = _loaded_masks(project, found, masks)
+    sectors = design_sectors(project, found.uid)
+    seeds = _result_of(seed_units(project, request, loaded))
+    refuse_pending(touched(sectors, seeds.domain))  # RF-013-05
+    start = prepare_envelope(project, request, version=found.uid, masks=loaded, sectors=sectors,
+                             touched_sectors=[ref.code for ref in seeds.touched],
+                             supersedes=supersedes)
+    handle = start.begin(project)
+    return handle, _envelope_run(project, handle, request, loaded, seeds, budget_s)
+
+
+def run_design(project: StoreProject, request: DesignRequest, surface: str, *,
+               version: str | None, masks: access.MaskSet | None = None,
+               supersedes: str | None = None, budget_s: float = STEP_BUDGET_S
+               ) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Lo mismo que :func:`run_envelope` para ``des.stepped_design``: escalona la envolvente
+    ``request.envelope`` de la versión sobre la superficie de partida ``surface`` (el nombre de su
+    dato), con los perfiles y las máscaras de la versión; compara el desmonte y el terraplén con
+    los de la revisión congelada más reciente (:func:`previous_comparison`) y escribe la superficie
+    de diseño, las cotas de las bermas, su tabla y el informe. Rechaza, además, un sector que toca
+    el dominio con la búsqueda pendiente (RF-013-05)."""
+    found = require_version(project, version, provenance.STEPPED)
+    loaded = _loaded_masks(project, found, masks)
+    sectors = design_sectors(project, found.uid)
+    envelope = read_surface(
+        project, provenance.dataset_name(provenance.ENVELOPE_GRID, request.envelope),
+        version_uid=found.uid, expect=project_frame(project), role="envolvente")
+    refs, labels = sector_layout(project, loaded)
+    with np.errstate(invalid="ignore"):
+        domain = np.isfinite(envelope.values)
+    touched_codes = pipeline.touched_in(refs, labels, domain)
+    refuse_pending(item for item in sectors if item.code in touched_codes)  # RF-013-05
+    waiting = [item.code for item in sectors if item.pending and item.code in touched_codes]
+    with project.read() as conn:
+        previous = previous_comparison(conn, found, provenance.STEPPED, request.name)
+    start = prepare_design(project, request, surface, version=found.uid, masks=loaded,
+                           sectors=sectors, pending_sectors=waiting, touched_sectors=touched_codes,
+                           previous=previous, supersedes=supersedes)
+    handle = start.begin(project)
+    return handle, _design_run(project, handle, request, surface, loaded, envelope, refs, labels,
+                               budget_s)
+
+
+def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
+                  ) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Repite la operación de ``des`` de ``request`` (``RecomputeRequest`` de «Recalcular lo
+    obsoleto», RF-008-26; RF-013-17; plan 013 §5.3.2): **sin pedir confirmación** —la operación ya
+    existe y se repite con sus ajustes—, empieza la operación nueva, que sustituye a la anterior en
+    la revisión abierta de **su** versión (:func:`run_envelope`, :func:`run_design`), con lo que
+    lee hoy: las máscaras de la versión, los sectores, las superficies y los parámetros, resueltos
+    de nuevo versión → proyecto (un perfil cambiado solo en V02 se lee de V02). Devuelve su
+    ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama (en Blender, la cola de
+    recálculo); el último lleva el :class:`Stored`.
+
+    Al llamar, sin empezar nada: ``TypeError``/``ValueError`` si no es una petición de un tipo de
+    :data:`RECOMPUTED` o sus ajustes no son los de su tipo; los rechazos de :func:`run_envelope` y
+    :func:`run_design` (un recálculo tampoco diseña en un sector sin búsqueda: RF-013-05)."""
+    if not isinstance(request, RecomputeRequest):
+        raise TypeError(f"se recalcula una RecomputeRequest, no {request!r}")
+    if request.op_type not in RECOMPUTED:
+        raise ValueError(f"recompute_run repite {', '.join(RECOMPUTED)}, no «{request.op_type}»")
+    project: StoreProject = request.project  # type: ignore[assignment]
+    if request.op_type == provenance.ENVELOPE:
+        return run_envelope(project, provenance.envelope_request(request.settings),
+                            version=request.version, supersedes=request.operation_uid,
+                            budget_s=budget_s)
+    return run_design(project, provenance.design_request(request.settings),
+                      provenance.design_start(request.settings), version=request.version,
+                      supersedes=request.operation_uid, budget_s=budget_s)
+
+
+def _envelope_run(project: StoreProject, handle: OperationHandle, envelope: EnvelopeRequest,
+                  masks: access.MaskSet, seeds: SeedSet, budget_s: float
+                  ) -> Generator[Progress, None, None]:
+    with DesignWriter.resume(project, handle) as writer:
+        yield Progress("envelope", 0, 1, "Preparando la envolvente…")
+        values = _values(handle)
+        domain = seeds.domain
+        slope = pipeline.envelope_slope(envelope, domain.sectors, domain.labels, values)
+        start = None
+        if pipeline.uses_start_surface(envelope):
+            assert envelope.seeds.surface is not None  # seed_units lo comprobó
+            start = read_surface(project, envelope.seeds.surface, version_uid=masks.version_uid,
+                                 expect=project_frame(project), role="semillas").values
+        job = pipeline.EnvelopeJob(envelope, seeds, slope, start,
+                                   number(values, VERIFY_MIN_THICKNESS))
+        outcome: pipeline.EnvelopeOutcome = yield from pipeline.forward(
+            pipeline.envelope_compute_steps(job, budget_s=budget_s))
+        raster = Raster(seeds.geometry, outcome.grid, writer.crs, writer.vertical)
+        yield from pipeline.forward(_store_steps(
+            writer.grid_steps(provenance.ENVELOPE_GRID, raster), budget_s, "la envolvente"))
+        stored = writer.commit(figures=outcome.figures, message=outcome.message)
+        yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
+
+
+def _design_run(project: StoreProject, handle: OperationHandle, design: DesignRequest,
+                surface: str, masks: access.MaskSet, envelope: Raster,
+                refs: Sequence[SectorRef], labels: np.ndarray, budget_s: float
+                ) -> Generator[Progress, None, None]:
+    with DesignWriter.resume(project, handle) as writer:
+        yield Progress("benching", 0, 1, "Preparando el escalonado…")
+        values = _values(handle)
+        frame = project_frame(project)
+        start = read_surface(project, surface, version_uid=masks.version_uid, expect=frame,
+                             role="superficie de partida")
+        anchors = None
+        if design.anchor_grid is not None:
+            anchors = read_surface(project, design.anchor_grid, version_uid=masks.version_uid,
+                                   expect=frame, role="anclas").values
+        profiles = pipeline.bench_profiles(values, [
+            design.base_profile, *(profile for _sector, profile in design.sector_profiles)])
+        waiting = set(provenance.settings_pending(handle.settings))
+        pending = tuple(ref.name for ref in refs if ref.code in waiting)
+        job = pipeline.DesignJob(
+            design, start.grid, start.values, envelope.values, masks, tuple(refs), labels,
+            pipeline.imposed_from(values, refs), profiles, anchors,
+            number(values, VERIFY_MIN_THICKNESS), number(values, TOLERANCE_FACE),
+            number(values, WARNING_RATIO),
+            pipeline.previous_of(provenance.settings_previous(handle.settings)), pending)
+        outcome: pipeline.DesignOutcome = yield from pipeline.forward(
+            pipeline.design_compute_steps(job, budget_s=budget_s))
+        geometry, crs, vertical = start.grid, writer.crs, writer.vertical
+        for family, grid, what in (
+                (provenance.DESIGN_GRID, outcome.design, "la superficie de diseño"),
+                (provenance.BERMS_GRID, outcome.berms.grid, "las cotas de las bermas")):
+            yield from pipeline.forward(_store_steps(
+                writer.grid_steps(family, Raster(geometry, grid, crs, vertical)), budget_s, what))
+        yield from pipeline.forward(_store_steps(
+            writer.table_steps(provenance.BERM_TABLE, berm_rows(outcome.berms)), budget_s,
+            "la tabla de bermas"))
+        yield from pipeline.forward(_store_steps(
+            writer.table_steps(provenance.REPORT_TABLE, report_rows(
+                outcome.report, unassigned_area_m2=outcome.unassigned_area_m2)), budget_s,
+            "el informe"))
+        stored = writer.commit(figures=outcome.figures, message=outcome.message)
+        yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
