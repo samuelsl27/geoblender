@@ -7201,3 +7201,24 @@ es = "1 recinto más"
 
 ["1 more group, the smallest one"]
 es = "1 grupo más, el más pequeño"
+
+# Parámetros de las envolventes y el escalonado (spec 013, T02; RF-013-08, RF-013-18, RF-013-27,
+# RF-013-30; plan 013 §5.2.2): la etiqueta de cada familia y de cada parámetro de design/params.py.
+
+["Face angle of the bench"]
+es = "Inclinación de la cara del banco"
+
+["Minimum berm width"]
+es = "Berma mínima"
+
+["Mesh factor of the profile"]
+es = "Factor de malla del perfil"
+
+["Maximum general slope imposed"]
+es = "Talud general máximo impuesto"
+
+["Tolerance on the face angle"]
+es = "Tolerancia sobre la inclinación de la cara"
+
+["Warning threshold for cut and fill against the previous revision"]
+es = "Umbral de aviso del desmonte y el terraplén frente a la revisión anterior"

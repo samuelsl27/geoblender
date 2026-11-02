@@ -1,0 +1,161 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Mensajes del diseño (spec 013, T02; plan 013 §5.1, §5.3.1 y §5.5; constitución, principio 10).
+
+Cada rechazo, aviso o nota que puede dar ``design`` tiene un **código** estable ``des.*``, un
+``msgid`` en inglés (su versión inglesa) y su texto en español, con los mismos marcadores en los
+dos; ``DesignError`` es el error para el usuario con su objeto, su campo y su valor. Aquí están los
+de los perfiles de banco (RF-013-19, RF-013-20) y el del talud impuesto por sector (RF-013-08); las
+tareas siguientes añaden los suyos (superficies, semillas, sectores, envolventes…).
+"""
+
+from __future__ import annotations
+
+import unittest
+
+from tests.support.package import import_geoblender
+
+messages = import_geoblender("design.messages")
+errors = import_geoblender("core.errors")
+i18n = import_geoblender("core.i18n")
+
+SPANISH_LETTERS = frozenset("áéíóúüñÁÉÍÓÚÜÑ¿¡")
+
+# Los códigos de la T02 con su gravedad: «error» se lanza (DesignError), «warning» se informa.
+CODES: dict[str, str] = {
+    "des.profile_name_missing": "error",     # RF-013-19
+    "des.profile_name_repeated": "error",    # RF-013-19
+    "des.profile_value_missing": "error",    # RF-013-19, D-7
+    "des.profile_value_range": "error",      # RF-013-18, RF-013-19
+    "des.sector_slope_range": "error",       # RF-013-08
+    "des.profile_unresolved": "warning",     # RF-013-20
+}
+
+
+class CatalogTest(unittest.TestCase):
+    def test_codes_of_the_task(self) -> None:
+        """RF-013-08, RF-013-19, RF-013-20: cada rechazo o aviso de los perfiles y del talud por
+        sector tiene su código ``des.*`` con su gravedad; todos los códigos son de ``des`` y no se
+        repiten, ni sus ``msgid``."""
+        codes = [message.code for message in messages.CATALOG]
+        self.assertEqual(len(codes), len(set(codes)), "códigos repetidos")
+        msgids = [message.msgid for message in messages.CATALOG]
+        self.assertEqual(len(msgids), len(set(msgids)), "msgid repetidos")
+        for message in messages.CATALOG:
+            with self.subTest(code=message.code):
+                self.assertRegex(message.code, r"^des\.[a-z][a-z0-9_]*$")
+                self.assertIn(message.severity, messages.SEVERITIES)
+                self.assertIs(messages.MESSAGES[message.code], message)
+        for code, severity in CODES.items():
+            with self.subTest(code=code):
+                self.assertIn(code, messages.MESSAGES)
+                self.assertEqual(messages.MESSAGES[code].severity, severity)
+
+    def test_both_languages_with_the_same_placeholders(self) -> None:
+        """Principio 10: cada código tiene su texto en los dos idiomas: el ``msgid`` en inglés
+        (sin letras del español) y el español, distinto y no vacío, con los mismos marcadores con
+        nombre en inglés; ``CATALOG_ES`` (``msgid`` → español) es lo que ``core.i18n.install``
+        recibe y da el mismo texto que ``render``."""
+        for message in messages.CATALOG:
+            with self.subTest(code=message.code):
+                self.assertTrue(message.msgid.strip())
+                self.assertTrue(message.es.strip())
+                self.assertNotEqual(message.msgid, message.es)
+                self.assertEqual(set(message.msgid) & SPANISH_LETTERS, set(),
+                                 "msgid en inglés")
+                self.assertEqual(i18n.placeholders(message.msgid),
+                                 i18n.placeholders(message.es))
+                for name in i18n.placeholders(message.es):
+                    self.assertRegex(name, r"^[a-z][a-z_]*$")
+                self.assertEqual(messages.CATALOG_ES[message.msgid], message.es)
+                values = {name: name.upper() for name in i18n.placeholders(message.es)}
+                self.assertEqual(messages.render(message.code, **values),
+                                 message.es.format(**values))
+                self.assertEqual(messages.render(message.code, language="en", **values),
+                                 message.msgid.format(**values))
+        self.assertEqual(set(messages.CATALOG_ES), {m.msgid for m in messages.CATALOG})
+
+    def test_every_message_names_the_object_and_the_value(self) -> None:
+        """RF-013-16, principio 10: cada error de los perfiles nombra el perfil (o el sector)
+        y el campo, y el de rango y el de falta de valor dicen qué hacer (dónde se declara)."""
+        for code in ("des.profile_name_missing", "des.profile_name_repeated",
+                     "des.profile_value_missing", "des.profile_value_range"):
+            with self.subTest(code=code):
+                self.assertIn("{profile}", messages.MESSAGES[code].es)
+                self.assertIn("{profile}", messages.MESSAGES[code].msgid)
+        self.assertIn("{sector}", messages.MESSAGES["des.sector_slope_range"].es)
+        self.assertIn("{field}", messages.MESSAGES["des.profile_value_range"].es)
+        self.assertIn("Diseño ▸ Parámetros ▸ Perfiles de banco…",
+                      messages.MESSAGES["des.profile_value_missing"].es)
+        self.assertIn("Design ▸ Parameters ▸ Bench profiles…",
+                      messages.MESSAGES["des.profile_value_missing"].msgid)
+
+    def test_render_formats_values(self) -> None:
+        """Principio 10: un marcador sin valor se ve «?» (nunca ``{…}``); los decimales salen
+        con coma en español y con punto en inglés; los valores que sobran se ignoran; un código
+        que no es de ``des`` o un idioma desconocido son errores del programa."""
+        text = messages.render("des.profile_value_range", profile="EXPL_10_60_6",
+                               field="des.bench.expl_10_60_6.face_deg", value=90.5,
+                               range="(0; 90) °")
+        self.assertEqual(text, "Perfil de banco «EXPL_10_60_6»: «des.bench.expl_10_60_6.face_deg» "
+                               "= 90,5 está fuera de su rango (0; 90) °; no se calcula nada con "
+                               "este perfil.")
+        english = messages.render("des.profile_value_range", language="en", profile="X",
+                                  field="f", value=90.5, range="(0, 90) deg", sobra=1)
+        self.assertEqual(english, "Bench profile «X»: «f» = 90.5 is outside its range "
+                                  "(0, 90) deg; nothing is calculated with this profile.")
+        missing = messages.render("des.profile_value_range", profile="X")
+        self.assertNotIn("{", missing)
+        self.assertIn("?", missing)
+        with self.assertRaises(ValueError):
+            messages.render("res.same_surface")
+        with self.assertRaises(ValueError):
+            messages.render("des.profile_unresolved", language="fr")
+
+
+class DesignErrorTest(unittest.TestCase):
+    def test_error_with_object_field_and_value(self) -> None:
+        """Principio 10 (RF-013-19): ``DesignError`` es un ``GeoblenderError`` con el código, el
+        ``msgid``, los valores en JSON (para el registro y para verlo en inglés), el objeto, el
+        campo y el valor, y su texto en español, que es también ``str(error)``."""
+        error = messages.DesignError(
+            "des.profile_value_range", obj="Perfil de banco «EXPL_10_60_6»",
+            field="des.bench.expl_10_60_6.height_m", value=0.0, profile="EXPL_10_60_6",
+            range="(0; 100] m")
+        self.assertIsInstance(error, errors.GeoblenderError)
+        self.assertEqual(error.code, "des.profile_value_range")
+        self.assertEqual(error.msgid, messages.MESSAGES["des.profile_value_range"].msgid)
+        self.assertEqual((error.obj, error.field, error.value),
+                         ("Perfil de banco «EXPL_10_60_6»",
+                          "des.bench.expl_10_60_6.height_m", 0.0))
+        self.assertEqual(error.values, {"field": "des.bench.expl_10_60_6.height_m", "value": 0.0,
+                                        "profile": "EXPL_10_60_6", "range": "(0; 100] m"})
+        self.assertEqual(error.text, "Perfil de banco «EXPL_10_60_6»: "
+                                     "«des.bench.expl_10_60_6.height_m» = 0 está fuera de su "
+                                     "rango (0; 100] m; no se calcula nada con este perfil.")
+        self.assertEqual(str(error), error.text)
+        self.assertEqual(error.message, error.text)
+        self.assertEqual(error.context, error.values)
+        english = messages.render(error.code, language="en", **error.values)
+        self.assertEqual(english, "Bench profile «EXPL_10_60_6»: "
+                                  "«des.bench.expl_10_60_6.height_m» = 0 is outside its range "
+                                  "(0; 100] m; nothing is calculated with this profile.")
+
+    def test_only_errors_are_raised(self) -> None:
+        """Un aviso no se lanza y un código desconocido es un error del programa
+        (``ValueError``); los errores del catálogo se lanzan con su texto sin marcadores."""
+        for code in ("des.profile_unresolved", "des.no_such_code", "res.same_surface"):
+            with self.subTest(code=code):
+                with self.assertRaises(ValueError):
+                    messages.DesignError(code, obj="Perfil", field="campo")
+        for code, severity in CODES.items():
+            if severity == "error":
+                with self.subTest(code=code):
+                    error = messages.DesignError(code, obj="Perfil", field="campo", value="v",
+                                                 profile="P", other="Q", sector="S",
+                                                 range="(0; 1]")
+                    self.assertNotIn("{", error.text)
+                    self.assertNotIn("?", error.text)
+
+
+if __name__ == "__main__":
+    unittest.main()
