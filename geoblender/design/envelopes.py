@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Las envolventes de pendiente acotada: el *chamfer* 5×5 por filas (spec 013; RF-013-11,
-RF-013-12, RF-013-13, RF-013-15; plan 013 A2, A3, A4, D-21, D-33; ADR-0014).
+"""Las envolventes de pendiente acotada: el *chamfer* 5×5 por filas y la euclídea exacta (spec 013;
+RF-013-11, RF-013-12, RF-013-13, RF-013-15; plan 013 A2, A3, A4, A5, D-21, D-22, D-33; ADR-0014).
 
 La envolvente **ascendente** de unas semillas es ``E↑(p) = mín_q [s(q) + t·d(p, q)]`` (la mayor
 superficie que no pasa de ellas con esa pendiente) y la **descendente**, ``E↓(p) = máx_q [s(q) −
-t·d(p, q)] = −E↑(−s)``. La distancia ``d`` es la del *chamfer* 5×5 de la rejilla de paso exacto
-(ADR-0014): los 16 desplazamientos de la máscara de 5×5 con los pesos 1, √2 y √5 por la escala
-``0,98644`` y el paso ``h``, que la dejan a −1,356 % … +1,355 % de la euclídea (RF-013-12: ≤ 1,4 %).
-**Nunca el *chamfer* 3×3.** Una pared alineada con la rejilla queda así un 1,356 % corta a lo largo
-del eje; la exactitud de la pared es de la euclídea exacta (T08).
+t·d(p, q)] = −E↑(−s)``. Hay dos métricas, y solo dos (RF-013-12). En el *chamfer* 5×5 de la rejilla
+de paso exacto (ADR-0014) la distancia ``d`` sale de los 16 desplazamientos de la máscara de 5×5
+con los pesos 1, √2 y √5 por la escala ``0,98644`` y el paso ``h``, que la dejan a −1,356 % …
++1,355 % de la euclídea (RF-013-12: ≤ 1,4 %). **Nunca el *chamfer* 3×3.** Una pared alineada con
+la rejilla queda así un 1,356 % corta a lo largo del eje; la euclídea exacta
+(:func:`exact_steps`, A5) da la distancia entre centros de celda y la pared exacta.
 
 - **La pendiente por celda** (A2): :class:`SlopeField` es la tangente efectiva de cada celda, la
   pedida por la persona por el factor de malla del perfil (RF-013-11): una constante
@@ -32,12 +33,26 @@ del eje; la exactitud de la pared es de la euclídea exacta (T08).
   una semilla, es un ``DesignError`` con la celda absoluta y la diferencia (m) y **no se entrega
   nada**.
 
+- **La euclídea exacta** (A5, D-22): :func:`exact_steps`, solo con pendiente constante (RF-013-16
+  la rechaza con la de los sectores), da ``T(p) = mín_q [f_q + k·|p − q|]`` entre centros de celda
+  (``k = t·h``) con error de redondeo (≤ 10⁻⁹ m frente a la fuerza bruta). No es la transformada
+  de distancia separable (con cotas distintas no lo es) sino una **búsqueda exacta por bloques**
+  podada con una cota: (1) la cota superior ``U`` es el *chamfer* **sin escala** (la longitud de un
+  camino real: nunca por debajo de la euclídea); (2) las dos reducciones exactas de
+  :mod:`~geoblender.design.reduction` retiran las semillas dominadas y las redundantes (la cota de
+  las retiradas es ``mín(T, f)``); (3) la rejilla se parte en bloques de 8 × 8 celdas
+  (superbloques de 16 × 16 bloques, para filtrar una vez); de cada bloque solo se evalúan las
+  semillas con ``f_q + k·dmín(bloque, q) ≤ máx_bloque U + 10⁻⁹`` (cualquier otra no puede ser la
+  mejor de ninguna de sus celdas; el margen es el de la diferencia de redondeo entre la cota y el
+  coste exacto de la misma semilla); (4) ``np.hypot`` de las celdas del bloque contra sus
+  candidatas, en trozos de ≤ 4 M de evaluaciones. No itera; la comprobación de RF-013-15 es la
+  misma con los pesos de la longitud real (sin escala).
 - **El alcance** (RF-013-14, A6): :func:`reach_steps` da la distancia a la semilla más próxima con
-  la misma métrica y ``t = 1`` (el *chamfer* con costes de entrada ``(1, √2, √5)·h·escala``) y
-  ``NaN`` donde pasa del alcance; :func:`envelope_steps` deja sin dato (``NaN``) las celdas de la
-  envolvente que pasan de él, que es el tope de la propagación (errores 17, 31 y 66). Sin alcance,
-  ninguno. Todas las semillas cuentan, también las que quedan fuera del dominio de trabajo (el
-  recorte al dominio es posterior).
+  la misma métrica y ``t = 1`` (el *chamfer* con costes de entrada ``(1, √2, √5)·h·escala``; la
+  exacta con ``f = 0``, que reduce todas las semillas de dentro) y ``NaN`` donde pasa del alcance;
+  :func:`envelope_steps` deja sin dato (``NaN``) las celdas de la envolvente que pasan de él, que es
+  el tope de la propagación (errores 17, 31 y 66). Sin alcance, ninguno. Todas las semillas cuentan,
+  también las que quedan fuera del dominio de trabajo (el recorte al dominio es posterior).
 - **Los rechazos de RF-013-16**, antes de calcular y sin registrar nada: :func:`check_request` (la
   pendiente, el factor de malla, el alcance y la euclídea exacta con sectores: lo que no necesita
   leer nada) y :func:`check_seed_set` (unas semillas sin ninguna celda con cota finita, un dominio
@@ -46,7 +61,7 @@ del eje; la exactitud de la pared es de la euclídea exacta (T08).
   semillas o la superficie de partida estén en otra rejilla, CRS o datum vertical lo rechaza antes
   ``design.surfaces`` al leerlas (``des.surface_mismatch``).
 
-Python puro (nivel 8), con numpy. La euclídea exacta es de T08.
+Python puro (nivel 8), con numpy.
 """
 
 from __future__ import annotations
@@ -62,11 +77,16 @@ from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
 from .messages import DesignError
 from .model import Direction, EnvelopeRequest, Metric, SlopeMode
+from .reduction import Reduction, reduce_units
 from .seeds import SeedSet, pace_progress
 
 __all__ = [
+    "BLOCK_CELLS",
+    "BLOCK_GROUP",
     "CELLS_PER_UNIT",
     "CHAMFER_SCALE",
+    "EVALS_PER_CHUNK",
+    "EVALS_PER_UNIT",
     "MAX_ITERATIONS",
     "TOLERANCE_M",
     "Envelope",
@@ -78,6 +98,7 @@ __all__ = [
     "check_seed_set",
     "constant_slope",
     "envelope_steps",
+    "exact_steps",
     "reach_steps",
     "request_slope",
     "sector_slope",
@@ -92,6 +113,22 @@ MAX_ITERATIONS = 8
 CELLS_PER_UNIT = 400_000
 """Las celdas de una unidad de trabajo de un barrido (≈ 10 ms); la comprobación usa la cuarta
 parte, porque cada celda cuesta unas cuatro veces más."""
+BLOCK_CELLS = 8
+"""El lado, en celdas, de los bloques de la búsqueda exacta (A5: 4 y 16 dieron 6-8 s y 5,5 s)."""
+BLOCK_GROUP = 16
+"""Los bloques de lado de un superbloque de la búsqueda exacta (128 celdas): se filtran las
+semillas una vez por superbloque y luego por bloque."""
+EVALS_PER_UNIT = 1_000_000
+"""Las evaluaciones de distancia (celda × semilla) de una unidad de trabajo de la búsqueda
+exacta (≈ 15 ms)."""
+EVALS_PER_CHUNK = 4_000_000
+"""Las evaluaciones de un solo ``np.hypot`` como mucho (32 MiB de temporal); una unidad de trabajo
+suele ser menor."""
+_FILTER_MARGIN_M = 1e-9
+"""El margen del filtro de candidatas: la cota y el coste exacto de la misma semilla difieren en
+3·10⁻¹⁵ (A5); sin él se descartó al único óptimo."""
+_BLOCK_OVERHEAD_EVALS = 2_000
+"""Lo que cuesta, en evaluaciones, la preparación de un bloque (sus ~15 llamadas de numpy)."""
 
 _SQRT2 = math.sqrt(2.0)
 _SQRT5 = math.sqrt(5.0)
@@ -252,12 +289,22 @@ def sector_slope(labels: np.ndarray, rules: Sequence[SlopeRule | None],
 class Envelope:
     """Una envolvente calculada: ``grid`` (m, float64, nueva, de la forma de la rejilla; ``+inf``
     —``−inf`` en la descendente— donde no hay envolvente porque no hay semilla alguna y ``NaN``
-    donde pasa del alcance, RF-013-14), las ``iterations`` (vueltas de ida y vuelta) y la
-    ``violation`` (m): la mayor violación de las relajaciones, que es ≤ :data:`TOLERANCE_M`."""
+    donde pasa del alcance, RF-013-14), las ``iterations`` (vueltas de ida y vuelta del
+    *chamfer*; 1 en la euclídea exacta, que no itera), la ``violation`` (m): la mayor violación de
+    las relajaciones, que es ≤ :data:`TOLERANCE_M`, y, solo en la euclídea exacta, la
+    ``reduction`` de semillas que hizo (cuántas retiró y por qué: ninguna se pierde sin contar);
+    ``None`` en el *chamfer*."""
 
     grid: np.ndarray
     iterations: int
     violation: float
+    reduction: Reduction | None = None
+
+
+def _scale_of(metric: Metric | str) -> float:
+    """La escala de los pesos de vecino de una métrica: la del ADR-0014 en el *chamfer* 5×5 y 1 (la
+    longitud real del paso) en la euclídea exacta; ``ValueError`` si no es ninguna de las dos."""
+    return CHAMFER_SCALE if Metric(metric) is Metric.CHAMFER5 else 1.0
 
 
 # --- Los costes de entrar en una celda ---------------------------------------------------------
@@ -267,10 +314,12 @@ class _Weights:
     """Los costes de entrar en una celda por un desplazamiento de eje (``a``), diagonal (``b``) o de
     caballo (``c``): ``t(llegada)·h·escala·(1, √2, √5)``, de una fila (``forward``/``backward``,
     con la suma acumulada de ``a`` en el sentido de la fila) y, para la comprobación, ``unit``
-    (``t·h·escala``: un escalar o el mapa entero)."""
+    (``t·h·escala``: un escalar o el mapa entero). La ``scale`` es la del *chamfer* escalado
+    (:data:`CHAMFER_SCALE`), o 1 para la cota sin escala y la comprobación de la euclídea exacta."""
 
-    def __init__(self, slope: SlopeField, ncols: int, step: float) -> None:
-        scale = step * CHAMFER_SCALE
+    def __init__(self, slope: SlopeField, ncols: int, step: float,
+                 scale_factor: float = CHAMFER_SCALE) -> None:
+        scale = step * scale_factor
         if isinstance(slope.tan, np.ndarray):
             self.unit: float | np.ndarray = slope.tan * scale
             self._row: tuple[np.ndarray, ...] | None = None
@@ -481,12 +530,14 @@ def _check_inputs(seed: np.ndarray, geometry: Grid, slope: SlopeField, direction
 
 
 def _work(seed: np.ndarray, geometry: Grid, slope: SlopeField, way: Direction, name: str,
-          max_iterations: int, cells_per_unit: int) -> Generator[None, None, Envelope]:
-    """Las unidades de :func:`chamfer_steps`: el barrido hasta el punto fijo y su comprobación."""
+          max_iterations: int, cells_per_unit: int, scale_factor: float = CHAMFER_SCALE
+          ) -> Generator[None, None, Envelope]:
+    """Las unidades de :func:`chamfer_steps`: el barrido hasta el punto fijo y su comprobación.
+    Con ``scale_factor = 1`` es el *chamfer* sin escala, la cota superior de la euclídea exacta."""
     nrows, ncols = seed.shape
     sign = 1.0 if way is Direction.UP else -1.0
     values = np.where(np.isfinite(seed), seed * sign, np.inf)
-    weights = _Weights(slope, ncols, geometry.dx)
+    weights = _Weights(slope, ncols, geometry.dx, scale_factor)
     rows = max(1, cells_per_unit // ncols)
     check_rows = max(1, cells_per_unit // (4 * ncols))
     yield None
@@ -534,13 +585,16 @@ def chamfer_steps(seed: np.ndarray, geometry: Grid, slope: SlopeField,
 
 def check_envelope(envelope: np.ndarray, seed: np.ndarray, slope: SlopeField, geometry: Grid,
                    direction: Direction | str, *, name: str = "",
-                   tolerance: float = TOLERANCE_M) -> None:
+                   tolerance: float = TOLERANCE_M,
+                   metric: Metric | str = Metric.CHAMFER5) -> None:
     """Comprueba el RF-013-15 de una ``envelope`` ya calculada (m, la cota de cada celda) de las
     semillas ``seed``: que es un punto fijo —ninguna de las 16 relajaciones se viola más de
-    ``tolerance`` m— y que cada semilla queda del lado de su cota (``E↑ ≤ f``, ``E↓ ≥ f``). Lanza
-    ``DesignError`` con la celda absoluta y la diferencia; no devuelve nada si todo cumple. Es la
-    comprobación que :func:`chamfer_steps` hace en cada ejecución, aplicable a cualquier
-    envolvente."""
+    ``tolerance`` m con los pesos de la ``metric``— y que cada semilla queda del lado de su cota
+    (``E↑ ≤ f``, ``E↓ ≥ f``). Lanza ``DesignError`` con la celda absoluta y la diferencia; no
+    devuelve nada si todo cumple. Es la comprobación que :func:`chamfer_steps` y
+    :func:`exact_steps` hacen en cada ejecución, aplicable a cualquier envolvente: los pesos son
+    los del *chamfer* escalado (``chamfer5``) o la longitud real del paso (``exact``)."""
+    scale_factor = _scale_of(metric)
     seed = np.asarray(seed, dtype=np.float64)
     way = _check_inputs(seed, geometry, slope, direction, 1, 1)
     values = np.asarray(envelope, dtype=np.float64)
@@ -549,7 +603,7 @@ def check_envelope(envelope: np.ndarray, seed: np.ndarray, slope: SlopeField, ge
                          f"{seed.shape}")
     sign = 1.0 if way is Direction.UP else -1.0
     values = values * sign
-    weights = _Weights(slope, seed.shape[1], geometry.dx)
+    weights = _Weights(slope, seed.shape[1], geometry.dx, scale_factor)
     rows = max(1, CELLS_PER_UNIT // (4 * seed.shape[1]))
     steps = _violation_units(values, weights, rows)
     while True:
@@ -561,6 +615,187 @@ def check_envelope(envelope: np.ndarray, seed: np.ndarray, slope: SlopeField, ge
     if worst > tolerance:
         raise _not_fixed_point(values, weights, geometry, name, None, tolerance, rows)
     _check_seeds(values, seed, way, geometry, name)
+
+
+# --- La euclídea exacta (A5, D-22) -------------------------------------------------------------
+
+
+def _constant_tan(slope: SlopeField) -> float:
+    """La tangente efectiva de una pendiente constante (un escalar, o un mapa de un solo valor): la
+    euclídea exacta no admite otra. ``ValueError`` si es un mapa con valores distintos (el rechazo
+    de la pendiente por sectores, para la persona, es de :func:`check_request`)."""
+    if slope.uniform:
+        return float(slope.tan)
+    low, high = float(np.min(slope.tan)), float(np.max(slope.tan))
+    if low != high:
+        raise ValueError("la euclídea exacta solo admite una pendiente constante (RF-013-16), no "
+                         f"un mapa de {low} a {high}")
+    return low
+
+
+def _check_exact_options(slope: SlopeField, evals_per_unit: int, block: int, group: int) -> None:
+    """Los errores del programa de la euclídea exacta (``ValueError``): una pendiente que no es
+    constante y unos bloques, superbloques o unidades menores que 1."""
+    _constant_tan(slope)
+    if min(evals_per_unit, block, group) < 1:
+        raise ValueError("las evaluaciones por unidad, el lado del bloque y los bloques por "
+                         "superbloque deben ser al menos 1")
+
+
+def _search_work(kept: Reduction, bound: np.ndarray, rise: float, block: int, group: int,
+                 evals_per_unit: int) -> Generator[None, None, np.ndarray]:
+    """La búsqueda exacta por bloques (A5): para cada celda, ``mín_q [f_q + rise·|p − q|]`` sobre
+    las semillas que quedan de la reducción (``kept``), con ``bound`` la cota superior de cada
+    celda y ``rise = t·h`` (m por celda). Las candidatas de cada bloque de ``block × block`` celdas
+    son las que cumplen ``f_q + rise·dmín(bloque, q) ≤ máx_bloque(bound) + 10⁻⁹`` (se filtran antes
+    por superbloques de ``group × group`` bloques); el resto no puede ser la mejor de ninguna de
+    sus celdas. Devuelve una rejilla nueva (``+inf`` en las celdas sin candidata, que no hay si
+    hay alguna semilla). Una unidad de trabajo son unas ``evals_per_unit`` evaluaciones. Un
+    superbloque o un bloque sin candidatas solo tiene celdas de semillas retiradas (su cota es la
+    propia) y queda en ``+inf`` aquí."""
+    nrows, ncols = bound.shape
+    found = np.full(bound.shape, np.inf)
+    seed_rows = kept.rows.astype(np.float64)
+    seed_cols = kept.cols.astype(np.float64)
+    seed_z = kept.values
+    side = block * group
+    chunk = min(EVALS_PER_CHUNK, evals_per_unit)
+    work = 0
+    for top in range(0, nrows, side):
+        bottom = min(top + side, nrows)
+        row_starts = np.arange(0, bottom - top, block)
+        first_rows = top + row_starts
+        last_rows = np.minimum(first_rows + block, bottom) - 1
+        for left in range(0, ncols, side):
+            right = min(left + side, ncols)
+            col_starts = np.arange(0, right - left, block)
+            first_cols = left + col_starts
+            last_cols = np.minimum(first_cols + block, right) - 1
+            peaks = np.maximum.reduceat(np.maximum.reduceat(
+                bound[top:bottom, left:right], row_starts, axis=0), col_starts, axis=1)
+            gap_row = np.maximum(np.maximum(top - seed_rows, seed_rows - (bottom - 1)), 0.0)
+            gap_col = np.maximum(np.maximum(left - seed_cols, seed_cols - (right - 1)), 0.0)
+            near = np.flatnonzero(seed_z + rise * np.hypot(gap_row, gap_col)
+                                  <= float(peaks.max()) + _FILTER_MARGIN_M)
+            work += seed_z.size // 2 + 1
+            if work >= evals_per_unit:
+                work = 0
+                yield None
+            if not near.size:  # todas sus celdas son semillas retiradas: valen su propia cota
+                continue
+            near_rows, near_cols, near_z = seed_rows[near], seed_cols[near], seed_z[near]
+            across = col_starts.size
+            total = row_starts.size * across
+            at_once = max(1, evals_per_unit // near.size)
+            for first in range(0, total, at_once):
+                ids = np.arange(first, min(first + at_once, total))
+                block_row, block_col = np.divmod(ids, across)
+                gap_row = np.maximum(np.maximum(
+                    first_rows[block_row][:, None] - near_rows[None, :],
+                    near_rows[None, :] - last_rows[block_row][:, None]), 0.0)
+                gap_col = np.maximum(np.maximum(
+                    first_cols[block_col][:, None] - near_cols[None, :],
+                    near_cols[None, :] - last_cols[block_col][:, None]), 0.0)
+                chosen = (near_z[None, :] + rise * np.hypot(gap_row, gap_col)
+                          <= (peaks[block_row, block_col] + _FILTER_MARGIN_M)[:, None])
+                work += chosen.size
+                if work >= evals_per_unit:
+                    work = 0
+                    yield None
+                for position in range(ids.size):
+                    index = np.flatnonzero(chosen[position])
+                    if not index.size:  # solo celdas de semillas retiradas: valen su propia cota
+                        continue
+                    row_a, row_b = int(first_rows[block_row[position]]), int(
+                        last_rows[block_row[position]])
+                    col_a, col_b = int(first_cols[block_col[position]]), int(
+                        last_cols[block_col[position]])
+                    rows = np.arange(row_a, row_b + 1, dtype=np.float64)
+                    cols = np.arange(col_a, col_b + 1, dtype=np.float64)
+                    best = np.full((rows.size, cols.size), np.inf)
+                    part = max(1, chunk // (rows.size * cols.size))
+                    for begin in range(0, index.size, part):
+                        pick = index[begin:begin + part]
+                        distance = np.hypot((rows[:, None] - near_rows[pick][None, :])[:, None, :],
+                                            (cols[:, None] - near_cols[pick][None, :])[None, :, :])
+                        distance *= rise
+                        distance += near_z[pick]
+                        np.minimum(best, distance.min(axis=2), out=best)
+                        work += distance.size
+                        if work >= evals_per_unit:
+                            work = 0
+                            yield None
+                    found[row_a:row_b + 1, col_a:col_b + 1] = best
+                    work += _BLOCK_OVERHEAD_EVALS
+                    if work >= evals_per_unit:
+                        work = 0
+                        yield None
+    return found
+
+
+def _exact_work(seed: np.ndarray, geometry: Grid, slope: SlopeField, way: Direction, name: str,
+                cells_per_unit: int, evals_per_unit: int, block: int, group: int
+                ) -> Generator[None, None, Envelope]:
+    """Las unidades de :func:`exact_steps`: la cota superior (el *chamfer* sin escala), las dos
+    reducciones, la búsqueda exacta por bloques y la comprobación de RF-013-15 con los pesos de la
+    longitud real. Sin pendiente (0°) la envolvente es plana a la semilla más baja: no se busca."""
+    tan = _constant_tan(slope)
+    ncols = seed.shape[1]
+    sign = 1.0 if way is Direction.UP else -1.0
+    values = np.where(np.isfinite(seed), seed * sign, np.inf)
+    rise = tan * geometry.dx
+    flat = SlopeField(tan)
+    yield None
+    bound = yield from _work(values, geometry, flat, Direction.UP, name, MAX_ITERATIONS,
+                             cells_per_unit, 1.0)
+    reduction = yield from reduce_units(values, bound.grid, rise,
+                                        rows_per_unit=max(1, cells_per_unit // ncols))
+    if rise == 0.0 or not reduction.kept:
+        found = np.full(values.shape, float(values.min()))
+    else:
+        found = yield from _search_work(reduction, bound.grid, rise, block, group, evals_per_unit)
+        np.minimum(found, values, out=found)  # la cota propia de las semillas retiradas
+        if not np.isfinite(found).all():  # solo si la cota superior no fuera válida
+            raise RuntimeError("la búsqueda exacta dejó celdas sin cota: la cota superior no es "
+                               "válida")
+    weights = _Weights(flat, ncols, geometry.dx, 1.0)
+    rows = max(1, cells_per_unit // (4 * ncols))
+    worst = yield from _violation_units(found, weights, rows)
+    if worst > TOLERANCE_M:
+        raise _not_fixed_point(found, weights, geometry, name, None, TOLERANCE_M, rows)
+    _check_seeds(found, seed, way, geometry, name)
+    yield None
+    if way is Direction.DOWN:
+        np.negative(found, out=found)
+    return Envelope(found, 1, worst, reduction)
+
+
+def exact_steps(seed: np.ndarray, geometry: Grid, slope: SlopeField, direction: Direction | str, *,
+                name: str = "", budget_s: float = STEP_BUDGET_S,
+                cells_per_unit: int = CELLS_PER_UNIT, evals_per_unit: int = EVALS_PER_UNIT,
+                block: int = BLOCK_CELLS, group: int = BLOCK_GROUP) -> Iterator[Progress]:
+    """La envolvente euclídea exacta de las semillas ``seed`` (m; es semilla toda celda con cota
+    finita) sobre ``geometry`` con una pendiente **constante** ``slope`` y en la ``direction``
+    pedida (RF-013-12, A5, D-22): la distancia entre centros de celda, con error de redondeo de
+    ≤ 10⁻⁹ m frente a la fuerza bruta (véase el módulo), por pasos de ``budget_s`` como mucho: el
+    último ``Progress`` (fase «envelope») lleva en ``result`` la :class:`Envelope`, con la
+    ``reduction`` de semillas. Comprueba en cada ejecución el RF-013-15 con los pesos de la longitud
+    real y lanza ``DesignError`` con la celda absoluta y la diferencia si falla, sin entregar nada.
+    Cerrar el generador a mitad no deja nada; las entradas no se modifican.
+
+    Una pendiente que no es constante (un mapa con valores distintos: la de los sectores, que la
+    petición rechaza antes, RF-013-16), una entrada que no casa (la forma, celdas no cuadradas, una
+    dirección desconocida) y unos ``cells_per_unit``, ``evals_per_unit``, ``block`` o ``group``
+    menores que 1 son errores del programa (``ValueError``) al llamar. ``cells_per_unit``,
+    ``evals_per_unit``, ``block`` (lado del bloque, en celdas) y ``group`` (bloques de lado de un
+    superbloque) afinan el trabajo; las pruebas los bajan."""
+    cotas = np.asarray(seed, dtype=np.float64)
+    way = _check_inputs(cotas, geometry, slope, direction, MAX_ITERATIONS, cells_per_unit)
+    _check_exact_options(slope, evals_per_unit, block, group)
+    work = _exact_work(cotas, geometry, slope, way, name, cells_per_unit, evals_per_unit, block,
+                       group)
+    return pace_progress(work, budget_s, phase="envelope", running="Calculando la envolvente…",
+                         finished="Envolvente calculada")
 
 
 # --- El alcance (RF-013-14, A6) ----------------------------------------------------------------
@@ -586,13 +821,19 @@ def _check_reach(name: str, reach_m: float) -> None:
 
 
 def _reach_work(seed: np.ndarray, geometry: Grid, reach_m: float, name: str,
-                cells_per_unit: int) -> Generator[None, None, np.ndarray]:
-    """Las unidades de :func:`reach_steps`: la distancia *chamfer* a la semilla más próxima (la
-    envolvente ascendente de unas semillas a 0 con ``t = 1``) y ``NaN`` donde pasa del alcance."""
+                cells_per_unit: int, metric: Metric = Metric.CHAMFER5
+                ) -> Generator[None, None, np.ndarray]:
+    """Las unidades de :func:`reach_steps`: la distancia a la semilla más próxima con la ``metric``
+    (la envolvente ascendente de unas semillas a 0 con ``t = 1``: el *chamfer* escalado o la
+    euclídea exacta) y ``NaN`` donde pasa del alcance."""
     origin = np.where(np.isfinite(seed), 0.0, np.inf)
-    found = yield from _work(origin, geometry, _DISTANCE, Direction.UP,
-                             f"{name} (alcance)" if name else "alcance", MAX_ITERATIONS,
-                             cells_per_unit)
+    label = f"{name} (alcance)" if name else "alcance"
+    if metric is Metric.EXACT:
+        found = yield from _exact_work(origin, geometry, _DISTANCE, Direction.UP, label,
+                                       cells_per_unit, EVALS_PER_UNIT, BLOCK_CELLS, BLOCK_GROUP)
+    else:
+        found = yield from _work(origin, geometry, _DISTANCE, Direction.UP, label, MAX_ITERATIONS,
+                                 cells_per_unit)
     distance = found.grid
     distance[distance > reach_m] = np.nan
     return distance
@@ -604,18 +845,18 @@ def reach_steps(seed: np.ndarray, geometry: Grid, reach_m: float,
                 ) -> Iterator[Progress]:
     """La distancia (m) de cada celda de ``geometry`` a la semilla más próxima de ``seed`` (m;
     semilla es toda celda con cota finita) con la ``metric`` y ``t = 1`` (RF-013-14, A6), y ``NaN``
-    donde pasa de ``reach_m``; las celdas de semilla, a 0. Por pasos de ``budget_s`` como mucho,
-    de la fase «reach»: el último ``Progress`` lleva en ``result`` el array (float64, nuevo). Un
-    alcance que no es un número mayor que 0 es ``des.reach_range`` (``DesignError``, ``name`` es
-    la envolvente); una forma que no casa, un error del programa (``ValueError``). Hoy, solo con
-    el *chamfer* 5×5; la euclídea exacta es de la T08. No modifica ``seed``."""
+    donde pasa de ``reach_m``; las celdas de semilla, a 0. Con ``chamfer5`` es la distancia del
+    *chamfer* escalado; con ``exact``, la euclídea entre centros de celda (la envolvente exacta con
+    ``f = 0``, en la que las dos reducciones retiran todas las semillas de dentro). Por pasos de
+    ``budget_s`` como mucho, de la fase «reach»: el último ``Progress`` lleva en ``result`` el
+    array (float64, nuevo). Un alcance que no es un número mayor que 0 es ``des.reach_range``
+    (``DesignError``, ``name`` es la envolvente); una forma que no casa o una métrica desconocida,
+    un error del programa (``ValueError``). No modifica ``seed``."""
     cotas = np.asarray(seed, dtype=np.float64)
     reach = float(reach_m)
     _check_reach(name, reach)
     _check_inputs(cotas, geometry, _DISTANCE, Direction.UP, MAX_ITERATIONS, cells_per_unit)
-    if Metric(metric) is not Metric.CHAMFER5:
-        raise NotImplementedError("la euclídea exacta es de la tarea T08 de la spec 013")
-    work = _reach_work(cotas, geometry, reach, name, cells_per_unit)
+    work = _reach_work(cotas, geometry, reach, name, cells_per_unit, Metric(metric))
     return pace_progress(work, budget_s, phase="reach", running="Calculando el alcance…",
                          finished="Alcance calculado")
 
@@ -691,30 +932,36 @@ def _envelope_units(request: EnvelopeRequest, seeds: SeedSet, slope: SlopeField
     con alcance, la distancia que deja sin dato (``NaN``) lo que pasa de él."""
     check_request(request)
     check_seed_set(request, seeds)
-    if Metric(request.metric) is not Metric.CHAMFER5:
-        raise NotImplementedError("la euclídea exacta es de la tarea T08 de la spec 013")
+    metric = Metric(request.metric)
     way = Direction(request.direction)
     cotas = np.asarray(seeds.grid, dtype=np.float64)
     _check_inputs(cotas, seeds.geometry, slope, way, MAX_ITERATIONS, CELLS_PER_UNIT)
-    found = yield from _work(cotas, seeds.geometry, slope, way, request.name, MAX_ITERATIONS,
-                             CELLS_PER_UNIT)
+    if metric is Metric.EXACT:
+        _check_exact_options(slope, EVALS_PER_UNIT, BLOCK_CELLS, BLOCK_GROUP)
+        found = yield from _exact_work(cotas, seeds.geometry, slope, way, request.name,
+                                       CELLS_PER_UNIT, EVALS_PER_UNIT, BLOCK_CELLS, BLOCK_GROUP)
+    else:
+        found = yield from _work(cotas, seeds.geometry, slope, way, request.name, MAX_ITERATIONS,
+                                 CELLS_PER_UNIT)
     if request.reach_m is None:
         return found
     distance = yield from _reach_work(cotas, seeds.geometry, request.reach_m, request.name,
-                                      CELLS_PER_UNIT)
+                                      CELLS_PER_UNIT, metric)
     found.grid[np.isnan(distance)] = np.nan
-    return Envelope(found.grid, found.iterations, found.violation)
+    return Envelope(found.grid, found.iterations, found.violation, found.reduction)
 
 
 def envelope_steps(request: EnvelopeRequest, seeds: SeedSet, slope: SlopeField, *,
                    budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
-    """La envolvente que pide ``request`` (su dirección, su nombre y su alcance) de las ``seeds``
-    (su rejilla de cotas y su geometría) con la pendiente ``slope``, por pasos: el último
-    ``Progress`` lleva la :class:`Envelope`. Antes de calcular, y al avanzar el generador, aplica
-    los rechazos de RF-013-16 (:func:`check_request`, :func:`check_seed_set`): ninguno cede un
-    paso ni registra nada. Con ``request.reach_m`` deja ``NaN`` lo que pasa de ese alcance de las
-    semillas (RF-013-14, :func:`reach_steps`); sin él, ninguna celda. La rejilla es la entera; el
-    recorte al dominio de trabajo es posterior. Hoy, solo con el *chamfer* 5×5; la euclídea
-    exacta (RF-013-12) es de la T08. Ninguna entrada se modifica."""
+    """La envolvente que pide ``request`` (su dirección, su métrica, su nombre y su alcance) de las
+    ``seeds`` (su rejilla de cotas y su geometría) con la pendiente ``slope``, por pasos: el
+    último ``Progress`` lleva la :class:`Envelope`. Antes de calcular, y al avanzar el generador,
+    aplica los rechazos de RF-013-16 (:func:`check_request`, :func:`check_seed_set`): ninguno cede
+    un paso ni registra nada. Con la métrica ``chamfer5`` calcula :func:`chamfer_steps` y con
+    ``exact``, :func:`exact_steps` (solo con la pendiente constante: con la de los sectores es
+    ``des.exact_needs_constant_slope``). Con ``request.reach_m`` deja ``NaN`` lo que pasa de ese
+    alcance de las semillas con la misma métrica (RF-013-14, :func:`reach_steps`); sin él, ninguna
+    celda. La rejilla es la entera; el recorte al dominio de trabajo es posterior. Ninguna entrada
+    se modifica."""
     return pace_progress(_envelope_units(request, seeds, slope), budget_s, phase="envelope",
                          running="Calculando la envolvente…", finished="Envolvente calculada")

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Casos de referencia de las envolventes *chamfer* (spec 013, T06; RF-013-11, RF-013-12,
-RF-013-15; CE-013-01, CE-013-02; ADR-0014; plan 013 §7.1).
+"""Casos de referencia de las envolventes (spec 013, T06 y T08; RF-013-11, RF-013-12, RF-013-15;
+CE-013-01, CE-013-02; ADR-0014; plan 013 §7.1).
 
 - **CE-013-01 · regresión del error 5** (el *chamfer* 3×3 daba un cono con un 8 % de error):
   un cono desde un punto, con el *chamfer* 5×5, difiere de la distancia euclídea **≤ 1,4 %** en
@@ -8,11 +8,13 @@ RF-013-15; CE-013-01, CE-013-02; ADR-0014; plan 013 §7.1).
   mano y frente al cono analítico del punto; con la escala 0,98644 del ADR-0014 el error está en
   −1,356 % a +1,355 %. Una pared plana alineada con la rejilla da, **con el *chamfer* 5×5**, una
   distancia a lo largo del eje un 1,356 % corta (``n·h·t·0,98644``), dentro del 1,4 % de RF-013-12
-  (spec 0.3): la cota exacta de la pared (≤ 10⁻⁹ m) es de la euclídea exacta (T08).
+  (spec 0.3). **Con la euclídea exacta (T08)** el cono da la distancia entre centros de celda con
+  error relativo ≤ 10⁻⁹ y queda a ≤ media celda del cono analítico del punto, y la pared da la
+  cota exacta (``f ± t·h·n``, ≤ 10⁻⁹ m).
 - **CE-013-02 · regresión del error 6** (la envolvente no era un punto fijo): con semillas
   dispersas, usar la envolvente como semilla en todas sus celdas no cambia ninguna más de 10⁻⁹ m,
-  en las dos direcciones y con pendiente por sectores (tres sectores con taludes de 10,6°, 18° y el
-  de su perfil).
+  en las dos direcciones y, con el *chamfer*, con pendiente por sectores (tres sectores con taludes
+  de 10,6°, 18° y el de su perfil; la exacta solo admite la constante, RF-013-16).
 """
 
 from __future__ import annotations
@@ -36,6 +38,11 @@ TOLERANCE_M = 1e-9
 
 def solve(seed: np.ndarray, slope: Any, grid: Any, direction: str) -> Any:
     steps = list(envelopes.chamfer_steps(seed, grid, slope, direction, name="e1"))
+    return steps[-1].result
+
+
+def solve_exact(seed: np.ndarray, slope: Any, grid: Any, direction: str) -> Any:
+    steps = list(envelopes.exact_steps(seed, grid, slope, direction, name="e1"))
     return steps[-1].result
 
 
@@ -127,8 +134,118 @@ class WallTest(unittest.TestCase):
                     self.assertAlmostEqual(float(error.max()), SCALE - 1.0, delta=1e-9)
 
 
+class ExactConeTest(unittest.TestCase):
+    """CE-013-01 (T08): el cono de un punto con la euclídea exacta (201 × 201 celdas de 1 m, 35°)"""
+
+    def setUp(self) -> None:
+        self.case = dfx.cone_case()
+        self.slope = envelopes.SlopeField(self.case.slope_tan)
+        self.far = self.case.distances() > 0.0
+
+    def test_the_distance_is_the_one_between_cell_centres_to_1e_9(self) -> None:
+        """CE-013-01, RF-013-12: con la euclídea exacta, la distancia (``(E − f)/t``) difiere de la
+        calculada a mano entre centros de celda (``h·√(Δfila² + Δcolumna²)``) ≤ 10⁻⁹ relativo en
+        toda la rejilla y en las dos direcciones; la celda de la semilla queda a su cota exacta."""
+        case = self.case
+        for direction, sign in (("up", 1.0), ("down", -1.0)):
+            found = solve_exact(case.seeds(), self.slope, case.grid, direction)
+            by_hand = case.up() if direction == "up" else case.down()
+            error = ((sign * (found.grid - case.seed_z))[self.far]
+                     / (sign * (by_hand - case.seed_z))[self.far] - 1.0)
+            with self.subTest(direction=direction):
+                self.assertEqual(found.grid[case.seed_row, case.seed_col], case.seed_z)
+                self.assertLessEqual(float(np.abs(error).max()), TOLERANCE_M)
+                self.assertLessEqual(found.violation, TOLERANCE_M)
+
+    def test_the_distance_is_within_half_a_cell_of_the_analytic_cone_of_the_point(self) -> None:
+        """CE-013-01, ADR-0014: frente al cono analítico del punto (la distancia de su centro a cada
+        centro de celda, desde la esquina de la rejilla), la distancia de la euclídea exacta queda a
+        ≤ media celda (0,5 m) en toda la rejilla."""
+        case = self.case
+        x, y = case.seed_point
+        analytic = dfx.analytic_distance(case.grid, x, y)
+        found = solve_exact(case.seeds(), self.slope, case.grid, "up").grid
+        measured = (found - case.seed_z) / case.slope_tan
+        self.assertLessEqual(float(np.abs(measured - analytic).max()), 0.5 * case.grid.dx)
+
+    def test_hand_distances_in_the_four_quadrants(self) -> None:
+        """CE-013-01: en las celdas de los triángulos pitagóricos de la spec (3-4-5, 5-12-13,
+        8-15-17, 20-21-29, 60-80-100, un eje de 100 m y una diagonal de 100√2 m), en los cuatro
+        cuadrantes, la cota es exactamente la hecha a mano ``f ± t·d`` (≤ 10⁻⁹ m)."""
+        case = self.case
+        up = solve_exact(case.seeds(), self.slope, case.grid, "up").grid
+        down = solve_exact(case.seeds(), self.slope, case.grid, "down").grid
+        for d_row, d_col, meters in dfx.CONE_HAND:
+            for sign_row in (1, -1):
+                for sign_col in (1, -1):
+                    cell = (case.seed_row + sign_row * d_row, case.seed_col + sign_col * d_col)
+                    rise = case.slope_tan * meters
+                    with self.subTest(cell=cell, meters=meters):
+                        self.assertAlmostEqual(up[cell], case.seed_z + rise, delta=TOLERANCE_M)
+                        self.assertAlmostEqual(down[cell], case.seed_z - rise, delta=TOLERANCE_M)
+
+    def test_the_chamfer_stays_within_1_4_percent_of_the_exact_cone(self) -> None:
+        """RF-013-12: las dos métricas, frente a frente: el *chamfer* 5×5 escalado difiere de la
+        exacta ≤ 1,4 % de lo que sube el cono en toda la rejilla (y la exacta es la de la spec)."""
+        case = self.case
+        exact = solve_exact(case.seeds(), self.slope, case.grid, "up").grid
+        chamfer = solve(case.seeds(), self.slope, case.grid, "up").grid
+        rise = (exact - case.seed_z)[self.far]
+        self.assertLessEqual(float(np.abs((chamfer - case.seed_z)[self.far] / rise - 1.0).max()),
+                             MAX_DISTANCE_ERROR)
+
+
+class ExactWallTest(unittest.TestCase):
+    """CE-013-01 (spec 0.3, T08): la pared alineada con la rejilla, con la euclídea exacta."""
+
+    def test_the_wall_gives_the_exact_height_to_1e_9(self) -> None:
+        """CE-013-01, RF-013-12: una columna entera de semillas a 250 m con t = 0,5 (rejillas de 41
+        × 41 celdas de 1 y de 2 m): la cota exacta, ``f ± t·h·n`` (``n`` = columnas a la pared), a
+        ≤ 10⁻⁹ m en toda la rejilla y en las dos direcciones; la pared queda a su cota; el *chamfer*
+        escalado queda un 1,356 % más corto, que es lo que esta métrica evita."""
+        for step in (1.0, 2.0):
+            case = dfx.wall_case(step)
+            slope = envelopes.SlopeField(case.slope_tan)
+            columns = np.abs(np.arange(case.grid.ncols) - case.column)
+            for direction, sign in (("up", 1.0), ("down", -1.0)):
+                found = solve_exact(case.seeds(), slope, case.grid, direction).grid
+                by_hand = case.wall_z + sign * case.slope_tan * step * columns
+                with self.subTest(step=step, direction=direction):
+                    self.assertLessEqual(float(np.abs(found - by_hand[None, :]).max()),
+                                         TOLERANCE_M)
+                    self.assertTrue((found[:, case.column] == case.wall_z).all())
+                    exact = case.up() if direction == "up" else case.down()
+                    self.assertLessEqual(float(np.abs(found - exact).max()), TOLERANCE_M)
+                    chamfer = solve(case.seeds(), slope, case.grid, direction).grid
+                    off = columns > 0
+                    shortfall = (1.0 - np.abs(chamfer - case.wall_z)[:, off]
+                                 / np.abs(found - case.wall_z)[:, off])
+                    self.assertAlmostEqual(float(shortfall.min()), 1.0 - SCALE, delta=1e-9)
+                    self.assertAlmostEqual(float(shortfall.max()), 1.0 - SCALE, delta=1e-9)
+
+
 class SeedsOfTheEnvelopeTest(unittest.TestCase):
     """CE-013-02: la envolvente usada como semilla no cambia nada."""
+
+    def test_the_exact_envelope_of_scattered_seeds_is_a_fixed_point(self) -> None:
+        """CE-013-02 (T08): con la euclídea exacta y veinticuatro semillas dispersas en 60 × 80
+        celdas de 2 m, con 35° (y un factor de malla de 0,8), usar la envolvente como semilla en
+        todas sus celdas no cambia ninguna más de 10⁻⁹ m, en las dos direcciones, y respeta cada
+        semilla."""
+        grid = dfx.grid_from(60, 80, 2.0)
+        seed = dfx.scattered_seeds(grid.shape, 24, seed=20_261_102)
+        for mesh in (1.0, 0.8):
+            slope = envelopes.constant_slope(35.0, mesh)
+            for direction in ("up", "down"):
+                found = solve_exact(seed, slope, grid, direction)
+                again = solve_exact(found.grid, slope, grid, direction)
+                finite = np.isfinite(seed)
+                sign = 1.0 if direction == "up" else -1.0
+                with self.subTest(mesh_factor=mesh, direction=direction):
+                    self.assertLessEqual(float(np.abs(again.grid - found.grid).max()),
+                                         TOLERANCE_M)
+                    self.assertLessEqual(found.violation, TOLERANCE_M)
+                    self.assertTrue(((found.grid - seed)[finite] * sign <= 0.0).all())
 
     def assert_fixed_point(self, seed: np.ndarray, slope: Any, grid: Any) -> None:
         for direction in ("up", "down"):

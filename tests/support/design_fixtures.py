@@ -235,6 +235,42 @@ def scattered_seeds(shape: tuple[int, int], count: int, *, seed: int, low: float
     return found
 
 
+ZONE_KINDS: tuple[str, ...] = ("loose", "contour", "solid", "mixed")
+"""Las formas de :func:`random_zone`."""
+
+
+def random_zone(rng: np.random.Generator, shape: tuple[int, int], kind: str,
+                rise: float) -> np.ndarray:
+    """Unas semillas aleatorias (T08, la euclídea exacta) de la forma ``kind``: ``loose`` (1 a 6
+    celdas sueltas), ``contour`` (el contorno de un rectángulo), ``solid`` (el rectángulo entero,
+    con un plano de hasta 2 ``rise`` por celda más un ruido, de modo que unas vecinas pasan del
+    umbral de la semilla redundante y otras no) o ``mixed`` (macizas y sueltas). ``rise`` es lo que
+    sube la envolvente por celda (``t·h``, m); la rejilla de salida es nueva, con ``+inf`` donde no
+    hay semilla. ``shape`` ha de tener al menos 3 filas y 3 columnas."""
+    nrows, ncols = shape
+    values = np.full(shape, np.inf)
+    amplitude = rise if rise > 0.0 else 0.5
+    if kind in ("contour", "solid", "mixed"):
+        top = int(rng.integers(0, nrows - 2))
+        bottom = int(rng.integers(top + 2, nrows))
+        left = int(rng.integers(0, ncols - 2))
+        right = int(rng.integers(left + 2, ncols))
+        rows, cols = np.indices((bottom - top + 1, right - left + 1))
+        plane = (float(rng.uniform(-2, 2)) * rows + float(rng.uniform(-2, 2)) * cols) * amplitude
+        noise = rng.uniform(-0.5, 0.5, rows.shape) * amplitude * float(rng.choice([0.2, 1.0, 3.0]))
+        patch = 100.0 + plane + noise
+        if kind == "contour":
+            edge = np.zeros(rows.shape, dtype=bool)
+            edge[0, :] = edge[-1, :] = edge[:, 0] = edge[:, -1] = True
+            patch = np.where(edge, patch, np.inf)
+        values[top:bottom + 1, left:right + 1] = patch
+    if kind in ("loose", "mixed"):
+        count = min(int(rng.integers(1, 7)), values.size)
+        cells = rng.choice(values.size, size=count, replace=False)
+        values.flat[cells] = rng.uniform(90.0, 130.0, count)
+    return values
+
+
 # --- Perfiles de banco (RF-013-18, RF-013-20) ------------------------------------------------
 
 

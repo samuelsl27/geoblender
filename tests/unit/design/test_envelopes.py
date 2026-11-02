@@ -99,6 +99,15 @@ def column_bands(shape: tuple[int, int], width: int, values: tuple[float, ...]) 
     return np.broadcast_to(np.asarray(values)[bands], shape).copy()
 
 
+def solve_exact(seed: np.ndarray, tan: Any, step: float = 1.0, direction: str = "up",
+                **options: Any) -> Any:
+    """La envolvente euclídea exacta de ``seed`` (rejilla de paso ``step``) con la pendiente ``tan``
+    (una constante o ya una ``SlopeField``)."""
+    slope = tan if isinstance(tan, envelopes.SlopeField) else envelopes.SlopeField(tan)
+    geometry = dfx.grid_from(seed.shape[0], seed.shape[1], step)
+    return finish(envelopes.exact_steps(seed, geometry, slope, direction, name="e1", **options))[1]
+
+
 def seed_set_of(seed: np.ndarray, step: float, inside: np.ndarray | None = None) -> Any:
     """El ``SeedSet`` de una rejilla de semillas de paso ``step`` con el dominio de trabajo
     ``inside`` (toda la rejilla por defecto), sin proyecto."""
@@ -1257,6 +1266,459 @@ class ProjectRefusalsTest(dfx.DesignProjectCase):
         self.assertTrue((found.grid[np.isfinite(seeds.grid)] == 650.0).all())
         self.assertEqual(float(found.grid[np.isfinite(found.grid)].min()), 650.0)
         self.assertEqual(self.snapshot(), before)
+
+
+class ExactByHandTest(unittest.TestCase):
+    """RF-013-12 (A5): la euclídea exacta, ``E↑(p) = mín_q [f_q + t·h·|p − q|]``, a mano."""
+
+    def test_cone_of_one_seed_is_the_distance_between_cell_centres(self) -> None:
+        """RF-013-12, CE-013-01: una semilla a 100 m en una rejilla de 30 × 40 celdas de 2 m, con
+        ``t = 0,5``: en las celdas de los triángulos pitagóricos 3-4-5, 5-12-13, 8-15-17 y 20-21-29
+        (en los cuatro cuadrantes) la cota es ``100 ± 0,5·2·n`` (``n`` = 5, 13, 17, 29) a ≤ 10⁻⁹ m,
+        sin la escala del *chamfer*; la celda de la semilla queda exactamente a su cota."""
+        seed = single_seed((30, 40), 12, 17, 100.0)
+        for direction, sign in (("up", 1.0), ("down", -1.0)):
+            found = solve_exact(seed, 0.5, 2.0, direction).grid
+            self.assertEqual(found[12, 17], 100.0)
+            for d_row, d_col, cells in ((3, 4, 5.0), (5, 12, 13.0), (8, 15, 17.0),
+                                        (12, 16, 20.0), (0, 20, 20.0), (12, 0, 12.0)):
+                for sign_row in (1, -1):
+                    for sign_col in (1, -1):
+                        cell = (12 + sign_row * d_row, 17 + sign_col * d_col)
+                        if not (0 <= cell[0] < 30 and 0 <= cell[1] < 40):
+                            continue
+                        with self.subTest(direction=direction, cell=cell):
+                            self.assertAlmostEqual(found[cell], 100.0 + sign * 0.5 * 2.0 * cells,
+                                                   delta=TOLERANCE_M)
+
+    def test_two_seeds_take_the_envelope_of_both(self) -> None:
+        """RF-013-11, RF-013-12: dos semillas de 100 y 104 m en una fila de 10 celdas de 1 m con
+        ``t = 1``: la ascendente es la menor de las dos pirámides, ``100,101,102,103,104,105,106,
+        106,105,104``; la descendente, la mayor, ``100,99,98,98,99,100,101,102,103,104``."""
+        seed = np.full((1, 10), np.inf)
+        seed[0, 0], seed[0, 9] = 100.0, 104.0
+        up = solve_exact(seed, 1.0).grid[0]
+        down = solve_exact(seed, 1.0, direction="down").grid[0]
+        self.assertTrue(np.array_equal(up, [100, 101, 102, 103, 104, 105, 106, 106, 105, 104]))
+        self.assertTrue(np.array_equal(down, [100, 99, 98, 98, 99, 100, 101, 102, 103, 104]))
+
+    def test_zero_slope_is_a_flat_envelope_at_the_lowest_seed(self) -> None:
+        """Con pendiente 0° la ascendente es plana a la cota de la semilla más baja y la
+        descendente, a la de la más alta, en toda la rejilla."""
+        rng = np.random.default_rng(41)
+        seed = random_seeds(rng, (13, 17))
+        finite = seed[np.isfinite(seed)]
+        up = solve_exact(seed, 0.0, 2.0).grid
+        down = solve_exact(seed, 0.0, 2.0, "down").grid
+        self.assertTrue((up == finite.min()).all())
+        self.assertTrue((down == finite.max()).all())
+
+    def test_no_seeds_leave_everything_without_envelope(self) -> None:
+        """Sin ninguna semilla, ``+inf`` (``−inf`` en la descendente), sin fallar (el rechazo es de
+        RF-013-16, antes de calcular); NaN, ``+inf`` y ``−inf`` no son semillas."""
+        blank = np.full((6, 7), np.inf)
+        self.assertTrue((solve_exact(blank, 0.7).grid == np.inf).all())
+        self.assertTrue((solve_exact(blank, 0.7, direction="down").grid == -np.inf).all())
+        noisy = blank.copy()
+        noisy[0, 0], noisy[1, 1], noisy[2, 2] = np.nan, -np.inf, 50.0
+        plain = single_seed((6, 7), 2, 2, 50.0)
+        self.assertTrue(np.array_equal(solve_exact(noisy, 0.7).grid, solve_exact(plain, 0.7).grid))
+
+    def test_the_result_has_the_reduction_counts(self) -> None:
+        """La ``Envelope`` de la exacta lleva las cuentas de las reducciones (RF-013-12: ninguna
+        semilla se descarta en silencio): en un bloque macizo plano de 9 × 9 semillas, las 49 de
+        dentro son redundantes y las 32 del anillo quedan; el *chamfer* no tiene reducción; la
+        exacta hace una sola pasada."""
+        seed = np.full((15, 15), np.inf)
+        seed[3:12, 3:12] = 100.0
+        found = solve_exact(seed, 0.5, 1.0)
+        reduced = found.reduction
+        self.assertEqual((reduced.seeds, reduced.dominated, reduced.redundant, reduced.kept),
+                         (81, 0, 49, 32))
+        self.assertEqual(found.iterations, 1)
+        self.assertLessEqual(found.violation, TOLERANCE_M)
+        self.assertIsNone(solve(seed, 0.5, 1.0).reduction)
+
+
+def exact_cases(rng: np.random.Generator, count: int, low: int, high: int
+                ) -> Iterator[tuple[str, np.ndarray, float, float, str]]:
+    """Casos aleatorios de la euclídea exacta: ``(etiqueta, semillas, tan, paso, dirección)`` con
+    semillas sueltas, de contorno, macizas y mezcladas, pendientes de 0 a 3, pasos de 0,5 a 2,5 m y
+    las dos direcciones, en rejillas de ``low`` a ``high − 1`` celdas de lado."""
+    for index in range(count):
+        shape = (int(rng.integers(low, high)), int(rng.integers(low, high)))
+        tan = float(rng.choice([0.0, 0.1, 0.3, 0.7, 1.5, 3.0]))
+        step = float(rng.choice([0.5, 1.0, 2.5]))
+        kind = dfx.ZONE_KINDS[index % 4]
+        direction = "up" if (index // 4) % 2 == 0 else "down"
+        label = f"caso {index} ({kind}, {shape[0]}×{shape[1]}, t={tan}, h={step}, {direction})"
+        yield label, dfx.random_zone(rng, shape, kind, tan * step), tan, step, direction
+
+
+class ExactOracleTest(unittest.TestCase):
+    """RF-013-12: la euclídea exacta es igual a la fuerza bruta (oráculo) a ≤ 10⁻⁹ m."""
+
+    def check(self, label: str, seed: np.ndarray, tan: float, step: float, direction: str,
+              **options: Any) -> Any:
+        expected = oracles.brute_force_euclidean(seed, tan, step, direction=direction)
+        found = solve_exact(seed, tan, step, direction, **options)
+        difference = float(np.abs(found.grid - expected).max())
+        if difference > TOLERANCE_M:
+            self.fail(f"{label}: difiere de la fuerza bruta {difference:.3g} m")
+        return found
+
+    def test_400_random_cases_with_small_blocks(self) -> None:
+        """RF-013-12, plan A5: 400 casos aleatorios (semillas sueltas, de contorno, macizas y
+        mezcladas; pendientes de 0 a 3; pasos de 0,5 a 2,5 m; las dos direcciones; rejillas de 5 a
+        13 celdas de lado) con bloques de 3 × 3 y superbloques de 2 × 2 bloques (muchos bloques
+        parciales en el borde) y unidades de 500 evaluaciones: igual a la fuerza bruta a ≤ 10⁻⁹ m;
+        las dos reducciones han retirado semillas de verdad."""
+        rng = np.random.default_rng(20_261_103)
+        dominated = redundant = cases = 0
+        for label, seed, tan, step, direction in exact_cases(rng, 400, 5, 14):
+            found = self.check(label, seed, tan, step, direction, block=3, group=2,
+                               evals_per_unit=500)
+            dominated += found.reduction.dominated
+            redundant += found.reduction.redundant
+            cases += 1
+        self.assertEqual(cases, 400)
+        self.assertGreater(dominated, 1_000)
+        self.assertGreater(redundant, 10)
+
+    def test_random_cases_with_the_default_blocks(self) -> None:
+        """Con los bloques de 8 × 8 y superbloques de 128 por defecto: 40 casos de 5 a 39 celdas de
+        lado, iguales a la fuerza bruta."""
+        rng = np.random.default_rng(20_261_104)
+        for label, seed, tan, step, direction in exact_cases(rng, 40, 5, 40):
+            self.check(label, seed, tan, step, direction)
+
+    def test_a_grid_that_crosses_the_superblock_boundary(self) -> None:
+        """Una rejilla de 150 × 140 celdas, que cruza el límite de 128 del superbloque por defecto
+        (con bloques parciales de 6 y 12 celdas en el borde), con una zona maciza rugosa, un
+        contorno y semillas sueltas, igual a la fuerza bruta a ≤ 10⁻⁹ m."""
+        rng = np.random.default_rng(20_261_105)
+        shape = (150, 140)
+        for tan, step, kind, direction in ((0.7, 1.0, "solid", "down"), (1.5, 2.0, "contour", "up"),
+                                           (0.3, 0.5, "loose", "up")):
+            seed = dfx.random_zone(rng, shape, kind, tan * step)
+            found = self.check(f"{kind} {direction}", seed, tan, step, direction)
+            self.assertEqual(found.grid.shape, shape)
+
+    def test_a_smooth_zone_is_redundant_inside_and_a_steep_one_is_dominated(self) -> None:
+        """RF-013-12, plan A5, a mano: una zona maciza de 30 × 30 semillas en una rejilla de 40 × 45
+        celdas con un plano de 0,3 de ``k`` por fila y 0,2 por columna (menos que el umbral, aun en
+        la diagonal) deja redundantes las 28 × 28 = 784 de dentro y quedan las 116 del anillo; con
+        1,3 de ``k`` por columna (más empinada que el cono) todas las de las columnas 1 a 29 de la
+        zona (870) quedan dominadas por la de su izquierda y queda la columna de más abajo (30).
+        En los dos casos, igual a la fuerza bruta."""
+        tan, step = 0.5, 2.0
+        rise = tan * step
+        rows, cols = np.indices((30, 30))
+        for gradient, counts in (((0.3, 0.2), (0, 784, 116)), ((0.0, 1.3), (870, 0, 30))):
+            seed = np.full((40, 45), np.inf)
+            seed[5:35, 5:35] = 100.0 + rise * (gradient[0] * rows + gradient[1] * cols)
+            for direction in ("up", "down"):
+                found = self.check(f"plano {gradient} {direction}", seed, tan, step, direction,
+                                   block=4, group=2)
+                reduced = found.reduction
+                with self.subTest(gradient=gradient, direction=direction):
+                    self.assertEqual((reduced.dominated, reduced.redundant, reduced.kept), counts)
+
+    def test_a_rough_solid_zone_at_the_threshold_of_the_redundant_rule(self) -> None:
+        """Una zona maciza cuyas vecinas difieren justo en torno al umbral de la redundante
+        (``k = t·h`` por celda): 40 casos con alturas que son múltiplos de ``k/2`` más un ruido de
+        ±10⁻¹², iguales a la fuerza bruta aunque cada semilla esté en el filo de ser redundante."""
+        rng = np.random.default_rng(20_261_106)
+        retired = 0
+        for index in range(40):
+            tan, step = float(rng.choice([0.5, 1.0])), float(rng.choice([1.0, 2.0]))
+            rise = tan * step
+            shape = (int(rng.integers(6, 14)), int(rng.integers(6, 14)))
+            steps = rng.integers(-3, 4, size=shape).cumsum(axis=0).cumsum(axis=1) % 5
+            seed = 100.0 + steps * rise / 2.0 + rng.uniform(-1e-12, 1e-12, shape)
+            direction = "up" if index % 2 == 0 else "down"
+            found = self.check(f"umbral {index}", seed, tan, step, direction, block=4, group=2,
+                               evals_per_unit=100)  # pocas evaluaciones: la búsqueda va por trozos
+            retired += found.reduction.redundant
+        self.assertGreater(retired, 100)
+
+    def test_thin_and_tiny_grids(self) -> None:
+        """Rejillas de una fila, de una columna, de 1 × 1 y de 2 × 2, con semillas en el borde, en
+        una esquina o en todas las celdas."""
+        rng = np.random.default_rng(42)
+        shapes = [(1, 1), (1, 9), (9, 1), (2, 2), (2, 7), (3, 3), (1, 40), (40, 1)]
+        for shape in shapes:
+            for fill in (0.0, 0.5, 1.0):
+                seed = np.full(shape, np.inf)
+                mask = rng.random(shape) <= fill
+                mask.flat[int(rng.integers(0, mask.size))] = True
+                seed[mask] = rng.uniform(90.0, 120.0, int(mask.sum()))
+                for direction in ("up", "down"):
+                    self.check(f"{shape} relleno {fill} {direction}", seed, 0.7, 1.5, direction,
+                               block=2, group=2)
+
+    def test_the_unscaled_chamfer_is_the_upper_bound_the_search_needs(self) -> None:
+        """Plan A5 (1): la cota ``U`` es el *chamfer* sin escala, que nunca queda por debajo de la
+        euclídea (es la longitud de un camino real) y no la pasa más de un 2,75 % de la mayor
+        distancia de la rejilla por la pendiente: con el oráculo, en 30 casos aleatorios."""
+        rng = np.random.default_rng(43)
+        for label, seed, tan, step, _direction in exact_cases(rng, 30, 6, 20):
+            upper = oracles.dijkstra(seed, tan, step, scale=1.0)
+            exact = oracles.brute_force_euclidean(seed, tan, step)
+            longest = step * math.hypot(*seed.shape)
+            with self.subTest(label):
+                self.assertGreaterEqual(float((upper - exact).min()), -1e-9)
+                self.assertLessEqual(float((upper - exact).max()),
+                                     0.0275 * tan * longest + 1e-9)
+
+
+class ExactFixedPointTest(unittest.TestCase):
+    """RF-013-15, CE-013-02: la euclídea exacta converge y respeta las semillas."""
+
+    def test_using_the_result_as_a_seed_changes_nothing(self) -> None:
+        """RF-013-15, CE-013-02: usar la envolvente exacta como semilla en todas sus celdas no
+        cambia ninguna más de 10⁻⁹ m (con el cálculo mismo y con la fuerza bruta de las propias
+        celdas), las 16 relajaciones con los pesos sin escala y las semillas se cumplen, y la
+        violación que entrega es ≤ 10⁻⁹ m; en las dos direcciones."""
+        rng = np.random.default_rng(44)
+        for label, seed, tan, step, direction in exact_cases(rng, 24, 6, 18):
+            found = solve_exact(seed, tan, step, direction)
+            again = solve_exact(found.grid, tan, step, direction)
+            with self.subTest(label):
+                self.assertLessEqual(float(np.abs(again.grid - found.grid).max()), TOLERANCE_M)
+                self.assertLessEqual(oracles.relaxation_violation(
+                    found.grid, tan, step, scale=1.0, direction=direction), TOLERANCE_M)
+                self.assertEqual(oracles.seed_violation(found.grid, seed, direction=direction),
+                                 0.0)
+                self.assertLessEqual(found.violation, TOLERANCE_M)
+
+    def test_neighbour_slope_never_exceeds_the_effective_slope(self) -> None:
+        """RF-013-15: entre celdas vecinas (los 8 vecinos 3 × 3) la pendiente, medida aparte, no
+        pasa de la efectiva con la tolerancia de la métrica exacta (0, salvo el redondeo: ≤ 10⁻⁹
+        de pendiente), en las dos direcciones."""
+        rng = np.random.default_rng(45)
+        for label, seed, tan, step, direction in exact_cases(rng, 30, 6, 18):
+            found = solve_exact(seed, tan, step, direction).grid
+            worst = -math.inf
+            for d_row, d_col in ((0, 1), (1, 0), (1, 1), (1, -1)):
+                first, second = pair_slices(found.shape, d_row, d_col)
+                slope = np.abs(found[second] - found[first]) / (math.hypot(d_row, d_col) * step)
+                worst = max(worst, float((slope - tan).max()))
+            with self.subTest(label):
+                self.assertLessEqual(worst, TOLERANCE_M)
+
+    def test_the_check_uses_the_metric_of_the_envelope(self) -> None:
+        """RF-013-15: ``check_envelope`` con ``metric="exact"`` da por buena la envolvente exacta
+        (sus pesos son los de la longitud real); con el *chamfer* escalado la daría por mala (su
+        peso es un 1,356 % menor), así que la métrica cuenta. Una celda 1 m alta sobre lo que
+        permite su vecina la nombra con su celda absoluta y 1 m."""
+        seed = single_seed((15, 15), 7, 7, 100.0)
+        geometry = dfx.grid_from(15, 15, 1.0)
+        slope = envelopes.SlopeField(0.8)
+        good = solve_exact(seed, 0.8).grid
+        envelopes.check_envelope(good, seed, slope, geometry, "up", name="e1", metric="exact")
+        with self.assertRaises(messages.DesignError) as scaled:
+            envelopes.check_envelope(good, seed, slope, geometry, "up", name="e1")
+        self.assertEqual(scaled.exception.code, "des.envelope_not_fixed_point")
+        bumped = good.copy()
+        bumped[3, 9] += 1.0
+        with self.assertRaises(messages.DesignError) as caught:
+            envelopes.check_envelope(bumped, seed, slope, geometry, "up", name="e1",
+                                     metric="exact")
+        error = caught.exception
+        self.assertEqual(error.code, "des.envelope_not_fixed_point")
+        self.assertEqual((error.values["row"], error.values["col"]), (3, 9))
+        self.assertAlmostEqual(error.value, 1.0, delta=1e-9)
+
+    def test_a_seed_on_the_wrong_side_is_named_with_the_exact_metric(self) -> None:
+        """RF-013-15: una semilla 0,3 m por encima de su cota en la ascendente lanza
+        ``des.envelope_seed_above`` con su celda absoluta y los 0,3 m, también con la exacta."""
+        seed = single_seed((15, 15), 7, 7, 100.0)
+        raised = solve_exact(seed, 0.8).grid
+        raised[7, 7] += 0.3
+        with self.assertRaises(messages.DesignError) as caught:
+            envelopes.check_envelope(raised, seed, envelopes.SlopeField(0.8),
+                                     dfx.grid_from(15, 15, 1.0), "up", name="e1", metric="exact")
+        self.assertEqual(caught.exception.code, "des.envelope_seed_above")
+        self.assertAlmostEqual(caught.exception.value, 0.3, delta=1e-9)
+
+    def test_a_wrong_metric_name_is_a_program_error(self) -> None:
+        """Una métrica que no es ``chamfer5`` ni ``exact`` es un error del programa."""
+        seed = single_seed((6, 7), 2, 3, 100.0)
+        geometry = dfx.grid_from(6, 7, 1.0)
+        with self.assertRaises(ValueError):
+            envelopes.check_envelope(seed, seed, envelopes.SlopeField(0.5), geometry, "up",
+                                     metric="chamfer3")
+        with self.assertRaises(ValueError):
+            list(envelopes.reach_steps(seed, geometry, 3.0, "chamfer3"))
+
+
+class ExactRequestTest(unittest.TestCase):
+    """``envelope_steps`` con la métrica exacta: la petición, los rechazos y el alcance."""
+
+    def test_the_request_selects_the_exact_metric(self) -> None:
+        """RF-013-12: ``metric="exact"`` en la petición da la envolvente exacta (la de
+        ``exact_steps``, bit a bit) y la de ``chamfer5``, el *chamfer*; en un cono de 60 m las dos
+        difieren más de 0,1 m y la exacta es la de la fuerza bruta a ≤ 10⁻⁹ m."""
+        seed = single_seed((60, 70), 30, 35, 100.0)
+        found = seed_set_of(seed, 2.0)
+        slope = envelopes.constant_slope(35.0)
+        exact_request = request_of(metric="exact", direction="up", slope_deg=35.0)
+        chamfer_request = request_of(metric="chamfer5", direction="up", slope_deg=35.0)
+        exact = finish(envelopes.envelope_steps(exact_request, found, slope))[1]
+        chamfer = finish(envelopes.envelope_steps(chamfer_request, found, slope))[1]
+        by_hand = oracles.brute_force_euclidean(seed, float(slope.tan), 2.0)
+        self.assertLessEqual(float(np.abs(exact.grid - by_hand).max()), TOLERANCE_M)
+        self.assertGreater(float(np.abs(exact.grid - chamfer.grid).max()), 0.1)
+        self.assertTrue(np.array_equal(exact.grid, solve_exact(seed, slope, 2.0).grid))
+        self.assertIsNotNone(exact.reduction)
+        self.assertIsNone(chamfer.reduction)
+
+    def test_the_exact_metric_with_slopes_by_sector_is_refused_when_advancing(self) -> None:
+        """RF-013-13, RF-013-16: la exacta con pendiente por sectores da un ``DesignError`` de
+        ``des.exact_needs_constant_slope`` (campo ``slope_mode``) al avanzar, antes de ceder un solo
+        paso ni calcular nada, aunque la pendiente que se pasa sea uniforme."""
+        found = seed_set_of(single_seed((6, 7), 2, 3, 100.0), 1.0)
+        request = request_of(metric="exact", slope_mode="sectors", slope_deg=None)
+        for slope in (envelopes.SlopeField(0.7), envelopes.SlopeField(np.full((6, 7), 0.7))):
+            produced: list[Any] = []
+            with self.assertRaises(messages.DesignError) as caught:
+                for item in envelopes.envelope_steps(request, found, slope):
+                    produced.append(item)
+            self.assertEqual(produced, [])
+            self.assertEqual((caught.exception.code, caught.exception.field),
+                             ("des.exact_needs_constant_slope", "slope_mode"))
+            self.assertEqual(caught.exception.value, "sectors")
+            self.assertIn("no se calcula ni se registra nada", caught.exception.text)
+
+    def test_a_slope_map_is_accepted_only_if_it_is_constant(self) -> None:
+        """Un mapa de pendientes de un solo valor es la constante y da lo mismo; uno con valores
+        distintos es un error del programa (``ValueError``) al avanzar: la exacta no admite
+        pendiente por celdas (RF-013-16 lo rechaza antes con la petición)."""
+        seed = single_seed((8, 9), 3, 4, 100.0)
+        constant = solve_exact(seed, 0.7).grid
+        same = solve_exact(seed, envelopes.SlopeField(np.full((8, 9), 0.7))).grid
+        self.assertTrue(np.array_equal(constant, same))
+        varied = np.full((8, 9), 0.7)
+        varied[0, 0] = 0.71
+        with self.assertRaises(ValueError):
+            list(envelopes.exact_steps(seed, dfx.grid_from(8, 9, 1.0),
+                                       envelopes.SlopeField(varied), "up"))
+
+    def test_bad_input_is_a_program_error(self) -> None:
+        """Una rejilla de celdas no cuadradas, una forma que no casa, una dirección desconocida y
+        unos bloques, superbloques o evaluaciones por unidad menores que 1 son errores del programa
+        (``ValueError``), al avanzar el generador."""
+        seed = single_seed((6, 7), 2, 3, 100.0)
+        slope = envelopes.SlopeField(0.7)
+        square = dfx.grid_from(6, 7, 1.0)
+        wide = gis.Grid(0.0, 12.0, 2.0, 1.0, 7, 6)
+        cases: list[tuple[Any, ...]] = [(seed, wide, slope, "up"),
+                                        (seed, dfx.grid_from(6, 8, 1.0), slope, "up"),
+                                        (seed, square, slope, "sideways"),
+                                        (seed[0], square, slope, "up")]
+        for args in cases:
+            with self.subTest(direction=args[3], shape=getattr(args[1], "shape", None)):
+                with self.assertRaises(ValueError):
+                    list(envelopes.exact_steps(*args))
+        for option in ("block", "group", "evals_per_unit", "cells_per_unit"):
+            with self.subTest(option=option), self.assertRaises(ValueError):
+                list(envelopes.exact_steps(seed, square, slope, "up", **{option: 0}))
+
+    def test_the_reach_with_the_exact_metric_is_the_euclidean_distance(self) -> None:
+        """RF-013-14, A6: con la exacta, el alcance es la distancia euclídea (m) a la semilla más
+        próxima —la fuerza bruta con ``f = 0`` y ``t = 1``— y deja ``NaN`` lo que pasa de él: las
+        celdas con envolvente son exactamente las de distancia ≤ alcance (con alcances a más de
+        10⁻⁶ m de toda celda), y en ellas la envolvente es la de siempre, bit a bit."""
+        rng = np.random.default_rng(45)
+        for step in (1.5, 2.0):
+            seed = random_seeds(rng, (30, 40))
+            origin = np.where(np.isfinite(seed), 0.0, np.inf)
+            distance = oracles.brute_force_euclidean(origin, 1.0, step)
+            plain = envelopes.constant_slope(30.0)
+            whole = finish(envelopes.envelope_steps(
+                request_of(metric="exact", direction="down", slope_deg=30.0),
+                seed_set_of(seed, step), plain))[1]
+            for target in (4.0, 9.0, 15.0):
+                reach = safe_reach(distance, target * step / 1.5)
+                request = request_of(metric="exact", direction="down", slope_deg=30.0,
+                                     reach_m=reach)
+                found = finish(envelopes.envelope_steps(request, seed_set_of(seed, step),
+                                                        plain))[1]
+                inside = distance <= reach
+                with self.subTest(step=step, reach=round(reach, 3)):
+                    self.assertTrue(0 < int(inside.sum()) < inside.size)
+                    self.assertTrue(np.array_equal(np.isfinite(found.grid), inside))
+                    self.assertTrue(np.array_equal(np.isnan(found.grid), ~inside))
+                    self.assertTrue(np.array_equal(found.grid[inside], whole.grid[inside]))
+            steps, measured = finish(envelopes.reach_steps(seed, dfx.grid_from(30, 40, step),
+                                                           reach, "exact", name="e1"))
+            self.assertTrue(all(item.phase == "reach" for item in steps))
+            inside = distance <= reach
+            self.assertLessEqual(float(np.abs(measured[inside] - distance[inside]).max()),
+                                 TOLERANCE_M)
+            self.assertTrue(np.isnan(measured[~inside]).all())
+
+    def test_the_exact_reach_is_narrower_than_the_chamfer_one_by_its_scale(self) -> None:
+        """RF-013-12, A6: a lo largo del eje, la celda ``n`` (paso 1 m, semilla en el extremo de una
+        fila de 14 celdas) está a ``n`` m con la exacta y a ``0,98644·n`` con el *chamfer*: con
+        9,95 m de alcance la exacta deja 10 celdas (0 a 9) y el *chamfer*, 11 (la décima queda a
+        9,8644 m); con 10,05, 10,15 y 0,5 m, las dos dejan 11, 11 y 1."""
+        seed = single_seed((1, 14), 0, 0, 100.0)
+        geometry = dfx.grid_from(1, 14, 1.0)
+        cases = ((10.05, 11, 11), (9.95, 10, 11), (10.15, 11, 11), (0.5, 1, 1))
+        for reach, exact_cells, chamfer_cells in cases:
+            exact = finish(envelopes.reach_steps(seed, geometry, reach, "exact"))[1]
+            chamfer = finish(envelopes.reach_steps(seed, geometry, reach, "chamfer5"))[1]
+            with self.subTest(reach=reach):
+                self.assertEqual(int(np.isfinite(exact).sum()), exact_cells)
+                self.assertEqual(int(np.isfinite(chamfer).sum()), chamfer_cells)
+        whole = finish(envelopes.reach_steps(seed, geometry, 20.0, "exact"))[1]
+        self.assertLessEqual(float(np.abs(whole[0] - np.arange(14.0)).max()), TOLERANCE_M)
+
+    def test_by_steps_and_closing_midway(self) -> None:
+        """D-20: la exacta es por pasos de la fase «envelope», con avance creciente y su resultado
+        solo en el último; con unidades pequeñas hay muchos pasos y el resultado es el mismo, bit a
+        bit, que con las de por defecto; cerrar a mitad no entrega nada; ninguna entrada se
+        modifica y el resultado no comparte memoria con ella."""
+        rng = np.random.default_rng(46)
+        seed = dfx.random_zone(rng, (60, 70), "mixed", 0.7)
+        before = seed.copy()
+        geometry = dfx.grid_from(60, 70, 1.0)
+        slope = envelopes.constant_slope(35.0)
+        steps, result = finish(envelopes.exact_steps(
+            seed, geometry, slope, "down", name="e1", budget_s=1e-9, cells_per_unit=200,
+            evals_per_unit=1_000, block=4, group=2))
+        self.assertGreater(len(steps), 30)
+        done = [item.done for item in steps]
+        self.assertEqual(done, sorted(done))
+        for item in steps:
+            self.assertIsInstance(item, progress_mod.Progress)
+            self.assertEqual(item.phase, "envelope")
+            self.assertIsNone(item.result)
+            self.assertLessEqual(item.done, item.total)
+            self.assertTrue(item.message)
+        self.assertIsInstance(result, envelopes.Envelope)
+        self.assertEqual(result.grid.dtype, np.float64)
+        self.assertFalse(np.shares_memory(result.grid, seed))
+        self.assertTrue(np.array_equal(seed, before))
+        self.assertTrue(np.array_equal(result.grid, solve_exact(seed, slope, 1.0, "down").grid))
+        half_way = envelopes.exact_steps(seed, geometry, slope, "down", budget_s=1e-9,
+                                         cells_per_unit=200, evals_per_unit=1_000, block=4,
+                                         group=2)
+        self.assertIsNone(next(half_way).result)
+        half_way.close()
+        self.assertTrue(np.array_equal(seed, before))
+
+    def test_float32_seeds_are_taken_as_float64(self) -> None:
+        """Unas semillas en float32 dan una envolvente float64, la misma que con sus valores
+        pasados a float64."""
+        rng = np.random.default_rng(47)
+        narrow = random_seeds(rng, (12, 15)).astype(np.float32)
+        found = solve_exact(narrow, 0.7)
+        self.assertEqual(found.grid.dtype, np.float64)
+        self.assertTrue(np.array_equal(found.grid, solve_exact(narrow.astype(np.float64),
+                                                               0.7).grid))
 
 
 if __name__ == "__main__":
