@@ -451,6 +451,23 @@ CATALOG: tuple[Message, ...] = (
         "tipo y nombre), así que el desmonte y el terraplén no se comparan con uno anterior.",
         "note",
     ),
+    # Registrar el resultado al confirmar (RF-013-04, RF-013-17, RF-013-31; T14) ---------------
+    Message(
+        "des.operation_name_repeated",
+        "«{value}» is already the name of an operation of the design in {version}: its data "
+        "«{dataset}» is alive. Choose another name, or recalculate that operation; nothing is "
+        "calculated or recorded.",
+        "«{value}» ya es el nombre de una operación del diseño en {version}: su dato "
+        "«{dataset}» está vigente. Elija otro nombre, o recalcule esa operación; no se calcula "
+        "ni se registra nada.",
+    ),
+    Message(
+        "des.input_changed",
+        "«{value}» changed after the calculation started, so the result no longer matches it. "
+        "Calculate again; nothing is recorded.",
+        "«{value}» cambió después de empezar el cálculo, así que el resultado ya no le "
+        "corresponde. Calcule de nuevo; no se registra nada.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})
