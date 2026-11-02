@@ -7222,3 +7222,149 @@ es = "Tolerancia sobre la inclinación de la cara"
 
 ["Warning threshold for cut and fill against the previous revision"]
 es = "Umbral de aviso del desmonte y el terraplén frente a la revisión anterior"
+
+# Procedencia de las envolventes y el escalonado (spec 013, T13; RF-013-17, RF-013-31; plan 013
+# §5.2.3): el nombre de cada operación, de cada ajuste y de sus elecciones, y de cada cifra de
+# design/provenance.py («Default domain», «Cut volume», «Fill volume» y «Area without data» ya
+# están arriba).
+
+["Slope envelope"]
+es = "Envolvente de pendiente acotada"
+
+["Benched design"]
+es = "Diseño escalonado"
+
+["Envelope direction"]
+es = "Dirección de la envolvente"
+
+["Downward envelope"]
+es = "Envolvente descendente"
+
+["Upward envelope"]
+es = "Envolvente ascendente"
+
+["Distance metric"]
+es = "Métrica de distancia"
+
+["5×5 chamfer distance"]
+es = "Distancia chamfer 5×5"
+
+["Exact Euclidean distance"]
+es = "Distancia euclídea exacta"
+
+["Reach"]
+es = "Alcance"
+
+["Slope mode"]
+es = "Modo de pendiente"
+
+["Constant slope"]
+es = "Pendiente constante"
+
+["Slope of each sector"]
+es = "Talud de cada sector"
+
+["Slope angle"]
+es = "Inclinación de la pendiente"
+
+["Mesh factor"]
+es = "Factor de malla"
+
+["Origin of the seeds"]
+es = "Origen de las semillas"
+
+["Cells of a surface"]
+es = "Celdas de una superficie"
+
+["Fixed elevation"]
+es = "Cota fija"
+
+["Grid of elevations"]
+es = "Rejilla de cotas"
+
+["Zone of the seeds"]
+es = "Zona de las semillas"
+
+["Zone of a constraint"]
+es = "Zona de una restricción"
+
+["Design sector"]
+es = "Sector de diseño"
+
+["Polygon layer"]
+es = "Capa de polígonos"
+
+["Elevation of the fixed seeds"]
+es = "Cota de las semillas fijas"
+
+["Bound of the work domain"]
+es = "Acotado del dominio de trabajo"
+
+["Whole work domain"]
+es = "Todo el dominio de trabajo"
+
+["Bounded to sectors"]
+es = "Acotado a sectores"
+
+["Bounded to a layer"]
+es = "Acotado a una capa"
+
+["Bounded to sectors and a layer"]
+es = "Acotado a sectores y a una capa"
+
+["Benching sense"]
+es = "Sentido del escalonado"
+
+["Cut, face first"]
+es = "Corte, cara primero"
+
+["Fill, berm first"]
+es = "Relleno, berma primero"
+
+["Base profile"]
+es = "Perfil base"
+
+["Anchor of the benches"]
+es = "Ancla de los bancos"
+
+["Anchor elevation of the profile"]
+es = "Cota de ancla del perfil"
+
+["Grid of anchor elevations"]
+es = "Rejilla de cotas de ancla"
+
+["Cells with envelope"]
+es = "Celdas con envolvente"
+
+["Area with envelope"]
+es = "Área con envolvente"
+
+["Lowest elevation of the envelope"]
+es = "Cota mínima de la envolvente"
+
+["Highest elevation of the envelope"]
+es = "Cota máxima de la envolvente"
+
+["Cut of the envelope against the start surface"]
+es = "Desmonte de la envolvente frente a la superficie de partida"
+
+["Fill of the envelope against the start surface"]
+es = "Terraplén de la envolvente frente a la superficie de partida"
+
+["Area with movement"]
+es = "Área con movimiento"
+
+["90th percentile of the slope"]
+es = "Percentil 90 de la inclinación"
+
+["99th percentile of the slope"]
+es = "Percentil 99 de la inclinación"
+
+["Maximum slope"]
+es = "Inclinación máxima"
+
+["Largest step at the edge of the prohibited cells"]
+es = "Mayor salto en el borde de las celdas prohibidas"
+
+["Berms by sector, profile and level"]
+es = "Bermas por sector, perfil y cota"
