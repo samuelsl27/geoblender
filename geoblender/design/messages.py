@@ -23,7 +23,8 @@ códigos que necesite (semillas, sectores, envolventes…): los de los perfiles 
 (RF-013-19, RF-013-20), el del talud impuesto por sector (RF-013-08), los de las superficies y las
 zonas de un cálculo (RF-013-01, RF-013-16) y los de las semillas, el dominio de trabajo y lo que
 dice la vista previa (RF-013-01 a RF-013-03) y los del rechazo y la marca de un sector con la
-búsqueda de intocables pendiente (RF-013-05, RF-013-06). Un campo que es un texto de una lista cerrada que la
+búsqueda de intocables pendiente (RF-013-05, RF-013-06) y los de la comprobación de cada
+envolvente (RF-013-15). Un campo que es un texto de una lista cerrada que la
 persona ve (el papel de una superficie, el tipo de geometría de una capa) llega ya en el idioma
 de quien lo llama: ``render`` no lo traduce.
 """
@@ -189,6 +190,40 @@ CATALOG: tuple[Message, ...] = (
         "Untouchables search pending in {sector}.",
         "Búsqueda de intocables pendiente en {sector}.",
         "warning",
+    ),
+    # La comprobación de cada envolvente (RF-013-15; T06): fallos del programa, nada se entrega -
+    Message(
+        "des.envelope_not_fixed_point",
+        "Envelope «{envelope}» is not a fixed point: using it as a seed would still change the "
+        "cell in row {row}, column {col} (x = {x} m, y = {y} m) by {value} m, more than "
+        "{tolerance} m. Nothing is delivered or recorded; this is a fault of the program, so "
+        "report it with the log.",
+        "La envolvente «{envelope}» no es un punto fijo: usarla como semilla aún cambiaría la "
+        "celda de la fila {row}, columna {col} (x = {x} m, y = {y} m) en {value} m, más de "
+        "{tolerance} m. No se entrega ni se registra nada; es un fallo del programa, así que "
+        "avíselo con el registro.",
+    ),
+    Message(
+        "des.envelope_seed_above",
+        "Envelope «{envelope}»: the seed cell in row {row}, column {col} (x = {x} m, y = {y} m) "
+        "ends {value} m above the elevation of its seed, {seed} m, and an ascending envelope "
+        "must not pass its seeds. Nothing is delivered or recorded; this is a fault of the "
+        "program, so report it with the log.",
+        "Envolvente «{envelope}»: la celda de semilla de la fila {row}, columna {col} "
+        "(x = {x} m, y = {y} m) queda {value} m por encima de la cota de su semilla, {seed} m, y "
+        "una envolvente ascendente no puede pasar de sus semillas. No se entrega ni se registra "
+        "nada; es un fallo del programa, así que avíselo con el registro.",
+    ),
+    Message(
+        "des.envelope_seed_below",
+        "Envelope «{envelope}»: the seed cell in row {row}, column {col} (x = {x} m, y = {y} m) "
+        "ends {value} m below the elevation of its seed, {seed} m, and a descending envelope "
+        "must not fall under its seeds. Nothing is delivered or recorded; this is a fault of the "
+        "program, so report it with the log.",
+        "Envolvente «{envelope}»: la celda de semilla de la fila {row}, columna {col} "
+        "(x = {x} m, y = {y} m) queda {value} m por debajo de la cota de su semilla, {seed} m, y "
+        "una envolvente descendente no puede bajar de sus semillas. No se entrega ni se registra "
+        "nada; es un fallo del programa, así que avíselo con el registro.",
     ),
     # Lo que dice la vista previa (RF-013-03; T04): notas y avisos, nunca se lanzan ------------
     Message(
