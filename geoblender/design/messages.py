@@ -20,8 +20,9 @@ el valor, y dice qué hacer; el marcador ``{value}`` es siempre el valor que se 
 Las cifras de un mensaje llegan ya redondeadas como números (:func:`render` los escribe en el
 formato del idioma: coma decimal en español, punto en inglés). Cada tarea de la spec añade aquí los
 códigos que necesite (semillas, sectores, envolventes…): los de los perfiles de banco
-(RF-013-19, RF-013-20), el del talud impuesto por sector (RF-013-08) y los de las superficies y las
-zonas de un cálculo (RF-013-01, RF-013-16). Un campo que es un texto de una lista cerrada que la
+(RF-013-19, RF-013-20), el del talud impuesto por sector (RF-013-08), los de las superficies y las
+zonas de un cálculo (RF-013-01, RF-013-16) y los de las semillas, el dominio de trabajo y lo que
+dice la vista previa (RF-013-01 a RF-013-03). Un campo que es un texto de una lista cerrada que la
 persona ve (el papel de una superficie, el tipo de geometría de una capa) llega ya en el idioma
 de quien lo llama: ``render`` no lo traduce.
 """
@@ -149,6 +150,126 @@ CATALOG: tuple[Message, ...] = (
         "layer of the project.",
         "La capa «{layer}» tiene {value}, no polígonos: las celdas de una zona salen de una "
         "capa de polígonos del proyecto.",
+    ),
+    # Semillas y dominio de trabajo (RF-013-01, RF-013-02; T04) --------------------------------
+    Message(
+        "des.seed_missing",
+        "The {kind} seeds need «{field}»: choose it in Design ▸ Quarry ▸ Envelopes and "
+        "benching… before calculating.",
+        "Las semillas de tipo «{kind}» necesitan «{field}»: elíjalo en Diseño ▸ Cantera ▸ "
+        "Envolventes y escalonado… antes de calcular.",
+    ),
+    Message(
+        "des.seed_elevation",
+        "The fixed elevation of the seeds «{field}» = {value} is not a finite number of metres; "
+        "give a real elevation.",
+        "La cota fija de las semillas «{field}» = {value} no es un número finito de metros; "
+        "dé una cota real.",
+    ),
+    Message(
+        "des.sector_unknown",
+        "Sector «{value}» is not one of the search sectors of the project; choose one of "
+        "{known} or declare the sectors again in Design ▸ Parameters ▸ Design sectors….",
+        "El sector «{value}» no es uno de los sectores de búsqueda del proyecto; elija uno de "
+        "{known} o declare de nuevo los sectores en Diseño ▸ Parámetros ▸ Sectores de diseño….",
+    ),
+    # Lo que dice la vista previa (RF-013-03; T04): notas y avisos, nunca se lanzan ------------
+    Message(
+        "des.preview_seeds",
+        "Seeds: {cells} cells ({area} m²), elevations {low} to {high} m; work domain: "
+        "{hectares} ha; {outside} seed cells outside the work domain.",
+        "Semillas: {cells} celdas ({area} m²), cotas {low} a {high} m; dominio: {hectares} ha; "
+        "{outside} celdas de semilla fuera del dominio.",
+        "note",
+    ),
+    Message(
+        "des.preview_seeds_none",
+        "Seeds: none, no cell has a finite elevation; work domain: {hectares} ha. Nothing can be "
+        "calculated without seeds.",
+        "Semillas: ninguna, ninguna celda tiene una cota finita; dominio: {hectares} ha. No se "
+        "puede calcular sin semillas.",
+        "warning",
+    ),
+    Message(
+        "des.preview_domain",
+        "Work domain: {cells} cells ({area} m²), {coverage} % of it with a seed.",
+        "Dominio de trabajo: {cells} celdas ({area} m²), {coverage} % con semilla.",
+        "note",
+    ),
+    Message(
+        "des.preview_domain_empty",
+        "The work domain is empty: the default domain of the masks, the fill-only strip and the "
+        "chosen sectors or layer have no cell in common. Nothing can be calculated.",
+        "El dominio de trabajo está vacío: el dominio por defecto de las máscaras, la franja de "
+        "solo relleno y los sectores o la capa elegidos no tienen ninguna celda en común. No se "
+        "puede calcular nada.",
+        "warning",
+    ),
+    Message(
+        "des.seeds_outside_domain",
+        "{cells} seed cells ({area} m²) are outside the work domain: the envelope uses them but "
+        "nothing is delivered there. Check the seed zone before calculating.",
+        "{cells} celdas de semilla ({area} m²) están fuera del dominio de trabajo: la envolvente "
+        "las usa, pero allí no se entrega nada. Revise la zona de las semillas antes de calcular.",
+        "warning",
+    ),
+    Message(
+        "des.seeds_without_data",
+        "{cells} cells ({area} m²) of the seed zone have no finite elevation in «{surface}» and "
+        "are not seeds.",
+        "{cells} celdas ({area} m²) de la zona de las semillas no tienen una cota finita en "
+        "«{surface}» y no son semillas.",
+        "warning",
+    ),
+    Message(
+        "des.preview_sectors",
+        "Sectors the work domain touches: {sectors}.",
+        "Sectores que toca el dominio de trabajo: {sectors}.",
+        "note",
+    ),
+    Message(
+        "des.preview_sector_pending",
+        "Sector «{sector}»: untouchables search pending; nothing is calculated while the work "
+        "domain touches it. Search in Design ▸ Legal limits and constraints ▸ Search "
+        "untouchable elements by sector….",
+        "Sector «{sector}»: búsqueda de intocables pendiente; no se calcula nada mientras el "
+        "dominio de trabajo lo toque. Búsqueda en Diseño ▸ Límites y restricciones ▸ Buscar "
+        "elementos intocables por sector….",
+        "warning",
+    ),
+    Message(
+        "des.preview_unassigned",
+        "{cells} cells of the work domain ({area} m²) belong to no sector; they use the base "
+        "profile.",
+        "{cells} celdas del dominio de trabajo ({area} m²) no son de ningún sector; usan el "
+        "perfil base.",
+        "note",
+    ),
+    Message(
+        "des.preview_masks_current",
+        "Masks of {version}: up to date.",
+        "Máscaras de {version}: al día.",
+        "note",
+    ),
+    Message(
+        "des.preview_masks_missing",
+        "The masks of {version} have not been compiled, so the work domain cannot be shown; "
+        "they are compiled before calculating (Design ▸ Legal limits and constraints ▸ "
+        "Constraints…).",
+        "Las máscaras de {version} no se han compilado, así que no se puede mostrar el dominio "
+        "de trabajo; se compilan antes de calcular (Diseño ▸ Límites y restricciones ▸ "
+        "Restricciones…).",
+        "warning",
+    ),
+    Message(
+        "des.preview_masks_stale",
+        "The masks of {version} are stale: a constraint, a sector, a search or a parameter "
+        "changed after compiling them, so the work domain cannot be shown; they are compiled "
+        "again before calculating.",
+        "Las máscaras de {version} están obsoletas: cambió una restricción, un sector, una "
+        "búsqueda o un parámetro después de compilarlas, así que no se puede mostrar el dominio "
+        "de trabajo; se compilan de nuevo antes de calcular.",
+        "warning",
     ),
 )
 
