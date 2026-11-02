@@ -54,7 +54,7 @@ import atexit
 import math
 import shutil
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -661,7 +661,9 @@ class DesignProjectCase(cp.ConstraintsProjectCase):
     ``stored_constraints`` de ``ConstraintsProjectCase``:
 
     - :meth:`masks`: el ``MaskSet`` de una versión (por defecto V01, que tiene las máscaras al día);
-    - :meth:`write_surfaces`: escribe más superficies como rejillas del proyecto.
+    - :meth:`write_surfaces`: escribe más superficies como rejillas del proyecto;
+    - :meth:`write_layer`: escribe una capa de entidades (polígonos, líneas) o de dominios;
+    - :meth:`write_tin`: escribe un TIN del proyecto.
 
     Para un sector con la búsqueda pendiente, cambie la geometría de un sector con
     ``constraints_project.edit_constraints``; para no tocar la copia de la clase, use
@@ -691,3 +693,88 @@ class DesignProjectCase(cp.ConstraintsProjectCase):
 
         self.clock.advance(minutes=1)
         write_grids(self.project, list(grids), message="Superficies de prueba")
+
+    def write_layer(self, name: str, entities: Sequence[Sequence[Sequence[np.ndarray]]], *,
+                    kind: str = "polygon", domains: bool = False) -> None:
+        """Escribe una capa del proyecto como lo hace la importación de la 006: ``gis_fea_…``
+        (entidades, la 012; ``kind``: ``polygon`` o ``line``) o, con ``domains``, ``gis_dom_…``
+        (dominios de polígonos, la 011). ``entities``: por entidad, sus partes y, de cada una,
+        sus anillos (el primero, el exterior) o su camino, ABSOLUTOS. ``name`` ha de llevar el
+        prefijo de su familia."""
+        from tests.support.provenance_contract import registered
+
+        contract = import_geoblender("core.provenance.contract")
+        operations = import_geoblender("core.provenance.operations")
+        datasets = import_geoblender("core.datasets")
+        builtin = import_geoblender("core.content.builtin")
+        gstore = import_geoblender("gis.store")
+        vector = import_geoblender("gis.vector")
+        srs = int(self.project.record.crs_epsg)
+        column = vector.FieldColumn("nombre", "nombre", "TEXT")
+        fids = tuple(range(1, len(entities) + 1))
+        values = {"nombre": tuple(f"Entidad {fid}" for fid in fids)}
+        polygons = tuple(tuple(tuple(np.asarray(ring, dtype=np.float64) for ring in polygon)
+                               for polygon in entity) for entity in entities)
+        if domains:
+            layer: Any = vector.DomainSet(fids, polygons, (column,), values)
+            rows, geometry_type, role = gstore.domain_rows(layer, srs), "MULTIPOLYGON", "domains"
+        else:
+            layer = vector.FeatureLayer(kind, fids, polygons, (column,), values)
+            rows, geometry_type, role = (gstore.feature_rows(layer, srs), layer.geometry_type,
+                                         "features")
+        writer = contract.OperationDef(LAYERS_TYPE, "1.0", "gis", "Layers of the tests", False)
+        with registered(writer):
+            self.clock.advance(minutes=1)
+            handle = operations.begin_operation(self.project, LAYERS_TYPE,
+                                                settings={"name": name}, executor="blender")
+            with self.project.write_transaction() as conn:
+                conn.execute(f'CREATE TABLE "{name}" (fid INTEGER PRIMARY KEY NOT NULL, '
+                             f'geom {geometry_type}, "nombre" TEXT)')
+                conn.execute("INSERT INTO gpkg_contents (table_name, data_type, identifier, "
+                             "description, srs_id) VALUES (?, 'features', ?, '', ?)",
+                             (name, name, srs))
+                conn.execute("INSERT INTO gpkg_geometry_columns (table_name, column_name, "
+                             "geometry_type_name, srs_id, z, m) VALUES (?, 'geom', ?, ?, 0, 0)",
+                             (name, geometry_type, srs))
+                conn.executemany(f'INSERT INTO "{name}" (fid, geom, "nombre") VALUES (?, ?, ?)',
+                                 rows)
+                handle.complete(conn, outputs=(datasets.DatasetSpec(
+                    name, "gis", "vector", datasets.Store.GPKG, name,
+                    reader=builtin.GPKG_LAYER.id, role=role, crs_epsg=srs, input_uid=None,
+                    immutable=False),), message="Capa de prueba")
+
+    def write_tin(self, label: str) -> str:
+        """Escribe un TIN de cuatro triángulos sobre la rejilla del sitio como ``gis_tin_<label>``
+        y devuelve su nombre."""
+        from tests.support.provenance_contract import registered
+
+        operations = import_geoblender("core.provenance.operations")
+        provenance = import_geoblender("gis.provenance")
+        gstore = import_geoblender("gis.store")
+        tin_mod = import_geoblender("gis.tin")
+        xy = np.array([[0.0, 0.0], [40.0, 0.0], [40.0, 40.0], [0.0, 40.0], [20.0, 20.0]])
+        xy += np.asarray(BASE)
+        z = np.array([650.0, 651.0, 652.5, 651.5, 653.25])
+        faces = np.array([[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]], dtype=np.int32)
+        tin = tin_mod.Tin(np.column_stack([xy, z]), faces, np.empty((0, 2), np.int32),
+                          np.zeros(5, np.uint8), triangulator="pure@1")
+        defs = provenance.operation_defs({provenance.TIN_FROM_POINTS: _never_recomputed},
+                                         op_types=[provenance.TIN_FROM_POINTS])
+        with registered(*defs):
+            self.clock.advance(minutes=1)
+            handle = operations.begin_operation(self.project, provenance.TIN_FROM_POINTS,
+                                                settings={"nombre": label}, executor="blender")
+            with gstore.ResultWriter(self.project, handle) as out:
+                out.tin(label, tin)
+                (record,) = out.commit(software={"triangulator": "pure@1"},
+                                       message="TIN de prueba")
+        return str(record.name)
+
+
+LAYERS_TYPE = "gis.test_layers"
+"""La operación de prueba de ``gis`` que escribe las capas de polígonos (hace lo que la
+importación de la 006)."""
+
+
+def _never_recomputed(request: Any) -> Any:
+    raise AssertionError("las pruebas del diseño no recalculan con la función de bl")

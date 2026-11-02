@@ -19,8 +19,11 @@ el valor, y dice qué hacer; el marcador ``{value}`` es siempre el valor que se 
 
 Las cifras de un mensaje llegan ya redondeadas como números (:func:`render` los escribe en el
 formato del idioma: coma decimal en español, punto en inglés). Cada tarea de la spec añade aquí los
-códigos que necesite (superficies, semillas, sectores, envolventes…); esta primera trae los de los
-perfiles de banco (RF-013-19, RF-013-20) y el del talud impuesto por sector (RF-013-08).
+códigos que necesite (semillas, sectores, envolventes…): los de los perfiles de banco
+(RF-013-19, RF-013-20), el del talud impuesto por sector (RF-013-08) y los de las superficies y las
+zonas de un cálculo (RF-013-01, RF-013-16). Un campo que es un texto de una lista cerrada que la
+persona ve (el papel de una superficie, el tipo de geometría de una capa) llega ya en el idioma
+de quien lo llama: ``render`` no lo traduce.
 """
 
 from __future__ import annotations
@@ -104,6 +107,48 @@ CATALOG: tuple[Message, ...] = (
         "{range}.",
         "Sector «{sector}»: el talud general máximo «{field}» = {value} está fuera de su rango "
         "{range}.",
+    ),
+    # Superficies y zonas de un cálculo (RF-013-01, RF-013-16; T03) ----------------------------
+    Message(
+        "des.surface_mismatch",
+        "«{surface}» ({role}) is not on the project grid: {detail} (project against surface; "
+        "«{field}» of the surface = {value}). Bring it to the project grid with Topography ▸ "
+        "Surfaces ▸ Project grid from a DTM… before calculating; nothing is calculated or "
+        "recorded.",
+        "«{surface}» ({role}) no está en la rejilla del proyecto: {detail} (proyecto frente a "
+        "superficie; «{field}» de la superficie = {value}). Llévela a la rejilla del proyecto "
+        "con Topografía ▸ Superficies ▸ Rejilla de proyecto desde un MDT… antes de calcular; no "
+        "se calcula ni se registra nada.",
+    ),
+    Message(
+        "des.surface_is_tin",
+        "«{surface}» is a TIN: bring it to a grid first with Topography ▸ Surfaces ▸ "
+        "DTM ⇄ TIN…; an envelope does not resample any surface.",
+        "«{surface}» es un TIN: llévelo antes a una rejilla con Topografía ▸ Superficies ▸ "
+        "MDT ⇄ TIN…; una envolvente no remuestrea ninguna superficie.",
+    ),
+    Message(
+        "des.surface_other_version",
+        "«{surface}» belongs to version {version}, not to the active version ({active}): "
+        "choose a surface of the project or of the active version.",
+        "«{surface}» es de la versión {version}, no de la activa ({active}): elija una "
+        "superficie del proyecto o de la versión activa.",
+    ),
+    Message(
+        "des.zone_unknown",
+        "Zone «{zone}» is not among the zones of the compiled masks: choose a constraint that "
+        "has a zone in Design ▸ Legal limits and constraints ▸ Constraints… or compile the "
+        "masks again.",
+        "La zona «{zone}» no está entre las de las máscaras compiladas: elija una restricción "
+        "que tenga zona en Diseño ▸ Límites y restricciones ▸ Restricciones… o compile de "
+        "nuevo las máscaras.",
+    ),
+    Message(
+        "des.layer_not_polygons",
+        "Layer «{layer}» holds {value}, not polygons: the cells of a zone come from a polygon "
+        "layer of the project.",
+        "La capa «{layer}» tiene {value}, no polígonos: las celdas de una zona salen de una "
+        "capa de polígonos del proyecto.",
     ),
 )
 
