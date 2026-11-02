@@ -32,8 +32,21 @@ del eje; la exactitud de la pared es de la euclídea exacta (T08).
   una semilla, es un ``DesignError`` con la celda absoluta y la diferencia (m) y **no se entrega
   nada**.
 
-Python puro (nivel 8), con numpy. Los rechazos de RF-013-16 (semillas o dominio vacíos, pendiente
-fuera de rango, rejilla distinta) y el alcance son de T07; la euclídea exacta, de T08.
+- **El alcance** (RF-013-14, A6): :func:`reach_steps` da la distancia a la semilla más próxima con
+  la misma métrica y ``t = 1`` (el *chamfer* con costes de entrada ``(1, √2, √5)·h·escala``) y
+  ``NaN`` donde pasa del alcance; :func:`envelope_steps` deja sin dato (``NaN``) las celdas de la
+  envolvente que pasan de él, que es el tope de la propagación (errores 17, 31 y 66). Sin alcance,
+  ninguno. Todas las semillas cuentan, también las que quedan fuera del dominio de trabajo (el
+  recorte al dominio es posterior).
+- **Los rechazos de RF-013-16**, antes de calcular y sin registrar nada: :func:`check_request` (la
+  pendiente, el factor de malla, el alcance y la euclídea exacta con sectores: lo que no necesita
+  leer nada) y :func:`check_seed_set` (unas semillas sin ninguna celda con cota finita, un dominio
+  de trabajo vacío) salen, como ``DesignError`` que nombra la envolvente, el campo y el valor y la
+  orden que lo resuelve, al avanzar :func:`envelope_steps`, antes de ceder un solo paso. Que las
+  semillas o la superficie de partida estén en otra rejilla, CRS o datum vertical lo rechaza antes
+  ``design.surfaces`` al leerlas (``des.surface_mismatch``).
+
+Python puro (nivel 8), con numpy. La euclídea exacta es de T08.
 """
 
 from __future__ import annotations
@@ -48,7 +61,7 @@ from ..core.project.model import Progress
 from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
 from .messages import DesignError
-from .model import Direction, EnvelopeRequest, Metric
+from .model import Direction, EnvelopeRequest, Metric, SlopeMode
 from .seeds import SeedSet, pace_progress
 
 __all__ = [
@@ -61,8 +74,12 @@ __all__ = [
     "SlopeRule",
     "chamfer_steps",
     "check_envelope",
+    "check_request",
+    "check_seed_set",
     "constant_slope",
     "envelope_steps",
+    "reach_steps",
+    "request_slope",
     "sector_slope",
 ]
 
@@ -82,6 +99,13 @@ _OBJECT = "Envolvente"
 _FIELD = "punto fijo"
 _SEED_FIELD = "semilla"
 _ROUNDED_M = 3  # decimales de las coordenadas que se dicen (mm)
+_SLOPE_FIELD = "slope_deg"
+_MESH_FIELD = "mesh_factor"
+_REACH_FIELD = "reach_m"
+_MODE_FIELD = "slope_mode"
+_SEEDS_FIELD = "seeds"
+_DOMAIN_FIELD = "domain"
+_NO_VALUE = "—"
 
 Mask = tuple[tuple[int, int, float], ...]
 
@@ -227,9 +251,9 @@ def sector_slope(labels: np.ndarray, rules: Sequence[SlopeRule | None],
 @dataclass(frozen=True, slots=True, eq=False)
 class Envelope:
     """Una envolvente calculada: ``grid`` (m, float64, nueva, de la forma de la rejilla; ``+inf``
-    —``−inf`` en la descendente— donde no hay envolvente), las ``iterations`` (vueltas de ida y
-    vuelta) y la ``violation`` (m): la mayor violación de las relajaciones, que es
-    ≤ :data:`TOLERANCE_M`."""
+    —``−inf`` en la descendente— donde no hay envolvente porque no hay semilla alguna y ``NaN``
+    donde pasa del alcance, RF-013-14), las ``iterations`` (vueltas de ida y vuelta) y la
+    ``violation`` (m): la mayor violación de las relajaciones, que es ≤ :data:`TOLERANCE_M`."""
 
     grid: np.ndarray
     iterations: int
@@ -489,11 +513,11 @@ def chamfer_steps(seed: np.ndarray, geometry: Grid, slope: SlopeField,
                   budget_s: float = STEP_BUDGET_S, max_iterations: int = MAX_ITERATIONS,
                   cells_per_unit: int = CELLS_PER_UNIT) -> Iterator[Progress]:
     """La envolvente *chamfer* 5×5 de las semillas ``seed`` (m, se toman como float64; es semilla
-    toda celda con cota finita, ``+inf`` y NaN no) sobre ``geometry`` (la rejilla del proyecto: celdas cuadradas)
-    con la pendiente ``slope`` y en la ``direction`` (``up`` o ``down``) pedidas (RF-013-11,
-    RF-013-12, RF-013-13), por pasos de ``budget_s`` como mucho: el último ``Progress`` lleva en
-    ``result`` la :class:`Envelope`. Cerrar el generador a mitad no deja nada; las entradas no se
-    modifican.
+    toda celda con cota finita, ``+inf`` y NaN no) sobre ``geometry`` (la rejilla del proyecto:
+    celdas cuadradas) con la pendiente ``slope`` y en la ``direction`` (``up`` o ``down``)
+    pedidas (RF-013-11, RF-013-12, RF-013-13), por pasos de ``budget_s`` como mucho: el último
+    ``Progress`` lleva en ``result`` la :class:`Envelope`. Cerrar el generador a mitad no deja
+    nada; las entradas no se modifican.
 
     Comprueba en cada ejecución el RF-013-15 (véase el módulo) y lanza ``DesignError``
     (``des.envelope_not_fixed_point``, ``des.envelope_seed_above`` o ``des.envelope_seed_below``,
@@ -539,13 +563,158 @@ def check_envelope(envelope: np.ndarray, seed: np.ndarray, slope: SlopeField, ge
     _check_seeds(values, seed, way, geometry, name)
 
 
-def envelope_steps(request: EnvelopeRequest, seeds: SeedSet, slope: SlopeField, *,
-                   budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
-    """La envolvente que pide ``request`` (su dirección y su nombre) de las ``seeds`` (su rejilla de
-    cotas y su geometría) con la pendiente ``slope``, por pasos: el último ``Progress`` lleva la
-    :class:`Envelope`. Hoy, solo con el *chamfer* 5×5; la euclídea exacta (RF-013-12) es de la T08.
-    Los rechazos de RF-013-16 son de quien arma la petición (T07)."""
+# --- El alcance (RF-013-14, A6) ----------------------------------------------------------------
+
+_DISTANCE = SlopeField(1.0)
+"""La pendiente de la distancia pura: ``t = 1`` (con la misma escala del *chamfer*)."""
+
+
+def _shown_number(value: float | None) -> float | str:
+    """Un número tal como se dice en un rechazo: el finito, tal cual; NaN o infinito, su texto; ni
+    número, «—»."""
+    if value is None:
+        return _NO_VALUE
+    return value if math.isfinite(value) else str(value)
+
+
+def _check_reach(name: str, reach_m: float) -> None:
+    """El alcance (m) ha de ser un número finito mayor que 0 (RF-013-14); si no,
+    ``des.reach_range``."""
+    if not math.isfinite(reach_m) or reach_m <= 0.0:
+        raise DesignError("des.reach_range", obj=_name_of(name), field=_REACH_FIELD,
+                          value=_shown_number(reach_m), envelope=name)
+
+
+def _reach_work(seed: np.ndarray, geometry: Grid, reach_m: float, name: str,
+                cells_per_unit: int) -> Generator[None, None, np.ndarray]:
+    """Las unidades de :func:`reach_steps`: la distancia *chamfer* a la semilla más próxima (la
+    envolvente ascendente de unas semillas a 0 con ``t = 1``) y ``NaN`` donde pasa del alcance."""
+    origin = np.where(np.isfinite(seed), 0.0, np.inf)
+    found = yield from _work(origin, geometry, _DISTANCE, Direction.UP,
+                             f"{name} (alcance)" if name else "alcance", MAX_ITERATIONS,
+                             cells_per_unit)
+    distance = found.grid
+    distance[distance > reach_m] = np.nan
+    return distance
+
+
+def reach_steps(seed: np.ndarray, geometry: Grid, reach_m: float,
+                metric: Metric | str = Metric.CHAMFER5, *, name: str = "",
+                budget_s: float = STEP_BUDGET_S, cells_per_unit: int = CELLS_PER_UNIT
+                ) -> Iterator[Progress]:
+    """La distancia (m) de cada celda de ``geometry`` a la semilla más próxima de ``seed`` (m;
+    semilla es toda celda con cota finita) con la ``metric`` y ``t = 1`` (RF-013-14, A6), y ``NaN``
+    donde pasa de ``reach_m``; las celdas de semilla, a 0. Por pasos de ``budget_s`` como mucho,
+    de la fase «reach»: el último ``Progress`` lleva en ``result`` el array (float64, nuevo). Un
+    alcance que no es un número mayor que 0 es ``des.reach_range`` (``DesignError``, ``name`` es
+    la envolvente); una forma que no casa, un error del programa (``ValueError``). Hoy, solo con
+    el *chamfer* 5×5; la euclídea exacta es de la T08. No modifica ``seed``."""
+    cotas = np.asarray(seed, dtype=np.float64)
+    reach = float(reach_m)
+    _check_reach(name, reach)
+    _check_inputs(cotas, geometry, _DISTANCE, Direction.UP, MAX_ITERATIONS, cells_per_unit)
+    if Metric(metric) is not Metric.CHAMFER5:
+        raise NotImplementedError("la euclídea exacta es de la tarea T08 de la spec 013")
+    work = _reach_work(cotas, geometry, reach, name, cells_per_unit)
+    return pace_progress(work, budget_s, phase="reach", running="Calculando el alcance…",
+                         finished="Alcance calculado")
+
+
+# --- Los rechazos de RF-013-16 antes de calcular -----------------------------------------------
+
+
+def _check_constant(request: EnvelopeRequest) -> None:
+    """La pendiente (de 0, incluido, a 90 grados, excluido) y el factor de malla (de 0, excluido,
+    a 1) de una petición de pendiente constante."""
+    degrees = request.slope_deg
+    if degrees is None or not math.isfinite(degrees) or not 0.0 <= degrees < 90.0:
+        raise DesignError("des.slope_range", obj=_name_of(request.name), field=_SLOPE_FIELD,
+                          value=_shown_number(degrees), envelope=request.name)
+    mesh = request.mesh_factor
+    if not math.isfinite(mesh) or not 0.0 < mesh <= 1.0:
+        raise DesignError("des.mesh_factor_range", obj=_name_of(request.name), field=_MESH_FIELD,
+                          value=_shown_number(mesh), envelope=request.name)
+
+
+def check_request(request: EnvelopeRequest) -> None:
+    """RF-013-16 sobre la petición sola, antes de leer nada: con pendiente constante, que sea un
+    número de 0 (incluido) a 90 grados (excluido) y que el factor de malla esté entre 0
+    (excluido) y 1 (``des.slope_range``, ``des.mesh_factor_range``); que la euclídea exacta no se
+    pida con la pendiente por sectores (``des.exact_needs_constant_slope``) y que el alcance, si
+    lo hay, sea un número de metros mayor que 0 (``des.reach_range``). Con la pendiente por
+    sectores no se comprueban el grado ni el factor de malla de la petición: salen de cada sector
+    y de su perfil. ``DesignError`` con la envolvente, el campo y el valor y la orden que lo
+    resuelve; no devuelve nada si todo cumple."""
+    if SlopeMode(request.slope_mode) is SlopeMode.CONSTANT:
+        _check_constant(request)
+    elif Metric(request.metric) is Metric.EXACT:
+        raise DesignError("des.exact_needs_constant_slope", obj=_name_of(request.name),
+                          field=_MODE_FIELD, value=SlopeMode(request.slope_mode).value,
+                          envelope=request.name)
+    if request.reach_m is not None:
+        _check_reach(request.name, request.reach_m)
+
+
+def check_seed_set(request: EnvelopeRequest, seeds: SeedSet) -> None:
+    """RF-013-16 sobre las semillas ya formadas: que alguna celda tenga cota finita
+    (``des.seeds_empty``, con las celdas de su zona que no la tenían) y que el dominio de trabajo
+    tenga alguna celda (``des.domain_empty``); en ese orden. Las semillas fuera del dominio no
+    bastan. ``DesignError`` con la envolvente, el campo y el valor y la orden que lo resuelve; no
+    devuelve nada si todo cumple."""
+    if not np.isfinite(seeds.grid).any():
+        raise DesignError("des.seeds_empty", obj=_name_of(request.name), field=_SEEDS_FIELD,
+                          value=0, envelope=request.name, nodata=seeds.nodata_cells)
+    if seeds.domain.cells == 0:
+        raise DesignError("des.domain_empty", obj=_name_of(request.name), field=_DOMAIN_FIELD,
+                          value=0, envelope=request.name)
+
+
+def request_slope(request: EnvelopeRequest) -> SlopeField:
+    """La pendiente de una petición de pendiente constante: ``tan(°)·factor de malla`` en toda la
+    rejilla (:func:`constant_slope`), con los rechazos de :func:`check_request` para la pendiente y
+    el factor de malla (``des.slope_range``, ``des.mesh_factor_range``). La de los sectores la
+    resuelve quien llama con :func:`sector_slope` (``ValueError`` si se pide aquí)."""
+    if SlopeMode(request.slope_mode) is not SlopeMode.CONSTANT:
+        raise ValueError("la pendiente por sectores la resuelve quien llama (sector_slope), no la "
+                         "petición")
+    _check_constant(request)
+    assert request.slope_deg is not None  # _check_constant
+    return constant_slope(request.slope_deg, request.mesh_factor)
+
+
+# --- La petición -------------------------------------------------------------------------------
+
+
+def _envelope_units(request: EnvelopeRequest, seeds: SeedSet, slope: SlopeField
+                    ) -> Generator[None, None, Envelope]:
+    """Las unidades de :func:`envelope_steps`: los rechazos, el barrido hasta el punto fijo y,
+    con alcance, la distancia que deja sin dato (``NaN``) lo que pasa de él."""
+    check_request(request)
+    check_seed_set(request, seeds)
     if Metric(request.metric) is not Metric.CHAMFER5:
         raise NotImplementedError("la euclídea exacta es de la tarea T08 de la spec 013")
-    return chamfer_steps(seeds.grid, seeds.geometry, slope, request.direction,
-                         name=request.name, budget_s=budget_s)
+    way = Direction(request.direction)
+    cotas = np.asarray(seeds.grid, dtype=np.float64)
+    _check_inputs(cotas, seeds.geometry, slope, way, MAX_ITERATIONS, CELLS_PER_UNIT)
+    found = yield from _work(cotas, seeds.geometry, slope, way, request.name, MAX_ITERATIONS,
+                             CELLS_PER_UNIT)
+    if request.reach_m is None:
+        return found
+    distance = yield from _reach_work(cotas, seeds.geometry, request.reach_m, request.name,
+                                      CELLS_PER_UNIT)
+    found.grid[np.isnan(distance)] = np.nan
+    return Envelope(found.grid, found.iterations, found.violation)
+
+
+def envelope_steps(request: EnvelopeRequest, seeds: SeedSet, slope: SlopeField, *,
+                   budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """La envolvente que pide ``request`` (su dirección, su nombre y su alcance) de las ``seeds``
+    (su rejilla de cotas y su geometría) con la pendiente ``slope``, por pasos: el último
+    ``Progress`` lleva la :class:`Envelope`. Antes de calcular, y al avanzar el generador, aplica
+    los rechazos de RF-013-16 (:func:`check_request`, :func:`check_seed_set`): ninguno cede un
+    paso ni registra nada. Con ``request.reach_m`` deja ``NaN`` lo que pasa de ese alcance de las
+    semillas (RF-013-14, :func:`reach_steps`); sin él, ninguna celda. La rejilla es la entera; el
+    recorte al dominio de trabajo es posterior. Hoy, solo con el *chamfer* 5×5; la euclídea
+    exacta (RF-013-12) es de la T08. Ninguna entrada se modifica."""
+    return pace_progress(_envelope_units(request, seeds, slope), budget_s, phase="envelope",
+                         running="Calculando la envolvente…", finished="Envolvente calculada")

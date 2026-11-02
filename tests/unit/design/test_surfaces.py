@@ -213,6 +213,36 @@ class ProjectSurfacesTest(dfx.DesignProjectCase):
         self.assertIn("superficie de partida", error.text)
         self.assertIn(COMMAND_ES, error.text)
 
+    def test_another_crs_or_vertical_datum_is_refused_from_the_header(self) -> None:
+        """RF-013-16: el escritor del proyecto solo admite su CRS y su datum vertical, así que la
+        diferencia viene de la referencia (p. ej. unas máscaras en otro sistema): la cabecera de la
+        superficie del proyecto, comparada con una referencia de la misma rejilla pero con otro CRS
+        (EPSG:25829) o con otro datum vertical (un plano local), se rechaza sin leer una sola celda,
+        con ``des.surface_mismatch``: el objeto (la superficie y su papel), el campo (``crs`` o
+        ``vertical``), el valor y la orden de la 006."""
+        grid = self.frame().grid
+        local = cfx.CATALOG.local_vertical("NP-0 del plano 3")
+        references = (
+            ("crs", surfaces.ProjectFrame(grid, cfx.CATALOG.horizontal(25829), dfx.VERTICAL)),
+            ("vertical", surfaces.ProjectFrame(grid, dfx.CRS, local)),
+        )
+        for field, reference in references:
+            with self.subTest(field=field):
+                with mock.patch.object(surfaces, "load_raster",
+                                       side_effect=AssertionError("no se leen celdas")), \
+                        mock.patch.object(surfaces, "read_geotiff",
+                                          side_effect=AssertionError("no se leen celdas")):
+                    with self.assertRaises(messages.DesignError) as caught:
+                        surfaces.read_surface(self.project, "gis_dtm_relieve", expect=reference,
+                                              role="superficie de partida")
+                error = caught.exception
+                self.assertEqual((error.code, error.field), ("des.surface_mismatch", field))
+                self.assertIn("gis_dtm_relieve", error.obj)
+                self.assertIn("superficie de partida", error.obj)
+                self.assertIn(f"«{field}»", error.text)
+                self.assertIn(COMMAND_ES, error.text)
+                self.assertNotIn("?", error.text)
+
     def test_a_dataset_of_the_active_version_and_the_project_one(self) -> None:
         """RF-013-01: con una versión activa se lee un dato de esa versión (la rejilla de clases de
         las máscaras de V01, por el nombre) o, si no lo hay en ella, el del proyecto; las cotas son
@@ -277,6 +307,9 @@ class ProjectSurfacesTest(dfx.DesignProjectCase):
         frame = self.frame()
         refusals = (
             lambda: surfaces.read_surface(self.project, "gis_dtm_desplazada", expect=frame),
+            lambda: surfaces.read_surface(
+                self.project, "gis_dtm_relieve", expect=surfaces.ProjectFrame(
+                    frame.grid, cfx.CATALOG.horizontal(25829), frame.vertical)),
             lambda: surfaces.read_surface(self.project, self.tin),
             lambda: surfaces.read_surface(self.project, "gis_msk", version_uid=self.v2.uid),
             lambda: surfaces.read_surface(self.project, "gis_dtm_no_hay"),

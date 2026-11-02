@@ -23,10 +23,10 @@ códigos que necesite (semillas, sectores, envolventes…): los de los perfiles 
 (RF-013-19, RF-013-20), el del talud impuesto por sector (RF-013-08), los de las superficies y las
 zonas de un cálculo (RF-013-01, RF-013-16) y los de las semillas, el dominio de trabajo y lo que
 dice la vista previa (RF-013-01 a RF-013-03) y los del rechazo y la marca de un sector con la
-búsqueda de intocables pendiente (RF-013-05, RF-013-06) y los de la comprobación de cada
-envolvente (RF-013-15). Un campo que es un texto de una lista cerrada que la
-persona ve (el papel de una superficie, el tipo de geometría de una capa) llega ya en el idioma
-de quien lo llama: ``render`` no lo traduce.
+búsqueda de intocables pendiente (RF-013-05, RF-013-06), los de la comprobación de cada
+envolvente (RF-013-15) y los que la rechazan antes de calcular (RF-013-14, RF-013-16). Un campo
+que es un texto de una lista cerrada que la persona ve (el papel de una superficie, el tipo de
+geometría de una capa) llega ya en el idioma de quien lo llama: ``render`` no lo traduce.
 """
 
 from __future__ import annotations
@@ -224,6 +224,71 @@ CATALOG: tuple[Message, ...] = (
         "(x = {x} m, y = {y} m) queda {value} m por debajo de la cota de su semilla, {seed} m, y "
         "una envolvente descendente no puede bajar de sus semillas. No se entrega ni se registra "
         "nada; es un fallo del programa, así que avíselo con el registro.",
+    ),
+    # Lo que se rechaza antes de calcular una envolvente (RF-013-14, RF-013-16; T07) ------------
+    Message(
+        "des.slope_range",
+        "Envelope «{envelope}»: the slope «{field}» = {value} is not a number of degrees from 0 "
+        "(included) to 90 (excluded); fix it in Design ▸ Quarry ▸ Envelopes and benching… before "
+        "calculating; nothing is calculated or recorded.",
+        "Envolvente «{envelope}»: la pendiente «{field}» = {value} no es un número de grados de 0 "
+        "(incluido) a 90 (excluido); corríjala en Diseño ▸ Cantera ▸ Envolventes y escalonado… "
+        "antes de calcular; no se calcula ni se registra nada.",
+    ),
+    Message(
+        "des.mesh_factor_range",
+        "Envelope «{envelope}»: the mesh factor «{field}» = {value} must be a number greater "
+        "than 0 and at most 1; fix it in Design ▸ Quarry ▸ Envelopes and benching… before "
+        "calculating; nothing is calculated or recorded.",
+        "Envolvente «{envelope}»: el factor de malla «{field}» = {value} debe ser un número mayor "
+        "que 0 y como mucho 1; corríjalo en Diseño ▸ Cantera ▸ Envolventes y escalonado… antes "
+        "de calcular; no se calcula ni se registra nada.",
+    ),
+    Message(
+        "des.reach_range",
+        "Envelope «{envelope}»: the reach «{field}» = {value} m must be a number of metres "
+        "greater than 0 (leave it empty for no reach); fix it in Design ▸ Quarry ▸ Envelopes and "
+        "benching… before calculating; nothing is calculated or recorded.",
+        "Envolvente «{envelope}»: el alcance «{field}» = {value} m debe ser un número de metros "
+        "mayor que 0 (déjelo vacío para no limitarlo); corríjalo en Diseño ▸ Cantera ▸ "
+        "Envolventes y escalonado… antes de calcular; no se calcula ni se registra nada.",
+    ),
+    Message(
+        "des.exact_needs_constant_slope",
+        "Envelope «{envelope}»: the exact Euclidean metric only accepts a constant slope, not "
+        "the slope by sectors («{field}» = {value}); choose the 5×5 chamfer metric or a "
+        "constant slope in Design ▸ Quarry ▸ Envelopes and benching… before calculating; "
+        "nothing is calculated or recorded.",
+        "Envolvente «{envelope}»: la euclídea exacta solo admite una pendiente constante, no la "
+        "de los sectores («{field}» = {value}); elija la métrica chamfer 5×5 o una pendiente "
+        "constante en Diseño ▸ Cantera ▸ Envolventes y escalonado… antes de calcular; no se "
+        "calcula ni se registra nada.",
+    ),
+    Message(
+        "des.seeds_empty",
+        "Envelope «{envelope}»: the seeds have no cell with a finite elevation («{field}» = "
+        "{value} cells; {nodata} cells of their zone have none), so there is nothing to start "
+        "from; choose another surface or zone for the seeds in Design ▸ Quarry ▸ Envelopes and "
+        "benching… before calculating; nothing is calculated or recorded.",
+        "Envolvente «{envelope}»: las semillas no tienen ninguna celda con cota finita "
+        "(«{field}» = {value} celdas; {nodata} celdas de su zona no la tienen), así que no hay "
+        "de dónde partir; elija otra superficie o zona de semillas en Diseño ▸ Cantera ▸ "
+        "Envolventes y escalonado… antes de calcular; no se calcula ni se registra nada.",
+    ),
+    Message(
+        "des.domain_empty",
+        "Envelope «{envelope}»: the work domain is empty («{field}» = {value} cells): the "
+        "default domain of the masks, the fill-only strip and the chosen sectors or layer have "
+        "no cell in common, so nothing would be delivered; choose another bound («Bound to») "
+        "in Design ▸ Quarry ▸ Envelopes and benching… or review the limits in Design ▸ Legal "
+        "limits and constraints ▸ Constraints… before calculating; nothing is calculated or "
+        "recorded.",
+        "Envolvente «{envelope}»: el dominio de trabajo está vacío («{field}» = {value} "
+        "celdas): el dominio por defecto de las máscaras, la franja de solo relleno y los "
+        "sectores o la capa elegidos no tienen ninguna celda en común, así que no se entregaría "
+        "nada; elija otro acotado («Acotar a») en Diseño ▸ Cantera ▸ Envolventes y escalonado… "
+        "o revise los límites en Diseño ▸ Límites y restricciones ▸ Restricciones… antes de "
+        "calcular; no se calcula ni se registra nada.",
     ),
     # Lo que dice la vista previa (RF-013-03; T04): notas y avisos, nunca se lanzan ------------
     Message(

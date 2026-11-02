@@ -99,6 +99,36 @@ def column_bands(shape: tuple[int, int], width: int, values: tuple[float, ...]) 
     return np.broadcast_to(np.asarray(values)[bands], shape).copy()
 
 
+def seed_set_of(seed: np.ndarray, step: float, inside: np.ndarray | None = None) -> Any:
+    """El ``SeedSet`` de una rejilla de semillas de paso ``step`` con el dominio de trabajo
+    ``inside`` (toda la rejilla por defecto), sin proyecto."""
+    geometry = dfx.grid_from(seed.shape[0], seed.shape[1], step)
+    labels = np.zeros(seed.shape, dtype=np.int16)
+    mask = np.ones(seed.shape, dtype=bool) if inside is None else inside
+    domain = seeds_mod.domain_of(mask, labels, (), geometry.cell_area)
+    return seeds_mod.collect_seeds(seed, None, domain, geometry)
+
+
+def request_of(**changes: Any) -> Any:
+    """Una petición de envolvente descendente de 35° con semillas a 100 m, con los campos que se
+    cambien."""
+    fields: dict[str, Any] = {
+        "name": "e1", "direction": "down",
+        "seeds": model.SeedSource("fixed", elevation_m=100.0, zone=model.Zone("domain")),
+        "slope_deg": 35.0}
+    return model.EnvelopeRequest(**{**fields, **changes})
+
+
+def safe_reach(distance: np.ndarray, target: float) -> float:
+    """Un alcance cercano a ``target`` que no cae sobre la distancia de ninguna celda (a más de
+    10⁻⁶ m de todas): el punto medio del mayor hueco entre las distancias vecinas de ``target``."""
+    values = np.unique(distance[(distance > target - 1.0) & (distance < target + 1.0)])
+    gaps = np.diff(values)
+    pick = int(np.argmax(gaps))
+    assert gaps[pick] > 1e-6, "ninguna separación utilizable"
+    return float((values[pick] + values[pick + 1]) / 2.0)
+
+
 class SlopeFieldTest(unittest.TestCase):
     """A2 (RF-013-11, RF-013-13): la pendiente efectiva de cada celda."""
 
@@ -601,11 +631,7 @@ class RequestTest(unittest.TestCase):
     """``envelope_steps``: la envolvente de una petición sobre unas semillas (plan §5.3.1)."""
 
     def seed_set(self, seed: np.ndarray, step: float) -> Any:
-        geometry = dfx.grid_from(seed.shape[0], seed.shape[1], step)
-        labels = np.zeros(seed.shape, dtype=np.int16)
-        domain = seeds_mod.domain_of(np.ones(seed.shape, dtype=bool), labels, (),
-                                     geometry.cell_area)
-        return seeds_mod.collect_seeds(seed, None, domain, geometry)
+        return seed_set_of(seed, step)
 
     def test_direction_and_name_come_from_the_request(self) -> None:
         """RF-013-11: la dirección sale de la petición y la rejilla y el paso, de las semillas
@@ -625,6 +651,420 @@ class RequestTest(unittest.TestCase):
             self.assertTrue(np.array_equal(result.grid, expected.grid))
         self.assertFalse(np.shares_memory(result.grid, found.grid))
         self.assertTrue(np.array_equal(found.grid, seed))
+
+
+class AscendingTest(unittest.TestCase):
+    """RF-013-11: la envolvente ascendente (relleno), ``E↑(p) = mín_q [s(q) + t·d(p, q)]``."""
+
+    def test_a_row_of_toe_seeds_rises_by_the_slope_row_by_row(self) -> None:
+        """RF-013-11 (R-39): el pie de un relleno —la fila sur de una rejilla de 10 × 12 celdas de
+        2 m, a 100 m— sube con la pendiente de 18° por 0,8 de factor de malla: a mano,
+        ``E↑ = 100 + escala·tan(18°)·0,8·2·(filas desde el pie)`` en todas sus columnas; la
+        petición ascendente da lo mismo que ``chamfer_steps``."""
+        seed = np.full((10, 12), np.inf)
+        seed[9, :] = 100.0
+        request = request_of(direction="up", slope_deg=18.0, mesh_factor=0.8)
+        slope = envelopes.constant_slope(18.0, 0.8)
+        found = finish(envelopes.envelope_steps(request, seed_set_of(seed, 2.0), slope))[1]
+        rise = SCALE * math.tan(math.radians(18.0)) * 0.8 * 2.0
+        by_hand = 100.0 + rise * (9 - np.arange(10.0))[:, None] * np.ones((1, 12))
+        self.assertLessEqual(float(np.abs(found.grid - by_hand).max()), TOLERANCE_M)
+        self.assertTrue(np.array_equal(found.grid, solve(seed, slope, 2.0, "up").grid))
+        self.assertTrue((found.grid[9] == 100.0).all())
+
+    def test_it_never_passes_a_seed_nor_falls_below_the_lowest_one(self) -> None:
+        """RF-013-11, RF-013-15: la ascendente queda en cada semilla a su cota o por debajo (la
+        descendente, o por encima) y nunca baja de la cota más baja (sube de la más alta, la
+        descendente): una envolvente de relleno no pasa de sus semillas y no hunde nada."""
+        rng = np.random.default_rng(21)
+        for _ in range(10):
+            seed = random_seeds(rng, (16, 19))
+            cells = np.isfinite(seed)
+            up = solve(seed, 0.6, 1.0, "up").grid
+            down = solve(seed, 0.6, 1.0, "down").grid
+            self.assertTrue((up[cells] <= seed[cells]).all())
+            self.assertTrue((down[cells] >= seed[cells]).all())
+            self.assertGreaterEqual(float(up.min()), float(seed[cells].min()))
+            self.assertLessEqual(float(down.max()), float(seed[cells].max()))
+
+    def test_the_request_enumerates_the_direction(self) -> None:
+        """RF-013-11: la dirección de la petición puede ser el enumerado o su texto, y la
+        ascendente y la descendente de las mismas semillas son distintas."""
+        rng = np.random.default_rng(5)
+        seed = random_seeds(rng, (12, 14))
+        found = seed_set_of(seed, 1.0)
+        slope = envelopes.constant_slope(40.0)
+        grids = {}
+        for way in (model.Direction.UP, "up", model.Direction.DOWN, "down"):
+            request = request_of(direction=way, slope_deg=40.0)
+            grids[str(way)] = finish(envelopes.envelope_steps(request, found, slope))[1].grid
+        self.assertTrue(np.array_equal(grids["up"], grids[str(model.Direction.UP)]))
+        self.assertTrue(np.array_equal(grids["down"], grids[str(model.Direction.DOWN)]))
+        self.assertFalse(np.array_equal(grids["up"], grids["down"]))
+
+
+class ReachTest(unittest.TestCase):
+    """RF-013-14 (A6): el alcance máximo, la distancia a la semilla más próxima con la misma
+    métrica y ``t = 1``, y ``NaN`` más allá; sin alcance, ninguno."""
+
+    def envelope(self, seed: np.ndarray, step: float, reach: float | None, direction: str = "up",
+                 degrees: float = 30.0, **changes: Any) -> Any:
+        request = request_of(direction=direction, slope_deg=degrees, reach_m=reach, **changes)
+        slope = envelopes.constant_slope(degrees, request.mesh_factor)
+        return finish(envelopes.envelope_steps(request, seed_set_of(seed, step), slope))[1]
+
+    def distance_to(self, seed: np.ndarray, step: float) -> np.ndarray:
+        """La distancia *chamfer* (m) a la semilla más próxima, por el oráculo (``t = 1``)."""
+        origin = np.where(np.isfinite(seed), 0.0, np.inf)
+        return oracles.dijkstra(origin, 1.0, step)
+
+    def test_a_row_by_hand(self) -> None:
+        """RF-013-14: en una fila de 12 celdas de 1 m con la semilla en el extremo, la distancia
+        *chamfer* es ``0,98644·n``: con 4 m de alcance quedan las celdas 0 a 4 (3,9458 m la
+        última), con 3,9 m, de 0 a 3, y con 0,5 m solo la semilla; el resto, ``NaN``. La
+        envolvente de las que quedan es ``100 + 0,5·0,98644·n``."""
+        seed = single_seed((1, 12), 0, 0, 100.0)
+        degrees = math.degrees(math.atan(0.5))
+        for reach, last in ((4.0, 4), (3.9, 3), (0.5, 0)):
+            with self.subTest(reach=reach):
+                row = self.envelope(seed, 1.0, reach, degrees=degrees).grid[0]
+                self.assertEqual(int(np.isfinite(row).sum()), last + 1)
+                self.assertTrue(np.isfinite(row[:last + 1]).all())
+                self.assertTrue(np.isnan(row[last + 1:]).all())
+                by_hand = 100.0 + 0.5 * SCALE * np.arange(last + 1.0)
+                self.assertLessEqual(float(np.abs(row[:last + 1] - by_hand).max()), 1e-12)
+        wide = self.envelope(seed, 2.0, 8.0, degrees=degrees).grid[0]  # el paso 2 m: 1,97288·n
+        self.assertEqual(int(np.isfinite(wide).sum()), 5)
+
+    def test_the_mask_is_the_chamfer_distance_to_the_nearest_seed(self) -> None:
+        """RF-013-14, A6: las celdas con envolvente son las que están a ``distancia ≤ alcance`` de
+        la semilla más próxima, con la distancia del oráculo (Dijkstra sobre los 16
+        desplazamientos con ``t = 1``); en ellas la envolvente es la de siempre, bit a bit; en las
+        demás, ``NaN``; en las dos direcciones, con pasos de 1,5 y 2 m."""
+        rng = np.random.default_rng(31)
+        for step in (1.5, 2.0):
+            seed = random_seeds(rng, (30, 40))
+            distance = self.distance_to(seed, step)
+            for target in (4.0, 9.0, 15.0):
+                reach = safe_reach(distance, target * step / 1.5)
+                for direction in ("up", "down"):
+                    with self.subTest(step=step, reach=round(reach, 3), direction=direction):
+                        found = self.envelope(seed, step, reach, direction)
+                        plain = self.envelope(seed, step, None, direction)
+                        inside = distance <= reach
+                        self.assertTrue(0 < int(inside.sum()) < inside.size)
+                        self.assertTrue(np.array_equal(np.isfinite(found.grid), inside))
+                        self.assertTrue(np.array_equal(np.isnan(found.grid), ~inside))
+                        self.assertTrue(np.array_equal(found.grid[inside], plain.grid[inside]))
+                        self.assertEqual((found.iterations, found.violation),
+                                         (plain.iterations, plain.violation))
+
+    def test_reach_steps_gives_the_distance_with_nan_beyond(self) -> None:
+        """RF-013-14, A6: ``reach_steps`` entrega la distancia (m, float64, array nuevo) a la
+        semilla más próxima donde no pasa del alcance —igual al oráculo a ≤ 10⁻⁹ m— y ``NaN``
+        donde pasa; las celdas de semilla, a 0. Es de la fase «reach», con su resultado en el último
+        paso."""
+        rng = np.random.default_rng(32)
+        seed = random_seeds(rng, (25, 30))
+        before = seed.copy()
+        distance = self.distance_to(seed, 2.0)
+        reach = safe_reach(distance, 12.0)
+        geometry = dfx.grid_from(25, 30, 2.0)
+        steps, found = finish(envelopes.reach_steps(seed, geometry, reach, name="e1",
+                                                    budget_s=1e-9))
+        self.assertTrue(steps)
+        for item in steps:
+            self.assertEqual(item.phase, "reach")
+            self.assertIsNone(item.result)
+        self.assertEqual(found.dtype, np.float64)
+        self.assertEqual(found.shape, seed.shape)
+        self.assertFalse(np.shares_memory(found, seed))
+        inside = distance <= reach
+        self.assertTrue(np.array_equal(np.isfinite(found), inside))
+        self.assertLessEqual(float(np.abs(found[inside] - distance[inside]).max()), TOLERANCE_M)
+        self.assertTrue((found[np.isfinite(seed)] == 0.0).all())
+        self.assertTrue(np.array_equal(seed, before))
+
+    def test_without_a_reach_nothing_is_cut(self) -> None:
+        """RF-013-14: sin alcance (``None``) toda la rejilla tiene envolvente (ninguna celda
+        ``NaN``) y es la misma que el *chamfer* sin más; con un alcance mayor que la rejilla,
+        también."""
+        rng = np.random.default_rng(33)
+        seed = random_seeds(rng, (20, 24))
+        plain = solve(seed, envelopes.constant_slope(30.0), 1.0, "down")
+        for reach in (None, 1_000.0):
+            found = self.envelope(seed, 1.0, reach, "down")
+            self.assertTrue(np.isfinite(found.grid).all())
+            self.assertTrue(np.array_equal(found.grid, plain.grid))
+
+    def test_the_reach_does_not_depend_on_the_slope_the_direction_or_the_mesh_factor(self) -> None:
+        """RF-013-14: el alcance se mide con ``t = 1`` (distancia pura): la misma máscara con
+        cualquier pendiente (5° a 80°), factor de malla y dirección, y con una pendiente por
+        sectores."""
+        rng = np.random.default_rng(34)
+        seed = random_seeds(rng, (22, 26))
+        reach = safe_reach(self.distance_to(seed, 1.0), 6.0)
+        masks = []
+        for degrees, mesh, direction in ((5.0, 1.0, "up"), (35.0, 0.5, "down"),
+                                         (80.0, 1.0, "down"), (0.0, 1.0, "up")):
+            found = self.envelope(seed, 1.0, reach, direction, degrees, mesh_factor=mesh)
+            masks.append(np.isnan(found.grid))
+        labels = (1 + (np.arange(26) >= 13).astype(np.int16))[None, :] * np.ones((22, 1), np.int16)
+        slope = envelopes.sector_slope(labels, [envelopes.SlopeRule(0.2),
+                                                envelopes.SlopeRule(3.0)], None)
+        request = request_of(slope_mode="sectors", slope_deg=None, reach_m=reach,
+                             direction="up")
+        by_sectors = finish(envelopes.envelope_steps(request, seed_set_of(seed, 1.0),
+                                                     slope))[1]
+        masks.append(np.isnan(by_sectors.grid))
+        for other in masks[1:]:
+            self.assertTrue(np.array_equal(masks[0], other))
+        self.assertTrue(0 < int(masks[0].sum()) < masks[0].size)
+
+    def test_a_larger_reach_contains_the_smaller_one_and_the_seeds_always_stay(self) -> None:
+        """RF-013-14: con más alcance, más celdas y siempre las anteriores con la misma cota; con un
+        alcance casi nulo, solo las celdas de semilla, a su cota."""
+        rng = np.random.default_rng(35)
+        seed = random_seeds(rng, (24, 28))
+        previous = None
+        for reach in (1e-9, 3.3, 7.7, 12.1, 30.3):
+            found = self.envelope(seed, 1.0, reach).grid
+            if previous is not None:
+                before = np.isfinite(previous)
+                self.assertTrue(np.isfinite(found)[before].all())
+                self.assertTrue(np.array_equal(found[before], previous[before]))
+                self.assertGreaterEqual(int(np.isfinite(found).sum()), int(before.sum()))
+            previous = found
+            self.assertTrue(np.isfinite(found[np.isfinite(seed)]).all())
+        tiny = self.envelope(seed, 1.0, 1e-9).grid
+        plain = self.envelope(seed, 1.0, None).grid
+        cells = np.isfinite(seed)
+        self.assertTrue(np.array_equal(np.isfinite(tiny), cells))
+        self.assertTrue(np.array_equal(tiny[cells], plain[cells]))
+
+    def test_seeds_outside_the_work_domain_count_for_the_reach(self) -> None:
+        """RF-013-01, RF-013-14: las semillas fuera del dominio de trabajo se usan (la envolvente
+        las conserva y el recorte al dominio es posterior): el alcance es el mismo con el dominio
+        entero que con medio dominio."""
+        rng = np.random.default_rng(36)
+        seed = random_seeds(rng, (20, 24))
+        half = np.zeros(seed.shape, dtype=bool)
+        half[:, :12] = True
+        request = request_of(direction="up", slope_deg=30.0, reach_m=5.5)
+        slope = envelopes.constant_slope(30.0)
+        whole = finish(envelopes.envelope_steps(request, seed_set_of(seed, 1.0), slope))[1]
+        part = finish(envelopes.envelope_steps(request, seed_set_of(seed, 1.0, half), slope))[1]
+        self.assertTrue(np.array_equal(np.isnan(whole.grid), np.isnan(part.grid)))
+        self.assertTrue(np.array_equal(whole.grid[np.isfinite(whole.grid)],
+                                       part.grid[np.isfinite(part.grid)]))
+
+    def test_the_reach_modifies_no_input_and_leaves_nothing_if_closed(self) -> None:
+        """Principio 7, D-20: ni las semillas ni el dominio ni el mapa de pendientes cambian con un
+        alcance; el resultado no comparte memoria con ellos; cerrar a mitad no entrega nada; con
+        presupuesto casi nulo hay un paso por unidad."""
+        rng = np.random.default_rng(37)
+        seed = random_seeds(rng, (60, 70))
+        found = seed_set_of(seed, 1.0)
+        before = (found.grid.copy(), found.domain.mask.copy())
+        request = request_of(direction="down", slope_deg=30.0, reach_m=11.5)
+        slope = envelopes.constant_slope(30.0)
+        steps, result = finish(envelopes.envelope_steps(request, found, slope, budget_s=1e-9))
+        self.assertGreater(len(steps), 3)
+        self.assertTrue(all(item.result is None for item in steps))
+        self.assertFalse(np.shares_memory(result.grid, found.grid))
+        self.assertTrue(np.array_equal(found.grid, before[0]))
+        self.assertTrue(np.array_equal(found.domain.mask, before[1]))
+        half_way = envelopes.envelope_steps(request, found, slope, budget_s=1e-9)
+        self.assertIsNone(next(half_way).result)
+        half_way.close()
+        self.assertTrue(np.array_equal(found.grid, before[0]))
+
+    def test_the_reach_step_is_checked(self) -> None:
+        """Una forma que no casa es un error del programa; un alcance fuera de rango, un rechazo
+        de RF-013-16 (``des.reach_range``)."""
+        seed = single_seed((6, 7), 2, 3, 100.0)
+        with self.assertRaises(ValueError):
+            list(envelopes.reach_steps(seed, dfx.grid_from(6, 8, 1.0), 5.0))
+        for bad in (0.0, -2.0, math.nan, math.inf):
+            with self.subTest(reach=bad), self.assertRaises(messages.DesignError) as caught:
+                list(envelopes.reach_steps(seed, dfx.grid_from(6, 7, 1.0), bad, name="e1"))
+            self.assertEqual((caught.exception.code, caught.exception.field),
+                             ("des.reach_range", "reach_m"))
+
+
+class RefusalsTest(unittest.TestCase):
+    """RF-013-16: lo que se rechaza antes de calcular, en español y nombrando el objeto, el campo
+    y el valor; no se calcula ni se registra nada."""
+
+    COMMAND_ES = "Diseño ▸ Cantera ▸ Envolventes y escalonado…"
+    COMMAND_EN = "Design ▸ Quarry ▸ Envelopes and benching…"
+    SEED = single_seed((6, 7), 2, 3, 100.0)
+
+    def refused(self, request: Any, found: Any = None) -> Any:
+        """El ``DesignError`` con el que ``envelope_steps`` rechaza la petición al avanzar,
+        antes de ceder un solo paso."""
+        found = seed_set_of(self.SEED, 1.0) if found is None else found
+        steps = envelopes.envelope_steps(request, found, envelopes.constant_slope(35.0))
+        with self.assertRaises(messages.DesignError) as caught:
+            next(steps)
+        return caught.exception
+
+    def assert_says(self, error: Any, code: str, field: str) -> None:
+        """El código, el campo, el objeto, la orden y los dos idiomas sin marcadores sueltos."""
+        self.assertEqual((error.code, error.field), (code, field))
+        self.assertIn("e1", error.obj)
+        self.assertIn("e1", error.text)
+        self.assertIn(f"«{field}»", error.text)
+        self.assertIn(self.COMMAND_ES, error.text)
+        self.assertIn("no se calcula ni se registra nada", error.text)
+        english = messages.render(code, language="en", **error.values)
+        self.assertIn(self.COMMAND_EN, english)
+        for text in (error.text, english):
+            self.assertNotIn("{", text)
+            self.assertNotIn("?", text)
+
+    def test_a_slope_that_is_not_a_number_from_0_included_to_90_excluded_is_refused(self) -> None:
+        """RF-013-16: una pendiente de -0,1°, de 90° (excluido), de 120°, NaN, infinita o sin
+        valor se rechaza con ``des.slope_range`` nombrando la envolvente, el campo y el valor; 0°
+        (incluido) y 89,999° pasan."""
+        cases: list[tuple[float | None, Any]] = [(-0.1, -0.1), (90.0, 90.0), (120.0, 120.0),
+                                                 (math.nan, "nan"), (math.inf, "inf"),
+                                                 (None, "—")]
+        for bad, shown in cases:
+            with self.subTest(slope=bad):
+                error = self.refused(request_of(slope_deg=bad))
+                self.assert_says(error, "des.slope_range", "slope_deg")
+                self.assertEqual(error.value, shown)
+        for good in (0.0, 35.0, 89.999):
+            with self.subTest(slope=good):
+                self.assertIsNone(envelopes.check_request(request_of(slope_deg=good)))
+
+    def test_a_mesh_factor_outside_0_excluded_to_1_is_refused(self) -> None:
+        """RF-013-11, RF-013-16: el factor de malla de una pendiente constante ha de estar entre 0
+        (excluido) y 1; fuera, ``des.mesh_factor_range`` con el campo y el valor; en 1 y en 0,0001
+        pasa."""
+        for bad in (0.0, -0.5, 1.0001, math.nan):
+            with self.subTest(mesh_factor=bad):
+                error = self.refused(request_of(mesh_factor=bad))
+                self.assert_says(error, "des.mesh_factor_range", "mesh_factor")
+        for good in (1.0, 0.0001):
+            self.assertIsNone(envelopes.check_request(request_of(mesh_factor=good)))
+
+    def test_the_exact_metric_with_slopes_by_sector_is_refused(self) -> None:
+        """RF-013-13, RF-013-16: la euclídea exacta solo admite la pendiente constante; con la de
+        los sectores, ``des.exact_needs_constant_slope`` (campo ``slope_mode``, valor
+        «sectors»); el *chamfer* con sectores, y la exacta con una constante, pasan."""
+        error = self.refused(request_of(metric="exact", slope_mode="sectors", slope_deg=None))
+        self.assert_says(error, "des.exact_needs_constant_slope", "slope_mode")
+        self.assertEqual(error.value, "sectors")
+        for request in (request_of(metric="chamfer5", slope_mode="sectors", slope_deg=None),
+                        request_of(metric="exact", slope_mode="constant")):
+            self.assertIsNone(envelopes.check_request(request))
+
+    def test_by_sectors_the_constant_slope_fields_are_not_asked_for(self) -> None:
+        """RF-013-13: con la pendiente por sectores no se comprueban el grado ni el factor de malla
+        de la petición (la pendiente sale de cada sector y de su perfil)."""
+        request = request_of(slope_mode="sectors", slope_deg=None, mesh_factor=0.0)
+        self.assertIsNone(envelopes.check_request(request))
+
+    def test_a_reach_that_is_not_a_positive_number_is_refused(self) -> None:
+        """RF-013-14, RF-013-16: un alcance de 0, negativo, NaN o infinito se rechaza con
+        ``des.reach_range`` (campo ``reach_m``); sin alcance y uno positivo pasan."""
+        for bad in (0.0, -5.0, math.nan, math.inf):
+            with self.subTest(reach=bad):
+                error = self.refused(request_of(reach_m=bad))
+                self.assert_says(error, "des.reach_range", "reach_m")
+        for good in (None, 0.001, 1.0e6):
+            self.assertIsNone(envelopes.check_request(request_of(reach_m=good)))
+
+    def test_seeds_without_a_finite_elevation_are_refused(self) -> None:
+        """RF-013-16: unas semillas sin ninguna celda con cota finita (todas ``+inf``, NaN o
+        ``−inf``) se rechazan con ``des.seeds_empty`` (campo ``seeds``, valor 0 celdas), con las
+        celdas de su zona que no tenían cota (42 aquí)."""
+        blank = np.full((6, 7), np.inf)
+        blank[0, 0], blank[1, 1] = np.nan, -np.inf
+        for seeds in (seed_set_of(blank, 1.0),
+                      seeds_mod.collect_seeds(np.full((6, 7), np.nan), np.ones((6, 7), bool),
+                                              seed_set_of(blank, 1.0).domain,
+                                              dfx.grid_from(6, 7, 1.0))):
+            error = self.refused(request_of(), seeds)
+            self.assert_says(error, "des.seeds_empty", "seeds")
+            self.assertEqual(error.value, 0)
+        self.assertEqual(error.values["nodata"], 42)
+        self.assertIn("42 celdas", error.text)
+
+    def test_an_empty_work_domain_is_refused(self) -> None:
+        """RF-013-16: un dominio de trabajo sin ninguna celda se rechaza con ``des.domain_empty``
+        (campo ``domain``, valor 0 celdas) aunque haya semillas fuera de él."""
+        error = self.refused(request_of(), seed_set_of(self.SEED, 1.0,
+                                                       np.zeros(self.SEED.shape, dtype=bool)))
+        self.assert_says(error, "des.domain_empty", "domain")
+        self.assertEqual(error.value, 0)
+
+    def test_the_request_is_checked_before_the_seeds_and_the_seeds_before_the_domain(self) -> None:
+        """RF-013-16: con varias causas se rechaza primero la que no necesita leer nada (la
+        petición), luego unas semillas vacías y luego un dominio vacío."""
+        nothing = np.full((6, 7), np.inf)
+        none_at_all = seed_set_of(nothing, 1.0, np.zeros((6, 7), dtype=bool))
+        self.assertEqual(self.refused(request_of(slope_deg=95.0), none_at_all).code,
+                         "des.slope_range")
+        self.assertEqual(self.refused(request_of(), none_at_all).code, "des.seeds_empty")
+        self.assertEqual(self.refused(request_of(), seed_set_of(
+            self.SEED, 1.0, np.zeros((6, 7), dtype=bool))).code, "des.domain_empty")
+
+    def test_a_valid_request_passes_every_check(self) -> None:
+        """RF-013-16: una petición con pendiente, factor de malla y alcance en rango y unas semillas
+        con dominio pasa las dos comprobaciones y se calcula."""
+        request = request_of(reach_m=4.0, mesh_factor=0.9)
+        found = seed_set_of(self.SEED, 1.0)
+        self.assertIsNone(envelopes.check_request(request))
+        self.assertIsNone(envelopes.check_seed_set(request, found))
+        steps = envelopes.envelope_steps(request, found, envelopes.constant_slope(35.0, 0.9))
+        self.assertIsInstance(finish(steps)[1], envelopes.Envelope)
+
+    def test_a_refusal_yields_nothing_and_modifies_nothing(self) -> None:
+        """RF-013-16 (como RF-011-03): el rechazo sale antes de ceder un solo ``Progress`` (nada se
+        entrega) y deja las semillas y el dominio como estaban."""
+        found = seed_set_of(self.SEED, 1.0, np.zeros(self.SEED.shape, dtype=bool))
+        before = (found.grid.copy(), found.domain.mask.copy())
+        for request in (request_of(), request_of(slope_deg=95.0)):
+            steps = envelopes.envelope_steps(request, found, envelopes.constant_slope(35.0))
+            produced = []
+            with self.assertRaises(messages.DesignError):
+                for item in steps:
+                    produced.append(item)
+            self.assertEqual(produced, [])
+        self.assertTrue(np.array_equal(found.grid, before[0]))
+        self.assertTrue(np.array_equal(found.domain.mask, before[1]))
+
+    def test_request_slope_is_the_constant_slope_of_the_request(self) -> None:
+        """RF-013-11, RF-013-13: la pendiente de una petición de pendiente constante es
+        ``tan(°)·factor de malla`` (como ``constant_slope``), con los mismos rechazos; por sectores
+        la resuelve quien llama (``ValueError``)."""
+        slope = envelopes.request_slope(request_of(slope_deg=35.0, mesh_factor=0.9))
+        self.assertTrue(slope.uniform)
+        self.assertEqual(slope.tan, envelopes.constant_slope(35.0, 0.9).tan)
+        for bad in (request_of(slope_deg=90.0), request_of(mesh_factor=0.0)):
+            with self.assertRaises(messages.DesignError):
+                envelopes.request_slope(bad)
+        with self.assertRaises(ValueError):
+            envelopes.request_slope(request_of(slope_mode="sectors", slope_deg=None))
+
+    def test_the_six_codes_are_errors_in_both_languages(self) -> None:
+        """Principio 10: los seis códigos de la tarea son errores del catálogo, con su texto en
+        español y en inglés, y rellenos con sus valores no dejan ni «?» ni «{…}»."""
+        codes = ("des.slope_range", "des.mesh_factor_range", "des.reach_range",
+                 "des.exact_needs_constant_slope", "des.seeds_empty", "des.domain_empty")
+        values = {"envelope": "e1", "nodata": 3}
+        for code in codes:
+            with self.subTest(code=code):
+                self.assertEqual(messages.MESSAGES[code].severity, "error")
+                error = messages.DesignError(code, obj="Envolvente «e1»", field="campo",
+                                             value="v", **values)
+                for language in ("es", "en"):
+                    text = messages.render(code, language=language, **error.values)
+                    self.assertNotIn("{", text)
+                    self.assertNotIn("?", text)
 
 
 @contextmanager
@@ -710,6 +1150,113 @@ class ProjectSectorsTest(dfx.DesignProjectCase):
         self.assertLessEqual(found.violation, TOLERANCE_M)
         again = solve(found.grid, slope, 2.0, "down")
         self.assertLessEqual(float(np.abs(again.grid - found.grid).max()), TOLERANCE_M)
+
+
+class ProjectRefusalsTest(dfx.DesignProjectCase):
+    """RF-013-14, RF-013-16 sobre el proyecto del diseño (160 × 160 celdas de 2 m): una superficie
+    en otra rejilla, otra con cota solo en un bloque, una capa dentro del sector 1 y otra fuera del
+    perímetro: lo que se rechaza se rechaza antes de calcular y no deja nada en el proyecto."""
+
+    LAYER = "gis_fea_cuadro"
+    FAR = "gis_fea_lejos"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        grid = cfx.SITE_GRID
+        rows, cols = np.indices(grid.shape)
+        slope = 600.0 + 0.5 * cols + 0.25 * rows
+        island = np.full(grid.shape, np.nan)
+        island[:10, :10] = 650.0
+        shifted = gis.Grid(grid.west + 2.0, grid.north, grid.dx, grid.dy, grid.ncols, grid.nrows)
+        helper = cls("test_a_surface_in_another_grid_is_refused_before_calculating")
+        helper.write_surfaces(("ladera", dfx.raster(grid, slope)),
+                              ("desplazada", dfx.raster(shifted, slope)),
+                              ("isla", dfx.raster(grid, island)))
+        helper.write_layer(cls.LAYER, [[[cfx.rectangle(40.0, 40.0, 60.0, 60.0)]]])
+        helper.write_layer(cls.FAR, [[[cfx.rectangle(230.0, -90.0, 290.0, -40.0)]]])
+        cls.masks_ = helper.masks()
+
+    def snapshot(self) -> tuple[Any, ...]:
+        """Lo que escribiría un cálculo: filas de operaciones, datos y cifras, y los ficheros."""
+        counts = tuple(self.query(f"SELECT COUNT(*) FROM {table}")[0][0]
+                       for table in ("gb_operation", "gb_dataset", "gb_operation_io",
+                                     "gb_figure"))
+        files = tuple(sorted((path.relative_to(self.root).as_posix(), path.stat().st_size)
+                             for path in self.root.rglob("*") if path.is_file()))
+        return counts, files
+
+    def calculate(self, request: Any) -> Any:
+        """Lo que hará la orden: las semillas de la petición sobre las máscaras de V01 y su
+        envolvente (la pendiente es constante)."""
+        found = finish(seeds_mod.build_seeds_steps(self.project, request, self.masks_))[1]
+        slope = envelopes.request_slope(request)
+        return finish(envelopes.envelope_steps(request, found, slope))[1]
+
+    def test_a_surface_in_another_grid_is_refused_before_calculating(self) -> None:
+        """RF-013-16: unas semillas de una superficie en otra rejilla se rechazan nombrando la
+        superficie, el campo (``west``) y la orden de la 006, antes de calcular, y no queda nada
+        registrado ni escrito."""
+        before = self.snapshot()
+        request = request_of(seeds=model.SeedSource("surface", surface="gis_dtm_desplazada"))
+        with self.assertRaises(messages.DesignError) as caught:
+            self.calculate(request)
+        error = caught.exception
+        self.assertEqual((error.code, error.field), ("des.surface_mismatch", "west"))
+        self.assertIn("gis_dtm_desplazada", error.text)
+        self.assertIn("Topografía ▸ Superficies ▸ Rejilla de proyecto desde un MDT…", error.text)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_seeds_without_elevation_in_their_zone_are_refused(self) -> None:
+        """RF-013-16: unas semillas de una superficie cuya zona no tiene ninguna cota (la zona es
+        una capa fuera del bloque con dato) se rechazan con ``des.seeds_empty`` y las 100 celdas
+        de la zona sin cota; no queda nada escrito."""
+        before = self.snapshot()
+        request = request_of(seeds=model.SeedSource("surface", surface="gis_dtm_isla",
+                                                    zone=model.Zone("layer", self.LAYER)))
+        with self.assertRaises(messages.DesignError) as caught:
+            self.calculate(request)
+        error = caught.exception
+        self.assertEqual((error.code, error.field, error.value), ("des.seeds_empty", "seeds", 0))
+        self.assertEqual(error.values["nodata"], 100)
+        self.assertIn("100 celdas", error.text)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_an_empty_work_domain_is_refused(self) -> None:
+        """RF-013-16: un dominio acotado a una capa fuera del perímetro de actuación queda vacío:
+        se rechaza con ``des.domain_empty`` aunque haya semillas (750 celdas) en esa capa; no queda
+        nada escrito."""
+        before = self.snapshot()
+        request = request_of(seeds=model.SeedSource("fixed", elevation_m=700.0,
+                                                    zone=model.Zone("layer", self.FAR)),
+                             domain=model.WorkDomain(layer=self.FAR))
+        with self.assertRaises(messages.DesignError) as caught:
+            self.calculate(request)
+        self.assertEqual((caught.exception.code, caught.exception.field),
+                         ("des.domain_empty", "domain"))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_a_fill_with_a_reach_is_calculated_and_writes_nothing(self) -> None:
+        """RF-013-11, RF-013-14: la envolvente ascendente de unas semillas fijas a 650 m en una
+        capa de 10 × 10 celdas del sector 1, con 8 m de alcance y 30° (paso 2 m), da envolvente en
+        las celdas a ≤ 8 m de las semillas (la distancia *chamfer* del oráculo, de 0,98644·2 m por
+        celda en el eje), ``NaN`` en el resto y exactamente la cota de las semillas en el interior;
+        calcular no escribe nada en el proyecto ni cambia la superficie."""
+        before = self.snapshot()
+        request = request_of(direction="up", slope_deg=30.0, reach_m=8.0,
+                             seeds=model.SeedSource("fixed", elevation_m=650.0,
+                                                    zone=model.Zone("layer", self.LAYER)))
+        found = self.calculate(request)
+        seeds = finish(seeds_mod.build_seeds_steps(self.project, request, self.masks_))[1]
+        self.assertEqual(seeds.cells, 100)
+        origin = np.where(np.isfinite(seeds.grid), 0.0, np.inf)
+        distance = oracles.dijkstra(origin, 1.0, cfx.SITE_GRID.dx)
+        self.assertTrue(np.array_equal(np.isfinite(found.grid), distance <= 8.0))
+        self.assertGreater(int(np.isfinite(found.grid).sum()), seeds.cells)
+        self.assertLess(int(np.isfinite(found.grid).sum()), found.grid.size)
+        self.assertTrue((found.grid[np.isfinite(seeds.grid)] == 650.0).all())
+        self.assertEqual(float(found.grid[np.isfinite(found.grid)].min()), 650.0)
+        self.assertEqual(self.snapshot(), before)
 
 
 if __name__ == "__main__":
