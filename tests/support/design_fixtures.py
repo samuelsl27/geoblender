@@ -695,12 +695,15 @@ class DesignProjectCase(cp.ConstraintsProjectCase):
         write_grids(self.project, list(grids), message="Superficies de prueba")
 
     def write_layer(self, name: str, entities: Sequence[Sequence[Sequence[np.ndarray]]], *,
-                    kind: str = "polygon", domains: bool = False) -> None:
+                    kind: str = "polygon", domains: bool = False,
+                    names: Sequence[str] | None = None) -> None:
         """Escribe una capa del proyecto como lo hace la importación de la 006: ``gis_fea_…``
         (entidades, la 012; ``kind``: ``polygon`` o ``line``) o, con ``domains``, ``gis_dom_…``
         (dominios de polígonos, la 011). ``entities``: por entidad, sus partes y, de cada una,
         sus anillos (el primero, el exterior) o su camino, ABSOLUTOS. ``name`` ha de llevar el
-        prefijo de su familia."""
+        prefijo de su familia. Cada entidad se llama «Entidad <fid>» en el campo ``nombre`` o,
+        con ``names``, como dice ese texto (uno por entidad): con él se declaran sectores con el
+        nombre que se quiera."""
         from tests.support.provenance_contract import registered
 
         contract = import_geoblender("core.provenance.contract")
@@ -712,7 +715,10 @@ class DesignProjectCase(cp.ConstraintsProjectCase):
         srs = int(self.project.record.crs_epsg)
         column = vector.FieldColumn("nombre", "nombre", "TEXT")
         fids = tuple(range(1, len(entities) + 1))
-        values = {"nombre": tuple(f"Entidad {fid}" for fid in fids)}
+        if names is not None and len(names) != len(entities):
+            raise ValueError("hace falta un nombre por entidad")
+        values = {"nombre": tuple(f"Entidad {fid}" for fid in fids) if names is None
+                  else tuple(names)}
         polygons = tuple(tuple(tuple(np.asarray(ring, dtype=np.float64) for ring in polygon)
                                for polygon in entity) for entity in entities)
         if domains:

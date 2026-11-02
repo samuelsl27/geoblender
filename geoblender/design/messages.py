@@ -22,7 +22,8 @@ formato del idioma: coma decimal en español, punto en inglés). Cada tarea de l
 códigos que necesite (semillas, sectores, envolventes…): los de los perfiles de banco
 (RF-013-19, RF-013-20), el del talud impuesto por sector (RF-013-08), los de las superficies y las
 zonas de un cálculo (RF-013-01, RF-013-16) y los de las semillas, el dominio de trabajo y lo que
-dice la vista previa (RF-013-01 a RF-013-03). Un campo que es un texto de una lista cerrada que la
+dice la vista previa (RF-013-01 a RF-013-03) y los del rechazo y la marca de un sector con la
+búsqueda de intocables pendiente (RF-013-05, RF-013-06). Un campo que es un texto de una lista cerrada que la
 persona ve (el papel de una superficie, el tipo de geometría de una capa) llega ya en el idioma
 de quien lo llama: ``render`` no lo traduce.
 """
@@ -172,6 +173,22 @@ CATALOG: tuple[Message, ...] = (
         "{known} or declare the sectors again in Design ▸ Parameters ▸ Design sectors….",
         "El sector «{value}» no es uno de los sectores de búsqueda del proyecto; elija uno de "
         "{known} o declare de nuevo los sectores en Diseño ▸ Parámetros ▸ Sectores de diseño….",
+    ),
+    # Sectores con la búsqueda de intocables pendiente (RF-013-05, RF-013-06; T05) -------------
+    Message(
+        "des.sector_pending",
+        "The work domain touches sectors with no current search for untouchables: {value}. "
+        "Nothing is calculated or recorded until they are searched; search in Design ▸ Legal "
+        "limits and constraints ▸ Find untouchable elements by sector….",
+        "El dominio de trabajo toca sectores sin búsqueda de intocables vigente: {value}. No se "
+        "calcula ni se registra nada hasta que se busquen; búsqueda en Diseño ▸ Límites y "
+        "restricciones ▸ Buscar elementos intocables por sector….",
+    ),
+    Message(
+        "des.sector_pending_mark",
+        "Untouchables search pending in {sector}.",
+        "Búsqueda de intocables pendiente en {sector}.",
+        "warning",
     ),
     # Lo que dice la vista previa (RF-013-03; T04): notas y avisos, nunca se lanzan ------------
     Message(
