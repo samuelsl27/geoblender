@@ -23,6 +23,10 @@ no existe), con cuentas hechas a mano y entre sí:
   1,356 %.
 - **Comprobaciones del punto fijo** (A4, RF-013-15): la mayor violación de las 16 relajaciones y la
   de las semillas, que son 0 para el resultado del Dijkstra y miden lo que se desvía una celda.
+- **El escalonado a mano** (T09, A8; RF-013-22, RF-013-23): ``hand_stairs`` da, con
+  ``EXPL_10_60_6`` y ``REST_5_35_6``, las cotas hechas a mano de la cara y de la berma en corte y
+  en relleno, los pisos también bajo el ancla, la difusión de los argumentos y NaN donde falta un
+  dato.
 """
 
 from __future__ import annotations
@@ -308,6 +312,54 @@ class FixedPointTest(unittest.TestCase):
         lowered[7, 7] -= 0.3  # la descendente debe quedar ≥ f
         self.assertAlmostEqual(oracles.seed_violation(lowered, seed, direction="down"), 0.3,
                                delta=1e-12)
+
+
+class HandStairsTest(unittest.TestCase):
+    """El oráculo del escalonado (T09, A8): el piso ``n`` y la fracción ``f`` exactos."""
+
+    def test_expl_10_60_6_by_hand(self) -> None:
+        """RF-013-22, RF-013-23: ``h`` 10 m, cara de 60° (``tan`` = √3), berma de 6 m, ancla 125 m:
+        ``a·tan α`` = 10 + 6√3 = 20,3923; la cota 145 es un piso (berma) en las dos; 146 m (n = 2,
+        f = 0,1) queda en la cara en corte (145 + 0,1·20,3923 = 147,0392) y en la berma en relleno
+        (145); 140,125 (n = 1, f = 0,5125) está en la berma del banco de arriba en corte (145) y en
+        la cara en relleno (135 + 0,5125·20,3923 − 6√3 = 135,0588); a 154,999 el relleno queda
+        6√3·0,0001 m por debajo."""
+        found = {}
+        for fill in (False, True):
+            found[fill] = oracles.hand_stairs([145.0, 146.0, 140.125, 154.999], 10.0,
+                                              math.sqrt(3.0), 6.0, 125.0, fill=fill)
+        np.testing.assert_allclose(found[False], [145.0, 147.03923048454132, 145.0, 155.0],
+                                   rtol=0.0, atol=1e-9)
+        np.testing.assert_allclose(found[True], [145.0, 145.0, 135.05875138786104,
+                                                 154.99796076951546], rtol=0.0, atol=1e-9)
+
+    def test_floors_below_the_anchor(self) -> None:
+        """RF-013-24: bajo el ancla el piso es negativo: 100 m (u = −2,5, n = −3, f = 0,5) queda
+        en la berma de 105 m en corte; 95 m (u = −3 exacto) es un piso."""
+        found = oracles.hand_stairs([100.0, 95.0], 10.0, math.sqrt(3.0), 6.0, 125.0)
+        np.testing.assert_allclose(found, [105.0, 95.0], rtol=0.0, atol=1e-9)
+
+    def test_rest_5_35_6_by_hand(self) -> None:
+        """RF-013-22, RF-013-23: ``h`` 5 m, cara de 35°, berma de 6 m, ancla 125 m: a 140,125 m
+        (n = 3, f = 0,025) el corte sube 0,025·(5 + 6 tan 35°) = 0,2300 sobre 140 m y el relleno se
+        queda en la berma, 140; a 142,4 m (f = 0,48) el corte da 144,4166 y el relleno 140,2154."""
+        tan = math.tan(math.radians(35.0))
+        cut = oracles.hand_stairs([140.125, 142.4], 5.0, tan, 6.0, 125.0)
+        fill = oracles.hand_stairs([140.125, 142.4], 5.0, tan, 6.0, 125.0, fill=True)
+        np.testing.assert_allclose(cut, [140.23003113073145, 144.41659771004396], rtol=0.0,
+                                   atol=1e-9)
+        np.testing.assert_allclose(fill, [140.0, 140.2153524807857], rtol=0.0, atol=1e-9)
+
+    def test_broadcast_and_non_finite(self) -> None:
+        """Los argumentos se difunden; con algún dato no finito, la celda sale NaN; ninguna entrada
+        se modifica."""
+        surface = np.array([[130.0, np.nan], [np.inf, 131.0]])
+        before = surface.copy()
+        found = oracles.hand_stairs(surface, [[10.0], [5.0]], 1.0, 0.0, 125.0)
+        self.assertEqual(found.shape, (2, 2))
+        self.assertTrue(np.isnan(found[0, 1]) and np.isnan(found[1, 0]))
+        self.assertFalse(np.isnan(found[0, 0]) or np.isnan(found[1, 1]))
+        np.testing.assert_array_equal(surface, before)
 
 
 if __name__ == "__main__":

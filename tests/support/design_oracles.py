@@ -16,6 +16,9 @@ después), para rejillas pequeñas (≤ 90 × 90 celdas):
 - :func:`relaxation_violation` y :func:`seed_violation`: las comprobaciones del punto fijo de A4
   (RF-013-15), la mayor violación de las relajaciones ``E(p) ≤ E(q) + coste(q → p)`` y de las
   semillas (``E_up ≤ f`` o ``E_down ≥ f``), que valen 0 para una envolvente correcta.
+- :func:`hand_stairs` (T09, A8): el escalonado en corte o en relleno celda a celda, con el piso
+  ``n`` y la fracción ``f`` en **aritmética racional exacta** (``fractions``) y la fórmula del RF
+  escrita tal cual, para comparar con ``design.benching`` (RF-013-22, RF-013-23).
 
 Convenciones: ``seed`` es la rejilla de semillas (fila 0 al norte): una celda es semilla si su cota
 es finita; ``+inf``, ``−inf`` y NaN no lo son. ``direction="up"`` es ``E_up = mín_q [s + t·d]`` y
@@ -30,6 +33,7 @@ from __future__ import annotations
 import heapq
 import math
 from collections.abc import Sequence
+from fractions import Fraction
 
 import numpy as np
 
@@ -40,6 +44,7 @@ __all__ = [
     "brute_force_euclidean",
     "dijkstra",
     "euclidean_displacements",
+    "hand_stairs",
     "relaxation_violation",
     "seed_violation",
 ]
@@ -217,3 +222,36 @@ def seed_violation(envelope: object, seed: object, *, direction: str = "up") -> 
         excess = values[is_seed] - seeds[is_seed]
     excess = np.where(np.isnan(excess), np.inf, excess)
     return max(0.0, float(excess.max()))
+
+
+def _stair(surface: float, height: float, tan_face: float, berm: float, anchor: float,
+           fill: bool) -> float:
+    """El escalonado de una celda con ``n = ⌊(S − z₀)/h⌋`` y ``f = u − n`` exactos (racionales)."""
+    if not all(math.isfinite(value) for value in (surface, height, tan_face, berm, anchor)):
+        return math.nan
+    level = (Fraction(surface) - Fraction(anchor)) / Fraction(height)
+    number = math.floor(level)
+    fraction = float(level - number)
+    advance = height / tan_face + berm
+    if fill:
+        rise = max((fraction * advance - berm) * tan_face, 0.0)
+    else:
+        rise = min(fraction * advance * tan_face, height)
+    return anchor + number * height + rise
+
+
+def hand_stairs(surface: object, height: object, tan_face: object, berm: object, anchor: object,
+                *, fill: bool = False) -> np.ndarray:
+    """El escalonado por celda del RF-013-22 (``fill=False``: cara primero,
+    ``z₀ + n·h + mín(f·a·tan α, h)``) o del RF-013-23 (``fill=True``: berma primero,
+    ``z₀ + n·h + máx((f·a − B)·tan α, 0)``), con ``a = h/tan α + B``, ``u = (S − z₀)/h``,
+    ``n = ⌊u⌋`` y ``f = u − n``. Los cinco argumentos se difunden entre sí (escalares o arrays); una
+    celda con algún dato no finito sale NaN. Lento (un bucle de Python con racionales): para pocas
+    celdas. Ninguna entrada se modifica."""
+    arrays = np.broadcast_arrays(*(np.asarray(value, dtype=np.float64)
+                                   for value in (surface, height, tan_face, berm, anchor)))
+    found = np.empty(arrays[0].shape)
+    for index in np.ndindex(found.shape):
+        s, h, t, b, z = (float(array[index]) for array in arrays)
+        found[index] = _stair(s, h, t, b, z, fill)
+    return found
