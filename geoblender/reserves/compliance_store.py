@@ -46,7 +46,9 @@ RF-012-28; plan 012 §5.2.3, A11, D-15, D-28, D-40, D-42, D-43).
 - :func:`freeze_findings` (T18; RF-012-25; D-7, D-29): la comprobación de ``res`` al congelar,
   que ``bl`` registra con ``core.versions.freeze.register_freeze_check``: las verificaciones de
   la versión obsoletas, con recintos que no cumplen (m³ por recinto) o con la marca de
-  RF-012-10, y las superficies de diseño sin verificación al día.
+  RF-012-10, y las superficies de diseño sin verificación al día (las que fueron final de una
+  verificación sustituida y las del papel ``design_surface`` de ``design.provenance``, T18 de
+  la 013).
 
 Python puro (nivel 9).
 """
@@ -107,6 +109,7 @@ from ..core.versions import store as versions_store
 from ..core.versions.freeze import FreezeFinding
 from ..core.versions.model import ItemKind, VersionError, version_locator
 from ..core.versions.reproduce import ReproducedOutput, ReproducedResult, ReproduceRequest
+from ..design.provenance import DESIGN_SURFACE_ROLE
 from ..gis.content import GEOTIFF
 from ..gis.geotiff.reader import read_geotiff
 from ..gis.geotiff.writer import target_locked, write_failed
@@ -1247,6 +1250,11 @@ _FINALS = (  # por el índice único de (operation_uid, direction, …)
     "SELECT item_uid FROM gb_operation_io WHERE operation_uid = ? AND direction = 'in' "
     "AND item_kind = 'dataset' AND role GLOB 'final_[0-9]*' ORDER BY fid"
 )
+_DESIGN_SURFACES = (  # por los índices gb_dataset_version y gb_operation_io_item
+    "SELECT DISTINCT d.uid FROM gb_dataset AS d JOIN gb_operation_io AS io "
+    "ON io.item_kind = 'dataset' AND io.item_uid = d.uid AND io.direction = 'out' "
+    "WHERE d.version_uid = ? AND io.role = ?"
+)
 _STALE = "SELECT 1 FROM gb_stale WHERE item_kind = 'operation' AND item_uid = ? LIMIT 1"
 _DATASET = "SELECT name, version_uid, status FROM gb_dataset WHERE uid = ?"
 _COUNTS_MESSAGE = {Counts.CUT.value: "res.freeze_cut", Counts.FILL.value: "res.freeze_fill",
@@ -1335,12 +1343,14 @@ def freeze_findings(conn: sqlite3.Connection, version_uid: str) -> tuple[FreezeF
       (calculados al vuelo, D-26: ``gis.masks.store.current_pending``, no los que anotó al
       hacerse; una búsqueda cerrada después, sin cambiar las máscaras, la quita).
 
-    Y por cada **superficie de diseño sin verificación al día** (D-29: hasta R-33, la que fue
-    final de una verificación de la versión; un módulo que las declare por un papel de su
-    ``DatasetSpec`` lo añadirá en su comprobación), sobre su dato: la que fue final de una
-    verificación sustituida y ya no lo es de ninguna vigente (una vigente obsoleta ya se lista
-    por obsoleta), si sigue viva y es del proyecto o de la versión. Una verificación cuya tabla
-    no se puede leer no se da por buena (``res.freeze_unreadable``)."""
+    Y por cada **superficie de diseño sin verificación al día** (D-29, 013 D-28), sobre su dato
+    y con la misma nota (``res.freeze_surface_unchecked``): la que fue final de una verificación
+    sustituida y la que ``design`` declara con el papel
+    :data:`~geoblender.design.provenance.DESIGN_SURFACE_ROLE` (el del escalonado, RF-013-31) en
+    esta versión, si ya no es final de ninguna verificación vigente (una vigente obsoleta ya se
+    lista por obsoleta) y sigue viva y es del proyecto o de la versión. Una superficie que cae en
+    las dos se lista una vez. Una verificación cuya tabla no se puede leer no se da por buena
+    (``res.freeze_unreadable``)."""
     found: list[FreezeFinding] = []
     current: set[str] = set()
     replaced: dict[str, None] = {}
@@ -1357,8 +1367,11 @@ def freeze_findings(conn: sqlite3.Connection, version_uid: str) -> tuple[FreezeF
         found += _verification_findings(conn, version_uid, str(uid),
                                         settings if isinstance(settings, Mapping) else {},
                                         pending)
+    unchecked = dict(replaced)  # las sustituidas y las de diseño, cada una una vez
+    unchecked.update(dict.fromkeys(
+        str(row[0]) for row in conn.execute(_DESIGN_SURFACES, (version_uid, DESIGN_SURFACE_ROLE))))
     surfaces: list[FreezeFinding] = []
-    for uid in replaced:
+    for uid in unchecked:
         row = conn.execute(_DATASET, (uid,)).fetchone()
         if (uid in current or row is None or str(row[2]) not in _LIVE
                 or str(row[1]) not in ("", version_uid)):
