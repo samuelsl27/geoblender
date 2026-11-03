@@ -7374,3 +7374,12 @@ es = "Bermas por sector, perfil y cota"
 
 ["Edition of the bench profiles"]
 es = "Edición de los perfiles de banco"
+
+# La vista previa de semillas, dominios y restricciones como propiedad de WindowManager (spec 013,
+# T21; RF-013-03): bl/props/des.py. Las órdenes y las ventanas llegan con las tareas siguientes.
+
+["Preview of seeds, domains and constraints"]
+es = "Vista previa de semillas, dominios y restricciones"
+
+["Show the seeds, domains and constraints before computing"]
+es = "Muestra las semillas, los dominios y las restricciones antes de calcular"

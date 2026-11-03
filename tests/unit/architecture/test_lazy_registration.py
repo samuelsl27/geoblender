@@ -52,8 +52,15 @@ HEAVY: frozenset[str] = frozenset({
     # La cadena de las versiones y la procedencia que arrastran el almacén y las máscaras.
     "core.versions.freeze", "core.versions.reproduce", "core.versions.copy",
     "core.versions.check", "core.provenance.lineage", "core.provenance.recompute",
+    # El cálculo de las envolventes y el escalonado de la 013 (spec 013, T21): ``design.params``,
+    # ``design.provenance``, ``design.profiles``, ``design.messages`` y ``design.model`` son las
+    # declaraciones ligeras que registra ``bl/ops/des.py``; el resto se importa al usarlo.
+    "design.benching", "design.berms", "design.compose", "design.envelopes", "design.export",
+    "design.pipeline", "design.preview", "design.reduction", "design.report",
+    "design.reproduce", "design.sectors", "design.seeds", "design.steps", "design.store",
+    "design.surfaces", "design.zones",
 })
-"""Los módulos de la 012 (y la cadena que arrastran) que se importan al primer uso."""
+"""Los módulos de la 012 y de la 013 (y la cadena que arrastran) que se importan al primer uso."""
 
 
 def registered_roots(modules: Collection[pyast.PyModule]) -> list[str]:

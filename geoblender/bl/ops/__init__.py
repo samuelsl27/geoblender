@@ -31,6 +31,12 @@ de ``dh`` (llegan de la T20 a la T25). Con la spec 012 (T21), también la verifi
 comprobación de congelar de ``res``), después de lo de ``res``; ``gis.compile_constraints`` (con la
 cola de sus máscaras) lo registra ``gis``, y ``res.verify_constraints``, ``res``. Sus órdenes, en
 ``classes``, después de las de ``res`` (llegan de la T22 a la T28).
+
+``des`` (spec 013, T21): lo que el diseño de explotación declara a las specs 008 y 009 (sus
+familias y definiciones de parámetros, sus tipos de operación con su recálculo por la cola de
+``des`` y su reproducción, y sus cifras), el cálculo abierto de la sesión y el ``poll`` común de sus
+órdenes, después de lo de ``core_constraints``; sus órdenes, en ``classes``, después de las de
+``core_constraints`` (llegan de la T22 a la T28).
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ from . import (
     core,
     core_constraints,
     core_provenance,
+    des,
     dh,
     geo,
     gis,
@@ -63,6 +70,7 @@ classes += gis.classes
 classes += dh.classes
 classes += res.classes
 classes += core_constraints.classes
+classes += des.classes
 
 # «Importar un fichero» y su manejador (spec 006, T32), que abre los de la topografía.
 classes += io.classes
@@ -71,8 +79,8 @@ classes += io.classes
 def register() -> None:
     """Registra ``classes`` en orden y después lo propio de ``core_provenance`` y de
     ``jobs``; si ya lo están, no hace nada. Si uno de los dos falla, deshace lo anterior
-    antes de propagar el error. Después, lo de ``gis``, lo de ``dh``, lo de ``res`` y lo de
-    ``core_constraints``: si falla, lo deshace todo."""
+    antes de propagar el error. Después, lo de ``gis``, lo de ``dh``, lo de ``res``, lo de
+    ``core_constraints`` y lo de ``des``: si falla, lo deshace todo."""
     register_classes(classes)
     try:
         core_provenance.register()
@@ -86,6 +94,7 @@ def register() -> None:
         dh.register()
         res.register()
         core_constraints.register()
+        des.register()
     except BaseException:
         unregister()
         raise
@@ -99,9 +108,10 @@ def cancel_running() -> tuple[str, ...]:
 
 
 def unregister() -> None:
-    """Deshace lo propio de ``core_constraints``, de ``res``, de ``dh``, de ``gis``, de ``jobs`` y
-    de ``core_provenance`` y desregistra ``classes`` en orden inverso; omite lo que no está
-    registrado."""
+    """Deshace lo propio de ``des``, de ``core_constraints``, de ``res``, de ``dh``, de ``gis``, de
+    ``jobs`` y de ``core_provenance`` y desregistra ``classes`` en orden inverso; omite lo que no
+    está registrado."""
+    des.unregister()
     core_constraints.unregister()
     res.unregister()
     dh.unregister()
