@@ -62,33 +62,61 @@ diseño…, Vista previa de semillas, dominios y restricciones y Envolventes y e
 :class:`DesignCommandAware`, el de las que son además de :class:`ProvenanceAwareOperator`, con su
 descripción con el porqué si la versión activa no es editable (RF-009-21).
 
-**Las órdenes** (T22 a T25 y T28) y **los cargadores de la vista** (T27) se añaden en sus tareas:
-:data:`classes` irá creciendo con ellas. El cargador de las rejillas ``des_env_``, ``des_srf_`` y
-``des_brm_`` (objetos ``DESIGN``) es de ``bl/scene/des_views.py`` (T27), que registra ``bl.scene``
-junto al tipo de objeto que necesita.
+**Perfiles de banco…** (T22; RF-013-18, RF-013-19, RF-013-20):
+:class:`GEOBLENDER_OT_des_edit_bench_profiles` abre la ventana de ``bl.ui.des_panels`` (lo
+leído del proyecto) y la interna :class:`GEOBLENDER_OT_des_save_bench_profile` crea, completa y renombra perfiles con
+``design.profiles.edit_bench_profiles`` (una operación de proyecto, en una transacción, con el
+ámbito de la 009 «¿Para el proyecto o solo para V01?»); cambiar un valor que ya existe es
+``core_set_parameter`` (la 008 y la 009). Ninguna cuenta ni regla de rango es de aquí: las del
+dominio (``design.model.BenchProfile``, ``design.params``).
+
+**Las demás órdenes** (T23 a T25 y T28) y **los cargadores de la vista** (T27) se añaden en sus
+tareas: :data:`classes` irá creciendo con ellas. El cargador de las rejillas ``des_env_``,
+``des_srf_`` y ``des_brm_`` (objetos ``DESIGN``) es de ``bl/scene/des_views.py`` (T27), que
+registra ``bl.scene`` junto al tipo de objeto que necesita.
 """
 
 from __future__ import annotations
 
 import functools
 import logging
+import math
+import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
+import bpy
+from bpy.props import EnumProperty, StringProperty
+
 from ...core import i18n
 from ...core import params as core_params
+from ...core.errors import GeoblenderError
+from ...core.i18n import tr
+from ...core.params import ParamKind
 from ...core.project.model import Progress
 from ...core.provenance import contract
+from ...core.provenance.undo import UndoKind
 from ...design import messages as design_messages
 from ...design import params as design_params
 from ...design import profiles as design_profiles
 from ...design import provenance
-from ..scene import project_session
+from ..scene import project_session, undo_watch
 from ..scene import versions as scene_versions
+from ..ui import des_panels
 from ..ui.commands import with_note
 from . import incorporation
-from .core_provenance import write_unavailable
+from .core_provenance import (
+    KIND_ITEMS,
+    PARAMETER_SCOPE_ITEMS,
+    SESSION,
+    SOURCE_KIND_ITEMS,
+    ProvenanceAwareOperator,
+    ensure_ready,
+    error_text,
+    scope_choice,
+    write_unavailable,
+)
 from .incorporation import StepQueue
 
 if TYPE_CHECKING:  # solo para los tipos: habilitar no importa el cálculo (RNF-001-03)
@@ -199,9 +227,6 @@ FAMILIES: tuple[core_params.ParamFamily, ...] = design_params.FAMILIES
 """Las familias de parámetros de ``des`` (ADR-0027)."""
 FIGURES: tuple[contract.FigureDef, ...] = provenance.FIGURES
 """Las cifras de ``des``: las de la envolvente y las del escalonado."""
-
-classes: tuple[type, ...] = ()
-"""Las órdenes reales del diseño (T22 a T25 y T28 las irán añadiendo)."""
 
 
 # --- Registro ------------------------------------------------------------------------------------
@@ -370,3 +395,325 @@ class DesignCommandAware(DesignCommand):
         about: str = super().description(context, properties)  # type: ignore[misc]
         note = scene_versions.not_editable_text()
         return about if note is None or note in about else with_note(about, note)
+
+
+# --- Ventanas ------------------------------------------------------------------------------------
+
+TRANSLATION_CONTEXT = "Geoblender"
+DIALOG_WIDTH = 520
+_HIDDEN = {"HIDDEN", "SKIP_SAVE"}  # las pone quien la lanza (el botón de la ventana)
+_FIELD = {"SKIP_SAVE"}  # las rellena el diálogo: nunca las de la vez anterior
+PROFILE_KIND_ITEMS = [item for item in KIND_ITEMS if item[0] in ("ADOPTADO", "HIPOTESIS")]
+"""Los tipos con que una persona declara los valores de un perfil (RF-013-18, D-7): ADOPTADO o
+HIPÓTESIS (``design.profiles.DECLARED_KINDS``)."""
+_EXAMPLE = "p"  # un código cualquiera para preguntar el ámbito de las claves de los perfiles
+
+
+def _call_panel(name: str) -> set[str]:
+    """Abre la ventana emergente ``name`` con ``wm.call_panel``; sigue abierta aunque el ratón
+    salga de ella (``keep_open``), hasta pulsar fuera o Esc. Una que no está registrada, nada."""
+    if getattr(bpy.types, name, None) is None:
+        return {"CANCELLED"}
+    return bpy.ops.wm.call_panel(name=name, keep_open=True)
+
+
+def design_error_text(exc: BaseException) -> str:
+    """El texto de un error para la persona en el idioma de Geoblender: el de ``design`` en su
+    idioma (``DesignError.text`` es el español) y el de los demás, el de ``core``."""
+    if isinstance(exc, design_messages.DesignError):
+        return des_panels.design_error_text(exc)
+    return error_text(exc)
+
+
+# --- Perfiles de banco… (T22; HU-013-4; RF-013-18, RF-013-19, RF-013-20, RF-013-33) ---------------
+
+EDIT_BENCH_PROFILES = design_profiles.EDIT_COMMAND
+SAVE_BENCH_PROFILE = des_panels.SAVE_PROFILE
+
+
+class ProfileFormError(ValueError):
+    """Lo que impide guardar un perfil con lo escrito en el diálogo (ya en el idioma de
+    Geoblender)."""
+
+
+def typed_number(typed: str, field: str) -> float | None:
+    """Un número tecleado (con coma o con punto decimal; sin separador de miles): ``None`` si está
+    vacío. :class:`ProfileFormError` si no es un número finito, nombrando el campo y lo tecleado
+    (los rangos los mira el dominio, RF-013-19)."""
+    text = typed.strip().replace(" ", "").replace(" ", "").replace(" ", "")
+    if not text:
+        return None
+    try:
+        number = float(text.replace(",", "."))
+    except ValueError:
+        number = math.nan
+    if not math.isfinite(number):
+        raise ProfileFormError(tr("«{value}» is not a number (field «{field}»)",
+                                  value=typed.strip(), field=field))
+    return number
+
+
+class GEOBLENDER_OT_des_edit_bench_profiles(DesignCommandAware, ProvenanceAwareOperator,
+                                            bpy.types.Operator):
+    """Bench profiles such as EXPL_10_60_6 or REST_5_35_6"""
+
+    bl_idname = EDIT_BENCH_PROFILES
+    bl_label = "Bench profiles…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = design_profiles.EDIT_BENCH_PROFILES
+
+    def execute(self, context: Any) -> set[str]:
+        """Lee los perfiles del proyecto y sus valores en la versión activa en la vista y abre su
+        ventana; desde un guion sin ventana, solo la vista (RF-013-18, RF-013-20)."""
+        try:
+            des_panels.fill_profiles(SESSION.project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        if getattr(context, "window", None) is None:
+            return {"FINISHED"}
+        return _call_panel(des_panels.PROFILES_PANEL)
+
+
+class GEOBLENDER_OT_des_save_bench_profile(DesignCommandAware, ProvenanceAwareOperator,
+                                           bpy.types.Operator):
+    """Create a bench profile, complete the values it lacks or rename it"""
+
+    bl_idname = SAVE_BENCH_PROFILE
+    bl_label = "Save profile…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+    provenance_op_type = design_profiles.EDIT_BENCH_PROFILES
+
+    code: StringProperty(  # type: ignore[valid-type]
+        name="Profile", description="Code of the profile to complete or rename (empty: a new "
+        "profile)", options=_HIDDEN)
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the profile, such as EXPL_10_60_6: it can change, its "
+        "code cannot", options=_FIELD)
+    height: StringProperty(  # type: ignore[valid-type]
+        name="Bench height (m)", description="Height of the bench in metres, more than 0",
+        options=_FIELD)
+    face: StringProperty(  # type: ignore[valid-type]
+        name="Face angle (°)", description="Maximum inclination of the bench face in degrees, "
+        "between 0 and 90 (both excluded)", options=_FIELD)
+    berm: StringProperty(  # type: ignore[valid-type]
+        name="Minimum berm width (m)", description="Minimum berm in metres, 0 or more",
+        options=_FIELD)
+    anchor: StringProperty(  # type: ignore[valid-type]
+        name="Anchor elevation (m)", description="Elevation the benches are anchored to, in "
+        "metres", options=_FIELD)
+    mesh: StringProperty(  # type: ignore[valid-type]
+        name="Mesh factor", description="Factor between 0 (excluded) and 1 that reduces the "
+        "slope of the envelope for the grid (empty: 1)", options=_FIELD)
+    kind: EnumProperty(  # type: ignore[valid-type]
+        name="Type", description="Type of the values: adopted or hypothesis",
+        items=PROFILE_KIND_ITEMS, default="HIPOTESIS", options=_FIELD)
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Source", description="Document, standard, person, operation or algorithm the "
+        "values come from (empty: the decider)", options=_FIELD)
+    source_kind: EnumProperty(  # type: ignore[valid-type]
+        name="Source type", items=SOURCE_KIND_ITEMS, default="PERSON", options=_FIELD)
+    decided_by: StringProperty(  # type: ignore[valid-type]
+        name="Decided by", description="Who decided the values (the owner, a laboratory, a "
+        "person)", options=_FIELD)
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the profile has these values (recorded in its history)",
+        options=_FIELD)
+    scope: EnumProperty(  # type: ignore[valid-type]
+        name="Scope",
+        description="Whether the change is for the project or only for the active version (a "
+                    "parameter that its module admits by version)",
+        items=PARAMETER_SCOPE_ITEMS, default="PROJECT", options=_FIELD)
+
+    def _stored(self, project: Any) -> design_profiles.StoredProfile | None:
+        """La fila del perfil de :attr:`code` en el proyecto; ``ProfileFormError`` si ya no
+        está (sin código, ``None``: un perfil nuevo)."""
+        if not self.code:
+            return None
+        with project.read() as conn:
+            found = [row for row in design_profiles.read_profiles(conn) if row.code == self.code]
+        if not found:
+            raise ProfileFormError(tr("The bench profile is no longer in the project: open the "
+                                      "list again"))
+        return found[0]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo: de un perfil que existe, con su nombre y lo que ya vale en cada ámbito
+        (solo se piden los valores que le faltan); de uno nuevo, vacío. Propone el decisor
+        (la persona de la sesión) y, de los parámetros de versión con una versión activa, el
+        ámbito (RF-009-29); no cambia nada hasta que se acepta."""
+        self.provenance_dialog = True
+        project = SESSION.project
+        try:
+            row = self._stored(project)
+            self._known = {} if row is None else _known_values(project, row.code)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        if row is not None:
+            self.name = row.name
+        if not self.decided_by:
+            self.decided_by = project.session.user_host
+        if not self.properties.is_property_set("scope"):
+            self.scope = "PROJECT"
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=tr("Bench profile"),
+            confirm_text=tr("Save"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        choice = scope_choice(design_params.bench_key(_EXAMPLE, design_params.BenchParam.HEIGHT))
+        if choice is not None:  # «¿Para el proyecto o solo para V01?» (RF-009-29)
+            layout.label(text=tr("For the project or only for {version}?", version=choice.code),
+                         translate=False)
+            row = layout.row(align=True)
+            row.use_property_split = False
+            row.prop_enum(self, "scope", "PROJECT", text=tr("The project"), translate=False)
+            only = row.row(align=True)
+            only.enabled = choice.refusal is None  # «Versión no editable» (RF-009-21)
+            only.prop_enum(self, "scope", "VERSION",
+                           text=tr("Only {version}", version=choice.code), translate=False)
+            if choice.refusal is not None:
+                refused = layout.row()
+                refused.alert = True
+                refused.label(text=choice.refusal, icon="ERROR", translate=False)
+        known = getattr(self, "_known", {})
+        declared = False
+        for param, attribute, label in (
+                (design_params.BenchParam.HEIGHT, "height", tr("Bench height (m)")),
+                (design_params.BenchParam.FACE, "face", tr("Face angle (°)")),
+                (design_params.BenchParam.BERM, "berm", tr("Minimum berm width (m)")),
+                (design_params.BenchParam.ANCHOR, "anchor", tr("Anchor elevation (m)")),
+                (design_params.BenchParam.MESH_FACTOR, "mesh", tr("Mesh factor"))):
+            here = known.get(param, {}).get(self.scope)
+            if here is not None:  # ya vale en ese ámbito: se cambia con «Cambiar…»
+                layout.label(text=tr("{name}: {value}", name=label, value=here), translate=False)
+                declared = True
+            else:
+                layout.prop(self, attribute, text=label, translate=False)
+        if declared:
+            layout.label(text=tr("Values already declared are changed with «Change…» in the "
+                                 "list"), translate=False)
+        layout.prop(self, "kind", text=tr("Type"), translate=False)
+        layout.prop(self, "source", text=tr("Source"), translate=False)
+        layout.prop(self, "source_kind", text=tr("Source type"), translate=False)
+        layout.prop(self, "decided_by", text=tr("Decided by"), translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def _request(self, project: Any) -> tuple[design_profiles.ProfileEdit,
+                                              design_profiles.ProfileDeclaration | None]:
+        """Lo escrito, como lo pide el dominio: la edición (un perfil nuevo con sus valores, o el
+        existente con su nombre nuevo y los valores que se completan) y la declaración de los
+        valores (tipo, origen, decisor, motivo y ámbito). :class:`ProfileFormError` si lo escrito
+        no se puede leer o no cambia nada; los rangos, los nombres y los valores que faltan los
+        rechaza el dominio (``DesignError``, RF-013-19)."""
+        row = self._stored(project)
+        param = design_params.BenchParam
+        values: dict[Any, float] = {}
+        for item, typed, label in (
+                (param.HEIGHT, self.height, tr("Bench height (m)")),
+                (param.FACE, self.face, tr("Face angle (°)")),
+                (param.BERM, self.berm, tr("Minimum berm width (m)")),
+                (param.ANCHOR, self.anchor, tr("Anchor elevation (m)")),
+                (param.MESH_FACTOR, self.mesh, tr("Mesh factor"))):
+            number = typed_number(typed, label)
+            if number is not None:  # un perfil nuevo sin un valor: el dominio dice cuál falta
+                values[item] = number
+        if row is None:
+            edit = design_profiles.ProfileEdit(name=self.name, values=values)
+        else:
+            typed = self.name.strip()  # vacío: se queda con el suyo
+            renamed = self.name if typed and typed != row.name else None
+            if renamed is None and not values:
+                raise ProfileFormError(tr("Nothing to change in «{name}»", name=row.name))
+            edit = design_profiles.ProfileEdit(name=renamed, code=row.code, values=values)
+        if not values:
+            return edit, None
+        decided_by = self.decided_by.strip()
+        if not decided_by:
+            raise ProfileFormError(tr("Write who decides the values of the profile"))
+        source = self.source.strip()
+        version = None
+        if self.scope == "VERSION":  # solo la versión activa (RF-009-24, RF-009-29)
+            active = scene_versions.active()
+            if active is None:
+                raise ProfileFormError(tr("Choose the active version first: Project ▸ "
+                                          "Versions ▸ Active version"))
+            version = active.code
+        kind = ParamKind.ADOPTADO if self.kind == "ADOPTADO" else ParamKind.HIPOTESIS
+        return edit, design_profiles.ProfileDeclaration(
+            source=source or decided_by, decided_by=decided_by,
+            reason=self.reason.strip() or tr("Declared in the bench profiles window"),
+            source_kind=self.source_kind.lower() if source else "person", kind=kind.value,
+            version=version)
+
+    def execute(self, context: Any) -> set[str]:
+        """Crea, completa o renombra el perfil con ``design.profiles.edit_bench_profiles`` (una
+        sola operación de proyecto y una sola transacción; RF-013-18). Todo se mira antes de
+        escribir: un perfil sin nombre, con el nombre de otro, sin un valor o con uno fuera de
+        rango se rechaza nombrando el perfil, el campo y el valor, y no deja nada (RF-013-19)."""
+        project = SESSION.project
+        try:
+            edit, declaration = self._request(project)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report,
+                             dialog=self.provenance_dialog,
+                             version=scene_versions.active_version())
+        if ready is None:
+            return {"CANCELLED"}
+        try:
+            edited = design_profiles.edit_bench_profiles(project, [edit], declaration)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, design_profiles.EDIT_BENCH_PROFILES)
+        code = edited.created[0] if edited.created else edit.code
+        shown = next(row.name for row in edited.profiles if row.code == code)
+        text = (tr("Bench profile «{name}» created with the code «{code}»", name=shown, code=code)
+                if edited.created else
+                tr("Bench profile «{name}» saved (code «{code}»)", name=shown, code=code))
+        try:
+            des_panels.fill_profiles(project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+            LOGGER.warning("No se pudo volver a leer la lista de perfiles de banco", exc_info=True)
+        des_panels.choose(code)
+        des_panels.show_report([(text, False)])
+        self.report({"INFO"}, text)
+        return {"FINISHED"}
+
+
+def _known_values(project: Any, code: str) -> dict[Any, dict[str, str]]:
+    """Lo que el perfil ``code`` ya tiene declarado, por valor y ámbito (``PROJECT`` o
+    ``VERSION``, el de la versión activa): su texto («10 m [ADO]»). Con ello el diálogo de
+    completar no pide lo que ya vale (se cambia con «Cambiar…»)."""
+    store = core_params.ParameterStore(project)
+    version = scene_versions.active()
+    found: dict[Any, dict[str, str]] = {}
+    with project.read() as conn:
+        for param in design_params.BenchParam:
+            key = design_params.bench_key(code, param)
+            records = {"PROJECT": store.get(key, conn=conn),
+                       "VERSION": None if version is None
+                       else store.get(key, version=version.uid, conn=conn)}
+            found[param] = {scope: des_panels.record_text(record)
+                            for scope, record in records.items()
+                            if record is not None and record.value is not None}
+    return found
+
+
+classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
+                             GEOBLENDER_OT_des_save_bench_profile)
+"""Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna; T23 a T25
+y T28 las irán añadiendo)."""

@@ -526,3 +526,15 @@ description.es = "Crea una restricción desde una intención del cliente, con el
 entry = "012"
 action = "D"
 frequency = 2
+
+# Diseño (spec 013, T22): la interna de «Perfiles de banco…»; la T26 pasa las órdenes de Diseño a «013».
+[[command]]
+key = "geoblender.des_save_bench_profile"
+kind = "internal"
+label.en = "Save profile…"
+label.es = "Guardar perfil…"
+description.en = "Create a bench profile, complete the values it lacks or rename it"
+description.es = "Crea un perfil de banco, completa los valores que le faltan o lo renombra"
+entry = "R-33"
+action = "P"
+frequency = 3

@@ -7383,3 +7383,99 @@ es = "Vista previa de semillas, dominios y restricciones"
 
 ["Show the seeds, domains and constraints before computing"]
 es = "Muestra las semillas, los dominios y las restricciones antes de calcular"
+
+# «Perfiles de banco…» (spec 013, T22; HU-013-4; RF-013-18 a RF-013-20; plan 013 §5.5): la ventana
+# bl/ui/des_panels.py y la orden bl/ops/des.py (des_save_bench_profile).
+
+["h {height} · face {face} · berm {berm} · anchor {anchor}"]
+es = "h {height} · cara {face} · berma {berm} · ancla {anchor}"
+
+["advance {advance} m · general slope {slope}°"]
+es = "avance {advance} m · talud general {slope}°"
+
+["{version} and the project"]
+es = "{version} y el proyecto"
+
+["Scope: {scope}"]
+es = "Ámbito: {scope}"
+
+["New profile…"]
+es = "Perfil nuevo…"
+
+["Complete or rename…"]
+es = "Completar o renombrar…"
+
+["Bench profiles: {count}"]
+es = "Perfiles de banco: {count}"
+
+["There are no bench profiles yet: create one with its height, face angle, berm and anchor elevation"]
+es = "Aún no hay perfiles de banco: cree uno con su altura, la inclinación de su cara, su berma y su cota de ancla"
+
+["Bench profile"]
+es = "Perfil de banco"
+
+["Profile"]
+es = "Perfil"
+
+["Code of the profile to complete or rename (empty: a new profile)"]
+es = "Código del perfil que se completa o se renombra (vacío: un perfil nuevo)"
+
+["Name of the profile, such as EXPL_10_60_6: it can change, its code cannot"]
+es = "Nombre del perfil, como EXPL_10_60_6: puede cambiar, su código no"
+
+["Height of the bench in metres, more than 0"]
+es = "Altura del banco en metros, más de 0"
+
+["Face angle (°)"]
+es = "Inclinación de la cara (°)"
+
+["Maximum inclination of the bench face in degrees, between 0 and 90 (both excluded)"]
+es = "Inclinación máxima de la cara del banco en grados, entre 0 y 90 (ambos excluidos)"
+
+["Minimum berm width (m)"]
+es = "Berma mínima (m)"
+
+["Minimum berm in metres, 0 or more"]
+es = "Berma mínima en metros, 0 o más"
+
+["Elevation the benches are anchored to, in metres"]
+es = "Cota a la que se anclan los bancos, en metros"
+
+["Factor between 0 (excluded) and 1 that reduces the slope of the envelope for the grid (empty: 1)"]
+es = "Factor entre 0 (excluido) y 1 que reduce la pendiente de la envolvente para la rejilla (vacío: 1)"
+
+["Type of the values: adopted or hypothesis"]
+es = "Tipo de los valores: adoptados o hipótesis"
+
+["Document, standard, person, operation or algorithm the values come from (empty: the decider)"]
+es = "Documento, norma, persona, operación o algoritmo de los que salen los valores (vacío: quien decide)"
+
+["Who decided the values (the owner, a laboratory, a person)"]
+es = "Quién decidió los valores (la propiedad, un laboratorio, una persona)"
+
+["Why the profile has these values (recorded in its history)"]
+es = "Por qué el perfil tiene estos valores (queda en su historial)"
+
+["Values already declared are changed with «Change…» in the list"]
+es = "Los valores ya declarados se cambian con «Cambiar…» en la lista"
+
+["«{value}» is not a number (field «{field}»)"]
+es = "«{value}» no es un número (campo «{field}»)"
+
+["Write who decides the values of the profile"]
+es = "Escriba quién decide los valores del perfil"
+
+["Declared in the bench profiles window"]
+es = "Declarado en la ventana de perfiles de banco"
+
+["Bench profile «{name}» created with the code «{code}»"]
+es = "Perfil de banco «{name}» creado con el código «{code}»"
+
+["Bench profile «{name}» saved (code «{code}»)"]
+es = "Perfil de banco «{name}» guardado (código «{code}»)"
+
+["The bench profile is no longer in the project: open the list again"]
+es = "El perfil de banco ya no está en el proyecto: abra la lista de nuevo"
+
+["Bench profiles"]
+es = "Perfiles de banco"

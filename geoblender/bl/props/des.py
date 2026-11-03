@@ -71,12 +71,18 @@ class GEOBLENDER_PG_des_profile(bpy.types.PropertyGroup):
     proyecto: su nombre (``name``) y su código (``code``, inmutable), cómo se lee
     (``summary``: «h 10 m · cara 60° · berma 6 m · ancla 125 m»), sus derivados (``derived``: el
     avance y el talud general), lo que la rejilla no resuelve (``unresolved``: vacío si todo se
-    resuelve; se dibuja en ámbar) y sus valores (``parameters``)."""
+    resuelve; se dibuja en ámbar), la insignia de tipo de sus valores (``badge``: [ADO] o [HIP],
+    la del menos firme), el ámbito de donde salen (``scope``: «el proyecto», «V01» o «V01 y el
+    proyecto»), lo que le falta o no vale en la versión activa (``problem``, en ámbar) y sus
+    valores (``parameters``)."""
 
     code: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     summary: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     derived: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     unresolved: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    badge: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    scope: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    problem: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     parameters: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_des_param, options=_STATIC,
     )
@@ -113,6 +119,10 @@ class GEOBLENDER_PG_des_panels(bpy.types.PropertyGroup):
         type=GEOBLENDER_PG_des_profile, options=_STATIC,
     )
     profile_index: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
+    profiles_project: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    profile_report: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_des_line, options=_STATIC,
+    )
     sectors: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_des_sector, options=_STATIC,
     )

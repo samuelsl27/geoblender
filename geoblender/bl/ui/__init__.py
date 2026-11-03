@@ -46,6 +46,7 @@ from . import (
     context,
     core_menus,
     core_panel,
+    des_panels,
     dh_panels,
     headers,
     i18n,
@@ -73,7 +74,8 @@ from . import help as help_pages
 # la interfaz (spec 003), la lista de trabajos (spec 004), lo obsoleto (spec 008), la ventana y
 # el menú de la versión activa (spec 009), la pestaña «Sondeos» (spec 005), la ventana de los
 # materiales de la cubicación y N ▸ Proyecto ▸ Cubicaciones, que es también su ventana (spec 011),
-# las ventanas de los límites y las restricciones y la pestaña «Restricción» (spec 012).
+# las ventanas de los límites y las restricciones y la pestaña «Restricción» (spec 012), y las
+# ventanas del diseño de explotación (spec 013: Perfiles de banco…).
 classes: tuple[type, ...] = (
     *core_menus.classes,
     *core_panel.classes,
@@ -87,6 +89,7 @@ classes: tuple[type, ...] = (
     *dh_panels.classes,
     *res_panels.classes,
     *constraint_panels.classes,
+    *des_panels.classes,
 )
 
 _UNDO: list[Callable[[], None]] = []
@@ -130,6 +133,7 @@ def register() -> None:
         (views.register, views.unregister),
         (view_panels.register, view_panels.unregister),
         (constraint_panels.install, constraint_panels.uninstall),
+        (des_panels.install, des_panels.uninstall),
         (layouts.register, layouts.unregister),
         (lambda: None, context.clear),
         (lambda: None, command_line.clear),

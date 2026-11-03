@@ -57,7 +57,7 @@ GROUP = "GEOBLENDER_PG_des_panels"
 STATUS_MSGID = "Recomputing «{name}»… {percent} %"
 STATUS = "Recalculando «{name}»… {percent} %"
 DROPPED = "cancelada durante la operación: se desactivó Geoblender antes de empezar"
-DELIVERED: frozenset[str] = frozenset()
+DELIVERED: frozenset[str] = frozenset({"geoblender.des_edit_bench_profiles"})
 """Las órdenes de Diseño de R-33 que ya tienen su clase real (T22 a T25 las van añadiendo: cada
 una pasa a la entrada «013» en la T26)."""
 REASON = "Prueba del registro del diseño"
