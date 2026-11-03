@@ -27,8 +27,11 @@ cálculo en preparación en sí (las rejillas sin registrar) no es una propiedad
 y perfiles de los diálogos son enumerados dinámicos con una caché de módulo viva (plan §2.1).
 
 ``WindowManager.geoblender_design_preview`` (:data:`PREVIEW_PROPERTY`) es la vista previa de
-semillas, dominios y restricciones como propiedad (RF-013-03): apagada al empezar y **no se guarda**
-(``SKIP_SAVE``); la orden de la T25 (``geoblender.des_toggle_preview``) la enciende y la apaga.
+semillas, dominios y restricciones como propiedad (RF-013-03; T25): apagada al empezar y **no se
+guarda** (``SKIP_SAVE``). Su valor es el de ``bl.draw.design.enabled()`` (sin importarlo si no lo
+está) y escribirla la activa —sobre la primera rejilla del proyecto, en todo su dominio— o la quita
+(la importa al activarla); la orden ``geoblender.des_toggle_preview`` la enciende con lo que pide su
+ventana y la apaga.
 
 Ninguna propiedad es una coordenada ni una cota en ``FloatProperty`` (ADR-0005; las alturas, caras,
 bermas, anclas, alcances y taludes de los diálogos, en ``StringProperty``: ``docs/trampas.md`` §1;
@@ -37,6 +40,10 @@ las dibuja la ventana con sus textos.
 """
 
 from __future__ import annotations
+
+import importlib
+import sys
+from typing import Any
 
 import bpy
 from bpy.props import (
@@ -52,7 +59,24 @@ WINDOW_MANAGER_PROPERTY = "geoblender_design"
 PREVIEW_PROPERTY = "geoblender_design_preview"
 """El de la propiedad de ``WindowManager`` de la vista previa de semillas, dominios y
 restricciones (RF-013-03)."""
+_PREVIEW_MODULE = f"{__package__.rpartition('.')[0]}.draw.design"
 _STATIC: set[str] = set()  # ni animable ni nada más
+
+
+def _get_preview(_self: Any) -> bool:
+    """Si la vista previa del diseño está activa (sin importarla si no lo está)."""
+    module = sys.modules.get(_PREVIEW_MODULE)
+    return bool(module is not None and module.enabled())
+
+
+def _set_preview(_self: Any, value: bool) -> None:
+    """Activa o quita la vista previa del diseño (la importa al activarla)."""
+    if value:
+        importlib.import_module(_PREVIEW_MODULE).enable()
+        return
+    module = sys.modules.get(_PREVIEW_MODULE)
+    if module is not None:
+        module.disable()
 
 
 class GEOBLENDER_PG_des_param(bpy.types.PropertyGroup):
@@ -166,7 +190,7 @@ def register() -> None:
     setattr(bpy.types.WindowManager, WINDOW_MANAGER_PROPERTY,
             PointerProperty(type=GEOBLENDER_PG_des_panels, options=_STATIC))
     setattr(bpy.types.WindowManager, PREVIEW_PROPERTY, BoolProperty(
-        name="Preview of seeds, domains and constraints", default=False,
+        name="Preview of seeds, domains and constraints", get=_get_preview, set=_set_preview,
         options={"SKIP_SAVE"},
         description="Show the seeds, domains and constraints before computing"))
 

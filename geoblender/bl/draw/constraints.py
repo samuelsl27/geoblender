@@ -39,6 +39,12 @@ parámetros), al elegir otra superficie; y se **quita** (:func:`disable`) al pul
 vez, al cerrar o cambiar de proyecto, al conmutar a la interfaz de Blender
 (``bl.ui.switcher.add_blender_hook``) y al desactivar Geoblender (:func:`unregister`, principio 8).
 Un error al dibujar se registra una vez y deja de dibujar: nunca una traza por fotograma.
+
+**Lo que reutiliza la vista previa del diseño** (spec 013, T25; ``bl.draw.design``): sus zonas,
+contornos, nombres y leyenda (:func:`build_steps`, que acepta las máscaras y la superficie ya
+leídas), las rayas de una máscara (:func:`mask_hatch_steps`), la superficie y el ajuste a ella
+(:func:`ground_steps`, :func:`drape_segments_steps`, :func:`drape_points_steps`) y el dibujo de
+los lotes (:func:`draw_lines`, :func:`pulled`).
 """
 
 from __future__ import annotations
@@ -78,10 +84,13 @@ from .dh_overlay import Box, LegendRow, Text
 
 __all__ = [
     "DOMAIN", "LABEL_OFFSET", "MAX_LABELS", "OUTLINE", "OUTLINE_PX", "POINT_ARM_M", "STRIP",
-    "UNTYPED", "ZONE", "Batch", "Built", "Label", "Request", "Surface", "HATCH_PX", "LIMIT_PX",
-    "build_steps", "building", "built", "color_of", "disable", "draw_lines", "drawing", "enable",
-    "enabled", "hatch_segments", "on_project_changed", "on_project_read", "on_surface_changed",
-    "on_version_changed", "rebuild", "register", "screen_items", "stamp", "tick", "unregister",
+    "UNTYPED", "ZONE", "Batch", "Built", "Label", "Pace", "Request", "Surface", "HATCH_PX",
+    "LIMIT_PX",
+    "build_steps", "building", "built", "color_of", "disable", "draw_lines", "drape_points_steps",
+    "drape_segments_steps", "drawing", "enable", "enabled", "ground_steps", "hatch_segments",
+    "mask_hatch_steps", "on_project_changed", "on_project_read", "on_surface_changed",
+    "on_version_changed", "pulled", "rebuild", "register", "screen_items", "stamp", "tick",
+    "unregister",
 ]
 
 LOGGER = logging.getLogger("geoblender.bl.draw")
@@ -283,6 +292,10 @@ class _Pace:
         return True
 
 
+Pace = _Pace
+""":class:`_Pace`, para quien da pasos con el mismo ritmo (``bl.draw.design``)."""
+
+
 def _row_segments(row: np.ndarray, col0: np.ndarray, col1: np.ndarray, grid: Grid) -> np.ndarray:
     """Los segmentos horizontales ``(k, 2, 2)`` absolutos por el centro de las celdas de los
     tramos (fila, primera columna, columna siguiente a la última)."""
@@ -310,25 +323,46 @@ def hatch_segments(runs: Runs, grid: Grid, lines: int) -> np.ndarray:
     return found
 
 
-def _class_hatch_steps(masks: Any, wanted: ClassBit, unwanted: ClassBit, lines: int,
-                       pace: _Pace) -> Generator[None, None, np.ndarray]:
-    """Las rayas de las celdas de la rejilla de clases de ``masks`` que tienen todos los bits de
-    ``wanted`` y ninguno de ``unwanted``, en ``lines`` filas repartidas por la rejilla, por
-    trozos de :data:`ROWS_PER_STEP` filas: segmentos ``(k, 2, 2)`` absolutos."""
-    grid, classes = masks.grid, masks.classes
+def _rows_hatch_steps(select: Callable[[np.ndarray], np.ndarray], grid: Grid, lines: int,
+                      pace: _Pace) -> Generator[None, None, np.ndarray]:
+    """Las rayas de las celdas que ``select`` elige (dadas unas filas, su máscara booleana), en
+    ``lines`` filas repartidas por la rejilla ``grid``, por trozos de :data:`ROWS_PER_STEP`
+    filas: segmentos ``(k, 2, 2)`` absolutos."""
     stride = max(1, grid.nrows // max(1, int(lines)))
     chosen = np.arange(stride // 2, grid.nrows, stride)
-    low, high = np.uint16(int(wanted)), np.uint16(int(unwanted))
     parts: list[np.ndarray] = []
     for top in range(0, len(chosen), ROWS_PER_STEP):
         rows = chosen[top:top + ROWS_PER_STEP]
-        sub = classes[rows]
-        found = Runs.from_mask(((sub & low) == low) & ((sub & high) == 0))
+        found = Runs.from_mask(select(rows))
         if len(found):
             parts.append(_row_segments(rows[found.row], found.col0, found.col1, grid))
         if pace.due():
             yield
     return np.concatenate(parts) if parts else np.empty((0, 2, 2), dtype=np.float64)
+
+
+def _class_hatch_steps(masks: Any, wanted: ClassBit, unwanted: ClassBit, lines: int,
+                       pace: _Pace) -> Generator[None, None, np.ndarray]:
+    """Las rayas de las celdas de la rejilla de clases de ``masks`` que tienen todos los bits de
+    ``wanted`` y ninguno de ``unwanted``, en ``lines`` filas repartidas por la rejilla, por
+    trozos de :data:`ROWS_PER_STEP` filas: segmentos ``(k, 2, 2)`` absolutos."""
+    classes = masks.classes
+    low, high = np.uint16(int(wanted)), np.uint16(int(unwanted))
+
+    def select(rows: np.ndarray) -> np.ndarray:
+        sub = classes[rows]
+        return ((sub & low) == low) & ((sub & high) == 0)
+
+    return (yield from _rows_hatch_steps(select, masks.grid, lines, pace))
+
+
+def mask_hatch_steps(mask: np.ndarray, grid: Grid, lines: int, *,
+                     budget_s: float = STEP_BUDGET_S) -> Generator[None, None, np.ndarray]:
+    """Las rayas de las celdas verdaderas de ``mask`` (booleana, de la forma de ``grid``): como
+    las del dominio por defecto, en ``lines`` filas repartidas por la rejilla y por trozos de
+    :data:`ROWS_PER_STEP` filas (``bl.draw.design`` las usa para el dominio de trabajo): segmentos
+    ``(k, 2, 2)`` absolutos. El resultado es el ``StopIteration.value``."""
+    return (yield from _rows_hatch_steps(lambda rows: mask[rows], grid, lines, _Pace(budget_s)))
 
 
 def _outline(item: Constraint) -> np.ndarray:
@@ -447,13 +481,43 @@ def _surface_steps(project: Any, chosen: str, version_uid: str | None,
     return Surface(pick.name, Raster(grid, values, source.header.crs, source.header.vertical))
 
 
-def build_steps(request: Request, *, budget_s: float = STEP_BUDGET_S
-                ) -> Generator[None, None, Built]:
+def ground_steps(project: Any, chosen: str, version_uid: str | None, *,
+                 budget_s: float = STEP_BUDGET_S) -> Generator[None, None, Surface | None]:
+    """La superficie sobre la que se dibuja (la rejilla ``chosen`` o, si no hay o no está, la más
+    reciente; ``None`` si no hay ninguna), leída por bandas de filas. La comparte la vista previa
+    del diseño (``bl.draw.design``) para dibujar sobre la misma superficie que las restricciones."""
+    return (yield from _surface_steps(project, chosen, version_uid, _Pace(budget_s)))
+
+
+def drape_segments_steps(segments: np.ndarray, ground: Surface | None, origin: Any, *,
+                         budget_s: float = STEP_BUDGET_S) -> Generator[None, None, np.ndarray]:
+    """Los vértices locales (float32) de ``segments`` ``(n, 2, 2)`` absolutos, de dos en dos y
+    partidos para que sigan ``ground`` (a la cota del GeoOrigin sin ella)."""
+    return (yield from _positions_steps(segments, ground, origin, _Pace(budget_s)))
+
+
+def drape_points_steps(xy: np.ndarray, ground: Surface | None, origin: Any, *,
+                       budget_s: float = STEP_BUDGET_S) -> Generator[None, None, np.ndarray]:
+    """Las posiciones locales (float32 ``(n, 3)``) de los puntos absolutos ``xy`` ``(n, 2)`` sobre
+    ``ground`` (a la cota del GeoOrigin sin ella)."""
+    return (yield from _local_steps(xy, ground, origin, _Pace(budget_s)))
+
+
+_READ: Any = object()
+"""El valor por defecto de ``ground`` de :func:`build_steps`: que lea la superficie ella misma."""
+
+
+def build_steps(request: Request, *, budget_s: float = STEP_BUDGET_S,
+                loaded: Any = None, ground: Any = _READ) -> Generator[None, None, Built]:
     """Los pasos que construyen lo que dibuja la superposición para ``request`` (véase el módulo):
     leer las restricciones con su «activa» en la versión, las máscaras (si están al día) y la
     superficie, y preparar los lotes, los nombres y la leyenda. Solo lee. Cada paso dura como
     mucho ``budget_s`` s (salvo una lectura, nunca de más de 0,2 s); el resultado es el
-    ``StopIteration.value``. Cerrarlo a mitad no deja nada."""
+    ``StopIteration.value``. Cerrarlo a mitad no deja nada.
+
+    Quien ya tiene las máscaras de la versión al día (``loaded``) o la superficie sobre la que
+    dibujar (``ground``, de :func:`ground_steps`; ``None``: a la cota del GeoOrigin) las pasa
+    para no leerlas dos veces (la vista previa del diseño)."""
     project, version_uid, shown = request.project, request.version_uid, request.language
     origin, pace = project.origin, _Pace(budget_s)
     listed = yield from mask_store.shown_constraints_steps(project, version=version_uid)
@@ -464,11 +528,13 @@ def build_steps(request: Request, *, budget_s: float = STEP_BUDGET_S
             state = found.value
             yield
             if found is mask_access.MaskState.CURRENT:
-                masks = yield from mask_access.load_masks_steps(project, version_uid)
+                masks = loaded if loaded is not None else (
+                    yield from mask_access.load_masks_steps(project, version_uid))
         except (GeoblenderError, sqlite3.Error, OSError):
             LOGGER.warning("No se pudieron leer las máscaras de la versión", exc_info=True)
             state, masks = "missing", None
-    surface = yield from _surface_steps(project, request.surface, version_uid, pace)
+    surface = ((yield from _surface_steps(project, request.surface, version_uid, pace))
+               if ground is _READ else ground)
 
     outlines: dict[tuple[str, bool], list[np.ndarray]] = {}
     counts: dict[str, int] = {}
@@ -680,6 +746,10 @@ def _pulled(view_matrix: Matrix, perspective: bool, view_distance: float) -> Mat
         return Matrix.Diagonal((scale, scale, scale, 1.0)) @ view_matrix
     return Matrix.Translation((0.0, 0.0, DEPTH_PULL * max(float(view_distance), 1.0))) @ (
         view_matrix)
+
+
+pulled = _pulled
+""":func:`_pulled`, para quien dibuja con las mismas matrices (``bl.draw.design``)."""
 
 
 def draw_lines(built: Built, *, view_matrix: Matrix, projection_matrix: Matrix, perspective: bool,

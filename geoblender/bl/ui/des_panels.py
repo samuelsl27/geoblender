@@ -57,6 +57,12 @@ los sectores con su marca de acotado y su perfil. :func:`show_summary` deja el r
 abierto (``summary_title`` y ``summary``) con :func:`summary_lines`: el desmonte, el terraplén, la
 inclinación, las bermas y los avisos (en ámbar), de las cifras y del informe del dominio (aquí solo se
 escriben).
+
+**Vista previa de semillas, dominios y restricciones** (T25; HU-013-1; RF-013-03):
+:func:`show_preview` deja en ``WindowManager.geoblender_design.preview`` el resumen que dice
+``design.preview`` (líneas ya traducidas, los avisos en alerta) cuando ``bl.draw.design`` acaba de
+construir la vista previa de la Vista 3D, y lo vacía al quitarla; la barra N «Diseño» (T27) lo leerá de
+ahí.
 """
 
 from __future__ import annotations
@@ -692,6 +698,19 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     lines.extend((notice.text(language()), notice.severity == "warning")
                  for notice in calculation.notices)
     return lines
+
+
+def show_preview(lines: Sequence[tuple[str, bool]]) -> None:
+    """Deja ``lines`` (texto ya traducido, si va en alerta) como el resumen de la vista previa de
+    semillas, dominios y restricciones (T25; RF-013-03; ``bl.draw.design``: lo que dice
+    ``design.preview``, aquí solo se guarda para que lo dibuje la barra N); sin líneas, lo vacía."""
+    shown = view()
+    if shown is None:
+        return
+    shown.preview.clear()
+    for text, alert in lines:
+        line = shown.preview.add()
+        line.name, line.alert = text, alert
 
 
 def show_summary(calculation: Calculation | None) -> None:

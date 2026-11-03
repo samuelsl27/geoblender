@@ -103,7 +103,15 @@ vez; el perfil de cada sector y los sectores a los que se acota se marcan en
 ``WindowManager.geoblender_design`` (``sectors[].profile_pick`` y ``.use``). Ninguna cuenta ni regla
 es de aquí: el cálculo, los rangos y los avisos son los de ``design``.
 
-**Las demás órdenes** (T25 y T28) y **los cargadores de la vista** (T27) se añaden en sus tareas:
+**Vista previa de semillas, dominios y restricciones** (T25; HU-013-1; RF-013-01, RF-013-02,
+RF-013-03, RF-013-33): :class:`GEOBLENDER_OT_des_toggle_preview` activa o quita la vista previa de la
+Vista 3D (``bl.draw.design``) con lo que pide su diálogo —las semillas (de una superficie en una zona,
+una cota fija en una zona o una rejilla de cotas) y el acotado del dominio—, sin crear objetos ni
+escribir en el proyecto; con ella activa, el control la quita aunque el proyecto esté ya en solo
+lectura. Las semillas y el acotado se piden con las mismas funciones que el diálogo de las envolventes
+(:func:`seed_source`, :func:`work_domain`). Nada se cuenta ni se resume aquí: lo hace ``design.preview``.
+
+**Las demás órdenes** (T28) y **los cargadores de la vista** (T27) se añaden en sus tareas:
 :data:`classes` irá creciendo con ellas. El cargador de las rejillas ``des_env_``, ``des_srf_`` y
 ``des_brm_`` (objetos ``DESIGN``) es de ``bl/scene/des_views.py`` (T27), que registra ``bl.scene``
 junto al tipo de objeto que necesita.
@@ -137,6 +145,7 @@ from ...design import profiles as design_profiles
 from ...design import model as design_model
 from ...design import provenance
 from ...design.model import PERIMETER_SEGMENT
+from ..props.des import PREVIEW_PROPERTY
 from ..scene import project_session, undo_watch
 from ..scene import versions as scene_versions
 from ..ui import constraint_panels, des_panels
@@ -1061,6 +1070,67 @@ def _zone_of(identifier: str) -> design_model.Zone | None:
     raise ComputeFormError(tr("Choose the zone of the seeds"))
 
 
+def seed_source(seeds_from: str, surface: str, zone: str, elevation: str
+                ) -> design_model.SeedSource:
+    """Las semillas pedidas en un diálogo (el de las envolventes y el de la vista previa): de dónde
+    salen (``SURFACE``, ``FIXED`` o ``GRID``), la superficie o rejilla de cotas, la zona (una opción
+    de ``bl.ui.des_panels.zone_items``) y la cota fija tecleada. Las que faltan o no valen las
+    rechaza el dominio al calcular (``des.seed_missing``, ``des.seed_elevation``…);
+    :class:`ComputeFormError` si falta algo del diálogo."""
+    kind = design_model.SeedKind(seeds_from.lower())
+    if kind is design_model.SeedKind.FIXED:
+        value = typed_number(elevation, tr("Elevation (m)"))
+        if value is None:
+            raise ComputeFormError(tr("Write the fixed elevation of the seeds in metres"))
+        return design_model.SeedSource(kind, zone=_zone_of(zone), elevation_m=value)
+    if surface in ("", des_panels.NO_ZONE):
+        raise ComputeFormError(tr("Choose the surface of the seeds: there are no grids in the "
+                                  "project or in the active version"))
+    if kind is design_model.SeedKind.GRID:
+        return design_model.SeedSource(kind, grid=surface)
+    return design_model.SeedSource(kind, surface=surface, zone=_zone_of(zone))
+
+
+def work_domain(bound: str, bound_layer: str, shown: Any) -> design_model.WorkDomain:
+    """El acotado del dominio de trabajo pedido en un diálogo (RF-013-02): todo, los sectores
+    marcados en la vista (``shown.sectors[].use``) o una capa de polígonos; nunca se amplía.
+    :class:`ComputeFormError` si falta algo del diálogo."""
+    if bound == "SECTORS":
+        codes = tuple(item.code for item in shown.sectors if item.use and item.code)
+        if not codes:
+            raise ComputeFormError(tr("Mark the sectors the work domain is bound to"))
+        return design_model.WorkDomain(sectors=codes)
+    if bound == "LAYER":
+        if bound_layer in ("", des_panels.NO_LAYER):
+            raise ComputeFormError(tr("Choose the layer of polygons the work domain is bound "
+                                      "to"))
+        return design_model.WorkDomain(layer=bound_layer)
+    return design_model.WorkDomain()
+
+
+def _draw_seeds(layout: Any, operator: Any) -> None:
+    """Las semillas de un diálogo (el de las envolventes y el de la vista previa): su origen, la
+    superficie o la rejilla de cotas, la zona y la cota fija, según el origen."""
+    seeds = layout.box()
+    seeds.label(text=tr("Seeds"), translate=False)
+    seeds.prop(operator, "seeds_from", text=tr("Origin of the seeds"), translate=False)
+    if operator.seeds_from != "FIXED":
+        seeds.prop(operator, "surface", text=tr("Surface") if operator.seeds_from == "SURFACE"
+                   else tr("Grid of elevations"), translate=False)
+    if operator.seeds_from != "GRID":
+        seeds.prop(operator, "zone", text=tr("Zone of the seeds"), translate=False)
+    if operator.seeds_from == "FIXED":
+        seeds.prop(operator, "elevation", text=tr("Elevation (m)"), translate=False)
+
+
+def _draw_bound(layout: Any, operator: Any) -> None:
+    """El acotado del dominio de un diálogo: a todo, a unos sectores o a una capa de polígonos (la
+    casilla de cada sector la dibuja ``bl.ui.des_panels.draw_sector_rows``)."""
+    layout.prop(operator, "bound", text=tr("Bound to"), translate=False)
+    if operator.bound == "LAYER":
+        layout.prop(operator, "bound_layer", text=tr("Layer of polygons"), translate=False)
+
+
 def _ask_confirmation(context: Any = None) -> None:
     """Pide confirmar el cálculo recién hecho (D-14): la misma orden con ``confirm=True`` en cuanto
     acaba el modal (un diálogo no se abre desde dentro de un modal); sin ventana, nada (lo dice el
@@ -1271,16 +1341,7 @@ class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOper
         layout.use_property_split = True
         shown = des_panels.view()
         layout.prop(self, "name", text=tr("Name"), translate=False)
-        seeds = layout.box()
-        seeds.label(text=tr("Seeds"), translate=False)
-        seeds.prop(self, "seeds_from", text=tr("Origin of the seeds"), translate=False)
-        if self.seeds_from != "FIXED":
-            seeds.prop(self, "surface", text=tr("Surface") if self.seeds_from == "SURFACE"
-                       else tr("Grid of elevations"), translate=False)
-        if self.seeds_from != "GRID":
-            seeds.prop(self, "zone", text=tr("Zone of the seeds"), translate=False)
-        if self.seeds_from == "FIXED":
-            seeds.prop(self, "elevation", text=tr("Elevation (m)"), translate=False)
+        _draw_seeds(layout, self)
         layout.prop(self, "direction", text=tr("Envelope direction"), translate=False)
         layout.prop(self, "metric", text=tr("Metric"), translate=False)
         layout.prop(self, "slope_mode", text=tr("Slope"), translate=False)
@@ -1288,9 +1349,7 @@ class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOper
             layout.prop(self, "slope", text=tr("Slope (°)"), translate=False)
         layout.prop(self, "mesh", text=tr("Mesh factor"), translate=False)
         layout.prop(self, "reach", text=tr("Reach"), translate=False)
-        layout.prop(self, "bound", text=tr("Bound to"), translate=False)
-        if self.bound == "LAYER":
-            layout.prop(self, "bound_layer", text=tr("Layer of polygons"), translate=False)
+        _draw_bound(layout, self)
         layout.prop(self, "stepped", text=tr("Bench the envelope"), toggle=True, translate=False)
         if self.stepped:
             layout.prop(self, "sense", text=tr("Sense"), translate=False)
@@ -1311,33 +1370,12 @@ class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOper
     def _seeds(self) -> design_model.SeedSource:
         """Las semillas pedidas; las que faltan o no valen las rechaza el dominio al calcular
         (``des.seed_missing``, ``des.seed_elevation``…)."""
-        kind = design_model.SeedKind(self.seeds_from.lower())
-        if kind is design_model.SeedKind.FIXED:
-            elevation = typed_number(self.elevation, tr("Elevation (m)"))
-            if elevation is None:
-                raise ComputeFormError(tr("Write the fixed elevation of the seeds in metres"))
-            return design_model.SeedSource(kind, zone=_zone_of(self.zone), elevation_m=elevation)
-        if self.surface in ("", des_panels.NO_ZONE):
-            raise ComputeFormError(tr("Choose the surface of the seeds: there are no grids in the "
-                                      "project or in the active version"))
-        if kind is design_model.SeedKind.GRID:
-            return design_model.SeedSource(kind, grid=self.surface)
-        return design_model.SeedSource(kind, surface=self.surface, zone=_zone_of(self.zone))
+        return seed_source(self.seeds_from, self.surface, self.zone, self.elevation)
 
     def _domain(self, shown: Any) -> design_model.WorkDomain:
         """El acotado del dominio de trabajo pedido (RF-013-02): todo, los sectores marcados o una
         capa; nunca se amplía."""
-        if self.bound == "SECTORS":
-            codes = tuple(item.code for item in shown.sectors if item.use and item.code)
-            if not codes:
-                raise ComputeFormError(tr("Mark the sectors the work domain is bound to"))
-            return design_model.WorkDomain(sectors=codes)
-        if self.bound == "LAYER":
-            if self.bound_layer in ("", des_panels.NO_LAYER):
-                raise ComputeFormError(tr("Choose the layer of polygons the work domain is bound "
-                                          "to"))
-            return design_model.WorkDomain(layer=self.bound_layer)
-        return design_model.WorkDomain()
+        return work_domain(self.bound, self.bound_layer, shown)
 
     @staticmethod
     def _profile_code(picked: str, where: str, codes: Mapping[str, str]) -> str | None:
@@ -1561,11 +1599,152 @@ class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOper
             discard_calculation()
 
 
+# --- Vista previa de semillas, dominios y restricciones (T25; HU-013-1; RF-013-01, RF-013-02,
+#     RF-013-03, RF-013-33; plan §5.3.3, §5.5, D-29) ----------------------------------------------
+
+TOGGLE_PREVIEW = "geoblender.des_toggle_preview"
+
+
+def _preview() -> Any:
+    """El módulo de la vista previa (``bl.draw.design``), importado al usarlo."""
+    from ..draw import design as preview  # al usarlo: nada pesado al registrar
+
+    return preview
+
+
+def _preview_on(context: Any = None) -> bool:
+    """Si la vista previa está activa (sin importar su módulo si no lo está)."""
+    manager = getattr(context, "window_manager", None) or getattr(bpy.context, "window_manager",
+                                                                  None)
+    return bool(getattr(manager, PREVIEW_PROPERTY, False))
+
+
+class GEOBLENDER_OT_des_toggle_preview(DesignCommandAware, ProvenanceAwareOperator,
+                                       bpy.types.Operator):
+    """Show the seeds, domains and constraints before computing"""
+
+    bl_idname = TOGGLE_PREVIEW
+    bl_label = "Preview of seeds, domains and constraints"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = ENVELOPE_STAGE
+
+    seeds_from: EnumProperty(  # type: ignore[valid-type]
+        name="Origin of the seeds",
+        description="Where the seeds come from: the cells of a surface inside a zone, a fixed "
+                    "elevation in the cells of a zone or a grid of elevations of the project or of "
+                    "the active version", items=SEEDS_FROM_ITEMS, default="SURFACE", options=_FIELD)
+    surface: EnumProperty(  # type: ignore[valid-type]
+        name="Surface",
+        description="Surface or grid of elevations of the project or of the active version the "
+                    "seeds are read from", items=des_panels.surface_items, options=_FIELD)
+    zone: EnumProperty(  # type: ignore[valid-type]
+        name="Zone of the seeds",
+        description="Cells where the seeds are: the whole surface, the default domain, the zone "
+                    "of a constraint, a design sector or a layer of polygons",
+        items=des_panels.zone_items, options=_FIELD)
+    elevation: StringProperty(  # type: ignore[valid-type]
+        name="Elevation (m)", description="Fixed elevation of the seeds in metres", options=_FIELD)
+    bound: EnumProperty(  # type: ignore[valid-type]
+        name="Bound to",
+        description="Where the work domain is bound: the whole domain of the masks, some sectors "
+                    "or a layer of polygons (it is never enlarged)",
+        items=BOUND_ITEMS, default="ALL", options=_FIELD)
+    bound_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Layer of polygons",
+        description="Layer of polygons of the project the work domain is bound to",
+        items=des_panels.layer_items, options=_FIELD)
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        """Con la vista previa activa, se puede quitar siempre; si no, lo de las órdenes de Diseño
+        (RF-013-33): con un proyecto en escritura y la versión activa editable o ninguna."""
+        return True if _preview_on(context) else _write_poll(cls)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Con la vista previa activa, la quita. Si no, sin versión activa abre la ventana que pide
+        una (RF-009-05) y con ella no editable dice por qué; con una, lee de nuevo las listas de
+        superficies, zonas, capas y sectores, propone la primera superficie y abre el diálogo de lo
+        que se previsualiza: Intro la muestra."""
+        self.provenance_dialog = True
+        if _preview_on(context):
+            return self.execute(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.fill_sectors(project)
+            des_panels.refresh_choices(project)
+            if des_panels.has_surfaces() and not self.properties.is_property_set("surface"):
+                self.surface = des_panels.surface_items(None, None)[0][0]
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        des_panels.clear_sector_marks()
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.bl_idname)].label),
+            confirm_text=tr("Show"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        _draw_seeds(layout, self)
+        _draw_bound(layout, self)
+        shown = des_panels.view()
+        if self.bound == "SECTORS" and shown is not None and len(shown.sectors):
+            box = layout.box()
+            box.label(text=tr("Sectors"), translate=False)
+            des_panels.draw_sector_rows(box, bound=True, profiles=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Con la vista previa activa, la quita. Si no, comprueba lo pedido (sin escribir ni calcular
+        nada) y la activa: se construye por pasos con el temporizador, solo leyendo, y dibuja las
+        semillas, el dominio de trabajo, los sectores y las restricciones con su resumen (RF-013-03)."""
+        preview = _preview()
+        if preview.enabled():
+            preview.disable()
+            self.report({"INFO"}, tr("Preview of seeds, domains and constraints hidden"))
+            return {"FINISHED"}
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        try:
+            des_panels.fill_sectors(SESSION.project)
+            wanted = preview.Plan(
+                seed_source(self.seeds_from, self.surface, self.zone, self.elevation),
+                work_domain(self.bound, self.bound_layer, des_panels.view()))
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        try:
+            preview.enable(wanted)
+        except (RuntimeError, GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, tr(
+                "The preview of seeds, domains and constraints could not be shown: {detail}",
+                detail=design_error_text(exc)))
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Showing the preview of seeds, domains and constraints"))
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
                              GEOBLENDER_OT_des_set_sector_slope,
-                             GEOBLENDER_OT_des_compute_envelope)
+                             GEOBLENDER_OT_des_compute_envelope,
+                             GEOBLENDER_OT_des_toggle_preview)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
-«Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…»; T25 y T28 las irán
-añadiendo)."""
+«Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…» y la T25 «Vista previa de
+semillas, dominios y restricciones»; la T28 irá añadiendo las suyas)."""

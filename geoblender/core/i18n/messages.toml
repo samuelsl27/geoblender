@@ -7801,3 +7801,42 @@ es = "Escalonado «{name}» en {version}"
 
 ["Bench the envelope"]
 es = "Escalonar"
+
+# «Vista previa de semillas, dominios y restricciones» (spec 013, T25; HU-013-1; RF-013-03; plan
+# 013 §5.5, D-29): la orden bl/ops/des.py (des_toggle_preview) y el dibujo bl/draw/design.py.
+
+["Show"]
+es = "Mostrar"
+
+["Showing the preview of seeds, domains and constraints"]
+es = "Mostrando la vista previa de semillas, dominios y restricciones"
+
+["Preview of seeds, domains and constraints hidden"]
+es = "Vista previa de semillas, dominios y restricciones quitada"
+
+["The preview of seeds, domains and constraints could not be shown: {detail}"]
+es = "No se pudo mostrar la vista previa de semillas, dominios y restricciones: {detail}"
+
+["The preview of seeds, domains and constraints could not be prepared: {detail}"]
+es = "No se pudo preparar la vista previa de semillas, dominios y restricciones: {detail}"
+
+["Preview · {version}"]
+es = "Vista previa · {version}"
+
+["Seeds at {value} m"]
+es = "Semillas a {value} m"
+
+["Seeds thinned: 1 of every {stride} is drawn"]
+es = "Semillas aclaradas: se dibuja 1 de cada {stride}"
+
+["Work domain"]
+es = "Dominio de trabajo"
+
+["Sector with its search in force"]
+es = "Sector con la búsqueda vigente"
+
+["Sector with its search pending"]
+es = "Sector con la búsqueda pendiente"
+
+["{name} · {state}"]
+es = "{name} · {state}"
