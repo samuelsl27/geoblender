@@ -113,6 +113,7 @@ __all__ = [
     "FAMILIES",
     "FAMILIES_BY_CODE",
     "FIGURES",
+    "FIGURE_SCOPE_KEY",
     "FIGURE_TOLERANCE",
     "FILL_M3",
     "MODULE",
@@ -144,6 +145,7 @@ __all__ = [
     "envelope_params",
     "envelope_request",
     "envelope_settings",
+    "figure_scope",
     "operation_def",
     "operation_defs",
     "profile_params",
@@ -445,46 +447,68 @@ def _count(key: str, value: object) -> float:
     return number
 
 
-def envelope_figures(*, cells: int, area_m2: float, min_m: float | None, max_m: float | None,
-                     cut_m3: float | None, fill_m3: float | None) -> tuple[FigureSpec, ...]:
-    """Las cifras CALCULADO de una envolvente (RF-013-17), en el orden de
-    :data:`ENVELOPE_FIGURES`: las celdas con envolvente, su área (m²), sus cotas mínima y máxima
-    (m) y el desmonte y el terraplén (m³) frente a la superficie de partida. Sin celdas con
-    envolvente no hay cota mínima ni máxima (``None``): esa cifra no existe y no se da; y sin
-    superficie de partida (unas semillas de cota fija o de una rejilla de cotas) tampoco hay
-    desmonte ni terraplén (``None``). Un valor que no es finito es un error del programa
-    (``ValueError``)."""
-    found = [FigureSpec("des.env_cells", _count("des.env_cells", cells), "-"),
-             FigureSpec("des.env_area_m2", _finite("des.env_area_m2", area_m2), "m2")]
+FIGURE_SCOPE_KEY = "name"
+"""La clave del ámbito de las cifras de ``des``: el nombre de la operación."""
+
+
+def figure_scope(name: str) -> dict[str, str]:
+    """El ámbito de las cifras de la operación ``name`` (RF-013-17): su nombre en ASCII, el mismo
+    que da el dato (``dataset_slug``; el nombre es único en la versión por él). La cifra vigente de
+    una clave es la última de cada ámbito (RF-009-20): sin él, dos envolventes (o dos escalonados)
+    de una versión se pisarían, y al congelar y reproducir solo se verían las de la última (hallazgo
+    del hito H1, T20). ``GisError`` ``gis.dataset_name_invalid`` si no queda ninguna letra ni
+    cifra."""
+    return {FIGURE_SCOPE_KEY: dataset_slug(name)}
+
+
+def envelope_figures(*, name: str, cells: int, area_m2: float, min_m: float | None,
+                     max_m: float | None, cut_m3: float | None, fill_m3: float | None
+                     ) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO de la envolvente ``name`` (RF-013-17), con el ámbito de
+    :func:`figure_scope`, en el orden de :data:`ENVELOPE_FIGURES`: las celdas con envolvente, su
+    área (m²), sus cotas mínima y máxima (m) y el desmonte y el terraplén (m³) frente a la
+    superficie de partida. Sin celdas con envolvente no hay cota mínima ni máxima (``None``): esa
+    cifra no existe y no se da; y sin superficie de partida (unas semillas de cota fija o de una
+    rejilla de cotas) tampoco hay desmonte ni terraplén (``None``). Un valor que no es finito es
+    un error del programa (``ValueError``)."""
+    scope = figure_scope(name)
+    found = [FigureSpec("des.env_cells", _count("des.env_cells", cells), "-", scope=scope),
+             FigureSpec("des.env_area_m2", _finite("des.env_area_m2", area_m2), "m2",
+                        scope=scope)]
     for key, value in (("des.env_min_m", min_m), ("des.env_max_m", max_m)):
         if value is not None:
-            found.append(FigureSpec(key, _finite(key, value), "m"))
+            found.append(FigureSpec(key, _finite(key, value), "m", scope=scope))
     for key, value in (("des.env_cut_m3", cut_m3), ("des.env_fill_m3", fill_m3)):
         if value is not None:
-            found.append(FigureSpec(key, _finite(key, value), "m3"))
+            found.append(FigureSpec(key, _finite(key, value), "m3", scope=scope))
     return tuple(found)
 
 
-def design_figures(report: DesignReport, *, berm_count: int) -> tuple[FigureSpec, ...]:
-    """Las cifras CALCULADO de un escalonado (RF-013-30, RF-013-31), en el orden de
-    :data:`DESIGN_FIGURES`, del informe ``report`` (``design.report.DesignReport``) y del número
-    de bermas de su tabla (``berm_count``). Sin celdas con movimiento el informe no tiene
-    inclinación (``None``): esas cifras no existen y no se dan. Un valor que no es finito es un
-    error del programa (``ValueError``)."""
-    found = [FigureSpec(CUT_M3, _finite(CUT_M3, report.cut_m3), "m3"),
-             FigureSpec(FILL_M3, _finite(FILL_M3, report.fill_m3), "m3"),
+def design_figures(report: DesignReport, *, name: str, berm_count: int
+                   ) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO del escalonado ``name`` (RF-013-30, RF-013-31), con el ámbito de
+    :func:`figure_scope`, en el orden de :data:`DESIGN_FIGURES`, del informe ``report``
+    (``design.report.DesignReport``) y del número de bermas de su tabla (``berm_count``). Sin
+    celdas con movimiento el informe no tiene inclinación (``None``): esas cifras no existen y no
+    se dan. Un valor que no es finito es un error del programa (``ValueError``)."""
+    scope = figure_scope(name)
+    found = [FigureSpec(CUT_M3, _finite(CUT_M3, report.cut_m3), "m3", scope=scope),
+             FigureSpec(FILL_M3, _finite(FILL_M3, report.fill_m3), "m3", scope=scope),
              FigureSpec("des.moved_area_m2", _finite("des.moved_area_m2", report.moved_area_m2),
-                        "m2")]
+                        "m2", scope=scope)]
     for key, value in (("des.slope_p90_deg", report.slope_p90_deg),
                        ("des.slope_p99_deg", report.slope_p99_deg),
                        ("des.slope_max_deg", report.slope_max_deg)):
         if value is not None:
-            found.append(FigureSpec(key, _finite(key, value), "deg"))
+            found.append(FigureSpec(key, _finite(key, value), "deg", scope=scope))
     found += [FigureSpec("des.edge_step_max_m",
-                         _finite("des.edge_step_max_m", report.edge_step_max_m), "m"),
-              FigureSpec("des.berm_count", _count("des.berm_count", berm_count), "-"),
+                         _finite("des.edge_step_max_m", report.edge_step_max_m), "m",
+                         scope=scope),
+              FigureSpec("des.berm_count", _count("des.berm_count", berm_count), "-",
+                         scope=scope),
               FigureSpec("des.nodata_area_m2",
-                         _finite("des.nodata_area_m2", report.nodata_area_m2), "m2")]
+                         _finite("des.nodata_area_m2", report.nodata_area_m2), "m2",
+                         scope=scope)]
     return tuple(found)
 
 

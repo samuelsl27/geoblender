@@ -53,6 +53,8 @@ SURFACE = dfx.START_DATASET
 FIVE = ("des_env_", "des_srf_", "des_brm_", "des_bmt_", "des_rpt_")
 THICKNESS = "res.verify.min_thickness_m"
 PROFILE = "expl_10_60_6"
+FIGURE_NAME = "Hueco inicial"
+FIGURE_SCOPE = {"name": "hueco_inicial"}
 OTHER = "rest_5_35_6"
 
 
@@ -454,17 +456,17 @@ class SettingsTest(unittest.TestCase):
         """RF-013-17 (T15): unas semillas de cota fija o de una rejilla de cotas no tienen
         superficie de partida: la envolvente no da desmonte ni terraplén (ni los inventa); un valor
         que no es finito sigue siendo un error del programa."""
-        figures = provenance.envelope_figures(cells=3, area_m2=12.0, min_m=1.0, max_m=2.0,
-                                              cut_m3=None, fill_m3=None)
+        figures = provenance.envelope_figures(name=FIGURE_NAME, cells=3, area_m2=12.0,
+                                              min_m=1.0, max_m=2.0, cut_m3=None, fill_m3=None)
         self.assertEqual([figure.key for figure in figures],
                          ["des.env_cells", "des.env_area_m2", "des.env_min_m", "des.env_max_m"])
-        both = provenance.envelope_figures(cells=3, area_m2=12.0, min_m=1.0, max_m=2.0,
-                                           cut_m3=0.0, fill_m3=5.0)
+        both = provenance.envelope_figures(name=FIGURE_NAME, cells=3, area_m2=12.0, min_m=1.0,
+                                           max_m=2.0, cut_m3=0.0, fill_m3=5.0)
         self.assertEqual([figure.key for figure in both][-2:],
                          ["des.env_cut_m3", "des.env_fill_m3"])
         with self.assertRaises(ValueError):
-            provenance.envelope_figures(cells=3, area_m2=12.0, min_m=1.0, max_m=2.0,
-                                        cut_m3=math.nan, fill_m3=None)
+            provenance.envelope_figures(name=FIGURE_NAME, cells=3, area_m2=12.0, min_m=1.0,
+                                        max_m=2.0, cut_m3=math.nan, fill_m3=None)
 
     def test_the_settings_do_not_change_what_they_were_given(self) -> None:
         """Regla 6 de AGENTS.md: las peticiones son inmutables y los ajustes que sacan son
@@ -718,22 +720,51 @@ class FiguresTest(unittest.TestCase):
         """RF-013-17: las celdas con envolvente, su área, sus cotas mínima y máxima y el
         desmonte y el terraplén frente a la superficie de partida, todas CALCULADO en su
         unidad; con la envolvente sobre el nivel del mar y bajo él."""
-        found = provenance.envelope_figures(cells=8_540, area_m2=34_160.0, min_m=-12.5,
-                                            max_m=231.5, cut_m3=412_380.25, fill_m3=0.0)
+        found = provenance.envelope_figures(name=FIGURE_NAME, cells=8_540, area_m2=34_160.0,
+                                            min_m=-12.5, max_m=231.5, cut_m3=412_380.25,
+                                            fill_m3=0.0)
         self.assertEqual([(spec.key, spec.value, spec.unit) for spec in found], [
             ("des.env_cells", 8540.0, "-"), ("des.env_area_m2", 34_160.0, "m2"),
             ("des.env_min_m", -12.5, "m"), ("des.env_max_m", 231.5, "m"),
             ("des.env_cut_m3", 412_380.25, "m3"), ("des.env_fill_m3", 0.0, "m3")])
         for spec in found:
             self.assertEqual((spec.kind, dict(spec.scope), spec.parameter_key),
-                             ("CALCULADO", {}, None))
+                             ("CALCULADO", FIGURE_SCOPE, None))
             self.assertIs(type(spec.value), float)
+
+    def test_the_figures_carry_the_name_of_their_operation_as_scope(self) -> None:
+        """RF-013-17, RF-009-20 (hito H1, T20): la cifra vigente de una clave es la última de cada
+        ámbito, y dos envolventes (o dos escalonados) de una versión comparten claves: el ámbito
+        es el nombre de la operación en ASCII (el que da el dato, único en la versión), de modo que
+        ninguna pisa a otra. Mismo nombre, mismo ámbito (aunque cambien mayúsculas, espacios o
+        acentos); otro nombre, otra clave de búsqueda; un nombre con forma de ruta sirve (el
+        ámbito de una cifra no admite rutas absolutas)."""
+        self.assertEqual(provenance.figure_scope("Hueco inicial"), FIGURE_SCOPE)
+        self.assertEqual(provenance.figure_scope("  HUECO   inicial "), FIGURE_SCOPE)
+        self.assertEqual(provenance.figure_scope("Bancos del hoyo"), {"name": "bancos_del_hoyo"})
+        keys = {name: figures_mod.scope_key(provenance.figure_scope(name))
+                for name in ("Hueco inicial", "Hueco 2", "Diseño inicial")}
+        self.assertEqual(len(set(keys.values())), 3)
+        self.assertNotIn("", keys.values())
+        odd = provenance.figure_scope("C:\\datos\\hueco")
+        self.assertEqual(figures_mod.scope_json(odd), '{"name":"c_datos_hueco"}')
+        for scope in (FIGURE_SCOPE, odd):
+            self.assertEqual(set(scope), {provenance.FIGURE_SCOPE_KEY})
+        first = provenance.envelope_figures(name="Hueco inicial", cells=3, area_m2=12.0,
+                                            min_m=1.0, max_m=2.0, cut_m3=0.0, fill_m3=0.0)
+        second = provenance.envelope_figures(name="Hueco 2", cells=3, area_m2=12.0,
+                                             min_m=1.0, max_m=2.0, cut_m3=0.0, fill_m3=0.0)
+        pairs = {(spec.key, figures_mod.scope_json(spec.scope)) for spec in (*first, *second)}
+        self.assertEqual(len(pairs), len(first) + len(second), "ninguna pisa a otra")
+        with self.assertRaises(Exception) as caught:  # sin letras ni cifras no hay nombre
+            provenance.figure_scope("¿¡!?")
+        self.assertEqual(getattr(caught.exception, "code", ""), "gis.dataset_name_invalid")
 
     def test_an_envelope_without_cells_has_no_extremes(self) -> None:
         """RF-013-17: sin celdas con envolvente no hay cota mínima ni máxima; la cifra no
         existe (no se registra una NaN ni una infinita) y las demás valen cero."""
-        found = provenance.envelope_figures(cells=0, area_m2=0.0, min_m=None, max_m=None,
-                                            cut_m3=0.0, fill_m3=0.0)
+        found = provenance.envelope_figures(name=FIGURE_NAME, cells=0, area_m2=0.0, min_m=None,
+                                            max_m=None, cut_m3=0.0, fill_m3=0.0)
         self.assertEqual([spec.key for spec in found],
                          ["des.env_cells", "des.env_area_m2", "des.env_cut_m3", "des.env_fill_m3"])
         self.assertEqual([spec.value for spec in found], [0.0, 0.0, 0.0, 0.0])
@@ -741,13 +772,13 @@ class FiguresTest(unittest.TestCase):
     def test_no_envelope_figure_can_be_nan_or_infinite(self) -> None:
         """RF-013-17: un valor que no es finito es un error del programa (``ValueError``
         nombrando la cifra), nunca una cifra registrada."""
-        good = {"cells": 10, "area_m2": 40.0, "min_m": 1.0, "max_m": 2.0, "cut_m3": 3.0,
-                "fill_m3": 4.0}
-        for name in good:
+        good = {"name": FIGURE_NAME, "cells": 10, "area_m2": 40.0, "min_m": 1.0, "max_m": 2.0,
+                "cut_m3": 3.0, "fill_m3": 4.0}
+        for field in list(good)[1:]:
             for bad in (math.nan, math.inf, -math.inf):
-                with self.subTest(name=name, value=bad):
+                with self.subTest(field=field, value=bad):
                     with self.assertRaises(ValueError) as caught:
-                        provenance.envelope_figures(**{**good, name: bad})
+                        provenance.envelope_figures(**{**good, field: bad})
                     self.assertIn("des.", str(caught.exception))
         with self.assertRaises(TypeError):
             provenance.envelope_figures(**{**good, "cells": "diez"})
@@ -757,7 +788,7 @@ class FiguresTest(unittest.TestCase):
         p99 y el máximo de la inclinación, el mayor salto en el borde de lo prohibido, las
         bermas y el área sin dato, con las cifras de un informe real (``DesignReport``)."""
         found = provenance.design_figures(report_of(nodata_area_m2=12.0, edge_step_max_m=0.4),
-                                          berm_count=214)
+                                          name=FIGURE_NAME, berm_count=214)
         self.assertEqual([(spec.key, spec.value, spec.unit) for spec in found], [
             ("des.cut_m3", 412_380.0, "m3"), ("des.fill_m3", 0.0, "m3"),
             ("des.moved_area_m2", 80_000.0, "m2"), ("des.slope_p90_deg", 33.1, "deg"),
@@ -765,6 +796,8 @@ class FiguresTest(unittest.TestCase):
             ("des.edge_step_max_m", 0.4, "m"), ("des.berm_count", 214.0, "-"),
             ("des.nodata_area_m2", 12.0, "m2")])
         self.assertEqual({spec.key for spec in found}, {f.key for f in provenance.DESIGN_FIGURES})
+        self.assertEqual({tuple(spec.scope.items()) for spec in found},
+                         {tuple(FIGURE_SCOPE.items())})
 
     def test_without_movement_there_are_no_slope_figures(self) -> None:
         """RF-013-17, RF-013-30: sin celdas con movimiento el informe no tiene inclinación
@@ -772,7 +805,7 @@ class FiguresTest(unittest.TestCase):
         inclinación) y no hay bermas."""
         quiet = report_of(cut_m3=0.0, cut_cells=0, moved_area_m2=0.0, slope_p90_deg=None,
                           slope_p99_deg=None, slope_max_deg=None)
-        found = provenance.design_figures(quiet, berm_count=0)
+        found = provenance.design_figures(quiet, name=FIGURE_NAME, berm_count=0)
         self.assertEqual([spec.key for spec in found], [
             "des.cut_m3", "des.fill_m3", "des.moved_area_m2", "des.edge_step_max_m",
             "des.berm_count", "des.nodata_area_m2"])
@@ -786,19 +819,21 @@ class FiguresTest(unittest.TestCase):
             for bad in (math.nan, math.inf, -math.inf):
                 with self.subTest(name=name, value=bad):
                     with self.assertRaises(ValueError) as caught:
-                        provenance.design_figures(report_of(**{name: bad}), berm_count=3)
+                        provenance.design_figures(report_of(**{name: bad}), name=FIGURE_NAME,
+                                                  berm_count=3)
                     self.assertIn("des.", str(caught.exception))
         for bad_count in (-1, 2.5, True, math.nan):
             with self.subTest(berm_count=bad_count):
                 with self.assertRaises((ValueError, TypeError)):
-                    provenance.design_figures(report_of(), berm_count=bad_count)
+                    provenance.design_figures(report_of(), name=FIGURE_NAME,
+                                              berm_count=bad_count)
 
     def test_the_report_is_not_modified(self) -> None:
         """Regla 6 de AGENTS.md: armar las cifras no cambia el informe (inmutable) ni lo
         copia con otra cosa."""
         report = report_of()
         before = astuple(report)
-        provenance.design_figures(report, berm_count=1)
+        provenance.design_figures(report, name=FIGURE_NAME, berm_count=1)
         self.assertEqual(astuple(report), before)
 
 
@@ -894,13 +929,15 @@ class RegistrationTest(dfx.DesignProjectCase):
             design_request(), SURFACE), params=(THICKNESS,))
         sets = [
             (envelope, provenance.envelope_figures(
-                cells=8_540, area_m2=34_160.0, min_m=-12.5, max_m=231.5, cut_m3=3.5, fill_m3=0.0)),
+                name=FIGURE_NAME, cells=8_540, area_m2=34_160.0, min_m=-12.5, max_m=231.5,
+                cut_m3=3.5, fill_m3=0.0)),
             (envelope, provenance.envelope_figures(
-                cells=0, area_m2=0.0, min_m=None, max_m=None, cut_m3=0.0, fill_m3=0.0)),
-            (stepped, provenance.design_figures(report_of(), berm_count=214)),
+                name=FIGURE_NAME, cells=0, area_m2=0.0, min_m=None, max_m=None, cut_m3=0.0,
+                fill_m3=0.0)),
+            (stepped, provenance.design_figures(report_of(), name=FIGURE_NAME, berm_count=214)),
             (stepped, provenance.design_figures(
                 report_of(cut_m3=0.0, moved_area_m2=0.0, slope_p90_deg=None, slope_p99_deg=None,
-                          slope_max_deg=None), berm_count=0))]
+                          slope_max_deg=None), name=FIGURE_NAME, berm_count=0))]
         for handle, specs in sets:
             with self.subTest(op_type=handle.op_type, keys=[spec.key for spec in specs]):
                 records = self.record(handle, specs)

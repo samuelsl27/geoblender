@@ -161,16 +161,17 @@ def lowered(depth: float, *, blank_rows: int = 20) -> Any:
     return raster_mod.Raster(start.grid, values, start.crs, start.vertical)
 
 
-def envelope_figures(raster: Any) -> Any:
-    """Las cifras de una envolvente de prueba, sacadas de su rejilla."""
+def envelope_figures(raster: Any, name: str = ENVELOPE_NAME) -> Any:
+    """Las cifras de la envolvente de prueba ``name``, sacadas de su rejilla."""
     start = cfx.site_start()
     finite = np.isfinite(raster.values)
     cells = int(np.count_nonzero(finite))
     low, high = float(raster.values[finite].min()), float(raster.values[finite].max())
     cut = float(np.sum((start.values[finite] - raster.values[finite]).clip(min=0.0))
                 * raster.grid.cell_area)
-    return provenance.envelope_figures(cells=cells, area_m2=cells * raster.grid.cell_area,
-                                       min_m=low, max_m=high, cut_m3=cut, fill_m3=0.0)
+    return provenance.envelope_figures(name=name, cells=cells,
+                                       area_m2=cells * raster.grid.cell_area, min_m=low,
+                                       max_m=high, cut_m3=cut, fill_m3=0.0)
 
 
 def design_pieces(pending: tuple[str, ...] = ()) -> dict[str, Any]:
@@ -752,7 +753,8 @@ class DesignCommitTest(_StoreCase):
                 "des_rpt_diseno_inicial"])
             self.clock.advance(minutes=1)
             stored = writer.commit(start, figures=provenance.design_figures(
-                pieces["report"], berm_count=pieces["berms"].count), message="Diseño de prueba")
+                pieces["report"], name=DESIGN_NAME, berm_count=pieces["berms"].count),
+                message="Diseño de prueba")
         return stored, pieces
 
     def test_the_design_registers_its_four_outputs_with_their_roles(self) -> None:
@@ -1289,7 +1291,8 @@ class VersionsStoryTest(dfx.DesignProjectCase):
         figures = self.figures_before[env_uid]
         self.assertEqual(sorted(figures), sorted(
             spec.key for spec in provenance.envelope_figures(
-                cells=1, area_m2=1.0, min_m=1.0, max_m=1.0, cut_m3=None, fill_m3=None)),
+                name=POOL, cells=1, area_m2=1.0, min_m=1.0, max_m=1.0, cut_m3=None,
+                fill_m3=None)),
             "sin superficie de partida no hay desmonte ni terraplén de la envolvente")
         self.assertEqual(figures["des.env_min_m"], BOTTOM_M)
         self.assertGreater(figures["des.env_cells"], 2800, "el hoyo y sus taludes")

@@ -244,8 +244,9 @@ def _envelope_steps(job: EnvelopeJob, budget_s: float) -> Generator[Progress, No
     if job.start is not None:
         moved = report.volumes(job.start, grid, geometry, job.min_thickness_m)
         cut, fill = moved.cut_m3, moved.fill_m3
-    figures = provenance.envelope_figures(cells=cells, area_m2=cells * geometry.cell_area,
-                                          min_m=low, max_m=high, cut_m3=cut, fill_m3=fill)
+    figures = provenance.envelope_figures(name=request.name, cells=cells,
+                                          area_m2=cells * geometry.cell_area, min_m=low,
+                                          max_m=high, cut_m3=cut, fill_m3=fill)
     text = (f"Envolvente «{request.name}» calculada: {cells} celdas "
             f"({cells * geometry.cell_area:.1f} m²)")
     yield _finish("figures", text, EnvelopeOutcome(grid, found, figures, text))
@@ -373,7 +374,7 @@ def _design_steps(job: DesignJob, budget_s: float) -> Generator[Progress, None, 
     moved = report.moved_cells(start, design, job.min_thickness_m)
     measured: berms.Berms = yield from forward(berms.berms_steps(
         design, geometry, heights, anchor, labels, scopes, moved=moved, budget_s=budget_s))
-    figures = provenance.design_figures(result, berm_count=measured.count)
+    figures = provenance.design_figures(result, name=request.name, berm_count=measured.count)
     loose = int(np.count_nonzero(domain & (labels == 0))) * geometry.cell_area
     text = (f"Escalonado «{request.name}» calculado: desmonte {result.cut_m3:.1f} m³, "
             f"terraplén {result.fill_m3:.1f} m³ y {measured.count} bermas")
