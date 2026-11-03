@@ -30,6 +30,11 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   escriben las salidas en sus temporales y completan en una transacción; :func:`recompute_run`
   repite con ellas lo obsoleto, con los ajustes de la operación que sustituye (RF-008-26), sin
   pedir confirmación. La reproducción de lo congelado es de ``design.reproduce``.
+- **Las partes que comparten esos caminos y «Calcular»** (T17, ``design.steps``): :func:`masks_steps`
+  (las máscaras de la versión, compiladas antes por pasos si hace falta),
+  :func:`prepare_envelope_units` y :func:`prepare_design_units` (lo que se lee y se rechaza antes de
+  calcular, por unidades) y :func:`compute_envelope_steps` y :func:`compute_design_steps` (el cálculo
+  y la escritura de las salidas en los temporales de un :class:`DesignWriter`, sin confirmar).
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -124,14 +129,21 @@ __all__ = [
     "REPORT_COLUMNS",
     "DesignWriter",
     "OperationStart",
+    "PreparedDesign",
+    "PreparedEnvelope",
     "Stored",
     "begin_design",
     "begin_envelope",
     "berm_rows",
     "RECOMPUTED",
+    "compute_design_steps",
+    "compute_envelope_steps",
+    "masks_steps",
     "number",
     "prepare_design",
+    "prepare_design_units",
     "prepare_envelope",
+    "prepare_envelope_units",
     "previous_comparison",
     "recompute_run",
     "report_rows",
@@ -416,21 +428,26 @@ def _check_profiles(project: StoreProject, version: Version, codes: Iterable[str
             check_bench_value(names.get(code, code), code, param, value)
 
 
-def _loaded_masks(project: StoreProject, version: Version, masks: access.MaskSet | None
-                  ) -> access.MaskSet:
-    """Las máscaras de ``version``: las que se dan (que han de ser de esa versión y estar al día:
-    ``MaskError``) o, sin ellas, las que da ``access.ensure_masks_steps`` (compila antes si no
-    están al día, RF-013-04)."""
+def masks_steps(project: StoreProject, version: Version, masks: access.MaskSet | None, *,
+                budget_s: float = STEP_BUDGET_S) -> Generator[Progress, None, access.MaskSet]:
+    """Las máscaras de ``version`` por pasos de ``budget_s`` como mucho (``yield from``): las que se
+    dan (que han de ser de esa versión y estar al día: ``MaskError``, ``ValueError``; sin pasos) o,
+    sin ellas, las que da ``access.ensure_masks_steps`` (que compila antes, como operación propia,
+    si no están al día, RF-013-04, y las carga). Se devuelven en ``StopIteration.value``."""
     if masks is not None:
         if masks.version_uid != version.uid:
             raise ValueError(f"las máscaras son de otra versión, no de {version.code}")
         _require_current_masks(project, version)
         return masks
-    found = None
-    for step in access.ensure_masks_steps(project, version.uid):
-        found = step
-    assert found is not None and isinstance(found.result, access.MaskSet)
-    return found.result
+    found: access.MaskSet = yield from pipeline.forward(
+        access.ensure_masks_steps(project, version.uid, budget_s=budget_s))
+    return found
+
+
+def _loaded_masks(project: StoreProject, version: Version, masks: access.MaskSet | None
+                  ) -> access.MaskSet:
+    """:func:`masks_steps` de una vez (sin ceder el hilo)."""
+    return _result_of(masks_steps(project, version, masks))
 
 
 def _seen(conn: sqlite3.Connection, uses: Iterable[Use], version: Version) -> dict[str, str]:
@@ -958,8 +975,9 @@ def previous_comparison(conn: sqlite3.Connection, version: Version, op_type: str
     return None
 
 
-def _result_of[T](work: Generator[None, None, T]) -> T:
-    """Lo que devuelve ``work`` (unidades de ``seeds``) llevado hasta el final."""
+def _result_of[T](work: Generator[object, None, T]) -> T:
+    """Lo que devuelve ``work`` (unidades de ``seeds``, pasos de ``masks_steps``) llevado hasta el
+    final."""
     while True:
         try:
             next(work)
@@ -990,6 +1008,150 @@ def _store_steps(spec_steps: Generator[None, None, Any], budget_s: float, what: 
                          running=f"Guardando {what}…", finished=f"{what.capitalize()} guardado")
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class PreparedEnvelope:
+    """Lo que se lee y se comprueba antes de calcular una envolvente (:func:`prepare_envelope_units`):
+    sus ``seeds`` con el dominio de trabajo y lo que anotará la operación (``start``)."""
+
+    seeds: SeedSet
+    start: OperationStart
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PreparedDesign:
+    """Lo que se lee y se comprueba antes de calcular un escalonado (:func:`prepare_design_units`): la
+    ``envelope`` que se escalona, los sectores del proyecto (``refs``) con la etiqueta de cada celda
+    (``labels``) y lo que anotará la operación (``start``)."""
+
+    envelope: Raster
+    refs: tuple[SectorRef, ...]
+    labels: np.ndarray
+    start: OperationStart
+
+
+def prepare_envelope_units(project: StoreProject, request: EnvelopeRequest, version: Version,
+                           masks: access.MaskSet, *, supersedes: str | None = None
+                           ) -> Generator[None, None, PreparedEnvelope]:
+    """Las unidades (cada ``yield``, una; para componerlas con ``pace_units``) que preparan el
+    cálculo de ``request`` en ``version`` con sus ``masks`` ya al día (:func:`masks_steps`): los
+    sectores, las semillas con el dominio de trabajo (``seed_units``), el rechazo de un sector con la
+    búsqueda pendiente (RF-013-05) y :func:`prepare_envelope`. Devuelve la
+    :class:`PreparedEnvelope`. Nada se escribe; los rechazos salen al avanzar."""
+    sectors = design_sectors(project, version.uid)
+    yield
+    seeds = yield from seed_units(project, request, masks)
+    refuse_pending(touched(sectors, seeds.domain))  # RF-013-05
+    yield
+    start = prepare_envelope(project, request, version=version.uid, masks=masks, sectors=sectors,
+                             touched_sectors=[ref.code for ref in seeds.touched],
+                             supersedes=supersedes)
+    yield
+    return PreparedEnvelope(seeds, start)
+
+
+def prepare_design_units(project: StoreProject, request: DesignRequest, surface: str,
+                         version: Version, masks: access.MaskSet, *,
+                         supersedes: str | None = None) -> Generator[None, None, PreparedDesign]:
+    """Lo mismo que :func:`prepare_envelope_units` para el escalonado ``request`` sobre la
+    superficie de partida ``surface``: los sectores, la envolvente de la versión (leída y comparada
+    con la rejilla del proyecto), la etiqueta de sector de cada celda, el rechazo de un sector con la
+    búsqueda pendiente que toca la envolvente (RF-013-05), la revisión congelada con que se compara
+    (:func:`previous_comparison`) y :func:`prepare_design`. Devuelve la :class:`PreparedDesign`."""
+    sectors = design_sectors(project, version.uid)
+    yield
+    envelope = read_surface(
+        project, provenance.dataset_name(provenance.ENVELOPE_GRID, request.envelope),
+        version_uid=version.uid, expect=project_frame(project), role="envolvente")
+    yield
+    refs, labels = sector_layout(project, masks)
+    yield
+    with np.errstate(invalid="ignore"):
+        domain = np.isfinite(envelope.values)
+    touched_codes = pipeline.touched_in(refs, labels, domain)
+    refuse_pending(item for item in sectors if item.code in touched_codes)  # RF-013-05
+    waiting = [item.code for item in sectors if item.pending and item.code in touched_codes]
+    with project.read() as conn:
+        previous = previous_comparison(conn, version, provenance.STEPPED, request.name)
+    yield
+    start = prepare_design(project, request, surface, version=version.uid, masks=masks,
+                           sectors=sectors, pending_sectors=waiting, touched_sectors=touched_codes,
+                           previous=previous, supersedes=supersedes)
+    yield
+    return PreparedDesign(envelope, refs, labels, start)
+
+
+def compute_envelope_steps(project: StoreProject, writer: DesignWriter, request: EnvelopeRequest,
+                           masks: access.MaskSet, seeds: SeedSet, values: Mapping[str, object],
+                           budget_s: float = STEP_BUDGET_S
+                           ) -> Generator[Progress, None, pipeline.EnvelopeOutcome]:
+    """Los pasos que calculan la envolvente de ``request`` con ``seeds`` y la dejan en el temporal
+    de su ``writer`` (``yield from``; **sin confirmar**: quien llama completa con
+    :meth:`DesignWriter.commit` o cierra el escritor). ``values`` son los parámetros (clave →
+    valor) con que se calcula: los que anotó la operación al empezar (``recompute``) o los que se
+    resuelven hoy («Calcular»). Devuelve el :class:`~design.pipeline.EnvelopeOutcome`."""
+    yield Progress("envelope", 0, 1, "Preparando la envolvente…")
+    domain = seeds.domain
+    slope = pipeline.envelope_slope(request, domain.sectors, domain.labels, values)
+    start = None
+    if pipeline.uses_start_surface(request):
+        assert request.seeds.surface is not None  # seed_units lo comprobó
+        start = read_surface(project, request.seeds.surface, version_uid=masks.version_uid,
+                             expect=project_frame(project), role="semillas").values
+    job = pipeline.EnvelopeJob(request, seeds, slope, start, number(values, VERIFY_MIN_THICKNESS))
+    outcome: pipeline.EnvelopeOutcome = yield from pipeline.forward(
+        pipeline.envelope_compute_steps(job, budget_s=budget_s))
+    raster = Raster(seeds.geometry, outcome.grid, writer.crs, writer.vertical)
+    yield from pipeline.forward(_store_steps(
+        writer.grid_steps(provenance.ENVELOPE_GRID, raster), budget_s, "la envolvente"))
+    return outcome
+
+
+def compute_design_steps(project: StoreProject, writer: DesignWriter, request: DesignRequest,
+                         surface: str, masks: access.MaskSet, prepared: PreparedDesign,
+                         values: Mapping[str, object], settings: Mapping[str, Any],
+                         budget_s: float = STEP_BUDGET_S
+                         ) -> Generator[Progress, None, pipeline.DesignOutcome]:
+    """Lo mismo que :func:`compute_envelope_steps` para el escalonado ``request`` sobre
+    ``surface`` y la ``prepared.envelope``: deja sus dos rejillas en los temporales de ``writer``
+    y prepara sus dos tablas. ``settings`` son los ajustes de la operación (los sectores con la
+    búsqueda pendiente y lo anterior con que se compara)."""
+    yield Progress("benching", 0, 1, "Preparando el escalonado…")
+    frame = project_frame(project)
+    start = read_surface(project, surface, version_uid=masks.version_uid, expect=frame,
+                         role="superficie de partida")
+    anchors = None
+    if request.anchor_grid is not None:
+        anchors = read_surface(project, request.anchor_grid, version_uid=masks.version_uid,
+                               expect=frame, role="anclas").values
+    profiles = pipeline.bench_profiles(values, [
+        request.base_profile, *(profile for _sector, profile in request.sector_profiles)])
+    waiting = set(provenance.settings_pending(settings))
+    refs = prepared.refs
+    pending = tuple(ref.name for ref in refs if ref.code in waiting)
+    job = pipeline.DesignJob(
+        request, start.grid, start.values, prepared.envelope.values, masks, tuple(refs),
+        prepared.labels, pipeline.imposed_from(values, refs), profiles, anchors,
+        number(values, VERIFY_MIN_THICKNESS), number(values, TOLERANCE_FACE),
+        number(values, WARNING_RATIO), pipeline.previous_of(provenance.settings_previous(settings)),
+        pending)
+    outcome: pipeline.DesignOutcome = yield from pipeline.forward(
+        pipeline.design_compute_steps(job, budget_s=budget_s))
+    geometry, crs, vertical = start.grid, writer.crs, writer.vertical
+    for family, grid, what in (
+            (provenance.DESIGN_GRID, outcome.design, "la superficie de diseño"),
+            (provenance.BERMS_GRID, outcome.berms.grid, "las cotas de las bermas")):
+        yield from pipeline.forward(_store_steps(
+            writer.grid_steps(family, Raster(geometry, grid, crs, vertical)), budget_s, what))
+    yield from pipeline.forward(_store_steps(
+        writer.table_steps(provenance.BERM_TABLE, berm_rows(outcome.berms)), budget_s,
+        "la tabla de bermas"))
+    yield from pipeline.forward(_store_steps(
+        writer.table_steps(provenance.REPORT_TABLE, report_rows(
+            outcome.report, unassigned_area_m2=outcome.unassigned_area_m2)), budget_s,
+        "el informe"))
+    return outcome
+
+
 def run_envelope(project: StoreProject, request: EnvelopeRequest, *, version: str | None,
                  masks: access.MaskSet | None = None, supersedes: str | None = None,
                  budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
@@ -1010,14 +1172,10 @@ def run_envelope(project: StoreProject, request: EnvelopeRequest, *, version: st
     (``des.operation_name_repeated``) y de un perfil sin valor (RF-013-19)."""
     found = require_version(project, version, provenance.ENVELOPE)
     loaded = _loaded_masks(project, found, masks)
-    sectors = design_sectors(project, found.uid)
-    seeds = _result_of(seed_units(project, request, loaded))
-    refuse_pending(touched(sectors, seeds.domain))  # RF-013-05
-    start = prepare_envelope(project, request, version=found.uid, masks=loaded, sectors=sectors,
-                             touched_sectors=[ref.code for ref in seeds.touched],
-                             supersedes=supersedes)
-    handle = start.begin(project)
-    return handle, _envelope_run(project, handle, request, loaded, seeds, budget_s)
+    prepared = _result_of(prepare_envelope_units(project, request, found, loaded,
+                                                 supersedes=supersedes))
+    handle = prepared.start.begin(project)
+    return handle, _envelope_run(project, handle, request, loaded, prepared.seeds, budget_s)
 
 
 def run_design(project: StoreProject, request: DesignRequest, surface: str, *,
@@ -1032,24 +1190,10 @@ def run_design(project: StoreProject, request: DesignRequest, surface: str, *,
     el dominio con la búsqueda pendiente (RF-013-05)."""
     found = require_version(project, version, provenance.STEPPED)
     loaded = _loaded_masks(project, found, masks)
-    sectors = design_sectors(project, found.uid)
-    envelope = read_surface(
-        project, provenance.dataset_name(provenance.ENVELOPE_GRID, request.envelope),
-        version_uid=found.uid, expect=project_frame(project), role="envolvente")
-    refs, labels = sector_layout(project, loaded)
-    with np.errstate(invalid="ignore"):
-        domain = np.isfinite(envelope.values)
-    touched_codes = pipeline.touched_in(refs, labels, domain)
-    refuse_pending(item for item in sectors if item.code in touched_codes)  # RF-013-05
-    waiting = [item.code for item in sectors if item.pending and item.code in touched_codes]
-    with project.read() as conn:
-        previous = previous_comparison(conn, found, provenance.STEPPED, request.name)
-    start = prepare_design(project, request, surface, version=found.uid, masks=loaded,
-                           sectors=sectors, pending_sectors=waiting, touched_sectors=touched_codes,
-                           previous=previous, supersedes=supersedes)
-    handle = start.begin(project)
-    return handle, _design_run(project, handle, request, surface, loaded, envelope, refs, labels,
-                               budget_s)
+    prepared = _result_of(prepare_design_units(project, request, surface, found, loaded,
+                                               supersedes=supersedes))
+    handle = prepared.start.begin(project)
+    return handle, _design_run(project, handle, request, surface, loaded, prepared, budget_s)
 
 
 def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
@@ -1084,64 +1228,18 @@ def _envelope_run(project: StoreProject, handle: OperationHandle, envelope: Enve
                   masks: access.MaskSet, seeds: SeedSet, budget_s: float
                   ) -> Generator[Progress, None, None]:
     with DesignWriter.resume(project, handle) as writer:
-        yield Progress("envelope", 0, 1, "Preparando la envolvente…")
-        values = _values(handle)
-        domain = seeds.domain
-        slope = pipeline.envelope_slope(envelope, domain.sectors, domain.labels, values)
-        start = None
-        if pipeline.uses_start_surface(envelope):
-            assert envelope.seeds.surface is not None  # seed_units lo comprobó
-            start = read_surface(project, envelope.seeds.surface, version_uid=masks.version_uid,
-                                 expect=project_frame(project), role="semillas").values
-        job = pipeline.EnvelopeJob(envelope, seeds, slope, start,
-                                   number(values, VERIFY_MIN_THICKNESS))
-        outcome: pipeline.EnvelopeOutcome = yield from pipeline.forward(
-            pipeline.envelope_compute_steps(job, budget_s=budget_s))
-        raster = Raster(seeds.geometry, outcome.grid, writer.crs, writer.vertical)
-        yield from pipeline.forward(_store_steps(
-            writer.grid_steps(provenance.ENVELOPE_GRID, raster), budget_s, "la envolvente"))
+        outcome: pipeline.EnvelopeOutcome = yield from compute_envelope_steps(
+            project, writer, envelope, masks, seeds, _values(handle), budget_s)
         stored = writer.commit(figures=outcome.figures, message=outcome.message)
         yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
 
 
 def _design_run(project: StoreProject, handle: OperationHandle, design: DesignRequest,
-                surface: str, masks: access.MaskSet, envelope: Raster,
-                refs: Sequence[SectorRef], labels: np.ndarray, budget_s: float
+                surface: str, masks: access.MaskSet, prepared: PreparedDesign, budget_s: float
                 ) -> Generator[Progress, None, None]:
     with DesignWriter.resume(project, handle) as writer:
-        yield Progress("benching", 0, 1, "Preparando el escalonado…")
-        values = _values(handle)
-        frame = project_frame(project)
-        start = read_surface(project, surface, version_uid=masks.version_uid, expect=frame,
-                             role="superficie de partida")
-        anchors = None
-        if design.anchor_grid is not None:
-            anchors = read_surface(project, design.anchor_grid, version_uid=masks.version_uid,
-                                   expect=frame, role="anclas").values
-        profiles = pipeline.bench_profiles(values, [
-            design.base_profile, *(profile for _sector, profile in design.sector_profiles)])
-        waiting = set(provenance.settings_pending(handle.settings))
-        pending = tuple(ref.name for ref in refs if ref.code in waiting)
-        job = pipeline.DesignJob(
-            design, start.grid, start.values, envelope.values, masks, tuple(refs), labels,
-            pipeline.imposed_from(values, refs), profiles, anchors,
-            number(values, VERIFY_MIN_THICKNESS), number(values, TOLERANCE_FACE),
-            number(values, WARNING_RATIO),
-            pipeline.previous_of(provenance.settings_previous(handle.settings)), pending)
-        outcome: pipeline.DesignOutcome = yield from pipeline.forward(
-            pipeline.design_compute_steps(job, budget_s=budget_s))
-        geometry, crs, vertical = start.grid, writer.crs, writer.vertical
-        for family, grid, what in (
-                (provenance.DESIGN_GRID, outcome.design, "la superficie de diseño"),
-                (provenance.BERMS_GRID, outcome.berms.grid, "las cotas de las bermas")):
-            yield from pipeline.forward(_store_steps(
-                writer.grid_steps(family, Raster(geometry, grid, crs, vertical)), budget_s, what))
-        yield from pipeline.forward(_store_steps(
-            writer.table_steps(provenance.BERM_TABLE, berm_rows(outcome.berms)), budget_s,
-            "la tabla de bermas"))
-        yield from pipeline.forward(_store_steps(
-            writer.table_steps(provenance.REPORT_TABLE, report_rows(
-                outcome.report, unassigned_area_m2=outcome.unassigned_area_m2)), budget_s,
-            "el informe"))
+        outcome: pipeline.DesignOutcome = yield from compute_design_steps(
+            project, writer, design, surface, masks, prepared, _values(handle), handle.settings,
+            budget_s)
         stored = writer.commit(figures=outcome.figures, message=outcome.message)
         yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)

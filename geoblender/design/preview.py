@@ -36,6 +36,7 @@ __all__ = [
     "Notice",
     "PreviewSummary",
     "SectorStatus",
+    "seed_notices",
     "summarize_steps",
 ]
 
@@ -140,6 +141,23 @@ class PreviewSummary:
                      if notice.severity == "warning")
 
 
+def seed_notices(plan: SeedPlan, seeds: SeedSet) -> tuple[Notice, ...]:
+    """Los avisos de unas semillas ya formadas de ``plan``: las que caen fuera del dominio de trabajo
+    (se conservan, la envolvente las usa) y las celdas de la zona sin cota. Los comparten la vista
+    previa y el cálculo (``design.steps``)."""
+    found = []
+    if seeds.outside_domain:
+        found.append(Notice("des.seeds_outside_domain", {
+            "cells": seeds.outside_domain, "area": seeds.outside_area_m2}))
+    if seeds.nodata_cells:
+        source = plan.seeds
+        name = source.surface if SeedKind(source.kind) is SeedKind.SURFACE else source.grid
+        found.append(Notice("des.seeds_without_data", {
+            "cells": seeds.nodata_cells, "area": seeds.nodata_cells * seeds.geometry.cell_area,
+            "surface": name or "—"}))
+    return tuple(found)
+
+
 def _notices(version: str, state: MaskState, plan: SeedPlan, masks: MaskSet | None,
              seeds: SeedSet | None) -> tuple[Notice, ...]:
     """Lo que dice el resumen, en orden: semillas, dominio, avisos de las semillas y de los
@@ -166,15 +184,7 @@ def _notices(version: str, state: MaskState, plan: SeedPlan, masks: MaskSet | No
     else:
         found.append(Notice("des.preview_domain_empty"))
     found.append(Notice("des.preview_masks_current", {"version": version}))
-    if seeds.outside_domain:
-        found.append(Notice("des.seeds_outside_domain", {
-            "cells": seeds.outside_domain, "area": seeds.outside_area_m2}))
-    if seeds.nodata_cells:
-        source = plan.seeds
-        name = source.surface if SeedKind(source.kind) is SeedKind.SURFACE else source.grid
-        found.append(Notice("des.seeds_without_data", {
-            "cells": seeds.nodata_cells, "area": seeds.nodata_cells * seeds.geometry.cell_area,
-            "surface": name or "—"}))
+    found.extend(seed_notices(plan, seeds))
     if domain.touched:
         found.append(Notice("des.preview_sectors",
                             {"sectors": tuple(sector.name for sector in domain.touched)}))
