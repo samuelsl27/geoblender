@@ -538,3 +538,15 @@ description.es = "Crea un perfil de banco, completa los valores que le faltan o 
 entry = "R-33"
 action = "P"
 frequency = 3
+
+# Diseño (spec 013, T23): la interna de «Sectores de diseño…»; la T26 pasa las órdenes de Diseño a «013».
+[[command]]
+key = "geoblender.des_set_sector_slope"
+kind = "internal"
+label.en = "Set the sector slope…"
+label.es = "Fijar el talud del sector…"
+description.en = "Set the maximum general slope that a sector imposes on the design"
+description.es = "Fija el talud general máximo que un sector impone al diseño"
+entry = "R-33"
+action = "P"
+frequency = 3

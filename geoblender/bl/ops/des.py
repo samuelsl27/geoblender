@@ -70,7 +70,19 @@ leído del proyecto) y la interna :class:`GEOBLENDER_OT_des_save_bench_profile` 
 ``core_set_parameter`` (la 008 y la 009). Ninguna cuenta ni regla de rango es de aquí: las del
 dominio (``design.model.BenchProfile``, ``design.params``).
 
-**Las demás órdenes** (T23 a T25 y T28) y **los cargadores de la vista** (T27) se añaden en sus
+**Sectores de diseño…** (T23; RF-013-07, RF-013-08, RF-013-09, RF-013-10, RF-013-21):
+:class:`GEOBLENDER_OT_des_edit_design_sectors` abre la ventana de ``bl.ui.des_panels`` con los
+sectores de la 012 (o el perímetro como único sector), el estado de su búsqueda, el talud que
+impone cada uno y el perfil asignado, y la interna :class:`GEOBLENDER_OT_des_set_sector_slope`
+guarda ese talud como el parámetro de su código (``des.sector.{código}.max_general_slope_deg``,
+ADR-0029) con su tipo, su origen, su decisor y su motivo, en el proyecto o solo en la versión
+activa (la 009): lo crea la primera vez en el ámbito y lo cambia después (su historial). «Declarar
+de nuevo desde una capa…» es la orden de la 012 (``core_declare_sectors``): conserva los valores de
+los sectores que mantienen su código y los demás quedan en la lista de huérfanos, sin borrarlos.
+Ninguna regla de rango ni cuenta es de aquí: las del dominio (``design.params``,
+``design.sectors``).
+
+**Las demás órdenes** (T24, T25 y T28) y **los cargadores de la vista** (T27) se añaden en sus
 tareas: :data:`classes` irá creciendo con ellas. El cargador de las rejillas ``des_env_``,
 ``des_srf_`` y ``des_brm_`` (objetos ``DESIGN``) es de ``bl/scene/des_views.py`` (T27), que
 registra ``bl.scene`` junto al tipo de objeto que necesita.
@@ -101,9 +113,11 @@ from ...design import messages as design_messages
 from ...design import params as design_params
 from ...design import profiles as design_profiles
 from ...design import provenance
+from ...design.model import PERIMETER_SEGMENT
 from ..scene import project_session, undo_watch
 from ..scene import versions as scene_versions
-from ..ui import des_panels
+from ..ui import constraint_panels, des_panels
+from ..ui import provenance as ui_provenance
 from ..ui.commands import with_note
 from . import incorporation
 from .core_provenance import (
@@ -115,6 +129,7 @@ from .core_provenance import (
     ensure_ready,
     error_text,
     scope_choice,
+    typed_value,
     write_unavailable,
 )
 from .incorporation import StepQueue
@@ -124,6 +139,7 @@ if TYPE_CHECKING:  # solo para los tipos: habilitar no importa el cálculo (RNF-
     from ...core.provenance.operations import OperationHandle
     from ...core.provenance.recompute import RecomputeRequest
     from ...core.versions.reproduce import ReproduceRequest
+    from ...design.sectors import DesignSector
     from ...design.steps import Calculation
 
 LOGGER = logging.getLogger("geoblender.bl.ops")
@@ -713,7 +729,247 @@ def _known_values(project: Any, code: str) -> dict[Any, dict[str, str]]:
     return found
 
 
+# --- Sectores de diseño… (T23; HU-013-2; RF-013-07 a RF-013-10, RF-013-21, RF-013-33) -----------
+
+EDIT_DESIGN_SECTORS = "geoblender.des_edit_design_sectors"
+SET_SECTOR_SLOPE = des_panels.SET_SECTOR_SLOPE
+
+
+class SectorFormError(ProfileFormError):
+    """Lo que impide guardar el talud de un sector con lo escrito en el diálogo (ya en el idioma de
+    Geoblender)."""
+
+
+def _parameters_written(project: Any) -> None:
+    """Tras escribir un parámetro: la lista de Parámetros del proyecto, los indicadores (lo que
+    dependía de él puede quedar obsoleto) y las ventanas de los perfiles y de los sectores (la
+    escucha de los indicadores las pone al día)."""
+    try:
+        ui_provenance.fill_parameters()
+    except (GeoblenderError, sqlite3.Error, OSError):
+        LOGGER.warning("No se pudo volver a leer la lista de parámetros", exc_info=True)
+    if ui_provenance.refresh(force=True):
+        ui_provenance.redraw()
+    des_panels.on_project_read(project)
+
+
+class GEOBLENDER_OT_des_edit_design_sectors(DesignCommandAware, ProvenanceAwareOperator,
+                                            bpy.types.Operator):
+    """Sectors with their own bench profile"""
+
+    bl_idname = EDIT_DESIGN_SECTORS
+    bl_label = "Design sectors…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+
+    def execute(self, context: Any) -> set[str]:
+        """Lee los sectores del proyecto —los de la 012 o el perímetro de actuación— con el estado
+        de su búsqueda, el talud que impone cada uno en la versión activa y los huérfanos, y las
+        capas de las que se pueden declarar de nuevo, y abre su ventana; desde un guion sin
+        ventana, solo la vista (RF-013-07)."""
+        project = SESSION.project
+        try:
+            des_panels.fill_sectors(project)
+            des_panels.fill_sector_sources(project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        des_panels.show_sector_report(())
+        if getattr(context, "window", None) is None:
+            return {"FINISHED"}
+        return _call_panel(des_panels.SECTORS_PANEL)
+
+
+class GEOBLENDER_OT_des_set_sector_slope(DesignCommandAware, ProvenanceAwareOperator,
+                                         bpy.types.Operator):
+    """Set the maximum general slope that a sector imposes on the design"""
+
+    bl_idname = SET_SECTOR_SLOPE
+    bl_label = "Set the sector slope…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    code: StringProperty(  # type: ignore[valid-type]
+        name="Sector", description="Code of the sector whose slope is set (empty: the action "
+        "perimeter, when it is the only sector)", options=_HIDDEN)
+    slope: StringProperty(  # type: ignore[valid-type]
+        name="Maximum general slope (°)", description="Maximum general slope that the sector "
+        "imposes on the design in degrees, between 0 and 90 (both excluded)", options=_FIELD)
+    kind: EnumProperty(  # type: ignore[valid-type]
+        name="Type", description="Type of the value: adopted or hypothesis",
+        items=PROFILE_KIND_ITEMS, default="ADOPTADO", options=_FIELD)
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Source", description="Document, standard, person, operation or algorithm the "
+        "value comes from (empty: the decider)", options=_FIELD)
+    source_kind: EnumProperty(  # type: ignore[valid-type]
+        name="Source type", items=SOURCE_KIND_ITEMS, default="PERSON", options=_FIELD)
+    decided_by: StringProperty(  # type: ignore[valid-type]
+        name="Decided by", description="Who decided the value (the owner, a laboratory, a "
+        "person)", options=_FIELD)
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the slope has this value (recorded in its history)",
+        options=_FIELD)
+    scope: EnumProperty(  # type: ignore[valid-type]
+        name="Scope",
+        description="Whether the change is for the project or only for the active version (a "
+                    "parameter that its module admits by version)",
+        items=PARAMETER_SCOPE_ITEMS, default="PROJECT", options=_FIELD)
+
+    def _sector(self, project: Any) -> DesignSector:
+        """El sector de :attr:`code` tal como está ahora en el proyecto (en la versión activa);
+        :class:`SectorFormError` si ya no está."""
+        from ...design import sectors as design_sectors  # al usarlo: habilitar no carga el cálculo
+
+        version = scene_versions.active()
+        found = design_sectors.design_sectors(project, None if version is None else version.uid)
+        for item in found:
+            if item.code == self.code:
+                return item
+        raise SectorFormError(tr("The sector is no longer in the project: open the list again"))
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo: del sector que se elige, con lo que ya impone en el ámbito (su valor,
+        su tipo, su origen y su decisor); propone el decisor (la persona de la sesión) y, con una
+        versión activa, el ámbito (RF-009-29: la versión si ya tiene valor propio, y si no, el
+        proyecto); no cambia nada hasta que se acepta."""
+        self.provenance_dialog = True
+        project = SESSION.project
+        try:
+            sector = self._sector(project)
+            choice = scope_choice(sector.key)
+            store = core_params.ParameterStore(project)
+            with project.read() as conn:
+                shared = store.get(sector.key, conn=conn)
+                own = None if choice is None else store.get(
+                    sector.key, version=choice.version_uid, conn=conn)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        if choice is None or choice.refusal is not None:
+            self.scope = "PROJECT"
+        elif not self.properties.is_property_set("scope"):
+            self.scope = "PROJECT" if own is None else "VERSION"
+        record = own if self.scope == "VERSION" and own is not None else shared
+        decided = ""
+        if record is not None and record.value is not None:
+            self.slope = typed_value(record.value, i18n.language())
+            if record.kind.name in ("ADOPTADO", "HIPOTESIS"):
+                self.kind = record.kind.name
+            self.source = record.source
+            self.source_kind = record.source_kind.name
+            decided = "" if record.decided_by == core_params.DEFAULT_DECIDER else record.decided_by
+        else:
+            self.slope = ""
+        self.decided_by = decided or project.session.user_host
+        self._title = tr("Maximum general slope of {sector}",
+                         sector=constraint_panels.sector_name(sector.code, sector.name))
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=tr("Sector slope"),
+            confirm_text=tr("Save"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        layout.use_property_split = True
+        layout.label(text=getattr(self, "_title", self.code), translate=False)
+        try:
+            choice = scope_choice(design_params.sector_slope_key(self.code or PERIMETER_SEGMENT))
+        except ValueError:  # un código que no es de sector: nada que preguntar
+            choice = None
+        if choice is not None:  # «¿Para el proyecto o solo para V01?» (RF-009-29)
+            layout.label(text=tr("For the project or only for {version}?", version=choice.code),
+                         translate=False)
+            row = layout.row(align=True)
+            row.use_property_split = False
+            row.prop_enum(self, "scope", "PROJECT", text=tr("The project"), translate=False)
+            only = row.row(align=True)
+            only.enabled = choice.refusal is None  # «Versión no editable» (RF-009-21)
+            only.prop_enum(self, "scope", "VERSION",
+                           text=tr("Only {version}", version=choice.code), translate=False)
+            if choice.refusal is not None:
+                refused = layout.row()
+                refused.alert = True
+                refused.label(text=choice.refusal, icon="ERROR", translate=False)
+        layout.prop(self, "slope", text=tr("Maximum general slope (°)"), translate=False)
+        layout.prop(self, "kind", text=tr("Type"), translate=False)
+        layout.prop(self, "source", text=tr("Source"), translate=False)
+        layout.prop(self, "source_kind", text=tr("Source type"), translate=False)
+        layout.prop(self, "decided_by", text=tr("Decided by"), translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def _request(self, project: Any) -> tuple[DesignSector, float]:
+        """Lo escrito, ya comprobado: el sector y el talud en grados. :class:`SectorFormError` si
+        el sector ya no está, falta el talud o quién lo decide, o no es un número; el rango (0 a
+        90°, ambos excluidos) lo rechaza el dominio (``DesignError``, nombrando el sector, el
+        campo y el valor)."""
+        sector = self._sector(project)
+        degrees = typed_number(self.slope, tr("Maximum general slope (°)"))
+        if degrees is None:
+            raise SectorFormError(tr("Write the maximum general slope of the sector"))
+        design_params.check_sector_slope(sector.code or PERIMETER_SEGMENT, degrees)
+        if not self.decided_by.strip():
+            raise SectorFormError(tr("Write who decides the slope of the sector"))
+        return sector, degrees
+
+    def execute(self, context: Any) -> set[str]:
+        """Guarda el talud del sector como su parámetro (``des.sector.{código}.
+        max_general_slope_deg``) en el proyecto o solo en la versión activa: lo da de alta la
+        primera vez en el ámbito y lo cambia después, con su tipo, su origen, su decisor y su
+        motivo (RF-013-08); el de otro sector o de otra versión no cambia. Todo se mira antes de
+        escribir: nada queda si se rechaza. Apunta Ctrl+Z (no deshace la BD) y pone al día las
+        ventanas (RF-013-07)."""
+        project = SESSION.project
+        try:
+            sector, degrees = self._request(project)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        version = None
+        if self.scope == "VERSION":  # solo la versión activa (RF-009-24, RF-009-29)
+            active = scene_versions.active()
+            if active is None:
+                self.report({"ERROR"}, tr("Choose the active version first: Project ▸ "
+                                          "Versions ▸ Active version"))
+                return {"CANCELLED"}
+            version = active
+        decided_by, source = self.decided_by.strip(), self.source.strip()
+        given: dict[str, Any] = {
+            "kind": ParamKind.ADOPTADO if self.kind == "ADOPTADO" else ParamKind.HIPOTESIS,
+            "source": source or decided_by,
+            "source_kind": self.source_kind.lower() if source else "person",
+            "decided_by": decided_by,
+            "reason": self.reason.strip() or tr("Declared in the design sectors window"),
+            "version": None if version is None else version.uid}
+        store = core_params.ParameterStore(project)
+        try:
+            with project.write_transaction() as conn:
+                if store.get(sector.key, version=given["version"], conn=conn) is None:
+                    saved = store.create(conn, sector.key, degrees, **given)
+                else:
+                    saved = store.change(conn, sector.key, value=degrees, **given)
+        except (GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.PARAMETER, saved.key)  # Ctrl+Z no lo deshace
+        _parameters_written(project)
+        des_panels.choose_sector(sector.code)
+        message = tr("Slope imposed by {sector} in {scope}: {value}",
+                     sector=constraint_panels.sector_name(sector.code, sector.name),
+                     scope=version.code if version is not None else tr("the project"),
+                     value=des_panels.slope_text(saved))
+        des_panels.show_sector_report([(message, False)])
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
-                             GEOBLENDER_OT_des_save_bench_profile)
-"""Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna; T23 a T25
-y T28 las irán añadiendo)."""
+                             GEOBLENDER_OT_des_save_bench_profile,
+                             GEOBLENDER_OT_des_edit_design_sectors,
+                             GEOBLENDER_OT_des_set_sector_slope)
+"""Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
+«Sectores de diseño…» y la suya; T24, T25 y T28 las irán añadiendo)."""

@@ -93,8 +93,10 @@ class GEOBLENDER_PG_des_sector(bpy.types.PropertyGroup):
     del proyecto: su nombre (``name``) y su código (``code``; vacío: el perímetro de actuación como
     único sector), su área ya escrita (``area``), el estado de su búsqueda de intocables
     (``search``: «Búsqueda vigente…» o «Búsqueda pendiente», ``pending`` si lo está), su talud
-    general máximo impuesto (``slope``, vacío si no lo tiene) con su origen y su decisor
-    (``slope_source``) y el código del perfil asignado (``profile``)."""
+    general máximo impuesto (``slope``, vacío si no lo tiene: «10,6° [ADO]») con su origen, su
+    decisor y su ámbito (``slope_source``: «la propiedad · decidido por … · V01»), lo que le pasa
+    (``problem``: un talud guardado fuera de rango, en ámbar) y el perfil asignado a la superficie
+    en preparación (``profile``: su código; ``profile_name``: su nombre)."""
 
     code: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     area: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
@@ -102,7 +104,9 @@ class GEOBLENDER_PG_des_sector(bpy.types.PropertyGroup):
     pending: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
     slope: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     slope_source: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    problem: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     profile: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    profile_name: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
 
 
 class GEOBLENDER_PG_des_line(bpy.types.PropertyGroup):
@@ -127,6 +131,10 @@ class GEOBLENDER_PG_des_panels(bpy.types.PropertyGroup):
         type=GEOBLENDER_PG_des_sector, options=_STATIC,
     )
     sector_index: IntProperty(default=0, min=0, options=_STATIC)  # type: ignore[valid-type]
+    sectors_project: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    sector_report: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_des_line, options=_STATIC,
+    )
     orphans: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_des_line, options=_STATIC,
     )

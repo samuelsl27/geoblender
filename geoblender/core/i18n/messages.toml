@@ -7479,3 +7479,88 @@ es = "El perfil de banco ya no está en el proyecto: abra la lista de nuevo"
 
 ["Bench profiles"]
 es = "Perfiles de banco"
+
+# «Sectores de diseño…» (spec 013, T23; HU-013-2; RF-013-07, RF-013-08, RF-013-10, RF-013-21; plan
+# 013 §5.5; ADR-0029): la ventana bl/ui/des_panels.py y las órdenes bl/ops/des.py
+# (des_edit_design_sectors y des_set_sector_slope).
+
+["Design sectors"]
+es = "Sectores de diseño"
+
+["Design sectors: {count}"]
+es = "Sectores de diseño: {count}"
+
+["Search in force"]
+es = "Búsqueda vigente"
+
+["Code: {code}"]
+es = "Código: {code}"
+
+["Area: {area}"]
+es = "Área: {area}"
+
+["The search of untouchable elements is mandatory before designing: {path}"]
+es = "La búsqueda de elementos intocables es obligatoria antes de diseñar: {path}"
+
+["Maximum general slope imposed: {slope}"]
+es = "Talud general máximo impuesto: {slope}"
+
+["No maximum general slope imposed"]
+es = "Sin talud general máximo impuesto"
+
+["{source} · decided by {who} · {scope}"]
+es = "{source} · decidido por {who} · {scope}"
+
+["Profile assigned: {profile}"]
+es = "Perfil asignado: {profile}"
+
+["Parameters without a sector: {count}"]
+es = "Parámetros sin sector: {count}"
+
+["These values belong to sectors that no longer exist (renamed or removed). They are never deleted: set the value again in the sector that replaces them"]
+es = "Estos valores son de sectores que ya no existen (renombrados o quitados). Nunca se borran: declare el valor de nuevo en el sector que los sustituye"
+
+["Slope of «{sector}» in {scope}: {value} · {source} · decided by {who}"]
+es = "Talud de «{sector}» en {scope}: {value} · {source} · decidido por {who}"
+
+["Declare again from a layer…"]
+es = "Declarar de nuevo desde una capa…"
+
+["Code of the sector whose slope is set (empty: the action perimeter, when it is the only sector)"]
+es = "Código del sector cuyo talud se fija (vacío: el perímetro de actuación, si es el único sector)"
+
+["Maximum general slope (°)"]
+es = "Talud general máximo (°)"
+
+["Maximum general slope that the sector imposes on the design in degrees, between 0 and 90 (both excluded)"]
+es = "Talud general máximo que el sector impone al diseño en grados, entre 0 y 90 (ambos excluidos)"
+
+["Type of the value: adopted or hypothesis"]
+es = "Tipo del valor: adoptado o hipótesis"
+
+["Document, standard, person, operation or algorithm the value comes from (empty: the decider)"]
+es = "Documento, norma, persona, operación o algoritmo de los que sale el valor (vacío: quien decide)"
+
+["Why the slope has this value (recorded in its history)"]
+es = "Por qué el talud tiene este valor (queda en su historial)"
+
+["The sector is no longer in the project: open the list again"]
+es = "El sector ya no está en el proyecto: abra la lista de nuevo"
+
+["Maximum general slope of {sector}"]
+es = "Talud general máximo de {sector}"
+
+["Sector slope"]
+es = "Talud del sector"
+
+["Write the maximum general slope of the sector"]
+es = "Escriba el talud general máximo del sector"
+
+["Write who decides the slope of the sector"]
+es = "Escriba quién decide el talud del sector"
+
+["Declared in the design sectors window"]
+es = "Declarado en la ventana de sectores de diseño"
+
+["Slope imposed by {sector} in {scope}: {value}"]
+es = "Talud impuesto por {sector} en {scope}: {value}"
