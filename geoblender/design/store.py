@@ -109,6 +109,7 @@ from .params import (
     bench_key,
     check_bench_value,
 )
+from .profiles import profile_names
 from .sectors import DesignSector, design_sectors, refuse_pending, slope_params, touched
 from .seeds import SectorRef, SeedSet, pace_progress, sector_layout, seed_units
 from .surfaces import project_frame, read_surface
@@ -392,15 +393,17 @@ def _check_profiles(project: StoreProject, version: Version, codes: Iterable[str
     """RF-013-19: cada valor de ``values`` de cada perfil de ``codes`` tiene un valor dentro de su
     rango en la versión (el de la versión si lo tiene y, si no, el del proyecto o, sin fila, el
     de su definición: ninguno, salvo el factor de malla). Si no, ``DesignError``
-    ``des.profile_value_missing`` o ``_range`` con el perfil (su código), la clave y el valor, antes
-    de registrar nada: abrir la operación con un valor que falta crearía una fila vacía «sin
-    confirmar» en el proyecto y calcularía con ella."""
+    ``des.profile_value_missing`` o ``_range`` con el perfil (su nombre en ``des_bench_profile`` o,
+    si no tiene fila, su código), la clave y el valor, antes de registrar nada: abrir la operación
+    con un valor que falta crearía una fila vacía «sin confirmar» en el proyecto y calcularía con
+    ella."""
     wanted = tuple(dict.fromkeys(codes))
     chosen = tuple(values)
     keys = tuple(bench_key(code, param) for code in wanted for param in chosen)
     with project.read() as conn:
         found = ParameterStore(project).resolve_many(
             conn, keys, (VERSION_SCOPE, PROJECT_SCOPE), version=version.uid)
+        names = profile_names(conn)
     for code in wanted:
         for param in chosen:
             key = bench_key(code, param)
@@ -410,7 +413,7 @@ def _check_profiles(project: StoreProject, version: Version, codes: Iterable[str
             else:
                 declared = definition(key)
                 value = None if declared is None else declared.default
-            check_bench_value(code, code, param, value)
+            check_bench_value(names.get(code, code), code, param, value)
 
 
 def _loaded_masks(project: StoreProject, version: Version, masks: access.MaskSet | None

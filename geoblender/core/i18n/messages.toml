@@ -7368,3 +7368,9 @@ es = "Mayor salto en el borde de las celdas prohibidas"
 
 ["Berms by sector, profile and level"]
 es = "Bermas por sector, perfil y cota"
+
+# Perfiles de banco del proyecto (spec 013, T16; RF-013-18, RF-013-19; plan 013 §5.2.1): el
+# nombre visible de la operación de proyecto de design/profiles.py.
+
+["Edition of the bench profiles"]
+es = "Edición de los perfiles de banco"

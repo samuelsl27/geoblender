@@ -28,7 +28,7 @@ import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from .messages import DesignError, render
 from .params import BenchParam, check_bench_value, is_code
@@ -44,6 +44,7 @@ __all__ = [
     "Direction",
     "EnvelopeRequest",
     "Metric",
+    "Named",
     "SeedKind",
     "SeedSource",
     "SlopeMode",
@@ -298,7 +299,18 @@ class BenchProfile:
         return render("des.profile_unresolved", language=language, **values)
 
 
-def check_profiles(profiles: Iterable[BenchProfile]) -> None:
+class Named(Protocol):
+    """Lo que la comprobación de nombres lee de un perfil: su ``code`` y su ``name`` (un
+    :class:`BenchProfile` o una fila de ``design.profiles``)."""
+
+    @property
+    def code(self) -> str: ...
+
+    @property
+    def name(self) -> str: ...
+
+
+def check_profiles(profiles: Iterable[Named]) -> None:
     """Comprueba el conjunto de perfiles de un proyecto: ``DesignError``
     ``des.profile_name_repeated`` si un perfil repite el nombre de otro (sin distinguir
     mayúsculas: el código sale del nombre; RF-013-19), nombrando los dos; :class:`ValueError` si
