@@ -323,7 +323,7 @@ class DesignPreviewTest(unittest.TestCase):
         self.assertTrue(issubclass(cls, self.des_ops.DesignCommandAware))
         self.assertEqual((cls.provenance_op_type, cls.bl_options), ("des.envelope", {"REGISTER"}))
         command = self.commands.catalog().commands[TOGGLE]
-        self.assertEqual((command.entry, command.action), ("R-33", "T"))  # la T26 la pasa a «013»
+        self.assertEqual((command.entry, command.action), ("013", "T"))
         self.assertEqual(command.label_es, "Vista previa de semillas, dominios y restricciones")
         self.assertTrue(cls.poll(bpy.context))
         for reason in ("Abra un proyecto", "Proyecto en solo lectura: prueba",

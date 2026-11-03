@@ -42,7 +42,8 @@ from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
 from tests.support.trees import temp_folder
 
-ENTRY = "R-33"  # hasta que la T26 pase las cuatro órdenes a la entrada «013»
+ENTRY = "013"
+ENTRY_TITLE = ("Envelopes and benching", "Envolventes y escalonado")
 COUNTS = {"parámetros": 2, "familias": 6, "operaciones": 3, "grupos": 0, "cifras": 15}
 """Lo de ``des`` en ``core``: 2 definiciones, 6 familias, 3 tipos de operación y 15 cifras."""
 OURS = ("des.", "des_")  # las claves de la 013 en los registros de core
@@ -61,8 +62,11 @@ DELIVERED: frozenset[str] = frozenset({"geoblender.des_edit_bench_profiles",
                                        "geoblender.des_edit_design_sectors",
                                        "geoblender.des_compute_envelope",
                                        "geoblender.des_toggle_preview"})
-"""Las órdenes de Diseño de R-33 que ya tienen su clase real (T22 a T25 las van añadiendo: cada
-una pasa a la entrada «013» en la T26)."""
+"""Las cuatro órdenes de Diseño de la 013 (T22 a T25 les dieron su clase real; la T26 las pasó de
+R-33 a la entrada «013»)."""
+INTERNAL: frozenset[str] = frozenset({"geoblender.des_save_bench_profile",
+                                      "geoblender.des_set_sector_slope"})
+"""Las órdenes internas de sus ventanas (T22 y T23): sin menú, también de la entrada «013»."""
 REASON = "Prueba del registro del diseño"
 NOT_EDITABLE = "V02 está en estado SUPERADO: cree una versión nueva a partir de ella"
 
@@ -256,8 +260,9 @@ class DesignRegisteredTest(unittest.TestCase):
         ``bl/ops/des.py``, la reproducción de ``design.reproduce`` (al usarla) y la tolerancia de
         sus cifras (10⁻⁹), y la edición de los perfiles, del proyecto y sin repetición. Lo
         registrado son las declaraciones del módulo, construidas una vez; sus cifras, las de
-        ``design.provenance``; los textos de todo ello, en español. Las cuatro órdenes de R-33
-        siguen siendo las provisionales hasta que llegue la clase real de cada una."""
+        ``design.provenance``; los textos de todo ello, en español. Las cuatro órdenes de
+        Diseño y las dos internas de sus ventanas son clases reales (no provisionales) de la
+        entrada «013», que entrega sus comandos (RF-013-33, D-31)."""
         m = self.m
         des_ops = m.des_ops
         declared = m.provenance
@@ -330,13 +335,18 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertEqual(launched["geoblender.des_compute_envelope"], list(VERSION_TYPES))
         for idname in sorted(launched):
             with self.subTest(orden=idname):
+                self.assertIn(idname, DELIVERED)
+        entry = self.cat.entries[ENTRY]
+        self.assertEqual((entry.title, entry.title_es, entry.delivered), (*ENTRY_TITLE, True))
+        for idname in sorted(DELIVERED | INTERNAL):
+            with self.subTest(orden=idname):
                 cls = m.commands.registered_class(idname)
-                if idname in DELIVERED:
-                    self.assertIn(cls, des_ops.classes)
-                    continue
-                # T22 a T25 las pasan a la 013 con su clase real
+                self.assertIn(cls, des_ops.classes)
+                self.assertFalse(m.commands.is_provisional(cls))
+                self.assertFalse(m.commands.is_undelivered(cls))
                 self.assertEqual(self.cat.commands[idname].entry, ENTRY)
-                self.assertTrue(m.commands.is_provisional(cls))
+                self.assertTrue(m.commands.is_available(idname))  # ya no «Disponible en R-33»
+        self.assertTrue(m.commands.is_available("GEOBLENDER_MT_des_context_design"))
 
     def test_c_recompute_goes_through_the_queue_of_des(self) -> None:
         """D-19, RF-013-17, RF-008-24, RF-008-26 (plan §5.3.2): el recálculo de una envolvente o

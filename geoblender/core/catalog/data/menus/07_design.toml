@@ -119,7 +119,7 @@ label.en = "Bench profiles…"
 label.es = "Perfiles de banco…"
 description.en = "Bench profiles such as EXPL_10_60_6 or REST_5_35_6"
 description.es = "Perfiles de banco como EXPL_10_60_6 o REST_5_35_6"
-entry = "R-33"
+entry = "013"
 action = "P"
 frequency = 3
 
@@ -129,7 +129,7 @@ label.en = "Design sectors…"
 label.es = "Sectores de diseño…"
 description.en = "Sectors with their own bench profile"
 description.es = "Sectores con su propio perfil de banco"
-entry = "R-33"
+entry = "013"
 action = "P"
 frequency = 2
 
@@ -139,7 +139,7 @@ label.en = "Preview of seeds, domains and constraints"
 label.es = "Vista previa de semillas, dominios y restricciones"
 description.en = "Show the seeds, domains and constraints before computing"
 description.es = "Muestra las semillas, los dominios y las restricciones antes de calcular"
-entry = "R-33"
+entry = "013"
 action = "T"
 frequency = 3
 
@@ -154,7 +154,7 @@ label.en = "Envelopes and benching…"
 label.es = "Envolventes y escalonado…"
 description.en = "Envelope of the excavation and its benching"
 description.es = "Envolvente de la excavación y su escalonado"
-entry = "R-33"
+entry = "013"
 action = "D"
 background = true
 frequency = 2

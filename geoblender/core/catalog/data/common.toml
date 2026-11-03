@@ -527,7 +527,7 @@ entry = "012"
 action = "D"
 frequency = 2
 
-# Diseño (spec 013, T22): la interna de «Perfiles de banco…»; la T26 pasa las órdenes de Diseño a «013».
+# Diseño (spec 013, T22): la interna de «Perfiles de banco…» (de la «013» desde la T26).
 [[command]]
 key = "geoblender.des_save_bench_profile"
 kind = "internal"
@@ -535,11 +535,11 @@ label.en = "Save profile…"
 label.es = "Guardar perfil…"
 description.en = "Create a bench profile, complete the values it lacks or rename it"
 description.es = "Crea un perfil de banco, completa los valores que le faltan o lo renombra"
-entry = "R-33"
+entry = "013"
 action = "P"
 frequency = 3
 
-# Diseño (spec 013, T23): la interna de «Sectores de diseño…»; la T26 pasa las órdenes de Diseño a «013».
+# Diseño (spec 013, T23): la interna de «Sectores de diseño…» (de la «013» desde la T26).
 [[command]]
 key = "geoblender.des_set_sector_slope"
 kind = "internal"
@@ -547,6 +547,6 @@ label.en = "Set the sector slope…"
 label.es = "Fijar el talud del sector…"
 description.en = "Set the maximum general slope that a sector imposes on the design"
 description.es = "Fija el talud general máximo que un sector impone al diseño"
-entry = "R-33"
+entry = "013"
 action = "P"
 frequency = 3

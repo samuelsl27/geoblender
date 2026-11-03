@@ -77,6 +77,16 @@ title.en = "Legal limits and constraints"
 title.es = "Límites legales y restricciones"
 delivered = true
 
+# La spec 013 (envolventes y escalonado) es R-33 (plan 013 D-31): sus cuatro órdenes de Diseño
+# (Perfiles de banco…, Sectores de diseño…, Vista previa de semillas, dominios y restricciones y
+# Envolventes y escalonado…), sus dos internas (guardar un perfil y fijar el talud de un sector,
+# common.toml) y el menú contextual «Diseño ▾» pasan de R-33 a la 013. R-33 sigue como entrada del
+# roadmap (otras specs la nombran) y ya no la usa ningún comando.
+["013"]
+title.en = "Envelopes and benching"
+title.es = "Envolventes y escalonado"
+delivered = true
+
 ["R-07"]
 title.en = "Versions and provenance"
 title.es = "Versiones y procedencia"

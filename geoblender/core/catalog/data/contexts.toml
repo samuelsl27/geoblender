@@ -318,7 +318,7 @@ label.en = "Design"
 label.es = "Diseño"
 description.en = "Commands for the active design"
 description.es = "Órdenes para el diseño activo"
-entry = "R-33"
+entry = "013"
 
 [[context.item]]
 ref = "geoblender.des_edit_bench_profiles"
