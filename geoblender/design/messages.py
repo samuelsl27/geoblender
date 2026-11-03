@@ -24,7 +24,8 @@ códigos que necesite (semillas, sectores, envolventes…): los de los perfiles 
 zonas de un cálculo (RF-013-01, RF-013-16) y los de las semillas, el dominio de trabajo y lo que
 dice la vista previa (RF-013-01 a RF-013-03) y los del rechazo y la marca de un sector con la
 búsqueda de intocables pendiente (RF-013-05, RF-013-06), los de la comprobación de cada
-envolvente (RF-013-15) y los que la rechazan antes de calcular (RF-013-14, RF-013-16). Un campo
+envolvente (RF-013-15), los que la rechazan antes de calcular (RF-013-14, RF-013-16) y los de
+exportar una rejilla a GeoTIFF (RF-013-34). Un campo
 que es un texto de una lista cerrada que la persona ve (el papel de una superficie, el tipo de
 geometría de una capa) llega ya en el idioma de quien lo llama: ``render`` no lo traduce.
 """
@@ -486,6 +487,23 @@ CATALOG: tuple[Message, ...] = (
         "La rejilla de anclas «{value}» no tiene cota en {cells} celdas de la superficie que se "
         "escalona; cada celda del dominio de trabajo necesita un ancla. Use una rejilla que lo "
         "cubra, o el ancla del perfil; no se calcula ni se registra nada.",
+    ),
+    # Exportar a GeoTIFF (RF-013-34; T19) --------------------------------------------------------
+    Message(
+        "des.export_unknown",
+        "Version {version} has no grid «{value}» of the design to export ({dataset}): choose an "
+        "envelope, a design surface or a berm grid calculated in that version; nothing has been "
+        "written.",
+        "La versión {version} no tiene la rejilla «{value}» del diseño para exportar "
+        "({dataset}): elija una envolvente, una superficie de diseño o una rejilla de bermas "
+        "calculada en esa versión; no se ha escrito nada.",
+    ),
+    Message(
+        "des.export_read_only_project",
+        "The project «{project}» is open read-only: export «{value}» outside the project; "
+        "nothing has been written.",
+        "El proyecto «{project}» está abierto en solo lectura: exporte «{value}» fuera del "
+        "proyecto; no se ha escrito nada.",
     ),
 )
 
