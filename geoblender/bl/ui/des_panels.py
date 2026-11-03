@@ -45,6 +45,18 @@ de ``WindowManager.geoblender_design``, leídos con :func:`fill_sectors` de ``de
 
 Ni el área, ni el estado, ni el talud, ni los huérfanos se calculan aquí: son los del dominio
 (``design.sectors``).
+
+**Envolventes y escalonado…** (T24; HU-013-1, HU-013-3, HU-013-5, HU-013-6; RF-013-17, RF-013-21,
+RF-013-31): lo que ofrece su diálogo y lo que enseña su resumen, ya leído del proyecto.
+:func:`refresh_choices` lee las superficies y rejillas de cotas (las del proyecto y las de la
+versión activa), las zonas (el dominio por defecto, las restricciones, los sectores y las capas
+de polígonos) y las capas con que se puede acotar el dominio, en listas vivas del módulo que
+alimentan los ``EnumProperty`` dinámicos (:func:`surface_items`, :func:`anchor_items`,
+:func:`zone_items`, :func:`layer_items`; ``docs/trampas.md`` §3). :func:`draw_sector_rows` dibuja
+los sectores con su marca de acotado y su perfil. :func:`show_summary` deja el resumen del cálculo
+abierto (``summary_title`` y ``summary``) con :func:`summary_lines`: el desmonte, el terraplén, la
+inclinación, las bermas y los avisos (en ámbar), de las cifras y del informe del dominio (aquí solo se
+escriben).
 """
 
 from __future__ import annotations
@@ -52,20 +64,25 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import bpy
 
 from ...core.catalog.search import path_text
+from ...core.constraints import store as constraint_store
 from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, language, tr, translate
 from ...core.params import ParameterStore, ParamKind, format_value
 from ...core.params import definition as param_definition
 from ...design import messages as design_messages
 from ...design import profiles as design_profiles
+from ...design import provenance as design_provenance
 from ...design.model import PERIMETER_SEGMENT, BenchProfile
 from ...design.params import BenchParam, bench_key
+from ...reserves import surfaces as res_surfaces
 from ..props.des import WINDOW_MANAGER_PROPERTY
+from ..scene import project_session
 from ..scene import versions as scene_versions
 from . import constraint_panels, labels, provenance
 from .commands import catalog
@@ -74,6 +91,7 @@ from .res_panels import NOT_SHOWN, record_text
 
 if TYPE_CHECKING:  # solo para los tipos: habilitar no importa el cálculo (RNF-001-03)
     from ...design.sectors import DesignSector, OrphanSlope
+    from ...design.steps import Calculation
 
 LOGGER = logging.getLogger("geoblender.bl.ui")
 TRANSLATION_CONTEXT = "Geoblender"
@@ -380,10 +398,14 @@ def fill_sectors(project: Any) -> int:
     old = shown.sectors
     chosen = old[shown.sector_index].code if 0 <= shown.sector_index < len(old) else None
     assigned = {item.code: item.profile for item in old if item.profile}
+    marks = {item.code: (bool(item.use), item.profile_pick) for item in old}
     shown.sectors.clear()
     for sector in found:
-        put_sector(shown.sectors.add(), sector, states.get(sector.code), version,
+        row = shown.sectors.add()
+        put_sector(row, sector, states.get(sector.code), version,
                    assigned.get(sector.code, ""), names)
+        use, pick = marks.get(sector.code, (False, ""))
+        row.use, row.profile_pick = use, pick or row.profile_name
     shown.sector_index = next((index for index, item in enumerate(shown.sectors)
                                if item.code == chosen), 0)
     shown.orphans.clear()
@@ -430,6 +452,7 @@ def assign_profiles(project: Any, assigned: Mapping[str, str]) -> None:
         code = assigned.get(item.code, "")
         item.profile = code
         item.profile_name = names.get(code, code) if code else ""
+        item.profile_pick = item.profile_name
 
 
 def show_sector_report(lines: Sequence[tuple[str, bool]]) -> None:
@@ -442,6 +465,266 @@ def show_sector_report(lines: Sequence[tuple[str, bool]]) -> None:
     for message, alert in lines:
         line = shown.sector_report.add()
         line.name, line.alert = message, alert
+
+
+# --- Envolventes y escalonado… (T24; HU-013-1, HU-013-3, HU-013-5; RF-013-21, RF-013-31) --------
+
+NO_ZONE = "none"
+DOMAIN_ZONE = "domain"
+CONSTRAINT_ZONE = "constraint:"
+SECTOR_ZONE = "sector:"
+LAYER_ZONE = "layer:"
+NO_ANCHOR = "none"
+NO_LAYER = "none"
+"""Los identificadores de las opciones de las listas del diálogo: sin zona (toda la superficie),
+el dominio por defecto de las máscaras, y el prefijo de una restricción, un sector o una capa (con
+su código o su nombre detrás); sin rejilla de anclas (la del perfil); sin capa."""
+
+
+@dataclass
+class _Choices:
+    """Las listas del diálogo ya leídas del proyecto (vivas: ``EnumProperty`` conserva sus textos,
+    ``docs/trampas.md`` §3) y la clave de lo que se leyó."""
+
+    surfaces: list[tuple[str, str, str]] = field(default_factory=list)
+    anchors: list[tuple[str, str, str]] = field(default_factory=list)
+    zones: list[tuple[str, str, str]] = field(default_factory=list)
+    layers: list[tuple[str, str, str]] = field(default_factory=list)
+    key: tuple[str, str, str] | None = None
+
+
+_CHOICES = _Choices()
+
+
+def _fixed_choices() -> None:
+    """Las listas sin nada del proyecto: sin superficies, sin rejilla de anclas, sin capa y las
+    zonas que no dependen de él."""
+    _CHOICES.surfaces = [(NO_ZONE, NOT_SHOWN, tr("There are no grids in the project"))]
+    _CHOICES.anchors = [(NO_ANCHOR, tr("The anchor of the profile"),
+                         tr("Anchor the benches to the elevation of the profile"))]
+    _CHOICES.zones = [(NO_ZONE, tr("The whole surface"),
+                       tr("Seeds in every cell of the surface with an elevation")),
+                      (DOMAIN_ZONE, tr("The default domain"),
+                       tr("The cells of the default work domain of the masks"))]
+    _CHOICES.layers = [(NO_LAYER, NOT_SHOWN, tr("There are no layers of polygons in the project"))]
+
+
+def refresh_choices(project: Any) -> None:
+    """Vuelve a leer de ``project`` las listas del diálogo, con la versión activa: las superficies
+    y rejillas de cotas del proyecto y de la versión activa (las que puede leer el cálculo: no las
+    congeladas ni las de otra versión), las zonas (el dominio por defecto, las restricciones, los
+    sectores declarados y las capas de polígonos) y las capas con que se acota el dominio. Si no se
+    puede leer, el error sigue y las listas quedan como estaban."""
+    version = scene_versions.active_version() or ""
+    found = [choice for choice in res_surfaces.surface_choices(project, version_uid=version)
+             if choice.revision is None]
+    with project.read() as conn:
+        constraints = constraint_store.read_constraints(conn)
+    layers = constraint_panels.polygon_layers(project)
+    shown = view()
+    sectors = [] if shown is None else [(item.code, item.name) for item in shown.sectors
+                                        if item.code]
+    _fixed_choices()
+    if found:
+        of_version, of_project = tr("A grid of the active version"), tr("A grid of the project")
+        _CHOICES.surfaces = [(choice.name, choice.name,
+                              of_version if choice.version_uid else of_project)
+                             for choice in found]
+    _CHOICES.anchors = [*_CHOICES.anchors, *_CHOICES.surfaces] if found else _CHOICES.anchors
+    _CHOICES.zones = [
+        *_CHOICES.zones,
+        *((CONSTRAINT_ZONE + item.code, item.name, tr("Zone of a constraint"))
+          for item in constraints if item.code),
+        *((SECTOR_ZONE + code, name, tr("Design sector")) for code, name in sectors),
+        *((LAYER_ZONE + name, constraint_panels.layer_label(name), tr("Layer of polygons"))
+          for name in layers)]
+    if layers:
+        _CHOICES.layers = [(name, constraint_panels.layer_label(name), tr("Layer of polygons"))
+                           for name in layers]
+    _CHOICES.key = (project.uid, version, language())
+
+
+def _ensure_choices() -> None:
+    """Las listas del proyecto de la sesión y su versión activa (las lee si son de otro, una vez:
+    ``invoke`` las vuelve a leer siempre); sin proyecto, las que no dependen de él."""
+    project = project_session.current()
+    if project is None:
+        if not _CHOICES.zones:
+            _fixed_choices()
+        return
+    key = (project.uid, scene_versions.active_version() or "", language())
+    if key == _CHOICES.key:
+        return
+    try:
+        refresh_choices(project)
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.warning("No se pudieron leer las listas de envolventes y escalonado", exc_info=True)
+        _fixed_choices()
+        _CHOICES.key = key  # sin volver a intentarlo en cada dibujo: invoke las relee
+
+
+def surface_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las superficies y rejillas de cotas que ofrece el diálogo (``EnumProperty``): una lista viva
+    del módulo."""
+    _ensure_choices()
+    return _CHOICES.surfaces
+
+
+def anchor_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las opciones del ancla del escalonado: el ancla de cada perfil o una rejilla de anclas del
+    proyecto o de la versión activa (una lista viva del módulo)."""
+    _ensure_choices()
+    return _CHOICES.anchors
+
+
+def zone_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las zonas de las semillas: toda la superficie, el dominio por defecto, una restricción, un
+    sector o una capa de polígonos (una lista viva del módulo)."""
+    _ensure_choices()
+    return _CHOICES.zones
+
+
+def layer_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las capas de polígonos con que se acota el dominio de trabajo (una lista viva del módulo)."""
+    _ensure_choices()
+    return _CHOICES.layers
+
+
+def forget_choices() -> None:
+    """Olvida las listas leídas (al desregistrar)."""
+    _CHOICES.key = None
+    _CHOICES.surfaces, _CHOICES.anchors, _CHOICES.zones, _CHOICES.layers = [], [], [], []
+
+
+def has_surfaces() -> bool:
+    """Si el proyecto ofrece alguna superficie o rejilla de cotas (la primera opción no es la de
+    «ninguna»)."""
+    _ensure_choices()
+    return bool(_CHOICES.surfaces) and _CHOICES.surfaces[0][0] != NO_ZONE
+
+
+def profile_codes() -> dict[str, str]:
+    """El código de cada perfil de banco de la vista por su nombre (lo que se elige en el diálogo)."""
+    shown = view()
+    return {} if shown is None else {item.name: item.code for item in shown.profiles}
+
+
+def clear_sector_marks() -> None:
+    """Quita la marca de acotar de los sectores (el diálogo parte sin acotar); los perfiles
+    elegidos se conservan."""
+    shown = view()
+    if shown is not None:
+        for item in shown.sectors:
+            item.use = False
+
+
+def draw_sector_rows(layout: Any, *, bound: bool, profiles: bool) -> None:
+    """Los sectores del diálogo, uno por fila: con ``bound``, su casilla de acotar el dominio de
+    trabajo a él; con ``profiles``, el perfil que se le asigna (buscado entre los perfiles del
+    proyecto; vacío, el perfil base). Su estado de búsqueda va en ámbar si está pendiente."""
+    shown = view()
+    if shown is None:
+        return
+    for item in shown.sectors:
+        row = layout.row(align=True)
+        if bound:
+            row.prop(item, "use", text=item.name, translate=False)
+        else:
+            row.label(text=item.name, translate=False)
+        if item.pending:
+            alert = row.row(align=True)
+            alert.alert = True
+            alert.label(text=tr("Search pending"), icon="ERROR", translate=False)
+        if profiles:
+            row.prop_search(item, "profile_pick", shown, "profiles", text="", translate=False)
+
+
+def _figure(calculation: Calculation, key: str) -> float | None:
+    """El valor de la cifra ``key`` de un cálculo (``None`` si no se dio)."""
+    return next((figure.value for figure in calculation.figures if figure.key == key), None)
+
+
+def _number(value: float | None, decimals: int = 0) -> str:
+    return NOT_SHOWN if value is None else format_number(value, decimals)
+
+
+def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+    """El resumen de un cálculo hecho y sin registrar (RF-013-31), línea a línea y en el idioma de
+    Geoblender, con los avisos al final y en alerta: de una envolvente, sus celdas, su área, sus
+    cotas y el desmonte y el terraplén frente a la superficie de partida (las cifras que se
+    registrarían); de un escalonado, el desmonte y el terraplén, la inclinación p99 y máxima con su
+    lugar, y las bermas con sus cotas reales (el informe y las bermas del dominio). Aquí solo se
+    escriben."""
+    lines: list[tuple[str, bool]] = []
+    if calculation.op_type == design_provenance.ENVELOPE:
+        cells = _figure(calculation, "des.env_cells")
+        lines.append((tr("Envelope «{name}»: {cells} cells ({area} m²)", name=calculation.name,
+                         cells=_number(cells), area=_number(_figure(calculation,
+                                                                    "des.env_area_m2"))), False))
+        low, high = _figure(calculation, "des.env_min_m"), _figure(calculation, "des.env_max_m")
+        if low is not None and high is not None:
+            lines.append((tr("Elevations {low} to {high} m", low=_number(low, 1),
+                             high=_number(high, 1)), False))
+        cut, fill = _figure(calculation, "des.env_cut_m3"), _figure(calculation, "des.env_fill_m3")
+        if cut is not None and fill is not None:
+            lines.append((tr("Against the start surface: cut {cut} m³ · fill {fill} m³",
+                             cut=_number(cut), fill=_number(fill)), False))
+    else:
+        outcome = calculation.outcome
+        report, berms = outcome.report, outcome.berms  # type: ignore[union-attr]
+        lines.append((tr("Benching «{name}»: cut {cut} m³ · fill {fill} m³ · moved area {area} m²",
+                         name=calculation.name, cut=_number(report.cut_m3),
+                         fill=_number(report.fill_m3), area=_number(report.moved_area_m2)),
+                      False))
+        if report.slope_max_deg is not None and report.slope_p99_deg is not None:
+            where = report.slope_max_at
+            lines.append((tr("Cell slope: p99 {p99}° · maximum {max}° at ({x}, {y})",
+                             p99=_number(report.slope_p99_deg, 1),
+                             max=_number(report.slope_max_deg, 1),
+                             x=_number(None if where is None else where.x, 1),
+                             y=_number(None if where is None else where.y, 1)), False))
+        if berms.lowest_m is not None and berms.highest_m is not None:
+            lines.append((tr("{count} berms, real elevations {low} to {high} m",
+                             count=_number(berms.count), low=_number(berms.lowest_m, 1),
+                             high=_number(berms.highest_m, 1)), False))
+        else:
+            lines.append((tr("No berms: nothing moves"), False))
+    lines.extend((notice.text(language()), notice.severity == "warning")
+                 for notice in calculation.notices)
+    return lines
+
+
+def show_summary(calculation: Calculation | None) -> None:
+    """Deja el resumen del cálculo abierto ``calculation`` (:func:`summary_lines`) en la vista, con
+    su título («Envolvente «Hoyo» en V01»); sin cálculo, lo vacía."""
+    shown = view()
+    if shown is None:
+        return
+    shown.summary.clear()
+    if calculation is None:
+        shown.summary_title = ""
+        return
+    shown.summary_title = (tr("Envelope «{name}» in {version}", name=calculation.name,
+                              version=calculation.version)
+                           if calculation.op_type == design_provenance.ENVELOPE
+                           else tr("Benching «{name}» in {version}", name=calculation.name,
+                                   version=calculation.version))
+    for text, alert in summary_lines(calculation):
+        line = shown.summary.add()
+        line.name, line.alert = text, alert
+
+
+def draw_summary(layout: Any, width_px: int) -> None:
+    """El resumen del cálculo abierto de la vista (:func:`show_summary`) en un diálogo de
+    ``width_px``: su título y cada línea partida al ancho, los avisos en ámbar."""
+    shown = view()
+    if shown is None:
+        return
+    width = labels.dialog_width(width_px)
+    if shown.summary_title:
+        _draw_text(layout, shown.summary_title, width)
+    for line in shown.summary:
+        _draw_text(layout, line.name, width, alert=bool(line.alert))
 
 
 def on_project_read(project: Any) -> None:
@@ -729,5 +1012,7 @@ def install() -> None:
 
 
 def uninstall() -> None:
-    """Quita lo que puso :func:`install`; idempotente."""
+    """Quita lo que puso :func:`install` y olvida las listas del diálogo de las envolventes;
+    idempotente."""
     provenance.remove_change_listener(on_project_read)
+    forget_choices()

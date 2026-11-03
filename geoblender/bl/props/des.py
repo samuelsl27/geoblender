@@ -96,7 +96,12 @@ class GEOBLENDER_PG_des_sector(bpy.types.PropertyGroup):
     general máximo impuesto (``slope``, vacío si no lo tiene: «10,6° [ADO]») con su origen, su
     decisor y su ámbito (``slope_source``: «la propiedad · decidido por … · V01»), lo que le pasa
     (``problem``: un talud guardado fuera de rango, en ámbar) y el perfil asignado a la superficie
-    en preparación (``profile``: su código; ``profile_name``: su nombre)."""
+    en preparación (``profile``: su código; ``profile_name``: su nombre).
+
+    Lo que marca la persona en el diálogo de «Envolventes y escalonado…» (T24): ``use`` (acotar el
+    dominio de trabajo a este sector) y ``profile_pick`` (el nombre del perfil que elige para él,
+    de la lista de perfiles; vacío: el perfil base). No son una lectura del proyecto: las
+    conserva :func:`~bl.ui.des_panels.fill_sectors` al volver a leer."""
 
     code: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     area: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
@@ -107,6 +112,8 @@ class GEOBLENDER_PG_des_sector(bpy.types.PropertyGroup):
     problem: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     profile: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     profile_name: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    use: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+    profile_pick: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
 
 
 class GEOBLENDER_PG_des_line(bpy.types.PropertyGroup):

@@ -82,10 +82,31 @@ los sectores que mantienen su código y los demás quedan en la lista de huérfa
 Ninguna regla de rango ni cuenta es de aquí: las del dominio (``design.params``,
 ``design.sectors``).
 
-**Las demás órdenes** (T24, T25 y T28) y **los cargadores de la vista** (T27) se añaden en sus
-tareas: :data:`classes` irá creciendo con ellas. El cargador de las rejillas ``des_env_``,
-``des_srf_`` y ``des_brm_`` (objetos ``DESIGN``) es de ``bl/scene/des_views.py`` (T27), que
-registra ``bl.scene`` junto al tipo de objeto que necesita.
+**Envolventes y escalonado…** (T24; HU-013-1, HU-013-3, HU-013-5, HU-013-6; RF-013-05, RF-013-16,
+RF-013-17, RF-013-21, RF-013-31; D-14, D-27, D-30):
+:class:`GEOBLENDER_OT_des_compute_envelope` es **una sola orden** con la envolvente y su escalonado
+opcional, con el diálogo de la spec (semillas, dirección, métrica, pendiente, alcance, acotar a,
+escalonar con su sentido, su superficie de partida, su perfil base, el de cada sector y su ancla, y
+el nombre). **Calcular** (el aceptar del diálogo) corre ``design.steps.envelope_run`` en su modal por
+pasos (``_StepsModal``: avance «Calculando la envolvente… 40 % · Esc: cancelar» y cancelación con
+Esc) y deja el cálculo hecho y **sin registrar** (:func:`hold_calculation`), con su resumen y sus
+avisos en la vista (``bl.ui.des_panels.show_summary``); al terminar pide confirmar
+(:func:`_ask_confirmation`: la misma orden con ``confirm=True``, que abre el diálogo de **Crear**,
+«Crear con N avisos» si los hay). **Crear** llama a ``Calculation.create()`` (una transacción) y
+**Cancelar**, cerrar la ventana (``cancel``), un cálculo nuevo, cambiar de proyecto y desactivar
+Geoblender descartan el cálculo y borran los temporales. Con «Escalonar», tras crear la envolvente
+(``design.steps.design_run`` la lee de la versión) sigue el escalonado en el mismo modal, con su
+propio resumen y su propia confirmación; si se rechaza, la envolvente ya está creada y lo dice. El
+rechazo de un sector con la búsqueda pendiente es el de ``design`` (``des.sector_pending``,
+nombrando el sector y la orden de la 012). Desde un guion (``bpy.ops`` sin ``in_steps``), de una
+vez; el perfil de cada sector y los sectores a los que se acota se marcan en
+``WindowManager.geoblender_design`` (``sectors[].profile_pick`` y ``.use``). Ninguna cuenta ni regla
+es de aquí: el cálculo, los rangos y los avisos son los de ``design``.
+
+**Las demás órdenes** (T25 y T28) y **los cargadores de la vista** (T27) se añaden en sus tareas:
+:data:`classes` irá creciendo con ellas. El cargador de las rejillas ``des_env_``, ``des_srf_`` y
+``des_brm_`` (objetos ``DESIGN``) es de ``bl/scene/des_views.py`` (T27), que registra ``bl.scene``
+junto al tipo de objeto que necesita.
 """
 
 from __future__ import annotations
@@ -95,11 +116,12 @@ import logging
 import math
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import bpy
-from bpy.props import EnumProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, StringProperty
 
 from ...core import i18n
 from ...core import params as core_params
@@ -112,14 +134,17 @@ from ...core.provenance.undo import UndoKind
 from ...design import messages as design_messages
 from ...design import params as design_params
 from ...design import profiles as design_profiles
+from ...design import model as design_model
 from ...design import provenance
 from ...design.model import PERIMETER_SEGMENT
 from ..scene import project_session, undo_watch
 from ..scene import versions as scene_versions
 from ..ui import constraint_panels, des_panels
 from ..ui import provenance as ui_provenance
-from ..ui.commands import with_note
+from ..ui.commands import catalog, command_idname, with_note
+from ..ui.commands import text as command_text
 from . import incorporation
+from .core import _StepsModal
 from .core_provenance import (
     KIND_ITEMS,
     PARAMETER_SCOPE_ITEMS,
@@ -325,6 +350,19 @@ def _unregister_families(ours: tuple[core_params.ParamFamily, ...]) -> None:
 _HELD: list[Calculation] = []  # a lo más uno: el cálculo hecho y sin registrar de la sesión
 
 
+@dataclass(frozen=True)
+class _Next:
+    """Lo que sigue a la envolvente en la misma orden (D-30): su escalonado, ya pedido, que se
+    calcula en cuanto la persona crea la envolvente (lee la envolvente de la versión)."""
+
+    request: design_model.DesignRequest
+    surface: str
+    version: str
+
+
+_NEXT: list[_Next] = []  # a lo más uno: el escalonado que espera a que se cree la envolvente
+
+
 def hold_calculation(opened: Calculation) -> None:
     """Deja ``opened`` (un ``design.steps.Calculation`` hecho y sin registrar) como el cálculo
     abierto de la sesión: el anterior, si lo había y sigue abierto, se descarta (sus temporales
@@ -346,9 +384,11 @@ def calculation() -> Calculation | None:
 
 def discard_calculation() -> None:
     """Descarta el cálculo abierto de la sesión («Cancelar», cerrar la ventana, cambiar de
-    proyecto, desactivar Geoblender): borra sus temporales y no deja nada. Sin él, nada."""
+    proyecto, desactivar Geoblender): borra sus temporales y no deja nada, y con él el escalonado
+    que esperaba a la envolvente. Sin él, nada."""
     held = _HELD[:]
     _HELD.clear()
+    _NEXT.clear()
     for other in held:
         _discard(other)
 
@@ -967,9 +1007,565 @@ class GEOBLENDER_OT_des_set_sector_slope(DesignCommandAware, ProvenanceAwareOper
         return {"FINISHED"}
 
 
+# --- Envolventes y escalonado… (T24; HU-013-1, HU-013-3, HU-013-5, HU-013-6; RF-013-05,
+#     RF-013-16, RF-013-17, RF-013-21, RF-013-31, RF-013-33; plan §5.3.3, §5.5, D-14, D-27, D-30) --
+
+COMPUTE_ENVELOPE = "geoblender.des_compute_envelope"
+ENVELOPE_STAGE = provenance.ENVELOPE
+STEPPED_STAGE = provenance.STEPPED
+SEEDS_FROM_ITEMS = [
+    ("SURFACE", "A surface in a zone", ""),
+    ("FIXED", "A fixed elevation in a zone", ""),
+    ("GRID", "A grid of elevations", ""),
+]
+"""De dónde salen las semillas (``design.model.SeedKind``): la superficie en las celdas de una zona,
+una cota fija en las celdas de una zona o una rejilla de cotas."""
+DIRECTION_ITEMS = [("DOWN", "Downwards", ""), ("UP", "Upwards", "")]
+METRIC_ITEMS = [("CHAMFER5", "Chamfer 5×5", ""), ("EXACT", "Exact Euclidean", "")]
+SLOPE_ITEMS = [("CONSTANT", "Constant", ""), ("SECTORS", "By sectors", "")]
+BOUND_ITEMS = [("ALL", "The whole domain", ""), ("SECTORS", "Some sectors", ""),
+               ("LAYER", "A layer of polygons", "")]
+SENSE_ITEMS = [("CUT", "Cut (face first)", ""), ("FILL", "Fill (berm first)", "")]
+
+
+class ComputeFormError(ProfileFormError):
+    """Lo que impide calcular con lo escrito en el diálogo de las envolventes (ya en el idioma de
+    Geoblender)."""
+
+
+@dataclass(frozen=True)
+class _Plan:
+    """Lo pedido en el diálogo, ya comprobado: la envolvente, su escalonado si se pidió, la
+    superficie de la que parte y el perfil de cada sector (código del sector → código del perfil)
+    cuando hacen falta."""
+
+    envelope: design_model.EnvelopeRequest
+    design: design_model.DesignRequest | None
+    start: str
+    assigned: dict[str, str]
+
+
+def _zone_of(identifier: str) -> design_model.Zone | None:
+    """La zona de una opción de la lista de zonas (``bl.ui.des_panels.zone_items``): ninguna (toda
+    la superficie), el dominio por defecto, o una restricción, un sector o una capa por su código o
+    su nombre."""
+    if identifier in ("", des_panels.NO_ZONE):
+        return None
+    kinds = design_model.ZoneKind
+    if identifier == des_panels.DOMAIN_ZONE:
+        return design_model.Zone(kinds.DOMAIN)
+    for prefix, kind in ((des_panels.CONSTRAINT_ZONE, kinds.CONSTRAINT),
+                         (des_panels.SECTOR_ZONE, kinds.SECTOR), (des_panels.LAYER_ZONE, kinds.LAYER)):
+        if identifier.startswith(prefix) and identifier[len(prefix):]:
+            return design_model.Zone(kind, identifier[len(prefix):])
+    raise ComputeFormError(tr("Choose the zone of the seeds"))
+
+
+def _ask_confirmation(context: Any = None) -> None:
+    """Pide confirmar el cálculo recién hecho (D-14): la misma orden con ``confirm=True`` en cuanto
+    acaba el modal (un diálogo no se abre desde dentro de un modal); sin ventana, nada (lo dice el
+    informe y el cálculo espera a que se cree con ``confirm=True``)."""
+    manager = getattr(bpy.context, "window_manager", None)
+    windows = list(getattr(manager, "windows", ()) or ())
+    chosen = getattr(context, "window", None) or (windows[0] if windows else None)
+    if chosen is None:
+        return
+    group, name = COMPUTE_ENVELOPE.split(".")
+
+    def call() -> None:
+        try:
+            with bpy.context.temp_override(window=chosen):
+                getattr(getattr(bpy.ops, group), name)("INVOKE_DEFAULT", confirm=True)
+        except (RuntimeError, TypeError, AttributeError, ReferenceError):
+            LOGGER.warning("No se pudo pedir la confirmación del cálculo", exc_info=True)
+
+    bpy.app.timers.register(call, first_interval=0.0)
+
+
+def _drain(operator: Any, steps: Iterator[Progress]) -> Any:
+    """Los pasos ``steps`` de una orden de una vez (desde un guion): el resultado del último o, si
+    fallan, ``None`` (ya dicho con el ``_report`` de ``operator``; sus pasos no dejan nada a
+    medias)."""
+    found = None
+    try:
+        for step in steps:
+            if step.result is not None:
+                found = step.result
+    except GeoblenderError as exc:
+        operator._report({"ERROR"}, operator._error_text(exc))
+        return None
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        LOGGER.error("«%s» se ha parado", operator.bl_idname, exc_info=exc)
+        operator._report({"ERROR"}, error_text(exc))
+        return None
+    if found is None:  # pragma: no cover - los pasos acaban siempre con su resultado
+        operator._report({"ERROR"}, tr("The operation did not finish with its result"))
+    return found
+
+
+class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOperator,
+                                         _StepsModal, bpy.types.Operator):
+    """Envelope of an excavation or a fill and, if you want, its benching and design surface"""
+
+    bl_idname = COMPUTE_ENVELOPE
+    bl_label = "Envelopes and benching…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.ENVELOPE
+
+    # Como Compilar las máscaras: cada evento del temporizador avanza pasos durante, como mucho,
+    # este tiempo (cada paso, ≤ 0,05 s: ninguna llamada de más de 0,2 s, RNF-013-07).
+    STEP_BUDGET_S = 0.05
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name",
+        description="Name of the envelope, unique in the active version; its benching has the same "
+                    "name", options=_FIELD)
+    seeds_from: EnumProperty(  # type: ignore[valid-type]
+        name="Origin of the seeds",
+        description="Where the seeds come from: the cells of a surface inside a zone, a fixed "
+                    "elevation in the cells of a zone or a grid of elevations of the project or of "
+                    "the active version", items=SEEDS_FROM_ITEMS, default="SURFACE", options=_FIELD)
+    surface: EnumProperty(  # type: ignore[valid-type]
+        name="Surface",
+        description="Surface or grid of elevations of the project or of the active version the "
+                    "seeds are read from", items=des_panels.surface_items, options=_FIELD)
+    zone: EnumProperty(  # type: ignore[valid-type]
+        name="Zone of the seeds",
+        description="Cells where the seeds are: the whole surface, the default domain, the zone "
+                    "of a constraint, a design sector or a layer of polygons",
+        items=des_panels.zone_items, options=_FIELD)
+    elevation: StringProperty(  # type: ignore[valid-type]
+        name="Elevation (m)", description="Fixed elevation of the seeds in metres", options=_FIELD)
+    direction: EnumProperty(  # type: ignore[valid-type]
+        name="Envelope direction",
+        description="Downwards: the lowest surface that does not go under the seeds; upwards: the "
+                    "highest surface that does not go over them",
+        items=DIRECTION_ITEMS, default="DOWN", options=_FIELD)
+    metric: EnumProperty(  # type: ignore[valid-type]
+        name="Metric",
+        description="How the distance to the seeds is measured: the 5×5 chamfer (fast, with the "
+                    "scale of the grid) or the exact Euclidean distance (constant slope only)",
+        items=METRIC_ITEMS, default="CHAMFER5", options=_FIELD)
+    slope_mode: EnumProperty(  # type: ignore[valid-type]
+        name="Slope",
+        description="A constant slope or the general slope of each sector (the maximum it imposes "
+                    "or, without one, that of its profile)",
+        items=SLOPE_ITEMS, default="CONSTANT", options=_FIELD)
+    slope: StringProperty(  # type: ignore[valid-type]
+        name="Slope (°)",
+        description="Slope of the envelope in degrees, from 0 (included) to 90 (excluded)",
+        options=_FIELD)
+    mesh: StringProperty(  # type: ignore[valid-type]
+        name="Mesh factor",
+        description="Factor between 0 (excluded) and 1 that reduces the slope of the envelope for "
+                    "the grid (empty: 1)", options=_FIELD)
+    reach: StringProperty(  # type: ignore[valid-type]
+        name="Reach",
+        description="Largest distance from the seeds, in metres, at which the envelope has data "
+                    "(empty: no limit)", options=_FIELD)
+    bound: EnumProperty(  # type: ignore[valid-type]
+        name="Bound to",
+        description="Where the work domain is bound: the whole domain of the masks, some sectors "
+                    "or a layer of polygons (it is never enlarged)",
+        items=BOUND_ITEMS, default="ALL", options=_FIELD)
+    bound_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Layer of polygons",
+        description="Layer of polygons of the project the work domain is bound to",
+        items=des_panels.layer_items, options=_FIELD)
+    stepped: BoolProperty(  # type: ignore[valid-type]
+        name="Bench the envelope", default=False,
+        description="After creating the envelope, bench it into benches and berms and compose the "
+                    "design surface (with its own summary to confirm)", options=_FIELD)
+    sense: EnumProperty(  # type: ignore[valid-type]
+        name="Sense",
+        description="Cut: the face first, the surface stays over the envelope; fill: the berm "
+                    "first, the surface stays under it",
+        items=SENSE_ITEMS, default="CUT", options=_FIELD)
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Surface the benching starts from: the ground the design is composed with",
+        items=des_panels.surface_items, options=_FIELD)
+    base_profile: StringProperty(  # type: ignore[valid-type]
+        name="Base profile",
+        description="Bench profile of the cells without a sector (and of the sectors without "
+                    "their own)", options=_FIELD)
+    anchor: EnumProperty(  # type: ignore[valid-type]
+        name="Anchor",
+        description="Elevation the benches are anchored to: that of each profile or a grid of "
+                    "anchors of the project or of the active version",
+        items=des_panels.anchor_items, options=_FIELD)
+    # La confirmación de crear (D-14) y los pasos con el temporizador de la ventana, con el avance y
+    # Esc: los pone invoke; desde un guion, sin ellos, de una vez.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué.
+        Con ``confirm``, el diálogo de crear el cálculo abierto (D-14). Si no, las listas de
+        superficies, zonas, capas, perfiles y sectores leídas de nuevo, la propuesta (el nombre y
+        la superficie) y el diálogo del cálculo: Intro calcula."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.fill_profiles(project)
+            des_panels.fill_sectors(project)
+            des_panels.refresh_choices(project)
+            self._propose()
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        des_panels.clear_sector_marks()
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.bl_idname)].label),
+            confirm_text=tr("Calculate"))
+
+    def _propose(self) -> None:
+        """El nombre y las superficies que propone el diálogo si quien lo lanza no los dio."""
+        given = self.properties.is_property_set
+        if not self.name.strip():
+            self.name = tr("Envelope")
+        if des_panels.has_surfaces():
+            first = des_panels.surface_items(None, None)[0][0]
+            if not given("surface"):
+                self.surface = first
+            if not given("start"):
+                self.start = self.surface
+
+    def _confirmation(self, context: Any) -> set[str]:
+        """El diálogo de crear el cálculo abierto (D-14, RF-013-31): su resumen con los avisos y
+        «Crear» (o «Crear con N avisos», que los nombra); «Cancelar» y cerrarlo lo descartan."""
+        held = calculation()
+        if held is None:
+            self.report({"ERROR"}, tr("There is no open calculation: compute first"))
+            return {"CANCELLED"}
+        count = len(held.warnings())
+        if not count:
+            confirm_text = tr("Create")
+        elif count == 1:
+            confirm_text = tr("Create with 1 warning")
+        else:
+            confirm_text = tr("Create with {count} warnings", count=count)
+        shown = des_panels.view()
+        title = shown.summary_title if shown is not None and shown.summary_title else (
+            command_text(catalog().commands[command_idname(self.bl_idname)].label))
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=title, confirm_text=confirm_text)
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        shown = des_panels.view()
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        seeds = layout.box()
+        seeds.label(text=tr("Seeds"), translate=False)
+        seeds.prop(self, "seeds_from", text=tr("Origin of the seeds"), translate=False)
+        if self.seeds_from != "FIXED":
+            seeds.prop(self, "surface", text=tr("Surface") if self.seeds_from == "SURFACE"
+                       else tr("Grid of elevations"), translate=False)
+        if self.seeds_from != "GRID":
+            seeds.prop(self, "zone", text=tr("Zone of the seeds"), translate=False)
+        if self.seeds_from == "FIXED":
+            seeds.prop(self, "elevation", text=tr("Elevation (m)"), translate=False)
+        layout.prop(self, "direction", text=tr("Envelope direction"), translate=False)
+        layout.prop(self, "metric", text=tr("Metric"), translate=False)
+        layout.prop(self, "slope_mode", text=tr("Slope"), translate=False)
+        if self.slope_mode == "CONSTANT":
+            layout.prop(self, "slope", text=tr("Slope (°)"), translate=False)
+        layout.prop(self, "mesh", text=tr("Mesh factor"), translate=False)
+        layout.prop(self, "reach", text=tr("Reach"), translate=False)
+        layout.prop(self, "bound", text=tr("Bound to"), translate=False)
+        if self.bound == "LAYER":
+            layout.prop(self, "bound_layer", text=tr("Layer of polygons"), translate=False)
+        layout.prop(self, "stepped", text=tr("Bench the envelope"), toggle=True, translate=False)
+        if self.stepped:
+            layout.prop(self, "sense", text=tr("Sense"), translate=False)
+            layout.prop(self, "start", text=tr("Start surface"), translate=False)
+            layout.prop(self, "anchor", text=tr("Anchor"), translate=False)
+        profiles = self.stepped or self.slope_mode == "SECTORS"
+        if profiles and shown is not None:
+            layout.prop_search(self, "base_profile", shown, "profiles", text=tr("Base profile"),
+                               translate=False)
+        bound = self.bound == "SECTORS"
+        if (bound or profiles) and shown is not None and len(shown.sectors):
+            box = layout.box()
+            box.label(text=tr("Sectors"), translate=False)
+            des_panels.draw_sector_rows(box, bound=bound, profiles=profiles)
+
+    # --- Lo pedido ----------------------------------------------------------------------------
+
+    def _seeds(self) -> design_model.SeedSource:
+        """Las semillas pedidas; las que faltan o no valen las rechaza el dominio al calcular
+        (``des.seed_missing``, ``des.seed_elevation``…)."""
+        kind = design_model.SeedKind(self.seeds_from.lower())
+        if kind is design_model.SeedKind.FIXED:
+            elevation = typed_number(self.elevation, tr("Elevation (m)"))
+            if elevation is None:
+                raise ComputeFormError(tr("Write the fixed elevation of the seeds in metres"))
+            return design_model.SeedSource(kind, zone=_zone_of(self.zone), elevation_m=elevation)
+        if self.surface in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the surface of the seeds: there are no grids in the "
+                                      "project or in the active version"))
+        if kind is design_model.SeedKind.GRID:
+            return design_model.SeedSource(kind, grid=self.surface)
+        return design_model.SeedSource(kind, surface=self.surface, zone=_zone_of(self.zone))
+
+    def _domain(self, shown: Any) -> design_model.WorkDomain:
+        """El acotado del dominio de trabajo pedido (RF-013-02): todo, los sectores marcados o una
+        capa; nunca se amplía."""
+        if self.bound == "SECTORS":
+            codes = tuple(item.code for item in shown.sectors if item.use and item.code)
+            if not codes:
+                raise ComputeFormError(tr("Mark the sectors the work domain is bound to"))
+            return design_model.WorkDomain(sectors=codes)
+        if self.bound == "LAYER":
+            if self.bound_layer in ("", des_panels.NO_LAYER):
+                raise ComputeFormError(tr("Choose the layer of polygons the work domain is bound "
+                                          "to"))
+            return design_model.WorkDomain(layer=self.bound_layer)
+        return design_model.WorkDomain()
+
+    @staticmethod
+    def _profile_code(picked: str, where: str, codes: Mapping[str, str]) -> str | None:
+        """El código del perfil de banco que se eligió por su nombre (``None`` si no se eligió
+        ninguno); :class:`ComputeFormError` si ya no existe."""
+        wanted = picked.strip()
+        if not wanted:
+            return None
+        found = codes.get(wanted)
+        if found is None:
+            raise ComputeFormError(tr("The bench profile «{profile}» ({where}) is not in the "
+                                      "project", profile=wanted, where=where))
+        return found
+
+    def _plan(self, project: Any) -> _Plan:
+        """Lo pedido en el diálogo, comprobado sin escribir ni calcular nada: los perfiles y los
+        sectores se leen de nuevo (un guion no abre el diálogo) y las peticiones del dominio se
+        arman con ellos. Los rangos, las semillas y los perfiles sin valor los rechaza el dominio
+        al calcular (RF-013-16, RF-013-19). :class:`ComputeFormError` si falta algo del diálogo."""
+        des_panels.fill_profiles(project)
+        des_panels.fill_sectors(project)
+        shown = des_panels.view()
+        name = self.name.strip()
+        if not name:
+            raise ComputeFormError(tr("Write the name of the envelope"))
+        seeds = self._seeds()
+        mode = design_model.SlopeMode(self.slope_mode.lower())
+        constant = mode is design_model.SlopeMode.CONSTANT
+        slope = typed_number(self.slope, tr("Slope (°)")) if constant else None
+        if constant and slope is None:
+            raise ComputeFormError(tr("Write the slope of the envelope in degrees"))
+        mesh = typed_number(self.mesh, tr("Mesh factor"))
+        reach = typed_number(self.reach, tr("Reach"))
+        domain = self._domain(shown)
+        codes = des_panels.profile_codes()
+        base = self._profile_code(self.base_profile, tr("Base profile"), codes)
+        assigned: dict[str, str] = {}
+        for item in shown.sectors:
+            found = self._profile_code(item.profile_pick, item.name, codes)
+            if found is not None:
+                assigned[item.code] = found
+        by_sectors = not constant
+        envelope = design_model.EnvelopeRequest(
+            name, self.direction.lower(), seeds, slope_mode=mode, slope_deg=slope,
+            metric=self.metric.lower(), mesh_factor=1.0 if mesh is None else mesh, reach_m=reach,
+            domain=domain, base_profile=base if by_sectors else None,
+            sector_profiles=assigned if by_sectors else {})
+        if not self.stepped:
+            return _Plan(envelope, None, "", assigned if by_sectors else {})
+        if base is None:
+            raise ComputeFormError(tr("Choose the base profile of the benching"))
+        if self.start in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the start surface of the benching"))
+        design = design_model.DesignRequest(
+            name, name, self.sense.lower(), base, assigned,
+            None if self.anchor in ("", des_panels.NO_ANCHOR) else self.anchor)
+        return _Plan(envelope, design, self.start, assigned)
+
+    # --- Calcular -----------------------------------------------------------------------------
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Si no, comprueba lo pedido
+        (sin escribir nada si no vale), pasa por la puerta de la 008 y calcula la envolvente por
+        pasos con ``design.steps.envelope_run`` —compila las máscaras antes si no están al día—,
+        sin registrar nada (D-14): desde la interfaz, en el modal con el avance y Esc; desde un guion,
+        de una vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar."""
+        if self.confirm:
+            return self._create(context)
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        try:
+            plan = self._plan(project)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report,
+                             dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        steps = design_steps.envelope_run(project, plan.envelope, version=version,
+                                          budget_s=self.STEP_BUDGET_S)
+        if plan.design is not None:
+            _NEXT[:] = [_Next(plan.design, plan.start, version)]
+        des_panels.assign_profiles(project, plan.assigned)  # RF-013-21: lo asignado, en la vista
+        return self._run(context, project, plan.envelope.name, ENVELOPE_STAGE, steps)
+
+    def _run(self, context: Any, project: Any, name: str, stage: str,
+             steps: Iterator[Progress]) -> set[str]:
+        """Corre los pasos de una fase (la envolvente o su escalonado): en el modal, con el avance y
+        Esc, o de una vez desde un guion."""
+        self._project, self._name, self._stage = project, name, stage
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, steps)
+            return {"RUNNING_MODAL"}
+        self.report_log: list[str] = []
+        calculated = _drain(self, steps)
+        if calculated is None:
+            _NEXT.clear()
+            return {"CANCELLED"}
+        self._finished(context, calculated)
+        return {"FINISHED"}
+
+    def _finished(self, context: Any, opened: Calculation) -> None:
+        """Lo que hace al terminar un cálculo (RF-013-31): lo deja abierto y sin registrar, enseña su
+        resumen con los avisos (en el informe y en la vista) y, desde la interfaz, pide confirmar."""
+        hold_calculation(opened)
+        des_panels.show_summary(opened)
+        shown = des_panels.view()
+        for line in () if shown is None else shown.summary:
+            self._report({"WARNING" if line.alert else "INFO"}, line.name)
+        if self.in_steps and getattr(context, "window", None) is not None:
+            _ask_confirmation(context)
+
+    # --- Crear --------------------------------------------------------------------------------
+
+    def _create(self, context: Any) -> set[str]:
+        """«Crear» (D-14, RF-013-17, RF-013-31): registra el cálculo abierto en una transacción
+        (``Calculation.create``: la operación, su dato, sus tablas y sus cifras); si falla, no queda
+        nada. Si se había pedido el escalonado, sigue con él (la envolvente ya está en la versión)."""
+        project = SESSION.project
+        opened = calculation()
+        if opened is None:
+            self.report({"ERROR"}, tr("There is no open calculation: compute first"))
+            return {"CANCELLED"}
+        try:
+            opened.create()
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            discard_calculation()
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, opened.op_type)  # Ctrl+Z no lo deshace
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
+        des_panels.show_summary(None)
+        self.report({"INFO"}, tr("Envelope «{name}» created in {version}", name=opened.name,
+                                 version=opened.version)
+                    if opened.op_type == ENVELOPE_STAGE
+                    else tr("Benching «{name}» created in {version}", name=opened.name,
+                            version=opened.version))
+        following = _NEXT.pop() if _NEXT and opened.op_type == ENVELOPE_STAGE else None
+        _NEXT.clear()
+        if following is None:
+            return {"FINISHED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        try:
+            steps = design_steps.design_run(project, following.request, following.surface,
+                                            version=following.version,
+                                            budget_s=self.STEP_BUDGET_S)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return self._run(context, project, following.request.name, STEPPED_STAGE, steps)
+
+    # --- En pasos (_StepsModal) ---------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado (plan §5.5): «Calculando la envolvente… 40 % · Esc:
+        cancelar» o, en la segunda fase, «Calculando el escalonado… 40 % · Esc: cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        if getattr(self, "_stage", ENVELOPE_STAGE) == STEPPED_STAGE:
+            return tr("Computing the benching… {percent} % · Esc: cancel", percent=percent)
+        return tr("Computing the envelope… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Calculation cancelled: nothing has been left half-done")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        """El error de los pasos en el idioma de Geoblender; si falló el escalonado, dice que la
+        envolvente ya está creada."""
+        found = design_error_text(exc)
+        if getattr(self, "_stage", ENVELOPE_STAGE) != STEPPED_STAGE:
+            return found
+        return f"{found} " + tr("The envelope «{name}» is already created: only its benching has "
+                                "not been computed", name=getattr(self, "_name", ""))
+
+    def _after_stop(self, context: Any) -> None:
+        """Tras cancelar o fallar: el escalonado que esperaba no sigue."""
+        _NEXT.clear()
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        if step.result is None:
+            if project_session.current() is not getattr(self, "_project", None):
+                return self._fail(context, tr(
+                    "The project was closed while «{name}» was being computed: nothing has been "
+                    "left half-done", name=getattr(self, "_name", "")))
+            return None
+        self._done(context)
+        self._finished(context, step.result)
+        return {"FINISHED"}
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except Exception as exc:  # noqa: BLE001 - los pasos cerrados no dejan nada a medias
+            LOGGER.error("«%s» se ha parado", self.bl_idname, exc_info=exc)
+            return self._fail(context, design_error_text(exc))
+
+    def cancel(self, context: Any) -> None:
+        """Lo que Blender llama al cancelar: un modal en curso cierra sus pasos (como Esc); la
+        ventana de la confirmación cerrada sin crear («Cancelar», Esc, apartar el ratón) descarta el
+        cálculo abierto y sus temporales (D-14). El diálogo del cálculo no descarta nada."""
+        if getattr(self, "_steps", None) is not None:
+            _StepsModal.cancel(self, context)
+            _NEXT.clear()
+        elif self.confirm:
+            discard_calculation()
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
-                             GEOBLENDER_OT_des_set_sector_slope)
+                             GEOBLENDER_OT_des_set_sector_slope,
+                             GEOBLENDER_OT_des_compute_envelope)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
-«Sectores de diseño…» y la suya; T24, T25 y T28 las irán añadiendo)."""
+«Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…»; T25 y T28 las irán
+añadiendo)."""

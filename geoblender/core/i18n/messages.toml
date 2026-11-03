@@ -7564,3 +7564,240 @@ es = "Declarado en la ventana de sectores de diseño"
 
 ["Slope imposed by {sector} in {scope}: {value}"]
 es = "Talud impuesto por {sector} en {scope}: {value}"
+
+["A surface in a zone"]
+es = "Una superficie en una zona"
+
+["A fixed elevation in a zone"]
+es = "Una cota fija en una zona"
+
+["A grid of elevations"]
+es = "Una rejilla de cotas"
+
+["Downwards"]
+es = "Hacia abajo"
+
+["Upwards"]
+es = "Hacia arriba"
+
+["Chamfer 5×5"]
+es = "Chamfer 5×5"
+
+["Exact Euclidean"]
+es = "Euclídea exacta"
+
+["Constant"]
+es = "Constante"
+
+["By sectors"]
+es = "Por sectores"
+
+["The whole domain"]
+es = "Todo el dominio"
+
+["Some sectors"]
+es = "Algunos sectores"
+
+["A layer of polygons"]
+es = "Una capa de polígonos"
+
+["Cut (face first)"]
+es = "Corte (cara primero)"
+
+["Fill (berm first)"]
+es = "Relleno (berma primero)"
+
+["Choose the zone of the seeds"]
+es = "Elija la zona de las semillas"
+
+["Name of the envelope, unique in the active version; its benching has the same name"]
+es = "Nombre de la envolvente, único en la versión activa; su escalonado lleva el mismo nombre"
+
+["Where the seeds come from: the cells of a surface inside a zone, a fixed elevation in the cells of a zone or a grid of elevations of the project or of the active version"]
+es = "De dónde salen las semillas: las celdas de una superficie dentro de una zona, una cota fija en las celdas de una zona o una rejilla de cotas del proyecto o de la versión activa"
+
+["Surface or grid of elevations of the project or of the active version the seeds are read from"]
+es = "Superficie o rejilla de cotas del proyecto o de la versión activa de la que se leen las semillas"
+
+["Cells where the seeds are: the whole surface, the default domain, the zone of a constraint, a design sector or a layer of polygons"]
+es = "Celdas donde están las semillas: toda la superficie, el dominio por defecto, la zona de una restricción, un sector de diseño o una capa de polígonos"
+
+["Fixed elevation of the seeds in metres"]
+es = "Cota fija de las semillas en metros"
+
+["Downwards: the lowest surface that does not go under the seeds; upwards: the highest surface that does not go over them"]
+es = "Hacia abajo: la superficie más baja que no queda por debajo de las semillas; hacia arriba: la más alta que no queda por encima de ellas"
+
+["Metric"]
+es = "Métrica"
+
+["How the distance to the seeds is measured: the 5×5 chamfer (fast, with the scale of the grid) or the exact Euclidean distance (constant slope only)"]
+es = "Cómo se mide la distancia a las semillas: el chamfer 5×5 (rápido, con la escala de la rejilla) o la distancia euclídea exacta (solo con pendiente constante)"
+
+["Slope"]
+es = "Pendiente"
+
+["A constant slope or the general slope of each sector (the maximum it imposes or, without one, that of its profile)"]
+es = "Una pendiente constante o el talud general de cada sector (el máximo que impone o, si no lo tiene, el de su perfil)"
+
+["Slope (°)"]
+es = "Pendiente (°)"
+
+["Slope of the envelope in degrees, from 0 (included) to 90 (excluded)"]
+es = "Pendiente de la envolvente en grados, de 0 (incluido) a 90 (excluido)"
+
+["Largest distance from the seeds, in metres, at which the envelope has data (empty: no limit)"]
+es = "Mayor distancia a las semillas, en metros, a la que la envolvente tiene dato (vacío: sin límite)"
+
+["Bound to"]
+es = "Acotar a"
+
+["Where the work domain is bound: the whole domain of the masks, some sectors or a layer of polygons (it is never enlarged)"]
+es = "A qué se acota el dominio de trabajo: todo el dominio de las máscaras, algunos sectores o una capa de polígonos (nunca se amplía)"
+
+["Layer of polygons"]
+es = "Capa de polígonos"
+
+["Layer of polygons of the project the work domain is bound to"]
+es = "Capa de polígonos del proyecto a la que se acota el dominio de trabajo"
+
+["After creating the envelope, bench it into benches and berms and compose the design surface (with its own summary to confirm)"]
+es = "Tras crear la envolvente, escalonarla en bancos y bermas y componer la superficie de diseño (con su propio resumen que confirmar)"
+
+["Sense"]
+es = "Sentido"
+
+["Cut: the face first, the surface stays over the envelope; fill: the berm first, the surface stays under it"]
+es = "Corte: la cara primero, la superficie queda por encima de la envolvente; relleno: la berma primero, la superficie queda por debajo"
+
+["Surface the benching starts from: the ground the design is composed with"]
+es = "Superficie de la que parte el escalonado: el terreno con el que se compone el diseño"
+
+["Bench profile of the cells without a sector (and of the sectors without their own)"]
+es = "Perfil de banco de las celdas sin sector (y de los sectores sin perfil propio)"
+
+["Anchor"]
+es = "Ancla"
+
+["Elevation the benches are anchored to: that of each profile or a grid of anchors of the project or of the active version"]
+es = "Cota a la que se anclan los bancos: la de cada perfil o una rejilla de anclas del proyecto o de la versión activa"
+
+["Calculate"]
+es = "Calcular"
+
+["Envelope"]
+es = "Envolvente"
+
+["There is no open calculation: compute first"]
+es = "No hay un cálculo abierto: calcule antes"
+
+["Create with 1 warning"]
+es = "Crear con 1 aviso"
+
+["Create with {count} warnings"]
+es = "Crear con {count} avisos"
+
+["Seeds"]
+es = "Semillas"
+
+["Sectors"]
+es = "Sectores"
+
+["Write the fixed elevation of the seeds in metres"]
+es = "Escriba la cota fija de las semillas en metros"
+
+["Choose the surface of the seeds: there are no grids in the project or in the active version"]
+es = "Elija la superficie de las semillas: no hay rejillas en el proyecto ni en la versión activa"
+
+["Mark the sectors the work domain is bound to"]
+es = "Marque los sectores a los que se acota el dominio de trabajo"
+
+["Choose the layer of polygons the work domain is bound to"]
+es = "Elija la capa de polígonos a la que se acota el dominio de trabajo"
+
+["The bench profile «{profile}» ({where}) is not in the project"]
+es = "El perfil de banco «{profile}» ({where}) no está en el proyecto"
+
+["Write the name of the envelope"]
+es = "Escriba el nombre de la envolvente"
+
+["Write the slope of the envelope in degrees"]
+es = "Escriba la pendiente de la envolvente en grados"
+
+["Choose the base profile of the benching"]
+es = "Elija el perfil base del escalonado"
+
+["Choose the start surface of the benching"]
+es = "Elija la superficie de partida del escalonado"
+
+["Envelope «{name}» created in {version}"]
+es = "Envolvente «{name}» creada en {version}"
+
+["Benching «{name}» created in {version}"]
+es = "Escalonado «{name}» creado en {version}"
+
+["Computing the benching… {percent} % · Esc: cancel"]
+es = "Calculando el escalonado… {percent} % · Esc: cancelar"
+
+["Computing the envelope… {percent} % · Esc: cancel"]
+es = "Calculando la envolvente… {percent} % · Esc: cancelar"
+
+["Calculation cancelled: nothing has been left half-done"]
+es = "Cálculo cancelado: no queda nada a medias"
+
+["The envelope «{name}» is already created: only its benching has not been computed"]
+es = "La envolvente «{name}» ya está creada: solo falta calcular su escalonado"
+
+["There are no grids in the project"]
+es = "No hay rejillas en el proyecto"
+
+["The anchor of the profile"]
+es = "El ancla del perfil"
+
+["Anchor the benches to the elevation of the profile"]
+es = "Anclar los bancos a la cota de cada perfil"
+
+["The whole surface"]
+es = "Toda la superficie"
+
+["Seeds in every cell of the surface with an elevation"]
+es = "Semillas en cada celda de la superficie con cota"
+
+["The default domain"]
+es = "El dominio por defecto"
+
+["The cells of the default work domain of the masks"]
+es = "Las celdas del dominio de trabajo por defecto de las máscaras"
+
+["There are no layers of polygons in the project"]
+es = "No hay capas de polígonos en el proyecto"
+
+["Envelope «{name}»: {cells} cells ({area} m²)"]
+es = "Envolvente «{name}»: {cells} celdas ({area} m²)"
+
+["Elevations {low} to {high} m"]
+es = "Cotas {low} a {high} m"
+
+["Against the start surface: cut {cut} m³ · fill {fill} m³"]
+es = "Frente a la superficie de partida: desmonte {cut} m³ · relleno {fill} m³"
+
+["Benching «{name}»: cut {cut} m³ · fill {fill} m³ · moved area {area} m²"]
+es = "Escalonado «{name}»: desmonte {cut} m³ · relleno {fill} m³ · área con movimiento {area} m²"
+
+["Cell slope: p99 {p99}° · maximum {max}° at ({x}, {y})"]
+es = "Inclinación de celda: p99 {p99}° · máx. {max}° en ({x}, {y})"
+
+["{count} berms, real elevations {low} to {high} m"]
+es = "{count} bermas, cotas reales {low} a {high} m"
+
+["No berms: nothing moves"]
+es = "Sin bermas: no se mueve nada"
+
+["Envelope «{name}» in {version}"]
+es = "Envolvente «{name}» en {version}"
+
+["Benching «{name}» in {version}"]
+es = "Escalonado «{name}» en {version}"
+
+["Bench the envelope"]
+es = "Escalonar"
