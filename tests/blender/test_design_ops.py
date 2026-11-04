@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""«Envolventes y escalonado…» en Blender (spec 013, T24; HU-013-3, HU-013-5, HU-013-6; RF-013-17,
-RF-013-21, RF-013-31, RF-013-33; plan 013 §5.3.3, §5.5, D-14, D-27, D-30; comprobación manual M4 a M6).
+"""«Envolventes y escalonado…» en Blender (spec 013, T24 y T28; HU-013-3, HU-013-5, HU-013-6; RF-013-17,
+RF-013-21, RF-013-31, RF-013-33, RF-013-34; plan 013 §5.3.3, §5.5, D-14, D-27, D-30; comprobación manual
+M4 a M7).
 
 La orden ``geoblender.des_compute_envelope`` (``bl.ops.des``): una sola ventana con la envolvente y,
 si se pide, su escalonado (D-30). **Calcular** lanza el modal por pasos (``_StepsModal``, con el
@@ -34,12 +35,20 @@ estado:
   pendiente; un cálculo nuevo borra el anterior al empezar; cambiar de proyecto o desactivar Geoblender
   también; Crear sin cálculo abierto se niega.
 - Principio 10 (i): el avance, el resumen y los avisos, en los dos idiomas.
+- RF-013-34 (j, T28; M7): «Exportar rejilla a GeoTIFF…» (``geoblender.des_export_design_grid``, la
+  interna del botón de la barra N «Diseño») escribe por pasos las tres rejillas de V01 como GeoTIFF
+  entregable sin escribir nada en el proyecto; sustituir, Esc, solo lectura, rechazos, el diálogo y la
+  rejilla del objeto activo.
+- RF-013-31, RF-013-17 (k, T28; M7): «Recalcular lo obsoleto» rehace por la cola de ``des`` lo que
+  dejó obsoleto un parámetro, sin pedir confirmación y con su avance.
 - Principio 8 (z): desactivar Geoblender quita la orden y descarta el cálculo abierto.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
 import importlib
+import json
+import os
 import tempfile
 import time
 import unittest
@@ -60,6 +69,9 @@ from tests.support.fake_layout import draw, operator_self
 from tests.support.trees import remove_tree
 
 OPEN = "geoblender.des_compute_envelope"
+EXPORT = "geoblender.des_export_design_grid"
+RECOMPUTE = "geoblender.core_recompute_stale"
+PANEL = "GEOBLENDER_PT_des_design"
 VIEW_PROPERTY = "geoblender_design"
 ENVELOPE_TYPE = "des.envelope"
 STEPPED_TYPE = "des.stepped_design"
@@ -99,6 +111,11 @@ def ring(box: tuple[float, float, float, float]) -> np.ndarray:
 
 def window() -> bpy.types.Window:
     return bpy.context.window_manager.windows[0]
+
+
+def json_name(settings: str) -> str:
+    """El nombre de la envolvente o del escalonado de unos ajustes guardados (JSON)."""
+    return str(json.loads(settings)["name"])
 
 
 class ComputeEnvelopeTest(unittest.TestCase):
@@ -282,11 +299,17 @@ class ComputeEnvelopeTest(unittest.TestCase):
         return {key: value for key, value in self.rows(
             "SELECT key, value FROM gb_figure WHERE operation_uid = ?", uid)}
 
-    def running(self) -> Any:
-        """El modal del cálculo en marcha (el único con pasos)."""
+    def figures_of(self, op_uid: str) -> dict[str, float]:
+        """Las cifras registradas por la operación ``op_uid`` (clave → valor)."""
+        return {key: value for key, value in self.rows(
+            "SELECT key, value FROM gb_figure WHERE operation_uid = ?", op_uid)}
+
+    def running(self, command: str = OPEN) -> Any:
+        """El modal de ``command`` en marcha (el único con pasos): por defecto, el del cálculo."""
+        cls = self.commands.registered_class(command)
         found = [op for op in bpy.context.window.modal_operators
-                 if isinstance(op, self.cls) and getattr(op, "_steps", None) is not None]
-        self.assertEqual(len(found), 1, "el cálculo no está en marcha")
+                 if isinstance(op, cls) and getattr(op, "_steps", None) is not None]
+        self.assertEqual(len(found), 1, f"{command} no está en marcha")
         return found[0]
 
     def drive(self, operator: Any, *, stop_after: int | None = None,
@@ -746,6 +769,307 @@ class ComputeEnvelopeTest(unittest.TestCase):
                 self.assertEqual([text for text, _alert in found[:3]], wanted)
                 self.assertTrue(found[3][1])  # el aviso, en alerta
                 self.assertEqual([alert for _text, alert in found[:3]], [False] * 3)
+
+    def grid_uid(self, name: str) -> str:
+        """El uid del dato vivo ``name`` de V01."""
+        ((uid,),) = self.rows("SELECT uid FROM gb_dataset WHERE name = ? AND status = 'current' "
+                              "AND version_uid = ?", name, self.v01.uid)
+        return str(uid)
+
+    def counts(self) -> list[tuple[Any, ...]]:
+        """Las operaciones, los datos y los eventos del proyecto (exportar no escribe en él)."""
+        return [self.rows(f"SELECT count(*) FROM {table}")[0]
+                for table in ("gb_operation", "gb_dataset", "gb_event")]
+
+    def test_j_export_a_grid_to_geotiff_by_steps_without_writing_in_the_project(self) -> None:
+        """RF-013-34, RF-006-24 (D-29 de la 011, RNF-013-07; M7): «Exportar rejilla a GeoTIFF…» (una
+        orden interna, no una operación) escribe por pasos la envolvente, la superficie de diseño y
+        la rejilla de cotas de berma de V01 como GeoTIFF entregable —las cotas registradas en
+        float32, el «sin dato» −9999 declarado y el CRS del proyecto—, con el avance y Esc (ninguna
+        llamada de más de 0,2 s), sin cambiar ni una operación, un dato, un evento o un fichero del
+        proyecto; desde un guion se rechaza sobre un fichero que ya existe si no se pide sustituirlo;
+        Esc a mitad no deja el GeoTIFF ni su temporal; con el proyecto en solo lectura exporta fuera
+        de él; lo que no es una rejilla viva del diseño, un destino que no es un GeoTIFF y uno dentro
+        del proyecto se rechazan nombrando el valor. El diálogo propone ``exports/<dato>_V01.tif``
+        y la barra N «Diseño» ofrece el botón con la rejilla del objeto activo."""
+        cls = self.commands.registered_class(EXPORT)
+        self.assertFalse(self.commands.is_provisional(cls))
+        self.assertIn(cls, self.des_ops.classes)
+        self.assertTrue(issubclass(cls, self.core_ops._StepsModal))
+        self.assertEqual(cls.bl_options, {"REGISTER"})
+        self.assertIsNone(getattr(cls, "provenance_op_type", None))  # no es una operación
+        command = self.commands.catalog().commands[EXPORT]
+        self.assertEqual((command.label, command.label_es),
+                         ("Export grid to GeoTIFF…", "Exportar rejilla a GeoTIFF…"))
+        self.assertEqual(command.entry, "013")
+        self.assertTrue(cls.poll(bpy.context))
+        out = Path(tempfile.mkdtemp(prefix="gb-d28-"))
+        self.addCleanup(remove_tree, out)
+        reader = _module("gis.geotiff.reader")
+        before, files = self.counts(), self.names()
+
+        grids = {"des_env_hoyo": "Envolvente", "des_srf_hoyo": "Superficie de diseño",
+                 "des_brm_hoyo": "Cota real de las bermas"}
+        for name in grids:
+            with self.subTest(grid=name):
+                target = out / f"{name}.tif"
+                self.assertEqual(bpy.ops.geoblender.des_export_design_grid(
+                    "EXEC_DEFAULT", source=self.grid_uid(name), filepath=str(target),
+                    in_steps=True), {"RUNNING_MODAL"})
+                modal = self.running(EXPORT)
+                self.assertEqual(modal._status_text(self.model.Progress("export", 400, 1000, "…")),
+                                 f"Exportando «{name}.tif»… 40 % · Esc: cancelar")
+                state, calls = self.drive(modal)
+                self.assertEqual(state, {"FINISHED"})
+                self.assertLess(max(calls), 0.2)  # RNF-013-07
+                self.assertGreater(len(modal.progress_log), 2)
+                self.assertEqual(modal.progress_log[-1][2:4], (1000, 1000))
+                self.assertEqual(modal.report_log, [f"Rejilla del diseño exportada a «{name}.tif»"])
+                record = self.rows("SELECT locator FROM gb_dataset WHERE uid = ?",
+                                   self.grid_uid(name))[0][0]
+                stored = reader.read_geotiff(Path(self.project.root, *record.split("/")),
+                                             max_cells=10 ** 7)
+                found = reader.read_geotiff(target, max_cells=10 ** 7)
+                self.assertEqual(found.grid, stored.grid)
+                self.assertEqual((found.declared_crs.epsg, found.source_dtype, found.nodata_value),
+                                 (self.project.record.crs_epsg, "float32", -9999.0))
+                self.assertTrue(np.isfinite(found.values).any(), name)
+                np.testing.assert_array_equal(  # 0 m: lo registrado en float32 (NaN con NaN)
+                    found.values, stored.values.astype(np.float32).astype(np.float64))
+        self.assertEqual(sorted(path.name for path in out.iterdir()),
+                         sorted(f"{name}.tif" for name in grids))
+        self.assertEqual((self.counts(), self.names()), (before, files))  # nada escrito en el proyecto
+
+        # Un fichero que ya existe: desde un guion se rechaza; con «overwrite», se sustituye igual.
+        uid, target = self.grid_uid("des_srf_hoyo"), out / "des_srf_hoyo.tif"
+        kept = target.read_bytes()
+        with self.assertRaises(RuntimeError) as raised:
+            bpy.ops.geoblender.des_export_design_grid("EXEC_DEFAULT", source=uid,
+                                                      filepath=str(target))
+        self.assertIn("Ya existe «des_srf_hoyo.tif»", str(raised.exception))
+        self.assertEqual(target.read_bytes(), kept)
+        self.assertEqual(bpy.ops.geoblender.des_export_design_grid(
+            "EXEC_DEFAULT", source=uid, filepath=str(target), overwrite=True), {"FINISHED"})
+        self.assertEqual(target.read_bytes(), kept)
+        # Con ventana, lo mismo pregunta antes de sustituir (la confirmación es la misma orden).
+        with mock.patch.object(self.des_ops, "_confirm_later") as later:
+            self.assertEqual(bpy.ops.geoblender.des_export_design_grid(
+                "EXEC_DEFAULT", source=uid, filepath=str(target), in_steps=True), {"CANCELLED"})
+        later.assert_called_once_with({"source": uid, "filepath": str(target)},
+                                      idname=EXPORT)
+
+        # Esc a mitad de la escritura: ni el GeoTIFF ni su temporal.
+        half = out / "a_medias.tif"
+        with mock.patch.object(_module("gis.geotiff.writer"), "TILE_SIZE", 16), \
+                mock.patch.object(cls, "STEP_BUDGET_S", 1e-9):  # un paso por llamada
+            self.assertEqual(bpy.ops.geoblender.des_export_design_grid(
+                "EXEC_DEFAULT", source=uid, filepath=str(half), in_steps=True),
+                {"RUNNING_MODAL"})
+            modal = self.running(EXPORT)
+            self.assertEqual(self.drive(modal, stop_after=3)[0], {"RUNNING_MODAL"})
+            done = [entry[2] for entry in modal.progress_log]  # el avance crece, sin llegar al final
+            self.assertEqual((len(done), done == sorted(done), 0 < done[-1] < 1000),
+                             (3, True, True), done)
+            self.assertEqual(modal.modal(bpy.context, ESCAPE), {"CANCELLED"})
+        self.assertIsNone(modal._steps)
+        self.assertIn("Exportación cancelada: no se ha escrito nada", modal.report_log)
+        self.assertFalse(half.exists())
+        self.assertEqual([path.name for path in out.iterdir() if ".tmp" in path.name], [])
+
+        # Los rechazos: nombran el valor y no escriben nada.
+        for label, values, word in (
+                ("una tabla", {"source": self.grid_uid("des_rpt_hoyo"), "filepath": "x.tif"},
+                 "no es una rejilla viva del diseño"),
+                ("la superficie de partida", {"source": self.ground, "filepath": "x.tif"},
+                 "no es una rejilla viva del diseño"),
+                ("sin rejilla", {"source": "", "filepath": str(out / "x.tif")},
+                 "Elija la rejilla del diseño"),
+                ("sin fichero", {"source": uid, "filepath": ""}, "Elija el fichero"),
+                ("no es un GeoTIFF", {"source": uid, "filepath": str(out / "x.png")}, "x.png"),
+                ("dentro del proyecto", {"source": uid, "filepath":
+                                         str(Path(self.project.root) / "x.tif")}, "x.tif")):
+            with self.subTest(rechazo=label):
+                with self.assertRaises(RuntimeError) as raised:
+                    bpy.ops.geoblender.des_export_design_grid("EXEC_DEFAULT", **values)
+                self.assertIn(word, str(raised.exception))
+        with mock.patch.dict(os.environ, {"GEOBLENDER_READ_ONLY_DIRS": str(out)}):  # RF-008-15
+            with self.assertRaises(RuntimeError) as raised:
+                bpy.ops.geoblender.des_export_design_grid(
+                    "EXEC_DEFAULT", source=uid, filepath=str(out / "protegida.tif"))
+        self.assertIn("solo lectura", str(raised.exception))
+        self.assertEqual((self.counts(), self.names()), (before, files))
+        self.assertEqual(sorted(path.name for path in out.iterdir()),
+                         sorted(f"{name}.tif" for name in grids))
+        with mock.patch.object(self.session.SESSION, "unavailable", return_value="Abra un proyecto"):
+            self.assertFalse(cls.poll(bpy.context))  # sin proyecto, no está disponible
+
+        # Con el proyecto en solo lectura exporta fuera de él, y dentro no.
+        project = self.project
+        with mock.patch.object(project, "_status", project.status):
+            project.set_read_only(_module("core.project").ReadOnlyCode.REQUESTED, "prueba")
+            self.assertTrue(cls.poll(bpy.context))
+            self.assertEqual(bpy.ops.geoblender.des_export_design_grid(
+                "EXEC_DEFAULT", source=uid, filepath=str(out / "solo_lectura.tif")),
+                {"FINISHED"})
+            with self.assertRaises(RuntimeError) as raised:
+                bpy.ops.geoblender.des_export_design_grid(
+                    "EXEC_DEFAULT", source=uid,
+                    filepath=str(Path(project.root, "exports", "x.tif")))
+            self.assertIn("solo lectura", str(raised.exception))
+        self.assertTrue((out / "solo_lectura.tif").is_file())
+
+        # El diálogo propone el fichero y pide el destino; sin rejilla elegida, lo dice.
+        reports: list[str] = []
+        manager = SimpleNamespace(fileselect_add=mock.Mock(),
+                                  invoke_confirm=mock.Mock(return_value={"RUNNING_MODAL"}))
+        context = SimpleNamespace(window=window(), window_manager=manager, active_object=None)
+        fake = operator_self(cls, report=lambda kind, text: reports.append(text), source=uid,
+                             filepath="", overwrite=False, confirm=False, in_steps=False)
+        self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+        manager.fileselect_add.assert_called_once_with(fake)
+        self.assertEqual(Path(fake.filepath),
+                         Path(self.project.root, "exports", "des_srf_hoyo_V01.tif"))
+        self.assertTrue(fake.in_steps)
+        fake = operator_self(cls, report=lambda kind, text: reports.append(text), source="",
+                             filepath="", overwrite=False, confirm=False, in_steps=False)
+        self.assertEqual(cls.invoke(fake, context, None), {"CANCELLED"})
+        self.assertEqual(reports, ["Elija la rejilla del diseño: selecciónela en la vista"])
+        fake = operator_self(cls, report=lambda kind, text: reports.append(text), source=uid,
+                             filepath=str(target), overwrite=False, confirm=True, in_steps=True)
+        self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+        self.assertTrue(fake.overwrite)  # la confirmación de sustituir
+        self.assertEqual(manager.invoke_confirm.call_args.kwargs["title"], "Sustituir el fichero")
+
+        # El objeto activo de la vista da la rejilla (source vacío) y la barra N ofrece el botón.
+        self.assertEqual(bpy.ops.geoblender.core_load_into_view(datasets=uid), {"FINISHED"})
+        (shown,) = [obj for obj in bpy.data.objects if obj.geoblender.dataset_uid == uid]
+        self.addCleanup(bpy.data.objects.remove, shown, do_unlink=True)
+        view_panels = _module("bl.ui.view_panels")
+        for other in bpy.data.objects:
+            other.select_set(False)
+        shown.select_set(True)
+        bpy.context.view_layer.objects.active = shown
+        self.addCleanup(setattr, bpy.context.view_layer.objects, "active", None)
+        view_panels.on_active_changed()
+        buttons = [item for item in draw(getattr(bpy.types, PANEL), bpy.context).items
+                   if item.kind == "operator" and item.target == EXPORT]
+        self.assertEqual([item.text for item in buttons], ["Exportar rejilla a GeoTIFF…"])
+        self.assertTrue(buttons[0].enabled)
+        self.assertEqual(bpy.ops.geoblender.des_export_design_grid(
+            "EXEC_DEFAULT", filepath=str(out / "activa.tif")), {"FINISHED"})
+        self.assertEqual((out / "activa.tif").read_bytes(), kept)
+        self.assertEqual((self.counts(), self.names()), (before, files))
+        self.i18n.set_language("en")
+        buttons = [item.text for item in draw(getattr(bpy.types, PANEL), bpy.context).items
+                   if item.kind == "operator" and item.target == EXPORT]
+        self.assertEqual(buttons, ["Export grid to GeoTIFF…"])
+
+    def stale(self) -> dict[str, Any]:
+        """Las operaciones obsoletas sin sustituir con sus causas (``deduce`` de la 008)."""
+        graph = _module("core.provenance.graph")
+        with self.project.read() as conn:
+            return dict(graph.deduce(graph.load_graph(conn)).operations)
+
+    def test_k_recompute_what_is_stale_without_asking_and_with_its_progress(self) -> None:
+        """RF-013-31, RF-013-17 (RF-008-26, D-19, RNF-013-07; M7): cambiar un valor del perfil EXPL
+        solo para V01 deja obsoletas las operaciones de ``des`` que lo leyeron (el escalonado «Hoyo» y
+        el «Monticulo», con su envolvente por sectores) y no la envolvente «Hoyo», que no lo lee;
+        «Recalcular lo obsoleto» las rehace por la cola de ``des`` **sin pedir confirmación**, con su
+        avance en la barra de estado («Recalculando «Hoyo»… 100 %»), cada una en la revisión abierta
+        de V01 y sustituyendo a la obsoleta, con el valor nuevo entre sus entradas y sus cifras
+        finitas; nada queda obsoleto ni en la cola, ni sin registrar, ni con temporales, y la barra
+        N lee el dato nuevo «Al día»."""
+        key = f"des.bench.{EXPL.lower()}.height_m"
+        graph = _module("core.provenance.graph")
+        self.assertEqual(self.stale(), {})
+        pending = {kind: [row[0] for row in self.operations(kind, "done")]
+                   for kind in (ENVELOPE_TYPE, STEPPED_TYPE)}
+        self.assertEqual((len(pending[ENVELOPE_TYPE]), len(pending[STEPPED_TYPE])), (3, 2))
+        self.assertEqual(bpy.ops.geoblender.core_set_parameter(
+            key=key, value="6", kind="ADOPTADO", source=SOURCE, source_kind="DOCUMENT",
+            decided_by=PERSON, reason=REASON, scope="VERSION"), {"FINISHED"})
+        ((own,),) = self.rows("SELECT uid FROM gb_parameter WHERE key = ? AND scope_uid = ?",
+                              key, self.v01.uid)
+        found = self.stale()
+        self.assertTrue(found, "ninguna operación de des quedó obsoleta")
+        for uid, causes in found.items():
+            self.assertEqual(causes, {graph.Cause(graph.CauseKind.PARAMETER_CHANGED, own)})
+        kinds = {self.rows("SELECT op_type FROM gb_operation WHERE uid = ?", uid)[0][0]
+                 for uid in found}
+        self.assertEqual(kinds, {ENVELOPE_TYPE, STEPPED_TYPE})
+        names = {json_name(self.rows("SELECT settings FROM gb_operation WHERE uid = ?", uid)[0][0])
+                 for uid in found}
+        self.assertEqual(names, {"Hoyo", "Monticulo"})
+        hoyo_envelope = next(uid for uid in pending[ENVELOPE_TYPE]
+                             if json_name(self.rows("SELECT settings FROM gb_operation WHERE "
+                                                    "uid = ?", uid)[0][0]) == "Hoyo")
+        self.assertNotIn(hoyo_envelope, found)  # la envolvente del hoyo no lee el perfil
+        old_stepped = {json_name(settings): uid for uid, settings in self.rows(
+            "SELECT uid, settings FROM gb_operation WHERE op_type = ? AND status = 'done'",
+            STEPPED_TYPE)}
+        old_figure = self.figures_of(old_stepped["Hoyo"])
+
+        # Recalcular lo obsoleto: sin confirmar, sin diálogo, por la cola de des y con su avance.
+        with mock.patch.object(self.des_ops, "_ask_confirmation") as ask, \
+                mock.patch.object(_module("bl.ops.incorporation"), "status_text") as status:
+            self.assertEqual(bpy.ops.geoblender.core_recompute_stale("EXEC_DEFAULT"),
+                             {"RUNNING_MODAL"})
+            operator = self.running(RECOMPUTE)
+            self.addCleanup(lambda: operator._steps is None or operator.cancel(bpy.context))
+            calls: list[float] = []
+            for _ in range(MAX_EVENTS):
+                started = time.process_time()
+                state = operator.modal(bpy.context, TIMER)
+                self.des_ops.des_tick()  # el temporizador de la cola (en blender -b, a mano)
+                calls.append(time.process_time() - started)
+                if state != {"RUNNING_MODAL"}:
+                    break
+            else:
+                self.fail("el recálculo no acaba")
+        ask.assert_not_called()
+        self.assertEqual(state, {"FINISHED"})
+        self.assertLess(max(calls), 0.4)  # una llamada del modal y un paso de la cola (RNF-013-07)
+        self.assertEqual({str(result.status) for result in operator.result.results}, {"done"})
+        self.assertTrue(operator.progress_log)
+        shown = [call.args[0] for call in status.call_args_list]
+        self.assertIn("Recalculando «Hoyo»… 100 %", shown)
+        self.assertIn("Recalculando «Monticulo»… 100 %", shown)
+        self.assertEqual(self.des_ops.pending_runs(), [])
+        self.assertEqual(self.stale(), {})
+        self.assertIsNone(self.des_ops.calculation())  # no deja un cálculo sin registrar
+        self.assertEqual(self.temporaries(), [])
+        self.assertEqual(self.operations(ENVELOPE_TYPE, "running"), [])
+        self.assertEqual(self.operations(STEPPED_TYPE, "running"), [])
+
+        ((opened,),) = self.rows("SELECT uid FROM gb_revision WHERE version_uid = ? AND state = "
+                                 "'open'", self.v01.uid)
+        for old in found:  # cada obsoleta tiene quien la sustituye, hecha, en la revisión abierta
+            ((new,),) = self.rows("SELECT superseded_by FROM gb_operation WHERE uid = ?", old)
+            self.assertTrue(new, f"{old}: nadie la sustituye")
+            self.assertEqual(self.rows("SELECT status, supersedes_uid, revision_uid FROM "
+                                       "gb_operation WHERE uid = ?", new),
+                             [("done", old, opened)])
+        ((value,),) = self.rows(
+            "SELECT p.value FROM gb_operation_param AS p JOIN gb_operation AS o ON o.uid = "
+            "p.operation_uid WHERE o.op_type = ? AND o.status = 'done' AND o.superseded_by IS "
+            "NULL AND o.settings LIKE '%Hoyo%' AND p.key = ?", STEPPED_TYPE, key)
+        self.assertEqual(json.loads(value), 6.0)  # el valor nuevo, entre sus entradas
+        (new_hoyo,) = [uid for uid, settings in self.rows(
+            "SELECT uid, settings FROM gb_operation WHERE op_type = ? AND status = 'done' AND "
+            "superseded_by IS NULL", STEPPED_TYPE) if json_name(settings) == "Hoyo"]
+        self.assertNotEqual(new_hoyo, old_stepped["Hoyo"])
+        figures = self.figures_of(new_hoyo)
+        self.assertEqual(sorted(figures), sorted(old_figure))
+        self.assertTrue(all(np.isfinite(value) for value in figures.values()))
+        self.assertNotEqual(figures["des.cut_m3"], old_figure["des.cut_m3"])  # con otro banco
+        self.assertIn("des_srf_hoyo", self.datasets())  # un dato vivo por nombre, el nuevo
+
+        # La barra N lee el dato nuevo «al día» (el estado sale de la procedencia).
+        read = self.panels.item_lines(self.project, self.grid_uid("des_srf_hoyo"))
+        self.assertIn("Al día", [line.text for line in read.lines])
+        self.i18n.set_language("en")
+        self.assertEqual(self.i18n.tr(self.des_ops.RECOMPUTING, name="Hoyo", percent=40),
+                         "Recomputing «Hoyo»… 40 %")
 
     def test_z_disabling_geoblender_removes_the_command_and_drops_the_calculation(self) -> None:
         """Principio 8, D-14: con un cálculo abierto, desactivar Geoblender lo descarta (no queda

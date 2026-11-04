@@ -111,10 +111,20 @@ escribir en el proyecto; con ella activa, el control la quita aunque el proyecto
 lectura. Las semillas y el acotado se piden con las mismas funciones que el diálogo de las envolventes
 (:func:`seed_source`, :func:`work_domain`). Nada se cuenta ni se resume aquí: lo hace ``design.preview``.
 
-**Las demás órdenes** (T28) y **los cargadores de la vista** (T27) se añaden en sus tareas:
-:data:`classes` irá creciendo con ellas. El cargador de las rejillas ``des_env_``, ``des_srf_`` y
-``des_brm_`` (objetos ``DESIGN``) es de ``bl/scene/des_views.py`` (T27), que registra ``bl.scene``
-junto al tipo de objeto que necesita.
+**Exportar una rejilla del diseño** (T28; HU-013-6; RF-013-34; D-29 de la 011):
+:class:`GEOBLENDER_OT_des_export_design_grid` (interna; el botón «Exportar rejilla a GeoTIFF…» está
+en la barra N «Diseño», con el objeto de la rejilla activo) escribe la envolvente, la superficie de
+diseño o la rejilla de cotas de berma registradas como GeoTIFF entregable con
+``design.export.export_grid_steps``, por pasos con el avance y Esc (desde un guion, de una vez). No
+es una operación: no escribe nada en el proyecto y vale en solo lectura (fuera de él) y desde una
+versión que ya no es editable; sobre un fichero que ya existe pregunta antes de sustituirlo
+(:func:`_confirm_later`). Qué rejilla es, de qué versión y qué nombre lleva su operación lo dice
+``design.export.stored_grid``. **Recalcular lo obsoleto** ya estaba integrado (T21, véase arriba): la
+T28 lo prueba de punta a punta sobre un proyecto real.
+
+**Los cargadores de la vista** (T27): el de las rejillas ``des_env_``, ``des_srf_`` y ``des_brm_``
+(objetos ``DESIGN``) es de ``bl/scene/des_views.py``, que registra ``bl.scene`` junto al tipo de
+objeto que necesita.
 """
 
 from __future__ import annotations
@@ -125,6 +135,7 @@ import math
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
@@ -145,6 +156,8 @@ from ...design import profiles as design_profiles
 from ...design import model as design_model
 from ...design import provenance
 from ...design.model import PERIMETER_SEGMENT
+from ...gis import provenance as gis_provenance
+from ...gis.messages import GisError
 from ..props.des import PREVIEW_PROPERTY
 from ..scene import project_session, undo_watch
 from ..scene import versions as scene_versions
@@ -162,6 +175,7 @@ from .core_provenance import (
     ProvenanceAwareOperator,
     ensure_ready,
     error_text,
+    read_only_dirs,
     scope_choice,
     typed_value,
     write_unavailable,
@@ -1131,25 +1145,43 @@ def _draw_bound(layout: Any, operator: Any) -> None:
         layout.prop(operator, "bound_layer", text=tr("Layer of polygons"), translate=False)
 
 
+def _invoke_later(idname: str, window: Any, **values: Any) -> None:
+    """Lanza la orden ``idname`` con ``INVOKE_DEFAULT`` y ``values`` en la ventana ``window`` en
+    cuanto acaba lo que corre (un diálogo no se abre desde dentro de un modal); sin ventana,
+    nada."""
+    if window is None:
+        return
+    group, name = idname.split(".")
+
+    def call() -> None:
+        try:
+            with bpy.context.temp_override(window=window):
+                getattr(getattr(bpy.ops, group), name)("INVOKE_DEFAULT", **values)
+        except (RuntimeError, TypeError, AttributeError, ReferenceError):
+            LOGGER.warning("No se pudo pedir confirmación en %s", idname, exc_info=True)
+
+    bpy.app.timers.register(call, first_interval=0.0)
+
+
+def _first_window() -> Any:
+    manager = getattr(bpy.context, "window_manager", None)
+    windows = list(getattr(manager, "windows", ()) or ())
+    return windows[0] if windows else None
+
+
 def _ask_confirmation(context: Any = None) -> None:
     """Pide confirmar el cálculo recién hecho (D-14): la misma orden con ``confirm=True`` en cuanto
     acaba el modal (un diálogo no se abre desde dentro de un modal); sin ventana, nada (lo dice el
     informe y el cálculo espera a que se cree con ``confirm=True``)."""
-    manager = getattr(bpy.context, "window_manager", None)
-    windows = list(getattr(manager, "windows", ()) or ())
-    chosen = getattr(context, "window", None) or (windows[0] if windows else None)
-    if chosen is None:
-        return
-    group, name = COMPUTE_ENVELOPE.split(".")
+    _invoke_later(COMPUTE_ENVELOPE, getattr(context, "window", None) or _first_window(),
+                  confirm=True)
 
-    def call() -> None:
-        try:
-            with bpy.context.temp_override(window=chosen):
-                getattr(getattr(bpy.ops, group), name)("INVOKE_DEFAULT", confirm=True)
-        except (RuntimeError, TypeError, AttributeError, ReferenceError):
-            LOGGER.warning("No se pudo pedir la confirmación del cálculo", exc_info=True)
 
-    bpy.app.timers.register(call, first_interval=0.0)
+def _confirm_later(values: Mapping[str, Any], idname: str) -> None:
+    """Pide confirmar que se sustituye el fichero que ya existe (D-29 de la 011): la misma orden
+    ``idname`` con ``confirm`` (su confirmación) y ``values``, en cuanto acaba ésta; sin ventana,
+    nada (lo dice el aviso)."""
+    _invoke_later(idname, _first_window(), confirm=True, **values)
 
 
 def _drain(operator: Any, steps: Iterator[Progress]) -> Any:
@@ -1739,12 +1771,191 @@ class GEOBLENDER_OT_des_toggle_preview(DesignCommandAware, ProvenanceAwareOperat
         return {"FINISHED"}
 
 
+# --- Exportar una rejilla del diseño a GeoTIFF (T28; HU-013-6; RF-013-34; plan §5.3.3, D-29) -------
+
+EXPORT_DESIGN_GRID = "geoblender.des_export_design_grid"
+EXPORT_TICKS = 1000
+"""El total de los pasos de la exportación (``Progress.total``): su avance, en milésimas."""
+GEOTIFF_SUFFIX = ".tif"
+
+
+def _export_progress(steps: Iterator[float], name: str) -> Iterator[Progress]:
+    """Los pasos de ``design.export.export_grid_steps`` (su avance, 0–1) como ``Progress`` (fase
+    ``export``, en milésimas); el último lleva el fichero escrito. Cerrarlos cierra los de la
+    exportación, que no dejan nada a medias."""
+    try:
+        while True:
+            try:
+                done = next(steps)
+            except StopIteration as stop:
+                yield Progress("export", EXPORT_TICKS, EXPORT_TICKS, name, result=stop.value)
+                return
+            yield Progress("export", int(EXPORT_TICKS * min(max(float(done), 0.0), 1.0)),
+                           EXPORT_TICKS, name)
+    finally:
+        close = getattr(steps, "close", None)
+        if callable(close):
+            close()
+
+
+class GEOBLENDER_OT_des_export_design_grid(_StepsModal, bpy.types.Operator):
+    """Write a registered grid of the design (envelope, design surface or berm elevations) as a
+    deliverable GeoTIFF (it is not an operation: also from a superseded version and, outside the
+    project, in read-only)"""
+
+    bl_idname = EXPORT_DESIGN_GRID
+    bl_label = "Export grid to GeoTIFF…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    STEP_BUDGET_S = 0.05
+
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Design grid",
+        description="Uid or name of the grid of the design (empty: the active one in the view)",
+        options=_FIELD)
+    filepath: StringProperty(  # type: ignore[valid-type]
+        name="File", subtype="FILE_PATH", options={"SKIP_SAVE"})
+    filter_glob: StringProperty(  # type: ignore[valid-type]
+        default="*.tif;*.tiff", options={"HIDDEN"})
+    check_existing: BoolProperty(  # type: ignore[valid-type]
+        default=True, options={"HIDDEN", "SKIP_SAVE"})
+    overwrite: BoolProperty(  # type: ignore[valid-type]
+        name="Replace", description="Replace the file if it already exists", options=_FIELD)
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        """Con un proyecto abierto y con procedencia: exportar no es una operación (D-29), así que
+        también en solo lectura (fuera del proyecto) y con la versión SUPERADO."""
+        reason = SESSION.unavailable()
+        if reason is not None:
+            cls.poll_message_set(reason)
+            return False
+        return True
+
+    def _stored(self, context: Any) -> Any:
+        """La rejilla que se exporta (``design.export.StoredGrid``): la de :attr:`source` o la del
+        objeto de diseño activo de la vista; ``ValueError`` sin ninguna, y ``DesignError`` si no es
+        una rejilla viva del diseño."""
+        from ...design import export  # al usarlo: habilitar no lo carga
+
+        ref = self.source.strip() or des_panels.wanted(context)
+        if not ref:
+            raise ValueError(tr("Choose the design grid: select it in the view"))
+        return export.stored_grid(SESSION.project, ref,
+                                  version=scene_versions.active_version() or "")
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """El diálogo de fichero, con el destino que propone (``exports/<dato>_<V01>.tif`` del
+        proyecto); con ``confirm``, la confirmación de sustituir el que ya existe."""
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            self.overwrite = True
+            return context.window_manager.invoke_confirm(
+                self, event, title=tr("Replace the file"),
+                message=tr("«{file}» already exists: replace it?",
+                           file=Path(self.filepath).name),
+                confirm_text=tr("Replace"), translate=False)
+        try:
+            stored = self._stored(context)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        self.source = stored.record.uid
+        if not self.filepath:
+            stem = f"{stored.record.name}_{stored.version_code}"
+            self.filepath = str(Path(SESSION.project.root, gis_provenance.EXPORTS_FOLDER,
+                                     f"{stem}{GEOTIFF_SUFFIX}"))
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context: Any) -> set[str]:
+        """Escribe el entregable desde lo registrado (``design.export``): desde la interfaz, por
+        pasos con el avance y Esc; desde un guion, de una vez. Sobre un fichero que ya existe, solo
+        con ``overwrite`` (desde la interfaz, lo pregunta)."""
+        from ...design import export  # al usarlo: habilitar no lo carga
+
+        blocked = SESSION.unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        shown = self.filepath.strip()
+        try:
+            stored = self._stored(context)
+            if not shown:
+                raise ValueError(tr("Choose the file to export to"))
+            target = Path(bpy.path.abspath(shown))
+            steps = export.export_grid_steps(
+                SESSION.project, stored.family, stored.name, target, version=stored.version_uid,
+                read_only=read_only_dirs(), overwrite=bool(self.overwrite))
+        except GisError as exc:
+            interactive = self.in_steps and getattr(context, "window", None) is not None
+            if exc.code == "gis.export_target_exists" and interactive:
+                self.report({"WARNING"}, error_text(exc))
+                _confirm_later({"source": stored.record.uid, "filepath": shown},
+                               idname=EXPORT_DESIGN_GRID)
+            else:
+                self.report({"ERROR"}, error_text(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        self._file = target.name
+        progress = _export_progress(steps, target.name)
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, progress)
+            return {"RUNNING_MODAL"}
+        self.report_log: list[str] = []
+        try:
+            for step in progress:
+                if step.result is not None:
+                    return self._exported()
+        except (GeoblenderError, OSError) as exc:
+            self._report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return {"CANCELLED"}  # pragma: no cover - los pasos acaban siempre con el fichero
+
+    def _exported(self) -> set[str]:
+        self._report({"INFO"}, tr("Design grid exported to «{file}»",
+                                  file=getattr(self, "_file", "")))
+        return {"FINISHED"}
+
+    # --- En pasos (_StepsModal) ---------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Exporting «{file}»… {percent} % · Esc: cancel",
+                  file=getattr(self, "_file", ""), percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Export cancelled: nothing has been written")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return design_error_text(exc)
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        if step.result is None:
+            return None
+        self._done(context)
+        return self._exported()
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except OSError as exc:  # los pasos cerrados no dejan nada a medias
+            LOGGER.error("La exportación de «%s» se ha parado", getattr(self, "_file", ""),
+                         exc_info=exc)
+            return self._fail(context, error_text(exc))
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
                              GEOBLENDER_OT_des_set_sector_slope,
                              GEOBLENDER_OT_des_compute_envelope,
-                             GEOBLENDER_OT_des_toggle_preview)
+                             GEOBLENDER_OT_des_toggle_preview,
+                             GEOBLENDER_OT_des_export_design_grid)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
-«Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…» y la T25 «Vista previa de
-semillas, dominios y restricciones»; la T28 irá añadiendo las suyas)."""
+«Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
+semillas, dominios y restricciones» y la T28, la interna que exporta una rejilla a GeoTIFF)."""

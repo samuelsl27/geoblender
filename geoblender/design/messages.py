@@ -499,6 +499,13 @@ CATALOG: tuple[Message, ...] = (
         "calculada en esa versión; no se ha escrito nada.",
     ),
     Message(
+        "des.export_not_grid",
+        "«{value}» is not a live grid of the design (an envelope, a design surface or a berm "
+        "grid of a version): choose one in the view; nothing has been written.",
+        "«{value}» no es una rejilla viva del diseño (una envolvente, una superficie de diseño "
+        "o una rejilla de bermas de una versión): elíjala en la vista; no se ha escrito nada.",
+    ),
+    Message(
         "des.export_read_only_project",
         "The project «{project}» is open read-only: export «{value}» outside the project; "
         "nothing has been written.",

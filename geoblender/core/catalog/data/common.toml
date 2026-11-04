@@ -550,3 +550,16 @@ description.es = "Fija el talud general máximo que un sector impone al diseño"
 entry = "013"
 action = "P"
 frequency = 3
+
+# Diseño (spec 013, T28): la interna que exporta una rejilla del diseño; el botón está en la barra N
+# «Diseño», con el objeto de la rejilla activo.
+[[command]]
+key = "geoblender.des_export_design_grid"
+kind = "internal"
+label.en = "Export grid to GeoTIFF…"
+label.es = "Exportar rejilla a GeoTIFF…"
+description.en = "Write a registered grid of the design (envelope, design surface or berm elevations) as a deliverable GeoTIFF (it is not an operation: also from a superseded version and, outside the project, in read-only)"
+description.es = "Escribe una rejilla registrada del diseño (envolvente, superficie de diseño o cotas de berma) como GeoTIFF entregable (no es una operación: también de una versión superada y, fuera del proyecto, en solo lectura)"
+entry = "013"
+action = "D"
+frequency = 2

@@ -7,6 +7,8 @@ también con el proyecto en solo lectura (si el destino está fuera de él) y de
 no es editable; nada se registra. Se exporta cualquiera de las tres rejillas de una versión
 (:data:`GRIDS`): la envolvente (``des_env_``), la superficie de diseño (``des_srf_``) o la rejilla
 de cotas de berma (``des_brm_``); las tablas no son rejillas y no se exportan aquí.
+:func:`stored_grid` (T28) dice cuál es y de qué versión el dato que elige quien exporta (su uid o su
+nombre): solo una rejilla **viva** del diseño (``des.export_not_grid``).
 
 **El GeoTIFF** (:func:`export_grid_steps`, :func:`export_grid`; RF-006-24): la rejilla registrada
 (``rasters/des_*_<vNN>.tif``, Float64 con NaN) como GeoTIFF del perfil ``deliverable`` de la 006
@@ -39,10 +41,12 @@ from __future__ import annotations
 import sys
 from collections.abc import Generator
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from ..core.datasets import registry as dataset_registry
+from ..core.datasets.model import DatasetRecord
 from ..core.inputs.guard import GuardProject, check_write_target
 from ..core.paths import ReadOnlyDirs, check_path_length
 from ..core.versions import read as versions_read
@@ -62,10 +66,12 @@ __all__ = [
     "SUFFIXES",
     "UNIT",
     "ExportProject",
+    "StoredGrid",
     "check_target",
     "export_grid",
     "export_grid_steps",
     "metadata_items",
+    "stored_grid",
 ]
 
 GRIDS: tuple[str, ...] = (declared.ENVELOPE_GRID, declared.DESIGN_GRID, declared.BERMS_GRID)
@@ -143,6 +149,53 @@ def _registered_file(project: ExportProject, family: str, name: str, found: Vers
         raise GisError("gis.dataset_file_missing", obj=record.name, field="fichero",
                        value=path.name, file=path.name, name=record.name)
     return path
+
+
+@dataclass(frozen=True, slots=True)
+class StoredGrid:
+    """Una rejilla viva del diseño que se puede exportar (:func:`stored_grid`): su dato, su
+    familia (una de :data:`GRIDS`), el nombre de su operación tal como está en el nombre de su dato
+    (``hoyo`` de ``des_env_hoyo``; vale tal cual para :func:`export_grid_steps`) y su versión (su
+    uid y su código)."""
+
+    record: DatasetRecord
+    family: str
+    name: str
+    version_uid: str
+    version_code: str
+
+
+def _grid_family(record: DatasetRecord | None) -> str | None:
+    """La familia de rejilla exportable de ``record`` por el comienzo de su nombre, o ``None``."""
+    if record is None or record.module != declared.MODULE:
+        return None
+    return next((family for family in GRIDS
+                 if record.name.startswith(declared.FAMILIES_BY_CODE[family].prefix)), None)
+
+
+def stored_grid(project: ExportProject, ref: str, *, version: str = "") -> StoredGrid:
+    """La rejilla del diseño ``ref`` —el uid de su dato o su nombre en la versión ``version`` (su
+    uid)— con lo que pide :func:`export_grid_steps`: su familia, el nombre de su operación y su
+    versión. ``DesignError`` ``des.export_not_grid`` si no es una rejilla **viva** del diseño
+    (una envolvente, una superficie de diseño o una rejilla de cotas de berma de una versión): una
+    tabla, un dato de otro módulo, uno que no existe, uno sustituido o descartado, o uno por su
+    nombre sin la versión que lo tiene. ``TypeError`` si ``ref`` o ``version`` no son textos (o
+    ``ref``, vacío). No escribe nada."""
+    if not isinstance(ref, str) or not ref:
+        raise TypeError(f"una rejilla del diseño se indica por el uid o el nombre de su dato, "
+                        f"no {ref!r}")
+    if not isinstance(version, str):
+        raise TypeError(f"la versión se indica por su uid ('' sin ninguna), no {version!r}")
+    with project.read() as conn:
+        record = dataset_registry.get(conn, ref, version_uid=version)
+        family = _grid_family(record)
+        owner = ("" if record is None
+                 else versions_read.dataset_versions(conn, [record.uid]).get(record.uid, ""))
+        found = versions_read.version(conn, owner) if owner else None
+    if record is None or not record.live or family is None or found is None:
+        raise DesignError("des.export_not_grid", obj=ref, field=_FIELD_GRID, value=ref)
+    return StoredGrid(record, family, record.name[len(declared.FAMILIES_BY_CODE[family].prefix):],
+                      owner, found.code)
 
 
 # --- El destino --------------------------------------------------------------------------------

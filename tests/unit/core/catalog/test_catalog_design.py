@@ -6,8 +6,9 @@ de comandos.
   sigue existiendo como entrada del roadmap (otras specs la nombran) pero ya no la usa ningún
   comando ni ningún menú contextual.
 - Las cuatro órdenes de Diseño (Perfiles de banco…, Sectores de diseño…, Vista previa de
-  semillas, dominios y restricciones y Envolventes y escalonado…) y las dos internas de las
-  ventanas (guardar un perfil, fijar el talud de un sector) son de la ``013`` y de ``des``;
+  semillas, dominios y restricciones y Envolventes y escalonado…) y las tres internas de las
+  ventanas (guardar un perfil, fijar el talud de un sector y, desde la T28, exportar una rejilla
+  a GeoTIFF) son de la ``013`` y de ``des``;
   las cuatro tienen su casa en Diseño y las internas, ninguna; la de las envolventes sigue
   siendo un trabajo en segundo plano (``D·2p``) y la vista previa, un interruptor (``T``).
 - El menú contextual de Diseño (``DESIGN``, PC §3.10) es de la ``013``, con los comandos que ya
@@ -30,7 +31,8 @@ MENU = {  # orden → (acción, en segundo plano)
     "geoblender.des_toggle_preview": ("T", False),
     "geoblender.des_compute_envelope": ("D", True),
 }
-INTERNAL = ("geoblender.des_save_bench_profile", "geoblender.des_set_sector_slope")
+INTERNAL = ("geoblender.des_save_bench_profile", "geoblender.des_set_sector_slope",
+            "geoblender.des_export_design_grid")
 HOME = "GEOBLENDER_MT_ui_design"
 
 
@@ -51,9 +53,9 @@ class DesignCatalogTest(unittest.TestCase):
         self.assertEqual(sorted(command.key for command in self.cat.commands.values()
                                 if command.entry == "R-33"), [])
 
-    def test_the_four_commands_and_the_two_internals_belong_to_013(self) -> None:
-        """RF-013-33, D-31: las cuatro órdenes de Diseño son de la ``013`` y de ``des``, con su
-        casa en Diseño, su acción y su trabajo en segundo plano; las dos internas de las
+    def test_the_four_commands_and_the_three_internals_belong_to_013(self) -> None:
+        """RF-013-33, RF-013-34, D-31: las cuatro órdenes de Diseño son de la ``013`` y de ``des``,
+        con su casa en Diseño, su acción y su trabajo en segundo plano; las tres internas de las
         ventanas, también de la ``013`` y sin casa en un menú."""
         for key, (action, background) in MENU.items():
             with self.subTest(key=key):

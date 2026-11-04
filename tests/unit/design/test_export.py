@@ -51,6 +51,7 @@ design_messages = import_geoblender("design.messages")
 core_params = import_geoblender("core.params")
 paths = import_geoblender("core.paths")
 versions_model = import_geoblender("core.versions.model")
+gis_provenance = import_geoblender("gis.provenance")
 reader = import_geoblender("gis.geotiff.reader")
 writer = import_geoblender("gis.geotiff.writer")
 tiff = import_geoblender("gis.geotiff.tiff")
@@ -388,6 +389,62 @@ class ExportTest(dfx.DesignProjectCase):
         self.assertEqual(self.counts(), before)
         self.assertEqual(target.read_bytes(), (self.out / f"{provenance.DESIGN_GRID}.tif"
                                                ).read_bytes())
+
+    def test_h_a_dataset_is_found_as_an_exportable_grid_only_if_it_is_a_live_design_grid(
+            self) -> None:
+        """RF-013-34 (T28; D-29 de la 011): ``stored_grid`` da, de un dato por su uid o por su nombre
+        en una versión, su familia, el nombre de su operación (el de su dato) y su versión, que es
+        justo lo que pide ``export_grid_steps``; solo lo hace de una rejilla viva del diseño: una
+        tabla, un dato de otro módulo, uno que no existe, uno por su nombre sin la versión y uno
+        sustituido se rechazan con ``des.export_not_grid`` y un valor que no es un texto, con
+        ``TypeError``; ni lo uno ni lo otro escribe nada."""
+        before = self.counts()
+        slugs = {family: gis_provenance.dataset_slug(NAMES[family]) for family in GRIDS}
+        for family in GRIDS:
+            with self.subTest(family=family):
+                record = self.record(provenance.dataset_name(family, NAMES[family]), self.v1)
+                by_uid = export.stored_grid(self.project, record.uid)
+                self.assertEqual((by_uid.record.uid, by_uid.family, by_uid.name,
+                                  by_uid.version_uid, by_uid.version_code),
+                                 (record.uid, family, slugs[family], self.v1.uid, self.v1.code))
+                by_name = export.stored_grid(self.project, record.name, version=self.v1.uid)
+                self.assertEqual(by_name, by_uid)
+                # Lo que da es lo que exporta: el nombre sirve tal cual para ``export_grid``.
+                path = export.export_grid(
+                    self.project, by_uid.family, by_uid.name, self.out / f"h_{family}.tif",
+                    version=by_uid.version_uid, read_only=NO_READ_ONLY)
+                self.assertEqual(path.read_bytes(), (self.out / f"{family}.tif").read_bytes())
+                path.unlink()
+        table = self.record(provenance.dataset_name(provenance.REPORT_TABLE, DESIGN_NAME),
+                            self.v1)
+        start = self.record(dfx.START_DATASET, None)
+        for ref, version in ((table.uid, ""), (table.name, self.v1.uid), (start.uid, ""),
+                             (start.name, ""),
+                             (provenance.dataset_name(provenance.DESIGN_GRID, DESIGN_NAME), ""),
+                             (provenance.dataset_name(provenance.DESIGN_GRID, DESIGN_NAME),
+                              self.v2.uid), ("zzz", self.v1.uid), ("0" * 32, "")):
+            with self.subTest(ref=ref, version=version):
+                with self.assertRaises(design_messages.DesignError) as caught:
+                    export.stored_grid(self.project, ref, version=version)
+                self.assertEqual(caught.exception.code, "des.export_not_grid")
+                self.assertEqual((caught.exception.field, caught.exception.value),
+                                 ("rejilla", ref))
+        for bad in ("", None, 7):
+            with self.subTest(bad=bad), self.assertRaises(TypeError):
+                export.stored_grid(self.project, bad)  # type: ignore[arg-type]
+        design = self.record(provenance.dataset_name(provenance.DESIGN_GRID, DESIGN_NAME), self.v1)
+        with self.project.write_transaction() as conn:  # un dato sustituido ya no se exporta
+            conn.execute("UPDATE gb_dataset SET status = 'superseded' WHERE uid = ?", (design.uid,))
+        try:
+            with self.assertRaises(design_messages.DesignError) as caught:
+                export.stored_grid(self.project, design.uid)
+            self.assertEqual(caught.exception.code, "des.export_not_grid")
+        finally:
+            with self.project.write_transaction() as conn:
+                conn.execute("UPDATE gb_dataset SET status = 'current' WHERE uid = ?",
+                             (design.uid,))
+        self.assertEqual(export.stored_grid(self.project, design.uid).record.uid, design.uid)
+        self.assertEqual(self.counts()[0:2], before[0:2])  # ni operaciones ni datos nuevos
 
 
 if __name__ == "__main__":

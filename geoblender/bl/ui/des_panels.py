@@ -79,7 +79,9 @@ diseño activo, enseña el resumen de la vista previa de las semillas mientras l
 sin las cifras (que ya son las de su ficha), las enseñan «Elemento activo» y «Cifras de la selección»
 de la 010 (``view_panels.register_object_lines``). **Nada se lee al dibujar**: :func:`read_selected`
 regenera las líneas al cambiar el objeto activo, tras cada lectura del proyecto cambiado y tras cargar un
-``.blend`` (``view_panels.add_card_listener``).
+``.blend`` (``view_panels.add_card_listener``). Con un dato leído, al final de la barra N está el botón
+«Exportar rejilla a GeoTIFF…» (T28; RF-013-34: ``geoblender.des_export_design_grid`` con la rejilla del
+objeto activo), siempre activo: exportar no escribe en el proyecto, así que vale en solo lectura.
 """
 
 from __future__ import annotations
@@ -1046,6 +1048,7 @@ class GEOBLENDER_PT_des_sectors(bpy.types.Panel):
 
 SELECTED_PANEL = "GEOBLENDER_PT_des_design"
 SELECTED_TAB = "Design"  # msgid de la pestaña y del título de la barra N
+EXPORT_GRID = "geoblender.des_export_design_grid"  # su botón: «Exportar rejilla a GeoTIFF…» (T28)
 MAX_CONSTRAINT_LINES = 10
 """Cuántas restricciones aplicadas enseña la barra N; de las demás, cuántas más hay."""
 
@@ -1406,6 +1409,9 @@ def draw_selected(layout: Any, context: Any) -> None:
             sub = layout.column(align=True)
             sub.active = row.kind != ROW_NONE
             _draw_text(sub, row.name, width, alert=bool(row.alert))
+        layout.separator()
+        export = layout.row()  # exportar no escribe en el proyecto: vale también en solo lectura
+        export.operator(EXPORT_GRID, text=_label(EXPORT_GRID), icon="EXPORT", translate=False)
     if len(shown.preview):
         if uid:
             layout.separator()

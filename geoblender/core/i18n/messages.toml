@@ -7931,3 +7931,20 @@ es = "Las semillas y el dominio no constan"
 
 ["Preview of the seeds"]
 es = "Vista previa de las semillas"
+
+# Exportar una rejilla del diseño a GeoTIFF (spec 013, T28; HU-013-6; RF-013-34; plan 013 §5.3.3,
+# D-29 de la 011): la interna des_export_design_grid y su botón de la barra N «Diseño» («File»,
+# «Replace», «Replace the file», «Choose the file to export to», «Exporting «{file}»… {percent} % ·
+# Esc: cancel» y «Export cancelled: nothing has been written» ya están arriba).
+
+["Design grid"]
+es = "Rejilla del diseño"
+
+["Uid or name of the grid of the design (empty: the active one in the view)"]
+es = "Uid o nombre de la rejilla del diseño (vacío: la activa en la vista)"
+
+["Choose the design grid: select it in the view"]
+es = "Elija la rejilla del diseño: selecciónela en la vista"
+
+["Design grid exported to «{file}»"]
+es = "Rejilla del diseño exportada a «{file}»"
