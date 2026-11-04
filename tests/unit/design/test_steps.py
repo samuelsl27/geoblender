@@ -10,9 +10,10 @@ registrar nada**). El último paso de los dos lleva una ``Calculation``: «Crear
 transacción y «Cancelar» (o cerrar la ventana) borra los temporales. Cerrar el generador a mitad
 borra los temporales y no deja nada.
 
-Cuota del plazo (RNF-013-07): ningún paso pasa de 0,2 s con la rejilla de prueba. Se mide el paso más
-lento de la mejor de tres pasadas (el equipo de desarrollo no siempre está en reposo); el presupuesto
-(0,05 s) lo reparte ``pace_units``, que se comprueba con presupuestos diminutos (un paso por unidad).
+Cuota del plazo (RNF-013-07): ningún paso pasa de 0,2 s con la rejilla de prueba. Se mide la CPU del
+proceso del paso más lento de la mejor de tres pasadas (en pared flaquea con la CPU de otros
+programas, T36); el presupuesto (0,05 s) lo reparte ``pace_units``, que se comprueba con presupuestos
+diminutos (un paso por unidad).
 """
 
 from __future__ import annotations
@@ -88,16 +89,19 @@ def release(found: list[Any]) -> None:
 
 
 def one_pass(make: Callable[[], Iterator[Any]]) -> tuple[float, list[Any]]:
-    """Lleva los pasos de ``make()`` hasta el final y devuelve el paso más lento (s) y los pasos."""
+    """Lleva los pasos de ``make()`` hasta el final y devuelve el paso más lento (s) y los pasos.
+
+    Mide la CPU del proceso (``time.process_time()``): la pared de un paso sube con lo que gasten
+    los demás programas del equipo, y el plazo de pared de verdad lo mide la prueba de rendimiento."""
     iterator = make()
     slowest, found = 0.0, []
     while True:
-        begun = time.perf_counter()
+        begun = time.process_time()
         try:
             step = next(iterator)
         except StopIteration:
             return slowest, found
-        slowest = max(slowest, time.perf_counter() - begun)
+        slowest = max(slowest, time.process_time() - begun)
         found.append(step)
 
 

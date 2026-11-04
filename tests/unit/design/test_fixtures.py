@@ -56,10 +56,11 @@ PIT_M3_006 = 1_308_944.006
 
 
 def _fast(test: unittest.TestCase, build: Callable[[], Any]) -> Any:
-    """``build()``, comprobando que tarda menos de :data:`BUILD_BUDGET_S`."""
-    started = time.perf_counter()
+    """``build()``, comprobando que gasta menos de :data:`BUILD_BUDGET_S` de CPU del proceso (la
+    pared sube con lo que gasten los demás programas del equipo y flaquea)."""
+    started = time.process_time()
     found = build()
-    test.assertLess(time.perf_counter() - started, BUILD_BUDGET_S)
+    test.assertLess(time.process_time() - started, BUILD_BUDGET_S)
     return found
 
 
@@ -472,9 +473,9 @@ class DesignProjectTest(fx.DesignProjectCase):
         se escribe en ella no está en la plantilla ni en otra copia."""
         template = fx.project_template()
         self.assertIs(template, fx.project_template())
-        started = time.perf_counter()
+        started = time.process_time()  # CPU del proceso: la pared flaquea con otros programas
         with fx.open_design_project() as (project, _clock):
-            elapsed = time.perf_counter() - started
+            elapsed = time.process_time() - started
             with project.write_transaction() as conn:
                 conn.execute("CREATE TABLE copia_privada (fid INTEGER)")
         self.assertLess(elapsed, BUILD_BUDGET_S)
