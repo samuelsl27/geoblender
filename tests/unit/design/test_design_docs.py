@@ -659,15 +659,15 @@ class StateDocTest(unittest.TestCase):
 
     def test_the_index_says_where_the_013_is(self) -> None:
         """Definición de hecho §3.7 (F-4, punto 1): el párrafo de la 013, su fila de la tabla y lo
-        que queda dicen que está en la 0.4, que llega a la T38 con su verificación única (T34) y
+        que queda dicen que está en la 0.5, que llega a la T38 con su verificación única (T34) y
         sus tareas de convergencia (T35 a T38), que el límite de ``check.py`` ya es de 46 s y lo
-        que queda (el diff de RF-013-06, el H3, CE-013-10, CE-013-11 y ``Z:``), y no hablan de la T32 ni de la 0.3
+        que queda (el H3, CE-013-10, CE-013-11 y ``Z:``), y no hablan de la T32 ni de la 0.3
         como lo último ni de lo ya decidido como pendiente."""
         self.assertIsNotNone(self.index_row)
         assert self.index_row is not None
         for name, text in (("párrafo", self.paragraph), ("fila", self.index_row.group(0))):
             with self.subTest(place=name):
-                self.assertIn("0.4", text)
+                self.assertIn("0.5", text)
                 self.assertIn(LAST_TASKS, text)
                 self.assertIn("verificación única", text)
                 self.assertNotIn("T01 a T32", text)
@@ -676,7 +676,7 @@ class StateDocTest(unittest.TestCase):
                 self.assertNotIn("spec 0.3", text)
         self.assertIn("46 s", self.paragraph)
         self.assertIn("T35 a T38", self.paragraph)
-        for fact in ("RF-013-06", "H3", "CE-013-10", "CE-013-11", "`Z:`", "diff de la T32"):
+        for fact in ("H3", "CE-013-10", "CE-013-11", "`Z:`", "diff de la T32"):
             with self.subTest(left=fact):
                 self.assertIn(fact, self.left)
         for stale in ("T33 (el arnés", "decidir el límite", "T34 (la verificación única"):
@@ -685,7 +685,7 @@ class StateDocTest(unittest.TestCase):
 
     def test_the_roadmap_says_where_the_013_is(self) -> None:
         """Definición de hecho §3.7 (F-4, punto 1): la fila de R-33, su *Spec* y el registro del
-        04/11/2026 dicen la 0.4, que llega a la T38 con su verificación única y lo que queda."""
+        04/11/2026 dicen la 0.5, que llega a la T38 con su verificación única y lo que queda."""
         self.assertIsNotNone(self.roadmap_row)
         assert self.roadmap_row is not None
         row = self.roadmap_row.group(0)
@@ -697,7 +697,7 @@ class StateDocTest(unittest.TestCase):
                 self.assertNotIn(stale, row)
         bullet = one_line(self.roadmap[self.roadmap.index("**R-33 · Envolventes y escalonado.**"):
                                        self.roadmap.index("**R-34 · Cantera con dos superficies.**")])
-        self.assertIn("versión 0.4", bullet)
+        self.assertIn("versión 0.5", bullet)
         self.assertNotIn("versión 0.3", bullet)
         self.assertTrue(any("T37" in entry and "verificación única" in entry
                             for entry in self.ledger), self.ledger)
