@@ -93,12 +93,13 @@ relleno, confirmar, congelar, reproducir y exportar), con casos de referencia ca
 cono de un punto, el punto fijo, el escalonado de referencia, la berma de 19,58 m, el recorte
 final, las máscaras, la corta circular de 1.308.944 m³) y con datos del tamaño de un proyecto real
 (una rejilla de 2,8 millones de celdas, 20 sectores, 10 perfiles y 500 restricciones) en disco
-local; faltan verlo en la pantalla de referencia (los colores de la vista previa, los diálogos, el
-avance y Esc, la barra N «Diseño»), el GeoTIFF abierto en QGIS 4.2, las medidas en `Z:`, su
-verificación única, la comparación con el proyecto de referencia, que se ejecuta a petición
-(CE-013-10), y que un ingeniero de IMGA defina una semilla, elija un perfil y un sector con talud
-impuesto, revise la vista previa y confirme una superficie de diseño en menos de 15 minutos y sin
-ayuda (CE-013-11).
+local, y pasó su verificación única (04/11/2026), cuyos hallazgos ya están corregidos salvo uno que
+se puede dejar (la marca de la búsqueda pendiente junto a las cifras); faltan verlo en la pantalla
+de referencia (los colores de la vista previa, los diálogos, el avance y Esc, la barra N «Diseño»),
+el GeoTIFF abierto en QGIS 4.2, las medidas en `Z:`, la comparación con el proyecto de referencia,
+que se ejecuta a petición (CE-013-10), y que un ingeniero de IMGA defina una semilla, elija un
+perfil y un sector con talud impuesto, revise la vista previa y confirme una superficie de diseño en
+menos de 15 minutos y sin ayuda (CE-013-11).
 
 ### Añadido
 
