@@ -15,7 +15,9 @@ ventanas «Perfiles de banco…», «Sectores de diseño…» y «Envolventes y 
   asignado), el elegido (``sector_index``), y los parámetros huérfanos aparte (``orphans``);
 - el **resumen** del cálculo en preparación (``summary``, con su título ``summary_title``) y el de
   la **vista previa** de las semillas (``preview``): líneas ya traducidas
-  (:class:`GEOBLENDER_PG_des_line`), algunas en alerta (el ámbar de los avisos).
+  (:class:`GEOBLENDER_PG_des_line`), algunas en alerta (el ámbar de los avisos);
+- el **dato del objeto activo** que enseña la barra N «Diseño» (T27: ``item_uid``, ``item_title`` y
+  ``item``, las líneas leídas del proyecto con su ``kind``).
 
 El nombre del grupo lleva su acción (``panels``, como el de la cubicación) porque NOM-01 la pide;
 el plan 013 §5.2.4 lo llamaba ``GEOBLENDER_PG_des``.
@@ -142,9 +144,14 @@ class GEOBLENDER_PG_des_sector(bpy.types.PropertyGroup):
 
 class GEOBLENDER_PG_des_line(bpy.types.PropertyGroup):
     """Una línea de lo que dice una ventana, ya traducida (``name``: su texto; ``alert``: si va
-    en alerta, en ámbar: un aviso, un sector pendiente, un perfil sin resolver)."""
+    en alerta, en ámbar: un aviso, un sector pendiente, un perfil sin resolver). En la barra N
+    «Diseño» (T27), ``kind`` dice cómo se dibuja (el título de un apartado, un dato, una cifra, un
+    apartado vacío: los ``ROW_*`` de ``bl.ui.view_panels``) y ``uid`` es el de la cifra que
+    nombra."""
 
     alert: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+    kind: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    uid: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
 
 
 class GEOBLENDER_PG_des_panels(bpy.types.PropertyGroup):
@@ -174,6 +181,15 @@ class GEOBLENDER_PG_des_panels(bpy.types.PropertyGroup):
         type=GEOBLENDER_PG_des_line, options=_STATIC,
     )
     preview: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_des_line, options=_STATIC,
+    )
+    # La barra N «Diseño» (T27; RF-013-32): el dato del objeto activo, de qué proyecto es, si el
+    # proyecto lo tiene, su título («Superficie de diseño · Hoyo») y sus líneas.
+    item_uid: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    item_project: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    item_found: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+    item_title: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    item: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_des_line, options=_STATIC,
     )
 

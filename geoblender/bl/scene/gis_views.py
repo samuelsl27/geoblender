@@ -64,6 +64,7 @@ from ...gis.provenance import (
     SOURCE_GRID,
     TIN,
 )
+from ...gis.raster import Raster
 from ...gis.tin import Tin, raster_to_tin_steps
 from . import views
 from .mesh import (
@@ -75,7 +76,7 @@ from .mesh import (
 )
 
 __all__ = ["CONTOURS_KIND", "INDEX_ATTRIBUTE", "LOADERS", "load_grid", "load_lines",
-           "load_points", "load_tin", "register", "unregister"]
+           "load_points", "load_tin", "raster_view_steps", "register", "unregister"]
 
 INDEX_ATTRIBUTE = "is_index"
 """El atributo de arista (booleano) de las curvas cargadas: verdadero en las aristas de las
@@ -166,17 +167,13 @@ def _surface(request: views.ViewRequest, tin: Tin, arrays: MeshArrays, name: str
         raise
 
 
-def load_grid(request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:
-    """Una rejilla (``gis_src_``, ``gis_dtm_``) como malla de superficie, en pasos (T50: la de
-    2,81 M celdas, desde el temporizador de la orden con su avance y Esc, RNF-006-09); con
-    ``lod`` 1 o 2, su versión de 2 o 5 m (RF-006-22). La malla es la de A13 (la de
-    ``gis.mesh.surface_mesh_from_raster``: los triángulos de ``raster_to_tin``, ya hacia
-    arriba)."""
-    from ...gis import store  # al cargar: no al habilitar
-
-    store.require_project_references(request.project, request.record)
-    raster = store.load_raster(request.project, request.record)
-    yield 0.05
+def raster_view_steps(request: views.ViewRequest, raster: Raster,
+                      ) -> Generator[float, None, views.ViewParts]:
+    """Los pasos que llevan la rejilla ``raster`` (ya leída, en el CRS y la referencia vertical del
+    proyecto) a la malla de superficie de su objeto, de 0,05 a 1 (T50; spec 013, T27: lo comparten
+    las rejillas de la topografía y las del diseño): con ``lod`` 1 o 2, su versión de 2 o 5 m
+    (RF-006-22), por media de área y sin tocar ``raster``; la malla de A13 (los triángulos de
+    ``raster_to_tin``, ya hacia arriba), comprobada en lo que guarda Blender (RF-006-21)."""
     surface, name, notes = raster, request.name, []
     if request.lod > 0:
         steps = lod_steps(request.project)
@@ -194,6 +191,20 @@ def load_grid(request: views.ViewRequest) -> Generator[float, None, views.ViewPa
                              0.1, 0.25)
     arrays = MeshArrays(tin.vertices, np.ascontiguousarray(tin.faces, dtype=np.int32))
     return (yield from _surface(request, tin, arrays, name, notes, 0.25))
+
+
+def load_grid(request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:
+    """Una rejilla (``gis_src_``, ``gis_dtm_``) como malla de superficie, en pasos (T50: la de
+    2,81 M celdas, desde el temporizador de la orden con su avance y Esc, RNF-006-09); con
+    ``lod`` 1 o 2, su versión de 2 o 5 m (RF-006-22). La malla es la de A13 (la de
+    ``gis.mesh.surface_mesh_from_raster``: los triángulos de ``raster_to_tin``, ya hacia
+    arriba)."""
+    from ...gis import store  # al cargar: no al habilitar
+
+    store.require_project_references(request.project, request.record)
+    raster = store.load_raster(request.project, request.record)
+    yield 0.05
+    return (yield from raster_view_steps(request, raster))
 
 
 def load_tin(request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:

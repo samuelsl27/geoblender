@@ -61,12 +61,30 @@ escriben).
 **Vista previa de semillas, dominios y restricciones** (T25; HU-013-1; RF-013-03):
 :func:`show_preview` deja en ``WindowManager.geoblender_design.preview`` el resumen que dice
 ``design.preview`` (líneas ya traducidas, los avisos en alerta) cuando ``bl.draw.design`` acaba de
-construir la vista previa de la Vista 3D, y lo vacía al quitarla; la barra N «Diseño» (T27) lo leerá de
-ahí.
+construir la vista previa de la Vista 3D, y lo vacía al quitarla; la barra N «Diseño» lo enseña
+mientras lo hay.
+
+**La barra N «Diseño»** (T27; HU-013-6; RF-013-32, RF-013-06, RF-010-06): el panel
+``GEOBLENDER_PT_des_design`` (de la Vista 3D) enseña, del objeto ``DESIGN`` activo (una envolvente,
+una superficie de diseño o una rejilla de cotas de berma cargada en la vista por
+``bl.scene.des_views``), lo que dice de él el proyecto (:func:`item_lines`; todo lo da el proyecto, nada
+se calcula aquí): su estado, **al día u obsoleto con su causa** (``core.provenance.stale``); en alerta,
+la marca «búsqueda de intocables pendiente» con el sector, si un sector que tocó su dominio de trabajo
+ya no tiene la búsqueda vigente (``design.sectors.pending_marks``, RF-013-06); los ajustes de su
+operación y los **parámetros** que leyó, cada uno con su valor, su insignia de tipo, su ámbito, su
+origen y su decisor, y lo que valen hoy si cambiaron (``core.provenance.lineage``); las **semillas** y el
+dominio de trabajo (los ajustes de la envolvente: la de un escalonado, la suya); las **restricciones
+aplicadas** (las activas en su versión) y sus **cifras** registradas con su insignia. Sin objeto de
+diseño activo, enseña el resumen de la vista previa de las semillas mientras lo hay. Las mismas líneas,
+sin las cifras (que ya son las de su ficha), las enseñan «Elemento activo» y «Cifras de la selección»
+de la 010 (``view_panels.register_object_lines``). **Nada se lee al dibujar**: :func:`read_selected`
+regenera las líneas al cambiar el objeto activo, tras cada lectura del proyecto cambiado y tras cargar un
+``.blend`` (``view_panels.add_card_listener``).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from collections.abc import Mapping, Sequence
@@ -79,23 +97,26 @@ from ...core.catalog.search import path_text
 from ...core.constraints import store as constraint_store
 from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, language, tr, translate
-from ...core.params import ParameterStore, ParamKind, format_value
+from ...core.params import ParameterStore, ParamKind, format_value, parameter_label
 from ...core.params import definition as param_definition
 from ...design import messages as design_messages
 from ...design import profiles as design_profiles
 from ...design import provenance as design_provenance
-from ...design.model import PERIMETER_SEGMENT, BenchProfile
+from ...design.model import PERIMETER_SEGMENT, BenchProfile, SeedKind, ZoneKind
 from ...design.params import BenchParam, bench_key
 from ...reserves import surfaces as res_surfaces
 from ..props.des import WINDOW_MANAGER_PROPERTY
-from ..scene import project_session
+from ..scene import des_views, project_session
 from ..scene import versions as scene_versions
-from . import constraint_panels, labels, provenance
+from . import constraint_panels, labels, provenance, view_panels
 from .commands import catalog
 from .commands import text as command_text
+from .context import active_object, object_kind
 from .res_panels import NOT_SHOWN, record_text
+from .view_panels import ROW_FIELD, ROW_FIGURE, ROW_HEADING, ROW_NONE, CardLine
 
 if TYPE_CHECKING:  # solo para los tipos: habilitar no importa el cálculo (RNF-001-03)
+    from ...design.model import EnvelopeRequest, WorkDomain, Zone
     from ...design.sectors import DesignSector, OrphanSlope
     from ...design.steps import Calculation
 
@@ -711,6 +732,7 @@ def show_preview(lines: Sequence[tuple[str, bool]]) -> None:
     for text, alert in lines:
         line = shown.preview.add()
         line.name, line.alert = text, alert
+    _redraw()  # la barra N «Diseño» enseña este resumen mientras lo hay
 
 
 def show_summary(calculation: Calculation | None) -> None:
@@ -1020,18 +1042,428 @@ class GEOBLENDER_PT_des_sectors(bpy.types.Panel):
         draw_sectors(self.layout, context)
 
 
+# --- La barra N «Diseño»: el dato del objeto activo (T27; RF-013-32, RF-013-06) -------------------
+
+SELECTED_PANEL = "GEOBLENDER_PT_des_design"
+SELECTED_TAB = "Design"  # msgid de la pestaña y del título de la barra N
+MAX_CONSTRAINT_LINES = 10
+"""Cuántas restricciones aplicadas enseña la barra N; de las demás, cuántas más hay."""
+
+
+@dataclass(frozen=True)
+class ItemLines:
+    """Lo que dice el proyecto del dato de un objeto de diseño (:func:`item_lines`): su título
+    («Superficie de diseño · Hoyo»), las líneas de su ficha (estado, marcas, ajustes, parámetros,
+    semillas y dominio, restricciones) y, aparte, sus cifras registradas."""
+
+    title: str
+    lines: tuple[CardLine, ...]
+    figures: tuple[CardLine, ...]
+
+
+def wanted(context: Any = None) -> str:
+    """El ``uid`` del dato que enseña la barra N: el del objeto ``DESIGN`` activo si es de un dato
+    del proyecto abierto; si no, ``""``. No lee el proyecto."""
+    context = bpy.context if context is None else context
+    project = project_session.current()
+    if project is None:
+        return ""
+    obj = active_object(context)
+    if object_kind(obj) != des_views.KIND:
+        return ""
+    props = obj.geoblender
+    return str(props.dataset_uid) if str(props.project_uid) == project.uid else ""
+
+
+def has_preview() -> bool:
+    """Si la vista previa de las semillas ha dejado su resumen (:func:`show_preview`)."""
+    shown = view()
+    return shown is not None and len(shown.preview) > 0
+
+
+def _family_label(name: str) -> str:
+    """El nombre, en el idioma de Geoblender, del tipo de rejilla del dato ``name`` (la envolvente,
+    la superficie de diseño o las cotas de berma); vacío si no es de las tres."""
+    for family, msgid in des_views.LOADERS:
+        if name.startswith(des_views.prefix(family)):
+            return translate(language(), msgid)
+    return ""
+
+
+def _stored_settings(conn: sqlite3.Connection, version_uid: str, family: str,
+                     name: object) -> Mapping[str, Any] | None:
+    """Los ajustes de la operación que escribió el dato de la familia ``family`` y la operación
+    ``name`` en la versión ``version_uid``; ``None`` si la versión ya no lo tiene."""
+    from ...core.datasets import registry as dataset_registry  # al usarlo: habilitar no lo carga
+
+    if not isinstance(name, str) or not name:
+        return None
+    dataset = design_provenance.dataset_name(family, name)
+    record = dataset_registry.get(conn, dataset, version_uid=version_uid)
+    if record is None or record.name != dataset:
+        return None
+    row = conn.execute("SELECT settings FROM gb_operation WHERE uid = ?",
+                       (record.operation_uid,)).fetchone()
+    found = json.loads(str(row[0])) if row is not None and row[0] else None
+    return found if isinstance(found, dict) else None
+
+
+def parameter_line(used: Any, version_code: str) -> CardLine:
+    """Un parámetro que leyó la operación (``core.provenance.lineage.ParameterLink``): su nombre, su
+    valor con su unidad y su insignia de tipo («Altura de banco · expl_10_60_6: 10 m [ADO]»), su
+    ámbito («el proyecto» o la versión), su origen y quién lo decidió; si hoy vale otra cosa, lo de
+    hoy, y en alerta. Aquí solo se escribe."""
+    shown = language()
+    value = f"{used.value_text(language=shown)} {provenance.badge(used.kind)}"
+    if used.unconfirmed:
+        value = f"{value} {tr('unconfirmed')}"
+    scope = tr("the project") if used.scope == "project" else (version_code or str(used.scope))
+    origin = [str(used.source or ""),
+              tr("decided by {person}", person=used.decided_by) if used.decided_by else ""]
+    parts = [f"{parameter_label(used.key, shown) or used.key}: {value}", scope,
+             *(part for part in origin if part)]
+    if used.changed:
+        today = f"{used.current_value_text(language=shown)} {provenance.badge(used.current_kind)}"
+        parts.append(tr("today: {value}", value=today))
+    return CardLine(ROW_FIELD, " · ".join(parts), alert=bool(used.changed or used.source_stale))
+
+
+def _zone_text(zone: Zone, constraints: Mapping[str, str], sectors: Mapping[str, str]) -> str:
+    """La zona de las semillas como se lee: el dominio por defecto, «zona de «Hoyo»» (su
+    restricción), «sector «Sector 1»» o «capa «x»»."""
+    if zone.kind is ZoneKind.DOMAIN:
+        return tr("default domain")
+    name = str(zone.name or "")
+    if zone.kind is ZoneKind.CONSTRAINT:
+        return tr("zone of «{name}»", name=constraints.get(name) or name)
+    if zone.kind is ZoneKind.SECTOR:
+        return tr("sector «{name}»", name=sectors.get(name) or name)
+    return tr("layer «{name}»", name=name)
+
+
+def _domain_text(domain: WorkDomain, sectors: Mapping[str, str]) -> str:
+    """El acotado del dominio de trabajo como se lee: todo el de las máscaras, unos sectores, una
+    capa o los dos."""
+    names = ", ".join(f"«{sectors.get(code) or code}»" for code in domain.sectors)
+    if domain.sectors and domain.layer:
+        return tr("Work domain: bound to the sectors {sectors} and to the layer «{layer}»",
+                  sectors=names, layer=domain.layer)
+    if domain.sectors:
+        return tr("Work domain: bound to the sectors {sectors}", sectors=names)
+    if domain.layer:
+        return tr("Work domain: bound to the layer «{layer}»", layer=domain.layer)
+    return tr("Work domain: the whole domain of the masks")
+
+
+def seed_lines(request: EnvelopeRequest, constraints: Mapping[str, str],
+               sectors: Mapping[str, str]) -> list[CardLine]:
+    """Las semillas y el dominio de trabajo de una envolvente (RF-013-01, RF-013-02; los ajustes que
+    guardó, ``design.provenance.envelope_request``): de dónde salen las semillas y su zona, y el
+    acotado del dominio. ``constraints`` y ``sectors`` dan el nombre de cada código."""
+    seeds = request.seeds
+    if seeds.kind is SeedKind.SURFACE:
+        origin = tr("cells of «{surface}»", surface=seeds.surface)
+    elif seeds.kind is SeedKind.FIXED:
+        origin = tr("fixed elevation {elevation} m",
+                    elevation=format_value(float(seeds.elevation_m or 0.0), language()))
+    else:
+        origin = tr("grid of elevations «{grid}»", grid=seeds.grid)
+    text = (tr("Seeds: {origin} · {zone}", origin=origin,
+               zone=_zone_text(seeds.zone, constraints, sectors))
+            if seeds.zone is not None else tr("Seeds: {origin}", origin=origin))
+    return [CardLine(ROW_FIELD, text), CardLine(ROW_FIELD, _domain_text(request.domain, sectors))]
+
+
+def profiles_text(settings: Mapping[str, Any], profile_names: Mapping[str, str],
+                  sectors: Mapping[str, str]) -> str:
+    """Los perfiles de banco asignados que guardó la operación (RF-013-21): el base y el de cada
+    sector, por su nombre («base EXPL_10_60_6 · Sector 2: REST_5_35_6»); vacío si no asignó ninguno.
+    ``profile_names`` da el nombre de cada código de perfil y ``sectors``, el de cada sector."""
+    parts: list[str] = []
+    base = settings.get("base_profile")
+    if isinstance(base, str) and base:
+        parts.append(tr("base {profile}", profile=profile_names.get(base) or base))
+    assigned = settings.get("sector_profiles")
+    for code, profile in (assigned.items() if isinstance(assigned, Mapping) else ()):
+        parts.append(f"{sectors.get(code) or code}: {profile_names.get(profile) or profile}")
+    return " · ".join(parts)
+
+
+def _constraint_lines(listed: Sequence[Any], version_code: str) -> list[CardLine]:
+    """Las restricciones activas en la versión (``gis.masks.store.ListedConstraint``), cada una con su
+    tipo y su nombre; las que pasan de :data:`MAX_CONSTRAINT_LINES`, contadas."""
+    shown = language()
+    active = [item.constraint for item in listed if item.state == "active"]
+    if not active:
+        return [CardLine(ROW_NONE, tr("No constraint is active in {version}",
+                                      version=version_code or tr("the project")))]
+    lines: list[CardLine] = []
+    for item in active[:MAX_CONSTRAINT_LINES]:
+        kind = constraint_panels.type_label("" if item.ctype is None else item.ctype.value)
+        lines.append(CardLine(ROW_FIELD, f"{kind} · {item.shown_name(shown)}"))
+    if len(active) > MAX_CONSTRAINT_LINES:
+        lines.append(CardLine(ROW_NONE, tr("… and {count} more",
+                                           count=len(active) - MAX_CONSTRAINT_LINES)))
+    return lines
+
+
+def item_lines(project: Any, uid: str) -> ItemLines | None:
+    """Lo que dice el proyecto del dato ``uid`` de un diseño (véase el módulo), en una instantánea y
+    sin escribir nada; ``None`` si el proyecto ya no lo tiene. Su estado es el de
+    ``core.provenance.stale`` (con su causa); los ajustes, los parámetros y la operación, los de
+    ``core.provenance.lineage``; la marca de la búsqueda pendiente, la de ``design.sectors``; las
+    semillas y el dominio, los de los ajustes de la envolvente (la de un escalonado, la que
+    escaló); las restricciones, las activas en su versión (``gis.masks.store``) y las cifras, las de
+    su operación. Los errores del proyecto (``GeoblenderError``, ``sqlite3.Error``) siguen."""
+    from ...core.provenance import lineage as prov_lineage  # al usarlo: habilitar no lo carga
+    from ...core.provenance import stale as prov_stale
+    from ...core.versions import read as versions_read
+    from ...core.views import card
+    from ...design.sectors import design_sectors, pending_marks
+    from ...gis.masks import store as masks_store
+    from ...gis.polygons import drain
+
+    shown = language()
+    with project.read() as conn:
+        found = card.item_card(project, uid, conn=conn)
+        if found is None:
+            return None
+        tree = prov_lineage.lineage(project, uid, conn=conn, language=shown)
+        link = tree.operations[tree.root]
+        cause = (prov_stale.item_text(conn, prov_stale.DATASET, uid, language=shown)
+                 if found.stale else None)
+        owner = versions_read.dataset_versions(conn, [uid]).get(uid, "")
+        constraints = {code: name for code, (name, _kind) in
+                       constraint_store.constraint_names(conn).items()}
+        profile_names = design_profiles.profile_names(conn)
+        settings = link.settings
+        envelope_settings: Mapping[str, Any] | None = settings
+        if link.op_type != design_provenance.ENVELOPE:  # un escalonado: la envolvente que escaló
+            envelope_settings =_stored_settings(conn, owner, design_provenance.ENVELOPE_GRID,
+                                                 settings.get("envelope"))
+    version_code = found.revision.code if found.revision is not None else ""
+    sectors = design_sectors(project, owner or None)
+    names = {sector.code: sector.name for sector in sectors}
+    listed = drain(masks_store.shown_constraints_steps(project, version=owner or None))
+
+    lines: list[CardLine] = [
+        CardLine(ROW_FIELD, cause or tr("Up to date"), alert=bool(found.stale))]
+    try:
+        touched = design_provenance.settings_touched(settings)
+    except ValueError:
+        touched = ()
+        LOGGER.info("Los sectores que tocó «%s» no se pueden leer", found.record.name)
+    lines += [CardLine(ROW_FIELD, mark.text(shown), alert=True)
+              for mark in pending_marks(touched, sectors)]
+    if link.settings_text:
+        lines.append(CardLine(ROW_FIELD, link.settings_text))
+    assigned = profiles_text(settings, profile_names, names)
+    if assigned:
+        lines.append(CardLine(ROW_FIELD, tr("Profiles: {profiles}", profiles=assigned)))
+    if link.op_type != design_provenance.ENVELOPE:
+        lines.append(CardLine(ROW_FIELD, tr("Envelope: «{name}»",
+                                            name=str(settings.get("envelope") or ""))))
+        lines.append(CardLine(ROW_FIELD, tr("Start surface: «{surface}»",
+                                            surface=str(settings.get("surface") or ""))))
+    lines.append(CardLine(ROW_HEADING, tr("Parameters")))
+    lines += [parameter_line(used, version_code) for used in link.params] or [
+        CardLine(ROW_NONE, tr("No parameters recorded"))]
+    lines.append(CardLine(ROW_HEADING, tr("Seeds and domains")))
+    try:
+        if envelope_settings is None:
+            lines.append(CardLine(ROW_NONE, tr("The envelope «{name}» is no longer in this version",
+                                               name=str(settings.get("envelope") or ""))))
+        else:
+            lines += seed_lines(design_provenance.envelope_request(envelope_settings),
+                                constraints, names)
+    except ValueError:
+        LOGGER.info("Los ajustes de la envolvente de «%s» no se pueden leer", found.record.name,
+                    exc_info=True)
+        lines.append(CardLine(ROW_NONE, tr("The seeds and the domain are not recorded")))
+    lines.append(CardLine(ROW_HEADING, tr("Applied constraints")))
+    lines += _constraint_lines(listed, version_code)
+    figures = [CardLine(ROW_HEADING, tr("Figures"))]
+    figures += [CardLine(ROW_FIGURE, f"{provenance.badge(figure.kind)} "
+                                     f"{figure.text(language=shown)}", uid=figure.uid)
+                for figure in found.figures] or [CardLine(ROW_NONE, tr("No figures recorded"))]
+    name = str(settings.get("name") or found.record.name)
+    return ItemLines(f"{_family_label(found.record.name)} · {name}", tuple(lines), tuple(figures))
+
+
+def object_lines(project: Any, obj: Any) -> list[CardLine]:
+    """Las líneas más que enseñan «Elemento activo» y «Cifras de la selección» de un objeto
+    ``DESIGN`` (``view_panels.register_object_lines``): las de :func:`item_lines`, sin las cifras
+    (las de su ficha). Ninguna si el proyecto ya no tiene su dato."""
+    uid = str(getattr(getattr(obj, "geoblender", None), "dataset_uid", "") or "")
+    try:
+        found = item_lines(project, uid) if uid else None
+    except ValueError:  # el proyecto se abrió solo con su cabecera: sin rejilla, sin sectores
+        LOGGER.info("No se pudieron leer las líneas del diseño de «%s»", getattr(obj, "name", ""),
+                    exc_info=True)
+        return []
+    return [] if found is None else list(found.lines)
+
+
+def _redraw() -> None:
+    manager = getattr(bpy.context, "window_manager", None)
+    for window in getattr(manager, "windows", ()):
+        for area in window.screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+
+
+def _clear_item(shown: Any) -> bool:
+    """Olvida el dato de la barra N; dice si había uno."""
+    had = bool(shown.item_uid) or len(shown.item) > 0
+    if had:
+        shown.item_uid = shown.item_project = shown.item_title = ""
+        shown.item_found = False
+        shown.item.clear()
+    return had
+
+
+def _put_item(shown: Any, uid: str, project_uid: str, found: ItemLines | None) -> None:
+    """Deja en la vista lo leído del dato ``uid`` (``None``: el proyecto ya no lo tiene)."""
+    shown.item_uid, shown.item_project = uid, project_uid
+    shown.item_found = found is not None
+    shown.item_title = "" if found is None else found.title
+    shown.item.clear()
+    for line in () if found is None else (*found.lines, *found.figures):
+        row = shown.item.add()
+        row.kind, row.name, row.alert, row.uid = line.kind, line.text, line.alert, line.uid
+
+
+def read_selected(context: Any = None) -> bool:
+    """Lee del proyecto de la sesión el dato del objeto de diseño activo (:func:`wanted`) y lo deja en
+    ``WindowManager.geoblender_design`` (``item_title`` e ``item``); sin ninguno, o si el proyecto ya
+    no lo tiene, lo olvida. No escribe en el proyecto; mientras esta sesión escribe en él o está en
+    WAL, no lo lee (lo hará la siguiente lectura de los indicadores). Devuelve si hay un dato. Si no se
+    puede leer, lo olvida y lo anota en el registro técnico."""
+    shown = view()
+    if shown is None:
+        return False
+    uid = wanted(context)
+    project = project_session.current()
+    if not uid or project is None:
+        changed, found = _clear_item(shown), False
+    elif not view_panels.readable(project):
+        return bool(shown.item_uid)
+    else:
+        try:
+            read = item_lines(project, uid)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+            LOGGER.info("No se pudo leer del proyecto el dato del diseño seleccionado",
+                        exc_info=True)
+            changed, found = _clear_item(shown), False
+        else:
+            _put_item(shown, uid, project.uid, read)
+            changed, found = True, read is not None
+    if changed:
+        _redraw()
+    return found
+
+
+def read_selected_safely() -> None:
+    """:func:`read_selected` para lo que llama Blender: un fallo va al registro técnico."""
+    try:
+        read_selected()
+    except Exception:  # noqa: BLE001 - lo que llama Blender no lo tumba
+        LOGGER.exception("Falló la lectura del dato del diseño seleccionado")
+
+
+def on_card_read() -> None:
+    """Lo que se apunta en ``view_panels.add_card_listener``: se volvió a leer la ficha del objeto
+    activo (cambió el objeto, el proyecto o el fichero), así que también este dato."""
+    read_selected_safely()
+
+
+def on_project_changed(_project: Any) -> None:
+    """Lo que se apunta en ``project_session``: con otro proyecto (o ninguno), olvida el dato; con
+    uno nuevo, la barra N no lee nada hasta que se selecciona algo."""
+    shown = view()
+    if shown is not None and _clear_item(shown):
+        _redraw()
+
+
+def draw_selected(layout: Any, context: Any) -> None:
+    """La barra N «Diseño» (véase el módulo), de lo ya leído: el dato del objeto activo y, mientras
+    lo hay, el resumen de la vista previa de las semillas."""
+    shown = view()
+    if shown is None:
+        return
+    width = labels.sidebar_width(context)
+    uid = wanted(context)
+    if uid and shown.item_uid != uid:
+        _draw_text(layout, tr("Reading the project data of the active object…"), width)
+    elif uid and not shown.item_found:
+        _draw_text(layout, tr("The project no longer has the data of this object"), width,
+                   alert=True)
+    elif uid:
+        _draw_text(layout, shown.item_title, width)
+        for row in shown.item:
+            if row.kind == ROW_HEADING:
+                layout.separator()
+            sub = layout.column(align=True)
+            sub.active = row.kind != ROW_NONE
+            _draw_text(sub, row.name, width, alert=bool(row.alert))
+    if len(shown.preview):
+        if uid:
+            layout.separator()
+        _draw_text(layout, tr("Preview of the seeds"), width)
+        for row in shown.preview:
+            _draw_text(layout, row.name, width, alert=bool(row.alert))
+
+
+class GEOBLENDER_PT_des_design(bpy.types.Panel):
+    """The design shown by the active object: state, parameters, seeds, domain, constraints and
+    figures, or the summary of the preview of the seeds"""
+
+    bl_idname = SELECTED_PANEL
+    bl_label = SELECTED_TAB
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = SELECTED_TAB
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return bool(wanted(context)) or has_preview()
+
+    def draw(self, context: Any) -> None:
+        draw_selected(self.layout, context)
+
+
+def localize() -> None:
+    """La pestaña y el título de la barra N «Diseño» en el idioma de la interfaz (antes de
+    registrar, y otra vez al cambiar el idioma)."""
+    GEOBLENDER_PT_des_design.bl_category = tr("Design")
+    GEOBLENDER_PT_des_design.bl_label = tr("Design")
+
+
 # En orden de registro (las listas, antes de la ventana que las dibuja).
 classes: tuple[type, ...] = (GEOBLENDER_UL_des_profiles, GEOBLENDER_PT_des_profiles,
-                             GEOBLENDER_UL_des_sectors, GEOBLENDER_PT_des_sectors)
+                             GEOBLENDER_UL_des_sectors, GEOBLENDER_PT_des_sectors,
+                             GEOBLENDER_PT_des_design)
 
 
 def install() -> None:
-    """Pone la escucha de los indicadores (:func:`on_project_read`); idempotente."""
+    """Pone la escucha de los indicadores (:func:`on_project_read`) y las de la barra N «Diseño»: la
+    ficha del objeto activo, el proyecto de la sesión y las líneas más de «Elemento activo» y
+    «Cifras de la selección» de los objetos ``DESIGN``; idempotente."""
     provenance.add_change_listener(on_project_read)
+    view_panels.add_card_listener(on_card_read)
+    view_panels.register_object_lines(des_views.KIND, object_lines)
+    project_session.add_listener(on_project_changed)
 
 
 def uninstall() -> None:
-    """Quita lo que puso :func:`install` y olvida las listas del diálogo de las envolventes;
-    idempotente."""
+    """Quita lo que puso :func:`install`, olvida el dato de la barra N y las listas del diálogo de las
+    envolventes; idempotente."""
+    project_session.remove_listener(on_project_changed)
+    view_panels.unregister_object_lines(des_views.KIND, object_lines)
+    view_panels.remove_card_listener(on_card_read)
     provenance.remove_change_listener(on_project_read)
+    shown = view()
+    if shown is not None:
+        _clear_item(shown)
     forget_choices()

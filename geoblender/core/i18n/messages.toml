@@ -7840,3 +7840,94 @@ es = "Sector con la búsqueda pendiente"
 
 ["{name} · {state}"]
 es = "{name} · {state}"
+
+# Las rejillas del diseño en la vista y la barra N «Diseño» (spec 013, T27; HU-013-6; RF-013-32,
+# RF-013-06; plan 013 §5.1, D-32): bl/scene/des_views.py (el nombre de cada tipo de rejilla en el
+# nombre generado de sus objetos, «Envolvente hoyo · V01 [VIGENTE]») y bl/ui/des_panels.py.
+
+["Design"]
+es = "Diseño"
+
+["Design surface"]
+es = "Superficie de diseño"
+
+["Berm elevations"]
+es = "Cotas de berma"
+
+["The envelope, the design surface or the berm elevations of a design, drawn as a surface"]
+es = "La envolvente, la superficie de diseño o las cotas de berma de un diseño, dibujadas como una superficie"
+
+["Seeds and domains"]
+es = "Semillas y dominios"
+
+["Profiles: {profiles}"]
+es = "Perfiles asignados: {profiles}"
+
+["base {profile}"]
+es = "base {profile}"
+
+["Applied constraints"]
+es = "Restricciones aplicadas"
+
+["No parameters recorded"]
+es = "Ningún parámetro registrado"
+
+["decided by {person}"]
+es = "decidido por {person}"
+
+["Envelope: «{name}»"]
+es = "Envolvente: «{name}»"
+
+["Start surface: «{surface}»"]
+es = "Superficie de partida: «{surface}»"
+
+["Seeds: {origin}"]
+es = "Semillas: {origin}"
+
+["Seeds: {origin} · {zone}"]
+es = "Semillas: {origin} · {zone}"
+
+["cells of «{surface}»"]
+es = "celdas de «{surface}»"
+
+["fixed elevation {elevation} m"]
+es = "cota fija {elevation} m"
+
+["grid of elevations «{grid}»"]
+es = "rejilla de cotas «{grid}»"
+
+["default domain"]
+es = "dominio por defecto"
+
+["zone of «{name}»"]
+es = "zona de «{name}»"
+
+["sector «{name}»"]
+es = "sector «{name}»"
+
+["layer «{name}»"]
+es = "capa «{name}»"
+
+["Work domain: the whole domain of the masks"]
+es = "Dominio de trabajo: todo el de las máscaras"
+
+["Work domain: bound to the sectors {sectors}"]
+es = "Dominio de trabajo: acotado a los sectores {sectors}"
+
+["Work domain: bound to the layer «{layer}»"]
+es = "Dominio de trabajo: acotado a la capa «{layer}»"
+
+["Work domain: bound to the sectors {sectors} and to the layer «{layer}»"]
+es = "Dominio de trabajo: acotado a los sectores {sectors} y a la capa «{layer}»"
+
+["No constraint is active in {version}"]
+es = "Ninguna restricción activa en {version}"
+
+["The envelope «{name}» is no longer in this version"]
+es = "La envolvente «{name}» ya no está en esta versión"
+
+["The seeds and the domain are not recorded"]
+es = "Las semillas y el dominio no constan"
+
+["Preview of the seeds"]
+es = "Vista previa de las semillas"

@@ -101,6 +101,7 @@ def _register_classes() -> None:
     dh_panels.localize()
     res_panels.localize()
     constraint_panels.localize()
+    des_panels.localize()
     register_classes(classes)
 
 

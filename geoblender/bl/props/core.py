@@ -211,6 +211,10 @@ OBJECT_KINDS: list[tuple[str, str, str]] = [
     ("COMPLIANCE_GRID", "Non-compliance grid",
      "The cells of a final surface that do not comply with the constraints, with their thickness "
      "(final minus start), drawn on the final surface"),
+    # Spec 013 (T27; RF-013-32; plan 013 §5.1, D-32): la envolvente, la superficie de diseño o la
+    # rejilla de cotas de berma de un diseño.
+    ("DESIGN", "Design",
+     "The envelope, the design surface or the berm elevations of a design, drawn as a surface"),
 ]
 # El estado del dato al cargarlo (gb_dataset.status de un dato vivo, en mayúsculas).
 OBJECT_STATUSES: list[tuple[str, str, str]] = [

@@ -146,6 +146,10 @@ BRANCHES: dict[str, tuple[tuple[str, str], ...]] = {
     # La rejilla de incumplimientos de una verificación por recinto (spec 012, T28; RF-012-23,
     # D-42): siempre de una versión, va en la colección de su versión; sin ella, en «Cubicación».
     "COMPLIANCE_GRID": (("volumetrics", "Volumetrics"),),
+    # La envolvente, la superficie de diseño y la rejilla de cotas de berma de un diseño (spec
+    # 013, T27; RF-013-32, D-32): siempre de una versión, van en la colección de su versión; sin
+    # ella, en «Diseño».
+    "DESIGN": (("design", "Design"),),
 }
 # El estado de un dato vivo en su nombre generado y en Object.geoblender.status.
 STATUS_TEXT: dict[DatasetStatus, str] = {
