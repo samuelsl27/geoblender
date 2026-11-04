@@ -20,7 +20,7 @@ describe; estas pruebas avisan de que se separan:
   búsqueda pendiente (y dónde sale: bajo el estado y junto a las cifras, T38) salen como los escribe
   el código; y dice lo que hace la regularización entre sectores cuando baja la envolvente (T35);
 - el índice de specs, el roadmap, el ``CHANGELOG.md`` del código y la ficha de ``des`` dicen el estado
-  de la 013 tras su verificación única (T34 a T37).
+  de la 013 tras su verificación única (T34 a T38).
 
 Sin la carpeta de la documentación, se omiten (recurso ``docs``). Las pruebas del emparejado de las
 citas (:class:`QuoteMatcherTest`) no la necesitan: comprueban que la regla no da falsos verdes.
@@ -68,10 +68,10 @@ CUBICATION_MSGID = ("The project was closed while «{name}» was being computed:
                     "left half-done")
 CUBICATION_ES = "Se cerró el proyecto mientras se cubicaba «Hoyo»: no ha quedado nada a medias"
 MARK_ES = "Búsqueda de intocables pendiente en «Sector 2»."
-# Hasta dónde llega la 013. Se escribe «de la T01 a la T37» y no «T01 a T37»: la prueba de la 012
+# Hasta dónde llega la 013. Se escribe «de la T01 a la T38» y no «T01 a T38»: la prueba de la 012
 # (``test_indexes_reach_the_last_task``) exige que esa frase, que era la suya, ya no esté en el índice
 # ni en el roadmap.
-LAST_TASKS = "de la T01 a la T37"
+LAST_TASKS = "de la T01 a la T38"
 
 # Las órdenes de Diseño de la 013 que la guía nombra con el texto de su catálogo.
 ORDERS = ("geoblender.des_edit_bench_profiles", "geoblender.des_edit_design_sectors",
@@ -489,7 +489,7 @@ class ModuleCardDocTest(unittest.TestCase):
                 self.assertIn(fact, shown)
 
     def test_the_state_of_the_013(self) -> None:
-        """Definición de hecho §3.7 (F-4, punto 1): la ficha dice que la 013 llega a la T37, con su
+        """Definición de hecho §3.7 (F-4, punto 1): la ficha dice que la 013 llega a la T38, con su
         verificación única, y no a la T32."""
         head = one_line(self.text[:self.text.index("## Responsabilidad")])
         row = re.search(r"^\| 013-des-envolventes-y-escalonado .*$", self.text, re.MULTILINE)
@@ -659,9 +659,9 @@ class StateDocTest(unittest.TestCase):
 
     def test_the_index_says_where_the_013_is(self) -> None:
         """Definición de hecho §3.7 (F-4, punto 1): el párrafo de la 013, su fila de la tabla y lo
-        que queda dicen que está en la 0.4, que llega a la T37 con su verificación única (T34) y
-        sus tareas de convergencia (T35 a T37), que el límite de ``check.py`` ya es de 46 s y lo
-        que queda (T38, el H3, CE-013-10, CE-013-11 y ``Z:``), y no hablan de la T32 ni de la 0.3
+        que queda dicen que está en la 0.4, que llega a la T38 con su verificación única (T34) y
+        sus tareas de convergencia (T35 a T38), que el límite de ``check.py`` ya es de 46 s y lo
+        que queda (el diff de RF-013-06, el H3, CE-013-10, CE-013-11 y ``Z:``), y no hablan de la T32 ni de la 0.3
         como lo último ni de lo ya decidido como pendiente."""
         self.assertIsNotNone(self.index_row)
         assert self.index_row is not None
@@ -675,8 +675,8 @@ class StateDocTest(unittest.TestCase):
                 self.assertNotIn("faltan la T33", text)
                 self.assertNotIn("spec 0.3", text)
         self.assertIn("46 s", self.paragraph)
-        self.assertIn("T35 a T37", self.paragraph)
-        for fact in ("T38", "H3", "CE-013-10", "CE-013-11", "`Z:`", "diff de la T32"):
+        self.assertIn("T35 a T38", self.paragraph)
+        for fact in ("RF-013-06", "H3", "CE-013-10", "CE-013-11", "`Z:`", "diff de la T32"):
             with self.subTest(left=fact):
                 self.assertIn(fact, self.left)
         for stale in ("T33 (el arnés", "decidir el límite", "T34 (la verificación única"):
@@ -685,7 +685,7 @@ class StateDocTest(unittest.TestCase):
 
     def test_the_roadmap_says_where_the_013_is(self) -> None:
         """Definición de hecho §3.7 (F-4, punto 1): la fila de R-33, su *Spec* y el registro del
-        04/11/2026 dicen la 0.4, que llega a la T37 con su verificación única y lo que queda."""
+        04/11/2026 dicen la 0.4, que llega a la T38 con su verificación única y lo que queda."""
         self.assertIsNotNone(self.roadmap_row)
         assert self.roadmap_row is not None
         row = self.roadmap_row.group(0)
@@ -701,6 +701,8 @@ class StateDocTest(unittest.TestCase):
         self.assertNotIn("versión 0.3", bullet)
         self.assertTrue(any("T37" in entry and "verificación única" in entry
                             for entry in self.ledger), self.ledger)
+        self.assertTrue(any("T38" in entry and "RF-013-06" in entry for entry in self.ledger),
+                        self.ledger)
 
     def test_the_changelog_says_the_013_passed_its_single_verification(self) -> None:
         """Definición de hecho §3.7 (F-4, punto 1): el ``CHANGELOG.md`` del código dice que la 013
