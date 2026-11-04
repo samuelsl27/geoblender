@@ -811,6 +811,51 @@ class DesignPreviewTest(unittest.TestCase):
                 expected = design.summary_items(built.summary, measure, scale, SIZE, covered_px=left)
                 self.assertEqual(items[-len(expected):], expected)
 
+    def test_i_the_seeds_legend_has_one_row_for_one_elevation_and_the_color_that_is_seen(self) -> None:
+        """RF-013-02 (H3, hallazgo 2; M1): con todas las semillas a la misma cota (la superficie
+        plana: ``low == high``) ``elevation_colors`` las pinta del color del medio de la rampa, y la
+        leyenda enseña **una** fila «Semillas a 50,0 m» con ese color (el de todos los puntos, ni el
+        del primer extremo ni el del último); con varias cotas, las dos filas de siempre, la baja con
+        el primer color de la rampa y la alta con el último, que son los de las semillas más baja y más
+        alta. Solo cambia la leyenda: los puntos y sus colores son los mismos."""
+        design = self.design
+        ends = (design._hex(design.RAMP[0][1]), design._hex(design.RAMP[-1][1]))
+
+        def seed_rows(built: Any) -> list[tuple[str, str | None]]:
+            return [(row.text, row.color) for row in built.lines.legend
+                    if row.text.startswith("Semillas a ")]  # no «Semillas aclaradas»
+
+        self.assertEqual(self.show(surface=self.flat), {"FINISHED"})
+        flat = self.pump()
+        self.assertEqual((flat.seeds.low, flat.seeds.high), (50.0, 50.0))
+        self.assertEqual(flat.seeds.count, 900)
+        self.assertTrue(np.all(flat.seeds.colors == flat.seeds.colors[0]))  # los puntos, de un color
+        seen = design._hex(flat.seeds.colors[0])
+        self.assertEqual(seen, design._hex(design.elevation_colors([50.0], 50.0, 50.0)[0]))
+        self.assertNotIn(seen, ends)
+        self.assertEqual(seed_rows(flat), [("Semillas a 50,0 m", seen)])
+
+        design.disable()
+        self.i18n.set_language("en")
+        self.assertEqual(self.show(surface=self.flat), {"FINISHED"})
+        english = [(row.text, row.color) for row in self.pump().lines.legend
+                   if row.text.startswith("Seeds at ")]
+        self.assertEqual(english, [("Seeds at 50.0 m", seen)])
+        self.i18n.set_language("es")
+
+        design.disable()
+        self.assertEqual(self.show(), {"FINISHED"})  # la ladera: varias cotas
+        sloped = self.pump()
+        low, high = sloped.seeds.low, sloped.seeds.high
+        self.assertLess(low, high)
+        number = self.i18n.format_number
+        self.assertEqual(seed_rows(sloped), [(f"Semillas a {number(low, 1)} m", ends[0]),
+                                             (f"Semillas a {number(high, 1)} m", ends[1])])
+        height = sloped.seeds.positions[:, 2]  # los puntos son float32: el color, con su redondeo
+        for place, stop in ((int(np.argmin(height)), design.RAMP[0][1]),
+                            (int(np.argmax(height)), design.RAMP[-1][1])):
+            self.assertTrue(np.allclose(sloped.seeds.colors[place][:3], stop, atol=1e-6), place)
+
     def test_z_disabling_geoblender_with_the_preview_on_leaves_nothing(self) -> None:
         """Principio 8: con la vista previa activa, desactivar Geoblender quita los manejadores de
         dibujo, los avisos, el temporizador y los lotes, y la huella de Blender vuelve a la del

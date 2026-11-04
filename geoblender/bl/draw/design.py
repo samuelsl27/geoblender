@@ -356,10 +356,16 @@ def _legend(request: Request, base: constraints.Built, points: Points | None, ha
             sectors: Sequence[tuple[str, bool]]) -> tuple[LegendRow, ...]:
     """La leyenda: el título con la versión, las cotas de las semillas con su color, el dominio de
     trabajo, los sectores (vigente y pendiente) y lo de la 012 (tipos presentes y notas) sin su
-    título ni su dominio por defecto y su franja, que aquí son el dominio de trabajo."""
+    título ni su dominio por defecto y su franja, que aquí son el dominio de trabajo. Las semillas
+    llevan una fila por cota, la baja con el primer color de la rampa y la alta con el último; con
+    todas a la misma cota, una sola con el color con que :func:`elevation_colors` las pinta."""
     rows = [LegendRow(tr("Preview · {version}", version=request.version_code or tr("No version")))]
     if points is not None:
-        for value, color in ((points.low, RAMP[0][1]), (points.high, RAMP[-1][1])):
+        if points.high - points.low > 0.0:  # la misma condición que la rampa de elevation_colors
+            heights = ((points.low, RAMP[0][1]), (points.high, RAMP[-1][1]))
+        else:
+            heights = ((points.low, elevation_colors([points.low], points.low, points.high)[0]),)
+        for value, color in heights:
             rows.append(LegendRow(tr("Seeds at {value} m", value=format_number(value, 1)),
                                   _hex(color)))
         if points.stride > 1:

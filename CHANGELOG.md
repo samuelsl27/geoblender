@@ -193,6 +193,10 @@ menos de 15 minutos y sin ayuda (CE-013-11).
   - **El resumen de la vista previa ya no queda bajo la barra de herramientas**: empieza a la
     derecha de ella cuando se superpone a la Vista 3D (con sus textos y cifras como antes) y no
     pierde las primeras letras de cada línea; lo vio el H3 en la pantalla de referencia.
+  - **La leyenda de las semillas de la vista previa dice el color que se ve**: con todas las
+    semillas a la misma cota (una superficie plana) enseña una sola fila, «Semillas a 650,0 m», con
+    el verde con que se pintan, y no dos filas iguales en azul y en rojo; con varias cotas, las
+    dos de siempre. Ningún cálculo ni cifra cambia; lo vio el H3 en la pantalla de referencia.
 
 - **Límites legales y restricciones** (spec 012). Antes de diseñar hay que saber dónde no se puede
   cortar ni rellenar, y después hay que poder demostrarlo en m³: lo que pasó en el proyecto de
