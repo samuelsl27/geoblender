@@ -129,27 +129,31 @@ def _spans(rings: Iterable[object], nrows: int, ncols: int) -> _Spans:
     return row[0::2][keep], begin[keep], end[keep]
 
 
-def _paint(spans: _Spans, nrows: int, ncols: int) -> tuple[int, np.ndarray]:
-    """Las celdas de ``spans`` (su unión) como máscara de las filas que tocan: ``(primera fila,
-    bloque booleano)``. Una suma acumulada de diferencias por fila, sin bucle por celda."""
+def _paint(spans: _Spans, nrows: int, ncols: int) -> tuple[int, int, np.ndarray]:
+    """Las celdas de ``spans`` (su unión) como máscara de la caja que tocan: ``(primera fila, primera
+    columna, bloque booleano)``. Una suma acumulada de diferencias por fila, sin bucle por celda y solo
+    sobre las columnas de la caja: antes de la primera columna no hay marca ninguna y desde la última
+    cada fila suma cero, así que el bloque es, bit a bit, el de la rejilla entera recortado a su caja
+    (un sector estrecho de una rejilla grande cuesta su caja, no la rejilla)."""
     rows, begin, end = spans
     if rows.size == 0:
-        return 0, np.zeros((0, ncols), dtype=bool)
+        return 0, 0, np.zeros((0, ncols), dtype=bool)
     top, bottom = int(rows.min()), int(rows.max()) + 1
-    width = ncols + 1
+    left, right = int(begin.min()), int(end.max())
+    width = right - left + 1
     marks = np.zeros((bottom - top) * width, dtype=np.int32)
-    base = (rows - top) * width
+    base = (rows - top) * width - left
     np.add.at(marks, base + begin, 1)
     np.add.at(marks, base + end, -1)
-    block = np.cumsum(marks.reshape(bottom - top, width)[:, :ncols], axis=1, dtype=np.int32) > 0
-    return top, block
+    block = np.cumsum(marks.reshape(bottom - top, width)[:, :width - 1], axis=1, dtype=np.int32) > 0
+    return top, left, block
 
 
 def _full(spans: _Spans, nrows: int, ncols: int) -> np.ndarray:
     """Las celdas de ``spans`` como máscara de toda la rejilla."""
-    top, block = _paint(spans, nrows, ncols)
+    top, left, block = _paint(spans, nrows, ncols)
     found = np.zeros((nrows, ncols), dtype=bool)
-    found[top:top + block.shape[0]] = block
+    found[top:top + block.shape[0], left:left + block.shape[1]] = block
     return found
 
 
@@ -212,8 +216,8 @@ def sector_labels(sectors: Sequence[SupportsRings], grid: Grid) -> np.ndarray:
     labels = np.zeros(grid.shape, dtype=np.int16)
     for label, sector in enumerate(sectors, start=1):
         spans = _spans(to_cell_units(sector.rings, grid), grid.nrows, grid.ncols)
-        top, block = _paint(spans, grid.nrows, grid.ncols)
-        window = labels[top:top + block.shape[0]]
+        top, left, block = _paint(spans, grid.nrows, grid.ncols)
+        window = labels[top:top + block.shape[0], left:left + block.shape[1]]
         window[block & (window == 0)] = label
     return labels
 

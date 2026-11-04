@@ -13,6 +13,7 @@ sectores, las celdas de una capa de polígonos del proyecto y las de la zona de 
 
 from __future__ import annotations
 
+import tracemalloc
 import unittest
 
 import numpy as np
@@ -357,6 +358,28 @@ class SectorLabelsTest(unittest.TestCase):
                          list(range(2, 15)))
         self.assertEqual(sorted(set(np.nonzero((labels == 2).any(axis=0))[0].tolist())),
                          list(range(15, 27)))
+
+    def test_a_narrow_sector_costs_its_box_and_not_the_whole_grid(self) -> None:
+        """RF-013-07, RNF-013-07: pintar un sector no reserva memoria por todas las columnas de la
+        rejilla, sino por las de su caja (con 20 franjas de 1.640 filas sobre 2,81 M celdas, cada
+        franja pintaba la rejilla entera: 192 ms de una sola llamada). Una franja de 10 columnas y
+        2.800 filas en una rejilla de 3.000 × 3.000 celdas deja las mismas etiquetas de siempre y gasta,
+        además del resultado, menos de 8 MiB (pintada a todo el ancho gastaba 72 MiB)."""
+        grid = dfx.grid_from(3000, 3000, 1.0)
+        south = dfx.south_of(grid)
+        ring = np.array([[grid.west + 100.0, south + 100.0], [grid.west + 110.0, south + 100.0],
+                         [grid.west + 110.0, south + 2900.0], [grid.west + 100.0, south + 2900.0]])
+        sector = constraints_model.Sector("a" * 32, "franja", "Franja", (ring,))
+        tracemalloc.start()
+        try:
+            labels = zones.sector_labels([sector], grid)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        expected = np.zeros((3000, 3000), dtype=np.int16)
+        expected[100:2900, 100:110] = 1
+        np.testing.assert_array_equal(labels, expected)
+        self.assertLess(peak - labels.nbytes, 8 * 2**20, f"{(peak - labels.nbytes) / 2**20:.1f} MiB")
 
     def test_first_sector_wins_where_two_overlap(self) -> None:
         """Dos sectores que (contra la 012) se solapan: la celda común es del primero, sin error ni

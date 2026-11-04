@@ -3,17 +3,13 @@
 ``tests/rendimiento/des/test_design_perf.py``). Solo sintéticos: se generan al pedirlos, no se
 versionan y los borra quien los escribe; ningún dato de cliente.
 
-- **La rejilla** (spec 013 §5): :data:`COLS` × :data:`ROWS` celdas de :data:`STEP_M` m (2,81 M), la
-  de las restricciones de la 012 (``constraints_data``), con :func:`terrain` (un terreno ondulado de
-  145 a 215 m con colinas, un ondulado de metros y ruido de 5 cm).
-- **Las semillas** (plan §2.2): :func:`ring_seeds` (un anillo de radio :data:`RING_RADIUS_M`; con
-  :data:`RING_HALF_WIDTH_M`, unas 5.300 celdas, y con :data:`THICK_HALF_WIDTH_M`, unas 9.800, bajo
-  el tope de 10.000 de RNF-013-01) y :func:`disc_seeds` (un disco rugoso de unas 159.900 celdas,
-  con un ondulado de ±2 m y ruido de 0,3 m sobre el terreno: la zona maciza de RNF-013-01). Cada
-  una es una rejilla de cotas con NaN donde no hay semilla.
-- **Los sectores** (:data:`SECTORS` franjas): :func:`strip_labels` (las etiquetas de la rejilla),
-  :func:`sector_rules` (una regla de pendiente por sector: el talud general de uno de los
-  :data:`PROFILES` o, en :data:`IMPOSED`, el impuesto de 10,6° y 18°) y :func:`base_rule`.
+- **La rejilla, las semillas, los perfiles y los sectores** (plan §2.2): son datos puros y están en
+  ``tests/support/design_data.py`` (los usa también ``perf_design.py`` dentro de Blender, T31); aquí
+  se reexportan: :func:`terrain`, :func:`ring_seeds`, :func:`disc_seeds`, :func:`strip_labels`,
+  :data:`PROFILES`, :data:`IMPOSED`…
+- **Los taludes de los sectores**: :func:`sector_rules` (una regla de pendiente por sector: el talud
+  general de uno de los :data:`PROFILES` o, en :data:`IMPOSED`, el impuesto de 10,6° y 18°) y
+  :func:`base_rule`.
 - **El proyecto de escala** (:func:`scale_project`): un proyecto nuevo en ``%TEMP%`` con la ventana
   de la rejilla, V01 y V02, el límite legal y el perímetro, los 20 sectores (franjas del
   perímetro) con su búsqueda de intocables cerrada, la superficie de partida (:data:`START`) y las
@@ -27,7 +23,6 @@ Python de Blender (su numpy 2.3.4) y biblioteca estándar.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -40,6 +35,11 @@ from tests.support import constraints_data as cdata
 from tests.support import constraints_fixtures as cfx
 from tests.support import constraints_project as cp
 from tests.support.core_fixtures import FakeClock, make_session, make_settings, project_tmp
+from tests.support.design_data import (
+    CELLS, COLS, CONTOUR_MAX_SEEDS, DISC_RADIUS_M, GENERAL_DEG, IMPOSED, MARGIN_M, PERSON, PROFILES,
+    RING_HALF_WIDTH_M, RING_RADIUS_M, ROWS, SECTORS, SEED, SOLID_MAX_SEEDS, STEP_M,
+    THICK_HALF_WIDTH_M, PerfProfile, assigned, disc_seeds, profile_of, ring_seeds, sector_boxes,
+    sector_code, strip_labels, terrain)
 from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
 from tests.support.res_fixtures import write_grids
@@ -61,37 +61,20 @@ envelopes = import_geoblender("design.envelopes")
 res_provenance = import_geoblender("reserves.provenance")
 
 __all__ = [
-    "CELLS", "COLS", "CONTOUR_MAX_SEEDS", "GENERAL_DEG", "IMPOSED", "PROFILES",
-    "RING_GRID", "RING_HALF_WIDTH_M", "RING_RADIUS_M", "ROWS", "SECTORS", "SOLID_MAX_SEEDS",
-    "START", "THICK_HALF_WIDTH_M", "DesignScale", "PerfProfile", "base_rule", "design_request",
-    "disc_seeds", "grid", "ring_request", "ring_seeds", "scale_project", "sector_rules",
-    "sectors_request", "strip_labels", "surface_request", "terrain",
+    "CELLS", "COLS", "CONTOUR_MAX_SEEDS", "DISC_RADIUS_M", "GENERAL_DEG", "IMPOSED", "MARGIN_M",
+    "PERSON", "PROFILES", "RING_GRID", "RING_HALF_WIDTH_M", "RING_RADIUS_M", "ROWS", "SECTORS",
+    "SEED", "SOLID_MAX_SEEDS", "START", "STEP_M", "THICK_HALF_WIDTH_M", "DesignScale",
+    "PerfProfile", "base_rule", "design_request", "disc_seeds", "grid", "ring_request",
+    "ring_seeds", "scale_project", "sector_rules", "sectors_request", "strip_labels",
+    "surface_request", "terrain",
 ]
 
-COLS, ROWS = cdata.COLS, cdata.ROWS
-STEP_M = cdata.STEP_M
-CELLS = COLS * ROWS
-SEED = 20_261_104
-GENERAL_DEG = 35.0
-"""La pendiente de las envolventes de pendiente constante (``k = tan 35°``, plan §2.2)."""
-CONTOUR_MAX_SEEDS = 10_000
-SOLID_MAX_SEEDS = 160_000
-RING_RADIUS_M = 600.0
-RING_HALF_WIDTH_M = 0.7
-"""El anillo de §2.2: unas 5.300 celdas."""
-THICK_HALF_WIDTH_M = 1.3
-"""El anillo más grueso: unas 9.800 celdas, bajo el tope de RNF-013-01."""
-DISC_RADIUS_M = 225.6
-SECTORS = 20
-PERSON = "Samuel (IMGA)"
 START = "gis_dtm_partida"
 """El dato de la superficie de partida del proyecto de escala."""
 RING_GRID = "gis_dtm_anillo"
 """El dato con las semillas en anillo (cotas del terreno en el anillo, sin dato fuera)."""
 _START_LABEL = "partida"
 _RING_LABEL = "anillo"
-MARGIN_M = 10.0
-"""Lo que el perímetro queda dentro de la ventana (y el límite legal, la mitad)."""
 BY_HAND = {"source": "Valores sintéticos de rendimiento", "source_kind": "person",
            "decided_by": PERSON}
 
@@ -101,104 +84,7 @@ def grid() -> Any:
     return gis.Grid(cdata.WEST, cdata.NORTH, STEP_M, STEP_M, COLS, ROWS)
 
 
-# --- El terreno y las semillas -------------------------------------------------------------------
-
-_CACHE: dict[str, np.ndarray] = {}
-
-
-def _east() -> np.ndarray:
-    """Las coordenadas locales (m desde el oeste) de los centros de cada columna, (1, COLS)."""
-    return (np.arange(COLS, dtype=np.float64) + 0.5)[None, :] * STEP_M
-
-
-def _north() -> np.ndarray:
-    """Las coordenadas locales (m desde el sur) de los centros de cada fila (la 0 al norte),
-    (ROWS, 1)."""
-    return (np.arange(ROWS, dtype=np.float64)[::-1] + 0.5)[:, None] * STEP_M
-
-
-def terrain() -> np.ndarray:
-    """El terreno (m, float64, fila 0 al norte): de 145 a 215 m, con colinas de cientos de
-    metros, un ondulado de metros y ruido de 5 cm. Es el mismo array en cada llamada: no se
-    modifica."""
-    if "terrain" not in _CACHE:
-        east, north = _east(), _north()
-        values = (180.0 + 30.0 * np.sin(east / 150.0) * np.cos(north / 120.0)
-                  + 5.0 * np.sin(east / 7.3) * np.sin(north / 5.1))
-        values += np.random.default_rng(SEED).normal(0.0, 0.05, values.shape)
-        _CACHE["terrain"] = values
-    return _CACHE["terrain"]
-
-
-def _distance_from_center() -> np.ndarray:
-    """La distancia (m) de cada centro de celda al centro de la rejilla."""
-    return np.hypot(_east() - COLS * STEP_M / 2.0, _north() - ROWS * STEP_M / 2.0)
-
-
-def ring_seeds(half_width_m: float) -> np.ndarray:
-    """Las semillas de un anillo de radio :data:`RING_RADIUS_M` y ``half_width_m`` de semiancho,
-    con la cota del terreno (NaN fuera): array nuevo."""
-    seeds = np.full((ROWS, COLS), np.nan)
-    ring = np.abs(_distance_from_center() - RING_RADIUS_M) <= half_width_m
-    seeds[ring] = terrain()[ring]
-    return seeds
-
-
-def disc_seeds() -> np.ndarray:
-    """La zona maciza: las celdas de un disco de :data:`DISC_RADIUS_M` con el terreno más un
-    ondulado de ±2 m y ruido de 0,3 m (rugosa, el peor caso de la búsqueda exacta; NaN fuera):
-    array nuevo."""
-    seeds = np.full((ROWS, COLS), np.nan)
-    disc = _distance_from_center() <= DISC_RADIUS_M
-    rough = (2.0 * np.sin(_east() / 3.1) * np.sin(_north() / 2.3)
-             + np.random.default_rng(SEED + 1).normal(0.0, 0.3, (ROWS, COLS)))
-    seeds[disc] = (terrain() + rough)[disc]
-    return seeds
-
-
-# --- Los perfiles y los sectores -----------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class PerfProfile:
-    """Un perfil de banco de §2.2: su ``code`` y la altura, la cara, la berma y el ancla (m y °)."""
-
-    code: str
-    height_m: float
-    face_deg: float
-    berm_m: float
-    anchor_m: float = 125.0
-
-    @property
-    def general_tan(self) -> float:
-        """El talud general ``h / (h/tan α + B)``."""
-        return self.height_m / (self.height_m / math.tan(math.radians(self.face_deg))
-                                + self.berm_m)
-
-
-PROFILES = tuple(PerfProfile(f"perf_{h}_{face}_{berm}", float(h), float(face), float(berm))
-                 for h, face, berm in ((10, 60, 6), (10, 70, 8), (10, 55, 8), (10, 65, 6),
-                                       (10, 50, 8), (5, 35, 6), (5, 45, 6), (5, 40, 8),
-                                       (5, 60, 6), (5, 50, 8)))
-"""Los diez perfiles (h 5 o 10 m; cara de 35° a 70°; berma de 6 u 8 m; ancla de 125 m)."""
-IMPOSED: dict[int, float] = {5: 10.6, 13: 18.0}
-"""El talud general impuesto (°) de los sectores 5 y 13 (plan §2.2)."""
-
-
-def sector_code(index: int) -> str:
-    """El código del sector ``index`` (1 a :data:`SECTORS`)."""
-    return f"sector_{index:02d}"
-
-
-def _profile_of(index: int) -> PerfProfile:
-    return PROFILES[(index - 1) % len(PROFILES)]
-
-
-def strip_labels() -> np.ndarray:
-    """Las etiquetas (int16) de :data:`SECTORS` franjas verticales de igual ancho que cubren toda
-    la rejilla: el sector ``k`` es la etiqueta ``k``."""
-    columns = (np.arange(COLS) * SECTORS // COLS + 1).astype(np.int16)
-    return np.broadcast_to(columns, (ROWS, COLS)).copy()
+# --- Los taludes de los sectores --------------------------------------------------------------
 
 
 def sector_rules() -> list[Any]:
@@ -209,7 +95,7 @@ def sector_rules() -> list[Any]:
         if index in IMPOSED:
             rules.append(envelopes.SlopeRule.from_degrees(IMPOSED[index]))
         else:
-            rules.append(envelopes.SlopeRule(_profile_of(index).general_tan))
+            rules.append(envelopes.SlopeRule(profile_of(index).general_tan))
     return rules
 
 
@@ -263,17 +149,10 @@ def _constraints() -> tuple[tuple[Any, ...], dict[str, Any]]:
 
 def _sectors() -> tuple[Any, ...]:
     """Las :data:`SECTORS` franjas verticales del perímetro."""
-    west, south, east, north = cdata.window()
-    left, right = west + MARGIN_M, east - MARGIN_M
-    width = (right - left) / SECTORS
-    found = []
-    for index in range(1, SECTORS + 1):
-        lo = left + (index - 1) * width
-        hi = right if index == SECTORS else left + index * width
-        found.append(cmodel.Sector(f"sector{index:02d}".ljust(32, "0"), sector_code(index),
-                                   f"Sector {index:02d}",
-                                   (_ring(lo, south + MARGIN_M, hi, north - MARGIN_M),)))
-    return tuple(found)
+    return tuple(
+        cmodel.Sector(f"sector{index:02d}".ljust(32, "0"), code, name,
+                      (_ring(left, bottom, right, top),))
+        for index, code, name, left, bottom, right, top in sector_boxes())
 
 
 def _close_searches(project: Any, clock: FakeClock, sectors: tuple[Any, ...]) -> None:
@@ -396,21 +275,17 @@ def surface_request(data: DesignScale, name: str) -> Any:
                                                    zone=design_model.Zone("domain")))
 
 
-def _assigned() -> dict[str, str]:
-    return {sector_code(index): _profile_of(index).code for index in range(1, SECTORS + 1)}
-
-
 def sectors_request(data: DesignScale, name: str) -> Any:
     """La envolvente del cálculo completo: descendente desde las semillas en anillo con la
     pendiente de cada sector (diez perfiles y los dos taludes impuestos)."""
     del data
     return _envelope(name, design_model.SeedSource("grid", grid=RING_GRID), slope_mode="sectors",
-                     slope_deg=None, base_profile=PROFILES[0].code, sector_profiles=_assigned())
+                     slope_deg=None, base_profile=PROFILES[0].code, sector_profiles=assigned())
 
 
 def design_request(data: DesignScale, name: str, envelope: str) -> Any:
     """El escalonado en corte de ``envelope`` con el perfil de cada sector."""
     del data
     return design_model.DesignRequest(name=name, envelope=envelope, sense="cut",
-                                      base_profile=PROFILES[0].code, sector_profiles=_assigned(),
+                                      base_profile=PROFILES[0].code, sector_profiles=assigned(),
                                       anchor_grid=None)
