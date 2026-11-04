@@ -544,11 +544,14 @@ class WarningsTest(unittest.TestCase):
         design[0:9, 0:3] = 20.0
         previous = report.Previous("d", "V01.r1", 1.0, 1.0)
         narrow = model.BenchProfile("estrecho", "ESTRECHO_5_70_0_5", 5.0, 80.0, 0.5, 100.0)
+        lowering = report.Lowering(cells=531, drop_m=0.565, slope_deg=20.83,
+                                   sectors=("Sector 2",))
         found = run(start, design, geometry, previous=previous, operation="d",
-                    pending=("Sector 1",), profiles=(narrow,), face_deg=45.0)
+                    pending=("Sector 1",), profiles=(narrow,), face_deg=45.0, lowering=lowering)
         seen = set(codes(found))
         self.assertTrue({"des.edge_movement", "des.slope_over_face", "des.magnitude_fill",
-                         "des.sector_pending_mark", "des.profile_unresolved"} <= seen)
+                         "des.sector_pending_mark", "des.profile_unresolved",
+                         "des.regularization_lowered"} <= seen)
         for notice in found.notices:
             for language in ("es", "en"):
                 text = notice.text(language)
@@ -558,6 +561,120 @@ class WarningsTest(unittest.TestCase):
         self.assertEqual(found.warnings("es"), tuple(n.text("es") for n in found.notices
                                                      if n.severity == "warning"))
         self.assertEqual(found.lines("en"), tuple(n.text("en") for n in found.notices))
+
+
+class RegularizationNoticeTest(unittest.TestCase):
+    """RF-013-26, RF-013-30 (spec 0.4; F-1): el aviso de que la regularización entre sectores bajó
+    la envolvente más que la tolerancia, con el número de celdas y el descenso máximo (m)."""
+
+    def setUp(self) -> None:
+        self.geometry = grid_of(4, 4, 2.0)
+        self.start = np.zeros((4, 4))
+        self.design = self.start - 1.0
+        self.lowering = report.Lowering(cells=531, drop_m=0.565, slope_deg=20.83,
+                                        sectors=("Sector 2", "Sector 3"))
+
+    def notice(self, found: Any) -> Any:
+        (notice,) = [n for n in found.notices if n.code == "des.regularization_lowered"]
+        return notice
+
+    def test_without_a_lowering_or_with_no_cells_there_is_no_notice(self) -> None:
+        """RF-013-30: sin regularización bajada (``None``, el valor por defecto) o con 0 celdas, el
+        informe no lleva el aviso: es el de siempre."""
+        plain = run(self.start, self.design, self.geometry)
+        self.assertNotIn("des.regularization_lowered", codes(plain))
+        none = run(self.start, self.design, self.geometry, lowering=None)
+        zero = run(self.start, self.design, self.geometry, lowering=report.Lowering(
+            cells=0, drop_m=0.0, slope_deg=20.83, sectors=()))
+        self.assertEqual(codes(none), codes(plain))
+        self.assertEqual(codes(zero), codes(plain))
+
+    def test_the_notice_carries_the_cells_the_drop_the_slope_and_the_sectors(self) -> None:
+        """RF-013-30: con celdas bajadas, un aviso (``warning``) con su recuento, el descenso
+        máximo (m), el talud con que se regularizó (°) y los sectores donde bajó, sin redondear;
+        entra en los avisos del informe (``warnings``) y en sus líneas."""
+        found = run(self.start, self.design, self.geometry, lowering=self.lowering)
+        notice = self.notice(found)
+        self.assertEqual(notice.severity, "warning")
+        self.assertEqual(dict(notice.values), {"cells": 531, "drop": 0.565, "slope": 20.83,
+                                               "sectors": "Sector 2, Sector 3"})
+        self.assertIn(notice.text("es"), found.warnings("es"))
+        self.assertIn(notice.text("en"), found.lines("en"))
+
+    def test_the_notice_reads_in_both_languages_and_says_what_to_do(self) -> None:
+        """RF-013-30, principio 10: el texto, en español y en inglés, dice las celdas, el descenso
+        con su decimal, el talud y los sectores, que el escalonado puede quedar por debajo de la
+        envolvente registrada y qué hacer (calcular la envolvente con el talud de cada sector o
+        subir el talud impuesto), sin huecos ni marcadores sin sustituir."""
+        notice = self.notice(run(self.start, self.design, self.geometry, lowering=self.lowering))
+        es, en = notice.text("es"), notice.text("en")
+        for text in (es, en):
+            self.assertNotIn("?", text)
+            self.assertNotIn("{", text)
+            self.assertIn("531", text)
+            self.assertIn("Sector 2, Sector 3", text)
+            self.assertIn("20,8" if text is es else "20.8", text)
+        self.assertIn("0,565", es)
+        self.assertIn("0.565", en)
+        self.assertIn("Talud de cada sector", es)
+        self.assertIn("Slope of each sector", en)
+        self.assertIn("por debajo de la envolvente registrada", es)
+        self.assertIn("below the recorded envelope", en)
+        self.assertIn("talud general máximo impuesto", es)
+        self.assertIn("maximum general slope imposed", en)
+
+    def test_it_comes_after_the_slope_notice_and_before_the_magnitude_ones(self) -> None:
+        """RF-013-30: en el orden en que se enseñan, el aviso de la regularización va tras el de
+        la inclinación pasada de la cara y antes de los de magnitud y los de los sectores
+        pendientes y los perfiles."""
+        design = self.start.copy()
+        design[0:3, 0:2] = 20.0
+        previous = report.Previous("d", "V01.r1", 1.0, 1.0)
+        found = run(self.start, design, self.geometry, previous=previous, operation="d",
+                    pending=("Sector 1",), face_deg=45.0, lowering=self.lowering)
+        order = codes(found)
+        self.assertLess(order.index("des.slope_over_face"),
+                        order.index("des.regularization_lowered"))
+        self.assertLess(order.index("des.regularization_lowered"),
+                        order.index("des.magnitude_fill"))
+        self.assertLess(order.index("des.regularization_lowered"),
+                        order.index("des.sector_pending_mark"))
+
+    def test_a_lowering_without_sectors_says_so_with_a_dash(self) -> None:
+        """RF-013-30: si no se sabe en qué sectores bajó (las celdas bajadas no tienen sector), el
+        texto lo dice con «—», no con un hueco."""
+        none = report.Lowering(cells=3, drop_m=1.5, slope_deg=30.0, sectors=())
+        notice = self.notice(run(self.start, self.design, self.geometry, lowering=none))
+        self.assertEqual(notice.values["sectors"], "—")
+        self.assertIn("—", notice.text("es"))
+        self.assertNotIn("?", notice.text("es"))
+
+    def test_a_bad_lowering_is_a_program_error(self) -> None:
+        """Un descenso que no es finito y no negativo, unas celdas negativas, un talud que no es
+        finito o que no es un ``Lowering`` son ``ValueError`` al llamar (RF-013-17: ninguna cifra
+        NaN ni infinita)."""
+        for changes in ({"cells": -1}, {"drop_m": math.nan}, {"drop_m": -0.1},
+                        {"drop_m": math.inf}, {"slope_deg": math.nan}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                report.Lowering(**{"cells": 1, "drop_m": 1.0, "slope_deg": 30.0, "sectors": (),
+                                   **changes})
+        with self.assertRaises(ValueError):
+            run(self.start, self.design, self.geometry, lowering=(531, 0.565))
+
+    def test_the_report_figures_do_not_change(self) -> None:
+        """RF-013-30: el aviso no cambia ninguna cifra del informe: las mismas con y sin él."""
+        design = self.start.copy()
+        design[0:3, 0:2] = 20.0
+        plain = run(self.start, design, self.geometry)
+        warned = run(self.start, design, self.geometry, lowering=self.lowering)
+        for name in ("cut_m3", "fill_m3", "cut_cells", "fill_cells", "moved_area_m2",
+                     "nodata_cells", "nodata_area_m2", "min_thickness_m", "slope_p90_deg",
+                     "slope_p99_deg", "slope_max_deg", "slope_max_at", "edge_step_max_m",
+                     "edge_cells"):
+            self.assertEqual(getattr(plain, name), getattr(warned, name), name)
+        self.assertEqual([code for code in codes(warned) if code != "des.regularization_lowered"],
+                         codes(plain), "los demás avisos, los mismos y en el mismo orden")
+        self.assertEqual(len(codes(warned)), len(codes(plain)) + 1)
 
 
 class CE013007HillsideTest(unittest.TestCase):

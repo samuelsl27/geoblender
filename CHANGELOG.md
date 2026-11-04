@@ -155,7 +155,9 @@ ayuda (CE-013-11).
     sector, perfil y cota (sin suponer múltiplos de nada), y un informe con el desmonte y el
     terraplén, el área con movimiento, la inclinación p90, p99 y máxima con su lugar, el salto en el
     borde de lo prohibido y los avisos (movimiento en el borde de la rejilla, inclinación pasada de
-    la cara, desmonte o terraplén muy superior al de la revisión congelada anterior).
+    la cara, desmonte o terraplén muy superior al de la revisión congelada anterior y, si una
+    envolvente de pendiente constante más empinada que el talud de un sector se regulariza y baja,
+    cuántas celdas y cuántos metros como máximo, sin cambiar la envolvente ni el escalonado).
   - **Confirmar antes de escribir**: «Calcular» va por pasos, con el avance en la barra de estado y
     Esc, y enseña el resumen con sus avisos; solo **Crear** lo registra, todo en una transacción, y
     Cancelar, Esc o cerrar la ventana no dejan nada. Son dos operaciones de la versión activa, con

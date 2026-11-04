@@ -24,8 +24,9 @@ códigos que necesite (semillas, sectores, envolventes…): los de los perfiles 
 zonas de un cálculo (RF-013-01, RF-013-16) y los de las semillas, el dominio de trabajo y lo que
 dice la vista previa (RF-013-01 a RF-013-03) y los del rechazo y la marca de un sector con la
 búsqueda de intocables pendiente (RF-013-05, RF-013-06), los de la comprobación de cada
-envolvente (RF-013-15), los que la rechazan antes de calcular (RF-013-14, RF-013-16) y los de
-exportar una rejilla a GeoTIFF (RF-013-34). Un campo
+envolvente (RF-013-15), los que la rechazan antes de calcular (RF-013-14, RF-013-16), el aviso de
+la regularización entre sectores que baja la envolvente (RF-013-26, RF-013-30) y los de exportar
+una rejilla a GeoTIFF (RF-013-34). Un campo
 que es un texto de una lista cerrada que la persona ve (el papel de una superficie, el tipo de
 geometría de una capa) llega ya en el idioma de quien lo llama: ``render`` no lo traduce.
 """
@@ -422,6 +423,24 @@ CATALOG: tuple[Message, ...] = (
         "la peor, {max}° frente a un límite de {limit}° (cara + {tolerance}°), en x = {x} m, "
         "y = {y} m. Revise el perfil, el factor de malla y las paredes contra lo prohibido (el "
         "salto en el borde).",
+        "warning",
+    ),
+    Message(
+        "des.regularization_lowered",
+        "The regularization between sectors with different general slopes lowered the envelope "
+        "by more than the tolerance in {cells} cells (by up to {drop} m; sectors: {sectors}), "
+        "because there the envelope is steeper than {slope}°, the steepest general slope of the "
+        "sectors involved. The stepped design follows the lowered envelope: in cut it can end up "
+        "below the recorded envelope in those cells, and in fill it fills less than it. "
+        "Calculate the envelope with «Slope of each sector» or raise the maximum general slope "
+        "imposed on the sector.",
+        "La regularización entre sectores con taludes generales distintos bajó la envolvente más "
+        "que la tolerancia en {cells} celdas (hasta {drop} m; sectores: {sectors}), porque allí "
+        "la envolvente es más empinada que {slope}°, el talud general más empinado de los "
+        "sectores implicados. El escalonado sigue a la envolvente bajada: en corte puede quedar "
+        "por debajo de la envolvente registrada en esas celdas y en relleno rellena menos que "
+        "ella. Calcule la envolvente con «Talud de cada sector» o suba el talud general máximo "
+        "impuesto del sector.",
         "warning",
     ),
     Message(

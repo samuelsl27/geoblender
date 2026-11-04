@@ -24,7 +24,9 @@ RF-013-17; plan 013 A11, D-9, D-13, D-25; CE-013-07).
   movimiento en el borde de la rejilla (el resultado queda cortado por ella: errores 10, 17, 56 y 66);
   inclinación por encima de la cara más la tolerancia de cara; desmonte o terraplén que superan en más
   del umbral de aviso (veces) los de la operación del mismo tipo y nombre de la revisión congelada más
-  reciente de la versión (D-25; sin ella, el aviso no se da y una nota lo dice); sectores con la
+  reciente de la versión (D-25; sin ella, el aviso no se da y una nota lo dice); la regularización
+  entre sectores que bajó la envolvente más que la tolerancia (:class:`Lowering`, spec 0.4; F-1:
+  el escalonado en corte puede quedar por debajo de la envolvente registrada); sectores con la
   búsqueda de intocables pendiente (RF-013-06) y perfiles que la rejilla no resuelve (RF-013-20).
 
 **Ninguna cifra NaN ni infinita** (RF-013-17): lo que no se puede dar (inclinaciones sin ninguna
@@ -56,6 +58,7 @@ __all__ = [
     "REPORT_CELLS_PER_UNIT",
     "CellPlace",
     "DesignReport",
+    "Lowering",
     "Previous",
     "Volumes",
     "moved_cells",
@@ -104,6 +107,37 @@ class Previous:
                 raise ValueError(f"{name} de la revisión anterior debe ser un volumen finito ≥ 0, "
                                  f"no {getattr(self, name)!r}")
             object.__setattr__(self, name, value)
+
+
+@dataclass(frozen=True, slots=True)
+class Lowering:
+    """Lo que bajó la regularización entre sectores (RF-013-26, RF-013-30; spec 0.4): las ``cells``
+    que bajaron más que la tolerancia de la métrica, el descenso máximo ``drop_m`` (m), el talud
+    (``slope_deg``, °) con que se regularizó —el general más empinado de los sectores implicados— y
+    los nombres de los ``sectors`` donde bajó alguna celda (puede ser ninguno si las celdas
+    bajadas no tienen sector). Con ``cells`` 0 no hay nada que avisar."""
+
+    cells: int
+    drop_m: float
+    slope_deg: float
+    sectors: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.cells, bool) or not isinstance(self.cells, int) or self.cells < 0:
+            raise ValueError(f"las celdas bajadas son un entero ≥ 0, no {self.cells!r}")
+        drop, slope = float(self.drop_m), float(self.slope_deg)
+        if not math.isfinite(drop) or drop < 0.0:
+            raise ValueError(f"el descenso máximo (drop_m) debe ser un número finito ≥ 0, no "
+                             f"{self.drop_m!r}")
+        if not math.isfinite(slope):
+            raise ValueError(f"el talud de la regularización (slope_deg) debe ser un número "
+                             f"finito, no {self.slope_deg!r}")
+        object.__setattr__(self, "drop_m", drop)
+        object.__setattr__(self, "slope_deg", slope)
+        if isinstance(self.sectors, str):
+            raise ValueError("los sectores de la regularización son una lista de nombres, no un "
+                             "texto")
+        object.__setattr__(self, "sectors", tuple(self.sectors))
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,8 +379,8 @@ def _grid_border_cells(moved: np.ndarray) -> int:
 
 def _notices(found: Volumes, threshold: float, border: int, over: int, worst: _Worst | None,
              geometry: Grid, tolerance: float, ratio: float, operation: str,
-             previous: Previous | None, pending: Sequence[str], profiles: Sequence[BenchProfile]
-             ) -> tuple[Notice, ...]:
+             previous: Previous | None, pending: Sequence[str], profiles: Sequence[BenchProfile],
+             lowering: Lowering | None) -> tuple[Notice, ...]:
     """Los avisos y notas del informe, en orden (véase el módulo)."""
     notices: list[Notice] = []
     if found.moved_cells == 0:
@@ -359,6 +393,10 @@ def _notices(found: Volumes, threshold: float, border: int, over: int, worst: _W
         notices.append(Notice("des.slope_over_face", {
             "cells": over, "max": worst.incline, "limit": worst.limit, "tolerance": tolerance,
             "x": offender.x, "y": offender.y}))
+    if lowering is not None and lowering.cells > 0:
+        notices.append(Notice("des.regularization_lowered", {
+            "cells": lowering.cells, "drop": lowering.drop_m, "slope": lowering.slope_deg,
+            "sectors": ", ".join(lowering.sectors) or "—"}))
     if previous is None:
         notices.append(Notice("des.magnitude_no_reference", {"operation": operation or "—"}))
     else:
@@ -381,8 +419,8 @@ def _notices(found: Volumes, threshold: float, border: int, over: int, worst: _W
 def _report_units(start: np.ndarray, design: np.ndarray, geometry: Grid, allowed: np.ndarray,
                   threshold: float, face: np.ndarray, tolerance: float, ratio: float,
                   operation: str, previous: Previous | None, pending: Sequence[str],
-                  profiles: Sequence[BenchProfile], cells_per_unit: int
-                  ) -> Generator[None, None, DesignReport]:
+                  profiles: Sequence[BenchProfile], lowering: Lowering | None,
+                  cells_per_unit: int) -> Generator[None, None, DesignReport]:
     """Las unidades de :func:`report_steps`."""
     rows, cols = start.shape
     per_unit = max(1, cells_per_unit // max(cols, 1))
@@ -450,7 +488,7 @@ def _report_units(start: np.ndarray, design: np.ndarray, geometry: Grid, allowed
         place = _place(geometry, best[1], best[2])
         yield
     notices = _notices(found, threshold, _grid_border_cells(moved), over, worst, geometry,
-                       tolerance, ratio, operation, previous, pending, profiles)
+                       tolerance, ratio, operation, previous, pending, profiles, lowering)
     yield
     return DesignReport(found.cut_m3, found.fill_m3, found.cut_cells, found.fill_cells,
                         found.moved_area_m2, found.nodata_cells, found.nodata_area_m2, threshold,
@@ -461,7 +499,7 @@ def report_steps(start: np.ndarray, design: np.ndarray, geometry: Grid, allowed:
                  min_thickness_m: float, face_deg: float | np.ndarray, face_tolerance_deg: float,
                  warning_ratio: float, operation: str = "", previous: Previous | None = None,
                  pending: Sequence[str] = (), profiles: Sequence[BenchProfile] = (),
-                 budget_s: float = STEP_BUDGET_S,
+                 lowering: Lowering | None = None, budget_s: float = STEP_BUDGET_S,
                  cells_per_unit: int = REPORT_CELLS_PER_UNIT) -> Iterator[Progress]:
     """El informe de la superficie de diseño ``design`` frente a la de partida ``start`` (m,
     rejillas de ``geometry``; se toman como float64), por pasos de ``budget_s`` como mucho: el último
@@ -475,6 +513,8 @@ def report_steps(start: np.ndarray, design: np.ndarray, geometry: Grid, allowed:
     el desmonte y el terraplén; sin él, una nota lo dice (``operation`` es el nombre de la operación
     que se informa). ``pending`` son los nombres de los sectores con la búsqueda pendiente y
     ``profiles`` los perfiles que se aplicaron (para avisar de los que la rejilla no resuelve).
+    ``lowering`` es lo que bajó la regularización entre sectores (RF-013-26): con celdas bajadas,
+    un aviso con su recuento y el descenso máximo; no cambia ninguna cifra.
 
     Ninguna cifra mínima, tolerancia ni umbral lleva valor por defecto (D-7): los lee quien llama de
     los parámetros del proyecto. Una forma que no casa, una máscara que no es booleana, un valor
@@ -510,8 +550,11 @@ def report_steps(start: np.ndarray, design: np.ndarray, geometry: Grid, allowed:
         raise ValueError("lo anterior es un Previous o None")
     if isinstance(pending, str):
         raise ValueError("los sectores pendientes son una lista de nombres, no un texto")
+    if lowering is not None and not isinstance(lowering, Lowering):
+        raise ValueError("lo que bajó la regularización es un Lowering o None")
     work = _report_units(base, changed, geometry, mask, threshold,
                          np.broadcast_to(faces, geometry.shape), tolerance, ratio, operation,
-                         previous, tuple(pending), tuple(profiles), _units(cells_per_unit))
+                         previous, tuple(pending), tuple(profiles), lowering,
+                         _units(cells_per_unit))
     return pace_progress(work, budget_s, phase="report", running="Calculando el informe…",
                          finished="Informe calculado")

@@ -720,6 +720,51 @@ class RegularizeTest(unittest.TestCase):
         self.assertEqual(found.lowered, lowered)
         self.assertGreater(found.lowered, 100)
 
+    def test_the_largest_drop_is_that_of_the_oracle_and_of_the_lowered_cells(self) -> None:
+        """RF-013-26, RF-013-30 (spec 0.4; F-1): ``Regularization.lowered_max_m`` es el mayor
+        descenso (m) de la regularización, el de las celdas que bajaron más que la tolerancia
+        (``lowered``): el del oráculo (Dijkstra con la pendiente 0,5) a ≤ 10⁻⁹ m y el que sale de
+        restar la superficie regularizada a la de entrada."""
+        surface, slope, geometry = walled()
+        found = regularize(surface, geometry, slope)
+        expected = oracles.dijkstra(surface, 0.5, 1.0, direction="up")
+        by_oracle = float((surface - expected).max())
+        self.assertGreater(by_oracle, 1.0)
+        self.assertAlmostEqual(found.lowered_max_m, by_oracle, delta=TOLERANCE_M)
+        lowered = found.grid < surface - TOLERANCE_M
+        self.assertEqual(found.lowered_max_m, float((surface - found.grid)[lowered].max()))
+        self.assertEqual(int(lowered.sum()), found.lowered)
+        self.assertIsInstance(found.lowered_max_m, float)
+
+    def test_the_largest_drop_by_hand_in_one_row(self) -> None:
+        """RF-013-26, RF-013-30: en una fila (solo hay pasos de eje, que cuestan ``SCALE · t · h``)
+        con 0 m en la primera celda y 10 m en las otras cuatro, regularizada con 0,5 (los dos
+        sectores, 0,2 y 0,5, tocan la frontera) sube ``0,5 · SCALE`` por celda (0,49322 m): la
+        contigua a la baja es la que más baja, 10 − 0,49322 = 9,50678 m; la última queda a
+        4 · 0,49322 = 1,97288 m y baja 8,02712 m; bajan las cuatro celdas altas."""
+        surface = np.array([[0.0, 10.0, 10.0, 10.0, 10.0]])
+        slope = envelopes.SlopeField(np.array([[0.2, 0.2, 0.5, 0.5, 0.5]]))
+        found = regularize(surface, dfx.grid_from(1, 5, 1.0), slope)
+        self.assertEqual(found.tan, 0.5)
+        np.testing.assert_allclose(found.grid[0], [0.0, 0.5 * SCALE, 1.0 * SCALE, 1.5 * SCALE,
+                                                   2.0 * SCALE], rtol=0.0, atol=1e-12)
+        self.assertAlmostEqual(found.lowered_max_m, 10.0 - 0.5 * SCALE, delta=1e-12)
+        self.assertEqual(found.lowered, 4)
+
+    def test_nothing_lowered_means_a_drop_of_zero(self) -> None:
+        """RF-013-30: sin celdas bajadas (una envolvente ya regular, otra regularizada otra vez o
+        una pendiente igual en toda la rejilla) el descenso máximo es 0,0, no ``None`` ni NaN."""
+        surface, slope, geometry = walled()
+        crest = np.full(geometry.shape, np.inf)
+        crest[0, :] = 150.0
+        envelope = finish(envelopes.chamfer_steps(crest, geometry, slope, "down", name="e1"))[1]
+        self.assertEqual(regularize(envelope.grid, geometry, slope).lowered_max_m, 0.0)
+        once = regularize(surface, geometry, slope)
+        self.assertEqual(regularize(once.grid, geometry, slope).lowered_max_m, 0.0)
+        for uniform in (envelopes.SlopeField(0.5),
+                        envelopes.SlopeField(np.full(surface.shape, 0.5))):
+            self.assertEqual(regularize(surface, geometry, uniform).lowered_max_m, 0.0)
+
     def test_regular_envelope_is_not_changed(self) -> None:
         """La envolvente de los sectores del *chamfer* (entrar cuesta con la pendiente de la celda
         de llegada) ya es 0,5-Lipschitz: la regularización no cambia ninguna celda más de 10⁻⁹ m ni

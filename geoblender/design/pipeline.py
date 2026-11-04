@@ -18,7 +18,10 @@ dónde se lee, no lo que se hace.
 - :func:`design_compute_steps` (:class:`DesignJob` → :class:`DesignOutcome`): regulariza la
   envolvente entre sectores, la escalona en corte o en relleno con el perfil de cada sector y la
   berma impuesta por su talud, la recorta, la compone con las máscaras, mide su informe y sus
-  bermas y arma las cifras (RF-013-22 a RF-013-31).
+  bermas y arma las cifras (RF-013-22 a RF-013-31). Si la regularización bajó la envolvente más
+  que la tolerancia (una pendiente constante más empinada que el talud general de un sector), el
+  informe lo avisa con las celdas y el descenso máximo (spec 0.4, RF-013-26 y RF-013-30): no
+  cambia la envolvente registrada ni el escalonado.
 - Los parámetros llegan como un diccionario clave → valor (:func:`bench_profiles`,
   :func:`imposed_from`, :func:`envelope_slope`): del proyecto, lo que anotó la operación al
   empezar (``OperationHandle.params``); de lo congelado, ``ReproduceRequest.params``.
@@ -298,6 +301,24 @@ class DesignOutcome:
     message: str
 
 
+def _lowering(regular: benching.Regularization, envelope: np.ndarray, labels: np.ndarray,
+              sectors: Sequence[SectorRef]) -> report.Lowering | None:
+    """Lo que bajó la regularización entre sectores (RF-013-26, RF-013-30; spec 0.4; F-1), para
+    avisarlo: las celdas bajadas más que la tolerancia y el descenso máximo (los de ``regular``), el
+    talud con que se regularizó (°) y los nombres de los ``sectors`` con alguna celda bajada, en su
+    orden (``labels`` es la etiqueta de cada celda: el sector ``k`` es la ``k + 1``). ``None`` si no
+    bajó ninguna. Solo lee: no cambia la regularización ni el escalonado."""
+    if regular.lowered == 0 or regular.tan is None:
+        return None
+    with np.errstate(invalid="ignore"):
+        below = regular.grid < envelope - envelopes.TOLERANCE_M
+    counts = np.bincount(labels[below], minlength=len(sectors) + 1)
+    names = tuple(sector.name for index, sector in enumerate(sectors, start=1)
+                  if index < counts.size and counts[index] > 0)
+    return report.Lowering(regular.lowered, regular.lowered_max_m,
+                           math.degrees(math.atan(regular.tan)), names)
+
+
 def _per_label(values: Sequence[float], labels: np.ndarray) -> float | np.ndarray:
     """Un valor por etiqueta (la 0, el perfil base) como un número, si es el mismo en todas, o un
     mapa por celda."""
@@ -346,7 +367,8 @@ def _design_steps(job: DesignJob, budget_s: float) -> Generator[Progress, None, 
                                   if job.anchors is None else job.anchors)
     yield Progress("benching", 0, 1, "Preparando el escalonado…")
     # La envolvente, regularizada entre sectores con taludes distintos (RF-013-26): la regla de
-    # cada sector es su talud impuesto o el general de su perfil.
+    # cada sector es su talud impuesto o el general de su perfil. Una envolvente más empinada que
+    # la tangente de la regularización baja (spec 0.4, F-1): no se cambia, se avisa.
     rules = [SlopeRule.from_degrees(degrees, p.mesh_factor) if degrees is not None
              else SlopeRule(p.general_tan, p.mesh_factor)
              for p, degrees in zip(by_label[1:], imposed[1:], strict=True)]
@@ -354,6 +376,7 @@ def _design_steps(job: DesignJob, budget_s: float) -> Generator[Progress, None, 
     slope = envelopes.sector_slope(labels, rules, base_rule)
     regular: benching.Regularization = yield from forward(benching.regularize_steps(
         envelope, geometry, slope, domain=domain, name=request.name, budget_s=budget_s))
+    lowering = _lowering(regular, envelope, labels, job.sectors)
     stairs = (benching.bench_cut if sense is BenchSense.CUT else benching.bench_fill)(
         regular.grid, heights, tan_face, berm, anchor)
     trim: benching.Trim = yield from forward(benching.final_trim_steps(
@@ -367,7 +390,7 @@ def _design_steps(job: DesignJob, budget_s: float) -> Generator[Progress, None, 
         start, design, geometry, allowed, min_thickness_m=job.min_thickness_m, face_deg=face,
         face_tolerance_deg=job.face_tolerance_deg, warning_ratio=job.warning_ratio,
         operation=request.name, previous=job.previous, pending=job.pending, profiles=unique,
-        budget_s=budget_s))
+        lowering=lowering, budget_s=budget_s))
     scopes = [berms.BermScope("", base.code),
               *(berms.BermScope(sector.code, profile.code)
                 for sector, profile in zip(job.sectors, by_label[1:], strict=True))]

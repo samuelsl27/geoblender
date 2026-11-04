@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 
 from tests.support import design_fixtures as dfx
+from tests.support import design_oracles as oracles
 from tests.support.package import import_geoblender
 
 pipeline = import_geoblender("design.pipeline")
@@ -361,6 +362,192 @@ class DesignComputeTest(unittest.TestCase):
         steps.close()
         again = self.outcome(job)
         self.assertEqual(float(np.nanmin(again.design)), 95.0)
+
+
+class RegularizationLoweredTest(unittest.TestCase):
+    """RF-013-22, RF-013-26, RF-013-30 (spec 0.4; F-1): la regularización entre sectores baja una
+    envolvente más empinada que el talud general de los sectores, y el cálculo lo avisa.
+
+    Un frente de 16 × 32 celdas de 1 m con dos sectores de 16 columnas: el A con ``REST_5_35_6``
+    (talud general 5 / (5/tan 35° + 6) = 20,83°) y el B con el mismo perfil y 12° impuestos. Las
+    semillas, a 100 m, ocupan todo el sector A; la superficie de partida está a 160 m. La envolvente
+    es de pendiente constante (la de la barrida) y la regularización usa la tangente más empinada de
+    los sectores implicados (la del A). El recuento y el descenso máximo esperados salen del oráculo
+    (Dijkstra sobre los 16 desplazamientos del *chamfer*), no de ``benching``."""
+
+    SHAPE = (16, 32)
+    SEED_M = 100.0
+    START_M = 160.0
+    IMPOSED_DEG = 12.0
+    TOLERANCE_M = 1e-9
+    SLOPES = (15.0, 20.8, 25.0, 35.0, 45.0, 60.0)
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.geometry = dfx.grid_from(*cls.SHAPE, 1.0)
+        cls.labels = np.zeros(cls.SHAPE, dtype=np.int16)
+        cls.labels[:, :16] = 1
+        cls.labels[:, 16:] = 2
+        cls.profiles = pipeline.bench_profiles(VALUES, [REST])
+        cls.sectors = (SECTOR_A, SECTOR_B)
+        cls.general_tan = 5.0 / (5.0 / math.tan(math.radians(35.0)) + 6.0)
+        cls.berm_b = max(6.0, 5.0 / math.tan(math.radians(cls.IMPOSED_DEG))
+                         - 5.0 / math.tan(math.radians(35.0)))
+
+    def envelope(self, direction: str, metric: str, degrees: float) -> np.ndarray:
+        """La envolvente de pendiente constante desde las semillas del sector A."""
+        seed = np.full(self.SHAPE, np.nan)
+        seed[:, :16] = self.SEED_M
+        function = envelopes.chamfer_steps if metric == "chamfer5" else envelopes.exact_steps
+        steps = function(seed, self.geometry, envelopes.constant_slope(degrees), direction,
+                         name="e1")
+        return list(steps)[-1].result.grid
+
+    def job(self, envelope: np.ndarray, *, imposed: bool = True) -> Any:
+        everything = np.ones(self.SHAPE, dtype=bool)
+        masks = types.SimpleNamespace(cut_allowed=lambda: everything.copy(),
+                                      fill_allowed=lambda: everything.copy(),
+                                      fill_strip=lambda: np.zeros(self.SHAPE, dtype=bool))
+        return pipeline.DesignJob(
+            request=model.DesignRequest("Bancos", "Hoyo", "cut", REST), geometry=self.geometry,
+            start=np.full(self.SHAPE, self.START_M), envelope=envelope, masks=masks,
+            sectors=self.sectors, labels=self.labels,
+            imposed={"b": self.IMPOSED_DEG} if imposed else {}, profiles=self.profiles,
+            anchors=None, min_thickness_m=0.02, face_tolerance_deg=1.0, warning_ratio=2.0)
+
+    @staticmethod
+    def outcome(job: Any) -> Any:
+        return list(pipeline.design_compute_steps(job))[-1].result
+
+    def expected(self, envelope: np.ndarray) -> tuple[int, float, str]:
+        """Lo que baja la regularización según el oráculo: las celdas, el descenso máximo (m) y los
+        sectores donde baja."""
+        regular = oracles.dijkstra(envelope, self.general_tan, 1.0, direction="up")
+        lowered = regular < envelope - self.TOLERANCE_M
+        names = [sector.name for index, sector in enumerate(self.sectors, start=1)
+                 if bool((lowered & (self.labels == index)).any())]
+        drop = float((envelope - regular)[lowered].max()) if lowered.any() else 0.0
+        return int(lowered.sum()), drop, ", ".join(names)
+
+    @staticmethod
+    def notices(found: Any) -> list[Any]:
+        return [n for n in found.report.notices if n.code == "des.regularization_lowered"]
+
+    def test_a_steeper_envelope_than_the_sectors_warns_with_the_count_and_the_maximum(self) -> None:
+        """RF-013-26, RF-013-30: una envolvente descendente *chamfer* de 45° es más empinada que el
+        talud general del sector A (20,83°): la regularización la baja, el escalonado en corte
+        queda por debajo de ``mín(envolvente, partida)`` en esas celdas (el efecto que se avisa) y
+        el informe lleva **un** aviso con el recuento y el descenso máximo del oráculo, el talud con
+        que se regularizó y los sectores donde bajó."""
+        envelope = self.envelope("down", "chamfer5", 45.0)
+        found = self.outcome(self.job(envelope))
+        cells, drop, sectors = self.expected(envelope)
+        self.assertGreater(cells, 100)
+        self.assertGreater(drop, 5.0)
+        below = np.minimum(envelope, self.START_M) - found.design
+        self.assertGreater(float(below.max()), 1.0, "queda por debajo de la envolvente: se avisa")
+        (notice,) = self.notices(found)
+        self.assertEqual(notice.severity, "warning")
+        self.assertEqual(notice.values["cells"], cells)
+        self.assertAlmostEqual(notice.values["drop"], drop, delta=self.TOLERANCE_M)
+        self.assertAlmostEqual(notice.values["slope"], math.degrees(math.atan(self.general_tan)),
+                               delta=1e-9)
+        self.assertEqual(notice.values["sectors"], sectors)
+        self.assertEqual(sectors, "Sector A, Sector B")
+        self.assertIn(notice.text("es"), found.report.warnings("es"))
+        self.assertIn(notice.text("en"), found.report.warnings("en"))
+
+    def test_the_sweep_of_slopes_directions_and_metrics(self) -> None:
+        """RF-013-26, RF-013-30: con 15, 20,8, 25, 35, 45 y 60°, las dos direcciones y las dos
+        métricas, cada caso con celdas bajadas por la regularización lleva su aviso con el recuento
+        y el máximo del oráculo (a ≤ 10⁻⁹ m), y los demás, ninguno; con 15° no baja nada, con 25° o
+        más baja siempre, y con la exacta a 20,8° baja un poco (la regularización usa el *chamfer*
+        escalado: 0,565 m en el H1) y con el *chamfer* no."""
+        warned: dict[tuple[str, str, float], int] = {}
+        for direction in ("down", "up"):
+            for metric in ("chamfer5", "exact"):
+                for degrees in self.SLOPES:
+                    case = (direction, metric, degrees)
+                    with self.subTest(case=case):
+                        envelope = self.envelope(direction, metric, degrees)
+                        found = self.outcome(self.job(envelope))
+                        cells, drop, sectors = self.expected(envelope)
+                        notices = self.notices(found)
+                        warned[case] = len(notices)
+                        if cells == 0:
+                            self.assertEqual(notices, [])
+                            continue
+                        (notice,) = notices
+                        self.assertEqual(notice.values["cells"], cells)
+                        self.assertAlmostEqual(notice.values["drop"], drop, delta=self.TOLERANCE_M)
+                        self.assertEqual(notice.values["sectors"], sectors)
+        self.assertEqual(len(warned), 24)
+        for direction in ("down", "up"):
+            for metric in ("chamfer5", "exact"):
+                self.assertEqual(warned[(direction, metric, 15.0)], 0)
+                for degrees in (25.0, 35.0, 45.0, 60.0):
+                    self.assertEqual(warned[(direction, metric, degrees)], 1)
+            self.assertEqual(warned[(direction, "chamfer5", 20.8)], 0)
+        self.assertEqual(warned[("down", "exact", 20.8)], 1)
+
+    def test_without_an_imposed_slope_nothing_is_regularized_and_nothing_is_warned(self) -> None:
+        """RF-013-26, RF-013-30: sin talud impuesto los dos sectores tienen el mismo talud general
+        (el del perfil), no hay frontera que regularizar: ni celdas bajadas ni aviso, aunque la
+        envolvente sea de 60°."""
+        for direction in ("down", "up"):
+            with self.subTest(direction=direction):
+                envelope = self.envelope(direction, "chamfer5", 60.0)
+                found = self.outcome(self.job(envelope, imposed=False))
+                self.assertEqual(self.notices(found), [])
+
+    def test_an_envelope_by_sectors_is_already_regular_and_is_not_warned(self) -> None:
+        """RF-013-26, RF-013-30: con la envolvente de la pendiente de cada sector (entrar en una
+        celda cuesta con la pendiente de la celda de llegada) la regularización no baja nada: 0
+        celdas y ningún aviso, en las dos direcciones."""
+        rules = [envelopes.SlopeRule(self.general_tan, 1.0),
+                 envelopes.SlopeRule.from_degrees(self.IMPOSED_DEG, 1.0)]
+        slope = envelopes.sector_slope(self.labels, rules)
+        seed = np.full(self.SHAPE, np.nan)
+        seed[:, :16] = self.SEED_M
+        for direction in ("down", "up"):
+            with self.subTest(direction=direction):
+                envelope = list(envelopes.chamfer_steps(seed, self.geometry, slope, direction,
+                                                        name="e1"))[-1].result.grid
+                found = self.outcome(self.job(envelope))
+                self.assertEqual(self.expected(envelope)[0], 0)
+                self.assertEqual(self.notices(found), [])
+
+    def test_the_design_still_follows_the_regularized_envelope(self) -> None:
+        """RF-013-22, RF-013-26 (decisión de Samuel, 04/11/2026: avisar, no cambiar): el aviso no
+        cambia el escalonado: la superficie de diseño es, a ≤ 10⁻⁹ m, la que sale de escalonar la
+        envolvente regularizada del oráculo (cara primero, con la berma del talud impuesto en el
+        sector B), recortarla con el *chamfer* de la cara y componerla con la de partida."""
+        envelope = self.envelope("down", "chamfer5", 45.0)
+        found = self.outcome(self.job(envelope))
+        regular = oracles.dijkstra(envelope, self.general_tan, 1.0, direction="up")
+        tan_face = math.tan(math.radians(35.0))
+        berm = np.where(self.labels == 2, self.berm_b, 6.0)
+        stairs = oracles.hand_stairs(regular, 5.0, tan_face, berm, 125.0)
+        trimmed = np.maximum(oracles.dijkstra(stairs, tan_face, 1.0, direction="up"), regular)
+        expected = np.minimum(self.START_M, trimmed)
+        self.assertLessEqual(float(np.abs(found.design - expected).max()), 1e-9)
+        self.assertEqual(len(self.notices(found)), 1)
+
+    def test_the_figures_of_the_report_do_not_depend_on_the_notice(self) -> None:
+        """RF-013-30: el aviso es solo un aviso: las cifras del informe son finitas y las mismas
+        figuras (``des.*``) que sin él; el cálculo no modifica la envolvente, las etiquetas ni la
+        superficie de partida."""
+        envelope = self.envelope("down", "chamfer5", 45.0)
+        job = self.job(envelope)
+        before = (np.array(job.envelope, copy=True), np.array(job.labels, copy=True),
+                  np.array(job.start, copy=True))
+        found = self.outcome(job)
+        for array, copy in zip((job.envelope, job.labels, job.start), before, strict=True):
+            self.assertTrue(np.array_equal(array, copy, equal_nan=True))
+        calm = self.outcome(self.job(self.envelope("down", "chamfer5", 15.0)))
+        self.assertEqual([figure.key for figure in found.figures],
+                         [figure.key for figure in calm.figures])
+        self.assertTrue(all(math.isfinite(figure.value) for figure in found.figures))
 
 
 class EnvelopeComputeTest(unittest.TestCase):

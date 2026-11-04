@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+import json
 import time
 import types
 import unittest
@@ -37,6 +38,7 @@ from tests.unit.design.test_store import (
     BY_HAND,
     OTHER_PROFILE,
     OTHER_VALUES,
+    POOL,
     PROFILE,
     SECTOR_SLOPE,
     STEPPED,
@@ -629,6 +631,100 @@ class ChangesTest(_StoreCase):
         left = set(self.des_state()["files"]) - set(before["files"])
         self.assertEqual(left, {"gis_msk_v02.tif"}, "queda lo que compiló, que es otra operación")
 
+
+class RegularizationWarningTest(dfx.DesignProjectCase):
+    """RF-013-26, RF-013-30, RF-013-31 (spec 0.4; F-1), con proyecto: una envolvente de pendiente
+    constante de 60° (más empinada que el talud general del perfil base, 40,4°, con el talud de
+    20° impuesto en el sector 2) y su escalonado en corte. El aviso de que la regularización la bajó
+    llega adonde llegan los avisos: el resumen de «Calcular» (``warnings``, lo que cuenta «Crear con
+    N avisos»), el informe ``des_rpt_`` que registra «Crear» y, sin él, ninguno cuando la
+    envolvente es la de la pendiente de cada sector."""
+
+    STEEP = "Hoyo empinado"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        register_design_parameters(cls)
+        cls.enterClassContext(registered(*definitions()))
+        declare_profile(cls.project, cls.clock, PROFILE)
+        declare_profile(cls.project, cls.clock, OTHER_PROFILE, **OTHER_VALUES)
+        with cls.project.write_transaction() as conn:
+            core_params.ParameterStore(cls.project).create(
+                conn, SECTOR_SLOPE, 20.0, kind="HIPÓTESIS", reason="Talud del sector 2",
+                version=cls.v1.code, **BY_HAND)
+        cls.clock.advance(minutes=1)
+        cls.steep = finish(store.run_envelope(
+            cls.project, renamed(pool_request(slope_mode="constant", slope_deg=60.0), cls.STEEP),
+            version=cls.v1.uid))
+        cls.clock.advance(minutes=1)
+        cls.pool = finish(store.run_envelope(cls.project, pool_request(), version=cls.v1.uid))
+        cls.loaded = access.load_masks(cls.project, cls.v1.uid)
+
+    def calculation(self, envelope: str, name: str) -> Any:
+        request = renamed(stepped_request(envelope=envelope), name)
+        calculation = last(steps.design_run(self.project, request, SURFACE, version=self.v1.uid,
+                                            masks=self.loaded)).result
+        self.addCleanup(calculation.discard)
+        return calculation
+
+    @staticmethod
+    def lowered(calculation: Any) -> list[Any]:
+        return [n for n in calculation.notices if n.code == "des.regularization_lowered"]
+
+    def test_the_notice_reaches_the_summary_and_the_count_of_warnings(self) -> None:
+        """RF-013-30, RF-013-31: «Calcular» enseña el aviso con sus avisos (``warnings``, de donde
+        sale el «N avisos» de «Crear»), en los dos idiomas, con las celdas y el descenso máximo
+        del informe y el nombre de los sectores donde bajó (solo el 2: la envolvente asciende
+        desde las semillas del sector 1 y allí es donde la regularización la baja)."""
+        found = self.calculation(self.STEEP, "Bancos empinados")
+        (notice,) = self.lowered(found)
+        self.assertGreater(notice.values["cells"], 1000)
+        self.assertGreater(notice.values["drop"], 1.0)
+        self.assertEqual(notice.values["sectors"], "Sector 2")
+        for language in ("es", "en"):
+            self.assertIn(notice.text(language), found.warnings(language))
+            self.assertIn(notice.text(language), found.lines(language))
+        self.assertIn("sectores: Sector 2)", notice.text("es"))
+        self.assertIn("sectors: Sector 2)", notice.text("en"))
+        warnings = [n for n in found.notices if n.severity == "warning"]
+        self.assertEqual(len(found.warnings("es")), len(warnings))
+        self.assertIn(notice, warnings)
+
+    def test_creating_records_the_notice_in_the_report_without_changing_the_figures(self) -> None:
+        """RF-013-30, RF-013-31: «Crear» escribe el aviso en el informe ``des_rpt_`` como una
+        fila ``warning`` con su código y sus valores en JSON (las mismas celdas y el mismo descenso
+        que el resumen, sin redondear), y las cifras (desmonte, terraplén, inclinación) son las
+        mismas filas que el informe sin avisos: el aviso no cambia ninguna."""
+        found = self.calculation(self.STEEP, "Bancos empinados creados")
+        (notice,) = self.lowered(found)
+        self.clock.advance(minutes=1)
+        stored = found.create()
+        rows = self.query('SELECT quantity, value, note FROM "des_rpt_bancos_empinados_creados_'
+                          'v01" ORDER BY fid')
+        warned = [json.loads(note) for quantity, _value, note in rows if quantity == "warning"]
+        (recorded,) = [item for item in warned if item["code"] == "des.regularization_lowered"]
+        self.assertEqual(recorded["values"], {"cells": notice.values["cells"],
+                                              "drop": notice.values["drop"],
+                                              "slope": notice.values["slope"],
+                                              "sectors": notice.values["sectors"]})
+        self.assertEqual([item["code"] for item in warned],
+                         [n.code for n in found.notices if n.severity == "warning"])
+        figures = {quantity: value for quantity, value, _note in rows
+                   if quantity not in ("warning", "note")}
+        self.assertEqual(figures["cut_m3"], found.outcome.report.cut_m3)
+        self.assertEqual(figures["fill_m3"], found.outcome.report.fill_m3)
+        self.assertEqual({spec.key: spec.value for spec in found.figures},
+                         {key: value for key, value in self.query(
+                             "SELECT key, value FROM gb_figure WHERE operation_uid = ?",
+                             stored.handle.uid)})
+
+    def test_the_envelope_by_sectors_is_not_warned(self) -> None:
+        """RF-013-26, RF-013-30: con la envolvente de la pendiente de cada sector (el hoyo de las
+        demás pruebas) la regularización no baja nada: ni aviso en el resumen."""
+        found = self.calculation(POOL, "Bancos del hoyo regular")
+        self.assertEqual(self.lowered(found), [])
+        self.assertFalse(any("regulariz" in line for line in found.warnings("es")))
 
 if __name__ == "__main__":
     unittest.main()

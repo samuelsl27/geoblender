@@ -50,7 +50,10 @@ propia envolvente (cada celda es semilla de su cota) con la tangente más empina
 implicados (:func:`implicated_cells`): la mayor superficie con esa pendiente por debajo de la
 envolvente, que quita las paredes del borde entre sectores (error 15). Una envolvente calculada con
 la pendiente por sectores del *chamfer* (entrar en una celda cuesta con la pendiente de la celda de
-llegada) ya es regular y no cambia.
+llegada) ya es regular y no cambia. Una más empinada que esa tangente (calculada con una pendiente
+constante mayor que el talud general de un sector) **baja**: :class:`Regularization` lleva las
+celdas bajadas y el descenso máximo para que quien calcula lo avise (spec 0.4, RF-013-30), sin
+cambiar la regularización ni el escalonado.
 
 **El recorte final** (T10; RF-013-27, A9): :func:`final_trim_steps` calcula la envolvente ascendente
 del resultado escalonado con la tangente de la cara del perfil de cada celda por su factor de malla,
@@ -292,13 +295,19 @@ class Regularization:
     celdas sin cota finita salen como entraron), la ``tan`` efectiva con la que se regularizó (la
     mayor de las celdas implicadas; ``None`` si no había sectores con otra pendiente y no se hizo
     nada), las ``cells`` implicadas, las celdas ``lowered`` (que bajaron más de
-    :data:`~design.envelopes.TOLERANCE_M`: 0 si la envolvente ya era regular), las ``iterations``
-    del barrido y su ``violation`` (m, ≤ :data:`~design.envelopes.TOLERANCE_M`)."""
+    :data:`~design.envelopes.TOLERANCE_M`: 0 si la envolvente ya era regular), el mayor descenso
+    ``lowered_max_m`` (m, de esas celdas: ``surface − grid``; 0,0 si no bajó ninguna), las
+    ``iterations`` del barrido y su ``violation`` (m, ≤ :data:`~design.envelopes.TOLERANCE_M`).
+
+    Que baje es lo que la spec 0.4 manda avisar (RF-013-26, RF-013-30): una envolvente más empinada
+    que la tangente de la regularización (calculada con una pendiente constante mayor que el talud
+    general de un sector) queda más baja que la registrada."""
 
     grid: np.ndarray
     tan: float | None
     cells: int
     lowered: int
+    lowered_max_m: float
     iterations: int
     violation: float
 
@@ -319,7 +328,7 @@ def _regularize_units(surface: np.ndarray, geometry: Grid, slope: SlopeField,
             tan = float(tangents[involved].max())
         del involved
     if not count:
-        return Regularization(surface.copy(), None, 0, 0, 0, 0.0)
+        return Regularization(surface.copy(), None, 0, 0, 0.0, 0, 0.0)
     found = yield from chamfer_units(surface, geometry, SlopeField(tan), Direction.UP, name=name,
                                      cells_per_unit=cells_per_unit)
     grid = found.grid
@@ -327,8 +336,10 @@ def _regularize_units(surface: np.ndarray, geometry: Grid, slope: SlopeField,
     np.copyto(grid, surface, where=~np.isfinite(surface))  # sin cota, como entró
     yield None
     with np.errstate(invalid="ignore"):
-        lowered = int(np.count_nonzero(grid < surface - TOLERANCE_M))
-    return Regularization(grid, tan, count, lowered, found.iterations, found.violation)
+        below = grid < surface - TOLERANCE_M
+    lowered = int(np.count_nonzero(below))
+    biggest = float((surface[below] - grid[below]).max()) if lowered else 0.0
+    return Regularization(grid, tan, count, lowered, biggest, found.iterations, found.violation)
 
 
 def regularize_steps(surface: np.ndarray, geometry: Grid, slope: SlopeField, *,
