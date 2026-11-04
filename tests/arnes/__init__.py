@@ -3,5 +3,5 @@
 
 Las ejecuta el paso «arnés» de ``tools/check.py --completo`` (spec 001 0.6, RF-001-06; D-9
 de la spec 002): prueban ``tools/`` y ``tests/support/``, no la extensión. La comprobación
-de cada tarea va sin ellas (RNF-001-01, ≤ 46 s) y ``tools/publish.py`` las pide siempre.
+de cada tarea va sin ellas (RNF-001-01, ≤ 48 s) y ``tools/publish.py`` las pide siempre.
 """

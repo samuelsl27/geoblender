@@ -181,8 +181,8 @@ menos de 15 minutos y sin ayuda (CE-013-11).
     contorno y ≤ 30 s con una zona maciza, la aprobó Samuel); el cálculo completo con diez perfiles,
     4,9 s; 436 MiB de pico; activar la vista previa con 100.000 semillas, 20 sectores y 500
     restricciones, de 0,80 a 0,98 s y cada redibujo, de 0,4 a 0,6 ms; la llamada más larga, 125 ms
-    (≤ 0,2 s), y la transacción final, de 40 a 59 ms. `tools/check.py` pasa de 41,6 s a unos 45 s:
-    IMGA sube su límite de 45 a 46 s (spec 001, versión 0.11, y spec 007, versión 0.7).
+    (≤ 0,2 s), y la transacción final, de 40 a 59 ms. `tools/check.py` pasa de 41,6 s a unos 44–46 s en reposo:
+    IMGA sube su límite de 45 a 48 s (spec 001, versión 0.12, y spec 007, versión 0.8).
   - **Sin dependencias nuevas**: los dos algoritmos son código propio sobre el numpy de Blender
     (la transformada de distancia separable no resuelve la euclídea con semillas de cotas
     distintas; `docs/trampas.md`). Una corrección de un texto: el aviso de un sector pendiente en

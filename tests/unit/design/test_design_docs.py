@@ -660,7 +660,7 @@ class StateDocTest(unittest.TestCase):
     def test_the_index_says_where_the_013_is(self) -> None:
         """Definición de hecho §3.7 (F-4, punto 1): el párrafo de la 013, su fila de la tabla y lo
         que queda dicen que está en la 0.5, que llega a la T38 con su verificación única (T34) y
-        sus tareas de convergencia (T35 a T38), que el límite de ``check.py`` ya es de 46 s y lo
+        sus tareas de convergencia (T35 a T38), que el límite de ``check.py`` ya es de 48 s y lo
         que queda (el H3, CE-013-10, CE-013-11 y ``Z:``), y no hablan de la T32 ni de la 0.3
         como lo último ni de lo ya decidido como pendiente."""
         self.assertIsNotNone(self.index_row)
@@ -674,7 +674,7 @@ class StateDocTest(unittest.TestCase):
                 self.assertNotIn("T01 a la T32", text)
                 self.assertNotIn("faltan la T33", text)
                 self.assertNotIn("spec 0.3", text)
-        self.assertIn("46 s", self.paragraph)
+        self.assertIn("48 s", self.paragraph)
         self.assertIn("T35 a T38", self.paragraph)
         for fact in ("H3", "CE-013-10", "CE-013-11", "`Z:`", "diff de la T32"):
             with self.subTest(left=fact):
