@@ -20,7 +20,10 @@ describe; estas pruebas avisan de que se separan:
   búsqueda pendiente (y dónde sale: bajo el estado y junto a las cifras, T38) salen como los escribe
   el código; y dice lo que hace la regularización entre sectores cuando baja la envolvente (T35);
 - el índice de specs, el roadmap, el ``CHANGELOG.md`` del código y la ficha de ``des`` dicen el estado
-  de la 013 tras su verificación única (T34 a T38).
+  de la 013 tras su verificación única (T34 a T38);
+- los colores que dicen la guía, el ``CHANGELOG.md`` y la comprobación M2 de ``tasks.md`` son los que
+  se ven: «ámbar» solo de lo que dibuja la vista 3D por sí misma; una etiqueta de Blender en alerta
+  (las ventanas y la barra N) sale en rojo con un triángulo (T42; hallazgo del H3 (4)).
 
 Sin la carpeta de la documentación, se omiten (recurso ``docs``). Las pruebas del emparejado de las
 citas (:class:`QuoteMatcherTest`) no la necesitan: comprueban que la regla no da falsos verdes.
@@ -106,6 +109,18 @@ EXAMPLES = (
 # Valores de ejemplo que un mensaje lleva en un marcador y que la guía escribe (no entre «»).
 EXAMPLE_VALUES = ("Sector 2", "superficie de partida", "la propiedad")
 SHORT = 14  # los textos más cortos se comparan enteros: no «están» dentro de cualquier otro
+
+# Los colores (T42; hallazgo del H3 (4)). El ámbar es de lo que la vista 3D dibuja por sí misma con
+# ``gpu`` y ``blf`` (``bl.draw``: el borde de un sector con la búsqueda pendiente y las líneas de aviso
+# del resumen de la vista previa) y del icono de [HIP]; una etiqueta de Blender en alerta (``alert``:
+# las ventanas y la barra N) sale en rojo con un triángulo. Cada «ámbar» que quede en la guía y en la
+# entrada de la 013 del ``CHANGELOG.md`` está aquí, y la prueba exige que siga estando.
+AMBER_IN_THE_GUIDE = (
+    "**en ámbar si su búsqueda está pendiente**",
+    "Los avisos salen en ámbar en la vista y en rojo, con un triángulo, en la barra N.",
+)
+AMBER_IN_THE_CHANGELOG = ("(en ámbar si su búsqueda está pendiente)",)
+TASKS_RELPATH = "specs/013-des-envolventes-y-escalonado/tasks.md"
 
 
 def one_line(text: str) -> str:
@@ -578,7 +593,8 @@ class GuideDocTest(unittest.TestCase):
         """RF-013-06 (F-4, punto 3; T38, F-2): la marca de la búsqueda pendiente sale «Búsqueda de
         intocables pendiente en «Sector 2».» (el nombre entre «», y el punto final); la guía la cita
         así en §3.2 y en §9, y dice dónde sale: la barra N, bajo su estado y como las primeras filas
-        del bloque «Cifras», en ámbar y una por sector pendiente; no se escribe en el proyecto, así
+        del bloque «Cifras», en rojo con un triángulo y una por sector pendiente (es una etiqueta en
+        alerta de la barra N, no un dibujo de la vista 3D); no se escribe en el proyecto, así
         que el informe y las cifras guardados no cambian ni la llevan (§3.2 y §10)."""
         mark = dsectors.PendingMark("sector_2", "Sector 2")
         self.assertEqual(mark.text("es"), MARK_ES)
@@ -591,7 +607,7 @@ class GuideDocTest(unittest.TestCase):
                 self.assertIn(f"«{MARK_ES}»", text)
                 self.assertNotIn("pendiente en Sector 2", text)
         notes = self.guide_section("### 3.2 Los límites, las restricciones y los sectores al día")
-        for fact in ("en la barra N", "debajo de su estado", "en ámbar y una por cada sector pendiente",
+        for fact in ("en la barra N", "debajo de su estado", "en rojo, con un triángulo, y una por cada sector pendiente",
                      "como las primeras filas del bloque «Cifras»", "justo encima de las cifras",
                      "es del estado de ahora, no del cálculo", "no se escribe en el proyecto",
                      "no cambian", "no la llevan"):
@@ -716,6 +732,68 @@ class StateDocTest(unittest.TestCase):
         bullet = text[text.index("- **Envolventes y escalonado** (spec 013)"):
                       text.index("- **Límites legales y restricciones** (spec 012)")]
         self.assertIn(f"«{CLOSED_ES}»", bullet)
+
+
+@docs.requires_docs
+class ColourDocTest(unittest.TestCase):
+    """Los colores que dicen la guía, el ``CHANGELOG.md`` y la comprobación M2 son los que se ven
+    (T42; hallazgo del H3 (4)): lo que sale en una etiqueta en alerta de una ventana o de la barra N es
+    rojo con un triángulo, y solo lo que la vista 3D dibuja por sí misma es ámbar."""
+
+    def only_the_drawn_amber(self, text: str, allowed: tuple[str, ...], where: str) -> None:
+        """Que cada frase de ``allowed`` siga en ``text`` y que no quede otro «ámbar»."""
+        for phrase in allowed:
+            with self.subTest(where=where, phrase=phrase):
+                self.assertIn(phrase, text)
+        rest = text
+        for phrase in allowed:
+            rest = rest.replace(phrase, " ")
+        left = [found.group(0) for found in re.finditer(r".{0,70}ámbar.{0,40}", rest)]
+        self.assertEqual(left, [], f"«ámbar» de {where} que no es de lo que dibuja la vista 3D: una "
+                                   "etiqueta de Blender en alerta sale en rojo, con un triángulo")
+
+    def test_the_guide_says_amber_only_for_what_the_3d_view_draws(self) -> None:
+        """RF-013-03, RF-013-06, RF-013-20, RF-013-31 (T42; H3 (4)): en la guía solo es ámbar el borde
+        de los sectores pendientes de la vista previa y sus avisos en la vista 3D; el perfil «no
+        resuelto por la rejilla», el estado «Búsqueda pendiente» de los sectores, la lista de lo que
+        cuelga de un sector que ya no existe, los avisos del resumen del cálculo, el sector pendiente
+        del diálogo y la marca de la búsqueda pendiente de la barra N salen en rojo con su
+        triángulo."""
+        text = one_line(docs.read(GUIDE_RELPATH))
+        self.only_the_drawn_amber(text, AMBER_IN_THE_GUIDE, "la guía")
+        for fact in ("el perfil sale en rojo, con un triángulo:",
+                     "o, en rojo, con un triángulo, «Búsqueda pendiente»",
+                     "sale en una lista aparte, en rojo («Parámetros sin sector»",
+                     "más los avisos, en rojo, con un triángulo (",
+                     "lleva, en rojo, «Búsqueda pendiente»",
+                     "en rojo y con un triángulo, la marca de la búsqueda pendiente, una por sector"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, text)
+
+    def test_the_changelog_says_amber_only_for_what_the_3d_view_draws(self) -> None:
+        """RF-013-03, RF-013-06, RF-013-20 (T42; H3 (4)): en la entrada de la 013 del ``CHANGELOG.md``
+        solo es ámbar el borde de los sectores pendientes de la vista previa; el perfil «no resuelto
+        por la rejilla» y la marca de la barra N salen en rojo, con un triángulo."""
+        text = one_line(CHANGELOG_PATH.read_text(encoding="utf-8"))
+        bullet = text[text.index("- **Envolventes y escalonado** (spec 013)"):
+                      text.index("- **Límites legales y restricciones** (spec 012)")]
+        self.only_the_drawn_amber(bullet, AMBER_IN_THE_CHANGELOG, "el CHANGELOG")
+        for fact in ("lo marca «no resuelto por la rejilla» en rojo, con un triángulo, si su cara",
+                     "una por sector y en rojo con un triángulo, la marca de búsqueda de intocables "
+                     "pendiente"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, bullet)
+
+    def test_the_m2_check_says_the_profile_that_the_grid_does_not_resolve_is_red(self) -> None:
+        """RF-013-20 (T42; H3 (4)): la comprobación manual M2 de ``tasks.md`` dice que el perfil
+        «no resuelto por la rejilla» sale en rojo, con un triángulo (el ``alert`` de Blender); la M1
+        sigue diciendo ámbar del borde de los sectores pendientes de la vista previa."""
+        tasks = docs.read(TASKS_RELPATH)
+        m2 = one_line(tasks[tasks.index("- **M2 — Perfiles de banco"):tasks.index("- **M3 — Sectores")])
+        self.assertNotIn("ámbar", m2)
+        self.assertIn("un perfil «no resuelto por la rejilla» en rojo, con un triángulo", m2)
+        m1 = one_line(tasks[tasks.index("- **M1 — E5"):tasks.index("- **M2 — Perfiles")])
+        self.assertIn("(ámbar si están pendientes)", m1)
 
 
 if __name__ == "__main__":

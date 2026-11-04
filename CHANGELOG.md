@@ -119,9 +119,9 @@ menos de 15 minutos y sin ayuda (CE-013-11).
     valor por defecto** (salvo el factor de malla, 1,0 «sin confirmar»), porque un perfil por
     defecto sería una cifra inventada. La ventana enseña de cada uno su avance y su talud general
     (`EXPL_10_60_6`: 11,77 m y 40,34°; `REST_5_35_6`: 13,14 m y 20,83°) y lo marca «no resuelto
-    por la rejilla» en ámbar si su cara o su berma es más estrecha que una celda. Un perfil sin
-    nombre, con el de otro o con un valor sin declarar o fuera de rango se rechaza nombrando el
-    perfil, el campo y el valor.
+    por la rejilla» en rojo, con un triángulo, si su cara o su berma es más estrecha que una celda.
+    Un perfil sin nombre, con el de otro o con un valor sin declarar o fuera de rango se rechaza
+    nombrando el perfil, el campo y el valor.
   - **Sectores de diseño…**: los sectores de la búsqueda de intocables (o el perímetro, si no hay
     capa de sectores) con su área, el estado de su búsqueda y el **talud general máximo** que
     impone la propiedad, con su origen y su decisor, por sector y por versión: cambiarlo en una no
@@ -169,9 +169,9 @@ menos de 15 minutos y sin ayuda (CE-013-11).
     cada superficie de diseño sin verificación al día, como las de la 012.
   - **Ver y exportar**: la envolvente, la superficie de diseño y las cotas de berma se cargan en
     la vista como objetos de tipo **Diseño**; la barra N «Diseño» enseña su estado, sus
-    parámetros, las semillas y el dominio, las restricciones aplicadas y sus cifras, y, en ámbar y
-    una por sector, la marca de búsqueda de intocables pendiente si un sector que tocó el cálculo ha
-    perdido su búsqueda (bajo su estado y como primera fila de sus cifras: es del estado de ahora y
+    parámetros, las semillas y el dominio, las restricciones aplicadas y sus cifras, y, una por
+    sector y en rojo con un triángulo, la marca de búsqueda de intocables pendiente si un sector
+    que tocó el cálculo ha perdido su búsqueda (bajo su estado y como primera fila de sus cifras: es del estado de ahora y
     no se escribe en el proyecto, así que el informe y las cifras guardados no cambian); su botón
     **Exportar rejilla a GeoTIFF…** escribe el GeoTIFF que QGIS abre georreferenciado (Float32,
     −9999 como «sin dato»).
