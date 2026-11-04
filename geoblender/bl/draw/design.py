@@ -69,8 +69,8 @@ __all__ = [
     "Built", "Plan", "Points", "Request", "build_steps", "building", "built", "default_plan",
     "disable", "draw_points", "drawing", "elevation_colors", "enable", "enabled", "on_project_changed",
     "on_project_read", "on_version_changed", "plan", "rebuild", "register", "screen_items",
-    "seed_points_steps", "stamp", "summary_items", "summary_lines", "tick", "unregister",
-    "wrap_text",
+    "seed_points_steps", "stamp", "summary_items", "summary_lines", "tick", "toolbar_covered_px",
+    "unregister", "wrap_text",
 ]
 
 LOGGER = logging.getLogger("geoblender.bl.draw")
@@ -450,37 +450,58 @@ def stamp(project: Any, version_uid: str | None) -> tuple[Any, ...]:
 # --- Lo que se dibuja en píxeles -----------------------------------------------------------------
 
 
+def toolbar_covered_px(space: Any, area: Any, overlap: bool) -> float:
+    """Lo que tapa por la izquierda la barra de herramientas de la Vista 3D (``area``, con su
+    ``space``) a lo que se dibuja en la región: su anchura (px) si se superpone a la región
+    (``overlap``: la preferencia «Region Overlap»), está a la vista (``show_region_toolbar``; una
+    región oculta mide 1 o 0 px) y está a la izquierda; 0 si no. Solo lee."""
+    if not overlap or not space.show_region_toolbar:
+        return 0.0
+    for region in area.regions:
+        if region.type == "TOOLS":
+            if region.alignment != "LEFT" or region.width <= 1:
+                return 0.0
+            return float(region.width)
+    return 0.0
+
+
 def summary_items(summary: Sequence[tuple[str, bool]], measure: Callable[[str], float],
-                  scale: float, size: tuple[float, float]) -> list[Any]:
+                  scale: float, size: tuple[float, float], covered_px: float = 0.0) -> list[Any]:
     """El resumen arriba a la izquierda de la región (``size``): su fondo y cada línea partida al
-    ancho (:data:`SUMMARY_WIDTH_FRACTION` de la región como mucho), los avisos en ámbar."""
+    ancho (:data:`SUMMARY_WIDTH_FRACTION` de lo que queda a la derecha de ``covered_px`` como mucho),
+    los avisos en ámbar. ``covered_px`` es la anchura (px) de lo que tapa la región por la izquierda
+    (:func:`toolbar_covered_px`): el resumen empieza donde acaba, con su margen; con 0, en el borde."""
     if not summary:
         return []
     row, margin, pad = (dh_overlay.ROW_PX * scale, dh_overlay.MARGIN_PX * scale,
                         dh_overlay.PAD_PX * scale)
-    limit = max(60.0 * scale, size[0] * SUMMARY_WIDTH_FRACTION - 2.0 * margin)
+    covered = max(0.0, float(covered_px))
+    left = covered + margin
+    limit = max(60.0 * scale, (size[0] - covered) * SUMMARY_WIDTH_FRACTION - 2.0 * margin)
     lines = [(part, alert) for text, alert in summary
              for part in wrap_text(text, measure, limit)]
     width = max(float(measure(part)) for part, _alert in lines)
     top = size[1] - margin - SUMMARY_TOP_PX * scale
     height = len(lines) * row
-    items: list[Any] = [Box(margin - pad, top - height - pad, margin + width + pad, top + pad,
+    items: list[Any] = [Box(left - pad, top - height - pad, left + width + pad, top + pad,
                             dh_overlay.PANEL)]
     baseline = (row - dh_overlay.FONT_PX * scale) / 2.0 + 2.0 * scale
     for index, (part, alert) in enumerate(lines):
         bottom = top - (index + 1) * row
-        items.append(Text(margin, bottom + baseline, part, ALERT_COLOR if alert else TEXT_COLOR))
+        items.append(Text(left, bottom + baseline, part, ALERT_COLOR if alert else TEXT_COLOR))
     return items
 
 
 def screen_items(built_view: Built, matrix: Any, size: tuple[float, float], *,
-                 measure: Callable[[str], float], scale: float = 1.0) -> list[Any]:
+                 measure: Callable[[str], float], scale: float = 1.0,
+                 covered_px: float = 0.0) -> list[Any]:
     """Lo que la vista previa dibuja en píxeles de la región (``size``) con la matriz de la vista
     ``matrix``: los nombres que caben y la leyenda (los de la 012) y el resumen
     (``bl.draw.dh_overlay.Text`` y ``Box``). ``measure`` da el ancho en px de un texto; ``scale``,
-    la escala de la interfaz."""
+    la escala de la interfaz; ``covered_px``, lo que la barra de herramientas tapa por la izquierda
+    (el resumen empieza a su derecha)."""
     items = constraints.screen_items(built_view.lines, matrix, size, measure=measure, scale=scale)
-    items.extend(summary_items(built_view.summary, measure, scale, size))
+    items.extend(summary_items(built_view.summary, measure, scale, size, covered_px))
     return items
 
 
@@ -610,12 +631,15 @@ def _draw_pixels() -> None:
         ready = _region_ready()
         if ready is None:
             return
-        _space, region, rv3d = ready
-        scale = float(bpy.context.preferences.system.ui_scale)
+        space, region, rv3d = ready
+        context = bpy.context
+        scale = float(context.preferences.system.ui_scale)
         size = (float(region.width), float(region.height))
+        covered = toolbar_covered_px(space, context.area,
+                                     bool(context.preferences.system.use_region_overlap))
         blf.size(dh_overlay.FONT_ID, dh_overlay.FONT_PX * scale)
         items = screen_items(_STATE.built, np.array(rv3d.perspective_matrix), size,
-                             measure=_measure, scale=scale)
+                             measure=_measure, scale=scale, covered_px=covered)
         if items:
             dh_overlay.paint(items, size, scale=scale)
     except Exception:  # una traza por fotograma no ayuda a nadie

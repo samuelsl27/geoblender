@@ -190,6 +190,9 @@ menos de 15 minutos y sin ayuda (CE-013-11).
     si se cierra el proyecto a mitad de un cálculo del diseño, el mensaje dice «Se cerró el
     proyecto mientras se calculaba «Hoyo»: no ha quedado nada a medias» y no que se cubicaba (el de
     la cubicación no cambia).
+  - **El resumen de la vista previa ya no queda bajo la barra de herramientas**: empieza a la
+    derecha de ella cuando se superpone a la Vista 3D (con sus textos y cifras como antes) y no
+    pierde las primeras letras de cada línea; lo vio el H3 en la pantalla de referencia.
 
 - **Límites legales y restricciones** (spec 012). Antes de diseñar hay que saber dónde no se puede
   cortar ni rellenar, y después hay que poder demostrarlo en m³: lo que pasó en el proyecto de

@@ -30,6 +30,8 @@ búsqueda de intocables cerrada solo en el primero, y una ladera que sube 0,1 m 
   proyecto la quita.
 - RF-013-33 (g): el diálogo y la orden rechazan lo que falta (la cota fija, los sectores marcados) sin
   activarla y quitarla informa; una vista previa que el cálculo rechaza avisa con el motivo y se quita.
+- RF-013-01, RF-013-02 (h; H3, hallazgo 1): el resumen empieza a la derecha de la barra de herramientas
+  de la Vista 3D cuando se superpone a la región (a escala 1,0 y 1,25), y sin ella queda donde estaba.
 - Principio 8 (z): desactivar Geoblender con la vista previa activa quita el manejador, los avisos y
   el temporizador y deja la huella de Blender como al principio de la sesión.
 
@@ -706,6 +708,108 @@ class DesignPreviewTest(unittest.TestCase):
             if self.design.tick() is None:
                 return self.design.built()
         self.fail("la vista previa no acaba")
+
+    def test_h_the_summary_starts_after_the_toolbar_that_covers_the_region(self) -> None:
+        """RF-013-01, RF-013-02 (H3, hallazgo 1; M1): la barra de herramientas de la Vista 3D se
+        superpone a la región (preferencia «Region Overlap») y tapa lo que se dibuja desde su borde
+        izquierdo, así que el resumen empieza donde ella acaba (``covered_px``: su anchura si está a la
+        vista, a la izquierda y superpuesta; 0 si no), a escala 1,0 y 1,25: ninguna caja ni línea
+        queda antes de ella, el ancho al que se parten las líneas sale de lo que queda a su derecha
+        (sin pasarse del borde derecho) y con 0 es el reparto de siempre; ``_draw_pixels`` se lo pasa
+        leyendo la región ``TOOLS`` del área."""
+        design = self.design
+        pixels = _module("bl.draw.dh_overlay")
+        measure = lambda text: 7.0 * len(text)  # noqa: E731 - el ancho de una fuente de mentira
+        summary = (
+            ("Semillas: 25 600 celdas (102 400 m²), cotas 650,0 a 650,0 m; dominio: 3,4 ha; "
+             "17 060 celdas de semilla fuera del dominio.", False),
+            ("Máscaras de V01: al día.", False),
+            ("17 060 celdas de semilla (68 240 m²) están fuera del dominio de trabajo: la envolvente "
+             "las usa, pero allí no se entrega nada. Revise la zona de las semillas antes de "
+             "calcular.", True),
+        )
+        words = " ".join(line for line, _alert in summary).split()
+
+        for scale in (1.0, 1.25):  # sin zona tapada: el reparto de siempre
+            with self.subTest(scale=scale, covered=0.0):
+                margin, pad = pixels.MARGIN_PX * scale, pixels.PAD_PX * scale
+                today = design.summary_items(summary, measure, scale, SIZE)
+                self.assertEqual(design.summary_items(summary, measure, scale, SIZE, covered_px=0.0),
+                                 today)
+                box, *lines = today
+                limit = SIZE[0] * design.SUMMARY_WIDTH_FRACTION - 2.0 * margin
+                self.assertEqual({item.x for item in lines}, {margin})
+                self.assertEqual((box.x0, box.x1 - pad - margin),
+                                 (margin - pad, max(measure(item.text) for item in lines)))
+                self.assertEqual([item.text for item in lines],
+                                 [part for line, _alert in summary
+                                  for part in design.wrap_text(line, measure, limit)])
+
+        for scale, covered in ((1.0, 56.0), (1.25, 70.0), (1.0, 300.0)):
+            with self.subTest(scale=scale, covered=covered):
+                margin, pad = pixels.MARGIN_PX * scale, pixels.PAD_PX * scale
+                box, *lines = design.summary_items(summary, measure, scale, SIZE, covered_px=covered)
+                self.assertGreaterEqual(box.x0, covered)  # la caja, a la derecha de la barra
+                self.assertTrue(all(isinstance(item, pixels.Text) and item.x >= covered
+                                    for item in lines))
+                self.assertEqual({item.x for item in lines}, {covered + margin})  # una vez, no dos
+                self.assertEqual(box.x0, covered + margin - pad)
+                limit = (SIZE[0] - covered) * design.SUMMARY_WIDTH_FRACTION - 2.0 * margin
+                self.assertTrue(all(measure(item.text) <= limit for item in lines))
+                self.assertLessEqual(box.x1, SIZE[0])  # sin pasarse del borde derecho
+                self.assertGreater(len(lines), len(summary))  # las líneas largas se parten
+                self.assertEqual(" ".join(item.text for item in lines).split(), words)
+                self.assertEqual([item.color for item in lines].count(pixels.STALE_COLOR),
+                                 len(design.wrap_text(summary[2][0], measure, limit)))
+
+        self.assertEqual(self.show(zone="sector:sector_1"), {"FINISHED"})
+        built = self.pump()
+        matrix = top_view(self.local(30.0, 30.0))
+        plain = design.summary_items(built.summary, measure, 1.0, SIZE)
+        moved = design.summary_items(built.summary, measure, 1.0, SIZE, covered_px=56.0)
+        shown = design.screen_items(built, matrix, SIZE, measure=measure, scale=1.0, covered_px=56.0)
+        rest = design.screen_items(built, matrix, SIZE, measure=measure, scale=1.0)
+        self.assertEqual(shown[-len(moved):], moved)  # el resumen, a la derecha de la barra
+        self.assertEqual(shown[:-len(moved)], rest[:-len(plain)])  # los nombres y la leyenda, donde estaban
+
+        def regions(tools_width: int, alignment: str = "LEFT") -> SimpleNamespace:
+            return SimpleNamespace(regions=[
+                SimpleNamespace(type="HEADER", width=SIZE[0], alignment="TOP"),
+                SimpleNamespace(type="TOOLS", width=tools_width, alignment=alignment),
+                SimpleNamespace(type="WINDOW", width=SIZE[0], alignment="NONE")])
+
+        shown_bar, hidden_bar = (SimpleNamespace(show_region_toolbar=value) for value in (True, False))
+        covered = design.toolbar_covered_px
+        self.assertEqual(covered(shown_bar, regions(56), True), 56.0)
+        self.assertEqual(covered(shown_bar, regions(56), False), 0.0)  # sin «Region Overlap»
+        self.assertEqual(covered(shown_bar, regions(1), True), 0.0)  # una región oculta mide 1
+        self.assertEqual(covered(shown_bar, regions(0), True), 0.0)
+        self.assertEqual(covered(hidden_bar, regions(56), True), 0.0)
+        self.assertEqual(covered(shown_bar, regions(56, "RIGHT"), True), 0.0)  # tapa el otro lado
+        self.assertEqual(covered(shown_bar, SimpleNamespace(regions=[]), True), 0.0)
+
+        fake_blf = SimpleNamespace(size=lambda *args: None,
+                                   dimensions=lambda font, text: (measure(text), 12.0))
+        for scale, tools_width in ((1.0, 56), (1.25, 70), (1.0, 1)):
+            with self.subTest(scale=scale, tools=tools_width):
+                context = SimpleNamespace(
+                    space_data=SimpleNamespace(overlay=SimpleNamespace(show_overlays=True),
+                                               show_region_toolbar=True),
+                    region=SimpleNamespace(width=SIZE[0], height=SIZE[1]),
+                    region_data=SimpleNamespace(perspective_matrix=matrix),
+                    area=regions(tools_width),
+                    preferences=SimpleNamespace(system=SimpleNamespace(
+                        ui_scale=scale, use_region_overlap=True)))
+                with mock.patch.object(design, "bpy", SimpleNamespace(context=context)), \
+                        mock.patch.object(design, "blf", fake_blf), \
+                        mock.patch.object(design.dh_overlay, "paint") as paint:
+                    design._draw_pixels()
+                self.assertFalse(design._STATE.failed)
+                paint.assert_called_once()
+                items = paint.call_args.args[0]
+                left = float(tools_width) if tools_width > 1 else 0.0
+                expected = design.summary_items(built.summary, measure, scale, SIZE, covered_px=left)
+                self.assertEqual(items[-len(expected):], expected)
 
     def test_z_disabling_geoblender_with_the_preview_on_leaves_nothing(self) -> None:
         """Principio 8: con la vista previa activa, desactivar Geoblender quita los manejadores de
