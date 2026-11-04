@@ -34,7 +34,7 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    OMISIONES») y, justo después, «arnés» (``tests/arnes`` como «unitarias»: las pruebas
    del propio arnés que lanzan Blender entero; sin pruebas, fallo; spec 001 0.6, D-9 de
    la spec 002). Sin la opción no se ejecutan (ni se busca el motor), y el resumen lo dice
-   antes de ``RESULTADO``: la comprobación de cada tarea va sin ella (RNF-001-01, ≤ 45 s;
+   antes de ``RESULTADO``: la comprobación de cada tarea va sin ella (RNF-001-01, ≤ 46 s;
    «motor» solo con ella desde la spec 004 0.4 y la 001 0.7, tarea 005/T50) y
    ``tools/publish.py`` la pide siempre. Solo si se piden, y después de los obligatorios:
    «rendimiento» (``--rendimiento``: ``tests/rendimiento`` con el Python de Blender y
@@ -58,7 +58,7 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    (ver ``STEPS``). Dentro de un paso,
    «unitarias», «referencia» (spec 006, T59) y «blender» reparten sus pruebas en partes que
    se ejecutan a la vez (spec 003,
-   T40; RNF-007-01: ≤ 45 s, ≤ 40 s hasta la spec 007 0.6, sin quitar ninguna prueba): hasta ``UNIT_PARTS`` y
+   T40; RNF-007-01: ≤ 46 s, ≤ 45 s en la spec 007 0.6 y ≤ 40 s antes, sin quitar ninguna prueba): hasta ``UNIT_PARTS`` y
    ``REFERENCE_PARTS`` procesos de ``tools/unittest_part.py`` y ``BLENDER_PARTS`` Blender
    con ``run_blender_tests.py --parte i/n``, sin pasar del número de módulos de prueba en
    disco ni del de procesadores (con uno, la orden de siempre). Cada parte descubre
@@ -214,7 +214,7 @@ COPY_THREAD = "check-copia"
 # variable con que lo reciben y el hilo que lo refresca.
 ENV_BYTECODE = pyc_cache.ENV_PREFIX
 BYTECODE_THREAD = "check-pyc"
-STEP_TIMEOUT_S = 1800.0  # sin --completo, la comprobación tarda ≤ 45 s (RNF-001-01)
+STEP_TIMEOUT_S = 1800.0  # sin --completo, la comprobación tarda ≤ 46 s (RNF-001-01)
 # El plazo de cada orden de «rendimiento» y de «banco» (Step.timeout_s; tarea 009/T38, F-3 de
 # su verificación): con GEOBLENDER_NET_TEST_DIR, el unittest de tests/rendimiento tardaba unos
 # 2 200 s (test_versions_perf, ≈ 1 091 s, crea 5 GB en la red y los congela dos veces) y se
@@ -983,7 +983,7 @@ def _docs_omit(ctx: Context) -> str | None:
 # «unitarias» y ≈ 18 s «blender»); a la vez, 39,3 s. Los opcionales se ejecutan siempre
 # después de los obligatorios (RF-001-10), en el orden de la tabla: los de --completo los
 # primeros, tras «blender»: «motor» (spec 004 0.4, RF-004-28: con la CPU llena, la
-# comprobación de cada tarea tardaba ≈ 42 s con él, frente a ≤ 40 s de RNF-001-01, hoy ≤ 45 s;
+# comprobación de cada tarea tardaba ≈ 42 s con él, frente a ≤ 40 s de RNF-001-01, hoy ≤ 46 s;
 # spec 005, T50) y «arnés» (spec 001 0.6); «documentación» (spec 007, RF-007-14), el último.
 # «motor» iba a la vez que «blender» (spec 004, T30) y, desde la tarea 011/T36, va solo,
 # después de él: con «unitarias» también a la vez (0.10), corrían juntas 12 partes de
