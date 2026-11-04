@@ -25,7 +25,11 @@ banco y unidad, con el escombro en su sitio y cada material pesado según su est
 cifras de la versión (spec 011). Y sabe dónde no se puede cortar ni rellenar: declara el límite
 legal y el perímetro de actuación, guarda las restricciones tipadas que también se editan en QGIS,
 busca lo intocable por sector, lo compila todo a máscaras sobre la rejilla del proyecto y verifica
-en m³ por recinto cualquier superficie de diseño (spec 012). Lo de
+en m³ por recinto cualquier superficie de diseño (spec 012). Y calcula el diseño de rejilla:
+envolventes de pendiente acotada hacia arriba y hacia abajo de unas semillas, perfiles de banco
+con nombre, y el escalonado en corte y en relleno, anclado a cotas absolutas, con la berma de cada
+sector, el recorte final y las cotas reales de las bermas, todo visto antes de calcular y
+confirmado antes de escribirse (spec 013). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
@@ -82,9 +86,101 @@ un GeoPackage sintético, busque los intocables de un sector y verifique un dise
 minutos y sin ayuda (CE-012-09). Con varios límites legales, la zona, la cifra y la banda hacia
 dentro de cada uno son las suyas y no las de la unión (el hallazgo F-1 de esa verificación, decidido
 por Samuel el 01/11/2026 y corregido). Las llamadas de «Recalcular lo obsoleto» tardan de 0,40 a
-0,55 s, más que los 0,2 s de las demás (el contrato de la spec 008).
+0,55 s, más que los 0,2 s de las demás (el contrato de la spec 008). Lo de la spec 013 está
+comprobado con Blender 5.2.1 sin su interfaz, con las órdenes reales y un proyecto sintético (sus
+escenarios E1 a E5 de principio a fin: semillas, vista previa, envolvente, escalonado en corte y en
+relleno, confirmar, congelar, reproducir y exportar), con casos de referencia calculados a mano (el
+cono de un punto, el punto fijo, el escalonado de referencia, la berma de 19,58 m, el recorte
+final, las máscaras, la corta circular de 1.308.944 m³) y con datos del tamaño de un proyecto real
+(una rejilla de 2,8 millones de celdas, 20 sectores, 10 perfiles y 500 restricciones) en disco
+local; faltan verlo en la pantalla de referencia (los colores de la vista previa, los diálogos, el
+avance y Esc, la barra N «Diseño»), el GeoTIFF abierto en QGIS 4.2, las medidas en `Z:`, su
+verificación única, la comparación con el proyecto de referencia, que se ejecuta a petición
+(CE-013-10), y que un ingeniero de IMGA defina una semilla, elija un perfil y un sector con talud
+impuesto, revise la vista previa y confirme una superficie de diseño en menos de 15 minutos y sin
+ayuda (CE-013-11).
 
 ### Añadido
+
+- **Envolventes y escalonado** (spec 013). Antes de excavar un hueco, tender un frente o rellenar
+  un talud hay que poder decir, con cifras, hasta dónde llega un talud y cómo se convierte en
+  bancos; lo que pasó en el proyecto de referencia (una métrica que alargaba la distancia un
+  8,2 % y dejaba caras a 37,2° en lugar de 35°; semillas en toda la ladera, con un relleno de
+  716.000 m³ donde bastaban 17.607 m³; la berma deducida de la pendiente local; caras de hasta
+  84,6° y paredes entre sectores; perfiles y factores de malla copiados de un script a otro) no se
+  puede repetir. Guía de uso: `docs/usuario/envolventes-y-escalonado.md` de la documentación.
+  Menú **Diseño ▸ Parámetros** (Perfiles de banco…, Sectores de diseño…, Vista previa de semillas,
+  dominios y restricciones) y **Diseño ▸ Cantera ▸ Envolventes y escalonado…**: sus órdenes dejan
+  de estar en gris (el resto de Cantera sigue «Disponible en R-34»).
+  - **Perfiles de banco…**: un perfil tiene un nombre (`EXPL_10_60_6`) y un código que no cambia, y
+    su altura, la inclinación máxima de su cara, su berma mínima, su cota de anclaje y su factor de
+    malla son parámetros con tipo, origen, decisor e historial, **por versión**: **ninguno tiene
+    valor por defecto** (salvo el factor de malla, 1,0 «sin confirmar»), porque un perfil por
+    defecto sería una cifra inventada. La ventana enseña de cada uno su avance y su talud general
+    (`EXPL_10_60_6`: 11,77 m y 40,34°; `REST_5_35_6`: 13,14 m y 20,83°) y lo marca «no resuelto
+    por la rejilla» en ámbar si su cara o su berma es más estrecha que una celda. Un perfil sin
+    nombre, con el de otro o con un valor sin declarar o fuera de rango se rechaza nombrando el
+    perfil, el campo y el valor.
+  - **Sectores de diseño…**: los sectores de la búsqueda de intocables (o el perímetro, si no hay
+    capa de sectores) con su área, el estado de su búsqueda y el **talud general máximo** que
+    impone la propiedad, con su origen y su decisor, por sector y por versión: cambiarlo en una no
+    lo cambia en las demás. Declarar los sectores de nuevo conserva los valores de los que
+    mantienen su código y lista, sin borrarlos, los de los que ya no existen.
+  - **Vista previa de semillas, dominios y restricciones**: antes de calcular, y sin escribir nada
+    en el proyecto, dibuja las semillas coloreadas por cota, el dominio de trabajo, los sectores
+    (en ámbar si su búsqueda está pendiente) y las zonas de las restricciones con su leyenda, y
+    resume sus magnitudes, con el aviso de las celdas de semilla fuera del dominio: el error de las
+    semillas en toda la ladera se ve antes de calcular. Se quita al conmutar a la interfaz de
+    Blender.
+  - **Envolventes y escalonado…**: la envolvente descendente (la menor que no queda por debajo de
+    las semillas: el hueco más profundo bajo unas coronaciones) o ascendente (la mayor que no
+    queda por encima: un hueco que sube desde un fondo), de las semillas que se elijan (una
+    superficie en una zona, una cota fija o una rejilla de cotas), con una pendiente constante o
+    la de cada sector, un factor de malla, un alcance máximo y el dominio acotado a unos sectores
+    o a una capa. **Dos métricas y ninguna más**: el *chamfer* 5×5, con un error de distancia de
+    ±1,4 %, y la euclídea exacta, solo con pendiente constante; el 3×3, que alargaba la distancia
+    un 8,2 %, no existe. Cada ejecución comprueba que la envolvente converge y no pasa de la
+    pendiente, y si no, no entrega nada. Se **niega a calcular** en un sector sin búsqueda de
+    intocables vigente, con otra rejilla, CRS o datum, sin semillas con cota o con el dominio
+    vacío, nombrando el objeto, el campo y el valor, y sin registrar nada.
+  - **Escalonar**: la envolvente se convierte en bancos y bermas **anclados a cotas absolutas**,
+    z₀ + n·h, que nada mueve después: en **corte** (la cara primero, queda por encima) o en
+    **relleno** (la berma primero, queda por debajo). Un sector con talud general máximo impuesto
+    tiene la berma de la fórmula (19,58 m con `REST_5_35_6` y 10,6°, no los 6 m del resto) y no la
+    deducida de la pendiente local; entre sectores se regulariza la envolvente, para que no queden
+    paredes, y al final se recorta la inclinación a la cara del perfil, sin dejar el corte por
+    debajo del terreno. La **superficie de diseño** se compone con el terreno solo donde las
+    máscaras de la 012 admiten corte o relleno, y se verifica por recinto con 0 m³ fuera de lo
+    admitido. Salen también la rejilla de las **cotas reales de las bermas** y su tabla por
+    sector, perfil y cota (sin suponer múltiplos de nada), y un informe con el desmonte y el
+    terraplén, el área con movimiento, la inclinación p90, p99 y máxima con su lugar, el salto en el
+    borde de lo prohibido y los avisos (movimiento en el borde de la rejilla, inclinación pasada de
+    la cara, desmonte o terraplén muy superior al de la revisión congelada anterior).
+  - **Confirmar antes de escribir**: «Calcular» va por pasos, con el avance en la barra de estado y
+    Esc, y enseña el resumen con sus avisos; solo **Crear** lo registra, todo en una transacción, y
+    Cancelar, Esc o cerrar la ventana no dejan nada. Son dos operaciones de la versión activa, con
+    sus cifras con tipo y procedencia y el nombre de la operación como ámbito (dos envolventes de
+    la misma versión no se pisan): quedan obsoletas con su causa si cambia una entrada (una
+    restricción, un sector, una búsqueda, un perfil o un talud), se recalculan con «Recalcular lo
+    obsoleto», se congelan con su revisión y se reproducen. Al congelar, el diálogo lista también
+    cada superficie de diseño sin verificación al día, como las de la 012.
+  - **Ver y exportar**: la envolvente, la superficie de diseño y las cotas de berma se cargan en
+    la vista como objetos de tipo **Diseño**; la barra N «Diseño» enseña su estado, sus
+    parámetros, las semillas y el dominio, las restricciones aplicadas con la marca de búsqueda
+    pendiente y sus cifras, y su botón **Exportar rejilla a GeoTIFF…** escribe el GeoTIFF que QGIS
+    abre georreferenciado (Float32, −9999 como «sin dato»).
+  - **Rendimiento**, medido en el PC de referencia con una rejilla de 2,8 millones de celdas, en
+    disco local y con el equipo cargado por otros programas: el *chamfer*, 0,13 s; con 20 sectores,
+    0,52 s; la euclídea exacta, de 3,1 s a 9,9 s (la cifra de la exacta, ≤ 6 s con semillas de
+    contorno y ≤ 30 s con una zona maciza, la aprobó Samuel); el cálculo completo con diez perfiles,
+    4,9 s; 436 MiB de pico; activar la vista previa con 100.000 semillas, 20 sectores y 500
+    restricciones, de 0,80 a 0,98 s y cada redibujo, de 0,4 a 0,6 ms; la llamada más larga, 125 ms
+    (≤ 0,2 s), y la transacción final, de 40 a 59 ms. `tools/check.py` pasa de 41,6 s a unos 45 s:
+    el límite de 45 s lo decide Samuel.
+  - **Sin dependencias nuevas**: los dos algoritmos son código propio sobre el numpy de Blender
+    (la transformada de distancia separable no resuelve la euclídea con semillas de cotas
+    distintas; `docs/trampas.md`). Una corrección de un texto: el aviso de un sector pendiente en
+    la vista previa dice en inglés «Find untouchable elements by sector…», como la orden.
 
 - **Límites legales y restricciones** (spec 012). Antes de diseñar hay que saber dónde no se puede
   cortar ni rellenar, y después hay que poder demostrarlo en m³: lo que pasó en el proyecto de

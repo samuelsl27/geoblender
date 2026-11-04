@@ -685,6 +685,8 @@ class ProjectSeedsTest(dfx.DesignProjectCase):
         self.assertIn("Sector «Sector 2»: búsqueda de intocables pendiente", warning)
         self.assertIn("Buscar elementos intocables por sector…", warning)
         self.assertIn("untouchables search pending", summary.warnings("en")[0])
+        # La orden se llama como en el catálogo (07_design.toml): «Find», no «Search».
+        self.assertIn("Find untouchable elements by sector…", summary.warnings("en")[0])
         self.assertEqual([(item.code, item.touched, item.pending) for item in bounded.sectors],
                          [("sector_1", True, False), ("sector_2", False, True)])
         self.assertNotIn("des.preview_sector_pending", [notice.code for notice in bounded.notices])

@@ -348,7 +348,7 @@ CATALOG: tuple[Message, ...] = (
     Message(
         "des.preview_sector_pending",
         "Sector «{sector}»: untouchables search pending; nothing is calculated while the work "
-        "domain touches it. Search in Design ▸ Legal limits and constraints ▸ Search "
+        "domain touches it. Search in Design ▸ Legal limits and constraints ▸ Find "
         "untouchable elements by sector….",
         "Sector «{sector}»: búsqueda de intocables pendiente; no se calcula nada mientras el "
         "dominio de trabajo lo toque. Búsqueda en Diseño ▸ Límites y restricciones ▸ Buscar "
