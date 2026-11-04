@@ -70,10 +70,12 @@ una superficie de diseño o una rejilla de cotas de berma cargada en la vista po
 ``bl.scene.des_views``), lo que dice de él el proyecto (:func:`item_lines`; todo lo da el proyecto, nada
 se calcula aquí): su estado, **al día u obsoleto con su causa** (``core.provenance.stale``); en alerta,
 la marca «búsqueda de intocables pendiente» con el sector, si un sector que tocó su dominio de trabajo
-ya no tiene la búsqueda vigente (``design.sectors.pending_marks``, RF-013-06); los ajustes de su
-operación y los **parámetros** que leyó, cada uno con su valor, su insignia de tipo, su ámbito, su
-origen y su decisor, y lo que valen hoy si cambiaron (``core.provenance.lineage``); las **semillas** y el
-dominio de trabajo (los ajustes de la envolvente: la de un escalonado, la suya); las **restricciones
+ya no tiene la búsqueda vigente (``design.sectors.pending_marks``, RF-013-06; una fila por sector
+pendiente, y otra vez como primeras filas del apartado «Cifras», junto a ellas: es del estado de ahora
+y no del cálculo, no se escribe en el proyecto y el informe y las cifras guardados no la llevan); los
+ajustes de su operación y los **parámetros** que leyó, cada uno con su valor, su insignia de tipo, su
+ámbito, su origen y su decisor, y lo que valen hoy si cambiaron (``core.provenance.lineage``); las
+**semillas** y el dominio de trabajo (los ajustes de la envolvente: la de un escalonado, la suya); las **restricciones
 aplicadas** (las activas en su versión) y sus **cifras** registradas con su insignia. Sin objeto de
 diseño activo, enseña el resumen de la vista previa de las semillas mientras lo hay. Las mismas líneas,
 sin las cifras (que ya son las de su ficha), las enseñan «Elemento activo» y «Cifras de la selección»
@@ -1057,7 +1059,8 @@ MAX_CONSTRAINT_LINES = 10
 class ItemLines:
     """Lo que dice el proyecto del dato de un objeto de diseño (:func:`item_lines`): su título
     («Superficie de diseño · Hoyo»), las líneas de su ficha (estado, marcas, ajustes, parámetros,
-    semillas y dominio, restricciones) y, aparte, sus cifras registradas."""
+    semillas y dominio, restricciones) y, aparte, sus cifras registradas, que empiezan por la marca de
+    la búsqueda pendiente si la hay (sin ``uid``: no es una cifra)."""
 
     title: str
     lines: tuple[CardLine, ...]
@@ -1214,7 +1217,8 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     """Lo que dice el proyecto del dato ``uid`` de un diseño (véase el módulo), en una instantánea y
     sin escribir nada; ``None`` si el proyecto ya no lo tiene. Su estado es el de
     ``core.provenance.stale`` (con su causa); los ajustes, los parámetros y la operación, los de
-    ``core.provenance.lineage``; la marca de la búsqueda pendiente, la de ``design.sectors``; las
+    ``core.provenance.lineage``; la marca de la búsqueda pendiente, la de ``design.sectors`` (en las
+    líneas y otra vez como primeras filas de las cifras, ámbar y una por sector pendiente); las
     semillas y el dominio, los de los ajustes de la envolvente (la de un escalonado, la que
     escaló); las restricciones, las activas en su versión (``gis.masks.store``) y las cifras, las de
     su operación. Los errores del proyecto (``GeoblenderError``, ``sqlite3.Error``) siguen."""
@@ -1256,8 +1260,9 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     except ValueError:
         touched = ()
         LOGGER.info("Los sectores que tocó «%s» no se pueden leer", found.record.name)
-    lines += [CardLine(ROW_FIELD, mark.text(shown), alert=True)
-              for mark in pending_marks(touched, sectors)]
+    marks = [CardLine(ROW_FIELD, mark.text(shown), alert=True)
+             for mark in pending_marks(touched, sectors)]
+    lines += marks
     if link.settings_text:
         lines.append(CardLine(ROW_FIELD, link.settings_text))
     assigned = profiles_text(settings, profile_names, names)
@@ -1285,7 +1290,9 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
         lines.append(CardLine(ROW_NONE, tr("The seeds and the domain are not recorded")))
     lines.append(CardLine(ROW_HEADING, tr("Applied constraints")))
     lines += _constraint_lines(listed, version_code)
-    figures = [CardLine(ROW_HEADING, tr("Figures"))]
+    # La marca también junto a las cifras (RF-013-06): una fila por sector pendiente, antes de ellas;
+    # es del estado de ahora y no una cifra (sin ``uid``): las registradas no la llevan.
+    figures = [CardLine(ROW_HEADING, tr("Figures")), *marks]
     figures += [CardLine(ROW_FIGURE, f"{provenance.badge(figure.kind)} "
                                      f"{figure.text(language=shown)}", uid=figure.uid)
                 for figure in found.figures] or [CardLine(ROW_NONE, tr("No figures recorded"))]

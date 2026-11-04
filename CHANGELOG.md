@@ -93,8 +93,8 @@ relleno, confirmar, congelar, reproducir y exportar), con casos de referencia ca
 cono de un punto, el punto fijo, el escalonado de referencia, la berma de 19,58 m, el recorte
 final, las máscaras, la corta circular de 1.308.944 m³) y con datos del tamaño de un proyecto real
 (una rejilla de 2,8 millones de celdas, 20 sectores, 10 perfiles y 500 restricciones) en disco
-local, y pasó su verificación única (04/11/2026), cuyos hallazgos ya están corregidos salvo uno que
-se puede dejar (la marca de la búsqueda pendiente junto a las cifras); faltan verlo en la pantalla
+local, y pasó su verificación única (04/11/2026), cuyos hallazgos ya están corregidos (la marca de la
+búsqueda pendiente sale también junto a las cifras); faltan verlo en la pantalla
 de referencia (los colores de la vista previa, los diálogos, el avance y Esc, la barra N «Diseño»),
 el GeoTIFF abierto en QGIS 4.2, las medidas en `Z:`, la comparación con el proyecto de referencia,
 que se ejecuta a petición (CE-013-10), y que un ingeniero de IMGA defina una semilla, elija un
@@ -169,9 +169,12 @@ menos de 15 minutos y sin ayuda (CE-013-11).
     cada superficie de diseño sin verificación al día, como las de la 012.
   - **Ver y exportar**: la envolvente, la superficie de diseño y las cotas de berma se cargan en
     la vista como objetos de tipo **Diseño**; la barra N «Diseño» enseña su estado, sus
-    parámetros, las semillas y el dominio, las restricciones aplicadas con la marca de búsqueda
-    pendiente y sus cifras, y su botón **Exportar rejilla a GeoTIFF…** escribe el GeoTIFF que QGIS
-    abre georreferenciado (Float32, −9999 como «sin dato»).
+    parámetros, las semillas y el dominio, las restricciones aplicadas y sus cifras, y, en ámbar y
+    una por sector, la marca de búsqueda de intocables pendiente si un sector que tocó el cálculo ha
+    perdido su búsqueda (bajo su estado y como primera fila de sus cifras: es del estado de ahora y
+    no se escribe en el proyecto, así que el informe y las cifras guardados no cambian); su botón
+    **Exportar rejilla a GeoTIFF…** escribe el GeoTIFF que QGIS abre georreferenciado (Float32,
+    −9999 como «sin dato»).
   - **Rendimiento**, medido en el PC de referencia con una rejilla de 2,8 millones de celdas, en
     disco local y con el equipo cargado por otros programas: el *chamfer*, 0,13 s; con 20 sectores,
     0,52 s; la euclídea exacta, de 3,1 s a 9,9 s (la cifra de la exacta, ≤ 6 s con semillas de

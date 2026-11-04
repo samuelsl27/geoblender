@@ -17,8 +17,8 @@ describe; estas pruebas avisan de que se separan:
   catálogo** (los de ``core/i18n/messages.toml``, los de ``design.messages`` y los del catálogo de
   órdenes) **o es un ejemplo que la propia prueba lista**; las rutas de los datos, los parámetros y
   las órdenes son las del código; el cierre del proyecto a mitad de un cálculo y la marca de la
-  búsqueda pendiente salen como los escribe el código; y dice lo que hace la regularización entre
-  sectores cuando baja la envolvente (T35);
+  búsqueda pendiente (y dónde sale: bajo el estado y junto a las cifras, T38) salen como los escribe
+  el código; y dice lo que hace la regularización entre sectores cuando baja la envolvente (T35);
 - el índice de specs, el roadmap, el ``CHANGELOG.md`` del código y la ficha de ``des`` dicen el estado
   de la 013 tras su verificación única (T34 a T37).
 
@@ -575,10 +575,11 @@ class GuideDocTest(unittest.TestCase):
                 self.assertNotIn(stale, text)
 
     def test_the_pending_search_mark_is_quoted_as_it_comes_out(self) -> None:
-        """RF-013-06 (F-4, punto 3): la marca de la búsqueda pendiente sale «Búsqueda de intocables
-        pendiente en «Sector 2».» (el nombre entre «», y el punto final); la guía la cita así en
-        §3.2 y en §9, y dice dónde sale (la barra N, junto a su estado; el informe guardado no
-        cambia)."""
+        """RF-013-06 (F-4, punto 3; T38, F-2): la marca de la búsqueda pendiente sale «Búsqueda de
+        intocables pendiente en «Sector 2».» (el nombre entre «», y el punto final); la guía la cita
+        así en §3.2 y en §9, y dice dónde sale: la barra N, bajo su estado y como las primeras filas
+        del bloque «Cifras», en ámbar y una por sector pendiente; no se escribe en el proyecto, así
+        que el informe y las cifras guardados no cambian ni la llevan (§3.2 y §10)."""
         mark = dsectors.PendingMark("sector_2", "Sector 2")
         self.assertEqual(mark.text("es"), MARK_ES)
         self.assertEqual(dmessages.render("des.sector_pending_mark", sector="Sector 2"),
@@ -590,8 +591,19 @@ class GuideDocTest(unittest.TestCase):
                 self.assertIn(f"«{MARK_ES}»", text)
                 self.assertNotIn("pendiente en Sector 2", text)
         notes = self.guide_section("### 3.2 Los límites, las restricciones y los sectores al día")
-        self.assertIn("en la barra N", notes)
-        self.assertIn("no cambia", notes)
+        for fact in ("en la barra N", "debajo de su estado", "en ámbar y una por cada sector pendiente",
+                     "como las primeras filas del bloque «Cifras»", "justo encima de las cifras",
+                     "es del estado de ahora, no del cálculo", "no se escribe en el proyecto",
+                     "no cambian", "no la llevan"):
+            with self.subTest(section="3.2", fact=fact):
+                self.assertIn(fact, notes)
+        shown = self.guide_section("## 10. Ver el resultado y exportarlo")
+        for fact in ("la marca de la búsqueda pendiente, una por sector (§3.2)",
+                     "las **cifras** de la operación, que empiezan por esa misma marca",
+                     "las cifras guardadas no cambian"):
+            with self.subTest(section="10", fact=fact):
+                self.assertIn(fact, shown)
+        self.assertNotIn("y la marca de la búsqueda pendiente;", shown)
 
     def test_the_regularization_that_lowers_the_envelope_is_told(self) -> None:
         """RF-013-22, RF-013-26, RF-013-30 (spec 0.4; T35; F-4, punto 4): la guía dice, en §8 y en el

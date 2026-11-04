@@ -24,7 +24,9 @@ mismo estado:
   la barra N enseña su estado, sus parámetros con insignia y origen, las semillas, el dominio, las
   restricciones aplicadas y las cifras registradas.
 - RF-013-06, RF-013-32 (d): con la búsqueda de un sector pendiente, el resultado lleva la marca con el
-  sector; un parámetro cambiado lo deja obsoleto con su causa; las dos, en la barra N.
+  sector; un parámetro cambiado lo deja obsoleto con su causa; las dos, en la barra N. La marca sale
+  además como primera fila del apartado «Cifras», en ámbar, una por sector pendiente y ninguna sin
+  pendientes ni con la búsqueda hecha después (T38; F-2); nada se escribe en el proyecto.
 - RF-010-06, RF-010-08 (e): «Elemento activo» y «Cifras de la selección» enseñan las mismas líneas.
 - RF-013-03, principio 10 (f): sin objeto de diseño activo, la barra N enseña el resumen de la vista
   previa de las semillas; en inglés y en español.
@@ -73,8 +75,11 @@ LEGAL = (4.0, 4.0, 52.0, 52.0)
 PERIMETER = (2.0, 2.0, 56.0, 56.0)
 PIT = (22.0, 22.0, 34.0, 34.0)
 SECTORS = {"Sector 1": (2.0, 2.0, 30.0, 56.0), "Sector 2": (30.0, 2.0, 56.0, 56.0)}
+MOVED_SECTOR_1 = (2.0, 2.0, 30.0, 54.0)
 MOVED_SECTOR_2 = (30.0, 2.0, 54.0, 56.0)
-EXPL = "EXPL_5_60_6"
+MARK_1 = "Búsqueda de intocables pendiente en «Sector 1»."
+MARK = "Búsqueda de intocables pendiente en «Sector 2»."
+EXPL ="EXPL_5_60_6"
 EXPL_VALUES = {"height": "5", "face": "60", "berm": "6", "anchor": "100"}
 NAME = "Hoyo"
 ENVELOPE, DESIGN, BERMS = "des_env_hoyo", "des_srf_hoyo", "des_brm_hoyo"
@@ -314,6 +319,20 @@ class DesignViewsTest(unittest.TestCase):
     def texts(self) -> list[str]:
         return [text for _kind, text, _alert in self.lines()]
 
+    def split(self) -> tuple[list[tuple[str, str, bool]], list[tuple[str, str, bool]]]:
+        """Las líneas de la barra N ya leídas, partidas en lo que va antes del apartado «Cifras» (la
+        ficha) y ese apartado (su encabezado y lo que sigue hasta el final)."""
+        rows = self.lines()
+        start = next(index for index, (kind, text, _alert) in enumerate(rows)
+                     if kind == "heading" and text == "Cifras")
+        return rows[:start], rows[start:]
+
+    def alert_texts(self) -> str:
+        """Lo que la barra N dibuja en alerta (en ámbar), con las etiquetas partidas al ancho de la
+        barra vueltas a unir con un espacio."""
+        layout = draw(getattr(bpy.types, PANEL), bpy.context)
+        return " ".join(item.text for item in layout.of_kind("label") if item.alert)
+
     # --- Pruebas ------------------------------------------------------------------------------
 
     def test_a_the_kind_the_loaders_and_the_side_panel(self) -> None:
@@ -478,9 +497,16 @@ class DesignViewsTest(unittest.TestCase):
         """RF-013-06, RF-013-32 (M4, M6): si el sector 2 pierde su búsqueda de intocables (se declara
         con otro contorno), la barra N de un resultado cuyo dominio lo tocó lleva, en alerta, la marca
         «Búsqueda de intocables pendiente en «Sector 2»» y, si cambia el espesor mínimo que leyó, el
-        resultado queda «Obsoleto» con su causa; el sector 1, con su búsqueda vigente, no se marca."""
+        resultado queda «Obsoleto» con su causa; el sector 1, con su búsqueda vigente, no se marca.
+        Antes de perderla, el apartado «Cifras» no lleva marca (F-2, T38); con ella, la lleva como su
+        primera fila, en ámbar, y las cifras siguen iguales."""
         self.choose(DESIGN)
         self.assertFalse([text for text in self.texts() if "pendiente" in text])
+        self.assertNotIn(MARK, self.alert_texts())
+        _card, plain = self.split()  # sin marcas, el apartado «Cifras» es el de siempre
+        self.assertEqual(plain[0], ("heading", "Cifras", False))
+        self.assertGreater(len(plain), 1)
+        self.assertEqual({kind for kind, _text, _alert in plain[1:]}, {"figure"})
         self.declare_sectors({"Sector 1": SECTORS["Sector 1"], "Sector 2": MOVED_SECTOR_2})
         store = _module("core.params").ParameterStore(self.project)
         with self.project.write_transaction() as conn:
@@ -489,10 +515,14 @@ class DesignViewsTest(unittest.TestCase):
                          reason=REASON)
         self.project.refresh_header()
         self.assertTrue(self.ui_provenance.refresh(force=True))  # la escucha lee la ficha otra vez
-        lines = self.lines()
+        lines, figures = self.split()
         marks = [(text, alert) for _kind, text, alert in lines if "pendiente" in text]
-        self.assertEqual(marks, [("Búsqueda de intocables pendiente en «Sector 2».", True)])
-        stale = [(text, alert) for _kind, text, alert in lines if text.startswith("Obsoleto")]
+        self.assertEqual(marks, [(MARK, True)])  # en la ficha, donde ya salía
+        # Y junto a las cifras (F-2): la primera fila de su apartado, en ámbar, y las cifras, como antes.
+        self.assertEqual(figures[:2], [("heading", "Cifras", False), ("field", MARK, True)])
+        self.assertEqual(figures[2:], plain[1:])
+        self.assertEqual(self.alert_texts().count(MARK), 2)  # las dos se dibujan en alerta
+        stale =[(text, alert) for _kind, text, alert in lines if text.startswith("Obsoleto")]
         self.assertEqual(len(stale), 1, lines)
         self.assertTrue(stale[0][1])
         self.assertNotIn("Al día", self.texts())
@@ -508,7 +538,7 @@ class DesignViewsTest(unittest.TestCase):
                           and alert])
         # También en la envolvente, que lee los mismos sectores.
         self.choose(ENVELOPE)
-        self.assertIn("Búsqueda de intocables pendiente en «Sector 2».", self.texts())
+        self.assertIn(MARK, self.texts())
         # Una restricción desactivada en la versión deja de estar entre las aplicadas.
         self.assertIn("Preferible no afectar · Hoyo", self.texts())
         with self.project.write_transaction() as conn:
@@ -520,6 +550,61 @@ class DesignViewsTest(unittest.TestCase):
         self.assertTrue(self.panels.read_selected(bpy.context))
         self.assertNotIn("Preferible no afectar · Hoyo", self.texts())
         self.assertIn("Límite legal · Concesión", self.texts())
+
+    def test_d_b_the_pending_mark_is_the_first_row_of_the_figures_one_per_pending_sector(self) -> None:
+        """RF-013-06 (F-2, T38): la marca de la búsqueda pendiente sale también como las primeras
+        filas del apartado «Cifras» de la barra N, tras su encabezado, una por sector pendiente (en
+        el orden de los sectores), en ámbar y sin el uid de ninguna cifra (no es una cifra: el clic y
+        la selección de las cifras no la ven), y sigue donde ya salía (la ficha); con la búsqueda
+        hecha después desaparece de las dos; las cifras registradas, el orden y los textos son los
+        mismos con y sin marca; ver no escribe nada en el proyecto (la marca es del estado de ahora,
+        no del cálculo: el informe y las cifras guardados no la llevan)."""
+        self.choose(DESIGN)
+        _card, one = self.split()  # tras la prueba anterior, solo el sector 2 está pendiente
+        self.assertEqual([text for _kind, text, _alert in one if "intocables pendiente" in text],
+                         [MARK])
+        figures = one[2:]
+        self.assertGreater(len(figures), 0)
+        self.assertEqual({kind for kind, _text, _alert in figures}, {"figure"})
+        stored = self.rows("SELECT count(*) FROM gb_figure AS f WHERE operation_uid = "
+                           "(SELECT operation_uid FROM gb_dataset WHERE uid = ?)", self.uids[DESIGN])
+        self.assertEqual(len(figures), int(stored[0][0]))  # ninguna cifra más ni menos
+
+        # Los dos sectores pendientes: una fila cada uno, en el orden de los sectores.
+        self.declare_sectors({"Sector 1": MOVED_SECTOR_1, "Sector 2": MOVED_SECTOR_2})
+        self.project.refresh_header()
+        files, operations = self.files(), self.operations()  # desde aquí, solo se lee
+        self.assertTrue(self.panels.read_selected(bpy.context))
+        lines, both = self.split()
+        self.assertEqual(both[:3], [("heading", "Cifras", False), ("field", MARK_1, True),
+                                    ("field", MARK, True)])
+        self.assertEqual(both[3:], figures)
+        self.assertEqual([text for _kind, text, _alert in lines if "intocables pendiente" in text],
+                         [MARK_1, MARK])  # la ficha las conserva, una vez cada una
+        self.assertEqual({row.uid for row in self.view.item if row.kind != "figure"}, {""})
+        self.assertNotIn("", {row.uid for row in self.view.item if row.kind == "figure"})
+        drawn = self.alert_texts()
+        self.assertEqual((drawn.count(MARK_1), drawn.count(MARK)), (2, 2))  # ficha y cifras
+        self.choose(ENVELOPE)  # también la envolvente, que lee los mismos sectores
+        self.assertEqual([text for _kind, text, _alert in self.split()[1]
+                          if "intocables pendiente" in text], [MARK_1, MARK])
+        self.assertEqual((self.files(), self.operations()), (files, operations))
+
+        # Con la búsqueda hecha después, desaparecen: el apartado vuelve a ser el de siempre.
+        self.close_search("sector_1", 3)
+        self.close_search("sector_2", 4)
+        self.project.refresh_header()
+        files, operations = self.files(), self.operations()
+        for name in (ENVELOPE, DESIGN):
+            with self.subTest(search_done=name):
+                self.choose(name)
+                _card, block = self.split()
+                self.assertFalse([text for text in self.texts() if "intocables pendiente" in text])
+                self.assertEqual(block[0], ("heading", "Cifras", False))
+                self.assertEqual({kind for kind, _text, _alert in block[1:]}, {"figure"})
+                self.assertNotIn("Búsqueda de intocables", self.alert_texts())
+        self.assertEqual(block[1:], figures)  # el de la superficie de diseño: las mismas cifras
+        self.assertEqual((self.files(), self.operations()), (files, operations))
 
     def test_e_the_active_item_and_the_selection_figures_show_the_same_lines(self) -> None:
         """RF-010-06, RF-010-08, RF-013-32: «Elemento activo» enseña, tras su ficha, las líneas de la
