@@ -7745,6 +7745,9 @@ es = "Calculando la envolvente… {percent} % · Esc: cancelar"
 ["Calculation cancelled: nothing has been left half-done"]
 es = "Cálculo cancelado: no queda nada a medias"
 
+["The project was closed while the design «{name}» was being computed: nothing has been left half-done"]
+es = "Se cerró el proyecto mientras se calculaba «{name}»: no ha quedado nada a medias"
+
 ["The envelope «{name}» is already created: only its benching has not been computed"]
 es = "La envolvente «{name}» ya está creada: solo falta calcular su escalonado"
 

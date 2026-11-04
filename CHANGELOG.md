@@ -182,7 +182,10 @@ ayuda (CE-013-11).
   - **Sin dependencias nuevas**: los dos algoritmos son código propio sobre el numpy de Blender
     (la transformada de distancia separable no resuelve la euclídea con semillas de cotas
     distintas; `docs/trampas.md`). Una corrección de un texto: el aviso de un sector pendiente en
-    la vista previa dice en inglés «Find untouchable elements by sector…», como la orden.
+    la vista previa dice en inglés «Find untouchable elements by sector…», como la orden. Otra:
+    si se cierra el proyecto a mitad de un cálculo del diseño, el mensaje dice «Se cerró el
+    proyecto mientras se calculaba «Hoyo»: no ha quedado nada a medias» y no que se cubicaba (el de
+    la cubicación no cambia).
 
 - **Límites legales y restricciones** (spec 012). Antes de diseñar hay que saber dónde no se puede
   cortar ni rellenar, y después hay que poder demostrarlo en m³: lo que pasó en el proyecto de

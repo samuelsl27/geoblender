@@ -41,6 +41,8 @@ estado:
   rejilla del objeto activo.
 - RF-013-31, RF-013-17 (k, T28; M7): «Recalcular lo obsoleto» rehace por la cola de ``des`` lo que
   dejó obsoleto un parámetro, sin pedir confirmación y con su avance.
+- RF-013-33, D-14 (l, T37): cerrar el proyecto a mitad de un cálculo lo para sin dejar nada y lo dice
+  con su propio texto («Se cerró el proyecto mientras se calculaba «Cierre»…»), no el de la cubicación.
 - Principio 8 (z): desactivar Geoblender quita la orden y descarta el cálculo abierto.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
@@ -1070,6 +1072,42 @@ class ComputeEnvelopeTest(unittest.TestCase):
         self.i18n.set_language("en")
         self.assertEqual(self.i18n.tr(self.des_ops.RECOMPUTING, name="Hoyo", percent=40),
                          "Recomputing «Hoyo»… 40 %")
+
+    def test_l_closing_the_project_midway_says_so_in_its_own_words(self) -> None:
+        """RF-013-33, D-14 (F-4 de la verificación única, T37): si el proyecto se cierra a mitad de
+        un cálculo, el modal se para sin dejar nada y dice «Se cerró el proyecto mientras se
+        calculaba «Cierre»: no ha quedado nada a medias» (en inglés, su propio *msgid*), no que se
+        cubicaba; el texto de la cubicación (011), que usa ``res.py``, sigue siendo el suyo."""
+        closed = ("The project was closed while the design «{name}» was being computed: nothing "
+                  "has been left half-done")
+        cubication = ("The project was closed while «{name}» was being computed: nothing has been "
+                      "left half-done")
+        files = self.names()
+        for language, wanted in (
+                ("es", "Se cerró el proyecto mientras se calculaba «Cierre»: no ha quedado nada a "
+                       "medias"),
+                ("en", closed.format(name="Cierre"))):
+            with self.subTest(idioma=language):
+                self.i18n.set_language(language)
+                with mock.patch.object(self.cls, "STEP_BUDGET_S", 1e-9):
+                    modal = self.start(name="Cierre")
+                    self.drive(modal, stop_after=2)  # ya ha empezado y aún no ha acabado
+                    with mock.patch.object(self.ps, "current", return_value=None):  # se cierra
+                        self.assertEqual(modal.modal(bpy.context, TIMER), {"CANCELLED"})
+                self.assertEqual(modal.report_log, [wanted])
+                self.assertIsNone(modal._steps)
+                self.assertIsNone(self.des_ops.calculation())
+                self.assertEqual(self.des_ops._NEXT, [])  # noqa: SLF001 - ni el escalonado pendiente
+                self.assertEqual(self.operations(ENVELOPE_TYPE, "running"), [])
+                self.assertEqual(self.temporaries(), [])
+                self.assertEqual(self.names(), files)
+        self.i18n.set_language("es")
+        self.assertEqual(self.i18n.tr(closed, name="Hoyo"),
+                         "Se cerró el proyecto mientras se calculaba «Hoyo»: no ha quedado nada a "
+                         "medias")
+        self.assertEqual(self.i18n.tr(cubication, name="Hoyo"),
+                         "Se cerró el proyecto mientras se cubicaba «Hoyo»: no ha quedado nada a "
+                         "medias")
 
     def test_z_disabling_geoblender_removes_the_command_and_drops_the_calculation(self) -> None:
         """Principio 8, D-14: con un cálculo abierto, desactivar Geoblender lo descarta (no queda

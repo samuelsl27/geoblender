@@ -1606,8 +1606,8 @@ class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOper
         if step.result is None:
             if project_session.current() is not getattr(self, "_project", None):
                 return self._fail(context, tr(
-                    "The project was closed while «{name}» was being computed: nothing has been "
-                    "left half-done", name=getattr(self, "_name", "")))
+                    "The project was closed while the design «{name}» was being computed: nothing "
+                    "has been left half-done", name=getattr(self, "_name", "")))
             return None
         self._done(context)
         self._finished(context, step.result)
