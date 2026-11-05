@@ -30,6 +30,9 @@ función que calculó.
   la torre hace fallar solo la torre.
 - **m** (CE-013-06): al cambiar una restricción, las operaciones y las superficies quedan obsoletas con su
   causa, en las dos versiones; lo congelado no cambia.
+- **n** (RF-013-31, T43, hallazgo (7) del H3): «Verificar un diseño por recinto…» y «Entre dos superficies…»
+  proponen la superficie de diseño seleccionada: la final es ella y la partida, la de su ficha; el nombre
+  propuesto sigue a las finales que se marcan después y uno tecleado no se toca.
 
 Ninguna llamada del modal pasa de 0,2 s de CPU (RNF-013-07, sin la transacción final de «Crear», que se
 mide aparte). Un proyecto por clase y la extensión sin importar otra vez (RNF-001-01). Se ejecuta con
@@ -41,6 +44,7 @@ import hashlib
 import importlib
 import json
 import math
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -57,6 +61,7 @@ import numpy as np
 from tests.support import blender_ext
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
+from tests.support.fake_layout import operator_self
 from tests.support.trees import remove_tree
 
 OPEN = "geoblender.des_compute_envelope"
@@ -1420,3 +1425,164 @@ class DesignH2Test(unittest.TestCase):
         self.assertEqual(self.frozen(self.r1), frozen, "lo congelado no cambia")
         with self.assertRaises(self.access.MaskError):
             self.access.load_masks(self.project, self.v01.uid)
+
+    # --- n: la ventana de verificar propone el diseño seleccionado (T43) ---------------------------------
+
+    def marked_object(self, kind: str, uid: str) -> Any:
+        """Un objeto de Blender de clase ``kind`` que muestra el dato ``uid`` (``Object.geoblender``), sin
+        cargar su malla: lo que mira la propuesta de los diálogos de las superficies seleccionadas."""
+        obj = bpy.data.objects.new("T43", None)
+        self.addCleanup(bpy.data.objects.remove, obj)
+        obj.geoblender.kind = kind
+        obj.geoblender.dataset_uid = uid
+        return obj
+
+    def surface_uid(self, name: str) -> str:
+        """El uid del dato vigente ``name``, de V01 o del proyecto (los ``gis_dtm_``)."""
+        ((uid,),) = self.rows("SELECT uid FROM gb_dataset WHERE name = ? AND status = 'current' AND "
+                              "version_uid IN (?, '')", name, self.v01.uid)
+        return str(uid)
+
+    def open_verify(self, selected: list[Any], **attributes: Any) -> tuple[Any, list[str]]:
+        """Abre «Verificar un diseño por recinto…» con ``selected`` seleccionados (un gestor de ventanas
+        simulado y el operador simulado de la clase real): el operador, con lo que propuso, y los
+        identificadores marcados como finales en la ventana."""
+        cls = self.commands.registered_class(VERIFY)
+        given = {key for key in attributes if key in ("start", "name")}
+        dialog = mock.Mock(return_value={"RUNNING_MODAL"})
+        context = SimpleNamespace(window=None, selected_objects=selected,
+                                  window_manager=SimpleNamespace(invoke_props_dialog=dialog))
+        values = {"name": "", "start": "", "finals": "", "start_elevation": "",
+                  "final_elevation": "", "in_steps": False, **attributes}
+        fake = operator_self(cls, report=lambda kind, text: None, **values,
+                             properties=SimpleNamespace(is_property_set=lambda name: name in given))
+        self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+        view = _module("bl.ui.constraint_panels").view()
+        return fake, [item.name for item in view.verify_choices if item.use]
+
+    def open_cubication(self, selected: list[Any]) -> Any:
+        """La propuesta de «Entre dos superficies…» con ``selected`` seleccionados: el operador simulado."""
+        cls = self.commands.registered_class("geoblender.res_compute_volume_between_surfaces")
+        fake = operator_self(cls, name="", start="", final="", start_elevation="",
+                             final_elevation="",
+                             properties=SimpleNamespace(is_property_set=lambda name: False))
+        context = SimpleNamespace(window=None, selected_objects=selected)
+        _module("bl.ui.res_panels").refresh_choices(self.project, self.v01.uid)
+        cls._propose(fake, context, self.project)
+        return fake
+
+    def test_n_verifying_proposes_the_selected_design_surface(self) -> None:
+        """RF-013-31, RF-011-06, RF-012-21, T43 (hallazgo (7) del H3): con la superficie de diseño del hueco
+        seleccionada (el objeto ``DESIGN`` de ``des_srf_hueco``, cargado en la vista con la orden), la ventana
+        de verificar marca ese dato como único final, pone de partida la de su ficha (``gis_dtm_partida``) y
+        propone «Verificación de des_srf_hueco»; la envolvente y las bermas seleccionadas no cuentan (todo
+        como sin selección); con otra superficie seleccionada se ordenan por la cota media (D-31 de la
+        011), con dos diseños también; lo que pasó quien la lanza no cambia; si la partida de la ficha ya
+        no está en la lista o no se puede leer, lo de siempre. «Entre dos superficies…» reconoce el mismo
+        objeto. El nombre propuesto sigue a las finales que se marcan después y uno tecleado no se toca."""
+        self.set_active(self.v01)
+        res_ops = _module("bl.ops.res")
+        hueco = {family: self.dataset_uid(family, "Hueco") for family in ("env", "srf", "brm")}
+        montera_design = self.dataset_uid("srf", "Montera")
+        partida, montera = self.surface_uid(self.start_name), self.surface_uid("gis_dtm_montera")
+        self.assertEqual(self.start_name, "gis_dtm_partida")
+
+        # La superficie de diseño cargada en la vista con la orden (el objeto DESIGN real).
+        self.assertEqual(bpy.ops.geoblender.core_load_into_view(datasets=hueco["srf"]), {"FINISHED"})
+        (loaded,) = [obj for obj in bpy.data.objects
+                     if obj.geoblender.kind == "DESIGN" and obj.geoblender.dataset_uid == hueco["srf"]]
+        self.addCleanup(bpy.data.objects.remove, loaded)
+
+        none, marked_none = self.open_verify([])
+        view = _module("bl.ui.constraint_panels").view()
+        items = [item.name for item in view.verify_choices]
+        self.assertGreater(len(items), 4)
+        self.assertEqual((none.start, marked_none), (items[0], [items[1]]),
+                         "sin selección: la primera y la segunda")
+        self.assertNotIn("des_srf_hueco", (none.start, *marked_none))
+
+        fake, marked = self.open_verify([loaded])
+        self.assertEqual((fake.start, marked), ("gis_dtm_partida", ["des_srf_hueco"]))
+        self.assertEqual(fake.name, "Verificación de des_srf_hueco")
+
+        # La envolvente y las bermas no son finales: todo queda como sin selección.
+        for kinds in (("env",), ("brm",), ("env", "brm")):
+            with self.subTest(seleccionados=kinds):
+                chosen = [self.marked_object("DESIGN", hueco[family]) for family in kinds]
+                other, marked = self.open_verify(chosen)
+                self.assertEqual((other.start, marked, other.name),
+                                 (none.start, marked_none, none.name))
+        other, marked = self.open_verify([self.marked_object("DESIGN", hueco["env"]), loaded])
+        self.assertEqual((other.start, marked), ("gis_dtm_partida", ["des_srf_hueco"]))
+
+        # Con un terreno además, o con dos diseños: se ordenan por la cota media (D-31), la más alta es la partida.
+        terrain = self.marked_object("DTM", montera)  # 660 m, más alto que cualquier diseño
+        for selected in ([loaded, terrain], [terrain, loaded]):
+            other, marked = self.open_verify(selected)
+            self.assertEqual((other.start, marked), ("gis_dtm_montera", ["des_srf_hueco"]))
+        flat = self.marked_object("DTM", partida)  # 650 m, el terreno de partida del diseño
+        other, marked = self.open_verify([loaded, flat])
+        self.assertEqual((other.start, marked), ("gis_dtm_partida", ["des_srf_hueco"]))
+        cut, fill = self.grid_of("srf", "Hueco"), self.grid_of("srf", "Montera")
+        common = np.isfinite(cut) & np.isfinite(fill)
+        self.assertNotEqual(float(cut[common].mean()), float(fill[common].mean()))
+        higher, lower = (("des_srf_hueco", "des_srf_montera") if cut[common].mean() > fill[common].mean()
+                         else ("des_srf_montera", "des_srf_hueco"))
+        other, marked = self.open_verify([loaded, self.marked_object("DESIGN", montera_design)])
+        self.assertEqual((other.start, marked), (higher, [lower]))
+
+        # Lo que pasó quien la lanza no cambia.
+        other, marked = self.open_verify([loaded], start="gis_dtm_montera")
+        self.assertEqual((other.start, marked), ("gis_dtm_montera", ["des_srf_hueco"]))
+
+        # La partida de la ficha ya no está en la lista, o no se pudo leer: lo de hoy (la primera de las demás).
+        first_other = next(item for item in items if item != "des_srf_hueco")
+        store = _module("design.store")
+        for label, patch in (
+                ("ya no está", mock.patch.object(store, "design_surface_start",
+                                                 return_value="gis_dtm_ya_no_esta")),
+                ("sin partida", mock.patch.object(store, "design_surface_start", return_value=None)),
+                ("no se lee", mock.patch.object(store, "design_surface_start",
+                                                side_effect=sqlite3.OperationalError("x")))):
+            with self.subTest(partida=label), patch:
+                other, marked = self.open_verify([loaded])
+                self.assertEqual((other.start, marked), (first_other, ["des_srf_hueco"]))
+
+        # El nombre propuesto al abrir sigue a las finales que se marcan después; uno tecleado no se toca.
+        def mark(*names: str) -> None:
+            for item in view.verify_choices:
+                item.use = item.name in names
+
+        fake, marked = self.open_verify([loaded])
+        mark("des_srf_hueco", "gis_dtm_montera")
+        self.assertEqual(res_ops.verify_request(fake, self.project).name,
+                         "Verificación de des_srf_hueco y 1 más")
+        mark("des_env_hueco")
+        self.assertEqual(res_ops.verify_request(fake, self.project).name,
+                         "Verificación de des_env_hueco")
+        mark("des_srf_hueco")
+        self.assertEqual(res_ops.verify_request(fake, self.project).name,
+                         "Verificación de des_srf_hueco")
+        fake.name = "Mi comprobación"  # la persona lo tecleó
+        mark("des_srf_hueco", "gis_dtm_montera")
+        self.assertEqual(res_ops.verify_request(fake, self.project).name, "Mi comprobación")
+        fake.name = "  "  # lo borró: como siempre, el propuesto por las finales
+        self.assertEqual(res_ops.verify_request(fake, self.project).name,
+                         "Verificación de des_srf_hueco y 1 más")
+        scripted, _marked = self.open_verify([loaded], name="Desde un guion")  # lo pasó quien la lanza
+        mark("des_env_hueco")
+        self.assertEqual(res_ops.verify_request(scripted, self.project).name, "Desde un guion")
+
+        # «Entre dos superficies…»: el mismo objeto; el diseño es la final y la partida, la de su ficha.
+        fake = self.open_cubication([loaded])
+        self.assertEqual((fake.start, fake.final, fake.name),
+                         ("gis_dtm_partida", "des_srf_hueco", "des_srf_hueco − partida"))
+        nothing = self.open_cubication([])
+        self.assertNotIn("des_srf_hueco", (nothing.start, nothing.final))
+        fake = self.open_cubication([self.marked_object("DESIGN", hueco["env"])])  # no cuenta
+        self.assertEqual((fake.start, fake.final, fake.name),
+                         (nothing.start, nothing.final, nothing.name))
+        fake = self.open_cubication([loaded, terrain])
+        self.assertEqual((fake.start, fake.final), ("gis_dtm_montera", "des_srf_hueco"))
+        fake = self.open_cubication([terrain])  # un terreno solo, como siempre: de partida
+        self.assertEqual(fake.start, "gis_dtm_montera")

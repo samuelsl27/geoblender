@@ -197,6 +197,15 @@ menos de 15 minutos y sin ayuda (CE-013-11).
     semillas a la misma cota (una superficie plana) enseña una sola fila, «Semillas a 650,0 m», con
     el verde con que se pintan, y no dos filas iguales en azul y en rojo; con varias cotas, las
     dos de siempre. Ningún cálculo ni cifra cambia; lo vio el H3 en la pantalla de referencia.
+  - **«Verificar un diseño por recinto…» y «Entre dos superficies…» proponen la superficie de
+    diseño que se ha seleccionado**: antes no reconocían el objeto de tipo Diseño y caían en «la
+    primera y la segunda de la lista» (de partida las bermas, de final la envolvente). Ahora, con la
+    superficie de diseño seleccionada (la envolvente y las bermas no cuentan), la final marcada es
+    ella y la partida, la de «Superficie de partida» de su ficha (si sigue en la lista); con otra
+    superficie seleccionada o con dos diseños se ordenan como siempre, de partida la de mayor cota
+    media. El nombre que propone la verificación («Verificación de des_srf_hueco») sigue a las
+    finales que se marcan después en la ventana, y uno tecleado no se toca. Ningún cálculo ni cifra
+    cambia; lo vio el H3 con ratón y teclado reales.
 
 - **Límites legales y restricciones** (spec 012). Antes de diseñar hay que saber dónde no se puede
   cortar ni rellenar, y después hay que poder demostrarlo en m³: lo que pasó en el proyecto de

@@ -975,6 +975,30 @@ def previous_comparison(conn: sqlite3.Connection, version: Version, op_type: str
     return None
 
 
+# Pública, pero fuera de ``__all__`` hasta que la fila de ``design.store`` de la API de
+# ``docs/arquitectura/modulos/des.md`` la nombre (una prueba exige nombrar todo lo de ``__all__``).
+def design_surface_start(conn: sqlite3.Connection, dataset_uid: str) -> str | None:
+    """El nombre del dato de la superficie de partida de la **superficie de diseño** de uid
+    ``dataset_uid`` (``des_srf_…``, el papel :data:`~geoblender.design.provenance.DESIGN_SURFACE_ROLE`
+    de la operación ``des.stepped_design`` que la escribió): la de «Superficie de partida» de su
+    ficha, de los ajustes de esa operación (:func:`~geoblender.design.provenance.design_start`).
+    ``None`` si el dato no es una superficie de diseño (la envolvente, las bermas, la tabla, el
+    informe, una superficie cualquiera o un uid que el proyecto no tiene; solo se busca por uid) o
+    si sus ajustes no la llevan: quien la pide sigue sin ella. Solo lee."""
+    row = conn.execute(
+        "SELECT o.op_type, o.settings FROM gb_dataset AS d JOIN gb_operation AS o "
+        "ON o.uid = d.operation_uid JOIN gb_operation_io AS io ON io.operation_uid = o.uid "
+        "AND io.direction = 'out' AND io.item_kind = 'dataset' AND io.item_uid = d.uid "
+        "WHERE d.uid = ? AND io.role = ?", (dataset_uid, provenance.DESIGN_SURFACE_ROLE)
+    ).fetchone()
+    if row is None or row[0] != provenance.STEPPED:
+        return None
+    try:
+        return provenance.design_start(json.loads(row[1]))
+    except (TypeError, ValueError):  # ajustes ausentes, que no son JSON o sin superficie
+        return None
+
+
 def _result_of[T](work: Generator[object, None, T]) -> T:
     """Lo que devuelve ``work`` (unidades de ``seeds``, pasos de ``masks_steps``) llevado hasta el
     final."""

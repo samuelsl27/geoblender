@@ -32,6 +32,7 @@ import contextlib
 import dataclasses
 import json
 import math
+import sqlite3
 import unittest
 from collections.abc import Iterator
 from pathlib import Path
@@ -835,6 +836,25 @@ class DesignCommitTest(_StoreCase):
         values = {item.key: json.loads(item.value_json) for item in handle.params}
         self.assertEqual(values[design_params.bench_key(PROFILE, "height_m")], 8.0)
 
+    def test_the_start_of_a_design_surface_is_read_from_its_operation(self) -> None:
+        """RF-013-31, T43 (hallazgo (7) del H3): de la superficie de diseño (``des_srf_``) se lee la
+        superficie de partida de los ajustes de la operación que la escribió, por el uid del dato;
+        de la rejilla de bermas, la tabla, el informe, la envolvente, la superficie de partida
+        misma o un uid desconocido no hay ninguna (solo la superficie de diseño es final). Solo
+        lee."""
+        stored, _pieces = self.write_design()
+        surface, berms, table, report = stored.records
+        before = self.des_state()
+        with self.project.read() as conn:
+            self.assertEqual(store.design_surface_start(conn, surface.uid), SURFACE)
+            for record in (berms, table, report, self.record_of(ENVELOPE_DATASET),
+                           self.record(SURFACE)):
+                with self.subTest(dato=record.name):
+                    self.assertIsNone(store.design_surface_start(conn, record.uid))
+            self.assertIsNone(store.design_surface_start(conn, "0" * 32))
+            self.assertIsNone(store.design_surface_start(conn, surface.name))  # solo por uid
+        self.assertNothing(before)
+
     def test_nothing_is_left_by_cancelling_failing_or_missing_an_output(self) -> None:
         """Hecho cuando, RF-013-31, R4: cancelar a mitad de las cuatro salidas, cerrar la ventana
         con todo listo, fallar al confirmar (con las cuatro listas) o confirmar sin alguna de
@@ -1070,6 +1090,52 @@ class RowsTest(unittest.TestCase):
             with self.subTest(field=field):
                 with self.assertRaises(ValueError):
                     store.report_rows(dataclasses.replace(report, **{field: value}))
+
+
+class DesignStartTest(unittest.TestCase):
+    """RF-013-31, T43: la superficie de partida de una superficie de diseño, con ajustes que no son
+    los de un escalonado (sin proyecto: tres tablas mínimas)."""
+
+    SURFACE_UID = "s" * 32
+
+    def connection(self, op_type: str, settings: str | None, role: str = "design_surface"
+                   ) -> sqlite3.Connection:
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.executescript(
+            "CREATE TABLE gb_dataset (uid TEXT, operation_uid TEXT);"
+            "CREATE TABLE gb_operation (uid TEXT, op_type TEXT, settings TEXT);"
+            "CREATE TABLE gb_operation_io (operation_uid TEXT, direction TEXT, item_kind TEXT, "
+            "item_uid TEXT, role TEXT);")
+        conn.execute("INSERT INTO gb_dataset VALUES (?, 'op')", (self.SURFACE_UID,))
+        conn.execute("INSERT INTO gb_operation VALUES ('op', ?, ?)", (op_type, settings))
+        conn.execute("INSERT INTO gb_operation_io VALUES ('op', 'out', 'dataset', ?, ?)",
+                     (self.SURFACE_UID, role))
+        return conn
+
+    def test_a_design_surface_gives_the_surface_of_its_settings(self) -> None:
+        settings = json.dumps({"name": "Hoyo", "envelope": "Hoyo", "surface": "gis_dtm_partida"})
+        conn = self.connection(provenance.STEPPED, settings)
+        self.assertEqual(store.design_surface_start(conn, self.SURFACE_UID), "gis_dtm_partida")
+
+    def test_what_is_not_a_stepped_design_surface_with_its_settings_gives_none(self) -> None:
+        """Una operación de otro tipo, un dato con otro papel o unos ajustes sin superficie (o que
+        no son JSON) no dan partida: el diálogo cae en lo de siempre en vez de fallar."""
+        good = json.dumps({"surface": "gis_dtm_partida"})
+        cases = {
+            "otro tipo de operación": (provenance.ENVELOPE, good, "design_surface"),
+            "otro papel": (provenance.STEPPED, good, "berms"),
+            "sin superficie": (provenance.STEPPED, json.dumps({"name": "Hoyo"}), "design_surface"),
+            "superficie vacía": (provenance.STEPPED, json.dumps({"surface": " "}),
+                                 "design_surface"),
+            "no es JSON": (provenance.STEPPED, "{no", "design_surface"),
+            "ajustes vacíos": (provenance.STEPPED, None, "design_surface"),
+            "no es un diccionario": (provenance.STEPPED, "[1]", "design_surface"),
+        }
+        for label, (op_type, settings, role) in cases.items():
+            with self.subTest(label):
+                conn = self.connection(op_type, settings, role)
+                self.assertIsNone(store.design_surface_start(conn, self.SURFACE_UID))
 
 
 # --- Recalcular lo obsoleto y reproducir lo congelado (T15) ---------------------------------------
