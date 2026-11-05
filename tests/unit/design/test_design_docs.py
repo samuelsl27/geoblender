@@ -71,10 +71,10 @@ CUBICATION_MSGID = ("The project was closed while «{name}» was being computed:
                     "left half-done")
 CUBICATION_ES = "Se cerró el proyecto mientras se cubicaba «Hoyo»: no ha quedado nada a medias"
 MARK_ES = "Búsqueda de intocables pendiente en «Sector 2»."
-# Hasta dónde llega la 013. Se escribe «de la T01 a la T40 y la T42» y no «T01 a T42»: la prueba de la 012
+# Hasta dónde llega la 013. Se escribe «de la T01 a la T40, la T42 y la T43» y no «T01 a T43»: la prueba de la 012
 # (``test_indexes_reach_the_last_task``) exige que esa frase, que era la suya, ya no esté en el índice
 # ni en el roadmap.
-LAST_TASKS = "de la T01 a la T40 y la T42"
+LAST_TASKS = "de la T01 a la T40, la T42 y la T43"
 
 # Las órdenes de Diseño de la 013 que la guía nombra con el texto de su catálogo.
 ORDERS = ("geoblender.des_edit_bench_profiles", "geoblender.des_edit_design_sectors",
@@ -675,8 +675,8 @@ class StateDocTest(unittest.TestCase):
 
     def test_the_index_says_where_the_013_is(self) -> None:
         """Definición de hecho §3.7 (F-4, punto 1): el párrafo de la 013, su fila de la tabla y lo
-        que queda dicen que está en la 0.5, que llega a la T40 y la T42 con su verificación única (T34) y
-        sus tareas de convergencia (T35 a T40 y T42), que el límite de ``check.py`` ya es de 48 s y lo
+        que queda dicen que está en la 0.5, que llega a la T40, la T42 y la T43 con su verificación única (T34) y
+        sus tareas de convergencia (T35 a T40, T42 y T43), que el límite de ``check.py`` ya es de 48 s y lo
         que queda (el H3, CE-013-10, CE-013-11 y ``Z:``), y no hablan de la T32 ni de la 0.3
         como lo último ni de lo ya decidido como pendiente."""
         self.assertIsNotNone(self.index_row)
@@ -691,7 +691,7 @@ class StateDocTest(unittest.TestCase):
                 self.assertNotIn("faltan la T33", text)
                 self.assertNotIn("spec 0.3", text)
         self.assertIn("48 s", self.paragraph)
-        self.assertIn("T35 a T40 y T42", self.paragraph)
+        self.assertIn("T35 a T40, T42 y T43", self.paragraph)
         for fact in ("H3", "CE-013-10", "CE-013-11", "`Z:`", "diff de la T32"):
             with self.subTest(left=fact):
                 self.assertIn(fact, self.left)

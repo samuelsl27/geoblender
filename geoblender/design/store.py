@@ -144,6 +144,7 @@ __all__ = [
     "prepare_design_units",
     "prepare_envelope",
     "prepare_envelope_units",
+    "design_surface_start",
     "previous_comparison",
     "recompute_run",
     "report_rows",
@@ -975,8 +976,6 @@ def previous_comparison(conn: sqlite3.Connection, version: Version, op_type: str
     return None
 
 
-# Pública, pero fuera de ``__all__`` hasta que la fila de ``design.store`` de la API de
-# ``docs/arquitectura/modulos/des.md`` la nombre (una prueba exige nombrar todo lo de ``__all__``).
 def design_surface_start(conn: sqlite3.Connection, dataset_uid: str) -> str | None:
     """El nombre del dato de la superficie de partida de la **superficie de diseño** de uid
     ``dataset_uid`` (``des_srf_…``, el papel :data:`~geoblender.design.provenance.DESIGN_SURFACE_ROLE`
