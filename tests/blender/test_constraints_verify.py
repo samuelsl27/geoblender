@@ -298,14 +298,18 @@ class VerifyTest(unittest.TestCase):
     def drive(self, operator: Any, *, stop_after: int | None = None
               ) -> tuple[set[str], list[float]]:
         """Un evento del temporizador cada vez hasta que el modal acaba (o ``stop_after``
-        eventos): su final y lo que duró cada llamada (s)."""
+        eventos): su final y lo que duró cada llamada (s: la menor de la CPU del proceso y del
+        reloj de pared; la carga de otros programas del equipo alarga el reloj y los hilos de
+        fondo del propio proceso alargan la CPU, y solo una llamada lenta de verdad se pasa en
+        las dos; el plazo de pared lo mide la prueba de rendimiento)."""
         calls: list[float] = []
         for index in range(MAX_EVENTS):
             if stop_after is not None and index == stop_after:
                 return {"RUNNING_MODAL"}, calls
-            started = time.perf_counter()
+            started, wall_started = time.process_time(), time.perf_counter()
             state = operator.modal(bpy.context, TIMER)
-            calls.append(time.perf_counter() - started)
+            calls.append(min(time.process_time() - started,
+                             time.perf_counter() - wall_started))
             if state != {"RUNNING_MODAL"}:
                 return state, calls
         self.fail("la verificación no acaba")
