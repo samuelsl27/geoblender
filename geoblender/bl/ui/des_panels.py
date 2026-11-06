@@ -134,6 +134,7 @@ SECTORS_PANEL = "GEOBLENDER_PT_des_sectors"
 SECTORS_LIST = "GEOBLENDER_UL_des_sectors"
 SET_SECTOR_SLOPE = "geoblender.des_set_sector_slope"
 DECLARE_SECTORS = constraint_panels.DECLARE_SECTORS
+DECLARE_SECTORS_AGAIN = "geoblender.des_declare_sectors"  # la 012 y volver a leer (T44)
 FIND_UNTOUCHABLES = "geoblender.core_find_untouchables"
 EDIT_LIMITS = constraint_panels.EDIT_LIMITS
 PROFILES_PANEL_UNITS = 40
@@ -986,8 +987,9 @@ def _draw_orphans(layout: Any, shown: Any, width: float) -> None:
 
 def _draw_declare(layout: Any, writable: bool) -> None:
     """«Declarar de nuevo desde una capa…» (RF-013-07, RF-013-10): la capa de polígonos y el
-    campo del nombre de la 012 y su orden de declarar los sectores (``core_declare_sectors``,
-    que conserva los valores de los sectores que mantienen su código)."""
+    campo del nombre de la 012 y la orden de la 013 que lanza la suya de declarar los sectores
+    (``core_declare_sectors``, que conserva los valores de los sectores que mantienen su código) y
+    vuelve a leer esta ventana sin cerrarla (T44)."""
     other = constraint_panels.view()
     box = layout.box()
     box.label(text=tr("Declare the sectors from a layer of polygons"), translate=False)
@@ -997,7 +999,7 @@ def _draw_declare(layout: Any, writable: bool) -> None:
         form.prop_search(other, "sector_layer", other, "sector_sources",
                          text=tr("Layer of the sectors"), translate=False)
         form.prop(other, "sector_field", text=tr("Field of the name"), translate=False)
-    form.operator(DECLARE_SECTORS, text=tr("Declare again from a layer…"), icon="CHECKMARK",
+    form.operator(DECLARE_SECTORS_AGAIN, text=tr("Declare again from a layer…"), icon="CHECKMARK",
                   translate=False)
 
 

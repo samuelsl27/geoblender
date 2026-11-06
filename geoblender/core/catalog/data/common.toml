@@ -563,3 +563,16 @@ description.es = "Escribe una rejilla registrada del diseño (envolvente, superf
 entry = "013"
 action = "D"
 frequency = 2
+
+# Diseño (spec 013, T44): la interna de «Declarar de nuevo desde una capa…» de «Sectores de diseño…»:
+# lanza la declaración de la 012 (geoblender.core_declare_sectors) y vuelve a leer la ventana.
+[[command]]
+key = "geoblender.des_declare_sectors"
+kind = "internal"
+label.en = "Declare the sectors again"
+label.es = "Declarar de nuevo los sectores"
+description.en = "Declare the sectors again from the layer of polygons of the window and read the design sectors again"
+description.es = "Declara de nuevo los sectores desde la capa de polígonos de la ventana y vuelve a leer los sectores de diseño"
+entry = "013"
+action = "A"
+frequency = 2

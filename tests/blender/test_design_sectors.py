@@ -5,7 +5,8 @@ RF-013-10, RF-013-21, RF-013-33; plan 013 §5.3.3 y §5.5, D-23; ADR-0029; compr
 La orden ``geoblender.des_edit_design_sectors`` abre la ventana ``GEOBLENDER_PT_des_sectors`` (lo ya
 leído del proyecto: nada se calcula ni se lee al dibujar) y la interna ``geoblender.des_set_sector_slope``
 guarda el talud general máximo que impone un sector como parámetro de su código (ADR-0029);
-«Declarar de nuevo desde una capa…» es la declaración de la 012 (``geoblender.core_declare_sectors``).
+«Declarar de nuevo desde una capa…» es la declaración de la 012 (``geoblender.core_declare_sectors``),
+que lanza la interna ``geoblender.des_declare_sectors`` para volver a leer la ventana (T44).
 Un proyecto por clase (100 × 80 m con celdas de 2 m, V01 y V02, dos capas de polígonos) y las
 pruebas, en el orden de sus letras sobre el mismo estado:
 
@@ -24,6 +25,9 @@ pruebas, en el orden de sus letras sobre el mismo estado:
 - RF-013-21 (f): el perfil asignado a cada sector se enseña con su nombre.
 - RF-013-07, RF-013-33 (g, h): la ventana y el diálogo en los dos idiomas; con la versión activa
   SUPERADO la ventana dice por qué y desactiva lo que escribe.
+- RF-013-07, RF-013-10 (i; T44, hallazgo del H3 (8)): «Declarar de nuevo desde una capa…» deja en la
+  misma ventana, sin reabrirla ni esperar al tic, la lista nueva, los huérfanos y lo que dice la 012;
+  cancelada o rechazada, la ventana queda como estaba.
 - Principio 8 (z): desactivar Geoblender quita las órdenes, la ventana y la lista.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
@@ -51,6 +55,7 @@ from tests.support.trees import remove_tree
 OPEN = "geoblender.des_edit_design_sectors"
 SET_SLOPE = "geoblender.des_set_sector_slope"
 DECLARE = "geoblender.core_declare_sectors"
+DECLARE_AGAIN = "geoblender.des_declare_sectors"
 FIND = "geoblender.core_find_untouchables"
 PANEL = "GEOBLENDER_PT_des_sectors"
 LIST = "GEOBLENDER_UL_des_sectors"
@@ -281,12 +286,13 @@ class DesignSectorsTest(unittest.TestCase):
         """RF-013-33 (plan §5.3.3): «Sectores de diseño…» y la interna que guarda el talud son
         clases reales de ``bl.ops.des`` (con la ventana y su lista) y la interna está en el
         catálogo; sin proyecto, la orden no está disponible y dice por qué."""
-        for idname in (OPEN, SET_SLOPE):
+        for idname in (OPEN, SET_SLOPE, DECLARE_AGAIN):
             with self.subTest(orden=idname):
                 self.assertIn(self.commands.registered_class(idname), self.des_ops.classes)
         for name in (PANEL, LIST):
             self.assertIsNotNone(getattr(bpy.types, name, None), name)
-        self.assertEqual(self.commands.catalog().commands[SET_SLOPE].kind, "internal")
+        for idname in (SET_SLOPE, DECLARE_AGAIN):
+            self.assertEqual(self.commands.catalog().commands[idname].kind, "internal")
         self.assertTrue(bpy.ops.geoblender.des_edit_design_sectors.poll())
         cls = self.commands.registered_class(OPEN)
         with mock.patch.object(cls, "poll_message_set") as said, \
@@ -503,7 +509,7 @@ class DesignSectorsTest(unittest.TestCase):
         self.assertIn("Declarar de nuevo desde una capa…", texts)
         self.assertIn("Capa de los sectores", texts)
         buttons = {item.target: item for item in layout.items if item.kind == "operator"}
-        for target in (SET_SLOPE, DECLARE, FIND):
+        for target in (SET_SLOPE, DECLARE_AGAIN, FIND):
             self.assertIn(target, buttons)
             self.assertTrue(buttons[target].enabled, target)
         self.assertEqual(buttons[SET_SLOPE].properties.code, "zona_norte")
@@ -531,11 +537,12 @@ class DesignSectorsTest(unittest.TestCase):
         blocked = draw(panel, bpy.context)
         self.assertIn(NOT_EDITABLE, " ".join(blocked.texts()))
         writes = [item for item in blocked.items
-                  if item.kind == "operator" and item.target in (SET_SLOPE, DECLARE)]
+                  if item.kind == "operator" and item.target in (SET_SLOPE, DECLARE_AGAIN)]
         self.assertTrue(writes and not any(item.enabled for item in writes))
         self.assertTrue(any("Zona Norte" in text for text in blocked.texts()))  # se sigue viendo
         self.assertFalse(bpy.ops.geoblender.des_set_sector_slope.poll())
         self.assertFalse(bpy.ops.geoblender.des_edit_design_sectors.poll())
+        self.assertFalse(bpy.ops.geoblender.des_declare_sectors.poll())
         self.set_active(self.v01)
 
     def test_h_the_dialog_asks_the_scope_and_fills_what_the_sector_has(self) -> None:
@@ -596,12 +603,81 @@ class DesignSectorsTest(unittest.TestCase):
         for name in ("slope", "kind", "source", "source_kind", "decided_by", "reason"):
             self.assertIn(name, props)
 
+    def test_i_declaring_again_from_the_window_shows_the_new_list_in_it(self) -> None:
+        """RF-013-07, RF-013-10 (T44; hallazgo del H3 (8)): «Declarar de nuevo desde una capa…» de
+        la ventana abierta deja en ella, sin reabrirla ni esperar al tic de los indicadores, los
+        sectores nuevos, el talud que vuelve a su sector, «Parámetros sin sector» con los del
+        sector que ya no existe y lo que dice la 012; ida y vuelta. Desde la interfaz conserva el
+        flujo de la 012 (su ``invoke``); cancelada o rechazada, la ventana queda como estaba."""
+        shown = self.opened()  # Renombrados: sector_1 y zona_norte; sector_2, huérfano
+        panel = getattr(bpy.types, PANEL)
+        self.assertEqual([item.code for item in shown.sectors], ["sector_1", "zona_norte"])
+        self.assertEqual(len(shown.orphans), 2)
+        layout = draw(panel, bpy.context)
+        (button,) = [item for item in layout.items
+                     if item.kind == "operator" and item.text == "Declarar de nuevo desde una capa…"]
+        self.assertEqual(button.target, DECLARE_AGAIN)
+        constraints = self.constraints
+        constraints.sector_layer, constraints.sector_field = self.layers["Sectores"], "sector"
+        self.assertEqual(bpy.ops.geoblender.des_declare_sectors(), {"FINISHED"})  # sin el tic
+        self.assertEqual([(item.code, item.name) for item in shown.sectors],
+                         [("sector_1", "Sector 1"), ("sector_2", "Sector 2")])
+        two = next(item for item in shown.sectors if item.code == "sector_2")
+        self.assertEqual(two.slope, "12° [ADO]")  # el de V01 vuelve a su sector
+        self.assertEqual(len(shown.orphans), 1)
+        self.assertIn("«zona_norte»", shown.orphans[0].name)
+        self.assertIn("10,6° [ADO]", shown.orphans[0].name)
+        said = [line.name for line in shown.sector_report]
+        self.assertEqual(len(said), 1)
+        self.assertTrue(said[0].startswith("Sectores declarados: 2"), said)
+        self.assertEqual(said, [line.text for line in constraints.search_lines])
+        texts = draw(panel, bpy.context).texts()
+        self.assertTrue(any("Parámetros sin sector: 1" in text for text in texts), texts)
+        self.assertIn(self.layers["Renombrados"], [item.name for item in constraints.sector_sources])
+        # y de vuelta, desde la interfaz (su invoke, a mano: en blender -b INVOKE_DEFAULT no lo
+        # llama): la orden de la 012 se lanza también con el suyo
+        declare = self.des_ops._declare_sectors
+        constraints.sector_layer = self.layers["Renombrados"]
+        cls = self.commands.registered_class(DECLARE_AGAIN)
+        said = mock.Mock()
+        with mock.patch.object(self.des_ops, "_declare_sectors", wraps=declare) as launched:
+            self.assertEqual(cls.invoke(operator_self(cls, report=said), bpy.context, None),
+                             {"FINISHED"})
+        launched.assert_called_once_with("INVOKE_DEFAULT")
+        self.assertEqual([call.args for call in said.call_args_list],
+                         [({"INFO"}, line.name) for line in shown.sector_report])
+        self.assertEqual([(item.code, item.name) for item in shown.sectors],
+                         [("sector_1", "Sector 1"), ("zona_norte", "Zona Norte")])
+        self.assertEqual(next(item for item in shown.sectors if item.code == "zona_norte").slope,
+                         "10,6° [ADO]")
+        self.assertEqual(len(shown.orphans), 2)
+        self.assertTrue(all("«sector_2»" in line.name for line in shown.orphans))
+        # rechazada por la 012 (sin campo): su error, y la ventana como estaba
+        before = ([item.code for item in shown.sectors], [line.name for line in shown.orphans],
+                  [line.name for line in shown.sector_report])
+        constraints.sector_layer, constraints.sector_field = self.layers["Sectores"], " "
+        with self.assertRaises(RuntimeError) as raised:
+            bpy.ops.geoblender.des_declare_sectors()
+        self.assertEqual(str(raised.exception).strip(),  # el de la 012, una vez y sin «Error: Error:»
+                         "Error: Escriba el campo de esa capa que nombra cada sector")
+        self.assertEqual(([item.code for item in shown.sectors], [line.name for line in shown.orphans],
+                          [line.name for line in shown.sector_report]), before)
+        # cancelada (p. ej., el diálogo de una entrada cambiada): nada que volver a leer
+        constraints.sector_field = "sector"
+        with mock.patch.object(self.des_ops, "_declare_sectors",
+                               return_value={"CANCELLED"}) as launched:
+            self.assertEqual(bpy.ops.geoblender.des_declare_sectors(), {"CANCELLED"})
+        launched.assert_called_once_with("EXEC_DEFAULT")
+        self.assertEqual(([item.code for item in shown.sectors], [line.name for line in shown.orphans],
+                          [line.name for line in shown.sector_report]), before)
+        self.assertEqual([item.code for item in self.opened().sectors], ["sector_1", "zona_norte"])
+
     def test_z_disabling_leaves_no_trace(self) -> None:
         """Principio 8: desactivar Geoblender quita las dos órdenes, la ventana y la lista (la
         huella entera la mira el lanzador al terminar)."""
         blender_ext.release()
         for name in (PANEL, LIST, "GEOBLENDER_OT_des_edit_design_sectors",
-                     "GEOBLENDER_OT_des_set_sector_slope"):
+                     "GEOBLENDER_OT_des_set_sector_slope", "GEOBLENDER_OT_des_declare_sectors"):
             with self.subTest(clase=name):
                 self.assertIsNone(getattr(bpy.types, name, None))
         self.assertFalse(hasattr(bpy.types.WindowManager, VIEW_PROPERTY))

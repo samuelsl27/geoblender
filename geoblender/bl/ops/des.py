@@ -1030,6 +1030,67 @@ class GEOBLENDER_OT_des_set_sector_slope(DesignCommandAware, ProvenanceAwareOper
         return {"FINISHED"}
 
 
+DECLARE_SECTORS_AGAIN = des_panels.DECLARE_SECTORS_AGAIN
+_REPORTED_ERROR = "Error: "  # cómo empieza cada línea del error de una orden lanzada con bpy.ops
+
+
+def _declare_sectors(mode: str) -> set[str]:
+    """La orden de la 012 que declara los sectores (``core_declare_sectors``) con la capa y el
+    campo de su vista, lanzada como ``mode`` (``INVOKE_DEFAULT`` desde la interfaz: su ``invoke``
+    y, si hace falta, el diálogo de la entrada cambiada; ``EXEC_DEFAULT`` desde un guion). Lo que
+    rechaza llega como ``RuntimeError`` con su texto."""
+    name = des_panels.DECLARE_SECTORS.split(".", 1)[1]
+    return set(getattr(bpy.ops.geoblender, name)(mode))
+
+
+def _error_lines(exc: RuntimeError) -> list[str]:
+    """Los errores que dijo una orden lanzada con ``bpy.ops`` (``Error: …`` por línea), sin la
+    palabra que Blender les antepone."""
+    return [line.removeprefix(_REPORTED_ERROR) for line in str(exc).splitlines() if line.strip()]
+
+
+class GEOBLENDER_OT_des_declare_sectors(DesignCommandAware, ProvenanceAwareOperator,
+                                       bpy.types.Operator):
+    """Declare the sectors again from the layer of polygons of the window and read the design
+    sectors again"""
+
+    bl_idname = DECLARE_SECTORS_AGAIN
+    bl_label = "Declare the sectors again"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    def execute(self, context: Any) -> set[str]:
+        """«Declarar de nuevo desde una capa…» de la ventana de los sectores (RF-013-07,
+        RF-013-10; T44): la declaración es la de la 012 (``core_declare_sectors``, que conserva los
+        valores de los sectores que mantienen su código), lanzada como se lanzó esta (desde la
+        interfaz, con su ``invoke``); solo si termina, vuelve a leer en la misma ventana los
+        sectores, los huérfanos y las capas, y deja en ella y en la barra de estado lo que dice la
+        012. Cancelada o rechazada, la ventana queda como estaba y se dice su error."""
+        mode = "INVOKE_DEFAULT" if self.provenance_dialog else "EXEC_DEFAULT"
+        try:
+            done = _declare_sectors(mode)
+        except RuntimeError as exc:  # la 012 lo rechazó: su texto (bpy.ops no lo pasa a la barra)
+            for line in _error_lines(exc):
+                self.report({"ERROR"}, line)
+            return {"CANCELLED"}
+        if "FINISHED" not in done:
+            return {"CANCELLED"}
+        other = constraint_panels.view()
+        said = [] if other is None else [(line.text, bool(line.alert))
+                                         for line in other.search_lines]
+        project = SESSION.project
+        try:
+            des_panels.fill_sectors(project)
+            des_panels.fill_sector_sources(project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            LOGGER.warning("No se pudo volver a leer los sectores de diseño", exc_info=True)
+            said.append((design_error_text(exc), True))
+        des_panels.show_sector_report(said)
+        for text, alert in said:
+            self.report({"WARNING" if alert else "INFO"}, text)
+        return {"FINISHED"}
+
+
 # --- Envolventes y escalonado… (T24; HU-013-1, HU-013-3, HU-013-5, HU-013-6; RF-013-05,
 #     RF-013-16, RF-013-17, RF-013-21, RF-013-31, RF-013-33; plan §5.3.3, §5.5, D-14, D-27, D-30) --
 
@@ -1955,7 +2016,9 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_set_sector_slope,
                              GEOBLENDER_OT_des_compute_envelope,
                              GEOBLENDER_OT_des_toggle_preview,
-                             GEOBLENDER_OT_des_export_design_grid)
+                             GEOBLENDER_OT_des_export_design_grid,
+                             GEOBLENDER_OT_des_declare_sectors)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
-semillas, dominios y restricciones» y la T28, la interna que exporta una rejilla a GeoTIFF)."""
+semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
+T44, la que declara de nuevo los sectores desde su ventana)."""

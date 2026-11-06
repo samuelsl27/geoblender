@@ -1255,3 +1255,8 @@ menos de 15 minutos y sin ayuda (CE-013-11).
   «padre perdido» (código 4, con su motivo en el registro del trabajo), igual que el que lo
   descubre al vigilar su entrada; antes, de vez en cuando, salía con una excepción no capturada
   (código 1) en el registro. En los dos casos termina en menos de 5 s (spec 004).
+- En Diseño ▸ Parámetros ▸ Sectores de diseño…, «Declarar de nuevo desde una capa…» deja en la
+  misma ventana, sin cerrarla, los sectores nuevos, el talud que vuelve a su sector, «Parámetros
+  sin sector» con los valores de los sectores que ya no existen y lo que dice la declaración
+  («Sectores declarados: …»); antes la ventana seguía enseñando los sectores de antes hasta
+  cerrarla y abrirla otra vez. Ningún cálculo ni cifra cambia (spec 013).

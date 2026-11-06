@@ -66,8 +66,9 @@ DELIVERED: frozenset[str] = frozenset({"geoblender.des_edit_bench_profiles",
 R-33 a la entrada «013»)."""
 INTERNAL: frozenset[str] = frozenset({"geoblender.des_save_bench_profile",
                                       "geoblender.des_set_sector_slope",
-                                      "geoblender.des_export_design_grid"})
-"""Las órdenes internas de sus ventanas (T22, T23 y T28): sin menú, también de la entrada «013»."""
+                                      "geoblender.des_export_design_grid",
+                                      "geoblender.des_declare_sectors"})
+"""Las órdenes internas de sus ventanas (T22, T23, T28 y T44): sin menú, también de la entrada «013»."""
 REASON = "Prueba del registro del diseño"
 NOT_EDITABLE = "V02 está en estado SUPERADO: cree una versión nueva a partir de ella"
 
