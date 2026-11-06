@@ -168,7 +168,6 @@ from ...core.provenance import contract
 from ...core.provenance.operations import failure_reason
 from ...core.provenance.undo import UndoKind
 from ...core.units import UnitError, convert, parse_quantity
-from ...design import provenance as design_provenance
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
 from ...gis.crs import crs_service_status, reference_label
@@ -187,13 +186,14 @@ from ...reserves.tonnage import PERCENT_TOLERANCE
 from ...reserves.volumes import FINAL, START, VolumeRequest
 from ..props import res as res_props
 from ..props.core import OBJECT_PROPERTY
-from ..scene import des_views, project_session, res_views, undo_watch, views
+from ..scene import project_session, res_views, undo_watch, views
 from ..scene import versions as scene_versions
 from ..ui import constraint_panels, gate, res_panels
 from ..ui import provenance as ui_provenance
 from ..ui.commands import catalog, command_idname, text, with_note
 from . import incorporation
 from . import jobs as jobs_ops
+from . import surface_proposal
 from .core import _StepsModal
 from .core_provenance import (
     KIND_ITEMS,
@@ -1123,8 +1123,6 @@ BETWEEN = "geoblender.res_compute_volume_between_surfaces"
 PARAMETERS = "geoblender.core_show_parameters"
 DIALOG_WIDTH = 440
 _SURFACES_OBJ = "Superficies de la cubicación"
-_SURFACE_KINDS = ("DTM", "TIN")  # Object.geoblender.kind de un objeto que muestra una superficie
-_DESIGN_SURFACE = des_views.prefix(design_provenance.DESIGN_GRID)  # «des_srf_»: la final
 
 
 def _short(identifier: str, typed: str) -> str:
@@ -1308,52 +1306,6 @@ def ordered_surfaces(project: Any, first: str, second: str) -> tuple[str, str]:
     return (first, second) if start is sources[0] else (second, first)
 
 
-def is_design_surface(identifier: str) -> bool:
-    """Si ``identifier`` (un elemento de las listas de superficies) es la superficie de diseño de
-    la 013 (``des_srf_…``), la única de las tres rejillas de un diseño que es una final: la
-    envolvente (``des_env_``) y las bermas (``des_brm_``) no lo son (T43)."""
-    choice = res_panels.surface_choice(identifier)
-    return choice is not None and choice.name.startswith(_DESIGN_SURFACE)
-
-
-def selected_surfaces(context: Any, by_uid: Mapping[str, str]) -> list[str]:
-    """Las superficies de las listas de la orden (``by_uid``: uid del dato → identificador) que
-    muestran los objetos seleccionados en la vista, en su orden y sin repetir: los de clase MDT o
-    TIN y los ``DESIGN`` cuyo dato es una superficie de diseño (T43; una envolvente o unas bermas
-    seleccionadas no cuentan)."""
-    chosen: list[str] = []
-    for obj in getattr(context, "selected_objects", None) or ():
-        marks = getattr(obj, OBJECT_PROPERTY, None)
-        found = None if marks is None else by_uid.get(str(marks.dataset_uid))
-        if found is None or found in chosen:
-            continue
-        if marks.kind in _SURFACE_KINDS or (marks.kind == des_views.KIND
-                                            and is_design_surface(found)):
-            chosen.append(found)
-    return chosen
-
-
-def design_start_item(project: Any, identifier: str, items: Sequence[str]) -> str | None:
-    """La partida de la superficie de diseño ``identifier``: la de «Superficie de partida» de su
-    ficha (``design.store.design_surface_start``, de los ajustes de la operación que la escribió)
-    si es una de ``items`` (los identificadores que ofrece el diálogo). ``None`` si no es un
-    diseño, si su ficha no la lleva, si ya no está en la lista o si el proyecto no se pudo leer
-    (se deja en el registro): quien lo pide sigue como si no hubiera diseño (T43). Solo lee."""
-    choice = res_panels.surface_choice(identifier)
-    if choice is None or not is_design_surface(identifier):
-        return None
-    from ...design import store as design_store  # al usarlo: habilitar no lo carga (T38)
-
-    try:
-        with project.read() as conn:
-            found = design_store.design_surface_start(conn, choice.uid)
-    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
-        LOGGER.info("No se pudo leer la superficie de partida de «%s»", choice.name,
-                    exc_info=True)
-        return None
-    return found if found in items and found != identifier else None
-
-
 def thickness_text(project: Any) -> str:
     """El espesor mínimo con su valor y su tipo, y dónde se cambia (plan §5.5)."""
     record = core_params.ParameterStore(project).get(res_params.MIN_THICKNESS)
@@ -1535,14 +1487,15 @@ class _SurfacesCommand:
                                                                                       None)]
         by_uid = {res_panels.surface_choice(identifier).uid: identifier
                   for identifier in items if res_panels.surface_choice(identifier) is not None}
-        chosen = selected_surfaces(context, by_uid)
+        chosen = surface_proposal.selected_surfaces(context, by_uid, res_panels.surface_choice)
         given = self.properties.is_property_set
         if not (given("start") or given("final")):
             surfaces = [item for item in items if item != res_panels.ELEVATION]
             if len(chosen) >= 2:
                 self.start, self.final = ordered_surfaces(project, chosen[0], chosen[1])
             elif chosen:
-                begin = design_start_item(project, chosen[0], items)
+                begin = surface_proposal.design_start_item(project, chosen[0], items,
+                                                           res_panels.surface_choice)
                 if begin is not None:  # un diseño solo: él es la final (T43)
                     self.start, self.final = begin, chosen[0]
                 else:
@@ -3074,7 +3027,7 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
                  constraint_panels.start_items(None, None) if identifier != res_panels.ELEVATION]
         by_uid = {choice.uid: identifier for identifier in items
                   if (choice := res_panels.surface_choice(identifier)) is not None}
-        chosen = selected_surfaces(context, by_uid)
+        chosen = surface_proposal.selected_surfaces(context, by_uid, res_panels.surface_choice)
         if self.properties.is_property_set("start"):
             return [item for item in chosen if item != self.start]
         start: str | None = None
@@ -3084,7 +3037,8 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
             marked = [other, *chosen[2:]]
         elif chosen:
             marked = [chosen[0]]
-            start = (design_start_item(project, chosen[0], items)
+            start = (surface_proposal.design_start_item(project, chosen[0], items,
+                                                        res_panels.surface_choice)
                      or next((item for item in items if item != chosen[0]), None))
         elif items:
             start, marked = items[0], items[1:2]

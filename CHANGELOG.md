@@ -1260,3 +1260,9 @@ menos de 15 minutos y sin ayuda (CE-013-11).
   sin sector» con los valores de los sectores que ya no existen y lo que dice la declaración
   («Sectores declarados: …»); antes la ventana seguía enseñando los sectores de antes hasta
   cerrarla y abrirla otra vez. Ningún cálculo ni cifra cambia (spec 013).
+- En Diseño ▸ «Envolventes y escalonado…», la «Superficie» de las semillas y la «Superficie de
+  partida» del escalonado proponen el terreno: el MDT o el TIN seleccionado en la vista; con una
+  superficie de diseño seleccionada, la de partida con que se hizo; sin selección, la primera
+  superficie de la lista que no es una envolvente, unas bermas ni una superficie de diseño. Antes
+  proponían la primera de la lista, que con un diseño en el proyecto era la rejilla de sus bermas.
+  La lista sigue ofreciéndolas todas y ningún cálculo ni cifra cambia (spec 013).

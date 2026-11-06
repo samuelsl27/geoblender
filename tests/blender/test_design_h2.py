@@ -33,6 +33,10 @@ función que calculó.
 - **n** (RF-013-31, T43, hallazgo (7) del H3): «Verificar un diseño por recinto…» y «Entre dos superficies…»
   proponen la superficie de diseño seleccionada: la final es ella y la partida, la de su ficha; el nombre
   propuesto sigue a las finales que se marcan después y uno tecleado no se toca.
+- **e.z** y **o** (RF-013-01, RF-013-29, T45, hallazgo (9) del H3): «Envolventes y escalonado…» propone de
+  superficie y de partida el terreno (el MDT o el TIN seleccionado, la partida de la ficha de una superficie
+  de diseño seleccionada o, sin selección, la primera que no es una rejilla de un diseño), no la primera de
+  la lista (``des_brm_hueco``); lo dado no cambia.
 
 Ninguna llamada del modal pasa de 0,2 s de CPU (RNF-013-07, sin la transacción final de «Crear», que se
 mide aparte). Un proyecto por clase y la extensión sin importar otra vez (RNF-001-01). Se ejecuta con
@@ -912,6 +916,62 @@ class DesignH2Test(unittest.TestCase):
                            "contra lo prohibido (la cuneta) hay un escalón, y el informe lo dice")
         self.assertGreater(figures["des.edge_step_max_m"], 10.0)
 
+    # --- e.z: el diálogo propone el terreno, no las bermas del hueco (T45) --------------------------
+
+    def open_envelope(self, selected: list[Any], **given: Any) -> Any:
+        """Abre «Envolventes y escalonado…» con ``selected`` seleccionados en la vista (un gestor de
+        ventanas simulado y el operador simulado de la clase real) y con ``given`` dados por quien la
+        lanza: el operador, con lo que propuso."""
+        cls = self.commands.registered_class(OPEN)
+        dialog = mock.Mock(return_value={"RUNNING_MODAL"})
+        context = SimpleNamespace(window=None, selected_objects=selected,
+                                  window_manager=SimpleNamespace(invoke_props_dialog=dialog))
+        values = {"name": "", "seeds_from": "SURFACE", "surface": "", "zone": "", "elevation": "",
+                  "direction": "DOWN", "metric": "CHAMFER5", "slope_mode": "CONSTANT", "slope": "",
+                  "mesh": "", "reach": "", "bound": "ALL", "bound_layer": "none", "stepped": False,
+                  "sense": "CUT", "start": "", "base_profile": "", "anchor": "none", "confirm": False,
+                  "in_steps": False, **given}
+        fake = operator_self(cls, report=lambda kind, text: None, **values,
+                             properties=SimpleNamespace(is_property_set=lambda name: name in given))
+        self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+        return fake
+
+    def proposed(self, selected: list[Any], **given: Any) -> tuple[str, str]:
+        """La «Superficie» y la «Superficie de partida» que propone el diálogo (``open_envelope``)."""
+        fake = self.open_envelope(selected, **given)
+        return fake.surface, fake.start
+
+    def test_e_z_the_dialog_proposes_the_ground_and_not_the_berms(self) -> None:
+        """RF-013-01, RF-013-29, T45 (hallazgo (9) del H3): con el hueco creado, la primera superficie de
+        la lista de V01 es la rejilla de sus bermas (``des_brm_hueco``), pero el diálogo propone el terreno,
+        ``gis_dtm_partida``, de «Superficie» (de donde salen las semillas) y de «Superficie de partida» (de
+        donde parte el escalonado): sin selección; con la superficie de diseño del hueco seleccionada (la de
+        su ficha); con sus bermas seleccionadas (no son el terreno) y con el MDT seleccionado. Lo que da
+        quien la lanza no cambia. La lista las sigue ofreciendo todas."""
+        self.set_active(self.v01)
+        hueco = {family: self.dataset_uid(family, "Hueco") for family in ("srf", "brm")}
+        none = self.proposed([])
+        items = [item[0] for item in self.panels.surface_items(None, None)]
+        self.assertEqual(items[:4], ["des_brm_hueco", "des_env_hueco", "des_srf_hueco", self.start_name])
+        self.assertEqual(none, (self.start_name, self.start_name), "sin selección")
+
+        self.assertEqual(bpy.ops.geoblender.core_load_into_view(datasets=hueco["srf"]), {"FINISHED"})
+        (loaded,) = [obj for obj in bpy.data.objects
+                     if obj.geoblender.kind == "DESIGN" and obj.geoblender.dataset_uid == hueco["srf"]]
+        self.addCleanup(bpy.data.objects.remove, loaded)
+        self.assertEqual(self.proposed([loaded]), (self.start_name, self.start_name), "el diseño")
+        berms = self.marked_object("DESIGN", hueco["brm"])
+        self.assertEqual(self.proposed([berms]), (self.start_name, self.start_name), "las bermas")
+        ground = self.marked_object("DTM", self.surface_uid(self.start_name))
+        self.assertEqual(self.proposed([berms, ground]), (self.start_name, self.start_name), "el MDT")
+
+        # Lo que da quien la lanza no cambia; lo que no da, el terreno.
+        self.assertEqual(self.proposed([loaded], surface="des_srf_hueco"),
+                         ("des_srf_hueco", self.start_name))
+        self.assertEqual(self.proposed([], start="des_env_hueco"), (self.start_name, "des_env_hueco"))
+        self.assertEqual(self.proposed([ground], surface="des_brm_hueco", start="des_env_hueco"),
+                         ("des_brm_hueco", "des_env_hueco"))
+
     # --- f: E2, el hueco que baja desde el límite legal ---------------------------------------------
 
     def test_f_the_exact_envelope_from_the_legal_limit_is_the_hand_distance(self) -> None:
@@ -1586,3 +1646,67 @@ class DesignH2Test(unittest.TestCase):
         self.assertEqual((fake.start, fake.final), ("gis_dtm_montera", "des_srf_hueco"))
         fake = self.open_cubication([terrain])  # un terreno solo, como siempre: de partida
         self.assertEqual(fake.start, "gis_dtm_montera")
+
+    # --- o: el diálogo de las envolventes propone el terreno seleccionado (T45) ----------------------
+
+    def test_o_the_envelope_dialog_proposes_the_selected_ground(self) -> None:
+        """RF-013-01, RF-013-29, T45 (hallazgo (9) del H3): con los dos diseños y tres terrenos en la lista
+        de V01 (las rejillas de los diseños, primero), «Envolventes y escalonado…» propone de «Superficie» y
+        de «Superficie de partida» el terreno: el MDT o el TIN seleccionado (antes que un diseño
+        seleccionado); con una superficie de diseño seleccionada, la de «Superficie de partida» de su ficha
+        (``gis_dtm_partida``, también la de la montera), y si su ficha no la lleva, lo de sin selección; sin
+        selección (o con una envolvente o unas bermas, que no son el terreno), la primera de la lista que no
+        es una rejilla de un diseño, y si solo hubiera de esas, la primera. Lo dado no cambia."""
+        self.set_active(self.v01)
+        hueco = {family: self.dataset_uid(family, "Hueco") for family in ("env", "srf", "brm")}
+        none = self.proposed([])
+        items = [item[0] for item in self.panels.surface_items(None, None)]
+        terrains = [item for item in items if item.startswith("gis_dtm_")]
+        self.assertEqual(terrains, ["gis_dtm_montera", self.start_name, "gis_dtm_tocada"])
+        self.assertTrue(items[0].startswith("des_brm_"), items)
+        self.assertEqual(none, ("gis_dtm_montera", "gis_dtm_montera"), "sin selección: el primer terreno")
+        for families in (("env",), ("brm",), ("env", "brm")):
+            with self.subTest(seleccionados=families):
+                chosen = [self.marked_object("DESIGN", hueco[family]) for family in families]
+                self.assertEqual(self.proposed(chosen), none)
+
+        partida = self.marked_object("DTM", self.surface_uid(self.start_name))
+        touched = self.marked_object("TIN", self.surface_uid("gis_dtm_tocada"))
+        montera = self.marked_object("DTM", self.surface_uid("gis_dtm_montera"))
+        design = self.marked_object("DESIGN", hueco["srf"])
+        mound = self.marked_object("DESIGN", self.dataset_uid("srf", "Montera"))
+        both = (self.start_name, self.start_name)
+        for label, selected, wanted in (
+                ("el MDT", [partida], both),
+                ("el TIN", [touched], ("gis_dtm_tocada", "gis_dtm_tocada")),
+                ("el primer terreno", [touched, partida], ("gis_dtm_tocada", "gis_dtm_tocada")),
+                ("el diseño del hueco", [design], both),
+                ("el diseño de la montera", [mound], both),
+                ("las bermas y el diseño", [self.marked_object("DESIGN", hueco["brm"]), design], both),
+                ("el terreno antes que el diseño", [design, montera], ("gis_dtm_montera",) * 2),
+                ("el diseño y el terreno", [montera, design], ("gis_dtm_montera",) * 2)):
+            with self.subTest(label):
+                self.assertEqual(self.proposed(selected), wanted)
+
+        # Si la ficha no la lleva, ya no está en la lista o no se lee: lo de sin selección.
+        store = _module("design.store")
+        for label, patch in (
+                ("sin partida", mock.patch.object(store, "design_surface_start", return_value=None)),
+                ("ya no está", mock.patch.object(store, "design_surface_start",
+                                                 return_value="gis_dtm_ya_no_esta")),
+                ("no se lee", mock.patch.object(store, "design_surface_start",
+                                                side_effect=sqlite3.OperationalError("x")))):
+            with self.subTest(partida=label), patch:
+                self.assertEqual(self.proposed([design]), none)
+
+        # Solo rejillas de diseños en la lista: la primera, como antes.
+        only = [item for item in self.panels.surface_items(None, None) if item[0].startswith("des_")]
+        with mock.patch.object(self.panels, "surface_items", return_value=only), \
+                mock.patch.object(self.panels, "refresh_choices"):
+            self.assertEqual(self.proposed([]), (only[0][0], only[0][0]))
+
+        # Lo que da quien la lanza no cambia; lo que no da, el terreno.
+        self.assertEqual(self.proposed([partida], surface="gis_dtm_tocada"),
+                         ("gis_dtm_tocada", self.start_name))
+        self.assertEqual(self.proposed([partida], start="des_srf_hueco"),
+                         (self.start_name, "des_srf_hueco"))

@@ -165,7 +165,7 @@ from ..ui import constraint_panels, des_panels
 from ..ui import provenance as ui_provenance
 from ..ui.commands import catalog, command_idname, with_note
 from ..ui.commands import text as command_text
-from . import incorporation
+from . import incorporation, surface_proposal
 from .core import _StepsModal
 from .core_provenance import (
     KIND_ITEMS,
@@ -1368,8 +1368,8 @@ class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOper
     def invoke(self, context: Any, event: Any) -> set[str]:
         """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué.
         Con ``confirm``, el diálogo de crear el cálculo abierto (D-14). Si no, las listas de
-        superficies, zonas, capas, perfiles y sectores leídas de nuevo, la propuesta (el nombre y
-        la superficie) y el diálogo del cálculo: Intro calcula."""
+        superficies, zonas, capas, perfiles y sectores leídas de nuevo, la propuesta (el nombre, la
+        superficie y la de partida: el terreno) y el diálogo del cálculo: Intro calcula."""
         self.provenance_dialog = True
         self.in_steps = getattr(context, "window", None) is not None
         if self.confirm:
@@ -1384,7 +1384,7 @@ class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOper
             des_panels.fill_profiles(project)
             des_panels.fill_sectors(project)
             des_panels.refresh_choices(project)
-            self._propose()
+            self._propose(context, project)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
@@ -1394,17 +1394,24 @@ class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOper
             title=command_text(catalog().commands[command_idname(self.bl_idname)].label),
             confirm_text=tr("Calculate"))
 
-    def _propose(self) -> None:
-        """El nombre y las superficies que propone el diálogo si quien lo lanza no los dio."""
+    def _propose(self, context: Any, project: Any) -> None:
+        """El nombre y las superficies que propone el diálogo si quien lo lanza no los dio. De
+        «Superficie» y de «Superficie de partida», el terreno (T45): el MDT o el TIN seleccionado
+        en la vista; con una superficie de diseño seleccionada, la de partida de su ficha; sin
+        selección, la primera de la lista que no es una rejilla de un diseño
+        (``surface_proposal.ground_item``). La lista las sigue ofreciendo todas."""
         given = self.properties.is_property_set
         if not self.name.strip():
             self.name = tr("Envelope")
         if des_panels.has_surfaces():
-            first = des_panels.surface_items(None, None)[0][0]
+            items = [identifier for identifier, _name, _about
+                     in des_panels.surface_items(None, None)]
+            ground = surface_proposal.ground_item(context, project, items,
+                                                  des_panels.surface_choice)
             if not given("surface"):
-                self.surface = first
+                self.surface = ground
             if not given("start"):
-                self.start = self.surface
+                self.start = ground
 
     def _confirmation(self, context: Any) -> set[str]:
         """El diálogo de crear el cálculo abierto (D-14, RF-013-31): su resumen con los avisos y

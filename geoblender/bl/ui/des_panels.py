@@ -516,12 +516,14 @@ su código o su nombre detrás); sin rejilla de anclas (la del perfil); sin capa
 @dataclass
 class _Choices:
     """Las listas del diálogo ya leídas del proyecto (vivas: ``EnumProperty`` conserva sus textos,
-    ``docs/trampas.md`` §3) y la clave de lo que se leyó."""
+    ``docs/trampas.md`` §3), las superficies por su identificador (su nombre; T45) y la clave de lo
+    que se leyó."""
 
     surfaces: list[tuple[str, str, str]] = field(default_factory=list)
     anchors: list[tuple[str, str, str]] = field(default_factory=list)
     zones: list[tuple[str, str, str]] = field(default_factory=list)
     layers: list[tuple[str, str, str]] = field(default_factory=list)
+    by_id: dict[str, res_surfaces.SurfaceChoice] = field(default_factory=dict)
     key: tuple[str, str, str] | None = None
 
 
@@ -532,6 +534,7 @@ def _fixed_choices() -> None:
     """Las listas sin nada del proyecto: sin superficies, sin rejilla de anclas, sin capa y las
     zonas que no dependen de él."""
     _CHOICES.surfaces = [(NO_ZONE, NOT_SHOWN, tr("There are no grids in the project"))]
+    _CHOICES.by_id = {}
     _CHOICES.anchors = [(NO_ANCHOR, tr("The anchor of the profile"),
                          tr("Anchor the benches to the elevation of the profile"))]
     _CHOICES.zones = [(NO_ZONE, tr("The whole surface"),
@@ -562,6 +565,7 @@ def refresh_choices(project: Any) -> None:
         _CHOICES.surfaces = [(choice.name, choice.name,
                               of_version if choice.version_uid else of_project)
                              for choice in found]
+        _CHOICES.by_id = {choice.name: choice for choice in found}
     _CHOICES.anchors = [*_CHOICES.anchors, *_CHOICES.surfaces] if found else _CHOICES.anchors
     _CHOICES.zones = [
         *_CHOICES.zones,
@@ -626,6 +630,14 @@ def forget_choices() -> None:
     """Olvida las listas leídas (al desregistrar)."""
     _CHOICES.key = None
     _CHOICES.surfaces, _CHOICES.anchors, _CHOICES.zones, _CHOICES.layers = [], [], [], []
+    _CHOICES.by_id = {}
+
+
+def surface_choice(identifier: str) -> res_surfaces.SurfaceChoice | None:
+    """La superficie de identificador ``identifier`` (el nombre de su dato) de la lista leída, o
+    ``None``: lo que necesita la propuesta del diálogo con lo seleccionado en la vista (T45)."""
+    _ensure_choices()
+    return _CHOICES.by_id.get(identifier)
 
 
 def has_surfaces() -> bool:
