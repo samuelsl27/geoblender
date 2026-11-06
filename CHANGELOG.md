@@ -1266,3 +1266,7 @@ menos de 15 minutos y sin ayuda (CE-013-11).
   superficie de la lista que no es una envolvente, unas bermas ni una superficie de diseño. Antes
   proponían la primera de la lista, que con un diseño en el proyecto era la rejilla de sus bermas.
   La lista sigue ofreciéndolas todas y ningún cálculo ni cifra cambia (spec 013).
+- En Diseño ▸ «Vista previa de semillas, dominios y restricciones», la «Superficie» de las semillas
+  propone el terreno, como «Envolventes y escalonado…»; antes proponía la primera de la lista, que
+  con un diseño en el proyecto era la rejilla de sus bermas. La lista sigue ofreciéndolas todas y
+  ningún cálculo ni cifra cambia (spec 013).

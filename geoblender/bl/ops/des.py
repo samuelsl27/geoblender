@@ -1764,8 +1764,9 @@ class GEOBLENDER_OT_des_toggle_preview(DesignCommandAware, ProvenanceAwareOperat
     def invoke(self, context: Any, event: Any) -> set[str]:
         """Con la vista previa activa, la quita. Si no, sin versión activa abre la ventana que pide
         una (RF-009-05) y con ella no editable dice por qué; con una, lee de nuevo las listas de
-        superficies, zonas, capas y sectores, propone la primera superficie y abre el diálogo de lo
-        que se previsualiza: Intro la muestra."""
+        superficies, zonas, capas y sectores, propone de «Superficie» el terreno, como «Envolventes y
+        escalonado…» (T46, ``surface_proposal.ground_item``), si quien la lanza no la dio, y abre el
+        diálogo de lo que se previsualiza: Intro la muestra."""
         self.provenance_dialog = True
         if _preview_on(context):
             return self.execute(context)
@@ -1779,7 +1780,10 @@ class GEOBLENDER_OT_des_toggle_preview(DesignCommandAware, ProvenanceAwareOperat
             des_panels.fill_sectors(project)
             des_panels.refresh_choices(project)
             if des_panels.has_surfaces() and not self.properties.is_property_set("surface"):
-                self.surface = des_panels.surface_items(None, None)[0][0]
+                items = [identifier for identifier, _name, _about
+                         in des_panels.surface_items(None, None)]
+                self.surface = surface_proposal.ground_item(context, project, items,
+                                                            des_panels.surface_choice)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}

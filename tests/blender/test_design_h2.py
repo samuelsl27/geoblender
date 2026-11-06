@@ -69,6 +69,7 @@ from tests.support.fake_layout import operator_self
 from tests.support.trees import remove_tree
 
 OPEN = "geoblender.des_compute_envelope"
+PREVIEW = "geoblender.des_toggle_preview"
 EXPORT = "geoblender.des_export_design_grid"
 RECOMPUTE = "geoblender.core_recompute_stale"
 VERIFY = "geoblender.res_verify_constraints"
@@ -972,6 +973,49 @@ class DesignH2Test(unittest.TestCase):
         self.assertEqual(self.proposed([ground], surface="des_brm_hueco", start="des_env_hueco"),
                          ("des_brm_hueco", "des_env_hueco"))
 
+    # --- e.zz: la vista previa también propone el terreno (T46) -------------------------------------
+
+    def preview_proposes(self, selected: list[Any], **given: Any) -> str:
+        """La «Superficie» que propone «Vista previa de semillas, dominios y restricciones» al abrir su
+        diálogo con ``selected`` seleccionados en la vista y ``given`` dados por quien la lanza (un
+        gestor de ventanas simulado, sin la vista previa activa, y el operador simulado de la clase
+        real)."""
+        cls = self.commands.registered_class(PREVIEW)
+        dialog = mock.Mock(return_value={"RUNNING_MODAL"})
+        context = SimpleNamespace(window=None, selected_objects=selected,
+                                  window_manager=SimpleNamespace(invoke_props_dialog=dialog))
+        values = {"seeds_from": "SURFACE", "surface": "", "zone": "", "elevation": "",
+                  "bound": "ALL", "bound_layer": "none", **given}
+        fake = operator_self(cls, report=lambda kind, text: None, **values,
+                             properties=SimpleNamespace(is_property_set=lambda name: name in given))
+        self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+        dialog.assert_called_once()
+        return fake.surface
+
+    def test_e_zz_the_preview_proposes_the_ground_and_not_the_berms(self) -> None:
+        """RF-013-01, RF-013-03, T46 (el defecto de la T45 en el otro diálogo que lee semillas de una
+        superficie): con el hueco creado, la primera superficie de la lista de V01 es la rejilla de sus
+        bermas (``des_brm_hueco``), pero la vista previa propone el terreno, ``gis_dtm_partida``: sin
+        selección, con la superficie de diseño del hueco seleccionada (la partida de su ficha), con sus
+        bermas seleccionadas y con el MDT seleccionado. La superficie dada no cambia."""
+        self.set_active(self.v01)
+        hueco = {family: self.dataset_uid(family, "Hueco") for family in ("srf", "brm")}
+        items = [item[0] for item in self.panels.surface_items(None, None)]
+        self.assertEqual(items[0], "des_brm_hueco", "la prueba mira el caso del H3")
+        self.assertEqual(self.preview_proposes([]), self.start_name, "sin selección")
+
+        self.assertEqual(bpy.ops.geoblender.core_load_into_view(datasets=hueco["srf"]), {"FINISHED"})
+        (loaded,) = [obj for obj in bpy.data.objects
+                     if obj.geoblender.kind == "DESIGN" and obj.geoblender.dataset_uid == hueco["srf"]]
+        self.addCleanup(bpy.data.objects.remove, loaded)
+        self.assertEqual(self.preview_proposes([loaded]), self.start_name, "el diseño")
+        berms = self.marked_object("DESIGN", hueco["brm"])
+        self.assertEqual(self.preview_proposes([berms]), self.start_name, "las bermas")
+        ground = self.marked_object("DTM", self.surface_uid(self.start_name))
+        self.assertEqual(self.preview_proposes([berms, ground]), self.start_name, "el MDT")
+        self.assertEqual(self.preview_proposes([ground], surface="des_brm_hueco"), "des_brm_hueco",
+                         "la dada")
+
     # --- f: E2, el hueco que baja desde el límite legal ---------------------------------------------
 
     def test_f_the_exact_envelope_from_the_legal_limit_is_the_hand_distance(self) -> None:
@@ -1656,7 +1700,8 @@ class DesignH2Test(unittest.TestCase):
         seleccionado); con una superficie de diseño seleccionada, la de «Superficie de partida» de su ficha
         (``gis_dtm_partida``, también la de la montera), y si su ficha no la lleva, lo de sin selección; sin
         selección (o con una envolvente o unas bermas, que no son el terreno), la primera de la lista que no
-        es una rejilla de un diseño, y si solo hubiera de esas, la primera. Lo dado no cambia."""
+        es una rejilla de un diseño, y si solo hubiera de esas, la primera. Lo dado no cambia. La vista
+        previa (T46; RF-013-03) propone lo mismo de «Superficie»."""
         self.set_active(self.v01)
         hueco = {family: self.dataset_uid(family, "Hueco") for family in ("env", "srf", "brm")}
         none = self.proposed([])
@@ -1710,3 +1755,13 @@ class DesignH2Test(unittest.TestCase):
                          ("gis_dtm_tocada", self.start_name))
         self.assertEqual(self.proposed([partida], start="des_srf_hueco"),
                          (self.start_name, "des_srf_hueco"))
+
+        # La vista previa propone lo mismo de «Superficie» (T46; RF-013-01, RF-013-03).
+        for label, selected, wanted in (
+                ("sin selección", [], "gis_dtm_montera"),
+                ("el TIN", [touched], "gis_dtm_tocada"),
+                ("el diseño del hueco", [design], self.start_name),
+                ("el terreno antes que el diseño", [design, montera], "gis_dtm_montera")):
+            with self.subTest(vista_previa=label):
+                self.assertEqual(self.preview_proposes(selected), wanted)
+        self.assertEqual(self.preview_proposes([touched], surface=self.start_name), self.start_name)
