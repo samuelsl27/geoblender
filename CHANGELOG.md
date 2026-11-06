@@ -1248,3 +1248,10 @@ menos de 15 minutos y sin ayuda (CE-013-11).
   base de 101 MB (2 000 sondeos y 875 000 muestras de 20 elementos), 22 s, con un aviso cada
   0,24 s como mucho (antes, la copia pasaba 1,9 s sin avisar y la tabla de muestras, 4,4 s), y
   cancelar la para en 0,12 s sin dejar ningún proceso vivo. Los hashes son los mismos.
+
+### Corregido
+
+- Un cálculo en segundo plano cuyo Blender muere justo cuando avisa de su avance termina como
+  «padre perdido» (código 4, con su motivo en el registro del trabajo), igual que el que lo
+  descubre al vigilar su entrada; antes, de vez en cuando, salía con una excepción no capturada
+  (código 1) en el registro. En los dos casos termina en menos de 5 s (spec 004).

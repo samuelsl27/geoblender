@@ -24,11 +24,15 @@ importa ``geoblender`` de forma absoluta (excepción de ARQ-09, plan 001). Pasos
 1. Lee los argumentos.
 2. Canal: duplica la salida estándar original para los eventos y manda el descriptor 1 y
    ``sys.stdout`` a la salida de error: lo que impriman ``print()`` o una librería en C va a
-   ``job.log`` (en UTF-8) y no ensucia el canal.
+   ``job.log`` (en UTF-8) y no ensucia el canal. Un evento que no se puede escribir en el
+   canal (``OSError``: la tubería ya no tiene quien la lea) es un padre perdido, con el
+   código 4, como en el paso 3 (spec 004, T47).
 3. Vigilancia del padre: un hilo *daemon* mira la entrada estándar hasta su fin y entonces
    termina el proceso con el código 4: si Blender muere, Windows cierra la tubería
    (RF-004-13). La mira sin dejar una lectura pendiente (``PeekNamedPipe``), que colgaría al
-   cargarse las DLL que la consultan, como el OpenBLAS de numpy en el motor.
+   cargarse las DLL que la consultan, como el OpenBLAS de numpy en el motor. Mira cada
+   :data:`_WATCH_POLL_S` s: un evento escrito entre la muerte del padre y la siguiente mirada
+   lo detecta el paso 2.
 4. Con ``--site``, ``site.addsitedir`` de esa carpeta (procesa sus ``.pth``). Es el único
    cambio de ``sys.path``: con ``-I -S`` (``compute``), ``sys.path`` solo tenía la
    biblioteca estándar, y el numpy de Blender no se puede colar.
@@ -64,6 +68,7 @@ sys.dont_write_bytecode = True  # Paso 0: antes de cualquier otro import.
 import argparse  # noqa: E402
 import importlib  # noqa: E402
 import importlib.util  # noqa: E402
+import io  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import site  # noqa: E402
@@ -91,6 +96,9 @@ EXIT_STARTUP = 5
 
 LOG_PREFIX = "Geoblender:"
 """Comienzo de las líneas que el arranque deja en ``job.log``."""
+STDIN_ENDED = "fin de la entrada estándar"
+CHANNEL_LOST = "el canal de eventos no tiene quien lo lea"
+"""Por qué el worker da al padre por perdido (:func:`_parent_lost`), en ``job.log``."""
 _IN_USE: list[IO[bytes]] = []
 """Los ficheros del motor de cálculo abiertos mientras el worker vive (:func:`hold_engine`);
 se cierran solos al terminar el proceso, también si se le mata."""
@@ -147,7 +155,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def open_channel() -> IO[str]:
     """Paso 2: el canal de eventos es una copia del descriptor 1 original (la tubería del
     lanzador); el descriptor 1 y ``sys.stdout`` pasan a ser la salida de error (``job.log``),
-    en UTF-8."""
+    en UTF-8. Lo devuelve envuelto en :class:`EventChannel`."""
     try:
         channel = os.fdopen(os.dup(1), "w", encoding="utf-8", newline="\n", buffering=1)
         os.dup2(2, 1)
@@ -156,7 +164,45 @@ def open_channel() -> IO[str]:
     if sys.__stdout__ is not None:
         _utf8(sys.__stdout__)
     sys.stdout = sys.stderr
-    return channel
+    return EventChannel(channel)
+
+
+class EventChannel(io.TextIOBase):
+    """El canal de eventos (texto) con una regla más: si escribir o vaciar da ``OSError`` (en
+    Windows, ``EINVAL`` al escribir en una tubería sin lector), el padre se ha perdido y el
+    worker termina con :data:`EXIT_PARENT_LOST` (:func:`_parent_lost`). Pasa cuando el padre
+    muere justo antes de que la vigilancia lo vea (paso 3): sin esto, el ``OSError`` saldría
+    del cálculo como una excepción no capturada, con el código 1 (spec 004, T47)."""
+
+    def __init__(self, stream: IO[str]) -> None:
+        super().__init__()
+        self._stream = stream
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        try:
+            return self._stream.write(text)
+        except OSError:
+            _parent_lost(CHANNEL_LOST)
+
+    def flush(self) -> None:
+        if self._stream.closed:  # ``IOBase.close`` vacía después de cerrar el de dentro
+            return
+        try:
+            self._stream.flush()
+        except OSError:
+            _parent_lost(CHANNEL_LOST)
+
+    def close(self) -> None:
+        """Cierra el canal (al acabar el trabajo); un ``OSError`` aquí sale tal cual: el
+        trabajo ya terminó y su código no cambia."""
+        if not self.closed:
+            try:
+                self._stream.close()
+            finally:
+                super().close()
 
 
 def watch_parent() -> threading.Thread:
@@ -179,9 +225,9 @@ def watch_parent() -> threading.Thread:
     return thread
 
 
-def _parent_lost() -> NoReturn:
-    note(f"el proceso padre ya no está (fin de la entrada estándar): el worker termina con "
-         f"el código {EXIT_PARENT_LOST}")
+def _parent_lost(reason: str = STDIN_ENDED) -> NoReturn:
+    note(f"el proceso padre ya no está ({reason}): el worker termina con el código "
+         f"{EXIT_PARENT_LOST}")
     os._exit(EXIT_PARENT_LOST)
 
 

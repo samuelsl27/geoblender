@@ -28,6 +28,8 @@ import hashlib
 import json
 import platform
 import shutil
+import subprocess
+import time
 import unittest
 from pathlib import Path
 
@@ -127,6 +129,25 @@ def _pycache(package: Path) -> set[str]:
     return found
 
 
+def _lose_channel(worker: _support.LaunchedWorker) -> dict[str, object]:
+    """Lee la primera línea del canal (el evento ``start``) y cierra su extremo de lectura
+    con la entrada estándar todavía abierta: el siguiente evento del worker no tiene quien lo
+    lea, como cuando el padre muere justo antes de que la vigilancia lo vea (spec 004, T47).
+    Devuelve el código de salida, los segundos desde el cierre y ``job.log``."""
+    first = worker.process.stdout.readline()
+    worker.process.stdout.close()
+    closed_at = time.monotonic()
+    try:
+        returncode = worker.process.wait(timeout=_support.WORKER_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        worker.close()
+        returncode = None
+    elapsed = time.monotonic() - closed_at
+    worker.lose_parent()
+    log = (worker.job_dir / paths.LOG_FILE).read_bytes().decode("utf-8", "replace")
+    return {"first": first, "returncode": returncode, "elapsed_s": elapsed, "log": log}
+
+
 def setUpModule() -> None:
     tmp = _support.jobs_tmp()
     base = tmp.__enter__()
@@ -155,6 +176,7 @@ def setUpModule() -> None:
         "bad_args": paths.job_dir(root, paths.new_job_uid()).create(),
         "copy": _support.prepare_job(root, ECHO_WORKER, arrays={"data": _STATE["utm"]}),
         "stdin": _support.prepare_job(root, STDIN_WORKER),
+        "channel": _support.prepare_job(root, params={"chunks": 600, "sleep_s": 0.05}),
     }
     _JOBS.update(jobs)
     launched: dict[str, _support.LaunchedWorker] = {}
@@ -172,6 +194,9 @@ def setUpModule() -> None:
         if name == "parent":
             worker.lose_parent()
     for name, worker in launched.items():
+        if name == "channel":
+            _STATE["channel"] = _lose_channel(worker)
+            continue
         if name == "stdin":
             try:
                 _RUNS[name] = worker.finish(timeout_s=STDIN_TIMEOUT_S)
@@ -299,6 +324,25 @@ class ParentWatchTest(unittest.TestCase):
         self.assertLess(run.elapsed_s, STDIN_TIMEOUT_S)
         self.assertEqual(run.types()[-1], "result")
         self.assertEqual(dict(run.of_type("result")[0].summary), {"answered": True})
+
+
+class ChannelLostTest(unittest.TestCase):
+    """RF-004-13 (spec 004, T47): un canal de eventos sin lector es un padre perdido."""
+
+    def test_closed_channel_is_a_lost_parent(self):
+        """RF-004-12, RF-004-13: si el padre muere entre dos miradas de la vigilancia y el
+        worker escribe antes un evento (``OSError`` al escribir en la tubería sin lector), el
+        worker termina enseguida con el código 4 de «padre perdido» y lo deja dicho en
+        ``job.log``, no con el 1 y una traza de «excepción no capturada»."""
+        state = _STATE["channel"]
+        self.assertIn(b'"start"', state["first"])
+        self.assertEqual(state["returncode"], 4, state["log"])
+        self.assertLess(state["elapsed_s"], PARENT_JOB_S / 3)
+        self.assertIn("el proceso padre ya no está (el canal de eventos no tiene quien lo "
+                      "lea): el worker termina con el código 4", state["log"])
+        self.assertNotIn("excepción no capturada", state["log"])
+        self.assertNotIn("Traceback", state["log"])
+        self.assertNotIn("el worker termina con el código 1", state["log"])
 
 
 class StartupFailureTest(unittest.TestCase):

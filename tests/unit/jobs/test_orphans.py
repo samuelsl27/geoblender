@@ -559,13 +559,17 @@ class ParentDeathTest(_IntermediateCase):
     def test_parent_watch_without_job_object(self):
         """RF-004-13: sin *Job Object*, el worker ve el fin de su entrada estándar al morir
         el proceso intermedio y termina con el código 4 en ≤ 5 s (lo dice su
-        ``job.log``)."""
+        ``job.log``). Si escribe un evento antes de que su vigilancia lo vea, lo ve el canal
+        sin lector: también el código 4, por ese motivo (spec 004, T47; antes salía con el 1
+        y una traza, de vez en cuando)."""
         intermediate = self.intermediate("eof")
         self.assertFalse(intermediate.report["job_object"])
         self.dead_within(intermediate, "worker")
         log = _log(Path(intermediate.report["job_dir"]) / "job.log")
-        self.assertIn("el proceso padre ya no está (fin de la entrada estándar): el worker "
-                      "termina con el código 4", log)
+        self.assertRegex(log, r"el proceso padre ya no está \((fin de la entrada estándar|el "
+                              r"canal de eventos no tiene quien lo lea)\): el worker termina "
+                              r"con el código 4")
+        self.assertNotIn("excepción no capturada", log)
 
 
 class GrandchildTest(_IntermediateCase):
@@ -613,7 +617,31 @@ class NoOrphanTest(unittest.TestCase):
         self.assertEqual(len(pids), 9)
         for name, pid in pids.items():
             with self.subTest(process=name):
-                self.assertFalse(_support.pid_alive(pid))
+                alive = _support.pid_alive(pid)
+                self.assertFalse(alive, _who(name, pid) if alive else "")
+
+
+def _who(name: str, pid: int) -> str:
+    """Para el mensaje de un fallo de :class:`NoOrphanTest`: qué proceso ocupa ``pid`` ahora
+    (ejecutable y padre, de la lista de procesos de Windows) y, si es el worker de un proceso
+    intermedio, el final de su ``job.log`` (spec 004, T47: un «eof_worker» vivo una vez sin
+    explicación)."""
+    entry = _support.processes().get(pid)
+    if entry is None:
+        found = "no está en la lista de procesos (acaba de terminar)"
+    else:
+        parent, exe = entry
+        parent_entry = _support.processes().get(parent)
+        found = (f"{exe}, hijo del pid {parent} "
+                 f"({parent_entry[1] if parent_entry else 'que ya no existe'})")
+    text = f"«{name}» (pid {pid}) sigue vivo: {found}"
+    key, _, process = name.rpartition("_")
+    intermediate = _INTERMEDIATES.get(key)
+    if process == "worker" and intermediate is not None and "job_dir" in intermediate.report:
+        log = Path(intermediate.report["job_dir"]) / "job.log"
+        tail = log.read_text("utf-8", "replace")[-2000:] if log.exists() else "(sin job.log)"
+        text += f"; su job.log acaba en:\n{tail}"
+    return text
 
 
 if __name__ == "__main__":
