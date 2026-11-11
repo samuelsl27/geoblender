@@ -456,7 +456,8 @@ class RedeclareTest(dfx.DesignProjectCase):
         («Zona oeste») deja su valor sin borrar y lo lista como huérfano, y el sector nuevo no
         impone nada; (4) volver a llamarlo como antes lo recupera; (5) sin capa (el perímetro
         como único sector) los de los dos son huérfanos y el del perímetro vale; (6) con la capa
-        otra vez, el del perímetro es el huérfano."""
+        otra vez, el del perímetro es el huérfano; (7) el valor por defecto sin valor que registra
+        una operación no es un huérfano y los valores de personas sí (T47)."""
         # (1)
         self.declare(LAYER_A)
         first_uids = self.stored_uids()
@@ -526,6 +527,36 @@ class RedeclareTest(dfx.DesignProjectCase):
         self.assertEqual((orphan.segment, orphan.key, orphan.value),
                          ("perimeter__", PERIMETER_KEY, 9.0))
         self.assertEqual(sectors_mod.imposed_slopes(found), {"entidad_1": 10.6, "entidad_2": 17.0})
+
+        # (7) T47 (hallazgo (10) del H3): el valor por defecto sin valor que registra una operación
+        # al leer el talud (``ensure_default``, RF-008-04) no es un huérfano: no hay nada que
+        # declarar de nuevo. Sí lo son los de personas, también uno sin valor en una versión.
+        put(self.project, self.clock, "zona_oeste", 15.0, version=self.v2)
+        put(self.project, self.clock, "zona_este", None, version=self.v1,
+            reason="Sin talud impuesto en V01")
+        put(self.project, self.clock, "zona_norte", 8.0)
+        store = core_params.ParameterStore(self.project)
+        with self.project.write_transaction() as conn:
+            for code in ("zona_oeste", "zona_este", "solo_defecto", "zona_norte"):
+                store.ensure_default(conn, key_of(code), geoblender_version="0.1.0")
+        default = store.get(key_of("zona_oeste"))
+        self.assertIsNone(default.value)
+        self.assertTrue(default.source.startswith("valor por defecto de Geoblender"))
+        self.assertEqual(store.get(key_of("zona_norte")).value, 8.0, "ya tenía fila: no se toca")
+        orphans = sectors_mod.orphan_slopes(self.project, found)
+        self.assertEqual([(item.segment, item.scope, item.version, item.value) for item in orphans],
+                         [("perimeter__", "project", "", 9.0),
+                          ("zona_este", "version", "V01", None),
+                          ("zona_norte", "project", "", 8.0),
+                          ("zona_oeste", "version", "V02", 15.0)])
+        # Si una persona le da un valor al del proyecto, ya es suyo y sale.
+        self.clock.advance(minutes=1)
+        with self.project.write_transaction() as conn:
+            store.change(conn, key_of("zona_oeste"), value=14.0, reason="Talud de la propiedad",
+                         **BY_HAND)
+        orphans = sectors_mod.orphan_slopes(self.project, found)
+        self.assertIn(("zona_oeste", "project", "", 14.0),
+                      [(item.segment, item.scope, item.version, item.value) for item in orphans])
 
 
 if __name__ == "__main__":

@@ -58,6 +58,7 @@ from ..core.params import (
     ParameterStore,
     ResolvedParam,
 )
+from ..core.params.store import DEFAULT_SOURCE_PREFIX
 from ..core.versions import read as versions_read
 from ..gis.grid import project_grid
 from ..gis.masks.store import search_sectors, sector_states_now
@@ -323,7 +324,9 @@ def orphan_slopes(project: StoreProject, sectors: Sequence[DesignSector]
     ningún sector actual, por clave y, en cada una, el proyecto antes que las versiones (por su
     número). Un sector renombrado cambia de código y deja el suyo aquí; si el perímetro de actuación
     deja de ser el sector único, también el suyo. Nunca se borran: la persona los pasa al sector
-    nuevo. Solo lee."""
+    nuevo. No es huérfano el valor por defecto **sin valor** que registra una operación al leer el
+    talud (``ensure_default``, RF-008-04; T47): no hay nada que pasar; sí lo es el de una persona,
+    también el de una versión sin valor. Solo lee."""
     active = {slope_key(item.code) for item in sectors}
     store = ParameterStore(project)
     found: list[OrphanSlope] = []
@@ -335,6 +338,8 @@ def orphan_slopes(project: StoreProject, sectors: Sequence[DesignSector]
             if segments is None or key in active:
                 continue
             for record in store.scopes(key, conn=conn):
+                if record.value is None and record.source.startswith(DEFAULT_SOURCE_PREFIX):
+                    continue  # el valor por defecto que registró Geoblender, sin valor (T47)
                 version = ""
                 if record.scope == VERSION_SCOPE:
                     owner = versions_read.version(conn, record.scope_uid)

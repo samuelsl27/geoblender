@@ -1270,3 +1270,7 @@ menos de 15 minutos y sin ayuda (CE-013-11).
   propone el terreno, como «Envolventes y escalonado…»; antes proponía la primera de la lista, que
   con un diseño en el proyecto era la rejilla de sus bermas. La lista sigue ofreciéndolas todas y
   ningún cálculo ni cifra cambia (spec 013).
+- En Diseño ▸ Parámetros ▸ Sectores de diseño…, «Parámetros sin sector» ya no lista el valor por
+  defecto sin valor que el proyecto registra cuando una operación lee el talud de un sector («— ·
+  valor por defecto de Geoblender»): no hay nada que declarar de nuevo. Los valores que decidió una
+  persona se siguen listando y nada se borra. Ningún cálculo ni cifra cambia (spec 013).
