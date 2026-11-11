@@ -24,6 +24,7 @@ import ast
 import re
 import unicodedata
 import unittest
+from pathlib import Path
 
 from tests.support import bs_tables, docs
 from tests.support.package import import_geoblender
@@ -93,8 +94,75 @@ def expand_combos(cell: str) -> list[tuple[frozenset[str], str]]:
     return [parse_combo(text)]
 
 
+def _module_constants() -> tuple[dict[tuple[str, str], ast.expr], dict[str, set[str]]]:
+    """Las constantes de módulo de la extensión: (fichero, nombre) → su valor (AST) y, de las
+    que son un texto ``geoblender.*``, nombre → sus textos (en cualquier módulo)."""
+    values: dict[tuple[str, str], ast.expr] = {}
+    texts: dict[str, set[str]] = {}
+    for path in sorted(EXTENSION_DIR.rglob("*.py")):
+        tree = ast.parse(path.read_bytes().decode("utf-8"))
+        for statement in tree.body:
+            if isinstance(statement, ast.Assign):
+                for target in statement.targets:
+                    if isinstance(target, ast.Name):
+                        values[(str(path), target.id)] = statement.value
+                        if (isinstance(statement.value, ast.Constant)
+                                and str(statement.value.value).startswith("geoblender.")):
+                            texts.setdefault(target.id, set()).add(statement.value.value)
+    return values, texts
+
+
+def _aliases(path: str) -> dict[str, str]:
+    """Los módulos que importa ``path`` con ``from .x import y [as z]``: nombre → su fichero."""
+    found: dict[str, str] = {}
+    here = Path(path).parent
+    for statement in ast.parse(Path(path).read_bytes().decode("utf-8")).body:
+        if isinstance(statement, ast.ImportFrom) and statement.level:
+            base = here
+            for _ in range(statement.level - 1):
+                base = base.parent
+            for part in (statement.module or "").split("."):
+                if part:
+                    base = base / part
+            for alias in statement.names:
+                for candidate in (base / f"{alias.name}.py", base / alias.name / "__init__.py"):
+                    if candidate.is_file():
+                        found[alias.asname or alias.name] = str(candidate)
+    return found
+
+
+def _resolved(value: ast.expr, path: str, values: dict[tuple[str, str], ast.expr],
+              texts: dict[str, set[str]], depth: int = 0) -> str | None:
+    """El texto ``geoblender.*`` de ``value``: un literal, una constante del mismo fichero
+    (``bl_idname = TOGGLE_PREVIEW``) o la de otro módulo (``modulo.NOMBRE``, por su
+    importación o, si no, por su nombre si es único). La 013 es la primera spec «Cerrada» que
+    nombra sus órdenes con constantes."""
+    if depth > 3:
+        return None
+    if isinstance(value, ast.Constant):
+        text = str(value.value)
+        return text if text.startswith("geoblender.") else None
+    if isinstance(value, ast.Name):
+        own = values.get((path, value.id))
+        if own is not None:
+            return _resolved(own, path, values, texts, depth + 1)
+        name = value.id
+    elif isinstance(value, ast.Attribute):
+        name = value.attr
+        if isinstance(value.value, ast.Name):
+            module = _aliases(path).get(value.value.id)
+            if module is not None and (module, name) in values:
+                return _resolved(values[(module, name)], module, values, texts, depth + 1)
+    else:
+        return None
+    found = texts.get(name, set())
+    return next(iter(found)) if len(found) == 1 else None
+
+
 def bl_idnames() -> set[str]:
-    """Los ``bl_idname`` literales ``geoblender.*`` de las clases de ``geoblender/bl/``."""
+    """Los ``bl_idname`` ``geoblender.*`` de las clases de ``geoblender/bl/``: literales o
+    constantes de módulo que se resuelven a un literal."""
+    values, texts = _module_constants()
     found: set[str] = set()
     for path in sorted((EXTENSION_DIR / "bl").rglob("*.py")):
         tree = ast.parse(path.read_bytes().decode("utf-8"))
@@ -104,10 +172,10 @@ def bl_idnames() -> set[str]:
             for statement in node.body:
                 if (isinstance(statement, ast.Assign)
                         and any(isinstance(t, ast.Name) and t.id == "bl_idname"
-                                for t in statement.targets)
-                        and isinstance(statement.value, ast.Constant)
-                        and str(statement.value.value).startswith("geoblender.")):
-                    found.add(statement.value.value)
+                                for t in statement.targets)):
+                    idname = _resolved(statement.value, str(path), values, texts)
+                    if idname is not None:
+                        found.add(idname)
     return found
 
 
