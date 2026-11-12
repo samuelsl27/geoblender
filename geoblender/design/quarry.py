@@ -69,8 +69,14 @@
   (``pipeline.envelope_compute_steps`` y ``pipeline.design_compute_steps``) con las semillas
   «coronación y zonas a sostener» (o las de la 013), los fondos y los corredores, el techo de
   conservación y el ancla del lado (la del perfil, una rejilla o «al fondo de cada muro»).
+- :func:`quarry_steps` (T16; RF-014-12, RF-014-13, RF-014-14; A8): **las dos superficies** en una
+  sola orden (:class:`QuarryJob` → :class:`QuarryOutcome`): los dos lados con :func:`side_steps`,
+  primero el que dice el orden del diseño; la regla de orden y ``≤ z`` (:func:`order_surfaces`,
+  :class:`OrderedSurfaces`: «final primero» sube la explotación a la final, «explotación primero»
+  baja la final a la explotación) y el invariante ``final ≤ explotación ≤ terreno`` a 1 mm
+  (:func:`check_order`; si fallara, un error del programa y no se crea nada).
 
-Las demás piezas de la cantera (las dos superficies juntas) llegan con sus tareas. Python puro
+La clasificación, las cifras y «explotación hasta la final» llegan con sus tareas. Python puro
 con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no escribe nada.
 """
 
@@ -114,6 +120,7 @@ from .model import (
     EnvelopeRequest,
     LayerField,
     Metric,
+    Order,
     QuarryRequest,
     SeedKind,
     SeedSource,
@@ -143,6 +150,8 @@ __all__ = [
     "CEILING_NAME",
     "FLOOR_LEVEL_MARGIN_M",
     "HOLD_TYPES",
+    "ORDER_NAMES",
+    "ORDER_TOLERANCE_M",
     "SIDE_NAMES",
     "AreaOutcome",
     "AreaPart",
@@ -154,6 +163,9 @@ __all__ = [
     "FloorAnchors",
     "FloorMap",
     "FloorsAbove",
+    "OrderedSurfaces",
+    "QuarryJob",
+    "QuarryOutcome",
     "SeedGroup",
     "SideJob",
     "SideOutcome",
@@ -161,6 +173,7 @@ __all__ = [
     "apply_ceiling",
     "area_outcome",
     "area_parts",
+    "check_order",
     "conservation_ceiling_steps",
     "conserve_moved",
     "corridor_cells",
@@ -174,7 +187,9 @@ __all__ = [
     "floors_above_terrain",
     "hold_zones",
     "join_floors",
+    "order_surfaces",
     "outside_crown",
+    "quarry_steps",
     "side_steps",
     "with_floors",
 ]
@@ -1293,3 +1308,224 @@ def _side_work(job: SideJob, budget_s: float) -> Generator[Progress, None, None]
     outcome = SideOutcome(surface, base, seeds, held, anchors, envelope, design)
     yield Progress("side", 1, 1, f"{SIDE_NAMES[surface].capitalize()} de «{job.request.name}» "
                    "calculada", result=outcome)
+
+
+# --- Las dos superficies y el orden (T16; A8) -----------------------------------------------------
+
+ORDER_TOLERANCE_M = 0.001
+"""La tolerancia del invariante ``final ≤ explotación ≤ terreno`` (m; RF-014-14: 1 mm)."""
+ORDER_NAMES = MappingProxyType({Order.FINAL_FIRST: "final primero",
+                                Order.EXPLOITATION_FIRST: "explotación primero"})
+"""El nombre de cada orden del diseño en los mensajes (RF-014-13)."""
+_ORDER_FIELD = "final ≤ explotación ≤ terreno"
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class OrderedSurfaces:
+    """Las dos superficies atadas por la regla de orden (A8; RF-014-13): la ``final`` y la de
+    ``exploitation`` (m, float64, rejillas nuevas), el ``order`` con que se ataron y las celdas en
+    que la regla cambió la segunda (``adjusted``: las que tenían la final por encima de la
+    explotación; «final primero» subió allí la explotación y «explotación primero» bajó la
+    final)."""
+
+    final: np.ndarray
+    exploitation: np.ndarray
+    order: Order
+    adjusted: int
+
+
+def _at_most(grid: np.ndarray, start: np.ndarray) -> np.ndarray:
+    """``grid`` sin pasar de ``start`` donde ``start`` tiene dato (``≤ z``); donde no, ``grid``
+    tal cual. Una rejilla nueva."""
+    return np.where(np.isfinite(start), np.minimum(grid, start), grid)
+
+
+def order_surfaces(order: Order | str, final: np.ndarray, exploitation: np.ndarray,
+                   start: np.ndarray) -> OrderedSurfaces:
+    """**La regla de orden** (A8; RF-014-13) de las dos superficies de un diseño, ``final`` y
+    ``exploitation`` (m, de la misma rejilla que la de partida ``start``): con «final primero», la
+    final se queda y la explotación sube donde queda por debajo de ella (``explotación =
+    máx(explotación, final)``); con «explotación primero», la explotación se queda y la final baja
+    donde queda por encima (``final = mín(final, explotación)``); después, las dos ``≤ z`` donde
+    el terreno tiene dato. Así ``final ≤ explotación ≤ terreno`` (RF-014-14, que comprueba
+    :func:`check_order`). Rejillas nuevas (:class:`OrderedSurfaces`); ninguna entrada se
+    modifica. ``ValueError`` (error del programa) si las rejillas no tienen la misma forma."""
+    order = Order(order)
+    base = np.asarray(start, dtype=np.float64)
+    upper = np.asarray(final, dtype=np.float64)
+    lower = np.asarray(exploitation, dtype=np.float64)
+    _same_shape("la superficie final", upper, base.shape)
+    _same_shape("la superficie de explotación", lower, base.shape)
+    with np.errstate(invalid="ignore"):
+        adjusted = int(np.count_nonzero(upper > lower))
+    if order is Order.FINAL_FIRST:
+        lower = np.maximum(lower, upper)
+    else:
+        upper = np.minimum(upper, lower)
+    return OrderedSurfaces(_at_most(upper, base), _at_most(lower, base), order, adjusted)
+
+
+def _level(value: float) -> object:
+    """Una cota en un mensaje: redondeada al mm, o «—» si no tiene dato."""
+    return round(value, 3) if math.isfinite(value) else _NO_VALUE
+
+
+def check_order(name: str, final: np.ndarray, exploitation: np.ndarray, start: np.ndarray,
+                geometry: Grid) -> None:
+    """**El invariante** de las dos superficies (A8; RF-014-14): ``final ≤ explotación ≤
+    terreno`` en cada celda con :data:`ORDER_TOLERANCE_M` (1 mm), comprobado antes de ofrecer
+    «Crear». Una celda sin dato en las tres cumple; una superficie sin dato donde el terreno lo
+    tiene (o al revés) no. Si alguna celda no cumple es un **error del programa**
+    (:class:`~.messages.DesignError` ``des.quarry_order_broken``: no se crea nada) con la primera
+    fila a fila desde el norte, sus coordenadas absolutas (m, centro de la celda) y las tres cotas,
+    y el número de celdas que fallan como valor. Solo lee; ``ValueError`` si las rejillas no son
+    de la forma de ``geometry``."""
+    base = np.asarray(start, dtype=np.float64)
+    upper = np.asarray(final, dtype=np.float64)
+    lower = np.asarray(exploitation, dtype=np.float64)
+    for label, grid in (("la superficie de partida", base), ("la superficie final", upper),
+                        ("la superficie de explotación", lower)):
+        _same_shape(label, grid, geometry.shape)
+    with np.errstate(invalid="ignore"):
+        holds = ((upper <= lower + ORDER_TOLERANCE_M) & (lower <= base + ORDER_TOLERANCE_M))
+    empty = np.isnan(upper) & np.isnan(lower) & np.isnan(base)
+    broken = ~(holds | empty)
+    if not broken.any():
+        return
+    first = int(np.flatnonzero(broken)[0])
+    row, col = divmod(first, geometry.ncols)
+    x = geometry.west + (col + 0.5) * geometry.dx
+    y = geometry.north - (row + 0.5) * geometry.dy
+    raise DesignError("des.quarry_order_broken", obj=f"Cantera «{name}»", field=_ORDER_FIELD,
+                      value=int(np.count_nonzero(broken)), x=round(x, 2), y=round(y, 2),
+                      final=_level(float(upper[row, col])),
+                      exploitation=_level(float(lower[row, col])),
+                      terrain=_level(float(base[row, col])))
+
+
+def _by_surface[T](items: Mapping[Surface | str, T]) -> Mapping[Surface, T]:
+    """``items`` con sus claves como :class:`~.model.Surface` (``ValueError`` si una no es una de
+    las dos), en un mapa que no se puede cambiar."""
+    return MappingProxyType({Surface(key): value for key, value in items.items()})
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class QuarryJob:
+    """Lo que necesita calcular la cantera con dos superficies, ya leído y sin proyecto (plan 014
+    §5.3.1; lo que ``DesignJob`` a la 013): lo común a los dos lados, como en :class:`SideJob` (la
+    petición, la de partida, las máscaras, el dominio de trabajo con sus sectores, los parámetros,
+    el anillo de coronación, el espesor mínimo, la tolerancia de cara, el umbral de aviso, los
+    fondos y corredores ya juntos, el techo ya calculado y los sectores con la búsqueda
+    pendiente: los fondos y el techo se calculan una vez para los dos), y lo de cada lado por su
+    :class:`~.model.Surface`: las semillas de la 013 (``seeds``) del lado que no siembra la
+    coronación y la rejilla de anclas leída (``anchors``) del lado con el ancla en rejilla.
+    ``ValueError`` si una clave no es una de las dos superficies."""
+
+    request: QuarryRequest
+    start: np.ndarray
+    masks: MaskSet
+    domain: DomainSet
+    values: Mapping[str, object]
+    ring_cells: int
+    min_thickness_m: float
+    face_tolerance_deg: float
+    warning_ratio: float
+    seeds: Mapping[Surface | str, SeedSet] = MappingProxyType({})
+    floors: FloorMap | None = None
+    ceiling: ConservationCeiling | None = None
+    anchors: Mapping[Surface | str, np.ndarray] = MappingProxyType({})
+    pending: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "seeds", _by_surface(self.seeds))
+        object.__setattr__(self, "anchors", _by_surface(self.anchors))
+
+    def side_job(self, surface: Surface | str) -> SideJob:
+        """El :class:`SideJob` del lado ``surface``: lo común y sus semillas y su rejilla de
+        anclas, si las tiene."""
+        surface = Surface(surface)
+        return SideJob(self.request, surface, self.start, self.masks, self.domain, self.values,
+                       self.ring_cells, self.min_thickness_m, self.face_tolerance_deg,
+                       self.warning_ratio, seeds=self.seeds.get(surface), floors=self.floors,
+                       ceiling=self.ceiling, anchors=self.anchors.get(surface),
+                       pending=self.pending)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class QuarryOutcome:
+    """La cantera con dos superficies calculada (A8; RF-014-12 a RF-014-14): el ``order`` del
+    diseño, cada lado tal como se calculó, antes de la regla de orden (``final`` y
+    ``exploitation``, :class:`SideOutcome`: su envolvente, su escalonado, su informe y sus bermas
+    de la 013), las dos superficies atadas por el orden y comprobadas (``ordered``,
+    :class:`OrderedSurfaces`) y el ``message`` de la operación."""
+
+    order: Order
+    final: SideOutcome
+    exploitation: SideOutcome
+    ordered: OrderedSurfaces
+    message: str
+
+    def side(self, surface: Surface | str) -> SideOutcome:
+        """El lado de la superficie ``surface``, antes de la regla de orden."""
+        if Surface(surface) is Surface.FINAL:
+            return self.final
+        return self.exploitation
+
+    @property
+    def final_grid(self) -> np.ndarray:
+        """La superficie final (m, float64): la del lado final con la regla de orden y ``≤ z``."""
+        return self.ordered.final
+
+    @property
+    def exploitation_grid(self) -> np.ndarray:
+        """La superficie de explotación (m, float64): la de su lado con la regla de orden y
+        ``≤ z``."""
+        return self.ordered.exploitation
+
+    @property
+    def adjusted(self) -> int:
+        """Las celdas en que la regla de orden cambió la segunda superficie."""
+        return self.ordered.adjusted
+
+
+def quarry_steps(job: QuarryJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**Las dos superficies** de la cantera en una sola orden (A8; RF-014-12 a RF-014-14), por
+    pasos de ``budget_s`` como mucho (los de :func:`side_steps` de cada lado y los del orden,
+    §5.3.2); el último ``Progress`` (fase ``quarry``) lleva el :class:`QuarryOutcome`. En orden:
+
+    1. los dos lados con :func:`side_steps` (:meth:`QuarryJob.side_job`), primero el que dice el
+       orden del diseño: con «final primero», la final; con «explotación primero», la explotación;
+    2. la regla de orden y ``≤ z`` (:func:`order_surfaces`, RF-014-13);
+    3. el invariante ``final ≤ explotación ≤ terreno`` a 1 mm (:func:`check_order`, RF-014-14): si
+       fallara, ``des.quarry_order_broken`` y ningún paso lleva un resultado que crear.
+
+    ``ValueError`` (error del programa) al llamar con los de :func:`side_steps` de cada lado. Al
+    avanzar, los rechazos de la 013 de cada lado. Ninguna entrada se modifica y no se escribe nada;
+    cerrar el generador a mitad no deja nada. La clasificación, las cifras y «explotación hasta la
+    final» son de sus tareas (A8, A9)."""
+    first = (Surface.FINAL if Order(job.request.order) is Order.FINAL_FIRST
+             else Surface.EXPLOITATION)
+    second = Surface.EXPLOITATION if first is Surface.FINAL else Surface.FINAL
+    sides = {surface: side_steps(job.side_job(surface), budget_s=budget_s)
+             for surface in (first, second)}
+    return _quarry_work(job, sides[first], sides[second])
+
+
+def _quarry_work(job: QuarryJob, first: Iterator[Progress], second: Iterator[Progress]
+                 ) -> Generator[Progress, None, None]:
+    order, name = Order(job.request.order), job.request.name
+    done: list[SideOutcome] = []
+    for steps in (first, second):
+        outcome: SideOutcome = yield from forward(steps)
+        done.append(outcome)
+    by_surface = {outcome.surface: outcome for outcome in done}
+    final, exploitation = by_surface[Surface.FINAL], by_surface[Surface.EXPLOITATION]
+    start = np.asarray(job.start, dtype=np.float64)
+    yield Progress("order", 0, 2, f"Ordenando las dos superficies ({ORDER_NAMES[order]})…")
+    ordered = order_surfaces(order, final.grid, exploitation.grid, start)
+    yield Progress("order", 1, 2, "Comprobando final ≤ explotación ≤ terreno…")
+    check_order(name, ordered.final, ordered.exploitation, start, job.masks.grid)
+    text = (f"Cantera «{name}» calculada ({ORDER_NAMES[order]}): superficie final y de "
+            f"explotación; la regla de orden cambió {ordered.adjusted} celdas")
+    yield Progress("quarry", 1, 1, text,
+                   result=QuarryOutcome(order, final, exploitation, ordered, text))

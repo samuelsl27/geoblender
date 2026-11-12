@@ -148,7 +148,8 @@ PENDING_014_MODULES = frozenset({
     # T10: CEILING_NAME, ConserveZone, ConservationCeiling, conservation_ceiling_steps,
     # apply_ceiling, ConservePart, ConserveMoved, conserve_moved; T11: ANCHOR_LABEL, FloorAnchors,
     # floor_anchor_steps, anchored_request; T13: SIDE_NAMES, SideJob, SideOutcome, join_floors,
-    # side_steps
+    # side_steps; T16: ORDER_NAMES, ORDER_TOLERANCE_M, OrderedSurfaces, QuarryJob, QuarryOutcome,
+    # order_surfaces, check_order, quarry_steps
 })
 
 
