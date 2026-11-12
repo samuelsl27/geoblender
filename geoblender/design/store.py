@@ -35,6 +35,9 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   :func:`prepare_envelope_units` y :func:`prepare_design_units` (lo que se lee y se rechaza antes de
   calcular, por unidades) y :func:`compute_envelope_steps` y :func:`compute_design_steps` (el cálculo
   y la escritura de las salidas en los temporales de un :class:`DesignWriter`, sin confirmar).
+- **El recinto excavable** (spec 014, T06; RF-014-01): :func:`prepare_excavation_area`,
+  :func:`prepare_area_units` y :func:`compute_area_steps` (``des.excavation_area``, el dato
+  ``des_rcn_`` y la cifra ``des.rcn_area_m2``), con el mismo :class:`DesignWriter`.
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -103,7 +106,7 @@ from ..gis.masks.store import CANCELLED_REASON, available_tables
 from ..gis.messages import GisError
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, backup_path, insert_rows, project_references, temporary_path
-from . import pipeline, provenance
+from . import pipeline, provenance, quarry
 from .messages import DesignError
 from .model import DesignRequest, EnvelopeRequest, SlopeMode
 from .params import (
@@ -129,6 +132,7 @@ __all__ = [
     "REPORT_COLUMNS",
     "DesignWriter",
     "OperationStart",
+    "PreparedArea",
     "PreparedDesign",
     "PreparedEnvelope",
     "Stored",
@@ -136,14 +140,17 @@ __all__ = [
     "begin_envelope",
     "berm_rows",
     "RECOMPUTED",
+    "compute_area_steps",
     "compute_design_steps",
     "compute_envelope_steps",
     "masks_steps",
     "number",
+    "prepare_area_units",
     "prepare_design",
     "prepare_design_units",
     "prepare_envelope",
     "prepare_envelope_units",
+    "prepare_excavation_area",
     "design_surface_start",
     "previous_comparison",
     "recompute_run",
@@ -546,6 +553,23 @@ def prepare_design(project: StoreProject, request: DesignRequest, surface: str, 
     return _start(project, provenance.STEPPED, request.name, found, loaded,
                   provenance.design_settings(request, surface, pending_sectors, touched_sectors,
                                              previous), inputs, params, supersedes)
+
+
+def prepare_excavation_area(project: StoreProject, name: str, surface: str, *,
+                            version: str | None, masks: access.MaskSet | None = None,
+                            supersedes: str | None = None) -> OperationStart:
+    """Lo mismo que :func:`prepare_envelope` para ``des.excavation_area`` (spec 014, T06;
+    RF-014-01) de nombre ``name`` sobre la superficie de partida ``surface`` (el nombre de su
+    dato): los ajustes de ``excavation_area_settings``, las entradas de
+    ``excavation_area_inputs`` (la superficie y las máscaras de la versión) y ningún parámetro.
+    Rechazos: los de :func:`require_version`, ``MaskError`` si las máscaras que se dan ya no están
+    al día, ``DesignError`` ``des.operation_name_repeated`` y ``GisError``
+    ``gis.dataset_name_invalid``."""
+    found = require_version(project, version, provenance.EXCAVATION_AREA)
+    loaded = _loaded_masks(project, found, masks)
+    return _start(project, provenance.EXCAVATION_AREA, name, found, loaded,
+                  provenance.excavation_area_settings(name, surface),
+                  provenance.excavation_area_inputs(surface, loaded.uses()), (), supersedes)
 
 
 def begin_envelope(project: StoreProject, request: EnvelopeRequest, *, version: str | None,
@@ -1052,6 +1076,17 @@ class PreparedDesign:
     start: OperationStart
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class PreparedArea:
+    """Lo que se lee y se comprueba antes de guardar un recinto (:func:`prepare_area_units`): el
+    recinto (``area``, ``design.quarry.excavation_area``), la superficie de partida de la que sale
+    (``surface``, con su rejilla) y lo que anotará la operación (``start``)."""
+
+    area: np.ndarray
+    surface: Raster
+    start: OperationStart
+
+
 def prepare_envelope_units(project: StoreProject, request: EnvelopeRequest, version: Version,
                            masks: access.MaskSet, *, supersedes: str | None = None
                            ) -> Generator[None, None, PreparedEnvelope]:
@@ -1101,6 +1136,42 @@ def prepare_design_units(project: StoreProject, request: DesignRequest, surface:
                            previous=previous, supersedes=supersedes)
     yield
     return PreparedDesign(envelope, refs, labels, start)
+
+
+def prepare_area_units(project: StoreProject, name: str, surface: str, version: Version,
+                       masks: access.MaskSet, *, supersedes: str | None = None
+                       ) -> Generator[None, None, PreparedArea]:
+    """Las unidades que preparan el recinto ``name`` de ``version`` sobre la superficie de partida
+    ``surface`` con sus ``masks`` ya al día (spec 014, T06; RF-014-01; A1): la superficie (leída y
+    comparada con la rejilla del proyecto), el recinto (``design.quarry.excavation_area``: vacío,
+    ``DesignError`` ``des.quarry_area_empty`` con lo que lo vacía) y
+    :func:`prepare_excavation_area`. Devuelve la :class:`PreparedArea`. Nada se escribe; los
+    rechazos salen al avanzar."""
+    found = read_surface(project, surface, version_uid=version.uid,
+                         expect=project_frame(project), role="superficie de partida")
+    yield
+    area = quarry.excavation_area(masks, found.values, version=version.code)
+    yield
+    start = prepare_excavation_area(project, name, surface, version=version.uid, masks=masks,
+                                    supersedes=supersedes)
+    yield
+    return PreparedArea(area, found, start)
+
+
+def compute_area_steps(writer: DesignWriter, name: str, prepared: PreparedArea,
+                       budget_s: float = STEP_BUDGET_S
+                       ) -> Generator[Progress, None, quarry.AreaOutcome]:
+    """Los pasos que miden el recinto ``prepared.area`` de la operación ``name``
+    (``design.quarry.area_outcome``) y dejan su rejilla (1 dentro, sin dato fuera) en el temporal
+    de ``writer`` como ``des_rcn_`` (``yield from``; **sin confirmar**, como
+    :func:`compute_envelope_steps`). Devuelve el ``design.quarry.AreaOutcome``."""
+    yield Progress("area", 0, 1, "Midiendo el recinto…")
+    geometry = prepared.surface.grid
+    outcome = quarry.area_outcome(name, prepared.area, geometry)
+    raster = Raster(geometry, outcome.grid, writer.crs, writer.vertical)
+    yield from pipeline.forward(_store_steps(
+        writer.grid_steps(provenance.EXCAVATION_AREA_GRID, raster), budget_s, "el recinto"))
+    return outcome
 
 
 def compute_envelope_steps(project: StoreProject, writer: DesignWriter, request: EnvelopeRequest,

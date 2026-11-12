@@ -131,10 +131,15 @@ PENDING_014_API = frozenset({
     "QuarrySide", "QuarryRequest", "check_quarry_param",
     # T05: design.provenance.
     "quarry_figure_scope", "quarry_operation_defs",
+    # T06: design.provenance, design.store y design.steps (el recinto).
+    "excavation_area_inputs", "excavation_area_settings", "excavation_area_start",
+    "PreparedArea", "compute_area_steps", "prepare_area_units", "prepare_excavation_area",
+    "excavation_area_run",
 })
 # Los módulos nuevos de la 014 que aún no tienen fila en la ficha (la T36 se la da y vacía esto).
 PENDING_014_MODULES = frozenset({
     "design.grids",  # T03: Labels, dilate_square, label_components_steps
+    "design.quarry",  # T06: AreaOutcome, AreaPart, area_outcome, area_parts, excavation_area
 })
 
 

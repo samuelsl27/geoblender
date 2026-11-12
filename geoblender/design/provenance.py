@@ -212,6 +212,9 @@ __all__ = [
     "envelope_params",
     "envelope_request",
     "envelope_settings",
+    "excavation_area_inputs",
+    "excavation_area_settings",
+    "excavation_area_start",
     "figure_scope",
     "operation_def",
     "operation_defs",
@@ -908,6 +911,23 @@ def design_settings(request: DesignRequest, surface: str, pending_sectors: Itera
     }
 
 
+def excavation_area_settings(name: str, surface: str) -> dict[str, Any]:
+    """Los ajustes de ``des.excavation_area`` (spec 014, T06; RF-014-01; JSON sin rutas): el
+    nombre de la operación y la superficie de partida ``surface`` (el nombre de su dato), lo que
+    la vuelve a pedir igual con sus entradas. Es un diccionario nuevo; ``ValueError`` si falta
+    alguno de los dos."""
+    return {"name": _named(name, "del recinto"),
+            "surface": _named(surface, "de la superficie de partida")}
+
+
+def excavation_area_start(settings: Mapping[str, Any]) -> tuple[str, str]:
+    """El nombre y la superficie de partida que guardan unos ajustes de ``des.excavation_area``
+    (:func:`excavation_area_settings`). ``ValueError`` si no los llevan."""
+    what = "los ajustes de un recinto"
+    data = _mapping(settings, what)
+    return _required_text(data, "name", what), _required_text(data, "surface", what)
+
+
 def _mapping(value: object, what: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{what} es un diccionario, no {value!r}")
@@ -1131,6 +1151,16 @@ def design_inputs(request: DesignRequest, surface: str, masks: Iterable[Use] = (
     found += list(masks)
     found += sector_inputs(available)
     return _unique(found)
+
+
+def excavation_area_inputs(surface: str, masks: Iterable[Use] = ()) -> tuple[Use, ...]:
+    """Lo que consume ``des.excavation_area`` (spec 014, T06; RF-014-01; plan 014 §5.2.3), en su
+    orden: la superficie de partida ``surface`` (``surface``: sus celdas sin dato quedan fuera del
+    recinto) y las máscaras de la versión ``masks`` (``MaskSet.uses()``, con sus papeles). Si una
+    cambia, el recinto queda obsoleto. No lee ningún parámetro. ``ValueError`` si falta el nombre
+    de la superficie."""
+    return _unique([Use(_named(surface, "de la superficie de partida"), SURFACE_ROLE),
+                    *masks])
 
 
 # --- Los parámetros que lee una operación -------------------------------------------------------
