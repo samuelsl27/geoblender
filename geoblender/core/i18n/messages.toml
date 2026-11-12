@@ -8119,3 +8119,237 @@ es = "Recinto excavable «{name}» creado en {version}"
 
 ["Computing the excavation boundary… {percent} % · Esc: cancel"]
 es = "Calculando el recinto excavable… {percent} % · Esc: cancelar"
+
+# «Cantera con dos superficies…» (spec 014, T21; HU-014-3; RF-014-12, RF-014-13, RF-014-29,
+# RF-014-30; plan 014 §5.3.3, §5.5): la orden bl/ops/des.py (des_design_quarry), su diálogo con las
+# dos superficies y las capas, y su resumen y las listas de sus capas (bl/ui/des_panels.py). («Name»,
+# «Start surface», «Order of the design», «Final surface», «Final surface first», «Exploitation
+# surface first», «Crown and zones to hold», «Floor nearest to each wall», «Exploitation down to the
+# final surface», «All the warned zones», «Zones of a layer», «Seeds of the final surface» y sus
+# hermanos, «Fixed elevation», «Grid of anchor elevations», «Elevation field», «Layers» y los textos
+# de «Envolventes y escalonado…» ya están arriba).
+
+["Name of the quarry, unique in the active version"]
+es = "Nombre de la cantera, único en la versión activa"
+
+["Ground of the project or of the active version the two surfaces start from"]
+es = "Terreno del proyecto o de la versión activa del que parten las dos superficies"
+
+["Final surface first: the final surface is computed first and the exploitation surface is raised where it is under it; exploitation surface first: the exploitation surface is computed first and the final surface is lowered where it is over it"]
+es = "Primero la superficie final: se calcula antes la final y la de explotación sube donde queda por debajo de ella; primero la superficie de explotación: se calcula antes la de explotación y la final baja donde queda por encima de ella"
+
+["Where the seeds of the final surface come from: the crown of the excavation boundary and the zones to hold, or the seeds of a surface, a fixed elevation or a grid of elevations"]
+es = "De dónde salen las semillas de la superficie final: la coronación del recinto excavable y las zonas a sostener, o las semillas de una superficie, una cota fija o una rejilla de cotas"
+
+["Where the seeds of the exploitation surface come from: the crown of the excavation boundary and the zones to hold, or the seeds of a surface, a fixed elevation or a grid of elevations"]
+es = "De dónde salen las semillas de la superficie de explotación: la coronación del recinto excavable y las zonas a sostener, o las semillas de una superficie, una cota fija o una rejilla de cotas"
+
+["Surface of the seeds of the final surface"]
+es = "Superficie de las semillas de la superficie final"
+
+["Surface of the seeds of the exploitation surface"]
+es = "Superficie de las semillas de la superficie de explotación"
+
+["Surface or grid of elevations of the project or of the active version the seeds of the final surface are read from"]
+es = "Superficie o rejilla de cotas del proyecto o de la versión activa de la que se leen las semillas de la superficie final"
+
+["Surface or grid of elevations of the project or of the active version the seeds of the exploitation surface are read from"]
+es = "Superficie o rejilla de cotas del proyecto o de la versión activa de la que se leen las semillas de la superficie de explotación"
+
+["Zone of the seeds of the final surface"]
+es = "Zona de las semillas de la superficie final"
+
+["Zone of the seeds of the exploitation surface"]
+es = "Zona de las semillas de la superficie de explotación"
+
+["Cells where the seeds of the final surface are: the whole surface, the default domain, the zone of a constraint, a design sector or a layer of polygons"]
+es = "Celdas donde están las semillas de la superficie final: toda la superficie, el dominio por defecto, la zona de una restricción, un sector de diseño o una capa de polígonos"
+
+["Cells where the seeds of the exploitation surface are: the whole surface, the default domain, the zone of a constraint, a design sector or a layer of polygons"]
+es = "Celdas donde están las semillas de la superficie de explotación: toda la superficie, el dominio por defecto, la zona de una restricción, un sector de diseño o una capa de polígonos"
+
+["Elevation of the seeds of the final surface (m)"]
+es = "Cota de las semillas de la superficie final (m)"
+
+["Elevation of the seeds of the exploitation surface (m)"]
+es = "Cota de las semillas de la superficie de explotación (m)"
+
+["Fixed elevation of the seeds of the final surface in metres"]
+es = "Cota fija de las semillas de la superficie final, en metros"
+
+["Fixed elevation of the seeds of the exploitation surface in metres"]
+es = "Cota fija de las semillas de la superficie de explotación, en metros"
+
+["Bench profile of the final surface in the cells without a sector (and in the sectors without their own)"]
+es = "Perfil de banco de la superficie final en las celdas sin sector (y en los sectores sin perfil propio)"
+
+["Bench profile of the exploitation surface in the cells without a sector (and in the sectors without their own)"]
+es = "Perfil de banco de la superficie de explotación en las celdas sin sector (y en los sectores sin perfil propio)"
+
+["Elevation the benches of the final surface are anchored to: that of each profile, a grid of anchor elevations or the floor nearest to each wall"]
+es = "Cota a la que se anclan los bancos de la superficie final: la de cada perfil, una rejilla de cotas de ancla o la del fondo más próximo a cada muro"
+
+["Elevation the benches of the exploitation surface are anchored to: that of each profile, a grid of anchor elevations or the floor nearest to each wall"]
+es = "Cota a la que se anclan los bancos de la superficie de explotación: la de cada perfil, una rejilla de cotas de ancla o la del fondo más próximo a cada muro"
+
+["Grid of anchor elevations of the final surface"]
+es = "Rejilla de cotas de ancla de la superficie final"
+
+["Grid of anchor elevations of the exploitation surface"]
+es = "Rejilla de cotas de ancla de la superficie de explotación"
+
+["Grid of anchor elevations of the project or of the active version of the final surface"]
+es = "Rejilla de cotas de ancla del proyecto o de la versión activa para la superficie final"
+
+["Grid of anchor elevations of the project or of the active version of the exploitation surface"]
+es = "Rejilla de cotas de ancla del proyecto o de la versión activa para la superficie de explotación"
+
+["How the distance to the seeds of the final surface is measured: the 5×5 chamfer or the exact Euclidean distance"]
+es = "Cómo se mide la distancia a las semillas de la superficie final: el chaflán 5×5 o la distancia euclídea exacta"
+
+["How the distance to the seeds of the exploitation surface is measured: the 5×5 chamfer or the exact Euclidean distance"]
+es = "Cómo se mide la distancia a las semillas de la superficie de explotación: el chaflán 5×5 o la distancia euclídea exacta"
+
+["Floors"]
+es = "Fondos"
+
+["Layer of polygons of the project with the floor elevation of each polygon (none: no floors)"]
+es = "Capa de polígonos del proyecto con la cota de fondo de cada polígono (ninguna: sin fondos)"
+
+["Floor elevation field"]
+es = "Campo de la cota de fondo"
+
+["Numeric field of the layer of floors with the elevation of each floor in metres"]
+es = "Campo numérico de la capa de fondos con la cota de cada fondo, en metros"
+
+["Zone to conserve"]
+es = "Zona a conservar"
+
+["Constraint or layer of polygons the design neither excavates nor buries, with its conservation ceiling (none: no zone to conserve)"]
+es = "Restricción o capa de polígonos que el diseño ni excava ni entierra, con su techo de conservación (ninguna: sin zona a conservar)"
+
+["Corridors"]
+es = "Corredores"
+
+["Layer of lines of the project with the axis of each corridor, a floor with flat ends (none: no corridors)"]
+es = "Capa de líneas del proyecto con el eje de cada corredor, un fondo con extremos planos (ninguna: sin corredores)"
+
+["Width field"]
+es = "Campo del ancho"
+
+["Numeric field of the layer of corridors with the width of each corridor in metres"]
+es = "Campo numérico de la capa de corredores con el ancho de cada corredor, en metros"
+
+["Elevation of the corridors"]
+es = "Cota de los corredores"
+
+["A fixed elevation or a grade: the elevation at the start of the axis and its slope in %"]
+es = "Una cota fija o una rasante: la cota al principio del eje y su pendiente en %"
+
+["Grade"]
+es = "Rasante"
+
+["Corridor elevation field"]
+es = "Campo de la cota del corredor"
+
+["Numeric field of the layer of corridors with the fixed elevation of each corridor in metres"]
+es = "Campo numérico de la capa de corredores con la cota fija de cada corredor, en metros"
+
+["Start elevation field"]
+es = "Campo de la cota inicial"
+
+["Numeric field of the layer of corridors with the elevation at the start of each axis in metres"]
+es = "Campo numérico de la capa de corredores con la cota al principio de cada eje, en metros"
+
+["Grade field"]
+es = "Campo de la pendiente"
+
+["Numeric field of the layer of corridors with the grade of each corridor in %, positive when it rises along the axis"]
+es = "Campo numérico de la capa de corredores con la pendiente de cada corredor en %, positiva cuando sube en el sentido del eje"
+
+["Restoration fill zones"]
+es = "Zonas de restauración por relleno"
+
+["Layer of polygons where the difference between the two surfaces is covered by a fill (none: no fill zones)"]
+es = "Capa de polígonos donde la diferencia entre las dos superficies la cubre un relleno (ninguna: sin zonas de relleno)"
+
+["Water sheets"]
+es = "Láminas de agua"
+
+["Layer of polygons with the elevation of each water sheet (none: no water sheets)"]
+es = "Capa de polígonos con la cota de cada lámina de agua (ninguna: sin láminas de agua)"
+
+["Water elevation field"]
+es = "Campo de la cota de la lámina"
+
+["Numeric field of the layer of water sheets with the elevation of each sheet in metres"]
+es = "Campo numérico de la capa de láminas de agua con la cota de cada lámina, en metros"
+
+["Where the exploitation surface is lowered down to the final surface with its benches: nowhere, in every warned zone or in the zones of a layer of polygons"]
+es = "Dónde baja la superficie de explotación hasta la final con sus bancos: en ninguna parte, en todas las zonas avisadas o en las zonas de una capa de polígonos"
+
+["Layer of zones"]
+es = "Capa de las zonas"
+
+["Layer of polygons with the zones where the exploitation surface is lowered down to the final surface"]
+es = "Capa de polígonos con las zonas donde la superficie de explotación baja hasta la final"
+
+["Exploitation surface"]
+es = "Superficie de explotación"
+
+["Quarry"]
+es = "Cantera"
+
+["Write the name of the quarry"]
+es = "Escriba el nombre de la cantera"
+
+["Choose the start surface of the quarry"]
+es = "Elija la superficie de partida de la cantera"
+
+["Choose the base profile of «{surface}»"]
+es = "Elija el perfil base de «{surface}»"
+
+["Choose the grid of anchor elevations of «{surface}»"]
+es = "Elija la rejilla de cotas de ancla de «{surface}»"
+
+["Write the name of the field «{field}» of the layer «{layer}»"]
+es = "Escriba el nombre del campo «{field}» de la capa «{layer}»"
+
+["Choose the layer of «{what}»"]
+es = "Elija la capa de «{what}»"
+
+["Quarry «{name}» created in {version}"]
+es = "Cantera «{name}» creada en {version}"
+
+["Computing the quarry… {percent} % · Esc: cancel"]
+es = "Calculando la cantera… {percent} % · Esc: cancelar"
+
+["No layer"]
+es = "Ninguna capa"
+
+["Without this layer"]
+es = "Sin esta capa"
+
+["No zone"]
+es = "Ninguna zona"
+
+["No zone to conserve"]
+es = "Sin zona a conservar"
+
+["Layer of lines"]
+es = "Capa de líneas"
+
+["Quarry «{name}» in {version}"]
+es = "Cantera «{name}» en {version}"
+
+["Order of the design: {order} · the order rule changed {cells} cells"]
+es = "Orden del diseño: {order} · la regla de orden cambió {cells} celdas"
+
+["Final surface: elevations {low} to {high} m"]
+es = "Superficie final: cotas {low} a {high} m"
+
+["Exploitation surface: elevations {low} to {high} m · excavation {cut} m³"]
+es = "Superficie de explotación: cotas {low} a {high} m · excavación {cut} m³"
+
+["Unsplit {unsplit} m³ · restoration fill {fill} m³"]
+es = "Desdoblado {unsplit} m³ · relleno de restauración {fill} m³"

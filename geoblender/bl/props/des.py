@@ -126,8 +126,9 @@ class GEOBLENDER_PG_des_sector(bpy.types.PropertyGroup):
 
     Lo que marca la persona en el diálogo de «Envolventes y escalonado…» (T24): ``use`` (acotar el
     dominio de trabajo a este sector) y ``profile_pick`` (el nombre del perfil que elige para él,
-    de la lista de perfiles; vacío: el perfil base). No son una lectura del proyecto: las
-    conserva :func:`~bl.ui.des_panels.fill_sectors` al volver a leer."""
+    de la lista de perfiles; vacío: el perfil base); en el de «Cantera con dos superficies…»
+    (spec 014, T21), el de cada superficie: ``final_pick`` y ``exploitation_pick``. No son una
+    lectura del proyecto: las conserva :func:`~bl.ui.des_panels.fill_sectors` al volver a leer."""
 
     code: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     area: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
@@ -140,6 +141,8 @@ class GEOBLENDER_PG_des_sector(bpy.types.PropertyGroup):
     profile_name: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     use: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
     profile_pick: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    final_pick: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    exploitation_pick: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
 
 
 class GEOBLENDER_PG_des_line(bpy.types.PropertyGroup):

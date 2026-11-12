@@ -90,6 +90,16 @@ objeto activo), siempre activo: exportar no escribe en el proyecto, así que val
 área) y la ficha de su recinto en la barra N (:func:`item_lines`: su título «Recinto excavable ·
 Límite», su superficie de partida y su cifra, sin semillas ni envolvente: el recinto es el corte
 admitido de las máscaras).
+
+**«Cantera con dos superficies…»** (spec 014, T21; HU-014-3; RF-014-12, RF-014-13): las listas de su
+diálogo, leídas con las demás en :func:`refresh_choices` (las capas de polígonos que puede no usar,
+:func:`optional_layer_items`; las de líneas de los corredores, :func:`line_layer_items` con
+:func:`line_layers`; y la zona a conservar, :func:`conserve_items`), el perfil de cada sector por
+superficie (:func:`draw_sector_rows` con ``pick``, que :func:`fill_sectors` conserva) y el resumen de
+su cálculo (:func:`show_summary`: «Cantera «Corta» en V01», el orden con las celdas que cambió su
+regla, las cotas de cada superficie, la excavación de la explotación, el desdoblado y el relleno, y
+sus avisos). La clasificación con sus áreas, la barra N y los cargadores de sus rejillas son de la
+T22.
 """
 
 from __future__ import annotations
@@ -112,8 +122,10 @@ from ...core.params import definition as param_definition
 from ...design import messages as design_messages
 from ...design import profiles as design_profiles
 from ...design import provenance as design_provenance
-from ...design.model import PERIMETER_SEGMENT, BenchProfile, SeedKind, ZoneKind
+from ...design.model import PERIMETER_SEGMENT, BenchProfile, Order, SeedKind, Surface, ZoneKind
 from ...design.params import BenchParam, bench_key
+from ...gis import provenance as gis_provenance
+from ...gis import store as gis_store
 from ...reserves import surfaces as res_surfaces
 from ..props.des import WINDOW_MANAGER_PROPERTY
 from ..scene import des_views, project_session
@@ -436,14 +448,16 @@ def fill_sectors(project: Any) -> int:
     old = shown.sectors
     chosen = old[shown.sector_index].code if 0 <= shown.sector_index < len(old) else None
     assigned = {item.code: item.profile for item in old if item.profile}
-    marks = {item.code: (bool(item.use), item.profile_pick) for item in old}
+    marks = {item.code: (bool(item.use), item.profile_pick, item.final_pick,
+                         item.exploitation_pick) for item in old}
     shown.sectors.clear()
     for sector in found:
         row = shown.sectors.add()
         put_sector(row, sector, states.get(sector.code), version,
                    assigned.get(sector.code, ""), names)
-        use, pick = marks.get(sector.code, (False, ""))
+        use, pick, final, exploitation = marks.get(sector.code, (False, "", "", ""))
         row.use, row.profile_pick = use, pick or row.profile_name
+        row.final_pick, row.exploitation_pick = final, exploitation  # la cantera (014, T21)
     shown.sector_index = next((index for index, item in enumerate(shown.sectors)
                                if item.code == chosen), 0)
     shown.orphans.clear()
@@ -529,6 +543,9 @@ class _Choices:
     anchors: list[tuple[str, str, str]] = field(default_factory=list)
     zones: list[tuple[str, str, str]] = field(default_factory=list)
     layers: list[tuple[str, str, str]] = field(default_factory=list)
+    optional_layers: list[tuple[str, str, str]] = field(default_factory=list)
+    lines: list[tuple[str, str, str]] = field(default_factory=list)
+    conserve: list[tuple[str, str, str]] = field(default_factory=list)
     by_id: dict[str, res_surfaces.SurfaceChoice] = field(default_factory=dict)
     key: tuple[str, str, str] | None = None
 
@@ -538,7 +555,7 @@ _CHOICES = _Choices()
 
 def _fixed_choices() -> None:
     """Las listas sin nada del proyecto: sin superficies, sin rejilla de anclas, sin capa y las
-    zonas que no dependen de él."""
+    zonas que no dependen de él; las capas que la cantera puede no usar, solo «ninguna»."""
     _CHOICES.surfaces = [(NO_ZONE, NOT_SHOWN, tr("There are no grids in the project"))]
     _CHOICES.by_id = {}
     _CHOICES.anchors = [(NO_ANCHOR, tr("The anchor of the profile"),
@@ -548,6 +565,26 @@ def _fixed_choices() -> None:
                       (DOMAIN_ZONE, tr("The default domain"),
                        tr("The cells of the default work domain of the masks"))]
     _CHOICES.layers = [(NO_LAYER, NOT_SHOWN, tr("There are no layers of polygons in the project"))]
+    _CHOICES.optional_layers = [(NO_LAYER, tr("No layer"), tr("Without this layer"))]
+    _CHOICES.lines = [(NO_LAYER, tr("No layer"), tr("Without this layer"))]
+    _CHOICES.conserve = [(NO_ZONE, tr("No zone"), tr("No zone to conserve"))]
+
+
+def line_layers(project: Any) -> tuple[str, ...]:
+    """Las capas «entidades» de líneas del proyecto (``gis_fea_``), por nombre: los ejes de los
+    corredores de la cantera (spec 014, T21; plan 014 §5.2.1). Una cuya tabla falta no se
+    ofrece."""
+    records = gis_store.list_gis_datasets(project, families=(gis_provenance.FEATURES,))
+    found: list[str] = []
+    for record in records:
+        try:
+            source = gis_store.feature_source(project, record)
+        except (GeoblenderError, ValueError):
+            LOGGER.warning("La capa «%s» no se ofrece a la cantera", record.name, exc_info=True)
+            continue
+        if source.kind == "line":
+            found.append(source.name)
+    return tuple(sorted(found))
 
 
 def refresh_choices(project: Any) -> None:
@@ -562,6 +599,7 @@ def refresh_choices(project: Any) -> None:
     with project.read() as conn:
         constraints = constraint_store.read_constraints(conn)
     layers = constraint_panels.polygon_layers(project)
+    lines = line_layers(project)
     shown = view()
     sectors = [] if shown is None else [(item.code, item.name) for item in shown.sectors
                                         if item.code]
@@ -583,6 +621,15 @@ def refresh_choices(project: Any) -> None:
     if layers:
         _CHOICES.layers = [(name, constraint_panels.layer_label(name), tr("Layer of polygons"))
                            for name in layers]
+    # La cantera (spec 014, T21): sus capas de polígonos y de líneas, que puede no usar, y sus
+    # zonas a conservar (una restricción o una capa de polígonos, RF-014-07).
+    _CHOICES.optional_layers = [*_CHOICES.optional_layers, *(
+        (name, constraint_panels.layer_label(name), tr("Layer of polygons")) for name in layers)]
+    _CHOICES.lines = [*_CHOICES.lines, *(
+        (name, constraint_panels.layer_label(name), tr("Layer of lines")) for name in lines)]
+    _CHOICES.conserve = [*_CHOICES.conserve, *(
+        item for item in _CHOICES.zones
+        if item[0].startswith((CONSTRAINT_ZONE, LAYER_ZONE)))]
     _CHOICES.key = (project.uid, version, language())
 
 
@@ -632,10 +679,34 @@ def layer_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
     return _CHOICES.layers
 
 
+def optional_layer_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Una capa de polígonos de la cantera que puede no usarse (los fondos, las zonas de relleno,
+    las láminas de agua; spec 014, T21): «ninguna capa» y las capas de polígonos del proyecto (una
+    lista viva del módulo)."""
+    _ensure_choices()
+    return _CHOICES.optional_layers
+
+
+def line_layer_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """La capa de líneas de los corredores de la cantera (spec 014, T21): «ninguna capa» y las
+    capas de líneas del proyecto (una lista viva del módulo)."""
+    _ensure_choices()
+    return _CHOICES.lines
+
+
+def conserve_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """La zona a conservar de la cantera (spec 014, T21; RF-014-07): ninguna, una restricción o
+    una capa de polígonos (con los identificadores de :func:`zone_items`; una lista viva del
+    módulo)."""
+    _ensure_choices()
+    return _CHOICES.conserve
+
+
 def forget_choices() -> None:
     """Olvida las listas leídas (al desregistrar)."""
     _CHOICES.key = None
     _CHOICES.surfaces, _CHOICES.anchors, _CHOICES.zones, _CHOICES.layers = [], [], [], []
+    _CHOICES.optional_layers, _CHOICES.lines, _CHOICES.conserve = [], [], []
     _CHOICES.by_id = {}
 
 
@@ -668,10 +739,13 @@ def clear_sector_marks() -> None:
             item.use = False
 
 
-def draw_sector_rows(layout: Any, *, bound: bool, profiles: bool) -> None:
+def draw_sector_rows(layout: Any, *, bound: bool, profiles: bool,
+                     pick: str = "profile_pick") -> None:
     """Los sectores del diálogo, uno por fila: con ``bound``, su casilla de acotar el dominio de
     trabajo a él; con ``profiles``, el perfil que se le asigna (buscado entre los perfiles del
-    proyecto; vacío, el perfil base). Su estado de búsqueda va en ámbar si está pendiente."""
+    proyecto; vacío, el perfil base) en su propiedad ``pick`` (la de las envolventes o, en la
+    cantera, la de cada superficie: ``final_pick``, ``exploitation_pick``). Su estado de búsqueda
+    va en ámbar si está pendiente."""
     shown = view()
     if shown is None:
         return
@@ -686,7 +760,7 @@ def draw_sector_rows(layout: Any, *, bound: bool, profiles: bool) -> None:
             alert.alert = True
             alert.label(text=tr("Search pending"), icon="ERROR", translate=False)
         if profiles:
-            row.prop_search(item, "profile_pick", shown, "profiles", text="", translate=False)
+            row.prop_search(item, pick, shown, "profiles", text="", translate=False)
 
 
 def _figure(calculation: Calculation, key: str) -> float | None:
@@ -698,15 +772,42 @@ def _number(value: float | None, decimals: int = 0) -> str:
     return NOT_SHOWN if value is None else format_number(value, decimals)
 
 
+def _quarry_lines(outcome: Any) -> list[tuple[str, bool]]:
+    """El resumen de las dos superficies de una cantera calculada (``design.quarry.QuarryOutcome``;
+    spec 014, T21; RF-014-12, RF-014-13): el orden del diseño con las celdas que cambió su regla,
+    las cotas de cada superficie en el recinto, la excavación de la explotación, el desdoblado y el
+    relleno de restauración (los totales de su clasificación, ``classes.total``; la clasificación
+    con sus áreas por clase es de la T22)."""
+    total = outcome.classes.total
+    order = (tr("Final surface first") if Order(outcome.order) is Order.FINAL_FIRST
+             else tr("Exploitation surface first"))
+    lines = [(tr("Order of the design: {order} · the order rule changed {cells} cells",
+                 order=order, cells=_number(outcome.adjusted)), False)]
+    final, exploitation = total.levels(Surface.FINAL), total.levels(Surface.EXPLOITATION)
+    if final is not None:
+        lines.append((tr("Final surface: elevations {low} to {high} m",
+                         low=_number(final[0], 1), high=_number(final[1], 1)), False))
+    if exploitation is not None:
+        lines.append((tr("Exploitation surface: elevations {low} to {high} m · excavation "
+                         "{cut} m³", low=_number(exploitation[0], 1),
+                         high=_number(exploitation[1], 1), cut=_number(total.exp_cut_m3)), False))
+    lines.append((tr("Unsplit {unsplit} m³ · restoration fill {fill} m³",
+                     unsplit=_number(total.unsplit_m3), fill=_number(total.fill_m3)), False))
+    return lines
+
+
 def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de un cálculo hecho y sin registrar (RF-013-31), línea a línea y en el idioma de
     Geoblender, con los avisos al final y en alerta: de una envolvente, sus celdas, su área, sus
     cotas y el desmonte y el terraplén frente a la superficie de partida (las cifras que se
     registrarían); de un escalonado, el desmonte y el terraplén, la inclinación p99 y máxima con su
     lugar, y las bermas con sus cotas reales (el informe y las bermas del dominio); de un recinto
-    excavable (spec 014, T20; RF-014-01), sus celdas y su área. Aquí solo se escriben."""
+    excavable (spec 014, T20; RF-014-01), sus celdas y su área; de una cantera con dos superficies
+    (spec 014, T21; RF-014-12), lo de :func:`_quarry_lines`. Aquí solo se escriben."""
     lines: list[tuple[str, bool]] = []
-    if calculation.op_type == design_provenance.EXCAVATION_AREA:
+    if calculation.op_type == design_provenance.QUARRY:
+        lines.extend(_quarry_lines(calculation.outcome))
+    elif calculation.op_type == design_provenance.EXCAVATION_AREA:
         cells = calculation.outcome.cells  # type: ignore[union-attr]
         lines.append((tr("Excavation boundary «{name}»: {cells} cells ({area} m²)",
                          name=calculation.name, cells=_number(cells),
@@ -778,6 +879,9 @@ def show_summary(calculation: Calculation | None) -> None:
                    version=calculation.version)
     elif calculation.op_type == design_provenance.EXCAVATION_AREA:
         title = tr("Excavation boundary «{name}» in {version}", name=calculation.name,
+                   version=calculation.version)
+    elif calculation.op_type == design_provenance.QUARRY:
+        title = tr("Quarry «{name}» in {version}", name=calculation.name,
                    version=calculation.version)
     else:
         title = tr("Benching «{name}» in {version}", name=calculation.name,

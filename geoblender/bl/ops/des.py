@@ -139,6 +139,23 @@ partida (propone «Recinto excavable» y el terreno, como la T45 de la 013); **C
 en ``bl.ui.des_panels`` y su confirmación, :func:`_ask_confirmation` con su ``idname``). Ninguna
 cuenta es de aquí: el recinto, su área y su rechazo cuando queda vacío (con el área de cada parte
 que lo vacía) son de ``design``.
+
+**Cantera con dos superficies…** (spec 014, T21; HU-014-3; RF-014-12, RF-014-13, RF-014-29,
+RF-014-30; plan 014 §5.3.3, §5.5): :class:`GEOBLENDER_OT_des_design_quarry` calcula en una sola
+orden la superficie final y la de explotación de la versión activa (``des.quarry``) con
+``design.steps.quarry_run``. Su diálogo tiene arriba el nombre, la superficie de partida (propone el
+terreno, T45 de la 013) y el orden del diseño; una caja por superficie con sus semillas
+(«coronación y zonas a sostener» o las de la 013), su perfil base y el de cada sector (por su
+nombre: ``final_pick`` y ``exploitation_pick`` de cada sector de la vista), su ancla (la del perfil,
+una rejilla o «al fondo de cada muro») y su métrica; y abajo las capas de plan 014 §5.2.1 con sus
+campos (fondos, zona a conservar, corredores con cota fija o rasante, zonas de restauración por
+relleno, láminas de agua) y «explotación hasta la final» (no, las zonas avisadas o las de una
+capa). Lo pedido es una ``design.model.QuarryRequest`` (su ``_request``). Calcular, Crear,
+Cancelar y Esc son los de «Límite desde el perímetro…» (:class:`_CalculateAndCreate`, común a las
+dos): nada se registra hasta Crear (RF-014-29) y la confirmación dice «Crear con N avisos» si los
+hay. Los rechazos (un sector del recinto sin búsqueda vigente, RF-014-30; las capas
+y sus campos, los perfiles, el recinto vacío, el nombre repetido) y todas las cuentas son de
+``design``.
 """
 
 from __future__ import annotations
@@ -1794,13 +1811,141 @@ class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOper
             discard_calculation()
 
 
+# --- Lo común de las órdenes de la 014 que calculan y crean (spec 014, T20 y T21; D-14 de la 013) --
+
+
+class _CalculateAndCreate:
+    """Lo común de las órdenes de la 014 que **calculan** por pasos y **crean** al confirmar
+    («Límite desde el perímetro…» y «Cantera con dos superficies…»), como «Envolventes y
+    escalonado…» sin el escalonado que sigue (D-14 de la 013): :meth:`_run_steps` corre los pasos
+    del cálculo en el modal con el avance y Esc (``_StepsModal``) o, desde un guion, de una vez;
+    al terminar, :meth:`_finished` deja el cálculo abierto con su resumen (``des_panels``) y pide
+    confirmar (:func:`_ask_confirmation` con :attr:`COMMAND`); :meth:`_confirmation` es el diálogo
+    de **Crear** («Crear con N avisos» si los hay) y :meth:`_create` registra en una transacción;
+    **Cancelar**, cerrar esa ventana (:meth:`cancel`) y Esc no dejan nada. Se pone **antes** de las
+    bases de la orden; cada orden da :attr:`COMMAND`, :meth:`_created_text` y su
+    ``_status_text``."""
+
+    COMMAND = ""
+    """El ``bl_idname`` de la orden, por su constante: en una instancia registrada, ``bl_idname``
+    es el nombre de la clase."""
+    # Como «Envolventes y escalonado…»: cada paso, ≤ 0,05 s (ninguna llamada de más de 0,2 s).
+    STEP_BUDGET_S = 0.05
+
+    def _created_text(self, opened: Calculation) -> str:  # pragma: no cover - cada orden el suyo
+        """Lo que dice el informe al crear ``opened``."""
+        raise NotImplementedError
+
+    def _confirmation(self, context: Any) -> set[str]:
+        """El diálogo de crear el cálculo abierto: su resumen con los avisos y «Crear» (o «Crear
+        con N avisos», que los nombra); «Cancelar» y cerrarlo lo descartan."""
+        held = calculation()
+        if held is None:
+            self.report({"ERROR"}, tr("There is no open calculation: compute first"))
+            return {"CANCELLED"}
+        count = len(held.warnings())
+        if not count:
+            confirm_text = tr("Create")
+        elif count == 1:
+            confirm_text = tr("Create with 1 warning")
+        else:
+            confirm_text = tr("Create with {count} warnings", count=count)
+        shown = des_panels.view()
+        title = shown.summary_title if shown is not None and shown.summary_title else (
+            command_text(catalog().commands[command_idname(self.COMMAND)].label))
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=title, confirm_text=confirm_text)
+
+    def _run_steps(self, context: Any, project: Any, name: str,
+                   steps: Iterator[Progress]) -> set[str]:
+        """Corre los pasos ``steps`` del cálculo ``name`` de ``project``: en el modal, con el avance
+        y Esc, o de una vez desde un guion (al terminar, :meth:`_finished`)."""
+        self._project, self._name = project, name
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, steps)
+            return {"RUNNING_MODAL"}
+        self.report_log: list[str] = []
+        calculated = _drain(self, steps)
+        if calculated is None:
+            return {"CANCELLED"}
+        self._finished(context, calculated)
+        return {"FINISHED"}
+
+    def _finished(self, context: Any, opened: Calculation) -> None:
+        """Lo deja abierto y sin registrar, enseña su resumen (en el informe y en la vista) y, desde
+        la interfaz, pide confirmar."""
+        hold_calculation(opened)
+        des_panels.show_summary(opened)
+        shown = des_panels.view()
+        for line in () if shown is None else shown.summary:
+            self._report({"WARNING" if line.alert else "INFO"}, line.name)
+        if self.in_steps and getattr(context, "window", None) is not None:
+            _ask_confirmation(context, idname=self.COMMAND)
+
+    def _create(self, context: Any) -> set[str]:
+        """«Crear»: registra el cálculo abierto en una transacción (``Calculation.create``: la
+        operación, sus salidas y sus cifras); si falla, no queda nada."""
+        opened = calculation()
+        if opened is None:
+            self.report({"ERROR"}, tr("There is no open calculation: compute first"))
+            return {"CANCELLED"}
+        try:
+            opened.create()
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            discard_calculation()
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, opened.op_type)  # Ctrl+Z no lo deshace
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
+        des_panels.show_summary(None)
+        self.report({"INFO"}, self._created_text(opened))
+        return {"FINISHED"}
+
+    # --- En pasos (_StepsModal) ---------------------------------------------------------------
+
+    def _cancelled_text(self) -> str:
+        return tr("Calculation cancelled: nothing has been left half-done")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return design_error_text(exc)
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        if step.result is None:
+            if project_session.current() is not getattr(self, "_project", None):
+                return self._fail(context, tr(
+                    "The project was closed while the design «{name}» was being computed: nothing "
+                    "has been left half-done", name=getattr(self, "_name", "")))
+            return None
+        self._done(context)
+        self._finished(context, step.result)
+        return {"FINISHED"}
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)  # type: ignore[misc]
+        except Exception as exc:  # noqa: BLE001 - los pasos cerrados no dejan nada a medias
+            LOGGER.error("«%s» se ha parado", self.COMMAND, exc_info=exc)
+            return self._fail(context, design_error_text(exc))
+
+    def cancel(self, context: Any) -> None:
+        """Lo que Blender llama al cancelar: un modal en curso cierra sus pasos (como Esc); la
+        ventana de la confirmación cerrada sin crear descarta el cálculo abierto y sus temporales.
+        El diálogo del cálculo no descarta nada."""
+        if getattr(self, "_steps", None) is not None:
+            _StepsModal.cancel(self, context)  # type: ignore[arg-type]
+        elif self.confirm:
+            discard_calculation()
+
+
 # --- Límite desde el perímetro… (spec 014, T20; HU-014-1; RF-014-01; plan 014 §5.3.3, §5.5) ------
 
 CREATE_LIMIT = provenance.LIMIT_COMMAND
 
 
-class GEOBLENDER_OT_des_create_limit_from_perimeter(DesignCommandAware, ProvenanceAwareOperator,
-                                                    _StepsModal, bpy.types.Operator):
+class GEOBLENDER_OT_des_create_limit_from_perimeter(_CalculateAndCreate, DesignCommandAware,
+                                                    ProvenanceAwareOperator, _StepsModal,
+                                                    bpy.types.Operator):
     """Excavation boundary of the active version: the cells its masks admit to cut and with data
     in the start surface"""
 
@@ -1809,9 +1954,7 @@ class GEOBLENDER_OT_des_create_limit_from_perimeter(DesignCommandAware, Provenan
     bl_translation_context = TRANSLATION_CONTEXT
     bl_options = {"REGISTER"}
     provenance_op_type = provenance.EXCAVATION_AREA
-
-    # Como «Envolventes y escalonado…»: cada paso, ≤ 0,05 s (ninguna llamada de más de 0,2 s).
-    STEP_BUDGET_S = 0.05
+    COMMAND = CREATE_LIMIT
 
     name: StringProperty(  # type: ignore[valid-type]
         name="Name", description="Name of the excavation boundary, unique in the active version",
@@ -1865,18 +2008,6 @@ class GEOBLENDER_OT_des_create_limit_from_perimeter(DesignCommandAware, Provenan
             self.surface = surface_proposal.ground_item(context, project, items,
                                                         des_panels.surface_choice)
 
-    def _confirmation(self, context: Any) -> set[str]:
-        """El diálogo de crear el cálculo abierto: su resumen y «Crear»; «Cancelar» y cerrarlo lo
-        descartan."""
-        if calculation() is None:
-            self.report({"ERROR"}, tr("There is no open calculation: compute first"))
-            return {"CANCELLED"}
-        shown = des_panels.view()
-        title = shown.summary_title if shown is not None and shown.summary_title else (
-            command_text(catalog().commands[command_idname(self.bl_idname)].label))
-        return context.window_manager.invoke_props_dialog(
-            self, width=DIALOG_WIDTH, translate=False, title=title, confirm_text=tr("Create"))
-
     def draw(self, context: Any) -> None:
         layout = self.layout
         if self.confirm:  # el resumen del cálculo abierto
@@ -1922,51 +2053,11 @@ class GEOBLENDER_OT_des_create_limit_from_perimeter(DesignCommandAware, Provenan
         discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
         steps = design_steps.excavation_area_run(project, name, self.surface, version=version,
                                                  budget_s=self.STEP_BUDGET_S)
-        self._project, self._name = project, name
-        if self.in_steps and getattr(context, "window", None) is not None:
-            self._start(context, steps)
-            return {"RUNNING_MODAL"}
-        self.report_log: list[str] = []
-        calculated = _drain(self, steps)
-        if calculated is None:
-            return {"CANCELLED"}
-        self._finished(context, calculated)
-        return {"FINISHED"}
+        return self._run_steps(context, project, name, steps)
 
-    def _finished(self, context: Any, opened: Calculation) -> None:
-        """Lo deja abierto y sin registrar, enseña su resumen (en el informe y en la vista) y, desde
-        la interfaz, pide confirmar."""
-        hold_calculation(opened)
-        des_panels.show_summary(opened)
-        shown = des_panels.view()
-        for line in () if shown is None else shown.summary:
-            self._report({"WARNING" if line.alert else "INFO"}, line.name)
-        if self.in_steps and getattr(context, "window", None) is not None:
-            # Por la constante: en una instancia registrada, bl_idname es el nombre de la clase.
-            _ask_confirmation(context, idname=CREATE_LIMIT)
-
-    def _create(self, context: Any) -> set[str]:
-        """«Crear»: registra el cálculo abierto en una transacción (``Calculation.create``: la
-        operación, el recinto ``des_rcn_`` y su cifra); si falla, no queda nada."""
-        opened = calculation()
-        if opened is None:
-            self.report({"ERROR"}, tr("There is no open calculation: compute first"))
-            return {"CANCELLED"}
-        try:
-            opened.create()
-        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
-            discard_calculation()
-            self.report({"ERROR"}, design_error_text(exc))
-            return {"CANCELLED"}
-        undo_watch.record(UndoKind.OPERATION, opened.op_type)  # Ctrl+Z no lo deshace
-        if ui_provenance.refresh(force=True):
-            ui_provenance.redraw()
-        des_panels.show_summary(None)
-        self.report({"INFO"}, tr("Excavation boundary «{name}» created in {version}",
-                                 name=opened.name, version=opened.version))
-        return {"FINISHED"}
-
-    # --- En pasos (_StepsModal) ---------------------------------------------------------------
+    def _created_text(self, opened: Calculation) -> str:
+        return tr("Excavation boundary «{name}» created in {version}", name=opened.name,
+                  version=opened.version)
 
     def _status_text(self, step: Progress) -> str:
         """El avance en la barra de estado: «Calculando el recinto excavable… 40 % · Esc:
@@ -1974,38 +2065,469 @@ class GEOBLENDER_OT_des_create_limit_from_perimeter(DesignCommandAware, Provenan
         percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
         return tr("Computing the excavation boundary… {percent} % · Esc: cancel", percent=percent)
 
-    def _cancelled_text(self) -> str:
-        return tr("Calculation cancelled: nothing has been left half-done")
 
-    def _error_text(self, exc: GeoblenderError) -> str:
-        return design_error_text(exc)
+# --- Cantera con dos superficies… (spec 014, T21; HU-014-3; RF-014-12, RF-014-13, RF-014-29,
+#     RF-014-30; plan 014 §5.3.3, §5.5) -------------------------------------------------------------
 
-    def _result(self, context: Any, step: Progress) -> set[str] | None:
-        if step.result is None:
-            if project_session.current() is not getattr(self, "_project", None):
-                return self._fail(context, tr(
-                    "The project was closed while the design «{name}» was being computed: nothing "
-                    "has been left half-done", name=getattr(self, "_name", "")))
-            return None
-        self._done(context)
-        self._finished(context, step.result)
-        return {"FINISHED"}
+DESIGN_QUARRY = provenance.QUARRY_COMMAND
+CROWN_SEEDS = "CROWN"
+QUARRY_SEEDS_ITEMS = [(CROWN_SEEDS, "Crown and zones to hold", ""), *SEEDS_FROM_ITEMS]
+"""De dónde salen las semillas de una superficie de la cantera: la coronación del recinto y las
+zonas a sostener (RF-014-02) o las de la 013 (``design.model.SeedKind``)."""
+ORDER_ITEMS = [("FINAL_FIRST", "Final surface first", ""),
+               ("EXPLOITATION_FIRST", "Exploitation surface first", "")]
+"""El orden del diseño (``design.model.Order``; RF-014-13, D-4: «final primero» por defecto)."""
+QUARRY_ANCHOR_ITEMS = [("FIXED", "The anchor of the profile", ""),
+                       ("GRID", "Grid of anchor elevations", ""),
+                       ("NEAREST_FLOOR", "Floor nearest to each wall", "")]
+"""El ancla de una superficie (``design.model.AnchorMode``; RF-014-11)."""
+CORRIDOR_LEVEL_ITEMS = [("FIXED", "Fixed elevation", ""), ("GRADE", "Grade", "")]
+"""La cota de los corredores: fija o una rasante (cota inicial y pendiente; RF-014-09)."""
+TO_FINAL_ITEMS = [("NONE", "No", ""), ("WARNED", "All the warned zones", ""),
+                  ("LAYER", "Zones of a layer", "")]
+"""Dónde se aplica «explotación hasta la final» (``design.model.ToFinalMode``; P-2)."""
+QUARRY_SIDES = (design_model.Surface.FINAL, design_model.Surface.EXPLOITATION)
+"""Las dos superficies, en el orden de sus cajas: el prefijo de sus propiedades es su valor."""
+FLOOR_FIELD, WIDTH_FIELD, LEVEL_FIELD = "cota", "ancho", "cota"
+START_LEVEL_FIELD, GRADE_FIELD, WATER_FIELD = "cota_inicial", "pendiente", "cota"
+"""Los campos que propone el diálogo (los de plan 014 §5.2.1); la persona escribe los suyos."""
 
-    def modal(self, context: Any, event: Any) -> set[str]:
+
+def _side_title(surface: design_model.Surface) -> str:
+    """El nombre de una superficie de la cantera, en el idioma de Geoblender."""
+    if surface is design_model.Surface.FINAL:
+        return tr("Final surface")
+    return tr("Exploitation surface")
+
+
+def _chosen(layer: str) -> bool:
+    """Si se eligió una capa en el diálogo de la cantera (no «ninguna»)."""
+    return layer not in ("", des_panels.NO_LAYER)
+
+
+def _field(typed: str, what: str, layer: str) -> str:
+    """El nombre de un campo de la capa ``layer`` tal como se escribió (sin espacios a los
+    lados); :class:`ComputeFormError` si está vacío. Si la capa no lo tiene, lo dice el dominio al
+    calcular (``des.quarry_layer_field``, con los campos que tiene)."""
+    found = typed.strip()
+    if not found:
+        raise ComputeFormError(tr("Write the name of the field «{field}» of the layer «{layer}»",
+                                  field=what, layer=constraint_panels.layer_label(layer)))
+    return found
+
+
+class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
+                                      ProvenanceAwareOperator, _StepsModal, bpy.types.Operator):
+    """Exploitation surface and final surface of the quarry, tied by the order of the design and
+    classified"""
+
+    bl_idname = DESIGN_QUARRY
+    bl_label = "Quarry with two surfaces…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.QUARRY
+    COMMAND = DESIGN_QUARRY
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the quarry, unique in the active version",
+        options=_FIELD)
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Ground of the project or of the active version the two surfaces start from",
+        items=des_panels.surface_items, options=_FIELD)
+    order: EnumProperty(  # type: ignore[valid-type]
+        name="Order of the design",
+        description="Final surface first: the final surface is computed first and the "
+                    "exploitation surface is raised where it is under it; exploitation surface "
+                    "first: the exploitation surface is computed first and the final surface is "
+                    "lowered where it is over it",
+        items=ORDER_ITEMS, default="FINAL_FIRST", options=_FIELD)
+    # La superficie final (su caja).
+    final_seeds: EnumProperty(  # type: ignore[valid-type]
+        name="Seeds of the final surface",
+        description="Where the seeds of the final surface come from: the crown of the excavation "
+                    "boundary and the zones to hold, or the seeds of a surface, a fixed elevation "
+                    "or a grid of elevations",
+        items=QUARRY_SEEDS_ITEMS, default=CROWN_SEEDS, options=_FIELD)
+    final_surface: EnumProperty(  # type: ignore[valid-type]
+        name="Surface of the seeds of the final surface",
+        description="Surface or grid of elevations of the project or of the active version the "
+                    "seeds of the final surface are read from",
+        items=des_panels.surface_items, options=_FIELD)
+    final_zone: EnumProperty(  # type: ignore[valid-type]
+        name="Zone of the seeds of the final surface",
+        description="Cells where the seeds of the final surface are: the whole surface, the "
+                    "default domain, the zone of a constraint, a design sector or a layer of "
+                    "polygons", items=des_panels.zone_items, options=_FIELD)
+    final_elevation: StringProperty(  # type: ignore[valid-type]
+        name="Elevation of the seeds of the final surface (m)",
+        description="Fixed elevation of the seeds of the final surface in metres", options=_FIELD)
+    final_profile: StringProperty(  # type: ignore[valid-type]
+        name="Base profile of the final surface",
+        description="Bench profile of the final surface in the cells without a sector (and in "
+                    "the sectors without their own)", options=_FIELD)
+    final_anchor: EnumProperty(  # type: ignore[valid-type]
+        name="Anchor of the final surface",
+        description="Elevation the benches of the final surface are anchored to: that of each "
+                    "profile, a grid of anchor elevations or the floor nearest to each wall",
+        items=QUARRY_ANCHOR_ITEMS, default="FIXED", options=_FIELD)
+    final_anchor_grid: EnumProperty(  # type: ignore[valid-type]
+        name="Grid of anchor elevations of the final surface",
+        description="Grid of anchor elevations of the project or of the active version of the "
+                    "final surface", items=des_panels.surface_items, options=_FIELD)
+    final_metric: EnumProperty(  # type: ignore[valid-type]
+        name="Distance metric of the final surface",
+        description="How the distance to the seeds of the final surface is measured: the 5×5 "
+                    "chamfer or the exact Euclidean distance",
+        items=METRIC_ITEMS, default="CHAMFER5", options=_FIELD)
+    # La superficie de explotación (su caja).
+    exploitation_seeds: EnumProperty(  # type: ignore[valid-type]
+        name="Seeds of the exploitation surface",
+        description="Where the seeds of the exploitation surface come from: the crown of the "
+                    "excavation boundary and the zones to hold, or the seeds of a surface, a fixed "
+                    "elevation or a grid of elevations",
+        items=QUARRY_SEEDS_ITEMS, default=CROWN_SEEDS, options=_FIELD)
+    exploitation_surface: EnumProperty(  # type: ignore[valid-type]
+        name="Surface of the seeds of the exploitation surface",
+        description="Surface or grid of elevations of the project or of the active version the "
+                    "seeds of the exploitation surface are read from",
+        items=des_panels.surface_items, options=_FIELD)
+    exploitation_zone: EnumProperty(  # type: ignore[valid-type]
+        name="Zone of the seeds of the exploitation surface",
+        description="Cells where the seeds of the exploitation surface are: the whole surface, "
+                    "the default domain, the zone of a constraint, a design sector or a layer of "
+                    "polygons", items=des_panels.zone_items, options=_FIELD)
+    exploitation_elevation: StringProperty(  # type: ignore[valid-type]
+        name="Elevation of the seeds of the exploitation surface (m)",
+        description="Fixed elevation of the seeds of the exploitation surface in metres",
+        options=_FIELD)
+    exploitation_profile: StringProperty(  # type: ignore[valid-type]
+        name="Base profile of the exploitation surface",
+        description="Bench profile of the exploitation surface in the cells without a sector "
+                    "(and in the sectors without their own)", options=_FIELD)
+    exploitation_anchor: EnumProperty(  # type: ignore[valid-type]
+        name="Anchor of the exploitation surface",
+        description="Elevation the benches of the exploitation surface are anchored to: that of "
+                    "each profile, a grid of anchor elevations or the floor nearest to each wall",
+        items=QUARRY_ANCHOR_ITEMS, default="FIXED", options=_FIELD)
+    exploitation_anchor_grid: EnumProperty(  # type: ignore[valid-type]
+        name="Grid of anchor elevations of the exploitation surface",
+        description="Grid of anchor elevations of the project or of the active version of the "
+                    "exploitation surface", items=des_panels.surface_items, options=_FIELD)
+    exploitation_metric: EnumProperty(  # type: ignore[valid-type]
+        name="Distance metric of the exploitation surface",
+        description="How the distance to the seeds of the exploitation surface is measured: the "
+                    "5×5 chamfer or the exact Euclidean distance",
+        items=METRIC_ITEMS, default="CHAMFER5", options=_FIELD)
+    # Las capas (plan 014 §5.2.1) y «explotación hasta la final».
+    floors_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Floors",
+        description="Layer of polygons of the project with the floor elevation of each polygon "
+                    "(none: no floors)", items=des_panels.optional_layer_items, options=_FIELD)
+    floors_field: StringProperty(  # type: ignore[valid-type]
+        name="Floor elevation field",
+        description="Numeric field of the layer of floors with the elevation of each floor in "
+                    "metres", default=FLOOR_FIELD, options=_FIELD)
+    conserve: EnumProperty(  # type: ignore[valid-type]
+        name="Zone to conserve",
+        description="Constraint or layer of polygons the design neither excavates nor buries, "
+                    "with its conservation ceiling (none: no zone to conserve)",
+        items=des_panels.conserve_items, options=_FIELD)
+    corridors_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Corridors",
+        description="Layer of lines of the project with the axis of each corridor, a floor with "
+                    "flat ends (none: no corridors)", items=des_panels.line_layer_items,
+        options=_FIELD)
+    corridors_width_field: StringProperty(  # type: ignore[valid-type]
+        name="Width field",
+        description="Numeric field of the layer of corridors with the width of each corridor in "
+                    "metres", default=WIDTH_FIELD, options=_FIELD)
+    corridors_level: EnumProperty(  # type: ignore[valid-type]
+        name="Elevation of the corridors",
+        description="A fixed elevation or a grade: the elevation at the start of the axis and its "
+                    "slope in %", items=CORRIDOR_LEVEL_ITEMS, default="FIXED", options=_FIELD)
+    corridors_level_field: StringProperty(  # type: ignore[valid-type]
+        name="Corridor elevation field",
+        description="Numeric field of the layer of corridors with the fixed elevation of each "
+                    "corridor in metres", default=LEVEL_FIELD, options=_FIELD)
+    corridors_start_field: StringProperty(  # type: ignore[valid-type]
+        name="Start elevation field",
+        description="Numeric field of the layer of corridors with the elevation at the start of "
+                    "each axis in metres", default=START_LEVEL_FIELD, options=_FIELD)
+    corridors_grade_field: StringProperty(  # type: ignore[valid-type]
+        name="Grade field",
+        description="Numeric field of the layer of corridors with the grade of each corridor in %, "
+                    "positive when it rises along the axis", default=GRADE_FIELD, options=_FIELD)
+    fill_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Restoration fill zones",
+        description="Layer of polygons where the difference between the two surfaces is covered "
+                    "by a fill (none: no fill zones)", items=des_panels.optional_layer_items,
+        options=_FIELD)
+    water_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Water sheets",
+        description="Layer of polygons with the elevation of each water sheet (none: no water "
+                    "sheets)", items=des_panels.optional_layer_items, options=_FIELD)
+    water_field: StringProperty(  # type: ignore[valid-type]
+        name="Water elevation field",
+        description="Numeric field of the layer of water sheets with the elevation of each sheet "
+                    "in metres", default=WATER_FIELD, options=_FIELD)
+    to_final: EnumProperty(  # type: ignore[valid-type]
+        name="Exploitation down to the final surface",
+        description="Where the exploitation surface is lowered down to the final surface with its "
+                    "benches: nowhere, in every warned zone or in the zones of a layer of polygons",
+        items=TO_FINAL_ITEMS, default="NONE", options=_FIELD)
+    to_final_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Layer of zones",
+        description="Layer of polygons with the zones where the exploitation surface is lowered "
+                    "down to the final surface", items=des_panels.layer_items, options=_FIELD)
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con
+    # el avance y Esc: los pone invoke; desde un guion, sin ellos, de una vez.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué.
+        Con ``confirm``, el diálogo de crear el cálculo abierto. Si no, las listas de superficies,
+        zonas, capas, perfiles y sectores leídas de nuevo, la propuesta (el nombre y, de partida,
+        el terreno: T45 de la 013) y el diálogo del cálculo: Intro calcula."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
         try:
-            return super().modal(context, event)
-        except Exception as exc:  # noqa: BLE001 - los pasos cerrados no dejan nada a medias
-            LOGGER.error("«%s» se ha parado", self.bl_idname, exc_info=exc)
-            return self._fail(context, design_error_text(exc))
+            des_panels.fill_profiles(project)
+            des_panels.fill_sectors(project)
+            des_panels.refresh_choices(project)
+            self._propose(context, project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.COMMAND)].label),
+            confirm_text=tr("Calculate"))
 
-    def cancel(self, context: Any) -> None:
-        """Lo que Blender llama al cancelar: un modal en curso cierra sus pasos (como Esc); la
-        ventana de la confirmación cerrada sin crear descarta el cálculo abierto y su temporal. El
-        diálogo del cálculo no descarta nada."""
-        if getattr(self, "_steps", None) is not None:
-            _StepsModal.cancel(self, context)
-        elif self.confirm:
-            discard_calculation()
+    def _propose(self, context: Any, project: Any) -> None:
+        """El nombre («Cantera») y la superficie de partida que propone el diálogo si quien lo
+        lanza no los dio: el terreno (``surface_proposal.ground_item``, como «Límite desde el
+        perímetro…»). Los perfiles no se proponen: los elige la persona."""
+        if not self.name.strip():
+            self.name = tr("Quarry")
+        if des_panels.has_surfaces() and not self.properties.is_property_set("start"):
+            items = [identifier for identifier, _name, _about
+                     in des_panels.surface_items(None, None)]
+            self.start = surface_proposal.ground_item(context, project, items,
+                                                      des_panels.surface_choice)
+
+    def draw(self, context: Any) -> None:
+        """Arriba el nombre, la superficie de partida y el orden; una caja por superficie; abajo
+        las capas con sus campos y «explotación hasta la final» (plan 014 §5.5)."""
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        shown = des_panels.view()
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "start", text=tr("Start surface"), translate=False)
+        layout.prop(self, "order", text=tr("Order of the design"), translate=False)
+        for surface in QUARRY_SIDES:
+            self._draw_side(layout.box(), shown, surface)
+        layers = layout.box()
+        layers.label(text=tr("Layers"), translate=False)
+        layers.prop(self, "floors_layer", text=tr("Floors"), translate=False)
+        if self.floors_layer != des_panels.NO_LAYER:
+            layers.prop(self, "floors_field", text=tr("Elevation field"), translate=False)
+        layers.prop(self, "conserve", text=tr("Zone to conserve"), translate=False)
+        layers.prop(self, "corridors_layer", text=tr("Corridors"), translate=False)
+        if self.corridors_layer != des_panels.NO_LAYER:
+            layers.prop(self, "corridors_width_field", text=tr("Width field"), translate=False)
+            layers.prop(self, "corridors_level", text=tr("Elevation of the corridors"),
+                        translate=False)
+            if self.corridors_level == "GRADE":
+                layers.prop(self, "corridors_start_field", text=tr("Start elevation field"),
+                            translate=False)
+                layers.prop(self, "corridors_grade_field", text=tr("Grade field"),
+                            translate=False)
+            else:
+                layers.prop(self, "corridors_level_field", text=tr("Elevation field"),
+                            translate=False)
+        layers.prop(self, "fill_layer", text=tr("Restoration fill zones"), translate=False)
+        layers.prop(self, "water_layer", text=tr("Water sheets"), translate=False)
+        if self.water_layer != des_panels.NO_LAYER:
+            layers.prop(self, "water_field", text=tr("Elevation field"), translate=False)
+        layout.prop(self, "to_final", text=tr("Exploitation down to the final surface"),
+                    translate=False)
+        if self.to_final == "LAYER":
+            layout.prop(self, "to_final_layer", text=tr("Layer of zones"), translate=False)
+
+    def _draw_side(self, box: Any, shown: Any, surface: design_model.Surface) -> None:
+        """La caja de una superficie: su título, sus semillas (la superficie o rejilla, la zona y
+        la cota fija, según de dónde salen), su perfil base, el de cada sector, su ancla (con su
+        rejilla) y su métrica."""
+        side = surface.value
+        box.label(text=_side_title(surface), translate=False)
+        seeds = getattr(self, f"{side}_seeds")
+        box.prop(self, f"{side}_seeds", text=tr("Origin of the seeds"), translate=False)
+        if seeds in ("SURFACE", "GRID"):
+            box.prop(self, f"{side}_surface", text=tr("Surface") if seeds == "SURFACE"
+                     else tr("Grid of elevations"), translate=False)
+        if seeds in ("SURFACE", "FIXED"):
+            box.prop(self, f"{side}_zone", text=tr("Zone of the seeds"), translate=False)
+        if seeds == "FIXED":
+            box.prop(self, f"{side}_elevation", text=tr("Elevation (m)"), translate=False)
+        if shown is not None:
+            box.prop_search(self, f"{side}_profile", shown, "profiles", text=tr("Base profile"),
+                            translate=False)
+        box.prop(self, f"{side}_anchor", text=tr("Anchor"), translate=False)
+        if getattr(self, f"{side}_anchor") == "GRID":
+            box.prop(self, f"{side}_anchor_grid", text=tr("Grid of anchor elevations"),
+                     translate=False)
+        box.prop(self, f"{side}_metric", text=tr("Metric"), translate=False)
+        if shown is not None and len(shown.sectors):
+            des_panels.draw_sector_rows(box, bound=False, profiles=True, pick=f"{side}_pick")
+
+    # --- Lo pedido ----------------------------------------------------------------------------
+
+    def _request(self, project: Any) -> design_model.QuarryRequest:
+        """Lo pedido en el diálogo como la ``design.model.QuarryRequest`` (RF-014-12), comprobado
+        sin escribir ni calcular nada: los perfiles y los sectores se leen de nuevo (un guion no
+        abre el diálogo que los lee). Las capas, sus campos, las semillas, los perfiles sin valor y
+        los sectores pendientes los rechaza el dominio al calcular. :class:`ComputeFormError` si
+        falta algo del diálogo."""
+        des_panels.fill_profiles(project)
+        des_panels.fill_sectors(project)
+        shown = des_panels.view()
+        name = self.name.strip()
+        if not name:
+            raise ComputeFormError(tr("Write the name of the quarry"))
+        if self.start in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the start surface of the quarry"))
+        codes = des_panels.profile_codes()
+        final, exploitation = (self._side(surface, shown, codes) for surface in QUARRY_SIDES)
+        floors = None
+        if _chosen(self.floors_layer):
+            floors = design_model.LayerField(self.floors_layer, _field(
+                self.floors_field, tr("Elevation field"), self.floors_layer))
+        conserve = ()
+        if self.conserve not in ("", des_panels.NO_ZONE):
+            conserve = (_zone_of(self.conserve),)
+        corridors = None
+        if _chosen(self.corridors_layer):
+            layer = self.corridors_layer
+            width = _field(self.corridors_width_field, tr("Width field"), layer)
+            if self.corridors_level == "GRADE":
+                corridors = design_model.CorridorFields(
+                    layer, width,
+                    start_level_field=_field(self.corridors_start_field,
+                                             tr("Start elevation field"), layer),
+                    grade_field=_field(self.corridors_grade_field, tr("Grade field"), layer))
+            else:
+                corridors = design_model.CorridorFields(layer, width, level_field=_field(
+                    self.corridors_level_field, tr("Elevation field"), layer))
+        water = None
+        if _chosen(self.water_layer):
+            water = design_model.LayerField(self.water_layer, _field(
+                self.water_field, tr("Elevation field"), self.water_layer))
+        to_final = design_model.ToFinalMode(self.to_final.lower())
+        to_final_layer = None
+        if to_final is design_model.ToFinalMode.LAYER:
+            if not _chosen(self.to_final_layer):
+                raise ComputeFormError(tr("Choose the layer of «{what}»",
+                                          what=tr("Exploitation down to the final surface")))
+            to_final_layer = self.to_final_layer
+        return design_model.QuarryRequest(
+            name, self.start, final, exploitation, order=self.order.lower(), floors=floors,
+            conserve=conserve, corridors=corridors,
+            fill_zones=self.fill_layer if _chosen(self.fill_layer) else None, water=water,
+            to_final=to_final, to_final_layer=to_final_layer)
+
+    def _side(self, surface: design_model.Surface, shown: Any, codes: Mapping[str, str]
+              ) -> design_model.QuarrySide:
+        """Lo pedido de una superficie (``design.model.QuarrySide``): el perfil base y el de cada
+        sector (por su nombre), las semillas («coronación y zonas a sostener» o las de la 013), el
+        ancla con su rejilla y la métrica."""
+        side, title = surface.value, _side_title(surface)
+        pick = GEOBLENDER_OT_des_compute_envelope._profile_code
+        base = pick(getattr(self, f"{side}_profile"), tr("Base profile"), codes)
+        if base is None:
+            raise ComputeFormError(tr("Choose the base profile of «{surface}»", surface=title))
+        assigned: dict[str, str] = {}
+        for item in () if shown is None else shown.sectors:
+            found = pick(getattr(item, f"{side}_pick"), item.name, codes)
+            if found is not None:
+                assigned[item.code] = found
+        seeds_from = getattr(self, f"{side}_seeds")
+        seeds = None if seeds_from == CROWN_SEEDS else seed_source(
+            seeds_from, getattr(self, f"{side}_surface"), getattr(self, f"{side}_zone"),
+            getattr(self, f"{side}_elevation"))
+        anchor = design_model.AnchorMode(getattr(self, f"{side}_anchor").lower())
+        grid = None
+        if anchor is design_model.AnchorMode.GRID:
+            grid = getattr(self, f"{side}_anchor_grid")
+            if grid in ("", des_panels.NO_ZONE):
+                raise ComputeFormError(tr("Choose the grid of anchor elevations of «{surface}»",
+                                          surface=title))
+        return design_model.QuarrySide(base, assigned, seeds, anchor, grid,
+                                       getattr(self, f"{side}_metric").lower())
+
+    # --- Calcular -----------------------------------------------------------------------------
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Si no, comprueba lo pedido
+        (sin escribir nada si falta algo), pasa por la puerta de la 008 y calcula las dos
+        superficies por pasos con ``design.steps.quarry_run`` —compila las máscaras antes si no
+        están al día—, sin registrar nada (RF-014-29): desde la interfaz, en el modal con el avance
+        y Esc; desde un guion, de una vez. Al terminar deja el cálculo abierto con su resumen y
+        pide confirmar. Los rechazos (un sector del recinto sin búsqueda vigente, RF-014-30; las
+        capas, los perfiles, el recinto vacío, el nombre repetido) son los de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        try:
+            request = self._request(project)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report,
+                             dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        steps = design_steps.quarry_run(project, request, version=version,
+                                        budget_s=self.STEP_BUDGET_S)
+        return self._run_steps(context, project, request.name, steps)
+
+    def _created_text(self, opened: Calculation) -> str:
+        return tr("Quarry «{name}» created in {version}", name=opened.name,
+                  version=opened.version)
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Calculando la cantera… 40 % · Esc: cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Computing the quarry… {percent} % · Esc: cancel", percent=percent)
 
 
 # --- Vista previa de semillas, dominios y restricciones (T25; HU-013-1; RF-013-01, RF-013-02,
@@ -2338,9 +2860,10 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_toggle_preview,
                              GEOBLENDER_OT_des_export_design_grid,
                              GEOBLENDER_OT_des_declare_sectors,
-                             GEOBLENDER_OT_des_create_limit_from_perimeter)
+                             GEOBLENDER_OT_des_create_limit_from_perimeter,
+                             GEOBLENDER_OT_des_design_quarry)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
 T44, la que declara de nuevo los sectores desde su ventana; de la 014, la T20 pone «Límite desde el
-perímetro…», aún de la entrada «014» sin entregar)."""
+perímetro…» y la T21 «Cantera con dos superficies…», aún de la entrada «014» sin entregar)."""
