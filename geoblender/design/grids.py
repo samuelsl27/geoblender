@@ -21,6 +21,19 @@ RF-014-17, RF-014-21; plan 014 A2, A3 y §8).
   orden de su primera celda recorriendo la rejilla fila a fila; se pintan por bandas.
   Es ``O(celdas)`` en numpy y nada por tramo en Python; cada unidad (una banda, un trozo de parejas
   o un salto de la compresión) cabe en un paso de ``budget_s``.
+- **El más próximo** (A7; RF-014-11): :func:`nearest_value_steps` da, para cada celda, el cuadrado
+  de la distancia euclídea entre centros de celda a la celda marcada más próxima y el valor de esa
+  celda; a igual distancia, el **menor** valor (la cota más baja). Es la transformada de distancia
+  exacta y separable de Felzenszwalb y Huttenlocher (2012): (1) por columnas, la semilla más
+  próxima de la misma columna (arriba y abajo, con ``np.maximum.accumulate``, por bandas de
+  :data:`BAND_ROWS` filas que se pasan la última semilla vista); (2) por filas, la envolvente
+  inferior de las parábolas ``g(c′) + (c − c′)²`` de las columnas con semilla, vectorizada sobre
+  las filas de una banda (una columna por unidad). El desempate es **exacto** porque se busca el
+  mínimo de una **clave entera** ``m · d² + r``, con ``r`` el rango del valor entre los ``m``
+  valores distintos de las semillas: el orden de las claves es el de ``(d², valor)`` y la clave
+  sigue siendo separable (``m · ((c − c′)² + (f − f′)²) + r``), así que las dos pasadas dan su
+  mínimo sin perder ningún empate. Todo en ``int64``, con los cortes de la envolvente comparados
+  como fracciones (productos cruzados), sin redondeo.
 
 Ninguna entrada se modifica: cada llamada da arrays nuevos.
 
@@ -29,6 +42,7 @@ Python puro (nivel 8), con numpy.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Generator, Iterator
 from dataclasses import dataclass
 
@@ -42,8 +56,10 @@ __all__ = [
     "BAND_ROWS",
     "EDGES_PER_UNIT",
     "Labels",
+    "Nearest",
     "dilate_square",
     "label_components_steps",
+    "nearest_value_steps",
 ]
 
 BAND_ROWS = 256
@@ -234,3 +250,170 @@ def _label_units(mask: object) -> Generator[None, None, Labels]:
         first_run = last_run
         yield None
     return Labels(grid, sizes)
+
+
+_NONE = np.iinfo(np.int64).max
+"""La clave de una columna sin semilla en la pasada por filas."""
+_KEY_LIMIT = 1 << 62
+"""El mayor producto que se admite en las comparaciones exactas de :func:`nearest_value_steps`."""
+
+
+@dataclass(frozen=True, eq=False)
+class Nearest:
+    """La celda marcada más próxima a cada celda: ``cells2`` (``int64``), el cuadrado de la
+    distancia euclídea entre centros en celdas² (exacto; −1 si no hay ninguna marcada), ``value``
+    (``float64``), el valor de la más próxima (a igual distancia, el menor; NaN si no hay
+    ninguna), y ``cell``, el lado de la celda (m)."""
+
+    cells2: np.ndarray
+    value: np.ndarray
+    cell: float
+
+    @property
+    def d2(self) -> np.ndarray:
+        """El cuadrado de la distancia en m² (``float64``; ``+inf`` si no hay ninguna marcada)."""
+        found = self.cells2.astype(np.float64) * (self.cell * self.cell)
+        found[self.cells2 < 0] = np.inf
+        return found
+
+
+def nearest_value_steps(mask: np.ndarray, values: np.ndarray, cell: float, *,
+                        budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """La celda de ``mask`` más próxima a cada celda de la rejilla y su valor en ``values`` (de la
+    forma de ``mask``; solo se leen las celdas marcadas), por pasos de ``budget_s`` como mucho: el
+    último ``Progress`` (fase ``nearest``) lleva el :class:`Nearest`. ``cell`` es el lado de la
+    celda (m). ``ValueError`` en la llamada si ``mask`` no es de 2 dimensiones, ``values`` no es de
+    su forma, ``cell`` no es positivo y finito o una celda marcada no tiene un valor finito; y al
+    avanzar si la rejilla y los valores distintos son tantos que la clave no cabe en ``int64``.
+    Ninguna entrada se modifica; cerrar el generador a mitad no deja nada."""
+    found = _mask(mask)
+    read = np.asarray(values, dtype=np.float64)
+    if read.shape != found.shape:
+        raise ValueError(f"los valores son una rejilla {read.shape}, no {found.shape}")
+    side = float(cell)
+    if not math.isfinite(side) or side <= 0.0:
+        raise ValueError(f"el lado de la celda es positivo y finito, no {cell!r}")
+    if not np.isfinite(read[found]).all():
+        raise ValueError("una celda marcada no tiene un valor finito")
+    return pace_progress(_nearest_units(found, read, side), budget_s, phase="nearest",
+                         running="Buscando el más próximo…", finished="El más próximo, encontrado")
+
+
+def _nearest_units(found: np.ndarray, values: np.ndarray, cell: float
+                   ) -> Generator[None, None, Nearest]:
+    """Las unidades de :func:`nearest_value_steps`."""
+    nrows, ncols = found.shape
+    bands = [(start, min(nrows, start + BAND_ROWS)) for start in range(0, nrows, BAND_ROWS)]
+    # 1 · Los valores distintos de las semillas, que dan el rango del desempate: los de cada banda
+    # (con el índice de cada semilla en ellos) y su unión, banda a banda (dos tramos ordenados que
+    # el orden estable mezcla en tiempo lineal).
+    parts: list[tuple[np.ndarray, np.ndarray]] = []
+    for start, stop in bands:
+        parts.append(np.unique(values[start:stop][found[start:stop]], return_inverse=True))
+        yield None
+    distinct = np.empty(0)
+    for part, _inverse in parts:
+        merged = np.sort(np.concatenate((distinct, part)), kind="stable")
+        distinct = merged[np.concatenate(([True], merged[1:] != merged[:-1]))] \
+            if merged.size else merged
+        yield None
+    if distinct.size == 0:
+        return Nearest(np.full(found.shape, -1, dtype=np.int64), np.full(found.shape, np.nan),
+                       cell)
+    scale = int(distinct.size)
+    if scale * (nrows * nrows + ncols * ncols + 1) * 2 * (ncols + 1) >= _KEY_LIMIT:
+        raise ValueError(f"la rejilla {found.shape} con {scale} valores distintos no cabe en la "
+                         "clave entera del más próximo")
+    rank = np.zeros(found.shape, dtype=np.int64)
+    for (start, stop), (part, inverse) in zip(bands, parts, strict=True):
+        rank[start:stop][found[start:stop]] = np.searchsorted(distinct, part)[inverse.ravel()]
+        yield None
+    del parts
+    # 2 · Por columnas: la clave de la semilla más próxima de la misma columna, arriba y abajo.
+    key = np.empty(found.shape, dtype=np.int64)
+    cols = np.arange(ncols, dtype=np.int64)
+    seen_row = np.full(ncols, -1, dtype=np.int64)
+    for start, stop in bands:
+        sub = found[start:stop]
+        rows = np.arange(start, stop, dtype=np.int64)[:, None]
+        above = np.maximum.accumulate(np.where(sub, rows, -1), axis=0)
+        np.maximum(above, seen_row, out=above)
+        seen_row = above[-1].copy()
+        seen = above >= 0
+        gap = rows - above
+        key[start:stop] = np.where(seen, scale * gap * gap + rank[np.where(seen, above, 0), cols],
+                                   _NONE)
+        yield None
+    seen_row = np.full(ncols, nrows, dtype=np.int64)
+    for start, stop in reversed(bands):
+        sub = found[start:stop]
+        rows = np.arange(start, stop, dtype=np.int64)[:, None]
+        below = np.minimum.accumulate(np.where(sub, rows, nrows)[::-1], axis=0)[::-1]
+        below = np.minimum(below, seen_row)
+        seen_row = below[0].copy()
+        seen = below < nrows
+        gap = below - rows
+        np.minimum(key[start:stop],
+                   np.where(seen, scale * gap * gap + rank[np.where(seen, below, 0), cols], _NONE),
+                   out=key[start:stop])
+        yield None
+    del rank
+    # 3 · Por filas: la envolvente inferior de las parábolas, todas las filas de una banda a la vez.
+    cells2 = np.empty(found.shape, dtype=np.int64)
+    nearest = np.empty(found.shape, dtype=np.float64)
+    for start, stop in bands:
+        best = np.empty((stop - start, ncols), dtype=np.int64)
+        yield from _envelope_units(key[start:stop], best, scale)
+        cells2[start:stop], low = np.divmod(best, scale)
+        nearest[start:stop] = distinct[low]
+        yield None
+    return Nearest(cells2, nearest, cell)
+
+
+def _envelope_units(key: np.ndarray, out: np.ndarray, scale: int) -> Generator[None, None, None]:
+    """``out[f, p] = mín_c (key[f, c] + scale · (p − c)²)`` sobre las columnas ``c`` con clave
+    (Felzenszwalb y Huttenlocher, una columna por unidad y todas las filas a la vez). La parábola
+    ``j`` de la envolvente de una fila está en la columna ``at[f, j]`` y manda desde
+    ``num[f, j] / (2 · scale · den[f, j])`` (``den`` > 0); la 0, desde −∞."""
+    lines, ncols = key.shape
+    every = np.arange(lines, dtype=np.int64)
+    at = np.zeros((lines, max(ncols, 1)), dtype=np.int64)
+    num = np.zeros_like(at)
+    den = np.ones_like(at)
+    top = np.full(lines, -1, dtype=np.int64)
+    for col in range(ncols):
+        here = key[:, col]
+        live = here != _NONE
+        fresh = every[live & (top < 0)]
+        waiting = every[live & (top >= 0)]
+        lift = scale * col * col
+        while waiting.size:
+            last = top[waiting]
+            other = at[waiting, last]
+            cut_num = here[waiting] + lift - key[waiting, other] - scale * other * other
+            cut_den = col - other
+            drop = (last > 0) & (cut_num * den[waiting, last] <= num[waiting, last] * cut_den)
+            stay = waiting[~drop]
+            if stay.size:
+                after = last[~drop] + 1
+                top[stay] = after
+                at[stay, after] = col
+                num[stay, after] = cut_num[~drop]
+                den[stay, after] = cut_den[~drop]
+            waiting = waiting[drop]
+            top[waiting] -= 1
+        top[fresh] = 0
+        at[fresh, 0] = col
+        yield None
+    current = np.zeros(lines, dtype=np.int64)
+    for col in range(ncols):
+        moving = every[current < top]
+        while moving.size:
+            ahead = current[moving] + 1
+            moving = moving[num[moving, ahead] < 2 * scale * col * den[moving, ahead]]
+            current[moving] += 1
+            moving = moving[current[moving] < top[moving]]
+        source = at[every, current]
+        gap = col - source
+        out[:, col] = scale * gap * gap + key[every, source]
+        yield None
