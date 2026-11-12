@@ -55,7 +55,13 @@
   dentro de las zonas, con el espesor mínimo de la 012, por partes con su volumen y su centro
   (:class:`ConserveMoved`, :class:`ConservePart`): más de 0 m³ es un error del diseño.
 
-Las demás piezas de la cantera (ancla y las dos superficies) llegan con sus tareas. Python puro
+- :func:`floor_anchor_steps` (T11; RF-014-11; A7): la **rejilla de anclas** «al fondo de cada
+  muro» (:class:`FloorAnchors`): en cada celda, la cota del fondo más próximo en planta (distancia
+  euclídea exacta entre centros de celda; empate, la más baja), y :func:`anchored_request`, su paso
+  al escalonado de la 013 como ancla en rejilla (D-18 de la 013): las bermas de cada muro quedan en
+  ``fondo + k·h``.
+
+Las demás piezas de la cantera (las dos superficies) llegan con sus tareas. Python puro
 con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no escribe nada.
 """
 
@@ -88,15 +94,16 @@ from .envelopes import (
     constant_slope,
     envelope_steps,
 )
-from .grids import _label_units, dilate_square
+from .grids import _label_units, _nearest_units, dilate_square
 from .messages import DesignError, render
-from .model import CorridorFields, Direction, EnvelopeRequest, LayerField, Metric
+from .model import CorridorFields, DesignRequest, Direction, EnvelopeRequest, LayerField, Metric
 from .params import CONSERVE_SLOPE, CROWN_RING, check_quarry_param
 from .report import moved_cells
 from .seeds import DomainSet, SeedSet, collect_seeds, domain_of, pace_progress
 from .zones import _paint, _polygon_spans
 
 __all__ = [
+    "ANCHOR_LABEL",
     "AREA_PART_LABELS",
     "CEILING_NAME",
     "FLOOR_LEVEL_MARGIN_M",
@@ -108,9 +115,11 @@ __all__ = [
     "ConservePart",
     "ConserveZone",
     "CorridorMap",
+    "FloorAnchors",
     "FloorMap",
     "FloorsAbove",
     "SeedGroup",
+    "anchored_request",
     "apply_ceiling",
     "area_outcome",
     "area_parts",
@@ -121,6 +130,7 @@ __all__ = [
     "crown_ring",
     "crown_seeds",
     "excavation_area",
+    "floor_anchor_steps",
     "floor_cut_steps",
     "floor_map",
     "floors_above_terrain",
@@ -959,3 +969,67 @@ def conserve_moved(design: np.ndarray, start: np.ndarray, zones: Sequence[Conser
             found.append(ConservePart(zone.name, index, cells, float(volume), float(x),
                                       float(y)))
     return ConserveMoved(tuple(found))
+
+
+# --- El ancla al fondo de cada muro (T11; A7) -----------------------------------------------------
+
+ANCHOR_LABEL = "al fondo de cada muro, capa {layer}"
+"""El nombre de la rejilla de anclas «al fondo de cada muro» en los mensajes del escalonado de la
+013 (``des.anchor_nodata``), con la capa de los fondos."""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class FloorAnchors:
+    """La **rejilla de anclas** «al fondo de cada muro» (A7, RF-014-11) de la capa de fondos
+    ``layer``: ``grid`` (m, float64, nueva), la cota del fondo más próximo a cada celda en planta
+    (a igual distancia, la más baja; ``NaN`` en toda la rejilla si no hay ninguna celda de fondo), y
+    ``d2_m2`` (float64), el cuadrado de esa distancia entre centros de celda en m² (``+inf`` sin
+    fondos)."""
+
+    layer: str
+    grid: np.ndarray
+    d2_m2: np.ndarray
+
+    @property
+    def label(self) -> str:
+        """El nombre de la rejilla en los mensajes (:data:`ANCHOR_LABEL`)."""
+        return ANCHOR_LABEL.format(layer=self.layer)
+
+
+def _anchor_work(floors: FloorMap, cell: float) -> Generator[None, None, FloorAnchors]:
+    """Las unidades del ancla: el más próximo de la 014 (``grids._nearest_units``) sobre las celdas
+    de fondo con su cota."""
+    found = np.isfinite(floors.grid)
+    nearest = yield from _nearest_units(found, floors.grid, cell)
+    return FloorAnchors(floors.layer, nearest.value, nearest.d2)
+
+
+def floor_anchor_steps(floors: FloorMap, geometry: Grid, *,
+                       budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**A7** (RF-014-11): la rejilla de anclas «al fondo de cada muro» del mapa de fondos
+    ``floors`` (:func:`floor_map`, o el de unos corredores) en la rejilla ``geometry``: cada celda
+    lleva la cota del fondo más próximo en planta —distancia euclídea exacta entre centros de celda
+    (``design.grids.nearest_value_steps``); a igual distancia, la cota más baja—, por pasos: el
+    último ``Progress`` (fase ``anchors``) lleva las :class:`FloorAnchors`. Con ellas como ancla en
+    rejilla del escalonado de la 013 (D-18 de la 013; :func:`anchored_request` y ``DesignJob.anchors
+    = grid``), las bermas de cada muro quedan en ``fondo + k·h``. Sin ninguna celda de fondo, la
+    rejilla no tiene cota y el escalonado la rechaza (``des.anchor_nodata``).
+
+    ``ValueError`` (error del programa) al llamar si el mapa no es de la forma de ``geometry`` o la
+    rejilla no tiene celdas cuadradas (ADR-0014). Ninguna entrada se modifica; cerrar el generador a
+    mitad no deja nada."""
+    _same_shape("el mapa de fondos", floors.grid, geometry.shape)
+    if geometry.dx != geometry.dy:
+        raise ValueError("el ancla al fondo de cada muro se calcula en una rejilla de celdas "
+                         f"cuadradas (ADR-0014), no de {geometry.dx} × {geometry.dy} m")
+    return pace_progress(_anchor_work(floors, float(geometry.dx)), budget_s, phase="anchors",
+                         running="Buscando el fondo de cada muro…",
+                         finished="Rejilla de anclas al fondo de cada muro calculada")
+
+
+def anchored_request(request: DesignRequest, anchors: FloorAnchors) -> DesignRequest:
+    """El paso de :class:`FloorAnchors` al escalonado de la 013 como ancla en rejilla (D-18 de la
+    013): la petición ``request`` con la rejilla de anclas nombrada por :attr:`FloorAnchors.label`
+    (la que citan sus mensajes); el ``DesignJob`` lleva ``anchors = anchors.grid``. Una petición
+    nueva; ``request`` no cambia."""
+    return replace(request, anchor_grid=anchors.label)

@@ -144,7 +144,8 @@ PENDING_014_MODULES = frozenset({
     # T08: FLOOR_LEVEL_MARGIN_M, FloorMap, FloorsAbove, floor_map, floors_above_terrain,
     # with_floors, floor_cut_steps; T09: CorridorMap, corridor_cells, corridor_too_long;
     # T10: CEILING_NAME, ConserveZone, ConservationCeiling, conservation_ceiling_steps,
-    # apply_ceiling, ConservePart, ConserveMoved, conserve_moved
+    # apply_ceiling, ConservePart, ConserveMoved, conserve_moved; T11: ANCHOR_LABEL, FloorAnchors,
+    # floor_anchor_steps, anchored_request
 })
 
 
