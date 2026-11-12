@@ -10,7 +10,8 @@ calcula ni escribe nada.
 
 De las rejillas de un diseño (``bl.scene.des_views``: la envolvente ``des_env_``, la superficie de
 diseño ``des_srf_``, las cotas de berma ``des_brm_`` y, de la 014, el recinto excavable
-``des_rcn_``), solo la superficie de diseño es una final; y ninguna es el terreno.
+``des_rcn_`` y las cinco de una cantera, ``des_exp_``, ``des_fin_``, ``des_xen_``, ``des_fen_`` y
+``des_cls_``), solo la superficie de diseño es una final; y ninguna es el terreno.
 """
 
 from __future__ import annotations
@@ -36,8 +37,9 @@ LOGGER = logging.getLogger("geoblender.bl.ops")
 SURFACE_KINDS = ("DTM", "TIN")  # Object.geoblender.kind de un objeto que muestra una superficie
 DESIGN_SURFACE = des_views.prefix(design_provenance.DESIGN_GRID)  # «des_srf_»: la final
 DESIGN_GRIDS = tuple(des_views.prefix(family) for family, _label in des_views.LOADERS)
-"""El comienzo del nombre de las rejillas de un diseño (``des_env_``, ``des_srf_``, ``des_brm_`` y
-el recinto ``des_rcn_``, T20 de la 014)."""
+"""El comienzo del nombre de las rejillas de un diseño (``des_env_``, ``des_srf_``, ``des_brm_``,
+el recinto ``des_rcn_``, T20 de la 014, y las de una cantera, T22: ``des_exp_``, ``des_fin_``,
+``des_xen_``, ``des_fen_`` y ``des_cls_``)."""
 
 type ChoiceOf = Callable[[str], SurfaceChoice | None]
 

@@ -98,9 +98,18 @@ diálogo, leídas con las demás en :func:`refresh_choices` (las capas de políg
 superficie (:func:`draw_sector_rows` con ``pick``, que :func:`fill_sectors` conserva) y el resumen de
 su cálculo (:func:`show_summary`: «Cantera «Corta» en V01», el orden con las celdas que cambió su
 regla, las cotas de cada superficie, la excavación de la explotación, el desdoblado y el relleno, y
-sus avisos). La clasificación con sus áreas, la barra N y los cargadores de sus rejillas son de la
-T22.
-"""
+sus avisos).
+
+**El resumen, la clasificación y la barra N de la cantera** (spec 014, T22; HU-014-3, HU-014-4;
+RF-014-15 a RF-014-18; plan 014 §5.5): el resumen dice además la excavación de la explotación en ha,
+la clasificación con el área de cada clase en ha y el espesor mínimo que la separa, y «explotación
+hasta la final: no» si no se pidió (con el modo, lo que pasó a la explotación es una de sus notas;
+el aviso de desdoblado sobre terreno sin explotar, con sus zonas, va en ámbar). La barra N enseña la
+ficha de cada rejilla de la cantera cargada en la vista (``bl.scene.des_views``: las dos
+superficies, sus envolventes y la clasificación): sus ajustes, los perfiles de cada superficie, la
+superficie de partida, las capas que leyó con sus campos, los parámetros, las semillas de cada
+superficie con el recinto como dominio, las restricciones, la leyenda de la clasificación (un color
+por clase) y las cifras registradas, por sector y en total."""
 
 from __future__ import annotations
 
@@ -122,7 +131,8 @@ from ...core.params import definition as param_definition
 from ...design import messages as design_messages
 from ...design import profiles as design_profiles
 from ...design import provenance as design_provenance
-from ...design.model import PERIMETER_SEGMENT, BenchProfile, Order, SeedKind, Surface, ZoneKind
+from ...design.model import (PERIMETER_SEGMENT, BenchProfile, CellClass, Order, SeedKind, Surface,
+                             ToFinalMode, ZoneKind)
 from ...design.params import BenchParam, bench_key
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
@@ -138,7 +148,7 @@ from .res_panels import NOT_SHOWN, record_text
 from .view_panels import ROW_FIELD, ROW_FIGURE, ROW_HEADING, ROW_NONE, CardLine
 
 if TYPE_CHECKING:  # solo para los tipos: habilitar no importa el cálculo (RNF-001-03)
-    from ...design.model import EnvelopeRequest, WorkDomain, Zone
+    from ...design.model import EnvelopeRequest, QuarryRequest, SeedSource, WorkDomain, Zone
     from ...design.sectors import DesignSector, OrphanSlope
     from ...design.steps import Calculation
 
@@ -774,10 +784,13 @@ def _number(value: float | None, decimals: int = 0) -> str:
 
 def _quarry_lines(outcome: Any) -> list[tuple[str, bool]]:
     """El resumen de las dos superficies de una cantera calculada (``design.quarry.QuarryOutcome``;
-    spec 014, T21; RF-014-12, RF-014-13): el orden del diseño con las celdas que cambió su regla,
-    las cotas de cada superficie en el recinto, la excavación de la explotación, el desdoblado y el
-    relleno de restauración (los totales de su clasificación, ``classes.total``; la clasificación
-    con sus áreas por clase es de la T22)."""
+    spec 014, T21 y T22; RF-014-12, RF-014-13, RF-014-15 a RF-014-18): el orden del diseño con las
+    celdas que cambió su regla, las cotas de cada superficie en el recinto, la excavación de la
+    explotación en m³ y ha, el desdoblado y el relleno de restauración en m³, **la clasificación**
+    con el área de cada clase en ha y el espesor mínimo que separa «sin diferencia» (los totales de
+    su clasificación, ``classes.total``) y, si no se pidió, «explotación hasta la final: no» (con el
+    modo, lo que pasó a la explotación es una nota del cálculo). Los avisos los añade
+    :func:`summary_lines`."""
     total = outcome.classes.total
     order = (tr("Final surface first") if Order(outcome.order) is Order.FINAL_FIRST
              else tr("Exploitation surface first"))
@@ -789,10 +802,19 @@ def _quarry_lines(outcome: Any) -> list[tuple[str, bool]]:
                          low=_number(final[0], 1), high=_number(final[1], 1)), False))
     if exploitation is not None:
         lines.append((tr("Exploitation surface: elevations {low} to {high} m · excavation "
-                         "{cut} m³", low=_number(exploitation[0], 1),
-                         high=_number(exploitation[1], 1), cut=_number(total.exp_cut_m3)), False))
+                         "{cut} m³ in {area} ha", low=_number(exploitation[0], 1),
+                         high=_number(exploitation[1], 1), cut=_number(total.exp_cut_m3),
+                         area=_number(total.exp_cut_area_ha, 2)), False))
     lines.append((tr("Unsplit {unsplit} m³ · restoration fill {fill} m³",
                      unsplit=_number(total.unsplit_m3), fill=_number(total.fill_m3)), False))
+    lines.append((tr("Classification (minimum thickness {thickness} m): unsplit {unsplit} ha · "
+                     "restoration fill {fill} ha · no difference {none} ha",
+                     thickness=format_value(float(outcome.classes.min_thickness_m), language()),
+                     unsplit=_number(total.area_ha(CellClass.UNSPLIT), 2),
+                     fill=_number(total.area_ha(CellClass.FILL), 2),
+                     none=_number(total.area_ha(CellClass.NONE), 2)), False))
+    if outcome.to_final is None:
+        lines.append((tr("Exploitation down to the final surface: no"), False))
     return lines
 
 
@@ -1302,17 +1324,128 @@ def seed_lines(request: EnvelopeRequest, constraints: Mapping[str, str],
     guardó, ``design.provenance.envelope_request``): de dónde salen las semillas y su zona, y el
     acotado del dominio. ``constraints`` y ``sectors`` dan el nombre de cada código."""
     seeds = request.seeds
-    if seeds.kind is SeedKind.SURFACE:
-        origin = tr("cells of «{surface}»", surface=seeds.surface)
-    elif seeds.kind is SeedKind.FIXED:
-        origin = tr("fixed elevation {elevation} m",
-                    elevation=format_value(float(seeds.elevation_m or 0.0), language()))
-    else:
-        origin = tr("grid of elevations «{grid}»", grid=seeds.grid)
+    origin = _seed_origin(seeds)
     text = (tr("Seeds: {origin} · {zone}", origin=origin,
                zone=_zone_text(seeds.zone, constraints, sectors))
             if seeds.zone is not None else tr("Seeds: {origin}", origin=origin))
     return [CardLine(ROW_FIELD, text), CardLine(ROW_FIELD, _domain_text(request.domain, sectors))]
+
+
+def _seed_origin(seeds: SeedSource) -> str:
+    """De dónde salen unas semillas de la 013 como se lee: «celdas de «Ladera»», «cota fija 90 m» o
+    «rejilla de cotas «x»»."""
+    if seeds.kind is SeedKind.SURFACE:
+        return tr("cells of «{surface}»", surface=seeds.surface)
+    if seeds.kind is SeedKind.FIXED:
+        return tr("fixed elevation {elevation} m",
+                  elevation=format_value(float(seeds.elevation_m or 0.0), language()))
+    return tr("grid of elevations «{grid}»", grid=seeds.grid)
+
+
+# --- La ficha de una cantera con dos superficies (spec 014, T22; RF-014-15, RF-014-16) ------------
+
+
+def _quarry_profile_lines(settings: Mapping[str, Any], profile_names: Mapping[str, str],
+                          sectors: Mapping[str, str]) -> list[CardLine]:
+    """Los perfiles de banco de cada superficie de una cantera (sus ajustes ``final`` y
+    ``exploitation``), por su nombre: «Perfiles de la superficie final: base REST_5_35_6»."""
+    def assigned(side: Surface) -> str:
+        found = settings.get(side.value)
+        return profiles_text(found, profile_names, sectors) if isinstance(found, Mapping) else ""
+
+    lines: list[CardLine] = []
+    final, exploitation = assigned(Surface.FINAL), assigned(Surface.EXPLOITATION)
+    if final:
+        lines.append(CardLine(ROW_FIELD, tr("Profiles of the final surface: {profiles}",
+                                            profiles=final)))
+    if exploitation:
+        lines.append(CardLine(ROW_FIELD, tr("Profiles of the exploitation surface: {profiles}",
+                                            profiles=exploitation)))
+    return lines
+
+
+def _quarry_layer_lines(request: QuarryRequest, constraints: Mapping[str, str],
+                        sectors: Mapping[str, str]) -> list[CardLine]:
+    """Las capas que leyó una cantera, cada una con sus campos (plan 014 §5.2.1): los fondos, las
+    zonas a conservar, los corredores, las zonas de restauración por relleno, las láminas de agua y
+    las zonas de «explotación hasta la final»; con su encabezado, o ninguna línea si no usó
+    ninguna."""
+    label = constraint_panels.layer_label
+    lines: list[CardLine] = []
+    if request.floors is not None:
+        lines.append(CardLine(ROW_FIELD, tr("{what}: layer «{layer}» · field «{field}»",
+                                            what=tr("Floors"), layer=label(request.floors.layer),
+                                            field=request.floors.field)))
+    lines += [CardLine(ROW_FIELD, tr("{name}: {value}", name=tr("Zone to conserve"),
+                                     value=_zone_text(zone, constraints, sectors)))
+              for zone in request.conserve]
+    corridors = request.corridors
+    if corridors is not None and corridors.graded:
+        lines.append(CardLine(ROW_FIELD, tr(
+            "Corridors: layer «{layer}» · width «{width}» · start elevation «{start}» · "
+            "grade «{grade}»", layer=label(corridors.layer), width=corridors.width_field,
+            start=corridors.start_level_field, grade=corridors.grade_field)))
+    elif corridors is not None:
+        lines.append(CardLine(ROW_FIELD, tr(
+            "Corridors: layer «{layer}» · width «{width}» · elevation «{level}»",
+            layer=label(corridors.layer), width=corridors.width_field,
+            level=corridors.level_field)))
+    if request.fill_zones:
+        lines.append(CardLine(ROW_FIELD, tr("{what}: layer «{layer}»",
+                                            what=tr("Restoration fill zones"),
+                                            layer=label(request.fill_zones))))
+    if request.water is not None:
+        lines.append(CardLine(ROW_FIELD, tr("{what}: layer «{layer}» · field «{field}»",
+                                            what=tr("Water sheets"),
+                                            layer=label(request.water.layer),
+                                            field=request.water.field)))
+    if ToFinalMode(request.to_final) is ToFinalMode.LAYER and request.to_final_layer:
+        lines.append(CardLine(ROW_FIELD, tr("{what}: layer «{layer}»",
+                                            what=tr("Exploitation down to the final surface"),
+                                            layer=label(request.to_final_layer))))
+    return [CardLine(ROW_HEADING, tr("Layers")), *lines] if lines else []
+
+
+def _quarry_seed_lines(request: QuarryRequest | None, constraints: Mapping[str, str],
+                       sectors: Mapping[str, str]) -> list[CardLine]:
+    """Las semillas de cada superficie de una cantera («Coronación y zonas a sostener» o las de la
+    013 con su zona) y su dominio de trabajo, el recinto excavable de las máscaras (RF-014-01,
+    RF-014-02); si sus ajustes no se pueden leer, lo dice."""
+    if request is None:
+        return [CardLine(ROW_NONE, tr("The seeds and the domain are not recorded"))]
+    lines: list[CardLine] = []
+    for side, name in ((request.final, tr("Seeds of the final surface")),
+                       (request.exploitation, tr("Seeds of the exploitation surface"))):
+        seeds = side.seeds
+        if seeds is None:
+            value = tr("Crown and zones to hold")
+        elif seeds.zone is None:
+            value = _seed_origin(seeds)
+        else:
+            value = f"{_seed_origin(seeds)} · {_zone_text(seeds.zone, constraints, sectors)}"
+        lines.append(CardLine(ROW_FIELD, tr("{name}: {value}", name=name, value=value)))
+    lines.append(CardLine(ROW_FIELD, tr("Work domain: the excavation boundary of the masks")))
+    return lines
+
+
+def _legend_lines() -> list[CardLine]:
+    """La leyenda de la clasificación de una cantera (``des_views.CLASS_LEGEND``): su encabezado y
+    una línea por clase, con su código y su color en la vista (RF-014-15)."""
+    shown = language()
+    return [CardLine(ROW_HEADING, tr("Legend")),
+            *(CardLine(ROW_FIELD, translate(shown, msgid))
+              for _code, _color, msgid in des_views.CLASS_LEGEND)]
+
+
+def _quarry_request(settings: Mapping[str, Any], name: str) -> QuarryRequest | None:
+    """La cantera que guardan los ajustes ``settings`` (``design.provenance.quarry_request``), o
+    ``None`` si no se pueden leer (lo deja en el registro técnico con el nombre del dato
+    ``name``)."""
+    try:
+        return design_provenance.quarry_request(settings)
+    except ValueError:
+        LOGGER.info("Los ajustes de la cantera de «%s» no se pueden leer", name, exc_info=True)
+        return None
 
 
 def profiles_text(settings: Mapping[str, Any], profile_names: Mapping[str, str],
@@ -1373,8 +1506,10 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     líneas y otra vez como primeras filas de las cifras, ámbar y una por sector pendiente); las
     semillas y el dominio, los de los ajustes de la envolvente (la de un escalonado, la que
     escaló; un recinto excavable de la 014, T20, no tiene: su ficha dice su superficie de
-    partida); las restricciones, las activas en su versión (``gis.masks.store``) y las cifras, las
-    de su operación. Los errores del proyecto (``GeoblenderError``, ``sqlite3.Error``) siguen."""
+    partida; una rejilla de una cantera, T22, las de cada superficie, con sus perfiles, su
+    superficie de partida y las capas que leyó, y la clasificación, además, su leyenda); las
+    restricciones, las activas en su versión (``gis.masks.store``) y las cifras, las de su
+    operación. Los errores del proyecto (``GeoblenderError``, ``sqlite3.Error``) siguen."""
     from ...core.provenance import lineage as prov_lineage  # al usarlo: habilitar no lo carga
     from ...core.provenance import stale as prov_stale
     from ...core.versions import read as versions_read
@@ -1398,10 +1533,11 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
         profile_names = design_profiles.profile_names(conn)
         settings = link.settings
         area = link.op_type == design_provenance.EXCAVATION_AREA  # un recinto: sin semillas
+        quarry = link.op_type == design_provenance.QUARRY  # una cantera: las de sus dos lados
         envelope_settings: Mapping[str, Any] | None = settings
-        if link.op_type != design_provenance.ENVELOPE and not area:  # la envolvente que escaló
+        if link.op_type != design_provenance.ENVELOPE and not area and not quarry:
             envelope_settings =_stored_settings(conn, owner, design_provenance.ENVELOPE_GRID,
-                                                 settings.get("envelope"))
+                                                 settings.get("envelope"))  # la que escaló
     version_code = found.revision.code if found.revision is not None else ""
     sectors = design_sectors(project, owner or None)
     names = {sector.code: sector.name for sector in sectors}
@@ -1419,23 +1555,31 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     lines += marks
     if link.settings_text:
         lines.append(CardLine(ROW_FIELD, link.settings_text))
-    assigned = profiles_text(settings, profile_names, names)
-    if assigned:
+    request = _quarry_request(settings, found.record.name) if quarry else None
+    if quarry:  # los perfiles de cada superficie (RF-014-12)
+        lines += _quarry_profile_lines(settings, profile_names, names)
+    elif assigned := profiles_text(settings, profile_names, names):
         lines.append(CardLine(ROW_FIELD, tr("Profiles: {profiles}", profiles=assigned)))
-    if link.op_type != design_provenance.ENVELOPE and not area:
+    if link.op_type != design_provenance.ENVELOPE and not area and not quarry:
         lines.append(CardLine(ROW_FIELD, tr("Envelope: «{name}»",
                                             name=str(settings.get("envelope") or ""))))
     if link.op_type != design_provenance.ENVELOPE:
+        start = settings.get("start" if quarry else "surface")
         lines.append(CardLine(ROW_FIELD, tr("Start surface: «{surface}»",
-                                            surface=str(settings.get("surface") or ""))))
+                                            surface=str(start or ""))))
+    if request is not None:
+        lines += _quarry_layer_lines(request, constraints, names)
     lines.append(CardLine(ROW_HEADING, tr("Parameters")))
     lines += [parameter_line(used, version_code) for used in link.params] or [
         CardLine(ROW_NONE, tr("No parameters recorded"))]
     if not area:  # el recinto no tiene semillas ni acotado: es el corte admitido (RF-014-01)
         lines.append(CardLine(ROW_HEADING, tr("Seeds and domains")))
-        lines += _seed_card(settings, envelope_settings, constraints, names, found.record.name)
+        lines += (_quarry_seed_lines(request, constraints, names) if quarry else
+                  _seed_card(settings, envelope_settings, constraints, names, found.record.name))
     lines.append(CardLine(ROW_HEADING, tr("Applied constraints")))
     lines += _constraint_lines(listed, version_code)
+    if found.record.name.startswith(des_views.prefix(design_provenance.CLASSIFICATION_GRID)):
+        lines += _legend_lines()  # la clasificación de una cantera: un color por clase
     # La marca también junto a las cifras (RF-013-06): una fila por sector pendiente, antes de ellas;
     # es del estado de ahora y no una cifra (sin ``uid``): las registradas no la llevan.
     figures = [CardLine(ROW_HEADING, tr("Figures")), *marks]

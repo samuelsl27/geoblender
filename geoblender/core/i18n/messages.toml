@@ -8348,8 +8348,58 @@ es = "Orden del diseño: {order} · la regla de orden cambió {cells} celdas"
 ["Final surface: elevations {low} to {high} m"]
 es = "Superficie final: cotas {low} a {high} m"
 
-["Exploitation surface: elevations {low} to {high} m · excavation {cut} m³"]
-es = "Superficie de explotación: cotas {low} a {high} m · excavación {cut} m³"
+["Exploitation surface: elevations {low} to {high} m · excavation {cut} m³ in {area} ha"]
+es = "Superficie de explotación: cotas {low} a {high} m · excavación {cut} m³ en {area} ha"
 
 ["Unsplit {unsplit} m³ · restoration fill {fill} m³"]
 es = "Desdoblado {unsplit} m³ · relleno de restauración {fill} m³"
+
+# «Cantera con dos superficies…»: el resumen, la clasificación y la barra N (spec 014, T22) ---
+
+["Classification (minimum thickness {thickness} m): unsplit {unsplit} ha · restoration fill {fill} ha · no difference {none} ha"]
+es = "Clasificación (espesor mínimo {thickness} m): desdoblado {unsplit} ha · relleno de restauración {fill} ha · sin diferencia {none} ha"
+
+["Exploitation down to the final surface: no"]
+es = "Explotación hasta la final: no"
+
+["Exploitation envelope"]
+es = "Envolvente de explotación"
+
+["Final envelope"]
+es = "Envolvente final"
+
+["Classification"]
+es = "Clasificación"
+
+["0 · gray: no difference"]
+es = "0 · gris: sin diferencia"
+
+["1 · orange: unsplit"]
+es = "1 · naranja: desdoblado"
+
+["2 · green: restoration fill"]
+es = "2 · verde: relleno de restauración"
+
+["The classification «{name}» is loaded whole: its classes are not averaged"]
+es = "La clasificación «{name}» se carga entera: sus clases no se promedian"
+
+["Profiles of the final surface: {profiles}"]
+es = "Perfiles de la superficie final: {profiles}"
+
+["Profiles of the exploitation surface: {profiles}"]
+es = "Perfiles de la superficie de explotación: {profiles}"
+
+["{what}: layer «{layer}» · field «{field}»"]
+es = "{what}: capa «{layer}» · campo «{field}»"
+
+["{what}: layer «{layer}»"]
+es = "{what}: capa «{layer}»"
+
+["Corridors: layer «{layer}» · width «{width}» · elevation «{level}»"]
+es = "Corredores: capa «{layer}» · ancho «{width}» · cota «{level}»"
+
+["Corridors: layer «{layer}» · width «{width}» · start elevation «{start}» · grade «{grade}»"]
+es = "Corredores: capa «{layer}» · ancho «{width}» · cota inicial «{start}» · pendiente «{grade}»"
+
+["Work domain: the excavation boundary of the masks"]
+es = "Dominio de trabajo: el recinto excavable de las máscaras"

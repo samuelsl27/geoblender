@@ -38,6 +38,23 @@ guardan los ajustes de su operación, leída en su versión): un vértice en el 
 del recinto a la cota de esa superficie, y ninguno fuera. Una partida que ya no está en la rejilla
 del recinto se rechaza (``des.surface_mismatch``), y una que ya no existe, con el error de
 ``design.surfaces``.
+
+**Las rejillas de una cantera con dos superficies** (spec 014, T22; HU-014-3; RF-014-15, RF-014-16;
+plan 014 §5.1, §5.2.3), del mismo tipo :data:`KIND`: las dos superficies (``des_exp_<nombre>``,
+«Superficie de explotación», y ``des_fin_<nombre>``, «Superficie final») y sus envolventes
+(``des_xen_``, «Envolvente de explotación», y ``des_fen_``, «Envolvente final») son cotas y se
+cargan como las de la 013 (:func:`load_design_grid`); así ningún diálogo las propone como el
+terreno (``bl.ops.surface_proposal``). **La clasificación** (``des_cls_<nombre>``, «Clasificación»:
+0 sin diferencia, 1 desdoblado, 2 relleno, sin dato fuera del dominio; P-1) no es una cota: su
+cargador (:func:`load_class_grid`) la dibuja **sobre la superficie final** de su cantera (la de los
+ajustes de su operación, leída en su versión), con un vértice en cada celda clasificada, y **un
+color por clase** en cada cara (:data:`CLASS_LEGEND`: gris, naranja y verde), el de la mayoría de
+sus tres vértices (:func:`face_classes`): el color va en el atributo de cara
+:data:`COLOR_ATTRIBUTE` (y la clase, en :data:`CLASS_ATTRIBUTE`) con el material
+:data:`CLASS_MATERIAL`, que lo pinta en «Vista previa del material», como la rejilla de diferencias
+de la 011 (``bl.scene.res_views``). Las clases no se promedian: con un nivel de detalle, la
+clasificación se carga entera y lo dice. Las cifras salen de la clasificación registrada, nunca de
+la malla.
 """
 
 from __future__ import annotations
@@ -45,18 +62,27 @@ from __future__ import annotations
 import json
 from collections.abc import Generator
 
+import bpy
 import numpy as np
 
+from ...core.i18n import tr
 from ...core.versions import read as versions_read
 from ...design import provenance as design_provenance
+from ...design.model import CellClass
 from ...gis.crs import reference_label
+from ...gis.grid import Grid
+from ...gis.mesh import MeshArrays
 from ...gis.messages import GisError
 from ...gis.raster import Raster
 from ...gis.store import project_references
+from ...gis.tin import raster_to_tin_steps
 from . import gis_views, views
+from .gis_views import _blocks, _scaled, _surface
+from .mesh import set_attribute
 
-__all__ = ["KIND", "LOADERS", "load_area_grid", "load_design_grid", "loader_of", "register",
-           "unregister"]
+__all__ = ["CLASS_ATTRIBUTE", "CLASS_LEGEND", "CLASS_MATERIAL", "COLOR_ATTRIBUTE", "KIND",
+           "LOADERS", "class_colors", "ensure_class_material", "face_classes", "load_area_grid",
+           "load_class_grid", "load_design_grid", "loader_of", "register", "unregister"]
 
 KIND = "DESIGN"
 """El tipo (``Object.geoblender.kind``) de los objetos de las rejillas de un diseño."""
@@ -65,10 +91,32 @@ LOADERS: tuple[tuple[str, str], ...] = (
     (design_provenance.DESIGN_GRID, "Design surface"),
     (design_provenance.BERMS_GRID, "Berm elevations"),
     (design_provenance.EXCAVATION_AREA_GRID, "Excavation boundary"),
+    (design_provenance.EXPLOITATION_GRID, "Exploitation surface"),
+    (design_provenance.FINAL_GRID, "Final surface"),
+    (design_provenance.EXPLOITATION_ENVELOPE_GRID, "Exploitation envelope"),
+    (design_provenance.FINAL_ENVELOPE_GRID, "Final envelope"),
+    (design_provenance.CLASSIFICATION_GRID, "Classification"),
 )
 """Las familias de datos que se cargan (``design.provenance``) con el ``msgid`` de su nombre en el
-nombre generado de sus objetos: las tres rejillas de un diseño de la 013 y el recinto excavable de
-la 014 (T20)."""
+nombre generado de sus objetos: las tres rejillas de un diseño de la 013, el recinto excavable de
+la 014 (T20) y las cinco rejillas de una cantera con dos superficies (T22)."""
+CLASS_ATTRIBUTE = "gb_class"
+"""El atributo de cara con el código de su clase (``CellClass.code``: 0, 1 o 2)."""
+COLOR_ATTRIBUTE = "gb_color"
+"""El atributo de cara con el color lineal de su clase."""
+CLASS_MATERIAL = "GB_QuarryClasses"
+"""El material de la vista de la clasificación (su color, el de cada cara)."""
+CLASS_LEGEND: tuple[tuple[int, tuple[float, float, float, float], str], ...] = (
+    (CellClass.NONE.code, (0.5, 0.5, 0.5, 1.0), "0 · gray: no difference"),
+    (CellClass.UNSPLIT.code, (0.9, 0.3, 0.02, 1.0), "1 · orange: unsplit"),
+    (CellClass.FILL.code, (0.05, 0.55, 0.1, 1.0), "2 · green: restoration fill"),
+)
+"""La leyenda de la clasificación (RF-014-15; P-1): por clase, su código en la rejilla, su color
+lineal con alfa en la vista y el ``msgid`` de su línea en la leyenda de la barra N."""
+MATERIAL_VERSION = 1
+"""La versión del material :data:`CLASS_MATERIAL`: cambiarlo aquí es subirla."""
+VERSION_PROPERTY = "geoblender_version"
+"""La propiedad de ID con la versión del material."""
 
 
 def prefix(family: str) -> str:
@@ -77,7 +125,8 @@ def prefix(family: str) -> str:
 
 
 def load_design_grid(request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:
-    """La rejilla ``request.record`` de un diseño (``des_env_``, ``des_srf_`` o ``des_brm_``) como
+    """La rejilla de cotas ``request.record`` de un diseño (``des_env_``, ``des_srf_`` o
+    ``des_brm_``; de una cantera, ``des_exp_``, ``des_fin_``, ``des_xen_`` o ``des_fen_``) como
     malla de superficie, en pasos (véase el módulo); con ``lod`` 1 o 2, su versión de 2 o 5 m
     (RF-006-22). Cerrados antes de terminar, borra lo que creó."""
     from ...design import surfaces  # al cargar: no al habilitar
@@ -116,6 +165,110 @@ def load_area_grid(request: views.ViewRequest) -> Generator[float, None, views.V
     return (yield from gis_views.raster_view_steps(request, shown))
 
 
+def class_colors(codes: np.ndarray) -> np.ndarray:
+    """El color lineal con alfa (``(n, 4)``, float32) de cada código de clase ``codes`` (0, 1 o 2:
+    los de :data:`CLASS_LEGEND`). ``ValueError`` si alguno no es de una clase."""
+    found = np.asarray(codes, dtype=np.int64)
+    palette = {code: color for code, color, _label in CLASS_LEGEND}
+    unknown = sorted(set(np.unique(found).tolist()) - set(palette))
+    if unknown:
+        raise ValueError(f"códigos de clase sin color: {unknown}")
+    table = np.array([palette[code] for code in sorted(palette)], dtype=np.float32)
+    return table[found]
+
+
+def face_classes(vertex_codes: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """La clase de cada cara triangular ``faces`` (``(m, 3)``, índices de vértice): la de la
+    mayoría de sus tres vértices (``vertex_codes``) o, si los tres son distintos, la del medio
+    (desdoblado, entre sin diferencia y relleno); ``np.intc``."""
+    corners = np.sort(np.asarray(vertex_codes, dtype=np.int64)[np.asarray(faces)], axis=1)
+    return corners[:, 1].astype(np.intc)
+
+
+def _cell_values(vertices: np.ndarray, grid: Grid, values: np.ndarray) -> np.ndarray:
+    """El valor de ``values`` (en ``grid``) en cada vértice absoluto de una malla de A13: el de la
+    celda de la que es centro."""
+    columns = np.rint((vertices[:, 0] - grid.west) / grid.dx - 0.5).astype(np.int64)
+    rows = np.rint((grid.north - vertices[:, 1]) / grid.dy - 0.5).astype(np.int64)
+    return values[rows, columns]
+
+
+def ensure_class_material() -> bpy.types.Material:
+    """El material :data:`CLASS_MATERIAL` de esta versión: el que hay o uno nuevo (o rehecho en
+    su sitio): su color base, el atributo :data:`COLOR_ATTRIBUTE` de la geometría; en la vista
+    sólida, gris. Es un dato de la escena (se guarda con el ``.blend``), no de la extensión."""
+    material = bpy.data.materials.get(CLASS_MATERIAL)
+    if material is not None and material.get(VERSION_PROPERTY) == MATERIAL_VERSION:
+        return material
+    if material is None:
+        material = bpy.data.materials.new(CLASS_MATERIAL)
+    material.diffuse_color = CLASS_LEGEND[0][1]
+    tree = material.node_tree
+    if tree is not None:  # en 5.2 nace con el BSDF principista y la salida
+        for node in list(tree.nodes):
+            tree.nodes.remove(node)
+        output = tree.nodes.new("ShaderNodeOutputMaterial")
+        shader = tree.nodes.new("ShaderNodeBsdfPrincipled")
+        attribute = tree.nodes.new("ShaderNodeAttribute")
+        attribute.attribute_type = "GEOMETRY"
+        attribute.attribute_name = COLOR_ATTRIBUTE
+        attribute.location = (-300.0, 0.0)
+        output.location = (300.0, 0.0)
+        tree.links.new(attribute.outputs["Color"], shader.inputs["Base Color"])
+        tree.links.new(shader.outputs["BSDF"], output.inputs["Surface"])
+    material[VERSION_PROPERTY] = MATERIAL_VERSION
+    return material
+
+
+def load_class_grid(request: views.ViewRequest) -> Generator[float, None, views.ViewParts]:
+    """La clasificación ``request.record`` (``des_cls_``) de una cantera como malla de superficie
+    **sobre su superficie final**, con el color de su clase en cada cara (véase el módulo;
+    RF-014-15), en pasos. Con ``lod`` 1 o 2 se carga entera (las clases no se promedian) y lo dice.
+    Cerrados antes de terminar, borra lo que creó. Solo lee."""
+    from ...design import surfaces  # al cargar: no al habilitar
+
+    project, record = request.project, request.record
+    with project.read() as conn:
+        owner = versions_read.dataset_versions(conn, [record.uid]).get(record.uid, "")
+        row = conn.execute("SELECT settings FROM gb_operation WHERE uid = ?",
+                           (record.operation_uid,)).fetchone()
+    settings = json.loads(str(row[0])) if row is not None and row[0] else {}
+    classes = surfaces.read_surface(project, record.name, version_uid=owner)
+    _check_references(project, classes, record.name)
+    yield 0.02
+    final_name = design_provenance.dataset_name(design_provenance.FINAL_GRID,
+                                                str(settings.get("name") or ""))
+    final = surfaces.read_surface(project, final_name, version_uid=owner, expect=classes,
+                                  role="superficie final")
+    yield 0.05
+    shown = np.isfinite(classes.values) & np.isfinite(final.values)
+    surface = Raster(classes.grid, np.where(shown, final.values, np.nan), classes.crs,
+                     classes.vertical)
+    notes: list[str] = []
+    if request.lod > 0:
+        notes.append(tr("The classification «{name}» is loaded whole: its classes are not "
+                        "averaged", name=record.name))
+    yield 0.1
+    tin = yield from _scaled(_blocks(raster_to_tin_steps(surface, name=record.name)), 0.1, 0.25)
+    faces = np.ascontiguousarray(tin.faces, dtype=np.int32)
+    codes = face_classes(_cell_values(tin.vertices, surface.grid, classes.values), faces)
+    colors = class_colors(codes)
+    parts = yield from _surface(request, tin, MeshArrays(tin.vertices, faces), request.name, notes,
+                                0.3)
+    try:
+        for obj in parts.objects:
+            set_attribute(obj.data, COLOR_ATTRIBUTE, "FACE", "FLOAT_COLOR", colors)
+            set_attribute(obj.data, CLASS_ATTRIBUTE, "FACE", "INT", codes)
+            obj.data.materials.append(ensure_class_material())
+    except BaseException:
+        for obj in parts.objects:
+            mesh = obj.data
+            bpy.data.objects.remove(obj)
+            bpy.data.meshes.remove(mesh)
+        raise
+    return parts
+
+
 def _check_references(project: object, raster: Raster, name: str) -> None:
     """La vista no transforma coordenadas: ``raster`` (el dato ``name``) ha de estar en el CRS y
     la referencia vertical del proyecto (``gis.view_references_mismatch``)."""
@@ -128,9 +281,12 @@ def _check_references(project: object, raster: Raster, name: str) -> None:
 
 def loader_of(family: str) -> views.ViewLoader:
     """El cargador de los datos de la familia ``family`` de :data:`LOADERS`: el del recinto
-    (:func:`load_area_grid`) o el de las rejillas de un diseño (:func:`load_design_grid`)."""
+    (:func:`load_area_grid`), el de la clasificación de una cantera (:func:`load_class_grid`) o
+    el de las rejillas de cotas de un diseño (:func:`load_design_grid`)."""
     if family == design_provenance.EXCAVATION_AREA_GRID:
         return load_area_grid
+    if family == design_provenance.CLASSIFICATION_GRID:
+        return load_class_grid
     return load_design_grid
 
 
