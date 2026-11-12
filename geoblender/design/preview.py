@@ -11,6 +11,13 @@ con el estado de su búsqueda de intocables y el estado de las máscaras. Lleva 
 la vista (las máscaras con sus zonas, el conjunto de semillas con su dominio): la vista 3D de
 ``bl`` no vuelve a leer el proyecto.
 
+Con un diseño de la cantera con dos superficies (spec 014, T12; RF-014-04; plan 014 §5.1 y §5.5),
+:func:`quarry_summarize_steps` prepara además, también por pasos y solo leyendo, el
+:class:`QuarryPreview`: el recinto excavable, la coronación, las zonas a sostener, los fondos, las
+zonas a conservar que siembran los techos de conservación y los corredores (``design.quarry``),
+con sus rejillas para la vista y sus notas. El techo mismo (una envolvente ascendente) no se
+calcula aquí, como la vista previa de la 013 no calcula envolventes: se calcula al «Calcular».
+
 Lo que dice son avisos y notas con código (:class:`Notice`, de ``design.messages``): el texto en
 cada idioma sale de :meth:`Notice.text` y de :meth:`PreviewSummary.lines`, con la coma decimal y el
 espacio fino de miles del español o el punto y la coma del inglés.
@@ -21,21 +28,33 @@ from __future__ import annotations
 from collections.abc import Generator, Iterator, Mapping
 from dataclasses import dataclass, field
 
+from typing import TYPE_CHECKING
+
+import numpy as np
+
 from ..core.i18n import THIN_SPACE
 from ..core.project.model import Progress
 from ..core.versions import read as versions_read
 from ..gis.masks import access
 from ..gis.masks.access import MaskSet, MaskState
 from ..gis.masks.compile import STEP_BUDGET_S
-from ..gis.store import StoreProject
+from ..gis.store import StoreProject, load_features
+from ..gis.vector import FeatureLayer
 from .messages import lookup, render
-from .model import SeedKind
+from .model import QuarryRequest, SeedKind, Zone, ZoneKind
 from .seeds import DomainSet, SeedPlan, SeedSet, pace_progress, seed_units
+from .surfaces import project_frame, read_surface
+from .zones import constraint_cells, layer_cells
+
+if TYPE_CHECKING:  # design.quarry importa design.report, que importa Notice de aquí
+    from .quarry import ConserveZone, CorridorMap, FloorMap
 
 __all__ = [
     "Notice",
     "PreviewSummary",
+    "QuarryPreview",
     "SectorStatus",
+    "quarry_summarize_steps",
     "seed_notices",
     "summarize_steps",
 ]
@@ -231,3 +250,189 @@ def summarize_steps(project: StoreProject, plan: SeedPlan, version_uid: str, *,
     return pace_progress(_summary_units(project, plan, version_uid), budget_s, phase="preview",
                          running="Preparando la vista previa…", finished="Vista previa lista",
                          total=10)
+
+
+# --- La cantera con dos superficies (spec 014, T12; RF-014-04) ---------------------------------
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class QuarryPreview:
+    """La vista previa de un diseño de la cantera con dos superficies (RF-014-04): la ``version``
+    (su código), el estado de sus máscaras (``masks_state``) y, solo si están al día, las máscaras
+    (``masks``), la superficie de partida (``start``, m, float64), el recinto excavable (``area``,
+    A1), la coronación (``crown``, el anillo exterior de A2), las zonas a sostener (``hold``,
+    intocables y sin corte), los fondos (``floors``, A4, si se piden), las zonas a conservar que
+    siembran los techos (``conserve``, A5) y los corredores (``corridors``, A6, si se piden),
+    todas en la rejilla de las máscaras; y los ``notices`` en el orden en que se enseñan. Sin
+    máscaras al día no hay nada de eso, y se dice."""
+
+    version: str
+    masks_state: MaskState
+    masks: MaskSet | None
+    start: np.ndarray | None
+    area: np.ndarray | None
+    crown: np.ndarray | None
+    hold: np.ndarray | None
+    floors: FloorMap | None
+    conserve: tuple[ConserveZone, ...]
+    corridors: CorridorMap | None
+    notices: tuple[Notice, ...]
+
+    def lines(self, language: str = "es") -> tuple[str, ...]:
+        """Todo lo que dice la vista previa, línea a línea, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices)
+
+    def warnings(self, language: str = "es") -> tuple[str, ...]:
+        """Solo los avisos, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices
+                     if notice.severity == "warning")
+
+
+def _features(project: StoreProject, name: str) -> FeatureLayer:
+    """La capa de entidades ``name`` del proyecto (solo lee); ``ValueError`` si no es una capa de
+    entidades (``gis_fea_``)."""
+    layer = load_features(project, name)
+    if not isinstance(layer, FeatureLayer):
+        raise ValueError(f"«{name}» no es una capa de entidades del proyecto (gis_fea_)")
+    return layer
+
+
+def _conserve_mask(project: StoreProject, masks: MaskSet, zone: Zone) -> np.ndarray:
+    """Las celdas de una zona a conservar: una restricción de la 012 o una capa de polígonos."""
+    kind = ZoneKind(zone.kind)
+    if kind not in (ZoneKind.CONSTRAINT, ZoneKind.LAYER) or not zone.name:
+        raise ValueError(f"una zona a conservar es una restricción o una capa con su nombre, no "
+                         f"{zone!r}")
+    if kind is ZoneKind.CONSTRAINT:
+        return constraint_cells(masks, zone.name)
+    return layer_cells(project, zone.name, masks.grid)
+
+
+def _cells(mask: np.ndarray, cell_area: float) -> dict[str, object]:
+    cells = int(np.count_nonzero(mask))
+    return {"cells": cells, "area": cells * cell_area}
+
+
+def _quarry_notices(ring_cells: int, area: np.ndarray, crown: np.ndarray, hold: np.ndarray,
+                    floors: FloorMap | None, conserve: tuple[ConserveZone, ...],
+                    corridors: CorridorMap | None, cell_area: float) -> list[Notice]:
+    """Las notas de las piezas de la cantera, en el orden en que se enseñan."""
+    cells = int(np.count_nonzero(area))
+    found = [
+        Notice("des.quarry_preview_area", {"cells": cells, "area": cells * cell_area,
+                                           "hectares": cells * cell_area / _HECTARE_M2}),
+        Notice("des.quarry_preview_crown", {"ring": ring_cells, **_cells(crown, cell_area)}),
+        Notice("des.quarry_preview_hold", _cells(hold, cell_area)),
+    ]
+    if floors is not None:
+        levels = floors.levels or (float("nan"),)
+        found.append(Notice("des.quarry_preview_floors", {
+            "layer": floors.layer, "field": floors.field, "polygons": len(floors.fids),
+            "cells": sum(floors.cells), "area": floors.area_m2, "low": min(levels),
+            "high": max(levels)}))
+    if conserve:
+        union = np.zeros(area.shape, dtype=bool)
+        for zone in conserve:
+            union |= zone.mask
+        found.append(Notice("des.quarry_preview_ceilings", {
+            "zones": tuple(zone.name for zone in conserve), **_cells(union, cell_area)}))
+    if corridors is not None:
+        found.append(Notice("des.quarry_preview_corridors", {
+            "layer": corridors.floors.layer, "corridors": len(corridors.floors.fids),
+            "cells": sum(corridors.floors.cells), "area": corridors.floors.area_m2,
+            "length": float(sum(corridors.axes_m))}))
+    return found
+
+
+def _quarry_warnings(start: np.ndarray, floors: FloorMap | None,
+                     conserve: tuple[ConserveZone, ...], corridors: CorridorMap | None,
+                     cell_area: float) -> list[Notice]:
+    """Los avisos que el cálculo dará de las capas, para verlos antes: los fondos por encima del
+    terreno (RF-014-05), las zonas a conservar sin dato de terreno (RF-014-07) y los corredores
+    más largos que su eje más su ancho (RF-014-10)."""
+    from .quarry import floors_above_terrain  # al usarlo: quarry → report → preview
+
+    found = []
+    if floors is not None:
+        above = floors_above_terrain(floors, start)
+        if above.cells:
+            found.append(Notice("des.floor_above_terrain", {"area": above.area_m2}))
+    blank = ~np.isfinite(start)
+    for zone in conserve:
+        nodata = int(np.count_nonzero(zone.mask & blank))
+        if nodata:
+            found.append(Notice("des.conserve_nodata", {"zone": zone.name,
+                                                        "area": nodata * cell_area}))
+    if corridors is not None:
+        for fid, axis, length, width in zip(corridors.floors.fids, corridors.axes_m,
+                                            corridors.lengths_m, corridors.widths_m,
+                                            strict=True):
+            if length > axis + width:
+                found.append(Notice("des.corridor_too_long", {
+                    "corridor": fid, "length": length, "axis": axis, "width": width}))
+    return found
+
+
+def _quarry_units(project: StoreProject, request: QuarryRequest, version_uid: str,
+                  ring_cells: int) -> Generator[None, None, QuarryPreview]:
+    from . import quarry  # al usarlo: quarry → report → preview (Notice)
+
+    state, _pending = access.mask_state(project, version_uid)
+    with project.read() as conn:
+        version = versions_read.version(conn, version_uid)
+    assert version is not None  # mask_state ya lo comprobó
+    yield
+    if state is not MaskState.CURRENT:
+        code = ("des.preview_masks_missing" if state is MaskState.MISSING
+                else "des.preview_masks_stale")
+        return QuarryPreview(version.code, state, None, None, None, None, None, None, (), None,
+                             (Notice(code, {"version": version.code}),))
+    masks: MaskSet = yield from access.load_masks_steps(project, version.uid)
+    start = read_surface(project, request.start, version_uid=version.uid,
+                         expect=project_frame(project), role="superficie de partida").values
+    yield
+    geometry = masks.grid
+    area = quarry.excavation_area(masks, start, version=version.code)
+    crown = quarry.crown_ring(area, start, ring_cells)
+    hold = quarry.hold_zones(masks)
+    yield
+    floors = None
+    if request.floors is not None:
+        floors = quarry.floor_map(_features(project, request.floors.layer), request.floors, start,
+                                  geometry)
+        yield
+    conserve = []
+    for zone in request.conserve:
+        assert zone.name is not None  # _conserve_mask lo comprueba
+        conserve.append(quarry.ConserveZone(zone.name, _conserve_mask(project, masks, zone)))
+        yield
+    corridors = None
+    if request.corridors is not None:
+        corridors = quarry.corridor_cells(_features(project, request.corridors.layer),
+                                          request.corridors, geometry)
+        yield
+    cell_area = geometry.cell_area
+    zones = tuple(conserve)
+    notices = [Notice("des.preview_masks_current", {"version": version.code}),
+               *_quarry_notices(ring_cells, area, crown, hold, floors, zones, corridors,
+                                cell_area),
+               *_quarry_warnings(start, floors, zones, corridors, cell_area)]
+    return QuarryPreview(version.code, state, masks, start, area, crown, hold, floors, zones,
+                         corridors, tuple(notices))
+
+
+def quarry_summarize_steps(project: StoreProject, request: QuarryRequest, version_uid: str, *,
+                           ring_cells: int, budget_s: float = STEP_BUDGET_S
+                           ) -> Iterator[Progress]:
+    """El :class:`QuarryPreview` de ``request`` (su superficie de partida, sus fondos, sus zonas a
+    conservar y sus corredores) para la versión activa ``version_uid`` (uid o código), por pasos
+    de ``budget_s`` como mucho: el último ``Progress`` lleva el resumen (RF-014-04). ``ring_cells``
+    es el ancho del anillo de coronación (``des.quarry.crown_ring_cells``, el valor que resuelve
+    quien llama, como lo leerá la operación). Solo lee: no compila las máscaras que falten ni
+    escribe nada en el proyecto. Rechaza (al avanzar) lo que rechazan el recinto vacío
+    (``des.quarry_area_empty``), el anillo fuera de rango, los fondos (``floor_map``) y los
+    corredores (``corridor_cells``); unas máscaras que no están al día no son un error: se dicen
+    en el resumen."""
+    return pace_progress(_quarry_units(project, request, version_uid, ring_cells), budget_s,
+                         phase="preview", running="Preparando la vista previa…",
+                         finished="Vista previa lista", total=10)

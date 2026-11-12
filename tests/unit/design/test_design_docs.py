@@ -135,6 +135,8 @@ PENDING_014_API = frozenset({
     "excavation_area_inputs", "excavation_area_settings", "excavation_area_start",
     "PreparedArea", "compute_area_steps", "prepare_area_units", "prepare_excavation_area",
     "excavation_area_run",
+    # T12: design.preview (el resumen de la vista previa de la cantera).
+    "QuarryPreview", "quarry_summarize_steps",
 })
 # Los módulos nuevos de la 014 que aún no tienen fila en la ficha (la T36 se la da y vacía esto).
 PENDING_014_MODULES = frozenset({

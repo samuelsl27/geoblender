@@ -590,6 +590,47 @@ CATALOG: tuple[Message, ...] = (
         "La capa «{layer}» no tiene el campo numérico «{value}»: elija uno de sus campos "
         "({fields}); no se calcula nada.",
     ),
+    # Lo que dice la vista previa de la cantera (RF-014-04; T12): notas, nunca se lanzan --------
+    Message(
+        "des.quarry_preview_area",
+        "Excavation area: {cells} cells ({area} m², {hectares} ha).",
+        "Recinto excavable: {cells} celdas ({area} m², {hectares} ha).",
+        "note",
+    ),
+    Message(
+        "des.quarry_preview_crown",
+        "Crown: ring of {ring} cells outside the excavation area, {cells} cells ({area} m²).",
+        "Coronación: anillo de {ring} celdas fuera del recinto, {cells} celdas ({area} m²).",
+        "note",
+    ),
+    Message(
+        "des.quarry_preview_hold",
+        "Zones to hold (untouchable and no cut): {cells} cells ({area} m²).",
+        "Zonas a sostener (intocables y sin corte): {cells} celdas ({area} m²).",
+        "note",
+    ),
+    Message(
+        "des.quarry_preview_floors",
+        "Floors of «{layer}» («{field}»): {polygons} polygons, {cells} cells ({area} m²), "
+        "elevations {low} to {high} m.",
+        "Fondos de «{layer}» («{field}»): {polygons} polígonos, {cells} celdas ({area} m²), "
+        "cotas {low} a {high} m.",
+        "note",
+    ),
+    Message(
+        "des.quarry_preview_ceilings",
+        "Zones to conserve, which seed the conservation ceilings ({zones}): {cells} cells "
+        "({area} m²).",
+        "Zonas a conservar, que siembran los techos de conservación ({zones}): {cells} celdas "
+        "({area} m²).",
+        "note",
+    ),
+    Message(
+        "des.quarry_preview_corridors",
+        "Corridors of «{layer}»: {corridors}, {cells} cells ({area} m²), {length} m of axis.",
+        "Corredores de «{layer}»: {corridors}, {cells} celdas ({area} m²), {length} m de eje.",
+        "note",
+    ),
     # Las dos superficies y «explotación hasta la final» (RF-014-14, RF-014-17) ----------------
     Message(
         "des.quarry_order_broken",
