@@ -61,14 +61,23 @@
   al escalonado de la 013 como ancla en rejilla (D-18 de la 013): las bermas de cada muro quedan en
   ``fondo + k·h``.
 
-Las demás piezas de la cantera (las dos superficies) llegan con sus tareas. Python puro
+- :func:`join_floors` (T13; RF-014-06, RF-014-09; A4, A6): los fondos y los corredores en un solo
+  :class:`FloorMap` (un corredor es un polígono de fondo), con el rechazo ``des.floor_overlap`` si un
+  corredor pisa un fondo.
+- :func:`side_steps` (T13; RF-014-01 a RF-014-11; A1 a A7 y A8 por lado): **un lado** de la cantera
+  (:class:`SideJob` → :class:`SideOutcome`), el escalonado en corte de la 013
+  (``pipeline.envelope_compute_steps`` y ``pipeline.design_compute_steps``) con las semillas
+  «coronación y zonas a sostener» (o las de la 013), los fondos y los corredores, el techo de
+  conservación y el ancla del lado (la del perfil, una rejilla o «al fondo de cada muro»).
+
+Las demás piezas de la cantera (las dos superficies juntas) llegan con sus tareas. Python puro
 con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no escribe nada.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Generator, Iterator, Sequence
+from collections.abc import Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 
@@ -96,8 +105,34 @@ from .envelopes import (
 )
 from .grids import _label_units, _nearest_units, dilate_square
 from .messages import DesignError, render
-from .model import CorridorFields, DesignRequest, Direction, EnvelopeRequest, LayerField, Metric
+from .model import (
+    AnchorMode,
+    BenchSense,
+    CorridorFields,
+    DesignRequest,
+    Direction,
+    EnvelopeRequest,
+    LayerField,
+    Metric,
+    QuarryRequest,
+    SeedKind,
+    SeedSource,
+    SlopeMode,
+    Surface,
+)
 from .params import CONSERVE_SLOPE, CROWN_RING, check_quarry_param
+from .pipeline import (
+    DesignJob,
+    DesignOutcome,
+    EnvelopeJob,
+    EnvelopeOutcome,
+    bench_profiles,
+    design_compute_steps,
+    envelope_compute_steps,
+    envelope_slope,
+    forward,
+    imposed_from,
+)
 from .report import moved_cells
 from .seeds import DomainSet, SeedSet, collect_seeds, domain_of, pace_progress
 from .zones import _paint, _polygon_spans
@@ -108,6 +143,7 @@ __all__ = [
     "CEILING_NAME",
     "FLOOR_LEVEL_MARGIN_M",
     "HOLD_TYPES",
+    "SIDE_NAMES",
     "AreaOutcome",
     "AreaPart",
     "ConservationCeiling",
@@ -119,6 +155,8 @@ __all__ = [
     "FloorMap",
     "FloorsAbove",
     "SeedGroup",
+    "SideJob",
+    "SideOutcome",
     "anchored_request",
     "apply_ceiling",
     "area_outcome",
@@ -135,7 +173,9 @@ __all__ = [
     "floor_map",
     "floors_above_terrain",
     "hold_zones",
+    "join_floors",
     "outside_crown",
+    "side_steps",
     "with_floors",
 ]
 
@@ -534,11 +574,20 @@ def with_floors(seeds: SeedSet, floors: FloorMap) -> SeedSet:
     descendente de esta unión). Un :class:`~.seeds.SeedSet` nuevo con su misma geometría, su
     dominio y sus celdas sin cota, contado de nuevo; las entradas no se modifican. ``ValueError``
     si el mapa no es de la rejilla de las semillas."""
+    _same_shape("el mapa de fondos", floors.grid, np.shape(seeds.grid))
+    return _with_cells(seeds, floors.grid)
+
+
+def _with_cells(seeds: SeedSet, levels: np.ndarray) -> SeedSet:
+    """Las semillas ``seeds`` y las celdas de ``levels`` con cota finita; donde coinciden, la más
+    alta. Un :class:`~.seeds.SeedSet` nuevo con la geometría, el dominio y las celdas sin cota de
+    ``seeds``."""
     values = np.asarray(seeds.grid, dtype=np.float64)
-    _same_shape("el mapa de fondos", floors.grid, values.shape)
-    inside = np.isfinite(floors.grid)
+    extra = np.asarray(levels, dtype=np.float64)
+    with np.errstate(invalid="ignore"):
+        inside = np.isfinite(extra)
     joined = np.where(np.isfinite(values), values, -np.inf)
-    joined = np.where(inside, np.fmax(joined, floors.grid), joined)
+    joined = np.where(inside, np.fmax(joined, extra), joined)
     joined[np.isneginf(joined)] = np.inf
     found = collect_seeds(joined, None, seeds.domain, seeds.geometry)
     return replace(found, nodata_cells=seeds.nodata_cells)
@@ -877,12 +926,19 @@ def apply_ceiling(surface: np.ndarray, start: np.ndarray,
     values = np.asarray(start, dtype=np.float64)
     _same_shape("la superficie de diseño", design, ceiling.grid.shape)
     _same_shape("la superficie de partida", values, ceiling.grid.shape)
+    held = _held(values, ceiling)
     with np.errstate(invalid="ignore"):
-        keep = ~ceiling.zone & np.isfinite(values) & (values > ceiling.grid)
         np.minimum(design, np.fmax(ceiling.grid, values), out=design)
-    design[keep] = values[keep]
-    design[ceiling.zone] = values[ceiling.zone]
+    design[held] = values[held]
     return design
+
+
+def _held(start: np.ndarray, ceiling: ConservationCeiling) -> np.ndarray:
+    """Las celdas que el techo deja como el terreno ``start``: la zona a conservar y, fuera, las
+    que tienen ``z > U`` (``KEEP``). Una máscara nueva."""
+    with np.errstate(invalid="ignore"):
+        keep = ~ceiling.zone & np.isfinite(start) & (start > ceiling.grid)
+    return keep | ceiling.zone
 
 
 @dataclass(frozen=True, slots=True)
@@ -1033,3 +1089,207 @@ def anchored_request(request: DesignRequest, anchors: FloorAnchors) -> DesignReq
     (la que citan sus mensajes); el ``DesignJob`` lleva ``anchors = anchors.grid``. Una petición
     nueva; ``request`` no cambia."""
     return replace(request, anchor_grid=anchors.label)
+
+
+# --- Un lado de la cantera (T13; A1 a A7, A8 por lado) ---------------------------------------------
+
+SIDE_NAMES = MappingProxyType({Surface.FINAL: "superficie final",
+                               Surface.EXPLOITATION: "superficie de explotación"})
+"""El nombre de cada superficie en los mensajes: la envolvente y el escalonado de un lado se
+llaman «<cantera> (<superficie>)»."""
+
+
+def join_floors(floors: FloorMap | None, corridors: CorridorMap | None) -> FloorMap | None:
+    """Los fondos ``floors`` (:func:`floor_map`) y los corredores ``corridors``
+    (:func:`corridor_cells`) en un solo :class:`FloorMap` (A4, A6: un corredor es un polígono de
+    fondo, RF-014-09): la cota de cada celda de los dos, los polígonos de los fondos y después los
+    corredores (su ``owner``, desplazado por el número de fondos), la capa «<fondos> y
+    <corredores>» y el campo de los fondos. Sin corredores, ``floors`` tal cual; sin fondos, el
+    mapa de los corredores; sin ninguno, ``None``. Si un corredor pisa un fondo es
+    ``des.floor_overlap`` (RF-014-06: no se elige cota), con el fondo, el corredor y sus celdas
+    comunes del primer par en el orden de las capas. ``ValueError`` si los mapas no son de la misma
+    rejilla. Ninguna entrada se modifica."""
+    if corridors is None:
+        return floors
+    lane = corridors.floors
+    if floors is None:
+        return lane
+    _same_shape("el mapa de los corredores", lane.grid, floors.grid.shape)
+    common = (floors.owner > 0) & (lane.owner > 0)
+    if common.any():
+        first = int(floors.owner[common].min())
+        pair = common & (floors.owner == first)
+        other = int(lane.owner[pair].min())
+        raise DesignError("des.floor_overlap",
+                          obj=f"Capas «{floors.layer}» y «{lane.layer}»",
+                          field=_GEOMETRY_FIELD, value=floors.fids[first - 1], layer=floors.layer,
+                          other=f"{lane.fids[other - 1]} (corredor de la capa «{lane.layer}»)",
+                          cells=int(np.count_nonzero(pair & (lane.owner == other))))
+    on_lane = lane.owner > 0
+    owner = np.where(on_lane, lane.owner + len(floors.fids), floors.owner).astype(np.int32)
+    grid = np.where(on_lane, lane.grid, floors.grid)
+    return FloorMap(f"{floors.layer} y {lane.layer}", floors.field, grid, owner,
+                    floors.fids + lane.fids, floors.levels + lane.levels,
+                    floors.cells + lane.cells, floors.cell_area_m2)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _HeldMasks:
+    """Las máscaras de la 012 sin corte admitido en las celdas que retiene el techo (A5): así la
+    composición de la 013 las deja como el terreno y su informe y sus bermas son los de la
+    superficie con el techo."""
+
+    masks: object
+    held: np.ndarray
+
+    def cut_allowed(self) -> np.ndarray:
+        return self.masks.cut_allowed() & ~self.held  # type: ignore[attr-defined]
+
+    def fill_allowed(self) -> np.ndarray:
+        return self.masks.fill_allowed()  # type: ignore[attr-defined]
+
+    def fill_strip(self) -> np.ndarray:
+        return self.masks.fill_strip()  # type: ignore[attr-defined]
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class SideJob:
+    """Lo que necesita calcular un lado de la cantera, ya leído (como ``DesignJob`` de la 013): la
+    petición (``request``) y la superficie (``surface``: su :class:`~.model.QuarrySide`), la de
+    partida ``start`` (m, float64), las ``masks`` de la versión (un ``MaskSet``), el ``domain`` de
+    trabajo (el recinto de :func:`excavation_area` con las etiquetas de sector, ``domain_of``), los
+    parámetros (``values``: clave → valor, los perfiles y los taludes impuestos), el anillo de
+    coronación (``ring_cells``, el valor de ``des.quarry.crown_ring_cells``), el espesor mínimo, la
+    tolerancia de cara y el umbral de aviso de la 013; las semillas de la 013 (``seeds``) si el lado
+    no siembra la coronación, y solo entonces; los fondos y corredores (``floors``,
+    :func:`join_floors`), el techo (``ceiling``, :func:`conservation_ceiling_steps`), la rejilla de
+    anclas leída (``anchors``) con el ancla en rejilla, y solo con ella, y los sectores con la
+    búsqueda pendiente (``pending``)."""
+
+    request: QuarryRequest
+    surface: Surface | str
+    start: np.ndarray
+    masks: MaskSet
+    domain: DomainSet
+    values: Mapping[str, object]
+    ring_cells: int
+    min_thickness_m: float
+    face_tolerance_deg: float
+    warning_ratio: float
+    seeds: SeedSet | None = None
+    floors: FloorMap | None = None
+    ceiling: ConservationCeiling | None = None
+    anchors: np.ndarray | None = None
+    pending: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "surface", Surface(self.surface))
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class SideOutcome:
+    """Un lado de la cantera calculado: su ``surface``; las semillas base (``seeds``: las de la
+    coronación y las zonas a sostener, o las de la 013) y las de su envolvente (``envelope_seeds``:
+    con los fondos, los corredores y lo que retiene el techo); lo que retiene el techo (``held``: la
+    zona a conservar y las celdas con ``z > U``; ``None`` sin techo); la rejilla de anclas «al fondo
+    de cada muro» (``anchors``; ``None`` con otra ancla); la envolvente (``envelope``) y el
+    escalonado (``design``) de la 013."""
+
+    surface: Surface
+    seeds: SeedSet
+    envelope_seeds: SeedSet
+    held: np.ndarray | None
+    anchors: FloorAnchors | None
+    envelope: EnvelopeOutcome
+    design: DesignOutcome
+
+    @property
+    def grid(self) -> np.ndarray:
+        """La superficie del lado (m, float64): la de diseño del escalonado."""
+        return self.design.design
+
+
+def side_steps(job: SideJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**Un lado** de la cantera (A8 por lado, con A1 a A7): el escalonado en corte de la 013 de la
+    superficie ``job.surface`` por pasos de ``budget_s`` como mucho (los de
+    ``envelope_compute_steps`` y ``design_compute_steps``, §5.3.2); el último ``Progress`` (fase
+    ``side``) lleva el :class:`SideOutcome`. En orden:
+
+    1. las semillas: «coronación y zonas a sostener» del recinto (:func:`crown_seeds`, RF-014-02) o
+       las de la 013 que se dan;
+    2. con ellas, los fondos y corredores (:func:`with_floors`: ``máx(ENV↓(s), ENV↓(F))``,
+       RF-014-05, RF-014-09) y, con techo, el terreno en las celdas que retiene (la zona a conservar
+       y ``z > U``): de ellas bajan las paredes como de las zonas a sostener;
+    3. la envolvente descendente de la 013 con el talud general del perfil del lado por sectores
+       (``envelope_slope``) y su métrica, recortada al recinto (RF-014-01);
+    4. el ancla: la del perfil, la rejilla leída o «al fondo de cada muro» (:func:`floor_anchor_steps`
+       de ``floors``, RF-014-11; sin fondos, sin cota: ``des.anchor_nodata``);
+    5. el escalonado en corte de la 013 con los perfiles del lado, compuesto con las máscaras sin
+       corte en las celdas que retiene el techo: la superficie cumple las tres reglas de
+       :func:`apply_ceiling` (RF-014-07; en corte, nunca pasa de ``z``).
+
+    ``ValueError`` (error del programa) al llamar si las semillas no casan con el lado (dadas con
+    «coronación» o sin ellas con las de la 013), si hay rejilla de anclas sin el ancla en rejilla o
+    al revés, o si la partida o el dominio no son de la rejilla de las máscaras. Al avanzar, los
+    rechazos de la 013 (perfiles, sectores, anclas). Ninguna entrada se modifica y no se escribe
+    nada; cerrar el generador a mitad no deja nada."""
+    side = job.request.side(job.surface)
+    if side.crown_seeds != (job.seeds is None):
+        raise ValueError("las semillas de la 013 se dan con un lado que no siembra la coronación, "
+                         "y solo entonces (RF-014-02)")
+    if (AnchorMode(side.anchor) is AnchorMode.GRID) != (job.anchors is not None):
+        raise ValueError("la rejilla de anclas leída va con el ancla en rejilla y solo con ella "
+                         "(D-18 de la 013)")
+    shape = job.masks.grid.shape
+    _same_shape("la superficie de partida", np.asarray(job.start), shape)
+    _same_shape("el dominio de trabajo", job.domain.mask, shape)
+    return _side_work(job, budget_s)
+
+
+def _side_work(job: SideJob, budget_s: float) -> Generator[Progress, None, None]:
+    side = job.request.side(job.surface)
+    surface = Surface(job.surface)
+    geometry = job.masks.grid
+    start = np.asarray(job.start, dtype=np.float64)
+    label = f"{job.request.name} ({SIDE_NAMES[surface]})"
+    yield Progress("side", 0, 1, f"Preparando la {SIDE_NAMES[surface]}…")
+    base = job.seeds
+    if base is None:
+        base = crown_seeds(job.domain.mask, start, job.masks, job.ring_cells, domain=job.domain)
+    seeds = base if job.floors is None else with_floors(base, job.floors)
+    held = None
+    if job.ceiling is not None:
+        held = _held(start, job.ceiling)
+        seeds = _with_cells(seeds, np.where(held, start, np.nan))
+    source = side.seeds or SeedSource(SeedKind.SURFACE, surface=job.request.start)
+    envelope_request = EnvelopeRequest(label, Direction.DOWN, source,
+                                       slope_mode=SlopeMode.SECTORS, metric=side.metric,
+                                       base_profile=side.base_profile,
+                                       sector_profiles=side.sector_profiles)
+    sectors, labels = job.domain.sectors, job.domain.labels
+    slope = envelope_slope(envelope_request, sectors, labels, job.values)
+    envelope: EnvelopeOutcome = yield from forward(envelope_compute_steps(
+        EnvelopeJob(envelope_request, seeds, slope, start, job.min_thickness_m),
+        budget_s=budget_s))
+    anchors: FloorAnchors | None = None
+    anchor_grid, anchor_name = job.anchors, side.anchor_grid
+    if AnchorMode(side.anchor) is AnchorMode.NEAREST_FLOOR:
+        if job.floors is None:
+            anchors = FloorAnchors(_NO_VALUE, np.full(geometry.shape, np.nan),
+                                   np.full(geometry.shape, np.inf))
+        else:
+            anchors = yield from forward(floor_anchor_steps(job.floors, geometry,
+                                                            budget_s=budget_s))
+        anchor_grid, anchor_name = anchors.grid, anchors.label
+    design_request = DesignRequest(label, label, BenchSense.CUT, side.base_profile,
+                                   side.sector_profiles, anchor_grid=anchor_name)
+    profiles = bench_profiles(job.values, [side.base_profile, *(
+        profile for _sector, profile in design_request.sector_profiles)])
+    masks: object = job.masks if held is None else _HeldMasks(job.masks, held)
+    design: DesignOutcome = yield from forward(design_compute_steps(DesignJob(
+        design_request, geometry, start, envelope.grid, masks, sectors, labels,
+        imposed_from(job.values, sectors), profiles, anchor_grid, job.min_thickness_m,
+        job.face_tolerance_deg, job.warning_ratio, pending=job.pending), budget_s=budget_s))
+    outcome = SideOutcome(surface, base, seeds, held, anchors, envelope, design)
+    yield Progress("side", 1, 1, f"{SIDE_NAMES[surface].capitalize()} de «{job.request.name}» "
+                   "calculada", result=outcome)
