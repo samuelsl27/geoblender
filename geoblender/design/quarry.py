@@ -75,9 +75,17 @@
   :class:`OrderedSurfaces`: «final primero» sube la explotación a la final, «explotación primero»
   baja la final a la explotación) y el invariante ``final ≤ explotación ≤ terreno`` a 1 mm
   (:func:`check_order`; si fallara, un error del programa y no se crea nada).
+- :func:`classify_steps` (T17; RF-014-15, RF-014-16; A8): **la clasificación** de las dos
+  superficies en el dominio de trabajo (:class:`Classification`) con ``Δ = explotación − final``
+  y el espesor mínimo ``e`` de la 012: sin diferencia (``Δ ≤ e``), relleno (``Δ > e`` en una zona
+  de restauración por relleno, la capa de D-11) o desdoblado (``Δ > e`` fuera de ellas), con sus
+  volúmenes (``Σ Δ · área de celda``, la fórmula celda a celda de la cubicación de la 011), la
+  excavación de la explotación, sus áreas y las cotas mínima y máxima de cada superficie, en total
+  y por sector (:class:`ClassTotals`); :func:`classification_figures`, sus cifras CALCULADO.
+  :func:`quarry_steps` la da con las dos superficies.
 
-La clasificación, las cifras y «explotación hasta la final» llegan con sus tareas. Python puro
-con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no escribe nada.
+«Explotación hasta la final» llega con su tarea. Python puro con numpy (nivel 8): no importa
+``reserves`` ni ``bl``; no escribe nada.
 """
 
 from __future__ import annotations
@@ -114,6 +122,7 @@ from .messages import DesignError, render
 from .model import (
     AnchorMode,
     BenchSense,
+    CellClass,
     CorridorFields,
     DesignRequest,
     Direction,
@@ -141,13 +150,15 @@ from .pipeline import (
     imposed_from,
 )
 from .report import moved_cells
-from .seeds import DomainSet, SeedSet, collect_seeds, domain_of, pace_progress
+from .seeds import DomainSet, SectorRef, SeedSet, collect_seeds, domain_of, pace_progress
 from .zones import _paint, _polygon_spans
 
 __all__ = [
     "ANCHOR_LABEL",
     "AREA_PART_LABELS",
     "CEILING_NAME",
+    "CLASS_CELLS_PER_UNIT",
+    "CLASS_NAMES",
     "FLOOR_LEVEL_MARGIN_M",
     "HOLD_TYPES",
     "ORDER_NAMES",
@@ -155,6 +166,8 @@ __all__ = [
     "SIDE_NAMES",
     "AreaOutcome",
     "AreaPart",
+    "ClassTotals",
+    "Classification",
     "ConservationCeiling",
     "ConserveMoved",
     "ConservePart",
@@ -174,6 +187,8 @@ __all__ = [
     "area_outcome",
     "area_parts",
     "check_order",
+    "classification_figures",
+    "classify_steps",
     "conservation_ceiling_steps",
     "conserve_moved",
     "corridor_cells",
@@ -1403,6 +1418,325 @@ def check_order(name: str, final: np.ndarray, exploitation: np.ndarray, start: n
                       terrain=_level(float(base[row, col])))
 
 
+# --- La clasificación y las cifras (T17; A8) ------------------------------------------------------
+
+CLASS_NAMES = MappingProxyType({CellClass.NONE: "sin diferencia",
+                                CellClass.UNSPLIT: "desdoblado",
+                                CellClass.FILL: "relleno"})
+"""El nombre de cada clase de la clasificación en los mensajes y en la leyenda (RF-014-15)."""
+CLASS_CELLS_PER_UNIT = 200_000
+"""Las celdas de una unidad de trabajo de la clasificación (una banda de filas)."""
+_HECTARE_M2 = 10_000.0
+
+
+@dataclass(frozen=True, slots=True)
+class ClassTotals:
+    """Las cifras de las dos superficies en un reparto (RF-014-15, RF-014-16): el total
+    (``sector`` ``None``) o un sector (:class:`~.seeds.SectorRef`). ``cells``, las celdas del
+    dominio de trabajo del reparto, y ``nodata_cells``, las de ellas sin dato en alguna de las dos
+    superficies (sin clase); la **excavación de la explotación** (``exp_cut_m3``, m³, y
+    ``exp_cut_cells``: las celdas con ``terreno − explotación > e``, con todo su espesor); el
+    **desdoblado** y el **relleno** (``unsplit_m3`` y ``fill_m3``: ``Σ Δ · área de celda`` de sus
+    celdas, y sus celdas); las celdas **sin diferencia** (``none_cells``); las cotas mínima y máxima
+    de cada superficie en las celdas del reparto con dato (m; ``None`` sin ninguna) y el área de
+    una celda (m²)."""
+
+    sector: SectorRef | None
+    cells: int
+    nodata_cells: int
+    exp_cut_m3: float
+    exp_cut_cells: int
+    unsplit_m3: float
+    unsplit_cells: int
+    fill_m3: float
+    fill_cells: int
+    none_cells: int
+    final_min_m: float | None
+    final_max_m: float | None
+    exploitation_min_m: float | None
+    exploitation_max_m: float | None
+    cell_area_m2: float
+
+    def cells_of(self, kind: CellClass | str) -> int:
+        """Las celdas de la clase ``kind``."""
+        kind = CellClass(kind)
+        if kind is CellClass.UNSPLIT:
+            return self.unsplit_cells
+        if kind is CellClass.FILL:
+            return self.fill_cells
+        return self.none_cells
+
+    def volume_m3(self, kind: CellClass | str) -> float:
+        """El volumen de la clase ``kind`` (m³); sin diferencia no tiene (lo que no pasa del
+        espesor mínimo no cuenta, como en la cubicación de la 011)."""
+        kind = CellClass(kind)
+        if kind is CellClass.UNSPLIT:
+            return self.unsplit_m3
+        if kind is CellClass.FILL:
+            return self.fill_m3
+        return 0.0
+
+    def area_m2(self, kind: CellClass | str) -> float:
+        """El área de la clase ``kind`` (m²): sus celdas por el área de celda."""
+        return self.cells_of(kind) * self.cell_area_m2
+
+    def area_ha(self, kind: CellClass | str) -> float:
+        """El área de la clase ``kind`` (ha)."""
+        return self.area_m2(kind) / _HECTARE_M2
+
+    @property
+    def exp_cut_area_m2(self) -> float:
+        """El área de la excavación de la explotación (m²)."""
+        return self.exp_cut_cells * self.cell_area_m2
+
+    @property
+    def exp_cut_area_ha(self) -> float:
+        """El área de la excavación de la explotación (ha)."""
+        return self.exp_cut_area_m2 / _HECTARE_M2
+
+    def levels(self, surface: Surface | str) -> tuple[float, float] | None:
+        """Las cotas mínima y máxima de la superficie ``surface`` (m), o ``None`` sin dato."""
+        if Surface(surface) is Surface.FINAL:
+            low, high = self.final_min_m, self.final_max_m
+        else:
+            low, high = self.exploitation_min_m, self.exploitation_max_m
+        return None if low is None or high is None else (low, high)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Classification:
+    """La clasificación de las dos superficies (A8; RF-014-15): ``grid`` (float64, de la forma de
+    la rejilla), el código de la clase de cada celda del dominio de trabajo con dato en las dos
+    (``CellClass.code``: 0 sin diferencia, 1 desdoblado, 2 relleno; P-1) y sin dato (``NaN``) en
+    las demás; el espesor mínimo con que se hizo (m), el área de una celda (m²), el ``total`` y un
+    reparto por cada sector que toca el dominio (``sectors``, en el orden de los sectores; la
+    celdas del dominio de ningún sector cuentan solo en el total)."""
+
+    grid: np.ndarray
+    min_thickness_m: float
+    cell_area_m2: float
+    total: ClassTotals
+    sectors: tuple[ClassTotals, ...]
+
+    def sector(self, code: str) -> ClassTotals:
+        """El reparto del sector de código ``code``; ``KeyError`` si el dominio no lo toca."""
+        for item in self.sectors:
+            if item.sector is not None and item.sector.code == code:
+                return item
+        raise KeyError(code)
+
+
+def _min_thickness(value: object) -> float:
+    """El espesor mínimo (m): un número finito ≥ 0 (``ValueError`` si no)."""
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        number = math.nan
+    if not math.isfinite(number) or number < 0.0:
+        raise ValueError(f"el espesor mínimo es un número finito ≥ 0, no {value!r}")
+    return number
+
+
+def classify_steps(final: np.ndarray, exploitation: np.ndarray, start: np.ndarray,
+                   domain: DomainSet, geometry: Grid, min_thickness_m: float, *,
+                   fill_zones: np.ndarray | None = None, budget_s: float = STEP_BUDGET_S,
+                   cells_per_unit: int = CLASS_CELLS_PER_UNIT) -> Iterator[Progress]:
+    """**La clasificación** de las dos superficies ya ordenadas (A8; RF-014-15, RF-014-16) en
+    las celdas del dominio de trabajo ``domain`` (con sus etiquetas de sector), por pasos de
+    ``budget_s`` como mucho (una unidad por banda de ``cells_per_unit`` celdas); el último
+    ``Progress`` (fase ``classes``) lleva la :class:`Classification`. Con ``Δ = explotación −
+    final`` y ``e`` = ``min_thickness_m`` (el espesor mínimo de la 012, D-12):
+
+    - ``Δ ≤ e``, **sin diferencia** (también la final hasta 1 mm por encima, RF-014-14);
+    - ``Δ > e`` dentro de ``fill_zones`` (las zonas de restauración por relleno, la capa de D-11,
+      como máscara de la rejilla; ``None``, ninguna), **relleno**: la diferencia la cubre un
+      relleno;
+    - ``Δ > e`` fuera de ellas, **desdoblado**: se excava al cerrar.
+
+    Los volúmenes, ``Σ Δ · área de celda`` de las celdas de cada clase, y la excavación de la
+    explotación, ``Σ (terreno − explotación) · área de celda`` donde pasa de ``e``: la fórmula
+    celda a celda de la cubicación de la 011 (desmonte con todo su espesor donde pasa del umbral),
+    en total y por sector; y las cotas mínima y máxima de cada superficie en el dominio. Una celda
+    con un valor no finito en una de las dos superficies no tiene clase (``nodata_cells``).
+
+    ``ValueError`` (error del programa) al llamar si las rejillas, el dominio o las zonas no son de
+    la forma de ``geometry`` o el espesor no es un número finito ≥ 0; al avanzar, si la final pasa
+    de la explotación en más de :data:`ORDER_TOLERANCE_M` (las superficies no vienen de la regla
+    de orden). Ninguna entrada se modifica y no se escribe nada; cerrar el generador a mitad no
+    deja nada. No importa ``reserves``: la prueba compara con su cubicación."""
+    shape = geometry.shape
+    upper = np.asarray(final, dtype=np.float64)
+    lower = np.asarray(exploitation, dtype=np.float64)
+    base = np.asarray(start, dtype=np.float64)
+    for label, grid in (("la superficie final", upper), ("la superficie de explotación", lower),
+                        ("la superficie de partida", base),
+                        ("el dominio de trabajo", domain.mask),
+                        ("las etiquetas de sector", domain.labels)):
+        _same_shape(label, grid, shape)
+    zone = None
+    if fill_zones is not None:
+        zone = np.asarray(fill_zones, dtype=bool)
+        _same_shape("las zonas de restauración por relleno", zone, shape)
+    threshold = _min_thickness(min_thickness_m)
+    if isinstance(cells_per_unit, bool) or int(cells_per_unit) < 1:
+        raise ValueError(f"una unidad tiene al menos una celda, no {cells_per_unit!r}")
+    rows = max(1, int(cells_per_unit) // max(geometry.ncols, 1))
+    work = _class_units(upper, lower, base, domain, zone, threshold, geometry.cell_area, rows)
+    return pace_progress(work, budget_s, phase="classes",
+                         running="Clasificando las dos superficies…",
+                         finished="Las dos superficies, clasificadas",
+                         total=max(2, -(-geometry.nrows // rows) + 1))
+
+
+@dataclass(slots=True)
+class _ClassSums:
+    """Lo que se lleva sumado de la clasificación, por etiqueta de sector (la 0, ninguno)."""
+
+    size: int
+    exp_cut: list[np.ndarray]
+    unsplit: list[np.ndarray]
+    fill: list[np.ndarray]
+    counts: dict[str, np.ndarray]
+    lows: dict[Surface, np.ndarray]
+    highs: dict[Surface, np.ndarray]
+
+    @classmethod
+    def empty(cls, size: int) -> _ClassSums:
+        return cls(size, [], [], [], {key: np.zeros(size, np.int64) for key in
+                                      ("cells", "nodata", "exp_cut", "unsplit", "fill", "none")},
+                   {surface: np.full(size, np.inf) for surface in Surface},
+                   {surface: np.full(size, -np.inf) for surface in Surface})
+
+    def count(self, key: str, label: np.ndarray, mask: np.ndarray) -> None:
+        self.counts[key] += np.bincount(label[mask], minlength=self.size)
+
+    def add(self, target: list[np.ndarray], label: np.ndarray, mask: np.ndarray,
+            values: np.ndarray) -> None:
+        target.append(np.bincount(label[mask], weights=values[mask], minlength=self.size))
+
+    def levels(self, surface: Surface, label: np.ndarray, values: np.ndarray) -> None:
+        known = np.isfinite(values)
+        np.minimum.at(self.lows[surface], label[known], values[known])
+        np.maximum.at(self.highs[surface], label[known], values[known])
+
+    def totals(self, sector: SectorRef | None, labels: Sequence[int], cell_area: float
+               ) -> ClassTotals:
+        """El reparto de las etiquetas ``labels`` (todas, el total; una, un sector)."""
+        chosen = list(labels)
+
+        def volume(parts: list[np.ndarray]) -> float:
+            return math.fsum(float(value) for part in parts for value in part[chosen]) * cell_area
+
+        def count(key: str) -> int:
+            return int(self.counts[key][chosen].sum())
+
+        def level(values: np.ndarray, pick: str) -> float | None:
+            found = values[chosen]
+            found = found[np.isfinite(found)]
+            if not found.size:
+                return None
+            return float(found.min() if pick == "min" else found.max())
+
+        return ClassTotals(
+            sector, count("cells"), count("nodata"), volume(self.exp_cut), count("exp_cut"),
+            volume(self.unsplit), count("unsplit"), volume(self.fill), count("fill"),
+            count("none"), level(self.lows[Surface.FINAL], "min"),
+            level(self.highs[Surface.FINAL], "max"),
+            level(self.lows[Surface.EXPLOITATION], "min"),
+            level(self.highs[Surface.EXPLOITATION], "max"), cell_area)
+
+
+def _class_units(final: np.ndarray, exploitation: np.ndarray, start: np.ndarray,
+                 domain: DomainSet, zone: np.ndarray | None, threshold: float, cell_area: float,
+                 rows_per_unit: int) -> Generator[None, None, Classification]:
+    """Las unidades de :func:`classify_steps`: una por banda de ``rows_per_unit`` filas."""
+    nrows = start.shape[0]
+    sums = _ClassSums.empty(len(domain.sectors) + 1)
+    grid = np.full(start.shape, np.nan)
+    for first in range(0, nrows, rows_per_unit):
+        rows = slice(first, min(nrows, first + rows_per_unit))
+        inside = domain.mask[rows]
+        label = domain.labels[rows][inside].astype(np.intp)
+        upper, lower, base = final[rows][inside], exploitation[rows][inside], start[rows][inside]
+        valid = np.isfinite(upper) & np.isfinite(lower)
+        with np.errstate(invalid="ignore"):
+            delta = lower - upper
+            dug = base - lower
+        if bool(np.any(valid & (delta < -ORDER_TOLERANCE_M))):
+            raise ValueError("la superficie final queda más de 1 mm por encima de la de "
+                             "explotación: las superficies no vienen de la regla de orden "
+                             "(RF-014-14)")
+        moved = valid & (delta > threshold)
+        in_zone = np.zeros(moved.shape, bool) if zone is None else zone[rows][inside]
+        filled, unsplit = moved & in_zone, moved & ~in_zone
+        codes = np.where(filled, float(CellClass.FILL.code),
+                         np.where(unsplit, float(CellClass.UNSPLIT.code),
+                                  float(CellClass.NONE.code)))
+        codes[~valid] = np.nan
+        grid[rows][inside] = codes
+        cut = np.isfinite(base) & np.isfinite(lower) & (dug > threshold)
+        everything = np.ones(label.shape, bool)
+        sums.count("cells", label, everything)
+        sums.count("nodata", label, ~valid)
+        sums.count("exp_cut", label, cut)
+        sums.count("unsplit", label, unsplit)
+        sums.count("fill", label, filled)
+        sums.count("none", label, valid & ~moved)
+        sums.add(sums.exp_cut, label, cut, dug)
+        sums.add(sums.unsplit, label, unsplit, delta)
+        sums.add(sums.fill, label, filled, delta)
+        sums.levels(Surface.FINAL, label, upper)
+        sums.levels(Surface.EXPLOITATION, label, lower)
+        yield
+    sectors = tuple(sums.totals(sector, (index,), cell_area)
+                    for index, sector in enumerate(domain.sectors, start=1)
+                    if sums.counts["cells"][index] > 0)
+    total = sums.totals(None, range(sums.size), cell_area)
+    return Classification(grid, threshold, cell_area, total, sectors)
+
+
+def classification_figures(name: str, classes: Classification) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO de la clasificación ``classes`` de la cantera ``name`` (RF-014-16;
+    plan 014 §5.2.3), en el orden de ``provenance.TWO_SURFACES_FIGURES``, en total y por cada
+    sector con código (el perímetro como sector único es el total y no se repite): la excavación
+    de la explotación, el desdoblado y el relleno de restauración (m³), sus áreas (ha) y las cotas
+    mínima y máxima de cada superficie (m; con la superficie en su ámbito, y solo si tiene dato),
+    con el ámbito de ``provenance.quarry_figure_scope``. Lo que pasa a la explotación con
+    «explotación hasta la final» (``des.to_final_m3``) es de A9. Un valor no finito es un error
+    del programa (``ValueError``)."""
+    found: list[FigureSpec] = []
+    for item in (classes.total, *classes.sectors):
+        if item.sector is not None and not item.sector.code:
+            continue
+        sector = None if item.sector is None else item.sector.code
+        scope = provenance.quarry_figure_scope(name, sector=sector)
+        for key, value, unit in (
+                ("des.exp_cut_m3", item.exp_cut_m3, "m3"),
+                ("des.unsplit_m3", item.unsplit_m3, "m3"),
+                ("des.restoration_fill_m3", item.fill_m3, "m3"),
+                ("des.exp_cut_area_ha", item.exp_cut_area_ha, "ha"),
+                ("des.unsplit_area_ha", item.area_ha(CellClass.UNSPLIT), "ha"),
+                ("des.restoration_fill_area_ha", item.area_ha(CellClass.FILL), "ha")):
+            found.append(FigureSpec(key, _figure_value(key, value), unit, scope=scope))
+        for surface in Surface:
+            levels = item.levels(surface)
+            if levels is None:
+                continue
+            surface_scope = provenance.quarry_figure_scope(name, surface=surface, sector=sector)
+            for key, value in zip(("des.quarry_min_m", "des.quarry_max_m"), levels, strict=True):
+                found.append(FigureSpec(key, _figure_value(key, value), "m",
+                                        scope=surface_scope))
+    return tuple(found)
+
+
+def _figure_value(key: str, value: float) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"la cifra «{key}» no es un número finito: {value!r} (no se registra "
+                         "una cifra NaN ni infinita)")
+    return number
+
+
 def _by_surface[T](items: Mapping[Surface | str, T]) -> Mapping[Surface, T]:
     """``items`` con sus claves como :class:`~.model.Surface` (``ValueError`` si una no es una de
     las dos), en un mapa que no se puede cambiar."""
@@ -1418,8 +1752,10 @@ class QuarryJob:
     fondos y corredores ya juntos, el techo ya calculado y los sectores con la búsqueda
     pendiente: los fondos y el techo se calculan una vez para los dos), y lo de cada lado por su
     :class:`~.model.Surface`: las semillas de la 013 (``seeds``) del lado que no siembra la
-    coronación y la rejilla de anclas leída (``anchors``) del lado con el ancla en rejilla.
-    ``ValueError`` si una clave no es una de las dos superficies."""
+    coronación y la rejilla de anclas leída (``anchors``) del lado con el ancla en rejilla; y las
+    zonas de restauración por relleno de la clasificación (``fill_zones``: la capa de D-11 como
+    máscara de la rejilla; ``None``, ninguna). ``ValueError`` si una clave no es una de las dos
+    superficies."""
 
     request: QuarryRequest
     start: np.ndarray
@@ -1435,6 +1771,7 @@ class QuarryJob:
     ceiling: ConservationCeiling | None = None
     anchors: Mapping[Surface | str, np.ndarray] = MappingProxyType({})
     pending: tuple[str, ...] = ()
+    fill_zones: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "seeds", _by_surface(self.seeds))
@@ -1457,12 +1794,16 @@ class QuarryOutcome:
     diseño, cada lado tal como se calculó, antes de la regla de orden (``final`` y
     ``exploitation``, :class:`SideOutcome`: su envolvente, su escalonado, su informe y sus bermas
     de la 013), las dos superficies atadas por el orden y comprobadas (``ordered``,
-    :class:`OrderedSurfaces`) y el ``message`` de la operación."""
+    :class:`OrderedSurfaces`), su clasificación (``classes``, :class:`Classification`;
+    RF-014-15) y sus cifras CALCULADO (``figures``, :func:`classification_figures`; RF-014-16),
+    y el ``message`` de la operación."""
 
     order: Order
     final: SideOutcome
     exploitation: SideOutcome
     ordered: OrderedSurfaces
+    classes: Classification
+    figures: tuple[FigureSpec, ...]
     message: str
 
     def side(self, surface: Surface | str) -> SideOutcome:
@@ -1497,22 +1838,28 @@ def quarry_steps(job: QuarryJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator
        orden del diseño: con «final primero», la final; con «explotación primero», la explotación;
     2. la regla de orden y ``≤ z`` (:func:`order_surfaces`, RF-014-13);
     3. el invariante ``final ≤ explotación ≤ terreno`` a 1 mm (:func:`check_order`, RF-014-14): si
-       fallara, ``des.quarry_order_broken`` y ningún paso lleva un resultado que crear.
+       fallara, ``des.quarry_order_broken`` y ningún paso lleva un resultado que crear;
+    4. la clasificación de las dos superficies en el dominio de trabajo con las zonas de
+       restauración por relleno del trabajo (:func:`classify_steps`, RF-014-15) y sus cifras
+       (:func:`classification_figures`, RF-014-16).
 
-    ``ValueError`` (error del programa) al llamar con los de :func:`side_steps` de cada lado. Al
-    avanzar, los rechazos de la 013 de cada lado. Ninguna entrada se modifica y no se escribe nada;
-    cerrar el generador a mitad no deja nada. La clasificación, las cifras y «explotación hasta la
-    final» son de sus tareas (A8, A9)."""
+    ``ValueError`` (error del programa) al llamar con los de :func:`side_steps` de cada lado o si
+    las zonas de relleno no son de la rejilla. Al avanzar, los rechazos de la 013 de cada lado.
+    Ninguna entrada se modifica y no se escribe nada; cerrar el generador a mitad no deja nada.
+    «Explotación hasta la final» es de su tarea (A9)."""
+    if job.fill_zones is not None:
+        _same_shape("las zonas de restauración por relleno", np.asarray(job.fill_zones),
+                    job.masks.grid.shape)
     first = (Surface.FINAL if Order(job.request.order) is Order.FINAL_FIRST
              else Surface.EXPLOITATION)
     second = Surface.EXPLOITATION if first is Surface.FINAL else Surface.FINAL
     sides = {surface: side_steps(job.side_job(surface), budget_s=budget_s)
              for surface in (first, second)}
-    return _quarry_work(job, sides[first], sides[second])
+    return _quarry_work(job, sides[first], sides[second], budget_s)
 
 
-def _quarry_work(job: QuarryJob, first: Iterator[Progress], second: Iterator[Progress]
-                 ) -> Generator[Progress, None, None]:
+def _quarry_work(job: QuarryJob, first: Iterator[Progress], second: Iterator[Progress],
+                 budget_s: float) -> Generator[Progress, None, None]:
     order, name = Order(job.request.order), job.request.name
     done: list[SideOutcome] = []
     for steps in (first, second):
@@ -1525,7 +1872,15 @@ def _quarry_work(job: QuarryJob, first: Iterator[Progress], second: Iterator[Pro
     ordered = order_surfaces(order, final.grid, exploitation.grid, start)
     yield Progress("order", 1, 2, "Comprobando final ≤ explotación ≤ terreno…")
     check_order(name, ordered.final, ordered.exploitation, start, job.masks.grid)
+    yield Progress("classes", 0, 1, "Clasificando las dos superficies…")
+    classes: Classification = yield from forward(classify_steps(
+        ordered.final, ordered.exploitation, start, job.domain, job.masks.grid,
+        job.min_thickness_m, fill_zones=job.fill_zones, budget_s=budget_s))
+    figures = classification_figures(name, classes)
     text = (f"Cantera «{name}» calculada ({ORDER_NAMES[order]}): superficie final y de "
-            f"explotación; la regla de orden cambió {ordered.adjusted} celdas")
+            f"explotación; la regla de orden cambió {ordered.adjusted} celdas; desdoblado "
+            f"{format_value(round(classes.total.unsplit_m3, 1))} m³ y relleno de restauración "
+            f"{format_value(round(classes.total.fill_m3, 1))} m³")
     yield Progress("quarry", 1, 1, text,
-                   result=QuarryOutcome(order, final, exploitation, ordered, text))
+                   result=QuarryOutcome(order, final, exploitation, ordered, classes, figures,
+                                        text))
