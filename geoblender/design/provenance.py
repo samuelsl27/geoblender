@@ -61,6 +61,10 @@ son los que nombran la ficha y la guía de la 013; la 014 los documenta en su T3
   registra además las del escalonado de la 013 (:data:`DESIGN_FIGURES`). Su ámbito,
   :func:`quarry_figure_scope`: el nombre de la operación, la superficie y el sector (plan 014
   §2.1: sin él, las de dos superficies o dos sectores se pisarían).
+- La cantera (``des.quarry``, T19): sus ajustes (:func:`quarry_settings`, :func:`quarry_request`),
+  lo que consume con sus papeles (:func:`quarry_inputs`, :func:`side_role` y los papeles de sus
+  capas, :data:`FLOORS_LAYER_ROLE`…) y los parámetros que lee (:func:`quarry_params`,
+  :func:`quarry_profiles`).
 """
 
 from __future__ import annotations
@@ -94,11 +98,15 @@ from ..gis.provenance import dataset_slug
 from .model import (
     AnchorMode,
     BenchSense,
+    CorridorFields,
     DesignRequest,
     Direction,
     EnvelopeRequest,
+    LayerField,
     Metric,
     Order,
+    QuarryRequest,
+    QuarrySide,
     SeedKind,
     SeedSource,
     SlopeMode,
@@ -109,7 +117,11 @@ from .model import (
     ZoneKind,
 )
 from .params import (
+    CONSERVE_SLOPE,
+    CROWN_RING,
     TOLERANCE_FACE,
+    UNSPLIT_MIN_AREA,
+    UNSPLIT_THRESHOLD,
     VERIFY_MIN_THICKNESS,
     WARNING_RATIO,
     BenchParam,
@@ -127,6 +139,8 @@ __all__ = [
     "CLASSIFICATION_GRID",
     "CLASSIFICATION_ROLE",
     "COMMAND",
+    "CONSERVE_LAYER_ROLE",
+    "CORRIDORS_LAYER_ROLE",
     "CROWN_SEEDS",
     "CUT_M3",
     "DESIGN_FIGURES",
@@ -154,6 +168,7 @@ __all__ = [
     "FIGURES",
     "FIGURE_SCOPE_KEY",
     "FIGURE_TOLERANCE",
+    "FILL_LAYER_ROLE",
     "FILL_M3",
     "FILL_ONLY",
     "FILL_ONLY_COMMAND",
@@ -162,6 +177,7 @@ __all__ = [
     "FINAL_ENVELOPE_GRID",
     "FINAL_ENVELOPE_ROLE",
     "FINAL_GRID",
+    "FLOORS_LAYER_ROLE",
     "LIMIT_COMMAND",
     "MODULE",
     "OPERATION_TYPES",
@@ -190,6 +206,7 @@ __all__ = [
     "STEPPED",
     "SURFACE_ROLE",
     "SURFACE_SCOPE_KEY",
+    "TO_FINAL_LAYER_ROLE",
     "TRANSITIONS_COMMAND",
     "TRANSITION_FIGURES",
     "TRANSITION_GRID",
@@ -220,8 +237,14 @@ __all__ = [
     "operation_defs",
     "profile_params",
     "quarry_figure_scope",
+    "quarry_inputs",
     "quarry_operation_defs",
+    "quarry_params",
+    "quarry_profiles",
+    "quarry_request",
+    "quarry_settings",
     "sector_inputs",
+    "side_role",
     "settings_pending",
     "settings_previous",
     "settings_touched",
@@ -348,6 +371,17 @@ QUARRY_REPORT_ROLE = "quarry_report"
 """El papel del informe de la cantera."""
 EDGE_REPORT_ROLE = "edge_report"
 """El papel del informe del salto creado."""
+
+FLOORS_LAYER_ROLE = "floors_layer"
+"""El papel de la capa de polígonos de los fondos de la cantera (RF-014-05)."""
+CONSERVE_LAYER_ROLE = "conserve_layer"
+"""El papel de cada capa de polígonos de las zonas a conservar (RF-014-07)."""
+CORRIDORS_LAYER_ROLE = "corridors_layer"
+"""El papel de la capa de líneas de los corredores (RF-014-09)."""
+FILL_LAYER_ROLE = "fill_layer"
+"""El papel de la capa de las zonas de restauración por relleno (RF-014-15, D-11)."""
+TO_FINAL_LAYER_ROLE = "to_final_layer"
+"""El papel de la capa de las zonas de «explotación hasta la final» (RF-014-18, P-2)."""
 
 QUARRY_FAMILIES: tuple[DatasetFamily, ...] = (
     DatasetFamily(EXCAVATION_AREA_GRID, "raster", Store.RASTERS, GEOTIFF.id, EXCAVATION_AREA_ROLE,
@@ -928,6 +962,63 @@ def excavation_area_start(settings: Mapping[str, Any]) -> tuple[str, str]:
     return _required_text(data, "name", what), _required_text(data, "surface", what)
 
 
+def _seeds_settings(source: SeedSource | None) -> dict[str, Any]:
+    """Las semillas de un lado de la cantera: :data:`CROWN_SEEDS` sin ``source`` o las de la 013
+    con su zona."""
+    if source is None:
+        return {"kind": CROWN_SEEDS}
+    zone = source.zone
+    return {"kind": SeedKind(source.kind).value, "surface": source.surface,
+            "zone": None if zone is None else {"kind": ZoneKind(zone.kind).value,
+                                               "name": zone.name},
+            "elevation_m": source.elevation_m, "grid": source.grid}
+
+
+def _side_settings_of(side: QuarrySide) -> dict[str, Any]:
+    """Lo de un lado de la cantera (``final`` o ``exploitation``) en sus ajustes."""
+    return {"base_profile": side.base_profile, "sector_profiles": dict(side.sector_profiles),
+            "seeds": _seeds_settings(side.seeds), "anchor": AnchorMode(side.anchor).value,
+            "anchor_grid": side.anchor_grid, "metric": Metric(side.metric).value}
+
+
+def _layer_field(value: LayerField | None) -> dict[str, str] | None:
+    return None if value is None else {"layer": value.layer, "field": value.field}
+
+
+def quarry_settings(request: QuarryRequest, pending_sectors: Iterable[str] = (),
+                    touched_sectors: Iterable[str] = ()) -> dict[str, Any]:
+    """Los ajustes de ``des.quarry`` (spec 014, T19; RF-014-29, RF-014-31; JSON sin rutas): lo que
+    la vuelve a pedir igual con sus entradas —el nombre, la superficie de partida, el orden, cada
+    lado (``final`` y ``exploitation``: el perfil base y el de cada sector, las semillas —
+    :data:`CROWN_SEEDS` o las de la 013 con su zona—, el ancla con su rejilla y la métrica), las
+    capas con sus campos (fondos, zonas a conservar, corredores, zonas de restauración por relleno
+    y láminas de agua) y «explotación hasta la final» con su capa—, con las claves de
+    :data:`QUARRY_SETTINGS`; y, como en :func:`envelope_settings`, los sectores sin búsqueda
+    vigente al calcular y los que tocó el recinto (RF-014-30). Es un diccionario nuevo."""
+    corridors = request.corridors
+    return {
+        "name": request.name,
+        "start": request.start,
+        "order": Order(request.order).value,
+        Surface.FINAL.value: _side_settings_of(request.final),
+        Surface.EXPLOITATION.value: _side_settings_of(request.exploitation),
+        "floors": _layer_field(request.floors),
+        "conserve": [{"kind": ZoneKind(zone.kind).value, "name": zone.name}
+                     for zone in request.conserve],
+        "corridors": None if corridors is None else {
+            "layer": corridors.layer, "width_field": corridors.width_field,
+            "level_field": corridors.level_field,
+            "start_level_field": corridors.start_level_field,
+            "grade_field": corridors.grade_field},
+        "fill_zones": request.fill_zones,
+        "water": _layer_field(request.water),
+        "to_final": ToFinalMode(request.to_final).value,
+        "to_final_layer": request.to_final_layer,
+        "pending_sectors": _codes(pending_sectors, "los sectores pendientes"),
+        "touched_sectors": _codes(touched_sectors, "los sectores que toca el recinto"),
+    }
+
+
 def _mapping(value: object, what: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{what} es un diccionario, no {value!r}")
@@ -1054,6 +1145,79 @@ def design_start(settings: Mapping[str, Any]) -> str:
     return _required_text(_mapping(settings, what), "surface", what)
 
 
+def _zone_of(value: object, what: str) -> Zone | None:
+    if value is None:
+        return None
+    data = _mapping(value, what)
+    return Zone(_enum(ZoneKind, data, "kind", what), _optional_text(data, "name", what))
+
+
+def _seeds_of(value: object, what: str, label: str) -> SeedSource | None:
+    here = f"{what}, «{label}»,"
+    data = _mapping(value, here)
+    if data.get("kind") == CROWN_SEEDS:
+        return None
+    return SeedSource(
+        _enum(SeedKind, data, "kind", here), surface=_optional_text(data, "surface", here),
+        zone=_zone_of(data.get("zone"), f"{what}, «{label}.zone»,"),
+        elevation_m=_number(data, "elevation_m", here), grid=_optional_text(data, "grid", here))
+
+
+def _side_of(data: Mapping[str, Any], side: Surface, what: str) -> QuarrySide:
+    here = f"{what}, «{side.value}»,"
+    found = _mapping(data.get(side.value), here)
+    return QuarrySide(
+        base_profile=_required_text(found, "base_profile", here),
+        sector_profiles=_profiles(found, here),
+        seeds=_seeds_of(found.get("seeds"), what, f"{side.value}.seeds"),
+        anchor=_enum(AnchorMode, found, "anchor", here),
+        anchor_grid=_optional_text(found, "anchor_grid", here),
+        metric=_enum(Metric, found, "metric", here))
+
+
+def _layer_field_of(value: object, what: str) -> LayerField | None:
+    if value is None:
+        return None
+    data = _mapping(value, what)
+    return LayerField(_required_text(data, "layer", what), _required_text(data, "field", what))
+
+
+def quarry_request(settings: Mapping[str, Any]) -> QuarryRequest:
+    """La cantera que repiten los ajustes ``settings`` de una operación ``des.quarry`` (los de
+    :func:`quarry_settings`): al recalcularla y al reproducirla. ``ValueError`` si no son los de
+    una cantera (nombrando el campo; también lo que rechaza la petición: un lado con la rejilla de
+    anclas sin el ancla en rejilla, un corredor sin cota ni rasante…)."""
+    what = "los ajustes de una cantera"
+    data = _mapping(settings, what)
+    corridors = data.get("corridors")
+    corridor_fields = None
+    if corridors is not None:
+        here = f"{what}, «corridors»,"
+        found = _mapping(corridors, here)
+        corridor_fields = CorridorFields(
+            _required_text(found, "layer", here), _required_text(found, "width_field", here),
+            level_field=_optional_text(found, "level_field", here),
+            start_level_field=_optional_text(found, "start_level_field", here),
+            grade_field=_optional_text(found, "grade_field", here))
+    conserve = data.get("conserve", [])
+    if not isinstance(conserve, list):
+        raise ValueError(f"{what} llevan «conserve» como una lista de zonas, no {conserve!r}")
+    zones = tuple(_zone_of(item, f"{what}, «conserve»,") for item in conserve)
+    return QuarryRequest(
+        name=_required_text(data, "name", what),
+        start=_required_text(data, "start", what),
+        final=_side_of(data, Surface.FINAL, what),
+        exploitation=_side_of(data, Surface.EXPLOITATION, what),
+        order=_enum(Order, data, "order", what),
+        floors=_layer_field_of(data.get("floors"), f"{what}, «floors»,"),
+        conserve=tuple(zone for zone in zones if zone is not None),
+        corridors=corridor_fields,
+        fill_zones=_optional_text(data, "fill_zones", what),
+        water=_layer_field_of(data.get("water"), f"{what}, «water»,"),
+        to_final=_enum(ToFinalMode, data, "to_final", what),
+        to_final_layer=_optional_text(data, "to_final_layer", what))
+
+
 def settings_pending(settings: Mapping[str, Any]) -> tuple[str, ...]:
     """Los códigos de los sectores sin búsqueda vigente al calcular que guardan unos ajustes
     (RF-013-06; ninguno si no los llevan). ``ValueError`` si no son una lista de textos."""
@@ -1163,6 +1327,63 @@ def excavation_area_inputs(surface: str, masks: Iterable[Use] = ()) -> tuple[Use
                     *masks])
 
 
+def side_role(surface: Surface | str, role: str) -> str:
+    """El papel de lo que consume un lado de la cantera (``final`` o ``exploitation``) con el
+    papel ``role`` de la 013: ``final_anchors``, ``exploitation_seeds_grid``… (los dos lados
+    pueden leer cosas distintas con el mismo papel). ``ValueError`` si no es una de las dos."""
+    return f"{Surface(surface).value}_{role}"
+
+
+def quarry_inputs(request: QuarryRequest, masks: Iterable[Use] = (),
+                  available: Collection[str] = ()) -> tuple[Use, ...]:
+    """Lo que consume ``des.quarry`` (spec 014, T19; RF-014-29, RF-014-31; plan 014 §5.2.3), en su
+    orden: la superficie de partida (``surface``); de cada lado, lo que leen sus semillas de la 013
+    (su superficie, su rejilla de cotas o la capa de su zona, con :func:`side_role`) y su rejilla de
+    anclas (``<lado>_anchors``); las capas de polígonos y de líneas que usa, cada una con su papel
+    (:data:`FLOORS_LAYER_ROLE`, :data:`CONSERVE_LAYER_ROLE` —las zonas a conservar que son una
+    capa—, :data:`CORRIDORS_LAYER_ROLE`, :data:`FILL_LAYER_ROLE` y :data:`TO_FINAL_LAYER_ROLE`);
+    las máscaras de la versión ``masks`` y los sectores y las búsquedas registrados
+    (``available``). Si una cambia, la cantera queda obsoleta. La capa de las láminas de agua no
+    la usa (es de «Solo relleno»). ``ValueError`` si faltan los nombres de lo que consume."""
+    found = [Use(_named(request.start, "de la superficie de partida"), SURFACE_ROLE)]
+    for surface in Surface:
+        side = request.side(surface)
+        seeds = side.seeds
+        if seeds is not None:
+            kind = SeedKind(seeds.kind)
+            if kind is SeedKind.SURFACE:
+                found.append(Use(_named(seeds.surface, "de la superficie de las semillas"),
+                                 side_role(surface, SURFACE_ROLE)))
+            elif kind is SeedKind.GRID:
+                found.append(Use(_named(seeds.grid, "de la rejilla de cotas de las semillas"),
+                                 side_role(surface, SEEDS_GRID_ROLE)))
+            zone = seeds.zone
+            if zone is not None and ZoneKind(zone.kind) is ZoneKind.LAYER:
+                found.append(Use(_named(zone.name, "de la capa de la zona de las semillas"),
+                                 side_role(surface, ZONE_LAYER_ROLE)))
+        if side.anchor_grid is not None:
+            found.append(Use(_named(side.anchor_grid, "de la rejilla de anclas"),
+                             side_role(surface, ANCHORS_ROLE)))
+    if request.floors is not None:
+        found.append(Use(_named(request.floors.layer, "de los fondos"), FLOORS_LAYER_ROLE))
+    for zone in request.conserve:
+        if ZoneKind(zone.kind) is ZoneKind.LAYER:
+            found.append(Use(_named(zone.name, "de una zona a conservar"), CONSERVE_LAYER_ROLE))
+    if request.corridors is not None:
+        found.append(Use(_named(request.corridors.layer, "de los corredores"),
+                         CORRIDORS_LAYER_ROLE))
+    if request.fill_zones is not None:
+        found.append(Use(_named(request.fill_zones, "de las zonas de restauración por relleno"),
+                         FILL_LAYER_ROLE))
+    if request.to_final_layer is not None:
+        found.append(Use(_named(request.to_final_layer,
+                                "de las zonas de «explotación hasta la final»"),
+                         TO_FINAL_LAYER_ROLE))
+    found += list(masks)
+    found += sector_inputs(available)
+    return _unique(found)
+
+
 # --- Los parámetros que lee una operación -------------------------------------------------------
 
 ENVELOPE_PROFILE_PARAMS: tuple[BenchParam, ...] = (
@@ -1203,4 +1424,27 @@ def design_params(request: DesignRequest, *, sector_slopes: Iterable[str] = ()
     codes = [request.base_profile, *(profile for _sector, profile in request.sector_profiles)]
     return _unique([*profile_params(codes),
                     *_codes(sector_slopes, "las claves de los taludes de los sectores"),
+                    TOLERANCE_FACE, WARNING_RATIO, VERIFY_MIN_THICKNESS])
+
+
+def quarry_profiles(request: QuarryRequest) -> tuple[str, ...]:
+    """Los códigos de los perfiles que usa la cantera ``request``: de la final y de la explotación,
+    el base y el de cada sector, sin repetir y en su orden."""
+    return _unique(code for surface in Surface for code in (
+        request.side(surface).base_profile,
+        *(profile for _sector, profile in request.side(surface).sector_profiles)))
+
+
+def quarry_params(request: QuarryRequest, *, sector_slopes: Iterable[str] = ()
+                  ) -> tuple[str, ...]:
+    """Los parámetros que lee ``des.quarry`` (spec 014, T19; RF-014-29, RF-014-31): los cinco
+    valores de cada perfil de los dos lados (:func:`quarry_profiles`), los taludes impuestos de los
+    sectores ``sector_slopes``, el anillo de coronación (también el lado con semillas de la 013 lo
+    necesita: el aviso de RF-014-03), el umbral y el área mínima del aviso de desdoblado, el talud
+    de conservación solo si hay zonas a conservar (no tiene valor por defecto, D-9), la tolerancia
+    de cara, el umbral de aviso de magnitud y el espesor mínimo de la 012."""
+    return _unique([*profile_params(quarry_profiles(request)),
+                    *_codes(sector_slopes, "las claves de los taludes de los sectores"),
+                    CROWN_RING, UNSPLIT_THRESHOLD, UNSPLIT_MIN_AREA,
+                    *((CONSERVE_SLOPE,) if request.conserve else ()),
                     TOLERANCE_FACE, WARNING_RATIO, VERIFY_MIN_THICKNESS])

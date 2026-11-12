@@ -17,6 +17,8 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
   ni dato, ni tabla, ni cifra todavía.** El último paso lleva la :class:`Calculation`.
 - :func:`excavation_area_run` (spec 014, T06; RF-014-01): «Calcular» el recinto excavable de la
   versión (``des.excavation_area``) del mismo modo; el último paso lleva su :class:`Calculation`.
+- :func:`quarry_run` (spec 014, T19; RF-014-12, RF-014-29, RF-014-30): «Calcular» la cantera con
+  dos superficies (``des.quarry``) del mismo modo, con los avisos de su resumen.
 - :class:`Calculation`: lo calculado y todavía sin registrar. :meth:`~Calculation.create`
   (**«Crear»**) abre la operación, mueve los temporales, escribe las tablas y las cifras y completa,
   todo en **una** transacción (``DesignWriter.commit``); :meth:`~Calculation.discard`
@@ -51,7 +53,7 @@ from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.store import StoreProject
 from . import pipeline, preview, provenance, quarry, store
 from .messages import DesignError
-from .model import DesignRequest, EnvelopeRequest
+from .model import DesignRequest, EnvelopeRequest, QuarryRequest
 from .preview import Notice
 from .seeds import SeedPlan, SeedSet, pace_progress
 
@@ -61,6 +63,7 @@ __all__ = [
     "envelope_run",
     "excavation_area_run",
     "preview_steps",
+    "quarry_run",
     "resolve_values",
 ]
 
@@ -94,15 +97,17 @@ def resolve_values(project: StoreProject, version_uid: str, keys: Iterable[str]
 class Calculation:
     """Un cálculo hecho y **sin registrar** (véase el módulo): su ``outcome``
     (``pipeline.EnvelopeOutcome``, ``pipeline.DesignOutcome`` o, de un recinto,
-    ``quarry.AreaOutcome``), los ``notices`` que enseña la
-    ventana junto a su resumen —de la envolvente, los de sus semillas; del escalonado, los de su
-    informe—, las ``seeds`` (``None`` en un escalonado), el tipo de operación (``op_type``), su
+    ``quarry.AreaOutcome``, y de una cantera, ``quarry.QuarryOutcome``), los ``notices`` que enseña
+    la ventana junto a su resumen —de la envolvente, los de sus semillas; del escalonado, los de su
+    informe; de la cantera, los suyos y los del informe de cada lado—, las ``seeds`` (``None``
+    salvo en una envolvente), el tipo de operación (``op_type``), su
     ``name`` y la ``version`` (su código). Mientras esté abierta (:attr:`open`), sus rejillas
     esperan en temporales junto a su destino: hay que crearla o descartarla."""
 
     def __init__(self, *, project: StoreProject, writer: store.DesignWriter,
                  start: store.OperationStart, outcome: pipeline.EnvelopeOutcome
-                 | pipeline.DesignOutcome | quarry.AreaOutcome, notices: Sequence[Notice],
+                 | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome,
+                 notices: Sequence[Notice],
                  seeds: SeedSet | None,
                  values: Mapping[str, object]) -> None:
         self._project = project
@@ -245,6 +250,26 @@ def excavation_area_run(project: StoreProject, name: str, surface: str, *, versi
     return _area_steps(project, name, surface, version, masks, budget_s)
 
 
+def quarry_run(project: StoreProject, request: QuarryRequest, *, version: str | None,
+               masks: MaskSet | None = None, budget_s: float = STEP_BUDGET_S
+               ) -> Iterator[Progress]:
+    """**«Calcular»** la cantera con dos superficies ``request`` de la versión ``version`` por
+    pasos de ``budget_s`` como mucho (spec 014, T19; RF-014-12, RF-014-29, RF-014-30; «Cantera con
+    dos superficies…»): el último ``Progress`` lleva la :class:`Calculation` de ``des.quarry``, con
+    sus cinco rejillas (las dos superficies, sus envolventes y la clasificación) en temporales, sus
+    dos tablas (las bermas de las dos y el informe) preparadas, sus cifras y los avisos del
+    resumen (los de sus capas, las semillas de la 013 fuera de la coronación, el desdoblado sobre
+    terreno sin explotar, «explotación hasta la final» y los del escalonado de cada lado), y
+    **nada registrado**. ``masks``, como en :func:`envelope_run`.
+
+    Los rechazos salen **al avanzar**, antes de escribir nada: sin versión activa o no editable,
+    máscaras (``MaskError``), la superficie, un recinto vacío, un sector del recinto con la
+    búsqueda de intocables pendiente (``des.sector_pending``, RF-014-30), las capas (fondos,
+    corredores, zonas), un perfil o un parámetro de la 014 sin valor (RF-013-19) y el nombre
+    repetido. Cerrar el generador a mitad borra los temporales."""
+    return _quarry_steps(project, request, version, masks, budget_s)
+
+
 def _prepare_steps[T](units: Generator[None, None, T], budget_s: float
                       ) -> Generator[Progress, None, T]:
     """Las unidades de preparar un cálculo agrupadas en pasos; devuelve lo que preparan."""
@@ -309,6 +334,29 @@ def _area_steps(project: StoreProject, name: str, surface: str, version: str | N
         calculation = Calculation(project=project, writer=writer, start=prepared.start,
                                   outcome=outcome, notices=(), seeds=None, values={})
     except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
+        writer.close(error)
+        raise
+    yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
+
+
+def _quarry_steps(project: StoreProject, request: QuarryRequest, version: str | None,
+                  masks: MaskSet | None, budget_s: float) -> Generator[Progress, None, None]:
+    found = store.require_version(project, version, provenance.QUARRY)
+    loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
+    prepared: store.PreparedQuarry = yield from _prepare_steps(
+        store.prepare_quarry_units(project, request, found, loaded), budget_s)
+    writer = store.DesignWriter(project, provenance.QUARRY, request.name, version=found.uid)
+    try:
+        values = resolve_values(project, found.uid, prepared.start.params)
+        calculated: store.QuarryCalculated = yield from store.compute_quarry_steps(
+            writer, request, loaded, prepared, values, prepared.start.settings, budget_s)
+        outcome = calculated.outcome
+        sides = tuple(notice for side in (outcome.final, outcome.exploitation)
+                      for notice in side.design.report.notices)
+        calculation = Calculation(project=project, writer=writer, start=prepared.start,
+                                  outcome=outcome, notices=(*calculated.notices, *sides),
+                                  seeds=None, values=values)
+    except BaseException as error:  # un fallo o cerrar el generador: no quedan los temporales
         writer.close(error)
         raise
     yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)

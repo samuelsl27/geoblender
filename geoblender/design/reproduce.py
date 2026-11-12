@@ -24,6 +24,12 @@ que el recálculo** —el mismo cálculo, ``design.pipeline``— con lo congelad
   proyecto, y la tabla de bermas y el informe (``bmt``, ``rpt``) cada uno en su GeoPackage, con el
   papel con que los anotó la operación; y sus cifras, las mismas que se registraron.
 
+De la cantera con dos superficies (spec 014, T19): :func:`reproduce_excavation_area` (el recinto)
+y :func:`reproduce_quarry` (las dos superficies, con las piezas y el cálculo que comparte con el
+proyecto, ``store.quarry_parts_units`` y ``store.quarry_compute_steps``; las capas, las rejillas
+de las semillas y de las anclas se buscan por su nombre entre las entradas congeladas, con el
+papel que tengan).
+
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con otros,
 ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹ relativo, plan
 §5.2.3). Cerrar los pasos antes del final o un fallo dejan lo escrito en la carpeta de trabajo,
@@ -62,10 +68,11 @@ from ..gis.masks import provenance as masks_declared
 from ..gis.masks.access import MaskSet, MaskState
 from ..gis.masks.combine import ClassBit
 from ..gis.masks.compile import STEP_BUDGET_S
-from ..gis.masks.store import PERIMETER_SECTOR_NAME, zone_runs_steps
+from ..gis.masks.store import PERIMETER_SECTOR_NAME, read_report, zone_runs_steps
 from ..gis.raster import Raster
-from ..gis.store import insert_rows
-from . import pipeline, provenance, store
+from ..gis.store import insert_rows, read_features
+from ..gis.vector import FeatureLayer
+from . import pipeline, provenance, quarry, store
 from .model import EnvelopeRequest, SeedKind
 from .params import TOLERANCE_FACE, VERIFY_MIN_THICKNESS, WARNING_RATIO
 from .seeds import (
@@ -85,6 +92,8 @@ __all__ = [
     "REPRODUCE",
     "reproduce_design",
     "reproduce_envelope",
+    "reproduce_excavation_area",
+    "reproduce_quarry",
 ]
 
 _OBJ = "Reproducción del diseño"
@@ -92,8 +101,6 @@ _PHASE = "reproduce"
 _MASKS_PREFIX = "masks_"
 _READ_ROWS = 256
 """Las filas de la rejilla de clases que se leen en cada unidad."""
-_COLUMNS = MappingProxyType({provenance.BERM_TABLE: store.BERM_COLUMNS,
-                             provenance.REPORT_TABLE: store.REPORT_COLUMNS})
 
 
 @contextmanager
@@ -165,7 +172,19 @@ class _Frozen:
         reading = _Reading(Path(zones_item.files["main"]))
         zones = _drain(zone_runs_steps(reading, str(zones_item.settings["layer"])))  # type: ignore[arg-type]
         return MaskSet(self.grid, "", "", MaskState.CURRENT, (), classes, (),
-                       MappingProxyType(zones))
+                       MappingProxyType(zones), ctypes=MappingProxyType(self._ctypes()))
+
+    def _ctypes(self) -> dict[str, str]:
+        """El tipo de cada restricción con zona, del informe congelado de las máscaras (como
+        ``gis.masks.access.load_masks``): con él la cantera halla las zonas a sostener (T19)."""
+        role = _MASKS_PREFIX + masks_declared.FAMILIES_BY_CODE[masks_declared.REPORT].role
+        found = [item for item in self.request.inputs if item.role == role]
+        if not found:
+            return {}
+        with _open(Path(found[0].files["main"])) as conn:
+            report = read_report(conn, str(found[0].settings["layer"]))
+        return {code: str(note) for code, quantity, _value, _unit, note in report
+                if quantity == "zone_area" and note is not None}
 
     def sector_layout(self, masks: MaskSet) -> tuple[tuple[SectorRef, ...], np.ndarray]:
         """Los sectores de búsqueda congelados y la etiqueta de cada celda; sin sectores
@@ -194,6 +213,37 @@ class _Frozen:
                 return polygons_cells(polygons, self.grid)
         raise ValueError(f"la capa «{name}» no está entre las entradas congeladas")
 
+    def named(self, name: str) -> FrozenInput:
+        """La entrada congelada del dato ``name``, con el papel que sea (la cantera lee un mismo
+        dato con varios papeles: la superficie de partida y la rejilla de anclas…)."""
+        for item in self.request.inputs:
+            if item.name == name:
+                return item
+        raise ValueError(f"«{name}» no está entre las entradas congeladas")
+
+    def named_raster(self, name: str, *, what: str) -> Raster:
+        """La rejilla congelada del dato ``name``, comparada con la del proyecto antes de usarla
+        (como :meth:`raster`)."""
+        item = self.named(name)
+        source = read_geotiff(Path(item.files["main"]), max_cells=sys.maxsize)
+        found = Raster(source.grid, source.values, source.declared_crs or self.crs,
+                       source.declared_vertical or self.vertical)
+        check_grid(found, self.frame, role=what, name=item.name)
+        return found
+
+    def features(self, name: str) -> FeatureLayer:
+        """La capa de entidades congelada ``name`` (sus geometrías y sus campos)."""
+        item = self.named(name)
+        with _open(Path(item.files["main"])) as conn:
+            return read_features(conn, str(item.settings["layer"]))
+
+    def cells_named(self, name: str) -> np.ndarray:
+        """Las celdas de la capa de polígonos congelada ``name``, con el papel que sea."""
+        item = self.named(name)
+        with _open(Path(item.files["main"])) as conn:
+            polygons = frozen_polygons(conn, str(item.settings["layer"]), name)
+        return polygons_cells(polygons, self.grid)
+
 
 def _paced[T](work: Generator[None, None, T], budget_s: float, text: str
               ) -> Generator[Progress, None, T]:
@@ -207,7 +257,7 @@ def _grid_output(request: ReproduceRequest, family: str, raster: Raster, budget_
                  ) -> Generator[Progress, None, ReproducedOutput]:
     """Escribe ``raster`` como la salida ``family`` de la operación, en la carpeta de trabajo."""
     found = provenance.FAMILIES_BY_CODE[family]
-    path = Path(request.workdir) / f"{found.role}.tif"
+    path = Path(request.workdir) / f"{found.role}_{family}.tif"  # dos superficies, un papel
     temporary = path.with_name(path.name + ".tmp")
     check_path_length(temporary, obj=_OBJ)
     steps = writer.write_steps(raster, path, profile="project", temporary=temporary,
@@ -221,13 +271,13 @@ def _grid_output(request: ReproduceRequest, family: str, raster: Raster, budget_
 def _table_output(request: ReproduceRequest, family: str, rows: list[tuple[object, ...]],
                   crs: CrsRef) -> ReproducedOutput:
     """Escribe ``rows`` como la tabla ``family`` de la operación, en su GeoPackage de la carpeta
-    de trabajo."""
+    de trabajo, con las columnas de su tipo (``store.columns_of``)."""
     found = provenance.FAMILIES_BY_CODE[family]
     name = str(request.settings.get("name", ""))
     table = provenance.dataset_locator(family, name, "V01")
     path = Path(request.workdir) / f"{found.role}.gpkg"
     check_path_length(path, obj=_OBJ)
-    columns = _COLUMNS[family]
+    columns = store.columns_of(request.op_type, family)
     with GpkgConnection.open_write(path, create=True) as gpkg, gpkg.transaction() as conn:
         create_base(conn, crs)
         create_attribute_table(conn, table, columns, f"{found.label} {name}",
@@ -344,6 +394,73 @@ def _reproduce_design(request: ReproduceRequest, budget_s: float) -> Iterator[Pr
                    result=ReproducedResult(tuple(outputs), outcome.figures))
 
 
+# --- La cantera con dos superficies y su recinto (spec 014, T19) -------------------------------
+
+
+def reproduce_excavation_area(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
+                              ) -> Iterator[Progress]:
+    """Reproduce ``des.excavation_area`` (spec 014, T19; RF-014-01) con su superficie de partida y
+    sus máscaras congeladas y sus ajustes, sin el proyecto: sus pasos y, el último, el
+    ``ReproducedResult`` con la rejilla del recinto y su cifra."""
+    return _reproduce_area(_check(request, provenance.EXCAVATION_AREA), budget_s)
+
+
+def _reproduce_area(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    name, _surface = provenance.excavation_area_start(request.settings)
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = frozen.masks()
+    start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida")
+    area = quarry.excavation_area(masks, start.values)
+    outcome = quarry.area_outcome(name, area, start.grid)
+    raster = Raster(start.grid, outcome.grid, frozen.crs, frozen.vertical)
+    output = yield from _grid_output(request, provenance.EXCAVATION_AREA_GRID, raster, budget_s)
+    yield Progress(_PHASE, 1, 1, "Recinto reproducido",
+                   result=ReproducedResult((output,), outcome.figures))
+
+
+def reproduce_quarry(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
+                     ) -> Iterator[Progress]:
+    """Reproduce ``des.quarry`` (spec 014, T19; RF-014-29) con sus entradas congeladas (la
+    superficie de partida, las máscaras, los sectores, las capas de fondos, corredores, zonas a
+    conservar, relleno y «explotación hasta la final», y lo que leen las semillas y las anclas de
+    cada lado), sus parámetros congelados y sus ajustes, sin el proyecto: el mismo cálculo que el
+    proyecto (``store.quarry_parts_units`` y ``store.quarry_compute_steps``). Sus pasos y, el
+    último, el ``ReproducedResult`` con las cinco rejillas, las dos tablas y sus cifras."""
+    return _reproduce_quarry(_check(request, provenance.QUARRY), budget_s)
+
+
+def _reproduce_quarry(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    wanted = provenance.quarry_request(request.settings)
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = frozen.masks()
+    refs, labels = frozen.sector_layout(masks)
+    start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida")
+    domain = store.quarry_domain(masks, start.values, refs, labels)
+    parts = yield from _paced(store.quarry_parts_units(
+        wanted, masks, start, domain, features=frozen.features, layer=frozen.cells_named,
+        surface=lambda name, what: frozen.named_raster(name, what=what).values),
+        budget_s, "Leyendo las capas de la cantera…")
+    waiting = set(provenance.settings_pending(request.settings))
+    calculated: store.QuarryCalculated = yield from store.quarry_compute_steps(
+        wanted, masks, parts, frozen.values,
+        pending=tuple(ref.name for ref in refs if ref.code in waiting), budget_s=budget_s)
+    outcome = calculated.outcome
+    outputs = []
+    for family, grid, _what in store.quarry_grids(outcome):
+        outputs.append((yield from _grid_output(
+            request, family, Raster(start.grid, grid, frozen.crs, frozen.vertical), budget_s)))
+    outputs.append(_table_output(request, provenance.BERM_TABLE,
+                                 store.quarry_berm_rows(outcome), frozen.crs))
+    outputs.append(_table_output(request, provenance.QUARRY_REPORT_TABLE,
+                                 store.quarry_report_rows(outcome, calculated.notices),
+                                 frozen.crs))
+    yield Progress(_PHASE, 1, 1, "Cantera reproducida",
+                   result=ReproducedResult(tuple(outputs), outcome.figures))
+
+
 REPRODUCE: Mapping[str, ReproduceFunction] = MappingProxyType({
     provenance.ENVELOPE: reproduce_envelope, provenance.STEPPED: reproduce_design})
-"""Las funciones de reproducir de los dos tipos de ``des`` (las que registra ``bl``)."""
+"""Las funciones de reproducir de los dos tipos de la 013 (las que registra ``bl``; las de la
+014 las registra por su nombre: :func:`reproduce_excavation_area` y :func:`reproduce_quarry`)."""

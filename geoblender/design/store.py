@@ -37,7 +37,16 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   y la escritura de las salidas en los temporales de un :class:`DesignWriter`, sin confirmar).
 - **El recinto excavable** (spec 014, T06; RF-014-01): :func:`prepare_excavation_area`,
   :func:`prepare_area_units` y :func:`compute_area_steps` (``des.excavation_area``, el dato
-  ``des_rcn_`` y la cifra ``des.rcn_area_m2``), con el mismo :class:`DesignWriter`.
+  ``des_rcn_`` y la cifra ``des.rcn_area_m2``), con el mismo :class:`DesignWriter`; y, desde la
+  T19, :func:`run_excavation_area`, su recálculo.
+- **La cantera con dos superficies** (spec 014, T19; RF-014-29 a RF-014-31): :func:`prepare_quarry`
+  y :func:`prepare_quarry_units` (con el rechazo de un sector del recinto con la búsqueda pendiente,
+  RF-014-30), las piezas que lee (:class:`QuarryParts`, :func:`quarry_domain`,
+  :func:`quarry_parts_units`, compartidas con la reproducción), el cálculo
+  (:func:`quarry_compute_steps`, con sus avisos, :func:`quarry_notices`) y su escritura
+  (:func:`compute_quarry_steps`: las cinco rejillas de :func:`quarry_grids`, las bermas de las dos
+  superficies con :data:`QUARRY_BERM_COLUMNS` y el informe ``des_qrp_``); y :func:`run_quarry`, su
+  recálculo.
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -55,7 +64,7 @@ import math
 import numbers
 import os
 import sqlite3
-from collections.abc import Generator, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -106,21 +115,48 @@ from ..gis.masks.store import CANCELLED_REASON, available_tables
 from ..gis.messages import GisError
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, backup_path, insert_rows, project_references, temporary_path
+from ..gis.vector import FeatureLayer
 from . import pipeline, provenance, quarry
 from .messages import DesignError
-from .model import DesignRequest, EnvelopeRequest, SlopeMode
+from .model import (
+    DesignRequest,
+    EnvelopeRequest,
+    Metric,
+    QuarryRequest,
+    SlopeMode,
+    Surface,
+    Zone,
+    ZoneKind,
+)
 from .params import (
+    CONSERVE_SLOPE,
+    CROWN_RING,
     TOLERANCE_FACE,
+    UNSPLIT_MIN_AREA,
+    UNSPLIT_THRESHOLD,
     VERIFY_MIN_THICKNESS,
     WARNING_RATIO,
     BenchParam,
     bench_key,
     check_bench_value,
+    check_quarry_param,
 )
+from .preview import Notice, _features, _quarry_warnings
 from .profiles import profile_names
 from .sectors import DesignSector, design_sectors, refuse_pending, slope_params, touched
-from .seeds import SectorRef, SeedSet, pace_progress, sector_layout, seed_units
+from .seeds import (
+    DomainSet,
+    SectorRef,
+    SeedSet,
+    assemble_units,
+    check_source,
+    domain_of,
+    pace_progress,
+    sector_layout,
+    seed_units,
+)
 from .surfaces import project_frame, read_surface
+from .zones import constraint_cells, layer_cells
 
 if TYPE_CHECKING:  # solo para los tipos: importarlos arrastraría los cálculos
     from .berms import Berms
@@ -128,21 +164,28 @@ if TYPE_CHECKING:  # solo para los tipos: importarlos arrastraría los cálculos
 
 __all__ = [
     "BERM_COLUMNS",
+    "NO_DATA_NOTE",
     "NO_MOVEMENT_NOTE",
+    "QUARRY_BERM_COLUMNS",
     "REPORT_COLUMNS",
     "DesignWriter",
     "OperationStart",
     "PreparedArea",
     "PreparedDesign",
     "PreparedEnvelope",
+    "PreparedQuarry",
+    "QuarryCalculated",
+    "QuarryParts",
     "Stored",
     "begin_design",
     "begin_envelope",
     "berm_rows",
     "RECOMPUTED",
+    "columns_of",
     "compute_area_steps",
     "compute_design_steps",
     "compute_envelope_steps",
+    "compute_quarry_steps",
     "masks_steps",
     "number",
     "prepare_area_units",
@@ -151,14 +194,25 @@ __all__ = [
     "prepare_envelope",
     "prepare_envelope_units",
     "prepare_excavation_area",
+    "prepare_quarry",
+    "prepare_quarry_units",
     "design_surface_start",
     "previous_comparison",
+    "quarry_berm_rows",
+    "quarry_compute_steps",
+    "quarry_domain",
+    "quarry_grids",
+    "quarry_notices",
+    "quarry_parts_units",
+    "quarry_report_rows",
     "recompute_run",
     "report_rows",
     "request_profiles",
     "require_version",
     "run_design",
     "run_envelope",
+    "run_excavation_area",
+    "run_quarry",
 ]
 
 _OBJ = "Envolventes y escalonado"
@@ -181,8 +235,22 @@ REPORT_COLUMNS: tuple[ColumnDef, ...] = (
     ColumnDef("quantity", "TEXT", True), ColumnDef("value", "DOUBLE", False),
     ColumnDef("unit_code", "TEXT", False), ColumnDef("note", "TEXT", False))
 """Las columnas de ``des_rpt_``: formato largo, como ``gis_mskr_`` (plan §5.2.3)."""
+QUARRY_BERM_COLUMNS: tuple[ColumnDef, ...] = (ColumnDef("surface", "TEXT", True), *BERM_COLUMNS)
+"""Las columnas de ``des_bmt_`` de una cantera (spec 014, T19; plan 014 §5.2.3): las bermas de
+las dos superficies, cada fila con su superficie (``final`` o ``exploitation``) delante de las de
+:data:`BERM_COLUMNS`."""
 _COLUMNS: Mapping[str, tuple[ColumnDef, ...]] = MappingProxyType({
-    provenance.BERM_TABLE: BERM_COLUMNS, provenance.REPORT_TABLE: REPORT_COLUMNS})
+    provenance.BERM_TABLE: BERM_COLUMNS, provenance.REPORT_TABLE: REPORT_COLUMNS,
+    provenance.QUARRY_REPORT_TABLE: REPORT_COLUMNS})
+
+
+def columns_of(op_type: str, family: str) -> tuple[ColumnDef, ...]:
+    """Las columnas de la tabla ``family`` de una operación ``op_type``: las de su familia salvo
+    las bermas de una cantera (:data:`QUARRY_BERM_COLUMNS`). ``KeyError`` si no es una tabla."""
+    if op_type == provenance.QUARRY and family == provenance.BERM_TABLE:
+        return QUARRY_BERM_COLUMNS
+    return _COLUMNS[family]
+
 
 Row = tuple[Any, ...]
 
@@ -259,20 +327,21 @@ def report_rows(report: DesignReport, *, unassigned_area_m2: float | None = None
     return rows
 
 
-def _names(family: str) -> tuple[str, ...]:
-    return tuple(column.name for column in _COLUMNS[family])
+def _names(columns: Sequence[ColumnDef]) -> tuple[str, ...]:
+    return tuple(column.name for column in columns)
 
 
-def _digest_steps(family: str, rows: Sequence[Row], crs: CrsRef
+def _digest_steps(family: str, columns: Sequence[ColumnDef], rows: Sequence[Row], crs: CrsRef
                   ) -> Generator[None, None, ContentDigest]:
-    """El hash (``core.gpkg_layer@1``) de la tabla ``family`` con ``rows``, en un GeoPackage en
-    memoria con la misma estructura (R4: fuera de la transacción), por pasos: una unidad por cada
-    trozo de filas que se inserta y por cada trozo que se lee y se hashea."""
+    """El hash (``core.gpkg_layer@1``) de la tabla ``family`` de columnas ``columns`` con
+    ``rows``, en un GeoPackage en memoria con la misma estructura (R4: fuera de la transacción),
+    por pasos: una unidad por cada trozo de filas que se inserta y por cada trozo que se lee y se
+    hashea."""
     conn = sqlite3.connect(":memory:")
     try:
         create_base(conn, crs)
-        create_attribute_table(conn, "digest", _COLUMNS[family], "digest")
-        names = _names(family)
+        create_attribute_table(conn, "digest", tuple(columns), "digest")
+        names = _names(columns)
         for first in range(0, len(rows), _DIGEST_ROWS_PER_UNIT):
             insert_rows(conn, "digest", names, rows[first:first + _DIGEST_ROWS_PER_UNIT])
             yield
@@ -572,6 +641,58 @@ def prepare_excavation_area(project: StoreProject, name: str, surface: str, *,
                   provenance.excavation_area_inputs(surface, loaded.uses()), (), supersedes)
 
 
+def _quarry_keys(request: QuarryRequest) -> tuple[str, ...]:
+    """Los parámetros de la 014 que lee la cantera ``request`` (los de ``quarry_params`` de
+    ``design.params``): el anillo, el aviso de desdoblado y, con zonas a conservar, su talud."""
+    return (CROWN_RING, UNSPLIT_THRESHOLD, UNSPLIT_MIN_AREA,
+            *((CONSERVE_SLOPE,) if request.conserve else ()))
+
+
+def _check_quarry_params(project: StoreProject, version: Version, request: QuarryRequest
+                         ) -> None:
+    """Como :func:`_check_profiles` para los parámetros de la 014 que lee la cantera: cada uno
+    con un valor dentro de su rango en la versión (el de su fila o, sin ella, el de su
+    definición). Si no, ``DesignError`` ``des.quarry_param_missing`` (el talud de conservación no
+    tiene valor por defecto, D-9) o ``des.quarry_param_range``, antes de registrar nada."""
+    keys = _quarry_keys(request)
+    with project.read() as conn:
+        found = ParameterStore(project).resolve_many(
+            conn, keys, (VERSION_SCOPE, PROJECT_SCOPE), version=version.uid)
+    for key in keys:
+        resolved = found.get(key)
+        if resolved is not None:
+            value = resolved.value
+        else:
+            declared = definition(key)
+            value = None if declared is None else declared.default
+        check_quarry_param(key, value)
+
+
+def prepare_quarry(project: StoreProject, request: QuarryRequest, *, version: str | None,
+                   masks: access.MaskSet | None = None,
+                   sectors: Sequence[DesignSector] | None = None,
+                   pending_sectors: Iterable[str] = (), touched_sectors: Iterable[str] = (),
+                   supersedes: str | None = None) -> OperationStart:
+    """Lo mismo que :func:`prepare_design` para ``des.quarry`` (spec 014, T19; RF-014-29) de
+    ``request``: los ajustes de ``quarry_settings`` (con los sectores pendientes y los que toca el
+    recinto), las entradas de ``quarry_inputs`` (la superficie de partida, lo que leen los lados,
+    las capas que usa, las máscaras, los sectores y las búsquedas) y los parámetros de
+    ``quarry_params`` (los cinco valores de los perfiles de los dos lados, los taludes de los
+    sectores, los de la 014 y los de la 013). Un perfil o un parámetro de la 014 sin valor, o fuera
+    de rango, se rechaza antes de registrar nada (RF-013-19; ``des.quarry_param_missing`` o
+    ``_range``)."""
+    found = require_version(project, version, provenance.QUARRY)
+    _check_profiles(project, found, provenance.quarry_profiles(request), tuple(BenchParam))
+    _check_quarry_params(project, found, request)
+    loaded = _loaded_masks(project, found, masks)
+    chosen = design_sectors(project, found.uid) if sectors is None else tuple(sectors)
+    inputs = provenance.quarry_inputs(request, loaded.uses(), available_tables(project))
+    params = provenance.quarry_params(request, sector_slopes=slope_params(chosen))
+    return _start(project, provenance.QUARRY, request.name, found, loaded,
+                  provenance.quarry_settings(request, pending_sectors, touched_sectors), inputs,
+                  params, supersedes)
+
+
 def begin_envelope(project: StoreProject, request: EnvelopeRequest, *, version: str | None,
                    masks: access.MaskSet | None = None,
                    sectors: Sequence[DesignSector] | None = None, profiles: Iterable[str] = (),
@@ -797,7 +918,7 @@ class DesignWriter:
         Se rechaza al llamar, como :meth:`grid_steps`, y una fila con otro número de columnas."""
         self._produces(family, "table")
         chosen = tuple(tuple(row) for row in rows)
-        width = len(_COLUMNS[family])
+        width = len(columns_of(self.op_type, family))
         for row in chosen:
             if len(row) != width:
                 raise ValueError(f"una fila de «{family}» lleva {width} columnas, no {len(row)}")
@@ -808,7 +929,8 @@ class DesignWriter:
         planned = provenance.dataset_spec(family, self.name, self.version_code)
         with self.project.read() as conn:
             self._check_place(conn, planned)
-        digest = yield from _digest_steps(family, rows, self.crs)
+        digest = yield from _digest_steps(family, columns_of(self.op_type, family), rows,
+                                          self.crs)
         spec = provenance.dataset_spec(family, self.name, self.version_code, content=digest)
         self._tables[family] = _Table(family, spec, rows)
         return spec
@@ -858,15 +980,16 @@ class DesignWriter:
     def _write_table(self, conn: sqlite3.Connection, table: _Table) -> None:
         spec = table.spec
         self._check_place(conn, spec)
+        columns = columns_of(self.op_type, table.family)
         if _table_exists(conn, spec.locator):
             conn.execute(f'DELETE FROM "{spec.locator}"')
         else:
             label = provenance.FAMILIES_BY_CODE[table.family].label
             create_attribute_table(
-                conn, spec.locator, _COLUMNS[table.family],
+                conn, spec.locator, columns,
                 f"{label} {self.name} {self.version_code}",
                 f"{label} «{self.name}» de la versión {self.version_code}, de Geoblender")
-        insert_rows(conn, spec.locator, _names(table.family), table.rows)
+        insert_rows(conn, spec.locator, _names(columns), table.rows)
 
     def commit(self, start: OperationStart | None = None, *, figures: Sequence[FigureSpec] = (),
                message: str | None = None) -> Stored:
@@ -968,8 +1091,10 @@ class DesignWriter:
 
 # --- Recalcular lo obsoleto ---------------------------------------------------------------------
 
-RECOMPUTED: tuple[str, ...] = provenance.REPRODUCIBLE
-"""Los tipos que repite «Recalcular lo obsoleto» (los dos de ``des``)."""
+RECOMPUTED: tuple[str, ...] = (*provenance.REPRODUCIBLE, provenance.EXCAVATION_AREA,
+                                provenance.QUARRY)
+"""Los tipos que repite «Recalcular lo obsoleto» aquí: los dos de la 013 y, de la 014, el recinto
+y la cantera (T19); los demás de la 014, cuando sus tareas los den."""
 _STORE_PHASE = "store"
 
 
@@ -1087,6 +1212,44 @@ class PreparedArea:
     start: OperationStart
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class QuarryParts:
+    """Lo que la cantera (``des.quarry``) lee del proyecto o de lo congelado, ya en la rejilla de
+    las máscaras: lo que necesita ``design.quarry.QuarryJob`` salvo el techo, que se calcula (plan
+    014 §5.3.1). La superficie de partida (``start``, con su rejilla); el dominio de trabajo, el
+    recinto con las etiquetas de sector (``domain``, :func:`quarry_domain`); por lado, las semillas
+    de la 013 del que no siembra la coronación (``seeds``) y la rejilla de anclas del que tiene el
+    ancla en rejilla (``anchors``); los fondos (``floors``) y los corredores (``corridors``), por
+    separado para sus avisos y juntos para el cálculo (``joined``, ``quarry.join_floors``); las
+    zonas a conservar (``conserve``) y las máscaras de las zonas de restauración por relleno
+    (``fill_zones``) y de «explotación hasta la final» (``to_final_zones``), si las hay."""
+
+    start: Raster
+    domain: DomainSet
+    seeds: Mapping[Surface, SeedSet]
+    anchors: Mapping[Surface, np.ndarray]
+    floors: quarry.FloorMap | None
+    corridors: quarry.CorridorMap | None
+    joined: quarry.FloorMap | None
+    conserve: tuple[quarry.ConserveZone, ...]
+    fill_zones: np.ndarray | None
+    to_final_zones: np.ndarray | None
+
+    @property
+    def area(self) -> np.ndarray:
+        """El recinto excavable (la máscara del dominio de trabajo)."""
+        return self.domain.mask
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PreparedQuarry:
+    """Lo que se lee y se comprueba antes de calcular una cantera (:func:`prepare_quarry_units`):
+    sus piezas (``parts``, :class:`QuarryParts`) y lo que anotará la operación (``start``)."""
+
+    parts: QuarryParts
+    start: OperationStart
+
+
 def prepare_envelope_units(project: StoreProject, request: EnvelopeRequest, version: Version,
                            masks: access.MaskSet, *, supersedes: str | None = None
                            ) -> Generator[None, None, PreparedEnvelope]:
@@ -1158,6 +1321,39 @@ def prepare_area_units(project: StoreProject, name: str, surface: str, version: 
     return PreparedArea(area, found, start)
 
 
+def prepare_quarry_units(project: StoreProject, request: QuarryRequest, version: Version,
+                         masks: access.MaskSet, *, supersedes: str | None = None
+                         ) -> Generator[None, None, PreparedQuarry]:
+    """Las unidades que preparan la cantera ``request`` de ``version`` con sus ``masks`` ya al día
+    (spec 014, T19; RF-014-29, RF-014-30): los sectores, la superficie de partida (leída y
+    comparada con la rejilla del proyecto), el recinto con sus sectores (:func:`quarry_domain`), el
+    rechazo de un sector del recinto con la búsqueda de intocables pendiente
+    (``des.sector_pending``, RF-014-30, como RF-013-05), las piezas del proyecto
+    (:func:`quarry_parts_units`) y :func:`prepare_quarry`. Devuelve la :class:`PreparedQuarry`.
+    Nada se escribe; los rechazos salen al avanzar."""
+    sectors = design_sectors(project, version.uid)
+    yield
+    frame = project_frame(project)
+    found = read_surface(project, request.start, version_uid=version.uid, expect=frame,
+                         role="superficie de partida")
+    yield
+    refs, labels = sector_layout(project, masks)
+    domain = quarry_domain(masks, found.values, refs, labels, version=version.code)
+    refuse_pending(touched(sectors, domain))  # RF-014-30
+    yield
+    geometry = masks.grid
+    parts = yield from quarry_parts_units(
+        request, masks, found, domain, features=lambda name: _features(project, name),
+        layer=lambda name: layer_cells(project, name, geometry),
+        surface=lambda name, what: read_surface(project, name, version_uid=version.uid,
+                                                expect=frame, role=what).values)
+    start = prepare_quarry(project, request, version=version.uid, masks=masks, sectors=sectors,
+                           touched_sectors=[ref.code for ref in domain.touched],
+                           supersedes=supersedes)
+    yield
+    return PreparedQuarry(parts, start)
+
+
 def compute_area_steps(writer: DesignWriter, name: str, prepared: PreparedArea,
                        budget_s: float = STEP_BUDGET_S
                        ) -> Generator[Progress, None, quarry.AreaOutcome]:
@@ -1172,6 +1368,284 @@ def compute_area_steps(writer: DesignWriter, name: str, prepared: PreparedArea,
     yield from pipeline.forward(_store_steps(
         writer.grid_steps(provenance.EXCAVATION_AREA_GRID, raster), budget_s, "el recinto"))
     return outcome
+
+
+# --- La cantera con dos superficies (spec 014, T19; RF-014-29 a RF-014-31) -----------------------
+
+
+def quarry_domain(masks: access.MaskSet, start: np.ndarray, refs: Sequence[SectorRef],
+                  labels: np.ndarray, *, version: str | None = None) -> DomainSet:
+    """El dominio de trabajo de una cantera: su recinto excavable (``quarry.excavation_area``, A1;
+    vacío, ``des.quarry_area_empty`` con lo que lo vacía; ``version``, el código que nombra) con
+    la etiqueta de sector de cada celda (``labels``, de los sectores ``refs``)."""
+    area = quarry.excavation_area(masks, start, version=version)
+    return domain_of(area, labels, refs, masks.grid.cell_area)
+
+
+def _conserve_cells(masks: access.MaskSet, zone: Zone, layer: Callable[[str], np.ndarray]
+                    ) -> np.ndarray:
+    """Las celdas de una zona a conservar: una restricción de la 012 (su zona en las máscaras) o
+    una capa de polígonos (``layer``); otra cosa es un error del programa."""
+    kind = ZoneKind(zone.kind)
+    if kind not in (ZoneKind.CONSTRAINT, ZoneKind.LAYER) or not zone.name:
+        raise ValueError(f"una zona a conservar es una restricción o una capa con su nombre, no "
+                         f"{zone!r}")
+    if kind is ZoneKind.CONSTRAINT:
+        return constraint_cells(masks, zone.name)
+    return layer(zone.name)
+
+
+def quarry_parts_units(request: QuarryRequest, masks: access.MaskSet, start: Raster,
+                       domain: DomainSet, *, features: Callable[[str], FeatureLayer],
+                       layer: Callable[[str], np.ndarray],
+                       surface: Callable[[str, str], np.ndarray]
+                       ) -> Generator[None, None, QuarryParts]:
+    """Las unidades que leen las piezas de la cantera ``request`` (:class:`QuarryParts`) en la
+    rejilla de ``masks`` con su partida ``start`` y su dominio ya formado (:func:`quarry_domain`),
+    con quien lee cada cosa por su nombre: ``features`` (una capa de entidades, ``FeatureLayer``),
+    ``layer`` (las celdas de una capa de polígonos) y ``surface`` (las cotas de una superficie o
+    rejilla, con lo que es en el mensaje). Lo comparten el proyecto (:func:`prepare_quarry_units`)
+    y la reproducción de lo congelado. Rechazos al avanzar: los de las semillas de la 013
+    (``seeds.check_source``, sus zonas), los fondos y los corredores (``quarry.floor_map``,
+    ``quarry.corridor_cells``, ``quarry.join_floors``), una zona a conservar sin zona y los de las
+    capas y las superficies."""
+    geometry = masks.grid
+    values = start.values
+    seeds: dict[Surface, SeedSet] = {}
+    anchors: dict[Surface, np.ndarray] = {}
+    for side_name in Surface:
+        side = request.side(side_name)
+        if side.seeds is not None:
+            check_source(side.seeds)
+            seeds[side_name] = yield from assemble_units(side.seeds, masks, domain, layer=layer,
+                                                         surface=surface)
+        if side.anchor_grid is not None:
+            anchors[side_name] = surface(side.anchor_grid, "anclas")
+            yield
+    floors = None
+    if request.floors is not None:
+        floors = quarry.floor_map(features(request.floors.layer), request.floors, values,
+                                  geometry)
+        yield
+    corridors = None
+    if request.corridors is not None:
+        corridors = quarry.corridor_cells(features(request.corridors.layer), request.corridors,
+                                          geometry)
+        yield
+    joined = quarry.join_floors(floors, corridors)
+    conserve = []
+    for zone in request.conserve:
+        cells = _conserve_cells(masks, zone, layer)  # sin nombre, ValueError
+        conserve.append(quarry.ConserveZone(str(zone.name), cells))
+        yield
+    fill_zones = None if request.fill_zones is None else layer(request.fill_zones)
+    to_final_zones = None if request.to_final_layer is None else layer(request.to_final_layer)
+    yield
+    return QuarryParts(start, domain, MappingProxyType(seeds), MappingProxyType(anchors), floors,
+                       corridors, joined, tuple(conserve), fill_zones, to_final_zones)
+
+
+def _ceiling_metric(request: QuarryRequest) -> Metric:
+    """La métrica del techo de conservación, que es uno para los dos lados (T13): la de los dos si
+    coinciden y, si no, el *chamfer* 5×5 por defecto de ADR-0014."""
+    metrics = {Metric(request.final.metric), Metric(request.exploitation.metric)}
+    return metrics.pop() if len(metrics) == 1 else Metric.CHAMFER5
+
+
+def quarry_notices(request: QuarryRequest, masks: access.MaskSet, parts: QuarryParts,
+                   ring_cells: int, outcome: quarry.QuarryOutcome) -> tuple[Notice, ...]:
+    """Los avisos y las notas de la cantera que no son del escalonado de un lado, en el orden en
+    que se enseñan: los de sus capas (fondos sobre el terreno, zonas a conservar sin dato,
+    corredores más largos que su eje más su ancho; los de la vista previa), las semillas de la 013
+    de un lado que caen fuera de la coronación y de las zonas a sostener, por grupos (RF-014-03),
+    el desdoblado sobre terreno sin explotar, por zonas (RF-014-17), y «explotación hasta la
+    final» (RF-014-18). Con sus valores como números (``preview.Notice``)."""
+    geometry = masks.grid
+    start = parts.start.values
+    found = list(_quarry_warnings(start, parts.floors, parts.conserve, parts.corridors,
+                                  geometry.cell_area))
+    for side_name in Surface:
+        seeds = parts.seeds.get(side_name)
+        if seeds is None:
+            continue
+        groups = quarry.outside_crown(seeds, parts.area, start, masks, ring_cells)
+        if groups:
+            cells = sum(group.cells for group in groups)
+            found.append(Notice("des.quarry_seeds_outside", {
+                "cells": cells, "area": cells * geometry.cell_area, "groups": len(groups)}))
+            found.extend(Notice("des.quarry_seed_group", {
+                "group": group.group, "cells": group.cells, "area": group.area_m2,
+                "x": round(group.x, 2), "y": round(group.y, 2)}) for group in groups)
+    unsplit = outcome.unsplit
+    if unsplit.zones:
+        found.append(Notice("des.quarry_unsplit_zones", {
+            "zones": len(unsplit.zones), "area": unsplit.area_ha, "volume": unsplit.volume_m3,
+            "threshold": unsplit.threshold_m, "min_area": unsplit.min_area_ha}))
+        found.extend(Notice("des.quarry_unsplit_zone", {
+            "zone": zone.zone, "area": zone.area_ha, "volume": zone.volume_m3,
+            "x": round(zone.x, 2), "y": round(zone.y, 2)}) for zone in unsplit.zones)
+    if outcome.to_final is not None:
+        found.append(Notice("des.quarry_to_final", {
+            "zones": len(outcome.to_final.zones), "area": outcome.to_final.area_ha,
+            "volume": outcome.to_final.volume_m3}))
+    return tuple(found)
+
+
+def quarry_compute_steps(request: QuarryRequest, masks: access.MaskSet, parts: QuarryParts,
+                         values: Mapping[str, object], *, pending: tuple[str, ...] = (),
+                         budget_s: float = STEP_BUDGET_S
+                         ) -> Generator[Progress, None, QuarryCalculated]:
+    """Los pasos que calculan la cantera ``request`` con sus piezas ``parts`` y los parámetros
+    ``values`` (clave → valor: los que anotó la operación, los que se resuelven hoy o los
+    congelados), sin escribir nada (``yield from``): el techo de conservación de sus zonas a
+    conservar, uno para los dos lados (``quarry.conservation_ceiling_steps``, con el talud de
+    conservación y la métrica de :func:`_ceiling_metric`), y las dos superficies
+    (``quarry.quarry_steps``, con el anillo de coronación, el espesor mínimo, la tolerancia, el
+    umbral y el aviso de desdoblado). ``pending``: los nombres de los sectores con la búsqueda
+    pendiente que se marcan. Devuelve la :class:`QuarryCalculated`: el ``QuarryOutcome`` y sus
+    avisos (:func:`quarry_notices`). Lo comparten «Calcular», el recálculo y la reproducción."""
+    geometry = masks.grid
+    start = parts.start.values
+    ring = int(check_quarry_param(CROWN_RING, values.get(CROWN_RING)))
+    ceiling = None
+    if parts.conserve:
+        ceiling = yield from pipeline.forward(quarry.conservation_ceiling_steps(
+            parts.conserve, start, geometry, values.get(CONSERVE_SLOPE),  # type: ignore[arg-type]
+            metric=_ceiling_metric(request), budget_s=budget_s))
+    job = quarry.QuarryJob(
+        request, start, masks, parts.domain, values, ring, number(values, VERIFY_MIN_THICKNESS),
+        number(values, TOLERANCE_FACE), number(values, WARNING_RATIO), seeds=parts.seeds,
+        floors=parts.joined, ceiling=ceiling, anchors=parts.anchors, pending=pending,
+        fill_zones=parts.fill_zones, unsplit_threshold_m=number(values, UNSPLIT_THRESHOLD),
+        unsplit_min_area_ha=number(values, UNSPLIT_MIN_AREA),
+        to_final_zones=parts.to_final_zones)
+    outcome: quarry.QuarryOutcome = yield from pipeline.forward(
+        quarry.quarry_steps(job, budget_s=budget_s))
+    return QuarryCalculated(outcome, quarry_notices(request, masks, parts, ring, outcome))
+
+
+def quarry_grids(outcome: quarry.QuarryOutcome) -> tuple[tuple[str, np.ndarray, str], ...]:
+    """Las rejillas de la cantera que se escriben (familia, rejilla, lo que es), en el orden de su
+    tipo: la explotación y la final (con la regla de orden y, en su caso, «explotación hasta la
+    final»), la envolvente de cada lado y la clasificación (códigos de ``CellClass``, sin dato
+    fuera del dominio; P-1)."""
+    return ((provenance.EXPLOITATION_GRID, outcome.exploitation_grid,
+             "la superficie de explotación"),
+            (provenance.FINAL_GRID, outcome.final_grid, "la superficie final"),
+            (provenance.EXPLOITATION_ENVELOPE_GRID, outcome.exploitation.envelope.grid,
+             "la envolvente de la explotación"),
+            (provenance.FINAL_ENVELOPE_GRID, outcome.final.envelope.grid,
+             "la envolvente de la final"),
+            (provenance.CLASSIFICATION_GRID, outcome.classes.grid, "la clasificación"))
+
+
+def quarry_berm_rows(outcome: quarry.QuarryOutcome) -> list[Row]:
+    """Las filas de ``des_bmt_`` de una cantera (:data:`QUARRY_BERM_COLUMNS`): las bermas medidas
+    de cada lado tal como se calculó (``SideOutcome.design.berms``), primero las de la final, cada
+    una con su superficie delante (:func:`berm_rows`)."""
+    return [(side_name.value, *row) for side_name in Surface
+            for row in berm_rows(outcome.side(side_name).design.berms)]
+
+
+def _notice_text(notice: Notice) -> str:
+    """Un aviso o una nota como en ``des_rpt_``: su código y sus valores en JSON."""
+    return json.dumps({"code": notice.code, "values": dict(notice.values)}, sort_keys=True,
+                      ensure_ascii=False, allow_nan=False, default=_plain)
+
+
+NO_DATA_NOTE = "no_data"
+"""La nota de una cota que no existe porque ninguna celda del dominio tiene dato."""
+
+
+def quarry_report_rows(outcome: quarry.QuarryOutcome, notices: Sequence[Notice]) -> list[Row]:
+    """Las filas de ``des_qrp_`` (``quantity, value, unit_code, note``, como ``des_rpt_``) de la
+    cantera ``outcome`` (RF-014-15 a RF-014-18): las celdas que cambió la regla de orden; la
+    clasificación del total (excavación de la explotación, desdoblado, relleno de restauración y
+    sus celdas, las celdas sin diferencia y sin dato y el espesor mínimo); las cotas mínima y
+    máxima de cada superficie (``final_min_m``…; sin dato, una fila sin valor con la nota
+    :data:`NO_DATA_NOTE`); con «explotación hasta la final», lo que pasa a la explotación y sus
+    celdas; las filas del informe de la 013 de cada lado (:func:`report_rows`) con su superficie
+    delante (``final.cut_m3``…) y sus avisos y notas con la superficie en el JSON; y, al final,
+    ``notices`` (:func:`quarry_notices`) con su código y sus valores en JSON. Un valor NaN o
+    infinito es un error del programa (``ValueError``)."""
+    total = outcome.classes.total
+    rows: list[Row] = [("order_adjusted_cells", _real("order_adjusted_cells", outcome.adjusted),
+                        "-", None)]
+    for key, value, unit in (
+            ("exp_cut_m3", total.exp_cut_m3, "m3"), ("exp_cut_cells", total.exp_cut_cells, "-"),
+            ("unsplit_m3", total.unsplit_m3, "m3"), ("unsplit_cells", total.unsplit_cells, "-"),
+            ("restoration_fill_m3", total.fill_m3, "m3"),
+            ("restoration_fill_cells", total.fill_cells, "-"),
+            ("none_cells", total.none_cells, "-"), ("nodata_cells", total.nodata_cells, "-"),
+            ("min_thickness_m", outcome.classes.min_thickness_m, "m")):
+        rows.append((key, _real(key, value), unit, None))
+    for side_name in Surface:
+        levels = total.levels(side_name)
+        for index, end in enumerate(("min", "max")):
+            key = f"{side_name.value}_{end}_m"
+            rows.append((key, None, "m", NO_DATA_NOTE) if levels is None
+                        else (key, _real(key, levels[index]), "m", None))
+    if outcome.to_final is not None:
+        rows.append(("to_final_m3", _real("to_final_m3", outcome.to_final.volume_m3), "m3",
+                     None))
+        rows.append(("to_final_cells", _real("to_final_cells", outcome.to_final.lowered_cells),
+                     "-", None))
+    for side_name in Surface:
+        side = outcome.side(side_name).design
+        for quantity, value, unit, note in report_rows(
+                side.report, unassigned_area_m2=side.unassigned_area_m2):
+            if quantity in _NOTICE_ROWS:
+                data = json.loads(note)
+                data["surface"] = side_name.value
+                rows.append((quantity, None, None, json.dumps(
+                    data, sort_keys=True, ensure_ascii=False, allow_nan=False)))
+            else:
+                rows.append((f"{side_name.value}.{quantity}", value, unit, note))
+    for notice in notices:
+        rows.append((notice.severity, None, None, _notice_text(notice)))
+    return rows
+
+
+_NOTICE_ROWS = frozenset({"warning", "note"})
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class QuarryCalculated:
+    """La cantera calculada y sus avisos (``outcome``, ``notices``): lo que devuelven los pasos de
+    :func:`compute_quarry_steps`."""
+
+    outcome: quarry.QuarryOutcome
+    notices: tuple[Notice, ...]
+
+
+def compute_quarry_steps(writer: DesignWriter, request: QuarryRequest, masks: access.MaskSet,
+                         prepared: PreparedQuarry, values: Mapping[str, object],
+                         settings: Mapping[str, Any], budget_s: float = STEP_BUDGET_S
+                         ) -> Generator[Progress, None, QuarryCalculated]:
+    """Lo mismo que :func:`compute_design_steps` para la cantera ``request`` (spec 014, T19;
+    RF-014-29): la calcula (:func:`quarry_compute_steps`, con las piezas de ``prepared``, los
+    parámetros ``values`` y los sectores pendientes de los ajustes ``settings``) y deja sus cinco
+    rejillas en los temporales de ``writer`` (:func:`quarry_grids`) y prepara sus dos tablas
+    (:func:`quarry_berm_rows`, :func:`quarry_report_rows`), **sin confirmar**. Devuelve la
+    :class:`QuarryCalculated`."""
+    yield Progress("quarry", 0, 1, f"Preparando la cantera «{request.name}»…")
+    parts = prepared.parts
+    waiting = set(provenance.settings_pending(settings))
+    pending = tuple(ref.name for ref in parts.domain.sectors if ref.code in waiting)
+    calculated: QuarryCalculated = yield from quarry_compute_steps(
+        request, masks, parts, values, pending=pending, budget_s=budget_s)
+    outcome, notices = calculated.outcome, calculated.notices
+    geometry, crs, vertical = parts.start.grid, writer.crs, writer.vertical
+    for family, grid, what in quarry_grids(outcome):
+        yield from pipeline.forward(_store_steps(
+            writer.grid_steps(family, Raster(geometry, grid, crs, vertical)), budget_s, what))
+    yield from pipeline.forward(_store_steps(
+        writer.table_steps(provenance.BERM_TABLE, quarry_berm_rows(outcome)), budget_s,
+        "la tabla de bermas"))
+    yield from pipeline.forward(_store_steps(
+        writer.table_steps(provenance.QUARRY_REPORT_TABLE, quarry_report_rows(outcome, notices)),
+        budget_s, "el informe de la cantera"))
+    return calculated
 
 
 def compute_envelope_steps(project: StoreProject, writer: DesignWriter, request: EnvelopeRequest,
@@ -1290,12 +1764,47 @@ def run_design(project: StoreProject, request: DesignRequest, surface: str, *,
     return handle, _design_run(project, handle, request, surface, loaded, prepared, budget_s)
 
 
+def run_excavation_area(project: StoreProject, name: str, surface: str, *, version: str | None,
+                        masks: access.MaskSet | None = None, supersedes: str | None = None,
+                        budget_s: float = STEP_BUDGET_S
+                        ) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Lo mismo que :func:`run_envelope` para ``des.excavation_area`` (spec 014, T19; RF-014-01):
+    el recinto ``name`` de la versión sobre la superficie de partida ``surface``, de una vez y sin
+    confirmar (el recálculo de lo obsoleto, :func:`recompute_run`). Al llamar, sin empezar nada,
+    los rechazos de :func:`prepare_area_units` (un recinto vacío, el nombre…)."""
+    found = require_version(project, version, provenance.EXCAVATION_AREA)
+    loaded = _loaded_masks(project, found, masks)
+    prepared = _result_of(prepare_area_units(project, name, surface, found, loaded,
+                                             supersedes=supersedes))
+    handle = prepared.start.begin(project)
+    return handle, _area_run(project, handle, name, prepared, budget_s)
+
+
+def run_quarry(project: StoreProject, request: QuarryRequest, *, version: str | None,
+               masks: access.MaskSet | None = None, supersedes: str | None = None,
+               budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Lo mismo que :func:`run_envelope` para ``des.quarry`` (spec 014, T19; RF-014-29,
+    RF-014-31): las dos superficies de ``request`` en la versión, de una vez y sin confirmar (el
+    recálculo de lo obsoleto, :func:`recompute_run`), con lo que lee hoy: las máscaras de la
+    versión, los sectores, la superficie de partida, las capas y los parámetros, resueltos versión
+    → proyecto. Al llamar, sin empezar nada, los rechazos de :func:`prepare_quarry_units` (un
+    sector del recinto con la búsqueda pendiente, RF-014-30; un perfil o un parámetro de la 014 sin
+    valor; las capas…)."""
+    found = require_version(project, version, provenance.QUARRY)
+    loaded = _loaded_masks(project, found, masks)
+    prepared = _result_of(prepare_quarry_units(project, request, found, loaded,
+                                               supersedes=supersedes))
+    handle = prepared.start.begin(project)
+    return handle, _quarry_run(project, handle, request, loaded, prepared, budget_s)
+
+
 def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
                   ) -> tuple[OperationHandle, Iterator[Progress]]:
     """Repite la operación de ``des`` de ``request`` (``RecomputeRequest`` de «Recalcular lo
     obsoleto», RF-008-26; RF-013-17; plan 013 §5.3.2): **sin pedir confirmación** —la operación ya
     existe y se repite con sus ajustes—, empieza la operación nueva, que sustituye a la anterior en
-    la revisión abierta de **su** versión (:func:`run_envelope`, :func:`run_design`), con lo que
+    la revisión abierta de **su** versión (:func:`run_envelope`, :func:`run_design` y, de la 014,
+    :func:`run_excavation_area` y :func:`run_quarry`; RF-014-31), con lo que
     lee hoy: las máscaras de la versión, los sectores, las superficies y los parámetros, resueltos
     de nuevo versión → proyecto (un perfil cambiado solo en V02 se lee de V02). Devuelve su
     ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama (en Blender, la cola de
@@ -1313,6 +1822,14 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
         return run_envelope(project, provenance.envelope_request(request.settings),
                             version=request.version, supersedes=request.operation_uid,
                             budget_s=budget_s)
+    if request.op_type == provenance.EXCAVATION_AREA:
+        name, surface = provenance.excavation_area_start(request.settings)
+        return run_excavation_area(project, name, surface, version=request.version,
+                                   supersedes=request.operation_uid, budget_s=budget_s)
+    if request.op_type == provenance.QUARRY:
+        return run_quarry(project, provenance.quarry_request(request.settings),
+                          version=request.version, supersedes=request.operation_uid,
+                          budget_s=budget_s)
     return run_design(project, provenance.design_request(request.settings),
                       provenance.design_start(request.settings), version=request.version,
                       supersedes=request.operation_uid, budget_s=budget_s)
@@ -1324,6 +1841,25 @@ def _envelope_run(project: StoreProject, handle: OperationHandle, envelope: Enve
     with DesignWriter.resume(project, handle) as writer:
         outcome: pipeline.EnvelopeOutcome = yield from compute_envelope_steps(
             project, writer, envelope, masks, seeds, _values(handle), budget_s)
+        stored = writer.commit(figures=outcome.figures, message=outcome.message)
+        yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
+
+
+def _area_run(project: StoreProject, handle: OperationHandle, name: str, prepared: PreparedArea,
+              budget_s: float) -> Generator[Progress, None, None]:
+    with DesignWriter.resume(project, handle) as writer:
+        outcome = yield from compute_area_steps(writer, name, prepared, budget_s)
+        stored = writer.commit(figures=outcome.figures, message=outcome.message)
+        yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
+
+
+def _quarry_run(project: StoreProject, handle: OperationHandle, request: QuarryRequest,
+                masks: access.MaskSet, prepared: PreparedQuarry, budget_s: float
+                ) -> Generator[Progress, None, None]:
+    with DesignWriter.resume(project, handle) as writer:
+        calculated = yield from compute_quarry_steps(writer, request, masks, prepared,
+                                                     _values(handle), handle.settings, budget_s)
+        outcome = calculated.outcome
         stored = writer.commit(figures=outcome.figures, message=outcome.message)
         yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
 

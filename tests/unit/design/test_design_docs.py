@@ -137,6 +137,14 @@ PENDING_014_API = frozenset({
     "excavation_area_run",
     # T12: design.preview (el resumen de la vista previa de la cantera).
     "QuarryPreview", "quarry_summarize_steps",
+    # T19: design.provenance, design.store, design.steps y design.reproduce (la operación
+    # des.quarry y el recálculo y la reproducción de la cantera y del recinto).
+    "quarry_inputs", "quarry_params", "quarry_profiles", "quarry_request", "quarry_settings",
+    "side_role", "columns_of", "PreparedQuarry", "QuarryCalculated", "QuarryParts",
+    "compute_quarry_steps", "prepare_quarry", "prepare_quarry_units", "quarry_berm_rows",
+    "quarry_compute_steps", "quarry_domain", "quarry_grids", "quarry_notices",
+    "quarry_parts_units", "quarry_report_rows", "run_excavation_area", "run_quarry", "quarry_run",
+    "reproduce_excavation_area", "reproduce_quarry",
 })
 # Los módulos nuevos de la 014 que aún no tienen fila en la ficha (la T36 se la da y vacía esto).
 PENDING_014_MODULES = frozenset({
