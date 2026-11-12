@@ -150,7 +150,9 @@ PENDING_014_MODULES = frozenset({
     # floor_anchor_steps, anchored_request; T13: SIDE_NAMES, SideJob, SideOutcome, join_floors,
     # side_steps; T16: ORDER_NAMES, ORDER_TOLERANCE_M, OrderedSurfaces, QuarryJob, QuarryOutcome,
     # order_surfaces, check_order, quarry_steps; T17: CLASS_NAMES, CLASS_CELLS_PER_UNIT,
-    # ClassTotals, Classification, classify_steps, classification_figures
+    # ClassTotals, Classification, classify_steps, classification_figures; T18: UNEXPLOITED_M,
+    # TO_FINAL_NAME, UnsplitZone, UnsplitZones, unsplit_zones_steps, ToFinal, to_final_steps,
+    # to_final_figures
 })
 
 

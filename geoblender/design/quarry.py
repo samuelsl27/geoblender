@@ -83,9 +83,19 @@
   excavación de la explotación, sus áreas y las cotas mínima y máxima de cada superficie, en total
   y por sector (:class:`ClassTotals`); :func:`classification_figures`, sus cifras CALCULADO.
   :func:`quarry_steps` la da con las dos superficies.
+- :func:`unsplit_zones_steps` (T18; RF-014-17; A9): **el aviso** de que la explotación no llega a
+  la final (error 60): el desdoblado de más del umbral sobre terreno sin explotar (la explotación
+  a menos de :data:`UNEXPLOITED_M` del terreno) en zonas conexas de al menos el área mínima
+  (:class:`UnsplitZones`, :class:`UnsplitZone`: área, volumen y centro de cada una).
+- :func:`to_final_steps` (T18; RF-014-18; A9): **«explotación hasta la final»** en unas celdas
+  (:class:`ToFinal`): la explotación baja con bancos de su perfil anclados a sus cotas hasta la
+  cota de su ancla inmediatamente por encima de la final, ``T = a + h·⌈(final − a)/h⌉``, sin
+  quedar por debajo de la final y con transición al resto a la cara de su perfil
+  (``máx(final, mín(explotación, ENV↑(T, tan(cara)·malla)))``), y el volumen que pasa del
+  desdoblado a la explotación (:func:`to_final_figures`, ``des.to_final_m3``). :func:`quarry_steps`
+  avisa siempre y aplica el modo del diseño (ninguna zona, las avisadas o las de una capa; P-2).
 
-«Explotación hasta la final» llega con su tarea. Python puro con numpy (nivel 8): no importa
-``reserves`` ni ``bl``; no escribe nada.
+Python puro con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no escribe nada.
 """
 
 from __future__ import annotations
@@ -111,13 +121,16 @@ from .envelopes import (
     BLOCK_GROUP,
     CELLS_PER_UNIT,
     EVALS_PER_UNIT,
+    TOLERANCE_M,
     SlopeField,
+    SlopeRule,
     _exact_work,
     chamfer_units,
     constant_slope,
     envelope_steps,
+    sector_slope,
 )
-from .grids import _label_units, _nearest_units, dilate_square
+from .grids import Labels, _label_units, _nearest_units, dilate_square
 from .messages import DesignError, render
 from .model import (
     AnchorMode,
@@ -135,8 +148,16 @@ from .model import (
     SeedSource,
     SlopeMode,
     Surface,
+    ToFinalMode,
 )
-from .params import CONSERVE_SLOPE, CROWN_RING, check_quarry_param
+from .params import (
+    CONSERVE_SLOPE,
+    CROWN_RING,
+    QUARRY_PARAMS,
+    UNSPLIT_MIN_AREA,
+    UNSPLIT_THRESHOLD,
+    check_quarry_param,
+)
 from .pipeline import (
     DesignJob,
     DesignOutcome,
@@ -164,6 +185,8 @@ __all__ = [
     "ORDER_NAMES",
     "ORDER_TOLERANCE_M",
     "SIDE_NAMES",
+    "TO_FINAL_NAME",
+    "UNEXPLOITED_M",
     "AreaOutcome",
     "AreaPart",
     "ClassTotals",
@@ -182,6 +205,9 @@ __all__ = [
     "SeedGroup",
     "SideJob",
     "SideOutcome",
+    "ToFinal",
+    "UnsplitZone",
+    "UnsplitZones",
     "anchored_request",
     "apply_ceiling",
     "area_outcome",
@@ -206,6 +232,9 @@ __all__ = [
     "outside_crown",
     "quarry_steps",
     "side_steps",
+    "to_final_figures",
+    "to_final_steps",
+    "unsplit_zones_steps",
     "with_floors",
 ]
 
@@ -890,21 +919,28 @@ def _zone_masks(zones: Sequence[ConserveZone], shape: tuple[int, ...]) -> list[n
     return found
 
 
+def _rising_work(seed: np.ndarray, geometry: Grid, slope: SlopeField, metric: Metric,
+                 name: str) -> Generator[None, None, np.ndarray]:
+    """Las unidades de la envolvente **ascendente** de la 013 de ``seed`` con ``slope`` y
+    ``metric`` (la euclídea exacta, con una pendiente constante), con ``name`` en sus mensajes:
+    su rejilla, o ``+inf`` en toda la rejilla sin ninguna semilla."""
+    if not np.isfinite(seed).any():
+        yield None
+        return np.full(seed.shape, np.inf)
+    if metric is Metric.EXACT:
+        found = yield from _exact_work(seed, geometry, slope, Direction.UP, name,
+                                       CELLS_PER_UNIT, EVALS_PER_UNIT, BLOCK_CELLS, BLOCK_GROUP)
+    else:
+        found = yield from chamfer_units(seed, geometry, slope, Direction.UP, name=name)
+    return found.grid
+
+
 def _ceiling_work(seed: np.ndarray, geometry: Grid, slope: SlopeField, metric: Metric,
                   zone: np.ndarray, names: tuple[str, ...], nodata: tuple[int, ...],
                   slope_deg: float) -> Generator[None, None, ConservationCeiling]:
     """Las unidades del techo: la envolvente ascendente de la 013 de ``seed`` con ``slope`` y
     ``metric``; sin ninguna semilla, ``+inf`` en toda la rejilla (no hay techo)."""
-    if not np.isfinite(seed).any():
-        yield None
-        grid = np.full(seed.shape, np.inf)
-    elif metric is Metric.EXACT:
-        found = yield from _exact_work(seed, geometry, slope, Direction.UP, CEILING_NAME,
-                                       CELLS_PER_UNIT, EVALS_PER_UNIT, BLOCK_CELLS, BLOCK_GROUP)
-        grid = found.grid
-    else:
-        found = yield from chamfer_units(seed, geometry, slope, Direction.UP, name=CEILING_NAME)
-        grid = found.grid
+    grid = yield from _rising_work(seed, geometry, slope, metric, CEILING_NAME)
     return ConservationCeiling(grid, zone, names, nodata, slope_deg, geometry.cell_area)
 
 
@@ -1702,8 +1738,8 @@ def classification_figures(name: str, classes: Classification) -> tuple[FigureSp
     de la explotación, el desdoblado y el relleno de restauración (m³), sus áreas (ha) y las cotas
     mínima y máxima de cada superficie (m; con la superficie en su ámbito, y solo si tiene dato),
     con el ámbito de ``provenance.quarry_figure_scope``. Lo que pasa a la explotación con
-    «explotación hasta la final» (``des.to_final_m3``) es de A9. Un valor no finito es un error
-    del programa (``ValueError``)."""
+    «explotación hasta la final» (``des.to_final_m3``) lo da :func:`to_final_figures`. Un valor no
+    finito es un error del programa (``ValueError``)."""
     found: list[FigureSpec] = []
     for item in (classes.total, *classes.sectors):
         if item.sector is not None and not item.sector.code:
@@ -1737,6 +1773,344 @@ def _figure_value(key: str, value: float) -> float:
     return number
 
 
+# --- Explotación hasta la final (T18; A9) ---------------------------------------------------------
+
+UNEXPLOITED_M = 0.3
+"""El terreno sigue **sin explotar** donde la explotación queda a menos de esto de él (m;
+RF-014-17). Es la definición de la spec, no un parámetro (plan 014 §5.2.2)."""
+TO_FINAL_NAME = "explotación hasta la final"
+"""El nombre de la envolvente de «explotación hasta la final» en los mensajes de la 013
+(RF-013-15): «<cantera> (explotación hasta la final)»."""
+_TO_FINAL_FIGURE = "des.to_final_m3"
+
+
+@dataclass(frozen=True, slots=True)
+class UnsplitZone:
+    """Una zona conexa (4 vecinos) de desdoblado (A9; RF-014-17, RF-014-18): su número ``zone``
+    (desde 1, en el orden de su primera celda recorriendo la rejilla fila a fila desde el norte),
+    sus ``cells``, su ``area_m2``, su ``volume_m3`` (el desdoblado de sus celdas, ``Σ
+    (explotación − final) · área de celda``) y el centro ``x``, ``y`` (m, absolutos en float64: la
+    media de los centros de sus celdas)."""
+
+    zone: int
+    cells: int
+    area_m2: float
+    volume_m3: float
+    x: float
+    y: float
+
+    @property
+    def area_ha(self) -> float:
+        """Su área (ha)."""
+        return self.area_m2 / _HECTARE_M2
+
+
+def _band_rows(geometry: Grid) -> int:
+    """Las filas de una unidad de trabajo por bandas (:data:`CLASS_CELLS_PER_UNIT` celdas)."""
+    return max(1, CLASS_CELLS_PER_UNIT // max(geometry.ncols, 1))
+
+
+def _zone_units(labels: Labels, delta: np.ndarray, geometry: Grid,
+                chosen: Sequence[int] | None = None
+                ) -> Generator[None, None, tuple[UnsplitZone, ...]]:
+    """Las unidades (una por banda de filas) de las zonas de las componentes ``labels`` (todas, o
+    las etiquetas ``chosen`` en su orden), numeradas desde 1, con el volumen de ``delta`` (m) en
+    sus celdas y su centro absoluto."""
+    count = labels.count + 1
+    row_sum = np.zeros(count)
+    col_sum = np.zeros(count)
+    depth = np.zeros(count)
+    step = _band_rows(geometry)
+    for first in range(0, geometry.nrows, step):
+        band = labels.grid[first:first + step].ravel()
+        picked = np.flatnonzero(band)
+        tags = band[picked]
+        rows, cols = np.divmod(picked, geometry.ncols)
+        row_sum += np.bincount(tags, weights=rows + first, minlength=count)
+        col_sum += np.bincount(tags, weights=cols, minlength=count)
+        depth += np.bincount(tags, weights=delta[first:first + step].ravel()[picked],
+                             minlength=count)
+        yield None
+    found = []
+    for number, index in enumerate(range(1, count) if chosen is None else chosen, start=1):
+        cells = int(labels.sizes[index - 1])
+        x = geometry.west + (col_sum[index] / cells + 0.5) * geometry.dx
+        y = geometry.north - (row_sum[index] / cells + 0.5) * geometry.dy
+        found.append(UnsplitZone(number, cells, cells * geometry.cell_area,
+                                 float(depth[index]) * geometry.cell_area, float(x), float(y)))
+    return tuple(found)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class UnsplitZones:
+    """**El aviso** de que la explotación no llega a la final (A9; RF-014-17, error 60):
+    ``candidates``, las celdas de desdoblado con más del umbral de diferencia sobre terreno sin
+    explotar (máscara nueva); las ``zones`` avisadas (:class:`UnsplitZone`: las componentes
+    4-conexas de ``candidates`` con al menos el área mínima, numeradas desde 1) y sus celdas
+    (``warned``); y el umbral (``threshold_m``, m) y el área mínima (``min_area_ha``, ha) con que
+    se buscaron."""
+
+    zones: tuple[UnsplitZone, ...]
+    candidates: np.ndarray
+    warned: np.ndarray
+    threshold_m: float
+    min_area_ha: float
+
+    @property
+    def area_ha(self) -> float:
+        """El área de las zonas avisadas (ha)."""
+        return math.fsum(zone.area_m2 for zone in self.zones) / _HECTARE_M2
+
+    @property
+    def volume_m3(self) -> float:
+        """El desdoblado de las zonas avisadas (m³)."""
+        return math.fsum(zone.volume_m3 for zone in self.zones)
+
+    @property
+    def notices(self) -> tuple[str, ...]:
+        """El aviso en español: ``des.quarry_unsplit_zones`` (las zonas, su área y su volumen, el
+        umbral y el área mínima, y el modo que lo resuelve) y una ``des.quarry_unsplit_zone`` por
+        zona (área, volumen y centro al cm); ``()`` sin zonas avisadas."""
+        if not self.zones:
+            return ()
+        lines = [render("des.quarry_unsplit_zones", zones=len(self.zones),
+                        area=round(self.area_ha, 2), volume=round(self.volume_m3, 1),
+                        threshold=self.threshold_m, min_area=self.min_area_ha)]
+        lines.extend(render("des.quarry_unsplit_zone", zone=zone.zone,
+                            area=round(zone.area_ha, 2), volume=round(zone.volume_m3, 1),
+                            x=round(zone.x, 2), y=round(zone.y, 2)) for zone in self.zones)
+        return tuple(lines)
+
+
+def unsplit_zones_steps(final: np.ndarray, exploitation: np.ndarray, start: np.ndarray,
+                        classes: Classification, geometry: Grid, threshold_m: float | None,
+                        min_area_ha: float | None, *, budget_s: float = STEP_BUDGET_S
+                        ) -> Iterator[Progress]:
+    """**El aviso de A9** (RF-014-17, error 60; D-5) sobre las dos superficies ya ordenadas
+    ``final`` y ``exploitation`` (m, de la forma de ``geometry``) y su clasificación ``classes``
+    (:func:`classify_steps`), por pasos de ``budget_s`` como mucho; el último ``Progress`` (fase
+    ``unsplit``) lleva las :class:`UnsplitZones`. Son del aviso las celdas **desdobladas** de la
+    clasificación con ``Δ = explotación − final`` **mayor** que el umbral ``threshold_m`` (m, el
+    parámetro ``des.quarry.unsplit_threshold_m``) sobre **terreno sin explotar**: ``|explotación −
+    z| <`` :data:`UNEXPLOITED_M` con la de partida ``start``. Se avisan sus zonas 4-conexas con un
+    área de **al menos** ``min_area_ha`` (ha, ``des.quarry.unsplit_min_area_ha``), con su área, su
+    volumen y su centro. El desdoblado bajo el umbral, sobre terreno ya excavado o en zonas más
+    pequeñas no se avisa: cuenta en la clasificación.
+
+    Rechazos al llamar: el umbral y el área mínima, como sus parámetros (``check_quarry_param``:
+    ``des.quarry_param_missing`` o ``des.quarry_param_range``); ``ValueError`` (error del programa)
+    si las rejillas no son de la forma de ``geometry``. Ninguna entrada se modifica y no se
+    escribe nada; cerrar el generador a mitad no deja nada."""
+    threshold = float(check_quarry_param(UNSPLIT_THRESHOLD, threshold_m))
+    min_area = float(check_quarry_param(UNSPLIT_MIN_AREA, min_area_ha))
+    upper = np.asarray(final, dtype=np.float64)
+    lower = np.asarray(exploitation, dtype=np.float64)
+    base = np.asarray(start, dtype=np.float64)
+    for label, grid in (("la superficie final", upper), ("la superficie de explotación", lower),
+                        ("la superficie de partida", base), ("la clasificación", classes.grid)):
+        _same_shape(label, grid, geometry.shape)
+    work = _unsplit_units(upper, lower, base, classes.grid, geometry, threshold, min_area)
+    return pace_progress(work, budget_s, phase="unsplit",
+                         running="Buscando el desdoblado sobre terreno sin explotar…",
+                         finished="Desdoblado sobre terreno sin explotar, medido")
+
+
+def _unsplit_units(final: np.ndarray, exploitation: np.ndarray, start: np.ndarray,
+                   codes: np.ndarray, geometry: Grid, threshold: float, min_area: float
+                   ) -> Generator[None, None, UnsplitZones]:
+    """Las unidades de :func:`unsplit_zones_steps`: las celdas del aviso y su ``Δ``, por bandas
+    de filas; sus componentes; y las zonas avisadas."""
+    candidates = np.zeros(final.shape, dtype=bool)
+    delta = np.zeros(final.shape)
+    step = _band_rows(geometry)
+    for first in range(0, geometry.nrows, step):
+        rows = slice(first, first + step)
+        with np.errstate(invalid="ignore"):
+            band = exploitation[rows] - final[rows]
+            found = ((codes[rows] == float(CellClass.UNSPLIT.code)) & (band > threshold)
+                     & (np.abs(exploitation[rows] - start[rows]) < UNEXPLOITED_M))
+        candidates[rows] = found
+        delta[rows] = np.where(found, band, 0.0)
+        yield None
+    labels: Labels = yield from _label_units(candidates)
+    areas = labels.sizes * geometry.cell_area
+    chosen = [index for index in range(1, labels.count + 1)
+              if areas[index - 1] >= min_area * _HECTARE_M2]
+    keep = np.zeros(labels.count + 1, dtype=bool)
+    keep[chosen] = True
+    zones = yield from _zone_units(labels, delta, geometry, chosen)
+    return UnsplitZones(zones, candidates, keep[labels.grid], threshold, min_area)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ToFinal:
+    """«Explotación hasta la final» aplicada (A9; RF-014-18): ``exploitation``, la superficie de
+    explotación bajada (m, float64, nueva); las celdas en que se aplicó (``target``, una máscara
+    nueva) y sus zonas 4-conexas (``zones``, :class:`UnsplitZone`, con el desdoblado que tenían);
+    el volumen que pasa del desdoblado a la explotación (``volume_m3``: ``Σ (antes − después) ·
+    área de celda``, también el de la transición) y el de cada sector que toca el dominio
+    (``sectors``: pares sector y m³, en su orden); y las celdas bajadas (``lowered_cells``)."""
+
+    exploitation: np.ndarray
+    target: np.ndarray
+    zones: tuple[UnsplitZone, ...]
+    volume_m3: float
+    sectors: tuple[tuple[SectorRef, float], ...]
+    lowered_cells: int
+
+    @property
+    def area_ha(self) -> float:
+        """El área de las zonas en que se aplicó (ha)."""
+        return math.fsum(zone.area_m2 for zone in self.zones) / _HECTARE_M2
+
+    @property
+    def notice(self) -> str:
+        """La nota en español ``des.quarry_to_final``: las zonas, su área y el volumen que pasa a
+        la explotación."""
+        return render("des.quarry_to_final", zones=len(self.zones), area=round(self.area_ha, 2),
+                      volume=round(self.volume_m3, 1))
+
+
+def _cell_values(name: str, value: float | np.ndarray, shape: tuple[int, ...]
+                 ) -> float | np.ndarray:
+    """Un valor por celda (un número o una rejilla de ``shape``), como float64."""
+    found = np.asarray(value, dtype=np.float64)
+    if found.ndim == 0:
+        return float(found)
+    _same_shape(name, found, shape)
+    return found
+
+
+def to_final_steps(final: np.ndarray, exploitation: np.ndarray, start: np.ndarray,
+                   domain: DomainSet, geometry: Grid, target: np.ndarray, *,
+                   anchor: float | np.ndarray, height_m: float | np.ndarray, slope: SlopeField,
+                   metric: Metric | str = Metric.CHAMFER5, name: str = "",
+                   budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**«Explotación hasta la final»** (A9; RF-014-18) en las celdas ``target`` (máscara de
+    ``geometry``) de las dos superficies ya ordenadas ``final`` y ``exploitation`` (m), por pasos
+    de ``budget_s`` como mucho; el último ``Progress`` (fase ``to_final``) lleva el
+    :class:`ToFinal`:
+
+    1. en cada celda de ``target``, la cota de ancla de la explotación inmediatamente por encima
+       de la final, ``T = a + h·⌈(final − a)/h⌉`` con su ancla ``a`` (``anchor``: la del perfil,
+       una rejilla de anclas o la «al fondo de cada muro») y su altura de banco ``h``
+       (``height_m``), un número o una rejilla por celda (una final a ≤ 10⁻⁹ m por encima de una
+       cota de ancla queda en ella);
+    2. la envolvente ascendente de la 013 de ``T`` con la pendiente ``slope`` (``tan(cara) ·
+       malla`` del perfil de explotación de cada celda) y la ``metric`` del lado: la transición
+       con el resto de la explotación a la cara de su perfil, como la V10;
+    3. en el dominio de trabajo ``domain``, ``máx(final, mín(explotación, ENV↑))``: nunca por
+       debajo de la final ni por encima de la explotación; fuera, la explotación; y ``≤ z``.
+
+    El volumen que pasa del desdoblado a la explotación es ``Σ (explotación − nueva) · área de
+    celda``, en total y por sector; el de cada zona de ``target``, su desdoblado de antes.
+
+    ``ValueError`` (error del programa) al llamar si una rejilla no es de la forma de
+    ``geometry``, la altura no es finita y mayor que 0 en ``target``, o la métrica es la euclídea
+    exacta con una pendiente que no es constante. Al avanzar, los rechazos de la envolvente de la
+    013 (RF-013-15), con ``name`` («<cantera> (explotación hasta la final)»). Ninguna entrada se
+    modifica y no se escribe nada; cerrar el generador a mitad no deja nada."""
+    shape = geometry.shape
+    upper = np.asarray(final, dtype=np.float64)
+    lower = np.asarray(exploitation, dtype=np.float64)
+    base = np.asarray(start, dtype=np.float64)
+    chosen = np.asarray(target, dtype=bool)
+    for label, grid in (("la superficie final", upper), ("la superficie de explotación", lower),
+                        ("la superficie de partida", base), ("las celdas donde se aplica", chosen),
+                        ("el dominio de trabajo", domain.mask),
+                        ("las etiquetas de sector", domain.labels)):
+        _same_shape(label, grid, shape)
+    level_anchor = _cell_values("el ancla", anchor, shape)
+    height = _cell_values("la altura de banco", height_m, shape)
+    with np.errstate(invalid="ignore"):
+        bad = ~(np.isfinite(height) & (np.asarray(height) > 0.0))
+    if bool(np.any(np.broadcast_to(bad, shape) & chosen)):
+        raise ValueError("la altura de banco es finita y mayor que 0 donde se aplica")
+    if not slope.uniform:
+        _same_shape("la pendiente", np.asarray(slope.tan), shape)
+    way = Metric(metric)
+    if way is Metric.EXACT and not slope.uniform and np.ptp(np.asarray(slope.tan)) != 0.0:
+        raise ValueError("la euclídea exacta solo admite una pendiente constante (RF-013-16)")
+    label = f"{name} ({TO_FINAL_NAME})" if name else TO_FINAL_NAME
+    work = _to_final_units(upper, lower, base, domain, geometry, chosen, level_anchor, height,
+                           slope, way, label)
+    return pace_progress(work, budget_s, phase="to_final",
+                         running="Bajando la explotación hasta la final…",
+                         finished="Explotación hasta la final calculada")
+
+
+def _to_final_units(final: np.ndarray, exploitation: np.ndarray, start: np.ndarray,
+                    domain: DomainSet, geometry: Grid, target: np.ndarray,
+                    anchor: float | np.ndarray, height: float | np.ndarray, slope: SlopeField,
+                    metric: Metric, name: str) -> Generator[None, None, ToFinal]:
+    """Las unidades de :func:`to_final_steps`: las cotas ``T`` y ``Δ`` donde se aplica, por
+    bandas de filas; la envolvente ascendente; la explotación nueva y lo que pasa a ella, por
+    bandas; y las zonas."""
+    step = _band_rows(geometry)
+    bands = [slice(first, first + step) for first in range(0, geometry.nrows, step)]
+    seed = np.full(final.shape, np.inf)
+    delta = np.zeros(final.shape)
+    for rows in bands:
+        a = anchor if isinstance(anchor, float) else anchor[rows]
+        h = height if isinstance(height, float) else height[rows]
+        here = target[rows]
+        with np.errstate(invalid="ignore"):
+            level = a + h * np.ceil((final[rows] - a - TOLERANCE_M) / h)
+            seed[rows] = np.where(here & np.isfinite(level), level, np.inf)
+            delta[rows] = np.where(here, exploitation[rows] - final[rows], 0.0)
+        yield None
+    rising = yield from _rising_work(seed, geometry, slope, metric, name)
+    lowered = exploitation.copy()
+    size = len(domain.sectors) + 1
+    per_label = np.zeros(size)
+    in_domain = np.zeros(size, dtype=np.int64)
+    changed_cells = 0
+    for rows in bands:
+        upper, lower = final[rows], exploitation[rows]
+        inside = domain.mask[rows] & np.isfinite(upper) & np.isfinite(lower)
+        band = np.where(inside, np.fmax(upper, np.fmin(lower, rising[rows])), lower)
+        band = _at_most(band, start[rows])
+        lowered[rows] = band
+        with np.errstate(invalid="ignore"):
+            moved = np.where(inside, lower - band, 0.0)
+        changed = inside & (moved > 0.0)
+        labels_here = domain.labels[rows]
+        per_label += np.bincount(labels_here[changed].astype(np.intp), weights=moved[changed],
+                                 minlength=size)
+        in_domain += np.bincount(labels_here[domain.mask[rows]].astype(np.intp), minlength=size)
+        changed_cells += int(np.count_nonzero(changed))
+        yield None
+    area = geometry.cell_area
+    sectors = tuple((sector, float(per_label[index]) * area)
+                    for index, sector in enumerate(domain.sectors, start=1)
+                    if in_domain[index] > 0)
+    labels: Labels = yield from _label_units(target)
+    zones = yield from _zone_units(labels, delta, geometry)
+    return ToFinal(lowered, target.copy(), zones, math.fsum(per_label.tolist()) * area, sectors,
+                   changed_cells)
+
+
+def to_final_figures(name: str, to_final: ToFinal) -> tuple[FigureSpec, ...]:
+    """La cifra CALCULADO ``des.to_final_m3`` (m³; RF-014-18; plan 014 §5.2.3) de la cantera
+    ``name``: el volumen que pasa del desdoblado a la explotación con «explotación hasta la
+    final», en total y por cada sector con código (el perímetro como sector único es el total y no
+    se repite), con el ámbito de ``provenance.quarry_figure_scope``."""
+    found = [FigureSpec(_TO_FINAL_FIGURE, _figure_value(_TO_FINAL_FIGURE, to_final.volume_m3),
+                        "m3", scope=provenance.quarry_figure_scope(name))]
+    found.extend(FigureSpec(_TO_FINAL_FIGURE, _figure_value(_TO_FINAL_FIGURE, volume), "m3",
+                            scope=provenance.quarry_figure_scope(name, sector=sector.code))
+                 for sector, volume in to_final.sectors if sector.code)
+    return tuple(found)
+
+
+def _parameter_default(key: str) -> float:
+    """El valor por defecto declarado del parámetro de la 014 ``key`` (``design.params``)."""
+    value = QUARRY_PARAMS[key].default
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        raise ValueError(f"el parámetro «{key}» no tiene un valor por defecto numérico")
+    return float(value)
+
+
 def _by_surface[T](items: Mapping[Surface | str, T]) -> Mapping[Surface, T]:
     """``items`` con sus claves como :class:`~.model.Surface` (``ValueError`` si una no es una de
     las dos), en un mapa que no se puede cambiar."""
@@ -1752,10 +2126,14 @@ class QuarryJob:
     fondos y corredores ya juntos, el techo ya calculado y los sectores con la búsqueda
     pendiente: los fondos y el techo se calculan una vez para los dos), y lo de cada lado por su
     :class:`~.model.Surface`: las semillas de la 013 (``seeds``) del lado que no siembra la
-    coronación y la rejilla de anclas leída (``anchors``) del lado con el ancla en rejilla; y las
+    coronación y la rejilla de anclas leída (``anchors``) del lado con el ancla en rejilla; las
     zonas de restauración por relleno de la clasificación (``fill_zones``: la capa de D-11 como
-    máscara de la rejilla; ``None``, ninguna). ``ValueError`` si una clave no es una de las dos
-    superficies."""
+    máscara de la rejilla; ``None``, ninguna); el umbral de desdoblado y el área mínima del aviso
+    de «explotación hasta la final» (``unsplit_threshold_m``, m, y ``unsplit_min_area_ha``, ha:
+    los valores de ``des.quarry.unsplit_threshold_m`` y ``des.quarry.unsplit_min_area_ha``; por
+    defecto, los declarados en ``design.params``, D-5) y, con el modo «las de una capa», sus
+    polígonos como máscara de la rejilla (``to_final_zones``; P-2). ``ValueError`` si una clave no
+    es una de las dos superficies."""
 
     request: QuarryRequest
     start: np.ndarray
@@ -1772,6 +2150,9 @@ class QuarryJob:
     anchors: Mapping[Surface | str, np.ndarray] = MappingProxyType({})
     pending: tuple[str, ...] = ()
     fill_zones: np.ndarray | None = None
+    unsplit_threshold_m: float = _parameter_default(UNSPLIT_THRESHOLD)
+    unsplit_min_area_ha: float = _parameter_default(UNSPLIT_MIN_AREA)
+    to_final_zones: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "seeds", _by_surface(self.seeds))
@@ -1795,8 +2176,12 @@ class QuarryOutcome:
     ``exploitation``, :class:`SideOutcome`: su envolvente, su escalonado, su informe y sus bermas
     de la 013), las dos superficies atadas por el orden y comprobadas (``ordered``,
     :class:`OrderedSurfaces`), su clasificación (``classes``, :class:`Classification`;
-    RF-014-15) y sus cifras CALCULADO (``figures``, :func:`classification_figures`; RF-014-16),
-    y el ``message`` de la operación."""
+    RF-014-15) y sus cifras CALCULADO (``figures``, :func:`classification_figures` y, con
+    «explotación hasta la final», :func:`to_final_figures`; RF-014-16, RF-014-18), el aviso de
+    desdoblado sobre terreno sin explotar que queda (``unsplit``, :class:`UnsplitZones`;
+    RF-014-17), «explotación hasta la final» aplicada (``to_final``, :class:`ToFinal`; ``None``
+    sin el modo) y el ``message`` de la operación. Con el modo, la clasificación, las cifras y el
+    aviso son los de la explotación bajada."""
 
     order: Order
     final: SideOutcome
@@ -1804,6 +2189,8 @@ class QuarryOutcome:
     ordered: OrderedSurfaces
     classes: Classification
     figures: tuple[FigureSpec, ...]
+    unsplit: UnsplitZones
+    to_final: ToFinal | None
     message: str
 
     def side(self, surface: Surface | str) -> SideOutcome:
@@ -1820,13 +2207,24 @@ class QuarryOutcome:
     @property
     def exploitation_grid(self) -> np.ndarray:
         """La superficie de explotación (m, float64): la de su lado con la regla de orden y
-        ``≤ z``."""
+        ``≤ z`` y, con «explotación hasta la final», bajada (:attr:`ToFinal.exploitation`)."""
+        if self.to_final is not None:
+            return self.to_final.exploitation
         return self.ordered.exploitation
 
     @property
     def adjusted(self) -> int:
         """Las celdas en que la regla de orden cambió la segunda superficie."""
         return self.ordered.adjusted
+
+    @property
+    def notices(self) -> tuple[str, ...]:
+        """Los avisos y las notas en español: el de desdoblado sobre terreno sin explotar con sus
+        zonas (RF-014-17) y, con «explotación hasta la final», lo que pasó a la explotación."""
+        found = self.unsplit.notices
+        if self.to_final is not None:
+            found = (*found, self.to_final.notice)
+        return found
 
 
 def quarry_steps(job: QuarryJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
@@ -1841,15 +2239,32 @@ def quarry_steps(job: QuarryJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator
        fallara, ``des.quarry_order_broken`` y ningún paso lleva un resultado que crear;
     4. la clasificación de las dos superficies en el dominio de trabajo con las zonas de
        restauración por relleno del trabajo (:func:`classify_steps`, RF-014-15) y sus cifras
-       (:func:`classification_figures`, RF-014-16).
+       (:func:`classification_figures`, RF-014-16);
+    5. el aviso de desdoblado sobre terreno sin explotar (:func:`unsplit_zones_steps`,
+       RF-014-17) y, con «explotación hasta la final» (``request.to_final``, P-2) en las zonas
+       avisadas o en las celdas del aviso dentro de los polígonos de ``job.to_final_zones``, la
+       explotación bajada con el perfil, el ancla y la métrica del lado de explotación
+       (:func:`to_final_steps`, RF-014-18), el invariante otra vez, la clasificación, el aviso de
+       lo que queda y la cifra ``des.to_final_m3`` (:func:`to_final_figures`).
 
-    ``ValueError`` (error del programa) al llamar con los de :func:`side_steps` de cada lado o si
-    las zonas de relleno no son de la rejilla. Al avanzar, los rechazos de la 013 de cada lado.
-    Ninguna entrada se modifica y no se escribe nada; cerrar el generador a mitad no deja nada.
-    «Explotación hasta la final» es de su tarea (A9)."""
+    ``ValueError`` (error del programa) al llamar con los de :func:`side_steps` de cada lado, si
+    las zonas de relleno no son de la rejilla o si los polígonos de «explotación hasta la final»
+    faltan con el modo «capa», se dan con otro modo o no son de la rejilla; ``DesignError`` si el
+    umbral o el área mínima del aviso están fuera de su rango (``check_quarry_param``). Al
+    avanzar, los rechazos de la 013 de cada lado. Ninguna entrada se modifica y no se escribe
+    nada; cerrar el generador a mitad no deja nada."""
+    shape = job.masks.grid.shape
     if job.fill_zones is not None:
-        _same_shape("las zonas de restauración por relleno", np.asarray(job.fill_zones),
-                    job.masks.grid.shape)
+        _same_shape("las zonas de restauración por relleno", np.asarray(job.fill_zones), shape)
+    mode = ToFinalMode(job.request.to_final)
+    if (mode is ToFinalMode.LAYER) != (job.to_final_zones is not None):
+        raise ValueError("los polígonos de «explotación hasta la final» van con el modo «capa» "
+                         "y solo con él (P-2)")
+    if job.to_final_zones is not None:
+        _same_shape("los polígonos de «explotación hasta la final»",
+                    np.asarray(job.to_final_zones), shape)
+    check_quarry_param(UNSPLIT_THRESHOLD, job.unsplit_threshold_m)
+    check_quarry_param(UNSPLIT_MIN_AREA, job.unsplit_min_area_ha)
     first = (Surface.FINAL if Order(job.request.order) is Order.FINAL_FIRST
              else Surface.EXPLOITATION)
     second = Surface.EXPLOITATION if first is Surface.FINAL else Surface.FINAL
@@ -1872,15 +2287,73 @@ def _quarry_work(job: QuarryJob, first: Iterator[Progress], second: Iterator[Pro
     ordered = order_surfaces(order, final.grid, exploitation.grid, start)
     yield Progress("order", 1, 2, "Comprobando final ≤ explotación ≤ terreno…")
     check_order(name, ordered.final, ordered.exploitation, start, job.masks.grid)
+    geometry = job.masks.grid
     yield Progress("classes", 0, 1, "Clasificando las dos superficies…")
     classes: Classification = yield from forward(classify_steps(
-        ordered.final, ordered.exploitation, start, job.domain, job.masks.grid,
+        ordered.final, ordered.exploitation, start, job.domain, geometry,
         job.min_thickness_m, fill_zones=job.fill_zones, budget_s=budget_s))
+    yield Progress("unsplit", 0, 1, "Buscando el desdoblado sobre terreno sin explotar…")
+    unsplit: UnsplitZones = yield from forward(unsplit_zones_steps(
+        ordered.final, ordered.exploitation, start, classes, geometry, job.unsplit_threshold_m,
+        job.unsplit_min_area_ha, budget_s=budget_s))
+    to_final: ToFinal | None = None
+    mode = ToFinalMode(job.request.to_final)
+    if mode is not ToFinalMode.NONE:
+        target = (unsplit.warned if mode is ToFinalMode.WARNED
+                  else unsplit.candidates & np.asarray(job.to_final_zones, dtype=bool))
+        anchor, height, slope, metric = _exploitation_benches(job, exploitation)
+        yield Progress("to_final", 0, 1, "Bajando la explotación hasta la final…")
+        to_final = yield from forward(to_final_steps(
+            ordered.final, ordered.exploitation, start, job.domain, geometry, target,
+            anchor=anchor, height_m=height, slope=slope, metric=metric, name=name,
+            budget_s=budget_s))
+        check_order(name, ordered.final, to_final.exploitation, start, geometry)
+        classes = yield from forward(classify_steps(
+            ordered.final, to_final.exploitation, start, job.domain, geometry,
+            job.min_thickness_m, fill_zones=job.fill_zones, budget_s=budget_s))
+        unsplit = yield from forward(unsplit_zones_steps(
+            ordered.final, to_final.exploitation, start, classes, geometry,
+            job.unsplit_threshold_m, job.unsplit_min_area_ha, budget_s=budget_s))
     figures = classification_figures(name, classes)
+    if to_final is not None:
+        figures = (*figures, *to_final_figures(name, to_final))
     text = (f"Cantera «{name}» calculada ({ORDER_NAMES[order]}): superficie final y de "
             f"explotación; la regla de orden cambió {ordered.adjusted} celdas; desdoblado "
             f"{format_value(round(classes.total.unsplit_m3, 1))} m³ y relleno de restauración "
             f"{format_value(round(classes.total.fill_m3, 1))} m³")
+    if to_final is not None:
+        text += (f"; explotación hasta la final {format_value(round(to_final.volume_m3, 1))} m³ "
+                 "del desdoblado a la explotación")
     yield Progress("quarry", 1, 1, text,
                    result=QuarryOutcome(order, final, exploitation, ordered, classes, figures,
-                                        text))
+                                        unsplit, to_final, text))
+
+
+def _exploitation_benches(job: QuarryJob, outcome: SideOutcome
+                          ) -> tuple[np.ndarray, np.ndarray, SlopeField, Metric]:
+    """Lo que A9 lee del lado de explotación (RF-014-18), por celda con las etiquetas de sector
+    del dominio (el perfil de cada sector o el base): la cota de ancla (la del perfil, la rejilla
+    leída o la «al fondo de cada muro» del lado), la altura de banco, la pendiente de su cara
+    ``tan(cara) · malla`` y la métrica del lado."""
+    side = job.request.exploitation
+    assigned = dict(side.sector_profiles)
+    profiles = bench_profiles(job.values, [side.base_profile, *assigned.values()])
+    by_label = [profiles[side.base_profile],
+                *(profiles[assigned.get(sector.code, side.base_profile)]
+                  for sector in job.domain.sectors)]
+    labels = job.domain.labels.astype(np.intp)
+    heights = np.array([profile.height_m for profile in by_label])[labels]
+    rules = [SlopeRule(math.tan(math.radians(profile.face_deg)), profile.mesh_factor)
+             for profile in by_label]
+    slope = sector_slope(job.domain.labels, rules[1:], rules[0])
+    mode = AnchorMode(side.anchor)
+    if mode is AnchorMode.GRID:
+        anchor = np.asarray(job.anchors[Surface.EXPLOITATION], dtype=np.float64)
+    elif mode is AnchorMode.NEAREST_FLOOR:
+        if outcome.anchors is None:
+            raise ValueError("el lado de explotación con el ancla «al fondo de cada muro» no "
+                             "trae su rejilla de anclas")
+        anchor = outcome.anchors.grid
+    else:
+        anchor = np.array([profile.anchor_m for profile in by_label])[labels]
+    return anchor, heights, slope, Metric(side.metric)

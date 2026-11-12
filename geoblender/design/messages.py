@@ -658,6 +658,14 @@ CATALOG: tuple[Message, ...] = (
         "Zona {zone}: {area} ha, {volume} m³, centro en x = {x} m, y = {y} m.",
         "note",
     ),
+    Message(
+        "des.quarry_to_final",
+        "«Exploitation down to the final» in {zones} zones ({area} ha): {volume} m³ pass from "
+        "the doubled surface to the exploitation, with benches anchored at its levels.",
+        "«Explotación hasta la final» en {zones} zonas ({area} ha): {volume} m³ pasan del "
+        "desdoblado a la explotación, con bancos anclados a sus cotas.",
+        "note",
+    ),
     # Fondos (RF-014-05, RF-014-06) -------------------------------------------------------------
     Message(
         "des.floor_overlap",
