@@ -25,43 +25,70 @@
   de ``C ∪ H``, por grupos 4-conexos (:class:`SeedGroup`: celdas, m² y el centro absoluto de sus
   celdas en float64), para avisar antes de calcular (error 10).
 
-Las demás piezas de la cantera (fondos, techo, corredores, ancla y las dos superficies)
-llegan con sus tareas. Python puro con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no
+- :func:`floor_map` (T08; RF-014-05, RF-014-06; A4): el **mapa de cotas de fondo** de una capa de
+  polígonos con su campo de cota (:class:`FloorMap`: cada celda con el centro dentro de un
+  polígono, su cota; ``NaN`` fuera), con sus rechazos: dos polígonos que se solapan, un polígono
+  sin cota o con una cota fuera de las del terreno ± 1.000 m (:data:`FLOOR_LEVEL_MARGIN_M`), un
+  campo que la capa no tiene o que no es numérico y una capa que no es de polígonos.
+  :func:`floors_above_terrain` (:class:`FloorsAbove`) mide lo que queda por encima del terreno,
+  que se admite (allí no hay corte) y se informa.
+- :func:`with_floors` y :func:`floor_cut_steps` (T08; RF-014-05; A4): la corta ``máx(ENV↓(s, t),
+  ENV↓(F, t))`` (``zdes = máx(BASE0, ZF)`` de la V7) sobre la envolvente de la 013, calculada
+  como la envolvente descendente de la unión de las semillas y los fondos (el máximo de los dos
+  donde coinciden): la descendente es un máximo sobre las semillas, así que es lo mismo con una
+  sola envolvente.
+
+Las demás piezas de la cantera (techo, corredores, ancla y las dos superficies) llegan con sus
+tareas. Python puro con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no
 escribe nada.
 """
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from dataclasses import dataclass
+import math
+from collections.abc import Generator, Iterator
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 
 import numpy as np
 
+from ..core.project.model import Progress
 from ..core.provenance.figures import FigureSpec
 from ..gis.grid import Grid
 from ..gis.masks.access import MaskSet
 from ..gis.masks.combine import ClassBit
+from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.messages import format_value
+from ..gis.vector import FeatureLayer
 from . import provenance
+from .envelopes import SlopeField, envelope_steps
 from .grids import _label_units, dilate_square
-from .messages import DesignError
+from .messages import DesignError, render
+from .model import Direction, EnvelopeRequest, LayerField
 from .params import CROWN_RING, check_quarry_param
 from .seeds import DomainSet, SeedSet, collect_seeds, domain_of
+from .zones import _paint, _polygon_spans
 
 __all__ = [
     "AREA_PART_LABELS",
+    "FLOOR_LEVEL_MARGIN_M",
     "HOLD_TYPES",
     "AreaOutcome",
     "AreaPart",
+    "FloorMap",
+    "FloorsAbove",
     "SeedGroup",
     "area_outcome",
     "area_parts",
     "crown_ring",
     "crown_seeds",
     "excavation_area",
+    "floor_cut_steps",
+    "floor_map",
+    "floors_above_terrain",
     "hold_zones",
     "outside_crown",
+    "with_floors",
 ]
 
 AREA_PART_LABELS = MappingProxyType({
@@ -299,3 +326,186 @@ def outside_crown(seeds: SeedSet | np.ndarray, area: np.ndarray, start: np.ndarr
         y = geometry.north - (row_sum[index] / cells + 0.5) * geometry.dy
         found.append(SeedGroup(index, cells, cells * geometry.cell_area, float(x), float(y)))
     return tuple(found)
+
+
+# --- Fondos (T08; A4) --------------------------------------------------------------------------
+
+FLOOR_LEVEL_MARGIN_M = 1000.0
+"""Lo que la cota de un fondo puede quedar por debajo de la mínima del terreno o por encima de su
+máxima (m; RF-014-06): fuera, es una cota imposible."""
+_NUMERIC_TYPES = frozenset({"DOUBLE", "INTEGER"})
+_KINDS_ES = MappingProxyType({"point": "puntos", "line": "líneas", "polygon": "polígonos"})
+_NO_VALUE = "—"
+_NO_FIELDS = "ninguno"
+_GEOMETRY_FIELD = "geometría"
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class FloorMap:
+    """El **mapa de cotas de fondo** (A4, RF-014-05) de la capa ``layer`` y su campo ``field``:
+    ``grid`` (m, float64, nueva: la cota del polígono en cada celda con el centro dentro de uno,
+    D-16 de la 013; ``NaN`` fuera), ``owner`` (int32: el orden del polígono en la capa, de 1 a n; 0
+    fuera) y, por polígono en el orden de la capa, su número (``fids``), su cota (``levels``, m) y
+    sus celdas (``cells``); ``cell_area_m2``, el área de una celda de la rejilla."""
+
+    layer: str
+    field: str
+    grid: np.ndarray
+    owner: np.ndarray
+    fids: tuple[int, ...]
+    levels: tuple[float, ...]
+    cells: tuple[int, ...]
+    cell_area_m2: float
+
+    @property
+    def area_m2(self) -> float:
+        """El área de los fondos (m²): sus celdas por el área de celda."""
+        return sum(self.cells) * self.cell_area_m2
+
+
+@dataclass(frozen=True, slots=True)
+class FloorsAbove:
+    """Lo de los fondos que queda por encima de la superficie de partida (RF-014-05: se admite,
+    allí no hay corte, y se informa): sus ``cells`` y su ``area_m2``."""
+
+    cells: int
+    area_m2: float
+
+    @property
+    def notice(self) -> str | None:
+        """El aviso ``des.floor_above_terrain`` en español con el área; ``None`` si no hay nada."""
+        if not self.cells:
+            return None
+        return render("des.floor_above_terrain", area=round(self.area_m2, 2))
+
+
+def _level_column(layer: FeatureLayer, source: LayerField) -> str:
+    """La columna del campo numérico ``source.field`` de la capa (por su nombre en la capa o por
+    su columna); ``des.quarry_layer_field`` con los campos numéricos que tiene si no está."""
+    numeric = [column for column in layer.columns if column.sql_type in _NUMERIC_TYPES]
+    for column in numeric:
+        if source.field in (column.field, column.column):
+            return column.column
+    raise DesignError("des.quarry_layer_field", obj=f"Capa «{source.layer}»", field="campo",
+                      value=source.field, layer=source.layer,
+                      fields=", ".join(column.field for column in numeric) or _NO_FIELDS)
+
+
+def _floor_level(value: object, fid: int, source: LayerField, low: float, high: float) -> float:
+    """La cota ``value`` del polígono ``fid`` como float; ``des.floor_level`` si falta, no es un
+    número finito o queda fuera de ``[low, high]`` (RF-014-06: no se elige ninguna por él)."""
+    number: float | None = None
+    if value is not None and not isinstance(value, bool):
+        try:
+            number = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            number = None
+    if number is not None and math.isfinite(number) and low <= number <= high:
+        return number
+    if value is None:
+        shown: object = _NO_VALUE
+    elif number is not None and not math.isfinite(number):
+        shown = str(number)
+    else:
+        shown = value
+    raise DesignError("des.floor_level", obj=f"Polígono {fid} de la capa «{source.layer}»",
+                      field=source.field, value=shown, layer=source.layer, polygon=fid, low=low,
+                      high=high)
+
+
+def floor_map(layer: FeatureLayer, source: LayerField, start: np.ndarray,
+              geometry: Grid) -> FloorMap:
+    """**A4** (RF-014-05, RF-014-06): el mapa de cotas de fondo de la capa de polígonos ``layer``
+    (sus entidades; ``source`` da su nombre en el proyecto y el campo de la cota, m) en la rejilla
+    ``geometry``: cada celda con el centro dentro de un polígono (D-16 de la 013; las partes de una
+    entidad se unen) lleva su cota (:class:`FloorMap`). ``start`` es la superficie de partida
+    (float64, de la forma de la rejilla): da el rango de las cotas admitidas. Solo lee.
+
+    Rechazos (``DesignError``, sin elegir ninguna cota por la persona), en el orden de la capa y,
+    en cada polígono, primero su cota: una capa que no es de polígonos
+    (``des.layer_not_polygons``); un campo que la capa no tiene o que no es numérico
+    (``des.quarry_layer_field``); una cota que falta, no es finita o queda fuera de ``[mín(z) −
+    1.000, máx(z) + 1.000]`` m (``des.floor_level``, con la capa, el polígono, el campo, el valor y
+    el rango); un polígono que pisa celdas de otro anterior (``des.floor_overlap``, con los dos y
+    las celdas comunes). Un fondo por encima del terreno se admite (:func:`floors_above_terrain`).
+    ``ValueError`` (error del programa) si ``start`` no es de la forma de la rejilla o no tiene
+    ninguna celda con dato. Cada polígono cuesta su caja, no la rejilla entera."""
+    values = np.asarray(start, dtype=np.float64)
+    _same_shape("la superficie de partida", values, geometry.shape)
+    if layer.kind != "polygon":
+        raise DesignError("des.layer_not_polygons", obj=f"Capa de polígonos «{source.layer}»",
+                          field=_GEOMETRY_FIELD, value=_KINDS_ES.get(layer.kind, layer.kind),
+                          layer=source.layer)
+    column = _level_column(layer, source)
+    with np.errstate(invalid="ignore"):
+        finite = np.isfinite(values)
+    if not finite.any():
+        raise ValueError("la superficie de partida no tiene ninguna celda con dato")
+    low = float(values[finite].min()) - FLOOR_LEVEL_MARGIN_M
+    high = float(values[finite].max()) + FLOOR_LEVEL_MARGIN_M
+    grid = np.full(geometry.shape, np.nan)
+    owner = np.zeros(geometry.shape, dtype=np.int32)
+    levels: list[float] = []
+    cells: list[int] = []
+    for index, (fid, parts) in enumerate(zip(layer.fids, layer.parts, strict=True), start=1):
+        level = _floor_level(layer.values[column][index - 1], fid, source, low, high)
+        top, left, block = _paint(_polygon_spans(parts, geometry), geometry.nrows,
+                                  geometry.ncols)
+        window = (slice(top, top + block.shape[0]), slice(left, left + block.shape[1]))
+        taken = owner[window][block]
+        taken = taken[taken > 0]
+        if taken.size:
+            first = int(taken.min())
+            raise DesignError("des.floor_overlap", obj=f"Capa «{source.layer}»",
+                              field=_GEOMETRY_FIELD, value=layer.fids[first - 1],
+                              layer=source.layer, other=fid,
+                              cells=int(np.count_nonzero(taken == first)))
+        owner[window][block] = index
+        grid[window][block] = level
+        levels.append(level)
+        cells.append(int(np.count_nonzero(block)))
+    return FloorMap(source.layer, source.field, grid, owner, tuple(layer.fids), tuple(levels),
+                    tuple(cells), geometry.cell_area)
+
+
+def floors_above_terrain(floors: FloorMap, start: np.ndarray) -> FloorsAbove:
+    """Lo de los fondos ``floors`` por encima de la superficie de partida ``start`` (las celdas
+    con cota de fondo mayor que la del terreno; RF-014-05): se admite —allí no hay corte, la
+    superficie nunca supera el terreno— y se informa con su área (:attr:`FloorsAbove.notice`).
+    ``ValueError`` si ``start`` no es de la forma del mapa. Solo lee."""
+    values = np.asarray(start, dtype=np.float64)
+    _same_shape("la superficie de partida", values, floors.grid.shape)
+    with np.errstate(invalid="ignore"):
+        above = int(np.count_nonzero(floors.grid > values))
+    return FloorsAbove(above, above * floors.cell_area_m2)
+
+
+def with_floors(seeds: SeedSet, floors: FloorMap) -> SeedSet:
+    """Las semillas de la corta con fondos (A4): las de ``seeds`` y las celdas de ``floors`` con su
+    cota; donde coinciden, la más alta de las dos (``máx(ENV↓(s), ENV↓(F))`` es la envolvente
+    descendente de esta unión). Un :class:`~.seeds.SeedSet` nuevo con su misma geometría, su
+    dominio y sus celdas sin cota, contado de nuevo; las entradas no se modifican. ``ValueError``
+    si el mapa no es de la rejilla de las semillas."""
+    values = np.asarray(seeds.grid, dtype=np.float64)
+    _same_shape("el mapa de fondos", floors.grid, values.shape)
+    inside = np.isfinite(floors.grid)
+    joined = np.where(np.isfinite(values), values, -np.inf)
+    joined = np.where(inside, np.fmax(joined, floors.grid), joined)
+    joined[np.isneginf(joined)] = np.inf
+    found = collect_seeds(joined, None, seeds.domain, seeds.geometry)
+    return replace(found, nodata_cells=seeds.nodata_cells)
+
+
+def floor_cut_steps(request: EnvelopeRequest, seeds: SeedSet, floors: FloorMap,
+                    slope: SlopeField, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**A4** (RF-014-05): la corta ``máx(ENV↓(s, t), ENV↓(F, t))`` de las semillas ``seeds`` y los
+    fondos ``floors`` con la pendiente ``slope``, sobre la envolvente de la 013
+    (``envelope_steps`` de :func:`with_floors`, con la métrica, el nombre y el alcance de
+    ``request``; con alcance, también los fondos son semilla), por pasos: el último ``Progress``
+    lleva la ``Envelope``. El escalonado sigue sobre ella; la composición con el terreno (la
+    superficie nunca lo supera) es posterior. Los rechazos, los de ``envelope_steps``;
+    ``ValueError`` al llamar si ``request`` no es descendente o el mapa no es de la rejilla."""
+    if Direction(request.direction) is not Direction.DOWN:
+        raise ValueError("la corta con fondos es una envolvente descendente, no "
+                         f"{Direction(request.direction).value!r}")
+    return envelope_steps(request, with_floors(seeds, floors), slope, budget_s=budget_s)
