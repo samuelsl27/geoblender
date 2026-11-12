@@ -149,7 +149,8 @@ PENDING_014_API = frozenset({
 # Los módulos nuevos de la 014 que aún no tienen fila en la ficha (la T36 se la da y vacía esto).
 PENDING_014_MODULES = frozenset({
     "design.grids",  # T03: Labels, dilate_square, label_components_steps
-    "design.edges",  # T26: TRANSITION_NAME, Transition, transition_steps
+    "design.edges",  # T26: TRANSITION_NAME, Transition, transition_steps; T27:
+    # PAIR_CELLS_PER_UNIT, EdgeStretch, EdgeReport, created_steps
     "design.quarry",  # T06: AreaOutcome, AreaPart, area_outcome, area_parts, excavation_area;
     # T07: HOLD_TYPES, SeedGroup, crown_ring, crown_seeds, hold_zones, outside_crown;
     # T08: FLOOR_LEVEL_MARGIN_M, FloorMap, FloorsAbove, floor_map, floors_above_terrain,

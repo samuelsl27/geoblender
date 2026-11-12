@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""El borde de un diseño con el terreno no afectado: la transición (spec 014, T26; HU-014-5;
-RF-014-19; plan 014 A10, §5.3.1).
+"""El borde de un diseño con el terreno no afectado: la transición y el salto creado (spec 014,
+T26 y T27; HU-014-5; RF-014-19 a RF-014-21; plan 014 A10, A11, §5.3.1).
 
 - :func:`transition_steps` (A10): la **transición** de una superficie de diseño ``S`` con el
   terreno no afectado del borde de su dominio de trabajo ``D``. Las semillas son la superficie de
@@ -15,6 +15,13 @@ RF-014-19; plan 014 A10, §5.3.1).
   Ninguna pareja del borde (una celda de ``D`` y su vecina fuera, con dato de terreno) queda más
   empinada que ``θ`` siempre que el propio terreno del anillo no lo sea: los pesos de vecino del
   *chamfer* 5×5 son menores que la distancia (ADR-0014) y la euclídea exacta es la distancia.
+- :func:`created_steps` (A11): el **salto creado** en el borde de un diseño. Son del borde las
+  parejas de celdas vecinas (4 vecinos) con una celda **movida** (en el dominio, con dato en las
+  dos superficies y ``|S − z|`` mayor que el espesor mínimo de la 012) y la otra no (con dato en
+  las dos); en cada una, ``c = |S_a − S_b| − |z_a − z_b|``: el salto con el diseño menos el que ya
+  tenía el terreno, que nunca cuenta (error 48). El informe (:class:`EdgeReport`) da las parejas,
+  las que pasan del salto admitido, el máximo con su lugar y los **tramos** (:class:`EdgeStretch`),
+  y avisa si queda dentro del salto admitido menos del porcentaje admitido (RF-014-21, D-6).
 
 Python puro con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no escribe nada.
 """
@@ -23,7 +30,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Generator, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -40,14 +47,20 @@ from .envelopes import (
     chamfer_units,
     constant_slope,
 )
-from .grids import dilate_square
+from .grids import Labels, _label_units, dilate_square
+from .messages import render
 from .model import Direction, Metric
-from .params import EDGE_TRANSITION, check_quarry_param
+from .params import EDGE_MAX_STEP, EDGE_MIN_SHARE, EDGE_TRANSITION, check_quarry_param
+from .report import _thickness, _units
 from .seeds import pace_progress
 
 __all__ = [
+    "PAIR_CELLS_PER_UNIT",
     "TRANSITION_NAME",
+    "EdgeReport",
+    "EdgeStretch",
     "Transition",
+    "created_steps",
     "transition_steps",
 ]
 
@@ -164,3 +177,249 @@ def transition_steps(surface: np.ndarray, start: np.ndarray, domain: np.ndarray,
     return pace_progress(work, budget_s, phase="transition",
                          running="Calculando la transición con el terreno no afectado…",
                          finished="Transición con el terreno no afectado calculada")
+
+
+# --- El salto creado (T27; A11) ------------------------------------------------------------------
+
+PAIR_CELLS_PER_UNIT = 200_000
+"""Las celdas de una unidad de trabajo del salto creado (una banda de filas con sus parejas)."""
+_PAIRS_PER_UNIT = 1 << 18
+"""Las parejas que pasan que se reparten entre sus tramos en cada unidad de trabajo."""
+
+
+@dataclass(frozen=True, slots=True)
+class EdgeStretch:
+    """Un **tramo** del borde (A11; RF-014-21): una componente 4-conexa de las celdas de las
+    parejas cuyo salto creado pasa del admitido, con su número ``stretch`` (desde 1, en el orden de
+    su primera celda recorriendo la rejilla fila a fila desde el norte), sus ``pairs``, su mayor
+    salto creado ``maximum_m`` (m) y su centro (``x``, ``y``: la media de los puntos medios de sus
+    parejas, en coordenadas absolutas, float64)."""
+
+    stretch: int
+    pairs: int
+    maximum_m: float
+    x: float
+    y: float
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class EdgeReport:
+    """El **salto creado** en el borde de un diseño (A11; RF-014-20, RF-014-21): las ``pairs`` del
+    borde (4 vecinos: una celda movida y la otra no, con dato en las dos superficies) y las que
+    tienen un salto creado mayor que el salto admitido ``threshold_m`` (``over``); el mayor salto
+    creado de todas, ``maximum_m`` (m; negativo si el diseño solo reduce los saltos que ya tenía el
+    terreno; 0 sin parejas), y su lugar (``x``, ``y``: el punto medio de la pareja, absoluto; a
+    igual salto, el primero de norte a sur y de oeste a este; ``None`` sin parejas); los
+    ``stretches`` (:class:`EdgeStretch`); el porcentaje admitido ``min_share_pct`` (%, el de las
+    parejas que tiene que quedar dentro del salto admitido) y el espesor mínimo con que se
+    buscaron las celdas movidas (``min_thickness_m``, m)."""
+
+    pairs: int
+    over: int
+    maximum_m: float
+    x: float | None
+    y: float | None
+    stretches: tuple[EdgeStretch, ...]
+    threshold_m: float
+    min_share_pct: float
+    min_thickness_m: float
+
+    @property
+    def over_pct(self) -> float:
+        """El porcentaje de las parejas con un salto creado mayor que el admitido (0 sin
+        parejas)."""
+        return 100.0 * self.over / self.pairs if self.pairs else 0.0
+
+    @property
+    def within_pct(self) -> float:
+        """El porcentaje de las parejas dentro del salto admitido (100 sin parejas)."""
+        return 100.0 * (self.pairs - self.over) / self.pairs if self.pairs else 100.0
+
+    @property
+    def warned(self) -> bool:
+        """Si se avisa (RF-014-21, D-6): queda dentro del salto admitido **menos** del porcentaje
+        admitido de las parejas (con exactamente ese porcentaje, no)."""
+        return (self.pairs - self.over) * 100.0 < self.min_share_pct * self.pairs
+
+    def lines(self, language: str = "es") -> tuple[str, ...]:
+        """El aviso en ``language``: ``des.edge_created_step`` (el porcentaje de las parejas que
+        pasa, las parejas, el salto y el porcentaje admitidos, el máximo y su lugar al cm y los
+        tramos) y una nota ``des.edge_stretch`` por tramo; ``()`` si no se avisa."""
+        if not self.warned:
+            return ()
+        found = [render("des.edge_created_step", language=language,
+                        share=round(self.over_pct, 2), pairs=self.pairs,
+                        threshold=self.threshold_m, admitted=self.min_share_pct,
+                        maximum=round(self.maximum_m, 2), x=_place(self.x), y=_place(self.y),
+                        stretches=len(self.stretches))]
+        found.extend(render("des.edge_stretch", language=language, stretch=item.stretch,
+                            pairs=item.pairs, maximum=round(item.maximum_m, 2),
+                            x=_place(item.x), y=_place(item.y)) for item in self.stretches)
+        return tuple(found)
+
+    @property
+    def notices(self) -> tuple[str, ...]:
+        """El aviso en español (:meth:`lines`)."""
+        return self.lines("es")
+
+
+def _place(value: float | None) -> float | None:
+    """Una coordenada al cm, para un mensaje."""
+    return None if value is None else round(value, 2)
+
+
+def _midpoint(geometry: Grid, key_row: float, key_col: float) -> tuple[float, float]:
+    """El punto medio absoluto de una pareja por sus claves de fila y de columna, en medias
+    celdas (``2·f + 1`` entre las filas ``f`` y ``f + 1``, ``2·f`` en la fila ``f``; lo mismo en
+    columnas), o el centro de varias con la media de sus claves."""
+    return (float(geometry.west + (key_col + 1.0) * geometry.dx / 2.0),
+            float(geometry.north - (key_row + 1.0) * geometry.dy / 2.0))
+
+
+@dataclass(slots=True)
+class _Found:
+    """Lo que se acumula banda a banda: las parejas del borde, el mayor salto creado y su clave, y
+    la clave y el salto de las parejas que pasan."""
+
+    pairs: int = 0
+    best: float = -math.inf
+    best_key: int = -1
+    keys: list[np.ndarray] = field(default_factory=list)
+    steps: list[np.ndarray] = field(default_factory=list)
+
+
+def _band_units(design: np.ndarray, start: np.ndarray, domain: np.ndarray, geometry: Grid,
+                thickness: float, threshold: float, rows_per_unit: int, marked: np.ndarray,
+                found: _Found) -> Generator[None, None, None]:
+    """Las parejas del borde por bandas de filas (cada banda con la primera fila de la siguiente,
+    para las parejas de norte a sur entre las dos): su salto creado, el mayor y su clave, y las que
+    pasan, con sus dos celdas en ``marked``. La clave de una pareja es la de su punto medio,
+    ``fila · (2·columnas + 1) + columna`` en medias celdas: ordena de norte a sur y de oeste a
+    este."""
+    nrows, ncols = geometry.shape
+    width = 2 * ncols + 1
+    for first in range(0, nrows, rows_per_unit):
+        last = min(nrows, first + rows_per_unit)
+        stop = min(nrows, last + 1)
+        surface = design[first:stop]
+        base = start[first:stop]
+        with np.errstate(invalid="ignore"):
+            valid = np.isfinite(surface) & np.isfinite(base)
+            moved = domain[first:stop] & valid & (np.abs(surface - base) > thickness)
+        upper, lower = last - first, stop - first - 1
+        east = (moved[:upper, :-1] != moved[:upper, 1:]) & valid[:upper, :-1] & valid[:upper, 1:]
+        south = (moved[:lower] != moved[1:lower + 1]) & valid[:lower] & valid[1:lower + 1]
+        for pairs, (d_row, d_col) in ((east, (0, 1)), (south, (1, 0))):
+            rows, cols = np.nonzero(pairs)
+            if not rows.size:
+                continue
+            created = (np.abs(surface[rows, cols] - surface[rows + d_row, cols + d_col])
+                       - np.abs(base[rows, cols] - base[rows + d_row, cols + d_col]))
+            keys = ((2 * (rows.astype(np.int64) + first) + d_row) * width
+                    + 2 * cols.astype(np.int64) + d_col)
+            found.pairs += int(rows.size)
+            top = float(created.max())
+            key = int(keys[created == top].min())
+            if top > found.best or (top == found.best and key < found.best_key):
+                found.best, found.best_key = top, key
+            over = created > threshold
+            if over.any():
+                marked[rows[over] + first, cols[over]] = True
+                marked[rows[over] + first + d_row, cols[over] + d_col] = True
+                found.keys.append(keys[over])
+                found.steps.append(created[over])
+        yield None
+
+
+def _stretch_units(found: _Found, labels: Labels, geometry: Grid
+                   ) -> Generator[None, None, tuple[EdgeStretch, ...]]:
+    """Los tramos por trozos de parejas: cada pareja que pasa, en el tramo de su celda del norte o
+    del oeste (las dos celdas de una pareja son vecinas), con sus parejas, su máximo y la suma de
+    las claves de sus puntos medios."""
+    count = labels.count
+    if not count:
+        return ()
+    width = 2 * geometry.ncols + 1
+    keys = np.concatenate(found.keys)
+    steps = np.concatenate(found.steps)
+    pairs = np.zeros(count + 1, dtype=np.int64)
+    rows_sum = np.zeros(count + 1)
+    cols_sum = np.zeros(count + 1)
+    top = np.full(count + 1, -math.inf)
+    for first in range(0, keys.size, _PAIRS_PER_UNIT):
+        key_rows, key_cols = np.divmod(keys[first:first + _PAIRS_PER_UNIT], width)
+        tags = labels.grid[key_rows // 2, key_cols // 2]
+        pairs += np.bincount(tags, minlength=count + 1)
+        rows_sum += np.bincount(tags, weights=key_rows, minlength=count + 1)
+        cols_sum += np.bincount(tags, weights=key_cols, minlength=count + 1)
+        np.maximum.at(top, tags, steps[first:first + _PAIRS_PER_UNIT])
+        yield None
+    stretches = []
+    for index in range(1, count + 1):
+        total = int(pairs[index])
+        x, y = _midpoint(geometry, rows_sum[index] / total, cols_sum[index] / total)
+        stretches.append(EdgeStretch(index, total, float(top[index]), x, y))
+    return tuple(stretches)
+
+
+def _created_units(design: np.ndarray, start: np.ndarray, domain: np.ndarray, geometry: Grid,
+                   thickness: float, threshold: float, share: float, cells_per_unit: int
+                   ) -> Generator[None, None, EdgeReport]:
+    """Las unidades de :func:`created_steps`: las parejas por bandas, las componentes de las
+    celdas de las que pasan y sus tramos."""
+    marked = np.zeros(geometry.shape, dtype=bool)
+    found = _Found()
+    rows_per_unit = max(1, cells_per_unit // max(geometry.ncols, 1))
+    yield from _band_units(design, start, domain, geometry, thickness, threshold, rows_per_unit,
+                           marked, found)
+    labels: Labels = yield from _label_units(marked)
+    stretches = yield from _stretch_units(found, labels, geometry)
+    over = sum(int(item.size) for item in found.keys)
+    if not found.pairs:
+        return EdgeReport(0, 0, 0.0, None, None, (), threshold, share, thickness)
+    x, y = _midpoint(geometry, *divmod(found.best_key, 2 * geometry.ncols + 1))
+    return EdgeReport(found.pairs, over, found.best, x, y, stretches, threshold, share,
+                      thickness)
+
+
+def created_steps(design: np.ndarray, start: np.ndarray, domain: np.ndarray, geometry: Grid,
+                  min_thickness_m: float, threshold_m: float | None, share_pct: float | None, *,
+                  budget_s: float = STEP_BUDGET_S, cells_per_unit: int = PAIR_CELLS_PER_UNIT
+                  ) -> Iterator[Progress]:
+    """**A11** (RF-014-20, RF-014-21; error 48): el salto creado en el borde de la superficie de
+    diseño ``design`` (``S``, m, float64, de la forma de ``geometry``) sobre la superficie de
+    partida ``start`` (``z``, m), con el dominio de trabajo ``domain`` (una máscara de
+    ``geometry``), el espesor mínimo de la 012 ``min_thickness_m`` (m), el salto admitido
+    ``threshold_m`` (m, el parámetro ``des.edge.max_created_step_m``) y el porcentaje admitido
+    ``share_pct`` (%, ``des.edge.min_share``: el de las parejas que tiene que quedar dentro del
+    salto admitido; D-6), por pasos de ``budget_s`` como mucho (bandas de ``cells_per_unit``
+    celdas): el último ``Progress`` (fase ``created_step``) lleva el :class:`EdgeReport`.
+
+    Una celda está **movida** si está en ``domain``, tiene dato en las dos superficies y ``|S −
+    z|`` es mayor que el espesor mínimo (la máscara del informe de la 013). Son del **borde** las
+    parejas de celdas vecinas (4 vecinos) con una movida y la otra no, con dato en las dos
+    superficies; su **salto creado** es ``c = |S_a − S_b| − |z_a − z_b|``: el salto con el diseño
+    menos el del terreno, así que el que el terreno ya tenía nunca cuenta. Pasan las de ``c``
+    mayor que el salto admitido; sus celdas (las dos de cada pareja) forman los **tramos**
+    (componentes 4-conexas). Se avisa si queda dentro del salto admitido menos del porcentaje
+    admitido de las parejas (:attr:`EdgeReport.warned`).
+
+    Rechazos al llamar: el salto y el porcentaje admitidos, como sus parámetros
+    (``check_quarry_param``: ``des.quarry_param_missing`` o ``des.quarry_param_range``);
+    ``ValueError`` (error del programa) si una rejilla no es de la forma de ``geometry``, el
+    espesor no es finito y ≥ 0 o ``cells_per_unit`` < 1. Ninguna entrada se modifica y no se
+    escribe nada; cerrar el generador a mitad no deja nada."""
+    threshold = float(check_quarry_param(EDGE_MAX_STEP, threshold_m))
+    share = float(check_quarry_param(EDGE_MIN_SHARE, share_pct))
+    thickness = _thickness(min_thickness_m)
+    units = _units(cells_per_unit)
+    surface = np.asarray(design, dtype=np.float64)
+    base = np.asarray(start, dtype=np.float64)
+    inside = np.asarray(domain, dtype=bool)
+    for label, grid in (("la superficie de diseño", surface), ("la superficie de partida", base),
+                        ("el dominio de trabajo", inside)):
+        _same_shape(label, grid, geometry.shape)
+    work = _created_units(surface, base, inside, geometry, thickness, threshold, share, units)
+    return pace_progress(work, budget_s, phase="created_step",
+                         running="Midiendo el salto creado en el borde…",
+                         finished="Salto creado en el borde, medido")
