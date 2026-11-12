@@ -8086,3 +8086,36 @@ es = "Corte del diseño de solo relleno"
 
 ["Volume of the refit"]
 es = "Volumen del ajuste"
+
+# «Límite desde el perímetro…» (spec 014, T20; HU-014-1; RF-014-01; plan 014 §5.3.3, §5.5): la orden
+# bl/ops/des.py (des_create_limit_from_perimeter), su resumen y la ficha de la barra N
+# (bl/ui/des_panels.py) y el nombre del recinto en la vista (bl/scene/des_views.py). («Name»,
+# «Start surface», «Calculate», «Create», «Calculation cancelled: nothing has been left half-done» y
+# «There is no open calculation: compute first» ya están arriba).
+
+["Name of the excavation boundary, unique in the active version"]
+es = "Nombre del recinto excavable, único en la versión activa"
+
+["Ground of the project or of the active version: its cells without data stay out of the excavation boundary"]
+es = "Terreno del proyecto o de la versión activa: sus celdas sin dato quedan fuera del recinto excavable"
+
+["Excavation boundary"]
+es = "Recinto excavable"
+
+["Excavation boundary «{name}» in {version}"]
+es = "Recinto excavable «{name}» en {version}"
+
+["Excavation boundary «{name}»: {cells} cells ({area} m²)"]
+es = "Recinto excavable «{name}»: {cells} celdas ({area} m²)"
+
+["Write the name of the excavation boundary"]
+es = "Escriba el nombre del recinto excavable"
+
+["Choose the start surface of the excavation boundary"]
+es = "Elija la superficie de partida del recinto excavable"
+
+["Excavation boundary «{name}» created in {version}"]
+es = "Recinto excavable «{name}» creado en {version}"
+
+["Computing the excavation boundary… {percent} % · Esc: cancel"]
+es = "Calculando el recinto excavable… {percent} % · Esc: cancelar"

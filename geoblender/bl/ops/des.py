@@ -128,7 +128,17 @@ T28 lo prueba de punta a punta sobre un proyecto real.
 
 **Los cargadores de la vista** (T27): el de las rejillas ``des_env_``, ``des_srf_`` y ``des_brm_``
 (objetos ``DESIGN``) es de ``bl/scene/des_views.py``, que registra ``bl.scene`` junto al tipo de
-objeto que necesita.
+objeto que necesita; también el del recinto ``des_rcn_`` de la 014 (T20).
+
+**Límite desde el perímetro…** (spec 014, T20; HU-014-1; RF-014-01; plan 014 §5.3.3):
+:class:`GEOBLENDER_OT_des_create_limit_from_perimeter` calcula el **recinto excavable** de la
+versión activa (``des.excavation_area``: el corte admitido de sus máscaras con dato en la superficie
+de partida) con ``design.steps.excavation_area_run``. Su diálogo pide el nombre y la superficie de
+partida (propone «Recinto excavable» y el terreno, como la T45 de la 013); **Calcular**, **Crear**,
+**Cancelar** y Esc, como «Envolventes y escalonado…» (el cálculo abierto de la sesión, su resumen
+en ``bl.ui.des_panels`` y su confirmación, :func:`_ask_confirmation` con su ``idname``). Ninguna
+cuenta es de aquí: el recinto, su área y su rechazo cuando queda vacío (con el área de cada parte
+que lo vacía) son de ``design``.
 """
 
 from __future__ import annotations
@@ -1315,12 +1325,12 @@ def _first_window() -> Any:
     return windows[0] if windows else None
 
 
-def _ask_confirmation(context: Any = None) -> None:
-    """Pide confirmar el cálculo recién hecho (D-14): la misma orden con ``confirm=True`` en cuanto
-    acaba el modal (un diálogo no se abre desde dentro de un modal); sin ventana, nada (lo dice el
-    informe y el cálculo espera a que se cree con ``confirm=True``)."""
-    _invoke_later(COMPUTE_ENVELOPE, getattr(context, "window", None) or _first_window(),
-                  confirm=True)
+def _ask_confirmation(context: Any = None, *, idname: str = COMPUTE_ENVELOPE) -> None:
+    """Pide confirmar el cálculo recién hecho (D-14): la misma orden (``idname``, por defecto
+    «Envolventes y escalonado…») con ``confirm=True`` en cuanto acaba el modal (un diálogo no se
+    abre desde dentro de un modal); sin ventana, nada (lo dice el informe y el cálculo espera a que
+    se cree con ``confirm=True``)."""
+    _invoke_later(idname, getattr(context, "window", None) or _first_window(), confirm=True)
 
 
 def _confirm_later(values: Mapping[str, Any], idname: str) -> None:
@@ -1784,6 +1794,220 @@ class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOper
             discard_calculation()
 
 
+# --- Límite desde el perímetro… (spec 014, T20; HU-014-1; RF-014-01; plan 014 §5.3.3, §5.5) ------
+
+CREATE_LIMIT = provenance.LIMIT_COMMAND
+
+
+class GEOBLENDER_OT_des_create_limit_from_perimeter(DesignCommandAware, ProvenanceAwareOperator,
+                                                    _StepsModal, bpy.types.Operator):
+    """Excavation boundary of the active version: the cells its masks admit to cut and with data
+    in the start surface"""
+
+    bl_idname = CREATE_LIMIT
+    bl_label = "Limit from the perimeter…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.EXCAVATION_AREA
+
+    # Como «Envolventes y escalonado…»: cada paso, ≤ 0,05 s (ninguna llamada de más de 0,2 s).
+    STEP_BUDGET_S = 0.05
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the excavation boundary, unique in the active version",
+        options=_FIELD)
+    surface: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Ground of the project or of the active version: its cells without data stay "
+                    "out of the excavation boundary", items=des_panels.surface_items,
+        options=_FIELD)
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con
+    # el avance y Esc: los pone invoke; desde un guion, sin ellos, de una vez.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué.
+        Con ``confirm``, el diálogo de crear el cálculo abierto. Si no, la lista de superficies
+        leída de nuevo, la propuesta (el nombre y, de partida, el terreno: T45 de la 013) y el
+        diálogo del cálculo: Intro calcula."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.refresh_choices(project)
+            self._propose(context, project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.bl_idname)].label),
+            confirm_text=tr("Calculate"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """El nombre («Recinto excavable») y la superficie de partida que propone el diálogo si
+        quien lo lanza no los dio: el terreno (``surface_proposal.ground_item``: el MDT o el TIN
+        seleccionado, la partida de una superficie de diseño seleccionada o la primera de la lista
+        que no es una rejilla de un diseño, tampoco un recinto)."""
+        if not self.name.strip():
+            self.name = tr("Excavation boundary")
+        if des_panels.has_surfaces() and not self.properties.is_property_set("surface"):
+            items = [identifier for identifier, _name, _about
+                     in des_panels.surface_items(None, None)]
+            self.surface = surface_proposal.ground_item(context, project, items,
+                                                        des_panels.surface_choice)
+
+    def _confirmation(self, context: Any) -> set[str]:
+        """El diálogo de crear el cálculo abierto: su resumen y «Crear»; «Cancelar» y cerrarlo lo
+        descartan."""
+        if calculation() is None:
+            self.report({"ERROR"}, tr("There is no open calculation: compute first"))
+            return {"CANCELLED"}
+        shown = des_panels.view()
+        title = shown.summary_title if shown is not None and shown.summary_title else (
+            command_text(catalog().commands[command_idname(self.bl_idname)].label))
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=title, confirm_text=tr("Create"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "surface", text=tr("Start surface"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Si no, comprueba lo pedido
+        (sin escribir nada si falta algo), pasa por la puerta de la 008 y calcula el recinto por
+        pasos con ``design.steps.excavation_area_run`` —compila las máscaras antes si no están al
+        día—, sin registrar nada: desde la interfaz, en el modal con el avance y Esc; desde un guion,
+        de una vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar. Los
+        rechazos (un recinto vacío con lo que lo vacía, la superficie, el nombre repetido) son los
+        de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        name = self.name.strip()
+        if not name:
+            self.report({"ERROR"}, tr("Write the name of the excavation boundary"))
+            return {"CANCELLED"}
+        if self.surface in ("", des_panels.NO_ZONE):
+            self.report({"ERROR"}, tr("Choose the start surface of the excavation boundary"))
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report,
+                             dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        steps = design_steps.excavation_area_run(project, name, self.surface, version=version,
+                                                 budget_s=self.STEP_BUDGET_S)
+        self._project, self._name = project, name
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, steps)
+            return {"RUNNING_MODAL"}
+        self.report_log: list[str] = []
+        calculated = _drain(self, steps)
+        if calculated is None:
+            return {"CANCELLED"}
+        self._finished(context, calculated)
+        return {"FINISHED"}
+
+    def _finished(self, context: Any, opened: Calculation) -> None:
+        """Lo deja abierto y sin registrar, enseña su resumen (en el informe y en la vista) y, desde
+        la interfaz, pide confirmar."""
+        hold_calculation(opened)
+        des_panels.show_summary(opened)
+        shown = des_panels.view()
+        for line in () if shown is None else shown.summary:
+            self._report({"WARNING" if line.alert else "INFO"}, line.name)
+        if self.in_steps and getattr(context, "window", None) is not None:
+            # Por la constante: en una instancia registrada, bl_idname es el nombre de la clase.
+            _ask_confirmation(context, idname=CREATE_LIMIT)
+
+    def _create(self, context: Any) -> set[str]:
+        """«Crear»: registra el cálculo abierto en una transacción (``Calculation.create``: la
+        operación, el recinto ``des_rcn_`` y su cifra); si falla, no queda nada."""
+        opened = calculation()
+        if opened is None:
+            self.report({"ERROR"}, tr("There is no open calculation: compute first"))
+            return {"CANCELLED"}
+        try:
+            opened.create()
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            discard_calculation()
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, opened.op_type)  # Ctrl+Z no lo deshace
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
+        des_panels.show_summary(None)
+        self.report({"INFO"}, tr("Excavation boundary «{name}» created in {version}",
+                                 name=opened.name, version=opened.version))
+        return {"FINISHED"}
+
+    # --- En pasos (_StepsModal) ---------------------------------------------------------------
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Calculando el recinto excavable… 40 % · Esc:
+        cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Computing the excavation boundary… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Calculation cancelled: nothing has been left half-done")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return design_error_text(exc)
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        if step.result is None:
+            if project_session.current() is not getattr(self, "_project", None):
+                return self._fail(context, tr(
+                    "The project was closed while the design «{name}» was being computed: nothing "
+                    "has been left half-done", name=getattr(self, "_name", "")))
+            return None
+        self._done(context)
+        self._finished(context, step.result)
+        return {"FINISHED"}
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)
+        except Exception as exc:  # noqa: BLE001 - los pasos cerrados no dejan nada a medias
+            LOGGER.error("«%s» se ha parado", self.bl_idname, exc_info=exc)
+            return self._fail(context, design_error_text(exc))
+
+    def cancel(self, context: Any) -> None:
+        """Lo que Blender llama al cancelar: un modal en curso cierra sus pasos (como Esc); la
+        ventana de la confirmación cerrada sin crear descarta el cálculo abierto y su temporal. El
+        diálogo del cálculo no descarta nada."""
+        if getattr(self, "_steps", None) is not None:
+            _StepsModal.cancel(self, context)
+        elif self.confirm:
+            discard_calculation()
+
+
 # --- Vista previa de semillas, dominios y restricciones (T25; HU-013-1; RF-013-01, RF-013-02,
 #     RF-013-03, RF-013-33; plan §5.3.3, §5.5, D-29) ----------------------------------------------
 
@@ -2113,8 +2337,10 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_compute_envelope,
                              GEOBLENDER_OT_des_toggle_preview,
                              GEOBLENDER_OT_des_export_design_grid,
-                             GEOBLENDER_OT_des_declare_sectors)
+                             GEOBLENDER_OT_des_declare_sectors,
+                             GEOBLENDER_OT_des_create_limit_from_perimeter)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
-T44, la que declara de nuevo los sectores desde su ventana)."""
+T44, la que declara de nuevo los sectores desde su ventana; de la 014, la T20 pone «Límite desde el
+perímetro…», aún de la entrada «014» sin entregar)."""

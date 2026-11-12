@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Lo que proponen los diálogos de superficies con lo seleccionado en la vista (T43, T45 de la 013).
 
-Lo usan «Verificar un diseño por recinto…» y «Entre dos superficies…» (``bl.ops.res``, T43) y
-«Envolventes y escalonado…» (``bl.ops.des``, T45). Cada diálogo tiene su lista de superficies (sus
+Lo usan «Verificar un diseño por recinto…» y «Entre dos superficies…» (``bl.ops.res``, T43),
+«Envolventes y escalonado…» (``bl.ops.des``, T45) y «Límite desde el perímetro…» (spec 014, T20). Cada diálogo tiene su lista de superficies (sus
 identificadores) y su forma de saber qué superficie es cada uno (``choice_of``: del identificador
 a su :class:`~geoblender.reserves.surfaces.SurfaceChoice`, o ``None``); lo de aquí solo mira los
 objetos seleccionados y los nombres de los datos, y lee la ficha de una superficie de diseño. No
 calcula ni escribe nada.
 
-De las tres rejillas de un diseño (``bl.scene.des_views``: la envolvente ``des_env_``, la
-superficie de diseño ``des_srf_`` y las cotas de berma ``des_brm_``), solo la superficie de diseño
-es una final; y ninguna de las tres es el terreno.
+De las rejillas de un diseño (``bl.scene.des_views``: la envolvente ``des_env_``, la superficie de
+diseño ``des_srf_``, las cotas de berma ``des_brm_`` y, de la 014, el recinto excavable
+``des_rcn_``), solo la superficie de diseño es una final; y ninguna es el terreno.
 """
 
 from __future__ import annotations
@@ -36,8 +36,8 @@ LOGGER = logging.getLogger("geoblender.bl.ops")
 SURFACE_KINDS = ("DTM", "TIN")  # Object.geoblender.kind de un objeto que muestra una superficie
 DESIGN_SURFACE = des_views.prefix(design_provenance.DESIGN_GRID)  # «des_srf_»: la final
 DESIGN_GRIDS = tuple(des_views.prefix(family) for family, _label in des_views.LOADERS)
-"""El comienzo del nombre de las tres rejillas de un diseño (``des_env_``, ``des_srf_`` y
-``des_brm_``)."""
+"""El comienzo del nombre de las rejillas de un diseño (``des_env_``, ``des_srf_``, ``des_brm_`` y
+el recinto ``des_rcn_``, T20 de la 014)."""
 
 type ChoiceOf = Callable[[str], SurfaceChoice | None]
 
@@ -57,8 +57,8 @@ def is_design_surface(identifier: str, choice_of: ChoiceOf) -> bool:
 
 
 def is_design_grid(identifier: str, choice_of: ChoiceOf) -> bool:
-    """Si ``identifier`` es una de las tres rejillas de un diseño (``des_env_``, ``des_srf_`` o
-    ``des_brm_``): ninguna es el terreno (T45)."""
+    """Si ``identifier`` es una de las rejillas de un diseño (``des_env_``, ``des_srf_``,
+    ``des_brm_`` o el recinto ``des_rcn_``): ninguna es el terreno (T45)."""
     return _name(identifier, choice_of).startswith(DESIGN_GRIDS)
 
 

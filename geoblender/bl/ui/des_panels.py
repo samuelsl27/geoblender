@@ -84,6 +84,12 @@ regenera las líneas al cambiar el objeto activo, tras cada lectura del proyecto
 ``.blend`` (``view_panels.add_card_listener``). Con un dato leído, al final de la barra N está el botón
 «Exportar rejilla a GeoTIFF…» (T28; RF-013-34: ``geoblender.des_export_design_grid`` con la rejilla del
 objeto activo), siempre activo: exportar no escribe en el proyecto, así que vale en solo lectura.
+
+**«Límite desde el perímetro…»** (spec 014, T20; HU-014-1; RF-014-01): el resumen de su cálculo
+(:func:`show_summary`, :func:`summary_lines`: «Recinto excavable «Límite» en V01», sus celdas y su
+área) y la ficha de su recinto en la barra N (:func:`item_lines`: su título «Recinto excavable ·
+Límite», su superficie de partida y su cifra, sin semillas ni envolvente: el recinto es el corte
+admitido de las máscaras).
 """
 
 from __future__ import annotations
@@ -697,10 +703,15 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     Geoblender, con los avisos al final y en alerta: de una envolvente, sus celdas, su área, sus
     cotas y el desmonte y el terraplén frente a la superficie de partida (las cifras que se
     registrarían); de un escalonado, el desmonte y el terraplén, la inclinación p99 y máxima con su
-    lugar, y las bermas con sus cotas reales (el informe y las bermas del dominio). Aquí solo se
-    escriben."""
+    lugar, y las bermas con sus cotas reales (el informe y las bermas del dominio); de un recinto
+    excavable (spec 014, T20; RF-014-01), sus celdas y su área. Aquí solo se escriben."""
     lines: list[tuple[str, bool]] = []
-    if calculation.op_type == design_provenance.ENVELOPE:
+    if calculation.op_type == design_provenance.EXCAVATION_AREA:
+        cells = calculation.outcome.cells  # type: ignore[union-attr]
+        lines.append((tr("Excavation boundary «{name}»: {cells} cells ({area} m²)",
+                         name=calculation.name, cells=_number(cells),
+                         area=_number(_figure(calculation, "des.rcn_area_m2"))), False))
+    elif calculation.op_type == design_provenance.ENVELOPE:
         cells = _figure(calculation, "des.env_cells")
         lines.append((tr("Envelope «{name}»: {cells} cells ({area} m²)", name=calculation.name,
                          cells=_number(cells), area=_number(_figure(calculation,
@@ -762,11 +773,16 @@ def show_summary(calculation: Calculation | None) -> None:
     if calculation is None:
         shown.summary_title = ""
         return
-    shown.summary_title = (tr("Envelope «{name}» in {version}", name=calculation.name,
-                              version=calculation.version)
-                           if calculation.op_type == design_provenance.ENVELOPE
-                           else tr("Benching «{name}» in {version}", name=calculation.name,
-                                   version=calculation.version))
+    if calculation.op_type == design_provenance.ENVELOPE:
+        title = tr("Envelope «{name}» in {version}", name=calculation.name,
+                   version=calculation.version)
+    elif calculation.op_type == design_provenance.EXCAVATION_AREA:
+        title = tr("Excavation boundary «{name}» in {version}", name=calculation.name,
+                   version=calculation.version)
+    else:
+        title = tr("Benching «{name}» in {version}", name=calculation.name,
+                   version=calculation.version)
+    shown.summary_title = title
     for text, alert in summary_lines(calculation):
         line = shown.summary.add()
         line.name, line.alert = text, alert
@@ -1103,7 +1119,8 @@ def has_preview() -> bool:
 
 def _family_label(name: str) -> str:
     """El nombre, en el idioma de Geoblender, del tipo de rejilla del dato ``name`` (la envolvente,
-    la superficie de diseño o las cotas de berma); vacío si no es de las tres."""
+    la superficie de diseño, las cotas de berma o el recinto excavable de la 014); vacío si no es
+    de ellas."""
     for family, msgid in des_views.LOADERS:
         if name.startswith(des_views.prefix(family)):
             return translate(language(), msgid)
@@ -1227,6 +1244,23 @@ def _constraint_lines(listed: Sequence[Any], version_code: str) -> list[CardLine
     return lines
 
 
+def _seed_card(settings: Mapping[str, Any], envelope_settings: Mapping[str, Any] | None,
+               constraints: Mapping[str, str], sectors: Mapping[str, str],
+               name: str) -> list[CardLine]:
+    """Las semillas y el dominio de la ficha de una envolvente o de un escalonado (los de su
+    envolvente, ``envelope_settings``; ``None`` si la versión ya no la tiene); si sus ajustes no
+    se pueden leer, lo dice (y lo deja en el registro técnico con el nombre del dato ``name``)."""
+    try:
+        if envelope_settings is None:
+            return [CardLine(ROW_NONE, tr("The envelope «{name}» is no longer in this version",
+                                          name=str(settings.get("envelope") or "")))]
+        return seed_lines(design_provenance.envelope_request(envelope_settings), constraints,
+                          sectors)
+    except ValueError:
+        LOGGER.info("Los ajustes de la envolvente de «%s» no se pueden leer", name, exc_info=True)
+        return [CardLine(ROW_NONE, tr("The seeds and the domain are not recorded"))]
+
+
 def item_lines(project: Any, uid: str) -> ItemLines | None:
     """Lo que dice el proyecto del dato ``uid`` de un diseño (véase el módulo), en una instantánea y
     sin escribir nada; ``None`` si el proyecto ya no lo tiene. Su estado es el de
@@ -1234,8 +1268,9 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     ``core.provenance.lineage``; la marca de la búsqueda pendiente, la de ``design.sectors`` (en las
     líneas y otra vez como primeras filas de las cifras, ámbar y una por sector pendiente); las
     semillas y el dominio, los de los ajustes de la envolvente (la de un escalonado, la que
-    escaló); las restricciones, las activas en su versión (``gis.masks.store``) y las cifras, las de
-    su operación. Los errores del proyecto (``GeoblenderError``, ``sqlite3.Error``) siguen."""
+    escaló; un recinto excavable de la 014, T20, no tiene: su ficha dice su superficie de
+    partida); las restricciones, las activas en su versión (``gis.masks.store``) y las cifras, las
+    de su operación. Los errores del proyecto (``GeoblenderError``, ``sqlite3.Error``) siguen."""
     from ...core.provenance import lineage as prov_lineage  # al usarlo: habilitar no lo carga
     from ...core.provenance import stale as prov_stale
     from ...core.versions import read as versions_read
@@ -1258,8 +1293,9 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
                        constraint_store.constraint_names(conn).items()}
         profile_names = design_profiles.profile_names(conn)
         settings = link.settings
+        area = link.op_type == design_provenance.EXCAVATION_AREA  # un recinto: sin semillas
         envelope_settings: Mapping[str, Any] | None = settings
-        if link.op_type != design_provenance.ENVELOPE:  # un escalonado: la envolvente que escaló
+        if link.op_type != design_provenance.ENVELOPE and not area:  # la envolvente que escaló
             envelope_settings =_stored_settings(conn, owner, design_provenance.ENVELOPE_GRID,
                                                  settings.get("envelope"))
     version_code = found.revision.code if found.revision is not None else ""
@@ -1282,26 +1318,18 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     assigned = profiles_text(settings, profile_names, names)
     if assigned:
         lines.append(CardLine(ROW_FIELD, tr("Profiles: {profiles}", profiles=assigned)))
-    if link.op_type != design_provenance.ENVELOPE:
+    if link.op_type != design_provenance.ENVELOPE and not area:
         lines.append(CardLine(ROW_FIELD, tr("Envelope: «{name}»",
                                             name=str(settings.get("envelope") or ""))))
+    if link.op_type != design_provenance.ENVELOPE:
         lines.append(CardLine(ROW_FIELD, tr("Start surface: «{surface}»",
                                             surface=str(settings.get("surface") or ""))))
     lines.append(CardLine(ROW_HEADING, tr("Parameters")))
     lines += [parameter_line(used, version_code) for used in link.params] or [
         CardLine(ROW_NONE, tr("No parameters recorded"))]
-    lines.append(CardLine(ROW_HEADING, tr("Seeds and domains")))
-    try:
-        if envelope_settings is None:
-            lines.append(CardLine(ROW_NONE, tr("The envelope «{name}» is no longer in this version",
-                                               name=str(settings.get("envelope") or ""))))
-        else:
-            lines += seed_lines(design_provenance.envelope_request(envelope_settings),
-                                constraints, names)
-    except ValueError:
-        LOGGER.info("Los ajustes de la envolvente de «%s» no se pueden leer", found.record.name,
-                    exc_info=True)
-        lines.append(CardLine(ROW_NONE, tr("The seeds and the domain are not recorded")))
+    if not area:  # el recinto no tiene semillas ni acotado: es el corte admitido (RF-014-01)
+        lines.append(CardLine(ROW_HEADING, tr("Seeds and domains")))
+        lines += _seed_card(settings, envelope_settings, constraints, names, found.record.name)
     lines.append(CardLine(ROW_HEADING, tr("Applied constraints")))
     lines += _constraint_lines(listed, version_code)
     # La marca también junto a las cifras (RF-013-06): una fila por sector pendiente, antes de ellas;
