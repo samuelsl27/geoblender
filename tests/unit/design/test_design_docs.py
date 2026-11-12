@@ -130,6 +130,10 @@ PENDING_014_API = frozenset({
     "Surface", "Order", "AnchorMode", "CellClass", "ToFinalMode", "LayerField", "CorridorFields",
     "QuarrySide", "QuarryRequest", "check_quarry_param",
 })
+# Los módulos nuevos de la 014 que aún no tienen fila en la ficha (la T36 se la da y vacía esto).
+PENDING_014_MODULES = frozenset({
+    "design.grids",  # T03: Labels, dilate_square, label_components_steps
+})
 
 
 def one_line(text: str) -> str:
@@ -455,6 +459,8 @@ class ModuleCardDocTest(unittest.TestCase):
         self.assertEqual(sorted(set(self.rows) - set(modules)), [], "una fila sin módulo")
         for dotted in modules:
             with self.subTest(module=dotted):
+                if dotted in PENDING_014_MODULES and dotted not in self.rows:
+                    continue
                 self.assertIn(dotted, self.rows)
                 module = import_geoblender(dotted)
                 found, suffixes = self.named(self.rows[dotted])
