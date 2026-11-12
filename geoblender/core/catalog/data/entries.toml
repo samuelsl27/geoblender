@@ -87,6 +87,15 @@ title.en = "Envelopes and benching"
 title.es = "Envolventes y escalonado"
 delivered = true
 
+# La spec 014 (cantera con dos superficies) es R-34 (plan 014 §5.1 y §5.6, T05): sus cinco órdenes
+# (Límite desde el perímetro…, Cantera con dos superficies…, Ajustar el diseño a un límite nuevo… y
+# Solo relleno…, de Diseño ▸ Cantera, y Transiciones con el terreno no afectado, de Restauración ▸
+# Superficie final) pasan de R-34 a la 014, aún provisionales: «delivered» llega al cerrarla. R-34
+# sigue como entrada del roadmap y ya no la usa ningún comando.
+["014"]
+title.en = "Quarry with two surfaces"
+title.es = "Cantera con dos superficies"
+
 ["R-07"]
 title.en = "Versions and provenance"
 title.es = "Versiones y procedencia"

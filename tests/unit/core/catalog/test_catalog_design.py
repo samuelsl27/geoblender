@@ -12,7 +12,13 @@ de comandos.
   las cuatro tienen su casa en Diseño y las internas, ninguna; la de las envolventes sigue
   siendo un trabajo en segundo plano (``D·2p``) y la vista previa, un interruptor (``T``).
 - El menú contextual de Diseño (``DESIGN``, PC §3.10) es de la ``013``, con los comandos que ya
-  tenía; lo de R-34, R-35 y R-44 que lleva sigue en su entrada.
+  tenía; lo de R-35 y R-44 que lleva sigue en su entrada.
+- La spec 014 (cantera con dos superficies; T05, plan 014 §5.6): la entrada ``014`` tiene su
+  título en los dos idiomas y **aún no entrega** sus comandos; las cinco órdenes de ``R-34``
+  (Límite desde el perímetro…, Cantera con dos superficies…, Ajustar el diseño a un límite
+  nuevo…, Solo relleno… y Transiciones con el terreno no afectado) pasan a ella con su casa, su
+  acción, su segundo plano y su frecuencia; ``R-34`` sigue como entrada del roadmap, sin
+  comandos.
 """
 
 import tomllib
@@ -34,6 +40,14 @@ MENU = {  # orden → (acción, en segundo plano)
 INTERNAL = ("geoblender.des_save_bench_profile", "geoblender.des_set_sector_slope",
             "geoblender.des_export_design_grid", "geoblender.des_declare_sectors")
 HOME = "GEOBLENDER_MT_ui_design"
+TITLE_014 = ("Quarry with two surfaces", "Cantera con dos superficies")
+MENU_014 = {  # orden → (casa, acción, en segundo plano, frecuencia)
+    "geoblender.des_create_limit_from_perimeter": (HOME, "D", False, 3),
+    "geoblender.des_design_quarry": (HOME, "D", True, 3),
+    "geoblender.des_refit_to_limit": (HOME, "D", False, 2),
+    "geoblender.des_design_fill_only": (HOME, "D", False, 1),
+    "geoblender.des_create_transitions": ("GEOBLENDER_MT_ui_reclamation", "A", False, 2),
+}
 
 
 class DesignCatalogTest(unittest.TestCase):
@@ -73,7 +87,7 @@ class DesignCatalogTest(unittest.TestCase):
     def test_the_design_context_menu_is_013(self) -> None:
         """RF-013-33, PC §3.10: el menú «Diseño ▾» (``DESIGN``) es de la ``013`` (su entrada, en
         ``contexts.toml``) y lleva los comandos de las dos órdenes que le corresponden más los
-        de R-34, R-35 y R-44 y los de otras specs que ya tenía."""
+        de R-35 y R-44 y los de otras specs que ya tenía."""
         raw = tomllib.loads((DATA / "contexts.toml").read_text(encoding="utf-8"))
         (context,) = [table for table in raw["context"] if table["kind"] == "DESIGN"]
         self.assertEqual(context["entry"], "013")
@@ -87,6 +101,32 @@ class DesignCatalogTest(unittest.TestCase):
         self.assertEqual(self.cat.commands[spec.id].entry, "013")
         for key in keys:
             self.assertIn(key, self.cat.commands)
+
+    def test_entry_014_is_not_delivered_yet(self) -> None:
+        """RF-014-29 (plan 014 §5.1 y §5.6; T05): la entrada ``014`` tiene el título de la spec en
+        los dos idiomas y aún no entrega sus comandos (``delivered`` llega al cerrarla); ``R-34``
+        sigue como entrada del roadmap, sin comandos."""
+        entry = self.cat.entries["014"]
+        self.assertEqual((entry.title, entry.title_es), TITLE_014)
+        self.assertFalse(entry.delivered)
+        self.assertEqual(catalog.entry_text(self.cat, "014", "es"), f"014 · {TITLE_014[1]}")
+        self.assertIn("R-34", self.cat.entries)
+        self.assertEqual(sorted(command.key for command in self.cat.commands.values()
+                                if command.entry == "R-34"), [])
+
+    def test_the_five_commands_of_r34_belong_to_014(self) -> None:
+        """RF-014-29 (plan 014 §5.5 y §5.6): las cinco órdenes de R-34 son de la ``014`` y de
+        ``des``, en el grupo «Cantera» de Diseño (y la transición, en Restauración ▸ Superficie
+        final), con la acción, el segundo plano y la frecuencia que ya tenían."""
+        self.assertEqual(sorted(command.key for command in self.cat.commands.values()
+                                if command.entry == "014"), sorted(MENU_014))
+        for key, (home, action, background, frequency) in MENU_014.items():
+            with self.subTest(key=key):
+                command = self.cat.commands[key]
+                self.assertEqual((command.entry, command.module, command.kind),
+                                 ("014", "des", "operator"))
+                self.assertEqual((command.home, command.action, command.background,
+                                  command.frequency), (home, action, background, frequency))
 
 
 if __name__ == "__main__":

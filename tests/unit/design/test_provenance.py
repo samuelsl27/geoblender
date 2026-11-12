@@ -16,6 +16,14 @@ la 008 y de la 009, sin registrar nada (lo registra ``bl``, T21 y T24):
   berma de un perfil que no usa: cambiar un perfil no deja obsoleta la envolvente que no lo usó);
 - sus **cifras** (``FigureDef``) y las funciones que las arman: una cifra que no existe (sin
   celdas con envolvente, sin movimiento) no se registra, y una NaN o infinita nunca (RF-013-17).
+
+Y lo de la **cantera con dos superficies** (spec 014, T05; RF-014-16, RF-014-29; plan 014 §5.2.3):
+las diez familias de datos de la versión (``des_rcn_``, ``des_exp_``, ``des_fin_``, ``des_xen_``,
+``des_fen_``, ``des_cls_``, ``des_qrp_``, ``des_trn_``, ``des_erp_`` y ``des_adj_``), aparte de
+las de la 013 (cuya ficha y guía las nombran ya); los cinco tipos de operación de la versión
+(``des.excavation_area``, ``des.quarry``, ``des.edge_transition``, ``des.fill_only`` y
+``des.refit``), todos repetibles y reproducibles salvo el ajuste, cada uno con su orden del
+catálogo (de la entrada «014»), sus ajustes y sus cifras; y el contrato de la 008 con ellos.
 """
 
 from __future__ import annotations
@@ -71,6 +79,44 @@ def definitions() -> tuple[Any, ...]:
     return (*provenance.operation_defs(
         {t: recompute for t in provenance.REPRODUCIBLE},
         {t: reproduce for t in provenance.REPRODUCIBLE}), *provenance.FIGURES)
+
+
+def quarry_definitions() -> tuple[Any, ...]:
+    """Los cinco tipos de la 014 con sus funciones y sus cifras, como los registra ``bl``."""
+    return (*provenance.quarry_operation_defs(
+        {t: recompute for t in provenance.QUARRY_VERSION_TYPES},
+        {t: reproduce for t in provenance.QUARRY_REPRODUCIBLE}), *provenance.QUARRY_FIGURES)
+
+
+QUARRY_TYPES = ("des.excavation_area", "des.quarry", "des.edge_transition", "des.fill_only",
+                "des.refit")
+QUARRY_COMMANDS = {
+    "des.excavation_area": "geoblender.des_create_limit_from_perimeter",
+    "des.quarry": "geoblender.des_design_quarry",
+    "des.edge_transition": "geoblender.des_create_transitions",
+    "des.fill_only": "geoblender.des_design_fill_only",
+    "des.refit": "geoblender.des_refit_to_limit"}
+QUARRY_FAMILIES = {  # código → (tipo, almacén, lector, papel)
+    "rcn": ("raster", "rasters", "gis.geotiff@1", "excavation_area"),
+    "exp": ("raster", "rasters", "gis.geotiff@1", "design_surface"),
+    "fin": ("raster", "rasters", "gis.geotiff@1", "design_surface"),
+    "xen": ("raster", "rasters", "gis.geotiff@1", "exploitation_envelope"),
+    "fen": ("raster", "rasters", "gis.geotiff@1", "final_envelope"),
+    "cls": ("raster", "rasters", "gis.geotiff@1", "classification"),
+    "qrp": ("table", "gpkg", "core.gpkg_layer@1", "quarry_report"),
+    "trn": ("raster", "rasters", "gis.geotiff@1", "design_surface"),
+    "erp": ("table", "gpkg", "core.gpkg_layer@1", "edge_report"),
+    "adj": ("raster", "rasters", "gis.geotiff@1", "design_surface")}
+QUARRY_FIGURES = {  # tipo → {clave: unidad}
+    "des.excavation_area": {"des.rcn_area_m2": "m2"},
+    "des.quarry": {
+        "des.exp_cut_m3": "m3", "des.unsplit_m3": "m3", "des.restoration_fill_m3": "m3",
+        "des.to_final_m3": "m3", "des.exp_cut_area_ha": "ha", "des.unsplit_area_ha": "ha",
+        "des.restoration_fill_area_ha": "ha", "des.quarry_min_m": "m", "des.quarry_max_m": "m"},
+    "des.edge_transition": {"des.transition_m3": "m3", "des.created_step_max_m": "m",
+                            "des.created_step_share_pct": "%"},
+    "des.fill_only": {"des.fill_only_cut_m3": "m3"},
+    "des.refit": {"des.refit_m3": "m3"}}
 
 
 def envelope_request(**changes: Any) -> Any:
@@ -154,8 +200,9 @@ class OperationTypesTest(unittest.TestCase):
                          ["des.envelope", "des.stepped_design"])
         self.assertEqual(provenance.REPRODUCIBLE, ("des.envelope", "des.stepped_design"))
         self.assertEqual(provenance.VERSION_TYPES, ("des.envelope", "des.stepped_design"))
-        self.assertEqual(dict(provenance.OPERATION_TYPES_BY_NAME),
-                         {t.op_type: t for t in provenance.OPERATION_TYPES})
+        self.assertEqual(dict(provenance.OPERATION_TYPES_BY_NAME),  # también los de la 014
+                         {t.op_type: t for t in (*provenance.OPERATION_TYPES,
+                                                 *provenance.QUARRY_OPERATION_TYPES)})
         self.assertEqual(provenance.MODULE, "des")
         self.assertEqual(provenance.OP_VERSION, "1.0")
         self.assertEqual(provenance.FIGURE_TOLERANCE, contract.Tolerance(relative=1e-9))
@@ -249,8 +296,9 @@ class DatasetsTest(unittest.TestCase):
         self.assertEqual([family.code for family in provenance.FAMILIES], list(expected))
         self.assertEqual((provenance.ENVELOPE_GRID, provenance.DESIGN_GRID, provenance.BERMS_GRID,
                           provenance.BERM_TABLE, provenance.REPORT_TABLE), tuple(expected))
-        self.assertEqual(dict(provenance.FAMILIES_BY_CODE),
-                         {family.code: family for family in provenance.FAMILIES})
+        self.assertEqual(dict(provenance.FAMILIES_BY_CODE),  # también las de la 014
+                         {family.code: family for family in (*provenance.FAMILIES,
+                                                             *provenance.QUARRY_FAMILIES)})
         self.assertEqual(provenance.DESIGN_SURFACE_ROLE, "design_surface")
         for family in provenance.FAMILIES:
             kind, store, reader, role = expected[family.code]
@@ -847,11 +895,12 @@ class RegistrationTest(dfx.DesignProjectCase):
 
     def setUp(self) -> None:
         super().setUp()
-        core_params.register_definitions(design_params.DEFINITIONS)
+        core_params.register_definitions((*design_params.DEFINITIONS,
+                                          *design_params.QUARRY_DEFINITIONS))
         self.addCleanup(core_params.unregister_definitions, "des")
         core_params.register_definitions(res_provenance.VERIFY_DEFINITIONS)
         self.addCleanup(core_params.unregister_definitions, "res")
-        stack = registered(*definitions())
+        stack = registered(*definitions(), *quarry_definitions())
         stack.__enter__()
         self.addCleanup(stack.__exit__, None, None, None)
 
@@ -957,6 +1006,277 @@ class RegistrationTest(dfx.DesignProjectCase):
                 with self.assertRaises(Exception) as caught:
                     self.record(stepped, [spec])
                 self.assertEqual(getattr(caught.exception, "code", ""), code)
+
+    def test_the_008_accepts_the_operations_of_the_014_and_their_figures(self) -> None:
+        """RF-014-29, RF-014-16, RF-008-05, RF-008-30 (plan 014 §5.2.3): con lo de la 013 y lo de
+        la 014 registrado a la vez, ``begin_operation`` empieza cada uno de los cinco tipos en la
+        versión (con los parámetros de §5.2.2 que tienen valor, resueltos en el proyecto) y cada
+        cifra declarada se registra CALCULADO con su unidad, su ámbito (el nombre, la superficie y
+        el sector) y, las cotas, también bajo el nivel del mar; «solo relleno» registra además las
+        del escalonado de la 013."""
+        params = {"des.quarry": (design_params.CROWN_RING, design_params.UNSPLIT_THRESHOLD,
+                                 design_params.UNSPLIT_MIN_AREA, THICKNESS),
+                  "des.edge_transition": (design_params.EDGE_MAX_STEP,
+                                          design_params.EDGE_MIN_SHARE)}
+        figures_of = {declared.op_type: declared.figures
+                      for declared in provenance.QUARRY_OPERATION_TYPES}
+        for op_type in QUARRY_TYPES:
+            with self.subTest(op_type=op_type):
+                handle = self.begin(op_type, settings={"name": FIGURE_NAME},
+                                    params=params.get(op_type, ()))
+                self.assertEqual({item.key for item in handle.params},
+                                 set(params.get(op_type, ())))
+                declared = figures_of[op_type]
+                if op_type == provenance.FILL_ONLY:
+                    declared = (*provenance.DESIGN_FIGURES, *declared)
+                specs = [figures_mod.FigureSpec(
+                    figure.key, -12.5 if figure.allow_negative else 7.25, figure.unit,
+                    scope=provenance.quarry_figure_scope(FIGURE_NAME, surface="final",
+                                                         sector="sector_1"))
+                    for figure in declared]
+                records = self.record(handle, specs)
+                self.assertEqual([(item.key, item.unit, str(item.kind)) for item in records],
+                                 [(spec.key, spec.unit, "CALCULADO") for spec in specs])
+
+
+class QuarryOperationTypesTest(unittest.TestCase):
+    """Los cinco tipos de operación de la 014 (T05; RF-014-29; plan 014 §5.2.3)."""
+
+    def test_five_version_operations_and_only_the_refit_is_not_reproduced(self) -> None:
+        """RF-014-29 (plan 014 §5.2.3): los cinco, del módulo ``des``, en la versión 1.0, de la
+        versión y repetibles; los lanza cada uno su orden del catálogo; se reproducen con 10⁻⁹
+        relativo salvo «Ajustar» (depende del límite vigente: sin reproducción ni tolerancia)."""
+        self.assertEqual((provenance.EXCAVATION_AREA, provenance.QUARRY,
+                          provenance.EDGE_TRANSITION, provenance.FILL_ONLY, provenance.REFIT),
+                         QUARRY_TYPES)
+        self.assertEqual([t.op_type for t in provenance.QUARRY_OPERATION_TYPES],
+                         list(QUARRY_TYPES))
+        self.assertEqual(provenance.QUARRY_VERSION_TYPES, QUARRY_TYPES)
+        self.assertEqual(provenance.QUARRY_REPRODUCIBLE, QUARRY_TYPES[:4])
+        for declared in provenance.QUARRY_OPERATION_TYPES:
+            op_type = declared.op_type
+            reproduced = op_type != "des.refit"
+            with self.subTest(op_type=op_type):
+                self.assertIs(provenance.OPERATION_TYPES_BY_NAME[op_type], declared)
+                self.assertEqual(declared.reproducible, reproduced)
+                built = provenance.operation_def(op_type, recompute,
+                                                 reproduce if reproduced else None)
+                self.assertIsInstance(built, contract.OperationDef)
+                self.assertEqual((built.op_type, built.version, built.module, built.scope,
+                                  built.repeatable, built.group),
+                                 (op_type, "1.0", "des", "version", True, None))
+                self.assertEqual(built.commands, (QUARRY_COMMANDS[op_type],))
+                self.assertIs(built.recompute, recompute)
+                self.assertIs(built.reproduce, reproduce if reproduced else None)
+                self.assertEqual(built.figure_tolerance,
+                                 contract.Tolerance(relative=1e-9) if reproduced else None)
+                self.assertEqual(built.settings, declared.settings)
+        # el ajuste no se reproduce: darle una función de reproducción es un error del programa
+        with self.assertRaises(ValueError):
+            provenance.operation_def(provenance.REFIT, recompute, reproduce)
+        # los de la 013 siguen como estaban
+        self.assertEqual(provenance.VERSION_TYPES, ("des.envelope", "des.stepped_design"))
+        self.assertEqual(provenance.REPRODUCIBLE, ("des.envelope", "des.stepped_design"))
+
+    def test_quarry_operation_defs_need_the_functions_of_every_type(self) -> None:
+        """RF-008-26, RF-009-11: ``quarry_operation_defs`` da los cinco en su orden con el
+        recálculo de cada uno y la reproducción de los cuatro que se reproducen (ni de más ni de
+        menos)."""
+        built = provenance.quarry_operation_defs(
+            {t: recompute for t in QUARRY_TYPES}, {t: reproduce for t in QUARRY_TYPES[:4]})
+        self.assertEqual([item.op_type for item in built], list(QUARRY_TYPES))
+        self.assertIsNone(built[-1].reproduce)
+        every = {t: recompute for t in QUARRY_TYPES}
+        four = {t: reproduce for t in QUARRY_TYPES[:4]}
+        for bad_recompute, bad_reproduce in (
+                ({t: recompute for t in QUARRY_TYPES[:4]}, four),
+                (every, {t: reproduce for t in QUARRY_TYPES}),
+                (every, {t: reproduce for t in QUARRY_TYPES[:3]}),
+                ({**every, "des.envelope": recompute}, four)):
+            with self.subTest(recompute=sorted(bad_recompute), reproduce=sorted(bad_reproduce)):
+                with self.assertRaises(ValueError):
+                    provenance.quarry_operation_defs(bad_recompute, bad_reproduce)
+
+    def test_what_each_operation_writes(self) -> None:
+        """RF-014-29 (plan 014 §5.2.3): el recinto; las dos superficies, sus envolventes, la
+        clasificación, las bermas de las dos (la tabla de la 013) y el informe; la transición y
+        su salto creado; «solo relleno», la superficie y el informe del escalonado de la 013; el
+        ajuste, su superficie ajustada."""
+        outputs = {t.op_type: t.outputs for t in provenance.QUARRY_OPERATION_TYPES}
+        self.assertEqual(outputs, {
+            "des.excavation_area": ("rcn",),
+            "des.quarry": ("exp", "fin", "xen", "fen", "cls", "bmt", "qrp"),
+            "des.edge_transition": ("trn", "erp"),
+            "des.fill_only": ("srf", "rpt"),
+            "des.refit": ("adj",)})
+        for produced in outputs.values():
+            for code in produced:
+                self.assertIn(code, provenance.FAMILIES_BY_CODE)
+
+    def test_the_declared_settings(self) -> None:
+        """RF-014-12, RF-014-13, RF-014-18, RF-014-22 (plan 014 §5.3.3): la cantera enseña el
+        orden, por lado (final y explotación) las semillas, el perfil base, el ancla (también «al
+        fondo de cada muro») y la métrica, y «explotación hasta la final»; «solo relleno», el
+        perfil base y el ancla como el escalonado de la 013; las otras tres solo llevan nombres
+        (no se declaran). Cada elección es uno de los valores del modelo."""
+        keys = {t.op_type: [item.key for item in t.settings]
+                for t in provenance.QUARRY_OPERATION_TYPES}
+        sides = [f"{side}.{key}" for side in ("final", "exploitation")
+                 for key in ("seeds.kind", "base_profile", "anchor", "metric")]
+        self.assertEqual(keys, {"des.excavation_area": [],
+                                "des.quarry": ["order", *sides, "to_final"],
+                                "des.edge_transition": [],
+                                "des.fill_only": ["base_profile", "anchor.source"],
+                                "des.refit": []})
+        by_key = {item.key: item for item in provenance.QUARRY_OPERATION_TYPES[1].settings}
+        values = {key: [value for value, _msgid in item.choices] for key, item in by_key.items()}
+        self.assertEqual(values["order"], [item.value for item in model.Order])
+        self.assertEqual(values["to_final"], [item.value for item in model.ToFinalMode])
+        for side in ("final", "exploitation"):
+            with self.subTest(side=side):
+                self.assertEqual(values[f"{side}.seeds.kind"],
+                                 ["crown", *(item.value for item in model.SeedKind)])
+                self.assertEqual(values[f"{side}.anchor"],
+                                 [item.value for item in model.AnchorMode])
+                self.assertEqual(values[f"{side}.metric"], [item.value for item in model.Metric])
+                self.assertEqual(values[f"{side}.base_profile"], [""])
+        labels = [item.label_msgid for item in provenance.QUARRY_OPERATION_TYPES[1].settings]
+        self.assertEqual(len(set(labels)), len(labels), "cada ajuste con su nombre")
+
+    def test_labels_have_their_spanish(self) -> None:
+        """RF-008-31 (principio 10): el nombre de cada tipo, ajuste, elección y cifra de la 014
+        es un ``msgid`` en inglés con su español en ``core/i18n/messages.toml``."""
+        table = i18n.load_messages()
+        wanted: list[str] = []
+        for declared in provenance.QUARRY_OPERATION_TYPES:
+            wanted.append(declared.label_msgid)
+            for setting in declared.settings:
+                wanted.append(setting.label_msgid)
+                wanted += [msgid for _value, msgid in setting.choices]
+        wanted += [figure.label_msgid for figure in provenance.QUARRY_FIGURES]
+        for msgid in wanted:
+            with self.subTest(msgid=msgid):
+                self.assertEqual(set(msgid) & SPANISH_LETTERS, set(), "msgid en inglés")
+                self.assertEqual(i18n.placeholders(msgid), set())
+                self.assertIn(msgid, table)
+                if msgid not in ("None", "No"):
+                    self.assertNotEqual(table[msgid], msgid)
+
+    def test_their_commands_are_the_ones_of_the_014_in_the_catalog(self) -> None:
+        """RF-014-29 (plan 014 §5.6): la orden de cada tipo está en el catálogo, de ``des`` y de
+        la entrada «014» (aún sin entregar: sus órdenes son provisionales)."""
+        cat = import_geoblender("core.catalog").load()
+        for declared in provenance.QUARRY_OPERATION_TYPES:
+            for idname in declared.commands:
+                with self.subTest(op_type=declared.op_type, idname=idname):
+                    command = cat.commands[idname]
+                    self.assertEqual((command.entry, command.module), ("014", "des"))
+        self.assertFalse(cat.entries["014"].delivered)
+
+    def test_registration_leaves_no_trace(self) -> None:
+        """RF-008-17 (principio 8): lo de la 013 y lo de la 014 se registran juntos sin chocar y
+        se quitan sin dejar nada."""
+        before = snapshot()
+        with registered(*definitions(), *quarry_definitions()):
+            for op_type in (*provenance.REPRODUCIBLE, *QUARRY_TYPES):
+                self.assertIn(op_type, contract.OPERATIONS)
+            for figure in (*provenance.FIGURES, *provenance.QUARRY_FIGURES):
+                self.assertIs(contract.FIGURES[figure.key], figure)
+        self.assertEqual(snapshot(), before)
+
+
+class QuarryDatasetsTest(unittest.TestCase):
+    """Las familias de datos de la 014 (T05; RF-014-16, RF-014-29; plan 014 §5.2.3)."""
+
+    def test_the_ten_families_of_the_version(self) -> None:
+        """Plan 014 §5.2.3, P-1: las ocho rejillas son GeoTIFF propio (la clasificación también,
+        con sus códigos) y las dos tablas, ``core.gpkg_layer@1``; las cuatro superficies que se
+        pueden congelar llevan ``design_surface`` (D-28 de la 013). Van aparte de las de la 013 y
+        no repiten su código."""
+        self.assertEqual([family.code for family in provenance.QUARRY_FAMILIES],
+                         list(QUARRY_FAMILIES))
+        self.assertEqual((provenance.EXCAVATION_AREA_GRID, provenance.EXPLOITATION_GRID,
+                          provenance.FINAL_GRID, provenance.EXPLOITATION_ENVELOPE_GRID,
+                          provenance.FINAL_ENVELOPE_GRID, provenance.CLASSIFICATION_GRID,
+                          provenance.QUARRY_REPORT_TABLE, provenance.TRANSITION_GRID,
+                          provenance.EDGE_REPORT_TABLE, provenance.REFIT_GRID),
+                         tuple(QUARRY_FAMILIES))
+        self.assertEqual([family.code for family in provenance.FAMILIES],
+                         ["env", "srf", "brm", "bmt", "rpt"])
+        for family in provenance.QUARRY_FAMILIES:
+            kind, store, reader, role = QUARRY_FAMILIES[family.code]
+            with self.subTest(family=family.code):
+                self.assertIs(provenance.FAMILIES_BY_CODE[family.code], family)
+                self.assertEqual((family.kind, str(family.store), family.reader, family.role),
+                                 (kind, store, reader, role))
+                self.assertEqual(family.prefix, f"des_{family.code}_")
+                self.assertEqual(family.extension, ".tif" if kind == "raster" else "")
+                self.assertTrue(family.label.strip())
+        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 15)
+
+    def test_names_locators_and_specs(self) -> None:
+        """RF-008-17, D-34 de la 009: el nombre ``des_<familia>_<nombre>`` y la ubicación con el
+        código de la versión, también los de la 014; su ``DatasetSpec`` es de ``des``, sin
+        selector y no editable en QGIS."""
+        self.assertEqual(provenance.dataset_locator("exp", "Cantera Ñandú", "V02"),
+                         "rasters/des_exp_cantera_nandu_v02.tif")
+        self.assertEqual(provenance.dataset_locator("qrp", "Cantera A", "V01"),
+                         "des_qrp_cantera_a_v01")
+        self.assertEqual(provenance.dataset_name("adj", "Cantera A final"),
+                         "des_adj_cantera_a_final")
+        for family in provenance.QUARRY_FAMILIES:
+            with self.subTest(family=family.code):
+                spec = provenance.dataset_spec(family.code, "Cantera A", "V01",
+                                               crs_epsg=25830 if family.kind == "raster" else None)
+                self.assertEqual((spec.module, spec.kind, spec.reader, spec.role, spec.selector),
+                                 ("des", family.kind, family.reader, family.role, None))
+                self.assertFalse(spec.qgis_editable)
+
+
+class QuarryFiguresTest(unittest.TestCase):
+    """Las cifras de la 014 (T05; RF-014-16; plan 014 §5.2.3 y §2.1)."""
+
+    def test_the_figures_of_the_plan(self) -> None:
+        """RF-014-16, RF-014-19 a RF-014-21, RF-014-25, RF-014-27: las de cada tipo con su unidad
+        del catálogo (áreas de la clasificación en ha); solo las cotas admiten negativos;
+        ninguna repite una clave de la 013 y «solo relleno» solo añade su corte (las del
+        escalonado son las de la 013)."""
+        by_type = {t.op_type: {figure.key: figure.unit for figure in t.figures}
+                   for t in provenance.QUARRY_OPERATION_TYPES}
+        self.assertEqual(by_type, QUARRY_FIGURES)
+        self.assertEqual([figure.key for figure in provenance.QUARRY_FIGURES],
+                         [key for found in QUARRY_FIGURES.values() for key in found])
+        self.assertEqual({figure.key for figure in provenance.QUARRY_FIGURES
+                          if figure.allow_negative}, {"des.quarry_min_m", "des.quarry_max_m"})
+        keys =[figure.key for figure in (*provenance.FIGURES, *provenance.QUARRY_FIGURES)]
+        self.assertEqual(len(keys), len(set(keys)))
+        for figure in provenance.QUARRY_FIGURES:
+            self.assertIn(figure.unit, units.UNITS)
+            self.assertEqual(figure.module, "des")
+            self.assertTrue(figure.allow_zero)
+        self.assertEqual(provenance.OPERATION_TYPES[0].figures, provenance.ENVELOPE_FIGURES)
+        self.assertEqual(provenance.OPERATION_TYPES[1].figures, provenance.DESIGN_FIGURES)
+
+    def test_the_scope_carries_the_name_the_surface_and_the_sector(self) -> None:
+        """Plan 014 §2.1 (``docs/trampas.md`` §6): las cifras de la 014 llevan el nombre de la
+        operación como las de la 013 y, si la tienen, la superficie (final o explotación) y el
+        sector; la del total no lleva sector. Ninguna pisa a otra."""
+        self.assertEqual(provenance.quarry_figure_scope("Hueco inicial"), FIGURE_SCOPE)
+        self.assertEqual(provenance.quarry_figure_scope("Hueco inicial", surface="final"),
+                         {**FIGURE_SCOPE, "surface": "final"})
+        self.assertEqual(provenance.quarry_figure_scope("Hueco inicial", surface="exploitation",
+                                                        sector="sector_2"),
+                         {**FIGURE_SCOPE, "surface": "exploitation", "sector": "sector_2"})
+        self.assertEqual(provenance.quarry_figure_scope("Hueco inicial", sector="sector_1"),
+                         {**FIGURE_SCOPE, "sector": "sector_1"})
+        scopes = [provenance.quarry_figure_scope("Hueco inicial", surface=surface, sector=sector)
+                  for surface in (None, "final", "exploitation")
+                  for sector in (None, "sector_1", "sector_2")]
+        self.assertEqual(len({figures_mod.scope_key(scope) for scope in scopes}), 9)
+        for bad in ({"surface": "ninguna"}, {"sector": ""}, {"sector": 3}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    provenance.quarry_figure_scope("Hueco inicial", **bad)
 
 
 if __name__ == "__main__":

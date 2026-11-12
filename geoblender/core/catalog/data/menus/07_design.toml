@@ -165,7 +165,7 @@ label.en = "Limit from the perimeter…"
 label.es = "Límite desde el perímetro…"
 description.en = "Setback and final slope from the perimeter down to the floor"
 description.es = "Retranqueo y talud final desde el perímetro hasta el fondo"
-entry = "R-34"
+entry = "014"
 action = "D"
 frequency = 3
 
@@ -175,7 +175,7 @@ label.en = "Quarry with two surfaces…"
 label.es = "Cantera con dos superficies…"
 description.en = "Exploitation surface and final surface of the quarry"
 description.es = "Superficie de explotación y superficie final de la cantera"
-entry = "R-34"
+entry = "014"
 action = "D"
 background = true
 frequency = 3
@@ -186,7 +186,7 @@ label.en = "Refit the design to a new limit…"
 label.es = "Ajustar el diseño a un límite nuevo…"
 description.en = "Refit an existing design to a redrawn limit"
 description.es = "Ajusta un diseño existente a un límite redibujado"
-entry = "R-34"
+entry = "014"
 action = "D"
 frequency = 2
 
@@ -196,7 +196,7 @@ label.en = "Fill only…"
 label.es = "Solo relleno…"
 description.en = "Design with zero cut: fill only"
 description.es = "Diseño con corte nulo: solo relleno"
-entry = "R-34"
+entry = "014"
 action = "D"
 frequency = 1
 

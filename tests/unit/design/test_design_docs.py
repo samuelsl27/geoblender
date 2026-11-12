@@ -129,6 +129,8 @@ PENDING_014_API = frozenset({
     # T02: design.model y design.params.
     "Surface", "Order", "AnchorMode", "CellClass", "ToFinalMode", "LayerField", "CorridorFields",
     "QuarrySide", "QuarryRequest", "check_quarry_param",
+    # T05: design.provenance.
+    "quarry_figure_scope", "quarry_operation_defs",
 })
 # Los módulos nuevos de la 014 que aún no tienen fila en la ficha (la T36 se la da y vacía esto).
 PENDING_014_MODULES = frozenset({

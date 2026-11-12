@@ -43,8 +43,16 @@ PENDING_REFS: frozenset[str] = frozenset()
 # propiedad…, de R-07 a 009), desde la T31 de la 009; las de Cubicación de la 011 (plan 011 D-36:
 # de R-38 a 011 al llegar su clase real), desde la T31 de la 011 (BS §8.9 y §8.4); las de
 # Diseño ▸ Límites y restricciones de la 012 (plan 012 D-38: de R-32 a 012 al llegar su clase
-# real, T22 a T28), desde la T34 de la 012 (BS §8.7 y §8.9). identificador → entrada.
-APPROVED_ENTRIES: dict[str, str] = {}
+# real, T22 a T28), desde la T34 de la 012 (BS §8.7 y §8.9). Las cinco órdenes de R-34 pasan a la
+# 014 (plan 014 §5.6, T05) y BS §8.7 y §8.9 las dirán al cerrarla (su T36, documentación).
+# identificador → entrada.
+APPROVED_ENTRIES: dict[str, str] = {
+    "des_create_limit_from_perimeter": "014",
+    "des_design_quarry": "014",
+    "des_refit_to_limit": "014",
+    "des_design_fill_only": "014",
+    "des_create_transitions": "014",
+}
 
 # Filas ↗ de BS que no dicen lo mismo que la casa de su comando (manda la casa: un comando,
 # una definición): ninguna (la T37 corrigió el «D·2p» de ``io_import_block_model`` en

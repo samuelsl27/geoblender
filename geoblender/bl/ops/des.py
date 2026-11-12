@@ -15,6 +15,10 @@ constantes del módulo construidas una vez:
   :data:`RECOMPUTE` y la de reproducción de :data:`REPRODUCE`, y ``des.edit_bench_profiles``, del
   proyecto y sin repetición (``design.profiles.OPERATIONS``); y sus quince **cifras**
   (``design.provenance.FIGURES``);
+- lo de la **014** (T05; plan 014 §5.2.2 y §5.2.3): sus siete parámetros
+  (``design.params.QUARRY_DEFINITIONS``), sus cinco tipos de operación de la versión, repetibles
+  (:data:`QUARRY_RECOMPUTE`) y reproducibles salvo el ajuste (:data:`QUARRY_REPRODUCE`), y sus
+  cifras (``design.provenance.QUARRY_FIGURES``);
 - sus textos (``design.messages``) en ``core.i18n``.
 
 :func:`register` pone lo que falta y apunta cómo quitarlo; :func:`unregister` quita solo eso, en
@@ -269,6 +273,65 @@ def reproduce_design(request: ReproduceRequest) -> Iterator[Progress]:
     return reproduce.reproduce_design(request)
 
 
+# Los cinco tipos de la 014 (T05; plan 014 §5.2.3): el mismo camino que los de la 013. Su recálculo
+# lo hace ``design.store.recompute_run`` y su reproducción, ``design.reproduce`` (las tareas que
+# crean cada operación, T06, T19, T28, T30 y T32, les dan su cálculo: hasta entonces no hay
+# ninguna operación de esos tipos que recalcular ni reproducir).
+
+
+def recompute_excavation_area(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.excavation_area`` (RF-014-29; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def recompute_quarry(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.quarry`` (RF-014-29; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def recompute_edge_transition(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.edge_transition`` (RF-014-29; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def recompute_fill_only(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.fill_only`` (RF-014-29; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def recompute_refit(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.refit`` (RF-014-29; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def reproduce_excavation_area(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.excavation_area``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_excavation_area(request)
+
+
+def reproduce_quarry(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.quarry``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_quarry(request)
+
+
+def reproduce_edge_transition(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.edge_transition``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_edge_transition(request)
+
+
+def reproduce_fill_only(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.fill_only``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_fill_only(request)
+
+
 # --- Declaraciones de la procedencia (ADR-0025 §2; plan §5.2.3) ----------------------------------
 
 RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = MappingProxyType({
@@ -280,17 +343,39 @@ REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]] = Mapp
     provenance.ENVELOPE: reproduce_envelope,
     provenance.STEPPED: reproduce_design,
 })
-"""La función de reproducción de cada tipo de ``des`` que se repite solo (RF-009-11)."""
+"""La función de reproducción de cada tipo de la 013 que se repite solo (RF-009-11)."""
+QUARRY_RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = (
+    MappingProxyType({
+        provenance.EXCAVATION_AREA: recompute_excavation_area,
+        provenance.QUARRY: recompute_quarry,
+        provenance.EDGE_TRANSITION: recompute_edge_transition,
+        provenance.FILL_ONLY: recompute_fill_only,
+        provenance.REFIT: recompute_refit,
+    }))
+"""La función de recálculo de cada tipo de la 014 (todos se repiten solos; RF-014-29)."""
+QUARRY_REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]] = (
+    MappingProxyType({
+        provenance.EXCAVATION_AREA: reproduce_excavation_area,
+        provenance.QUARRY: reproduce_quarry,
+        provenance.EDGE_TRANSITION: reproduce_edge_transition,
+        provenance.FILL_ONLY: reproduce_fill_only,
+    }))
+"""La función de reproducción de cada tipo de la 014 que se reproduce (todos salvo el ajuste)."""
 OPERATION_DEFS: tuple[contract.OperationDef, ...] = (
-    *provenance.operation_defs(RECOMPUTE, REPRODUCE), *design_profiles.OPERATIONS)
-"""Los ``OperationDef`` de los tres tipos de ``des`` (spec 013): la envolvente y el escalonado, de
-la versión y repetibles, y la edición de los perfiles de banco, del proyecto."""
-DEFINITIONS: tuple[core_params.ParamDef, ...] = design_params.DEFINITIONS
-"""Las definiciones de parámetros del proyecto de ``des``."""
+    *provenance.operation_defs(RECOMPUTE, REPRODUCE), *design_profiles.OPERATIONS,
+    *provenance.quarry_operation_defs(QUARRY_RECOMPUTE, QUARRY_REPRODUCE))
+"""Los ``OperationDef`` de los ocho tipos de ``des``: de la 013, la envolvente y el escalonado, de
+la versión y repetibles, y la edición de los perfiles de banco, del proyecto; de la 014, el recinto,
+la cantera con dos superficies, la transición, «solo relleno» y el ajuste, de la versión y
+repetibles (T05)."""
+DEFINITIONS: tuple[core_params.ParamDef, ...] = (
+    *design_params.DEFINITIONS, *design_params.QUARRY_DEFINITIONS)
+"""Las definiciones de parámetros de ``des``: las dos del proyecto de la 013 y las siete de la 014
+(plan 014 §5.2.2)."""
 FAMILIES: tuple[core_params.ParamFamily, ...] = design_params.FAMILIES
 """Las familias de parámetros de ``des`` (ADR-0027)."""
-FIGURES: tuple[contract.FigureDef, ...] = provenance.FIGURES
-"""Las cifras de ``des``: las de la envolvente y las del escalonado."""
+FIGURES: tuple[contract.FigureDef, ...] = (*provenance.FIGURES, *provenance.QUARRY_FIGURES)
+"""Las cifras de ``des``: las de la envolvente y las del escalonado (013) y las de la 014."""
 
 
 # --- Registro ------------------------------------------------------------------------------------

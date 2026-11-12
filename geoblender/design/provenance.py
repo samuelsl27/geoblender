@@ -39,6 +39,28 @@ escalonado lee los cinco valores de cada perfil. Las dos leen el espesor mínimo
 **Ninguna cifra es NaN ni infinita**: una que no existe (sin celdas con envolvente no hay cota
 mínima ni máxima; sin celdas con movimiento no hay inclinación) no se registra, y un valor que no
 es finito es un error del programa (``ValueError``).
+
+**La cantera con dos superficies** (spec 014, T05; RF-014-16, RF-014-29; plan 014 §5.2.3) declara
+lo suyo **aparte** de lo de la 013 (:data:`FAMILIES`, :data:`OPERATION_TYPES` y :data:`FIGURES`
+son los que nombran la ficha y la guía de la 013; la 014 los documenta en su T36), con el prefijo
+``QUARRY_`` como ``design.params.QUARRY_DEFINITIONS``:
+
+- :data:`QUARRY_FAMILIES`: el recinto (``des_rcn_``), las dos superficies (``des_exp_`` y
+  ``des_fin_``, papel ``design_surface``) y sus envolventes (``des_xen_`` y ``des_fen_``), la
+  clasificación (``des_cls_``, GeoTIFF con los códigos de ``CellClass``; P-1), el informe de la
+  cantera (``des_qrp_``), la transición (``des_trn_``) y su salto creado (``des_erp_``) y la
+  superficie ajustada (``des_adj_``). :data:`FAMILIES_BY_CODE` tiene las de las dos specs, y
+  :func:`dataset_name`, :func:`dataset_locator` y :func:`dataset_spec` valen para todas.
+- :data:`QUARRY_OPERATION_TYPES`: cinco tipos de la versión, cada uno con su orden del catálogo
+  (entrada «014»): ``des.excavation_area`` (:data:`EXCAVATION_AREA`), ``des.quarry``
+  (:data:`QUARRY`), ``des.edge_transition`` (:data:`EDGE_TRANSITION`), ``des.fill_only``
+  (:data:`FILL_ONLY`) y ``des.refit`` (:data:`REFIT`). Todos se repiten solos; se reproducen
+  todos salvo el ajuste, que depende del límite vigente (:data:`QUARRY_REPRODUCIBLE`).
+  :func:`quarry_operation_defs` los arma con las funciones de ``bl``.
+- :data:`QUARRY_FIGURES`: las cifras de cada tipo (``OperationType.figures``); «solo relleno»
+  registra además las del escalonado de la 013 (:data:`DESIGN_FIGURES`). Su ámbito,
+  :func:`quarry_figure_scope`: el nombre de la operación, la superficie y el sector (plan 014
+  §2.1: sin él, las de dos superficies o dos sectores se pisarían).
 """
 
 from __future__ import annotations
@@ -70,14 +92,18 @@ from ..gis.content import GEOTIFF
 from ..gis.masks.provenance import SEARCHES_ROLE, SECTORS_ROLE
 from ..gis.provenance import dataset_slug
 from .model import (
+    AnchorMode,
     BenchSense,
     DesignRequest,
     Direction,
     EnvelopeRequest,
     Metric,
+    Order,
     SeedKind,
     SeedSource,
     SlopeMode,
+    Surface,
+    ToFinalMode,
     WorkDomain,
     Zone,
     ZoneKind,
@@ -95,38 +121,79 @@ if TYPE_CHECKING:  # solo para los tipos: importar el informe arrastraría los c
 
 __all__ = [
     "ANCHORS_ROLE",
+    "AREA_FIGURES",
     "BERMS_GRID",
     "BERM_TABLE",
+    "CLASSIFICATION_GRID",
+    "CLASSIFICATION_ROLE",
     "COMMAND",
+    "CROWN_SEEDS",
     "CUT_M3",
     "DESIGN_FIGURES",
     "DESIGN_GRID",
     "DESIGN_SETTINGS",
     "DESIGN_SURFACE_ROLE",
     "DOMAIN_LAYER_ROLE",
+    "EDGE_REPORT_ROLE",
+    "EDGE_REPORT_TABLE",
+    "EDGE_TRANSITION",
     "ENVELOPE",
     "ENVELOPE_FIGURES",
     "ENVELOPE_GRID",
     "ENVELOPE_PROFILE_PARAMS",
     "ENVELOPE_ROLE",
     "ENVELOPE_SETTINGS",
+    "EXCAVATION_AREA",
+    "EXCAVATION_AREA_GRID",
+    "EXCAVATION_AREA_ROLE",
+    "EXPLOITATION_ENVELOPE_GRID",
+    "EXPLOITATION_ENVELOPE_ROLE",
+    "EXPLOITATION_GRID",
     "FAMILIES",
     "FAMILIES_BY_CODE",
     "FIGURES",
     "FIGURE_SCOPE_KEY",
     "FIGURE_TOLERANCE",
     "FILL_M3",
+    "FILL_ONLY",
+    "FILL_ONLY_COMMAND",
+    "FILL_ONLY_FIGURES",
+    "FILL_ONLY_SETTINGS",
+    "FINAL_ENVELOPE_GRID",
+    "FINAL_ENVELOPE_ROLE",
+    "FINAL_GRID",
+    "LIMIT_COMMAND",
     "MODULE",
     "OPERATION_TYPES",
     "OPERATION_TYPES_BY_NAME",
     "OP_VERSION",
+    "QUARRY",
+    "QUARRY_COMMAND",
+    "QUARRY_FAMILIES",
+    "QUARRY_FIGURES",
+    "QUARRY_OPERATION_TYPES",
+    "QUARRY_REPORT_ROLE",
+    "QUARRY_REPORT_TABLE",
+    "QUARRY_REPRODUCIBLE",
+    "QUARRY_SETTINGS",
+    "QUARRY_VERSION_TYPES",
+    "REFIT",
+    "REFIT_COMMAND",
+    "REFIT_FIGURES",
+    "REFIT_GRID",
     "REPORT_TABLE",
     "REPRODUCIBLE",
     "SEARCHES_ROLE",
     "SECTORS_ROLE",
+    "SECTOR_SCOPE_KEY",
     "SEEDS_GRID_ROLE",
     "STEPPED",
     "SURFACE_ROLE",
+    "SURFACE_SCOPE_KEY",
+    "TRANSITIONS_COMMAND",
+    "TRANSITION_FIGURES",
+    "TRANSITION_GRID",
+    "TWO_SURFACES_FIGURES",
     "VERSION_TYPES",
     "ZONE_LAYER_ROLE",
     "DatasetFamily",
@@ -149,6 +216,8 @@ __all__ = [
     "operation_def",
     "operation_defs",
     "profile_params",
+    "quarry_figure_scope",
+    "quarry_operation_defs",
     "sector_inputs",
     "settings_pending",
     "settings_previous",
@@ -239,10 +308,74 @@ FAMILIES: tuple[DatasetFamily, ...] = (
     DatasetFamily(REPORT_TABLE, "table", Store.GPKG, GPKG_LAYER.id, _REPORT_ROLE, "",
                   "Informe del diseño"),
 )
-"""Las familias de datos de la versión de ``des`` (plan §5.2.3)."""
+"""Las familias de datos de la versión de la 013 (plan 013 §5.2.3)."""
+
+# Las de la cantera con dos superficies (spec 014, T05; plan 014 §5.2.3).
+EXCAVATION_AREA_GRID = "rcn"
+"""El recinto de excavación: 1 dentro, sin dato fuera (``rasters/des_rcn_<nombre>_<vNN>.tif``)."""
+EXPLOITATION_GRID = "exp"
+"""La superficie de explotación (``rasters/des_exp_<nombre>_<vNN>.tif``)."""
+FINAL_GRID = "fin"
+"""La superficie final (``rasters/des_fin_<nombre>_<vNN>.tif``)."""
+EXPLOITATION_ENVELOPE_GRID = "xen"
+"""La envolvente de la superficie de explotación."""
+FINAL_ENVELOPE_GRID = "fen"
+"""La envolvente de la superficie final."""
+CLASSIFICATION_GRID = "cls"
+"""La clasificación de las dos superficies: GeoTIFF Float32 con el código de ``CellClass`` (0 sin
+diferencia, 1 desdoblado, 2 relleno) y sin dato fuera del dominio (P-1)."""
+QUARRY_REPORT_TABLE = "qrp"
+"""El informe de la cantera en formato largo, como ``des_rpt_`` (``des_qrp_<nombre>_<vNN>``)."""
+TRANSITION_GRID = "trn"
+"""La superficie con la transición al terreno no afectado (RF-014-19)."""
+EDGE_REPORT_TABLE = "erp"
+"""El informe del salto creado en el borde: parejas, porcentaje y tramos (RF-014-20, RF-014-21)."""
+REFIT_GRID = "adj"
+"""Una superficie ajustada a un límite nuevo (``des_adj_<nombre>_<superficie>_<vNN>``; RF-014-27)."""
+
+EXCAVATION_AREA_ROLE = "excavation_area"
+"""El papel del recinto de excavación."""
+EXPLOITATION_ENVELOPE_ROLE = "exploitation_envelope"
+"""El papel de la envolvente de la explotación."""
+FINAL_ENVELOPE_ROLE = "final_envelope"
+"""El papel de la envolvente de la final."""
+CLASSIFICATION_ROLE = "classification"
+"""El papel de la clasificación de las dos superficies."""
+QUARRY_REPORT_ROLE = "quarry_report"
+"""El papel del informe de la cantera."""
+EDGE_REPORT_ROLE = "edge_report"
+"""El papel del informe del salto creado."""
+
+QUARRY_FAMILIES: tuple[DatasetFamily, ...] = (
+    DatasetFamily(EXCAVATION_AREA_GRID, "raster", Store.RASTERS, GEOTIFF.id, EXCAVATION_AREA_ROLE,
+                  ".tif", "Recinto de excavación"),
+    DatasetFamily(EXPLOITATION_GRID, "raster", Store.RASTERS, GEOTIFF.id, DESIGN_SURFACE_ROLE,
+                  ".tif", "Superficie de explotación"),
+    DatasetFamily(FINAL_GRID, "raster", Store.RASTERS, GEOTIFF.id, DESIGN_SURFACE_ROLE, ".tif",
+                  "Superficie final"),
+    DatasetFamily(EXPLOITATION_ENVELOPE_GRID, "raster", Store.RASTERS, GEOTIFF.id,
+                  EXPLOITATION_ENVELOPE_ROLE, ".tif", "Envolvente de la explotación"),
+    DatasetFamily(FINAL_ENVELOPE_GRID, "raster", Store.RASTERS, GEOTIFF.id, FINAL_ENVELOPE_ROLE,
+                  ".tif", "Envolvente de la final"),
+    DatasetFamily(CLASSIFICATION_GRID, "raster", Store.RASTERS, GEOTIFF.id, CLASSIFICATION_ROLE,
+                  ".tif", "Clasificación de las dos superficies"),
+    DatasetFamily(QUARRY_REPORT_TABLE, "table", Store.GPKG, GPKG_LAYER.id, QUARRY_REPORT_ROLE, "",
+                  "Informe de la cantera"),
+    DatasetFamily(TRANSITION_GRID, "raster", Store.RASTERS, GEOTIFF.id, DESIGN_SURFACE_ROLE,
+                  ".tif", "Transición con el terreno no afectado"),
+    DatasetFamily(EDGE_REPORT_TABLE, "table", Store.GPKG, GPKG_LAYER.id, EDGE_REPORT_ROLE, "",
+                  "Salto creado en el borde"),
+    DatasetFamily(REFIT_GRID, "raster", Store.RASTERS, GEOTIFF.id, DESIGN_SURFACE_ROLE, ".tif",
+                  "Superficie ajustada a un límite nuevo"),
+)
+"""Las familias de datos de la versión de la 014 (plan 014 §5.2.3), aparte de las de la 013. Las
+cuatro superficies que se pueden congelar (las dos de la cantera, la transición y la ajustada)
+llevan :data:`DESIGN_SURFACE_ROLE`: congelar pide verificarlas por recinto (D-28 de la 013)."""
 FAMILIES_BY_CODE: Mapping[str, DatasetFamily] = MappingProxyType(
-    {family.code: family for family in FAMILIES})
-"""Las familias por código (solo lectura)."""
+    {family.code: family for family in (*FAMILIES, *QUARRY_FAMILIES)})
+"""Las familias de las dos specs por código (solo lectura)."""
+if len(FAMILIES_BY_CODE) != len(FAMILIES) + len(QUARRY_FAMILIES):  # pragma: no cover
+    raise RuntimeError("dos familias de datos del diseño con el mismo código")
 
 
 def _family(code: object) -> DatasetFamily:
@@ -331,69 +464,51 @@ DESIGN_SETTINGS: tuple[SettingDef, ...] = (
 (su código, tal cual: un valor que no es «ninguno» se enseña como está) y de dónde sale el
 ancla."""
 
-
-# --- Tipos de operación ------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class OperationType:
-    """Un tipo de operación de ``des`` sin sus funciones (plan §5.2.3): ``op_type``, su nombre
-    visible (``label_msgid``, con su español en ``core/i18n/messages.toml``), las familias de
-    datos que produce y los ajustes de su orden que enseña su procedencia. Los dos son de
-    versión (RF-009-05), se repiten solos y se reproducen, y los lanza :data:`COMMAND`."""
-
-    op_type: str
-    label_msgid: str
-    outputs: tuple[str, ...]
-    settings: tuple[SettingDef, ...]
-
-    def definition(self, recompute: RecomputeFunction | None = None,
-                   reproduce: ReproduceFunction | None = None) -> OperationDef:
-        """Su ``OperationDef`` (versión :data:`OP_VERSION`) con las funciones de ``bl``: la de
-        recálculo y la de reproducción (con :data:`FIGURE_TOLERANCE`); ``ValueError`` de
-        ``OperationDef`` si falta la de recálculo."""
-        return OperationDef(
-            self.op_type, OP_VERSION, MODULE, self.label_msgid, True, scope="version",
-            commands=(COMMAND,), recompute=recompute, settings=self.settings, reproduce=reproduce,
-            figure_tolerance=FIGURE_TOLERANCE if reproduce is not None else None)
+CROWN_SEEDS = "crown"
+"""El origen de las semillas de un lado de la cantera cuando son «coronación y zonas a sostener»
+(RF-014-02; ``QuarrySide.seeds`` es ``None``): el valor que se guarda en ``<lado>.seeds.kind``."""
 
 
-OPERATION_TYPES: tuple[OperationType, ...] = (
-    OperationType(ENVELOPE, "Slope envelope", (ENVELOPE_GRID,), ENVELOPE_SETTINGS),
-    OperationType(STEPPED, "Benched design", (DESIGN_GRID, BERMS_GRID, BERM_TABLE, REPORT_TABLE),
-                  DESIGN_SETTINGS),
+def _side_settings(side: Surface, label: str) -> tuple[SettingDef, ...]:
+    """Los ajustes de un lado de la cantera (``final`` o ``exploitation``), cada uno con su
+    nombre propio (``label``: «of the final surface»)."""
+    return (
+        SettingDef(f"{side.value}.seeds.kind", f"Seeds {label}", choices=(
+            (CROWN_SEEDS, "Crown and zones to hold"),
+            (SeedKind.SURFACE.value, "Cells of a surface"),
+            (SeedKind.FIXED.value, "Fixed elevation"),
+            (SeedKind.GRID.value, "Grid of elevations"))),
+        SettingDef(f"{side.value}.base_profile", f"Base profile {label}", choices=(("", "None"),)),
+        SettingDef(f"{side.value}.anchor", f"Anchor {label}", choices=(
+            (AnchorMode.FIXED.value, "Anchor elevation of the profile"),
+            (AnchorMode.GRID.value, "Grid of anchor elevations"),
+            (AnchorMode.NEAREST_FLOOR.value, "Floor nearest to each wall"))),
+        SettingDef(f"{side.value}.metric", f"Distance metric {label}", choices=(
+            (Metric.CHAMFER5.value, "5×5 chamfer distance"),
+            (Metric.EXACT.value, "Exact Euclidean distance"))),
+    )
+
+
+QUARRY_SETTINGS: tuple[SettingDef, ...] = (
+    SettingDef("order", "Order of the design", choices=(
+        (Order.FINAL_FIRST.value, "Final surface first"),
+        (Order.EXPLOITATION_FIRST.value, "Exploitation surface first"))),
+    *_side_settings(Surface.FINAL, "of the final surface"),
+    *_side_settings(Surface.EXPLOITATION, "of the exploitation surface"),
+    SettingDef("to_final", "Exploitation down to the final surface", choices=(
+        (ToFinalMode.NONE.value, "No"), (ToFinalMode.WARNED.value, "All the warned zones"),
+        (ToFinalMode.LAYER.value, "Zones of a layer"))),
 )
-"""Los tipos de operación de ``des``, en el orden del plan §5.2.3."""
-OPERATION_TYPES_BY_NAME: Mapping[str, OperationType] = MappingProxyType(
-    {declared.op_type: declared for declared in OPERATION_TYPES})
-"""Los tipos por nombre (solo lectura)."""
-VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in OPERATION_TYPES)
-"""Los tipos de versión (RF-013-17, RF-013-31)."""
-REPRODUCIBLE: tuple[str, ...] = VERSION_TYPES
-"""Los tipos que se repiten solos y se reproducen (los dos)."""
-
-
-def operation_def(op_type: str, recompute: RecomputeFunction | None = None,
-                  reproduce: ReproduceFunction | None = None) -> OperationDef:
-    """El ``OperationDef`` de ``op_type`` con las funciones de recálculo y de reproducción que le
-    da ``bl``. ``ValueError`` si el tipo no es de ``des`` o falta la función de recálculo."""
-    found = OPERATION_TYPES_BY_NAME.get(op_type) if isinstance(op_type, str) else None
-    if found is None:
-        raise ValueError(f"{op_type!r} no es un tipo de operación del diseño: es uno de "
-                         f"{', '.join(OPERATION_TYPES_BY_NAME)}")
-    return found.definition(recompute, reproduce)
-
-
-def operation_defs(recompute: Mapping[str, RecomputeFunction],
-                   reproduce: Mapping[str, ReproduceFunction]) -> tuple[OperationDef, ...]:
-    """Los ``OperationDef`` de los dos tipos, en su orden, cada uno con su función de
-    ``recompute`` y de ``reproduce`` (por tipo). ``ValueError`` si sobra o falta alguna."""
-    for name, given in (("recálculo", recompute), ("reproducción", reproduce)):
-        if set(given) != set(REPRODUCIBLE):
-            raise ValueError(f"las funciones de {name} son las de {', '.join(REPRODUCIBLE)}, "
-                             f"no las de {', '.join(sorted(map(str, given)))}")
-    return tuple(declared.definition(recompute[declared.op_type], reproduce[declared.op_type])
-                 for declared in OPERATION_TYPES)
+"""Los ajustes de ``des.quarry`` que enseña su procedencia (plan 014 §5.3.3; RF-014-12, RF-014-13,
+RF-014-18): el orden; por lado (``final.…`` y ``exploitation.…``), el origen de las semillas
+(:data:`CROWN_SEEDS` o el de unas de la 013), el perfil base (su código, tal cual), el ancla
+(también «al fondo de cada muro») y la métrica; y «explotación hasta la final». Los nombres
+(superficies, capas, campos, sectores) no se declaran."""
+FILL_ONLY_SETTINGS: tuple[SettingDef, ...] = tuple(
+    setting for setting in DESIGN_SETTINGS if setting.key != "sense")
+"""Los ajustes de ``des.fill_only`` (plan 014 §5.3.3): los del escalonado de la 013 salvo el
+sentido, que es siempre relleno (el perfil base y de dónde sale el ancla); la capa de las láminas
+y su campo son nombres."""
 
 
 # --- Cifras ------------------------------------------------------------------------------------
@@ -425,7 +540,178 @@ DESIGN_FIGURES: tuple[FigureDef, ...] = (
 )
 """Las cifras de ``des.stepped_design`` (RF-013-30, RF-013-31)."""
 FIGURES: tuple[FigureDef, ...] = ENVELOPE_FIGURES + DESIGN_FIGURES
-"""Las cifras de ``des`` (plan §5.2.3), cada una con su unidad del catálogo."""
+"""Las cifras de la 013 (plan 013 §5.2.3), cada una con su unidad del catálogo."""
+
+AREA_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("des.rcn_area_m2", "m2", "Area of the excavation boundary"),
+)
+"""La cifra de ``des.excavation_area`` (RF-014-01)."""
+TWO_SURFACES_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("des.exp_cut_m3", "m3", "Excavation of the exploitation surface"),
+    FigureDef("des.unsplit_m3", "m3", "Unsplit volume"),
+    FigureDef("des.restoration_fill_m3", "m3", "Restoration fill"),
+    FigureDef("des.to_final_m3", "m3", "Volume taken down to the final surface"),
+    FigureDef("des.exp_cut_area_ha", "ha", "Area of the excavation of the exploitation"),
+    FigureDef("des.unsplit_area_ha", "ha", "Unsplit area"),
+    FigureDef("des.restoration_fill_area_ha", "ha", "Area of the restoration fill"),
+    FigureDef("des.quarry_min_m", "m", "Lowest elevation of the quarry surface",
+              allow_negative=True),
+    FigureDef("des.quarry_max_m", "m", "Highest elevation of the quarry surface",
+              allow_negative=True),
+)
+"""Las cifras de ``des.quarry`` (RF-014-16, RF-014-18): la excavación de la explotación, el
+desdoblado, el relleno de restauración (lo clasificado, no diseñado) y lo que pasa del desdoblado a
+la explotación, en m³; sus áreas en ha; y las cotas mínima y máxima de cada superficie (con la
+superficie en su ámbito, :func:`quarry_figure_scope`), por sector y en total."""
+TRANSITION_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("des.transition_m3", "m3", "Volume of the transition"),
+    FigureDef("des.created_step_max_m", "m", "Largest created step at the edge"),
+    FigureDef("des.created_step_share_pct", "%",
+              "Share of edge pairs within the admitted created step"),
+)
+"""Las cifras de ``des.edge_transition`` (RF-014-19 a RF-014-21)."""
+FILL_ONLY_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("des.fill_only_cut_m3", "m3", "Cut of the fill-only design"),
+)
+"""La cifra propia de ``des.fill_only`` (RF-014-22, RF-014-25): las demás son las del escalonado
+de la 013 (:data:`DESIGN_FIGURES`), ya registradas."""
+REFIT_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("des.refit_m3", "m3", "Volume of the refit"),
+)
+"""La cifra de ``des.refit`` por superficie (RF-014-27)."""
+QUARRY_FIGURES: tuple[FigureDef, ...] = (
+    *AREA_FIGURES, *TWO_SURFACES_FIGURES, *TRANSITION_FIGURES, *FILL_ONLY_FIGURES, *REFIT_FIGURES)
+"""Las cifras que declara la 014 (plan 014 §5.2.3), aparte de las de la 013."""
+
+
+# --- Tipos de operación ------------------------------------------------------------------------
+
+EXCAVATION_AREA = "des.excavation_area"
+QUARRY = "des.quarry"
+EDGE_TRANSITION = "des.edge_transition"
+FILL_ONLY = "des.fill_only"
+REFIT = "des.refit"
+"""Los cinco tipos de la 014 (plan 014 §5.2.3)."""
+LIMIT_COMMAND = "geoblender.des_create_limit_from_perimeter"
+QUARRY_COMMAND = "geoblender.des_design_quarry"
+TRANSITIONS_COMMAND = "geoblender.des_create_transitions"
+FILL_ONLY_COMMAND = "geoblender.des_design_fill_only"
+REFIT_COMMAND = "geoblender.des_refit_to_limit"
+"""Las órdenes del catálogo que los lanzan, una por tipo (plan 014 §5.3.3; entrada «014»)."""
+
+
+@dataclass(frozen=True, slots=True)
+class OperationType:
+    """Un tipo de operación de ``des`` sin sus funciones (plan §5.2.3): ``op_type``, su nombre
+    visible (``label_msgid``, con su español en ``core/i18n/messages.toml``), las familias de
+    datos que produce y los ajustes de su orden que enseña su procedencia; con su nombre, sus
+    cifras (``figures``), las órdenes que lo lanzan (``commands``; por defecto, :data:`COMMAND`) y
+    si se reproduce (``reproducible``). Todos son de versión (RF-009-05) y se repiten solos."""
+
+    op_type: str
+    label_msgid: str
+    outputs: tuple[str, ...]
+    settings: tuple[SettingDef, ...]
+    figures: tuple[FigureDef, ...] = ()
+    commands: tuple[str, ...] = (COMMAND,)
+    reproducible: bool = True
+
+    def definition(self, recompute: RecomputeFunction | None = None,
+                   reproduce: ReproduceFunction | None = None) -> OperationDef:
+        """Su ``OperationDef`` (versión :data:`OP_VERSION`) con las funciones de ``bl``: la de
+        recálculo y la de reproducción (con :data:`FIGURE_TOLERANCE`); ``ValueError`` de
+        ``OperationDef`` si falta la de recálculo, y si se da la de reproducción a un tipo que no
+        se reproduce."""
+        if reproduce is not None and not self.reproducible:
+            raise ValueError(f"«{self.op_type}» no se reproduce (depende de lo vigente): no lleva "
+                             "función de reproducción")
+        return OperationDef(
+            self.op_type, OP_VERSION, MODULE, self.label_msgid, True, scope="version",
+            commands=self.commands, recompute=recompute, settings=self.settings,
+            reproduce=reproduce,
+            figure_tolerance=FIGURE_TOLERANCE if reproduce is not None else None)
+
+
+OPERATION_TYPES: tuple[OperationType, ...] = (
+    OperationType(ENVELOPE, "Slope envelope", (ENVELOPE_GRID,), ENVELOPE_SETTINGS,
+                  ENVELOPE_FIGURES),
+    OperationType(STEPPED, "Benched design", (DESIGN_GRID, BERMS_GRID, BERM_TABLE, REPORT_TABLE),
+                  DESIGN_SETTINGS, DESIGN_FIGURES),
+)
+"""Los tipos de operación de la 013, en el orden del plan 013 §5.2.3."""
+QUARRY_OPERATION_TYPES: tuple[OperationType, ...] = (
+    OperationType(EXCAVATION_AREA, "Limit from the perimeter", (EXCAVATION_AREA_GRID,), (),
+                  AREA_FIGURES, (LIMIT_COMMAND,)),
+    OperationType(QUARRY, "Quarry with two surfaces",
+                  (EXPLOITATION_GRID, FINAL_GRID, EXPLOITATION_ENVELOPE_GRID, FINAL_ENVELOPE_GRID,
+                   CLASSIFICATION_GRID, BERM_TABLE, QUARRY_REPORT_TABLE),
+                  QUARRY_SETTINGS, TWO_SURFACES_FIGURES, (QUARRY_COMMAND,)),
+    OperationType(EDGE_TRANSITION, "Transitions with the untouched terrain",
+                  (TRANSITION_GRID, EDGE_REPORT_TABLE), (), TRANSITION_FIGURES,
+                  (TRANSITIONS_COMMAND,)),
+    OperationType(FILL_ONLY, "Fill only", (DESIGN_GRID, REPORT_TABLE), FILL_ONLY_SETTINGS,
+                  FILL_ONLY_FIGURES, (FILL_ONLY_COMMAND,)),
+    OperationType(REFIT, "Refit of the design to a new limit", (REFIT_GRID,), (), REFIT_FIGURES,
+                  (REFIT_COMMAND,), reproducible=False),
+)
+"""Los tipos de operación de la 014, en el orden del plan 014 §5.2.3, aparte de los de la 013."""
+OPERATION_TYPES_BY_NAME: Mapping[str, OperationType] = MappingProxyType(
+    {declared.op_type: declared for declared in (*OPERATION_TYPES, *QUARRY_OPERATION_TYPES)})
+"""Los tipos de las dos specs por nombre (solo lectura)."""
+VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in OPERATION_TYPES)
+"""Los tipos de versión de la 013 (RF-013-17, RF-013-31)."""
+REPRODUCIBLE: tuple[str, ...] = VERSION_TYPES
+"""Los tipos de la 013 que se repiten solos y se reproducen (los dos): los que repite
+``design.store.recompute_run``."""
+QUARRY_VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in QUARRY_OPERATION_TYPES)
+"""Los tipos de versión de la 014, que se repiten solos (RF-014-29)."""
+QUARRY_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in QUARRY_OPERATION_TYPES
+                                             if t.reproducible)
+"""Los tipos de la 014 que se reproducen: todos salvo el ajuste."""
+
+
+def operation_def(op_type: str, recompute: RecomputeFunction | None = None,
+                  reproduce: ReproduceFunction | None = None) -> OperationDef:
+    """El ``OperationDef`` de ``op_type`` (de la 013 o de la 014) con las funciones de recálculo y
+    de reproducción que le da ``bl``. ``ValueError`` si el tipo no es de ``des``, falta la
+    función de recálculo o se da la de reproducción a uno que no se reproduce."""
+    found = OPERATION_TYPES_BY_NAME.get(op_type) if isinstance(op_type, str) else None
+    if found is None:
+        raise ValueError(f"{op_type!r} no es un tipo de operación del diseño: es uno de "
+                         f"{', '.join(OPERATION_TYPES_BY_NAME)}")
+    return found.definition(recompute, reproduce)
+
+
+def _check_functions(name: str, given: Mapping[str, Any], wanted: tuple[str, ...]) -> None:
+    if set(given) != set(wanted):
+        raise ValueError(f"las funciones de {name} son las de {', '.join(wanted)}, no las de "
+                         f"{', '.join(sorted(map(str, given)))}")
+
+
+def operation_defs(recompute: Mapping[str, RecomputeFunction],
+                   reproduce: Mapping[str, ReproduceFunction]) -> tuple[OperationDef, ...]:
+    """Los ``OperationDef`` de los dos tipos de la 013, en su orden, cada uno con su función de
+    ``recompute`` y de ``reproduce`` (por tipo). ``ValueError`` si sobra o falta alguna."""
+    _check_functions("recálculo", recompute, REPRODUCIBLE)
+    _check_functions("reproducción", reproduce, REPRODUCIBLE)
+    return tuple(declared.definition(recompute[declared.op_type], reproduce[declared.op_type])
+                 for declared in OPERATION_TYPES)
+
+
+def quarry_operation_defs(recompute: Mapping[str, RecomputeFunction],
+                          reproduce: Mapping[str, ReproduceFunction]
+                          ) -> tuple[OperationDef, ...]:
+    """Los ``OperationDef`` de los cinco tipos de la 014, en su orden: cada uno con su función de
+    ``recompute`` (todos se repiten solos) y, los de :data:`QUARRY_REPRODUCIBLE`, con la de
+    ``reproduce``. ``ValueError`` si sobra o falta alguna."""
+    _check_functions("recálculo", recompute, QUARRY_VERSION_TYPES)
+    _check_functions("reproducción", reproduce, QUARRY_REPRODUCIBLE)
+    return tuple(declared.definition(recompute[declared.op_type],
+                                     reproduce.get(declared.op_type))
+                 for declared in QUARRY_OPERATION_TYPES)
+
+
+# --- Las cifras: armarlas -----------------------------------------------------------------------
 
 
 def _finite(key: str, value: object) -> float:
@@ -459,6 +745,33 @@ def figure_scope(name: str) -> dict[str, str]:
     del hito H1, T20). ``GisError`` ``gis.dataset_name_invalid`` si no queda ninguna letra ni
     cifra."""
     return {FIGURE_SCOPE_KEY: dataset_slug(name)}
+
+
+SURFACE_SCOPE_KEY = "surface"
+SECTOR_SCOPE_KEY = "sector"
+"""Las claves del ámbito de una cifra de la 014 además del nombre: la superficie (``final`` o
+``exploitation``) y el sector (su código)."""
+
+
+def quarry_figure_scope(name: str, *, surface: Surface | str | None = None,
+                        sector: str | None = None) -> dict[str, str]:
+    """El ámbito de una cifra de la 014 (plan 014 §2.1; ``docs/trampas.md`` §6): el de
+    :func:`figure_scope` y, si los tiene, la superficie ``surface`` (``Surface``) y el código del
+    sector ``sector`` (sin él, la del total). Sin ellos, las cifras de las dos superficies o de
+    dos sectores se pisarían. ``ValueError`` si la superficie no es una de las dos o el sector no
+    es un texto con algo."""
+    scope = figure_scope(name)
+    if surface is not None:
+        try:
+            scope[SURFACE_SCOPE_KEY] = Surface(surface).value
+        except ValueError:
+            raise ValueError(f"la superficie de una cifra es «final» o «exploitation», no "
+                             f"{surface!r}") from None
+    if sector is not None:
+        if not isinstance(sector, str) or not sector.strip():
+            raise ValueError(f"el sector de una cifra es su código, no {sector!r}")
+        scope[SECTOR_SCOPE_KEY] = sector
+    return scope
 
 
 def envelope_figures(*, name: str, cells: int, area_m2: float, min_m: float | None,

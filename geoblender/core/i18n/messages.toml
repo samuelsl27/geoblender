@@ -7975,3 +7975,114 @@ es = "Elija la rejilla del diseño: selecciónela en la vista"
 
 ["Design grid exported to «{file}»"]
 es = "Rejilla del diseño exportada a «{file}»"
+
+# Procedencia de la cantera con dos superficies (spec 014, T05; RF-014-16, RF-014-29; plan 014
+# §5.2.3): el nombre de cada operación, de cada ajuste y de sus elecciones, y de cada cifra de
+# design/provenance.py («Fill only», «No», «None», «Cells of a surface», «Fixed elevation», «Grid of
+# elevations», «Anchor elevation of the profile», «Grid of anchor elevations» y las métricas ya están
+# arriba).
+
+["Limit from the perimeter"]
+es = "Límite desde el perímetro"
+
+["Quarry with two surfaces"]
+es = "Cantera con dos superficies"
+
+["Transitions with the untouched terrain"]
+es = "Transiciones con el terreno no afectado"
+
+["Refit of the design to a new limit"]
+es = "Ajuste del diseño a un límite nuevo"
+
+["Order of the design"]
+es = "Orden del diseño"
+
+["Final surface first"]
+es = "Primero la superficie final"
+
+["Exploitation surface first"]
+es = "Primero la superficie de explotación"
+
+["Seeds of the final surface"]
+es = "Semillas de la superficie final"
+
+["Base profile of the final surface"]
+es = "Perfil base de la superficie final"
+
+["Anchor of the final surface"]
+es = "Ancla de la superficie final"
+
+["Distance metric of the final surface"]
+es = "Métrica de distancia de la superficie final"
+
+["Seeds of the exploitation surface"]
+es = "Semillas de la superficie de explotación"
+
+["Base profile of the exploitation surface"]
+es = "Perfil base de la superficie de explotación"
+
+["Anchor of the exploitation surface"]
+es = "Ancla de la superficie de explotación"
+
+["Distance metric of the exploitation surface"]
+es = "Métrica de distancia de la superficie de explotación"
+
+["Crown and zones to hold"]
+es = "Coronación y zonas a sostener"
+
+["Floor nearest to each wall"]
+es = "Al fondo de cada muro"
+
+["Exploitation down to the final surface"]
+es = "Explotación hasta la final"
+
+["All the warned zones"]
+es = "Todas las zonas avisadas"
+
+["Zones of a layer"]
+es = "Las zonas de una capa"
+
+["Area of the excavation boundary"]
+es = "Área del recinto de excavación"
+
+["Excavation of the exploitation surface"]
+es = "Excavación de la superficie de explotación"
+
+["Unsplit volume"]
+es = "Volumen desdoblado"
+
+["Restoration fill"]
+es = "Relleno de restauración"
+
+["Volume taken down to the final surface"]
+es = "Volumen que pasa del desdoblado a la explotación"
+
+["Area of the excavation of the exploitation"]
+es = "Área de la excavación de la explotación"
+
+["Unsplit area"]
+es = "Área desdoblada"
+
+["Area of the restoration fill"]
+es = "Área del relleno de restauración"
+
+["Lowest elevation of the quarry surface"]
+es = "Cota mínima de la superficie de la cantera"
+
+["Highest elevation of the quarry surface"]
+es = "Cota máxima de la superficie de la cantera"
+
+["Volume of the transition"]
+es = "Volumen de la transición"
+
+["Largest created step at the edge"]
+es = "Mayor salto creado en el borde"
+
+["Share of edge pairs within the admitted created step"]
+es = "Porcentaje de parejas del borde dentro del salto creado admitido"
+
+["Cut of the fill-only design"]
+es = "Corte del diseño de solo relleno"
+
+["Volume of the refit"]
+es = "Volumen del ajuste"

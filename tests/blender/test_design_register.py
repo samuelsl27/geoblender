@@ -6,7 +6,9 @@
   definiciones de parámetros del proyecto (tolerancia de cara y umbral de aviso de magnitud), sus
   seis familias (los cinco valores de un perfil de banco y el talud impuesto de un sector), sus
   tres tipos de operación (``des.envelope`` y ``des.stepped_design``, de la versión; la edición de
-  los perfiles, del proyecto) y sus quince cifras; ``bl/ops/des.py`` lo quita y lo vuelve a poner
+  los perfiles, del proyecto) y sus quince cifras; y lo de la 014 (T05; RF-014-29): sus siete
+  parámetros, sus cinco tipos de operación de la versión (repetibles; reproducibles salvo el
+  ajuste) y sus quince cifras, con sus órdenes aún provisionales de la entrada «014»; ``bl/ops/des.py`` lo quita y lo vuelve a poner
   con los mismos objetos y deja lo que otro registró antes con las mismas claves.
 - El contrato de registro de la 008 (RF-008-26, RF-009-05, RF-009-11): cada tipo con su versión
   1.0, su ámbito, sus órdenes en el catálogo y, los dos que se repiten, su recálculo (por la cola
@@ -44,12 +46,28 @@ from tests.support.trees import temp_folder
 
 ENTRY = "013"
 ENTRY_TITLE = ("Envelopes and benching", "Envolventes y escalonado")
-COUNTS = {"parámetros": 2, "familias": 6, "operaciones": 3, "grupos": 0, "cifras": 15}
-"""Lo de ``des`` en ``core``: 2 definiciones, 6 familias, 3 tipos de operación y 15 cifras."""
+COUNTS = {"parámetros": 9, "familias": 6, "operaciones": 8, "grupos": 0, "cifras": 30}
+"""Lo de ``des`` en ``core``: 2 + 7 definiciones (013 y 014), 6 familias, 3 + 5 tipos de operación
+y 15 + 15 cifras."""
 OURS = ("des.", "des_")  # las claves de la 013 en los registros de core
 VERSION_TYPES = ("des.envelope", "des.stepped_design")
 PROFILES_TYPE = "des.edit_bench_profiles"
-REPRODUCED = {"des.envelope": "reproduce_envelope", "des.stepped_design": "reproduce_design"}
+QUARRY_TYPES = ("des.excavation_area", "des.quarry", "des.edge_transition", "des.fill_only",
+                "des.refit")
+"""Los cinco tipos de la 014 (T05): de la versión y repetibles."""
+REPRODUCED = {"des.envelope": "reproduce_envelope", "des.stepped_design": "reproduce_design",
+              "des.excavation_area": "reproduce_excavation_area",
+              "des.quarry": "reproduce_quarry",
+              "des.edge_transition": "reproduce_edge_transition",
+              "des.fill_only": "reproduce_fill_only"}
+"""Los tipos que se reproducen y su función de ``design.reproduce`` (el ajuste no se reproduce)."""
+ENTRY_014 = "014"
+COMMANDS_014: frozenset[str] = frozenset({"geoblender.des_create_limit_from_perimeter",
+                                          "geoblender.des_design_quarry",
+                                          "geoblender.des_create_transitions",
+                                          "geoblender.des_design_fill_only",
+                                          "geoblender.des_refit_to_limit"})
+"""Las órdenes de la 014 (T05: de R-34 a la entrada «014», aún provisionales)."""
 WM_PROPERTY = "geoblender_design"
 PREVIEW_PROPERTY = "geoblender_design_preview"
 PREVIEW_NAME = "Preview of seeds, domains and constraints"
@@ -278,16 +296,20 @@ class DesignRegisteredTest(unittest.TestCase):
                                             create=True))
         found = {op_type: defn for op_type, defn in m.contract.OPERATIONS.items()
                  if defn.module == "des"}
-        self.assertEqual(sorted(found), sorted((*VERSION_TYPES, PROFILES_TYPE)))
+        self.assertEqual(sorted(found), sorted((*VERSION_TYPES, PROFILES_TYPE, *QUARRY_TYPES)))
         self.assertEqual(sorted(des_ops.RECOMPUTE), sorted(declared.REPRODUCIBLE))
         self.assertEqual(sorted(des_ops.REPRODUCE), sorted(declared.REPRODUCIBLE))
+        self.assertEqual(sorted(des_ops.QUARRY_RECOMPUTE), sorted(QUARRY_TYPES))
+        self.assertEqual(sorted(des_ops.QUARRY_REPRODUCE), sorted(QUARRY_TYPES[:4]))
+        recomputed = {**des_ops.RECOMPUTE, **des_ops.QUARRY_RECOMPUTE}
+        reproduced = {**des_ops.REPRODUCE, **des_ops.QUARRY_REPRODUCE}
         self.assertEqual(sorted(defn.op_type for defn in des_ops.OPERATION_DEFS),
                          sorted(found))
         for defn in des_ops.OPERATION_DEFS:
             op_type = defn.op_type
             with self.subTest(operación=op_type):
                 self.assertIs(found[op_type], defn)
-                repeats = op_type in VERSION_TYPES
+                repeats = op_type in (*VERSION_TYPES, *QUARRY_TYPES)
                 self.assertEqual((defn.version, defn.group, defn.repeatable),
                                  ("1.0", None, repeats))
                 self.assertEqual(defn.scope, "version" if repeats else "project")
@@ -295,20 +317,20 @@ class DesignRegisteredTest(unittest.TestCase):
                 self.assertTrue(defn.commands)
                 for idname in defn.commands:
                     self.assertIn(idname, self.cat.commands)
-                self.assertIs(defn.recompute, des_ops.RECOMPUTE.get(op_type))
-                self.assertIs(defn.reproduce, des_ops.REPRODUCE.get(op_type))
+                self.assertIs(defn.recompute, recomputed.get(op_type))
+                self.assertIs(defn.reproduce, reproduced.get(op_type))
                 self.assertEqual(callable(defn.recompute), repeats)
-                self.assertEqual(callable(defn.reproduce), repeats)
+                self.assertEqual(callable(defn.reproduce), op_type in REPRODUCED)
                 self.assertEqual(defn.figure_tolerance,
-                                 declared.FIGURE_TOLERANCE if repeats else None)
-                if repeats:  # la reproducción es la de design.reproduce, al usarla
+                                 declared.FIGURE_TOLERANCE if op_type in REPRODUCED else None)
+                if op_type in REPRODUCED:  # la de design.reproduce, al usarla
                     with mock.patch.object(reproduce, REPRODUCED[op_type],
                                            return_value="pasos") as function:
                         self.assertEqual(defn.reproduce("petición"), "pasos")
                     function.assert_called_once_with("petición")
-        for figure in declared.FIGURES:
+        for figure in (*declared.FIGURES, *declared.QUARRY_FIGURES):
             self.assertIs(m.contract.FIGURES[figure.key], figure)
-        for definition in m.des_params.DEFINITIONS:
+        for definition in (*m.des_params.DEFINITIONS, *m.des_params.QUARRY_DEFINITIONS):
             self.assertIs(m.params.DEFINITIONS[definition.key], definition)
         for family in m.des_params.FAMILIES:
             self.assertIs(m.params.FAMILIES[family.pattern], family)
@@ -317,8 +339,9 @@ class DesignRegisteredTest(unittest.TestCase):
                    for setting in defn.settings}
         msgids |= {label for defn in des_ops.OPERATION_DEFS for setting in defn.settings
                    for _value, label in setting.choices or ()}
-        msgids |= {figure.label_msgid for figure in declared.FIGURES}
-        msgids |= {defn.label_msgid for defn in m.des_params.DEFINITIONS}
+        msgids |= {figure.label_msgid for figure in (*declared.FIGURES, *declared.QUARRY_FIGURES)}
+        msgids |= {defn.label_msgid for defn in (*m.des_params.DEFINITIONS,
+                                                 *m.des_params.QUARRY_DEFINITIONS)}
         msgids |= {family.template.label_msgid for family in m.des_params.FAMILIES}
         self.assertNotIn(None, msgids)
         self.assertEqual(m.i18n.untranslated(msgids), [])
@@ -332,12 +355,19 @@ class DesignRegisteredTest(unittest.TestCase):
         for defn in des_ops.OPERATION_DEFS:
             for idname in defn.commands:
                 launched.setdefault(idname, []).append(defn.op_type)
-        self.assertEqual(sorted(launched), ["geoblender.des_compute_envelope",
-                                            "geoblender.des_edit_bench_profiles"])
+        self.assertEqual(sorted(launched), sorted({"geoblender.des_compute_envelope",
+                                                   "geoblender.des_edit_bench_profiles",
+                                                   *COMMANDS_014}))
         self.assertEqual(launched["geoblender.des_compute_envelope"], list(VERSION_TYPES))
-        for idname in sorted(launched):
+        for idname in sorted(set(launched) - COMMANDS_014):
             with self.subTest(orden=idname):
                 self.assertIn(idname, DELIVERED)
+        self.assertFalse(self.cat.entries[ENTRY_014].delivered)
+        for idname in sorted(COMMANDS_014):  # la 014 las entrega al cerrarse
+            with self.subTest(orden=idname):
+                self.assertEqual(len(launched[idname]), 1)
+                self.assertEqual(self.cat.commands[idname].entry, ENTRY_014)
+                self.assertFalse(m.commands.is_available(idname))
         entry = self.cat.entries[ENTRY]
         self.assertEqual((entry.title, entry.title_es, entry.delivered), (*ENTRY_TITLE, True))
         for idname in sorted(DELIVERED | INTERNAL):
