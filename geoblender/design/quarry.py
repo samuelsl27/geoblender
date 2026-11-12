@@ -45,14 +45,24 @@
   proyección; su longitud medida es la del eje con error ≤ 1 celda (error 20), y
   :func:`corridor_too_long` da el aviso de RF-014-10.
 
-Las demás piezas de la cantera (techo, ancla y las dos superficies) llegan con sus tareas. Python puro con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no
-escribe nada.
+- :func:`conservation_ceiling_steps` (T10; RF-014-07; A5): el **techo de conservación** ``U =
+  ENV↑(z en Z, tan(talud de conservación))`` de las zonas a conservar (:class:`ConserveZone`)
+  sobre la envolvente ascendente de la 013 (:class:`ConservationCeiling`, con el aviso
+  ``des.conserve_nodata`` de las celdas de la zona sin dato de terreno, que no lo siembran), y
+  :func:`apply_ceiling`, sus tres reglas: en ``Z``, la superficie es ``z``; fuera, ninguna celda
+  con ``z > U`` se excava y la superficie no pasa de ``máx(U, z)`` (no entierra la zona: el error
+  37 fue un relleno; spec 0.2). :func:`conserve_moved` (RF-014-08) mide lo que un diseño mueve
+  dentro de las zonas, con el espesor mínimo de la 012, por partes con su volumen y su centro
+  (:class:`ConserveMoved`, :class:`ConservePart`): más de 0 m³ es un error del diseño.
+
+Las demás piezas de la cantera (ancla y las dos superficies) llegan con sus tareas. Python puro
+con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no escribe nada.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Generator, Iterator
+from collections.abc import Generator, Iterator, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 
@@ -67,26 +77,45 @@ from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.messages import format_value
 from ..gis.vector import FeatureLayer
 from . import provenance
-from .envelopes import SlopeField, envelope_steps
+from .envelopes import (
+    BLOCK_CELLS,
+    BLOCK_GROUP,
+    CELLS_PER_UNIT,
+    EVALS_PER_UNIT,
+    SlopeField,
+    _exact_work,
+    chamfer_units,
+    constant_slope,
+    envelope_steps,
+)
 from .grids import _label_units, dilate_square
 from .messages import DesignError, render
-from .model import CorridorFields, Direction, EnvelopeRequest, LayerField
-from .params import CROWN_RING, check_quarry_param
-from .seeds import DomainSet, SeedSet, collect_seeds, domain_of
+from .model import CorridorFields, Direction, EnvelopeRequest, LayerField, Metric
+from .params import CONSERVE_SLOPE, CROWN_RING, check_quarry_param
+from .report import moved_cells
+from .seeds import DomainSet, SeedSet, collect_seeds, domain_of, pace_progress
 from .zones import _paint, _polygon_spans
 
 __all__ = [
     "AREA_PART_LABELS",
+    "CEILING_NAME",
     "FLOOR_LEVEL_MARGIN_M",
     "HOLD_TYPES",
     "AreaOutcome",
     "AreaPart",
+    "ConservationCeiling",
+    "ConserveMoved",
+    "ConservePart",
+    "ConserveZone",
     "CorridorMap",
     "FloorMap",
     "FloorsAbove",
     "SeedGroup",
+    "apply_ceiling",
     "area_outcome",
     "area_parts",
+    "conservation_ceiling_steps",
+    "conserve_moved",
     "corridor_cells",
     "corridor_too_long",
     "crown_ring",
@@ -721,3 +750,212 @@ def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid) 
     floors = FloorMap(fields.layer, level_fields[0], grid, owner, tuple(layer.fids),
                       tuple(levels), tuple(cells), geometry.cell_area)
     return CorridorMap(floors, tuple(widths), tuple(axes), tuple(measured))
+
+
+# --- Techo de conservación (T10; A5) -----------------------------------------------------------
+
+CEILING_NAME = "Techo de conservación"
+"""El nombre del techo en los mensajes de la envolvente de la 013 (RF-013-15)."""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ConserveZone:
+    """Una zona **a conservar** (RF-014-07): su ``name`` (el de la restricción de la 012 o el del
+    polígono de la capa, como lo ve la persona) y su ``mask`` (booleana, de la rejilla)."""
+
+    name: str
+    mask: np.ndarray
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ConservationCeiling:
+    """El **techo de conservación** (A5, RF-014-07): ``grid``, ``U`` (m, float64, nueva; ``+inf``
+    donde no hay techo porque ninguna celda lo siembra), ``zone`` (la unión de las zonas, booleana y
+    nueva) y, por zona en su orden, su nombre (``names``) y sus celdas sin dato de terreno
+    (``nodata_cells``: no siembran); el talud de conservación ``slope_deg`` (°) y
+    ``cell_area_m2``, el área de una celda."""
+
+    grid: np.ndarray
+    zone: np.ndarray
+    names: tuple[str, ...]
+    nodata_cells: tuple[int, ...]
+    slope_deg: float
+    cell_area_m2: float
+
+    @property
+    def notices(self) -> tuple[str, ...]:
+        """Los avisos ``des.conserve_nodata`` en español (zona y área en m²) de las zonas con
+        celdas sin dato de terreno, en su orden."""
+        return tuple(render("des.conserve_nodata", zone=name,
+                            area=round(cells * self.cell_area_m2, 2))
+                     for name, cells in zip(self.names, self.nodata_cells, strict=True) if cells)
+
+
+def _zone_masks(zones: Sequence[ConserveZone], shape: tuple[int, ...]) -> list[np.ndarray]:
+    """Las máscaras de ``zones`` (booleanas); ``ValueError`` si una no es de la forma ``shape``."""
+    found = []
+    for zone in zones:
+        mask = np.asarray(zone.mask, dtype=bool)
+        _same_shape(f"la zona a conservar «{zone.name}»", mask, shape)
+        found.append(mask)
+    return found
+
+
+def _ceiling_work(seed: np.ndarray, geometry: Grid, slope: SlopeField, metric: Metric,
+                  zone: np.ndarray, names: tuple[str, ...], nodata: tuple[int, ...],
+                  slope_deg: float) -> Generator[None, None, ConservationCeiling]:
+    """Las unidades del techo: la envolvente ascendente de la 013 de ``seed`` con ``slope`` y
+    ``metric``; sin ninguna semilla, ``+inf`` en toda la rejilla (no hay techo)."""
+    if not np.isfinite(seed).any():
+        yield None
+        grid = np.full(seed.shape, np.inf)
+    elif metric is Metric.EXACT:
+        found = yield from _exact_work(seed, geometry, slope, Direction.UP, CEILING_NAME,
+                                       CELLS_PER_UNIT, EVALS_PER_UNIT, BLOCK_CELLS, BLOCK_GROUP)
+        grid = found.grid
+    else:
+        found = yield from chamfer_units(seed, geometry, slope, Direction.UP, name=CEILING_NAME)
+        grid = found.grid
+    return ConservationCeiling(grid, zone, names, nodata, slope_deg, geometry.cell_area)
+
+
+def conservation_ceiling_steps(zones: Sequence[ConserveZone], start: np.ndarray, geometry: Grid,
+                               slope_deg: float | None, *, metric: Metric | str = Metric.CHAMFER5,
+                               budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**A5** (RF-014-07): el techo de conservación ``U = ENV↑(z en Z, tan(talud))`` de las zonas
+    a conservar ``zones`` (``Z``, su unión: la ascendente es un mínimo sobre las semillas, así que
+    es el menor de los techos de cada zona) sobre la superficie de partida ``start`` (m, float64,
+    de la forma de ``geometry``), con el talud de conservación ``slope_deg`` (°, el parámetro
+    ``des.conserve.slope_deg``, sin factor de malla) y la ``metric`` de la 013 (*chamfer* 5×5 o
+    euclídea exacta), por pasos: el último ``Progress`` (fase ``ceiling``) lleva el
+    :class:`ConservationCeiling`. Las celdas de una zona sin dato de terreno no lo siembran y se
+    cuentan para su aviso (``des.conserve_nodata``); sin ninguna semilla no hay techo (``+inf``).
+    Las reglas que impone son las de :func:`apply_ceiling`. Ninguna entrada se modifica.
+
+    Rechazos al llamar: el talud, como el parámetro (``check_quarry_param``:
+    ``des.quarry_param_missing`` sin valor, D-9; ``des.quarry_param_range`` fuera de (0; 90));
+    ``ValueError`` (error del programa) si una zona o ``start`` no son de la forma de la rejilla.
+    Al avanzar, los de la envolvente de la 013 (RF-013-15)."""
+    degrees = float(check_quarry_param(CONSERVE_SLOPE, slope_deg))
+    values = np.asarray(start, dtype=np.float64)
+    _same_shape("la superficie de partida", values, geometry.shape)
+    way = Metric(metric)
+    masks = _zone_masks(zones, geometry.shape)
+    with np.errstate(invalid="ignore"):
+        terrain = np.isfinite(values)
+    union = np.zeros(geometry.shape, dtype=bool)
+    for mask in masks:
+        union |= mask
+    nodata = tuple(int(np.count_nonzero(mask & ~terrain)) for mask in masks)
+    seed = np.where(union & terrain, values, np.inf)
+    work = _ceiling_work(seed, geometry, constant_slope(degrees), way, union,
+                         tuple(zone.name for zone in zones), nodata, degrees)
+    return pace_progress(work, budget_s, phase="ceiling",
+                         running="Calculando el techo de conservación…",
+                         finished="Techo de conservación calculado")
+
+
+def apply_ceiling(surface: np.ndarray, start: np.ndarray,
+                  ceiling: ConservationCeiling) -> np.ndarray:
+    """**A5** (RF-014-07, spec 0.2): las tres reglas del techo ``ceiling`` sobre la superficie de
+    diseño ``surface`` (m, float64) frente a la de partida ``start``, como rejilla nueva: en la zona
+    a conservar, la superficie es ``z`` (0 m³); fuera, ninguna celda con ``z > U`` se excava (queda
+    ``z``, ``KEEP`` como la V9) y la superficie no pasa de ``máx(U, z)`` (no entierra la zona: el
+    error 37 fue un relleno). Una celda sin dato en ``surface`` sigue sin dato. ``ValueError`` si
+    las rejillas no son de la misma forma. Ninguna entrada se modifica."""
+    design = np.array(surface, dtype=np.float64)
+    values = np.asarray(start, dtype=np.float64)
+    _same_shape("la superficie de diseño", design, ceiling.grid.shape)
+    _same_shape("la superficie de partida", values, ceiling.grid.shape)
+    with np.errstate(invalid="ignore"):
+        keep = ~ceiling.zone & np.isfinite(values) & (values > ceiling.grid)
+        np.minimum(design, np.fmax(ceiling.grid, values), out=design)
+    design[keep] = values[keep]
+    design[ceiling.zone] = values[ceiling.zone]
+    return design
+
+
+@dataclass(frozen=True, slots=True)
+class ConservePart:
+    """Una parte de lo que el diseño mueve dentro de una zona a conservar (RF-014-08): la zona
+    (``zone``, su nombre), su número ``part`` (desde 1 en la zona, 4-conexa, en el orden de su
+    primera celda fila a fila desde el norte), sus ``cells``, su ``volume_m3`` (desmonte más
+    terraplén, con todo su espesor) y el centro ``x``, ``y`` (m, absolutos en float64): la media
+    de los centros de sus celdas."""
+
+    zone: str
+    part: int
+    cells: int
+    volume_m3: float
+    x: float
+    y: float
+
+
+@dataclass(frozen=True, slots=True)
+class ConserveMoved:
+    """Lo que el diseño mueve dentro de las zonas a conservar (RF-014-08), por partes
+    (:class:`ConservePart`, por zona en su orden)."""
+
+    parts: tuple[ConservePart, ...]
+
+    @property
+    def volume_m3(self) -> float:
+        """El volumen movido en todas las zonas (m³)."""
+        return math.fsum(part.volume_m3 for part in self.parts)
+
+    @property
+    def moved(self) -> bool:
+        """Si el diseño mueve más de 0 m³ en alguna zona: un error del diseño."""
+        return bool(self.parts)
+
+    @property
+    def notices(self) -> tuple[str, ...]:
+        """El error del diseño en español: ``des.conserve_moved`` (volumen y partes) y una
+        ``des.conserve_part`` por parte (zona, volumen y centro, redondeados al cm); ``()`` si no
+        mueve nada."""
+        if not self.parts:
+            return ()
+        lines = [render("des.conserve_moved", volume=round(self.volume_m3, 2),
+                        parts=len(self.parts))]
+        lines.extend(render("des.conserve_part", zone=part.zone,
+                            volume=round(part.volume_m3, 2), x=round(part.x, 2),
+                            y=round(part.y, 2)) for part in self.parts)
+        return tuple(lines)
+
+
+def conserve_moved(design: np.ndarray, start: np.ndarray, zones: Sequence[ConserveZone],
+                   geometry: Grid, min_thickness_m: float) -> ConserveMoved:
+    """**RF-014-08**: lo que la superficie ``design`` mueve frente a ``start`` dentro de cada zona
+    a conservar de ``zones``: las celdas con dato en las dos y una diferencia mayor que el espesor
+    mínimo de la 012 ``min_thickness_m`` (m; ``design.report.moved_cells``, la máscara del
+    informe), por partes 4-conexas de cada zona, con su volumen (todo su espesor por el área de
+    celda) y su centro absoluto (:class:`ConserveMoved`). Más de 0 m³ es un error del diseño que
+    no se crea sin confirmación expresa con motivo (lo pide quien crea). Solo lee; ``ValueError``
+    si las rejillas no son de la forma de ``geometry``."""
+    base = np.asarray(start, dtype=np.float64)
+    other = np.asarray(design, dtype=np.float64)
+    _same_shape("la superficie de partida", base, geometry.shape)
+    _same_shape("la superficie de diseño", other, geometry.shape)
+    moved = moved_cells(base, other, min_thickness_m)
+    found: list[ConservePart] = []
+    for zone, mask in zip(zones, _zone_masks(zones, geometry.shape), strict=True):
+        inside = moved & mask
+        if not inside.any():
+            continue
+        labels = _finish(_label_units(inside))
+        flat = labels.grid.ravel()
+        picked = np.flatnonzero(flat)
+        tags = flat[picked]
+        rows, cols = np.divmod(picked, geometry.ncols)
+        count = labels.count + 1
+        row_sum = np.bincount(tags, weights=rows, minlength=count)
+        col_sum = np.bincount(tags, weights=cols, minlength=count)
+        depth = np.abs(base.ravel()[picked] - other.ravel()[picked])
+        for index in range(1, count):
+            cells = int(labels.sizes[index - 1])
+            volume = math.fsum(depth[tags == index]) * geometry.cell_area
+            x = geometry.west + (col_sum[index] / cells + 0.5) * geometry.dx
+            y = geometry.north - (row_sum[index] / cells + 0.5) * geometry.dy
+            found.append(ConservePart(zone.name, index, cells, float(volume), float(x),
+                                      float(y)))
+    return ConserveMoved(tuple(found))
