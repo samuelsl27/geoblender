@@ -111,6 +111,32 @@ class ProjectParametersTest(unittest.TestCase):
         self.assertEqual(dict(core_params.DEFINITIONS), before)
 
 
+class QuarryParametersTest(unittest.TestCase):
+    def test_the_014_ones_are_apart_and_registered_with_the_others(self) -> None:
+        """RF-014-02, RF-014-07, RF-014-17, RF-014-19, RF-014-21 (plan 014 §5.2.2; spec 014,
+        T02): los siete de la 014 van aparte de los dos del proyecto de la 013 (en
+        ``QUARRY_DEFINITIONS``, de versión), no repiten ninguna clave ni etiqueta, y ``bl`` puede
+        registrarlos con ellos y quitarlos sin dejar rastro. Su detalle (rango, valor y
+        procedencia) está en ``tests/unit/design/test_quarry_model.py``."""
+        quarry = params.QUARRY_DEFINITIONS
+        self.assertEqual(len(quarry), 7)
+        self.assertEqual(set(params.QUARRY_PARAMS), {item.key for item in quarry})
+        self.assertFalse(set(params.QUARRY_PARAMS) & set(params.PARAMS))
+        self.assertTrue(all(item.scope == "version" for item in quarry))
+        every = (*params.DEFINITIONS, *quarry, *(family.template for family in params.FAMILIES))
+        labels = [item.label_msgid for item in every]
+        self.assertEqual(len(set(labels)), len(labels), "etiquetas repetidas")
+        before = dict(core_params.DEFINITIONS)
+        self.addCleanup(core_params.unregister_definitions, "des")
+        core_params.register_definitions((*params.DEFINITIONS, *quarry))
+        self.assertIs(core_params.DEFINITIONS[params.CROWN_RING], params.QUARRY_PARAMS[
+            params.CROWN_RING])
+        self.assertEqual(core_params.definition(params.EDGE_MIN_SHARE).default, 99.0)
+        self.assertIsNone(core_params.definition(params.CONSERVE_SLOPE).default)
+        self.assertEqual(core_params.unregister_definitions("des"), 9)
+        self.assertEqual(dict(core_params.DEFINITIONS), before)
+
+
 class FamiliesTest(unittest.TestCase):
     def test_the_six_families_of_the_plan(self) -> None:
         """RF-013-08, RF-013-18 (plan §5.2.2, D-7, D-17, ADR-0029): las cuatro familias de un

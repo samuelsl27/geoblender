@@ -34,6 +34,24 @@ Y los dos parámetros **del proyecto** (:data:`DEFINITIONS`), ADOPTADO «sin con
 - ``des.warning.magnitude_ratio`` (:data:`WARNING_RATIO`; RF-013-30): las veces que el desmonte o
   el terraplén pueden superar los de la revisión anterior antes de avisar, — en (1; 1 000], 2,0.
 
+Y los siete de la cantera con dos superficies (spec 014, T02; plan 014 §5.2.2;
+:data:`QUARRY_DEFINITIONS`, por clave en :data:`QUARRY_PARAMS`; aparte de :data:`DEFINITIONS`),
+**de versión**, con sus rangos en :data:`QUARRY_RANGES` y su comprobación en
+:func:`check_quarry_param`:
+
+- ``des.quarry.crown_ring_cells`` (:data:`CROWN_RING`; RF-014-02): el anillo de coronación,
+  entero en [1; 50] celdas, **3** ADOPTADO «sin confirmar» (D-7 de la 014);
+- ``des.quarry.unsplit_threshold_m`` y ``des.quarry.unsplit_min_area_ha`` (RF-014-17): el aviso
+  de «explotación hasta la final», m en (0; 100] y ha en (0; 1 000], **1,0 m** y **0,2 ha**
+  ADOPTADO «sin confirmar» (D-5);
+- ``des.edge.max_created_step_m`` y ``des.edge.min_share`` (RF-014-21): el salto creado
+  admitido, m en (0; 100], y el porcentaje de parejas del borde dentro de él, % en (0; 100],
+  **1,0 m** y **99 %** ADOPTADO «sin confirmar» (D-6);
+- ``des.edge.transition_deg`` (RF-014-19) y ``des.conserve.slope_deg`` (RF-014-07): ° en (0; 90)
+  (ambos excluidos), ADOPTADO **sin valor** (D-9: los declara una persona).
+
+El umbral «sin explotar» de RF-014-17 (0,3 m) no es un parámetro: es la definición de la spec.
+
 El espesor mínimo del informe es el de la 012, ``res.verify.min_thickness_m``
 (:data:`VERIFY_MIN_THICKNESS`), que ``design`` lee **por su clave** con ``core.params`` sin
 importar ``reserves`` (D-24); una prueba de arquitectura comprueba que sigue declarada.
@@ -63,12 +81,22 @@ from ..core.params import ParamDef, ParamFamily, ParamValue, format_range
 from .messages import DesignError
 
 __all__ = [
+    "CONSERVE_SLOPE",
+    "CROWN_RING",
     "DEFINITIONS",
+    "EDGE_MAX_STEP",
+    "EDGE_MIN_SHARE",
+    "EDGE_TRANSITION",
     "FAMILIES",
     "PARAMS",
+    "QUARRY_DEFINITIONS",
+    "QUARRY_PARAMS",
+    "QUARRY_RANGES",
     "RANGES",
     "SECTOR_SLOPE",
     "TOLERANCE_FACE",
+    "UNSPLIT_MIN_AREA",
+    "UNSPLIT_THRESHOLD",
     "VERIFY_MIN_THICKNESS",
     "WARNING_RATIO",
     "BenchParam",
@@ -77,6 +105,7 @@ __all__ = [
     "ValueRange",
     "bench_key",
     "check_bench_value",
+    "check_quarry_param",
     "check_sector_slope",
     "is_code",
     "sector_slope_key",
@@ -207,6 +236,81 @@ FAMILIES: tuple[ParamFamily, ...] = (
 """Las familias de plan §5.2.2: los cinco valores de un perfil y el talud impuesto de un sector,
 todas de versión; sin valor por defecto salvo el factor de malla."""
 
+_014_D7 = ("Spec 014, D-7: 3 celdas, el anillo de la V7 y la V8 del proyecto de referencia; sin "
+           "confirmar (Samuel, IMGA, 12/11/2026)")
+_014_D5 = ("Spec 014, D-5: 1 m de desdoblado en zonas de 0,2 ha, del error 60 del proyecto de "
+           "referencia; sin confirmar (Samuel, IMGA, 12/11/2026)")
+_014_D6 = ("Spec 014, D-6: un salto creado de 1 m en al menos el 99 % de las parejas del borde "
+           "(CA-11); solo avisa; sin confirmar (Samuel, IMGA, 12/11/2026)")
+_014_D9 = ("Spec 014, D-9: sin valor por defecto (como D-7 de la 013); lo declara una persona "
+           "con su origen y su decisor; el análisis usó 35° (Samuel, IMGA, 12/11/2026)")
+
+CROWN_RING = "des.quarry.crown_ring_cells"
+"""Ancho del anillo de coronación (celdas; RF-014-02)."""
+UNSPLIT_THRESHOLD = "des.quarry.unsplit_threshold_m"
+"""Desdoblado (m) a partir del cual se avisa de que la explotación no llega a la final
+(RF-014-17)."""
+UNSPLIT_MIN_AREA = "des.quarry.unsplit_min_area_ha"
+"""Área mínima (ha) de una zona de desdoblado que se avisa (RF-014-17)."""
+EDGE_MAX_STEP = "des.edge.max_created_step_m"
+"""Salto creado admitido (m) en una pareja del borde (RF-014-21)."""
+EDGE_MIN_SHARE = "des.edge.min_share"
+"""Porcentaje de las parejas del borde que tiene que quedar dentro del salto admitido
+(RF-014-21)."""
+EDGE_TRANSITION = "des.edge.transition_deg"
+"""Ángulo de transición con el terreno no afectado (°; RF-014-19; sin valor por defecto)."""
+CONSERVE_SLOPE = "des.conserve.slope_deg"
+"""Talud de conservación (°; RF-014-07; sin valor por defecto)."""
+
+QUARRY_RANGES: Mapping[str, ValueRange] = MappingProxyType({
+    CROWN_RING: ValueRange(1, 50, "-"),
+    UNSPLIT_THRESHOLD: ValueRange(0.0, 100.0, "m", min_exclusive=True),
+    UNSPLIT_MIN_AREA: ValueRange(0.0, 1000.0, "ha", min_exclusive=True),
+    EDGE_MAX_STEP: ValueRange(0.0, 100.0, "m", min_exclusive=True),
+    EDGE_MIN_SHARE: ValueRange(0.0, 100.0, "%", min_exclusive=True),
+    EDGE_TRANSITION: ValueRange(0.0, 90.0, "deg", min_exclusive=True, max_exclusive=True),
+    CONSERVE_SLOPE: ValueRange(0.0, 90.0, "deg", min_exclusive=True, max_exclusive=True),
+})
+"""Los rangos de los parámetros de la 014 (plan 014 §5.2.2) por clave, en su orden (solo
+lectura): la única fuente de los de :data:`QUARRY_DEFINITIONS` y de lo que
+:func:`check_quarry_param` acepta (con el 90° excluido que ``ParamDef`` no puede decir)."""
+
+
+def _quarry(key: str, value_type: str, default: float | None, requirements: tuple[str, ...],
+            source: str, label: str) -> ParamDef:
+    """El ``ParamDef`` de versión de ``key`` con el rango de :data:`QUARRY_RANGES`: ADOPTADO
+    «sin confirmar» (origen ``algorithm``) con valor por defecto, o ADOPTADO sin valor que
+    declara una persona (origen ``person``)."""
+    span = QUARRY_RANGES[key]
+    return ParamDef(key, value_type, span.unit, default, span.minimum, span.maximum,
+                    requirements, source, min_exclusive=span.min_exclusive,
+                    allow_empty=default is None, kind="ADOPTADO",
+                    source_kind="person" if default is None else "algorithm", scope="version",
+                    label_msgid=label)
+
+
+QUARRY_DEFINITIONS: tuple[ParamDef, ...] = (
+    _quarry(CROWN_RING, "int", 3, ("RF-014-02",), _014_D7, "Width of the crown ring"),
+    _quarry(UNSPLIT_THRESHOLD, "float", 1.0, ("RF-014-17",), _014_D5,
+            "Unsplit depth of the warning"),
+    _quarry(UNSPLIT_MIN_AREA, "float", 0.2, ("RF-014-17",), _014_D5,
+            "Minimum area of a warned unsplit zone"),
+    _quarry(EDGE_MAX_STEP, "float", 1.0, ("RF-014-21",), _014_D6,
+            "Admitted created step at the edge"),
+    _quarry(EDGE_MIN_SHARE, "float", 99.0, ("RF-014-21",), _014_D6,
+            "Share of edge pairs within the admitted step"),
+    _quarry(EDGE_TRANSITION, "float", None, ("RF-014-19",), _014_D9,
+            "Transition angle with the untouched terrain"),
+    _quarry(CONSERVE_SLOPE, "float", None, ("RF-014-07",), _014_D9, "Conservation slope"),
+)
+"""Los siete parámetros de la 014 (plan 014 §5.2.2), de versión, en su orden. Van aparte de
+:data:`DEFINITIONS` (los de la 013, que su documentación describe): ``bl`` los registra junto a
+ellos cuando registre las operaciones de la 014."""
+
+QUARRY_PARAMS: Mapping[str, ParamDef] = MappingProxyType(
+    {item.key: item for item in QUARRY_DEFINITIONS})
+"""Los parámetros de la 014 por clave (solo lectura)."""
+
 DEFINITIONS: tuple[ParamDef, ...] = (
     ParamDef(TOLERANCE_FACE, "float", "deg", 1.0, 0.0, 10.0, ("RF-013-27", "RF-013-30"),
              _D7_FACE, min_exclusive=True, label_msgid="Tolerance on the face angle"),
@@ -278,4 +382,31 @@ def check_sector_slope(sector: str, value: object) -> float:
     if not span.contains(number):
         raise DesignError("des.sector_slope_range", obj=f"Sector «{sector}»", field=key,
                           value=number, sector=sector, range=span.text())
+    return number
+
+
+def check_quarry_param(key: str, value: object) -> float | int:
+    """El valor ``value`` del parámetro de la 014 ``key`` (:data:`QUARRY_DEFINITIONS`), ya
+    comprobado: ``int`` el anillo de coronación y ``float`` los demás.
+    :class:`~design.messages.DesignError` ``des.quarry_param_missing`` si no tiene valor
+    (``None``: la transición y la conservación no tienen valor por defecto, D-9) o
+    ``des.quarry_param_range`` si está fuera de su rango (:data:`QUARRY_RANGES`, con el 90°
+    excluido), nombrando la clave y el valor; :class:`TypeError` si no es un número (o, en el
+    anillo, un entero); :class:`ValueError` si ``key`` no es de la 014 (errores del programa)."""
+    span = QUARRY_RANGES.get(key)
+    if span is None:
+        raise ValueError(f"«{key}» no es un parámetro de la 014 (plan 014 §5.2.2)")
+    obj = "Parámetros del proyecto"
+    if value is None:
+        raise DesignError("des.quarry_param_missing", obj=obj, field=key, value=None)
+    number: float | int
+    if QUARRY_PARAMS[key].value_type == "int":
+        if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+            raise TypeError(f"el valor {key} es un número entero, no {value!r}")
+        number = int(value)
+    else:
+        number = _real(value, f"el valor {key}")
+    if not span.contains(number):
+        raise DesignError("des.quarry_param_range", obj=obj, field=key, value=number,
+                          range=span.text())
     return number

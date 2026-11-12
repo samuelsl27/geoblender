@@ -26,7 +26,10 @@ dice la vista previa (RF-013-01 a RF-013-03) y los del rechazo y la marca de un 
 búsqueda de intocables pendiente (RF-013-05, RF-013-06), los de la comprobación de cada
 envolvente (RF-013-15), los que la rechazan antes de calcular (RF-013-14, RF-013-16), el aviso de
 la regularización entre sectores que baja la envolvente (RF-013-26, RF-013-30) y los de exportar
-una rejilla a GeoTIFF (RF-013-34). Un campo
+una rejilla a GeoTIFF (RF-013-34). Los de la 014 (plan 014 §5.1, T02) van al final, por
+familias: ``des.quarry_*`` (sus parámetros, el recinto, las semillas, las capas, las dos
+superficies y «explotación hasta la final»), ``des.floor_*``, ``des.conserve_*``,
+``des.corridor_*``, ``des.edge_*``, ``des.fill_only_*`` y ``des.refit_*``. Un campo
 que es un texto de una lista cerrada que la persona ve (el papel de una superficie, el tipo de
 geometría de una capa) llega ya en el idioma de quien lo llama: ``render`` no lo traduce.
 """
@@ -530,6 +533,247 @@ CATALOG: tuple[Message, ...] = (
         "nothing has been written.",
         "El proyecto «{project}» está abierto en solo lectura: exporte «{value}» fuera del "
         "proyecto; no se ha escrito nada.",
+    ),
+    # Cantera con dos superficies (spec 014, T02; plan 014 §5.1) ===============================
+    # Sus parámetros (plan 014 §5.2.2; D-9) ----------------------------------------------------
+    Message(
+        "des.quarry_param_missing",
+        "«{field}» has no value and has no default; declare it with its origin in Project ▸ "
+        "Project parameters… before calculating.",
+        "«{field}» no tiene valor ni lleva ninguno por defecto; declárelo con su origen en "
+        "Proyecto ▸ Parámetros del proyecto… antes de calcular.",
+    ),
+    Message(
+        "des.quarry_param_range",
+        "«{field}» = {value} is outside its range {range}; change it in Project ▸ Project "
+        "parameters… before calculating.",
+        "«{field}» = {value} está fuera de su rango {range}; cámbielo en Proyecto ▸ Parámetros "
+        "del proyecto… antes de calcular.",
+    ),
+    # Recinto, semillas y capas (RF-014-01 a RF-014-03; spec §7; plan §5.2.1) ------------------
+    Message(
+        "des.quarry_area_empty",
+        "The excavation area of version {version} is empty: no cell is both admitted to cut by "
+        "its masks and has terrain data. What empties it: {parts}. Review the limit and the "
+        "constraints; nothing is calculated or recorded.",
+        "El recinto excavable de la versión {version} está vacío: ninguna celda tiene a la vez "
+        "corte admitido por sus máscaras y dato de terreno. Lo que lo vacía: {parts}. Revise el "
+        "límite y las restricciones; no se calcula ni se registra nada.",
+    ),
+    Message(
+        "des.quarry_seeds_outside",
+        "{cells} seed cells ({area} m²) in {groups} groups fall outside the crown and the zones "
+        "to hold: seeding there raises the floors. Confirm to calculate with them, or choose "
+        "the seeds «Crown and zones to hold».",
+        "{cells} celdas de semillas ({area} m²) en {groups} grupos caen fuera de la coronación y "
+        "de las zonas a sostener: sembrar allí sube los fondos. Confirme para calcular con "
+        "ellas, o elija las semillas «Coronación y zonas a sostener».",
+        "warning",
+    ),
+    Message(
+        "des.quarry_seed_group",
+        "Group {group}: {cells} cells, {area} m², centre at x = {x} m, y = {y} m.",
+        "Grupo {group}: {cells} celdas, {area} m², centro en x = {x} m, y = {y} m.",
+        "note",
+    ),
+    Message(
+        "des.quarry_layer_crs",
+        "Layer «{layer}» is in {value}, not in the CRS of the project ({crs}): reproject it in "
+        "QGIS to the project CRS; no CRS is assumed and nothing is calculated.",
+        "La capa «{layer}» está en {value}, no en el CRS del proyecto ({crs}): reproyéctela en "
+        "QGIS al CRS del proyecto; no se supone ningún CRS y no se calcula nada.",
+    ),
+    Message(
+        "des.quarry_layer_field",
+        "Layer «{layer}» has no numeric field «{value}»: choose one of its fields ({fields}); "
+        "nothing is calculated.",
+        "La capa «{layer}» no tiene el campo numérico «{value}»: elija uno de sus campos "
+        "({fields}); no se calcula nada.",
+    ),
+    # Las dos superficies y «explotación hasta la final» (RF-014-14, RF-014-17) ----------------
+    Message(
+        "des.quarry_order_broken",
+        "Program error: at x = {x} m, y = {y} m the final surface ({final} m), the exploitation "
+        "surface ({exploitation} m) and the terrain ({terrain} m) do not keep final ≤ "
+        "exploitation ≤ terrain within 1 mm; nothing is created. Report it with the project.",
+        "Error del programa: en x = {x} m, y = {y} m la superficie final ({final} m), la de "
+        "explotación ({exploitation} m) y el terreno ({terrain} m) no cumplen final ≤ "
+        "explotación ≤ terreno a 1 mm; no se crea nada. Comuníquelo con el proyecto.",
+    ),
+    Message(
+        "des.quarry_unsplit_zones",
+        "The exploitation does not reach the final surface in {zones} zones: {area} ha and "
+        "{volume} m³ of doubled surface over {threshold} m on unexploited terrain, in zones of "
+        "at least {min_area} ha. Use «Exploitation down to the final» to lower it there with "
+        "anchored benches.",
+        "La explotación no llega a la final en {zones} zonas: {area} ha y {volume} m³ de "
+        "desdoblado de más de {threshold} m sobre terreno sin explotar, en zonas de al menos "
+        "{min_area} ha. Use «Explotación hasta la final» para bajarla allí con bancos anclados.",
+        "warning",
+    ),
+    Message(
+        "des.quarry_unsplit_zone",
+        "Zone {zone}: {area} ha, {volume} m³, centre at x = {x} m, y = {y} m.",
+        "Zona {zone}: {area} ha, {volume} m³, centro en x = {x} m, y = {y} m.",
+        "note",
+    ),
+    # Fondos (RF-014-05, RF-014-06) -------------------------------------------------------------
+    Message(
+        "des.floor_overlap",
+        "Layer «{layer}»: floor polygons {value} and {other} overlap in {cells} cells; correct "
+        "the layer in QGIS (no level is chosen for them) and calculate again.",
+        "Capa «{layer}»: los polígonos de fondo {value} y {other} se solapan en {cells} celdas; "
+        "corrija la capa en QGIS (no se elige ninguna cota por ellos) y calcule de nuevo.",
+    ),
+    Message(
+        "des.floor_level",
+        "Layer «{layer}», polygon {polygon}: «{field}» = {value} is missing or outside the "
+        "terrain elevations ± 1 000 m ({low} to {high} m); correct it in QGIS (no level is "
+        "chosen for it); nothing is calculated.",
+        "Capa «{layer}», polígono {polygon}: «{field}» = {value} falta o está fuera de las cotas "
+        "del terreno ± 1.000 m (de {low} a {high} m); corríjalo en QGIS (no se elige ninguna "
+        "cota por él); no se calcula nada.",
+    ),
+    Message(
+        "des.floor_above_terrain",
+        "{area} m² of the floors are above the terrain: there is no cut there (the surface "
+        "never goes above the terrain).",
+        "{area} m² de los fondos quedan por encima del terreno: allí no hay corte (la "
+        "superficie nunca supera el terreno).",
+        "warning",
+    ),
+    # Zonas a conservar (RF-014-07, RF-014-08) --------------------------------------------------
+    Message(
+        "des.conserve_moved",
+        "The design moves {volume} m³ inside the zones to conserve, in {parts} parts: it is an "
+        "error of the design. It cannot be created without an express confirmation with a "
+        "reason.",
+        "El diseño mueve {volume} m³ dentro de las zonas a conservar, en {parts} partes: es un "
+        "error del diseño. No se puede crear sin una confirmación expresa con motivo.",
+        "warning",
+    ),
+    Message(
+        "des.conserve_part",
+        "«{zone}»: {volume} m³, centre at x = {x} m, y = {y} m.",
+        "«{zone}»: {volume} m³, centro en x = {x} m, y = {y} m.",
+        "note",
+    ),
+    Message(
+        "des.conserve_nodata",
+        "Zone to conserve «{zone}» has no terrain data in {area} m²: those cells do not seed its "
+        "conservation ceiling.",
+        "La zona a conservar «{zone}» no tiene dato de terreno en {area} m²: esas celdas no "
+        "siembran su techo de conservación.",
+        "warning",
+    ),
+    # Corredores (RF-014-09, RF-014-10) ---------------------------------------------------------
+    Message(
+        "des.corridor_not_lines",
+        "Layer «{layer}» holds {value}, not lines: the axis of a corridor is a line layer of "
+        "the project.",
+        "La capa «{layer}» tiene {value}, no líneas: el eje de un corredor es una capa de líneas "
+        "del proyecto.",
+    ),
+    Message(
+        "des.corridor_width",
+        "Layer «{layer}», corridor {corridor}: the width «{field}» = {value} m must be greater "
+        "than 0; correct it in QGIS; nothing is calculated.",
+        "Capa «{layer}», corredor {corridor}: el ancho «{field}» = {value} m tiene que ser mayor "
+        "que 0; corríjalo en QGIS; no se calcula nada.",
+    ),
+    Message(
+        "des.corridor_length_zero",
+        "Layer «{layer}», corridor {corridor}: its axis has a length of {value} m; draw an axis "
+        "with length in QGIS; nothing is calculated.",
+        "Capa «{layer}», corredor {corridor}: su eje mide {value} m; dibuje un eje con longitud "
+        "en QGIS; no se calcula nada.",
+    ),
+    Message(
+        "des.corridor_level_missing",
+        "Layer «{layer}», corridor {corridor}: «{field}» = {value} has no valid value; give it "
+        "a level, or a start level and a grade, in QGIS (none is assumed); nothing is "
+        "calculated.",
+        "Capa «{layer}», corredor {corridor}: «{field}» = {value} no tiene un valor válido; "
+        "dele una cota, o una cota inicial y una pendiente, en QGIS (no se supone ninguna); no "
+        "se calcula nada.",
+    ),
+    Message(
+        "des.corridor_too_long",
+        "Corridor {corridor} measures {length} m, more than its axis ({axis} m) plus its width "
+        "({width} m): check its ends.",
+        "El corredor {corridor} mide {length} m, más que su eje ({axis} m) más su ancho "
+        "({width} m): revise sus extremos.",
+        "warning",
+    ),
+    # Transición del borde y salto creado (RF-014-19 a RF-014-21) -------------------------------
+    Message(
+        "des.edge_created_step",
+        "{share} % of the {pairs} pairs of the edge have a created step greater than "
+        "{threshold} m (at least {admitted} % should be within it); the largest, {maximum} m, at "
+        "x = {x} m, y = {y} m, in {stretches} stretches. Use «Transitions with the untouched "
+        "terrain».",
+        "El {share} % de las {pairs} parejas del borde tiene un salto creado mayor que "
+        "{threshold} m (al menos el {admitted} % debería quedar por debajo); el mayor, "
+        "{maximum} m, en x = {x} m, y = {y} m, en {stretches} tramos. Use «Transiciones con el "
+        "terreno no afectado».",
+        "warning",
+    ),
+    Message(
+        "des.edge_stretch",
+        "Stretch {stretch}: {pairs} pairs, up to {maximum} m, centre at x = {x} m, y = {y} m.",
+        "Tramo {stretch}: {pairs} parejas, hasta {maximum} m, centro en x = {x} m, y = {y} m.",
+        "note",
+    ),
+    Message(
+        "des.edge_not_design_surface",
+        "«{value}» is not a design surface of the active version: choose a surface of the "
+        "design (the exploitation, the final one or a stepped design); nothing is calculated.",
+        "«{value}» no es una superficie de diseño de la versión activa: elija una superficie del "
+        "diseño (la de explotación, la final o un escalonado); no se calcula nada.",
+    ),
+    # Solo relleno (RF-014-22 a RF-014-25) ------------------------------------------------------
+    Message(
+        "des.fill_only_cuts",
+        "The fill-only design would cut {value} m³ (it must cut less than 1 m³): review the "
+        "seeds and the profile; nothing is created.",
+        "El diseño «solo relleno» cortaría {value} m³ (tiene que cortar menos de 1 m³): revise "
+        "las semillas y el perfil; no se crea nada.",
+    ),
+    Message(
+        "des.fill_only_untouchable",
+        "The fill-only design moves {value} m³ in the untouchable «{constraint}»: review the "
+        "seeds and the work domain; nothing is created.",
+        "El diseño «solo relleno» mueve {value} m³ en el intocable «{constraint}»: revise las "
+        "semillas y el dominio de trabajo; no se crea nada.",
+    ),
+    Message(
+        "des.fill_only_water_level",
+        "Layer «{layer}», water sheet {polygon}: «{field}» = {value} is not a valid level; "
+        "correct it in QGIS (none is assumed); nothing is calculated.",
+        "Capa «{layer}», lámina de agua {polygon}: «{field}» = {value} no es una cota válida; "
+        "corríjala en QGIS (no se supone ninguna); no se calcula nada.",
+    ),
+    # Ajuste a un límite nuevo (RF-014-26 a RF-014-28) ------------------------------------------
+    Message(
+        "des.refit_outside",
+        "«{surface}» leaves {volume} m³ in {area} m² outside the current limit of version "
+        "{version}: use Design ▸ Quarry ▸ Refit the design to a new limit….",
+        "«{surface}» deja {volume} m³ en {area} m² fuera del límite vigente de la versión "
+        "{version}: use Diseño ▸ Cantera ▸ Ajustar el diseño a un límite nuevo….",
+        "warning",
+    ),
+    Message(
+        "des.refit_not_needed",
+        "The new limit does not cut «{surface}»: its refit is 0 m³ and was not needed.",
+        "El límite nuevo no corta «{surface}»: su ajuste es de 0 m³ y no hacía falta.",
+        "warning",
+    ),
+    Message(
+        "des.refit_angle",
+        "«{surface}» is refitted with the face of its own profile «{profile}» ({face}°), not "
+        "with {value}°: a refit with another angle gives false volumes; nothing is calculated.",
+        "«{surface}» se ajusta con la cara de su propio perfil «{profile}» ({face}°), no con "
+        "{value}°: un ajuste con otro ángulo da volúmenes falsos; no se calcula nada.",
     ),
 )
 

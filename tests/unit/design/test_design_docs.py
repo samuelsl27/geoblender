@@ -122,6 +122,15 @@ AMBER_IN_THE_GUIDE = (
 AMBER_IN_THE_CHANGELOG = ("(en ámbar si su búsqueda está pendiente)",)
 TASKS_RELPATH = "specs/013-des-envolventes-y-escalonado/tasks.md"
 
+# Lo que la spec 014 añade a la API pública de ``design`` mientras se construye: la ficha
+# (``des.md`` §4.1) es de la 013 y la de la 014 la escribe su T36 (documentación). Cada tarea de la
+# 014 añade aquí sus nombres; la T36 los lleva a la ficha y vacía este conjunto.
+PENDING_014_API = frozenset({
+    # T02: design.model y design.params.
+    "Surface", "Order", "AnchorMode", "CellClass", "ToFinalMode", "LayerField", "CorridorFields",
+    "QuarrySide", "QuarryRequest", "check_quarry_param",
+})
+
 
 def one_line(text: str) -> str:
     """``text`` con cada salto de línea y sangría reducidos a un espacio, para buscar una frase
@@ -454,6 +463,7 @@ class ModuleCardDocTest(unittest.TestCase):
                               or inspect.isfunction(getattr(module, name)))
                           and getattr(module, name).__module__ == module.__name__]
                 missing = [name for name in public if name not in found
+                           and name not in PENDING_014_API
                            and not any(name.endswith(suffix) for suffix in suffixes)]
                 self.assertEqual(missing, [])
                 self.assertEqual(sorted(name for name in found if not hasattr(module, name)), [])

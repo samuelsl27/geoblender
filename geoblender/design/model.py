@@ -20,6 +20,13 @@ de las funciones que calculan, que las hacen antes de registrar nada (RF-013-16)
   ``a = h/tan α + B`` y su talud general ``atan(h/a)`` derivados (no son parámetros) y la marca
   «no resuelto por la rejilla»; :func:`check_profiles`.
 - :data:`PERIMETER_SEGMENT`: el código del perímetro de actuación como sector único (ADR-0029).
+
+Y los de la cantera con dos superficies (spec 014, T02; plan 014 §5.1 y §5.3.1; RF-014-11 a
+RF-014-18): :class:`Surface`, :class:`Order` («final primero» por defecto, D-4),
+:class:`AnchorMode` (fija, en rejilla o «al fondo de cada muro»), :class:`CellClass` (sin
+diferencia, desdoblado o relleno, con su código del GeoTIFF), :class:`ToFinalMode` (P-2), las
+capas con sus campos (:class:`LayerField`, :class:`CorridorFields`), lo de cada superficie
+(:class:`QuarrySide`) y la petición (:class:`QuarryRequest`).
 """
 
 from __future__ import annotations
@@ -38,16 +45,25 @@ if TYPE_CHECKING:
 
 __all__ = [
     "PERIMETER_SEGMENT",
+    "AnchorMode",
     "BenchProfile",
     "BenchSense",
+    "CellClass",
+    "CorridorFields",
     "DesignRequest",
     "Direction",
     "EnvelopeRequest",
+    "LayerField",
     "Metric",
     "Named",
+    "Order",
+    "QuarryRequest",
+    "QuarrySide",
     "SeedKind",
     "SeedSource",
     "SlopeMode",
+    "Surface",
+    "ToFinalMode",
     "WorkDomain",
     "Zone",
     "ZoneKind",
@@ -297,6 +313,175 @@ class BenchProfile:
         if values is None:
             return None
         return render("des.profile_unresolved", language=language, **values)
+
+
+# --- Cantera con dos superficies (spec 014, T02; plan 014 §5.1 y §5.3.1) -------------------------
+
+
+class Surface(StrEnum):
+    """Las dos superficies de una cantera (RF-014-12): la final y la de explotación."""
+
+    FINAL = "final"
+    EXPLOITATION = "exploitation"
+
+
+class Order(StrEnum):
+    """El orden del diseño (RF-014-13; D-4): «final primero» calcula antes la final y sube la
+    explotación donde queda por debajo (``explotación = máx(explotación, final)``); «explotación
+    primero» calcula antes la explotación y baja la final donde queda por encima
+    (``final = mín(final, explotación)``)."""
+
+    FINAL_FIRST = "final_first"
+    EXPLOITATION_FIRST = "exploitation_first"
+
+
+class AnchorMode(StrEnum):
+    """El ancla de un escalonado: la cota de ancla de su perfil (``FIXED``), una rejilla de cotas
+    de la versión (``GRID``; D-18 de la 013) o «al fondo de cada muro» (``NEAREST_FLOOR``: la
+    cota del fondo más próximo en planta, empate a la más baja; RF-014-11)."""
+
+    FIXED = "fixed"
+    GRID = "grid"
+    NEAREST_FLOOR = "nearest_floor"
+
+
+class CellClass(StrEnum):
+    """La clase de una celda de las dos superficies (RF-014-15; plan 014 §5.2.3, P-1): sin
+    diferencia (≤ el espesor mínimo de la 012), desdoblado o relleno; :attr:`code` es su código
+    en el GeoTIFF de la clasificación (0, 1 y 2)."""
+
+    NONE = "none"
+    UNSPLIT = "unsplit"
+    FILL = "fill"
+
+    @property
+    def code(self) -> int:
+        """El código de la clase en la rejilla de la clasificación: 0, 1 o 2."""
+        return list(CellClass).index(self)
+
+    @classmethod
+    def from_code(cls, code: int) -> CellClass:
+        """La clase del código ``code``; :class:`ValueError` si no es 0, 1 ni 2."""
+        for item in cls:
+            if item.code == code:
+                return item
+        raise ValueError(f"el código de clase {code!r} no es 0, 1 ni 2 (plan 014 §5.2.3)")
+
+
+class ToFinalMode(StrEnum):
+    """Dónde se aplica «explotación hasta la final» (RF-014-18; P-2): en ninguna zona, en todas
+    las zonas avisadas (RF-014-17) o en las zonas de una capa de polígonos."""
+
+    NONE = "none"
+    WARNED = "warned"
+    LAYER = "layer"
+
+
+@dataclass(frozen=True, slots=True)
+class LayerField:
+    """Una capa de polígonos del proyecto y el campo numérico que se lee de ella (plan 014
+    §5.2.1): la cota de los fondos (RF-014-05) o de las láminas de agua (RF-014-24)."""
+
+    layer: str
+    field: str
+
+
+@dataclass(frozen=True, slots=True)
+class CorridorFields:
+    """La capa de líneas de los corredores y sus campos (RF-014-09; plan 014 §5.2.1): el ancho
+    (``width_field``, m) y o bien una cota fija (``level_field``, m) o bien una rasante
+    (``start_level_field``, m, y ``grade_field``, % positivo cuando sube en el sentido del eje).
+    Las dos cosas, ninguna o media rasante son un error del programa."""
+
+    layer: str
+    width_field: str
+    level_field: str | None = None
+    start_level_field: str | None = None
+    grade_field: str | None = None
+
+    def __post_init__(self) -> None:
+        grade = (self.start_level_field, self.grade_field)
+        if (None in grade) != (grade == (None, None)):
+            raise ValueError("una rasante lleva la cota inicial y la pendiente (RF-014-09)")
+        if (self.level_field is None) == (grade == (None, None)):
+            raise ValueError("un corredor tiene una cota fija o una rasante, no las dos ni "
+                             "ninguna (RF-014-09)")
+
+    @property
+    def graded(self) -> bool:
+        """Si el corredor va con rasante (cota inicial y pendiente) y no con cota fija."""
+        return self.level_field is None
+
+
+@dataclass(frozen=True, slots=True)
+class QuarrySide:
+    """Lo de una superficie de la cantera (RF-014-12): el perfil base (``base_profile``) y el de
+    cada sector (``sector_profiles``: código del sector → código del perfil; sale como pares
+    ordenados por sector), las semillas (``seeds``; ninguna: «coronación y zonas a sostener»,
+    RF-014-02; o unas de la 013), el ancla (``anchor``; con ``GRID``, la rejilla ``anchor_grid``
+    y solo con él) y la métrica de su envolvente (*chamfer* 5×5 por defecto, ADR-0014)."""
+
+    base_profile: str
+    sector_profiles: Mapping[str, str] | Iterable[tuple[str, str]] = ()
+    seeds: SeedSource | None = None
+    anchor: AnchorMode | str = AnchorMode.FIXED
+    anchor_grid: str | None = None
+    metric: Metric | str = Metric.CHAMFER5
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "anchor", AnchorMode(self.anchor))
+        object.__setattr__(self, "metric", Metric(self.metric))
+        pairs: Any = self.sector_profiles
+        object.__setattr__(self, "sector_profiles", tuple(sorted(dict(pairs).items())))
+        if (self.anchor is AnchorMode.GRID) != (self.anchor_grid is not None):
+            raise ValueError("la rejilla de anclas va con el ancla en rejilla y solo con ella "
+                             "(D-18 de la 013)")
+
+    @property
+    def crown_seeds(self) -> bool:
+        """Si las semillas son «coronación y zonas a sostener» (RF-014-02)."""
+        return self.seeds is None
+
+
+@dataclass(frozen=True, slots=True)
+class QuarryRequest:
+    """Lo que pide el usuario de «Cantera con dos superficies…» (RF-014-12): su ``name`` (único
+    en la versión), la superficie de partida (``start``), los dos lados (``final`` y
+    ``exploitation``, :class:`QuarrySide`), el ``order`` («final primero» por defecto, D-4) y las
+    capas de plan 014 §5.2.1 que use: los fondos (``floors``), las zonas a conservar
+    (``conserve``: restricciones de la 012 o capas, :class:`Zone`), los corredores
+    (``corridors``), las zonas de restauración por relleno (``fill_zones``, una capa; D-11) y las
+    láminas de agua (``water``); y «explotación hasta la final» (``to_final``; con ``LAYER``, la
+    capa ``to_final_layer`` y solo con él; P-2)."""
+
+    name: str
+    start: str
+    final: QuarrySide
+    exploitation: QuarrySide
+    order: Order | str = Order.FINAL_FIRST
+    floors: LayerField | None = None
+    conserve: tuple[Zone, ...] | Iterable[Zone] = ()
+    corridors: CorridorFields | None = None
+    fill_zones: str | None = None
+    water: LayerField | None = None
+    to_final: ToFinalMode | str = ToFinalMode.NONE
+    to_final_layer: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "order", Order(self.order))
+        object.__setattr__(self, "to_final", ToFinalMode(self.to_final))
+        if isinstance(self.conserve, str | bytes):
+            raise TypeError(f"las zonas a conservar son una lista de zonas, no {self.conserve!r}")
+        object.__setattr__(self, "conserve", tuple(self.conserve))
+        if (self.to_final is ToFinalMode.LAYER) != (self.to_final_layer is not None):
+            raise ValueError("la capa de «explotación hasta la final» va con el modo «capa» y "
+                             "solo con él (P-2)")
+
+    def side(self, surface: Surface | str) -> QuarrySide:
+        """El lado de la superficie ``surface``."""
+        if Surface(surface) is Surface.FINAL:
+            return self.final
+        return self.exploitation
 
 
 class Named(Protocol):

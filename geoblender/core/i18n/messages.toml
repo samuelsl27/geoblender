@@ -7223,6 +7223,30 @@ es = "Tolerancia sobre la inclinación de la cara"
 ["Warning threshold for cut and fill against the previous revision"]
 es = "Umbral de aviso del desmonte y el terraplén frente a la revisión anterior"
 
+# Parámetros de la cantera con dos superficies (spec 014, T02; RF-014-02, RF-014-07, RF-014-17,
+# RF-014-19, RF-014-21; plan 014 §5.2.2): la etiqueta de cada uno de design/params.py.
+
+["Width of the crown ring"]
+es = "Ancho del anillo de coronación"
+
+["Unsplit depth of the warning"]
+es = "Desdoblado que se avisa"
+
+["Minimum area of a warned unsplit zone"]
+es = "Área mínima de una zona de desdoblado que se avisa"
+
+["Admitted created step at the edge"]
+es = "Salto creado admitido en el borde"
+
+["Share of edge pairs within the admitted step"]
+es = "Porcentaje de parejas del borde dentro del salto admitido"
+
+["Transition angle with the untouched terrain"]
+es = "Ángulo de transición con el terreno no afectado"
+
+["Conservation slope"]
+es = "Talud de conservación"
+
 # Procedencia de las envolventes y el escalonado (spec 013, T13; RF-013-17, RF-013-31; plan 013
 # §5.2.3): el nombre de cada operación, de cada ajuste y de sus elecciones, y de cada cifra de
 # design/provenance.py («Default domain», «Cut volume», «Fill volume» y «Area without data» ya
