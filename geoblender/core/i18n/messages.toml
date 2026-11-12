@@ -8403,3 +8403,32 @@ es = "Corredores: capa «{layer}» · ancho «{width}» · cota inicial «{start
 
 ["Work domain: the excavation boundary of the masks"]
 es = "Dominio de trabajo: el recinto excavable de las máscaras"
+
+# La vista previa de la cantera con dos superficies (spec 014, T23) ----------------------------
+
+["Crown at {value} m"]
+es = "Coronación a {value} m"
+
+["Zones to hold"]
+es = "Zonas a sostener"
+
+["Floors of «{layer}» ({count})"]
+es = "Fondos de «{layer}» ({count})"
+
+["Floor at {level} m"]
+es = "Fondo a {level} m"
+
+["Zones to conserve: conservation ceilings ({count})"]
+es = "Zonas a conservar: techos de conservación ({count})"
+
+["Zone to conserve «{name}»"]
+es = "Zona a conservar «{name}»"
+
+["Corridors of «{layer}» ({count})"]
+es = "Corredores de «{layer}» ({count})"
+
+["Corridor {corridor} at {level} m"]
+es = "Corredor {corridor} a {level} m"
+
+["Corridor {corridor}: {low} to {high} m"]
+es = "Corredor {corridor}: {low} a {high} m"

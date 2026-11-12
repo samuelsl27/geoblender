@@ -24,6 +24,25 @@ Aquí **no se calcula nada de minería**: el resumen, las semillas, el dominio y
 construye sin ``gpu`` y se prueba en sus lotes (:class:`Built`, :class:`Points`; ``docs/trampas.md``
 §3: sin GPU en ``blender -b``).
 
+**Con un diseño de la cantera con dos superficies** (spec 014, T23; RF-014-04; plan 014 §5.5): lo que
+se previsualiza es un :class:`QuarryPlan` (la ``design.model.QuarryRequest`` y el ancho del anillo de
+coronación: el pedido o el del parámetro ``des.quarry.crown_ring_cells`` de la versión,
+:func:`crown_ring_cells`) y la vista previa enseña, sobre la superficie de partida y con las
+restricciones y los sectores de siempre, lo que dice ``design.preview.quarry_summarize_steps``:
+
+- **el recinto excavable**, su borde (:data:`AREA`, el trazo más grueso);
+- **la coronación**, un punto por celda del anillo en su cota y **en el color de las semillas**
+  (:func:`crown_points_steps`: la misma rampa por cota y el mismo aclarado);
+- **las zonas a sostener** (intocables y sin corte), su borde (:data:`HOLD`);
+- **los fondos**, el borde de cada uno y su nombre con su cota (:data:`FLOORS`);
+- **las zonas a conservar** que siembran los techos de conservación, su borde, su trama y su nombre
+  (:data:`CEILINGS`; el techo mismo es una envolvente y no se calcula en la vista previa);
+- **los corredores**, el borde de cada uno y su nombre con sus cotas (:data:`CORRIDORS`);
+- y **su leyenda**: una fila por pieza presente, antes de las de los sectores y de la 012.
+
+Los bordes son los lados de celda entre celdas de valor distinto (:func:`edges_steps`), unidos en
+tramos rectos y ajustados a la superficie como los contornos de la 012.
+
 **Construcción por pasos** (:func:`build_steps`; RNF-013-05): nada se lee ni se calcula de una vez.
 Un temporizador (:func:`tick`) avanza los pasos, de :data:`STEP_BUDGET_S` s como mucho cada uno; activar
 la vista previa ocupa lo que cabe en el siguiente ciclo y no el hilo de Blender. Se **rehace**
@@ -54,10 +73,15 @@ from mathutils import Matrix
 from ...core.errors import GeoblenderError
 from ...core.georef import world_to_local
 from ...core.i18n import format_number, language, tr
+from ...core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
 from ...design import messages as design_messages
+from ...design import preview as design_preview
 from ...design import steps as design_steps
-from ...design.model import SeedKind, SeedSource, WorkDomain
+from ...design.model import QuarryRequest, SeedKind, SeedSource, WorkDomain
+from ...design.params import CROWN_RING, check_quarry_param
+from ...gis.grid import Grid
 from ...gis.masks import store as mask_store
+from ...gis.masks.zones import Runs
 from ..scene import project_session
 from ..scene import versions as scene_versions
 from . import constraints, dh_overlay
@@ -65,12 +89,14 @@ from .constraints import Batch, Label
 from .dh_overlay import Box, LegendRow, Text
 
 __all__ = [
-    "MAX_SEED_POINTS", "PENDING_COLOR", "RAMP", "SECTOR", "SECTOR_COLOR", "SECTOR_PENDING", "SEED_PX",
-    "Built", "Plan", "Points", "Request", "build_steps", "building", "built", "default_plan",
-    "disable", "draw_points", "drawing", "elevation_colors", "enable", "enabled", "on_project_changed",
-    "on_project_read", "on_version_changed", "plan", "rebuild", "register", "screen_items",
-    "seed_points_steps", "stamp", "summary_items", "summary_lines", "tick", "toolbar_covered_px",
-    "unregister", "wrap_text",
+    "AREA", "AREA_COLOR", "CEILINGS", "CEILING_COLOR", "CORRIDORS", "CORRIDOR_COLOR",
+    "EDGE_ROWS_PER_STEP", "FLOORS", "FLOOR_COLOR", "HOLD", "HOLD_COLOR", "MAX_SEED_POINTS",
+    "PENDING_COLOR", "RAMP", "SECTOR", "SECTOR_COLOR", "SECTOR_PENDING", "SEED_PX",
+    "Built", "Plan", "Points", "QuarryPlan", "Request", "build_steps", "building", "built",
+    "crown_points_steps", "crown_ring_cells", "default_plan", "disable", "draw_points", "drawing",
+    "edges_steps", "elevation_colors", "enable", "enabled", "on_project_changed", "on_project_read",
+    "on_version_changed", "plan", "rebuild", "register", "screen_items", "seed_points_steps", "stamp",
+    "summary_items", "summary_lines", "tick", "toolbar_covered_px", "unregister", "wrap_text",
 ]
 
 LOGGER = logging.getLogger("geoblender.bl.draw")
@@ -115,6 +141,30 @@ SUMMARY_TOP_PX = 72.0
 SUMMARY_WIDTH_FRACTION = 0.6
 """Lo que ocupa como mucho el resumen del ancho de la región."""
 
+# La cantera con dos superficies (spec 014, T23; RF-014-04).
+AREA = "excavation_area"
+HOLD = "hold"
+FLOORS = "floors"
+CEILINGS = "ceilings"
+CORRIDORS = "corridors"
+"""Las claves de los lotes de la cantera: el recinto excavable, las zonas a sostener, los fondos, las
+zonas a conservar que siembran los techos y los corredores. Su borde lleva el papel
+``constraints.OUTLINE``; la trama de las zonas a conservar, ``constraints.ZONE``."""
+AREA_COLOR = (1.0, 1.0, 1.0, 1.0)
+HOLD_COLOR = (1.0, 0.40, 0.80, 1.0)
+FLOOR_COLOR = (0.20, 1.00, 0.60, 1.0)
+CEILING_COLOR = (0.75, 0.55, 1.0, 1.0)
+CORRIDOR_COLOR = (1.0, 1.0, 0.30, 1.0)
+"""El color del borde (y del nombre) del recinto (blanco), de las zonas a sostener (rosa), de los
+fondos (verde menta), de las zonas a conservar (lila) y de los corredores (amarillo)."""
+AREA_PX = 3.5
+PIECE_PX = 2.5
+"""El trazo (px) del borde del recinto y del de las demás piezas de la cantera."""
+CEILING_LINES = constraints.ZONE_LINES
+"""Las rayas de la trama de las zonas a conservar, a lo largo de toda la rejilla."""
+EDGE_ROWS_PER_STEP = 256
+"""Las filas de una rejilla cuyo borde se busca en cada unidad (:func:`edges_steps`)."""
+
 type Color = tuple[float, float, float, float]
 
 
@@ -128,6 +178,18 @@ class Plan:
 
     seeds: SeedSource
     domain: WorkDomain = field(default_factory=WorkDomain)
+
+
+@dataclass(frozen=True)
+class QuarryPlan:
+    """Lo que se previsualiza de un diseño de la cantera con dos superficies (spec 014, RF-014-04):
+    su ``request`` (``design.model.QuarryRequest``: la superficie de partida y las capas de los
+    fondos, las zonas a conservar y los corredores) y el ancho del anillo de coronación en celdas
+    (``ring_cells``; ``None``: el del parámetro ``des.quarry.crown_ring_cells`` de la versión
+    activa, como lo leerá la operación, :func:`crown_ring_cells`)."""
+
+    request: QuarryRequest
+    ring_cells: int | None = None
 
 
 @dataclass(frozen=True, eq=False)
@@ -180,12 +242,13 @@ class Built:
 @dataclass(frozen=True, eq=False)
 class Request:
     """Lo que se construye: el proyecto, la versión (``None``: ninguna) y su código, lo que se
-    previsualiza, el idioma de los textos y el sello de lo que se lee."""
+    previsualiza (las semillas de la 013 o un diseño de la cantera de la 014), el idioma de los
+    textos y el sello de lo que se lee."""
 
     project: Any
     version_uid: str | None
     version_code: str
-    plan: Plan
+    plan: Plan | QuarryPlan
     language: str
     stamp: tuple[Any, ...]
 
@@ -286,8 +349,35 @@ def seed_points_steps(seeds: Any, origin: Any, *, budget_s: float = STEP_BUDGET_
     total = int(seeds.cells)
     if total == 0 or seeds.min_m is None or seeds.max_m is None:
         return None
+    return (yield from _points_steps(seeds.grid, seeds.geometry, total, float(seeds.min_m),
+                                     float(seeds.max_m), origin, budget_s))
+
+
+def crown_points_steps(start: np.ndarray, crown: np.ndarray, grid: Grid, origin: Any, *,
+                       budget_s: float = STEP_BUDGET_S) -> Generator[None, None, Points | None]:
+    """Los puntos de la coronación de la cantera (spec 014, RF-014-04; plan 014 §5.5: «en el color
+    de las semillas»): uno por celda de ``crown`` (booleana, de la rejilla ``grid``) en su cota de la
+    superficie de partida ``start`` (m, float64) y coloreado por ella entre la mínima y la máxima de
+    la coronación, como :func:`seed_points_steps` (con el mismo aclarado). Sin coronación o sin cota
+    en ella, ``None``. El resultado es el ``StopIteration.value``."""
+    chosen = np.asarray(crown, dtype=bool) & np.isfinite(start)
+    total = int(np.count_nonzero(chosen))
+    if total == 0:
+        return None
+    heights = start[chosen]
+    values = np.where(chosen, start, np.nan)
+    yield
+    return (yield from _points_steps(values, grid, total, float(heights.min()),
+                                     float(heights.max()), origin, budget_s))
+
+
+def _points_steps(values: np.ndarray, grid: Grid, total: int, low: float, high: float,
+                  origin: Any, budget_s: float) -> Generator[None, None, Points | None]:
+    """Los puntos de las ``total`` celdas con cota finita de ``values`` (de la rejilla ``grid``) en
+    su cota, coloreados entre ``low`` y ``high``; con más de :data:`MAX_SEED_POINTS`, uno de cada
+    ``stride`` en el orden de la rejilla, leídos por trozos de :data:`SEED_ROWS_PER_STEP` filas."""
     stride = max(1, -(-total // max(1, MAX_SEED_POINTS)))
-    grid, values, pace = seeds.geometry, seeds.grid, constraints.Pace(budget_s)
+    pace = constraints.Pace(budget_s)
     places: list[np.ndarray] = []
     heights: list[np.ndarray] = []
     seen = 0
@@ -310,8 +400,8 @@ def seed_points_steps(seeds: Any, origin: Any, *, budget_s: float = STEP_BUDGET_
     if not places:
         return None
     positions = np.concatenate(places)
-    colors = elevation_colors(np.concatenate(heights), seeds.min_m, seeds.max_m)
-    return Points(positions, colors, SEED_PX, total, stride, float(seeds.min_m), float(seeds.max_m))
+    colors = elevation_colors(np.concatenate(heights), low, high)
+    return Points(positions, colors, SEED_PX, total, stride, float(low), float(high))
 
 
 def _sector_steps(project: Any, masks: Any, ground: Any, origin: Any, *, budget_s: float
@@ -373,13 +463,321 @@ def _legend(request: Request, base: constraints.Built, points: Points | None, ha
                                      stride=points.stride)))
     if has_domain:
         rows.append(LegendRow(tr("Work domain"), _hex(constraints.DOMAIN_COLOR)))
+    rows.extend(_sector_rows(sectors))
+    rows.extend(_base_rows(base))
+    return tuple(rows)
+
+
+def _sector_rows(sectors: Sequence[tuple[str, bool]]) -> list[LegendRow]:
+    """Las filas de la leyenda de los sectores dibujados: con la búsqueda vigente y pendiente."""
+    rows = []
     if any(not pending for _name, pending in sectors):
         rows.append(LegendRow(tr("Sector with its search in force"), _hex(SECTOR_COLOR)))
     if any(pending for _name, pending in sectors):
         rows.append(LegendRow(tr("Sector with its search pending"), _hex(PENDING_COLOR)))
+    return rows
+
+
+def _base_rows(base: constraints.Built) -> list[LegendRow]:
+    """Las filas de la leyenda de la 012 (tipos presentes y notas) sin su título ni su dominio por
+    defecto y su franja, que la vista previa no dibuja."""
     skipped = {tr("Default domain"), tr("Fill-only strip")}
-    rows.extend(row for row in base.legend[1:] if row.text not in skipped)
-    return tuple(rows)
+    return [row for row in base.legend[1:] if row.text not in skipped]
+
+
+# --- La cantera con dos superficies (spec 014, T23; RF-014-04) -----------------------------------
+
+
+def edges_steps(values: np.ndarray, grid: Grid, *, budget_s: float = STEP_BUDGET_S
+                ) -> Generator[None, None, np.ndarray]:
+    """El borde de las celdas de ``values`` (de la forma de ``grid``; booleana o de enteros, con
+    ``False`` o 0 en las celdas de nada): los lados de celda entre dos celdas de valor distinto, o
+    entre una con valor y el borde de la rejilla, como segmentos ``(k, 2, 2)`` absolutos unidos en
+    tramos rectos por fila y por columna dentro de cada banda de :data:`EDGE_ROWS_PER_STEP` filas.
+    Así, el borde de una máscara es su contorno y el de una rejilla de dueños (los fondos o los
+    corredores, numerados de 1 a n), el de cada uno, también entre dos vecinos. Sin celdas, ninguno.
+    Se busca por bandas; el resultado es el ``StopIteration.value``."""
+    found = np.asarray(values)
+    if found.shape != grid.shape:
+        raise ValueError(f"los valores son de forma {found.shape}, no de la rejilla {grid.shape}")
+    pace = constraints.Pace(budget_s)
+    nrows, ncols = found.shape
+    blank = np.zeros((1, ncols), dtype=found.dtype)
+    parts: list[np.ndarray] = []
+    for top in range(0, nrows, max(1, int(EDGE_ROWS_PER_STEP))):
+        band = found[top:top + max(1, int(EDGE_ROWS_PER_STEP))]
+        last = top + len(band) == nrows
+        stacked = np.concatenate([found[top - 1:top] if top else blank, band,
+                                  *((blank,) if last else ())])
+        across = Runs.from_mask(stacked[:-1] != stacked[1:])  # el lado de arriba de la fila top + i
+        if len(across):
+            pieces = np.empty((len(across), 2, 2), dtype=np.float64)
+            pieces[:, 0, 0] = grid.west + across.col0 * grid.dx
+            pieces[:, 1, 0] = grid.west + across.col1 * grid.dx
+            pieces[:, :, 1] = (grid.north - (top + across.row) * grid.dy)[:, None]
+            parts.append(pieces)
+        padded = np.zeros((len(band), ncols + 2), dtype=found.dtype)
+        padded[:, 1:-1] = band
+        down = Runs.from_mask((padded[:, :-1] != padded[:, 1:]).T)  # el lado izquierdo de cada columna
+        if len(down):
+            pieces = np.empty((len(down), 2, 2), dtype=np.float64)
+            pieces[:, :, 0] = (grid.west + down.row * grid.dx)[:, None]
+            pieces[:, 0, 1] = grid.north - (top + down.col0) * grid.dy
+            pieces[:, 1, 1] = grid.north - (top + down.col1) * grid.dy
+            parts.append(pieces)
+        if pace.due():
+            yield
+    return np.concatenate(parts) if parts else np.empty((0, 2, 2), dtype=np.float64)
+
+
+@dataclass(frozen=True, eq=False)
+class _Owned:
+    """Lo de cada dueño de una rejilla de dueños (1 a n): sus celdas, el centro de ellas
+    (absoluto; ``NaN`` sin celdas) y la cota mínima y máxima de sus celdas (``NaN`` sin cotas)."""
+
+    cells: np.ndarray
+    centers: np.ndarray
+    low: np.ndarray
+    high: np.ndarray
+
+
+def _owned_steps(owner: np.ndarray, count: int, grid: Grid, levels: np.ndarray | None,
+                 pace: Any) -> Generator[None, None, _Owned]:
+    """Las celdas, el centro (la media de los centros de celda) y, con ``levels``, la cota mínima y
+    máxima de cada dueño ``1 … count`` de ``owner`` (0: nadie), por bandas de filas."""
+    cells = np.zeros(count + 1, dtype=np.int64)
+    rows = np.zeros(count + 1, dtype=np.float64)
+    cols = np.zeros(count + 1, dtype=np.float64)
+    low = np.full(count + 1, np.inf)
+    high = np.full(count + 1, -np.inf)
+    step = max(1, int(EDGE_ROWS_PER_STEP))
+    for top in range(0, owner.shape[0], step):
+        band = owner[top:top + step]
+        row, col = np.nonzero(band)
+        ids = band[row, col].astype(np.int64)
+        cells += np.bincount(ids, minlength=count + 1)[:count + 1]
+        rows += np.bincount(ids, weights=(row + top).astype(np.float64),
+                            minlength=count + 1)[:count + 1]
+        cols += np.bincount(ids, weights=col.astype(np.float64), minlength=count + 1)[:count + 1]
+        if levels is not None and len(ids):
+            heights = levels[top:top + step][row, col]
+            np.minimum.at(low, ids, heights)
+            np.maximum.at(high, ids, heights)
+        if pace.due():
+            yield
+    with np.errstate(invalid="ignore", divide="ignore"):
+        centers = np.column_stack([grid.west + (cols / cells + 0.5) * grid.dx,
+                                   grid.north - (rows / cells + 0.5) * grid.dy])
+    low[~np.isfinite(low)] = np.nan
+    high[~np.isfinite(high)] = np.nan
+    return _Owned(cells[1:], centers[1:], low[1:], high[1:])
+
+
+def crown_ring_cells(project: Any, version_uid: str) -> int:
+    """El ancho del anillo de coronación (``des.quarry.crown_ring_cells``) en la versión
+    ``version_uid``, como lo leerá la cantera: el de la versión, el del proyecto o, sin fila, el de
+    su definición; fuera de su rango o sin valor, ``DesignError`` (``check_quarry_param``). Solo
+    lee."""
+    with project.read() as conn:
+        found = ParameterStore(project).resolve_many(
+            conn, (CROWN_RING,), (VERSION_SCOPE, PROJECT_SCOPE), version=version_uid)
+    resolved = found.get(CROWN_RING)
+    if resolved is not None:
+        value = resolved.value
+    else:
+        declared = definition(CROWN_RING)
+        value = None if declared is None else declared.default
+    return int(check_quarry_param(CROWN_RING, value))  # type: ignore[arg-type]
+
+
+def _number_text(value: float) -> str:
+    """Una cota de un fondo o de un corredor para su nombre: con dos decimales."""
+    return format_number(float(value), 2)
+
+
+def _outline_steps(key: str, values: np.ndarray, grid: Grid, color: Color, width: float,
+                   ground: Any, origin: Any, budget_s: float
+                   ) -> Generator[None, None, Batch | None]:
+    """El lote del borde (``constraints.OUTLINE``) de las celdas de ``values`` sobre ``ground``;
+    ``None`` si no tiene ninguna."""
+    segments = yield from edges_steps(values, grid, budget_s=budget_s)
+    if not len(segments):
+        return None
+    positions = yield from constraints.drape_segments_steps(segments, ground, origin,
+                                                           budget_s=budget_s)
+    return Batch(key, constraints.OUTLINE, color, width, positions)
+
+
+@dataclass(frozen=True, eq=False)
+class _Pieces:
+    """Lo construido de las piezas de la cantera: los lotes (los de debajo primero), los nombres
+    (absolutos, aún sin cota), las filas de su leyenda y los puntos de la coronación."""
+
+    batches: tuple[Batch, ...]
+    named: tuple[tuple[str, tuple[float, float], Color], ...]
+    rows: tuple[LegendRow, ...]
+    crown: Points | None
+
+
+def _quarry_pieces_steps(found: Any, ground: Any, origin: Any, *, budget_s: float
+                         ) -> Generator[None, None, _Pieces]:
+    """Los lotes, los nombres y la leyenda de las piezas de ``found``
+    (``design.preview.QuarryPreview`` con las máscaras al día): el borde del recinto, el de las
+    zonas a sostener, el de cada fondo con su cota, el de las zonas a conservar con su trama y su
+    nombre, el de cada corredor con sus cotas y los puntos de la coronación."""
+    grid = found.masks.grid
+    pace = constraints.Pace(budget_s)
+    batches: list[Batch] = []
+    named: list[tuple[str, tuple[float, float], Color]] = []
+    rows: list[LegendRow] = []
+    crown = yield from crown_points_steps(found.start, found.crown, grid, origin, budget_s=budget_s)
+    if crown is not None:
+        if crown.high - crown.low > 0.0:  # como las semillas: una fila por cota extrema
+            heights = ((crown.low, RAMP[0][1]), (crown.high, RAMP[-1][1]))
+        else:
+            heights = ((crown.low, elevation_colors([crown.low], crown.low, crown.high)[0]),)
+        for value, color in heights:
+            rows.append(LegendRow(tr("Crown at {value} m", value=format_number(value, 1)),
+                                  _hex(color)))
+    if found.conserve:
+        union = np.zeros(grid.shape, dtype=bool)
+        for zone in found.conserve:
+            union |= zone.mask
+        segments = yield from constraints.mask_hatch_steps(union, grid, CEILING_LINES,
+                                                           budget_s=budget_s)
+        if len(segments):
+            positions = yield from constraints.drape_segments_steps(segments, ground, origin,
+                                                                   budget_s=budget_s)
+            batches.append(Batch(CEILINGS, constraints.ZONE, (*CEILING_COLOR[:3],
+                                                              constraints.HATCH_ALPHA),
+                                 constraints.HATCH_PX, positions))
+    hold = yield from _outline_steps(HOLD, found.hold, grid, HOLD_COLOR, PIECE_PX, ground, origin,
+                                     budget_s)
+    area = yield from _outline_steps(AREA, found.area, grid, AREA_COLOR, AREA_PX, ground, origin,
+                                     budget_s)
+    rows.append(LegendRow(tr("Excavation boundary"), _hex(AREA_COLOR)))
+    if hold is not None:
+        batches.append(hold)
+        rows.append(LegendRow(tr("Zones to hold"), _hex(HOLD_COLOR)))
+    floors = found.floors
+    if floors is not None and floors.fids:
+        batch = yield from _outline_steps(FLOORS, floors.owner, grid, FLOOR_COLOR, PIECE_PX, ground,
+                                          origin, budget_s)
+        owned = yield from _owned_steps(floors.owner, len(floors.fids), grid, None, pace)
+        if batch is not None:
+            batches.append(batch)
+        named.extend((tr("Floor at {level} m", level=_number_text(level)), (float(x), float(y)),
+                      FLOOR_COLOR)
+                     for level, cells, (x, y) in zip(floors.levels, owned.cells.tolist(),
+                                                     owned.centers.tolist(), strict=True) if cells)
+        rows.append(LegendRow(tr("Floors of «{layer}» ({count})", layer=floors.layer,
+                                 count=len(floors.fids)), _hex(FLOOR_COLOR)))
+    if found.conserve:
+        pieces = []
+        for zone in found.conserve:
+            segments = yield from edges_steps(zone.mask, grid, budget_s=budget_s)
+            pieces.append(segments)
+            owned = yield from _owned_steps(zone.mask.astype(np.int8), 1, grid, None, pace)
+            if owned.cells[0]:
+                x, y = owned.centers[0].tolist()
+                named.append((tr("Zone to conserve «{name}»", name=zone.name), (x, y),
+                              CEILING_COLOR))
+        segments = np.concatenate(pieces)
+        if len(segments):
+            positions = yield from constraints.drape_segments_steps(segments, ground, origin,
+                                                                   budget_s=budget_s)
+            batches.append(Batch(CEILINGS, constraints.OUTLINE, CEILING_COLOR, PIECE_PX, positions))
+        rows.append(LegendRow(tr("Zones to conserve: conservation ceilings ({count})",
+                                 count=len(found.conserve)), _hex(CEILING_COLOR)))
+    corridors = None if found.corridors is None else found.corridors.floors
+    if corridors is not None and corridors.fids:
+        batch = yield from _outline_steps(CORRIDORS, corridors.owner, grid, CORRIDOR_COLOR, PIECE_PX,
+                                          ground, origin, budget_s)
+        owned = yield from _owned_steps(corridors.owner, len(corridors.fids), grid, corridors.grid,
+                                        pace)
+        if batch is not None:
+            batches.append(batch)
+        for fid, cells, (x, y), low, high in zip(corridors.fids, owned.cells.tolist(),
+                                                 owned.centers.tolist(), owned.low.tolist(),
+                                                 owned.high.tolist(), strict=True):
+            if not cells:
+                continue
+            if _number_text(low) == _number_text(high):
+                text = tr("Corridor {corridor} at {level} m", corridor=fid,
+                          level=_number_text(low))
+            else:
+                text = tr("Corridor {corridor}: {low} to {high} m", corridor=fid,
+                          low=_number_text(low), high=_number_text(high))
+            named.append((text, (float(x), float(y)), CORRIDOR_COLOR))
+        rows.append(LegendRow(tr("Corridors of «{layer}» ({count})", layer=corridors.layer,
+                                 count=len(corridors.fids)), _hex(CORRIDOR_COLOR)))
+    if area is not None:
+        batches.append(area)
+    if crown is not None and crown.stride > 1:
+        rows.append(LegendRow(tr("Seeds thinned: 1 of every {stride} is drawn",
+                                 stride=crown.stride)))
+    return _Pieces(tuple(batches), tuple(named), tuple(rows), crown)
+
+
+def _quarry_build_steps(request: Request, plan_: QuarryPlan, *, budget_s: float
+                        ) -> Generator[None, None, Built]:
+    """Los pasos de :func:`build_steps` con un diseño de la cantera (``plan_``): el resumen y las
+    piezas (``design.preview.quarry_summarize_steps``: solo lee y no compila las máscaras), la
+    superficie de partida, las restricciones con su leyenda (``bl.draw.constraints``, con las
+    máscaras ya leídas), las piezas con sus nombres y su leyenda y el borde de los sectores. Sin
+    versión activa o sin las máscaras al día, solo las restricciones (y el resumen lo dice)."""
+    project, version_uid, shown = request.project, request.version_uid, request.language
+    origin = project.origin
+    found = None
+    if version_uid:
+        ring = (plan_.ring_cells if plan_.ring_cells is not None
+                else crown_ring_cells(project, version_uid))
+        yield
+        steps = design_preview.quarry_summarize_steps(project, plan_.request, version_uid,
+                                                      ring_cells=ring, budget_s=budget_s)
+        try:
+            for step in steps:
+                if step.result is not None:
+                    found = step.result
+                yield
+        finally:
+            close = getattr(steps, "close", None)
+            if close is not None:
+                close()
+    masks = None if found is None else found.masks
+    chosen = plan_.request.start
+    ground = yield from constraints.ground_steps(project, chosen, version_uid, budget_s=budget_s)
+    base = yield from constraints.build_steps(
+        constraints.Request(project, version_uid, request.version_code, chosen, shown,
+                            request.stamp),
+        budget_s=budget_s, loaded=masks, ground=ground)
+    batches = [batch for batch in base.batches
+               if batch.role not in (constraints.DOMAIN, constraints.STRIP)]
+    labels: list[Label] = []
+    rows = [LegendRow(tr("Preview · {version}", version=request.version_code or tr("No version")))]
+    crown = None
+    sectors: tuple[tuple[str, bool], ...] = ()
+    if masks is not None and found.area is not None:
+        pieces = yield from _quarry_pieces_steps(found, ground, origin, budget_s=budget_s)
+        batches.extend(pieces.batches)
+        places = np.array([place for _text, place, _color in pieces.named],
+                          dtype=np.float64).reshape(-1, 2)
+        spots = yield from constraints.drape_points_steps(places, ground, origin,
+                                                          budget_s=budget_s)
+        labels.extend(Label(text, (float(x), float(y), float(z)), color)
+                      for (text, _place, color), (x, y, z) in zip(pieces.named, spots.tolist(),
+                                                                  strict=True))
+        rows.extend(pieces.rows)
+        crown = pieces.crown
+        sector_batches, sector_labels, sectors = yield from _sector_steps(
+            project, masks, ground, origin, budget_s=budget_s)
+        batches.extend(sector_batches)
+        labels.extend(sector_labels)
+    rows.extend(_sector_rows(sectors))
+    rows.extend(_base_rows(base))
+    lines = replace(base, batches=tuple(batches), labels=(*base.labels, *labels),
+                    legend=tuple(rows), stamp=request.stamp)
+    return Built(lines, crown, sectors, () if found is None else summary_lines(found, shown))
 
 
 def build_steps(request: Request, *, budget_s: float = STEP_BUDGET_S
@@ -391,7 +789,11 @@ def build_steps(request: Request, *, budget_s: float = STEP_BUDGET_S
     puntos de las semillas. Cada paso dura como mucho ``budget_s`` s (salvo una lectura, nunca de
     más de 0,2 s); el resultado es el ``StopIteration.value``. Los rechazos del cálculo (una
     superficie que no está, una zona desconocida…) salen al avanzar. Cerrarlo a mitad no deja nada.
-    Sin versión activa no hay semillas ni dominio: solo las restricciones."""
+    Sin versión activa no hay semillas ni dominio: solo las restricciones. Con un diseño de la
+    cantera (:class:`QuarryPlan`), sus piezas en lugar de las semillas y el dominio (véase el
+    módulo; spec 014, RF-014-04)."""
+    if isinstance(request.plan, QuarryPlan):
+        return (yield from _quarry_build_steps(request, request.plan, budget_s=budget_s))
     project, version_uid, shown = request.project, request.version_uid, request.language
     origin = project.origin
     found = None
@@ -552,7 +954,7 @@ class _State:
         self.built: Built | None = None
         self.steps: Generator[None, None, Built] | None = None
         self.request: Request | None = None
-        self.plan: Plan | None = None
+        self.plan: Plan | QuarryPlan | None = None
         self.undo: list[Callable[[], object]] = []
         self.failed = False
 
@@ -580,8 +982,9 @@ def built() -> Built | None:
     return _STATE.built
 
 
-def plan() -> Plan | None:
-    """Lo que se previsualiza ahora; ``None`` si no está activa."""
+def plan() -> Plan | QuarryPlan | None:
+    """Lo que se previsualiza ahora (las semillas de la 013 o un diseño de la cantera); ``None`` si
+    no está activa."""
     return _STATE.plan
 
 
@@ -802,8 +1205,9 @@ def default_plan() -> Plan:
     return Plan(SeedSource(SeedKind.SURFACE, surface=des_panels.surface_items(None, None)[0][0]))
 
 
-def enable(wanted: Plan | None = None) -> None:
-    """Activa la vista previa de ``wanted`` (sin él, :func:`default_plan`): pone los manejadores de
+def enable(wanted: Plan | QuarryPlan | None = None) -> None:
+    """Activa la vista previa de ``wanted`` (unas semillas de la 013, :class:`Plan`, o un diseño de la
+    cantera de la 014, :class:`QuarryPlan`; sin él, :func:`default_plan`): pone los manejadores de
     dibujo, apunta lo que la rehace o la quita y empieza a construirla (:func:`rebuild`). Ya activa,
     nada. Sin proyecto abierto o sin rejillas que previsualizar, ``RuntimeError``."""
     if _STATE.enabled:

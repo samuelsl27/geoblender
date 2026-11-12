@@ -32,6 +32,15 @@ búsqueda de intocables cerrada solo en el primero, y una ladera que sube 0,1 m 
   activarla y quitarla informa; una vista previa que el cálculo rechaza avisa con el motivo y se quita.
 - RF-013-01, RF-013-02 (h; H3, hallazgo 1): el resumen empieza a la derecha de la barra de herramientas
   de la Vista 3D cuando se superpone a la región (a escala 1,0 y 1,25), y sin ella queda donde estaba.
+- RF-014-04 (j; spec 014, T23; plan 014 §5.5; M1): con un diseño de la cantera con dos superficies
+  (``QuarryPlan``: su ``QuarryRequest`` con dos fondos, una zona a conservar y un corredor con rasante,
+  en capas del proyecto) la vista previa enseña además el recinto excavable (su borde), la coronación
+  (puntos en el color de las semillas, por cota), las zonas a sostener, los fondos con su cota, las
+  zonas a conservar que siembran los techos y los corredores, cada uno con su lote, sus nombres y su
+  fila en la leyenda (en los dos idiomas), todo igual a lo que dice ``design.preview`` y con el borde
+  de cada pieza, lado a lado, igual al de sus celdas; el anillo, el del parámetro o el pedido; sin
+  máscaras al día, solo los contornos y el aviso; una capa que el cálculo rechaza avisa y la quita; y
+  no escribe nada.
 - Principio 8 (z): desactivar Geoblender con la vista previa activa quita el manejador, los avisos y
   el temporizador y deja la huella de Blender como al principio de la sesión.
 
@@ -43,6 +52,8 @@ import importlib
 import tempfile
 import unittest
 import uuid
+from collections.abc import Generator
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -78,6 +89,21 @@ SIZE = (600, 400)  # la región, en píxeles
 HALF = 60.0  # la vista desde arriba: 120 m de ancho
 MAX_PUMPS = 20_000
 
+# La cantera con dos superficies (spec 014, T23): capas del proyecto, en coordenadas de la prueba.
+LAYERS_TYPE = "gis.test_preview_layers"
+FLOORS_LAYER = "gis_fea_fondos"
+FLOOR_BOXES = ((8.0, 30.0, 16.0, 46.0), (24.0, 36.0, 34.0, 46.0))
+FLOOR_LEVELS = (95.0, 96.0)
+FLOOR_CELLS = (4 * 8, 5 * 5)  # centros x = 9 … 15, y = 31 … 45; x = 25 … 33, y = 37 … 45
+CONSERVE_LAYER = "gis_fea_conservar"
+CONSERVE_BOX = (8.0, 8.0, 16.0, 16.0)
+CORRIDORS_LAYER = "gis_fea_corredores"
+CORRIDOR_AXIS = ((40.0, 8.0), (40.0, 30.0))
+CORRIDOR_FIELDS = {"ancho": 4.0, "cota_inicial": 97.0, "pendiente": 5.0}
+CORRIDOR_CELLS = 2 * 11  # x = 39 y 41; y = 9 … 29 (σ = 1 … 21 m: 97,05 a 98,05 m)
+AREA_CELLS = 22 * 22 - 5 * 5  # x, y = 7 … 49 menos la torre con su resguardo (x, y = 19 … 27)
+CROWN_CELLS = 28 * 28 - 22 * 22 + 5 * 5  # el anillo de 3 celdas y el agujero de la torre
+
 
 def _module(name: str) -> ModuleType:
     return importlib.import_module(f"{module_name()}.{name}")
@@ -100,6 +126,51 @@ def top_view(centre: tuple[float, float]) -> np.ndarray:
                      [0.0, sy, 0.0, -centre[1] * sy],
                      [0.0, 0.0, -0.001, 0.0],
                      [0.0, 0.0, 0.0, 1.0]])
+
+
+def finish(steps: Generator[None, None, Any]) -> Any:
+    """Los pasos de un generador hasta el final: su ``StopIteration.value``."""
+    while True:
+        try:
+            next(steps)
+        except StopIteration as done:
+            return done.value
+
+
+def path(points: tuple[tuple[float, float], ...]) -> np.ndarray:
+    """El camino absoluto de los puntos ``points`` (coordenadas de la prueba)."""
+    return np.array([(WEST + x, SOUTH + y) for x, y in points], dtype=np.float64)
+
+
+def unit_edges(values: np.ndarray) -> set[tuple[str, int, int]]:
+    """Los lados de celda del borde de ``values`` por fuerza bruta: ``("h", i, j)`` es el lado de
+    arriba de la fila ``i`` (``i`` = filas: el de abajo de la última) en la columna ``j``, y ``("v",
+    i, j)`` el lado izquierdo de la columna ``j`` en la fila ``i``, cuando las dos celdas que separa
+    (fuera de la rejilla, 0) tienen valores distintos."""
+    rows, cols = values.shape
+
+    def at(i: int, j: int) -> Any:
+        return values[i, j] if 0 <= i < rows and 0 <= j < cols else 0
+
+    found = {("h", i, j) for i in range(rows + 1) for j in range(cols) if at(i - 1, j) != at(i, j)}
+    found |= {("v", i, j) for i in range(rows) for j in range(cols + 1) if at(i, j - 1) != at(i, j)}
+    return found
+
+
+def covered_edges(segments: np.ndarray, grid: Any) -> set[tuple[str, int, int]]:
+    """Los lados de celda de ``grid`` que cubren unos segmentos ``(k, 2, 2)`` absolutos que van por
+    los lados de celda (los del borde, partidos o no): los de su línea con el punto medio dentro."""
+    found: set[tuple[str, int, int]] = set()
+    for (x0, y0), (x1, y1) in np.asarray(segments, dtype=np.float64).tolist():
+        if abs(y0 - y1) < 1e-6:
+            i = int(round((grid.north - y0) / grid.dy))
+            low, high = sorted(((x0 - grid.west) / grid.dx, (x1 - grid.west) / grid.dx))
+            found |= {("h", i, j) for j in range(grid.ncols) if low - 1e-6 <= j + 0.5 <= high + 1e-6}
+        else:
+            j = int(round((x0 - grid.west) / grid.dx))
+            low, high = sorted(((grid.north - y0) / grid.dy, (grid.north - y1) / grid.dy))
+            found |= {("v", i, j) for i in range(grid.nrows) if low - 1e-6 <= i + 0.5 <= high + 1e-6}
+    return found
 
 
 class DesignPreviewTest(unittest.TestCase):
@@ -228,6 +299,40 @@ class DesignPreviewTest(unittest.TestCase):
                                                           vertical))
             records = out.commit(software={library: library_version}, message=REASON)
         return str(records[0].name)
+
+    @classmethod
+    def write_layer(cls, name: str, kind: str, entities: tuple[Any, ...],
+                    numbers: dict[str, tuple[float, ...]]) -> None:
+        """Una capa ``gis_fea_…`` con las entidades ``entities`` (cada una, sus partes con sus anillos
+        o su camino, absolutos), el campo ``nombre`` y los campos numéricos ``numbers`` (``DOUBLE``,
+        un valor por entidad), como la deja la importación de la 006."""
+        gis_store, vector = _module("gis.store"), _module("gis.vector")
+        datasets, builtin = _module("core.datasets"), _module("core.content.builtin")
+        srs = int(cls.project.record.crs_epsg)
+        columns = (vector.FieldColumn("nombre", "nombre", "TEXT"),
+                   *(vector.FieldColumn(field, field, "DOUBLE") for field in numbers))
+        fids = tuple(range(1, len(entities) + 1))
+        values = {"nombre": tuple(f"Entidad {fid}" for fid in fids),
+                  **{field: tuple(found) for field, found in numbers.items()}}
+        layer = vector.FeatureLayer(kind, fids, tuple(entities), columns, values)
+        rows = gis_store.feature_rows(layer, srs)
+        names = ", ".join(f'"{column.column}" {column.sql_type}' for column in columns)
+        marks = ", ".join("?" for _ in range(len(columns) + 2))
+        handle = _module("core.provenance.operations").begin_operation(
+            cls.project, LAYERS_TYPE, settings={"name": name}, executor="blender")
+        with cls.project.write_transaction() as conn:
+            conn.execute(f'CREATE TABLE "{name}" (fid INTEGER PRIMARY KEY NOT NULL, '
+                         f"geom {layer.geometry_type}, {names})")
+            conn.execute("INSERT INTO gpkg_contents (table_name, data_type, identifier, "
+                         "description, srs_id) VALUES (?, 'features', ?, '', ?)", (name, name, srs))
+            conn.execute("INSERT INTO gpkg_geometry_columns (table_name, column_name, "
+                         "geometry_type_name, srs_id, z, m) VALUES (?, 'geom', ?, ?, 0, 0)",
+                         (name, layer.geometry_type, srs))
+            conn.executemany(f'INSERT INTO "{name}" VALUES ({marks})', rows)
+            handle.complete(conn, outputs=(datasets.DatasetSpec(
+                name, "gis", "vector", datasets.Store.GPKG, name,
+                reader=builtin.GPKG_LAYER.id, role="features", crs_epsg=srs, input_uid=None,
+                immutable=False),), message="Capa de prueba de la vista previa de la cantera")
 
     @staticmethod
     def set_active(version: Any) -> None:
@@ -855,6 +960,228 @@ class DesignPreviewTest(unittest.TestCase):
         for place, stop in ((int(np.argmin(height)), design.RAMP[0][1]),
                             (int(np.argmax(height)), design.RAMP[-1][1])):
             self.assertTrue(np.allclose(sloped.seeds.colors[place][:3], stop, atol=1e-6), place)
+
+    def quarry_truth(self, request: Any, ring: int, version: Any | None = None) -> Any:
+        """Lo que dice ``design`` de la cantera ``request`` con el anillo ``ring``
+        (``design.preview.quarry_summarize_steps``), sin pasar por el dibujo."""
+        found = None
+        for step in _module("design.preview").quarry_summarize_steps(
+                self.project, request, (version or self.v01).uid, ring_cells=ring):
+            found = step.result if step.result is not None else found
+        return found
+
+    def absolute(self, batch: Any) -> tuple[np.ndarray, np.ndarray]:
+        """Los segmentos ``(k, 2, 2)`` absolutos de un lote y la cota local de sus vértices."""
+        xyz = batch.positions.astype(np.float64)
+        xy = xyz[:, :2] + np.array([self.origin.x0, self.origin.y0], dtype=np.float64)
+        return xy.reshape(-1, 2, 2), xyz[:, 2]
+
+    def on_slope(self, x_local: np.ndarray, z_local: np.ndarray) -> bool:
+        """Si las cotas locales ``z_local`` son las de la ladera en las abscisas locales."""
+        return bool(np.allclose(z_local, 100.0 + 0.1 * (x_local + self.origin.x0 - WEST)
+                                - self.origin.z0, atol=2e-3))
+
+    def test_j_a_quarry_design_adds_its_pieces_with_their_legend(self) -> None:
+        """RF-014-04 (spec 014, T23; plan 014 §5.5; M1): con un diseño de la cantera con dos
+        superficies (``QuarryPlan``) la vista previa enseña, sobre la superficie de partida y sin
+        escribir nada, además de las restricciones y los sectores: el borde del recinto excavable, la
+        coronación (un punto por celda en su cota, coloreado por ella como las semillas), el borde de
+        las zonas a sostener, el de cada fondo con su cota, el de las zonas a conservar (y su trama)
+        con su nombre y el de cada corredor con sus cotas; cada borde, lado a lado, igual al de sus
+        celdas en ``design.preview`` (y las celdas, a mano); la leyenda con una fila por pieza y el
+        resumen de ``design``, en español y en inglés. El anillo es el del parámetro (3 celdas por
+        defecto) o el pedido; sin las máscaras de la versión, solo los contornos y el aviso; una capa
+        que el cálculo rechaza avisa con el motivo y la quita."""
+        design, constraints = self.design, self.constraints
+        grid_module = _module("gis.grid")
+        rng = np.random.default_rng(14)
+        for case in range(24):  # el borde de una rejilla de valores, frente a la fuerza bruta
+            rows, cols = (int(value) for value in rng.integers(1, 12, size=2))
+            values = rng.integers(0, 3, size=(rows, cols))
+            if case % 2:
+                values = values > 0
+            small = grid_module.Grid(10.0, 20.0 + STEP_M * rows, STEP_M, STEP_M, cols, rows)
+            with mock.patch.object(design, "EDGE_ROWS_PER_STEP", 1 + case % 4):
+                segments = finish(design.edges_steps(values, small))
+            self.assertEqual(covered_edges(segments, small), unit_edges(values), case)
+        empty = grid_module.Grid(0.0, 4.0, 2.0, 2.0, 2, 2)
+        self.assertEqual(finish(design.edges_steps(np.zeros((2, 2), dtype=bool), empty)).shape,
+                         (0, 2, 2))
+
+        contract = _module("core.provenance.contract")
+        contract.register_operation(contract.OperationDef(LAYERS_TYPE, "1.0", "gis",
+                                                          "Layers of the tests", False))
+        self.addCleanup(contract.unregister_operation, LAYERS_TYPE)
+        self.write_layer(FLOORS_LAYER, "polygon", tuple(((ring(box),),) for box in FLOOR_BOXES),
+                         {"cota": FLOOR_LEVELS})
+        self.write_layer(CONSERVE_LAYER, "polygon", (((ring(CONSERVE_BOX),),),), {})
+        self.write_layer(CORRIDORS_LAYER, "line", (((path(CORRIDOR_AXIS),),),),
+                         {field: (value,) for field, value in CORRIDOR_FIELDS.items()})
+        access = _module("gis.masks.access")
+        if access.mask_state(self.project, self.v01.uid)[0] is not access.MaskState.CURRENT:
+            self.compile_masks(self.v01)
+        self.set_active(self.v01)
+        m = self.dmodel
+        request = m.QuarryRequest(
+            "Corta", self.ground, m.QuarrySide("rest_5_35_6"), m.QuarrySide("expl_10_60_6"),
+            floors=m.LayerField(FLOORS_LAYER, "cota"),
+            conserve=(m.Zone(m.ZoneKind.LAYER, CONSERVE_LAYER),),
+            corridors=m.CorridorFields(CORRIDORS_LAYER, "ancho", start_level_field="cota_inicial",
+                                       grade_field="pendiente"))
+        files, operations = self.files(), self.operations()
+
+        plan = design.QuarryPlan(request)
+        design.enable(plan)
+        self.assertTrue(design.enabled() and design.drawing() and design.building())
+        self.assertIs(design.plan(), plan)
+        built = self.pump()
+        truth = self.quarry_truth(request, 3)  # el anillo del parámetro: 3 celdas por defecto
+        grid = truth.masks.grid
+        self.assertEqual((built.lines.masks, built.lines.surface), ("current", self.ground))
+        self.assertEqual((int(truth.area.sum()), int(truth.crown.sum()), int(truth.hold.sum())),
+                         (AREA_CELLS, CROWN_CELLS, 25))
+        self.assertEqual((truth.floors.cells, truth.corridors.floors.cells,
+                          int(truth.conserve[0].mask.sum())), (FLOOR_CELLS, (CORRIDOR_CELLS,), 16))
+
+        pieces = ((design.AREA, truth.area, design.AREA_COLOR),
+                  (design.HOLD, truth.hold, design.HOLD_COLOR),
+                  (design.FLOORS, truth.floors.owner, design.FLOOR_COLOR),
+                  (design.CEILINGS, truth.conserve[0].mask, design.CEILING_COLOR),
+                  (design.CORRIDORS, truth.corridors.floors.owner, design.CORRIDOR_COLOR))
+        for key, cells, color in pieces:  # el borde de cada pieza, lado a lado, sobre la ladera
+            with self.subTest(pieza=key):
+                batch = built.lines.batch(key, constraints.OUTLINE)
+                self.assertIsNotNone(batch)
+                self.assertEqual(batch.color, color)
+                segments, height = self.absolute(batch)
+                self.assertEqual(covered_edges(segments, grid), unit_edges(cells))
+                self.assertTrue(self.on_slope(batch.positions[:, 0].astype(np.float64), height))
+        self.assertGreater(built.lines.batch(design.AREA, constraints.OUTLINE).width_px,
+                           built.lines.batch(design.HOLD, constraints.OUTLINE).width_px)
+        hatch = built.lines.batch(design.CEILINGS, constraints.ZONE)  # la zona a conservar, en trama
+        segments, _height = self.absolute(hatch)
+        zone = truth.conserve[0].mask
+        for (x0, y0), (x1, _y1) in segments.tolist():
+            row = int(round((grid.north - y0) / grid.dy - 0.5))
+            first, last = sorted((int(round((x0 - grid.west) / grid.dx)),
+                                  int(round((x1 - grid.west) / grid.dx))))
+            self.assertTrue(zone[row, first:last].all(), (row, first, last))
+        roles = {batch.role for batch in built.lines.batches}
+        self.assertFalse(roles & {constraints.DOMAIN, constraints.STRIP})
+        self.assertIsNotNone(built.lines.batch(design.SECTOR_PENDING, design.SECTOR_PENDING))
+        self.assertIsNotNone(built.lines.batch("untouchable", constraints.OUTLINE))
+
+        crown = built.seeds  # la coronación, en el color de las semillas
+        self.assertEqual((crown.count, crown.total, crown.stride), (CROWN_CELLS, CROWN_CELLS, 1))
+        rows, cols = np.nonzero(truth.crown)
+        expected = np.column_stack([grid.west + (cols + 0.5) * grid.dx - self.origin.x0,
+                                    grid.north - (rows + 0.5) * grid.dy - self.origin.y0,
+                                    truth.start[rows, cols] - self.origin.z0])
+        self.assertTrue(np.allclose(crown.positions.astype(np.float64), expected, atol=1e-4))
+        self.assertEqual((round(crown.low, 6), round(crown.high, 6)), (100.1, 105.5))
+        low, high = np.argmin(crown.positions[:, 2]), np.argmax(crown.positions[:, 2])
+        self.assertTrue(np.allclose(crown.colors[low], (*design.RAMP[0][1], 1.0), atol=1e-6))
+        self.assertTrue(np.allclose(crown.colors[high], (*design.RAMP[-1][1], 1.0), atol=1e-6))
+
+        labels = {label.text: label for label in built.lines.labels}
+        for text, (x, y), color in (("Fondo a 95,00 m", (12.0, 38.0), design.FLOOR_COLOR),
+                                    ("Fondo a 96,00 m", (29.0, 41.0), design.FLOOR_COLOR),
+                                    ("Corredor 1: 97,05 a 98,05 m", (40.0, 19.0),
+                                     design.CORRIDOR_COLOR),
+                                    (f"Zona a conservar «{CONSERVE_LAYER}»", (12.0, 12.0),
+                                     design.CEILING_COLOR)):
+            with self.subTest(nombre=text):
+                self.assertIn(text, labels)
+                lx, ly = self.local(x, y)
+                place = labels[text].xyz
+                self.assertTrue(np.allclose(place[:2], (lx, ly), atol=1e-3), place)
+                self.assertTrue(self.on_slope(np.array([place[0]]), np.array([place[2]])))
+                self.assertEqual(labels[text].color, color)
+        self.assertIn("Sector 2 · Búsqueda pendiente", labels)
+        self.assertIn("Torre", labels)
+
+        hexed = design._hex
+        legend = [(row.text, row.color) for row in built.lines.legend]
+        self.assertEqual(legend[:10], [
+            ("Vista previa · V01", None),
+            ("Coronación a 100,1 m", hexed(design.RAMP[0][1])),
+            ("Coronación a 105,5 m", hexed(design.RAMP[-1][1])),
+            ("Recinto excavable", hexed(design.AREA_COLOR)),
+            ("Zonas a sostener", hexed(design.HOLD_COLOR)),
+            (f"Fondos de «{FLOORS_LAYER}» (2)", hexed(design.FLOOR_COLOR)),
+            ("Zonas a conservar: techos de conservación (1)", hexed(design.CEILING_COLOR)),
+            (f"Corredores de «{CORRIDORS_LAYER}» (1)", hexed(design.CORRIDOR_COLOR)),
+            ("Sector con la búsqueda vigente", hexed(design.SECTOR_COLOR)),
+            ("Sector con la búsqueda pendiente", hexed(design.PENDING_COLOR))])
+        texts = [text for text, _color in legend]
+        self.assertIn(f"Sobre la superficie «{self.ground}»", texts)
+        for absent in ("Dominio de trabajo", "Dominio por defecto", "Franja de solo relleno"):
+            self.assertNotIn(absent, texts)
+        self.assertEqual(built.summary, tuple((notice.text("es"), notice.severity == "warning")
+                                              for notice in truth.notices))
+        thin = self.i18n.THIN_SPACE
+        said = " ".join(line for line, _alert in built.summary)
+        self.assertIn(f"Recinto excavable: {AREA_CELLS} celdas (1{thin}836 m²", said)
+        self.assertIn(f"Coronación: anillo de 3 celdas fuera del recinto, {CROWN_CELLS} celdas", said)
+        self.assertEqual([line.name for line in self.view.preview],
+                         [line for line, _alert in built.summary])
+
+        measure = lambda text: 7.0 * len(text)  # noqa: E731 - el ancho de una fuente de mentira
+        shown = {item.text for item in design.screen_items(built, top_view(self.local(30.0, 30.0)),
+                                                            SIZE, measure=measure)
+                 if hasattr(item, "text")}
+        self.assertTrue({"Fondo a 95,00 m", "Recinto excavable", "Zonas a sostener"} <= shown)
+        gpu = mock.MagicMock()
+        with mock.patch.object(design, "gpu", gpu), mock.patch.object(design, "batch_for_shader"):
+            self.assertEqual(design.draw_points(built, view_matrix=Matrix.Identity(4),
+                                                projection_matrix=Matrix.Identity(4),
+                                                perspective=True, view_distance=100.0,
+                                                pixel_size=1.0), CROWN_CELLS)
+
+        self.i18n.set_language("en")
+        design.rebuild()
+        english = self.pump()
+        self.assertEqual(english.summary, tuple((notice.text("en"), notice.severity == "warning")
+                                                for notice in truth.notices))
+        rows_en = [row.text for row in english.lines.legend]
+        self.assertEqual(rows_en[1:8], ["Crown at 100.1 m", "Crown at 105.5 m",
+                                        "Excavation boundary", "Zones to hold",
+                                        f"Floors of «{FLOORS_LAYER}» (2)",
+                                        "Zones to conserve: conservation ceilings (1)",
+                                        f"Corridors of «{CORRIDORS_LAYER}» (1)"])
+        names = {label.text for label in english.lines.labels}
+        self.assertTrue({"Floor at 95.00 m", "Corridor 1: 97.05 to 98.05 m",
+                         f"Zone to conserve «{CONSERVE_LAYER}»"} <= names)
+        self.i18n.set_language("es")
+
+        design.disable()  # el anillo pedido, no el del parámetro
+        design.enable(design.QuarryPlan(request, ring_cells=1))
+        narrow = self.pump()
+        self.assertEqual(narrow.seeds.total, 24 * 24 - 22 * 22 + 16)  # y el borde del agujero
+        self.assertEqual(narrow.seeds.total, int(self.quarry_truth(request, 1).crown.sum()))
+
+        self.set_active(self.v02)  # sin máscaras: solo los contornos y el aviso
+        self.assertTrue(design.building())
+        bare = self.pump()
+        self.assertEqual((bare.lines.version_code, bare.lines.masks), ("V02", "missing"))
+        self.assertIsNone(bare.seeds)
+        self.assertIsNone(bare.lines.batch(design.AREA, constraints.OUTLINE))
+        self.assertTrue(bare.summary[0][0].startswith("Las máscaras de V02 no se han compilado"))
+        self.set_active(self.v01)
+        self.assertEqual(self.pump().seeds.total, 24 * 24 - 22 * 22 + 16)
+        design.disable()
+
+        self.ps.take_notices()
+        wrong = replace(request, floors=m.LayerField(FLOORS_LAYER, "nada"))
+        design.enable(design.QuarryPlan(wrong))
+        self.assertIsNone(self.run_to_end())
+        self.assertFalse(design.enabled() or design.drawing() or design.building())
+        (notice,) = self.ps.take_notices()
+        self.assertTrue(notice.startswith("No se pudo preparar la vista previa de semillas, "
+                                          "dominios y restricciones: "), notice)
+        self.assertIn(f"La capa «{FLOORS_LAYER}» no tiene el campo numérico «nada»", notice)
+        self.assertEqual(self.files(), files)
+        self.assertEqual(self.operations(), operations)
 
     def test_z_disabling_geoblender_with_the_preview_on_leaves_nothing(self) -> None:
         """Principio 8: con la vista previa activa, desactivar Geoblender quita los manejadores de
