@@ -38,8 +38,14 @@
   donde coinciden): la descendente es un máximo sobre las semillas, así que es lo mismo con una
   sola envolvente.
 
-Las demás piezas de la cantera (techo, corredores, ancla y las dos superficies) llegan con sus
-tareas. Python puro con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no
+- :func:`corridor_cells` (T09; RF-014-09, RF-014-10; A6): los **corredores** de una capa de
+  líneas (eje, ancho y una cota fija o una rasante) convertidos en fondos con **extremos planos**
+  (:class:`CorridorMap`, con un :class:`FloorMap`): las celdas a ≤ ancho/2 de un tramo cuya
+  proyección no cae fuera del eje, con la cota fija o la de la rasante en la abscisa de esa
+  proyección; su longitud medida es la del eje con error ≤ 1 celda (error 20), y
+  :func:`corridor_too_long` da el aviso de RF-014-10.
+
+Las demás piezas de la cantera (techo, ancla y las dos superficies) llegan con sus tareas. Python puro con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no
 escribe nada.
 """
 
@@ -64,7 +70,7 @@ from . import provenance
 from .envelopes import SlopeField, envelope_steps
 from .grids import _label_units, dilate_square
 from .messages import DesignError, render
-from .model import Direction, EnvelopeRequest, LayerField
+from .model import CorridorFields, Direction, EnvelopeRequest, LayerField
 from .params import CROWN_RING, check_quarry_param
 from .seeds import DomainSet, SeedSet, collect_seeds, domain_of
 from .zones import _paint, _polygon_spans
@@ -75,11 +81,14 @@ __all__ = [
     "HOLD_TYPES",
     "AreaOutcome",
     "AreaPart",
+    "CorridorMap",
     "FloorMap",
     "FloorsAbove",
     "SeedGroup",
     "area_outcome",
     "area_parts",
+    "corridor_cells",
+    "corridor_too_long",
     "crown_ring",
     "crown_seeds",
     "excavation_area",
@@ -509,3 +518,206 @@ def floor_cut_steps(request: EnvelopeRequest, seeds: SeedSet, floors: FloorMap,
         raise ValueError("la corta con fondos es una envolvente descendente, no "
                          f"{Direction(request.direction).value!r}")
     return envelope_steps(request, with_floors(seeds, floors), slope, budget_s=budget_s)
+
+
+# --- Corredores (T09; A6) ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class CorridorMap:
+    """Los corredores de una capa de líneas (A6, RF-014-09) convertidos en fondos: ``floors``, un
+    :class:`FloorMap` (la cota de cada celda del corredor —la fija o la de su rasante—, ``NaN``
+    fuera; ``levels``, la cota fija o la inicial de cada uno; ``field``, el campo de esa cota) y,
+    por corredor en el orden de la capa, su ancho (``widths_m``), la longitud de su eje
+    (``axes_m``) y la longitud medida en la rejilla (``lengths_m``: el máximo menos el mínimo de
+    la abscisa de sus celdas; 0 si no tiene ninguna), todas en m."""
+
+    floors: FloorMap
+    widths_m: tuple[float, ...]
+    axes_m: tuple[float, ...]
+    lengths_m: tuple[float, ...]
+
+    @property
+    def notices(self) -> tuple[str, ...]:
+        """Los avisos ``des.corridor_too_long`` (RF-014-10) de sus corredores, en su orden."""
+        found = (corridor_too_long(fid, axis, length, width) for fid, axis, length, width
+                 in zip(self.floors.fids, self.axes_m, self.lengths_m, self.widths_m,
+                        strict=True))
+        return tuple(text for text in found if text is not None)
+
+
+def corridor_too_long(corridor: int, axis_m: float, length_m: float,
+                      width_m: float) -> str | None:
+    """**RF-014-10**: el aviso ``des.corridor_too_long`` en español, con las dos longitudes en m,
+    si el corredor ``corridor`` mide (``length_m``) más que su eje (``axis_m``) más su ancho
+    (``width_m``); ``None`` si no pasa de ahí."""
+    if not length_m > axis_m + width_m:
+        return None
+    return render("des.corridor_too_long", corridor=corridor, length=round(length_m, 2),
+                  axis=round(axis_m, 2), width=round(width_m, 2))
+
+
+def _number(value: object) -> float | None:
+    """``value`` como float finito; ``None`` si falta, no es un número o no es finito."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _shown(value: object) -> object:
+    """``value`` como se nombra en un rechazo: «—» si falta y el texto de un float no finito."""
+    if value is None:
+        return _NO_VALUE
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    return value
+
+
+def _corridor_value(layer: FeatureLayer, column: str, index: int, fid: int, layer_name: str,
+                    field: str, code: str, *, positive: bool = False) -> float:
+    """El valor del corredor ``fid`` (entidad ``index``) en la columna ``column`` como float
+    finito (y mayor que 0 con ``positive``); si no, ``DesignError`` ``code`` con la capa, el
+    corredor, el campo y el valor (no se supone ninguno)."""
+    value = layer.values[column][index]
+    number = _number(value)
+    if number is not None and (not positive or number > 0.0):
+        return number
+    raise DesignError(code, obj=f"Corredor {fid} de la capa «{layer_name}»", field=field,
+                      value=_shown(value), layer=layer_name, corridor=fid)
+
+
+def _axis_paths(parts: tuple[tuple[np.ndarray, ...], ...]) -> list[np.ndarray]:
+    """Los caminos del eje de una entidad (cada parte, en su orden), float64 ``(k, 2)``."""
+    return [np.asarray(path, dtype=np.float64).reshape(-1, 2) for part in parts for path in part]
+
+
+def _corridor_window(paths: list[np.ndarray], half: float,
+                     geometry: Grid) -> tuple[slice, slice]:
+    """Las filas y columnas de la rejilla que pueden tener el centro a ≤ ``half`` de los
+    caminos: su caja ampliada en ``half``, recortada a la rejilla."""
+    points = np.concatenate(paths)
+    west, south = points.min(axis=0) - half
+    east, north = points.max(axis=0) + half
+    col0 = min(max(math.floor((west - geometry.west) / geometry.dx), 0), geometry.ncols)
+    col1 = min(max(math.ceil((east - geometry.west) / geometry.dx), col0), geometry.ncols)
+    row0 = min(max(math.floor((geometry.north - north) / geometry.dy), 0), geometry.nrows)
+    row1 = min(max(math.ceil((geometry.north - south) / geometry.dy), row0), geometry.nrows)
+    return slice(row0, row1), slice(col0, col1)
+
+
+def _corridor_sigma(paths: list[np.ndarray], half: float, geometry: Grid,
+                    window: tuple[slice, slice]) -> np.ndarray:
+    """La abscisa ``σ`` (m, a lo largo del eje desde su principio; las partes, seguidas) de cada
+    celda de ``window`` dentro del corredor, ``NaN`` fuera (A6). Por tramo: la distancia del
+    centro al tramo y la proyección ``t`` sobre su recta; dentro si la distancia es ≤ ``half`` y
+    ni ``t < 0`` en el primer tramo de un camino ni ``t`` pasa del último (extremos planos,
+    perpendiculares al eje; en un vértice interior, la unión redonda de la distancia al tramo).
+    Cada celda toma la abscisa del tramo más próximo (a igual distancia, el anterior)."""
+    rows = np.arange(window[0].start, window[0].stop, dtype=np.float64)
+    cols = np.arange(window[1].start, window[1].stop, dtype=np.float64)
+    shape = (rows.size, cols.size)
+    best = np.full(shape, np.inf)
+    sigma = np.full(shape, np.nan)
+    limit = half * half
+    walked = 0.0
+    for path in paths:
+        lengths = np.hypot(*np.diff(path, axis=0).T)
+        segments = [i for i in range(lengths.size) if lengths[i] > 0.0]
+        for i in segments:
+            a, b, length = path[i], path[i + 1], float(lengths[i])
+            ux, uy = (b - a) / length
+            px = ((geometry.west - a[0]) + (cols + 0.5) * geometry.dx)[None, :]
+            py = ((geometry.north - a[1]) - (rows + 0.5) * geometry.dy)[:, None]
+            along = px * ux + py * uy
+            across = py * ux - px * uy
+            clamped = np.clip(along, 0.0, length)
+            d2 = across * across + (along - clamped) ** 2
+            inside = d2 <= limit
+            if i == segments[0]:
+                inside &= along >= 0.0
+            if i == segments[-1]:
+                inside &= along <= length
+            better = inside & (d2 < best)
+            best[better] = d2[better]
+            sigma[better] = (walked + clamped)[better]
+            walked += length
+    return sigma
+
+
+def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid) -> CorridorMap:
+    """**A6** (RF-014-09, RF-014-10): los corredores de la capa de líneas ``layer`` (sus
+    entidades; ``fields`` da su nombre en el proyecto, el campo del ancho, m, y el de la cota fija
+    o los de la rasante: cota inicial, m, y pendiente, %, positiva cuando sube en el sentido del
+    eje) convertidos en fondos con **extremos planos** en la rejilla ``geometry``
+    (:class:`CorridorMap`): dentro, cada celda con el centro a ≤ ancho/2 de un tramo del eje y
+    cuya proyección no cae antes de su principio ni después de su final; su cota, la fija o
+    ``cota inicial + σ · pendiente / 100`` con ``σ`` la abscisa de su proyección. Su longitud
+    medida (máximo menos mínimo de ``σ``) es la del eje con error ≤ 1 celda (error 20), y
+    :attr:`CorridorMap.notices` avisa si pasara de la del eje más el ancho. Solo lee; cada
+    corredor cuesta su caja, no la rejilla entera.
+
+    Rechazos (``DesignError``, sin suponer nada), en el orden de la capa y, en cada corredor,
+    primero su ancho, después su cota y después su eje: una capa que no es de líneas
+    (``des.corridor_not_lines``); un campo que la capa no tiene o que no es numérico
+    (``des.quarry_layer_field``); un ancho que falta, no es finito o es ≤ 0
+    (``des.corridor_width``); una cota, cota inicial o pendiente que falta o no es finita
+    (``des.corridor_level_missing``); un eje de longitud cero (``des.corridor_length_zero``); y,
+    como dos fondos (RF-014-06), un corredor que pisa celdas de otro anterior
+    (``des.floor_overlap``, con los dos y las celdas comunes)."""
+    if layer.kind != "line":
+        raise DesignError("des.corridor_not_lines", obj=f"Capa de líneas «{fields.layer}»",
+                          field=_GEOMETRY_FIELD, value=_KINDS_ES.get(layer.kind, layer.kind),
+                          layer=fields.layer)
+    level_fields = tuple(name for name in ((fields.start_level_field, fields.grade_field)
+                                           if fields.graded else (fields.level_field,))
+                         if name is not None)
+    width_column = _level_column(layer, LayerField(fields.layer, fields.width_field))
+    level_columns = tuple(_level_column(layer, LayerField(fields.layer, name))
+                          for name in level_fields)
+    grid = np.full(geometry.shape, np.nan)
+    owner = np.zeros(geometry.shape, dtype=np.int32)
+    levels: list[float] = []
+    cells: list[int] = []
+    widths: list[float] = []
+    axes: list[float] = []
+    measured: list[float] = []
+    for index, (fid, parts) in enumerate(zip(layer.fids, layer.parts, strict=True), start=1):
+        width = _corridor_value(layer, width_column, index - 1, fid, fields.layer,
+                                fields.width_field, "des.corridor_width", positive=True)
+        values = [_corridor_value(layer, column, index - 1, fid, fields.layer, name,
+                                  "des.corridor_level_missing")
+                  for column, name in zip(level_columns, level_fields, strict=True)]
+        start_level, grade_pct = (values[0], values[1]) if fields.graded else (values[0], 0.0)
+        paths = _axis_paths(parts)
+        axis = float(sum(np.hypot(*np.diff(path, axis=0).T).sum() for path in paths))
+        if not axis > 0.0:
+            raise DesignError("des.corridor_length_zero",
+                              obj=f"Corredor {fid} de la capa «{fields.layer}»",
+                              field=_GEOMETRY_FIELD, value=round(axis, 2), layer=fields.layer,
+                              corridor=fid)
+        window = _corridor_window(paths, width / 2.0, geometry)
+        sigma = _corridor_sigma(paths, width / 2.0, geometry, window)
+        inside = np.isfinite(sigma)
+        taken = owner[window][inside]
+        taken = taken[taken > 0]
+        if taken.size:
+            first = int(taken.min())
+            raise DesignError("des.floor_overlap", obj=f"Capa «{fields.layer}»",
+                              field=_GEOMETRY_FIELD, value=layer.fids[first - 1],
+                              layer=fields.layer, other=fid,
+                              cells=int(np.count_nonzero(taken == first)))
+        owner[window][inside] = index
+        grid[window][inside] = start_level + sigma[inside] * grade_pct / 100.0
+        levels.append(start_level)
+        cells.append(int(np.count_nonzero(inside)))
+        widths.append(width)
+        axes.append(axis)
+        found = sigma[inside]
+        measured.append(float(found.max() - found.min()) if found.size else 0.0)
+    floors = FloorMap(fields.layer, level_fields[0], grid, owner, tuple(layer.fids),
+                      tuple(levels), tuple(cells), geometry.cell_area)
+    return CorridorMap(floors, tuple(widths), tuple(axes), tuple(measured))

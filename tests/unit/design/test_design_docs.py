@@ -142,7 +142,7 @@ PENDING_014_MODULES = frozenset({
     "design.quarry",  # T06: AreaOutcome, AreaPart, area_outcome, area_parts, excavation_area;
     # T07: HOLD_TYPES, SeedGroup, crown_ring, crown_seeds, hold_zones, outside_crown;
     # T08: FLOOR_LEVEL_MARGIN_M, FloorMap, FloorsAbove, floor_map, floors_above_terrain,
-    # with_floors, floor_cut_steps
+    # with_floors, floor_cut_steps; T09: CorridorMap, corridor_cells, corridor_too_long
 })
 
 
