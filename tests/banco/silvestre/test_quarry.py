@@ -5,9 +5,13 @@ RF-014-12 a RF-014-18; plan 014 §7.1, «Banco»; constitución, principio 2).
 
 CE-014-09: con el banco privado del proyecto de referencia, las dos superficies de su versión
 vigente con los mismos perfiles, fondos y orden: la explotación, el desdoblado y «explotación hasta
-la final» dentro de la tolerancia que fija esta comparación (el plan no fija otra: son las de la
-013 y la 011, abajo) y con cada diferencia en su clase. Cada diferencia la explica la persona que
-lo ejecuta (hito H3).
+la final» dentro de la tolerancia y con cada diferencia en su clase. Cada diferencia la explica la
+persona que lo ejecuta (hito H3). **Las tolerancias** (F-21 de la verificación de la 014; Samuel
+aceptó la propuesta el 13/11/2026; las escribe el plan 014 §7.1, fila «Banco»): las de la 013 y la
+011, **1 mm** en las cotas (``EQUAL_M``), **10⁻⁴ relativo** en los volúmenes (``VOLUME_TOL``) y
+**el espesor mínimo de la 012** (``res.verify.min_thickness_m``) del proyecto de referencia, que
+trae su ficha (``espesor_minimo_m``) y, si no lo trae, el valor por defecto de su definición
+(0,02 m, D-6 de la 012): no se escribe aquí.
 
 Lo ejecuta el arnés de los bancos de la 001 (``tools/bench_silvestre.py``) solo con
 ``tools/check.py --banco`` y con ``GEOBLENDER_SILVESTRE_DIR`` apuntando a la carpeta del banco;
@@ -45,6 +49,7 @@ comparación (nunca el banco):
         "relleno": "<máscara de las zonas de restauración por relleno>",   // opcional (D-11)
         "fondos": "<cotas de los fondos, sin dato fuera>",                 // opcional
         "anillo_celdas": 3,       // opcional: la coronación (D-7) de un lado sin semillas
+        "espesor_minimo_m": 0.02, // opcional: su res.verify.min_thickness_m (la 012, D-6)
         "final": {"referencia": "<su superficie final>",
                   "semillas": "<cotas de las semillas>",   // opcional: sin ellas, la coronación
                   "perfil": {"altura_m": 5, "cara_deg": 35, "berma_m": 6, "ancla_m": 125},
@@ -62,7 +67,8 @@ comparación (nunca el banco):
 
 **Lo calculado** (con ``design.quarry``, que es el cálculo de «Calcular» y de reproducir una
 cantera; el dominio de trabajo, las celdas del recinto con terreno; sin sectores; el espesor
-mínimo, el de la 012): sobre las superficies de la referencia, la regla de orden, la clasificación,
+mínimo, el de la ficha, comprobado con la definición del parámetro de la 012, o el de su valor por
+defecto): sobre las superficies de la referencia, la regla de orden, la clasificación,
 el aviso de desdoblado sobre terreno sin explotar y «explotación hasta la final» en las zonas de la
 referencia; y **la cadena**: las dos superficies de Geoblender (``quarry_steps``) con los perfiles,
 las semillas, los fondos, las anclas y el orden de la ficha, y «explotación hasta la final» en las
@@ -119,6 +125,7 @@ from tests.support import bank_folder as shape
 from tests.support.bank_folder import ENV, BankShapeError  # ENV: lo lee test_quarry_bank
 from tests.support.package import import_geoblender
 
+core_params = import_geoblender("core.params")
 geotiff = import_geoblender("gis.geotiff")
 gis_messages = import_geoblender("gis.messages")
 messages = import_geoblender("design.messages")
@@ -127,15 +134,21 @@ params = import_geoblender("design.params")
 envelopes = import_geoblender("design.envelopes")
 quarry = import_geoblender("design.quarry")
 seeds_mod = import_geoblender("design.seeds")
+res_provenance = import_geoblender("reserves.provenance")
 
 NAME = "CE-014-09"  # el nombre de las líneas de la comparación
 EQUAL_M = 1e-3
 """Lo que se cuenta como igual (m): la tolerancia del invariante de RF-014-14 (1 mm), más de diez
-veces la cuantización de float32 a 1.000 m de cota."""
+veces la cuantización de float32 a 1.000 m de cota (plan 014 §7.1, F-21)."""
 VOLUME_TOL = 1e-4
-"""Lo que pueden diferir las cifras de volumen, relativo (D-14 d de la 011)."""
-MIN_THICKNESS_M = 0.02
-"""El espesor mínimo de la clasificación (D-6 de la 012)."""
+"""Lo que pueden diferir las cifras de volumen, relativo (D-14 d de la 011; plan 014 §7.1,
+F-21)."""
+THICKNESS = res_provenance.VERIFY_MIN_THICKNESS_DEF
+"""La definición del espesor mínimo de la clasificación: el parámetro de la 012
+``res.verify.min_thickness_m`` (D-6), el que ``design`` lee por su clave
+(``design.params.VERIFY_MIN_THICKNESS``). Su valor, el de la ficha (:data:`THICKNESS_FIELD`) o,
+si no lo trae, el de esta definición (plan 014 §7.1, F-21)."""
+THICKNESS_FIELD = "espesor_minimo_m"
 BUDGET_S = 60.0
 """Lo que dura un paso como mucho: todo de una vez, no hay interfaz que atender."""
 OPERATION = "Comparación del banco"
@@ -160,8 +173,8 @@ FIGURES = MappingProxyType({
 """Las cifras de la referencia que se comparan, en su orden, con su nombre."""
 EQUAL, THIN, UNEXPLAINED = "igual", "explicada por el espesor mínimo", "sin explicar"
 FLOORS_LAYER, FLOORS_FIELD = "fondos de la ficha", "cota"
-TOP_KEYS = frozenset({"orden", "recinto", "relleno", "fondos", "anillo_celdas", "final",
-                      "explotacion", "hasta_la_final", "cifras"})
+TOP_KEYS = frozenset({"orden", "recinto", "relleno", "fondos", "anillo_celdas", THICKNESS_FIELD,
+                      "final", "explotacion", "hasta_la_final", "cifras"})
 SIDE_KEYS = frozenset({"referencia", "previa", "semillas", "perfil", "factor_malla", "ancla"})
 TO_FINAL_KEYS = frozenset({"zonas", "umbral_m", "area_minima_ha"})
 
@@ -198,7 +211,8 @@ class ToFinalSpec:
 class Sheet:
     """La ficha de la cantera (véase el módulo): el ``order``, los ficheros del recinto (``area``),
     de las zonas de relleno (``fill``) y de los fondos (``floors``), el anillo de coronación, los
-    dos lados, «explotación hasta la final» de la referencia y sus cifras (clave → m³)."""
+    dos lados, «explotación hasta la final» de la referencia, sus cifras (clave → m³) y el espesor
+    mínimo (m; el de la ficha o el valor por defecto de :data:`THICKNESS`)."""
 
     order: object
     area: str
@@ -209,6 +223,7 @@ class Sheet:
     exploitation: SideSpec
     to_final: ToFinalSpec | None
     figures: Mapping[str, float]
+    min_thickness_m: float
 
     def side(self, surface: object) -> SideSpec:
         return self.final if Surface(surface) is Surface.FINAL else self.exploitation
@@ -272,6 +287,22 @@ def _parameter(item: Mapping[str, object], field: str, key: str, where: str,
         return params.check_quarry_param(key, number)
     except (messages.DesignError, TypeError) as error:
         problems.append(f"{where}: «{field}»: {error}")
+        return None
+
+
+def _thickness(item: Mapping[str, object], where: str, problems: list[str]) -> float | None:
+    """El espesor mínimo de la ficha (``item[THICKNESS_FIELD]``), comprobado con la definición del
+    parámetro de la 012 (:data:`THICKNESS`: su tipo y su rango); si falta, su valor por
+    defecto."""
+    if THICKNESS_FIELD not in item:
+        return float(THICKNESS.default)
+    value = _number(item, THICKNESS_FIELD, where, problems)
+    if value is None:
+        return None
+    try:
+        return float(THICKNESS.check(float(value)))
+    except core_params.ParamError as error:
+        problems.append(f"{where}: «{THICKNESS_FIELD}»: {error}")
         return None
 
 
@@ -372,6 +403,7 @@ def _parse_sheet(data: object, problems: list[str]) -> Sheet | None:
     fill = _text(data, "relleno", where, problems, optional=True)
     floors = _text(data, "fondos", where, problems, optional=True)
     ring = _parameter(data, "anillo_celdas", params.CROWN_RING, where, problems)
+    thickness = _thickness(data, where, problems)
     final = _side_spec(data, Surface.FINAL, floors is not None, problems)
     exploitation = _side_spec(data, Surface.EXPLOITATION, floors is not None, problems)
     wanted = "hasta_la_final" in data
@@ -380,10 +412,10 @@ def _parse_sheet(data: object, problems: list[str]) -> Sheet | None:
         problems.append("el lado «explotacion»: «previa» va con «hasta_la_final», y solo con él")
     figures = _figures(data, problems)
     if (len(problems) > before or order is None or area is None or ring is None
-            or final is None or exploitation is None):
+            or thickness is None or final is None or exploitation is None):
         return None
     return Sheet(order, area, fill, floors, int(ring), final, exploitation, to_final,
-                 MappingProxyType(figures))
+                 MappingProxyType(figures), thickness)
 
 
 def _read_sheet(version: list[Path], everything: list[Path], problems: list[str]) -> Sheet | None:
@@ -641,11 +673,12 @@ class ChainResult:
 @dataclass(frozen=True, slots=True, eq=False)
 class Comparison:
     """Las cifras de la versión vigente del banco: el dominio (celdas), el área real y la nominal
-    de la celda, y las partes (a) a (d)."""
+    de la celda, el espesor mínimo con que se clasifica (m) y las partes (a) a (d)."""
 
     cells: int
     cell_area_m2: float
     nominal_m2: float
+    min_thickness_m: float
     order: tuple[OrderResult, ...]
     figures: tuple[FigureResult, ...]
     to_final: ToFinalResult | None
@@ -687,7 +720,7 @@ def _order(sheet: Sheet, label: str, final: np.ndarray, exploitation: np.ndarray
         moved = np.abs(ordered.final - final) + np.abs(ordered.exploitation - exploitation)
         changed = known & (moved > EQUAL_M)
         dug = start - exploitation
-        cut = known & (dug > MIN_THICKNESS_M)
+        cut = known & (dug > sheet.min_thickness_m)
     return OrderResult(
         label, int(known.sum()), int((known & ~changed).sum()), int(above.sum()),
         int(high.sum()), int((domain & ~known).sum()),
@@ -706,10 +739,11 @@ def _verdict(found: float, reference: float, thin: float) -> str:
     return UNEXPLAINED
 
 
-def _thin(values: np.ndarray, where: np.ndarray, area: float) -> float:
-    """Lo que suman ``values`` (m) en las celdas ``where`` de más de 0 y hasta el espesor mínimo."""
+def _thin(values: np.ndarray, where: np.ndarray, area: float, thickness: float) -> float:
+    """Lo que suman ``values`` (m) en las celdas ``where`` de más de 0 y hasta el espesor mínimo
+    ``thickness``."""
     with np.errstate(invalid="ignore"):
-        chosen = where & np.isfinite(values) & (values > 0.0) & (values <= MIN_THICKNESS_M)
+        chosen = where & np.isfinite(values) & (values > 0.0) & (values <= thickness)
     return math.fsum(values[chosen].tolist()) * area
 
 
@@ -724,9 +758,10 @@ def _class_figures(sheet: Sheet, classes: object, final: np.ndarray, exploitatio
         delta = exploitation - final
         dug = start - exploitation
     total = classes.total
-    found = {EXP_CUT: (total.exp_cut_m3, _thin(dug, domain, area)),
-             UNSPLIT: (total.unsplit_m3, _thin(delta, domain & ~zone, area)),
-             FILL: (total.fill_m3, _thin(delta, domain & zone, area))}
+    thickness = sheet.min_thickness_m
+    found = {EXP_CUT: (total.exp_cut_m3, _thin(dug, domain, area, thickness)),
+             UNSPLIT: (total.unsplit_m3, _thin(delta, domain & ~zone, area, thickness)),
+             FILL: (total.fill_m3, _thin(delta, domain & zone, area, thickness))}
     if previous is not None:
         with np.errstate(invalid="ignore"):
             passed = previous - exploitation
@@ -772,7 +807,7 @@ def _to_final(sheet: Sheet, final: np.ndarray, previous: np.ndarray, current: np
     profile = sheet.exploitation.profile
     area = grid.cell_area
     classes = _last(quarry.classify_steps(final, previous, start, domain_set, grid,
-                                          MIN_THICKNESS_M, budget_s=BUDGET_S))
+                                          sheet.min_thickness_m, budget_s=BUDGET_S))
     warned = _last(quarry.unsplit_zones_steps(final, previous, start, classes, grid,
                                               sheet.to_final.threshold_m,
                                               sheet.to_final.min_area_ha, budget_s=BUDGET_S))
@@ -860,7 +895,7 @@ def quarry_job(sheet: Sheet, grid: object, start: np.ndarray, area: np.ndarray,
                 else sheet.to_final.min_area_ha)
     return quarry.QuarryJob(
         request=request, start=start, masks=_Masks(grid, area), domain=domain_set,
-        values=parameters, ring_cells=sheet.ring_cells, min_thickness_m=MIN_THICKNESS_M,
+        values=parameters, ring_cells=sheet.ring_cells, min_thickness_m=sheet.min_thickness_m,
         face_tolerance_deg=_default(params.TOLERANCE_FACE),
         warning_ratio=_default(params.WARNING_RATIO), seeds=seeds, floors=floors,
         fill_zones=fill, unsplit_threshold_m=threshold, unsplit_min_area_ha=min_area,
@@ -941,7 +976,7 @@ def compare_values(sheet: Sheet, grid: object, start: np.ndarray,
         orders.append(before)
         previous = earlier.exploitation
     classes = _last(quarry.classify_steps(ordered.final, ordered.exploitation, start, domain_set,
-                                          grid, MIN_THICKNESS_M, fill_zones=fill,
+                                          grid, sheet.min_thickness_m, fill_zones=fill,
                                           budget_s=BUDGET_S))
     figures = _class_figures(sheet, classes, ordered.final, ordered.exploitation, start, domain,
                              fill, factor, cell_area, previous)
@@ -951,8 +986,8 @@ def compare_values(sheet: Sheet, grid: object, start: np.ndarray,
                              domain_set, grid, floors, zones)
     chain = _chain(sheet, grid, start, area, values, domain_set, floors, fill, zones,
                    {"final": final, "exploitation": exploitation}, factor)
-    return Comparison(int(domain.sum()), cell_area, nominal_area(grid), tuple(orders), figures,
-                      to_final, chain)
+    return Comparison(int(domain.sum()), cell_area, nominal_area(grid), sheet.min_thickness_m,
+                      tuple(orders), figures, to_final, chain)
 
 
 # --- Salida en español ----------------------------------------------------------------------
@@ -989,10 +1024,11 @@ def _figure_text(item: FigureResult) -> str:
 
 def figures_line(result: Comparison) -> str:
     parts = "; ".join(_figure_text(item) for item in result.figures) or "la ficha no da cifras"
+    thickness = core_params.format_value(result.min_thickness_m)
     return (f"{_where('cifras')}: la referencia corregida ×"
             f"{shape.number(result.cell_area_m2 / result.nominal_m2, 9)} (celda de "
             f"{shape.number(result.cell_area_m2, 10)} m² frente a "
-            f"{shape.number(result.nominal_m2, 4)} m²); {parts}")
+            f"{shape.number(result.nominal_m2, 4)} m²); espesor mínimo {thickness} m; {parts}")
 
 
 def to_final_line(item: ToFinalResult) -> str:

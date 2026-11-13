@@ -88,14 +88,21 @@ NAMES = MappingProxyType({
 SHEET_NAME = "ficha_cantera.json"
 
 THIN = "thin"
+SHALLOW = "shallow"
 ANCHOR = "anchor"
 ORDER = "order"
 FIGURE = "figure"
 LOWERING = "lowering"
 THIN_CELLS = 50
+THIN_M = 0.01
+SHALLOW_M = 0.03
 ANCHOR_CELLS = 20
 ORDER_CELLS = 30
 LOWERING_CELLS = 15
+THICKNESS_FIELD = "espesor_minimo_m"
+SHEET_THICKNESS = 0.05
+"""Otro espesor mínimo en la ficha (T52): más que el de la 012 por defecto (0,02 m) y que
+:data:`SHALLOW_M`."""
 
 
 def _box(box: tuple[tuple[int, int], tuple[int, int]]) -> np.ndarray:
@@ -228,11 +235,12 @@ def _sheet(**changes: Any) -> dict[str, Any]:
 
 
 def figures(start: np.ndarray, final: np.ndarray, exploitation: np.ndarray,
-            previous: np.ndarray, *, thin: bool = False) -> dict[str, float]:
+            previous: np.ndarray, *, thin: bool = False, e: float = E) -> dict[str, float]:
     """Las cifras de la referencia a mano: la excavación de la explotación (``z − E > e``), el
     desdoblado y el relleno (``E − F > e``, fuera y dentro de las zonas de relleno; con ``thin``,
     el desdoblado de todo ``E − F > 0``, como si la referencia no tuviera espesor mínimo) y lo que
-    pasó a la explotación (``Σ (previa − E) > 0``), en el recinto, con la celda de 4 m²."""
+    pasó a la explotación (``Σ (previa − E) > 0``), en el recinto, con la celda de 4 m²; ``e``, el
+    espesor mínimo (el de la 012 por defecto)."""
     area = _box(AREA_BOX)
     fill = _box(FILL_BOX)
     dug = start - exploitation
@@ -240,9 +248,9 @@ def figures(start: np.ndarray, final: np.ndarray, exploitation: np.ndarray,
     passed = previous - exploitation
     cell = GRID.cell_area
     return {
-        "explotacion_m3": float(dug[area & (dug > E)].sum() * cell),
-        "desdoblado_m3": float(delta[area & ~fill & (delta > (0.0 if thin else E))].sum() * cell),
-        "relleno_m3": float(delta[area & fill & (delta > E)].sum() * cell),
+        "explotacion_m3": float(dug[area & (dug > e)].sum() * cell),
+        "desdoblado_m3": float(delta[area & ~fill & (delta > (0.0 if thin else e))].sum() * cell),
+        "relleno_m3": float(delta[area & fill & (delta > e)].sum() * cell),
         "hasta_la_final_m3": float(passed[area & (passed > 0.0)].sum() * cell),
     }
 
@@ -256,15 +264,18 @@ def _pick(mask: np.ndarray, count: int) -> tuple[np.ndarray, np.ndarray]:
 
 
 def build_bank(root: Path, *, flaw: str | None = None, drop: tuple[str, ...] = (),
-               sheet: dict[str, Any] | None = None) -> Path:
+               sheet: dict[str, Any] | None = None, thickness: float | None = None) -> Path:
     """La carpeta sintética en ``root``. ``flaw``: ``"thin"`` (la final 1 cm por debajo de la
     explotación en 50 celdas iguales, y el desdoblado de la ficha contado sin espesor mínimo),
-    ``"anchor"`` (en 20 celdas de las zonas, la explotación de la referencia baja hasta la final),
-    los dos juntos con ``"thin+anchor"``, ``"order"`` (la explotación 0,5 m por encima del terreno
-    en 30 celdas sin excavar; las cifras, las de antes), ``"figure"`` (600 m³ más de desdoblado en
-    la ficha) o ``"lowering"`` (en 15 celdas de las zonas, la explotación de la referencia a medio
-    camino entre la final y la cota de ancla de encima). ``drop``: lo que no se escribe
-    (``"sheet"``, ``"area"``, ``"previous"``, ``"start"``). ``sheet``: otra ficha."""
+    ``"shallow"`` (la final 3 cm por debajo en esas 50 celdas, y las cifras con el espesor
+    mínimo), ``"anchor"`` (en 20 celdas de las zonas, la explotación de la referencia baja hasta
+    la final), ``"thin"`` y ``"anchor"`` juntos con ``"thin+anchor"``, ``"order"`` (la explotación
+    0,5 m por encima del terreno en 30 celdas sin excavar; las cifras, las de antes), ``"figure"``
+    (600 m³ más de desdoblado en la ficha) o ``"lowering"`` (en 15 celdas de las zonas, la
+    explotación de la referencia a medio camino entre la final y la cota de ancla de encima).
+    ``drop``: lo que no se escribe (``"sheet"``, ``"area"``, ``"previous"``, ``"start"``).
+    ``sheet``: otra ficha. ``thickness``: el espesor mínimo de la ficha (``espesor_minimo_m``;
+    las cifras se cuentan con él); sin él, la ficha no lo trae (el de la 012 por defecto)."""
     start = _start()
     outcome = _reference()
     final = _stored(outcome.final_grid)
@@ -273,17 +284,19 @@ def build_bank(root: Path, *, flaw: str | None = None, drop: tuple[str, ...] = (
     zones = outcome.to_final.target
     area = _box(AREA_BOX)
     flaws = set() if flaw is None else set(flaw.split("+"))
-    if THIN in flaws:
+    if flaws & {THIN, SHALLOW}:
         rows, cols = _pick(area & ~zones & ~_box(FILL_BOX) & (exploitation == final)
                            & (exploitation < start - 1.0), THIN_CELLS)
-        final[rows, cols] = _stored(exploitation[rows, cols] - 0.01)
+        depth = THIN_M if THIN in flaws else SHALLOW_M
+        final[rows, cols] = _stored(exploitation[rows, cols] - depth)
     if ANCHOR in flaws:
         rows, cols = _pick(zones & (exploitation > final + 0.1), ANCHOR_CELLS)
         exploitation[rows, cols] = final[rows, cols]
     if LOWERING in flaws:
         rows, cols = _pick(zones & (exploitation > final + 0.1), LOWERING_CELLS)
         exploitation[rows, cols] = _stored((final[rows, cols] + exploitation[rows, cols]) / 2.0)
-    found = figures(start, final, exploitation, previous, thin=THIN in flaws)
+    found = figures(start, final, exploitation, previous, thin=THIN in flaws,
+                    e=E if thickness is None else thickness)
     if FIGURE in flaws:
         found["desdoblado_m3"] += 600.0
     if ORDER in flaws:
@@ -310,6 +323,8 @@ def build_bank(root: Path, *, flaw: str | None = None, drop: tuple[str, ...] = (
     np.save(folder / f"{NAMES['zones']}.npy", zones.astype(np.float64), allow_pickle=False)
     if "sheet" not in drop:
         text = _sheet(cifras={key: round(value, 3) for key, value in found.items()})
+        if thickness is not None:
+            text[THICKNESS_FIELD] = thickness
         (folder / SHEET_NAME).write_text(
             json.dumps(sheet if sheet is not None else text, ensure_ascii=False, indent=1),
             encoding="utf-8")
@@ -389,6 +404,9 @@ class QuarryBankHarnessTest(unittest.TestCase):
         cells = (AREA_BOX[0][1] - AREA_BOX[0][0]) * (AREA_BOX[1][1] - AREA_BOX[1][0])
         self.assertEqual(found.cells, cells)
         self.assertEqual((found.cell_area_m2, found.nominal_m2), (4.0, 4.0))
+        # La ficha no trae el espesor mínimo: el de la 012 por defecto (D-6 de la 012).
+        self.assertEqual(found.min_thickness_m, E)
+        self.assertIn("espesor mínimo 0,02 m", output)
         for item in found.order:
             self.assertEqual((item.cells, item.equal, item.final_above, item.above_terrain,
                               item.nodata, item.changed_m3), (cells, cells, 0, 0, 0, 0.0))
@@ -431,7 +449,7 @@ class QuarryBankHarnessTest(unittest.TestCase):
         # defecto y lo poco que la referencia ya tenía entre 0 y 2 cm.
         self.assertAlmostEqual(unsplit.found_m3 - unsplit.reference_m3, -unsplit.thin_m3,
                                delta=1e-2)
-        self.assertGreaterEqual(unsplit.thin_m3, THIN_CELLS * 0.01 * GRID.cell_area - 1e-2)
+        self.assertGreaterEqual(unsplit.thin_m3, THIN_CELLS * THIN_M * GRID.cell_area - 1e-2)
         self.assertEqual({key: item.verdict for key, item in verdicts.items()
                           if key != "desdoblado_m3"},
                          dict.fromkeys(("explotacion_m3", "relleno_m3", "hasta_la_final_m3"),
@@ -512,14 +530,45 @@ class QuarryBankHarnessTest(unittest.TestCase):
         del sheet["fondos"]
         sheet["final"]["perfil"]["cara_deg"] = 95
         sheet["final"]["previa"] = NAMES["previous"]
+        sheet[THICKNESS_FIELD] = 11
         folder = build_bank(self.temp / "ficha-mala", sheet=sheet)
         result, _ = _run(folder)
         self.assertEqual((result.testsRun, result.failures), (0, []))
         message = _shape_error(result)
         for text in ("«orden»", "al revés", "el lado «final»: el perfil no es válido",
                      "«previa» es de la explotación", "el lado «explotacion»: el ancla «al fondo "
-                     "de cada muro» necesita «fondos»", "«volumen_m3» no es un campo"):
+                     "de cada muro» necesita «fondos»", "«volumen_m3» no es un campo",
+                     "la ficha de la cantera: «espesor_minimo_m»: Parámetro "
+                     "«res.verify.min_thickness_m»: 11", "fuera de su rango"):
             self.assertIn(text, message)
+
+    def test_i_the_minimum_thickness_comes_from_the_sheet(self) -> None:
+        """CE-014-09 (T52, F-21): la ficha trae el espesor mínimo del proyecto de referencia (su
+        ``res.verify.min_thickness_m``, aquí 0,05 m) y la comparación cuenta con él, no con el de
+        la 012 por defecto (0,02 m): 50 celdas con 3 cm de desdoblado (entre los dos) no cuentan
+        ni en la ficha ni en Geoblender, pero sí en lo que suma su clase hasta el espesor mínimo;
+        las cuatro cifras, las de la cadena y la excavación de la explotación (la base de la
+        tolerancia del orden) son las de la ficha, y la línea de las cifras dice el espesor."""
+        folder = build_bank(self.temp / "espesor", flaw=SHALLOW, thickness=SHEET_THICKNESS)
+        result, output = _run(folder)
+        self.assertEqual((result.testsRun, result.failures, result.errors, result.skipped),
+                         (3, [], [], []), output)
+        found = bank.ReferenceQuarryTest.result
+        self.assertEqual(found.min_thickness_m, SHEET_THICKNESS)
+        self.assertIn("espesor mínimo 0,05 m", output)
+        verdicts = {item.key: item for item in found.figures}
+        self.assertEqual(list(verdicts), list(bank.FIGURES))
+        for item in found.figures:
+            with self.subTest(figure=item.key):
+                self.assertEqual(item.verdict, bank.EQUAL, bank._figure_text(item))
+                self.assertLessEqual(abs(item.relative), 1e-6)
+        self.assertGreaterEqual(verdicts["desdoblado_m3"].thin_m3,
+                                THIN_CELLS * SHALLOW_M * GRID.cell_area - 1e-2)
+        current = found.order[0]
+        self.assertAlmostEqual(current.moved_m3, verdicts["explotacion_m3"].reference_m3,
+                               delta=1e-2)
+        self.assertIsNone(found.chain.error)
+        self.assertEqual([item.verdict for item in found.chain.figures], [bank.EQUAL] * 4)
 
 
 if __name__ == "__main__":
