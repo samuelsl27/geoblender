@@ -72,7 +72,53 @@ class CatalogTest(unittest.TestCase):
                                  message.es.format(**values))
                 self.assertEqual(messages.render(message.code, language="en", **values),
                                  message.msgid.format(**values))
-        self.assertEqual(set(messages.CATALOG_ES), {m.msgid for m in messages.CATALOG})
+        singular = [m for m in messages.CATALOG if m.count]
+        self.assertGreaterEqual(len(singular), 3)
+        for message in singular:
+            with self.subTest(code=message.code, singular=True):
+                self.assertNotEqual(message.one_msgid, message.msgid)
+                self.assertNotEqual(message.one_es, message.es)
+                self.assertNotEqual(message.one_msgid, message.one_es)
+                self.assertEqual(set(message.one_msgid) & SPANISH_LETTERS, set(),
+                                 "msgid en inglés")
+                self.assertIn(message.count, i18n.placeholders(message.es))
+                for text in (message.one_msgid, message.one_es):
+                    self.assertEqual(i18n.placeholders(text), i18n.placeholders(message.es))
+                self.assertEqual(messages.CATALOG_ES[message.one_msgid], message.one_es)
+        self.assertEqual(set(messages.CATALOG_ES),
+                         {m.msgid for m in messages.CATALOG}
+                         | {m.one_msgid for m in messages.CATALOG if m.one_msgid})
+        self.assertEqual({m.code for m in messages.CATALOG if m.one_msgid or m.one_es},
+                         {m.code for m in singular})
+
+    def test_a_count_of_one_takes_its_singular(self) -> None:
+        """RF-014-17, RF-014-18, RF-014-08 (spec 014, T51; F-12 (b)): un mensaje que cuenta algo
+        lleva su singular, en los dos idiomas: con 1 en su marcador (también 1,0, como vuelve de un
+        JSON), «en 1 zona» / «in 1 zone»; con otro número, sin él o con un valor que no es un
+        número (un booleano tampoco), el plural de siempre."""
+        for code, count, one_es, one_en, many_es, many_en in (
+                ("des.quarry_unsplit_zones", "zones", "en 1 zona:", "in 1 zone:", "en 2 zonas:",
+                 "in 2 zones:"),
+                ("des.quarry_to_final", "zones", "en 1 zona (", "in 1 zone (", "en 2 zonas (",
+                 "in 2 zones ("),
+                ("des.conserve_moved", "parts", "en 1 parte:", "in 1 part:", "en 2 partes:",
+                 "in 2 parts:")):
+            message = messages.MESSAGES[code]
+            self.assertEqual(message.count, count)
+            for value in (1, 1.0):
+                with self.subTest(code=code, value=value):
+                    self.assertIn(one_es, messages.render(code, **{count: value}))
+                    self.assertIn(one_en, messages.render(code, language="en", **{count: value}))
+                    self.assertEqual(message.templates(value), (message.one_msgid,
+                                                                message.one_es))
+            for value in (2, 0, True, None, "1"):
+                with self.subTest(code=code, value=value):
+                    self.assertEqual(message.templates(value), (message.msgid, message.es))
+            self.assertIn(many_es, messages.render(code, **{count: 2}))
+            self.assertIn(many_en, messages.render(code, language="en", **{count: 2}))
+        plain = messages.MESSAGES["des.profile_value_range"]
+        self.assertEqual((plain.count, plain.one_msgid, plain.one_es), ("", "", ""))
+        self.assertEqual(plain.templates(1), (plain.msgid, plain.es))
 
     def test_every_message_names_the_object_and_the_value(self) -> None:
         """RF-013-16, principio 10: cada error de los perfiles nombra el perfil (o el sector)
@@ -144,8 +190,17 @@ class DesignErrorTest(unittest.TestCase):
         """RF-014-08 (T47): un error puede llevar detrás sus notas (``notes``: código de una nota
         del catálogo y sus valores en JSON), cada una con su texto: en español en ``text`` (y
         ``str(error)``) y en cualquier idioma con ``text_in``, las cifras en el formato del
-        idioma; sin notas, ``text_in`` es el texto del código de siempre. Una nota que no es una
-        nota (un aviso, un error, un código desconocido) es un error del programa."""
+        idioma, y con una sola parte, en singular (T51); sin notas, ``text_in`` es el texto del
+        código de siempre. Una nota que no es una nota (un aviso, un error, un código
+        desconocido) es un error del programa."""
+        one = messages.DesignError(
+            "des.conserve_moved", obj="Cantera «A»", field="volumen", value=2.0, volume=2.0,
+            parts=1, notes=(("des.conserve_part", {"zone": "Pie", "volume": 2.0, "x": 1.0,
+                                                   "y": 2.0}),))
+        self.assertEqual(one.text, "El diseño mueve 2 m³ dentro de las zonas a conservar, en 1 "
+                                   "parte: es un error del diseño; no se crea. «Pie»: 2 m³, centro "
+                                   "en x = 1 m, y = 2 m.")
+        self.assertIn("in 1 part: it is an error", one.text_in("en"))
         error = messages.DesignError(
             "des.conserve_moved", obj="Cantera «A»", field="volumen", value=50.5, volume=50.5,
             parts=2, notes=(("des.conserve_part", {"zone": "Ladera", "volume": 48.25,

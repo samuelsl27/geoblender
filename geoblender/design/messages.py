@@ -31,7 +31,10 @@ familias: ``des.quarry_*`` (sus parámetros, el recinto, las semillas, las capas
 superficies y «explotación hasta la final»), ``des.floor_*``, ``des.conserve_*``,
 ``des.corridor_*``, ``des.edge_*``, ``des.fill_only_*`` y ``des.refit_*``. Un campo
 que es un texto de una lista cerrada que la persona ve (el papel de una superficie, el tipo de
-geometría de una capa) llega ya en el idioma de quien lo llama: ``render`` no lo traduce.
+geometría de una capa) llega ya en el idioma de quien lo llama: ``render`` no lo traduce; por
+eso, lo que cambia con el idioma va en otro código (las partes que vacían el recinto, notas detrás
+de ``des.quarry_area_empty``) y un mensaje que cuenta algo lleva su singular (``Message.count``,
+T51: «en 1 zona», no «en 1 zonas»).
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from ..core.errors import GeoblenderError
-from ..core.i18n import LANGUAGES
+from ..core.i18n import LANGUAGES, placeholders
 from ..gis.messages import MISSING_VALUE, JsonScalar, format_value, json_value
 
 __all__ = [
@@ -62,12 +65,28 @@ SEVERITIES = ("error", "warning", "note")
 @dataclass(frozen=True, slots=True)
 class Message:
     """Un mensaje del catálogo: código ``des.*``, ``msgid`` en inglés, texto en español y
-    gravedad (una de :data:`SEVERITIES`)."""
+    gravedad (una de :data:`SEVERITIES`).
+
+    Un mensaje que cuenta algo («en {zones} zonas») puede llevar su texto **en singular** (spec
+    014, T51): ``count`` es el marcador del número y ``one_msgid`` y ``one_es``, el texto en
+    inglés y en español cuando ese número es 1 («en 1 zona»), con los mismos marcadores que el
+    plural; :func:`render` elige uno u otro."""
 
     code: str
     msgid: str
     es: str
     severity: str = "error"
+    count: str = ""
+    one_msgid: str = ""
+    one_es: str = ""
+
+    def templates(self, value: object = None) -> tuple[str, str]:
+        """El ``msgid`` y el español que corresponden al número ``value`` de su marcador
+        ``count``: los del singular si el mensaje lo tiene y ``value`` es 1; si no, los de
+        siempre."""
+        if self.count and value == 1 and not isinstance(value, bool):
+            return self.one_msgid, self.one_es
+        return self.msgid, self.es
 
 
 CATALOG: tuple[Message, ...] = (
@@ -554,11 +573,48 @@ CATALOG: tuple[Message, ...] = (
     Message(
         "des.quarry_area_empty",
         "The excavation area of version {version} is empty: no cell is both admitted to cut by "
-        "its masks and has terrain data. What empties it: {parts}. Review the limit and the "
-        "constraints; nothing is calculated or recorded.",
+        "its masks and has terrain data. Review the limit and the constraints; nothing is "
+        "calculated or recorded. What empties it:",
         "El recinto excavable de la versión {version} está vacío: ninguna celda tiene a la vez "
-        "corte admitido por sus máscaras y dato de terreno. Lo que lo vacía: {parts}. Revise el "
-        "límite y las restricciones; no se calcula ni se registra nada.",
+        "corte admitido por sus máscaras y dato de terreno. Revise el límite y las "
+        "restricciones; no se calcula ni se registra nada. Lo que lo vacía:",
+    ),
+    # Lo que vacía el recinto, una nota por parte detrás del error (RF-014-01; T51) ----------
+    Message(
+        "des.quarry_area_outside_limit",
+        "Action perimeter outside the legal limit: {area} m².",
+        "Perímetro de actuación fuera del límite legal: {area} m².",
+        "note",
+    ),
+    Message(
+        "des.quarry_area_untouchable",
+        "Untouchables and exclusions: {area} m².",
+        "Intocables y exclusiones: {area} m².",
+        "note",
+    ),
+    Message(
+        "des.quarry_area_inner_band",
+        "Buffer inside the limit: {area} m².",
+        "Resguardo hacia dentro del límite: {area} m².",
+        "note",
+    ),
+    Message(
+        "des.quarry_area_no_cut",
+        "Zones with no cut, fill only or restoration only: {area} m².",
+        "Zonas sin corte, solo relleno o solo restauración: {area} m².",
+        "note",
+    ),
+    Message(
+        "des.quarry_area_no_terrain",
+        "Cells without terrain data: {area} m².",
+        "Celdas sin dato de terreno: {area} m².",
+        "note",
+    ),
+    Message(
+        "des.quarry_area_no_perimeter",
+        "The action perimeter has no cell in the grid.",
+        "El perímetro de actuación no tiene ninguna celda en la rejilla.",
+        "note",
     ),
     Message(
         "des.quarry_seeds_outside",
@@ -575,13 +631,6 @@ CATALOG: tuple[Message, ...] = (
         "Group {group}: {cells} cells, {area} m², centre at x = {x} m, y = {y} m.",
         "Grupo {group}: {cells} celdas, {area} m², centro en x = {x} m, y = {y} m.",
         "note",
-    ),
-    Message(
-        "des.quarry_layer_crs",
-        "Layer «{layer}» is in {value}, not in the CRS of the project ({crs}): reproject it in "
-        "QGIS to the project CRS; no CRS is assumed and nothing is calculated.",
-        "La capa «{layer}» está en {value}, no en el CRS del proyecto ({crs}): reproyéctela en "
-        "QGIS al CRS del proyecto; no se supone ningún CRS y no se calcula nada.",
     ),
     Message(
         "des.quarry_layer_field",
@@ -672,6 +721,14 @@ CATALOG: tuple[Message, ...] = (
         "desdoblado de más de {threshold} m sobre terreno sin explotar, en zonas de más de "
         "{min_area} ha. Use «Explotación hasta la final» para bajarla allí con bancos anclados.",
         "warning",
+        count="zones",
+        one_msgid="The exploitation does not reach the final surface in {zones} zone: {area} ha "
+        "and {volume} m³ of doubled surface over {threshold} m on unexploited terrain, in a zone "
+        "of more than {min_area} ha. Use «Exploitation down to the final» to lower it there with "
+        "anchored benches.",
+        one_es="La explotación no llega a la final en {zones} zona: {area} ha y {volume} m³ de "
+        "desdoblado de más de {threshold} m sobre terreno sin explotar, en una zona de más de "
+        "{min_area} ha. Use «Explotación hasta la final» para bajarla allí con bancos anclados.",
     ),
     Message(
         "des.quarry_unsplit_zone",
@@ -686,6 +743,11 @@ CATALOG: tuple[Message, ...] = (
         "«Explotación hasta la final» en {zones} zonas ({area} ha): {volume} m³ pasan del "
         "desdoblado a la explotación, con bancos anclados a sus cotas.",
         "note",
+        count="zones",
+        one_msgid="«Exploitation down to the final» in {zones} zone ({area} ha): {volume} m³ pass "
+        "from the doubled surface to the exploitation, with benches anchored at its levels.",
+        one_es="«Explotación hasta la final» en {zones} zona ({area} ha): {volume} m³ pasan del "
+        "desdoblado a la explotación, con bancos anclados a sus cotas.",
     ),
     # Fondos (RF-014-05, RF-014-06) -------------------------------------------------------------
     Message(
@@ -719,6 +781,11 @@ CATALOG: tuple[Message, ...] = (
         "error of the design; it is not created.",
         "El diseño mueve {volume} m³ dentro de las zonas a conservar, en {parts} partes: es un "
         "error del diseño; no se crea.",
+        count="parts",
+        one_msgid="The design moves {volume} m³ inside the zones to conserve, in {parts} part: it "
+        "is an error of the design; it is not created.",
+        one_es="El diseño mueve {volume} m³ dentro de las zonas a conservar, en {parts} parte: es "
+        "un error del diseño; no se crea.",
     ),
     Message(
         "des.conserve_part",
@@ -766,6 +833,15 @@ CATALOG: tuple[Message, ...] = (
         "se calcula nada.",
     ),
     Message(
+        "des.corridor_level",
+        "Layer «{layer}», corridor {corridor}: «{field}» = {value} m is outside the terrain "
+        "elevations ± 1 000 m ({low} to {high} m); correct it in QGIS (no level is chosen for "
+        "it); nothing is calculated.",
+        "Capa «{layer}», corredor {corridor}: «{field}» = {value} m está fuera de las cotas del "
+        "terreno ± 1.000 m (de {low} a {high} m); corríjalo en QGIS (no se elige ninguna cota "
+        "por él); no se calcula nada.",
+    ),
+    Message(
         "des.corridor_too_long",
         "Corridor {corridor} measures {length} m, more than its axis ({axis} m) plus its width "
         "({width} m): check its ends.",
@@ -795,24 +871,26 @@ CATALOG: tuple[Message, ...] = (
     Message(
         "des.edge_not_design_surface",
         "«{value}» is not a design surface of the active version: choose a surface of the "
-        "design (the exploitation, the final one or a stepped design); nothing is calculated.",
+        "design (the exploitation or the final surface of a quarry, a stepped design, a "
+        "fill-only design, a transition or a refitted surface); nothing is calculated.",
         "«{value}» no es una superficie de diseño de la versión activa: elija una superficie del "
-        "diseño (la de explotación, la final o un escalonado); no se calcula nada.",
+        "diseño (la de explotación o la final de una cantera, un escalonado, un diseño «solo "
+        "relleno», una transición o una superficie ajustada); no se calcula nada.",
     ),
     # Solo relleno (RF-014-22 a RF-014-25) ------------------------------------------------------
     Message(
         "des.fill_only_cuts",
         "The fill-only design would cut {value} m³ (it must cut less than 1 m³): review the "
-        "seeds and the profile; nothing is created.",
+        "envelope, its profile and its domain; nothing is created.",
         "El diseño «solo relleno» cortaría {value} m³ (tiene que cortar menos de 1 m³): revise "
-        "las semillas y el perfil; no se crea nada.",
+        "la envolvente, su perfil y su dominio; no se crea nada.",
     ),
     Message(
         "des.fill_only_untouchable",
         "The fill-only design moves {value} m³ in the untouchable «{constraint}»: review the "
-        "seeds and the work domain; nothing is created.",
-        "El diseño «solo relleno» mueve {value} m³ en el intocable «{constraint}»: revise las "
-        "semillas y el dominio de trabajo; no se crea nada.",
+        "envelope, its profile and its domain; nothing is created.",
+        "El diseño «solo relleno» mueve {value} m³ en el intocable «{constraint}»: revise la "
+        "envolvente, su perfil y su dominio; no se crea nada.",
     ),
     Message(
         "des.fill_only_water_level",
@@ -864,18 +942,31 @@ CATALOG: tuple[Message, ...] = (
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})
 """Los mensajes por código (solo lectura)."""
 
-CATALOG_ES: Mapping[str, str] = MappingProxyType({m.msgid: m.es for m in CATALOG})
-"""``msgid`` → texto en español, para ``core.i18n.install`` (solo lectura)."""
+CATALOG_ES: Mapping[str, str] = MappingProxyType(
+    {msgid: es for m in CATALOG
+     for msgid, es in ((m.msgid, m.es), (m.one_msgid, m.one_es)) if msgid})
+"""``msgid`` → texto en español, para ``core.i18n.install`` (solo lectura): el de cada mensaje y,
+si lo tiene, el de su singular."""
 
 
 def _check_catalog() -> None:
     """Un catálogo incoherente es un error del programa: códigos o ``msgid`` repetidos, un
-    código que no es ``des.*`` o una gravedad desconocida."""
-    if len(MESSAGES) != len(CATALOG) or len(CATALOG_ES) != len(CATALOG):
+    código que no es ``des.*``, una gravedad desconocida o un singular a medias (sin alguno de
+    sus dos textos, con un marcador ``count`` que el plural no tiene o con otros marcadores que
+    el plural)."""
+    singular = sum(1 for m in CATALOG if m.one_msgid)
+    if len(MESSAGES) != len(CATALOG) or len(CATALOG_ES) != len(CATALOG) + singular:
         raise ValueError("códigos o msgid repetidos en el catálogo del diseño")
     for message in CATALOG:
         if not message.code.startswith("des.") or message.severity not in SEVERITIES:
             raise ValueError(f"mensaje del diseño mal declarado: «{message.code}»")
+        if not (message.count or message.one_msgid or message.one_es):
+            continue
+        marks = placeholders(message.es)
+        if (message.count not in marks or not message.one_msgid or not message.one_es
+                or placeholders(message.one_msgid) != marks
+                or placeholders(message.one_es) != marks):
+            raise ValueError(f"el singular del mensaje «{message.code}» está mal declarado")
 
 
 _check_catalog()
@@ -895,12 +986,14 @@ def lookup(code: str) -> Message:
 
 def render(code: str, /, *, language: str = "es", **values: object) -> str:
     """El texto de ``code`` con ``values`` en sus marcadores, en ``language`` (``"es"`` o
-    ``"en"``, el ``msgid``). El marcador sin valor queda «?»; los valores que sobran se
-    ignoran. Los decimales salen con coma en español y con punto en inglés."""
+    ``"en"``, el ``msgid``); en singular si el mensaje lo tiene y el valor de su marcador
+    ``count`` es 1 (:meth:`Message.templates`). El marcador sin valor queda «?»; los valores que
+    sobran se ignoran. Los decimales salen con coma en español y con punto en inglés."""
     if language not in LANGUAGES:
         raise ValueError(f"el idioma «{language}» no es de Geoblender: {', '.join(LANGUAGES)}")
     message = lookup(code)
-    template = message.es if language == "es" else message.msgid
+    msgid, es = message.templates(values.get(message.count) if message.count else None)
+    template = es if language == "es" else msgid
     shown = _Shown({name: format_value(value, language) for name, value in values.items()})
     return template.format_map(shown)
 

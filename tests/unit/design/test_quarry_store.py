@@ -362,7 +362,8 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
         """RF-014-29, plan 014 §5.2.3: ``des_bmt_`` lleva las bermas de las dos superficies con la
         columna ``surface`` (las del cálculo de cada lado), y ``des_qrp_``, el informe en formato
         largo con las cifras de la clasificación iguales a las registradas y los avisos de cada
-        lado con su superficie."""
+        lado con su superficie, los de su informe en su orden (T51: sin la nota de que no se
+        compara, que va una vez por cantera, sin superficie)."""
         outcome = self.calculation.outcome
         rows = self.query_of('SELECT surface, sector, profile, level_m, cells FROM '
                              '"des_bmt_cantera_e3_v01" ORDER BY fid')
@@ -388,7 +389,11 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
         self.assertTrue(notes)
         self.assertTrue({"code", "values"} <= set(notes[0]))
         sided = [note for note in notes if "surface" in note]
-        self.assertEqual({note["surface"] for note in sided}, {"final", "exploitation"})
+        self.assertTrue(sided)
+        self.assertEqual([(note["surface"], note["code"]) for note in sided],
+                         [(surface.value, notice.code) for surface in model.Surface
+                          for notice in outcome.side(surface).design.report.notices])
+        self.assertNotIn("des.magnitude_no_reference", [note["code"] for note in sided])
 
     def test_a_what_is_registered_repeats_the_request(self) -> None:
         """RF-014-29, RF-014-31: los ajustes repiten la petición (también la otra cantera) y los
@@ -436,6 +441,28 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
             "SELECT key FROM gb_operation_param WHERE operation_uid = ?",
             self.other_stored.handle.uid)}
         self.assertNotIn(design_params.CONSERVE_SLOPE, other_params)
+
+    def test_a_without_a_frozen_quarry_it_says_so_once(self) -> None:
+        """RF-014-12, RF-013-30 de la 013 (T51, hallazgo F-12 (g)): sin revisión congelada, la
+        cantera no se compara con ninguna anterior y lo dice **una vez**, con su nombre, en el
+        resumen y en ``des_qrp_`` (no una nota por lado con un nombre que no tiene ninguna
+        operación); sus ajustes no llevan nada con que se comparó."""
+        found = [notice for notice in self.calculation.notices
+                 if notice.code == "des.magnitude_no_reference"]
+        self.assertEqual([notice.values for notice in found], [{"operation": QUARRY_NAME}])
+        self.assertIn("Ninguna revisión congelada de la versión tiene una operación como "
+                      f"«{QUARRY_NAME}» (mismo tipo y nombre), así que el desmonte y el terraplén "
+                      "no se comparan con uno anterior.", self.calculation.lines("es"))
+        notes = [json.loads(note) for (note,) in self.query_of(
+            'SELECT note FROM "des_qrp_cantera_e3_v01" WHERE quantity = \'note\'')]
+        self.assertEqual([note for note in notes if note["code"] == "des.magnitude_no_reference"],
+                         [{"code": "des.magnitude_no_reference",
+                           "values": {"operation": QUARRY_NAME}}])
+        self.assertIsNone(self.settings_of(self.stored.handle.uid)["previous"])
+        for surface in model.Surface:
+            with self.subTest(surface=surface):
+                self.assertIsNone(provenance.settings_previous(
+                    self.settings_of(self.stored.handle.uid), surface))
 
     def test_a_seeds_outside_the_crown_stop_before_calculating(self) -> None:
         """RF-014-03 (T43, hallazgo F-4): con las semillas de la 013 de la explotación fuera de la
@@ -508,9 +535,9 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
         """RF-014-05, RF-014-06, RF-014-09 (T42, hallazgo F-3): con el corredor de 80 × 10 m a
         290 m, por encima del terreno (por debajo de 226 m), la cantera se calcula y el resumen
         avisa de los fondos sobre el terreno con su área, 800 m² (antes no decía nada: solo miraba
-        los polígonos); con uno a 5.000 m, «Calcular» se niega al avanzar con ``des.floor_level``
-        nombrando la capa, el corredor, el campo y el valor, y no deja nada (antes se calculaba y
-        el corredor anulaba la corta en silencio)."""
+        los polígonos); con uno a 5.000 m, «Calcular» se niega al avanzar con
+        ``des.corridor_level`` (T51: «corredor 1») nombrando la capa, el corredor, el campo y el
+        valor, y no deja nada (antes se calculaba y el corredor anulaba la corta en silencio)."""
         for name, level in ((HIGH_CORRIDORS, 290.0), (IMPOSSIBLE_CORRIDORS, 5000.0)):
             qfx.write_feature_layer(self.project, self.clock, lane_layer(name, level))
         before = self.des_state()
@@ -532,9 +559,10 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
             drive(steps.quarry_run(self.project, impossible, version=self.v1.uid,
                                    masks=self.masks_v1))
         error = caught.exception
-        self.assertEqual(error.code, "des.floor_level")
-        self.assertEqual((error.values["layer"], error.values["polygon"], error.values["field"],
+        self.assertEqual(error.code, "des.corridor_level")
+        self.assertEqual((error.values["layer"], error.values["corridor"], error.values["field"],
                           error.values["value"]), (IMPOSSIBLE_CORRIDORS, 1, "cota_inicial", 5000.0))
+        self.assertIn(f"Capa «{IMPOSSIBLE_CORRIDORS}», corredor 1:", error.text)
         self.assertEqual(self.des_state(), before)
 
     def test_a_moving_inside_a_zone_to_conserve_is_an_error_and_nothing_is_created(self) -> None:
@@ -638,7 +666,10 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
     def test_d_recomputing_repeats_the_quarry_with_its_settings(self) -> None:
         """RF-014-31, RF-008-26: «Recalcular lo obsoleto» repite solo la cantera de E3, sin pedir
         confirmación y en la revisión abierta (r2), con sus mismos ajustes y el fondo nuevo: la
-        explotación cambia (la plataforma manda) y lo congelado en V01.r1 no cambia."""
+        explotación cambia (la plataforma manda) y lo congelado en V01.r1 no cambia. Con V01.r1
+        congelada, cada lado se compara con el suyo de la cantera del mismo nombre de V01.r1 (T51,
+        F-12 (g); RF-013-30 de la 013): sus ajustes lo anotan —el desmonte y el terraplén de cada
+        lado tal como se congelaron en su ``des_qrp_``— y ya no dicen que no se comparan."""
         old = self.stored.handle.uid
         before = self.outputs_of()
         with self.project.read() as conn:
@@ -653,6 +684,17 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
                                        "gb_operation WHERE uid = ?", new),
                          [(provenance.QUARRY, "done", self.r2, old)])
         self.assertEqual(provenance.quarry_request(self.settings_of(new)), quarry_request())
+        sides = self.calculation.outcome
+        self.assertEqual(self.settings_of(new)["previous"], {
+            surface.value: {"operation": f"{QUARRY_NAME} ({quarry.SIDE_NAMES[surface]})",
+                            "revision": "V01.r1",
+                            "cut_m3": sides.side(surface).design.report.cut_m3,
+                            "fill_m3": sides.side(surface).design.report.fill_m3}
+            for surface in model.Surface})
+        codes = [json.loads(note)["code"] for (note,) in self.query_of(
+            'SELECT note FROM "des_qrp_cantera_e3_v01" WHERE quantity IN (\'warning\', '
+            "'note')")]
+        self.assertNotIn("des.magnitude_no_reference", codes)
         now = self.outputs_of()
         exploitation = provenance.dataset_name("exp", QUARRY_NAME)
         self.assertNotEqual(now[exploitation], before[exploitation])

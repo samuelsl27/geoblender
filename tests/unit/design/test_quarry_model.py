@@ -49,9 +49,14 @@ QUARRY_CODES: dict[str, str] = {
     "des.quarry_param_missing": "error",       # D-9
     "des.quarry_param_range": "error",         # plan §5.2.2
     "des.quarry_area_empty": "error",          # RF-014-01
+    "des.quarry_area_outside_limit": "note",   # RF-014-01 (T51: lo que lo vacía, por partes)
+    "des.quarry_area_untouchable": "note",     # RF-014-01 (T51)
+    "des.quarry_area_inner_band": "note",      # RF-014-01 (T51)
+    "des.quarry_area_no_cut": "note",          # RF-014-01 (T51)
+    "des.quarry_area_no_terrain": "note",      # RF-014-01 (T51)
+    "des.quarry_area_no_perimeter": "note",    # RF-014-01 (T51)
     "des.quarry_seeds_outside": "warning",     # RF-014-03
     "des.quarry_seed_group": "note",           # RF-014-03
-    "des.quarry_layer_crs": "error",           # spec §7
     "des.quarry_layer_field": "error",         # plan §5.2.1
     "des.quarry_order_broken": "error",        # RF-014-14
     "des.quarry_unsplit_zones": "warning",     # RF-014-17
@@ -68,6 +73,7 @@ QUARRY_CODES: dict[str, str] = {
     "des.corridor_width": "error",             # RF-014-09
     "des.corridor_length_zero": "error",       # RF-014-09
     "des.corridor_level_missing": "error",     # RF-014-09
+    "des.corridor_level": "error",             # RF-014-06, RF-014-09 (T51: «corredor N»)
     "des.corridor_too_long": "warning",        # RF-014-10
     "des.edge_created_step": "warning",        # RF-014-21
     "des.edge_stretch": "note",                # RF-014-21
@@ -368,6 +374,106 @@ class QuarryMessagesTest(unittest.TestCase):
         self.assertIn("35", angle.text)
         self.assertIn("60", angle.text)
         self.assertIn("«EXPL_10_60_6»", angle.text)
+
+
+
+class QuarryTextsTest(unittest.TestCase):
+    """Los textos de la cantera (spec 014, T51; hallazgo F-12 de la verificación única): lo que
+    dicen, en los dos idiomas con los mismos marcadores."""
+
+    def test_the_singular_of_zones(self) -> None:
+        """RF-014-17, RF-014-18 (F-12 (b)): el aviso de desdoblado y «explotación hasta la final»
+        con una sola zona dicen «en 1 zona», no «en 1 zonas» (y «in 1 zone»); con dos, como
+        siempre."""
+        values = {"area": 2.0, "volume": 200_000.0, "threshold": 1.0, "min_area": 0.2}
+        one = messages.render("des.quarry_unsplit_zones", zones=1, **values)
+        self.assertEqual(one, "La explotación no llega a la final en 1 zona: 2 ha y 200000 m³ de "
+                              "desdoblado de más de 1 m sobre terreno sin explotar, en una zona de "
+                              "más de 0,2 ha. Use «Explotación hasta la final» para bajarla allí "
+                              "con bancos anclados.")
+        self.assertIn("in 1 zone: 2 ha", messages.render("des.quarry_unsplit_zones",
+                                                         language="en", zones=1, **values))
+        self.assertIn("en 2 zonas: 2 ha", messages.render("des.quarry_unsplit_zones", zones=2,
+                                                          **values))
+        lowered = messages.render("des.quarry_to_final", zones=1, area=0.5, volume=9_000.0)
+        self.assertEqual(lowered, "«Explotación hasta la final» en 1 zona (0,5 ha): 9000 m³ "
+                                  "pasan del desdoblado a la explotación, con bancos anclados a "
+                                  "sus cotas.")
+        self.assertIn("in 1 zone (0.5 ha)", messages.render(
+            "des.quarry_to_final", language="en", zones=1, area=0.5, volume=9_000.0))
+        for language in ("es", "en"):
+            for code in ("des.quarry_unsplit_zones", "des.quarry_to_final",
+                         "des.conserve_moved"):
+                with self.subTest(code=code, language=language):
+                    text = messages.render(code, language=language, zones=1, parts=1)
+                    self.assertNotRegex(text, r"\b1 (zonas|zones|partes|parts)\b")
+
+    def test_the_parts_of_an_empty_area_in_both_languages(self) -> None:
+        """RF-014-01 (F-12 (c)): lo que vacía el recinto va en una nota por parte, en el idioma
+        de quien lo lee: en inglés, sin una palabra en español."""
+        notes = ("des.quarry_area_outside_limit", "des.quarry_area_untouchable",
+                 "des.quarry_area_inner_band", "des.quarry_area_no_cut",
+                 "des.quarry_area_no_terrain")
+        error = messages.DesignError(
+            "des.quarry_area_empty", obj="Recinto de la versión V01", field="recinto", value=0,
+            version="V01", notes=tuple((code, {"area": 1_234.5}) for code in notes))
+        self.assertEqual(error.text, (
+            "El recinto excavable de la versión V01 está vacío: ninguna celda tiene a la vez "
+            "corte admitido por sus máscaras y dato de terreno. Revise el límite y las "
+            "restricciones; no se calcula ni se registra nada. Lo que lo vacía: Perímetro de "
+            "actuación fuera del límite legal: 1234,5 m². Intocables y exclusiones: 1234,5 m². "
+            "Resguardo hacia dentro del límite: 1234,5 m². Zonas sin corte, solo relleno o solo "
+            "restauración: 1234,5 m². Celdas sin dato de terreno: 1234,5 m²."))
+        english = error.text_in("en")
+        self.assertEqual(english, (
+            "The excavation area of version V01 is empty: no cell is both admitted to cut by its "
+            "masks and has terrain data. Review the limit and the constraints; nothing is "
+            "calculated or recorded. What empties it: Action perimeter outside the legal limit: "
+            "1234.5 m². Untouchables and exclusions: 1234.5 m². Buffer inside the limit: "
+            "1234.5 m². Zones with no cut, fill only or restoration only: 1234.5 m². Cells "
+            "without terrain data: 1234.5 m²."))
+        self.assertEqual(set(english) & SPANISH_LETTERS, set())
+        self.assertNotIn("{parts}", messages.MESSAGES["des.quarry_area_empty"].es)
+
+    def test_fill_only_names_what_it_has(self) -> None:
+        """RF-014-25 (F-12 (d)): «Solo relleno…» no tiene semillas: sus rechazos dicen que se
+        revise la envolvente, su perfil y su dominio."""
+        for code in ("des.fill_only_cuts", "des.fill_only_untouchable"):
+            message = messages.MESSAGES[code]
+            with self.subTest(code=code):
+                self.assertIn("revise la envolvente, su perfil y su dominio", message.es)
+                self.assertIn("review the envelope, its profile and its domain", message.msgid)
+                self.assertNotIn("semillas", message.es)
+                self.assertNotIn("seeds", message.msgid)
+
+    def test_every_design_surface_is_named(self) -> None:
+        """RF-014-19, RF-014-27 (F-12 (e)): lo que no es una superficie de diseño se rechaza
+        nombrando todas las que valen: las dos de una cantera, un escalonado, un «solo relleno»,
+        una transición y una ajustada."""
+        text = messages.render("des.edge_not_design_surface", value="gis_dtm_ladera")
+        self.assertIn("(la de explotación o la final de una cantera, un escalonado, un diseño "
+                      "«solo relleno», una transición o una superficie ajustada)", text)
+        english = messages.render("des.edge_not_design_surface", language="en", value="x")
+        self.assertIn("(the exploitation or the final surface of a quarry, a stepped design, a "
+                      "fill-only design, a transition or a refitted surface)", english)
+
+    def test_no_text_that_nothing_raises(self) -> None:
+        """Spec §7 (F-12 (f)): las capas de la cantera son datos ``gis_fea_`` del proyecto, en su
+        CRS por construcción: no hay un rechazo por el CRS de una capa que nada puede lanzar."""
+        self.assertNotIn("des.quarry_layer_crs", messages.MESSAGES)
+        self.assertFalse([m.code for m in messages.CATALOG if "reproyéctela" in m.es])
+
+    def test_a_corridor_out_of_the_range_is_named_a_corridor(self) -> None:
+        """RF-014-06, RF-014-09 (T42, T51 (h)): la cota de un corredor fuera de las del terreno
+        ± 1.000 m se rechaza nombrando el corredor, no un polígono, en los dos idiomas."""
+        error = messages.DesignError("des.corridor_level", obj="Corredor 2 de la capa «c»",
+                                     field="cota", value=5000.0, layer="c", corridor=2,
+                                     low=-819.84375, high=1307.84375)
+        self.assertEqual(error.text, "Capa «c», corredor 2: «cota» = 5000 m está fuera de las "
+                                     "cotas del terreno ± 1.000 m (de -819,84375 a 1307,84375 "
+                                     "m); corríjalo en QGIS (no se elige ninguna cota por él); "
+                                     "no se calcula nada.")
+        self.assertIn("Layer «c», corridor 2: «cota» = 5000 m is outside", error.text_in("en"))
 
 
 if __name__ == "__main__":

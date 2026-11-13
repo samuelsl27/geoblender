@@ -16,9 +16,10 @@ cuál es y de qué versión el dato que elige quien exporta (su uid o su nombre)
 
 **Las rejillas de códigos** (spec 014, T33; RF-014-32; plan 014 P-1): la clasificación y el recinto
 no son cotas sino un **código por celda** (:data:`LEGENDS`: 0 sin diferencia, 1 desdoblado y 2
-relleno, los de ``design.model.CellClass``; 1 dentro del recinto), que el entregable Float32 lleva
-exacto. Sus metadatos dicen ``UNIDAD`` ``código`` (:data:`CODE_UNIT`) y, en vez de una unidad
-física, **su leyenda**: un ``CODIGO_<n>`` por clase con su nombre en español.
+relleno de restauración, los de ``design.model.CellClass``; 1 dentro del recinto excavable), que el
+entregable Float32 lleva exacto. Sus metadatos dicen ``UNIDAD`` ``código`` (:data:`CODE_UNIT`) y,
+en vez de una unidad física, **su leyenda**: un ``CODIGO_<n>`` por clase con su nombre en español,
+el mismo de la vista y de la barra N (T51).
 
 **El GeoTIFF** (:func:`export_grid_steps`, :func:`export_grid`; RF-006-24): la rejilla registrada
 (``rasters/des_*_<vNN>.tif``, Float64 con NaN) como GeoTIFF del perfil ``deliverable`` de la 006
@@ -104,11 +105,13 @@ GRIDS: tuple[str, ...] = (declared.ENVELOPE_GRID, declared.DESIGN_GRID, declared
 exportar: las tres de la 013 y las de :data:`QUARRY_GRIDS`."""
 LEGENDS: Mapping[str, tuple[tuple[int, str], ...]] = MappingProxyType({
     declared.CLASSIFICATION_GRID: tuple((item.code, CLASS_NAMES[item]) for item in CellClass),
-    declared.EXCAVATION_AREA_GRID: ((1, "recinto de excavación"),),
+    declared.EXCAVATION_AREA_GRID: ((1, "recinto excavable"),),
 })
 """Las rejillas de **códigos** (spec 014, T33; RF-014-32; P-1) con su leyenda: por código, el
-nombre de su clase en español (la clasificación, los de ``CellClass``: 0 sin diferencia, 1
-desdoblado, 2 relleno; el recinto, 1 dentro). Las demás rejillas son cotas en metros."""
+nombre de su clase en español, el de la vista y la barra N (T51; la clasificación, los de
+``CellClass`` con ``quarry.CLASS_NAMES``: 0 sin diferencia, 1 desdoblado, 2 relleno de
+restauración; el recinto, 1 «recinto excavable», como en spec 014 §6). Las demás rejillas son
+cotas en metros."""
 SUFFIXES: tuple[str, ...] = (".tif", ".tiff")
 """Las extensiones del GeoTIFF entregable."""
 NODATA = DELIVERABLE_NODATA

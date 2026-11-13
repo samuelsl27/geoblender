@@ -8050,7 +8050,7 @@ es = "Todas las zonas avisadas"
 es = "Las zonas de una capa"
 
 ["Area of the excavation boundary"]
-es = "Área del recinto de excavación"
+es = "Área del recinto excavable"
 
 ["Excavation of the exploitation surface"]
 es = "Excavación de la superficie de explotación"

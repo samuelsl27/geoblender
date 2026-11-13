@@ -7,7 +7,7 @@
   de actuación ∩ límite legal − intocables y exclusiones, menos el resguardo hacia dentro del límite
   y las zonas sin corte, solo relleno o solo restauración (RF-012-13)— donde la superficie de partida
   ``z`` tiene dato. Vacío, :class:`~.messages.DesignError` ``des.quarry_area_empty`` con el área de
-  cada parte que lo vacía (:func:`area_parts`).
+  cada parte que lo vacía (:func:`area_parts`), una nota por parte (T51: en los dos idiomas).
 - :func:`area_parts`: lo que separa el perímetro de actuación del recinto, por partes disjuntas
   (:class:`AreaPart`) en este orden: el perímetro fuera del límite legal, los intocables y las
   exclusiones, el resguardo hacia dentro del límite, las zonas que no admiten corte y las celdas sin
@@ -46,7 +46,8 @@
   punto más próximo del eje; su longitud medida (la extensión de la huella a lo largo del eje)
   no pasa de la del eje más una celda (error 20), y :func:`corridor_too_long` da el aviso de
   RF-014-10. Con la superficie de partida, la cota de cada corredor pasa por el rango de los
-  fondos de RF-014-06 (T42: la fija, o la inicial y la final de su rasante; ``des.floor_level``).
+  fondos de RF-014-06 (T42: la fija, o la inicial y la final de su rasante; ``des.corridor_level``,
+  que nombra el corredor, T51).
 
 - :func:`conservation_ceiling_steps` (T10; RF-014-07; A5): el **techo de conservación** ``U =
   ENV↑(z en Z, tan(talud de conservación))`` de las zonas a conservar (:class:`ConserveZone`)
@@ -175,7 +176,7 @@ from .pipeline import (
     forward,
     imposed_from,
 )
-from .report import moved_cells
+from .report import Previous, moved_cells
 from .seeds import DomainSet, SectorRef, SeedSet, collect_seeds, domain_of, pace_progress
 from .zones import _paint, _polygon_spans
 
@@ -254,7 +255,16 @@ AREA_PART_LABELS = MappingProxyType({
 HOLD_TYPES = frozenset({"untouchable", "no_cut"})
 """Los tipos de restricción (valores de ``ConstraintType``) cuyas zonas son **a sostener** (A2):
 los intocables y las zonas sin corte."""
-_NO_PERIMETER = "el perímetro de actuación no tiene ninguna celda en la rejilla"
+_AREA_PART_NOTES = MappingProxyType({
+    "outside_limit": "des.quarry_area_outside_limit",
+    "untouchable": "des.quarry_area_untouchable",
+    "inner_band": "des.quarry_area_inner_band",
+    "no_cut": "des.quarry_area_no_cut",
+    "no_terrain": "des.quarry_area_no_terrain",
+})
+"""La nota de cada parte de :data:`AREA_PART_LABELS` detrás de ``des.quarry_area_empty`` (T51: así
+el rechazo dice sus partes también en inglés)."""
+_NO_PERIMETER = "des.quarry_area_no_perimeter"
 _AREA_FIGURE = "des.rcn_area_m2"
 
 
@@ -327,10 +337,12 @@ def area_parts(masks: MaskSet, start: np.ndarray) -> tuple[AreaPart, ...]:
                  for key, cells in found.items())
 
 
-def _parts_text(parts: tuple[AreaPart, ...]) -> str:
-    shown = [f"{part.label}: {format_value(round(part.area_m2, 2))} m²" for part in parts
-             if part.cells]
-    return "; ".join(shown) if shown else _NO_PERIMETER
+def _parts_notes(parts: tuple[AreaPart, ...]) -> tuple[tuple[str, dict[str, object]], ...]:
+    """Las notas de lo que vacía el recinto: una por parte con celdas, con su área en m² (al
+    cm), en el orden de :data:`AREA_PART_LABELS`; sin ninguna, la del perímetro sin celdas."""
+    shown = tuple((_AREA_PART_NOTES[part.key], {"area": round(part.area_m2, 2)})
+                  for part in parts if part.cells)
+    return shown or ((_NO_PERIMETER, {}),)
 
 
 def excavation_area(masks: MaskSet, start: np.ndarray, *, version: str | None = None
@@ -340,16 +352,17 @@ def excavation_area(masks: MaskSet, start: np.ndarray, *, version: str | None = 
     forma). Ninguna entrada se modifica.
 
     Rechazos: ``DesignError`` ``des.quarry_area_empty`` si no tiene ninguna celda, con la versión
-    ``version`` (su código; sin él, el uid de las máscaras) y el área de cada parte que lo vacía
-    (:func:`area_parts`); ``ValueError`` (error del programa) si ``start`` no es de la forma de la
-    rejilla."""
+    ``version`` (su código; sin él, el uid de las máscaras) y, detrás, una nota con el área de
+    cada parte que lo vacía (:func:`area_parts`; T51: ``des.quarry_area_outside_limit``… en los dos
+    idiomas, ``DesignError.text_in``); ``ValueError`` (error del programa) si ``start`` no es de la
+    forma de la rejilla."""
     terrain = _terrain(masks, start)
     area = masks.cut_allowed() & terrain
     if not area.any():
         shown = version or masks.version_uid
         raise DesignError("des.quarry_area_empty", obj=f"Recinto de la versión {shown}",
                           field="recinto", value=0, version=shown,
-                          parts=_parts_text(area_parts(masks, start)))
+                          notes=_parts_notes(area_parts(masks, start)))
     return area
 
 
@@ -774,9 +787,9 @@ def _corridor_level(fid: int, fields: CorridorFields, start_level: float, grade_
     """**RF-014-06** para un corredor, que es un polígono de fondo (RF-014-09; T42, hallazgo F-3
     de la T38): su cota —la fija, o la inicial y la final de su rasante, la del final del eje de
     ``axis_m`` m— dentro de ``[low, high]`` (las del terreno ± :data:`FLOOR_LEVEL_MARGIN_M`). Si
-    no, ``des.floor_level`` como un polígono de fondo, con la capa, el corredor (su número), el
-    campo —el de la cota fija o el de la inicial; para la final, «<cota inicial> + <pendiente>»—
-    y el valor (la cota, en m); no se elige ninguna por él."""
+    no, ``des.corridor_level`` (el rango de ``des.floor_level`` con «corredor N», T51), con la capa,
+    el corredor (su número), el campo —el de la cota fija o el de la inicial; para la final,
+    «<cota inicial> + <pendiente>»— y el valor (la cota, en m); no se elige ninguna por él."""
     field = fields.start_level_field if fields.graded else fields.level_field
     checks = [(str(field), start_level)]
     if fields.graded:
@@ -784,9 +797,9 @@ def _corridor_level(fid: int, fields: CorridorFields, start_level: float, grade_
                        start_level + axis_m * grade_pct / 100.0))
     for name, level in checks:
         if not low <= level <= high:
-            raise DesignError("des.floor_level", obj=f"Corredor {fid} de la capa «{fields.layer}»",
-                              field=name, value=level, layer=fields.layer, polygon=fid, low=low,
-                              high=high)
+            raise DesignError("des.corridor_level",
+                              obj=f"Corredor {fid} de la capa «{fields.layer}»", field=name,
+                              value=level, layer=fields.layer, corridor=fid, low=low, high=high)
 
 
 def _axis_paths(parts: tuple[tuple[np.ndarray, ...], ...]) -> list[np.ndarray]:
@@ -1330,8 +1343,11 @@ class SideJob:
     tolerancia de cara y el umbral de aviso de la 013; las semillas de la 013 (``seeds``) si el lado
     no siembra la coronación, y solo entonces; los fondos y corredores (``floors``,
     :func:`join_floors`), el techo (``ceiling``, :func:`conservation_ceiling_steps`), la rejilla de
-    anclas leída (``anchors``) con el ancla en rejilla, y solo con ella, y los sectores con la
-    búsqueda pendiente (``pending``)."""
+    anclas leída (``anchors``) con el ancla en rejilla, y solo con ella, los sectores con la
+    búsqueda pendiente (``pending``) y lo ``previous`` con que se comparan el desmonte y el
+    terraplén del lado (T51; RF-013-30, D-25 de la 013: el mismo lado de la cantera del mismo
+    nombre de la revisión congelada más reciente). Sin ``previous``, el lado no se compara y su
+    informe **no** lo dice: lo dice la cantera, una vez (``des.magnitude_no_reference``)."""
 
     request: QuarryRequest
     surface: Surface | str
@@ -1348,6 +1364,7 @@ class SideJob:
     ceiling: ConservationCeiling | None = None
     anchors: np.ndarray | None = None
     pending: tuple[str, ...] = ()
+    previous: Previous | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "surface", Surface(self.surface))
@@ -1464,10 +1481,25 @@ def _side_work(job: SideJob, budget_s: float) -> Generator[Progress, None, None]
     design: DesignOutcome = yield from forward(design_compute_steps(DesignJob(
         design_request, geometry, start, envelope.grid, masks, sectors, labels,
         imposed_from(job.values, sectors), profiles, anchor_grid, job.min_thickness_m,
-        job.face_tolerance_deg, job.warning_ratio, pending=job.pending), budget_s=budget_s))
+        job.face_tolerance_deg, job.warning_ratio, previous=job.previous, pending=job.pending),
+        budget_s=budget_s))
+    if job.previous is None:
+        design = _without_reference_note(design)
     outcome = SideOutcome(surface, base, seeds, held, anchors, envelope, design)
     yield Progress("side", 1, 1, f"{SIDE_NAMES[surface].capitalize()} de «{job.request.name}» "
                    "calculada", result=outcome)
+
+
+_NO_REFERENCE = "des.magnitude_no_reference"
+"""La nota de la 013 de un escalonado que no se compara con ninguno anterior (RF-013-30)."""
+
+
+def _without_reference_note(design: DesignOutcome) -> DesignOutcome:
+    """``design`` sin la nota :data:`_NO_REFERENCE` en su informe (T51, hallazgo F-12 (g)): un lado
+    de la cantera sin nada con que compararse no lo dice; lo dice la cantera, una vez, con su
+    nombre (``store.quarry_notices``). Lo demás, tal cual."""
+    notices = tuple(item for item in design.report.notices if item.code != _NO_REFERENCE)
+    return replace(design, report=replace(design.report, notices=notices))
 
 
 # --- Las dos superficies y el orden (T16; A8) -----------------------------------------------------
@@ -1567,8 +1599,9 @@ def check_order(name: str, final: np.ndarray, exploitation: np.ndarray, start: n
 
 CLASS_NAMES = MappingProxyType({CellClass.NONE: "sin diferencia",
                                 CellClass.UNSPLIT: "desdoblado",
-                                CellClass.FILL: "relleno"})
-"""El nombre de cada clase de la clasificación en los mensajes y en la leyenda (RF-014-15)."""
+                                CellClass.FILL: "relleno de restauración"})
+"""El nombre de cada clase de la clasificación en los mensajes y en la leyenda (RF-014-15): el de
+la vista y la barra N y el de RF-014-16 («relleno de restauración», T51)."""
 CLASS_CELLS_PER_UNIT = 200_000
 """Las celdas de una unidad de trabajo de la clasificación (una banda de filas)."""
 _HECTARE_M2 = 10_000.0
@@ -2248,8 +2281,10 @@ class QuarryJob:
     de «explotación hasta la final» (``unsplit_threshold_m``, m, y ``unsplit_min_area_ha``, ha:
     los valores de ``des.quarry.unsplit_threshold_m`` y ``des.quarry.unsplit_min_area_ha``; por
     defecto, los declarados en ``design.params``, D-5) y, con el modo «las de una capa», sus
-    polígonos como máscara de la rejilla (``to_final_zones``; P-2). ``ValueError`` si una clave no
-    es una de las dos superficies."""
+    polígonos como máscara de la rejilla (``to_final_zones``; P-2); y lo ``previous`` con que se
+    compara cada lado (T51: los de la cantera del mismo nombre de la revisión congelada más
+    reciente, cada lado con el suyo; vacío, ninguno se compara y la cantera lo dice una vez).
+    ``ValueError`` si una clave no es una de las dos superficies."""
 
     request: QuarryRequest
     start: np.ndarray
@@ -2269,20 +2304,22 @@ class QuarryJob:
     unsplit_threshold_m: float = _parameter_default(UNSPLIT_THRESHOLD)
     unsplit_min_area_ha: float = _parameter_default(UNSPLIT_MIN_AREA)
     to_final_zones: np.ndarray | None = None
+    previous: Mapping[Surface | str, Previous] = MappingProxyType({})
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "seeds", _by_surface(self.seeds))
         object.__setattr__(self, "anchors", _by_surface(self.anchors))
+        object.__setattr__(self, "previous", _by_surface(self.previous))
 
     def side_job(self, surface: Surface | str) -> SideJob:
-        """El :class:`SideJob` del lado ``surface``: lo común y sus semillas y su rejilla de
-        anclas, si las tiene."""
+        """El :class:`SideJob` del lado ``surface``: lo común y sus semillas, su rejilla de
+        anclas y lo anterior con que se compara, si los tiene."""
         surface = Surface(surface)
         return SideJob(self.request, surface, self.start, self.masks, self.domain, self.values,
                        self.ring_cells, self.min_thickness_m, self.face_tolerance_deg,
                        self.warning_ratio, seeds=self.seeds.get(surface), floors=self.floors,
                        ceiling=self.ceiling, anchors=self.anchors.get(surface),
-                       pending=self.pending)
+                       pending=self.pending, previous=self.previous.get(surface))
 
 
 @dataclass(frozen=True, slots=True, eq=False)

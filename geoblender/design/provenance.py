@@ -376,7 +376,7 @@ FAMILIES: tuple[DatasetFamily, ...] = (
 
 # Las de la cantera con dos superficies (spec 014, T05; plan 014 §5.2.3).
 EXCAVATION_AREA_GRID = "rcn"
-"""El recinto de excavación: 1 dentro, sin dato fuera (``rasters/des_rcn_<nombre>_<vNN>.tif``)."""
+"""El recinto excavable: 1 dentro, sin dato fuera (``rasters/des_rcn_<nombre>_<vNN>.tif``)."""
 EXPLOITATION_GRID = "exp"
 """La superficie de explotación (``rasters/des_exp_<nombre>_<vNN>.tif``)."""
 FINAL_GRID = "fin"
@@ -398,7 +398,7 @@ REFIT_GRID = "adj"
 """Una superficie ajustada a un límite nuevo (``des_adj_<nombre>_<superficie>_<vNN>``; RF-014-27)."""
 
 EXCAVATION_AREA_ROLE = "excavation_area"
-"""El papel del recinto de excavación."""
+"""El papel del recinto excavable."""
 EXPLOITATION_ENVELOPE_ROLE = "exploitation_envelope"
 """El papel de la envolvente de la explotación."""
 FINAL_ENVELOPE_ROLE = "final_envelope"
@@ -426,7 +426,7 @@ T30)."""
 
 QUARRY_FAMILIES: tuple[DatasetFamily, ...] = (
     DatasetFamily(EXCAVATION_AREA_GRID, "raster", Store.RASTERS, GEOTIFF.id, EXCAVATION_AREA_ROLE,
-                  ".tif", "Recinto de excavación"),
+                  ".tif", "Recinto excavable"),
     DatasetFamily(EXPLOITATION_GRID, "raster", Store.RASTERS, GEOTIFF.id, DESIGN_SURFACE_ROLE,
                   ".tif", "Superficie de explotación"),
     DatasetFamily(FINAL_GRID, "raster", Store.RASTERS, GEOTIFF.id, DESIGN_SURFACE_ROLE, ".tif",
@@ -1058,7 +1058,9 @@ def _layer_field(value: LayerField | None) -> dict[str, str] | None:
 
 
 def quarry_settings(request: QuarryRequest, pending_sectors: Iterable[str] = (),
-                    touched_sectors: Iterable[str] = ()) -> dict[str, Any]:
+                    touched_sectors: Iterable[str] = (),
+                    previous: Mapping[Surface | str, Mapping[str, Any]] | None = None
+                    ) -> dict[str, Any]:
     """Los ajustes de ``des.quarry`` (spec 014, T19; RF-014-29, RF-014-31; JSON sin rutas): lo que
     la vuelve a pedir igual con sus entradas —el nombre, la superficie de partida, el orden, cada
     lado (``final`` y ``exploitation``: el perfil base y el de cada sector, las semillas —
@@ -1066,7 +1068,12 @@ def quarry_settings(request: QuarryRequest, pending_sectors: Iterable[str] = (),
     capas con sus campos (fondos, zonas a conservar, corredores, zonas de restauración por relleno
     y láminas de agua) y «explotación hasta la final» con su capa—, con las claves de
     :data:`QUARRY_SETTINGS`; y, como en :func:`envelope_settings`, los sectores sin búsqueda
-    vigente al calcular y los que tocó el recinto (RF-014-30). Es un diccionario nuevo."""
+    vigente al calcular y los que tocó el recinto (RF-014-30); y, como en :func:`design_settings`,
+    lo ``previous`` con que se comparó **cada lado** (T51; D-25 de la 013): por superficie
+    (``final`` y ``exploitation``), su ``operation``, ``revision``, ``cut_m3`` y ``fill_m3``, los
+    del mismo lado de la cantera del mismo nombre de la revisión congelada más reciente; ``None``
+    si no se comparó (:func:`settings_previous` con la superficie lo lee). Es un diccionario
+    nuevo; ``ValueError`` si ``previous`` no trae los dos lados con esa forma."""
     corridors = request.corridors
     return {
         "name": request.name,
@@ -1088,7 +1095,19 @@ def quarry_settings(request: QuarryRequest, pending_sectors: Iterable[str] = (),
         "to_final_layer": request.to_final_layer,
         "pending_sectors": _codes(pending_sectors, "los sectores pendientes"),
         "touched_sectors": _codes(touched_sectors, "los sectores que toca el recinto"),
+        "previous": None if previous is None else _sides_previous(previous),
     }
+
+
+def _sides_previous(value: Mapping[Surface | str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Lo anterior con que se comparó cada lado de una cantera (T51), comprobado: los dos lados,
+    cada uno como :func:`_previous`, y nada más."""
+    what = "lo anterior con que se comparó la cantera"
+    data = {Surface(key).value: item for key, item in _mapping(value, what).items()}
+    if sorted(data) != sorted(side.value for side in Surface):
+        raise ValueError(f"{what} lleva los dos lados ({', '.join(s.value for s in Surface)}), "
+                         f"no {sorted(data)}")
+    return {side.value: _previous(data[side.value]) for side in Surface}
 
 
 def fill_only_settings(request: FillOnlyRequest, pending_sectors: Iterable[str] = (),
@@ -1411,12 +1430,18 @@ def _previous(value: Mapping[str, Any]) -> dict[str, Any]:
             "fill_m3": _number(data, "fill_m3", what, required=True)}
 
 
-def settings_previous(settings: Mapping[str, Any]) -> dict[str, Any] | None:
+def settings_previous(settings: Mapping[str, Any], surface: Surface | str | None = None
+                      ) -> dict[str, Any] | None:
     """Lo anterior con que se comparó el escalonado de unos ajustes (``operation``, ``revision``,
-    ``cut_m3`` y ``fill_m3``; D-25), o ``None`` si no se comparó con nada. ``ValueError`` si no
-    tiene esa forma."""
+    ``cut_m3`` y ``fill_m3``; D-25), o ``None`` si no se comparó con nada. Con ``surface``, el de
+    ese lado en los ajustes de una cantera (:func:`quarry_settings`, T51); sin la clave (una
+    cantera de antes de la T51), ``None``. ``ValueError`` si no tiene esa forma."""
     value = _mapping(settings, "los ajustes de un escalonado").get("previous")
-    return None if value is None else _previous(value)
+    if value is None:
+        return None
+    if surface is not None:
+        return _sides_previous(value)[Surface(surface).value]
+    return _previous(value)
 
 
 # --- Lo que consume una operación ---------------------------------------------------------------

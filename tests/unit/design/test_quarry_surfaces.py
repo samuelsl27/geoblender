@@ -406,6 +406,36 @@ class QuarryStepsTest(qfx.QuarryProjectCase):
                 self.assertIn("Quarry «Cantera E3»", english)
                 self.assertIn("use the 5×5 chamfer", english)
 
+    def test_each_side_is_compared_with_its_own_previous(self) -> None:
+        """RF-014-12 con RF-013-30 de la 013 (spec 014, T51, hallazgo F-12 (g)): cada lado compara
+        su desmonte y su terraplén con lo suyo de la cantera anterior (``QuarryJob.previous``, por
+        superficie: ``side_job`` da a cada uno el suyo) y avisa con el nombre del lado
+        (``des.magnitude_cut``); sin lo anterior, ningún lado dice que no se compara (lo dice la
+        cantera, una vez: ``store.quarry_notices``), ni con un orden ni con el otro."""
+        for outcome in (self.final_first, self.exploitation_first):
+            for surface in model.Surface:
+                with self.subTest(order=outcome.order, surface=surface):
+                    codes = [n.code for n in outcome.side(surface).design.report.notices]
+                    self.assertNotIn("des.magnitude_no_reference", codes)
+        report = import_geoblender("design.report")
+        final_before = report.Previous("Cantera E3 (superficie final)", "V01.r1", 5.0, 0.0)
+        before = report.Previous("Cantera E3 (superficie de explotación)", "V01.r1", 1.0, 0.0)
+        job = self.job(previous={"final": final_before, model.Surface.EXPLOITATION: before})
+        self.assertIs(job.side_job(model.Surface.FINAL).previous, final_before)
+        self.assertIs(job.side_job("exploitation").previous, before)
+        self.assertIsNone(self.job().side_job("final").previous)
+        with self.assertRaises(ValueError):
+            self.job(previous={"bench": before})
+        side = last_result(quarry.side_steps(job.side_job("exploitation")))
+        alone = self.final_first.exploitation.design
+        np.testing.assert_array_equal(side.design.design, alone.design)
+        (warned,) = [n for n in side.design.report.notices if n.code == "des.magnitude_cut"]
+        self.assertEqual(warned.values["operation"], "Cantera E3 (superficie de explotación)")
+        self.assertEqual((warned.values["revision"], warned.values["previous"]), ("V01.r1", 1))
+        self.assertEqual(warned.values["current"], round(alone.report.cut_m3))
+        self.assertNotIn("des.magnitude_no_reference",
+                         [n.code for n in side.design.report.notices])
+
     def test_closing_half_way_leaves_nothing(self) -> None:
         """§5.3.2: cerrar los pasos a mitad (Esc) no deja nada ni lanza nada."""
         steps = quarry.quarry_steps(self.job())

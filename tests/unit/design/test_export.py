@@ -27,9 +27,10 @@ pruebas:
 una cantera (``des_exp_``, ``des_fin_``), sus envolventes (``des_xen_``, ``des_fen_``), la
 transición (``des_trn_``) y la superficie ajustada (``des_adj_``) se exportan como las cotas de la
 013; la clasificación (``des_cls_``) y el recinto excavable (``des_rcn_``), con su código por
-celda (0 sin diferencia, 1 desdoblado, 2 relleno; 1 dentro del recinto) y su **leyenda en los
-metadatos**. Sobre una copia de la cantera sintética (``quarry_fixtures``) con la cantera «Corta»
-(los perfiles al revés y la capa de relleno: las tres clases) y el recinto «Recinto» de V01.
+celda (0 sin diferencia, 1 desdoblado, 2 relleno de restauración; 1 dentro del recinto) y su
+**leyenda en los metadatos**, con los nombres de la vista y de la barra N (T51). Sobre una copia
+de la cantera sintética (``quarry_fixtures``) con la cantera «Corta» (los perfiles al revés y la
+capa de relleno: las tres clases) y el recinto «Recinto» de V01.
 """
 
 from __future__ import annotations
@@ -469,15 +470,15 @@ QUARRY_NAMES = {**{family: QUARRY_NAME for family in QUARRY_LEVELS},
                 provenance.EXCAVATION_AREA_GRID: AREA_NAME}
 """El nombre de la operación de cada rejilla de la 014 que exporta la prueba."""
 LEGENDS = {provenance.CLASSIFICATION_GRID: {"CODIGO_0": "sin diferencia", "CODIGO_1": "desdoblado",
-                                            "CODIGO_2": "relleno"},
-           provenance.EXCAVATION_AREA_GRID: {"CODIGO_1": "recinto de excavación"}}
+                                            "CODIGO_2": "relleno de restauración"},
+           provenance.EXCAVATION_AREA_GRID: {"CODIGO_1": "recinto excavable"}}
 """La leyenda de los metadatos de las rejillas de códigos, escrita a mano (la de ``CellClass``)."""
 QUARRY_LABELS = {provenance.EXPLOITATION_GRID: "Superficie de explotación",
                  provenance.FINAL_GRID: "Superficie final",
                  provenance.EXPLOITATION_ENVELOPE_GRID: "Envolvente de la explotación",
                  provenance.FINAL_ENVELOPE_GRID: "Envolvente de la final",
                  provenance.CLASSIFICATION_GRID: "Clasificación de las dos superficies",
-                 provenance.EXCAVATION_AREA_GRID: "Recinto de excavación"}
+                 provenance.EXCAVATION_AREA_GRID: "Recinto excavable"}
 
 
 def quarry_definitions() -> tuple[Any, ...]:
@@ -579,10 +580,12 @@ class QuarryExportTest(qfx.QuarryProjectCase):
     def test_b_the_classification_has_a_code_per_class_and_its_legend_in_the_metadata(
             self) -> None:
         """RF-014-32 (P-1): la clasificación exportada lleva en cada celda del dominio el código de
-        su clase (0 sin diferencia, 1 desdoblado, 2 relleno; las tres en esta cantera) y nada más, y
-        sus metadatos dicen qué es, que el valor es un código, el dato, la versión y la leyenda
-        (un código por clase); el recinto, el código 1 y el suyo. Las cotas de la cantera, la unidad
-        (m), qué son (en español), el dato y la versión, como las de la 013."""
+        su clase (0 sin diferencia, 1 desdoblado, 2 relleno de restauración; las tres en esta
+        cantera) y nada más, y sus metadatos dicen qué es, que el valor es un código, el dato, la
+        versión y la leyenda (un código por clase), con los nombres de la vista y de la barra N
+        (T51: «relleno de restauración»; el recinto, «Recinto excavable» y su código 1 «recinto
+        excavable»). Las cotas de la cantera, la unidad (m), qué son (en español), el dato y la
+        versión, como las de la 013."""
         codes = reader.read_geotiff(self.out / f"{provenance.CLASSIFICATION_GRID}.tif",
                                     max_cells=sys.maxsize).values
         self.assertEqual(sorted(np.unique(codes[np.isfinite(codes)]).tolist()), [0.0, 1.0, 2.0])

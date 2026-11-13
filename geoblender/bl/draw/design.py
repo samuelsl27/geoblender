@@ -1082,9 +1082,10 @@ def _publish(lines: Sequence[tuple[str, bool]]) -> None:
 
 
 def _error_text(exc: BaseException) -> str:
-    """El texto de un error para la persona, en el idioma de Geoblender."""
+    """El texto de un error para la persona, en el idioma de Geoblender (el de un error del
+    diseño, con las notas que lo acompañan: lo que vacía el recinto, T51)."""
     if isinstance(exc, design_messages.DesignError):
-        return design_messages.render(exc.code, language=language(), **exc.values)
+        return exc.text_in(language())
     if isinstance(exc, GeoblenderError):
         return exc.message
     return str(exc) or type(exc).__name__

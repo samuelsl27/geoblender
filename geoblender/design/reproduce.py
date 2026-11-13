@@ -78,7 +78,7 @@ from ..gis.raster import Raster
 from ..gis.store import insert_rows, read_features
 from ..gis.vector import FeatureLayer
 from . import fronts, pipeline, provenance, quarry, store
-from .model import EnvelopeRequest, SeedKind
+from .model import EnvelopeRequest, SeedKind, Surface
 from .params import TOLERANCE_FACE, VERIFY_MIN_THICKNESS, WARNING_RATIO
 from .seeds import (
     SectorRef,
@@ -452,7 +452,9 @@ def _reproduce_quarry(request: ReproduceRequest, budget_s: float) -> Iterator[Pr
     waiting = set(provenance.settings_pending(request.settings))
     calculated: store.QuarryCalculated = yield from store.quarry_compute_steps(
         wanted, masks, parts, frozen.values,
-        pending=tuple(ref.name for ref in refs if ref.code in waiting), budget_s=budget_s)
+        pending=tuple(ref.name for ref in refs if ref.code in waiting),
+        previous={side: provenance.settings_previous(request.settings, side) for side in Surface},
+        budget_s=budget_s)
     outcome = calculated.outcome
     outputs = []
     for family, grid, _what in store.quarry_grids(outcome):

@@ -24,8 +24,9 @@
   corredores que se solapan, como dos fondos (``des.floor_overlap``, RF-014-06).
 - El corredor, como fondo (T42, hallazgo F-3 de la T38): con la superficie de partida, su cota
   —la fija, o la inicial y la final de su rasante— en el rango de los fondos, ``[mín(z) − 1.000,
-  máx(z) + 1.000]`` m (RF-014-06, ``des.floor_level`` con la capa, el corredor, el campo y el
-  valor: un corredor a 5.000 m o a 10⁶ m ya no anula la corta en silencio); uno por encima del
+  máx(z) + 1.000]`` m (RF-014-06, ``des.corridor_level`` —el rango de ``des.floor_level``, con
+  «corredor N», T51— con la capa, el corredor, el campo y el valor: un corredor a 5.000 m o a
+  10⁶ m ya no anula la corta en silencio); uno por encima del
   terreno se admite y cuenta en lo de los fondos sobre el terreno (RF-014-05,
   ``floors_above_terrain`` con los corredores, cada celda una vez).
 
@@ -493,21 +494,24 @@ class LevelRangeTest(unittest.TestCase):
 
     def test_a_fixed_level_out_of_the_terrain_range_is_refused(self) -> None:
         """Una cota fija de 5.000 m o de 10⁶ m (la T38: se admitían y anulaban la corta en
-        silencio), o medio metro fuera de ``[−819,84375, 1.307,84375]`` m: ``des.floor_level`` con
-        la capa, el corredor (el polígono de fondo 2), el campo, el valor y el rango; el corredor 1,
-        en el rango, no."""
+        silencio), o medio metro fuera de ``[−819,84375, 1.307,84375]`` m: ``des.corridor_level``
+        con la capa, el corredor 2, el campo, el valor y el rango, y su texto dice «corredor 2», no
+        «polígono 2» (T51 (h); en inglés, «corridor 2»); el corredor 1, en el rango, no."""
         for level in (5000.0, 1.0e6, LOW_M - 0.5, HIGH_M + 0.5):
             with self.subTest(level=level):
                 error = self.rejected(corridor_layer((STRAIGHT, ((0.0, 0.0), (50.0, 0.0))),
                                                      ancho=(20.0, 10.0), cota=(150.0, level)))
-                self.assertEqual(error.code, "des.floor_level")
+                self.assertEqual(error.code, "des.corridor_level")
                 self.assertEqual(error.values["layer"], qfx.CORRIDORS_LAYER)
-                self.assertEqual(error.values["polygon"], 2)
+                self.assertEqual(error.values["corridor"], 2)
                 self.assertEqual(error.values["field"], "cota")
                 self.assertEqual(error.values["value"], level)
                 self.assertEqual((error.values["low"], error.values["high"]), (LOW_M, HIGH_M))
                 self.assertEqual(error.obj, f"Corredor 2 de la capa «{qfx.CORRIDORS_LAYER}»")
-                self.assertIn(f"Capa «{qfx.CORRIDORS_LAYER}», polígono 2: «cota» = ", error.text)
+                self.assertIn(f"Capa «{qfx.CORRIDORS_LAYER}», corredor 2: «cota» = ", error.text)
+                self.assertNotIn("polígono", error.text)
+                self.assertIn(f"Layer «{qfx.CORRIDORS_LAYER}», corridor 2: «cota» = ",
+                              error.text_in("en"))
 
     def test_the_start_and_the_end_of_a_grade_out_of_the_range_are_refused(self) -> None:
         """Con rasante, la cota inicial fuera del rango (``cota_inicial``) y la final, la del
@@ -520,8 +524,8 @@ class LevelRangeTest(unittest.TestCase):
             with self.subTest(field=field, value=value):
                 error = self.rejected(corridor_layer((STRAIGHT,), ancho=(20.0,),
                                                      cota_inicial=start, pendiente=grade), GRADED)
-                self.assertEqual(error.code, "des.floor_level")
-                self.assertEqual((error.values["polygon"], error.values["field"]), (1, field))
+                self.assertEqual(error.code, "des.corridor_level")
+                self.assertEqual((error.values["corridor"], error.values["field"]), (1, field))
                 self.assertEqual(error.values["value"], value)
 
     def test_the_ends_of_the_range_and_a_level_above_the_terrain_are_admitted(self) -> None:

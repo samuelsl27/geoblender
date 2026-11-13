@@ -164,8 +164,9 @@ class ExcavationAreaTest(qfx.QuarryProjectCase):
 
     def test_an_empty_area_is_an_error_with_what_empties_it(self) -> None:
         """RF-014-01 (spec §7): sin ninguna celda con corte admitido, o sin terreno, el recinto
-        está vacío: error ``des.quarry_area_empty`` con la versión y el área de cada parte que lo
-        vacía."""
+        está vacío: error ``des.quarry_area_empty`` con la versión y, detrás, una nota con el área
+        de cada parte que lo vacía (T51, F-12 (c): también en inglés, sin una palabra en
+        español)."""
         empty = without_cut(self.loaded)
         with self.assertRaises(messages.DesignError) as caught:
             quarry.excavation_area(empty, qfx.terrain(), version="V01")
@@ -174,15 +175,39 @@ class ExcavationAreaTest(qfx.QuarryProjectCase):
         self.assertEqual(error.values["version"], "V01")
         self.assertEqual(error.values["value"], 0)
         no_cut = qfx.DOMAIN_CELLS - INNER_BAND_CELLS
-        for text in (f"perímetro fuera del límite legal: {OUTSIDE_LIMIT_CELLS} m²",
-                     f"intocables y exclusiones: {qfx.TOWER_ZONE_CELLS} m²",
-                     f"resguardo hacia dentro del límite: {INNER_BAND_CELLS} m²",
-                     f"zonas sin corte, solo relleno o solo restauración: {no_cut} m²"):
+        self.assertEqual(error.notes, (
+            ("des.quarry_area_outside_limit", {"area": OUTSIDE_LIMIT_CELLS}),
+            ("des.quarry_area_untouchable", {"area": qfx.TOWER_ZONE_CELLS}),
+            ("des.quarry_area_inner_band", {"area": INNER_BAND_CELLS}),
+            ("des.quarry_area_no_cut", {"area": no_cut})))
+        for text in (f"Lo que lo vacía: Perímetro de actuación fuera del límite legal: "
+                     f"{OUTSIDE_LIMIT_CELLS} m².",
+                     f"Intocables y exclusiones: {qfx.TOWER_ZONE_CELLS} m².",
+                     f"Resguardo hacia dentro del límite: {INNER_BAND_CELLS} m².",
+                     f"Zonas sin corte, solo relleno o solo restauración: {no_cut} m²."):
             self.assertIn(text, error.text)
         self.assertNotIn("sin dato de terreno", error.text, "solo las partes con celdas")
+        english = error.text_in("en")
+        for text in (f"What empties it: Action perimeter outside the legal limit: "
+                     f"{OUTSIDE_LIMIT_CELLS} m².",
+                     f"Untouchables and exclusions: {qfx.TOWER_ZONE_CELLS} m².",
+                     f"Buffer inside the limit: {INNER_BAND_CELLS} m².",
+                     f"Zones with no cut, fill only or restoration only: {no_cut} m²."):
+            self.assertIn(text, english)
+        self.assertEqual(set(english) & set("áéíóúñ"), set(), english)
         with self.assertRaises(messages.DesignError) as caught:
             quarry.excavation_area(self.loaded, np.full(qfx.GRID.shape, np.nan))
-        self.assertIn(f"sin dato de terreno: {qfx.CUT_ALLOWED_CELLS} m²", caught.exception.text)
+        self.assertIn(f"Celdas sin dato de terreno: {qfx.CUT_ALLOWED_CELLS} m²",
+                      caught.exception.text)
+        self.assertIn(f"Cells without terrain data: {qfx.CUT_ALLOWED_CELLS} m²",
+                      caught.exception.text_in("en"))
+        nothing = dataclasses.replace(self.loaded,
+                                      classes=np.zeros_like(self.loaded.classes))
+        with self.assertRaises(messages.DesignError) as caught:
+            quarry.excavation_area(nothing, qfx.terrain())
+        self.assertEqual(caught.exception.notes, (("des.quarry_area_no_perimeter", {}),))
+        self.assertIn("Lo que lo vacía: El perímetro de actuación no tiene ninguna celda en la "
+                      "rejilla.", caught.exception.text)
 
     def test_a_terrain_of_another_shape_is_a_programming_error(self) -> None:
         with self.assertRaises(ValueError):

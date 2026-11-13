@@ -561,7 +561,8 @@ class RefitToLimitTest(unittest.TestCase):
                     self.assertEqual({key: value for key, value in items.items()
                                       if key.startswith("CODIGO_") or key == "UNIDAD"},
                                      {"UNIDAD": "código", "CODIGO_0": "sin diferencia",
-                                      "CODIGO_1": "desdoblado", "CODIGO_2": "relleno"})
+                                      "CODIGO_1": "desdoblado",
+                                      "CODIGO_2": "relleno de restauración"})
                 else:
                     self.assertEqual((items["UNIDAD"], items["TIPO"]),
                                      ("m", "Superficie ajustada a un límite nuevo"))

@@ -130,7 +130,8 @@ class ClassRuleTest(unittest.TestCase):
         sin diferencia, 1 desdoblado, 2 relleno) en las celdas del dominio con las dos superficies
         y sin dato fuera de él o donde falta una: ``Δ ≤ e`` (también el empate exacto y la final
         medio milímetro por encima) es sin diferencia; ``Δ > e`` en la zona de relleno, relleno; y
-        si no, desdoblado. Una rejilla nueva de float64 (P-1: GeoTIFF con sin dato)."""
+        si no, desdoblado. Una rejilla nueva de float64 (P-1: GeoTIFF con sin dato). El nombre de
+        cada clase (RF-014-16, T51): el de la vista y la barra N, «relleno de restauración»."""
         found = classify()
         self.assertIsInstance(found, quarry.Classification)
         self.assertEqual(found.grid.dtype, np.float64)
@@ -141,7 +142,7 @@ class ClassRuleTest(unittest.TestCase):
         self.assertEqual(found.cell_area_m2, 4.0)
         self.assertEqual(dict(quarry.CLASS_NAMES), {
             CellClass.NONE: "sin diferencia", CellClass.UNSPLIT: "desdoblado",
-            CellClass.FILL: "relleno"})
+            CellClass.FILL: "relleno de restauración"})
 
     def test_volumes_and_areas_in_total(self) -> None:
         """El total: relleno 4 + 0,5 = 4,5 m de Δ (18 m³, 2 celdas, 8 m²); desdoblado 0,5 + 3 +

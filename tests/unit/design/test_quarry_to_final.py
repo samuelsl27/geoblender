@@ -224,8 +224,8 @@ class UnsplitZonesTest(unittest.TestCase):
     def test_the_bounds_of_the_threshold_and_of_the_area(self) -> None:
         """El desdoblado ha de pasar del umbral (3,25 m no pasa de 3,25 m: ``W`` sale) y la zona,
         del área mínima («de más del área mínima»): con 0,25 ha exactas, ``W`` (625 celdas de
-        4 m², 2.500 m²) no se avisa; con 0,2496 ha (624 celdas), ``W`` tiene una celda más y se
-        avisa; con 0,26 ha, no."""
+        4 m², 2.500 m²) no se avisa (y el aviso de su única zona dice «en 1 zona», T51); con
+        0,2496 ha (624 celdas), ``W`` tiene una celda más y se avisa; con 0,26 ha, no."""
         higher = zones_of(self.case, threshold_m=3.25)
         np.testing.assert_array_equal(higher.candidates, box("M") | box("S"))
         self.assertEqual([zone.cells for zone in higher.zones], [5_000])
@@ -236,6 +236,7 @@ class UnsplitZonesTest(unittest.TestCase):
         self.assertEqual(exact.notices[0], messages.render(
             "des.quarry_unsplit_zones", zones=1, area=2.0, volume=200_000.0, threshold=1.0,
             min_area=0.25))
+        self.assertIn("La explotación no llega a la final en 1 zona: 2 ha", exact.notices[0])
         one_more = zones_of(self.case, min_area_ha=0.2496)
         self.assertEqual([zone.cells for zone in one_more.zones], [5_000, 625])
         above = zones_of(self.case, min_area_ha=0.26)
@@ -609,14 +610,15 @@ class QuarryToFinalTest(unittest.TestCase):
 
     def test_after_the_mode_it_classifies_again_and_warns_what_is_left(self) -> None:
         """La clasificación se rehace con la explotación bajada (el desdoblado baja en los
-        190.000 m³ que pasan) y el aviso dice lo que queda (solo ``W``); el invariante se cumple y
-        los avisos dicen lo que pasó."""
+        190.000 m³ que pasan) y el aviso dice lo que queda (solo ``W``: «en 1 zona», T51); el
+        invariante se cumple y los avisos dicen lo que pasó."""
         outcome = self.warned
         np.testing.assert_array_equal(outcome.classes.grid,
                                       classify(self.case, outcome.exploitation_grid).grid)
         self.assertEqual(outcome.classes.total.unsplit_m3,
                          self.none.classes.total.unsplit_m3 - 190_000.0)
         self.assertEqual([zone.cells for zone in outcome.unsplit.zones], [625])
+        self.assertIn("no llega a la final en 1 zona: 0,25 ha", outcome.unsplit.notices[0])
         quarry.check_order("Cantera a mano", outcome.final_grid, outcome.exploitation_grid,
                            self.case["terrain"], GRID)
         note = messages.render("des.quarry_to_final", zones=2, area=2.25, volume=190_000.0)

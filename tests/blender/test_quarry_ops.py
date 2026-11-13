@@ -779,11 +779,13 @@ class LimitFromPerimeterTest(unittest.TestCase):
         """RF-014-01 (casos límite de la spec): sobre la rejilla «sin dato» el recinto queda vacío y
         se rechaza al calcular, nombrando la versión y el área de cada parte que lo vacía (fuera del
         límite legal 468 m², resguardo hacia dentro 256 m², sin corte 100 m², sin dato de terreno
-        1.660 m²), desde la interfaz y desde un guion, en los dos idiomas; no deja nada."""
+        1.660 m²), desde la interfaz y desde un guion, en los dos idiomas (T51, F-12 (c): las
+        partes también en inglés); no deja nada."""
         files = self.names()
         done = len(self.operations("done"))
-        parts = ("perímetro fuera del límite legal: 468 m²", "resguardo hacia dentro del límite: "
-                 "256 m²", "zonas sin corte, solo relleno o solo restauración: 100 m²")
+        parts = ("Lo que lo vacía: Perímetro de actuación fuera del límite legal: 468 m².",
+                 "Resguardo hacia dentro del límite: 256 m².",
+                 "Zonas sin corte, solo relleno o solo restauración: 100 m².")
         modal = self.start(name="Vacío", surface=self.hollow)
         state, _calls = self.drive(modal)
         self.assertEqual(state, {"CANCELLED"})
@@ -791,13 +793,20 @@ class LimitFromPerimeterTest(unittest.TestCase):
         self.assertIn("El recinto excavable de la versión V01 está vacío", shown)
         for part in parts:
             self.assertIn(part, shown)
-        self.assertRegex(shown, r"sin dato de terreno: 1\D?660 m²")
+        self.assertRegex(shown, r"Celdas sin dato de terreno: 1\D?660 m²")
         self.nothing_left(files, done)
         self.i18n.set_language("en")
         with self.assertRaises(RuntimeError) as raised:
             bpy.ops.geoblender.des_create_limit_from_perimeter(
                 "EXEC_DEFAULT", name="Vacío", surface=self.hollow)
-        self.assertIn("The excavation area of version V01 is empty", str(raised.exception))
+        english = str(raised.exception)
+        self.assertIn("The excavation area of version V01 is empty", english)
+        for part in ("What empties it: Action perimeter outside the legal limit: 468 m².",
+                     "Buffer inside the limit: 256 m².",
+                     "Zones with no cut, fill only or restoration only: 100 m²."):
+            self.assertIn(part, english)
+        self.assertRegex(english, r"Cells without terrain data: 1\D?660 m²")
+        self.assertNotRegex(english, "[áéíóúñ]")
         self.nothing_left(files, done)
 
     def test_d_esc_cancel_and_a_missing_field_leave_nothing(self) -> None:

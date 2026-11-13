@@ -116,6 +116,7 @@ from ..core.datasets.model import (
 from ..core.errors import GeoblenderError
 from ..core.georef import CrsRef
 from ..core.gpkg.base import ColumnDef, create_attribute_table, create_base
+from ..core.gpkg.connection import GpkgConnection
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
 from ..core.paths import check_path_length
 from ..core.project.model import Progress
@@ -759,10 +760,12 @@ def prepare_quarry(project: StoreProject, request: QuarryRequest, *, version: st
                    masks: access.MaskSet | None = None,
                    sectors: Sequence[DesignSector] | None = None,
                    pending_sectors: Iterable[str] = (), touched_sectors: Iterable[str] = (),
+                   previous: Mapping[Surface | str, Mapping[str, Any]] | None = None,
                    supersedes: str | None = None) -> OperationStart:
     """Lo mismo que :func:`prepare_design` para ``des.quarry`` (spec 014, T19; RF-014-29) de
     ``request``: los ajustes de ``quarry_settings`` (con los sectores pendientes y los que toca el
-    recinto), las entradas de ``quarry_inputs`` (la superficie de partida, lo que leen los lados,
+    recinto y lo ``previous`` con que se compara cada lado, :func:`_quarry_previous`, T51),
+    las entradas de ``quarry_inputs`` (la superficie de partida, lo que leen los lados,
     las capas que usa, las máscaras, los sectores y las búsquedas) y los parámetros de
     ``quarry_params`` (los cinco valores de los perfiles de los dos lados, los taludes de los
     sectores, los de la 014 y los de la 013). Un perfil o un parámetro de la 014 sin valor, o fuera
@@ -776,8 +779,8 @@ def prepare_quarry(project: StoreProject, request: QuarryRequest, *, version: st
     inputs = provenance.quarry_inputs(request, loaded.uses(), available_tables(project))
     params = provenance.quarry_params(request, sector_slopes=slope_params(chosen))
     return _start(project, provenance.QUARRY, request.name, found, loaded,
-                  provenance.quarry_settings(request, pending_sectors, touched_sectors), inputs,
-                  params, supersedes)
+                  provenance.quarry_settings(request, pending_sectors, touched_sectors, previous),
+                  inputs, params, supersedes)
 
 
 def prepare_edge_transition(project: StoreProject, name: str, surface: str, start: str, *,
@@ -2029,8 +2032,9 @@ def prepare_quarry_units(project: StoreProject, request: QuarryRequest, version:
     comparada con la rejilla del proyecto), el recinto con sus sectores (:func:`quarry_domain`), el
     rechazo de un sector del recinto con la búsqueda de intocables pendiente
     (``des.sector_pending``, RF-014-30, como RF-013-05), las piezas del proyecto
-    (:func:`quarry_parts_units`) y :func:`prepare_quarry`. Devuelve la :class:`PreparedQuarry`.
-    Nada se escribe; los rechazos salen al avanzar."""
+    (:func:`quarry_parts_units`), con qué se compara cada lado (:func:`_quarry_previous`, T51) y
+    :func:`prepare_quarry`. Devuelve la :class:`PreparedQuarry`. Nada se escribe; los rechazos
+    salen al avanzar."""
     sectors = design_sectors(project, version.uid)
     yield
     frame = project_frame(project)
@@ -2047,9 +2051,11 @@ def prepare_quarry_units(project: StoreProject, request: QuarryRequest, version:
         layer=lambda name: layer_cells(project, name, geometry),
         surface=lambda name, what: read_surface(project, name, version_uid=version.uid,
                                                 expect=frame, role=what).values)
+    previous = _quarry_previous(project, version, request.name)
+    yield
     start = prepare_quarry(project, request, version=version.uid, masks=masks, sectors=sectors,
                            touched_sectors=[ref.code for ref in domain.touched],
-                           supersedes=supersedes)
+                           previous=previous, supersedes=supersedes)
     yield
     return PreparedQuarry(parts, start)
 
@@ -2071,6 +2077,60 @@ def compute_area_steps(writer: DesignWriter, name: str, prepared: PreparedArea,
 
 
 # --- La cantera con dos superficies (spec 014, T19; RF-014-29 a RF-014-31) -----------------------
+
+_SIDE_VOLUMES = ("cut_m3", "fill_m3")
+"""Las filas del informe de la 013 de cada lado en ``des_qrp_`` (``final.cut_m3``…) con que se
+compara el mismo lado de una cantera posterior (T51)."""
+_QUARRY_REPORT_ROLE = provenance.FAMILIES_BY_CODE[provenance.QUARRY_REPORT_TABLE].role
+
+
+def _quarry_previous(project: StoreProject, version: Version, name: str
+                     ) -> dict[str, dict[str, Any]] | None:
+    """Con qué se comparan el desmonte y el terraplén de cada lado de la cantera ``name`` (spec
+    014, T51, hallazgo F-12 (g); RF-013-30, D-25 de la 013, como :func:`previous_comparison`): la
+    operación ``des.quarry`` de ese nombre de la revisión **congelada** más reciente de
+    ``version`` y, de cada lado, el desmonte y el terraplén de su escalonado tal como se congeló
+    (las filas ``final.cut_m3``… de su informe ``des_qrp_``, leídas de su copia en la
+    instantánea: ``core.versions.read.frozen_location``), cada lado con el suyo: por superficie
+    (``final`` y ``exploitation``), ``operation`` (el nombre del lado, «<cantera> (superficie
+    final)», el de su informe), ``revision`` (``V01.r1``), ``cut_m3`` y ``fill_m3``. ``None`` si la
+    versión no tiene ninguna congelada o está alterada, si no tiene ninguna cantera así, si su
+    informe no tiene copia o si le falta alguna de esas filas. Solo lee."""
+    with project.read() as conn:
+        revision = versions_read.last_frozen(conn, version.uid)
+        if revision is None or revision.altered:
+            return None
+        rows = conn.execute(
+            "SELECT uid, settings FROM gb_operation WHERE revision_uid = ? AND op_type = ? "
+            "AND status = ? ORDER BY fid DESC",
+            (revision.uid, provenance.QUARRY, OperationStatus.DONE.value)).fetchall()
+        uid = next((str(uid) for uid, settings in rows
+                    if json.loads(settings).get("name") == name), None)
+        if uid is None:
+            return None
+        report = conn.execute(
+            "SELECT item_uid FROM gb_operation_io WHERE operation_uid = ? AND direction = 'out' "
+            "AND item_kind = 'dataset' AND role = ?", (uid, _QUARRY_REPORT_ROLE)).fetchone()
+        location = (None if report is None
+                    else versions_read.frozen_location(conn, revision.uid, str(report[0])))
+    if location is None or location.path is None or location.layer is None:
+        return None
+    path = Path(project.root, *location.path.split("/"))
+    if not path.is_file():
+        return None
+    keys = [f"{side.value}.{key}" for side in Surface for key in _SIDE_VOLUMES]
+    table = '"' + location.layer.replace('"', '""') + '"'
+    with GpkgConnection.open_read(path) as gpkg:
+        found = dict(gpkg.connection.execute(
+            f"SELECT quantity, value FROM {table} WHERE quantity IN "
+            f"({', '.join('?' for _key in keys)})", keys).fetchall())
+    if any(found.get(key) is None for key in keys):
+        return None
+    label = f"{version.code}.r{revision.number}"
+    return {side.value: {"operation": f"{name} ({quarry.SIDE_NAMES[side]})", "revision": label,
+                         **{key: float(found[f"{side.value}.{key}"]) for key in _SIDE_VOLUMES}}
+            for side in Surface}
+
 
 
 def quarry_domain(masks: access.MaskSet, start: np.ndarray, refs: Sequence[SectorRef],
@@ -2152,14 +2212,17 @@ ADR-0014, la de los dos lados de una cantera (T45: la euclídea exacta se rechaz
 
 
 def quarry_notices(request: QuarryRequest, masks: access.MaskSet, parts: QuarryParts,
-                   ring_cells: int, outcome: quarry.QuarryOutcome) -> tuple[Notice, ...]:
+                   ring_cells: int, outcome: quarry.QuarryOutcome, *, compared: bool = False
+                   ) -> tuple[Notice, ...]:
     """Los avisos y las notas de la cantera que no son del escalonado de un lado, en el orden en
     que se enseñan: los de sus capas (fondos y corredores sobre el terreno, juntos, como en
     ``parts.joined``, T42; zonas a conservar sin dato, corredores más largos que su eje más su
     ancho; los de la vista previa), las semillas de la 013 de un lado que caen fuera de la
     coronación y de las zonas a sostener, por grupos (RF-014-03), el desdoblado sobre terreno sin
-    explotar, por zonas (RF-014-17), y «explotación hasta la final» (RF-014-18). Con sus valores
-    como números (``preview.Notice``)."""
+    explotar, por zonas (RF-014-17), «explotación hasta la final» (RF-014-18) y, si sus lados no se
+    compararon con los de una cantera anterior (sin ``compared``), la nota de la 013 que lo dice,
+    una sola vez y con el nombre de la cantera (``des.magnitude_no_reference``; T51: no una por
+    lado). Con sus valores como números (``preview.Notice``)."""
     geometry = masks.grid
     start = parts.start.values
     found = list(_quarry_warnings(start, parts.floors, parts.conserve, parts.corridors,
@@ -2182,6 +2245,8 @@ def quarry_notices(request: QuarryRequest, masks: access.MaskSet, parts: QuarryP
         found.append(Notice("des.quarry_to_final", {
             "zones": len(outcome.to_final.zones), "area": outcome.to_final.area_ha,
             "volume": outcome.to_final.volume_m3}))
+    if not compared:
+        found.append(Notice("des.magnitude_no_reference", {"operation": request.name}))
     return tuple(found)
 
 
@@ -2223,6 +2288,7 @@ def _seeds_outside_units(masks: access.MaskSet, parts: QuarryParts, values: Mapp
 
 def quarry_compute_steps(request: QuarryRequest, masks: access.MaskSet, parts: QuarryParts,
                          values: Mapping[str, object], *, pending: tuple[str, ...] = (),
+                         previous: Mapping[Surface | str, Mapping[str, Any] | None] | None = None,
                          budget_s: float = STEP_BUDGET_S
                          ) -> Generator[Progress, None, QuarryCalculated]:
     """Los pasos que calculan la cantera ``request`` con sus piezas ``parts`` y los parámetros
@@ -2233,9 +2299,12 @@ def quarry_compute_steps(request: QuarryRequest, masks: access.MaskSet, parts: Q
     (``quarry.quarry_steps``, con el anillo de coronación, el espesor mínimo, la tolerancia, el
     umbral y el aviso de desdoblado) y, con zonas a conservar, lo que mueven en ellas
     (:func:`_check_conserved`, RF-014-08: más de 0 m³ es ``des.conserve_moved`` y no sale nada que
-    crear). ``pending``: los nombres de los sectores con la búsqueda pendiente que se marcan.
-    Devuelve la :class:`QuarryCalculated`: el ``QuarryOutcome`` y sus avisos
-    (:func:`quarry_notices`). Lo comparten «Calcular», el recálculo y la reproducción."""
+    crear). ``pending``: los nombres de los sectores con la búsqueda pendiente que se marcan;
+    ``previous``: lo anterior con que se compara cada lado (T51; por superficie, como en los
+    ajustes, ``provenance.settings_previous(ajustes, lado)``): con los dos, cada lado se compara
+    con el suyo; si falta alguno, ninguno, y la cantera lo dice una vez. Devuelve la
+    :class:`QuarryCalculated`: el ``QuarryOutcome`` y sus avisos (:func:`quarry_notices`). Lo
+    comparten «Calcular», el recálculo y la reproducción."""
     geometry = masks.grid
     start = parts.start.values
     ring = int(check_quarry_param(CROWN_RING, values.get(CROWN_RING)))
@@ -2245,20 +2314,24 @@ def quarry_compute_steps(request: QuarryRequest, masks: access.MaskSet, parts: Q
         ceiling = yield from pipeline.forward(quarry.conservation_ceiling_steps(
             parts.conserve, start, geometry, values.get(CONSERVE_SLOPE),  # type: ignore[arg-type]
             metric=_CEILING_METRIC, budget_s=budget_s))
+    sides = {Surface(key): pipeline.previous_of(item)
+             for key, item in (previous or {}).items() if item is not None}
+    compared = len(sides) == len(Surface)
     job = quarry.QuarryJob(
         request, start, masks, parts.domain, values, ring, thickness,
         number(values, TOLERANCE_FACE), number(values, WARNING_RATIO), seeds=parts.seeds,
         floors=parts.joined, ceiling=ceiling, anchors=parts.anchors, pending=pending,
         fill_zones=parts.fill_zones, unsplit_threshold_m=number(values, UNSPLIT_THRESHOLD),
         unsplit_min_area_ha=number(values, UNSPLIT_MIN_AREA),
-        to_final_zones=parts.to_final_zones)
+        to_final_zones=parts.to_final_zones, previous=sides if compared else {})
     outcome: quarry.QuarryOutcome = yield from pipeline.forward(
         quarry.quarry_steps(job, budget_s=budget_s))
     if parts.conserve:
         yield Progress("conserve", 0, 1, "Midiendo lo que se mueve en las zonas a conservar…")
         _check_conserved(request.name, outcome, start, parts.conserve, geometry, thickness)
         yield Progress("conserve", 1, 1, "Nada movido en las zonas a conservar")
-    return QuarryCalculated(outcome, quarry_notices(request, masks, parts, ring, outcome))
+    return QuarryCalculated(outcome, quarry_notices(request, masks, parts, ring, outcome,
+                                                    compared=compared))
 
 
 _CONSERVE_FIELD = "volumen en las zonas a conservar (m³)"
@@ -2396,7 +2469,8 @@ def compute_quarry_steps(writer: DesignWriter, request: QuarryRequest, masks: ac
                          ) -> Generator[Progress, None, QuarryCalculated]:
     """Lo mismo que :func:`compute_design_steps` para la cantera ``request`` (spec 014, T19;
     RF-014-29): la calcula (:func:`quarry_compute_steps`, con las piezas de ``prepared``, los
-    parámetros ``values`` y los sectores pendientes de los ajustes ``settings``) y deja sus cinco
+    parámetros ``values`` y los sectores pendientes y lo anterior de cada lado de los ajustes
+    ``settings``) y deja sus cinco
     rejillas en los temporales de ``writer`` (:func:`quarry_grids`) y prepara sus dos tablas
     (:func:`quarry_berm_rows`, :func:`quarry_report_rows`), **sin confirmar**. Devuelve la
     :class:`QuarryCalculated`."""
@@ -2405,7 +2479,9 @@ def compute_quarry_steps(writer: DesignWriter, request: QuarryRequest, masks: ac
     waiting = set(provenance.settings_pending(settings))
     pending = tuple(ref.name for ref in parts.domain.sectors if ref.code in waiting)
     calculated: QuarryCalculated = yield from quarry_compute_steps(
-        request, masks, parts, values, pending=pending, budget_s=budget_s)
+        request, masks, parts, values, pending=pending,
+        previous={side: provenance.settings_previous(settings, side) for side in Surface},
+        budget_s=budget_s)
     outcome, notices = calculated.outcome, calculated.notices
     geometry, crs, vertical = parts.start.grid, writer.crs, writer.vertical
     for family, grid, what in quarry_grids(outcome):

@@ -215,7 +215,8 @@ class QuarryPreviewTest(qfx.QuarryProjectCase):
         × 10 m a 290 m, por encima del terreno, la vista previa avisa de los fondos sobre el
         terreno con su área (800 celdas de 1 m², a mano; los fondos de la cantera quedan por debajo
         de él), como lo dirá el cálculo; con uno a 10⁶ m, rechaza al avanzar con
-        ``des.floor_level`` (la capa, el corredor, el campo y el valor) y no escribe nada."""
+        ``des.corridor_level`` (la capa, el corredor, el campo y el valor; T51) y no escribe
+        nada."""
         for name, level in ((HIGH_CORRIDORS, 290.0), (IMPOSSIBLE_CORRIDORS, 1.0e6)):
             qfx.write_feature_layer(self.project, self.clock, lane_layer(name, level))
         before = self.snapshot()
@@ -228,8 +229,8 @@ class QuarryPreviewTest(qfx.QuarryProjectCase):
         with self.assertRaises(messages.DesignError) as caught:
             self.summarize(corridors=replace(CORRIDOR, layer=IMPOSSIBLE_CORRIDORS))
         error = caught.exception
-        self.assertEqual(error.code, "des.floor_level")
-        self.assertEqual((error.values["layer"], error.values["polygon"], error.values["field"],
+        self.assertEqual(error.code, "des.corridor_level")
+        self.assertEqual((error.values["layer"], error.values["corridor"], error.values["field"],
                           error.values["value"]),
                          (IMPOSSIBLE_CORRIDORS, 1, "cota_inicial", 1.0e6))
         self.assertEqual(self.snapshot(), before)
