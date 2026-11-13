@@ -53,8 +53,10 @@ registrar** (``design.steps.Calculation``), con sus rejillas en temporales junto
 que la persona lo crea o lo cancela. Es de la sesión: :func:`hold_calculation` lo guarda en memoria
 (el anterior se descarta), :func:`calculation` lo da mientras siga abierto y
 :func:`discard_calculation` lo descarta. Cambiar de proyecto (cerrarlo o abrir otro:
-:func:`project_changed`) y desactivar Geoblender lo descartan: no quedan ``*.tif.tmp-*``. La
-confirmación de la orden no recalcula: llama a ``create()`` de éste.
+:func:`project_changed`) y desactivar Geoblender lo descartan: no quedan ``*.tif.tmp-*``. Un cálculo
+cuyo resultado llega con el proyecto ya cerrado (en el último paso: spec 014, T48) no queda abierto:
+el modal lo descarta (:func:`_discard_late`) y se para diciéndolo. La confirmación de la orden no
+recalcula: llama a ``create()`` de éste.
 
 **La disponibilidad** (RF-013-33): :func:`design_unavailable` dice por qué no se puede lanzar ahora
 una orden de Diseño que escribe, en el idioma de Geoblender: sin proyecto, sin la procedencia o en
@@ -575,6 +577,17 @@ def _discard(held: Calculation) -> None:
         held.discard()
     except Exception:  # noqa: BLE001 - lo que queda son temporales; no impide seguir
         LOGGER.exception("No se pudieron borrar los temporales de un cálculo del diseño")
+
+
+def _discard_late(result: object) -> None:
+    """Lo que trae un paso de un cálculo cuando el proyecto ya se ha cerrado (spec 014, T48;
+    RNF-014-05): un cálculo hecho (``design.steps.Calculation``, el del último paso) se descarta
+    y sus temporales se borran, en lugar de quedar abierto de un proyecto cerrado; otra cosa (nada,
+    o los avisos de la cantera que esperaban su confirmación) no deja nada."""
+    from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+    if isinstance(result, design_steps.Calculation):
+        _discard(result)
 
 
 def project_changed(_project: Project | None) -> None:
@@ -1829,11 +1842,15 @@ class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOper
         _NEXT.clear()
 
     def _result(self, context: Any, step: Progress) -> set[str] | None:
+        """Con el proyecto del cálculo cerrado, en cualquier paso (también el último, que trae el
+        cálculo hecho: :func:`_discard_late`; spec 014, T48), se para sin dejar nada y lo dice;
+        si no, sigue o, con el resultado, lo deja abierto (:meth:`_finished`)."""
+        if project_session.current() is not getattr(self, "_project", None):
+            _discard_late(step.result)
+            return self._fail(context, tr(
+                "The project was closed while the design «{name}» was being computed: nothing "
+                "has been left half-done", name=getattr(self, "_name", "")))
         if step.result is None:
-            if project_session.current() is not getattr(self, "_project", None):
-                return self._fail(context, tr(
-                    "The project was closed while the design «{name}» was being computed: nothing "
-                    "has been left half-done", name=getattr(self, "_name", "")))
             return None
         self._done(context)
         self._finished(context, step.result)
@@ -1869,7 +1886,8 @@ class _CalculateAndCreate:
     al terminar, :meth:`_finished` deja el cálculo abierto con su resumen (``des_panels``) y pide
     confirmar (:func:`_ask_confirmation` con :attr:`COMMAND`); :meth:`_confirmation` es el diálogo
     de **Crear** («Crear con N avisos» si los hay) y :meth:`_create` registra en una transacción;
-    **Cancelar**, cerrar esa ventana (:meth:`cancel`) y Esc no dejan nada. Se pone **antes** de las
+    **Cancelar**, cerrar esa ventana (:meth:`cancel`), Esc y cerrar el proyecto mientras calcula
+    (también en el último paso: :meth:`_result`) no dejan nada. Se pone **antes** de las
     bases de la orden; cada orden da :attr:`COMMAND`, :meth:`_created_text` y su
     ``_status_text``."""
 
@@ -1958,11 +1976,16 @@ class _CalculateAndCreate:
         return design_error_text(exc)
 
     def _result(self, context: Any, step: Progress) -> set[str] | None:
+        """Con el proyecto del cálculo cerrado, en cualquier paso (también el último, que trae el
+        cálculo hecho o los avisos de la cantera: :func:`_discard_late`; T48), se para sin dejar
+        nada ni volver a abrir la orden, y lo dice; si no, sigue o, con el resultado, acaba
+        (:meth:`_finished`)."""
+        if project_session.current() is not getattr(self, "_project", None):
+            _discard_late(step.result)
+            return self._fail(context, tr(
+                "The project was closed while the design «{name}» was being computed: nothing "
+                "has been left half-done", name=getattr(self, "_name", "")))
         if step.result is None:
-            if project_session.current() is not getattr(self, "_project", None):
-                return self._fail(context, tr(
-                    "The project was closed while the design «{name}» was being computed: nothing "
-                    "has been left half-done", name=getattr(self, "_name", "")))
             return None
         self._done(context)
         return self._finished(context, step.result)

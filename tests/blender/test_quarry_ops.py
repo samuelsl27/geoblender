@@ -71,6 +71,9 @@ restauración por relleno (de (40, 30) a (48, 46)).
   diciendo los grupos.
 - RF-014-12 (l; T45): la métrica de cada superficie solo ofrece el chamfer 5×5 (la de la 013, las
   dos), y desde un guion la orden no admite la exacta.
+- RNF-014-05 (n; T48): cerrar el proyecto justo antes del último evento del recinto o de la cantera
+  (el resultado llega con el proyecto cerrado) no deja nada: ni cálculo abierto, ni temporal, ni
+  la orden vuelta a abrir, y lo dice.
 - Principio 8 (z): desactivar Geoblender quita las dos órdenes y el cargador y descarta el cálculo
   abierto.
 
@@ -93,7 +96,7 @@ from unittest import mock
 import bpy
 import numpy as np
 
-from tests.support import blender_ext
+from tests.support import blender_ext, step_modals
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
 from tests.support.fake_layout import draw, operator_self
@@ -189,6 +192,9 @@ OUTSIDE_GROUPS = ((172, 6_616 / 172, 5_160 / 172),
                   (AREA_CELLS, (440 * 28 - 25 * 25) / AREA_CELLS,
                    (440 * 30 - 25 * 25) / AREA_CELLS))
 """Cada grupo: sus celdas y su centro local (m)."""
+CLOSED_NAME = "Cierre"
+CLOSED_TEXT = "Se cerró el proyecto mientras se calculaba «Cierre»: no ha quedado nada a medias"
+"""Lo que dice una orden si el proyecto se cierra mientras calcula «Cierre» (T48)."""
 
 
 def _module(name: str) -> ModuleType:
@@ -1323,6 +1329,34 @@ class LimitFromPerimeterTest(unittest.TestCase):
             with self.subTest(idioma=language):
                 self.i18n.set_language(language)
                 self.assertEqual(self.des_ops.design_error_text(error), text)
+
+    def test_n_closing_the_project_at_the_last_step_leaves_nothing(self) -> None:
+        """RNF-014-05, RF-014-29 (T48, hallazgo F-9): si el proyecto se cierra justo antes del
+        último evento de «Límite desde el perímetro…» o de «Cantera con dos superficies…» —el
+        cálculo, hecho; su resultado llega con el proyecto ya cerrado—, el modal se para sin dejar
+        nada: ni cálculo abierto ni ventana de «Crear», ni temporal, ni operación, y dice «Se cerró
+        el proyecto mientras se calculaba «Cierre»: no ha quedado nada a medias». Con las semillas
+        fuera de la coronación (T43), tampoco vuelve a abrir la orden para confirmarlas."""
+        files = self.names()
+        done, quarries = len(self.operations("done")), len(self.quarry_operations("done"))
+        outside = {"exploitation_seeds": "SURFACE", "exploitation_surface": self.ground,
+                   "exploitation_zone": "none"}
+        for label, command, start in (
+                ("recinto", self.cls, lambda: self.start(name=CLOSED_NAME)),
+                ("cantera", self.quarry_cls, lambda: self.quarry_start(name=CLOSED_NAME)),
+                ("semillas fuera", self.quarry_cls,
+                 lambda: self.quarry_start(name=CLOSED_NAME, **outside))):
+            with (self.subTest(orden=label),
+                  mock.patch.object(self.des_ops, "_invoke_later") as later):
+                closed = step_modals.close_at_the_last_event(
+                    command, start, bpy.context, session=self.ps, des_ops=self.des_ops)
+                self.assertEqual(closed.state, {"CANCELLED"})
+                self.assertEqual(closed.modal.report_log, [CLOSED_TEXT])
+                self.assertIsNone(closed.modal._steps)
+                self.assertEqual(closed.asked, 0)  # ni «Crear»
+                self.assertEqual(later.call_count, 1 if label == "semillas fuera" else 0)  # 1.ª vez
+                self.nothing_left(files, done)
+                self.nothing_left_quarry(files, quarries)
 
     def test_z_disabling_geoblender_removes_the_command_and_the_loader(self) -> None:
         """Principio 8, D-14 de la 013: con un cálculo abierto, desactivar Geoblender lo descarta (no

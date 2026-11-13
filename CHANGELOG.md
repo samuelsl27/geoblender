@@ -180,7 +180,12 @@ cantera con dos superficies, revise la clasificación y la cree en menos de 20 m
     mismo para las dos), con los m³ de cada una; pedir otro ángulo se rechaza, y si el límite no corta
     una superficie su ajuste es de 0 m³ y lo dice.
   - **Confirmar antes de escribir**: las cinco órdenes calculan por pasos, con el avance en la barra
-    de estado y Esc, y enseñan su resumen; solo **Crear** lo registra, en una transacción. Son cinco
+    de estado y Esc, y enseñan su resumen; solo **Crear** lo registra, en una transacción. Cerrar el
+    proyecto mientras calculan no deja nada, tampoco justo cuando acaban: el cálculo se descarta con
+    sus rejillas temporales y lo dicen («Se cerró el proyecto mientras se calculaba…»). Su
+    verificación encontró que, cerrado el proyecto en el último paso, el cálculo quedaba abierto
+    pidiendo **Crear**, con sus temporales en la carpeta del proyecto cerrado; **Envolventes y
+    escalonado…** (spec 013) hacía lo mismo y se corrige igual. Ninguna cifra cambia. Son cinco
     operaciones de la versión activa con sus entradas, sus parámetros y sus cifras con tipo y
     procedencia (con el nombre de la operación, la superficie y el sector como ámbito): quedan
     obsoletas con su causa si cambia una capa, un perfil o las máscaras, se recalculan con

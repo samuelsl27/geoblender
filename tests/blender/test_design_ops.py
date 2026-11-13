@@ -43,6 +43,8 @@ estado:
   dejó obsoleto un parámetro, sin pedir confirmación y con su avance.
 - RF-013-33, D-14 (l, T37): cerrar el proyecto a mitad de un cálculo lo para sin dejar nada y lo dice
   con su propio texto («Se cerró el proyecto mientras se calculaba «Cierre»…»), no el de la cubicación.
+- RF-013-33, D-14 (m, T48 de la 014): cerrarlo justo antes del último evento (el resultado llega con
+  el proyecto cerrado) tampoco deja nada: ni cálculo abierto, ni temporal, ni escalonado pendiente.
 - Principio 8 (z): desactivar Geoblender quita la orden y descarta el cálculo abierto.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
@@ -64,7 +66,7 @@ from unittest import mock
 import bpy
 import numpy as np
 
-from tests.support import blender_ext
+from tests.support import blender_ext, step_modals
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
 from tests.support.fake_layout import draw, operator_self
@@ -1108,6 +1110,27 @@ class ComputeEnvelopeTest(unittest.TestCase):
         self.assertEqual(self.i18n.tr(cubication, name="Hoyo"),
                          "Se cerró el proyecto mientras se cubicaba «Hoyo»: no ha quedado nada a "
                          "medias")
+
+    def test_m_closing_the_project_at_the_last_step_leaves_nothing(self) -> None:
+        """RF-013-33, D-14 (spec 014, T48; hallazgo F-9 de su verificación única): si el proyecto se
+        cierra justo antes del último evento —la envolvente, calculada; su resultado llega con el
+        proyecto ya cerrado—, el modal se para sin dejar nada (ni cálculo abierto ni ventana de
+        «Crear», ni el escalonado pendiente, ni operación, ni temporal) y lo dice."""
+        files = self.names()
+        closed = step_modals.close_at_the_last_event(
+            self.cls, lambda: self.start(name="Cierre", stepped=True, base_profile=EXPL,
+                                         sense="CUT", start=self.ground),
+            bpy.context, session=self.ps, des_ops=self.des_ops)
+        self.assertEqual(closed.state, {"CANCELLED"})
+        self.assertEqual(closed.modal.report_log, [
+            "Se cerró el proyecto mientras se calculaba «Cierre»: no ha quedado nada a medias"])
+        self.assertIsNone(closed.modal._steps)
+        self.assertEqual(closed.asked, 0)
+        self.assertIsNone(self.des_ops.calculation())
+        self.assertEqual(self.des_ops._NEXT, [])  # noqa: SLF001 - ni el escalonado pendiente
+        self.assertEqual(self.operations(ENVELOPE_TYPE, "running"), [])
+        self.assertEqual(self.temporaries(), [])
+        self.assertEqual(self.names(), files)
 
     def test_z_disabling_geoblender_removes_the_command_and_drops_the_calculation(self) -> None:
         """Principio 8, D-14: con un cálculo abierto, desactivar Geoblender lo descarta (no queda

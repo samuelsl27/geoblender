@@ -37,7 +37,7 @@ from unittest import mock
 import bpy
 import numpy as np
 
-from tests.support import blender_ext
+from tests.support import blender_ext, step_modals
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
 from tests.support.fake_layout import draw, operator_self
@@ -74,6 +74,8 @@ PROPERTIES = {
 }
 """Las propiedades del diálogo con el ``msgid`` de su nombre y de su descripción."""
 ESCAPE = SimpleNamespace(type="ESC", value="PRESS")
+CLOSED_TEXT = "Se cerró el proyecto mientras se calculaba «Cierre»: no ha quedado nada a medias"
+"""Lo que dice la orden si el proyecto se cierra mientras calcula «Cierre» (T48)."""
 
 
 def _module(name: str) -> ModuleType:
@@ -456,6 +458,28 @@ class CreateTransitionsTest(unittest.TestCase):
         with self.assertRaises(RuntimeError) as caught:
             bpy.ops.geoblender.des_create_transitions("EXEC_DEFAULT", **self.form(name=" "))
         self.assertIn("Escriba el nombre de la transición", str(caught.exception))
+        self.assertEqual(self.state(), before)
+
+    def test_e_closing_the_project_at_the_last_step_leaves_nothing(self) -> None:
+        """RNF-014-05, RF-014-29 (T48, hallazgo F-9): si el proyecto se cierra justo antes del
+        último evento —la transición, calculada; su resultado llega con el proyecto ya cerrado—, el
+        modal se para sin dejar nada (ni cálculo abierto ni ventana de «Crear», ni operación, ni
+        dato, ni cifra, ni temporal) y lo dice."""
+        before = self.state()
+
+        def start() -> Any:
+            with mock.patch.object(self.des_ops, "_ask_confirmation"):
+                self.assertEqual(bpy.ops.geoblender.des_create_transitions(
+                    "EXEC_DEFAULT", **self.form(name="Cierre", in_steps=True)), {"RUNNING_MODAL"})
+            return self.running()
+
+        closed = step_modals.close_at_the_last_event(self.cls, start, bpy.context, session=self.ps,
+                                                     des_ops=self.des_ops)
+        self.assertEqual(closed.state, {"CANCELLED"})
+        self.assertEqual(closed.modal.report_log, [CLOSED_TEXT])
+        self.assertIsNone(closed.modal._steps)
+        self.assertEqual(closed.asked, 0)
+        self.assertIsNone(self.des_ops.calculation())
         self.assertEqual(self.state(), before)
 
     def test_z_disabling_geoblender_removes_the_command_and_the_loader(self) -> None:
