@@ -30,8 +30,8 @@
   polígono, su cota; ``NaN`` fuera), con sus rechazos: dos polígonos que se solapan, un polígono
   sin cota o con una cota fuera de las del terreno ± 1.000 m (:data:`FLOOR_LEVEL_MARGIN_M`), un
   campo que la capa no tiene o que no es numérico y una capa que no es de polígonos.
-  :func:`floors_above_terrain` (:class:`FloorsAbove`) mide lo que queda por encima del terreno,
-  que se admite (allí no hay corte) y se informa.
+  :func:`floors_above_terrain` (:class:`FloorsAbove`) mide lo que queda por encima del terreno
+  de los fondos y de los corredores (T42), que se admite (allí no hay corte) y se informa.
 - :func:`with_floors` y :func:`floor_cut_steps` (T08; RF-014-05; A4): la corta ``máx(ENV↓(s, t),
   ENV↓(F, t))`` (``zdes = máx(BASE0, ZF)`` de la V7) sobre la envolvente de la 013, calculada
   como la envolvente descendente de la unión de las semillas y los fondos (el máximo de los dos
@@ -45,7 +45,8 @@
   extremo más corto que medio ancho), con la cota fija o la de la rasante en la abscisa de su
   punto más próximo del eje; su longitud medida (la extensión de la huella a lo largo del eje)
   no pasa de la del eje más una celda (error 20), y :func:`corridor_too_long` da el aviso de
-  RF-014-10.
+  RF-014-10. Con la superficie de partida, la cota de cada corredor pasa por el rango de los
+  fondos de RF-014-06 (T42: la fija, o la inicial y la final de su rasante; ``des.floor_level``).
 
 - :func:`conservation_ceiling_steps` (T10; RF-014-07; A5): el **techo de conservación** ``U =
   ENV↑(z en Z, tan(talud de conservación))`` de las zonas a conservar (:class:`ConserveZone`)
@@ -564,6 +565,18 @@ def _floor_level(value: object, fid: int, source: LayerField, low: float, high: 
                       high=high)
 
 
+def _level_range(values: np.ndarray) -> tuple[float, float]:
+    """Las cotas que admite un fondo o un corredor (RF-014-06): ``[mín(z) −
+    FLOOR_LEVEL_MARGIN_M, máx(z) + FLOOR_LEVEL_MARGIN_M]`` m con las celdas con dato de la
+    superficie de partida ``values``; ``ValueError`` (error del programa) si no tiene ninguna."""
+    with np.errstate(invalid="ignore"):
+        finite = np.isfinite(values)
+    if not finite.any():
+        raise ValueError("la superficie de partida no tiene ninguna celda con dato")
+    return (float(values[finite].min()) - FLOOR_LEVEL_MARGIN_M,
+            float(values[finite].max()) + FLOOR_LEVEL_MARGIN_M)
+
+
 def floor_map(layer: FeatureLayer, source: LayerField, start: np.ndarray,
               geometry: Grid) -> FloorMap:
     """**A4** (RF-014-05, RF-014-06): el mapa de cotas de fondo de la capa de polígonos ``layer``
@@ -588,12 +601,7 @@ def floor_map(layer: FeatureLayer, source: LayerField, start: np.ndarray,
                           field=_GEOMETRY_FIELD, value=_KINDS_ES.get(layer.kind, layer.kind),
                           layer=source.layer)
     column = _level_column(layer, source)
-    with np.errstate(invalid="ignore"):
-        finite = np.isfinite(values)
-    if not finite.any():
-        raise ValueError("la superficie de partida no tiene ninguna celda con dato")
-    low = float(values[finite].min()) - FLOOR_LEVEL_MARGIN_M
-    high = float(values[finite].max()) + FLOOR_LEVEL_MARGIN_M
+    low, high = _level_range(values)
     grid = np.full(geometry.shape, np.nan)
     owner = np.zeros(geometry.shape, dtype=np.int32)
     levels: list[float] = []
@@ -619,16 +627,22 @@ def floor_map(layer: FeatureLayer, source: LayerField, start: np.ndarray,
                     tuple(cells), geometry.cell_area)
 
 
-def floors_above_terrain(floors: FloorMap, start: np.ndarray) -> FloorsAbove:
-    """Lo de los fondos ``floors`` por encima de la superficie de partida ``start`` (las celdas
-    con cota de fondo mayor que la del terreno; RF-014-05): se admite —allí no hay corte, la
-    superficie nunca supera el terreno— y se informa con su área (:attr:`FloorsAbove.notice`).
-    ``ValueError`` si ``start`` no es de la forma del mapa. Solo lee."""
+def floors_above_terrain(floors: FloorMap, start: np.ndarray, *others: FloorMap) -> FloorsAbove:
+    """Lo de los fondos ``floors`` —y de los mapas ``others``, como el de los corredores, que son
+    fondos (RF-014-09; T42)— por encima de la superficie de partida ``start`` (las celdas con cota
+    de fondo mayor que la del terreno, cada una una vez aunque esté en dos mapas; RF-014-05): se
+    admite —allí no hay corte, la superficie nunca supera el terreno— y se informa con su área
+    (:attr:`FloorsAbove.notice`). ``ValueError`` si ``start`` u otro mapa no es de la forma de
+    ``floors``. Solo lee."""
     values = np.asarray(start, dtype=np.float64)
     _same_shape("la superficie de partida", values, floors.grid.shape)
-    with np.errstate(invalid="ignore"):
-        above = int(np.count_nonzero(floors.grid > values))
-    return FloorsAbove(above, above * floors.cell_area_m2)
+    above = np.zeros(floors.grid.shape, dtype=bool)
+    for found in (floors, *others):
+        _same_shape("el mapa de fondos", found.grid, floors.grid.shape)
+        with np.errstate(invalid="ignore"):
+            above |= found.grid > values
+    cells = int(np.count_nonzero(above))
+    return FloorsAbove(cells, cells * floors.cell_area_m2)
 
 
 def with_floors(seeds: SeedSet, floors: FloorMap) -> SeedSet:
@@ -742,6 +756,26 @@ def _corridor_value(layer: FeatureLayer, column: str, index: int, fid: int, laye
                       value=_shown(value), layer=layer_name, corridor=fid)
 
 
+def _corridor_level(fid: int, fields: CorridorFields, start_level: float, grade_pct: float,
+                    axis_m: float, low: float, high: float) -> None:
+    """**RF-014-06** para un corredor, que es un polígono de fondo (RF-014-09; T42, hallazgo F-3
+    de la T38): su cota —la fija, o la inicial y la final de su rasante, la del final del eje de
+    ``axis_m`` m— dentro de ``[low, high]`` (las del terreno ± :data:`FLOOR_LEVEL_MARGIN_M`). Si
+    no, ``des.floor_level`` como un polígono de fondo, con la capa, el corredor (su número), el
+    campo —el de la cota fija o el de la inicial; para la final, «<cota inicial> + <pendiente>»—
+    y el valor (la cota, en m); no se elige ninguna por él."""
+    field = fields.start_level_field if fields.graded else fields.level_field
+    checks = [(str(field), start_level)]
+    if fields.graded:
+        checks.append((f"{fields.start_level_field} + {fields.grade_field}",
+                       start_level + axis_m * grade_pct / 100.0))
+    for name, level in checks:
+        if not low <= level <= high:
+            raise DesignError("des.floor_level", obj=f"Corredor {fid} de la capa «{fields.layer}»",
+                              field=name, value=level, layer=fields.layer, polygon=fid, low=low,
+                              high=high)
+
+
 def _axis_paths(parts: tuple[tuple[np.ndarray, ...], ...]) -> list[np.ndarray]:
     """Los caminos del eje de una entidad (cada parte, en su orden), float64 ``(k, 2)``."""
     return [np.asarray(path, dtype=np.float64).reshape(-1, 2) for part in parts for path in part]
@@ -826,7 +860,8 @@ def _corridor_sigma(paths: list[np.ndarray], half: float, geometry: Grid,
     return sigma, reach
 
 
-def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid) -> CorridorMap:
+def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid, *,
+                   start: np.ndarray | None = None) -> CorridorMap:
     """**A6** (RF-014-09, RF-014-10): los corredores de la capa de líneas ``layer`` (sus
     entidades; ``fields`` da su nombre en el proyecto, el campo del ancho, m, y el de la cota fija
     o los de la rasante: cota inicial, m, y pendiente, %, positiva cuando sube en el sentido del
@@ -843,14 +878,24 @@ def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid) 
     20 m de ancho), y :attr:`CorridorMap.notices` avisa si pasara de la del eje más el ancho.
     Solo lee; cada corredor cuesta su caja, no la rejilla entera.
 
+    Con ``start``, la superficie de partida (float64, de la forma de la rejilla; la pasan la
+    cantera y su vista previa), la cota de cada corredor se comprueba como la de un polígono de
+    fondo (RF-014-06; T42): la fija, o la inicial y la final de su rasante (la del final del eje),
+    dentro de ``[mín(z) − 1.000, máx(z) + 1.000]`` m. Un corredor por encima del terreno se admite
+    (:func:`floors_above_terrain` con su mapa).
+
     Rechazos (``DesignError``, sin suponer nada), en el orden de la capa y, en cada corredor,
     primero su ancho, después su cota y después su eje: una capa que no es de líneas
     (``des.corridor_not_lines``); un campo que la capa no tiene o que no es numérico
     (``des.quarry_layer_field``); un ancho que falta, no es finito o es ≤ 0
     (``des.corridor_width``); una cota, cota inicial o pendiente que falta o no es finita
-    (``des.corridor_level_missing``); un eje de longitud cero (``des.corridor_length_zero``); y,
-    como dos fondos (RF-014-06), un corredor que pisa celdas de otro anterior
-    (``des.floor_overlap``, con los dos y las celdas comunes)."""
+    (``des.corridor_level_missing``); con ``start``, una cota fuera del rango
+    (``des.floor_level``, como un polígono de fondo: la capa, el corredor, el campo —para la final
+    de la rasante, «<cota inicial> + <pendiente>»—, el valor y el rango); un eje de longitud cero
+    (``des.corridor_length_zero``); y, como dos fondos (RF-014-06), un corredor que pisa celdas de
+    otro anterior (``des.floor_overlap``, con los dos y las celdas comunes). ``ValueError`` (error
+    del programa) si ``start`` no es de la forma de la rejilla o no tiene ninguna celda con
+    dato."""
     if layer.kind != "line":
         raise DesignError("des.corridor_not_lines", obj=f"Capa de líneas «{fields.layer}»",
                           field=_GEOMETRY_FIELD, value=_KINDS_ES.get(layer.kind, layer.kind),
@@ -861,6 +906,11 @@ def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid) 
     width_column = _level_column(layer, LayerField(fields.layer, fields.width_field))
     level_columns = tuple(_level_column(layer, LayerField(fields.layer, name))
                           for name in level_fields)
+    bounds = None
+    if start is not None:
+        values = np.asarray(start, dtype=np.float64)
+        _same_shape("la superficie de partida", values, geometry.shape)
+        bounds = _level_range(values)
     grid = np.full(geometry.shape, np.nan)
     owner = np.zeros(geometry.shape, dtype=np.int32)
     levels: list[float] = []
@@ -877,6 +927,8 @@ def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid) 
         start_level, grade_pct = (values[0], values[1]) if fields.graded else (values[0], 0.0)
         paths = _axis_paths(parts)
         axis = float(sum(np.hypot(*np.diff(path, axis=0).T).sum() for path in paths))
+        if bounds is not None:
+            _corridor_level(fid, fields, start_level, grade_pct, axis, *bounds)
         if not axis > 0.0:
             raise DesignError("des.corridor_length_zero",
                               obj=f"Corredor {fid} de la capa «{fields.layer}»",

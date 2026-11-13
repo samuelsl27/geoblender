@@ -22,6 +22,12 @@
   (``des.corridor_length_zero``), sin cota (``des.corridor_level_missing``), capa que no es de
   líneas (``des.corridor_not_lines``), campo que falta (``des.quarry_layer_field``) y dos
   corredores que se solapan, como dos fondos (``des.floor_overlap``, RF-014-06).
+- El corredor, como fondo (T42, hallazgo F-3 de la T38): con la superficie de partida, su cota
+  —la fija, o la inicial y la final de su rasante— en el rango de los fondos, ``[mín(z) − 1.000,
+  máx(z) + 1.000]`` m (RF-014-06, ``des.floor_level`` con la capa, el corredor, el campo y el
+  valor: un corredor a 5.000 m o a 10⁶ m ya no anula la corta en silencio); uno por encima del
+  terreno se admite y cuenta en lo de los fondos sobre el terreno (RF-014-05,
+  ``floors_above_terrain`` con los corredores, cada celda una vez).
 
 Sobre la rejilla de la cantera sintética de ``tests.support.quarry_fixtures`` (T01), sin proyecto
 (la capa se arma como la escribe ``write_feature_layer``).
@@ -45,6 +51,7 @@ model = import_geoblender("design.model")
 messages = import_geoblender("design.messages")
 vector = import_geoblender("gis.vector")
 gis = import_geoblender("gis")
+i18n = import_geoblender("core.i18n")
 
 TOLERANCE_M = 1e-9
 FIXED = model.CorridorFields(qfx.CORRIDORS_LAYER, "ancho", level_field="cota")
@@ -459,6 +466,100 @@ class RejectionTest(unittest.TestCase):
         self.assertEqual(error.code, "des.floor_overlap")
         self.assertEqual((error.values["value"], error.values["other"]), (1, 2))
         self.assertEqual(error.values["cells"], 200)
+
+
+LOW_M = -819.84375
+"""La cota más baja que admite un fondo en la cantera: la mínima del terreno (180,15625 m) menos
+1.000 m, a mano."""
+HIGH_M = 1307.84375
+"""La más alta: la máxima del terreno (307,84375 m) más 1.000 m, a mano."""
+
+
+class LevelRangeTest(unittest.TestCase):
+    """RF-014-06, RF-014-09, RF-014-05 (T42, hallazgo F-3): un corredor es un polígono de fondo,
+    también para el rango de su cota y para lo que queda por encima del terreno."""
+
+    terrain: Any
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.terrain = qfx.terrain()
+
+    def rejected(self, layer: Any, fields: Any = FIXED) -> Any:
+        """El ``DesignError`` de convertir ``layer`` con la superficie de partida."""
+        with self.assertRaises(messages.DesignError) as caught:
+            quarry.corridor_cells(layer, fields, qfx.GRID, start=self.terrain)
+        return caught.exception
+
+    def test_a_fixed_level_out_of_the_terrain_range_is_refused(self) -> None:
+        """Una cota fija de 5.000 m o de 10⁶ m (la T38: se admitían y anulaban la corta en
+        silencio), o medio metro fuera de ``[−819,84375, 1.307,84375]`` m: ``des.floor_level`` con
+        la capa, el corredor (el polígono de fondo 2), el campo, el valor y el rango; el corredor 1,
+        en el rango, no."""
+        for level in (5000.0, 1.0e6, LOW_M - 0.5, HIGH_M + 0.5):
+            with self.subTest(level=level):
+                error = self.rejected(corridor_layer((STRAIGHT, ((0.0, 0.0), (50.0, 0.0))),
+                                                     ancho=(20.0, 10.0), cota=(150.0, level)))
+                self.assertEqual(error.code, "des.floor_level")
+                self.assertEqual(error.values["layer"], qfx.CORRIDORS_LAYER)
+                self.assertEqual(error.values["polygon"], 2)
+                self.assertEqual(error.values["field"], "cota")
+                self.assertEqual(error.values["value"], level)
+                self.assertEqual((error.values["low"], error.values["high"]), (LOW_M, HIGH_M))
+                self.assertEqual(error.obj, f"Corredor 2 de la capa «{qfx.CORRIDORS_LAYER}»")
+                self.assertIn(f"Capa «{qfx.CORRIDORS_LAYER}», polígono 2: «cota» = ", error.text)
+
+    def test_the_start_and_the_end_of_a_grade_out_of_the_range_are_refused(self) -> None:
+        """Con rasante, la cota inicial fuera del rango (``cota_inicial``) y la final, la del
+        final del eje de 200 m: 300 + 200 · 600 / 100 = 1.500 m y 0 − 200 · 500 / 100 = −1.000 m
+        (``cota_inicial + pendiente``, con la cota final)."""
+        cases = (((-900.0,), (1.0,), "cota_inicial", -900.0),
+                 ((300.0,), (600.0,), "cota_inicial + pendiente", 1500.0),
+                 ((0.0,), (-500.0,), "cota_inicial + pendiente", -1000.0))
+        for start, grade, field, value in cases:
+            with self.subTest(field=field, value=value):
+                error = self.rejected(corridor_layer((STRAIGHT,), ancho=(20.0,),
+                                                     cota_inicial=start, pendiente=grade), GRADED)
+                self.assertEqual(error.code, "des.floor_level")
+                self.assertEqual((error.values["polygon"], error.values["field"]), (1, field))
+                self.assertEqual(error.values["value"], value)
+
+    def test_the_ends_of_the_range_and_a_level_above_the_terrain_are_admitted(self) -> None:
+        """Las cotas justo en los extremos del rango se admiten, y también la de un corredor por
+        encima del terreno (290 m sobre 233,75 a 251,25 m): sus 4.000 celdas cuentan en lo de los
+        fondos sobre el terreno (RF-014-05), que se admite y se avisa con su área."""
+        found: dict[float, Any] = {}
+        for level in (LOW_M, HIGH_M, 290.0):
+            with self.subTest(level=level):
+                found[level] = quarry.corridor_cells(
+                    corridor_layer((STRAIGHT,), ancho=(20.0,), cota=(level,)), FIXED, qfx.GRID,
+                    start=self.terrain)
+                self.assertEqual(found[level].floors.cells, (4000,))
+        above = quarry.floors_above_terrain(found[290.0].floors, self.terrain)
+        self.assertEqual((above.cells, above.area_m2), (4000, 4000.0))
+        self.assertIn("4000 m² de los fondos quedan por encima del terreno",
+                      above.notice.replace(i18n.THIN_SPACE, ""))
+
+    def test_floors_and_corridors_above_the_terrain_are_counted_once(self) -> None:
+        """``floors_above_terrain`` con los fondos y los corredores (RF-014-05, RF-014-09): un
+        fondo de 200 × 20 m a 290 m y el corredor recto a 290 m sobre él cuentan 4.000 celdas, no
+        8.000; con otro corredor de 200 × 20 m a 290 m más al sur, 8.000."""
+        polygon = vector.FeatureLayer(
+            "polygon", (1,), (((cfx.rectangle(100.0, 190.0, 300.0, 210.0),),),),
+            (vector.FieldColumn("cota", "cota", "DOUBLE"),), {"cota": (290.0,)})
+        floors = quarry.floor_map(polygon, model.LayerField(qfx.FLOORS_LAYER, "cota"),
+                                  self.terrain, qfx.GRID)
+        same = quarry.corridor_cells(corridor_layer((STRAIGHT,), ancho=(20.0,), cota=(290.0,)),
+                                     FIXED, qfx.GRID, start=self.terrain)
+        south = quarry.corridor_cells(corridor_layer((((100.0, 100.0), (300.0, 100.0)),),
+                                                     ancho=(20.0,), cota=(290.0,)),
+                                      FIXED, qfx.GRID, start=self.terrain)
+        self.assertEqual(quarry.floors_above_terrain(floors, self.terrain, same.floors).cells,
+                         4000)
+        self.assertEqual(quarry.floors_above_terrain(floors, self.terrain, south.floors).cells,
+                         8000)
+        self.assertEqual(quarry.floors_above_terrain(floors, self.terrain, same.floors,
+                                                     south.floors).area_m2, 8000.0)
 
 
 if __name__ == "__main__":

@@ -347,14 +347,17 @@ def _quarry_notices(ring_cells: int, area: np.ndarray, crown: np.ndarray, hold: 
 def _quarry_warnings(start: np.ndarray, floors: FloorMap | None,
                      conserve: tuple[ConserveZone, ...], corridors: CorridorMap | None,
                      cell_area: float) -> list[Notice]:
-    """Los avisos que el cálculo dará de las capas, para verlos antes: los fondos por encima del
-    terreno (RF-014-05), las zonas a conservar sin dato de terreno (RF-014-07) y los corredores
-    más largos que su eje más su ancho (RF-014-10)."""
+    """Los avisos que el cálculo dará de las capas, para verlos antes: los fondos y los
+    corredores, que son fondos (RF-014-09; T42), por encima del terreno (RF-014-05: un solo aviso
+    con el área de los dos, cada celda una vez), las zonas a conservar sin dato de terreno
+    (RF-014-07) y los corredores más largos que su eje más su ancho (RF-014-10)."""
     from .quarry import floors_above_terrain  # al usarlo: quarry → report → preview
 
     found = []
-    if floors is not None:
-        above = floors_above_terrain(floors, start)
+    maps = [item for item in (floors, None if corridors is None else corridors.floors)
+            if item is not None]
+    if maps:
+        above = floors_above_terrain(maps[0], start, *maps[1:])
         if above.cells:
             found.append(Notice("des.floor_above_terrain", {"area": above.area_m2}))
     blank = ~np.isfinite(start)
@@ -409,7 +412,7 @@ def _quarry_units(project: StoreProject, request: QuarryRequest, version_uid: st
     corridors = None
     if request.corridors is not None:
         corridors = quarry.corridor_cells(_features(project, request.corridors.layer),
-                                          request.corridors, geometry)
+                                          request.corridors, geometry, start=start)
         yield
     cell_area = geometry.cell_area
     zones = tuple(conserve)

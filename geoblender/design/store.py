@@ -2076,7 +2076,7 @@ def quarry_parts_units(request: QuarryRequest, masks: access.MaskSet, start: Ras
     corridors = None
     if request.corridors is not None:
         corridors = quarry.corridor_cells(features(request.corridors.layer), request.corridors,
-                                          geometry)
+                                          geometry, start=values)
         yield
     joined = quarry.join_floors(floors, corridors)
     conserve = []
@@ -2101,11 +2101,12 @@ def _ceiling_metric(request: QuarryRequest) -> Metric:
 def quarry_notices(request: QuarryRequest, masks: access.MaskSet, parts: QuarryParts,
                    ring_cells: int, outcome: quarry.QuarryOutcome) -> tuple[Notice, ...]:
     """Los avisos y las notas de la cantera que no son del escalonado de un lado, en el orden en
-    que se enseñan: los de sus capas (fondos sobre el terreno, zonas a conservar sin dato,
-    corredores más largos que su eje más su ancho; los de la vista previa), las semillas de la 013
-    de un lado que caen fuera de la coronación y de las zonas a sostener, por grupos (RF-014-03),
-    el desdoblado sobre terreno sin explotar, por zonas (RF-014-17), y «explotación hasta la
-    final» (RF-014-18). Con sus valores como números (``preview.Notice``)."""
+    que se enseñan: los de sus capas (fondos y corredores sobre el terreno, juntos, como en
+    ``parts.joined``, T42; zonas a conservar sin dato, corredores más largos que su eje más su
+    ancho; los de la vista previa), las semillas de la 013 de un lado que caen fuera de la
+    coronación y de las zonas a sostener, por grupos (RF-014-03), el desdoblado sobre terreno sin
+    explotar, por zonas (RF-014-17), y «explotación hasta la final» (RF-014-18). Con sus valores
+    como números (``preview.Notice``)."""
     geometry = masks.grid
     start = parts.start.values
     found = list(_quarry_warnings(start, parts.floors, parts.conserve, parts.corridors,

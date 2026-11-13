@@ -29,10 +29,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import Any, ClassVar
 
 import numpy as np
 
+from tests.support import constraints_fixtures as cfx
 from tests.support import quarry_fixtures as qfx
 from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
@@ -78,6 +80,22 @@ ROLES = {"exp": "design_surface", "fin": "design_surface", "xen": "exploitation_
 NEW_PLATFORM_M = 178.0
 """La cota nueva de la plataforma (el fondo 2, a 175 m): la que sí manda en E1 (T14); 3 m (no un
 múltiplo de la altura de banco) mueven también las anclas «al fondo de cada muro»."""
+HIGH_CORRIDORS = "gis_fea_corredores_altos"
+"""Una capa con un corredor por encima del terreno (T42): 80 × 10 m a 290 m."""
+IMPOSSIBLE_CORRIDORS = "gis_fea_corredores_imposibles"
+"""Una capa con un corredor a 5.000 m, fuera de las cotas del terreno ± 1.000 m (T42)."""
+LANE_AXIS_LOCAL = ((220.0, 101.0), (300.0, 101.0))
+"""El eje de esos corredores (local): 80 m hacia el este, lejos de los fondos, de la zona a
+conservar y de las de relleno; con 10 m de ancho, las celdas de 96 a 106 m de norte."""
+LANE_AREA_M2 = 800.0
+"""Su área, a mano: 80 × 10 m (en la rejilla de 2 m, 40 × 5 celdas de 4 m²)."""
+
+
+def lane_layer(name: str, level_m: float) -> Any:
+    """Una capa de corredores ``name`` con uno, el de :data:`LANE_AXIS_LOCAL`, de 10 m de ancho y
+    la cota ``level_m`` (cota inicial y pendiente 0 %)."""
+    return qfx.LayerData(name, "line", (((cfx.absolute(LANE_AXIS_LOCAL),),),), ("Corredor",),
+                         {"ancho": (10.0,), "cota_inicial": (level_m,), "pendiente": (0.0,)})
 
 
 def quarry_request(name: str = QUARRY_NAME) -> Any:
@@ -416,6 +434,39 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
         self.assertIn("des.to_final_m3", {spec.key for spec in self.other.figures})
         self.assertFalse(any("coronación" in line for line in self.calculation.lines("es")))
         self.assertIs(self.other.outcome.order, model.Order.EXPLOITATION_FIRST)
+
+    def test_a_a_corridor_is_a_floor_for_the_range_and_above_the_terrain(self) -> None:
+        """RF-014-05, RF-014-06, RF-014-09 (T42, hallazgo F-3): con el corredor de 80 × 10 m a
+        290 m, por encima del terreno (por debajo de 226 m), la cantera se calcula y el resumen
+        avisa de los fondos sobre el terreno con su área, 800 m² (antes no decía nada: solo miraba
+        los polígonos); con uno a 5.000 m, «Calcular» se niega al avanzar con ``des.floor_level``
+        nombrando la capa, el corredor, el campo y el valor, y no deja nada (antes se calculaba y
+        el corredor anulaba la corta en silencio)."""
+        for name, level in ((HIGH_CORRIDORS, 290.0), (IMPOSSIBLE_CORRIDORS, 5000.0)):
+            qfx.write_feature_layer(self.project, self.clock, lane_layer(name, level))
+        before = self.des_state()
+        high = replace(quarry_request("Cantera alta"), corridors=replace(CORRIDOR,
+                                                                         layer=HIGH_CORRIDORS))
+        calculation = drive(steps.quarry_run(self.project, high, version=self.v1.uid,
+                                             masks=self.masks_v1)).result
+        try:
+            above = [notice.values for notice in calculation.notices
+                     if notice.code == "des.floor_above_terrain"]
+            self.assertEqual(above, [{"area": LANE_AREA_M2}])
+            self.assertIn("800 m² de los fondos quedan por encima del terreno: allí no hay corte "
+                          "(la superficie nunca supera el terreno).", calculation.lines("es"))
+        finally:
+            calculation.discard()
+        impossible = replace(high, name="Cantera imposible",
+                             corridors=replace(CORRIDOR, layer=IMPOSSIBLE_CORRIDORS))
+        with self.assertRaises(messages.DesignError) as caught:
+            drive(steps.quarry_run(self.project, impossible, version=self.v1.uid,
+                                   masks=self.masks_v1))
+        error = caught.exception
+        self.assertEqual(error.code, "des.floor_level")
+        self.assertEqual((error.values["layer"], error.values["polygon"], error.values["field"],
+                          error.values["value"]), (IMPOSSIBLE_CORRIDORS, 1, "cota_inicial", 5000.0))
+        self.assertEqual(self.des_state(), before)
 
     # --- Reproducir (RF-009-11) --------------------------------------------------------------
 

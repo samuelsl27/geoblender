@@ -12,15 +12,20 @@ Sobre la cantera sintética de ``tests.support.quarry_fixtures`` (T01), con las 
 recinto :data:`~tests.support.quarry_fixtures.CUT_ALLOWED_CELLS` celdas de 1 m², anillo de
 coronación de 3 celdas = 4.176 celdas (3.576 fuera de las zonas a sostener, T07), zonas a
 sostener = la torre (224) + «sin corte» (1.600), fondos de 6.400 y 4.800 celdas a 125 y 175 m, zona a conservar de 40 × 60 m = 2.400 celdas.
+
+Un corredor es un fondo (T42, hallazgo F-3 de la T38): su cota pasa por el rango de los fondos
+(RF-014-06) y lo que queda por encima del terreno se avisa con los fondos (RF-014-05).
 """
 
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from typing import Any, ClassVar
 
 import numpy as np
 
+from tests.support import constraints_fixtures as cfx
 from tests.support import quarry_fixtures as qfx
 from tests.support.package import import_geoblender
 
@@ -46,6 +51,19 @@ CORRIDOR = model.CorridorFields(qfx.CORRIDORS_LAYER, "ancho", start_level_field=
 QUARRY_NOTES = ("des.quarry_preview_area", "des.quarry_preview_crown", "des.quarry_preview_hold",
                 "des.quarry_preview_floors", "des.quarry_preview_ceilings",
                 "des.quarry_preview_corridors")
+HIGH_CORRIDORS = "gis_fea_corredores_altos"
+"""Una capa con un corredor por encima del terreno (T42)."""
+IMPOSSIBLE_CORRIDORS = "gis_fea_corredores_imposibles"
+"""Una capa con un corredor a 10⁶ m, fuera de las cotas del terreno ± 1.000 m (T42)."""
+
+
+def lane_layer(name: str, level_m: float) -> Any:
+    """Una capa de corredores ``name`` con uno de 80 m de eje hacia el este (local, de (220, 101)
+    a (300, 101): lejos de los fondos) y 10 m de ancho, a la cota ``level_m`` (cota inicial y
+    pendiente 0 %)."""
+    axis = ((220.0, 101.0), (300.0, 101.0))
+    return qfx.LayerData(name, "line", (((cfx.absolute(axis),),),), ("Corredor",),
+                         {"ancho": (10.0,), "cota_inicial": (level_m,), "pendiente": (0.0,)})
 
 
 def grouped(number: int) -> str:
@@ -190,6 +208,30 @@ class QuarryPreviewTest(qfx.QuarryProjectCase):
         with self.assertRaises(messages.DesignError) as caught:
             self.summarize(floors=model.LayerField(qfx.FLOORS_LAYER, "no_existe"))
         self.assertEqual(caught.exception.code, "des.quarry_layer_field")
+        self.assertEqual(self.snapshot(), before)
+
+    def test_a_corridor_is_a_floor_for_the_range_and_above_the_terrain(self) -> None:
+        """RF-014-04, RF-014-05, RF-014-06, RF-014-09 (T42, hallazgo F-3): con un corredor de 80
+        × 10 m a 290 m, por encima del terreno, la vista previa avisa de los fondos sobre el
+        terreno con su área (800 celdas de 1 m², a mano; los fondos de la cantera quedan por debajo
+        de él), como lo dirá el cálculo; con uno a 10⁶ m, rechaza al avanzar con
+        ``des.floor_level`` (la capa, el corredor, el campo y el valor) y no escribe nada."""
+        for name, level in ((HIGH_CORRIDORS, 290.0), (IMPOSSIBLE_CORRIDORS, 1.0e6)):
+            qfx.write_feature_layer(self.project, self.clock, lane_layer(name, level))
+        before = self.snapshot()
+        summary = self.summarize(corridors=replace(CORRIDOR, layer=HIGH_CORRIDORS))
+        above = [notice for notice in summary.notices if notice.code == "des.floor_above_terrain"]
+        self.assertEqual([notice.values for notice in above], [{"area": 800.0}])
+        self.assertEqual(summary.warnings("es"),
+                         ("800 m² de los fondos quedan por encima del terreno: allí no hay corte "
+                          "(la superficie nunca supera el terreno).",))
+        with self.assertRaises(messages.DesignError) as caught:
+            self.summarize(corridors=replace(CORRIDOR, layer=IMPOSSIBLE_CORRIDORS))
+        error = caught.exception
+        self.assertEqual(error.code, "des.floor_level")
+        self.assertEqual((error.values["layer"], error.values["polygon"], error.values["field"],
+                          error.values["value"]),
+                         (IMPOSSIBLE_CORRIDORS, 1, "cota_inicial", 1.0e6))
         self.assertEqual(self.snapshot(), before)
 
     def test_it_goes_by_steps_and_ends_with_the_summary(self) -> None:
