@@ -35,6 +35,11 @@ RF-014-29, RF-014-31; CE-014-08; plan 014 A13, P-3, §5.2.3; error 46 del análi
   ``check_order`` las comprueba antes de «Crear», con una nota con las celdas que cambió; los m³
   de cada una siguen siendo los de su cara (CE-014-08 igual); con una sola, un aviso si queda del
   lado equivocado de la otra.
+- **El ajuste frente a lo obsoleto del diseño del que sale** (T54; RF-014-27, RF-014-31, hallazgo
+  F-16; la propuesta por defecto (b) que aceptó Samuel): el límite nuevo deja obsoleta la cantera
+  (sus máscaras), así que el ajuste nace obsoleto y «Recalcular lo obsoleto» rediseña la cantera con
+  el límite vigente y rehace el ajuste sobre ella; el resumen lo avisa (``des.refit_source_stale``),
+  una vez por diseño obsoleto; con la cantera ya recalculada, no.
 """
 
 from __future__ import annotations
@@ -942,11 +947,38 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         self.assertNotIn("des.refit_order_side",
                          [notice.code for notice in self.calculation.notices])
 
+    def test_a_the_refit_of_a_stale_quarry_says_that_recomputing_it_replaces_it(self) -> None:
+        """RF-014-27, RF-014-31 (T54, hallazgo F-16; la propuesta por defecto (b) que aceptó
+        Samuel): el límite nuevo deja obsoleta «Corta E8» (lee las máscaras), de la que salen las
+        dos superficies, así que el ajuste nace obsoleto y «Recalcular lo obsoleto» la rediseña con
+        el límite vigente y rehace el ajuste sobre ella. El resumen lo avisa una sola vez por
+        diseño, al final, con la cantera y las superficies que salen de ella, en los dos
+        idiomas."""
+        ((quarry_uid,),) = self.query_of("SELECT uid FROM gb_operation WHERE op_type = ? AND "
+                                         "superseded_by IS NULL", provenance.QUARRY)
+        self.assertTrue(self.stale_causes(quarry_uid), "la cantera, obsoleta por el límite nuevo")
+        notices = self.calculation.notices
+        stale = [notice for notice in notices if notice.code == "des.refit_source_stale"]
+        self.assertEqual([dict(notice.values) for notice in stale],
+                         [{"design": QUARRY_NAME, "surfaces": f"«{EXPLOITATION}», «{FINAL}»"}])
+        self.assertIs(notices[-1], stale[0])
+        self.assertEqual(stale[0].severity, "warning")
+        self.assertEqual(stale[0].text(), (
+            f"El diseño «{QUARRY_NAME}» está obsoleto: Proyecto ▸ Recalcular lo obsoleto lo "
+            "vuelve a calcular con el límite vigente y después rehace sobre él este ajuste de "
+            f"«{EXPLOITATION}», «{FINAL}», que sustituye al que se cree ahora."))
+        self.assertIn(stale[0].text(), self.calculation.warnings())
+        self.assertEqual(stale[0].text("en"), (
+            f"The design «{QUARRY_NAME}» is stale: Project ▸ Recompute the stale results computes "
+            "it again with the current limit and then redoes this refit of "
+            f"«{EXPLOITATION}», «{FINAL}» on it, which replaces the one created now."))
+
     def test_b_the_final_alone_warns_when_it_ends_above_the_exploitation(self) -> None:
         """RF-014-14 (T53): el ajuste de la final de «Corta E8» sola no la ata a la explotación
         (es la de su cara); como queda más de 1 mm por encima de la explotación de la cantera, el
         resumen lo avisa (``des.refit_order_side``) con la cantera, las dos superficies, las celdas
-        y cuánto por encima, sin escribir nada."""
+        y cuánto por encima, sin escribir nada; y, detrás, que la cantera de la que sale está
+        obsoleta (T54)."""
         before = self.des_state()
         with drive(self.refit_steps("Solo la final", (FINAL,))).result as alone:
             (only,) = alone.outcome.refits
@@ -959,7 +991,8 @@ class RefitOperationTest(qfx.QuarryProjectCase):
                 ("des.refit_order_side", {"surface": FINAL, "quarry": QUARRY_NAME,
                                           "other": EXPLOITATION,
                                           "cells": int(np.count_nonzero(broken)),
-                                          "above": round(float(above[broken].max()), 3)})])
+                                          "above": round(float(above[broken].max()), 3)}),
+                ("des.refit_source_stale", {"design": QUARRY_NAME, "surfaces": f"«{FINAL}»"})])
         self.assertEqual(self.des_state(), before)
 
     def test_b_the_rule_is_the_one_of_the_quarry(self) -> None:
@@ -980,7 +1013,8 @@ class RefitOperationTest(qfx.QuarryProjectCase):
                                           exploitation)
             np.testing.assert_array_equal(calculation.outcome.refit(FINAL).grid,
                                           np.minimum(final, exploitation))
-            self.assertEqual([dict(notice.values) for notice in calculation.notices],
+            self.assertEqual([dict(notice.values) for notice in calculation.notices
+                              if notice.code == "des.refit_order"],
                              [{"quarry": QUARRY_NAME, "surface": FINAL,
                                "cells": int(np.count_nonzero(final > exploitation))}])
 
@@ -1012,15 +1046,19 @@ class RefitOperationTest(qfx.QuarryProjectCase):
     def test_b_an_adjusted_surface_needs_no_refit(self) -> None:
         """RF-014-27 (spec §8), P-3: la superficie ajustada ya no deja nada fuera: ajustarla otra
         vez es de 0 m³ con el aviso ``des.refit_not_needed``; su perfil es el de la superficie de
-        la que sale (la explotación de la cantera)."""
+        la que sale (la explotación de la cantera), y el diseño del que sale, la cantera obsoleta
+        (T54: recalcularla lo sustituye)."""
         with self.project.read() as conn:
             origin = store.design_surface_of(conn, ADJUSTED[EXPLOITATION], self.v1.uid)
             self.assertEqual(store.refit_profiles(conn, origin, self.v1.uid), (EXPL.code, ()))
         with drive(self.refit_steps("Otra vez", (ADJUSTED[EXPLOITATION],))).result as again:
             (only,) = again.outcome.refits
             self.assertEqual((only.cells, only.volume_m3), (0, 0.0))
-            self.assertEqual([notice.code for notice in again.notices],
-                             ["des.refit_not_needed"])
+            self.assertEqual([(notice.code, dict(notice.values)) for notice in again.notices],
+                             [("des.refit_not_needed", {"surface": ADJUSTED[EXPLOITATION]}),
+                              ("des.refit_source_stale",
+                               {"design": QUARRY_NAME,
+                                "surfaces": f"«{ADJUSTED[EXPLOITATION]}»"})])
 
     def change(self, key: str, value: float) -> None:
         """Cambia el parámetro ``key`` del proyecto a ``value``, un minuto después."""
@@ -1081,7 +1119,8 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         (``faces``) y, como parámetro, solo el espesor mínimo. Recalculada la cantera con el perfil
         de 50° (reescribe el mismo dato; con el límite nuevo ya no hace falta ajustarla), la cara
         es la de 50° que anotó la operación que escribió su contenido de hoy, no la de 60° de la
-        primera: pedir 50° vale y es lo que anota."""
+        primera: pedir 50° vale y es lo que anota; y, con la cantera al día, el resumen ya no
+        avisa de que recalcularla sustituye el ajuste (T54)."""
         face_key = design_params.bench_key(EXPL.code, "face_deg")
         mesh_key = design_params.bench_key(EXPL.code, "mesh_factor")
         (quarry, settings), = self.query_of(
@@ -1120,6 +1159,7 @@ class RefitOperationTest(qfx.QuarryProjectCase):
                                     angles={EXPLOITATION: 50.0})).result as again:
             self.assertEqual(again.settings["faces"], {EXPLOITATION: {face_key: 50.0,
                                                                       mesh_key: EXPL.mesh_factor}})
+            self.assertNotIn("des.refit_source_stale", [notice.code for notice in again.notices])
 
     def test_c_the_refit_is_recomputed_with_its_settings(self) -> None:
         """RF-014-29, RF-014-31: «Recalcular lo obsoleto» repite el ajuste con sus ajustes y lo

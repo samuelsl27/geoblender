@@ -41,7 +41,7 @@ El ángulo no se pide (P-3): es la cara del perfil de la operación que creó la
 error 46: con 35° en el muro de explotación salían 39.000 m³ falsos). Lo de las superficies de un
 ajuste (:class:`RefitOutcome`, :func:`refit_outcome`) lleva su cifra ``des.refit_m3`` por
 superficie (:func:`refit_figures`), los avisos de las que no hacía falta, los del orden de las dos
-superficies de una cantera y el mensaje.
+superficies de una cantera, los de los diseños obsoletos de los que sale y el mensaje.
 
 **El orden de las dos superficies de una cantera** (T53; RF-014-14 frente a RF-014-27, hallazgo
 F-15): con la final más tendida que la explotación, junto al límite nuevo la final ajustada sube más
@@ -52,6 +52,15 @@ que la explotación ajustada. Si un ajuste lleva las dos superficies de una mism
 siendo los de su cara (CE-014-08); la nota :data:`ORDER_CODE` dice las celdas que cambió la regla.
 Con una sola de las dos, no se ata, y el aviso :data:`ORDER_SIDE_CODE` dice si queda del lado
 equivocado de la otra.
+
+**El ajuste frente a lo obsoleto del diseño del que sale** (T54; RF-014-27, RF-014-31, hallazgo
+F-16; la propuesta por defecto (b) que aceptó Samuel): un límite nuevo deja obsoleto el diseño del
+que sale cada superficie (la cantera, el escalonado de la 013 o «solo relleno»: leen las máscaras),
+así que el ajuste nace obsoleto con sus causas, y «Recalcular lo obsoleto» vuelve a calcular ese
+diseño con el límite vigente y después rehace el ajuste sobre él, que sustituye al que se creó. El
+ajuste no resuelve lo obsoleto de su diseño de origen (eso sería de la 008); lo dice: el aviso
+:data:`SOURCE_STALE_CODE`, uno por diseño obsoleto con las superficies del ajuste que salen de él
+(lo lee ``design.store.prepare_refit_units``, de la caché de lo obsoleto de la 008).
 
 Python puro con numpy; no lee el proyecto ni modifica ninguna entrada.
 """
@@ -91,6 +100,7 @@ __all__ = [
     "OUTSIDE_CODE",
     "REFIT_NAME",
     "REFIT_PHASE",
+    "SOURCE_STALE_CODE",
     "ProfileFace",
     "Refit",
     "RefitCheck",
@@ -203,6 +213,10 @@ RF-014-14): la cantera, la superficie que cambió y sus celdas."""
 ORDER_SIDE_CODE = "des.refit_order_side"
 """El aviso de una superficie de una cantera ajustada sin la otra que deja la final por encima de
 la explotación (T53; RF-014-14): la superficie, la cantera, la otra, las celdas y cuánto."""
+SOURCE_STALE_CODE = "des.refit_source_stale"
+"""El aviso de un diseño obsoleto del que sale lo que se ajusta (T54; RF-014-31, hallazgo F-16):
+recalcularlo con el límite vigente rehace el ajuste, que sustituye al que se cree ahora; el nombre
+del diseño (``design``) y las superficies del ajuste que salen de él (``surfaces``)."""
 _FIGURE = "des.refit_m3"
 
 
@@ -398,15 +412,17 @@ def refit_steps(surface: np.ndarray, start: np.ndarray, masks: MaskSet, slope: S
 class RefitOutcome:
     """Lo que calcula ``des.refit`` (RF-014-27, RF-014-29): el ``name`` del ajuste, el
     :class:`Refit` de cada superficie (``refits``, en el orden de la petición), sus cifras
-    CALCULADO (``figures``, :func:`refit_figures`), el ``message`` de la operación y las notas y los
+    CALCULADO (``figures``, :func:`refit_figures`), el ``message`` de la operación, las notas y los
     avisos del orden de las dos superficies de una cantera (``order_notices``, :data:`ORDER_CODE` y
-    :data:`ORDER_SIDE_CODE`; T53)."""
+    :data:`ORDER_SIDE_CODE`; T53) y los de los diseños obsoletos de los que sale
+    (``stale_notices``, :data:`SOURCE_STALE_CODE`; T54)."""
 
     name: str
     refits: tuple[Refit, ...]
     figures: tuple[FigureSpec, ...]
     message: str
     order_notices: tuple[Notice, ...] = ()
+    stale_notices: tuple[Notice, ...] = ()
 
     @property
     def volume_m3(self) -> float:
@@ -415,10 +431,11 @@ class RefitOutcome:
 
     @property
     def notices(self) -> tuple[Notice, ...]:
-        """Los avisos ``des.refit_not_needed`` de las superficies que el límite nuevo no corta y,
-        detrás, los del orden de las dos superficies de una cantera (T53)."""
+        """Los avisos ``des.refit_not_needed`` de las superficies que el límite nuevo no corta,
+        detrás los del orden de las dos superficies de una cantera (T53) y, al final, los de los
+        diseños obsoletos de los que sale (T54)."""
         return (*(item.notice for item in self.refits if item.notice is not None),
-                *self.order_notices)
+                *self.order_notices, *self.stale_notices)
 
     def refit(self, surface: str) -> Refit:
         """El ajuste de la superficie ``surface`` (el nombre de su dato); ``KeyError`` si no es de
@@ -448,11 +465,12 @@ def _order_text(notice: Notice) -> str:
             f"de la explotación en {values['cells']} celdas")
 
 
-def refit_outcome(name: str, refits: Sequence[Refit], order_notices: Iterable[Notice] = ()
-                  ) -> RefitOutcome:
-    """El :class:`RefitOutcome` del ajuste ``name`` con sus ``refits`` y las notas y avisos del
-    orden de las dos superficies de una cantera (``order_notices``, T53): las cifras y el mensaje
-    (cada superficie con su volumen de ajuste y sus celdas, o «no hacía falta», y lo del orden)."""
+def refit_outcome(name: str, refits: Sequence[Refit], order_notices: Iterable[Notice] = (),
+                  stale_notices: Iterable[Notice] = ()) -> RefitOutcome:
+    """El :class:`RefitOutcome` del ajuste ``name`` con sus ``refits``, las notas y avisos del
+    orden de las dos superficies de una cantera (``order_notices``, T53) y los avisos de los
+    diseños obsoletos de los que sale (``stale_notices``, T54): las cifras y el mensaje (cada
+    superficie con su volumen de ajuste y sus celdas, o «no hacía falta», y lo del orden)."""
     found = tuple(refits)
     orders = tuple(order_notices)
     parts = [f"«{item.surface}» {format_value(round(item.volume_m3, 1))} m³ en {item.cells} "
@@ -460,4 +478,5 @@ def refit_outcome(name: str, refits: Sequence[Refit], order_notices: Iterable[No
              for item in found]
     parts += [_order_text(notice) for notice in orders]
     message = f"Ajuste «{name}» al límite nuevo calculado: {'; '.join(parts)}"
-    return RefitOutcome(name, found, refit_figures(name, found), message, orders)
+    return RefitOutcome(name, found, refit_figures(name, found), message, orders,
+                        tuple(stale_notices))

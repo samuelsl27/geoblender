@@ -196,8 +196,9 @@ la primera marcada o el terreno. Lo pedido es una ``design.model.RefitRequest``.
 Cancelar y Esc, los de :class:`_CalculateAndCreate`; los rechazos y las cuentas, de ``design``.
 Las marcas salen de la caché de la comprobación (spec 014, T35; RNF-014-02:
 ``des_panels.cached_refit_rows``); sin acierto, la orden comprueba antes **por pasos** en su modal
-(``des_panels.refit_rows_steps``, con el texto en la barra de estado y Esc, que no abre nada) y
-después vuelve a abrirse con las filas ya marcadas.
+(``des_panels.refit_rows_steps``, con el texto en la barra de estado y Esc, que no abre nada; cerrar
+el proyecto mientras tanto tampoco, ni en el último paso: T54) y después vuelve a abrirse con las
+filas ya marcadas.
 """
 
 from __future__ import annotations
@@ -3331,13 +3332,15 @@ class GEOBLENDER_OT_des_refit_to_limit(_CalculateAndCreate, DesignCommandAware,
 
     def _result(self, context: Any, step: Progress) -> set[str] | None:
         """Mientras comprueba antes de abrir el diálogo (:meth:`_check_first`): si se cierra el
-        proyecto, lo deja (no abre nada); al terminar, vuelve a abrir la orden con las filas ya
-        marcadas y su nota (y el nombre y la partida si se dieron). Si no, el del cálculo."""
+        proyecto, en cualquier paso (también el último, que trae las filas: spec 014, T54, punto 2
+        de la T48), lo deja sin volver a abrir la orden y lo dice; al terminar, vuelve a abrir la
+        orden con las filas ya marcadas y su nota (y el nombre y la partida si se dieron). Si no,
+        el del cálculo."""
         if not getattr(self, "_checking", False):
             return super()._result(context, step)
+        if project_session.current() is not getattr(self, "_project", None):
+            return self._stop(context)
         if step.result is None:
-            if project_session.current() is not getattr(self, "_project", None):
-                return self._stop(context)
             return None
         self._done(context)
         rows, note = step.result  # type: ignore[misc]

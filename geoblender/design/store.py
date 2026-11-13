@@ -73,7 +73,8 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   malla que **anotó** esa operación, no los de hoy, T49), el cálculo
   (:func:`refit_compute_steps`, con el rechazo de un ángulo que no es esa cara, RF-014-28, y,
   si lleva las dos superficies de una misma cantera, la regla de orden de esa cantera y
-  ``check_order`` después de ajustarlas, T53, RF-014-14) y su
+  ``check_order`` después de ajustarlas, T53, RF-014-14, y el aviso de cada diseño obsoleto del
+  que sale, que recalcularlo sustituye el ajuste, T54, RF-014-31) y su
   escritura (:func:`compute_refit_steps`: una ``des_adj_`` por superficie, con
   :meth:`DesignWriter.grid_steps` y su ``part``); y :func:`run_refit`, su recálculo (no se
   reproduce: depende del límite vigente).
@@ -136,6 +137,8 @@ from ..core.provenance.operations import (
     failure_reason,
 )
 from ..core.provenance.recompute import RecomputeRequest
+from ..core.provenance.stale import OPERATION as STALE_OPERATION
+from ..core.provenance.stale import item_causes
 from ..core.versions import read as versions_read
 from ..core.versions import store as versions_store
 from ..core.versions.model import Version, VersionError
@@ -942,6 +945,43 @@ def _quarry_link(made: SurfaceOrigin) -> tuple[str, Surface | None, Order | None
     exploitation = provenance.FAMILIES_BY_CODE[provenance.EXPLOITATION_GRID].prefix
     side = Surface.EXPLOITATION if made.record.name.startswith(exploitation) else Surface.FINAL
     return request.name, side, Order(request.order)
+
+
+def _design_name(made: SurfaceOrigin) -> str:
+    """El nombre del diseño que escribió ``made`` (una cantera, un escalonado de la 013 o «solo
+    relleno»: :func:`_profile_origin`), de los ajustes de su operación."""
+    if made.op_type == provenance.QUARRY:
+        return provenance.quarry_request(made.settings).name
+    if made.op_type == provenance.STEPPED:
+        return provenance.design_request(made.settings).name
+    return provenance.fill_only_request(made.settings).name
+
+
+def _stale_designs(conn: sqlite3.Connection, surfaces: Iterable[str], version_uid: str
+                   ) -> tuple[Notice, ...]:
+    """**El ajuste frente a lo obsoleto del diseño del que sale** (T54; RF-014-27, RF-014-31,
+    hallazgo F-16; la propuesta por defecto (b) que aceptó Samuel): de cada superficie de
+    ``surfaces`` (superficies de diseño de la versión ``version_uid``), el diseño que la hizo
+    (:func:`_profile_origin`: su cantera, su escalonado de la 013 o su «solo relleno», también
+    a través de una transición o de un ajuste) y, si la operación que lo escribió está obsoleta
+    en la caché de la 008 (``core.provenance.stale.item_causes``; con un límite nuevo, por las
+    máscaras), el aviso ``design.refit.SOURCE_STALE_CODE``: «Recalcular lo obsoleto» lo vuelve a
+    calcular con el límite vigente y rehace después el ajuste sobre él, que sustituye al que se
+    cree. Uno por diseño, con sus superficies en el orden de la petición. Solo lee."""
+    found: dict[str, tuple[str, list[str]]] = {}
+    for surface in surfaces:
+        origin = design_surface_of(conn, surface, version_uid)
+        if origin is None:  # ya rechazada por _refit_sources
+            continue
+        made = _profile_origin(conn, origin, version_uid)
+        uid = made.operation_uid
+        if uid in found:
+            found[uid][1].append(surface)
+        elif uid and item_causes(conn, STALE_OPERATION, uid):
+            found[uid] = (_design_name(made), [surface])
+    return tuple(Notice(refit.SOURCE_STALE_CODE, {
+        "design": name, "surfaces": ", ".join(f"«{item}»" for item in listed)})
+        for name, listed in found.values())
 
 
 def _refit_sources(conn: sqlite3.Connection, request: RefitRequest, version_uid: str,
@@ -1979,7 +2019,8 @@ class PreparedRefit:
     código → nombre, para los mensajes), lo que anotará la operación (``start``) y, de cada
     superficie de una cantera que va sin la otra en la petición, la otra tal como está en la
     versión (``others``: el nombre de su dato, :attr:`RefitPart.other` → su rejilla; T53), con la
-    que se compara después de ajustarla."""
+    que se compara después de ajustarla; y los avisos de los diseños obsoletos de los que sale
+    (``stale_notices``, :func:`_stale_designs`; T54)."""
 
     parts: tuple[RefitPart, ...]
     ground: Raster
@@ -1988,6 +2029,7 @@ class PreparedRefit:
     names: Mapping[str, str]
     start: OperationStart
     others: Mapping[str, Raster] = field(default_factory=lambda: MappingProxyType({}))
+    stale_notices: tuple[Notice, ...] = ()
 
 
 def prepare_envelope_units(project: StoreProject, request: EnvelopeRequest, version: Version,
@@ -2792,9 +2834,10 @@ def prepare_refit_units(project: StoreProject, request: RefitRequest, version: V
     partida se leen y se comparan con la rejilla del proyecto (``des.surface_*``); de cada
     superficie que sale de una cantera, la cantera, su lado y su orden (:func:`_quarry_link`) y, si
     la petición no lleva la otra de esa cantera, la otra tal como está en la versión, si la tiene
-    (T53, RF-014-14: con ella se compara después de ajustarla); los sectores con la etiqueta de
-    cada celda; y :func:`prepare_refit`. Devuelve el :class:`PreparedRefit`. Nada se escribe; los
-    rechazos salen al avanzar."""
+    (T53, RF-014-14: con ella se compara después de ajustarla); el aviso de cada diseño obsoleto
+    del que salen (:func:`_stale_designs`, T54, RF-014-31: recalcularlo sustituye el ajuste); los
+    sectores con la etiqueta de cada celda; y :func:`prepare_refit`. Devuelve el
+    :class:`PreparedRefit`. Nada se escribe; los rechazos salen al avanzar."""
     with project.read() as conn:
         names = MappingProxyType(profile_names(conn))
         sources = _refit_sources(conn, request, version.uid, names)
@@ -2802,6 +2845,7 @@ def prepare_refit_units(project: StoreProject, request: RefitRequest, version: V
         wanted = [name for name in dict.fromkeys(_other_surface(*sources[at][4][:2])
                                                  for at in alone)
                   if design_surface_of(conn, name, version.uid) is not None]
+        stale = _stale_designs(conn, request.surfaces, version.uid)
     yield
     frame = project_frame(project)
     parts: list[RefitPart] = []
@@ -2826,7 +2870,7 @@ def prepare_refit_units(project: StoreProject, request: RefitRequest, version: V
                               supersedes=supersedes)
     yield
     return PreparedRefit(tuple(parts), ground, refs, labels, names, operation,
-                         MappingProxyType(others))
+                         MappingProxyType(others), stale)
 
 
 def _other_surface(quarry_name: str, side: Surface | None) -> str:
@@ -2921,7 +2965,8 @@ def refit_compute_steps(request: RefitRequest, masks: access.MaskSet, prepared: 
     (``face_slope``) y el espesor mínimo; y, después, el orden de las dos superficies de una
     cantera (:func:`_ordered_refits`, T53, RF-014-14: con las dos, la regla de orden de la cantera
     y ``check_order`` antes de ofrecer «Crear»; con una sola, un aviso si queda del lado equivocado
-    de la otra). Devuelve el ``design.refit.RefitOutcome``."""
+    de la otra). Devuelve el ``design.refit.RefitOutcome``, con los avisos de los diseños obsoletos
+    de los que sale al final (``prepared.stale_notices``, T54)."""
     faces = [refit.profile_faces(part.values, part.profiles, prepared.names)
              for part in prepared.parts]
     angles = dict(request.angles)
@@ -2944,7 +2989,7 @@ def refit_compute_steps(request: RefitRequest, masks: access.MaskSet, prepared: 
                        f"Comprobando el orden de las superficies de «{request.name}»…")
     tied, orders = _ordered_refits(prepared.parts, found, prepared.ground.values,
                                    prepared.others, masks.grid)
-    return refit.refit_outcome(request.name, tied, orders)
+    return refit.refit_outcome(request.name, tied, orders, prepared.stale_notices)
 
 
 def compute_refit_steps(writer: DesignWriter, request: RefitRequest, masks: access.MaskSet,

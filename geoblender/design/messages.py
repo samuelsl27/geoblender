@@ -976,6 +976,17 @@ CATALOG: tuple[Message, ...] = (
                "«{other}», sin ajustar): no cumplen final ≤ explotación ≤ terreno; ajuste las dos "
                "a la vez para que las ate la regla de orden de la cantera.",
     ),
+    # El ajuste frente a lo obsoleto del diseño del que sale (RF-014-27, RF-014-31; T54) --------
+    Message(
+        "des.refit_source_stale",
+        "The design «{design}» is stale: Project ▸ Recompute the stale results computes it again "
+        "with the current limit and then redoes this refit of {surfaces} on it, which replaces "
+        "the one created now.",
+        "El diseño «{design}» está obsoleto: Proyecto ▸ Recalcular lo obsoleto lo vuelve a "
+        "calcular con el límite vigente y después rehace sobre él este ajuste de {surfaces}, que "
+        "sustituye al que se cree ahora.",
+        "warning",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

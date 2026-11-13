@@ -12,7 +12,10 @@ quedan fuera del límite vigente marcadas** y lo que deja fuera cada una; si las
 día, lo dice. Calcular, Crear, Cancelar y Esc son los de las demás órdenes de la 014: nada se
 registra hasta Crear. El cargador de ``des_adj_`` lleva cada superficie ajustada a la vista y la
 barra N enseña su ficha; «Exportar rejilla a GeoTIFF…» la exporta, y también la clasificación de la
-cantera, con su código por clase y su leyenda en los metadatos (RF-014-32).
+cantera, con su código por clase y su leyenda en los metadatos (RF-014-32). El resumen de un ajuste
+de un diseño obsoleto dice que recalcularlo sustituye el ajuste (T54, RF-014-31, hallazgo F-16), y
+cerrar el proyecto mientras la orden comprueba antes de abrir su ventana no la vuelve a abrir (T54,
+punto 2 de la T48).
 
 Un proyecto pequeño por clase (ventana de 60 × 40 m con celdas de 2 m, V01, el límite legal de
 (4, 4) a (56, 36) con 2 m hacia dentro, el perímetro de (2, 2) a (58, 38), un sector con la búsqueda
@@ -452,7 +455,10 @@ class RefitToLimitTest(unittest.TestCase):
         idiomas) y solo sus dos temporales; cada superficie, ajustada con la cara de **su propio
         perfil** (la explotación con 60°, la final con 35°: con 35°, la explotación saldría
         distinta) y las dos atadas después por la regla de orden de la cantera («final primero»,
-        con su nota al final del resumen; T53, RF-014-14); Crear registra ``des.refit`` hecha en V01 con una ``des_adj_`` por superficie
+        con su nota en el resumen; T53, RF-014-14) y, al final del resumen, en alerta y en los dos
+        idiomas, el aviso de que la cantera de la que salen está obsoleta (el límite nuevo) y
+        recalcularla sustituye el ajuste (T54, RF-014-31, hallazgo F-16); Crear registra
+        ``des.refit`` hecha en V01 con una ``des_adj_`` por superficie
         (releídas, las calculadas) y la cifra ``des.refit_m3`` de cada una, y lo ajustado ya no deja
         nada fuera del límite vigente."""
         self.compiled()
@@ -493,9 +499,29 @@ class RefitToLimitTest(unittest.TestCase):
                 self.assertGreater(found.volume_m3, 0.0)
         self.assertIn(f"Regla de orden de la cantera «{QUARRY_NAME}» con sus dos superficies "
                       f"ajustadas: «{self.exploitation}» cambia en {tied.adjusted} celdas",
-                      summary[-1])
+                      summary[-2])
+        stale = _module("core.provenance.stale")  # la cantera, obsoleta por el límite nuevo
+        ((quarry_uid,),) = self.rows("SELECT uid FROM gb_operation WHERE op_type = ?",
+                                     "des.quarry")
+        with self.project.read() as conn:
+            self.assertTrue(stale.item_causes(conn, "operation", quarry_uid))
+        surfaces = f"«{self.exploitation}», «{self.final}»"
+        self.assertEqual(summary[-1], (  # T54: recalcular la cantera sustituye el ajuste
+            f"El diseño «{QUARRY_NAME}» está obsoleto: Proyecto ▸ Recalcular lo obsoleto lo "
+            "vuelve a calcular con el límite vigente y después rehace sobre él este ajuste de "
+            f"{surfaces}, que sustituye al que se cree ahora."))
+        self.assertTrue(self.view.summary[-1].alert)
+        self.i18n.set_language("en")
+        self.panels.show_summary(held)
+        self.assertEqual(self.view.summary[-1].name, (
+            f"The design «{QUARRY_NAME}» is stale: Project ▸ Recompute the stale results "
+            f"computes it again with the current limit and then redoes this refit of {surfaces} "
+            "on it, which replaces the one created now."))
+        self.i18n.set_language("es")
+        self.panels.show_summary(held)
         wrong = self.expected(self.exploitation, REST_FACE_DEG)  # el error 46
         self.assertGreater(wrong.volume_m3, outcome.refit(self.exploitation).volume_m3)
+        self.assertEqual(held.warnings()[-1], summary[-1])  # «Crear con N avisos» lo cuenta
 
         self.assertEqual(bpy.ops.geoblender.des_refit_to_limit(
             "EXEC_DEFAULT", confirm=True, in_steps=False), {"FINISHED"})
@@ -517,6 +543,23 @@ class RefitToLimitTest(unittest.TestCase):
                                           names=tuple(self.adjusted.values()))
         self.assertEqual(len(checks), 2)
         self.assertFalse(any(check.outside for check in checks))
+
+    def test_b_the_refit_of_a_stale_stepped_design_names_it(self) -> None:
+        """RF-014-27, RF-014-31 (T54, hallazgo F-16): lo mismo con una superficie que no sale de
+        una cantera: el escalonado de la 013 «Escalonado» está obsoleto (su envolvente lee las
+        máscaras del límite nuevo), y el resumen del ajuste de su superficie lo dice, en alerta y
+        al final, nombrándolo. Calcular no registra nada."""
+        self.compiled()
+        before = self.state()
+        self.assertEqual(bpy.ops.geoblender.des_refit_to_limit("EXEC_DEFAULT", **self.form(
+            name="Del escalonado", surfaces=[self.row(self.stepped, True)])), {"FINISHED"})
+        self.assertEqual(self.state()[:3], before[:3])
+        last = self.view.summary[-1]
+        self.assertEqual(last.name, (
+            f"El diseño «{STEPPED_NAME}» está obsoleto: Proyecto ▸ Recalcular lo obsoleto lo "
+            "vuelve a calcular con el límite vigente y después rehace sobre él este ajuste de "
+            f"«{self.stepped}», que sustituye al que se cree ahora."))
+        self.assertTrue(last.alert)
 
     def test_c_the_refitted_surface_in_the_view_its_card_and_the_exports(self) -> None:
         """RF-014-27, RF-014-32 (M6): «Cargar en la vista» de una superficie ajustada da un objeto
@@ -621,6 +664,47 @@ class RefitToLimitTest(unittest.TestCase):
         self.assertEqual(closed.state, {"CANCELLED"})
         self.assertEqual(closed.modal.report_log, [CLOSED_TEXT])
         self.assertIsNone(closed.modal._steps)
+        self.assertEqual(closed.asked, 0)
+        self.assertIsNone(self.des_ops.calculation())
+        self.assertEqual(self.state(), before)
+
+    def test_e_closing_the_project_while_checking_opens_nothing(self) -> None:
+        """RNF-014-05 (T54, punto 2 de la T48; la comprobación previa de la T35, RNF-014-02): sin
+        acierto en la caché, la orden comprueba las superficies antes de abrir su ventana; si el
+        proyecto se cierra justo antes del último evento —las filas, calculadas; llegan con el
+        proyecto ya cerrado—, el modal se para sin volver a abrir la orden, lo dice y no deja
+        nada (ni cálculo abierto, ni operación, ni dato, ni cifra, ni temporal). (En
+        ``blender -b`` Blender no llama a ``invoke``: se llama a mano con un ``self`` y un
+        contexto de mentira, como en la prueba f de ``test_quarry_limit``.)"""
+        self.compiled()
+        later = self.enterContext(mock.patch.object(self.des_ops, "_invoke_later"))
+        before = self.state()
+        fakes: list[Any] = []
+
+        def start() -> Any:
+            self.panels.forget_limit_checks()  # sin acierto: comprueba antes
+            manager = SimpleNamespace(**{name: mock.Mock() for name in (
+                "event_timer_add", "event_timer_remove", "modal_handler_add", "progress_begin",
+                "progress_update", "progress_end", "invoke_props_dialog")})
+            context = SimpleNamespace(window=window(), window_manager=manager, workspace=None,
+                                      selected_objects=())
+            fake = operator_self(self.cls, name="", surfaces=_Rows(), start="", note="",
+                                 confirm=False, in_steps=False, report=lambda kind, text: None,
+                                 properties=SimpleNamespace(is_property_set=lambda name: False))
+            self.assertEqual(self.cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+            manager.invoke_props_dialog.assert_not_called()
+            fakes.append(fake)
+            return SimpleNamespace(modal=lambda _context, event: self.core_ops._StepsModal.modal(
+                fake, context, event))
+
+        closed = step_modals.close_at_the_last_event(self.cls, start, bpy.context, session=self.ps,
+                                                     des_ops=self.des_ops)
+        self.assertEqual(later.call_count, 1, "solo la primera vez, la que llega al final")
+        self.assertEqual(closed.state, {"CANCELLED"})
+        checking = fakes[-1]
+        self.assertEqual(checking.report_log,
+                         ["Comprobación cancelada: no se ha abierto la ventana"])
+        self.assertIsNone(checking._steps)
         self.assertEqual(closed.asked, 0)
         self.assertIsNone(self.des_ops.calculation())
         self.assertEqual(self.state(), before)
