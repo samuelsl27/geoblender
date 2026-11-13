@@ -326,12 +326,13 @@ class QuarryH2Test(unittest.TestCase):
 
     def e4_form(self, **values: Any) -> dict[str, Any]:
         """E4: la final de E3; la explotación con ``EXPL_10_60_6`` sembrada en toda la ladera del
-        dominio (no excava: queda sobre terreno sin explotar)."""
+        dominio (no excava: queda sobre terreno sin explotar), con la confirmación de esas
+        semillas, que caen fuera de la coronación (``confirm_outside``, T43)."""
         return {"name": WITHOUT, "start": self.ground, "final_profile": REST,
                 "exploitation_profile": EXPL, "exploitation_seeds": "SURFACE",
                 "exploitation_surface": self.ground, "exploitation_zone": "domain",
                 "floors_layer": FLOORS_LAYER, "fill_layer": FILL_LAYER, "in_steps": False,
-                **values}
+                "confirm_outside": True, **values}
 
     def calculate(self, form: dict[str, Any]) -> Any:
         """«Calcular» desde un guion: el cálculo abierto, con su resumen en la vista."""

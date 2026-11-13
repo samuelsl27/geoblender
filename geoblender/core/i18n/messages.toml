@@ -8331,6 +8331,15 @@ es = "Cantera «{name}» creada en {version}"
 ["Computing the quarry… {percent} % · Esc: cancel"]
 es = "Calculando la cantera… {percent} % · Esc: cancelar"
 
+["Quarry «{name}»: seeds outside the crown and the zones to hold"]
+es = "Cantera «{name}»: semillas fuera de la coronación y de las zonas a sostener"
+
+["Calculate with them"]
+es = "Calcular con ellas"
+
+["Nothing has been computed in «{name}»: confirm the seeds outside the crown and the zones to hold to compute with them (from a script, with confirm_outside=True)"]
+es = "No se ha calculado nada en «{name}»: confirme las semillas fuera de la coronación y de las zonas a sostener para calcular con ellas (desde un guion, con confirm_outside=True)"
+
 ["No layer"]
 es = "Ninguna capa"
 

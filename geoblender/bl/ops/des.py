@@ -199,6 +199,7 @@ después vuelve a abrirse con las filas ya marcadas.
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import math
 import sqlite3
@@ -231,7 +232,7 @@ from ..props.core import OBJECT_PROPERTY
 from ..props.des import PREVIEW_PROPERTY, GEOBLENDER_PG_des_refit_surface
 from ..scene import des_views, project_session, undo_watch
 from ..scene import versions as scene_versions
-from ..ui import constraint_panels, des_panels
+from ..ui import constraint_panels, des_panels, labels
 from ..ui import provenance as ui_provenance
 from ..ui.commands import catalog, command_idname, with_note
 from ..ui.commands import text as command_text
@@ -1908,12 +1909,11 @@ class _CalculateAndCreate:
         calculated = _drain(self, steps)
         if calculated is None:
             return {"CANCELLED"}
-        self._finished(context, calculated)
-        return {"FINISHED"}
+        return self._finished(context, calculated)
 
-    def _finished(self, context: Any, opened: Calculation) -> None:
+    def _finished(self, context: Any, opened: Calculation) -> set[str]:
         """Lo deja abierto y sin registrar, enseña su resumen (en el informe y en la vista) y, desde
-        la interfaz, pide confirmar."""
+        la interfaz, pide confirmar. Devuelve cómo acaba la orden."""
         hold_calculation(opened)
         des_panels.show_summary(opened)
         shown = des_panels.view()
@@ -1921,6 +1921,7 @@ class _CalculateAndCreate:
             self._report({"WARNING" if line.alert else "INFO"}, line.name)
         if self.in_steps and getattr(context, "window", None) is not None:
             _ask_confirmation(context, idname=self.COMMAND)
+        return {"FINISHED"}
 
     def _create(self, context: Any) -> set[str]:
         """«Crear»: registra el cálculo abierto en una transacción (``Calculation.create``: la
@@ -1958,8 +1959,7 @@ class _CalculateAndCreate:
                     "has been left half-done", name=getattr(self, "_name", "")))
             return None
         self._done(context)
-        self._finished(context, step.result)
-        return {"FINISHED"}
+        return self._finished(context, step.result)
 
     def modal(self, context: Any, event: Any) -> set[str]:
         try:
@@ -2138,6 +2138,31 @@ def _side_title(surface: design_model.Surface) -> str:
     if surface is design_model.Surface.FINAL:
         return tr("Final surface")
     return tr("Exploitation surface")
+
+
+_QUARRY_HIDDEN = frozenset({"confirm", "in_steps", "confirm_outside", "outside"})
+"""Las propiedades ocultas de «Cantera con dos superficies…»: las pone quien la lanza."""
+
+
+def _draw_outside(layout: Any, outside: str) -> None:
+    """Los avisos de las semillas fuera de la coronación y de las zonas a sostener (``outside``:
+    ``[[código, valores], …]`` en JSON, los de ``design.steps.quarry_run``; RF-014-03) en el
+    diálogo que pide confirmarlas: por lado, el nombre de su superficie y su aviso, en ámbar, y
+    después cada grupo con sus celdas, su área y su centro; cada texto, partido al ancho."""
+    from ...design.preview import Notice  # al usarlo: habilitar no carga el cálculo
+
+    width = labels.dialog_width(DIALOG_WIDTH)
+    language = i18n.language()
+    for code, values in json.loads(outside):
+        notice = Notice(code, values)
+        warning = notice.severity == "warning"
+        if warning and "surface" in values:
+            layout.label(text=_side_title(design_model.Surface(values["surface"])),
+                         translate=False)
+        column = layout.column(align=True)
+        column.alert = warning
+        labels.draw_wrapped(column, notice.text(language), width,
+                            icon="ERROR" if warning else "NONE")
 
 
 def _chosen(layer: str) -> bool:
@@ -2324,18 +2349,31 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
     # el avance y Esc: los pone invoke; desde un guion, sin ellos, de una vez.
     confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
     in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    # Las semillas de la 013 fuera de la coronación y de las zonas a sostener (T43; RF-014-03): la
+    # confirmación de calcular con ellas (el botón «Calcular con ellas» del diálogo que las enseña
+    # o, desde un guion, quien la lanza) y lo que enseña ese diálogo (sus avisos, en JSON).
+    confirm_outside: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    outside: StringProperty(default="", options=_HIDDEN)  # type: ignore[valid-type]
 
     # --- El diálogo ---------------------------------------------------------------------------
 
     def invoke(self, context: Any, event: Any) -> set[str]:
         """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué.
-        Con ``confirm``, el diálogo de crear el cálculo abierto. Si no, las listas de superficies,
-        zonas, capas, perfiles y sectores leídas de nuevo, la propuesta (el nombre y, de partida,
-        el terreno: T45 de la 013) y el diálogo del cálculo: Intro calcula."""
+        Con ``confirm``, el diálogo de crear el cálculo abierto; con ``outside``, el que pide
+        confirmar las semillas fuera de la coronación antes de calcular con ellas (RF-014-03:
+        «Calcular con ellas»; «Cancelar» y cerrarlo no calculan nada). Si no, las listas de
+        superficies, zonas, capas, perfiles y sectores leídas de nuevo, la propuesta (el nombre y,
+        de partida, el terreno: T45 de la 013) y el diálogo del cálculo: Intro calcula."""
         self.provenance_dialog = True
         self.in_steps = getattr(context, "window", None) is not None
         if self.confirm:
             return self._confirmation(context)
+        if self.outside:  # lo pedido, tal cual, con la confirmación de las semillas puesta
+            return context.window_manager.invoke_props_dialog(
+                self, width=DIALOG_WIDTH, translate=False,
+                title=tr("Quarry «{name}»: seeds outside the crown and the zones to hold",
+                         name=self.name.strip()),
+                confirm_text=tr("Calculate with them"))
         refusal = self._version_refusal()
         if refusal is not None:
             if scene_versions.active_version() is not None:
@@ -2369,10 +2407,14 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
 
     def draw(self, context: Any) -> None:
         """Arriba el nombre, la superficie de partida y el orden; una caja por superficie; abajo
-        las capas con sus campos y «explotación hasta la final» (plan 014 §5.5)."""
+        las capas con sus campos y «explotación hasta la final» (plan 014 §5.5). En la
+        confirmación de crear, el resumen; en la de las semillas fuera, sus avisos."""
         layout = self.layout
         if self.confirm:  # el resumen del cálculo abierto
             des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        if self.outside:  # las semillas fuera de la coronación, antes de calcular (RF-014-03)
+            _draw_outside(layout, self.outside)
             return
         layout.use_property_split = True
         shown = des_panels.view()
@@ -2528,7 +2570,9 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
         están al día—, sin registrar nada (RF-014-29): desde la interfaz, en el modal con el avance
         y Esc; desde un guion, de una vez. Al terminar deja el cálculo abierto con su resumen y
         pide confirmar. Los rechazos (un sector del recinto sin búsqueda vigente, RF-014-30; las
-        capas, los perfiles, el recinto vacío, el nombre repetido) son los de ``design``."""
+        capas, los perfiles, el recinto vacío, el nombre repetido) son los de ``design``. Si las
+        semillas de la 013 de un lado caen fuera de la coronación y de las zonas a sostener, sin
+        ``confirm_outside`` no calcula nada (RF-014-03, :meth:`_finished`)."""
         if self.confirm:
             return self._create(context)
         blocked = write_unavailable()
@@ -2557,8 +2601,36 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
 
         discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
         steps = design_steps.quarry_run(project, request, version=version,
-                                        budget_s=self.STEP_BUDGET_S)
+                                        budget_s=self.STEP_BUDGET_S,
+                                        confirm_outside=self.confirm_outside)
         return self._run_steps(context, project, request.name, steps)
+
+    def _finished(self, context: Any, opened: Calculation | tuple[Any, ...]) -> set[str]:
+        """El cálculo abierto, como en las demás órdenes; o, si ``quarry_run`` se paró antes de
+        calcular por las semillas de la 013 fuera de la coronación y de las zonas a sostener (sus
+        avisos, ``preview.Notice``; RF-014-03, error 10), nada calculado: sus avisos en el informe
+        y, desde la interfaz, la misma orden con lo pedido otra vez, la confirmación de las
+        semillas puesta y el diálogo que las enseña («Calcular con ellas»); desde un guion, el
+        error que lo dice (hace falta ``confirm_outside``)."""
+        if not isinstance(opened, tuple):
+            return super()._finished(context, opened)
+        language = i18n.language()
+        for notice in opened:
+            self._report({"WARNING" if notice.severity == "warning" else "INFO"},
+                         notice.text(language))
+        window = getattr(context, "window", None)
+        if self.in_steps and window is not None:
+            asked = {name: getattr(self, name) for name in type(self).__annotations__
+                     if name not in _QUARRY_HIDDEN and self.properties.is_property_set(name)}
+            _invoke_later(self.COMMAND, window, **asked, confirm_outside=True,
+                          outside=json.dumps([[notice.code, dict(notice.values)]
+                                              for notice in opened], ensure_ascii=False))
+            return {"FINISHED"}
+        self._report({"ERROR"}, tr(
+            "Nothing has been computed in «{name}»: confirm the seeds outside the crown and the "
+            "zones to hold to compute with them (from a script, with confirm_outside=True)",
+            name=getattr(self, "_name", "")))
+        return {"CANCELLED"}
 
     def _created_text(self, opened: Calculation) -> str:
         return tr("Quarry «{name}» created in {version}", name=opened.name,

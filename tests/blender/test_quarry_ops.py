@@ -63,6 +63,12 @@ restauración por relleno (de (40, 30) a (48, 46)).
   mín(final(final primero), explotación(explotación primero))``, bit a bit.
 - D-14 de la 013, RNF-014-05 (j): Esc a mitad (también con los temporales escritos), «Cancelar» la
   confirmación y un nombre que falta no dejan nada.
+- RF-014-03, CE-014-01, HU-014-1 (k; T43): con la explotación sembrada en toda la ladera, Calcular
+  se para antes de calcular, sin dejar nada, y pide confirmarlo en un diálogo con los dos grupos
+  fuera de la coronación y de las zonas a sostener, a mano: lo de fuera del recinto ampliado en 3
+  celdas (de (0, 4) a (56, 56)), 172 celdas, 688 m², y el recinto, 415 celdas, 1.660 m²; desde un
+  guion, sin ``confirm_outside`` se niega; con él, calcula como hasta ahora y el resumen sigue
+  diciendo los grupos.
 - Principio 8 (z): desactivar Geoblender quita las dos órdenes y el cargador y descarta el cálculo
   abierto.
 
@@ -71,6 +77,7 @@ Se ejecuta con ``tools/run_blender_tests.py``.
 
 import importlib
 import json
+import re
 import tempfile
 import time
 import unittest
@@ -169,6 +176,17 @@ QUARRY_PROPERTIES = {
 }
 """Algunas propiedades del diálogo de la cantera con el ``msgid`` de su nombre y de su
 descripción (todas llevan los dos)."""
+HIDDEN = ("confirm", "in_steps", "confirm_outside", "outside")
+"""Las propiedades ocultas de la cantera (las pone quien la lanza): sin nombre ni descripción."""
+# Las semillas en toda la ladera (T43): los dos grupos fuera de la coronación (3 celdas) y de las
+# zonas a sostener, a mano. Fuera del recinto ampliado (los centros con 1 ≤ x ≤ 55 y 5 ≤ y ≤ 55):
+# las columnas x = 57 y 59 (2 · 30) y las filas y = 1, 3, 57 y 59 de x = 1 a 55 (4 · 28) = 172
+# celdas, con Σx = 30 · (57 + 59) + 4 · 28² = 6.616 y Σy = 2 · 900 + 28 · 120 = 5.160; el recinto,
+# sus 415 celdas, con Σx = 440 · 28 − 25 · 25 y Σy = 440 · 30 − 25 · 25.
+OUTSIDE_GROUPS = ((172, 6_616 / 172, 5_160 / 172),
+                  (AREA_CELLS, (440 * 28 - 25 * 25) / AREA_CELLS,
+                   (440 * 30 - 25 * 25) / AREA_CELLS))
+"""Cada grupo: sus celdas y su centro local (m)."""
 
 
 def _module(name: str) -> ModuleType:
@@ -618,7 +636,7 @@ class LimitFromPerimeterTest(unittest.TestCase):
                 "corridors_start_field": "cota_inicial", "corridors_grade_field": "pendiente",
                 "fill_layer": "none", "water_layer": "none", "water_field": "cota",
                 "to_final": "NONE", "to_final_layer": "none", "confirm": False,
-                "in_steps": False, **values}
+                "in_steps": False, "confirm_outside": False, "outside": "", **values}
 
     def read(self, family: str, name: str) -> np.ndarray:
         """Las cotas de la rejilla ``family`` de la cantera ``name`` de V01, releídas."""
@@ -906,7 +924,7 @@ class LimitFromPerimeterTest(unittest.TestCase):
                 self.assertEqual(self.i18n.untranslated([label, about]), [])
         fields = self.quarry_fields()
         for prop in fields:
-            if prop in ("confirm", "in_steps"):
+            if prop in HIDDEN:
                 continue
             with self.subTest(propiedad=prop):
                 keywords = cls.__annotations__[prop].keywords
@@ -1180,6 +1198,78 @@ class LimitFromPerimeterTest(unittest.TestCase):
         with self.assertRaises(RuntimeError) as raised:
             self.quarry_create()
         self.assertIn("No hay un cálculo abierto", str(raised.exception))
+
+    def test_k_seeds_outside_the_crown_are_confirmed_before_calculating(self) -> None:
+        """RF-014-03, CE-014-01, HU-014-1 (T43, hallazgo F-4): con la explotación sembrada en toda
+        la ladera, Calcular desde la interfaz se para antes de calcular —ni cálculo abierto, ni
+        temporal, ni operación— y pide confirmarlo: vuelve a abrir la orden con lo pedido y la
+        confirmación puesta, en un diálogo («Calcular con ellas») con el aviso de la superficie de
+        explotación (587 celdas, 2.348 m², 2 grupos) y cada grupo con sus celdas, su área y su
+        centro a mano; cerrar ese diálogo no deja nada. Desde un guion, sin ``confirm_outside`` se
+        niega en los dos idiomas y no deja nada; con él (lo que hace el botón), calcula como hasta
+        ahora y el resumen sigue diciendo los grupos."""
+        files = self.names()
+        done = len(self.quarry_operations("done"))
+        seeds = {"name": "Ladera", "exploitation_seeds": "SURFACE",
+                 "exploitation_surface": self.ground, "exploitation_zone": "none"}
+        modal = self.quarry_start(**seeds)
+        with mock.patch.object(self.des_ops, "_invoke_later") as later:
+            state, _calls = self.drive(modal)
+        self.assertEqual(state, {"FINISHED"})
+        self.nothing_left_quarry(files, done)
+        self.assertEqual(later.call_count, 1)
+        (idname, shown_in), asked = later.call_args.args, later.call_args.kwargs
+        self.assertEqual((idname, shown_in), (QUARRY, window()))
+        form = self.quarry_form(**seeds)
+        del form["in_steps"]
+        self.assertEqual({key: asked[key] for key in form}, form)  # lo pedido, tal cual
+        self.assertIs(asked["confirm_outside"], True)
+        self.assertTrue(any("2 grupos caen fuera de la coronación" in line
+                            for line in modal.report_log), modal.report_log)
+        warning, *groups = json.loads(asked["outside"])
+        self.assertEqual(warning, ["des.quarry_seeds_outside", {
+            "surface": "exploitation", "cells": 587, "area": 2_348.0, "groups": 2}])
+        self.assertEqual(len(groups), 2)
+        for (code, values), (cells, x, y) in zip(groups, OUTSIDE_GROUPS, strict=True):
+            self.assertEqual((code, values["cells"], values["area"]),
+                             ("des.quarry_seed_group", cells, cells * STEP_M ** 2))
+            self.assertAlmostEqual(values["x"], WEST + x, delta=0.005)  # en cm
+            self.assertAlmostEqual(values["y"], SOUTH + y, delta=0.005)
+
+        dialog = mock.Mock(return_value={"RUNNING_MODAL"})
+        context = SimpleNamespace(window=window(), selected_objects=(),
+                                  window_manager=SimpleNamespace(invoke_props_dialog=dialog))
+        fields = self.quarry_fields(**{key: asked[key] for key in asked if key != "in_steps"})
+        fake = operator_self(self.quarry_cls, report=lambda kind, text: None, **fields)
+        self.assertEqual(self.quarry_cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+        self.assertEqual(dialog.call_args.kwargs["confirm_text"], "Calcular con ellas")
+        texts = draw(self.quarry_cls, bpy.context, **fields).texts()
+        self.assertIn("Superficie de explotación", texts)
+        self.assertTrue(any(text.startswith("587 celdas de semillas") for text in texts), texts)
+        for pattern in (r"^Grupo 1: 172 celdas, 688 m²", r"^Grupo 2: 415 celdas, 1\D?660 m²"):
+            self.assertTrue(any(re.match(pattern, text) for text in texts), texts)
+        self.quarry_cls.cancel(operator_self(self.quarry_cls, **fields), bpy.context)
+        self.nothing_left_quarry(files, done)
+
+        script = {**self.quarry_form(**seeds), "in_steps": False}
+        for language, refusal in (("es", "No se ha calculado nada"),
+                                  ("en", "Nothing has been computed")):
+            self.i18n.set_language(language)
+            with self.subTest(idioma=language), self.assertRaises(RuntimeError) as raised:
+                bpy.ops.geoblender.des_design_quarry("EXEC_DEFAULT", **script)
+            self.assertIn(refusal, str(raised.exception))
+            self.nothing_left_quarry(files, done)
+        self.i18n.set_language("es")
+        self.assertEqual(bpy.ops.geoblender.des_design_quarry(
+            "EXEC_DEFAULT", **script, confirm_outside=True), {"FINISHED"})
+        held = self.des_ops.calculation()
+        self.assertEqual((held.op_type, held.name, held.open), (QUARRY_TYPE, "Ladera", True))
+        lines = [item.name for item in self.view.summary]
+        self.assertTrue(any("2 grupos caen fuera de la coronación" in line for line in lines),
+                        lines)
+        self.assertTrue(any(line.startswith("Grupo 1: 172 celdas") for line in lines), lines)
+        self.des_ops.discard_calculation()
+        self.nothing_left_quarry(files, done)
 
     def test_z_disabling_geoblender_removes_the_command_and_the_loader(self) -> None:
         """Principio 8, D-14 de la 013: con un cálculo abierto, desactivar Geoblender lo descarta (no

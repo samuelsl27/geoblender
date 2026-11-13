@@ -2116,13 +2116,7 @@ def quarry_notices(request: QuarryRequest, masks: access.MaskSet, parts: QuarryP
         if seeds is None:
             continue
         groups = quarry.outside_crown(seeds, parts.area, start, masks, ring_cells)
-        if groups:
-            cells = sum(group.cells for group in groups)
-            found.append(Notice("des.quarry_seeds_outside", {
-                "cells": cells, "area": cells * geometry.cell_area, "groups": len(groups)}))
-            found.extend(Notice("des.quarry_seed_group", {
-                "group": group.group, "cells": group.cells, "area": group.area_m2,
-                "x": round(group.x, 2), "y": round(group.y, 2)}) for group in groups)
+        found.extend(_seed_notices(side_name, groups, geometry.cell_area))
     unsplit = outcome.unsplit
     if unsplit.zones:
         found.append(Notice("des.quarry_unsplit_zones", {
@@ -2135,6 +2129,42 @@ def quarry_notices(request: QuarryRequest, masks: access.MaskSet, parts: QuarryP
         found.append(Notice("des.quarry_to_final", {
             "zones": len(outcome.to_final.zones), "area": outcome.to_final.area_ha,
             "volume": outcome.to_final.volume_m3}))
+    return tuple(found)
+
+
+def _seed_notices(surface: Surface, groups: Sequence[quarry.SeedGroup], cell_area: float
+                  ) -> list[Notice]:
+    """El aviso de las semillas de la 013 del lado ``surface`` que caen fuera de la coronación y de
+    las zonas a sostener, con su superficie, sus celdas, su área y sus grupos, y una nota por grupo
+    con sus celdas, su área y su centro en cm (RF-014-03); ninguno sin grupos."""
+    if not groups:
+        return []
+    cells = sum(group.cells for group in groups)
+    return [Notice("des.quarry_seeds_outside", {
+        "surface": surface.value, "cells": cells, "area": cells * cell_area,
+        "groups": len(groups)}),
+        *(Notice("des.quarry_seed_group", {
+            "group": group.group, "cells": group.cells, "area": group.area_m2,
+            "x": round(group.x, 2), "y": round(group.y, 2)}) for group in groups)]
+
+
+def _seeds_outside_units(masks: access.MaskSet, parts: QuarryParts, values: Mapping[str, object]
+                         ) -> Generator[None, None, tuple[Notice, ...]]:
+    """Las unidades que buscan, **antes de calcular** la cantera de piezas ``parts`` (T43;
+    RF-014-03, error 10), las semillas de la 013 de cada lado que caen fuera de la coronación (con
+    el anillo de ``values``) y de las zonas a sostener: sus avisos, como en el resumen
+    (:func:`_seed_notices`, en el orden de los lados), o ``()`` si no hay ninguna. Solo leen. Las
+    usa ``design.steps.quarry_run`` para pararse sin la confirmación."""
+    ring = int(check_quarry_param(CROWN_RING, values.get(CROWN_RING)))
+    found: list[Notice] = []
+    for side_name in Surface:
+        seeds = parts.seeds.get(side_name)
+        if seeds is None:
+            continue
+        groups = yield from quarry._outside_units(seeds, parts.area, parts.start.values, masks,
+                                                  ring)
+        found.extend(_seed_notices(side_name, groups, masks.grid.cell_area))
+        yield
     return tuple(found)
 
 

@@ -38,8 +38,9 @@ Cada cifra se compara con su cálculo a mano (coordenadas locales, en m desde la
   celdas a mano.
 
 Y las tres regresiones: **CE-014-01** (error 10), sembrar en toda la ladera se avisa antes de
-calcular, con dos grupos de celdas, área y centro a mano, y lo que se calcula con esas semillas no
-excava nada (el fondo es el terreno); con «coronación y zonas a sostener» no queda ninguna fuera.
+calcular, con dos grupos de celdas, área y centro a mano —«Calcular» se para tras armar las piezas,
+sin escribir nada, y solo calcula con la confirmación (T43)—, y lo que se calcula con esas semillas
+no excava nada (el fondo es el terreno); con «coronación y zonas a sostener» no queda ninguna fuera.
 **CE-014-02** (error 37): la corta junto a la zona a conservar mueve 0 m³ en ella y su techo es el
 del cálculo a mano a ≤ 10⁻⁹ m. **CE-014-03** (error 20): el corredor de 200 m de eje y 20 m de
 ancho mide 200 m ± 1 celda.
@@ -55,6 +56,7 @@ import numpy as np
 
 from tests.support import quarry_fixtures as qfx
 from tests.support.package import import_geoblender
+from tests.support.provenance_contract import registered
 
 quarry = import_geoblender("design.quarry")
 model = import_geoblender("design.model")
@@ -62,6 +64,10 @@ params = import_geoblender("design.params")
 seeds_mod = import_geoblender("design.seeds")
 messages = import_geoblender("design.messages")
 report_mod = import_geoblender("design.report")
+steps = import_geoblender("design.steps")
+dprov = import_geoblender("design.provenance")
+core_params = import_geoblender("core.params")
+res_provenance = import_geoblender("reserves.provenance")
 
 TOLERANCE_M = 1e-9
 RING_CELLS = 3
@@ -119,6 +125,10 @@ def last_result(steps: Any) -> Any:
     for found in steps:
         pass
     return found.result
+
+
+def never(request: Any) -> Any:  # nunca se llama: estas pruebas no recalculan ni reproducen
+    raise AssertionError("estas pruebas no recalculan ni reproducen")
 
 
 def absolute(x: float, y: float) -> tuple[float, float]:
@@ -343,22 +353,105 @@ class QuarryH1Test(qfx.QuarryProjectCase):
                                               self.loaded, RING_CELLS), ())
 
     def test_ce01_seeds_all_over_the_slope_are_warned_before_calculating(self) -> None:
-        """CE-014-01, RF-014-03: sembrar en toda la ladera da, antes de calcular, dos grupos fuera
+        """CE-014-01, RF-014-03 (T43, hallazgo F-4): sembrar en toda la ladera da dos grupos fuera
         de ``C ∪ H`` con sus celdas, su área y su centro absoluto a mano (lo de fuera del recinto
-        ampliado, centrado en (200, 200), y el recinto), 154.600 celdas en total, y el aviso los
-        cuenta."""
+        ampliado, centrado en (200, 200), y el recinto), 154.600 celdas en total; y «Calcular»
+        (``design.steps.quarry_run``) con esas semillas en la explotación **se para antes de
+        calcular**, tras armar las piezas y sin escribir nada (ni operación ni temporal): su último
+        paso lleva, en lugar del cálculo, el aviso de la superficie de explotación (154.600 celdas,
+        154.600 m², 2 grupos) y un grupo por nota con sus celdas, su área y su centro (a 0,005 m:
+        el aviso lo redondea a centímetros). Solo con la confirmación (``confirm_outside``) pasa a
+        calcular."""
         groups = quarry.outside_crown(self.start, self.area, self.start, self.loaded, RING_CELLS)
         self.assertEqual([(item.group, item.cells) for item in groups],
                          [(1, OUTSIDE_CROWN_CELLS), (2, qfx.CUT_ALLOWED_CELLS)])
         self.assertEqual(sum(item.cells for item in groups), SLOPE_SEED_CELLS)
         self.assertEqual([item.area_m2 for item in groups], [69_624.0, 84_976.0])
-        for item, (x, y) in zip(groups, (absolute(200.0, 200.0), area_centre()), strict=True):
+        centres = (absolute(200.0, 200.0), area_centre())
+        for item, (x, y) in zip(groups, centres, strict=True):
             self.assertAlmostEqual(item.x, x, delta=TOLERANCE_M)
             self.assertAlmostEqual(item.y, y, delta=TOLERANCE_M)
         text = messages.render("des.quarry_seeds_outside", cells=SLOPE_SEED_CELLS,
                                area=float(SLOPE_SEED_CELLS), groups=len(groups))
         self.assertIn("2 grupos", text)
         self.assertEqual(messages.lookup("des.quarry_seeds_outside").severity, "warning")
+
+        self.ready_to_calculate()
+        request = model.QuarryRequest(
+            name="Toda la ladera", start=qfx.START_DATASET,
+            final=model.QuarrySide(base_profile=REST.code),
+            exploitation=model.QuarrySide(base_profile=EXPL.code, seeds=model.SeedSource(
+                "surface", surface=qfx.START_DATASET)))
+        before = self.written()
+        found = list(steps.quarry_run(self.project, request, version=self.v1.uid,
+                                      masks=self.loaded))
+        last = found[-1]
+        self.assertEqual(last.phase, "seeds_outside")
+        self.assertEqual([step.result for step in found[:-1]], [None] * (len(found) - 1))
+        self.assertNotIn("quarry", {step.phase for step in found})  # no empezó a calcular
+        warning, *notes = last.result
+        self.assertEqual((warning.code, dict(warning.values)), ("des.quarry_seeds_outside", {
+            "surface": "exploitation", "cells": SLOPE_SEED_CELLS,
+            "area": float(SLOPE_SEED_CELLS), "groups": 2}))
+        self.assertEqual(warning.severity, "warning")
+        self.assertRegex(warning.text("es"),
+                         r"^154\D600 celdas de semillas \(154\D600 m²\) en 2 grupos caen fuera")
+        self.assertEqual([note.code for note in notes], ["des.quarry_seed_group"] * 2)
+        for note, number, cells, (x, y) in zip(notes, (1, 2), (69_624, 84_976), centres,
+                                               strict=True):
+            values = dict(note.values)
+            self.assertEqual((values["group"], values["cells"], values["area"]),
+                             (number, cells, float(cells)))
+            self.assertAlmostEqual(values["x"], x, delta=0.005)
+            self.assertAlmostEqual(values["y"], y, delta=0.005)
+        self.assertEqual(self.written(), before)
+
+        work = steps.quarry_run(self.project, request, version=self.v1.uid, masks=self.loaded,
+                                confirm_outside=True)
+        phases = []
+        for step in work:  # con la confirmación, calcula: se cancela en cuanto empieza
+            phases.append(step.phase)
+            if step.phase == "quarry":
+                work.close()
+                break
+        self.assertIn("quarry", phases)
+        self.assertNotIn("seeds_outside", phases)
+        self.assertEqual(self.written(), before)  # cancelado: no queda nada
+
+    def ready_to_calculate(self) -> None:
+        """Lo que «Calcular» lee además del proyecto de la cantera: las definiciones, las familias,
+        los tipos de operación de la 013 y de la 014 y sus cifras registrados (hasta el final de
+        la prueba), y los cinco valores de los dos perfiles declarados en el proyecto."""
+        core_params.register_definitions(params.DEFINITIONS)
+        core_params.register_definitions(params.QUARRY_DEFINITIONS)
+        self.addCleanup(core_params.unregister_definitions, "des")
+        core_params.register_families(params.FAMILIES)
+        self.addCleanup(core_params.unregister_families, "des")
+        core_params.register_definitions(res_provenance.VERIFY_DEFINITIONS)
+        self.addCleanup(core_params.unregister_definitions, "res")
+        self.enterContext(registered(
+            *dprov.operation_defs(dict.fromkeys(dprov.REPRODUCIBLE, never),
+                                  dict.fromkeys(dprov.REPRODUCIBLE, never)),
+            *dprov.quarry_operation_defs(dict.fromkeys(dprov.QUARRY_VERSION_TYPES, never),
+                                         dict.fromkeys(dprov.QUARRY_REPRODUCIBLE, never)),
+            *dprov.FIGURES, *dprov.QUARRY_FIGURES))
+        store = core_params.ParameterStore(self.project)
+        for code, values in ((EXPL.code, EXPL), (REST.code, REST)):
+            for param in ("height_m", "face_deg", "berm_m", "anchor_m", "mesh_factor"):
+                self.clock.advance(minutes=1)
+                with self.project.write_transaction() as conn:
+                    store.create(conn, params.bench_key(code, param), getattr(values, param),
+                                 kind="ADOPTADO", reason="Prueba de CE-014-01",
+                                 source="Perfil de prueba", source_kind="person",
+                                 decided_by="Samuel (IMGA)")
+
+    def written(self) -> tuple[Any, ...]:
+        """Lo que el diseño ha dejado en el proyecto: sus operaciones y los temporales de la
+        carpeta del proyecto."""
+        operations = self.query("SELECT uid, op_type, status FROM gb_operation WHERE op_type "
+                                "LIKE 'des.%' ORDER BY fid")
+        temporaries = sorted(str(path) for path in self.root.rglob("*") if ".tmp" in path.name)
+        return operations, temporaries
 
     def test_ce01_seeds_all_over_the_slope_raise_the_floors(self) -> None:
         """CE-014-01 (error 10): con las semillas en toda la ladera la envolvente no baja del

@@ -18,7 +18,9 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
 - :func:`excavation_area_run` (spec 014, T06; RF-014-01): «Calcular» el recinto excavable de la
   versión (``des.excavation_area``) del mismo modo; el último paso lleva su :class:`Calculation`.
 - :func:`quarry_run` (spec 014, T19; RF-014-12, RF-014-29, RF-014-30): «Calcular» la cantera con
-  dos superficies (``des.quarry``) del mismo modo, con los avisos de su resumen.
+  dos superficies (``des.quarry``) del mismo modo, con los avisos de su resumen; sin la
+  confirmación, se para antes de calcular si las semillas de la 013 de un lado caen fuera de la
+  coronación y de las zonas a sostener, con sus grupos (T43; RF-014-03).
 - :func:`edge_transition_run` (spec 014, T28; RF-014-19 a RF-014-21, RF-014-29): «Calcular» la
   transición de una superficie de diseño con el terreno no afectado (``des.edge_transition``) del
   mismo modo, con el aviso del salto creado que deja.
@@ -81,6 +83,7 @@ __all__ = [
 
 _PREPARE_PHASE = "prepare"
 _DONE_PHASE = "calculated"
+_OUTSIDE_PHASE = "seeds_outside"  # la cantera parada por sus semillas fuera (T43; RF-014-03)
 _READY, _CREATED, _DISCARDED = "ready", "created", "discarded"
 
 
@@ -273,8 +276,8 @@ def excavation_area_run(project: StoreProject, name: str, surface: str, *, versi
 
 
 def quarry_run(project: StoreProject, request: QuarryRequest, *, version: str | None,
-               masks: MaskSet | None = None, budget_s: float = STEP_BUDGET_S
-               ) -> Iterator[Progress]:
+               masks: MaskSet | None = None, budget_s: float = STEP_BUDGET_S,
+               confirm_outside: bool = False) -> Iterator[Progress]:
     """**«Calcular»** la cantera con dos superficies ``request`` de la versión ``version`` por
     pasos de ``budget_s`` como mucho (spec 014, T19; RF-014-12, RF-014-29, RF-014-30; «Cantera con
     dos superficies…»): el último ``Progress`` lleva la :class:`Calculation` de ``des.quarry``, con
@@ -284,12 +287,20 @@ def quarry_run(project: StoreProject, request: QuarryRequest, *, version: str | 
     terreno sin explotar, «explotación hasta la final» y los del escalonado de cada lado), y
     **nada registrado**. ``masks``, como en :func:`envelope_run`.
 
+    **Semillas fuera** (T43; RF-014-03, error 10): si las semillas de la 013 de un lado caen fuera
+    de la coronación y de las zonas a sostener y no viene la confirmación (``confirm_outside``), se
+    para tras armar las piezas, antes de calcular y sin escribir nada (ni un temporal): su último
+    ``Progress`` (fase ``seeds_outside``) lleva en ``result``, en lugar de la
+    :class:`Calculation`, sus avisos (``preview.Notice``: por lado, ``des.quarry_seeds_outside``
+    con su superficie y un ``des.quarry_seed_group`` por grupo, con sus celdas, su área y su
+    centro). Con la confirmación, calcula; el resumen sigue diciendo los grupos.
+
     Los rechazos salen **al avanzar**, antes de escribir nada: sin versión activa o no editable,
     máscaras (``MaskError``), la superficie, un recinto vacío, un sector del recinto con la
     búsqueda de intocables pendiente (``des.sector_pending``, RF-014-30), las capas (fondos,
     corredores, zonas), un perfil o un parámetro de la 014 sin valor (RF-013-19) y el nombre
     repetido. Cerrar el generador a mitad borra los temporales."""
-    return _quarry_steps(project, request, version, masks, budget_s)
+    return _quarry_steps(project, request, version, masks, budget_s, confirm_outside)
 
 
 def edge_transition_run(project: StoreProject, name: str, surface: str, start: str, *,
@@ -421,14 +432,24 @@ def _area_steps(project: StoreProject, name: str, surface: str, version: str | N
 
 
 def _quarry_steps(project: StoreProject, request: QuarryRequest, version: str | None,
-                  masks: MaskSet | None, budget_s: float) -> Generator[Progress, None, None]:
+                  masks: MaskSet | None, budget_s: float, confirm_outside: bool
+                  ) -> Generator[Progress, None, None]:
     found = store.require_version(project, version, provenance.QUARRY)
     loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
     prepared: store.PreparedQuarry = yield from _prepare_steps(
         store.prepare_quarry_units(project, request, found, loaded), budget_s)
+    values = resolve_values(project, found.uid, prepared.start.params)
+    if not confirm_outside:  # RF-014-03: antes de calcular, sin escribir nada
+        outside: tuple[Notice, ...] = yield from pipeline.forward(pace_progress(
+            store._seeds_outside_units(loaded, prepared.parts, values), budget_s,
+            phase=_OUTSIDE_PHASE, running="Buscando las semillas fuera de la coronación…",
+            finished="Semillas comprobadas"))
+        if outside:
+            yield Progress(_OUTSIDE_PHASE, 1, 1, "Semillas fuera de la coronación y de las zonas "
+                           "a sostener: falta su confirmación para calcular", result=outside)
+            return
     writer = store.DesignWriter(project, provenance.QUARRY, request.name, version=found.uid)
     try:
-        values = resolve_values(project, found.uid, prepared.start.params)
         calculated: store.QuarryCalculated = yield from store.compute_quarry_steps(
             writer, request, loaded, prepared, values, prepared.start.settings, budget_s)
         outcome = calculated.outcome

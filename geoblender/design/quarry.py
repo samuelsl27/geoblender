@@ -456,7 +456,18 @@ def outside_crown(seeds: SeedSet | np.ndarray, area: np.ndarray, start: np.ndarr
     H``, como en :func:`crown_seeds`), por grupos 4-conexos (:class:`SeedGroup`), en el orden de su
     primera celda fila a fila; ``()`` si no hay ninguna. El centro de cada grupo es la media exacta
     de los índices de sus celdas llevada a coordenadas absolutas (float64). Solo lee; los mismos
-    rechazos que :func:`crown_ring`, y ``ValueError`` si ``seeds`` no es de la rejilla."""
+    rechazos que :func:`crown_ring`, y ``ValueError`` si ``seeds`` no es de la rejilla. Por
+    unidades, :func:`_outside_units`."""
+    return _finish(_outside_units(seeds, area, start, masks, ring_cells))
+
+
+def _outside_units(seeds: SeedSet | np.ndarray, area: np.ndarray, start: np.ndarray,
+                   masks: MaskSet, ring_cells: int
+                   ) -> Generator[None, None, tuple[SeedGroup, ...]]:
+    """Las unidades de :func:`outside_crown` (la coronación y las zonas a sostener; las del
+    etiquetado, ``grids._label_units``; los grupos), para avanzarlas por pasos dentro de otro
+    cálculo: la parada de «Calcular» de la cantera antes de calcular (T43, RF-014-03). Los rechazos
+    salen en la primera."""
     values = np.asarray(seeds.grid if isinstance(seeds, SeedSet) else seeds, dtype=np.float64)
     geometry = masks.grid
     _same_shape("las semillas", values, geometry.shape)
@@ -464,7 +475,8 @@ def outside_crown(seeds: SeedSet | np.ndarray, area: np.ndarray, start: np.ndarr
     loose = np.isfinite(values) & ~allowed
     if not loose.any():
         return ()
-    labels = _finish(_label_units(loose))
+    yield
+    labels = yield from _label_units(loose)
     flat = labels.grid.ravel()
     picked = np.flatnonzero(flat)
     rows, cols = np.divmod(picked, geometry.ncols)

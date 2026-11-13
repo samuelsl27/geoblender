@@ -335,13 +335,14 @@ class QuarryViewsTest(unittest.TestCase):
     def form(self, **values: Any) -> dict[str, Any]:
         """Lo pedido en el diálogo, como desde un guion: la final con ``REST_5_35_6`` y semillas en
         la coronación; la explotación con ``EXPL_10_60_6`` y semillas en toda la ladera (dentro del
-        dominio por defecto); los fondos, el corredor de cota fija y las zonas de relleno."""
+        dominio por defecto, con su confirmación: caen fuera de la coronación, T43); los fondos, el
+        corredor de cota fija y las zonas de relleno."""
         return {"name": NAME, "start": self.ground, "final_profile": REST,
                 "exploitation_profile": EXPL, "exploitation_seeds": "SURFACE",
                 "exploitation_surface": self.ground, "exploitation_zone": "domain",
                 "floors_layer": FLOORS_LAYER, "corridors_layer": CORRIDORS_LAYER,
                 "corridors_level": "FIXED", "fill_layer": FILL_LAYER, "in_steps": False,
-                **values}
+                "confirm_outside": True, **values}
 
     def calculate(self, **values: Any) -> Any:
         """«Calcular» desde un guion: el cálculo abierto, con su resumen en la vista."""

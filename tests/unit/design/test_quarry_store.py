@@ -234,8 +234,12 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
         cls.calculated = cls.des_state()
         cls.stored = cls.calculation.create()
         cls.clock.advance(minutes=1)
-        cls.other = drive(steps.quarry_run(cls.project, other_request(),
-                                           version=cls.v1.uid)).result
+        cls.waiting = cls.des_state()
+        cls.unconfirmed = list(steps.quarry_run(cls.project, other_request(),
+                                                version=cls.v1.uid))
+        cls.waited = cls.des_state()
+        cls.other = drive(steps.quarry_run(cls.project, other_request(), version=cls.v1.uid,
+                                           confirm_outside=True)).result
         cls.other_stored = cls.other.create()
         cls.figures_before = {stored.handle.uid: cls.figures_of(stored.handle.uid)
                               for stored in (cls.area, cls.stored, cls.other_stored)}
@@ -421,6 +425,32 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
             "SELECT key FROM gb_operation_param WHERE operation_uid = ?",
             self.other_stored.handle.uid)}
         self.assertNotIn(design_params.CONSERVE_SLOPE, other_params)
+
+    def test_a_seeds_outside_the_crown_stop_before_calculating(self) -> None:
+        """RF-014-03 (T43, hallazgo F-4): con las semillas de la 013 de la explotación fuera de la
+        coronación y de las zonas a sostener (la cota fija en la capa de relleno), «Calcular» sin la
+        confirmación se para tras armar las piezas: ningún paso empieza a calcular, ninguno lleva un
+        cálculo, y el último (fase ``seeds_outside``) lleva el aviso de la superficie de explotación
+        con sus celdas, su área y un grupo (las celdas de la capa de relleno, a mano, con su centro:
+        el de la caja de la capa) y nada escrito: ni operación, ni dato, ni tabla, ni cifra, ni
+        temporal. Con la confirmación (``confirm_outside``), calcula (la cantera B de la clase)."""
+        last = self.unconfirmed[-1]
+        self.assertEqual(last.phase, "seeds_outside")
+        self.assertEqual([step.result for step in self.unconfirmed[:-1]],
+                         [None] * (len(self.unconfirmed) - 1))
+        self.assertNotIn("quarry", {step.phase for step in self.unconfirmed})
+        self.assertEqual(self.waited, self.waiting)
+        cells = int(np.count_nonzero(qfx.in_box(qfx.FILL_ZONE_LOCAL, self.grid)))
+        area = cells * self.grid.cell_area
+        left, bottom, right, top = qfx.FILL_ZONE_LOCAL
+        x, y = cfx.absolute(((left + right) / 2, (bottom + top) / 2))[0]
+        warning, note = last.result
+        self.assertEqual((warning.code, dict(warning.values)), ("des.quarry_seeds_outside", {
+            "surface": "exploitation", "cells": cells, "area": area, "groups": 1}))
+        self.assertEqual((note.code, dict(note.values)), ("des.quarry_seed_group", {
+            "group": 1, "cells": cells, "area": area, "x": x, "y": y}))
+        self.assertTrue(any(line.startswith(f"Grupo 1: {cells} celdas")
+                            for line in self.other.lines("es")))  # el resumen lo sigue diciendo
 
     def test_a_the_summary_says_the_warnings_of_the_request(self) -> None:
         """RF-014-12, RF-014-03 (en el resumen): la otra cantera siembra la explotación fuera de
