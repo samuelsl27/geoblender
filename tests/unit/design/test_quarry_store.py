@@ -12,6 +12,8 @@ RF-008-24, RF-008-26, RF-009-11; como D-14 de la 013).
   se recalcula, nombrando el sector, y no se registra nada.
 - **RF-014-31**: cambiar una capa de fondos deja obsoleta la cantera que la usa, con su causa, y
   no la que no la usa; «Recalcular lo obsoleto» la repite con sus ajustes, sin confirmar.
+- **RF-014-08** (T47): un diseño que mueve algo dentro de una zona a conservar es un error del
+  diseño, con el volumen y el centro de cada parte, y no se crea.
 - **RF-009-11**: reproducir la revisión congelada da las mismas salidas (el mismo hash) y las
   mismas cifras de las dos canteras y del recinto (``des.excavation_area``, que también se
   recalcula), sin escribir en el proyecto.
@@ -62,6 +64,7 @@ datasets = import_geoblender("core.datasets")
 builtin = import_geoblender("core.content.builtin")
 access = import_geoblender("gis.masks.access")
 geotiff_reader = import_geoblender("gis.geotiff.reader")
+project_model = import_geoblender("core.project.model")
 
 START = qfx.START_DATASET
 EXPL, REST = qfx.EXPLOITATION_PROFILE, qfx.FINAL_PROFILE
@@ -90,6 +93,12 @@ LANE_AXIS_LOCAL = ((220.0, 101.0), (300.0, 101.0))
 conservar y de las de relleno; con 10 m de ancho, las celdas de 96 a 106 m de norte."""
 LANE_AREA_M2 = 800.0
 """Su área, a mano: 80 × 10 m (en la rejilla de 2 m, 40 × 5 celdas de 4 m²)."""
+DUG_FINAL_LOCAL = (64.0, 220.0, 72.0, 232.0)
+"""Una caja local dentro de la ladera a conservar (T47): en la rejilla de 2 m, 4 × 6 = 24 celdas
+con el centro medio en (68, 226) locales, (699.768, 4.399.926) absolutas."""
+DUG_BOTH_LOCAL = (84.0, 186.0, 88.0, 190.0)
+"""Otra, separada de la primera (T47): 2 × 2 = 4 celdas con el centro medio en (86, 188) locales,
+(699.786, 4.399.888) absolutas."""
 
 
 def lane_layer(name: str, level_m: float) -> Any:
@@ -525,6 +534,66 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
         self.assertEqual(error.code, "des.floor_level")
         self.assertEqual((error.values["layer"], error.values["polygon"], error.values["field"],
                           error.values["value"]), (IMPOSSIBLE_CORRIDORS, 1, "cota_inicial", 5000.0))
+        self.assertEqual(self.des_state(), before)
+
+    def test_a_moving_inside_a_zone_to_conserve_is_an_error_and_nothing_is_created(self) -> None:
+        """RF-014-08 (T47, hallazgo F-8): «Calcular» mide lo que mueven las dos superficies dentro
+        de las zonas a conservar, con el espesor mínimo de la 012 (en cada celda, lo más que mueve
+        una de las dos). La cantera de E3 no mueve nada en la ladera a conservar (0 m³: las dos
+        superficies son el terreno en ella, bit a bit) y su resumen no dice nada de ella. Un diseño
+        que moviera dos partes (aquí, por ``mock``: la final 2 m por debajo del terreno en 4 × 6
+        celdas y, en otras 2 × 2, la final 0,5 m y la explotación 1 m —la regla de orden no lo
+        dejaría: así cuentan las dos superficies—) se para con el error del diseño
+        ``des.conserve_moved``: 208 m³ en 2 partes, cada una con su volumen (a mano, celdas ·
+        4 m² · lo más hondo: 24 · 4 · 2 = 192 y 4 · 4 · 1 = 16 m³) y su centro absoluto (el de su
+        caja), en los dos idiomas; ningún paso lleva un cálculo que crear y no queda nada
+        escrito: ni operación, ni dato, ni tabla, ni cifra, ni temporal."""
+        start = qfx.terrain(self.grid)
+        zone = quarry.ConserveZone(qfx.CONSERVE_LAYER, qfx.in_box(qfx.CONSERVE_LOCAL, self.grid))
+        today = self.calculation.outcome
+        for grid in (today.final_grid, today.exploitation_grid):
+            found = quarry.conserve_moved(grid, start, (zone,), self.grid, 0.0)
+            self.assertEqual((found.moved, found.volume_m3), (False, 0.0))
+        self.assertEqual([notice.code for notice in self.calculation.notices
+                          if notice.code.startswith("des.conserve_")], [])
+        final, exploitation = today.final_grid.copy(), today.exploitation_grid.copy()
+        one, two = qfx.in_box(DUG_FINAL_LOCAL, self.grid), qfx.in_box(DUG_BOTH_LOCAL, self.grid)
+        self.assertEqual((int(np.count_nonzero(one)), int(np.count_nonzero(two))), (24, 4))
+        final[one] -= 2.0
+        final[two] -= 0.5
+        exploitation[two] -= 1.0
+        dug = replace(today, ordered=replace(today.ordered, final=final,
+                                             exploitation=exploitation))
+
+        def dug_steps(job: Any, **options: Any) -> Iterator[Any]:
+            yield project_model.Progress("quarry", 1, 1, "Cantera excavada a mano", result=dug)
+
+        before = self.des_state()
+        seen: list[Any] = []
+        with mock.patch.object(quarry, "quarry_steps", dug_steps), \
+                self.assertRaises(messages.DesignError) as caught:
+            seen.extend(steps.quarry_run(self.project, quarry_request("Cantera excavada"),
+                                         version=self.v1.uid, masks=self.masks_v1))
+        self.assertTrue(seen)
+        self.assertEqual([step.result for step in seen], [None] * len(seen))
+        error = caught.exception
+        self.assertEqual((error.code, error.value, error.values["volume"],
+                          error.values["parts"]), ("des.conserve_moved", 208.0, 208.0, 2))
+        self.assertIn("«Cantera excavada»", error.obj)
+        self.assertEqual(error.notes, (
+            ("des.conserve_part", {"zone": qfx.CONSERVE_LAYER, "volume": 192.0,
+                                   "x": 699_768.0, "y": 4_399_926.0}),
+            ("des.conserve_part", {"zone": qfx.CONSERVE_LAYER, "volume": 16.0,
+                                   "x": 699_786.0, "y": 4_399_888.0})))
+        self.assertEqual(error.text, (
+            "El diseño mueve 208 m³ dentro de las zonas a conservar, en 2 partes: es un error del "
+            "diseño; no se crea. «gis_fea_conservar»: 192 m³, centro en x = 699768 m, "
+            "y = 4399926 m. «gis_fea_conservar»: 16 m³, centro en x = 699786 m, y = 4399888 m."))
+        self.assertEqual(error.text_in("es"), error.text)
+        self.assertEqual(error.text_in("en"), (
+            "The design moves 208 m³ inside the zones to conserve, in 2 parts: it is an error of "
+            "the design; it is not created. «gis_fea_conservar»: 192 m³, centre at x = 699768 m, "
+            "y = 4399926 m. «gis_fea_conservar»: 16 m³, centre at x = 699786 m, y = 4399888 m."))
         self.assertEqual(self.des_state(), before)
 
     # --- Reproducir (RF-009-11) --------------------------------------------------------------

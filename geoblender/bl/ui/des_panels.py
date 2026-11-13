@@ -252,8 +252,8 @@ def number_text(value: float | None, param: BenchParam) -> str:
 
 def design_error_text(exc: design_messages.DesignError) -> str:
     """El texto de un error del diseño en el idioma de Geoblender (``DesignError.text`` es el
-    español)."""
-    return design_messages.render(exc.code, language=language(), **exc.values)
+    español), con las notas que lo acompañan (las partes de RF-014-08, T47)."""
+    return exc.text_in(language())
 
 
 def parameter_text(project_record: Any, own: Any, key: str, version: Any) -> str:

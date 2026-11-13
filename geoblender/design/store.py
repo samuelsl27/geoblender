@@ -137,6 +137,7 @@ from ..core.versions import store as versions_store
 from ..core.versions.model import Version, VersionError
 from ..gis.content import GEOTIFF, raster_header
 from ..gis.geotiff import writer
+from ..gis.grid import Grid
 from ..gis.masks import access
 from ..gis.masks import provenance as masks_declared
 from ..gis.masks.compile import STEP_BUDGET_S
@@ -2175,21 +2176,24 @@ def quarry_compute_steps(request: QuarryRequest, masks: access.MaskSet, parts: Q
     ``values`` (clave → valor: los que anotó la operación, los que se resuelven hoy o los
     congelados), sin escribir nada (``yield from``): el techo de conservación de sus zonas a
     conservar, uno para los dos lados (``quarry.conservation_ceiling_steps``, con el talud de
-    conservación y el *chamfer* 5×5, :data:`_CEILING_METRIC`), y las dos superficies
+    conservación y el *chamfer* 5×5, :data:`_CEILING_METRIC`), las dos superficies
     (``quarry.quarry_steps``, con el anillo de coronación, el espesor mínimo, la tolerancia, el
-    umbral y el aviso de desdoblado). ``pending``: los nombres de los sectores con la búsqueda
-    pendiente que se marcan. Devuelve la :class:`QuarryCalculated`: el ``QuarryOutcome`` y sus
-    avisos (:func:`quarry_notices`). Lo comparten «Calcular», el recálculo y la reproducción."""
+    umbral y el aviso de desdoblado) y, con zonas a conservar, lo que mueven en ellas
+    (:func:`_check_conserved`, RF-014-08: más de 0 m³ es ``des.conserve_moved`` y no sale nada que
+    crear). ``pending``: los nombres de los sectores con la búsqueda pendiente que se marcan.
+    Devuelve la :class:`QuarryCalculated`: el ``QuarryOutcome`` y sus avisos
+    (:func:`quarry_notices`). Lo comparten «Calcular», el recálculo y la reproducción."""
     geometry = masks.grid
     start = parts.start.values
     ring = int(check_quarry_param(CROWN_RING, values.get(CROWN_RING)))
+    thickness = number(values, VERIFY_MIN_THICKNESS)
     ceiling = None
     if parts.conserve:
         ceiling = yield from pipeline.forward(quarry.conservation_ceiling_steps(
             parts.conserve, start, geometry, values.get(CONSERVE_SLOPE),  # type: ignore[arg-type]
             metric=_CEILING_METRIC, budget_s=budget_s))
     job = quarry.QuarryJob(
-        request, start, masks, parts.domain, values, ring, number(values, VERIFY_MIN_THICKNESS),
+        request, start, masks, parts.domain, values, ring, thickness,
         number(values, TOLERANCE_FACE), number(values, WARNING_RATIO), seeds=parts.seeds,
         floors=parts.joined, ceiling=ceiling, anchors=parts.anchors, pending=pending,
         fill_zones=parts.fill_zones, unsplit_threshold_m=number(values, UNSPLIT_THRESHOLD),
@@ -2197,7 +2201,46 @@ def quarry_compute_steps(request: QuarryRequest, masks: access.MaskSet, parts: Q
         to_final_zones=parts.to_final_zones)
     outcome: quarry.QuarryOutcome = yield from pipeline.forward(
         quarry.quarry_steps(job, budget_s=budget_s))
+    if parts.conserve:
+        yield Progress("conserve", 0, 1, "Midiendo lo que se mueve en las zonas a conservar…")
+        _check_conserved(request.name, outcome, start, parts.conserve, geometry, thickness)
+        yield Progress("conserve", 1, 1, "Nada movido en las zonas a conservar")
     return QuarryCalculated(outcome, quarry_notices(request, masks, parts, ring, outcome))
+
+
+_CONSERVE_FIELD = "volumen en las zonas a conservar (m³)"
+"""El campo del error de lo movido en las zonas a conservar (RF-014-08)."""
+
+
+def _check_conserved(name: str, outcome: quarry.QuarryOutcome, start: np.ndarray,
+                     zones: Sequence[quarry.ConserveZone], geometry: Grid,
+                     min_thickness_m: float) -> None:
+    """**RF-014-08** (T47, hallazgo F-8): lo que mueven las dos superficies de la cantera ``name``
+    (``outcome``) frente a la de partida ``start`` dentro de las zonas a conservar ``zones``, con
+    el espesor mínimo de la 012 (``quarry.conserve_moved``): en cada celda, lo más que mueve una de
+    las dos (con ``final ≤ explotación ≤ terreno``, la final; una celda no cuenta dos veces). Más
+    de 0 m³ es un **error del diseño** que no se crea —así nunca se crea sin confirmación—, como
+    el invariante del orden: ``DesignError`` ``des.conserve_moved`` con el volumen y las partes y,
+    detrás, una ``des.conserve_part`` por parte con su zona, su volumen y su centro (m³ y m,
+    redondeados al cm). Con el techo de conservación no mueve nada (0 m³ por construcción). Solo
+    lee."""
+    final = np.asarray(outcome.final_grid, dtype=np.float64)
+    exploitation = np.asarray(outcome.exploitation_grid, dtype=np.float64)
+    with np.errstate(invalid="ignore"):
+        final_depth = np.abs(final - start)
+        deeper = np.abs(exploitation - start) > np.where(np.isnan(final_depth), -1.0,
+                                                         final_depth)
+    design = np.where(deeper, exploitation, final)
+    moved = quarry.conserve_moved(design, start, zones, geometry, min_thickness_m)
+    if not moved.moved:
+        return
+    volume = round(moved.volume_m3, 2)
+    raise DesignError(
+        "des.conserve_moved", obj=f"Cantera «{name}»", field=_CONSERVE_FIELD, value=volume,
+        volume=volume, parts=len(moved.parts),
+        notes=tuple(("des.conserve_part", {"zone": part.zone, "volume": round(part.volume_m3, 2),
+                                           "x": round(part.x, 2), "y": round(part.y, 2)})
+                    for part in moved.parts))
 
 
 def quarry_grids(outcome: quarry.QuarryOutcome) -> tuple[tuple[str, np.ndarray, str], ...]:

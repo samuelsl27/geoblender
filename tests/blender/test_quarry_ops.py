@@ -1298,6 +1298,32 @@ class LimitFromPerimeterTest(unittest.TestCase):
         self.assertIsNone(self.des_ops.calculation())
         self.nothing_left_quarry(files, done)
 
+    def test_m_the_error_of_a_zone_to_conserve_says_its_parts(self) -> None:
+        """RF-014-08 (T47, hallazgo F-8): el error de lo que un diseño mueve dentro de las zonas a
+        conservar (``des.conserve_moved``, que para el cálculo y no deja crear: el dominio lo lanza
+        en ``store.quarry_compute_steps``, ``tests/unit/design``) lo informa la orden con el volumen
+        y el centro de cada parte, las notas que lo acompañan, en el idioma de Geoblender."""
+        messages = _module("design.messages")
+        error = messages.DesignError(
+            "des.conserve_moved", obj="Cantera «Corta»", field="volumen", value=208.0,
+            volume=208.0, parts=2,
+            notes=(("des.conserve_part", {"zone": "Ladera", "volume": 192.0, "x": 699_768.0,
+                                          "y": 4_399_926.5}),
+                   ("des.conserve_part", {"zone": "Pie", "volume": 16.0, "x": 699_786.0,
+                                          "y": 4_399_888.0})))
+        self.addCleanup(self.i18n.set_language, self.i18n.language())
+        for language, text in (
+                ("es", "El diseño mueve 208 m³ dentro de las zonas a conservar, en 2 partes: es "
+                       "un error del diseño; no se crea. «Ladera»: 192 m³, centro en x = 699768 m, "
+                       "y = 4399926,5 m. «Pie»: 16 m³, centro en x = 699786 m, y = 4399888 m."),
+                ("en", "The design moves 208 m³ inside the zones to conserve, in 2 parts: it is "
+                       "an error of the design; it is not created. «Ladera»: 192 m³, centre at "
+                       "x = 699768 m, y = 4399926.5 m. «Pie»: 16 m³, centre at x = 699786 m, "
+                       "y = 4399888 m.")):
+            with self.subTest(idioma=language):
+                self.i18n.set_language(language)
+                self.assertEqual(self.des_ops.design_error_text(error), text)
+
     def test_z_disabling_geoblender_removes_the_command_and_the_loader(self) -> None:
         """Principio 8, D-14 de la 013: con un cálculo abierto, desactivar Geoblender lo descarta (no
         queda ningún temporal) y quita las dos órdenes y el cargador del recinto."""

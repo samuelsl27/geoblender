@@ -61,7 +61,7 @@ QUARRY_CODES: dict[str, str] = {
     "des.floor_overlap": "error",              # RF-014-06
     "des.floor_level": "error",                # RF-014-06
     "des.floor_above_terrain": "warning",      # RF-014-05 (caso límite)
-    "des.conserve_moved": "warning",           # RF-014-08
+    "des.conserve_moved": "error",             # RF-014-08 (T47: no se crea)
     "des.conserve_part": "note",               # RF-014-08
     "des.conserve_nodata": "warning",          # RF-014-07 (caso límite)
     "des.corridor_not_lines": "error",         # RF-014-09

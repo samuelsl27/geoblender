@@ -140,6 +140,42 @@ class DesignErrorTest(unittest.TestCase):
                                   "«des.bench.expl_10_60_6.height_m» = 0 is outside its range "
                                   "(0; 100] m; nothing is calculated with this profile.")
 
+    def test_an_error_with_its_notes(self) -> None:
+        """RF-014-08 (T47): un error puede llevar detrás sus notas (``notes``: código de una nota
+        del catálogo y sus valores en JSON), cada una con su texto: en español en ``text`` (y
+        ``str(error)``) y en cualquier idioma con ``text_in``, las cifras en el formato del
+        idioma; sin notas, ``text_in`` es el texto del código de siempre. Una nota que no es una
+        nota (un aviso, un error, un código desconocido) es un error del programa."""
+        error = messages.DesignError(
+            "des.conserve_moved", obj="Cantera «A»", field="volumen", value=50.5, volume=50.5,
+            parts=2, notes=(("des.conserve_part", {"zone": "Ladera", "volume": 48.25,
+                                                   "x": 500_001.5, "y": 4_400_002.0}),
+                            ("des.conserve_part", {"zone": "Pie", "volume": 2.25, "x": 500_010.0,
+                                                   "y": 4_400_020.5})))
+        self.assertEqual(error.notes, (
+            ("des.conserve_part", {"zone": "Ladera", "volume": 48.25, "x": 500_001.5,
+                                   "y": 4_400_002.0}),
+            ("des.conserve_part", {"zone": "Pie", "volume": 2.25, "x": 500_010.0,
+                                   "y": 4_400_020.5})))
+        self.assertEqual(error.text, (
+            "El diseño mueve 50,5 m³ dentro de las zonas a conservar, en 2 partes: es un error del "
+            "diseño; no se crea. «Ladera»: 48,25 m³, centro en x = 500001,5 m, y = 4400002 m. "
+            "«Pie»: 2,25 m³, centro en x = 500010 m, y = 4400020,5 m."))
+        self.assertEqual((str(error), error.text_in("es")), (error.text, error.text))
+        self.assertEqual(error.text_in("en"), (
+            "The design moves 50.5 m³ inside the zones to conserve, in 2 parts: it is an error of "
+            "the design; it is not created. «Ladera»: 48.25 m³, centre at x = 500001.5 m, "
+            "y = 4400002 m. «Pie»: 2.25 m³, centre at x = 500010 m, y = 4400020.5 m."))
+        plain = messages.DesignError("des.profile_name_missing", obj="Perfil", field="nombre",
+                                     profile="P")
+        self.assertEqual(plain.notes, ())
+        self.assertEqual(plain.text_in("en"),
+                         messages.render(plain.code, language="en", **plain.values))
+        for note in ("des.conserve_moved", "des.profile_name_missing", "des.no_such_code"):
+            with self.subTest(nota=note), self.assertRaises(ValueError):
+                messages.DesignError("des.profile_name_missing", obj="Perfil", field="nombre",
+                                     notes=((note, {}),))
+
     def test_only_errors_are_raised(self) -> None:
         """Un aviso no se lanza y un código desconocido es un error del programa
         (``ValueError``); los errores del catálogo se lanzan con su texto sin marcadores."""

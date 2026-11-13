@@ -56,7 +56,8 @@
   con ``z > U`` se excava y la superficie no pasa de ``máx(U, z)`` (no entierra la zona: el error
   37 fue un relleno; spec 0.2). :func:`conserve_moved` (RF-014-08) mide lo que un diseño mueve
   dentro de las zonas, con el espesor mínimo de la 012, por partes con su volumen y su centro
-  (:class:`ConserveMoved`, :class:`ConservePart`): más de 0 m³ es un error del diseño.
+  (:class:`ConserveMoved`, :class:`ConservePart`): más de 0 m³ es un error del diseño, que no se
+  crea (``des.conserve_moved``; lo comprueba la cantera, ``store.quarry_compute_steps``, T47).
 
 - :func:`floor_anchor_steps` (T11; RF-014-11; A7): la **rejilla de anclas** «al fondo de cada
   muro» (:class:`FloorAnchors`): en cada celda, la cota del fondo más próximo en planta (distancia
@@ -1162,8 +1163,8 @@ def conserve_moved(design: np.ndarray, start: np.ndarray, zones: Sequence[Conser
     mínimo de la 012 ``min_thickness_m`` (m; ``design.report.moved_cells``, la máscara del
     informe), por partes 4-conexas de cada zona, con su volumen (todo su espesor por el área de
     celda) y su centro absoluto (:class:`ConserveMoved`). Más de 0 m³ es un error del diseño que
-    no se crea sin confirmación expresa con motivo (lo pide quien crea). Solo lee; ``ValueError``
-    si las rejillas no son de la forma de ``geometry``."""
+    no se crea (la cantera lo lanza con sus partes, ``store.quarry_compute_steps``, T47). Solo
+    lee; ``ValueError`` si las rejillas no son de la forma de ``geometry``."""
     base = np.asarray(start, dtype=np.float64)
     other = np.asarray(design, dtype=np.float64)
     _same_shape("la superficie de partida", base, geometry.shape)

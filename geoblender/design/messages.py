@@ -15,7 +15,7 @@ el valor, y dice qué hacer; el marcador ``{value}`` es siempre el valor que se 
 - :data:`CATALOG_ES`: ``msgid`` → español, para ``core.i18n.install`` al registrar.
 - :func:`render`: el texto de un código con sus valores, en español o en inglés.
 - :class:`DesignError`: el error para el usuario, con código, ``msgid``, valores (JSON), objeto,
-  campo y valor (un ``GeoblenderError``).
+  campo y valor (un ``GeoblenderError``) y, si las lleva, las notas que lo acompañan (T47).
 
 Las cifras de un mensaje llegan ya redondeadas como números (:func:`render` los escribe en el
 formato del idioma: coma decimal en español, punto en inglés). Cada tarea de la spec añade aquí los
@@ -36,7 +36,7 @@ geometría de una capa) llega ya en el idioma de quien lo llama: ``render`` no l
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -716,11 +716,9 @@ CATALOG: tuple[Message, ...] = (
     Message(
         "des.conserve_moved",
         "The design moves {volume} m³ inside the zones to conserve, in {parts} parts: it is an "
-        "error of the design. It cannot be created without an express confirmation with a "
-        "reason.",
+        "error of the design; it is not created.",
         "El diseño mueve {volume} m³ dentro de las zonas a conservar, en {parts} partes: es un "
-        "error del diseño. No se puede crear sin una confirmación expresa con motivo.",
-        "warning",
+        "error del diseño; no se crea.",
     ),
     Message(
         "des.conserve_part",
@@ -903,7 +901,12 @@ class DesignError(GeoblenderError):
     el registro y para mostrarlo en otro idioma con :func:`render`), el objeto, el campo y el valor
     (``GeoblenderError``) y ``text`` en español, que es también ``str(error)`` y ``message``. El
     valor es el marcador ``{value}`` del texto y el campo, ``{field}``. Un código de aviso o de
-    nota no es un error: :class:`ValueError`."""
+    nota no es un error: :class:`ValueError`.
+
+    ``notes`` (spec 014, T47): las notas que acompañan al error, cada una el código de una nota
+    del catálogo y sus valores (JSON, como ``values``), que van detrás de su texto, una frase cada
+    una (las partes de lo movido en las zonas a conservar, RF-014-08); :meth:`text_in` da el texto
+    entero en un idioma. Una nota que no es una nota: :class:`ValueError`."""
 
     def __init__(
         self,
@@ -913,18 +916,35 @@ class DesignError(GeoblenderError):
         obj: str,
         field: str,
         value: object = None,
+        notes: Sequence[tuple[str, Mapping[str, object]]] = (),
         **values: object,
     ) -> None:
         message = lookup(code)
         if message.severity != "error":
             raise ValueError(f"«{code}» es un {message.severity}, no un error: no se lanza")
+        for note, _values in notes:
+            found = lookup(note)
+            if found.severity != "note":
+                raise ValueError(f"«{note}» es un {found.severity}, no una nota: no acompaña a "
+                                 "un error")
         shown = {"field": field, "value": value, **values}
         self.msgid = message.msgid
         self.values: dict[str, JsonScalar] = {k: json_value(v) for k, v in shown.items()}
-        self.text = render(code, **shown)
+        self.notes: tuple[tuple[str, dict[str, JsonScalar]], ...] = tuple(
+            (note, {k: json_value(v) for k, v in note_values.items()})
+            for note, note_values in notes)
+        self.text = " ".join((render(code, **shown),
+                              *(render(note, **note_values) for note, note_values in notes)))
         super().__init__(code, self.text, obj=obj, field=field, value=value,
                          context=self.values)
         self.args = (self.text,)
+
+    def text_in(self, language: str = "es") -> str:
+        """El texto del error en ``language`` (``"es"`` o ``"en"``) con sus notas detrás, de sus
+        valores en JSON (:func:`render`)."""
+        return " ".join((render(self.code, language=language, **self.values),
+                         *(render(note, language=language, **values)
+                           for note, values in self.notes)))
 
 
 class _Shown(dict[str, str]):
