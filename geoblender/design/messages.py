@@ -850,6 +850,15 @@ CATALOG: tuple[Message, ...] = (
         "«{surface}» se ajusta con la cara de su propio perfil «{profile}» ({face}°), no con "
         "{value}°: un ajuste con otro ángulo da volúmenes falsos; no se calcula nada.",
     ),
+    Message(
+        "des.refit_face_missing",
+        "«{surface}» cannot be refitted: the operation that made its design did not record "
+        "«{field}» of its profile «{profile}», and a refit uses the face the surface was designed "
+        "with; calculate that design again; nothing is calculated.",
+        "«{surface}» no se puede ajustar: la operación que hizo su diseño no anotó «{field}» de "
+        "su perfil «{profile}», y un ajuste usa la cara con que se diseñó la superficie; vuelva a "
+        "calcular ese diseño; no se calcula nada.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

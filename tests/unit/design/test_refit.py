@@ -23,7 +23,9 @@ RF-014-29; CE-014-08; plan 014 A13, P-3, §5.2.3; error 46 del análisis).
   una cantera de la versión deja una rejilla por superficie en su temporal y **nada registrado**;
   «Crear» registra ``des.refit`` con una ``des_adj_`` por superficie (papel ``design_surface``) y
   su cifra ``des.refit_m3``; el ángulo de cada una sale del perfil de la operación que la creó
-  (P-3); se recalcula (no se reproduce: depende del límite vigente).
+  (P-3): la cara y el factor de malla que **anotó** esa operación, no los de hoy (T49, hallazgo
+  F-10), que el ajuste anota en sus ajustes; se recalcula (no se reproduce: depende del límite
+  vigente).
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ import math
 import unittest
 from collections.abc import Iterator
 from typing import Any, ClassVar
+from unittest import mock
 
 import numpy as np
 
@@ -623,16 +626,22 @@ class RefitOperationTest(qfx.QuarryProjectCase):
 
     def test_a_what_is_registered_repeats_the_request(self) -> None:
         """RF-014-29, RF-014-31: los ajustes son el nombre, las superficies y la de partida (lo que
-        lo vuelve a pedir; el ángulo no se pide: sale del perfil); las entradas, cada superficie
-        (``design_surface``), la de partida (``surface``) y las máscaras; los parámetros, la cara y
-        el factor de malla de los perfiles de las dos superficies y el espesor mínimo."""
+        lo vuelve a pedir; el ángulo no se pide: sale del perfil) y, por superficie, la cara y el
+        factor de malla con que se ajustó, los que anotó la operación que hizo su diseño (T49, P-3:
+        el recálculo los vuelve a leer de ella); las entradas, cada superficie
+        (``design_surface``), la de partida (``surface``) y las máscaras; el único parámetro que
+        lee del proyecto, el espesor mínimo."""
         uid = self.stored.handle.uid
         settings = json.loads(self.query_of("SELECT settings FROM gb_operation WHERE uid = ?",
                                             uid)[0][0])
         request = model.RefitRequest(NAME, (EXPLOITATION, FINAL), START)
-        self.assertEqual(settings, provenance.refit_settings(request))
+        faces = {surface: {design_params.bench_key(profile.code, "face_deg"): profile.face_deg,
+                           design_params.bench_key(profile.code, "mesh_factor"):
+                               profile.mesh_factor}
+                 for surface, profile in ((EXPLOITATION, EXPL), (FINAL, REST))}
+        self.assertEqual(settings, provenance.refit_settings(request, faces))
         self.assertEqual(settings, {"name": NAME, "surfaces": [EXPLOITATION, FINAL],
-                                    "start": START})
+                                    "start": START, "faces": faces})
         self.assertEqual(provenance.refit_request(settings), request)
         inputs = {(name, role) for name, role in self.query_of(
             "SELECT d.name, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON "
@@ -643,10 +652,7 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         self.assertTrue(any(role.startswith("masks_") for _name, role in inputs), inputs)
         params = {key for (key,) in self.query_of(
             "SELECT key FROM gb_operation_param WHERE operation_uid = ?", uid)}
-        self.assertEqual(params, {
-            *(design_params.bench_key(code, value) for code in (EXPL.code, REST.code)
-              for value in ("face_deg", "mesh_factor")),
-            design_params.VERIFY_MIN_THICKNESS})
+        self.assertEqual(params, {design_params.VERIFY_MIN_THICKNESS})
         with self.project.read() as conn:
             origin = store.design_surface_of(conn, ADJUSTED[FINAL], self.v1.uid)
         self.assertEqual((origin.op_type, origin.start), (provenance.REFIT, START))
@@ -688,6 +694,105 @@ class RefitOperationTest(qfx.QuarryProjectCase):
             self.assertEqual((only.cells, only.volume_m3), (0, 0.0))
             self.assertEqual([notice.code for notice in again.notices],
                              ["des.refit_not_needed"])
+
+    def change(self, key: str, value: float) -> None:
+        """Cambia el parámetro ``key`` del proyecto a ``value``, un minuto después."""
+        self.clock.advance(minutes=1)
+        with self.project.write_transaction() as conn:
+            core_params.ParameterStore(self.project).change(conn, key, value=value,
+                                                            reason="Prueba de la T49")
+        self.clock.advance(minutes=1)
+
+    def by_hand(self, surface: str, face_deg: float) -> Any:
+        """El ajuste de ``surface`` (su dato de V01 de hoy) al límite nuevo con una cara de
+        ``face_deg`` y el factor de malla del perfil de explotación (``design.refit.refit_steps``,
+        como en la prueba a)."""
+        face = refit.ProfileFace(EXPL.code, EXPL.code, face_deg, EXPL.mesh_factor)
+        labels = np.zeros(self.grid.shape, dtype=np.int16)
+        return finish(refit.refit_steps(
+            self.grid_of(surface), qfx.terrain(self.grid), self.masks_new,
+            refit.face_slope(labels, face, ()), self.thickness(), name=surface))
+
+    def test_d_a_design_that_did_not_record_its_face_is_refused(self) -> None:
+        """RF-014-27 (T49, hallazgo F-10; plan A13, P-3): si la operación que hizo el diseño de una
+        superficie no anotó la cara o el factor de malla de su perfil, el ajuste se rechaza con
+        ``des.refit_face_missing`` nombrando la superficie, el perfil y la clave, en los dos
+        idiomas, sin escribir nada. Aquí, la explotación como si la hubiera escrito el ajuste ya
+        creado, que solo anota el espesor mínimo."""
+        real = store.design_surface_of
+        other = self.stored.handle.uid
+
+        def without(conn: Any, name: str, version_uid: str) -> Any:
+            found = real(conn, name, version_uid)
+            if found is None or name != EXPLOITATION:
+                return found
+            return dataclasses.replace(found, operation_uid=other)
+
+        before = self.des_state()
+        key = design_params.bench_key(EXPL.code, "face_deg")
+        with mock.patch.object(store, "design_surface_of", without):
+            with self.assertRaises(messages.DesignError) as caught:
+                drive(self.refit_steps("Sin la cara", (EXPLOITATION,)))
+        error = caught.exception
+        self.assertEqual(error.code, "des.refit_face_missing")
+        self.assertEqual((error.values["surface"], error.values["profile"], error.field),
+                         (EXPLOITATION, EXPL.code, key))
+        for language in ("es", "en"):
+            with self.subTest(idioma=language):
+                text = error.text_in(language)
+                for shown in (f"«{EXPLOITATION}»", f"«{EXPL.code}»", f"«{key}»"):
+                    self.assertIn(shown, text)
+        self.assertEqual(self.des_state(), before)
+
+    def test_d_the_refit_uses_the_face_recorded_by_the_operation_that_made_it(self) -> None:
+        """RF-014-27, RF-014-28 (T49, hallazgo F-10; plan A13, P-3; error 46): la cara y el factor
+        de malla del ajuste son los que anotó la operación que escribió el contenido de hoy de la
+        superficie, no los del perfil de hoy. Con el perfil de explotación cambiado a 50° después
+        de crear la cantera (diseñada con 60°), el ajuste de su explotación da los m³ del ajuste a
+        mano con 60°, no los de 50°; pedir 50° por guion se rechaza nombrando la cara de 60° y
+        pedir 60° vale; «Crear» anota en sus ajustes esa cara y ese factor de malla por superficie
+        (``faces``) y, como parámetro, solo el espesor mínimo. Recalculada la cantera con el perfil
+        de 50° (reescribe el mismo dato; con el límite nuevo ya no hace falta ajustarla), la cara
+        es la de 50° que anotó la operación que escribió su contenido de hoy, no la de 60° de la
+        primera: pedir 50° vale y es lo que anota."""
+        face_key = design_params.bench_key(EXPL.code, "face_deg")
+        mesh_key = design_params.bench_key(EXPL.code, "mesh_factor")
+        (quarry, settings), = self.query_of(
+            "SELECT uid, settings FROM gb_operation WHERE op_type = ? AND superseded_by IS NULL",
+            provenance.QUARRY)
+        self.change(face_key, 50.0)
+        self.addCleanup(self.change, face_key, EXPL.face_deg)
+        designed, today = self.by_hand(EXPLOITATION, EXPL.face_deg), self.by_hand(EXPLOITATION,
+                                                                                  50.0)
+        self.assertGreater(today.volume_m3 - designed.volume_m3, 100.0)
+        with self.assertRaises(messages.DesignError) as caught:
+            drive(self.refit_steps("Tras el perfil", (EXPLOITATION,),
+                                   angles={EXPLOITATION: 50.0}))
+        self.assertEqual(caught.exception.code, "des.refit_angle")
+        self.assertEqual((caught.exception.values["face"], caught.exception.values["value"]),
+                         (EXPL.face_deg, 50.0))
+        calculation = drive(self.refit_steps("Tras el perfil", (EXPLOITATION,),
+                                             angles={EXPLOITATION: EXPL.face_deg})).result
+        (only,) = calculation.outcome.refits
+        np.testing.assert_array_equal(only.grid, designed.grid)
+        self.assertEqual(only.volume_m3, designed.volume_m3)
+        uid = calculation.create().handle.uid
+        stored = json.loads(self.query_of("SELECT settings FROM gb_operation WHERE uid = ?",
+                                          uid)[0][0])
+        self.assertEqual(stored["faces"], {EXPLOITATION: {face_key: EXPL.face_deg,
+                                                          mesh_key: EXPL.mesh_factor}})
+        self.assertEqual(self.query_of("SELECT key FROM gb_operation_param WHERE "
+                                       "operation_uid = ?", uid),
+                         [(design_params.VERIFY_MIN_THICKNESS,)])
+        request = recompute_mod.RecomputeRequest(self.project, quarry, provenance.QUARRY,
+                                                 json.loads(settings), (), (),
+                                                 version=self.v1.uid)
+        _handle, work = store.recompute_run(request)
+        drive(work)
+        with drive(self.refit_steps("Tras recalcular", (EXPLOITATION,),
+                                    angles={EXPLOITATION: 50.0})).result as again:
+            self.assertEqual(again.settings["faces"], {EXPLOITATION: {face_key: 50.0,
+                                                                      mesh_key: EXPL.mesh_factor}})
 
     def test_c_the_refit_is_recomputed_with_its_settings(self) -> None:
         """RF-014-29, RF-014-31: «Recalcular lo obsoleto» repite el ajuste con sus ajustes y lo

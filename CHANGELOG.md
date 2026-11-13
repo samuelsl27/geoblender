@@ -178,7 +178,11 @@ cantera con dos superficies, revise la clasificación y la cree en menos de 20 m
     (también en la barra N de esa superficie); **Ajustar el diseño a un límite nuevo…** las ofrece
     marcadas y las ajusta con **la cara de su propio perfil** (60° la explotación, 35° la final, no el
     mismo para las dos), con los m³ de cada una; pedir otro ángulo se rechaza, y si el límite no corta
-    una superficie su ajuste es de 0 m³ y lo dice.
+    una superficie su ajuste es de 0 m³ y lo dice. La cara y el factor de malla son los que anotó la
+    operación que diseñó la superficie, no los del perfil de hoy, y el ajuste los anota en sus
+    ajustes: su verificación encontró que, cambiado el perfil de explotación a 50° después de crear
+    la cantera con 60°, el ajuste daba 18.011,0 m³ en lugar de 17.050,6 m³. Ninguna cifra de prueba
+    cambia.
   - **Confirmar antes de escribir**: las cinco órdenes calculan por pasos, con el avance en la barra
     de estado y Esc, y enseñan su resumen; solo **Crear** lo registra, en una transacción. Cerrar el
     proyecto mientras calculan no deja nada, tampoco justo cuando acaban: el cálculo se descarta con

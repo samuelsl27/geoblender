@@ -78,6 +78,7 @@ QUARRY_CODES: dict[str, str] = {
     "des.refit_outside": "warning",            # RF-014-26
     "des.refit_not_needed": "warning",         # RF-014-27 (caso límite)
     "des.refit_angle": "error",                # RF-014-28
+    "des.refit_face_missing": "error",         # RF-014-27 (T49: la cara anotada)
 }
 FAMILIES = ("des.quarry_", "des.floor_", "des.corridor_", "des.conserve_", "des.edge_",
             "des.fill_only_", "des.refit_")

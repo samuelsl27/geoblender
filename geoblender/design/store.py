@@ -69,9 +69,10 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   leen la barra N y el diálogo del ajuste.
 - **El ajuste a un límite nuevo** (spec 014, T32; RF-014-27 a RF-014-29): :func:`prepare_refit` y
   :func:`prepare_refit_units` (las superficies de diseño de :data:`REFIT_SOURCES`, cada una con el
-  perfil de la operación que la creó, :func:`refit_profiles`, P-3), el cálculo
-  (:func:`refit_compute_steps`, con el rechazo de un ángulo que no es la cara de su perfil,
-  RF-014-28) y su escritura (:func:`compute_refit_steps`: una ``des_adj_`` por superficie, con
+  perfil de la operación que hizo su diseño, :func:`refit_profiles`, P-3, y la cara y el factor de
+  malla que **anotó** esa operación, no los de hoy, T49), el cálculo
+  (:func:`refit_compute_steps`, con el rechazo de un ángulo que no es esa cara, RF-014-28) y su
+  escritura (:func:`compute_refit_steps`: una ``des_adj_`` por superficie, con
   :meth:`DesignWriter.grid_steps` y su ``part``); y :func:`run_refit`, su recálculo (no se
   reproduce: depende del límite vigente).
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
@@ -841,33 +842,21 @@ def _not_design_surface(surface: str) -> DesignError:
                        field="superficie de diseño", value=surface)
 
 
-def refit_profiles(conn: sqlite3.Connection, origin: SurfaceOrigin, version_uid: str
-                   ) -> tuple[str, tuple[tuple[str, str], ...]]:
-    """El perfil base y el de cada sector (código del sector → código del perfil, en pares
-    ordenados) de la superficie de diseño ``origin`` de la versión ``version_uid`` (spec 014, T32;
-    RF-014-27, P-3: el ángulo del ajuste sale del perfil de la operación que creó la superficie):
-    de una cantera, los del lado de la superficie (``des_exp_``, la explotación; ``des_fin_``, la
-    final); de un escalonado de la 013 o de «solo relleno», los suyos; de una transición o de un
-    ajuste, los de la superficie de la que salen (que ha de seguir siendo una superficie de diseño
-    de la versión). ``DesignError`` ``des.edge_not_design_surface`` nombrando la superficie si no es
-    de uno de :data:`REFIT_SOURCES` o aquella de la que sale ya no lo es; ``ValueError`` si los
-    ajustes de su operación no son los de su tipo. Solo lee."""
+def _profile_origin(conn: sqlite3.Connection, origin: SurfaceOrigin, version_uid: str
+                    ) -> SurfaceOrigin:
+    """La superficie de diseño de la que sale el perfil de ``origin`` (véase
+    :func:`refit_profiles`): ella misma si la escribió una cantera (su explotación o su final), un
+    escalonado de la 013 o «solo relleno»; si la escribió una transición o un ajuste, la de la
+    superficie de la que salen, hasta llegar a una de esas. Solo lee."""
     exploitation = provenance.FAMILIES_BY_CODE[provenance.EXPLOITATION_GRID].prefix
     final = provenance.FAMILIES_BY_CODE[provenance.FINAL_GRID].prefix
     current = origin
     for _depth in range(_SOURCE_DEPTH):
         name, op_type, settings = current.record.name, current.op_type, current.settings
         source: str | None
-        if op_type == provenance.QUARRY and name.startswith((exploitation, final)):
-            side = provenance.quarry_request(settings).side(
-                Surface.EXPLOITATION if name.startswith(exploitation) else Surface.FINAL)
-            return side.base_profile, tuple(side.sector_profiles)
-        if op_type == provenance.STEPPED:
-            stepped = provenance.design_request(settings)
-            return stepped.base_profile, tuple(stepped.sector_profiles)
-        if op_type == provenance.FILL_ONLY:
-            filled = provenance.fill_only_request(settings)
-            return filled.base_profile, tuple(filled.sector_profiles)
+        if (op_type == provenance.QUARRY and name.startswith((exploitation, final))) \
+                or op_type in (provenance.STEPPED, provenance.FILL_ONLY):
+            return current
         if op_type == provenance.EDGE_TRANSITION:
             source = provenance.transition_start(settings)[1]
         elif op_type == provenance.REFIT:
@@ -881,54 +870,112 @@ def refit_profiles(conn: sqlite3.Connection, origin: SurfaceOrigin, version_uid:
     raise ValueError(f"«{origin.record.name}» sale de más de {_SOURCE_DEPTH} superficies")
 
 
-def _refit_sources(conn: sqlite3.Connection, request: RefitRequest, version_uid: str
-                   ) -> list[tuple[str, str, tuple[tuple[str, str], ...]]]:
+def _origin_profiles(origin: SurfaceOrigin) -> tuple[str, tuple[tuple[str, str], ...]]:
+    """El perfil base y el de cada sector de la superficie ``origin`` que escribió una cantera, un
+    escalonado de la 013 o «solo relleno» (:func:`_profile_origin`), de los ajustes de su
+    operación."""
+    name, op_type, settings = origin.record.name, origin.op_type, origin.settings
+    if op_type == provenance.QUARRY:
+        exploitation = provenance.FAMILIES_BY_CODE[provenance.EXPLOITATION_GRID].prefix
+        side = provenance.quarry_request(settings).side(
+            Surface.EXPLOITATION if name.startswith(exploitation) else Surface.FINAL)
+        return side.base_profile, tuple(side.sector_profiles)
+    if op_type == provenance.STEPPED:
+        stepped = provenance.design_request(settings)
+        return stepped.base_profile, tuple(stepped.sector_profiles)
+    filled = provenance.fill_only_request(settings)
+    return filled.base_profile, tuple(filled.sector_profiles)
+
+
+def refit_profiles(conn: sqlite3.Connection, origin: SurfaceOrigin, version_uid: str
+                   ) -> tuple[str, tuple[tuple[str, str], ...]]:
+    """El perfil base y el de cada sector (código del sector → código del perfil, en pares
+    ordenados) de la superficie de diseño ``origin`` de la versión ``version_uid`` (spec 014, T32;
+    RF-014-27, P-3: el ángulo del ajuste sale del perfil de la operación que creó la superficie):
+    de una cantera, los del lado de la superficie (``des_exp_``, la explotación; ``des_fin_``, la
+    final); de un escalonado de la 013 o de «solo relleno», los suyos; de una transición o de un
+    ajuste, los de la superficie de la que salen (que ha de seguir siendo una superficie de diseño
+    de la versión). ``DesignError`` ``des.edge_not_design_surface`` nombrando la superficie si no es
+    de uno de :data:`REFIT_SOURCES` o aquella de la que sale ya no lo es; ``ValueError`` si los
+    ajustes de su operación no son los de su tipo. Solo lee."""
+    return _origin_profiles(_profile_origin(conn, origin, version_uid))
+
+
+def _recorded_faces(conn: sqlite3.Connection, surface: str, origin: SurfaceOrigin,
+                    codes: Iterable[str], names: Mapping[str, str]) -> dict[str, object]:
+    """La cara y el factor de malla (:data:`~geoblender.design.provenance.REFIT_PROFILE_PARAMS`)
+    de cada perfil de ``codes`` que **anotó** la operación que escribió el contenido de hoy de
+    ``origin`` (``gb_operation_param``; clave ``des.bench.{p}.…`` → valor), la que hizo el diseño
+    de la superficie ``surface`` que se ajusta (spec 014, T49, hallazgo F-10; plan A13, P-3: no los
+    de hoy). Si no anotó alguno, ``DesignError`` ``des.refit_face_missing`` nombrando ``surface``,
+    el perfil (su nombre de ``names`` o su código) y la clave. Solo lee."""
+    rows = {str(key): value for key, value in conn.execute(
+        "SELECT key, value FROM gb_operation_param WHERE operation_uid = ?",
+        (origin.operation_uid,))}
+    found: dict[str, object] = {}
+    for code in dict.fromkeys(codes):
+        for param in provenance.REFIT_PROFILE_PARAMS:
+            key = bench_key(code, param)
+            if key not in rows:
+                raise DesignError("des.refit_face_missing", obj=f"Superficie «{surface}»",
+                                  field=key, value=origin.record.name, surface=surface,
+                                  profile=names.get(code, code))
+            text = rows[key]
+            found[key] = None if text is None else json.loads(text)
+    return found
+
+
+def _refit_sources(conn: sqlite3.Connection, request: RefitRequest, version_uid: str,
+                   names: Mapping[str, str]
+                   ) -> list[tuple[str, str, tuple[tuple[str, str], ...], dict[str, object]]]:
     """Cada superficie de ``request`` con su perfil base y el de cada sector
-    (:func:`refit_profiles`); ``des.edge_not_design_surface`` si alguna no es una superficie de
-    diseño de la versión de :data:`REFIT_SOURCES`. Solo lee."""
+    (:func:`refit_profiles`) y la cara y el factor de malla de esos perfiles que anotó la
+    operación que hizo su diseño (:func:`_recorded_faces`, T49), comprobados como en
+    ``design.refit.ProfileFace`` (``names``, código → nombre, para los mensajes). Rechazos:
+    ``des.edge_not_design_surface`` si alguna no es una superficie de diseño de la versión de
+    :data:`REFIT_SOURCES`; ``des.refit_face_missing`` si esa operación no anotó alguno;
+    ``des.profile_value_missing`` o ``_range`` si anotó uno sin valor o fuera de rango. Solo
+    lee."""
     found = []
     for surface in request.surfaces:
         origin = design_surface_of(conn, surface, version_uid)
         if origin is None or origin.op_type not in REFIT_SOURCES:
             raise _not_design_surface(surface)
-        base, sectors = refit_profiles(conn, origin, version_uid)
-        found.append((surface, base, sectors))
+        made = _profile_origin(conn, origin, version_uid)
+        base, sectors = _origin_profiles(made)
+        codes = (base, *(profile for _sector, profile in sectors))
+        values = _recorded_faces(conn, surface, made, codes, names)
+        refit.profile_faces(values, codes, names)  # una cara sin valor o fuera de rango
+        found.append((surface, base, sectors, values))
     return found
 
 
-def _profile_codes(sources: Iterable[tuple[str, str, tuple[tuple[str, str], ...]]]
-                   ) -> tuple[str, ...]:
-    """Los códigos de los perfiles de unas superficies (el base y los de sus sectores), sin
-    repetir y en su orden."""
-    return tuple(dict.fromkeys(code for _surface, base, sectors in sources
-                               for code in (base, *(profile for _sector, profile in sectors))))
-
-
 def prepare_refit(project: StoreProject, request: RefitRequest, *, version: str | None,
-                  masks: access.MaskSet | None = None, profiles: Iterable[str] | None = None,
+                  masks: access.MaskSet | None = None,
+                  faces: Mapping[str, Mapping[str, object]] | None = None,
                   supersedes: str | None = None) -> OperationStart:
     """Lo mismo que :func:`prepare_envelope` para ``des.refit`` (spec 014, T32; RF-014-27,
-    RF-014-29) de ``request``: los ajustes de ``refit_settings`` (el nombre, las superficies y la
-    de partida), las entradas de ``refit_inputs`` (cada superficie, la de partida, las máscaras
-    —el límite nuevo— y los sectores) y los parámetros de ``refit_params`` (la cara y el factor de
-    malla de los perfiles de las superficies, ``profiles``; sin ellos, los de la operación que creó
-    cada una, :func:`refit_profiles`; y el espesor mínimo). El nombre se mira en cada salida
+    RF-014-29) de ``request``: los ajustes de ``refit_settings`` (el nombre, las superficies, la
+    de partida y la cara y el factor de malla de cada superficie, ``faces``: superficie → clave →
+    valor; sin ellas, los que anotó la operación que hizo el diseño de cada una, T49), las entradas
+    de ``refit_inputs`` (cada superficie, la de partida, las máscaras —el límite nuevo— y los
+    sectores) y los parámetros de ``refit_params`` (el espesor mínimo: la cara y el factor de malla
+    no se leen del perfil de hoy, P-3). El nombre se mira en cada salida
     (``des_adj_<nombre>_<superficie>``, ``provenance.refit_output``). Rechazos, antes de registrar
     nada: los de :func:`prepare_envelope` de la versión, las máscaras y el nombre;
-    ``des.edge_not_design_surface`` si una superficie no es de diseño de la versión; y una cara o
-    un factor de malla sin valor o fuera de rango (RF-013-19)."""
+    ``des.edge_not_design_surface`` si una superficie no es de diseño de la versión; y, sin
+    ``faces``, los de lo que anotó la operación de cada diseño (``des.refit_face_missing``, una
+    cara o un factor de malla sin valor o fuera de rango, RF-013-19)."""
     found = require_version(project, version, provenance.REFIT)
-    if profiles is None:
+    if faces is None:
         with project.read() as conn:
-            codes = _profile_codes(_refit_sources(conn, request, found.uid))
-    else:
-        codes = tuple(dict.fromkeys(profiles))
-    _check_profiles(project, found, codes, provenance.REFIT_PROFILE_PARAMS)
+            sources = _refit_sources(conn, request, found.uid, profile_names(conn))
+        faces = {surface: values for surface, _base, _sectors, values in sources}
     loaded = _loaded_masks(project, found, masks)
     return _start(project, provenance.REFIT, request.name, found, loaded,
-                  provenance.refit_settings(request),
+                  provenance.refit_settings(request, faces),
                   provenance.refit_inputs(request, loaded.uses(), available_tables(project)),
-                  provenance.refit_params(codes), supersedes,
+                  provenance.refit_params(), supersedes,
                   [provenance.refit_part(surface) for surface in request.surfaces])
 
 
@@ -1407,11 +1454,13 @@ escalonado de la 013 y en «solo relleno» (T30), que guarda los ajustes de su e
 class SurfaceOrigin:
     """Una superficie de diseño de una versión (spec 014, T28): su dato (``record``) y el tipo y
     los ajustes de la operación que la escribió con el papel ``design_surface`` (``op_type``,
-    ``settings``)."""
+    ``settings``) y su uid (``operation_uid``, T49: la que escribió su contenido de hoy, si fueron
+    varias —un recálculo reescribe el mismo dato—; la que lee el ajuste para la cara anotada)."""
 
     record: DatasetRecord
     op_type: str
     settings: Mapping[str, Any]
+    operation_uid: str = ""
 
     @property
     def start(self) -> str | None:
@@ -1437,10 +1486,11 @@ def design_surface_of(conn: sqlite3.Connection, name: str, version_uid: str
                          (record.uid,)).fetchone()
     if found is None or found[0] != version_uid:
         return None
-    row = conn.execute(
-        "SELECT o.op_type, o.settings FROM gb_operation_io AS io JOIN gb_operation AS o "
+    row = conn.execute(  # la que escribió su contenido de hoy antes que las anteriores (T49)
+        "SELECT o.op_type, o.settings, o.uid FROM gb_operation_io AS io JOIN gb_operation AS o "
         "ON o.uid = io.operation_uid WHERE io.direction = 'out' AND io.item_kind = 'dataset' "
-        "AND io.item_uid = ? AND io.role = ?", (record.uid, provenance.DESIGN_SURFACE_ROLE)
+        "AND io.item_uid = ? AND io.role = ? ORDER BY o.uid = ? DESC, io.fid DESC",
+        (record.uid, provenance.DESIGN_SURFACE_ROLE, record.operation_uid)
     ).fetchone()
     if row is None or str(row[0]) not in provenance.OPERATION_TYPES_BY_NAME:
         return None
@@ -1449,7 +1499,8 @@ def design_surface_of(conn: sqlite3.Connection, name: str, version_uid: str
     except ValueError:
         settings = {}
     return SurfaceOrigin(record, str(row[0]),
-                         MappingProxyType(settings if isinstance(settings, dict) else {}))
+                         MappingProxyType(settings if isinstance(settings, dict) else {}),
+                         str(row[2]))
 
 
 # --- La comprobación contra un límite nuevo (spec 014, T31; RF-014-26; plan A13) -------------------
@@ -1866,14 +1917,16 @@ class PreparedFillOnly:
 @dataclass(frozen=True, slots=True, eq=False)
 class RefitPart:
     """Una superficie que se ajusta a un límite nuevo (spec 014, T32): el nombre de su dato
-    (``name``), su rejilla (``surface``, en la rejilla del proyecto) y el perfil base y el de cada
+    (``name``), su rejilla (``surface``, en la rejilla del proyecto), el perfil base y el de cada
     sector de la operación que la creó (``base_profile``, ``sector_profiles``;
-    :func:`refit_profiles`)."""
+    :func:`refit_profiles`) y la cara y el factor de malla de esos perfiles que **anotó** esa
+    operación (``values``: clave ``des.bench.{p}.…`` → valor; T49, P-3), con los que se ajusta."""
 
     name: str
     surface: Raster
     base_profile: str
     sector_profiles: tuple[tuple[str, str], ...]
+    values: Mapping[str, object]
 
     @property
     def profiles(self) -> tuple[str, ...]:
@@ -2620,21 +2673,22 @@ def prepare_refit_units(project: StoreProject, request: RefitRequest, version: V
     """Las unidades que preparan el ajuste ``request`` en ``version`` con sus ``masks`` (las del
     límite nuevo) ya al día (spec 014, T32; RF-014-27): cada superficie ha de ser una superficie de
     diseño de la versión de :data:`REFIT_SOURCES` (si no, ``DesignError``
-    ``des.edge_not_design_surface`` con su nombre) y su perfil sale de la operación que la creó
-    (:func:`refit_profiles`, P-3); las superficies y la de partida se leen y se comparan con la
-    rejilla del proyecto (``des.surface_*``); los sectores con la etiqueta de cada celda; y
-    :func:`prepare_refit`. Devuelve el :class:`PreparedRefit`. Nada se escribe; los rechazos salen
-    al avanzar."""
+    ``des.edge_not_design_surface`` con su nombre), su perfil sale de la operación que la creó
+    (:func:`refit_profiles`, P-3) y su cara y su factor de malla, de lo que **anotó** esa operación
+    (T49: no los de hoy; ``des.refit_face_missing`` si no los anotó); las superficies y la de
+    partida se leen y se comparan con la rejilla del proyecto (``des.surface_*``); los sectores con
+    la etiqueta de cada celda; y :func:`prepare_refit`. Devuelve el :class:`PreparedRefit`. Nada se
+    escribe; los rechazos salen al avanzar."""
     with project.read() as conn:
-        sources = _refit_sources(conn, request, version.uid)
         names = MappingProxyType(profile_names(conn))
+        sources = _refit_sources(conn, request, version.uid, names)
     yield
     frame = project_frame(project)
     parts: list[RefitPart] = []
-    for surface, base, sectors in sources:
+    for surface, base, sectors, values in sources:
         raster = read_surface(project, surface, version_uid=version.uid, expect=frame,
                               role="superficie de diseño")
-        parts.append(RefitPart(surface, raster, base, sectors))
+        parts.append(RefitPart(surface, raster, base, sectors, MappingProxyType(values)))
         yield
     ground = read_surface(project, request.start, version_uid=version.uid, expect=frame,
                           role="superficie de partida")
@@ -2642,7 +2696,8 @@ def prepare_refit_units(project: StoreProject, request: RefitRequest, version: V
     refs, labels = sector_layout(project, masks)
     yield
     operation = prepare_refit(project, request, version=version.uid, masks=masks,
-                              profiles=_profile_codes(sources), supersedes=supersedes)
+                              faces={part.name: part.values for part in parts},
+                              supersedes=supersedes)
     yield
     return PreparedRefit(tuple(parts), ground, refs, labels, names, operation)
 
@@ -2652,25 +2707,26 @@ def refit_compute_steps(request: RefitRequest, masks: access.MaskSet, prepared: 
                         ) -> Generator[Progress, None, refit.RefitOutcome]:
     """Los pasos que calculan el ajuste ``request`` con lo de ``prepared``, las máscaras del límite
     nuevo y los parámetros ``values`` (clave → valor: los que anotó la operación o los que se
-    resuelven hoy), sin escribir nada (``yield from``; spec 014, T32; RF-014-27, RF-014-28): la
-    cara de cada perfil (``design.refit.profile_faces``); **antes de calcular nada**, el ángulo que
-    traiga la petición para una superficie, que ha de ser la cara de su perfil
-    (``design.refit.check_angle``: ``des.refit_angle``); y cada superficie con
+    resuelven hoy; el espesor mínimo), sin escribir nada (``yield from``; spec 014, T32;
+    RF-014-27, RF-014-28): la cara de cada perfil de cada superficie, la que anotó la operación
+    que hizo su diseño (``RefitPart.values``, T49: no la de hoy; ``design.refit.profile_faces``);
+    **antes de calcular nada**, el ángulo que traiga la petición para una superficie, que ha de ser
+    esa cara (``design.refit.check_angle``: ``des.refit_angle``); y cada superficie con
     ``design.refit.refit_steps``, la pendiente de su perfil en cada celda según su sector
     (``face_slope``) y el espesor mínimo. Devuelve el ``design.refit.RefitOutcome``."""
-    codes = tuple(dict.fromkeys(code for part in prepared.parts for code in part.profiles))
-    faces = refit.profile_faces(values, codes, prepared.names)
+    faces = [refit.profile_faces(part.values, part.profiles, prepared.names)
+             for part in prepared.parts]
     angles = dict(request.angles)
-    for part in prepared.parts:  # RF-014-28: el ángulo de la petición, antes de calcular
-        refit.check_angle(part.name, [faces[code] for code in part.profiles],
+    for part, own in zip(prepared.parts, faces, strict=True):  # RF-014-28, antes de calcular
+        refit.check_angle(part.name, [own[code] for code in part.profiles],
                           angles.get(part.name))
     thickness = number(values, VERIFY_MIN_THICKNESS)
     found: list[refit.Refit] = []
-    for part in prepared.parts:
+    for part, own in zip(prepared.parts, faces, strict=True):
         assigned = dict(part.sector_profiles)
         slope = refit.face_slope(
-            prepared.labels, faces[part.base_profile],
-            [faces[assigned.get(ref.code, part.base_profile)] for ref in prepared.refs])
+            prepared.labels, own[part.base_profile],
+            [own[assigned.get(ref.code, part.base_profile)] for ref in prepared.refs])
         item: refit.Refit = yield from pipeline.forward(refit.refit_steps(
             part.surface.values, prepared.ground.values, masks, slope, thickness,
             name=part.name, version=prepared.start.version_code, budget_s=budget_s))
