@@ -122,7 +122,15 @@ superficie (una ``des_srf_``), la capa de láminas con su campo.
 máscaras de una versión, :func:`limit_lines` añade al resumen de la compilación
 (``constraint_panels.compile_check_lines``) el aviso de cada superficie de diseño de la 014 que
 mueve algo fuera del límite vigente, con su volumen y su área (``design.store.limit_checks``), y la
-ficha de la barra N de esa superficie lo dice también, en alerta, tras su estado."""
+ficha de la barra N de esa superficie lo dice también, en alerta, tras su estado.
+
+**«Ajustar el diseño a un límite nuevo…»** (spec 014, T33; HU-014-7; RF-014-27, RF-014-32): las filas
+de su diálogo (:func:`refit_rows`: cada superficie de diseño de la versión que se puede ajustar, con
+lo que deja fuera del límite vigente; las que lo dejan, marcadas), el resumen de su cálculo
+(:func:`show_summary`: «Ajuste «…» en V01» y, por superficie, su volumen de ajuste con la cara de su
+perfil) y la ficha de cada superficie ajustada (la superficie de la que sale y su partida). El botón
+«Exportar rejilla a GeoTIFF…» vale ya para todas las rejillas de la 014 (la clasificación y el
+recinto, con su leyenda en los metadatos: ``design.export``)."""
 
 from __future__ import annotations
 
@@ -917,6 +925,59 @@ def _transition_lines(calculation: Calculation) -> list[tuple[str, bool]]:
             maximum=_number(max(0.0, report.maximum_m), 2)), False)]
 
 
+def _refit_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+    """El resumen de un ajuste a un límite nuevo calculado (``design.refit.RefitOutcome``; spec 014,
+    T33; RF-014-27): por superficie, en el orden de la petición, su volumen de ajuste con la cara de
+    su propio perfil, las celdas que cambian y, de ellas, las que vuelven al terreno fuera del
+    límite. El aviso de las que no hacía falta ajustar lo añade :func:`summary_lines`."""
+    return [(tr("«{surface}» refitted with the face of its profile: {volume} m³ in {cells} cells "
+                "· {outside} cells back to the terrain outside the limit", surface=item.surface,
+                volume=_number(item.volume_m3), cells=_number(item.cells),
+                outside=_number(item.outside_cells)), False)
+            for item in calculation.outcome.refits]  # type: ignore[union-attr]
+
+
+def refit_rows(project: Any, version_uid: str) -> tuple[list[tuple[str, str, bool]], str]:
+    """Las filas de «Ajustar el diseño a un límite nuevo…» (spec 014, T33; plan 014 §5.3.3): cada
+    superficie de diseño de la versión ``version_uid`` que se puede ajustar
+    (``design.store.REFIT_SOURCES``, por el nombre de su dato) con lo que dice de ella la ventana y
+    si queda fuera del límite vigente (``design.store.limit_checks``: la marcada); y una nota si las
+    máscaras no están al día (sin ellas no se sabe qué queda fuera). Solo lee; los errores del
+    proyecto siguen."""
+    from ...core.versions import read as versions_read  # al usarlo: habilitar no lo carga
+    from ...design import store as design_store  # al usarlo: habilitar no carga el cálculo
+    from ...gis.masks import access as masks_access
+
+    with project.read() as conn:
+        origins = design_store.limit_surfaces(conn, version_uid,
+                                              types=design_store.REFIT_SOURCES)
+    checks = {check.surface: check for check in design_store.limit_checks(
+        project, version_uid, types=design_store.REFIT_SOURCES)} if origins else {}
+    rows: list[tuple[str, str, bool]] = []
+    for origin in origins:
+        surface = origin.record.name
+        check = checks.get(surface)
+        if check is None:
+            rows.append((surface, f"«{surface}»", False))
+        elif check.outside:
+            rows.append((surface, tr("«{surface}» · {volume} m³ in {area} m² outside the current "
+                                     "limit", surface=surface, volume=_number(check.volume_m3),
+                                     area=_number(check.area_m2)), True))
+        else:
+            rows.append((surface, tr("«{surface}» · nothing outside the current limit",
+                                     surface=surface), False))
+    note = ""
+    if origins and not checks:
+        state, _pending = masks_access.mask_state(project, version_uid)
+        if state is not masks_access.MaskState.CURRENT:
+            with project.read() as conn:
+                found = versions_read.version(conn, version_uid)
+            note = tr("The masks of {version} are not up to date: compile them to see which "
+                      "surfaces the current limit leaves outside",
+                      version=found.code if found is not None else version_uid)
+    return rows, note
+
+
 def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de un cálculo hecho y sin registrar (RF-013-31), línea a línea y en el idioma de
     Geoblender, con los avisos al final y en alerta: de una envolvente, sus celdas, su área, sus
@@ -925,11 +986,13 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     lugar, y las bermas con sus cotas reales (el informe y las bermas del dominio); de un recinto
     excavable (spec 014, T20; RF-014-01), sus celdas y su área; de una cantera con dos superficies
     (spec 014, T21; RF-014-12), lo de :func:`_quarry_lines`; de una transición (T28), lo de
-    :func:`_transition_lines`; de un diseño «solo relleno» (T30), lo de :func:`_fill_only_lines`.
-    Aquí solo se escriben."""
+    :func:`_transition_lines`; de un diseño «solo relleno» (T30), lo de :func:`_fill_only_lines`;
+    de un ajuste a un límite nuevo (T33), lo de :func:`_refit_lines`. Aquí solo se escriben."""
     lines: list[tuple[str, bool]] = []
     if calculation.op_type == design_provenance.QUARRY:
         lines.extend(_quarry_lines(calculation.outcome))
+    elif calculation.op_type == design_provenance.REFIT:
+        lines.extend(_refit_lines(calculation))
     elif calculation.op_type == design_provenance.EDGE_TRANSITION:
         lines.extend(_transition_lines(calculation))
     elif calculation.op_type == design_provenance.EXCAVATION_AREA:
@@ -1045,6 +1108,9 @@ def show_summary(calculation: Calculation | None) -> None:
                    version=calculation.version)
     elif calculation.op_type == design_provenance.FILL_ONLY:
         title = tr("Fill-only design «{name}» in {version}", name=calculation.name,
+                   version=calculation.version)
+    elif calculation.op_type == design_provenance.REFIT:
+        title = tr("Refit «{name}» in {version}", name=calculation.name,
                    version=calculation.version)
     else:
         title = tr("Benching «{name}» in {version}", name=calculation.name,
@@ -1698,8 +1764,9 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     escaló; un recinto excavable de la 014, T20, no tiene: su ficha dice su superficie de
     partida; una rejilla de una cantera, T22, las de cada superficie, con sus perfiles, su
     superficie de partida y las capas que leyó, y la clasificación, además, su leyenda; una
-    transición, T28, su superficie de diseño y su superficie de partida, sin semillas); las
-    restricciones, las activas en su versión (``gis.masks.store``) y las cifras, las de su
+    transición, T28, su superficie de diseño y su superficie de partida, sin semillas; una
+    superficie ajustada a un límite nuevo, T33, la superficie de la que sale y su partida, sin
+    semillas); las restricciones, las activas en su versión (``gis.masks.store``) y las cifras, las de su
     operación. Los errores del proyecto (``GeoblenderError``, ``sqlite3.Error``) siguen."""
     from ...core.provenance import lineage as prov_lineage  # al usarlo: habilitar no lo carga
     from ...core.provenance import stale as prov_stale
@@ -1727,9 +1794,11 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
         quarry = link.op_type == design_provenance.QUARRY  # una cantera: las de sus dos lados
         # Una transición (T28): sin semillas ni envolvente; su superficie de diseño y su partida.
         transition = link.op_type == design_provenance.EDGE_TRANSITION
+        # Un ajuste a un límite nuevo (T33): tampoco; la superficie que ajusta y su partida.
+        refit = link.op_type == design_provenance.REFIT
         envelope_settings: Mapping[str, Any] | None = settings
         if (link.op_type != design_provenance.ENVELOPE and not area and not quarry
-                and not transition):
+                and not transition and not refit):
             envelope_settings =_stored_settings(conn, owner, design_provenance.ENVELOPE_GRID,
                                                  settings.get("envelope"))  # la que escaló
     version_code = found.revision.code if found.revision is not None else ""
@@ -1756,14 +1825,18 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
         lines += _quarry_profile_lines(settings, profile_names, names)
     elif assigned := profiles_text(settings, profile_names, names):
         lines.append(CardLine(ROW_FIELD, tr("Profiles: {profiles}", profiles=assigned)))
-    if link.op_type != design_provenance.ENVELOPE and not area and not quarry and not transition:
+    if (link.op_type != design_provenance.ENVELOPE and not area and not quarry and not transition
+            and not refit):
         lines.append(CardLine(ROW_FIELD, tr("Envelope: «{name}»",
                                             name=str(settings.get("envelope") or ""))))
     if transition:
         lines.append(CardLine(ROW_FIELD, tr("Design surface: «{surface}»",
                                             surface=str(settings.get("surface") or ""))))
+    if refit:  # la superficie de diseño de la que sale este dato ajustado (T33)
+        lines.append(CardLine(ROW_FIELD, tr("Refitted surface: «{surface}»", surface=str(
+            design_provenance.refit_source(settings, found.record.name) or ""))))
     if link.op_type != design_provenance.ENVELOPE:
-        start = settings.get("start" if quarry or transition else "surface")
+        start = settings.get("start" if quarry or transition or refit else "surface")
         lines.append(CardLine(ROW_FIELD, tr("Start surface: «{surface}»",
                                             surface=str(start or ""))))
     if request is not None:
@@ -1773,7 +1846,8 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     lines.append(CardLine(ROW_HEADING, tr("Parameters")))
     lines += [parameter_line(used, version_code) for used in link.params] or [
         CardLine(ROW_NONE, tr("No parameters recorded"))]
-    if not area and not transition:  # el recinto y la transición no tienen semillas ni acotado
+    # El recinto, la transición y el ajuste no tienen semillas ni acotado.
+    if not area and not transition and not refit:
         lines.append(CardLine(ROW_HEADING, tr("Seeds and domains")))
         lines += (_quarry_seed_lines(request, constraints, names) if quarry else
                   _seed_card(settings, envelope_settings, constraints, names, found.record.name))

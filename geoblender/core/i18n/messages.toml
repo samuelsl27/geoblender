@@ -8521,3 +8521,60 @@ es = "Diseño «solo relleno» «{name}»: terraplén {fill} m³ · corte {cut} 
 
 ["Water sheets as the start surface in {cells} cells"]
 es = "Láminas de agua como terreno de partida en {cells} celdas"
+
+["Refit the design to a new limit…"]
+es = "Ajustar el diseño a un límite nuevo…"
+
+["Name of the refit, unique in the active version"]
+es = "Nombre del ajuste, único en la versión activa"
+
+["Design surfaces"]
+es = "Superficies de diseño"
+
+["Design surfaces of the active version that are refitted (marked: the ones the current limit leaves outside)"]
+es = "Superficies de diseño de la versión activa que se ajustan (marcadas: las que el límite vigente deja fuera)"
+
+["Surface the design starts from: outside the limit the refitted surfaces go back to it"]
+es = "Superficie de la que parte el diseño: fuera del límite, las superficies ajustadas vuelven a ella"
+
+["Refit"]
+es = "Ajuste"
+
+["Design surfaces to refit"]
+es = "Superficies de diseño que se ajustan"
+
+["«{surface}» · {volume} m³ in {area} m² outside the current limit"]
+es = "«{surface}» · {volume} m³ en {area} m² fuera del límite vigente"
+
+["«{surface}» · nothing outside the current limit"]
+es = "«{surface}» · nada fuera del límite vigente"
+
+["The masks of {version} are not up to date: compile them to see which surfaces the current limit leaves outside"]
+es = "Las máscaras de {version} no están al día: compílelas para ver qué superficies deja fuera el límite vigente"
+
+["Write the name of the refit"]
+es = "Escriba el nombre del ajuste"
+
+["Choose the design surfaces to refit: mark at least one"]
+es = "Elija las superficies de diseño que se ajustan: marque al menos una"
+
+["Choose the start surface of the refit"]
+es = "Elija la superficie de partida del ajuste"
+
+["Refit «{name}» created in {version}"]
+es = "Ajuste «{name}» creado en {version}"
+
+["Computing the refit… {percent} % · Esc: cancel"]
+es = "Calculando el ajuste… {percent} % · Esc: cancelar"
+
+["Refit «{name}» in {version}"]
+es = "Ajuste «{name}» en {version}"
+
+["«{surface}» refitted with the face of its profile: {volume} m³ in {cells} cells · {outside} cells back to the terrain outside the limit"]
+es = "«{surface}» ajustada con la cara de su perfil: {volume} m³ en {cells} celdas · {outside} celdas vuelven al terreno fuera del límite"
+
+["Surface refitted to a new limit"]
+es = "Superficie ajustada a un límite nuevo"
+
+["Refitted surface: «{surface}»"]
+es = "Superficie ajustada: «{surface}»"

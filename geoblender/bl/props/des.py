@@ -19,6 +19,10 @@ ventanas «Perfiles de banco…», «Sectores de diseño…» y «Envolventes y 
 - el **dato del objeto activo** que enseña la barra N «Diseño» (T27: ``item_uid``, ``item_title`` y
   ``item``, las líneas leídas del proyecto con su ``kind``).
 
+:class:`GEOBLENDER_PG_des_refit_surface` es una fila de la ventana de «Ajustar el diseño a un límite
+nuevo…» (spec 014, T33): una superficie de diseño de la versión activa, lo que deja fuera del límite
+vigente y si se ajusta; la orden la lleva en su propia colección, no en ``WindowManager``.
+
 El nombre del grupo lleva su acción (``panels``, como el de la cubicación) porque NOM-01 la pide;
 el plan 013 §5.2.4 lo llamaba ``GEOBLENDER_PG_des``.
 
@@ -157,6 +161,18 @@ class GEOBLENDER_PG_des_line(bpy.types.PropertyGroup):
     uid: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
 
 
+class GEOBLENDER_PG_des_refit_surface(bpy.types.PropertyGroup):
+    """Una superficie de diseño de la versión activa que ofrece «Ajustar el diseño a un límite
+    nuevo…» (spec 014, T33; RF-014-27; plan 014 §5.3.3): el nombre de su dato (``name``), lo que
+    dice de ella la ventana, ya traducido (``label``: lo que deja fuera del límite vigente), si lo
+    deja (``outside``: va en alerta) y si se ajusta (``selected``: marcada, de entrada, si queda
+    fuera)."""
+
+    label: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    outside: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+    selected: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+
+
 class GEOBLENDER_PG_des_panels(bpy.types.PropertyGroup):
     """Lo que dibujan las ventanas del diseño (una vista; véase el módulo)."""
 
@@ -200,7 +216,7 @@ class GEOBLENDER_PG_des_panels(bpy.types.PropertyGroup):
 # En orden de registro: cada grupo, después de los que contiene.
 classes: tuple[type, ...] = (GEOBLENDER_PG_des_param, GEOBLENDER_PG_des_profile,
                              GEOBLENDER_PG_des_sector, GEOBLENDER_PG_des_line,
-                             GEOBLENDER_PG_des_panels)
+                             GEOBLENDER_PG_des_refit_surface, GEOBLENDER_PG_des_panels)
 
 
 def register() -> None:

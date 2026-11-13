@@ -4,11 +4,21 @@ RF-008-15; plan 013 §5.1 y §5.3.3; ADR-0014; D-29 de la 011).
 
 Exportar **no es una operación** (D-29 de la 011): el entregable se escribe desde lo registrado,
 también con el proyecto en solo lectura (si el destino está fuera de él) y desde una versión que ya
-no es editable; nada se registra. Se exporta cualquiera de las tres rejillas de una versión
-(:data:`GRIDS`): la envolvente (``des_env_``), la superficie de diseño (``des_srf_``) o la rejilla
-de cotas de berma (``des_brm_``); las tablas no son rejillas y no se exportan aquí.
-:func:`stored_grid` (T28) dice cuál es y de qué versión el dato que elige quien exporta (su uid o su
-nombre): solo una rejilla **viva** del diseño (``des.export_not_grid``).
+no es editable; nada se registra. Se exporta cualquiera de las rejillas de una versión
+(:data:`GRIDS`): de la 013, la envolvente (``des_env_``), la superficie de diseño (``des_srf_``) o la
+rejilla de cotas de berma (``des_brm_``); de la 014 (T33; RF-014-32; :data:`QUARRY_GRIDS`), las dos
+superficies de una cantera (``des_exp_``, ``des_fin_``) y sus envolventes (``des_xen_``,
+``des_fen_``), la transición (``des_trn_``), la superficie ajustada a un límite nuevo
+(``des_adj_``), la clasificación de una cantera (``des_cls_``) y el recinto excavable
+(``des_rcn_``); las tablas no son rejillas y no se exportan aquí. :func:`stored_grid` (T28) dice
+cuál es y de qué versión el dato que elige quien exporta (su uid o su nombre): solo una rejilla
+**viva** del diseño (``des.export_not_grid``).
+
+**Las rejillas de códigos** (spec 014, T33; RF-014-32; plan 014 P-1): la clasificación y el recinto
+no son cotas sino un **código por celda** (:data:`LEGENDS`: 0 sin diferencia, 1 desdoblado y 2
+relleno, los de ``design.model.CellClass``; 1 dentro del recinto), que el entregable Float32 lleva
+exacto. Sus metadatos dicen ``UNIDAD`` ``código`` (:data:`CODE_UNIT`) y, en vez de una unidad
+física, **su leyenda**: un ``CODIGO_<n>`` por clase con su nombre en español.
 
 **El GeoTIFF** (:func:`export_grid_steps`, :func:`export_grid`; RF-006-24): la rejilla registrada
 (``rasters/des_*_<vNN>.tif``, Float64 con NaN) como GeoTIFF del perfil ``deliverable`` de la 006
@@ -17,8 +27,9 @@ celda sin dato, NaN o infinita, lo lleva), el CRS y la referencia vertical del p
 igual a la registrada redondeada al float32 más próximo (las cotas son metros: ni escala ni
 desplazamiento) y compresión sin pérdida; una cota que en float32 fuese el −9999 o no cupiese se
 rechaza antes de escribir (``gis.export_nodata_collision``, ``gis.export_value_out_of_range``). Con
-sus metadatos (:func:`metadata_items`, ``GDAL_METADATA``): ``UNIDAD`` (``m``), ``TIPO`` (qué es,
-en español), ``DATO`` (el dato del proyecto del que sale) y ``VERSION``.
+sus metadatos (:func:`metadata_items`, ``GDAL_METADATA``): ``UNIDAD`` (``m``; ``código`` en una
+rejilla de códigos, con su leyenda), ``TIPO`` (qué es, en español), ``DATO`` (el dato del proyecto
+del que sale) y ``VERSION``.
 
 **El destino** (:func:`check_target`, antes de escribir nada): con su extensión
 (``gis.export_extension_invalid``); dentro del proyecto, solo en ``exports/``
@@ -39,10 +50,11 @@ no deja nada. Python puro (nivel 8).
 from __future__ import annotations
 
 import sys
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Protocol
 
 from ..core.datasets import registry as dataset_registry
@@ -59,10 +71,16 @@ from ..gis.raster import Raster
 from ..gis.store import StoreProject, project_references
 from . import provenance as declared
 from .messages import DesignError
+from .model import CellClass
+from .quarry import CLASS_NAMES
 
 __all__ = [
+    "CODE_UNIT",
     "GRIDS",
+    "LEGENDS",
+    "LEGEND_KEY",
     "NODATA",
+    "QUARRY_GRIDS",
     "SUFFIXES",
     "UNIT",
     "ExportProject",
@@ -74,14 +92,34 @@ __all__ = [
     "stored_grid",
 ]
 
-GRIDS: tuple[str, ...] = (declared.ENVELOPE_GRID, declared.DESIGN_GRID, declared.BERMS_GRID)
-"""Las familias de datos de ``des`` que son una rejilla de cotas y se pueden exportar."""
+QUARRY_GRIDS: tuple[str, ...] = (
+    declared.EXPLOITATION_GRID, declared.FINAL_GRID, declared.EXPLOITATION_ENVELOPE_GRID,
+    declared.FINAL_ENVELOPE_GRID, declared.TRANSITION_GRID, declared.REFIT_GRID,
+    declared.CLASSIFICATION_GRID, declared.EXCAVATION_AREA_GRID)
+"""Las rejillas de la 014 que se pueden exportar (T33; RF-014-32): las cotas de las superficies y
+de las envolventes y las dos rejillas de códigos (:data:`LEGENDS`)."""
+GRIDS: tuple[str, ...] = (declared.ENVELOPE_GRID, declared.DESIGN_GRID, declared.BERMS_GRID,
+                          *QUARRY_GRIDS)
+"""Las familias de datos de ``des`` que son una rejilla (de cotas o de códigos) y se pueden
+exportar: las tres de la 013 y las de :data:`QUARRY_GRIDS`."""
+LEGENDS: Mapping[str, tuple[tuple[int, str], ...]] = MappingProxyType({
+    declared.CLASSIFICATION_GRID: tuple((item.code, CLASS_NAMES[item]) for item in CellClass),
+    declared.EXCAVATION_AREA_GRID: ((1, "recinto de excavación"),),
+})
+"""Las rejillas de **códigos** (spec 014, T33; RF-014-32; P-1) con su leyenda: por código, el
+nombre de su clase en español (la clasificación, los de ``CellClass``: 0 sin diferencia, 1
+desdoblado, 2 relleno; el recinto, 1 dentro). Las demás rejillas son cotas en metros."""
 SUFFIXES: tuple[str, ...] = (".tif", ".tiff")
 """Las extensiones del GeoTIFF entregable."""
 NODATA = DELIVERABLE_NODATA
 """El sin dato del entregable (−9999; RF-006-24)."""
 UNIT = "m"
 """La unidad de la cota, declarada en los metadatos."""
+CODE_UNIT = "código"
+"""Lo que declaran los metadatos de una rejilla de :data:`LEGENDS` en vez de una unidad: su valor
+es el código de una clase de su leyenda."""
+LEGEND_KEY = "CODIGO_{code}"
+"""La clave de los metadatos con el nombre de la clase de cada código."""
 
 _FIELD_TARGET = "destino"
 _FIELD_EXTENSION = "extensión"
@@ -114,15 +152,21 @@ def _name(name: object) -> str:
 def metadata_items(family: str, name: str, version_code: str) -> dict[str, str]:
     """Los metadatos de texto del GeoTIFF (``GDAL_METADATA``) de la rejilla ``family`` de la
     operación ``name`` en la versión ``version_code``: ``UNIDAD`` (:data:`UNIT`), ``TIPO`` (qué
-    es, en español: «Envolvente», «Superficie de diseño», «Cota real de las bermas»), ``DATO`` (su
-    nombre en el proyecto, en ASCII) y ``VERSION``. Sin «&» (GDAL 3.13 lo lee mal): el nombre de
-    la operación no va tal cual, sino en el del dato. ``ValueError`` si la familia no es una
-    rejilla del diseño o la versión es un texto vacío."""
+    es, en español: «Envolvente», «Superficie de diseño», «Cota real de las bermas», «Superficie
+    final»…), ``DATO`` (su nombre en el proyecto, en ASCII) y ``VERSION``. Una rejilla de códigos
+    (:data:`LEGENDS`: la clasificación o el recinto de la 014; RF-014-32) declara ``UNIDAD``
+    :data:`CODE_UNIT` y, detrás, su leyenda: ``CODIGO_<n>`` con el nombre de la clase de cada
+    código. Sin «&» (GDAL 3.13 lo lee mal): el nombre de la operación no va tal cual, sino en el
+    del dato. ``ValueError`` si la familia no es una rejilla del diseño o la versión es un texto
+    vacío."""
     found = _family(family)
     if not isinstance(version_code, str) or not version_code.strip():
         raise ValueError(f"la versión de los metadatos es un texto no vacío, no {version_code!r}")
-    return {"UNIDAD": UNIT, "TIPO": found.label, "DATO": declared.dataset_name(family, name),
-            "VERSION": version_code}
+    legend = LEGENDS.get(family, ())
+    items = {"UNIDAD": CODE_UNIT if legend else UNIT, "TIPO": found.label,
+             "DATO": declared.dataset_name(family, name), "VERSION": version_code}
+    items.update((LEGEND_KEY.format(code=code), label) for code, label in legend)
+    return items
 
 
 def _version(project: ExportProject, version: object) -> Version:
@@ -177,8 +221,9 @@ def stored_grid(project: ExportProject, ref: str, *, version: str = "") -> Store
     """La rejilla del diseño ``ref`` —el uid de su dato o su nombre en la versión ``version`` (su
     uid)— con lo que pide :func:`export_grid_steps`: su familia, el nombre de su operación y su
     versión. ``DesignError`` ``des.export_not_grid`` si no es una rejilla **viva** del diseño
-    (una envolvente, una superficie de diseño o una rejilla de cotas de berma de una versión): una
-    tabla, un dato de otro módulo, uno que no existe, uno sustituido o descartado, o uno por su
+    de una versión, de :data:`GRIDS`: una envolvente, una superficie de diseño o una rejilla de
+    cotas de berma de la 013; una superficie, una envolvente, la clasificación o el recinto de la
+    014): una tabla, un dato de otro módulo, uno que no existe, uno sustituido o descartado, o uno por su
     nombre sin la versión que lo tiene. ``TypeError`` si ``ref`` o ``version`` no son textos (o
     ``ref``, vacío). No escribe nada."""
     if not isinstance(ref, str) or not ref:

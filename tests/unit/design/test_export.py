@@ -22,6 +22,14 @@ pruebas:
 - **f**: los pasos son cortos, el avance crece hasta 1 y cerrarlos a mitad no deja nada; con el
   destino abierto por otro programa, ``gis.raster_target_locked`` y el anterior intacto.
 - **g**: dentro de ``exports/`` del proyecto también se exporta, sin registrar el entregable.
+
+**Las rejillas de la 014** (spec 014, T33; RF-014-32; plan 014 §5.2.3, P-1): las superficies de
+una cantera (``des_exp_``, ``des_fin_``), sus envolventes (``des_xen_``, ``des_fen_``), la
+transición (``des_trn_``) y la superficie ajustada (``des_adj_``) se exportan como las cotas de la
+013; la clasificación (``des_cls_``) y el recinto excavable (``des_rcn_``), con su código por
+celda (0 sin diferencia, 1 desdoblado, 2 relleno; 1 dentro del recinto) y su **leyenda en los
+metadatos**. Sobre una copia de la cantera sintética (``quarry_fixtures``) con la cantera «Corta»
+(los perfiles al revés y la capa de relleno: las tres clases) y el recinto «Recinto» de V01.
 """
 
 from __future__ import annotations
@@ -38,12 +46,14 @@ import numpy as np
 
 from tests.support import constraints_fixtures as cfx
 from tests.support import design_fixtures as dfx
+from tests.support import quarry_fixtures as qfx
 from tests.support.core_fixtures import project_tmp
 from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
 
 export = import_geoblender("design.export")
 store = import_geoblender("design.store")
+quarry_steps = import_geoblender("design.steps")
 provenance = import_geoblender("design.provenance")
 model = import_geoblender("design.model")
 design_params = import_geoblender("design.params")
@@ -445,6 +455,182 @@ class ExportTest(dfx.DesignProjectCase):
                              (design.uid,))
         self.assertEqual(export.stored_grid(self.project, design.uid).record.uid, design.uid)
         self.assertEqual(self.counts()[0:2], before[0:2])  # ni operaciones ni datos nuevos
+
+
+# --- Las rejillas de la 014 (spec 014, T33; RF-014-32) ---------------------------------------------
+
+QUARRY_NAME = "Corta"
+AREA_NAME = "Recinto"
+QUARRY_LEVELS = (provenance.EXPLOITATION_GRID, provenance.FINAL_GRID,
+                 provenance.EXPLOITATION_ENVELOPE_GRID, provenance.FINAL_ENVELOPE_GRID)
+"""Las rejillas de cotas de una cantera (sus dos superficies y sus envolventes)."""
+QUARRY_NAMES = {**{family: QUARRY_NAME for family in QUARRY_LEVELS},
+                provenance.CLASSIFICATION_GRID: QUARRY_NAME,
+                provenance.EXCAVATION_AREA_GRID: AREA_NAME}
+"""El nombre de la operación de cada rejilla de la 014 que exporta la prueba."""
+LEGENDS = {provenance.CLASSIFICATION_GRID: {"CODIGO_0": "sin diferencia", "CODIGO_1": "desdoblado",
+                                            "CODIGO_2": "relleno"},
+           provenance.EXCAVATION_AREA_GRID: {"CODIGO_1": "recinto de excavación"}}
+"""La leyenda de los metadatos de las rejillas de códigos, escrita a mano (la de ``CellClass``)."""
+QUARRY_LABELS = {provenance.EXPLOITATION_GRID: "Superficie de explotación",
+                 provenance.FINAL_GRID: "Superficie final",
+                 provenance.EXPLOITATION_ENVELOPE_GRID: "Envolvente de la explotación",
+                 provenance.FINAL_ENVELOPE_GRID: "Envolvente de la final",
+                 provenance.CLASSIFICATION_GRID: "Clasificación de las dos superficies",
+                 provenance.EXCAVATION_AREA_GRID: "Recinto de excavación"}
+
+
+def quarry_definitions() -> tuple[Any, ...]:
+    """Los tipos de la 013 y de la 014 con sus cifras, como los registra ``bl`` (ninguno se
+    recalcula ni se reproduce aquí)."""
+    found = [*provenance.operation_defs({t: _never for t in provenance.REPRODUCIBLE},
+                                        {t: _never for t in provenance.REPRODUCIBLE})]
+    found += [provenance.operation_def(op_type, _never)
+              for op_type in provenance.QUARRY_VERSION_TYPES]
+    return (*found, *provenance.FIGURES, *provenance.QUARRY_FIGURES)
+
+
+class QuarryExportTest(qfx.QuarryProjectCase):
+    """RF-014-32: exportar las rejillas de una cantera y su recinto de V01 (el proyecto, la carpeta
+    de destino y lo exportado son de la clase)."""
+
+    out: Path
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        core_params.register_definitions(design_params.DEFINITIONS)
+        core_params.register_definitions(design_params.QUARRY_DEFINITIONS)
+        cls.addClassCleanup(core_params.unregister_definitions, "des")
+        core_params.register_families(design_params.FAMILIES)
+        cls.addClassCleanup(core_params.unregister_families, "des")
+        core_params.register_definitions(res_provenance.VERIFY_DEFINITIONS)
+        cls.addClassCleanup(core_params.unregister_definitions, "res")
+        cls.enterClassContext(registered(*quarry_definitions()))
+        cls.out = cls.enterClassContext(project_tmp("gb-dq-"))
+        cls.clock.advance(minutes=1)
+        with cls.project.write_transaction() as conn:
+            for profile in (qfx.EXPLOITATION_PROFILE, qfx.FINAL_PROFILE):
+                for param in ("height_m", "face_deg", "berm_m", "anchor_m", "mesh_factor"):
+                    core_params.ParameterStore(cls.project).create(
+                        conn, design_params.bench_key(profile.code, param),
+                        getattr(profile, param), kind="ADOPTADO", reason="Perfil de prueba",
+                        **BY_HAND)
+        masks = cls.masks_of()
+        # Los perfiles al revés y la capa de relleno: desdoblado y relleno en la clasificación.
+        request = model.QuarryRequest(
+            name=QUARRY_NAME, start=qfx.START_DATASET,
+            final=model.QuarrySide(qfx.EXPLOITATION_PROFILE.code),
+            exploitation=model.QuarrySide(qfx.FINAL_PROFILE.code), fill_zones=qfx.FILL_LAYER)
+        cls.clock.advance(minutes=1)
+        last(quarry_steps.quarry_run(cls.project, request, version=cls.v1.uid,
+                                     masks=masks)).result.create()
+        cls.clock.advance(minutes=1)
+        last(quarry_steps.excavation_area_run(cls.project, AREA_NAME, qfx.START_DATASET,
+                                              version=cls.v1.uid, masks=masks)).result.create()
+
+    @classmethod
+    def masks_of(cls) -> Any:
+        return import_geoblender("gis.masks.access").load_masks(cls.project, cls.v1.uid)
+
+    def registered_grid(self, family: str) -> Any:
+        """La rejilla registrada de ``family`` en V01, leída con ``gis`` (float64, NaN sin dato)."""
+        record = self.record(provenance.dataset_name(family, QUARRY_NAMES[family]), self.v1)
+        self.assertIsNotNone(record, family)
+        return reader.read_geotiff(self.root.joinpath(*record.locator.split("/")),
+                                   max_cells=sys.maxsize)
+
+    def export(self, family: str) -> Path:
+        """Exporta la rejilla ``family`` de V01 a ``out/<familia>.tif``."""
+        return export.export_grid(self.project, family, QUARRY_NAMES[family],
+                                  self.out / f"{family}.tif", version=self.v1.uid,
+                                  read_only=NO_READ_ONLY)
+
+    def counts(self) -> tuple[int, int, int]:
+        return tuple(self.query(f"SELECT count(*) FROM {table}")[0][0]  # type: ignore[return-value]
+                     for table in ("gb_operation", "gb_dataset", "gb_event"))
+
+    def test_a_each_grid_of_the_quarry_reads_back_equal_to_the_registered_one(self) -> None:
+        """RF-014-32 (RF-013-34, RF-006-24): las dos superficies y las dos envolventes de la cantera,
+        su clasificación y el recinto se leen de nuevo con ``gis`` con la rejilla de la registrada,
+        el CRS y la referencia vertical del proyecto, el «sin dato» −9999 declarado y cada valor
+        igual al registrado pasado a float32 (0 m de diferencia en las cotas; el código exacto en la
+        clasificación y el recinto); las celdas sin dato siguen sin dato. Nada se escribe en el
+        proyecto."""
+        before = self.counts()
+        for family in QUARRY_NAMES:
+            with self.subTest(family=family):
+                stored = self.registered_grid(family)
+                found = reader.read_geotiff(self.export(family), max_cells=sys.maxsize)
+                self.assertEqual(found.grid, stored.grid)
+                self.assertEqual(found.grid, qfx.GRID)
+                self.assertEqual((found.declared_crs.epsg, found.declared_vertical.epsg),
+                                 (25830, self.project.record.vcrs_epsg))
+                self.assertEqual((found.source_dtype, found.nodata_value), ("float32", NODATA))
+                finite = np.isfinite(stored.values)
+                self.assertTrue(finite.any())
+                np.testing.assert_array_equal(found.values, np.where(
+                    finite, stored.values.astype(np.float32).astype(np.float64), np.nan))
+                self.assertFalse((found.values == NODATA).any())
+        self.assertEqual(self.counts(), before)
+        self.assertEqual(sorted(path.name for path in self.out.iterdir()),
+                         sorted(f"{family}.tif" for family in QUARRY_NAMES))
+
+    def test_b_the_classification_has_a_code_per_class_and_its_legend_in_the_metadata(
+            self) -> None:
+        """RF-014-32 (P-1): la clasificación exportada lleva en cada celda del dominio el código de
+        su clase (0 sin diferencia, 1 desdoblado, 2 relleno; las tres en esta cantera) y nada más, y
+        sus metadatos dicen qué es, que el valor es un código, el dato, la versión y la leyenda
+        (un código por clase); el recinto, el código 1 y el suyo. Las cotas de la cantera, la unidad
+        (m), qué son (en español), el dato y la versión, como las de la 013."""
+        codes = reader.read_geotiff(self.out / f"{provenance.CLASSIFICATION_GRID}.tif",
+                                    max_cells=sys.maxsize).values
+        self.assertEqual(sorted(np.unique(codes[np.isfinite(codes)]).tolist()), [0.0, 1.0, 2.0])
+        area = reader.read_geotiff(self.out / f"{provenance.EXCAVATION_AREA_GRID}.tif",
+                                   max_cells=sys.maxsize).values
+        self.assertEqual(np.unique(area[np.isfinite(area)]).tolist(), [1.0])
+        self.assertEqual(int(np.isfinite(area).sum()), qfx.CUT_ALLOWED_CELLS)
+        for family in QUARRY_NAMES:
+            with self.subTest(family=family):
+                path = self.out / f"{family}.tif"
+                with path.open("rb") as stream:
+                    ifd = tiff.read_first_ifd(stream, path.stat().st_size)
+                items = geokeys.parse_gdal_items(ifd.text(tiff.GDAL_METADATA) or "")
+                common = {"TIPO": QUARRY_LABELS[family],
+                          "DATO": provenance.dataset_name(family, QUARRY_NAMES[family]),
+                          "VERSION": self.v1.code}
+                if family in LEGENDS:
+                    self.assertEqual(items, {"UNIDAD": "código", **common, **LEGENDS[family]})
+                else:
+                    self.assertEqual(items, {"UNIDAD": "m", **common})
+                self.assertEqual(items, export.metadata_items(family, QUARRY_NAMES[family],
+                                                              self.v1.code))
+
+    def test_c_every_grid_of_the_014_is_found_as_an_exportable_grid(self) -> None:
+        """RF-014-32 (T20, T22): ``stored_grid`` da de cada rejilla de la cantera y del recinto su
+        familia, el nombre de su operación y su versión (ya no ``des.export_not_grid``); también
+        exporta la transición y la superficie ajustada (las otras superficies de la 014); las tablas
+        de la cantera siguen sin ser rejillas."""
+        for family in (*QUARRY_LEVELS, provenance.TRANSITION_GRID, provenance.REFIT_GRID,
+                       provenance.CLASSIFICATION_GRID, provenance.EXCAVATION_AREA_GRID):
+            self.assertIn(family, export.GRIDS)
+        for family in QUARRY_NAMES:
+            with self.subTest(family=family):
+                record = self.record(provenance.dataset_name(family, QUARRY_NAMES[family]),
+                                     self.v1)
+                found = export.stored_grid(self.project, record.uid)
+                self.assertEqual((found.family, found.name, found.version_uid),
+                                 (family, gis_provenance.dataset_slug(QUARRY_NAMES[family]),
+                                  self.v1.uid))
+        table = self.record(provenance.dataset_name(provenance.QUARRY_REPORT_TABLE, QUARRY_NAME),
+                            self.v1)
+        with self.assertRaises(design_messages.DesignError) as caught:
+            export.stored_grid(self.project, table.uid)
+        self.assertEqual(caught.exception.code, "des.export_not_grid")
+        with self.assertRaises(ValueError):
+            export.export_grid(self.project, provenance.QUARRY_REPORT_TABLE, QUARRY_NAME,
+                               self.out / "tabla.tif", version=self.v1.uid,
+                               read_only=NO_READ_ONLY)
 
 
 if __name__ == "__main__":

@@ -1452,23 +1452,29 @@ vigente al recompilar las máscaras: la cantera (sus dos superficies), la transi
 y el ajuste."""
 
 
-def limit_surfaces(conn: sqlite3.Connection, version_uid: str) -> tuple[SurfaceOrigin, ...]:
+def limit_surfaces(conn: sqlite3.Connection, version_uid: str, *,
+                   types: Iterable[str] = LIMIT_CHECKED_TYPES) -> tuple[SurfaceOrigin, ...]:
     """Las superficies de diseño **de la 014** vivas en la versión ``version_uid`` (su uid), por el
     nombre de su dato: las que escribió con el papel
     :data:`~geoblender.design.provenance.DESIGN_SURFACE_ROLE` una operación de
     :data:`LIMIT_CHECKED_TYPES` (no las envolventes, la clasificación ni las tablas; tampoco las de
-    un escalonado de la 013), cada una como :class:`SurfaceOrigin`. Solo lee."""
-    marks = ", ".join("?" for _ in LIMIT_CHECKED_TYPES)
+    un escalonado de la 013), cada una como :class:`SurfaceOrigin`. Con ``types``, las de esos tipos
+    de operación (las que ofrece «Ajustar el diseño a un límite nuevo…», T33: las de
+    :data:`REFIT_SOURCES`, también las de un escalonado de la 013). Solo lee."""
+    wanted = tuple(dict.fromkeys(types))
+    if not wanted:
+        return ()
+    marks = ", ".join("?" for _ in wanted)
     rows = conn.execute(
         "SELECT DISTINCT d.uid, d.name FROM gb_dataset AS d JOIN gb_operation_io AS io "
         "ON io.item_uid = d.uid AND io.direction = 'out' AND io.item_kind = 'dataset' "
         "JOIN gb_operation AS o ON o.uid = io.operation_uid "
         f"WHERE d.version_uid = ? AND io.role = ? AND o.op_type IN ({marks}) ORDER BY d.name",
-        (version_uid, provenance.DESIGN_SURFACE_ROLE, *LIMIT_CHECKED_TYPES)).fetchall()
+        (version_uid, provenance.DESIGN_SURFACE_ROLE, *wanted)).fetchall()
     found: list[SurfaceOrigin] = []
     for uid, _name in rows:
         origin = design_surface_of(conn, str(uid), version_uid)
-        if origin is not None and origin.op_type in LIMIT_CHECKED_TYPES:
+        if origin is not None and origin.op_type in wanted:
             found.append(origin)
     return tuple(found)
 
@@ -1489,11 +1495,13 @@ def _min_thickness(conn: sqlite3.Connection, project: StoreProject, version: Ver
 
 
 def limit_checks_steps(project: StoreProject, version_uid: str, *,
-                       names: Iterable[str] | None = None, masks: access.MaskSet | None = None
+                       names: Iterable[str] | None = None, masks: access.MaskSet | None = None,
+                       types: Iterable[str] = LIMIT_CHECKED_TYPES
                        ) -> Generator[None, None, tuple[refit.RefitCheck, ...]]:
     """**A13**, la comprobación (spec 014, T31; RF-014-26), por unidades (una por la lectura de las
     máscaras y de cada superficie): cada superficie de la 014 de la versión ``version_uid`` (uid o
-    código; :func:`limit_surfaces`, o solo las de ``names``, por el nombre o el uid de su dato)
+    código; :func:`limit_surfaces`, o solo las de ``names``, por el nombre o el uid de su dato;
+    con ``types``, las de esos tipos de operación, como en :func:`limit_surfaces`)
     frente al límite **vigente** de sus máscaras (``design.refit.outside_volume``: lo que mueve
     fuera de él frente a su superficie de partida, la de los ajustes de su operación, con el espesor
     mínimo de la 012 en la versión). Devuelve una ``RefitCheck`` por superficie, en su orden; ninguna
@@ -1507,7 +1515,7 @@ def limit_checks_steps(project: StoreProject, version_uid: str, *,
         if version is None:
             raise VersionError("core.version_unknown", field="versión", value=version_uid,
                                version=version_uid)
-        surfaces = limit_surfaces(conn, version.uid)
+        surfaces = limit_surfaces(conn, version.uid, types=types)
         thickness = _min_thickness(conn, project, version) if surfaces else 0.0
     if names is not None:
         wanted = set(names)
@@ -1537,9 +1545,11 @@ def limit_checks_steps(project: StoreProject, version_uid: str, *,
 
 
 def limit_checks(project: StoreProject, version_uid: str, *, names: Iterable[str] | None = None,
-                 masks: access.MaskSet | None = None) -> tuple[refit.RefitCheck, ...]:
+                 masks: access.MaskSet | None = None,
+                 types: Iterable[str] = LIMIT_CHECKED_TYPES) -> tuple[refit.RefitCheck, ...]:
     """:func:`limit_checks_steps` de una vez."""
-    return _result_of(limit_checks_steps(project, version_uid, names=names, masks=masks))
+    return _result_of(limit_checks_steps(project, version_uid, names=names, masks=masks,
+                                         types=types))
 
 
 def _result_of[T](work: Generator[object, None, T]) -> T:

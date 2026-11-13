@@ -59,6 +59,10 @@ la malla.
 **La transición con el terreno no afectado** (spec 014, T28; RF-014-19): ``des_trn_<nombre>``
 («Transición con el terreno no afectado», del mismo tipo :data:`KIND`) es una superficie de diseño
 y se carga como las cotas de la 013 (:func:`load_design_grid`).
+
+**La superficie ajustada a un límite nuevo** (spec 014, T33; RF-014-27): cada
+``des_adj_<ajuste>_<superficie>`` («Superficie ajustada a un límite nuevo», del tipo :data:`KIND`)
+es también una superficie de diseño y se carga igual; con su cargador, no se propone como terreno.
 """
 
 from __future__ import annotations
@@ -101,11 +105,12 @@ LOADERS: tuple[tuple[str, str], ...] = (
     (design_provenance.FINAL_ENVELOPE_GRID, "Final envelope"),
     (design_provenance.CLASSIFICATION_GRID, "Classification"),
     (design_provenance.TRANSITION_GRID, "Transition with the untouched terrain"),
+    (design_provenance.REFIT_GRID, "Surface refitted to a new limit"),
 )
 """Las familias de datos que se cargan (``design.provenance``) con el ``msgid`` de su nombre en el
 nombre generado de sus objetos: las tres rejillas de un diseño de la 013, el recinto excavable de
-la 014 (T20), las cinco rejillas de una cantera con dos superficies (T22) y la superficie con la
-transición con el terreno no afectado (T28)."""
+la 014 (T20), las cinco rejillas de una cantera con dos superficies (T22), la superficie con la
+transición con el terreno no afectado (T28) y la superficie ajustada a un límite nuevo (T33)."""
 CLASS_ATTRIBUTE = "gb_class"
 """El atributo de cara con el código de su clase (``CellClass.code``: 0, 1 o 2)."""
 COLOR_ATTRIBUTE = "gb_color"

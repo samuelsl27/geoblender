@@ -124,7 +124,9 @@ es una operación: no escribe nada en el proyecto y vale en solo lectura (fuera 
 versión que ya no es editable; sobre un fichero que ya existe pregunta antes de sustituirlo
 (:func:`_confirm_later`). Qué rejilla es, de qué versión y qué nombre lleva su operación lo dice
 ``design.export.stored_grid``. **Recalcular lo obsoleto** ya estaba integrado (T21, véase arriba): la
-T28 lo prueba de punta a punta sobre un proyecto real.
+T28 lo prueba de punta a punta sobre un proyecto real. Desde la 014 (T33; RF-014-32) exporta también
+las rejillas de la cantera, la transición, la superficie ajustada y el recinto; la clasificación y
+el recinto, con un código por celda y su leyenda en los metadatos (``design.export.LEGENDS``).
 
 **Los cargadores de la vista** (T27): el de las rejillas ``des_env_``, ``des_srf_`` y ``des_brm_``
 (objetos ``DESIGN``) es de ``bl/scene/des_views.py``, que registra ``bl.scene`` junto al tipo de
@@ -178,6 +180,16 @@ propone «Solo relleno», la primera envolvente, el terreno y el campo «cota».
 ``design.model.FillOnlyRequest``. Calcular, Crear, Cancelar y Esc, los de
 :class:`_CalculateAndCreate`; los rechazos (un intocable movido o un corte, RF-014-25; las
 láminas; un perfil sin valor) y las cuentas son de ``design``.
+
+**Ajustar el diseño a un límite nuevo…** (spec 014, T33; HU-014-7; RF-014-27 a RF-014-29; plan 014
+§5.3.3, P-3): :class:`GEOBLENDER_OT_des_refit_to_limit` (Diseño ▸ Cantera) calcula ``des.refit`` de
+la versión activa con ``design.steps.refit_run``: cada superficie elegida, ajustada al límite
+vigente con la cara de su propio perfil (el ángulo no se pide). Su diálogo pide el nombre, la
+superficie de partida y las superficies que se ajustan: las de diseño de la versión
+(``des_panels.refit_rows``, una fila por superficie en ``surfaces``, con lo que deja fuera del límite
+vigente), con **las que quedan fuera marcadas**; propone «Ajuste» y, de partida, la de la ficha de
+la primera marcada o el terreno. Lo pedido es una ``design.model.RefitRequest``. Calcular, Crear,
+Cancelar y Esc, los de :class:`_CalculateAndCreate`; los rechazos y las cuentas, de ``design``.
 """
 
 from __future__ import annotations
@@ -193,7 +205,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, StringProperty
+from bpy.props import BoolProperty, CollectionProperty, EnumProperty, StringProperty
 
 from ...core import i18n
 from ...core import params as core_params
@@ -212,7 +224,7 @@ from ...design.model import PERIMETER_SEGMENT
 from ...gis import provenance as gis_provenance
 from ...gis.messages import GisError
 from ..props.core import OBJECT_PROPERTY
-from ..props.des import PREVIEW_PROPERTY
+from ..props.des import PREVIEW_PROPERTY, GEOBLENDER_PG_des_refit_surface
 from ..scene import des_views, project_session, undo_watch
 from ..scene import versions as scene_versions
 from ..ui import constraint_panels, des_panels
@@ -2938,6 +2950,182 @@ class GEOBLENDER_OT_des_design_fill_only(_CalculateAndCreate, DesignCommandAware
         return tr("Computing the fill-only design… {percent} % · Esc: cancel", percent=percent)
 
 
+# --- Ajustar el diseño a un límite nuevo… (spec 014, T33; HU-014-7; RF-014-27, RF-014-28,
+#     RF-014-29; plan 014 §5.3.3, §5.5, P-3) ---------------------------------------------------------
+
+REFIT_TO_LIMIT = provenance.REFIT_COMMAND
+
+
+def _fill_refit_rows(rows: Any, found: Iterator[tuple[str, str, bool]]) -> None:
+    """Pone en la colección ``rows`` de la orden una fila por superficie de ``found`` (el nombre de
+    su dato, lo que dice la ventana y si queda fuera del límite vigente): marcada si queda
+    fuera."""
+    rows.clear()
+    for surface, label, outside in found:
+        row = rows.add()
+        row.name, row.label, row.outside, row.selected = surface, label, outside, outside
+
+
+class GEOBLENDER_OT_des_refit_to_limit(_CalculateAndCreate, DesignCommandAware,
+                                       ProvenanceAwareOperator, _StepsModal, bpy.types.Operator):
+    """Refit design surfaces of the active version to its current limit: the untouched terrain
+    outside it and, inside, the face of the own profile of each surface, without going above the
+    terrain"""
+
+    bl_idname = REFIT_TO_LIMIT
+    bl_label = "Refit the design to a new limit…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.REFIT
+    COMMAND = REFIT_TO_LIMIT
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the refit, unique in the active version",
+        options=_FIELD)
+    surfaces: CollectionProperty(  # type: ignore[valid-type]
+        type=GEOBLENDER_PG_des_refit_surface, name="Design surfaces",
+        description="Design surfaces of the active version that are refitted (marked: the ones "
+                    "the current limit leaves outside)", options=_FIELD)
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Surface the design starts from: outside the limit the refitted surfaces go "
+                    "back to it", items=des_panels.surface_items, options=_FIELD)
+    # Lo que dice la ventana si no se sabe qué queda fuera (las máscaras no están al día).
+    note: StringProperty(default="", options=_HIDDEN)  # type: ignore[valid-type]
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con
+    # el avance y Esc: los pone invoke; desde un guion, sin ellos, de una vez.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué.
+        Con ``confirm``, el diálogo de crear el cálculo abierto. Si no, las superficies de diseño
+        de la versión leídas de nuevo (``des_panels.refit_rows``: las que quedan fuera del límite
+        vigente, marcadas), la propuesta (el nombre y la superficie de partida) y el diálogo del
+        cálculo: Intro calcula."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.refresh_choices(project)
+            self._propose(context, project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.COMMAND)].label),
+            confirm_text=tr("Calculate"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """Lo que propone el diálogo si quien lo lanza no lo dio (plan 014 §5.3.3): el nombre
+        («Ajuste»); las superficies de diseño de la versión activa con **las que quedan fuera del
+        límite vigente marcadas** (y, si las máscaras no están al día, la nota que lo dice); y, de
+        partida, la de la ficha de la primera marcada (o de la primera, sin ninguna marcada:
+        ``design.store.design_surface_of``) o, si no la tiene, el terreno
+        (``surface_proposal.ground_item``)."""
+        if not self.name.strip():
+            self.name = tr("Refit")
+        given = self.properties.is_property_set
+        if not given("surfaces"):
+            rows, self.note = des_panels.refit_rows(project, scene_versions.active_version() or "")
+            _fill_refit_rows(self.surfaces, iter(rows))
+        if des_panels.has_surfaces() and not given("start"):
+            listed = [item.name for item in self.surfaces]
+            chosen = [item.name for item in self.surfaces if item.selected] or listed
+            start = next((found for surface in chosen
+                          if (found := _design_surface_start(project, surface)) is not None), None)
+            if start is None:
+                items = [identifier for identifier, _name, _about
+                         in des_panels.surface_items(None, None)]
+                start = surface_proposal.ground_item(context, project, items,
+                                                     des_panels.surface_choice)
+            if start is not None:
+                self.start = start
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "start", text=tr("Start surface"), translate=False)
+        box = layout.box()
+        box.use_property_split = False
+        box.label(text=tr("Design surfaces to refit"), translate=False)
+        if not len(self.surfaces):
+            box.label(text=tr("There are no design surfaces in the active version"),
+                      translate=False)
+        for item in self.surfaces:
+            row = box.row()
+            row.alert = bool(item.outside)
+            row.prop(item, "selected", text=item.label, translate=False)
+        if self.note:
+            box.label(text=self.note, icon="INFO", translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Si no, comprueba lo pedido
+        (sin escribir nada si falta algo), pasa por la puerta de la 008 y calcula el ajuste de las
+        superficies marcadas por pasos con ``design.steps.refit_run`` —compila las máscaras antes
+        si no están al día—, sin registrar nada (RF-014-29): desde la interfaz, en el modal con el
+        avance y Esc; desde un guion, de una vez. Al terminar deja el cálculo abierto con su
+        resumen y pide confirmar. El ángulo de cada superficie no se pide: es la cara de su propio
+        perfil (P-3). Desde un guion, cada fila de ``surfaces`` lleva todos sus campos (Blender los
+        pide): ``{"name": <dato>, "label": "", "outside": False, "selected": True}``. Los rechazos
+        (una superficie que no es de diseño, un perfil sin cara, el nombre repetido) y todas las
+        cuentas son de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        name = self.name.strip()
+        if not name:
+            self.report({"ERROR"}, tr("Write the name of the refit"))
+            return {"CANCELLED"}
+        chosen = tuple(dict.fromkeys(item.name for item in self.surfaces if item.selected))
+        if not chosen:
+            self.report({"ERROR"}, tr("Choose the design surfaces to refit: mark at least one"))
+            return {"CANCELLED"}
+        if self.start in ("", des_panels.NO_ZONE):
+            self.report({"ERROR"}, tr("Choose the start surface of the refit"))
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report,
+                             dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        request = design_model.RefitRequest(name, chosen, self.start)
+        steps = design_steps.refit_run(project, request, version=version,
+                                       budget_s=self.STEP_BUDGET_S)
+        return self._run_steps(context, project, name, steps)
+
+    def _created_text(self, opened: Calculation) -> str:
+        return tr("Refit «{name}» created in {version}", name=opened.name, version=opened.version)
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Calculando el ajuste… 40 % · Esc: cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Computing the refit… {percent} % · Esc: cancel", percent=percent)
+
+
 # --- Vista previa de semillas, dominios y restricciones (T25; HU-013-1; RF-013-01, RF-013-02,
 #     RF-013-03, RF-013-33; plan §5.3.3, §5.5, D-29) ----------------------------------------------
 
@@ -3110,9 +3298,9 @@ def _export_progress(steps: Iterator[float], name: str) -> Iterator[Progress]:
 
 
 class GEOBLENDER_OT_des_export_design_grid(_StepsModal, bpy.types.Operator):
-    """Write a registered grid of the design (envelope, design surface or berm elevations) as a
-    deliverable GeoTIFF (it is not an operation: also from a superseded version and, outside the
-    project, in read-only)"""
+    """Write a registered grid of the design (an envelope, a design surface, the berm elevations,
+    the classification of a quarry or an excavation boundary) as a deliverable GeoTIFF (it is not
+    an operation: also from a superseded version and, outside the project, in read-only)"""
 
     bl_idname = EXPORT_DESIGN_GRID
     bl_label = "Export grid to GeoTIFF…"
@@ -3271,10 +3459,12 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_create_limit_from_perimeter,
                              GEOBLENDER_OT_des_design_quarry,
                              GEOBLENDER_OT_des_create_transitions,
-                             GEOBLENDER_OT_des_design_fill_only)
+                             GEOBLENDER_OT_des_design_fill_only,
+                             GEOBLENDER_OT_des_refit_to_limit)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
 T44, la que declara de nuevo los sectores desde su ventana; de la 014, la T20 pone «Límite desde el
 perímetro…», la T21 «Cantera con dos superficies…», la T28 «Transiciones con el terreno no
-afectado» y la T30 «Solo relleno…», aún de la entrada «014» sin entregar)."""
+afectado», la T30 «Solo relleno…» y la T33 «Ajustar el diseño a un límite nuevo…», aún de la
+entrada «014» sin entregar)."""
