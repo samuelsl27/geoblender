@@ -47,7 +47,7 @@ HOLD_CELLS = qfx.TOWER_ZONE_CELLS + qfx.NO_CUT_CELLS
 CONSERVE_CELLS = 2_400
 """La zona a conservar: 40 × 60 m de celdas de 1 m."""
 CORRIDOR = model.CorridorFields(qfx.CORRIDORS_LAYER, "ancho", start_level_field="cota_inicial",
-                                grade_field="pendiente")
+                                gradient_field="pendiente")
 QUARRY_NOTES = ("des.quarry_preview_area", "des.quarry_preview_crown", "des.quarry_preview_hold",
                 "des.quarry_preview_floors", "des.quarry_preview_ceilings",
                 "des.quarry_preview_corridors")
@@ -151,7 +151,8 @@ class QuarryPreviewTest(qfx.QuarryProjectCase):
     def test_the_summary_says_each_piece_in_both_languages(self) -> None:
         """RF-014-04, principio 10: lo que dice el resumen, en orden —las máscaras al día y, después,
         recinto, coronación, zonas a sostener, fondos, techos y corredores—, como notas con su
-        código; en español con espacio fino de miles y coma decimal, y en inglés."""
+        código; en español con espacio fino de miles y coma decimal, y en inglés; con un solo
+        corredor, en singular («1 línea»; T60), y con dos fondos, en plural."""
         codes = [notice.code for notice in self.summary.notices]
         self.assertEqual(codes, ["des.preview_masks_current", *QUARRY_NOTES])
         self.assertEqual(self.summary.warnings("es"), ())
@@ -168,11 +169,16 @@ class QuarryPreviewTest(qfx.QuarryProjectCase):
         self.assertIn(f"{grouped(CONSERVE_CELLS)} celdas", lines[5])
         self.assertIn("gis_fea_conservar", lines[5])
         corridor_cells = sum(self.summary.corridors.floors.cells)
-        self.assertIn(f"{grouped(corridor_cells)} celdas", lines[6])
-        self.assertIn("200,0 m de eje", lines[6])
+        self.assertEqual(lines[6], f"Corredores de «{qfx.CORRIDORS_LAYER}»: 1 línea, "
+                                   f"{grouped(corridor_cells)} celdas ({grouped(corridor_cells)} "
+                                   "m²), 200,0 m de eje.")
         english = self.summary.lines("en")
         self.assertEqual(english[1], f"Excavation area: {qfx.CUT_ALLOWED_CELLS:,} cells "
                                      f"({qfx.CUT_ALLOWED_CELLS:,} m², 8.5 ha).")
+        self.assertIn("2 polygons", english[4])
+        self.assertEqual(english[6], f"Corridors of «{qfx.CORRIDORS_LAYER}»: 1 line, "
+                                     f"{corridor_cells:,} cells ({corridor_cells:,} m²), 200.0 m "
+                                     "of axis.")
         for line in (*lines, *english):
             self.assertNotIn("{", line)
 
@@ -240,6 +246,61 @@ class QuarryPreviewTest(qfx.QuarryProjectCase):
         self.assertGreaterEqual(len(self.progress), 4)
         self.assertIsInstance(self.summary, preview.QuarryPreview)
         self.assertTrue(all(item.phase == "preview" for item in self.progress))
+
+
+THIN = i18n.THIN_SPACE
+
+
+class NoticeCountTest(unittest.TestCase):
+    """RF-014-03, RF-014-04, RF-014-17, RF-014-18, RF-014-21 (T60; el punto 1 de la T57, la sonda
+    E4): ``Notice.text`` escribe los números para una persona (espacio fino de miles y coma decimal
+    en español) y elige el singular de un mensaje que cuenta algo con el número **sin escribir**: en
+    el resumen, «en 1 zona», no «en 1 zonas» (antes lo elegía con el número ya escrito, «1», y salía
+    siempre el plural); con 2, el plural; en los dos idiomas."""
+
+    CASES: ClassVar[tuple[tuple[str, str, dict[str, object], str, str, str, str], ...]] = (
+        ("des.quarry_to_final", "zones", {"area": 2.6, "volume": 14_902.4},
+         f"«Explotación hasta la final» en 1 zona (2,6 ha): 14{THIN}902,4 m³ pasan del "
+         "desdoblado a la explotación, con bancos anclados a sus cotas.",
+         "«Exploitation down to the final» in 1 zone (2.6 ha): 14,902.4 m³ pass",
+         "«Explotación hasta la final» en 2 zonas (2,6 ha)",
+         "«Exploitation down to the final» in 2 zones (2.6 ha)"),
+        ("des.quarry_unsplit_zones", "zones",
+         {"area": 0.6, "volume": 14_902.4, "threshold": 1.0, "min_area": 0.2},
+         "La explotación no llega a la final en 1 zona: 0,6 ha", "in 1 zone: 0.6 ha",
+         "en 2 zonas: 0,6 ha", "in 2 zones: 0.6 ha"),
+        ("des.quarry_seeds_outside", "groups", {"cells": 5_747, "area": 5_747.0},
+         f"5{THIN}747 celdas de semillas (5{THIN}747 m²) en 1 grupo caen fuera",
+         "5,747 seed cells (5,747 m²) in 1 group fall outside",
+         f"5{THIN}747 celdas de semillas (5{THIN}747 m²) en 2 grupos caen fuera",
+         "in 2 groups fall outside"),
+        ("des.edge_created_step", "stretches",
+         {"share": 60.77, "pairs": 520, "threshold": 1.0, "admitted": 99.0, "maximum": 4.0,
+          "x": "500 010,00", "y": "4 400 010,00"},
+         "en 1 tramo. Use «Transiciones", "in 1 stretch. Use «Transitions",
+         "en 2 tramos. Use «Transiciones", "in 2 stretches. Use «Transitions"),
+        ("des.refit_order", "cells", {"quarry": "Corta", "surface": "des_exp_corta"},
+         "«des_exp_corta» cambia en 1 celda para", "«des_exp_corta» changes in 1 cell so",
+         "«des_exp_corta» cambia en 2 celdas para", "«des_exp_corta» changes in 2 cells so"),
+        ("des.quarry_preview_crown", "ring", {"cells": 4_176, "area": 4_176.0},
+         f"Coronación: anillo de 1 celda fuera del recinto, 4{THIN}176 celdas",
+         "Crown: ring of 1 cell outside the excavation area, 4,176 cells",
+         "anillo de 2 celdas fuera", "ring of 2 cells outside"),
+    )
+
+    def test_a_count_of_one_takes_its_singular_in_the_summary(self) -> None:
+        """Cada aviso o nota con un 1 en su recuento, en singular en español y en inglés, y los
+        demás números escritos como siempre; con un 2, el plural."""
+        for code, count, values, one_es, one_en, many_es, many_en in self.CASES:
+            with self.subTest(code=code):
+                one = preview.Notice(code, {**values, count: 1})
+                many = preview.Notice(code, {**values, count: 2})
+                self.assertIn(one_es, one.text("es"))
+                self.assertIn(one_en, one.text("en"))
+                self.assertIn(many_es, many.text())
+                self.assertIn(many_en, many.text("en"))
+                for text in (one.text("es"), one.text("en"), many.text("es")):
+                    self.assertNotIn("{", text)
 
 
 class QuarryPreviewMessagesTest(unittest.TestCase):

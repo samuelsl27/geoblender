@@ -107,8 +107,13 @@ class Notice:
         return lookup(self.code).severity
 
     def text(self, language: str = "es") -> str:
-        """El texto del aviso en ``language`` (``"es"`` o ``"en"``)."""
-        return render(self.code, language=language, **_shown(self.values, language))
+        """El texto del aviso en ``language`` (``"es"`` o ``"en"``): sus números, escritos para
+        una persona, y, si el mensaje cuenta algo, el singular elegido con el número **sin
+        escribir** (spec 014, T60: «en 1 zona», no «en 1 zonas»)."""
+        message = lookup(self.code)
+        number = self.values.get(message.count) if message.count else None
+        return render(self.code, language=language, number=number,
+                      **_shown(self.values, language))
 
 
 @dataclass(frozen=True, slots=True)

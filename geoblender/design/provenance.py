@@ -1089,7 +1089,7 @@ def quarry_settings(request: QuarryRequest, pending_sectors: Iterable[str] = (),
             "layer": corridors.layer, "width_field": corridors.width_field,
             "level_field": corridors.level_field,
             "start_level_field": corridors.start_level_field,
-            "grade_field": corridors.grade_field},
+            "gradient_field": corridors.gradient_field},
         "fill_zones": request.fill_zones,
         "water": _layer_field(request.water),
         "to_final": ToFinalMode(request.to_final).value,
@@ -1350,7 +1350,7 @@ def quarry_request(settings: Mapping[str, Any]) -> QuarryRequest:
             _required_text(found, "layer", here), _required_text(found, "width_field", here),
             level_field=_optional_text(found, "level_field", here),
             start_level_field=_optional_text(found, "start_level_field", here),
-            grade_field=_optional_text(found, "grade_field", here))
+            gradient_field=_optional_text(found, "gradient_field", here))
     conserve = data.get("conserve", [])
     if not isinstance(conserve, list):
         raise ValueError(f"{what} llevan «conserve» como una lista de zonas, no {conserve!r}")

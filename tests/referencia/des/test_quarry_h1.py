@@ -81,7 +81,7 @@ WARNING_RATIO = 2.0
 EXPL = qfx.EXPLOITATION_PROFILE
 REST = qfx.FINAL_PROFILE
 CORRIDOR = model.CorridorFields(qfx.CORRIDORS_LAYER, "ancho", start_level_field="cota_inicial",
-                                grade_field="pendiente")
+                                gradient_field="pendiente")
 FLOORS = model.LayerField(qfx.FLOORS_LAYER, "cota")
 
 AREA_BOX = (45.0, 60.0, 355.0, 340.0)
@@ -310,10 +310,10 @@ class QuarryH1Test(qfx.QuarryProjectCase):
         ``σ = 179,5``: 139,36 m)."""
         anchors = self.outcome.anchors
         self.assertIsNotNone(anchors)
-        grade = qfx.CORRIDOR_GRADE_PCT / 100.0
+        gradient = qfx.CORRIDOR_GRADIENT_PCT / 100.0
         for (x, y), level, d2 in (((160.5, 160.5), 125.0, 0.0), ((100.5, 160.5), 125.0, 400.0),
                                   ((260.5, 280.5), 175.0, 441.0), ((210.5, 230.5), 175.0, 100.0),
-                                  ((340.5, 100.5), qfx.CORRIDOR_START_M + 179.5 * grade, 121.0)):
+                                  ((340.5, 100.5), qfx.CORRIDOR_START_M + 179.5 * gradient, 121.0)):
             with self.subTest(x=x, y=y):
                 self.assertAlmostEqual(self.at(anchors.grid, x, y), level, delta=TOLERANCE_M)
                 self.assertEqual(self.at(anchors.d2_m2, x, y), d2)
@@ -546,8 +546,8 @@ class QuarryH1Test(qfx.QuarryProjectCase):
         self.assertEqual(self.corridors.floors.cells, (CORRIDOR_CELLS,))
         found = self.corridors.floors.grid
         np.testing.assert_array_equal(np.isfinite(found), inside)
-        grade = qfx.CORRIDOR_GRADE_PCT / 100.0
-        hand = qfx.CORRIDOR_START_M + sigma[inside] * grade
+        gradient = qfx.CORRIDOR_GRADIENT_PCT / 100.0
+        hand = qfx.CORRIDOR_START_M + sigma[inside] * gradient
         self.assertLessEqual(float(np.max(np.abs(found[inside] - hand))), TOLERANCE_M)
         self.assertAlmostEqual(float(found[inside].max()), 140.96, delta=TOLERANCE_M)
         x, y = qfx.local_centers()

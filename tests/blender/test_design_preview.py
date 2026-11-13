@@ -117,7 +117,7 @@ QUARRY_FIELDS = {  # los campos del diálogo de la cantera, con lo que pone por 
     "exploitation_anchor_grid": "none", "exploitation_metric": "CHAMFER5", "floors_layer": "none",
     "floors_field": "cota", "conserve": "none", "corridors_layer": "none",
     "corridors_width_field": "ancho", "corridors_level": "FIXED", "corridors_level_field": "cota",
-    "corridors_start_field": "cota_inicial", "corridors_grade_field": "pendiente",
+    "corridors_start_field": "cota_inicial", "corridors_gradient_field": "pendiente",
     "fill_layer": "none", "water_layer": "none", "water_field": "cota", "to_final": "NONE",
     "to_final_layer": "none"}
 
@@ -1005,7 +1005,7 @@ class DesignPreviewTest(unittest.TestCase):
         return {"name": "Corta", "start": self.ground, "final_profile": PROFILE,
                 "exploitation_profile": PROFILE, "floors_layer": FLOORS_LAYER,
                 "conserve": f"layer:{CONSERVE_LAYER}", "corridors_layer": CORRIDORS_LAYER,
-                "corridors_level": "GRADE", **values}
+                "corridors_level": "GRADIENT", **values}
 
     def preview_button(self, form: dict[str, Any]) -> Any:
         """El botón de la orden de la cantera en su diálogo, dibujado con lo pedido en ``form``
@@ -1071,7 +1071,7 @@ class DesignPreviewTest(unittest.TestCase):
             floors=m.LayerField(FLOORS_LAYER, "cota"),
             conserve=(m.Zone(m.ZoneKind.LAYER, CONSERVE_LAYER),),
             corridors=m.CorridorFields(CORRIDORS_LAYER, "ancho", start_level_field="cota_inicial",
-                                       grade_field="pendiente"))
+                                       gradient_field="pendiente"))
         files, operations = self.files(), self.operations()
 
         self.panels.refresh_choices(self.project)  # las capas nuevas, en las listas del diálogo

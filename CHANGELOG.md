@@ -162,8 +162,13 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     de cada muro a la cota de su fondo más k bancos (con un corredor con rasante, siguen su rampa). El
     **orden del diseño** («Primero la superficie final», por defecto, o «Primero la superficie de
     explotación») sube la explotación o baja la final, y nunca se crean unas superficies sin
-    `final ≤ explotación ≤ terreno` a 1 mm, tampoco al ajustar las dos a un límite nuevo (abajo). Cada
-    superficie se compara con la misma de la cantera del mismo nombre de la revisión congelada más
+    `final ≤ explotación ≤ terreno` a 1 mm, tampoco al ajustar las dos a un límite nuevo (abajo). Las
+    celdas que cambió la regla (en el resumen, en el informe de la cantera y en la nota del ajuste)
+    se cuentan con esa misma tolerancia, las que cambian más de 1 mm: antes contaban también las que
+    cambiaban por el ruido del cálculo (en una sonda de su verificación, 4.806 de 7.146 celdas, por
+    menos de 4·10⁻¹³ m); en las pruebas, la cantera de prueba pasa de 76.571 a 76.570 celdas, el
+    ajuste de prueba de 140 a 84 y algunos de los 100 diseños de referencia, de 328 a 327 o de 234
+    a 230. Cada superficie se compara con la misma de la cantera del mismo nombre de la revisión congelada más
     reciente (el aviso de magnitud de la spec 013); sin ella, una sola nota con el nombre de la
     cantera (antes, dos notas que no comparaban nada). La diferencia se **clasifica** en
     desdoblado, relleno de restauración (en una capa de zonas) y sin diferencia (el espesor mínimo de
@@ -226,7 +231,8 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     la cantera con 60°, el ajuste daba 18.011,0 m³ en lugar de 17.050,6 m³. Ninguna cifra de prueba
     cambia. Si se ajustan juntas las dos superficies de una cantera, después se les aplica la regla
     de orden de la cantera y se comprueba `final ≤ explotación ≤ terreno` antes de crear, con una nota
-    de las celdas que cambió (los m³ de ajuste de cada una siguen siendo los de su cara); ajustar solo
+    de las celdas que cambió más de 1 mm (los m³ de ajuste de cada una siguen siendo los de su
+    cara); ajustar solo
     una avisa si la final queda por encima de la explotación (lo decidió Samuel el 13/11/2026; su
     verificación encontró que ajustarlas por separado dejaba la final hasta 20,72 m por encima). El
     resumen del ajuste avisa también de que el diseño del que sale está obsoleto y de que
@@ -252,8 +258,11 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     exporta todas, y la clasificación y el recinto con su código por clase y su leyenda en los
     metadatos, con los nombres de la vista y de la barra N («relleno de restauración», «recinto
     excavable»; antes, «relleno» y «recinto de excavación»).
-  - **Textos**: los mensajes que cuentan zonas o partes tienen su singular («en 1 zona»; el resumen
-    todavía no lo elige, abajo); los rechazos
+  - **Textos**: los mensajes que cuentan algo (zonas, partes, grupos de semillas, tramos, parejas,
+    celdas, polígonos y líneas) tienen su singular, también en el resumen de cada orden y en la
+    vista previa («en 1 zona»; antes el resumen decía «en 1 zonas»), y la vista previa dice cuántas
+    líneas tiene la capa de corredores («1 línea»; antes, un número suelto); el campo de la
+    pendiente de un corredor con rasante se llama **Campo de pendiente de la rasante**; los rechazos
     de «Solo relleno…» dicen «revise la envolvente, su perfil y su dominio» (no hay semillas que
     revisar); el de una superficie que no es de diseño nombra todas las que valen (también una
     transición, un diseño «solo relleno» y una ajustada); el de la cota de un corredor dice
@@ -277,9 +286,8 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     hasta el fondo», que no es lo que hace; ahora dice «Recinto excavable de la versión: el corte
     admitido por sus máscaras».
   - **Lo que hoy no hace**, tras su verificación única: la capa de láminas del diálogo de la cantera
-    no se usa (las láminas son de «Solo relleno…»); una sola zona a conservar por diseño; un corredor
-    que pisa un fondo se rechaza; y, en el resumen, un aviso con una sola zona o un solo tramo sale en
-    plural («en 1 zonas»).
+    no se usa (las láminas son de «Solo relleno…»); una sola zona a conservar por diseño; y un
+    corredor que pisa un fondo se rechaza.
 
 - **Envolventes y escalonado** (spec 013). Antes de excavar un hueco, tender un frente o rellenar
   un talud hay que poder decir, con cifras, hasta dónde llega un talud y cómo se convierte en

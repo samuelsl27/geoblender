@@ -2543,15 +2543,15 @@ NO_DATA_NOTE = "no_data"
 
 def quarry_report_rows(outcome: quarry.QuarryOutcome, notices: Sequence[Notice]) -> list[Row]:
     """Las filas de ``des_qrp_`` (``quantity, value, unit_code, note``, como ``des_rpt_``) de la
-    cantera ``outcome`` (RF-014-15 a RF-014-18): las celdas que cambió la regla de orden; la
-    clasificación del total (excavación de la explotación, desdoblado, relleno de restauración y
-    sus celdas, las celdas sin diferencia y sin dato y el espesor mínimo); las cotas mínima y
-    máxima de cada superficie (``final_min_m``…; sin dato, una fila sin valor con la nota
-    :data:`NO_DATA_NOTE`); con «explotación hasta la final», lo que pasa a la explotación y sus
-    celdas; las filas del informe de la 013 de cada lado (:func:`report_rows`) con su superficie
-    delante (``final.cut_m3``…) y sus avisos y notas con la superficie en el JSON; y, al final,
-    ``notices`` (:func:`quarry_notices`) con su código y sus valores en JSON. Un valor NaN o
-    infinito es un error del programa (``ValueError``)."""
+    cantera ``outcome`` (RF-014-15 a RF-014-18): las celdas que cambió la regla de orden (más de
+    1 mm; T60); la clasificación del total (excavación de la explotación, desdoblado, relleno de
+    restauración y sus celdas, las celdas sin diferencia y sin dato y el espesor mínimo); las
+    cotas mínima y máxima de cada superficie (``final_min_m``…; sin dato, una fila sin valor con
+    la nota :data:`NO_DATA_NOTE`); con «explotación hasta la final», lo que pasa a la explotación
+    y sus celdas; las filas del informe de la 013 de cada lado (:func:`report_rows`) con su
+    superficie delante (``final.cut_m3``…) y sus avisos y notas con la superficie en el JSON; y,
+    al final, ``notices`` (:func:`quarry_notices`) con su código y sus valores en JSON. Un valor
+    NaN o infinito es un error del programa (``ValueError``)."""
     total = outcome.classes.total
     rows: list[Row] = [("order_adjusted_cells", _real("order_adjusted_cells", outcome.adjusted),
                         "-", None)]
@@ -2982,11 +2982,11 @@ def _ordered_refits(parts: Sequence[RefitPart], found: Sequence[refit.Refit], st
     ajustadas y ``quarry.check_order`` (``des.quarry_order_broken``, un error del programa: no se
     crea nada); la rejilla de cada :class:`~design.refit.Refit` pasa a ser la atada y su volumen y
     sus celdas siguen siendo los de su cara (CE-014-08); la nota ``des.refit_order`` dice la
-    cantera, la superficie que cambió la regla y sus celdas (las que tenían la final por encima,
-    ``OrderedSurfaces.adjusted``). De cada superficie de una cantera sin la otra, si la otra tal
-    como está (``others``) deja la final más de 1 mm por encima de la explotación, el aviso
-    ``des.refit_order_side`` con las celdas y cuánto (m). Devuelve los ajustes y las notas y
-    avisos; ninguna entrada se modifica."""
+    cantera, la superficie que cambió la regla y sus celdas (las que tenían la final más de 1 mm
+    por encima, ``OrderedSurfaces.adjusted``; T60). De cada superficie de una cantera sin la otra,
+    si la otra tal como está (``others``) deja la final más de 1 mm por encima de la explotación,
+    el aviso ``des.refit_order_side`` con las celdas y cuánto (m). Devuelve los ajustes y las
+    notas y avisos; ninguna entrada se modifica."""
     refits = list(found)
     notices: list[Notice] = []
     pairs, alone = _quarry_pairs([(part.quarry, part.side) for part in parts])

@@ -270,7 +270,7 @@ CORRIDOR_WIDTH_M = 20.0
 """El ancho del corredor (m)."""
 CORRIDOR_START_M = 125.0
 """La cota inicial de la rasante del corredor (m): la del fondo del que sale."""
-CORRIDOR_GRADE_PCT = 8.0
+CORRIDOR_GRADIENT_PCT = 8.0
 """La pendiente de la rasante (%): 125 + 200 · 0,08 = 141 m al final."""
 FILL_ZONE_LOCAL = (60.0, 80.0, 110.0, 140.0)
 """La zona de restauración por relleno (local; D-11): 50 × 60 m, 3.000 m²."""
@@ -318,7 +318,7 @@ def layers() -> tuple[LayerData, ...]:
         LayerData(CORRIDORS_LAYER, "line", (((cfx.absolute(CORRIDOR_AXIS_LOCAL),),),),
                   ("Corredor de salida",),
                   {"ancho": (CORRIDOR_WIDTH_M,), "cota_inicial": (CORRIDOR_START_M,),
-                   "pendiente": (CORRIDOR_GRADE_PCT,)}),
+                   "pendiente": (CORRIDOR_GRADIENT_PCT,)}),
         LayerData(FILL_LAYER, "polygon", (polygon(FILL_ZONE_LOCAL),), ("Relleno de restauración",),
                   {}),
         LayerData(WATER_LAYER, "polygon", (polygon(WATER_LOCAL),), ("Balsa",),

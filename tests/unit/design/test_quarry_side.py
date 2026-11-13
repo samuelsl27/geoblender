@@ -50,7 +50,7 @@ WARNING_RATIO = 2.0
 EXPL = qfx.EXPLOITATION_PROFILE
 REST = qfx.FINAL_PROFILE
 CORRIDOR = model.CorridorFields(qfx.CORRIDORS_LAYER, "ancho", start_level_field="cota_inicial",
-                                grade_field="pendiente")
+                                gradient_field="pendiente")
 CROWN_AND_HOLD_CELLS = 3_576 + qfx.TOWER_ZONE_CELLS + qfx.NO_CUT_CELLS
 """``|C ∪ H|`` con el anillo de 3 celdas (a mano en T07): 5.400 celdas."""
 

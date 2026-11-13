@@ -394,25 +394,26 @@ class LayerField:
 class CorridorFields:
     """La capa de líneas de los corredores y sus campos (RF-014-09; plan 014 §5.2.1): el ancho
     (``width_field``, m) y o bien una cota fija (``level_field``, m) o bien una rasante
-    (``start_level_field``, m, y ``grade_field``, % positivo cuando sube en el sentido del eje).
-    Las dos cosas, ninguna o media rasante son un error del programa."""
+    (``start_level_field``, m, y ``gradient_field``, la pendiente de la rasante en %, positiva
+    cuando sube en el sentido del eje; en inglés, «gradient»: glosario §14, T60). Las dos cosas,
+    ninguna o media rasante son un error del programa."""
 
     layer: str
     width_field: str
     level_field: str | None = None
     start_level_field: str | None = None
-    grade_field: str | None = None
+    gradient_field: str | None = None
 
     def __post_init__(self) -> None:
-        grade = (self.start_level_field, self.grade_field)
-        if (None in grade) != (grade == (None, None)):
+        rasante = (self.start_level_field, self.gradient_field)
+        if (None in rasante) != (rasante == (None, None)):
             raise ValueError("una rasante lleva la cota inicial y la pendiente (RF-014-09)")
-        if (self.level_field is None) == (grade == (None, None)):
+        if (self.level_field is None) == (rasante == (None, None)):
             raise ValueError("un corredor tiene una cota fija o una rasante, no las dos ni "
                              "ninguna (RF-014-09)")
 
     @property
-    def graded(self) -> bool:
+    def has_gradient(self) -> bool:
         """Si el corredor va con rasante (cota inicial y pendiente) y no con cota fija."""
         return self.level_field is None
 

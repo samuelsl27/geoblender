@@ -73,7 +73,7 @@ CONSERVE_SLOPE_DEG = 35.0
 """El talud de conservación de la prueba (D-9: lo declara una persona; el del análisis)."""
 BY_HAND = {"source": "Perfil de prueba", "source_kind": "person", "decided_by": "Samuel (IMGA)"}
 CORRIDOR = model.CorridorFields(qfx.CORRIDORS_LAYER, "ancho", start_level_field="cota_inicial",
-                                grade_field="pendiente")
+                                gradient_field="pendiente")
 AREA_NAME = "Recinto de la cantera"
 QUARRY_NAME = "Cantera E3"
 OTHER_NAME = "Cantera B"

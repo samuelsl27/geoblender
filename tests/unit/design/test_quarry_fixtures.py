@@ -119,7 +119,7 @@ class SiteTest(unittest.TestCase):
         self.assertFalse((boxes[0] & boxes[1]).any())
         for floor, inside in zip(qfx.FLOORS, boxes, strict=True):
             self.assertGreater(float(z[inside].min()), floor.level_m + 40.0)
-        end = qfx.CORRIDOR_START_M + qfx.CORRIDOR_LENGTH_M * qfx.CORRIDOR_GRADE_PCT / 100.0
+        end = qfx.CORRIDOR_START_M + qfx.CORRIDOR_LENGTH_M * qfx.CORRIDOR_GRADIENT_PCT / 100.0
         self.assertEqual(end, 141.0)
         self.assertGreater(float(z.min()), end)
         water = z[qfx.in_box(qfx.WATER_LOCAL)]

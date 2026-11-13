@@ -479,7 +479,7 @@ MIN_THICKNESS_M = 0.02
 EXPL = qfx.EXPLOITATION_PROFILE
 REST = qfx.FINAL_PROFILE
 CORRIDOR = model.CorridorFields(qfx.CORRIDORS_LAYER, "ancho", start_level_field="cota_inicial",
-                                grade_field="pendiente")
+                                gradient_field="pendiente")
 
 
 def profile_values() -> dict[str, object]:

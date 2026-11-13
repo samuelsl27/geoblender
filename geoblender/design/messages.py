@@ -625,12 +625,22 @@ CATALOG: tuple[Message, ...] = (
         "de las zonas a sostener: sembrar allí sube los fondos. Confirme para calcular con "
         "ellas, o elija las semillas «Coronación y zonas a sostener».",
         "warning",
+        count="groups",
+        one_msgid="{cells} seed cells ({area} m²) in {groups} group fall outside the crown and the "
+        "zones to hold: seeding there raises the floors. Confirm to calculate with them, or "
+        "choose the seeds «Crown and zones to hold».",
+        one_es="{cells} celdas de semillas ({area} m²) en {groups} grupo caen fuera de la "
+        "coronación y de las zonas a sostener: sembrar allí sube los fondos. Confirme para "
+        "calcular con ellas, o elija las semillas «Coronación y zonas a sostener».",
     ),
     Message(
         "des.quarry_seed_group",
         "Group {group}: {cells} cells, {area} m², centre at x = {x} m, y = {y} m.",
         "Grupo {group}: {cells} celdas, {area} m², centro en x = {x} m, y = {y} m.",
         "note",
+        count="cells",
+        one_msgid="Group {group}: {cells} cell, {area} m², centre at x = {x} m, y = {y} m.",
+        one_es="Grupo {group}: {cells} celda, {area} m², centro en x = {x} m, y = {y} m.",
     ),
     Message(
         "des.quarry_layer_field",
@@ -645,18 +655,28 @@ CATALOG: tuple[Message, ...] = (
         "Excavation area: {cells} cells ({area} m², {hectares} ha).",
         "Recinto excavable: {cells} celdas ({area} m², {hectares} ha).",
         "note",
+        count="cells",
+        one_msgid="Excavation area: {cells} cell ({area} m², {hectares} ha).",
+        one_es="Recinto excavable: {cells} celda ({area} m², {hectares} ha).",
     ),
     Message(
         "des.quarry_preview_crown",
         "Crown: ring of {ring} cells outside the excavation area, {cells} cells ({area} m²).",
         "Coronación: anillo de {ring} celdas fuera del recinto, {cells} celdas ({area} m²).",
         "note",
+        count="ring",
+        one_msgid="Crown: ring of {ring} cell outside the excavation area, {cells} cells "
+        "({area} m²).",
+        one_es="Coronación: anillo de {ring} celda fuera del recinto, {cells} celdas ({area} m²).",
     ),
     Message(
         "des.quarry_preview_hold",
         "Zones to hold (untouchable and no cut): {cells} cells ({area} m²).",
         "Zonas a sostener (intocables y sin corte): {cells} celdas ({area} m²).",
         "note",
+        count="cells",
+        one_msgid="Zones to hold (untouchable and no cut): {cells} cell ({area} m²).",
+        one_es="Zonas a sostener (intocables y sin corte): {cells} celda ({area} m²).",
     ),
     Message(
         "des.quarry_preview_floors",
@@ -665,6 +685,11 @@ CATALOG: tuple[Message, ...] = (
         "Fondos de «{layer}» («{field}»): {polygons} polígonos, {cells} celdas ({area} m²), "
         "cotas {low} a {high} m.",
         "note",
+        count="polygons",
+        one_msgid="Floors of «{layer}» («{field}»): {polygons} polygon, {cells} cells ({area} m²), "
+        "elevations {low} to {high} m.",
+        one_es="Fondos de «{layer}» («{field}»): {polygons} polígono, {cells} celdas ({area} m²), "
+        "cotas {low} a {high} m.",
     ),
     Message(
         "des.quarry_preview_ceilings",
@@ -673,12 +698,24 @@ CATALOG: tuple[Message, ...] = (
         "Zonas a conservar, que siembran los techos de conservación ({zones}): {cells} celdas "
         "({area} m²).",
         "note",
+        count="cells",
+        one_msgid="Zones to conserve, which seed the conservation ceilings ({zones}): {cells} cell "
+        "({area} m²).",
+        one_es="Zonas a conservar, que siembran los techos de conservación ({zones}): {cells} "
+        "celda ({area} m²).",
     ),
     Message(
         "des.quarry_preview_corridors",
-        "Corridors of «{layer}»: {corridors}, {cells} cells ({area} m²), {length} m of axis.",
-        "Corredores de «{layer}»: {corridors}, {cells} celdas ({area} m²), {length} m de eje.",
+        "Corridors of «{layer}»: {corridors} lines, {cells} cells ({area} m²), {length} m of "
+        "axis.",
+        "Corredores de «{layer}»: {corridors} líneas, {cells} celdas ({area} m²), {length} m de "
+        "eje.",
         "note",
+        count="corridors",
+        one_msgid="Corridors of «{layer}»: {corridors} line, {cells} cells ({area} m²), {length} m "
+        "of axis.",
+        one_es="Corredores de «{layer}»: {corridors} línea, {cells} celdas ({area} m²), {length} m "
+        "de eje.",
     ),
     # La métrica de cada superficie (RF-014-12; T45): solo el chamfer 5×5 ---------------------
     Message(
@@ -784,6 +821,11 @@ CATALOG: tuple[Message, ...] = (
         "the layer in QGIS (no level is chosen for them) and calculate again.",
         "Capa «{layer}»: los polígonos de fondo {value} y {other} se solapan en {cells} celdas; "
         "corrija la capa en QGIS (no se elige ninguna cota por ellos) y calcule de nuevo.",
+        count="cells",
+        one_msgid="Layer «{layer}»: floor polygons {value} and {other} overlap in {cells} cell; "
+        "correct the layer in QGIS (no level is chosen for them) and calculate again.",
+        one_es="Capa «{layer}»: los polígonos de fondo {value} y {other} se solapan en {cells} "
+        "celda; corrija la capa en QGIS (no se elige ninguna cota por ellos) y calcule de nuevo.",
     ),
     Message(
         "des.floor_level",
@@ -854,7 +896,7 @@ CATALOG: tuple[Message, ...] = (
     Message(
         "des.corridor_level_missing",
         "Layer «{layer}», corridor {corridor}: «{field}» = {value} has no valid value; give it "
-        "a level, or a start level and a grade, in QGIS (none is assumed); nothing is "
+        "a level, or a start level and a gradient, in QGIS (none is assumed); nothing is "
         "calculated.",
         "Capa «{layer}», corredor {corridor}: «{field}» = {value} no tiene un valor válido; "
         "dele una cota, o una cota inicial y una pendiente, en QGIS (no se supone ninguna); no "
@@ -889,6 +931,15 @@ CATALOG: tuple[Message, ...] = (
         "{maximum} m, en x = {x} m, y = {y} m, en {stretches} tramos. Use «Transiciones con el "
         "terreno no afectado».",
         "warning",
+        count="stretches",
+        one_msgid="{share} % of the {pairs} pairs of the edge have a created step greater than "
+        "{threshold} m (at least {admitted} % should be within it); the largest, {maximum} m, at "
+        "x = {x} m, y = {y} m, in {stretches} stretch. Use «Transitions with the untouched "
+        "terrain».",
+        one_es="El {share} % de las {pairs} parejas del borde tiene un salto creado mayor que "
+        "{threshold} m (al menos el {admitted} % debería quedar por debajo); el mayor, "
+        "{maximum} m, en x = {x} m, y = {y} m, en {stretches} tramo. Use «Transiciones con el "
+        "terreno no afectado».",
     ),
     Message(
         "des.edge_surface_step",
@@ -916,6 +967,11 @@ CATALOG: tuple[Message, ...] = (
         "Stretch {stretch}: {pairs} pairs, up to {maximum} m, centre at x = {x} m, y = {y} m.",
         "Tramo {stretch}: {pairs} parejas, hasta {maximum} m, centro en x = {x} m, y = {y} m.",
         "note",
+        count="pairs",
+        one_msgid="Stretch {stretch}: {pairs} pair, up to {maximum} m, centre at x = {x} m, "
+        "y = {y} m.",
+        one_es="Tramo {stretch}: {pairs} pareja, hasta {maximum} m, centro en x = {x} m, "
+        "y = {y} m.",
     ),
     Message(
         "des.edge_not_design_surface",
@@ -953,6 +1009,11 @@ CATALOG: tuple[Message, ...] = (
         "Layer «{layer}»: water sheets {value} and {other} overlap in {cells} cells; correct the "
         "layer in QGIS (no level is chosen for them); nothing is calculated.",
         "Capa «{layer}»: las láminas de agua {value} y {other} se solapan en {cells} celdas; "
+        "corrija la capa en QGIS (no se elige ninguna cota por ellas); no se calcula nada.",
+        count="cells",
+        one_msgid="Layer «{layer}»: water sheets {value} and {other} overlap in {cells} cell; "
+        "correct the layer in QGIS (no level is chosen for them); nothing is calculated.",
+        one_es="Capa «{layer}»: las láminas de agua {value} y {other} se solapan en {cells} celda; "
         "corrija la capa en QGIS (no se elige ninguna cota por ellas); no se calcula nada.",
     ),
     # La lámina solo es la partida del relleno admitido (RF-014-23, RF-014-24; T55) ---------------
@@ -1066,17 +1127,25 @@ CATALOG_ES: Mapping[str, str] = MappingProxyType(
 si lo tiene, el de su singular."""
 
 
+_RENDER_ARGUMENTS = frozenset({"language", "number"})
+"""Los argumentos de :func:`render` que no son marcadores: ningún mensaje los usa como tales."""
+
+
 def _check_catalog() -> None:
     """Un catálogo incoherente es un error del programa: códigos o ``msgid`` repetidos, un
     código que no es ``des.*``, una gravedad desconocida o un singular a medias (sin alguno de
     sus dos textos, con un marcador ``count`` que el plural no tiene o con otros marcadores que
-    el plural)."""
+    el plural) o un marcador con el nombre de un argumento de :func:`render` (``language``,
+    ``number``)."""
     singular = sum(1 for m in CATALOG if m.one_msgid)
     if len(MESSAGES) != len(CATALOG) or len(CATALOG_ES) != len(CATALOG) + singular:
         raise ValueError("códigos o msgid repetidos en el catálogo del diseño")
     for message in CATALOG:
         if not message.code.startswith("des.") or message.severity not in SEVERITIES:
             raise ValueError(f"mensaje del diseño mal declarado: «{message.code}»")
+        if _RENDER_ARGUMENTS & placeholders(message.es):
+            raise ValueError(f"el mensaje «{message.code}» tiene un marcador con el nombre de un "
+                             f"argumento de render: {', '.join(sorted(_RENDER_ARGUMENTS))}")
         if not (message.count or message.one_msgid or message.one_es):
             continue
         marks = placeholders(message.es)
@@ -1101,15 +1170,22 @@ def lookup(code: str) -> Message:
     return message
 
 
-def render(code: str, /, *, language: str = "es", **values: object) -> str:
+def render(code: str, /, *, language: str = "es", number: object = None,
+           **values: object) -> str:
     """El texto de ``code`` con ``values`` en sus marcadores, en ``language`` (``"es"`` o
     ``"en"``, el ``msgid``); en singular si el mensaje lo tiene y el valor de su marcador
     ``count`` es 1 (:meth:`Message.templates`). El marcador sin valor queda «?»; los valores que
-    sobran se ignoran. Los decimales salen con coma en español y con punto en inglés."""
+    sobran se ignoran. Los decimales salen con coma en español y con punto en inglés.
+
+    ``number`` (spec 014, T60): el número **sin escribir** que elige el singular cuando los
+    ``values`` llegan ya escritos para una persona (``preview.Notice.text``, con su espacio fino
+    de miles: «1» como texto no es el número 1); sin él, el valor del marcador ``count``."""
     if language not in LANGUAGES:
         raise ValueError(f"el idioma «{language}» no es de Geoblender: {', '.join(LANGUAGES)}")
     message = lookup(code)
-    msgid, es = message.templates(values.get(message.count) if message.count else None)
+    if number is None and message.count:
+        number = values.get(message.count)
+    msgid, es = message.templates(number)
     template = es if language == "es" else msgid
     shown = _Shown({name: format_value(value, language) for name, value in values.items()})
     return template.format_map(shown)

@@ -11,6 +11,7 @@ tareas siguientes añaden los suyos (superficies, semillas, sectores, envolvente
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from tests.support.package import import_geoblender
 
@@ -95,7 +96,10 @@ class CatalogTest(unittest.TestCase):
         """RF-014-17, RF-014-18, RF-014-08 (spec 014, T51; F-12 (b)): un mensaje que cuenta algo
         lleva su singular, en los dos idiomas: con 1 en su marcador (también 1,0, como vuelve de un
         JSON), «en 1 zona» / «in 1 zone»; con otro número, sin él o con un valor que no es un
-        número (un booleano tampoco), el plural de siempre."""
+        número (un booleano tampoco), el plural de siempre. También los demás recuentos de la 014
+        (T60; RF-014-03, RF-014-04, RF-014-05, RF-014-21, RF-014-24, RF-014-27): los grupos de
+        semillas, los tramos y las parejas del salto creado, lo que cuenta la vista previa, los
+        solapes de fondos y de láminas y las celdas de la regla de orden del ajuste."""
         for code, count, one_es, one_en, many_es, many_en in (
                 ("des.quarry_unsplit_zones", "zones", "en 1 zona:", "in 1 zone:", "en 2 zonas:",
                  "in 2 zones:"),
@@ -104,7 +108,41 @@ class CatalogTest(unittest.TestCase):
                 ("des.quarry_to_final", "zones", "en 1 zona (", "in 1 zone (", "en 2 zonas (",
                  "in 2 zones ("),
                 ("des.conserve_moved", "parts", "en 1 parte:", "in 1 part:", "en 2 partes:",
-                 "in 2 parts:")):
+                 "in 2 parts:"),
+                # Los demás recuentos de la 014 (T60): los grupos de semillas, los tramos del
+                # salto creado, la vista previa y los solapes.
+                ("des.quarry_seeds_outside", "groups", "en 1 grupo caen", "in 1 group fall",
+                 "en 2 grupos caen", "in 2 groups fall"),
+                ("des.quarry_seed_group", "cells", ": 1 celda,", ": 1 cell,", ": 2 celdas,",
+                 ": 2 cells,"),
+                ("des.edge_created_step", "stretches", "en 1 tramo.", "in 1 stretch.",
+                 "en 2 tramos.", "in 2 stretches."),
+                ("des.edge_surface_step", "stretches", "en 1 tramo.", "in 1 stretch.",
+                 "en 2 tramos.", "in 2 stretches."),
+                ("des.edge_stretch", "pairs", ": 1 pareja,", ": 1 pair,", ": 2 parejas,",
+                 ": 2 pairs,"),
+                ("des.quarry_preview_area", "cells", ": 1 celda (", ": 1 cell (", ": 2 celdas (",
+                 ": 2 cells ("),
+                ("des.quarry_preview_crown", "ring", "anillo de 1 celda fuera",
+                 "ring of 1 cell outside", "anillo de 2 celdas fuera", "ring of 2 cells outside"),
+                ("des.quarry_preview_hold", "cells", ": 1 celda (", ": 1 cell (", ": 2 celdas (",
+                 ": 2 cells ("),
+                ("des.quarry_preview_floors", "polygons", ": 1 polígono,", ": 1 polygon,",
+                 ": 2 polígonos,", ": 2 polygons,"),
+                ("des.quarry_preview_ceilings", "cells", ": 1 celda (", ": 1 cell (",
+                 ": 2 celdas (", ": 2 cells ("),
+                ("des.quarry_preview_corridors", "corridors", ": 1 línea,", ": 1 line,",
+                 ": 2 líneas,", ": 2 lines,"),
+                ("des.floor_overlap", "cells", "en 1 celda;", "in 1 cell;", "en 2 celdas;",
+                 "in 2 cells;"),
+                ("des.fill_only_water_overlap", "cells", "en 1 celda;", "in 1 cell;",
+                 "en 2 celdas;", "in 2 cells;"),
+                ("des.fill_only_water_outside", "cells", ": 1 celda (", ": 1 cell (",
+                 ": 2 celdas (", ": 2 cells ("),
+                ("des.refit_order", "cells", "en 1 celda para", "in 1 cell so",
+                 "en 2 celdas para", "in 2 cells so"),
+                ("des.refit_order_side", "cells", "en 1 celda, hasta", "in 1 cell, up to",
+                 "en 2 celdas, hasta", "in 2 cells, up to")):
             message = messages.MESSAGES[code]
             self.assertEqual(message.count, count)
             for value in (1, 1.0):
@@ -121,6 +159,29 @@ class CatalogTest(unittest.TestCase):
         plain = messages.MESSAGES["des.profile_value_range"]
         self.assertEqual((plain.count, plain.one_msgid, plain.one_es), ("", "", ""))
         self.assertEqual(plain.templates(1), (plain.msgid, plain.es))
+
+    def test_the_number_chooses_the_singular_of_written_values(self) -> None:
+        """RF-014-17, RF-014-18 (T60; el punto 1 de la T57): con los valores ya escritos para una
+        persona («1» como texto), ``render`` elige el singular con ``number``, el número sin
+        escribir (lo que hace ``preview.Notice.text``); sin él, con el texto «1», el plural. Un
+        mensaje con un marcador ``number`` o ``language`` (los argumentos de ``render``) es un
+        catálogo mal declarado."""
+        code = "des.quarry_to_final"
+        self.assertIn("en 1 zonas (", messages.render(code, zones="1"))
+        self.assertIn("en 1 zona (", messages.render(code, number=1, zones="1"))
+        self.assertIn("in 1 zone (", messages.render(code, language="en", number=1, zones="1"))
+        self.assertIn("en 2 zonas (", messages.render(code, number=2, zones="2"))
+        self.assertIn("en 1 zona (", messages.render(code, zones=1))
+        for mark in ("number", "language"):
+            bad = messages.Message("des.t60_bad", f"In {{{mark}}} cells.", f"En {{{mark}}} celdas.",
+                                   "note")
+            catalog = (*messages.CATALOG, bad)
+            with self.subTest(mark=mark), mock.patch.multiple(
+                    messages, CATALOG=catalog, MESSAGES={m.code: m for m in catalog},
+                    CATALOG_ES={**messages.CATALOG_ES, bad.msgid: bad.es}):
+                with self.assertRaises(ValueError):
+                    messages._check_catalog()
+        messages._check_catalog()
 
     def test_every_message_names_the_object_and_the_value(self) -> None:
         """RF-013-16, principio 10: cada error de los perfiles nombra el perfil (o el sector)

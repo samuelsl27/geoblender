@@ -641,7 +641,7 @@ class LimitFromPerimeterTest(unittest.TestCase):
                 "floors_layer": "none", "floors_field": "cota", "conserve": "none",
                 "corridors_layer": "none", "corridors_width_field": "ancho",
                 "corridors_level": "FIXED", "corridors_level_field": "cota",
-                "corridors_start_field": "cota_inicial", "corridors_grade_field": "pendiente",
+                "corridors_start_field": "cota_inicial", "corridors_gradient_field": "pendiente",
                 "fill_layer": "none", "water_layer": "none", "water_field": "cota",
                 "to_final": "NONE", "to_final_layer": "none", "confirm": False,
                 "in_steps": False, "confirm_outside": False, "outside": "", **values}
@@ -988,9 +988,9 @@ class LimitFromPerimeterTest(unittest.TestCase):
             with self.subTest(texto=twice):
                 self.assertEqual(shown.count(twice), 2)
         texts = draw(cls, bpy.context, **self.quarry_fields(
-            corridors_layer=CORRIDORS_LAYER, corridors_level="GRADE", final_seeds="FIXED",
+            corridors_layer=CORRIDORS_LAYER, corridors_level="GRADIENT", final_seeds="FIXED",
             exploitation_anchor="GRID")).texts()
-        for heading in ("Campo de la cota inicial", "Campo de la pendiente", "Cota (m)",
+        for heading in ("Campo de la cota inicial", "Campo de pendiente de la rasante", "Cota (m)",
                         "Zona de las semillas", "Rejilla de cotas de ancla"):
             with self.subTest(texto=heading):
                 self.assertIn(heading, texts)
@@ -1030,7 +1030,7 @@ class LimitFromPerimeterTest(unittest.TestCase):
             exploitation_zone=constraint, exploitation_profile=EXPL, exploitation_anchor="GRID",
             exploitation_anchor_grid=self.hollow, floors_layer=FLOORS_LAYER,
             floors_field="cota", conserve=f"layer:{FILL_LAYER}", corridors_layer=CORRIDORS_LAYER,
-            corridors_level="GRADE", fill_layer=FILL_LAYER, water_layer=FLOORS_LAYER,
+            corridors_level="GRADIENT", fill_layer=FILL_LAYER, water_layer=FLOORS_LAYER,
             to_final="LAYER", to_final_layer=FILL_LAYER)
         found = cls._request(operator_self(cls, **fields), self.project)
         m = self.dmodel
@@ -1043,7 +1043,7 @@ class LimitFromPerimeterTest(unittest.TestCase):
             order=m.Order.EXPLOITATION_FIRST, floors=m.LayerField(FLOORS_LAYER, "cota"),
             conserve=(m.Zone(m.ZoneKind.LAYER, FILL_LAYER),),
             corridors=m.CorridorFields(CORRIDORS_LAYER, "ancho", start_level_field="cota_inicial",
-                                       grade_field="pendiente"),
+                                       gradient_field="pendiente"),
             fill_zones=FILL_LAYER, water=m.LayerField(FLOORS_LAYER, "cota"),
             to_final=m.ToFinalMode.LAYER, to_final_layer=FILL_LAYER)
         self.assertEqual(found, wanted)

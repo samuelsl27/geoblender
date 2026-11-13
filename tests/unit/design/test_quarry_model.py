@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import re
 import unittest
+from pathlib import Path
 
 from tests.support.package import import_geoblender
 
@@ -194,14 +196,14 @@ class QuarryRequestTest(unittest.TestCase):
             conserve=[model.Zone(model.ZoneKind.LAYER, "gis_fea_conservar")],
             corridors=model.CorridorFields("gis_fea_corredores", width_field="ancho",
                                            start_level_field="cota_inicial",
-                                           grade_field="pendiente"),
+                                           gradient_field="pendiente"),
             fill_zones="gis_fea_relleno", water=model.LayerField("gis_fea_lamina", "cota"),
             to_final="layer", to_final_layer="gis_fea_hasta_final")
         self.assertEqual(made.order, model.Order.EXPLOITATION_FIRST)
         self.assertEqual(made.conserve, (model.Zone(model.ZoneKind.LAYER, "gis_fea_conservar"),))
-        self.assertTrue(made.corridors.graded)
+        self.assertTrue(made.corridors.has_gradient)
         self.assertFalse(model.CorridorFields("c", width_field="ancho",
-                                              level_field="cota").graded)
+                                              level_field="cota").has_gradient)
         self.assertEqual(made.to_final, model.ToFinalMode.LAYER)
         with self.assertRaises(ValueError):
             request(to_final="layer")
@@ -210,12 +212,12 @@ class QuarryRequestTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             request(conserve="gis_fea_conservar")
 
-    def test_corridor_level_or_grade(self) -> None:
+    def test_corridor_level_or_gradient(self) -> None:
         """RF-014-09: un corredor tiene una cota fija **o** una rasante (cota inicial y
         pendiente), nunca las dos ni ninguna, ni media rasante (error del programa)."""
         for wrong in ({}, {"level_field": "cota", "start_level_field": "cota_inicial",
-                           "grade_field": "pendiente"},
-                      {"start_level_field": "cota_inicial"}, {"grade_field": "pendiente"}):
+                           "gradient_field": "pendiente"},
+                      {"start_level_field": "cota_inicial"}, {"gradient_field": "pendiente"}):
             with self.subTest(fields=wrong), self.assertRaises(ValueError):
                 model.CorridorFields("c", width_field="ancho", **wrong)
 
@@ -480,6 +482,34 @@ class QuarryTextsTest(unittest.TestCase):
                                      "m); corríjalo en QGIS (no se elige ninguna cota por él); "
                                      "no se calcula nada.")
         self.assertIn("Layer «c», corridor 2: «cota» = 5000 m is outside", error.text_in("en"))
+
+
+GRADE = re.compile(r"(?<!up)(?<!down)grade", re.IGNORECASE)
+"""«grade» como palabra o como parte de un identificador (no «upgrade» ni «downgrade»)."""
+DESIGN_UI = ("bl/ops/des.py", "bl/ui/des_panels.py", "bl/draw/design.py", "bl/scene/des_views.py",
+             "bl/props/des.py")
+"""Los módulos de ``bl`` del diseño (sus órdenes, paneles, vista y propiedades)."""
+
+
+class GlossaryTest(unittest.TestCase):
+    def test_grade_is_only_the_grade_of_the_ore(self) -> None:
+        """Glosario §14 (T60; la T59): «grade» es la **ley**; la pendiente de la rasante de un
+        corredor (RF-014-09) es ``gradient`` (``CorridorFields.gradient_field``, la propiedad
+        ``corridors_gradient_field`` de la cantera y «Gradient field», en español «Campo de
+        pendiente de la rasante»). Ni el diseño (``design``, sus códigos y textos) ni sus módulos
+        de ``bl`` dicen «grade»: no tienen leyes."""
+        root = Path(model.__file__).resolve().parents[1]
+        files = [*sorted((root / "design").rglob("*.py")), *(root / name for name in DESIGN_UI)]
+        found = [f"{path.relative_to(root).as_posix()}:{number}: {line.strip()}"
+                 for path in files if path.is_file()
+                 for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+                 if GRADE.search(line)]
+        self.assertGreater(len(files), 20)
+        self.assertEqual(found, [])
+        fields = {item.name for item in dataclasses.fields(model.CorridorFields)}
+        self.assertIn("gradient_field", fields)
+        self.assertTrue(model.CorridorFields("c", "ancho", start_level_field="cota_inicial",
+                                             gradient_field="pendiente").has_gradient)
 
 
 if __name__ == "__main__":

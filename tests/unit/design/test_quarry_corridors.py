@@ -56,8 +56,8 @@ i18n = import_geoblender("core.i18n")
 
 TOLERANCE_M = 1e-9
 FIXED = model.CorridorFields(qfx.CORRIDORS_LAYER, "ancho", level_field="cota")
-GRADED = model.CorridorFields(qfx.CORRIDORS_LAYER, "ancho", start_level_field="cota_inicial",
-                              grade_field="pendiente")
+GRADIENT = model.CorridorFields(qfx.CORRIDORS_LAYER, "ancho",
+                                start_level_field="cota_inicial", gradient_field="pendiente")
 STRAIGHT = ((100.0, 200.0), (300.0, 200.0))
 """Un eje recto de 200 m hacia el este (local), sobre bordes de celda."""
 
@@ -102,12 +102,12 @@ class StraightCorridorTest(unittest.TestCase):
         self.assertEqual((found.floors.layer, found.floors.field), (qfx.CORRIDORS_LAYER, "cota"))
         np.testing.assert_array_equal(found.floors.owner, inside.astype(np.int32))
 
-    def test_grade_level(self) -> None:
+    def test_gradient_level(self) -> None:
         """Con rasante, cada celda a ``cota inicial + σ · pendiente / 100`` a ≤ 10⁻⁹ m (σ, la
         distancia del centro al principio del eje, medida a lo largo de él)."""
         layer = corridor_layer((STRAIGHT,), ancho=(20.0,), cota_inicial=(125.0,),
                                pendiente=(-3.0,))
-        found = quarry.corridor_cells(layer, GRADED, qfx.GRID)
+        found = quarry.corridor_cells(layer, GRADIENT, qfx.GRID)
         x, _ = qfx.local_centers()
         inside = np.isfinite(found.floors.grid)
         expected = 125.0 + (x[inside] - 100.0) * -3.0 / 100.0
@@ -127,7 +127,7 @@ class BrokenAxisTest(unittest.TestCase):
     desde 125 m)."""
 
     def setUp(self) -> None:
-        self.found = quarry.corridor_cells(fixture_layer(), GRADED, qfx.GRID)
+        self.found = quarry.corridor_cells(fixture_layer(), GRADIENT, qfx.GRID)
         self.x, self.y = qfx.local_centers()
 
     def cell(self, x: float, y: float) -> float:
@@ -153,15 +153,15 @@ class BrokenAxisTest(unittest.TestCase):
         for x, y in ((200.5, 169.5), (329.5, 80.5), (320.5, 160.5)):
             self.assertFalse(np.isnan(self.cell(x, y)), (x, y))
 
-    def test_grade_follows_the_axis(self) -> None:
+    def test_gradient_follows_the_axis(self) -> None:
         """La abscisa sigue el eje: en el primer tramo, ``x − 200``; en el segundo, ``120 + (160 −
         y)``; en el cuarto de círculo de la esquina, la del vértice (120 m). Cotas a ≤ 10⁻⁹ m."""
-        grade = qfx.CORRIDOR_GRADE_PCT / 100.0
+        gradient = qfx.CORRIDOR_GRADIENT_PCT / 100.0
         start = qfx.CORRIDOR_START_M
         for (x, y), sigma in (((200.5, 160.5), 0.5), ((250.5, 151.5), 50.5),
                               ((325.5, 100.5), 179.5), ((310.5, 80.5), 199.5),
                               ((325.5, 165.5), 120.0)):
-            self.assertAlmostEqual(self.cell(x, y), start + sigma * grade, delta=TOLERANCE_M)
+            self.assertAlmostEqual(self.cell(x, y), start + sigma * gradient, delta=TOLERANCE_M)
 
 
 CORNER_CELLS = sum(1 for i in range(10) for j in range(10)
@@ -267,12 +267,12 @@ class ShortEndStretchTest(unittest.TestCase):
         92,5 m), la rasante del eje de un tramo a ≤ 10⁻⁹ m y la misma longitud medida, 199 m
         (de 0,5 a 199,5), sin aviso."""
         fields = {"ancho": (20.0,), "cota_inicial": (125.0,), "pendiente": (-3.0,)}
-        single = quarry.corridor_cells(corridor_layer((STRAIGHT,), **fields), GRADED, qfx.GRID)
+        single = quarry.corridor_cells(corridor_layer((STRAIGHT,), **fields), GRADIENT, qfx.GRID)
         box = qfx.in_box((100.0, 190.0, 300.0, 210.0))
         for axis in (((100.0, 200.0), (298.0, 200.0), (300.0, 200.0)),
                      ((100.0, 200.0), (102.0, 200.0), (300.0, 200.0))):
             with self.subTest(axis=axis):
-                found = quarry.corridor_cells(corridor_layer((axis,), **fields), GRADED,
+                found = quarry.corridor_cells(corridor_layer((axis,), **fields), GRADIENT,
                                               qfx.GRID)
                 inside = np.isfinite(found.floors.grid)
                 np.testing.assert_array_equal(inside, box)
@@ -300,10 +300,10 @@ class ShortEndStretchTest(unittest.TestCase):
         """El eje en L de la cantera con un primer tramo de 2 m y un último de 2 m (5 vértices)
         da las mismas celdas que el de 3 vértices (3.979), su rasante a ≤ 10⁻⁹ m y la misma
         longitud medida (199 m)."""
-        whole = quarry.corridor_cells(fixture_layer(), GRADED, qfx.GRID)
+        whole = quarry.corridor_cells(fixture_layer(), GRADIENT, qfx.GRID)
         data = next(item for item in qfx.layers() if item.name == qfx.CORRIDORS_LAYER)
         axis = ((200.0, 160.0), (202.0, 160.0), (320.0, 160.0), (320.0, 82.0), (320.0, 80.0))
-        found = quarry.corridor_cells(corridor_layer((axis,), **data.fields), GRADED, qfx.GRID)
+        found = quarry.corridor_cells(corridor_layer((axis,), **data.fields), GRADIENT, qfx.GRID)
         inside = np.isfinite(found.floors.grid)
         np.testing.assert_array_equal(inside, np.isfinite(whole.floors.grid))
         self.assertEqual(found.floors.cells, whole.floors.cells)
@@ -435,8 +435,8 @@ class RejectionTest(unittest.TestCase):
         """Sin cota fija, sin cota inicial o sin pendiente: ``des.corridor_level_missing`` con el
         campo."""
         cases = ((FIXED, {"cota": (None,)}, "cota"),
-                 (GRADED, {"cota_inicial": (float("inf"),), "pendiente": (5.0,)}, "cota_inicial"),
-                 (GRADED, {"cota_inicial": (125.0,), "pendiente": (None,)}, "pendiente"))
+                 (GRADIENT, {"cota_inicial": (float("inf"),), "pendiente": (5.0,)}, "cota_inicial"),
+                 (GRADIENT, {"cota_inicial": (125.0,), "pendiente": (None,)}, "pendiente"))
         for fields, values, field in cases:
             with self.subTest(field=field):
                 error = self.rejected(corridor_layer((STRAIGHT,), ancho=(20.0,), **values),
@@ -513,17 +513,18 @@ class LevelRangeTest(unittest.TestCase):
                 self.assertIn(f"Layer «{qfx.CORRIDORS_LAYER}», corridor 2: «cota» = ",
                               error.text_in("en"))
 
-    def test_the_start_and_the_end_of_a_grade_out_of_the_range_are_refused(self) -> None:
+    def test_the_start_and_the_end_of_a_gradient_out_of_the_range_are_refused(self) -> None:
         """Con rasante, la cota inicial fuera del rango (``cota_inicial``) y la final, la del
         final del eje de 200 m: 300 + 200 · 600 / 100 = 1.500 m y 0 − 200 · 500 / 100 = −1.000 m
         (``cota_inicial + pendiente``, con la cota final)."""
         cases = (((-900.0,), (1.0,), "cota_inicial", -900.0),
                  ((300.0,), (600.0,), "cota_inicial + pendiente", 1500.0),
                  ((0.0,), (-500.0,), "cota_inicial + pendiente", -1000.0))
-        for start, grade, field, value in cases:
+        for start, gradient, field, value in cases:
             with self.subTest(field=field, value=value):
                 error = self.rejected(corridor_layer((STRAIGHT,), ancho=(20.0,),
-                                                     cota_inicial=start, pendiente=grade), GRADED)
+                                                     cota_inicial=start, pendiente=gradient),
+                                      GRADIENT)
                 self.assertEqual(error.code, "des.corridor_level")
                 self.assertEqual((error.values["corridor"], error.values["field"]), (1, field))
                 self.assertEqual(error.values["value"], value)

@@ -8250,10 +8250,10 @@ es = "Campo numérico de la capa de corredores con el ancho de cada corredor, en
 ["Elevation of the corridors"]
 es = "Cota de los corredores"
 
-["A fixed elevation or a grade: the elevation at the start of the axis and its slope in %"]
+["A fixed elevation or a gradient: the elevation at the start of the axis and its slope in %"]
 es = "Una cota fija o una rasante: la cota al principio del eje y su pendiente en %"
 
-["Grade"]
+["Gradient"]
 es = "Rasante"
 
 ["Corridor elevation field"]
@@ -8268,11 +8268,11 @@ es = "Campo de la cota inicial"
 ["Numeric field of the layer of corridors with the elevation at the start of each axis in metres"]
 es = "Campo numérico de la capa de corredores con la cota al principio de cada eje, en metros"
 
-["Grade field"]
-es = "Campo de la pendiente"
+["Gradient field"]
+es = "Campo de pendiente de la rasante"
 
-["Numeric field of the layer of corridors with the grade of each corridor in %, positive when it rises along the axis"]
-es = "Campo numérico de la capa de corredores con la pendiente de cada corredor en %, positiva cuando sube en el sentido del eje"
+["Numeric field of the layer of corridors with the gradient of each corridor in %, positive when it rises along the axis"]
+es = "Campo numérico de la capa de corredores con la pendiente de la rasante de cada corredor en %, positiva cuando sube en el sentido del eje"
 
 ["Restoration fill zones"]
 es = "Zonas de restauración por relleno"
@@ -8420,8 +8420,8 @@ es = "{what}: capa «{layer}»"
 ["Corridors: layer «{layer}» · width «{width}» · elevation «{level}»"]
 es = "Corredores: capa «{layer}» · ancho «{width}» · cota «{level}»"
 
-["Corridors: layer «{layer}» · width «{width}» · start elevation «{start}» · grade «{grade}»"]
-es = "Corredores: capa «{layer}» · ancho «{width}» · cota inicial «{start}» · pendiente «{grade}»"
+["Corridors: layer «{layer}» · width «{width}» · start elevation «{start}» · gradient «{gradient}»"]
+es = "Corredores: capa «{layer}» · ancho «{width}» · cota inicial «{start}» · pendiente de la rasante «{gradient}»"
 
 ["Work domain: the excavation boundary of the masks"]
 es = "Dominio de trabajo: el recinto excavable de las máscaras"

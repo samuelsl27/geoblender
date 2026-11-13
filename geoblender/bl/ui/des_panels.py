@@ -1659,11 +1659,11 @@ def _quarry_layer_lines(request: QuarryRequest, constraints: Mapping[str, str],
                                      value=_zone_text(zone, constraints, sectors)))
               for zone in request.conserve]
     corridors = request.corridors
-    if corridors is not None and corridors.graded:
+    if corridors is not None and corridors.has_gradient:
         lines.append(CardLine(ROW_FIELD, tr(
             "Corridors: layer «{layer}» · width «{width}» · start elevation «{start}» · "
-            "grade «{grade}»", layer=label(corridors.layer), width=corridors.width_field,
-            start=corridors.start_level_field, grade=corridors.grade_field)))
+            "gradient «{gradient}»", layer=label(corridors.layer), width=corridors.width_field,
+            start=corridors.start_level_field, gradient=corridors.gradient_field)))
     elif corridors is not None:
         lines.append(CardLine(ROW_FIELD, tr(
             "Corridors: layer «{layer}» · width «{width}» · elevation «{level}»",

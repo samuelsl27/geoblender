@@ -429,7 +429,8 @@ class TwoSurfacesDesignsTest(unittest.TestCase):
         """CE-014-04, RF-014-13: con «final primero», la final es la de su lado ``≤ z`` y la
         explotación, ``máx(explotación, final)`` ``≤ z``; con «explotación primero», la explotación
         es la de su lado ``≤ z`` y la final, ``mín(final, explotación)`` ``≤ z``; bit a bit. Las
-        celdas que la regla cambió son las de la final por encima de la explotación."""
+        celdas que la regla cambió son las de la final más de 1 mm por encima de la explotación
+        (RF-014-14; T60: no en sentido estricto)."""
         for design, order, outcome in self.each():
             with self.subTest(design=design.index, order=order):
                 z = design.terrain
@@ -443,7 +444,8 @@ class TwoSurfacesDesignsTest(unittest.TestCase):
                 np.testing.assert_array_equal(outcome.final_grid, expected[0])
                 np.testing.assert_array_equal(outcome.exploitation_grid, expected[1])
                 with np.errstate(invalid="ignore"):
-                    self.assertEqual(outcome.adjusted, int(np.count_nonzero(final > exploitation)))
+                    self.assertEqual(outcome.adjusted, int(np.count_nonzero(
+                        final - exploitation > quarry.ORDER_TOLERANCE_M)))
                 self.assertIs(outcome.order, order)
 
     def test_ce04_the_classification_matches_the_011(self) -> None:

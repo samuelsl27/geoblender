@@ -2151,15 +2151,16 @@ QUARRY_ANCHOR_ITEMS = [("FIXED", "The anchor of the profile", ""),
                        ("GRID", "Grid of anchor elevations", ""),
                        ("NEAREST_FLOOR", "Floor nearest to each wall", "")]
 """El ancla de una superficie (``design.model.AnchorMode``; RF-014-11)."""
-CORRIDOR_LEVEL_ITEMS = [("FIXED", "Fixed elevation", ""), ("GRADE", "Grade", "")]
-"""La cota de los corredores: fija o una rasante (cota inicial y pendiente; RF-014-09)."""
+CORRIDOR_LEVEL_ITEMS = [("FIXED", "Fixed elevation", ""), ("GRADIENT", "Gradient", "")]
+"""La cota de los corredores: fija o una rasante (cota inicial y pendiente; RF-014-09). La
+pendiente de la rasante es «gradient» en el código y en inglés (glosario §14; T60)."""
 TO_FINAL_ITEMS = [("NONE", "No", ""), ("WARNED", "All the warned zones", ""),
                   ("LAYER", "Zones of a layer", "")]
 """Dónde se aplica «explotación hasta la final» (``design.model.ToFinalMode``; P-2)."""
 QUARRY_SIDES = (design_model.Surface.FINAL, design_model.Surface.EXPLOITATION)
 """Las dos superficies, en el orden de sus cajas: el prefijo de sus propiedades es su valor."""
 FLOOR_FIELD, WIDTH_FIELD, LEVEL_FIELD = "cota", "ancho", "cota"
-START_LEVEL_FIELD, GRADE_FIELD, WATER_FIELD = "cota_inicial", "pendiente", "cota"
+START_LEVEL_FIELD, GRADIENT_FIELD, WATER_FIELD = "cota_inicial", "pendiente", "cota"
 """Los campos que propone el diálogo (los de plan 014 §5.2.1); la persona escribe los suyos."""
 
 
@@ -2362,8 +2363,8 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
                     "metres", default=WIDTH_FIELD, options=_FIELD)
     corridors_level: EnumProperty(  # type: ignore[valid-type]
         name="Elevation of the corridors",
-        description="A fixed elevation or a grade: the elevation at the start of the axis and its "
-                    "slope in %", items=CORRIDOR_LEVEL_ITEMS, default="FIXED", options=_FIELD)
+        description="A fixed elevation or a gradient: the elevation at the start of the axis and "
+                    "its slope in %", items=CORRIDOR_LEVEL_ITEMS, default="FIXED", options=_FIELD)
     corridors_level_field: StringProperty(  # type: ignore[valid-type]
         name="Corridor elevation field",
         description="Numeric field of the layer of corridors with the fixed elevation of each "
@@ -2372,10 +2373,11 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
         name="Start elevation field",
         description="Numeric field of the layer of corridors with the elevation at the start of "
                     "each axis in metres", default=START_LEVEL_FIELD, options=_FIELD)
-    corridors_grade_field: StringProperty(  # type: ignore[valid-type]
-        name="Grade field",
-        description="Numeric field of the layer of corridors with the grade of each corridor in %, "
-                    "positive when it rises along the axis", default=GRADE_FIELD, options=_FIELD)
+    corridors_gradient_field: StringProperty(  # type: ignore[valid-type]
+        name="Gradient field",
+        description="Numeric field of the layer of corridors with the gradient of each corridor "
+                    "in %, positive when it rises along the axis", default=GRADIENT_FIELD,
+        options=_FIELD)
     fill_layer: EnumProperty(  # type: ignore[valid-type]
         name="Restoration fill zones",
         description="Layer of polygons where the difference between the two surfaces is covered "
@@ -2490,10 +2492,10 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
             layers.prop(self, "corridors_width_field", text=tr("Width field"), translate=False)
             layers.prop(self, "corridors_level", text=tr("Elevation of the corridors"),
                         translate=False)
-            if self.corridors_level == "GRADE":
+            if self.corridors_level == "GRADIENT":
                 layers.prop(self, "corridors_start_field", text=tr("Start elevation field"),
                             translate=False)
-                layers.prop(self, "corridors_grade_field", text=tr("Grade field"),
+                layers.prop(self, "corridors_gradient_field", text=tr("Gradient field"),
                             translate=False)
             else:
                 layers.prop(self, "corridors_level_field", text=tr("Elevation field"),
@@ -2563,12 +2565,13 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
         if _chosen(self.corridors_layer):
             layer = self.corridors_layer
             width = _field(self.corridors_width_field, tr("Width field"), layer)
-            if self.corridors_level == "GRADE":
+            if self.corridors_level == "GRADIENT":
                 corridors = design_model.CorridorFields(
                     layer, width,
                     start_level_field=_field(self.corridors_start_field,
                                              tr("Start elevation field"), layer),
-                    grade_field=_field(self.corridors_grade_field, tr("Grade field"), layer))
+                    gradient_field=_field(self.corridors_gradient_field, tr("Gradient field"),
+                                          layer))
             else:
                 corridors = design_model.CorridorFields(layer, width, level_field=_field(
                     self.corridors_level_field, tr("Elevation field"), layer))

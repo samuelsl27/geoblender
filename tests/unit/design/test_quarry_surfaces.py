@@ -46,7 +46,7 @@ WARNING_RATIO = 2.0
 EXPL = qfx.EXPLOITATION_PROFILE
 REST = qfx.FINAL_PROFILE
 CORRIDOR = model.CorridorFields(qfx.CORRIDORS_LAYER, "ancho", start_level_field="cota_inicial",
-                                grade_field="pendiente")
+                                gradient_field="pendiente")
 NAN = math.nan
 
 
@@ -110,6 +110,24 @@ class OrderRuleTest(unittest.TestCase):
         np.testing.assert_array_equal(found.exploitation,
                                       [[102.0, 100.0, 95.5], [90.0, 98.0, NAN]])
         self.assertEqual(found.adjusted, 1)
+
+    def test_the_cells_it_changes_count_with_the_tolerance(self) -> None:
+        """RF-014-14 (T60; el punto 1 de la T53): las celdas que cambió la regla se cuentan con la
+        tolerancia del invariante, 1 mm (``ORDER_TOLERANCE_M``: las que cambian más de 1 mm), no en
+        sentido estricto. Con la final 4·10⁻¹³ m o 0,9 mm por encima de la explotación la regla
+        cambia la segunda (es exacta: ``final ≤ explotación`` sin tolerancia) pero no cuenta; con
+        1,1 mm y 5 m, sí: 2 celdas, con los dos órdenes."""
+        final = np.array([[100.0 + 4e-13, 100.0009, 100.0011], [105.0, 99.0, NAN]])
+        exploitation = np.full(final.shape, 100.0)
+        terrain = np.full(final.shape, 110.0)
+        for order in model.Order:
+            with self.subTest(order=order):
+                found = quarry.order_surfaces(order, final, exploitation, terrain)
+                self.assertEqual(found.adjusted, 2)
+                with np.errstate(invalid="ignore"):
+                    self.assertTrue(bool(np.all((found.final <= found.exploitation)
+                                                | np.isnan(found.final))))
+                    self.assertEqual(int(np.count_nonzero(final > exploitation)), 4)
 
     def test_both_orders_keep_the_invariant_and_the_inputs(self) -> None:
         """RF-014-14: con los dos órdenes, ``final ≤ explotación ≤ terreno`` (``check_order`` no
@@ -294,7 +312,8 @@ class QuarryStepsTest(qfx.QuarryProjectCase):
         sale más de 1 m por encima de la explotación (``EXPL_10_60_6``, 40,3°) en miles de celdas.
         «Final primero» deja la final y sube la explotación a ella (``máx``); «explotación
         primero» deja la explotación y baja la final (``mín``); las dos dicen cuántas celdas
-        cambió la regla."""
+        cambió la regla más de 1 mm (T60: una celda con la final 0,91 mm por encima la cambia la
+        regla, pero no cuenta)."""
         final, exploitation = self.final_first.final.grid, self.final_first.exploitation.grid
         above = final > exploitation
         self.assertGreater(int(np.count_nonzero(final > exploitation + 1.0)), 10_000)
@@ -307,8 +326,10 @@ class QuarryStepsTest(qfx.QuarryProjectCase):
         np.testing.assert_array_equal(second.exploitation_grid, exploitation)
         np.testing.assert_array_equal(second.final_grid, np.minimum(final, exploitation))
         np.testing.assert_array_equal(second.final_grid[above], exploitation[above])
+        counted = int(np.count_nonzero(final - exploitation > quarry.ORDER_TOLERANCE_M))
+        self.assertGreater(int(np.count_nonzero(above)), counted)
         for outcome in (first, second):
-            self.assertEqual(outcome.adjusted, int(np.count_nonzero(above)))
+            self.assertEqual(outcome.adjusted, counted)
 
     def test_final_below_exploitation_below_terrain_everywhere(self) -> None:
         """RF-014-14: con los dos órdenes, ``final ≤ explotación ≤ terreno`` en todas las celdas

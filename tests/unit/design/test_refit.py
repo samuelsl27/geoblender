@@ -576,8 +576,9 @@ class RefitOrderTest(unittest.TestCase):
         primero» deja la final ajustada con su cara y sube la explotación ajustada hasta ella
         (``máx``): ninguna celda con la final más de 1 mm por encima (``check_order`` la acepta);
         el volumen de ajuste, las celdas y la cifra de cada superficie, los de su cara; la nota
-        ``des.refit_order`` dice la cantera, la superficie que cambió y sus celdas (en los dos
-        idiomas), y el mensaje, la regla."""
+        ``des.refit_order`` dice la cantera, la superficie que cambió y sus celdas, las que la
+        regla cambió más de 1 mm (en los dos idiomas; T60: no en sentido estricto), y el mensaje,
+        la regla."""
         order = model.Order.FINAL_FIRST
         outcome = self.calculate((order_part(model.Surface.EXPLOITATION, self.exploitation, order),
                                   order_part(model.Surface.FINAL, self.final, order)))
@@ -598,8 +599,13 @@ class RefitOrderTest(unittest.TestCase):
         self.assertEqual(outcome.figures, refit.refit_figures("Ajuste T53",
                                                               (self.faced[ORDER_EXPLOITATION],
                                                                self.faced[ORDER_FINAL])))
-        changed = int(np.count_nonzero(faced_final > faced_exploitation))
-        self.assertEqual(changed, int(np.count_nonzero(exploitation != faced_exploitation)))
+        ruled = int(np.count_nonzero(faced_final > faced_exploitation))
+        self.assertEqual(ruled, int(np.count_nonzero(exploitation != faced_exploitation)))
+        # T60 (el punto 1 de la T53): la nota cuenta las celdas que la regla cambia más de 1 mm
+        # (84; las otras 56 que cambia, por menos de 3·10⁻¹⁴ m, no).
+        changed = int(np.count_nonzero(faced_final - faced_exploitation
+                                       > quarry.ORDER_TOLERANCE_M))
+        self.assertEqual((ruled, changed), (140, 84))
         (note,) = outcome.notices
         self.assertEqual((note.code, note.severity, dict(note.values)),
                          ("des.refit_order", "note", {"quarry": ORDER_QUARRY,
@@ -634,7 +640,8 @@ class RefitOrderTest(unittest.TestCase):
         (note,) = outcome.notices
         self.assertEqual(dict(note.values), {
             "quarry": ORDER_QUARRY, "surface": ORDER_FINAL,
-            "cells": int(np.count_nonzero(faced_final > faced_exploitation))})
+            "cells": int(np.count_nonzero(faced_final - faced_exploitation
+                                          > quarry.ORDER_TOLERANCE_M))})
 
     def test_a_broken_order_after_the_rule_is_a_program_error(self) -> None:
         """RF-014-14 (T53): las dos ajustadas pasan por ``check_order`` antes de ofrecer «Crear»:
@@ -972,7 +979,7 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         with np.errstate(invalid="ignore"):
             self.assertGreater(
                 int(np.count_nonzero(final > exploitation + quarry.ORDER_TOLERANCE_M)), 0)
-            changed = int(np.count_nonzero(final > exploitation))
+            changed = int(np.count_nonzero(final - exploitation > quarry.ORDER_TOLERANCE_M))
         written = {surface: self.grid_of(ADJUSTED[surface]) for surface in (FINAL, EXPLOITATION)}
         quarry.check_order(QUARRY_NAME, written[FINAL], written[EXPLOITATION], start, self.grid)
         notes = [dict(notice.values) for notice in self.calculation.notices
@@ -1058,7 +1065,8 @@ class RefitOperationTest(qfx.QuarryProjectCase):
             self.assertEqual([dict(notice.values) for notice in calculation.notices
                               if notice.code == "des.refit_order"],
                              [{"quarry": QUARRY_NAME, "surface": FINAL,
-                               "cells": int(np.count_nonzero(final > exploitation))}])
+                               "cells": int(np.count_nonzero(
+                                   final - exploitation > quarry.ORDER_TOLERANCE_M))}])
 
     def test_b_another_angle_is_refused_before_writing(self) -> None:
         """CE-014-08, RF-014-28 (error 46): pedir por guion 35° para la explotación (su perfil es

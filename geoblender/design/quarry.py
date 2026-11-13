@@ -784,7 +784,7 @@ def _corridor_value(layer: FeatureLayer, column: str, index: int, fid: int, laye
                       value=_shown(value), layer=layer_name, corridor=fid)
 
 
-def _corridor_level(fid: int, fields: CorridorFields, start_level: float, grade_pct: float,
+def _corridor_level(fid: int, fields: CorridorFields, start_level: float, gradient_pct: float,
                     axis_m: float, low: float, high: float) -> None:
     """**RF-014-06** para un corredor, que es un polígono de fondo (RF-014-09; T42, hallazgo F-3
     de la T38): su cota —la fija, o la inicial y la final de su rasante, la del final del eje de
@@ -792,11 +792,11 @@ def _corridor_level(fid: int, fields: CorridorFields, start_level: float, grade_
     no, ``des.corridor_level`` (el rango de ``des.floor_level`` con «corredor N», T51), con la capa,
     el corredor (su número), el campo —el de la cota fija o el de la inicial; para la final,
     «<cota inicial> + <pendiente>»— y el valor (la cota, en m); no se elige ninguna por él."""
-    field = fields.start_level_field if fields.graded else fields.level_field
+    field = fields.start_level_field if fields.has_gradient else fields.level_field
     checks = [(str(field), start_level)]
-    if fields.graded:
-        checks.append((f"{fields.start_level_field} + {fields.grade_field}",
-                       start_level + axis_m * grade_pct / 100.0))
+    if fields.has_gradient:
+        checks.append((f"{fields.start_level_field} + {fields.gradient_field}",
+                       start_level + axis_m * gradient_pct / 100.0))
     for name, level in checks:
         if not low <= level <= high:
             raise DesignError("des.corridor_level",
@@ -918,18 +918,18 @@ def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid, 
     (``des.quarry_layer_field``); un ancho que falta, no es finito o es ≤ 0
     (``des.corridor_width``); una cota, cota inicial o pendiente que falta o no es finita
     (``des.corridor_level_missing``); con ``start``, una cota fuera del rango
-    (``des.floor_level``, como un polígono de fondo: la capa, el corredor, el campo —para la final
-    de la rasante, «<cota inicial> + <pendiente>»—, el valor y el rango); un eje de longitud cero
-    (``des.corridor_length_zero``); y, como dos fondos (RF-014-06), un corredor que pisa celdas de
-    otro anterior (``des.floor_overlap``, con los dos y las celdas comunes). ``ValueError`` (error
-    del programa) si ``start`` no es de la forma de la rejilla o no tiene ninguna celda con
-    dato."""
+    (``des.corridor_level``, el rango de un polígono de fondo: la capa, el corredor, el campo —para
+    la final de la rasante, «<cota inicial> + <pendiente>»—, el valor y el rango); un eje de
+    longitud cero (``des.corridor_length_zero``); y, como dos fondos (RF-014-06), un corredor que
+    pisa celdas de otro anterior (``des.floor_overlap``, con los dos y las celdas comunes).
+    ``ValueError`` (error del programa) si ``start`` no es de la forma de la rejilla o no tiene
+    ninguna celda con dato."""
     if layer.kind != "line":
         raise DesignError("des.corridor_not_lines", obj=f"Capa de líneas «{fields.layer}»",
                           field=_GEOMETRY_FIELD, value=_KINDS_ES.get(layer.kind, layer.kind),
                           layer=fields.layer)
-    level_fields = tuple(name for name in ((fields.start_level_field, fields.grade_field)
-                                           if fields.graded else (fields.level_field,))
+    level_fields = tuple(name for name in ((fields.start_level_field, fields.gradient_field)
+                                           if fields.has_gradient else (fields.level_field,))
                          if name is not None)
     width_column = _level_column(layer, LayerField(fields.layer, fields.width_field))
     level_columns = tuple(_level_column(layer, LayerField(fields.layer, name))
@@ -952,11 +952,12 @@ def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid, 
         values = [_corridor_value(layer, column, index - 1, fid, fields.layer, name,
                                   "des.corridor_level_missing")
                   for column, name in zip(level_columns, level_fields, strict=True)]
-        start_level, grade_pct = (values[0], values[1]) if fields.graded else (values[0], 0.0)
+        start_level, gradient_pct = ((values[0], values[1]) if fields.has_gradient
+                                     else (values[0], 0.0))
         paths = _axis_paths(parts)
         axis = float(sum(np.hypot(*np.diff(path, axis=0).T).sum() for path in paths))
         if bounds is not None:
-            _corridor_level(fid, fields, start_level, grade_pct, axis, *bounds)
+            _corridor_level(fid, fields, start_level, gradient_pct, axis, *bounds)
         if not axis > 0.0:
             raise DesignError("des.corridor_length_zero",
                               obj=f"Corredor {fid} de la capa «{fields.layer}»",
@@ -974,7 +975,7 @@ def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid, 
                               layer=fields.layer, other=fid,
                               cells=int(np.count_nonzero(taken == first)))
         owner[window][inside] = index
-        grid[window][inside] = start_level + sigma[inside] * grade_pct / 100.0
+        grid[window][inside] = start_level + sigma[inside] * gradient_pct / 100.0
         levels.append(start_level)
         cells.append(int(np.count_nonzero(inside)))
         widths.append(width)
@@ -1518,9 +1519,12 @@ _ORDER_FIELD = "final ≤ explotación ≤ terreno"
 class OrderedSurfaces:
     """Las dos superficies atadas por la regla de orden (A8; RF-014-13): la ``final`` y la de
     ``exploitation`` (m, float64, rejillas nuevas), el ``order`` con que se ataron y las celdas en
-    que la regla cambió la segunda (``adjusted``: las que tenían la final por encima de la
-    explotación; «final primero» subió allí la explotación y «explotación primero» bajó la
-    final)."""
+    que la regla cambió la segunda **más de 1 mm** (``adjusted``: las que tenían la final más de
+    :data:`ORDER_TOLERANCE_M` por encima de la explotación; «final primero» subió allí la
+    explotación y «explotación primero» bajó la final). Se cuentan con la tolerancia del
+    invariante (RF-014-14; T60, el punto 1 de la T53), no en sentido estricto: la regla es exacta
+    y cambia también las celdas en que la final queda por encima por el ruido del cálculo
+    (≈ 10⁻¹³ m), pero esas no cuentan."""
 
     final: np.ndarray
     exploitation: np.ndarray
@@ -1542,8 +1546,10 @@ def order_surfaces(order: Order | str, final: np.ndarray, exploitation: np.ndarr
     máx(explotación, final)``); con «explotación primero», la explotación se queda y la final baja
     donde queda por encima (``final = mín(final, explotación)``); después, las dos ``≤ z`` donde
     el terreno tiene dato. Así ``final ≤ explotación ≤ terreno`` (RF-014-14, que comprueba
-    :func:`check_order`). Rejillas nuevas (:class:`OrderedSurfaces`); ninguna entrada se
-    modifica. ``ValueError`` (error del programa) si las rejillas no tienen la misma forma."""
+    :func:`check_order`). Las celdas que cambió la regla se cuentan con su tolerancia, las que
+    cambian más de 1 mm (:attr:`OrderedSurfaces.adjusted`; T60). Rejillas nuevas
+    (:class:`OrderedSurfaces`); ninguna entrada se modifica. ``ValueError`` (error del programa)
+    si las rejillas no tienen la misma forma."""
     order = Order(order)
     base = np.asarray(start, dtype=np.float64)
     upper = np.asarray(final, dtype=np.float64)
@@ -1551,7 +1557,7 @@ def order_surfaces(order: Order | str, final: np.ndarray, exploitation: np.ndarr
     _same_shape("la superficie final", upper, base.shape)
     _same_shape("la superficie de explotación", lower, base.shape)
     with np.errstate(invalid="ignore"):
-        adjusted = int(np.count_nonzero(upper > lower))
+        adjusted = int(np.count_nonzero(upper - lower > ORDER_TOLERANCE_M))
     if order is Order.FINAL_FIRST:
         lower = np.maximum(lower, upper)
     else:
@@ -2431,7 +2437,7 @@ class QuarryOutcome:
 
     @property
     def adjusted(self) -> int:
-        """Las celdas en que la regla de orden cambió la segunda superficie."""
+        """Las celdas en que la regla de orden cambió la segunda superficie más de 1 mm (T60)."""
         return self.ordered.adjusted
 
     @property
