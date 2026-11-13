@@ -44,6 +44,26 @@ class SiteTest(unittest.TestCase):
         raster = qfx.start_raster()
         self.assertEqual((raster.crs.epsg, raster.vertical.epsg), (25830, 5782))
 
+    def test_coarse_grid(self) -> None:
+        """La rejilla gruesa (T35; plan 014 §7.4, las unitarias en ≤ 200 × 200): 200 × 200 celdas
+        de 2 m con la extensión de :data:`GRID`; con el paso de 1 m, la misma ``GRID``. Su terreno
+        es la ladera en sus centros: la media exacta de los cuatro de 1 m de cada celda (el
+        escarpe de y = 300 cae en un borde de celda de 2 m); sus cajas, las de 2 m."""
+        coarse = qfx.grid_of(qfx.COARSE_STEP_M)
+        self.assertIs(qfx.grid_of(), qfx.GRID)
+        self.assertEqual(coarse.shape, (200, 200))
+        self.assertEqual((coarse.dx, coarse.dy), (2.0, 2.0))
+        self.assertEqual(coarse.extent, qfx.GRID.extent)
+        with self.assertRaises(ValueError):
+            qfx.grid_of(3.0)
+        z = qfx.terrain(coarse)
+        np.testing.assert_array_equal(z, qfx.terrain().reshape(200, 2, 200, 2).mean(axis=(1, 3)))
+        self.assertEqual(float(z[-1, 0]), 180.0 + 0.25 + 0.0625)  # el centro (1, 1)
+        raster = qfx.start_raster(coarse)
+        self.assertEqual(raster.grid, coarse)
+        np.testing.assert_array_equal(raster.values, z)
+        self.assertEqual(int(qfx.in_box(qfx.FILL_ZONE_LOCAL, coarse).sum()), 3_000 // 4)
+
     def test_terrain_by_hand(self) -> None:
         """La ladera ``180 + 0,25·y + 0,0625·x`` con el escarpe de 3 m al norte de y = 300:
         mínimo y máximo a mano, exactos en binario; el salto entre las filas a los lados del

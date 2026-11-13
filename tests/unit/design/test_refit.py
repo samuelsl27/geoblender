@@ -492,6 +492,9 @@ class RefitOperationTest(qfx.QuarryProjectCase):
     recompiladas; el ajuste de sus dos superficies con un ángulo de más (rechazado), calculado,
     creado y recalculado."""
 
+    STEP_M = qfx.COARSE_STEP_M
+    """La rejilla gruesa de 2 m (T35; plan 014 §7.4): la historia no comprueba ninguna cifra hecha
+    a mano con celdas de 1 m."""
     calculation: ClassVar[Any]
     stored: ClassVar[Any]
 
@@ -595,8 +598,8 @@ class RefitOperationTest(qfx.QuarryProjectCase):
             "SELECT d.name, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON "
             "d.uid = io.item_uid WHERE io.operation_uid = ? AND io.direction = 'out'", uid))
         self.assertEqual(roles, {name: "design_surface" for name in ADJUSTED.values()})
-        start = qfx.terrain()
-        labels = np.zeros(qfx.GRID.shape, dtype=np.int16)
+        start = qfx.terrain(self.grid)
+        labels = np.zeros(self.grid.shape, dtype=np.int16)
         figures = {}
         for surface, face in ((EXPLOITATION, EXPL_FACE), (FINAL, REST_FACE)):
             with self.subTest(superficie=surface):

@@ -19,8 +19,9 @@ RF-014-29; CE-014-06; plan 014 A10, A11, §5.2.3, §5.3.2).
   (``des.edge_not_design_surface``) y el ángulo sin valor también (D-9), sin escribir nada; se
   recalcula y se reproduce como las demás de la 014.
 
-La historia con proyecto, sobre una copia de la cantera sintética (``quarry_fixtures``, T01) con
-una cantera de dos superficies creada en V01: la transición de su superficie final.
+La historia con proyecto, sobre una copia de la cantera sintética (``quarry_fixtures``, T01, con
+su rejilla gruesa de 2 m, T35) con una cantera de dos superficies creada en V01: la transición de su
+superficie final.
 """
 
 from __future__ import annotations
@@ -330,6 +331,9 @@ class EdgeTransitionOperationTest(qfx.QuarryProjectCase):
     V01 creada una vez; antes de declarar el ángulo de transición, su rechazo; después, la
     transición de su superficie final calculada, creada, recalculada y reproducida."""
 
+    STEP_M = qfx.COARSE_STEP_M
+    """La rejilla gruesa de 2 m (T35; plan 014 §7.4): la historia no comprueba ninguna cifra hecha
+    a mano con celdas de 1 m."""
     calculation: ClassVar[Any]
     stored: ClassVar[Any]
 
@@ -433,18 +437,18 @@ class EdgeTransitionOperationTest(qfx.QuarryProjectCase):
             "SELECT d.name, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON "
             "d.uid = io.item_uid WHERE io.operation_uid = ? AND io.direction = 'out'", uid))
         self.assertEqual(roles, {DATASET: "design_surface", REPORT: "edge_report"})
-        final, start = self.grid_of(SURFACE), qfx.terrain()
+        final, start = self.grid_of(SURFACE), qfx.terrain(self.grid)
         allowed = self.masks_v1.cut_allowed() | self.masks_v1.fill_allowed()
         with np.errstate(invalid="ignore"):
             domain = (allowed & np.isfinite(final) & np.isfinite(start)
                       & (np.abs(final - start) > self.thickness()))
         self.assertTrue(domain.any(), "la cantera excava")
-        expected = finish(edges.transition_steps(final, start, domain, qfx.GRID, ANGLE_DEG))
+        expected = finish(edges.transition_steps(final, start, domain, self.grid, ANGLE_DEG))
         written = self.grid_of(DATASET)
         np.testing.assert_array_equal(written, expected.grid)
         np.testing.assert_array_equal(written, calculation.outcome.grid)
         np.testing.assert_array_equal(written[~domain], final[~domain])
-        report = finish(edges.created_steps(written, start, domain, qfx.GRID, self.thickness(),
+        report = finish(edges.created_steps(written, start, domain, self.grid, self.thickness(),
                                             THRESHOLD_M, SHARE_PCT))
         scope = figures_mod.scope_json(provenance.quarry_figure_scope(NAME))
         self.assertEqual(self.figures_of(uid), {

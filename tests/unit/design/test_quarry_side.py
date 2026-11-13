@@ -109,6 +109,8 @@ class QuarrySideTest(qfx.QuarryProjectCase):
             exploitation=side(EXPL, anchor="nearest_floor"),
             floors=model.LayerField(qfx.FLOORS_LAYER, "cota"),
             conserve=(model.Zone("layer", qfx.CONSERVE_LAYER),), corridors=CORRIDOR)
+        cls.inputs = (cls.start.copy(), cls.floors.grid.copy(), cls.ceiling.grid.copy(),
+                      cls.area.copy())
         cls.steps = list(quarry.side_steps(cls.job()))
         cls.outcome = cls.steps[-1].result
 
@@ -302,12 +304,10 @@ class QuarrySideTest(qfx.QuarryProjectCase):
         np.testing.assert_array_equal(outcome.grid, fixed.grid)
 
     def test_the_inputs_are_not_modified(self) -> None:
-        """Ninguna entrada se modifica."""
-        before = (self.start.copy(), self.floors.grid.copy(), self.ceiling.grid.copy(),
-                  self.area.copy())
-        last_result(quarry.side_steps(self.job()))
+        """Ninguna entrada se modifica: las de la clase, copiadas antes de su primer lado, siguen
+        igual tras él y tras los de las pruebas anteriores."""
         after = (self.start, self.floors.grid, self.ceiling.grid, self.area)
-        for old, new in zip(before, after, strict=True):
+        for old, new in zip(self.inputs, after, strict=True):
             np.testing.assert_array_equal(old, new)
 
 

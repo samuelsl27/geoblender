@@ -15,9 +15,10 @@ RF-014-25, RF-014-29; CE-014-07; plan 014 A12, §5.2.3, §5.3.2, §5.3.3).
   intocable se rechaza nombrándolo, sin escribir nada (RF-014-25); se recalcula y se reproduce como
   las demás de la 014.
 
-La historia con proyecto, sobre una copia de la cantera sintética (``quarry_fixtures``, T01): en V01,
-una envolvente descendente de 30° desde 274 m en la lámina de agua (datos de la prueba) y el diseño
-«solo relleno» «Balsa» que la escalona en relleno con ``REST_5_35_6`` y la lámina a 270 m.
+La historia con proyecto, sobre una copia de la cantera sintética (``quarry_fixtures``, T01, con su
+rejilla gruesa de 2 m, T35): en V01, una envolvente descendente de 30° desde 274 m en la lámina de
+agua (datos de la prueba) y el diseño «solo relleno» «Balsa» que la escalona en relleno con
+``REST_5_35_6`` y la lámina a 270 m.
 """
 
 from __future__ import annotations
@@ -70,8 +71,15 @@ WATER = model.LayerField(qfx.WATER_LAYER, "cota")
 REQUEST = model.FillOnlyRequest(NAME, ENVELOPE, START, REST.code, water=WATER)
 DATASET = provenance.dataset_name("srf", NAME)
 REPORT = provenance.dataset_name("rpt", NAME)
-RAISED_CELLS = 420
-"""Las celdas de la lámina por debajo de su cota (T29: ``Σ 15 − ⌊i/4⌋`` a mano)."""
+RAISED_CELLS = 105
+"""Las celdas de 2 m de la lámina por debajo de su cota, a mano (T29 con 1 m: 420): los centros
+``x = 131 + 2j`` (j de 0 a 19) e ``y = 301 + 2i`` (i de 0 a 14), al norte del escarpe, con
+``183 + 0,25·y + 0,0625·x < 270`` ⟺ ``4i + j ≤ 28``: ``Σ min(20, 29 − 4i)`` = 20 + 20 + 20 +
+17 + 13 + 9 + 5 + 1."""
+TOWER_CELLS = 60
+"""Las celdas de 2 m de la zona de la torre, a mano (con 1 m, ``TOWER_ZONE_CELLS``, 224): las
+que tocan el disco abierto de 8 m (4 celdas) de una esquina, por cuadrante ``i² + j² < 16`` (4,
+4, 4 y 3 por columna: 15)."""
 
 
 def finish(found: Iterator[Any]) -> Any:
@@ -199,6 +207,9 @@ class FillOnlyOperationTest(qfx.QuarryProjectCase):
     creada en V01 una vez y el diseño «solo relleno» «Balsa» calculado, creado, recalculado y
     reproducido."""
 
+    STEP_M = qfx.COARSE_STEP_M
+    """La rejilla gruesa de 2 m (T35; plan 014 §7.4), con sus cifras a mano (:data:`RAISED_CELLS`,
+    :data:`TOWER_CELLS`)."""
     calculation: ClassVar[Any]
     stored: ClassVar[Any]
 
@@ -282,12 +293,13 @@ class FillOnlyOperationTest(qfx.QuarryProjectCase):
         values = {design_params.bench_key(REST.code, param): getattr(REST, param)
                   for param in ("height_m", "face_deg", "berm_m", "anchor_m", "mesh_factor")}
         job = pipeline.DesignJob(
-            model.DesignRequest(NAME, ENVELOPE, "fill", REST.code), qfx.GRID, qfx.terrain(),
+            model.DesignRequest(NAME, ENVELOPE, "fill", REST.code), self.grid,
+            qfx.terrain(self.grid),
             envelope, self.masks_v1, refs, labels, {},
             pipeline.bench_profiles(values, [REST.code]), None,
             self.default(design_params.VERIFY_MIN_THICKNESS),
             self.default(design_params.TOLERANCE_FACE), self.default(design_params.WARNING_RATIO))
-        sheets = fronts.water_sheets(self.read_layer(qfx.WATER_LAYER), WATER, qfx.GRID)
+        sheets = fronts.water_sheets(self.read_layer(qfx.WATER_LAYER), WATER, self.grid)
         untouchables = fronts.untouchable_zones(self.masks_v1, {"torre": "Torre"})
         return finish(fronts.fill_only_steps(fronts.FillOnlyJob(job, sheets, untouchables)))
 
@@ -315,7 +327,7 @@ class FillOnlyOperationTest(qfx.QuarryProjectCase):
             "SELECT d.name, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON "
             "d.uid = io.item_uid WHERE io.operation_uid = ? AND io.direction = 'out'", uid))
         self.assertEqual(roles, {DATASET: "design_surface", REPORT: "report"})
-        written, terrain = self.grid_of(DATASET), qfx.terrain()
+        written, terrain = self.grid_of(DATASET), qfx.terrain(self.grid)
         expected = self.expected()
         np.testing.assert_array_equal(written, expected.surface)
         np.testing.assert_array_equal(written, calculation.outcome.surface)
@@ -392,21 +404,23 @@ class FillOnlyOperationTest(qfx.QuarryProjectCase):
 
     def test_b_a_moved_untouchable_or_a_layer_without_its_field_writes_nothing(self) -> None:
         """RF-014-25, RF-014-24: si el escalonado moviera el intocable (aquí, sustituido en la
-        prueba para subir 1 m las 224 celdas de la torre: 224 m³) «Calcular» se rechaza al avanzar
-        nombrándolo por su nombre de la 012, «Torre», con el volumen
+        prueba para subir 1 m las 60 celdas de 2 m de la torre: 240 m³) «Calcular» se rechaza al
+        avanzar nombrándolo por su nombre de la 012, «Torre», con el volumen
         (``des.fill_only_untouchable``); una capa de láminas sin el campo de la cota, con sus
         campos (``des.quarry_layer_field``). En los dos casos no queda nada: ni operación, ni
         dato, ni temporal."""
         before = self.des_state()
         tower = fronts.untouchable_zones(self.masks_v1)[0].mask
-        lifted = qfx.terrain()
+        self.assertEqual(int(np.count_nonzero(tower)), TOWER_CELLS)
+        lifted = qfx.terrain(self.grid)
         lifted[tower] += 1.0
         with mock.patch.object(fronts, "design_compute_steps", composed(lifted)):
             with self.assertRaises(messages.DesignError) as caught:
                 drive(self.fill_steps(model.FillOnlyRequest("Torre", ENVELOPE, START, REST.code)))
         self.assertEqual(caught.exception.code, "des.fill_only_untouchable")
         self.assertEqual(caught.exception.values["constraint"], "Torre")
-        self.assertEqual(caught.exception.values["value"], float(qfx.TOWER_ZONE_CELLS))
+        self.assertEqual(caught.exception.values["value"],
+                         TOWER_CELLS * qfx.COARSE_STEP_M * qfx.COARSE_STEP_M)
         self.assertEqual(self.des_state(), before)
         wrong = model.FillOnlyRequest("Sin campo", ENVELOPE, START, REST.code,
                                       water=model.LayerField(qfx.WATER_LAYER, "nivel"))

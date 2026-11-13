@@ -17,11 +17,12 @@ RF-008-24, RF-008-26, RF-009-11; como D-14 de la 013).
   recalcula), sin escribir en el proyecto.
 
 Una sola historia, en el orden de las pruebas, sobre una copia del proyecto de la cantera
-(``tests.support.quarry_fixtures``, T01) con lo que declara ``des`` registrado con sus funciones
-reales de recálculo y de reproducción: el recinto, la cantera de E3 (las dos superficies con
-fondos, corredor, zona a conservar y zonas de restauración por relleno) y otra que recorre los
-caminos que la primera no (semillas de la 013 en una capa, ancla en rejilla, «explotación
-primero» y «explotación hasta la final» en una capa); después se congela V01.
+(``tests.support.quarry_fixtures``, T01) con su rejilla gruesa de 2 m (T35) y con lo que declara
+``des`` registrado con sus funciones reales de recálculo y de reproducción: el recinto, la cantera
+de E3 (las dos superficies con fondos, corredor, zona a conservar y zonas de restauración por
+relleno) y otra que recorre los caminos que la primera no (semillas de la 013 en una capa, ancla
+en rejilla, «explotación primero» y «explotación hasta la final» en una capa); después se congela
+V01.
 """
 
 from __future__ import annotations
@@ -179,6 +180,10 @@ def rewrite_floor(project: Any, clock: Any, fid: int, level_m: float) -> None:
 class QuarryOperationTest(qfx.QuarryProjectCase):
     """RF-014-29 a RF-014-31 y la reproducción (véase el módulo), en el orden de las pruebas."""
 
+    STEP_M = qfx.COARSE_STEP_M
+    """La rejilla gruesa de 2 m (T35; plan 014 §7.4): la historia no comprueba ninguna cifra hecha
+    a mano con celdas de 1 m."""
+
     area: ClassVar[Any]
     calculation: ClassVar[Any]
     stored: ClassVar[Any]
@@ -314,7 +319,7 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
         np.testing.assert_array_equal(self.grid_of("xen"), outcome.exploitation.envelope.grid)
         np.testing.assert_array_equal(self.grid_of("fen"), outcome.final.envelope.grid)
         np.testing.assert_array_equal(self.grid_of("cls"), outcome.classes.grid)
-        start = qfx.terrain()
+        start = qfx.terrain(self.grid)
         final, exploitation = self.grid_of("fin"), self.grid_of("exp")
         self.assertTrue(np.all(final <= exploitation + 1e-3))
         self.assertTrue(np.all(exploitation <= start + 1e-3))
@@ -401,11 +406,13 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
 
     def test_a_the_summary_says_the_warnings_of_the_request(self) -> None:
         """RF-014-12, RF-014-03 (en el resumen): la otra cantera siembra la explotación fuera de
-        la coronación y de las zonas a sostener, y el resumen lo dice con su grupo; «explotación
-        hasta la final» deja su cifra; la de E3 no tiene semillas de la 013 y no lo dice."""
+        la coronación y de las zonas a sostener, y el resumen lo dice con su grupo (las celdas de
+        la capa de relleno); «explotación hasta la final» deja su cifra; la de E3 no tiene semillas
+        de la 013 y no lo dice."""
         lines = self.other.lines("es")
         self.assertTrue(any("caen fuera de la coronación" in line for line in lines), lines)
-        self.assertTrue(any(line.startswith("Grupo 1: 3") for line in lines), lines)
+        cells = int(np.count_nonzero(qfx.in_box(qfx.FILL_ZONE_LOCAL, self.grid)))
+        self.assertTrue(any(line.startswith(f"Grupo 1: {cells} celdas") for line in lines), lines)
         self.assertIn("des.to_final_m3", {spec.key for spec in self.other.figures})
         self.assertFalse(any("coronación" in line for line in self.calculation.lines("es")))
         self.assertIs(self.other.outcome.order, model.Order.EXPLOITATION_FIRST)

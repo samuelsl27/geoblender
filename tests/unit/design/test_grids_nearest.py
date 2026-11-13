@@ -51,9 +51,12 @@ def finish(mask: np.ndarray, values: np.ndarray, cell: float = 1.0, **kwargs: An
 class NearestValueTest(unittest.TestCase):
     """RF-014-11 (plan 014 A7): la distancia exacta con el valor del más próximo."""
 
-    def assert_same_as_brute(self, mask: np.ndarray, values: np.ndarray) -> None:
+    def assert_same_as_brute(self, mask: np.ndarray, values: np.ndarray,
+                             expected: tuple[np.ndarray, np.ndarray] | None = None) -> None:
+        """Lo de :func:`finish` igual al oráculo (``expected``, si ya se calculó con los mismos
+        ``mask`` y ``values``: el mismo oráculo una vez; T35)."""
         _steps, found = finish(mask, values)
-        expected_d2, expected_value = brute_nearest(mask, values)
+        expected_d2, expected_value = brute_nearest(mask, values) if expected is None else expected
         self.assertEqual(found.cells2.dtype, np.int64)
         self.assertEqual(found.value.dtype, np.float64)
         np.testing.assert_array_equal(found.cells2, expected_d2)
@@ -115,16 +118,16 @@ class NearestValueTest(unittest.TestCase):
         mask[3::8, 5::8] = True
         rng = np.random.default_rng(14112)
         values = rng.integers(0, 3, mask.shape).astype(np.float64) * 10.0
-        expected_d2, _expected = brute_nearest(mask, values)
+        expected = brute_nearest(mask, values)
         seeds = np.argwhere(mask)
         ties = 0
         for row, col in ((7, 9), (7, 5), (3, 9)):  # a igual distancia de 4, 2 y 2 semillas
             d2 = ((seeds - (row, col)) ** 2).sum(axis=1)
-            ties += int((d2 == expected_d2[row, col]).sum())
+            ties += int((d2 == expected[0][row, col]).sum())
         self.assertEqual(ties, 8)
         for band in (grids.BAND_ROWS, 7):
             with self.subTest(band=band), mock.patch.object(grids, "BAND_ROWS", band):
-                self.assert_same_as_brute(mask, values)
+                self.assert_same_as_brute(mask, values, expected)
 
     def test_the_seed_itself_is_at_zero_and_metres_use_the_cell(self) -> None:
         mask = np.zeros((6, 7), dtype=bool)
