@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import unittest
 from collections.abc import Iterator
 from pathlib import Path
@@ -36,6 +37,7 @@ from unittest import mock
 
 import numpy as np
 
+from tests.support import constraints_fixtures as cfx
 from tests.support import quarry_fixtures as qfx
 from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
@@ -345,9 +347,11 @@ class FillOnlyOperationTest(qfx.QuarryProjectCase):
                          self.terrain_sha)
 
     def test_a_its_figures_are_those_of_the_013_and_its_cut(self) -> None:
-        """RF-014-22, RF-014-29 (plan §5.2.3): las cifras CALCULADO son las del escalonado de la
-        013 (desmonte, terraplén, área con movimiento…, con el ámbito de su nombre) y
-        ``des.fill_only_cut_m3`` = 0 m³."""
+        """RF-014-22, RF-014-24, RF-014-29 (plan §5.2.3; T55, decisión de Samuel): las cifras
+        CALCULADO son las del escalonado de la 013 (desmonte, terraplén, área con movimiento…, con
+        el ámbito de su nombre) **frente al terreno registrado** —el terraplén, la suma a mano de
+        lo que la superficie escrita sube más que el espesor mínimo sobre la ladera, también el
+        agua que cubre: la cubicación con láminas— y ``des.fill_only_cut_m3`` = 0 m³."""
         uid = self.stored.handle.uid
         scope = figures_mod.scope_json(provenance.quarry_figure_scope(NAME))
         found = self.figures_of(uid)
@@ -358,7 +362,49 @@ class FillOnlyOperationTest(qfx.QuarryProjectCase):
         self.assertEqual(found[("des.cut_m3", scope)], 0.0)
         self.assertEqual(found[("des.fill_m3", scope)],
                          self.calculation.outcome.design.report.fill_m3)
+        written, terrain = self.grid_of(DATASET), qfx.terrain(self.grid)
+        moved = np.abs(written - terrain) > self.default(design_params.VERIFY_MIN_THICKNESS)
+        cell = qfx.COARSE_STEP_M * qfx.COARSE_STEP_M
+        self.assertAlmostEqual(found[("des.fill_m3", scope)],
+                               math.fsum((written - terrain)[moved]) * cell, delta=1e-6)
         self.assertIn(NAME, self.calculation.message)
+
+    def test_a_a_sheet_outside_the_admitted_fill_is_warned_and_left_on_the_terrain(self) -> None:
+        """RF-014-23, RF-014-24, RF-014-25 (T55, hallazgo F-17): con una capa de láminas por encima
+        de la ladera sobre la franja de fuera del límite (20 × 20 m: 100 celdas de 2 m, ninguna con
+        relleno admitido) y sobre la torre (16 × 16 m alrededor de su vértice: sus
+        :data:`TOWER_CELLS` celdas y 4 esquinas con relleno admitido), «Calcular» no deja su cota
+        allí (el terreno registrado, bit a bit) y avisa de cada lámina con sus celdas y su área
+        fuera del relleno admitido o en el intocable (100 celdas, 400 m²; 60, 240 m²), en el
+        resumen y en ``des_rpt_``, antes de los avisos del escalonado."""
+        layer = "gis_fea_laminas_fuera"
+        boxes = ((20.0, 200.0, 40.0, 220.0), (292.0, 112.0, 308.0, 128.0))
+        qfx.write_feature_layer(self.project, self.clock, qfx.LayerData(
+            layer, "polygon", tuple(((cfx.rectangle(*box),),) for box in boxes),
+            ("Fuera del límite", "Sobre la torre"), {"cota": (250.0, 240.0)}))
+        request = model.FillOnlyRequest("Fuera", ENVELOPE, START, REST.code,
+                                        water=model.LayerField(layer, "cota"))
+        calculation = drive(self.fill_steps(request)).result
+        self.addCleanup(calculation.discard)
+        allowed = self.masks_v1.fill_allowed()
+        tower = fronts.untouchable_zones(self.masks_v1)[0].mask
+        strip, near = qfx.in_box(boxes[0], self.grid), qfx.in_box(boxes[1], self.grid)
+        self.assertEqual((int(strip.sum()), int((strip & allowed).sum())), (100, 0))
+        self.assertEqual((int(near.sum()), int((near & tower).sum()),
+                          int((near & ~tower & allowed).sum())), (64, TOWER_CELLS, 4))
+        terrain, surface = qfx.terrain(self.grid), calculation.outcome.surface
+        np.testing.assert_array_equal(surface[strip | tower], terrain[strip | tower])
+        outside = [notice for notice in calculation.notices
+                   if notice.code == "des.fill_only_water_outside"]
+        self.assertEqual(list(calculation.notices[:2]), outside)
+        self.assertEqual([dict(notice.values) for notice in outside], [
+            {"layer": layer, "polygon": 1, "cells": 100, "area": 400.0},
+            {"layer": layer, "polygon": 2, "cells": TOWER_CELLS, "area": 240.0}])
+        rows = store.fill_only_report_rows(calculation.outcome)
+        warned = [json.loads(note) for quantity, _value, _unit, note in rows
+                  if quantity == "warning"]
+        self.assertEqual(warned[:2], [{"code": notice.code, "values": dict(notice.values)}
+                                      for notice in outside])
 
     def test_a_what_is_registered_repeats_the_request(self) -> None:
         """RF-014-29, RF-014-31: los ajustes repiten la petición (con la capa de láminas y su campo);

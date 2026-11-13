@@ -172,7 +172,19 @@ cantera con dos superficies, revise la clasificación y la cree en menos de 20 m
   - **Solo relleno…**: escalona en relleno una envolvente de la versión sin cortar nunca, con el pie
     dentro del relleno admitido (sin pasar el límite) y las **láminas de agua** de una capa como
     terreno de partida, solo en memoria; un diseño que cortaría 1 m³ o más, o movería algo en un
-    intocable, se rechaza nombrándolo.
+    intocable, se rechaza nombrándolo. La lámina solo es la partida del relleno (lo decidió Samuel
+    el 13/11/2026): donde el relleno no sube de su cota (la balsa que no se rellena), fuera del
+    relleno admitido y en los intocables, la superficie queda en el terreno registrado; cada lámina
+    que cae fuera del relleno admitido o en un intocable se avisa con sus celdas y su área; y las
+    cifras del diseño (el terraplén, el área con movimiento…) se miden frente al terreno registrado,
+    como la cubicación de la misma superficie, así que el relleno que cubre una balsa cuenta con el
+    agua de debajo. Su verificación encontró que la superficie se quedaba con la cota de la lámina en
+    esas celdas: una lámina sobre la franja de fuera del límite y una torre dejaba 468 m³ fuera del
+    límite y 92 m³ en la torre sin rechazarse (ahora, 0 m³ y el aviso), y en la balsa de prueba 352
+    celdas a 270 m sin relleno, con un terraplén de 33.354,8 m³ frente a la lámina y 33.947,4 m³ de
+    la superficie frente al terreno (ahora, esas celdas en el terreno y 33.412,3 m³). Por lo mismo,
+    el terraplén del diseño de prueba de la operación pasa de 7.185,1 a 7.776,3 m³ (+591,25 m³, el
+    agua bajo el relleno) y el del caso a mano, de 2.120,9 a 2.132,3 m³.
   - **Un límite nuevo**: **Compilar las máscaras** comprueba después, por pasos y con Esc, cada
     superficie de esta spec de la versión y dice el volumen y el área que el límite vigente deja fuera
     (también en la barra N de esa superficie); **Ajustar el diseño a un límite nuevo…** las ofrece

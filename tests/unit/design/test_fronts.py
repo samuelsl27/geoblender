@@ -9,19 +9,28 @@
   es un número, dos láminas que se solapan, una capa que no es de polígonos o sin el campo).
 - ``design.fronts.fill_only_steps`` (RF-014-22, RF-014-23): el escalonado en relleno de la 013 de
   la envolvente sobre ``z'``, solo en el relleno admitido de la 012 (la franja de solo relleno de
-  fuera del límite legal, que el escalonado de la 013 sí rellena, no entra), y ``S = máx(z,
-  compuesta)``: el corte es 0 m³; su informe, sus bermas y sus cifras son los de la 013 más
-  ``des.fill_only_cut_m3``.
+  fuera del límite legal, que el escalonado de la 013 sí rellena, no entra); la superficie es la
+  compuesta donde sube de ``z'`` y el terreno **registrado** en las demás celdas (T55, hallazgo
+  F-17: fuera del relleno admitido, en los intocables y en la balsa que no se rellena, nunca la
+  cota de la lámina): el corte es 0 m³; su informe, sus bermas y sus cifras son los de la 013
+  **frente al terreno registrado** (la cubicación con láminas, decisión de Samuel del 13/11/2026:
+  la lámina solo es la partida del relleno, en memoria) más ``des.fill_only_cut_m3``; y un aviso
+  por cada lámina que cae fuera del relleno admitido o en un intocable
+  (``des.fill_only_water_outside``).
 - ``design.fronts.check_fill_only`` (RF-014-25): los rechazos, un movimiento de más del espesor
-  mínimo en un intocable (nombrándolo, con su volumen) y un corte de 1 m³ o más frente al terreno
-  registrado (con el volumen).
+  mínimo en un intocable frente al terreno registrado (nombrándolo, con su volumen) y un corte de
+  1 m³ o más frente al terreno registrado (con el volumen).
 - **CE-014-07** sobre la cantera sintética (``quarry_fixtures``, T01) con sus máscaras compiladas
   de V01: un tendido «solo relleno» junto a la torre intocable y a lo largo del límite corta 0 m³
   (< 1 m³), mueve 0 m³ en la torre y no rellena fuera del límite; la lámina de agua es su terreno
-  de partida y el terreno registrado no cambia.
+  de partida y el terreno registrado no cambia; y E5 de la T38 (tres plataformas, 30°): las 352
+  celdas de la lámina que el escalonado no sube de su cota quedan en el terreno.
 
 Las cifras a mano salen de las rejillas de los casos; la superficie de la 013 con que se comparan,
-del escalonado de la 013 con las mismas entradas (``pipeline.design_compute_steps``).
+del escalonado de la 013 con las mismas entradas (``pipeline.design_compute_steps``), y el
+escalonado sin componer (``stepped``), del de la 013 sobre una partida a 0 m, que deja el
+escalonado tal cual en el relleno admitido (la composición en relleno es ``máx(partida,
+escalonado)``).
 """
 
 from __future__ import annotations
@@ -43,6 +52,7 @@ from tests.support import quarry_fixtures as qfx
 from tests.support.package import import_geoblender
 
 fronts = import_geoblender("design.fronts")
+envelopes = import_geoblender("design.envelopes")
 pipeline = import_geoblender("design.pipeline")
 model = import_geoblender("design.model")
 params = import_geoblender("design.params")
@@ -88,6 +98,12 @@ NODATA_DRY = (8, 5)
 """Una celda sin dato de terreno fuera de la lámina: sigue sin dato."""
 RAISED = WATER & (_C <= 6)
 """Las celdas que toman la cota de la lámina, a mano: 2 filas × 4 columnas (con la sin dato)."""
+HIGH_BOX = (0.0, 8.0, 20.0, 20.0)
+"""Una lámina alta (local): las filas 0 a 5 y las columnas 0 a 9, sobre la franja de fuera del
+límite (12 celdas) y la torre (4 celdas)."""
+HIGH = (_R <= 5) & (_C <= 9)
+HIGH_LEVEL_M = 110.0
+"""Su cota: por encima del terreno en todas sus celdas (100 a 104,5 m)."""
 
 
 def finish(found: Iterator[Any]) -> Any:
@@ -174,6 +190,25 @@ def fake_design(design: np.ndarray) -> Any:
         yield project_model.Progress("benching", 1, 1, "escalonado", result=outcome)
 
     return steps
+
+
+def stepped(geometry: Any, envelope: np.ndarray, masks: Any) -> np.ndarray:
+    """El escalonado en relleno de la 013 de ``envelope`` sin componer con ninguna partida: el de
+    una partida a 0 m (en relleno, ``máx(0, escalonado)`` = el escalonado en el relleno admitido;
+    0 m fuera). No depende de la partida: la regularización, los bancos y el recorte final salen
+    de la envolvente."""
+    return finish(pipeline.design_compute_steps(design_job(
+        geometry, np.zeros(geometry.shape), envelope, masks))).design
+
+
+def expected_surface(terrain: np.ndarray, start: np.ndarray, steps_grid: np.ndarray,
+                     admitted: np.ndarray) -> np.ndarray:
+    """La superficie de «solo relleno» a mano (T55): el escalonado donde el relleno está admitido y
+    sube de la partida ``start`` (``z'``), y el terreno registrado ``terrain`` en las demás
+    celdas."""
+    with np.errstate(invalid="ignore"):
+        rises = admitted & np.isfinite(start) & (steps_grid > start)
+    return np.where(rises, steps_grid, terrain)
 
 
 class WaterSheetsTest(unittest.TestCase):
@@ -298,29 +333,41 @@ class FillOnlyTest(unittest.TestCase):
         self.assertTrue(bool(np.all(surface[known] >= self.terrain[known])))
         self.assertGreater(int(np.count_nonzero(surface[known] > self.terrain[known] + 1.0)), 80)
         self.assertEqual(self.outcome.cut_m3, 0.0)
+        np.testing.assert_array_equal(surface, expected_surface(
+            self.terrain, self.outcome.start, stepped(GRID, self.envelope, HandMasks()), FILL))
+        self.assertEqual(self.outcome.notices, ())
 
     def test_the_toe_stays_in_the_admitted_fill(self) -> None:
         """RF-014-23: fuera del relleno admitido —la franja de fuera del límite y la torre— la
-        superficie es el terreno de partida bit a bit; el escalonado de la 013 sí rellena la
+        superficie es el terreno registrado bit a bit; el escalonado de la 013 sí rellena la
         franja (sus 20 celdas), «solo relleno» no; ninguna celda movida fuera de lo admitido."""
-        np.testing.assert_array_equal(self.outcome.surface[~FILL], self.outcome.start[~FILL])
+        np.testing.assert_array_equal(self.outcome.surface[~FILL], self.terrain[~FILL])
         self.assertEqual(int(np.count_nonzero(self.plain.design[STRIP]
                                               > self.terrain[STRIP] + THICKNESS_M)), 20)
-        moved = np.abs(self.outcome.surface - self.outcome.start) > 0.0
+        with np.errstate(invalid="ignore"):
+            moved = np.abs(self.outcome.surface - self.terrain) > 0.0
         self.assertFalse(bool(np.any(moved & ~FILL)))
 
     def test_the_report_berms_and_figures_are_those_of_the_013_plus_its_cut(self) -> None:
-        """RF-014-22, RF-014-29 (plan §5.2.3): el informe de la 013 mide la superficie frente a
-        ``z'`` (corte 0 m³, terraplén = la suma a mano de lo que sube más que el espesor mínimo),
-        y las cifras son las suyas más ``des.fill_only_cut_m3`` = 0 m³ con el ámbito del diseño."""
+        """RF-014-22, RF-014-24, RF-014-29 (plan §5.2.3; T55, decisión de Samuel): el informe de la
+        013 mide la superficie frente al **terreno registrado**, no frente a ``z'`` (corte 0 m³,
+        terraplén = la suma a mano de lo que sube más que el espesor mínimo sobre el terreno: con la
+        lámina, también el agua que el relleno cubre), y las cifras son las suyas más
+        ``des.fill_only_cut_m3`` = 0 m³ con el ámbito del diseño."""
         report = self.outcome.design.report
-        start, surface = self.outcome.start, self.outcome.surface
+        terrain, surface = self.terrain, self.outcome.surface
         with np.errstate(invalid="ignore"):
-            moved = np.isfinite(start) & np.isfinite(surface) & (np.abs(surface - start)
-                                                                 > THICKNESS_M)
+            moved = np.isfinite(terrain) & np.isfinite(surface) & (np.abs(surface - terrain)
+                                                                   > THICKNESS_M)
         self.assertEqual(report.cut_m3, 0.0)
-        self.assertAlmostEqual(report.fill_m3, float((surface - start)[moved].sum()) * CELL_M2,
+        self.assertAlmostEqual(report.fill_m3, float((surface - terrain)[moved].sum()) * CELL_M2,
                                delta=1e-9)
+        # El agua que cubre el relleno, a mano: las 7 celdas de la lámina con terreno, (1,75 +
+        # 1,25 + 0,75 + 0,25 + 1,75 + 1,25 + 0,75) m · 4 m² = 31 m³ más que frente a z'.
+        self.assertEqual(int(np.count_nonzero(moved & RAISED)), 7)
+        self.assertAlmostEqual(
+            report.fill_m3 - float((surface - self.outcome.start)[moved].sum()) * CELL_M2, 31.0,
+            delta=1e-9)
         np.testing.assert_array_equal(self.outcome.design.design, surface)
         figures = self.outcome.figures
         self.assertEqual(figures[:-1], self.outcome.design.figures)
@@ -328,6 +375,47 @@ class FillOnlyTest(unittest.TestCase):
         self.assertEqual((last.key, last.value, last.unit), ("des.fill_only_cut_m3", 0.0, "m3"))
         self.assertEqual(dict(last.scope), provenance.quarry_figure_scope("Tendido"))
         self.assertIn("«Tendido»", self.outcome.message)
+
+    def test_a_sheet_outside_the_admitted_fill_leaves_the_terrain(self) -> None:
+        """RF-014-23, RF-014-24, RF-014-25 (T55, hallazgo F-17; errores 65 y 66): una lámina a 110 m
+        sobre la franja de fuera del límite y la torre (sus 60 celdas, todas por encima del
+        terreno) no deja su cota fuera del relleno admitido ni en el intocable: allí la superficie
+        es el terreno registrado bit a bit (antes, 468 m³ en las 12 celdas de la franja y 92 m³ en
+        las 4 de la torre); dentro, el escalonado donde sube de 110 m y el terreno donde no: aquí
+        el escalonado de la envolvente (106 + 0,5·columna, hasta 110,5 m) no pasa de 110 m en
+        ninguna celda de la lámina, que no se rellena (sus 43 celdas con terreno del relleno
+        admitido, en el terreno; la sin dato, sin dato; antes, todas a 110 m), y fuera de ella
+        rellena; el corte es 0 m³ y se avisa de la lámina con sus 16 celdas (64 m²) fuera del
+        relleno admitido o en el intocable."""
+        sheets = fronts.water_sheets(sheet_layer((HIGH_BOX,), (HIGH_LEVEL_M,)), WATER_SOURCE,
+                                     GRID)
+        np.testing.assert_array_equal(np.isfinite(sheets.grid), HIGH)
+        outcome = finish(fronts.fill_only_steps(fronts.FillOnlyJob(self.design, water=sheets)))
+        surface, terrain = outcome.surface, self.terrain
+        np.testing.assert_array_equal(surface[~FILL], terrain[~FILL])
+        for zone, cells in ((STRIP, 12), (TOWER, 4)):
+            self.assertEqual(int(np.count_nonzero(zone & HIGH)), cells)
+            self.assertEqual(float(np.nansum(np.where(zone, surface - terrain, 0.0))), 0.0)
+        np.testing.assert_array_equal(surface, expected_surface(
+            terrain, outcome.start, stepped(GRID, self.envelope, HandMasks()), FILL))
+        with np.errstate(invalid="ignore"):
+            dry = HIGH & FILL & np.isfinite(terrain) & (surface == terrain)
+            filled = ~HIGH & FILL & (surface > terrain + 1.0)
+        self.assertEqual(int(np.count_nonzero(dry)), 43)
+        self.assertTrue(math.isnan(surface[NODATA_WATER]))
+        self.assertGreater(int(np.count_nonzero(filled)), 10)
+        self.assertEqual(outcome.cut_m3, 0.0)
+        self.assertEqual(outcome.water_cells, 60)
+        (notice,) = outcome.notices
+        self.assertEqual((notice.code, notice.severity), ("des.fill_only_water_outside",
+                                                          "warning"))
+        self.assertEqual(dict(notice.values), {"layer": qfx.WATER_LAYER, "polygon": 1,
+                                               "cells": 16, "area": 64.0})
+        self.assertEqual(notice.text(), (
+            f"Capa «{qfx.WATER_LAYER}», lámina de agua 1: 16 celdas (64 m²) caen fuera del "
+            "relleno admitido o en un intocable; allí no se rellena y la superficie queda en el "
+            "terreno registrado."))
+        self.assertIn("16 cells (64 m²) fall outside the admitted fill", notice.text("en"))
 
     def test_the_untouchables_of_the_masks(self) -> None:
         """RF-014-25: los intocables son las zonas de las restricciones de tipo intocable de las
@@ -341,7 +429,8 @@ class FillOnlyTest(unittest.TestCase):
     def test_a_moved_untouchable_is_refused_while_advancing(self) -> None:
         """RF-014-25: si el escalonado moviera una celda del intocable (aquí, sustituido en la
         prueba para que suba 1 m las 4 celdas de la torre), se rechaza al avanzar nombrándolo con
-        su volumen (4 · 1 m · 4 m² = 16 m³) y no se da ningún resultado."""
+        su volumen frente al terreno registrado (4 · 1 m · 4 m² = 16 m³) y no se da ningún
+        resultado."""
         lifted = self.outcome.start.copy()
         lifted[TOWER] += 1.0
         with mock.patch.object(fronts, "design_compute_steps", fake_design(lifted)):
@@ -384,8 +473,8 @@ class CheckFillOnlyTest(unittest.TestCase):
         self.zones = (fronts.UntouchableZone("Torre", TOWER.copy()),)
 
     def check(self, surface: np.ndarray) -> float:
-        return fronts.check_fill_only("Tendido", surface, self.terrain, self.start, self.zones,
-                                      GRID, THICKNESS_M)
+        return fronts.check_fill_only("Tendido", surface, self.terrain, self.zones, GRID,
+                                      THICKNESS_M)
 
     def test_a_cut_of_one_cubic_metre_or_more_is_refused(self) -> None:
         """RF-014-22, RF-014-25: el corte es ``Σ máx(z − S, 0) · área de celda`` frente al terreno
@@ -408,10 +497,12 @@ class CheckFillOnlyTest(unittest.TestCase):
         self.assertEqual(self.check(self.start), 0.0)
 
     def test_moving_an_untouchable_more_than_the_minimum_thickness_is_refused(self) -> None:
-        """RF-014-25 (error 65): más del espesor mínimo frente al terreno de partida ``z'`` en una
-        celda del intocable se rechaza nombrándolo con su volumen (0,03 m · 4 m² = 0,12 m³); el
-        espesor mínimo justo, no; tampoco un movimiento fuera de él ni la lámina, que es su
-        partida."""
+        """RF-014-25 (error 65; T55, hallazgo F-17): más del espesor mínimo frente al terreno
+        **registrado** en una celda del intocable se rechaza nombrándolo con su volumen (0,03 m ·
+        4 m² = 0,12 m³); el espesor mínimo justo, no; tampoco un movimiento fuera de él. Una lámina
+        sobre un intocable no es su partida: dejar su cota en él se rechaza (las 7 celdas con
+        terreno de la lámina de mano, (1,75 + 1,25 + 0,75 + 0,25 + 1,75 + 1,25 + 0,75) m · 4 m² =
+        31 m³; la celda sin dato no cuenta)."""
         surface = self.start.copy()
         surface[4, 8] += 0.03
         with self.assertRaises(messages.DesignError) as caught:
@@ -425,8 +516,13 @@ class CheckFillOnlyTest(unittest.TestCase):
         surface[4, 7] += 3.0
         self.assertEqual(self.check(surface), 0.0)
         wet = (fronts.UntouchableZone("Balsa", RAISED.copy()),)
-        self.assertEqual(fronts.check_fill_only("Tendido", self.start, self.terrain, self.start,
-                                                wet, GRID, THICKNESS_M), 0.0)
+        with self.assertRaises(messages.DesignError) as caught:
+            fronts.check_fill_only("Tendido", self.start, self.terrain, wet, GRID, THICKNESS_M)
+        self.assertEqual((caught.exception.code, caught.exception.values["constraint"],
+                          caught.exception.values["value"]),
+                         ("des.fill_only_untouchable", "Balsa", 31.0))
+        self.assertEqual(fronts.check_fill_only("Tendido", self.terrain, self.terrain, wet, GRID,
+                                                THICKNESS_M), 0.0)
 
 
 class QuarryFillOnlyTest(qfx.QuarryProjectCase):
@@ -499,21 +595,65 @@ class QuarryFillOnlyTest(qfx.QuarryProjectCase):
         x, _y = qfx.local_centers()
         toe = qfx.in_box(self.BAND) & (x == 40.5)
         self.assertTrue(bool(np.all(surface[toe] > self.terrain[toe] + 1.0)))
-        moved = surface != self.outcome.start
+        moved = surface != self.terrain
         self.assertFalse(bool(np.any(moved & ~self.masks_v1.fill_allowed())))
 
     def test_the_sheet_is_the_start_and_the_terrain_does_not_change(self) -> None:
-        """RF-014-24: la lámina a 270 m es el terreno de partida en sus 420 celdas por debajo de esa
-        cota y el tendido no queda por debajo de ella; el terreno registrado (su fichero) no cambia
-        y el que se pasó, tampoco."""
+        """RF-014-24 (T55): la lámina a 270 m es el terreno de partida en sus 420 celdas por debajo
+        de esa cota: donde el tendido sube de ella, la superficie pasa de 270 m, y donde no, queda
+        en el terreno registrado (no en la cota de la lámina); el terreno registrado (su fichero)
+        no cambia y el que se pasó, tampoco."""
         raised = self.outcome.start != self.terrain
         self.assertEqual(int(np.count_nonzero(raised)), 420)
         self.assertEqual(self.outcome.water_cells, 420)
         self.assertTrue(bool(np.all(self.outcome.start[raised] == qfx.WATER_LEVEL_M)))
-        self.assertTrue(bool(np.all(self.outcome.surface[raised] >= qfx.WATER_LEVEL_M)))
+        surface = self.outcome.surface[raised]
+        filled = surface > qfx.WATER_LEVEL_M
+        self.assertTrue(bool(np.all(filled | (surface == self.terrain[raised]))))
+        self.assertGreater(int(np.count_nonzero(filled)), 0)
+        self.assertGreater(int(np.count_nonzero(~filled)), 0)
         np.testing.assert_array_equal(self.terrain, qfx.terrain())
         self.assertEqual(hashlib.sha256(self.terrain_file.read_bytes()).hexdigest(),
                          self.terrain_sha)
+
+    def test_e5_the_sheet_cells_the_benching_does_not_fill_stay_on_the_terrain(self) -> None:
+        """RF-014-23, RF-014-24 (T55, hallazgo F-17; E5 de la T38): con la envolvente de E5 —
+        descendente, de 30°, *chamfer*, desde las plataformas de 236 m (x 276-292, y 108-132), 278 m
+        (x 170-190, y 300-330) y 235 m (x 45-60, y 150-200), en el dominio por defecto más la franja
+        de solo relleno— y la lámina a 270 m, las 352 celdas de la lámina que el escalonado no sube
+        de su cota (antes, a 270 m) quedan en el terreno registrado; las demás de la lámina, el
+        escalonado; el terraplén del informe es el de la superficie frente al terreno registrado
+        (la cubicación, decisión de Samuel; antes, 33.354,8 m³ frente a ``z'`` y 33.947,4 m³ de la
+        superficie frente al terreno); y ninguna lámina cae fuera del relleno admitido: sin
+        aviso."""
+        seeds = np.full(qfx.GRID.shape, np.inf)
+        for box, level in (((276.0, 108.0, 292.0, 132.0), 236.0),
+                           ((170.0, 300.0, 190.0, 330.0), 278.0),
+                           ((45.0, 150.0, 60.0, 200.0), 235.0)):
+            seeds[qfx.in_box(box)] = level
+        found = finish(envelopes.chamfer_steps(seeds, qfx.GRID, envelopes.constant_slope(30.0),
+                                               "down")).grid
+        envelope = np.where(self.masks_v1.default_domain() | self.masks_v1.fill_strip(), found,
+                            np.nan)
+        outcome = finish(fronts.fill_only_steps(fronts.FillOnlyJob(
+            design_job(qfx.GRID, self.terrain, envelope, self.masks_v1, name="Balsa"),
+            water=self.job.water, untouchables=self.untouchables)))
+        surface, terrain = outcome.surface, self.terrain
+        raised = outcome.start != terrain
+        self.assertEqual(int(np.count_nonzero(raised)), 420)
+        steps_grid = stepped(qfx.GRID, envelope, self.masks_v1)
+        unfilled = raised & ~(steps_grid > qfx.WATER_LEVEL_M)
+        self.assertEqual(int(np.count_nonzero(unfilled)), 352)
+        np.testing.assert_array_equal(surface[unfilled], terrain[unfilled])
+        self.assertEqual(int(np.count_nonzero(raised & (surface == qfx.WATER_LEVEL_M))), 0)
+        self.assertEqual(int(np.count_nonzero(raised & (surface > qfx.WATER_LEVEL_M))), 420 - 352)
+        np.testing.assert_array_equal(surface, expected_surface(
+            terrain, outcome.start, steps_grid, self.masks_v1.fill_allowed()))
+        moved = np.abs(surface - terrain) > THICKNESS_M
+        self.assertEqual(outcome.design.report.cut_m3, 0.0)
+        self.assertAlmostEqual(outcome.design.report.fill_m3,
+                               math.fsum((surface - terrain)[moved]), delta=1e-6)
+        self.assertEqual(outcome.notices, ())
 
 
 if __name__ == "__main__":

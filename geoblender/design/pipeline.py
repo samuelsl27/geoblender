@@ -21,7 +21,10 @@ dónde se lee, no lo que se hace.
   bermas y arma las cifras (RF-013-22 a RF-013-31). Si la regularización bajó la envolvente más
   que la tolerancia (una pendiente constante más empinada que el talud general de un sector), el
   informe lo avisa con las celdas y el descenso máximo (spec 0.4, RF-013-26 y RF-013-30): no
-  cambia la envolvente registrada ni el escalonado.
+  cambia la envolvente registrada ni el escalonado. Con un terreno registrado aparte
+  (``DesignJob.ground``, spec 014, T55: la partida de «solo relleno» con las láminas de agua, que
+  solo vive en memoria), la superficie es la compuesta donde se mueve de la partida y ese terreno
+  en las demás celdas, y el informe, las bermas y las cifras se miden frente a él.
 - Los parámetros llegan como un diccionario clave → valor (:func:`bench_profiles`,
   :func:`imposed_from`, :func:`envelope_slope`): del proyecto, lo que anotó la operación al
   empezar (``OperationHandle.params``); de lo congelado, ``ReproduceRequest.params``.
@@ -268,7 +271,13 @@ class DesignJob:
     (:func:`bench_profiles`), la rejilla de ``anchors`` si el ancla no es la del perfil, el
     espesor mínimo, la tolerancia de cara y el umbral de aviso de magnitud, lo ``previous`` con
     que se compara el desmonte y el terraplén (D-25) y los nombres de los sectores con la búsqueda
-    ``pending`` (RF-013-06)."""
+    ``pending`` (RF-013-06).
+
+    ``ground`` (spec 014, T55; RF-014-24): el terreno **registrado** cuando ``start`` es una
+    partida solo de memoria (la de «solo relleno» con sus láminas de agua): la superficie de
+    diseño es la compuesta donde se mueve de ``start`` y ``ground`` en las demás celdas (la
+    partida de memoria no queda en ella), y se mide frente a ``ground``. ``None`` (la 013): la
+    partida es el terreno."""
 
     request: DesignRequest
     geometry: Grid
@@ -285,6 +294,7 @@ class DesignJob:
     warning_ratio: float
     previous: report.Previous | None = None
     pending: tuple[str, ...] = ()
+    ground: np.ndarray | None = None
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -333,8 +343,21 @@ def design_compute_steps(job: DesignJob, *, budget_s: float = STEP_BUDGET_S
     """El escalonado de ``job`` por pasos de ``budget_s`` como mucho: el último ``Progress`` lleva
     el :class:`DesignOutcome`. Rechaza al avanzar un perfil asignado a un sector que no existe
     (``des.sector_unknown``) y una rejilla de anclas sin cota en el dominio (``des.anchor_nodata``);
-    ninguna entrada se modifica y no se escribe nada."""
+    ninguna entrada se modifica y no se escribe nada. Un terreno registrado (``job.ground``) que no
+    es de la forma de la partida es un error del programa (``ValueError``) al llamar."""
+    if job.ground is not None and np.shape(job.ground) != np.shape(job.start):
+        raise ValueError(f"el terreno registrado es de {np.shape(job.ground)} celdas, no de las "
+                         f"{np.shape(job.start)} de la partida")
     return _design_steps(job, budget_s)
+
+
+def _on_ground(design: np.ndarray, start: np.ndarray, ground: np.ndarray) -> np.ndarray:
+    """La superficie de diseño frente a un terreno registrado aparte (spec 014, T55): la compuesta
+    ``design`` donde tiene cota y se mueve de la partida de memoria ``start``; el terreno
+    ``ground`` en las demás celdas (allí la partida de memoria no se queda). Una rejilla nueva."""
+    with np.errstate(invalid="ignore"):
+        moves = np.isfinite(design) & (design != start)
+    return np.where(moves, design, ground)
 
 
 def _design_steps(job: DesignJob, budget_s: float) -> Generator[Progress, None, None]:
@@ -384,17 +407,21 @@ def _design_steps(job: DesignJob, budget_s: float) -> Generator[Progress, None, 
         budget_s=budget_s))
     allowed = compose.allowed_cells(job.masks, sense, domain)  # type: ignore[arg-type]
     design = compose.compose(start, trim.grid, allowed, sense)
+    measured = start  # frente a lo que se mide: la partida o, si es de memoria, el terreno
+    if job.ground is not None:  # spec 014, T55: «solo relleno» con láminas de agua
+        measured = np.asarray(job.ground, dtype=np.float64)
+        design = _on_ground(design, start, measured)
     face = faces if isinstance(faces, float) else np.where(np.isfinite(trim.grid), faces, np.nan)
     unique = tuple(dict.fromkeys(by_label))
     result: report.DesignReport = yield from forward(report.report_steps(
-        start, design, geometry, allowed, min_thickness_m=job.min_thickness_m, face_deg=face,
+        measured, design, geometry, allowed, min_thickness_m=job.min_thickness_m, face_deg=face,
         face_tolerance_deg=job.face_tolerance_deg, warning_ratio=job.warning_ratio,
         operation=request.name, previous=job.previous, pending=job.pending, profiles=unique,
         lowering=lowering, budget_s=budget_s))
     scopes = [berms.BermScope("", base.code),
               *(berms.BermScope(sector.code, profile.code)
                 for sector, profile in zip(job.sectors, by_label[1:], strict=True))]
-    moved = report.moved_cells(start, design, job.min_thickness_m)
+    moved = report.moved_cells(measured, design, job.min_thickness_m)
     measured: berms.Berms = yield from forward(berms.berms_steps(
         design, geometry, heights, anchor, labels, scopes, moved=moved, budget_s=budget_s))
     figures = provenance.design_figures(result, name=request.name, berm_count=measured.count)

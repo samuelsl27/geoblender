@@ -2778,16 +2778,18 @@ def fill_only_compute_steps(request: FillOnlyRequest, masks: access.MaskSet, par
 def fill_only_report_rows(outcome: fronts.FillOnlyOutcome) -> list[Row]:
     """Las filas de ``des_rpt_`` de un diseño «solo relleno» (``quantity, value, unit_code,
     note``; spec 014, T30; RF-014-22, RF-014-24): las del informe de su escalonado de la 013
-    (:func:`report_rows`: frente al terreno de partida con las láminas) y, antes de sus avisos y
-    notas, el corte frente al terreno registrado (``fill_only_cut_m3``, m³) y las celdas en que la
-    lámina de agua es el terreno de partida (``water_cells``). Un valor NaN o infinito es un error
-    del programa (``ValueError``)."""
+    (:func:`report_rows`: frente al terreno registrado, T55) y, antes de sus avisos y notas, el
+    corte frente al terreno registrado (``fill_only_cut_m3``, m³), las celdas en que la lámina de
+    agua es el terreno de partida (``water_cells``) y los avisos propios del diseño (los de las
+    láminas que caen fuera del relleno admitido o en un intocable, con su código y sus valores en
+    JSON). Un valor NaN o infinito es un error del programa (``ValueError``)."""
     design = outcome.design
     rows = report_rows(design.report, unassigned_area_m2=design.unassigned_area_m2)
     first = next((index for index, row in enumerate(rows) if row[0] in _NOTICE_ROWS), len(rows))
     rows[first:first] = [
         ("fill_only_cut_m3", _real("fill_only_cut_m3", outcome.cut_m3), "m3", None),
-        ("water_cells", _real("water_cells", outcome.water_cells), "-", None)]
+        ("water_cells", _real("water_cells", outcome.water_cells), "-", None),
+        *((notice.severity, None, None, _notice_text(notice)) for notice in outcome.notices)]
     return rows
 
 

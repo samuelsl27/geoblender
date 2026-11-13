@@ -332,8 +332,9 @@ def fill_only_run(project: StoreProject, request: FillOnlyRequest, *, version: s
     ``budget_s`` como mucho (spec 014, T30; RF-014-22 a RF-014-25, RF-014-29; «Solo relleno…»):
     el último ``Progress`` lleva la :class:`Calculation` de ``des.fill_only``, con su superficie
     (``des_srf_``) en un temporal, su informe (``des_rpt_``) preparado, sus cifras (las del
-    escalonado de la 013 y ``des.fill_only_cut_m3``) y los avisos del informe de su escalonado, y
-    **nada registrado**. ``masks``, como en :func:`envelope_run`.
+    escalonado de la 013 frente al terreno registrado y ``des.fill_only_cut_m3``) y sus avisos (los
+    de las láminas que caen fuera del relleno admitido o en un intocable, T55, y después los del
+    informe de su escalonado), y **nada registrado**. ``masks``, como en :func:`envelope_run`.
 
     Los rechazos salen **al avanzar**, antes de escribir nada: sin versión activa o no editable,
     máscaras (``MaskError``), la envolvente y las superficies (``des.surface_*``), un sector con la
@@ -500,7 +501,8 @@ def _fill_only_steps(project: StoreProject, request: FillOnlyRequest, version: s
         outcome: fronts.FillOnlyOutcome = yield from store.compute_fill_only_steps(
             writer, request, loaded, prepared, values, prepared.start.settings, budget_s)
         calculation = Calculation(project=project, writer=writer, start=prepared.start,
-                                  outcome=outcome, notices=outcome.design.report.notices,
+                                  outcome=outcome,
+                                  notices=(*outcome.notices, *outcome.design.report.notices),
                                   seeds=None, values=values)
     except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
         writer.close(error)

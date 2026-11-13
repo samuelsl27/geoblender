@@ -81,6 +81,7 @@ QUARRY_CODES: dict[str, str] = {
     "des.fill_only_cuts": "error",             # RF-014-25
     "des.fill_only_untouchable": "error",      # RF-014-25
     "des.fill_only_water_level": "error",      # RF-014-24
+    "des.fill_only_water_outside": "warning",  # RF-014-23, RF-014-24 (T55: lámina fuera)
     "des.refit_outside": "warning",            # RF-014-26
     "des.refit_not_needed": "warning",         # RF-014-27 (caso límite)
     "des.refit_angle": "error",                # RF-014-28

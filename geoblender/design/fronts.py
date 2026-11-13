@@ -12,26 +12,31 @@
 - :func:`with_water` (RF-014-24; A12): el **terreno de partida del diseño** ``z'``, solo en
   memoria: el terreno ``z`` con la cota de la lámina dentro de sus polígonos donde el terreno queda
   por debajo de ella o no tiene dato. Donde el terreno registrado queda por encima de la cota (la
-  orilla seca que cae dentro del polígono), ``z' = z``: la lámina no rebaja el terreno (y la
-  cubicación no cuenta como relleno lo que ya estaba seco). El terreno registrado no cambia: es
-  una rejilla nueva.
+  orilla seca que cae dentro del polígono), ``z' = z``: la lámina no rebaja el terreno. El terreno
+  registrado no cambia: es una rejilla nueva.
 - :func:`untouchable_zones`: las zonas de las restricciones **intocables** de las máscaras de la 012
   (ya con su resguardo, ADR-0028), con su nombre (:class:`UntouchableZone`).
-- :func:`fill_only_steps` (RF-014-22, RF-014-23; A12): el **diseño «solo relleno»**
-  (:class:`FillOnlyJob` → :class:`FillOnlyOutcome`): el escalonado en relleno de la 013
+- :func:`fill_only_steps` (RF-014-22 a RF-014-24; A12; T55, hallazgo F-17): el **diseño «solo
+  relleno»** (:class:`FillOnlyJob` → :class:`FillOnlyOutcome`): el escalonado en relleno de la 013
   (``pipeline.design_compute_steps``) de la envolvente del trabajo sobre ``z'``, compuesto **solo en
   el relleno admitido** de la 012 (``fill_allowed``: dentro del límite legal, sin intocables ni
   zonas sin relleno; la franja de solo relleno de fuera del límite, que el escalonado de la 013 sí
-  rellena, no entra: el límite es la frontera del pie), y la superficie ``S = máx(z, compuesta)``.
-  Como ``z' ≥ z`` donde el terreno tiene dato, la compuesta ya no queda por debajo del terreno y
-  ``S`` es ella: el informe, las bermas y las cifras de la 013 son los de ``S`` frente a ``z'``.
+  rellena, no entra: el límite es la frontera del pie). La lámina solo es la partida del relleno
+  (decisión de Samuel, 13/11/2026): la superficie ``S`` es la compuesta donde sube de ``z'`` y el
+  **terreno registrado** ``z`` en las demás celdas —fuera del relleno admitido, en los intocables
+  y en la balsa que el escalonado no sube de su cota, que no se rellena—, nunca la cota de la
+  lámina (``pipeline.DesignJob.ground``); y el informe, las bermas y las cifras de la 013 son los de
+  ``S`` frente al terreno registrado, la **cubicación** con láminas (lo que cubre el relleno en la
+  balsa, el agua incluida, cuenta como terraplén). Un aviso por cada lámina que es la partida en
+  celdas fuera del relleno admitido o en un intocable (``des.fill_only_water_outside``: allí no se
+  rellena).
 - :func:`check_fill_only` (RF-014-25; A12): los **rechazos**, sobre ``S`` y antes de dar nada: un
-  movimiento de más del espesor mínimo de la 012 frente a ``z'`` en una celda de un intocable
-  (``des.fill_only_untouchable``, nombrando el intocable y su volumen; error 65) o un corte de
-  :data:`FILL_ONLY_CUT_LIMIT_M3` o más frente al terreno registrado, ``Σ máx(z − S, 0) · área de
-  celda`` (``des.fill_only_cuts``, con el volumen; DIS-17). Con :func:`fill_only_steps` no se dan
-  por construcción: son la red que impide crear un diseño «solo relleno» que corte o toque un
-  intocable.
+  movimiento de más del espesor mínimo de la 012 frente al terreno registrado en una celda de un
+  intocable (``des.fill_only_untouchable``, nombrando el intocable y su volumen; error 65; una
+  lámina sobre él no es su partida) o un corte de :data:`FILL_ONLY_CUT_LIMIT_M3` o más frente al
+  terreno registrado, ``Σ máx(z − S, 0) · área de celda`` (``des.fill_only_cuts``, con el volumen;
+  DIS-17). Con :func:`fill_only_steps` no se dan por construcción: son la red que impide crear un
+  diseño «solo relleno» que corte o toque un intocable.
 - :func:`fill_only_figures`: la cifra propia, ``des.fill_only_cut_m3`` (las demás son las del
   escalonado de la 013).
 
@@ -56,6 +61,7 @@ from . import provenance
 from .messages import DesignError
 from .model import BenchSense, LayerField
 from .pipeline import DesignJob, DesignOutcome, design_compute_steps, forward
+from .preview import Notice
 from .quarry import _GEOMETRY_FIELD, _KINDS_ES, _NO_VALUE, _level_column
 from .report import _thickness, moved_cells
 from .zones import _paint, _polygon_spans
@@ -85,6 +91,8 @@ FILL_ONLY_PHASE = "fill_only"
 """La fase de los pasos propios de «solo relleno» (los del escalonado son los de la 013)."""
 _CUT_FIGURE = provenance.FILL_ONLY_FIGURES[0].key
 _VOLUME_FIELD = "volumen (m³)"
+_WATER_OUTSIDE = "des.fill_only_water_outside"
+"""El aviso de una lámina que es la partida fuera del relleno admitido o en un intocable (T55)."""
 
 
 def _same_shape(name: str, values: np.ndarray, shape: tuple[int, ...]) -> None:
@@ -238,18 +246,19 @@ def untouchable_zones(masks: object, names: Mapping[str, str] | None = None
 # --- Los rechazos (RF-014-25) --------------------------------------------------------------------
 
 
-def _check_untouchables(surface: np.ndarray, start: np.ndarray,
+def _check_untouchables(surface: np.ndarray, terrain: np.ndarray,
                         untouchables: Sequence[UntouchableZone], geometry: Grid,
                         thickness: float) -> None:
     """``des.fill_only_untouchable`` con el primer intocable en que ``surface`` se mueve más que
-    el espesor mínimo frente a ``start``, nombrándolo con el volumen de ese movimiento."""
+    el espesor mínimo frente al terreno registrado ``terrain`` (T55: una lámina sobre él no es su
+    partida), nombrándolo con el volumen de ese movimiento."""
     if not untouchables:
         return
-    moved = moved_cells(start, surface, thickness)
+    moved = moved_cells(terrain, surface, thickness)
     for zone in untouchables:
         inside = moved & zone.mask
         if inside.any():
-            volume = float(np.abs(surface[inside] - start[inside]).sum()) * geometry.cell_area
+            volume = float(np.abs(surface[inside] - terrain[inside]).sum()) * geometry.cell_area
             raise DesignError("des.fill_only_untouchable", obj=f"Intocable «{zone.name}»",
                               field=_VOLUME_FIELD, value=round(volume, 3), constraint=zone.name)
 
@@ -274,14 +283,15 @@ def _checked(name: str, values: np.ndarray, shape: tuple[int, ...]) -> np.ndarra
     return found
 
 
-def check_fill_only(name: str, surface: np.ndarray, terrain: np.ndarray, start: np.ndarray,
+def check_fill_only(name: str, surface: np.ndarray, terrain: np.ndarray,
                     untouchables: Sequence[UntouchableZone], geometry: Grid,
                     min_thickness_m: float) -> float:
-    """**RF-014-25** (A12): los rechazos del diseño «solo relleno» ``name`` con la superficie
-    ``surface`` (``S``), el terreno registrado ``terrain`` (``z``) y el terreno de partida del diseño
-    ``start`` (``z'``, :func:`with_water`), en la rejilla ``geometry``; devuelve su corte (m³).
+    """**RF-014-25** (A12; T55): los rechazos del diseño «solo relleno» ``name`` con la superficie
+    ``surface`` (``S``) y el terreno registrado ``terrain`` (``z``), en la rejilla ``geometry``;
+    devuelve su corte (m³). Los dos se miden frente al terreno registrado: una lámina de agua solo
+    es la partida del relleno, no el terreno de un intocable.
 
-    - Un movimiento de más de ``min_thickness_m`` (el espesor mínimo de la 012) frente a ``z'`` en
+    - Un movimiento de más de ``min_thickness_m`` (el espesor mínimo de la 012) frente a ``z`` en
       una celda de un intocable de ``untouchables`` (error 65): ``des.fill_only_untouchable``
       nombrando el primero, en su orden, con el volumen de ese movimiento (m³).
     - Un corte de :data:`FILL_ONLY_CUT_LIMIT_M3` o más frente a ``z``, ``Σ máx(z − S, 0) · área de
@@ -292,11 +302,31 @@ def check_fill_only(name: str, surface: np.ndarray, terrain: np.ndarray, start: 
     shape = geometry.shape
     design = _checked("la superficie", surface, shape)
     ground = _checked("el terreno", terrain, shape)
-    base = _checked("el terreno de partida", start, shape)
     for zone in untouchables:
         _same_shape(f"el intocable «{zone.name}»", np.asarray(zone.mask), shape)
-    _check_untouchables(design, base, untouchables, geometry, _thickness(min_thickness_m))
+    _check_untouchables(design, ground, untouchables, geometry, _thickness(min_thickness_m))
     return _cut_m3(name, design, ground, geometry)
+
+
+def _water_outside(sheets: WaterSheets | None, start: np.ndarray, terrain: np.ndarray,
+                   masks: object, zones: Sequence[UntouchableZone]) -> tuple[Notice, ...]:
+    """**RF-014-23, RF-014-24** (T55, hallazgo F-17): un aviso ``des.fill_only_water_outside`` por
+    cada lámina de ``sheets``, en el orden de su capa, que es la partida ``start`` (``z'``: el
+    terreno ``terrain`` queda por debajo de su cota o no tiene dato) en celdas fuera del relleno
+    admitido de ``masks`` o en un intocable de ``zones``, con esas celdas y su área (m²): allí no se
+    rellena y la superficie queda en el terreno registrado. Sin láminas, ninguno. Solo lee."""
+    if sheets is None:
+        return ()
+    with np.errstate(invalid="ignore"):
+        wet = np.isfinite(start) & ~(start == terrain)
+    barred = ~np.asarray(masks.fill_allowed(), dtype=bool)  # type: ignore[attr-defined]
+    for zone in zones:
+        barred |= np.asarray(zone.mask, dtype=bool)
+    counts = np.bincount(sheets.owner[wet & barred], minlength=len(sheets.fids) + 1)
+    return tuple(
+        Notice(_WATER_OUTSIDE, {"layer": sheets.layer, "polygon": fid, "cells": int(counts[index]),
+                                "area": float(counts[index]) * sheets.cell_area_m2})
+        for index, fid in enumerate(sheets.fids, start=1) if counts[index])
 
 
 def fill_only_figures(name: str, cut_m3: float) -> tuple[FigureSpec, ...]:
@@ -345,11 +375,15 @@ class FillOnlyJob:
 @dataclass(frozen=True, slots=True, eq=False)
 class FillOnlyOutcome:
     """Un diseño «solo relleno» calculado: el terreno de partida del diseño (``start``, ``z'``,
-    float64 nueva; las láminas solo en memoria), la superficie (``surface``, ``S``, float64 nueva),
-    el escalonado de la 013 sobre ``z'`` (``design``: su informe frente a ``z'``, sus bermas y sus
-    cifras), las celdas en que la lámina es la partida (``water_cells``), el corte frente al
-    terreno registrado (``cut_m3``, < :data:`FILL_ONLY_CUT_LIMIT_M3`), las cifras CALCULADO (las de
-    la 013 y ``des.fill_only_cut_m3``) y el ``message`` de la operación."""
+    float64 nueva; las láminas solo en memoria), la superficie (``surface``, ``S``, float64 nueva:
+    la compuesta donde sube de ``z'`` y el terreno registrado en las demás celdas, T55), el
+    escalonado de la 013 sobre ``z'`` (``design``: su superficie, que es ``S``, y su informe, sus
+    bermas y sus cifras frente al terreno registrado), las celdas en que la lámina es la partida
+    (``water_cells``), el corte frente al terreno registrado (``cut_m3``, <
+    :data:`FILL_ONLY_CUT_LIMIT_M3`), las cifras CALCULADO (las de la 013 y
+    ``des.fill_only_cut_m3``), el ``message`` de la operación y los avisos propios (``notices``:
+    ``des.fill_only_water_outside``, uno por lámina que cae fuera del relleno admitido o en un
+    intocable; los del escalonado van en su informe)."""
 
     start: np.ndarray
     surface: np.ndarray
@@ -358,6 +392,7 @@ class FillOnlyOutcome:
     cut_m3: float
     figures: tuple[FigureSpec, ...]
     message: str
+    notices: tuple[Notice, ...] = ()
 
     @property
     def grid(self) -> np.ndarray:
@@ -369,10 +404,12 @@ def fill_only_steps(job: FillOnlyJob, *, budget_s: float = STEP_BUDGET_S) -> Ite
     """**A12** (RF-014-22 a RF-014-25): el diseño «solo relleno» de ``job`` por pasos de ``budget_s``
     como mucho; el último ``Progress`` lleva el :class:`FillOnlyOutcome`.
 
-    El terreno de partida ``z'`` (:func:`with_water`); el escalonado en relleno de la 013 de la
-    envolvente sobre ``z'`` con solo el relleno admitido de la 012 (sin la franja de fuera del
-    límite); ``S = máx(z, compuesta)`` (sin dato donde no lo tiene ninguna de las dos); y los
-    rechazos de :func:`check_fill_only`, al avanzar, antes de dar el resultado. Los rechazos del
+    El terreno de partida ``z'`` (:func:`with_water`) y los avisos de las láminas que caen fuera
+    del relleno admitido o en un intocable; el escalonado en relleno de la 013 de la envolvente
+    sobre ``z'`` con solo el relleno admitido de la 012 (sin la franja de fuera del límite), medido
+    frente al terreno registrado ``z`` (``DesignJob.ground``): ``S`` es la compuesta donde sube de
+    ``z'`` y ``z`` en las demás celdas (T55; nunca por debajo del terreno: ``S = máx(z, S)``); y
+    los rechazos de :func:`check_fill_only`, al avanzar, antes de dar el resultado. Los rechazos del
     escalonado de la 013 (un perfil, un sector o un ancla), también al avanzar.
 
     Al llamar, ``ValueError`` (error del programa) si el escalonado no es en relleno o el terreno,
@@ -401,11 +438,13 @@ def _fill_only_steps(job: FillOnlyJob, terrain: np.ndarray, zones: tuple[Untouch
     start = with_water(terrain, job.water)
     with np.errstate(invalid="ignore"):
         water_cells = int(np.count_nonzero(np.isfinite(start) & ~(start == terrain)))
+    notices = _water_outside(job.water, start, terrain, design.masks, zones)
     stepped: DesignOutcome = yield from forward(design_compute_steps(
-        replace(design, start=start, masks=_FillOnlyMasks(design.masks)), budget_s=budget_s))
+        replace(design, start=start, masks=_FillOnlyMasks(design.masks), ground=terrain),
+        budget_s=budget_s))
     yield Progress(FILL_ONLY_PHASE, 0, 1, "Comprobando que el diseño solo rellena…")
     surface = np.fmax(terrain, np.asarray(stepped.design, dtype=np.float64))
-    _check_untouchables(surface, start, zones, geometry, _thickness(design.min_thickness_m))
+    _check_untouchables(surface, terrain, zones, geometry, _thickness(design.min_thickness_m))
     yield Progress(FILL_ONLY_PHASE, 0, 1, "Midiendo el corte…")
     cut = _cut_m3(name, surface, terrain, geometry)
     figures = (*stepped.figures, *fill_only_figures(name, cut))
@@ -415,4 +454,4 @@ def _fill_only_steps(job: FillOnlyJob, terrain: np.ndarray, zones: tuple[Untouch
     if water_cells:
         text += f"; láminas de agua como terreno de partida en {water_cells} celdas"
     yield Progress(FILL_ONLY_PHASE, 1, 1, text, result=FillOnlyOutcome(
-        start, surface, stepped, water_cells, cut, figures, text))
+        start, surface, stepped, water_cells, cut, figures, text, notices))

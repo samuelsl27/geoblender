@@ -906,6 +906,24 @@ CATALOG: tuple[Message, ...] = (
         "Capa «{layer}»: las láminas de agua {value} y {other} se solapan en {cells} celdas; "
         "corrija la capa en QGIS (no se elige ninguna cota por ellas); no se calcula nada.",
     ),
+    # La lámina solo es la partida del relleno admitido (RF-014-23, RF-014-24; T55) ---------------
+    Message(
+        "des.fill_only_water_outside",
+        "Layer «{layer}», water sheet {polygon}: {cells} cells ({area} m²) fall outside the "
+        "admitted fill or in an untouchable; it is not filled there and the surface stays on the "
+        "recorded terrain.",
+        "Capa «{layer}», lámina de agua {polygon}: {cells} celdas ({area} m²) caen fuera del "
+        "relleno admitido o en un intocable; allí no se rellena y la superficie queda en el "
+        "terreno registrado.",
+        "warning",
+        count="cells",
+        one_msgid="Layer «{layer}», water sheet {polygon}: {cells} cell ({area} m²) falls outside "
+                  "the admitted fill or in an untouchable; it is not filled there and the surface "
+                  "stays on the recorded terrain.",
+        one_es="Capa «{layer}», lámina de agua {polygon}: {cells} celda ({area} m²) cae fuera del "
+               "relleno admitido o en un intocable; allí no se rellena y la superficie queda en el "
+               "terreno registrado.",
+    ),
     # Ajuste a un límite nuevo (RF-014-26 a RF-014-28) ------------------------------------------
     Message(
         "des.refit_outside",
