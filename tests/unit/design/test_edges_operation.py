@@ -11,7 +11,10 @@ RF-014-29; CE-014-06; plan 014 A10, A11, §5.2.3, §5.3.2).
   y el salto creado de la superficie con la transición (A11, ``created_steps``), con sus tres
   cifras (``des.transition_m3``, ``des.created_step_max_m``, ``des.created_step_share_pct``) y el
   aviso de RF-014-21 si queda dentro menos del porcentaje admitido. **CE-014-06**, segunda mitad:
-  con la transición, el salto creado del borde queda ≤ 1 m.
+  con la transición, el salto creado del borde queda ≤ 1 m. La transición **solo acerca la
+  superficie al terreno** (T40, hallazgo F-1 de la T38): junto al escarpe previo, la corta y la
+  regularización ya no pasan a relleno sobre el terreno (antes, 1.000 celdas, hasta 2,56 m y
+  1.300,8 m³), y en lo alto de él la final de la cantera ya no se ahonda.
 - ``design.steps.edge_transition_run``: «Calcular» la transición de una superficie de diseño de la
   versión deja su rejilla en un temporal y **nada registrado**; «Crear» registra
   ``des.edge_transition`` con ``des_trn_`` (``design_surface``) y ``des_erp_``, sus ajustes, sus
@@ -63,6 +66,12 @@ ANGLE_DEG = 35.0
 THRESHOLD_M, SHARE_PCT = 1.0, 99.0
 """El salto y el porcentaje admitidos por defecto (D-6)."""
 TAN = math.tan(math.radians(ANGLE_DEG))
+CHAMFER_SCALE = 0.98644
+"""La escala del *chamfer* 5×5 (ADR-0014): un paso de eje de 1 m cuesta 0,98644 m."""
+SCARP_ROWS = 6
+"""Las filas de la corta (de 1 m) junto al escarpe previo en que la descendente desde lo alto de él
+pasa del terreno, a mano: a ``k`` filas, ``3 + 0,25·k − tan 35° · 0,98644 · k > 0`` ⇔ ``k ≤ 6``
+(3 / 0,4407 = 6,8)."""
 
 A_BOX = (100.0, 260.0, 200.0, 300.0)
 """La corta de 4 m al pie del escarpe previo (local: izquierda, abajo, derecha, arriba; T27)."""
@@ -161,12 +170,19 @@ class EdgeTransitionDomainTest(unittest.TestCase):
         borde, no se avisa y su porcentaje dentro es el 100 %. En cada pareja del borde del
         dominio con su anillo (el terreno no afectado), el salto creado no pasa del de la
         transición (``tan θ`` por el paso más el espesor mínimo), también en la esquina del
-        escarpe previo, donde la pendiente del propio terreno pasa de 35°."""
+        escarpe previo, donde la pendiente del propio terreno pasa de 35°.
+
+        Las parejas del borde de la superficie nueva, a mano (T40): las :data:`SCARP_ROWS` filas
+        de la corta junto al escarpe y la regularización entera se quedan en el terreno (no se
+        mueven: véase la prueba d), así que lo movido son las 34 filas de 100 celdas del sur de la
+        corta y el relleno de 10 × 10: ``2·(100 + 34) + 4·10`` = 308 parejas (antes, 520, las del
+        dominio entero, con 1.000 celdas sobre el terreno)."""
         before = finish(edges.created_steps(self.surface, self.start, self.outcome.domain,
                                             qfx.GRID, THICKNESS_M, THRESHOLD_M, SHARE_PCT))
         self.assertEqual((before.pairs, before.over, before.maximum_m), (520, 316, 4.0))
         report = self.outcome.report
-        self.assertGreater(report.pairs, 0)
+        self.assertEqual(report.pairs, 2 * (100 + (40 - SCARP_ROWS)) + 4 * 10)
+        self.assertEqual(report.pairs, 308)
         self.assertEqual(report.over, 0)
         self.assertLessEqual(report.maximum_m, 1.0)
         self.assertFalse(report.warned)
@@ -183,6 +199,33 @@ class EdgeTransitionDomainTest(unittest.TestCase):
         for one, two in pairs:
             created = abs(grid[one] - grid[two]) - abs(start[one] - start[two])
             self.assertLessEqual(created, TAN * qfx.STEP_M + THICKNESS_M + 1e-9, (one, two))
+
+    def test_d_the_transition_only_brings_the_surface_closer_to_the_terrain(self) -> None:
+        """T40 (hallazgo F-1), RF-014-19, CE-014-06: ninguna celda del dominio queda fuera de
+        ``[mín(S, z), máx(S, z)]``: la transición no convierte el corte en relleno (antes, 1.000
+        celdas de corte quedaban sobre el terreno: 600 de la corta de 4 m y las 400 de la
+        regularización de 0,5 m, hasta 2,56 m y 1.300,8 m³). A mano: a ``k`` filas de 1 m del
+        escarpe previo, la descendente desde lo alto de él (3 m más los 0,25·k de la ladera) pasa
+        del terreno si ``k ≤ 6`` (:data:`SCARP_ROWS`); esas 6 filas de la corta (600 celdas) y las
+        4 de la regularización (400) se quedan en el terreno bit a bit; lo demás del dominio (las
+        34 filas del sur de la corta y el relleno de 2 m, lejos del escarpe) sigue movido."""
+        reach = TAN * CHAMFER_SCALE * qfx.STEP_M
+        self.assertTrue(all(3.0 + 0.25 * k - reach * k > 0.0
+                            for k in range(1, SCARP_ROWS + 1)))
+        self.assertLess(3.0 + 0.25 * (SCARP_ROWS + 1) - reach * (SCARP_ROWS + 1), 0.0)
+        grid, start, surface = self.outcome.grid, self.start, self.surface
+        domain = self.outcome.domain
+        with np.errstate(invalid="ignore"):
+            low, high = np.fmin(surface, start), np.fmax(surface, start)
+            away = domain & ((grid < low) | (grid > high))
+        self.assertEqual(int(away.sum()), 0)
+        left, _bottom, right, top = A_BOX
+        on_terrain = qfx.in_box((left, top - SCARP_ROWS, right, top)) | qfx.in_box(B_BOX)
+        self.assertEqual(int(on_terrain.sum()), 1_000)
+        np.testing.assert_array_equal(grid[on_terrain], start[on_terrain])
+        rest = domain & ~on_terrain
+        self.assertEqual(int(rest.sum()), 3_400 + 100)
+        self.assertTrue(bool((np.abs(grid[rest] - start[rest]) > THICKNESS_M).all()))
 
     def test_the_three_figures_and_the_message(self) -> None:
         """RF-014-19 a RF-014-21 (plan §5.2.3): las cifras CALCULADO de la transición, con el
@@ -457,6 +500,26 @@ class EdgeTransitionOperationTest(qfx.QuarryProjectCase):
             ("des.created_step_share_pct", scope): report.within_pct})
         self.assertGreater(expected.volume_m3, 0.0)
         self.assertIn(NAME, calculation.message)
+
+    def test_a_the_created_step_does_not_pass_the_one_of_the_final(self) -> None:
+        """T40 (hallazgo F-1), RF-014-19, RF-014-20, HU-014-5 (M7): la transición de la superficie
+        final de la cantera a 35° no aleja ninguna celda del terreno (ni la ahonda ni la sube más
+        que la final) y su salto creado no pasa del de la final sin transición, en el mismo
+        dominio. En esta rejilla de 2 m, el de la final es de 1,20 m; antes, la ascendente desde el
+        pie del escarpe previo ahondaba 25 celdas de lo alto de él, hasta 2,06 m, y el salto creado
+        subía a 2,12 m (en la de 1 m de la T38, con la «Corta» del H2, 117 celdas hasta 2,53 m y de
+        0,628 a 2,559 m)."""
+        outcome = self.calculation.outcome
+        final, start = self.grid_of(SURFACE), qfx.terrain(self.grid)
+        domain = outcome.domain
+        with np.errstate(invalid="ignore"):
+            low, high = np.fmin(final, start), np.fmax(final, start)
+            away = domain & ((outcome.grid < low) | (outcome.grid > high))
+        self.assertEqual(int(away.sum()), 0)
+        before = finish(edges.created_steps(final, start, domain, self.grid, self.thickness(),
+                                            THRESHOLD_M, SHARE_PCT))
+        self.assertGreater(before.maximum_m, 1.0)
+        self.assertLessEqual(outcome.report.maximum_m, before.maximum_m)
 
     def test_a_what_is_registered_repeats_the_request(self) -> None:
         """RF-014-29, RF-014-31: los ajustes son el nombre, la superficie de diseño y la de

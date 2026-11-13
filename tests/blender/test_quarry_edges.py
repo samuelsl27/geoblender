@@ -350,8 +350,9 @@ class CreateTransitionsTest(unittest.TestCase):
         """RF-014-19 a RF-014-21, RF-014-29 (M7): Calcular desde un guion deja el cálculo abierto
         con su resumen (la transición en m³ y el salto creado del borde, en los dos idiomas) y solo
         el temporal; Crear registra ``des.edge_transition`` hecha en V01 con ``des_trn_`` (la
-        transición de A10 en lo que mueve la superficie final, releída) y ``des_erp_`` y sus tres
-        cifras CALCULADO."""
+        transición de A10 en lo que mueve la superficie final, releída, que solo la acerca al
+        terreno: ninguna celda fuera de ``[mín(final, ladera), máx(final, ladera)]``, T40) y
+        ``des_erp_`` y sus tres cifras CALCULADO."""
         before = self.state()
         self.assertEqual(bpy.ops.geoblender.des_create_transitions(
             "EXEC_DEFAULT", **self.form()), {"FINISHED"})
@@ -385,6 +386,10 @@ class CreateTransitionsTest(unittest.TestCase):
                                                     ANGLE_DEG):
             pass
         np.testing.assert_array_equal(outcome.grid, expected.result.grid)
+        with np.errstate(invalid="ignore"):
+            low, high = np.fmin(final, ground()), np.fmax(final, ground())
+            away = domain & ((outcome.grid < low) | (outcome.grid > high))
+        self.assertFalse(bool(away.any()), "la transición aleja celdas del terreno")
         self.assertGreater(outcome.transition.volume_m3, 0.0)
 
         self.assertEqual(bpy.ops.geoblender.des_create_transitions(

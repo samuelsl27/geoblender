@@ -157,7 +157,17 @@ cantera con dos superficies, revise la clasificación y la cree en menos de 20 m
     terreno del borde de lo que mueve, sin paredes más empinadas que el ángulo de transición (sin
     valor por defecto), y mide el **salto creado** de cada pareja del borde como el salto con el diseño
     menos el que ya tenía el terreno: un escarpe natural no cuenta. Si menos del 99 % de las parejas
-    queda por debajo de 1 m, avisa con sus tramos, sin bloquear.
+    queda por debajo de 1 m, avisa con sus tramos, sin bloquear. La transición **solo acerca la
+    superficie al terreno**: cada celda queda entre su cota de diseño y la del terreno, así que no
+    convierte un corte en relleno ni un relleno en corte, no ahonda un corte ni sube un relleno, y no
+    rellena donde las restricciones solo admiten el corte. Su verificación lo encontró junto a un
+    escarpe previo más empinado que el ángulo: la primera versión subía por encima del terreno una
+    corta a su pie (en el caso del escalón creado junto al escarpe, 1.000 celdas, hasta 2,56 m y
+    1.300,8 m³ de relleno que el diseño no tenía) y ahondaba lo alto (en la cantera de prueba, el
+    salto creado de la superficie final pasaba de 0,63 a 2,56 m); ahora esas celdas se quedan en el
+    terreno o en el diseño (en la cantera de prueba, el salto creado queda en 0,61 m, frente a los
+    0,63 m de la final sin transición) y en el caso del escarpe las parejas del borde de la
+    superficie nueva son 308 en lugar de 520.
   - **Solo relleno…**: escalona en relleno una envolvente de la versión sin cortar nunca, con el pie
     dentro del relleno admitido (sin pasar el límite) y las **láminas de agua** de una capa como
     terreno de partida, solo en memoria; un diseño que cortaría 1 m³ o más, o movería algo en un

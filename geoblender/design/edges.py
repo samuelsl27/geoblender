@@ -1,20 +1,31 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """El borde de un diseño con el terreno no afectado: la transición y el salto creado (spec 014,
-T26 y T27; HU-014-5; RF-014-19 a RF-014-21; plan 014 A10, A11, §5.3.1).
+T26, T27 y T40; HU-014-5; RF-014-19 a RF-014-21; plan 014 A10, A11, §5.3.1).
 
 - :func:`transition_steps` (A10): la **transición** de una superficie de diseño ``S`` con el
   terreno no afectado del borde de su dominio de trabajo ``D``. Las semillas son la superficie de
   partida ``z`` en el **anillo exterior de una celda** de ``D`` (``dilate_square(D, 1) ∧ ¬D``,
   como la coronación, con dato de terreno); con el ángulo de transición ``θ`` (el parámetro
   ``des.edge.transition_deg``, sin valor por defecto: D-9) y la envolvente de la 013, ``T↓ =
-  ENV↓(·, tan θ)`` y ``T↑ = ENV↑(·, tan θ)``; dentro de ``D``, ``S' = mín(máx(S, T↓), T↑)`` (ninguna
-  pared más empinada que ``θ`` hacia el terreno no afectado, ni hacia abajo ni hacia arriba);
-  fuera, ``S``. El volumen de la transición es ``Σ |S' − S| · área de celda``
-  (:class:`Transition`).
+  ENV↓(·, tan θ)`` y ``T↑ = ENV↑(·, tan θ)``; dentro de ``D``, ``S'' = clip(mín(máx(S, T↓), T↑),
+  mín(S, z), máx(S, z))`` (ninguna pared más empinada que ``θ`` hacia el terreno no afectado, ni
+  hacia abajo ni hacia arriba, **acercando solo la superficie al terreno**: T40); fuera, ``S``. El
+  volumen de la transición es ``Σ |S'' − S| · área de celda`` (:class:`Transition`).
+
+  La transición **solo acerca la superficie al terreno** (T40; hallazgo F-1 de la T38): una celda
+  queda entre su cota de diseño y la del terreno, así que no convierte un corte en relleno ni un
+  relleno en corte, ni ahonda un corte ni sube un relleno; un diseño que solo corta donde la 012
+  admite el corte (o solo rellena donde admite el relleno) lo sigue haciendo con la transición. Sin
+  la cota, al pie de un escarpe previo más empinado que ``θ`` la descendente desde lo alto de él
+  subía la corta por encima del terreno, y en lo alto la ascendente desde su pie la ahondaba.
+  Donde la celda no tiene dato de terreno no hay terreno al que acercarse: ``S`` tal cual.
 
   Ninguna pareja del borde (una celda de ``D`` y su vecina fuera, con dato de terreno) queda más
-  empinada que ``θ`` siempre que el propio terreno del anillo no lo sea: los pesos de vecino del
-  *chamfer* 5×5 son menores que la distancia (ADR-0014) y la euclídea exacta es la distancia.
+  empinada que ``θ`` siempre que el propio terreno no lo sea: los pesos de vecino del *chamfer*
+  5×5 son menores que la distancia (ADR-0014) y la euclídea exacta es la distancia. La cota solo
+  actúa donde una envolvente pasaría del terreno o de ``S``: la celda se queda en el terreno (y su
+  pareja con el anillo, como en el terreno) o, junto a un escarpe previo más empinado que ``θ``, en
+  ``S`` (como el diseño).
 - :func:`created_steps` (A11): el **salto creado** en el borde de un diseño. Son del borde las
   parejas de celdas vecinas (4 vecinos) con una celda **movida** (en el dominio, con dato en las
   dos superficies y ``|S − z|`` mayor que el espesor mínimo de la 012) y la otra no (con dato en
@@ -26,7 +37,9 @@ T26 y T27; HU-014-5; RF-014-19 a RF-014-21; plan 014 A10, A11, §5.3.1).
   ``des.edge_transition`` («Transiciones con el terreno no afectado») con una superficie de diseño:
   su dominio (:func:`transition_domain`: las celdas que **mueve el diseño** donde las máscaras
   admiten mover el terreno, de modo que su anillo es el terreno no afectado del borde del diseño,
-  el mismo borde en que A11 mide el salto creado), la transición en él (A10), el salto creado de la
+  el mismo borde en que A11 mide el salto creado), la transición en él (A10, que solo acerca la
+  superficie al terreno: no rellena donde el diseño corta ni corta donde rellena, y así no rellena
+  donde la 012 solo admite el corte ni corta donde solo admite el relleno), el salto creado de la
   superficie nueva (A11), sus tres cifras (:func:`edge_transition_figures`) y el aviso de RF-014-21
   (:func:`edge_notices`), en un :class:`EdgeTransition`.
 
@@ -87,8 +100,8 @@ TRANSITION_NAME = "transición con el terreno no afectado"
 
 @dataclass(frozen=True, slots=True, eq=False)
 class Transition:
-    """La **transición** del borde (A10, RF-014-19): ``grid``, la superficie ``S'`` (m, float64,
-    nueva; ``NaN`` donde ``S`` no tiene dato); el volumen de la transición ``volume_m3`` (``Σ |S' −
+    """La **transición** del borde (A10, RF-014-19): ``grid``, la superficie ``S''`` (m, float64,
+    nueva; ``NaN`` donde ``S`` no tiene dato); el volumen de la transición ``volume_m3`` (``Σ |S'' −
     S| · área de celda``, lo que sube más lo que baja), las ``cells`` que cambian, el ángulo de
     transición ``angle_deg`` (°) y ``cell_area_m2``, el área de una celda."""
 
@@ -130,7 +143,8 @@ def _transition_units(surface: np.ndarray, start: np.ndarray, domain: np.ndarray
                       geometry: Grid, degrees: float, metric: Metric, name: str
                       ) -> Generator[None, None, Transition]:
     """Las unidades de :func:`transition_steps`: las dos envolventes desde el anillo y la
-    superficie nueva con lo que cambia, por bandas de filas."""
+    superficie nueva con lo que cambia, por bandas de filas: A10 acotada entre la superficie de
+    diseño y la de partida (``np.fmin``/``np.fmax``: sin dato de terreno, la cota es ``S``)."""
     with np.errstate(invalid="ignore"):
         ring = dilate_square(domain, 1) & ~domain & np.isfinite(start)
     seed = np.where(ring, start, np.nan)
@@ -145,8 +159,11 @@ def _transition_units(surface: np.ndarray, start: np.ndarray, domain: np.ndarray
     for first in range(0, geometry.nrows, step):
         rows = slice(first, first + step)
         before = surface[rows]
+        ground = start[rows]
         with np.errstate(invalid="ignore"):
             joined = np.minimum(np.maximum(before, lower[rows]), upper[rows])
+            joined = np.minimum(np.maximum(joined, np.fmin(before, ground)),
+                                np.fmax(before, ground))
             moved = np.where(domain[rows] & np.isfinite(before), np.abs(joined - before), 0.0)
         changed = moved > 0.0
         design[rows] = np.where(changed, joined, before)
@@ -170,9 +187,11 @@ def transition_steps(surface: np.ndarray, start: np.ndarray, domain: np.ndarray,
 
     Las semillas son ``z`` en el anillo exterior de una celda de ``D`` (Chebyshev) donde tiene
     dato; ``T↓`` y ``T↑``, sus envolventes descendente y ascendente con ``tan θ``; dentro de ``D``
-    y donde ``S`` tiene dato, ``S' = mín(máx(S, T↓), T↑)``; en las demás celdas, ``S`` tal cual
-    (una celda que ya está entre las dos no cambia ni un bit). Sin anillo con dato no hay
-    transición: ``S``, 0 m³.
+    y donde ``S`` tiene dato, ``S'' = clip(mín(máx(S, T↓), T↑), mín(S, z), máx(S, z))``: la
+    transición solo acerca la superficie al terreno (T40), sin convertir un corte en relleno ni un
+    relleno en corte, ni ahondar un corte ni subir un relleno (sin dato de ``z``, ``S``); en las
+    demás celdas, ``S`` tal cual (una celda que ya está entre las dos envolventes no cambia ni un
+    bit). Sin anillo con dato no hay transición: ``S``, 0 m³.
 
     Rechazos al llamar: el ángulo, como el parámetro (``check_quarry_param``:
     ``des.quarry_param_missing`` sin valor, D-9; ``des.quarry_param_range`` fuera de (0; 90));
@@ -570,8 +589,9 @@ def edge_transition_steps(surface: np.ndarray, start: np.ndarray, geometry: Grid
     partida ``start`` (``z``, m), por pasos de ``budget_s`` como mucho: el dominio
     (:func:`transition_domain`, con el espesor mínimo ``min_thickness_m`` y lo que admiten las
     máscaras, ``allowed``), la transición en él con el ángulo de transición ``angle_deg`` (°) y la
-    ``metric`` de la 013 (:func:`transition_steps`) y el salto creado de la superficie nueva en ese
-    mismo dominio con el salto admitido ``threshold_m`` (m) y el porcentaje admitido
+    ``metric`` de la 013 (:func:`transition_steps`, que solo acerca la superficie al terreno: lo
+    que el diseño corta no pasa a relleno ni al revés, T40) y el salto creado de la superficie
+    nueva en ese mismo dominio con el salto admitido ``threshold_m`` (m) y el porcentaje admitido
     ``share_pct`` (%) (:func:`created_steps`). El último ``Progress`` (fase :data:`EDGE_PHASE`)
     lleva el :class:`EdgeTransition` de la operación ``name`` (el ámbito de sus cifras).
 

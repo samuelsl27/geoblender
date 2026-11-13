@@ -1,21 +1,29 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""La transición del borde de un diseño con el terreno no afectado (spec 014, T26; HU-014-5;
-RF-014-19; plan 014 A10, §5.3.1).
+"""La transición del borde de un diseño con el terreno no afectado (spec 014, T26 y T40; HU-014-5;
+RF-014-19; plan 014 A10, §5.3.1; hallazgo F-1 de la T38).
 
 ``design.edges.transition_steps``: semillas ``z`` (la superficie de partida) en el anillo exterior
 de una celda del dominio ``D`` con dato de terreno; ``T↓ = ENV↓(·, tan θ)`` y ``T↑ = ENV↑(·, tan θ)``
 con la envolvente de la 013 y el ángulo de transición ``θ`` (el parámetro
-``des.edge.transition_deg``, sin valor por defecto: D-9); dentro de ``D``, ``S' = mín(máx(S, T↓),
-T↑)``; fuera, ``S``; el volumen de la transición, ``Σ |S' − S| · área de celda``.
+``des.edge.transition_deg``, sin valor por defecto: D-9); dentro de ``D``, ``S'' = clip(mín(máx(S,
+T↓), T↑), mín(S, z), máx(S, z))``: la transición **solo acerca la superficie al terreno** (T40: no
+convierte un corte en relleno ni un relleno en corte, ni ahonda un corte ni sube un relleno); fuera,
+``S``; el volumen de la transición, ``Σ |S'' − S| · área de celda``.
 
 - A mano: un terreno llano de 100 m y un dominio de 10 × 20 celdas de 2 m con una corta de 10 m en
   su mitad oeste y un relleno de 10 m en la este; con el *chamfer* 5×5 la distancia al anillo de
-  una celda a ``k`` celdas del borde es ``k · 2 · 0,98644`` m, así que ``S'`` y el volumen salen a
+  una celda a ``k`` celdas del borde es ``k · 2 · 0,98644`` m, así que ``S''`` y el volumen salen a
   mano por anillos (56, 48, 40, 32 y 24 celdas a 1 … 5 celdas).
 - Por fuerza bruta: una ladera con onda, un dominio con una muesca, una celda del anillo sin dato
   y una celda de la superficie sin dato, con la euclídea exacta.
 - En los dos: ninguna pareja del borde (una celda del dominio y su vecina fuera, con dato de
   terreno) más empinada que ``θ``, cuando antes lo eran.
+- Junto a un escarpe previo más empinado que ``θ`` (T40, F-1): una corta de 4 m a su pie, en una
+  zona sin relleno admitido, no pasa a relleno (antes, 80 celdas por encima del terreno, hasta
+  2,31 m y 93,5 m³); una corta de 2 m en lo alto no se ahonda (antes, 20 celdas hasta 0,31 m, y el
+  salto creado subía de 2,0 a 2,31 m); y en 20 casos al azar con escarpes, la de la euclídea exacta
+  es la cota de la fuerza bruta y ninguna celda del dominio queda fuera de ``[mín(S, z), máx(S,
+  z)]`` con ninguna de las dos métricas.
 """
 
 from __future__ import annotations
@@ -198,17 +206,39 @@ def slope_case() -> tuple[Any, np.ndarray, np.ndarray, np.ndarray]:
     return geometry, start, domain, surface
 
 
-def brute_force(surface: np.ndarray, start: np.ndarray, domain: np.ndarray) -> np.ndarray:
-    """``S'`` con las envolventes euclídeas exactas por fuerza bruta desde el anillo."""
+def joined(surface: np.ndarray, start: np.ndarray, domain: np.ndarray, *, tan: float = TAN,
+           step: float = STEP) -> np.ndarray:
+    """``S' = mín(máx(S, T↓), T↑)`` en el dominio (A10 sin acotar), con las envolventes euclídeas
+    exactas por fuerza bruta desde el anillo (8 vecinos, con dato de terreno); fuera, ``S``."""
     ring = np.zeros(domain.shape, dtype=bool)
+    padded = np.pad(domain, 1)
     for d_row, d_col in NEIGHBOURS_8:
-        ring |= np.roll(np.roll(domain, d_row, axis=0), d_col, axis=1)
+        ring |= padded[1 + d_row:1 + d_row + domain.shape[0], 1 + d_col:1 + d_col + domain.shape[1]]
     ring &= ~domain & np.isfinite(start)
-    seeds = np.where(ring, start, np.inf)
-    upper = oracles.brute_force_euclidean(seeds, TAN, STEP, direction="up")
-    lower = oracles.brute_force_euclidean(np.where(ring, start, -np.inf), TAN, STEP,
+    upper = oracles.brute_force_euclidean(np.where(ring, start, np.inf), tan, step,
+                                          direction="up")
+    lower = oracles.brute_force_euclidean(np.where(ring, start, -np.inf), tan, step,
                                           direction="down")
     return np.where(domain, np.minimum(np.maximum(surface, lower), upper), surface)
+
+
+def brute_force(surface: np.ndarray, start: np.ndarray, domain: np.ndarray, *, tan: float = TAN,
+                step: float = STEP) -> np.ndarray:
+    """``S''``: :func:`joined` acotada en el dominio entre ``mín(S, z)`` y ``máx(S, z)`` (T40; sin
+    dato de terreno, ``S``)."""
+    raw = joined(surface, start, domain, tan=tan, step=step)
+    low, high = np.fmin(surface, start), np.fmax(surface, start)
+    return np.where(domain, np.clip(raw, low, high), surface)
+
+
+def outside(found: np.ndarray, surface: np.ndarray, start: np.ndarray, domain: np.ndarray
+            ) -> np.ndarray:
+    """Las celdas del dominio con dato que quedan fuera de ``[mín(S, z), máx(S, z)]``: las que la
+    transición aleja del terreno (las que pasan de corte a relleno o al revés, o se ahondan o
+    suben más que el diseño)."""
+    with np.errstate(invalid="ignore"):
+        low, high = np.fmin(surface, start), np.fmax(surface, start)
+        return domain & np.isfinite(found) & ((found < low) | (found > high))
 
 
 class BruteForceTest(unittest.TestCase):
@@ -223,10 +253,12 @@ class BruteForceTest(unittest.TestCase):
                                                     cls.geometry, ANGLE_DEG))
 
     def test_exact_surface_and_volume_against_the_brute_force(self) -> None:
-        """RF-014-19, A10: ``S' = mín(máx(S, T↓), T↑)`` en el dominio a ≤ 10⁻⁹ m; la celda sin
-        dato sigue sin dato y la del anillo sin dato no siembra; el volumen, ``Σ |S' − S| · 4 m²``
+        """RF-014-19, A10: ``S'' = clip(mín(máx(S, T↓), T↑), mín(S, z), máx(S, z))`` en el dominio
+        a ≤ 10⁻⁹ m (en esta ladera, más tendida que ``θ``, la cota no cambia nada); la celda sin
+        dato sigue sin dato y la del anillo sin dato no siembra; el volumen, ``Σ |S'' − S| · 4 m²``
         a mano."""
         expected = brute_force(self.surface, self.start, self.domain)
+        np.testing.assert_array_equal(expected, joined(self.surface, self.start, self.domain))
         same_nan = np.isnan(self.found.grid) == np.isnan(expected)
         self.assertTrue(bool(same_nan.all()))
         self.assertTrue(math.isnan(self.found.grid[10, 8]))
@@ -263,6 +295,142 @@ class BruteForceTest(unittest.TestCase):
                                       self.surface[~self.domain])
 
 
+# --- Junto a un escarpe previo (T40; hallazgo F-1 de la T38) --------------------------------------
+
+SCARP_ANGLE_DEG = 35.0
+"""El ángulo de transición de los casos del escarpe (el del análisis de la cantera)."""
+SCARP_REACH = math.tan(math.radians(SCARP_ANGLE_DEG)) * CHAMFER_SCALE
+"""Lo que baja (o sube) la transición por celda de 1 m en línea recta: ``tan 35° · 0,98644``."""
+SCARP_THICKNESS_M = 0.02
+"""El espesor mínimo de la 012 de los casos (un dato de entrada)."""
+
+
+def scarp_edge(surface: np.ndarray, start: np.ndarray, allowed: np.ndarray) -> Any:
+    """La operación ``des.edge_transition`` (``edge_transition_steps``) en la rejilla de 40 × 40
+    celdas de 1 m con lo que admiten las máscaras ``allowed`` (el corte **o** el relleno
+    admitidos, como ``design.store``): salto admitido de 1 m y el 99 %."""
+    return finish(edges.edge_transition_steps(
+        surface, start, dfx.grid_from(40, 40, 1.0), angle_deg=SCARP_ANGLE_DEG,
+        min_thickness_m=SCARP_THICKNESS_M, threshold_m=1.0, share_pct=99.0, allowed=allowed,
+        name="Escarpe"))
+
+
+class ScarpTest(unittest.TestCase):
+    """RF-014-19, HU-014-5, A10 (T40; F-1): con un escarpe previo de 3 m más empinado que ``θ`` en
+    el anillo, la transición solo acerca la superficie al terreno."""
+
+    def test_a_cut_at_the_foot_of_a_scarp_is_not_turned_into_fill(self) -> None:
+        """(a) Una corta de 4 m (a 96 m) al pie de un escarpe de 3 m (el terreno, 100 m, y 103 m
+        en las 10 filas del norte), en una zona **sin relleno admitido** (la 012 solo admite ahí
+        el corte): ninguna celda queda por encima del terreno (antes, la descendente desde lo alto
+        del escarpe subía 80 celdas sobre él, hasta 2,31 m y 93,5 m³). A mano: a ``k`` celdas del
+        escarpe, ``T↓ = 103 − tan 35° · 0,98644 · k`` pasa del terreno si ``k ≤ 4`` (3 / 0,6907 =
+        4,34): esas 4 filas (80 celdas) se quedan en el terreno bit a bit, sin moverse; las demás,
+        entre la corta y el terreno; el salto creado, ≤ 1 m y sin aviso."""
+        start = np.full((40, 40), 100.0)
+        start[:10] = 103.0
+        surface = start.copy()
+        surface[10:20, 10:30] = 96.0
+        fill_allowed = np.ones((40, 40), dtype=bool)
+        fill_allowed[10:20, 10:30] = False
+        outcome = scarp_edge(surface, start, np.ones((40, 40), dtype=bool) | fill_allowed)
+        grid = outcome.grid
+        np.testing.assert_array_equal(outcome.domain, surface != start)
+        self.assertEqual(int(np.count_nonzero((grid > start) & ~fill_allowed)), 0)
+        self.assertEqual(int(outside(grid, surface, start, outcome.domain).sum()), 0)
+        self.assertTrue(all(3.0 - SCARP_REACH * k > 0.0 for k in range(1, 5)))
+        self.assertLess(3.0 - SCARP_REACH * 5, 0.0)
+        np.testing.assert_array_equal(grid[10:14, 10:30], start[10:14, 10:30])
+        self.assertTrue(bool(((grid[14:20, 10:30] >= 96.0) & (grid[14:20, 10:30] < 100.0)).all()))
+        self.assertLessEqual(outcome.report.maximum_m, 1.0)
+        self.assertFalse(outcome.report.warned)
+
+    def test_b_a_cut_on_top_of_a_scarp_is_not_deepened(self) -> None:
+        """(b) Una corta de 2 m (a 101 m) en lo alto de un escarpe de 3 m (103 m en las 20 filas
+        del norte, 100 m al sur), hasta su borde: ninguna celda queda por debajo de la corta
+        (antes, la ascendente desde el pie la ahondaba en las 20 celdas de la fila del borde,
+        ``100 + 0,6907`` = 100,69 m, 0,31 m) y el salto creado no pasa del de sin transición: 2,0 m,
+        a mano, entre la corta (101 m) y lo alto del escarpe (103 m) en las esquinas de esa fila
+        (antes, 2,31 m)."""
+        start = np.full((40, 40), 100.0)
+        start[:20] = 103.0
+        surface = start.copy()
+        surface[5:20, 10:30] = 101.0
+        outcome = scarp_edge(surface, start, np.ones((40, 40), dtype=bool))
+        grid = outcome.grid
+        self.assertEqual(int(np.count_nonzero(outcome.domain & (grid < surface))), 0)
+        self.assertEqual(int(outside(grid, surface, start, outcome.domain).sum()), 0)
+        np.testing.assert_array_equal(grid[19, 10:30], surface[19, 10:30])
+        before = finish(edges.created_steps(surface, start, outcome.domain,
+                                            dfx.grid_from(40, 40, 1.0), SCARP_THICKNESS_M, 1.0,
+                                            99.0))
+        self.assertEqual(before.maximum_m, 2.0)
+        self.assertEqual(outcome.report.maximum_m, 2.0)
+
+
+RANDOM_CASES = 20
+
+
+def scarp_case(seed: int) -> tuple[Any, float, np.ndarray, np.ndarray, np.ndarray, float]:
+    """Un caso al azar: una rejilla de 16 a 28 celdas por lado de 1 o 2 m; una ladera con un
+    **escarpe** de 2 a 6 m (de subida o de bajada) a lo largo de una fila o de una columna; una
+    corta y un relleno de 1 a 6 m en rectángulos al azar (pueden cruzar el escarpe); el ángulo de
+    transición, de 20 a 45°; el dominio, las celdas que mueve el diseño (``transition_domain``).
+    Devuelve la rejilla, el paso, el terreno, el diseño, el dominio y el ángulo."""
+    rng = np.random.default_rng(seed)
+    nrows, ncols = (int(value) for value in rng.integers(16, 29, size=2))
+    step = float(rng.choice((1.0, 2.0)))
+    rows, cols = np.indices((nrows, ncols))
+    x, y = (cols + 0.5) * step, (nrows - rows - 0.5) * step
+    start = 200.0 + rng.uniform(-0.3, 0.3) * x + rng.uniform(-0.3, 0.3) * y
+    height = float(rng.uniform(2.0, 6.0) * rng.choice((-1.0, 1.0)))
+    if rng.random() < 0.5:
+        start += np.where(rows < int(rng.integers(nrows // 4, 3 * nrows // 4)), height, 0.0)
+    else:
+        start += np.where(cols < int(rng.integers(ncols // 4, 3 * ncols // 4)), height, 0.0)
+    surface = start.copy()
+    for change in (-rng.uniform(1.0, 6.0), rng.uniform(1.0, 6.0)):
+        top, left = int(rng.integers(1, nrows - 5)), int(rng.integers(1, ncols - 5))
+        bottom = int(rng.integers(top + 3, nrows))
+        right = int(rng.integers(left + 3, ncols))
+        surface[top:bottom, left:right] = start[top:bottom, left:right] + change
+    domain = edges.transition_domain(surface, start, SCARP_THICKNESS_M)
+    return (dfx.grid_from(nrows, ncols, step), step, start, surface, domain,
+            float(rng.uniform(20.0, 45.0)))
+
+
+class RandomScarpTest(unittest.TestCase):
+    """RF-014-19, A10 (T40; F-1): 20 casos al azar con escarpes."""
+
+    def test_the_transition_never_moves_a_cell_away_from_the_terrain(self) -> None:
+        """En cada caso, con la euclídea exacta, la transición es la de la fuerza bruta (A10 acotada
+        entre ``mín(S, z)`` y ``máx(S, z)``) a ≤ 10⁻⁹ m, con su volumen; con las dos métricas,
+        ninguna celda del dominio queda fuera de ``[mín(S, z), máx(S, z)]``. Sin la cota (A10 antes
+        de la T40), al menos la mitad de los casos deja celdas fuera (16 de los 20: 324 celdas,
+        hasta 3,88 m): los escarpes cuentan."""
+        away = 0
+        for seed in range(RANDOM_CASES):
+            geometry, step, start, surface, domain, angle = scarp_case(seed)
+            tan = math.tan(math.radians(angle))
+            with self.subTest(seed=seed):
+                self.assertTrue(domain.any())
+                raw = joined(surface, start, domain, tan=tan, step=step)
+                away += int(outside(raw, surface, start, domain).any())
+                expected = brute_force(surface, start, domain, tan=tan, step=step)
+                exact = finish(edges.transition_steps(surface, start, domain, geometry, angle,
+                                                      metric="exact"))
+                chamfer = finish(edges.transition_steps(surface, start, domain, geometry, angle))
+                self.assertLessEqual(float(np.abs(exact.grid - expected).max()), TOLERANCE_M)
+                moved = np.abs(expected - surface)
+                self.assertAlmostEqual(exact.volume_m3,
+                                       math.fsum(moved.ravel().tolist()) * step * step,
+                                       delta=1e-6)
+                for found in (exact, chamfer):
+                    self.assertEqual(int(outside(found.grid, surface, start, domain).sum()), 0)
+                    np.testing.assert_array_equal(found.grid[~domain], surface[~domain])
+        self.assertGreaterEqual(away, RANDOM_CASES // 2)
+
+
 class LimitsTest(unittest.TestCase):
     """RF-014-19: los rechazos y los casos sin transición."""
 
@@ -291,6 +459,21 @@ class LimitsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             edges.transition_steps(self.surface, self.start, self.domain, self.geometry,
                                    ANGLE_DEG, metric="chamfer3")
+
+    def test_a_domain_cell_without_terrain_keeps_the_design(self) -> None:
+        """T40 (la transición solo acerca la superficie al terreno): una celda del dominio sin dato
+        de terreno no tiene terreno al que acercarse y conserva la superficie de diseño bit a bit
+        (antes, la celda de la corta a 5 celdas del borde subía de 90 a ``100 − t·a·5``); sus
+        vecinas, como siempre."""
+        start = self.start.copy()
+        start[10, 10] = np.nan
+        found = finish(edges.transition_steps(self.surface, start, self.domain, self.geometry,
+                                              ANGLE_DEG))
+        self.assertEqual(found.grid[10, 10], self.surface[10, 10])
+        reference = finish(edges.transition_steps(self.surface, self.start, self.domain,
+                                                  self.geometry, ANGLE_DEG))
+        self.assertGreater(reference.grid[10, 10], self.surface[10, 10])
+        np.testing.assert_array_equal(found.grid[9:12, 11], reference.grid[9:12, 11])
 
     def test_without_untouched_terrain_nothing_changes(self) -> None:
         """Sin anillo con dato (el dominio es toda la rejilla, o el anillo no tiene terreno) no
