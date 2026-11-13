@@ -802,6 +802,13 @@ CATALOG: tuple[Message, ...] = (
         "Capa «{layer}», lámina de agua {polygon}: «{field}» = {value} no es una cota válida; "
         "corríjala en QGIS (no se supone ninguna); no se calcula nada.",
     ),
+    Message(
+        "des.fill_only_water_overlap",
+        "Layer «{layer}»: water sheets {value} and {other} overlap in {cells} cells; correct the "
+        "layer in QGIS (no level is chosen for them); nothing is calculated.",
+        "Capa «{layer}»: las láminas de agua {value} y {other} se solapan en {cells} celdas; "
+        "corrija la capa en QGIS (no se elige ninguna cota por ellas); no se calcula nada.",
+    ),
     # Ajuste a un límite nuevo (RF-014-26 a RF-014-28) ------------------------------------------
     Message(
         "des.refit_outside",

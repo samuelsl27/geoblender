@@ -159,6 +159,9 @@ PENDING_014_MODULES = frozenset({
     # PAIR_CELLS_PER_UNIT, EdgeStretch, EdgeReport, created_steps; T28: EDGE_PHASE,
     # EdgeTransition, transition_domain, edge_notices, edge_transition_figures,
     # edge_transition_steps
+    "design.fronts",  # T29: FILL_ONLY_CUT_LIMIT_M3, FILL_ONLY_PHASE, UNTOUCHABLE_TYPE, FillOnlyJob,
+    # FillOnlyOutcome, UntouchableZone, WaterSheets, check_fill_only, fill_only_figures,
+    # fill_only_steps, untouchable_zones, water_sheets, with_water
     "design.quarry",  # T06: AreaOutcome, AreaPart, area_outcome, area_parts, excavation_area;
     # T07: HOLD_TYPES, SeedGroup, crown_ring, crown_seeds, hold_zones, outside_crown;
     # T08: FLOOR_LEVEL_MARGIN_M, FloorMap, FloorsAbove, floor_map, floors_above_terrain,
