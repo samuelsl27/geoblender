@@ -29,7 +29,11 @@ en m³ por recinto cualquier superficie de diseño (spec 012). Y calcula el dise
 envolventes de pendiente acotada hacia arriba y hacia abajo de unas semillas, perfiles de banco
 con nombre, y el escalonado en corte y en relleno, anclado a cotas absolutas, con la berma de cada
 sector, el recorte final y las cotas reales de las bermas, todo visto antes de calcular y
-confirmado antes de escribirse (spec 013). Lo de
+confirmado antes de escribirse (spec 013). Y diseña la cantera completa: el recinto excavable de las
+restricciones con las semillas en su coronación, los fondos por polígonos, los corredores, las zonas
+a conservar, la superficie final y la de explotación con su orden y su clasificación en desdoblado y
+relleno, la transición del borde con el terreno no afectado, el diseño «solo relleno» y el ajuste a
+un límite nuevo (spec 014, en curso; sus órdenes salen en gris hasta que se cierre). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
@@ -99,9 +103,101 @@ de referencia (los colores de la vista previa, los diálogos, el avance y Esc, l
 el GeoTIFF abierto en QGIS 4.2, las medidas en `Z:`, la comparación con el proyecto de referencia,
 que se ejecuta a petición (CE-013-10), y que un ingeniero de IMGA defina una semilla, elija un
 perfil y un sector con talud impuesto, revise la vista previa y confirme una superficie de diseño en
-menos de 15 minutos y sin ayuda (CE-013-11).
+menos de 15 minutos y sin ayuda (CE-013-11). Lo de la spec 014 está comprobado con Blender 5.2.1 sin
+su interfaz, con las órdenes reales y proyectos sintéticos (las dos superficies con los dos órdenes,
+su clasificación y «explotación hasta la final», la transición, «solo relleno», la comprobación al
+compilar las máscaras, el ajuste y la exportación), con casos de referencia calculados a mano
+(CE-014-01 a CE-014-08: las semillas en toda la ladera, la zona a conservar, el corredor de 200 m,
+100 diseños con los dos órdenes cuadrados con la cubicación, la zona de 2 ha sin explotar, el escalón
+creado junto a un escarpe, el tendido junto a la torre y el ajuste con 60° y 35°) y con datos del
+tamaño de un proyecto real (2,8 millones de celdas y 20 sectores) en disco local; faltan su
+verificación única, verlo en la pantalla de referencia, el GeoTIFF en QGIS 4.2, las medidas en
+`Z:`, la comparación con el proyecto de referencia (CE-014-09) y que un ingeniero de IMGA diseñe una
+cantera con dos superficies, revise la clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Añadido
+
+- **Cantera con dos superficies** (spec 014, en curso). Con las envolventes y el escalonado se hace
+  una corta, pero no la cantera completa de un proyecto; lo que pasó en el proyecto de referencia
+  (semillas en toda la ladera y fondos altísimos; una ladera a conservar enterrada, 58.167 m³; un
+  corredor con los extremos redondos 140 m más largo; hasta 36 m de «desdoblado» porque la explotación
+  no llegaba a la final; 39.000 m³ falsos al ajustar el muro de explotación a un límite nuevo con el
+  ángulo de la final; escalones de 3,6 a 4,7 m en el borde, medidos como salto absoluto; un tendido
+  «solo de relleno» que rebajó 26,6 m el montículo de una torre) no se puede repetir. Guía de uso:
+  `docs/usuario/cantera-con-dos-superficies.md` de la documentación. Menú **Diseño ▸ Cantera**
+  (Límite desde el perímetro…, Cantera con dos superficies…, Ajustar el diseño a un límite nuevo…,
+  Solo relleno…) y **Restauración ▸ Superficie final ▸ Transiciones con el terreno no afectado**: sus
+  órdenes ya calculan, pero **salen en gris** («Disponible en 014») hasta que la spec se cierre; hoy
+  se lanzan desde un guion.
+  - **Límite desde el perímetro…**: el recinto excavable de la versión activa, el corte admitido por
+    sus máscaras (perímetro ∩ límite legal, menos intocables, exclusiones, el resguardo hacia dentro
+    y las zonas sin corte) con dato de terreno, con su área en m². Vacío, se rechaza diciendo el área
+    de cada parte que lo vacía.
+  - **Cantera con dos superficies…**: la superficie final y la de explotación en una sola orden, cada
+    una con sus semillas, su perfil base y el de cada sector, su ancla y su métrica. Las semillas
+    «Coronación y zonas a sostener» siembran el terreno solo en el anillo que rodea el recinto (3
+    celdas, Adoptado «sin confirmar») y en los intocables y las zonas sin corte; con las de la 013, las
+    que caen fuera se avisan por grupos con su área y su centro. Las **cotas de fondo** se dan con una
+    capa de polígonos (un fondo es un suelo; dos que se solapan o una cota imposible se rechazan
+    nombrando la capa, el polígono, el campo y el valor); los **corredores**, con una capa de líneas,
+    su ancho y una cota o una rasante, con los extremos planos (un eje de 200 m mide 199 m, no 220); una
+    **zona a conservar** tiene su techo de conservación, con su talud (sin valor por defecto), y no se
+    excava ni se entierra; y el ancla **«Al fondo de cada muro»** pone las bermas de cada muro a la cota
+    de su fondo más k bancos. El **orden del diseño** («Primero la superficie final», por defecto, o
+    «Primero la superficie de explotación») sube la explotación o baja la final, y nunca se crean unas
+    superficies sin `final ≤ explotación ≤ terreno` a 1 mm. La diferencia se **clasifica** en
+    desdoblado, relleno de restauración (en una capa de zonas) y sin diferencia (el espesor mínimo de
+    la verificación), con sus m³ y ha por sector, iguales a los de la cubicación sobre las mismas
+    rejillas. Si la explotación no llega a la final en zonas de más de 1 m de desdoblado sobre terreno
+    sin explotar y de al menos 0,2 ha, **se avisa** con cada zona, y **«Explotación hasta la final»**
+    (en todas las zonas avisadas o en las de una capa) la baja con los bancos de su perfil hasta la
+    cota de su ancla inmediatamente por encima de la final y dice cuánto pasa del desdoblado a la
+    explotación. Se niega a calcular con un sector del recinto sin búsqueda de intocables vigente.
+  - **Transiciones con el terreno no afectado**: une una superficie de diseño (la seleccionada) con el
+    terreno del borde de lo que mueve, sin paredes más empinadas que el ángulo de transición (sin
+    valor por defecto), y mide el **salto creado** de cada pareja del borde como el salto con el diseño
+    menos el que ya tenía el terreno: un escarpe natural no cuenta. Si menos del 99 % de las parejas
+    queda por debajo de 1 m, avisa con sus tramos, sin bloquear.
+  - **Solo relleno…**: escalona en relleno una envolvente de la versión sin cortar nunca, con el pie
+    dentro del relleno admitido (sin pasar el límite) y las **láminas de agua** de una capa como
+    terreno de partida, solo en memoria; un diseño que cortaría 1 m³ o más, o movería algo en un
+    intocable, se rechaza nombrándolo.
+  - **Un límite nuevo**: **Compilar las máscaras** comprueba después, por pasos y con Esc, cada
+    superficie de esta spec de la versión y dice el volumen y el área que el límite vigente deja fuera
+    (también en la barra N de esa superficie); **Ajustar el diseño a un límite nuevo…** las ofrece
+    marcadas y las ajusta con **la cara de su propio perfil** (60° la explotación, 35° la final, no el
+    mismo para las dos), con los m³ de cada una; pedir otro ángulo se rechaza, y si el límite no corta
+    una superficie su ajuste es de 0 m³ y lo dice.
+  - **Confirmar antes de escribir**: las cinco órdenes calculan por pasos, con el avance en la barra
+    de estado y Esc, y enseñan su resumen; solo **Crear** lo registra, en una transacción. Son cinco
+    operaciones de la versión activa con sus entradas, sus parámetros y sus cifras con tipo y
+    procedencia (con el nombre de la operación, la superficie y el sector como ámbito): quedan
+    obsoletas con su causa si cambia una capa, un perfil o las máscaras, se recalculan con
+    «Recalcular lo obsoleto», se congelan con su revisión (las superficies, como superficies de diseño
+    para la verificación por recinto) y se reproducen, salvo el ajuste, que existe por un límite que
+    cambió.
+  - **Ver y exportar**: el recinto, las dos superficies, sus envolventes, la clasificación (con un
+    color por clase sobre la superficie final), la transición y la superficie ajustada se cargan como
+    objetos de tipo **Diseño**, con su ficha en la barra N; **Exportar rejilla a GeoTIFF…** las
+    exporta todas, y la clasificación y el recinto con su código por clase y su leyenda en los
+    metadatos.
+  - **Parámetros nuevos**, de versión: el anillo de coronación (3 celdas), el desdoblado que se avisa
+    (1 m) y su área mínima (0,2 ha), el salto creado admitido (1 m) y su porcentaje (99 %), todos
+    Adoptado «sin confirmar», y el ángulo de transición y el talud de conservación, **sin valor por
+    defecto**: los declara una persona con su origen.
+  - **Rendimiento**, medido en el PC de referencia con 2,8 millones de celdas y 20 sectores, en disco
+    local y con el equipo cargado por otros programas: las dos superficies, 9,3 s (≤ 20 s), con 511
+    MiB de pico; el salto creado, 0,03 s; la transición, 1,9 s; el ajuste de una superficie, 2,3 s, y
+    de las dos en una orden, de 4,0 a 4,7 s (una vez 5,4 s, frente a ≤ 5 s); cada llamada, de 94 a
+    156 ms (≤ 0,2 s); Esc, ≤ 0,16 s. `tools/check.py` sigue por debajo de 48 s (de 45,6 a 46,8 s).
+  - **Sin dependencias nuevas**: las componentes conexas y la distancia euclídea exacta con la cota
+    del más próximo son código propio sobre el numpy de Blender. Una corrección de un texto: la
+    descripción de «Límite desde el perímetro…» decía «Retranqueo y talud final desde el perímetro
+    hasta el fondo», que no es lo que hace; ahora dice «Recinto excavable de la versión: el corte
+    admitido por sus máscaras».
+  - **Lo que hoy no hace**, hasta su verificación única: la vista previa de la cantera no se activa
+    desde ninguna orden; el aviso de las semillas fuera de la coronación sale después de calcular; la
+    métrica exacta se ofrece y se rechaza; y la capa de láminas del diálogo de la cantera no se usa.
 
 - **Envolventes y escalonado** (spec 013). Antes de excavar un hueco, tender un frente o rellenar
   un talud hay que poder decir, con cifras, hasta dónde llega un talud y cómo se convierte en
@@ -112,7 +208,7 @@ menos de 15 minutos y sin ayuda (CE-013-11).
   puede repetir. Guía de uso: `docs/usuario/envolventes-y-escalonado.md` de la documentación.
   Menú **Diseño ▸ Parámetros** (Perfiles de banco…, Sectores de diseño…, Vista previa de semillas,
   dominios y restricciones) y **Diseño ▸ Cantera ▸ Envolventes y escalonado…**: sus órdenes dejan
-  de estar en gris (el resto de Cantera sigue «Disponible en R-34»).
+  de estar en gris (el resto de Cantera, de la spec 014, sigue en gris hasta que esta se cierre).
   - **Perfiles de banco…**: un perfil tiene un nombre (`EXPL_10_60_6`) y un código que no cambia, y
     su altura, la inclinación máxima de su cara, su berma mínima, su cota de anclaje y su factor de
     malla son parámetros con tipo, origen, decisor e historial, **por versión**: **ninguno tiene

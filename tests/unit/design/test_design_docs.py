@@ -10,9 +10,10 @@ describe; estas pruebas avisan de que se separan:
   ``des_bench_profile``, ``des_bmt_`` y ``des_rpt_``, igual que lo crea el código (salvo los
   comentarios, los espacios y las comillas); §4.2, las tres rejillas; §3.3, cada familia de
   parámetros;
-- ``docs/arquitectura/modulos/des.md``: la API nombra cada módulo de ``design``, cada clase y función
-  pública que define y nada que no exista; «Datos que posee» nombra sus datos, sus parámetros y sus
-  cifras; §1.2 no dice que el escalonado sea conservador sin decir frente a qué;
+- ``docs/arquitectura/modulos/des.md``: la API (§4.1, la 013, y §4.2, la 014: su T36) nombra cada
+  módulo de ``design``, cada clase y función pública que define y nada que no exista; «Datos que
+  posee» nombra sus datos, sus parámetros y sus cifras, también los de la 014; §1.2 no dice que el
+  escalonado sea conservador sin decir frente a qué;
 - la guía de uso ``docs/usuario/envolventes-y-escalonado.md``: **todo texto entre «» está en el
   catálogo** (los de ``core/i18n/messages.toml``, los de ``design.messages`` y los del catálogo de
   órdenes) **o es un ejemplo que la propia prueba lista**; las rutas de los datos, los parámetros y
@@ -122,79 +123,11 @@ AMBER_IN_THE_GUIDE = (
 AMBER_IN_THE_CHANGELOG = ("(en ámbar si su búsqueda está pendiente)",)
 TASKS_RELPATH = "specs/013-des-envolventes-y-escalonado/tasks.md"
 
-# Lo que la spec 014 añade a la API pública de ``design`` mientras se construye: la ficha
-# (``des.md`` §4.1) es de la 013 y la de la 014 la escribe su T36 (documentación). Cada tarea de la
-# 014 añade aquí sus nombres; la T36 los lleva a la ficha y vacía este conjunto.
-PENDING_014_API = frozenset({
-    # T02: design.model y design.params.
-    "Surface", "Order", "AnchorMode", "CellClass", "ToFinalMode", "LayerField", "CorridorFields",
-    "QuarrySide", "QuarryRequest", "check_quarry_param",
-    # T05: design.provenance.
-    "quarry_figure_scope", "quarry_operation_defs",
-    # T06: design.provenance, design.store y design.steps (el recinto).
-    "excavation_area_inputs", "excavation_area_settings", "excavation_area_start",
-    "PreparedArea", "compute_area_steps", "prepare_area_units", "prepare_excavation_area",
-    "excavation_area_run",
-    # T12: design.preview (el resumen de la vista previa de la cantera).
-    "QuarryPreview", "quarry_summarize_steps",
-    # T19: design.provenance, design.store, design.steps y design.reproduce (la operación
-    # des.quarry y el recálculo y la reproducción de la cantera y del recinto).
-    "quarry_inputs", "quarry_params", "quarry_profiles", "quarry_request", "quarry_settings",
-    "side_role", "columns_of", "PreparedQuarry", "QuarryCalculated", "QuarryParts",
-    "compute_quarry_steps", "prepare_quarry", "prepare_quarry_units", "quarry_berm_rows",
-    "quarry_compute_steps", "quarry_domain", "quarry_grids", "quarry_notices",
-    "quarry_parts_units", "quarry_report_rows", "run_excavation_area", "run_quarry", "quarry_run",
-    "reproduce_excavation_area", "reproduce_quarry",
-    # T28: design.provenance, design.store, design.steps y design.reproduce (la operación
-    # des.edge_transition, su recálculo y su reproducción).
-    "transition_inputs", "transition_settings", "transition_start", "PreparedTransition",
-    "SurfaceOrigin", "compute_transition_steps", "design_surface_of", "edge_report_rows",
-    "prepare_edge_transition", "prepare_transition_units", "run_edge_transition",
-    "transition_compute_steps", "edge_transition_run", "reproduce_edge_transition",
-    # T30: design.model, design.provenance, design.store, design.steps y design.reproduce (la
-    # operación des.fill_only, su recálculo y su reproducción).
-    "FillOnlyRequest", "fill_only_inputs", "fill_only_request", "fill_only_settings",
-    "FillOnlyParts", "PreparedFillOnly", "compute_fill_only_steps", "fill_only_compute_steps",
-    "fill_only_report_rows", "prepare_fill_only", "prepare_fill_only_units", "run_fill_only",
-    "fill_only_run", "reproduce_fill_only",
-    # T31: design.store (la comprobación contra un límite nuevo).
-    "limit_checks", "limit_checks_steps", "limit_surfaces",
-    # T32: design.model, design.provenance, design.store y design.steps (la operación des.refit
-    # y su recálculo).
-    "RefitRequest", "REFIT_PROFILE_PARAMS", "refit_figure_scope", "refit_inputs", "refit_output",
-    "refit_params", "refit_part", "refit_request", "refit_settings", "refit_source",
-    "REFIT_SOURCES", "PreparedRefit", "RefitPart", "compute_refit_steps", "prepare_refit",
-    "prepare_refit_units", "refit_compute_steps", "refit_profiles", "run_refit", "refit_run",
-    # T35: design.store (la caché de la comprobación contra un límite nuevo).
-    "LimitCheckMemo", "LimitKey", "LimitKeys", "limit_check_keys",
-})
-# Los módulos nuevos de la 014 que aún no tienen fila en la ficha (la T36 se la da y vacía esto).
-PENDING_014_MODULES = frozenset({
-    "design.grids",  # T03: Labels, dilate_square, label_components_steps
-    "design.edges",  # T26: TRANSITION_NAME, Transition, transition_steps; T27:
-    # PAIR_CELLS_PER_UNIT, EdgeStretch, EdgeReport, created_steps; T28: EDGE_PHASE,
-    # EdgeTransition, transition_domain, edge_notices, edge_transition_figures,
-    # edge_transition_steps
-    "design.fronts",  # T29: FILL_ONLY_CUT_LIMIT_M3, FILL_ONLY_PHASE, UNTOUCHABLE_TYPE, FillOnlyJob,
-    # FillOnlyOutcome, UntouchableZone, WaterSheets, check_fill_only, fill_only_figures,
-    # fill_only_steps, untouchable_zones, water_sheets, with_water
-    "design.quarry",  # T06: AreaOutcome, AreaPart, area_outcome, area_parts, excavation_area;
-    # T07: HOLD_TYPES, SeedGroup, crown_ring, crown_seeds, hold_zones, outside_crown;
-    # T08: FLOOR_LEVEL_MARGIN_M, FloorMap, FloorsAbove, floor_map, floors_above_terrain,
-    # with_floors, floor_cut_steps; T09: CorridorMap, corridor_cells, corridor_too_long;
-    # T10: CEILING_NAME, ConserveZone, ConservationCeiling, conservation_ceiling_steps,
-    # apply_ceiling, ConservePart, ConserveMoved, conserve_moved; T11: ANCHOR_LABEL, FloorAnchors,
-    # floor_anchor_steps, anchored_request; T13: SIDE_NAMES, SideJob, SideOutcome, join_floors,
-    # side_steps; T16: ORDER_NAMES, ORDER_TOLERANCE_M, OrderedSurfaces, QuarryJob, QuarryOutcome,
-    # order_surfaces, check_order, quarry_steps; T17: CLASS_NAMES, CLASS_CELLS_PER_UNIT,
-    # ClassTotals, Classification, classify_steps, classification_figures; T18: UNEXPLOITED_M,
-    # TO_FINAL_NAME, UnsplitZone, UnsplitZones, unsplit_zones_steps, ToFinal, to_final_steps,
-    # to_final_figures
-    "design.refit",  # T31: OUTSIDE_CODE, RefitCheck, limit_cells, outside_volume; T32:
-    # ANGLE_CODE, ANGLE_TOLERANCE_DEG, NOT_NEEDED_CODE, REFIT_NAME, REFIT_PHASE, ProfileFace,
-    # Refit, RefitOutcome, check_angle, face_slope, profile_faces, refit_figures, refit_outcome,
-    # refit_steps
-})
+# Las secciones de la API de la ficha ``des.md``: lo de la 013 y lo que añade la 014 (su T36). Un
+# módulo puede tener fila en las dos (lo de la 014 en un módulo de la 013, como ``design.store``):
+# la prueba junta sus celdas.
+API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
+                "### 4.2 Lo que entrega la spec 014 (R-34)")
 
 
 def one_line(text: str) -> str:
@@ -490,9 +423,13 @@ class ModuleCardDocTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.text = docs.read(DES_RELPATH)
-        api = section(cls.text, "### 4.1 Lo que entrega la spec 013 (R-33)")
-        cls.rows = {names[0]: cells[1] for table in tables(api) for cells in table
-                    if (names := backticked(cells[0])) and names[0].startswith("design.")}
+        cls.rows: dict[str, str] = {}
+        for heading in API_SECTIONS:
+            for table in tables(section(cls.text, heading)):
+                for cells in table:
+                    names = backticked(cells[0])
+                    if names and names[0].startswith("design."):
+                        cls.rows[names[0]] = f"{cls.rows.get(names[0], '')} {cells[1]}".strip()
 
     @staticmethod
     def named(cell: str) -> tuple[set[str], list[str]]:
@@ -512,16 +449,15 @@ class ModuleCardDocTest(unittest.TestCase):
         return found, suffixes
 
     def test_api_names_every_module_class_and_function_and_nothing_else(self) -> None:
-        """RF-013-01 a RF-013-34 (plan 013 §5.1 y §5.3.1): la API tiene una fila por cada módulo de
-        ``design``, nombra cada clase y función pública que define (con ``__all__``) y todo lo que
-        nombra existe en su módulo."""
+        """RF-013-01 a RF-013-34, RF-014-01 a RF-014-32 (plan 013 §5.1 y §5.3.1; plan 014 §5.1 y
+        §5.3.1; T36 de la 014): la API (§4.1 y §4.2) tiene una fila por cada módulo de ``design``,
+        también los de la 014, nombra cada clase y función pública que define (con ``__all__``) y
+        todo lo que nombra existe en su módulo."""
         modules = [f"design.{info.name}" for info in pkgutil.iter_modules(design.__path__)]
-        self.assertGreaterEqual(len(modules), 21)
+        self.assertGreaterEqual(len(modules), 26)
         self.assertEqual(sorted(set(self.rows) - set(modules)), [], "una fila sin módulo")
         for dotted in modules:
             with self.subTest(module=dotted):
-                if dotted in PENDING_014_MODULES and dotted not in self.rows:
-                    continue
                 self.assertIn(dotted, self.rows)
                 module = import_geoblender(dotted)
                 found, suffixes = self.named(self.rows[dotted])
@@ -530,7 +466,6 @@ class ModuleCardDocTest(unittest.TestCase):
                               or inspect.isfunction(getattr(module, name)))
                           and getattr(module, name).__module__ == module.__name__]
                 missing = [name for name in public if name not in found
-                           and name not in PENDING_014_API
                            and not any(name.endswith(suffix) for suffix in suffixes)]
                 self.assertEqual(missing, [])
                 self.assertEqual(sorted(name for name in found if not hasattr(module, name)), [])
@@ -560,6 +495,27 @@ class ModuleCardDocTest(unittest.TestCase):
         for op in (dprov.ENVELOPE, dprov.STEPPED, dprofiles.EDIT_BENCH_PROFILES):
             with self.subTest(operation=op):
                 self.assertIn(op, named)
+
+    def test_owned_data_parameters_figures_and_operations_of_the_014(self) -> None:
+        """RF-014-16, RF-014-29, RF-014-32 (plan 014 §5.2.2 y §5.2.3; T36): «Datos que posee» nombra
+        también cada familia de datos de la 014 (las rejillas y las dos tablas), sus siete
+        parámetros y sus cifras, y la ficha, sus cinco tipos de operación."""
+        owned = inline_tokens(section(self.text, "## Datos que posee"))
+        for family in dprov.QUARRY_FAMILIES:
+            shown = (raster_pattern(family.code, folder=False).removesuffix(".tif")
+                     if family.extension else table_pattern(family.code))
+            with self.subTest(dataset=family.code):
+                self.assertIn(shown, owned)
+        for definition in dparams.QUARRY_DEFINITIONS:
+            with self.subTest(parameter=definition.key):
+                self.assertIn(definition.key, owned)
+        for figure in dprov.QUARRY_FIGURES:
+            with self.subTest(figure=figure.key):
+                self.assertIn(figure.key, owned)
+        named = inline_tokens(self.text)
+        for op in dprov.QUARRY_OPERATION_TYPES:
+            with self.subTest(operation=op.op_type):
+                self.assertIn(op.op_type, named)
 
     def test_a_stepped_design_is_conservative_against_the_regularized_envelope(self) -> None:
         """RF-013-22, RF-013-26, RF-013-30 (spec 0.4; F-4, punto 4): §1.2 no dice sin más que cada
