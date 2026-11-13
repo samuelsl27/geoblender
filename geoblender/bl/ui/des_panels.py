@@ -116,7 +116,13 @@ de la versión activa de su diálogo (:func:`envelope_items`, leída en :func:`r
 resumen de su cálculo (:func:`show_summary`: «Diseño «solo relleno» «Balsa» en V01», el terraplén,
 el corte frente al terreno registrado y el área con movimiento, las celdas en que la lámina de agua
 es la partida, la inclinación y las bermas, y los avisos de su escalonado) y, en la ficha de su
-superficie (una ``des_srf_``), la capa de láminas con su campo."""
+superficie (una ``des_srf_``), la capa de láminas con su campo.
+
+**La comprobación contra un límite nuevo** (spec 014, T31; HU-014-7; RF-014-26): al recompilar las
+máscaras de una versión, :func:`limit_lines` añade al resumen de la compilación
+(``constraint_panels.compile_check_lines``) el aviso de cada superficie de diseño de la 014 que
+mueve algo fuera del límite vigente, con su volumen y su área (``design.store.limit_checks``), y la
+ficha de la barra N de esa superficie lo dice también, en alerta, tras su estado."""
 
 from __future__ import annotations
 
@@ -1344,6 +1350,10 @@ SELECTED_TAB = "Design"  # msgid de la pestaña y del título de la barra N
 EXPORT_GRID = "geoblender.des_export_design_grid"  # su botón: «Exportar rejilla a GeoTIFF…» (T28)
 MAX_CONSTRAINT_LINES = 10
 """Cuántas restricciones aplicadas enseña la barra N; de las demás, cuántas más hay."""
+_LIMIT_CHECKED = frozenset({design_provenance.QUARRY, design_provenance.EDGE_TRANSITION,
+                            design_provenance.FILL_ONLY, design_provenance.REFIT})
+"""Los tipos de operación cuyas superficies se comprueban contra el límite vigente en la barra N
+(los de ``design.store.LIMIT_CHECKED_TYPES``, sin importar el cálculo al habilitar)."""
 
 
 @dataclass(frozen=True)
@@ -1611,6 +1621,38 @@ def profiles_text(settings: Mapping[str, Any], profile_names: Mapping[str, str],
     return " · ".join(parts)
 
 
+def limit_lines(project: Any, version_uid: str) -> list[constraint_panels.Line]:
+    """Lo que añade la 014 al resumen de una compilación de las máscaras de la versión
+    ``version_uid`` (spec 014, T31; RF-014-26; ``constraint_panels.add_compile_check``): en alerta,
+    el aviso de cada superficie de diseño de la 014 de la versión que mueve algo fuera del límite
+    vigente, con su volumen y su área (``design.store.limit_checks``); ninguna si no queda nada
+    fuera. Solo lee."""
+    from ...design import store as design_store  # al usarlo: habilitar no carga el cálculo
+
+    shown = language()
+    return [constraint_panels.Line(check.notice.text(shown), alert=True)
+            for check in design_store.limit_checks(project, version_uid)
+            if check.notice is not None]
+
+
+def _outside_lines(project: Any, version_uid: str, uid: str) -> list[CardLine]:
+    """La ficha de una superficie de diseño de la 014 (el dato ``uid`` de la versión
+    ``version_uid``) que mueve algo fuera del límite vigente de su versión: su aviso, en alerta
+    (spec 014, T31; RF-014-26); ninguna línea si no deja nada fuera, si no es una superficie de la
+    014 o si las máscaras no están al día. Si no se puede comprobar, lo deja en el registro
+    técnico."""
+    from ...design import store as design_store  # al usarlo: habilitar no carga el cálculo
+
+    try:
+        checks = design_store.limit_checks(project, version_uid, names=(uid,))
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.info("No se pudo comprobar «%s» contra el límite vigente", uid, exc_info=True)
+        return []
+    shown = language()
+    return [CardLine(ROW_FIELD, check.notice.text(shown), alert=True) for check in checks
+            if check.notice is not None]
+
+
 def _constraint_lines(listed: Sequence[Any], version_code: str) -> list[CardLine]:
     """Las restricciones activas en la versión (``gis.masks.store.ListedConstraint``), cada una con su
     tipo y su nombre; las que pasan de :data:`MAX_CONSTRAINT_LINES`, contadas."""
@@ -1697,6 +1739,8 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
 
     lines: list[CardLine] = [
         CardLine(ROW_FIELD, cause or tr("Up to date"), alert=bool(found.stale))]
+    if owner and link.op_type in _LIMIT_CHECKED:  # una superficie de la 014 fuera del límite (T31)
+        lines += _outside_lines(project, owner, uid)
     try:
         touched = design_provenance.settings_touched(settings)
     except ValueError:
@@ -1909,16 +1953,19 @@ classes: tuple[type, ...] = (GEOBLENDER_UL_des_profiles, GEOBLENDER_PT_des_profi
 def install() -> None:
     """Pone la escucha de los indicadores (:func:`on_project_read`) y las de la barra N «Diseño»: la
     ficha del objeto activo, el proyecto de la sesión y las líneas más de «Elemento activo» y
-    «Cifras de la selección» de los objetos ``DESIGN``; idempotente."""
+    «Cifras de la selección» de los objetos ``DESIGN``; y la comprobación de las superficies de la
+    014 en el resumen de cada compilación de las máscaras (:func:`limit_lines`); idempotente."""
     provenance.add_change_listener(on_project_read)
     view_panels.add_card_listener(on_card_read)
     view_panels.register_object_lines(des_views.KIND, object_lines)
     project_session.add_listener(on_project_changed)
+    constraint_panels.add_compile_check(limit_lines)
 
 
 def uninstall() -> None:
     """Quita lo que puso :func:`install`, olvida el dato de la barra N y las listas del diálogo de las
     envolventes; idempotente."""
+    constraint_panels.remove_compile_check(limit_lines)
     project_session.remove_listener(on_project_changed)
     view_panels.unregister_object_lines(des_views.KIND, object_lines)
     view_panels.remove_card_listener(on_card_read)

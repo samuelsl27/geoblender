@@ -4313,12 +4313,16 @@ def pending_mask_runs() -> list[str]:
     return MASKS_RUNS.pending()
 
 
-def _report_mask_notices(result: object) -> None:
+def _report_mask_notices(result: object, version_uid: str = "") -> None:
     """Los avisos de una compilación (``StoredMasks``: el perímetro tomado del límite legal, una
-    zona fuera de la rejilla…), al registro de Blender en el idioma de Geoblender."""
+    zona fuera de la rejilla…), al registro de Blender en el idioma de Geoblender; y, de la versión
+    ``version_uid`` recompilada, lo que dicen los módulos que miran sus datos contra las máscaras
+    nuevas (``constraint_panels.compile_check_lines``; la 014: RF-014-26)."""
     found = getattr(result, "result", None)
     for notice in getattr(found, "notices", None) or ():
         jobs_ops.report_later("WARNING", notice.text(i18n.language()))
+    for line in constraint_panels.compile_check_lines(project_session.current(), version_uid):
+        jobs_ops.report_later("WARNING" if line.alert else "INFO", line.text)
 
 
 def _mask_name(handle: Any) -> str:
@@ -4333,9 +4337,13 @@ def queue_mask_steps(handle: OperationHandle, steps: Iterator[Progress]) -> None
     """Pone en la cola de las máscaras los pasos ``steps`` (``Progress``) de la compilación
     ``handle``, «en curso», y registra su temporizador si no lo estaba."""
     name = _mask_name(handle)
+    version_uid = str(getattr(handle, "version_uid", "") or "")
+
+    def report(result: object) -> None:
+        _report_mask_notices(result, version_uid)
+
     MASKS_RUNS.add(handle.uid, name,
-                   incorporation.RecomputeSteps(handle, name, steps,
-                                                report=_report_mask_notices),
+                   incorporation.RecomputeSteps(handle, name, steps, report=report),
                    status=incorporation.RECOMPUTING)
 
 
@@ -4511,6 +4519,9 @@ class GEOBLENDER_OT_gis_compile_constraints(ProvenanceAwareOperator, _StepsModal
         revision = shown.revision if shown is not None and shown.uid == handle.version_uid \
             else ""
         lines = constraint_panels.compile_lines(stored, revision, names)
+        # Lo que dicen de la versión recompilada los módulos que miran sus datos contra las
+        # máscaras nuevas (la 014: las superficies fuera del límite vigente, RF-014-26).
+        lines += constraint_panels.compile_check_lines(project, handle.version_uid)
         constraint_panels.show_report(lines)
         for line in lines:
             self._report({"WARNING" if line.alert else "INFO"}, line.text)

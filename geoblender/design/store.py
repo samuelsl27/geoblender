@@ -60,6 +60,10 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   (:func:`fill_only_compute_steps`, ``design.fronts.fill_only_steps``, compartido con la
   reproducción) y su escritura (:func:`compute_fill_only_steps`: ``des_srf_`` y ``des_rpt_``,
   :func:`fill_only_report_rows`); y :func:`run_fill_only`, su recálculo.
+- **La comprobación contra un límite nuevo** (spec 014, T31; RF-014-26): :func:`limit_checks` (y
+  :func:`limit_checks_steps`) da, al recompilar las máscaras, lo que cada superficie de la 014 de
+  la versión (:func:`limit_surfaces`) mueve fuera del límite vigente (``design.refit``), sin
+  escribir nada.
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -130,7 +134,7 @@ from ..gis.messages import GisError
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, backup_path, insert_rows, project_references, temporary_path
 from ..gis.vector import FeatureLayer
-from . import edges, fronts, pipeline, provenance, quarry
+from . import edges, fronts, pipeline, provenance, quarry, refit
 from .messages import DesignError
 from .model import (
     DesignRequest,
@@ -213,6 +217,10 @@ __all__ = [
     "edge_report_rows",
     "fill_only_compute_steps",
     "fill_only_report_rows",
+    "LIMIT_CHECKED_TYPES",
+    "limit_checks",
+    "limit_checks_steps",
+    "limit_surfaces",
     "masks_steps",
     "number",
     "prepare_area_units",
@@ -1290,6 +1298,105 @@ def design_surface_of(conn: sqlite3.Connection, name: str, version_uid: str
         settings = {}
     return SurfaceOrigin(record, str(row[0]),
                          MappingProxyType(settings if isinstance(settings, dict) else {}))
+
+
+# --- La comprobación contra un límite nuevo (spec 014, T31; RF-014-26; plan A13) -------------------
+
+LIMIT_CHECKED_TYPES: tuple[str, ...] = (provenance.QUARRY, provenance.EDGE_TRANSITION,
+                                        provenance.FILL_ONLY, provenance.REFIT)
+"""Los tipos de operación de la 014 cuyas superficies de diseño se comprueban contra el límite
+vigente al recompilar las máscaras: la cantera (sus dos superficies), la transición, «solo relleno»
+y el ajuste."""
+
+
+def limit_surfaces(conn: sqlite3.Connection, version_uid: str) -> tuple[SurfaceOrigin, ...]:
+    """Las superficies de diseño **de la 014** vivas en la versión ``version_uid`` (su uid), por el
+    nombre de su dato: las que escribió con el papel
+    :data:`~geoblender.design.provenance.DESIGN_SURFACE_ROLE` una operación de
+    :data:`LIMIT_CHECKED_TYPES` (no las envolventes, la clasificación ni las tablas; tampoco las de
+    un escalonado de la 013), cada una como :class:`SurfaceOrigin`. Solo lee."""
+    marks = ", ".join("?" for _ in LIMIT_CHECKED_TYPES)
+    rows = conn.execute(
+        "SELECT DISTINCT d.uid, d.name FROM gb_dataset AS d JOIN gb_operation_io AS io "
+        "ON io.item_uid = d.uid AND io.direction = 'out' AND io.item_kind = 'dataset' "
+        "JOIN gb_operation AS o ON o.uid = io.operation_uid "
+        f"WHERE d.version_uid = ? AND io.role = ? AND o.op_type IN ({marks}) ORDER BY d.name",
+        (version_uid, provenance.DESIGN_SURFACE_ROLE, *LIMIT_CHECKED_TYPES)).fetchall()
+    found: list[SurfaceOrigin] = []
+    for uid, _name in rows:
+        origin = design_surface_of(conn, str(uid), version_uid)
+        if origin is not None and origin.op_type in LIMIT_CHECKED_TYPES:
+            found.append(origin)
+    return tuple(found)
+
+
+def _min_thickness(conn: sqlite3.Connection, project: StoreProject, version: Version) -> float:
+    """El espesor mínimo de la 012 (``res.verify.min_thickness_m``) en la versión ``version``: el
+    suyo, el del proyecto o, sin ninguno, el de su definición. ``ValueError`` (error del programa)
+    si no está declarado ni registrado."""
+    resolved = ParameterStore(project).resolve_many(
+        conn, (VERIFY_MIN_THICKNESS,), (VERSION_SCOPE, PROJECT_SCOPE),
+        version=version.uid).get(VERIFY_MIN_THICKNESS)
+    if resolved is not None:
+        return float(resolved.value)
+    declared = definition(VERIFY_MIN_THICKNESS)
+    if declared is None or declared.default is None:
+        raise ValueError(f"«{VERIFY_MIN_THICKNESS}» no tiene valor ni está registrado")
+    return float(declared.default)
+
+
+def limit_checks_steps(project: StoreProject, version_uid: str, *,
+                       names: Iterable[str] | None = None, masks: access.MaskSet | None = None
+                       ) -> Generator[None, None, tuple[refit.RefitCheck, ...]]:
+    """**A13**, la comprobación (spec 014, T31; RF-014-26), por unidades (una por la lectura de las
+    máscaras y de cada superficie): cada superficie de la 014 de la versión ``version_uid`` (uid o
+    código; :func:`limit_surfaces`, o solo las de ``names``, por el nombre o el uid de su dato)
+    frente al límite **vigente** de sus máscaras (``design.refit.outside_volume``: lo que mueve
+    fuera de él frente a su superficie de partida, la de los ajustes de su operación, con el espesor
+    mínimo de la 012 en la versión). Devuelve una ``RefitCheck`` por superficie, en su orden; ninguna
+    sin superficies, si alguna no tiene partida en sus ajustes o si las máscaras no están al día
+    (sin compilar u obsoletas: no hay límite vigente contra el que comprobar). Solo lee.
+
+    Los errores de leer la versión, las máscaras o una superficie (``VersionError``, ``GisError``,
+    ``DesignError``) siguen; ``ValueError`` si una superficie no es de la rejilla de las máscaras."""
+    with project.read() as conn:
+        version = versions_read.version(conn, version_uid)
+        if version is None:
+            raise VersionError("core.version_unknown", field="versión", value=version_uid,
+                               version=version_uid)
+        surfaces = limit_surfaces(conn, version.uid)
+        thickness = _min_thickness(conn, project, version) if surfaces else 0.0
+    if names is not None:
+        wanted = set(names)
+        surfaces = tuple(origin for origin in surfaces
+                         if origin.record.name in wanted or origin.record.uid in wanted)
+    if not surfaces:
+        return ()
+    if masks is None:
+        state, _pending = access.mask_state(project, version.uid)
+        if state is not access.MaskState.CURRENT:
+            return ()
+        masks = yield from access.load_masks_steps(project, version.uid)
+    starts: dict[str, np.ndarray] = {}
+    found: list[refit.RefitCheck] = []
+    for origin in surfaces:
+        start = origin.start
+        if start is None:
+            continue
+        yield None
+        design = read_surface(project, origin.record.name, version_uid=version.uid).values
+        if start not in starts:
+            yield None
+            starts[start] = read_surface(project, start, version_uid=version.uid).values
+        found.append(refit.outside_volume(design, starts[start], masks, thickness,
+                                          name=origin.record.name, version=version.code))
+    return tuple(found)
+
+
+def limit_checks(project: StoreProject, version_uid: str, *, names: Iterable[str] | None = None,
+                 masks: access.MaskSet | None = None) -> tuple[refit.RefitCheck, ...]:
+    """:func:`limit_checks_steps` de una vez."""
+    return _result_of(limit_checks_steps(project, version_uid, names=names, masks=masks))
 
 
 def _result_of[T](work: Generator[object, None, T]) -> T:

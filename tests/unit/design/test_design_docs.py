@@ -157,6 +157,8 @@ PENDING_014_API = frozenset({
     "FillOnlyParts", "PreparedFillOnly", "compute_fill_only_steps", "fill_only_compute_steps",
     "fill_only_report_rows", "prepare_fill_only", "prepare_fill_only_units", "run_fill_only",
     "fill_only_run", "reproduce_fill_only",
+    # T31: design.store (la comprobación contra un límite nuevo).
+    "limit_checks", "limit_checks_steps", "limit_surfaces",
 })
 # Los módulos nuevos de la 014 que aún no tienen fila en la ficha (la T36 se la da y vacía esto).
 PENDING_014_MODULES = frozenset({
@@ -180,6 +182,7 @@ PENDING_014_MODULES = frozenset({
     # ClassTotals, Classification, classify_steps, classification_figures; T18: UNEXPLOITED_M,
     # TO_FINAL_NAME, UnsplitZone, UnsplitZones, unsplit_zones_steps, ToFinal, to_final_steps,
     # to_final_figures
+    "design.refit",  # T31: OUTSIDE_CODE, RefitCheck, limit_cells, outside_volume
 })
 
 

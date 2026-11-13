@@ -33,7 +33,9 @@ enlazada, lo que le falta y sus parámetros con su valor en la versión y en el 
 (``geoblender.core_create_constraints``), «Compilar las máscaras» (``geoblender.gis_compile_constraints``)
 y «Exportar las máscaras…» (``geoblender.gis_export_constraint_masks``); abajo, el último
 resultado de cada una (lo creado y lo rechazado, el informe de compilar con lo ganado y lo
-perdido y la búsqueda pendiente: :func:`compile_lines`). :func:`fill_constraints` regenera la
+perdido y la búsqueda pendiente: :func:`compile_lines`; y lo que dicen de la versión recompilada
+los módulos que miran sus datos contra las máscaras nuevas, :func:`compile_check_lines`: la 014,
+las superficies de diseño que quedan fuera del límite vigente). :func:`fill_constraints` regenera la
 vista desde el proyecto, sin escribir (``gis.masks.store.listed_constraints``). Debajo de los
 botones, «Ver restricciones y límites» (el control 30,
 ``geoblender.core_toggle_constraints_overlay``, pulsado mientras está activa) y la superficie de
@@ -105,7 +107,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -655,6 +657,43 @@ def compile_lines(stored: Any, revision: str, pending: Sequence[str]) -> list[Li
         lines.append(Line(tr("Search for untouchable elements pending in: {names}",
                              names="; ".join(pending)), alert=True))
     return lines
+
+
+CompileCheck = Callable[[Any, str], Sequence[Line]]
+"""Quien mira sus propios datos contra las máscaras recién compiladas de una versión (lo pone el
+``bl`` de su módulo con :func:`add_compile_check`): recibe el proyecto y el uid de la versión y da
+las líneas que se añaden al resumen de la compilación."""
+_COMPILE_CHECKS: list[CompileCheck] = []
+
+
+def add_compile_check(check: CompileCheck) -> None:
+    """Apunta ``check`` para el resumen de cada compilación (:func:`compile_check_lines`); si ya
+    estaba, no hace nada."""
+    if check not in _COMPILE_CHECKS:
+        _COMPILE_CHECKS.append(check)
+
+
+def remove_compile_check(check: CompileCheck) -> None:
+    """Quita ``check``; si no estaba, nada."""
+    if check in _COMPILE_CHECKS:
+        _COMPILE_CHECKS.remove(check)
+
+
+def compile_check_lines(project: Any, version_uid: str) -> list[Line]:
+    """Las líneas que añaden al resumen de una compilación de las máscaras de la versión
+    ``version_uid`` los que miran sus datos contra ellas (:func:`add_compile_check`; la 014, las
+    superficies de diseño que quedan fuera del límite vigente: RF-014-26), en su orden; sin
+    proyecto o sin versión, ninguna. Uno que falla va al registro técnico y no para a los demás ni
+    a la compilación, que ya está guardada."""
+    if project is None or not version_uid:
+        return []
+    found: list[Line] = []
+    for check in list(_COMPILE_CHECKS):
+        try:
+            found.extend(check(project, version_uid))
+        except Exception:  # noqa: BLE001 - la compilación ya está hecha: un aviso no la tumba
+            LOGGER.exception("Falló una comprobación de los datos contra las máscaras nuevas")
+    return found
 
 
 class GEOBLENDER_UL_core_constraints(bpy.types.UIList):
