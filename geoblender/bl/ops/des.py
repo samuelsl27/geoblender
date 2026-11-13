@@ -157,7 +157,9 @@ Cancelar y Esc son los de «Límite desde el perímetro…» (:class:`_Calculate
 dos): nada se registra hasta Crear (RF-014-29) y la confirmación dice «Crear con N avisos» si los
 hay. Los rechazos (un sector del recinto sin búsqueda vigente, RF-014-30; las capas
 y sus campos, los perfiles, el recinto vacío, el nombre repetido) y todas las cuentas son de
-``design``.
+``design``. El botón **«Vista previa»** del diálogo (T44; RF-014-04) es la misma orden con la oculta
+``preview`` y todo lo pedido: comprueba lo pedido sin calcular ni escribir nada y activa la vista
+previa de la 013 con ese diseño (``bl.draw.design.QuarryPlan``), que se quita como siempre.
 
 **Transiciones con el terreno no afectado** (spec 014, T28; HU-014-5; RF-014-19 a RF-014-21,
 RF-014-29; plan 014 §5.3.3, §5.5): :class:`GEOBLENDER_OT_des_create_transitions` (Restauración ▸
@@ -2140,8 +2142,31 @@ def _side_title(surface: design_model.Surface) -> str:
     return tr("Exploitation surface")
 
 
-_QUARRY_HIDDEN = frozenset({"confirm", "in_steps", "confirm_outside", "outside"})
+_QUARRY_HIDDEN = frozenset({"confirm", "in_steps", "confirm_outside", "outside", "preview"})
 """Las propiedades ocultas de «Cantera con dos superficies…»: las pone quien la lanza."""
+
+
+def _quarry_fields() -> tuple[str, ...]:
+    """Los campos del diálogo de «Cantera con dos superficies…»: sus propiedades no ocultas."""
+    return tuple(name for name in GEOBLENDER_OT_des_design_quarry.__annotations__
+                 if name not in _QUARRY_HIDDEN)
+
+
+def _draw_preview_button(layout: Any, operator: Any) -> None:
+    """El botón «Vista previa» del diálogo de la cantera (T44; RF-014-04): la misma orden con
+    ``preview`` y todo lo pedido en el diálogo (cada campo, tal como está), que se ejecuta sin
+    abrir otro diálogo. Un valor que su lista ya no ofrece se queda en el de por defecto (y lo
+    rechaza la orden si falta)."""
+    row = layout.row()
+    row.operator_context = "EXEC_DEFAULT"
+    shown = row.operator(DESIGN_QUARRY, text=tr("Preview"), icon="HIDE_OFF")
+    for name in _quarry_fields():
+        try:
+            setattr(shown, name, getattr(operator, name))
+        except (TypeError, ValueError):
+            LOGGER.debug("El campo %s no pasa a la vista previa de la cantera", name,
+                         exc_info=True)
+    shown.preview = True
 
 
 def _draw_outside(layout: Any, outside: str) -> None:
@@ -2354,6 +2379,8 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
     # o, desde un guion, quien la lanza) y lo que enseña ese diálogo (sus avisos, en JSON).
     confirm_outside: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
     outside: StringProperty(default="", options=_HIDDEN)  # type: ignore[valid-type]
+    # La vista previa de lo pedido (T44; RF-014-04): la pone el botón «Vista previa» del diálogo.
+    preview: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
 
     # --- El diálogo ---------------------------------------------------------------------------
 
@@ -2407,8 +2434,9 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
 
     def draw(self, context: Any) -> None:
         """Arriba el nombre, la superficie de partida y el orden; una caja por superficie; abajo
-        las capas con sus campos y «explotación hasta la final» (plan 014 §5.5). En la
-        confirmación de crear, el resumen; en la de las semillas fuera, sus avisos."""
+        las capas con sus campos, «explotación hasta la final» (plan 014 §5.5) y el botón «Vista
+        previa» (T44; RF-014-04: :func:`_draw_preview_button`). En la confirmación de crear, el
+        resumen; en la de las semillas fuera, sus avisos."""
         layout = self.layout
         if self.confirm:  # el resumen del cálculo abierto
             des_panels.draw_summary(layout, DIALOG_WIDTH)
@@ -2450,6 +2478,7 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
                     translate=False)
         if self.to_final == "LAYER":
             layout.prop(self, "to_final_layer", text=tr("Layer of zones"), translate=False)
+        _draw_preview_button(layout, self)
 
     def _draw_side(self, box: Any, shown: Any, surface: design_model.Surface) -> None:
         """La caja de una superficie: su título, sus semillas (la superficie o rejilla, la zona y
@@ -2572,9 +2601,12 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
         pide confirmar. Los rechazos (un sector del recinto sin búsqueda vigente, RF-014-30; las
         capas, los perfiles, el recinto vacío, el nombre repetido) son los de ``design``. Si las
         semillas de la 013 de un lado caen fuera de la coronación y de las zonas a sostener, sin
-        ``confirm_outside`` no calcula nada (RF-014-03, :meth:`_finished`)."""
+        ``confirm_outside`` no calcula nada (RF-014-03, :meth:`_finished`). Con ``preview``, la
+        vista previa de lo pedido (:meth:`_show_preview`)."""
         if self.confirm:
             return self._create(context)
+        if self.preview:
+            return self._show_preview()
         blocked = write_unavailable()
         if blocked is not None:
             self.report({"ERROR"}, blocked)
@@ -2604,6 +2636,41 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
                                         budget_s=self.STEP_BUDGET_S,
                                         confirm_outside=self.confirm_outside)
         return self._run_steps(context, project, request.name, steps)
+
+    def _show_preview(self) -> set[str]:
+        """«Vista previa» (T44; RF-014-04): comprueba lo pedido como al calcular (:meth:`_request`,
+        sin escribir ni calcular nada) y activa con ello la vista previa de la 013
+        (``bl.draw.design``, un ``QuarryPlan``: el recinto, la coronación, las zonas a sostener, los
+        fondos, los techos y los corredores con su leyenda); la que hubiera activa se quita antes
+        (pulsarlo otra vez la cambia por la nueva). Lo que falta del diálogo se rechaza sin tocar la
+        vista previa. Se quita como la de la 013: su control, conmutar, cerrar el proyecto."""
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        try:
+            request = self._request(SESSION.project)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        preview = _preview()
+        preview.disable()
+        try:
+            preview.enable(preview.QuarryPlan(request))
+        except (RuntimeError, GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, tr(
+                "The preview of seeds, domains and constraints could not be shown: {detail}",
+                detail=design_error_text(exc)))
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Showing the preview of the quarry «{name}»", name=request.name))
+        return {"FINISHED"}
 
     def _finished(self, context: Any, opened: Calculation | tuple[Any, ...]) -> set[str]:
         """El cálculo abierto, como en las demás órdenes; o, si ``quarry_run`` se paró antes de

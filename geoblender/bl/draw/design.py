@@ -24,7 +24,8 @@ Aquí **no se calcula nada de minería**: el resumen, las semillas, el dominio y
 construye sin ``gpu`` y se prueba en sus lotes (:class:`Built`, :class:`Points`; ``docs/trampas.md``
 §3: sin GPU en ``blender -b``).
 
-**Con un diseño de la cantera con dos superficies** (spec 014, T23; RF-014-04; plan 014 §5.5): lo que
+**Con un diseño de la cantera con dos superficies** (spec 014, T23; RF-014-04; plan 014 §5.5; la
+activa el botón «Vista previa» del diálogo de «Cantera con dos superficies…», T44): lo que
 se previsualiza es un :class:`QuarryPlan` (la ``design.model.QuarryRequest`` y el ancho del anillo de
 coronación: el pedido o el del parámetro ``des.quarry.crown_ring_cells`` de la versión,
 :func:`crown_ring_cells`) y la vista previa enseña, sobre la superficie de partida y con las

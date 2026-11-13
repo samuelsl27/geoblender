@@ -8340,6 +8340,12 @@ es = "Calcular con ellas"
 ["Nothing has been computed in «{name}»: confirm the seeds outside the crown and the zones to hold to compute with them (from a script, with confirm_outside=True)"]
 es = "No se ha calculado nada en «{name}»: confirme las semillas fuera de la coronación y de las zonas a sostener para calcular con ellas (desde un guion, con confirm_outside=True)"
 
+["Preview"]
+es = "Vista previa"
+
+["Showing the preview of the quarry «{name}»"]
+es = "Mostrando la vista previa de la cantera «{name}»"
+
 ["No layer"]
 es = "Ninguna capa"
 

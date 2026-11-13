@@ -32,15 +32,18 @@ búsqueda de intocables cerrada solo en el primero, y una ladera que sube 0,1 m 
   activarla y quitarla informa; una vista previa que el cálculo rechaza avisa con el motivo y se quita.
 - RF-013-01, RF-013-02 (h; H3, hallazgo 1): el resumen empieza a la derecha de la barra de herramientas
   de la Vista 3D cuando se superpone a la región (a escala 1,0 y 1,25), y sin ella queda donde estaba.
-- RF-014-04 (j; spec 014, T23; plan 014 §5.5; M1): con un diseño de la cantera con dos superficies
-  (``QuarryPlan``: su ``QuarryRequest`` con dos fondos, una zona a conservar y un corredor con rasante,
-  en capas del proyecto) la vista previa enseña además el recinto excavable (su borde), la coronación
-  (puntos en el color de las semillas, por cota), las zonas a sostener, los fondos con su cota, las
-  zonas a conservar que siembran los techos y los corredores, cada uno con su lote, sus nombres y su
-  fila en la leyenda (en los dos idiomas), todo igual a lo que dice ``design.preview`` y con el borde
-  de cada pieza, lado a lado, igual al de sus celdas; el anillo, el del parámetro o el pedido; sin
-  máscaras al día, solo los contornos y el aviso; una capa que el cálculo rechaza avisa y la quita; y
-  no escribe nada.
+- RF-014-04 (j; spec 014, T23 y T44; plan 014 §5.5; M1): el botón «Vista previa» del diálogo de
+  «Cantera con dos superficies…» (la misma orden con ``preview``, con todo lo pedido en el diálogo)
+  activa la vista previa con su diseño (``QuarryPlan``: su ``QuarryRequest`` con dos fondos, una zona
+  a conservar y un corredor con rasante, en capas del proyecto), sin calcular ni escribir nada; lo que
+  falta del diálogo se rechaza sin activarla, y pulsarlo otra vez la cambia por la nueva. La vista
+  previa enseña además el recinto excavable (su borde), la coronación (puntos en el color de las
+  semillas, por cota), las zonas a sostener, los fondos con su cota, las zonas a conservar que siembran
+  los techos y los corredores, cada uno con su lote, sus nombres y su fila en la leyenda (en los dos
+  idiomas), todo igual a lo que dice ``design.preview`` y con el borde de cada pieza, lado a lado,
+  igual al de sus celdas; conmutar a la interfaz de Blender (``Ctrl+F10``) la quita con la de la
+  cantera activa; el anillo, el del parámetro o el pedido por guion; sin máscaras al día, solo los
+  contornos y el aviso; una capa que el cálculo rechaza avisa y la quita; y no escribe nada.
 - Principio 8 (z): desactivar Geoblender con la vista previa activa quita el manejador, los avisos y
   el temporizador y deja la huella de Blender como al principio de la sesión.
 
@@ -103,6 +106,20 @@ CORRIDOR_FIELDS = {"ancho": 4.0, "cota_inicial": 97.0, "pendiente": 5.0}
 CORRIDOR_CELLS = 2 * 11  # x = 39 y 41; y = 9 … 29 (σ = 1 … 21 m: 97,05 a 98,05 m)
 AREA_CELLS = 22 * 22 - 5 * 5  # x, y = 7 … 49 menos la torre con su resguardo (x, y = 19 … 27)
 CROWN_CELLS = 28 * 28 - 22 * 22 + 5 * 5  # el anillo de 3 celdas y el agujero de la torre
+QUARRY = "geoblender.des_design_quarry"
+PROFILE = "REST_5_35_6"  # el perfil de banco de las dos superficies de la cantera (T44)
+QUARRY_FIELDS = {  # los campos del diálogo de la cantera, con lo que pone por defecto (T44)
+    "name": "", "start": "none", "order": "FINAL_FIRST", "final_seeds": "CROWN",
+    "final_surface": "none", "final_zone": "none", "final_elevation": "", "final_profile": "",
+    "final_anchor": "FIXED", "final_anchor_grid": "none", "final_metric": "CHAMFER5",
+    "exploitation_seeds": "CROWN", "exploitation_surface": "none", "exploitation_zone": "none",
+    "exploitation_elevation": "", "exploitation_profile": "", "exploitation_anchor": "FIXED",
+    "exploitation_anchor_grid": "none", "exploitation_metric": "CHAMFER5", "floors_layer": "none",
+    "floors_field": "cota", "conserve": "none", "corridors_layer": "none",
+    "corridors_width_field": "ancho", "corridors_level": "FIXED", "corridors_level_field": "cota",
+    "corridors_start_field": "cota_inicial", "corridors_grade_field": "pendiente",
+    "fill_layer": "none", "water_layer": "none", "water_field": "cota", "to_final": "NONE",
+    "to_final_layer": "none"}
 
 
 def _module(name: str) -> ModuleType:
@@ -981,17 +998,39 @@ class DesignPreviewTest(unittest.TestCase):
         return bool(np.allclose(z_local, 100.0 + 0.1 * (x_local + self.origin.x0 - WEST)
                                 - self.origin.z0, atol=2e-3))
 
+    def quarry_form(self, **values: Any) -> dict[str, Any]:
+        """Lo pedido en el diálogo de la cantera: «Corta» sobre la ladera, las dos superficies con
+        el perfil :data:`PROFILE` (por su nombre), los fondos, la zona a conservar y los corredores
+        con rasante (sus campos, los propuestos); cambiado por ``values``."""
+        return {"name": "Corta", "start": self.ground, "final_profile": PROFILE,
+                "exploitation_profile": PROFILE, "floors_layer": FLOORS_LAYER,
+                "conserve": f"layer:{CONSERVE_LAYER}", "corridors_layer": CORRIDORS_LAYER,
+                "corridors_level": "GRADE", **values}
+
+    def preview_button(self, form: dict[str, Any]) -> Any:
+        """El botón de la orden de la cantera en su diálogo, dibujado con lo pedido en ``form``
+        (los demás campos, los de :data:`QUARRY_FIELDS`)."""
+        cls = self.des_ops.GEOBLENDER_OT_des_design_quarry
+        shown = draw(cls, bpy.context, confirm=False, outside="", **{**QUARRY_FIELDS, **form})
+        (button,) = [item for item in shown.of_kind("operator") if item.target == QUARRY]
+        return button
+
     def test_j_a_quarry_design_adds_its_pieces_with_their_legend(self) -> None:
-        """RF-014-04 (spec 014, T23; plan 014 §5.5; M1): con un diseño de la cantera con dos
-        superficies (``QuarryPlan``) la vista previa enseña, sobre la superficie de partida y sin
+        """RF-014-04 (spec 014, T23 y T44; plan 014 §5.5; M1): el botón «Vista previa» del diálogo de
+        «Cantera con dos superficies…» es la misma orden con ``preview`` y todo lo pedido en él; la
+        orden comprueba lo pedido (lo que falta, rechazado sin activar nada) y activa la vista previa
+        con su diseño (``QuarryPlan``), sin calcular ni escribir nada; pulsarlo otra vez la cambia
+        por la nueva. La vista previa enseña, sobre la superficie de partida y sin
         escribir nada, además de las restricciones y los sectores: el borde del recinto excavable, la
         coronación (un punto por celda en su cota, coloreado por ella como las semillas), el borde de
         las zonas a sostener, el de cada fondo con su cota, el de las zonas a conservar (y su trama)
         con su nombre y el de cada corredor con sus cotas; cada borde, lado a lado, igual al de sus
         celdas en ``design.preview`` (y las celdas, a mano); la leyenda con una fila por pieza y el
-        resumen de ``design``, en español y en inglés. El anillo es el del parámetro (3 celdas por
-        defecto) o el pedido; sin las máscaras de la versión, solo los contornos y el aviso; una capa
-        que el cálculo rechaza avisa con el motivo y la quita."""
+        resumen de ``design``, en español y en inglés. Conmutar a la interfaz de Blender
+        (``Ctrl+F10``, los ganchos del conmutador) la quita con la de la cantera activa. El anillo es
+        el del parámetro (3 celdas por defecto) o el pedido por guion; sin las máscaras de la versión,
+        solo los contornos y el aviso; una capa que el cálculo rechaza avisa con el motivo y la
+        quita."""
         design, constraints = self.design, self.constraints
         grid_module = _module("gis.grid")
         rng = np.random.default_rng(14)
@@ -1021,19 +1060,41 @@ class DesignPreviewTest(unittest.TestCase):
         if access.mask_state(self.project, self.v01.uid)[0] is not access.MaskState.CURRENT:
             self.compile_masks(self.v01)
         self.set_active(self.v01)
+        self.assertEqual(bpy.ops.geoblender.des_save_bench_profile(  # el que piden los dos lados
+            name=PROFILE, kind="ADOPTADO", source=REASON, decided_by=PERSON, reason=REASON,
+            scope="PROJECT", height="5", face="35", berm="6", anchor="100"), {"FINISHED"})
+        self.panels.fill_profiles(self.project)
+        code = self.panels.profile_codes()[PROFILE]
         m = self.dmodel
         request = m.QuarryRequest(
-            "Corta", self.ground, m.QuarrySide("rest_5_35_6"), m.QuarrySide("expl_10_60_6"),
+            "Corta", self.ground, m.QuarrySide(code), m.QuarrySide(code),
             floors=m.LayerField(FLOORS_LAYER, "cota"),
             conserve=(m.Zone(m.ZoneKind.LAYER, CONSERVE_LAYER),),
             corridors=m.CorridorFields(CORRIDORS_LAYER, "ancho", start_level_field="cota_inicial",
                                        grade_field="pendiente"))
         files, operations = self.files(), self.operations()
 
-        plan = design.QuarryPlan(request)
-        design.enable(plan)
+        self.panels.refresh_choices(self.project)  # las capas nuevas, en las listas del diálogo
+        form = self.quarry_form()
+        button = self.preview_button(form)  # «Vista previa»: la orden de la cantera, con lo pedido
+        self.assertEqual((button.text, button.icon, button.operator_context),
+                         ("Vista previa", "HIDE_OFF", "EXEC_DEFAULT"))
+        self.assertEqual(vars(button.properties), {**QUARRY_FIELDS, **form, "preview": True})
+        with self.assertRaises(RuntimeError) as caught:  # lo que falta: nada activado
+            bpy.ops.geoblender.des_design_quarry("EXEC_DEFAULT", preview=True,
+                                                 **self.quarry_form(final_profile=""))
+        self.assertIn("Elija el perfil base de «Superficie final»", str(caught.exception))
+        self.assertFalse(design.enabled())
+        self.assertEqual(bpy.ops.geoblender.des_design_quarry(
+            "EXEC_DEFAULT", preview=True, **self.quarry_form(corridors_layer="none")),
+            {"FINISHED"})
+        self.assertEqual(design.plan(), design.QuarryPlan(replace(request, corridors=None)))
+        self.assertEqual(bpy.ops.geoblender.des_design_quarry("EXEC_DEFAULT", preview=True, **form),
+                         {"FINISHED"})  # pulsarlo otra vez: la nueva en lugar de la otra
         self.assertTrue(design.enabled() and design.drawing() and design.building())
-        self.assertIs(design.plan(), plan)
+        self.assertEqual(design.plan(), design.QuarryPlan(request))
+        self.assertIs(getattr(bpy.context.window_manager, WM_PROPERTY), True)
+        self.assertIsNone(self.des_ops.calculation())  # ni un cálculo abierto
         built = self.pump()
         truth = self.quarry_truth(request, 3)  # el anillo del parámetro: 3 celdas por defecto
         grid = truth.masks.grid
@@ -1154,8 +1215,24 @@ class DesignPreviewTest(unittest.TestCase):
                          f"Zone to conserve «{CONSERVE_LAYER}»"} <= names)
         self.i18n.set_language("es")
 
-        design.disable()  # el anillo pedido, no el del parámetro
-        design.enable(design.QuarryPlan(request, ring_cells=1))
+        switcher = self.switcher  # conmutar a la interfaz de Blender la quita
+        self.assertIn(design.disable, switcher.blender_hooks())
+        window = bpy.context.window_manager.windows[0]
+        self.addCleanup(switcher.forget)
+        with mock.patch.object(switcher, "_marked", return_value={window.workspace.name}):
+            self.assertTrue(switcher.toggle(window, "BLENDER").workspace)
+        self.assertFalse(design.enabled() or design.drawing() or design.building())
+        self.assertIsNone(design.plan())
+        self.assertIsNone(design.built())
+        self.assertIs(getattr(bpy.context.window_manager, WM_PROPERTY), False)
+        self.assertEqual(len(self.view.preview), 0)
+        other_space = next(space.name for space in bpy.data.workspaces
+                           if space.name != window.workspace.name)
+        with mock.patch.object(switcher, "_marked", return_value={other_space}):
+            self.assertEqual(switcher.toggle(window, "GEOBLENDER").workspace, other_space)
+        self.assertFalse(design.enabled())
+
+        design.enable(design.QuarryPlan(request, ring_cells=1))  # el anillo pedido por guion
         narrow = self.pump()
         self.assertEqual(narrow.seeds.total, 24 * 24 - 22 * 22 + 16)  # y el borde del agujero
         self.assertEqual(narrow.seeds.total, int(self.quarry_truth(request, 1).crown.sum()))
@@ -1172,8 +1249,10 @@ class DesignPreviewTest(unittest.TestCase):
         design.disable()
 
         self.ps.take_notices()
-        wrong = replace(request, floors=m.LayerField(FLOORS_LAYER, "nada"))
-        design.enable(design.QuarryPlan(wrong))
+        self.assertEqual(bpy.ops.geoblender.des_design_quarry(
+            "EXEC_DEFAULT", preview=True, **self.quarry_form(floors_field="nada")), {"FINISHED"})
+        self.assertEqual(design.plan(), design.QuarryPlan(
+            replace(request, floors=m.LayerField(FLOORS_LAYER, "nada"))))
         self.assertIsNone(self.run_to_end())
         self.assertFalse(design.enabled() or design.drawing() or design.building())
         (notice,) = self.ps.take_notices()
