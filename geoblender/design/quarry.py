@@ -40,10 +40,12 @@
 
 - :func:`corridor_cells` (T09; RF-014-09, RF-014-10; A6): los **corredores** de una capa de
   líneas (eje, ancho y una cota fija o una rasante) convertidos en fondos con **extremos planos**
-  (:class:`CorridorMap`, con un :class:`FloorMap`): las celdas a ≤ ancho/2 de un tramo cuya
-  proyección no cae fuera del eje, con la cota fija o la de la rasante en la abscisa de esa
-  proyección; su longitud medida es la del eje con error ≤ 1 celda (error 20), y
-  :func:`corridor_too_long` da el aviso de RF-014-10.
+  (:class:`CorridorMap`, con un :class:`FloorMap`): las celdas en la banda de un tramo o en la
+  unión redonda de un vértice interior sin pasar de un extremo del eje (T41: también con un tramo
+  extremo más corto que medio ancho), con la cota fija o la de la rasante en la abscisa de su
+  punto más próximo del eje; su longitud medida (la extensión de la huella a lo largo del eje)
+  no pasa de la del eje más una celda (error 20), y :func:`corridor_too_long` da el aviso de
+  RF-014-10.
 
 - :func:`conservation_ceiling_steps` (T10; RF-014-07; A5): el **techo de conservación** ``U =
   ENV↑(z en Z, tan(talud de conservación))`` de las zonas a conservar (:class:`ConserveZone`)
@@ -679,7 +681,8 @@ class CorridorMap:
     fuera; ``levels``, la cota fija o la inicial de cada uno; ``field``, el campo de esa cota) y,
     por corredor en el orden de la capa, su ancho (``widths_m``), la longitud de su eje
     (``axes_m``) y la longitud medida en la rejilla (``lengths_m``: el máximo menos el mínimo de
-    la abscisa de sus celdas; 0 si no tiene ninguna), todas en m."""
+    la abscisa sin recortar de sus celdas, la extensión de su huella a lo largo del eje; 0 si no
+    tiene ninguna), todas en m."""
 
     floors: FloorMap
     widths_m: tuple[float, ...]
@@ -758,43 +761,69 @@ def _corridor_window(paths: list[np.ndarray], half: float,
     return slice(row0, row1), slice(col0, col1)
 
 
+def _segment_frame(a: np.ndarray, b: np.ndarray, length: float, geometry: Grid,
+                   rows: np.ndarray, cols: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """La proyección (``along``, m desde ``a`` en el sentido de ``b``) y la distancia con signo a
+    la recta (``across``, m) de los centros de las filas ``rows`` y columnas ``cols`` de
+    ``geometry`` respecto del tramo ``a → b`` de longitud ``length`` (> 0)."""
+    ux, uy = (b - a) / length
+    px = ((geometry.west - a[0]) + (cols + 0.5) * geometry.dx)[None, :]
+    py = ((geometry.north - a[1]) - (rows + 0.5) * geometry.dy)[:, None]
+    return px * ux + py * uy, py * ux - px * uy
+
+
 def _corridor_sigma(paths: list[np.ndarray], half: float, geometry: Grid,
-                    window: tuple[slice, slice]) -> np.ndarray:
+                    window: tuple[slice, slice]) -> tuple[np.ndarray, np.ndarray]:
     """La abscisa ``σ`` (m, a lo largo del eje desde su principio; las partes, seguidas) de cada
-    celda de ``window`` dentro del corredor, ``NaN`` fuera (A6). Por tramo: la distancia del
-    centro al tramo y la proyección ``t`` sobre su recta; dentro si la distancia es ≤ ``half`` y
-    ni ``t < 0`` en el primer tramo de un camino ni ``t`` pasa del último (extremos planos,
-    perpendiculares al eje; en un vértice interior, la unión redonda de la distancia al tramo).
-    Cada celda toma la abscisa del tramo más próximo (a igual distancia, el anterior)."""
+    celda de ``window`` dentro del corredor y su abscisa **sin recortar**, ``NaN`` fuera (A6).
+
+    Cada celda toma el tramo más próximo de **todo** el eje (a igual distancia, el anterior):
+    ``σ`` es la abscisa de su punto más próximo; la sin recortar, la de su proyección sobre la
+    recta de ese tramo (pasa del vértice en la unión redonda de fuera). Dentro: el centro en la
+    banda de un tramo (a ≤ ``half`` de su recta y con la proyección sobre el tramo: su rectángulo
+    de extremos planos) o, si no, a ≤ ``half`` del eje (la unión redonda de un vértice interior)
+    sin pasar de un extremo del camino de su tramo más próximo (antes del plano perpendicular del
+    principio de su primer tramo o después del del final del último). Así los extremos son planos
+    también con un tramo extremo más corto que medio ancho (T41, F-2: la unión redonda del
+    vértice vecino no deja pasar del extremo) y un gancho corto al final no abre un hueco en la
+    banda del tramo anterior."""
     rows = np.arange(window[0].start, window[0].stop, dtype=np.float64)
     cols = np.arange(window[1].start, window[1].stop, dtype=np.float64)
     shape = (rows.size, cols.size)
     best = np.full(shape, np.inf)
     sigma = np.full(shape, np.nan)
+    reach = np.full(shape, np.nan)
+    band = np.zeros(shape, dtype=bool)
+    passes = np.zeros(shape, dtype=bool)
     limit = half * half
     walked = 0.0
     for path in paths:
         lengths = np.hypot(*np.diff(path, axis=0).T)
         segments = [i for i in range(lengths.size) if lengths[i] > 0.0]
+        if not segments:
+            continue
+        first, last = segments[0], segments[-1]
+        before, _ = _segment_frame(path[first], path[first + 1], float(lengths[first]),
+                                   geometry, rows, cols)
+        after, _ = _segment_frame(path[last], path[last + 1], float(lengths[last]), geometry,
+                                  rows, cols)
+        out = (before < 0.0) | (after > float(lengths[last]))
         for i in segments:
-            a, b, length = path[i], path[i + 1], float(lengths[i])
-            ux, uy = (b - a) / length
-            px = ((geometry.west - a[0]) + (cols + 0.5) * geometry.dx)[None, :]
-            py = ((geometry.north - a[1]) - (rows + 0.5) * geometry.dy)[:, None]
-            along = px * ux + py * uy
-            across = py * ux - px * uy
+            length = float(lengths[i])
+            along, across = _segment_frame(path[i], path[i + 1], length, geometry, rows, cols)
             clamped = np.clip(along, 0.0, length)
             d2 = across * across + (along - clamped) ** 2
-            inside = d2 <= limit
-            if i == segments[0]:
-                inside &= along >= 0.0
-            if i == segments[-1]:
-                inside &= along <= length
-            better = inside & (d2 < best)
+            band |= (along >= 0.0) & (along <= length) & (across * across <= limit)
+            better = d2 < best
             best[better] = d2[better]
             sigma[better] = (walked + clamped)[better]
+            reach[better] = (walked + along)[better]
+            passes[better] = out[better]
             walked += length
-    return sigma
+    inside = band | ((best <= limit) & ~passes)
+    sigma[~inside] = np.nan
+    reach[~inside] = np.nan
+    return sigma, reach
 
 
 def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid) -> CorridorMap:
@@ -802,12 +831,17 @@ def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid) 
     entidades; ``fields`` da su nombre en el proyecto, el campo del ancho, m, y el de la cota fija
     o los de la rasante: cota inicial, m, y pendiente, %, positiva cuando sube en el sentido del
     eje) convertidos en fondos con **extremos planos** en la rejilla ``geometry``
-    (:class:`CorridorMap`): dentro, cada celda con el centro a ≤ ancho/2 de un tramo del eje y
-    cuya proyección no cae antes de su principio ni después de su final; su cota, la fija o
-    ``cota inicial + σ · pendiente / 100`` con ``σ`` la abscisa de su proyección. Su longitud
-    medida (máximo menos mínimo de ``σ``) es la del eje con error ≤ 1 celda (error 20), y
-    :attr:`CorridorMap.notices` avisa si pasara de la del eje más el ancho. Solo lee; cada
-    corredor cuesta su caja, no la rejilla entera.
+    (:class:`CorridorMap`): dentro, cada celda con el centro en la banda de un tramo (a ≤
+    ancho/2 de su recta y con la proyección sobre el tramo) o, en la unión redonda de un vértice
+    interior, a ≤ ancho/2 del eje sin pasar de un extremo (ni antes del plano perpendicular de
+    su principio ni después del de su final, aunque el tramo extremo mida menos que medio ancho:
+    T41); su cota, la fija o ``cota inicial + σ · pendiente / 100`` con ``σ`` la abscisa de su
+    punto más próximo del eje. Su longitud medida (máximo menos mínimo de la abscisa sin
+    recortar de sus celdas: la extensión de la huella a lo largo del eje) no pasa de la del eje
+    más una celda si sus tramos extremos miden al menos medio ancho, ni baja de ella en dos
+    celdas o más (es la de los centros; error 20: no los 220 m de un *buffer* de 200 m de eje y
+    20 m de ancho), y :attr:`CorridorMap.notices` avisa si pasara de la del eje más el ancho.
+    Solo lee; cada corredor cuesta su caja, no la rejilla entera.
 
     Rechazos (``DesignError``, sin suponer nada), en el orden de la capa y, en cada corredor,
     primero su ancho, después su cota y después su eje: una capa que no es de líneas
@@ -849,7 +883,7 @@ def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid) 
                               field=_GEOMETRY_FIELD, value=round(axis, 2), layer=fields.layer,
                               corridor=fid)
         window = _corridor_window(paths, width / 2.0, geometry)
-        sigma = _corridor_sigma(paths, width / 2.0, geometry, window)
+        sigma, reach = _corridor_sigma(paths, width / 2.0, geometry, window)
         inside = np.isfinite(sigma)
         taken = owner[window][inside]
         taken = taken[taken > 0]
@@ -865,7 +899,7 @@ def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid) 
         cells.append(int(np.count_nonzero(inside)))
         widths.append(width)
         axes.append(axis)
-        found = sigma[inside]
+        found = reach[inside]
         measured.append(float(found.max() - found.min()) if found.size else 0.0)
     floors = FloorMap(fields.layer, level_fields[0], grid, owner, tuple(layer.fids),
                       tuple(levels), tuple(cells), geometry.cell_area)
