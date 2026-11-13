@@ -8432,3 +8432,52 @@ es = "Corredor {corridor} a {level} m"
 
 ["Corridor {corridor}: {low} to {high} m"]
 es = "Corredor {corridor}: {low} a {high} m"
+
+# Transiciones con el terreno no afectado (spec 014, T28)
+["Transition with the untouched terrain"]
+es = "Transición con el terreno no afectado"
+
+["Transition"]
+es = "Transición"
+
+["Name of the transition, unique in the active version"]
+es = "Nombre de la transición, único en la versión activa"
+
+["Design surface of the active version that is joined with the untouched terrain at the edge of what it moves"]
+es = "Superficie de diseño de la versión activa que se une con el terreno no afectado del borde de lo que mueve"
+
+["Surface the design starts from: the untouched terrain is the one the design does not move"]
+es = "Superficie de la que parte el diseño: el terreno no afectado es el que el diseño no mueve"
+
+["Write the name of the transition"]
+es = "Escriba el nombre de la transición"
+
+["Choose the design surface of the transition"]
+es = "Elija la superficie de diseño de la transición"
+
+["Choose the start surface of the transition"]
+es = "Elija la superficie de partida de la transición"
+
+["Transition «{name}» created in {version}"]
+es = "Transición «{name}» creada en {version}"
+
+["Computing the transition… {percent} % · Esc: cancel"]
+es = "Calculando la transición… {percent} % · Esc: cancelar"
+
+["Transition «{name}» in {version}"]
+es = "Transición «{name}» en {version}"
+
+["Transition of «{surface}» at {angle}°: {volume} m³ in {cells} cells ({area} m²)"]
+es = "Transición de «{surface}» a {angle}°: {volume} m³ en {cells} celdas ({area} m²)"
+
+["Created step at the edge: {pairs} pairs, {within} % within {threshold} m, the largest {maximum} m"]
+es = "Salto creado en el borde: {pairs} parejas, el {within} % por debajo de {threshold} m; el mayor, {maximum} m"
+
+["There are no design surfaces in the active version"]
+es = "No hay superficies de diseño en la versión activa"
+
+["A design surface of the active version"]
+es = "Una superficie de diseño de la versión activa"
+
+["Design surface: «{surface}»"]
+es = "Superficie de diseño: «{surface}»"

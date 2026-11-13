@@ -145,12 +145,20 @@ PENDING_014_API = frozenset({
     "quarry_compute_steps", "quarry_domain", "quarry_grids", "quarry_notices",
     "quarry_parts_units", "quarry_report_rows", "run_excavation_area", "run_quarry", "quarry_run",
     "reproduce_excavation_area", "reproduce_quarry",
+    # T28: design.provenance, design.store, design.steps y design.reproduce (la operación
+    # des.edge_transition, su recálculo y su reproducción).
+    "transition_inputs", "transition_settings", "transition_start", "PreparedTransition",
+    "SurfaceOrigin", "compute_transition_steps", "design_surface_of", "edge_report_rows",
+    "prepare_edge_transition", "prepare_transition_units", "run_edge_transition",
+    "transition_compute_steps", "edge_transition_run", "reproduce_edge_transition",
 })
 # Los módulos nuevos de la 014 que aún no tienen fila en la ficha (la T36 se la da y vacía esto).
 PENDING_014_MODULES = frozenset({
     "design.grids",  # T03: Labels, dilate_square, label_components_steps
     "design.edges",  # T26: TRANSITION_NAME, Transition, transition_steps; T27:
-    # PAIR_CELLS_PER_UNIT, EdgeStretch, EdgeReport, created_steps
+    # PAIR_CELLS_PER_UNIT, EdgeStretch, EdgeReport, created_steps; T28: EDGE_PHASE,
+    # EdgeTransition, transition_domain, edge_notices, edge_transition_figures,
+    # edge_transition_steps
     "design.quarry",  # T06: AreaOutcome, AreaPart, area_outcome, area_parts, excavation_area;
     # T07: HOLD_TYPES, SeedGroup, crown_ring, crown_seeds, hold_zones, outside_crown;
     # T08: FLOOR_LEVEL_MARGIN_M, FloorMap, FloorsAbove, floor_map, floors_above_terrain,

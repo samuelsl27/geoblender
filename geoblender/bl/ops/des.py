@@ -156,6 +156,16 @@ dos): nada se registra hasta Crear (RF-014-29) y la confirmación dice «Crear c
 hay. Los rechazos (un sector del recinto sin búsqueda vigente, RF-014-30; las capas
 y sus campos, los perfiles, el recinto vacío, el nombre repetido) y todas las cuentas son de
 ``design``.
+
+**Transiciones con el terreno no afectado** (spec 014, T28; HU-014-5; RF-014-19 a RF-014-21,
+RF-014-29; plan 014 §5.3.3, §5.5): :class:`GEOBLENDER_OT_des_create_transitions` (Restauración ▸
+Superficie final) calcula ``des.edge_transition`` de la versión activa con
+``design.steps.edge_transition_run``: la transición de una superficie de diseño con el terreno no
+afectado del borde de lo que mueve y el salto creado que deja. Su diálogo pide el nombre, la
+superficie de diseño (``des_panels.design_surface_items``: las de la versión) y la de partida;
+propone «Transición», **la superficie de diseño seleccionada** en la vista (sin ella, la primera de
+la lista) y, de partida, la de su ficha (``design.store.design_surface_of``) o el terreno. Calcular,
+Crear, Cancelar y Esc, los de :class:`_CalculateAndCreate`.
 """
 
 from __future__ import annotations
@@ -189,8 +199,9 @@ from ...design import provenance
 from ...design.model import PERIMETER_SEGMENT
 from ...gis import provenance as gis_provenance
 from ...gis.messages import GisError
+from ..props.core import OBJECT_PROPERTY
 from ..props.des import PREVIEW_PROPERTY
-from ..scene import project_session, undo_watch
+from ..scene import des_views, project_session, undo_watch
 from ..scene import versions as scene_versions
 from ..ui import constraint_panels, des_panels
 from ..ui import provenance as ui_provenance
@@ -1816,7 +1827,8 @@ class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOper
 
 class _CalculateAndCreate:
     """Lo común de las órdenes de la 014 que **calculan** por pasos y **crean** al confirmar
-    («Límite desde el perímetro…» y «Cantera con dos superficies…»), como «Envolventes y
+    («Límite desde el perímetro…», «Cantera con dos superficies…» y «Transiciones con el terreno
+    no afectado»), como «Envolventes y
     escalonado…» sin el escalonado que sigue (D-14 de la 013): :meth:`_run_steps` corre los pasos
     del cálculo en el modal con el avance y Esc (``_StepsModal``) o, desde un guion, de una vez;
     al terminar, :meth:`_finished` deja el cálculo abierto con su resumen (``des_panels``) y pide
@@ -2530,6 +2542,178 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
         return tr("Computing the quarry… {percent} % · Esc: cancel", percent=percent)
 
 
+# --- Transiciones con el terreno no afectado (spec 014, T28; HU-014-5; RF-014-19 a RF-014-21,
+#     RF-014-29; plan 014 §5.3.3, §5.5) ------------------------------------------------------------
+
+CREATE_TRANSITIONS = provenance.TRANSITIONS_COMMAND
+
+
+def _design_surface_start(project: Any, surface: str) -> str | None:
+    """La superficie de partida de la ficha de la superficie de diseño ``surface`` de la versión
+    activa (``design.store.design_surface_of``) si el diálogo la ofrece; ``None`` si no la hay, no
+    está en la lista o no se pudo leer (queda en el registro técnico). Solo lee."""
+    from ...design import store as design_store  # al usarlo: habilitar no lo carga
+
+    version = scene_versions.active_version() or ""
+    try:
+        with project.read() as conn:
+            origin = design_store.design_surface_of(conn, surface, version)
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.info("No se pudo leer la superficie de partida de «%s»", surface, exc_info=True)
+        return None
+    start = None if origin is None else origin.start
+    listed = {identifier for identifier, _name, _about in des_panels.surface_items(None, None)}
+    return start if start in listed and start != surface else None
+
+
+class GEOBLENDER_OT_des_create_transitions(_CalculateAndCreate, DesignCommandAware,
+                                           ProvenanceAwareOperator, _StepsModal,
+                                           bpy.types.Operator):
+    """Join a design surface with the untouched terrain at the edge of what it moves, with a slope
+    no steeper than the transition angle, and measure the created step"""
+
+    bl_idname = CREATE_TRANSITIONS
+    bl_label = "Transitions with the untouched terrain"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.EDGE_TRANSITION
+    COMMAND = CREATE_TRANSITIONS
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the transition, unique in the active version",
+        options=_FIELD)
+    surface: EnumProperty(  # type: ignore[valid-type]
+        name="Design surface",
+        description="Design surface of the active version that is joined with the untouched "
+                    "terrain at the edge of what it moves",
+        items=des_panels.design_surface_items, options=_FIELD)
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Surface the design starts from: the untouched terrain is the one the design "
+                    "does not move", items=des_panels.surface_items, options=_FIELD)
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con
+    # el avance y Esc: los pone invoke; desde un guion, sin ellos, de una vez.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué.
+        Con ``confirm``, el diálogo de crear el cálculo abierto. Si no, las listas de superficies
+        leídas de nuevo, la propuesta (el nombre, la superficie de diseño seleccionada y su
+        partida) y el diálogo del cálculo: Intro calcula."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.refresh_choices(project)
+            self._propose(context, project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.COMMAND)].label),
+            confirm_text=tr("Calculate"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """Lo que propone el diálogo si quien lo lanza no lo dio (plan 014 §5.3.3, como la T45 de
+        la 013): el nombre («Transición»); **la superficie de diseño seleccionada** en la vista (el
+        objeto ``DESIGN`` de una de la lista; sin ninguna, la primera de la lista) y, de partida, la
+        de su ficha (``design.store.design_surface_of``) o, si no la tiene, el terreno
+        (``surface_proposal.ground_item``)."""
+        if not self.name.strip():
+            self.name = tr("Transition")
+        given = self.properties.is_property_set
+        designs = [identifier for identifier, _name, _about
+                   in des_panels.design_surface_items(None, None)
+                   if identifier != des_panels.NO_ZONE]
+        if designs and not given("surface"):
+            by_uid = {choice.uid: identifier for identifier in designs
+                      if (choice := des_panels.surface_choice(identifier)) is not None}
+            chosen = [by_uid[str(marks.dataset_uid)]
+                      for obj in getattr(context, "selected_objects", None) or ()
+                      if (marks := getattr(obj, OBJECT_PROPERTY, None)) is not None
+                      and marks.kind == des_views.KIND and str(marks.dataset_uid) in by_uid]
+            self.surface = chosen[0] if chosen else designs[0]
+        if des_panels.has_surfaces() and not given("start"):
+            start = (_design_surface_start(project, self.surface)
+                     if self.surface in designs else None)
+            if start is None:
+                items = [identifier for identifier, _name, _about
+                         in des_panels.surface_items(None, None)]
+                start = surface_proposal.ground_item(context, project, items,
+                                                     des_panels.surface_choice)
+            if start is not None:
+                self.start = start
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "surface", text=tr("Design surface"), translate=False)
+        layout.prop(self, "start", text=tr("Start surface"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Si no, comprueba lo pedido
+        (sin escribir nada si falta algo), pasa por la puerta de la 008 y calcula la transición por
+        pasos con ``design.steps.edge_transition_run`` —compila las máscaras antes si no están al
+        día—, sin registrar nada (RF-014-29): desde la interfaz, en el modal con el avance y Esc;
+        desde un guion, de una vez. Al terminar deja el cálculo abierto con su resumen y pide
+        confirmar. Los rechazos (una superficie que no es de diseño, el ángulo de transición sin
+        valor, el nombre repetido) y todas las cuentas son de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        name = self.name.strip()
+        if not name:
+            self.report({"ERROR"}, tr("Write the name of the transition"))
+            return {"CANCELLED"}
+        if self.surface in ("", des_panels.NO_ZONE):
+            self.report({"ERROR"}, tr("Choose the design surface of the transition"))
+            return {"CANCELLED"}
+        if self.start in ("", des_panels.NO_ZONE):
+            self.report({"ERROR"}, tr("Choose the start surface of the transition"))
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report,
+                             dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        steps = design_steps.edge_transition_run(project, name, self.surface, self.start,
+                                                 version=version, budget_s=self.STEP_BUDGET_S)
+        return self._run_steps(context, project, name, steps)
+
+    def _created_text(self, opened: Calculation) -> str:
+        return tr("Transition «{name}» created in {version}", name=opened.name,
+                  version=opened.version)
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Calculando la transición… 40 % · Esc: cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Computing the transition… {percent} % · Esc: cancel", percent=percent)
+
+
 # --- Vista previa de semillas, dominios y restricciones (T25; HU-013-1; RF-013-01, RF-013-02,
 #     RF-013-03, RF-013-33; plan §5.3.3, §5.5, D-29) ----------------------------------------------
 
@@ -2861,9 +3045,11 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_export_design_grid,
                              GEOBLENDER_OT_des_declare_sectors,
                              GEOBLENDER_OT_des_create_limit_from_perimeter,
-                             GEOBLENDER_OT_des_design_quarry)
+                             GEOBLENDER_OT_des_design_quarry,
+                             GEOBLENDER_OT_des_create_transitions)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
 T44, la que declara de nuevo los sectores desde su ventana; de la 014, la T20 pone «Límite desde el
-perímetro…» y la T21 «Cantera con dos superficies…», aún de la entrada «014» sin entregar)."""
+perímetro…», la T21 «Cantera con dos superficies…» y la T28 «Transiciones con el terreno no
+afectado», aún de la entrada «014» sin entregar)."""

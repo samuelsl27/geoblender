@@ -47,6 +47,12 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   (:func:`compute_quarry_steps`: las cinco rejillas de :func:`quarry_grids`, las bermas de las dos
   superficies con :data:`QUARRY_BERM_COLUMNS` y el informe ``des_qrp_``); y :func:`run_quarry`, su
   recálculo.
+- **Las transiciones con el terreno no afectado** (spec 014, T28; RF-014-19 a RF-014-21,
+  RF-014-29): :func:`prepare_edge_transition` y :func:`prepare_transition_units` (con el rechazo de
+  una superficie que no es de diseño de la versión, :func:`design_surface_of`), el cálculo
+  (:func:`transition_compute_steps`, compartido con la reproducción) y su escritura
+  (:func:`compute_transition_steps`: ``des_trn_`` y el informe ``des_erp_``,
+  :func:`edge_report_rows`); y :func:`run_edge_transition`, su recálculo.
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -116,7 +122,7 @@ from ..gis.messages import GisError
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, backup_path, insert_rows, project_references, temporary_path
 from ..gis.vector import FeatureLayer
-from . import pipeline, provenance, quarry
+from . import edges, pipeline, provenance, quarry
 from .messages import DesignError
 from .model import (
     DesignRequest,
@@ -131,6 +137,8 @@ from .model import (
 from .params import (
     CONSERVE_SLOPE,
     CROWN_RING,
+    EDGE_MAX_STEP,
+    EDGE_MIN_SHARE,
     TOLERANCE_FACE,
     UNSPLIT_MIN_AREA,
     UNSPLIT_THRESHOLD,
@@ -141,6 +149,7 @@ from .params import (
     check_bench_value,
     check_quarry_param,
 )
+from .params import EDGE_TRANSITION as EDGE_TRANSITION_DEG
 from .preview import Notice, _features, _quarry_warnings
 from .profiles import profile_names
 from .sectors import DesignSector, design_sectors, refuse_pending, slope_params, touched
@@ -174,9 +183,11 @@ __all__ = [
     "PreparedDesign",
     "PreparedEnvelope",
     "PreparedQuarry",
+    "PreparedTransition",
     "QuarryCalculated",
     "QuarryParts",
     "Stored",
+    "SurfaceOrigin",
     "begin_design",
     "begin_envelope",
     "berm_rows",
@@ -186,16 +197,21 @@ __all__ = [
     "compute_design_steps",
     "compute_envelope_steps",
     "compute_quarry_steps",
+    "compute_transition_steps",
+    "edge_report_rows",
     "masks_steps",
     "number",
     "prepare_area_units",
     "prepare_design",
     "prepare_design_units",
+    "prepare_edge_transition",
     "prepare_envelope",
     "prepare_envelope_units",
     "prepare_excavation_area",
     "prepare_quarry",
     "prepare_quarry_units",
+    "prepare_transition_units",
+    "design_surface_of",
     "design_surface_start",
     "previous_comparison",
     "quarry_berm_rows",
@@ -210,9 +226,11 @@ __all__ = [
     "request_profiles",
     "require_version",
     "run_design",
+    "run_edge_transition",
     "run_envelope",
     "run_excavation_area",
     "run_quarry",
+    "transition_compute_steps",
 ]
 
 _OBJ = "Envolventes y escalonado"
@@ -241,7 +259,7 @@ las dos superficies, cada fila con su superficie (``final`` o ``exploitation``) 
 :data:`BERM_COLUMNS`."""
 _COLUMNS: Mapping[str, tuple[ColumnDef, ...]] = MappingProxyType({
     provenance.BERM_TABLE: BERM_COLUMNS, provenance.REPORT_TABLE: REPORT_COLUMNS,
-    provenance.QUARRY_REPORT_TABLE: REPORT_COLUMNS})
+    provenance.QUARRY_REPORT_TABLE: REPORT_COLUMNS, provenance.EDGE_REPORT_TABLE: REPORT_COLUMNS})
 
 
 def columns_of(op_type: str, family: str) -> tuple[ColumnDef, ...]:
@@ -654,7 +672,12 @@ def _check_quarry_params(project: StoreProject, version: Version, request: Quarr
     con un valor dentro de su rango en la versión (el de su fila o, sin ella, el de su
     definición). Si no, ``DesignError`` ``des.quarry_param_missing`` (el talud de conservación no
     tiene valor por defecto, D-9) o ``des.quarry_param_range``, antes de registrar nada."""
-    keys = _quarry_keys(request)
+    _check_014_params(project, version, _quarry_keys(request))
+
+
+def _check_014_params(project: StoreProject, version: Version, keys: tuple[str, ...]) -> None:
+    """Los parámetros de la 014 ``keys``, cada uno con un valor dentro de su rango en la versión
+    (véase :func:`_check_quarry_params`)."""
     with project.read() as conn:
         found = ParameterStore(project).resolve_many(
             conn, keys, (VERSION_SCOPE, PROJECT_SCOPE), version=version.uid)
@@ -691,6 +714,26 @@ def prepare_quarry(project: StoreProject, request: QuarryRequest, *, version: st
     return _start(project, provenance.QUARRY, request.name, found, loaded,
                   provenance.quarry_settings(request, pending_sectors, touched_sectors), inputs,
                   params, supersedes)
+
+
+def prepare_edge_transition(project: StoreProject, name: str, surface: str, start: str, *,
+                            version: str | None, masks: access.MaskSet | None = None,
+                            supersedes: str | None = None) -> OperationStart:
+    """Lo mismo que :func:`prepare_envelope` para ``des.edge_transition`` (spec 014, T28;
+    RF-014-19, RF-014-29) de nombre ``name`` con la superficie de diseño ``surface`` y la de
+    partida ``start`` (los nombres de sus datos): los ajustes de ``transition_settings``, las
+    entradas de ``transition_inputs`` (las dos superficies y las máscaras de la versión) y los
+    parámetros de ``TRANSITION_PARAMS``. El ángulo de transición sin valor (no lo tiene por
+    defecto, D-9), o un parámetro fuera de rango, se rechaza antes de registrar nada
+    (``des.quarry_param_missing`` o ``_range``); además, los rechazos de :func:`prepare_envelope`
+    de la versión, las máscaras y el nombre."""
+    found = require_version(project, version, provenance.EDGE_TRANSITION)
+    _check_014_params(project, found, (EDGE_TRANSITION_DEG, EDGE_MAX_STEP, EDGE_MIN_SHARE))
+    loaded = _loaded_masks(project, found, masks)
+    return _start(project, provenance.EDGE_TRANSITION, name, found, loaded,
+                  provenance.transition_settings(name, surface, start),
+                  provenance.transition_inputs(surface, start, loaded.uses()),
+                  provenance.TRANSITION_PARAMS, supersedes)
 
 
 def begin_envelope(project: StoreProject, request: EnvelopeRequest, *, version: str | None,
@@ -1092,9 +1135,9 @@ class DesignWriter:
 # --- Recalcular lo obsoleto ---------------------------------------------------------------------
 
 RECOMPUTED: tuple[str, ...] = (*provenance.REPRODUCIBLE, provenance.EXCAVATION_AREA,
-                                provenance.QUARRY)
+                                provenance.QUARRY, provenance.EDGE_TRANSITION)
 """Los tipos que repite «Recalcular lo obsoleto» aquí: los dos de la 013 y, de la 014, el recinto
-y la cantera (T19); los demás de la 014, cuando sus tareas los den."""
+y la cantera (T19) y la transición (T28); los demás de la 014, cuando sus tareas los den."""
 _STORE_PHASE = "store"
 
 
@@ -1145,6 +1188,60 @@ def design_surface_start(conn: sqlite3.Connection, dataset_uid: str) -> str | No
         return provenance.design_start(json.loads(row[1]))
     except (TypeError, ValueError):  # ajustes ausentes, que no son JSON o sin superficie
         return None
+
+
+_START_KEYS: Mapping[str, str] = MappingProxyType({provenance.STEPPED: "surface"})
+"""La clave de los ajustes con la superficie de partida de cada tipo que escribe una superficie
+de diseño, si no es ``start`` (la de la cantera y la de la transición)."""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class SurfaceOrigin:
+    """Una superficie de diseño de una versión (spec 014, T28): su dato (``record``) y el tipo y
+    los ajustes de la operación que la escribió con el papel ``design_surface`` (``op_type``,
+    ``settings``)."""
+
+    record: DatasetRecord
+    op_type: str
+    settings: Mapping[str, Any]
+
+    @property
+    def start(self) -> str | None:
+        """El nombre del dato de su superficie de partida, de los ajustes de su operación (la
+        ``surface`` de un escalonado de la 013; la ``start`` de una cantera o de una transición);
+        ``None`` si no la llevan."""
+        found = self.settings.get(_START_KEYS.get(self.op_type, "start"))
+        return found if isinstance(found, str) and found else None
+
+
+def design_surface_of(conn: sqlite3.Connection, name: str, version_uid: str
+                      ) -> SurfaceOrigin | None:
+    """La superficie de diseño ``name`` (el nombre de su dato o su uid) de la versión
+    ``version_uid`` (spec 014, T28; RF-014-19): un dato vivo de esa versión que una operación de
+    ``des`` escribió con el papel :data:`~geoblender.design.provenance.DESIGN_SURFACE_ROLE` (la
+    superficie de un escalonado de la 013, las dos de una cantera, una transición…); ``None`` si
+    no lo es (una superficie del proyecto, una envolvente, una de otra versión o un nombre que la
+    versión no tiene). Solo lee."""
+    record = dataset_registry.get(conn, name, version_uid=version_uid)
+    if record is None or not record.live:
+        return None
+    found = conn.execute("SELECT version_uid FROM gb_dataset WHERE uid = ?",
+                         (record.uid,)).fetchone()
+    if found is None or found[0] != version_uid:
+        return None
+    row = conn.execute(
+        "SELECT o.op_type, o.settings FROM gb_operation_io AS io JOIN gb_operation AS o "
+        "ON o.uid = io.operation_uid WHERE io.direction = 'out' AND io.item_kind = 'dataset' "
+        "AND io.item_uid = ? AND io.role = ?", (record.uid, provenance.DESIGN_SURFACE_ROLE)
+    ).fetchone()
+    if row is None or str(row[0]) not in provenance.OPERATION_TYPES_BY_NAME:
+        return None
+    try:
+        settings = json.loads(row[1]) if row[1] else {}
+    except ValueError:
+        settings = {}
+    return SurfaceOrigin(record, str(row[0]),
+                         MappingProxyType(settings if isinstance(settings, dict) else {}))
 
 
 def _result_of[T](work: Generator[object, None, T]) -> T:
@@ -1247,6 +1344,17 @@ class PreparedQuarry:
     sus piezas (``parts``, :class:`QuarryParts`) y lo que anotará la operación (``start``)."""
 
     parts: QuarryParts
+    start: OperationStart
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PreparedTransition:
+    """Lo que se lee y se comprueba antes de calcular una transición
+    (:func:`prepare_transition_units`): la superficie de diseño (``surface``), la de partida
+    (``ground``), las dos en la rejilla del proyecto, y lo que anotará la operación (``start``)."""
+
+    surface: Raster
+    ground: Raster
     start: OperationStart
 
 
@@ -1648,6 +1756,121 @@ def compute_quarry_steps(writer: DesignWriter, request: QuarryRequest, masks: ac
     return calculated
 
 
+# --- Transiciones con el terreno no afectado (spec 014, T28; RF-014-19 a RF-014-21, RF-014-29) ----
+
+
+def prepare_transition_units(project: StoreProject, name: str, surface: str, start: str,
+                             version: Version, masks: access.MaskSet, *,
+                             supersedes: str | None = None
+                             ) -> Generator[None, None, PreparedTransition]:
+    """Las unidades que preparan la transición ``name`` de la superficie de diseño ``surface`` de
+    ``version`` sobre la de partida ``start`` (los nombres de sus datos) con sus ``masks`` ya al
+    día (spec 014, T28; RF-014-19): la superficie ha de ser una superficie de diseño de la versión
+    (:func:`design_surface_of`; si no, ``DesignError`` ``des.edge_not_design_surface`` con su
+    nombre), las dos superficies se leen y se comparan con la rejilla del proyecto
+    (``des.surface_*``) y :func:`prepare_edge_transition`. Devuelve la :class:`PreparedTransition`.
+    Nada se escribe; los rechazos salen al avanzar."""
+    with project.read() as conn:
+        origin = design_surface_of(conn, surface, version.uid)
+    if origin is None:
+        raise DesignError("des.edge_not_design_surface", obj=f"Superficie «{surface}»",
+                          field="superficie de diseño", value=surface)
+    yield
+    frame = project_frame(project)
+    design = read_surface(project, surface, version_uid=version.uid, expect=frame,
+                          role="superficie de diseño")
+    yield
+    ground = read_surface(project, start, version_uid=version.uid, expect=frame,
+                          role="superficie de partida")
+    yield
+    operation = prepare_edge_transition(project, name, surface, start, version=version.uid,
+                                        masks=masks, supersedes=supersedes)
+    yield
+    return PreparedTransition(design, ground, operation)
+
+
+def transition_compute_steps(name: str, surface: np.ndarray, ground: np.ndarray,
+                             masks: access.MaskSet, values: Mapping[str, object], *,
+                             budget_s: float = STEP_BUDGET_S
+                             ) -> Generator[Progress, None, edges.EdgeTransition]:
+    """Los pasos que calculan la transición ``name`` de la superficie de diseño ``surface`` sobre
+    la de partida ``ground`` (cotas en la rejilla de ``masks``) con los parámetros ``values``
+    (clave → valor: los que anotó la operación, los que se resuelven hoy o los congelados), sin
+    escribir nada (``yield from``): ``design.edges.edge_transition_steps`` con el ángulo de
+    transición, el salto y el porcentaje admitidos, el espesor mínimo y lo que las máscaras
+    admiten mover (el corte o el relleno admitidos). Lo comparten «Calcular», el recálculo y la
+    reproducción. Devuelve el ``design.edges.EdgeTransition``."""
+    allowed = masks.cut_allowed() | masks.fill_allowed()
+    angle, threshold, share = (values.get(key) for key in (EDGE_TRANSITION_DEG, EDGE_MAX_STEP,
+                                                           EDGE_MIN_SHARE))
+    outcome: edges.EdgeTransition = yield from pipeline.forward(edges.edge_transition_steps(
+        surface, ground, masks.grid, angle_deg=angle,  # type: ignore[arg-type]
+        min_thickness_m=number(values, VERIFY_MIN_THICKNESS),
+        threshold_m=threshold, share_pct=share,  # type: ignore[arg-type]
+        allowed=allowed, name=name, budget_s=budget_s))
+    return outcome
+
+
+def edge_report_rows(outcome: edges.EdgeTransition) -> list[Row]:
+    """Las filas de ``des_erp_`` (``quantity, value, unit_code, note``, como ``des_rpt_``) de la
+    transición ``outcome`` (RF-014-19 a RF-014-21): el volumen y las celdas de la transición, su
+    ángulo y su área; las parejas del borde de la superficie nueva, las que pasan del salto
+    admitido y los porcentajes por encima y dentro; el mayor salto creado (con su signo; su lugar
+    en la nota como ``x;y`` en float64 en texto, sin parejas ninguno); el salto y el porcentaje
+    admitidos y el espesor mínimo; una fila ``stretch`` por tramo (su mayor salto creado en m, y en
+    la nota, en JSON, su número, sus parejas y su centro) y, al final, el aviso de RF-014-21 y sus
+    notas con su código y sus valores en JSON. Un valor NaN o infinito es un error del programa
+    (``ValueError``)."""
+    transition, report = outcome.transition, outcome.report
+    rows: list[Row] = []
+    for key, value, unit in (
+            ("transition_m3", transition.volume_m3, "m3"),
+            ("transition_cells", transition.cells, "-"),
+            ("transition_area_m2", transition.area_m2, "m2"),
+            ("angle_deg", transition.angle_deg, "deg"), ("edge_pairs", report.pairs, "-"),
+            ("over_pairs", report.over, "-"), ("over_pct", report.over_pct, "%"),
+            ("within_pct", report.within_pct, "%")):
+        rows.append((key, _real(key, value), unit, None))
+    place = (None if report.x is None or report.y is None else
+             f"{_real('created_step_max_at.x', report.x)!r};"
+             f"{_real('created_step_max_at.y', report.y)!r}")
+    rows.append(("created_step_max_m", _real("created_step_max_m", report.maximum_m), "m", place))
+    for key, value, unit in (("threshold_m", report.threshold_m, "m"),
+                             ("min_share_pct", report.min_share_pct, "%"),
+                             ("min_thickness_m", report.min_thickness_m, "m")):
+        rows.append((key, _real(key, value), unit, None))
+    for item in report.stretches:
+        rows.append(("stretch", _real("stretch", item.maximum_m), "m", json.dumps(
+            {"stretch": item.stretch, "pairs": item.pairs, "x": _real("stretch.x", item.x),
+             "y": _real("stretch.y", item.y)}, sort_keys=True, allow_nan=False)))
+    for notice in outcome.notices:
+        rows.append((notice.severity, None, None, _notice_text(notice)))
+    return rows
+
+
+def compute_transition_steps(writer: DesignWriter, name: str, prepared: PreparedTransition,
+                             masks: access.MaskSet, values: Mapping[str, object],
+                             budget_s: float = STEP_BUDGET_S
+                             ) -> Generator[Progress, None, edges.EdgeTransition]:
+    """Lo mismo que :func:`compute_design_steps` para la transición ``name`` (spec 014, T28;
+    RF-014-19 a RF-014-21, RF-014-29): la calcula (:func:`transition_compute_steps`, con las
+    superficies de ``prepared``, las máscaras y los parámetros ``values``), deja su rejilla
+    (``des_trn_``) en el temporal de ``writer`` y prepara el informe del salto creado
+    (``des_erp_``, :func:`edge_report_rows`), **sin confirmar**. Devuelve el
+    ``design.edges.EdgeTransition``."""
+    yield Progress(edges.EDGE_PHASE, 0, 1, f"Preparando la transición «{name}»…")
+    outcome = yield from transition_compute_steps(name, prepared.surface.values,
+                                                  prepared.ground.values, masks, values,
+                                                  budget_s=budget_s)
+    raster = Raster(prepared.surface.grid, outcome.grid, writer.crs, writer.vertical)
+    yield from pipeline.forward(_store_steps(
+        writer.grid_steps(provenance.TRANSITION_GRID, raster), budget_s, "la transición"))
+    yield from pipeline.forward(_store_steps(
+        writer.table_steps(provenance.EDGE_REPORT_TABLE, edge_report_rows(outcome)), budget_s,
+        "el informe del salto creado"))
+    return outcome
+
+
 def compute_envelope_steps(project: StoreProject, writer: DesignWriter, request: EnvelopeRequest,
                            masks: access.MaskSet, seeds: SeedSet, values: Mapping[str, object],
                            budget_s: float = STEP_BUDGET_S
@@ -1798,6 +2021,25 @@ def run_quarry(project: StoreProject, request: QuarryRequest, *, version: str | 
     return handle, _quarry_run(project, handle, request, loaded, prepared, budget_s)
 
 
+def run_edge_transition(project: StoreProject, name: str, surface: str, start: str, *,
+                        version: str | None, masks: access.MaskSet | None = None,
+                        supersedes: str | None = None, budget_s: float = STEP_BUDGET_S
+                        ) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Lo mismo que :func:`run_envelope` para ``des.edge_transition`` (spec 014, T28; RF-014-19,
+    RF-014-31): la transición ``name`` de la superficie de diseño ``surface`` sobre la de partida
+    ``start``, de una vez y sin confirmar (el recálculo de lo obsoleto, :func:`recompute_run`),
+    con lo que lee hoy: las máscaras de la versión, las dos superficies y los parámetros,
+    resueltos versión → proyecto. Al llamar, sin empezar nada, los rechazos de
+    :func:`prepare_transition_units` (una superficie que no es de diseño, el ángulo sin valor, el
+    nombre…)."""
+    found = require_version(project, version, provenance.EDGE_TRANSITION)
+    loaded = _loaded_masks(project, found, masks)
+    prepared = _result_of(prepare_transition_units(project, name, surface, start, found, loaded,
+                                                   supersedes=supersedes))
+    handle = prepared.start.begin(project)
+    return handle, _transition_run(project, handle, name, loaded, prepared, budget_s)
+
+
 def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
                   ) -> tuple[OperationHandle, Iterator[Progress]]:
     """Repite la operación de ``des`` de ``request`` (``RecomputeRequest`` de «Recalcular lo
@@ -1830,6 +2072,10 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
         return run_quarry(project, provenance.quarry_request(request.settings),
                           version=request.version, supersedes=request.operation_uid,
                           budget_s=budget_s)
+    if request.op_type == provenance.EDGE_TRANSITION:
+        name, surface, start = provenance.transition_start(request.settings)
+        return run_edge_transition(project, name, surface, start, version=request.version,
+                                   supersedes=request.operation_uid, budget_s=budget_s)
     return run_design(project, provenance.design_request(request.settings),
                       provenance.design_start(request.settings), version=request.version,
                       supersedes=request.operation_uid, budget_s=budget_s)
@@ -1860,6 +2106,16 @@ def _quarry_run(project: StoreProject, handle: OperationHandle, request: QuarryR
         calculated = yield from compute_quarry_steps(writer, request, masks, prepared,
                                                      _values(handle), handle.settings, budget_s)
         outcome = calculated.outcome
+        stored = writer.commit(figures=outcome.figures, message=outcome.message)
+        yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
+
+
+def _transition_run(project: StoreProject, handle: OperationHandle, name: str,
+                    masks: access.MaskSet, prepared: PreparedTransition, budget_s: float
+                    ) -> Generator[Progress, None, None]:
+    with DesignWriter.resume(project, handle) as writer:
+        outcome = yield from compute_transition_steps(writer, name, prepared, masks,
+                                                      _values(handle), budget_s)
         stored = writer.commit(figures=outcome.figures, message=outcome.message)
         yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
 

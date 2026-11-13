@@ -556,6 +556,7 @@ class _Choices:
     optional_layers: list[tuple[str, str, str]] = field(default_factory=list)
     lines: list[tuple[str, str, str]] = field(default_factory=list)
     conserve: list[tuple[str, str, str]] = field(default_factory=list)
+    designs: list[tuple[str, str, str]] = field(default_factory=list)
     by_id: dict[str, res_surfaces.SurfaceChoice] = field(default_factory=dict)
     key: tuple[str, str, str] | None = None
 
@@ -578,6 +579,16 @@ def _fixed_choices() -> None:
     _CHOICES.optional_layers = [(NO_LAYER, tr("No layer"), tr("Without this layer"))]
     _CHOICES.lines = [(NO_LAYER, tr("No layer"), tr("Without this layer"))]
     _CHOICES.conserve = [(NO_ZONE, tr("No zone"), tr("No zone to conserve"))]
+    _CHOICES.designs = [(NO_ZONE, NOT_SHOWN,
+                         tr("There are no design surfaces in the active version"))]
+
+
+DESIGN_SURFACE_PREFIXES: tuple[str, ...] = tuple(
+    family.prefix for family in (*design_provenance.FAMILIES, *design_provenance.QUARRY_FAMILIES)
+    if family.role == design_provenance.DESIGN_SURFACE_ROLE)
+"""El comienzo del nombre de las superficies de diseño (las familias con el papel
+``design_surface``: la de un escalonado de la 013, las dos de una cantera, la transición y la
+ajustada de la 014)."""
 
 
 def line_layers(project: Any) -> tuple[str, ...]:
@@ -640,6 +651,12 @@ def refresh_choices(project: Any) -> None:
     _CHOICES.conserve = [*_CHOICES.conserve, *(
         item for item in _CHOICES.zones
         if item[0].startswith((CONSTRAINT_ZONE, LAYER_ZONE)))]
+    # Las transiciones (spec 014, T28): las superficies de diseño de la versión activa.
+    designs = [(choice.name, choice.name, tr("A design surface of the active version"))
+               for choice in found
+               if choice.version_uid and choice.name.startswith(DESIGN_SURFACE_PREFIXES)]
+    if designs:
+        _CHOICES.designs = designs
     _CHOICES.key = (project.uid, version, language())
 
 
@@ -712,11 +729,21 @@ def conserve_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
     return _CHOICES.conserve
 
 
+def design_surface_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las superficies de diseño de la versión activa que ofrece «Transiciones con el terreno no
+    afectado» (spec 014, T28; plan 014 §5.2.3: :data:`DESIGN_SURFACE_PREFIXES`), con el nombre de
+    su dato como identificador (el de :func:`surface_items`); sin ninguna, «—» (una lista viva del
+    módulo)."""
+    _ensure_choices()
+    return _CHOICES.designs
+
+
 def forget_choices() -> None:
     """Olvida las listas leídas (al desregistrar)."""
     _CHOICES.key = None
     _CHOICES.surfaces, _CHOICES.anchors, _CHOICES.zones, _CHOICES.layers = [], [], [], []
     _CHOICES.optional_layers, _CHOICES.lines, _CHOICES.conserve = [], [], []
+    _CHOICES.designs = []
     _CHOICES.by_id = {}
 
 
@@ -818,6 +845,28 @@ def _quarry_lines(outcome: Any) -> list[tuple[str, bool]]:
     return lines
 
 
+def _transition_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+    """El resumen de una transición calculada (``design.edges.EdgeTransition``; spec 014, T28;
+    RF-014-19 a RF-014-21): la superficie de diseño, el ángulo y el volumen, las celdas y el área
+    de la transición; y el salto creado del borde de la superficie nueva (las parejas, el
+    porcentaje dentro del salto admitido y el mayor salto creado). El aviso de RF-014-21 lo añade
+    :func:`summary_lines`."""
+    outcome = calculation.outcome
+    transition, report = outcome.transition, outcome.report  # type: ignore[union-attr]
+    shown = language()
+    surface = str(calculation.settings.get("surface") or "")
+    return [
+        (tr("Transition of «{surface}» at {angle}°: {volume} m³ in {cells} cells ({area} m²)",
+            surface=surface, angle=format_value(float(transition.angle_deg), shown),
+            volume=_number(transition.volume_m3), cells=_number(transition.cells),
+            area=_number(transition.area_m2)), False),
+        (tr("Created step at the edge: {pairs} pairs, {within} % within {threshold} m, the "
+            "largest {maximum} m", pairs=_number(report.pairs),
+            within=_number(report.within_pct, 2),
+            threshold=format_value(float(report.threshold_m), shown),
+            maximum=_number(max(0.0, report.maximum_m), 2)), False)]
+
+
 def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de un cálculo hecho y sin registrar (RF-013-31), línea a línea y en el idioma de
     Geoblender, con los avisos al final y en alerta: de una envolvente, sus celdas, su área, sus
@@ -829,6 +878,8 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     lines: list[tuple[str, bool]] = []
     if calculation.op_type == design_provenance.QUARRY:
         lines.extend(_quarry_lines(calculation.outcome))
+    elif calculation.op_type == design_provenance.EDGE_TRANSITION:
+        lines.extend(_transition_lines(calculation))
     elif calculation.op_type == design_provenance.EXCAVATION_AREA:
         cells = calculation.outcome.cells  # type: ignore[union-attr]
         lines.append((tr("Excavation boundary «{name}»: {cells} cells ({area} m²)",
@@ -904,6 +955,9 @@ def show_summary(calculation: Calculation | None) -> None:
                    version=calculation.version)
     elif calculation.op_type == design_provenance.QUARRY:
         title = tr("Quarry «{name}» in {version}", name=calculation.name,
+                   version=calculation.version)
+    elif calculation.op_type == design_provenance.EDGE_TRANSITION:
+        title = tr("Transition «{name}» in {version}", name=calculation.name,
                    version=calculation.version)
     else:
         title = tr("Benching «{name}» in {version}", name=calculation.name,
@@ -1507,7 +1561,8 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     semillas y el dominio, los de los ajustes de la envolvente (la de un escalonado, la que
     escaló; un recinto excavable de la 014, T20, no tiene: su ficha dice su superficie de
     partida; una rejilla de una cantera, T22, las de cada superficie, con sus perfiles, su
-    superficie de partida y las capas que leyó, y la clasificación, además, su leyenda); las
+    superficie de partida y las capas que leyó, y la clasificación, además, su leyenda; una
+    transición, T28, su superficie de diseño y su superficie de partida, sin semillas); las
     restricciones, las activas en su versión (``gis.masks.store``) y las cifras, las de su
     operación. Los errores del proyecto (``GeoblenderError``, ``sqlite3.Error``) siguen."""
     from ...core.provenance import lineage as prov_lineage  # al usarlo: habilitar no lo carga
@@ -1534,8 +1589,11 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
         settings = link.settings
         area = link.op_type == design_provenance.EXCAVATION_AREA  # un recinto: sin semillas
         quarry = link.op_type == design_provenance.QUARRY  # una cantera: las de sus dos lados
+        # Una transición (T28): sin semillas ni envolvente; su superficie de diseño y su partida.
+        transition = link.op_type == design_provenance.EDGE_TRANSITION
         envelope_settings: Mapping[str, Any] | None = settings
-        if link.op_type != design_provenance.ENVELOPE and not area and not quarry:
+        if (link.op_type != design_provenance.ENVELOPE and not area and not quarry
+                and not transition):
             envelope_settings =_stored_settings(conn, owner, design_provenance.ENVELOPE_GRID,
                                                  settings.get("envelope"))  # la que escaló
     version_code = found.revision.code if found.revision is not None else ""
@@ -1560,11 +1618,14 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
         lines += _quarry_profile_lines(settings, profile_names, names)
     elif assigned := profiles_text(settings, profile_names, names):
         lines.append(CardLine(ROW_FIELD, tr("Profiles: {profiles}", profiles=assigned)))
-    if link.op_type != design_provenance.ENVELOPE and not area and not quarry:
+    if link.op_type != design_provenance.ENVELOPE and not area and not quarry and not transition:
         lines.append(CardLine(ROW_FIELD, tr("Envelope: «{name}»",
                                             name=str(settings.get("envelope") or ""))))
+    if transition:
+        lines.append(CardLine(ROW_FIELD, tr("Design surface: «{surface}»",
+                                            surface=str(settings.get("surface") or ""))))
     if link.op_type != design_provenance.ENVELOPE:
-        start = settings.get("start" if quarry else "surface")
+        start = settings.get("start" if quarry or transition else "surface")
         lines.append(CardLine(ROW_FIELD, tr("Start surface: «{surface}»",
                                             surface=str(start or ""))))
     if request is not None:
@@ -1572,7 +1633,7 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     lines.append(CardLine(ROW_HEADING, tr("Parameters")))
     lines += [parameter_line(used, version_code) for used in link.params] or [
         CardLine(ROW_NONE, tr("No parameters recorded"))]
-    if not area:  # el recinto no tiene semillas ni acotado: es el corte admitido (RF-014-01)
+    if not area and not transition:  # el recinto y la transición no tienen semillas ni acotado
         lines.append(CardLine(ROW_HEADING, tr("Seeds and domains")))
         lines += (_quarry_seed_lines(request, constraints, names) if quarry else
                   _seed_card(settings, envelope_settings, constraints, names, found.record.name))

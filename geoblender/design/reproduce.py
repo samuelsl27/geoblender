@@ -28,7 +28,9 @@ De la cantera con dos superficies (spec 014, T19): :func:`reproduce_excavation_a
 y :func:`reproduce_quarry` (las dos superficies, con las piezas y el cálculo que comparte con el
 proyecto, ``store.quarry_parts_units`` y ``store.quarry_compute_steps``; las capas, las rejillas
 de las semillas y de las anclas se buscan por su nombre entre las entradas congeladas, con el
-papel que tengan).
+papel que tengan). De la transición con el terreno no afectado (spec 014, T28):
+:func:`reproduce_edge_transition` (con el cálculo que comparte con el proyecto,
+``store.transition_compute_steps``; la superficie de diseño y la de partida, por su papel).
 
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con otros,
 ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹ relativo, plan
@@ -91,6 +93,7 @@ from .zones import frozen_polygons, polygons_cells, sector_labels
 __all__ = [
     "REPRODUCE",
     "reproduce_design",
+    "reproduce_edge_transition",
     "reproduce_envelope",
     "reproduce_excavation_area",
     "reproduce_quarry",
@@ -460,7 +463,38 @@ def _reproduce_quarry(request: ReproduceRequest, budget_s: float) -> Iterator[Pr
                    result=ReproducedResult(tuple(outputs), outcome.figures))
 
 
-REPRODUCE: Mapping[str, ReproduceFunction] = MappingProxyType({
+# --- La transición con el terreno no afectado (spec 014, T28) ----------------------------------
+
+
+def reproduce_edge_transition(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
+                              ) -> Iterator[Progress]:
+    """Reproduce ``des.edge_transition`` (spec 014, T28; RF-014-19 a RF-014-21, RF-014-29) con su
+    superficie de diseño, su superficie de partida y sus máscaras congeladas, sus parámetros
+    congelados y sus ajustes, sin el proyecto: el mismo cálculo que el proyecto
+    (``store.transition_compute_steps``). Sus pasos y, el último, el ``ReproducedResult`` con la
+    superficie con la transición, el informe del salto creado y sus cifras."""
+    return _reproduce_transition(_check(request, provenance.EDGE_TRANSITION), budget_s)
+
+
+def _reproduce_transition(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    name, _surface, _start = provenance.transition_start(request.settings)
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = frozen.masks()
+    surface = frozen.raster(provenance.DESIGN_SURFACE_ROLE, what="superficie de diseño")
+    start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida")
+    outcome = yield from store.transition_compute_steps(name, surface.values, start.values,
+                                                        masks, frozen.values,
+                                                        budget_s=budget_s)
+    raster = Raster(start.grid, outcome.grid, frozen.crs, frozen.vertical)
+    output = yield from _grid_output(request, provenance.TRANSITION_GRID, raster, budget_s)
+    report = _table_output(request, provenance.EDGE_REPORT_TABLE,
+                           store.edge_report_rows(outcome), frozen.crs)
+    yield Progress(_PHASE, 1, 1, "Transición reproducida",
+                   result=ReproducedResult((output, report), outcome.figures))
+
+
+REPRODUCE:Mapping[str, ReproduceFunction] = MappingProxyType({
     provenance.ENVELOPE: reproduce_envelope, provenance.STEPPED: reproduce_design})
 """Las funciones de reproducir de los dos tipos de la 013 (las que registra ``bl``; las de la
 014 las registra por su nombre: :func:`reproduce_excavation_area` y :func:`reproduce_quarry`)."""

@@ -65,6 +65,10 @@ son los que nombran la ficha y la guía de la 013; la 014 los documenta en su T3
   lo que consume con sus papeles (:func:`quarry_inputs`, :func:`side_role` y los papeles de sus
   capas, :data:`FLOORS_LAYER_ROLE`…) y los parámetros que lee (:func:`quarry_params`,
   :func:`quarry_profiles`).
+- La transición con el terreno no afectado (``des.edge_transition``, T28): sus ajustes
+  (:func:`transition_settings`, :func:`transition_start`), lo que consume
+  (:func:`transition_inputs`: la superficie de diseño con el papel :data:`DESIGN_SURFACE_ROLE`, la
+  de partida y las máscaras) y los parámetros que lee (:data:`TRANSITION_PARAMS`).
 """
 
 from __future__ import annotations
@@ -119,6 +123,8 @@ from .model import (
 from .params import (
     CONSERVE_SLOPE,
     CROWN_RING,
+    EDGE_MAX_STEP,
+    EDGE_MIN_SHARE,
     TOLERANCE_FACE,
     UNSPLIT_MIN_AREA,
     UNSPLIT_THRESHOLD,
@@ -127,6 +133,7 @@ from .params import (
     BenchParam,
     bench_key,
 )
+from .params import EDGE_TRANSITION as EDGE_TRANSITION_DEG
 
 if TYPE_CHECKING:  # solo para los tipos: importar el informe arrastraría los cálculos
     from .report import DesignReport
@@ -210,6 +217,7 @@ __all__ = [
     "TRANSITIONS_COMMAND",
     "TRANSITION_FIGURES",
     "TRANSITION_GRID",
+    "TRANSITION_PARAMS",
     "TWO_SURFACES_FIGURES",
     "VERSION_TYPES",
     "ZONE_LAYER_ROLE",
@@ -248,6 +256,9 @@ __all__ = [
     "settings_pending",
     "settings_previous",
     "settings_touched",
+    "transition_inputs",
+    "transition_settings",
+    "transition_start",
 ]
 
 MODULE = "des"
@@ -962,6 +973,26 @@ def excavation_area_start(settings: Mapping[str, Any]) -> tuple[str, str]:
     return _required_text(data, "name", what), _required_text(data, "surface", what)
 
 
+def transition_settings(name: str, surface: str, start: str) -> dict[str, Any]:
+    """Los ajustes de ``des.edge_transition`` (spec 014, T28; RF-014-19, RF-014-29; JSON sin
+    rutas): el nombre de la operación, la superficie de diseño que se une con el terreno no
+    afectado (``surface``, el nombre de su dato) y la superficie de partida ``start`` (el de la
+    suya), lo que la vuelve a pedir igual con sus entradas. Es un diccionario nuevo; ``ValueError``
+    si falta alguno."""
+    return {"name": _named(name, "de la transición"),
+            "surface": _named(surface, "de la superficie de diseño"),
+            "start": _named(start, "de la superficie de partida")}
+
+
+def transition_start(settings: Mapping[str, Any]) -> tuple[str, str, str]:
+    """El nombre, la superficie de diseño y la superficie de partida que guardan unos ajustes de
+    ``des.edge_transition`` (:func:`transition_settings`). ``ValueError`` si no los llevan."""
+    what = "los ajustes de una transición"
+    data = _mapping(settings, what)
+    return (_required_text(data, "name", what), _required_text(data, "surface", what),
+            _required_text(data, "start", what))
+
+
 def _seeds_settings(source: SeedSource | None) -> dict[str, Any]:
     """Las semillas de un lado de la cantera: :data:`CROWN_SEEDS` sin ``source`` o las de la 013
     con su zona."""
@@ -1327,6 +1358,17 @@ def excavation_area_inputs(surface: str, masks: Iterable[Use] = ()) -> tuple[Use
                     *masks])
 
 
+def transition_inputs(surface: str, start: str, masks: Iterable[Use] = ()) -> tuple[Use, ...]:
+    """Lo que consume ``des.edge_transition`` (spec 014, T28; RF-014-19, RF-014-31; plan 014
+    §5.2.3), en su orden: la superficie de diseño ``surface`` (papel :data:`DESIGN_SURFACE_ROLE`:
+    la que se une con el terreno no afectado), la superficie de partida ``start``
+    (:data:`SURFACE_ROLE`) y las máscaras de la versión ``masks`` (``MaskSet.uses()``: lo que
+    admiten mover). Si una cambia, la transición queda obsoleta. ``ValueError`` si faltan los
+    nombres."""
+    return _unique([Use(_named(surface, "de la superficie de diseño"), DESIGN_SURFACE_ROLE),
+                    Use(_named(start, "de la superficie de partida"), SURFACE_ROLE), *masks])
+
+
 def side_role(surface: Surface | str, role: str) -> str:
     """El papel de lo que consume un lado de la cantera (``final`` o ``exploitation``) con el
     papel ``role`` de la 013: ``final_anchors``, ``exploitation_seeds_grid``… (los dos lados
@@ -1448,3 +1490,10 @@ def quarry_params(request: QuarryRequest, *, sector_slopes: Iterable[str] = ()
                     CROWN_RING, UNSPLIT_THRESHOLD, UNSPLIT_MIN_AREA,
                     *((CONSERVE_SLOPE,) if request.conserve else ()),
                     TOLERANCE_FACE, WARNING_RATIO, VERIFY_MIN_THICKNESS])
+
+
+TRANSITION_PARAMS: tuple[str, ...] = (EDGE_TRANSITION_DEG, EDGE_MAX_STEP, EDGE_MIN_SHARE,
+                                      VERIFY_MIN_THICKNESS)
+"""Los parámetros que lee ``des.edge_transition`` (spec 014, T28; RF-014-19 a RF-014-21): el
+ángulo de transición (sin valor por defecto, D-9), el salto y el porcentaje admitidos del salto
+creado (D-6) y el espesor mínimo de la 012 con que se buscan las celdas que mueve el diseño."""

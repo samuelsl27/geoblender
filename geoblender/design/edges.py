@@ -22,6 +22,13 @@ T26 y T27; HU-014-5; RF-014-19 a RF-014-21; plan 014 A10, A11, §5.3.1).
   tenía el terreno, que nunca cuenta (error 48). El informe (:class:`EdgeReport`) da las parejas,
   las que pasan del salto admitido, el máximo con su lugar y los **tramos** (:class:`EdgeStretch`),
   y avisa si queda dentro del salto admitido menos del porcentaje admitido (RF-014-21, D-6).
+- :func:`edge_transition_steps` (T28; RF-014-19 a RF-014-21): lo que calcula la operación
+  ``des.edge_transition`` («Transiciones con el terreno no afectado») con una superficie de diseño:
+  su dominio (:func:`transition_domain`: las celdas que **mueve el diseño** donde las máscaras
+  admiten mover el terreno, de modo que su anillo es el terreno no afectado del borde del diseño,
+  el mismo borde en que A11 mide el salto creado), la transición en él (A10), el salto creado de la
+  superficie nueva (A11), sus tres cifras (:func:`edge_transition_figures`) y el aviso de RF-014-21
+  (:func:`edge_notices`), en un :class:`EdgeTransition`.
 
 Python puro con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no escribe nada.
 """
@@ -35,8 +42,11 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..core.project.model import Progress
+from ..core.provenance.figures import FigureSpec
 from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
+from ..gis.messages import format_value
+from . import pipeline, provenance
 from .envelopes import (
     BLOCK_CELLS,
     BLOCK_GROUP,
@@ -51,16 +61,23 @@ from .grids import Labels, _label_units, dilate_square
 from .messages import render
 from .model import Direction, Metric
 from .params import EDGE_MAX_STEP, EDGE_MIN_SHARE, EDGE_TRANSITION, check_quarry_param
+from .preview import Notice
 from .report import _thickness, _units
 from .seeds import pace_progress
 
 __all__ = [
+    "EDGE_PHASE",
     "PAIR_CELLS_PER_UNIT",
     "TRANSITION_NAME",
     "EdgeReport",
     "EdgeStretch",
+    "EdgeTransition",
     "Transition",
     "created_steps",
+    "edge_notices",
+    "edge_transition_figures",
+    "edge_transition_steps",
+    "transition_domain",
     "transition_steps",
 ]
 
@@ -423,3 +440,158 @@ def created_steps(design: np.ndarray, start: np.ndarray, domain: np.ndarray, geo
     return pace_progress(work, budget_s, phase="created_step",
                          running="Midiendo el salto creado en el borde…",
                          finished="Salto creado en el borde, medido")
+
+
+# --- La operación «Transiciones con el terreno no afectado» (T28; RF-014-19 a RF-014-21) ---------
+
+EDGE_PHASE = "edge"
+"""La fase de los pasos de :func:`edge_transition_steps` que no son de la transición ni del salto
+creado (el dominio y el resultado)."""
+_TRANSITION_FIGURE = "des.transition_m3"
+_STEP_FIGURE = "des.created_step_max_m"
+_SHARE_FIGURE = "des.created_step_share_pct"
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class EdgeTransition:
+    """Lo que calcula ``des.edge_transition`` (RF-014-19 a RF-014-21): el ``domain`` de la
+    transición (:func:`transition_domain`), la ``transition`` (A10, :class:`Transition`: la
+    superficie nueva y su volumen), el ``report`` del salto creado de la superficie nueva (A11,
+    :class:`EdgeReport`), sus cifras CALCULADO (``figures``, :func:`edge_transition_figures`) y el
+    ``message`` de la operación."""
+
+    domain: np.ndarray
+    transition: Transition
+    report: EdgeReport
+    figures: tuple[FigureSpec, ...]
+    message: str
+
+    @property
+    def grid(self) -> np.ndarray:
+        """La superficie con la transición (m, float64; la de ``transition``)."""
+        return self.transition.grid
+
+    @property
+    def notices(self) -> tuple[Notice, ...]:
+        """El aviso de RF-014-21 y sus tramos (:func:`edge_notices`); ninguno si no se avisa."""
+        return edge_notices(self.report)
+
+
+def transition_domain(surface: np.ndarray, start: np.ndarray, min_thickness_m: float,
+                      allowed: np.ndarray | None = None) -> np.ndarray:
+    """El dominio de la transición de la superficie de diseño ``surface`` (``S``, m) sobre la de
+    partida ``start`` (``z``, m) (T28; RF-014-19): las celdas que **mueve el diseño** —con dato en
+    las dos superficies y ``|S − z|`` mayor que el espesor mínimo de la 012 ``min_thickness_m`` (m),
+    la máscara de las celdas movidas del informe de la 013 y de A11— y, si se da, dentro de
+    ``allowed`` (las celdas en que las máscaras admiten mover el terreno: el corte o el relleno
+    admitidos). Su anillo exterior es así el **terreno no afectado** del borde del diseño: las
+    celdas que el diseño no mueve, que es donde A11 mide el salto creado. Una máscara nueva;
+    ``ValueError`` (error del programa) si las rejillas no son de la misma forma o el espesor no
+    es finito y ≥ 0."""
+    thickness = _thickness(min_thickness_m)
+    design = np.asarray(surface, dtype=np.float64)
+    base = np.asarray(start, dtype=np.float64)
+    _same_shape("la superficie de partida", base, design.shape)
+    with np.errstate(invalid="ignore"):
+        moved = np.isfinite(design) & np.isfinite(base) & (np.abs(design - base) > thickness)
+    if allowed is not None:
+        inside = np.asarray(allowed, dtype=bool)
+        _same_shape("lo que admiten las máscaras", inside, design.shape)
+        moved &= inside
+    return moved
+
+
+def edge_notices(report: EdgeReport) -> tuple[Notice, ...]:
+    """El aviso de RF-014-21 del salto creado ``report`` (``des.edge_created_step``, con el
+    porcentaje de las parejas que pasa, las parejas, el salto y el porcentaje admitidos, el máximo
+    y su lugar al cm y los tramos) y una nota ``des.edge_stretch`` por tramo, con sus valores como
+    números (``preview.Notice``); ninguno si no se avisa (:attr:`EdgeReport.warned`)."""
+    if not report.warned:
+        return ()
+    found = [Notice("des.edge_created_step", {
+        "share": round(report.over_pct, 2), "pairs": report.pairs,
+        "threshold": report.threshold_m, "admitted": report.min_share_pct,
+        "maximum": round(report.maximum_m, 2), "x": _place(report.x), "y": _place(report.y),
+        "stretches": len(report.stretches)})]
+    found.extend(Notice("des.edge_stretch", {
+        "stretch": item.stretch, "pairs": item.pairs, "maximum": round(item.maximum_m, 2),
+        "x": _place(item.x), "y": _place(item.y)}) for item in report.stretches)
+    return tuple(found)
+
+
+def edge_transition_figures(name: str, transition: Transition, report: EdgeReport
+                            ) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO de la transición ``name`` (plan 014 §5.2.3; RF-014-19 a RF-014-21), con
+    el ámbito de ``provenance.quarry_figure_scope``: el volumen de la transición (m³), el mayor
+    salto creado del borde de la superficie nueva (m: si es negativo —el diseño solo reduce los
+    saltos que ya tenía el terreno— o no hay parejas, 0 m, porque la cifra no admite negativos; el
+    informe ``des_erp_`` lleva el valor con su signo) y el porcentaje de las parejas del borde
+    dentro del salto admitido (%, el 100 % sin parejas)."""
+    scope = provenance.quarry_figure_scope(name)
+    return (FigureSpec(_TRANSITION_FIGURE, float(transition.volume_m3), "m3", scope=scope),
+            FigureSpec(_STEP_FIGURE, max(0.0, float(report.maximum_m)), "m", scope=scope),
+            FigureSpec(_SHARE_FIGURE, float(report.within_pct), "%", scope=scope))
+
+
+def _edge_message(name: str, transition: Transition, report: EdgeReport) -> str:
+    """El mensaje de la operación: lo que hace la transición y lo que queda en el borde."""
+    return (f"Transición «{name}» calculada: {format_value(round(transition.volume_m3, 2))} m³ en "
+            f"{transition.cells} celdas a {format_value(transition.angle_deg)}°; salto creado "
+            f"máximo {format_value(round(max(0.0, report.maximum_m), 2))} m, "
+            f"{format_value(round(report.within_pct, 2))} % de las {report.pairs} parejas del "
+            f"borde dentro de {format_value(report.threshold_m)} m")
+
+
+def _edge_steps(surface: np.ndarray, start: np.ndarray, geometry: Grid,
+                allowed: np.ndarray | None, degrees: float, thickness: float, threshold: float,
+                share: float, metric: Metric, name: str, budget_s: float
+                ) -> Generator[Progress, None, None]:
+    yield Progress(EDGE_PHASE, 0, 1, "Buscando las celdas que mueve el diseño…")
+    domain = transition_domain(surface, start, thickness, allowed)
+    transition: Transition = yield from pipeline.forward(transition_steps(
+        surface, start, domain, geometry, degrees, metric=metric, name=name, budget_s=budget_s))
+    report: EdgeReport = yield from pipeline.forward(created_steps(
+        transition.grid, start, domain, geometry, thickness, threshold, share,
+        budget_s=budget_s))
+    outcome = EdgeTransition(domain, transition, report,
+                             edge_transition_figures(name, transition, report),
+                             _edge_message(name, transition, report))
+    yield Progress(EDGE_PHASE, 1, 1, outcome.message, result=outcome)
+
+
+def edge_transition_steps(surface: np.ndarray, start: np.ndarray, geometry: Grid, *,
+                          angle_deg: float | None, min_thickness_m: float,
+                          threshold_m: float | None, share_pct: float | None, name: str,
+                          allowed: np.ndarray | None = None,
+                          metric: Metric | str = Metric.CHAMFER5,
+                          budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """Lo que calcula ``des.edge_transition`` (T28; RF-014-19 a RF-014-21; A10, A11) con la
+    superficie de diseño ``surface`` (``S``, m, float64, de la forma de ``geometry``) sobre la de
+    partida ``start`` (``z``, m), por pasos de ``budget_s`` como mucho: el dominio
+    (:func:`transition_domain`, con el espesor mínimo ``min_thickness_m`` y lo que admiten las
+    máscaras, ``allowed``), la transición en él con el ángulo de transición ``angle_deg`` (°) y la
+    ``metric`` de la 013 (:func:`transition_steps`) y el salto creado de la superficie nueva en ese
+    mismo dominio con el salto admitido ``threshold_m`` (m) y el porcentaje admitido
+    ``share_pct`` (%) (:func:`created_steps`). El último ``Progress`` (fase :data:`EDGE_PHASE`)
+    lleva el :class:`EdgeTransition` de la operación ``name`` (el ámbito de sus cifras).
+
+    Rechazos al llamar: el ángulo, el salto y el porcentaje, como sus parámetros
+    (``check_quarry_param``: ``des.quarry_param_missing`` —el ángulo no tiene valor por defecto,
+    D-9— o ``des.quarry_param_range``); ``GisError`` ``gis.dataset_name_invalid`` si el nombre no
+    tiene ninguna letra ni cifra; ``ValueError`` (error del programa) si una rejilla no es de la
+    forma de ``geometry``, el espesor no es finito y ≥ 0 o la métrica no es de la 013. Ninguna
+    entrada se modifica y no se escribe nada; cerrar el generador a mitad no deja nada."""
+    provenance.quarry_figure_scope(name)  # el nombre, al llamar: lo necesitan las cifras
+    degrees = float(check_quarry_param(EDGE_TRANSITION, angle_deg))
+    threshold = float(check_quarry_param(EDGE_MAX_STEP, threshold_m))
+    share = float(check_quarry_param(EDGE_MIN_SHARE, share_pct))
+    thickness = _thickness(min_thickness_m)
+    design = np.asarray(surface, dtype=np.float64)
+    base = np.asarray(start, dtype=np.float64)
+    for label, grid in (("la superficie de diseño", design), ("la superficie de partida", base)):
+        _same_shape(label, grid, geometry.shape)
+    inside = None if allowed is None else np.asarray(allowed, dtype=bool)
+    if inside is not None:
+        _same_shape("lo que admiten las máscaras", inside, geometry.shape)
+    return _edge_steps(design, base, geometry, inside, degrees, thickness, threshold, share,
+                       Metric(metric), name, budget_s)

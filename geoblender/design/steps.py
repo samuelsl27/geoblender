@@ -19,6 +19,9 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
   versión (``des.excavation_area``) del mismo modo; el último paso lleva su :class:`Calculation`.
 - :func:`quarry_run` (spec 014, T19; RF-014-12, RF-014-29, RF-014-30): «Calcular» la cantera con
   dos superficies (``des.quarry``) del mismo modo, con los avisos de su resumen.
+- :func:`edge_transition_run` (spec 014, T28; RF-014-19 a RF-014-21, RF-014-29): «Calcular» la
+  transición de una superficie de diseño con el terreno no afectado (``des.edge_transition``) del
+  mismo modo, con el aviso del salto creado que deja.
 - :class:`Calculation`: lo calculado y todavía sin registrar. :meth:`~Calculation.create`
   (**«Crear»**) abre la operación, mueve los temporales, escribe las tablas y las cifras y completa,
   todo en **una** transacción (``DesignWriter.commit``); :meth:`~Calculation.discard`
@@ -42,7 +45,7 @@ Python puro (nivel 8): no importa ``reserves`` ni ``bl``.
 from __future__ import annotations
 
 from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
-from types import TracebackType
+from types import MappingProxyType, TracebackType
 
 from ..core.datasets.model import DatasetSpec
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
@@ -51,7 +54,7 @@ from ..core.provenance.figures import FigureSpec
 from ..gis.masks.access import MaskSet
 from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.store import StoreProject
-from . import pipeline, preview, provenance, quarry, store
+from . import edges, pipeline, preview, provenance, quarry, store
 from .messages import DesignError
 from .model import DesignRequest, EnvelopeRequest, QuarryRequest
 from .preview import Notice
@@ -60,6 +63,7 @@ from .seeds import SeedPlan, SeedSet, pace_progress
 __all__ = [
     "Calculation",
     "design_run",
+    "edge_transition_run",
     "envelope_run",
     "excavation_area_run",
     "preview_steps",
@@ -97,7 +101,8 @@ def resolve_values(project: StoreProject, version_uid: str, keys: Iterable[str]
 class Calculation:
     """Un cálculo hecho y **sin registrar** (véase el módulo): su ``outcome``
     (``pipeline.EnvelopeOutcome``, ``pipeline.DesignOutcome`` o, de un recinto,
-    ``quarry.AreaOutcome``, y de una cantera, ``quarry.QuarryOutcome``), los ``notices`` que enseña
+    ``quarry.AreaOutcome``, de una cantera, ``quarry.QuarryOutcome``, y de una transición,
+    ``edges.EdgeTransition``), los ``notices`` que enseña
     la ventana junto a su resumen —de la envolvente, los de sus semillas; del escalonado, los de su
     informe; de la cantera, los suyos y los del informe de cada lado—, las ``seeds`` (``None``
     salvo en una envolvente), el tipo de operación (``op_type``), su
@@ -106,7 +111,8 @@ class Calculation:
 
     def __init__(self, *, project: StoreProject, writer: store.DesignWriter,
                  start: store.OperationStart, outcome: pipeline.EnvelopeOutcome
-                 | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome,
+                 | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome
+                 | edges.EdgeTransition,
                  notices: Sequence[Notice],
                  seeds: SeedSet | None,
                  values: Mapping[str, object]) -> None:
@@ -144,6 +150,12 @@ class Calculation:
     def specs(self) -> tuple[DatasetSpec, ...]:
         """Las salidas preparadas (con su hash), en el orden de su tipo de operación."""
         return self._writer.specs
+
+    @property
+    def settings(self) -> Mapping[str, object]:
+        """Los ajustes que anotará la operación al crearla (los de lo pedido: la superficie de una
+        transición, T28…), de solo lectura."""
+        return MappingProxyType(dict(self._start.settings))
 
     def lines(self, language: str = "es") -> tuple[str, ...]:
         """Los avisos y notas del resumen, línea a línea, en ``language`` (``"es"`` o ``"en"``)."""
@@ -270,6 +282,26 @@ def quarry_run(project: StoreProject, request: QuarryRequest, *, version: str | 
     return _quarry_steps(project, request, version, masks, budget_s)
 
 
+def edge_transition_run(project: StoreProject, name: str, surface: str, start: str, *,
+                        version: str | None, masks: MaskSet | None = None,
+                        budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**«Calcular»** la transición ``name`` de la superficie de diseño ``surface`` de la versión
+    ``version`` con el terreno no afectado, sobre la superficie de partida ``start`` (los nombres
+    de sus datos), por pasos de ``budget_s`` como mucho (spec 014, T28; RF-014-19 a RF-014-21,
+    RF-014-29; «Transiciones con el terreno no afectado»): el último ``Progress`` lleva la
+    :class:`Calculation` de ``des.edge_transition``, con la superficie con la transición
+    (``des_trn_``) en su temporal, el informe del salto creado (``des_erp_``) preparado, sus cifras
+    y el aviso de RF-014-21 si queda dentro del salto admitido menos del porcentaje admitido, y
+    **nada registrado**. ``masks``, como en :func:`envelope_run`.
+
+    Los rechazos salen **al avanzar**, antes de escribir nada: sin versión activa o no editable,
+    máscaras (``MaskError``), una superficie que no es de diseño de la versión
+    (``des.edge_not_design_surface``), las superficies (``des.surface_*``), el ángulo de transición
+    sin valor (``des.quarry_param_missing``, D-9) o un parámetro fuera de rango y el nombre
+    repetido. Cerrar el generador a mitad borra el temporal."""
+    return _transition_steps(project, name, surface, start, version, masks, budget_s)
+
+
 def _prepare_steps[T](units: Generator[None, None, T], budget_s: float
                       ) -> Generator[Progress, None, T]:
     """Las unidades de preparar un cálculo agrupadas en pasos; devuelve lo que preparan."""
@@ -357,6 +389,27 @@ def _quarry_steps(project: StoreProject, request: QuarryRequest, version: str | 
                                   outcome=outcome, notices=(*calculated.notices, *sides),
                                   seeds=None, values=values)
     except BaseException as error:  # un fallo o cerrar el generador: no quedan los temporales
+        writer.close(error)
+        raise
+    yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
+
+
+def _transition_steps(project: StoreProject, name: str, surface: str, start: str,
+                      version: str | None, masks: MaskSet | None, budget_s: float
+                      ) -> Generator[Progress, None, None]:
+    found = store.require_version(project, version, provenance.EDGE_TRANSITION)
+    loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
+    prepared: store.PreparedTransition = yield from _prepare_steps(
+        store.prepare_transition_units(project, name, surface, start, found, loaded), budget_s)
+    writer = store.DesignWriter(project, provenance.EDGE_TRANSITION, name, version=found.uid)
+    try:
+        values = resolve_values(project, found.uid, prepared.start.params)
+        outcome: edges.EdgeTransition = yield from store.compute_transition_steps(
+            writer, name, prepared, loaded, values, budget_s)
+        calculation = Calculation(project=project, writer=writer, start=prepared.start,
+                                  outcome=outcome, notices=outcome.notices, seeds=None,
+                                  values=values)
+    except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
         writer.close(error)
         raise
     yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
