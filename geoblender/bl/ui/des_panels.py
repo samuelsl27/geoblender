@@ -109,7 +109,14 @@ ficha de cada rejilla de la cantera cargada en la vista (``bl.scene.des_views``:
 superficies, sus envolventes y la clasificación): sus ajustes, los perfiles de cada superficie, la
 superficie de partida, las capas que leyó con sus campos, los parámetros, las semillas de cada
 superficie con el recinto como dominio, las restricciones, la leyenda de la clasificación (un color
-por clase) y las cifras registradas, por sector y en total."""
+por clase) y las cifras registradas, por sector y en total.
+
+**«Solo relleno…»** (spec 014, T30; HU-014-6; RF-014-22 a RF-014-24): la lista de las envolventes
+de la versión activa de su diálogo (:func:`envelope_items`, leída en :func:`refresh_choices`), el
+resumen de su cálculo (:func:`show_summary`: «Diseño «solo relleno» «Balsa» en V01», el terraplén,
+el corte frente al terreno registrado y el área con movimiento, las celdas en que la lámina de agua
+es la partida, la inclinación y las bermas, y los avisos de su escalonado) y, en la ficha de su
+superficie (una ``des_srf_``), la capa de láminas con su campo."""
 
 from __future__ import annotations
 
@@ -557,6 +564,7 @@ class _Choices:
     lines: list[tuple[str, str, str]] = field(default_factory=list)
     conserve: list[tuple[str, str, str]] = field(default_factory=list)
     designs: list[tuple[str, str, str]] = field(default_factory=list)
+    envelopes: list[tuple[str, str, str]] = field(default_factory=list)
     by_id: dict[str, res_surfaces.SurfaceChoice] = field(default_factory=dict)
     key: tuple[str, str, str] | None = None
 
@@ -581,6 +589,7 @@ def _fixed_choices() -> None:
     _CHOICES.conserve = [(NO_ZONE, tr("No zone"), tr("No zone to conserve"))]
     _CHOICES.designs = [(NO_ZONE, NOT_SHOWN,
                          tr("There are no design surfaces in the active version"))]
+    _CHOICES.envelopes = [(NO_ZONE, NOT_SHOWN, tr("There are no envelopes in the active version"))]
 
 
 DESIGN_SURFACE_PREFIXES: tuple[str, ...] = tuple(
@@ -617,8 +626,11 @@ def refresh_choices(project: Any) -> None:
     version = scene_versions.active_version() or ""
     found = [choice for choice in res_surfaces.surface_choices(project, version_uid=version)
              if choice.revision is None]
+    envelope_prefix = design_provenance.FAMILIES_BY_CODE[design_provenance.ENVELOPE_GRID].prefix
     with project.read() as conn:
         constraints = constraint_store.read_constraints(conn)
+        envelopes = _envelope_names(conn, [choice for choice in found if choice.version_uid
+                                           and choice.name.startswith(envelope_prefix)])
     layers = constraint_panels.polygon_layers(project)
     lines = line_layers(project)
     shown = view()
@@ -657,7 +669,31 @@ def refresh_choices(project: Any) -> None:
                if choice.version_uid and choice.name.startswith(DESIGN_SURFACE_PREFIXES)]
     if designs:
         _CHOICES.designs = designs
+    # «Solo relleno…» (spec 014, T30): las envolventes de la versión activa, por el nombre de su
+    # operación (el que escalona, como el escalonado de la 013).
+    if envelopes:
+        _CHOICES.envelopes = [(name, name, tr("An envelope of the active version"))
+                              for name in envelopes]
     _CHOICES.key = (project.uid, version, language())
+
+
+def _envelope_names(conn: sqlite3.Connection, choices: Sequence[res_surfaces.SurfaceChoice]
+                    ) -> list[str]:
+    """El nombre de la operación de cada envolvente de ``choices`` (los datos ``des_env_`` de la
+    versión activa), de los ajustes de la operación que la escribió, sin repetir y en su orden;
+    una cuyos ajustes no lo llevan no se ofrece. Solo lee."""
+    found: list[str] = []
+    for choice in choices:
+        row = conn.execute("SELECT o.settings FROM gb_dataset AS d JOIN gb_operation AS o "
+                           "ON o.uid = d.operation_uid WHERE d.uid = ?", (choice.uid,)).fetchone()
+        try:
+            settings = json.loads(str(row[0])) if row is not None and row[0] else None
+        except ValueError:
+            settings = None
+        name = settings.get("name") if isinstance(settings, dict) else None
+        if isinstance(name, str) and name.strip() and name not in found:
+            found.append(name)
+    return found
 
 
 def _ensure_choices() -> None:
@@ -738,12 +774,20 @@ def design_surface_items(_self: Any, _context: Any) -> list[tuple[str, str, str]
     return _CHOICES.designs
 
 
+def envelope_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las envolventes de la versión activa que ofrece «Solo relleno…» (spec 014, T30; plan 014
+    §5.3.3: el escalonado en relleno de una envolvente, como la 013), con el nombre de su
+    operación como identificador; sin ninguna, «—» (una lista viva del módulo)."""
+    _ensure_choices()
+    return _CHOICES.envelopes
+
+
 def forget_choices() -> None:
     """Olvida las listas leídas (al desregistrar)."""
     _CHOICES.key = None
     _CHOICES.surfaces, _CHOICES.anchors, _CHOICES.zones, _CHOICES.layers = [], [], [], []
     _CHOICES.optional_layers, _CHOICES.lines, _CHOICES.conserve = [], [], []
-    _CHOICES.designs = []
+    _CHOICES.designs, _CHOICES.envelopes = [], []
     _CHOICES.by_id = {}
 
 
@@ -874,7 +918,9 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     registrarían); de un escalonado, el desmonte y el terraplén, la inclinación p99 y máxima con su
     lugar, y las bermas con sus cotas reales (el informe y las bermas del dominio); de un recinto
     excavable (spec 014, T20; RF-014-01), sus celdas y su área; de una cantera con dos superficies
-    (spec 014, T21; RF-014-12), lo de :func:`_quarry_lines`. Aquí solo se escriben."""
+    (spec 014, T21; RF-014-12), lo de :func:`_quarry_lines`; de una transición (T28), lo de
+    :func:`_transition_lines`; de un diseño «solo relleno» (T30), lo de :func:`_fill_only_lines`.
+    Aquí solo se escriben."""
     lines: list[tuple[str, bool]] = []
     if calculation.op_type == design_provenance.QUARRY:
         lines.extend(_quarry_lines(calculation.outcome))
@@ -898,6 +944,8 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
         if cut is not None and fill is not None:
             lines.append((tr("Against the start surface: cut {cut} m³ · fill {fill} m³",
                              cut=_number(cut), fill=_number(fill)), False))
+    elif calculation.op_type == design_provenance.FILL_ONLY:
+        lines.extend(_fill_only_lines(calculation))
     else:
         outcome = calculation.outcome
         report, berms = outcome.report, outcome.berms  # type: ignore[union-attr]
@@ -905,22 +953,52 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
                          name=calculation.name, cut=_number(report.cut_m3),
                          fill=_number(report.fill_m3), area=_number(report.moved_area_m2)),
                       False))
-        if report.slope_max_deg is not None and report.slope_p99_deg is not None:
-            where = report.slope_max_at
-            lines.append((tr("Cell slope: p99 {p99}° · maximum {max}° at ({x}, {y})",
-                             p99=_number(report.slope_p99_deg, 1),
-                             max=_number(report.slope_max_deg, 1),
-                             x=_number(None if where is None else where.x, 1),
-                             y=_number(None if where is None else where.y, 1)), False))
-        if berms.lowest_m is not None and berms.highest_m is not None:
-            lines.append((tr("{count} berms, real elevations {low} to {high} m",
-                             count=_number(berms.count), low=_number(berms.lowest_m, 1),
-                             high=_number(berms.highest_m, 1)), False))
-        else:
-            lines.append((tr("No berms: nothing moves"), False))
+        lines.extend(_bench_lines(report, berms))
     lines.extend((notice.text(language()), notice.severity == "warning")
                  for notice in calculation.notices)
     return lines
+
+
+def _bench_lines(report: Any, berms: Any, *, without_berms: bool = True
+                 ) -> list[tuple[str, bool]]:
+    """La inclinación p99 y máxima con su lugar y las bermas con sus cotas reales de un
+    escalonado (su informe y sus bermas medidas), como las dice el resumen; sin bermas, «Sin
+    bermas: no se mueve nada» si ``without_berms``."""
+    lines: list[tuple[str, bool]] = []
+    if report.slope_max_deg is not None and report.slope_p99_deg is not None:
+        where = report.slope_max_at
+        lines.append((tr("Cell slope: p99 {p99}° · maximum {max}° at ({x}, {y})",
+                         p99=_number(report.slope_p99_deg, 1),
+                         max=_number(report.slope_max_deg, 1),
+                         x=_number(None if where is None else where.x, 1),
+                         y=_number(None if where is None else where.y, 1)), False))
+    if berms.lowest_m is not None and berms.highest_m is not None:
+        lines.append((tr("{count} berms, real elevations {low} to {high} m",
+                         count=_number(berms.count), low=_number(berms.lowest_m, 1),
+                         high=_number(berms.highest_m, 1)), False))
+    elif without_berms:
+        lines.append((tr("No berms: nothing moves"), False))
+    return lines
+
+
+def _fill_only_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+    """El resumen de un diseño «solo relleno» calculado (``design.fronts.FillOnlyOutcome``; spec
+    014, T30; RF-014-22 a RF-014-24): el terraplén y el área con movimiento frente al terreno de
+    partida con las láminas (el informe de su escalonado), el corte frente al terreno registrado
+    (con dos decimales: tiene que ser menor de 1 m³), las celdas en que la lámina de agua es la
+    partida, si las hay, y la inclinación y las bermas (un relleno de un solo banco no tiene
+    bermas, y no por eso deja de mover: «Sin bermas: no se mueve nada», solo si no mueve nada).
+    Los avisos los añade :func:`summary_lines`."""
+    outcome = calculation.outcome
+    report, berms = outcome.design.report, outcome.design.berms  # type: ignore[union-attr]
+    lines = [(tr("Fill-only design «{name}»: fill {fill} m³ · cut {cut} m³ · moved area {area} m²",
+                 name=calculation.name, fill=_number(report.fill_m3),
+                 cut=_number(outcome.cut_m3, 2),  # type: ignore[union-attr]
+                 area=_number(report.moved_area_m2)), False)]
+    if outcome.water_cells:  # type: ignore[union-attr]
+        lines.append((tr("Water sheets as the start surface in {cells} cells",
+                         cells=_number(outcome.water_cells)), False))  # type: ignore[union-attr]
+    return [*lines, *_bench_lines(report, berms, without_berms=not report.moved_area_m2)]
 
 
 def show_preview(lines: Sequence[tuple[str, bool]]) -> None:
@@ -958,6 +1036,9 @@ def show_summary(calculation: Calculation | None) -> None:
                    version=calculation.version)
     elif calculation.op_type == design_provenance.EDGE_TRANSITION:
         title = tr("Transition «{name}» in {version}", name=calculation.name,
+                   version=calculation.version)
+    elif calculation.op_type == design_provenance.FILL_ONLY:
+        title = tr("Fill-only design «{name}» in {version}", name=calculation.name,
                    version=calculation.version)
     else:
         title = tr("Benching «{name}» in {version}", name=calculation.name,
@@ -1460,6 +1541,19 @@ def _quarry_layer_lines(request: QuarryRequest, constraints: Mapping[str, str],
     return [CardLine(ROW_HEADING, tr("Layers")), *lines] if lines else []
 
 
+def _water_lines(settings: Mapping[str, Any]) -> list[CardLine]:
+    """La capa de láminas de agua de un diseño «solo relleno» con su campo de cota (sus ajustes
+    ``water``; spec 014, T30; RF-014-24): «Láminas de agua: capa «laminas» · campo «cota»»; ninguna
+    línea sin láminas."""
+    water = settings.get("water")
+    if not isinstance(water, Mapping) or not water.get("layer"):
+        return []
+    return [CardLine(ROW_FIELD, tr("{what}: layer «{layer}» · field «{field}»",
+                                   what=tr("Water sheets"),
+                                   layer=constraint_panels.layer_label(str(water["layer"])),
+                                   field=str(water.get("field") or "")))]
+
+
 def _quarry_seed_lines(request: QuarryRequest | None, constraints: Mapping[str, str],
                        sectors: Mapping[str, str]) -> list[CardLine]:
     """Las semillas de cada superficie de una cantera («Coronación y zonas a sostener» o las de la
@@ -1630,6 +1724,8 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
                                             surface=str(start or ""))))
     if request is not None:
         lines += _quarry_layer_lines(request, constraints, names)
+    if link.op_type == design_provenance.FILL_ONLY:  # «solo relleno» (T30): su capa de láminas
+        lines += _water_lines(settings)
     lines.append(CardLine(ROW_HEADING, tr("Parameters")))
     lines += [parameter_line(used, version_code) for used in link.params] or [
         CardLine(ROW_NONE, tr("No parameters recorded"))]

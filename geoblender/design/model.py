@@ -26,7 +26,8 @@ RF-014-18): :class:`Surface`, :class:`Order` («final primero» por defecto, D-4
 :class:`AnchorMode` (fija, en rejilla o «al fondo de cada muro»), :class:`CellClass` (sin
 diferencia, desdoblado o relleno, con su código del GeoTIFF), :class:`ToFinalMode` (P-2), las
 capas con sus campos (:class:`LayerField`, :class:`CorridorFields`), lo de cada superficie
-(:class:`QuarrySide`) y la petición (:class:`QuarryRequest`).
+(:class:`QuarrySide`) y la petición (:class:`QuarryRequest`); y la de «Solo relleno…» (T30,
+:class:`FillOnlyRequest`).
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ __all__ = [
     "DesignRequest",
     "Direction",
     "EnvelopeRequest",
+    "FillOnlyRequest",
     "LayerField",
     "Metric",
     "Named",
@@ -482,6 +484,36 @@ class QuarryRequest:
         if Surface(surface) is Surface.FINAL:
             return self.final
         return self.exploitation
+
+
+@dataclass(frozen=True, slots=True)
+class FillOnlyRequest:
+    """Lo que pide el usuario de «Solo relleno…» (spec 014, T30; RF-014-22 a RF-014-24; plan 014
+    §5.3.3): como el escalonado **en relleno** de la 013 —su ``name`` (único en la versión), la
+    ``envelope`` de la versión que se escalona, la superficie de partida (``start``, el nombre de
+    su dato), el código del perfil base (``base_profile``), el de cada sector
+    (``sector_profiles``: código del sector → código del perfil; sale como pares ordenados por
+    sector) y la rejilla de anclas (``anchor_grid``; ninguna: el ancla del perfil)— más la capa de
+    las láminas de agua con su campo de cota (``water``; ninguna: sin láminas, D-10)."""
+
+    name: str
+    envelope: str
+    start: str
+    base_profile: str
+    sector_profiles: Mapping[str, str] | Iterable[tuple[str, str]] = ()
+    anchor_grid: str | None = None
+    water: LayerField | None = None
+
+    def __post_init__(self) -> None:
+        pairs: Any = self.sector_profiles
+        object.__setattr__(self, "sector_profiles", tuple(sorted(dict(pairs).items())))
+
+    @property
+    def design(self) -> DesignRequest:
+        """El escalonado de la 013 que hace (RF-014-22): el de la misma envolvente, en relleno,
+        con su perfil base, el de cada sector y su ancla."""
+        return DesignRequest(self.name, self.envelope, BenchSense.FILL, self.base_profile,
+                             self.sector_profiles, self.anchor_grid)
 
 
 class Named(Protocol):

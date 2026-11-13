@@ -166,6 +166,18 @@ superficie de diseño (``des_panels.design_surface_items``: las de la versión) 
 propone «Transición», **la superficie de diseño seleccionada** en la vista (sin ella, la primera de
 la lista) y, de partida, la de su ficha (``design.store.design_surface_of``) o el terreno. Calcular,
 Crear, Cancelar y Esc, los de :class:`_CalculateAndCreate`.
+
+**Solo relleno…** (spec 014, T30; HU-014-6; RF-014-22 a RF-014-25, RF-014-29; plan 014 §5.3.3):
+:class:`GEOBLENDER_OT_des_design_fill_only` (Diseño ▸ Cantera) calcula ``des.fill_only`` de la
+versión activa con ``design.steps.fill_only_run``: el escalonado en relleno de la 013 de una
+envolvente de la versión, que nunca corta, con el pie dentro del relleno admitido de la 012 y las
+láminas de agua de una capa como terreno de partida. Su diálogo es el del escalonado en relleno de
+la 013 (el nombre, la envolvente —``des_panels.envelope_items``: las de la versión—, la superficie
+de partida, el ancla, el perfil base y el de cada sector) más la capa de láminas y su campo;
+propone «Solo relleno», la primera envolvente, el terreno y el campo «cota». Lo pedido es una
+``design.model.FillOnlyRequest``. Calcular, Crear, Cancelar y Esc, los de
+:class:`_CalculateAndCreate`; los rechazos (un intocable movido o un corte, RF-014-25; las
+láminas; un perfil sin valor) y las cuentas son de ``design``.
 """
 
 from __future__ import annotations
@@ -1827,8 +1839,8 @@ class GEOBLENDER_OT_des_compute_envelope(DesignCommandAware, ProvenanceAwareOper
 
 class _CalculateAndCreate:
     """Lo común de las órdenes de la 014 que **calculan** por pasos y **crean** al confirmar
-    («Límite desde el perímetro…», «Cantera con dos superficies…» y «Transiciones con el terreno
-    no afectado»), como «Envolventes y
+    («Límite desde el perímetro…», «Cantera con dos superficies…», «Transiciones con el terreno
+    no afectado» y «Solo relleno…»), como «Envolventes y
     escalonado…» sin el escalonado que sigue (D-14 de la 013): :meth:`_run_steps` corre los pasos
     del cálculo en el modal con el avance y Esc (``_StepsModal``) o, desde un guion, de una vez;
     al terminar, :meth:`_finished` deja el cálculo abierto con su resumen (``des_panels``) y pide
@@ -2714,6 +2726,218 @@ class GEOBLENDER_OT_des_create_transitions(_CalculateAndCreate, DesignCommandAwa
         return tr("Computing the transition… {percent} % · Esc: cancel", percent=percent)
 
 
+# --- Solo relleno… (spec 014, T30; HU-014-6; RF-014-22 a RF-014-25, RF-014-29; plan 014 §5.3.3,
+#     §5.5) ---------------------------------------------------------------------------------------
+
+DESIGN_FILL_ONLY = provenance.FILL_ONLY_COMMAND
+
+
+class GEOBLENDER_OT_des_design_fill_only(_CalculateAndCreate, DesignCommandAware,
+                                         ProvenanceAwareOperator, _StepsModal,
+                                         bpy.types.Operator):
+    """Bench an envelope of the active version in fill without cutting: the toe stays in the
+    admitted fill and the water sheets are the start surface"""
+
+    bl_idname = DESIGN_FILL_ONLY
+    bl_label = "Fill only…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.FILL_ONLY
+    COMMAND = DESIGN_FILL_ONLY
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the fill-only design, unique in the active version",
+        options=_FIELD)
+    envelope: EnumProperty(  # type: ignore[valid-type]
+        name="Envelope",
+        description="Envelope of the active version that is benched in fill: the design only "
+                    "fills", items=des_panels.envelope_items, options=_FIELD)
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Surface the benching starts from: the ground the design is composed with",
+        items=des_panels.surface_items, options=_FIELD)
+    anchor: EnumProperty(  # type: ignore[valid-type]
+        name="Anchor",
+        description="Elevation the benches are anchored to: that of each profile or a grid of "
+                    "anchors of the project or of the active version",
+        items=des_panels.anchor_items, options=_FIELD)
+    base_profile: StringProperty(  # type: ignore[valid-type]
+        name="Base profile",
+        description="Bench profile of the cells without a sector (and of the sectors without "
+                    "their own)", options=_FIELD)
+    water_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Water sheets",
+        description="Layer of polygons with the elevation of each water sheet (none: no water "
+                    "sheets)", items=des_panels.optional_layer_items, options=_FIELD)
+    water_field: StringProperty(  # type: ignore[valid-type]
+        name="Water elevation field",
+        description="Numeric field of the layer of water sheets with the elevation of each sheet "
+                    "in metres", default=WATER_FIELD, options=_FIELD)
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con
+    # el avance y Esc: los pone invoke; desde un guion, sin ellos, de una vez.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué.
+        Con ``confirm``, el diálogo de crear el cálculo abierto. Si no, las listas de envolventes,
+        superficies, anclas, capas, perfiles y sectores leídas de nuevo, la propuesta (el nombre,
+        la envolvente, el terreno y el campo de la cota) y el diálogo del cálculo: Intro calcula."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.fill_profiles(project)
+            des_panels.fill_sectors(project)
+            des_panels.refresh_choices(project)
+            self._propose(context, project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.COMMAND)].label),
+            confirm_text=tr("Calculate"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """Lo que propone el diálogo si quien lo lanza no lo dio (plan 014 §5.3.3, como la T45 de
+        la 013): el nombre («Solo relleno»), la primera envolvente de la versión, de partida el
+        terreno (``surface_proposal.ground_item``: el MDT o el TIN seleccionado, la partida de una
+        superficie de diseño seleccionada o la primera de la lista que no es una rejilla de un
+        diseño) y el campo de la cota de las láminas («cota», plan 014 §5.2.1). Los perfiles no se
+        proponen: los elige la persona."""
+        given = self.properties.is_property_set
+        if not self.name.strip():
+            self.name = tr("Fill only")
+        envelopes = [identifier for identifier, _name, _about
+                     in des_panels.envelope_items(None, None) if identifier != des_panels.NO_ZONE]
+        if envelopes and not given("envelope"):
+            self.envelope = envelopes[0]
+        if des_panels.has_surfaces() and not given("start"):
+            items = [identifier for identifier, _name, _about
+                     in des_panels.surface_items(None, None)]
+            self.start = surface_proposal.ground_item(context, project, items,
+                                                      des_panels.surface_choice)
+        if not given("water_field") and not self.water_field.strip():
+            self.water_field = WATER_FIELD
+
+    def draw(self, context: Any) -> None:
+        """Lo del escalonado en relleno de la 013 (el nombre, la envolvente, la superficie de
+        partida, el ancla, el perfil base y el de cada sector) y la capa de láminas con su campo
+        (plan 014 §5.3.3)."""
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        shown = des_panels.view()
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "envelope", text=tr("Envelope"), translate=False)
+        layout.prop(self, "start", text=tr("Start surface"), translate=False)
+        layout.prop(self, "anchor", text=tr("Anchor"), translate=False)
+        if shown is not None:
+            layout.prop_search(self, "base_profile", shown, "profiles", text=tr("Base profile"),
+                               translate=False)
+            if len(shown.sectors):
+                box = layout.box()
+                box.label(text=tr("Sectors"), translate=False)
+                des_panels.draw_sector_rows(box, bound=False, profiles=True)
+        layout.prop(self, "water_layer", text=tr("Water sheets"), translate=False)
+        if self.water_layer != des_panels.NO_LAYER:
+            layout.prop(self, "water_field", text=tr("Elevation field"), translate=False)
+
+    def _request(self, project: Any) -> design_model.FillOnlyRequest:
+        """Lo pedido en el diálogo como la ``design.model.FillOnlyRequest`` (RF-014-22, RF-014-24),
+        comprobado sin escribir ni calcular nada: los perfiles y los sectores se leen de nuevo (un
+        guion no abre el diálogo que los lee). La envolvente, las superficies, la capa y su campo,
+        los perfiles sin valor y los sectores pendientes los rechaza el dominio al calcular.
+        :class:`ComputeFormError` si falta algo del diálogo."""
+        des_panels.fill_profiles(project)
+        des_panels.fill_sectors(project)
+        shown = des_panels.view()
+        name = self.name.strip()
+        if not name:
+            raise ComputeFormError(tr("Write the name of the fill-only design"))
+        if self.envelope in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the envelope of the fill-only design"))
+        if self.start in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the start surface of the fill-only design"))
+        codes = des_panels.profile_codes()
+        pick = GEOBLENDER_OT_des_compute_envelope._profile_code
+        base = pick(self.base_profile, tr("Base profile"), codes)
+        if base is None:
+            raise ComputeFormError(tr("Choose the base profile of the fill-only design"))
+        assigned: dict[str, str] = {}
+        for item in () if shown is None else shown.sectors:
+            found = pick(item.profile_pick, item.name, codes)
+            if found is not None:
+                assigned[item.code] = found
+        water = None
+        if _chosen(self.water_layer):
+            water = design_model.LayerField(self.water_layer, _field(
+                self.water_field, tr("Elevation field"), self.water_layer))
+        anchor = None if self.anchor in ("", des_panels.NO_ANCHOR) else self.anchor
+        return design_model.FillOnlyRequest(name, self.envelope, self.start, base, assigned,
+                                            anchor, water)
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Si no, comprueba lo pedido
+        (sin escribir nada si falta algo), pasa por la puerta de la 008 y calcula el diseño por
+        pasos con ``design.steps.fill_only_run`` —compila las máscaras antes si no están al día—,
+        sin registrar nada (RF-014-29): desde la interfaz, en el modal con el avance y Esc; desde un
+        guion, de una vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar.
+        Los rechazos (un intocable movido o un corte, RF-014-25; las láminas; un sector pendiente;
+        un perfil sin valor; el nombre repetido) y todas las cuentas son de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        try:
+            request = self._request(project)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report,
+                             dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        des_panels.assign_profiles(project, dict(request.sector_profiles))  # RF-013-21, en la vista
+        steps = design_steps.fill_only_run(project, request, version=version,
+                                           budget_s=self.STEP_BUDGET_S)
+        return self._run_steps(context, project, request.name, steps)
+
+    def _created_text(self, opened: Calculation) -> str:
+        return tr("Fill-only design «{name}» created in {version}", name=opened.name,
+                  version=opened.version)
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Calculando el diseño «solo relleno»… 40 % · Esc:
+        cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Computing the fill-only design… {percent} % · Esc: cancel", percent=percent)
+
+
 # --- Vista previa de semillas, dominios y restricciones (T25; HU-013-1; RF-013-01, RF-013-02,
 #     RF-013-03, RF-013-33; plan §5.3.3, §5.5, D-29) ----------------------------------------------
 
@@ -3046,10 +3270,11 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_declare_sectors,
                              GEOBLENDER_OT_des_create_limit_from_perimeter,
                              GEOBLENDER_OT_des_design_quarry,
-                             GEOBLENDER_OT_des_create_transitions)
+                             GEOBLENDER_OT_des_create_transitions,
+                             GEOBLENDER_OT_des_design_fill_only)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
 T44, la que declara de nuevo los sectores desde su ventana; de la 014, la T20 pone «Límite desde el
-perímetro…», la T21 «Cantera con dos superficies…» y la T28 «Transiciones con el terreno no
-afectado», aún de la entrada «014» sin entregar)."""
+perímetro…», la T21 «Cantera con dos superficies…», la T28 «Transiciones con el terreno no
+afectado» y la T30 «Solo relleno…», aún de la entrada «014» sin entregar)."""

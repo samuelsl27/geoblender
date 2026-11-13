@@ -53,6 +53,13 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   (:func:`transition_compute_steps`, compartido con la reproducción) y su escritura
   (:func:`compute_transition_steps`: ``des_trn_`` y el informe ``des_erp_``,
   :func:`edge_report_rows`); y :func:`run_edge_transition`, su recálculo.
+- **«Solo relleno…»** (spec 014, T30; RF-014-22 a RF-014-25, RF-014-29): :func:`prepare_fill_only`
+  y :func:`prepare_fill_only_units` (lo del escalonado de la 013 —la envolvente, la superficie de
+  partida, las anclas, los sectores y el rechazo de uno pendiente que toca la envolvente— más la
+  capa de láminas de agua y los intocables con su nombre: :class:`FillOnlyParts`), el cálculo
+  (:func:`fill_only_compute_steps`, ``design.fronts.fill_only_steps``, compartido con la
+  reproducción) y su escritura (:func:`compute_fill_only_steps`: ``des_srf_`` y ``des_rpt_``,
+  :func:`fill_only_report_rows`); y :func:`run_fill_only`, su recálculo.
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -79,6 +86,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from ..core.constraints.store import constraint_names
 from ..core.content import builtin as core_builtin
 from ..core.content.encoder import NORMALIZER, ContentDigest, ContentHasher
 from ..core.datasets import registry as dataset_registry
@@ -122,11 +130,12 @@ from ..gis.messages import GisError
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, backup_path, insert_rows, project_references, temporary_path
 from ..gis.vector import FeatureLayer
-from . import edges, pipeline, provenance, quarry
+from . import edges, fronts, pipeline, provenance, quarry
 from .messages import DesignError
 from .model import (
     DesignRequest,
     EnvelopeRequest,
+    FillOnlyRequest,
     Metric,
     QuarryRequest,
     SlopeMode,
@@ -178,10 +187,12 @@ __all__ = [
     "QUARRY_BERM_COLUMNS",
     "REPORT_COLUMNS",
     "DesignWriter",
+    "FillOnlyParts",
     "OperationStart",
     "PreparedArea",
     "PreparedDesign",
     "PreparedEnvelope",
+    "PreparedFillOnly",
     "PreparedQuarry",
     "PreparedTransition",
     "QuarryCalculated",
@@ -196,9 +207,12 @@ __all__ = [
     "compute_area_steps",
     "compute_design_steps",
     "compute_envelope_steps",
+    "compute_fill_only_steps",
     "compute_quarry_steps",
     "compute_transition_steps",
     "edge_report_rows",
+    "fill_only_compute_steps",
+    "fill_only_report_rows",
     "masks_steps",
     "number",
     "prepare_area_units",
@@ -208,6 +222,8 @@ __all__ = [
     "prepare_envelope",
     "prepare_envelope_units",
     "prepare_excavation_area",
+    "prepare_fill_only",
+    "prepare_fill_only_units",
     "prepare_quarry",
     "prepare_quarry_units",
     "prepare_transition_units",
@@ -229,6 +245,7 @@ __all__ = [
     "run_edge_transition",
     "run_envelope",
     "run_excavation_area",
+    "run_fill_only",
     "run_quarry",
     "transition_compute_steps",
 ]
@@ -736,6 +753,32 @@ def prepare_edge_transition(project: StoreProject, name: str, surface: str, star
                   provenance.TRANSITION_PARAMS, supersedes)
 
 
+def prepare_fill_only(project: StoreProject, request: FillOnlyRequest, *, version: str | None,
+                      masks: access.MaskSet | None = None,
+                      sectors: Sequence[DesignSector] | None = None,
+                      pending_sectors: Iterable[str] = (), touched_sectors: Iterable[str] = (),
+                      previous: Mapping[str, Any] | None = None, supersedes: str | None = None
+                      ) -> OperationStart:
+    """Lo mismo que :func:`prepare_design` para ``des.fill_only`` (spec 014, T30; RF-014-22,
+    RF-014-29) de ``request``: los ajustes de ``fill_only_settings`` (los del escalonado sin el
+    sentido, con la capa de láminas), las entradas de ``fill_only_inputs`` (las del escalonado y
+    la capa de láminas) y los parámetros del escalonado de la 013 (``design_params``: los cinco
+    valores de cada perfil que usa, los taludes de los sectores, las tolerancias y el espesor
+    mínimo; ninguno de la cantera). Un perfil sin valor, o fuera de rango, se rechaza antes de
+    registrar nada (RF-013-19)."""
+    found = require_version(project, version, provenance.FILL_ONLY)
+    _check_profiles(project, found, [request.base_profile,
+                                     *(profile for _sector, profile in request.sector_profiles)],
+                    tuple(BenchParam))
+    loaded = _loaded_masks(project, found, masks)
+    chosen = design_sectors(project, found.uid) if sectors is None else tuple(sectors)
+    inputs = provenance.fill_only_inputs(request, loaded.uses(), available_tables(project))
+    params = provenance.design_params(request.design, sector_slopes=slope_params(chosen))
+    return _start(project, provenance.FILL_ONLY, request.name, found, loaded,
+                  provenance.fill_only_settings(request, pending_sectors, touched_sectors,
+                                                previous), inputs, params, supersedes)
+
+
 def begin_envelope(project: StoreProject, request: EnvelopeRequest, *, version: str | None,
                    masks: access.MaskSet | None = None,
                    sectors: Sequence[DesignSector] | None = None, profiles: Iterable[str] = (),
@@ -1135,9 +1178,11 @@ class DesignWriter:
 # --- Recalcular lo obsoleto ---------------------------------------------------------------------
 
 RECOMPUTED: tuple[str, ...] = (*provenance.REPRODUCIBLE, provenance.EXCAVATION_AREA,
-                                provenance.QUARRY, provenance.EDGE_TRANSITION)
+                                provenance.QUARRY, provenance.EDGE_TRANSITION,
+                                provenance.FILL_ONLY)
 """Los tipos que repite «Recalcular lo obsoleto» aquí: los dos de la 013 y, de la 014, el recinto
-y la cantera (T19) y la transición (T28); los demás de la 014, cuando sus tareas los den."""
+y la cantera (T19), la transición (T28) y «solo relleno» (T30); el ajuste, cuando su tarea lo
+dé."""
 _STORE_PHASE = "store"
 
 
@@ -1171,8 +1216,9 @@ def previous_comparison(conn: sqlite3.Connection, version: Version, op_type: str
 def design_surface_start(conn: sqlite3.Connection, dataset_uid: str) -> str | None:
     """El nombre del dato de la superficie de partida de la **superficie de diseño** de uid
     ``dataset_uid`` (``des_srf_…``, el papel :data:`~geoblender.design.provenance.DESIGN_SURFACE_ROLE`
-    de la operación ``des.stepped_design`` que la escribió): la de «Superficie de partida» de su
-    ficha, de los ajustes de esa operación (:func:`~geoblender.design.provenance.design_start`).
+    de la operación ``des.stepped_design`` o, de la 014, ``des.fill_only`` que la escribió): la de
+    «Superficie de partida» de su ficha, de los ajustes de esa operación
+    (:func:`~geoblender.design.provenance.design_start`).
     ``None`` si el dato no es una superficie de diseño (la envolvente, las bermas, la tabla, el
     informe, una superficie cualquiera o un uid que el proyecto no tiene; solo se busca por uid) o
     si sus ajustes no la llevan: quien la pide sigue sin ella. Solo lee."""
@@ -1182,7 +1228,7 @@ def design_surface_start(conn: sqlite3.Connection, dataset_uid: str) -> str | No
         "AND io.direction = 'out' AND io.item_kind = 'dataset' AND io.item_uid = d.uid "
         "WHERE d.uid = ? AND io.role = ?", (dataset_uid, provenance.DESIGN_SURFACE_ROLE)
     ).fetchone()
-    if row is None or row[0] != provenance.STEPPED:
+    if row is None or row[0] not in (provenance.STEPPED, provenance.FILL_ONLY):
         return None
     try:
         return provenance.design_start(json.loads(row[1]))
@@ -1190,9 +1236,11 @@ def design_surface_start(conn: sqlite3.Connection, dataset_uid: str) -> str | No
         return None
 
 
-_START_KEYS: Mapping[str, str] = MappingProxyType({provenance.STEPPED: "surface"})
+_START_KEYS: Mapping[str, str] = MappingProxyType({provenance.STEPPED: "surface",
+                                                   provenance.FILL_ONLY: "surface"})
 """La clave de los ajustes con la superficie de partida de cada tipo que escribe una superficie
-de diseño, si no es ``start`` (la de la cantera y la de la transición)."""
+de diseño, si no es ``start`` (la de la cantera y la de la transición): ``surface`` en el
+escalonado de la 013 y en «solo relleno» (T30), que guarda los ajustes de su escalonado."""
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -1355,6 +1403,34 @@ class PreparedTransition:
 
     surface: Raster
     ground: Raster
+    start: OperationStart
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class FillOnlyParts:
+    """Lo que «solo relleno» (``des.fill_only``, spec 014, T30) lee del proyecto o de lo congelado,
+    ya en la rejilla de las máscaras: la envolvente que se escalona (``envelope``) y la superficie
+    de partida (``start``, el terreno registrado), las dos con su rejilla; la rejilla de anclas
+    (``anchors``; ``None``, el ancla del perfil); los sectores (``refs``) con la etiqueta de cada
+    celda (``labels``); las láminas de agua (``water``; ``None`` sin ellas) y los intocables de las
+    máscaras con su nombre (``untouchables``)."""
+
+    envelope: Raster
+    start: Raster
+    anchors: np.ndarray | None
+    refs: tuple[SectorRef, ...]
+    labels: np.ndarray
+    water: fronts.WaterSheets | None
+    untouchables: tuple[fronts.UntouchableZone, ...]
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PreparedFillOnly:
+    """Lo que se lee y se comprueba antes de calcular un diseño «solo relleno»
+    (:func:`prepare_fill_only_units`): sus piezas (``parts``, :class:`FillOnlyParts`) y lo que
+    anotará la operación (``start``)."""
+
+    parts: FillOnlyParts
     start: OperationStart
 
 
@@ -1871,6 +1947,135 @@ def compute_transition_steps(writer: DesignWriter, name: str, prepared: Prepared
     return outcome
 
 
+# --- Solo relleno (spec 014, T30; RF-014-22 a RF-014-25, RF-014-29) -----------------------------
+
+
+def prepare_fill_only_units(project: StoreProject, request: FillOnlyRequest, version: Version,
+                            masks: access.MaskSet, *, supersedes: str | None = None
+                            ) -> Generator[None, None, PreparedFillOnly]:
+    """Las unidades que preparan el diseño «solo relleno» ``request`` de ``version`` con sus
+    ``masks`` ya al día (spec 014, T30; RF-014-22, RF-014-24, RF-014-29), como
+    :func:`prepare_design_units`: los sectores, la envolvente de la versión, la superficie de
+    partida y la rejilla de anclas (leídas y comparadas con la rejilla del proyecto), la etiqueta
+    de sector de cada celda, el rechazo de un sector con la búsqueda pendiente que toca la
+    envolvente (``des.sector_pending``, RF-013-05) y la revisión congelada con que se compara
+    (D-25); además, las láminas de agua de su capa (``design.fronts.water_sheets``: una capa que no
+    es de polígonos, sin el campo, una cota que falta o dos láminas que se solapan se rechazan) y
+    los intocables de las máscaras con el nombre de su restricción; y :func:`prepare_fill_only`.
+    Devuelve la :class:`PreparedFillOnly`. Nada se escribe; los rechazos salen al avanzar."""
+    sectors = design_sectors(project, version.uid)
+    yield
+    frame = project_frame(project)
+    envelope = read_surface(
+        project, provenance.dataset_name(provenance.ENVELOPE_GRID, request.envelope),
+        version_uid=version.uid, expect=frame, role="envolvente")
+    yield
+    start = read_surface(project, request.start, version_uid=version.uid, expect=frame,
+                         role="superficie de partida")
+    yield
+    anchors = None
+    if request.anchor_grid is not None:
+        anchors = read_surface(project, request.anchor_grid, version_uid=version.uid,
+                               expect=frame, role="anclas").values
+        yield
+    refs, labels = sector_layout(project, masks)
+    yield
+    with np.errstate(invalid="ignore"):
+        domain = np.isfinite(envelope.values)
+    touched_codes = pipeline.touched_in(refs, labels, domain)
+    refuse_pending(item for item in sectors if item.code in touched_codes)  # RF-013-05
+    waiting = [item.code for item in sectors if item.pending and item.code in touched_codes]
+    with project.read() as conn:
+        previous = previous_comparison(conn, version, provenance.FILL_ONLY, request.name)
+        names = {code: name for code, (name, _kind) in constraint_names(conn).items() if name}
+    yield
+    water = None
+    if request.water is not None:
+        water = fronts.water_sheets(_features(project, request.water.layer), request.water,
+                                    masks.grid)
+        yield
+    parts = FillOnlyParts(envelope, start, anchors, tuple(refs), labels, water,
+                          fronts.untouchable_zones(masks, names))
+    operation = prepare_fill_only(project, request, version=version.uid, masks=masks,
+                                  sectors=sectors, pending_sectors=waiting,
+                                  touched_sectors=touched_codes, previous=previous,
+                                  supersedes=supersedes)
+    yield
+    return PreparedFillOnly(parts, operation)
+
+
+def fill_only_compute_steps(request: FillOnlyRequest, masks: access.MaskSet, parts: FillOnlyParts,
+                            values: Mapping[str, object], *, pending: tuple[str, ...] = (),
+                            previous: Mapping[str, Any] | None = None,
+                            budget_s: float = STEP_BUDGET_S
+                            ) -> Generator[Progress, None, fronts.FillOnlyOutcome]:
+    """Los pasos que calculan el diseño «solo relleno» ``request`` con sus piezas ``parts`` y los
+    parámetros ``values`` (clave → valor: los que anotó la operación, los que se resuelven hoy o
+    los congelados), sin escribir nada (``yield from``): el escalonado en relleno de la 013 de la
+    envolvente (``pipeline.DesignJob`` con los perfiles, los taludes impuestos de los sectores, el
+    espesor mínimo, la tolerancia de cara y el umbral de aviso de ``values``) dentro de
+    ``design.fronts.fill_only_steps`` (A12: sobre el terreno con las láminas, solo en el relleno
+    admitido, nunca por debajo del terreno, y sus rechazos de RF-014-25). ``pending``: los nombres
+    de los sectores con la búsqueda pendiente que se marcan; ``previous``: lo anterior con que se
+    compara (D-25). Lo comparten «Calcular», el recálculo y la reproducción. Devuelve el
+    ``design.fronts.FillOnlyOutcome``."""
+    design = request.design
+    profiles = pipeline.bench_profiles(values, [
+        design.base_profile, *(profile for _sector, profile in design.sector_profiles)])
+    job = pipeline.DesignJob(
+        design, parts.start.grid, parts.start.values, parts.envelope.values, masks,
+        tuple(parts.refs), parts.labels, pipeline.imposed_from(values, parts.refs), profiles,
+        parts.anchors, number(values, VERIFY_MIN_THICKNESS), number(values, TOLERANCE_FACE),
+        number(values, WARNING_RATIO), pipeline.previous_of(previous), pending)
+    outcome: fronts.FillOnlyOutcome = yield from pipeline.forward(fronts.fill_only_steps(
+        fronts.FillOnlyJob(job, parts.water, parts.untouchables), budget_s=budget_s))
+    return outcome
+
+
+def fill_only_report_rows(outcome: fronts.FillOnlyOutcome) -> list[Row]:
+    """Las filas de ``des_rpt_`` de un diseño «solo relleno» (``quantity, value, unit_code,
+    note``; spec 014, T30; RF-014-22, RF-014-24): las del informe de su escalonado de la 013
+    (:func:`report_rows`: frente al terreno de partida con las láminas) y, antes de sus avisos y
+    notas, el corte frente al terreno registrado (``fill_only_cut_m3``, m³) y las celdas en que la
+    lámina de agua es el terreno de partida (``water_cells``). Un valor NaN o infinito es un error
+    del programa (``ValueError``)."""
+    design = outcome.design
+    rows = report_rows(design.report, unassigned_area_m2=design.unassigned_area_m2)
+    first = next((index for index, row in enumerate(rows) if row[0] in _NOTICE_ROWS), len(rows))
+    rows[first:first] = [
+        ("fill_only_cut_m3", _real("fill_only_cut_m3", outcome.cut_m3), "m3", None),
+        ("water_cells", _real("water_cells", outcome.water_cells), "-", None)]
+    return rows
+
+
+def compute_fill_only_steps(writer: DesignWriter, request: FillOnlyRequest,
+                           masks: access.MaskSet, prepared: PreparedFillOnly,
+                           values: Mapping[str, object], settings: Mapping[str, Any],
+                           budget_s: float = STEP_BUDGET_S
+                           ) -> Generator[Progress, None, fronts.FillOnlyOutcome]:
+    """Lo mismo que :func:`compute_design_steps` para el diseño «solo relleno» ``request`` (spec
+    014, T30; RF-014-22 a RF-014-25, RF-014-29): lo calcula (:func:`fill_only_compute_steps`, con
+    las piezas de ``prepared``, los parámetros ``values`` y, de los ajustes ``settings``, los
+    sectores pendientes y lo anterior con que se compara), deja su superficie (``des_srf_``) en el
+    temporal de ``writer`` y prepara su informe (``des_rpt_``, :func:`fill_only_report_rows`),
+    **sin confirmar**. Devuelve el ``design.fronts.FillOnlyOutcome``."""
+    yield Progress(fronts.FILL_ONLY_PHASE, 0, 1,
+                   f"Preparando el diseño «solo relleno» «{request.name}»…")
+    parts = prepared.parts
+    waiting = set(provenance.settings_pending(settings))
+    pending = tuple(ref.name for ref in parts.refs if ref.code in waiting)
+    outcome = yield from fill_only_compute_steps(
+        request, masks, parts, values, pending=pending,
+        previous=provenance.settings_previous(settings), budget_s=budget_s)
+    raster = Raster(parts.start.grid, outcome.surface, writer.crs, writer.vertical)
+    yield from pipeline.forward(_store_steps(
+        writer.grid_steps(provenance.DESIGN_GRID, raster), budget_s, "la superficie de diseño"))
+    yield from pipeline.forward(_store_steps(
+        writer.table_steps(provenance.REPORT_TABLE, fill_only_report_rows(outcome)), budget_s,
+        "el informe"))
+    return outcome
+
+
 def compute_envelope_steps(project: StoreProject, writer: DesignWriter, request: EnvelopeRequest,
                            masks: access.MaskSet, seeds: SeedSet, values: Mapping[str, object],
                            budget_s: float = STEP_BUDGET_S
@@ -2040,13 +2245,32 @@ def run_edge_transition(project: StoreProject, name: str, surface: str, start: s
     return handle, _transition_run(project, handle, name, loaded, prepared, budget_s)
 
 
+def run_fill_only(project: StoreProject, request: FillOnlyRequest, *, version: str | None,
+                  masks: access.MaskSet | None = None, supersedes: str | None = None,
+                  budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Lo mismo que :func:`run_design` para ``des.fill_only`` (spec 014, T30; RF-014-22,
+    RF-014-31): el diseño «solo relleno» ``request`` de la versión, de una vez y sin confirmar (el
+    recálculo de lo obsoleto, :func:`recompute_run`), con lo que lee hoy: las máscaras de la
+    versión, los sectores, la envolvente, la superficie de partida, la capa de láminas y los
+    parámetros, resueltos versión → proyecto. Al llamar, sin empezar nada, los rechazos de
+    :func:`prepare_fill_only_units` (un sector pendiente que toca la envolvente, RF-013-05; las
+    láminas; un perfil sin valor; el nombre…)."""
+    found = require_version(project, version, provenance.FILL_ONLY)
+    loaded = _loaded_masks(project, found, masks)
+    prepared = _result_of(prepare_fill_only_units(project, request, found, loaded,
+                                                  supersedes=supersedes))
+    handle = prepared.start.begin(project)
+    return handle, _fill_only_run(project, handle, request, loaded, prepared, budget_s)
+
+
 def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
                   ) -> tuple[OperationHandle, Iterator[Progress]]:
     """Repite la operación de ``des`` de ``request`` (``RecomputeRequest`` de «Recalcular lo
     obsoleto», RF-008-26; RF-013-17; plan 013 §5.3.2): **sin pedir confirmación** —la operación ya
     existe y se repite con sus ajustes—, empieza la operación nueva, que sustituye a la anterior en
     la revisión abierta de **su** versión (:func:`run_envelope`, :func:`run_design` y, de la 014,
-    :func:`run_excavation_area` y :func:`run_quarry`; RF-014-31), con lo que
+    :func:`run_excavation_area`, :func:`run_quarry`, :func:`run_edge_transition` y
+    :func:`run_fill_only`; RF-014-31), con lo que
     lee hoy: las máscaras de la versión, los sectores, las superficies y los parámetros, resueltos
     de nuevo versión → proyecto (un perfil cambiado solo en V02 se lee de V02). Devuelve su
     ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama (en Blender, la cola de
@@ -2076,6 +2300,10 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
         name, surface, start = provenance.transition_start(request.settings)
         return run_edge_transition(project, name, surface, start, version=request.version,
                                    supersedes=request.operation_uid, budget_s=budget_s)
+    if request.op_type == provenance.FILL_ONLY:
+        return run_fill_only(project, provenance.fill_only_request(request.settings),
+                             version=request.version, supersedes=request.operation_uid,
+                             budget_s=budget_s)
     return run_design(project, provenance.design_request(request.settings),
                       provenance.design_start(request.settings), version=request.version,
                       supersedes=request.operation_uid, budget_s=budget_s)
@@ -2116,6 +2344,16 @@ def _transition_run(project: StoreProject, handle: OperationHandle, name: str,
     with DesignWriter.resume(project, handle) as writer:
         outcome = yield from compute_transition_steps(writer, name, prepared, masks,
                                                       _values(handle), budget_s)
+        stored = writer.commit(figures=outcome.figures, message=outcome.message)
+        yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
+
+
+def _fill_only_run(project: StoreProject, handle: OperationHandle, request: FillOnlyRequest,
+                   masks: access.MaskSet, prepared: PreparedFillOnly, budget_s: float
+                   ) -> Generator[Progress, None, None]:
+    with DesignWriter.resume(project, handle) as writer:
+        outcome = yield from compute_fill_only_steps(writer, request, masks, prepared,
+                                                     _values(handle), handle.settings, budget_s)
         stored = writer.commit(figures=outcome.figures, message=outcome.message)
         yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
 

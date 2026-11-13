@@ -151,6 +151,12 @@ PENDING_014_API = frozenset({
     "SurfaceOrigin", "compute_transition_steps", "design_surface_of", "edge_report_rows",
     "prepare_edge_transition", "prepare_transition_units", "run_edge_transition",
     "transition_compute_steps", "edge_transition_run", "reproduce_edge_transition",
+    # T30: design.model, design.provenance, design.store, design.steps y design.reproduce (la
+    # operación des.fill_only, su recálculo y su reproducción).
+    "FillOnlyRequest", "fill_only_inputs", "fill_only_request", "fill_only_settings",
+    "FillOnlyParts", "PreparedFillOnly", "compute_fill_only_steps", "fill_only_compute_steps",
+    "fill_only_report_rows", "prepare_fill_only", "prepare_fill_only_units", "run_fill_only",
+    "fill_only_run", "reproduce_fill_only",
 })
 # Los módulos nuevos de la 014 que aún no tienen fila en la ficha (la T36 se la da y vacía esto).
 PENDING_014_MODULES = frozenset({

@@ -30,7 +30,10 @@ proyecto, ``store.quarry_parts_units`` y ``store.quarry_compute_steps``; las cap
 de las semillas y de las anclas se buscan por su nombre entre las entradas congeladas, con el
 papel que tengan). De la transición con el terreno no afectado (spec 014, T28):
 :func:`reproduce_edge_transition` (con el cálculo que comparte con el proyecto,
-``store.transition_compute_steps``; la superficie de diseño y la de partida, por su papel).
+``store.transition_compute_steps``; la superficie de diseño y la de partida, por su papel). De
+«Solo relleno…» (spec 014, T30): :func:`reproduce_fill_only` (con ``store.fill_only_compute_steps``;
+la envolvente, la superficie de partida y las anclas por su papel y la capa de láminas por su
+nombre).
 
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con otros,
 ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹ relativo, plan
@@ -74,7 +77,7 @@ from ..gis.masks.store import PERIMETER_SECTOR_NAME, read_report, zone_runs_step
 from ..gis.raster import Raster
 from ..gis.store import insert_rows, read_features
 from ..gis.vector import FeatureLayer
-from . import pipeline, provenance, quarry, store
+from . import fronts, pipeline, provenance, quarry, store
 from .model import EnvelopeRequest, SeedKind
 from .params import TOLERANCE_FACE, VERIFY_MIN_THICKNESS, WARNING_RATIO
 from .seeds import (
@@ -96,6 +99,7 @@ __all__ = [
     "reproduce_edge_transition",
     "reproduce_envelope",
     "reproduce_excavation_area",
+    "reproduce_fill_only",
     "reproduce_quarry",
 ]
 
@@ -492,6 +496,51 @@ def _reproduce_transition(request: ReproduceRequest, budget_s: float) -> Iterato
                            store.edge_report_rows(outcome), frozen.crs)
     yield Progress(_PHASE, 1, 1, "Transición reproducida",
                    result=ReproducedResult((output, report), outcome.figures))
+
+
+# --- Solo relleno (spec 014, T30) ----------------------------------------------------------------
+
+
+def reproduce_fill_only(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
+                        ) -> Iterator[Progress]:
+    """Reproduce ``des.fill_only`` (spec 014, T30; RF-014-22 a RF-014-25, RF-014-29) con sus
+    entradas congeladas (la envolvente, la superficie de partida, la rejilla de anclas, la capa de
+    láminas de agua, las máscaras y los sectores), sus parámetros congelados y sus ajustes, sin el
+    proyecto: el mismo cálculo que el proyecto (``store.fill_only_compute_steps``; los intocables,
+    los de las máscaras congeladas). Sus pasos y, el último, el ``ReproducedResult`` con la
+    superficie, el informe y sus cifras."""
+    return _reproduce_fill_only(_check(request, provenance.FILL_ONLY), budget_s)
+
+
+def _reproduce_fill_only(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    wanted = provenance.fill_only_request(request.settings)
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = frozen.masks()
+    refs, labels = frozen.sector_layout(masks)
+    envelope = frozen.raster(provenance.ENVELOPE_ROLE, what="envolvente")
+    start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida")
+    anchors = None
+    if wanted.anchor_grid is not None:
+        anchors = frozen.raster(provenance.ANCHORS_ROLE, what="anclas").values
+    water = None
+    if wanted.water is not None:
+        water = fronts.water_sheets(frozen.features(wanted.water.layer), wanted.water,
+                                    masks.grid)
+    parts = store.FillOnlyParts(envelope, start, anchors, tuple(refs), labels, water,
+                                fronts.untouchable_zones(masks))
+    waiting = set(provenance.settings_pending(request.settings))
+    outcome = yield from store.fill_only_compute_steps(
+        wanted, masks, parts, frozen.values,
+        pending=tuple(ref.name for ref in refs if ref.code in waiting),
+        previous=provenance.settings_previous(request.settings), budget_s=budget_s)
+    surface = yield from _grid_output(
+        request, provenance.DESIGN_GRID,
+        Raster(start.grid, outcome.surface, frozen.crs, frozen.vertical), budget_s)
+    report = _table_output(request, provenance.REPORT_TABLE, store.fill_only_report_rows(outcome),
+                           frozen.crs)
+    yield Progress(_PHASE, 1, 1, "Diseño «solo relleno» reproducido",
+                   result=ReproducedResult((surface, report), outcome.figures))
 
 
 REPRODUCE:Mapping[str, ReproduceFunction] = MappingProxyType({

@@ -69,6 +69,10 @@ son los que nombran la ficha y la guía de la 013; la 014 los documenta en su T3
   (:func:`transition_settings`, :func:`transition_start`), lo que consume
   (:func:`transition_inputs`: la superficie de diseño con el papel :data:`DESIGN_SURFACE_ROLE`, la
   de partida y las máscaras) y los parámetros que lee (:data:`TRANSITION_PARAMS`).
+- «Solo relleno…» (``des.fill_only``, T30): sus ajustes (:func:`fill_only_settings`,
+  :func:`fill_only_request`; los del escalonado de la 013 sin el sentido, con la capa de láminas
+  y su campo) y lo que consume (:func:`fill_only_inputs`: lo del escalonado y la capa de láminas,
+  :data:`WATER_LAYER_ROLE`); los parámetros que lee son los del escalonado (:func:`design_params`).
 """
 
 from __future__ import annotations
@@ -106,6 +110,7 @@ from .model import (
     DesignRequest,
     Direction,
     EnvelopeRequest,
+    FillOnlyRequest,
     LayerField,
     Metric,
     Order,
@@ -220,6 +225,7 @@ __all__ = [
     "TRANSITION_PARAMS",
     "TWO_SURFACES_FIGURES",
     "VERSION_TYPES",
+    "WATER_LAYER_ROLE",
     "ZONE_LAYER_ROLE",
     "DatasetFamily",
     "OperationType",
@@ -241,6 +247,9 @@ __all__ = [
     "excavation_area_settings",
     "excavation_area_start",
     "figure_scope",
+    "fill_only_inputs",
+    "fill_only_request",
+    "fill_only_settings",
     "operation_def",
     "operation_defs",
     "profile_params",
@@ -393,6 +402,9 @@ FILL_LAYER_ROLE = "fill_layer"
 """El papel de la capa de las zonas de restauración por relleno (RF-014-15, D-11)."""
 TO_FINAL_LAYER_ROLE = "to_final_layer"
 """El papel de la capa de las zonas de «explotación hasta la final» (RF-014-18, P-2)."""
+WATER_LAYER_ROLE = "water_layer"
+"""El papel de la capa de polígonos de las láminas de agua de «Solo relleno…» (RF-014-24, D-10;
+T30)."""
 
 QUARRY_FAMILIES: tuple[DatasetFamily, ...] = (
     DatasetFamily(EXCAVATION_AREA_GRID, "raster", Store.RASTERS, GEOTIFF.id, EXCAVATION_AREA_ROLE,
@@ -1050,6 +1062,22 @@ def quarry_settings(request: QuarryRequest, pending_sectors: Iterable[str] = (),
     }
 
 
+def fill_only_settings(request: FillOnlyRequest, pending_sectors: Iterable[str] = (),
+                       touched_sectors: Iterable[str] = (),
+                       previous: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Los ajustes de ``des.fill_only`` (spec 014, T30; RF-014-22 a RF-014-24, RF-014-29; JSON sin
+    rutas): los de su escalonado de la 013 (:func:`design_settings`: el nombre, la envolvente, la
+    superficie de partida en ``surface``, el perfil base y el de cada sector, el ancla, los
+    sectores pendientes y los que toca el dominio, y lo ``previous`` con que se comparó, D-25)
+    **sin el sentido**, que siempre es relleno (:data:`FILL_ONLY_SETTINGS`), y la capa de las
+    láminas de agua con su campo (``water``; ``None`` sin láminas). Es un diccionario nuevo."""
+    settings = design_settings(request.design, request.start, pending_sectors, touched_sectors,
+                               previous)
+    del settings["sense"]
+    settings["water"] = _layer_field(request.water)
+    return settings
+
+
 def _mapping(value: object, what: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{what} es un diccionario, no {value!r}")
@@ -1249,6 +1277,19 @@ def quarry_request(settings: Mapping[str, Any]) -> QuarryRequest:
         to_final_layer=_optional_text(data, "to_final_layer", what))
 
 
+def fill_only_request(settings: Mapping[str, Any]) -> FillOnlyRequest:
+    """El diseño «solo relleno» que repiten los ajustes ``settings`` de una operación
+    ``des.fill_only`` (los de :func:`fill_only_settings`): al recalcularlo y al reproducirlo.
+    ``ValueError`` si no son los de un diseño «solo relleno» (nombrando el campo: los de su
+    escalonado, como :func:`design_request`, y la capa de láminas sin su campo)."""
+    what = "los ajustes de un diseño «solo relleno»"
+    data = _mapping(settings, what)
+    design = design_request({**data, "sense": BenchSense.FILL.value})
+    return FillOnlyRequest(design.name, design.envelope, design_start(data), design.base_profile,
+                           design.sector_profiles, design.anchor_grid,
+                           _layer_field_of(data.get("water"), f"{what}, «water»,"))
+
+
 def settings_pending(settings: Mapping[str, Any]) -> tuple[str, ...]:
     """Los códigos de los sectores sin búsqueda vigente al calcular que guardan unos ajustes
     (RF-013-06; ninguno si no los llevan). ``ValueError`` si no son una lista de textos."""
@@ -1421,6 +1462,22 @@ def quarry_inputs(request: QuarryRequest, masks: Iterable[Use] = (),
         found.append(Use(_named(request.to_final_layer,
                                 "de las zonas de «explotación hasta la final»"),
                          TO_FINAL_LAYER_ROLE))
+    found += list(masks)
+    found += sector_inputs(available)
+    return _unique(found)
+
+
+def fill_only_inputs(request: FillOnlyRequest, masks: Iterable[Use] = (),
+                     available: Collection[str] = ()) -> tuple[Use, ...]:
+    """Lo que consume ``des.fill_only`` (spec 014, T30; RF-014-29, RF-014-31; plan 014 §5.2.3: «como
+    ``des.stepped_design`` en relleno, más láminas»), en su orden: lo de su escalonado
+    (:func:`design_inputs`: la envolvente, la superficie de partida y la rejilla de anclas), la capa
+    de las láminas de agua si la hay (:data:`WATER_LAYER_ROLE`), las máscaras ``masks`` y los
+    sectores y las búsquedas registrados (``available``). Si una cambia, el diseño queda obsoleto.
+    ``ValueError`` si faltan los nombres de lo que consume."""
+    found = list(design_inputs(request.design, request.start))
+    if request.water is not None:
+        found.append(Use(_named(request.water.layer, "de las láminas de agua"), WATER_LAYER_ROLE))
     found += list(masks)
     found += sector_inputs(available)
     return _unique(found)

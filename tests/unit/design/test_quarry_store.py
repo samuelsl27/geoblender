@@ -550,7 +550,7 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
             store.recompute_run(request)
         self.assertEqual(caught.exception.code, "des.sector_pending")
         self.assertEqual(self.query_of("SELECT count(*) FROM gb_operation"), before)
-        other = recompute_mod.RecomputeRequest(self.project, uid, provenance.FILL_ONLY,
+        other = recompute_mod.RecomputeRequest(self.project, uid, provenance.REFIT,
                                                {}, (), (), version=self.v1.uid)
         with self.assertRaises(ValueError):
             store.recompute_run(other)

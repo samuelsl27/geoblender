@@ -22,6 +22,9 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
 - :func:`edge_transition_run` (spec 014, T28; RF-014-19 a RF-014-21, RF-014-29): «Calcular» la
   transición de una superficie de diseño con el terreno no afectado (``des.edge_transition``) del
   mismo modo, con el aviso del salto creado que deja.
+- :func:`fill_only_run` (spec 014, T30; RF-014-22 a RF-014-25, RF-014-29): «Calcular» el diseño
+  «solo relleno» de una envolvente de la versión (``des.fill_only``) del mismo modo, con los avisos
+  del informe de su escalonado.
 - :class:`Calculation`: lo calculado y todavía sin registrar. :meth:`~Calculation.create`
   (**«Crear»**) abre la operación, mueve los temporales, escribe las tablas y las cifras y completa,
   todo en **una** transacción (``DesignWriter.commit``); :meth:`~Calculation.discard`
@@ -54,9 +57,9 @@ from ..core.provenance.figures import FigureSpec
 from ..gis.masks.access import MaskSet
 from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.store import StoreProject
-from . import edges, pipeline, preview, provenance, quarry, store
+from . import edges, fronts, pipeline, preview, provenance, quarry, store
 from .messages import DesignError
-from .model import DesignRequest, EnvelopeRequest, QuarryRequest
+from .model import DesignRequest, EnvelopeRequest, FillOnlyRequest, QuarryRequest
 from .preview import Notice
 from .seeds import SeedPlan, SeedSet, pace_progress
 
@@ -66,6 +69,7 @@ __all__ = [
     "edge_transition_run",
     "envelope_run",
     "excavation_area_run",
+    "fill_only_run",
     "preview_steps",
     "quarry_run",
     "resolve_values",
@@ -101,8 +105,9 @@ def resolve_values(project: StoreProject, version_uid: str, keys: Iterable[str]
 class Calculation:
     """Un cálculo hecho y **sin registrar** (véase el módulo): su ``outcome``
     (``pipeline.EnvelopeOutcome``, ``pipeline.DesignOutcome`` o, de un recinto,
-    ``quarry.AreaOutcome``, de una cantera, ``quarry.QuarryOutcome``, y de una transición,
-    ``edges.EdgeTransition``), los ``notices`` que enseña
+    ``quarry.AreaOutcome``, de una cantera, ``quarry.QuarryOutcome``, de una transición,
+    ``edges.EdgeTransition``, y de un diseño «solo relleno», ``fronts.FillOnlyOutcome``), los
+    ``notices`` que enseña
     la ventana junto a su resumen —de la envolvente, los de sus semillas; del escalonado, los de su
     informe; de la cantera, los suyos y los del informe de cada lado—, las ``seeds`` (``None``
     salvo en una envolvente), el tipo de operación (``op_type``), su
@@ -112,7 +117,7 @@ class Calculation:
     def __init__(self, *, project: StoreProject, writer: store.DesignWriter,
                  start: store.OperationStart, outcome: pipeline.EnvelopeOutcome
                  | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome
-                 | edges.EdgeTransition,
+                 | edges.EdgeTransition | fronts.FillOnlyOutcome,
                  notices: Sequence[Notice],
                  seeds: SeedSet | None,
                  values: Mapping[str, object]) -> None:
@@ -302,6 +307,25 @@ def edge_transition_run(project: StoreProject, name: str, surface: str, start: s
     return _transition_steps(project, name, surface, start, version, masks, budget_s)
 
 
+def fill_only_run(project: StoreProject, request: FillOnlyRequest, *, version: str | None,
+                  masks: MaskSet | None = None, budget_s: float = STEP_BUDGET_S
+                  ) -> Iterator[Progress]:
+    """**«Calcular»** el diseño «solo relleno» ``request`` de la versión ``version`` por pasos de
+    ``budget_s`` como mucho (spec 014, T30; RF-014-22 a RF-014-25, RF-014-29; «Solo relleno…»):
+    el último ``Progress`` lleva la :class:`Calculation` de ``des.fill_only``, con su superficie
+    (``des_srf_``) en un temporal, su informe (``des_rpt_``) preparado, sus cifras (las del
+    escalonado de la 013 y ``des.fill_only_cut_m3``) y los avisos del informe de su escalonado, y
+    **nada registrado**. ``masks``, como en :func:`envelope_run`.
+
+    Los rechazos salen **al avanzar**, antes de escribir nada: sin versión activa o no editable,
+    máscaras (``MaskError``), la envolvente y las superficies (``des.surface_*``), un sector con la
+    búsqueda pendiente que toca la envolvente (RF-013-05), las láminas de agua (su capa, su campo,
+    una cota que falta, dos que se solapan), un perfil sin valor (RF-013-19), el nombre repetido y
+    los de RF-014-25: un movimiento en un intocable (nombrándolo, con su volumen) o un corte de
+    1 m³ o más. Cerrar el generador a mitad borra el temporal."""
+    return _fill_only_steps(project, request, version, masks, budget_s)
+
+
 def _prepare_steps[T](units: Generator[None, None, T], budget_s: float
                       ) -> Generator[Progress, None, T]:
     """Las unidades de preparar un cálculo agrupadas en pasos; devuelve lo que preparan."""
@@ -409,6 +433,26 @@ def _transition_steps(project: StoreProject, name: str, surface: str, start: str
         calculation = Calculation(project=project, writer=writer, start=prepared.start,
                                   outcome=outcome, notices=outcome.notices, seeds=None,
                                   values=values)
+    except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
+        writer.close(error)
+        raise
+    yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
+
+
+def _fill_only_steps(project: StoreProject, request: FillOnlyRequest, version: str | None,
+                     masks: MaskSet | None, budget_s: float) -> Generator[Progress, None, None]:
+    found = store.require_version(project, version, provenance.FILL_ONLY)
+    loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
+    prepared: store.PreparedFillOnly = yield from _prepare_steps(
+        store.prepare_fill_only_units(project, request, found, loaded), budget_s)
+    writer = store.DesignWriter(project, provenance.FILL_ONLY, request.name, version=found.uid)
+    try:
+        values = resolve_values(project, found.uid, prepared.start.params)
+        outcome: fronts.FillOnlyOutcome = yield from store.compute_fill_only_steps(
+            writer, request, loaded, prepared, values, prepared.start.settings, budget_s)
+        calculation = Calculation(project=project, writer=writer, start=prepared.start,
+                                  outcome=outcome, notices=outcome.design.report.notices,
+                                  seeds=None, values=values)
     except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
         writer.close(error)
         raise

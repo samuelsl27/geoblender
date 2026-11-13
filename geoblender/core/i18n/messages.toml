@@ -8481,3 +8481,43 @@ es = "Una superficie de diseño de la versión activa"
 
 ["Design surface: «{surface}»"]
 es = "Superficie de diseño: «{surface}»"
+
+# Solo relleno… (spec 014, T30)
+["Name of the fill-only design, unique in the active version"]
+es = "Nombre del diseño «solo relleno», único en la versión activa"
+
+["Envelope of the active version that is benched in fill: the design only fills"]
+es = "Envolvente de la versión activa que se escalona en relleno: el diseño solo rellena"
+
+["There are no envelopes in the active version"]
+es = "No hay envolventes en la versión activa"
+
+["An envelope of the active version"]
+es = "Una envolvente de la versión activa"
+
+["Write the name of the fill-only design"]
+es = "Escriba el nombre del diseño «solo relleno»"
+
+["Choose the envelope of the fill-only design"]
+es = "Elija la envolvente del diseño «solo relleno»"
+
+["Choose the start surface of the fill-only design"]
+es = "Elija la superficie de partida del diseño «solo relleno»"
+
+["Choose the base profile of the fill-only design"]
+es = "Elija el perfil base del diseño «solo relleno»"
+
+["Fill-only design «{name}» created in {version}"]
+es = "Diseño «solo relleno» «{name}» creado en {version}"
+
+["Computing the fill-only design… {percent} % · Esc: cancel"]
+es = "Calculando el diseño «solo relleno»… {percent} % · Esc: cancelar"
+
+["Fill-only design «{name}» in {version}"]
+es = "Diseño «solo relleno» «{name}» en {version}"
+
+["Fill-only design «{name}»: fill {fill} m³ · cut {cut} m³ · moved area {area} m²"]
+es = "Diseño «solo relleno» «{name}»: terraplén {fill} m³ · corte {cut} m³ · área con movimiento {area} m²"
+
+["Water sheets as the start surface in {cells} cells"]
+es = "Láminas de agua como terreno de partida en {cells} celdas"
