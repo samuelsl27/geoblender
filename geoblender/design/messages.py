@@ -666,10 +666,10 @@ CATALOG: tuple[Message, ...] = (
         "des.quarry_unsplit_zones",
         "The exploitation does not reach the final surface in {zones} zones: {area} ha and "
         "{volume} m³ of doubled surface over {threshold} m on unexploited terrain, in zones of "
-        "at least {min_area} ha. Use «Exploitation down to the final» to lower it there with "
+        "more than {min_area} ha. Use «Exploitation down to the final» to lower it there with "
         "anchored benches.",
         "La explotación no llega a la final en {zones} zonas: {area} ha y {volume} m³ de "
-        "desdoblado de más de {threshold} m sobre terreno sin explotar, en zonas de al menos "
+        "desdoblado de más de {threshold} m sobre terreno sin explotar, en zonas de más de "
         "{min_area} ha. Use «Explotación hasta la final» para bajarla allí con bancos anclados.",
         "warning",
     ),

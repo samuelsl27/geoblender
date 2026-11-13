@@ -4,8 +4,8 @@ CE-014-05).
 
 El aviso (RF-014-17, error 60): el **desdoblado** de más del umbral
 (``des.quarry.unsplit_threshold_m``) sobre **terreno sin explotar** (la explotación a menos de 0,3 m
-del terreno) en zonas conexas (4 vecinos) de al menos el área mínima
-(``des.quarry.unsplit_min_area_ha``), con el área, el volumen y el centro de cada zona
+del terreno) en zonas conexas (4 vecinos) de más del área mínima
+(``des.quarry.unsplit_min_area_ha``; la igualdad no avisa, también en coma flotante), con el área, el volumen y el centro de cada zona
 (``design.quarry.unsplit_zones_steps``). El modo (RF-014-18; P-2: por
 diseño, no zona a zona): ninguna zona, todas las avisadas o las celdas del aviso dentro de una capa
 de polígonos; donde se aplica, la explotación baja con bancos de su perfil anclados a sus cotas
@@ -152,6 +152,29 @@ def cells(name: str) -> int:
     return (row1 - row0) * (col1 - col0)
 
 
+FINE = gis_grid.Grid(500_000.0, 4_400_100.0, 1.0, 1.0, 80, 40)
+"""40 filas × 80 columnas de 1 m (1 m² por celda), para la frontera del área mínima."""
+FINE_ZONES = {29: (1, 2, 1, 30), 30: (3, 4, 1, 31), 51: (5, 8, 1, 18), 52: (9, 13, 1, 14),
+              700: (15, 25, 1, 71), 701: (27, 37, 1, 71)}
+"""Las zonas de :func:`fine_case` por su número de celdas: filas y columnas (de la primera a la
+última más uno) de su rectángulo; la de 701 es el de 700 y la celda (37, 1), debajo."""
+
+
+def fine_case() -> dict[str, Any]:
+    """Las zonas de :data:`FINE_ZONES` en :data:`FINE`, a una fila vacía o más unas de otras: el
+    terreno llano, la explotación en el terreno (sin explotar) y la final 10 m por debajo en las
+    zonas (desdoblado) y en el terreno fuera (sin diferencia); el dominio, toda la rejilla, en el
+    primer sector."""
+    terrain = np.full(FINE.shape, Z)
+    final = terrain.copy()
+    for row0, row1, col0, col1 in FINE_ZONES.values():
+        final[row0:row1, col0:col1] = Z - 10.0
+    final[37, 1] = Z - 10.0
+    domain = seeds_mod.domain_of(np.ones(FINE.shape, bool), np.ones(FINE.shape, np.int16),
+                                 SECTORS[:1], FINE.cell_area)
+    return {"terrain": terrain, "exploitation": terrain.copy(), "final": final, "domain": domain}
+
+
 # --- El aviso (RF-014-17) -------------------------------------------------------------------------
 
 
@@ -199,19 +222,55 @@ class UnsplitZonesTest(unittest.TestCase):
         self.assertTrue(bool(np.all(classes.grid[box("R")] == CellClass.FILL.code)))
 
     def test_the_bounds_of_the_threshold_and_of_the_area(self) -> None:
-        """El desdoblado ha de pasar del umbral (3,25 m no pasa de 3,25 m: ``W`` sale) y el área
-        mínima se alcanza con igualdad (0,25 ha exactas: ``W`` se avisa; con 0,26 ha, no)."""
+        """El desdoblado ha de pasar del umbral (3,25 m no pasa de 3,25 m: ``W`` sale) y la zona,
+        del área mínima («de más del área mínima»): con 0,25 ha exactas, ``W`` (625 celdas de
+        4 m², 2.500 m²) no se avisa; con 0,2496 ha (624 celdas), ``W`` tiene una celda más y se
+        avisa; con 0,26 ha, no."""
         higher = zones_of(self.case, threshold_m=3.25)
         np.testing.assert_array_equal(higher.candidates, box("M") | box("S"))
         self.assertEqual([zone.cells for zone in higher.zones], [5_000])
         exact = zones_of(self.case, min_area_ha=0.25)
-        self.assertEqual([zone.cells for zone in exact.zones], [5_000, 625])
+        self.assertEqual([zone.cells for zone in exact.zones], [5_000])
+        np.testing.assert_array_equal(exact.candidates, box("M") | box("S") | box("W"))
+        np.testing.assert_array_equal(exact.warned, box("M"))
+        self.assertEqual(exact.notices[0], messages.render(
+            "des.quarry_unsplit_zones", zones=1, area=2.0, volume=200_000.0, threshold=1.0,
+            min_area=0.25))
+        one_more = zones_of(self.case, min_area_ha=0.2496)
+        self.assertEqual([zone.cells for zone in one_more.zones], [5_000, 625])
         above = zones_of(self.case, min_area_ha=0.26)
         self.assertEqual([zone.cells for zone in above.zones], [5_000])
 
+    def test_the_equality_does_not_warn_in_floating_point(self) -> None:
+        """«De más del área mínima», estable en coma flotante: el área mínima se da en ha y
+        ``ha · 10⁴`` no siempre es el entero de m² que se tecleó (0,0029 ha da 28,999999999999996
+        m²; 0,0051 ha, 51,00000000000001 m²; 0,07 ha, 700,0000000000001 m²). En celdas de 1 m
+        (:data:`FINE`), la zona de justo el área mínima no se avisa en ninguno de los tres casos y la
+        de una celda más, sí."""
+        self.assertLess(0.0029 * 10_000.0, 29.0)
+        self.assertGreater(0.0051 * 10_000.0, 51.0)
+        self.assertGreater(0.07 * 10_000.0, 700.0)
+        case = fine_case()
+        classes = last_result(quarry.classify_steps(
+            case["final"], case["exploitation"], case["terrain"], case["domain"], FINE,
+            MIN_THICKNESS_M))
+        for area_ha, warned in ((0.0029, [30, 51, 52, 700, 701]), (0.0051, [52, 700, 701]),
+                                (0.07, [701])):
+            with self.subTest(area_ha=area_ha):
+                found = last_result(quarry.unsplit_zones_steps(
+                    case["final"], case["exploitation"], case["terrain"], classes, FINE,
+                    THRESHOLD_M, area_ha))
+                self.assertEqual(int(found.candidates.sum()), sum(FINE_ZONES))
+                self.assertEqual([zone.cells for zone in found.zones], warned)
+                self.assertEqual([zone.area_m2 for zone in found.zones],
+                                 [float(cells) for cells in warned])
+                self.assertEqual(int(found.warned.sum()), sum(warned))
+                self.assertEqual(found.min_area_ha, area_ha)
+
     def test_the_warning_text(self) -> None:
         """El aviso en español: las zonas, el área (ha) y el volumen (m³), el umbral y el área
-        mínima, y una nota por zona con su área, su volumen y su centro (al cm). Sin zonas, nada."""
+        mínima («en zonas de más de 0,2 ha»; en inglés, «in zones of more than 0.2 ha»), y una nota
+        por zona con su área, su volumen y su centro (al cm). Sin zonas, nada."""
         found = zones_of(self.case)
         warning, *notes = found.notices
         self.assertEqual(warning, messages.render(
@@ -219,6 +278,10 @@ class UnsplitZonesTest(unittest.TestCase):
             min_area=0.2))
         self.assertIn("2 zonas", warning)
         self.assertIn("«Explotación hasta la final»", warning)
+        self.assertIn("sobre terreno sin explotar, en zonas de más de 0,2 ha.", warning)
+        self.assertIn("on unexploited terrain, in zones of more than 0.2 ha.", messages.render(
+            "des.quarry_unsplit_zones", language="en", zones=2, area=2.25, volume=208_125.0,
+            threshold=1.0, min_area=0.2))
         self.assertEqual(notes, [
             messages.render("des.quarry_unsplit_zone", zone=1, area=2.0, volume=200_000.0,
                             x=500_120.0, y=4_400_130.0),

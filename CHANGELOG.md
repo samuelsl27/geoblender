@@ -149,7 +149,8 @@ cantera con dos superficies, revise la clasificación y la cree en menos de 20 m
     desdoblado, relleno de restauración (en una capa de zonas) y sin diferencia (el espesor mínimo de
     la verificación), con sus m³ y ha por sector, iguales a los de la cubicación sobre las mismas
     rejillas. Si la explotación no llega a la final en zonas de más de 1 m de desdoblado sobre terreno
-    sin explotar y de al menos 0,2 ha, **se avisa** con cada zona, y **«Explotación hasta la final»**
+    sin explotar y de más de 0,2 ha (una zona de justo el área mínima no se avisa, cualquiera que sea
+    la cifra tecleada en ha), **se avisa** con cada zona, y **«Explotación hasta la final»**
     (en todas las zonas avisadas o en las de una capa) la baja con los bancos de su perfil hasta la
     cota de su ancla inmediatamente por encima de la final y dice cuánto pasa del desdoblado a la
     explotación. Se niega a calcular con un sector del recinto sin búsqueda de intocables vigente.

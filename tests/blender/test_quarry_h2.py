@@ -28,7 +28,7 @@ mismo estado:
   por sector, y su rejilla de clases, la regla a mano.
 - **E4** (c; RF-014-17; M4): con la explotación sembrada en toda la ladera (queda sin explotar y la
   final, por debajo), el resumen avisa en ámbar de la zona de desdoblado sobre terreno sin explotar
-  de al menos 0,2 ha, con su nota, y ofrece «Explotación hasta la final»; se crea «Sin el modo».
+  de más de 0,2 ha, con su nota, y ofrece «Explotación hasta la final»; se crea «Sin el modo».
 - **E4** (d; RF-014-18; CE-014-05; M4): con «todas las zonas avisadas», «Hasta la final» baja la
   explotación en esas zonas a la cota de ancla de su perfil inmediatamente por encima de la final
   (sin quedar nunca por debajo de ella ni pasar del terreno) y lo que pasa a la explotación
@@ -493,7 +493,7 @@ class QuarryH2Test(unittest.TestCase):
 
     def test_c_e4_the_warning_of_unsplit_on_unexploited_ground(self) -> None:
         """E4, RF-014-17 (error 60; M4): con la explotación en toda la ladera, el resumen avisa en
-        ámbar de las zonas de desdoblado sobre terreno sin explotar de al menos 0,2 ha (los valores
+        ámbar de las zonas de desdoblado sobre terreno sin explotar de más de 0,2 ha (los valores
         de D-5 por defecto, 1 m y 0,2 ha), con una nota por zona, y ofrece «Explotación hasta la
         final»; dice «Explotación hasta la final: no». Se crea «Sin el modo»: su explotación es la
         ladera."""

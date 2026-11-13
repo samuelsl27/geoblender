@@ -88,7 +88,7 @@
   :func:`quarry_steps` la da con las dos superficies.
 - :func:`unsplit_zones_steps` (T18; RF-014-17; A9): **el aviso** de que la explotación no llega a
   la final (error 60): el desdoblado de más del umbral sobre terreno sin explotar (la explotación
-  a menos de :data:`UNEXPLOITED_M` del terreno) en zonas conexas de al menos el área mínima
+  a menos de :data:`UNEXPLOITED_M` del terreno) en zonas conexas de más del área mínima
   (:class:`UnsplitZones`, :class:`UnsplitZone`: área, volumen y centro de cada una).
 - :func:`to_final_steps` (T18; RF-014-18; A9): **«explotación hasta la final»** en unas celdas
   (:class:`ToFinal`): la explotación baja con bancos de su perfil anclados a sus cotas hasta la
@@ -1890,6 +1890,12 @@ TO_FINAL_NAME = "explotación hasta la final"
 """El nombre de la envolvente de «explotación hasta la final» en los mensajes de la 013
 (RF-013-15): «<cantera> (explotación hasta la final)»."""
 _TO_FINAL_FIGURE = "des.to_final_m3"
+_AREA_RTOL = 1e-12
+"""La tolerancia relativa con que una zona pasa del área mínima del aviso (RF-014-17, «de más
+del área mínima»): ``área > mín_ha · 10⁴ · (1 + 10⁻¹²)``. El área mínima se da en ha y
+``mín_ha · 10⁴`` no siempre es el entero de m² que se tecleó (0,07 ha da 700,0000000000001 m² y
+0,0029 ha, 28,999999999999996 m²): sin ella, una zona de justo el área mínima se avisaría con
+unos valores y no con otros. Una celda más pasa siempre de ella."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1954,7 +1960,7 @@ class UnsplitZones:
     """**El aviso** de que la explotación no llega a la final (A9; RF-014-17, error 60):
     ``candidates``, las celdas de desdoblado con más del umbral de diferencia sobre terreno sin
     explotar (máscara nueva); las ``zones`` avisadas (:class:`UnsplitZone`: las componentes
-    4-conexas de ``candidates`` con al menos el área mínima, numeradas desde 1) y sus celdas
+    4-conexas de ``candidates`` de más del área mínima, numeradas desde 1) y sus celdas
     (``warned``); y el umbral (``threshold_m``, m) y el área mínima (``min_area_ha``, ha) con que
     se buscaron."""
 
@@ -2000,10 +2006,11 @@ def unsplit_zones_steps(final: np.ndarray, exploitation: np.ndarray, start: np.n
     ``unsplit``) lleva las :class:`UnsplitZones`. Son del aviso las celdas **desdobladas** de la
     clasificación con ``Δ = explotación − final`` **mayor** que el umbral ``threshold_m`` (m, el
     parámetro ``des.quarry.unsplit_threshold_m``) sobre **terreno sin explotar**: ``|explotación −
-    z| <`` :data:`UNEXPLOITED_M` con la de partida ``start``. Se avisan sus zonas 4-conexas con un
-    área de **al menos** ``min_area_ha`` (ha, ``des.quarry.unsplit_min_area_ha``), con su área, su
-    volumen y su centro. El desdoblado bajo el umbral, sobre terreno ya excavado o en zonas más
-    pequeñas no se avisa: cuenta en la clasificación.
+    z| <`` :data:`UNEXPLOITED_M` con la de partida ``start``. Se avisan sus zonas 4-conexas de
+    **más** de ``min_area_ha`` (ha, ``des.quarry.unsplit_min_area_ha``; la igualdad no avisa,
+    también en coma flotante: ``área > min_area_ha · 10⁴ · (1 + 10⁻¹²)``), con su área, su volumen
+    y su centro. El desdoblado bajo el umbral o justo en él, sobre terreno ya excavado o en zonas
+    de esa área o más pequeñas no se avisa: cuenta en la clasificación.
 
     Rechazos al llamar: el umbral y el área mínima, como sus parámetros (``check_quarry_param``:
     ``des.quarry_param_missing`` o ``des.quarry_param_range``); ``ValueError`` (error del programa)
@@ -2042,8 +2049,8 @@ def _unsplit_units(final: np.ndarray, exploitation: np.ndarray, start: np.ndarra
         yield None
     labels: Labels = yield from _label_units(candidates)
     areas = labels.sizes * geometry.cell_area
-    chosen = [index for index in range(1, labels.count + 1)
-              if areas[index - 1] >= min_area * _HECTARE_M2]
+    limit = min_area * _HECTARE_M2 * (1.0 + _AREA_RTOL)
+    chosen = [index for index in range(1, labels.count + 1) if areas[index - 1] > limit]
     keep = np.zeros(labels.count + 1, dtype=bool)
     keep[chosen] = True
     zones = yield from _zone_units(labels, delta, geometry, chosen)
