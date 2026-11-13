@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """La operación ``des.fill_only`` de «Solo relleno…» (spec 014, T30; HU-014-6; RF-014-22 a
-RF-014-25, RF-014-29; CE-014-07; plan 014 A12, §5.2.3, §5.3.2, §5.3.3).
+RF-014-25, RF-014-29 a RF-014-31; CE-014-07; plan 014 A12, §5.2.3, §5.3.2, §5.3.3).
 
 - ``design.model.FillOnlyRequest``: lo que pide «Solo relleno…», como el escalonado en relleno de la
   013 (una envolvente de la versión, la superficie de partida, el perfil base y el de cada sector y
@@ -13,7 +13,9 @@ RF-014-25, RF-014-29; CE-014-07; plan 014 A12, §5.2.3, §5.3.2, §5.3.3).
   escalonado de la 013 y ``des.fill_only_cut_m3``); lo escrito es el diseño de
   ``design.fronts.fill_only_steps`` con las mismas entradas, bit a bit; un diseño que movería un
   intocable se rechaza nombrándolo, sin escribir nada (RF-014-25); se recalcula y se reproduce como
-  las demás de la 014.
+  las demás de la 014; cambiar su perfil lo deja obsoleto con su causa, y un sector con la
+  búsqueda de intocables pendiente que la envolvente toca impide calcularlo y recalcularlo (T50,
+  hallazgo F-11; RF-014-30, RF-014-31).
 
 La historia con proyecto, sobre una copia de la cantera sintética (``quarry_fixtures``, T01, con su
 rejilla gruesa de 2 m, T35): en V01, una envolvente descendente de 30° desde 274 m en la lámina de
@@ -203,9 +205,9 @@ def composed(design: np.ndarray) -> Any:
 
 
 class FillOnlyOperationTest(qfx.QuarryProjectCase):
-    """RF-014-22 a RF-014-25 y RF-014-29 con proyecto (véase el módulo): la envolvente de la balsa
-    creada en V01 una vez y el diseño «solo relleno» «Balsa» calculado, creado, recalculado y
-    reproducido."""
+    """RF-014-22 a RF-014-25 y RF-014-29 a RF-014-31 con proyecto (véase el módulo): la envolvente
+    de la balsa creada en V01 una vez y el diseño «solo relleno» «Balsa» calculado, creado,
+    recalculado, reproducido, obsoleto y, con un sector pendiente, rechazado."""
 
     STEP_M = qfx.COARSE_STEP_M
     """La rejilla gruesa de 2 m (T35; plan 014 §7.4), con sus cifras a mano (:data:`RAISED_CELLS`,
@@ -474,6 +476,57 @@ class FillOnlyOperationTest(qfx.QuarryProjectCase):
         self.assertIn("des.fill_m3", reproduced)
         self.assertTrue(all(check.same for check in report.figures if check.operation_uid == uid))
         self.assertTrue(report.matches)
+
+    # --- Lo obsoleto y los sectores pendientes -----------------------------------------------
+
+    def settings_of(self, uid: str) -> dict[str, Any]:
+        return dict(json.loads(self.query_of("SELECT settings FROM gb_operation WHERE uid = ?",
+                                             uid)[0][0]))
+
+    def test_e_a_changed_profile_stales_the_design_with_its_cause(self) -> None:
+        """RF-014-31, RF-008-24, RF-008-26 (T50, hallazgo F-11), en la revisión abierta de V01:
+        cambiar la cara del perfil ``REST_5_35_6`` deja obsoleto el diseño «solo relleno» con la
+        causa «cambió la cara» (``parameter_changed``), y no la envolvente que escalona (su talud
+        es el de su petición, no el del perfil); «Recalcular lo obsoleto» lo repite a él solo."""
+        uid = self.stored.handle.uid
+        ((envelope,),) = self.query_of("SELECT uid FROM gb_operation WHERE op_type = ? AND "
+                                       "superseded_by IS NULL", provenance.ENVELOPE)
+        self.assertEqual(self.stale_causes(uid), set())
+        face = design_params.bench_key(REST.code, "face_deg")
+        self.clock.advance(minutes=1)
+        with self.project.write_transaction() as conn:
+            core_params.ParameterStore(self.project).change(
+                conn, face, value=REST.face_deg - 1.0, reason="Prueba de la T50")
+        self.assertEqual(self.stale_causes(uid), {("parameter_changed", face)})
+        self.assertEqual(self.stale_causes(envelope), set())
+        self.assertEqual(self.recompute_plan(), [(provenance.FILL_ONLY,)])
+
+    def test_f_a_pending_sector_that_the_envelope_touches_refuses_it(self) -> None:
+        """RF-014-30 (RF-013-05; T50, hallazgo F-11): con la búsqueda de intocables del sector 1
+        («Sector oeste», el de la lámina, que la envolvente toca) pendiente, «Calcular» se niega
+        al avanzar y el recálculo al llamar con ``des.sector_pending``, nombrando el sector (y
+        solo él) y la orden que la busca, sin registrar nada: ni operación, ni dato, ni
+        temporal."""
+        with self.project.write_transaction() as conn:
+            conn.execute("DELETE FROM core_untouchable_search WHERE sector_code = 'sector_1'")
+        before = (self.des_state(), self.query_of("SELECT count(*) FROM gb_operation"))
+        with self.assertRaises(messages.DesignError) as caught:
+            drive(self.fill_steps(model.FillOnlyRequest("Pendiente", ENVELOPE, START, REST.code,
+                                                        water=WATER)))
+        uid = self.stored.handle.uid
+        request = recompute_mod.RecomputeRequest(self.project, uid, provenance.FILL_ONLY,
+                                                 self.settings_of(uid), (), (),
+                                                 version=self.v1.uid)
+        with self.assertRaises(messages.DesignError) as again:
+            store.recompute_run(request)
+        for error in (caught.exception, again.exception):
+            with self.subTest(error=error.text):
+                self.assertEqual(error.code, "des.sector_pending")
+                self.assertIn("«Sector oeste»", error.text)
+                self.assertNotIn("Sector este", error.text)
+                self.assertIn("Buscar elementos intocables por sector", error.text)
+        self.assertEqual((self.des_state(), self.query_of("SELECT count(*) FROM gb_operation")),
+                         before)
 
 
 if __name__ == "__main__":

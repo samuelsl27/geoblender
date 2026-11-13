@@ -63,6 +63,7 @@ figures_mod = import_geoblender("core.provenance.figures")
 datasets = import_geoblender("core.datasets")
 builtin = import_geoblender("core.content.builtin")
 access = import_geoblender("gis.masks.access")
+masks_provenance = import_geoblender("gis.masks.provenance")
 geotiff_reader = import_geoblender("gis.geotiff.reader")
 project_model = import_geoblender("core.project.model")
 
@@ -716,10 +717,12 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
         self.assertEqual(after["figures"], before["figures"])
 
     def test_g_a_pending_sector_refuses_calculating_and_recomputing(self) -> None:
-        """RF-014-30 (RF-013-05): con la búsqueda de intocables del sector 1 («Sector oeste»)
-        pendiente, que el recinto toca, «Calcular» se niega al avanzar y el recálculo al llamar,
-        nombrando el sector, sin registrar nada; una operación que no es de la 013 ni de la
-        cantera o su recinto no se recalcula aquí (``ValueError``)."""
+        """RF-014-30 (RF-013-05), RF-014-31: con la búsqueda de intocables del sector 1 («Sector
+        oeste») pendiente, que el recinto toca, «Calcular» se niega al avanzar y el recálculo al
+        llamar, nombrando el sector, sin registrar nada; una operación de un tipo que
+        ``recompute_run`` no repite (aquí, ``gis.compile_constraints`` con los ajustes de la
+        cantera; T50, hallazgo F-11: ``des.refit`` ya se repite) se rechaza al llamar con un
+        ``ValueError`` que dice los tipos que sí repite."""
         with self.project.write_transaction() as conn:
             conn.execute("DELETE FROM core_untouchable_search WHERE sector_code = 'sector_1'")
         before = self.query_of("SELECT count(*) FROM gb_operation")
@@ -736,7 +739,16 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
             store.recompute_run(request)
         self.assertEqual(caught.exception.code, "des.sector_pending")
         self.assertEqual(self.query_of("SELECT count(*) FROM gb_operation"), before)
-        other = recompute_mod.RecomputeRequest(self.project, uid, provenance.REFIT,
-                                               {}, (), (), version=self.v1.uid)
-        with self.assertRaises(ValueError):
+        compile_type = masks_provenance.COMPILE
+        self.assertNotIn(compile_type, store.RECOMPUTED)
+        self.assertIn(provenance.REFIT, store.RECOMPUTED)
+        other = recompute_mod.RecomputeRequest(self.project, uid, compile_type,
+                                               self.settings_of(uid), (), (), version=self.v1.uid)
+        with self.assertRaises(ValueError) as refused:
             store.recompute_run(other)
+        text = str(refused.exception)
+        self.assertTrue(text.startswith("recompute_run repite "), text)
+        self.assertTrue(text.endswith(f", no «{compile_type}»"), text)
+        for op_type in (provenance.ENVELOPE, provenance.STEPPED, *provenance.QUARRY_VERSION_TYPES):
+            self.assertIn(op_type, text)
+        self.assertEqual(self.query_of("SELECT count(*) FROM gb_operation"), before)

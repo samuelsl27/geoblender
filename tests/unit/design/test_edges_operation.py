@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """La operación ``des.edge_transition``: la transición del borde de una superficie de diseño con el
 terreno no afectado y el salto creado que deja (spec 014, T28; HU-014-5; RF-014-19 a RF-014-21,
-RF-014-29; CE-014-06; plan 014 A10, A11, §5.2.3, §5.3.2).
+RF-014-29, RF-014-31; CE-014-06; plan 014 A10, A11, §5.2.3, §5.3.2).
 
 - ``design.edges.transition_domain``: el dominio de la transición son las celdas que **mueve el
   diseño** (con dato en las dos superficies y ``|S − z|`` mayor que el espesor mínimo de la 012)
@@ -20,7 +20,9 @@ RF-014-29; CE-014-06; plan 014 A10, A11, §5.2.3, §5.3.2).
   ``des.edge_transition`` con ``des_trn_`` (``design_surface``) y ``des_erp_``, sus ajustes, sus
   entradas, sus parámetros y sus cifras; una superficie que no es de diseño se rechaza
   (``des.edge_not_design_surface``) y el ángulo sin valor también (D-9), sin escribir nada; se
-  recalcula y se reproduce como las demás de la 014.
+  recalcula y se reproduce como las demás de la 014; cambiar lo que lee (su ángulo, el perfil
+  de la cantera de la que sale) la deja obsoleta con su causa, y «Recalcular lo obsoleto» va
+  cantera → transición (T50, hallazgo F-11).
 
 La historia con proyecto, sobre una copia de la cantera sintética (``quarry_fixtures``, T01, con
 su rejilla gruesa de 2 m, T35) con una cantera de dos superficies creada en V01: la transición de su
@@ -370,9 +372,10 @@ def declare(project: Any, clock: Any, key: str, value: object) -> None:
 
 
 class EdgeTransitionOperationTest(qfx.QuarryProjectCase):
-    """RF-014-19 a RF-014-21 y RF-014-29 con proyecto (véase el módulo): la cantera «Cantera E7» de
-    V01 creada una vez; antes de declarar el ángulo de transición, su rechazo; después, la
-    transición de su superficie final calculada, creada, recalculada y reproducida."""
+    """RF-014-19 a RF-014-21, RF-014-29 y RF-014-31 con proyecto (véase el módulo): la cantera
+    «Cantera E7» de V01 creada una vez; antes de declarar el ángulo de transición, su rechazo;
+    después, la transición de su superficie final calculada, creada, recalculada, reproducida y,
+    al final, obsoleta."""
 
     STEP_M = qfx.COARSE_STEP_M
     """La rejilla gruesa de 2 m (T35; plan 014 §7.4): la historia no comprueba ninguna cifra hecha
@@ -636,3 +639,47 @@ class EdgeTransitionOperationTest(qfx.QuarryProjectCase):
                                       "des.created_step_share_pct"})
         self.assertTrue(all(check.same for check in report.figures if check.operation_uid == uid))
         self.assertTrue(report.matches)
+
+    # --- Lo obsoleto -------------------------------------------------------------------------
+
+    def change(self, key: str, value: float) -> None:
+        """Cambia el parámetro ``key`` del proyecto a ``value``, un minuto después."""
+        self.clock.advance(minutes=1)
+        with self.project.write_transaction() as conn:
+            core_params.ParameterStore(self.project).change(conn, key, value=value,
+                                                            reason="Prueba de la T50")
+
+    def test_e_what_it_reads_stales_the_transition_with_its_cause(self) -> None:
+        """RF-014-31, RF-008-24, RF-008-26 (T50, hallazgo F-11), en la revisión abierta de V01:
+        cambiar el ángulo de transición deja obsoleta la transición con la causa «cambió el
+        ángulo» (``parameter_changed``), y no la cantera; cambiar la cara del perfil de la final
+        deja obsoleta la cantera con esa causa y, aguas abajo, la transición, que lee su
+        superficie final; «Recalcular lo obsoleto» las repite en ese orden, cantera →
+        transición. Recalculada la cantera (su final cambia), la transición sigue obsoleta, ahora
+        también porque cambió su superficie de diseño (``dataset_changed`` de ``des_fin_…``), y
+        es lo único que queda por recalcular."""
+        transition = self.stored.handle.uid
+        (quarry, settings), = self.query_of(
+            "SELECT uid, settings FROM gb_operation WHERE op_type = ? AND superseded_by IS NULL",
+            provenance.QUARRY)
+        self.assertEqual(self.stale_causes(transition), set())
+        self.assertEqual(self.recompute_plan(), [])
+        angle = design_params.EDGE_TRANSITION
+        self.change(angle, ANGLE_DEG - 5.0)
+        self.assertEqual(self.stale_causes(transition), {("parameter_changed", angle)})
+        self.assertEqual(self.stale_causes(quarry), set())
+        self.assertEqual(self.recompute_plan(), [(provenance.EDGE_TRANSITION,)])
+        face = design_params.bench_key(REST.code, "face_deg")
+        self.change(face, REST.face_deg - 1.0)
+        self.assertEqual(self.stale_causes(quarry), {("parameter_changed", face)})
+        self.assertEqual(self.stale_causes(transition),
+                         {("parameter_changed", angle), ("parameter_changed", face)})
+        self.assertEqual(self.recompute_plan(),
+                         [(provenance.QUARRY,), (provenance.EDGE_TRANSITION,)])
+        self.clock.advance(minutes=1)
+        _handle, work = store.recompute_run(recompute_mod.RecomputeRequest(
+            self.project, quarry, provenance.QUARRY, json.loads(settings), (), (),
+            version=self.v1.uid))
+        drive(work)
+        self.assertIn(("dataset_changed", SURFACE), self.stale_causes(transition))
+        self.assertEqual(self.recompute_plan(), [(provenance.EDGE_TRANSITION,)])

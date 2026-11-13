@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """El ajuste de un diseño a un límite nuevo (spec 014, T32; HU-014-7; RF-014-27, RF-014-28,
-RF-014-29; CE-014-08; plan 014 A13, P-3, §5.2.3; error 46 del análisis).
+RF-014-29, RF-014-31; CE-014-08; plan 014 A13, P-3, §5.2.3; error 46 del análisis).
 
 - ``design.refit.refit_steps`` (A13, el ajuste): con el límite nuevo de las máscaras
   (``design.refit.limit_cells``: para cortar, el perímetro de actuación ∩ el límite legal sin su
@@ -25,7 +25,8 @@ RF-014-29; CE-014-08; plan 014 A13, P-3, §5.2.3; error 46 del análisis).
   su cifra ``des.refit_m3``; el ángulo de cada una sale del perfil de la operación que la creó
   (P-3): la cara y el factor de malla que **anotó** esa operación, no los de hoy (T49, hallazgo
   F-10), que el ajuste anota en sus ajustes; se recalcula (no se reproduce: depende del límite
-  vigente).
+  vigente); cambiar el perfil de la cantera de la que sale lo deja obsoleto con esa causa, y
+  «Recalcular lo obsoleto» va cantera → ajuste (T50, hallazgo F-11).
 """
 
 from __future__ import annotations
@@ -490,10 +491,10 @@ def declare(project: Any, clock: Any, key: str, value: object) -> None:
 
 
 class RefitOperationTest(qfx.QuarryProjectCase):
-    """RF-014-27 a RF-014-29 con proyecto (véase el módulo): la cantera «Corta E8» de V01 creada
-    con el límite de la cantera; después, el límite legal 30 m más corto por el este y las máscaras
-    recompiladas; el ajuste de sus dos superficies con un ángulo de más (rechazado), calculado,
-    creado y recalculado."""
+    """RF-014-27 a RF-014-29 y RF-014-31 con proyecto (véase el módulo): la cantera «Corta E8» de
+    V01 creada con el límite de la cantera; después, el límite legal 30 m más corto por el este y
+    las máscaras recompiladas; el ajuste de sus dos superficies con un ángulo de más (rechazado),
+    calculado, creado, recalculado y obsoleto."""
 
     STEP_M = qfx.COARSE_STEP_M
     """La rejilla gruesa de 2 m (T35; plan 014 §7.4): la historia no comprueba ninguna cifra hecha
@@ -811,6 +812,30 @@ class RefitOperationTest(qfx.QuarryProjectCase):
                           for name in ADJUSTED.values()}, hashes)
         self.assertEqual(sorted(self.figures_of(handle.uid).values()),
                          sorted(self.figures_of(uid).values()))
+
+    def test_c_then_a_changed_profile_stales_the_refit_after_its_quarry(self) -> None:
+        """RF-014-31, RF-008-24, RF-008-26 (T50, hallazgo F-11): cambiar la cara del perfil de
+        explotación deja obsoleta la cantera de la que sale el ajuste con la causa «cambió la
+        cara» (``parameter_changed``) y, aguas abajo, el ajuste, que lee su explotación, con esa
+        causa además de las que ya tenía (nace obsoleto con las de la cantera: las máscaras del
+        límite nuevo; T54); «Recalcular lo obsoleto» los repite en ese orden, cantera → ajuste.
+        Va tras el recálculo del ajuste y antes de las pruebas que cambian el perfil o recalculan
+        la cantera; vuelve a dejar el perfil como estaba."""
+        ((quarry,),) = self.query_of("SELECT uid FROM gb_operation WHERE op_type = ? AND "
+                                     "superseded_by IS NULL", provenance.QUARRY)
+        ((adjusted,),) = self.query_of(
+            "SELECT uid FROM gb_operation WHERE op_type = ? AND superseded_by IS NULL AND "
+            "settings LIKE ?", provenance.REFIT, f'%"name":"{NAME}"%')
+        born = {uid: self.stale_causes(uid) for uid in (quarry, adjusted)}
+        self.assertTrue(born[adjusted], "nace obsoleto con las causas de la cantera")
+        face = design_params.bench_key(EXPL.code, "face_deg")
+        self.change(face, EXPL.face_deg - 1.0)
+        self.addCleanup(self.change, face, EXPL.face_deg)
+        for uid in (quarry, adjusted):
+            with self.subTest(operation=uid):
+                self.assertEqual(self.stale_causes(uid) - born[uid], {("parameter_changed", face)})
+                self.assertLessEqual(born[uid], self.stale_causes(uid))
+        self.assertEqual(self.recompute_plan(), [(provenance.QUARRY,), (provenance.REFIT,)])
 
 
 if __name__ == "__main__":

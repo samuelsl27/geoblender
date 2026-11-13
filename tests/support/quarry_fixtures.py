@@ -508,7 +508,9 @@ class QuarryProjectCase(cp.ConstraintsProjectCase):
     ``record`` y ``stored_constraints``:
 
     - :meth:`masks`: el ``MaskSet`` de una versión (por defecto V01, al día);
-    - :meth:`read_layer`: una capa de entidades del proyecto (``gis.store.read_features``)."""
+    - :meth:`read_layer`: una capa de entidades del proyecto (``gis.store.read_features``);
+    - :meth:`stale_causes` y :meth:`recompute_plan` (T50): por qué está obsoleta una operación y
+      el plan de «Recalcular lo obsoleto» (de la 008), con nombres legibles."""
 
     STEP_M: ClassVar[float] = STEP_M
     project: ClassVar[Any]
@@ -538,6 +540,33 @@ class QuarryProjectCase(cp.ConstraintsProjectCase):
         gstore = import_geoblender("gis.store")
         with self.project.read() as conn:
             return gstore.read_features(conn, name)
+
+    def stale_causes(self, operation_uid: str) -> set[tuple[str, str]]:
+        """Las causas por las que la operación ``operation_uid`` está obsoleta (la caché
+        ``gb_stale`` de la 008), cada una con su clase (``parameter_changed``,
+        ``dataset_changed``…) y lo que cambió por su nombre: la clave del parámetro, el nombre
+        del dato o, si no es ninguno de los dos, su uid. Vacío si está al día."""
+        found: set[tuple[str, str]] = set()
+        with self.project.read() as conn:
+            for cause, subject in conn.execute(
+                    "SELECT cause_kind, subject_uid FROM gb_stale WHERE item_kind = 'operation' "
+                    "AND item_uid = ?", (operation_uid,)).fetchall():
+                named = conn.execute("SELECT key FROM gb_parameter WHERE uid = ? UNION ALL "
+                                     "SELECT name FROM gb_dataset WHERE uid = ?",
+                                     (subject, subject)).fetchone()
+                found.add((cause, subject if named is None else named[0]))
+        return found
+
+    def recompute_plan(self) -> list[tuple[str, ...]]:
+        """El plan de «Recalcular lo obsoleto» del proyecto (``plan_recompute`` de la 008): el tipo
+        de las operaciones de cada unidad, unidad a unidad, en el orden en que se repiten."""
+        graph = import_geoblender("core.provenance.graph")
+        recompute = import_geoblender("core.provenance.recompute")
+        with self.project.read() as conn:
+            units = recompute.plan_recompute(graph.load_graph(conn)).units
+            return [tuple(conn.execute("SELECT op_type FROM gb_operation WHERE uid = ?",
+                                       (uid,)).fetchone()[0] for uid in unit.operations)
+                    for unit in units]
 
 
 def same_entities(found: Sequence[Any], expected: Sequence[Any]) -> bool:
