@@ -190,6 +190,10 @@ superficie de partida y las superficies que se ajustan: las de diseño de la ver
 vigente), con **las que quedan fuera marcadas**; propone «Ajuste» y, de partida, la de la ficha de
 la primera marcada o el terreno. Lo pedido es una ``design.model.RefitRequest``. Calcular, Crear,
 Cancelar y Esc, los de :class:`_CalculateAndCreate`; los rechazos y las cuentas, de ``design``.
+Las marcas salen de la caché de la comprobación (spec 014, T35; RNF-014-02:
+``des_panels.cached_refit_rows``); sin acierto, la orden comprueba antes **por pasos** en su modal
+(``des_panels.refit_rows_steps``, con el texto en la barra de estado y Esc, que no abre nada) y
+después vuelve a abrirse con las filas ya marcadas.
 """
 
 from __future__ import annotations
@@ -3000,11 +3004,14 @@ class GEOBLENDER_OT_des_refit_to_limit(_CalculateAndCreate, DesignCommandAware,
     def invoke(self, context: Any, event: Any) -> set[str]:
         """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué.
         Con ``confirm``, el diálogo de crear el cálculo abierto. Si no, las superficies de diseño
-        de la versión leídas de nuevo (``des_panels.refit_rows``: las que quedan fuera del límite
-        vigente, marcadas), la propuesta (el nombre y la superficie de partida) y el diálogo del
-        cálculo: Intro calcula."""
+        de la versión leídas de nuevo (las que quedan fuera del límite vigente, marcadas: de la
+        caché de la comprobación, ``des_panels.cached_refit_rows``), la propuesta (el nombre y la
+        superficie de partida) y el diálogo del cálculo: Intro calcula. Sin acierto en la caché
+        (spec 014, T35; RNF-014-02), desde la interfaz comprueba antes por pasos
+        (:meth:`_check_first`) y la ventana se abre al terminar; desde un guion, de una vez."""
         self.provenance_dialog = True
         self.in_steps = getattr(context, "window", None) is not None
+        self._checking = False
         if self.confirm:
             return self._confirmation(context)
         refusal = self._version_refusal()
@@ -3013,9 +3020,17 @@ class GEOBLENDER_OT_des_refit_to_limit(_CalculateAndCreate, DesignCommandAware,
                 self.report({"ERROR"}, refusal)
             return {"CANCELLED"}
         project = SESSION.project
+        version = scene_versions.active_version() or ""
         try:
             des_panels.refresh_choices(project)
-            self._propose(context, project)
+            rows = None
+            if not self.properties.is_property_set("surfaces"):
+                rows = des_panels.cached_refit_rows(project, version)
+                if rows is None and self.in_steps:
+                    return self._check_first(context, project, version)
+                if rows is None:  # sin ventana: de una vez
+                    rows = des_panels.refit_rows(project, version)
+            self._propose(context, project, rows)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
@@ -3024,19 +3039,33 @@ class GEOBLENDER_OT_des_refit_to_limit(_CalculateAndCreate, DesignCommandAware,
             title=command_text(catalog().commands[command_idname(self.COMMAND)].label),
             confirm_text=tr("Calculate"))
 
-    def _propose(self, context: Any, project: Any) -> None:
+    def _check_first(self, context: Any, project: Any, version: str) -> set[str]:
+        """La comprobación de las superficies de la versión contra el límite vigente antes de abrir
+        el diálogo (spec 014, T35; RNF-014-02): por pasos en el modal de la orden
+        (``des_panels.refit_rows_steps``, que llena la caché), con el texto en la barra de estado y
+        Esc, que no abre nada; al terminar, la orden se vuelve a abrir con las filas ya marcadas
+        (:meth:`_result`)."""
+        self._checking = True
+        self._project, self._name = project, ""
+        self._start(context, des_panels.refit_rows_steps(project, version))
+        return {"RUNNING_MODAL"}
+
+    def _propose(self, context: Any, project: Any,
+                 rows: tuple[list[tuple[str, str, bool]], str] | None = None) -> None:
         """Lo que propone el diálogo si quien lo lanza no lo dio (plan 014 §5.3.3): el nombre
         («Ajuste»); las superficies de diseño de la versión activa con **las que quedan fuera del
-        límite vigente marcadas** (y, si las máscaras no están al día, la nota que lo dice); y, de
-        partida, la de la ficha de la primera marcada (o de la primera, sin ninguna marcada:
+        límite vigente marcadas** (``rows``: las filas y la nota de ``des_panels.refit_rows``; y,
+        si las máscaras no están al día, la nota que lo dice); y, de partida, la de la ficha de la
+        primera marcada (o de la primera, sin ninguna marcada:
         ``design.store.design_surface_of``) o, si no la tiene, el terreno
         (``surface_proposal.ground_item``)."""
         if not self.name.strip():
             self.name = tr("Refit")
         given = self.properties.is_property_set
         if not given("surfaces"):
-            rows, self.note = des_panels.refit_rows(project, scene_versions.active_version() or "")
-            _fill_refit_rows(self.surfaces, iter(rows))
+            found, self.note = rows if rows is not None else des_panels.refit_rows(
+                project, scene_versions.active_version() or "")
+            _fill_refit_rows(self.surfaces, iter(found))
         if des_panels.has_surfaces() and not given("start"):
             listed = [item.name for item in self.surfaces]
             chosen = [item.name for item in self.surfaces if item.selected] or listed
@@ -3121,9 +3150,41 @@ class GEOBLENDER_OT_des_refit_to_limit(_CalculateAndCreate, DesignCommandAware,
         return tr("Refit «{name}» created in {version}", name=opened.name, version=opened.version)
 
     def _status_text(self, step: Progress) -> str:
-        """El avance en la barra de estado: «Calculando el ajuste… 40 % · Esc: cancelar»."""
+        """El avance en la barra de estado: «Calculando el ajuste… 40 % · Esc: cancelar» o, mientras
+        comprueba antes de abrir el diálogo, «Comprobando las superficies de diseño contra el límite
+        vigente… · Esc: cancelar»."""
+        if getattr(self, "_checking", False):
+            return tr("Checking the design surfaces against the current limit… · Esc: cancel")
         percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
         return tr("Computing the refit… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        if getattr(self, "_checking", False):
+            return tr("Check cancelled: the window has not been opened")
+        return super()._cancelled_text()
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        """Mientras comprueba antes de abrir el diálogo (:meth:`_check_first`): si se cierra el
+        proyecto, lo deja (no abre nada); al terminar, vuelve a abrir la orden con las filas ya
+        marcadas y su nota (y el nombre y la partida si se dieron). Si no, el del cálculo."""
+        if not getattr(self, "_checking", False):
+            return super()._result(context, step)
+        if step.result is None:
+            if project_session.current() is not getattr(self, "_project", None):
+                return self._stop(context)
+            return None
+        self._done(context)
+        rows, note = step.result  # type: ignore[misc]
+        values: dict[str, Any] = {
+            "surfaces": [{"name": surface, "label": label, "outside": outside,
+                          "selected": outside} for surface, label, outside in rows],
+            "note": note}
+        for given in ("name", "start"):
+            if self.properties.is_property_set(given):
+                values[given] = getattr(self, given)
+        _invoke_later(self.COMMAND, getattr(context, "window", None) or _first_window(),
+                      **values)
+        return {"FINISHED"}
 
 
 # --- Vista previa de semillas, dominios y restricciones (T25; HU-013-1; RF-013-01, RF-013-02,

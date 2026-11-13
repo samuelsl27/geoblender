@@ -9,6 +9,15 @@ vigente sale en el resumen de la compilación (la ventana Restricciones… y el 
 como aviso con su volumen y su área (``des.refit_outside``, que lleva a «Ajustar el diseño a un
 límite nuevo…»); la barra N «Diseño» lo dice también, en alerta, en la ficha de la superficie.
 
+Desde la T35 (RNF-014-02), **por pasos y con una caché**: la comprobación sigue a la compilación en
+los pasos de su modal y de su recálculo en la cola, sin que ninguna llamada haga las dos cosas (Esc
+durante ella deja la compilación guardada y no guarda nada de la comprobación), y llena la caché en
+memoria de ``des_panels`` (``design.store.LimitCheckMemo``), de la que leen la ficha de la barra N y
+el diálogo de «Ajustar el diseño a un límite nuevo…» sin leer ninguna rejilla; sin acierto, la ficha
+no dice nada y comprueba por pasos en un temporizador (``des_panels.limit_tick``; en ``blender -b``
+no corre: la prueba lo llama) que vuelve a leerla, y el diálogo comprueba por pasos en el modal de
+su orden antes de abrirse.
+
 Un proyecto pequeño por clase (ventana de 60 × 40 m con celdas de 2 m, V01, el límite legal de
 (4, 4) a (56, 36) con 2 m hacia dentro, el perímetro de (2, 2) a (58, 38), un sector con la búsqueda
 cerrada, la ladera ``100 + 0,25·y + 0,0625·x`` y el perfil ``REST_5_35_6``) con la cantera «Corta»
@@ -18,6 +27,7 @@ después, con el límite legal **30 m más corto por el este** (de x = 56 a x = 
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
+import contextlib
 import dataclasses
 import importlib
 import tempfile
@@ -35,6 +45,7 @@ import numpy as np
 from tests.support import blender_ext
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
+from tests.support.fake_layout import operator_self
 from tests.support.trees import remove_tree
 
 REASON = "Prueba de la cantera frente a un límite nuevo"
@@ -57,6 +68,9 @@ REST, REST_CODE = "REST_5_35_6", "rest_5_35_6"
 QUARRY_NAME = "Corta"
 THICKNESS_M = 0.02
 """El espesor mínimo de la 012 por defecto (el proyecto no declara otro)."""
+TIMER = SimpleNamespace(type="TIMER", value="NOTHING")
+ESCAPE = SimpleNamespace(type="ESC", value="PRESS")
+OUTSIDE = "fuera del límite vigente"
 
 
 def _module(name: str) -> ModuleType:
@@ -84,6 +98,28 @@ def ground() -> np.ndarray:
     return 100.0 + 0.25 * y + 0.0625 * x
 
 
+def window() -> bpy.types.Window:
+    return bpy.context.window_manager.windows[0]
+
+
+class _Rows(list):  # type: ignore[type-arg]
+    """La colección de filas de la orden, de mentira (``add`` y ``clear``)."""
+
+    def add(self) -> SimpleNamespace:
+        row = SimpleNamespace(name="", label="", outside=False, selected=False)
+        self.append(row)
+        return row
+
+
+def drained(steps: Any) -> Any:
+    """El resultado del último de unos pasos (``Progress``) llevados hasta el final."""
+    found = None
+    for step in steps:
+        if step.result is not None:
+            found = step.result
+    return found
+
+
 class QuarryLimitTest(unittest.TestCase):
     """La extensión habilitada una vez y el proyecto de la cantera, para toda la clase."""
 
@@ -108,6 +144,9 @@ class QuarryLimitTest(unittest.TestCase):
         cls.cprov = _module("core.constraints.provenance")
         cls.dprov = _module("design.provenance")
         cls.dstore = _module("design.store")
+        cls.surfaces = _module("design.surfaces")
+        cls.des_ops = _module("bl.ops.des")
+        cls.commands = _module("bl.ui.commands")
         cls.i18n = _module("core.i18n")
         core_project = _module("core.project")
         settings = core_project.ProjectSettings(**settings_values(
@@ -221,6 +260,39 @@ class QuarryLimitTest(unittest.TestCase):
         """Las líneas de la ficha de la barra N del dato vivo ``name``."""
         return list(self.panels.item_lines(self.project, self.uid_of(name)).lines)
 
+    def no_grid_read(self) -> Any:
+        """Un contexto en el que leer una rejilla del diseño es un error de la prueba (lo que sale
+        de la caché no lee ninguna)."""
+        stack = contextlib.ExitStack()
+        for module in (self.dstore, self.surfaces):
+            stack.enter_context(mock.patch.object(module, "read_surface",
+                                                  side_effect=AssertionError("lee una rejilla")))
+        return stack
+
+    def running(self, cls: type) -> Any:
+        """El modal de ``cls`` en marcha (el único con pasos)."""
+        found = [op for op in window().modal_operators
+                 if isinstance(op, cls) and getattr(op, "_steps", None) is not None]
+        self.assertEqual(len(found), 1, f"{cls.__name__} no está en marcha")
+        return found[0]
+
+    def compile_in_steps(self) -> Any:
+        """«Compilar las máscaras» como desde la interfaz, por pasos, con un paso por evento del
+        temporizador de su modal (``STEP_BUDGET_S`` a 0); devuelve el modal en marcha."""
+        cls = self.commands.registered_class("geoblender.gis_compile_constraints")
+        self.enterContext(mock.patch.object(cls, "STEP_BUDGET_S", 0.0))
+        with bpy.context.temp_override(window=window()):
+            self.assertEqual(bpy.ops.geoblender.gis_compile_constraints(
+                "EXEC_DEFAULT", in_steps=True), {"RUNNING_MODAL"})
+        return self.running(cls)
+
+    def compiled_uids(self) -> list[str]:
+        """Las compilaciones de las máscaras hechas, en orden."""
+        with self.project.read() as conn:
+            return [row[0] for row in conn.execute(
+                "SELECT uid FROM gb_operation WHERE op_type = 'gis.compile_constraints' AND "
+                "status = 'done' ORDER BY fid")]
+
     def outside_by_hand(self, name: str) -> tuple[int, float]:
         """Las celdas y el volumen que la superficie ``name`` mueve al este de
         :data:`NO_LONGER_CUT_X` (más que el espesor mínimo frente a la ladera), a mano."""
@@ -241,8 +313,8 @@ class QuarryLimitTest(unittest.TestCase):
         de la barra N de las dos superficies de la cantera dicen nada de él; las envolventes y la
         clasificación no se comprueban. La barra N mira los tipos de ``design.store``."""
         self.assertEqual(self.panels._LIMIT_CHECKED, frozenset(self.dstore.LIMIT_CHECKED_TYPES))
-        self.assertEqual(self.panels.limit_lines(self.project, self.v01.uid), [])
-        self.assertIn(self.panels.limit_lines, self.constraint_panels._COMPILE_CHECKS)
+        self.assertEqual(drained(self.panels.limit_steps(self.project, self.v01.uid)), [])
+        self.assertIn(self.panels.limit_steps, self.constraint_panels._COMPILE_CHECKS)
         for name in (self.exploitation, self.final):
             with self.subTest(superficie=name):
                 self.assertFalse(any("fuera del límite vigente" in line.text
@@ -259,7 +331,7 @@ class QuarryLimitTest(unittest.TestCase):
             legal, parts=((ring(NEW_LEGAL),),))], srs_id=self.project.record.crs_epsg)
         self.assertEqual(bpy.ops.geoblender.gis_compile_constraints(), {"FINISHED"})
         shown = [(line.text, line.alert) for line in self.constraint_panels.view().report_lines]
-        warned = [(text, alert) for text, alert in shown if "fuera del límite vigente" in text]
+        warned = [(text, alert) for text, alert in shown if OUTSIDE in text]
         self.assertEqual(len(warned), 2, shown)
         for name in (self.exploitation, self.final):
             with self.subTest(superficie=name):
@@ -271,11 +343,12 @@ class QuarryLimitTest(unittest.TestCase):
                 text = check.notice.text("es")
                 self.assertIn((text, True), warned)
                 self.assertTrue(text.startswith(f"«{name}» deja "), text)
-                card = self.card(name)
-                self.assertEqual((card[1].text, card[1].alert), (text, True))
-                self.i18n.set_language("en")
-                self.assertEqual(self.card(name)[1].text, check.notice.text("en"))
-                self.i18n.set_language("es")
+                with self.no_grid_read():  # la ficha, de la caché que llenó la compilación (T35)
+                    card = self.card(name)
+                    self.assertEqual((card[1].text, card[1].alert), (text, True))
+                    self.i18n.set_language("en")
+                    self.assertEqual(self.card(name)[1].text, check.notice.text("en"))
+                    self.i18n.set_language("es")
 
     def test_c_its_recalculation_says_it_too(self) -> None:
         """RF-014-26: una compilación recalculada en la cola de las máscaras («Recalcular lo
@@ -300,6 +373,173 @@ class QuarryLimitTest(unittest.TestCase):
         for text in expected:
             self.assertIn(("WARNING", text), sent)
 
+
+    def test_d_in_steps_the_check_follows_the_saved_compilation(self) -> None:
+        """RNF-014-02 (spec 014, T35; RF-014-26): «Compilar las máscaras» desde la interfaz da los
+        pasos de la comprobación **tras** los suyos: ninguno de la comprobación antes de guardar la
+        compilación ni en el mismo paso que la guarda (el de su transacción se da sin lo guardado),
+        con su texto en la barra de estado; al terminar, el resumen con los dos avisos y la caché
+        llena (la ficha, sin leer ninguna rejilla). Esc durante la comprobación: la compilación
+        queda guardada y la orden termina con su resumen y la línea que dice que la comprobación se
+        omitió, sin los avisos ni nada en la caché."""
+        check = self.constraint_panels.CHECK_PHASE
+        before = self.compiled_uids()
+        modal = self.compile_in_steps()
+        state = {"RUNNING_MODAL"}
+        for _event in range(500):
+            state = modal.modal(bpy.context, TIMER)
+            if state != {"RUNNING_MODAL"}:
+                break
+        self.assertEqual(state, {"FINISHED"})
+        phases = [entry[1] for entry in modal.progress_log]
+        first = phases.index(check)
+        self.assertGreater(first, 1)
+        self.assertNotIn(check, phases[:first])
+        self.assertTrue(all(phase == check for phase in phases[first:-1]), phases)
+        self.assertEqual(phases[-1], phases[first - 1])  # el último, como el que guardó
+        self.assertIsNotNone(modal.stored)
+        self.assertEqual(len(self.compiled_uids()), len(before) + 1)
+        progress = _module("core.project.model").Progress
+        self.assertEqual(modal._status_text(progress(check, 1, 1, "")),
+                         "Comprobando los datos de la versión contra las máscaras nuevas… · Esc: "
+                         "omitir la comprobación")
+        self.assertEqual(len([text for text in modal.report_log if OUTSIDE in text]), 2)
+        with self.no_grid_read():
+            self.assertEqual(len(self.panels._LIMITS.memo().lookup(self.project, self.v01.uid)),
+                             2)
+            self.assertIn(OUTSIDE, self.card(self.final)[1].text)
+
+        modal = self.compile_in_steps()  # Esc en cuanto empieza la comprobación
+        for _event in range(500):
+            self.assertEqual(modal.modal(bpy.context, TIMER), {"RUNNING_MODAL"})
+            if modal.progress_log[-1][1] == check:
+                break
+        self.assertEqual(modal.modal(bpy.context, ESCAPE), {"FINISHED"})
+        self.assertEqual(modal.outcome, "FINISHED")
+        self.assertEqual(len(self.compiled_uids()), len(before) + 2)
+        self.assertIs(self.access().mask_state(self.project, self.v01.uid)[0],
+                      self.access().MaskState.CURRENT)
+        skipped = ("Comprobación de los datos de la versión contra las máscaras nuevas omitida: "
+                   "las máscaras están compiladas y guardadas")
+        self.assertIn(skipped, modal.report_log)
+        self.assertFalse(any(OUTSIDE in text for text in modal.report_log))
+        shown = [(line.text, line.alert) for line in self.constraint_panels.view().report_lines]
+        self.assertIn((skipped, True), shown)
+        self.assertIsNone(self.panels._LIMITS.memo().lookup(self.project, self.v01.uid))
+
+    def access(self) -> ModuleType:
+        return _module("gis.masks.access")
+
+    def test_e_without_a_hit_the_card_checks_in_a_timer(self) -> None:
+        """RNF-014-02 (spec 014, T35; RF-014-26): sin acierto en la caché, la ficha de la barra N no
+        se bloquea: no dice nada del límite y lanza la comprobación por pasos en su temporizador
+        (``des_panels.limit_tick``, una sola aunque se lea otra ficha de la versión), que llena la
+        caché y vuelve a leer las fichas; después, la ficha lo dice sin leer ninguna rejilla.
+        Cerrar el proyecto (o desactivar) vacía la caché."""
+        panels = self.panels
+        self.addCleanup(lambda: bpy.app.timers.is_registered(panels.limit_tick)
+                        and bpy.app.timers.unregister(panels.limit_tick))
+        panels.forget_limit_checks()
+        with mock.patch.object(bpy.app.timers, "register") as register:
+            self.assertFalse(any(OUTSIDE in line.text for line in self.card(self.final)))
+            work = panels._LIMITS.work
+            self.assertIsNotNone(work)
+            self.assertFalse(any(OUTSIDE in line.text for line in self.card(self.exploitation)))
+            self.assertIs(panels._LIMITS.work, work)  # la misma: ya estaba en marcha
+        register.assert_called_once()
+        self.assertIs(register.call_args.args[0], panels.limit_tick)
+        self.assertTrue(register.call_args.kwargs["persistent"])
+        with mock.patch.object(panels, "_reread_cards") as reread:
+            ticks = 1
+            while panels.limit_tick() is not None:
+                ticks += 1
+                self.assertLess(ticks, 500)
+        reread.assert_called_once_with()
+        self.assertIsNone(panels._LIMITS.work)
+        self.assertIsNone(panels.limit_tick())
+        with self.no_grid_read():
+            self.assertIn(OUTSIDE, self.card(self.final)[1].text)
+            self.assertIn(OUTSIDE, self.card(self.exploitation)[1].text)
+        self.assertGreater(len(panels._LIMITS.memo()), 0)
+        panels.on_project_changed(None)
+        self.assertEqual(len(panels._LIMITS.memo()), 0)
+
+    def test_f_without_a_hit_the_refit_dialog_checks_before_opening(self) -> None:
+        """RNF-014-02 (spec 014, T35; RF-014-26, RF-014-27): sin acierto, «Ajustar el diseño a un
+        límite nuevo…» desde la interfaz no abre su ventana: comprueba antes por pasos en su modal
+        (con su texto en la barra de estado) y, al terminar, se vuelve a abrir con las filas ya
+        marcadas (las dos superficies de la cantera, fuera del límite vigente) y la caché llena.
+        Esc a mitad no abre nada ni guarda nada en la caché. Con acierto, abre su ventana sin leer
+        ninguna rejilla. (En ``blender -b`` Blender no llama a ``invoke``: se llama a mano con un
+        ``self`` y un contexto de mentira, y el modal se avanza como lo haría su temporizador.)"""
+        cls = self.commands.registered_class("geoblender.des_refit_to_limit")
+        core_ops = _module("bl.ops.core")
+        progress = _module("core.project.model").Progress
+        self.enterContext(mock.patch.object(cls, "STEP_BUDGET_S", 0.0))
+        later = self.enterContext(mock.patch.object(self.des_ops, "_invoke_later"))
+        expected = {check.surface: check for check in self.dstore.limit_checks(
+            self.project, self.v01.uid, types=self.dstore.REFIT_SOURCES)}
+        self.assertEqual(sorted(expected), sorted([self.exploitation, self.final]))
+
+        def invoked() -> tuple[Any, Any]:
+            manager = SimpleNamespace(**{name: mock.Mock() for name in (
+                "event_timer_add", "event_timer_remove", "modal_handler_add", "progress_begin",
+                "progress_update", "progress_end", "invoke_props_dialog")})
+            context = SimpleNamespace(window=window(), window_manager=manager, workspace=None,
+                                      selected_objects=())
+            fake = operator_self(cls, name="", surfaces=_Rows(), start="", note="",
+                                 confirm=False, in_steps=False, report=lambda kind, text: None,
+                                 properties=SimpleNamespace(is_property_set=lambda name: False))
+            return fake, context
+
+        for escape in (True, False):
+            with self.subTest(esc=escape):
+                self.panels.forget_limit_checks()
+                later.reset_mock()
+                fake, context = invoked()
+                self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
+                context.window_manager.invoke_props_dialog.assert_not_called()
+                context.window_manager.modal_handler_add.assert_called_once_with(fake)
+                self.assertEqual(fake._status_text(progress("limit_check", 0, 0, "")),
+                                 "Comprobando las superficies de diseño contra el límite "
+                                 "vigente… · Esc: cancelar")
+                self.assertIsNone(fake._result(context, progress(
+                    "limit_check", 0, 0, "")))
+                self.assertEqual(core_ops._StepsModal.modal(fake, context, TIMER),
+                                 {"RUNNING_MODAL"})
+                if escape:
+                    self.assertEqual(core_ops._StepsModal.modal(fake, context, ESCAPE),
+                                     {"CANCELLED"})
+                    self.assertIn("Comprobación cancelada: no se ha abierto la ventana",
+                                  fake.report_log)
+                    later.assert_not_called()
+                    self.assertEqual(len(self.panels._LIMITS.memo()), 0)
+                    continue
+                state = {"RUNNING_MODAL"}
+                for _event in range(500):
+                    state = core_ops._StepsModal.modal(fake, context, TIMER)
+                    if state != {"RUNNING_MODAL"}:
+                        break
+                self.assertEqual(state, {"FINISHED"})
+                context.window_manager.invoke_props_dialog.assert_not_called()
+                later.assert_called_once()
+                self.assertEqual(later.call_args.args[0], "geoblender.des_refit_to_limit")
+                values = later.call_args.kwargs
+                self.assertEqual(values["note"], "")
+                rows = {row["name"]: row for row in values["surfaces"]}
+                self.assertEqual(sorted(rows), sorted(expected))
+                for row in rows.values():
+                    self.assertEqual((row["outside"], row["selected"]), (True, True))
+                    self.assertIn(OUTSIDE, row["label"])
+        fake, context = invoked()  # con acierto: la ventana, sin leer ninguna rejilla
+        with self.no_grid_read():
+            self.assertEqual(self.panels.cached_refit_rows(self.project, self.v01.uid),
+                             ([(name, rows[name]["label"], True) for name in sorted(rows)], ""))
+            cls.invoke(fake, context, None)
+        context.window_manager.invoke_props_dialog.assert_called_once()
+        context.window_manager.modal_handler_add.assert_not_called()
+        self.assertEqual([(row.name, row.outside, row.selected) for row in fake.surfaces],
+                         [(name, True, True) for name in sorted(rows)])
 
 if __name__ == "__main__":
     unittest.main()

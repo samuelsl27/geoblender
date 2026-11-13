@@ -34,9 +34,10 @@ enlazada, lo que le falta y sus parámetros con su valor en la versión y en el 
 y «Exportar las máscaras…» (``geoblender.gis_export_constraint_masks``); abajo, el último
 resultado de cada una (lo creado y lo rechazado, el informe de compilar con lo ganado y lo
 perdido y la búsqueda pendiente: :func:`compile_lines`; y lo que dicen de la versión recompilada
-los módulos que miran sus datos contra las máscaras nuevas, :func:`compile_check_lines`: la 014,
-las superficies de diseño que quedan fuera del límite vigente). :func:`fill_constraints` regenera la
-vista desde el proyecto, sin escribir (``gis.masks.store.listed_constraints``). Debajo de los
+los módulos que miran sus datos contra las máscaras nuevas, por pasos tras los de la compilación,
+:func:`compile_check_steps`: la 014, las superficies de diseño que quedan fuera del límite
+vigente). :func:`fill_constraints` regenera la vista desde el proyecto, sin escribir
+(``gis.masks.store.listed_constraints``). Debajo de los
 botones, «Ver restricciones y límites» (el control 30,
 ``geoblender.core_toggle_constraints_overlay``, pulsado mientras está activa) y la superficie de
 las rejillas del proyecto sobre la que se dibuja (T26; RF-012-18; ``overlay_surface``: vacía, la
@@ -107,7 +108,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -124,6 +125,7 @@ from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, language, translate, tr
 from ...core.params.model import format_value
 from ...core.params.store import ParameterStore
+from ...core.project.model import Progress
 from ...core.versions import decisions as versions_decisions
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
@@ -659,15 +661,20 @@ def compile_lines(stored: Any, revision: str, pending: Sequence[str]) -> list[Li
     return lines
 
 
-CompileCheck = Callable[[Any, str], Sequence[Line]]
+CompileCheck = Callable[[Any, str], Iterator[Progress]]
 """Quien mira sus propios datos contra las máscaras recién compiladas de una versión (lo pone el
 ``bl`` de su módulo con :func:`add_compile_check`): recibe el proyecto y el uid de la versión y da
-las líneas que se añaden al resumen de la compilación."""
+los pasos de su comprobación (``Progress``, ninguno de más de ≈ 0,1 s: RNF-014-02), el último con
+las líneas que se añaden al resumen de la compilación (``result``, una secuencia de
+:class:`Line`). Cerrar sus pasos a mitad no deja nada."""
 _COMPILE_CHECKS: list[CompileCheck] = []
+CHECK_PHASE = "compile_check"
+"""La fase de los pasos de :func:`compile_check_steps` (los de después de guardar la
+compilación)."""
 
 
 def add_compile_check(check: CompileCheck) -> None:
-    """Apunta ``check`` para el resumen de cada compilación (:func:`compile_check_lines`); si ya
+    """Apunta ``check`` para el resumen de cada compilación (:func:`compile_check_steps`); si ya
     estaba, no hace nada."""
     if check not in _COMPILE_CHECKS:
         _COMPILE_CHECKS.append(check)
@@ -679,20 +686,34 @@ def remove_compile_check(check: CompileCheck) -> None:
         _COMPILE_CHECKS.remove(check)
 
 
-def compile_check_lines(project: Any, version_uid: str) -> list[Line]:
-    """Las líneas que añaden al resumen de una compilación de las máscaras de la versión
-    ``version_uid`` los que miran sus datos contra ellas (:func:`add_compile_check`; la 014, las
-    superficies de diseño que quedan fuera del límite vigente: RF-014-26), en su orden; sin
-    proyecto o sin versión, ninguna. Uno que falla va al registro técnico y no para a los demás ni
-    a la compilación, que ya está guardada."""
+def compile_check_steps(project: Any, version_uid: str) -> Generator[Progress, None, list[Line]]:
+    """Los pasos de los que miran sus datos contra las máscaras recién compiladas de la versión
+    ``version_uid`` (:func:`add_compile_check`; la 014, las superficies de diseño que quedan fuera
+    del límite vigente: RF-014-26), uno tras otro y en su orden, cada uno como un ``Progress`` de
+    :data:`CHECK_PHASE` sin resultado (spec 014, T35; RNF-014-02: la compilación los encadena tras
+    los suyos, en el modal de «Compilar las máscaras» y en la cola de las máscaras); el último de
+    cada uno, el que lleva sus líneas, no se da (sin nada que comprobar, ningún paso). Devuelve las
+    líneas que dan para el resumen. Sin proyecto o sin versión, ninguna. Uno que falla va al
+    registro técnico y no para a los demás ni a la compilación, que ya está guardada. Cerrarlos a
+    mitad cierra los del que está en marcha (no dejan nada)."""
     if project is None or not version_uid:
         return []
     found: list[Line] = []
     for check in list(_COMPILE_CHECKS):
+        steps: Iterator[Progress] | None = None
         try:
-            found.extend(check(project, version_uid))
+            steps = check(project, version_uid)
+            for step in steps:
+                if step.result is not None:
+                    found.extend(step.result)  # type: ignore[call-overload]
+                else:
+                    yield Progress(CHECK_PHASE, 1, 1, step.message)
         except Exception:  # noqa: BLE001 - la compilación ya está hecha: un aviso no la tumba
             LOGGER.exception("Falló una comprobación de los datos contra las máscaras nuevas")
+        finally:
+            close = getattr(steps, "close", None)
+            if callable(close):
+                close()
     return found
 
 

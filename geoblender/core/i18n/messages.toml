@@ -6584,6 +6584,13 @@ es = "Compilando las restricciones… {percent} % · Esc: cancelar"
 ["Compilation cancelled: nothing has been left half-done"]
 es = "Compilación cancelada: no ha quedado nada a medias"
 
+# La comprobación de los datos de la versión tras guardar la compilación (spec 014, T35)
+["Checking the data of the version against the new masks… · Esc: skip the check"]
+es = "Comprobando los datos de la versión contra las máscaras nuevas… · Esc: omitir la comprobación"
+
+["Check of the data of the version against the new masks skipped: the masks are compiled and saved"]
+es = "Comprobación de los datos de la versión contra las máscaras nuevas omitida: las máscaras están compiladas y guardadas"
+
 ["The project was closed while the masks were being compiled: nothing has been left half-done"]
 es = "Se cerró el proyecto mientras se compilaban las máscaras: no ha quedado nada a medias"
 
@@ -8548,6 +8555,16 @@ es = "«{surface}» · {volume} m³ en {area} m² fuera del límite vigente"
 
 ["«{surface}» · nothing outside the current limit"]
 es = "«{surface}» · nada fuera del límite vigente"
+
+# La comprobación por pasos contra el límite vigente (spec 014, T35)
+["Checking the design surfaces against the current limit…"]
+es = "Comprobando las superficies de diseño contra el límite vigente…"
+
+["Checking the design surfaces against the current limit… · Esc: cancel"]
+es = "Comprobando las superficies de diseño contra el límite vigente… · Esc: cancelar"
+
+["Check cancelled: the window has not been opened"]
+es = "Comprobación cancelada: no se ha abierto la ventana"
 
 ["The masks of {version} are not up to date: compile them to see which surfaces the current limit leaves outside"]
 es = "Las máscaras de {version} no están al día: compílelas para ver qué superficies deja fuera el límite vigente"

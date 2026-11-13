@@ -119,10 +119,18 @@ es la partida, la inclinación y las bermas, y los avisos de su escalonado) y, e
 superficie (una ``des_srf_``), la capa de láminas con su campo.
 
 **La comprobación contra un límite nuevo** (spec 014, T31; HU-014-7; RF-014-26): al recompilar las
-máscaras de una versión, :func:`limit_lines` añade al resumen de la compilación
-(``constraint_panels.compile_check_lines``) el aviso de cada superficie de diseño de la 014 que
+máscaras de una versión, :func:`limit_steps` añade al resumen de la compilación
+(``constraint_panels.compile_check_steps``) el aviso de cada superficie de diseño de la 014 que
 mueve algo fuera del límite vigente, con su volumen y su área (``design.store.limit_checks``), y la
-ficha de la barra N de esa superficie lo dice también, en alerta, tras su estado.
+ficha de la barra N de esa superficie lo dice también, en alerta, tras su estado. Desde la T35
+(RNF-014-02), **por pasos y con una caché en memoria** (``design.store.LimitCheckMemo``, la de
+:data:`_LIMITS`): los pasos de la compilación comprueban, tras guardarla, todas las superficies de
+diseño de la versión que se pueden ajustar y las guardan con su clave barata; la ficha y el diálogo
+del ajuste las leen de ella sin leer ninguna rejilla. Sin acierto, la ficha no se bloquea: no dice
+nada y lanza la comprobación por pasos en un temporizador (:func:`limit_tick`), que llena la caché y
+vuelve a leer la ficha; el diálogo comprueba antes de abrirse (:func:`refit_rows_steps`, en el modal
+de su orden). La caché se invalida sola por la clave y se vacía al cerrar el proyecto y al
+desactivar Geoblender (:func:`forget_limit_checks`).
 
 **«Ajustar el diseño a un límite nuevo…»** (spec 014, T33; HU-014-7; RF-014-27, RF-014-32): las filas
 de su diálogo (:func:`refit_rows`: cada superficie de diseño de la versión que se puede ajustar, con
@@ -137,7 +145,8 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -149,6 +158,7 @@ from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, language, tr, translate
 from ...core.params import ParameterStore, ParamKind, format_value, parameter_label
 from ...core.params import definition as param_definition
+from ...core.project.model import Progress
 from ...design import messages as design_messages
 from ...design import profiles as design_profiles
 from ...design import provenance as design_provenance
@@ -937,26 +947,20 @@ def _refit_lines(calculation: Calculation) -> list[tuple[str, bool]]:
             for item in calculation.outcome.refits]  # type: ignore[union-attr]
 
 
-def refit_rows(project: Any, version_uid: str) -> tuple[list[tuple[str, str, bool]], str]:
-    """Las filas de «Ajustar el diseño a un límite nuevo…» (spec 014, T33; plan 014 §5.3.3): cada
-    superficie de diseño de la versión ``version_uid`` que se puede ajustar
-    (``design.store.REFIT_SOURCES``, por el nombre de su dato) con lo que dice de ella la ventana y
-    si queda fuera del límite vigente (``design.store.limit_checks``: la marcada); y una nota si las
-    máscaras no están al día (sin ellas no se sabe qué queda fuera). Solo lee; los errores del
-    proyecto siguen."""
+def _refit_rows_of(project: Any, version_uid: str, origins: Sequence[Any],
+                   checks: Sequence[Any], current: bool | None = None
+                   ) -> tuple[list[tuple[str, str, bool]], str]:
+    """Las filas de :func:`refit_rows` de las superficies ``origins`` (``SurfaceOrigin``) con sus
+    comprobaciones ``checks`` (``RefitCheck``) y la nota si no hay ninguna y las máscaras no están
+    al día (``current``: ya se sabe si lo están; ``None``, se lee)."""
     from ...core.versions import read as versions_read  # al usarlo: habilitar no lo carga
-    from ...design import store as design_store  # al usarlo: habilitar no carga el cálculo
     from ...gis.masks import access as masks_access
 
-    with project.read() as conn:
-        origins = design_store.limit_surfaces(conn, version_uid,
-                                              types=design_store.REFIT_SOURCES)
-    checks = {check.surface: check for check in design_store.limit_checks(
-        project, version_uid, types=design_store.REFIT_SOURCES)} if origins else {}
+    found = {check.surface: check for check in checks}
     rows: list[tuple[str, str, bool]] = []
     for origin in origins:
         surface = origin.record.name
-        check = checks.get(surface)
+        check = found.get(surface)
         if check is None:
             rows.append((surface, f"«{surface}»", False))
         elif check.outside:
@@ -967,15 +971,79 @@ def refit_rows(project: Any, version_uid: str) -> tuple[list[tuple[str, str, boo
             rows.append((surface, tr("«{surface}» · nothing outside the current limit",
                                      surface=surface), False))
     note = ""
-    if origins and not checks:
-        state, _pending = masks_access.mask_state(project, version_uid)
-        if state is not masks_access.MaskState.CURRENT:
+    if origins and not found:
+        if current is None:
+            state, _pending = masks_access.mask_state(project, version_uid)
+            current = state is masks_access.MaskState.CURRENT
+        if not current:
             with project.read() as conn:
-                found = versions_read.version(conn, version_uid)
+                version = versions_read.version(conn, version_uid)
             note = tr("The masks of {version} are not up to date: compile them to see which "
                       "surfaces the current limit leaves outside",
-                      version=found.code if found is not None else version_uid)
+                      version=version.code if version is not None else version_uid)
     return rows, note
+
+
+def _refit_origins(project: Any, version_uid: str) -> tuple[Any, ...]:
+    """Las superficies de diseño de la versión que se pueden ajustar (``design.store``)."""
+    from ...design import store as design_store  # al usarlo: habilitar no carga el cálculo
+
+    with project.read() as conn:
+        return design_store.limit_surfaces(conn, version_uid, types=design_store.REFIT_SOURCES)
+
+
+def cached_refit_rows(project: Any, version_uid: str
+                      ) -> tuple[list[tuple[str, str, bool]], str] | None:
+    """Las filas de «Ajustar el diseño a un límite nuevo…» (como :func:`refit_rows`) **de la
+    caché** de la comprobación (spec 014, T35; RNF-014-02), sin leer ninguna rejilla; ``None`` si
+    hay que comprobar antes (alguna superficie sin acierto y las máscaras al día). Sin máscaras al
+    día no hay nada que comprobar: las filas sin marcar y la nota. Solo lee."""
+    from ...design import store as design_store  # al usarlo: habilitar no carga el cálculo
+    from ...gis.masks import access as masks_access
+
+    origins = _refit_origins(project, version_uid)
+    if not origins:
+        return [], ""
+    checks = _LIMITS.memo().lookup(project, version_uid, types=design_store.REFIT_SOURCES)
+    if checks is not None:
+        return _refit_rows_of(project, version_uid, origins, checks)
+    state, _pending = masks_access.mask_state(project, version_uid)
+    if state is masks_access.MaskState.CURRENT:
+        return None
+    return _refit_rows_of(project, version_uid, origins, (), current=False)
+
+
+def refit_rows_steps(project: Any, version_uid: str) -> Iterator[Progress]:
+    """La comprobación de las superficies de diseño de la versión que se pueden ajustar, por pasos
+    (``design.store.LimitCheckMemo.fill_steps``, que llena la caché; spec 014, T35; RNF-014-02):
+    los ``Progress`` de :data:`LIMIT_PHASE`, el último con las filas y la nota de
+    :func:`refit_rows`. Cerrarlos a mitad no deja nada."""
+    from ...design import store as design_store  # al usarlo: habilitar no carga el cálculo
+
+    message = tr("Checking the design surfaces against the current limit…")
+    found = yield from _progress(_LIMITS.memo().fill_steps(
+        project, version_uid, types=design_store.REFIT_SOURCES), message)
+    yield Progress(LIMIT_PHASE, 1, 1, message, result=_refit_rows_of(
+        project, version_uid, _refit_origins(project, version_uid),
+        [check for _op_type, check in found]))
+
+
+def refit_rows(project: Any, version_uid: str) -> tuple[list[tuple[str, str, bool]], str]:
+    """Las filas de «Ajustar el diseño a un límite nuevo…» (spec 014, T33; plan 014 §5.3.3): cada
+    superficie de diseño de la versión ``version_uid`` que se puede ajustar
+    (``design.store.REFIT_SOURCES``, por el nombre de su dato) con lo que dice de ella la ventana y
+    si queda fuera del límite vigente (``design.store.limit_checks``: la marcada); y una nota si las
+    máscaras no están al día (sin ellas no se sabe qué queda fuera). De la caché
+    (:func:`cached_refit_rows`) o, sin acierto, de una vez (:func:`refit_rows_steps`: desde un
+    guion; la orden, desde la interfaz, comprueba por pasos antes de abrir su ventana). Solo lee;
+    los errores del proyecto siguen."""
+    found = cached_refit_rows(project, version_uid)
+    if found is not None:
+        return found
+    for step in refit_rows_steps(project, version_uid):
+        if step.result is not None:
+            return step.result  # type: ignore[return-value]
+    raise AssertionError("la comprobación acaba siempre con sus filas")  # pragma: no cover
 
 
 def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
@@ -1687,32 +1755,152 @@ def profiles_text(settings: Mapping[str, Any], profile_names: Mapping[str, str],
     return " · ".join(parts)
 
 
-def limit_lines(project: Any, version_uid: str) -> list[constraint_panels.Line]:
+LIMIT_PHASE = "limit_check"
+"""La fase de los pasos de la comprobación de las superficies contra el límite vigente."""
+LIMIT_TICK_S = 0.05
+"""Cada cuánto vuelve el temporizador de la comprobación de fondo (:func:`limit_tick`)."""
+LIMIT_BUDGET_S = 0.05
+"""Lo que avanza la comprobación de fondo en cada llamada, como mucho (más su última unidad, de
+≈ 0,1 s como mucho: RNF-014-02)."""
+
+
+@dataclass
+class _LimitChecks:
+    """La caché en memoria de la comprobación contra el límite vigente
+    (``design.store.LimitCheckMemo``, creada al usarla: habilitar no carga el cálculo) y la
+    comprobación de fondo en marcha (sus unidades, el proyecto y la versión)."""
+
+    held: Any = None
+    work: Iterator[None] | None = None
+    target: tuple[str, str] | None = None
+    project: Any = None
+
+    def memo(self) -> Any:
+        """La caché (``design.store.LimitCheckMemo``)."""
+        if self.held is None:
+            from ...design import store as design_store  # al usarlo
+
+            self.held = design_store.LimitCheckMemo()
+        return self.held
+
+    def stop(self) -> None:
+        """Deja la comprobación de fondo (sus unidades se cierran sin guardar nada)."""
+        work, self.work, self.target, self.project = self.work, None, None, None
+        if work is not None:
+            work.close()  # type: ignore[attr-defined]
+
+
+_LIMITS = _LimitChecks()
+
+
+def _progress[T](work: Generator[None, None, T], message: str) -> Generator[Progress, None, T]:
+    """Las unidades de ``work`` como ``Progress`` de :data:`LIMIT_PHASE` con ``message``; devuelve
+    lo que devuelve ``work``. Cerrarlo cierra ``work``."""
+    try:
+        while True:
+            try:
+                next(work)
+            except StopIteration as stop:
+                return stop.value  # type: ignore[no-any-return]
+            yield Progress(LIMIT_PHASE, 0, 0, message)
+    finally:
+        work.close()
+
+
+def limit_steps(project: Any, version_uid: str) -> Iterator[Progress]:
     """Lo que añade la 014 al resumen de una compilación de las máscaras de la versión
-    ``version_uid`` (spec 014, T31; RF-014-26; ``constraint_panels.add_compile_check``): en alerta,
-    el aviso de cada superficie de diseño de la 014 de la versión que mueve algo fuera del límite
-    vigente, con su volumen y su área (``design.store.limit_checks``); ninguna si no queda nada
-    fuera. Solo lee."""
+    ``version_uid`` (spec 014, T31; RF-014-26; ``constraint_panels.add_compile_check``), **por
+    pasos** (T35; RNF-014-02): la comprobación de las superficies de diseño de la versión que se
+    pueden ajustar (``design.store.REFIT_SOURCES``) contra el límite vigente, que llena la caché
+    (:data:`_LIMITS`), un ``Progress`` por unidad; el último lleva, en alerta, el aviso de cada
+    superficie de la 014 (``design.store.LIMIT_CHECKED_TYPES``) que mueve algo fuera de él, con su
+    volumen y su área; ninguna línea si no queda nada fuera. Solo lee."""
     from ...design import store as design_store  # al usarlo: habilitar no carga el cálculo
 
+    message = tr("Checking the design surfaces against the current limit…")
+    found = yield from _progress(_LIMITS.memo().fill_steps(
+        project, version_uid, types=design_store.REFIT_SOURCES), message)
     shown = language()
-    return [constraint_panels.Line(check.notice.text(shown), alert=True)
-            for check in design_store.limit_checks(project, version_uid)
-            if check.notice is not None]
+    yield Progress(LIMIT_PHASE, 1, 1, message, result=[
+        constraint_panels.Line(check.notice.text(shown), alert=True) for op_type, check in found
+        if op_type in design_store.LIMIT_CHECKED_TYPES and check.notice is not None])
+
+
+def _check_later(project: Any, version_uid: str) -> None:
+    """Lanza la comprobación de las superficies de la versión ``version_uid`` en el temporizador
+    :func:`limit_tick` (por pasos; llena la caché y vuelve a leer la ficha), si no está ya en marcha
+    para ella; una de otra versión o de otro proyecto se deja."""
+    from ...design import store as design_store  # al usarlo: habilitar no carga el cálculo
+
+    target = (str(project.uid), version_uid)
+    if _LIMITS.work is not None and _LIMITS.target == target:
+        return
+    _LIMITS.stop()
+    _LIMITS.work = _LIMITS.memo().fill_steps(project, version_uid,
+                                             types=design_store.REFIT_SOURCES)
+    _LIMITS.target, _LIMITS.project = target, project
+    if not bpy.app.timers.is_registered(limit_tick):
+        bpy.app.timers.register(limit_tick, first_interval=LIMIT_TICK_S, persistent=True)
+
+
+def _reread_cards() -> None:
+    """Vuelve a leer la ficha del objeto activo («Elemento activo») y la de la barra N «Diseño»."""
+    try:
+        view_panels.read_card()
+    except Exception:  # noqa: BLE001 - lo que llama Blender no lo tumba
+        LOGGER.exception("Falló la lectura de la ficha del objeto activo")
+    read_selected_safely()
+
+
+def limit_tick() -> float | None:
+    """El temporizador de la comprobación de fondo (spec 014, T35; RNF-014-02): avanza sus unidades
+    durante :data:`LIMIT_BUDGET_S` como mucho y vuelve en :data:`LIMIT_TICK_S`; al terminar, con la
+    caché ya llena, vuelve a leer la ficha. Sin comprobación, o con otro proyecto en la sesión, se
+    quita. Un fallo va al registro técnico (la ficha sigue sin la línea)."""
+    work = _LIMITS.work
+    if work is None:
+        return None
+    if project_session.current() is not _LIMITS.project:
+        _LIMITS.stop()
+        return None
+    started = time.perf_counter()
+    try:
+        while True:
+            next(work)
+            if time.perf_counter() - started >= LIMIT_BUDGET_S:
+                return LIMIT_TICK_S
+    except StopIteration:
+        _LIMITS.work = _LIMITS.target = _LIMITS.project = None
+    except Exception:  # noqa: BLE001 - lo que llama Blender no lo tumba
+        LOGGER.exception("Falló la comprobación de las superficies contra el límite vigente")
+        _LIMITS.stop()
+        return None
+    _reread_cards()
+    return None
+
+
+def forget_limit_checks() -> None:
+    """Vacía la caché de la comprobación y deja la de fondo (al cerrar el proyecto o abrir otro, y
+    al desactivar Geoblender)."""
+    _LIMITS.stop()
+    if _LIMITS.held is not None:
+        _LIMITS.held.clear()
 
 
 def _outside_lines(project: Any, version_uid: str, uid: str) -> list[CardLine]:
     """La ficha de una superficie de diseño de la 014 (el dato ``uid`` de la versión
     ``version_uid``) que mueve algo fuera del límite vigente de su versión: su aviso, en alerta
     (spec 014, T31; RF-014-26); ninguna línea si no deja nada fuera, si no es una superficie de la
-    014 o si las máscaras no están al día. Si no se puede comprobar, lo deja en el registro
-    técnico."""
-    from ...design import store as design_store  # al usarlo: habilitar no carga el cálculo
-
+    014 o si las máscaras no están al día. **De la caché** (T35; RNF-014-02): sin acierto, ninguna
+    línea y la comprobación por pasos en el temporizador (:func:`limit_tick`), que vuelve a leer la
+    ficha al terminar. Si no se puede comprobar, lo deja en el registro técnico."""
     try:
-        checks = design_store.limit_checks(project, version_uid, names=(uid,))
+        checks = _LIMITS.memo().lookup(project, version_uid, names=(uid,))
     except (GeoblenderError, sqlite3.Error, OSError, ValueError):
         LOGGER.info("No se pudo comprobar «%s» contra el límite vigente", uid, exc_info=True)
+        return []
+    if checks is None:  # sin acierto: la ficha no se bloquea
+        _check_later(project, version_uid)
         return []
     shown = language()
     return [CardLine(ROW_FIELD, check.notice.text(shown), alert=True) for check in checks
@@ -1953,8 +2141,10 @@ def on_card_read() -> None:
 
 
 def on_project_changed(_project: Any) -> None:
-    """Lo que se apunta en ``project_session``: con otro proyecto (o ninguno), olvida el dato; con
-    uno nuevo, la barra N no lee nada hasta que se selecciona algo."""
+    """Lo que se apunta en ``project_session``: con otro proyecto (o ninguno), olvida el dato y la
+    caché de la comprobación contra el límite vigente (:func:`forget_limit_checks`); con uno nuevo,
+    la barra N no lee nada hasta que se selecciona algo."""
+    forget_limit_checks()
     shown = view()
     if shown is not None and _clear_item(shown):
         _redraw()
@@ -2028,18 +2218,23 @@ def install() -> None:
     """Pone la escucha de los indicadores (:func:`on_project_read`) y las de la barra N «Diseño»: la
     ficha del objeto activo, el proyecto de la sesión y las líneas más de «Elemento activo» y
     «Cifras de la selección» de los objetos ``DESIGN``; y la comprobación de las superficies de la
-    014 en el resumen de cada compilación de las máscaras (:func:`limit_lines`); idempotente."""
+    014 en el resumen de cada compilación de las máscaras, por pasos (:func:`limit_steps`);
+    idempotente."""
     provenance.add_change_listener(on_project_read)
     view_panels.add_card_listener(on_card_read)
     view_panels.register_object_lines(des_views.KIND, object_lines)
     project_session.add_listener(on_project_changed)
-    constraint_panels.add_compile_check(limit_lines)
+    constraint_panels.add_compile_check(limit_steps)
 
 
 def uninstall() -> None:
-    """Quita lo que puso :func:`install`, olvida el dato de la barra N y las listas del diálogo de las
-    envolventes; idempotente."""
-    constraint_panels.remove_compile_check(limit_lines)
+    """Quita lo que puso :func:`install`, olvida el dato de la barra N, las listas del diálogo de
+    las envolventes y la caché de la comprobación contra el límite vigente, y quita su
+    temporizador; idempotente."""
+    constraint_panels.remove_compile_check(limit_steps)
+    forget_limit_checks()
+    if bpy.app.timers.is_registered(limit_tick):
+        bpy.app.timers.unregister(limit_tick)
     project_session.remove_listener(on_project_changed)
     view_panels.unregister_object_lines(des_views.KIND, object_lines)
     view_panels.remove_card_listener(on_card_read)

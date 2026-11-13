@@ -113,6 +113,7 @@ from ..gis.grid import Grid
 from ..gis.masks.access import MaskSet
 from ..gis.masks.combine import ClassBit
 from ..gis.masks.compile import STEP_BUDGET_S
+from ..gis.masks.zones import Runs
 from ..gis.messages import format_value
 from ..gis.vector import FeatureLayer
 from . import provenance
@@ -408,12 +409,13 @@ def crown_ring(area: np.ndarray, start: np.ndarray, ring_cells: int) -> np.ndarr
 def hold_zones(masks: MaskSet) -> np.ndarray:
     """**A2** (RF-014-02): las zonas a sostener ``H`` de ``masks``, la unión de las zonas de las
     restricciones de :data:`HOLD_TYPES` (intocables y sin corte; su zona ya lleva el resguardo,
-    ADR-0028), como máscara nueva de la rejilla de las máscaras. Solo lee."""
-    found = np.zeros(masks.grid.shape, dtype=bool)
-    for code, ctype in sorted(masks.ctypes.items()):
-        if ctype in HOLD_TYPES and code in masks.zones:
-            found |= masks.zone(code).mask(masks.grid.shape)
-    return found
+    ADR-0028), como máscara nueva de la rejilla de las máscaras. Solo lee.
+
+    La unión se hace con los tramos y se pinta una vez (spec 014, T35; RNF-014-02): con las 500
+    restricciones de §2.2, una máscara por zona costaba 133 ms en una sola unidad."""
+    held = [masks.zone(code) for code, ctype in sorted(masks.ctypes.items())
+            if ctype in HOLD_TYPES and code in masks.zones]
+    return Runs.union_all(held).mask(masks.grid.shape)
 
 
 def crown_seeds(area: np.ndarray, start: np.ndarray, masks: MaskSet, ring_cells: int, *,
@@ -1318,15 +1320,23 @@ def _side_work(job: SideJob, budget_s: float) -> Generator[Progress, None, None]
     geometry = job.masks.grid
     start = np.asarray(job.start, dtype=np.float64)
     label = f"{job.request.name} ({SIDE_NAMES[surface]})"
-    yield Progress("side", 0, 1, f"Preparando la {SIDE_NAMES[surface]}…")
+    # Un paso por pieza de la preparación (spec 014, T35; RNF-014-02): juntas, con las 500
+    # restricciones de §2.2, pasaban de 0,2 s en una sola llamada del hilo de Blender.
+    preparing = Progress("side", 0, 1, f"Preparando la {SIDE_NAMES[surface]}…")
+    yield preparing
     base = job.seeds
     if base is None:
         base = crown_seeds(job.domain.mask, start, job.masks, job.ring_cells, domain=job.domain)
-    seeds = base if job.floors is None else with_floors(base, job.floors)
+        yield preparing
+    seeds = base
+    if job.floors is not None:
+        seeds = with_floors(base, job.floors)
+        yield preparing
     held = None
     if job.ceiling is not None:
         held = _held(start, job.ceiling)
         seeds = _with_cells(seeds, np.where(held, start, np.nan))
+        yield preparing
     source = side.seeds or SeedSource(SeedKind.SURFACE, surface=job.request.start)
     envelope_request = EnvelopeRequest(label, Direction.DOWN, source,
                                        slope_mode=SlopeMode.SECTORS, metric=side.metric,

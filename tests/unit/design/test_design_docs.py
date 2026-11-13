@@ -165,6 +165,8 @@ PENDING_014_API = frozenset({
     "refit_params", "refit_part", "refit_request", "refit_settings", "refit_source",
     "REFIT_SOURCES", "PreparedRefit", "RefitPart", "compute_refit_steps", "prepare_refit",
     "prepare_refit_units", "refit_compute_steps", "refit_profiles", "run_refit", "refit_run",
+    # T35: design.store (la caché de la comprobación contra un límite nuevo).
+    "LimitCheckMemo", "LimitKey", "LimitKeys", "limit_check_keys",
 })
 # Los módulos nuevos de la 014 que aún no tienen fila en la ficha (la T36 se la da y vacía esto).
 PENDING_014_MODULES = frozenset({

@@ -63,7 +63,10 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
 - **La comprobación contra un límite nuevo** (spec 014, T31; RF-014-26): :func:`limit_checks` (y
   :func:`limit_checks_steps`) da, al recompilar las máscaras, lo que cada superficie de la 014 de
   la versión (:func:`limit_surfaces`) mueve fuera del límite vigente (``design.refit``), sin
-  escribir nada.
+  escribir nada; desde la T35 (RNF-014-02), en unidades de una lectura cada una, y con
+  :class:`LimitCheckMemo`, su caché en memoria por superficie con la clave barata de
+  :func:`limit_check_keys` (sin leer ninguna rejilla), que llenan los pasos de la compilación y
+  leen la barra N y el diálogo del ajuste.
 - **El ajuste a un límite nuevo** (spec 014, T32; RF-014-27 a RF-014-29): :func:`prepare_refit` y
   :func:`prepare_refit_units` (las superficies de diseño de :data:`REFIT_SOURCES`, cada una con el
   perfil de la operación que la creó, :func:`refit_profiles`, P-3), el cálculo
@@ -88,7 +91,8 @@ import math
 import numbers
 import os
 import sqlite3
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import (Callable, Generator, Hashable, Iterable, Iterator, Mapping,
+                             Sequence)
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -230,6 +234,10 @@ __all__ = [
     "fill_only_compute_steps",
     "fill_only_report_rows",
     "LIMIT_CHECKED_TYPES",
+    "LimitCheckMemo",
+    "LimitKey",
+    "LimitKeys",
+    "limit_check_keys",
     "limit_checks",
     "limit_checks_steps",
     "limit_surfaces",
@@ -1498,9 +1506,11 @@ def limit_checks_steps(project: StoreProject, version_uid: str, *,
                        names: Iterable[str] | None = None, masks: access.MaskSet | None = None,
                        types: Iterable[str] = LIMIT_CHECKED_TYPES
                        ) -> Generator[None, None, tuple[refit.RefitCheck, ...]]:
-    """**A13**, la comprobación (spec 014, T31; RF-014-26), por unidades (una por la lectura de las
-    máscaras y de cada superficie): cada superficie de la 014 de la versión ``version_uid`` (uid o
-    código; :func:`limit_surfaces`, o solo las de ``names``, por el nombre o el uid de su dato;
+    """**A13**, la comprobación (spec 014, T31; RF-014-26), por unidades (las de la lectura de las
+    máscaras y, desde la T35, una por la lectura de cada rejilla y otra por la comprobación de cada
+    superficie: ninguna de más de ≈ 0,11 s con 2,81 M celdas, RNF-014-02): cada superficie de la
+    014 de la versión ``version_uid`` (uid o código; :func:`limit_surfaces`, o solo las de
+    ``names``, por el nombre o el uid de su dato;
     con ``types``, las de esos tipos de operación, como en :func:`limit_surfaces`)
     frente al límite **vigente** de sus máscaras (``design.refit.outside_volume``: lo que mueve
     fuera de él frente a su superficie de partida, la de los ajustes de su operación, con el espesor
@@ -1527,6 +1537,7 @@ def limit_checks_steps(project: StoreProject, version_uid: str, *,
         state, _pending = access.mask_state(project, version.uid)
         if state is not access.MaskState.CURRENT:
             return ()
+        yield None  # el estado y la primera unidad de las máscaras, aparte (spec 014, T35)
         masks = yield from access.load_masks_steps(project, version.uid)
     starts: dict[str, np.ndarray] = {}
     found: list[refit.RefitCheck] = []
@@ -1539,6 +1550,9 @@ def limit_checks_steps(project: StoreProject, version_uid: str, *,
         if start not in starts:
             yield None
             starts[start] = read_surface(project, start, version_uid=version.uid).values
+        # Cada lectura de una rejilla es una unidad y la comprobación, otra (spec 014, T35;
+        # RNF-014-02): juntas pasaban de 0,1 s con 2,81 M celdas.
+        yield None
         found.append(refit.outside_volume(design, starts[start], masks, thickness,
                                           name=origin.record.name, version=version.code))
     return tuple(found)
@@ -1550,6 +1564,160 @@ def limit_checks(project: StoreProject, version_uid: str, *, names: Iterable[str
     """:func:`limit_checks_steps` de una vez."""
     return _result_of(limit_checks_steps(project, version_uid, names=names, masks=masks,
                                          types=types))
+
+
+# --- La caché de la comprobación (spec 014, T35; RNF-014-02) -------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class LimitKey:
+    """La clave de la comprobación de una superficie de diseño (:func:`limit_check_keys`): el nombre
+    y el uid de su dato, el tipo de la operación que la escribió y ``key``, lo que decide su
+    resultado (las máscaras de la versión, el espesor mínimo vigente, la superficie y su partida),
+    comparable con ``==``."""
+
+    surface: str
+    uid: str
+    op_type: str
+    key: Hashable
+
+
+@dataclass(frozen=True, slots=True)
+class LimitKeys:
+    """Las claves de las superficies de diseño de una versión (su uid), en el orden de
+    :func:`limit_surfaces`."""
+
+    version_uid: str
+    surfaces: tuple[LimitKey, ...]
+
+
+def _record_key(record: DatasetRecord | None) -> tuple[str, str, str] | None:
+    """Lo que identifica el contenido de ``record``: su uid, su hash y su estado."""
+    return None if record is None else (record.uid, record.content_sha256, str(record.status))
+
+
+def _masks_key(conn: sqlite3.Connection, version_uid: str) -> Hashable:
+    """Lo que decide el estado de las máscaras de la versión ``version_uid`` y su contenido, sin
+    leer las restricciones (``gis.masks.access.mask_state`` lee además los sectores pendientes, que
+    no cambian la comprobación): sus tres datos, la operación que los escribió y si alguno tiene
+    causa de obsolescencia (``gb_stale``)."""
+    records = [dataset_registry.get(conn, masks_declared.dataset_name(family),
+                                    version_uid=version_uid) for family in access.MASK_FAMILIES]
+    found = tuple(None if record is None else (*_record_key(record), record.operation_uid)
+                  for record in records)
+    items = sorted({uid for record in records if record is not None
+                    for uid in (record.uid, record.operation_uid)})
+    if not items:
+        return (found,)
+    marks = ", ".join("?" for _ in items)
+    operations = tuple(tuple(row) for row in conn.execute(
+        f"SELECT uid, op_type, status, superseded_by FROM gb_operation WHERE uid IN ({marks}) "
+        "ORDER BY uid", items))
+    stale = tuple(str(row[0]) for row in conn.execute(
+        f"SELECT DISTINCT item_uid FROM gb_stale WHERE item_uid IN ({marks}) ORDER BY item_uid",
+        items))
+    return (found, operations, stale)
+
+
+def _start_record(conn: sqlite3.Connection, name: str, version_uid: str) -> DatasetRecord | None:
+    """El dato vivo de la superficie de partida ``name`` como la lee ``read_surface``: el de la
+    versión o, si no tiene uno así, el del proyecto."""
+    record = dataset_registry.get(conn, name, version_uid=version_uid)
+    if record is None:
+        record = dataset_registry.get(conn, name)
+    return record if record is not None and record.live else None
+
+
+def limit_check_keys(project: StoreProject, version_uid: str, *,
+                     types: Iterable[str] = LIMIT_CHECKED_TYPES) -> LimitKeys:
+    """Las claves de la comprobación (:func:`limit_checks_steps`) de cada superficie de diseño de la
+    versión ``version_uid`` (uid o código) de los tipos ``types`` (:func:`limit_surfaces`), en una
+    lectura corta (spec 014, T35; RNF-014-02): por superficie, el estado y el contenido de las
+    máscaras de la versión, el espesor mínimo vigente en ella, el uid, el hash y el estado de su
+    dato y el nombre, el uid, el hash y el estado de su superficie de partida. Si cambia la clave de
+    una superficie, puede cambiar su comprobación; si no cambia, no. No lee ninguna rejilla. Solo
+    lee; ``VersionError`` si la versión no existe."""
+    with project.read() as conn:
+        version = versions_read.version(conn, version_uid)
+        if version is None:
+            raise VersionError("core.version_unknown", field="versión", value=version_uid,
+                               version=version_uid)
+        surfaces = limit_surfaces(conn, version.uid, types=types)
+        if not surfaces:
+            return LimitKeys(version.uid, ())
+        masks = _masks_key(conn, version.uid)
+        thickness = _min_thickness(conn, project, version)
+        starts: dict[str, tuple[str, str, str] | None] = {}
+        found: list[LimitKey] = []
+        for origin in surfaces:
+            start = origin.start
+            if start is not None and start not in starts:
+                starts[start] = _record_key(_start_record(conn, start, version.uid))
+            record = origin.record
+            key = (masks, thickness, _record_key(record), start,
+                   None if start is None else starts[start])
+            found.append(LimitKey(record.name, record.uid, origin.op_type, key))
+    return LimitKeys(version.uid, tuple(found))
+
+
+class LimitCheckMemo:
+    """Los resultados de la comprobación contra el límite vigente (:func:`limit_checks_steps`) en
+    memoria, por superficie y con su clave (:func:`limit_check_keys`; spec 014, T35; RNF-014-02):
+    los llena :meth:`fill_steps` (al compilar las máscaras, por pasos) y los leen :meth:`lookup` (la
+    ficha de la barra N, el diálogo del ajuste) sin leer ninguna rejilla. Se invalida sola: una
+    superficie cuya clave cambió (otras máscaras, otro espesor, otra superficie u otra partida) no
+    acierta. :meth:`clear` la vacía (al cerrar el proyecto). No escribe en el proyecto."""
+
+    def __init__(self) -> None:
+        self._held: dict[tuple[str, str, str], tuple[Hashable, refit.RefitCheck | None]] = {}
+
+    def __len__(self) -> int:
+        return len(self._held)
+
+    def lookup(self, project: StoreProject, version_uid: str, *,
+               names: Iterable[str] | None = None,
+               types: Iterable[str] = LIMIT_CHECKED_TYPES) -> tuple[refit.RefitCheck, ...] | None:
+        """Lo que daría :func:`limit_checks` con lo mismo, de la caché: una ``RefitCheck`` por
+        superficie que la tiene, en su orden; ``None`` (sin acierto) si alguna de las pedidas no
+        está o cambió su clave. Solo lee las claves."""
+        keys = limit_check_keys(project, version_uid, types=types)
+        wanted = None if names is None else set(names)
+        found: list[refit.RefitCheck] = []
+        for item in keys.surfaces:
+            if wanted is not None and item.surface not in wanted and item.uid not in wanted:
+                continue
+            held = self._held.get((str(project.uid), keys.version_uid, item.surface))
+            if held is None or held[0] != item.key:
+                return None
+            if held[1] is not None:
+                found.append(held[1])
+        return tuple(found)
+
+    def fill_steps(self, project: StoreProject, version_uid: str, *,
+                   types: Iterable[str] = REFIT_SOURCES
+                   ) -> Generator[None, None, tuple[tuple[str, refit.RefitCheck], ...]]:
+        """:func:`limit_checks_steps` de las superficies de los tipos ``types`` de la versión
+        ``version_uid``, por unidades, guardando en la caché lo de cada una con su clave **si
+        ninguna clave cambió mientras tanto** (las de antes y las de después, iguales). Devuelve,
+        por superficie comprobada, el tipo de su operación y su ``RefitCheck``. Cerrarlo a mitad no
+        guarda nada."""
+        wanted = tuple(types)
+        keys = limit_check_keys(project, version_uid, types=wanted)
+        if not keys.surfaces:
+            return ()
+        yield None
+        found = yield from limit_checks_steps(project, keys.version_uid, types=wanted)
+        if limit_check_keys(project, keys.version_uid, types=wanted) == keys:
+            checked = {check.surface: check for check in found}
+            for item in keys.surfaces:
+                self._held[(str(project.uid), keys.version_uid, item.surface)] = (
+                    item.key, checked.get(item.surface))
+        kinds = {item.surface: item.op_type for item in keys.surfaces}
+        return tuple((kinds.get(check.surface, ""), check) for check in found)
+
+    def clear(self) -> None:
+        """Olvida todo lo guardado."""
+        self._held.clear()
 
 
 def _result_of[T](work: Generator[object, None, T]) -> T:

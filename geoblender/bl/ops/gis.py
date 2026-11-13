@@ -35,7 +35,11 @@ Registra lo que la topografía declara a las specs 004 y 008:
   la puerta de la 008, los pasos de ``gis.masks.store.begin_compile_steps`` y ``compile_run`` en
   un modal con su avance y Esc, y el informe de ganado y perdido y de la búsqueda pendiente) y
   «Exportar las máscaras…» (``geoblender.gis_export_constraint_masks``: la rejilla de clases a
-  GeoTIFF con su leyenda; no es una operación).
+  GeoTIFF con su leyenda; no es una operación). Tras guardar la compilación, en el modal y en la
+  cola, siguen por pasos los de los módulos que miran sus datos contra las máscaras nuevas
+  (``constraint_panels.compile_check_steps``; spec 014, T35; RNF-014-02: la 014, sus superficies
+  fuera del límite vigente): :func:`checked_steps`. Esc durante ellos no deshace la compilación,
+  que ya está guardada: la comprobación se deja sin guardar nada y el resumen lo dice.
 
 (T44) Las declaraciones de procedencia son constantes del módulo, construidas una vez:
 :data:`OPERATION_DEFS` (los once tipos de ``gis.provenance.OPERATION_TYPES``, cada repetible con
@@ -4313,15 +4317,55 @@ def pending_mask_runs() -> list[str]:
     return MASKS_RUNS.pending()
 
 
-def _report_mask_notices(result: object, version_uid: str = "") -> None:
-    """Los avisos de una compilación (``StoredMasks``: el perímetro tomado del límite legal, una
-    zona fuera de la rejilla…), al registro de Blender en el idioma de Geoblender; y, de la versión
-    ``version_uid`` recompilada, lo que dicen los módulos que miran sus datos contra las máscaras
-    nuevas (``constraint_panels.compile_check_lines``; la 014: RF-014-26)."""
-    found = getattr(result, "result", None)
+@dataclass(frozen=True, slots=True)
+class Checked:
+    """El resultado del último paso de :func:`checked_steps`: lo guardado de la compilación
+    (``StoredMasks``) y las líneas que dan de la versión recompilada los módulos que miran sus datos
+    contra las máscaras nuevas (``constraint_panels.Line``)."""
+
+    stored: Any
+    lines: tuple[Any, ...]
+
+
+def checked_steps(steps: Iterator[Progress], project: Any, version_uid: str,
+                  owner: Any = None) -> Iterator[Progress]:
+    """Los pasos ``steps`` de una compilación de las máscaras de la versión ``version_uid`` y, tras
+    ellos, los de la comprobación de los datos de la versión contra las máscaras nuevas
+    (``constraint_panels.compile_check_steps``; spec 014, T35; RNF-014-02: la 014, las superficies
+    de diseño fuera del límite vigente, RF-014-26), sin que ninguna llamada haga las dos cosas: el
+    paso de la compilación que lleva lo guardado se da sin él (la llamada de su transacción no
+    comprueba nada) y lo guardado queda en ``owner.stored`` (si hay ``owner``); los de la
+    comprobación son de ``constraint_panels.CHECK_PHASE`` (sin nada que comprobar, ninguno) y el
+    último, como el que guardó, lleva :class:`Checked`. ``project`` es el de la compilación o,
+    ``None``, el de la sesión al terminarla (la cola). Si la compilación no acaba con lo guardado,
+    no se comprueba nada."""
+    saved = None
+    for step in steps:
+        if step.result is None:
+            yield step
+            continue
+        saved = step
+        if owner is not None:
+            owner.stored = step.result
+        yield Progress(step.phase, step.done, step.total, step.message)
+    if saved is None:
+        return
+    if project is None:
+        project = project_session.current()
+    lines = yield from constraint_panels.compile_check_steps(project, version_uid)
+    yield Progress(saved.phase, saved.done, saved.total, saved.message,
+                   result=Checked(saved.result, tuple(lines)))
+
+
+def _report_mask_notices(result: object) -> None:
+    """Los avisos de una compilación recalculada en la cola (:class:`Checked`: los de lo guardado,
+    ``StoredMasks``, como el perímetro tomado del límite legal o una zona fuera de la rejilla, y
+    lo que dicen de la versión recompilada los módulos que miran sus datos contra las máscaras
+    nuevas; la 014: RF-014-26), al registro de Blender en el idioma de Geoblender."""
+    found = getattr(getattr(result, "stored", None), "result", None)
     for notice in getattr(found, "notices", None) or ():
         jobs_ops.report_later("WARNING", notice.text(i18n.language()))
-    for line in constraint_panels.compile_check_lines(project_session.current(), version_uid):
+    for line in getattr(result, "lines", None) or ():
         jobs_ops.report_later("WARNING" if line.alert else "INFO", line.text)
 
 
@@ -4335,15 +4379,15 @@ def _mask_name(handle: Any) -> str:
 
 def queue_mask_steps(handle: OperationHandle, steps: Iterator[Progress]) -> None:
     """Pone en la cola de las máscaras los pasos ``steps`` (``Progress``) de la compilación
-    ``handle``, «en curso», y registra su temporizador si no lo estaba."""
+    ``handle``, «en curso», seguidos de los de la comprobación de los datos de su versión contra
+    las máscaras nuevas (:func:`checked_steps`; spec 014, T35), y registra su temporizador si no lo
+    estaba."""
     name = _mask_name(handle)
     version_uid = str(getattr(handle, "version_uid", "") or "")
-
-    def report(result: object) -> None:
-        _report_mask_notices(result, version_uid)
-
     MASKS_RUNS.add(handle.uid, name,
-                   incorporation.RecomputeSteps(handle, name, steps, report=report),
+                   incorporation.RecomputeSteps(handle, name,
+                                                checked_steps(steps, None, version_uid),
+                                                report=_report_mask_notices),
                    status=incorporation.RECOMPUTING)
 
 
@@ -4452,6 +4496,9 @@ class GEOBLENDER_OT_gis_compile_constraints(ProvenanceAwareOperator, _StepsModal
 
     handle: Any = None
     """La operación que empezó (``None`` hasta que empieza)."""
+    stored: Any = None
+    """Lo guardado de la compilación (``None`` hasta que se guarda): desde entonces, solo queda la
+    comprobación de los datos de la versión contra las máscaras nuevas (spec 014, T35)."""
 
     def invoke(self, context: Any, event: Any) -> set[str]:
         """Desde la interfaz, por pasos con el avance y Esc (sin versión activa, la ventana que
@@ -4487,24 +4534,27 @@ class GEOBLENDER_OT_gis_compile_constraints(ProvenanceAwareOperator, _StepsModal
             dialog=self.provenance_dialog, version=version_uid)
         if ready is None:
             return {"CANCELLED"}
-        self.handle = None
+        self.handle = self.stored = None
         self._project = project
-        steps = _compile_steps(self, project, version_uid)
+        steps = checked_steps(_compile_steps(self, project, version_uid), project, version_uid,
+                              self)
         if self.in_steps and getattr(context, "window", None) is not None:
             self._start(context, steps)
             return {"RUNNING_MODAL"}
         self.report_log: list[str] = []
-        stored = _drained(self, steps)
-        if stored is None:
+        found = _drained(self, steps)
+        if found is None:
             return {"CANCELLED"}
-        self._finished(stored)
+        self._finished(found.stored, found.lines)
         return {"FINISHED"}
 
-    def _finished(self, stored: Any) -> None:
+    def _finished(self, stored: Any, checked: Sequence[Any] | None) -> None:
         """Lo que dice la orden al terminar (RF-012-05, 06, 10, 11, 14): el informe de
-        ``constraint_panels.compile_lines`` en la ventana y en el informe de Blender. La lista de
-        la ventana no se vuelve a leer: compilar no cambia las restricciones ni su estado, y leerla
-        con 500 restricciones tarda más de los 0,2 s de una llamada (RNF-012-06)."""
+        ``constraint_panels.compile_lines`` en la ventana y en el informe de Blender, con las
+        líneas de la comprobación de los datos de la versión contra las máscaras nuevas
+        (``checked``; la 014, RF-014-26) o, si se dejó con Esc (``None``), la que lo dice. La lista
+        de la ventana no se vuelve a leer: compilar no cambia las restricciones ni su estado, y
+        leerla con 500 restricciones tarda más de los 0,2 s de una llamada (RNF-012-06)."""
         project, handle = self._project, self.handle
         undo_watch.record(UndoKind.OPERATION, masks_provenance.COMPILE)
         names: tuple[str, ...] = ()
@@ -4520,8 +4570,12 @@ class GEOBLENDER_OT_gis_compile_constraints(ProvenanceAwareOperator, _StepsModal
             else ""
         lines = constraint_panels.compile_lines(stored, revision, names)
         # Lo que dicen de la versión recompilada los módulos que miran sus datos contra las
-        # máscaras nuevas (la 014: las superficies fuera del límite vigente, RF-014-26).
-        lines += constraint_panels.compile_check_lines(project, handle.version_uid)
+        # máscaras nuevas (la 014: las superficies fuera del límite vigente, RF-014-26), ya
+        # calculado por pasos (T35), o que esa comprobación se dejó.
+        if checked is None:
+            lines.append(constraint_panels.Line(self._check_cancelled_text(), alert=True))
+        else:
+            lines += checked
         constraint_panels.show_report(lines)
         for line in lines:
             self._report({"WARNING" if line.alert else "INFO"}, line.text)
@@ -4529,24 +4583,57 @@ class GEOBLENDER_OT_gis_compile_constraints(ProvenanceAwareOperator, _StepsModal
     # --- En pasos (_StepsModal) ---------------------------------------------------------------
 
     def _status_text(self, step: Progress) -> str:
+        if step.phase == constraint_panels.CHECK_PHASE:  # la compilación ya está guardada
+            return tr("Checking the data of the version against the new masks… · Esc: skip the "
+                      "check")
         percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
         return tr("Compiling the constraints… {percent} % · Esc: cancel", percent=percent)
 
     def _cancelled_text(self) -> str:
+        if self.stored is not None:
+            return self._check_cancelled_text()
         return tr("Compilation cancelled: nothing has been left half-done")
+
+    @staticmethod
+    def _check_cancelled_text() -> str:
+        """Lo que se dice si la comprobación de después de guardar se deja (Esc)."""
+        return tr("Check of the data of the version against the new masks skipped: the masks are "
+                  "compiled and saved")
 
     def _error_text(self, exc: GeoblenderError) -> str:
         return error_text(exc)
 
+    def _stop(self, context: Any, *, after: bool = True) -> set[str]:
+        """Esc (o desactivar Geoblender): antes de guardar, cancela la compilación como siempre
+        (no deja nada); después, solo queda la comprobación de los datos de la versión contra las
+        máscaras nuevas (spec 014, T35): se cierran sus pasos (no guardan nada) y la orden termina
+        con el resumen de la compilación y la línea que dice que la comprobación se dejó (sin
+        ``after``, al desactivar, solo esa línea en el informe)."""
+        if self.stored is None:
+            return super()._stop(context, after=after)
+        self._cleanup(context)
+        self.outcome = "FINISHED"
+        if after:
+            self._finished(self.stored, None)
+        else:
+            self._report({"INFO"}, self._check_cancelled_text())
+        return {"FINISHED"}
+
     def _result(self, context: Any, step: Progress) -> set[str] | None:
         if step.result is None:
             if project_session.current() is not getattr(self, "_project", None):
+                if self.stored is not None:  # guardada: se deja la comprobación
+                    return self._stop(context, after=False)
                 return self._fail(context, tr(
                     "The project was closed while the masks were being compiled: nothing has "
                     "been left half-done"))
+            if self.stored is not None and step.phase != constraint_panels.CHECK_PHASE:
+                # El paso que guardó la compilación (su transacción): esta llamada no sigue con la
+                # comprobación (spec 014, T35; RNF-014-02).
+                return {"RUNNING_MODAL"}
             return None
         self._done(context)
-        self._finished(step.result)
+        self._finished(step.result.stored, step.result.lines)
         return {"FINISHED"}
 
     def modal(self, context: Any, event: Any) -> set[str]:

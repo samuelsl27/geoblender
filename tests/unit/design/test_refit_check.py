@@ -15,7 +15,8 @@ RF-014-26; plan 014 A13, §5.3.1; error 46 del análisis).
 
 Sin proyecto, en una rejilla hecha a mano; con proyecto, en una copia de la cantera sintética
 (``quarry_fixtures``, T01) con una cantera de dos superficies creada en V01 y el límite legal
-redibujado **30 m más corto por el este**.
+redibujado **30 m más corto por el este**; y su caché en memoria (``design.store.LimitCheckMemo``,
+spec 014, T35; RNF-014-02), con la clave barata de ``limit_check_keys``.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import dataclasses
 import unittest
 from collections.abc import Iterator
 from typing import Any, ClassVar
+from unittest import mock
 
 import numpy as np
 
@@ -78,6 +80,15 @@ def drive(work: Iterator[Any]) -> Any:
     for found in work:
         pass
     return found
+
+
+def drive_value(work: Iterator[Any]) -> Any:
+    """Lleva unas unidades hasta el final y devuelve lo que devuelven."""
+    while True:
+        try:
+            next(work)
+        except StopIteration as stop:
+            return stop.value
 
 
 def hand_masks() -> Any:
@@ -302,6 +313,98 @@ class LimitChecksTest(qfx.QuarryProjectCase):
         (only,) = store.limit_checks(self.project, self.v1.uid, names=(FINAL,))
         self.assertEqual((only.surface, only.cells), (FINAL, found[FINAL].cells))
         self.assertEqual(store.limit_checks(self.project, self.v1.uid, names=(START,)), ())
+
+    def set_hash(self, name: str, digest: str) -> None:
+        """Cambia el hash de contenido registrado del dato ``name`` de V01 (lo que cambia al
+        reescribir una superficie)."""
+        with self.project.write_transaction() as conn:
+            conn.execute("UPDATE gb_dataset SET content_sha256 = ? WHERE name = ? AND version_uid "
+                         "= ? AND status = 'current'", (digest, name, self.v1.uid))
+
+    def test_c_the_memo_hits_misses_and_follows_its_keys(self) -> None:
+        """RNF-014-02 (spec 014, T35; RF-014-26): la caché de la comprobación
+        (``design.store.LimitCheckMemo``). Vacía, no acierta; llenada por pasos
+        (:meth:`~LimitCheckMemo.fill_steps`, en unidades), da lo mismo que ``limit_checks`` (todas,
+        solo una por su nombre o su uid, ninguna de otra) **sin leer ninguna rejilla**, con el tipo
+        de cada una; cerrada a mitad, o si una clave cambia mientras se llena, no guarda nada. Se
+        invalida sola: con otro hash de una superficie (como al reescribirla) esa no acierta y,
+        repuesto, vuelve a acertar; con las máscaras obsoletas (otra restricción) o recompiladas,
+        nada acierta hasta llenarla otra vez. La clave no lee rejillas y es la misma para una
+        superficie pida quien la pida (``types``)."""
+        memo = store.LimitCheckMemo()
+        self.assertIsNone(memo.lookup(self.project, self.v1.uid))
+        expected = store.limit_checks(self.project, self.v1.uid)
+        self.assertEqual(len(expected), 2)
+        ((final_uid, original),) = self.query(
+            "SELECT uid, content_sha256 FROM gb_dataset WHERE name = ? AND version_uid = ? AND "
+            "status = 'current'", FINAL, self.v1.uid)
+
+        work = memo.fill_steps(self.project, self.v1.uid)
+        next(work)
+        next(work)
+        work.close()  # cerrada a mitad: nada guardado
+        self.assertEqual(len(memo), 0)
+        work = memo.fill_steps(self.project, self.v1.uid)
+        next(work)
+        self.set_hash(FINAL, "0" * 64)  # cambia una clave mientras se llena: nada guardado
+        drive_value(work)
+        self.assertEqual(len(memo), 0)
+        self.set_hash(FINAL, original)
+
+        units = 0
+        work = memo.fill_steps(self.project, self.v1.uid)
+        while True:
+            try:
+                self.assertIsNone(next(work))
+            except StopIteration as stop:
+                found = stop.value
+                break
+            units += 1
+        self.assertGreater(units, 3)
+        self.assertEqual([check for _op_type, check in found], list(expected))
+        self.assertEqual({op_type for op_type, _check in found}, {provenance.QUARRY})
+        surfaces = import_geoblender("design.surfaces")
+        with mock.patch.object(store, "read_surface", side_effect=AssertionError("lee")), \
+                mock.patch.object(surfaces, "read_surface", side_effect=AssertionError("lee")):
+            self.assertEqual(memo.lookup(self.project, self.v1.uid), expected)
+            by_name = {check.surface: check for check in expected}
+            self.assertEqual(memo.lookup(self.project, self.v1.uid, names=(FINAL,)),
+                             (by_name[FINAL],))
+            self.assertEqual(memo.lookup(self.project, self.v1.uid, names=(final_uid,)),
+                             (by_name[FINAL],))
+            self.assertEqual(memo.lookup(self.project, self.v1.uid, names=(START,)), ())
+            self.assertEqual(memo.lookup(self.project, self.v1.uid,
+                                         types=store.REFIT_SOURCES), expected)
+        keys = store.limit_check_keys(self.project, self.v1.uid)
+        self.assertEqual(keys, store.limit_check_keys(self.project, self.v1.code))
+        self.assertEqual(keys.surfaces, store.limit_check_keys(
+            self.project, self.v1.uid, types=store.REFIT_SOURCES).surfaces)
+
+        self.set_hash(FINAL, "f" * 64)  # otra superficie: esa no acierta; la otra, sí
+        self.assertIsNone(memo.lookup(self.project, self.v1.uid))
+        self.assertIsNone(memo.lookup(self.project, self.v1.uid, names=(FINAL,)))
+        self.assertEqual(memo.lookup(self.project, self.v1.uid, names=(EXPLOITATION,)),
+                         (by_name[EXPLOITATION],))
+        self.set_hash(FINAL, original)
+        self.assertEqual(memo.lookup(self.project, self.v1.uid), expected)
+
+        (legal,) = [item for item in self.stored_constraints() if item.code == "concesion"]
+        self.clock.advance(minutes=1)
+        cp.edit_constraints(self.project, [dataclasses.replace(
+            legal, parts=((cfx.rectangle(*qfx.LEGAL_LOCAL),),))])  # el límite de antes
+        self.assertIsNone(memo.lookup(self.project, self.v1.uid))  # máscaras obsoletas
+        self.clock.advance(minutes=1)
+        drive(access.ensure_masks_steps(self.project, self.v1.uid))
+        self.assertIsNone(memo.lookup(self.project, self.v1.uid))  # recompiladas: otras
+        found = drive_value(memo.fill_steps(self.project, self.v1.uid))
+        self.assertEqual([check.cells for _op_type, check in found], [0, 0])
+        self.assertEqual(memo.lookup(self.project, self.v1.uid),
+                         tuple(check for _op_type, check in found))
+        memo.clear()
+        self.assertEqual(len(memo), 0)
+        self.assertIsNone(memo.lookup(self.project, self.v1.uid))
+        self.assertEqual(drive_value(memo.fill_steps(self.project, self.v2.uid)), ())
+        self.assertEqual(memo.lookup(self.project, self.v2.uid), ())
 
 
 if __name__ == "__main__":
