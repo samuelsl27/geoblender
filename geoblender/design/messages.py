@@ -736,6 +736,34 @@ CATALOG: tuple[Message, ...] = (
         "Zona {zone}: {area} ha, {volume} m³, centro en x = {x} m, y = {y} m.",
         "note",
     ),
+    # Lo que queda tras «explotación hasta la final» en las zonas tratadas (T57, hallazgo F-19):
+    # la cota de ancla inmediatamente por encima de la final deja menos de un banco y el aviso no
+    # vuelve a ofrecer el modo (RF-014-17, RF-014-18).
+    Message(
+        "des.quarry_unsplit_remaining",
+        "After «Exploitation down to the final», the exploitation still does not reach the final "
+        "surface in {zones} zones within the treated ones: {area} ha and {volume} m³ of doubled "
+        "surface over {threshold} m on unexploited terrain, in zones of more than {min_area} ha. "
+        "It is less than one bench height: the mode does not go below the anchor level "
+        "immediately above the final, and there that level leaves the terrain unexploited.",
+        "Tras «Explotación hasta la final», la explotación sigue sin llegar a la final en {zones} "
+        "zonas dentro de las tratadas: {area} ha y {volume} m³ de desdoblado de más de "
+        "{threshold} m sobre terreno sin explotar, en zonas de más de {min_area} ha. Es menos de "
+        "una altura de banco: el modo no baja de la cota de ancla inmediatamente por encima de la "
+        "final, y allí esa cota deja el terreno sin explotar.",
+        "warning",
+        count="zones",
+        one_msgid="After «Exploitation down to the final», the exploitation still does not reach "
+        "the final surface in {zones} zone within the treated ones: {area} ha and {volume} m³ of "
+        "doubled surface over {threshold} m on unexploited terrain, in a zone of more than "
+        "{min_area} ha. It is less than one bench height: the mode does not go below the anchor "
+        "level immediately above the final, and there that level leaves the terrain unexploited.",
+        one_es="Tras «Explotación hasta la final», la explotación sigue sin llegar a la final en "
+        "{zones} zona dentro de las tratadas: {area} ha y {volume} m³ de desdoblado de más de "
+        "{threshold} m sobre terreno sin explotar, en una zona de más de {min_area} ha. Es menos "
+        "de una altura de banco: el modo no baja de la cota de ancla inmediatamente por encima de "
+        "la final, y allí esa cota deja el terreno sin explotar.",
+    ),
     Message(
         "des.quarry_to_final",
         "«Exploitation down to the final» in {zones} zones ({area} ha): {volume} m³ pass from "

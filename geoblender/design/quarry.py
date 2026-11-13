@@ -91,7 +91,9 @@
 - :func:`unsplit_zones_steps` (T18; RF-014-17; A9): **el aviso** de que la explotación no llega a
   la final (error 60): el desdoblado de más del umbral sobre terreno sin explotar (la explotación
   a menos de :data:`UNEXPLOITED_M` del terreno) en zonas conexas de más del área mínima
-  (:class:`UnsplitZones`, :class:`UnsplitZone`: área, volumen y centro de cada una).
+  (:class:`UnsplitZones`, :class:`UnsplitZone`: área, volumen y centro de cada una). Tras el modo,
+  lo que queda dentro de las celdas tratadas tiene su propio aviso, que no vuelve a ofrecerlo
+  (T57, hallazgo F-19).
 - :func:`to_final_steps` (T18; RF-014-18; A9): **«explotación hasta la final»** en unas celdas
   (:class:`ToFinal`): la explotación baja con bancos de su perfil anclados a sus cotas hasta la
   cota de su ancla inmediatamente por encima de la final, ``T = a + h·⌈(final − a)/h⌉``, sin
@@ -1959,11 +1961,11 @@ def _band_rows(geometry: Grid) -> int:
 
 
 def _zone_units(labels: Labels, delta: np.ndarray, geometry: Grid,
-                chosen: Sequence[int] | None = None
+                chosen: Sequence[int] | None = None, number_from: int = 1
                 ) -> Generator[None, None, tuple[UnsplitZone, ...]]:
     """Las unidades (una por banda de filas) de las zonas de las componentes ``labels`` (todas, o
-    las etiquetas ``chosen`` en su orden), numeradas desde 1, con el volumen de ``delta`` (m) en
-    sus celdas y su centro absoluto."""
+    las etiquetas ``chosen`` en su orden), numeradas desde ``number_from``, con el volumen de
+    ``delta`` (m) en sus celdas y su centro absoluto."""
     count = labels.count + 1
     row_sum = np.zeros(count)
     col_sum = np.zeros(count)
@@ -1980,7 +1982,8 @@ def _zone_units(labels: Labels, delta: np.ndarray, geometry: Grid,
                              minlength=count)
         yield None
     found = []
-    for number, index in enumerate(range(1, count) if chosen is None else chosen, start=1):
+    for number, index in enumerate(range(1, count) if chosen is None else chosen,
+                                   start=number_from):
         cells = int(labels.sizes[index - 1])
         x = geometry.west + (col_sum[index] / cells + 0.5) * geometry.dx
         y = geometry.north - (row_sum[index] / cells + 0.5) * geometry.dy
@@ -1989,12 +1992,26 @@ def _zone_units(labels: Labels, delta: np.ndarray, geometry: Grid,
     return tuple(found)
 
 
+def _zones_area_ha(zones: Sequence[UnsplitZone]) -> float:
+    """El área de ``zones`` (ha)."""
+    return math.fsum(zone.area_m2 for zone in zones) / _HECTARE_M2
+
+
+def _zones_volume_m3(zones: Sequence[UnsplitZone]) -> float:
+    """El desdoblado de ``zones`` (m³)."""
+    return math.fsum(zone.volume_m3 for zone in zones)
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class UnsplitZones:
     """**El aviso** de que la explotación no llega a la final (A9; RF-014-17, error 60):
     ``candidates``, las celdas de desdoblado con más del umbral de diferencia sobre terreno sin
-    explotar (máscara nueva); las ``zones`` avisadas (:class:`UnsplitZone`: las componentes
-    4-conexas de ``candidates`` de más del área mínima, numeradas desde 1) y sus celdas
+    explotar (máscara nueva); las ``zones`` avisadas que ofrecen «explotación hasta la final»
+    (:class:`UnsplitZone`: las componentes 4-conexas de ``candidates`` de más del área mínima,
+    numeradas desde 1); con el modo ya aplicado, las que quedan **dentro de las celdas tratadas**
+    (``remaining``, T57, hallazgo F-19: las componentes de ``candidates`` en esas celdas, con la
+    misma regla, numeradas detrás de ``zones``; las ``zones`` son entonces solo las de fuera de
+    ellas), que tienen su propio aviso y no vuelven a ofrecer el modo; las celdas de unas y otras
     (``warned``); y el umbral (``threshold_m``, m) y el área mínima (``min_area_ha``, ha) con que
     se buscaron."""
 
@@ -2003,37 +2020,56 @@ class UnsplitZones:
     warned: np.ndarray
     threshold_m: float
     min_area_ha: float
+    remaining: tuple[UnsplitZone, ...] = ()
 
     @property
     def area_ha(self) -> float:
-        """El área de las zonas avisadas (ha)."""
-        return math.fsum(zone.area_m2 for zone in self.zones) / _HECTARE_M2
+        """El área de las zonas avisadas que ofrecen el modo, ``zones`` (ha)."""
+        return _zones_area_ha(self.zones)
 
     @property
     def volume_m3(self) -> float:
-        """El desdoblado de las zonas avisadas (m³)."""
-        return math.fsum(zone.volume_m3 for zone in self.zones)
+        """El desdoblado de las zonas avisadas que ofrecen el modo, ``zones`` (m³)."""
+        return _zones_volume_m3(self.zones)
+
+    @property
+    def remaining_area_ha(self) -> float:
+        """El área de lo que queda tras el modo dentro de las celdas tratadas, ``remaining``
+        (ha)."""
+        return _zones_area_ha(self.remaining)
+
+    @property
+    def remaining_volume_m3(self) -> float:
+        """El desdoblado de lo que queda tras el modo dentro de las celdas tratadas,
+        ``remaining`` (m³)."""
+        return _zones_volume_m3(self.remaining)
 
     @property
     def notices(self) -> tuple[str, ...]:
-        """El aviso en español: ``des.quarry_unsplit_zones`` (las zonas, su área y su volumen, el
-        umbral y el área mínima, y el modo que lo resuelve) y una ``des.quarry_unsplit_zone`` por
-        zona (área, volumen y centro al cm); ``()`` sin zonas avisadas."""
-        if not self.zones:
-            return ()
-        lines = [render("des.quarry_unsplit_zones", zones=len(self.zones),
-                        area=round(self.area_ha, 2), volume=round(self.volume_m3, 1),
-                        threshold=self.threshold_m, min_area=self.min_area_ha)]
-        lines.extend(render("des.quarry_unsplit_zone", zone=zone.zone,
-                            area=round(zone.area_ha, 2), volume=round(zone.volume_m3, 1),
-                            x=round(zone.x, 2), y=round(zone.y, 2)) for zone in self.zones)
+        """Los avisos en español: ``des.quarry_unsplit_zones`` de las ``zones`` (las zonas, su
+        área y su volumen, el umbral y el área mínima, y el modo que lo resuelve) y
+        ``des.quarry_unsplit_remaining`` de las ``remaining`` (lo mismo de lo que queda tras el
+        modo, y por qué: menos de una altura de banco, sin volver a ofrecerlo; T57), cada uno
+        seguido de una ``des.quarry_unsplit_zone`` por zona (área, volumen y centro al cm); ``()``
+        sin zonas avisadas."""
+        lines: list[str] = []
+        for code, zones in (("des.quarry_unsplit_zones", self.zones),
+                            ("des.quarry_unsplit_remaining", self.remaining)):
+            if not zones:
+                continue
+            lines.append(render(code, zones=len(zones), area=round(_zones_area_ha(zones), 2),
+                                volume=round(_zones_volume_m3(zones), 1),
+                                threshold=self.threshold_m, min_area=self.min_area_ha))
+            lines.extend(render("des.quarry_unsplit_zone", zone=zone.zone,
+                                area=round(zone.area_ha, 2), volume=round(zone.volume_m3, 1),
+                                x=round(zone.x, 2), y=round(zone.y, 2)) for zone in zones)
         return tuple(lines)
 
 
 def unsplit_zones_steps(final: np.ndarray, exploitation: np.ndarray, start: np.ndarray,
                         classes: Classification, geometry: Grid, threshold_m: float | None,
-                        min_area_ha: float | None, *, budget_s: float = STEP_BUDGET_S
-                        ) -> Iterator[Progress]:
+                        min_area_ha: float | None, *, treated: np.ndarray | None = None,
+                        budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
     """**El aviso de A9** (RF-014-17, error 60; D-5) sobre las dos superficies ya ordenadas
     ``final`` y ``exploitation`` (m, de la forma de ``geometry``) y su clasificación ``classes``
     (:func:`classify_steps`), por pasos de ``budget_s`` como mucho; el último ``Progress`` (fase
@@ -2046,6 +2082,14 @@ def unsplit_zones_steps(final: np.ndarray, exploitation: np.ndarray, start: np.n
     y su centro. El desdoblado bajo el umbral o justo en él, sobre terreno ya excavado o en zonas
     de esa área o más pequeñas no se avisa: cuenta en la clasificación.
 
+    Con ``treated`` (máscara de ``geometry``: las celdas en que ya se aplicó «explotación hasta la
+    final», :attr:`ToFinal.target`; T57, hallazgo F-19), las celdas del aviso se agrupan en zonas
+    por separado fuera y dentro de ellas, con el mismo umbral y la misma área mínima: las de fuera
+    son las ``zones`` de siempre y las de dentro, ``remaining`` (lo que queda tras el modo: menos
+    de una altura de banco, porque la explotación no baja allí de la cota de ancla
+    inmediatamente por encima de la final, RF-014-18), con su propio aviso. Sin ``treated``, todo
+    como antes.
+
     Rechazos al llamar: el umbral y el área mínima, como sus parámetros (``check_quarry_param``:
     ``des.quarry_param_missing`` o ``des.quarry_param_range``); ``ValueError`` (error del programa)
     si las rejillas no son de la forma de ``geometry``. Ninguna entrada se modifica y no se
@@ -2055,20 +2099,24 @@ def unsplit_zones_steps(final: np.ndarray, exploitation: np.ndarray, start: np.n
     upper = np.asarray(final, dtype=np.float64)
     lower = np.asarray(exploitation, dtype=np.float64)
     base = np.asarray(start, dtype=np.float64)
+    done = None if treated is None else np.asarray(treated, dtype=bool)
     for label, grid in (("la superficie final", upper), ("la superficie de explotación", lower),
                         ("la superficie de partida", base), ("la clasificación", classes.grid)):
         _same_shape(label, grid, geometry.shape)
-    work = _unsplit_units(upper, lower, base, classes.grid, geometry, threshold, min_area)
+    if done is not None:
+        _same_shape("las celdas tratadas", done, geometry.shape)
+    work = _unsplit_units(upper, lower, base, classes.grid, geometry, threshold, min_area, done)
     return pace_progress(work, budget_s, phase="unsplit",
                          running="Buscando el desdoblado sobre terreno sin explotar…",
                          finished="Desdoblado sobre terreno sin explotar, medido")
 
 
 def _unsplit_units(final: np.ndarray, exploitation: np.ndarray, start: np.ndarray,
-                   codes: np.ndarray, geometry: Grid, threshold: float, min_area: float
-                   ) -> Generator[None, None, UnsplitZones]:
+                   codes: np.ndarray, geometry: Grid, threshold: float, min_area: float,
+                   treated: np.ndarray | None = None) -> Generator[None, None, UnsplitZones]:
     """Las unidades de :func:`unsplit_zones_steps`: las celdas del aviso y su ``Δ``, por bandas
-    de filas; sus componentes; y las zonas avisadas."""
+    de filas; sus componentes y las zonas avisadas (con ``treated``, fuera y dentro de esas
+    celdas)."""
     candidates = np.zeros(final.shape, dtype=bool)
     delta = np.zeros(final.shape)
     step = _band_rows(geometry)
@@ -2081,14 +2129,29 @@ def _unsplit_units(final: np.ndarray, exploitation: np.ndarray, start: np.ndarra
         candidates[rows] = found
         delta[rows] = np.where(found, band, 0.0)
         yield None
-    labels: Labels = yield from _label_units(candidates)
+    if treated is None:
+        zones, warned = yield from _warned_units(candidates, delta, geometry, min_area)
+        return UnsplitZones(zones, candidates, warned, threshold, min_area)
+    zones, warned = yield from _warned_units(candidates & ~treated, delta, geometry, min_area)
+    remaining, left = yield from _warned_units(candidates & treated, delta, geometry, min_area,
+                                               number_from=len(zones) + 1)
+    return UnsplitZones(zones, candidates, warned | left, threshold, min_area, remaining)
+
+
+def _warned_units(mask: np.ndarray, delta: np.ndarray, geometry: Grid, min_area: float,
+                  number_from: int = 1
+                  ) -> Generator[None, None, tuple[tuple[UnsplitZone, ...], np.ndarray]]:
+    """Las unidades de las zonas avisadas de las celdas del aviso ``mask``: sus componentes
+    4-conexas de más de ``min_area`` (ha, con :data:`_AREA_RTOL`), numeradas desde
+    ``number_from``, con el volumen de ``delta``, y sus celdas (máscara nueva)."""
+    labels: Labels = yield from _label_units(mask)
     areas = labels.sizes * geometry.cell_area
     limit = min_area * _HECTARE_M2 * (1.0 + _AREA_RTOL)
     chosen = [index for index in range(1, labels.count + 1) if areas[index - 1] > limit]
     keep = np.zeros(labels.count + 1, dtype=bool)
     keep[chosen] = True
-    zones = yield from _zone_units(labels, delta, geometry, chosen)
-    return UnsplitZones(zones, candidates, keep[labels.grid], threshold, min_area)
+    zones = yield from _zone_units(labels, delta, geometry, chosen, number_from)
+    return zones, keep[labels.grid]
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -2334,7 +2397,8 @@ class QuarryOutcome:
     desdoblado sobre terreno sin explotar que queda (``unsplit``, :class:`UnsplitZones`;
     RF-014-17), «explotación hasta la final» aplicada (``to_final``, :class:`ToFinal`; ``None``
     sin el modo) y el ``message`` de la operación. Con el modo, la clasificación, las cifras y el
-    aviso son los de la explotación bajada."""
+    aviso son los de la explotación bajada, y lo que queda dentro de las celdas tratadas va en
+    ``unsplit.remaining``, con su aviso (T57)."""
 
     order: Order
     final: SideOutcome
@@ -2373,7 +2437,8 @@ class QuarryOutcome:
     @property
     def notices(self) -> tuple[str, ...]:
         """Los avisos y las notas en español: el de desdoblado sobre terreno sin explotar con sus
-        zonas (RF-014-17) y, con «explotación hasta la final», lo que pasó a la explotación."""
+        zonas (RF-014-17; con el modo, el de fuera de las celdas tratadas y el de lo que queda
+        dentro, T57) y, con «explotación hasta la final», lo que pasó a la explotación."""
         found = self.unsplit.notices
         if self.to_final is not None:
             found = (*found, self.to_final.notice)
@@ -2422,7 +2487,8 @@ def quarry_steps(job: QuarryJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator
        avisadas o en las celdas del aviso dentro de los polígonos de ``job.to_final_zones``, la
        explotación bajada con el perfil, el ancla y la métrica del lado de explotación
        (:func:`to_final_steps`, RF-014-18), el invariante otra vez, la clasificación, el aviso de
-       lo que queda y la cifra ``des.to_final_m3`` (:func:`to_final_figures`).
+       lo que queda (dentro de las celdas tratadas, el suyo, que no vuelve a ofrecer el modo; T57)
+       y la cifra ``des.to_final_m3`` (:func:`to_final_figures`).
 
     ``ValueError`` (error del programa) al llamar con los de :func:`side_steps` de cada lado, si
     las zonas de relleno no son de la rejilla o si los polígonos de «explotación hasta la final»
@@ -2492,7 +2558,8 @@ def _quarry_work(job: QuarryJob, first: Iterator[Progress], second: Iterator[Pro
             job.min_thickness_m, fill_zones=job.fill_zones, budget_s=budget_s))
         unsplit = yield from forward(unsplit_zones_steps(
             ordered.final, to_final.exploitation, start, classes, geometry,
-            job.unsplit_threshold_m, job.unsplit_min_area_ha, budget_s=budget_s))
+            job.unsplit_threshold_m, job.unsplit_min_area_ha, treated=to_final.target,
+            budget_s=budget_s))
     figures = classification_figures(name, classes)
     if to_final is not None:
         figures = (*figures, *to_final_figures(name, to_final))

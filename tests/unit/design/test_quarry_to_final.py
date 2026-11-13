@@ -40,6 +40,7 @@ seeds_mod = import_geoblender("design.seeds")
 messages = import_geoblender("design.messages")
 envelopes = import_geoblender("design.envelopes")
 provenance = import_geoblender("design.provenance")
+store = import_geoblender("design.store")
 figures_module = import_geoblender("core.provenance.figures")
 project_model = import_geoblender("core.project.model")
 gis_grid = import_geoblender("gis.grid")
@@ -289,6 +290,59 @@ class UnsplitZonesTest(unittest.TestCase):
             messages.render("des.quarry_unsplit_zone", zone=2, area=0.25, volume=8_125.0,
                             x=500_355.0, y=4_400_035.0)])
         self.assertEqual(zones_of(self.case, min_area_ha=1000.0).notices, ())
+
+    def test_what_is_left_in_the_treated_cells_has_its_own_warning(self) -> None:
+        """RF-014-17, RF-014-18, HU-014-4 (T57, hallazgo F-19): con las celdas donde ya se aplicó
+        «explotación hasta la final» (``treated``: ``M`` y ``S``), las celdas del aviso se buscan
+        por separado dentro y fuera de ellas, con el mismo umbral y la misma área mínima: fuera,
+        ``W`` (zona 1), con el aviso que ofrece el modo; dentro, ``M`` (zona 2, numerada detrás) en
+        ``remaining``, con el aviso de lo que queda tras el modo (menos de una altura de banco: la
+        cota de ancla inmediatamente por encima de la final), que no lo ofrece; ``S`` no llega al
+        área mínima. Las celdas avisadas son las de las dos; sin ``treated``, todo como antes."""
+        treated = box("M") | box("S")
+        found = zones_of(self.case, treated=treated)
+        self.assertEqual([(zone.zone, zone.cells) for zone in found.zones], [(1, 625)])
+        self.assertEqual([(zone.zone, zone.cells) for zone in found.remaining], [(2, 5_000)])
+        np.testing.assert_array_equal(found.candidates, box("M") | box("S") | box("W"))
+        np.testing.assert_array_equal(found.warned, box("M") | box("W"))
+        self.assertEqual((found.area_ha, found.volume_m3), (0.25, 8_125.0))
+        self.assertEqual((found.remaining_area_ha, found.remaining_volume_m3), (2.0, 200_000.0))
+        values = {"threshold": 1.0, "min_area": 0.2}
+        left = messages.render("des.quarry_unsplit_remaining", zones=1, area=2.0,
+                               volume=200_000.0, **values)
+        self.assertEqual(found.notices, (
+            messages.render("des.quarry_unsplit_zones", zones=1, area=0.25, volume=8_125.0,
+                            **values),
+            messages.render("des.quarry_unsplit_zone", zone=1, area=0.25, volume=8_125.0,
+                            x=500_355.0, y=4_400_035.0),
+            left,
+            messages.render("des.quarry_unsplit_zone", zone=2, area=2.0, volume=200_000.0,
+                            x=500_120.0, y=4_400_130.0)))
+        self.assertIn("Use «Explotación hasta la final»", found.notices[0])
+        self.assertEqual(left, "Tras «Explotación hasta la final», la explotación sigue sin llegar "
+                               "a la final en 1 zona dentro de las tratadas: 2 ha y 200000 m³ de "
+                               "desdoblado de más de 1 m sobre terreno sin explotar, en una zona "
+                               "de más de 0,2 ha. Es menos de una altura de banco: el modo no baja "
+                               "de la cota de ancla inmediatamente por encima de la final, y allí "
+                               "esa cota deja el terreno sin explotar.")
+        english = messages.render("des.quarry_unsplit_remaining", language="en", zones=2,
+                                  area=2.0, volume=200_000.0, **values)
+        self.assertIn("still does not reach the final surface in 2 zones within the treated ones",
+                      english)
+        self.assertIn("less than one bench height", english)
+        for language in ("es", "en"):
+            for zones in (1, 2):
+                with self.subTest(language=language, zones=zones):
+                    text = messages.render("des.quarry_unsplit_remaining", language=language,
+                                           zones=zones, area=2.0, volume=1.0, **values)
+                    self.assertNotIn("Use «", text)
+                    self.assertNotIn("«Use", text)
+        plain = zones_of(self.case)
+        self.assertEqual(plain.remaining, ())
+        self.assertEqual(zones_of(self.case, treated=np.zeros(GRID.shape, bool)).notices,
+                         plain.notices)
+        with self.assertRaises(ValueError):
+            zones_of(self.case, treated=treated[:, :10])
 
     def test_by_steps_and_closing(self) -> None:
         """Por pasos (fase ``unsplit``; solo el último lleva el resultado); cerrar a mitad no deja
@@ -610,15 +664,21 @@ class QuarryToFinalTest(unittest.TestCase):
 
     def test_after_the_mode_it_classifies_again_and_warns_what_is_left(self) -> None:
         """La clasificación se rehace con la explotación bajada (el desdoblado baja en los
-        190.000 m³ que pasan) y el aviso dice lo que queda (solo ``W``: «en 1 zona», T51); el
+        190.000 m³ que pasan) y el aviso dice lo que queda (solo ``W``, «en 1 zona», T51): ``W``
+        es de las zonas tratadas y queda menos de una altura de banco (3,25 m de 10 m), así que su
+        aviso es el de lo que queda tras el modo, sin volver a ofrecerlo (T57, hallazgo F-19); el
         invariante se cumple y los avisos dicen lo que pasó."""
         outcome = self.warned
         np.testing.assert_array_equal(outcome.classes.grid,
                                       classify(self.case, outcome.exploitation_grid).grid)
         self.assertEqual(outcome.classes.total.unsplit_m3,
                          self.none.classes.total.unsplit_m3 - 190_000.0)
-        self.assertEqual([zone.cells for zone in outcome.unsplit.zones], [625])
-        self.assertIn("no llega a la final en 1 zona: 0,25 ha", outcome.unsplit.notices[0])
+        self.assertEqual(outcome.unsplit.zones, ())
+        self.assertEqual([zone.cells for zone in outcome.unsplit.remaining], [625])
+        np.testing.assert_array_equal(outcome.unsplit.warned, box("W"))
+        self.assertIn("sigue sin llegar a la final en 1 zona dentro de las tratadas: 0,25 ha",
+                      outcome.unsplit.notices[0])
+        self.assertNotIn("Use «", outcome.unsplit.notices[0])
         quarry.check_order("Cantera a mano", outcome.final_grid, outcome.exploitation_grid,
                            self.case["terrain"], GRID)
         note = messages.render("des.quarry_to_final", zones=2, area=2.25, volume=190_000.0)
@@ -653,6 +713,54 @@ class QuarryToFinalTest(unittest.TestCase):
         self.assertAlmostEqual(found.volume_m3, expected, delta=1e-6)
         self.assertAlmostEqual(dict(found.sectors)[SECTORS[0]], expected, delta=1e-6)
         self.assertEqual(dict(found.sectors)[SECTORS[1]], 0.0)
+
+    def test_f19_inside_the_treated_zones_the_mode_is_not_offered_again(self) -> None:
+        """RF-014-17, RF-014-18, HU-014-4, CE-014-05 (T57, hallazgo F-19; E4 de la verificación
+        única, en pequeño): con «las de una capa» que cubre la mitad oeste de ``M``, ``S`` y ``W``,
+        lo que queda dentro de las zonas tratadas es ``W`` (su cota de ancla, 195 m, está por
+        encima del terreno: queda 3,25 m, menos de un banco de 10 m) y se avisa como lo que queda
+        tras el modo, sin ofrecerlo; fuera de ellas, la mitad este de ``M`` (columnas 62 a 109,
+        tras las dos de la transición: 2.400 celdas, 0,96 ha y 96.000 m³) se avisa como siempre,
+        ofreciendo el modo. El resumen de la cantera (``store.quarry_notices``) dice lo mismo, con
+        sus valores como números, antes de lo que pasa a la explotación."""
+        layer = LAYER_ZONES | box("W")
+        _steps, outcome = run(self.case, request=request(
+            to_final="layer", to_final_layer="gis_fea_hasta_la_final"), to_final_zones=layer)
+        np.testing.assert_array_equal(outcome.to_final.target,
+                                      (box("M") & LAYER_ZONES) | box("S") | box("W"))
+        np.testing.assert_array_equal(outcome.exploitation_grid[box("W")], 194.25)
+        east = box("M") & (np.indices(GRID.shape)[1] >= 62)
+        unsplit = outcome.unsplit
+        self.assertEqual([(zone.zone, zone.cells, zone.area_m2, zone.volume_m3, zone.x, zone.y)
+                          for zone in unsplit.zones],
+                         [(1, 2_400, 9_600.0, 96_000.0, 500_172.0, 4_400_130.0)])
+        self.assertEqual([(zone.zone, zone.cells, zone.volume_m3, zone.x, zone.y)
+                          for zone in unsplit.remaining],
+                         [(2, 625, 8_125.0, 500_355.0, 4_400_035.0)])
+        np.testing.assert_array_equal(unsplit.warned, east | box("W"))
+        warning, _zone, left, _left_zone, moved = outcome.notices
+        self.assertIn("Use «Explotación hasta la final»", warning)
+        self.assertTrue(left.startswith("Tras «Explotación hasta la final», la explotación sigue "
+                                         "sin llegar a la final en 1 zona dentro de las tratadas"),
+                        left)
+        self.assertIn("menos de una altura de banco", left)
+        self.assertNotIn("Use «", left)
+        self.assertEqual(moved, outcome.to_final.notice)
+        parts = SimpleNamespace(start=SimpleNamespace(values=self.case["terrain"]), floors=None,
+                                conserve=(), corridors=None, seeds={})
+        found = store.quarry_notices(request(), SimpleNamespace(grid=GRID), parts, 3, outcome,
+                                     compared=True)
+        self.assertEqual([notice.code for notice in found], [
+            "des.quarry_unsplit_zones", "des.quarry_unsplit_zone",
+            "des.quarry_unsplit_remaining", "des.quarry_unsplit_zone", "des.quarry_to_final"])
+        self.assertEqual(found[2].values, {"zones": 1, "area": 0.25, "volume": 8_125.0,
+                                           "threshold": 1.0, "min_area": 0.2})
+        self.assertEqual(found[3].values, {"zone": 2, "area": 0.25, "volume": 8_125.0,
+                                           "x": 500_355.0, "y": 4_400_035.0})
+        self.assertEqual(found[0].values["zones"], 1)
+        self.assertEqual(found[2].severity, "warning")
+        self.assertIn("Use «", messages.render(found[0].code, **found[0].values))
+        self.assertNotIn("Use «", messages.render(found[2].code, **found[2].values))
 
     def test_the_anchor_of_the_exploitation_side(self) -> None:
         """Las cotas de ancla son las del lado de explotación: con una rejilla de anclas a 124 m,

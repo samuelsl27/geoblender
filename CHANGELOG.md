@@ -153,7 +153,11 @@ cantera con dos superficies, revise la clasificación y la cree en menos de 20 m
     la cifra tecleada en ha), **se avisa** con cada zona, y **«Explotación hasta la final»**
     (en todas las zonas avisadas o en las de una capa) la baja con los bancos de su perfil hasta la
     cota de su ancla inmediatamente por encima de la final y dice cuánto pasa del desdoblado a la
-    explotación. Se niega a calcular con un sector del recinto sin búsqueda de intocables vigente.
+    explotación. Lo que aún queda dentro de las zonas tratadas (menos de una altura de banco: la
+    cota de ancla inmediatamente por encima de la final deja allí el terreno sin explotar) se avisa
+    con un aviso propio que lo dice y ya no vuelve a recomendar el modo (lo decidió Samuel el
+    13/11/2026; su verificación encontró que el aviso se repetía tal cual); fuera de ellas, como
+    siempre. Se niega a calcular con un sector del recinto sin búsqueda de intocables vigente.
   - **Transiciones con el terreno no afectado**: une una superficie de diseño (la seleccionada) con el
     terreno del borde de lo que mueve, sin paredes más empinadas que el ángulo de transición (sin
     valor por defecto), y mide el **salto creado** de cada pareja del borde como el salto con el diseño

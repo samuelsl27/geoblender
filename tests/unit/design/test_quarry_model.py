@@ -61,6 +61,7 @@ QUARRY_CODES: dict[str, str] = {
     "des.quarry_order_broken": "error",        # RF-014-14
     "des.quarry_unsplit_zones": "warning",     # RF-014-17
     "des.quarry_unsplit_zone": "note",         # RF-014-17
+    "des.quarry_unsplit_remaining": "warning",  # RF-014-17, RF-014-18 (T57: lo que queda)
     "des.quarry_final_exact": "error",         # RF-014-12 (T45)
     "des.quarry_exploitation_exact": "error",  # RF-014-12 (T45)
     "des.floor_overlap": "error",              # RF-014-06
@@ -407,8 +408,8 @@ class QuarryTextsTest(unittest.TestCase):
         self.assertIn("in 1 zone (0.5 ha)", messages.render(
             "des.quarry_to_final", language="en", zones=1, area=0.5, volume=9_000.0))
         for language in ("es", "en"):
-            for code in ("des.quarry_unsplit_zones", "des.quarry_to_final",
-                         "des.conserve_moved"):
+            for code in ("des.quarry_unsplit_zones", "des.quarry_unsplit_remaining",
+                         "des.quarry_to_final", "des.conserve_moved"):
                 with self.subTest(code=code, language=language):
                     text = messages.render(code, language=language, zones=1, parts=1)
                     self.assertNotRegex(text, r"\b1 (zonas|zones|partes|parts)\b")

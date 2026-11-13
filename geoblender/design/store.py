@@ -2340,11 +2340,13 @@ def quarry_notices(request: QuarryRequest, masks: access.MaskSet, parts: QuarryP
     ``parts.joined``, T42; zonas a conservar sin dato, corredores más largos que su eje más su
     ancho; los de la vista previa), las semillas de la 013 de un lado que caen fuera de la
     coronación y de las zonas a sostener, por grupos (RF-014-03), el desdoblado sobre terreno sin
-    explotar, por zonas (RF-014-17), «explotación hasta la final» (RF-014-18), el salto creado de
-    sus superficies (``created``: los avisos de :func:`_created_step_steps`, T56, RF-014-21) y, si
-    sus lados no se compararon con los de una cantera anterior (sin ``compared``), la nota de la
-    013 que lo dice, una sola vez y con el nombre de la cantera (``des.magnitude_no_reference``;
-    T51: no una por lado). Con sus valores como números (``preview.Notice``)."""
+    explotar, por zonas (RF-014-17; tras el modo, el de lo que queda dentro de las celdas
+    tratadas va aparte y no vuelve a ofrecerlo, T57), «explotación hasta la final» (RF-014-18), el
+    salto creado de sus superficies (``created``: los avisos de :func:`_created_step_steps`, T56,
+    RF-014-21) y, si sus lados no se compararon con los de una cantera anterior (sin
+    ``compared``), la nota de la 013 que lo dice, una sola vez y con el nombre de la cantera
+    (``des.magnitude_no_reference``; T51: no una por lado). Con sus valores como números
+    (``preview.Notice``)."""
     geometry = masks.grid
     start = parts.start.values
     found = list(_quarry_warnings(start, parts.floors, parts.conserve, parts.corridors,
@@ -2356,13 +2358,18 @@ def quarry_notices(request: QuarryRequest, masks: access.MaskSet, parts: QuarryP
         groups = quarry.outside_crown(seeds, parts.area, start, masks, ring_cells)
         found.extend(_seed_notices(side_name, groups, geometry.cell_area))
     unsplit = outcome.unsplit
-    if unsplit.zones:
-        found.append(Notice("des.quarry_unsplit_zones", {
-            "zones": len(unsplit.zones), "area": unsplit.area_ha, "volume": unsplit.volume_m3,
+    for code, zones, area, volume in (
+            ("des.quarry_unsplit_zones", unsplit.zones, unsplit.area_ha, unsplit.volume_m3),
+            ("des.quarry_unsplit_remaining", unsplit.remaining, unsplit.remaining_area_ha,
+             unsplit.remaining_volume_m3)):
+        if not zones:
+            continue
+        found.append(Notice(code, {
+            "zones": len(zones), "area": area, "volume": volume,
             "threshold": unsplit.threshold_m, "min_area": unsplit.min_area_ha}))
         found.extend(Notice("des.quarry_unsplit_zone", {
             "zone": zone.zone, "area": zone.area_ha, "volume": zone.volume_m3,
-            "x": round(zone.x, 2), "y": round(zone.y, 2)}) for zone in unsplit.zones)
+            "x": round(zone.x, 2), "y": round(zone.y, 2)}) for zone in zones)
     if outcome.to_final is not None:
         found.append(Notice("des.quarry_to_final", {
             "zones": len(outcome.to_final.zones), "area": outcome.to_final.area_ha,

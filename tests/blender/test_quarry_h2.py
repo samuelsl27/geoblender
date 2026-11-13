@@ -523,12 +523,27 @@ class QuarryH2Test(unittest.TestCase):
         debajo de la final ni por encima del terreno; la final no cambia; lo que pasa a la
         explotación, ``des.to_final_m3`` en total y por sector, es la diferencia de las celdas a
         mano y lo que cubica la 011 entre la explotación «Sin el modo» y esta, sin terraplén; y la
-        clasificación de las dos canteras cuadra con la 011."""
+        clasificación de las dos canteras cuadra con la 011. Tras el modo, ninguna línea del
+        resumen lo vuelve a recomendar (T57, hallazgo F-19; HU-014-4, RF-014-17): lo que queda en
+        las zonas tratadas (aquí, menos de un banco en zonas que no pasan del área mínima) solo
+        tendría su propio aviso, sin ofrecerlo."""
         held = self.calculate(self.e4_form(name=DOWN, to_final="WARNED"))
         self.assertIsNotNone(held.outcome.to_final)
-        moved = [text for text, _alert in self.summary()
+        shown = self.summary()
+        moved = [text for text, _alert in shown
                  if text.startswith("«Explotación hasta la final» en ")]
-        self.assertEqual(len(moved), 1, self.summary())
+        self.assertEqual(len(moved), 1, shown)
+        unsplit = held.outcome.unsplit
+        self.assertEqual(unsplit.zones, ())  # todas las avisadas se trataron
+        left = [text for text, alert in shown
+                if alert and text.startswith("Tras «Explotación hasta la final», la explotación "
+                                             "sigue sin llegar a la final en ")]
+        self.assertEqual(len(left), 1 if unsplit.remaining else 0, shown)
+        self.assertFalse(any("Use «Explotación hasta la final»" in text for text, _alert in shown),
+                         shown)
+        self.assertFalse(any(text.startswith("La explotación no llega a la final")
+                             for text, _alert in shown), shown)
+        self.assertTrue(bool(np.all(self.kept["warned"][unsplit.warned])))
         self.create()
         z, warned = ground(), self.kept["warned"]
         before, after = self.read("exp", WITHOUT), self.read("exp", DOWN)

@@ -99,6 +99,8 @@ class CatalogTest(unittest.TestCase):
         for code, count, one_es, one_en, many_es, many_en in (
                 ("des.quarry_unsplit_zones", "zones", "en 1 zona:", "in 1 zone:", "en 2 zonas:",
                  "in 2 zones:"),
+                ("des.quarry_unsplit_remaining", "zones", "en 1 zona dentro",
+                 "in 1 zone within", "en 2 zonas dentro", "in 2 zones within"),
                 ("des.quarry_to_final", "zones", "en 1 zona (", "in 1 zone (", "en 2 zonas (",
                  "in 2 zones ("),
                 ("des.conserve_moved", "parts", "en 1 parte:", "in 1 part:", "en 2 partes:",
