@@ -937,6 +937,45 @@ CATALOG: tuple[Message, ...] = (
         "su perfil «{profile}», y un ajuste usa la cara con que se diseñó la superficie; vuelva a "
         "calcular ese diseño; no se calcula nada.",
     ),
+    # El orden de las dos superficies después del ajuste (RF-014-14, RF-014-27; T53) ----------
+    Message(
+        "des.refit_order",
+        "Order rule of quarry «{quarry}» with its two refitted surfaces: «{surface}» changes in "
+        "{cells} cells so that final ≤ exploitation ≤ terrain; the refit volume of each one is "
+        "still that of the face of its profile.",
+        "Regla de orden de la cantera «{quarry}» con sus dos superficies ajustadas: «{surface}» "
+        "cambia en {cells} celdas para que final ≤ explotación ≤ terreno; el volumen de ajuste de "
+        "cada una sigue siendo el de la cara de su perfil.",
+        "note",
+        count="cells",
+        one_msgid="Order rule of quarry «{quarry}» with its two refitted surfaces: «{surface}» "
+                  "changes in {cells} cell so that final ≤ exploitation ≤ terrain; the refit "
+                  "volume of each one is still that of the face of its profile.",
+        one_es="Regla de orden de la cantera «{quarry}» con sus dos superficies ajustadas: "
+               "«{surface}» cambia en {cells} celda para que final ≤ explotación ≤ terreno; el "
+               "volumen de ajuste de cada una sigue siendo el de la cara de su perfil.",
+    ),
+    Message(
+        "des.refit_order_side",
+        "After refitting «{surface}», the final surface of quarry «{quarry}» is above its "
+        "exploitation surface in {cells} cells, up to {above} m (against «{other}», not "
+        "refitted): they do not keep final ≤ exploitation ≤ terrain; refit both at once so that "
+        "the order rule of the quarry ties them.",
+        "Tras ajustar «{surface}», la superficie final de la cantera «{quarry}» queda por encima "
+        "de la de explotación en {cells} celdas, hasta {above} m (frente a «{other}», sin "
+        "ajustar): no cumplen final ≤ explotación ≤ terreno; ajuste las dos a la vez para que "
+        "las ate la regla de orden de la cantera.",
+        "warning",
+        count="cells",
+        one_msgid="After refitting «{surface}», the final surface of quarry «{quarry}» is above "
+                  "its exploitation surface in {cells} cell, up to {above} m (against «{other}», "
+                  "not refitted): they do not keep final ≤ exploitation ≤ terrain; refit both at "
+                  "once so that the order rule of the quarry ties them.",
+        one_es="Tras ajustar «{surface}», la superficie final de la cantera «{quarry}» queda por "
+               "encima de la de explotación en {cells} celda, hasta {above} m (frente a "
+               "«{other}», sin ajustar): no cumplen final ≤ explotación ≤ terreno; ajuste las dos "
+               "a la vez para que las ate la regla de orden de la cantera.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

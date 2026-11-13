@@ -451,7 +451,8 @@ class RefitToLimitTest(unittest.TestCase):
         la cantera deja el cálculo abierto con su resumen (una línea por superficie, en los dos
         idiomas) y solo sus dos temporales; cada superficie, ajustada con la cara de **su propio
         perfil** (la explotación con 60°, la final con 35°: con 35°, la explotación saldría
-        distinta); Crear registra ``des.refit`` hecha en V01 con una ``des_adj_`` por superficie
+        distinta) y las dos atadas después por la regla de orden de la cantera («final primero»,
+        con su nota al final del resumen; T53, RF-014-14); Crear registra ``des.refit`` hecha en V01 con una ``des_adj_`` por superficie
         (releídas, las calculadas) y la cifra ``des.refit_m3`` de cada una, y lo ajustado ya no deja
         nada fuera del límite vigente."""
         self.compiled()
@@ -479,14 +480,20 @@ class RefitToLimitTest(unittest.TestCase):
         self.assertTrue([line.name for line in self.view.summary][0].startswith(
             f"«{self.exploitation}» refitted with the face of its profile: "))
         self.i18n.set_language("es")
-        for surface, face in ((self.exploitation, EXPL_FACE_DEG), (self.final, REST_FACE_DEG)):
+        expected = {surface: self.expected(surface, face) for surface, face in (
+            (self.exploitation, EXPL_FACE_DEG), (self.final, REST_FACE_DEG))}
+        tied = _module("design.quarry").order_surfaces(  # «final primero», T53 (RF-014-14)
+            "final_first", expected[self.final].grid, expected[self.exploitation].grid, ground())
+        for surface, grid in ((self.exploitation, tied.exploitation), (self.final, tied.final)):
             with self.subTest(superficie=surface):
-                expected = self.expected(surface, face)
                 found = outcome.refit(surface)
-                np.testing.assert_array_equal(found.grid, expected.grid)
+                np.testing.assert_array_equal(found.grid, grid)
                 self.assertEqual((found.volume_m3, found.cells),
-                                 (expected.volume_m3, expected.cells))
+                                 (expected[surface].volume_m3, expected[surface].cells))
                 self.assertGreater(found.volume_m3, 0.0)
+        self.assertIn(f"Regla de orden de la cantera «{QUARRY_NAME}» con sus dos superficies "
+                      f"ajustadas: «{self.exploitation}» cambia en {tied.adjusted} celdas",
+                      summary[-1])
         wrong = self.expected(self.exploitation, REST_FACE_DEG)  # el error 46
         self.assertGreater(wrong.volume_m3, outcome.refit(self.exploitation).volume_m3)
 

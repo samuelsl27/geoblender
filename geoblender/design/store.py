@@ -71,7 +71,9 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   :func:`prepare_refit_units` (las superficies de diseño de :data:`REFIT_SOURCES`, cada una con el
   perfil de la operación que hizo su diseño, :func:`refit_profiles`, P-3, y la cara y el factor de
   malla que **anotó** esa operación, no los de hoy, T49), el cálculo
-  (:func:`refit_compute_steps`, con el rechazo de un ángulo que no es esa cara, RF-014-28) y su
+  (:func:`refit_compute_steps`, con el rechazo de un ángulo que no es esa cara, RF-014-28, y,
+  si lleva las dos superficies de una misma cantera, la regla de orden de esa cantera y
+  ``check_order`` después de ajustarlas, T53, RF-014-14) y su
   escritura (:func:`compute_refit_steps`: una ``des_adj_`` por superficie, con
   :meth:`DesignWriter.grid_steps` y su ``part``); y :func:`run_refit`, su recálculo (no se
   reproduce: depende del límite vigente).
@@ -95,7 +97,7 @@ import sqlite3
 from collections.abc import (Callable, Generator, Hashable, Iterable, Iterator, Mapping,
                              Sequence)
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, Any
@@ -155,6 +157,7 @@ from .model import (
     EnvelopeRequest,
     FillOnlyRequest,
     Metric,
+    Order,
     QuarryRequest,
     RefitRequest,
     SlopeMode,
@@ -928,13 +931,28 @@ def _recorded_faces(conn: sqlite3.Connection, surface: str, origin: SurfaceOrigi
     return found
 
 
+def _quarry_link(made: SurfaceOrigin) -> tuple[str, Surface | None, Order | None]:
+    """De qué cantera sale la superficie cuyo perfil es el de ``made`` (:func:`_profile_origin`;
+    T53, RF-014-14): el nombre de la cantera, su lado (``des_exp_``, la explotación;
+    ``des_fin_``, la final) y el orden del diseño, de los ajustes de su operación; ``("", None,
+    None)`` si no la escribió una cantera. Solo lee los ajustes."""
+    if made.op_type != provenance.QUARRY:
+        return "", None, None
+    request = provenance.quarry_request(made.settings)
+    exploitation = provenance.FAMILIES_BY_CODE[provenance.EXPLOITATION_GRID].prefix
+    side = Surface.EXPLOITATION if made.record.name.startswith(exploitation) else Surface.FINAL
+    return request.name, side, Order(request.order)
+
+
 def _refit_sources(conn: sqlite3.Connection, request: RefitRequest, version_uid: str,
                    names: Mapping[str, str]
-                   ) -> list[tuple[str, str, tuple[tuple[str, str], ...], dict[str, object]]]:
+                   ) -> list[tuple[str, str, tuple[tuple[str, str], ...], dict[str, object],
+                                   tuple[str, Surface | None, Order | None]]]:
     """Cada superficie de ``request`` con su perfil base y el de cada sector
-    (:func:`refit_profiles`) y la cara y el factor de malla de esos perfiles que anotó la
+    (:func:`refit_profiles`), la cara y el factor de malla de esos perfiles que anotó la
     operación que hizo su diseño (:func:`_recorded_faces`, T49), comprobados como en
-    ``design.refit.ProfileFace`` (``names``, código → nombre, para los mensajes). Rechazos:
+    ``design.refit.ProfileFace`` (``names``, código → nombre, para los mensajes), y la cantera de
+    la que sale con su lado y su orden (:func:`_quarry_link`, T53). Rechazos:
     ``des.edge_not_design_surface`` si alguna no es una superficie de diseño de la versión de
     :data:`REFIT_SOURCES`; ``des.refit_face_missing`` si esa operación no anotó alguno;
     ``des.profile_value_missing`` o ``_range`` si anotó uno sin valor o fuera de rango. Solo
@@ -949,7 +967,7 @@ def _refit_sources(conn: sqlite3.Connection, request: RefitRequest, version_uid:
         codes = (base, *(profile for _sector, profile in sectors))
         values = _recorded_faces(conn, surface, made, codes, names)
         refit.profile_faces(values, codes, names)  # una cara sin valor o fuera de rango
-        found.append((surface, base, sectors, values))
+        found.append((surface, base, sectors, values, _quarry_link(made)))
     return found
 
 
@@ -973,7 +991,7 @@ def prepare_refit(project: StoreProject, request: RefitRequest, *, version: str 
     if faces is None:
         with project.read() as conn:
             sources = _refit_sources(conn, request, found.uid, profile_names(conn))
-        faces = {surface: values for surface, _base, _sectors, values in sources}
+        faces = {surface: values for surface, _base, _sectors, values, _link in sources}
     loaded = _loaded_masks(project, found, masks)
     return _start(project, provenance.REFIT, request.name, found, loaded,
                   provenance.refit_settings(request, faces),
@@ -1923,13 +1941,20 @@ class RefitPart:
     (``name``), su rejilla (``surface``, en la rejilla del proyecto), el perfil base y el de cada
     sector de la operación que la creó (``base_profile``, ``sector_profiles``;
     :func:`refit_profiles`) y la cara y el factor de malla de esos perfiles que **anotó** esa
-    operación (``values``: clave ``des.bench.{p}.…`` → valor; T49, P-3), con los que se ajusta."""
+    operación (``values``: clave ``des.bench.{p}.…`` → valor; T49, P-3), con los que se ajusta.
+    Si sale de una cantera (su explotación o su final, o una transición o un ajuste de ellas, como
+    su perfil), el nombre de la cantera (``quarry``), su lado (``side``) y el orden del diseño de la
+    cantera (``order``, su ajuste «order»), con los que el ajuste ata las dos superficies de una
+    misma cantera (T53; RF-014-14); si no, ``""``, ``None`` y ``None``."""
 
     name: str
     surface: Raster
     base_profile: str
     sector_profiles: tuple[tuple[str, str], ...]
     values: Mapping[str, object]
+    quarry: str = ""
+    side: Surface | None = None
+    order: Order | None = None
 
     @property
     def profiles(self) -> tuple[str, ...]:
@@ -1937,13 +1962,24 @@ class RefitPart:
         return tuple(dict.fromkeys(
             [self.base_profile, *(profile for _sector, profile in self.sector_profiles)]))
 
+    @property
+    def other(self) -> str | None:
+        """El dato de la otra superficie de su cantera (``des_fin_<cantera>`` de la explotación,
+        ``des_exp_<cantera>`` de la final; T53); ``None`` si no sale de una cantera."""
+        if not self.quarry or self.side is None:
+            return None
+        return _other_surface(self.quarry, self.side)
+
 
 @dataclass(frozen=True, slots=True, eq=False)
 class PreparedRefit:
     """Lo que se lee y se comprueba antes de calcular un ajuste (:func:`prepare_refit_units`): las
     superficies (``parts``, :class:`RefitPart`), la de partida (``ground``), los sectores
     (``refs``) con la etiqueta de cada celda (``labels``), el nombre de cada perfil (``names``:
-    código → nombre, para los mensajes) y lo que anotará la operación (``start``)."""
+    código → nombre, para los mensajes), lo que anotará la operación (``start``) y, de cada
+    superficie de una cantera que va sin la otra en la petición, la otra tal como está en la
+    versión (``others``: el nombre de su dato, :attr:`RefitPart.other` → su rejilla; T53), con la
+    que se compara después de ajustarla."""
 
     parts: tuple[RefitPart, ...]
     ground: Raster
@@ -1951,6 +1987,7 @@ class PreparedRefit:
     labels: np.ndarray
     names: Mapping[str, str]
     start: OperationStart
+    others: Mapping[str, Raster] = field(default_factory=lambda: MappingProxyType({}))
 
 
 def prepare_envelope_units(project: StoreProject, request: EnvelopeRequest, version: Version,
@@ -2752,19 +2789,32 @@ def prepare_refit_units(project: StoreProject, request: RefitRequest, version: V
     ``des.edge_not_design_surface`` con su nombre), su perfil sale de la operación que la creó
     (:func:`refit_profiles`, P-3) y su cara y su factor de malla, de lo que **anotó** esa operación
     (T49: no los de hoy; ``des.refit_face_missing`` si no los anotó); las superficies y la de
-    partida se leen y se comparan con la rejilla del proyecto (``des.surface_*``); los sectores con
-    la etiqueta de cada celda; y :func:`prepare_refit`. Devuelve el :class:`PreparedRefit`. Nada se
-    escribe; los rechazos salen al avanzar."""
+    partida se leen y se comparan con la rejilla del proyecto (``des.surface_*``); de cada
+    superficie que sale de una cantera, la cantera, su lado y su orden (:func:`_quarry_link`) y, si
+    la petición no lleva la otra de esa cantera, la otra tal como está en la versión, si la tiene
+    (T53, RF-014-14: con ella se compara después de ajustarla); los sectores con la etiqueta de
+    cada celda; y :func:`prepare_refit`. Devuelve el :class:`PreparedRefit`. Nada se escribe; los
+    rechazos salen al avanzar."""
     with project.read() as conn:
         names = MappingProxyType(profile_names(conn))
         sources = _refit_sources(conn, request, version.uid, names)
+        _pairs, alone = _quarry_pairs([link[:2] for *_source, link in sources])
+        wanted = [name for name in dict.fromkeys(_other_surface(*sources[at][4][:2])
+                                                 for at in alone)
+                  if design_surface_of(conn, name, version.uid) is not None]
     yield
     frame = project_frame(project)
     parts: list[RefitPart] = []
-    for surface, base, sectors, values in sources:
+    for surface, base, sectors, values, (quarry_name, side, order) in sources:
         raster = read_surface(project, surface, version_uid=version.uid, expect=frame,
                               role="superficie de diseño")
-        parts.append(RefitPart(surface, raster, base, sectors, MappingProxyType(values)))
+        parts.append(RefitPart(surface, raster, base, sectors, MappingProxyType(values),
+                               quarry_name, side, order))
+        yield
+    others: dict[str, Raster] = {}
+    for name in wanted:
+        others[name] = read_surface(project, name, version_uid=version.uid, expect=frame,
+                                    role="superficie de diseño")
         yield
     ground = read_surface(project, request.start, version_uid=version.uid, expect=frame,
                           role="superficie de partida")
@@ -2775,7 +2825,86 @@ def prepare_refit_units(project: StoreProject, request: RefitRequest, version: V
                               faces={part.name: part.values for part in parts},
                               supersedes=supersedes)
     yield
-    return PreparedRefit(tuple(parts), ground, refs, labels, names, operation)
+    return PreparedRefit(tuple(parts), ground, refs, labels, names, operation,
+                         MappingProxyType(others))
+
+
+def _other_surface(quarry_name: str, side: Surface | None) -> str:
+    """El dato de la otra superficie de la cantera ``quarry_name`` frente a la de ``side``
+    (``des_fin_<cantera>`` de la explotación, ``des_exp_<cantera>`` de la final; T53)."""
+    family = (provenance.FINAL_GRID if side is Surface.EXPLOITATION
+              else provenance.EXPLOITATION_GRID)
+    return provenance.dataset_name(family, quarry_name)
+
+
+def _quarry_pairs(links: Sequence[tuple[str, Surface | None]]
+                  ) -> tuple[list[tuple[int, int]], list[int]]:
+    """Las superficies de un ajuste que salen de una cantera (``links``: el nombre de la cantera,
+    ``""`` si no sale de una, y el lado de cada superficie, en el orden de la petición; T53,
+    RF-014-14): las parejas (el índice de su final y el de su explotación) de cada cantera de la que
+    la petición lleva una superficie de cada lado, y los índices de las demás que salen de una
+    cantera (sin la otra, o con más de una de un lado: ninguna se ata y cada una se compara con la
+    otra de su cantera)."""
+    by_quarry: dict[str, list[int]] = {}
+    for at, (name, side) in enumerate(links):
+        if name and side is not None:
+            by_quarry.setdefault(name, []).append(at)
+    pairs: list[tuple[int, int]] = []
+    alone: list[int] = []
+    for found in by_quarry.values():
+        finals = [at for at in found if links[at][1] is Surface.FINAL]
+        exploitations = [at for at in found if links[at][1] is Surface.EXPLOITATION]
+        if len(finals) == 1 and len(exploitations) == 1:
+            pairs.append((finals[0], exploitations[0]))
+        else:
+            alone.extend(found)
+    return pairs, sorted(alone)
+
+
+def _ordered_refits(parts: Sequence[RefitPart], found: Sequence[refit.Refit], start: np.ndarray,
+                    others: Mapping[str, Raster], geometry: Grid
+                    ) -> tuple[list[refit.Refit], list[Notice]]:
+    """**El orden de las dos superficies después del ajuste** (T53; RF-014-14 frente a
+    RF-014-27, hallazgo F-15; la propuesta por defecto que aceptó Samuel): de cada cantera de la
+    que el ajuste lleva sus dos superficies (:func:`_quarry_pairs`), la regla de orden de esa
+    cantera (``quarry.order_surfaces`` con su orden, frente a la de partida ``start``) sobre las dos
+    ajustadas y ``quarry.check_order`` (``des.quarry_order_broken``, un error del programa: no se
+    crea nada); la rejilla de cada :class:`~design.refit.Refit` pasa a ser la atada y su volumen y
+    sus celdas siguen siendo los de su cara (CE-014-08); la nota ``des.refit_order`` dice la
+    cantera, la superficie que cambió la regla y sus celdas (las que tenían la final por encima,
+    ``OrderedSurfaces.adjusted``). De cada superficie de una cantera sin la otra, si la otra tal
+    como está (``others``) deja la final más de 1 mm por encima de la explotación, el aviso
+    ``des.refit_order_side`` con las celdas y cuánto (m). Devuelve los ajustes y las notas y
+    avisos; ninguna entrada se modifica."""
+    refits = list(found)
+    notices: list[Notice] = []
+    pairs, alone = _quarry_pairs([(part.quarry, part.side) for part in parts])
+    for final_at, exploitation_at in pairs:
+        final, exploitation = parts[final_at], parts[exploitation_at]
+        ordered = quarry.order_surfaces(Order(final.order), refits[final_at].grid,
+                                        refits[exploitation_at].grid, start)
+        quarry.check_order(final.quarry, ordered.final, ordered.exploitation, start, geometry)
+        refits[final_at] = replace(refits[final_at], grid=ordered.final)
+        refits[exploitation_at] = replace(refits[exploitation_at], grid=ordered.exploitation)
+        changed = exploitation if ordered.order is Order.FINAL_FIRST else final
+        notices.append(Notice(refit.ORDER_CODE, {"quarry": final.quarry, "surface": changed.name,
+                                                 "cells": ordered.adjusted}))
+    for at in alone:
+        part = parts[at]
+        other = others.get(part.other or "")
+        if other is None:
+            continue
+        upper, lower = ((refits[at].grid, other.values) if part.side is Surface.FINAL
+                        else (other.values, refits[at].grid))
+        with np.errstate(invalid="ignore"):
+            above = upper - lower
+            broken = above > quarry.ORDER_TOLERANCE_M
+        cells = int(np.count_nonzero(broken))
+        if cells:
+            notices.append(Notice(refit.ORDER_SIDE_CODE, {
+                "surface": part.name, "quarry": part.quarry, "other": part.other,
+                "cells": cells, "above": round(float(above[broken].max()), 3)}))
+    return refits, notices
 
 
 def refit_compute_steps(request: RefitRequest, masks: access.MaskSet, prepared: PreparedRefit,
@@ -2787,9 +2916,12 @@ def refit_compute_steps(request: RefitRequest, masks: access.MaskSet, prepared: 
     RF-014-27, RF-014-28): la cara de cada perfil de cada superficie, la que anotó la operación
     que hizo su diseño (``RefitPart.values``, T49: no la de hoy; ``design.refit.profile_faces``);
     **antes de calcular nada**, el ángulo que traiga la petición para una superficie, que ha de ser
-    esa cara (``design.refit.check_angle``: ``des.refit_angle``); y cada superficie con
+    esa cara (``design.refit.check_angle``: ``des.refit_angle``); cada superficie con
     ``design.refit.refit_steps``, la pendiente de su perfil en cada celda según su sector
-    (``face_slope``) y el espesor mínimo. Devuelve el ``design.refit.RefitOutcome``."""
+    (``face_slope``) y el espesor mínimo; y, después, el orden de las dos superficies de una
+    cantera (:func:`_ordered_refits`, T53, RF-014-14: con las dos, la regla de orden de la cantera
+    y ``check_order`` antes de ofrecer «Crear»; con una sola, un aviso si queda del lado equivocado
+    de la otra). Devuelve el ``design.refit.RefitOutcome``."""
     faces = [refit.profile_faces(part.values, part.profiles, prepared.names)
              for part in prepared.parts]
     angles = dict(request.angles)
@@ -2807,7 +2939,12 @@ def refit_compute_steps(request: RefitRequest, masks: access.MaskSet, prepared: 
             part.surface.values, prepared.ground.values, masks, slope, thickness,
             name=part.name, version=prepared.start.version_code, budget_s=budget_s))
         found.append(item)
-    return refit.refit_outcome(request.name, found)
+    if any(part.quarry for part in prepared.parts):
+        yield Progress(refit.REFIT_PHASE, 0, 1,
+                       f"Comprobando el orden de las superficies de «{request.name}»…")
+    tied, orders = _ordered_refits(prepared.parts, found, prepared.ground.values,
+                                   prepared.others, masks.grid)
+    return refit.refit_outcome(request.name, tied, orders)
 
 
 def compute_refit_steps(writer: DesignWriter, request: RefitRequest, masks: access.MaskSet,

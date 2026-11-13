@@ -40,7 +40,18 @@ El ángulo no se pide (P-3): es la cara del perfil de la operación que creó la
 ``des.refit_angle`` nombrando la superficie y los dos ángulos (:func:`check_angle`; RF-014-28, el
 error 46: con 35° en el muro de explotación salían 39.000 m³ falsos). Lo de las superficies de un
 ajuste (:class:`RefitOutcome`, :func:`refit_outcome`) lleva su cifra ``des.refit_m3`` por
-superficie (:func:`refit_figures`), los avisos de las que no hacía falta y el mensaje.
+superficie (:func:`refit_figures`), los avisos de las que no hacía falta, los del orden de las dos
+superficies de una cantera y el mensaje.
+
+**El orden de las dos superficies de una cantera** (T53; RF-014-14 frente a RF-014-27, hallazgo
+F-15): con la final más tendida que la explotación, junto al límite nuevo la final ajustada sube más
+que la explotación ajustada. Si un ajuste lleva las dos superficies de una misma cantera,
+``design.store.refit_compute_steps`` les aplica después la regla de orden de esa cantera
+(``design.quarry.order_surfaces``, con su ajuste «order») y ``check_order`` antes de ofrecer
+«Crear»: la rejilla de cada :class:`Refit` es entonces la atada, y su volumen y sus celdas siguen
+siendo los de su cara (CE-014-08); la nota :data:`ORDER_CODE` dice las celdas que cambió la regla.
+Con una sola de las dos, no se ata, y el aviso :data:`ORDER_SIDE_CODE` dice si queda del lado
+equivocado de la otra.
 
 Python puro con numpy; no lee el proyecto ni modifica ninguna entrada.
 """
@@ -75,6 +86,8 @@ __all__ = [
     "ANGLE_CODE",
     "ANGLE_TOLERANCE_DEG",
     "NOT_NEEDED_CODE",
+    "ORDER_CODE",
+    "ORDER_SIDE_CODE",
     "OUTSIDE_CODE",
     "REFIT_NAME",
     "REFIT_PHASE",
@@ -184,6 +197,12 @@ ANGLE_CODE = "des.refit_angle"
 ANGLE_TOLERANCE_DEG = 1e-9
 """Lo que puede diferir de la cara del perfil un ángulo pedido por guion (°): el mismo número
 escrito de otra forma (60 y 60,0), no otro ángulo."""
+ORDER_CODE = "des.refit_order"
+"""La nota de la regla de orden de una cantera aplicada a sus dos superficies ajustadas (T53;
+RF-014-14): la cantera, la superficie que cambió y sus celdas."""
+ORDER_SIDE_CODE = "des.refit_order_side"
+"""El aviso de una superficie de una cantera ajustada sin la otra que deja la final por encima de
+la explotación (T53; RF-014-14): la superficie, la cantera, la otra, las celdas y cuánto."""
 _FIGURE = "des.refit_m3"
 
 
@@ -270,7 +289,9 @@ class Refit:
     dato; ``grid``, la superficie ajustada ``S'`` (m, float64, nueva); ``check``, lo que dejaba
     fuera del límite nuevo antes (:class:`RefitCheck`, la comprobación de la T31); el volumen de
     ajuste ``volume_m3`` (``Σ |S' − S| · área de celda``), las ``cells`` que cambian y, de ellas,
-    las que vuelven al terreno fuera del límite (``outside_cells``), y ``cell_area_m2``."""
+    las que vuelven al terreno fuera del límite (``outside_cells``), y ``cell_area_m2``. Si el
+    ajuste ata después las dos superficies de una cantera (T53, véase el módulo), ``grid`` es la
+    atada y el volumen y las celdas siguen siendo los de su cara."""
 
     surface: str
     grid: np.ndarray
@@ -377,12 +398,15 @@ def refit_steps(surface: np.ndarray, start: np.ndarray, masks: MaskSet, slope: S
 class RefitOutcome:
     """Lo que calcula ``des.refit`` (RF-014-27, RF-014-29): el ``name`` del ajuste, el
     :class:`Refit` de cada superficie (``refits``, en el orden de la petición), sus cifras
-    CALCULADO (``figures``, :func:`refit_figures`) y el ``message`` de la operación."""
+    CALCULADO (``figures``, :func:`refit_figures`), el ``message`` de la operación y las notas y los
+    avisos del orden de las dos superficies de una cantera (``order_notices``, :data:`ORDER_CODE` y
+    :data:`ORDER_SIDE_CODE`; T53)."""
 
     name: str
     refits: tuple[Refit, ...]
     figures: tuple[FigureSpec, ...]
     message: str
+    order_notices: tuple[Notice, ...] = ()
 
     @property
     def volume_m3(self) -> float:
@@ -391,8 +415,10 @@ class RefitOutcome:
 
     @property
     def notices(self) -> tuple[Notice, ...]:
-        """Los avisos ``des.refit_not_needed`` de las superficies que el límite nuevo no corta."""
-        return tuple(item.notice for item in self.refits if item.notice is not None)
+        """Los avisos ``des.refit_not_needed`` de las superficies que el límite nuevo no corta y,
+        detrás, los del orden de las dos superficies de una cantera (T53)."""
+        return (*(item.notice for item in self.refits if item.notice is not None),
+                *self.order_notices)
 
     def refit(self, surface: str) -> Refit:
         """El ajuste de la superficie ``surface`` (el nombre de su dato); ``KeyError`` si no es de
@@ -412,12 +438,26 @@ def refit_figures(name: str, refits: Sequence[Refit]) -> tuple[FigureSpec, ...]:
                  for item in refits)
 
 
-def refit_outcome(name: str, refits: Sequence[Refit]) -> RefitOutcome:
-    """El :class:`RefitOutcome` del ajuste ``name`` con sus ``refits``: las cifras y el mensaje
-    (cada superficie con su volumen de ajuste y sus celdas, o «no hacía falta»)."""
+def _order_text(notice: Notice) -> str:
+    """Lo que dice el mensaje de la operación de una nota o un aviso del orden (T53)."""
+    values = notice.values
+    if notice.code == ORDER_CODE:
+        return (f"regla de orden de la cantera «{values['quarry']}»: {values['cells']} celdas de "
+                f"«{values['surface']}»")
+    return (f"«{values['surface']}» deja la final de la cantera «{values['quarry']}» por encima "
+            f"de la explotación en {values['cells']} celdas")
+
+
+def refit_outcome(name: str, refits: Sequence[Refit], order_notices: Iterable[Notice] = ()
+                  ) -> RefitOutcome:
+    """El :class:`RefitOutcome` del ajuste ``name`` con sus ``refits`` y las notas y avisos del
+    orden de las dos superficies de una cantera (``order_notices``, T53): las cifras y el mensaje
+    (cada superficie con su volumen de ajuste y sus celdas, o «no hacía falta», y lo del orden)."""
     found = tuple(refits)
+    orders = tuple(order_notices)
     parts = [f"«{item.surface}» {format_value(round(item.volume_m3, 1))} m³ en {item.cells} "
              "celdas" if item.needed else f"«{item.surface}» 0 m³ (no hacía falta)"
              for item in found]
+    parts += [_order_text(notice) for notice in orders]
     message = f"Ajuste «{name}» al límite nuevo calculado: {'; '.join(parts)}"
-    return RefitOutcome(name, found, refit_figures(name, found), message)
+    return RefitOutcome(name, found, refit_figures(name, found), message, orders)

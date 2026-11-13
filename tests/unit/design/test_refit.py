@@ -27,6 +27,14 @@ RF-014-29, RF-014-31; CE-014-08; plan 014 A13, P-3, §5.2.3; error 46 del análi
   F-10), que el ajuste anota en sus ajustes; se recalcula (no se reproduce: depende del límite
   vigente); cambiar el perfil de la cantera de la que sale lo deja obsoleto con esa causa, y
   «Recalcular lo obsoleto» va cantera → ajuste (T50, hallazgo F-11).
+- **El orden de las dos superficies después del ajuste** (T53; RF-014-14 frente a RF-014-27,
+  hallazgo F-15; la propuesta por defecto que aceptó Samuel): ajustada cada una con la cara de su
+  perfil, la final (35°) queda por encima de la explotación (60°) junto al límite nuevo (la sonda
+  de la T38, con ``store.refit_compute_steps`` en celdas de 10 m); si el ajuste lleva las dos
+  superficies de una misma cantera, la regla de orden de esa cantera (su ajuste «order») las ata y
+  ``check_order`` las comprueba antes de «Crear», con una nota con las celdas que cambió; los m³
+  de cada una siguen siendo los de su cara (CE-014-08 igual); con una sola, un aviso si queda del
+  lado equivocado de la otra.
 """
 
 from __future__ import annotations
@@ -36,6 +44,7 @@ import json
 import math
 import unittest
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any, ClassVar
 from unittest import mock
 
@@ -49,6 +58,7 @@ from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
 
 refit = import_geoblender("design.refit")
+quarry = import_geoblender("design.quarry")
 messages = import_geoblender("design.messages")
 steps = import_geoblender("design.steps")
 store = import_geoblender("design.store")
@@ -447,6 +457,249 @@ class Ce01408Test(unittest.TestCase):
                          (60.0, 35.0))
 
 
+# --- El orden de las dos superficies después del ajuste (T53; hallazgo F-15) ----------------------
+ORDER_CELL_M = 10.0
+"""El paso de la rejilla de la sonda de la T38 (rf-b) más grueso que conserva sus bordes y su rojo
+(con celdas de 2 m, las de la sonda: 2.340 celdas con la final más de 1 mm por encima de la
+explotación, hasta 20,72 m; con 10 m, 84 celdas, hasta 20,721 m)."""
+ORDER_SIZE = 24
+ORDER_GRID = gis.Grid(500_000.0, 4_400_000.0 + ORDER_SIZE * ORDER_CELL_M, ORDER_CELL_M,
+                      ORDER_CELL_M, ORDER_SIZE, ORDER_SIZE)
+"""240 × 240 m en celdas de 10 m."""
+ORDER_LOW, ORDER_HIGH, ORDER_EAST = 2, 22, 19
+"""El perímetro de actuación y el recinto con que se diseñó, de la fila y la columna 2 a la 21 (de
+20 a 220 m); el límite legal nuevo, 30 m más corto por el este (hasta la columna 18: 190 m)."""
+ORDER_FLOORS = {35.0: 170.0, 60.0: 180.0}
+"""El fondo de la final (35°) y el de la explotación (60°) de la sonda (m)."""
+ORDER_QUARRY = "Corta T53"
+ORDER_FINAL = provenance.dataset_name("fin", ORDER_QUARRY)
+ORDER_EXPLOITATION = provenance.dataset_name("exp", ORDER_QUARRY)
+
+
+def order_masks() -> Any:
+    """Las máscaras de la sonda: el perímetro y el límite legal nuevo, sin resguardo (``D``, de las
+    columnas 2 a 18)."""
+    rows, columns = np.indices(ORDER_GRID.shape)
+    perimeter = ((rows >= ORDER_LOW) & (rows < ORDER_HIGH) & (columns >= ORDER_LOW)
+                 & (columns < ORDER_HIGH))
+    legal = perimeter & (columns < ORDER_EAST)
+    classes = (perimeter * P | legal * L).astype(np.uint16)
+    return access.MaskSet(ORDER_GRID, "v-orden", "op-orden", access.MaskState.CURRENT, (),
+                          classes)
+
+
+def order_pit(face_deg: float) -> np.ndarray:
+    """Una corta del recinto de antes con la cara ``face_deg`` (el *chamfer* hasta una recta de
+    semillas va por el eje: ``k`` celdas hasta el anillo) hasta su fondo, el terreno fuera."""
+    rows, columns = np.indices(ORDER_GRID.shape)
+    k = np.minimum.reduce([rows - ORDER_LOW + 1, ORDER_HIGH - rows, columns - ORDER_LOW + 1,
+                           ORDER_HIGH - columns])
+    drop = math.tan(math.radians(face_deg)) * SCALE * ORDER_CELL_M
+    return np.where(k >= 1, np.maximum(ORDER_FLOORS[face_deg], Z0 - drop * k), Z0)
+
+
+def order_part(side: Any, surface: np.ndarray, order: Any) -> Any:
+    """La superficie ``side`` de la cantera de la sonda, como la prepara
+    ``store.prepare_refit_units``: su rejilla, su perfil con la cara de la sonda (factor de malla
+    1) y de qué cantera sale, con su lado y su orden."""
+    profile, face = ((qfx.FINAL_PROFILE, 35.0) if side is model.Surface.FINAL
+                     else (qfx.EXPLOITATION_PROFILE, 60.0))
+    name = ORDER_FINAL if side is model.Surface.FINAL else ORDER_EXPLOITATION
+    values = {design_params.bench_key(profile.code, "face_deg"): face,
+              design_params.bench_key(profile.code, "mesh_factor"): 1.0}
+    return store.RefitPart(name, SimpleNamespace(values=surface), profile.code, (), values,
+                           quarry=ORDER_QUARRY, side=side, order=order)
+
+
+class RefitOrderTest(unittest.TestCase):
+    """RF-014-14 frente a RF-014-27 (T53; hallazgo F-15; la decisión de Samuel del 13/11/2026: la
+    propuesta por defecto) sin proyecto, con ``store.refit_compute_steps``: la sonda de la T38 (el
+    terreno llano a 234,25 m, una corta con la explotación a 60° y la final a 35° atadas con «final
+    primero», el límite legal 30 m más corto por el este). Ajustada cada una con la cara de su
+    perfil, la final queda por encima de la explotación junto al límite nuevo (la de 35° sube más);
+    si el ajuste lleva las dos superficies de la cantera, la regla de orden de la cantera las ata
+    otra vez y el resumen dice las celdas que cambió; con una sola, un aviso si queda del lado
+    equivocado de la otra. Los m³ de ajuste de cada superficie siguen siendo los de su cara
+    (CE-014-08 igual)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.start = np.full(ORDER_GRID.shape, Z0)
+        ordered = quarry.order_surfaces(model.Order.FINAL_FIRST, order_pit(35.0), order_pit(60.0),
+                                        cls.start)
+        cls.final, cls.exploitation = ordered.final, ordered.exploitation
+        cls.masks = order_masks()
+        labels = np.zeros(ORDER_GRID.shape, dtype=np.int16)
+        cls.faced = {}  # cada una ajustada sola con la cara de su perfil (``refit_steps``)
+        for name, surface, face in ((ORDER_FINAL, cls.final, REST_FACE),
+                                    (ORDER_EXPLOITATION, cls.exploitation, EXPL_FACE)):
+            face = refit.ProfileFace(face.code, face.name, face.face_deg, 1.0)
+            cls.faced[name] = finish(refit.refit_steps(
+                surface, cls.start, cls.masks, refit.face_slope(labels, face, ()), THICKNESS_M,
+                name=name))
+
+    def calculate(self, parts: tuple[Any, ...], others: dict[str, np.ndarray] | None = None
+                  ) -> Any:
+        """``store.refit_compute_steps`` del ajuste «Ajuste T53» de ``parts`` con lo de la sonda;
+        ``others``, la otra superficie de la cantera de cada una que va sola."""
+        prepared = store.PreparedRefit(
+            parts, SimpleNamespace(values=self.start), (),
+            np.zeros(ORDER_GRID.shape, dtype=np.int16), {},
+            SimpleNamespace(version_code="V01"),
+            {name: SimpleNamespace(values=grid) for name, grid in (others or {}).items()})
+        request = model.RefitRequest("Ajuste T53", [part.name for part in parts], "gis_dtm_llano")
+        work = store.refit_compute_steps(request, self.masks, prepared,
+                                         {design_params.VERIFY_MIN_THICKNESS: THICKNESS_M})
+        while True:  # lo que devuelve (``yield from``), no el último ``Progress``
+            try:
+                next(work)
+            except StopIteration as done:
+                return done.value
+
+    def test_each_surface_with_its_face_breaks_the_order(self) -> None:
+        """RF-014-27 (T53, el rojo de la T38): antes del ajuste, ``final ≤ explotación ≤ terreno``
+        en todas las celdas; ajustada cada una sola con la cara de su perfil, la final queda más de
+        1 mm por encima de la explotación en 84 celdas, hasta 20,721 m (junto al límite nuevo)."""
+        quarry.check_order(ORDER_QUARRY, self.final, self.exploitation, self.start, ORDER_GRID)
+        above = self.faced[ORDER_FINAL].grid - self.faced[ORDER_EXPLOITATION].grid
+        self.assertEqual(int(np.count_nonzero(above > quarry.ORDER_TOLERANCE_M)), 84)
+        self.assertAlmostEqual(float(above.max()), 20.721, places=3)
+
+    def test_final_first_raises_the_exploitation_to_the_refitted_final(self) -> None:
+        """RF-014-14, RF-014-27, CE-014-08 (T53): con las dos superficies de la cantera, «final
+        primero» deja la final ajustada con su cara y sube la explotación ajustada hasta ella
+        (``máx``): ninguna celda con la final más de 1 mm por encima (``check_order`` la acepta);
+        el volumen de ajuste, las celdas y la cifra de cada superficie, los de su cara; la nota
+        ``des.refit_order`` dice la cantera, la superficie que cambió y sus celdas (en los dos
+        idiomas), y el mensaje, la regla."""
+        order = model.Order.FINAL_FIRST
+        outcome = self.calculate((order_part(model.Surface.EXPLOITATION, self.exploitation, order),
+                                  order_part(model.Surface.FINAL, self.final, order)))
+        final, exploitation = (outcome.refit(ORDER_FINAL).grid,
+                               outcome.refit(ORDER_EXPLOITATION).grid)
+        faced_final, faced_exploitation = (self.faced[ORDER_FINAL].grid,
+                                           self.faced[ORDER_EXPLOITATION].grid)
+        np.testing.assert_array_equal(final, faced_final)
+        np.testing.assert_array_equal(exploitation, np.maximum(faced_exploitation, faced_final))
+        self.assertEqual(int(np.count_nonzero(final > exploitation + quarry.ORDER_TOLERANCE_M)),
+                         0)
+        quarry.check_order(ORDER_QUARRY, final, exploitation, self.start, ORDER_GRID)
+        for name, item in self.faced.items():
+            with self.subTest(superficie=name):
+                found = outcome.refit(name)
+                self.assertEqual((found.volume_m3, found.cells, found.outside_cells),
+                                 (item.volume_m3, item.cells, item.outside_cells))
+        self.assertEqual(outcome.figures, refit.refit_figures("Ajuste T53",
+                                                              (self.faced[ORDER_EXPLOITATION],
+                                                               self.faced[ORDER_FINAL])))
+        changed = int(np.count_nonzero(faced_final > faced_exploitation))
+        self.assertEqual(changed, int(np.count_nonzero(exploitation != faced_exploitation)))
+        (note,) = outcome.notices
+        self.assertEqual((note.code, note.severity, dict(note.values)),
+                         ("des.refit_order", "note", {"quarry": ORDER_QUARRY,
+                                                      "surface": ORDER_EXPLOITATION,
+                                                      "cells": changed}))
+        self.assertEqual(note.text(), (
+            f"Regla de orden de la cantera «{ORDER_QUARRY}» con sus dos superficies ajustadas: "
+            f"«{ORDER_EXPLOITATION}» cambia en {changed} celdas para que final ≤ explotación ≤ "
+            "terreno; el volumen de ajuste de cada una sigue siendo el de la cara de su perfil."))
+        self.assertIn(f"«{ORDER_EXPLOITATION}» changes in {changed} cells so that final ≤ "
+                      "exploitation ≤ terrain", note.text("en"))
+        self.assertIn("cambia en 1 celda para", messages.render("des.refit_order", cells=1))
+        self.assertIn("changes in 1 cell so", messages.render("des.refit_order", language="en",
+                                                              cells=1))
+        self.assertIn(f"regla de orden de la cantera «{ORDER_QUARRY}»: {changed} celdas de "
+                      f"«{ORDER_EXPLOITATION}»", outcome.message)
+
+    def test_exploitation_first_lowers_the_final_to_the_refitted_exploitation(self) -> None:
+        """RF-014-13, RF-014-14 (T53): con «explotación primero», la explotación ajustada se queda
+        y la final ajustada baja hasta ella (``mín``); la nota nombra la final."""
+        order = model.Order.EXPLOITATION_FIRST
+        outcome = self.calculate((order_part(model.Surface.FINAL, self.final, order),
+                                  order_part(model.Surface.EXPLOITATION, self.exploitation,
+                                             order)))
+        faced_final, faced_exploitation = (self.faced[ORDER_FINAL].grid,
+                                           self.faced[ORDER_EXPLOITATION].grid)
+        np.testing.assert_array_equal(outcome.refit(ORDER_EXPLOITATION).grid, faced_exploitation)
+        np.testing.assert_array_equal(outcome.refit(ORDER_FINAL).grid,
+                                      np.minimum(faced_final, faced_exploitation))
+        self.assertEqual(outcome.refit(ORDER_FINAL).volume_m3,
+                         self.faced[ORDER_FINAL].volume_m3)
+        (note,) = outcome.notices
+        self.assertEqual(dict(note.values), {
+            "quarry": ORDER_QUARRY, "surface": ORDER_FINAL,
+            "cells": int(np.count_nonzero(faced_final > faced_exploitation))})
+
+    def test_a_broken_order_after_the_rule_is_a_program_error(self) -> None:
+        """RF-014-14 (T53): las dos ajustadas pasan por ``check_order`` antes de ofrecer «Crear»:
+        si la regla no las atara, ``des.quarry_order_broken`` nombrando la cantera."""
+        order = model.Order.FINAL_FIRST
+
+        def untied(order: Any, final: Any, exploitation: Any, start: Any) -> Any:
+            return quarry.OrderedSurfaces(final, exploitation, model.Order(order), 0)
+
+        with mock.patch.object(quarry, "order_surfaces", untied):
+            with self.assertRaises(messages.DesignError) as caught:
+                self.calculate((order_part(model.Surface.EXPLOITATION, self.exploitation, order),
+                                order_part(model.Surface.FINAL, self.final, order)))
+        self.assertEqual((caught.exception.code, caught.exception.obj),
+                         ("des.quarry_order_broken", f"Cantera «{ORDER_QUARRY}»"))
+
+    def test_one_surface_alone_warns_when_it_ends_on_the_wrong_side(self) -> None:
+        """RF-014-14 (T53): con una sola de las dos superficies de la cantera, la ajustada no se
+        ata (la de su cara), y si queda del lado equivocado de la otra (la final más de 1 mm por
+        encima de la explotación) el aviso ``des.refit_order_side`` lo dice con la cantera, las
+        dos superficies, las celdas y cuánto por encima; la explotación sola, que el ajuste solo
+        sube, no avisa."""
+        order = model.Order.FINAL_FIRST
+        alone = self.calculate((order_part(model.Surface.FINAL, self.final, order),),
+                               {ORDER_EXPLOITATION: self.exploitation})
+        faced = self.faced[ORDER_FINAL]
+        np.testing.assert_array_equal(alone.refit(ORDER_FINAL).grid, faced.grid)
+        above = faced.grid - self.exploitation
+        broken = above > quarry.ORDER_TOLERANCE_M
+        self.assertGreater(int(np.count_nonzero(broken)), 0)
+        (warning,) = alone.notices
+        self.assertEqual((warning.code, warning.severity, dict(warning.values)), (
+            "des.refit_order_side", "warning",
+            {"surface": ORDER_FINAL, "quarry": ORDER_QUARRY, "other": ORDER_EXPLOITATION,
+             "cells": int(np.count_nonzero(broken)),
+             "above": round(float(above[broken].max()), 3)}))
+        for language, shown in (("es", "final ≤ explotación ≤ terreno"),
+                                ("en", "final ≤ exploitation ≤ terrain")):
+            with self.subTest(idioma=language):
+                text = warning.text(language)
+                for value in (ORDER_FINAL, ORDER_QUARRY, ORDER_EXPLOITATION, shown):
+                    self.assertIn(value, text)
+        self.assertIn("en 1 celda,", messages.render("des.refit_order_side", cells=1))
+        self.assertIn("in 1 cell,", messages.render("des.refit_order_side", language="en",
+                                                    cells=1))
+        exploitation = self.calculate(
+            (order_part(model.Surface.EXPLOITATION, self.exploitation, order),),
+            {ORDER_FINAL: self.final})
+        self.assertEqual(exploitation.notices, ())
+        np.testing.assert_array_equal(exploitation.refit(ORDER_EXPLOITATION).grid,
+                                      self.faced[ORDER_EXPLOITATION].grid)
+
+    def test_two_of_one_side_are_not_tied(self) -> None:
+        """RF-014-14 (T53): con dos superficies de un mismo lado de la cantera (la final y otra
+        que sale de ella) y la explotación, no se sabe a cuál atarla: ninguna se ata y cada una se
+        compara con la otra de la cantera tal como está (las dos finales avisan; la explotación,
+        no)."""
+        order = model.Order.FINAL_FIRST
+        twin = dataclasses.replace(order_part(model.Surface.FINAL, self.final, order),
+                                   name="des_adj_otro_des_fin_corta_t53")
+        outcome = self.calculate(
+            (order_part(model.Surface.EXPLOITATION, self.exploitation, order),
+             order_part(model.Surface.FINAL, self.final, order), twin),
+            {ORDER_FINAL: self.final, ORDER_EXPLOITATION: self.exploitation})
+        for name in (ORDER_FINAL, ORDER_EXPLOITATION):
+            np.testing.assert_array_equal(outcome.refit(name).grid, self.faced[name].grid)
+        self.assertEqual([(notice.code, notice.values["surface"]) for notice in outcome.notices],
+                         [("des.refit_order_side", ORDER_FINAL),
+                          ("des.refit_order_side", twin.name)])
+
+
 # --- La operación (con proyecto) ------------------------------------------------------------------
 
 START = qfx.START_DATASET
@@ -542,6 +795,14 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         cls.calculation = drive(cls.refit_steps()).result
         cls.calculated = cls.des_state()
         cls.stored = cls.calculation.create()
+        start, labels = qfx.terrain(cls.grid), np.zeros(cls.grid.shape, dtype=np.int16)
+        thickness = float(core_params.definition(design_params.VERIFY_MIN_THICKNESS).default)
+        cls.faced = {}  # cada una ajustada sola con la cara de su perfil, sin la regla de orden
+        for surface, face in ((EXPLOITATION, EXPL_FACE), (FINAL, REST_FACE)):
+            designed = store.read_surface(cls.project, surface, version_uid=cls.v1.uid).values
+            cls.faced[surface] = finish(refit.refit_steps(
+                designed, start, cls.masks_new, refit.face_slope(labels, face, ()), thickness,
+                name=surface))
 
     @classmethod
     def refit_steps(cls, name: str = NAME, surfaces: tuple[str, ...] = (EXPLOITATION, FINAL),
@@ -582,7 +843,9 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         y no registra nada; «Crear» registra ``des.refit`` de V01 hecha con una ``des_adj_`` por
         superficie (papel ``design_surface``) y la cifra ``des.refit_m3`` de cada una; lo escrito
         es el ajuste de A13 de cada superficie con la cara de **su** perfil (60° la explotación,
-        35° la final), y ya no deja nada fuera del límite vigente (la comprobación de la T31)."""
+        35° la final) atadas por la regla de orden de su cantera («final primero»: la explotación,
+        nunca por debajo de la final; T53), la cifra de cada una es la de su cara (CE-014-08), y
+        ya no deja nada fuera del límite vigente (la comprobación de la T31)."""
         for key in ("operations", "datasets", "figures"):
             self.assertEqual(self.calculated[key], self.before[key], key)
         temporaries = sorted(set(self.calculated["files"]) - set(self.before["files"]))
@@ -603,15 +866,14 @@ class RefitOperationTest(qfx.QuarryProjectCase):
             "d.uid = io.item_uid WHERE io.operation_uid = ? AND io.direction = 'out'", uid))
         self.assertEqual(roles, {name: "design_surface" for name in ADJUSTED.values()})
         start = qfx.terrain(self.grid)
-        labels = np.zeros(self.grid.shape, dtype=np.int16)
+        ordered = quarry.order_surfaces(model.Order.FINAL_FIRST, self.faced[FINAL].grid,
+                                        self.faced[EXPLOITATION].grid, start)
+        tied = {EXPLOITATION: ordered.exploitation, FINAL: ordered.final}
         figures = {}
-        for surface, face in ((EXPLOITATION, EXPL_FACE), (FINAL, REST_FACE)):
+        for surface, expected in self.faced.items():
             with self.subTest(superficie=surface):
-                expected = finish(refit.refit_steps(
-                    self.grid_of(surface), start, self.masks_new,
-                    refit.face_slope(labels, face, ()), self.thickness(), name=surface))
                 written = self.grid_of(ADJUSTED[surface])
-                np.testing.assert_array_equal(written, expected.grid)
+                np.testing.assert_array_equal(written, tied[surface])
                 np.testing.assert_array_equal(
                     written, calculation.outcome.refit(surface).grid)
                 self.assertGreater(expected.volume_m3, 0.0)
@@ -657,6 +919,70 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         with self.project.read() as conn:
             origin = store.design_surface_of(conn, ADJUSTED[FINAL], self.v1.uid)
         self.assertEqual((origin.op_type, origin.start), (provenance.REFIT, START))
+
+    def test_a_the_order_rule_of_the_quarry_ties_its_two_refitted_surfaces(self) -> None:
+        """RF-014-14, RF-014-27 (T53; hallazgo F-15): ajustadas cada una con la cara de su perfil,
+        la final de «Corta E8» queda más de 1 mm por encima de su explotación junto al límite
+        nuevo; el ajuste de las dos (la petición lleva la explotación y la final de la misma
+        cantera) les aplica la regla de orden de la cantera, que lee de sus ajustes («final
+        primero»): las dos creadas cumplen ``final ≤ explotación ≤ terreno`` a 1 mm y el resumen
+        dice, en una nota, la cantera, la superficie que cambió y sus celdas."""
+        start = qfx.terrain(self.grid)
+        final, exploitation = self.faced[FINAL].grid, self.faced[EXPLOITATION].grid
+        with np.errstate(invalid="ignore"):
+            self.assertGreater(
+                int(np.count_nonzero(final > exploitation + quarry.ORDER_TOLERANCE_M)), 0)
+            changed = int(np.count_nonzero(final > exploitation))
+        written = {surface: self.grid_of(ADJUSTED[surface]) for surface in (FINAL, EXPLOITATION)}
+        quarry.check_order(QUARRY_NAME, written[FINAL], written[EXPLOITATION], start, self.grid)
+        notes = [dict(notice.values) for notice in self.calculation.notices
+                 if notice.code == "des.refit_order"]
+        self.assertEqual(notes, [{"quarry": QUARRY_NAME, "surface": EXPLOITATION,
+                                  "cells": changed}])
+        self.assertNotIn("des.refit_order_side",
+                         [notice.code for notice in self.calculation.notices])
+
+    def test_b_the_final_alone_warns_when_it_ends_above_the_exploitation(self) -> None:
+        """RF-014-14 (T53): el ajuste de la final de «Corta E8» sola no la ata a la explotación
+        (es la de su cara); como queda más de 1 mm por encima de la explotación de la cantera, el
+        resumen lo avisa (``des.refit_order_side``) con la cantera, las dos superficies, las celdas
+        y cuánto por encima, sin escribir nada."""
+        before = self.des_state()
+        with drive(self.refit_steps("Solo la final", (FINAL,))).result as alone:
+            (only,) = alone.outcome.refits
+            np.testing.assert_array_equal(only.grid, self.faced[FINAL].grid)
+            with np.errstate(invalid="ignore"):
+                above = only.grid - self.grid_of(EXPLOITATION)
+                broken = above > quarry.ORDER_TOLERANCE_M
+            self.assertGreater(int(np.count_nonzero(broken)), 0)
+            self.assertEqual([(notice.code, dict(notice.values)) for notice in alone.notices], [
+                ("des.refit_order_side", {"surface": FINAL, "quarry": QUARRY_NAME,
+                                          "other": EXPLOITATION,
+                                          "cells": int(np.count_nonzero(broken)),
+                                          "above": round(float(above[broken].max()), 3)})])
+        self.assertEqual(self.des_state(), before)
+
+    def test_b_the_rule_is_the_one_of_the_quarry(self) -> None:
+        """RF-014-13, RF-014-14 (T53): la regla es la del ajuste «order» de la cantera de la que
+        salen las dos superficies: con «explotación primero» (los ajustes de «Corta E8» leídos con
+        ese orden), la explotación ajustada se queda y la final baja hasta ella; la nota nombra la
+        final. Sin escribir nada."""
+        real = provenance.quarry_request
+
+        def exploitation_first(settings: Any) -> Any:
+            return dataclasses.replace(real(settings), order=model.Order.EXPLOITATION_FIRST)
+
+        final, exploitation = self.faced[FINAL].grid, self.faced[EXPLOITATION].grid
+        with mock.patch.object(provenance, "quarry_request", exploitation_first):
+            calculation = drive(self.refit_steps("Explotación primero")).result
+        with calculation:
+            np.testing.assert_array_equal(calculation.outcome.refit(EXPLOITATION).grid,
+                                          exploitation)
+            np.testing.assert_array_equal(calculation.outcome.refit(FINAL).grid,
+                                          np.minimum(final, exploitation))
+            self.assertEqual([dict(notice.values) for notice in calculation.notices],
+                             [{"quarry": QUARRY_NAME, "surface": FINAL,
+                               "cells": int(np.count_nonzero(final > exploitation))}])
 
     def test_b_another_angle_is_refused_before_writing(self) -> None:
         """CE-014-08, RF-014-28 (error 46): pedir por guion 35° para la explotación (su perfil es
