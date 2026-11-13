@@ -162,6 +162,7 @@ __all__ = [
     "COMMAND",
     "CONSERVE_LAYER_ROLE",
     "CORRIDORS_LAYER_ROLE",
+    "CREATED_STEP_PARAMS",
     "CROWN_SEEDS",
     "CUT_M3",
     "DESIGN_FIGURES",
@@ -1671,18 +1672,25 @@ def quarry_profiles(request: QuarryRequest) -> tuple[str, ...]:
         *(profile for _sector, profile in request.side(surface).sector_profiles)))
 
 
+CREATED_STEP_PARAMS: tuple[str, ...] = (EDGE_MAX_STEP, EDGE_MIN_SHARE)
+"""El salto y el porcentaje admitidos del salto creado (RF-014-20, RF-014-21; D-6): los lee también
+el diseño que mide el salto creado de sus superficies en su resumen (T56, hallazgo F-18: la
+cantera, «solo relleno» y el ajuste), no solo la transición (:data:`TRANSITION_PARAMS`)."""
+
+
 def quarry_params(request: QuarryRequest, *, sector_slopes: Iterable[str] = ()
                   ) -> tuple[str, ...]:
     """Los parámetros que lee ``des.quarry`` (spec 014, T19; RF-014-29, RF-014-31): los cinco
     valores de cada perfil de los dos lados (:func:`quarry_profiles`), los taludes impuestos de los
     sectores ``sector_slopes``, el anillo de coronación (también el lado con semillas de la 013 lo
     necesita: el aviso de RF-014-03), el umbral y el área mínima del aviso de desdoblado, el talud
-    de conservación solo si hay zonas a conservar (no tiene valor por defecto, D-9), la tolerancia
-    de cara, el umbral de aviso de magnitud y el espesor mínimo de la 012."""
+    de conservación solo si hay zonas a conservar (no tiene valor por defecto, D-9), el salto y el
+    porcentaje admitidos del salto creado de sus dos superficies (:data:`CREATED_STEP_PARAMS`,
+    T56), la tolerancia de cara, el umbral de aviso de magnitud y el espesor mínimo de la 012."""
     return _unique([*profile_params(quarry_profiles(request)),
                     *_codes(sector_slopes, "las claves de los taludes de los sectores"),
                     CROWN_RING, UNSPLIT_THRESHOLD, UNSPLIT_MIN_AREA,
-                    *((CONSERVE_SLOPE,) if request.conserve else ()),
+                    *((CONSERVE_SLOPE,) if request.conserve else ()), *CREATED_STEP_PARAMS,
                     TOLERANCE_FACE, WARNING_RATIO, VERIFY_MIN_THICKNESS])
 
 
@@ -1701,7 +1709,9 @@ T49), no los de hoy: no son parámetros que el ajuste lea del proyecto (:func:`r
 def refit_params() -> tuple[str, ...]:
     """Los parámetros que lee del proyecto ``des.refit`` (spec 014, T32; RF-014-27, RF-014-29): el
     espesor mínimo de la 012 con que se mira si el límite nuevo deja algo fuera (la comprobación
-    de la T31). La cara y el factor de malla de cada superficie (:data:`REFIT_PROFILE_PARAMS`) son
-    los que anotó la operación que hizo su diseño (P-3; T49, hallazgo F-10): van en sus ajustes
-    (:func:`refit_settings`), no aquí, que anotaría los de hoy."""
-    return (VERIFY_MIN_THICKNESS,)
+    de la T31) y el salto y el porcentaje admitidos del salto creado de cada superficie ajustada
+    (:data:`CREATED_STEP_PARAMS`, T56). La cara y el factor de malla de cada superficie
+    (:data:`REFIT_PROFILE_PARAMS`) son los que anotó la operación que hizo su diseño (P-3; T49,
+    hallazgo F-10): van en sus ajustes (:func:`refit_settings`), no aquí, que anotaría los de
+    hoy."""
+    return (VERIFY_MIN_THICKNESS, *CREATED_STEP_PARAMS)

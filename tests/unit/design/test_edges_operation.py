@@ -91,6 +91,15 @@ def finish(found: Iterator[Any]) -> Any:
     return last.result
 
 
+def returned(work: Iterator[Any]) -> Any:
+    """Lo que **devuelven** unos pasos (``yield from``), no lo que lleva su último ``Progress``."""
+    while True:
+        try:
+            next(work)
+        except StopIteration as done:
+            return done.value
+
+
 def scarp_design() -> tuple[np.ndarray, np.ndarray]:
     """La ladera de la cantera y el diseño de CE-014-06 de la T27: la corta de 4 m al pie del
     escarpe previo de 3 m, la regularización de 0,5 m a lo largo de él y el relleno de 2 m."""
@@ -201,6 +210,64 @@ class EdgeTransitionDomainTest(unittest.TestCase):
         for one, two in pairs:
             created = abs(grid[one] - grid[two]) - abs(start[one] - start[two])
             self.assertLessEqual(created, TAN * qfx.STEP_M + THICKNESS_M + 1e-9, (one, two))
+
+    def test_ce_014_06_a_design_warns_of_its_created_step_with_its_stretches(self) -> None:
+        """RF-014-20, RF-014-21, CE-014-06 (T56; hallazgo F-18, la propuesta por defecto que aceptó
+        Samuel): el salto creado se mide en el resumen de **cada diseño**, no solo en la transición
+        (``store._created_step_steps``, lo que comparten la cantera, «Solo relleno…» y el ajuste).
+        El diseño de CE-014-06 sin la transición avisa con el nombre de su superficie, el
+        porcentaje de las parejas que pasa (316 de 520: 60,77 %), el máximo (4 m) y su lugar, y una
+        nota por tramo (los dos de la T27), en los dos idiomas: A11 a mano en el dominio de la
+        transición (las celdas que mueve el diseño donde las máscaras admiten moverlas), con el
+        espesor mínimo y el salto y el porcentaje admitidos que leyó la operación; donde las
+        máscaras no admiten mover (aquí, sin el relleno de 2 m), no es del borde (480 parejas, un
+        tramo). Con la transición, no avisa. Una operación que no leyó el salto ni el porcentaje
+        admitidos (anterior a la T56: su reproducción) no lo mide."""
+        name = "des_srf_ce_014_06"
+        values = {design_params.VERIFY_MIN_THICKNESS: THICKNESS_M,
+                  design_params.EDGE_MAX_STEP: THRESHOLD_M,
+                  design_params.EDGE_MIN_SHARE: SHARE_PCT}
+        found = returned(store._created_step_steps(name, self.surface, self.start, qfx.GRID,
+                                                   self.allowed, values, budget_s=0.0))
+        domain = edges.transition_domain(self.surface, self.start, THICKNESS_M, self.allowed)
+        report = finish(edges.created_steps(self.surface, self.start, domain, qfx.GRID,
+                                            THICKNESS_M, THRESHOLD_M, SHARE_PCT))
+        self.assertEqual((report.pairs, report.over, report.maximum_m, len(report.stretches)),
+                         (520, 316, 4.0, 2))
+        self.assertEqual(found, edges.edge_notices(report, surface=name))
+        self.assertEqual([notice.code for notice in found],
+                         ["des.edge_surface_step", "des.edge_stretch", "des.edge_stretch"])
+        self.assertEqual([notice.severity for notice in found], ["warning", "note", "note"])
+        warning = found[0]
+        self.assertEqual({key: warning.values[key] for key in (
+            "surface", "share", "pairs", "threshold", "admitted", "maximum", "stretches")},
+            {"surface": name, "share": 60.77, "pairs": 520, "threshold": THRESHOLD_M,
+             "admitted": SHARE_PCT, "maximum": 4.0, "stretches": 2})
+        self.assertEqual([notice.values["surface"] for notice in found[1:]], [name, name])
+        self.assertTrue(warning.text("es").startswith(
+            f"«{name}»: el 60,8 % de las 520 parejas de su borde tiene un salto creado mayor que "
+            "1,0 m (al menos el 99,0 % debería quedar por debajo); el mayor, 4,0 m, en x = "))
+        self.assertTrue(warning.text("es").endswith(
+            ", en 2 tramos. Use «Transiciones con el terreno no afectado»."))
+        self.assertTrue(warning.text("en").startswith(
+            f"«{name}»: 60.8 % of the 520 pairs of its edge have a created step greater than "
+            "1.0 m (at least 99.0 % should be within it); the largest, 4.0 m, at x = "))
+        self.assertIn("in 2 stretches. Use «Transitions with the untouched terrain».",
+                      warning.text("en"))
+        one = {**warning.values, "stretches": 1}
+        self.assertIn(", en 1 tramo. Use", messages.render(warning.code, **one))
+        self.assertIn(" in 1 stretch. Use", messages.render(warning.code, language="en", **one))
+        self.assertIn("Tramo 1", found[1].text("es"))
+        inside = self.allowed & ~qfx.in_box(C_BOX)  # el relleno de 2 m, donde no se admite mover
+        warning, *stretches = returned(store._created_step_steps(
+            name, self.surface, self.start, qfx.GRID, inside, values))
+        self.assertEqual((warning.values["pairs"], warning.values["stretches"], len(stretches)),
+                         (520 - 40, 1, 1))
+        self.assertEqual(returned(store._created_step_steps(
+            name, self.outcome.grid, self.start, qfx.GRID, self.allowed, values)), ())
+        older = {design_params.VERIFY_MIN_THICKNESS: THICKNESS_M}
+        self.assertEqual(returned(store._created_step_steps(
+            name, self.surface, self.start, qfx.GRID, self.allowed, older)), ())
 
     def test_d_the_transition_only_brings_the_surface_closer_to_the_terrain(self) -> None:
         """T40 (hallazgo F-1), RF-014-19, CE-014-06: ninguna celda del dominio queda fuera de
@@ -382,6 +449,8 @@ class EdgeTransitionOperationTest(qfx.QuarryProjectCase):
     a mano con celdas de 1 m."""
     calculation: ClassVar[Any]
     stored: ClassVar[Any]
+    quarry: ClassVar[Any]
+    quarry_stored: ClassVar[Any]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -403,8 +472,9 @@ class EdgeTransitionOperationTest(qfx.QuarryProjectCase):
         request = model.QuarryRequest(name=QUARRY_NAME, start=START,
                                       final=model.QuarrySide(REST.code),
                                       exploitation=model.QuarrySide(EXPL.code))
-        drive(steps.quarry_run(cls.project, request, version=cls.v1.uid,
-                               masks=cls.masks_v1)).result.create()
+        cls.quarry = drive(steps.quarry_run(cls.project, request, version=cls.v1.uid,
+                                            masks=cls.masks_v1)).result
+        cls.quarry_stored = cls.quarry.create()
         cls.before = cls.des_state()
         try:
             drive(cls.transition_steps())
@@ -523,6 +593,50 @@ class EdgeTransitionOperationTest(qfx.QuarryProjectCase):
                                             THRESHOLD_M, SHARE_PCT))
         self.assertGreater(before.maximum_m, 1.0)
         self.assertLessEqual(outcome.report.maximum_m, before.maximum_m)
+
+    def test_a_the_quarry_measures_the_created_step_of_each_surface(self) -> None:
+        """RF-014-20, RF-014-21 (T56; hallazgo F-18, la propuesta por defecto que aceptó Samuel):
+        el resumen de la cantera (la del H2 en la rejilla de 2 m) dice el salto creado de **cada
+        superficie**, la final y después la de explotación, como A11 a mano sobre lo escrito: en las
+        celdas que mueve cada una donde las máscaras admiten mover el terreno (el dominio de la
+        transición), con el espesor mínimo y el salto y el porcentaje admitidos (D-6). Lo que dé:
+        aquí la final llega a 1,20 m pero queda dentro más del 99 % de sus parejas y no avisa; la
+        de explotación, sí (el 3,93 % de sus 1.324 parejas, hasta 2,49 m, en 17 tramos), en el
+        resumen, delante de la nota de lo anterior con que se compara, y en ``des_qrp_``, con su
+        superficie; la cantera anota el salto y el porcentaje admitidos entre sus parámetros."""
+        start = qfx.terrain(self.grid)
+        allowed = self.masks_v1.cut_allowed() | self.masks_v1.fill_allowed()
+        expected, reports = [], []
+        for family in ("fin", "exp"):
+            name = provenance.dataset_name(family, QUARRY_NAME)
+            grid = self.grid_of(name)
+            domain = edges.transition_domain(grid, start, self.thickness(), allowed)
+            report = finish(edges.created_steps(grid, start, domain, self.grid, self.thickness(),
+                                                THRESHOLD_M, SHARE_PCT))
+            self.assertGreater(report.pairs, 0, name)
+            reports.append(report)
+            expected += edges.edge_notices(report, surface=name)
+        self.assertGreater(reports[0].maximum_m, THRESHOLD_M)
+        self.assertEqual([report.warned for report in reports], [False, True])
+        codes = ("des.edge_surface_step", "des.edge_stretch")
+        notices = list(self.quarry.notices)
+        found = [notice for notice in notices if notice.code in codes]
+        self.assertEqual(found, expected)
+        if found:
+            after = notices.index(found[-1]) + 1
+            self.assertEqual(notices[after].code, "des.magnitude_no_reference")
+        table = provenance.dataset_name("qrp", QUARRY_NAME)
+        rows = [json.loads(note) for quantity, note in self.query_of(
+            f'SELECT quantity, note FROM "{table}_v01" ORDER BY fid')
+            if quantity in ("warning", "note")]
+        self.assertEqual([row for row in rows if row["code"] in codes],
+                         [{"code": notice.code, "values": dict(notice.values)}
+                          for notice in expected])
+        params = {key for (key,) in self.query_of(
+            "SELECT key FROM gb_operation_param WHERE operation_uid = ?",
+            self.quarry_stored.handle.uid)}
+        self.assertTrue({design_params.EDGE_MAX_STEP, design_params.EDGE_MIN_SHARE} <= params)
+        self.assertNotIn(design_params.EDGE_TRANSITION, params)
 
     def test_a_what_is_registered_repeats_the_request(self) -> None:
         """RF-014-29, RF-014-31: los ajustes son el nombre, la superficie de diseño y la de

@@ -76,6 +76,7 @@ QUARRY_CODES: dict[str, str] = {
     "des.corridor_level": "error",             # RF-014-06, RF-014-09 (T51: «corredor N»)
     "des.corridor_too_long": "warning",        # RF-014-10
     "des.edge_created_step": "warning",        # RF-014-21
+    "des.edge_surface_step": "warning",        # RF-014-20, RF-014-21 (T56: el de cada diseño)
     "des.edge_stretch": "note",                # RF-014-21
     "des.edge_not_design_surface": "error",    # RF-014-19
     "des.fill_only_cuts": "error",             # RF-014-25

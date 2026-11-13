@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """El borde de un diseño con el terreno no afectado: la transición y el salto creado (spec 014,
-T26, T27 y T40; HU-014-5; RF-014-19 a RF-014-21; plan 014 A10, A11, §5.3.1).
+T26, T27, T40 y T56; HU-014-5; RF-014-19 a RF-014-21; plan 014 A10, A11, §5.3.1).
 
 - :func:`transition_steps` (A10): la **transición** de una superficie de diseño ``S`` con el
   terreno no afectado del borde de su dominio de trabajo ``D``. Las semillas son la superficie de
@@ -32,7 +32,11 @@ T26, T27 y T40; HU-014-5; RF-014-19 a RF-014-21; plan 014 A10, A11, §5.3.1).
   las dos); en cada una, ``c = |S_a − S_b| − |z_a − z_b|``: el salto con el diseño menos el que ya
   tenía el terreno, que nunca cuenta (error 48). El informe (:class:`EdgeReport`) da las parejas,
   las que pasan del salto admitido, el máximo con su lugar y los **tramos** (:class:`EdgeStretch`),
-  y avisa si queda dentro del salto admitido menos del porcentaje admitido (RF-014-21, D-6).
+  y avisa si queda dentro del salto admitido menos del porcentaje admitido (RF-014-21, D-6). No
+  solo lo mide la transición: el resumen de la cantera, de «solo relleno» y del ajuste lo mide en
+  cada superficie que hace, en el dominio de la transición (T56, hallazgo F-18;
+  ``design.store``), con su aviso ``des.edge_surface_step``, que nombra la superficie
+  (:func:`edge_notices`).
 - :func:`edge_transition_steps` (T28; RF-014-19 a RF-014-21): lo que calcula la operación
   ``des.edge_transition`` («Transiciones con el terreno no afectado») con una superficie de diseño:
   su dominio (:func:`transition_domain`: las celdas que **mueve el diseño** donde las máscaras
@@ -520,21 +524,29 @@ def transition_domain(surface: np.ndarray, start: np.ndarray, min_thickness_m: f
     return moved
 
 
-def edge_notices(report: EdgeReport) -> tuple[Notice, ...]:
+def edge_notices(report: EdgeReport, *, surface: str | None = None) -> tuple[Notice, ...]:
     """El aviso de RF-014-21 del salto creado ``report`` (``des.edge_created_step``, con el
     porcentaje de las parejas que pasa, las parejas, el salto y el porcentaje admitidos, el máximo
     y su lugar al cm y los tramos) y una nota ``des.edge_stretch`` por tramo, con sus valores como
-    números (``preview.Notice``); ninguno si no se avisa (:attr:`EdgeReport.warned`)."""
+    números (``preview.Notice``); ninguno si no se avisa (:attr:`EdgeReport.warned`).
+
+    ``surface`` (T56; RF-014-20, RF-014-21): el nombre del dato de la superficie de diseño medida,
+    en el resumen de un diseño que no es una transición (la cantera, «solo relleno», el ajuste),
+    que puede llevar más de una: el aviso es entonces ``des.edge_surface_step``, que la nombra, y
+    el aviso y sus notas llevan ``surface`` entre sus valores (el informe la guarda en su JSON)."""
     if not report.warned:
         return ()
-    found = [Notice("des.edge_created_step", {
-        "share": round(report.over_pct, 2), "pairs": report.pairs,
+    named = {} if surface is None else {"surface": surface}
+    code = "des.edge_created_step" if surface is None else "des.edge_surface_step"
+    found = [Notice(code, {
+        **named, "share": round(report.over_pct, 2), "pairs": report.pairs,
         "threshold": report.threshold_m, "admitted": report.min_share_pct,
         "maximum": round(report.maximum_m, 2), "x": _place(report.x), "y": _place(report.y),
         "stretches": len(report.stretches)})]
     found.extend(Notice("des.edge_stretch", {
-        "stretch": item.stretch, "pairs": item.pairs, "maximum": round(item.maximum_m, 2),
-        "x": _place(item.x), "y": _place(item.y)}) for item in report.stretches)
+        **named, "stretch": item.stretch, "pairs": item.pairs,
+        "maximum": round(item.maximum_m, 2), "x": _place(item.x), "y": _place(item.y)})
+        for item in report.stretches)
     return tuple(found)
 
 

@@ -43,6 +43,7 @@ from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
 from tests.support.versions_fixtures import change_counter, files
 
+edges = import_geoblender("design.edges")
 fronts = import_geoblender("design.fronts")
 messages = import_geoblender("design.messages")
 steps = import_geoblender("design.steps")
@@ -406,12 +407,43 @@ class FillOnlyOperationTest(qfx.QuarryProjectCase):
         self.assertEqual(warned[:2], [{"code": notice.code, "values": dict(notice.values)}
                                       for notice in outside])
 
+    def test_a_the_created_step_of_its_surface_is_in_its_summary(self) -> None:
+        """RF-014-20, RF-014-21 (T56; hallazgo F-18, la propuesta por defecto que aceptó Samuel):
+        el resumen de «Solo relleno…» dice el salto creado de su superficie como A11 a mano sobre
+        lo escrito, frente al terreno registrado (T55): en las celdas que mueve el diseño donde las
+        máscaras admiten mover el terreno (el dominio de la transición), con el espesor mínimo y el
+        salto y el porcentaje admitidos (D-6). Lo que dé: aquí avisa (2 de sus 124 parejas pasan
+        de 1 m, hasta 1,08 m, en la rejilla de 2 m), detrás de los avisos de las láminas y delante
+        de los del escalonado, en el resumen y en ``des_rpt_``, con su superficie."""
+        terrain = qfx.terrain(self.grid)
+        allowed = self.masks_v1.cut_allowed() | self.masks_v1.fill_allowed()
+        surface = self.grid_of(DATASET)
+        e = self.default(design_params.VERIFY_MIN_THICKNESS)
+        domain = edges.transition_domain(surface, terrain, e, allowed)
+        report = finish(edges.created_steps(
+            surface, terrain, domain, self.grid, e, self.default(design_params.EDGE_MAX_STEP),
+            self.default(design_params.EDGE_MIN_SHARE)))
+        self.assertGreater(report.pairs, 0)
+        self.assertTrue(report.warned)
+        expected = list(edges.edge_notices(report, surface=DATASET))
+        codes = ("des.edge_surface_step", "des.edge_stretch")
+        notices = list(self.calculation.notices)
+        self.assertEqual([notice for notice in notices if notice.code in codes], expected)
+        self.assertEqual(list(self.calculation.outcome.notices[-len(expected):]), expected)
+        rows = [json.loads(note) for quantity, note in self.query_of(
+            f'SELECT quantity, note FROM "{REPORT}_v01" ORDER BY fid')
+            if quantity in ("warning", "note")]
+        self.assertEqual([row for row in rows if row["code"] in codes],
+                         [{"code": notice.code, "values": dict(notice.values)}
+                          for notice in expected])
+
     def test_a_what_is_registered_repeats_the_request(self) -> None:
         """RF-014-29, RF-014-31: los ajustes repiten la petición (con la capa de láminas y su campo);
         las entradas, la envolvente, la superficie de partida, la capa de láminas
         (``water_layer``), las máscaras y los sectores; los parámetros, los del escalonado de la
-        013 (los cinco del perfil, las tolerancias y el espesor mínimo), ninguno de la cantera;
-        la ficha de la superficie dice su superficie de partida."""
+        013 (los cinco del perfil, las tolerancias y el espesor mínimo) y el salto y el porcentaje
+        admitidos del salto creado de su superficie (T56), ninguno más de la cantera ni el ángulo
+        de transición; la ficha de la superficie dice su superficie de partida."""
         uid = self.stored.handle.uid
         settings = json.loads(self.query_of("SELECT settings FROM gb_operation WHERE uid = ?",
                                             uid)[0][0])
@@ -430,8 +462,10 @@ class FillOnlyOperationTest(qfx.QuarryProjectCase):
             "height_m", "face_deg", "berm_m", "anchor_m", "mesh_factor")}
         wanted |= {design_params.TOLERANCE_FACE, design_params.WARNING_RATIO,
                    design_params.VERIFY_MIN_THICKNESS}
+        wanted |= {design_params.EDGE_MAX_STEP, design_params.EDGE_MIN_SHARE}  # T56: su salto
         self.assertTrue(wanted <= params, params)
-        self.assertFalse(any(key.startswith(("des.quarry.", "des.edge.")) for key in params))
+        self.assertFalse(any(key.startswith("des.quarry.") for key in params))
+        self.assertNotIn(design_params.EDGE_TRANSITION, params)
         with self.project.read() as conn:
             origin = store.design_surface_of(conn, DATASET, self.v1.uid)
             record = self.record(DATASET, self.v1)

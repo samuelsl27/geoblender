@@ -863,6 +863,27 @@ CATALOG: tuple[Message, ...] = (
         "warning",
     ),
     Message(
+        "des.edge_surface_step",
+        "«{surface}»: {share} % of the {pairs} pairs of its edge have a created step greater than "
+        "{threshold} m (at least {admitted} % should be within it); the largest, {maximum} m, at "
+        "x = {x} m, y = {y} m, in {stretches} stretches. Use «Transitions with the untouched "
+        "terrain».",
+        "«{surface}»: el {share} % de las {pairs} parejas de su borde tiene un salto creado mayor "
+        "que {threshold} m (al menos el {admitted} % debería quedar por debajo); el mayor, "
+        "{maximum} m, en x = {x} m, y = {y} m, en {stretches} tramos. Use «Transiciones con el "
+        "terreno no afectado».",
+        "warning",
+        count="stretches",
+        one_msgid="«{surface}»: {share} % of the {pairs} pairs of its edge have a created step "
+        "greater than {threshold} m (at least {admitted} % should be within it); the largest, "
+        "{maximum} m, at x = {x} m, y = {y} m, in {stretches} stretch. Use «Transitions with the "
+        "untouched terrain».",
+        one_es="«{surface}»: el {share} % de las {pairs} parejas de su borde tiene un salto creado "
+        "mayor que {threshold} m (al menos el {admitted} % debería quedar por debajo); el mayor, "
+        "{maximum} m, en x = {x} m, y = {y} m, en {stretches} tramo. Use «Transiciones con el "
+        "terreno no afectado».",
+    ),
+    Message(
         "des.edge_stretch",
         "Stretch {stretch}: {pairs} pairs, up to {maximum} m, centre at x = {x} m, y = {y} m.",
         "Tramo {stretch}: {pairs} parejas, hasta {maximum} m, centro en x = {x} m, y = {y} m.",

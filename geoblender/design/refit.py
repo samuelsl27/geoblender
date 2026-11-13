@@ -414,8 +414,10 @@ class RefitOutcome:
     :class:`Refit` de cada superficie (``refits``, en el orden de la petición), sus cifras
     CALCULADO (``figures``, :func:`refit_figures`), el ``message`` de la operación, las notas y los
     avisos del orden de las dos superficies de una cantera (``order_notices``, :data:`ORDER_CODE` y
-    :data:`ORDER_SIDE_CODE`; T53) y los de los diseños obsoletos de los que sale
-    (``stale_notices``, :data:`SOURCE_STALE_CODE`; T54)."""
+    :data:`ORDER_SIDE_CODE`; T53), los de los diseños obsoletos de los que sale
+    (``stale_notices``, :data:`SOURCE_STALE_CODE`; T54) y los del salto creado de cada superficie
+    ajustada (``created_notices``: ``des.edge_surface_step`` y sus tramos, T56; RF-014-20,
+    RF-014-21)."""
 
     name: str
     refits: tuple[Refit, ...]
@@ -423,6 +425,7 @@ class RefitOutcome:
     message: str
     order_notices: tuple[Notice, ...] = ()
     stale_notices: tuple[Notice, ...] = ()
+    created_notices: tuple[Notice, ...] = ()
 
     @property
     def volume_m3(self) -> float:
@@ -431,11 +434,12 @@ class RefitOutcome:
 
     @property
     def notices(self) -> tuple[Notice, ...]:
-        """Los avisos ``des.refit_not_needed`` de las superficies que el límite nuevo no corta,
-        detrás los del orden de las dos superficies de una cantera (T53) y, al final, los de los
-        diseños obsoletos de los que sale (T54)."""
+        """Los avisos ``des.refit_not_needed`` de las superficies que el límite nuevo no corta y
+        los del salto creado de cada superficie ajustada (T56), lo de cada superficie; detrás, los
+        del orden de las dos superficies de una cantera (T53) y, al final, los de los diseños
+        obsoletos de los que sale (T54)."""
         return (*(item.notice for item in self.refits if item.notice is not None),
-                *self.order_notices, *self.stale_notices)
+                *self.created_notices, *self.order_notices, *self.stale_notices)
 
     def refit(self, surface: str) -> Refit:
         """El ajuste de la superficie ``surface`` (el nombre de su dato); ``KeyError`` si no es de
@@ -466,11 +470,14 @@ def _order_text(notice: Notice) -> str:
 
 
 def refit_outcome(name: str, refits: Sequence[Refit], order_notices: Iterable[Notice] = (),
-                  stale_notices: Iterable[Notice] = ()) -> RefitOutcome:
+                  stale_notices: Iterable[Notice] = (), *,
+                  created_notices: Iterable[Notice] = ()) -> RefitOutcome:
     """El :class:`RefitOutcome` del ajuste ``name`` con sus ``refits``, las notas y avisos del
-    orden de las dos superficies de una cantera (``order_notices``, T53) y los avisos de los
-    diseños obsoletos de los que sale (``stale_notices``, T54): las cifras y el mensaje (cada
-    superficie con su volumen de ajuste y sus celdas, o «no hacía falta», y lo del orden)."""
+    orden de las dos superficies de una cantera (``order_notices``, T53), los avisos de los
+    diseños obsoletos de los que sale (``stale_notices``, T54) y los del salto creado de cada
+    superficie ajustada (``created_notices``, T56): las cifras y el mensaje (cada superficie con
+    su volumen de ajuste y sus celdas, o «no hacía falta», y lo del orden; el salto creado no
+    cambia el mensaje)."""
     found = tuple(refits)
     orders = tuple(order_notices)
     parts = [f"«{item.surface}» {format_value(round(item.volume_m3, 1))} m³ en {item.cells} "
@@ -479,4 +486,4 @@ def refit_outcome(name: str, refits: Sequence[Refit], order_notices: Iterable[No
     parts += [_order_text(notice) for notice in orders]
     message = f"Ajuste «{name}» al límite nuevo calculado: {'; '.join(parts)}"
     return RefitOutcome(name, found, refit_figures(name, found), message, orders,
-                        tuple(stale_notices))
+                        tuple(stale_notices), tuple(created_notices))

@@ -62,6 +62,7 @@ from tests.support import quarry_fixtures as qfx
 from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
 
+edges = import_geoblender("design.edges")
 refit = import_geoblender("design.refit")
 quarry = import_geoblender("design.quarry")
 messages = import_geoblender("design.messages")
@@ -716,6 +717,8 @@ EXPLOITATION = provenance.dataset_name("exp", QUARRY_NAME)
 FINAL = provenance.dataset_name("fin", QUARRY_NAME)
 ADJUSTED = {EXPLOITATION: provenance.refit_output(NAME, EXPLOITATION),
             FINAL: provenance.refit_output(NAME, FINAL)}
+CREATED_STEP = ("des.edge_surface_step", "des.edge_stretch")
+"""Los códigos del salto creado de cada superficie ajustada en el resumen (T56)."""
 
 
 def recompute_function(request: Any) -> Any:
@@ -897,8 +900,9 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         lo vuelve a pedir; el ángulo no se pide: sale del perfil) y, por superficie, la cara y el
         factor de malla con que se ajustó, los que anotó la operación que hizo su diseño (T49, P-3:
         el recálculo los vuelve a leer de ella); las entradas, cada superficie
-        (``design_surface``), la de partida (``surface``) y las máscaras; el único parámetro que
-        lee del proyecto, el espesor mínimo."""
+        (``design_surface``), la de partida (``surface``) y las máscaras; los parámetros que lee
+        del proyecto, el espesor mínimo y, para el salto creado de cada superficie ajustada (T56),
+        el salto y el porcentaje admitidos."""
         uid = self.stored.handle.uid
         settings = json.loads(self.query_of("SELECT settings FROM gb_operation WHERE uid = ?",
                                             uid)[0][0])
@@ -920,10 +924,41 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         self.assertTrue(any(role.startswith("masks_") for _name, role in inputs), inputs)
         params = {key for (key,) in self.query_of(
             "SELECT key FROM gb_operation_param WHERE operation_uid = ?", uid)}
-        self.assertEqual(params, {design_params.VERIFY_MIN_THICKNESS})
+        self.assertEqual(params, {design_params.VERIFY_MIN_THICKNESS,
+                                  design_params.EDGE_MAX_STEP, design_params.EDGE_MIN_SHARE})
         with self.project.read() as conn:
             origin = store.design_surface_of(conn, ADJUSTED[FINAL], self.v1.uid)
         self.assertEqual((origin.op_type, origin.start), (provenance.REFIT, START))
+
+    def test_a_the_created_step_of_each_refitted_surface_is_in_its_summary(self) -> None:
+        """RF-014-20, RF-014-21 (T56; hallazgo F-18, la propuesta por defecto que aceptó Samuel):
+        el resumen del ajuste dice el salto creado de cada superficie ajustada, en el orden de la
+        petición, como A11 a mano sobre lo escrito (atadas por la regla de orden de su cantera):
+        en las celdas que mueve cada una donde las máscaras del límite nuevo admiten mover el
+        terreno (el dominio de la transición), con el espesor mínimo y el salto y el porcentaje
+        admitidos (D-6). Lo que dé, con el nombre de la superficie ajustada, lo de cada superficie
+        delante de la nota del orden (T53) y del aviso de la cantera obsoleta, que sigue el último
+        (T54): aquí avisan las dos (en la rejilla de 2 m,
+        la explotación hasta 2,49 m y la final hasta 1,26 m)."""
+        start = qfx.terrain(self.grid)
+        allowed = self.masks_new.cut_allowed() | self.masks_new.fill_allowed()
+        expected = []
+        for surface in (EXPLOITATION, FINAL):
+            grid = self.grid_of(ADJUSTED[surface])
+            domain = edges.transition_domain(grid, start, self.thickness(), allowed)
+            report = finish(edges.created_steps(
+                grid, start, domain, self.grid, self.thickness(),
+                core_params.definition(design_params.EDGE_MAX_STEP).default,
+                core_params.definition(design_params.EDGE_MIN_SHARE).default))
+            self.assertGreater(report.pairs, 0, surface)
+            self.assertTrue(report.warned, surface)
+            expected += edges.edge_notices(report, surface=ADJUSTED[surface])
+        codes = ("des.edge_surface_step", "des.edge_stretch")
+        notices = list(self.calculation.notices)
+        self.assertEqual([notice for notice in notices if notice.code in codes], expected)
+        self.assertEqual(notices[:len(expected)], expected)
+        self.assertEqual([notice.code for notice in notices[len(expected):]],
+                         ["des.refit_order", "des.refit_source_stale"])
 
     def test_a_the_order_rule_of_the_quarry_ties_its_two_refitted_surfaces(self) -> None:
         """RF-014-14, RF-014-27 (T53; hallazgo F-15): ajustadas cada una con la cara de su perfil,
@@ -978,7 +1013,8 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         (es la de su cara); como queda más de 1 mm por encima de la explotación de la cantera, el
         resumen lo avisa (``des.refit_order_side``) con la cantera, las dos superficies, las celdas
         y cuánto por encima, sin escribir nada; y, detrás, que la cantera de la que sale está
-        obsoleta (T54)."""
+        obsoleta (T54). Delante de los dos, el salto creado de la final ajustada (T56), con el
+        nombre de su salida."""
         before = self.des_state()
         with drive(self.refit_steps("Solo la final", (FINAL,))).result as alone:
             (only,) = alone.outcome.refits
@@ -987,12 +1023,18 @@ class RefitOperationTest(qfx.QuarryProjectCase):
                 above = only.grid - self.grid_of(EXPLOITATION)
                 broken = above > quarry.ORDER_TOLERANCE_M
             self.assertGreater(int(np.count_nonzero(broken)), 0)
-            self.assertEqual([(notice.code, dict(notice.values)) for notice in alone.notices], [
+            notices = alone.notices
+            self.assertEqual([(notice.code, dict(notice.values)) for notice in notices
+                              if notice.code not in CREATED_STEP], [
                 ("des.refit_order_side", {"surface": FINAL, "quarry": QUARRY_NAME,
                                           "other": EXPLOITATION,
                                           "cells": int(np.count_nonzero(broken)),
                                           "above": round(float(above[broken].max()), 3)}),
                 ("des.refit_source_stale", {"design": QUARRY_NAME, "surfaces": f"«{FINAL}»"})])
+            created = notices[:-2]
+            self.assertTrue(created and all(notice.code in CREATED_STEP for notice in created))
+            self.assertEqual({notice.values["surface"] for notice in created},
+                             {provenance.refit_output("Solo la final", FINAL)})
         self.assertEqual(self.des_state(), before)
 
     def test_b_the_rule_is_the_one_of_the_quarry(self) -> None:
@@ -1047,18 +1089,28 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         """RF-014-27 (spec §8), P-3: la superficie ajustada ya no deja nada fuera: ajustarla otra
         vez es de 0 m³ con el aviso ``des.refit_not_needed``; su perfil es el de la superficie de
         la que sale (la explotación de la cantera), y el diseño del que sale, la cantera obsoleta
-        (T54: recalcularla lo sustituye)."""
+        (T54: recalcularla lo sustituye). Su salto creado (T56) es el de la superficie ajustada,
+        que no cambia: el mismo aviso y los mismos tramos que el del primer ajuste, con el nombre
+        de su salida."""
         with self.project.read() as conn:
             origin = store.design_surface_of(conn, ADJUSTED[EXPLOITATION], self.v1.uid)
             self.assertEqual(store.refit_profiles(conn, origin, self.v1.uid), (EXPL.code, ()))
         with drive(self.refit_steps("Otra vez", (ADJUSTED[EXPLOITATION],))).result as again:
             (only,) = again.outcome.refits
             self.assertEqual((only.cells, only.volume_m3), (0, 0.0))
-            self.assertEqual([(notice.code, dict(notice.values)) for notice in again.notices],
+            self.assertEqual([(notice.code, dict(notice.values)) for notice in again.notices
+                              if notice.code not in CREATED_STEP],
                              [("des.refit_not_needed", {"surface": ADJUSTED[EXPLOITATION]}),
                               ("des.refit_source_stale",
                                {"design": QUARRY_NAME,
                                 "surfaces": f"«{ADJUSTED[EXPLOITATION]}»"})])
+            output = provenance.refit_output("Otra vez", ADJUSTED[EXPLOITATION])
+            first = [{**notice.values, "surface": output} for notice in self.calculation.notices
+                     if notice.code in CREATED_STEP
+                     and notice.values["surface"] == ADJUSTED[EXPLOITATION]]
+            self.assertTrue(first)
+            self.assertEqual([dict(notice.values) for notice in again.notices
+                              if notice.code in CREATED_STEP], first)
 
     def change(self, key: str, value: float) -> None:
         """Cambia el parámetro ``key`` del proyecto a ``value``, un minuto después."""
@@ -1147,9 +1199,9 @@ class RefitOperationTest(qfx.QuarryProjectCase):
                                           uid)[0][0])
         self.assertEqual(stored["faces"], {EXPLOITATION: {face_key: EXPL.face_deg,
                                                           mesh_key: EXPL.mesh_factor}})
-        self.assertEqual(self.query_of("SELECT key FROM gb_operation_param WHERE "
-                                       "operation_uid = ?", uid),
-                         [(design_params.VERIFY_MIN_THICKNESS,)])
+        self.assertEqual({key for (key,) in self.query_of(
+            "SELECT key FROM gb_operation_param WHERE operation_uid = ?", uid)},
+            set(provenance.refit_params()))  # ni la cara ni el factor de malla (T49)
         request = recompute_mod.RecomputeRequest(self.project, quarry, provenance.QUARRY,
                                                  json.loads(settings), (), (),
                                                  version=self.v1.uid)

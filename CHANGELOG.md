@@ -158,7 +158,13 @@ cantera con dos superficies, revise la clasificación y la cree en menos de 20 m
     terreno del borde de lo que mueve, sin paredes más empinadas que el ángulo de transición (sin
     valor por defecto), y mide el **salto creado** de cada pareja del borde como el salto con el diseño
     menos el que ya tenía el terreno: un escarpe natural no cuenta. Si menos del 99 % de las parejas
-    queda por debajo de 1 m, avisa con sus tramos, sin bloquear. La transición **solo acerca la
+    queda por debajo de 1 m, avisa con sus tramos, sin bloquear. El salto creado no lo mide solo la
+    transición: el resumen de la cantera (de cada una de sus dos superficies), de **Solo relleno…**
+    y del ajuste a un límite nuevo (de cada superficie ajustada) lo mide igual, en el mismo borde, y
+    avisa nombrando la superficie (lo decidió Samuel el 13/11/2026; su verificación encontró que
+    solo lo medía la transición); por eso esas tres operaciones anotan también el salto y el
+    porcentaje admitidos entre sus parámetros, y cambiarlos las deja obsoletas. Ninguna cifra
+    cambia. La transición **solo acerca la
     superficie al terreno**: cada celda queda entre su cota de diseño y la del terreno, así que no
     convierte un corte en relleno ni un relleno en corte, no ahonda un corte ni sube un relleno, y no
     rellena donde las restricciones solo admiten el corte. Su verificación lo encontró junto a un
