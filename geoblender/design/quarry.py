@@ -2335,6 +2335,30 @@ class QuarryOutcome:
         return found
 
 
+_EXACT_CODES = MappingProxyType({Surface.FINAL: "des.quarry_final_exact",
+                                 Surface.EXPLOITATION: "des.quarry_exploitation_exact"})
+"""El rechazo de la euclídea exacta en cada superficie (T45): uno por lado, para nombrarlo en los
+dos idiomas."""
+
+
+def _check_metric(request: QuarryRequest) -> None:
+    """RF-014-12 (T45, hallazgo F-6): la métrica de cada lado de la cantera ``request`` es el
+    *chamfer* 5×5 (ADR-0014). Cada lado va con la pendiente de sus sectores (:func:`side_steps`)
+    y la euclídea exacta solo admite una pendiente constante, así que un lado con ella se rechaza
+    **al pedirlo**, antes de leer ni calcular nada: ``DesignError`` ``des.quarry_final_exact`` o
+    ``des.quarry_exploitation_exact`` (con los dos, el de la final) con la cantera, el campo
+    (``final.metric`` o ``exploitation.metric``, su ajuste) y el valor, que dice que se use el
+    *chamfer* 5×5 (y no ``des.exact_needs_constant_slope``, que manda a la orden de la 013). Lo
+    llaman :func:`quarry_steps` y ``design.steps.quarry_run``."""
+    for surface in Surface:
+        metric = Metric(request.side(surface).metric)
+        if metric is Metric.EXACT:
+            raise DesignError(_EXACT_CODES[surface],
+                              obj=f"Cantera «{request.name}» ({SIDE_NAMES[surface]})",
+                              field=f"{surface.value}.metric", value=metric.value,
+                              quarry=request.name)
+
+
 def quarry_steps(job: QuarryJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
     """**Las dos superficies** de la cantera en una sola orden (A8; RF-014-12 a RF-014-14), por
     pasos de ``budget_s`` como mucho (los de :func:`side_steps` de cada lado y los del orden,
@@ -2357,10 +2381,12 @@ def quarry_steps(job: QuarryJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator
 
     ``ValueError`` (error del programa) al llamar con los de :func:`side_steps` de cada lado, si
     las zonas de relleno no son de la rejilla o si los polígonos de «explotación hasta la final»
-    faltan con el modo «capa», se dan con otro modo o no son de la rejilla; ``DesignError`` si el
-    umbral o el área mínima del aviso están fuera de su rango (``check_quarry_param``). Al
+    faltan con el modo «capa», se dan con otro modo o no son de la rejilla; ``DesignError`` al
+    llamar, antes que nada, si un lado pide la euclídea exacta (:func:`_check_metric`, T45), y si
+    el umbral o el área mínima del aviso están fuera de su rango (``check_quarry_param``). Al
     avanzar, los rechazos de la 013 de cada lado. Ninguna entrada se modifica y no se escribe
     nada; cerrar el generador a mitad no deja nada."""
+    _check_metric(job.request)
     shape = job.masks.grid.shape
     if job.fill_zones is not None:
         _same_shape("las zonas de restauración por relleno", np.asarray(job.fill_zones), shape)

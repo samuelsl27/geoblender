@@ -9,7 +9,8 @@ queda por debajo de la final (``explotación = máx(explotación, final)``) y «
 baja la final donde queda por encima (``final = mín(final, explotación)``); después, las dos
 ``≤ z``. Antes de dar el resultado comprueba ``final ≤ explotación ≤ terreno`` celda a celda a
 1 mm (``check_order``): si fallara, es un error del programa (``des.quarry_order_broken``) y no
-sale nada que crear.
+sale nada que crear. Un lado con la euclídea exacta se rechaza al llamar (T45): los dos van con la
+pendiente de sus sectores.
 
 Las reglas, con rejillas a mano; el orden y el invariante, con la corta de E3 sobre la cantera
 sintética de ``tests.support.quarry_fixtures`` (T01), en la que la final (``REST_5_35_6``, más
@@ -376,6 +377,34 @@ class QuarryStepsTest(qfx.QuarryProjectCase):
             quarry.quarry_steps(self.job(seeds={"final": crown}))
         with self.assertRaises(ValueError):
             quarry.quarry_steps(self.job(anchors={"final": anchors}))
+
+    def test_the_exact_metric_is_refused_when_asked(self) -> None:
+        """RF-014-12 (T45, hallazgo F-6): cada lado va con la pendiente de sus sectores y la
+        euclídea exacta solo admite una pendiente constante, así que un lado con la exacta se
+        rechaza al llamar, antes de calcular nada (ni el techo ni un lado), con su código
+        —nunca ``des.exact_needs_constant_slope``, que manda a la orden de la 013—, nombrando la
+        cantera y el lado (su campo, ``final.metric`` o ``exploitation.metric``, y su valor) y
+        diciendo que se use el chamfer 5×5; con los dos lados, el de la final."""
+        exact = {surface: replace(self.request.side(surface), metric="exact")
+                 for surface in ("final", "exploitation")}
+        cases = (({"final": exact["final"]}, "des.quarry_final_exact", "final"),
+                 ({"exploitation": exact["exploitation"]}, "des.quarry_exploitation_exact",
+                  "exploitation"),
+                 (exact, "des.quarry_final_exact", "final"))
+        for sides, code, surface in cases:
+            with self.subTest(lados=sorted(sides)):
+                with mock.patch.object(quarry, "side_steps", side_effect=AssertionError), \
+                        self.assertRaises(messages.DesignError) as caught:
+                    quarry.quarry_steps(self.job(request=replace(self.request, **sides)))
+                error = caught.exception
+                self.assertEqual((error.code, error.field, error.value),
+                                 (code, f"{surface}.metric", "exact"))
+                self.assertIn("«Cantera E3»", error.obj)
+                self.assertIn("Cantera «Cantera E3»", error.text)
+                self.assertIn("use el chamfer 5×5", error.text)
+                english = messages.render(code, language="en", **error.values)
+                self.assertIn("Quarry «Cantera E3»", english)
+                self.assertIn("use the 5×5 chamfer", english)
 
     def test_closing_half_way_leaves_nothing(self) -> None:
         """§5.3.2: cerrar los pasos a mitad (Esc) no deja nada ni lanza nada."""

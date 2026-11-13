@@ -56,6 +56,8 @@ QUARRY_CODES: dict[str, str] = {
     "des.quarry_order_broken": "error",        # RF-014-14
     "des.quarry_unsplit_zones": "warning",     # RF-014-17
     "des.quarry_unsplit_zone": "note",         # RF-014-17
+    "des.quarry_final_exact": "error",         # RF-014-12 (T45)
+    "des.quarry_exploitation_exact": "error",  # RF-014-12 (T45)
     "des.floor_overlap": "error",              # RF-014-06
     "des.floor_level": "error",                # RF-014-06
     "des.floor_above_terrain": "warning",      # RF-014-05 (caso límite)

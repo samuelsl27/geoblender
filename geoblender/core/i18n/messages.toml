@@ -8211,11 +8211,11 @@ es = "Rejilla de cotas de ancla del proyecto o de la versión activa para la sup
 ["Grid of anchor elevations of the project or of the active version of the exploitation surface"]
 es = "Rejilla de cotas de ancla del proyecto o de la versión activa para la superficie de explotación"
 
-["How the distance to the seeds of the final surface is measured: the 5×5 chamfer or the exact Euclidean distance"]
-es = "Cómo se mide la distancia a las semillas de la superficie final: el chaflán 5×5 o la distancia euclídea exacta"
+["How the distance to the seeds of the final surface is measured: the 5×5 chamfer, the only one with the slope of each sector"]
+es = "Cómo se mide la distancia a las semillas de la superficie final: el chaflán 5×5, la única con la pendiente de cada sector"
 
-["How the distance to the seeds of the exploitation surface is measured: the 5×5 chamfer or the exact Euclidean distance"]
-es = "Cómo se mide la distancia a las semillas de la superficie de explotación: el chaflán 5×5 o la distancia euclídea exacta"
+["How the distance to the seeds of the exploitation surface is measured: the 5×5 chamfer, the only one with the slope of each sector"]
+es = "Cómo se mide la distancia a las semillas de la superficie de explotación: el chaflán 5×5, la única con la pendiente de cada sector"
 
 ["Floors"]
 es = "Fondos"

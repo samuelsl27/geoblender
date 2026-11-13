@@ -31,6 +31,7 @@ import json
 from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any, ClassVar
+from unittest import mock
 
 import numpy as np
 
@@ -451,6 +452,34 @@ class QuarryOperationTest(qfx.QuarryProjectCase):
             "group": 1, "cells": cells, "area": area, "x": x, "y": y}))
         self.assertTrue(any(line.startswith(f"Grupo 1: {cells} celdas")
                             for line in self.other.lines("es")))  # el resumen lo sigue diciendo
+
+    def test_a_the_exact_metric_is_refused_before_reading_anything(self) -> None:
+        """RF-014-12 (T45, hallazgo F-6): desde un guion, una ``QuarryRequest`` con la euclídea
+        exacta en un lado (el diálogo ya no la ofrece) se rechaza al pedirla: el primer paso de
+        «Calcular» se niega antes de leer nada (ni la versión, ni las máscaras, ni las capas)
+        nombrando la cantera y el lado y diciendo que se use el chamfer 5×5, en los dos idiomas, y
+        no deja nada escrito."""
+        before = self.des_state()
+        base = quarry_request("Cantera exacta")
+        exact = replace(base, exploitation=replace(base.exploitation, metric="exact"))
+        work = steps.quarry_run(self.project, exact, version=self.v1.uid)
+        with mock.patch.object(store, "require_version", side_effect=AssertionError("leída")), \
+                self.assertRaises(messages.DesignError) as caught:
+            next(work)
+        error = caught.exception
+        self.assertEqual((error.code, error.field, error.value),
+                         ("des.quarry_exploitation_exact", "exploitation.metric", "exact"))
+        self.assertEqual(error.text, (
+            "Cantera «Cantera exacta»: la superficie de explotación pide la euclídea exacta "
+            "(«exploitation.metric» = exact), que solo admite una pendiente constante, y cada "
+            "superficie de una cantera va con la pendiente de sus sectores: use el chamfer 5×5; "
+            "no se calcula ni se registra nada."))
+        self.assertEqual(messages.render(error.code, language="en", **error.values), (
+            "Quarry «Cantera exacta»: the exploitation surface asks for the exact Euclidean "
+            "metric («exploitation.metric» = exact), which only accepts a constant slope, and "
+            "each surface of a quarry follows the slope of its sectors: use the 5×5 chamfer; "
+            "nothing is calculated or recorded."))
+        self.assertEqual(self.des_state(), before)
 
     def test_a_the_summary_says_the_warnings_of_the_request(self) -> None:
         """RF-014-12, RF-014-03 (en el resumen): la otra cantera siembra la explotación fuera de

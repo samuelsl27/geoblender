@@ -295,7 +295,9 @@ def quarry_run(project: StoreProject, request: QuarryRequest, *, version: str | 
     con su superficie y un ``des.quarry_seed_group`` por grupo, con sus celdas, su área y su
     centro). Con la confirmación, calcula; el resumen sigue diciendo los grupos.
 
-    Los rechazos salen **al avanzar**, antes de escribir nada: sin versión activa o no editable,
+    Los rechazos salen **al avanzar**, antes de escribir nada: el primero, antes de leer nada, un
+    lado con la euclídea exacta (``des.quarry_final_exact``, ``des.quarry_exploitation_exact``;
+    T45: la cantera solo admite el *chamfer* 5×5); después, sin versión activa o no editable,
     máscaras (``MaskError``), la superficie, un recinto vacío, un sector del recinto con la
     búsqueda de intocables pendiente (``des.sector_pending``, RF-014-30), las capas (fondos,
     corredores, zonas), un perfil o un parámetro de la 014 sin valor (RF-013-19) y el nombre
@@ -434,6 +436,7 @@ def _area_steps(project: StoreProject, name: str, surface: str, version: str | N
 def _quarry_steps(project: StoreProject, request: QuarryRequest, version: str | None,
                   masks: MaskSet | None, budget_s: float, confirm_outside: bool
                   ) -> Generator[Progress, None, None]:
+    quarry._check_metric(request)  # T45: la petición sola, antes de leer nada
     found = store.require_version(project, version, provenance.QUARRY)
     loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
     prepared: store.PreparedQuarry = yield from _prepare_steps(

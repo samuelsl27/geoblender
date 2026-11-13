@@ -631,6 +631,27 @@ CATALOG: tuple[Message, ...] = (
         "Corredores de «{layer}»: {corridors}, {cells} celdas ({area} m²), {length} m de eje.",
         "note",
     ),
+    # La métrica de cada superficie (RF-014-12; T45): solo el chamfer 5×5 ---------------------
+    Message(
+        "des.quarry_final_exact",
+        "Quarry «{quarry}»: the final surface asks for the exact Euclidean metric («{field}» = "
+        "{value}), which only accepts a constant slope, and each surface of a quarry follows "
+        "the slope of its sectors: use the 5×5 chamfer; nothing is calculated or recorded.",
+        "Cantera «{quarry}»: la superficie final pide la euclídea exacta («{field}» = {value}), "
+        "que solo admite una pendiente constante, y cada superficie de una cantera va con la "
+        "pendiente de sus sectores: use el chamfer 5×5; no se calcula ni se registra nada.",
+    ),
+    Message(
+        "des.quarry_exploitation_exact",
+        "Quarry «{quarry}»: the exploitation surface asks for the exact Euclidean metric "
+        "(«{field}» = {value}), which only accepts a constant slope, and each surface of a "
+        "quarry follows the slope of its sectors: use the 5×5 chamfer; nothing is calculated or "
+        "recorded.",
+        "Cantera «{quarry}»: la superficie de explotación pide la euclídea exacta («{field}» = "
+        "{value}), que solo admite una pendiente constante, y cada superficie de una cantera va "
+        "con la pendiente de sus sectores: use el chamfer 5×5; no se calcula ni se registra "
+        "nada.",
+    ),
     # Las dos superficies y «explotación hasta la final» (RF-014-14, RF-014-17) ----------------
     Message(
         "des.quarry_order_broken",

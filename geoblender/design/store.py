@@ -2091,11 +2091,10 @@ def quarry_parts_units(request: QuarryRequest, masks: access.MaskSet, start: Ras
                        corridors, joined, tuple(conserve), fill_zones, to_final_zones)
 
 
-def _ceiling_metric(request: QuarryRequest) -> Metric:
-    """La métrica del techo de conservación, que es uno para los dos lados (T13): la de los dos si
-    coinciden y, si no, el *chamfer* 5×5 por defecto de ADR-0014."""
-    metrics = {Metric(request.final.metric), Metric(request.exploitation.metric)}
-    return metrics.pop() if len(metrics) == 1 else Metric.CHAMFER5
+_CEILING_METRIC = Metric.CHAMFER5
+"""La métrica del techo de conservación, que es uno para los dos lados (T13): el *chamfer* 5×5 de
+ADR-0014, la de los dos lados de una cantera (T45: la euclídea exacta se rechaza al pedirla,
+``quarry._check_metric``)."""
 
 
 def quarry_notices(request: QuarryRequest, masks: access.MaskSet, parts: QuarryParts,
@@ -2176,7 +2175,7 @@ def quarry_compute_steps(request: QuarryRequest, masks: access.MaskSet, parts: Q
     ``values`` (clave → valor: los que anotó la operación, los que se resuelven hoy o los
     congelados), sin escribir nada (``yield from``): el techo de conservación de sus zonas a
     conservar, uno para los dos lados (``quarry.conservation_ceiling_steps``, con el talud de
-    conservación y la métrica de :func:`_ceiling_metric`), y las dos superficies
+    conservación y el *chamfer* 5×5, :data:`_CEILING_METRIC`), y las dos superficies
     (``quarry.quarry_steps``, con el anillo de coronación, el espesor mínimo, la tolerancia, el
     umbral y el aviso de desdoblado). ``pending``: los nombres de los sectores con la búsqueda
     pendiente que se marcan. Devuelve la :class:`QuarryCalculated`: el ``QuarryOutcome`` y sus
@@ -2188,7 +2187,7 @@ def quarry_compute_steps(request: QuarryRequest, masks: access.MaskSet, parts: Q
     if parts.conserve:
         ceiling = yield from pipeline.forward(quarry.conservation_ceiling_steps(
             parts.conserve, start, geometry, values.get(CONSERVE_SLOPE),  # type: ignore[arg-type]
-            metric=_ceiling_metric(request), budget_s=budget_s))
+            metric=_CEILING_METRIC, budget_s=budget_s))
     job = quarry.QuarryJob(
         request, start, masks, parts.domain, values, ring, number(values, VERIFY_MIN_THICKNESS),
         number(values, TOLERANCE_FACE), number(values, WARNING_RATIO), seeds=parts.seeds,

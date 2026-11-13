@@ -69,6 +69,8 @@ restauración por relleno (de (40, 30) a (48, 46)).
   celdas (de (0, 4) a (56, 56)), 172 celdas, 688 m², y el recinto, 415 celdas, 1.660 m²; desde un
   guion, sin ``confirm_outside`` se niega; con él, calcula como hasta ahora y el resumen sigue
   diciendo los grupos.
+- RF-014-12 (l; T45): la métrica de cada superficie solo ofrece el chamfer 5×5 (la de la 013, las
+  dos), y desde un guion la orden no admite la exacta.
 - Principio 8 (z): desactivar Geoblender quita las dos órdenes y el cargador y descarta el cálculo
   abierto.
 
@@ -1009,7 +1011,7 @@ class LimitFromPerimeterTest(unittest.TestCase):
         self.addCleanup(setattr, east, "final_pick", "")
         fields = self.quarry_fields(
             name=" Mía ", start=self.ground, order="EXPLOITATION_FIRST", final_profile=REST,
-            final_metric="EXACT", exploitation_seeds="SURFACE", exploitation_surface=self.ground,
+            final_metric="CHAMFER5", exploitation_seeds="SURFACE", exploitation_surface=self.ground,
             exploitation_zone=constraint, exploitation_profile=EXPL, exploitation_anchor="GRID",
             exploitation_anchor_grid=self.hollow, floors_layer=FLOORS_LAYER,
             floors_field="cota", conserve=f"layer:{FILL_LAYER}", corridors_layer=CORRIDORS_LAYER,
@@ -1019,7 +1021,7 @@ class LimitFromPerimeterTest(unittest.TestCase):
         m = self.dmodel
         wanted = m.QuarryRequest(
             "Mía", self.ground,
-            m.QuarrySide(REST_CODE, {"sector_2": EXPL_CODE}, metric=m.Metric.EXACT),
+            m.QuarrySide(REST_CODE, {"sector_2": EXPL_CODE}, metric=m.Metric.CHAMFER5),
             m.QuarrySide(EXPL_CODE, seeds=m.SeedSource(
                 m.SeedKind.SURFACE, surface=self.ground, zone=m.Zone(m.ZoneKind.CONSTRAINT, code)),
                 anchor=m.AnchorMode.GRID, anchor_grid=self.hollow),
@@ -1269,6 +1271,31 @@ class LimitFromPerimeterTest(unittest.TestCase):
                         lines)
         self.assertTrue(any(line.startswith("Grupo 1: 172 celdas") for line in lines), lines)
         self.des_ops.discard_calculation()
+        self.nothing_left_quarry(files, done)
+
+    def test_l_the_quarry_offers_only_the_chamfer(self) -> None:
+        """RF-014-12 (T45, hallazgo F-6): la métrica de las cajas de la final y de la explotación
+        de «Cantera con dos superficies…» solo ofrece el chamfer 5×5 (cada lado va con la
+        pendiente de sus sectores, que la euclídea exacta no admite) y su descripción no nombra la
+        exacta; la de «Envolventes y escalonado…» de la 013 sigue ofreciendo las dos. Desde un
+        guion, la orden no admite la exacta (``TypeError`` de Blender, sin calcular ni dejar
+        nada); una ``QuarryRequest`` con ella la rechaza el dominio al pedirla, en los dos
+        idiomas (``tests/unit/design``)."""
+        files = self.names()
+        done = len(self.quarry_operations("done"))
+        quarry = bpy.ops.geoblender.des_design_quarry.get_rna_type().properties
+        for prop in ("final_metric", "exploitation_metric"):
+            with self.subTest(propiedad=prop):
+                self.assertEqual(quarry[prop].enum_items.keys(), ["CHAMFER5"])
+                self.assertEqual(quarry[prop].default, "CHAMFER5")
+                self.assertNotIn("exacta", quarry[prop].description)
+                self.assertIn("chaflán 5×5", quarry[prop].description)
+        envelope = bpy.ops.geoblender.des_compute_envelope.get_rna_type().properties
+        self.assertEqual(envelope["metric"].enum_items.keys(), ["CHAMFER5", "EXACT"])
+        for prop in ("final_metric", "exploitation_metric"):
+            with self.subTest(guion=prop), self.assertRaises(TypeError):
+                bpy.ops.geoblender.des_design_quarry("EXEC_DEFAULT", **{prop: "EXACT"})
+        self.assertIsNone(self.des_ops.calculation())
         self.nothing_left_quarry(files, done)
 
     def test_z_disabling_geoblender_removes_the_command_and_the_loader(self) -> None:

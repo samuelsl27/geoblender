@@ -1260,6 +1260,10 @@ SEEDS_FROM_ITEMS = [
 una cota fija en las celdas de una zona o una rejilla de cotas."""
 DIRECTION_ITEMS = [("DOWN", "Downwards", ""), ("UP", "Upwards", "")]
 METRIC_ITEMS = [("CHAMFER5", "Chamfer 5×5", ""), ("EXACT", "Exact Euclidean", "")]
+QUARRY_METRIC_ITEMS = [("CHAMFER5", "Chamfer 5×5", "")]
+"""La métrica de cada superficie de la cantera (spec 014, T45; RF-014-12): solo el *chamfer* 5×5,
+porque cada lado va con la pendiente de sus sectores y la euclídea exacta solo admite una pendiente
+constante (la de «Envolventes y escalonado…» de la 013 sigue con :data:`METRIC_ITEMS`)."""
 SLOPE_ITEMS = [("CONSTANT", "Constant", ""), ("SECTORS", "By sectors", "")]
 BOUND_ITEMS = [("ALL", "The whole domain", ""), ("SECTORS", "Some sectors", ""),
                ("LAYER", "A layer of polygons", "")]
@@ -2268,8 +2272,8 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
     final_metric: EnumProperty(  # type: ignore[valid-type]
         name="Distance metric of the final surface",
         description="How the distance to the seeds of the final surface is measured: the 5×5 "
-                    "chamfer or the exact Euclidean distance",
-        items=METRIC_ITEMS, default="CHAMFER5", options=_FIELD)
+                    "chamfer, the only one with the slope of each sector",
+        items=QUARRY_METRIC_ITEMS, default="CHAMFER5", options=_FIELD)
     # La superficie de explotación (su caja).
     exploitation_seeds: EnumProperty(  # type: ignore[valid-type]
         name="Seeds of the exploitation surface",
@@ -2307,8 +2311,8 @@ class GEOBLENDER_OT_des_design_quarry(_CalculateAndCreate, DesignCommandAware,
     exploitation_metric: EnumProperty(  # type: ignore[valid-type]
         name="Distance metric of the exploitation surface",
         description="How the distance to the seeds of the exploitation surface is measured: the "
-                    "5×5 chamfer or the exact Euclidean distance",
-        items=METRIC_ITEMS, default="CHAMFER5", options=_FIELD)
+                    "5×5 chamfer, the only one with the slope of each sector",
+        items=QUARRY_METRIC_ITEMS, default="CHAMFER5", options=_FIELD)
     # Las capas (plan 014 §5.2.1) y «explotación hasta la final».
     floors_layer: EnumProperty(  # type: ignore[valid-type]
         name="Floors",
