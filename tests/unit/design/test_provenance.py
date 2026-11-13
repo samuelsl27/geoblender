@@ -1164,14 +1164,14 @@ class QuarryOperationTypesTest(unittest.TestCase):
 
     def test_their_commands_are_the_ones_of_the_014_in_the_catalog(self) -> None:
         """RF-014-29 (plan 014 §5.6): la orden de cada tipo está en el catálogo, de ``des`` y de
-        la entrada «014» (aún sin entregar: sus órdenes son provisionales)."""
+        la entrada «014», que las entrega desde la T58 (antes del H3)."""
         cat = import_geoblender("core.catalog").load()
         for declared in provenance.QUARRY_OPERATION_TYPES:
             for idname in declared.commands:
                 with self.subTest(op_type=declared.op_type, idname=idname):
                     command = cat.commands[idname]
                     self.assertEqual((command.entry, command.module), ("014", "des"))
-        self.assertFalse(cat.entries["014"].delivered)
+        self.assertTrue(cat.entries["014"].delivered)
 
     def test_registration_leaves_no_trace(self) -> None:
         """RF-008-17 (principio 8): lo de la 013 y lo de la 014 se registran juntos sin chocar y

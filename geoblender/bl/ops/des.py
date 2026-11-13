@@ -3696,5 +3696,5 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
 T44, la que declara de nuevo los sectores desde su ventana; de la 014, la T20 pone «Límite desde el
 perímetro…», la T21 «Cantera con dos superficies…», la T28 «Transiciones con el terreno no
-afectado», la T30 «Solo relleno…» y la T33 «Ajustar el diseño a un límite nuevo…», aún de la
-entrada «014» sin entregar)."""
+afectado», la T30 «Solo relleno…» y la T33 «Ajustar el diseño a un límite nuevo…», de la entrada
+«014», que la T58 entrega)."""

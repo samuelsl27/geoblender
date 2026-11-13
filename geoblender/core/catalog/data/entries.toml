@@ -90,11 +90,13 @@ delivered = true
 # La spec 014 (cantera con dos superficies) es R-34 (plan 014 §5.1 y §5.6, T05): sus cinco órdenes
 # (Límite desde el perímetro…, Cantera con dos superficies…, Ajustar el diseño a un límite nuevo… y
 # Solo relleno…, de Diseño ▸ Cantera, y Transiciones con el terreno no afectado, de Restauración ▸
-# Superficie final) pasan de R-34 a la 014, aún provisionales: «delivered» llega al cerrarla. R-34
-# sigue como entrada del roadmap y ya no la usa ningún comando.
+# Superficie final) pasan de R-34 a la 014 y tienen su clase real desde la T20 a la T33; la T58 la
+# entrega antes del H3 (sin «delivered» salían en gris con «Disponible en 014»). R-34 sigue como
+# entrada del roadmap y ya no la usa ningún comando.
 ["014"]
 title.en = "Quarry with two surfaces"
 title.es = "Cantera con dos superficies"
+delivered = true
 
 ["R-07"]
 title.en = "Versions and provenance"

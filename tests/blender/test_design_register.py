@@ -8,8 +8,9 @@
   tres tipos de operación (``des.envelope`` y ``des.stepped_design``, de la versión; la edición de
   los perfiles, del proyecto) y sus quince cifras; y lo de la 014 (T05; RF-014-29): sus siete
   parámetros, sus cinco tipos de operación de la versión (repetibles; reproducibles salvo el
-  ajuste) y sus quince cifras, con sus órdenes aún provisionales de la entrada «014»; ``bl/ops/des.py`` lo quita y lo vuelve a poner
-  con los mismos objetos y deja lo que otro registró antes con las mismas claves.
+  ajuste) y sus quince cifras, con sus cinco órdenes reales de la entrada «014» (entregada desde
+  la T58); ``bl/ops/des.py`` lo quita y lo vuelve a poner con los mismos objetos y deja lo que
+  otro registró antes con las mismas claves.
 - El contrato de registro de la 008 (RF-008-26, RF-009-05, RF-009-11): cada tipo con su versión
   1.0, su ámbito, sus órdenes en el catálogo y, los dos que se repiten, su recálculo (por la cola
   de ``des``), su reproducción (la de ``design.reproduce``, al usarla) y la tolerancia de sus
@@ -42,6 +43,7 @@ import bpy
 from tests.support import blender_ext
 from tests.support.blender_ext import module_name
 from tests.support.core_fixtures import settings_values
+from tests.support.fake_layout import draw
 from tests.support.trees import temp_folder
 
 ENTRY = "013"
@@ -67,7 +69,16 @@ COMMANDS_014: frozenset[str] = frozenset({"geoblender.des_create_limit_from_peri
                                           "geoblender.des_create_transitions",
                                           "geoblender.des_design_fill_only",
                                           "geoblender.des_refit_to_limit"})
-"""Las órdenes de la 014 (T05: de R-34 a la entrada «014», aún provisionales)."""
+"""Las órdenes de la 014 (T05: de R-34 a la entrada «014»; T20 a T33, su clase real; T58, la
+entrada entregada: ya no salen en gris en sus menús)."""
+ENTRY_014_TITLE = ("Quarry with two surfaces", "Cantera con dos superficies")
+MENUS_014 = {"GEOBLENDER_MT_ui_design": ("geoblender.des_create_limit_from_perimeter",
+                                         "geoblender.des_design_quarry",
+                                         "geoblender.des_refit_to_limit",
+                                         "geoblender.des_design_fill_only"),
+             "GEOBLENDER_MT_ui_reclamation": ("geoblender.des_create_transitions",)}
+"""Sus menús (BS §8.7, Diseño ▸ Cantera, y §8.8, Restauración ▸ Superficie final) y las que
+dibuja cada uno, en su orden."""
 WM_PROPERTY = "geoblender_design"
 PREVIEW_PROPERTY = "geoblender_design_preview"
 PREVIEW_NAME = "Preview of seeds, domains and constraints"
@@ -235,6 +246,20 @@ class DesignRegisteredTest(unittest.TestCase):
         assert bpy.ops.geoblender.core_set_active_version(
             version_uid="" if version is None else version.uid) == {"FINISHED"}
 
+    def commands_014(self) -> dict[str, tuple[bool, bool]]:
+        """Las cinco órdenes de la 014 como las dibujan sus menús (:data:`MENUS_014`, sin
+        interfaz: ``tests.support.fake_layout``), en su orden: si se dibujan habilitadas y si el
+        ``poll`` de Blender (``bpy.ops``) deja lanzarlas ahora (T58)."""
+        found: dict[str, tuple[bool, bool]] = {}
+        for menu, idnames in MENUS_014.items():
+            items = [item for item in draw(getattr(bpy.types, menu), bpy.context).items
+                     if item.target in COMMANDS_014]
+            self.assertEqual([item.target for item in items], list(idnames), menu)
+            for item in items:
+                operator = getattr(bpy.ops.geoblender, item.target.removeprefix("geoblender."))
+                found[item.target] = (item.enabled and item.active, operator.poll())
+        return found
+
     # --- Pruebas ------------------------------------------------------------------------------
 
     def test_a_register_and_unregister_leave_core_as_it_was(self) -> None:
@@ -362,12 +387,18 @@ class DesignRegisteredTest(unittest.TestCase):
         for idname in sorted(set(launched) - COMMANDS_014):
             with self.subTest(orden=idname):
                 self.assertIn(idname, DELIVERED)
-        self.assertFalse(self.cat.entries[ENTRY_014].delivered)
-        for idname in sorted(COMMANDS_014):  # la 014 las entrega al cerrarse
+        entry_014 = self.cat.entries[ENTRY_014]  # la T58 la entrega, antes del H3
+        self.assertEqual((entry_014.title, entry_014.title_es, entry_014.delivered),
+                         (*ENTRY_014_TITLE, True))
+        for idname in sorted(COMMANDS_014):
             with self.subTest(orden=idname):
                 self.assertEqual(len(launched[idname]), 1)
                 self.assertEqual(self.cat.commands[idname].entry, ENTRY_014)
-                self.assertFalse(m.commands.is_available(idname))
+                cls = m.commands.registered_class(idname)
+                self.assertIn(cls, des_ops.classes)
+                self.assertFalse(m.commands.is_provisional(cls))
+                self.assertFalse(m.commands.is_undelivered(cls))
+                self.assertTrue(m.commands.is_available(idname))  # ya no «Disponible en 014»
         entry = self.cat.entries[ENTRY]
         self.assertEqual((entry.title, entry.title_es, entry.delivered), (*ENTRY_TITLE, True))
         for idname in sorted(DELIVERED | INTERNAL):
@@ -462,9 +493,13 @@ class DesignRegisteredTest(unittest.TestCase):
         calcula la pide al lanzarla); y desactivadas, con su motivo en el idioma de Geoblender,
         sin proyecto («Abra un proyecto»), en solo lectura («Proyecto en solo lectura: …») o con
         la versión activa SUPERADO («V02 está en estado SUPERADO: …»), que también dice su
-        descripción."""
+        descripción. RF-014-29 (T58): las cinco órdenes de la 014, entregada, se lanzan desde sus
+        menús (Diseño ▸ Cantera y Restauración ▸ Superficie final) igual que las de la 013:
+        habilitadas y con su ``poll`` con V01 activa; desactivadas con V02 SUPERADO; sin
+        proyecto, su ``poll`` no las deja lanzar."""
         des_ops = self.m.des_ops
         messages: list[str] = []
+        ordered = [idname for idnames in MENUS_014.values() for idname in idnames]
 
         class Base:
             """Lo que da ``ProvenanceAwareOperator`` a la descripción de una orden."""
@@ -488,6 +523,7 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertEqual(des_ops.design_unavailable(), "Abra un proyecto")
         self.assertFalse(poll())
         self.assertEqual(messages, ["Abra un proyecto"])
+        self.assertEqual({poll_014 for _drawn, poll_014 in self.commands_014().values()}, {False})
         self.attach(project)
         self.set_active(None)  # sin versión activa: sigue disponible, la orden la pide
         self.assertIsNone(des_ops.design_unavailable())
@@ -497,6 +533,7 @@ class DesignRegisteredTest(unittest.TestCase):
         self.addCleanup(self.set_active, None)
         self.assertTrue(poll())
         self.assertEqual(Probe.description(bpy.context, SimpleNamespace()), "Una orden de prueba")
+        self.assertEqual(self.commands_014(), dict.fromkeys(ordered, (True, True)))
 
         ps = _module("bl.scene.project_session")
         provenance = _module("bl.ops.core_provenance")
@@ -521,6 +558,7 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertEqual(messages, [NOT_EDITABLE])
         self.assertEqual(Probe.description(bpy.context, SimpleNamespace()),
                          f"Una orden de prueba\n{NOT_EDITABLE}")
+        self.assertEqual(self.commands_014(), dict.fromkeys(ordered, (False, False)))
         self.set_active(v01)
         self.assertTrue(poll())
         self.assertIsNotNone(ps.current())

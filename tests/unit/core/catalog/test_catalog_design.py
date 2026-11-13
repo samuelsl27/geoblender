@@ -14,11 +14,11 @@ de comandos.
 - El menú contextual de Diseño (``DESIGN``, PC §3.10) es de la ``013``, con los comandos que ya
   tenía; lo de R-35 y R-44 que lleva sigue en su entrada.
 - La spec 014 (cantera con dos superficies; T05, plan 014 §5.6): la entrada ``014`` tiene su
-  título en los dos idiomas y **aún no entrega** sus comandos; las cinco órdenes de ``R-34``
-  (Límite desde el perímetro…, Cantera con dos superficies…, Ajustar el diseño a un límite
-  nuevo…, Solo relleno… y Transiciones con el terreno no afectado) pasan a ella con su casa, su
-  acción, su segundo plano y su frecuencia; ``R-34`` sigue como entrada del roadmap, sin
-  comandos.
+  título en los dos idiomas y, desde la T58 (antes del H3), **entrega** sus comandos; las cinco
+  órdenes de ``R-34`` (Límite desde el perímetro…, Cantera con dos superficies…, Ajustar el
+  diseño a un límite nuevo…, Solo relleno… y Transiciones con el terreno no afectado) pasan a
+  ella con su casa, su acción, su segundo plano y su frecuencia; ``R-34`` sigue como entrada del
+  roadmap, sin comandos.
 """
 
 import tomllib
@@ -102,14 +102,16 @@ class DesignCatalogTest(unittest.TestCase):
         for key in keys:
             self.assertIn(key, self.cat.commands)
 
-    def test_entry_014_is_not_delivered_yet(self) -> None:
-        """RF-014-29 (plan 014 §5.1 y §5.6; T05): la entrada ``014`` tiene el título de la spec en
-        los dos idiomas y aún no entrega sus comandos (``delivered`` llega al cerrarla); ``R-34``
-        sigue como entrada del roadmap, sin comandos."""
+    def test_entry_014_delivers_its_commands(self) -> None:
+        """RF-014-29 (plan 014 §5.1 y §5.6; T05 y T58): la entrada ``014`` tiene el título de la
+        spec en los dos idiomas y entrega sus comandos (``delivered``, desde la T58, antes del H3:
+        sus cinco órdenes ya no salen en gris con «Disponible en 014»); ``R-34`` sigue como
+        entrada del roadmap, sin comandos."""
         entry = self.cat.entries["014"]
         self.assertEqual((entry.title, entry.title_es), TITLE_014)
-        self.assertFalse(entry.delivered)
+        self.assertTrue(entry.delivered)
         self.assertEqual(catalog.entry_text(self.cat, "014", "es"), f"014 · {TITLE_014[1]}")
+        self.assertEqual(catalog.entry_text(self.cat, "014", "en"), f"014 · {TITLE_014[0]}")
         self.assertIn("R-34", self.cat.entries)
         self.assertEqual(sorted(command.key for command in self.cat.commands.values()
                                 if command.entry == "R-34"), [])
