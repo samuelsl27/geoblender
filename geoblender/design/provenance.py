@@ -73,6 +73,13 @@ son los que nombran la ficha y la guía de la 013; la 014 los documenta en su T3
   :func:`fill_only_request`; los del escalonado de la 013 sin el sentido, con la capa de láminas
   y su campo) y lo que consume (:func:`fill_only_inputs`: lo del escalonado y la capa de láminas,
   :data:`WATER_LAYER_ROLE`); los parámetros que lee son los del escalonado (:func:`design_params`).
+- «Ajustar el diseño a un límite nuevo…» (``des.refit``, T32): sus ajustes (:func:`refit_settings`,
+  :func:`refit_request`: el nombre, las superficies y la de partida), el nombre de la salida de
+  cada superficie (:func:`refit_output`, :func:`refit_part`, :func:`refit_source`), lo que consume
+  (:func:`refit_inputs`: cada superficie con el papel :data:`DESIGN_SURFACE_ROLE`, la de partida,
+  las máscaras y los sectores), los parámetros que lee (:func:`refit_params`: la cara y el factor
+  de malla de sus perfiles y el espesor mínimo) y el ámbito de su cifra
+  (:func:`refit_figure_scope`).
 """
 
 from __future__ import annotations
@@ -116,6 +123,7 @@ from .model import (
     Order,
     QuarryRequest,
     QuarrySide,
+    RefitRequest,
     SeedKind,
     SeedSource,
     SlopeMode,
@@ -209,6 +217,7 @@ __all__ = [
     "REFIT_COMMAND",
     "REFIT_FIGURES",
     "REFIT_GRID",
+    "REFIT_PROFILE_PARAMS",
     "REPORT_TABLE",
     "REPRODUCIBLE",
     "SEARCHES_ROLE",
@@ -260,6 +269,14 @@ __all__ = [
     "quarry_profiles",
     "quarry_request",
     "quarry_settings",
+    "refit_figure_scope",
+    "refit_inputs",
+    "refit_output",
+    "refit_params",
+    "refit_part",
+    "refit_request",
+    "refit_settings",
+    "refit_source",
     "sector_inputs",
     "side_role",
     "settings_pending",
@@ -834,6 +851,17 @@ def quarry_figure_scope(name: str, *, surface: Surface | str | None = None,
     return scope
 
 
+def refit_figure_scope(name: str, surface: str) -> dict[str, str]:
+    """El ámbito de la cifra ``des.refit_m3`` de la superficie ``surface`` (el nombre de su dato)
+    en el ajuste ``name`` (spec 014, T32; plan 014 §5.2.3: «por superficie»): el de
+    :func:`figure_scope` y, en la clave de la superficie (:data:`SURFACE_SCOPE_KEY`), el nombre del
+    dato de la superficie que se ajusta: sin él, las de dos superficies se pisarían. ``ValueError``
+    si falta."""
+    scope = figure_scope(name)
+    scope[SURFACE_SCOPE_KEY] = _named(surface, "de la superficie que se ajusta")
+    return scope
+
+
 def envelope_figures(*, name: str, cells: int, area_m2: float, min_m: float | None,
                      max_m: float | None, cut_m3: float | None, fill_m3: float | None
                      ) -> tuple[FigureSpec, ...]:
@@ -1078,6 +1106,36 @@ def fill_only_settings(request: FillOnlyRequest, pending_sectors: Iterable[str] 
     return settings
 
 
+def refit_part(surface: str) -> str:
+    """Lo que distingue en el nombre de su salida la superficie ajustada ``surface`` (el nombre de
+    su dato) de las demás de un ajuste (spec 014, T32; plan 014 §5.2.3,
+    ``des_adj_<n>_<sup>_<vNN>``): su nombre sin el prefijo ``des_`` (``des_exp_corta`` →
+    ``exp_corta``). ``ValueError`` si falta."""
+    found = _named(surface, "de la superficie que se ajusta")
+    return found[len(_PREFIX):] if found.startswith(_PREFIX) else found
+
+
+def refit_output(name: str, surface: str) -> str:
+    """El nombre del dato de la superficie ``surface`` ajustada por el ajuste ``name`` (spec 014,
+    T32; plan 014 §5.2.3): ``des_adj_<nombre>_<superficie>`` (:func:`dataset_name` de
+    ``f"{name} {refit_part(surface)}"``; con el código de la versión en su ubicación). ``GisError``
+    ``gis.dataset_name_invalid`` si el nombre no tiene ninguna letra ni cifra."""
+    return dataset_name(REFIT_GRID, f"{name} {refit_part(surface)}")
+
+
+def refit_settings(request: RefitRequest) -> dict[str, Any]:
+    """Los ajustes de ``des.refit`` (spec 014, T32; RF-014-27, RF-014-29; JSON sin rutas): el
+    nombre de la operación, las superficies de diseño que se ajustan (los nombres de sus datos, en
+    su orden) y la superficie de partida ``start`` (la que lee la comprobación contra un límite
+    nuevo de sus salidas, T31), lo que lo vuelve a pedir igual con sus entradas. El ángulo que
+    traiga una petición por guion no se guarda (es la cara del perfil de cada superficie, P-3). Es
+    un diccionario nuevo; ``ValueError`` si falta algún nombre."""
+    return {"name": _named(request.name, "del ajuste"),
+            "surfaces": [_named(surface, "de la superficie que se ajusta")
+                         for surface in request.surfaces],
+            "start": _named(request.start, "de la superficie de partida")}
+
+
 def _mapping(value: object, what: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{what} es un diccionario, no {value!r}")
@@ -1290,6 +1348,28 @@ def fill_only_request(settings: Mapping[str, Any]) -> FillOnlyRequest:
                            _layer_field_of(data.get("water"), f"{what}, «water»,"))
 
 
+def refit_request(settings: Mapping[str, Any]) -> RefitRequest:
+    """El ajuste que repiten los ajustes ``settings`` de una operación ``des.refit`` (los de
+    :func:`refit_settings`): al recalcularlo. ``ValueError`` si no son los de un ajuste (nombrando
+    el campo)."""
+    what = "los ajustes de un ajuste a un límite nuevo"
+    data = _mapping(settings, what)
+    return RefitRequest(_required_text(data, "name", what), _list(data, "surfaces", what),
+                        _required_text(data, "start", what))
+
+
+def refit_source(settings: Mapping[str, Any], output: str) -> str | None:
+    """La superficie de la que sale la superficie ajustada ``output`` (el nombre de su dato) de
+    la operación ``des.refit`` de ajustes ``settings``: la de su lista cuya salida
+    (:func:`refit_output`) se llama así; ``None`` si ninguna. ``ValueError`` si no son los ajustes
+    de un ajuste."""
+    request = refit_request(settings)
+    for surface in request.surfaces:
+        if refit_output(request.name, surface) == output:
+            return surface
+    return None
+
+
 def settings_pending(settings: Mapping[str, Any]) -> tuple[str, ...]:
     """Los códigos de los sectores sin búsqueda vigente al calcular que guardan unos ajustes
     (RF-013-06; ninguno si no los llevan). ``ValueError`` si no son una lista de textos."""
@@ -1483,6 +1563,23 @@ def fill_only_inputs(request: FillOnlyRequest, masks: Iterable[Use] = (),
     return _unique(found)
 
 
+def refit_inputs(request: RefitRequest, masks: Iterable[Use] = (),
+                 available: Collection[str] = ()) -> tuple[Use, ...]:
+    """Lo que consume ``des.refit`` (spec 014, T32; RF-014-27, RF-014-29; plan 014 §5.2.3: «las
+    superficies que ajusta; las máscaras nuevas»), en su orden: cada superficie de diseño que se
+    ajusta (papel :data:`DESIGN_SURFACE_ROLE`), la superficie de partida (:data:`SURFACE_ROLE`),
+    las máscaras de la versión ``masks`` (``MaskSet.uses()``: el límite nuevo) y la tabla de los
+    sectores si está registrada (``available``: el perfil de cada celda sale de su sector). Las
+    búsquedas de intocables no: el ajuste no las lee. Si una cambia, el ajuste queda obsoleto.
+    ``ValueError`` si faltan los nombres."""
+    found = [Use(_named(surface, "de la superficie que se ajusta"), DESIGN_SURFACE_ROLE)
+             for surface in request.surfaces]
+    found.append(Use(_named(request.start, "de la superficie de partida"), SURFACE_ROLE))
+    found += list(masks)
+    found += [use for use in sector_inputs(available) if use.role == SECTORS_ROLE]
+    return _unique(found)
+
+
 # --- Los parámetros que lee una operación -------------------------------------------------------
 
 ENVELOPE_PROFILE_PARAMS: tuple[BenchParam, ...] = (
@@ -1554,3 +1651,15 @@ TRANSITION_PARAMS: tuple[str, ...] = (EDGE_TRANSITION_DEG, EDGE_MAX_STEP, EDGE_M
 """Los parámetros que lee ``des.edge_transition`` (spec 014, T28; RF-014-19 a RF-014-21): el
 ángulo de transición (sin valor por defecto, D-9), el salto y el porcentaje admitidos del salto
 creado (D-6) y el espesor mínimo de la 012 con que se buscan las celdas que mueve el diseño."""
+
+REFIT_PROFILE_PARAMS: tuple[BenchParam, ...] = (BenchParam.FACE, BenchParam.MESH_FACTOR)
+"""Lo que lee el ajuste de un perfil (RF-014-27): la cara y el factor de malla; ni la altura, ni
+la berma, ni el ancla."""
+
+
+def refit_params(profiles: Iterable[str]) -> tuple[str, ...]:
+    """Los parámetros que lee ``des.refit`` (spec 014, T32; RF-014-27, RF-014-29): la cara y el
+    factor de malla (:data:`REFIT_PROFILE_PARAMS`) de los perfiles ``profiles`` de las superficies
+    que ajusta (los de la operación que creó cada una, P-3) y el espesor mínimo de la 012 con que
+    se mira si el límite nuevo deja algo fuera (la comprobación de la T31)."""
+    return _unique([*profile_params(profiles, REFIT_PROFILE_PARAMS), VERIFY_MIN_THICKNESS])

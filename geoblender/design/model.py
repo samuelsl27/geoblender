@@ -26,8 +26,9 @@ RF-014-18): :class:`Surface`, :class:`Order` («final primero» por defecto, D-4
 :class:`AnchorMode` (fija, en rejilla o «al fondo de cada muro»), :class:`CellClass` (sin
 diferencia, desdoblado o relleno, con su código del GeoTIFF), :class:`ToFinalMode` (P-2), las
 capas con sus campos (:class:`LayerField`, :class:`CorridorFields`), lo de cada superficie
-(:class:`QuarrySide`) y la petición (:class:`QuarryRequest`); y la de «Solo relleno…» (T30,
-:class:`FillOnlyRequest`).
+(:class:`QuarrySide`) y la petición (:class:`QuarryRequest`); la de «Solo relleno…» (T30,
+:class:`FillOnlyRequest`) y la de «Ajustar el diseño a un límite nuevo…» (T32,
+:class:`RefitRequest`).
 """
 
 from __future__ import annotations
@@ -61,6 +62,7 @@ __all__ = [
     "Order",
     "QuarryRequest",
     "QuarrySide",
+    "RefitRequest",
     "SeedKind",
     "SeedSource",
     "SlopeMode",
@@ -514,6 +516,40 @@ class FillOnlyRequest:
         con su perfil base, el de cada sector y su ancla."""
         return DesignRequest(self.name, self.envelope, BenchSense.FILL, self.base_profile,
                              self.sector_profiles, self.anchor_grid)
+
+
+@dataclass(frozen=True, slots=True)
+class RefitRequest:
+    """Lo que pide el usuario de «Ajustar el diseño a un límite nuevo…» (spec 014, T32; RF-014-27,
+    RF-014-28; plan 014 A13, P-3): su ``name`` (único en la versión), las superficies de diseño de
+    la versión que se ajustan (``surfaces``: los nombres de sus datos, en su orden y sin repetir;
+    al menos una) y la superficie de partida (``start``, el nombre de su dato). El ángulo de cada
+    superficie **no se pide**: es la cara del perfil de la operación que la creó (P-3); solo una
+    petición por guion puede traer uno (``angles``: superficie → °, sale como pares ordenados por
+    superficie), que se comprueba contra esa cara (RF-014-28) y no se guarda."""
+
+    name: str
+    surfaces: tuple[str, ...] | Iterable[str]
+    start: str
+    angles: Mapping[str, float] | Iterable[tuple[str, float]] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.surfaces, str | bytes):
+            raise TypeError(f"las superficies que se ajustan son una lista de nombres, no "
+                            f"{self.surfaces!r}")
+        found = tuple(self.surfaces)
+        if not found or not all(isinstance(item, str) and item.strip() for item in found):
+            raise ValueError(f"un ajuste ajusta al menos una superficie, por el nombre de su "
+                             f"dato, no {found!r}")
+        if len(set(found)) != len(found):
+            raise ValueError(f"una superficie se ajusta una vez, no {found!r}")
+        object.__setattr__(self, "surfaces", found)
+        pairs: Any = self.angles
+        angles = tuple(sorted(dict(pairs).items()))
+        strangers = [surface for surface, _angle in angles if surface not in found]
+        if strangers:
+            raise ValueError(f"se pide un ángulo para {strangers!r}, que no se ajusta")
+        object.__setattr__(self, "angles", angles)
 
 
 class Named(Protocol):

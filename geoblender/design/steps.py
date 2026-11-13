@@ -25,6 +25,9 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
 - :func:`fill_only_run` (spec 014, T30; RF-014-22 a RF-014-25, RF-014-29): «Calcular» el diseño
   «solo relleno» de una envolvente de la versión (``des.fill_only``) del mismo modo, con los avisos
   del informe de su escalonado.
+- :func:`refit_run` (spec 014, T32; RF-014-27 a RF-014-29): «Calcular» el ajuste de unas
+  superficies de diseño de la versión a su límite vigente (``des.refit``) del mismo modo, con el
+  aviso de las que no hacía falta ajustar.
 - :class:`Calculation`: lo calculado y todavía sin registrar. :meth:`~Calculation.create`
   (**«Crear»**) abre la operación, mueve los temporales, escribe las tablas y las cifras y completa,
   todo en **una** transacción (``DesignWriter.commit``); :meth:`~Calculation.discard`
@@ -57,9 +60,9 @@ from ..core.provenance.figures import FigureSpec
 from ..gis.masks.access import MaskSet
 from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.store import StoreProject
-from . import edges, fronts, pipeline, preview, provenance, quarry, store
+from . import edges, fronts, pipeline, preview, provenance, quarry, refit, store
 from .messages import DesignError
-from .model import DesignRequest, EnvelopeRequest, FillOnlyRequest, QuarryRequest
+from .model import DesignRequest, EnvelopeRequest, FillOnlyRequest, QuarryRequest, RefitRequest
 from .preview import Notice
 from .seeds import SeedPlan, SeedSet, pace_progress
 
@@ -72,6 +75,7 @@ __all__ = [
     "fill_only_run",
     "preview_steps",
     "quarry_run",
+    "refit_run",
     "resolve_values",
 ]
 
@@ -106,7 +110,8 @@ class Calculation:
     """Un cálculo hecho y **sin registrar** (véase el módulo): su ``outcome``
     (``pipeline.EnvelopeOutcome``, ``pipeline.DesignOutcome`` o, de un recinto,
     ``quarry.AreaOutcome``, de una cantera, ``quarry.QuarryOutcome``, de una transición,
-    ``edges.EdgeTransition``, y de un diseño «solo relleno», ``fronts.FillOnlyOutcome``), los
+    ``edges.EdgeTransition``, de un diseño «solo relleno», ``fronts.FillOnlyOutcome``, y de un
+    ajuste, ``refit.RefitOutcome``), los
     ``notices`` que enseña
     la ventana junto a su resumen —de la envolvente, los de sus semillas; del escalonado, los de su
     informe; de la cantera, los suyos y los del informe de cada lado—, las ``seeds`` (``None``
@@ -117,7 +122,7 @@ class Calculation:
     def __init__(self, *, project: StoreProject, writer: store.DesignWriter,
                  start: store.OperationStart, outcome: pipeline.EnvelopeOutcome
                  | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome
-                 | edges.EdgeTransition | fronts.FillOnlyOutcome,
+                 | edges.EdgeTransition | fronts.FillOnlyOutcome | refit.RefitOutcome,
                  notices: Sequence[Notice],
                  seeds: SeedSet | None,
                  values: Mapping[str, object]) -> None:
@@ -326,6 +331,26 @@ def fill_only_run(project: StoreProject, request: FillOnlyRequest, *, version: s
     return _fill_only_steps(project, request, version, masks, budget_s)
 
 
+def refit_run(project: StoreProject, request: RefitRequest, *, version: str | None,
+              masks: MaskSet | None = None, budget_s: float = STEP_BUDGET_S
+              ) -> Iterator[Progress]:
+    """**«Calcular»** el ajuste ``request`` de unas superficies de diseño de la versión ``version``
+    a su límite vigente por pasos de ``budget_s`` como mucho (spec 014, T32; RF-014-27 a
+    RF-014-29; «Ajustar el diseño a un límite nuevo…»): el último ``Progress`` lleva la
+    :class:`Calculation` de ``des.refit``, con la superficie ajustada de cada una
+    (``des_adj_<nombre>_<superficie>``) en su temporal, la cifra ``des.refit_m3`` de cada una y el
+    aviso ``des.refit_not_needed`` de las que el límite nuevo no corta, y **nada registrado**.
+    ``masks``, como en :func:`envelope_run` (las del límite nuevo).
+
+    Los rechazos salen **al avanzar**, antes de escribir nada: sin versión activa o no editable,
+    máscaras (``MaskError``), una superficie que no es de diseño de la versión
+    (``des.edge_not_design_surface``), las superficies (``des.surface_*``), un perfil sin cara o
+    sin factor de malla (RF-013-19), el nombre repetido y, si la petición trae un ángulo para una
+    superficie que no es la cara de su perfil, ``des.refit_angle`` (RF-014-28). Cerrar el generador
+    a mitad borra los temporales."""
+    return _refit_steps(project, request, version, masks, budget_s)
+
+
 def _prepare_steps[T](units: Generator[None, None, T], budget_s: float
                       ) -> Generator[Progress, None, T]:
     """Las unidades de preparar un cálculo agrupadas en pasos; devuelve lo que preparan."""
@@ -454,6 +479,26 @@ def _fill_only_steps(project: StoreProject, request: FillOnlyRequest, version: s
                                   outcome=outcome, notices=outcome.design.report.notices,
                                   seeds=None, values=values)
     except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
+        writer.close(error)
+        raise
+    yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
+
+
+def _refit_steps(project: StoreProject, request: RefitRequest, version: str | None,
+                 masks: MaskSet | None, budget_s: float) -> Generator[Progress, None, None]:
+    found = store.require_version(project, version, provenance.REFIT)
+    loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
+    prepared: store.PreparedRefit = yield from _prepare_steps(
+        store.prepare_refit_units(project, request, found, loaded), budget_s)
+    writer = store.DesignWriter(project, provenance.REFIT, request.name, version=found.uid)
+    try:
+        values = resolve_values(project, found.uid, prepared.start.params)
+        outcome: refit.RefitOutcome = yield from store.compute_refit_steps(
+            writer, request, loaded, prepared, values, budget_s)
+        calculation = Calculation(project=project, writer=writer, start=prepared.start,
+                                  outcome=outcome, notices=outcome.notices, seeds=None,
+                                  values=values)
+    except BaseException as error:  # un fallo o cerrar el generador: no quedan los temporales
         writer.close(error)
         raise
     yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)

@@ -64,6 +64,13 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   :func:`limit_checks_steps`) da, al recompilar las máscaras, lo que cada superficie de la 014 de
   la versión (:func:`limit_surfaces`) mueve fuera del límite vigente (``design.refit``), sin
   escribir nada.
+- **El ajuste a un límite nuevo** (spec 014, T32; RF-014-27 a RF-014-29): :func:`prepare_refit` y
+  :func:`prepare_refit_units` (las superficies de diseño de :data:`REFIT_SOURCES`, cada una con el
+  perfil de la operación que la creó, :func:`refit_profiles`, P-3), el cálculo
+  (:func:`refit_compute_steps`, con el rechazo de un ángulo que no es la cara de su perfil,
+  RF-014-28) y su escritura (:func:`compute_refit_steps`: una ``des_adj_`` por superficie, con
+  :meth:`DesignWriter.grid_steps` y su ``part``); y :func:`run_refit`, su recálculo (no se
+  reproduce: depende del límite vigente).
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -142,6 +149,7 @@ from .model import (
     FillOnlyRequest,
     Metric,
     QuarryRequest,
+    RefitRequest,
     SlopeMode,
     Surface,
     Zone,
@@ -198,9 +206,12 @@ __all__ = [
     "PreparedEnvelope",
     "PreparedFillOnly",
     "PreparedQuarry",
+    "PreparedRefit",
     "PreparedTransition",
     "QuarryCalculated",
     "QuarryParts",
+    "REFIT_SOURCES",
+    "RefitPart",
     "Stored",
     "SurfaceOrigin",
     "begin_design",
@@ -213,6 +224,7 @@ __all__ = [
     "compute_envelope_steps",
     "compute_fill_only_steps",
     "compute_quarry_steps",
+    "compute_refit_steps",
     "compute_transition_steps",
     "edge_report_rows",
     "fill_only_compute_steps",
@@ -234,6 +246,8 @@ __all__ = [
     "prepare_fill_only_units",
     "prepare_quarry",
     "prepare_quarry_units",
+    "prepare_refit",
+    "prepare_refit_units",
     "prepare_transition_units",
     "design_surface_of",
     "design_surface_start",
@@ -246,6 +260,8 @@ __all__ = [
     "quarry_parts_units",
     "quarry_report_rows",
     "recompute_run",
+    "refit_compute_steps",
+    "refit_profiles",
     "report_rows",
     "request_profiles",
     "require_version",
@@ -255,6 +271,7 @@ __all__ = [
     "run_excavation_area",
     "run_fill_only",
     "run_quarry",
+    "run_refit",
     "transition_compute_steps",
 ]
 
@@ -423,17 +440,25 @@ def _editable(conn: sqlite3.Connection, version: str | None, op_type: str) -> Ve
 
 
 def _check_name(conn: sqlite3.Connection, op_type: str, name: str, version: Version,
-                replacing: str | None) -> None:
+                replacing: str | None, parts: Sequence[str] = ()) -> None:
     """RF-013-17: ningún dato vigente de la versión tiene ya el nombre de alguna de las salidas de
     ``op_type`` para ``name`` (el mismo nombre en ASCII), salvo uno escrito por la operación
-    ``replacing`` a la que sustituye la nueva. ``DesignError`` ``des.operation_name_repeated``;
-    ``GisError`` ``gis.dataset_name_invalid`` si el nombre no tiene ninguna letra ni cifra."""
+    ``replacing`` a la que sustituye la nueva. Con ``parts`` (un ajuste, T32: una salida de cada
+    familia por parte), las salidas son las de ``f"{name} {parte}"``, y dos partes que dan el mismo
+    nombre también se rechazan. ``DesignError`` ``des.operation_name_repeated``; ``GisError``
+    ``gis.dataset_name_invalid`` si el nombre no tiene ninguna letra ni cifra."""
+    labels = [f"{name} {part}" for part in parts] or [name]
+    seen: set[str] = set()
     for family in provenance.OPERATION_TYPES_BY_NAME[op_type].outputs:
-        dataset = provenance.dataset_name(family, name)
-        record = dataset_registry.get(conn, dataset, version_uid=version.uid)
-        if record is not None and record.live and record.operation_uid != replacing:
-            raise DesignError("des.operation_name_repeated", obj=f"Operación «{name}»",
-                              field="nombre", value=name, dataset=dataset, version=version.code)
+        for label in labels:
+            dataset = provenance.dataset_name(family, label)
+            record = dataset_registry.get(conn, dataset, version_uid=version.uid)
+            if dataset in seen or (record is not None and record.live
+                                   and record.operation_uid != replacing):
+                raise DesignError("des.operation_name_repeated", obj=f"Operación «{name}»",
+                                  field="nombre", value=name, dataset=dataset,
+                                  version=version.code)
+            seen.add(dataset)
 
 
 # --- Empezar la operación -----------------------------------------------------------------------
@@ -469,6 +494,9 @@ class OperationStart:
     masks: access.MaskSet
     seen: Mapping[str, str]
     supersedes: str | None = None
+    parts: tuple[str, ...] = ()
+    """Las partes de sus salidas, si escribe una de cada familia por parte (un ajuste, T32: la
+    de cada superficie, ``provenance.refit_part``); ninguna, una salida por familia."""
 
     def check_masks(self, project: StoreProject) -> None:
         """RF-013-04: las máscaras de la versión siguen al día; si no, ``MaskError``
@@ -509,7 +537,7 @@ class OperationStart:
 
     def _check_name(self, conn: sqlite3.Connection) -> None:
         version = versions_store.require_editable(conn, self.version_uid)
-        _check_name(conn, self.op_type, self.name, version, self.supersedes)
+        _check_name(conn, self.op_type, self.name, version, self.supersedes, self.parts)
 
     def _check_unchanged(self, handle: OperationHandle) -> None:
         """RF-013-04, RF-013-17: cada dato que consume es el que había al prepararla, con su
@@ -587,12 +615,13 @@ def _seen(conn: sqlite3.Connection, uses: Iterable[Use], version: Version) -> di
 
 def _start(project: StoreProject, op_type: str, name: str, version: Version,
            masks: access.MaskSet, settings: Mapping[str, Any], inputs: tuple[Use, ...],
-           params: tuple[str, ...], supersedes: str | None) -> OperationStart:
+           params: tuple[str, ...], supersedes: str | None, parts: Sequence[str] = ()
+           ) -> OperationStart:
     with project.read() as conn:
-        _check_name(conn, op_type, name, version, supersedes)
+        _check_name(conn, op_type, name, version, supersedes, parts)
         seen = MappingProxyType(_seen(conn, inputs, version))
     return OperationStart(op_type, name, version.uid, version.code, dict(settings), inputs,
-                          params, masks, seen, supersedes)
+                          params, masks, seen, supersedes, tuple(parts))
 
 
 def request_profiles(request: EnvelopeRequest) -> tuple[str, ...]:
@@ -787,6 +816,113 @@ def prepare_fill_only(project: StoreProject, request: FillOnlyRequest, *, versio
                                                 previous), inputs, params, supersedes)
 
 
+REFIT_SOURCES: tuple[str, ...] = (provenance.STEPPED, provenance.QUARRY,
+                                  provenance.EDGE_TRANSITION, provenance.FILL_ONLY,
+                                  provenance.REFIT)
+"""Los tipos de operación cuyas superficies de diseño se ajustan a un límite nuevo (spec 014, T32;
+RF-014-27): las de la 014 que comprueba la T31 (:data:`LIMIT_CHECKED_TYPES`) y la de un
+escalonado de la 013, todas con un perfil del que sale su cara (P-3)."""
+_SOURCE_DEPTH = 32
+"""Cuántas superficies se siguen como mucho hasta la que tiene perfil (una transición de un ajuste
+de un ajuste…): más es un error del programa."""
+
+
+def _not_design_surface(surface: str) -> DesignError:
+    return DesignError("des.edge_not_design_surface", obj=f"Superficie «{surface}»",
+                       field="superficie de diseño", value=surface)
+
+
+def refit_profiles(conn: sqlite3.Connection, origin: SurfaceOrigin, version_uid: str
+                   ) -> tuple[str, tuple[tuple[str, str], ...]]:
+    """El perfil base y el de cada sector (código del sector → código del perfil, en pares
+    ordenados) de la superficie de diseño ``origin`` de la versión ``version_uid`` (spec 014, T32;
+    RF-014-27, P-3: el ángulo del ajuste sale del perfil de la operación que creó la superficie):
+    de una cantera, los del lado de la superficie (``des_exp_``, la explotación; ``des_fin_``, la
+    final); de un escalonado de la 013 o de «solo relleno», los suyos; de una transición o de un
+    ajuste, los de la superficie de la que salen (que ha de seguir siendo una superficie de diseño
+    de la versión). ``DesignError`` ``des.edge_not_design_surface`` nombrando la superficie si no es
+    de uno de :data:`REFIT_SOURCES` o aquella de la que sale ya no lo es; ``ValueError`` si los
+    ajustes de su operación no son los de su tipo. Solo lee."""
+    exploitation = provenance.FAMILIES_BY_CODE[provenance.EXPLOITATION_GRID].prefix
+    final = provenance.FAMILIES_BY_CODE[provenance.FINAL_GRID].prefix
+    current = origin
+    for _depth in range(_SOURCE_DEPTH):
+        name, op_type, settings = current.record.name, current.op_type, current.settings
+        source: str | None
+        if op_type == provenance.QUARRY and name.startswith((exploitation, final)):
+            side = provenance.quarry_request(settings).side(
+                Surface.EXPLOITATION if name.startswith(exploitation) else Surface.FINAL)
+            return side.base_profile, tuple(side.sector_profiles)
+        if op_type == provenance.STEPPED:
+            stepped = provenance.design_request(settings)
+            return stepped.base_profile, tuple(stepped.sector_profiles)
+        if op_type == provenance.FILL_ONLY:
+            filled = provenance.fill_only_request(settings)
+            return filled.base_profile, tuple(filled.sector_profiles)
+        if op_type == provenance.EDGE_TRANSITION:
+            source = provenance.transition_start(settings)[1]
+        elif op_type == provenance.REFIT:
+            source = provenance.refit_source(settings, name)
+        else:
+            raise _not_design_surface(name)
+        found = None if source is None else design_surface_of(conn, source, version_uid)
+        if found is None:
+            raise _not_design_surface(name if source is None else source)
+        current = found
+    raise ValueError(f"«{origin.record.name}» sale de más de {_SOURCE_DEPTH} superficies")
+
+
+def _refit_sources(conn: sqlite3.Connection, request: RefitRequest, version_uid: str
+                   ) -> list[tuple[str, str, tuple[tuple[str, str], ...]]]:
+    """Cada superficie de ``request`` con su perfil base y el de cada sector
+    (:func:`refit_profiles`); ``des.edge_not_design_surface`` si alguna no es una superficie de
+    diseño de la versión de :data:`REFIT_SOURCES`. Solo lee."""
+    found = []
+    for surface in request.surfaces:
+        origin = design_surface_of(conn, surface, version_uid)
+        if origin is None or origin.op_type not in REFIT_SOURCES:
+            raise _not_design_surface(surface)
+        base, sectors = refit_profiles(conn, origin, version_uid)
+        found.append((surface, base, sectors))
+    return found
+
+
+def _profile_codes(sources: Iterable[tuple[str, str, tuple[tuple[str, str], ...]]]
+                   ) -> tuple[str, ...]:
+    """Los códigos de los perfiles de unas superficies (el base y los de sus sectores), sin
+    repetir y en su orden."""
+    return tuple(dict.fromkeys(code for _surface, base, sectors in sources
+                               for code in (base, *(profile for _sector, profile in sectors))))
+
+
+def prepare_refit(project: StoreProject, request: RefitRequest, *, version: str | None,
+                  masks: access.MaskSet | None = None, profiles: Iterable[str] | None = None,
+                  supersedes: str | None = None) -> OperationStart:
+    """Lo mismo que :func:`prepare_envelope` para ``des.refit`` (spec 014, T32; RF-014-27,
+    RF-014-29) de ``request``: los ajustes de ``refit_settings`` (el nombre, las superficies y la
+    de partida), las entradas de ``refit_inputs`` (cada superficie, la de partida, las máscaras
+    —el límite nuevo— y los sectores) y los parámetros de ``refit_params`` (la cara y el factor de
+    malla de los perfiles de las superficies, ``profiles``; sin ellos, los de la operación que creó
+    cada una, :func:`refit_profiles`; y el espesor mínimo). El nombre se mira en cada salida
+    (``des_adj_<nombre>_<superficie>``, ``provenance.refit_output``). Rechazos, antes de registrar
+    nada: los de :func:`prepare_envelope` de la versión, las máscaras y el nombre;
+    ``des.edge_not_design_surface`` si una superficie no es de diseño de la versión; y una cara o
+    un factor de malla sin valor o fuera de rango (RF-013-19)."""
+    found = require_version(project, version, provenance.REFIT)
+    if profiles is None:
+        with project.read() as conn:
+            codes = _profile_codes(_refit_sources(conn, request, found.uid))
+    else:
+        codes = tuple(dict.fromkeys(profiles))
+    _check_profiles(project, found, codes, provenance.REFIT_PROFILE_PARAMS)
+    loaded = _loaded_masks(project, found, masks)
+    return _start(project, provenance.REFIT, request.name, found, loaded,
+                  provenance.refit_settings(request),
+                  provenance.refit_inputs(request, loaded.uses(), available_tables(project)),
+                  provenance.refit_params(codes), supersedes,
+                  [provenance.refit_part(surface) for surface in request.surfaces])
+
+
 def begin_envelope(project: StoreProject, request: EnvelopeRequest, *, version: str | None,
                    masks: access.MaskSet | None = None,
                    sectors: Sequence[DesignSector] | None = None, profiles: Iterable[str] = (),
@@ -922,7 +1058,7 @@ class DesignWriter:
 
     # --- Preparar --------------------------------------------------------------------------
 
-    def _produces(self, family: str, kind: str) -> None:
+    def _produces(self, family: str, kind: str, key: str | None = None) -> None:
         if self._closed or self._committed:
             raise RuntimeError("el escritor ya se confirmó o se cerró")
         if family not in self._type.outputs:
@@ -931,8 +1067,9 @@ class DesignWriter:
         if provenance.FAMILIES_BY_CODE[family].kind != kind:
             raise ValueError(f"la familia «{family}» es "
                              f"{'una tabla' if kind == 'raster' else 'una rejilla'}")
-        if family in self._grids or family in self._tables:
-            raise ValueError(f"la salida «{family}» ya está preparada")
+        wanted = family if key is None else key
+        if wanted in self._grids or wanted in self._tables:
+            raise ValueError(f"la salida «{wanted}» ya está preparada")
 
     def _check_place(self, conn: sqlite3.Connection, spec: DatasetSpec) -> None:
         """Su sitio está libre o es del mismo dato vigente (una operación que lo sustituye)."""
@@ -949,25 +1086,31 @@ class DesignWriter:
             raise GisError("gis.output_target_taken", obj=f"{_OBJ}: «{spec.name}»",
                            field=_FIELD, value=spec.locator, name=spec.name)
 
-    def grid_steps(self, family: str, raster: Raster) -> Generator[None, None, DatasetSpec]:
+    def grid_steps(self, family: str, raster: Raster, *, part: str | None = None
+                   ) -> Generator[None, None, DatasetSpec]:
         """Prepara la rejilla ``raster`` como la salida ``family`` (``env``, ``srf`` o ``brm``) de
         la operación: su hash por bandas de filas y su GeoTIFF del perfil ``project`` (los mismos
         bits, también los NaN) en su temporal junto a su destino, **sin registrar nada**. Una
         unidad por banda de hash y por tesela; devuelve su ``DatasetSpec`` (con el hash) en
-        ``StopIteration.value``. Cerrarlo a mitad borra el temporal. Se rechaza **al llamar**
-        (errores del programa: ``ValueError`` si la familia no es una rejilla de su tipo, ya está
-        preparada o el ráster no va en el CRS y la referencia vertical del proyecto)."""
-        self._produces(family, "raster")
+        ``StopIteration.value``. Cerrarlo a mitad borra el temporal. Con ``part`` (un ajuste, T32:
+        una rejilla de la familia por superficie), el dato es el de ``f"{nombre} {part}"``, y la
+        familia puede tener varias. Se rechaza **al llamar** (errores del programa: ``ValueError``
+        si la familia no es una rejilla de su tipo, ya está preparada o el ráster no va en el CRS
+        y la referencia vertical del proyecto)."""
+        key = None if part is None else f"{family}/{part}"
+        self._produces(family, "raster", key)
         if not isinstance(raster, Raster):
             raise TypeError(f"se escribe un Raster, no {type(raster).__name__}")
         if raster.crs.epsg != self.crs.epsg or raster.vertical != self.vertical:
             raise ValueError(
                 f"«{self.name}» va en el CRS y la referencia vertical del proyecto (EPSG:"
                 f"{self.crs.epsg}), no en EPSG:{raster.crs.epsg}: remuestréela antes")
-        return self._grid_steps(family, raster)
+        return self._grid_steps(family, raster, part)
 
-    def _grid_steps(self, family: str, raster: Raster) -> Generator[None, None, DatasetSpec]:
-        planned = provenance.dataset_spec(family, self.name, self.version_code)
+    def _grid_steps(self, family: str, raster: Raster, part: str | None = None
+                    ) -> Generator[None, None, DatasetSpec]:
+        label = self.name if part is None else f"{self.name} {part}"
+        planned = provenance.dataset_spec(family, label, self.version_code)
         final = Path(self.project.root, *planned.locator.split("/"))
         temporary = temporary_path(self.project, final)
         backup = backup_path(self.project, final)
@@ -997,9 +1140,10 @@ class DesignWriter:
                 except StopIteration:
                     break
                 yield
-        spec = provenance.dataset_spec(family, self.name, self.version_code,
+        spec = provenance.dataset_spec(family, label, self.version_code,
                                        content=hasher.digest(), crs_epsg=self.crs.epsg)
-        self._grids[family] = _Grid(family, spec, final, temporary, backup)
+        self._grids[family if part is None else f"{family}/{part}"] = _Grid(
+            family, spec, final, temporary, backup)
         if self.handle is not None:
             self.handle.claim_paths(temporary, final, backup)
         return spec
@@ -1031,12 +1175,12 @@ class DesignWriter:
 
     @property
     def specs(self) -> tuple[DatasetSpec, ...]:
-        """Las salidas preparadas, en el orden de su tipo."""
+        """Las salidas preparadas, en el orden de su tipo (las de una familia con partes, en el
+        orden en que se prepararon)."""
         found: list[DatasetSpec] = []
         for family in self._type.outputs:
-            if family in self._grids:
-                found.append(self._grids[family].spec)
-            elif family in self._tables:
+            found += [grid.spec for grid in self._grids.values() if grid.family == family]
+            if family in self._tables:
                 found.append(self._tables[family].spec)
         return tuple(found)
 
@@ -1121,8 +1265,8 @@ class DesignWriter:
         return Stored(handle, records)
 
     def _check_ready(self, start: OperationStart | None) -> None:
-        missing = [family for family in self._type.outputs
-                   if family not in self._grids and family not in self._tables]
+        made = {grid.family for grid in self._grids.values()} | set(self._tables)
+        missing = [family for family in self._type.outputs if family not in made]
         if missing:
             raise ValueError(f"faltan salidas de «{self.op_type}» por preparar: "
                              f"{', '.join(missing)}")
@@ -1187,10 +1331,9 @@ class DesignWriter:
 
 RECOMPUTED: tuple[str, ...] = (*provenance.REPRODUCIBLE, provenance.EXCAVATION_AREA,
                                 provenance.QUARRY, provenance.EDGE_TRANSITION,
-                                provenance.FILL_ONLY)
+                                provenance.FILL_ONLY, provenance.REFIT)
 """Los tipos que repite «Recalcular lo obsoleto» aquí: los dos de la 013 y, de la 014, el recinto
-y la cantera (T19), la transición (T28) y «solo relleno» (T30); el ajuste, cuando su tarea lo
-dé."""
+y la cantera (T19), la transición (T28), «solo relleno» (T30) y el ajuste (T32)."""
 _STORE_PHASE = "store"
 
 
@@ -1538,6 +1681,40 @@ class PreparedFillOnly:
     anotará la operación (``start``)."""
 
     parts: FillOnlyParts
+    start: OperationStart
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RefitPart:
+    """Una superficie que se ajusta a un límite nuevo (spec 014, T32): el nombre de su dato
+    (``name``), su rejilla (``surface``, en la rejilla del proyecto) y el perfil base y el de cada
+    sector de la operación que la creó (``base_profile``, ``sector_profiles``;
+    :func:`refit_profiles`)."""
+
+    name: str
+    surface: Raster
+    base_profile: str
+    sector_profiles: tuple[tuple[str, str], ...]
+
+    @property
+    def profiles(self) -> tuple[str, ...]:
+        """Los códigos de sus perfiles: el base y los de sus sectores, sin repetir."""
+        return tuple(dict.fromkeys(
+            [self.base_profile, *(profile for _sector, profile in self.sector_profiles)]))
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PreparedRefit:
+    """Lo que se lee y se comprueba antes de calcular un ajuste (:func:`prepare_refit_units`): las
+    superficies (``parts``, :class:`RefitPart`), la de partida (``ground``), los sectores
+    (``refs``) con la etiqueta de cada celda (``labels``), el nombre de cada perfil (``names``:
+    código → nombre, para los mensajes) y lo que anotará la operación (``start``)."""
+
+    parts: tuple[RefitPart, ...]
+    ground: Raster
+    refs: tuple[SectorRef, ...]
+    labels: np.ndarray
+    names: Mapping[str, str]
     start: OperationStart
 
 
@@ -2183,6 +2360,93 @@ def compute_fill_only_steps(writer: DesignWriter, request: FillOnlyRequest,
     return outcome
 
 
+# --- El ajuste a un límite nuevo (spec 014, T32; RF-014-27 a RF-014-29) ---------------------------
+
+
+def prepare_refit_units(project: StoreProject, request: RefitRequest, version: Version,
+                        masks: access.MaskSet, *, supersedes: str | None = None
+                        ) -> Generator[None, None, PreparedRefit]:
+    """Las unidades que preparan el ajuste ``request`` en ``version`` con sus ``masks`` (las del
+    límite nuevo) ya al día (spec 014, T32; RF-014-27): cada superficie ha de ser una superficie de
+    diseño de la versión de :data:`REFIT_SOURCES` (si no, ``DesignError``
+    ``des.edge_not_design_surface`` con su nombre) y su perfil sale de la operación que la creó
+    (:func:`refit_profiles`, P-3); las superficies y la de partida se leen y se comparan con la
+    rejilla del proyecto (``des.surface_*``); los sectores con la etiqueta de cada celda; y
+    :func:`prepare_refit`. Devuelve el :class:`PreparedRefit`. Nada se escribe; los rechazos salen
+    al avanzar."""
+    with project.read() as conn:
+        sources = _refit_sources(conn, request, version.uid)
+        names = MappingProxyType(profile_names(conn))
+    yield
+    frame = project_frame(project)
+    parts: list[RefitPart] = []
+    for surface, base, sectors in sources:
+        raster = read_surface(project, surface, version_uid=version.uid, expect=frame,
+                              role="superficie de diseño")
+        parts.append(RefitPart(surface, raster, base, sectors))
+        yield
+    ground = read_surface(project, request.start, version_uid=version.uid, expect=frame,
+                          role="superficie de partida")
+    yield
+    refs, labels = sector_layout(project, masks)
+    yield
+    operation = prepare_refit(project, request, version=version.uid, masks=masks,
+                              profiles=_profile_codes(sources), supersedes=supersedes)
+    yield
+    return PreparedRefit(tuple(parts), ground, refs, labels, names, operation)
+
+
+def refit_compute_steps(request: RefitRequest, masks: access.MaskSet, prepared: PreparedRefit,
+                        values: Mapping[str, object], *, budget_s: float = STEP_BUDGET_S
+                        ) -> Generator[Progress, None, refit.RefitOutcome]:
+    """Los pasos que calculan el ajuste ``request`` con lo de ``prepared``, las máscaras del límite
+    nuevo y los parámetros ``values`` (clave → valor: los que anotó la operación o los que se
+    resuelven hoy), sin escribir nada (``yield from``; spec 014, T32; RF-014-27, RF-014-28): la
+    cara de cada perfil (``design.refit.profile_faces``); **antes de calcular nada**, el ángulo que
+    traiga la petición para una superficie, que ha de ser la cara de su perfil
+    (``design.refit.check_angle``: ``des.refit_angle``); y cada superficie con
+    ``design.refit.refit_steps``, la pendiente de su perfil en cada celda según su sector
+    (``face_slope``) y el espesor mínimo. Devuelve el ``design.refit.RefitOutcome``."""
+    codes = tuple(dict.fromkeys(code for part in prepared.parts for code in part.profiles))
+    faces = refit.profile_faces(values, codes, prepared.names)
+    angles = dict(request.angles)
+    for part in prepared.parts:  # RF-014-28: el ángulo de la petición, antes de calcular
+        refit.check_angle(part.name, [faces[code] for code in part.profiles],
+                          angles.get(part.name))
+    thickness = number(values, VERIFY_MIN_THICKNESS)
+    found: list[refit.Refit] = []
+    for part in prepared.parts:
+        assigned = dict(part.sector_profiles)
+        slope = refit.face_slope(
+            prepared.labels, faces[part.base_profile],
+            [faces[assigned.get(ref.code, part.base_profile)] for ref in prepared.refs])
+        item: refit.Refit = yield from pipeline.forward(refit.refit_steps(
+            part.surface.values, prepared.ground.values, masks, slope, thickness,
+            name=part.name, version=prepared.start.version_code, budget_s=budget_s))
+        found.append(item)
+    return refit.refit_outcome(request.name, found)
+
+
+def compute_refit_steps(writer: DesignWriter, request: RefitRequest, masks: access.MaskSet,
+                        prepared: PreparedRefit, values: Mapping[str, object],
+                        budget_s: float = STEP_BUDGET_S
+                        ) -> Generator[Progress, None, refit.RefitOutcome]:
+    """Lo mismo que :func:`compute_design_steps` para el ajuste ``request`` (spec 014, T32;
+    RF-014-27 a RF-014-29): lo calcula (:func:`refit_compute_steps`) y deja la superficie ajustada
+    de cada superficie (``des_adj_<nombre>_<superficie>``, una parte de la familia por superficie,
+    ``provenance.refit_part``) en el temporal de ``writer``, **sin confirmar**. Devuelve el
+    ``design.refit.RefitOutcome``."""
+    yield Progress(refit.REFIT_PHASE, 0, 1, f"Preparando el ajuste «{request.name}»…")
+    outcome = yield from refit_compute_steps(request, masks, prepared, values, budget_s=budget_s)
+    for part, item in zip(prepared.parts, outcome.refits, strict=True):
+        raster = Raster(part.surface.grid, item.grid, writer.crs, writer.vertical)
+        yield from pipeline.forward(_store_steps(
+            writer.grid_steps(provenance.REFIT_GRID, raster,
+                              part=provenance.refit_part(part.name)),
+            budget_s, f"el ajuste de «{part.name}»"))
+    return outcome
+
+
 def compute_envelope_steps(project: StoreProject, writer: DesignWriter, request: EnvelopeRequest,
                            masks: access.MaskSet, seeds: SeedSet, values: Mapping[str, object],
                            budget_s: float = STEP_BUDGET_S
@@ -2370,14 +2634,31 @@ def run_fill_only(project: StoreProject, request: FillOnlyRequest, *, version: s
     return handle, _fill_only_run(project, handle, request, loaded, prepared, budget_s)
 
 
+def run_refit(project: StoreProject, request: RefitRequest, *, version: str | None,
+              masks: access.MaskSet | None = None, supersedes: str | None = None,
+              budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Lo mismo que :func:`run_envelope` para ``des.refit`` (spec 014, T32; RF-014-27,
+    RF-014-31): el ajuste ``request`` de la versión, de una vez y sin confirmar (el recálculo de lo
+    obsoleto, :func:`recompute_run`), con lo que lee hoy: las máscaras de la versión (el límite
+    vigente), las superficies, la de partida, los sectores y los parámetros, resueltos versión →
+    proyecto. Al llamar, sin empezar nada, los rechazos de :func:`prepare_refit_units` (una
+    superficie que no es de diseño, un perfil sin cara, el nombre…)."""
+    found = require_version(project, version, provenance.REFIT)
+    loaded = _loaded_masks(project, found, masks)
+    prepared = _result_of(prepare_refit_units(project, request, found, loaded,
+                                              supersedes=supersedes))
+    handle = prepared.start.begin(project)
+    return handle, _refit_run(project, handle, request, loaded, prepared, budget_s)
+
+
 def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
                   ) -> tuple[OperationHandle, Iterator[Progress]]:
     """Repite la operación de ``des`` de ``request`` (``RecomputeRequest`` de «Recalcular lo
     obsoleto», RF-008-26; RF-013-17; plan 013 §5.3.2): **sin pedir confirmación** —la operación ya
     existe y se repite con sus ajustes—, empieza la operación nueva, que sustituye a la anterior en
     la revisión abierta de **su** versión (:func:`run_envelope`, :func:`run_design` y, de la 014,
-    :func:`run_excavation_area`, :func:`run_quarry`, :func:`run_edge_transition` y
-    :func:`run_fill_only`; RF-014-31), con lo que
+    :func:`run_excavation_area`, :func:`run_quarry`, :func:`run_edge_transition`,
+    :func:`run_fill_only` y :func:`run_refit`; RF-014-31), con lo que
     lee hoy: las máscaras de la versión, los sectores, las superficies y los parámetros, resueltos
     de nuevo versión → proyecto (un perfil cambiado solo en V02 se lee de V02). Devuelve su
     ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama (en Blender, la cola de
@@ -2411,6 +2692,10 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
         return run_fill_only(project, provenance.fill_only_request(request.settings),
                              version=request.version, supersedes=request.operation_uid,
                              budget_s=budget_s)
+    if request.op_type == provenance.REFIT:
+        return run_refit(project, provenance.refit_request(request.settings),
+                         version=request.version, supersedes=request.operation_uid,
+                         budget_s=budget_s)
     return run_design(project, provenance.design_request(request.settings),
                       provenance.design_start(request.settings), version=request.version,
                       supersedes=request.operation_uid, budget_s=budget_s)
@@ -2461,6 +2746,16 @@ def _fill_only_run(project: StoreProject, handle: OperationHandle, request: Fill
     with DesignWriter.resume(project, handle) as writer:
         outcome = yield from compute_fill_only_steps(writer, request, masks, prepared,
                                                      _values(handle), handle.settings, budget_s)
+        stored = writer.commit(figures=outcome.figures, message=outcome.message)
+        yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
+
+
+def _refit_run(project: StoreProject, handle: OperationHandle, request: RefitRequest,
+               masks: access.MaskSet, prepared: PreparedRefit, budget_s: float
+               ) -> Generator[Progress, None, None]:
+    with DesignWriter.resume(project, handle) as writer:
+        outcome = yield from compute_refit_steps(writer, request, masks, prepared,
+                                                 _values(handle), budget_s)
         stored = writer.commit(figures=outcome.figures, message=outcome.message)
         yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
 

@@ -159,6 +159,12 @@ PENDING_014_API = frozenset({
     "fill_only_run", "reproduce_fill_only",
     # T31: design.store (la comprobación contra un límite nuevo).
     "limit_checks", "limit_checks_steps", "limit_surfaces",
+    # T32: design.model, design.provenance, design.store y design.steps (la operación des.refit
+    # y su recálculo).
+    "RefitRequest", "REFIT_PROFILE_PARAMS", "refit_figure_scope", "refit_inputs", "refit_output",
+    "refit_params", "refit_part", "refit_request", "refit_settings", "refit_source",
+    "REFIT_SOURCES", "PreparedRefit", "RefitPart", "compute_refit_steps", "prepare_refit",
+    "prepare_refit_units", "refit_compute_steps", "refit_profiles", "run_refit", "refit_run",
 })
 # Los módulos nuevos de la 014 que aún no tienen fila en la ficha (la T36 se la da y vacía esto).
 PENDING_014_MODULES = frozenset({
@@ -182,7 +188,10 @@ PENDING_014_MODULES = frozenset({
     # ClassTotals, Classification, classify_steps, classification_figures; T18: UNEXPLOITED_M,
     # TO_FINAL_NAME, UnsplitZone, UnsplitZones, unsplit_zones_steps, ToFinal, to_final_steps,
     # to_final_figures
-    "design.refit",  # T31: OUTSIDE_CODE, RefitCheck, limit_cells, outside_volume
+    "design.refit",  # T31: OUTSIDE_CODE, RefitCheck, limit_cells, outside_volume; T32:
+    # ANGLE_CODE, ANGLE_TOLERANCE_DEG, NOT_NEEDED_CODE, REFIT_NAME, REFIT_PHASE, ProfileFace,
+    # Refit, RefitOutcome, check_angle, face_slope, profile_faces, refit_figures, refit_outcome,
+    # refit_steps
 })
 
 
