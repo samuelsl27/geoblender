@@ -969,9 +969,9 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         admitidos (D-6). Lo que dé, con el nombre de la superficie ajustada, lo de cada superficie
         delante de la nota del orden (T53) y del aviso de la cantera obsoleta, que sigue el último
         (T54): aquí avisan las dos (en la rejilla de 2 m,
-        la explotación hasta 2,49 m y la final hasta 1,26 m). El resumen enseña los 10 primeros
-        tramos de cada una y cuántos faltan (T61, lo que vio el H3): de los 13 de la explotación,
-        «… y 3 tramos más (un ajuste no guarda informe)»."""
+        la explotación hasta 2,49 m y la final hasta 1,26 m). Un ajuste no guarda informe, así que
+        su resumen enseña todos los tramos (RF-014-21: las coordenadas de cada uno), también los
+        13 de la explotación, sin la nota de los que faltan (T61)."""
         start = qfx.terrain(self.grid)
         allowed = self.masks_new.cut_allowed() | self.masks_new.fill_allowed()
         expected = []
@@ -991,12 +991,10 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         self.assertEqual(notices[:len(expected)], expected)
         self.assertEqual([notice.code for notice in notices[len(expected):]],
                          ["des.refit_order", "des.refit_source_stale"])
-        shown = list(self.calculation.notices)  # el resumen (T61)
-        self.assertEqual(shown, list(edges.summary_notices(notices, reported=False)))
-        more = [notice for notice in shown if notice.code.startswith("des.edge_more_")]
-        self.assertEqual([(notice.code, dict(notice.values)) for notice in more],
-                         [("des.edge_more_stretches_refit", {"stretches": 3})])
-        self.assertEqual(more[0].text(), "… y 3 tramos más (un ajuste no guarda informe).")
+        shown = list(self.calculation.notices)  # el resumen (T61): todos, sin informe
+        self.assertEqual(shown, notices)
+        self.assertGreater(sum(notice.code == "des.edge_stretch" for notice in shown), 10)
+        self.assertFalse(any(notice.code.startswith("des.edge_more_") for notice in shown))
 
     def test_a_the_order_rule_of_the_quarry_ties_its_two_refitted_surfaces(self) -> None:
         """RF-014-14, RF-014-27 (T53; hallazgo F-15): ajustadas cada una con la cara de su perfil,

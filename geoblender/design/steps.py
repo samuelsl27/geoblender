@@ -119,7 +119,8 @@ class Calculation:
     la ventana junto a su resumen —de la envolvente, los de sus semillas; del escalonado, los de su
     informe; de la cantera, los suyos y los del informe de cada lado; de cada aviso del salto
     creado, sus primeros tramos y cuántos faltan, ``edges.summary_notices``, T61: el informe del
-    diseño los guarda todos—, las ``seeds`` (``None``
+    diseño los guarda todos; un ajuste, que no guarda informe, los enseña todos—, las ``seeds``
+    (``None``
     salvo en una envolvente), el tipo de operación (``op_type``), su
     ``name`` y la ``version`` (su código). Mientras esté abierta (:attr:`open`), sus rejillas
     esperan en temporales junto a su destino: hay que crearla o descartarla."""
@@ -526,9 +527,8 @@ def _refit_steps(project: StoreProject, request: RefitRequest, version: str | No
         outcome: refit.RefitOutcome = yield from store.compute_refit_steps(
             writer, request, loaded, prepared, values, budget_s)
         calculation = Calculation(project=project, writer=writer, start=prepared.start,
-                                  outcome=outcome,
-                                  notices=edges.summary_notices(outcome.notices, reported=False),
-                                  seeds=None, values=values)
+                                  outcome=outcome, notices=outcome.notices, seeds=None,
+                                  values=values)
     except BaseException as error:  # un fallo o cerrar el generador: no quedan los temporales
         writer.close(error)
         raise

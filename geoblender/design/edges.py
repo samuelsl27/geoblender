@@ -560,18 +560,18 @@ _STEP_CODES = frozenset({"des.edge_created_step", "des.edge_surface_step"})
 _STRETCH_CODE = "des.edge_stretch"
 
 
-def summary_notices(notices: Iterable[Notice], *, reported: bool = True,
-                    limit: int = SUMMARY_STRETCHES) -> tuple[Notice, ...]:
+def summary_notices(notices: Iterable[Notice], *, limit: int = SUMMARY_STRETCHES
+                    ) -> tuple[Notice, ...]:
     """Los avisos y notas ``notices`` como los enseña el resumen de un cálculo (T61; RF-014-21):
     de cada aviso del salto creado (``des.edge_created_step``, ``des.edge_surface_step``), sus
     ``limit`` primeros tramos y, si tiene más, una nota con los que faltan:
     ``des.edge_more_stretches`` («… y N tramos más (en el informe)», que los guarda todos:
-    ``des_qrp_``, ``des_rpt_``, ``des_erp_``) o, sin informe (``reported`` falso: un ajuste),
-    ``des.edge_more_stretches_refit``. Lo demás, tal cual y en su orden. Las coordenadas de cada
-    tramo siguen en ``notices`` (lo que va al informe); esto solo es lo que se enseña."""
+    ``des_qrp_``, ``des_rpt_``, ``des_erp_``). Lo demás, tal cual y en su orden. Las coordenadas
+    de cada tramo siguen en ``notices`` (lo que va al informe); esto solo es lo que se enseña. Un
+    ajuste no guarda informe: su resumen no pasa por aquí y enseña todos sus tramos (RF-014-21)."""
     if limit < 0:
         raise ValueError(f"los tramos que se enseñan son 0 o más, no {limit!r}")
-    code = "des.edge_more_stretches" if reported else "des.edge_more_stretches_refit"
+    code = "des.edge_more_stretches"
     found: list[Notice] = []
     shown = hidden = 0
     inside = False

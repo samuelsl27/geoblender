@@ -482,7 +482,7 @@ class SummaryNoticesTest(unittest.TestCase):
 
     def test_the_limit_itself_one_more_and_a_refit(self) -> None:
         """Con 10 tramos, todos y ninguna nota; con 11, la nota en singular («… y 1 tramo más»);
-        un ajuste (sin informe) lo dice con la suya; con ``limit`` 0, solo el aviso y la nota; un
+        con ``limit`` 0, solo el aviso y la nota; un
         tramo suelto (sin su aviso delante) no se toca, y un límite negativo es un error del
         programa."""
         ten = warned("des_fin_corta", 1, 10)
@@ -492,8 +492,6 @@ class SummaryNoticesTest(unittest.TestCase):
         self.assertEqual(found[-1], Notice("des.edge_more_stretches", {"stretches": 1}))
         self.assertEqual(found[-1].text(), "… y 1 tramo más (en el informe).")
         self.assertEqual(len(found), 12)
-        refit = edges.summary_notices(eleven, reported=False)
-        self.assertEqual(refit[-1], Notice("des.edge_more_stretches_refit", {"stretches": 1}))
         self.assertEqual(edges.summary_notices(eleven, limit=0),
                          (eleven[0], Notice("des.edge_more_stretches", {"stretches": 11})))
         created_step = [Notice("des.edge_created_step", {"stretches": 12}),

@@ -200,9 +200,8 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     porcentaje admitidos entre sus parámetros, y cambiarlos las deja obsoletas. Ninguna cifra
     cambia. El resumen de cada orden enseña los 10 primeros tramos de cada aviso y «… y N tramos más
     (en el informe)», que los guarda todos (en su demostración en pantalla, con 204 tramos el botón
-    «Crear» quedaba fuera de la ventana); el ajuste, que no guarda informe, lo dice. La transición
-    **solo acerca la
-    superficie al terreno**: cada celda queda entre su cota de diseño y la del terreno, así que no
+    «Crear» quedaba fuera de la ventana); el ajuste, que no guarda informe, los enseña todos. La
+    transición **solo acerca la superficie al terreno**: cada celda queda entre su cota de diseño y la del terreno, así que no
     convierte un corte en relleno ni un relleno en corte, no ahonda un corte ni sube un relleno, y no
     rellena donde las restricciones solo admiten el corte. Su verificación lo encontró junto a un
     escarpe previo más empinado que el ángulo: la primera versión subía por encima del terreno una

@@ -84,7 +84,6 @@ QUARRY_CODES: dict[str, str] = {
     "des.edge_surface_step": "warning",        # RF-014-20, RF-014-21 (T56: el de cada diseño)
     "des.edge_stretch": "note",                # RF-014-21
     "des.edge_more_stretches": "note",         # RF-014-21 (T61: los que no enseña el resumen)
-    "des.edge_more_stretches_refit": "note",   # RF-014-21 (T61: un ajuste, sin informe)
     "des.edge_not_design_surface": "error",    # RF-014-19
     "des.fill_only_cuts": "error",             # RF-014-25
     "des.fill_only_untouchable": "error",      # RF-014-25
@@ -509,17 +508,11 @@ class QuarryTextsTest(unittest.TestCase):
     def test_the_stretches_the_summary_leaves_out(self) -> None:
         """RF-014-21 (T61; el H3: 204 tramos dejaban «Crear» fuera de la ventana): la nota de los
         tramos que el resumen no enseña dice cuántos y dónde están, con su singular, en los dos
-        idiomas; la de un ajuste dice que no tiene informe."""
+        idiomas (un ajuste, sin informe, no la lleva: enseña todos sus tramos)."""
         cases = (("des.edge_more_stretches", 2, "… y 2 tramos más (en el informe).",
                   "… and 2 more stretches (in the report)."),
                  ("des.edge_more_stretches", 1, "… y 1 tramo más (en el informe).",
-                  "… and 1 more stretch (in the report)."),
-                 ("des.edge_more_stretches_refit", 194,
-                  "… y 194 tramos más (un ajuste no guarda informe).",
-                  "… and 194 more stretches (a refit keeps no report)."),
-                 ("des.edge_more_stretches_refit", 1,
-                  "… y 1 tramo más (un ajuste no guarda informe).",
-                  "… and 1 more stretch (a refit keeps no report)."))
+                  "… and 1 more stretch (in the report)."))
         for code, count, es, en in cases:
             with self.subTest(code=code, count=count):
                 self.assertEqual(messages.render(code, stretches=count), es)

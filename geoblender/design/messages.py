@@ -999,7 +999,7 @@ CATALOG: tuple[Message, ...] = (
         "y = {y} m.",
     ),
     # Los tramos que el resumen no enseña (T61, el H3: con 204 tramos, «Crear» quedaba fuera de la
-    # ventana); los guarda el informe del diseño. Un ajuste no tiene informe.
+    # ventana); los guarda el informe del diseño. Un ajuste, sin informe, los enseña todos.
     Message(
         "des.edge_more_stretches",
         "… and {stretches} more stretches (in the report).",
@@ -1008,15 +1008,6 @@ CATALOG: tuple[Message, ...] = (
         count="stretches",
         one_msgid="… and {stretches} more stretch (in the report).",
         one_es="… y {stretches} tramo más (en el informe).",
-    ),
-    Message(
-        "des.edge_more_stretches_refit",
-        "… and {stretches} more stretches (a refit keeps no report).",
-        "… y {stretches} tramos más (un ajuste no guarda informe).",
-        "note",
-        count="stretches",
-        one_msgid="… and {stretches} more stretch (a refit keeps no report).",
-        one_es="… y {stretches} tramo más (un ajuste no guarda informe).",
     ),
     Message(
         "des.edge_not_design_surface",
