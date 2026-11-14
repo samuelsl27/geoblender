@@ -101,6 +101,7 @@ CODES: dict[str, str] = {
     "des.platform_self_intersects": "error",    # RF-015-08
     "des.platform_axis_length_zero": "error",   # RF-015-08
     "des.platform_axis_closed": "error",        # RF-015-08
+    "des.platform_axis_parts": "error",         # RF-015-08 (T06)
     "des.platform_area_zero": "error",          # RF-015-08
     "des.platform_no_cells": "error",           # RF-015-08
     "des.platform_axis_not_crossing": "error",  # RF-015-08

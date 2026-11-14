@@ -221,6 +221,7 @@ __all__ = [
     "area_outcome",
     "area_parts",
     "axis_abscissa",
+    "axis_paths",
     "check_order",
     "classification_figures",
     "classify_steps",
@@ -228,6 +229,7 @@ __all__ = [
     "conserve_moved",
     "corridor_cells",
     "corridor_too_long",
+    "corridor_window",
     "crown_ring",
     "crown_seeds",
     "excavation_area",
@@ -805,15 +807,17 @@ def _corridor_level(fid: int, fields: CorridorFields, start_level: float, gradie
                               value=level, layer=fields.layer, corridor=fid, low=low, high=high)
 
 
-def _axis_paths(parts: tuple[tuple[np.ndarray, ...], ...]) -> list[np.ndarray]:
-    """Los caminos del eje de una entidad (cada parte, en su orden), float64 ``(k, 2)``."""
+def axis_paths(parts: tuple[tuple[np.ndarray, ...], ...]) -> list[np.ndarray]:
+    """Los caminos del eje de una entidad (cada parte, en su orden), float64 ``(k, 2)``. Pública
+    desde la T06 de la 015 (era ``_axis_paths``; sin cambio de comportamiento)."""
     return [np.asarray(path, dtype=np.float64).reshape(-1, 2) for part in parts for path in part]
 
 
-def _corridor_window(paths: list[np.ndarray], half: float,
-                     geometry: Grid) -> tuple[slice, slice]:
+def corridor_window(paths: list[np.ndarray], half: float,
+                    geometry: Grid) -> tuple[slice, slice]:
     """Las filas y columnas de la rejilla que pueden tener el centro a ≤ ``half`` de los
-    caminos: su caja ampliada en ``half``, recortada a la rejilla."""
+    caminos: su caja ampliada en ``half``, recortada a la rejilla. Pública desde la T06 de la 015
+    (era ``_corridor_window``; sin cambio de comportamiento)."""
     points = np.concatenate(paths)
     west, south = points.min(axis=0) - half
     east, north = points.max(axis=0) + half
@@ -961,7 +965,7 @@ def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid, 
                   for column, name in zip(level_columns, level_fields, strict=True)]
         start_level, gradient_pct = ((values[0], values[1]) if fields.has_gradient
                                      else (values[0], 0.0))
-        paths = _axis_paths(parts)
+        paths = axis_paths(parts)
         axis = float(sum(np.hypot(*np.diff(path, axis=0).T).sum() for path in paths))
         if bounds is not None:
             _corridor_level(fid, fields, start_level, gradient_pct, axis, *bounds)
@@ -970,7 +974,7 @@ def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid, 
                               obj=f"Corredor {fid} de la capa «{fields.layer}»",
                               field=_GEOMETRY_FIELD, value=round(axis, 2), layer=fields.layer,
                               corridor=fid)
-        window = _corridor_window(paths, width / 2.0, geometry)
+        window = corridor_window(paths, width / 2.0, geometry)
         sigma, reach = axis_abscissa(paths, width / 2.0, geometry, window)
         inside = np.isfinite(sigma)
         taken = owner[window][inside]

@@ -152,11 +152,18 @@ PENDING_015_API = frozenset({
     # T05: los tres privados de la 014 que pasan a públicos (design.quarry, design.edges y
     # design.store).
     "axis_abscissa", "seed_envelope_steps", "created_step_steps",
+    # T06: los dos ayudantes del corredor que pasan a públicos (design.quarry) y la huella y la
+    # rasante de la plataforma (design.platform).
+    "axis_paths", "corridor_window",
+    "Footprint", "PlatformGeometry", "PlatformJob", "axis_of_polygon", "platform_footprint",
+    "work_window",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({
     "design.entities",  # T02: EntityKind, EntityRecord, EntityState, next_code, declared_reason;
     # T03: la cadena (start_conflict, insert_after, chain_of, chain_tails) y registry
+    "design.platform",  # T06: PlatformJob, PlatformGeometry, Footprint, platform_footprint,
+    # axis_of_polygon y work_window (la huella y la rasante de la plataforma)
 })
 
 

@@ -1333,6 +1333,15 @@ CATALOG: tuple[Message, ...] = (
         "no tiene sentido ni abscisa 0; dibújelo abierto en QGIS; no se calcula nada.",
     ),
     Message(
+        "des.platform_axis_parts",
+        "Layer «{layer}», platform «{entity}»: its axis has {value} parts; a platform axis is a "
+        "single line (the abscissa 0 is its first vertex); join them into one line in QGIS; "
+        "nothing is calculated.",
+        "Capa «{layer}», plataforma «{entity}»: su eje tiene {value} partes; el eje de una "
+        "plataforma es una sola línea (la abscisa 0 está en su primer vértice); únalas en una "
+        "línea en QGIS; no se calcula nada.",
+    ),
+    Message(
         "des.platform_area_zero",
         "Layer «{layer}», platform «{entity}»: its polygon has an area of {value} m²; draw a "
         "polygon with area in QGIS; nothing is calculated.",
