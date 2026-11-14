@@ -78,6 +78,11 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   escritura (:func:`compute_refit_steps`: una ``des_adj_`` por superficie, con
   :meth:`DesignWriter.grid_steps` y su ``part``); y :func:`run_refit`, su recálculo (no se
   reproduce: depende del límite vigente).
+- **Las entidades de diseño** (spec 015, T13; RF-015-01, RF-015-02): el escritor conoce las tablas de la
+  plataforma (:data:`ENTITY_COLUMNS` para ``des_epr_``; ``des_prp_`` lleva las de :data:`REPORT_COLUMNS`) y
+  :meth:`DesignWriter.commit` admite ``before_begin``, una función que escribe, en la misma transacción y
+  antes de abrir la operación, los parámetros de la entidad; la preparación, el cálculo y «Crear» son de
+  ``design.entity_store``.
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -208,6 +213,7 @@ if TYPE_CHECKING:  # solo para los tipos: importarlos arrastraría los cálculos
 
 __all__ = [
     "BERM_COLUMNS",
+    "ENTITY_COLUMNS",
     "NO_DATA_NOTE",
     "NO_MOVEMENT_NOTE",
     "QUARRY_BERM_COLUMNS",
@@ -318,9 +324,26 @@ QUARRY_BERM_COLUMNS: tuple[ColumnDef, ...] = (ColumnDef("surface", "TEXT", True)
 """Las columnas de ``des_bmt_`` de una cantera (spec 014, T19; plan 014 §5.2.3): las bermas de
 las dos superficies, cada fila con su superficie (``final`` o ``exploitation``) delante de las de
 :data:`BERM_COLUMNS`."""
+ENTITY_COLUMNS: tuple[ColumnDef, ...] = (
+    ColumnDef("code", "TEXT", True), ColumnDef("name", "TEXT", True),
+    ColumnDef("kind", "TEXT", True), ColumnDef("start_surface", "TEXT", True),
+    ColumnDef("support_surface", "TEXT", False), ColumnDef("layer", "TEXT", True),
+    ColumnDef("source_fid", "INTEGER", True), ColumnDef("geometry_sha256", "TEXT", True),
+    ColumnDef("mode", "TEXT", True), ColumnDef("cells", "INTEGER", True),
+    ColumnDef("axis_principal", "INTEGER", True), ColumnDef("bounds", "TEXT", True),
+    ColumnDef("footprint", "TEXT", True), ColumnDef("axis", "TEXT", True))
+"""Las columnas de ``des_epr_`` (spec 015, T13; plan 015 §5.2.3: «huella, eje y atributos»): **una fila
+por entidad** con sus atributos —el código, el nombre, el tipo, el nombre de los datos de su superficie
+de partida y de apoyo, la capa y el ``fid`` de su geometría de origen y su hash, el modo y las celdas de
+la huella—, la ventana de trabajo (``bounds``: ``[fila0, fila1, col0, col1]`` de la rejilla entera, las
+segundas excluidas, JSON), la huella en tramos de fila (``footprint``: ``[[fila, col0, col1], …]`` absolutos,
+``col1`` excluida, JSON) y los vértices de su eje (``axis``: ``[[x, y], …]`` absolutos en float64, JSON; con
+``axis_principal`` si es el eje principal de un polígono sin eje enlazado). De ella salen la zona
+declarada (T16), el cargador (T28) y la capa de entidades (T30)."""
 _COLUMNS: Mapping[str, tuple[ColumnDef, ...]] = MappingProxyType({
     provenance.BERM_TABLE: BERM_COLUMNS, provenance.REPORT_TABLE: REPORT_COLUMNS,
-    provenance.QUARRY_REPORT_TABLE: REPORT_COLUMNS, provenance.EDGE_REPORT_TABLE: REPORT_COLUMNS})
+    provenance.QUARRY_REPORT_TABLE: REPORT_COLUMNS, provenance.EDGE_REPORT_TABLE: REPORT_COLUMNS,
+    provenance.ENTITY_TABLE: ENTITY_COLUMNS, provenance.ENTITY_REPORT_TABLE: REPORT_COLUMNS})
 
 
 def columns_of(op_type: str, family: str) -> tuple[ColumnDef, ...]:
@@ -1277,9 +1300,10 @@ class DesignWriter:
 
     def table_steps(self, family: str, rows: Iterable[Sequence[Any]]
                     ) -> Generator[None, None, DatasetSpec]:
-        """Prepara la tabla ``family`` (``bmt`` o ``rpt``) con ``rows`` (:func:`berm_rows`,
-        :func:`report_rows`): su hash en un GeoPackage en memoria, por trozos de filas, **sin
-        registrar nada**. Devuelve su ``DatasetSpec`` (con el hash) en ``StopIteration.value``.
+        """Prepara la tabla ``family`` (``bmt``, ``rpt``…; las de la 015, ``epr`` y ``prp``) con
+        ``rows`` (:func:`berm_rows`, :func:`report_rows`…): su hash en un GeoPackage en memoria, por
+        trozos de filas, **sin registrar nada**. Devuelve su ``DatasetSpec`` (con el hash) en
+        ``StopIteration.value``.
         Se rechaza al llamar, como :meth:`grid_steps`, y una fila con otro número de columnas."""
         self._produces(family, "table")
         chosen = tuple(tuple(row) for row in rows)
@@ -1357,7 +1381,8 @@ class DesignWriter:
         insert_rows(conn, spec.locator, _names(columns), table.rows)
 
     def commit(self, start: OperationStart | None = None, *, figures: Sequence[FigureSpec] = (),
-               message: str | None = None) -> Stored:
+               message: str | None = None,
+               before_begin: Callable[[sqlite3.Connection], object] | None = None) -> Stored:
         """Registra el resultado, en **una** transacción de escritura: abre la operación
         (``start``, :meth:`OperationStart.begin`; no hace falta si el escritor se reanudó con una
         operación que ya empezó), reclama las rutas, pone las rejillas en su sitio, escribe las
@@ -1365,7 +1390,13 @@ class DesignWriter:
         que las máscaras siguen al día (RF-013-04). Si algo falla, o lo que consume cambió desde que
         se preparó, deshace todo (no quedan operación, dato, tabla, cifra, rejilla en su sitio ni
         temporal) y el error sigue. Errores del programa (``ValueError``): faltan salidas de su
-        tipo, o ``start`` no es de esta operación (o se da con una ya empezada, o falta)."""
+        tipo, o ``start`` no es de esta operación (o se da con una ya empezada, o falta).
+
+        ``before_begin`` (spec 015, T13): una función que se llama **con la conexión de esa
+        transacción, antes de abrir la operación**, para escribir en ella lo que la operación ha de
+        leer al empezar (los parámetros de una entidad de diseño, que ``begin_operation`` crearía
+        en el proyecto si faltaran: trampa de la T04). Si falla, o falla algo después, se deshace
+        con todo lo demás. Sin ella (la 013 y la 014), no hace nada."""
         if self._closed or self._committed:
             raise RuntimeError("el escritor ya se confirmó o se cerró")
         self._check_ready(start)  # un error del programa no cierra el escritor
@@ -1373,6 +1404,8 @@ class DesignWriter:
             if start is not None:
                 start.check_masks(self.project)
             with self.project.write_transaction() as conn:
+                if before_begin is not None:
+                    before_begin(conn)
                 handle = self.handle
                 if handle is None:
                     assert start is not None

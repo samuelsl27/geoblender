@@ -172,6 +172,9 @@ PENDING_015_API = frozenset({
     "compute_platform_steps", "platform_compute_steps", "platform_obsolete", "platform_previous",
     "platform_summary", "quarry_order", "platform_run", "Obsolete", "ObsoleteKind",
     "PlatformSummary", "held_notices", "obsolete_notices", "summary_notices",
+    # T13: «Crear» la plataforma (design.entity_store; ENTITY_COLUMNS de design.store es una constante).
+    "create_platform", "detected_supports", "footprint_runs", "geometry_sha256",
+    "platform_entity_rows", "platform_report_rows", "runs_mask",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({
@@ -186,7 +189,9 @@ PENDING_015_MODULES = frozenset({
     "design.entity_store",  # T11: prepare_platform, prepare_platform_units, PreparedPlatform,
     # EntityParamRow y set_entity_params (preparar la plataforma y escribir sus parámetros); T12:
     # platform_compute_steps, compute_platform_steps, platform_summary, platform_previous,
-    # quarry_order y platform_obsolete (calcularla y su resumen)
+    # quarry_order y platform_obsolete (calcularla y su resumen); T13: create_platform,
+    # platform_entity_rows, platform_report_rows, footprint_runs, runs_mask, geometry_sha256 y
+    # detected_supports (crearla: su tabla, su informe y el gancho de las dependencias)
 })
 
 

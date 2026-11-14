@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Preparar la plataforma —lo que se lee y se rechaza antes de calcular— y calcularla (spec 015, T11 y
-T12; HU-015-3; RF-015-03, RF-015-06, RF-015-07, RF-015-08, RF-015-09, RF-015-13, RF-015-29; plan 015
-§5.1, §5.2.1, §5.2.2, §5.3.1 y §5.3.2; ADR-0030).
+"""Preparar la plataforma —lo que se lee y se rechaza antes de calcular—, calcularla y crearla (spec 015,
+T11, T12 y T13; HU-015-1, HU-015-3; RF-015-01, RF-015-02, RF-015-03, RF-015-04, RF-015-06, RF-015-07,
+RF-015-08, RF-015-09, RF-015-13, RF-015-29; plan 015 §5.1, §5.2.1, §5.2.2, §5.2.3, §5.3.1 y §5.3.2;
+ADR-0030).
 
 El homólogo, para las entidades de diseño, de ``prepare_quarry`` y ``prepare_quarry_units`` de
 ``design.store``: **solo lee**. Nada se escribe en el proyecto (RF-015-03: hasta que el usuario
@@ -47,6 +48,19 @@ revisión congelada más reciente), el orden de la cantera de la 014 (:func:`qua
 impide mover unas celdas (nombres y entidades que declaran, ``preview.held_notices``) y lo obsoleto
 (:func:`platform_obsolete`, del grafo de la 008: no se marca nada de una revisión congelada, RF-009-19).
 
+**Crear** (T13; RF-015-01, RF-015-02, RF-015-04): :func:`create_platform` registra lo calculado en **una**
+transacción del ``DesignWriter`` (:meth:`~.store.DesignWriter.commit`): los parámetros de la entidad como
+filas de la versión (:func:`set_entity_params`, con el gancho ``before_begin`` del ``commit``, antes de abrir la
+operación), la operación con sus entradas y ajustes, la superficie ``des_psf_``, la tabla ``des_epr_``
+(:func:`platform_entity_rows`: una fila con los atributos de la entidad, su huella en tramos de fila
+—:func:`footprint_runs`, :func:`runs_mask`—, su eje y el hash de su geometría de origen,
+:func:`geometry_sha256`), el informe ``des_prp_`` (:func:`platform_report_rows`) y las cifras con el ámbito
+de la entidad. «Calcular» deja ya preparadas las tres salidas (:func:`compute_platform_steps`: el hash de
+las tablas se calcula fuera de la transacción, R4). Una plataforma que parte de otra consume su superficie
+(``des_psf_<nombre>``) como entrada ``surface``, y cambiar un parámetro de la primera deja obsoleta la
+segunda con la causa (la 008). El gancho de las dependencias (:func:`detected_supports`, RF-015-15) es de la
+T23 y hoy no añade ninguna.
+
 La capa solo da la **geometría** y los **valores iniciales**: se copian a parámetros de la entidad
 (con el origen «capa X, campo Y, entidad Z») y cambian después en ella; la capa no se modifica. Del
 terreno (RF-015-09) se comprueba la superficie de partida y la de apoyo, que son las que lee el
@@ -59,10 +73,11 @@ las órdenes al usarlo, no ``bl`` al registrarse
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import sqlite3
-from collections.abc import Generator, Iterable, Mapping
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
@@ -73,7 +88,7 @@ from ..core.constraints.store import constraint_names
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterRecord, ParameterStore, definition
 from ..core.params.store import default_reason
 from ..core.project.model import Progress
-from ..core.provenance.operations import OperationStatus
+from ..core.provenance.operations import OperationStatus, Use
 from ..core.versions import read as versions_read
 from ..core.versions.model import Version
 from ..gis.masks import access
@@ -124,11 +139,16 @@ from .seeds import sector_layout
 from .store import (
     DesignWriter,
     OperationStart,
+    Row,
+    Stored,
     _check_014_params,
     _loaded_masks,
+    _notice_text,
     _other_surface,
     _quarry_link,
+    _real,
     _result_of,
+    _seen,
     _start,
     _store_steps,
     design_surface_of,
@@ -141,13 +161,20 @@ __all__ = [
     "EntityParamRow",
     "PreparedPlatform",
     "compute_platform_steps",
+    "create_platform",
+    "detected_supports",
+    "footprint_runs",
+    "geometry_sha256",
     "platform_compute_steps",
+    "platform_entity_rows",
     "platform_obsolete",
     "platform_previous",
+    "platform_report_rows",
     "platform_summary",
     "prepare_platform",
     "prepare_platform_units",
     "quarry_order",
+    "runs_mask",
     "set_entity_params",
 ]
 
@@ -197,7 +224,10 @@ class PreparedPlatform:
     parámetros del proyecto que lee el cálculo (``common``: clave → valor, los de
     :data:`~.provenance.PLATFORM_COMMON_PARAMS`, el ``project`` de ``platform_edge`` y
     ``platform_outcome``) y los nombres de los datos de la superficie de partida
-    (``start_surface``) y de apoyo (``support_surface``; ``None`` sin ella), ya resueltos."""
+    (``start_surface``) y de apoyo (``support_surface``; ``None`` sin ella), ya resueltos.
+    ``existing`` (spec 015, T13): la entidad ya estaba en la versión (se preparó con su ``code``:
+    recalcularla o calcular la que dejó «Traer las entidades de…»), así que «Crear» no escribe otra
+    vez sus parámetros."""
 
     job: PlatformJob
     footprint: Footprint
@@ -208,6 +238,7 @@ class PreparedPlatform:
     common: Mapping[str, float]
     start_surface: str
     support_surface: str | None
+    existing: bool = False
 
     @property
     def values(self) -> Mapping[str, object]:
@@ -668,7 +699,7 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
     yield
     rows = _rows(request, chosen, values, layer_fields)
     return PreparedPlatform(job, footprint, begun, chosen, fid, rows, MappingProxyType(common),
-                            start_name, support_name)
+                            start_name, support_name, code is not None)
 
 
 def prepare_platform(project: StoreProject, request: PlatformRequest, *, version: str | None,
@@ -768,11 +799,13 @@ def compute_platform_steps(writer: DesignWriter, prepared: PreparedPlatform, *,
                            operation: str = "", quarry: QuarryOrder | None = None,
                            budget_s: float = STEP_BUDGET_S
                            ) -> Generator[Progress, None, PlatformOutcome]:
-    """Lo que hace «Calcular» sobre el ``writer`` (spec 015, T12; RF-015-03, RF-015-29): calcula la
+    """Lo que hace «Calcular» sobre el ``writer`` (spec 015, T12 y T13; RF-015-03, RF-015-29): calcula la
     plataforma preparada (:func:`platform_compute_steps`, con la huella de ``prepared`` y los
-    parámetros del proyecto que lee) y deja su superficie —la de partida, entera, con el resultado en
-    la ventana de la huella— en el temporal de ``writer`` (``des_psf_``, con su hash), **sin confirmar**.
-    La tabla de la entidad y su informe son de «Crear» (T13). Devuelve el
+    parámetros del proyecto que lee), deja su superficie —la de partida, entera, con el resultado en
+    la ventana de la huella— en el temporal de ``writer`` (``des_psf_``, con su hash) y prepara, con su
+    hash en memoria, la tabla de la entidad (``des_epr_``, :func:`platform_entity_rows`) y su informe
+    (``des_prp_``, :func:`platform_report_rows`), **sin confirmar**: lo que falta para crearla
+    (:func:`create_platform`, T13) es una sola transacción. Devuelve el
     :class:`~.platform.PlatformOutcome`."""
     outcome = yield from platform_compute_steps(
         prepared.job, prepared.common, footprint=prepared.footprint,
@@ -784,7 +817,287 @@ def compute_platform_steps(writer: DesignWriter, prepared: PreparedPlatform, *,
     yield from pipeline.forward(_store_steps(
         writer.grid_steps(provenance.ENTITY_SURFACE_GRID, raster), budget_s,
         "la superficie de la plataforma"))
+    entity = platform_entity_rows(prepared.job, outcome, fid=prepared.fid,
+                                  start_surface=prepared.start_surface,
+                                  support_surface=prepared.support_surface)
+    yield from pipeline.forward(_store_steps(
+        writer.table_steps(provenance.ENTITY_TABLE, entity), budget_s,
+        "la tabla de la plataforma"))
+    yield from pipeline.forward(_store_steps(
+        writer.table_steps(provenance.ENTITY_REPORT_TABLE, platform_report_rows(outcome)),
+        budget_s, "el informe de la plataforma"))
     return outcome
+
+
+# --- Las tablas de la entidad (spec 015, T13; RF-015-01, RF-015-02) -----------------------------
+
+_OUTSIDE_NOTICES = frozenset({
+    "des.magnitude_cut", "des.magnitude_fill", "des.magnitude_no_reference",
+    "des.entity_quarry_order"})
+"""Los avisos del resultado que **no** van al informe ``des_prp_``: dependen de algo que la operación no
+consume —la revisión congelada anterior con que se compara la magnitud y la otra superficie de la
+cantera— y el informe se reproduce sin el proyecto (RF-015-02: bit a bit desde lo congelado). El
+resumen de «Calcular» sí los lleva."""
+
+
+def _json(value: object) -> str:
+    """``value`` como JSON compacto y estable (``allow_nan`` falso: nada que no sea finito)."""
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def footprint_runs(cells: np.ndarray, window: tuple[slice, slice]
+                   ) -> list[tuple[int, int, int]]:
+    """La huella ``cells`` (booleana, de la forma de su ventana de trabajo ``window``) en **tramos de
+    fila** ``(fila, col0, col1)`` de la **rejilla entera**: la fila y las columnas absolutas, ``col1``
+    excluida (como un ``slice``), de norte a sur y de oeste a este. Es lo que guarda ``des_epr_``
+    (``footprint``) y de lo que salen la zona declarada, el cargador y la capa de entidades; sin bucle
+    por celda (los inicios y finales de cada tramo salen de la diferencia de cada fila).
+    ``ValueError`` (error del programa) si ``cells`` no es de la forma de la ventana."""
+    mask = np.asarray(cells, dtype=bool)
+    rows, cols = window
+    if mask.ndim != 2 or mask.shape != (rows.stop - rows.start, cols.stop - cols.start):
+        raise ValueError(f"la huella es de la forma de su ventana "
+                         f"({rows.stop - rows.start}, {cols.stop - cols.start}), no {mask.shape}")
+    padded = np.zeros((mask.shape[0], mask.shape[1] + 2), dtype=np.int8)
+    padded[:, 1:-1] = mask
+    edges = np.diff(padded, axis=1)
+    first_rows, first = np.nonzero(edges == 1)
+    _last_rows, last = np.nonzero(edges == -1)  # una por inicio y en el mismo orden
+    return [(int(row) + rows.start, int(start) + cols.start, int(stop) + cols.start)
+            for row, start, stop in zip(first_rows, first, last, strict=True)]
+
+
+def runs_mask(runs: Iterable[Sequence[int]], shape: tuple[int, int]) -> np.ndarray:
+    """La máscara booleana de la rejilla entera (``shape``: filas y columnas) que dicen los tramos
+    ``runs`` de :func:`footprint_runs` (``(fila, col0, col1)`` absolutos, ``col1`` excluida): la huella
+    de una entidad leída de su tabla. ``ValueError`` si un tramo no cabe en la rejilla o no tiene celdas."""
+    height, width = shape
+    found = np.zeros(shape, dtype=bool)
+    for run in runs:
+        row, first, last = (int(value) for value in run)
+        if not (0 <= row < height and 0 <= first < last <= width):
+            raise ValueError(f"el tramo ({row}, {first}, {last}) no cabe en una rejilla de "
+                             f"{height} × {width} celdas")
+        found[row, first:last] = True
+    return found
+
+
+def geometry_sha256(geometry: PlatformGeometry) -> str:
+    """El hash de la geometría de origen de una plataforma (SHA-256 en hexadecimal; RF-015-01): su tipo,
+    el número de sus partes y de sus caminos y los vértices **tal cual** (X e Y absolutas en float64,
+    ``<f8``: el último bit cuenta) y, de un polígono con eje enlazado, los de su eje. Lo que guarda
+    ``des_epr_`` (``geometry_sha256``) para saber si la geometría de la capa es la de la entidad."""
+    digest = hashlib.sha256()
+
+    def feed(tag: str, parts: Sequence[Sequence[np.ndarray]]) -> None:
+        digest.update(f"{tag}:{len(parts)};".encode())
+        for part in parts:
+            digest.update(f"part:{len(part)};".encode())
+            for path in part:
+                array = np.ascontiguousarray(path, dtype="<f8")
+                digest.update(f"path:{array.shape[0]};".encode())
+                digest.update(array.tobytes())
+
+    feed(geometry.kind, geometry.parts)
+    if geometry.axis_parts is not None:
+        feed("axis", geometry.axis_parts)
+    return digest.hexdigest()
+
+
+def platform_entity_rows(job: PlatformJob, outcome: PlatformOutcome, *, fid: int,
+                         start_surface: str, support_surface: str | None) -> list[Row]:
+    """La fila de ``des_epr_`` (columnas de :data:`~.store.ENTITY_COLUMNS`) de la plataforma de ``job``
+    con su ``outcome`` (RF-015-01): **una**, con los atributos de la entidad —su código, su nombre, su
+    tipo, los datos de su superficie de partida (``start_surface``) y de apoyo, la capa y el ``fid`` de
+    su geometría de origen y el hash de esa geometría (:func:`geometry_sha256`), el modo y las celdas de
+    su huella—, su ventana de trabajo, la huella en tramos de fila (:func:`footprint_runs`) y los
+    vértices de su eje (absolutos, float64, exactos). Solo depende de lo que se lee para calcular, no del
+    proyecto: lo repite la reproducción desde lo congelado."""
+    footprint = outcome.footprint
+    window = footprint.window
+    mode = PlatformMode(job.values.get(PlatformParam.MODE.value,
+                                       _default(PlatformParam.MODE))).value
+    runs = footprint_runs(footprint.cells, window)
+    return [(job.code, job.request.name, EntityKind.PLATFORM.value, start_surface, support_surface,
+             job.request.layer, int(fid), geometry_sha256(job.geometry), mode,
+             footprint.cell_count, int(footprint.axis.principal),
+             _json([int(window[0].start), int(window[0].stop), int(window[1].start),
+                    int(window[1].stop)]),
+             _json([list(run) for run in runs]),
+             _json([[x, y] for x, y in footprint.axis.vertices]))]
+
+
+def _place(x: float | None, y: float | None, what: str) -> str | None:
+    """El lugar absoluto ``x;y`` de una cifra (float64 en texto, como el de la 013 y la 014), o
+    ``None`` sin él."""
+    if x is None or y is None:
+        return None
+    return f"{_real(f'{what}.x', x)!r};{_real(f'{what}.y', y)!r}"
+
+
+def platform_report_rows(outcome: PlatformOutcome) -> list[Row]:
+    """Las filas de ``des_prp_`` (``quantity, value, unit_code, note``, formato largo como ``des_rpt_`` y
+    ``des_qrp_``) de la plataforma ``outcome`` (RF-015-02, RF-015-13, RF-015-23, RF-015-24), en este
+    orden: lo de la huella (área, celdas, longitudes del eje y de la huella, las cotas y la pendiente de la
+    rasante); lo aplicado (corte y relleno, celdas, lo que las máscaras no dejan mover, lo que no queda en
+    la rasante y lo que no se mueve) con una fila por grupo de celdas por encima o por debajo
+    (``off_level_above`` y ``off_level_below``) y por grupo de lo que no se mueve (``held_group``), con su
+    número, causa, celdas, área y lugar en la nota (JSON); el borde (su ángulo, factor de malla, alcance y
+    límite, su corte y relleno, las celdas movidas, las que no se mueven, las más empinadas y las que llegan
+    al borde de la rejilla o a celdas sin dato, la altura de su pared con su lugar y una fila ``edge_wall`` por
+    causa); el salto creado de la 014 (``created_*``, con una fila ``created_stretch`` por tramo); el perfil
+    longitudinal (la tolerancia, los tramos con contrapendiente y la diferencia máxima, una fila ``profile``
+    por tramo de una celda de abscisa y una fila ``counter_slope`` por cada uno que pasa de la tolerancia); y,
+    al final, los avisos y notas (``warning`` y ``note``, con su código y sus valores en JSON) menos los de
+    :data:`_OUTSIDE_NOTICES`. Un valor que no es un número finito es un error del programa
+    (``ValueError``): nada se escribe. Solo depende del resultado: lo repite la reproducción."""
+    footprint, applied, edge, profile = (outcome.footprint, outcome.applied, outcome.edge,
+                                         outcome.profile)
+    rows: list[Row] = []
+
+    def scalar(key: str, value: float, unit: str, note: str | None = None) -> None:
+        rows.append((key, _real(key, value), unit, note))
+
+    for key, value, unit in (
+            ("area_m2", footprint.area_m2, "m2"), ("footprint_cells", footprint.cell_count, "-"),
+            ("axis_m", footprint.axis.length_m, "m"), ("footprint_m", footprint.length_m, "m"),
+            ("start_level_m", footprint.start_level_m, "m"),
+            ("end_level_m", footprint.end_level_m, "m"),
+            ("gradient_pct", footprint.gradient_pct, "%"),
+            ("cut_m3", applied.cut_m3, "m3"), ("fill_m3", applied.fill_m3, "m3"),
+            ("cut_cells", applied.cut_cells, "-"), ("fill_cells", applied.fill_cells, "-"),
+            ("blocked_cells", applied.blocked_cells, "-"),
+            ("blocked_area_m2", applied.blocked_area_m2, "m2"),
+            ("off_level_area_m2", outcome.off_level_area_m2, "m2"),
+            ("off_level_max_m", outcome.off_level_max_m, "m"),
+            ("held_cells", outcome.held_cells, "-"), ("held_area_m2", outcome.held_area_m2, "m2")):
+        scalar(key, value, unit)
+    for side, groups in (("above", applied.above), ("below", applied.below)):
+        for item in groups:
+            scalar(f"off_level_{side}", item.max_m, "m", _json({
+                "group": item.group, "cause": item.cause.value, "cells": item.cells,
+                "area_m2": _real("off_level.area_m2", item.area_m2),
+                "x": _real("off_level.x", item.x), "y": _real("off_level.y", item.y)}))
+    for group in outcome.held_groups:
+        scalar("held_group", group.area_m2, "m2", _json({
+            "group": group.group, "cells": group.cells, "footprint_cells": group.footprint_cells,
+            "edge_cells": group.edge_cells, "x": _real("held_group.x", group.x),
+            "y": _real("held_group.y", group.y)}))
+    for key, value, unit in (
+            ("edge_angle_deg", edge.angle_deg, "deg"), ("edge_mesh_factor", edge.mesh_factor, "-"),
+            ("edge_reach_m", edge.reach_m, "m"), ("edge_limit_deg", edge.limit_deg, "deg"),
+            ("edge_cut_m3", edge.cut_m3, "m3"), ("edge_fill_m3", edge.fill_m3, "m3"),
+            ("edge_cut_cells", edge.cut_cells, "-"), ("edge_fill_cells", edge.fill_cells, "-"),
+            ("edge_changed_cells", edge.changed_cells, "-"),
+            ("edge_held_cells", edge.held_cells, "-"),
+            ("edge_held_area_m2", edge.held_area_m2, "m2"),
+            ("edge_steep_cells", edge.steep_cells, "-"),
+            ("edge_outside_cells", edge.outside_cells, "-"),
+            ("edge_outside_area_m2", edge.outside_area_m2, "m2")):
+        scalar(key, value, unit)
+    scalar("edge_wall_max_m", edge.wall_max_m, "m", _place(edge.wall_x, edge.wall_y, "edge_wall"))
+    for wall in edge.walls:
+        scalar("edge_wall", wall.max_deg, "deg", _json({
+            "cause": wall.cause.value, "cells": wall.cells,
+            "area_m2": _real("edge_wall.area_m2", wall.area_m2),
+            "x": _real("edge_wall.x", wall.x), "y": _real("edge_wall.y", wall.y)}))
+    created = edge.created
+    for key, value, unit in (
+            ("created_pairs", created.pairs, "-"), ("created_over_pairs", created.over, "-"),
+            ("created_over_pct", created.over_pct, "%"),
+            ("created_within_pct", created.within_pct, "%")):
+        scalar(key, value, unit)
+    scalar("created_step_max_m", created.maximum_m, "m", _place(created.x, created.y, "created_step"))
+    for key, value, unit in (("created_threshold_m", created.threshold_m, "m"),
+                             ("created_min_share_pct", created.min_share_pct, "%"),
+                             ("created_min_thickness_m", created.min_thickness_m, "m")):
+        scalar(key, value, unit)
+    for stretch in created.stretches:
+        scalar("created_stretch", stretch.maximum_m, "m", _json({
+            "stretch": stretch.stretch, "pairs": stretch.pairs,
+            "x": _real("created_stretch.x", stretch.x),
+            "y": _real("created_stretch.y", stretch.y)}))
+    scalar("counter_tolerance_m", profile.tolerance_m, "m")
+    scalar("counter_sections", profile.counter_sections, "-")
+    scalar("profile_spread_m", profile.spread_m, "m")
+    for index in range(profile.section.size):
+        where = {"section": int(profile.section[index]),
+                 "chainage_m": _real("profile.chainage_m", profile.chainage_m[index]),
+                 "x": _real("profile.x", profile.x[index]),
+                 "y": _real("profile.y", profile.y[index])}
+        scalar("profile", profile.level_m[index], "m",
+               _json({**where, "rise_m": _real("profile.rise_m", profile.rise_m[index])}))
+    for index in np.flatnonzero(profile.flagged):
+        scalar("counter_slope", profile.rise_m[index], "m", _json({
+            "section": int(profile.section[index]),
+            "chainage_m": _real("counter_slope.chainage_m", profile.chainage_m[index]),
+            "x": _real("counter_slope.x", profile.x[index]),
+            "y": _real("counter_slope.y", profile.y[index])}))
+    for notice in outcome.notices:
+        if notice.code not in _OUTSIDE_NOTICES:
+            rows.append((notice.severity, None, None, _notice_text(notice)))
+    return rows
+
+
+# --- Crear (spec 015, T13; RF-015-01, RF-015-02, RF-015-04) -------------------------------------
+
+
+def detected_supports(project: StoreProject, prepared: PreparedPlatform,
+                      outcome: PlatformOutcome) -> tuple[str, ...]:
+    """**El gancho de las dependencias** (RF-015-15; ADR-0030 §4): los nombres de los datos de las
+    superficies de las entidades en cuya huella rellena la plataforma (y las que declara el usuario), que
+    :func:`create_platform` añade a las entradas de la operación como ``supported_on``. Es de la **T23**
+    (``detect_supports``, A6); hoy no detecta nada y devuelve ``()``: la superficie de apoyo de la petición
+    ya es una entrada ``supported_on`` desde que se prepara (:func:`~.provenance.platform_inputs`)."""
+    return ()
+
+
+def _with_supports(project: StoreProject, start: OperationStart, names: Iterable[str]
+                   ) -> OperationStart:
+    """``start`` con las entradas ``supported_on`` de ``names`` que aún no lleva (una operación hecha es
+    inmutable: se añaden aquí, antes de abrirla, con ``dataclasses.replace``) y el hash que tiene cada una
+    ahora, para que ``des.input_changed`` las vigile como las demás. Sin nombres nuevos, ``start``."""
+    have = {(use.item, str(use.role)) for use in start.inputs}
+    extra = tuple(Use(name, provenance.SUPPORTED_ON_ROLE) for name in dict.fromkeys(names)
+                  if (name, provenance.SUPPORTED_ON_ROLE) not in have)
+    if not extra:
+        return start
+    version = require_version(project, start.version_uid, start.op_type)
+    with project.read() as conn:
+        seen = {**start.seen, **_seen(conn, extra, version)}
+    return replace(start, inputs=(*start.inputs, *extra), seen=MappingProxyType(seen))
+
+
+def create_platform(project: StoreProject, writer: DesignWriter, prepared: PreparedPlatform,
+                    outcome: PlatformOutcome, *, decided_by: str | None = None) -> Stored:
+    """**«Crear» una plataforma** (spec 015, T13; RF-015-01, RF-015-02, RF-015-04): registra en **una**
+    transacción de escritura (:meth:`~.store.DesignWriter.commit` de ``writer``, el de «Calcular», con sus
+    tres salidas preparadas) los parámetros de la entidad —una fila de la versión por parámetro, ADOPTADO,
+    con su origen, de ``decided_by`` (por defecto, quien tiene abierto el proyecto): :func:`set_entity_params`
+    con el gancho ``before_begin``, **antes** de abrir la operación para que lea todos de la versión—, la
+    operación ``des.platform`` con sus entradas (la capa, la superficie de partida —la de otra entidad si
+    la encadena—, las máscaras y las ``supported_on`` que da :func:`detected_supports`) y sus ajustes, las
+    tres salidas, las cifras con el ámbito de la entidad y el mensaje del resumen. Una entidad que ya
+    estaba en la versión (``prepared.existing``) no vuelve a escribir sus parámetros (``ValueError`` si no
+    los tiene). Si algo falla, o lo que consume cambió desde que se calculó (``des.input_changed``), no
+    queda nada y el error sigue; **no modifica ninguna capa de entrada**. ``DesignError``
+    ``des.platform_counter_unconfirmed`` si el resultado tiene una contrapendiente sin confirmar
+    (RF-015-23), antes de escribir nada."""
+    outcome.ensure_creatable()
+    start = _with_supports(project, prepared.start, detected_supports(project, prepared, outcome))
+
+    def parameters(conn: sqlite3.Connection) -> None:
+        key = entity_key(prepared.code, PlatformParam.NAME)
+        if prepared.existing:
+            if ParameterStore(project).get(key, version=start.version_uid, conn=conn) is None:
+                raise ValueError(f"la entidad {prepared.code} no tiene sus parámetros en la versión: no "
+                                 "está en ella (se prepara sin su código)")
+        else:
+            set_entity_params(project, prepared.rows, version=start.version_uid,
+                              decided_by=decided_by, conn=conn)
+
+    return writer.commit(start, figures=outcome.figures, message=outcome.message,
+                         before_begin=parameters)
 
 
 # --- Con qué se compara, y lo que sale del proyecto para el resumen -----------------------------

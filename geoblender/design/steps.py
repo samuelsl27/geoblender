@@ -34,7 +34,9 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
   (``des.platform``) del mismo modo: deja la superficie (``des_psf_``) en un temporal y el **resumen**
   (:class:`~.preview.PlatformSummary`: las cifras, los avisos —el salto creado, la magnitud, lo que llega
   a celdas sin dato, lo que no mueve por la restricción de otra entidad, el orden de la cantera— y lo que
-  quedará obsoleto al crearla) y **nada en el proyecto**; crearla es de la T13.
+  quedará obsoleto al crearla) y **nada en el proyecto**; crearla (T13; RF-015-01, RF-015-02,
+  RF-015-04) es :meth:`Calculation.create`: los parámetros de su entidad, la operación, la superficie, su
+  tabla y su informe y las cifras, en **una** transacción.
 - :class:`Calculation`: lo calculado y todavía sin registrar. :meth:`~Calculation.create`
   (**«Crear»**) abre la operación, mueve los temporales, escribe las tablas y las cifras y completa,
   todo en **una** transacción (``DesignWriter.commit``); :meth:`~Calculation.discard`
@@ -149,9 +151,10 @@ class Calculation:
     salvo en una envolvente), el tipo de operación (``op_type``), su
     ``name`` y la ``version`` (su código). De una plataforma (spec 015, T12) lleva además ``entity``
     (la :class:`~.entity_store.PreparedPlatform`: su código, su geometría, sus parámetros con su origen,
-    lo que anotará la operación) y ``summary`` (el :class:`~.preview.PlatformSummary`), y **crearla es de
-    la T13**. Mientras esté abierta (:attr:`open`), sus rejillas
-    esperan en temporales junto a su destino: hay que crearla o descartarla."""
+    lo que anotará la operación) y ``summary`` (el :class:`~.preview.PlatformSummary`); **crearla** (T13) es
+    :meth:`create`, que escribe además los parámetros de su entidad. Mientras esté abierta
+    (:attr:`open`), sus rejillas esperan en temporales junto a su destino: hay que crearla o
+    descartarla."""
 
     def __init__(self, *, project: StoreProject, writer: store.DesignWriter,
                  start: store.OperationStart, outcome: pipeline.EnvelopeOutcome
@@ -239,24 +242,38 @@ class Calculation:
         ``commit`` que las máscaras están al día y que ninguna entrada cambió. Si algo falla, no queda
         nada (ni operación, ni dato, ni temporal) y el error sigue: ``DesignError``
         ``des.input_changed`` si cambió un parámetro o una entrada, ``MaskError``, los de la 008 y
-        los de disco. ``RuntimeError`` si ya se creó o se descartó. **Una plataforma aún no se crea**
-        (``NotImplementedError``: es de la T13 de la spec 015); el cálculo sigue abierto, sin escribir
-        nada, y se puede descartar."""
+        los de disco. ``RuntimeError`` si ya se creó o se descartó.
+
+        **Una plataforma** (spec 015, T13; RF-015-01, RF-015-02, RF-015-04) se registra con
+        :func:`~.entity_store.create_platform`: además de lo anterior, escribe en esa misma transacción los
+        parámetros de su entidad como filas de la versión, con su origen, antes de abrir la operación.
+        Si tiene una contrapendiente sin confirmar (``needs_confirmation``, RF-015-23), se rechaza
+        (``DesignError`` ``des.platform_counter_unconfirmed``) **antes de escribir nada y sin cerrar el
+        cálculo**: se confirma (:meth:`confirm_counterslope`) y se vuelve a crear."""
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
         if self.entity is not None:
-            raise NotImplementedError(
-                f"crear la plataforma «{self.name}» es de la T13 de la spec 015 (``commit`` sobre el "
-                "DesignWriter, con su tabla y su informe): «Calcular» solo deja su resumen")
+            self._platform().ensure_creatable()  # sin cerrar el cálculo: se confirma y se crea
         try:
             self._check_parameters()
-            stored = self._writer.commit(self._start, figures=self.outcome.figures,
-                                         message=self.outcome.message)
+            if self.entity is not None:
+                stored = entity_store.create_platform(self._project, self._writer, self.entity,
+                                                      self._platform())
+            else:
+                stored = self._writer.commit(self._start, figures=self.outcome.figures,
+                                             message=self.outcome.message)
         except BaseException:
             self.discard()
             raise
         self._state = _CREATED
         return stored
+
+    def _platform(self) -> platform.PlatformOutcome:
+        """El resultado de una plataforma (``TypeError`` si el cálculo no lo es: un error del programa)."""
+        found = self.outcome
+        if not isinstance(found, platform.PlatformOutcome):
+            raise TypeError(f"el cálculo «{self.name}» no es el de una plataforma, sino «{self.op_type}»")
+        return found
 
     def discard(self) -> None:
         """**«Cancelar»**: borra los temporales y no deja nada. No hace nada si ya se descartó o se

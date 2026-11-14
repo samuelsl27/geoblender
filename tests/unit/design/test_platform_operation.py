@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """«Calcular» una plataforma y su resumen (spec 015, T12; HU-015-3; RF-015-03, RF-015-13, RF-015-29;
-plan 015 §5.3.2 y §5.4; E1 y E2 de la spec): caso (a) de ``test_platform_operation`` (el (b) lo
-añade la T13 y los (c), (d) y (e), la T14).
+plan 015 §5.3.2 y §5.4; E1 y E2 de la spec) y «Crear» (T13; HU-015-1; RF-015-01, RF-015-02, RF-015-04):
+casos (a) y (b) de ``test_platform_operation`` (los (c), (d) y (e) los añade la T14).
 
 Sobre la cantera sintética de la 014 con las capas de plataformas (``tests.support.entity_fixtures``)
 y su rejilla gruesa de 2 m:
@@ -12,17 +12,26 @@ y su rejilla gruesa de 2 m:
 - **«Calcular» no escribe** (RF-015-03, RF-015-29): ``steps.platform_run`` deja la superficie en un
   temporal y el resumen, y **nada en el proyecto** (ni la base de datos, ni operaciones, ni datos, ni
   parámetros); cerrarlo a mitad, descartar la cuenta o un fallo después del temporal no dejan nada;
-  los rechazos salen al avanzar. Crearla es de la T13: aquí ``create()`` lo dice.
+  los rechazos salen al avanzar.
 - **El resumen** (RF-015-03, RF-015-13): las cifras, los avisos (el salto creado, la magnitud, lo que
   llega a celdas sin dato fuera de la huella, el área que no mueve por la restricción de otra entidad
   con esa entidad, o con el nombre de la restricción) y lo que quedará obsoleto al crearla (si
   protege: las máscaras y lo que las usó; si inserta: la sucesora y las que le siguen; si sustituye
   una operación: lo que dependía de ella), con el singular («en 1 grupo»).
+- **«Crear»** (T13; RF-015-01, RF-015-02, RF-015-04): registra todo en **una** transacción (la
+  superficie ``des_psf_``, la tabla ``des_epr_`` con la huella en tramos de fila, el eje y los
+  atributos, el informe ``des_prp_``, las cifras con el ámbito de la entidad, la operación con sus
+  entradas y los parámetros de la entidad como filas de la versión con su origen); si algo falla a
+  mitad no queda nada; no modifica la capa de origen; una plataforma que parte de otra consume su
+  superficie y queda obsoleta, con la causa, si cambia la de la primera; una contrapendiente sin
+  confirmar no se crea.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
+import math
 import re
 import unittest
 from collections.abc import Iterator
@@ -37,7 +46,7 @@ from tests.support import quarry_fixtures as qfx
 from tests.support import res_fixtures
 from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
-from tests.support.versions_fixtures import freeze_rows
+from tests.support.versions_fixtures import change_counter, freeze_rows
 from tests.unit.design import test_edges_operation as edges_test
 from tests.unit.design import test_platform_prepare as prep
 
@@ -52,6 +61,8 @@ design_params = import_geoblender("design.params")
 design_report = import_geoblender("design.report")
 entities_module = import_geoblender("design.entities")
 entity_store = import_geoblender("design.entity_store")
+figures_mod = import_geoblender("core.provenance.figures")
+design_store = import_geoblender("design.store")
 geotiff_reader = import_geoblender("gis.geotiff.reader")
 gis = import_geoblender("gis")
 messages = import_geoblender("design.messages")
@@ -218,7 +229,10 @@ class CalculateTest(OperationCase):
                          ("des.platform", LOADING, "V01"))
         self.assertTrue(calculation.open)
         self.assertEqual([spec.name for spec in calculation.specs],
-                         [provenance.dataset_name("psf", LOADING)])
+                         [provenance.dataset_name(family, LOADING)
+                          for family in ("psf", "epr", "prp")])
+        self.assertTrue(all(spec.content is not None for spec in calculation.specs),
+                        "las tres salidas llevan ya su hash")
         self.assertEqual(calculation.entity.code, "PLT-001")
         outcome = calculation.outcome
         self.assertIsInstance(outcome, platform.PlatformOutcome)
@@ -309,20 +323,6 @@ class CalculateTest(OperationCase):
             self.assertTrue(inside.open)
             self.assertEqual(len(self.temporaries()), 1)
         self.assertEqual(self.state(), before)
-
-    def test_a_creating_is_not_available_until_t13(self) -> None:
-        """RF-015-02 (T13): ``Calculation.create()`` de una plataforma dice que aún no se puede
-        crear (``NotImplementedError``), sin escribir nada y sin cerrar la cuenta (se puede
-        descartar)."""
-        calculation = self.calculate(prep.request())
-        before = self.state()
-        with self.assertRaises(NotImplementedError) as caught:
-            calculation.create()
-        self.assertIn("T13", str(caught.exception))
-        self.assertEqual(self.state(), before)
-        self.assertTrue(calculation.open)
-        calculation.discard()
-        self.assertEqual(self.temporaries(), [])
 
     def test_a_the_counter_slope_is_confirmed_on_the_calculation(self) -> None:
         """RF-015-23 (T09, la orden de T15): una plataforma con contrapendiente pide confirmación
@@ -1019,6 +1019,722 @@ class PreviousFrozenTest(OperationCase):
         cut = only(calculation.summary, "des.magnitude_cut")
         self.assertEqual((cut.values["revision"], cut.values["previous"]), ("V01.r1", 150))
         self.assertNotIn("des.magnitude_no_reference", codes(calculation.summary))
+
+
+# ---------------------------------------------------------------------------------------------
+# «Crear» (T13): lo que se registra
+# ---------------------------------------------------------------------------------------------
+
+PSF, EPR, PRP = (provenance.dataset_name(family, LOADING) for family in ("psf", "epr", "prp"))
+"""Los nombres de los tres datos de la «Plataforma de carga»."""
+EPR_TABLE = provenance.dataset_locator("epr", LOADING, "V01")
+PRP_TABLE = provenance.dataset_locator("prp", LOADING, "V01")
+ENTITY_COLUMNS = ("code", "name", "kind", "start_surface", "support_surface", "layer", "source_fid",
+                  "geometry_sha256", "mode", "cells", "axis_principal", "bounds", "footprint",
+                  "axis")
+"""Las columnas de ``des_epr_``, en su orden."""
+OUTSIDE_NOTICES = {"des.magnitude_cut", "des.magnitude_fill", "des.magnitude_no_reference",
+                   "des.entity_quarry_order"}
+"""Los avisos que dependen de algo que la operación no consume (la revisión congelada anterior y la
+otra superficie de la cantera): no van al informe, que se reproduce sin el proyecto."""
+LOADING_ROWS = list(range(55, 65))
+"""Las filas de la huella de la «Plataforma de carga» (a mano: y de 270 a 290 m locales, de 2 m, desde
+el norte de 400 m: 400 − 2·(fila + ½) de 271 a 289)."""
+LOADING_COLUMNS = (55, 155)
+"""Sus columnas (x de 110 a 310 m locales: de 2 m)."""
+
+
+def written_tables(case: Any) -> list[str]:
+    """Las tablas ``des_…`` del proyecto."""
+    return [name for (name,) in case.query(
+        "SELECT name FROM sqlite_master WHERE name LIKE 'des!_%' ESCAPE '!' ORDER BY name")]
+
+
+class CreateCase(OperationCase):
+    """Lo de ``OperationCase`` más ayudantes **de clase** (las historias de «Crear» se hacen una vez
+    en ``setUpClass``) y ``written``: lo que ``des`` y las operaciones han dejado en el proyecto."""
+
+    @classmethod
+    def query_of(cls, sql: str, *values: Any) -> list[Any]:
+        with cls.project.read() as conn:
+            return conn.execute(sql, values).fetchall()
+
+    @classmethod
+    def written(cls) -> dict[str, Any]:
+        """Todo lo que podría escribir «Crear» (sin el contador de cambios: un deshacer lo deja)."""
+        return {
+            "operations": cls.query_of(
+                "SELECT uid, op_type, status FROM gb_operation ORDER BY fid"),
+            "datasets": cls.query_of(
+                "SELECT uid, name, status, content_sha256 FROM gb_dataset ORDER BY fid"),
+            "parameters": cls.query_of(
+                "SELECT key, scope, scope_uid, value, unconfirmed FROM gb_parameter ORDER BY fid"),
+            "io": cls.query_of(
+                "SELECT operation_uid, direction, item_uid, role FROM gb_operation_io ORDER BY fid"),
+            "figures": cls.query_of(
+                "SELECT operation_uid, key, scope, value FROM gb_figure ORDER BY fid"),
+            "tables": cls.query_of("SELECT name FROM sqlite_master WHERE name LIKE 'des!_%' "
+                                   "ESCAPE '!' ORDER BY name"),
+            "files": sorted(path.name for path in (cls.root / "rasters").iterdir())}
+
+    @staticmethod
+    def settled(state: dict[str, Any]) -> dict[str, Any]:
+        """``state`` sin los temporales (``….tmp-…``) de un cálculo abierto: lo que queda en el proyecto
+        cuando ese cálculo se descarta o falla al crearse."""
+        return {**state, "files": [name for name in state["files"] if ".tmp-" not in name]}
+
+    @classmethod
+    def layers(cls) -> dict[str, Any]:
+        """Las capas de plataformas como están: su registro y todo el contenido de su tabla."""
+        found: dict[str, Any] = {}
+        for name in efx.LAYERS:
+            (locator,) = cls.query_of("SELECT locator FROM gb_dataset WHERE name = ?", name)[0]
+            found[name] = (cls.query_of("SELECT uid, status, content_sha256 FROM gb_dataset "
+                                        "WHERE name = ?", name),
+                           cls.query_of(f'SELECT * FROM "{locator}" ORDER BY fid'))
+        return found
+
+    @classmethod
+    def calculate_in(cls, asked: Any, **options: Any) -> Any:
+        """«Calcular» ``asked`` hasta el final (la ``Calculation``, que **no** se descarta al acabar)."""
+        options.setdefault("masks", cls.masks_v1)
+        options.setdefault("version", cls.v1.uid)
+        return finish(steps.platform_run(cls.project, asked, **options))
+
+    def grid_of(self, name: str) -> np.ndarray:
+        """La rejilla del dato ``name`` de V01 tal como está en su fichero."""
+        record = self.record(name, self.v1)
+        return geotiff_reader.read_geotiff(self.root / record.locator).values
+
+    def figures_of(self, uid: str) -> dict[tuple[str, str], float]:
+        return {(key, scope): value for key, scope, value in self.query(
+            "SELECT key, scope, value FROM gb_figure WHERE operation_uid = ?", uid)}
+
+    def rows_of(self, table: str) -> dict[str, list[tuple[Any, str | None, str | None]]]:
+        """Las filas de un informe largo por su cifra: ``quantity`` → lista de ``(valor, unidad, nota)``."""
+        found: dict[str, list[Any]] = {}
+        for quantity, value, unit, note in self.query(
+                f'SELECT quantity, value, unit_code, note FROM "{table}" ORDER BY fid'):
+            found.setdefault(quantity, []).append((value, unit, note))
+        return found
+
+
+class CreateTest(CreateCase):
+    """RF-015-01, RF-015-02, RF-015-04: la «Plataforma de carga» (PLT-001, del terreno) calculada y creada
+    y la «Plataforma de taller» (PLT-002) de la superficie de la primera, ambas una vez en V01."""
+
+    first: ClassVar[Any]
+    second: ClassVar[Any]
+    first_stored: ClassVar[Any]
+    second_stored: ClassVar[Any]
+    clean: ClassVar[dict[str, Any]]
+    calculated: ClassVar[dict[str, Any]]
+    layers_before: ClassVar[dict[str, Any]]
+    layers_after: ClassVar[dict[str, Any]]
+    counters: ClassVar[tuple[int, int, int]]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.layers_before = cls.layers()
+        cls.clean = cls.written()
+        before = change_counter(cls.root)
+        cls.clock.advance(minutes=1)
+        cls.first = cls.calculate_in(prep.request())
+        cls.calculated = cls.written()
+        calculated = change_counter(cls.root)
+        cls.clock.advance(minutes=1)
+        cls.first_stored = cls.first.create()
+        cls.counters = (before, calculated, change_counter(cls.root))
+        cls.clock.advance(minutes=1)
+        cls.second = cls.calculate_in(prep.request(WORKSHOP, start="entity:PLT-001"))
+        cls.clock.advance(minutes=1)
+        cls.second_stored = cls.second.create()
+        cls.layers_after = cls.layers()
+
+    # --- Una transacción --------------------------------------------------------------------
+
+    def test_b_creating_is_one_write_transaction(self) -> None:
+        """RF-015-02, RF-015-29: «Calcular» no sube el contador de cambios de la base y «Crear» lo sube
+        **una** vez: la operación, los tres datos, las tablas, las cifras y los parámetros de la
+        entidad entran en una sola transacción de escritura (el fichero de la superficie se pone en
+        su sitio dentro de ella)."""
+        before, calculated, created = self.counters
+        self.assertEqual(calculated, before, "calcular no escribe")
+        self.assertEqual(created, calculated + 1, "crear es una sola transacción")
+        self.assertTrue(self.first.open is False)
+        with self.assertRaises(RuntimeError):
+            self.first.create()
+        self.first.discard()  # lo creado no se toca
+        self.assertEqual(self.written()["operations"][-2:],
+                         [(self.first_stored.handle.uid, "des.platform", "done"),
+                          (self.second_stored.handle.uid, "des.platform", "done")])
+
+    # --- La operación y sus tres datos ---------------------------------------------------------
+
+    def test_b_the_operation_with_its_inputs_settings_and_message(self) -> None:
+        """RF-015-02, RF-015-04, RF-015-06: la operación ``des.platform`` de V01 (revisión abierta), hecha,
+        con los ajustes de la entidad, la capa (``entity_layer``), la superficie de partida
+        (``surface``) y las máscaras como entradas y los parámetros que lee; el mensaje es el del
+        resumen de lo calculado."""
+        uid = self.first_stored.handle.uid
+        ((op_type, status, settings, message, revision),) = self.query(
+            "SELECT op_type, status, settings, message, revision_uid FROM gb_operation "
+            "WHERE uid = ?", uid)
+        self.assertEqual((op_type, status), ("des.platform", "done"))
+        self.assertEqual(json.loads(settings), provenance.platform_settings(prep.request(), "PLT-001"))
+        self.assertEqual(message, self.first.outcome.message)
+        self.assertEqual(self.query("SELECT version_uid, state FROM gb_revision WHERE uid = ?",
+                                    revision), [(self.v1.uid, "open")])
+        inputs = [(name, role) for name, role in self.query(
+            "SELECT d.name, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON "
+            "d.uid = io.item_uid WHERE io.operation_uid = ? AND io.direction = 'in' "
+            "ORDER BY io.fid", uid)]
+        self.assertEqual(inputs[:2], [(efx.AXES_LAYER, "entity_layer"), (START, "surface")])
+        self.assertTrue(all(role.startswith("masks_") for _name, role in inputs[2:]), inputs)
+        self.assertNotIn("supported_on", [role for _name, role in inputs])
+        params = [key for (key,) in self.query(
+            "SELECT key FROM gb_operation_param WHERE operation_uid = ? ORDER BY fid", uid)]
+        self.assertEqual(sorted(params), sorted(provenance.platform_params("PLT-001", prep.request())))
+        self.assertEqual([record.name for record in self.first_stored.records], [PSF, EPR, PRP])
+
+    def test_b_the_three_data_with_their_roles_and_hashes(self) -> None:
+        """RF-015-01, RF-015-02: ``des_psf_`` (``entity_surface``), ``des_epr_`` (``entity``) y
+        ``des_prp_`` (``entity_report``) son datos vivos de V01 escritos por la operación, con el hash
+        que se preparó al calcular; la superficie está en su sitio sin temporales y las dos tablas, en el
+        proyecto."""
+        uid = self.first_stored.handle.uid
+        outputs = {name: (role, status, sha) for name, role, status, sha in self.query(
+            "SELECT d.name, io.role, d.status, io.content_sha256 FROM gb_operation_io AS io "
+            "JOIN gb_dataset AS d ON d.uid = io.item_uid WHERE io.operation_uid = ? "
+            "AND io.direction = 'out'", uid)}
+        prepared = {spec.name: spec.content.content_sha256 for spec in self.first.specs}
+        self.assertEqual({name: role for name, (role, _status, _sha) in outputs.items()},
+                         {PSF: "entity_surface", EPR: "entity", PRP: "entity_report"})
+        self.assertEqual({name: sha for name, (_role, _status, sha) in outputs.items()}, prepared)
+        self.assertEqual({status for _role, status, _sha in outputs.values()}, {"current"})
+        self.assertEqual(self.record(PSF, self.v1).locator,
+                         provenance.dataset_locator("psf", LOADING, "V01"))
+        stems = {path for path in self.written()["files"]} - set(self.clean["files"])
+        self.assertEqual(stems, {provenance.dataset_locator("psf", LOADING, "V01").rsplit("/", 1)[-1],
+                                 provenance.dataset_locator("psf", WORKSHOP, "V01").rsplit("/", 1)[-1]})
+        self.assertEqual([name for name in written_tables(self) if name in (EPR_TABLE, PRP_TABLE)],
+                         sorted((EPR_TABLE, PRP_TABLE)))
+        start = qfx.terrain(GRID)
+        expected = start.copy()
+        expected[self.first.outcome.footprint.window] = self.first.outcome.result
+        np.testing.assert_array_equal(self.grid_of(PSF), expected)
+
+    # --- La tabla de la entidad -----------------------------------------------------------------
+
+    def test_b_the_table_of_the_entity_has_the_footprint_the_axis_and_the_attributes(self) -> None:
+        """RF-015-01: ``des_epr_`` lleva **una** fila con el código, el nombre, el tipo, la partida, la capa
+        y el ``fid`` de origen, el hash de la geometría de origen, el modo, las celdas, la ventana, la huella
+        en tramos de fila ``(fila, col0, col1)`` (a mano: 10 filas de 55 a 155) y los vértices del eje
+        (absolutos, float64, exactos, los de la capa)."""
+        found = self.query(f'SELECT {", ".join(ENTITY_COLUMNS)} FROM "{EPR_TABLE}"')
+        self.assertEqual(len(found), 1)
+        row = dict(zip(ENTITY_COLUMNS, found[0], strict=True))
+        self.assertEqual((row["code"], row["name"], row["kind"]), ("PLT-001", LOADING, "platform"))
+        self.assertEqual((row["start_surface"], row["support_surface"]), (START, None))
+        self.assertEqual((row["layer"], row["source_fid"], row["mode"], row["cells"],
+                          row["axis_principal"]), (efx.AXES_LAYER, efx.axis_fid(LOADING), "cut", 1000, 0))
+        runs = json.loads(row["footprint"])
+        self.assertEqual(runs, [[r, *LOADING_COLUMNS] for r in LOADING_ROWS])
+        footprint = self.first.outcome.footprint
+        window = footprint.window
+        self.assertEqual(json.loads(row["bounds"]),
+                         [window[0].start, window[0].stop, window[1].start, window[1].stop])
+        mask = entity_store.runs_mask(runs, GRID.shape)
+        self.assertEqual(int(mask.sum()), 1000)
+        np.testing.assert_array_equal(mask[window], footprint.cells)
+        axis = np.array(json.loads(row["axis"]))
+        layer_axis = self.read_layer(efx.AXES_LAYER).parts[efx.axis_fid(LOADING) - 1][0][0]
+        np.testing.assert_array_equal(axis, np.asarray(layer_axis)[:, :2])
+        self.assertEqual(axis.dtype, np.float64)
+        origin = platform.PlatformGeometry(
+            "line", self.read_layer(efx.AXES_LAYER).parts[efx.axis_fid(LOADING) - 1])
+        self.assertEqual(row["geometry_sha256"], entity_store.geometry_sha256(origin))
+        self.assertRegex(row["geometry_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_b_the_second_platform_table_names_its_start_as_a_surface(self) -> None:
+        """RF-015-04: la fila de la «Plataforma de taller» guarda su partida resuelta (el dato de la
+        superficie de la primera, no ``entity:PLT-001``) y su código; el hash de su geometría no es el
+        de la otra."""
+        table = provenance.dataset_locator("epr", WORKSHOP, "V01")
+        ((code, start, sha),) = self.query(
+            f'SELECT code, start_surface, geometry_sha256 FROM "{table}"')
+        (other_sha,) = self.query(f'SELECT geometry_sha256 FROM "{EPR_TABLE}"')[0]
+        self.assertEqual((code, start), ("PLT-002", PSF))
+        self.assertNotEqual(sha, other_sha)
+
+    # --- El informe -----------------------------------------------------------------------------
+
+    def test_b_the_report_has_the_profile_the_counter_slopes_and_the_edge(self) -> None:
+        """RF-015-02, RF-015-13, RF-015-23, RF-015-24: ``des_prp_`` en formato largo lleva las cifras de la
+        huella y del borde, una fila por tramo del perfil longitudinal, las contrapendientes (ninguna en
+        esta plataforma), las pendientes del salto creado y los avisos con su código y sus valores; no lleva
+        los que dependen de lo que la operación no consume (la revisión anterior, la otra superficie de la
+        cantera), ni ningún valor que no sea finito."""
+        rows = self.rows_of(PRP_TABLE)
+        outcome = self.first.outcome
+        self.assertEqual(rows["area_m2"], [(4000.0, "m2", None)])
+        self.assertEqual(rows["cut_m3"][0][:2], (outcome.applied.cut_m3, "m3"))
+        self.assertEqual(rows["edge_cut_m3"][0][:2], (outcome.edge.cut_m3, "m3"))
+        self.assertEqual(rows["edge_fill_m3"][0][:2], (outcome.edge.fill_m3, "m3"))
+        self.assertEqual(rows["axis_m"][0][:2], (outcome.footprint.axis.length_m, "m"))
+        self.assertEqual(rows["start_level_m"][0][0], 250.0)
+        self.assertEqual(rows["gradient_pct"][0][:2], (1.0, "%"))
+        profile = outcome.profile
+        shown = [json.loads(note) for _value, _unit, note in rows["profile"]]
+        self.assertEqual(len(shown), profile.section.size)
+        self.assertEqual([item["section"] for item in shown], profile.section.tolist())
+        self.assertEqual([value for value, _unit, _note in rows["profile"]], profile.level_m.tolist())
+        self.assertEqual([item["chainage_m"] for item in shown], profile.chainage_m.tolist())
+        self.assertNotIn("counter_slope", rows)
+        self.assertEqual(rows["counter_sections"][0][0], 0.0)
+        self.assertEqual(rows["counter_tolerance_m"][0][:2], (0.1, "m"))
+        found = [json.loads(note)["code"] for quantity in ("warning", "note")
+                 for _value, _unit, note in rows.get(quantity, [])]
+        expected = [notice.code for notice in outcome.notices if notice.code not in OUTSIDE_NOTICES]
+        self.assertEqual(sorted(found), sorted(expected))
+        self.assertTrue(set(found).isdisjoint(OUTSIDE_NOTICES))
+        self.assertTrue(set(codes(self.first.summary)) & OUTSIDE_NOTICES, "el resumen sí los lleva")
+        for values in rows.values():
+            for value, _unit, _note in values:
+                self.assertTrue(value is None or math.isfinite(value))
+
+    # --- Las cifras ------------------------------------------------------------------------------
+
+    def test_b_the_figures_have_the_scope_of_their_entity(self) -> None:
+        """RF-015-02, RF-008-30: las cifras de cada plataforma (CALCULADO, con su unidad) se registran con
+        el ámbito de su entidad (el nombre y el código): las de la otra con las mismas claves no las pisan
+        (a mano: 4.000 m² la primera)."""
+        first = self.figures_of(self.first_stored.handle.uid)
+        second = self.figures_of(self.second_stored.handle.uid)
+        scope = figures_mod.scope_json(provenance.entity_figure_scope(LOADING, "PLT-001"))
+        other = figures_mod.scope_json(provenance.entity_figure_scope(WORKSHOP, "PLT-002"))
+        self.assertEqual(first, {(figure.key, scope): figure.value for figure in self.first.figures})
+        self.assertEqual(second, {(figure.key, other): figure.value for figure in self.second.figures})
+        self.assertEqual(first[("des.plat_area_m2", scope)], 4000.0)
+        self.assertGreater(len(first), 9)
+        self.assertTrue(set(key for key, _scope in first) & set(key for key, _scope in second))
+        both = self.query("SELECT key, count(*), count(DISTINCT scope) FROM gb_figure "
+                          "WHERE key = 'des.plat_area_m2' GROUP BY key")
+        self.assertEqual(both, [("des.plat_area_m2", 2, 2)])
+        kinds = {kind for (kind,) in self.query(
+            "SELECT DISTINCT kind FROM gb_figure WHERE operation_uid IN (?, ?)",
+            self.first_stored.handle.uid, self.second_stored.handle.uid)}
+        self.assertEqual(kinds, {"CALCULADO"})
+
+    # --- Los parámetros de la entidad ------------------------------------------------------------
+
+    def test_b_the_parameters_of_the_entity_are_version_rows_with_their_origin(self) -> None:
+        """RF-015-01, RF-008-01, RF-009-29: «Crear» escribe cada parámetro de la entidad como una fila de la
+        **versión** (ADOPTADO, de la persona que tiene abierto el proyecto, con su motivo) con su origen:
+        «capa X, campo Y, entidad Z» los copiados de la capa; el diálogo, lo que eligió la persona; el valor
+        por defecto, la procedencia de su definición. El registro ve la entidad al día con su operación.
+
+        **Limitación conocida** (trampa de la T04, ``docs/trampas.md`` §6): ``begin_operation`` deja en el
+        proyecto una fila «sin confirmar» por clave que lee (``ensure_default``; no hacen entidad ni se
+        leen: la de la versión manda); solo de las que lee, no las del nombre, lo que declara o la
+        pendiente máxima."""
+        store = core_params.ParameterStore(self.project)
+        decider = self.project.session.user_host
+        for row in self.first.entity.rows:
+            with self.subTest(key=row.key):
+                record = store.get(row.key, version=self.v1.uid)
+                self.assertIsNotNone(record)
+                self.assertEqual((record.scope, record.scope_uid), ("version", self.v1.uid))
+                self.assertEqual((record.value, str(record.kind), record.decided_by),
+                                 (row.value, "ADOPTADO", decider))
+                self.assertEqual((record.source, str(record.source_kind)),
+                                 (row.source, row.source_kind))
+                self.assertFalse(record.unconfirmed)
+                self.assertIsNotNone(record.decided_at)
+        origin = {row.param.value: row.source for row in self.first.entity.rows}
+        for param, field in (("width_m", "ancho"), ("start_level_m", "cota_inicial"),
+                             ("gradient_pct", "pendiente")):
+            self.assertEqual(origin[param],
+                             f"capa «{efx.AXES_LAYER}», campo «{field}», entidad «{LOADING}»")
+        versioned = {key for (key,) in self.query(
+            "SELECT key FROM gb_parameter WHERE key LIKE 'des.platform.plt_001.%' "
+            "AND scope = 'version'")}
+        self.assertEqual(versioned, {row.key for row in self.first.entity.rows})
+        read = {item for item in provenance.platform_params("PLT-001", prep.request())
+                if item.startswith("des.platform.")}
+        placeholders = {key: unconfirmed for key, unconfirmed in self.query(
+            "SELECT key, unconfirmed FROM gb_parameter WHERE key LIKE 'des.platform.plt_001.%' "
+            "AND scope = 'project'")}
+        self.assertEqual(set(placeholders), read)
+        self.assertTrue(all(placeholders.values()), "sin confirmar, no de la entidad")
+        self.assertNotIn(design_params.entity_key("PLT-001", "name"), placeholders)
+        self.assertNotIn(design_params.entity_key("PLT-001", "protect"), placeholders)
+        by_key = {item.key: (item.scope, item.value) for item in self.first_stored.handle.params}
+        for row in self.first.entity.rows:
+            if row.key in read:
+                self.assertEqual(by_key[row.key], ("version", row.value), row.key)
+        registry = entities_module.registry(self.project, self.v1.uid)
+        entry = registry.get("PLT-001")
+        self.assertEqual((entry.record.name, str(entry.record.state)), (LOADING, "current"))
+        self.assertEqual(entry.operation_uid, self.first_stored.handle.uid)
+
+    # --- La capa de origen ------------------------------------------------------------------------
+
+    def test_b_the_source_layers_are_not_modified(self) -> None:
+        """RF-015-01 (principio 7): tras calcular y crear dos plataformas, las capas de plataformas (ejes y
+        polígonos) tienen el mismo registro (uid, estado y hash de contenido) y el mismo contenido que
+        antes, y las operaciones las anotan como entradas con ese hash."""
+        self.assertEqual(self.layers_after, self.layers_before)
+        sha = self.layers_before[efx.AXES_LAYER][0][0][2]
+        io = self.query("SELECT content_sha256 FROM gb_operation_io WHERE operation_uid = ? "
+                        "AND role = 'entity_layer'", self.first_stored.handle.uid)
+        self.assertEqual(io, [(sha,)])
+
+    # --- La cadena ----------------------------------------------------------------------------------
+
+    def test_b_a_chained_platform_consumes_the_surface_of_the_first(self) -> None:
+        """RF-015-04, RF-015-01: la «Plataforma de taller», con partida ``entity:PLT-001``, consume la
+        superficie de la primera (``des_psf_…``, papel ``surface``) y no el terreno; su resultado es igual a
+        esa superficie fuera de las celdas que mueve (y por debajo de ella), y la última de la cadena es la
+        suya."""
+        uid = self.second_stored.handle.uid
+        inputs = {(name, role) for name, role in self.query(
+            "SELECT d.name, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON "
+            "d.uid = io.item_uid WHERE io.operation_uid = ? AND io.direction = 'in'", uid)}
+        self.assertIn((PSF, "surface"), inputs)
+        self.assertNotIn((START, "surface"), inputs)
+        self.assertEqual(self.second.entity.start_surface, PSF)
+        value = core_params.ParameterStore(self.project).get(
+            design_params.entity_key("PLT-002", "start"), version=self.v1.uid)
+        self.assertEqual(value.value, "entity:PLT-001")
+        first, second = self.grid_of(PSF), self.grid_of(provenance.dataset_name("psf", WORKSHOP))
+        mine = self.second.outcome.footprint.window
+        theirs = self.first.outcome.footprint.window
+        self.assertFalse(mine[0].start < theirs[0].stop and theirs[0].start < mine[0].stop
+                         and mine[1].start < theirs[1].stop and theirs[1].start < mine[1].stop,
+                         "las ventanas de trabajo no se cruzan")
+        untouched = np.ones(GRID.shape, dtype=bool)
+        untouched[mine] = False
+        np.testing.assert_array_equal(second[untouched], first[untouched])
+        with np.errstate(invalid="ignore"):
+            self.assertTrue((second <= first).all())
+            self.assertTrue((second < first).any())
+        records = entities_module.registry(self.project, self.v1.uid).records
+        self.assertEqual([item.code for item in entities_module.chain_tails(records)], ["PLT-002"])
+        self.assertEqual([str(entry.record.state) for entry in
+                          entities_module.registry(self.project, self.v1.uid)],
+                         ["current", "current"])
+
+
+class ChainStaleTest(CreateCase):
+    """RF-015-04, RF-015-16, RF-008-24: cambiar un parámetro de la primera plataforma deja obsoleta la
+    primera y, en cascada, la que parte de su superficie, cada una con su causa."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.clock.advance(minutes=1)
+        cls.first = cls.calculate_in(prep.request()).create()
+        cls.clock.advance(minutes=1)
+        cls.second = cls.calculate_in(prep.request(WORKSHOP, start="entity:PLT-001")).create()
+
+    def test_b_changing_a_parameter_of_the_first_stales_it_and_the_next_with_the_cause(self) -> None:
+        """RF-015-04, RF-015-16: antes de cambiar nada ninguna está obsoleta; con el alcance de la primera
+        cambiado (parámetro de su fila de la versión), la primera queda obsoleta por ese parámetro y la
+        segunda, que consumió su superficie, también (``parameter_changed``, en cascada); el registro de las
+        entidades las da como obsoletas, con la causa, y «Recalcular lo obsoleto» tiene dos operaciones."""
+        reach = design_params.entity_key("PLT-001", "reach_m")
+        first, second = self.first.handle.uid, self.second.handle.uid
+        self.assertEqual((self.stale_causes(first), self.stale_causes(second)), (set(), set()))
+        self.assertEqual(self.recompute_plan(), [])
+        self.clock.advance(minutes=1)
+        with self.project.write_transaction() as conn:
+            core_params.ParameterStore(self.project).change(
+                conn, reach, value=25.0, version=self.v1.uid, reason="Prueba de la T13")
+        self.assertEqual(self.stale_causes(first), {("parameter_changed", reach)})
+        self.assertIn(("parameter_changed", reach), self.stale_causes(second))
+        own = design_params.entity_key("PLT-002", "reach_m")
+        self.assertNotIn(("parameter_changed", own), self.stale_causes(second))
+        registry = entities_module.registry(self.project, self.v1.uid)
+        self.assertEqual([str(entry.record.state) for entry in registry], ["stale", "stale"])
+        for entry in registry:
+            self.assertEqual({cause.kind for cause in entry.causes}, {"parameter_changed"})
+        self.assertEqual(len(self.recompute_plan()), 2)
+
+
+# ---------------------------------------------------------------------------------------------
+# «Crear»: todo o nada
+# ---------------------------------------------------------------------------------------------
+
+
+class AtomicCreateTest(CreateCase):
+    """RF-015-02, RF-015-29: si algo falla a mitad de «Crear», no queda nada: ni operación, ni datos, ni
+    tablas, ni cifras, ni parámetros, ni la superficie en su sitio, ni el temporal."""
+
+    def test_b_a_failure_midway_leaves_nothing(self) -> None:
+        """Un fallo simulado al abrir la operación (con los parámetros de la entidad ya escritos en la
+        transacción), al escribir las tablas (con la superficie ya en su sitio) y al completar (con todo
+        hecho menos confirmar) deja el proyecto como antes de calcular, el error sigue y la cuenta queda
+        cerrada; calculada y creada otra vez sin el fallo, se registra con el mismo código."""
+        clean = self.written()
+        failures = (
+            ("abrir la operación", mock.patch.object(design_store.OperationStart, "begin",
+                                                     side_effect=RuntimeError("fallo de prueba"))),
+            ("escribir las tablas", mock.patch.object(design_store.DesignWriter, "_write_table",
+                                                      side_effect=RuntimeError("fallo de prueba"))),
+            ("completar", mock.patch.object(operations.OperationHandle, "complete",
+                                            side_effect=RuntimeError("fallo de prueba"))))
+        for step, patched in failures:
+            with self.subTest(step=step):
+                calculation = self.calculate_in(prep.request())
+                self.assertNotEqual(self.written()["files"], clean["files"], "el temporal")
+                with patched:
+                    with self.assertRaises(RuntimeError) as caught:
+                        calculation.create()
+                self.assertEqual(str(caught.exception), "fallo de prueba")
+                self.assertEqual(self.written(), clean)
+                self.assertFalse(calculation.open)
+        self.clock.advance(minutes=1)
+        stored = self.calculate_in(prep.request()).create()
+        entry = entities_module.registry(self.project, self.v1.uid).get("PLT-001")
+        self.assertEqual(entry.operation_uid, stored.handle.uid)
+
+
+class ChangedMeanwhileTest(CreateCase):
+    """RF-015-02, RF-013-04 (``des.input_changed``): lo que cambia entre «Calcular» y «Crear» (nada se
+    registra, así que cada prueba puede calcular la misma plataforma)."""
+
+    def test_b_an_input_that_changed_meanwhile_is_not_registered(self) -> None:
+        """RF-015-02, RF-013-04 (``des.input_changed``): si la superficie de partida cambia entre «Calcular» y
+        «Crear», el resultado ya no le corresponde: se rechaza **al abrir la operación, ya con los
+        parámetros de la entidad escritos**, y todo se deshace."""
+        clean = self.written()
+        calculation = self.calculate_in(prep.request())
+        shifted = gis.Raster(GRID, qfx.terrain(GRID) + 1.0, efx.CRS, efx.VERTICAL)
+        self.clock.advance(minutes=1)
+        res_fixtures.write_grids(self.project, [(START.removeprefix("gis_dtm_"), shifted)],
+                                 message="La partida cambia mientras se calcula")
+        changed = self.written()
+        self.assertNotEqual(changed["datasets"], clean["datasets"], "la partida cambió")
+        self.assertEqual(changed["parameters"], clean["parameters"])
+        with self.assertRaises(messages.DesignError) as caught:
+            calculation.create()
+        self.assertEqual(caught.exception.code, "des.input_changed")
+        self.assertIn(START, caught.exception.text)
+        self.assertEqual(self.written(), self.settled(changed))
+        self.assertFalse(calculation.open)
+
+    def test_b_a_parameter_that_changed_meanwhile_is_not_registered(self) -> None:
+        """RF-015-02 (``des.input_changed``): lo mismo con un parámetro del proyecto que lee el cálculo
+        (el umbral de aviso de magnitud): se rechaza antes de escribir nada y el temporal se borra."""
+        clean = self.written()
+        calculation = self.calculate_in(prep.request())
+        self.clock.advance(minutes=1)
+        key = design_params.WARNING_RATIO
+        with self.project.write_transaction() as conn:
+            store = core_params.ParameterStore(self.project)
+            store.ensure_default(conn, key, geoblender_version="0.1.0")
+            store.change(conn, key, value=3.0, reason="Prueba de la T13", source="Prueba",
+                         source_kind="person", decided_by=prep.USER)
+        changed = self.written()
+        self.assertNotEqual(changed["parameters"], clean["parameters"], "el parámetro cambió")
+        with self.assertRaises(messages.DesignError) as caught:
+            calculation.create()
+        self.assertEqual(caught.exception.code, "des.input_changed")
+        self.assertIn(key, caught.exception.text)
+        self.assertEqual(self.written(), self.settled(changed))
+        self.assertFalse(calculation.open)
+
+
+class CounterSlopeCreateTest(CreateCase):
+    """RF-015-23: una plataforma con contrapendiente que pasa de la tolerancia no se crea sin la
+    confirmación expresa de quien la pide."""
+
+    def test_b_a_counter_slope_is_not_created_without_confirmation(self) -> None:
+        """La «Plataforma de la torre» (con una contrapendiente: la torre de la zona intocable) pide
+        confirmación: ``create()`` se rechaza (``des.platform_counter_unconfirmed``) **antes de escribir
+        nada** y deja la cuenta abierta; confirmada en la cuenta, se crea, con su contrapendiente en el
+        informe y su aviso."""
+        calculation = self.calculate_in(prep.request(TOWER))
+        self.addCleanup(calculation.discard)
+        self.assertTrue(calculation.needs_confirmation)
+        before = self.written()
+        with self.assertRaises(messages.DesignError) as caught:
+            calculation.create()
+        self.assertEqual(caught.exception.code, "des.platform_counter_unconfirmed")
+        self.assertEqual(self.written(), before)
+        self.assertTrue(calculation.open)
+        with self.assertRaises(messages.DesignError) as direct:  # la función pública, por sí sola
+            entity_store.create_platform(self.project, calculation._writer, calculation.entity,
+                                         calculation.outcome)
+        self.assertEqual(direct.exception.code, "des.platform_counter_unconfirmed")
+        self.assertEqual(self.written(), before)
+        calculation.confirm_counterslope()
+        self.clock.advance(minutes=1)
+        stored = calculation.create()
+        self.assertEqual(stored.handle.op_type, "des.platform")
+        table = provenance.dataset_locator("prp", TOWER, "V01")
+        rows = self.rows_of(table)
+        profile = calculation.outcome.profile
+        self.assertEqual(len(rows["counter_slope"]), profile.counter_sections)
+        self.assertGreater(len(rows["counter_slope"]), 0)
+        worst = max(rows["counter_slope"], key=lambda item: item[0])
+        self.assertEqual(worst[0], float(profile.rise_m.max()))
+        self.assertEqual(rows["counter_sections"][0][0], float(profile.counter_sections))
+        found = [json.loads(note)["code"] for _value, _unit, note in rows["warning"]]
+        self.assertIn("des.platform_counter_slope", found)
+
+
+class CounterSlopeAskedTest(CreateCase):
+    """RF-015-23: lo mismo con la confirmación pedida desde el principio."""
+
+    def test_b_a_counter_slope_asked_confirmed_is_created(self) -> None:
+        """Pedida ya confirmada (``confirm_counterslope=True``), se crea sin más."""
+        calculation = self.calculate_in(prep.request(TOWER), confirm_counterslope=True)
+        self.assertFalse(calculation.needs_confirmation)
+        self.clock.advance(minutes=1)
+        self.assertEqual(calculation.create().handle.op_type, "des.platform")
+
+
+# ---------------------------------------------------------------------------------------------
+# «Crear»: una entidad que ya está en la versión y el gancho de las dependencias
+# ---------------------------------------------------------------------------------------------
+
+
+class ExistingEntityTest(CreateCase):
+    """RF-015-01 (RF-015-18): una entidad que ya está en la versión (sus parámetros, sin calcular: lo que
+    deja «Traer las entidades de…») se calcula con su código y «Crear» registra su operación **sin escribir
+    otra vez sus parámetros**."""
+
+    def test_b_an_entity_already_in_the_version_is_not_written_again(self) -> None:
+        asked = prep.request()
+        prepared = self.units(asked)
+        self.clock.advance(minutes=1)
+        entity_store.set_entity_params(self.project, prepared.rows, version=self.v1.uid,
+                                       decided_by=prep.USER)
+        rows = self.query("SELECT uid, key, value, decided_by, rev FROM gb_parameter "
+                          "WHERE scope = 'version' ORDER BY fid")
+        self.clock.advance(minutes=1)
+        calculation = self.calculate_in(asked, code="PLT-001")
+        self.assertTrue(calculation.entity.existing)
+        self.assertFalse(self.calculate(prep.request(WORKSHOP, start=prep.HOLE_DATASET))
+                         .entity.existing)
+        stored = calculation.create()
+        self.assertEqual(self.query("SELECT uid, key, value, decided_by, rev FROM gb_parameter "
+                                    "WHERE scope = 'version' AND key LIKE 'des.platform.plt_001.%' "
+                                    "ORDER BY fid"), rows)
+        entry = entities_module.registry(self.project, self.v1.uid).get("PLT-001")
+        self.assertEqual((str(entry.record.state), entry.operation_uid),
+                         ("current", stored.handle.uid))
+        scopes = {item.scope for item in stored.handle.params
+                  if item.key.startswith("des.platform.")}
+        self.assertEqual(scopes, {"version"})
+
+
+class RacedEntityTest(CreateCase):
+    """RF-015-01: dos sesiones calcularon la misma entidad nueva (el mismo código) y una creó antes."""
+
+    def test_b_a_new_entity_whose_rows_appeared_meanwhile_is_refused(self) -> None:
+        """Si entre «Calcular» y «Crear» alguien dio de alta una entidad con el mismo código (sus
+        parámetros), «Crear» no pisa ni se queda con las suyas: ``core.param_exists``, nada se escribe y
+        la cuenta queda cerrada."""
+        calculation = self.calculate_in(prep.request())
+        self.assertEqual(calculation.entity.code, "PLT-001")
+        other = self.units(prep.request(WORKSHOP, start=prep.HOLE_DATASET), code="PLT-001")
+        self.clock.advance(minutes=1)
+        entity_store.set_entity_params(self.project, other.rows, version=self.v1.uid,
+                                       decided_by=prep.USER)
+        expected = self.settled(self.written())
+        with self.assertRaises(core_params.ParamError) as caught:
+            calculation.create()
+        self.assertEqual(caught.exception.code, "core.param_exists")
+        self.assertEqual(self.written(), expected)
+        self.assertFalse(calculation.open)
+
+
+class SupportsHookTest(CreateCase):
+    """RF-015-15 (T23): el gancho de las dependencias queda preparado y vacío: hoy no añade ninguna
+    entrada ``supported_on``; lo que devuelva se añade como entrada de la operación al crearla."""
+
+    def test_b_the_hook_is_empty_and_what_it_returns_is_an_input_of_the_operation(self) -> None:
+        calculation = self.calculate_in(prep.request())
+        self.assertEqual(entity_store.detected_supports(
+            self.project, calculation.entity, calculation.outcome), ())
+        self.clock.advance(minutes=1)
+        with mock.patch.object(entity_store, "detected_supports",
+                               return_value=(prep.HOLE_DATASET,)):
+            stored = calculation.create()
+        inputs = self.query(
+            "SELECT d.name, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON "
+            "d.uid = io.item_uid WHERE io.operation_uid = ? AND io.role = 'supported_on'",
+            stored.handle.uid)
+        self.assertEqual(inputs, [(prep.HOLE_DATASET, "supported_on")])
+
+
+# ---------------------------------------------------------------------------------------------
+# Las funciones puras de la tabla de la entidad
+# ---------------------------------------------------------------------------------------------
+
+
+class EntityTableTest(unittest.TestCase):
+    """RF-015-01: la huella en tramos de fila, su inversa y el hash de la geometría de origen."""
+
+    def test_b_the_footprint_in_runs_and_back(self) -> None:
+        """La huella de una ventana (con un hueco, una celda suelta y los bordes de la ventana) son sus
+        tramos ``(fila, col0, col1)`` **absolutos** de la rejilla, de norte a sur y de oeste a este, con
+        ``col1`` excluida; ``runs_mask`` los devuelve a la máscara de la rejilla entera."""
+        mask = np.array([[1, 1, 0, 1, 1],
+                         [0, 0, 0, 0, 0],
+                         [1, 0, 0, 0, 1],
+                         [0, 1, 1, 1, 0]], dtype=bool)
+        window = (slice(3, 7), slice(2, 7))
+        found = entity_store.footprint_runs(mask, window)
+        self.assertEqual(found, [(3, 2, 4), (3, 5, 7), (5, 2, 3), (5, 6, 7), (6, 3, 6)])
+        whole = entity_store.runs_mask(found, (10, 10))
+        np.testing.assert_array_equal(whole[window], mask)
+        self.assertEqual(int(whole.sum()), int(mask.sum()))
+        self.assertEqual(entity_store.footprint_runs(np.zeros((2, 2), dtype=bool),
+                                                     (slice(0, 2), slice(0, 2))), [])
+        self.assertFalse(entity_store.runs_mask([], (3, 3)).any())
+
+    def test_b_a_run_outside_the_grid_is_a_program_error(self) -> None:
+        for runs in ([(0, 3, 3)], [(0, 4, 2)], [(3, 0, 1)], [(0, 0, 4)], [(-1, 0, 1)]):
+            with self.subTest(runs=runs):
+                with self.assertRaises(ValueError):
+                    entity_store.runs_mask(runs, (3, 3))
+
+    def test_b_the_geometry_hash_follows_the_geometry_to_the_last_bit(self) -> None:
+        """El hash de la geometría de origen es el mismo para la misma geometría y cambia con el tipo, con
+        un vértice movido 10⁻⁹ m (la resolución de un float64 a 4,4 Mm de norte), con otra parte y con el
+        eje enlazado de un polígono."""
+        path = np.array([[725_100.0, 4_400_100.5], [725_200.0, 4_400_100.5]])
+        base = platform.PlatformGeometry("line", ((path,),))
+        again = platform.PlatformGeometry("line", ((path.copy(),),))
+        self.assertEqual(entity_store.geometry_sha256(base), entity_store.geometry_sha256(again))
+        self.assertRegex(entity_store.geometry_sha256(base), r"^[0-9a-f]{64}$")
+        moved = path.copy()
+        moved[1, 1] = np.nextafter(moved[1, 1], np.inf)
+        self.assertNotEqual(entity_store.geometry_sha256(platform.PlatformGeometry("line", ((moved,),))),
+                            entity_store.geometry_sha256(base))
+        ring = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 0.0]])
+        polygon = platform.PlatformGeometry("polygon", ((ring,),))
+        self.assertNotEqual(entity_store.geometry_sha256(polygon),
+                            entity_store.geometry_sha256(platform.PlatformGeometry("line", ((ring,),))))
+        linked = platform.PlatformGeometry("polygon", ((ring,),), axis_parts=((path,),))
+        self.assertNotEqual(entity_store.geometry_sha256(linked), entity_store.geometry_sha256(polygon))
+        two = platform.PlatformGeometry("line", ((path,), (path,)))
+        self.assertNotEqual(entity_store.geometry_sha256(two), entity_store.geometry_sha256(base))
+
+    def test_b_the_columns_of_the_tables_of_an_entity(self) -> None:
+        """RF-015-01: el escritor conoce las tablas de la plataforma: ``des_epr_`` con las columnas de
+        la entidad y ``des_prp_`` con las del informe largo."""
+        found = design_store.columns_of("des.platform", "epr")
+        self.assertEqual(tuple(column.name for column in found), ENTITY_COLUMNS)
+        self.assertEqual(found, design_store.ENTITY_COLUMNS)
+        self.assertEqual(design_store.columns_of("des.platform", "prp"), design_store.REPORT_COLUMNS)
+        with self.assertRaises(KeyError):
+            design_store.columns_of("des.platform", "psf")
 
 
 if __name__ == "__main__":
