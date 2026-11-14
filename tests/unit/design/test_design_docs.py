@@ -159,6 +159,8 @@ PENDING_015_API = frozenset({
     "work_window",
     # T07: aplicar la plataforma (design.platform).
     "Applied", "OffLevel", "OffLevelCause", "apply_platform", "apply_platform_steps",
+    # T08: el borde de la plataforma y el aviso de magnitud (design.platform).
+    "Edge", "EdgeWall", "WallCause", "magnitude_notices", "platform_edge", "platform_edge_steps",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({
@@ -166,7 +168,8 @@ PENDING_015_MODULES = frozenset({
     # T03: la cadena (start_conflict, insert_after, chain_of, chain_tails) y registry
     "design.platform",  # T06: PlatformJob, PlatformGeometry, Footprint, platform_footprint,
     # axis_of_polygon y work_window (la huella y la rasante de la plataforma); T07: Applied,
-    # OffLevel, OffLevelCause, apply_platform y apply_platform_steps (aplicarla)
+    # OffLevel, OffLevelCause, apply_platform y apply_platform_steps (aplicarla); T08: Edge,
+    # EdgeWall, WallCause, platform_edge, platform_edge_steps y magnitude_notices (el borde)
 })
 
 

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""La plataforma: huella y rasante, y su aplicación sobre la superficie de partida (spec 015, T06 y
-T07; RF-015-19, los rechazos de geometría de RF-015-08, RF-015-20, RF-015-21, RF-015-06 y RF-015-13;
-plan 015 §5.1 y §5.4, A0, A1 y A2; CE-015-02 y CE-015-03). Dominio puro: sin proyecto y sin ``bpy``.
+"""La plataforma: huella y rasante, su aplicación sobre la superficie de partida y su borde (spec 015,
+T06, T07 y T08; RF-015-19, los rechazos de geometría de RF-015-08, RF-015-20, RF-015-21, RF-015-22,
+RF-015-06 y RF-015-13; plan 015 §5.1 y §5.4, A0, A1, A2 y A3; CE-015-02, CE-015-03 y CE-015-07).
+Dominio puro: sin proyecto y sin ``bpy``.
 
 Lo que entrega:
 
@@ -18,6 +19,11 @@ Lo que entrega:
 - :func:`axis_of_polygon` (A1): el eje principal de las celdas de un polígono.
 - :func:`apply_platform` y :func:`apply_platform_steps` (A2): la superficie que deja la plataforma
   sobre la de partida (:class:`Applied`), con lo que no se mueve y por qué (:class:`OffLevel`).
+- :func:`platform_edge` y :func:`platform_edge_steps` (A3): el borde que une la huella con la
+  superficie de partida (:class:`Edge`), con su volumen, la altura de su pared, la pared más
+  empinada que el ángulo de borde con su causa (:class:`EdgeWall`) y sus avisos.
+- :func:`magnitude_notices`: el aviso de magnitud de RF-013-30 del desmonte y el terraplén de la
+  entidad frente a la revisión congelada anterior.
 
 **Con eje y ancho** la huella es la del corredor de extremos planos de RF-014-09
 (:func:`~.quarry.axis_abscissa`, que mide lo que su eje ± 1 celda: error 20) y la abscisa σ, la del
@@ -30,7 +36,8 @@ inicial + σ · pendiente / 100``.
 
 Rechaza (``DesignError``, nombrando la capa, la entidad, el campo y el valor, y sin elegir ninguno por
 la persona; RF-015-08), en este orden: una capa de puntos (``des.platform_layer_kind``); un ancho, una
-cota inicial, una pendiente o un alcance que falta o sale de rango (``des.entity_param_*``); una línea
+cota inicial, una pendiente o un alcance que falta o sale de rango y una métrica que no es de su lista
+(``des.entity_param_*``); una línea
 de varias partes, sin longitud, cerrada o que se corta a sí misma (``des.platform_axis_parts``,
 ``_axis_length_zero``, ``_axis_closed`` y ``_self_intersects``); un polígono sin área, que se corta o
 sin celdas (``des.platform_area_zero``, ``_self_intersects`` y ``_no_cells``); un eje enlazado que no
@@ -50,15 +57,38 @@ las restricciones de otras entidades (el resumen es de la T12). Las celdas que q
 (:attr:`Applied.at_level`) son las semillas del borde (T08). Sin dato en la huella lo rechaza la
 preparación (RF-015-09, T11): aquí es un error del programa, no se oculta con un valor.
 
+**El borde** (A3, RF-015-22): las semillas son las celdas de la huella que quedaron en la rasante
+(:attr:`Applied.at_level`). Con ``t = tan(ángulo de borde) · factor de malla`` y la métrica de la
+entidad (la euclídea exacta, por defecto, o el *chamfer* 5×5 de la 013), la envolvente ascendente
+``ENV↑`` y, en «en corte y relleno», la descendente ``ENV↓`` de esas semillas
+(:func:`~.edges.seed_envelope_steps`) dan, **fuera de la huella** y hasta el **alcance** (obligatorio,
+D-20: la distancia a la semilla más próxima con la misma métrica; lo que pasa de él no se toca),
+``z' = mín(z, ENV↑)`` donde el corte se admite y ``z' = máx(z, ENV↓)`` donde se admite el relleno. El
+volumen del borde (corte y relleno por separado, m³) es la suma celda a celda de ``|z − z'|`` por el
+área de la celda; la **altura máxima de su pared** es ``máx(|z − z'|)`` en las celdas que el borde
+mueve (interpretación del plan, [I]). Una celda que el borde mueve queda **más empinada que el ángulo
+de borde más la tolerancia de cara** de la 013 si su mayor inclinación a sus 8 vecinas con dato (la de
+D-13) la pasa **y** pasa de la que el terreno ya tenía en esa celda (lo que el terreno ya tenía no
+cuenta, como en el salto creado de la 014, error 48): solo se admite en el límite del alcance y en el
+borde de lo que admiten las máscaras (:class:`WallCause`); lo demás es de la propia plataforma (su
+pendiente, o lo que no queda en su rasante). Lo que el borde deja sin
+mover por las máscaras (``held``), lo que llega al borde de la rejilla o a celdas sin dato fuera de la
+huella (``outside``) y el salto creado de la 014 (A11, :class:`~.edges.EdgeReport`) son los datos de
+RF-015-13; sus avisos ya vienen armados (:attr:`Edge.notices`). La ventana de trabajo (A0) cubre lo
+que el alcance puede tocar con la métrica de la entidad (con el *chamfer*, que mide 0,98644 de la
+distancia exacta a lo largo de un eje, una ventana algo mayor).
+
 Las coordenadas absolutas son float64 y se pasan a locales respecto a la esquina de la rejilla solo
-dentro del cálculo (principio 6, ADR-0005). Ninguna entrada se modifica. El borde, la contrapendiente
-y las cifras son de las tareas siguientes (T08 y T09).
+dentro del cálculo (principio 6, ADR-0005). Ninguna entrada se modifica. La contrapendiente y las
+cifras son de la tarea siguiente (T09).
 """
 
 from __future__ import annotations
 
 import math
+import numbers
 from collections.abc import Generator, Iterator, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -68,10 +98,22 @@ import numpy as np
 from ..core.project.model import Progress
 from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
-from .grids import _label_units
+from .edges import EdgeReport, created_steps, edge_notices, seed_envelope_steps, transition_domain
+from .envelopes import CHAMFER_SCALE, SlopeField, reach_steps
+from .grids import _label_units, dilate_square
 from .messages import DesignError
-from .model import Axis, PlatformMode, PlatformRequest
-from .params import PLATFORM_PARAMS, PlatformParam, check_entity_param, entity_segment
+from .model import Axis, Direction, Metric, PlatformMode, PlatformRequest
+from .params import (
+    EDGE_MAX_STEP,
+    EDGE_MIN_SHARE,
+    PLATFORM_PARAMS,
+    TOLERANCE_FACE,
+    VERIFY_MIN_THICKNESS,
+    PlatformParam,
+    check_entity_param,
+    check_quarry_param,
+    entity_segment,
+)
 from .preview import Notice
 from .quarry import (
     FLOOR_LEVEL_MARGIN_M,
@@ -80,19 +122,26 @@ from .quarry import (
     axis_paths,
     corridor_window,
 )
+from .report import REPORT_CELLS_PER_UNIT, Previous, _max_tangents, _padded, _thickness
 from .seeds import pace_progress
 from .zones import _paint, _polygon_spans
 
 __all__ = [
     "Applied",
+    "Edge",
+    "EdgeWall",
     "Footprint",
     "OffLevel",
     "OffLevelCause",
     "PlatformGeometry",
     "PlatformJob",
+    "WallCause",
     "apply_platform",
     "apply_platform_steps",
     "axis_of_polygon",
+    "magnitude_notices",
+    "platform_edge",
+    "platform_edge_steps",
     "platform_footprint",
     "work_window",
 ]
@@ -243,16 +292,23 @@ class Footprint:
         return self.start_level_m + self.axis.length_m * self.gradient_pct / 100.0
 
 
-def work_window(rows: slice, cols: slice, reach_m: float, grid: Grid) -> tuple[slice, slice]:
+def work_window(rows: slice, cols: slice, reach_m: float, grid: Grid,
+                metric: Metric | str = Metric.EXACT) -> tuple[slice, slice]:
     """**A0** (plan 015 §5.4): la ventana de trabajo de una entidad, la caja de su huella (``rows``
     y ``cols``: filas y columnas de ``grid``) ampliada por el alcance ``reach_m`` (m) y dos celdas,
     recortada a la rejilla: ``⌈alcance / paso⌉ + 2`` celdas por cada lado (el paso de cada eje). Así
     veinte plataformas de una hectárea no cuestan veinte envolventes de la rejilla entera.
-    ``ValueError`` si el alcance no es un número mayor o igual que 0."""
+
+    Con la métrica *chamfer* 5×5 (``metric``), que a lo largo de un eje mide
+    :data:`~.envelopes.CHAMFER_SCALE` (0,98644) de la distancia exacta, lo que el alcance llega a
+    tocar es ``alcance / 0,98644``: la ampliación es ``⌈alcance / (0,98644 · paso)⌉ + 2`` (con la
+    exacta, la de siempre, bit a bit). ``ValueError`` si el alcance no es un número mayor o igual que
+    0 o la métrica no es de la 013."""
     if not reach_m >= 0.0:
         raise ValueError(f"el alcance es un número mayor o igual que 0, no {reach_m!r}")
-    across_rows = math.ceil(reach_m / grid.dy) + 2
-    across_cols = math.ceil(reach_m / grid.dx) + 2
+    scale = CHAMFER_SCALE if Metric(metric) is Metric.CHAMFER5 else 1.0
+    across_rows = math.ceil(reach_m / (scale * grid.dy)) + 2
+    across_cols = math.ceil(reach_m / (scale * grid.dx)) + 2
     return (slice(max(rows.start - across_rows, 0), min(rows.stop + across_rows, grid.nrows)),
             slice(max(cols.start - across_cols, 0), min(cols.stop + across_cols, grid.ncols)))
 
@@ -282,6 +338,15 @@ def _resolved(job: PlatformJob, *, line: bool) -> tuple[float, float, float, flo
     width = one(PlatformParam.WIDTH) if line else None
     return (one(PlatformParam.START_LEVEL), one(PlatformParam.GRADIENT), one(PlatformParam.REACH),
             width)
+
+
+def _metric(job: PlatformJob) -> Metric:
+    """La métrica de la envolvente de la plataforma de ``job`` (``des.entity_param_choice`` si no es
+    de su lista); sin el valor, la de la familia de parámetros (la exacta, D-22)."""
+    found = job.values.get(PlatformParam.METRIC.value)
+    if found is None:
+        found = PLATFORM_PARAMS[PlatformParam.METRIC.value].default
+    return Metric(check_entity_param(job.request.name, job.code, PlatformParam.METRIC, found))
 
 
 def _check_levels(job: PlatformJob, axis_m: float, start_level: float, gradient: float) -> None:
@@ -681,6 +746,7 @@ def platform_footprint(job: PlatformJob) -> Footprint:
         raise _reject("des.platform_layer_kind", request, _GEOMETRY, _KINDS_ES[geometry.kind])
     line = geometry.kind == "line"
     start_level, gradient, reach_m, width = _resolved(job, line=line)
+    metric = _metric(job)
     notices: list[Notice] = []
     if line:
         assert width is not None
@@ -714,7 +780,7 @@ def platform_footprint(job: PlatformJob) -> Footprint:
         _check_levels(job, axis.length_m, start_level, gradient)
         sigma, reach = _nearest_abscissa(np.array(axis.vertices), grid, rows, cols)
         sigma, reach = np.where(cells, sigma, np.nan), np.where(cells, reach, np.nan)
-    window = work_window(rows, cols, reach_m, grid)
+    window = work_window(rows, cols, reach_m, grid, metric)
     shape = (window[0].stop - window[0].start, window[1].stop - window[1].start)
     at = (slice(rows.start - window[0].start, rows.stop - window[0].start),
           slice(cols.start - window[1].start, cols.stop - window[1].start))
@@ -769,7 +835,7 @@ class Applied:
     aplicada; el resto, igual) y ``at_level`` (la huella que queda en la rasante a 10⁻⁹ m: las
     semillas del borde).
 
-    ``cut_m3`` y ``fill_m3`` son el corte y el relleno **de la huella** (m³; el borde, de la T08) y
+    ``cut_m3`` y ``fill_m3`` son el corte y el relleno **de la huella** (m³; el del borde, :class:`Edge`) y
     ``cut_cells`` y ``fill_cells``, las celdas que bajan y que suben. Lo que no queda en la rasante:
     ``above`` (por encima, que son las celdas que las máscaras no dejan cortar) y ``below`` (por
     debajo: lo que el modo «en corte» no rellena o, en «en corte y relleno», lo que las máscaras no
@@ -915,7 +981,7 @@ def apply_platform_steps(job: PlatformJob, footprint: Footprint, *,
     ``cut_allowed``: **ninguna celda sube** (el lomo de B7: la plataforma es el fondo de su corredor,
     no una cota mínima). En «en corte y relleno», además ``z' = rasante`` donde ``z < rasante`` y
     ``fill_allowed``. Fuera de la huella y donde las máscaras no dejan mover, ``z' = z`` bit a bit.
-    El corte y el relleno son los de la huella (m³); el borde, de la T08. Lo que no queda en la
+    El corte y el relleno son los de la huella (m³); los del borde, de :func:`platform_edge`. Lo que no queda en la
     rasante se agrupa con su área, su diferencia máxima, su lugar y su causa (:class:`Applied`).
 
     Rechazos al llamar: un modo que no es de la lista (``des.entity_param_choice``, con la entidad, el
@@ -942,3 +1008,509 @@ def apply_platform(job: PlatformJob, footprint: Footprint) -> Applied:
             next(work)
         except StopIteration as done:
             return done.value
+
+
+# --- A3: el borde ------------------------------------------------------------------------------
+
+_EDGE_PHASE = "platform_edge"
+
+
+class WallCause(StrEnum):
+    """Por qué una celda del borde queda más empinada que el ángulo de borde más la tolerancia de cara
+    y que el terreno (RF-015-22, RF-015-13): ``REACH`` (junto a una celda que el alcance deja sin tocar: la
+    envolvente llegó a su límite sin encontrar el terreno y la pared queda ahí), ``MASKS`` (junto a lo
+    que las máscaras no dejan mover: una celda del borde que no se corta ni se rellena, o una de la
+    huella que no se mueve) y ``OTHER`` (ninguna de las dos: la pared viene de la propia plataforma
+    —su pendiente, más empinada que el ángulo de borde, o lo que no queda en su rasante—, no del
+    borde). Las dos primeras son las únicas que RF-015-22 admite y avisa; ``OTHER`` es lo que no
+    debería haber. El valor es el nombre de la causa."""
+
+    REACH = "reach"
+    MASKS = "masks"
+    OTHER = "other"
+
+
+@dataclass(frozen=True, slots=True)
+class EdgeWall:
+    """Las celdas del borde más empinadas que el ángulo de borde más la tolerancia de cara (y que lo
+    que el terreno ya tenía) por una misma ``cause`` (RF-015-22): cuántas (``cells``), su ``area_m2``, la mayor inclinación
+    ``max_deg`` (°: la de la celda a la más distinta de sus 8 vecinas con dato, D-13) y el lugar de
+    la primera celda con ella (``x``, ``y``: absolutos en float64; a igual inclinación, la primera
+    de norte a sur y de oeste a este)."""
+
+    cause: WallCause
+    cells: int
+    area_m2: float
+    max_deg: float
+    x: float
+    y: float
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Edge:
+    """El borde de una plataforma (A3; RF-015-22, RF-015-13), en la ventana de trabajo de su huella
+    (``window``; todas las rejillas son de su forma): ``surface`` (m, float64, **nueva**: la
+    superficie de partida con la huella aplicada y el borde, ``z'``), ``in_reach`` (las celdas a
+    ≤ ``reach_m`` de las semillas con la métrica ``metric``: lo que el alcance deja tocar), ``changed``
+    (las celdas que el borde mueve, fuera de la huella), ``held`` (las que su envolvente movería y las
+    máscaras no admiten: quedan como en la partida, y de ellas sale el área que no se mueve de
+    RF-015-13), ``steep`` (las celdas movidas más empinadas que ``limit_deg`` y que lo que el terreno
+    ya tenía en ellas) y ``outside`` (las
+    movidas que llegan al borde de la rejilla o a celdas sin dato fuera de la huella).
+
+    ``angle_deg``, ``mesh_factor`` y ``reach_m`` son los de la entidad y ``tolerance_deg`` la
+    tolerancia de cara de la 013 (:attr:`limit_deg` = ángulo + tolerancia). ``cut_m3`` y ``fill_m3``
+    son el corte y el relleno **del borde** (m³, por separado; ``Σ |z − z'|`` por el área de la
+    celda) y ``cut_cells`` y ``fill_cells``, las celdas que bajan y que suben. ``wall_max_m`` es la
+    **altura máxima de su pared**, ``máx(|z − z'|)`` sobre las celdas que el borde mueve (m; 0 sin
+    ninguna: interpretación del plan, [I], que CE-015-07 comprueba a mano), con su lugar
+    (``wall_x``, ``wall_y``: absolutos, la primera de norte a sur y de oeste a este; ``None`` sin
+    borde). ``walls`` son las celdas de ``steep`` por causa (:class:`EdgeWall`, las que tienen
+    alguna, en el orden de :class:`WallCause`) y ``created`` el salto creado de la 014 (A11,
+    :class:`~.edges.EdgeReport`) de la superficie entera (huella y borde) frente a la de partida.
+    ``notices`` son los avisos ya armados (``preview.Notice``, en este orden): la pared del borde
+    (``des.platform_edge_steep``), lo que llega al borde de la rejilla o a celdas sin dato
+    (``des.entity_edge_outside``) y el salto creado y sus tramos (``des.edge_surface_step`` y
+    ``des.edge_stretch``, con el nombre de la entidad). Los de lo que no se mueve por la restricción
+    de otra entidad y el de magnitud son de la tarea que los junta con el resto del resumen (T12;
+    :func:`magnitude_notices`)."""
+
+    window: tuple[slice, slice]
+    surface: np.ndarray
+    in_reach: np.ndarray
+    changed: np.ndarray
+    held: np.ndarray
+    steep: np.ndarray
+    outside: np.ndarray
+    metric: Metric
+    angle_deg: float
+    mesh_factor: float
+    reach_m: float
+    tolerance_deg: float
+    cut_cells: int
+    fill_cells: int
+    cut_m3: float
+    fill_m3: float
+    wall_max_m: float
+    wall_x: float | None
+    wall_y: float | None
+    walls: tuple[EdgeWall, ...]
+    created: EdgeReport
+    cell_area_m2: float
+    notices: tuple[Notice, ...]
+
+    @property
+    def limit_deg(self) -> float:
+        """La inclinación que una celda del borde puede pasar sin avisar (°): el ángulo de borde más
+        la tolerancia de cara."""
+        return self.angle_deg + self.tolerance_deg
+
+    @property
+    def changed_cells(self) -> int:
+        """Las celdas que el borde mueve."""
+        return int(np.count_nonzero(self.changed))
+
+    @property
+    def held_cells(self) -> int:
+        """Las celdas del borde que las máscaras no dejan mover."""
+        return int(np.count_nonzero(self.held))
+
+    @property
+    def held_area_m2(self) -> float:
+        """El área del borde que las máscaras no dejan mover (m²)."""
+        return self.held_cells * self.cell_area_m2
+
+    @property
+    def steep_cells(self) -> int:
+        """Las celdas del borde más empinadas que el ángulo más la tolerancia."""
+        return int(np.count_nonzero(self.steep))
+
+    @property
+    def outside_cells(self) -> int:
+        """Las celdas que el borde mueve y llegan al borde de la rejilla o a celdas sin dato."""
+        return int(np.count_nonzero(self.outside))
+
+    @property
+    def outside_area_m2(self) -> float:
+        """Su área (m²)."""
+        return self.outside_cells * self.cell_area_m2
+
+
+@dataclass(frozen=True, slots=True)
+class _EdgeSettings:
+    """Lo que lee el borde, ya comprobado: los valores de la entidad (el ángulo de borde y su
+    factor de malla, el alcance y la métrica) y los parámetros del proyecto (la tolerancia de cara,
+    el espesor mínimo, el salto creado admitido y el porcentaje de parejas dentro de él)."""
+
+    angle_deg: float
+    mesh_factor: float
+    reach_m: float
+    metric: Metric
+    tolerance_deg: float
+    thickness_m: float
+    threshold_m: float
+    share_pct: float
+
+    @property
+    def tan(self) -> float:
+        """La tangente efectiva de la envolvente: ``tan(ángulo de borde) · factor de malla``."""
+        return math.tan(math.radians(self.angle_deg)) * self.mesh_factor
+
+
+def _project_number(project: Mapping[str, object], key: str) -> float:
+    """El parámetro del proyecto ``key`` de ``project`` como número finito; ``ValueError`` (error del
+    programa: quien llama los lee del proyecto, ``PLATFORM_COMMON_PARAMS``) si no lo tiene."""
+    value = project.get(key)
+    if isinstance(value, bool) or not isinstance(value, numbers.Real) \
+            or not math.isfinite(float(value)):
+        raise ValueError(f"los parámetros del proyecto no dan un valor numérico de «{key}»: "
+                         f"{value!r}")
+    return float(value)
+
+
+def _edge_settings(job: PlatformJob, project: Mapping[str, object]) -> _EdgeSettings:
+    """Los valores del borde de ``job`` y los parámetros del proyecto, comprobados: el ángulo de
+    borde, el alcance (obligatorio, D-20), el factor de malla y la métrica (``des.entity_param_*``,
+    nombrando la plataforma, la clave y el valor; el ángulo y el alcance no tienen valor por
+    defecto) y, del proyecto, la tolerancia de cara, el espesor mínimo y el salto admitido y su
+    porcentaje (``des.quarry_param_*`` si salen de rango). El factor de malla de la plataforma es de
+    (0; 10] (plan 015 §5.2.2); la envolvente se construye con ``tan · factor`` sin más tope."""
+    name, code, found = job.request.name, job.code, job.values
+    angle = check_entity_param(name, code, PlatformParam.EDGE_ANGLE,
+                               found.get(PlatformParam.EDGE_ANGLE.value))
+    reach = check_entity_param(name, code, PlatformParam.REACH,
+                               found.get(PlatformParam.REACH.value))
+    mesh = found.get(PlatformParam.MESH_FACTOR.value)
+    if mesh is None:
+        mesh = PLATFORM_PARAMS[PlatformParam.MESH_FACTOR.value].default
+    mesh = check_entity_param(name, code, PlatformParam.MESH_FACTOR, mesh)
+    assert isinstance(angle, float) and isinstance(reach, float) and isinstance(mesh, float)
+    tolerance = _project_number(project, TOLERANCE_FACE)
+    if tolerance < 0.0:
+        raise ValueError(f"la tolerancia de cara es un número finito ≥ 0, no {tolerance!r}")
+    thickness = _thickness(_project_number(project, VERIFY_MIN_THICKNESS))
+    threshold = float(check_quarry_param(EDGE_MAX_STEP, _project_number(project, EDGE_MAX_STEP)))
+    share = float(check_quarry_param(EDGE_MIN_SHARE, _project_number(project, EDGE_MIN_SHARE)))
+    return _EdgeSettings(angle, mesh, reach, _metric(job), tolerance, thickness, threshold, share)
+
+
+def _check_edge_inputs(job: PlatformJob, footprint: Footprint, applied: Applied,
+                       settings: _EdgeSettings) -> None:
+    """``ValueError`` (errores del programa) si ``footprint`` y ``applied`` no son de la misma
+    ventana, de la forma de ``footprint`` o de ``job``, o si la ventana no cubre lo que el alcance
+    de ``job`` puede tocar con su métrica (A0: el cálculo no sale de ella)."""
+    _check_footprint(job, footprint)
+    rows, cols = footprint.window
+    if applied.window != footprint.window:
+        raise ValueError("la plataforma aplicada es de otra ventana que la huella")
+    shape = footprint.cells.shape
+    for name in ("surface", "at_level", "cut_denied", "fill_denied"):
+        found = getattr(applied, name).shape
+        if found != shape:
+            raise ValueError(f"«{name}» de la plataforma aplicada es de la forma {found}, no de la "
+                             f"de la ventana {shape}")
+    where_rows, where_cols = np.nonzero(footprint.cells)
+    if not where_rows.size:
+        raise ValueError("la huella no tiene ninguna celda")
+    box = (slice(int(where_rows.min()) + rows.start, int(where_rows.max()) + 1 + rows.start),
+           slice(int(where_cols.min()) + cols.start, int(where_cols.max()) + 1 + cols.start))
+    needed = work_window(box[0], box[1], settings.reach_m, job.grid, settings.metric)
+    if not (rows.start <= needed[0].start and needed[0].stop <= rows.stop
+            and cols.start <= needed[1].start and needed[1].stop <= cols.stop):
+        raise ValueError(
+            f"la ventana de la huella ({rows}, {cols}) no cubre lo que un alcance de "
+            f"{settings.reach_m} m puede tocar con la métrica {settings.metric.value} "
+            f"({needed[0]}, {needed[1]}): se calculó con otro alcance u otra métrica")
+
+
+def _window_grid(grid: Grid, window: tuple[slice, slice]) -> Grid:
+    """La rejilla de la ventana ``window`` de ``grid`` (la esquina noroeste de su primera celda)."""
+    rows, cols = window
+    return Grid(grid.west + cols.start * grid.dx, grid.north - rows.start * grid.dy, grid.dx,
+                grid.dy, cols.stop - cols.start, rows.stop - rows.start)
+
+
+def _places(grid: Grid, window: tuple[slice, slice], rows: np.ndarray, cols: np.ndarray
+            ) -> tuple[np.ndarray, np.ndarray]:
+    """Los centros absolutos (float64) de las celdas ``rows``, ``cols`` de la ventana."""
+    x = grid.west + (cols + window[1].start + 0.5) * grid.dx
+    y = grid.north - (rows + window[0].start + 0.5) * grid.dy
+    return x, y
+
+
+def _drain[T](steps: Iterator[Progress]) -> Generator[None, None, T]:
+    """Las unidades de un cálculo por pasos (``steps``: cada ``Progress`` es una unidad) y, al
+    terminar, su resultado; cerrar el generador cierra ``steps``. Es lo que deja componer los pasos
+    públicos de la 013 y la 014 (:func:`~.envelopes.reach_steps`, :func:`~.edges.created_steps`) con
+    ``yield from`` dentro de las unidades del borde."""
+    with closing(steps):  # type: ignore[type-var]
+        for step in steps:
+            if step.result is not None:
+                return step.result  # type: ignore[return-value]
+            yield None
+    raise RuntimeError("los pasos terminaron sin dar resultado")
+
+
+def _walls(grid: Grid, window: tuple[slice, slice], rows: np.ndarray, cols: np.ndarray,
+           degrees: np.ndarray, far: np.ndarray, blocked: np.ndarray, area: float
+           ) -> tuple[EdgeWall, ...]:
+    """Las celdas empinadas (``rows``, ``cols`` de la ventana, con su inclinación ``degrees``) por
+    causa: ``REACH`` si alguna de sus 8 vecinas es de ``far`` (con dato fuera de la huella y más allá
+    del alcance), si no ``MASKS`` si alguna es de ``blocked`` (lo que las máscaras no dejan mover) y,
+    si no, ``OTHER``. De cada causa, cuántas, su área y la peor con su lugar."""
+    near_far = dilate_square(far, 1)[rows, cols]
+    near_blocked = dilate_square(blocked, 1)[rows, cols]
+    selectors = {WallCause.REACH: near_far, WallCause.MASKS: ~near_far & near_blocked,
+                 WallCause.OTHER: ~near_far & ~near_blocked}
+    found = []
+    for cause in WallCause:
+        picked = np.nonzero(selectors[cause])[0]
+        if not picked.size:
+            continue
+        best = int(picked[int(np.argmax(degrees[picked]))])
+        x, y = _places(grid, window, rows[best:best + 1], cols[best:best + 1])
+        found.append(EdgeWall(cause, int(picked.size), float(picked.size) * area,
+                              float(degrees[best]), float(x[0]), float(y[0])))
+    return tuple(found)
+
+
+def _edge_notices(name: str, settings: _EdgeSettings, walls: tuple[EdgeWall, ...],
+                  outside: np.ndarray, created: EdgeReport, grid: Grid,
+                  window: tuple[slice, slice]) -> tuple[Notice, ...]:
+    """Los avisos del borde, en el orden de :class:`Edge`: la pared (una nota con las celdas de
+    cada causa y la peor), lo que llega al borde de la rejilla o a celdas sin dato con su lugar (la
+    primera celda) y el salto creado con sus tramos, con el nombre de la entidad."""
+    found: list[Notice] = []
+    if walls:
+        by_cause = {wall.cause: wall.cells for wall in walls}
+        worst = walls[0]
+        for wall in walls[1:]:
+            if wall.max_deg > worst.max_deg:
+                worst = wall
+        found.append(Notice("des.platform_edge_steep", {
+            "entity": name, "cells": sum(by_cause.values()), "angle": settings.angle_deg,
+            "tolerance": settings.tolerance_deg, "max": worst.max_deg,
+            "limit": settings.angle_deg + settings.tolerance_deg, "x": worst.x, "y": worst.y,
+            "at_reach": by_cause.get(WallCause.REACH, 0), "reach": settings.reach_m,
+            "at_masks": by_cause.get(WallCause.MASKS, 0),
+            "other": by_cause.get(WallCause.OTHER, 0)}))
+    if outside.any():
+        rows, cols = np.nonzero(outside)
+        x, y = _places(grid, window, rows[:1], cols[:1])
+        count = int(rows.size)
+        found.append(Notice("des.entity_edge_outside", {
+            "entity": name, "cells": count, "area": count * grid.cell_area, "x": float(x[0]),
+            "y": float(y[0])}))
+    found.extend(edge_notices(created, surface=name))
+    return tuple(found)
+
+
+def _edge_units(job: PlatformJob, footprint: Footprint, applied: Applied, settings: _EdgeSettings,
+                budget_s: float) -> Generator[None, None, Edge]:
+    """Las unidades de :func:`platform_edge_steps`: el alcance, las envolventes, la superficie con
+    el borde, sus volúmenes y su pared, las celdas empinadas por bandas de filas, lo que llega al
+    borde de la rejilla y el salto creado."""
+    window, fp, grid = footprint.window, footprint.cells, job.grid
+    shape = fp.shape
+    z = job.start[window]
+    base = applied.surface
+    cut_ok = job.cut_allowed[window]
+    fill_ok = job.fill_allowed[window]
+    sub = _window_grid(grid, window)
+    area = grid.cell_area
+    name = job.request.name
+    label = f"{name} (borde de la plataforma)"
+    seeds = applied.at_level & fp
+    in_reach = np.zeros(shape, dtype=bool)
+    held = np.zeros(shape, dtype=bool)
+    changed = np.zeros(shape, dtype=bool)
+    final = z
+    yield None
+    if seeds.any():
+        origin = np.where(seeds, 0.0, np.nan)
+        distance = yield from _drain(reach_steps(origin, sub, settings.reach_m, settings.metric,
+                                                 name=label, budget_s=budget_s))
+        in_reach = np.isfinite(distance)
+        del distance, origin
+        seed_z = np.where(seeds, base, np.nan)
+        slope = SlopeField(settings.tan)
+        with np.errstate(invalid="ignore"):
+            reachable = in_reach & ~fp & np.isfinite(z)
+        up = yield from seed_envelope_steps(seed_z, sub, slope, settings.metric, Direction.UP,
+                                            label)
+        final = np.array(z, dtype=np.float64, copy=True)
+        with np.errstate(invalid="ignore"):
+            want_cut = reachable & (z > up)
+        changed = want_cut & cut_ok
+        held = want_cut & ~cut_ok
+        final[changed] = up[changed]
+        del up, want_cut
+        yield None
+        if applied.mode is PlatformMode.CUT_FILL:
+            down = yield from seed_envelope_steps(seed_z, sub, slope, settings.metric,
+                                                  Direction.DOWN, label)
+            with np.errstate(invalid="ignore"):
+                want_fill = reachable & (z < down)
+            filled = want_fill & fill_ok
+            held |= want_fill & ~fill_ok
+            final[filled] = down[filled]
+            changed = changed | filled
+            del down, want_fill, filled
+        del seed_z, reachable
+        yield None
+    surface = np.where(changed, final, base)
+    moved = z[changed] - surface[changed]
+    cut_m3 = float(np.sum(np.maximum(moved, 0.0))) * area
+    fill_m3 = float(np.sum(np.maximum(-moved, 0.0))) * area
+    wall_max, wall_x, wall_y = 0.0, None, None
+    if moved.size:
+        size = np.abs(moved)
+        where_rows, where_cols = np.nonzero(changed)
+        top = int(np.argmax(size))
+        wall_max = float(size[top])
+        found_x, found_y = _places(grid, window, where_rows[top:top + 1], where_cols[top:top + 1])
+        wall_x, wall_y = float(found_x[0]), float(found_y[0])
+    yield None
+    limit = settings.angle_deg + settings.tolerance_deg
+    picked_rows: list[np.ndarray] = []
+    picked_cols: list[np.ndarray] = []
+    picked_deg: list[np.ndarray] = []
+    per_unit = max(1, REPORT_CELLS_PER_UNIT // max(shape[1], 1))
+    for first in range(0, shape[0], per_unit):
+        last = min(shape[0], first + per_unit)
+        band = changed[first:last]
+        if band.any():
+            low, high = max(first - 1, 0), min(last + 1, shape[0])
+            start = 1 + first - low
+            rows_of = slice(start, start + (last - first))
+            tangents = _max_tangents(_padded(surface, low, high), grid.dx, grid.dy)[
+                rows_of, 1:shape[1] + 1]
+            own = _max_tangents(_padded(z, low, high), grid.dx, grid.dy)[rows_of, 1:shape[1] + 1]
+            with np.errstate(invalid="ignore"):
+                degrees = np.degrees(np.arctan(tangents))
+                over = band & (degrees > limit) & (tangents > own)
+            found_rows, found_cols = np.nonzero(over)
+            if found_rows.size:
+                picked_rows.append(found_rows + first)
+                picked_cols.append(found_cols)
+                picked_deg.append(degrees[over])
+        yield None
+    steep = np.zeros(shape, dtype=bool)
+    walls: tuple[EdgeWall, ...] = ()
+    if picked_rows:
+        rows_f, cols_f = np.concatenate(picked_rows), np.concatenate(picked_cols)
+        steep[rows_f, cols_f] = True
+        far = ~in_reach & ~fp & np.isfinite(z)
+        blocked = applied.cut_denied | applied.fill_denied | held
+        walls = _walls(grid, window, rows_f, cols_f, np.concatenate(picked_deg), far, blocked, area)
+    yield None
+    border = np.zeros(shape, dtype=bool)
+    if window[0].start == 0:
+        border[0, :] = True
+    if window[0].stop == grid.nrows:
+        border[-1, :] = True
+    if window[1].start == 0:
+        border[:, 0] = True
+    if window[1].stop == grid.ncols:
+        border[:, -1] = True
+    nodata = ~np.isfinite(z) & ~fp
+    near_nodata = dilate_square(nodata, 1) if nodata.any() else np.zeros(shape, dtype=bool)
+    outside = changed & (border | near_nodata)
+    domain = transition_domain(surface, z, settings.thickness_m, cut_ok | fill_ok)
+    created: EdgeReport = yield from _drain(created_steps(
+        surface, z, domain, sub, settings.thickness_m, settings.threshold_m, settings.share_pct,
+        budget_s=budget_s))
+    notices = _edge_notices(name, settings, walls, outside, created, grid, window)
+    return Edge(window, surface, in_reach, changed, held, steep, outside, settings.metric,
+                settings.angle_deg, settings.mesh_factor, settings.reach_m, settings.tolerance_deg,
+                int(np.count_nonzero(moved > 0.0)), int(np.count_nonzero(moved < 0.0)), cut_m3,
+                fill_m3, wall_max, wall_x, wall_y, walls, created, area, notices)
+
+
+def platform_edge_steps(job: PlatformJob, footprint: Footprint, applied: Applied,
+                        project: Mapping[str, object], *, budget_s: float = STEP_BUDGET_S
+                        ) -> Iterator[Progress]:
+    """**A3** (RF-015-22, RF-015-13; plan 015 §5.4): el borde de la plataforma de ``job`` con su
+    ``footprint`` (:func:`platform_footprint`) y ``applied`` (:func:`apply_platform`), por pasos de
+    ``budget_s`` como mucho: el último ``Progress`` (fase ``platform_edge``) lleva el :class:`Edge`.
+
+    Las semillas son las celdas de la huella que quedaron en la rasante (``applied.at_level``). Con
+    ``t = tan(ángulo de borde) · factor de malla`` y la métrica de la entidad (exacta por defecto,
+    D-22, o *chamfer* 5×5), ``ENV↑`` y, en «en corte y relleno», ``ENV↓`` de esas semillas con
+    ``seed_envelope_steps``, y el alcance (``reach_m``, m, obligatorio: D-20) como la distancia a la
+    semilla más próxima con la misma métrica y ``t = 1`` (``reach_steps``): **fuera de la huella** y
+    solo donde el alcance llega, ``z' = mín(z, ENV↑)`` donde ``cut_allowed`` y, en «en corte y
+    relleno», ``z' = máx(z, ENV↓)`` donde ``fill_allowed`` (si las dos se cruzan —semillas más
+    empinadas que el ángulo de borde: la rasante es una rampa— gana la descendente). Las celdas con
+    ``NaN`` en la partida siguen sin dato; las que las máscaras no dejan mover quedan como estaban
+    (``Edge.held``); lo que pasa del alcance, ni un bit.
+
+    Da el volumen del borde (corte y relleno por separado), la altura máxima de su pared (``máx(|z −
+    z'|)`` en las celdas que mueve), las celdas movidas más empinadas que el ángulo de borde más la
+    tolerancia de cara —y que la inclinación que el terreno ya tenía en ellas— por causa
+    (:class:`WallCause`), lo que llega al borde de la rejilla o a celdas
+    sin dato, el salto creado de la 014 de la superficie entera (A11) y sus avisos (:class:`Edge`).
+    Sin ninguna semilla (la huella no baja ninguna celda a la rasante) no hay borde: la superficie es
+    la de ``applied``.
+
+    ``project`` son los parámetros del proyecto que lee el borde, por su clave
+    (``provenance.PLATFORM_COMMON_PARAMS``): la tolerancia de cara (``des.tolerance.face_deg``), el
+    espesor mínimo (``res.verify.min_thickness_m``) y el salto admitido y su porcentaje
+    (``des.edge.max_created_step_m``, ``des.edge.min_share``): ninguno lleva valor por defecto en
+    este módulo (``ValueError`` si falta alguno).
+
+    Rechazos al llamar, nombrando la plataforma, el campo y el valor (RF-015-08): sin ``reach_m`` o
+    sin ``edge_angle_deg``, ``des.entity_param_missing``; fuera de su rango, ``des.entity_param_range``
+    (el alcance, de (0; 10.000] m, y el ángulo, de (0; 90)°); una métrica que no es de la lista,
+    ``des.entity_param_choice``. ``ValueError`` (errores del programa) si ``footprint`` y ``applied``
+    no casan con ``job``, si la ventana no cubre lo que el alcance puede tocar con la métrica (A0) o,
+    al avanzar, si las celdas no son cuadradas (ADR-0014). Ninguna entrada se modifica y no se
+    escribe nada; cerrar el generador a mitad no deja nada."""
+    settings = _edge_settings(job, project)
+    _check_edge_inputs(job, footprint, applied, settings)
+    work = _edge_units(job, footprint, applied, settings, budget_s)
+    return pace_progress(work, budget_s, phase=_EDGE_PHASE,
+                         running="Calculando el borde de la plataforma…",
+                         finished="Borde de la plataforma calculado")
+
+
+def platform_edge(job: PlatformJob, footprint: Footprint, applied: Applied,
+                  project: Mapping[str, object]) -> Edge:
+    """**A3**: :func:`platform_edge_steps` hasta el final, sin pasos: el :class:`Edge` de la
+    plataforma de ``job``. Los mismos rechazos."""
+    settings = _edge_settings(job, project)
+    _check_edge_inputs(job, footprint, applied, settings)
+    work = _edge_units(job, footprint, applied, settings, STEP_BUDGET_S)
+    while True:
+        try:
+            next(work)
+        except StopIteration as done:
+            return done.value
+
+
+def magnitude_notices(cut_m3: float, fill_m3: float, previous: Previous | None,
+                      warning_ratio: float, operation: str = "") -> tuple[Notice, ...]:
+    """El aviso de magnitud de RF-013-30 para el desmonte ``cut_m3`` y el terraplén ``fill_m3`` (m³,
+    los de la entidad: huella y borde juntos) frente a la operación del mismo tipo y nombre de la
+    revisión congelada más reciente de la versión (``previous``, D-25 de la 013): si el desmonte (o
+    el terraplén) pasa en más de ``warning_ratio`` veces (el parámetro ``des.warning.magnitude_ratio``,
+    mayor que 1) a los de esa revisión, ``des.magnitude_cut`` (o ``des.magnitude_fill``) con las
+    cifras redondeadas, las veces y el umbral; con exactamente el umbral, o con 0 m³ antes, no. Sin
+    revisión anterior (``None``), la nota ``des.magnitude_no_reference``, que dice el nombre de la
+    ``operation``. La misma regla que el informe de la 013 (RF-013-30, ``design.report``), con el
+    umbral que lee quien llama. ``ValueError`` si el umbral no es un número finito mayor que 1."""
+    ratio = float(warning_ratio)
+    if not math.isfinite(ratio) or ratio <= 1.0:
+        raise ValueError(f"el umbral de aviso debe ser un número finito mayor que 1, no "
+                         f"{warning_ratio!r}")
+    if previous is None:
+        return (Notice("des.magnitude_no_reference", {"operation": operation or "—"}),)
+    found = []
+    for code, current, before in (("des.magnitude_cut", cut_m3, previous.cut_m3),
+                                  ("des.magnitude_fill", fill_m3, previous.fill_m3)):
+        if before > 0.0 and current > ratio * before:
+            found.append(Notice(code, {
+                "current": round(current), "previous": round(before), "ratio": current / before,
+                "threshold": ratio, "operation": previous.operation or operation or "—",
+                "revision": previous.revision}))
+    return tuple(found)

@@ -1483,6 +1483,38 @@ CATALOG: tuple[Message, ...] = (
         "rasante.",
         "warning",
     ),
+    # El borde de la plataforma: la pared que queda más empinada que su ángulo (RF-015-22,
+    # RF-015-13; T08). La que sale del salto creado, de la magnitud y de lo que llega al borde de la
+    # rejilla usa ``des.edge_surface_step``, ``des.magnitude_*`` y ``des.entity_edge_outside``.
+    Message(
+        "des.platform_edge_steep",
+        "Platform «{entity}»: {cells} cells of its edge are steeper than its edge angle "
+        "({angle}°) plus the face tolerance ({tolerance}°); the worst is {max}° against a limit "
+        "of {limit}°, at x = {x} m, y = {y} m: {at_reach} at the reach limit ({reach} m), "
+        "{at_masks} next to what the masks do not let move and {other} because of the platform "
+        "itself. Widen the reach or check the slope; a wall like that is only "
+        "admitted at those limits.",
+        "Plataforma «{entity}»: {cells} celdas de su borde quedan más empinadas que su ángulo de "
+        "borde ({angle}°) más la tolerancia de cara ({tolerance}°); la peor, {max}° frente a un "
+        "límite de {limit}°, en x = {x} m, y = {y} m: {at_reach} en el límite del alcance "
+        "({reach} m), {at_masks} junto a lo que las máscaras no dejan mover y {other} por la "
+        "propia plataforma. Amplíe el alcance o revise la ladera; una pared así "
+        "solo se admite en esos límites.",
+        "warning",
+        count="cells",
+        one_msgid="Platform «{entity}»: {cells} cell of its edge is steeper than its edge angle "
+        "({angle}°) plus the face tolerance ({tolerance}°); it is {max}° against a limit of "
+        "{limit}°, at x = {x} m, y = {y} m: {at_reach} at the reach limit ({reach} m), "
+        "{at_masks} next to what the masks do not let move and {other} because of the platform "
+        "itself. Widen the reach or check the slope; a wall like that is only "
+        "admitted at those limits.",
+        one_es="Plataforma «{entity}»: {cells} celda de su borde queda más empinada que su ángulo "
+        "de borde ({angle}°) más la tolerancia de cara ({tolerance}°); es de {max}° frente a un "
+        "límite de {limit}°, en x = {x} m, y = {y} m: {at_reach} en el límite del alcance "
+        "({reach} m), {at_masks} junto a lo que las máscaras no dejan mover y {other} por la "
+        "propia plataforma. Amplíe el alcance o revise la ladera; una pared así "
+        "solo se admite en esos límites.",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

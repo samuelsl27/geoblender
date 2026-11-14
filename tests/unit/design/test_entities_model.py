@@ -116,6 +116,7 @@ CODES: dict[str, str] = {
     "des.platform_above": "warning",            # RF-015-24
     "des.platform_above_group": "note",         # RF-015-24
     "des.platform_no_cut": "warning",           # RF-015-24
+    "des.platform_edge_steep": "warning",       # RF-015-22 (T08)
 }
 FAMILIES = ("des.entity_", "des.platform_")
 
