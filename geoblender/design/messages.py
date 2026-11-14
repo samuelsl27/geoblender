@@ -1424,6 +1424,17 @@ CATALOG: tuple[Message, ...] = (
         "warning",
     ),
     Message(
+        "des.platform_counter_unconfirmed",
+        "Platform «{entity}» is not created: its longitudinal profile rises {amount} m against the "
+        "sense in which its level falls (tolerance {tolerance} m) and it is not created without "
+        "your express confirmation; confirm the counter-gradient, or correct the level, the "
+        "gradient or the masks; nothing is created.",
+        "La plataforma «{entity}» no se crea: su perfil longitudinal sube {amount} m en contra del "
+        "sentido en que baja su rasante (tolerancia {tolerance} m) y no se crea sin su "
+        "confirmación expresa; confirme la contrapendiente, o corrija la cota, la pendiente o las "
+        "máscaras; no se crea nada.",
+    ),
+    Message(
         "des.platform_below",
         "Platform «{entity}»: {area} m² of its footprint stay below its level, up to {maximum} "
         "m, in {groups} groups, because in the «cut» mode it does not fill.",
@@ -1448,6 +1459,19 @@ CATALOG: tuple[Message, ...] = (
         "centre at x = {x} m, y = {y} m.",
         one_es="Grupo {group}: {cells} celda, {area} m², hasta {maximum} m por debajo de su "
         "rasante, centro en x = {x} m, y = {y} m.",
+    ),
+    Message(
+        "des.platform_below_masks",
+        "Platform «{entity}»: {area} m² of its footprint stay below its level, up to {maximum} "
+        "m, in {groups} groups, because the masks do not allow filling there.",
+        "Plataforma «{entity}»: {area} m² de su huella quedan por debajo de su rasante, hasta "
+        "{maximum} m, en {groups} grupos, porque las máscaras no admiten allí el relleno.",
+        "warning",
+        count="groups",
+        one_msgid="Platform «{entity}»: {area} m² of its footprint stay below its level, up to "
+        "{maximum} m, in {groups} group, because the masks do not allow filling there.",
+        one_es="Plataforma «{entity}»: {area} m² de su huella quedan por debajo de su rasante, "
+        "hasta {maximum} m, en {groups} grupo, porque las máscaras no admiten allí el relleno.",
     ),
     Message(
         "des.platform_above",

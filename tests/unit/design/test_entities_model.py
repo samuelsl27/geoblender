@@ -113,6 +113,8 @@ CODES: dict[str, str] = {
     "des.platform_counter_flat": "warning",     # RF-015-23 (D-16)
     "des.platform_below": "warning",            # RF-015-24
     "des.platform_below_group": "note",         # RF-015-24
+    "des.platform_below_masks": "warning",      # RF-015-13, RF-015-24 (T09)
+    "des.platform_counter_unconfirmed": "error",  # RF-015-23 (T09)
     "des.platform_above": "warning",            # RF-015-24
     "des.platform_above_group": "note",         # RF-015-24
     "des.platform_no_cut": "warning",           # RF-015-24

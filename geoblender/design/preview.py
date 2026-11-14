@@ -61,8 +61,10 @@ __all__ = [
 
 _HECTARE_M2 = 10_000.0
 _DECIMALS = {"hectares": 1, "coverage": 1, "low": 1, "high": 1, "thickness": 3, "face": 2,
-             "berm": 2, "step": 2, "drop": 3, "above": 3}
-"""Los decimales de los números que no son enteros (el área, entera o con uno)."""
+             "berm": 2, "step": 2, "drop": 3, "above": 3, "amount": 3}
+"""Los decimales de los números que no son enteros (el área, entera o con uno). ``amount``: la
+contrapendiente de una plataforma (spec 015, T09), que ronda la tolerancia de 0,1 m: con un decimal
+«0,12 m» se leería «0,1 m», que no pasa de ella."""
 
 
 def _number(value: float, decimals: int, language: str) -> str:

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """La plataforma: huella y rasante, su aplicación sobre la superficie de partida y su borde (spec 015,
 T06, T07 y T08; RF-015-19, los rechazos de geometría de RF-015-08, RF-015-20, RF-015-21, RF-015-22,
-RF-015-06 y RF-015-13; plan 015 §5.1 y §5.4, A0, A1, A2 y A3; CE-015-02, CE-015-03 y CE-015-07).
+RF-015-06 y RF-015-13; plan 015 §5.1 y §5.4, A0, A1, A2 y A3; CE-015-02, CE-015-03 y CE-015-07) y su
+contrapendiente, sus cifras y sus avisos (T09; RF-015-23, RF-015-24, RF-015-14 y RF-015-13; A4 y A5).
 Dominio puro: sin proyecto y sin ``bpy``.
 
 Lo que entrega:
@@ -24,6 +25,13 @@ Lo que entrega:
   empinada que el ángulo de borde con su causa (:class:`EdgeWall`) y sus avisos.
 - :func:`magnitude_notices`: el aviso de magnitud de RF-013-30 del desmonte y el terraplén de la
   entidad frente a la revisión congelada anterior.
+- :func:`platform_profile` (A4): el perfil longitudinal de la superficie resultante
+  (:class:`LongProfile`) y su contrapendiente.
+- :func:`order_check` (RF-015-14): el orden ``final ≤ explotación ≤ terreno`` de una cantera de la 014
+  frente a la otra de sus dos superficies (:class:`QuarryOrder`, :class:`OrderBreach`).
+- :func:`platform_outcome` (A5): el :class:`PlatformOutcome` que junta la huella, lo aplicado y el borde
+  con el perfil, lo que las máscaras no dejan mover (:class:`HeldGroup`), las cifras de RF-015-24
+  (``provenance.platform_figures``) y la lista de avisos, en orden estable.
 
 **Con eje y ancho** la huella es la del corredor de extremos planos de RF-014-09
 (:func:`~.quarry.axis_abscissa`, que mide lo que su eje ± 1 celda: error 20) y la abscisa σ, la del
@@ -78,9 +86,26 @@ RF-015-13; sus avisos ya vienen armados (:attr:`Edge.notices`). La ventana de tr
 que el alcance puede tocar con la métrica de la entidad (con el *chamfer*, que mide 0,98644 de la
 distancia exacta a lo largo de un eje, una ventana algo mayor).
 
+**La contrapendiente** (A4, RF-015-23, D-8, D-16): el perfil longitudinal de la plataforma **en la
+superficie resultante** (huella y borde) es, por cada tramo de una celda de abscisa (``⌊σ/h⌋``), la
+cota más alta de su sección. En el sentido en que **baja** la rasante (pendiente < 0: hacia las
+abscisas grandes; > 0: hacia las pequeñas) la contrapendiente de un tramo es lo que sube el perfil
+sobre el mínimo de los tramos aguas arriba; pasa si es mayor que la tolerancia de la entidad
+(``counter_tol_m``, 0,1 m por defecto, D-8). Con pendiente 0 %, es el máximo menos el mínimo del
+perfil (D-16: admitida). El aviso lleva la abscisa, la cuantía y el lugar de la celda más alta del
+peor tramo y **hay que confirmarlo expresamente para crear la plataforma**
+(:attr:`PlatformOutcome.needs_confirmation`, :meth:`PlatformOutcome.ensure_creatable`).
+
+**Las cifras y los avisos** (A5, RF-015-24, RF-015-13, RF-015-14): el área, las longitudes del eje y de
+la huella, las cotas de la rasante en los extremos, el corte y el relleno de la huella y del borde por
+separado y, de lo que no queda en la rasante (por debajo y por encima), su área y la diferencia
+máxima; «la plataforma no corta» si ninguna celda baja; y el orden de las dos superficies de una
+cantera de la 014 contra la otra (un aviso: no impide crear). Los avisos de lo que no se mueve por
+la restricción de **otra entidad**, con su nombre, son de quien lee las restricciones (T12): aquí
+quedan los datos (:attr:`PlatformOutcome.held`, :attr:`PlatformOutcome.held_groups`).
+
 Las coordenadas absolutas son float64 y se pasan a locales respecto a la esquina de la rejilla solo
-dentro del cálculo (principio 6, ADR-0005). Ninguna entrada se modifica. La contrapendiente y las
-cifras son de la tarea siguiente (T09).
+dentro del cálculo (principio 6, ADR-0005). Ninguna entrada se modifica.
 """
 
 from __future__ import annotations
@@ -89,34 +114,39 @@ import math
 import numbers
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
 
 import numpy as np
 
 from ..core.project.model import Progress
+from ..core.provenance.figures import FigureSpec
 from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
 from .edges import EdgeReport, created_steps, edge_notices, seed_envelope_steps, transition_domain
 from .envelopes import CHAMFER_SCALE, SlopeField, reach_steps
 from .grids import _label_units, dilate_square
 from .messages import DesignError
-from .model import Axis, Direction, Metric, PlatformMode, PlatformRequest
+from .model import Axis, Direction, Metric, PlatformMode, PlatformRequest, Surface
 from .params import (
     EDGE_MAX_STEP,
     EDGE_MIN_SHARE,
     PLATFORM_PARAMS,
     TOLERANCE_FACE,
     VERIFY_MIN_THICKNESS,
+    WARNING_RATIO,
     PlatformParam,
     check_entity_param,
     check_quarry_param,
+    entity_key,
     entity_segment,
 )
 from .preview import Notice
+from .provenance import platform_figures
 from .quarry import (
     FLOOR_LEVEL_MARGIN_M,
+    ORDER_TOLERANCE_M,
     _segment_frame,
     axis_abscissa,
     axis_paths,
@@ -131,18 +161,26 @@ __all__ = [
     "Edge",
     "EdgeWall",
     "Footprint",
+    "HeldGroup",
+    "LongProfile",
     "OffLevel",
     "OffLevelCause",
+    "OrderBreach",
     "PlatformGeometry",
     "PlatformJob",
+    "PlatformOutcome",
+    "QuarryOrder",
     "WallCause",
     "apply_platform",
     "apply_platform_steps",
     "axis_of_polygon",
     "magnitude_notices",
+    "order_check",
     "platform_edge",
     "platform_edge_steps",
     "platform_footprint",
+    "platform_outcome",
+    "platform_profile",
     "work_window",
 ]
 
@@ -1514,3 +1552,503 @@ def magnitude_notices(cut_m3: float, fill_m3: float, previous: Previous | None,
                 "threshold": ratio, "operation": previous.operation or operation or "—",
                 "revision": previous.revision}))
     return tuple(found)
+
+
+# --- A4: la contrapendiente --------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class LongProfile:
+    """El perfil longitudinal de una plataforma en la superficie resultante (A4; RF-015-23, D-8,
+    D-16): por cada tramo con celdas de la huella, de una celda de abscisa (``⌊σ/h⌋``, con ``h`` el
+    paso de la rejilla ``step_m``), en el orden de la abscisa creciente, su número (``section``), su
+    abscisa (``chainage_m``: el centro del tramo, ``(k + 0,5) · h``, sin pasar de la longitud del
+    eje), su cota (``level_m``: **la más alta de su sección**), el lugar de esa celda (``x``, ``y``:
+    absolutos en float64; a igual cota, la primera de norte a sur y de oeste a este) y su
+    contrapendiente (``rise_m``, m, nunca negativa).
+
+    La contrapendiente de un tramo es lo que su cota sube sobre el **mínimo de los tramos aguas arriba**
+    (los anteriores en el sentido en que baja la rasante: hacia las abscisas grandes si la pendiente
+    ``gradient_pct`` es negativa y hacia las pequeñas si es positiva; 0 en el primero). Con pendiente 0 %
+    (:attr:`flat`, D-16) no hay sentido: es lo que sube sobre el mínimo de todo el perfil. Pasa si es
+    mayor que ``tolerance_m`` (:attr:`flagged`)."""
+
+    step_m: float
+    gradient_pct: float
+    tolerance_m: float
+    section: np.ndarray
+    chainage_m: np.ndarray
+    level_m: np.ndarray
+    x: np.ndarray
+    y: np.ndarray
+    rise_m: np.ndarray
+
+    @property
+    def flat(self) -> bool:
+        """Si la rasante tiene pendiente 0 % (la contrapendiente es el máximo menos el mínimo)."""
+        return self.gradient_pct == 0.0
+
+    @property
+    def flagged(self) -> np.ndarray:
+        """Los tramos cuya contrapendiente pasa de la tolerancia (booleana, de la forma del perfil)."""
+        return self.rise_m > self.tolerance_m
+
+    @property
+    def counter_sections(self) -> int:
+        """Cuántos tramos pasan de la tolerancia."""
+        return int(np.count_nonzero(self.flagged))
+
+    @property
+    def worst(self) -> int | None:
+        """El índice (en los arrays del perfil) del tramo de mayor contrapendiente, si alguno pasa de
+        la tolerancia (a igual cuantía, el de menor abscisa); si no, ``None``."""
+        if not self.flagged.any():
+            return None
+        return int(np.argmax(self.rise_m))
+
+    @property
+    def spread_m(self) -> float:
+        """El máximo menos el mínimo del perfil (m)."""
+        return float(self.level_m.max() - self.level_m.min())
+
+
+def _counter_tolerance(job: PlatformJob) -> float:
+    """La tolerancia de contrapendiente de la plataforma de ``job`` (``des.entity_param_range`` si
+    sale de rango); sin el valor, la de la familia de parámetros (0,1 m, D-8)."""
+    found = job.values.get(PlatformParam.COUNTER_TOL.value)
+    if found is None:
+        found = PLATFORM_PARAMS[PlatformParam.COUNTER_TOL.value].default
+    value = check_entity_param(job.request.name, job.code, PlatformParam.COUNTER_TOL, found)
+    assert isinstance(value, float)
+    return value
+
+
+def platform_profile(job: PlatformJob, footprint: Footprint, surface: np.ndarray,
+                     tolerance_m: float | None = None) -> LongProfile:
+    """**A4** (RF-015-23; plan 015 §5.4): el perfil longitudinal y la contrapendiente de la plataforma
+    de ``job`` con su ``footprint`` en la ``surface`` resultante (m, de la forma de la ventana de la
+    huella: la de :class:`Edge`, con la huella y el borde ya aplicados) y la tolerancia
+    ``tolerance_m`` (por defecto, ``counter_tol_m`` del trabajo o 0,1 m, D-8). Véase
+    :class:`LongProfile`. Sin bucle por celda: la cota más alta de cada sección y la primera celda
+    con ella salen de ``np.maximum.at`` y ``np.minimum.at``, y el mínimo aguas arriba, de
+    ``np.minimum.accumulate``. Ninguna entrada se modifica.
+
+    ``ValueError`` (errores del programa) si la ventana no cabe en la rejilla, la superficie o la
+    abscisa no son de la forma de la huella, hay celdas de la huella sin dato, las celdas no son
+    cuadradas (ADR-0014: el tramo es una celda de abscisa) o la tolerancia no es un número finito
+    mayor o igual que 0."""
+    _check_footprint(job, footprint)
+    grid = job.grid
+    if grid.dx != grid.dy:
+        raise ValueError(f"el perfil por tramos de una celda de abscisa supone celdas cuadradas "
+                         f"(ADR-0014), no de {grid.dx} × {grid.dy} m")
+    cells = footprint.cells
+    heights = np.asarray(surface, dtype=np.float64)
+    if heights.shape != cells.shape or footprint.sigma.shape != cells.shape:
+        raise ValueError(f"la superficie resultante ({heights.shape}) y la abscisa "
+                         f"({footprint.sigma.shape}) son de la forma de la ventana de la huella "
+                         f"{cells.shape}")
+    if tolerance_m is None:
+        tolerance = _counter_tolerance(job)
+    else:
+        tolerance = float(tolerance_m)
+        if not (math.isfinite(tolerance) and tolerance >= 0.0):
+            raise ValueError(f"la tolerancia de contrapendiente es un número finito mayor o igual "
+                             f"que 0, no {tolerance_m!r}")
+    if not cells.any():
+        raise ValueError("la huella no tiene ninguna celda")
+    levels = heights[cells]
+    sigma = footprint.sigma[cells]
+    if not (np.isfinite(levels).all() and np.isfinite(sigma).all()):
+        raise ValueError(f"la plataforma «{job.request.name}» ({job.code}) tiene celdas sin dato en "
+                         "su huella o sin abscisa: no hay perfil que medir")
+    step = grid.dx
+    index = np.floor(sigma / step).astype(np.int64)
+    size = int(index.max()) + 1
+    present = np.flatnonzero(np.bincount(index, minlength=size))
+    top = np.full(size, -np.inf)
+    np.maximum.at(top, index, levels)
+    order = np.arange(levels.size, dtype=np.int64)
+    at_top = levels == top[index]
+    first = np.full(size, levels.size, dtype=np.int64)
+    np.minimum.at(first, index[at_top], order[at_top])
+    level = top[present]
+    rows, cols = np.nonzero(cells)
+    pick = first[present]
+    x, y = _places(grid, footprint.window, rows[pick], cols[pick])
+    gradient = footprint.gradient_pct
+    if gradient == 0.0:
+        rise = level - level.min()
+    else:
+        walk = level if gradient < 0.0 else level[::-1]
+        before = np.minimum.accumulate(walk)
+        found = np.zeros(walk.size)
+        found[1:] = np.maximum(walk[1:] - before[:-1], 0.0)
+        rise = found if gradient < 0.0 else found[::-1]
+    chainage = np.minimum((present + 0.5) * step, footprint.axis.length_m)
+    return LongProfile(step, gradient, tolerance, present.astype(np.int64), chainage, level, x, y,
+                       np.ascontiguousarray(rise))
+
+
+def _counter_notice(name: str, profile: LongProfile) -> tuple[Notice, ...]:
+    """El aviso de la contrapendiente del peor tramo (``des.platform_counter_slope``, o
+    ``des.platform_counter_flat`` con pendiente 0 %): la cuantía y la cota al mm, la abscisa y el
+    lugar de su celda más alta al cm, la tolerancia y la entidad; ninguno si no pasa de ella."""
+    index = profile.worst
+    if index is None:
+        return ()
+    values: dict[str, object] = {
+        "entity": name, "amount": round(float(profile.rise_m[index]), 3),
+        "tolerance": profile.tolerance_m, "chainage": round(float(profile.chainage_m[index]), 3),
+        "x": round(float(profile.x[index]), 2), "y": round(float(profile.y[index]), 2)}
+    if profile.flat:
+        values["low"] = round(float(profile.level_m.min()), 3)
+        values["high"] = round(float(profile.level_m[index]), 3)
+        return (Notice("des.platform_counter_flat", values),)
+    return (Notice("des.platform_counter_slope", values),)
+
+
+# --- RF-015-14: el orden de las dos superficies de una cantera ---------------------------------
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class QuarryOrder:
+    """La otra superficie de una cantera de la 014 cuando la plataforma parte de una de las dos
+    (RF-015-14): el nombre de la cantera (``quarry``), el lado que cambia la plataforma (``side``, la
+    superficie de partida: ``final`` o ``exploitation``) con el nombre de su dato (``surface``) y la
+    **otra** (``other``, m, float64, de la forma de la rejilla entera) con el suyo (``other_name``).
+    ``ValueError`` (error del programa) si el lado no es de la cantera o ``other`` no es una rejilla."""
+
+    quarry: str
+    side: Surface | str
+    surface: str
+    other_name: str
+    other: np.ndarray
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "side", Surface(self.side))
+        other = np.asarray(self.other, dtype=np.float64)
+        if other.ndim != 2:
+            raise ValueError(f"la otra superficie de la cantera es una rejilla, no de forma "
+                             f"{other.shape}")
+        object.__setattr__(self, "other", other)
+
+
+@dataclass(frozen=True, slots=True)
+class OrderBreach:
+    """Lo que no cumple ``final ≤ explotación ≤ terreno`` frente a la otra superficie (RF-015-14): el
+    ``side`` que cambió la plataforma, las ``cells`` que lo incumplen (más que la tolerancia), su
+    ``area_m2``, el mayor exceso ``max_m`` (m) y el lugar de la primera celda de norte a sur y de oeste
+    a este (``x``, ``y``: absolutos en float64)."""
+
+    side: Surface
+    cells: int
+    area_m2: float
+    max_m: float
+    x: float
+    y: float
+
+
+def order_check(result: np.ndarray, other: np.ndarray, side: Surface | str, grid: Grid,
+                window: tuple[slice, slice] | None = None,
+                tolerance_m: float = ORDER_TOLERANCE_M) -> OrderBreach | None:
+    """**RF-015-14**: lo que la ``result`` de una entidad aplicada al lado ``side`` de una cantera de
+    la 014 no cumple de ``final ≤ explotación ≤ terreno`` frente a la ``other`` superficie
+    (``other``, de la rejilla ``grid`` entera): con ``side`` ``final`` (la entidad cambia la final)
+    ``result ≤ other + tolerancia`` y con ``exploitation``, ``other ≤ result + tolerancia``, con la
+    tolerancia ``tolerance_m`` (por defecto 1 mm: RF-014-14). ``result`` es de la ventana ``window``
+    de ``grid`` (por defecto, la rejilla entera). Una celda sin dato en una de las dos no se compara.
+    ``None`` si se cumple; si no, el :class:`OrderBreach` con el área y el lugar. Solo lee;
+    ``ValueError`` (errores del programa) si el lado no es de la cantera o las rejillas no son de la
+    forma de ``grid`` o de ``window``."""
+    side = Surface(side)
+    full = (slice(0, grid.nrows), slice(0, grid.ncols)) if window is None else window
+    shape = (full[0].stop - full[0].start, full[1].stop - full[1].start)
+    other_full = np.asarray(other, dtype=np.float64)
+    if other_full.shape != grid.shape:
+        raise ValueError(f"la otra superficie es de la forma de la rejilla {grid.shape}, no "
+                         f"{other_full.shape}")
+    found = np.asarray(result, dtype=np.float64)
+    if found.shape != shape:
+        raise ValueError(f"el resultado es de la forma de su ventana {shape}, no {found.shape}")
+    against = other_full[full]
+    with np.errstate(invalid="ignore"):
+        excess = found - against if side is Surface.FINAL else against - found
+        broken = excess > tolerance_m
+    if not broken.any():
+        return None
+    rows, cols = np.nonzero(broken)
+    x, y = _places(grid, full, rows[:1], cols[:1])
+    count = int(rows.size)
+    return OrderBreach(side, count, count * grid.cell_area, float(excess[broken].max()),
+                       float(x[0]), float(y[0]))
+
+
+# --- Lo que las máscaras no dejan mover --------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class HeldGroup:
+    """Un grupo 4-conexo de celdas que las máscaras no dejan mover (RF-015-13), de la huella
+    (``cut_denied`` y ``fill_denied`` de :class:`Applied`) y del borde (:attr:`Edge.held`) juntas: su
+    número ``group`` (desde 1, en el orden de su primera celda de norte a sur), sus ``cells`` y de
+    ellas las de la huella (``footprint_cells``) y las del borde (``edge_cells``), su ``area_m2`` y
+    su centro ``x``, ``y`` (absolutos en float64: la media de los centros de sus celdas). La
+    restricción de **otra entidad** que lo causa la nombra quien lee las restricciones (T12)."""
+
+    group: int
+    cells: int
+    footprint_cells: int
+    edge_cells: int
+    area_m2: float
+    x: float
+    y: float
+
+
+def _run[T](work: Generator[None, None, T]) -> T:
+    """El resultado de las unidades ``work`` ejecutadas hasta el final."""
+    while True:
+        try:
+            next(work)
+        except StopIteration as done:
+            return done.value  # type: ignore[no-any-return]
+
+
+def _held_groups(held: np.ndarray, inside: np.ndarray, grid: Grid, window: tuple[slice, slice]
+                 ) -> tuple[HeldGroup, ...]:
+    """Los grupos 4-conexos de ``held`` (de la ventana ``window``), con cuántas de sus celdas son de
+    la huella (``inside``), su área y su centro absoluto; etiquetados solo sobre su caja."""
+    rows, cols = np.nonzero(held)
+    if not rows.size:
+        return ()
+    top, left = int(rows.min()), int(cols.min())
+    mask = np.zeros((int(rows.max()) - top + 1, int(cols.max()) - left + 1), dtype=bool)
+    mask[rows - top, cols - left] = True
+    labels = _run(_label_units(mask))
+    tags = labels.grid[rows - top, cols - left]
+    count = labels.count + 1
+    row_sum = np.bincount(tags, weights=rows + window[0].start, minlength=count)
+    col_sum = np.bincount(tags, weights=cols + window[1].start, minlength=count)
+    in_footprint = np.bincount(tags, weights=inside[rows, cols].astype(np.float64), minlength=count)
+    found = []
+    for index in range(1, count):
+        cells = int(labels.sizes[index - 1])
+        mine = int(round(in_footprint[index]))
+        found.append(HeldGroup(
+            index, cells, mine, cells - mine, cells * grid.cell_area,
+            float(grid.west + (col_sum[index] / cells + 0.5) * grid.dx),
+            float(grid.north - (row_sum[index] / cells + 0.5) * grid.dy)))
+    return tuple(found)
+
+
+# --- A5: el resultado, las cifras y los avisos -------------------------------------------------
+
+
+def _off_level_notices(name: str, footprint_area_m2: float, applied: Applied) -> tuple[Notice, ...]:
+    """Lo que no queda en la rasante, como avisos (RF-015-24, RF-015-13), en este orden: «la plataforma
+    no corta» con el área de su huella si ninguna celda baja; lo que queda **por encima** (el corte que
+    las máscaras no admiten) y lo que queda **por debajo** (el modo «en corte» no rellena o las máscaras
+    no dejan rellenar), cada uno con su resumen (el área, la diferencia máxima y los grupos) y una nota por
+    grupo con su área, su diferencia máxima y su lugar (al cm)."""
+    found: list[Notice] = []
+    if applied.cut_cells == 0:
+        found.append(Notice("des.platform_no_cut", {"entity": name, "area": footprint_area_m2}))
+    over = ("des.platform_above", "des.platform_above_group")
+    under = (("des.platform_below_masks" if applied.below
+              and applied.below[0].cause is OffLevelCause.FILL_DENIED else "des.platform_below"),
+             "des.platform_below_group")
+    for groups, (summary, note) in ((applied.above, over), (applied.below, under)):
+        if not groups:
+            continue
+        found.append(Notice(summary, {
+            "entity": name, "area": math.fsum(item.area_m2 for item in groups),
+            "maximum": round(max(item.max_m for item in groups), 3), "groups": len(groups)}))
+        found.extend(Notice(note, {
+            "group": item.group, "cells": item.cells, "area": item.area_m2,
+            "maximum": round(item.max_m, 3), "x": round(item.x, 2), "y": round(item.y, 2)})
+            for item in groups)
+    return tuple(found)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PlatformOutcome:
+    """El cálculo de una plataforma (A0 a A5; RF-015-23, RF-015-24, RF-015-14, RF-015-13): su
+    ``footprint``, lo ``applied`` y el ``edge`` (la superficie resultante es :attr:`result`), el
+    ``profile`` longitudinal con su contrapendiente, lo que las máscaras no dejan mover (``held``: la
+    máscara de la ventana, y ``held_groups``), el incumplimiento del orden de la cantera (``order``,
+    ``None`` si se cumple o la plataforma no parte de una cantera), las ``figures`` de RF-015-24
+    (``provenance.platform_figures``: CALCULADO, con su unidad y su ámbito) y los ``notices`` en orden
+    estable: los de la huella (el eje principal), la contrapendiente, lo que no corta o no queda en la
+    rasante, los del borde (:attr:`Edge.notices`: su pared, lo que llega al borde de la rejilla y el
+    salto creado), el orden de la cantera y la magnitud.
+
+    ``confirmed`` es la confirmación expresa de la contrapendiente (``confirm_counterslope`` de
+    :func:`platform_outcome`): sin ella, una contrapendiente que pasa de la tolerancia impide crear
+    (:attr:`needs_confirmation`, :meth:`ensure_creatable`). El incumplimiento del orden de la cantera
+    **no** lo impide (RF-015-14)."""
+
+    name: str
+    code: str
+    footprint: Footprint
+    applied: Applied
+    edge: Edge
+    profile: LongProfile
+    held: np.ndarray
+    held_groups: tuple[HeldGroup, ...]
+    order: OrderBreach | None
+    figures: tuple[FigureSpec, ...]
+    notices: tuple[Notice, ...]
+    confirmed: bool = False
+
+    @property
+    def result(self) -> np.ndarray:
+        """La superficie resultante en la ventana de trabajo (m, float64): la de partida con la
+        huella aplicada y el borde."""
+        return self.edge.surface
+
+    @property
+    def area_m2(self) -> float:
+        """El área de la huella (m²)."""
+        return self.footprint.area_m2
+
+    @property
+    def total_cut_m3(self) -> float:
+        """El corte de la huella y del borde juntos (m³): el de la magnitud de RF-013-30."""
+        return self.applied.cut_m3 + self.edge.cut_m3
+
+    @property
+    def total_fill_m3(self) -> float:
+        """El relleno de la huella y del borde juntos (m³)."""
+        return self.applied.fill_m3 + self.edge.fill_m3
+
+    @property
+    def no_cut(self) -> bool:
+        """Si ninguna celda de la huella baja (RF-015-24: «la plataforma no corta»)."""
+        return self.applied.cut_cells == 0
+
+    @property
+    def off_level_area_m2(self) -> float:
+        """El área de las celdas de la huella que no quedan en la rasante, por encima y por debajo
+        (m²)."""
+        return math.fsum(item.area_m2 for item in (*self.applied.above, *self.applied.below))
+
+    @property
+    def off_level_max_m(self) -> float:
+        """La mayor diferencia de esas celdas con la rasante (m); 0 si no hay ninguna."""
+        return max((item.max_m for item in (*self.applied.above, *self.applied.below)),
+                   default=0.0)
+
+    @property
+    def held_cells(self) -> int:
+        """Las celdas de la huella y del borde que las máscaras no dejan mover."""
+        return int(np.count_nonzero(self.held))
+
+    @property
+    def held_area_m2(self) -> float:
+        """Su área (m²)."""
+        return self.held_cells * self.applied.cell_area_m2
+
+    @property
+    def counter_slope(self) -> bool:
+        """Si el perfil tiene una contrapendiente que pasa de la tolerancia."""
+        return self.profile.worst is not None
+
+    @property
+    def needs_confirmation(self) -> bool:
+        """Si hay una contrapendiente y el usuario no la ha confirmado: no se puede crear
+        (RF-015-23)."""
+        return self.counter_slope and not self.confirmed
+
+    def confirm(self) -> PlatformOutcome:
+        """El mismo resultado con la contrapendiente confirmada expresamente por el usuario."""
+        return replace(self, confirmed=True)
+
+    def ensure_creatable(self) -> None:
+        """Rechaza crear la plataforma si tiene una contrapendiente sin confirmar: ``DesignError``
+        ``des.platform_counter_unconfirmed`` con la entidad, la cuantía del peor tramo y la
+        tolerancia (RF-015-23). No hace nada si no la hay o está confirmada; el orden de la cantera no
+        lo impide."""
+        index = self.profile.worst
+        if index is None or self.confirmed:
+            return
+        raise DesignError(
+            "des.platform_counter_unconfirmed", obj=f"Plataforma «{self.name}»",
+            field=entity_key(self.code, PlatformParam.COUNTER_TOL), value=self.profile.tolerance_m,
+            entity=self.name, amount=round(float(self.profile.rise_m[index]), 3),
+            tolerance=self.profile.tolerance_m)
+
+
+def _figures(name: str, code: str, footprint: Footprint, applied: Applied, edge: Edge
+             ) -> tuple[FigureSpec, ...]:
+    """Las cifras de RF-015-24 (las doce de ``provenance.PLATFORM_FIGURES``, CALCULADO): lo que no
+    existe (sin celdas fuera de la rasante no hay diferencia máxima; sin borde no hay pared) se da como
+    ``None``, que no se registra."""
+    off = (*applied.above, *applied.below)
+    return platform_figures(name, code, {
+        "des.plat_area_m2": footprint.area_m2,
+        "des.plat_axis_m": footprint.axis.length_m,
+        "des.plat_footprint_m": footprint.length_m,
+        "des.plat_start_level_m": footprint.start_level_m,
+        "des.plat_end_level_m": footprint.end_level_m,
+        "des.plat_cut_m3": applied.cut_m3,
+        "des.plat_fill_m3": applied.fill_m3,
+        "des.edge_cut_m3": edge.cut_m3,
+        "des.edge_fill_m3": edge.fill_m3,
+        "des.edge_wall_max_m": None if edge.wall_x is None else edge.wall_max_m,
+        "des.plat_below_m2": math.fsum(item.area_m2 for item in off),
+        "des.plat_below_max_m": max((item.max_m for item in off), default=None)})
+
+
+def platform_outcome(job: PlatformJob, footprint: Footprint, applied: Applied, edge: Edge,
+                     project: Mapping[str, object], *, confirm_counterslope: bool = False,
+                     previous: Previous | None = None, operation: str = "",
+                     quarry: QuarryOrder | None = None) -> PlatformOutcome:
+    """**A4 y A5** (RF-015-23, RF-015-24, RF-015-14, RF-015-13; plan 015 §5.4): junta la ``footprint``
+    de ``job``, lo ``applied`` y el ``edge`` en el :class:`PlatformOutcome`: el perfil longitudinal de
+    la superficie resultante (:func:`platform_profile`, con la tolerancia ``counter_tol_m`` de la
+    entidad o 0,1 m), las cifras, lo que las máscaras no dejan mover con su lugar y la lista de avisos
+    en orden estable (:class:`PlatformOutcome`).
+
+    ``confirm_counterslope`` es la confirmación expresa del usuario de una contrapendiente (RF-015-23;
+    sin ella no se puede crear). ``previous`` y ``operation`` son los de la magnitud
+    (:func:`magnitude_notices`: la operación del mismo nombre de la revisión congelada anterior y el
+    nombre de la operación; sin ``previous``, la nota de que no hay con qué comparar) con el desmonte
+    y el relleno de la huella y del borde juntos y el umbral ``des.warning.magnitude_ratio`` de
+    ``project``, el mismo mapa de parámetros del proyecto que lee :func:`platform_edge` (``ValueError``
+    si no lo tiene o no es un número finito mayor que 1). ``quarry`` es la otra
+    superficie de la cantera de la 014 si la plataforma parte de una de las dos (RF-015-14): el
+    incumplimiento de ``final ≤ explotación ≤ terreno`` con 1 mm avisa, sin impedir crearla.
+
+    Solo lee; ``ValueError`` (errores del programa) si ``applied`` o ``edge`` no son de la ventana de
+    ``footprint`` o de su forma, o ``quarry.other`` no es de la forma de la rejilla."""
+    _check_footprint(job, footprint)
+    if applied.window != footprint.window or edge.window != footprint.window:
+        raise ValueError("la plataforma aplicada y el borde son de la misma ventana que la huella")
+    shape = footprint.cells.shape
+    for owner, names in ((applied, ("surface", "at_level", "cut_denied", "fill_denied")),
+                         (edge, ("surface", "held"))):
+        for attribute in names:
+            found = getattr(owner, attribute).shape
+            if found != shape:
+                raise ValueError(f"«{attribute}» es de la forma {found}, no de la de la ventana "
+                                 f"{shape}")
+    ratio = _project_number(project, WARNING_RATIO)
+    name = job.request.name
+    profile = platform_profile(job, footprint, edge.surface)
+    held = applied.cut_denied | applied.fill_denied | edge.held
+    groups = _held_groups(held, footprint.cells, job.grid, footprint.window)
+    breach: OrderBreach | None = None
+    if quarry is not None:
+        breach = order_check(edge.surface, quarry.other, quarry.side, job.grid, footprint.window)
+    notices = [*footprint.notices, *_counter_notice(name, profile),
+               *_off_level_notices(name, footprint.area_m2, applied), *edge.notices]
+    if breach is not None and quarry is not None:
+        notices.append(Notice("des.entity_quarry_order", {
+            "entity": name, "surface": quarry.surface, "quarry": quarry.quarry,
+            "other": quarry.other_name, "cells": breach.cells, "area": breach.area_m2,
+            "above": round(breach.max_m, 3), "x": round(breach.x, 2), "y": round(breach.y, 2)}))
+    notices.extend(magnitude_notices(applied.cut_m3 + edge.cut_m3, applied.fill_m3 + edge.fill_m3,
+                                     previous, ratio, operation))
+    return PlatformOutcome(name, job.code, footprint, applied, edge, profile, held, groups, breach,
+                           _figures(name, job.code, footprint, applied, edge), tuple(notices),
+                           bool(confirm_counterslope))

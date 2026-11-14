@@ -175,7 +175,10 @@ class PublicNamesTest(unittest.TestCase):
                  "Applied", "OffLevel", "OffLevelCause", "apply_platform", "apply_platform_steps",
                  # T08: el borde (test_platform_edge.py).
                  "Edge", "EdgeWall", "WallCause", "magnitude_notices", "platform_edge",
-                 "platform_edge_steps")
+                 "platform_edge_steps",
+                 # T09: la contrapendiente, las cifras y los avisos (test_platform_profile.py).
+                 "HeldGroup", "LongProfile", "OrderBreach", "PlatformOutcome", "QuarryOrder",
+                 "order_check", "platform_outcome", "platform_profile")
         self.assertEqual(sorted(platform.__all__), sorted(names))
         for name in names:
             with self.subTest(name=name):
