@@ -144,6 +144,7 @@ from __future__ import annotations
 
 import json
 import logging
+import numbers
 import sqlite3
 import time
 from collections.abc import Generator, Iterator, Mapping, Sequence
@@ -167,6 +168,7 @@ from ...design.model import (PERIMETER_SEGMENT, BenchProfile, CellClass, Order, 
 from ...design.params import BenchParam, bench_key
 from ...gis import provenance as gis_provenance
 from ...gis import store as gis_store
+from ...gis.masks import provenance as masks_provenance
 from ...reserves import surfaces as res_surfaces
 from ..props.des import WINDOW_MANAGER_PROPERTY
 from ..scene import des_views, project_session
@@ -624,6 +626,16 @@ DESIGN_SURFACE_PREFIXES: tuple[str, ...] = tuple(
 ajustada de la 014)."""
 
 
+CODE_GRID_PREFIXES: tuple[str, ...] = (
+    *(design_provenance.FAMILIES_BY_CODE[code].prefix for code in (
+        design_provenance.EXCAVATION_AREA_GRID, design_provenance.CLASSIFICATION_GRID)),
+    masks_provenance.dataset_name(masks_provenance.CLASSES))
+"""El comienzo del nombre de las rejillas de **códigos**, que no son cotas y no se ofrecen como
+superficie ni como rejilla de anclas (spec 014, T61; el H3: la de las semillas proponía la
+clasificación la primera): el recinto excavable (1 dentro), la clasificación de una cantera (0, 1
+o 2) y la rejilla de clases de las máscaras de la 012 (sus bits)."""
+
+
 def line_layers(project: Any) -> tuple[str, ...]:
     """Las capas «entidades» de líneas del proyecto (``gis_fea_``), por nombre: los ejes de los
     corredores de la cantera (spec 014, T21; plan 014 §5.2.1). Una cuya tabla falta no se
@@ -644,12 +656,13 @@ def line_layers(project: Any) -> tuple[str, ...]:
 def refresh_choices(project: Any) -> None:
     """Vuelve a leer de ``project`` las listas del diálogo, con la versión activa: las superficies
     y rejillas de cotas del proyecto y de la versión activa (las que puede leer el cálculo: no las
-    congeladas ni las de otra versión), las zonas (el dominio por defecto, las restricciones, los
-    sectores declarados y las capas de polígonos) y las capas con que se acota el dominio. Si no se
-    puede leer, el error sigue y las listas quedan como estaban."""
+    congeladas ni las de otra versión, ni las de códigos, :data:`CODE_GRID_PREFIXES`), las zonas
+    (el dominio por defecto, las restricciones, los sectores declarados y las capas de polígonos)
+    y las capas con que se acota el dominio. Si no se puede leer, el error sigue y las listas
+    quedan como estaban."""
     version = scene_versions.active_version() or ""
     found = [choice for choice in res_surfaces.surface_choices(project, version_uid=version)
-             if choice.revision is None]
+             if choice.revision is None and not choice.name.startswith(CODE_GRID_PREFIXES)]
     envelope_prefix = design_provenance.FAMILIES_BY_CODE[design_provenance.ENVELOPE_GRID].prefix
     with project.read() as conn:
         constraints = constraint_store.read_constraints(conn)
@@ -877,6 +890,12 @@ def _number(value: float | None, decimals: int = 0) -> str:
     return NOT_SHOWN if value is None else format_number(value, decimals)
 
 
+def _one(count: object) -> bool:
+    """Si un recuento (celdas, parejas, bermas) es 1 y su línea va en singular (spec 014, T61):
+    «la regla de orden cambió 1 celda», no «1 celdas», como los avisos del diseño (T60)."""
+    return not isinstance(count, bool) and isinstance(count, numbers.Real) and count == 1
+
+
 def _quarry_lines(outcome: Any) -> list[tuple[str, bool]]:
     """El resumen de las dos superficies de una cantera calculada (``design.quarry.QuarryOutcome``;
     spec 014, T21 y T22; RF-014-12, RF-014-13, RF-014-15 a RF-014-18): el orden del diseño con las
@@ -889,8 +908,12 @@ def _quarry_lines(outcome: Any) -> list[tuple[str, bool]]:
     total = outcome.classes.total
     order = (tr("Final surface first") if Order(outcome.order) is Order.FINAL_FIRST
              else tr("Exploitation surface first"))
-    lines = [(tr("Order of the design: {order} · the order rule changed {cells} cells",
-                 order=order, cells=_number(outcome.adjusted)), False)]
+    if _one(outcome.adjusted):  # T61: el singular, como los avisos (T60)
+        changed = tr("Order of the design: {order} · the order rule changed 1 cell", order=order)
+    else:
+        changed = tr("Order of the design: {order} · the order rule changed {cells} cells",
+                     order=order, cells=_number(outcome.adjusted))
+    lines = [(changed, False)]
     final, exploitation = total.levels(Surface.FINAL), total.levels(Surface.EXPLOITATION)
     if final is not None:
         lines.append((tr("Final surface: elevations {low} to {high} m",
@@ -923,16 +946,26 @@ def _transition_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     transition, report = outcome.transition, outcome.report  # type: ignore[union-attr]
     shown = language()
     surface = str(calculation.settings.get("surface") or "")
-    return [
-        (tr("Transition of «{surface}» at {angle}°: {volume} m³ in {cells} cells ({area} m²)",
-            surface=surface, angle=format_value(float(transition.angle_deg), shown),
-            volume=_number(transition.volume_m3), cells=_number(transition.cells),
-            area=_number(transition.area_m2)), False),
-        (tr("Created step at the edge: {pairs} pairs, {within} % within {threshold} m, the "
-            "largest {maximum} m", pairs=_number(report.pairs),
-            within=_number(report.within_pct, 2),
-            threshold=format_value(float(report.threshold_m), shown),
-            maximum=_number(max(0.0, report.maximum_m), 2)), False)]
+    angle = format_value(float(transition.angle_deg), shown)
+    volume, area = _number(transition.volume_m3), _number(transition.area_m2)
+    if _one(transition.cells):  # T61: el singular
+        moved = tr("Transition of «{surface}» at {angle}°: {volume} m³ in 1 cell ({area} m²)",
+                   surface=surface, angle=angle, volume=volume, area=area)
+    else:
+        moved = tr("Transition of «{surface}» at {angle}°: {volume} m³ in {cells} cells "
+                   "({area} m²)", surface=surface, angle=angle, volume=volume,
+                   cells=_number(transition.cells), area=area)
+    within = _number(report.within_pct, 2)
+    threshold = format_value(float(report.threshold_m), shown)
+    maximum = _number(max(0.0, report.maximum_m), 2)
+    if _one(report.pairs):
+        step = tr("Created step at the edge: 1 pair, {within} % within {threshold} m, the "
+                  "largest {maximum} m", within=within, threshold=threshold, maximum=maximum)
+    else:
+        step = tr("Created step at the edge: {pairs} pairs, {within} % within {threshold} m, the "
+                  "largest {maximum} m", pairs=_number(report.pairs), within=within,
+                  threshold=threshold, maximum=maximum)
+    return [(moved, False), (step, False)]
 
 
 def _refit_lines(calculation: Calculation) -> list[tuple[str, bool]]:
@@ -940,11 +973,29 @@ def _refit_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     T33; RF-014-27): por superficie, en el orden de la petición, su volumen de ajuste con la cara de
     su propio perfil, las celdas que cambian y, de ellas, las que vuelven al terreno fuera del
     límite. El aviso de las que no hacía falta ajustar lo añade :func:`summary_lines`."""
-    return [(tr("«{surface}» refitted with the face of its profile: {volume} m³ in {cells} cells "
-                "· {outside} cells back to the terrain outside the limit", surface=item.surface,
-                volume=_number(item.volume_m3), cells=_number(item.cells),
-                outside=_number(item.outside_cells)), False)
+    return [(_refit_line(item), False)
             for item in calculation.outcome.refits]  # type: ignore[union-attr]
+
+
+def _refit_line(item: Any) -> str:
+    """La línea de una superficie ajustada (``design.refit.Refit``) del resumen de un ajuste, con
+    el singular de sus dos recuentos (T61)."""
+    surface, volume = item.surface, _number(item.volume_m3)
+    cells, outside = _number(item.cells), _number(item.outside_cells)
+    if _one(item.cells) and _one(item.outside_cells):
+        return tr("«{surface}» refitted with the face of its profile: {volume} m³ in 1 cell · 1 cell "
+                  "back to the terrain outside the limit", surface=surface, volume=volume)
+    if _one(item.cells):
+        return tr("«{surface}» refitted with the face of its profile: {volume} m³ in 1 cell · "
+                  "{outside} cells back to the terrain outside the limit", surface=surface,
+                  volume=volume, outside=outside)
+    if _one(item.outside_cells):
+        return tr("«{surface}» refitted with the face of its profile: {volume} m³ in {cells} cells "
+                  "· 1 cell back to the terrain outside the limit", surface=surface,
+                  volume=volume, cells=cells)
+    return tr("«{surface}» refitted with the face of its profile: {volume} m³ in {cells} cells · "
+              "{outside} cells back to the terrain outside the limit", surface=surface,
+              volume=volume, cells=cells, outside=outside)
 
 
 def _refit_rows_of(project: Any, version_uid: str, origins: Sequence[Any],
@@ -1065,9 +1116,11 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
         lines.extend(_transition_lines(calculation))
     elif calculation.op_type == design_provenance.EXCAVATION_AREA:
         cells = calculation.outcome.cells  # type: ignore[union-attr]
-        lines.append((tr("Excavation boundary «{name}»: {cells} cells ({area} m²)",
-                         name=calculation.name, cells=_number(cells),
-                         area=_number(_figure(calculation, "des.rcn_area_m2"))), False))
+        area = _number(_figure(calculation, "des.rcn_area_m2"))
+        lines.append((tr("Excavation boundary «{name}»: 1 cell ({area} m²)", name=calculation.name,
+                         area=area) if _one(cells) else
+                      tr("Excavation boundary «{name}»: {cells} cells ({area} m²)",
+                         name=calculation.name, cells=_number(cells), area=area), False))
     elif calculation.op_type == design_provenance.ENVELOPE:
         cells = _figure(calculation, "des.env_cells")
         lines.append((tr("Envelope «{name}»: {cells} cells ({area} m²)", name=calculation.name,
@@ -1110,9 +1163,11 @@ def _bench_lines(report: Any, berms: Any, *, without_berms: bool = True
                          x=_number(None if where is None else where.x, 1),
                          y=_number(None if where is None else where.y, 1)), False))
     if berms.lowest_m is not None and berms.highest_m is not None:
-        lines.append((tr("{count} berms, real elevations {low} to {high} m",
-                         count=_number(berms.count), low=_number(berms.lowest_m, 1),
-                         high=_number(berms.highest_m, 1)), False))
+        low, high = _number(berms.lowest_m, 1), _number(berms.highest_m, 1)
+        lines.append((tr("1 berm, real elevations {low} to {high} m", low=low, high=high)
+                      if _one(berms.count) else
+                      tr("{count} berms, real elevations {low} to {high} m",
+                         count=_number(berms.count), low=low, high=high), False))
     elif without_berms:
         lines.append((tr("No berms: nothing moves"), False))
     return lines
@@ -1132,9 +1187,11 @@ def _fill_only_lines(calculation: Calculation) -> list[tuple[str, bool]]:
                  name=calculation.name, fill=_number(report.fill_m3),
                  cut=_number(outcome.cut_m3, 2),  # type: ignore[union-attr]
                  area=_number(report.moved_area_m2)), False)]
-    if outcome.water_cells:  # type: ignore[union-attr]
-        lines.append((tr("Water sheets as the start surface in {cells} cells",
-                         cells=_number(outcome.water_cells)), False))  # type: ignore[union-attr]
+    water = outcome.water_cells  # type: ignore[union-attr]
+    if water:
+        lines.append((tr("Water sheets as the start surface in 1 cell") if _one(water) else
+                      tr("Water sheets as the start surface in {cells} cells",
+                         cells=_number(water)), False))
     return [*lines, *_bench_lines(report, berms, without_berms=not report.moved_area_m2)]
 
 
@@ -2047,7 +2104,8 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     # es del estado de ahora y no una cifra (sin ``uid``): las registradas no la llevan.
     figures = [CardLine(ROW_HEADING, tr("Figures")), *marks]
     figures += [CardLine(ROW_FIGURE, f"{provenance.badge(figure.kind)} "
-                                     f"{figure.text(language=shown)}", uid=figure.uid)
+                                     f"{design_provenance.figure_text(figure, language=shown)}",
+                         uid=figure.uid)
                 for figure in found.figures] or [CardLine(ROW_NONE, tr("No figures recorded"))]
     name = str(settings.get("name") or found.record.name)
     return ItemLines(f"{_family_label(found.record.name)} · {name}", tuple(lines), tuple(figures))

@@ -515,8 +515,11 @@ class FigureText:
     def of(cls, figure: Any, shown_language: str) -> FigureText:
         """La de ``figure`` (``core.provenance.figures.FigureRecord``) en ``shown_language``:
         lo que escribe ``FigureRecord.text`` («Volumen · fase 2 = 1 563 631 m³»), partido en su
-        nombre y su valor."""
-        text = figure.text(language=shown_language)
+        nombre y su valor; la superficie del ámbito de una cifra de la 014, en ese idioma
+        (``design.provenance.figure_text``; spec 014, T61)."""
+        from ...design.provenance import figure_text  # al usarlo: no al habilitar
+
+        text = figure_text(figure, language=shown_language)
         label, found, value = text.rpartition(" = ")
         if not found:
             label, value = text, ""

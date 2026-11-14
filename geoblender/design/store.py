@@ -186,6 +186,7 @@ from .params import (
 from .params import EDGE_TRANSITION as EDGE_TRANSITION_DEG
 from .preview import Notice, _features, _quarry_warnings
 from .profiles import profile_names
+from .report import moved_cells
 from .sectors import DesignSector, design_sectors, refuse_pending, slope_params, touched
 from .seeds import (
     DomainSet,
@@ -2339,7 +2340,10 @@ def quarry_notices(request: QuarryRequest, masks: access.MaskSet, parts: QuarryP
     que se enseñan: los de sus capas (fondos y corredores sobre el terreno, juntos, como en
     ``parts.joined``, T42; zonas a conservar sin dato, corredores más largos que su eje más su
     ancho; los de la vista previa), las semillas de la 013 de un lado que caen fuera de la
-    coronación y de las zonas a sostener, por grupos (RF-014-03), el desdoblado sobre terreno sin
+    coronación y de las zonas a sostener, por grupos (RF-014-03), cada superficie que no mueve
+    ninguna celda más del espesor mínimo, medida sobre la que se crea —con la regla de orden y
+    «explotación hasta la final»— y nombrándola (``des.quarry_final_no_movement``,
+    ``des.quarry_exploitation_no_movement``; T61, el H3), el desdoblado sobre terreno sin
     explotar, por zonas (RF-014-17; tras el modo, el de lo que queda dentro de las celdas
     tratadas va aparte y no vuelve a ofrecerlo, T57), «explotación hasta la final» (RF-014-18), el
     salto creado de sus superficies (``created``: los avisos de :func:`_created_step_steps`, T56,
@@ -2357,6 +2361,7 @@ def quarry_notices(request: QuarryRequest, masks: access.MaskSet, parts: QuarryP
             continue
         groups = quarry.outside_crown(seeds, parts.area, start, masks, ring_cells)
         found.extend(_seed_notices(side_name, groups, geometry.cell_area))
+    found.extend(_unmoved_notices(request.name, outcome, start))
     unsplit = outcome.unsplit
     for code, zones, area, volume in (
             ("des.quarry_unsplit_zones", unsplit.zones, unsplit.area_ha, unsplit.volume_m3),
@@ -2378,6 +2383,29 @@ def quarry_notices(request: QuarryRequest, masks: access.MaskSet, parts: QuarryP
     if not compared:
         found.append(Notice("des.magnitude_no_reference", {"operation": request.name}))
     return tuple(found)
+
+
+_UNMOVED_CODES = MappingProxyType({Surface.FINAL: "des.quarry_final_no_movement",
+                                   Surface.EXPLOITATION: "des.quarry_exploitation_no_movement"})
+"""El aviso de cada superficie de la cantera que no mueve nada (T61): uno por lado, para nombrarlo
+en los dos idiomas."""
+
+
+def _unmoved_notices(name: str, outcome: quarry.QuarryOutcome, start: np.ndarray
+                     ) -> list[Notice]:
+    """El aviso de cada superficie de la cantera ``name`` (``outcome``, en el orden de los lados)
+    que no mueve ninguna celda más del espesor mínimo de su clasificación frente a la de partida
+    ``start`` (``report.moved_cells``, la máscara del informe de la 013), medida sobre la que se
+    crea: con la regla de orden y, con «explotación hasta la final», la explotación bajada (T61; el
+    H3: el escalonado de un lado decía que no movía nada aunque el modo excavaba 491.006 m³)."""
+    thickness = float(outcome.classes.min_thickness_m)
+    found: list[Notice] = []
+    for side_name, grid in ((Surface.FINAL, outcome.final_grid),
+                            (Surface.EXPLOITATION, outcome.exploitation_grid)):
+        if not moved_cells(start, grid, thickness).any():
+            found.append(Notice(_UNMOVED_CODES[side_name], {"quarry": name,
+                                                            "thickness": thickness}))
+    return found
 
 
 def _seed_notices(surface: Surface, groups: Sequence[quarry.SeedGroup], cell_area: float
@@ -2983,7 +3011,8 @@ def _ordered_refits(parts: Sequence[RefitPart], found: Sequence[refit.Refit], st
     crea nada); la rejilla de cada :class:`~design.refit.Refit` pasa a ser la atada y su volumen y
     sus celdas siguen siendo los de su cara (CE-014-08); la nota ``des.refit_order`` dice la
     cantera, la superficie que cambió la regla y sus celdas (las que tenían la final más de 1 mm
-    por encima, ``OrderedSurfaces.adjusted``; T60). De cada superficie de una cantera sin la otra,
+    por encima, ``OrderedSurfaces.adjusted``; T60), y ninguna nota si no cambió ninguna (T61). De
+    cada superficie de una cantera sin la otra,
     si la otra tal como está (``others``) deja la final más de 1 mm por encima de la explotación,
     el aviso ``des.refit_order_side`` con las celdas y cuánto (m). Devuelve los ajustes y las
     notas y avisos; ninguna entrada se modifica."""
@@ -2998,8 +3027,9 @@ def _ordered_refits(parts: Sequence[RefitPart], found: Sequence[refit.Refit], st
         refits[final_at] = replace(refits[final_at], grid=ordered.final)
         refits[exploitation_at] = replace(refits[exploitation_at], grid=ordered.exploitation)
         changed = exploitation if ordered.order is Order.FINAL_FIRST else final
-        notices.append(Notice(refit.ORDER_CODE, {"quarry": final.quarry, "surface": changed.name,
-                                                 "cells": ordered.adjusted}))
+        if ordered.adjusted:  # T61: sin nota si la regla no cambia ninguna celda más de 1 mm
+            notices.append(Notice(refit.ORDER_CODE, {
+                "quarry": final.quarry, "surface": changed.name, "cells": ordered.adjusted}))
     for at in alone:
         part = parts[at]
         other = others.get(part.other or "")

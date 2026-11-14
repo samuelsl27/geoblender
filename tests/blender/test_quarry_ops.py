@@ -906,9 +906,11 @@ class LimitFromPerimeterTest(unittest.TestCase):
         fake, context, _dialog = self.fake_dialog()
         self.assertEqual(self.cls.invoke(fake, context, None), {"RUNNING_MODAL"})
         listed = [item[0] for item in self.panels.surface_items(None, None)]
-        self.assertIn(self.dataset, listed)
-        self.assertEqual(listed[0], self.dataset)  # el primero de la lista…
-        self.assertEqual(fake.surface, self.ground)  # …pero se propone el terreno
+        # T61 (lo que vio el H3): el recinto es una rejilla de códigos (1 dentro), no de cotas: no
+        # se ofrece como superficie (antes era el primero de la lista).
+        self.assertNotIn(self.dataset, listed)
+        self.assertEqual(listed[0], self.ground)
+        self.assertEqual(fake.surface, self.ground)  # se propone el terreno
         bpy.context.view_layer.objects.active = None
         self.view_panels.on_active_changed()
 
@@ -958,7 +960,7 @@ class LimitFromPerimeterTest(unittest.TestCase):
         self.assertTrue(fake.in_steps)
         self.assertEqual((fake.name, fake.start), ("Cantera", self.ground))  # el terreno (T45)
         listed = [item[0] for item in self.panels.surface_items(None, None)]
-        self.assertEqual(listed[0], self.dataset)  # el recinto va primero, pero no se propone
+        self.assertNotIn(self.dataset, listed)  # el recinto no es una cota (T61)
         given = operator_self(self.quarry_cls, report=lambda kind, text: None, **self.quarry_fields(
             name="Mía", start=self.hollow,
             properties=SimpleNamespace(is_property_set=lambda name: name == "start")))

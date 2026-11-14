@@ -33,6 +33,7 @@ import math
 import unittest
 from collections.abc import Iterator, Mapping
 from dataclasses import astuple
+from types import MappingProxyType
 from typing import Any
 
 from tests.support import design_fixtures as dfx
@@ -1277,6 +1278,44 @@ class QuarryFiguresTest(unittest.TestCase):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):
                     provenance.quarry_figure_scope("Hueco inicial", **bad)
+
+    def test_the_surface_of_the_scope_is_shown_in_the_language_of_the_reader(self) -> None:
+        """RF-014-16 (T61; lo que vio el H3 en la barra N, «cantera, exploitation = …»): la cifra
+        de una superficie se lee con la superficie en el idioma de quien la lee («cantera,
+        explotación» en español), sin cambiar la clave ni el valor guardados; una de otra spec, la
+        de un ajuste (su ámbito lleva el nombre del dato) y una sin superficie, como
+        ``FigureRecord.text``. Otro idioma es un error del programa."""
+
+        def record(key: str, scope: dict[str, Any]) -> Any:
+            return figures_mod.FigureRecord(
+                uid="f", key=key, label="Cota mínima", value=188.5, unit="m",
+                kind=figures_mod.ParamKind.CALCULADO, operation_uid="o", parameter_uid=None,
+                parameter_rev=None, scope=MappingProxyType(scope),
+                scope_key=figures_mod.scope_key(scope), created_at="2026-11-14T10:00:00Z")
+
+        for surface, es, en in (("exploitation", "explotación", "exploitation"),
+                                 ("final", "final", "final")):
+            scope = provenance.quarry_figure_scope("Cantera", surface=surface, sector="sector_1")
+            figure = record("des.quarry_min_m", scope)
+            with self.subTest(surface=surface):
+                self.assertEqual(provenance.figure_text(figure),
+                                 f"Cota mínima · cantera, {es}, sector_1 = 188,5 m")
+                self.assertIn(f"· cantera, {en}, sector_1 = 188.5 m",
+                              provenance.figure_text(figure, language="en"))
+                self.assertEqual(dict(figure.scope), scope)  # lo guardado no cambia
+        self.assertIn("cantera, exploitation", record(
+            "des.quarry_max_m", provenance.quarry_figure_scope("Cantera", surface="exploitation")
+        ).text())
+        for figure in (record("des.refit_m3", provenance.refit_figure_scope("Ajuste",
+                                                                            "des_exp_cantera")),
+                       record("res.sellable_t", {"surface": "exploitation"}),
+                       record("des.exp_cut_m3", provenance.quarry_figure_scope("Cantera"))):
+            with self.subTest(key=figure.key):
+                for language in ("es", "en"):
+                    self.assertEqual(provenance.figure_text(figure, language=language),
+                                     figure.text(language=language))
+        with self.assertRaises(ValueError):
+            provenance.figure_text(record("des.quarry_min_m", {}), language="fr")
 
 
 if __name__ == "__main__":

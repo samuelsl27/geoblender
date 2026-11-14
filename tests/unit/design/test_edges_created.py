@@ -446,5 +446,64 @@ class LimitsTest(unittest.TestCase):
             self.assertEqual(found.notices, ())
 
 
+# --- Lo que enseña el resumen (T61; el H3) ---------------------------------------------------------
+
+Notice = import_geoblender("design.preview").Notice
+
+
+def warned(surface: str, first: int, count: int) -> list[Any]:
+    """El aviso ``des.edge_surface_step`` de ``surface`` y sus ``count`` tramos, numerados desde
+    ``first`` (los valores, de mentira: solo cuenta lo que se enseña)."""
+    found = [Notice("des.edge_surface_step", {"surface": surface, "stretches": count})]
+    found += [Notice("des.edge_stretch", {"surface": surface, "stretch": number, "pairs": 1})
+              for number in range(first, first + count)]
+    return found
+
+
+class SummaryNoticesTest(unittest.TestCase):
+    """RF-014-21 (T61; lo que vio el H3: con 101, 138 y 204 tramos, «Crear» quedaba fuera de la
+    ventana): ``edges.summary_notices`` deja los :data:`SUMMARY_STRETCHES` (10) primeros tramos de
+    cada aviso del salto creado y una nota con los que faltan; lo demás, tal cual."""
+
+    def test_ten_stretches_of_each_warning_and_how_many_are_left(self) -> None:
+        """Dos superficies con 17 y 12 tramos (numerados seguidos) entre otros avisos: de cada una,
+        su aviso, sus 10 primeros tramos y «… y 7 tramos más (en el informe)» / «… y 2 …»; la nota
+        de antes y la de después, en su sitio."""
+        self.assertEqual(edges.SUMMARY_STRETCHES, 10)
+        before = Notice("des.quarry_unsplit_zone", {"zone": 1})
+        after = Notice("des.magnitude_no_reference", {"operation": "Corta"})
+        first, second = warned("des_fin_corta", 1, 17), warned("des_exp_corta", 18, 12)
+        found = edges.summary_notices([before, *first, *second, after])
+        self.assertEqual(found, (
+            before, *first[:11], Notice("des.edge_more_stretches", {"stretches": 7}),
+            *second[:11], Notice("des.edge_more_stretches", {"stretches": 2}), after))
+        self.assertEqual(found[12].text(), "… y 7 tramos más (en el informe).")
+        self.assertEqual(found[12].text("en"), "… and 7 more stretches (in the report).")
+
+    def test_the_limit_itself_one_more_and_a_refit(self) -> None:
+        """Con 10 tramos, todos y ninguna nota; con 11, la nota en singular («… y 1 tramo más»);
+        un ajuste (sin informe) lo dice con la suya; con ``limit`` 0, solo el aviso y la nota; un
+        tramo suelto (sin su aviso delante) no se toca, y un límite negativo es un error del
+        programa."""
+        ten = warned("des_fin_corta", 1, 10)
+        self.assertEqual(edges.summary_notices(ten), tuple(ten))
+        eleven = warned("des_fin_corta", 1, 11)
+        found = edges.summary_notices(eleven)
+        self.assertEqual(found[-1], Notice("des.edge_more_stretches", {"stretches": 1}))
+        self.assertEqual(found[-1].text(), "… y 1 tramo más (en el informe).")
+        self.assertEqual(len(found), 12)
+        refit = edges.summary_notices(eleven, reported=False)
+        self.assertEqual(refit[-1], Notice("des.edge_more_stretches_refit", {"stretches": 1}))
+        self.assertEqual(edges.summary_notices(eleven, limit=0),
+                         (eleven[0], Notice("des.edge_more_stretches", {"stretches": 11})))
+        created_step = [Notice("des.edge_created_step", {"stretches": 12}),
+                        *warned("x", 1, 12)[1:]]
+        self.assertEqual(len(edges.summary_notices(created_step)), 12)
+        loose = warned("des_fin_corta", 1, 12)[1:]
+        self.assertEqual(edges.summary_notices(loose), tuple(loose))
+        with self.assertRaises(ValueError):
+            edges.summary_notices(ten, limit=-1)
+
+
 if __name__ == "__main__":
     unittest.main()

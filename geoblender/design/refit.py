@@ -50,7 +50,7 @@ que la explotación ajustada. Si un ajuste lleva las dos superficies de una mism
 (``design.quarry.order_surfaces``, con su ajuste «order») y ``check_order`` antes de ofrecer
 «Crear»: la rejilla de cada :class:`Refit` es entonces la atada, y su volumen y sus celdas siguen
 siendo los de su cara (CE-014-08); la nota :data:`ORDER_CODE` dice las celdas que cambió la regla
-más de 1 mm (T60).
+más de 1 mm (T60), y no sale si no cambió ninguna (T61).
 Con una sola de las dos, no se ata, y el aviso :data:`ORDER_SIDE_CODE` dice si queda del lado
 equivocado de la otra.
 
@@ -210,7 +210,8 @@ ANGLE_TOLERANCE_DEG = 1e-9
 escrito de otra forma (60 y 60,0), no otro ángulo."""
 ORDER_CODE = "des.refit_order"
 """La nota de la regla de orden de una cantera aplicada a sus dos superficies ajustadas (T53;
-RF-014-14): la cantera, la superficie que cambió y sus celdas, las que cambió más de 1 mm (T60)."""
+RF-014-14): la cantera, la superficie que cambió y sus celdas, las que cambió más de 1 mm (T60);
+sin ninguna, no hay nota (T61)."""
 ORDER_SIDE_CODE = "des.refit_order_side"
 """El aviso de una superficie de una cantera ajustada sin la otra que deja la final por encima de
 la explotación (T53; RF-014-14): la superficie, la cantera, la otra, las celdas y cuánto."""

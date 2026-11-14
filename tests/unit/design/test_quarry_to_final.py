@@ -762,6 +762,45 @@ class QuarryToFinalTest(unittest.TestCase):
         self.assertIn("Use «", messages.render(found[0].code, **found[0].values))
         self.assertNotIn("Use «", messages.render(found[2].code, **found[2].values))
 
+    def test_a_surface_that_moves_nothing_is_measured_on_what_is_created(self) -> None:
+        """RF-014-12, RF-014-18 (T61; lo que vio el H3 en E4, «Hasta la final»): el resumen de la
+        cantera dice que una superficie no mueve nada midiéndolo sobre la que **se crea** y
+        nombrándola. Con la explotación en el terreno (su lado no excava), lo dice de la de
+        explotación; con «explotación hasta la final» en las zonas avisadas, la misma explotación
+        baja (en el H3, 491.006 m³) y ya no lo dice; con las dos en el terreno, una por superficie,
+        la final primero. Los avisos van tras los de las semillas y antes del desdoblado."""
+        parts = SimpleNamespace(start=SimpleNamespace(values=self.case["terrain"]), floors=None,
+                                conserve=(), corridors=None, seeds={})
+
+        def said(outcome: Any) -> list[Any]:
+            return list(store.quarry_notices(request(), SimpleNamespace(grid=GRID), parts, 3,
+                                             outcome, compared=True))
+
+        def notices(case: dict[str, Any], **changes: Any) -> list[Any]:
+            return said(run(case, **changes)[1])
+
+        still = dict(self.case, exploitation=self.case["terrain"].copy())
+        found = notices(still)
+        unmoved = {"quarry": "Cantera a mano", "thickness": MIN_THICKNESS_M}
+        self.assertEqual((found[0].code, dict(found[0].values)),
+                         ("des.quarry_exploitation_no_movement", unmoved))
+        self.assertEqual(found[0].severity, "warning")
+        self.assertEqual([notice.code for notice in found[1:]],
+                         ["des.quarry_unsplit_zones", "des.quarry_unsplit_zone"])
+        self.assertTrue(found[0].text().startswith(
+            "La superficie de explotación de «Cantera a mano» no mueve ninguna celda más del "
+            "espesor mínimo de 0,020 m: es la superficie de partida."), found[0].text())
+        lowered = notices(still, request=request(to_final="warned"))
+        self.assertIn("des.quarry_to_final", [notice.code for notice in lowered])
+        self.assertFalse([notice for notice in lowered if notice.code.endswith("_no_movement")])
+        flat = dict(self.case, final=self.case["terrain"].copy(),
+                    exploitation=self.case["terrain"].copy())
+        self.assertEqual([(notice.code, dict(notice.values)) for notice in notices(flat)],
+                         [("des.quarry_final_no_movement", unmoved),
+                          ("des.quarry_exploitation_no_movement", unmoved)])
+        moving = said(self.none)
+        self.assertFalse([notice for notice in moving if notice.code.endswith("_no_movement")])
+
     def test_the_anchor_of_the_exploitation_side(self) -> None:
         """Las cotas de ancla son las del lado de explotación: con una rejilla de anclas a 124 m,
         ``M`` baja a 194 m y ``W``, de 194,25 a 194 m (10.000 + 625 m³); «al fondo de cada muro»

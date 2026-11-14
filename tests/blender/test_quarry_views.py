@@ -627,7 +627,20 @@ class QuarryViewsTest(unittest.TestCase):
                     "des.to_final_m3", "des.unsplit_area_ha"):
             self.assertIn(key, keys)
         shown = [row.name for row in self.view.item if row.kind == "figure"]
-        self.assertEqual(shown, [f"[CAL] {figure.text(language='es')}" for figure in stored])
+        # T61 (lo que vio el H3): la superficie del ámbito, en español («corta, explotación»), y
+        # lo guardado igual («exploitation»).
+        self.assertEqual(shown, [f"[CAL] {self.dprov.figure_text(figure, language='es')}"
+                                 for figure in stored])
+        sided = [text for text in shown if "Cota mínima de la superficie" in text]
+        self.assertTrue(sided, shown)
+        self.assertTrue(any(", explotación = " in text for text in sided), sided)
+        self.assertTrue(any(", final = " in text for text in sided), sided)
+        self.assertFalse([text for text in shown if "exploitation" in text], shown)
+        self.assertIn("exploitation", {figure.scope.get("surface") for figure in stored})
+        obj = self.loaded("exp")  # las cifras de su objeto, igual (Object.geoblender.figures)
+        labels = [item.label for item in obj.geoblender.figures]
+        self.assertTrue(any(label.endswith(", explotación") for label in labels), labels)
+        self.assertFalse([label for label in labels if "exploitation" in label], labels)
         joined = " ".join(draw(panel, bpy.context).texts())
         self.assertIn("Superficie de explotación · Corta", joined)
 
@@ -662,12 +675,30 @@ class QuarryViewsTest(unittest.TestCase):
     def test_f_no_dialog_proposes_a_quarry_grid_as_the_ground(self) -> None:
         """T45 de la 013 (plan 014 §5.3.3): con las rejillas de la cantera en la versión activa
         (las primeras de la lista de superficies), el diálogo de «Límite desde el perímetro…»
-        propone como superficie de partida la ladera, no una rejilla de la cantera."""
+        propone como superficie de partida la ladera, no una rejilla de la cantera. T61 (lo que
+        vio el H3): las rejillas de **códigos** (la clasificación, el recinto excavable y la
+        rejilla de clases de las máscaras) no son cotas: no están en la lista de superficies (la
+        de partida, la de las semillas…) ni en la de anclas, y la primera ya no es la
+        clasificación."""
         self.panels.refresh_choices(self.project)
         listed = [item[0] for item in self.panels.surface_items(None, None)]
+        anchors = [item[0] for item in self.panels.anchor_items(None, None)]
         for family in FAMILIES:
-            self.assertIn(self.names[family], listed)
+            with self.subTest(familia=family):
+                if family == "cls":
+                    self.assertNotIn(self.names[family], listed)
+                    self.assertNotIn(self.names[family], anchors)
+                else:
+                    self.assertIn(self.names[family], listed)
+        families = self.dprov.FAMILIES_BY_CODE  # (los prefijos de las rejillas de códigos)
+        codes = [name for name in (*listed, *anchors)
+                 if name.startswith((families["cls"].prefix, families["rcn"].prefix,
+                                     "gis_msk"))]
+        self.assertEqual(codes, [])
+        self.assertTrue(self.rows("SELECT uid FROM gb_dataset WHERE name = 'gis_msk'"))
+        self.assertIsNone(self.panels.surface_choice(self.names["cls"]))
         self.assertNotEqual(listed[0], self.ground)  # una de la cantera va antes
+        self.assertFalse(listed[0].startswith(families["cls"].prefix))
         for obj in bpy.data.objects:
             obj.select_set(False)
         cls = self.commands.registered_class(LIMIT)
@@ -679,6 +710,88 @@ class QuarryViewsTest(unittest.TestCase):
                              properties=SimpleNamespace(is_property_set=lambda name: False))
         self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
         self.assertEqual(fake.surface, self.ground)
+
+    def test_g_load_into_the_view_names_each_grid_with_its_quarry(self) -> None:
+        """RF-014-15, RF-014-16 (T61; lo que vio el H3 en «Cargar en la vista…», en una captura
+        reducida: «Superficie final [VIGENTE]»; recortada, decía «Superficie final cantera
+        [VIGENTE]»): el nombre de cada rejilla de una cantera en la lista de «Cargar en la vista…»
+        lleva el nombre de la cantera, también la superficie final, así que dos canteras se
+        distinguen."""
+        names = {}
+        for family in FAMILIES:
+            (row,) = self.rows("SELECT name FROM gb_dataset WHERE uid = ?", self.uid(family))
+            record = SimpleNamespace(name=row[0], status="current")
+            other = SimpleNamespace(name=f"{row[0]}_b", status="current")
+            loader = self.views.loader_for(record.name)
+            names[family] = self.views.view_name(loader, record, stale=False)
+            with self.subTest(familia=family):
+                self.assertEqual(names[family], f"{LABELS_ES[family]} corta [VIGENTE]")
+                self.assertNotEqual(self.views.view_name(loader, other, stale=False),
+                                    names[family])
+        self.assertEqual(names["fin"], "Superficie final corta [VIGENTE]")
+
+    def test_h_a_count_of_one_in_the_summary_and_the_card_is_singular(self) -> None:
+        """T61 (lo que vio el H3, como los avisos de la T60): las líneas del resumen y de la barra
+        N de la 014 con un recuento de 1 van en singular, en los dos idiomas: la regla de orden,
+        la transición (sus celdas y sus parejas), el ajuste (sus celdas y las que vuelven al
+        terreno), las láminas de agua, el recinto y las bermas; con 2, en plural."""
+        quarry = SimpleNamespace(
+            adjusted=1, order="final_first", to_final=None,
+            classes=SimpleNamespace(min_thickness_m=0.02, total=SimpleNamespace(
+                levels=lambda surface: None, exp_cut_m3=0.0, exp_cut_area_ha=0.0,
+                unsplit_m3=0.0, fill_m3=0.0, area_ha=lambda kind: 0.0)))
+        transition = SimpleNamespace(
+            settings={"surface": "des_fin_corta"},
+            outcome=SimpleNamespace(
+                transition=SimpleNamespace(angle_deg=35.0, volume_m3=3.0, cells=1, area_m2=4.0),
+                report=SimpleNamespace(pairs=1, within_pct=100.0, threshold_m=1.0,
+                                       maximum_m=0.5)))
+        refit = SimpleNamespace(outcome=SimpleNamespace(refits=(
+            SimpleNamespace(surface="des_fin_corta", volume_m3=2.0, cells=1, outside_cells=1),
+            SimpleNamespace(surface="des_exp_corta", volume_m3=2.0, cells=2, outside_cells=1),
+            SimpleNamespace(surface="des_exp_corta", volume_m3=2.0, cells=1, outside_cells=0))))
+        berms = SimpleNamespace(count=1, lowest_m=125.0, highest_m=125.0)
+        lines = [text for text, _alert in (
+            *self.panels._quarry_lines(quarry)[:1], *self.panels._transition_lines(transition),
+            *self.panels._refit_lines(refit),
+            *self.panels._bench_lines(SimpleNamespace(slope_max_deg=None, slope_p99_deg=None),
+                                      berms))]
+        self.assertEqual(lines, [
+            "Orden del diseño: Primero la superficie final · la regla de orden cambió 1 celda",
+            "Transición de «des_fin_corta» a 35°: 3 m³ en 1 celda (4 m²)",
+            "Salto creado en el borde: 1 pareja, el 100,00 % por debajo de 1 m; el mayor, 0,50 m",
+            "«des_fin_corta» ajustada con la cara de su perfil: 2 m³ en 1 celda · 1 celda vuelve "
+            "al terreno fuera del límite",
+            "«des_exp_corta» ajustada con la cara de su perfil: 2 m³ en 2 celdas · 1 celda vuelve "
+            "al terreno fuera del límite",
+            "«des_exp_corta» ajustada con la cara de su perfil: 2 m³ en 1 celda · 0 celdas "
+            "vuelven al terreno fuera del límite",
+            "1 berma, cotas reales 125,0 a 125,0 m"])
+        water = SimpleNamespace(outcome=SimpleNamespace(
+            design=SimpleNamespace(report=SimpleNamespace(fill_m3=1.0, moved_area_m2=4.0,
+                                                          slope_max_deg=None,
+                                                          slope_p99_deg=None),
+                                   berms=SimpleNamespace(count=0, lowest_m=None, highest_m=None)),
+            cut_m3=0.0, water_cells=1), name="Balsa")
+        self.assertIn("Láminas de agua como terreno de partida en 1 celda",
+                      [text for text, _alert in self.panels._fill_only_lines(water)])
+        boundary = SimpleNamespace(op_type=self.dprov.EXCAVATION_AREA, name="Recinto",
+                                   outcome=SimpleNamespace(cells=1), notices=(),
+                                   figures=(SimpleNamespace(key="des.rcn_area_m2", value=4.0),))
+        self.assertEqual(self.panels.summary_lines(boundary)[0][0],
+                         "Recinto excavable «Recinto»: 1 celda (4 m²)")
+        self.i18n.set_language("en")
+        try:
+            quarry.adjusted = 2
+            self.assertTrue(self.panels._quarry_lines(quarry)[0][0].endswith(
+                "the order rule changed 2 cells"))
+            quarry.adjusted = 1
+            self.assertTrue(self.panels._quarry_lines(quarry)[0][0].endswith(
+                "the order rule changed 1 cell"))
+            self.assertTrue(self.panels._refit_lines(refit)[0][0].endswith(
+                "in 1 cell · 1 cell back to the terrain outside the limit"))
+        finally:
+            self.i18n.set_language("es")
 
     def test_z_disable_removes_the_loaders_of_the_quarry(self) -> None:
         """Principio 8: desactivar Geoblender quita los cargadores de las rejillas de la cantera

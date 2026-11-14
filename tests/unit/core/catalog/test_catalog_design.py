@@ -130,6 +130,20 @@ class DesignCatalogTest(unittest.TestCase):
                 self.assertEqual((command.home, command.action, command.background,
                                   command.frequency), (home, action, background, frequency))
 
+    def test_the_five_commands_open_a_dialog_and_say_so(self) -> None:
+        """RF-014-19, RF-014-29 (T61; lo que vio el H3): las cinco órdenes de la ``014`` abren un
+        diálogo, así que su nombre acaba en «…» en los dos idiomas, también «Transiciones con el
+        terreno no afectado…» (Restauración ▸ Superficie final), que no lo llevaba."""
+        for key in MENU_014:
+            with self.subTest(key=key):
+                command = self.cat.commands[key]
+                self.assertTrue(command.label.endswith("…"), command.label)
+                self.assertTrue(command.label_es.endswith("…"), command.label_es)
+        transitions = self.cat.commands["geoblender.des_create_transitions"]
+        self.assertEqual((transitions.label, transitions.label_es),
+                         ("Transitions with the untouched terrain…",
+                          "Transiciones con el terreno no afectado…"))
+
 
 if __name__ == "__main__":
     unittest.main()

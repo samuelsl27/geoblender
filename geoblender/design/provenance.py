@@ -88,7 +88,7 @@ from __future__ import annotations
 import math
 import numbers
 from collections.abc import Collection, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
@@ -105,7 +105,7 @@ from ..core.provenance.contract import (
     SettingDef,
     Tolerance,
 )
-from ..core.provenance.figures import FigureSpec
+from ..core.provenance.figures import FigureRecord, FigureSpec
 from ..core.provenance.operations import Use
 from ..core.versions.model import version_locator
 from ..gis.content import GEOTIFF
@@ -229,6 +229,7 @@ __all__ = [
     "STEPPED",
     "SURFACE_ROLE",
     "SURFACE_SCOPE_KEY",
+    "SURFACE_SCOPE_NAMES",
     "TO_FINAL_LAYER_ROLE",
     "TRANSITIONS_COMMAND",
     "TRANSITION_FIGURES",
@@ -258,6 +259,7 @@ __all__ = [
     "excavation_area_settings",
     "excavation_area_start",
     "figure_scope",
+    "figure_text",
     "fill_only_inputs",
     "fill_only_request",
     "fill_only_settings",
@@ -851,6 +853,35 @@ def quarry_figure_scope(name: str, *, surface: Surface | str | None = None,
             raise ValueError(f"el sector de una cifra es su código, no {sector!r}")
         scope[SECTOR_SCOPE_KEY] = sector
     return scope
+
+
+SURFACE_SCOPE_NAMES: Mapping[str, Mapping[Surface, str]] = MappingProxyType({
+    "es": MappingProxyType({Surface.FINAL: "final", Surface.EXPLOITATION: "explotación"}),
+    "en": MappingProxyType({Surface.FINAL: "final", Surface.EXPLOITATION: "exploitation"})})
+"""Cómo se ve la superficie del ámbito de una cifra de la 014 en cada idioma (T61, el H3: la barra N
+decía «cantera, exploitation» en español). Lo que se guarda es el valor de :class:`Surface`."""
+
+
+def figure_text(figure: FigureRecord, *, language: str = "es") -> str:
+    """La cifra registrada ``figure`` como la lee una persona en ``language`` (la de
+    ``FigureRecord.text``), con la superficie de su ámbito (:data:`SURFACE_SCOPE_KEY`, la de una
+    cifra de la 014: ``final`` o ``exploitation``) en ese idioma (:data:`SURFACE_SCOPE_NAMES`):
+    «Cota mínima de la superficie de la cantera · cantera, explotación = 188,9 m» (T61). La clave
+    y el valor guardados no cambian; una cifra de otra spec, o cuyo ámbito no lleva una de las dos
+    superficies (la de un ajuste lleva el nombre del dato), sale como ``FigureRecord.text``.
+    ``ValueError`` con otro idioma."""
+    if language not in SURFACE_SCOPE_NAMES:
+        raise ValueError(f"el idioma «{language}» no es de Geoblender: "
+                         f"{', '.join(SURFACE_SCOPE_NAMES)}")
+    value = figure.scope.get(SURFACE_SCOPE_KEY)
+    if not figure.key.startswith(f"{MODULE}.") or value not in _SURFACE_VALUES:
+        return figure.text(language=language)
+    scope = {key: (SURFACE_SCOPE_NAMES[language][Surface(item)] if key == SURFACE_SCOPE_KEY
+                   else item) for key, item in figure.scope.items()}
+    return replace(figure, scope=MappingProxyType(scope)).text(language=language)
+
+
+_SURFACE_VALUES = frozenset(item.value for item in Surface)
 
 
 def refit_figure_scope(name: str, surface: str) -> dict[str, str]:

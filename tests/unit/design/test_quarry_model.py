@@ -61,6 +61,8 @@ QUARRY_CODES: dict[str, str] = {
     "des.quarry_seed_group": "note",           # RF-014-03
     "des.quarry_layer_field": "error",         # plan §5.2.1
     "des.quarry_order_broken": "error",        # RF-014-14
+    "des.quarry_final_no_movement": "warning",  # RF-014-12 (T61: la que se crea, nombrada)
+    "des.quarry_exploitation_no_movement": "warning",  # RF-014-12, RF-014-18 (T61)
     "des.quarry_unsplit_zones": "warning",     # RF-014-17
     "des.quarry_unsplit_zone": "note",         # RF-014-17
     "des.quarry_unsplit_remaining": "warning",  # RF-014-17, RF-014-18 (T57: lo que queda)
@@ -81,6 +83,8 @@ QUARRY_CODES: dict[str, str] = {
     "des.edge_created_step": "warning",        # RF-014-21
     "des.edge_surface_step": "warning",        # RF-014-20, RF-014-21 (T56: el de cada diseño)
     "des.edge_stretch": "note",                # RF-014-21
+    "des.edge_more_stretches": "note",         # RF-014-21 (T61: los que no enseña el resumen)
+    "des.edge_more_stretches_refit": "note",   # RF-014-21 (T61: un ajuste, sin informe)
     "des.edge_not_design_surface": "error",    # RF-014-19
     "des.fill_only_cuts": "error",             # RF-014-25
     "des.fill_only_untouchable": "error",      # RF-014-25
@@ -482,6 +486,73 @@ class QuarryTextsTest(unittest.TestCase):
                                      "m); corríjalo en QGIS (no se elige ninguna cota por él); "
                                      "no se calcula nada.")
         self.assertIn("Layer «c», corridor 2: «cota» = 5000 m is outside", error.text_in("en"))
+
+    def test_a_surface_that_moves_nothing_is_named(self) -> None:
+        """RF-014-12, RF-014-18 (T61; lo que vio el H3 en E4): la superficie de la cantera que no
+        mueve ninguna celda más del espesor mínimo se nombra, en los dos idiomas (el aviso de la
+        013, ``des.no_movement``, decía «El diseño…» sin decir cuál de las dos)."""
+        for code, es, en in (
+                ("des.quarry_final_no_movement", "La superficie final de «Corta» no mueve",
+                 "The final surface of «Corta» does not move"),
+                ("des.quarry_exploitation_no_movement",
+                 "La superficie de explotación de «Corta» no mueve",
+                 "The exploitation surface of «Corta» does not move")):
+            with self.subTest(code=code):
+                text = messages.render(code, quarry="Corta", thickness=0.02)
+                self.assertTrue(text.startswith(es), text)
+                self.assertIn("más del espesor mínimo de 0,02 m: es la superficie de partida.",
+                              text)
+                english = messages.render(code, language="en", quarry="Corta", thickness=0.02)
+                self.assertTrue(english.startswith(en), english)
+                self.assertEqual(set(english) & SPANISH_LETTERS, set())
+
+    def test_the_stretches_the_summary_leaves_out(self) -> None:
+        """RF-014-21 (T61; el H3: 204 tramos dejaban «Crear» fuera de la ventana): la nota de los
+        tramos que el resumen no enseña dice cuántos y dónde están, con su singular, en los dos
+        idiomas; la de un ajuste dice que no tiene informe."""
+        cases = (("des.edge_more_stretches", 2, "… y 2 tramos más (en el informe).",
+                  "… and 2 more stretches (in the report)."),
+                 ("des.edge_more_stretches", 1, "… y 1 tramo más (en el informe).",
+                  "… and 1 more stretch (in the report)."),
+                 ("des.edge_more_stretches_refit", 194,
+                  "… y 194 tramos más (un ajuste no guarda informe).",
+                  "… and 194 more stretches (a refit keeps no report)."),
+                 ("des.edge_more_stretches_refit", 1,
+                  "… y 1 tramo más (un ajuste no guarda informe).",
+                  "… and 1 more stretch (a refit keeps no report)."))
+        for code, count, es, en in cases:
+            with self.subTest(code=code, count=count):
+                self.assertEqual(messages.render(code, stretches=count), es)
+                self.assertEqual(messages.render(code, language="en", stretches=count), en)
+
+    def test_no_text_ends_with_an_ellipsis_and_a_full_stop(self) -> None:
+        """RF-014-26 (T61; lo que vio el H3 en la ficha): un texto de la 014 que acaba en el nombre
+        de una orden con «…» no lleva además el punto («límite nuevo….»); el aviso del límite
+        vigente acaba en «Ajustar el diseño a un límite nuevo…»."""
+        for code in QUARRY_CODES:
+            message = messages.MESSAGES[code]
+            for text in (message.msgid, message.es, message.one_msgid, message.one_es):
+                with self.subTest(code=code, text=text[:40]):
+                    self.assertNotIn("….", text)
+        outside = messages.MESSAGES["des.refit_outside"]
+        self.assertTrue(outside.es.endswith("Diseño ▸ Cantera ▸ Ajustar el diseño a un límite "
+                                            "nuevo…"), outside.es)
+        self.assertTrue(outside.msgid.endswith("Design ▸ Quarry ▸ Refit the design to a new "
+                                               "limit…"), outside.msgid)
+
+    def test_the_created_step_names_the_transitions_as_in_their_menu(self) -> None:
+        """RF-014-21 (T61, (g)): los avisos del salto creado mandan a «Transiciones con el terreno
+        no afectado…», con el «…» de su menú (abre un diálogo), en los dos idiomas y en singular."""
+        for code in ("des.edge_created_step", "des.edge_surface_step"):
+            message = messages.MESSAGES[code]
+            for text in (message.es, message.one_es):
+                with self.subTest(code=code):
+                    self.assertTrue(text.endswith("Use «Transiciones con el terreno no "
+                                                  "afectado…»."), text)
+            for text in (message.msgid, message.one_msgid):
+                with self.subTest(code=code):
+                    self.assertTrue(text.endswith("Use «Transitions with the untouched "
+                                                  "terrain…»."), text)
 
 
 GRADE = re.compile(r"(?<!up)(?<!down)grade", re.IGNORECASE)

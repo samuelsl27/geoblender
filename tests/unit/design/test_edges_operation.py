@@ -60,6 +60,7 @@ reproduce_mod = import_geoblender("core.versions.reproduce")
 figures_mod = import_geoblender("core.provenance.figures")
 access = import_geoblender("gis.masks.access")
 geotiff_reader = import_geoblender("gis.geotiff.reader")
+notice_of = import_geoblender("design.preview").Notice
 
 THICKNESS_M = 0.02
 """El espesor mínimo de las pruebas sin proyecto (el de la 012 es un dato de entrada)."""
@@ -248,11 +249,11 @@ class EdgeTransitionDomainTest(unittest.TestCase):
             f"«{name}»: el 60,8 % de las 520 parejas de su borde tiene un salto creado mayor que "
             "1,0 m (al menos el 99,0 % debería quedar por debajo); el mayor, 4,0 m, en x = "))
         self.assertTrue(warning.text("es").endswith(
-            ", en 2 tramos. Use «Transiciones con el terreno no afectado»."))
+            ", en 2 tramos. Use «Transiciones con el terreno no afectado…»."))  # T61: su menú
         self.assertTrue(warning.text("en").startswith(
             f"«{name}»: 60.8 % of the 520 pairs of its edge have a created step greater than "
             "1.0 m (at least 99.0 % should be within it); the largest, 4.0 m, at x = "))
-        self.assertIn("in 2 stretches. Use «Transitions with the untouched terrain».",
+        self.assertIn("in 2 stretches. Use «Transitions with the untouched terrain…».",
                       warning.text("en"))
         one = {**warning.values, "stretches": 1}
         self.assertIn(", en 1 tramo. Use", messages.render(warning.code, **one))
@@ -603,7 +604,9 @@ class EdgeTransitionOperationTest(qfx.QuarryProjectCase):
         aquí la final llega a 1,20 m pero queda dentro más del 99 % de sus parejas y no avisa; la
         de explotación, sí (el 3,93 % de sus 1.324 parejas, hasta 2,49 m, en 17 tramos), en el
         resumen, delante de la nota de lo anterior con que se compara, y en ``des_qrp_``, con su
-        superficie; la cantera anota el salto y el porcentaje admitidos entre sus parámetros."""
+        superficie; la cantera anota el salto y el porcentaje admitidos entre sus parámetros. El
+        resumen enseña sus 10 primeros tramos y «… y 7 tramos más (en el informe)», y el informe
+        guarda los 17 (T61, lo que vio el H3)."""
         start = qfx.terrain(self.grid)
         allowed = self.masks_v1.cut_allowed() | self.masks_v1.fill_allowed()
         expected, reports = [], []
@@ -618,13 +621,17 @@ class EdgeTransitionOperationTest(qfx.QuarryProjectCase):
             expected += edges.edge_notices(report, surface=name)
         self.assertGreater(reports[0].maximum_m, THRESHOLD_M)
         self.assertEqual([report.warned for report in reports], [False, True])
-        codes = ("des.edge_surface_step", "des.edge_stretch")
+        codes = ("des.edge_surface_step", "des.edge_stretch", "des.edge_more_stretches")
         notices = list(self.quarry.notices)
         found = [notice for notice in notices if notice.code in codes]
-        self.assertEqual(found, expected)
-        if found:
-            after = notices.index(found[-1]) + 1
-            self.assertEqual(notices[after].code, "des.magnitude_no_reference")
+        # T61 (el H3): el resumen enseña los 10 primeros tramos y cuántos faltan; el informe
+        # (``des_qrp_``, abajo), los 17.
+        self.assertEqual(len(reports[1].stretches), 17)
+        self.assertEqual(found, [*expected[:11],
+                                 notice_of("des.edge_more_stretches", {"stretches": 7})])
+        self.assertEqual(found[-1].text(), "… y 7 tramos más (en el informe).")
+        after = notices.index(found[-1]) + 1
+        self.assertEqual(notices[after].code, "des.magnitude_no_reference")
         table = provenance.dataset_name("qrp", QUARRY_NAME)
         rows = [json.loads(note) for quantity, note in self.query_of(
             f'SELECT quantity, note FROM "{table}_v01" ORDER BY fid')

@@ -36,7 +36,8 @@ T26, T27, T40 y T56; HU-014-5; RF-014-19 a RF-014-21; plan 014 A10, A11, §5.3.1
   solo lo mide la transición: el resumen de la cantera, de «solo relleno» y del ajuste lo mide en
   cada superficie que hace, en el dominio de la transición (T56, hallazgo F-18;
   ``design.store``), con su aviso ``des.edge_surface_step``, que nombra la superficie
-  (:func:`edge_notices`).
+  (:func:`edge_notices`). El resumen de un cálculo enseña los :data:`SUMMARY_STRETCHES` primeros
+  tramos de cada aviso y cuántos faltan (:func:`summary_notices`, T61); el informe, todos.
 - :func:`edge_transition_steps` (T28; RF-014-19 a RF-014-21): lo que calcula la operación
   ``des.edge_transition`` («Transiciones con el terreno no afectado») con una superficie de diseño:
   su dominio (:func:`transition_domain`: las celdas que **mueve el diseño** donde las máscaras
@@ -53,7 +54,7 @@ Python puro con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no escribe n
 from __future__ import annotations
 
 import math
-from collections.abc import Generator, Iterator
+from collections.abc import Generator, Iterable, Iterator
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -85,6 +86,7 @@ from .seeds import pace_progress
 __all__ = [
     "EDGE_PHASE",
     "PAIR_CELLS_PER_UNIT",
+    "SUMMARY_STRETCHES",
     "TRANSITION_NAME",
     "EdgeReport",
     "EdgeStretch",
@@ -94,6 +96,7 @@ __all__ = [
     "edge_notices",
     "edge_transition_figures",
     "edge_transition_steps",
+    "summary_notices",
     "transition_domain",
     "transition_steps",
 ]
@@ -547,6 +550,45 @@ def edge_notices(report: EdgeReport, *, surface: str | None = None) -> tuple[Not
         **named, "stretch": item.stretch, "pairs": item.pairs,
         "maximum": round(item.maximum_m, 2), "x": _place(item.x), "y": _place(item.y)})
         for item in report.stretches)
+    return tuple(found)
+
+
+SUMMARY_STRETCHES = 10
+"""Los tramos de cada aviso del salto creado que enseña el resumen de un cálculo (T61, el H3: con
+204, «Crear» quedaba fuera de la ventana). No es una cifra minera: es lo que cabe en la ventana."""
+_STEP_CODES = frozenset({"des.edge_created_step", "des.edge_surface_step"})
+_STRETCH_CODE = "des.edge_stretch"
+
+
+def summary_notices(notices: Iterable[Notice], *, reported: bool = True,
+                    limit: int = SUMMARY_STRETCHES) -> tuple[Notice, ...]:
+    """Los avisos y notas ``notices`` como los enseña el resumen de un cálculo (T61; RF-014-21):
+    de cada aviso del salto creado (``des.edge_created_step``, ``des.edge_surface_step``), sus
+    ``limit`` primeros tramos y, si tiene más, una nota con los que faltan:
+    ``des.edge_more_stretches`` («… y N tramos más (en el informe)», que los guarda todos:
+    ``des_qrp_``, ``des_rpt_``, ``des_erp_``) o, sin informe (``reported`` falso: un ajuste),
+    ``des.edge_more_stretches_refit``. Lo demás, tal cual y en su orden. Las coordenadas de cada
+    tramo siguen en ``notices`` (lo que va al informe); esto solo es lo que se enseña."""
+    if limit < 0:
+        raise ValueError(f"los tramos que se enseñan son 0 o más, no {limit!r}")
+    code = "des.edge_more_stretches" if reported else "des.edge_more_stretches_refit"
+    found: list[Notice] = []
+    shown = hidden = 0
+    inside = False
+    for notice in notices:
+        if inside and notice.code == _STRETCH_CODE:
+            if shown < limit:
+                found.append(notice)
+                shown += 1
+            else:
+                hidden += 1
+            continue
+        if hidden:
+            found.append(Notice(code, {"stretches": hidden}))
+        inside, shown, hidden = notice.code in _STEP_CODES, 0, 0
+        found.append(notice)
+    if hidden:
+        found.append(Notice(code, {"stretches": hidden}))
     return tuple(found)
 
 

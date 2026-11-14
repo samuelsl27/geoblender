@@ -456,7 +456,8 @@ class QuarryH1Test(qfx.QuarryProjectCase):
     def test_ce01_seeds_all_over_the_slope_raise_the_floors(self) -> None:
         """CE-014-01 (error 10): con las semillas en toda la ladera la envolvente no baja del
         terreno en el recinto (los fondos «altísimos») y el lado no excava nada; con la coronación,
-        la misma corta excava más de 1 hm³."""
+        la misma corta excava más de 1 hm³. El informe del lado no lo avisa (RF-014-12, T61: lo
+        avisa la cantera sobre la superficie que crea)."""
         user = model.SeedSource("surface", surface=qfx.START_DATASET, zone=model.Zone("domain"))
         request = replace(self.request, exploitation=model.QuarrySide(
             base_profile=EXPL.code, seeds=user, anchor="nearest_floor"))
@@ -470,6 +471,11 @@ class QuarryH1Test(qfx.QuarryProjectCase):
         moved = report_mod.moved_cells(self.start, outcome.grid, MIN_THICKNESS_M)
         self.assertFalse(bool(np.any(moved)))
         self.assertGreater(self.outcome.design.report.cut_m3, 1.0e6)
+        # T61 (el H3): el informe de un lado no dice «El diseño no mueve…» de la 013: el lado es
+        # la superficie antes de la regla de orden y del modo; lo dice la cantera, medido sobre la
+        # superficie que crea y nombrándola (``store.quarry_notices``).
+        self.assertNotIn("des.no_movement",
+                         [notice.code for notice in outcome.design.report.notices])
 
     # --- CE-014-02 (error 37) -------------------------------------------------------------
 

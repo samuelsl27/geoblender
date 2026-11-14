@@ -748,6 +748,31 @@ CATALOG: tuple[Message, ...] = (
         "explotación ({exploitation} m) y el terreno ({terrain} m) no cumplen final ≤ "
         "explotación ≤ terreno a 1 mm; no se crea nada. Comuníquelo con el proyecto.",
     ),
+    # Una superficie de la cantera que no mueve nada (RF-014-12, RF-014-18; T61, el H3): se mide
+    # sobre la superficie que se crea (con la regla de orden y «explotación hasta la final»), no
+    # sobre el escalonado de un lado, y nombra la superficie (``des.no_movement`` es de la 013).
+    Message(
+        "des.quarry_final_no_movement",
+        "The final surface of «{quarry}» does not move any cell by more than the minimum "
+        "thickness of {thickness} m: it is the start surface. Check that its seeds are below "
+        "the start surface and that the excavation boundary has cells where cutting is admitted.",
+        "La superficie final de «{quarry}» no mueve ninguna celda más del espesor mínimo de "
+        "{thickness} m: es la superficie de partida. Compruebe que sus semillas quedan por debajo "
+        "de la superficie de partida y que el recinto excavable tiene celdas donde se admite "
+        "cortar.",
+        "warning",
+    ),
+    Message(
+        "des.quarry_exploitation_no_movement",
+        "The exploitation surface of «{quarry}» does not move any cell by more than the minimum "
+        "thickness of {thickness} m: it is the start surface. Check that its seeds are below "
+        "the start surface and that the excavation boundary has cells where cutting is admitted.",
+        "La superficie de explotación de «{quarry}» no mueve ninguna celda más del espesor mínimo "
+        "de {thickness} m: es la superficie de partida. Compruebe que sus semillas quedan por "
+        "debajo de la superficie de partida y que el recinto excavable tiene celdas donde se "
+        "admite cortar.",
+        "warning",
+    ),
     Message(
         "des.quarry_unsplit_zones",
         "The exploitation does not reach the final surface in {zones} zones: {area} ha and "
@@ -925,42 +950,42 @@ CATALOG: tuple[Message, ...] = (
         "{share} % of the {pairs} pairs of the edge have a created step greater than "
         "{threshold} m (at least {admitted} % should be within it); the largest, {maximum} m, at "
         "x = {x} m, y = {y} m, in {stretches} stretches. Use «Transitions with the untouched "
-        "terrain».",
+        "terrain…».",
         "El {share} % de las {pairs} parejas del borde tiene un salto creado mayor que "
         "{threshold} m (al menos el {admitted} % debería quedar por debajo); el mayor, "
         "{maximum} m, en x = {x} m, y = {y} m, en {stretches} tramos. Use «Transiciones con el "
-        "terreno no afectado».",
+        "terreno no afectado…».",
         "warning",
         count="stretches",
         one_msgid="{share} % of the {pairs} pairs of the edge have a created step greater than "
         "{threshold} m (at least {admitted} % should be within it); the largest, {maximum} m, at "
         "x = {x} m, y = {y} m, in {stretches} stretch. Use «Transitions with the untouched "
-        "terrain».",
+        "terrain…».",
         one_es="El {share} % de las {pairs} parejas del borde tiene un salto creado mayor que "
         "{threshold} m (al menos el {admitted} % debería quedar por debajo); el mayor, "
         "{maximum} m, en x = {x} m, y = {y} m, en {stretches} tramo. Use «Transiciones con el "
-        "terreno no afectado».",
+        "terreno no afectado…».",
     ),
     Message(
         "des.edge_surface_step",
         "«{surface}»: {share} % of the {pairs} pairs of its edge have a created step greater than "
         "{threshold} m (at least {admitted} % should be within it); the largest, {maximum} m, at "
         "x = {x} m, y = {y} m, in {stretches} stretches. Use «Transitions with the untouched "
-        "terrain».",
+        "terrain…».",
         "«{surface}»: el {share} % de las {pairs} parejas de su borde tiene un salto creado mayor "
         "que {threshold} m (al menos el {admitted} % debería quedar por debajo); el mayor, "
         "{maximum} m, en x = {x} m, y = {y} m, en {stretches} tramos. Use «Transiciones con el "
-        "terreno no afectado».",
+        "terreno no afectado…».",
         "warning",
         count="stretches",
         one_msgid="«{surface}»: {share} % of the {pairs} pairs of its edge have a created step "
         "greater than {threshold} m (at least {admitted} % should be within it); the largest, "
         "{maximum} m, at x = {x} m, y = {y} m, in {stretches} stretch. Use «Transitions with the "
-        "untouched terrain».",
+        "untouched terrain…».",
         one_es="«{surface}»: el {share} % de las {pairs} parejas de su borde tiene un salto creado "
         "mayor que {threshold} m (al menos el {admitted} % debería quedar por debajo); el mayor, "
         "{maximum} m, en x = {x} m, y = {y} m, en {stretches} tramo. Use «Transiciones con el "
-        "terreno no afectado».",
+        "terreno no afectado…».",
     ),
     Message(
         "des.edge_stretch",
@@ -972,6 +997,26 @@ CATALOG: tuple[Message, ...] = (
         "y = {y} m.",
         one_es="Tramo {stretch}: {pairs} pareja, hasta {maximum} m, centro en x = {x} m, "
         "y = {y} m.",
+    ),
+    # Los tramos que el resumen no enseña (T61, el H3: con 204 tramos, «Crear» quedaba fuera de la
+    # ventana); los guarda el informe del diseño. Un ajuste no tiene informe.
+    Message(
+        "des.edge_more_stretches",
+        "… and {stretches} more stretches (in the report).",
+        "… y {stretches} tramos más (en el informe).",
+        "note",
+        count="stretches",
+        one_msgid="… and {stretches} more stretch (in the report).",
+        one_es="… y {stretches} tramo más (en el informe).",
+    ),
+    Message(
+        "des.edge_more_stretches_refit",
+        "… and {stretches} more stretches (a refit keeps no report).",
+        "… y {stretches} tramos más (un ajuste no guarda informe).",
+        "note",
+        count="stretches",
+        one_msgid="… and {stretches} more stretch (a refit keeps no report).",
+        one_es="… y {stretches} tramo más (un ajuste no guarda informe).",
     ),
     Message(
         "des.edge_not_design_surface",
@@ -1038,9 +1083,9 @@ CATALOG: tuple[Message, ...] = (
     Message(
         "des.refit_outside",
         "«{surface}» leaves {volume} m³ in {area} m² outside the current limit of version "
-        "{version}: use Design ▸ Quarry ▸ Refit the design to a new limit….",
+        "{version}: use Design ▸ Quarry ▸ Refit the design to a new limit…",
         "«{surface}» deja {volume} m³ en {area} m² fuera del límite vigente de la versión "
-        "{version}: use Diseño ▸ Cantera ▸ Ajustar el diseño a un límite nuevo….",
+        "{version}: use Diseño ▸ Cantera ▸ Ajustar el diseño a un límite nuevo…",
         "warning",
     ),
     Message(

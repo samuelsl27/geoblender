@@ -544,17 +544,19 @@ class RefitOrderTest(unittest.TestCase):
                 surface, cls.start, cls.masks, refit.face_slope(labels, face, ()), THICKNESS_M,
                 name=name))
 
-    def calculate(self, parts: tuple[Any, ...], others: dict[str, np.ndarray] | None = None
-                  ) -> Any:
+    def calculate(self, parts: tuple[Any, ...], others: dict[str, np.ndarray] | None = None,
+                  masks: Any = None) -> Any:
         """``store.refit_compute_steps`` del ajuste «Ajuste T53» de ``parts`` con lo de la sonda;
-        ``others``, la otra superficie de la cantera de cada una que va sola."""
+        ``others``, la otra superficie de la cantera de cada una que va sola; ``masks``, otras
+        máscaras que las de la sonda."""
         prepared = store.PreparedRefit(
             parts, SimpleNamespace(values=self.start), (),
             np.zeros(ORDER_GRID.shape, dtype=np.int16), {},
             SimpleNamespace(version_code="V01"),
             {name: SimpleNamespace(values=grid) for name, grid in (others or {}).items()})
         request = model.RefitRequest("Ajuste T53", [part.name for part in parts], "gis_dtm_llano")
-        work = store.refit_compute_steps(request, self.masks, prepared,
+        work = store.refit_compute_steps(request, self.masks if masks is None else masks,
+                                         prepared,
                                          {design_params.VERIFY_MIN_THICKNESS: THICKNESS_M})
         while True:  # lo que devuelve (``yield from``), no el último ``Progress``
             try:
@@ -622,6 +624,27 @@ class RefitOrderTest(unittest.TestCase):
                                                               cells=1))
         self.assertIn(f"regla de orden de la cantera «{ORDER_QUARRY}»: {changed} celdas de "
                       f"«{ORDER_EXPLOITATION}»", outcome.message)
+
+    def test_no_note_when_the_rule_changes_no_cell(self) -> None:
+        """RF-014-14, RF-014-27 (T61; lo que vio el H3): si la regla de orden de la cantera no
+        cambia ninguna celda más de 1 mm —aquí, con el límite legal en el perímetro de antes, que
+        no corta ninguna de las dos: no hacía falta ajustarlas—, el ajuste de las dos no lleva la
+        nota ``des.refit_order`` («cambia en 0 celdas…»), ni su mensaje la regla; solo lo de cada
+        superficie."""
+        rows, columns = np.indices(ORDER_GRID.shape)
+        perimeter = ((rows >= ORDER_LOW) & (rows < ORDER_HIGH) & (columns >= ORDER_LOW)
+                     & (columns < ORDER_HIGH))
+        same = access.MaskSet(ORDER_GRID, "v-orden", "op-orden", access.MaskState.CURRENT, (),
+                              (perimeter * P | perimeter * L).astype(np.uint16))
+        order = model.Order.FINAL_FIRST
+        outcome = self.calculate((order_part(model.Surface.EXPLOITATION, self.exploitation, order),
+                                  order_part(model.Surface.FINAL, self.final, order)), masks=same)
+        self.assertEqual([notice.code for notice in outcome.notices],
+                         ["des.refit_not_needed", "des.refit_not_needed"])
+        self.assertEqual(outcome.order_notices, ())
+        self.assertNotIn("regla de orden", outcome.message)
+        np.testing.assert_array_equal(outcome.refit(ORDER_FINAL).grid, self.final)
+        np.testing.assert_array_equal(outcome.refit(ORDER_EXPLOITATION).grid, self.exploitation)
 
     def test_exploitation_first_lowers_the_final_to_the_refitted_exploitation(self) -> None:
         """RF-014-13, RF-014-14 (T53): con «explotación primero», la explotación ajustada se queda
@@ -946,7 +969,9 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         admitidos (D-6). Lo que dé, con el nombre de la superficie ajustada, lo de cada superficie
         delante de la nota del orden (T53) y del aviso de la cantera obsoleta, que sigue el último
         (T54): aquí avisan las dos (en la rejilla de 2 m,
-        la explotación hasta 2,49 m y la final hasta 1,26 m)."""
+        la explotación hasta 2,49 m y la final hasta 1,26 m). El resumen enseña los 10 primeros
+        tramos de cada una y cuántos faltan (T61, lo que vio el H3): de los 13 de la explotación,
+        «… y 3 tramos más (un ajuste no guarda informe)»."""
         start = qfx.terrain(self.grid)
         allowed = self.masks_new.cut_allowed() | self.masks_new.fill_allowed()
         expected = []
@@ -961,11 +986,17 @@ class RefitOperationTest(qfx.QuarryProjectCase):
             self.assertTrue(report.warned, surface)
             expected += edges.edge_notices(report, surface=ADJUSTED[surface])
         codes = ("des.edge_surface_step", "des.edge_stretch")
-        notices = list(self.calculation.notices)
+        notices = list(self.calculation.outcome.notices)
         self.assertEqual([notice for notice in notices if notice.code in codes], expected)
         self.assertEqual(notices[:len(expected)], expected)
         self.assertEqual([notice.code for notice in notices[len(expected):]],
                          ["des.refit_order", "des.refit_source_stale"])
+        shown = list(self.calculation.notices)  # el resumen (T61)
+        self.assertEqual(shown, list(edges.summary_notices(notices, reported=False)))
+        more = [notice for notice in shown if notice.code.startswith("des.edge_more_")]
+        self.assertEqual([(notice.code, dict(notice.values)) for notice in more],
+                         [("des.edge_more_stretches_refit", {"stretches": 3})])
+        self.assertEqual(more[0].text(), "… y 3 tramos más (un ajuste no guarda informe).")
 
     def test_a_the_order_rule_of_the_quarry_ties_its_two_refitted_surfaces(self) -> None:
         """RF-014-14, RF-014-27 (T53; hallazgo F-15): ajustadas cada una con la cara de su perfil,
@@ -1106,18 +1137,19 @@ class RefitOperationTest(qfx.QuarryProjectCase):
         with drive(self.refit_steps("Otra vez", (ADJUSTED[EXPLOITATION],))).result as again:
             (only,) = again.outcome.refits
             self.assertEqual((only.cells, only.volume_m3), (0, 0.0))
-            self.assertEqual([(notice.code, dict(notice.values)) for notice in again.notices
+            self.assertEqual([(notice.code, dict(notice.values))
+                              for notice in again.outcome.notices
                               if notice.code not in CREATED_STEP],
                              [("des.refit_not_needed", {"surface": ADJUSTED[EXPLOITATION]}),
                               ("des.refit_source_stale",
                                {"design": QUARRY_NAME,
                                 "surfaces": f"«{ADJUSTED[EXPLOITATION]}»"})])
             output = provenance.refit_output("Otra vez", ADJUSTED[EXPLOITATION])
-            first = [{**notice.values, "surface": output} for notice in self.calculation.notices
-                     if notice.code in CREATED_STEP
+            first = [{**notice.values, "surface": output}
+                     for notice in self.calculation.outcome.notices if notice.code in CREATED_STEP
                      and notice.values["surface"] == ADJUSTED[EXPLOITATION]]
             self.assertTrue(first)
-            self.assertEqual([dict(notice.values) for notice in again.notices
+            self.assertEqual([dict(notice.values) for notice in again.outcome.notices
                               if notice.code in CREATED_STEP], first)
 
     def change(self, key: str, value: float) -> None:

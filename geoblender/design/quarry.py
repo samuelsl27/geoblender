@@ -1350,7 +1350,9 @@ class SideJob:
     búsqueda pendiente (``pending``) y lo ``previous`` con que se comparan el desmonte y el
     terraplén del lado (T51; RF-013-30, D-25 de la 013: el mismo lado de la cantera del mismo
     nombre de la revisión congelada más reciente). Sin ``previous``, el lado no se compara y su
-    informe **no** lo dice: lo dice la cantera, una vez (``des.magnitude_no_reference``)."""
+    informe **no** lo dice: lo dice la cantera, una vez (``des.magnitude_no_reference``). Su
+    informe tampoco dice ``des.no_movement`` (T61): lo que no mueve se mide sobre la superficie que
+    crea la cantera, y lo dice ella nombrando la superficie."""
 
     request: QuarryRequest
     surface: Surface | str
@@ -1486,8 +1488,8 @@ def _side_work(job: SideJob, budget_s: float) -> Generator[Progress, None, None]
         imposed_from(job.values, sectors), profiles, anchor_grid, job.min_thickness_m,
         job.face_tolerance_deg, job.warning_ratio, previous=job.previous, pending=job.pending),
         budget_s=budget_s))
-    if job.previous is None:
-        design = _without_reference_note(design)
+    quiet = (_NO_MOVEMENT,) if job.previous is not None else (_NO_MOVEMENT, _NO_REFERENCE)
+    design = _without(design, *quiet)
     outcome = SideOutcome(surface, base, seeds, held, anchors, envelope, design)
     yield Progress("side", 1, 1, f"{SIDE_NAMES[surface].capitalize()} de «{job.request.name}» "
                    "calculada", result=outcome)
@@ -1495,13 +1497,17 @@ def _side_work(job: SideJob, budget_s: float) -> Generator[Progress, None, None]
 
 _NO_REFERENCE = "des.magnitude_no_reference"
 """La nota de la 013 de un escalonado que no se compara con ninguno anterior (RF-013-30)."""
+_NO_MOVEMENT = "des.no_movement"
+"""El aviso de la 013 de un escalonado que no mueve ninguna celda más del espesor mínimo."""
 
 
-def _without_reference_note(design: DesignOutcome) -> DesignOutcome:
-    """``design`` sin la nota :data:`_NO_REFERENCE` en su informe (T51, hallazgo F-12 (g)): un lado
-    de la cantera sin nada con que compararse no lo dice; lo dice la cantera, una vez, con su
-    nombre (``store.quarry_notices``). Lo demás, tal cual."""
-    notices = tuple(item for item in design.report.notices if item.code != _NO_REFERENCE)
+def _without(design: DesignOutcome, *codes: str) -> DesignOutcome:
+    """``design`` sin los avisos y notas ``codes`` en su informe. Un lado de la cantera no dice
+    :data:`_NO_REFERENCE` (T51, hallazgo F-12 (g)): lo dice la cantera, una vez, con su nombre; ni
+    :data:`_NO_MOVEMENT` (T61, el H3): el escalonado de un lado es la superficie antes de la regla
+    de orden y de «explotación hasta la final», así que lo que no mueve se mide sobre la superficie
+    que se crea y lo dice la cantera nombrándola (``store.quarry_notices``). Lo demás, tal cual."""
+    notices = tuple(item for item in design.report.notices if item.code not in codes)
     return replace(design, report=replace(design.report, notices=notices))
 
 

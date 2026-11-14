@@ -7824,6 +7824,10 @@ es = "Inclinación de celda: p99 {p99}° · máx. {max}° en ({x}, {y})"
 ["{count} berms, real elevations {low} to {high} m"]
 es = "{count} bermas, cotas reales {low} a {high} m"
 
+# El singular de los recuentos de la barra N y del resumen (spec 014, T61)
+["1 berm, real elevations {low} to {high} m"]
+es = "1 berma, cotas reales {low} a {high} m"
+
 ["No berms: nothing moves"]
 es = "Sin bermas: no se mueve nada"
 
@@ -7998,6 +8002,9 @@ es = "Cantera con dos superficies"
 ["Transitions with the untouched terrain"]
 es = "Transiciones con el terreno no afectado"
 
+["Transitions with the untouched terrain…"]
+es = "Transiciones con el terreno no afectado…"
+
 ["Refit of the design to a new limit"]
 es = "Ajuste del diseño a un límite nuevo"
 
@@ -8114,6 +8121,9 @@ es = "Recinto excavable «{name}» en {version}"
 
 ["Excavation boundary «{name}»: {cells} cells ({area} m²)"]
 es = "Recinto excavable «{name}»: {cells} celdas ({area} m²)"
+
+["Excavation boundary «{name}»: 1 cell ({area} m²)"]
+es = "Recinto excavable «{name}»: 1 celda ({area} m²)"
 
 ["Write the name of the excavation boundary"]
 es = "Escriba el nombre del recinto excavable"
@@ -8367,6 +8377,9 @@ es = "Cantera «{name}» en {version}"
 ["Order of the design: {order} · the order rule changed {cells} cells"]
 es = "Orden del diseño: {order} · la regla de orden cambió {cells} celdas"
 
+["Order of the design: {order} · the order rule changed 1 cell"]
+es = "Orden del diseño: {order} · la regla de orden cambió 1 celda"
+
 ["Final surface: elevations {low} to {high} m"]
 es = "Superficie final: cotas {low} a {high} m"
 
@@ -8492,8 +8505,14 @@ es = "Transición «{name}» en {version}"
 ["Transition of «{surface}» at {angle}°: {volume} m³ in {cells} cells ({area} m²)"]
 es = "Transición de «{surface}» a {angle}°: {volume} m³ en {cells} celdas ({area} m²)"
 
+["Transition of «{surface}» at {angle}°: {volume} m³ in 1 cell ({area} m²)"]
+es = "Transición de «{surface}» a {angle}°: {volume} m³ en 1 celda ({area} m²)"
+
 ["Created step at the edge: {pairs} pairs, {within} % within {threshold} m, the largest {maximum} m"]
 es = "Salto creado en el borde: {pairs} parejas, el {within} % por debajo de {threshold} m; el mayor, {maximum} m"
+
+["Created step at the edge: 1 pair, {within} % within {threshold} m, the largest {maximum} m"]
+es = "Salto creado en el borde: 1 pareja, el {within} % por debajo de {threshold} m; el mayor, {maximum} m"
 
 ["There are no design surfaces in the active version"]
 es = "No hay superficies de diseño en la versión activa"
@@ -8543,6 +8562,9 @@ es = "Diseño «solo relleno» «{name}»: terraplén {fill} m³ · corte {cut} 
 
 ["Water sheets as the start surface in {cells} cells"]
 es = "Láminas de agua como terreno de partida en {cells} celdas"
+
+["Water sheets as the start surface in 1 cell"]
+es = "Láminas de agua como terreno de partida en 1 celda"
 
 ["Refit the design to a new limit…"]
 es = "Ajustar el diseño a un límite nuevo…"
@@ -8604,6 +8626,15 @@ es = "Ajuste «{name}» en {version}"
 
 ["«{surface}» refitted with the face of its profile: {volume} m³ in {cells} cells · {outside} cells back to the terrain outside the limit"]
 es = "«{surface}» ajustada con la cara de su perfil: {volume} m³ en {cells} celdas · {outside} celdas vuelven al terreno fuera del límite"
+
+["«{surface}» refitted with the face of its profile: {volume} m³ in 1 cell · {outside} cells back to the terrain outside the limit"]
+es = "«{surface}» ajustada con la cara de su perfil: {volume} m³ en 1 celda · {outside} celdas vuelven al terreno fuera del límite"
+
+["«{surface}» refitted with the face of its profile: {volume} m³ in {cells} cells · 1 cell back to the terrain outside the limit"]
+es = "«{surface}» ajustada con la cara de su perfil: {volume} m³ en {cells} celdas · 1 celda vuelve al terreno fuera del límite"
+
+["«{surface}» refitted with the face of its profile: {volume} m³ in 1 cell · 1 cell back to the terrain outside the limit"]
+es = "«{surface}» ajustada con la cara de su perfil: {volume} m³ en 1 celda · 1 celda vuelve al terreno fuera del límite"
 
 ["Surface refitted to a new limit"]
 es = "Superficie ajustada a un límite nuevo"

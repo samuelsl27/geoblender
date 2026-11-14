@@ -163,7 +163,7 @@ y sus campos, los perfiles, el recinto vacío, el nombre repetido) y todas las c
 ``preview`` y todo lo pedido: comprueba lo pedido sin calcular ni escribir nada y activa la vista
 previa de la 013 con ese diseño (``bl.draw.design.QuarryPlan``), que se quita como siempre.
 
-**Transiciones con el terreno no afectado** (spec 014, T28; HU-014-5; RF-014-19 a RF-014-21,
+**Transiciones con el terreno no afectado…** (spec 014, T28; HU-014-5; RF-014-19 a RF-014-21,
 RF-014-29; plan 014 §5.3.3, §5.5): :class:`GEOBLENDER_OT_des_create_transitions` (Restauración ▸
 Superficie final) calcula ``des.edge_transition`` de la versión activa con
 ``design.steps.edge_transition_run``: la transición de una superficie de diseño con el terreno no
@@ -2771,7 +2771,7 @@ class GEOBLENDER_OT_des_create_transitions(_CalculateAndCreate, DesignCommandAwa
     no steeper than the transition angle, and measure the created step"""
 
     bl_idname = CREATE_TRANSITIONS
-    bl_label = "Transitions with the untouched terrain"
+    bl_label = "Transitions with the untouched terrain…"
     bl_translation_context = TRANSLATION_CONTEXT
     bl_options = {"REGISTER"}
     provenance_op_type = provenance.EDGE_TRANSITION

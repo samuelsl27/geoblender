@@ -295,7 +295,7 @@ class CreateTransitionsTest(unittest.TestCase):
     # --- Pruebas ------------------------------------------------------------------------------
 
     def test_a_the_command_its_dialog_and_the_proposal(self) -> None:
-        """RF-014-19, RF-014-29 (plan §5.3.3, §5.5): «Transiciones con el terreno no afectado» es
+        """RF-014-19, RF-014-29 (plan §5.3.3, §5.5): «Transiciones con el terreno no afectado…» es
         una orden real de ``des.edge_transition`` en Restauración, con la puerta de la procedencia y
         los pasos con Esc; sus propiedades tienen nombre y descripción en español; su lista de
         superficies de diseño tiene solo las de la versión (las dos de la cantera, no la ladera ni
@@ -313,7 +313,9 @@ class CreateTransitionsTest(unittest.TestCase):
         self.assertEqual(cls.STEP_BUDGET_S, 0.05)
         command = self.commands.catalog().commands[TRANSITIONS]
         self.assertEqual((command.label_es, command.home),
-                         ("Transiciones con el terreno no afectado", RECLAMATION))
+                         ("Transiciones con el terreno no afectado…", RECLAMATION))
+        self.assertTrue(cls.bl_label.endswith("…"), cls.bl_label)  # T61: abre un diálogo, así
+        # que lleva «…» en el menú, como las demás órdenes de la 014 (el H3)
         self.assertEqual(self.dprov.OPERATION_TYPES_BY_NAME[TRANSITION_TYPE].commands,
                          (TRANSITIONS,))
         for prop, (label, about) in PROPERTIES.items():  # registradas ya en español
@@ -329,7 +331,7 @@ class CreateTransitionsTest(unittest.TestCase):
         fake, context, dialog = self.fake_dialog()
         self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
         self.assertEqual(dialog.call_args.kwargs["title"],
-                         "Transiciones con el terreno no afectado")
+                         "Transiciones con el terreno no afectado…")
         self.assertEqual(dialog.call_args.kwargs["confirm_text"], "Calcular")
         self.assertTrue(fake.in_steps)
         self.assertEqual((fake.name, fake.surface, fake.start),

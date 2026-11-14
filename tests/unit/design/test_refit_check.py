@@ -146,7 +146,8 @@ class OutsideVolumeTest(unittest.TestCase):
 
     def test_the_warning_in_both_languages(self) -> None:
         """RF-014-26 (error 46): el aviso ``des.refit_outside`` nombra la superficie, el volumen,
-        el área y la versión, y lleva a «Ajustar el diseño a un límite nuevo…»."""
+        el área y la versión, y lleva a «Ajustar el diseño a un límite nuevo…», sin un punto
+        detrás del «…» (T61, lo que vio el H3 en la ficha)."""
         start, surface = hand_case()
         found = refit.outside_volume(surface, start, hand_masks(), THICKNESS_M,
                                      name="des_exp_mano_v01", version="V01")
@@ -155,11 +156,11 @@ class OutsideVolumeTest(unittest.TestCase):
         self.assertEqual(notice.text("es"),
                          "«des_exp_mano_v01» deja 124,0 m³ en 56 m² fuera del límite vigente de "
                          "la versión V01: use Diseño ▸ Cantera ▸ Ajustar el diseño a un límite "
-                         "nuevo….")
+                         "nuevo…")
         self.assertEqual(notice.text("en"),
                          "«des_exp_mano_v01» leaves 124.0 m³ in 56 m² outside the current limit "
                          "of version V01: use Design ▸ Quarry ▸ Refit the design to a new "
-                         "limit….")
+                         "limit…")
 
     def test_inside_the_limit_there_is_no_warning(self) -> None:
         """RF-014-26: lo que solo se mueve dentro del límite (un corte en las columnas 4 a 9 y un

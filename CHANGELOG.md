@@ -128,7 +128,7 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
   «solo de relleno» que rebajó 26,6 m el montículo de una torre) no se puede repetir. Guía de uso:
   `docs/usuario/cantera-con-dos-superficies.md` de la documentación. Menú **Diseño ▸ Cantera**
   (Límite desde el perímetro…, Cantera con dos superficies…, Ajustar el diseño a un límite nuevo…,
-  Solo relleno…) y **Restauración ▸ Superficie final ▸ Transiciones con el terreno no afectado**: sus
+  Solo relleno…) y **Restauración ▸ Superficie final ▸ Transiciones con el terreno no afectado…**: sus
   órdenes están **disponibles en sus menús**, como las de la spec 013 (con un proyecto en escritura y
   una versión activa que se puede editar), desde que se entregó su entrada del catálogo, antes de
   verla en pantalla.
@@ -182,8 +182,13 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     cota de ancla inmediatamente por encima de la final deja allí el terreno sin explotar) se avisa
     con un aviso propio que lo dice y ya no vuelve a recomendar el modo (lo decidió Samuel el
     13/11/2026; su verificación encontró que el aviso se repetía tal cual); fuera de ellas, como
-    siempre. Se niega a calcular con un sector del recinto sin búsqueda de intocables vigente.
-  - **Transiciones con el terreno no afectado**: une una superficie de diseño (la seleccionada) con el
+    siempre. Si una de las dos superficies no mueve ninguna celda más del espesor mínimo, se avisa
+    nombrándola («La superficie de explotación de «…» no mueve…»), medido sobre la superficie que se
+    crea: en su demostración en pantalla, el resumen de «Explotación hasta la final» decía «El
+    diseño no mueve ninguna celda…» (el escalonado de un lado, antes del modo) aunque la
+    explotación excavaba 491.006 m³. Se niega a calcular con un sector del recinto sin búsqueda de
+    intocables vigente.
+  - **Transiciones con el terreno no afectado…**: une una superficie de diseño (la seleccionada) con el
     terreno del borde de lo que mueve, sin paredes más empinadas que el ángulo de transición (sin
     valor por defecto), y mide el **salto creado** de cada pareja del borde como el salto con el diseño
     menos el que ya tenía el terreno: un escarpe natural no cuenta. Si menos del 99 % de las parejas
@@ -193,7 +198,10 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     avisa nombrando la superficie (lo decidió Samuel el 13/11/2026; su verificación encontró que
     solo lo medía la transición); por eso esas tres operaciones anotan también el salto y el
     porcentaje admitidos entre sus parámetros, y cambiarlos las deja obsoletas. Ninguna cifra
-    cambia. La transición **solo acerca la
+    cambia. El resumen de cada orden enseña los 10 primeros tramos de cada aviso y «… y N tramos más
+    (en el informe)», que los guarda todos (en su demostración en pantalla, con 204 tramos el botón
+    «Crear» quedaba fuera de la ventana); el ajuste, que no guarda informe, lo dice. La transición
+    **solo acerca la
     superficie al terreno**: cada celda queda entre su cota de diseño y la del terreno, así que no
     convierte un corte en relleno ni un relleno en corte, no ahonda un corte ni sube un relleno, y no
     rellena donde las restricciones solo admiten el corte. Su verificación lo encontró junto a un
@@ -231,8 +239,8 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     la cantera con 60°, el ajuste daba 18.011,0 m³ en lugar de 17.050,6 m³. Ninguna cifra de prueba
     cambia. Si se ajustan juntas las dos superficies de una cantera, después se les aplica la regla
     de orden de la cantera y se comprueba `final ≤ explotación ≤ terreno` antes de crear, con una nota
-    de las celdas que cambió más de 1 mm (los m³ de ajuste de cada una siguen siendo los de su
-    cara); ajustar solo
+    de las celdas que cambió más de 1 mm, que no sale si no cambió ninguna (antes, «cambia en 0
+    celdas»; los m³ de ajuste de cada una siguen siendo los de su cara); ajustar solo
     una avisa si la final queda por encima de la explotación (lo decidió Samuel el 13/11/2026; su
     verificación encontró que ajustarlas por separado dejaba la final hasta 20,72 m por encima). El
     resumen del ajuste avisa también de que el diseño del que sale está obsoleto y de que
@@ -254,13 +262,22 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     cambió.
   - **Ver y exportar**: el recinto, las dos superficies, sus envolventes, la clasificación (con un
     color por clase sobre la superficie final), la transición y la superficie ajustada se cargan como
-    objetos de tipo **Diseño**, con su ficha en la barra N; **Exportar rejilla a GeoTIFF…** las
+    objetos de tipo **Diseño**, con su ficha en la barra N (las cifras de una superficie dicen
+    «cantera, explotación» en español: antes, «exploitation», el valor que se guarda); las listas
+    de superficies de los diálogos ya no ofrecen las rejillas de códigos (la clasificación, el
+    recinto, la rejilla de clases de las máscaras), que no son cotas (antes, la de las semillas
+    proponía la primera la clasificación); **Exportar rejilla a GeoTIFF…** las
     exporta todas, y la clasificación y el recinto con su código por clase y su leyenda en los
     metadatos, con los nombres de la vista y de la barra N («relleno de restauración», «recinto
     excavable»; antes, «relleno» y «recinto de excavación»).
   - **Textos**: los mensajes que cuentan algo (zonas, partes, grupos de semillas, tramos, parejas,
-    celdas, polígonos y líneas) tienen su singular, también en el resumen de cada orden y en la
-    vista previa («en 1 zona»; antes el resumen decía «en 1 zonas»), y la vista previa dice cuántas
+    celdas, polígonos y líneas) tienen su singular, también en el resumen de cada orden, en sus
+    líneas («la regla de orden cambió 1 celda», también las de la transición, el ajuste, las láminas,
+    el recinto y las bermas) y en la vista previa («en 1 zona»; antes el resumen decía «en 1 zonas»
+    y «1 celdas»); **Transiciones con el terreno no afectado…** lleva en su menú el «…» de las
+    órdenes que abren un diálogo, y los avisos del salto creado la nombran así; el aviso de una
+    superficie fuera del límite vigente acaba en «Ajustar el diseño a un límite nuevo…» (antes, con
+    un punto de más); y la vista previa dice cuántas
     líneas tiene la capa de corredores («1 línea»; antes, un número suelto); el campo de la
     pendiente de un corredor con rasante se llama **Campo de pendiente de la rasante**; los rechazos
     de «Solo relleno…» dicen «revise la envolvente, su perfil y su dominio» (no hay semillas que

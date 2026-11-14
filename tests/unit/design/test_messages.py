@@ -142,7 +142,12 @@ class CatalogTest(unittest.TestCase):
                 ("des.refit_order", "cells", "en 1 celda para", "in 1 cell so",
                  "en 2 celdas para", "in 2 cells so"),
                 ("des.refit_order_side", "cells", "en 1 celda, hasta", "in 1 cell, up to",
-                 "en 2 celdas, hasta", "in 2 cells, up to")):
+                 "en 2 celdas, hasta", "in 2 cells, up to"),
+                # Los tramos que el resumen no enseña (T61; RF-014-21).
+                ("des.edge_more_stretches", "stretches", "y 1 tramo más", "and 1 more stretch ",
+                 "y 2 tramos más", "and 2 more stretches"),
+                ("des.edge_more_stretches_refit", "stretches", "y 1 tramo más",
+                 "and 1 more stretch ", "y 2 tramos más", "and 2 more stretches")):
             message = messages.MESSAGES[code]
             self.assertEqual(message.count, count)
             for value in (1, 1.0):

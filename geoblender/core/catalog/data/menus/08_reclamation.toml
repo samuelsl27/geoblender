@@ -135,8 +135,8 @@ label.es = "Superficie final"
 
 [[menu.group.item]]
 key = "geoblender.des_create_transitions"
-label.en = "Transitions with the untouched terrain"
-label.es = "Transiciones con el terreno no afectado"
+label.en = "Transitions with the untouched terrain…"
+label.es = "Transiciones con el terreno no afectado…"
 description.en = "Smooth transitions between the design and the untouched terrain"
 description.es = "Transiciones suaves entre el diseño y el terreno no afectado"
 entry = "014"
