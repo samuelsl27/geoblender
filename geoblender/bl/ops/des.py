@@ -19,6 +19,11 @@ constantes del módulo construidas una vez:
   (``design.params.QUARRY_DEFINITIONS``), sus cinco tipos de operación de la versión, repetibles
   (:data:`QUARRY_RECOMPUTE`) y reproducibles salvo el ajuste (:data:`QUARRY_REPRODUCE`), y sus
   cifras (``design.provenance.QUARRY_FIGURES``);
+- lo de la **015** (T04; plan 015 §5.2.2 y §5.2.3): las 19 familias de parámetros de una plataforma
+  (``design.params.ENTITY_FAMILIES``, ``des.platform.{e}.*``, junto a las de la 013), sus tres tipos de
+  operación de la versión, repetibles y reproducibles (``des.platform``, ``des.declare_constraints`` y
+  ``des.entity_layer``: :data:`ENTITY_RECOMPUTE`, :data:`ENTITY_REPRODUCE`) y sus cifras
+  (``design.provenance.ENTITY_FIGURES``); sin las órdenes (T15 y siguientes);
 - sus textos (``design.messages``) en ``core.i18n``.
 
 :func:`register` pone lo que falta y apunta cómo quitarlo; :func:`unregister` quita solo eso, en
@@ -404,6 +409,48 @@ def reproduce_fill_only(request: ReproduceRequest) -> Iterator[Progress]:
     return reproduce.reproduce_fill_only(request)
 
 
+# Los tres tipos de la 015 (T04; plan 015 §5.2.3): el mismo camino que los de la 013 y la 014. Su
+# recálculo lo hace ``design.store.recompute_run`` y su reproducción, ``design.reproduce`` (las tareas
+# que crean cada operación, T13, T14, T17 y T19, les dan su cálculo: hasta entonces no hay ninguna
+# operación de esos tipos que recalcular ni reproducir).
+
+
+def recompute_platform(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.platform`` (RF-015-02, RF-015-16; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def recompute_declare_constraints(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.declare_constraints`` (RF-015-10; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def recompute_entity_layer(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.entity_layer`` (RF-015-27; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def reproduce_platform(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.platform``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_platform(request)
+
+
+def reproduce_declare_constraints(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.declare_constraints``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_declare_constraints(request)
+
+
+def reproduce_entity_layer(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.entity_layer``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_entity_layer(request)
+
+
 # --- Declaraciones de la procedencia (ADR-0025 §2; plan §5.2.3) ----------------------------------
 
 RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = MappingProxyType({
@@ -433,21 +480,41 @@ QUARRY_REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]]
         provenance.FILL_ONLY: reproduce_fill_only,
     }))
 """La función de reproducción de cada tipo de la 014 que se reproduce (todos salvo el ajuste)."""
+ENTITY_RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = (
+    MappingProxyType({
+        provenance.PLATFORM: recompute_platform,
+        provenance.DECLARE_CONSTRAINTS: recompute_declare_constraints,
+        provenance.ENTITY_LAYER: recompute_entity_layer,
+    }))
+"""La función de recálculo de cada tipo de la 015 (todos se repiten solos; RF-015-02)."""
+ENTITY_REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]] = (
+    MappingProxyType({
+        provenance.PLATFORM: reproduce_platform,
+        provenance.DECLARE_CONSTRAINTS: reproduce_declare_constraints,
+        provenance.ENTITY_LAYER: reproduce_entity_layer,
+    }))
+"""La función de reproducción de cada tipo de la 015 (todos se reproducen; RF-015-02)."""
 OPERATION_DEFS: tuple[contract.OperationDef, ...] = (
     *provenance.operation_defs(RECOMPUTE, REPRODUCE), *design_profiles.OPERATIONS,
-    *provenance.quarry_operation_defs(QUARRY_RECOMPUTE, QUARRY_REPRODUCE))
-"""Los ``OperationDef`` de los ocho tipos de ``des``: de la 013, la envolvente y el escalonado, de
+    *provenance.quarry_operation_defs(QUARRY_RECOMPUTE, QUARRY_REPRODUCE),
+    *provenance.entity_operation_defs(ENTITY_RECOMPUTE, ENTITY_REPRODUCE))
+"""Los ``OperationDef`` de los once tipos de ``des``: de la 013, la envolvente y el escalonado, de
 la versión y repetibles, y la edición de los perfiles de banco, del proyecto; de la 014, el recinto,
 la cantera con dos superficies, la transición, «solo relleno» y el ajuste, de la versión y
-repetibles (T05)."""
+repetibles (T05); de la 015, la plataforma, la declaración de restricciones y la capa de entidades,
+de la versión, repetibles y reproducibles (T04)."""
 DEFINITIONS: tuple[core_params.ParamDef, ...] = (
     *design_params.DEFINITIONS, *design_params.QUARRY_DEFINITIONS)
 """Las definiciones de parámetros de ``des``: las dos del proyecto de la 013 y las siete de la 014
 (plan 014 §5.2.2)."""
-FAMILIES: tuple[core_params.ParamFamily, ...] = design_params.FAMILIES
-"""Las familias de parámetros de ``des`` (ADR-0027)."""
-FIGURES: tuple[contract.FigureDef, ...] = (*provenance.FIGURES, *provenance.QUARRY_FIGURES)
-"""Las cifras de ``des``: las de la envolvente y las del escalonado (013) y las de la 014."""
+FAMILIES: tuple[core_params.ParamFamily, ...] = (*design_params.FAMILIES,
+                                                *design_params.ENTITY_FAMILIES)
+"""Las familias de parámetros de ``des`` (ADR-0027): las seis de la 013 y las 19 de una plataforma
+(``des.platform.{e}.*``, T04)."""
+FIGURES: tuple[contract.FigureDef, ...] = (*provenance.FIGURES, *provenance.QUARRY_FIGURES,
+                                           *provenance.ENTITY_FIGURES)
+"""Las cifras de ``des``: las de la envolvente y las del escalonado (013), las de la 014 y las de las
+entidades (015)."""
 
 
 # --- Registro ------------------------------------------------------------------------------------

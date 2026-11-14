@@ -65,6 +65,7 @@ from ..core.versions import read as versions_read
 from ..core.versions.model import Version, VersionError
 from .messages import DesignError, render
 from .params import PLATFORM_PREFIX, PlatformParam, entity_key, entity_segment, segment_code
+from .provenance import PLATFORM, SUPPORTED_ON_ROLE, SURFACE_ROLE
 
 __all__ = [
     "ENTITY_PREFIX",
@@ -530,13 +531,14 @@ def insert_before(records: Iterable[EntityRecord], ref: str, new: EntityRecord, 
 # --- El registro de las entidades de una versión (RF-015-01, RF-015-25; plan 015 §5.2.3) ----------
 
 _FAMILIES: Mapping[EntityKind, tuple[str, str]] = MappingProxyType({
-    EntityKind.PLATFORM: (PLATFORM_PREFIX, "des.platform"),
+    EntityKind.PLATFORM: (PLATFORM_PREFIX, PLATFORM),
 })
 """Por tipo de entidad: el principio de la clave de sus parámetros (``des.platform``, que sigue
-``.{e}.<valor>``) y el tipo de su operación de versión (``des.platform``; lo declara la T04)."""
-_SUPPORT_ROLES = ("surface", "supported_on")
-"""Los papeles con que una entidad consume la superficie de la que parte y las de las que se apoya:
-si uno de esos datos se descarta, a la entidad le han retirado el apoyo (RF-015-17)."""
+``.{e}.<valor>``) y el tipo de su operación de versión (``des.platform``, ``provenance.PLATFORM``)."""
+_SUPPORT_ROLES = (SURFACE_ROLE, SUPPORTED_ON_ROLE)
+"""Los papeles con que una entidad consume la superficie de la que parte (``surface``) y las de las
+que se apoya (``supported_on``; ``provenance``): si uno de esos datos se descarta, a la entidad le
+han retirado el apoyo (RF-015-17)."""
 _CHUNK = 400
 """Las operaciones por consulta al leer sus datos (el límite de variables de SQLite es mayor)."""
 _PARAMETER_ROWS = (

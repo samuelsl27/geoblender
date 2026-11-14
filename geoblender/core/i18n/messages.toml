@@ -8702,3 +8702,55 @@ es = "Motivo de la restricción declarada"
 
 ["Entities the platform is declared to rest on"]
 es = "Entidades en las que se declara apoyada la plataforma"
+
+# Procedencia de las entidades de diseño (spec 015, T04; RF-015-01, RF-015-02, RF-015-10, RF-015-15,
+# RF-015-24; plan 015 §5.2.3): el nombre de cada operación («Platform» ya está arriba) y de cada
+# cifra de design/provenance.py.
+
+["Constraints of the entities"]
+es = "Restricciones de las entidades"
+
+["Layer of the entities"]
+es = "Capa de entidades"
+
+["Area of the platform"]
+es = "Área de la plataforma"
+
+["Length of the axis of the platform"]
+es = "Longitud del eje de la plataforma"
+
+["Length of the footprint of the platform"]
+es = "Longitud de la huella de la plataforma"
+
+["Level of the platform at the start of its axis"]
+es = "Cota de la plataforma al principio de su eje"
+
+["Level of the platform at the end of its axis"]
+es = "Cota de la plataforma al final de su eje"
+
+["Cut of the platform footprint"]
+es = "Corte de la huella de la plataforma"
+
+["Fill of the platform footprint"]
+es = "Relleno de la huella de la plataforma"
+
+["Cut of the platform edge"]
+es = "Corte del borde de la plataforma"
+
+["Fill of the platform edge"]
+es = "Relleno del borde de la plataforma"
+
+["Highest wall of the platform edge"]
+es = "Pared más alta del borde de la plataforma"
+
+["Area of the footprint not left at the platform level"]
+es = "Área de la huella que no queda en la rasante"
+
+["Largest gap between the footprint and the platform level"]
+es = "Mayor diferencia entre la huella y la rasante"
+
+["Volume resting on an entity"]
+es = "Volumen apoyado sobre una entidad"
+
+["Constraints declared by the entities"]
+es = "Restricciones declaradas por las entidades"

@@ -9,8 +9,11 @@
   los perfiles, del proyecto) y sus quince cifras; y lo de la 014 (T05; RF-014-29): sus siete
   parámetros, sus cinco tipos de operación de la versión (repetibles; reproducibles salvo el
   ajuste) y sus quince cifras, con sus cinco órdenes reales de la entrada «014» (entregada desde
-  la T58); ``bl/ops/des.py`` lo quita y lo vuelve a poner con los mismos objetos y deja lo que
-  otro registró antes con las mismas claves.
+  la T58); y lo de la 015 (T04; RF-015-02): las 19 familias de parámetros de una plataforma, sus tres
+  tipos de operación de la versión (repetibles y reproducibles: ``des.platform``,
+  ``des.declare_constraints`` y ``des.entity_layer``, con la orden «Plataforma» de la entrada de R-36,
+  aún provisional) y sus catorce cifras, sin las órdenes; ``bl/ops/des.py`` lo quita y lo vuelve a
+  poner con los mismos objetos y deja lo que otro registró antes con las mismas claves.
 - El contrato de registro de la 008 (RF-008-26, RF-009-05, RF-009-11): cada tipo con su versión
   1.0, su ámbito, sus órdenes en el catálogo y, los dos que se repiten, su recálculo (por la cola
   de ``des``), su reproducción (la de ``design.reproduce``, al usarla) y la tolerancia de sus
@@ -48,20 +51,30 @@ from tests.support.trees import temp_folder
 
 ENTRY = "013"
 ENTRY_TITLE = ("Envelopes and benching", "Envolventes y escalonado")
-COUNTS = {"parámetros": 9, "familias": 6, "operaciones": 8, "grupos": 0, "cifras": 30}
-"""Lo de ``des`` en ``core``: 2 + 7 definiciones (013 y 014), 6 familias, 3 + 5 tipos de operación
-y 15 + 15 cifras."""
+COUNTS = {"parámetros": 9, "familias": 25, "operaciones": 11, "grupos": 0, "cifras": 44}
+"""Lo de ``des`` en ``core``: 2 + 7 definiciones (013 y 014), 6 + 19 familias (013 y 015), 3 + 5 + 3
+tipos de operación (013, 014 y 015) y 15 + 15 + 14 cifras (T04 de la 015)."""
 OURS = ("des.", "des_")  # las claves de la 013 en los registros de core
 VERSION_TYPES = ("des.envelope", "des.stepped_design")
 PROFILES_TYPE = "des.edit_bench_profiles"
 QUARRY_TYPES = ("des.excavation_area", "des.quarry", "des.edge_transition", "des.fill_only",
                 "des.refit")
 """Los cinco tipos de la 014 (T05): de la versión y repetibles."""
+ENTITY_TYPES = ("des.platform", "des.declare_constraints", "des.entity_layer")
+"""Los tres tipos de la 015 (T04): de la versión, repetibles y reproducibles."""
+PLATFORM_COMMAND = "geoblender.des_draw_platform"
+"""La orden de los tres: la «Plataforma» de la entrada de R-36, que la T15 sustituye por la
+definitiva (``geoblender.des_create_platform``). Aún no tiene clase real: la genera ``bl.ui`` como
+provisional y el catálogo la deja sin entregar."""
+ENTRY_R36 = "R-36"
 REPRODUCED = {"des.envelope": "reproduce_envelope", "des.stepped_design": "reproduce_design",
               "des.excavation_area": "reproduce_excavation_area",
               "des.quarry": "reproduce_quarry",
               "des.edge_transition": "reproduce_edge_transition",
-              "des.fill_only": "reproduce_fill_only"}
+              "des.fill_only": "reproduce_fill_only",
+              "des.platform": "reproduce_platform",
+              "des.declare_constraints": "reproduce_declare_constraints",
+              "des.entity_layer": "reproduce_entity_layer"}
 """Los tipos que se reproducen y su función de ``design.reproduce`` (el ajuste no se reproduce)."""
 ENTRY_014 = "014"
 COMMANDS_014: frozenset[str] = frozenset({"geoblender.des_create_limit_from_perimeter",
@@ -263,18 +276,19 @@ class DesignRegisteredTest(unittest.TestCase):
     # --- Pruebas ------------------------------------------------------------------------------
 
     def test_a_register_and_unregister_leave_core_as_it_was(self) -> None:
-        """ADR-0025 §2, ADR-0027, principio 8 (RF-013-33): habilitada, la 013 tiene en ``core``
-        sus 2 definiciones de parámetros, sus 6 familias, sus 3 tipos de operación y sus 15
-        cifras (ningún grupo acoplado). ``bl/ops/des.py`` lo quita todo (dos veces: nada más
-        cambia) y lo vuelve a poner (dos veces) con los mismos objetos. Con lo que «otro»
-        registró antes con las mismas claves, registrar pone solo lo que falta (lo de otro se
-        queda) y desregistrar deja los registros exactamente como estaban."""
+        """ADR-0025 §2, ADR-0027, principio 8 (RF-013-33; RF-015-02): habilitada, la 013 tiene en
+        ``core`` sus 2 definiciones de parámetros, sus 6 familias, sus 3 tipos de operación y sus 15
+        cifras (ningún grupo acoplado) y, con la 014 y la 015, sus 7 parámetros, sus 19 familias de
+        una plataforma, sus 8 tipos de operación y sus 29 cifras. ``bl/ops/des.py`` lo quita todo
+        (dos veces: nada más cambia) y lo vuelve a poner (dos veces) con los mismos objetos. Con lo
+        que «otro» registró antes con las mismas claves, registrar pone solo lo que falta (lo de
+        otro se queda) y desregistrar deja los registros exactamente como estaban."""
         m = self.m
         enabled = m.registries()
         ours = m.ours()
         self.assertEqual({name: len(keys) for name, keys in ours.items()}, COUNTS)
-        self.assertEqual(ours["familias"], sorted(family.pattern for family
-                                                  in m.des_params.FAMILIES))
+        self.assertEqual(ours["familias"], sorted(
+            family.pattern for family in (*m.des_params.FAMILIES, *m.des_params.ENTITY_FAMILIES)))
         bare = {name: {key: item for key, item in found.items() if not key.startswith(OURS)}
                 for name, found in enabled.items()}
         others: list[tuple[str, str, Any]] = []
@@ -299,8 +313,10 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertSameRegistries(m.registries(), before)
 
     def test_b_operation_types_follow_the_contract_of_008(self) -> None:
-        """RF-013-17, RF-013-31, RF-008-26, RF-009-05, RF-009-11 (contrato de ADR-0025; plan
-        §5.2.3, D-26, D-30): los tres tipos de ``des``, versión 1.0, sin grupo; los dos de la
+        """RF-013-17, RF-013-31, RF-008-26, RF-009-05, RF-009-11, RF-015-02 (contrato de ADR-0025;
+        plan §5.2.3, D-26, D-30; los tres tipos de la 015, de la versión, repetibles y
+        reproducibles, con la orden «Plataforma» aún sin entregar, T04): los tipos de ``des``,
+        versión 1.0, sin grupo; los dos de la
         envolvente y el escalonado, de la versión, repetibles, con el recálculo de
         ``bl/ops/des.py``, la reproducción de ``design.reproduce`` (al usarla) y la tolerancia de
         sus cifras (10⁻⁹), y la edición de los perfiles, del proyecto y sin repetición. Lo
@@ -321,20 +337,23 @@ class DesignRegisteredTest(unittest.TestCase):
                                             create=True))
         found = {op_type: defn for op_type, defn in m.contract.OPERATIONS.items()
                  if defn.module == "des"}
-        self.assertEqual(sorted(found), sorted((*VERSION_TYPES, PROFILES_TYPE, *QUARRY_TYPES)))
+        self.assertEqual(sorted(found), sorted((*VERSION_TYPES, PROFILES_TYPE, *QUARRY_TYPES,
+                                                *ENTITY_TYPES)))
         self.assertEqual(sorted(des_ops.RECOMPUTE), sorted(declared.REPRODUCIBLE))
         self.assertEqual(sorted(des_ops.REPRODUCE), sorted(declared.REPRODUCIBLE))
         self.assertEqual(sorted(des_ops.QUARRY_RECOMPUTE), sorted(QUARRY_TYPES))
         self.assertEqual(sorted(des_ops.QUARRY_REPRODUCE), sorted(QUARRY_TYPES[:4]))
-        recomputed = {**des_ops.RECOMPUTE, **des_ops.QUARRY_RECOMPUTE}
-        reproduced = {**des_ops.REPRODUCE, **des_ops.QUARRY_REPRODUCE}
+        self.assertEqual(sorted(des_ops.ENTITY_RECOMPUTE), sorted(ENTITY_TYPES))
+        self.assertEqual(sorted(des_ops.ENTITY_REPRODUCE), sorted(ENTITY_TYPES))
+        recomputed = {**des_ops.RECOMPUTE, **des_ops.QUARRY_RECOMPUTE, **des_ops.ENTITY_RECOMPUTE}
+        reproduced = {**des_ops.REPRODUCE, **des_ops.QUARRY_REPRODUCE, **des_ops.ENTITY_REPRODUCE}
         self.assertEqual(sorted(defn.op_type for defn in des_ops.OPERATION_DEFS),
                          sorted(found))
         for defn in des_ops.OPERATION_DEFS:
             op_type = defn.op_type
             with self.subTest(operación=op_type):
                 self.assertIs(found[op_type], defn)
-                repeats = op_type in (*VERSION_TYPES, *QUARRY_TYPES)
+                repeats = op_type in (*VERSION_TYPES, *QUARRY_TYPES, *ENTITY_TYPES)
                 self.assertEqual((defn.version, defn.group, defn.repeatable),
                                  ("1.0", None, repeats))
                 self.assertEqual(defn.scope, "version" if repeats else "project")
@@ -353,21 +372,23 @@ class DesignRegisteredTest(unittest.TestCase):
                                            return_value="pasos") as function:
                         self.assertEqual(defn.reproduce("petición"), "pasos")
                     function.assert_called_once_with("petición")
-        for figure in (*declared.FIGURES, *declared.QUARRY_FIGURES):
+        for figure in (*declared.FIGURES, *declared.QUARRY_FIGURES, *declared.ENTITY_FIGURES):
             self.assertIs(m.contract.FIGURES[figure.key], figure)
         for definition in (*m.des_params.DEFINITIONS, *m.des_params.QUARRY_DEFINITIONS):
             self.assertIs(m.params.DEFINITIONS[definition.key], definition)
-        for family in m.des_params.FAMILIES:
+        for family in (*m.des_params.FAMILIES, *m.des_params.ENTITY_FAMILIES):
             self.assertIs(m.params.FAMILIES[family.pattern], family)
         msgids = {defn.label_msgid for defn in des_ops.OPERATION_DEFS}
         msgids |= {setting.label_msgid for defn in des_ops.OPERATION_DEFS
                    for setting in defn.settings}
         msgids |= {label for defn in des_ops.OPERATION_DEFS for setting in defn.settings
                    for _value, label in setting.choices or ()}
-        msgids |= {figure.label_msgid for figure in (*declared.FIGURES, *declared.QUARRY_FIGURES)}
+        msgids |= {figure.label_msgid for figure in (*declared.FIGURES, *declared.QUARRY_FIGURES,
+                                                     *declared.ENTITY_FIGURES)}
         msgids |= {defn.label_msgid for defn in (*m.des_params.DEFINITIONS,
                                                  *m.des_params.QUARRY_DEFINITIONS)}
-        msgids |= {family.template.label_msgid for family in m.des_params.FAMILIES}
+        msgids |= {family.template.label_msgid
+                   for family in (*m.des_params.FAMILIES, *m.des_params.ENTITY_FAMILIES)}
         self.assertNotIn(None, msgids)
         self.assertEqual(m.i18n.untranslated(msgids), [])
         catalog = _module("design.messages").CATALOG_ES  # los mensajes con código, instalados
@@ -382,9 +403,13 @@ class DesignRegisteredTest(unittest.TestCase):
                 launched.setdefault(idname, []).append(defn.op_type)
         self.assertEqual(sorted(launched), sorted({"geoblender.des_compute_envelope",
                                                    "geoblender.des_edit_bench_profiles",
-                                                   *COMMANDS_014}))
+                                                   PLATFORM_COMMAND, *COMMANDS_014}))
         self.assertEqual(launched["geoblender.des_compute_envelope"], list(VERSION_TYPES))
-        for idname in sorted(set(launched) - COMMANDS_014):
+        self.assertEqual(launched[PLATFORM_COMMAND], list(ENTITY_TYPES))  # RF-015-02 (T04)
+        platform = self.cat.commands[PLATFORM_COMMAND]  # de la entrada de R-36, sin entregar
+        self.assertEqual((platform.entry, platform.module), (ENTRY_R36, "des"))
+        self.assertFalse(self.cat.entries[ENTRY_R36].delivered)
+        for idname in sorted(set(launched) - COMMANDS_014 - {PLATFORM_COMMAND}):
             with self.subTest(orden=idname):
                 self.assertIn(idname, DELIVERED)
         entry_014 = self.cat.entries[ENTRY_014]  # la T58 la entrega, antes del H3

@@ -81,6 +81,38 @@ son los que nombran la ficha y la guía de la 013; la 014 los documenta en su T3
   :data:`DESIGN_SURFACE_ROLE`, la de partida, las máscaras y los sectores), los parámetros que lee
   del proyecto (:func:`refit_params`: el espesor mínimo; la cara y el factor de malla no se leen
   del perfil de hoy, P-3) y el ámbito de su cifra (:func:`refit_figure_scope`).
+
+**Las entidades de diseño** (spec 015, T04; RF-015-01, RF-015-02; plan 015 §5.2.3; ADR-0030) declaran
+lo suyo **aparte** de lo de las dos specs anteriores, con el prefijo ``ENTITY_``:
+
+- :data:`ENTITY_FAMILIES`: la superficie de una entidad (``des_psf_``, papel
+  :data:`ENTITY_SURFACE_ROLE`, **no** :data:`DESIGN_SURFACE_ROLE`: la última de cada cadena la añade
+  congelar, T32), su tabla (``des_epr_``, :data:`ENTITY_ROLE`) y su informe (``des_prp_``) y, **una por
+  versión** y sin el nombre de una operación (``DatasetFamily.named``), la tabla de las restricciones
+  que declaran las entidades (``des_decl_<vNN>``) y la capa de entidades para QGIS
+  (``des_enl_<vNN>``). :data:`FAMILIES_BY_CODE` tiene las de las tres specs.
+- :data:`ENTITY_OPERATION_TYPES`: tres tipos de la versión, repetibles y reproducibles:
+  ``des.platform`` (:data:`PLATFORM`), ``des.declare_constraints`` (:data:`DECLARE_CONSTRAINTS`) y
+  ``des.entity_layer`` (:data:`ENTITY_LAYER`), con :func:`entity_operation_defs`. «Soltar el apoyo»
+  (T25) no es un tipo: es una ``des.platform`` repetida con ``supersedes``.
+- La plataforma (``des.platform``): sus ajustes (:func:`platform_settings`, :func:`platform_request`:
+  el nombre, el código y los campos de su capa; lo demás son los **parámetros** de la entidad,
+  ``des.platform.{e}.*``, :func:`platform_values`), lo que consume con su papel
+  (:func:`platform_inputs`: la capa, :data:`ENTITY_LAYER_ROLE`; la superficie de partida,
+  :data:`SURFACE_ROLE`; las máscaras; y, añadidas al crear, las superficies de las entidades en las
+  que se apoya, :data:`SUPPORTED_ON_ROLE`) y los parámetros que lee (:func:`platform_params`).
+- La declaración (``des.declare_constraints``) y la capa (``des.entity_layer``) no tienen entradas de
+  capas del proyecto: consumen los datos ``des_epr_`` de las entidades vivas (:data:`ENTITY_ROLE`;
+  :func:`declare_inputs`, :func:`entity_layer_inputs`), con las entidades en sus ajustes
+  (:func:`declare_settings`, :func:`entity_layer_settings`, :func:`settings_entities`) y, la
+  declaración, los parámetros ``protect``, ``guard_m`` y ``reason`` (:func:`declare_params`).
+- :data:`ENTITY_FIGURES`: las cifras de la plataforma (:data:`PLATFORM_FIGURES`), la de lo apoyado
+  (:data:`SUPPORT_FIGURES`: ``des.supported_m3``, también de las operaciones de la 013 y la 014 que
+  rellenan sobre una entidad) y la de la declaración (:data:`DECLARE_FIGURES`). Su ámbito
+  (:func:`entity_figure_scope`) lleva el nombre de la operación y el **código de la entidad**
+  (``entity``); las arman :func:`platform_figures`, :func:`supported_figures` y
+  :func:`declare_figures`. La cota inicial y la final de la rasante son ``des.plat_start_level_m`` y
+  ``des.plat_end_level_m`` (glosario §14: la pendiente de la rasante es «gradient»).
 """
 
 from __future__ import annotations
@@ -122,6 +154,8 @@ from .model import (
     LayerField,
     Metric,
     Order,
+    PlatformFields,
+    PlatformRequest,
     QuarryRequest,
     QuarrySide,
     RefitRequest,
@@ -139,13 +173,17 @@ from .params import (
     CROWN_RING,
     EDGE_MAX_STEP,
     EDGE_MIN_SHARE,
+    PLATFORM_PREFIX,
     TOLERANCE_FACE,
     UNSPLIT_MIN_AREA,
     UNSPLIT_THRESHOLD,
     VERIFY_MIN_THICKNESS,
     WARNING_RATIO,
     BenchParam,
+    PlatformParam,
     bench_key,
+    entity_key,
+    entity_segment,
 )
 from .params import EDGE_TRANSITION as EDGE_TRANSITION_DEG
 
@@ -165,6 +203,11 @@ __all__ = [
     "CREATED_STEP_PARAMS",
     "CROWN_SEEDS",
     "CUT_M3",
+    "DECLARED_COUNT",
+    "DECLARED_ROLE",
+    "DECLARED_TABLE",
+    "DECLARE_CONSTRAINTS",
+    "DECLARE_FIGURES",
     "DESIGN_FIGURES",
     "DESIGN_GRID",
     "DESIGN_SETTINGS",
@@ -173,6 +216,23 @@ __all__ = [
     "EDGE_REPORT_ROLE",
     "EDGE_REPORT_TABLE",
     "EDGE_TRANSITION",
+    "ENTITY_AXIS_LAYER_ROLE",
+    "ENTITY_FAMILIES",
+    "ENTITY_FIGURES",
+    "ENTITY_LAYER",
+    "ENTITY_LAYER_ROLE",
+    "ENTITY_MAP_ROLE",
+    "ENTITY_MAP_TABLE",
+    "ENTITY_OPERATION_TYPES",
+    "ENTITY_REPORT_ROLE",
+    "ENTITY_REPORT_TABLE",
+    "ENTITY_REPRODUCIBLE",
+    "ENTITY_ROLE",
+    "ENTITY_SCOPE_KEY",
+    "ENTITY_SURFACE_GRID",
+    "ENTITY_SURFACE_ROLE",
+    "ENTITY_TABLE",
+    "ENTITY_VERSION_TYPES",
     "ENVELOPE",
     "ENVELOPE_FIGURES",
     "ENVELOPE_GRID",
@@ -205,6 +265,11 @@ __all__ = [
     "OPERATION_TYPES",
     "OPERATION_TYPES_BY_NAME",
     "OP_VERSION",
+    "PLATFORM",
+    "PLATFORM_COMMAND",
+    "PLATFORM_COMMON_PARAMS",
+    "PLATFORM_FIGURES",
+    "PLATFORM_SETTINGS",
     "QUARRY",
     "QUARRY_COMMAND",
     "QUARRY_FAMILIES",
@@ -227,6 +292,9 @@ __all__ = [
     "SECTOR_SCOPE_KEY",
     "SEEDS_GRID_ROLE",
     "STEPPED",
+    "SUPPORTED_M3",
+    "SUPPORTED_ON_ROLE",
+    "SUPPORT_FIGURES",
     "SURFACE_ROLE",
     "SURFACE_SCOPE_KEY",
     "SURFACE_SCOPE_NAMES",
@@ -244,12 +312,20 @@ __all__ = [
     "dataset_locator",
     "dataset_name",
     "dataset_spec",
+    "declare_figures",
+    "declare_inputs",
+    "declare_params",
+    "declare_settings",
     "design_figures",
     "design_inputs",
     "design_params",
     "design_request",
     "design_settings",
     "design_start",
+    "entity_figure_scope",
+    "entity_layer_inputs",
+    "entity_layer_settings",
+    "entity_operation_defs",
     "envelope_figures",
     "envelope_inputs",
     "envelope_params",
@@ -265,6 +341,13 @@ __all__ = [
     "fill_only_settings",
     "operation_def",
     "operation_defs",
+    "platform_code",
+    "platform_figures",
+    "platform_inputs",
+    "platform_params",
+    "platform_request",
+    "platform_settings",
+    "platform_values",
     "profile_params",
     "quarry_figure_scope",
     "quarry_inputs",
@@ -282,10 +365,12 @@ __all__ = [
     "refit_settings",
     "refit_source",
     "sector_inputs",
+    "settings_entities",
     "side_role",
     "settings_pending",
     "settings_previous",
     "settings_touched",
+    "supported_figures",
     "transition_inputs",
     "transition_settings",
     "transition_start",
@@ -325,6 +410,11 @@ ENVELOPE_ROLE = "envelope"
 DESIGN_SURFACE_ROLE = "design_surface"
 """El papel de la superficie de diseño: lo que reconoce la comprobación de congelar de la 012
 (``reserves.compliance_store.freeze_findings``; RF-013-31, D-28)."""
+ENTITY_SURFACE_ROLE = "entity_surface"
+"""El papel de la superficie que deja una entidad de diseño (spec 015, T04; plan 015 §5.2.3): **no**
+cuenta como :data:`DESIGN_SURFACE_ROLE`. Las superficies intermedias de una cadena de entidades son
+superficies de trabajo (P-2); la última de cada cadena (``design.entities.chain_tails``) es la de
+diseño para congelar, y la comprobación de congelar la pide aparte (T32)."""
 _BERMS_ROLE = "berms"
 _BERM_TABLE_ROLE = "berm_table"
 _REPORT_ROLE = "report"
@@ -342,12 +432,40 @@ ANCHORS_ROLE = "anchors"
 
 _PREFIX = f"{MODULE}_"
 
+# Los papeles de las entidades de diseño (spec 015, T04; plan 015 §5.2.3). Los de consumo de la
+# plataforma son los de lo que lee: la capa de las plataformas, la superficie de la que parte
+# (:data:`SURFACE_ROLE`, el de siempre), aquellas en las que se apoya y los datos de las entidades
+# vivas; los demás, el papel con que sale cada dato de las familias de las entidades.
+ENTITY_LAYER_ROLE = "entity_layer"
+"""El papel de la capa de plataformas (la geometría y los valores iniciales de una entidad) que
+consume ``des.platform``: líneas con ancho, o polígonos."""
+ENTITY_AXIS_LAYER_ROLE = "entity_axis_layer"
+"""El papel de la capa de líneas con el eje que enlaza un polígono (``PlatformFields.axis_layer``);
+solo si el polígono lo enlaza."""
+SUPPORTED_ON_ROLE = "supported_on"
+"""El papel de la superficie de una entidad en la que se apoya la operación que rellena sobre ella
+(RF-015-15; ADR-0030 §4): las que detecta el cálculo y las que declara el usuario, añadidas al crear
+(una operación hecha es inmutable). Si ese dato se descarta, «apoyo retirado» (RF-015-17)."""
+ENTITY_ROLE = "entity"
+"""El papel de la tabla de una entidad (huella, eje y atributos): salida de ``des.platform`` y
+entrada de la declaración y de la capa de entidades, que recogen las entidades vivas."""
+ENTITY_REPORT_ROLE = "entity_report"
+"""El papel del informe de una entidad (avisos, perfil, contrapendientes, borde)."""
+DECLARED_ROLE = "constraints_declared"
+"""El papel de la tabla de las restricciones que declaran las entidades: la salida de
+``des.declare_constraints`` y, con el mismo texto, lo que consume la compilación de la 012 (T18)."""
+ENTITY_MAP_ROLE = "entity_map"
+"""El papel de la capa de entidades que se abre en QGIS (``des.entity_layer``)."""
+
 
 @dataclass(frozen=True, slots=True)
 class DatasetFamily:
     """Una familia de datos de ``des`` (plan §5.2.3): su código (``env``), su tipo y su almacén,
     su lector (con versión), su papel de salida, la extensión de su fichero (``""`` en una tabla)
-    y su nombre visible."""
+    y su nombre visible. ``named``: si cada operación tiene su dato (``des_env_<nombre>``: la
+    mayoría) o es **uno por versión** (``des_decl_<vNN>``, ``des_enl_<vNN>``: sin el nombre de una
+    operación, como las máscaras de la 012); en una así, el nombre del dato es la raíz sin el último
+    «_» (``des_decl``) y su ubicación lleva el código de la versión."""
 
     code: str
     kind: str
@@ -356,6 +474,7 @@ class DatasetFamily:
     role: str
     extension: str
     label: str
+    named: bool = True
 
     @property
     def prefix(self) -> str:
@@ -452,11 +571,45 @@ QUARRY_FAMILIES: tuple[DatasetFamily, ...] = (
 """Las familias de datos de la versión de la 014 (plan 014 §5.2.3), aparte de las de la 013. Las
 cuatro superficies que se pueden congelar (las dos de la cantera, la transición y la ajustada)
 llevan :data:`DESIGN_SURFACE_ROLE`: congelar pide verificarlas por recinto (D-28 de la 013)."""
+
+# Las de las entidades de diseño (spec 015, T04; plan 015 §5.2.3).
+ENTITY_SURFACE_GRID = "psf"
+"""La superficie que deja una entidad (``rasters/des_psf_<nombre>_<vNN>.tif``, GeoTIFF Float64;
+papel :data:`ENTITY_SURFACE_ROLE`)."""
+ENTITY_TABLE = "epr"
+"""La tabla de una entidad: su huella, su eje y sus atributos (``des_epr_<nombre>_<vNN>``)."""
+ENTITY_REPORT_TABLE = "prp"
+"""El informe de una entidad en formato largo: avisos, perfil, contrapendientes y el borde
+(``des_prp_<nombre>_<vNN>``)."""
+DECLARED_TABLE = "decl"
+"""La tabla de las restricciones que declaran las entidades de la versión (``des_decl_<vNN>``): una
+capa de polígonos no editable a mano (RF-008-56) que consume la compilación de la 012."""
+ENTITY_MAP_TABLE = "enl"
+"""La capa de entidades de la versión para QGIS (``des_enl_<vNN>``): sus huellas con su tipo, su
+nombre, su estado, su apoyo, su cadena y sus cifras principales; no editable a mano."""
+
+ENTITY_FAMILIES: tuple[DatasetFamily, ...] = (
+    DatasetFamily(ENTITY_SURFACE_GRID, "raster", Store.RASTERS, GEOTIFF.id, ENTITY_SURFACE_ROLE,
+                  ".tif", "Superficie de la entidad"),
+    DatasetFamily(ENTITY_TABLE, "table", Store.GPKG, GPKG_LAYER.id, ENTITY_ROLE, "",
+                  "Huella, eje y atributos de la entidad"),
+    DatasetFamily(ENTITY_REPORT_TABLE, "table", Store.GPKG, GPKG_LAYER.id, ENTITY_REPORT_ROLE, "",
+                  "Informe de la entidad"),
+    DatasetFamily(DECLARED_TABLE, "vector", Store.GPKG, GPKG_LAYER.id, DECLARED_ROLE, "",
+                  "Restricciones declaradas por las entidades", named=False),
+    DatasetFamily(ENTITY_MAP_TABLE, "vector", Store.GPKG, GPKG_LAYER.id, ENTITY_MAP_ROLE, "",
+                  "Capa de entidades", named=False),
+)
+"""Las familias de datos de la versión de la 015 (plan 015 §5.2.3), aparte de las de la 013 y la 014.
+La superficie de una entidad lleva :data:`ENTITY_SURFACE_ROLE` y **no** :data:`DESIGN_SURFACE_ROLE`:
+las de una cadena son de trabajo, y la última la añade congelar (P-2, T32). La tabla de la entidad es
+una tabla (``table``: su huella y su eje van como columnas); las de las restricciones declaradas y la
+capa de entidades son capas (``vector``) para QGIS, una por versión."""
 FAMILIES_BY_CODE: Mapping[str, DatasetFamily] = MappingProxyType(
-    {family.code: family for family in (*FAMILIES, *QUARRY_FAMILIES)})
-"""Las familias de las dos specs por código (solo lectura)."""
-if len(FAMILIES_BY_CODE) != len(FAMILIES) + len(QUARRY_FAMILIES):  # pragma: no cover
-    raise RuntimeError("dos familias de datos del diseño con el mismo código")
+    {family.code: family for family in (*FAMILIES, *QUARRY_FAMILIES, *ENTITY_FAMILIES)})
+"""Las familias de las tres specs por código (solo lectura)."""
+if len(FAMILIES_BY_CODE) != len(FAMILIES) + len(QUARRY_FAMILIES) + len(ENTITY_FAMILIES):
+    raise RuntimeError("dos familias de datos del diseño con el mismo código")  # pragma: no cover
 
 
 def _family(code: object) -> DatasetFamily:
@@ -467,18 +620,27 @@ def _family(code: object) -> DatasetFamily:
     return found
 
 
-def dataset_name(family: str, name: str) -> str:
+def dataset_name(family: str, name: str = "") -> str:
     """El nombre estable del dato de la familia ``family`` de la operación ``name``:
     ``des_<familia>_<nombre>`` (el nombre en ASCII en minúsculas, ``gis.provenance.dataset_slug``:
-    el mismo nombre da el mismo dato). ``GisError`` ``gis.dataset_name_invalid`` si no queda
+    el mismo nombre da el mismo dato). Una familia **sin nombre** (``DatasetFamily.named`` falso:
+    ``des_decl_<vNN>``, ``des_enl_<vNN>``) es una por versión y se llama ``des_<familia>``: no lleva
+    ``name`` (``ValueError`` si se lo dan). ``GisError`` ``gis.dataset_name_invalid`` si no queda
     ninguna letra ni cifra; ``ValueError`` si la familia no es de ``des``."""
-    return _family(family).prefix + dataset_slug(name)
+    found = _family(family)
+    if not found.named:
+        if name not in ("", None):
+            raise ValueError(f"los datos de la familia «{found.code}» son uno por versión: no "
+                             f"llevan el nombre de una operación, no {name!r}")
+        return found.prefix.rstrip("_")
+    return found.prefix + dataset_slug(name)
 
 
 def dataset_locator(family: str, name: str, version_code: str) -> str:
     """La ubicación del dato de la familia ``family`` de la operación ``name`` en la versión
     ``version_code`` («V03»): la tabla (``des_bmt_<nombre>_v03``) o la ruta en su almacén
-    (``rasters/des_srf_<nombre>_v03.tif``; D-34 de la 009)."""
+    (``rasters/des_srf_<nombre>_v03.tif``; D-34 de la 009). Con una familia sin nombre
+    (``des_decl_v03``), ``name`` es ``""``."""
     found = _family(family)
     base = dataset_name(family, name)
     if found.store is Store.GPKG:
@@ -492,7 +654,8 @@ def dataset_spec(family: str, name: str, version_code: str, *,
     """La ``DatasetSpec`` del dato de la familia ``family`` de la operación ``name`` en la
     versión ``version_code`` (RF-008-17, RF-013-31): su nombre, su tipo, su almacén, su
     ubicación, su lector y su papel; sin selector y no editable en QGIS. ``content``: su hash,
-    calculado fuera de la transacción (R4); ``crs_epsg``, el de una rejilla."""
+    calculado fuera de la transacción (R4); ``crs_epsg``, el de una rejilla o una capa. Con una
+    familia sin nombre (:func:`dataset_name`), ``name`` es ``""``."""
     found = _family(family)
     return DatasetSpec(dataset_name(family, name), MODULE, found.kind, found.store,
                        dataset_locator(family, name, version_code), reader=found.reader,
@@ -590,6 +753,11 @@ FILL_ONLY_SETTINGS: tuple[SettingDef, ...] = tuple(
 """Los ajustes de ``des.fill_only`` (plan 014 §5.3.3): los del escalonado de la 013 salvo el
 sentido, que es siempre relleno (el perfil base y de dónde sale el ancla); la capa de las láminas
 y su campo son nombres."""
+PLATFORM_SETTINGS: tuple[SettingDef, ...] = ()
+"""Los ajustes de ``des.platform`` que enseña su procedencia: ninguno (plan 015 §5.2.2: la definición
+de una entidad son sus **parámetros** ``des.platform.{e}.*``, que la procedencia enseña con sus
+valores; los ajustes solo guardan nombres —el de la entidad, su código y los campos de su capa—, que
+no se declaran). Lo mismo vale para la declaración y la capa de entidades."""
 
 
 # --- Cifras ------------------------------------------------------------------------------------
@@ -664,6 +832,46 @@ QUARRY_FIGURES: tuple[FigureDef, ...] = (
     *AREA_FIGURES, *TWO_SURFACES_FIGURES, *TRANSITION_FIGURES, *FILL_ONLY_FIGURES, *REFIT_FIGURES)
 """Las cifras que declara la 014 (plan 014 §5.2.3), aparte de las de la 013."""
 
+SUPPORTED_M3 = "des.supported_m3"
+DECLARED_COUNT = "des.declared_count"
+"""Las claves de lo apoyado y de lo declarado (spec 015)."""
+
+PLATFORM_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("des.plat_area_m2", "m2", "Area of the platform"),
+    FigureDef("des.plat_axis_m", "m", "Length of the axis of the platform"),
+    FigureDef("des.plat_footprint_m", "m", "Length of the footprint of the platform"),
+    FigureDef("des.plat_start_level_m", "m", "Level of the platform at the start of its axis",
+              allow_negative=True),
+    FigureDef("des.plat_end_level_m", "m", "Level of the platform at the end of its axis",
+              allow_negative=True),
+    FigureDef("des.plat_cut_m3", "m3", "Cut of the platform footprint"),
+    FigureDef("des.plat_fill_m3", "m3", "Fill of the platform footprint"),
+    FigureDef("des.edge_cut_m3", "m3", "Cut of the platform edge"),
+    FigureDef("des.edge_fill_m3", "m3", "Fill of the platform edge"),
+    FigureDef("des.edge_wall_max_m", "m", "Highest wall of the platform edge"),
+    FigureDef("des.plat_below_m2", "m2", "Area of the footprint not left at the platform level"),
+    FigureDef("des.plat_below_max_m", "m",
+              "Largest gap between the footprint and the platform level"),
+)
+"""Las cifras de ``des.platform`` (RF-015-24, RF-015-22; plan 015 §5.2.3), con el ámbito de
+:func:`entity_figure_scope`: el área de su huella, las longitudes de su eje y de su huella, las cotas
+de la rasante en sus extremos (pueden ser negativas), el corte y el relleno de la huella y del borde
+por separado, la altura máxima de la pared del borde y, de las celdas de la huella que no quedan en
+la rasante, su área y la diferencia máxima. Las dos cotas son ``plat_start_level_m`` y
+``plat_end_level_m`` (el plan las llamaba con la palabra que el glosario §14 reserva a la ley)."""
+SUPPORT_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef(SUPPORTED_M3, "m3", "Volume resting on an entity"),
+)
+"""La cifra de lo apoyado (RF-015-15; ADR-0030 §4): el volumen que una operación que rellena apoya
+sobre la huella de **cada** entidad (``scope = {name, entity}``, con la entidad en la que se apoya). La
+deja también toda operación de la 013 o la 014 que rellena sobre una entidad (T23)."""
+DECLARE_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef(DECLARED_COUNT, "-", "Constraints declared by the entities"),
+)
+"""La cifra de ``des.declare_constraints`` (RF-015-10): cuántas restricciones declara la versión."""
+ENTITY_FIGURES: tuple[FigureDef, ...] = (*PLATFORM_FIGURES, *SUPPORT_FIGURES, *DECLARE_FIGURES)
+"""Las cifras que declara la 015 (plan 015 §5.2.3), aparte de las de la 013 y la 014."""
+
 
 # --- Tipos de operación ------------------------------------------------------------------------
 
@@ -679,6 +887,17 @@ TRANSITIONS_COMMAND = "geoblender.des_create_transitions"
 FILL_ONLY_COMMAND = "geoblender.des_design_fill_only"
 REFIT_COMMAND = "geoblender.des_refit_to_limit"
 """Las órdenes del catálogo que los lanzan, una por tipo (plan 014 §5.3.3; entrada «014»)."""
+
+PLATFORM = "des.platform"
+DECLARE_CONSTRAINTS = "des.declare_constraints"
+ENTITY_LAYER = "des.entity_layer"
+"""Los tres tipos de la 015 (plan 015 §5.2.3). «Soltar el apoyo…» no es un tipo: es una
+``des.platform`` repetida con ``supersedes`` (T25)."""
+PLATFORM_COMMAND = "geoblender.des_draw_platform"
+"""La orden del catálogo que lanza los tres: «Plataforma» (entrada «R-36»; la declaración y la capa
+de entidades las encadena la orden que crea la entidad, plan 015 §5.3.2). Es la clave que ya trae el
+catálogo; la T15 la sustituye por la definitiva (``geoblender.des_create_platform``, plan 015
+§5.3.3) en el catálogo, la documentación y aquí."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -736,9 +955,20 @@ QUARRY_OPERATION_TYPES: tuple[OperationType, ...] = (
                   (REFIT_COMMAND,), reproducible=False),
 )
 """Los tipos de operación de la 014, en el orden del plan 014 §5.2.3, aparte de los de la 013."""
+ENTITY_OPERATION_TYPES: tuple[OperationType, ...] = (
+    OperationType(PLATFORM, "Platform", (ENTITY_SURFACE_GRID, ENTITY_TABLE, ENTITY_REPORT_TABLE),
+                  PLATFORM_SETTINGS, (*PLATFORM_FIGURES, *SUPPORT_FIGURES), (PLATFORM_COMMAND,)),
+    OperationType(DECLARE_CONSTRAINTS, "Constraints of the entities", (DECLARED_TABLE,), (),
+                  DECLARE_FIGURES, (PLATFORM_COMMAND,)),
+    OperationType(ENTITY_LAYER, "Layer of the entities", (ENTITY_MAP_TABLE,), (), (),
+                  (PLATFORM_COMMAND,)),
+)
+"""Los tipos de operación de la 015, en el orden del plan 015 §5.2.3, aparte de los de la 013 y la
+014: repetibles y reproducibles (:data:`ENTITY_REPRODUCIBLE`)."""
 OPERATION_TYPES_BY_NAME: Mapping[str, OperationType] = MappingProxyType(
-    {declared.op_type: declared for declared in (*OPERATION_TYPES, *QUARRY_OPERATION_TYPES)})
-"""Los tipos de las dos specs por nombre (solo lectura)."""
+    {declared.op_type: declared
+     for declared in (*OPERATION_TYPES, *QUARRY_OPERATION_TYPES, *ENTITY_OPERATION_TYPES)})
+"""Los tipos de las tres specs por nombre (solo lectura)."""
 VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in OPERATION_TYPES)
 """Los tipos de versión de la 013 (RF-013-17, RF-013-31)."""
 REPRODUCIBLE: tuple[str, ...] = VERSION_TYPES
@@ -749,11 +979,17 @@ QUARRY_VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in QUARRY_OPERATIO
 QUARRY_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in QUARRY_OPERATION_TYPES
                                              if t.reproducible)
 """Los tipos de la 014 que se reproducen: todos salvo el ajuste."""
+ENTITY_VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in ENTITY_OPERATION_TYPES)
+"""Los tipos de versión de la 015, que se repiten solos (RF-015-02)."""
+ENTITY_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in ENTITY_OPERATION_TYPES
+                                             if t.reproducible)
+"""Los tipos de la 015 que se reproducen: los tres (RF-015-02: bit a bit desde una revisión
+congelada, con :data:`FIGURE_TOLERANCE` en las cifras)."""
 
 
 def operation_def(op_type: str, recompute: RecomputeFunction | None = None,
                   reproduce: ReproduceFunction | None = None) -> OperationDef:
-    """El ``OperationDef`` de ``op_type`` (de la 013 o de la 014) con las funciones de recálculo y
+    """El ``OperationDef`` de ``op_type`` (de la 013, la 014 o la 015) con las funciones de recálculo y
     de reproducción que le da ``bl``. ``ValueError`` si el tipo no es de ``des``, falta la
     función de recálculo o se da la de reproducción a uno que no se reproduce."""
     found = OPERATION_TYPES_BY_NAME.get(op_type) if isinstance(op_type, str) else None
@@ -790,6 +1026,18 @@ def quarry_operation_defs(recompute: Mapping[str, RecomputeFunction],
     return tuple(declared.definition(recompute[declared.op_type],
                                      reproduce.get(declared.op_type))
                  for declared in QUARRY_OPERATION_TYPES)
+
+
+def entity_operation_defs(recompute: Mapping[str, RecomputeFunction],
+                          reproduce: Mapping[str, ReproduceFunction]
+                          ) -> tuple[OperationDef, ...]:
+    """Los ``OperationDef`` de los tres tipos de la 015, en su orden: cada uno con su función de
+    ``recompute`` (todos se repiten solos) y de ``reproduce`` (todos se reproducen). ``ValueError``
+    si sobra o falta alguna."""
+    _check_functions("recálculo", recompute, ENTITY_VERSION_TYPES)
+    _check_functions("reproducción", reproduce, ENTITY_REPRODUCIBLE)
+    return tuple(declared.definition(recompute[declared.op_type], reproduce[declared.op_type])
+                 for declared in ENTITY_OPERATION_TYPES)
 
 
 # --- Las cifras: armarlas -----------------------------------------------------------------------
@@ -944,6 +1192,81 @@ def design_figures(report: DesignReport, *, name: str, berm_count: int
                          _finite("des.nodata_area_m2", report.nodata_area_m2), "m2",
                          scope=scope)]
     return tuple(found)
+
+
+ENTITY_SCOPE_KEY = "entity"
+"""La clave del ámbito de una cifra de las entidades además del nombre: el código de la entidad
+(``PLT-001``; inmutable por versión: no cambia al renombrarla)."""
+
+
+def entity_figure_scope(name: str, code: str) -> dict[str, str]:
+    """El ámbito de una cifra de las entidades (spec 015, T04; plan 015 §5.2.3; ``docs/trampas.md``
+    §6): el de :func:`figure_scope` (el nombre de la operación en ASCII, único en la versión) y, en
+    :data:`ENTITY_SCOPE_KEY`, el código de la entidad ``code``: el de la propia entidad en las cifras
+    de la plataforma y el de **la entidad en la que se apoya** en ``des.supported_m3``. Sin él, las
+    cifras de dos entidades se pisarían (la vigente de una clave es la última de cada ámbito,
+    RF-009-20). ``ValueError`` si ``code`` no es el código de una entidad (``PLT-001``);
+    ``GisError`` ``gis.dataset_name_invalid`` si el nombre no tiene letras ni cifras."""
+    scope = figure_scope(name)
+    entity_segment(code)  # el código de una entidad (ValueError, TypeError)
+    scope[ENTITY_SCOPE_KEY] = code
+    return scope
+
+
+def _non_negative(key: str, value: object) -> float:
+    """``value`` como real finito y no negativo (un volumen, un área, una longitud)."""
+    number = _finite(key, value)
+    if number < 0:
+        raise ValueError(f"la cifra «{key}» no admite un valor negativo: {value!r}")
+    return number
+
+
+def platform_figures(name: str, code: str, values: Mapping[str, float | None]
+                     ) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO de la plataforma ``name`` de código ``code`` (RF-015-24; plan 015
+    §5.2.3), con el ámbito de :func:`entity_figure_scope`, en el orden de :data:`PLATFORM_FIGURES`
+    y con su unidad: ``values`` da cada una por su clave (las doce, ninguna de más ni de menos). Una
+    que no existe (``None``: sin celdas fuera de la rasante no hay diferencia máxima; sin
+    relleno, no hay pared) no se registra; las que no admiten negativos (todas salvo las cotas)
+    rechazan uno. Un valor que no es finito es un error del programa (``ValueError``)."""
+    declared = {figure.key: figure for figure in PLATFORM_FIGURES}
+    given = _mapping(values, "las cifras de una plataforma")
+    extra = sorted(str(key) for key in given if key not in declared)
+    if extra:
+        raise ValueError(f"{', '.join(extra)} no son cifras de una plataforma: son "
+                         f"{', '.join(declared)}")
+    missing = [key for key in declared if key not in given]
+    if missing:
+        raise ValueError(f"faltan las cifras de la plataforma «{name}»: {', '.join(missing)} "
+                         "(las que no existen se dan como None)")
+    scope = entity_figure_scope(name, code)
+    found = []
+    for key, figure in declared.items():
+        value = given[key]
+        if value is None:
+            continue
+        number = _finite(key, value) if figure.allow_negative else _non_negative(key, value)
+        found.append(FigureSpec(key, number, figure.unit, scope=scope))
+    return tuple(found)
+
+
+def supported_figures(name: str, volumes: Mapping[str, float]) -> tuple[FigureSpec, ...]:
+    """Las cifras ``des.supported_m3`` de la operación ``name`` (spec 015, T04; RF-015-15; ADR-0030
+    §4): una por entidad en la que se apoya, por orden de código, con el volumen apoyado (m³; cero
+    si lo declara el usuario y no rellena nada) y el ámbito de :func:`entity_figure_scope` con **esa**
+    entidad (``volumes``: código → volumen). Sin entidades, ninguna. ``ValueError`` si un volumen
+    no es un número finito y no negativo o un código no es el de una entidad."""
+    scope_of = {code: entity_figure_scope(name, code) for code in volumes}
+    return tuple(FigureSpec(SUPPORTED_M3, _non_negative(SUPPORTED_M3, volumes[code]), "m3",
+                            scope=scope_of[code])
+                 for code in sorted(scope_of))
+
+
+def declare_figures(count: int) -> tuple[FigureSpec, ...]:
+    """La cifra ``des.declared_count`` de ``des.declare_constraints`` (RF-015-10): cuántas
+    restricciones declara la versión (un entero no negativo; cero si ninguna entidad protege), sin
+    ámbito: hay una declaración por versión."""
+    return (FigureSpec(DECLARED_COUNT, _count(DECLARED_COUNT, count), "-"),)
 
 
 # --- Los ajustes: guardarlos y leerlos ---------------------------------------------------------
@@ -1436,6 +1759,177 @@ def refit_source(settings: Mapping[str, Any], output: str) -> str | None:
     return None
 
 
+# --- Los ajustes de las entidades (spec 015, T04) ---------------------------------------------
+
+
+def platform_settings(request: PlatformRequest, code: str) -> dict[str, Any]:
+    """Los ajustes de ``des.platform`` (spec 015, T04; RF-015-02, RF-015-19; JSON sin rutas): el
+    nombre de la plataforma, su ``code`` (``PLT-001``) y los campos de su capa de los que salieron
+    sus valores iniciales y el enlace de su eje (``fields``: la cota inicial, la pendiente, el
+    ancho, el campo del eje y la capa de ese eje; ``None`` los que no lleva). **Ninguna otra cosa**:
+    la capa, la geometría, la partida, el modo, el borde y lo demás son **parámetros de la
+    entidad** (``des.platform.{e}.*``, :func:`platform_values`): guardarlos aquí los duplicaría y
+    cambiar uno no cambiaría el otro. Es un diccionario nuevo; ``ValueError`` si ``code`` no es el
+    de una entidad."""
+    if not isinstance(request, PlatformRequest):
+        raise TypeError(f"los ajustes de una plataforma salen de una PlatformRequest, no "
+                        f"{request!r}")
+    entity_segment(code)
+    fields = request.fields
+    return {
+        "name": request.name,
+        "code": code,
+        "fields": {
+            "start_level_field": fields.start_level_field,
+            "gradient_field": fields.gradient_field,
+            "width_field": fields.width_field,
+            "axis_field": fields.axis_field,
+            "axis_layer": fields.axis_layer,
+        },
+    }
+
+
+def platform_code(settings: Mapping[str, Any]) -> str:
+    """El código de la entidad que guardan unos ajustes de ``des.platform``
+    (:func:`platform_settings`). ``ValueError`` si no lo llevan o no es el de una entidad."""
+    what = "los ajustes de una plataforma"
+    code = _required_text(_mapping(settings, what), "code", what)
+    entity_segment(code)
+    return code
+
+
+def platform_values(code: str, parameters: Mapping[str, Any]) -> dict[str, Any]:
+    """Los valores de la entidad de código ``code`` entre los parámetros resueltos ``parameters``
+    (clave completa → valor, como los anota una operación: ``des.platform.plt_001.mode``): por su
+    último segmento (``mode``), sin los de otra entidad ni los del proyecto. Es lo que recibe
+    :func:`platform_request`. ``ValueError`` si ``code`` no es el de una entidad."""
+    prefix = f"{PLATFORM_PREFIX}.{entity_segment(code)}."
+    return {key[len(prefix):]: value for key, value in _mapping(
+        parameters, "los parámetros de una entidad").items()
+        if isinstance(key, str) and key.startswith(prefix)}
+
+
+_VALUES = "los valores de una plataforma"
+
+
+def _entity_values(parameters: Mapping[str, Any]) -> dict[str, Any]:
+    """Los valores de una plataforma por su último segmento; ``ValueError`` si uno no es de una."""
+    found: dict[str, Any] = {}
+    for key, value in _mapping(parameters, _VALUES).items():
+        try:
+            found[PlatformParam(key).value] = value
+        except ValueError:
+            options = ", ".join(item.value for item in PlatformParam)
+            raise ValueError(f"{_VALUES} son de {options}, no «{key}»") from None
+    return found
+
+
+def _param_text(values: Mapping[str, Any], param: PlatformParam, *, required: bool = False
+                ) -> str | None:
+    value = values.get(param.value)
+    if value is None:
+        if required:
+            raise ValueError(f"falta «{param.value}» en {_VALUES}")
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{_VALUES} llevan «{param.value}» como un texto, no {value!r}")
+    return value
+
+
+def platform_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]
+                     ) -> PlatformRequest:
+    """La plataforma que repiten los ajustes ``settings`` de una operación ``des.platform`` (los de
+    :func:`platform_settings`) con los valores de los parámetros de su entidad ``parameters``
+    (por último segmento: :func:`platform_values`): al recalcularla y al reproducirla. La capa y la
+    geometría salen de los parámetros (cambiar uno repite la operación con el nuevo), la capa de
+    las líneas y los campos, de los ajustes; lo que no tiene valor (la apoyada, la pendiente máxima,
+    lo que declara) queda como en la petición sin pedirlo. ``ValueError`` si no son los de una
+    plataforma (nombrando el campo)."""
+    what = "los ajustes de una plataforma"
+    data = _mapping(settings, what)
+    fields_what = f"{what}, «fields»,"
+    fields = _mapping(data.get("fields"), fields_what)
+    values = _entity_values(parameters)
+    protect = values.get(PlatformParam.PROTECT.value)
+    if protect is not None and not isinstance(protect, bool):
+        raise ValueError(f"{_VALUES} llevan «protect» como sí o no, no {protect!r}")
+    layer = _param_text(values, PlatformParam.LAYER, required=True)
+    assert layer is not None
+    feature = _param_text(values, PlatformParam.FEATURE, required=True)
+    start = _param_text(values, PlatformParam.START, required=True)
+    assert feature is not None and start is not None
+    return PlatformRequest(
+        name=_required_text(data, "name", what),
+        fields=PlatformFields(
+            layer=layer,
+            start_level_field=_required_text(fields, "start_level_field", fields_what),
+            gradient_field=_required_text(fields, "gradient_field", fields_what),
+            width_field=_optional_text(fields, "width_field", fields_what),
+            axis_field=_optional_text(fields, "axis_field", fields_what),
+            axis_layer=_optional_text(fields, "axis_layer", fields_what)),
+        feature=feature, start=start,
+        support=_param_text(values, PlatformParam.SUPPORT),
+        mode=_param_text(values, PlatformParam.MODE),
+        edge_angle_deg=_number(values, PlatformParam.EDGE_ANGLE.value, _VALUES),
+        reach_m=_number(values, PlatformParam.REACH.value, _VALUES),
+        mesh_factor=_number(values, PlatformParam.MESH_FACTOR.value, _VALUES),
+        counter_tol_m=_number(values, PlatformParam.COUNTER_TOL.value, _VALUES),
+        metric=_param_text(values, PlatformParam.METRIC),
+        max_slope_pct=_number(values, PlatformParam.MAX_SLOPE.value, _VALUES),
+        protect=bool(protect),
+        guard_m=_number(values, PlatformParam.GUARD.value, _VALUES),
+        reason=_param_text(values, PlatformParam.REASON))
+
+
+def _entity_pairs(entities: Iterable[tuple[str, str]], what: str) -> list[dict[str, str]]:
+    """Las entidades ``(código, nombre)`` de ``what`` como las guardan los ajustes."""
+    if isinstance(entities, str | bytes | Mapping) or not isinstance(entities, Iterable):
+        raise TypeError(f"las entidades {what} son una lista de (código, nombre), no "
+                        f"{entities!r}")
+    found: list[dict[str, str]] = []
+    for pair in entities:
+        code, name = pair
+        entity_segment(code)
+        if not isinstance(name, str):
+            raise TypeError(f"el nombre de la entidad «{code}» es un texto, no {name!r}")
+        if not name.strip():
+            raise ValueError(f"falta el nombre de la entidad «{code}»")
+        if any(item["code"] == code for item in found):
+            raise ValueError(f"la entidad «{code}» está dos veces {what}")
+        found.append({"code": code, "name": name})
+    return found
+
+
+def declare_settings(entities: Iterable[tuple[str, str]]) -> dict[str, Any]:
+    """Los ajustes de ``des.declare_constraints`` (spec 015, T04; RF-015-10; JSON sin rutas): las
+    entidades que recoge, por orden, cada una con su código y su nombre (lo que hace falta para
+    nombrar sus datos al recalcular y reproducir). Es un diccionario nuevo; ``ValueError`` si un
+    código no es el de una entidad, un nombre está en blanco o una entidad sale dos veces."""
+    return {"entities": _entity_pairs(entities, "de la declaración")}
+
+
+def entity_layer_settings(entities: Iterable[tuple[str, str]]) -> dict[str, Any]:
+    """Los ajustes de ``des.entity_layer`` (spec 015, T04; RF-015-27): las mismas que
+    :func:`declare_settings`, las de la capa de entidades."""
+    return {"entities": _entity_pairs(entities, "de la capa de entidades")}
+
+
+def settings_entities(settings: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """Las entidades ``(código, nombre)`` que guardan unos ajustes de ``des.declare_constraints`` o
+    de ``des.entity_layer`` (:func:`declare_settings`, :func:`entity_layer_settings`), por orden.
+    ``ValueError`` si no las llevan como esas listas."""
+    what = "los ajustes de la declaración o de la capa de entidades"
+    items = _mapping(settings, what).get("entities")
+    if not isinstance(items, list):
+        raise ValueError(f"{what} llevan «entities» como una lista, no {items!r}")
+    found = []
+    for item in items:
+        data = _mapping(item, f"{what}, «entities»,")
+        found.append((_required_text(data, "code", f"{what}, «entities»,"),
+                      _required_text(data, "name", f"{what}, «entities»,")))
+    return tuple(found)
+
+
 def settings_pending(settings: Mapping[str, Any]) -> tuple[str, ...]:
     """Los códigos de los sectores sin búsqueda vigente al calcular que guardan unos ajustes
     (RF-013-06; ninguno si no los llevan). ``ValueError`` si no son una lista de textos."""
@@ -1652,6 +2146,54 @@ def refit_inputs(request: RefitRequest, masks: Iterable[Use] = (),
     return _unique(found)
 
 
+def platform_inputs(request: PlatformRequest, start: str, masks: Iterable[Use] = (),
+                    supports: Iterable[str] = ()) -> tuple[Use, ...]:
+    """Lo que consume ``des.platform`` (spec 015, T04; RF-015-02, RF-015-04, RF-015-06, RF-015-15;
+    plan 015 §5.2.3), en su orden: la capa de las plataformas (:data:`ENTITY_LAYER_ROLE`: la
+    geometría y su hash; un cambio de geometría en QGIS deja obsoleta la operación) y, si un polígono
+    enlaza su eje con otra capa, la de ese eje (:data:`ENTITY_AXIS_LAYER_ROLE`); la superficie de
+    partida ``start`` (:data:`SURFACE_ROLE`; **ya resuelta**: el nombre de su dato, no el
+    ``entity:<código>`` del parámetro); las máscaras de la versión ``masks`` (``MaskSet.uses()``) y,
+    **añadidas al crear** (una operación hecha es inmutable), las superficies de las entidades en
+    las que se apoya, ``supports`` (:data:`SUPPORTED_ON_ROLE`: las que detecta el cálculo y las que
+    declara el usuario, y la superficie de apoyo de la petición, resuelta), sin repetir. Si una
+    cambia, la plataforma queda obsoleta. No lee sectores ni búsquedas: las máscaras ya las llevan y
+    ``refuse_pending`` rechaza el cálculo con uno pendiente. ``ValueError`` si faltan los nombres;
+    ``TypeError`` si ``supports`` es un texto."""
+    found = [Use(_named(request.layer, "de la capa de las plataformas"), ENTITY_LAYER_ROLE)]
+    if request.fields.axis_layer is not None:
+        found.append(Use(_named(request.fields.axis_layer, "de la capa de los ejes"),
+                         ENTITY_AXIS_LAYER_ROLE))
+    found.append(Use(_named(start, "de la superficie de partida"), SURFACE_ROLE))
+    found += list(masks)
+    found += [Use(_named(name, "de una superficie en la que se apoya"), SUPPORTED_ON_ROLE)
+              for name in _codes(supports, "las superficies de apoyo")]
+    return _unique(found)
+
+
+def _entity_inputs(names: Iterable[str], what: str) -> tuple[Use, ...]:
+    """Los datos ``des_epr_`` de las entidades de nombre ``names`` como entradas (papel
+    :data:`ENTITY_ROLE`), sin repetir."""
+    return _unique(Use(dataset_name(ENTITY_TABLE, name), ENTITY_ROLE)
+                   for name in _codes(names, what))
+
+
+def declare_inputs(names: Iterable[str]) -> tuple[Use, ...]:
+    """Lo que consume ``des.declare_constraints`` (spec 015, T04; RF-015-10; plan 015 §5.2.3): los
+    datos ``des_epr_`` de las entidades vivas que protegen (papel :data:`ENTITY_ROLE`), por el nombre
+    de cada entidad. Ninguna entrada de una capa del proyecto. Si uno cambia, la declaración queda
+    obsoleta. ``GisError`` ``gis.dataset_name_invalid`` si un nombre no tiene letras ni cifras;
+    ``TypeError`` si ``names`` es un texto."""
+    return _entity_inputs(names, "las entidades de la declaración")
+
+
+def entity_layer_inputs(names: Iterable[str]) -> tuple[Use, ...]:
+    """Lo que consume ``des.entity_layer`` (spec 015, T04; RF-015-27; plan 015 §5.2.3): los datos
+    ``des_epr_`` de **todas** las entidades vivas (papel :data:`ENTITY_ROLE`), por el nombre de cada
+    una. Como :func:`declare_inputs`."""
+    return _entity_inputs(names, "las entidades de la capa")
+
+
 # --- Los parámetros que lee una operación -------------------------------------------------------
 
 ENVELOPE_PROFILE_PARAMS: tuple[BenchParam, ...] = (
@@ -1746,3 +2288,71 @@ def refit_params() -> tuple[str, ...]:
     hallazgo F-10): van en sus ajustes (:func:`refit_settings`), no aquí, que anotaría los de
     hoy."""
     return (VERIFY_MIN_THICKNESS, *CREATED_STEP_PARAMS)
+
+
+PLATFORM_COMMON_PARAMS: tuple[str, ...] = (TOLERANCE_FACE, WARNING_RATIO, VERIFY_MIN_THICKNESS,
+                                           *CREATED_STEP_PARAMS)
+"""Lo que lee de los parámetros del proyecto toda plataforma (spec 015, T04; plan 015 §5.2.2): la
+tolerancia de cara de la 013 (la pared más empinada que la cara solo se admite en el límite del
+alcance, RF-015-22) y el umbral de aviso de magnitud (RF-015-13), el espesor mínimo de la 012 con
+que se cuentan las celdas que mueve y el salto y el porcentaje admitidos del salto creado de la 014
+(:data:`CREATED_STEP_PARAMS`, RF-015-13)."""
+
+_PLATFORM_READ: tuple[PlatformParam, ...] = (
+    PlatformParam.LAYER, PlatformParam.FEATURE, PlatformParam.START, PlatformParam.START_LEVEL,
+    PlatformParam.GRADIENT, PlatformParam.MODE, PlatformParam.EDGE_ANGLE, PlatformParam.REACH,
+    PlatformParam.MESH_FACTOR, PlatformParam.COUNTER_TOL, PlatformParam.METRIC)
+"""Los valores de la entidad que lee siempre ``des.platform``: los que cambian su resultado. No
+lee su nombre (renombrarla no la deja obsoleta) ni lo que declara (``protect``, ``guard_m`` y
+``reason``: lo lee la declaración)."""
+
+
+def platform_params(code: str, request: PlatformRequest, *, supports: bool = False
+                    ) -> tuple[str, ...]:
+    """Los parámetros que lee ``des.platform`` de la entidad de código ``code``
+    (``begin_operation(params=…)``; spec 015, T04; RF-015-02, RF-015-16; plan 015 §5.2.2): la capa,
+    la geometría, la partida, la cota inicial y la pendiente de la rasante, el modo, el borde (su
+    ángulo, su alcance, su factor de malla y su métrica) y la tolerancia de contrapendiente, y, solo
+    los que tienen valor (un parámetro sin valor ni valor por defecto es un rechazo de la 008): el
+    ancho, si la geometría es una línea con su campo de ancho; la superficie de apoyo y la pendiente
+    máxima, si la ``request`` las lleva; y las dependencias declaradas (``supports``), si la entidad
+    las tiene (``supports=True``: cambiarlas cambia lo que se apoya). Después, los del proyecto
+    (:data:`PLATFORM_COMMON_PARAMS`). Por orden de :class:`~.params.PlatformParam`. Cambiar la
+    partida, un parámetro o la geometría deja la plataforma (y, en cascada, lo que parte de ella)
+    obsoleta con su causa. ``ValueError`` si ``code`` no es el de una entidad."""
+    read = set(_PLATFORM_READ)
+    if request.fields.width_field is not None:
+        read.add(PlatformParam.WIDTH)
+    if request.support is not None:
+        read.add(PlatformParam.SUPPORT)
+    if request.max_slope_pct is not None:
+        read.add(PlatformParam.MAX_SLOPE)
+    if supports:
+        read.add(PlatformParam.SUPPORTS)
+    return (*(entity_key(code, param) for param in PlatformParam if param in read),
+            *PLATFORM_COMMON_PARAMS)
+
+
+def declare_params(codes: Iterable[str], *, protecting: Iterable[str] = (),
+                   reasoned: Iterable[str] = ()) -> tuple[str, ...]:
+    """Los parámetros que lee ``des.declare_constraints`` de las entidades de código ``codes`` (spec
+    015, T04; RF-015-10, RF-015-12; plan 015 §5.2.3), por entidad y en su orden: su nombre (el
+    motivo generado, «declarada por la plataforma P1», lo lleva) y si protege (``protect``); de las
+    que protegen (``protecting``), su modo (una «en corte y relleno» que protege se rechaza) y su
+    resguardo (``guard_m``, obligatorio si protege: D-19); y, de las que editaron su motivo
+    (``reasoned``), el ``reason``. ``ValueError`` si un código de ``protecting`` o de ``reasoned``
+    no está en ``codes`` o no es el de una entidad."""
+    entities = _codes(codes, "las entidades de la declaración")
+    protects = set(_codes(protecting, "las entidades que protegen"))
+    edited = set(_codes(reasoned, "las entidades con el motivo editado"))
+    unknown = sorted((protects | edited) - set(entities))
+    if unknown:
+        raise ValueError(f"{', '.join(unknown)} no están entre las entidades de la declaración")
+    found: list[str] = []
+    for code in entities:
+        found += [entity_key(code, PlatformParam.NAME), entity_key(code, PlatformParam.PROTECT)]
+        if code in protects:
+            found += [entity_key(code, PlatformParam.MODE), entity_key(code, PlatformParam.GUARD)]
+        if code in edited:
+            found.append(entity_key(code, PlatformParam.REASON))
+    return _unique(found)

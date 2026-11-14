@@ -142,6 +142,13 @@ PENDING_015_API = frozenset({
     "EntityEntry", "EntityRegistry", "ParamChange", "chain_of", "chain_tails", "check_chain",
     "find_entity", "insert_after", "insert_before", "insertion_start", "predecessor_of",
     "ref_code", "registry", "start_conflict", "successor_of", "surface_ref",
+    # T04: design.provenance (los tipos de operación, los ajustes, las entradas, los parámetros y las
+    # cifras de las entidades).
+    "entity_operation_defs", "entity_figure_scope", "platform_figures", "supported_figures",
+    "declare_figures", "platform_settings", "platform_code", "platform_values",
+    "platform_request", "declare_settings", "entity_layer_settings", "settings_entities",
+    "platform_inputs", "declare_inputs", "entity_layer_inputs", "platform_params",
+    "declare_params",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({
