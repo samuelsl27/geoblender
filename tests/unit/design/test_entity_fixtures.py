@@ -264,6 +264,91 @@ class StripCaseTest(unittest.TestCase):
         self.assertFalse(np.isnan(again.terrain).any())
 
 
+class DownstreamStripCaseTest(unittest.TestCase):
+    """La variante de la franja con el tramo bajo la rasante **aguas abajo** (T10, el caso base de
+    CE-015-02): la rasante sube con la abscisa (+ 1 %), así que baja hacia su abscisa 0, el extremo
+    de menor ``x``; el tramo (los 40 m del principio del eje) está en ese extremo y el perfil
+    longitudinal solo baja. Con la del medio (``strip_case()``), el perfil vuelve a subir aguas
+    abajo del tramo: es una contrapendiente (RF-015-23). Cuentas a mano."""
+
+    def setUp(self) -> None:
+        self.case = efx.strip_case(hollow="downstream")
+        self.middle = efx.strip_case()
+
+    def test_the_stretch_is_the_first_40_m_of_the_axis(self) -> None:
+        """El tramo bajo la rasante es la caja de x de 100 a 140 (la abscisa 0 a 40 m) y de y de 180
+        a 220: 40 columnas de 40 filas = 1.600 celdas, las mismas que la del medio, dentro de la
+        huella; el centro de la primera columna es x = 100,5 y el de la última, 139,5."""
+        case = self.case
+        x, y = qfx.local_centers()
+        self.assertEqual(efx.STRIP_DOWNSTREAM_HOLLOW_BOX, (100.0, 180.0, 140.0, 220.0))
+        self.assertEqual(int(case.hollow.sum()), 40 * 40)
+        self.assertEqual(int(case.hollow.sum()), efx.STRIP_HOLLOW_CELLS)
+        self.assertTrue((case.hollow <= case.footprint).all())
+        self.assertEqual((float(x[case.hollow].min()), float(x[case.hollow].max())), (100.5, 139.5))
+        self.assertEqual((float(y[case.hollow].min()), float(y[case.hollow].max())), (180.5, 219.5))
+        self.assertEqual(case.hollow_at, "downstream")
+        self.assertEqual(self.middle.hollow_at, "middle")
+
+    def test_it_is_the_downstream_end_of_the_grade(self) -> None:
+        """Con la rasante ``230 + (x − 100) · 0,01`` (+ 1 %), la menor cota está en x = 100: el tramo
+        queda en las abscisas más bajas de la rasante (230,005 a 230,395 m), y el resto de la huella,
+        más arriba (230,405 a 231,995 m)."""
+        case = self.case
+        x, _y = qfx.local_centers()
+        self.assertGreater(case.slope_pct, 0.0)
+        self.assertLess(float(case.grade[case.hollow].max()), float(case.grade[
+            case.footprint & ~case.hollow].min()))
+        self.assertAlmostEqual(float(case.grade[case.hollow].min()), 230.005, places=9)
+        self.assertAlmostEqual(float(case.grade[case.hollow].max()), 230.395, places=9)
+        self.assertAlmostEqual(float(case.grade[case.footprint & ~case.hollow].min()), 230.405,
+                               places=9)
+        self.assertTrue((x[case.hollow] < 140.0).all())
+
+    def test_the_terrain_is_6_m_above_and_5_m_below_in_the_stretch(self) -> None:
+        """El terreno sigue el mismo plano al 1 %: 5 m por debajo de la rasante en el tramo y 6 m
+        por encima en el resto de la huella; fuera del tramo, igual que el de la del medio."""
+        case = self.case
+        gap = case.terrain - case.grade
+        np.testing.assert_allclose(gap[case.hollow], -efx.STRIP_HOLLOW_M, rtol=0.0, atol=1e-9)
+        np.testing.assert_allclose(gap[case.footprint & ~case.hollow], efx.STRIP_ABOVE_M, rtol=0.0,
+                                   atol=1e-9)
+        outside = ~(case.hollow | self.middle.hollow)
+        np.testing.assert_array_equal(case.terrain[outside], self.middle.terrain[outside])
+        self.assertFalse(np.isnan(case.terrain).any())
+
+    def test_same_figures_as_the_middle_one(self) -> None:
+        """El mismo eje, la misma huella, la misma rasante y las mismas cuentas a mano: 38.400 m³ de
+        corte y 8.000 de relleno, 6.400 celdas por encima y 1.600 por debajo."""
+        case, middle = self.case, self.middle
+        np.testing.assert_array_equal(case.axis, middle.axis)
+        np.testing.assert_array_equal(case.footprint, middle.footprint)
+        np.testing.assert_array_equal(case.grade[case.footprint], middle.grade[middle.footprint])
+        above = np.where(case.terrain > case.grade, case.terrain - case.grade, 0.0)
+        below = np.where(case.terrain < case.grade, case.grade - case.terrain, 0.0)
+        self.assertAlmostEqual(float(above[case.footprint].sum()), efx.STRIP_CUT_M3, places=6)
+        self.assertAlmostEqual(float(below[case.footprint].sum()), efx.STRIP_FILL_M3, places=6)
+        self.assertEqual((case.cut_m3, case.fill_m3), (efx.STRIP_CUT_M3, efx.STRIP_FILL_M3))
+        self.assertEqual(int((above > 0.0)[case.footprint].sum()), 6_400)
+        self.assertEqual(int((below > 0.0)[case.footprint].sum()), 1_600)
+
+    def test_with_the_untouchable_it_does_not_touch_the_stretch(self) -> None:
+        """El intocable (x de 140 a 150) queda aguas arriba del tramo, pegado a él: las mismas 400
+        celdas bloqueadas fuera del tramo, 36.000 m³ de corte y los mismos 8.000 de relleno."""
+        case = efx.strip_case(untouchable=True, hollow="downstream")
+        self.assertEqual(int(case.blocked.sum()), efx.STRIP_BLOCKED_CELLS)
+        self.assertFalse((case.blocked & case.hollow).any())
+        self.assertEqual((case.cut_m3, case.fill_m3), (efx.STRIP_CUT_BLOCKED_M3,
+                                                       efx.STRIP_FILL_M3))
+        self.assertEqual(case.blocked_by, efx.UNTOUCHABLE_NAME)
+        self.assertEqual(case.hollow_at, "downstream")
+
+    def test_an_unknown_place_is_an_error(self) -> None:
+        """Un lugar que no es «middle» ni «downstream» es un error del programa."""
+        with self.assertRaises(ValueError):
+            efx.strip_case(hollow="upstream")
+
+
 class LayersTest(unittest.TestCase):
     """La capa de ejes y la de polígonos de las plataformas, sin proyecto."""
 

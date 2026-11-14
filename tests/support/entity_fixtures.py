@@ -18,7 +18,10 @@ hechas a mano; las comprueba ``tests/unit/design/test_entity_fixtures.py``.
   1.600 del tramo; «en corte» baja 38.400 m³ y no sube nada (el lomo de B7) y «en corte y relleno»
   sube además 8.000 m³. Con ``untouchable=True``, un intocable (una banda de 10 m que cruza la
   huella de lado a lado) deja 400 celdas sin mover: 36.000 m³ de corte y los mismos 8.000 m³ de
-  relleno.
+  relleno. Con ``hollow="downstream"`` el tramo bajo la rasante va en el extremo de la abscisa 0 (de
+  0 a 40 m, ``STRIP_DOWNSTREAM_HOLLOW_BOX``) y no en el medio: la rasante baja hacia él y el perfil
+  longitudinal **no vuelve a subir** (ninguna contrapendiente: el caso base de CE-015-02; en el medio
+  sí la hay, RF-015-23). Las cuentas (celdas y m³) son las mismas.
 - **Las capas de plataformas** (:func:`platform_layers`; plan §5.2.1): una capa de líneas con los
   campos de un corredor (``ancho``, ``cota_inicial`` y ``pendiente``; D-15: sirve también de capa de
   corredores de la cantera) y una de polígonos con ``cota_inicial``, ``pendiente`` y ``eje``, el
@@ -109,6 +112,12 @@ STRIP_FOOTPRINT_BOX = (100.0, 180.0, 300.0, 220.0)
 """La huella de la franja (local: izquierda, abajo, derecha, arriba): 200 × 40 m."""
 STRIP_HOLLOW_BOX = (180.0, 180.0, 220.0, 220.0)
 """El tramo bajo la rasante (local): de 80 a 120 m del principio del eje, todo el ancho."""
+STRIP_DOWNSTREAM_HOLLOW_BOX = (100.0, 180.0, 140.0, 220.0)
+"""El tramo bajo la rasante **aguas abajo** (local): de 0 a 40 m del principio del eje, todo el ancho.
+La rasante sube con la abscisa (+ 1 %): baja hacia la abscisa 0, que es el extremo del tramo."""
+STRIP_HOLLOW_PLACES: tuple[str, ...] = ("middle", "downstream")
+"""Dónde va el tramo bajo la rasante: ``middle`` (de 80 a 120 m, el de siempre) o ``downstream``
+(de 0 a 40 m, aguas abajo de la rasante)."""
 UNTOUCHABLE_BOX = (140.0, 170.0, 150.0, 230.0)
 """La banda del intocable (local): 10 m en x, de 40 a 50 m del principio del eje, que cruza la
 huella de lado a lado y sobresale 10 m por cada lado (10 × 60 celdas)."""
@@ -142,7 +151,8 @@ class StripCase:
     bajo ella (``hollow``) y las máscaras ``cut_allowed`` y ``fill_allowed`` (la rejilla entera
     admitida, salvo la banda del intocable si lo hay), con las celdas de la huella que el intocable
     bloquea (``blocked``, ``blocked_by`` su nombre) y los m³ de corte y de relleno que dan las
-    cuentas a mano (``cut_m3`` en cualquier modo; ``fill_m3`` solo en «en corte y relleno»)."""
+    cuentas a mano (``cut_m3`` en cualquier modo; ``fill_m3`` solo en «en corte y relleno»).
+    ``hollow_at`` es dónde está el tramo bajo la rasante (:data:`STRIP_HOLLOW_PLACES`)."""
 
     grid: Any
     axis: np.ndarray
@@ -159,23 +169,34 @@ class StripCase:
     blocked_by: str
     cut_m3: float
     fill_m3: float
+    hollow_at: str = "middle"
 
 
-def strip_case(*, untouchable: bool = False) -> StripCase:
-    """La franja de CE-015-02 (véase el módulo), con o sin el intocable que cruza la huella."""
+def strip_case(*, untouchable: bool = False, hollow: str = "middle") -> StripCase:
+    """La franja de CE-015-02 (véase el módulo), con o sin el intocable que cruza la huella y con el
+    tramo bajo la rasante en ``hollow`` (:data:`STRIP_HOLLOW_PLACES`): ``middle`` (de 80 a 120 m del
+    principio del eje: el perfil baja en el tramo y **vuelve a subir** aguas abajo de él, una
+    contrapendiente de 4,99 m por RF-015-23) o ``downstream`` (de 0 a 40 m: el tramo está en el
+    extremo por donde baja la rasante y el perfil solo baja; el caso base de CE-015-02: ninguna
+    contrapendiente). El eje, la huella, la rasante, las máscaras y las cuentas a mano (los m³) son
+    los mismos en las dos; ``ValueError`` si ``hollow`` no es de la lista."""
+    if hollow not in STRIP_HOLLOW_PLACES:
+        raise ValueError(f"el tramo bajo la rasante va en {' o '.join(STRIP_HOLLOW_PLACES)}, "
+                         f"no en «{hollow}»")
     x, _y = qfx.local_centers(GRID)
     footprint = qfx.in_box(STRIP_FOOTPRINT_BOX, GRID)
-    hollow = qfx.in_box(STRIP_HOLLOW_BOX, GRID)
+    hollow_box = STRIP_HOLLOW_BOX if hollow == "middle" else STRIP_DOWNSTREAM_HOLLOW_BOX
+    hollow_cells = qfx.in_box(hollow_box, GRID)
     line = STRIP_START_M + (x - STRIP_AXIS_LOCAL[0][0]) * (STRIP_GRADIENT_PCT / 100.0)
-    terrain = np.where(hollow, line - STRIP_HOLLOW_M, line + STRIP_ABOVE_M)
+    terrain = np.where(hollow_cells, line - STRIP_HOLLOW_M, line + STRIP_ABOVE_M)
     grade = np.where(footprint, line, np.nan)
     band = qfx.in_box(UNTOUCHABLE_BOX, GRID) if untouchable else np.zeros(GRID.shape, dtype=bool)
     allowed = ~band
     return StripCase(
         GRID, cfx.absolute(STRIP_AXIS_LOCAL), STRIP_WIDTH_M, STRIP_START_M, STRIP_GRADIENT_PCT,
-        terrain, footprint, grade, hollow, allowed, allowed.copy(), footprint & band,
+        terrain, footprint, grade, hollow_cells, allowed, allowed.copy(), footprint & band,
         UNTOUCHABLE_NAME if untouchable else "",
-        STRIP_CUT_BLOCKED_M3 if untouchable else STRIP_CUT_M3, STRIP_FILL_M3)
+        STRIP_CUT_BLOCKED_M3 if untouchable else STRIP_CUT_M3, STRIP_FILL_M3, hollow)
 
 
 # --- Las capas de plataformas (plan 015 §5.2.1) ----------------------------------------------
