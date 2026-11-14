@@ -89,6 +89,8 @@ CODES: dict[str, str] = {
     "des.entity_field_value": "error",          # RF-015-08
     "des.entity_feature_unknown": "error",      # RF-015-08
     "des.entity_start_taken": "error",          # RF-015-04
+    "des.entity_chain_cycle": "error",          # RF-015-04 (T03)
+    "des.entity_insert_reason": "note",         # RF-015-05 (T03)
     "des.entity_nodata": "error",               # RF-015-09
     "des.entity_held": "warning",               # RF-015-13
     "des.entity_held_masks": "warning",         # RF-015-13

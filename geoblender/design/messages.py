@@ -1214,6 +1214,23 @@ CATALOG: tuple[Message, ...] = (
         "o elija otra superficie (otra alternativa va en otra versión); no se calcula nada.",
     ),
     Message(
+        "des.entity_chain_cycle",
+        "The chain of entities {chain} loops back on itself: an entity cannot start, directly or "
+        "through others, from its own surface; change the start surface of one of them; nothing "
+        "is calculated.",
+        "La cadena de entidades {chain} se cierra sobre sí misma: una entidad no puede partir, "
+        "directa ni indirectamente, de su propia superficie; cambie la superficie de partida de "
+        "una de ellas; no se calcula nada.",
+    ),
+    Message(
+        "des.entity_insert_reason",
+        "Entity {inserted} is inserted before {entity}: {entity} now starts from the surface "
+        "that {inserted} leaves.",
+        "Se inserta la entidad {inserted} antes de {entity}: {entity} pasa a partir de la "
+        "superficie que deja {inserted}.",
+        "note",
+    ),
+    Message(
         "des.entity_nodata",
         "Entity «{entity}»: {area} m² of its footprint have no data in the surface «{surface}» "
         "({role}), the first cell at x = {x} m, y = {y} m; complete the surface or move the "
