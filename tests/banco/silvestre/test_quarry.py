@@ -59,11 +59,15 @@ comparación (nunca el banco):
                         "previa": "<la de antes de «explotación hasta la final»>",
                         ... (lo mismo que la final)},
         "hasta_la_final": {"zonas": "<máscara de las celdas en que la bajó>",
-                           "umbral_m": 1, "area_minima_ha": 0.2},   // opcionales (D-5)
+                           "umbral_m": 1, "area_minima_ha": 0.2,   // opcionales (D-5)
+                           "tolerancia_ancla_m": 0.05},   // opcional: la de su cota de ancla
         "cifras": {"explotacion_m3": ..., "desdoblado_m3": ..., "relleno_m3": ...,
                    "hasta_la_final_m3": ...}}    // las que dé la referencia
 
    ``previa`` va con ``hasta_la_final`` y solo con él; «al fondo de cada muro», con ``fondos``.
+   ``tolerancia_ancla_m`` (T63) es la regla de la cota de ancla de la referencia: su final hasta
+   esa altura por encima de una cota de ancla se queda en ella (m; ≥ 0 y menor que la altura de
+   banco de la explotación); sin ella, la de Geoblender (``quarry.TOLERANCE_M``).
 
 **Lo calculado** (con ``design.quarry``, que es el cálculo de «Calcular» y de reproducir una
 cantera; el dominio de trabajo, las celdas del recinto con terreno; sin sectores; el espesor
@@ -93,13 +97,31 @@ zonas de la referencia (el modo «capa», P-2).
     mínimo** (Geoblender da menos, como mucho lo que suman las celdas de su clase de más de 0 y
     hasta el espesor mínimo, que la 011 no cuenta y la referencia quizá sí) o **sin explicar**.
 (c) *«Explotación hasta la final»* (RF-014-17, RF-014-18). En las zonas en que la referencia bajó
-    la explotación, Geoblender la baja desde la previa con su perfil y su ancla: cada celda es
-    **igual** (≤ 1 mm), **explicada por la cota de ancla** (la referencia llega a la final, a ≤ 1
-    mm, y Geoblender se queda, como pide RF-014-18, en la cota de ancla inmediatamente por encima,
-    a menos de un banco) o **sin explicar**, y falla si queda alguna. Fuera de las zonas, la
-    transición con el resto de la explotación (Geoblender, a la cara del perfil; la referencia, a su
-    manera) y el aviso de Geoblender sobre la previa frente a las zonas de la referencia se
-    informan, sin fallar.
+    la explotación, Geoblender la baja desde la previa con su perfil y su ancla. Con ``T`` su cota
+    de ancla, la de ``quarry.to_final_steps`` (``a + h·⌈(final − a − tolerancia)/h⌉``, con el ancla
+    ``a`` y la altura ``h`` del perfil de explotación de la ficha y la tolerancia de Geoblender),
+    ``T_ref`` la misma con la tolerancia de la referencia (``tolerancia_ancla_m``; sin ella,
+    ``T``) y todo a 1 mm, cada celda va a la primera de estas clases que cumple (T63):
+
+    1. **igual**;
+    2. **explicada por la cota de ancla**: la referencia llega a la final y Geoblender se queda,
+       como pide RF-014-18, en la cota de ancla inmediatamente por encima, a menos de un banco;
+    3. **la referencia sube la previa**: la de Geoblender cumple RF-014-18 (entre ``máx(final,
+       mín(T, previa))`` y la previa) y la de la referencia queda por encima de la previa, que
+       RF-014-18 solo baja;
+    4. **las dos cumplen RF-014-18**: la de Geoblender, como en 3; la de la referencia, no por
+       debajo de ``mín(T_ref, previa)`` o en la final; y entre las dos, menos de una altura de
+       banco (la cara entre dos cotas y la regla de la cota de cada una);
+    5. **solo la referencia baja de su cota**: la de Geoblender, como en 3; la de la referencia,
+       por debajo de ``mín(T_ref, previa)`` y por encima de la final;
+    6. **sin explicar**, y falla si queda alguna.
+
+    La línea dice la tolerancia de ``T_ref`` y cuántas celdas hay en cada clase; de la 3 a la 5,
+    también su volumen y su mayor diferencia (en la 3, la de la referencia sobre la previa, ``Σ
+    (referencia − previa) · área de celda``; en la 4 y la 5, ``Σ |Geoblender − referencia| · área
+    de celda``) y de la 6, su mayor diferencia. Fuera de las zonas, la transición con el resto de la
+    explotación (Geoblender, a la cara del perfil; la referencia, a su manera) y el aviso de
+    Geoblender sobre la previa frente a las zonas de la referencia se informan, sin fallar.
 (d) *La cadena* (RF-014-12 a RF-014-14, con RF-014-02, 05 y 11). Se informa, sin fallar: cuántas
     celdas de cada superficie difieren (> 1 mm) y cuánto, y sus cifras frente a las de la ficha;
     la persona del H3 lo explica con (a), (b) y (c) y con CE-013-10 (las envolventes y los
@@ -173,10 +195,11 @@ FIGURES = MappingProxyType({
 """Las cifras de la referencia que se comparan, en su orden, con su nombre."""
 EQUAL, THIN, UNEXPLAINED = "igual", "explicada por el espesor mínimo", "sin explicar"
 FLOORS_LAYER, FLOORS_FIELD = "fondos de la ficha", "cota"
+ANCHOR_TOLERANCE_FIELD = "tolerancia_ancla_m"
 TOP_KEYS = frozenset({"orden", "recinto", "relleno", "fondos", "anillo_celdas", THICKNESS_FIELD,
                       "final", "explotacion", "hasta_la_final", "cifras"})
 SIDE_KEYS = frozenset({"referencia", "previa", "semillas", "perfil", "factor_malla", "ancla"})
-TO_FINAL_KEYS = frozenset({"zonas", "umbral_m", "area_minima_ha"})
+TO_FINAL_KEYS = frozenset({"zonas", "umbral_m", "area_minima_ha", ANCHOR_TOLERANCE_FIELD})
 
 
 # --- La ficha -------------------------------------------------------------------------------
@@ -200,11 +223,13 @@ class SideSpec:
 @dataclass(frozen=True, slots=True)
 class ToFinalSpec:
     """«Explotación hasta la final» de la referencia: el fichero de sus ``zones``, el umbral de
-    desdoblado (m) y el área mínima (ha) del aviso."""
+    desdoblado (m) y el área mínima (ha) del aviso, y la tolerancia de su cota de ancla
+    (``anchor_tolerance_m``, m; ``None``: la de Geoblender)."""
 
     zones: str
     threshold_m: float
     min_area_ha: float
+    anchor_tolerance_m: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,7 +380,29 @@ def _side_spec(data: Mapping[str, object], surface: object, floors: bool,
     return SideSpec(surface, reference, previous, seeds, profile, anchor)
 
 
-def _to_final_spec(data: Mapping[str, object], problems: list[str]) -> ToFinalSpec | None:
+def _anchor_tolerance(item: Mapping[str, object], height_m: float | None, where: str,
+                      problems: list[str]) -> float | None:
+    """La tolerancia de la cota de ancla de la referencia (``item[ANCHOR_TOLERANCE_FIELD]``, m):
+    un número ≥ 0 y menor que la altura de banco ``height_m`` de la explotación (si se conoce);
+    ``None`` si falta o no vale (lo que no vale, se anota)."""
+    if ANCHOR_TOLERANCE_FIELD not in item:
+        return None
+    value = _number(item, ANCHOR_TOLERANCE_FIELD, where, problems)
+    if value is None:
+        return None
+    if value < 0 or (height_m is not None and float(value) >= height_m):
+        bound = "" if height_m is None else (
+            " y menor que la altura de banco de la explotación "
+            f"({core_params.format_value(height_m)} m)")
+        problems.append(f"{where}: «{ANCHOR_TOLERANCE_FIELD}» es una altura ≥ 0{bound}, no {value}")
+        return None
+    return float(value)
+
+
+def _to_final_spec(data: Mapping[str, object], height_m: float | None, problems: list[str]
+                   ) -> ToFinalSpec | None:
+    """«hasta_la_final» de la ficha, con la altura de banco de la explotación (``height_m``;
+    ``None`` si su lado no vale), que limita la tolerancia de la cota de ancla."""
     item = data.get("hasta_la_final")
     where = "«hasta_la_final»"
     if not isinstance(item, dict):
@@ -366,9 +413,10 @@ def _to_final_spec(data: Mapping[str, object], problems: list[str]) -> ToFinalSp
     zones = _text(item, "zonas", where, problems)
     threshold = _parameter(item, "umbral_m", params.UNSPLIT_THRESHOLD, where, problems)
     area = _parameter(item, "area_minima_ha", params.UNSPLIT_MIN_AREA, where, problems)
+    tolerance = _anchor_tolerance(item, height_m, where, problems)
     if len(problems) > before or zones is None or threshold is None or area is None:
         return None
-    return ToFinalSpec(zones, float(threshold), float(area))
+    return ToFinalSpec(zones, float(threshold), float(area), tolerance)
 
 
 def _figures(data: Mapping[str, object], problems: list[str]) -> dict[str, float]:
@@ -407,7 +455,8 @@ def _parse_sheet(data: object, problems: list[str]) -> Sheet | None:
     final = _side_spec(data, Surface.FINAL, floors is not None, problems)
     exploitation = _side_spec(data, Surface.EXPLOITATION, floors is not None, problems)
     wanted = "hasta_la_final" in data
-    to_final = _to_final_spec(data, problems) if wanted else None
+    height = None if exploitation is None else exploitation.profile.height_m
+    to_final = _to_final_spec(data, height, problems) if wanted else None
     if exploitation is not None and (wanted != (exploitation.previous is not None)):
         problems.append("el lado «explotacion»: «previa» va con «hasta_la_final», y solo con él")
     figures = _figures(data, problems)
@@ -622,17 +671,34 @@ class FigureResult:
 
 
 @dataclass(frozen=True, slots=True, eq=False)
+class CellGroup:
+    """(c) Las celdas de una clase (T63): cuántas (``cells``), su volumen (``volume_m3``) y la
+    mayor de sus diferencias (``max_m``), las de la clase (véase el módulo)."""
+
+    cells: int
+    volume_m3: float
+    max_m: float
+
+
+@dataclass(frozen=True, slots=True, eq=False)
 class ToFinalResult:
     """(c) «Explotación hasta la final» de Geoblender en las zonas de la referencia: las celdas de
-    las zonas (``zone_cells``) iguales, explicadas por la cota de ancla (``by_anchor``) y sin
-    explicar (con la diferencia máxima de estas); las celdas de fuera que difieren (la transición)
-    y su máxima; lo que pasa a la explotación con Geoblender y en la referencia (m³); y el aviso de
-    Geoblender sobre la explotación previa: sus zonas, su área (ha), su volumen y sus celdas, y
-    cuántas de ellas están en las zonas de la referencia."""
+    las zonas (``zone_cells``) iguales, explicadas por la cota de ancla (``by_anchor``), en las
+    clases de la T63 (``raises_previous``, la referencia sube la previa; ``both_comply``, las dos
+    cumplen RF-014-18; ``reference_below``, solo la referencia baja de su cota) y sin explicar
+    (con la diferencia máxima de estas); la tolerancia de la cota de ancla de la referencia
+    (``anchor_tolerance_m``; ``None``, la de Geoblender); las celdas de fuera que difieren (la
+    transición) y su máxima; lo que pasa a la explotación con Geoblender y en la referencia (m³); y
+    el aviso de Geoblender sobre la explotación previa: sus zonas, su área (ha), su volumen y sus
+    celdas, y cuántas de ellas están en las zonas de la referencia."""
 
     zone_cells: int
     equal: int
     by_anchor: int
+    raises_previous: CellGroup
+    both_comply: CellGroup
+    reference_below: CellGroup
+    anchor_tolerance_m: float | None
     unexplained: int
     unexplained_max_m: float
     transition_cells: int
@@ -796,15 +862,32 @@ def _anchor(sheet: Sheet, floors: object | None, grid: object) -> float | np.nda
     return float(side.profile.anchor_m)
 
 
+def _levels(final: np.ndarray, anchor: float | np.ndarray, height_m: float,
+            tolerance_m: float) -> np.ndarray:
+    """La cota de ancla de la explotación inmediatamente por encima de ``final``, ``a +
+    h·⌈(final − a − tolerancia)/h⌉`` (la regla de ``quarry.to_final_steps``, RF-014-18): la final
+    hasta ``tolerance_m`` por encima de una cota de ancla se queda en ella."""
+    with np.errstate(invalid="ignore"):
+        return anchor + height_m * np.ceil((final - anchor - tolerance_m) / height_m)
+
+
+def _group(cells: np.ndarray, sizes: np.ndarray, area: float) -> CellGroup:
+    """La :class:`CellGroup` de las celdas ``cells`` con sus diferencias ``sizes`` (m)."""
+    found = sizes[cells]
+    return CellGroup(int(cells.sum()), math.fsum(found.tolist()) * area,
+                     float(found.max()) if found.size else 0.0)
+
+
 def _to_final(sheet: Sheet, final: np.ndarray, previous: np.ndarray, current: np.ndarray,
               start: np.ndarray, domain_set: object, grid: object, floors: object | None,
               zones: np.ndarray) -> ToFinalResult:
     """(c) «Explotación hasta la final» de Geoblender en las zonas ``zones`` de la referencia,
-    desde su explotación ``previous``, frente a la suya (``current``); y el aviso sobre la
-    previa."""
+    desde su explotación ``previous``, frente a la suya (``current``), cada celda en su clase
+    (véase el módulo); y el aviso sobre la previa."""
     assert sheet.to_final is not None
     domain = domain_set.mask
     profile = sheet.exploitation.profile
+    height = profile.height_m
     area = grid.cell_area
     classes = _last(quarry.classify_steps(final, previous, start, domain_set, grid,
                                           sheet.min_thickness_m, budget_s=BUDGET_S))
@@ -814,23 +897,40 @@ def _to_final(sheet: Sheet, final: np.ndarray, previous: np.ndarray, current: np
     target = zones & domain
     slope = envelopes.sector_slope(domain_set.labels, [], envelopes.SlopeRule(
         math.tan(math.radians(profile.face_deg)), profile.mesh_factor))
+    anchor = _anchor(sheet, floors, grid)
     lowered = _last(quarry.to_final_steps(
-        final, previous, start, domain_set, grid, target, anchor=_anchor(sheet, floors, grid),
-        height_m=profile.height_m, slope=slope, name=OPERATION, budget_s=BUDGET_S))
+        final, previous, start, domain_set, grid, target, anchor=anchor, height_m=height,
+        slope=slope, name=OPERATION, budget_s=BUDGET_S))
     mine = lowered.exploitation
+    tolerance = sheet.to_final.anchor_tolerance_m
+    levels = _levels(final, anchor, height, quarry.TOLERANCE_M)
+    reference_levels = levels if tolerance is None else _levels(final, anchor, height, tolerance)
     known = domain & np.isfinite(mine) & np.isfinite(current) & np.isfinite(final)
     with np.errstate(invalid="ignore"):
         size = np.abs(mine - current)
         same = known & (size <= EQUAL_M)
         anchored = (known & ~same & (np.abs(current - final) <= EQUAL_M)
-                    & (mine > current) & (mine - final < profile.height_m + EQUAL_M))
+                    & (mine > current) & (mine - final < height + EQUAL_M))
         passed = previous - current
         chosen = domain & np.isfinite(passed) & (passed > 0.0)
+        complies = ((mine >= np.maximum(final, np.minimum(levels, previous)) - EQUAL_M)
+                    & (mine <= previous + EQUAL_M))
+        floor = np.minimum(reference_levels, previous)
+        at_final = np.abs(current - final) <= EQUAL_M
     inside, outside = known & target, known & ~target
-    loose = inside & ~same & ~anchored
+    rest = inside & ~same & ~anchored & complies
+    with np.errstate(invalid="ignore"):
+        raised = rest & (current > previous + EQUAL_M)
+        rest &= ~raised
+        both = rest & ((current >= floor - EQUAL_M) | at_final) & (size < height + EQUAL_M)
+        rest &= ~both
+        below = rest & (current < floor - EQUAL_M) & (current > final + EQUAL_M)
+    loose = inside & ~same & ~anchored & ~raised & ~both & ~below
     moved = outside & ~same
     return ToFinalResult(
         int(inside.sum()), int((inside & same).sum()), int((inside & anchored).sum()),
+        _group(raised, current - previous, area), _group(both, size, area),
+        _group(below, size, area), tolerance,
         int(loose.sum()), float(size[loose].max()) if loose.any() else 0.0,
         int(moved.sum()), float(size[moved].max()) if moved.any() else 0.0,
         lowered.volume_m3, math.fsum(passed[chosen].tolist()) * area,
@@ -1031,11 +1131,23 @@ def figures_line(result: Comparison) -> str:
             f"{shape.number(result.nominal_m2, 4)} m²); espesor mínimo {thickness} m; {parts}")
 
 
+def _group_text(label: str, group: CellGroup) -> str:
+    return (f"{label} {_whole(group.cells)} ({shape.number(group.volume_m3)} m³, máxima "
+            f"{shape.number(group.max_m, 4)} m)")
+
+
 def to_final_line(item: ToFinalResult) -> str:
+    tolerance = ("la de Geoblender" if item.anchor_tolerance_m is None
+                 else f"{core_params.format_value(item.anchor_tolerance_m)} m")
     return (
-        f"{_where('explotación hasta la final')}: en las zonas de la referencia, "
-        f"{_whole(item.zone_cells)} celdas; iguales {_whole(item.equal)}; explicadas por la cota "
-        f"de ancla {_whole(item.by_anchor)}; sin explicar {_whole(item.unexplained)} (máxima "
+        f"{_where('explotación hasta la final')}: en las zonas de la referencia (la tolerancia "
+        f"de la cota de ancla de la referencia, {tolerance}), {_whole(item.zone_cells)} celdas; "
+        f"iguales {_whole(item.equal)}; explicadas por la cota de ancla "
+        f"{_whole(item.by_anchor)}; "
+        f"{_group_text('la referencia sube la previa', item.raises_previous)}; "
+        f"{_group_text('las dos cumplen RF-014-18', item.both_comply)}; "
+        f"{_group_text('solo la referencia baja de su cota', item.reference_below)}; "
+        f"sin explicar {_whole(item.unexplained)} (máxima "
         f"{shape.number(item.unexplained_max_m, 4)} m); fuera de ellas, en la transición, "
         f"difieren {_whole(item.transition_cells)} celdas (máxima "
         f"{shape.number(item.transition_max_m, 4)} m); pasan a la explotación "
@@ -1114,8 +1226,11 @@ class ReferenceQuarryTest(unittest.TestCase):
     def test_to_final_in_the_reference_zones_is_explained(self) -> None:
         """CE-014-09, RF-014-17, RF-014-18: en las zonas en que la referencia bajó la explotación
         hasta la final, la de Geoblender desde la misma previa, con el perfil y el ancla de la
-        ficha, es la suya (≤ 1 mm) o se queda en la cota de ancla inmediatamente por encima de una
-        final a la que la referencia llegó; ninguna celda queda sin explicar."""
+        ficha, es la suya (≤ 1 mm), se queda en la cota de ancla inmediatamente por encima de una
+        final a la que la referencia llegó o, sin bajar nunca de su cota ni subir la previa, difiere
+        de la suya porque la referencia sube la previa, porque las dos cumplen RF-014-18 a menos
+        de una altura de banco o porque solo la referencia baja de su cota (T63); ninguna celda
+        queda sin explicar."""
         assert self.result is not None
         item = self.result.to_final
         if item is None:
