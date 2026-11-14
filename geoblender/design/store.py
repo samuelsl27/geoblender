@@ -240,6 +240,7 @@ __all__ = [
     "compute_quarry_steps",
     "compute_refit_steps",
     "compute_transition_steps",
+    "created_step_steps",
     "edge_report_rows",
     "fill_only_compute_steps",
     "fill_only_report_rows",
@@ -2293,10 +2294,10 @@ def quarry_parts_units(request: QuarryRequest, masks: access.MaskSet, start: Ras
                        corridors, joined, tuple(conserve), fill_zones, to_final_zones)
 
 
-def _created_step_steps(surface: str, grid: np.ndarray, start: np.ndarray, geometry: Grid,
-                        allowed: np.ndarray, values: Mapping[str, object], *,
-                        budget_s: float = STEP_BUDGET_S
-                        ) -> Generator[Progress, None, tuple[Notice, ...]]:
+def created_step_steps(surface: str, grid: np.ndarray, start: np.ndarray, geometry: Grid,
+                       allowed: np.ndarray, values: Mapping[str, object], *,
+                       budget_s: float = STEP_BUDGET_S
+                       ) -> Generator[Progress, None, tuple[Notice, ...]]:
     """**El salto creado de una superficie de diseño en el resumen de su diseño** (T56; RF-014-20,
     RF-014-21; hallazgo F-18, la propuesta por defecto que aceptó Samuel): A11
     (``design.edges.created_steps``) de la superficie ``grid`` (m) del dato ``surface`` sobre la de
@@ -2309,7 +2310,10 @@ def _created_step_steps(surface: str, grid: np.ndarray, start: np.ndarray, geome
     (``design.edges.edge_notices``), o ``()`` si no se avisa. Lo usan la cantera (sus dos
     superficies), «solo relleno» y el ajuste (cada superficie ajustada), en «Calcular», el
     recálculo y la reproducción. Una operación que no leyó ni el salto ni el porcentaje admitidos
-    (anterior a la T56: la reproducción de lo que anotó) no lo mide: ``()``."""
+    (anterior a la T56: la reproducción de lo que anotó) no lo mide: ``()``.
+
+    Pública desde la 015 (T05; plan 015 §5.4 A3: el borde de una plataforma avisa del salto creado
+    con esta misma función; sin cambio de comportamiento)."""
     if EDGE_MAX_STEP not in values and EDGE_MIN_SHARE not in values:
         return ()
     thickness = number(values, VERIFY_MIN_THICKNESS)
@@ -2346,7 +2350,7 @@ def quarry_notices(request: QuarryRequest, masks: access.MaskSet, parts: QuarryP
     ``des.quarry_exploitation_no_movement``; T61, el H3), el desdoblado sobre terreno sin
     explotar, por zonas (RF-014-17; tras el modo, el de lo que queda dentro de las celdas
     tratadas va aparte y no vuelve a ofrecerlo, T57), «explotación hasta la final» (RF-014-18), el
-    salto creado de sus superficies (``created``: los avisos de :func:`_created_step_steps`, T56,
+    salto creado de sus superficies (``created``: los avisos de :func:`created_step_steps`, T56,
     RF-014-21) y, si sus lados no se compararon con los de una cantera anterior (sin
     ``compared``), la nota de la 013 que lo dice, una sola vez y con el nombre de la cantera
     (``des.magnitude_no_reference``; T51: no una por lado). Con sus valores como números
@@ -2457,7 +2461,7 @@ def quarry_compute_steps(request: QuarryRequest, masks: access.MaskSet, parts: Q
     (``quarry.quarry_steps``, con el anillo de coronación, el espesor mínimo, la tolerancia, el
     umbral y el aviso de desdoblado), con zonas a conservar, lo que mueven en ellas
     (:func:`_check_conserved`, RF-014-08: más de 0 m³ es ``des.conserve_moved`` y no sale nada que
-    crear) y el salto creado de la final y de la explotación (:func:`_created_step_steps`, T56;
+    crear) y el salto creado de la final y de la explotación (:func:`created_step_steps`, T56;
     RF-014-20, RF-014-21). ``pending``: los nombres de los sectores con la búsqueda pendiente que
     se marcan;
     ``previous``: lo anterior con que se compara cada lado (T51; por superficie, como en los
@@ -2494,7 +2498,7 @@ def quarry_compute_steps(request: QuarryRequest, masks: access.MaskSet, parts: Q
     created: list[Notice] = []
     for family, grid in ((provenance.FINAL_GRID, outcome.final_grid),
                          (provenance.EXPLOITATION_GRID, outcome.exploitation_grid)):
-        created += yield from _created_step_steps(
+        created += yield from created_step_steps(
             provenance.dataset_name(family, request.name), np.asarray(grid, dtype=np.float64),
             start, geometry, allowed, values, budget_s=budget_s)
     return QuarryCalculated(outcome, quarry_notices(request, masks, parts, ring, outcome,
@@ -2847,7 +2851,7 @@ def fill_only_compute_steps(request: FillOnlyRequest, masks: access.MaskSet, par
     espesor mínimo, la tolerancia de cara y el umbral de aviso de ``values``) dentro de
     ``design.fronts.fill_only_steps`` (A12: sobre el terreno con las láminas, solo en el relleno
     admitido, nunca por debajo del terreno, y sus rechazos de RF-014-25) y el salto creado de su
-    superficie frente al terreno registrado (:func:`_created_step_steps`, T56; RF-014-20,
+    superficie frente al terreno registrado (:func:`created_step_steps`, T56; RF-014-20,
     RF-014-21), detrás de sus avisos (``FillOnlyOutcome.notices``). ``pending``: los nombres de
     los sectores con la búsqueda pendiente que se marcan; ``previous``: lo anterior con que se
     compara (D-25). Lo comparten «Calcular», el recálculo y la reproducción. Devuelve el
@@ -2862,7 +2866,7 @@ def fill_only_compute_steps(request: FillOnlyRequest, masks: access.MaskSet, par
         number(values, WARNING_RATIO), pipeline.previous_of(previous), pending)
     outcome: fronts.FillOnlyOutcome = yield from pipeline.forward(fronts.fill_only_steps(
         fronts.FillOnlyJob(job, parts.water, parts.untouchables), budget_s=budget_s))
-    created = yield from _created_step_steps(
+    created = yield from created_step_steps(
         provenance.dataset_name(provenance.DESIGN_GRID, request.name), outcome.surface,
         parts.start.values, parts.start.grid, _allowed(masks), values, budget_s=budget_s)
     return replace(outcome, notices=(*outcome.notices, *created)) if created else outcome
@@ -3064,7 +3068,7 @@ def refit_compute_steps(request: RefitRequest, masks: access.MaskSet, prepared: 
     y ``check_order`` antes de ofrecer «Crear»; con una sola, un aviso si queda del lado equivocado
     de la otra). Devuelve el ``design.refit.RefitOutcome``, con los avisos de los diseños obsoletos
     de los que sale al final (``prepared.stale_notices``, T54) y el salto creado de cada
-    superficie ajustada (:func:`_created_step_steps`, T56; RF-014-20, RF-014-21), con el nombre de
+    superficie ajustada (:func:`created_step_steps`, T56; RF-014-20, RF-014-21), con el nombre de
     su salida, delante de los del orden (``RefitOutcome.notices``)."""
     faces = [refit.profile_faces(part.values, part.profiles, prepared.names)
              for part in prepared.parts]
@@ -3091,7 +3095,7 @@ def refit_compute_steps(request: RefitRequest, masks: access.MaskSet, prepared: 
     allowed = _allowed(masks)
     created: list[Notice] = []
     for part, item in zip(prepared.parts, tied, strict=True):
-        created += yield from _created_step_steps(
+        created += yield from created_step_steps(
             provenance.refit_output(request.name, part.name), item.grid, prepared.ground.values,
             masks.grid, allowed, values, budget_s=budget_s)
     return refit.refit_outcome(request.name, tied, orders, prepared.stale_notices,

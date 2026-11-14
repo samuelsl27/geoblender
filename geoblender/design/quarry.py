@@ -48,6 +48,9 @@
   RF-014-10. Con la superficie de partida, la cota de cada corredor pasa por el rango de los
   fondos de RF-014-06 (T42: la fija, o la inicial y la final de su rasante; ``des.corridor_level``,
   que nombra el corredor, T51).
+- :func:`axis_abscissa` (T05 de la 015; plan 015 §5.4 A1): la abscisa ``σ`` de cada celda de una
+  ventana a lo largo de un eje de varios tramos, la que usa la rasante de un corredor y la de una
+  plataforma con eje (promovida a pública sin cambio de comportamiento).
 
 - :func:`conservation_ceiling_steps` (T10; RF-014-07; A5): el **techo de conservación** ``U =
   ENV↑(z en Z, tan(talud de conservación))`` de las zonas a conservar (:class:`ConserveZone`)
@@ -126,16 +129,11 @@ from ..gis.masks.zones import Runs
 from ..gis.messages import format_value
 from ..gis.vector import FeatureLayer
 from . import provenance
+from .edges import seed_envelope_steps
 from .envelopes import (
-    BLOCK_CELLS,
-    BLOCK_GROUP,
-    CELLS_PER_UNIT,
-    EVALS_PER_UNIT,
     TOLERANCE_M,
     SlopeField,
     SlopeRule,
-    _exact_work,
-    chamfer_units,
     constant_slope,
     envelope_steps,
     sector_slope,
@@ -222,6 +220,7 @@ __all__ = [
     "apply_ceiling",
     "area_outcome",
     "area_parts",
+    "axis_abscissa",
     "check_order",
     "classification_figures",
     "classify_steps",
@@ -836,10 +835,16 @@ def _segment_frame(a: np.ndarray, b: np.ndarray, length: float, geometry: Grid,
     return px * ux + py * uy, py * ux - px * uy
 
 
-def _corridor_sigma(paths: list[np.ndarray], half: float, geometry: Grid,
-                    window: tuple[slice, slice]) -> tuple[np.ndarray, np.ndarray]:
+def axis_abscissa(paths: list[np.ndarray], half: float, geometry: Grid,
+                  window: tuple[slice, slice]) -> tuple[np.ndarray, np.ndarray]:
     """La abscisa ``σ`` (m, a lo largo del eje desde su principio; las partes, seguidas) de cada
-    celda de ``window`` dentro del corredor y su abscisa **sin recortar**, ``NaN`` fuera (A6).
+    celda de ``window`` dentro del corredor y su abscisa **sin recortar**, ``NaN`` fuera (A6; A1
+    de la 015, plan 015 §5.4: la rasante de una plataforma con eje es ``cota inicial + σ ·
+    pendiente / 100``). Pública desde la T05 de la 015 (sin cambio de comportamiento).
+    ``paths``: los caminos del eje, cada uno float64 ``(k, 2)`` en coordenadas absolutas, en su
+    orden; ``half``: la mitad del ancho (m); ``window``: las filas y columnas de ``geometry`` que
+    se miden (cualquier rectángulo de la rejilla, también ella entera); devuelve dos rejillas de
+    la forma de la ventana (``σ`` y la sin recortar).
 
     Cada celda toma el tramo más próximo de **todo** el eje (a igual distancia, el anterior):
     ``σ`` es la abscisa de su punto más próximo; la sin recortar, la de su proyección sobre la
@@ -966,7 +971,7 @@ def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid, 
                               field=_GEOMETRY_FIELD, value=round(axis, 2), layer=fields.layer,
                               corridor=fid)
         window = _corridor_window(paths, width / 2.0, geometry)
-        sigma, reach = _corridor_sigma(paths, width / 2.0, geometry, window)
+        sigma, reach = axis_abscissa(paths, width / 2.0, geometry, window)
         inside = np.isfinite(sigma)
         taken = owner[window][inside]
         taken = taken[taken > 0]
@@ -1038,29 +1043,13 @@ def _zone_masks(zones: Sequence[ConserveZone], shape: tuple[int, ...]) -> list[n
     return found
 
 
-def _envelope_work(seed: np.ndarray, geometry: Grid, slope: SlopeField, metric: Metric,
-                   direction: Direction, name: str) -> Generator[None, None, np.ndarray]:
-    """Las unidades de la envolvente de la 013 de ``seed`` en la ``direction`` pedida
-    (**ascendente** o **descendente**) con ``slope`` y ``metric`` (la euclídea exacta, con una
-    pendiente constante), con ``name`` en sus mensajes: su rejilla o, sin ninguna semilla, ``+inf``
-    (ascendente) o ``−inf`` (descendente) en toda la rejilla."""
-    if not np.isfinite(seed).any():
-        yield None
-        return np.full(seed.shape, np.inf if direction is Direction.UP else -np.inf)
-    if metric is Metric.EXACT:
-        found = yield from _exact_work(seed, geometry, slope, direction, name,
-                                       CELLS_PER_UNIT, EVALS_PER_UNIT, BLOCK_CELLS, BLOCK_GROUP)
-    else:
-        found = yield from chamfer_units(seed, geometry, slope, direction, name=name)
-    return found.grid
-
-
 def _ceiling_work(seed: np.ndarray, geometry: Grid, slope: SlopeField, metric: Metric,
                   zone: np.ndarray, names: tuple[str, ...], nodata: tuple[int, ...],
                   slope_deg: float) -> Generator[None, None, ConservationCeiling]:
     """Las unidades del techo: la envolvente ascendente de la 013 de ``seed`` con ``slope`` y
     ``metric``; sin ninguna semilla, ``+inf`` en toda la rejilla (no hay techo)."""
-    grid = yield from _envelope_work(seed, geometry, slope, metric, Direction.UP, CEILING_NAME)
+    grid = yield from seed_envelope_steps(seed, geometry, slope, metric, Direction.UP,
+                                          CEILING_NAME)
     return ConservationCeiling(grid, zone, names, nodata, slope_deg, geometry.cell_area)
 
 
@@ -2295,7 +2284,8 @@ def _to_final_units(final: np.ndarray, exploitation: np.ndarray, start: np.ndarr
             delta[rows] = np.where(target[rows], exploitation[rows] - upper, 0.0)
         yield None
     if bool(np.any(target & domain.mask)):
-        falling = yield from _envelope_work(levels, geometry, slope, metric, Direction.DOWN, name)
+        falling = yield from seed_envelope_steps(levels, geometry, slope, metric, Direction.DOWN,
+                                                 name)
     else:
         falling = np.full(final.shape, -np.inf)
     zone = np.zeros(final.shape, dtype=bool)
@@ -2308,7 +2298,7 @@ def _to_final_units(final: np.ndarray, exploitation: np.ndarray, start: np.ndarr
         band = _at_most(np.fmax(upper, np.fmin(lower, falling[rows])), start[rows])
         kept[rows] = np.where(here, band, np.inf)
         yield None
-    rising = yield from _envelope_work(kept, geometry, slope, metric, Direction.UP, name)
+    rising = yield from seed_envelope_steps(kept, geometry, slope, metric, Direction.UP, name)
     lowered = exploitation.copy()
     size = len(domain.sectors) + 1
     per_label = np.zeros(size)

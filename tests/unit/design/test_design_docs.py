@@ -149,6 +149,9 @@ PENDING_015_API = frozenset({
     "platform_request", "declare_settings", "entity_layer_settings", "settings_entities",
     "platform_inputs", "declare_inputs", "entity_layer_inputs", "platform_params",
     "declare_params",
+    # T05: los tres privados de la 014 que pasan a públicos (design.quarry, design.edges y
+    # design.store).
+    "axis_abscissa", "seed_envelope_steps", "created_step_steps",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({

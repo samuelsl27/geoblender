@@ -47,6 +47,10 @@ T26, T27, T40 y T56; HU-014-5; RF-014-19 a RF-014-21; plan 014 A10, A11, §5.3.1
   donde la 012 solo admite el corte ni corta donde solo admite el relleno), el salto creado de la
   superficie nueva (A11), sus tres cifras (:func:`edge_transition_figures`) y el aviso de RF-014-21
   (:func:`edge_notices`), en un :class:`EdgeTransition`.
+- :func:`seed_envelope_steps` (T05 de la 015; plan 015 §5.4 A3): las unidades de la envolvente de
+  la 013 desde unas semillas, en el sentido y con la métrica que se pidan; la usan la transición,
+  el ajuste, la cantera y el borde de una plataforma (promovida a pública sin cambio de
+  comportamiento).
 
 Python puro con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no escribe nada.
 """
@@ -96,6 +100,7 @@ __all__ = [
     "edge_notices",
     "edge_transition_figures",
     "edge_transition_steps",
+    "seed_envelope_steps",
     "summary_notices",
     "transition_domain",
     "transition_steps",
@@ -130,11 +135,15 @@ def _same_shape(name: str, values: np.ndarray, shape: tuple[int, ...]) -> None:
         raise ValueError(f"{name} {values.shape} no es de la forma de la rejilla {shape}")
 
 
-def _envelope_work(seed: np.ndarray, geometry: Grid, slope: SlopeField, metric: Metric,
-                   way: Direction, name: str) -> Generator[None, None, np.ndarray]:
+def seed_envelope_steps(seed: np.ndarray, geometry: Grid, slope: SlopeField, metric: Metric,
+                        way: Direction, name: str) -> Generator[None, None, np.ndarray]:
     """Las unidades de la envolvente de la 013 de ``seed`` en el sentido ``way`` con ``slope`` y
     ``metric`` (la euclídea exacta, con una pendiente constante), con ``name`` en sus mensajes: su
-    rejilla, o ``+inf`` (``−inf`` en la descendente) en toda la rejilla sin ninguna semilla."""
+    rejilla, o ``+inf`` (``−inf`` en la descendente) en toda la rejilla sin ninguna semilla.
+
+    Pública desde la 015 (T05; plan 015 §5.4 A3): la comparten la transición de este módulo, el
+    ajuste (``design.refit``), la cantera (``design.quarry``) y el borde de una plataforma. Se usa
+    con ``yield from``: cada ``yield`` es una unidad de trabajo (``None``) y devuelve la rejilla."""
     if not np.isfinite(seed).any():
         yield None
         return np.full(seed.shape, np.inf if way is Direction.UP else -np.inf)
@@ -157,8 +166,8 @@ def _transition_units(surface: np.ndarray, start: np.ndarray, domain: np.ndarray
     seed = np.where(ring, start, np.nan)
     slope = constant_slope(degrees)
     yield None
-    lower = yield from _envelope_work(seed, geometry, slope, metric, Direction.DOWN, name)
-    upper = yield from _envelope_work(seed, geometry, slope, metric, Direction.UP, name)
+    lower = yield from seed_envelope_steps(seed, geometry, slope, metric, Direction.DOWN, name)
+    upper = yield from seed_envelope_steps(seed, geometry, slope, metric, Direction.UP, name)
     design = surface.copy()
     step = max(1, CELLS_PER_UNIT // max(geometry.ncols, 1))
     sums: list[float] = []

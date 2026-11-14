@@ -215,7 +215,7 @@ class EdgeTransitionDomainTest(unittest.TestCase):
     def test_ce_014_06_a_design_warns_of_its_created_step_with_its_stretches(self) -> None:
         """RF-014-20, RF-014-21, CE-014-06 (T56; hallazgo F-18, la propuesta por defecto que aceptó
         Samuel): el salto creado se mide en el resumen de **cada diseño**, no solo en la transición
-        (``store._created_step_steps``, lo que comparten la cantera, «Solo relleno…» y el ajuste).
+        (``store.created_step_steps``, lo que comparten la cantera, «Solo relleno…» y el ajuste).
         El diseño de CE-014-06 sin la transición avisa con el nombre de su superficie, el
         porcentaje de las parejas que pasa (316 de 520: 60,77 %), el máximo (4 m) y su lugar, y una
         nota por tramo (los dos de la T27), en los dos idiomas: A11 a mano en el dominio de la
@@ -228,8 +228,8 @@ class EdgeTransitionDomainTest(unittest.TestCase):
         values = {design_params.VERIFY_MIN_THICKNESS: THICKNESS_M,
                   design_params.EDGE_MAX_STEP: THRESHOLD_M,
                   design_params.EDGE_MIN_SHARE: SHARE_PCT}
-        found = returned(store._created_step_steps(name, self.surface, self.start, qfx.GRID,
-                                                   self.allowed, values, budget_s=0.0))
+        found = returned(store.created_step_steps(name, self.surface, self.start, qfx.GRID,
+                                                  self.allowed, values, budget_s=0.0))
         domain = edges.transition_domain(self.surface, self.start, THICKNESS_M, self.allowed)
         report = finish(edges.created_steps(self.surface, self.start, domain, qfx.GRID,
                                             THICKNESS_M, THRESHOLD_M, SHARE_PCT))
@@ -260,14 +260,14 @@ class EdgeTransitionDomainTest(unittest.TestCase):
         self.assertIn(" in 1 stretch. Use", messages.render(warning.code, language="en", **one))
         self.assertIn("Tramo 1", found[1].text("es"))
         inside = self.allowed & ~qfx.in_box(C_BOX)  # el relleno de 2 m, donde no se admite mover
-        warning, *stretches = returned(store._created_step_steps(
+        warning, *stretches = returned(store.created_step_steps(
             name, self.surface, self.start, qfx.GRID, inside, values))
         self.assertEqual((warning.values["pairs"], warning.values["stretches"], len(stretches)),
                          (520 - 40, 1, 1))
-        self.assertEqual(returned(store._created_step_steps(
+        self.assertEqual(returned(store.created_step_steps(
             name, self.outcome.grid, self.start, qfx.GRID, self.allowed, values)), ())
         older = {design_params.VERIFY_MIN_THICKNESS: THICKNESS_M}
-        self.assertEqual(returned(store._created_step_steps(
+        self.assertEqual(returned(store.created_step_steps(
             name, self.surface, self.start, qfx.GRID, self.allowed, older)), ())
 
     def test_d_the_transition_only_brings_the_surface_closer_to_the_terrain(self) -> None:

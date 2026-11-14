@@ -82,7 +82,7 @@ from ..gis.masks.combine import ClassBit
 from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.messages import format_value
 from . import provenance
-from .edges import _envelope_work
+from .edges import seed_envelope_steps
 from .envelopes import CELLS_PER_UNIT, SlopeField, SlopeRule, sector_slope
 from .grids import dilate_square
 from .messages import DesignError
@@ -351,8 +351,8 @@ def _refit_units(design: np.ndarray, start: np.ndarray, masks: MaskSet, slope: S
         ring = dilate_square(cut_inside, 1) & ~cut_inside & np.isfinite(start)
     seed = np.where(ring, start, np.nan)
     yield None
-    lower = yield from _envelope_work(seed, geometry, slope, metric, Direction.DOWN,
-                                      f"{name} ({REFIT_NAME})")
+    lower = yield from seed_envelope_steps(seed, geometry, slope, metric, Direction.DOWN,
+                                           f"{name} ({REFIT_NAME})")
     found = design.copy()
     step = max(1, CELLS_PER_UNIT // max(geometry.ncols, 1))
     sums: list[float] = []
