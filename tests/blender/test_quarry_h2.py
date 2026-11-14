@@ -518,8 +518,9 @@ class QuarryH2Test(unittest.TestCase):
         """E4, RF-014-18, CE-014-05 (M4): «Hasta la final», con «todas las zonas avisadas», dice en
         el resumen lo que pasa a la explotación y baja la explotación en esas zonas hasta la cota
         de ancla de ``EXPL_10_60_6`` inmediatamente por encima de la final (``125 + 10·⌈(final −
-        125)/10⌉``: queda menos de un banco, alguna celda justo en ella), con la transición a la
-        cara de su perfil (A9 a mano con la ascendente *chamfer* de la 013, a ≤ 10⁻⁹ m), nunca por
+        125)/10⌉``: alguna celda justo en ella), sin quedar por debajo de ella en ninguna celda
+        (T62: la cara baja desde la cota de arriba), con la transición a la cara de su perfil (A9
+        a mano con la descendente y la ascendente *chamfer* de la 013, a ≤ 10⁻⁹ m), nunca por
         debajo de la final ni por encima del terreno; la final no cambia; lo que pasa a la
         explotación, ``des.to_final_m3`` en total y por sector, es la diferencia de las celdas a
         mano y lo que cubica la 011 entre la explotación «Sin el modo» y esta, sin terraplén; y la
@@ -553,22 +554,30 @@ class QuarryH2Test(unittest.TestCase):
         self.assertTrue(bool(np.all(after <= before)))
         self.assertTrue(bool(np.all(after <= z)))
         level = ANCHOR_M + EXPL_HEIGHT_M * np.ceil((final - ANCHOR_M - 1e-9) / EXPL_HEIGHT_M)
-        self.assertTrue(bool(np.all(after[warned] <= level[warned])))
-        self.assertTrue(bool(np.all(after[warned] - final[warned] < EXPL_HEIGHT_M)))
+        floor = np.minimum(level, before)
+        self.assertGreaterEqual(float(np.min(after[warned] - floor[warned])), -1e-3)  # T62
         self.assertTrue(bool(np.any(after[warned] == level[warned])))
         self.assertTrue(bool(np.any(after[warned] > final[warned] + 1.0)))  # menos de un banco
         self.assertTrue(np.array_equal(after[~hand_area()], z[~hand_area()]))
-        # A9 a mano: la ascendente de la 013 de esas cotas con la cara de EXPL_10_60_6 (60°, malla
-        # 1,0), y en el recinto máx(final, mín(explotación, ENV↑)), ≤ z.
+        # A9 a mano (T62): la descendente de la 013 de las cotas de ancla del recinto con la cara de
+        # EXPL_10_60_6 (60°, malla 1,0); en las zonas, máx(final, mín(explotación, z, ENV↓)); la
+        # ascendente de lo que queda en ellas y, en el resto del recinto, máx(final,
+        # mín(explotación, ENV↑)); ≤ z.
         envelopes = _module("design.envelopes")
         grid = _module("gis.grid").project_grid(self.project.record.window, STEP_M)
-        rising = None
-        for rising in envelopes.chamfer_steps(
-                np.where(warned, level, np.inf), grid,
-                envelopes.SlopeField(math.tan(math.radians(EXPL_FACE_DEG))), "up", name="A9"):
+        slope = envelopes.SlopeField(math.tan(math.radians(EXPL_FACE_DEG)))
+        area = hand_area()
+        zone = warned & area
+        falling = rising = None
+        for falling in envelopes.chamfer_steps(np.where(area & np.isfinite(final), level, np.inf),
+                                               grid, slope, "down", name="A9"):
             pass
-        expected = np.where(hand_area(), np.maximum(final, np.minimum(before, rising.result.grid)),
-                            before)
+        kept = np.minimum(np.maximum(final, np.minimum(before, falling.result.grid)), z)
+        for rising in envelopes.chamfer_steps(np.where(zone, kept, np.inf), grid, slope, "up",
+                                              name="A9"):
+            pass
+        expected = np.where(zone, kept, np.where(
+            area, np.maximum(final, np.minimum(before, rising.result.grid)), before))
         np.testing.assert_allclose(after, np.minimum(expected, z), rtol=0.0, atol=1e-9)
         found = self.figures(DOWN)
         passed = found[("des.to_final_m3", None, None)]

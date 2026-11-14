@@ -96,10 +96,12 @@
   (T57, hallazgo F-19).
 - :func:`to_final_steps` (T18; RF-014-18; A9): **«explotación hasta la final»** en unas celdas
   (:class:`ToFinal`): la explotación baja con bancos de su perfil anclados a sus cotas hasta la
-  cota de su ancla inmediatamente por encima de la final, ``T = a + h·⌈(final − a)/h⌉``, sin
-  quedar por debajo de la final y con transición al resto a la cara de su perfil
-  (``máx(final, mín(explotación, ENV↑(T, tan(cara)·malla)))``), y el volumen que pasa del
-  desdoblado a la explotación (:func:`to_final_figures`, ``des.to_final_m3``). :func:`quarry_steps`
+  cota de su ancla inmediatamente por encima de la final, ``T = a + h·⌈(final − a)/h⌉`` en el
+  recinto, sin quedar por debajo de ella ni de la final, con la cara bajando desde la cota de
+  arriba (``máx(final, mín(explotación, z, ENV↓(T, tan(cara)·malla)))`` en la zona; A9 nuevo,
+  T62) y con transición al resto a la cara de su perfil (``máx(final, mín(explotación, ENV↑(lo
+  que queda en la zona)))``), y el volumen que pasa del desdoblado a la explotación
+  (:func:`to_final_figures`, ``des.to_final_m3``). :func:`quarry_steps`
   avisa siempre y aplica el modo del diseño (ninguna zona, las avisadas o las de una capa; P-2).
 
 Python puro con numpy (nivel 8): no importa ``reserves`` ni ``bl``; no escribe nada.
@@ -1036,19 +1038,20 @@ def _zone_masks(zones: Sequence[ConserveZone], shape: tuple[int, ...]) -> list[n
     return found
 
 
-def _rising_work(seed: np.ndarray, geometry: Grid, slope: SlopeField, metric: Metric,
-                 name: str) -> Generator[None, None, np.ndarray]:
-    """Las unidades de la envolvente **ascendente** de la 013 de ``seed`` con ``slope`` y
-    ``metric`` (la euclídea exacta, con una pendiente constante), con ``name`` en sus mensajes:
-    su rejilla, o ``+inf`` en toda la rejilla sin ninguna semilla."""
+def _envelope_work(seed: np.ndarray, geometry: Grid, slope: SlopeField, metric: Metric,
+                   direction: Direction, name: str) -> Generator[None, None, np.ndarray]:
+    """Las unidades de la envolvente de la 013 de ``seed`` en la ``direction`` pedida
+    (**ascendente** o **descendente**) con ``slope`` y ``metric`` (la euclídea exacta, con una
+    pendiente constante), con ``name`` en sus mensajes: su rejilla o, sin ninguna semilla, ``+inf``
+    (ascendente) o ``−inf`` (descendente) en toda la rejilla."""
     if not np.isfinite(seed).any():
         yield None
-        return np.full(seed.shape, np.inf)
+        return np.full(seed.shape, np.inf if direction is Direction.UP else -np.inf)
     if metric is Metric.EXACT:
-        found = yield from _exact_work(seed, geometry, slope, Direction.UP, name,
+        found = yield from _exact_work(seed, geometry, slope, direction, name,
                                        CELLS_PER_UNIT, EVALS_PER_UNIT, BLOCK_CELLS, BLOCK_GROUP)
     else:
-        found = yield from chamfer_units(seed, geometry, slope, Direction.UP, name=name)
+        found = yield from chamfer_units(seed, geometry, slope, direction, name=name)
     return found.grid
 
 
@@ -1057,7 +1060,7 @@ def _ceiling_work(seed: np.ndarray, geometry: Grid, slope: SlopeField, metric: M
                   slope_deg: float) -> Generator[None, None, ConservationCeiling]:
     """Las unidades del techo: la envolvente ascendente de la 013 de ``seed`` con ``slope`` y
     ``metric``; sin ninguna semilla, ``+inf`` en toda la rejilla (no hay techo)."""
-    grid = yield from _rising_work(seed, geometry, slope, metric, CEILING_NAME)
+    grid = yield from _envelope_work(seed, geometry, slope, metric, Direction.UP, CEILING_NAME)
     return ConservationCeiling(grid, zone, names, nodata, slope_deg, geometry.cell_area)
 
 
@@ -2215,16 +2218,22 @@ def to_final_steps(final: np.ndarray, exploitation: np.ndarray, start: np.ndarra
     de ``budget_s`` como mucho; el último ``Progress`` (fase ``to_final``) lleva el
     :class:`ToFinal`:
 
-    1. en cada celda de ``target``, la cota de ancla de la explotación inmediatamente por encima
-       de la final, ``T = a + h·⌈(final − a)/h⌉`` con su ancla ``a`` (``anchor``: la del perfil,
-       una rejilla de anclas o la «al fondo de cada muro») y su altura de banco ``h``
-       (``height_m``), un número o una rejilla por celda (una final a ≤ 10⁻⁹ m por encima de una
-       cota de ancla queda en ella);
-    2. la envolvente ascendente de la 013 de ``T`` con la pendiente ``slope`` (``tan(cara) ·
-       malla`` del perfil de explotación de cada celda) y la ``metric`` del lado: la transición
-       con el resto de la explotación a la cara de su perfil, como la V10;
-    3. en el dominio de trabajo ``domain``, ``máx(final, mín(explotación, ENV↑))``: nunca por
-       debajo de la final ni por encima de la explotación; fuera, la explotación; y ``≤ z``.
+    1. en cada celda del recinto (las del dominio de trabajo ``domain`` con final), la cota de
+       ancla de la explotación inmediatamente por encima de la final, ``T = a + h·⌈(final −
+       a)/h⌉`` con su ancla ``a`` (``anchor``: la del perfil, una rejilla de anclas o la «al
+       fondo de cada muro») y su altura de banco ``h`` (``height_m``), un número o una rejilla
+       por celda (una final a ≤ 10⁻⁹ m por encima de una cota de ancla queda en ella);
+    2. la envolvente descendente de la 013 de esas ``T`` con la pendiente ``slope`` (``tan(cara)
+       · malla`` del perfil de explotación de cada celda) y la ``metric`` del lado; en las celdas
+       de ``target`` del dominio con su ``T`` (la zona), ``máx(final, mín(explotación, z,
+       ENV↓))``: cada celda en su cota de ancla o por encima, sin quedar por debajo de ella
+       (RF-014-18), y donde la cota cambia de un banco al siguiente, la cara baja desde la de
+       arriba, como la V10 (A9 nuevo, T62: con ``ENV↑`` de ``T`` en la zona la cara subía desde
+       la de abajo y dejaba celdas por debajo de su cota; hallazgo de CE-014-09);
+    3. la envolvente ascendente de la 013 de lo que queda en la zona, con la misma pendiente y la
+       misma métrica: en el resto del dominio, la transición con la explotación a la cara de su
+       perfil, ``máx(final, mín(explotación, ENV↑))``; nunca por debajo de la final ni por encima
+       de la explotación; fuera del dominio, la explotación; y ``≤ z``.
 
     El volumen que pasa del desdoblado a la explotación es ``Σ (explotación − nueva) · área de
     celda``, en total y por sector; el de cada zona de ``target``, su desdoblado de antes.
@@ -2267,23 +2276,39 @@ def _to_final_units(final: np.ndarray, exploitation: np.ndarray, start: np.ndarr
                     domain: DomainSet, geometry: Grid, target: np.ndarray,
                     anchor: float | np.ndarray, height: float | np.ndarray, slope: SlopeField,
                     metric: Metric, name: str) -> Generator[None, None, ToFinal]:
-    """Las unidades de :func:`to_final_steps`: las cotas ``T`` y ``Δ`` donde se aplica, por
-    bandas de filas; la envolvente ascendente; la explotación nueva y lo que pasa a ella, por
-    bandas; y las zonas."""
+    """Las unidades de :func:`to_final_steps` (A9 nuevo, T62): las cotas ``T`` del recinto y
+    ``Δ`` donde se aplica, por bandas de filas; la envolvente descendente de ``T``; la explotación
+    de la zona, por bandas; la envolvente ascendente de lo que queda en ella; la explotación nueva
+    en el dominio (la zona y la transición) y lo que pasa a ella, por bandas; y las zonas."""
     step = _band_rows(geometry)
     bands = [slice(first, first + step) for first in range(0, geometry.nrows, step)]
-    seed = np.full(final.shape, np.inf)
+    levels = np.full(final.shape, -np.inf)
     delta = np.zeros(final.shape)
     for rows in bands:
         a = anchor if isinstance(anchor, float) else anchor[rows]
         h = height if isinstance(height, float) else height[rows]
-        here = target[rows]
-        with np.errstate(invalid="ignore"):
-            level = a + h * np.ceil((final[rows] - a - TOLERANCE_M) / h)
-            seed[rows] = np.where(here & np.isfinite(level), level, np.inf)
-            delta[rows] = np.where(here, exploitation[rows] - final[rows], 0.0)
+        upper = final[rows]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            level = a + h * np.ceil((upper - a - TOLERANCE_M) / h)
+            known = domain.mask[rows] & np.isfinite(upper) & np.isfinite(level) & (h > 0.0)
+            levels[rows] = np.where(known, level, -np.inf)
+            delta[rows] = np.where(target[rows], exploitation[rows] - upper, 0.0)
         yield None
-    rising = yield from _rising_work(seed, geometry, slope, metric, name)
+    if bool(np.any(target & domain.mask)):
+        falling = yield from _envelope_work(levels, geometry, slope, metric, Direction.DOWN, name)
+    else:
+        falling = np.full(final.shape, -np.inf)
+    zone = np.zeros(final.shape, dtype=bool)
+    kept = np.full(final.shape, np.inf)
+    for rows in bands:
+        upper, lower = final[rows], exploitation[rows]
+        here = (target[rows] & domain.mask[rows] & np.isfinite(upper) & np.isfinite(lower)
+                & np.isfinite(levels[rows]))
+        zone[rows] = here
+        band = _at_most(np.fmax(upper, np.fmin(lower, falling[rows])), start[rows])
+        kept[rows] = np.where(here, band, np.inf)
+        yield None
+    rising = yield from _envelope_work(kept, geometry, slope, metric, Direction.UP, name)
     lowered = exploitation.copy()
     size = len(domain.sectors) + 1
     per_label = np.zeros(size)
@@ -2292,7 +2317,8 @@ def _to_final_units(final: np.ndarray, exploitation: np.ndarray, start: np.ndarr
     for rows in bands:
         upper, lower = final[rows], exploitation[rows]
         inside = domain.mask[rows] & np.isfinite(upper) & np.isfinite(lower)
-        band = np.where(inside, np.fmax(upper, np.fmin(lower, rising[rows])), lower)
+        band = np.where(zone[rows], kept[rows],
+                        np.where(inside, np.fmax(upper, np.fmin(lower, rising[rows])), lower))
         band = _at_most(band, start[rows])
         lowered[rows] = band
         with np.errstate(invalid="ignore"):

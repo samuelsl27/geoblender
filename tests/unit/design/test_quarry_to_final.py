@@ -10,14 +10,17 @@ del terreno) en zonas conexas (4 vecinos) de más del área mínima
 diseño, no zona a zona): ninguna zona, todas las avisadas o las celdas del aviso dentro de una capa
 de polígonos; donde se aplica, la explotación baja con bancos de su perfil anclados a sus cotas
 hasta la cota de su ancla inmediatamente por encima de la final, ``T = a + h·⌈(final − a)/h⌉``, sin
-quedar por debajo de la final y con transición al resto a la cara de su perfil:
-``máx(final, mín(explotación, ENV↑(T, tan(cara)·malla)))`` (``design.quarry.to_final_steps``); el
-volumen que pasa del desdoblado a la explotación es ``Σ (antes − después) · área de celda``.
+quedar por debajo de ella (``T`` en el recinto; en la zona, ``máx(final, mín(explotación, z,
+ENV↓(T, tan(cara)·malla)))``: la cara baja desde la cota de arriba; A9 nuevo, T62) y con transición
+al resto a la cara de su perfil: ``máx(final, mín(explotación, ENV↑(lo que queda en la zona)))``
+(``design.quarry.to_final_steps``); el volumen que pasa del desdoblado a la explotación es ``Σ
+(antes − después) · área de celda``.
 
 Las reglas, con una rejilla a mano de 100 × 200 celdas de 2 m (la zona de 2 ha con 10 m de
-desdoblado de CE-014-05 y una de cada caso que no se avisa) y, el ``ENV↑`` exacto, frente a la
-fuerza bruta; ``quarry_steps`` con los dos lados sustituidos por esas rejillas (el orden, la
-clasificación, el aviso, los tres modos, las tres anclas y las cifras).
+desdoblado de CE-014-05 y una de cada caso que no se avisa) y, las dos envolventes exactas, frente
+a la fuerza bruta; la regresión de la T62 (la final cruzando una cota de ancla en la zona);
+``quarry_steps`` con los dos lados sustituidos por esas rejillas (el orden, la clasificación, el
+aviso, los tres modos, las tres anclas y las cifras).
 """
 
 from __future__ import annotations
@@ -409,22 +412,32 @@ def small_case() -> dict[str, Any]:
 
 
 def brute_force(case: dict[str, Any], height: float, tan: float) -> np.ndarray:
-    """A9 a mano con la distancia euclídea entre centros de celda: ``T`` en cada celda donde se
-    aplica, ``ENV↑(p) = mín_q T_q + t·|p − q|``, ``máx(final, mín(explotación, ENV↑))`` en el
-    dominio y ``≤ z``."""
-    final, exploitation = case["final"], case["exploitation"]
+    """A9 a mano (el nuevo, T62) con la distancia euclídea entre centros de celda: ``T`` en cada
+    celda del dominio (todas con final), ``ENV↓(p) = máx_q T_q − t·|p − q|``; en las celdas donde
+    se aplica, ``B' = máx(final, mín(explotación, z, ENV↓))``; en el resto del dominio,
+    ``máx(final, mín(explotación, ENV↑))`` con ``ENV↑(p) = mín_q B'_q + t·|p − q|`` de las celdas
+    donde se aplica; fuera, la explotación; y ``≤ z``."""
+    final, exploitation, terrain = case["final"], case["exploitation"], case["terrain"]
     anchor = case["anchor"]
+    inside, target = case["domain"].mask, case["target"]
     rows, cols = np.indices(SMALL.shape)
     level = anchor + height * np.ceil((final - anchor - 1e-9) / height)
-    picked = np.flatnonzero(case["target"])
+
+    def distance(index: int) -> np.ndarray:
+        row, col = divmod(index, SMALL.ncols)
+        return tan * SMALL.dx * np.hypot(rows - row, cols - col)
+
+    falling = np.full(SMALL.shape, -np.inf)
+    for index in np.flatnonzero(inside).tolist():
+        np.maximum(falling, level.flat[index] - distance(index), out=falling)
+    zone = np.maximum(final, np.minimum(np.minimum(exploitation, terrain), falling))
     rising = np.full(SMALL.shape, np.inf)
-    for index in picked:
-        row, col = divmod(int(index), SMALL.ncols)
-        cost = level[row, col] + tan * SMALL.dx * np.hypot(rows - row, cols - col)
-        np.minimum(rising, cost, out=rising)
-    inside = case["domain"].mask
-    found = np.where(inside, np.maximum(final, np.minimum(exploitation, rising)), exploitation)
-    return np.minimum(found, case["terrain"])
+    for index in np.flatnonzero(target & inside).tolist():
+        np.minimum(rising, zone.flat[index] + distance(index), out=rising)
+    found = np.where(inside & target, zone,
+                     np.where(inside, np.maximum(final, np.minimum(exploitation, rising)),
+                              exploitation))
+    return np.minimum(found, terrain)
 
 
 def lower(case: dict[str, Any], **changes: Any) -> Any:
@@ -440,11 +453,13 @@ def lower(case: dict[str, Any], **changes: Any) -> Any:
 class ToFinalStepsTest(unittest.TestCase):
     """RF-014-18 (A9): la explotación bajada, frente a la fuerza bruta."""
 
-    def test_the_exact_rising_envelope_matches_the_brute_force(self) -> None:
-        """Con la métrica euclídea exacta, la explotación bajada es la de la fuerza bruta a
-        ≤ 10⁻⁹ m en todas las celdas (el ancla, una rejilla por columna; la altura, 5 m; la cara,
-        50°), nunca por debajo de la final ni por encima de la explotación; y el volumen que pasa
-        es ``Σ (antes − después) · 4 m²``, en total y por sector."""
+    def test_the_exact_envelopes_match_the_brute_force(self) -> None:
+        """Con la métrica euclídea exacta, la explotación bajada (la descendente de las cotas de
+        ancla del recinto en la zona y la ascendente de lo que queda en ella en la transición; T62)
+        es la de la fuerza bruta a ≤ 10⁻⁹ m en todas las celdas (el ancla, una rejilla por
+        columna; la altura, 5 m; la cara, 50°), nunca por debajo de la final ni por encima de la
+        explotación; y el volumen que pasa es ``Σ (antes − después) · 4 m²``, en total y por
+        sector."""
         case = small_case()
         found = lower(case)
         self.assertIsInstance(found, quarry.ToFinal)
@@ -467,17 +482,17 @@ class ToFinalStepsTest(unittest.TestCase):
     def test_the_level_is_the_anchor_level_just_above_the_final(self) -> None:
         """``T = a + h·⌈(final − a)/h⌉``: con la final justo en una cota de ancla (110 m, ancla
         100 m, 5 m) la explotación baja a ella, no a la siguiente; a 0,25 m por debajo (109,75 m),
-        también a 110 m (queda 0,25 m); y una zona sin otra explotación alrededor no tiene
-        transición: el volumen es el de la zona a mano."""
+        también a 110 m (queda 0,25 m); y con el dominio de trabajo en la zona (sin otras cotas
+        del recinto, cuyas caras bajarían a ella desde 130 m, T62, ni transición) el volumen es el
+        de la zona a mano."""
         rows, cols = np.indices(SMALL.shape)
         terrain = np.full(SMALL.shape, 130.0)
-        domain = (rows >= 1) & (rows < 19) & (cols >= 1) & (cols < 23)
         zone = (rows >= 5) & (rows < 10) & (cols >= 5) & (cols < 15)
         for level, rest in ((110.0, 0.0), (109.75, 0.25)):
             final = np.where(zone, level, terrain)
             case = {"terrain": terrain, "exploitation": terrain.copy(), "final": final,
                     "target": zone, "anchor": 100.0,
-                    "domain": seeds_mod.domain_of(domain, np.zeros(SMALL.shape, np.int16), (),
+                    "domain": seeds_mod.domain_of(zone, np.zeros(SMALL.shape, np.int16), (),
                                                   SMALL.cell_area)}
             with self.subTest(level=level):
                 found = lower(case, anchor=100.0, metric="chamfer5")
@@ -487,6 +502,45 @@ class ToFinalStepsTest(unittest.TestCase):
                 self.assertEqual(found.volume_m3, 20.0 * 50 * 4.0)
                 self.assertEqual(found.lowered_cells, 50)
                 self.assertEqual(found.sectors, ())
+
+    def test_t62_no_cell_of_the_zone_below_its_anchor_level(self) -> None:
+        """RF-014-18 (T62; CE-014-09 con el banco; plan 014 A9 del 14/11/2026), «sin quedar por
+        debajo de ella»: con la final cruzando una cota de ancla dentro de la zona (112 m al oeste
+        de la columna 12 y 107 m al este en todo el dominio, ancla 100 m y bancos de 5 m: cotas de
+        ancla 115 y 110 m) y la explotación sin explotar (130 m), con las dos métricas, ninguna
+        celda de la zona queda por debajo de ``mín(T, explotación)`` (a 1 mm): donde la cota
+        cambia de un banco al siguiente, la cara **baja desde la de arriba** (la columna 12, a
+        ``115 − tan 50°`` por un paso), no sube desde la de abajo (con ``ENV↑`` de ``T`` en la
+        zona, la columna 11 quedaba 2,65 m por debajo de 115 m); lejos del cambio, cada celda en
+        su cota; y entre dos celdas vecinas de la zona la cara no pasa de la del perfil (50° por
+        el paso de 2 m)."""
+        rows, cols = np.indices(SMALL.shape)
+        terrain = np.full(SMALL.shape, 130.0)
+        domain = (rows >= 1) & (rows < 19) & (cols >= 1) & (cols < 23)
+        zone = (rows >= 4) & (rows < 16) & (cols >= 4) & (cols < 20)
+        final = np.where(domain, np.where(cols < 12, 112.0, 107.0), terrain)
+        level = np.where(cols < 12, 115.0, 110.0)
+        case = {"terrain": terrain, "exploitation": terrain.copy(), "final": final,
+                "target": zone, "anchor": 100.0,
+                "domain": seeds_mod.domain_of(domain, np.zeros(SMALL.shape, np.int16), (),
+                                              SMALL.cell_area)}
+        tan = math.tan(math.radians(50.0))
+        for metric, step in (("chamfer5", SMALL.dx * envelopes.CHAMFER_SCALE),
+                             ("exact", SMALL.dx)):
+            with self.subTest(metric=metric):
+                found = lower(case, metric=metric).exploitation
+                floor = np.minimum(level, case["exploitation"])
+                self.assertGreaterEqual(float(np.min(found[zone] - floor[zone])), -1e-3)
+                np.testing.assert_allclose(found[4:16, 12], 115.0 - tan * step, rtol=0.0,
+                                           atol=1e-9)
+                np.testing.assert_array_equal(found[4:16, 4:12], 115.0)
+                np.testing.assert_array_equal(found[4:16, 15:20], 110.0)
+                for near, far, both in ((found[:, 1:], found[:, :-1], zone[:, 1:] & zone[:, :-1]),
+                                        (found[1:], found[:-1], zone[1:] & zone[:-1])):
+                    self.assertLessEqual(float(np.max(np.abs(near - far)[both])),
+                                         tan * SMALL.dx + 1e-9)
+                self.assertTrue(bool(np.all(found >= final)))
+                self.assertTrue(bool(np.all(found <= terrain)))
 
     def test_nothing_to_apply_changes_nothing(self) -> None:
         """Sin celdas donde aplicar, la explotación no cambia y no pasa nada a ella."""

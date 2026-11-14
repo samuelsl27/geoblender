@@ -322,7 +322,9 @@ def build_bank(root: Path, *, flaw: str | None = None, drop: tuple[str, ...] = (
     _write(folder / f"{NAMES['seeds']}.tif", GRID, _seeds(start))
     np.save(folder / f"{NAMES['zones']}.npy", zones.astype(np.float64), allow_pickle=False)
     if "sheet" not in drop:
-        text = _sheet(cifras={key: round(value, 3) for key, value in found.items()})
+        # Con 6 decimales, el redondeo de la ficha no pasa de 10⁻⁶ relativo ni con lo poco que
+        # pasa a la explotación desde la T62 (136 m³; con 3, 3·10⁻⁶).
+        text = _sheet(cifras={key: round(value, 6) for key, value in found.items()})
         if thickness is not None:
             text[THICKNESS_FIELD] = thickness
         (folder / SHEET_NAME).write_text(

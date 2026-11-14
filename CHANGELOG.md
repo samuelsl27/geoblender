@@ -178,7 +178,18 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     la cifra tecleada en ha), **se avisa** con cada zona, y **«Explotación hasta la final»**
     (en todas las zonas avisadas o en las de una capa) la baja con los bancos de su perfil hasta la
     cota de su ancla inmediatamente por encima de la final y dice cuánto pasa del desdoblado a la
-    explotación. Lo que aún queda dentro de las zonas tratadas (menos de una altura de banco: la
+    explotación. **Ninguna celda de la zona queda por debajo de su cota de ancla** (RF-014-18;
+    hallazgo de CE-014-09): donde la cota cambia de un banco al siguiente, la cara de su perfil baja
+    desde la cota de arriba (la de cada celda del recinto, también fuera de la zona) y la transición
+    con el resto de la explotación sube desde lo que queda en la zona. Su comparación con el
+    proyecto de referencia encontró que la cara subía desde la cota de abajo y se comía las celdas de
+    arriba: 17.775 celdas por debajo de su cota y 899.048 m³ a la explotación frente a los 738.612
+    de la referencia. En las pruebas, lo que pasa a la explotación baja en la cantera de la historia
+    de Blender (E4) de 3.828,6 a 1.380,5 m³, en la de las vistas de 90,5 a 2,9 m³ y en la cantera
+    sintética del banco de 410,239 a 136,462 m³ (allí la final cruza cotas de ancla y las caras bajan
+    ahora desde las cotas de alrededor de la zona, más altas); los casos a mano (la zona de 2 ha:
+    190.000 y 185.000 m³) no cambian, y calcularlo tarda 0,65 s en lugar de 0,37 s en 2,8 millones
+    de celdas. Lo que aún queda dentro de las zonas tratadas (menos de una altura de banco: la
     cota de ancla inmediatamente por encima de la final deja allí el terreno sin explotar) se avisa
     con un aviso propio que lo dice y ya no vuelve a recomendar el modo (lo decidió Samuel el
     13/11/2026; su verificación encontró que el aviso se repetía tal cual); fuera de ellas, como
