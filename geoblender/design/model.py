@@ -29,11 +29,18 @@ capas con sus campos (:class:`LayerField`, :class:`CorridorFields`), lo de cada 
 (:class:`QuarrySide`) y la petición (:class:`QuarryRequest`); la de «Solo relleno…» (T30,
 :class:`FillOnlyRequest`) y la de «Ajustar el diseño a un límite nuevo…» (T32,
 :class:`RefitRequest`).
+
+Y los de las entidades de diseño de la 015 (T02; plan 015 §5.1 y §5.3.1): el modo de una plataforma
+(:class:`PlatformMode`, «en corte» por defecto, D-5), su eje (:class:`Axis`: vértices absolutos en
+``float64`` con la abscisa 0 en el primero), la capa con sus campos (:class:`PlatformFields`) y la
+petición (:class:`PlatformRequest`, el homólogo de :class:`QuarryRequest`). El registro de una
+entidad y su código son de :mod:`design.entities`.
 """
 
 from __future__ import annotations
 
 import math
+import numbers
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -48,6 +55,7 @@ if TYPE_CHECKING:
 __all__ = [
     "PERIMETER_SEGMENT",
     "AnchorMode",
+    "Axis",
     "BenchProfile",
     "BenchSense",
     "CellClass",
@@ -60,6 +68,9 @@ __all__ = [
     "Metric",
     "Named",
     "Order",
+    "PlatformFields",
+    "PlatformMode",
+    "PlatformRequest",
     "QuarryRequest",
     "QuarrySide",
     "RefitRequest",
@@ -582,3 +593,192 @@ def check_profiles(profiles: Iterable[Named]) -> None:
                               obj=f"Perfil de banco «{profile.code}»", field="name",
                               value=profile.name, profile=profile.code, other=names[key])
         names[key] = profile.code
+
+
+# --- Entidades de diseño: la plataforma (spec 015, T02; plan 015 §5.1, §5.2.1 y §5.3.1) ----------
+
+
+class PlatformMode(StrEnum):
+    """El modo de una plataforma (RF-015-20, RF-015-21; D-5): ``CUT`` («en corte», el de por
+    defecto) baja a la rasante donde el corte se admite y no sube ninguna celda (la plataforma es
+    el fondo de su corredor, no una cota mínima); ``CUT_FILL`` («en corte y relleno») además sube a
+    la rasante donde el relleno se admite."""
+
+    CUT = "cut"
+    CUT_FILL = "cut_fill"
+
+
+def _text(value: object, what: str) -> str:
+    """``value`` sin los espacios de los extremos; :class:`TypeError` si no es un texto."""
+    if not isinstance(value, str):
+        raise TypeError(f"{what} es un texto, no {value!r}")
+    return value.strip()
+
+
+def _name_or_none(value: object, what: str) -> str | None:
+    """``value`` como texto sin los espacios de los extremos (``None`` si es ``None`` o está en
+    blanco); :class:`TypeError` si no es un texto."""
+    if value is None:
+        return None
+    return _text(value, what) or None
+
+
+def _real_or_none(value: object, what: str) -> float | None:
+    """``value`` como ``float`` (``None`` si es ``None``); :class:`TypeError` si no es un número
+    real (un texto o un booleano no lo son)."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise TypeError(f"{what} es un número real, no {value!r}")
+    return float(value)
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformFields:
+    """La capa de una plataforma y los campos que se leen de ella (plan 015 §5.2.1; D-15: los de
+    un corredor de la 014): su ``layer`` y, de cada geometría, la cota inicial de la rasante
+    (``start_level_field``, m) y su pendiente (``gradient_field``, %, positiva si sube en el sentido
+    del eje). Una capa de líneas lleva además el ancho (``width_field``, m); una de polígonos, si
+    quiere elegir su eje, el campo que lo enlaza (``axis_field``: el ``fid`` de una línea) y la capa
+    de líneas de ese eje (``axis_layer``), los dos o ninguno (sin ellos, el eje principal del
+    polígono, con aviso). Una línea con ancho y un polígono con eje enlazado no se dan juntos."""
+
+    layer: str
+    start_level_field: str
+    gradient_field: str
+    width_field: str | None = None
+    axis_field: str | None = None
+    axis_layer: str | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("layer", "start_level_field", "gradient_field"):
+            value = _text(getattr(self, name), f"«{name}» de los campos de una plataforma")
+            if not value:
+                raise ValueError(f"«{name}» de los campos de una plataforma no puede estar en "
+                                 "blanco (plan 015 §5.2.1)")
+            object.__setattr__(self, name, value)
+        for name in ("width_field", "axis_field", "axis_layer"):
+            object.__setattr__(self, name, _name_or_none(
+                getattr(self, name), f"«{name}» de los campos de una plataforma"))
+        if (self.axis_field is None) != (self.axis_layer is None):
+            raise ValueError("el enlace de un polígono con su eje lleva el campo y la capa de "
+                             "líneas, los dos o ninguno (plan 015 §5.2.1)")
+        if self.width_field is not None and self.axis_field is not None:
+            raise ValueError("una plataforma es una línea con su ancho o un polígono con su eje "
+                             "enlazado, no las dos cosas (RF-015-19)")
+
+
+@dataclass(frozen=True, slots=True)
+class Axis:
+    """El eje de una plataforma (RF-015-19): la polilínea de sus ``vertices`` absolutos
+    ``(x, y)`` en ``float64`` (pares de ``float`` de Python: lo exacto, sin ``float32``; ADR-0005),
+    en el sentido de digitalización: la abscisa 0 está en el primer vértice. ``principal``, si es
+    el eje principal de un polígono sin eje enlazado (con el aviso ``des.platform_axis_principal``).
+
+    El modelo no rechaza un eje sin longitud ni cerrado (lo hace la geometría con su capa y su
+    entidad, RF-015-08): lo representa. Lo que no puede ser un eje (menos de dos vértices, un
+    vértice que no son dos números finitos) es un error del programa: :class:`ValueError`."""
+
+    vertices: tuple[tuple[float, float], ...]
+    principal: bool = False
+
+    def __post_init__(self) -> None:
+        points: list[tuple[float, float]] = []
+        try:
+            for vertex in self.vertices:
+                x, y = vertex
+                point = (float(x), float(y))
+                if not (math.isfinite(point[0]) and math.isfinite(point[1])):
+                    raise ValueError("no es un número finito")
+                points.append(point)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"un eje es una lista de vértices (x, y) finitos: {exc}") from None
+        if len(points) < 2:
+            raise ValueError(f"un eje tiene al menos dos vértices, no {len(points)}")
+        object.__setattr__(self, "vertices", tuple(points))
+
+    @property
+    def start(self) -> tuple[float, float]:
+        """El primer vértice: la abscisa 0."""
+        return self.vertices[0]
+
+    @property
+    def end(self) -> tuple[float, float]:
+        """El último vértice."""
+        return self.vertices[-1]
+
+    @property
+    def length_m(self) -> float:
+        """La longitud medida sobre el eje (m): la suma de sus tramos."""
+        return math.fsum(math.hypot(b[0] - a[0], b[1] - a[1])
+                         for a, b in zip(self.vertices, self.vertices[1:], strict=False))
+
+    @property
+    def closed(self) -> bool:
+        """Si el eje es un anillo: acaba donde empieza, con tres vértices al menos."""
+        return len(self.vertices) >= 3 and self.vertices[0] == self.vertices[-1]
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformRequest:
+    """Lo que pide el usuario de «Plataforma…» (RF-015-01, RF-015-19 a RF-015-23; plan 015 §5.3.1
+    y §5.3.3; el homólogo de :class:`QuarryRequest`): su ``name`` (único en la versión), la capa y
+    sus campos (``fields``), la geometría de la capa (``feature``: su nombre o su ``fid``, como
+    texto; ``prepare_platform`` la resuelve, T11), la superficie de partida (``start``, el nombre de
+    su dato) y, si la hay, la de apoyo (``support``), el ``mode`` y los valores del borde
+    (``edge_angle_deg``, ``mesh_factor``, ``reach_m`` y la ``metric``), la tolerancia de
+    contrapendiente (``counter_tol_m``), la pendiente máxima (``max_slope_pct``) y lo que declara
+    (``protect``, ``guard_m`` y su ``reason``).
+
+    Lo que no se pide es ``None``: el valor por defecto del parámetro (D-5, D-7, D-8 y D-22: la
+    petición no lleva ninguna cifra minera a mano) o, si no lo tiene, el rechazo de RF-015-08. Las
+    cotas, la pendiente y el ancho no se piden: salen de los campos de la capa y se copian a los
+    parámetros de la entidad al crearla (P-3). Lo leído (rejilla, partida, máscaras y geometría)
+    no es parte de la petición: lo recoge el cálculo."""
+
+    name: str
+    fields: PlatformFields
+    feature: str
+    start: str
+    support: str | None = None
+    mode: PlatformMode | str | None = None
+    edge_angle_deg: float | None = None
+    reach_m: float | None = None
+    mesh_factor: float | None = None
+    counter_tol_m: float | None = None
+    metric: Metric | str | None = None
+    max_slope_pct: float | None = None
+    protect: bool = False
+    guard_m: float | None = None
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        name = _text(self.name, "el nombre de una plataforma")
+        if not name:
+            raise DesignError("des.entity_name_missing", obj="Plataforma", field="name",
+                              value=self.name)
+        object.__setattr__(self, "name", name)
+        if not isinstance(self.fields, PlatformFields):
+            raise TypeError(f"los campos de una plataforma son PlatformFields, no "
+                            f"{self.fields!r}")
+        for attr in ("feature", "start"):
+            object.__setattr__(self, attr, _text(getattr(self, attr), f"«{attr}» de una "
+                                                                     "plataforma"))
+        for attr in ("support", "reason"):
+            object.__setattr__(self, attr, _name_or_none(getattr(self, attr), f"«{attr}» de una "
+                                                                              "plataforma"))
+        if self.mode is not None:
+            object.__setattr__(self, "mode", PlatformMode(self.mode))
+        if self.metric is not None:
+            object.__setattr__(self, "metric", Metric(self.metric))
+        for attr in ("edge_angle_deg", "reach_m", "mesh_factor", "counter_tol_m",
+                     "max_slope_pct", "guard_m"):
+            object.__setattr__(self, attr, _real_or_none(getattr(self, attr),
+                                                         f"«{attr}» de una plataforma"))
+        if not isinstance(self.protect, bool):
+            raise TypeError(f"«protect» de una plataforma es un sí/no, no {self.protect!r}")
+
+    @property
+    def layer(self) -> str:
+        """La capa de la geometría de la plataforma."""
+        return self.fields.layer

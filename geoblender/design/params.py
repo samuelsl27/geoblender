@@ -52,6 +52,19 @@ Y los siete de la cantera con dos superficies (spec 014, T02; plan 014 §5.2.2;
 
 El umbral «sin explotar» de RF-014-17 (0,3 m) no es un parámetro: es la definición de la spec.
 
+Y los de una entidad de diseño (spec 015, T02; plan 015 §5.2.2; ADR-0027 y ADR-0030): la
+definición de una **plataforma** son sus parámetros de versión, 19 **familias**
+``des.platform.{e}.<valor>`` (:data:`ENTITY_FAMILIES`, aparte de :data:`FAMILIES`; sus plantillas por
+valor en :data:`PLATFORM_PARAMS`, sus rangos en :data:`ENTITY_RANGES`, su comprobación en
+:func:`check_entity_param`). ``{e}`` es el código de la entidad (``PLT-001``) como segmento de clave
+(:func:`entity_segment`: ``plt_001``). Sin valor por defecto (lo declara una persona al crear la
+entidad, ADOPTADO): el nombre, la capa, la geometría, la partida y el apoyo, el ancho, la cota
+inicial y la pendiente de la rasante (``start_level_m`` y ``gradient_pct``, como en el glosario
+§14), la pendiente máxima (opcional, D-6), el ángulo de borde (D-7), el alcance (D-20), el
+resguardo (D-19), el motivo y las dependencias declaradas. Con valor, ADOPTADO «sin confirmar»: el
+modo «en corte» (D-5), el factor de malla 1,0 (D-7), la tolerancia de contrapendiente 0,1 m (D-8),
+la métrica exacta (D-22) y «no proteger» (D-4).
+
 El espesor mínimo del informe es el de la 012, ``res.verify.min_thickness_m``
 (:data:`VERIFY_MIN_THICKNESS`), que ``design`` lee **por su clave** con ``core.params`` sin
 importar ``reserves`` (D-24); una prueba de arquitectura comprueba que sigue declarada.
@@ -87,8 +100,11 @@ __all__ = [
     "EDGE_MAX_STEP",
     "EDGE_MIN_SHARE",
     "EDGE_TRANSITION",
+    "ENTITY_FAMILIES",
+    "ENTITY_RANGES",
     "FAMILIES",
     "PARAMS",
+    "PLATFORM_PARAMS",
     "QUARRY_DEFINITIONS",
     "QUARRY_PARAMS",
     "QUARRY_RANGES",
@@ -102,13 +118,18 @@ __all__ = [
     "BenchParam",
     "ParamDef",
     "ParamValue",
+    "PlatformParam",
     "ValueRange",
     "bench_key",
     "check_bench_value",
+    "check_entity_param",
     "check_quarry_param",
     "check_sector_slope",
+    "entity_key",
+    "entity_segment",
     "is_code",
     "sector_slope_key",
+    "segment_code",
 ]
 
 TOLERANCE_FACE = "des.tolerance.face_deg"
@@ -136,7 +157,8 @@ class BenchParam(StrEnum):
 @dataclass(frozen=True, slots=True)
 class ValueRange:
     """El rango de un valor de ``design`` con sus dos extremos abiertos o cerrados (a diferencia
-    de ``ParamDef``, que no puede excluir el máximo): ``minimum`` a ``maximum`` en ``unit``."""
+    de ``ParamDef``, que no puede excluir el máximo): ``minimum`` a ``maximum`` en ``unit``; un
+    extremo infinito (``-inf`` o ``inf``) es un extremo sin tope."""
 
     minimum: float
     maximum: float
@@ -158,8 +180,10 @@ class ValueRange:
 
     def text(self, language: str = "es") -> str:
         """El rango como se lee: ``(0; 90) °`` en español (``(0, 90) deg`` en inglés), con
-        paréntesis en los extremos excluidos."""
-        shown = format_range("float", self.unit, self.minimum, self.maximum,
+        paréntesis en los extremos excluidos y ``±∞`` en el extremo infinito (``(0; +∞) %``)."""
+        shown = format_range("float", self.unit,
+                             None if self.minimum == -math.inf else self.minimum,
+                             None if self.maximum == math.inf else self.maximum,
                              min_exclusive=self.min_exclusive, language=language)
         return shown.replace("]", ")", 1) if self.max_exclusive else shown
 
@@ -410,3 +434,249 @@ def check_quarry_param(key: str, value: object) -> float | int:
         raise DesignError("des.quarry_param_range", obj=obj, field=key, value=number,
                           range=span.text())
     return number
+
+
+# --- Las entidades de diseño (spec 015, T02; plan 015 §5.2.2; ADR-0027, ADR-0030) ----------------
+
+PLATFORM_PREFIX = "des.platform"
+"""El principio de la clave de un parámetro de una plataforma: ``des.platform.{e}.<valor>``."""
+_ENTITY_CODE = re.compile(r"[A-Z]{2,5}-[0-9]{3,}")
+_ENTITY_SEGMENT = re.compile(r"[a-z]{2,5}_[0-9]{3,}")
+
+
+class PlatformParam(StrEnum):
+    """Los 19 valores de una plataforma: el último segmento de su clave
+    ``des.platform.{e}.<valor>`` (plan 015 §5.2.2), en su orden."""
+
+    NAME = "name"
+    LAYER = "layer"
+    FEATURE = "feature"
+    START = "start"
+    SUPPORT = "support"
+    WIDTH = "width_m"
+    START_LEVEL = "start_level_m"
+    GRADIENT = "gradient_pct"
+    MAX_SLOPE = "max_slope_pct"
+    MODE = "mode"
+    EDGE_ANGLE = "edge_angle_deg"
+    REACH = "reach_m"
+    MESH_FACTOR = "mesh_factor"
+    COUNTER_TOL = "counter_tol_m"
+    METRIC = "metric"
+    PROTECT = "protect"
+    GUARD = "guard_m"
+    REASON = "reason"
+    SUPPORTS = "supports"
+
+
+_OPTIONAL = frozenset({PlatformParam.SUPPORT, PlatformParam.MAX_SLOPE, PlatformParam.REASON,
+                       PlatformParam.SUPPORTS})
+"""Los valores que pueden quedarse sin valor: la superficie de apoyo («si la hay»), la pendiente
+máxima (opcional, D-6), el motivo (el generado, editable) y las dependencias declaradas (vacío)."""
+
+_INF = math.inf
+ENTITY_RANGES: Mapping[str, ValueRange] = MappingProxyType({
+    PlatformParam.WIDTH.value: ValueRange(0.0, 1000.0, "m", min_exclusive=True),
+    PlatformParam.START_LEVEL.value: ValueRange(-_INF, _INF, "m"),
+    PlatformParam.GRADIENT.value: ValueRange(-_INF, _INF, "%"),
+    PlatformParam.MAX_SLOPE.value: ValueRange(0.0, _INF, "%", min_exclusive=True),
+    PlatformParam.EDGE_ANGLE.value: ValueRange(0.0, 90.0, "deg", min_exclusive=True,
+                                               max_exclusive=True),
+    PlatformParam.REACH.value: ValueRange(0.0, 10000.0, "m", min_exclusive=True),
+    PlatformParam.MESH_FACTOR.value: ValueRange(0.0, 10.0, "-", min_exclusive=True),
+    PlatformParam.COUNTER_TOL.value: ValueRange(0.0, 10.0, "m"),
+    PlatformParam.GUARD.value: ValueRange(0.0, 1000.0, "m"),
+})
+"""Los rangos de los valores numéricos de una plataforma (plan 015 §5.2.2) por último segmento de
+la clave (solo lectura): la única fuente de los de :data:`ENTITY_FAMILIES` y de lo que
+:func:`check_entity_param` acepta (con el 90° excluido que ``ParamDef`` no puede decir)."""
+
+_015_NAME = ("Spec 015, RF-015-01: sin valor por defecto; lo elige una persona al crear la entidad "
+             "(Samuel, IMGA, 14/11/2026)")
+_015_START = ("Spec 015, RF-015-04: sin valor por defecto; la superficie de partida (el terreno, "
+              "una de diseño o una entidad) la elige una persona al crear la entidad, y la de "
+              "apoyo, si la hay (Samuel, IMGA, 14/11/2026)")
+_015_D15 = ("Spec 015, D-15 (el ancho de un corredor de la 014): sin valor por defecto; lo copia "
+            "una persona al crear la entidad, con su origen (la capa y el campo) (Samuel, IMGA, "
+            "14/11/2026)")
+_015_D6 = ("Spec 015, D-6: sin valor por defecto, una pendiente constante por plataforma; lo "
+           "declara una persona al crear la entidad, con su origen (la capa y el campo, o una "
+           "persona) y su decisor (Samuel, IMGA, 14/11/2026)")
+_015_D6_MAX = ("Spec 015, D-6: opcional y sin valor por defecto; si se fija y la rasante la pasa, "
+               "es una rampa y se rechaza (Samuel, IMGA, 14/11/2026)")
+_015_D5 = ("Spec 015, D-5: «en corte» por defecto (la plataforma es el fondo de su corredor, B7); "
+           "sin confirmar (Samuel, IMGA, 14/11/2026)")
+_015_D7_ANGLE = ("Spec 015, D-7: sin valor por defecto, el ángulo de borde es propio de cada "
+                 "plataforma (en el proyecto de referencia, 35°) (Samuel, IMGA, 14/11/2026)")
+_015_D20 = ("Spec 015, D-20: obligatorio y sin valor por defecto: sin tope, en una ladera más "
+            "empinada que el ángulo de borde la envolvente cortaría toda la ladera (Samuel, "
+            "IMGA, 14/11/2026)")
+_015_D7_MESH = ("Spec 015, D-7: 1,0, como el factor de malla de la 013 (sin margen); sin "
+                "confirmar (Samuel, IMGA, 14/11/2026)")
+_015_D8 = ("Spec 015, D-8: 0,1 m, la tolerancia de la solera del canal (error 21, R-37), no la de "
+           "una plataforma; sin confirmar (Samuel, IMGA, 14/11/2026)")
+_015_D22 = ("Spec 015, D-22: la euclídea exacta (RF-013-12), decidida por la sesión principal; "
+            "revisable (14/11/2026)")
+_015_D4 = ("Spec 015, D-4: la plataforma no declara nada por defecto; «proteger» (sin relleno) se "
+           "elige con motivo; sin confirmar (Samuel, IMGA, 14/11/2026)")
+_015_D19 = ("Spec 015, D-19: obligatorio y sin valor por defecto, como todo resguardo de la 012 "
+            "(RF-012-02: un resguardo por defecto es una distancia de seguridad inventada) "
+            "(Samuel, IMGA, 14/11/2026)")
+_015_REASON = ("Spec 015, RF-015-10: el motivo generado («declarada por la plataforma P1»), que "
+               "la persona puede editar en la entidad (Samuel, IMGA, 14/11/2026)")
+_015_SUPPORTS = ("Spec 015, RF-015-15: las entidades en las que la persona declara que se apoya; "
+                 "vacío por defecto (Samuel, IMGA, 14/11/2026)")
+
+_MODE_CHOICES = ("cut", "cut_fill")
+_METRIC_CHOICES = ("exact", "chamfer5")
+
+_ENTITY_SPECS: tuple[tuple[PlatformParam, str, ParamValue | None, tuple[str, ...],
+                           tuple[str, ...], str, str], ...] = (
+    (PlatformParam.NAME, "text", None, (), ("RF-015-01",), _015_NAME, "Name of the entity"),
+    (PlatformParam.LAYER, "text", None, (), ("RF-015-01",), _015_NAME,
+     "Layer the entity comes from"),
+    (PlatformParam.FEATURE, "text", None, (), ("RF-015-01",), _015_NAME,
+     "Feature of the layer the entity comes from"),
+    (PlatformParam.START, "text", None, (), ("RF-015-04", "RF-015-05"), _015_START,
+     "Start surface of the entity"),
+    (PlatformParam.SUPPORT, "text", None, (), ("RF-015-04", "RF-015-05"), _015_START,
+     "Support surface of the entity"),
+    (PlatformParam.WIDTH, "float", None, (), ("RF-015-19",), _015_D15, "Width of the platform"),
+    (PlatformParam.START_LEVEL, "float", None, (), ("RF-015-19",), _015_D6,
+     "Start level of the platform"),
+    (PlatformParam.GRADIENT, "float", None, (), ("RF-015-19",), _015_D6,
+     "Gradient of the platform"),
+    (PlatformParam.MAX_SLOPE, "float", None, (), ("RF-015-08",), _015_D6_MAX,
+     "Maximum gradient of the platform"),
+    (PlatformParam.MODE, "text", "cut", _MODE_CHOICES, ("RF-015-20", "RF-015-21"), _015_D5,
+     "Mode of the platform"),
+    (PlatformParam.EDGE_ANGLE, "float", None, (), ("RF-015-22",), _015_D7_ANGLE,
+     "Edge angle of the platform"),
+    (PlatformParam.REACH, "float", None, (), ("RF-015-22",), _015_D20,
+     "Reach of the platform edge"),
+    (PlatformParam.MESH_FACTOR, "float", 1.0, (), ("RF-015-22",), _015_D7_MESH,
+     "Mesh factor of the platform edge"),
+    (PlatformParam.COUNTER_TOL, "float", 0.1, (), ("RF-015-23",), _015_D8,
+     "Counter-gradient tolerance of the platform"),
+    (PlatformParam.METRIC, "text", "exact", _METRIC_CHOICES, ("RF-015-22",), _015_D22,
+     "Distance metric of the platform edge"),
+    (PlatformParam.PROTECT, "bool", False, (), ("RF-015-10", "RF-015-12"), _015_D4,
+     "The platform protects its area"),
+    (PlatformParam.GUARD, "float", None, (), ("RF-015-10", "RF-015-12"), _015_D19,
+     "Buffer of the protected area"),
+    (PlatformParam.REASON, "text", None, (), ("RF-015-10", "RF-015-12"), _015_REASON,
+     "Reason of the declared constraint"),
+    (PlatformParam.SUPPORTS, "text", None, (), ("RF-015-15",), _015_SUPPORTS,
+     "Entities the platform is declared to rest on"),
+)
+
+
+def _entity_family(param: PlatformParam, value_type: str, default: ParamValue | None,
+                   choices: tuple[str, ...], rfs: tuple[str, ...], source: str,
+                   label: str) -> ParamFamily:
+    """La familia ``des.platform.{e}.<param>`` (de versión) con la plantilla de clave
+    ``des.platform.e.<param>``: el rango de :data:`ENTITY_RANGES` (sin tope en un extremo
+    infinito), ADOPTADO «sin confirmar» de origen ``algorithm`` con valor por defecto, o ADOPTADO
+    sin valor que declara una persona (origen ``person``)."""
+    span = ENTITY_RANGES.get(param.value)
+    unit = "-" if span is None else span.unit
+    minimum = None if span is None or span.minimum == -math.inf else span.minimum
+    maximum = None if span is None or span.maximum == math.inf else span.maximum
+    template = ParamDef(
+        f"{PLATFORM_PREFIX}.e.{param.value}", value_type, unit, default, minimum, maximum, rfs,
+        source, min_exclusive=span is not None and span.min_exclusive, allow_empty=default is None,
+        choices=choices, kind="ADOPTADO", source_kind="person" if default is None else "algorithm",
+        scope="version", label_msgid=label)
+    return ParamFamily(f"{PLATFORM_PREFIX}.{{e}}.{param.value}", template)
+
+
+ENTITY_FAMILIES: tuple[ParamFamily, ...] = tuple(_entity_family(*spec) for spec in _ENTITY_SPECS)
+"""Las 19 familias de una plataforma (plan 015 §5.2.2), de versión, en su orden. Van aparte de
+:data:`FAMILIES` (las de la 013): ``bl`` las registra junto a ellas cuando registre las operaciones
+de la 015 (T04)."""
+
+PLATFORM_PARAMS: Mapping[str, ParamDef] = MappingProxyType(
+    {PlatformParam(family.pattern.rsplit(".", 1)[1]).value: family.template
+     for family in ENTITY_FAMILIES})
+"""Las plantillas de las 19 familias por último segmento de la clave (solo lectura)."""
+
+
+def entity_segment(code: str) -> str:
+    """El código de una entidad como segmento de clave de un parámetro: ``PLT-001`` →
+    ``plt_001`` (un segmento es ``[a-z][a-z0-9_]*``, ADR-0027). :class:`TypeError` si no es un
+    texto; :class:`ValueError` si no es un código de entidad (``[A-Z]{2,5}-[0-9]{3,}``): un error
+    del programa."""
+    if not isinstance(code, str):
+        raise TypeError(f"el código de una entidad es un texto, no {code!r}")
+    if _ENTITY_CODE.fullmatch(code) is None:
+        raise ValueError(f"el código {code!r} no es de una entidad (PLT-001: letras mayúsculas, "
+                         "un guion y al menos tres cifras)")
+    return code.lower().replace("-", "_")
+
+
+def segment_code(segment: str) -> str:
+    """El código de una entidad desde su segmento de clave: ``plt_001`` → ``PLT-001`` (la inversa
+    de :func:`entity_segment`). :class:`TypeError` si no es un texto; :class:`ValueError` si no es
+    el segmento de un código de entidad (``[a-z]{2,5}_[0-9]{3,}``)."""
+    if not isinstance(segment, str):
+        raise TypeError(f"el segmento de una entidad es un texto, no {segment!r}")
+    if _ENTITY_SEGMENT.fullmatch(segment) is None:
+        raise ValueError(f"el segmento {segment!r} no es el de una entidad (plt_001: letras "
+                         "minúsculas, un guion bajo y al menos tres cifras)")
+    return segment.upper().replace("_", "-")
+
+
+def entity_key(code: str, param: PlatformParam | str) -> str:
+    """La clave del valor ``param`` de la plataforma de código ``code``
+    (``des.platform.plt_001.width_m``); :class:`ValueError` si el código no es de una entidad o
+    ``param`` no es un valor de una plataforma (un error del programa)."""
+    return f"{PLATFORM_PREFIX}.{entity_segment(code)}.{PlatformParam(param).value}"
+
+
+def check_entity_param(entity: str, code: str, param: PlatformParam | str, value: object, *,
+                       required: bool | None = None) -> float | str | bool | None:
+    """El valor ``param`` de la plataforma de nombre ``entity`` y código ``code``, ya comprobado:
+    ``float`` un número, ``str`` un texto (sin los espacios de los extremos), ``bool`` el sí/no y
+    ``None`` un opcional sin valor.
+
+    :class:`~design.messages.DesignError` ``des.entity_param_missing`` si no tiene valor
+    (``None`` o un texto en blanco: ninguno elige un valor por la persona, RF-015-08),
+    ``des.entity_param_range`` si un número está fuera de su rango (:data:`ENTITY_RANGES`; ``nan`` y
+    el infinito también) o ``des.entity_param_choice`` si un texto no es de su lista cerrada,
+    nombrando la plataforma, la clave del campo y el valor. ``required`` (por defecto, todo salvo lo
+    opcional: la superficie de apoyo, la pendiente máxima, el motivo y las dependencias declaradas)
+    lo cambia: ``False`` deja pasar un valor que no hace falta (el ancho de un eje que no es de
+    línea, el resguardo de quien no protege); ``True`` exige uno opcional. :class:`TypeError` si el
+    valor no es del tipo del parámetro (un número que llega como texto o como booleano);
+    :class:`ValueError` si el código o el parámetro no existen (errores del programa)."""
+    param = PlatformParam(param)
+    key = entity_key(code, param)
+    definition = PLATFORM_PARAMS[param.value]
+    value_type = str(definition.value_type)
+    if value is not None:
+        if value_type == "bool":
+            if not isinstance(value, bool):
+                raise TypeError(f"el valor {key} es un sí/no, no {value!r}")
+        elif value_type == "text":
+            if not isinstance(value, str):
+                raise TypeError(f"el valor {key} es un texto, no {value!r}")
+            value = value.strip() or None
+        else:
+            value = _real(value, f"el valor {key}")
+    obj = f"Plataforma «{entity}»"
+    if value is None:
+        if (param not in _OPTIONAL) if required is None else required:
+            raise DesignError("des.entity_param_missing", obj=obj, field=key, value=None,
+                              entity=entity)
+        return None
+    if definition.choices and value not in definition.choices:
+        listed = ", ".join(f"«{choice}»" for choice in definition.choices)
+        raise DesignError("des.entity_param_choice", obj=obj, field=key, value=value,
+                          entity=entity, choices=listed)
+    span = ENTITY_RANGES.get(param.value)
+    if span is not None:
+        if not span.contains(value):
+            raise DesignError("des.entity_param_range", obj=obj, field=key, value=value,
+                              entity=entity, range=span.text())
+        return float(value)  # type: ignore[arg-type]
+    return value  # type: ignore[return-value]

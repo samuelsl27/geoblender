@@ -29,7 +29,10 @@ la regularización entre sectores que baja la envolvente (RF-013-26, RF-013-30) 
 una rejilla a GeoTIFF (RF-013-34). Los de la 014 (plan 014 §5.1, T02) van al final, por
 familias: ``des.quarry_*`` (sus parámetros, el recinto, las semillas, las capas, las dos
 superficies y «explotación hasta la final»), ``des.floor_*``, ``des.conserve_*``,
-``des.corridor_*``, ``des.edge_*``, ``des.fill_only_*`` y ``des.refit_*``. Un campo
+``des.corridor_*``, ``des.edge_*``, ``des.fill_only_*`` y ``des.refit_*``. Los de las entidades de
+diseño de la 015 (T02, plan 015 §5.1) van detrás de los de la 014: ``des.entity_*`` (el marco
+común: nombre, parámetros, partida, falta de dato, lo que no se mueve) y ``des.platform_*`` (la
+plataforma: su geometría, su rasante, su contrapendiente y lo que deja fuera de ella). Un campo
 que es un texto de una lista cerrada que la persona ve (el papel de una superficie, el tipo de
 geometría de una capa) llega ya en el idioma de quien lo llama: ``render`` no lo traduce; por
 eso, lo que cambia con el idioma va en otro código (las partes que vacían el recinto, notas detrás
@@ -1149,6 +1152,309 @@ CATALOG: tuple[Message, ...] = (
         "El diseño «{design}» está obsoleto: Proyecto ▸ Recalcular lo obsoleto lo vuelve a "
         "calcular con el límite vigente y después rehace sobre él este ajuste de {surfaces}, que "
         "sustituye al que se cree ahora.",
+        "warning",
+    ),
+    # Entidades de diseño: el marco común (spec 015, T02; RF-015-01, RF-015-04, RF-015-08,
+    # RF-015-09, RF-015-13, RF-015-14) ---------------------------------------------------------
+    Message(
+        "des.entity_name_missing",
+        "The entity has no name; give it one, for example P1.",
+        "La entidad no tiene nombre; póngale uno, por ejemplo P1.",
+    ),
+    Message(
+        "des.entity_name_repeated",
+        "The name «{value}» is already used by entity «{other}» in {version}; give each entity "
+        "its own name.",
+        "El nombre «{value}» ya lo tiene la entidad «{other}» en {version}; dé a cada entidad su "
+        "propio nombre.",
+    ),
+    Message(
+        "des.entity_param_missing",
+        "Entity «{entity}»: «{field}» has no value and has no default; give it a value in the "
+        "entity dialog before calculating (no value is chosen for it).",
+        "Entidad «{entity}»: «{field}» no tiene valor ni lleva ninguno por defecto; dele un valor "
+        "en el diálogo de la entidad antes de calcular (no se elige ninguno por ella).",
+    ),
+    Message(
+        "des.entity_param_range",
+        "Entity «{entity}»: «{field}» = {value} is outside its range {range}; correct it in the "
+        "entity dialog; nothing is calculated.",
+        "Entidad «{entity}»: «{field}» = {value} está fuera de su rango {range}; corríjalo en el "
+        "diálogo de la entidad; no se calcula nada.",
+    ),
+    Message(
+        "des.entity_param_choice",
+        "Entity «{entity}»: «{field}» = {value} is not one of its options ({choices}); choose "
+        "one of them; nothing is calculated.",
+        "Entidad «{entity}»: «{field}» = {value} no es una de sus opciones ({choices}); elija "
+        "una de ellas; no se calcula nada.",
+    ),
+    Message(
+        "des.entity_field_value",
+        "Layer «{layer}», entity «{entity}»: «{field}» = {value} has no valid value; give it one "
+        "in QGIS (none is assumed); nothing is calculated.",
+        "Capa «{layer}», entidad «{entity}»: «{field}» = {value} no tiene un valor válido; dele "
+        "uno en QGIS (no se supone ninguno); no se calcula nada.",
+    ),
+    Message(
+        "des.entity_feature_unknown",
+        "Layer «{layer}» has no feature «{value}»: choose the name or the fid of one of its "
+        "features; nothing is calculated.",
+        "La capa «{layer}» no tiene ninguna geometría «{value}»: elija el nombre o el fid de una "
+        "de las suyas; no se calcula nada.",
+    ),
+    Message(
+        "des.entity_start_taken",
+        "Entity «{entity}» cannot start from «{value}»: entity «{other}» already does and only "
+        "one entity starts from each surface; insert the new one before or after «{other}», or "
+        "choose another surface (another alternative goes in another version); nothing is "
+        "calculated.",
+        "La entidad «{entity}» no puede partir de «{value}»: ya parte la entidad «{other}» y de "
+        "cada superficie parte una sola entidad; inserte la nueva antes o después de «{other}», "
+        "o elija otra superficie (otra alternativa va en otra versión); no se calcula nada.",
+    ),
+    Message(
+        "des.entity_nodata",
+        "Entity «{entity}»: {area} m² of its footprint have no data in the surface «{surface}» "
+        "({role}), the first cell at x = {x} m, y = {y} m; complete the surface or move the "
+        "geometry; nothing is calculated or recorded.",
+        "Entidad «{entity}»: {area} m² de su huella no tienen dato en la superficie «{surface}» "
+        "({role}), la primera celda en x = {x} m, y = {y} m; complete la superficie o mueva la "
+        "geometría; no se calcula ni se registra nada.",
+    ),
+    Message(
+        "des.entity_held",
+        "Entity «{entity}»: {area} m² of its footprint do not move because of the constraint "
+        "«{constraint}», declared by entity «{other}» (around x = {x} m, y = {y} m); they stay "
+        "as in the start surface.",
+        "Entidad «{entity}»: {area} m² de su huella no se mueven por la restricción "
+        "«{constraint}», declarada por la entidad «{other}» (en torno a x = {x} m, y = {y} m); "
+        "quedan como en la superficie de partida.",
+        "warning",
+    ),
+    Message(
+        "des.entity_held_masks",
+        "Entity «{entity}»: {area} m² of its footprint do not move because the masks of the "
+        "version do not allow it (untouchables, limits or other constraints; around x = {x} m, "
+        "y = {y} m); they stay as in the start surface.",
+        "Entidad «{entity}»: {area} m² de su huella no se mueven porque las máscaras de la "
+        "versión no lo admiten (intocables, límites u otras restricciones; en torno a x = {x} m, "
+        "y = {y} m); quedan como en la superficie de partida.",
+        "warning",
+    ),
+    Message(
+        "des.entity_edge_outside",
+        "Entity «{entity}»: its edge reaches the border of the grid or cells without data "
+        "outside its footprint, in {cells} cells ({area} m²), the first at x = {x} m, y = {y} m; "
+        "the surface can be cut short there.",
+        "Entidad «{entity}»: su borde llega al borde de la rejilla o a celdas sin dato fuera de "
+        "su huella, en {cells} celdas ({area} m²), la primera en x = {x} m, y = {y} m; allí la "
+        "superficie puede quedar cortada.",
+        "warning",
+        count="cells",
+        one_msgid="Entity «{entity}»: its edge reaches the border of the grid or cells without "
+        "data outside its footprint, in {cells} cell ({area} m²), at x = {x} m, y = {y} m; the "
+        "surface can be cut short there.",
+        one_es="Entidad «{entity}»: su borde llega al borde de la rejilla o a celdas sin dato "
+        "fuera de su huella, en {cells} celda ({area} m²), en x = {x} m, y = {y} m; allí la "
+        "superficie puede quedar cortada.",
+    ),
+    Message(
+        "des.entity_quarry_order",
+        "Entity «{entity}» changes «{surface}», a surface of quarry «{quarry}», and the result "
+        "does not keep final ≤ exploitation ≤ terrain against «{other}»: {cells} cells "
+        "({area} m²), up to {above} m, the first at x = {x} m, y = {y} m; it can be created "
+        "anyway.",
+        "La entidad «{entity}» cambia «{surface}», una superficie de la cantera «{quarry}», y el "
+        "resultado no cumple final ≤ explotación ≤ terreno frente a «{other}»: {cells} celdas "
+        "({area} m²), hasta {above} m, la primera en x = {x} m, y = {y} m; se puede crear "
+        "igualmente.",
+        "warning",
+        count="cells",
+        one_msgid="Entity «{entity}» changes «{surface}», a surface of quarry «{quarry}», and "
+        "the result does not keep final ≤ exploitation ≤ terrain against «{other}»: {cells} "
+        "cell ({area} m²), {above} m, at x = {x} m, y = {y} m; it can be created anyway.",
+        one_es="La entidad «{entity}» cambia «{surface}», una superficie de la cantera "
+        "«{quarry}», y el resultado no cumple final ≤ explotación ≤ terreno frente a «{other}»: "
+        "{cells} celda ({area} m²), {above} m, en x = {x} m, y = {y} m; se puede crear "
+        "igualmente.",
+    ),
+    # La plataforma: el motivo que declara, su geometría y su rasante (RF-015-08, RF-015-10,
+    # RF-015-12, RF-015-19, RF-015-23, RF-015-24) -----------------------------------------------
+    Message(
+        "des.platform_declared_reason",
+        "declared by platform {name}",
+        "declarada por la plataforma {name}",
+        "note",
+    ),
+    Message(
+        "des.platform_layer_kind",
+        "Layer «{layer}» holds {value}, not lines or polygons: a platform comes from a line (its "
+        "axis, with its width) or from a polygon of a layer of the project.",
+        "La capa «{layer}» tiene {value}, no líneas ni polígonos: una plataforma sale de una "
+        "línea (su eje, con su ancho) o de un polígono de una capa del proyecto.",
+    ),
+    Message(
+        "des.platform_self_intersects",
+        "Layer «{layer}», platform «{entity}»: its geometry crosses itself at x = {x} m, "
+        "y = {y} m; correct it in QGIS; nothing is calculated.",
+        "Capa «{layer}», plataforma «{entity}»: su geometría se corta a sí misma en x = {x} m, "
+        "y = {y} m; corríjala en QGIS; no se calcula nada.",
+    ),
+    Message(
+        "des.platform_axis_length_zero",
+        "Layer «{layer}», platform «{entity}»: its axis has a length of {value} m; draw an axis "
+        "with length in QGIS; nothing is calculated.",
+        "Capa «{layer}», plataforma «{entity}»: su eje mide {value} m; dibuje un eje con "
+        "longitud en QGIS; no se calcula nada.",
+    ),
+    Message(
+        "des.platform_axis_closed",
+        "Layer «{layer}», platform «{entity}»: its axis is closed (it ends where it starts), so "
+        "it has no sense and no abscissa 0; draw it open in QGIS; nothing is calculated.",
+        "Capa «{layer}», plataforma «{entity}»: su eje es cerrado (acaba donde empieza), así que "
+        "no tiene sentido ni abscisa 0; dibújelo abierto en QGIS; no se calcula nada.",
+    ),
+    Message(
+        "des.platform_area_zero",
+        "Layer «{layer}», platform «{entity}»: its polygon has an area of {value} m²; draw a "
+        "polygon with area in QGIS; nothing is calculated.",
+        "Capa «{layer}», plataforma «{entity}»: su polígono tiene {value} m² de área; dibuje un "
+        "polígono con área en QGIS; no se calcula nada.",
+    ),
+    Message(
+        "des.platform_no_cells",
+        "Layer «{layer}», platform «{entity}»: its footprint has no cell in the project grid (a "
+        "cell is part of it if its centre is inside); check its position and its width; "
+        "nothing is calculated.",
+        "Capa «{layer}», plataforma «{entity}»: su huella no tiene ninguna celda en la rejilla "
+        "del proyecto (una celda es suya si su centro queda dentro); revise su posición y su "
+        "ancho; no se calcula nada.",
+    ),
+    Message(
+        "des.platform_axis_not_crossing",
+        "Layer «{layer}», platform «{entity}»: the axis «{value}» does not cross its polygon "
+        "from side to side; draw an axis that enters and leaves the polygon, or remove the link "
+        "to use the principal axis; nothing is calculated.",
+        "Capa «{layer}», plataforma «{entity}»: el eje «{value}» no cruza su polígono de lado a "
+        "lado; dibuje un eje que entre y salga del polígono, o quite el enlace para usar el eje "
+        "principal; no se calcula nada.",
+    ),
+    Message(
+        "des.platform_axis_principal",
+        "Platform «{entity}» has no linked axis: its principal axis is used, from x = {x} m, "
+        "y = {y} m (abscissa 0) towards x = {x_end} m, y = {y_end} m; link an axis in its layer "
+        "to choose the sense.",
+        "La plataforma «{entity}» no tiene eje enlazado: se usa su eje principal, desde "
+        "x = {x} m, y = {y} m (abscisa 0) hacia x = {x_end} m, y = {y_end} m; enlace un eje en "
+        "su capa para elegir el sentido.",
+        "warning",
+    ),
+    Message(
+        "des.platform_level_range",
+        "Layer «{layer}», platform «{entity}»: «{field}» = {value} m is outside the terrain "
+        "elevations ± 1 000 m ({low} to {high} m); correct it (no level is chosen for it); "
+        "nothing is calculated.",
+        "Capa «{layer}», plataforma «{entity}»: «{field}» = {value} m está fuera de las cotas "
+        "del terreno ± 1.000 m (de {low} a {high} m); corríjalo (no se elige ninguna cota por "
+        "ella); no se calcula nada.",
+    ),
+    Message(
+        "des.platform_max_slope",
+        "Platform «{entity}»: its gradient «{field}» = {value} % exceeds its maximum gradient of "
+        "{maximum} %; a gradient like that is a ramp, not a platform: draw it with the haul "
+        "roads or raise the maximum; nothing is calculated.",
+        "Plataforma «{entity}»: su pendiente «{field}» = {value} % supera su pendiente máxima de "
+        "{maximum} %; una pendiente así es una rampa, no una plataforma: dibújela con las pistas "
+        "o suba el máximo; no se calcula nada.",
+    ),
+    Message(
+        "des.platform_protect_cut_fill",
+        "Platform «{entity}»: in the «cut and fill» mode it fills its own footprint, so it "
+        "cannot protect it with «no fill»; choose the «cut» mode or do not protect it; nothing "
+        "is calculated.",
+        "Plataforma «{entity}»: en el modo «en corte y relleno» rellena su propia huella, así que "
+        "no puede protegerla con «sin relleno»; elija el modo «en corte» o no la proteja; no se "
+        "calcula nada.",
+    ),
+    Message(
+        "des.platform_counter_slope",
+        "Platform «{entity}»: its longitudinal profile rises {amount} m against the sense in "
+        "which its level falls, at chainage {chainage} m (x = {x} m, y = {y} m), more than its "
+        "tolerance of {tolerance} m; confirm to create it with this counter-gradient.",
+        "Plataforma «{entity}»: su perfil longitudinal sube {amount} m en contra del sentido en "
+        "que baja su rasante, en la abscisa {chainage} m (x = {x} m, y = {y} m), más que su "
+        "tolerancia de {tolerance} m; confirme para crearla con esta contrapendiente.",
+        "warning",
+    ),
+    Message(
+        "des.platform_counter_flat",
+        "Platform «{entity}»: with a gradient of 0 %, its longitudinal profile varies {amount} m "
+        "(from {low} m to {high} m), more than its tolerance of {tolerance} m; the highest point "
+        "is at chainage {chainage} m (x = {x} m, y = {y} m); confirm to create it anyway.",
+        "Plataforma «{entity}»: con una pendiente del 0 %, su perfil longitudinal varía {amount} m "
+        "(de {low} m a {high} m), más que su tolerancia de {tolerance} m; el punto más alto está "
+        "en la abscisa {chainage} m (x = {x} m, y = {y} m); confirme para crearla igualmente.",
+        "warning",
+    ),
+    Message(
+        "des.platform_below",
+        "Platform «{entity}»: {area} m² of its footprint stay below its level, up to {maximum} "
+        "m, in {groups} groups, because in the «cut» mode it does not fill.",
+        "Plataforma «{entity}»: {area} m² de su huella quedan por debajo de su rasante, hasta "
+        "{maximum} m, en {groups} grupos, porque en el modo «en corte» no rellena.",
+        "warning",
+        count="groups",
+        one_msgid="Platform «{entity}»: {area} m² of its footprint stay below its level, up to "
+        "{maximum} m, in {groups} group, because in the «cut» mode it does not fill.",
+        one_es="Plataforma «{entity}»: {area} m² de su huella quedan por debajo de su rasante, "
+        "hasta {maximum} m, en {groups} grupo, porque en el modo «en corte» no rellena.",
+    ),
+    Message(
+        "des.platform_below_group",
+        "Group {group}: {cells} cells, {area} m², up to {maximum} m below its level, centre at "
+        "x = {x} m, y = {y} m.",
+        "Grupo {group}: {cells} celdas, {area} m², hasta {maximum} m por debajo de su rasante, "
+        "centro en x = {x} m, y = {y} m.",
+        "note",
+        count="cells",
+        one_msgid="Group {group}: {cells} cell, {area} m², up to {maximum} m below its level, "
+        "centre at x = {x} m, y = {y} m.",
+        one_es="Grupo {group}: {cells} celda, {area} m², hasta {maximum} m por debajo de su "
+        "rasante, centro en x = {x} m, y = {y} m.",
+    ),
+    Message(
+        "des.platform_above",
+        "Platform «{entity}»: {area} m² of its footprint stay above its level, up to {maximum} "
+        "m, in {groups} groups, because the masks do not allow cutting there.",
+        "Plataforma «{entity}»: {area} m² de su huella quedan por encima de su rasante, hasta "
+        "{maximum} m, en {groups} grupos, porque las máscaras no admiten allí el corte.",
+        "warning",
+        count="groups",
+        one_msgid="Platform «{entity}»: {area} m² of its footprint stay above its level, up to "
+        "{maximum} m, in {groups} group, because the masks do not allow cutting there.",
+        one_es="Plataforma «{entity}»: {area} m² de su huella quedan por encima de su rasante, "
+        "hasta {maximum} m, en {groups} grupo, porque las máscaras no admiten allí el corte.",
+    ),
+    Message(
+        "des.platform_above_group",
+        "Group {group}: {cells} cells, {area} m², up to {maximum} m above its level, centre at "
+        "x = {x} m, y = {y} m.",
+        "Grupo {group}: {cells} celdas, {area} m², hasta {maximum} m por encima de su rasante, "
+        "centro en x = {x} m, y = {y} m.",
+        "note",
+        count="cells",
+        one_msgid="Group {group}: {cells} cell, {area} m², up to {maximum} m above its level, "
+        "centre at x = {x} m, y = {y} m.",
+        one_es="Grupo {group}: {cells} celda, {area} m², hasta {maximum} m por encima de su "
+        "rasante, centro en x = {x} m, y = {y} m.",
+    ),
+    Message(
+        "des.platform_no_cut",
+        "Platform «{entity}» does not cut: no cell of its footprint ({area} m²) goes down to its "
+        "level.",
+        "La plataforma «{entity}» no corta: ninguna celda de su huella ({area} m²) baja hasta su "
+        "rasante.",
         "warning",
     ),
 )

@@ -8641,3 +8641,64 @@ es = "Superficie ajustada a un límite nuevo"
 
 ["Refitted surface: «{surface}»"]
 es = "Superficie ajustada: «{surface}»"
+
+# Parámetros de las entidades de diseño: la plataforma (spec 015, T02; RF-015-01, RF-015-04,
+# RF-015-08, RF-015-10, RF-015-15, RF-015-19 a RF-015-23; plan 015 §5.2.2): la etiqueta de cada una
+# de las 19 familias de design/params.py.
+
+["Name of the entity"]
+es = "Nombre de la entidad"
+
+["Layer the entity comes from"]
+es = "Capa de la que sale la entidad"
+
+["Feature of the layer the entity comes from"]
+es = "Geometría de la capa de la que sale la entidad"
+
+["Start surface of the entity"]
+es = "Superficie de partida de la entidad"
+
+["Support surface of the entity"]
+es = "Superficie de apoyo de la entidad"
+
+["Width of the platform"]
+es = "Ancho de la plataforma"
+
+["Start level of the platform"]
+es = "Cota inicial de la plataforma"
+
+["Gradient of the platform"]
+es = "Pendiente de la rasante de la plataforma"
+
+["Maximum gradient of the platform"]
+es = "Pendiente máxima de la plataforma"
+
+["Mode of the platform"]
+es = "Modo de la plataforma"
+
+["Edge angle of the platform"]
+es = "Ángulo de borde de la plataforma"
+
+["Reach of the platform edge"]
+es = "Alcance del borde de la plataforma"
+
+["Mesh factor of the platform edge"]
+es = "Factor de malla del borde de la plataforma"
+
+["Counter-gradient tolerance of the platform"]
+es = "Tolerancia de contrapendiente de la plataforma"
+
+["Distance metric of the platform edge"]
+es = "Métrica de distancia del borde de la plataforma"
+
+["The platform protects its area"]
+es = "La plataforma protege su zona"
+
+["Buffer of the protected area"]
+es = "Resguardo de la zona protegida"
+
+["Reason of the declared constraint"]
+es = "Motivo de la restricción declarada"
+
+["Entities the platform is declared to rest on"]
+es = "Entidades en las que se declara apoyada la plataforma"

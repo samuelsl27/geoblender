@@ -59,8 +59,11 @@ HEAVY: frozenset[str] = frozenset({
     "design.pipeline", "design.preview", "design.reduction", "design.report",
     "design.reproduce", "design.sectors", "design.seeds", "design.steps", "design.store",
     "design.surfaces", "design.zones",
+    # Las entidades de diseño de la 015 (spec 015, T02): ``design.entities``; ``design.platform`` y
+    # ``design.entity_store`` se añaden aquí al crearse (T06 y T11).
+    "design.entities",
 })
-"""Los módulos de la 012 y de la 013 (y la cadena que arrastran) que se importan al primer uso."""
+"""Los módulos de la 012, la 013 y la 015 (y la cadena que arrastran) que se importan al primer uso."""
 
 
 def registered_roots(modules: Collection[pyast.PyModule]) -> list[str]:

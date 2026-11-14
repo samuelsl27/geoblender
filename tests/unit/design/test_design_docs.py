@@ -129,6 +129,21 @@ TASKS_RELPATH = "specs/013-des-envolventes-y-escalonado/tasks.md"
 API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
                 "### 4.2 Lo que entrega la spec 014 (R-34)")
 
+# Lo que la spec 015 añade a la API pública de ``design`` mientras se construye: la ficha
+# (``des.md`` §4.3, hoy «API prevista») la escribe su T34 (documentación). Cada tarea de la 015 añade
+# aquí sus nombres; la T34 los lleva a la ficha (una sección «Lo que entrega la spec 015 (R-36)» que
+# entra en ``API_SECTIONS``) y vacía estos dos conjuntos.
+PENDING_015_API = frozenset({
+    # T02: design.model, design.params y design.entities.
+    "Axis", "PlatformFields", "PlatformMode", "PlatformRequest",
+    "PlatformParam", "check_entity_param", "entity_key", "entity_segment", "segment_code",
+    "EntityKind", "EntityRecord", "EntityState", "declared_reason", "format_code", "next_code",
+})
+# Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
+PENDING_015_MODULES = frozenset({
+    "design.entities",  # T02: EntityKind, EntityRecord, EntityState, next_code, declared_reason
+})
+
 
 def one_line(text: str) -> str:
     """``text`` con cada salto de línea y sangría reducidos a un espacio, para buscar una frase
@@ -458,6 +473,8 @@ class ModuleCardDocTest(unittest.TestCase):
         self.assertEqual(sorted(set(self.rows) - set(modules)), [], "una fila sin módulo")
         for dotted in modules:
             with self.subTest(module=dotted):
+                if dotted in PENDING_015_MODULES and dotted not in self.rows:
+                    continue
                 self.assertIn(dotted, self.rows)
                 module = import_geoblender(dotted)
                 found, suffixes = self.named(self.rows[dotted])
@@ -466,6 +483,7 @@ class ModuleCardDocTest(unittest.TestCase):
                               or inspect.isfunction(getattr(module, name)))
                           and getattr(module, name).__module__ == module.__name__]
                 missing = [name for name in public if name not in found
+                           and name not in PENDING_015_API
                            and not any(name.endswith(suffix) for suffix in suffixes)]
                 self.assertEqual(missing, [])
                 self.assertEqual(sorted(name for name in found if not hasattr(module, name)), [])
