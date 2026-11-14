@@ -170,7 +170,9 @@ class PublicNamesTest(unittest.TestCase):
         """``design.platform`` exporta lo que usarán las tareas siguientes, cada nombre con su
         documentación."""
         names = ("Footprint", "PlatformGeometry", "PlatformJob", "axis_of_polygon",
-                 "platform_footprint", "work_window")
+                 "platform_footprint", "work_window",
+                 # T07: aplicar la plataforma (test_platform_apply.py).
+                 "Applied", "OffLevel", "OffLevelCause", "apply_platform", "apply_platform_steps")
         self.assertEqual(sorted(platform.__all__), sorted(names))
         for name in names:
             with self.subTest(name=name):

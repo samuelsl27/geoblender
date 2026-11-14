@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""La plataforma: huella y rasante (spec 015, T06; RF-015-19 y los rechazos de geometría de
-RF-015-08; plan 015 §5.1 y §5.4, A0 y A1; CE-015-03). Dominio puro: sin proyecto y sin ``bpy``.
+"""La plataforma: huella y rasante, y su aplicación sobre la superficie de partida (spec 015, T06 y
+T07; RF-015-19, los rechazos de geometría de RF-015-08, RF-015-20, RF-015-21, RF-015-06 y RF-015-13;
+plan 015 §5.1 y §5.4, A0, A1 y A2; CE-015-02 y CE-015-03). Dominio puro: sin proyecto y sin ``bpy``.
 
 Lo que entrega:
 
@@ -15,6 +16,8 @@ Lo que entrega:
   avisos— en su **ventana de trabajo** (:func:`work_window`: la huella ampliada por el alcance y dos
   celdas, recortada a la rejilla).
 - :func:`axis_of_polygon` (A1): el eje principal de las celdas de un polígono.
+- :func:`apply_platform` y :func:`apply_platform_steps` (A2): la superficie que deja la plataforma
+  sobre la de partida (:class:`Applied`), con lo que no se mueve y por qué (:class:`OffLevel`).
 
 **Con eje y ancho** la huella es la del corredor de extremos planos de RF-014-09
 (:func:`~.quarry.axis_abscissa`, que mide lo que su eje ± 1 celda: error 20) y la abscisa σ, la del
@@ -35,24 +38,40 @@ cruza su polígono de lado a lado (``des.platform_axis_not_crossing``); una cota
 rasante fuera de las del terreno ± 1.000 m (``des.platform_level_range``); y una línea fuera de la
 rejilla (``des.platform_no_cells``).
 
+**Aplicar** (A2): en el modo «en corte» (el de por defecto, D-5) la superficie es ``z' = mín(z,
+rasante)`` en las celdas de la huella donde el corte se admite (``cut_allowed``) y **ninguna celda
+sube**: la plataforma es el fondo de su corredor, no una cota mínima (B7). En «en corte y relleno»,
+además ``z' = rasante`` donde ``z < rasante`` y el relleno se admite (``fill_allowed``). Las celdas de
+la huella que las máscaras no dejan mover quedan como en la partida; las que no quedan en la rasante
+(a 10⁻⁹ m) se agrupan (4-conexas) con su área, su diferencia máxima, su lugar absoluto y su causa
+(:class:`OffLevelCause`: ``cut_allowed`` falso, ``fill_allowed`` falso o, por debajo en «en corte», el
+modo), y las máscaras de lo que se impide quedan en :class:`Applied` para que la zona se mire contra
+las restricciones de otras entidades (el resumen es de la T12). Las celdas que quedan en la rasante
+(:attr:`Applied.at_level`) son las semillas del borde (T08). Sin dato en la huella lo rechaza la
+preparación (RF-015-09, T11): aquí es un error del programa, no se oculta con un valor.
+
 Las coordenadas absolutas son float64 y se pasan a locales respecto a la esquina de la rejilla solo
-dentro del cálculo (principio 6, ADR-0005). Ninguna entrada se modifica. Aplicar la plataforma, el
-borde, la contrapendiente y las cifras son de las tareas siguientes (T07 a T09).
+dentro del cálculo (principio 6, ADR-0005). Ninguna entrada se modifica. El borde, la contrapendiente
+y las cifras son de las tareas siguientes (T08 y T09).
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from types import MappingProxyType
 
 import numpy as np
 
+from ..core.project.model import Progress
 from ..gis.grid import Grid
+from ..gis.masks.compile import STEP_BUDGET_S
+from .grids import _label_units
 from .messages import DesignError
-from .model import Axis, PlatformRequest
-from .params import PlatformParam, check_entity_param, entity_segment
+from .model import Axis, PlatformMode, PlatformRequest
+from .params import PLATFORM_PARAMS, PlatformParam, check_entity_param, entity_segment
 from .preview import Notice
 from .quarry import (
     FLOOR_LEVEL_MARGIN_M,
@@ -61,12 +80,18 @@ from .quarry import (
     axis_paths,
     corridor_window,
 )
+from .seeds import pace_progress
 from .zones import _paint, _polygon_spans
 
 __all__ = [
+    "Applied",
     "Footprint",
+    "OffLevel",
+    "OffLevelCause",
     "PlatformGeometry",
     "PlatformJob",
+    "apply_platform",
+    "apply_platform_steps",
     "axis_of_polygon",
     "platform_footprint",
     "work_window",
@@ -702,3 +727,218 @@ def platform_footprint(job: PlatformJob) -> Footprint:
     found = reach[cells]
     return Footprint(window, footprint, abscissa, levels, axis, float(found.max() - found.min()),
                      start_level, gradient, grid.cell_area, tuple(notices))
+
+
+# --- A2: aplicar la plataforma -----------------------------------------------------------------
+
+
+class OffLevelCause(StrEnum):
+    """Por qué una celda de la huella no queda en la rasante (RF-015-13, RF-015-24): ``CUT_DENIED``
+    (``cut_allowed`` falso: está por encima y las máscaras no dejan cortar), ``FILL_DENIED``
+    (``fill_allowed`` falso: en «en corte y relleno» está por debajo y las máscaras no dejan
+    rellenar) y ``NOT_FILLED`` (está por debajo en el modo «en corte», que no rellena: no es lo que
+    una máscara impide). El valor es el nombre de la máscara o del modo."""
+
+    CUT_DENIED = "cut_allowed"
+    FILL_DENIED = "fill_allowed"
+    NOT_FILLED = "cut_mode"
+
+
+@dataclass(frozen=True, slots=True)
+class OffLevel:
+    """Un grupo 4-conexo de celdas de la huella que no quedan en la rasante (A2, RF-015-24): su
+    número ``group`` (desde 1, en el orden de su primera celda recorriendo la rejilla fila a fila
+    desde el norte), su ``cause``, sus ``cells``, su ``area_m2``, su diferencia máxima con la rasante
+    ``max_m`` (m, positiva) y su centro ``x``, ``y`` (m, absolutos en float64: la media de los
+    centros de sus celdas)."""
+
+    group: int
+    cause: OffLevelCause
+    cells: int
+    area_m2: float
+    max_m: float
+    x: float
+    y: float
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Applied:
+    """La plataforma aplicada sobre su superficie de partida (A2; RF-015-20, RF-015-21), en la
+    ventana de trabajo de su huella (``window``; todas las rejillas son de su forma) y en el
+    ``mode`` pedido: ``surface`` (m, float64, **nueva**: la superficie de partida con la huella
+    aplicada; el resto, igual) y ``at_level`` (la huella que queda en la rasante a 10⁻⁹ m: las
+    semillas del borde).
+
+    ``cut_m3`` y ``fill_m3`` son el corte y el relleno **de la huella** (m³; el borde, de la T08) y
+    ``cut_cells`` y ``fill_cells``, las celdas que bajan y que suben. Lo que no queda en la rasante:
+    ``above`` (por encima, que son las celdas que las máscaras no dejan cortar) y ``below`` (por
+    debajo: lo que el modo «en corte» no rellena o, en «en corte y relleno», lo que las máscaras no
+    dejan rellenar), cada uno en grupos (:class:`OffLevel`); y las máscaras de lo que **las máscaras**
+    impiden, ``cut_denied`` y ``fill_denied`` (esta, solo en «en corte y relleno»), para mirar de qué
+    restricción es esa zona (RF-015-13)."""
+
+    window: tuple[slice, slice]
+    mode: PlatformMode
+    surface: np.ndarray
+    at_level: np.ndarray
+    cut_cells: int
+    fill_cells: int
+    cut_m3: float
+    fill_m3: float
+    cut_denied: np.ndarray
+    fill_denied: np.ndarray
+    above: tuple[OffLevel, ...]
+    below: tuple[OffLevel, ...]
+    cell_area_m2: float
+
+    @property
+    def blocked_cells(self) -> int:
+        """Las celdas de la huella que las máscaras no dejan mover (cortar o rellenar)."""
+        return int(np.count_nonzero(self.cut_denied)) + int(np.count_nonzero(self.fill_denied))
+
+    @property
+    def blocked_area_m2(self) -> float:
+        """El área (m²) que las máscaras no dejan mover: la de ``blocked_cells``."""
+        return self.blocked_cells * self.cell_area_m2
+
+
+def _mode(job: PlatformJob) -> PlatformMode:
+    """El modo de la plataforma de ``job`` (``des.entity_param_choice`` si no es de su lista); sin el
+    valor, el de la familia de parámetros («en corte», D-5)."""
+    found = job.values.get(PlatformParam.MODE.value)
+    if found is None:
+        found = PLATFORM_PARAMS[PlatformParam.MODE.value].default
+    return PlatformMode(check_entity_param(job.request.name, job.code, PlatformParam.MODE, found))
+
+
+def _check_footprint(job: PlatformJob, footprint: Footprint) -> None:
+    """``ValueError`` (error del programa) si la ventana de ``footprint`` no cabe en la rejilla de
+    ``job`` o sus rejillas no son de su forma."""
+    rows, cols = footprint.window
+    grid = job.grid
+    if not (0 <= rows.start < rows.stop <= grid.nrows and 0 <= cols.start < cols.stop <= grid.ncols
+            and rows.step in (None, 1) and cols.step in (None, 1)):
+        raise ValueError(f"la ventana de la huella ({rows}, {cols}) no cabe en la rejilla del "
+                         f"trabajo de {grid.nrows} filas y {grid.ncols} columnas")
+    shape = (rows.stop - rows.start, cols.stop - cols.start)
+    for name in ("cells", "levels"):
+        found = getattr(footprint, name).shape
+        if found != shape:
+            raise ValueError(f"«{name}» de la huella es de la forma {found}, no de la de su "
+                             f"ventana {shape}")
+
+
+def _group_units(chosen: np.ndarray, rows: np.ndarray, cols: np.ndarray, depth: np.ndarray,
+                 cause: OffLevelCause, grid: Grid, window: tuple[slice, slice],
+                 box: tuple[slice, slice]) -> Generator[None, None, tuple[OffLevel, ...]]:
+    """Los grupos 4-conexos (:class:`OffLevel`) de las celdas de la huella ``chosen`` (de las
+    celdas de la huella, en su orden): ``rows`` y ``cols`` son su posición en la ventana, ``depth``
+    su diferencia con la rasante y ``box`` la caja de la huella en la ventana (el etiquetado solo
+    recorre esa caja). Las unidades del etiquetado son las de ``grids._label_units``."""
+    if not chosen.any():
+        return ()
+    picked_rows, picked_cols = rows[chosen], cols[chosen]
+    mask = np.zeros((box[0].stop - box[0].start, box[1].stop - box[1].start), dtype=bool)
+    mask[picked_rows - box[0].start, picked_cols - box[1].start] = True
+    labels = yield from _label_units(mask)
+    tags = labels.grid[picked_rows - box[0].start, picked_cols - box[1].start]
+    count = labels.count + 1
+    row_sum = np.bincount(tags, weights=picked_rows + window[0].start, minlength=count)
+    col_sum = np.bincount(tags, weights=picked_cols + window[1].start, minlength=count)
+    top = np.zeros(count)
+    np.maximum.at(top, tags, depth[chosen])
+    found = []
+    for index in range(1, count):
+        cells = int(labels.sizes[index - 1])
+        x = grid.west + (col_sum[index] / cells + 0.5) * grid.dx
+        y = grid.north - (row_sum[index] / cells + 0.5) * grid.dy
+        found.append(OffLevel(index, cause, cells, cells * grid.cell_area, float(top[index]),
+                              float(x), float(y)))
+    return tuple(found)
+
+
+def _apply_units(job: PlatformJob, footprint: Footprint, mode: PlatformMode
+                 ) -> Generator[None, None, Applied]:
+    """Las unidades de :func:`apply_platform_steps`: las celdas de la huella (sin bucle por celda,
+    sobre las de la huella y no sobre la ventana), la superficie y los grupos."""
+    window, cells, grid = footprint.window, footprint.cells, job.grid
+    start = job.start[window]
+    z = start[cells]
+    level = footprint.levels[cells]
+    missing = int(np.count_nonzero(~np.isfinite(z)))
+    if missing or not np.isfinite(level).all():
+        raise ValueError(
+            f"la plataforma «{job.request.name}» ({job.code}) tiene {missing} celdas sin dato en "
+            "su huella (o una rasante sin cota): la preparación lo rechaza antes de calcular "
+            "(RF-015-09)")
+    yield None
+    new = np.where(job.cut_allowed[window][cells], np.minimum(z, level), z)
+    if mode is PlatformMode.CUT_FILL:
+        new = np.where(job.fill_allowed[window][cells] & (z < level), level, new)
+    drop = z - new
+    gap = new - level
+    near = np.abs(gap) <= _TOL_M
+    above = gap > _TOL_M
+    below = gap < -_TOL_M
+    cut_m3 = float(np.sum(np.maximum(drop, 0.0))) * grid.cell_area
+    fill_m3 = float(np.sum(np.maximum(-drop, 0.0))) * grid.cell_area
+    yield None
+    surface = np.array(start, dtype=np.float64, copy=True)
+    surface[cells] = new
+    at_level = np.zeros(cells.shape, dtype=bool)
+    at_level[cells] = near
+    cut_denied = np.zeros(cells.shape, dtype=bool)
+    cut_denied[cells] = above
+    fill_denied = np.zeros(cells.shape, dtype=bool)
+    if mode is PlatformMode.CUT_FILL:
+        fill_denied[cells] = below
+    yield None
+    rows, cols = np.nonzero(cells)
+    box = (slice(int(rows.min()), int(rows.max()) + 1), slice(int(cols.min()), int(cols.max()) + 1))
+    over = yield from _group_units(above, rows, cols, gap, OffLevelCause.CUT_DENIED, grid, window,
+                                   box)
+    why = OffLevelCause.FILL_DENIED if mode is PlatformMode.CUT_FILL else OffLevelCause.NOT_FILLED
+    under = yield from _group_units(below, rows, cols, -gap, why, grid, window, box)
+    return Applied(window, mode, surface, at_level, int(np.count_nonzero(drop > 0.0)),
+                   int(np.count_nonzero(drop < 0.0)), cut_m3, fill_m3, cut_denied, fill_denied,
+                   over, under, grid.cell_area)
+
+
+def apply_platform_steps(job: PlatformJob, footprint: Footprint, *,
+                         budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**A2** (RF-015-20, RF-015-21, RF-015-06, RF-015-13; plan 015 §5.4): aplica la plataforma de
+    ``job`` con su ``footprint`` (:func:`platform_footprint`) sobre su superficie de partida, por
+    pasos de ``budget_s`` como mucho: el último ``Progress`` (fase ``platform_apply``) lleva el
+    :class:`Applied`.
+
+    En el modo «en corte» (el de por defecto) ``z' = mín(z, rasante)`` en las celdas de la huella con
+    ``cut_allowed``: **ninguna celda sube** (el lomo de B7: la plataforma es el fondo de su corredor,
+    no una cota mínima). En «en corte y relleno», además ``z' = rasante`` donde ``z < rasante`` y
+    ``fill_allowed``. Fuera de la huella y donde las máscaras no dejan mover, ``z' = z`` bit a bit.
+    El corte y el relleno son los de la huella (m³); el borde, de la T08. Lo que no queda en la
+    rasante se agrupa con su área, su diferencia máxima, su lugar y su causa (:class:`Applied`).
+
+    Rechazos al llamar: un modo que no es de la lista (``des.entity_param_choice``, con la entidad, el
+    campo y el valor; sin el valor ``mode``, el de por defecto) y ``ValueError`` (errores del
+    programa) si la ventana de la huella no es de la rejilla del trabajo; al avanzar, ``ValueError``
+    si falta dato en la huella (lo rechaza antes la preparación, RF-015-09, T11: no se oculta con un
+    valor). Ninguna entrada se modifica y no se escribe nada; cerrar el generador a mitad no deja
+    nada."""
+    mode = _mode(job)
+    _check_footprint(job, footprint)
+    work = _apply_units(job, footprint, mode)
+    return pace_progress(work, budget_s, phase="platform_apply",
+                         running="Aplicando la plataforma…", finished="Plataforma aplicada")
+
+
+def apply_platform(job: PlatformJob, footprint: Footprint) -> Applied:
+    """**A2**: :func:`apply_platform_steps` hasta el final, sin pasos: el :class:`Applied` de la
+    plataforma de ``job`` con su ``footprint``. Los mismos rechazos."""
+    mode = _mode(job)
+    _check_footprint(job, footprint)
+    work = _apply_units(job, footprint, mode)
+    while True:
+        try:
+            next(work)
+        except StopIteration as done:
+            return done.value
