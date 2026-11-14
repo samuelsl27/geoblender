@@ -18,6 +18,13 @@ zonas a conservar que siembran los techos de conservación y los corredores (``d
 con sus rejillas para la vista y sus notas. El techo mismo (una envolvente ascendente) no se
 calcula aquí, como la vista previa de la 013 no calcula envolventes: se calcula al «Calcular».
 
+Con una entidad de diseño (spec 015, T12; RF-015-03, RF-015-13; plan 015 §5.3.2), el resumen de
+«Calcular» (:class:`PlatformSummary`) junta las cifras, los avisos y **lo que quedará obsoleto al
+crearla** (:class:`Obsolete`, :func:`obsolete_notices`), y :func:`held_notices` dice qué restricción
+impide mover unas celdas: la que declara otra entidad (código ``DEC-…``), con esa entidad, o una
+restricción normal, con su nombre. Sin proyecto: las funciones de este módulo reciben lo que ya se
+leyó (``design.entity_store`` lo lee).
+
 Lo que dice son avisos y notas con código (:class:`Notice`, de ``design.messages``): el texto en
 cada idioma sale de :meth:`Notice.text` y de :meth:`PreviewSummary.lines`, con la coma decimal y el
 espacio fino de miles del español o el punto y la coma del inglés.
@@ -25,15 +32,18 @@ espacio fino de miles del español o el punto y la coma del inglés.
 
 from __future__ import annotations
 
-from collections.abc import Generator, Iterator, Mapping
+from collections.abc import Generator, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ..core.constraints.model import ConstraintType
 from ..core.i18n import THIN_SPACE
 from ..core.project.model import Progress
+from ..core.provenance.figures import FigureSpec
 from ..core.versions import read as versions_read
 from ..gis.masks import access
 from ..gis.masks.access import MaskSet, MaskState
@@ -41,19 +51,25 @@ from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.store import StoreProject, load_features
 from ..gis.vector import FeatureLayer
 from .messages import lookup, render
-from .model import QuarryRequest, SeedKind, Zone, ZoneKind
+from .model import DECLARED_PREFIX, QuarryRequest, SeedKind, Zone, ZoneKind
 from .seeds import DomainSet, SeedPlan, SeedSet, pace_progress, seed_units
 from .surfaces import project_frame, read_surface
 from .zones import constraint_cells, layer_cells
 
 if TYPE_CHECKING:  # design.quarry importa design.report, que importa Notice de aquí
+    from ..gis.grid import Grid
     from .quarry import ConserveZone, CorridorMap, FloorMap
 
 __all__ = [
     "Notice",
+    "Obsolete",
+    "ObsoleteKind",
+    "PlatformSummary",
     "PreviewSummary",
     "QuarryPreview",
     "SectorStatus",
+    "held_notices",
+    "obsolete_notices",
     "quarry_summarize_steps",
     "seed_notices",
     "summarize_steps",
@@ -446,3 +462,190 @@ def quarry_summarize_steps(project: StoreProject, request: QuarryRequest, versio
     return pace_progress(_quarry_units(project, request, version_uid, ring_cells), budget_s,
                          phase="preview", running="Preparando la vista previa…",
                          finished="Vista previa lista", total=10)
+
+
+# --- El resumen de una entidad de diseño (spec 015, T12; RF-015-03, RF-015-13) -----------------
+
+
+class ObsoleteKind(StrEnum):
+    """Por qué algo quedará obsoleto al crear una entidad (RF-015-03, RF-015-16): ``MASKS`` (las máscaras
+    de la versión, porque la entidad que protege declara una restricción y se compilan de nuevo),
+    ``CONSUMER`` (lo que usó esas máscaras, y lo que depende de ello), ``SUCCESSOR`` (la entidad que
+    parte de la superficie donde se inserta la nueva y las que le siguen, RF-015-05) y ``DEPENDENT``
+    (lo que dependía de la operación que sustituye la nueva)."""
+
+    MASKS = "masks"
+    CONSUMER = "consumer"
+    SUCCESSOR = "successor"
+    DEPENDENT = "dependent"
+
+
+@dataclass(frozen=True, slots=True)
+class Obsolete:
+    """Algo que quedará obsoleto al crear la entidad: su ``kind``, su ``name`` (el de la operación o la
+    entidad; el código de la versión en las máscaras), el tipo de su operación (``op_type``, vacío
+    en una entidad sin calcular) y su ``uid`` (de la operación; ``""`` si no la tiene)."""
+
+    kind: ObsoleteKind
+    name: str
+    op_type: str = ""
+    uid: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "kind", ObsoleteKind(self.kind))
+
+
+SUMMARY_ITEMS = 10
+"""Los nombres de lo que quedará obsoleto que enseña cada nota del resumen; el resto, un «…» (la
+lista entera va en :attr:`PlatformSummary.obsolete`). No es una cifra minera: es lo que cabe en la
+ventana."""
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformSummary:
+    """El resumen de «Calcular» una plataforma (RF-015-03): su ``name`` y su ``code`` (``PLT-001``), la
+    ``version`` (su código), las ``figures`` que se registrarán (CALCULADO, con su unidad y el ámbito
+    de la entidad), los ``notices`` en el orden en que se enseñan (los avisos y notas del cálculo, lo
+    que no se mueve por una restricción y, al final, lo que quedará obsoleto) y ``obsolete``, lo que
+    quedará obsoleto al crearla, con su lista entera."""
+
+    name: str
+    code: str
+    version: str
+    figures: tuple[FigureSpec, ...]
+    notices: tuple[Notice, ...]
+    obsolete: tuple[Obsolete, ...] = ()
+
+    def lines(self, language: str = "es") -> tuple[str, ...]:
+        """Todo lo que dice el resumen, línea a línea, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices)
+
+    def warnings(self, language: str = "es") -> tuple[str, ...]:
+        """Solo los avisos, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices
+                     if notice.severity == "warning")
+
+
+def _listed(items: Iterable[Obsolete]) -> tuple[str, ...]:
+    """Los nombres de ``items`` entre «», los :data:`SUMMARY_ITEMS` primeros y, si hay más, un «…»."""
+    names = [f"«{item.name}»" for item in items]
+    return tuple(names[:SUMMARY_ITEMS]) + (("…",) if len(names) > SUMMARY_ITEMS else ())
+
+
+def obsolete_notices(entity: str, version: str, items: Iterable[Obsolete]) -> tuple[Notice, ...]:
+    """Las notas de lo que quedará obsoleto al crear la entidad ``entity`` en la versión ``version``
+    (RF-015-03), por orden: las máscaras (si ``items`` las lleva), lo que las usó, las entidades de la
+    cadena que siguen a la que se inserta y lo que dependía de la operación sustituida; cada una con
+    su cuenta (con singular) y los nombres. Ninguna si no hay nada."""
+    by_kind: dict[ObsoleteKind, list[Obsolete]] = {kind: [] for kind in ObsoleteKind}
+    for item in items:
+        by_kind[item.kind].append(item)
+    found: list[Notice] = []
+    if by_kind[ObsoleteKind.MASKS]:
+        found.append(Notice("des.entity_obsolete_masks", {"entity": entity, "version": version}))
+    for kind, code, count in ((ObsoleteKind.CONSUMER, "des.entity_obsolete_consumers", "operations"),
+                              (ObsoleteKind.SUCCESSOR, "des.entity_obsolete_successor", "entities"),
+                              (ObsoleteKind.DEPENDENT, "des.entity_obsolete_dependents",
+                               "operations")):
+        if by_kind[kind]:
+            found.append(Notice(code, {"entity": entity, count: len(by_kind[kind]),
+                                       "items": _listed(by_kind[kind])}))
+    return tuple(found)
+
+
+_INNER = ":inner"
+"""El sufijo de la zona de la banda hacia dentro de un límite legal (``MaskSet.zone``)."""
+
+
+def _rule(masks: MaskSet, code: str) -> tuple[bool, bool] | None:
+    """Si la zona ``code`` de ``masks`` impide cortar y rellenar (``None`` si no impide nada o no se
+    sabe su tipo: un límite, «preferible no afectar»…). La banda hacia dentro de un límite legal
+    (``<código>:inner``) impide cortar; un intocable o una exclusión, las dos cosas."""
+    if code.endswith(_INNER):
+        return True, False
+    value = masks.ctypes.get(code)
+    try:
+        kind = ConstraintType(value)
+    except ValueError:
+        return None
+    cut = kind.forbids_cut or kind.removes_from_domain
+    fill = kind.forbids_fill or kind.removes_from_domain
+    return (cut, fill) if cut or fill else None
+
+
+def _place(grid: Grid, origin: tuple[int, int], mask: np.ndarray) -> tuple[float, float]:
+    """El centro absoluto (m, float64) de la primera celda de ``mask`` de norte a sur y de oeste a
+    este, al cm; ``origin`` es la fila y la columna de la rejilla donde empieza ``mask``."""
+    rows, cols = np.nonzero(mask)
+    x = grid.west + (int(cols[0]) + origin[1] + 0.5) * grid.dx
+    y = grid.north - (int(rows[0]) + origin[0] + 0.5) * grid.dy
+    return round(float(x), 2), round(float(y), 2)
+
+
+def held_notices(entity: str, masks: MaskSet, window: tuple[slice, slice], *, cut: np.ndarray,
+                 fill: np.ndarray, edge: np.ndarray, names: Mapping[str, str],
+                 declared: Mapping[str, str]) -> tuple[Notice, ...]:
+    """**Lo que la entidad ``entity`` no mueve por una restricción** (RF-015-13), con su área (m²) y su
+    lugar: ``cut`` y ``fill`` son las celdas de su huella que las máscaras no dejan cortar y rellenar,
+    ``edge`` las de su borde que no dejan mover (todas de la forma de la ventana ``window`` de la
+    rejilla de ``masks``). Cada zona de las máscaras que impide lo que se le pide a esas celdas (un
+    intocable o una exclusión, «sin corte», «solo relleno», «solo restauración», la banda de resguardo,
+    «sin relleno» y la banda hacia dentro de un límite legal) da un aviso con sus celdas: si su
+    código empieza por ``DEC-`` (la declara una entidad, RF-015-10), ``des.entity_held`` con esa
+    entidad (``declared``: código de la restricción → nombre de la entidad; sin ella, el código de la
+    entidad); si no, ``des.entity_held_constraint`` con su nombre (``names``: código → nombre) y su
+    código. Lo que ninguna zona explica (fuera del límite…) sale en ``des.entity_held_masks``. Una
+    celda en dos zonas cuenta en las dos. Sin celdas, ninguno."""
+    held = cut | fill | edge
+    if not held.any():
+        return ()
+    grid = masks.grid
+    shape = held.shape
+    origin = (window[0].start, window[1].start)
+    rows, cols = np.nonzero(held)
+    top, bottom = int(rows.min()) + origin[0], int(rows.max()) + origin[0]  # la caja de lo que no se mueve
+    left, right = int(cols.min()) + origin[1], int(cols.max()) + 1 + origin[1]
+    explained = np.zeros(shape, dtype=bool)
+    found: list[Notice] = []
+    for code in sorted(masks.zones):
+        rule = _rule(masks, code)
+        if rule is None:
+            continue
+        runs = masks.zones[code].between_rows(top, bottom)
+        if not len(runs):
+            continue
+        low, high = max(top, int(runs.row.min())), min(bottom, int(runs.row.max()))
+        west = max(left, int(runs.col0.min()))
+        east = min(right, int(runs.col1.max()))
+        if east <= west:
+            continue
+        box = (slice(low - origin[0], high + 1 - origin[0]), slice(west - origin[1], east - origin[1]))
+        asked = edge[box].copy()  # solo la caja común a la zona y a lo que no se mueve
+        if rule[0]:
+            asked |= cut[box]
+        if rule[1]:
+            asked |= fill[box]
+        hit = runs.mask((high - low + 1, east - west), (low, west)) & asked
+        if not hit.any():
+            continue
+        explained[box] |= hit
+        base = code[:-len(_INNER)] if code.endswith(_INNER) else code
+        area = int(np.count_nonzero(hit)) * grid.cell_area
+        x, y = _place(grid, (low, west), hit)
+        if base.startswith(DECLARED_PREFIX):
+            other = declared.get(base, base[len(DECLARED_PREFIX):])
+            found.append(Notice("des.entity_held", {
+                "entity": entity, "area": area, "constraint": base, "other": other,
+                "x": x, "y": y}))
+            continue
+        name = names.get(base, "")
+        shown = f"{name} ({base})" if name and name != base else base
+        found.append(Notice("des.entity_held_constraint", {
+            "entity": entity, "area": area, "constraint": shown, "x": x, "y": y}))
+    loose = held & ~explained
+    if loose.any():
+        x, y = _place(grid, origin, loose)
+        found.append(Notice("des.entity_held_masks", {
+            "entity": entity, "area": int(np.count_nonzero(loose)) * grid.cell_area, "x": x,
+            "y": y}))
+    return tuple(found)

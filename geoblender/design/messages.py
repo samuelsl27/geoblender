@@ -1259,22 +1259,32 @@ CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "des.entity_held",
-        "Entity «{entity}»: {area} m² of its footprint do not move because of the constraint "
-        "«{constraint}», declared by entity «{other}» (around x = {x} m, y = {y} m); they stay "
-        "as in the start surface.",
-        "Entidad «{entity}»: {area} m² de su huella no se mueven por la restricción "
-        "«{constraint}», declarada por la entidad «{other}» (en torno a x = {x} m, y = {y} m); "
-        "quedan como en la superficie de partida.",
+        "Entity «{entity}»: {area} m² of its footprint or its edge do not move because of the "
+        "constraint «{constraint}», declared by entity «{other}» (around x = {x} m, y = {y} m); "
+        "they stay as in the start surface.",
+        "Entidad «{entity}»: {area} m² de su huella o de su borde no se mueven por la "
+        "restricción «{constraint}», declarada por la entidad «{other}» (en torno a x = {x} m, "
+        "y = {y} m); quedan como en la superficie de partida.",
+        "warning",
+    ),
+    Message(
+        "des.entity_held_constraint",
+        "Entity «{entity}»: {area} m² of its footprint or its edge do not move because of the "
+        "constraint «{constraint}» (around x = {x} m, y = {y} m); they stay as in the start "
+        "surface.",
+        "Entidad «{entity}»: {area} m² de su huella o de su borde no se mueven por la "
+        "restricción «{constraint}» (en torno a x = {x} m, y = {y} m); quedan como en la "
+        "superficie de partida.",
         "warning",
     ),
     Message(
         "des.entity_held_masks",
-        "Entity «{entity}»: {area} m² of its footprint do not move because the masks of the "
-        "version do not allow it (untouchables, limits or other constraints; around x = {x} m, "
+        "Entity «{entity}»: {area} m² of its footprint or its edge do not move because the masks "
+        "of the version do not allow it (limits or the band of a limit; around x = {x} m, "
         "y = {y} m); they stay as in the start surface.",
-        "Entidad «{entity}»: {area} m² de su huella no se mueven porque las máscaras de la "
-        "versión no lo admiten (intocables, límites u otras restricciones; en torno a x = {x} m, "
-        "y = {y} m); quedan como en la superficie de partida.",
+        "Entidad «{entity}»: {area} m² de su huella o de su borde no se mueven porque las "
+        "máscaras de la versión no lo admiten (límites o la banda de un límite; en torno a "
+        "x = {x} m, y = {y} m); quedan como en la superficie de partida.",
         "warning",
     ),
     Message(
@@ -1556,6 +1566,64 @@ CATALOG: tuple[Message, ...] = (
         "({reach} m), {at_masks} junto a lo que las máscaras no dejan mover y {other} por la "
         "propia plataforma. Amplíe el alcance o revise la ladera; una pared así "
         "solo se admite en esos límites.",
+    ),
+    # El resumen de «Calcular» (RF-015-03, RF-015-13; T12): los grupos que no caben y lo que quedará
+    # obsoleto al crear la entidad.
+    Message(
+        "des.platform_more_groups",
+        "… and {groups} more groups (in the report)",
+        "… y {groups} grupos más (en el informe)",
+        "note",
+        count="groups",
+        one_msgid="… and {groups} more group (in the report)",
+        one_es="… y {groups} grupo más (en el informe)",
+    ),
+    Message(
+        "des.entity_obsolete_masks",
+        "Creating the platform «{entity}», which protects its footprint, will make the masks of "
+        "{version} stale: they are compiled again with the constraint it declares.",
+        "Al crear la plataforma «{entity}», que protege su huella, quedarán obsoletas las "
+        "máscaras de {version}: se compilan de nuevo con la restricción que declara.",
+        "note",
+    ),
+    Message(
+        "des.entity_obsolete_consumers",
+        "With them, {operations} operations that used the masks will be stale: {items}; Project ▸ "
+        "Recompute the stale results computes them again.",
+        "Con ellas quedarán obsoletas {operations} operaciones que usaron las máscaras: {items}; "
+        "Proyecto ▸ Recalcular lo obsoleto las vuelve a calcular.",
+        "note",
+        count="operations",
+        one_msgid="With them, {operations} operation that used the masks will be stale: {items}; "
+        "Project ▸ Recompute the stale results computes it again.",
+        one_es="Con ellas quedará obsoleta {operations} operación que usó las máscaras: {items}; "
+        "Proyecto ▸ Recalcular lo obsoleto la vuelve a calcular.",
+    ),
+    Message(
+        "des.entity_obsolete_successor",
+        "Inserting the platform «{entity}» will make {entities} entities of the chain stale, the "
+        "one that starts from its surface and the ones after it: {items}.",
+        "Al insertar la plataforma «{entity}», quedarán obsoletas {entities} entidades de la "
+        "cadena, la que parte de su superficie y las que le siguen: {items}.",
+        "note",
+        count="entities",
+        one_msgid="Inserting the platform «{entity}» will make {entities} entity of the chain "
+        "stale, the one that starts from its surface: {items}.",
+        one_es="Al insertar la plataforma «{entity}», quedará obsoleta {entities} entidad de la "
+        "cadena, la que parte de su superficie: {items}.",
+    ),
+    Message(
+        "des.entity_obsolete_dependents",
+        "Replacing the operation that made the platform «{entity}» will make {operations} "
+        "operations that depended on it stale: {items}.",
+        "Al sustituir la operación que hizo la plataforma «{entity}», quedarán obsoletas "
+        "{operations} operaciones que dependían de ella: {items}.",
+        "note",
+        count="operations",
+        one_msgid="Replacing the operation that made the platform «{entity}» will make "
+        "{operations} operation that depended on it stale: {items}.",
+        one_es="Al sustituir la operación que hizo la plataforma «{entity}», quedará obsoleta "
+        "{operations} operación que dependía de ella: {items}.",
     ),
 )
 

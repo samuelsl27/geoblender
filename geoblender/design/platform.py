@@ -112,7 +112,7 @@ from __future__ import annotations
 
 import math
 import numbers
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -124,7 +124,10 @@ from ..core.project.model import Progress
 from ..core.provenance.figures import FigureSpec
 from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
-from .edges import EdgeReport, created_steps, edge_notices, seed_envelope_steps, transition_domain
+from ..gis.messages import format_value
+from .edges import EdgeReport, created_steps, edge_notices, seed_envelope_steps
+from .edges import summary_notices as _stretch_notices
+from .edges import transition_domain
 from .envelopes import CHAMFER_SCALE, SlopeField, reach_steps
 from .grids import _label_units, dilate_square
 from .messages import DesignError
@@ -181,6 +184,7 @@ __all__ = [
     "platform_footprint",
     "platform_outcome",
     "platform_profile",
+    "summary_notices",
     "work_window",
 ]
 
@@ -1910,6 +1914,16 @@ class PlatformOutcome:
         return self.edge.surface
 
     @property
+    def message(self) -> str:
+        """El mensaje de la operación (spec 015, T12): lo que dice el resumen de lo calculado, en
+        español: la plataforma, su código, su área y el desmonte y el terraplén de la huella y el
+        borde juntos. Es lo que recibe ``DesignWriter.commit`` al crearla."""
+        return (f"Plataforma «{self.name}» ({self.code}) calculada: "
+                f"{format_value(round(self.area_m2, 2))} m², desmonte "
+                f"{format_value(round(self.total_cut_m3, 2))} m³ y terraplén "
+                f"{format_value(round(self.total_fill_m3, 2))} m³ (huella y borde)")
+
+    @property
     def area_m2(self) -> float:
         """El área de la huella (m²)."""
         return self.footprint.area_m2
@@ -1979,6 +1993,44 @@ class PlatformOutcome:
             field=entity_key(self.code, PlatformParam.COUNTER_TOL), value=self.profile.tolerance_m,
             entity=self.name, amount=round(float(self.profile.rise_m[index]), 3),
             tolerance=self.profile.tolerance_m)
+
+
+SUMMARY_GROUPS = 10
+"""Los grupos de celdas fuera de la rasante (por encima o por debajo) que enseña el resumen de un
+cálculo, y los tramos de cada aviso del salto creado; el resto, una nota con cuántos faltan (la lista
+entera queda en el resultado y en el informe). No es una cifra minera: es lo que cabe en la
+ventana."""
+_GROUP_NOTES = {"des.platform_above": "des.platform_above_group",
+                "des.platform_below": "des.platform_below_group",
+                "des.platform_below_masks": "des.platform_below_group"}
+
+
+def summary_notices(notices: Iterable[Notice], *, limit: int = SUMMARY_GROUPS
+                    ) -> tuple[Notice, ...]:
+    """Los avisos y notas ``notices`` de un :class:`PlatformOutcome` como los enseña el resumen de
+    «Calcular» (spec 015, T12; RF-015-03, RF-015-24; la regla de ``edges.summary_notices``): de cada
+    aviso del salto creado, sus ``limit`` primeros tramos (``des.edge_more_stretches`` con los que
+    faltan) y, de lo que queda por encima o por debajo de la rasante, sus ``limit`` primeros grupos y
+    una nota ``des.platform_more_groups`` con los que faltan. Lo demás, tal cual y en su orden;
+    ``ValueError`` si ``limit`` es negativo."""
+    found: list[Notice] = []
+    note: str | None = None  # el código de las notas de grupo del último aviso de grupos
+    shown = hidden = 0
+    for notice in _stretch_notices(notices, limit=limit):
+        if note is not None and notice.code == note:
+            if shown < limit:
+                found.append(notice)
+                shown += 1
+            else:
+                hidden += 1
+            continue
+        if hidden:
+            found.append(Notice("des.platform_more_groups", {"groups": hidden}))
+        note, shown, hidden = _GROUP_NOTES.get(notice.code), 0, 0
+        found.append(notice)
+    if hidden:
+        found.append(Notice("des.platform_more_groups", {"groups": hidden}))
+    return tuple(found)
 
 
 def _figures(name: str, code: str, footprint: Footprint, applied: Applied, edge: Edge

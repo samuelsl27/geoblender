@@ -30,6 +30,11 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
 - :func:`refit_run` (spec 014, T32; RF-014-27 a RF-014-29): «Calcular» el ajuste de unas
   superficies de diseño de la versión a su límite vigente (``des.refit``) del mismo modo, con el
   aviso de las que no hacía falta ajustar.
+- :func:`platform_run` (spec 015, T12; RF-015-03, RF-015-13, RF-015-29): «Calcular» una plataforma
+  (``des.platform``) del mismo modo: deja la superficie (``des_psf_``) en un temporal y el **resumen**
+  (:class:`~.preview.PlatformSummary`: las cifras, los avisos —el salto creado, la magnitud, lo que llega
+  a celdas sin dato, lo que no mueve por la restricción de otra entidad, el orden de la cantera— y lo que
+  quedará obsoleto al crearla) y **nada en el proyecto**; crearla es de la T13.
 - :class:`Calculation`: lo calculado y todavía sin registrar. :meth:`~Calculation.create`
   (**«Crear»**) abre la operación, mueve los temporales, escribe las tablas y las cifras y completa,
   todo en **una** transacción (``DesignWriter.commit``); :meth:`~Calculation.discard`
@@ -62,9 +67,27 @@ from ..core.provenance.figures import FigureSpec
 from ..gis.masks.access import MaskSet
 from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.store import StoreProject
-from . import edges, fronts, pipeline, preview, provenance, quarry, refit, store
+from . import (
+    edges,
+    entity_store,
+    fronts,
+    pipeline,
+    platform,
+    preview,
+    provenance,
+    quarry,
+    refit,
+    store,
+)
 from .messages import DesignError
-from .model import DesignRequest, EnvelopeRequest, FillOnlyRequest, QuarryRequest, RefitRequest
+from .model import (
+    DesignRequest,
+    EnvelopeRequest,
+    FillOnlyRequest,
+    PlatformRequest,
+    QuarryRequest,
+    RefitRequest,
+)
 from .preview import Notice
 from .seeds import SeedPlan, SeedSet, pace_progress
 
@@ -75,6 +98,7 @@ __all__ = [
     "envelope_run",
     "excavation_area_run",
     "fill_only_run",
+    "platform_run",
     "preview_steps",
     "quarry_run",
     "refit_run",
@@ -83,6 +107,7 @@ __all__ = [
 
 _PREPARE_PHASE = "prepare"
 _DONE_PHASE = "calculated"
+_SUMMARY_PHASE = "platform_summary"  # el resumen de una plataforma (T12)
 _OUTSIDE_PHASE = "seeds_outside"  # la cantera parada por sus semillas fuera (T43; RF-014-03)
 _READY, _CREATED, _DISCARDED = "ready", "created", "discarded"
 
@@ -113,8 +138,8 @@ class Calculation:
     """Un cálculo hecho y **sin registrar** (véase el módulo): su ``outcome``
     (``pipeline.EnvelopeOutcome``, ``pipeline.DesignOutcome`` o, de un recinto,
     ``quarry.AreaOutcome``, de una cantera, ``quarry.QuarryOutcome``, de una transición,
-    ``edges.EdgeTransition``, de un diseño «solo relleno», ``fronts.FillOnlyOutcome``, y de un
-    ajuste, ``refit.RefitOutcome``), los
+    ``edges.EdgeTransition``, de un diseño «solo relleno», ``fronts.FillOnlyOutcome``, de un
+    ajuste, ``refit.RefitOutcome``, y de una plataforma, ``platform.PlatformOutcome``), los
     ``notices`` que enseña
     la ventana junto a su resumen —de la envolvente, los de sus semillas; del escalonado, los de su
     informe; de la cantera, los suyos y los del informe de cada lado; de cada aviso del salto
@@ -122,16 +147,22 @@ class Calculation:
     diseño los guarda todos; un ajuste, que no guarda informe, los enseña todos—, las ``seeds``
     (``None``
     salvo en una envolvente), el tipo de operación (``op_type``), su
-    ``name`` y la ``version`` (su código). Mientras esté abierta (:attr:`open`), sus rejillas
+    ``name`` y la ``version`` (su código). De una plataforma (spec 015, T12) lleva además ``entity``
+    (la :class:`~.entity_store.PreparedPlatform`: su código, su geometría, sus parámetros con su origen,
+    lo que anotará la operación) y ``summary`` (el :class:`~.preview.PlatformSummary`), y **crearla es de
+    la T13**. Mientras esté abierta (:attr:`open`), sus rejillas
     esperan en temporales junto a su destino: hay que crearla o descartarla."""
 
     def __init__(self, *, project: StoreProject, writer: store.DesignWriter,
                  start: store.OperationStart, outcome: pipeline.EnvelopeOutcome
                  | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome
-                 | edges.EdgeTransition | fronts.FillOnlyOutcome | refit.RefitOutcome,
+                 | edges.EdgeTransition | fronts.FillOnlyOutcome | refit.RefitOutcome
+                 | platform.PlatformOutcome,
                  notices: Sequence[Notice],
                  seeds: SeedSet | None,
-                 values: Mapping[str, object]) -> None:
+                 values: Mapping[str, object],
+                 entity: entity_store.PreparedPlatform | None = None,
+                 summary: preview.PlatformSummary | None = None) -> None:
         self._project = project
         self._writer = writer
         self._start = start
@@ -143,6 +174,8 @@ class Calculation:
         self.outcome = outcome
         self.notices = tuple(notices)
         self.seeds = seeds
+        self.entity = entity
+        self.summary = summary
 
     def __repr__(self) -> str:
         return f"<Calculation {self.op_type} «{self.name}» {self.version} {self._state}>"
@@ -173,6 +206,23 @@ class Calculation:
         transición, T28…), de solo lectura."""
         return MappingProxyType(dict(self._start.settings))
 
+    @property
+    def needs_confirmation(self) -> bool:
+        """Si es una plataforma con una contrapendiente que pasa de su tolerancia y la persona aún no
+        la ha confirmado: no se podrá crear (RF-015-23). Falso en cualquier otra."""
+        found = self.outcome
+        return isinstance(found, platform.PlatformOutcome) and found.needs_confirmation
+
+    def confirm_counterslope(self) -> None:
+        """La confirmación expresa de la contrapendiente de una plataforma (RF-015-23): la deja
+        confirmada sin recalcular (``PlatformOutcome.confirm``). ``TypeError`` si no es una
+        plataforma."""
+        found = self.outcome
+        if not isinstance(found, platform.PlatformOutcome):
+            raise TypeError(f"solo una plataforma tiene contrapendiente que confirmar, no "
+                            f"«{self.op_type}»")
+        self.outcome = found.confirm()
+
     def lines(self, language: str = "es") -> tuple[str, ...]:
         """Los avisos y notas del resumen, línea a línea, en ``language`` (``"es"`` o ``"en"``)."""
         return tuple(notice.text(language) for notice in self.notices)
@@ -189,9 +239,15 @@ class Calculation:
         ``commit`` que las máscaras están al día y que ninguna entrada cambió. Si algo falla, no queda
         nada (ni operación, ni dato, ni temporal) y el error sigue: ``DesignError``
         ``des.input_changed`` si cambió un parámetro o una entrada, ``MaskError``, los de la 008 y
-        los de disco. ``RuntimeError`` si ya se creó o se descartó."""
+        los de disco. ``RuntimeError`` si ya se creó o se descartó. **Una plataforma aún no se crea**
+        (``NotImplementedError``: es de la T13 de la spec 015); el cálculo sigue abierto, sin escribir
+        nada, y se puede descartar."""
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
+        if self.entity is not None:
+            raise NotImplementedError(
+                f"crear la plataforma «{self.name}» es de la T13 de la spec 015 (``commit`` sobre el "
+                "DesignWriter, con su tabla y su informe): «Calcular» solo deja su resumen")
         try:
             self._check_parameters()
             stored = self._writer.commit(self._start, figures=self.outcome.figures,
@@ -346,6 +402,30 @@ def fill_only_run(project: StoreProject, request: FillOnlyRequest, *, version: s
     los de RF-014-25: un movimiento en un intocable (nombrándolo, con su volumen) o un corte de
     1 m³ o más. Cerrar el generador a mitad borra el temporal."""
     return _fill_only_steps(project, request, version, masks, budget_s)
+
+
+def platform_run(project: StoreProject, request: PlatformRequest, *, version: str | None,
+                 masks: MaskSet | None = None, code: str | None = None,
+                 supersedes: str | None = None, insert_before: str | None = None,
+                 confirm_counterslope: bool = False, budget_s: float = STEP_BUDGET_S
+                 ) -> Iterator[Progress]:
+    """**«Calcular»** la plataforma ``request`` en la versión ``version`` (uid o código) por pasos de
+    ``budget_s`` como mucho (spec 015, T12; RF-015-03, RF-015-13, RF-015-29; «Plataforma…»): el último
+    ``Progress`` lleva la :class:`Calculation` de ``des.platform``, con su superficie (``des_psf_``) en
+    un temporal, su resumen (``Calculation.summary``: las cifras, los avisos y lo que quedará obsoleto
+    al crearla) y **nada registrado ni escrito en el proyecto**: ni la base de datos, ni las
+    operaciones, los datos o los parámetros. ``masks``, como en :func:`envelope_run`. ``code``,
+    ``supersedes`` e ``insert_before``, los de ``entity_store.prepare_platform_units`` (recalcular una
+    entidad que ya está en la versión, sustituir una operación e insertar antes de otra entidad);
+    ``confirm_counterslope``, la confirmación expresa de una contrapendiente (RF-015-23; también
+    ``Calculation.confirm_counterslope``).
+
+    Los rechazos salen **al avanzar**, antes de escribir nada: los de ``prepare_platform_units``
+    (sin versión activa o no editable, geometría, campos, parámetros, partida, falta de dato, un
+    sector pendiente…, RF-015-06 a RF-015-09) y los del cálculo. Cerrar el generador a mitad (Esc) o un
+    fallo después de dejar el temporal lo borra y no deja nada (RF-015-29)."""
+    return _platform_steps(project, request, version, masks, code, supersedes, insert_before,
+                           confirm_counterslope, budget_s)
 
 
 def refit_run(project: StoreProject, request: RefitRequest, *, version: str | None,
@@ -530,6 +610,38 @@ def _refit_steps(project: StoreProject, request: RefitRequest, version: str | No
                                   outcome=outcome, notices=outcome.notices, seeds=None,
                                   values=values)
     except BaseException as error:  # un fallo o cerrar el generador: no quedan los temporales
+        writer.close(error)
+        raise
+    yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
+
+
+def _platform_steps(project: StoreProject, request: PlatformRequest, version: str | None,
+                    masks: MaskSet | None, code: str | None, supersedes: str | None,
+                    insert_before: str | None, confirm_counterslope: bool, budget_s: float
+                    ) -> Generator[Progress, None, None]:
+    found = store.require_version(project, version, provenance.PLATFORM)
+    loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
+    prepared: entity_store.PreparedPlatform = yield from _prepare_steps(
+        entity_store.prepare_platform_units(project, request, found, loaded, code=code,
+                                            supersedes=supersedes, insert_before=insert_before),
+        budget_s)
+    with project.read() as conn:  # con qué se compara la magnitud y el orden de la cantera
+        previous = entity_store.platform_previous(conn, found, prepared.code)
+    order = entity_store.quarry_order(project, found, prepared)
+    writer = store.DesignWriter(project, provenance.PLATFORM, request.name, version=found.uid,
+                                supersedes=supersedes)
+    try:
+        outcome: platform.PlatformOutcome = yield from entity_store.compute_platform_steps(
+            writer, prepared, confirm_counterslope=confirm_counterslope, previous=previous,
+            operation=request.name, quarry=order, budget_s=budget_s)
+        yield Progress(_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
+        summary = entity_store.platform_summary(project, found, prepared, outcome, loaded,
+                                                insert_before=insert_before,
+                                                supersedes=supersedes)
+        calculation = Calculation(project=project, writer=writer, start=prepared.start,
+                                  outcome=outcome, notices=summary.notices, seeds=None,
+                                  values=prepared.common, entity=prepared, summary=summary)
+    except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
         writer.close(error)
         raise
     yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)

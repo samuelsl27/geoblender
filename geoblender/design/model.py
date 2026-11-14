@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from ..gis.grid import Grid
 
 __all__ = [
+    "DECLARED_PREFIX",
     "PERIMETER_SEGMENT",
     "AnchorMode",
     "Axis",
@@ -88,6 +89,10 @@ __all__ = [
 PERIMETER_SEGMENT = "perimeter__"
 """El código del perímetro de actuación como sector único, en la clave de un parámetro por sector
 (``des.sector.perimeter__.max_general_slope_deg``; ADR-0029, D-23)."""
+DECLARED_PREFIX = "DEC-"
+"""El principio del código de una restricción que declara una entidad (``DEC-PLT-001``; RF-015-10,
+plan 015 §5.4 A8): el resto es el código de la entidad. La tabla de las declaradas es de la T16; el
+resumen de «Calcular» (T12) lo usa para decir qué entidad impide mover unas celdas."""
 
 
 class Direction(StrEnum):

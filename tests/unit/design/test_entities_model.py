@@ -96,6 +96,11 @@ CODES: dict[str, str] = {
     "des.entity_nodata": "error",               # RF-015-09
     "des.entity_held": "warning",               # RF-015-13
     "des.entity_held_masks": "warning",         # RF-015-13
+    "des.entity_held_constraint": "warning",    # RF-015-13 (T12)
+    "des.entity_obsolete_masks": "note",        # RF-015-03 (T12)
+    "des.entity_obsolete_consumers": "note",    # RF-015-03 (T12)
+    "des.entity_obsolete_successor": "note",    # RF-015-03, RF-015-05 (T12)
+    "des.entity_obsolete_dependents": "note",   # RF-015-03 (T12)
     "des.entity_edge_outside": "warning",       # RF-015-13
     "des.entity_quarry_order": "warning",       # RF-015-14
     "des.platform_declared_reason": "note",     # RF-015-10
@@ -121,6 +126,7 @@ CODES: dict[str, str] = {
     "des.platform_above_group": "note",         # RF-015-24
     "des.platform_no_cut": "warning",           # RF-015-24
     "des.platform_edge_steep": "warning",       # RF-015-22 (T08)
+    "des.platform_more_groups": "note",         # RF-015-24 (T12)
 }
 FAMILIES = ("des.entity_", "des.platform_")
 
@@ -774,7 +780,18 @@ class EntityMessagesTest(unittest.TestCase):
              ": 1 celda,", ": 1 cell,", ": 2 celdas,", ": 2 cells,"),
             ("des.platform_above_group", "cells",
              {"group": 1, "area": 1, "maximum": 1, "x": 1, "y": 2},
-             ": 1 celda,", ": 1 cell,", ": 2 celdas,", ": 2 cells,"))
+             ": 1 celda,", ": 1 cell,", ": 2 celdas,", ": 2 cells,"),
+            ("des.platform_more_groups", "groups", {},
+             "y 1 grupo más", "and 1 more group", "y 2 grupos más", "and 2 more groups"),
+            ("des.entity_obsolete_consumers", "operations", {"items": "«Cantera»"},
+             "Con ellas quedará obsoleta 1 operación", "With them, 1 operation",
+             "quedarán obsoletas 2 operaciones", "2 operations"),
+            ("des.entity_obsolete_successor", "entities", {"entity": "P1", "items": "«P2»"},
+             "quedará obsoleta 1 entidad", "1 entity of the chain",
+             "quedarán obsoletas 2 entidades", "2 entities of the chain"),
+            ("des.entity_obsolete_dependents", "operations", {"entity": "P1", "items": "«Q»"},
+             "quedará obsoleta 1 operación", "1 operation that depended",
+             "quedarán obsoletas 2 operaciones", "2 operations that depended"))
         for code, count, rest, one_es, one_en, many_es, many_en in cases:
             self.assertEqual(messages.MESSAGES[code].count, count)
             with self.subTest(code=code):

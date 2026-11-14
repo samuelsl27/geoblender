@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Preparar la plataforma: lo que se lee y se rechaza antes de calcular (spec 015, T11; HU-015-3;
-RF-015-06, RF-015-07, RF-015-08, RF-015-09; plan 015 §5.1, §5.2.1, §5.2.2 y §5.3.1; ADR-0030).
+"""Preparar la plataforma —lo que se lee y se rechaza antes de calcular— y calcularla (spec 015, T11 y
+T12; HU-015-3; RF-015-03, RF-015-06, RF-015-07, RF-015-08, RF-015-09, RF-015-13, RF-015-29; plan 015
+§5.1, §5.2.1, §5.2.2, §5.3.1 y §5.3.2; ADR-0030).
 
 El homólogo, para las entidades de diseño, de ``prepare_quarry`` y ``prepare_quarry_units`` de
 ``design.store``: **solo lee**. Nada se escribe en el proyecto (RF-015-03: hasta que el usuario
@@ -36,6 +37,16 @@ por una orden aparte y explícita, los parámetros de la entidad (:func:`set_ent
   (``mode``, ``mesh_factor``, ``counter_tol_m``, ``metric``, ``protect``), ``begin_operation`` la
   crea **en el proyecto** y la entidad llegaría a toda versión (trampa de la T04, ``docs/trampas.md``).
 
+**Calcular** (T12; RF-015-03, RF-015-29): :func:`platform_compute_steps` es el cálculo —la huella, aplicar,
+el borde, el perfil y las cifras de ``design.platform``— por pasos de ≤ 0,05 s, **sin proyecto dentro**
+(recibe lo ya leído): lo comparten «Calcular», el recálculo y la reproducción. :func:`compute_platform_steps`
+lo hace sobre un ``DesignWriter`` y deja la superficie (``des_psf_``) en un temporal; **no hay operación, ni
+dato, ni cifra todavía**. Del resumen (:func:`platform_summary`: las cifras, los avisos y lo que quedará
+obsoleto al crearla), lo que sale del proyecto: con qué se compara la magnitud (:func:`platform_previous`, la
+revisión congelada más reciente), el orden de la cantera de la 014 (:func:`quarry_order`), qué restricción
+impide mover unas celdas (nombres y entidades que declaran, ``preview.held_notices``) y lo obsoleto
+(:func:`platform_obsolete`, del grafo de la 008: no se marca nada de una revisión congelada, RF-009-19).
+
 La capa solo da la **geometría** y los **valores iniciales**: se copian a parámetros de la entidad
 (con el origen «capa X, campo Y, entidad Z») y cambian después en ella; la capa no se modifica. Del
 terreno (RF-015-09) se comprueba la superficie de partida y la de apoyo, que son las que lee el
@@ -48,19 +59,26 @@ las órdenes al usarlo, no ``bl`` al registrarse
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from collections.abc import Generator, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
 
 import numpy as np
 
+from ..core.constraints.store import constraint_names
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterRecord, ParameterStore, definition
 from ..core.params.store import default_reason
+from ..core.project.model import Progress
+from ..core.provenance.operations import OperationStatus
+from ..core.versions import read as versions_read
 from ..core.versions.model import Version
 from ..gis.masks import access
+from ..gis.masks import provenance as masks_provenance
+from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, load_features
 from ..gis.vector import FeatureLayer
@@ -69,7 +87,14 @@ from .compose import admitted
 from .entities import EntityKind, EntityRecord, EntityRegistry, EntityState
 from .envelopes import reach_steps
 from .messages import DesignError
-from .model import BenchSense, LayerField, Metric, PlatformMode, PlatformRequest
+from .model import (
+    DECLARED_PREFIX,
+    BenchSense,
+    LayerField,
+    Metric,
+    PlatformMode,
+    PlatformRequest,
+)
 from .params import (
     PLATFORM_PARAMS,
     PlatformParam,
@@ -81,19 +106,32 @@ from .platform import (
     Footprint,
     PlatformGeometry,
     PlatformJob,
+    PlatformOutcome,
+    QuarryOrder,
     _drain,
     _window_grid,
+    apply_platform_steps,
+    platform_edge_steps,
     platform_footprint,
+    platform_outcome,
+    summary_notices,
 )
+from .preview import Obsolete, ObsoleteKind, PlatformSummary, held_notices, obsolete_notices
 from .quarry import _level_column
+from .report import Previous
 from .sectors import design_sectors, refuse_pending
 from .seeds import sector_layout
 from .store import (
+    DesignWriter,
     OperationStart,
     _check_014_params,
     _loaded_masks,
+    _other_surface,
+    _quarry_link,
     _result_of,
     _start,
+    _store_steps,
+    design_surface_of,
     number,
     require_version,
 )
@@ -102,8 +140,14 @@ from .surfaces import project_frame, read_surface
 __all__ = [
     "EntityParamRow",
     "PreparedPlatform",
+    "compute_platform_steps",
+    "platform_compute_steps",
+    "platform_obsolete",
+    "platform_previous",
+    "platform_summary",
     "prepare_platform",
     "prepare_platform_units",
+    "quarry_order",
     "set_entity_params",
 ]
 
@@ -201,17 +245,36 @@ def _identify(project: StoreProject, version: Version, request: PlatformRequest,
     return chosen, registry
 
 
-def _check_chain(registry: EntityRegistry, request: PlatformRequest, code: str) -> None:
+def _check_chain(registry: EntityRegistry, request: PlatformRequest, code: str,
+                 insert_before: str | None = None) -> None:
     """RF-015-04: de cada superficie parte como mucho una entidad (``des.entity_start_taken``, con la
     que ya parte) y la cadena no da la vuelta (``des.entity_chain_cycle``); la entidad ``code`` no
-    cuenta consigo misma."""
-    other = entities.start_conflict(registry.records, request.start, ignoring=code)
-    if other is not None:
-        raise DesignError("des.entity_start_taken", obj=_object(request),
-                          field=entity_key(code, PlatformParam.START), value=request.start,
-                          entity=request.name, other=other.name)
+    cuenta consigo misma. Con ``insert_before`` (RF-015-05: la entidad de código o nombre que pasará a
+    partir de la superficie de la nueva), la entidad nueva parte de la **misma** superficie que ella y
+    no choca con ella: la cadena se comprueba con ella ya re-apuntada a la nueva (``ValueError``, error
+    del programa, si no existe o parte de otra superficie)."""
+    records = [item for item in registry.records if item.code != code]
+    if insert_before is None:
+        other = entities.start_conflict(registry.records, request.start, ignoring=code)
+        if other is not None:
+            raise DesignError("des.entity_start_taken", obj=_object(request),
+                              field=entity_key(code, PlatformParam.START), value=request.start,
+                              entity=request.name, other=other.name)
+    else:
+        successor = entities.find_entity(records, insert_before)
+        if successor is None:
+            raise ValueError(f"la versión no tiene ninguna entidad con el código o el nombre "
+                             f"{insert_before!r}: no se puede insertar la plataforma "
+                             f"«{request.name}» antes de ella")
+        if (successor.start or "").strip() != (request.start or "").strip():
+            raise ValueError(
+                f"la plataforma «{request.name}» se inserta antes de «{successor.name}», que parte de "
+                f"{successor.start!r}, pero ella parte de {request.start!r}: la insertada parte de la "
+                "misma superficie (entities.insertion_start)")
+        records = [replace(item, start=entities.surface_ref(code)) if item is successor else item
+                   for item in records]
     this = EntityRecord(code, request.name, EntityKind.PLATFORM, request.start, request.support)
-    entities.check_chain([*(item for item in registry.records if item.code != code), this])
+    entities.check_chain([*records, this])
 
 
 def _surface_dataset(registry: EntityRegistry, version: Version, request: PlatformRequest,
@@ -536,7 +599,7 @@ def _pending_zone(job: PlatformJob, footprint: Footprint, values: Mapping[str, A
 
 def prepare_platform_units(project: StoreProject, request: PlatformRequest, version: Version,
                            masks: access.MaskSet, *, code: str | None = None,
-                           supersedes: str | None = None
+                           supersedes: str | None = None, insert_before: str | None = None
                            ) -> Generator[None, None, PreparedPlatform]:
     """Las unidades (cada ``yield``, una; para componerlas con ``pace_units``) que preparan la
     plataforma ``request`` de la versión editable ``version`` con sus ``masks`` ya al día
@@ -545,7 +608,9 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
     partida y la cadena, la capa con su geometría y sus campos, los parámetros resueltos, las
     superficies de partida y de apoyo, la huella (que comprueba la geometría), la falta de dato, los
     sectores con la búsqueda pendiente y lo que anotará la operación. ``supersedes``: la operación hecha
-    a la que sustituye (un recálculo). Devuelve la :class:`PreparedPlatform`. **Nada se escribe**;
+    a la que sustituye (un recálculo). ``insert_before`` (spec 015, T12; RF-015-05): la entidad que
+    hoy parte de la misma superficie y que pasará a partir de la de la nueva (una inserción: sin ello,
+    esa superficie ocupada se rechaza). Devuelve la :class:`PreparedPlatform`. **Nada se escribe**;
     los rechazos salen al avanzar, en este orden: versión (``VersionError``), nombre y partida
     (``des.entity_name_repeated``, ``des.entity_start_taken``, ``des.entity_chain_cycle``), capa y
     geometría (``des.entity_feature_unknown`` y ``_ambiguous``, ``des.quarry_layer_field``,
@@ -557,7 +622,7 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
     (``des.operation_name_repeated``)."""
     require_version(project, version.uid, provenance.PLATFORM)
     chosen, registry = _identify(project, version, request, code)
-    _check_chain(registry, request, chosen)
+    _check_chain(registry, request, chosen, insert_before)
     yield
     layer = _layer(project, request.layer)
     index = _feature(layer, request, chosen)
@@ -658,3 +723,253 @@ def set_entity_params(project: StoreProject, rows: Iterable[EntityParamRow], *, 
         return write(conn)
     with project.write_transaction() as writing:
         return write(writing)
+
+
+# --- Calcular (spec 015, T12; RF-015-03, RF-015-29) ---------------------------------------------
+
+_COMPUTE_PHASE = "platform_compute"
+
+
+def platform_compute_steps(job: PlatformJob, common: Mapping[str, object], *,
+                           footprint: Footprint | None = None,
+                           confirm_counterslope: bool = False, previous: Previous | None = None,
+                           operation: str = "", quarry: QuarryOrder | None = None,
+                           budget_s: float = STEP_BUDGET_S
+                           ) -> Generator[Progress, None, PlatformOutcome]:
+    """Los pasos que calculan la plataforma de ``job`` (RF-015-03, RF-015-29; plan 015 §5.3.1: el
+    ``platform_compute_steps`` que **comparten «Calcular», el recálculo y la reproducción**), sin
+    proyecto y sin escribir nada (``yield from``; cerrar el generador no deja nada): la huella y la
+    rasante (``footprint``, si ya se calculó al preparar; si no, aquí), aplicarla
+    (``apply_platform_steps``), el borde (``platform_edge_steps``) y el perfil con las cifras y los
+    avisos (``platform_outcome``), por pasos de ``budget_s`` como mucho. ``common`` son los parámetros del
+    proyecto que lee el cálculo (``provenance.PLATFORM_COMMON_PARAMS``: la tolerancia de cara, el umbral de
+    magnitud, el espesor mínimo y el salto creado, ya resueltos). ``confirm_counterslope``, ``previous``
+    (con qué se compara la magnitud), ``operation`` (el nombre que da la nota de que no hay con qué
+    compararla) y ``quarry`` (la otra superficie de la cantera, RF-015-14) son los de
+    ``platform.platform_outcome``. Los rechazos son los de esas funciones y salen al avanzar. La huella
+    y el perfil no se parten (7 ms una línea de 300 m, 37 ms 1,2 M celdas): son una unidad cada uno.
+    Devuelve el :class:`~.platform.PlatformOutcome`."""
+    name = job.request.name
+    yield Progress(_COMPUTE_PHASE, 0, 1, f"Calculando la plataforma «{name}»…")
+    if footprint is None:
+        footprint = platform_footprint(job)
+        yield Progress(_COMPUTE_PHASE, 0, 1, f"Huella de la plataforma «{name}» calculada")
+    applied = yield from pipeline.forward(apply_platform_steps(job, footprint, budget_s=budget_s))
+    edge = yield from pipeline.forward(
+        platform_edge_steps(job, footprint, applied, common, budget_s=budget_s))
+    yield Progress(_COMPUTE_PHASE, 1, 1, f"Perfil de la plataforma «{name}»…")
+    return platform_outcome(job, footprint, applied, edge, common,
+                            confirm_counterslope=confirm_counterslope, previous=previous,
+                            operation=operation, quarry=quarry)
+
+
+def compute_platform_steps(writer: DesignWriter, prepared: PreparedPlatform, *,
+                           confirm_counterslope: bool = False, previous: Previous | None = None,
+                           operation: str = "", quarry: QuarryOrder | None = None,
+                           budget_s: float = STEP_BUDGET_S
+                           ) -> Generator[Progress, None, PlatformOutcome]:
+    """Lo que hace «Calcular» sobre el ``writer`` (spec 015, T12; RF-015-03, RF-015-29): calcula la
+    plataforma preparada (:func:`platform_compute_steps`, con la huella de ``prepared`` y los
+    parámetros del proyecto que lee) y deja su superficie —la de partida, entera, con el resultado en
+    la ventana de la huella— en el temporal de ``writer`` (``des_psf_``, con su hash), **sin confirmar**.
+    La tabla de la entidad y su informe son de «Crear» (T13). Devuelve el
+    :class:`~.platform.PlatformOutcome`."""
+    outcome = yield from platform_compute_steps(
+        prepared.job, prepared.common, footprint=prepared.footprint,
+        confirm_counterslope=confirm_counterslope, previous=previous, operation=operation,
+        quarry=quarry, budget_s=budget_s)
+    surface = np.array(prepared.job.start, dtype=np.float64, copy=True)
+    surface[outcome.footprint.window] = outcome.result
+    raster = Raster(prepared.job.grid, surface, writer.crs, writer.vertical)
+    yield from pipeline.forward(_store_steps(
+        writer.grid_steps(provenance.ENTITY_SURFACE_GRID, raster), budget_s,
+        "la superficie de la plataforma"))
+    return outcome
+
+
+# --- Con qué se compara, y lo que sale del proyecto para el resumen -----------------------------
+
+_MAGNITUDE_CUT = ("des.plat_cut_m3", "des.edge_cut_m3")
+_MAGNITUDE_FILL = ("des.plat_fill_m3", "des.edge_fill_m3")
+
+
+def platform_previous(conn: sqlite3.Connection, version: Version, code: str) -> Previous | None:
+    """Con qué se compara el desmonte y el terraplén de una plataforma (RF-015-13, RF-013-30, D-25): la
+    operación ``des.platform`` de la entidad de código ``code`` de la revisión **congelada** más
+    reciente de la versión ``version`` y sus cifras de la huella y del borde sumadas
+    (``des.plat_cut_m3`` + ``des.edge_cut_m3``, y las del relleno), como ``report.Previous``
+    (``operation``: su nombre; ``revision``: ``V01.r1``). Por el código y no por el nombre: es
+    inmutable en la versión y sobrevive a renombrarla. ``None`` si la versión no tiene ninguna
+    congelada, ninguna operación de esa entidad o sin esas cifras. Solo lee."""
+    revision = versions_read.last_frozen(conn, version.uid)
+    if revision is None:
+        return None
+    rows = conn.execute(
+        "SELECT uid, settings FROM gb_operation WHERE revision_uid = ? AND op_type = ? "
+        "AND status = ? ORDER BY fid DESC",
+        (revision.uid, provenance.PLATFORM, OperationStatus.DONE.value)).fetchall()
+    for uid, settings in rows:
+        found = json.loads(settings) if settings else {}
+        if found.get("code") != code:
+            continue
+        keys = (*_MAGNITUDE_CUT, *_MAGNITUDE_FILL)
+        figures = {str(key): float(value) for key, value in conn.execute(
+            f"SELECT key, value FROM gb_figure WHERE operation_uid = ? AND key IN "
+            f"({', '.join('?' for _ in keys)})", (uid, *keys)) if value is not None}
+        if len(figures) < len(keys):
+            return None
+        name = found.get("name")
+        return Previous(str(name) if isinstance(name, str) and name else code,
+                        f"{version.code}.r{revision.number}",
+                        sum(figures[key] for key in _MAGNITUDE_CUT),
+                        sum(figures[key] for key in _MAGNITUDE_FILL))
+    return None
+
+
+def quarry_order(project: StoreProject, version: Version, prepared: PreparedPlatform
+                 ) -> QuarryOrder | None:
+    """La otra superficie de la cantera de la 014 cuando la plataforma parte de una de sus dos
+    superficies (RF-015-14; ``des_fin_`` o ``des_exp_``), para comprobar ``final ≤ explotación ≤
+    terreno`` con lo que ella cambia; ``None`` si parte de otra cosa (el terreno, un diseño de la 013, la
+    superficie de otra entidad). La lee del proyecto en la rejilla del proyecto (RF-011-02). Solo lee."""
+    with project.read() as conn:
+        origin = design_surface_of(conn, prepared.start_surface, version.uid)
+    if origin is None or origin.op_type != provenance.QUARRY:
+        return None
+    name, side, _order = _quarry_link(origin)
+    other = _other_surface(name, side)
+    found = read_surface(project, other, version_uid=version.uid, expect=project_frame(project),
+                         role="otra superficie de la cantera")
+    assert side is not None  # lo es de una cantera
+    return QuarryOrder(name, side, prepared.start_surface, other, found.values)
+
+
+_CONSUMERS = (
+    "SELECT DISTINCT o.fid, o.uid, o.op_type, o.settings FROM gb_operation_io AS io "
+    "JOIN gb_operation AS o ON o.uid = io.operation_uid "
+    "JOIN gb_revision AS r ON r.uid = o.revision_uid "
+    "WHERE io.direction = 'in' AND io.item_kind = 'dataset' AND io.item_uid IN ({marks}) "
+    "AND o.status = 'done' AND o.superseded_by IS NULL AND r.version_uid = ? "
+    "AND r.state = 'open'")
+_OUTPUTS = (
+    "SELECT DISTINCT item_uid FROM gb_operation_io WHERE direction = 'out' "
+    "AND item_kind = 'dataset' AND operation_uid IN ({marks})")
+_CHUNK = 400
+"""Los uid por consulta (el límite de variables de SQLite es mayor)."""
+
+
+def _name_of(op_type: str, settings: object) -> str:
+    """El nombre de una operación hecha: el ``name`` de sus ajustes o, sin él, su tipo."""
+    try:
+        found = json.loads(str(settings)) if settings else {}
+    except ValueError:
+        found = {}
+    name = found.get("name") if isinstance(found, dict) else None
+    return name if isinstance(name, str) and name else op_type
+
+
+def _dependents(conn: sqlite3.Connection, datasets: Iterable[str], version_uid: str, *,
+                exclude: Iterable[str | None] = ()) -> list[tuple[str, str, str]]:
+    """Lo que depende de los datos ``datasets`` en la revisión **abierta** de la versión
+    ``version_uid`` (RF-015-16; la 008): las operaciones hechas y no sustituidas que los consumen y,
+    en cascada, las que consumen lo que escribieron esas, por orden de registro; como ``(uid, tipo,
+    nombre)``. Sin las de ``exclude``. Una revisión congelada no se marca (RF-009-19). Solo lee."""
+    skip = {uid for uid in exclude if uid is not None}
+    found: dict[str, tuple[int, str, str]] = {}
+    frontier = list(dict.fromkeys(datasets))
+    seen = set(frontier)
+    while frontier:
+        fresh: list[str] = []
+        for first in range(0, len(frontier), _CHUNK):
+            part = frontier[first:first + _CHUNK]
+            sql = _CONSUMERS.format(marks=", ".join("?" for _ in part))
+            for fid, uid, op_type, settings in conn.execute(sql, (*part, version_uid)):
+                if uid not in found and uid not in skip:
+                    found[str(uid)] = (int(fid), str(op_type), _name_of(str(op_type), settings))
+                    fresh.append(str(uid))
+        frontier = []
+        for first in range(0, len(fresh), _CHUNK):
+            part = fresh[first:first + _CHUNK]
+            sql = _OUTPUTS.format(marks=", ".join("?" for _ in part))
+            for (dataset,) in conn.execute(sql, part):
+                if dataset not in seen:
+                    seen.add(str(dataset))
+                    frontier.append(str(dataset))
+    ordered = sorted(found.items(), key=lambda item: item[1][0])
+    return [(uid, op_type, name) for uid, (_fid, op_type, name) in ordered]
+
+
+def platform_obsolete(project: StoreProject, version: Version, prepared: PreparedPlatform,
+                      masks: access.MaskSet, *, insert_before: str | None = None,
+                      supersedes: str | None = None) -> tuple[Obsolete, ...]:
+    """**Lo que quedará obsoleto al crear la plataforma** ``prepared`` en ``version`` (RF-015-03,
+    RF-015-16; del grafo de la 008, sin escribir; una revisión congelada no se marca, RF-009-19): si
+    **protege** (``protect``), las máscaras de la versión (declarará una restricción y se compilan de
+    nuevo) y lo que las consumió, en cascada (``ObsoleteKind.MASKS`` y ``CONSUMER``); si es una
+    **inserción** (``insert_before``: la entidad que pasa a partir de la nueva), esa entidad y las que le
+    siguen en la cadena, las que ya tienen resultado (``SUCCESSOR``: una sin calcular no queda obsoleta);
+    si **sustituye** una operación (``supersedes``), lo que dependía de lo que escribió, en cascada
+    (``DEPENDENT``). Con las operaciones sustituidas no se cuenta la propia sustituida. Una operación no
+    sale dos veces."""
+    found: list[Obsolete] = []
+    listed: set[str] = set()
+    with project.read() as conn:
+        if prepared.values.get("protect"):
+            found.append(Obsolete(ObsoleteKind.MASKS, version.code, masks_provenance.COMPILE,
+                                  masks.operation_uid))
+            for uid, op_type, name in _dependents(conn, [item.uid for item in masks.used],
+                                                  version.uid, exclude=(supersedes,)):
+                found.append(Obsolete(ObsoleteKind.CONSUMER, name, op_type, uid))
+                listed.add(uid)
+        if insert_before is not None:
+            registry = entities.registry(project, version.uid, conn=conn)
+            for item in entities.chain_of(registry.records, insert_before):
+                if item.state is EntityState.UNCALCULATED:
+                    continue
+                entry = registry.get(item.code)
+                uid = "" if entry is None or entry.operation_uid is None else entry.operation_uid
+                found.append(Obsolete(ObsoleteKind.SUCCESSOR, item.name, provenance.PLATFORM, uid))
+                if uid:
+                    listed.add(uid)
+        if supersedes is not None:
+            written = [str(row[0]) for row in conn.execute(
+                "SELECT item_uid FROM gb_operation_io WHERE operation_uid = ? "
+                "AND direction = 'out' AND item_kind = 'dataset' ORDER BY fid", (supersedes,))]
+            for uid, op_type, name in _dependents(conn, written, version.uid,
+                                                  exclude=(supersedes, *listed)):
+                found.append(Obsolete(ObsoleteKind.DEPENDENT, name, op_type, uid))
+    return tuple(found)
+
+
+def _restrictions(project: StoreProject, version: Version
+                  ) -> tuple[dict[str, str], dict[str, str]]:
+    """Lo que hace falta para nombrar la restricción que impide mover unas celdas: el nombre de cada
+    restricción por su código (las tres capas de la 012) y la entidad que declara cada
+    ``DEC-<código>`` (su nombre, del registro de la versión). Solo lee."""
+    with project.read() as conn:
+        named = {code: name for code, (name, _ctype) in constraint_names(conn).items()}
+        registry = entities.registry(project, version.uid, conn=conn)
+    declared = {f"{DECLARED_PREFIX}{entry.record.code}": entry.record.name for entry in registry}
+    return named, declared
+
+
+def platform_summary(project: StoreProject, version: Version, prepared: PreparedPlatform,
+                     outcome: PlatformOutcome, masks: access.MaskSet, *,
+                     insert_before: str | None = None, supersedes: str | None = None
+                     ) -> PlatformSummary:
+    """El resumen de «Calcular» la plataforma ``prepared`` (RF-015-03, RF-015-13): las cifras del
+    ``outcome``, sus avisos como los enseña la cuenta (``platform.summary_notices``: los 10 primeros tramos
+    del salto creado y grupos de lo que no queda en la rasante, con una nota de los que faltan), lo que
+    no mueve por una restricción —con su nombre, o con la entidad que la declara
+    (``preview.held_notices``)— y lo que quedará obsoleto al crearla (:func:`platform_obsolete`), en
+    notas. Solo lee."""
+    names, declared = _restrictions(project, version)
+    held = held_notices(
+        outcome.name, masks, outcome.footprint.window, cut=outcome.applied.cut_denied,
+        fill=outcome.applied.fill_denied, edge=outcome.edge.held, names=names, declared=declared)
+    obsolete = platform_obsolete(project, version, prepared, masks, insert_before=insert_before,
+                                 supersedes=supersedes)
+    notices = (*summary_notices(outcome.notices), *held,
+               *obsolete_notices(outcome.name, version.code, obsolete))
+    return PlatformSummary(outcome.name, outcome.code, version.code, outcome.figures, notices,
+                           obsolete)

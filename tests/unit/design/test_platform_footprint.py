@@ -178,7 +178,9 @@ class PublicNamesTest(unittest.TestCase):
                  "platform_edge_steps",
                  # T09: la contrapendiente, las cifras y los avisos (test_platform_profile.py).
                  "HeldGroup", "LongProfile", "OrderBreach", "PlatformOutcome", "QuarryOrder",
-                 "order_check", "platform_outcome", "platform_profile")
+                 "order_check", "platform_outcome", "platform_profile",
+                 # T12: el resumen de «Calcular» (test_platform_operation.py).
+                 "summary_notices")
         self.assertEqual(sorted(platform.__all__), sorted(names))
         for name in names:
             with self.subTest(name=name):
