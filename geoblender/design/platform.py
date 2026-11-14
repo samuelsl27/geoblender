@@ -364,12 +364,12 @@ def _reject(code: str, request: PlatformRequest, field: str, value: object,
 
 def _resolved(job: PlatformJob, *, line: bool) -> tuple[float, float, float, float | None]:
     """Los valores que calcula la huella, ya comprobados (``des.entity_param_missing`` o
-    ``des.entity_param_range`` con la clave de su campo): ``(cota inicial, pendiente, alcance,
+    ``des.entity_param_range`` con la capa y la clave de su campo): ``(cota inicial, pendiente, alcance,
     ancho)``, y el ancho solo con una línea (un polígono no lo tiene: ``None``)."""
-    name, code, found = job.request.name, job.code, job.values
+    name, code, found, layer = job.request.name, job.code, job.values, job.request.layer
 
     def one(param: PlatformParam) -> float:
-        value = check_entity_param(name, code, param, found.get(param.value))
+        value = check_entity_param(name, code, param, found.get(param.value), layer=layer)
         assert isinstance(value, float)
         return value
 
@@ -384,7 +384,8 @@ def _metric(job: PlatformJob) -> Metric:
     found = job.values.get(PlatformParam.METRIC.value)
     if found is None:
         found = PLATFORM_PARAMS[PlatformParam.METRIC.value].default
-    return Metric(check_entity_param(job.request.name, job.code, PlatformParam.METRIC, found))
+    return Metric(check_entity_param(job.request.name, job.code, PlatformParam.METRIC, found,
+                                     layer=job.request.layer))
 
 
 def _check_levels(job: PlatformJob, axis_m: float, start_level: float, gradient: float) -> None:
@@ -912,7 +913,8 @@ def _mode(job: PlatformJob) -> PlatformMode:
     found = job.values.get(PlatformParam.MODE.value)
     if found is None:
         found = PLATFORM_PARAMS[PlatformParam.MODE.value].default
-    return PlatformMode(check_entity_param(job.request.name, job.code, PlatformParam.MODE, found))
+    return PlatformMode(check_entity_param(job.request.name, job.code, PlatformParam.MODE, found,
+                                           layer=job.request.layer))
 
 
 def _check_footprint(job: PlatformJob, footprint: Footprint) -> None:
@@ -1213,15 +1215,15 @@ def _edge_settings(job: PlatformJob, project: Mapping[str, object]) -> _EdgeSett
     defecto) y, del proyecto, la tolerancia de cara, el espesor mínimo y el salto admitido y su
     porcentaje (``des.quarry_param_*`` si salen de rango). El factor de malla de la plataforma es de
     (0; 10] (plan 015 §5.2.2); la envolvente se construye con ``tan · factor`` sin más tope."""
-    name, code, found = job.request.name, job.code, job.values
+    name, code, found, layer = job.request.name, job.code, job.values, job.request.layer
     angle = check_entity_param(name, code, PlatformParam.EDGE_ANGLE,
-                               found.get(PlatformParam.EDGE_ANGLE.value))
+                               found.get(PlatformParam.EDGE_ANGLE.value), layer=layer)
     reach = check_entity_param(name, code, PlatformParam.REACH,
-                               found.get(PlatformParam.REACH.value))
+                               found.get(PlatformParam.REACH.value), layer=layer)
     mesh = found.get(PlatformParam.MESH_FACTOR.value)
     if mesh is None:
         mesh = PLATFORM_PARAMS[PlatformParam.MESH_FACTOR.value].default
-    mesh = check_entity_param(name, code, PlatformParam.MESH_FACTOR, mesh)
+    mesh = check_entity_param(name, code, PlatformParam.MESH_FACTOR, mesh, layer=layer)
     assert isinstance(angle, float) and isinstance(reach, float) and isinstance(mesh, float)
     tolerance = _project_number(project, TOLERANCE_FACE)
     if tolerance < 0.0:
@@ -1618,7 +1620,8 @@ def _counter_tolerance(job: PlatformJob) -> float:
     found = job.values.get(PlatformParam.COUNTER_TOL.value)
     if found is None:
         found = PLATFORM_PARAMS[PlatformParam.COUNTER_TOL.value].default
-    value = check_entity_param(job.request.name, job.code, PlatformParam.COUNTER_TOL, found)
+    value = check_entity_param(job.request.name, job.code, PlatformParam.COUNTER_TOL, found,
+                               layer=job.request.layer)
     assert isinstance(value, float)
     return value
 

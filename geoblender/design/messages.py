@@ -1170,24 +1170,25 @@ CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "des.entity_param_missing",
-        "Entity «{entity}»: «{field}» has no value and has no default; give it a value in the "
-        "entity dialog before calculating (no value is chosen for it).",
-        "Entidad «{entity}»: «{field}» no tiene valor ni lleva ninguno por defecto; dele un valor "
-        "en el diálogo de la entidad antes de calcular (no se elige ninguno por ella).",
+        "Layer «{layer}», entity «{entity}»: «{field}» has no value and has no default; give it a "
+        "value in the entity dialog before calculating (no value is chosen for it).",
+        "Capa «{layer}», entidad «{entity}»: «{field}» no tiene valor ni lleva ninguno por "
+        "defecto; dele un valor en el diálogo de la entidad antes de calcular (no se elige "
+        "ninguno por ella).",
     ),
     Message(
         "des.entity_param_range",
-        "Entity «{entity}»: «{field}» = {value} is outside its range {range}; correct it in the "
-        "entity dialog; nothing is calculated.",
-        "Entidad «{entity}»: «{field}» = {value} está fuera de su rango {range}; corríjalo en el "
-        "diálogo de la entidad; no se calcula nada.",
+        "Layer «{layer}», entity «{entity}»: «{field}» = {value} is outside its range {range}; "
+        "correct it in the entity dialog; nothing is calculated.",
+        "Capa «{layer}», entidad «{entity}»: «{field}» = {value} está fuera de su rango {range}; "
+        "corríjalo en el diálogo de la entidad; no se calcula nada.",
     ),
     Message(
         "des.entity_param_choice",
-        "Entity «{entity}»: «{field}» = {value} is not one of its options ({choices}); choose "
-        "one of them; nothing is calculated.",
-        "Entidad «{entity}»: «{field}» = {value} no es una de sus opciones ({choices}); elija "
-        "una de ellas; no se calcula nada.",
+        "Layer «{layer}», entity «{entity}»: «{field}» = {value} is not one of its options "
+        "({choices}); choose one of them; nothing is calculated.",
+        "Capa «{layer}», entidad «{entity}»: «{field}» = {value} no es una de sus opciones "
+        "({choices}); elija una de ellas; no se calcula nada.",
     ),
     Message(
         "des.entity_field_value",
@@ -1204,6 +1205,13 @@ CATALOG: tuple[Message, ...] = (
         "de las suyas; no se calcula nada.",
     ),
     Message(
+        "des.entity_feature_ambiguous",
+        "Layer «{layer}» has several features called «{value}» (fid {fids}); choose the one you "
+        "mean by its fid; nothing is calculated.",
+        "La capa «{layer}» tiene varias geometrías llamadas «{value}» (fid {fids}); elija la que "
+        "quiere por su fid; no se calcula nada.",
+    ),
+    Message(
         "des.entity_start_taken",
         "Entity «{entity}» cannot start from «{value}»: entity «{other}» already does and only "
         "one entity starts from each surface; insert the new one before or after «{other}», or "
@@ -1212,6 +1220,16 @@ CATALOG: tuple[Message, ...] = (
         "La entidad «{entity}» no puede partir de «{value}»: ya parte la entidad «{other}» y de "
         "cada superficie parte una sola entidad; inserte la nueva antes o después de «{other}», "
         "o elija otra superficie (otra alternativa va en otra versión); no se calcula nada.",
+    ),
+    Message(
+        "des.entity_start_unknown",
+        "Entity «{entity}»: «{field}» = {value} is not the surface of a calculated entity of "
+        "{version} (it does not exist, it has not been calculated yet or it was discarded); "
+        "choose the terrain, a design surface or the surface of another entity; nothing is "
+        "calculated.",
+        "Entidad «{entity}»: «{field}» = {value} no es la superficie de una entidad calculada de "
+        "{version} (no existe, aún no se ha calculado o se descartó); elija el terreno, una "
+        "superficie de diseño o la superficie de otra entidad; no se calcula nada.",
     ),
     Message(
         "des.entity_chain_cycle",
@@ -1387,21 +1405,21 @@ CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "des.platform_max_slope",
-        "Platform «{entity}»: its gradient «{field}» = {value} % exceeds its maximum gradient of "
-        "{maximum} %; a gradient like that is a ramp, not a platform: draw it with the haul "
-        "roads or raise the maximum; nothing is calculated.",
-        "Plataforma «{entity}»: su pendiente «{field}» = {value} % supera su pendiente máxima de "
-        "{maximum} %; una pendiente así es una rampa, no una plataforma: dibújela con las pistas "
-        "o suba el máximo; no se calcula nada.",
+        "Layer «{layer}», platform «{entity}»: its gradient «{field}» = {value} % exceeds its "
+        "maximum gradient of {maximum} %; a gradient like that is a ramp, not a platform: draw "
+        "it with the haul roads or raise the maximum; nothing is calculated.",
+        "Capa «{layer}», plataforma «{entity}»: su pendiente «{field}» = {value} % supera su "
+        "pendiente máxima de {maximum} %; una pendiente así es una rampa, no una plataforma: "
+        "dibújela con las pistas o suba el máximo; no se calcula nada.",
     ),
     Message(
         "des.platform_protect_cut_fill",
-        "Platform «{entity}»: in the «cut and fill» mode it fills its own footprint, so it "
-        "cannot protect it with «no fill»; choose the «cut» mode or do not protect it; nothing "
-        "is calculated.",
-        "Plataforma «{entity}»: en el modo «en corte y relleno» rellena su propia huella, así que "
-        "no puede protegerla con «sin relleno»; elija el modo «en corte» o no la proteja; no se "
-        "calcula nada.",
+        "Layer «{layer}», platform «{entity}»: in the «cut and fill» mode it fills its own "
+        "footprint, so it cannot protect it with «no fill»; choose the «cut» mode or do not "
+        "protect it; nothing is calculated.",
+        "Capa «{layer}», plataforma «{entity}»: en el modo «en corte y relleno» rellena su propia "
+        "huella, así que no puede protegerla con «sin relleno»; elija el modo «en corte» o no la "
+        "proteja; no se calcula nada.",
     ),
     Message(
         "des.platform_counter_slope",

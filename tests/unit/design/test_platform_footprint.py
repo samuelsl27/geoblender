@@ -756,6 +756,7 @@ class RejectionTest(unittest.TestCase):
         error = self.reject(job, "des.entity_param_missing")
         self.assertEqual(error.field, "des.platform.plt_001.width_m")
         self.assertIn("«Eje sin ancho»", error.text)
+        self.assertIn(f"«{efx.AXES_LAYER}»", error.text)  # RF-015-08: también la capa
 
     def test_a_polygon_does_not_need_a_width(self) -> None:
         """Un polígono no tiene ancho: sin el valor se calcula igual."""
@@ -779,6 +780,7 @@ class RejectionTest(unittest.TestCase):
                                values(**changes))
                 error = self.reject(job, code)
                 self.assertEqual(error.field, f"des.platform.plt_001.{field}")
+                self.assertEqual(error.values["layer"], efx.AXES_LAYER)
 
     def test_a_level_outside_the_terrain_plus_or_minus_1000_m(self) -> None:
         """RF-015-08: el terreno va de 180,15625 a 304,84375 m, así que una cota válida está entre

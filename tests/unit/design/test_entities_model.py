@@ -88,7 +88,9 @@ CODES: dict[str, str] = {
     "des.entity_param_choice": "error",         # RF-015-08
     "des.entity_field_value": "error",          # RF-015-08
     "des.entity_feature_unknown": "error",      # RF-015-08
+    "des.entity_feature_ambiguous": "error",    # RF-015-01 (T11)
     "des.entity_start_taken": "error",          # RF-015-04
+    "des.entity_start_unknown": "error",        # RF-015-04 (T11)
     "des.entity_chain_cycle": "error",          # RF-015-04 (T03)
     "des.entity_insert_reason": "note",         # RF-015-05 (T03)
     "des.entity_nodata": "error",               # RF-015-09
@@ -400,9 +402,13 @@ class PlatformParamsTest(unittest.TestCase):
         self.assertEqual(i18n.untranslated(labels), [])
 
 
+LAYER = "gis_fea_plataformas_ejes"
+"""La capa de la plataforma de las pruebas del parámetro: RF-015-08 pide nombrarla."""
+
+
 class CheckEntityParamTest(unittest.TestCase):
     def check(self, last: str, value: object, **options: object) -> object:
-        return params.check_entity_param("P1", "PLT-001", last, value, **options)
+        return params.check_entity_param("P1", "PLT-001", last, value, layer=LAYER, **options)
 
     def test_every_number_in_its_range(self) -> None:
         """RF-015-08 (plan §5.2.2): cada número se comprueba en su rango (extremos incluidos o
@@ -424,6 +430,8 @@ class CheckEntityParamTest(unittest.TestCase):
                     self.assertEqual(error.field, key_of(last))
                     self.assertEqual(error.obj, "Plataforma «P1»")
                     self.assertIn("«P1»", error.text)
+                    self.assertIn(f"«{LAYER}»", error.text)  # RF-015-08: la capa, la entidad,
+                    self.assertEqual(error.values["layer"], LAYER)  # el campo y el valor
                     self.assertIn(key_of(last), error.text)
                     self.assertIn(params.ENTITY_RANGES[last].text(), error.text)
                     self.assertNotIn("{", error.text)
@@ -462,6 +470,8 @@ class CheckEntityParamTest(unittest.TestCase):
                 self.assertEqual(error.obj, "Plataforma «P1»")
                 self.assertIsNone(error.value)
                 self.assertIn("«P1»", error.text)
+                self.assertIn(f"«{LAYER}»", error.text)
+                self.assertEqual(error.values["layer"], LAYER)
                 self.assertIn(key_of(last), error.text)
                 self.assertNotIn("{", error.text)
                 self.assertIsNone(self.check(last, None, required=False))
@@ -492,6 +502,7 @@ class CheckEntityParamTest(unittest.TestCase):
                     self.check(last, wrong)
                 self.assertEqual(caught.exception.code, "des.entity_param_choice")
                 self.assertEqual(caught.exception.field, key_of(last))
+                self.assertIn(f"«{LAYER}»", caught.exception.text)
                 for option in params.PLATFORM_PARAMS[last].choices:
                     self.assertIn(f"«{option}»", caught.exception.text)
 
@@ -506,9 +517,9 @@ class CheckEntityParamTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.check("no_such_param", 1.0)
         with self.assertRaises(ValueError):
-            params.check_entity_param("P1", "PLT-1", "reach_m", 1.0)
+            params.check_entity_param("P1", "PLT-1", "reach_m", 1.0, layer=LAYER)
         with self.assertRaises(ValueError):
-            params.check_entity_param("P1", "plt_001", "reach_m", 1.0)
+            params.check_entity_param("P1", "plt_001", "reach_m", 1.0, layer=LAYER)
 
 
 class PlatformModelTest(unittest.TestCase):

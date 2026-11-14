@@ -634,16 +634,17 @@ def entity_key(code: str, param: PlatformParam | str) -> str:
 
 
 def check_entity_param(entity: str, code: str, param: PlatformParam | str, value: object, *,
-                       required: bool | None = None) -> float | str | bool | None:
-    """El valor ``param`` de la plataforma de nombre ``entity`` y código ``code``, ya comprobado:
-    ``float`` un número, ``str`` un texto (sin los espacios de los extremos), ``bool`` el sí/no y
-    ``None`` un opcional sin valor.
+                       layer: str, required: bool | None = None) -> float | str | bool | None:
+    """El valor ``param`` de la plataforma de nombre ``entity`` y código ``code`` de la capa
+    ``layer``, ya comprobado: ``float`` un número, ``str`` un texto (sin los espacios de los
+    extremos), ``bool`` el sí/no y ``None`` un opcional sin valor.
 
     :class:`~design.messages.DesignError` ``des.entity_param_missing`` si no tiene valor
     (``None`` o un texto en blanco: ninguno elige un valor por la persona, RF-015-08),
     ``des.entity_param_range`` si un número está fuera de su rango (:data:`ENTITY_RANGES`; ``nan`` y
     el infinito también) o ``des.entity_param_choice`` si un texto no es de su lista cerrada,
-    nombrando la plataforma, la clave del campo y el valor. ``required`` (por defecto, todo salvo lo
+    nombrando la capa, la plataforma, la clave del campo y el valor (RF-015-08: «la capa, la
+    entidad, el campo y el valor»; la capa, desde la T11). ``required`` (por defecto, todo salvo lo
     opcional: la superficie de apoyo, la pendiente máxima, el motivo y las dependencias declaradas)
     lo cambia: ``False`` deja pasar un valor que no hace falta (el ancho de un eje que no es de
     línea, el resguardo de quien no protege); ``True`` exige uno opcional. :class:`TypeError` si el
@@ -667,16 +668,16 @@ def check_entity_param(entity: str, code: str, param: PlatformParam | str, value
     if value is None:
         if (param not in _OPTIONAL) if required is None else required:
             raise DesignError("des.entity_param_missing", obj=obj, field=key, value=None,
-                              entity=entity)
+                              entity=entity, layer=layer)
         return None
     if definition.choices and value not in definition.choices:
         listed = ", ".join(f"«{choice}»" for choice in definition.choices)
         raise DesignError("des.entity_param_choice", obj=obj, field=key, value=value,
-                          entity=entity, choices=listed)
+                          entity=entity, layer=layer, choices=listed)
     span = ENTITY_RANGES.get(param.value)
     if span is not None:
         if not span.contains(value):
             raise DesignError("des.entity_param_range", obj=obj, field=key, value=value,
-                              entity=entity, range=span.text())
+                              entity=entity, layer=layer, range=span.text())
         return float(value)  # type: ignore[arg-type]
     return value  # type: ignore[return-value]

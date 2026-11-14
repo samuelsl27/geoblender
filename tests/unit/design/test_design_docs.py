@@ -164,6 +164,9 @@ PENDING_015_API = frozenset({
     # T09: la contrapendiente, las cifras y los avisos de la plataforma (design.platform).
     "HeldGroup", "LongProfile", "OrderBreach", "PlatformOutcome", "QuarryOrder", "order_check",
     "platform_outcome", "platform_profile",
+    # T11: preparar la plataforma (design.entity_store).
+    "EntityParamRow", "PreparedPlatform", "prepare_platform", "prepare_platform_units",
+    "set_entity_params",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({
@@ -175,6 +178,8 @@ PENDING_015_MODULES = frozenset({
     # EdgeWall, WallCause, platform_edge, platform_edge_steps y magnitude_notices (el borde); T09:
     # LongProfile, platform_profile, QuarryOrder, OrderBreach, order_check, HeldGroup,
     # PlatformOutcome y platform_outcome (la contrapendiente, las cifras y los avisos)
+    "design.entity_store",  # T11: prepare_platform, prepare_platform_units, PreparedPlatform,
+    # EntityParamRow y set_entity_params (preparar la plataforma y escribir sus parámetros)
 })
 
 

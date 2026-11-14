@@ -59,9 +59,9 @@ HEAVY: frozenset[str] = frozenset({
     "design.pipeline", "design.preview", "design.reduction", "design.report",
     "design.reproduce", "design.sectors", "design.seeds", "design.steps", "design.store",
     "design.surfaces", "design.zones",
-    # Las entidades de diseño de la 015 (spec 015, T02 y T06): ``design.entities`` y
-    # ``design.platform``; ``design.entity_store`` se añade aquí al crearse (T11).
-    "design.entities", "design.platform",
+    # Las entidades de diseño de la 015 (spec 015, T02, T06 y T11): ``design.entities``,
+    # ``design.platform`` y ``design.entity_store``.
+    "design.entities", "design.platform", "design.entity_store",
 })
 """Los módulos de la 012, la 013 y la 015 (y la cadena que arrastran) que se importan al primer uso."""
 
