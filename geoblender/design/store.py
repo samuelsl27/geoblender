@@ -78,11 +78,13 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   escritura (:func:`compute_refit_steps`: una ``des_adj_`` por superficie, con
   :meth:`DesignWriter.grid_steps` y su ``part``); y :func:`run_refit`, su recálculo (no se
   reproduce: depende del límite vigente).
-- **Las entidades de diseño** (spec 015, T13; RF-015-01, RF-015-02): el escritor conoce las tablas de la
-  plataforma (:data:`ENTITY_COLUMNS` para ``des_epr_``; ``des_prp_`` lleva las de :data:`REPORT_COLUMNS`) y
-  :meth:`DesignWriter.commit` admite ``before_begin``, una función que escribe, en la misma transacción y
-  antes de abrir la operación, los parámetros de la entidad; la preparación, el cálculo y «Crear» son de
-  ``design.entity_store``.
+- **Las entidades de diseño** (spec 015, T13 y T17; RF-015-01, RF-015-02, RF-015-10): el escritor conoce
+  las tablas de la plataforma (:data:`ENTITY_COLUMNS` para ``des_epr_``; ``des_prp_`` lleva las de
+  :data:`REPORT_COLUMNS`), :meth:`DesignWriter.commit` admite ``before_begin``, una función que escribe, en
+  la misma transacción y antes de abrir la operación, los parámetros de la entidad, y
+  :meth:`DesignWriter.declared_steps` prepara la capa de las restricciones declaradas de la versión
+  (``des_decl_``, que ``commit`` reescribe entera con ``core.constraints.declared.write_declared``); la
+  preparación, el cálculo y «Crear» son de ``design.entity_store``, que también hace la declaración.
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -110,6 +112,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from ..core.constraints.declared import DeclaredConstraint, write_declared
 from ..core.constraints.store import constraint_names
 from ..core.content import builtin as core_builtin
 from ..core.content.encoder import NORMALIZER, ContentDigest, ContentHasher
@@ -302,6 +305,9 @@ __all__ = [
 
 _OBJ = "Envolventes y escalonado"
 _FIELD = "ubicación"
+_KIND_ES = MappingProxyType({"raster": "una rejilla", "table": "una tabla",
+                             "vector": "una capa de polígonos"})
+"""Cómo dice un mensaje de error el tipo de una familia de datos del diseño (``DatasetFamily.kind``)."""
 _HASH_BLOCK_CELLS = 1 << 18
 """Las celdas que se hashean en cada unidad de la rejilla (bandas de filas: ≈ 1,4 ms cada una)."""
 _DIGEST_ROWS_PER_UNIT = 4000
@@ -524,7 +530,9 @@ def _require_current_masks(project: StoreProject, version: Version | str,
 class OperationStart:
     """Lo que anota una operación de ``des`` al empezar (véase el módulo): su tipo y su nombre, la
     versión, los ajustes (JSON), las entradas, los parámetros que lee, las máscaras de las que
-    parte y el hash que tenía cada dato que consume cuando se preparó (``seen``: uid → hash)."""
+    parte (``None``: no parte de ninguna, como la declaración de restricciones de las entidades, que las
+    deja obsoletas y no las consume: no se exige que estén al día) y el hash que tenía cada dato que
+    consume cuando se preparó (``seen``: uid → hash)."""
 
     op_type: str
     name: str
@@ -533,7 +541,7 @@ class OperationStart:
     settings: Mapping[str, Any]
     inputs: tuple[Use, ...]
     params: tuple[str, ...]
-    masks: access.MaskSet
+    masks: access.MaskSet | None
     seen: Mapping[str, str]
     supersedes: str | None = None
     parts: tuple[str, ...] = ()
@@ -542,7 +550,10 @@ class OperationStart:
 
     def check_masks(self, project: StoreProject) -> None:
         """RF-013-04: las máscaras de la versión siguen al día; si no, ``MaskError``
-        (``core.constraint_masks_missing``/``_stale``), sin escribir nada. Solo lee."""
+        (``core.constraint_masks_missing``/``_stale``), sin escribir nada. Solo lee. Una operación que no
+        parte de máscaras (``masks`` ``None``) no lo comprueba."""
+        if self.masks is None:
+            return
         _require_current_masks(project, self.version_uid, self.version_code)
 
     def begin(self, project: StoreProject, *, conn: sqlite3.Connection | None = None,
@@ -656,7 +667,7 @@ def _seen(conn: sqlite3.Connection, uses: Iterable[Use], version: Version) -> di
 
 
 def _start(project: StoreProject, op_type: str, name: str, version: Version,
-           masks: access.MaskSet, settings: Mapping[str, Any], inputs: tuple[Use, ...],
+           masks: access.MaskSet | None, settings: Mapping[str, Any], inputs: tuple[Use, ...],
            params: tuple[str, ...], supersedes: str | None, parts: Sequence[str] = ()
            ) -> OperationStart:
     with project.read() as conn:
@@ -1144,6 +1155,15 @@ class _Table:
     rows: tuple[Row, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _Declared:
+    """La tabla de las restricciones declaradas por las entidades preparada: su declaración (sin hash: la
+    operación lo calcula al registrarla, de lo escrito en su transacción) y sus filas."""
+
+    spec: DatasetSpec
+    rows: tuple[DeclaredConstraint, ...]
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class Stored:
     """Lo guardado: la operación (``OperationHandle``, ya completada) y sus salidas registradas,
@@ -1185,6 +1205,7 @@ class DesignWriter:
         self.crs, self.vertical = project_references(project)
         self._grids: dict[str, _Grid] = {}
         self._tables: dict[str, _Table] = {}
+        self._vectors: dict[str, _Declared] = {}
         self._committed = self._closed = False
 
     @classmethod
@@ -1214,11 +1235,12 @@ class DesignWriter:
         if family not in self._type.outputs:
             raise ValueError(f"«{self.op_type}» no escribe la familia «{family}»: escribe "
                              f"{', '.join(self._type.outputs)}")
-        if provenance.FAMILIES_BY_CODE[family].kind != kind:
-            raise ValueError(f"la familia «{family}» es "
-                             f"{'una tabla' if kind == 'raster' else 'una rejilla'}")
+        found = provenance.FAMILIES_BY_CODE[family].kind
+        if found != kind:
+            raise ValueError(f"la familia «{family}» es {_KIND_ES.get(found, found)}, no "
+                             f"{_KIND_ES.get(kind, kind)}")
         wanted = family if key is None else key
-        if wanted in self._grids or wanted in self._tables:
+        if wanted in self._grids or wanted in self._tables or wanted in self._vectors:
             raise ValueError(f"la salida «{wanted}» ya está preparada")
 
     def _check_place(self, conn: sqlite3.Connection, spec: DatasetSpec) -> None:
@@ -1324,6 +1346,33 @@ class DesignWriter:
         self._tables[family] = _Table(family, spec, rows)
         return spec
 
+    def declared_steps(self, rows: Iterable[DeclaredConstraint]
+                       ) -> Generator[None, None, DatasetSpec]:
+        """Prepara la tabla de las restricciones declaradas por las entidades (``decl``; spec 015, T17;
+        RF-015-10, RF-012-29) con ``rows`` (todas las de la versión: la tabla se reescribe **entera**,
+        ``core.constraints.declared.write_declared``), **sin registrar nada**: una capa de polígonos del
+        GeoPackage del proyecto, no editable en QGIS (RF-008-56), de la que la operación calcula el hash al
+        registrarla (es pequeña: una fila por entidad que protege). Devuelve su ``DatasetSpec`` en
+        ``StopIteration.value``. Se rechaza al llamar, como :meth:`table_steps` (``ValueError``; ``TypeError``
+        si una fila no es una ``DeclaredConstraint``); dos filas que repiten el código o el ``uid`` o un
+        código que usan las capas del proyecto los rechaza :func:`write_declared` al confirmar, sin escribir
+        nada."""
+        self._produces(provenance.DECLARED_TABLE, "vector")
+        chosen = tuple(rows)
+        for item in chosen:
+            if not isinstance(item, DeclaredConstraint):
+                raise TypeError(f"una fila de las declaradas es una DeclaredConstraint, no {item!r}")
+        return self._declared_steps(chosen)
+
+    def _declared_steps(self, rows: tuple[DeclaredConstraint, ...]) -> Generator[None, None, DatasetSpec]:
+        planned = provenance.dataset_spec(provenance.DECLARED_TABLE, "", self.version_code,
+                                          crs_epsg=self.crs.epsg)
+        with self.project.read() as conn:
+            self._check_place(conn, planned)
+        yield
+        self._vectors[provenance.DECLARED_TABLE] = _Declared(planned, rows)
+        return planned
+
     @property
     def specs(self) -> tuple[DatasetSpec, ...]:
         """Las salidas preparadas, en el orden de su tipo (las de una familia con partes, en el
@@ -1333,6 +1382,8 @@ class DesignWriter:
             found += [grid.spec for grid in self._grids.values() if grid.family == family]
             if family in self._tables:
                 found.append(self._tables[family].spec)
+            if family in self._vectors:
+                found.append(self._vectors[family].spec)
         return tuple(found)
 
     # --- Confirmar -------------------------------------------------------------------------
@@ -1380,6 +1431,10 @@ class DesignWriter:
                 f"{label} «{self.name}» de la versión {self.version_code}, de Geoblender")
         insert_rows(conn, spec.locator, _names(columns), table.rows)
 
+    def _write_declared(self, conn: sqlite3.Connection, declared: _Declared) -> None:
+        self._check_place(conn, declared.spec)
+        write_declared(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg)
+
     def commit(self, start: OperationStart | None = None, *, figures: Sequence[FigureSpec] = (),
                message: str | None = None,
                before_begin: Callable[[sqlite3.Connection], object] | None = None) -> Stored:
@@ -1414,6 +1469,8 @@ class DesignWriter:
                 self._install()
                 for table in self._tables.values():
                     self._write_table(conn, table)
+                for declared in self._vectors.values():
+                    self._write_declared(conn, declared)
                 records = handle.complete(conn, outputs=self.specs, figures=figures,
                                           message=message)
         except BaseException as error:
@@ -1425,7 +1482,8 @@ class DesignWriter:
         return Stored(handle, records)
 
     def _check_ready(self, start: OperationStart | None) -> None:
-        made = {grid.family for grid in self._grids.values()} | set(self._tables)
+        made = ({grid.family for grid in self._grids.values()} | set(self._tables)
+                | set(self._vectors))
         missing = [family for family in self._type.outputs if family not in made]
         if missing:
             raise ValueError(f"faltan salidas de «{self.op_type}» por preparar: "
@@ -1491,11 +1549,13 @@ class DesignWriter:
 
 RECOMPUTED: tuple[str, ...] = (*provenance.REPRODUCIBLE, provenance.EXCAVATION_AREA,
                                 provenance.QUARRY, provenance.EDGE_TRANSITION,
-                                provenance.FILL_ONLY, provenance.REFIT, provenance.PLATFORM)
+                                provenance.FILL_ONLY, provenance.REFIT, provenance.PLATFORM,
+                                provenance.DECLARE_CONSTRAINTS)
 """Los tipos que repite «Recalcular lo obsoleto» aquí: los dos de la 013, de la 014 el recinto
 y la cantera (T19), la transición (T28), «solo relleno» (T30) y el ajuste (T32) y, de la 015, la plataforma
-(T14 de la 015; ``design.entity_store.recompute_platform``). La declaración de restricciones (T17) y la
-capa de entidades (T30) de la 015 los añadirán con su cálculo."""
+(T14 de la 015; ``design.entity_store.recompute_platform``) y la declaración de restricciones de las
+entidades (T17; ``design.entity_store.recompute_declaration``). La capa de entidades (T30) de la 015 lo
+añadirá con su cálculo."""
 _STORE_PHASE = "store"
 
 
@@ -3370,7 +3430,8 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
     :func:`run_excavation_area`, :func:`run_quarry`, :func:`run_edge_transition`,
     :func:`run_fill_only` y :func:`run_refit`; RF-014-31; de la 015, la plataforma,
     ``design.entity_store.recompute_platform``, con los parámetros vigentes de su entidad en su versión,
-    RF-015-02), con lo que
+    RF-015-02, y la declaración de restricciones de las entidades, ``recompute_declaration``, con las
+    entidades vivas de la versión, RF-015-10), con lo que
     lee hoy: las máscaras de la versión, los sectores, las superficies y los parámetros, resueltos
     de nuevo versión → proyecto (un perfil cambiado solo en V02 se lee de V02). Devuelve su
     ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama (en Blender, la cola de
@@ -3412,6 +3473,10 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
         from . import entity_store  # al usarlo: entity_store importa este módulo
 
         return entity_store.recompute_platform(request, budget_s=budget_s)
+    if request.op_type == provenance.DECLARE_CONSTRAINTS:
+        from . import entity_store  # al usarlo: entity_store importa este módulo
+
+        return entity_store.recompute_declaration(request, budget_s=budget_s)
     return run_design(project, provenance.design_request(request.settings),
                       provenance.design_start(request.settings), version=request.version,
                       supersedes=request.operation_uid, budget_s=budget_s)

@@ -7,7 +7,7 @@ existen), con cuentas a mano: la cantera de la 014 con sus capas de plataformas 
 tres de eje y dos de polígono, y los defectos de geometría que rechaza RF-015-08), el terreno
 inclinado de 400 × 400 celdas de 1 m, la franja de 40 m con un tramo 5 m por debajo de la rasante
 (CE-015-02) y su variante con un intocable que cruza la huella, la restricción declarada de prueba
-(``DEC-PLT-001`` en la tabla de V01, que escribe la T16) y que la plantilla se construye en ≤ 2 s de
+(``dec__plt_001`` en la tabla de V01, que escribe la T16) y que la plantilla se construye en ≤ 2 s de
 CPU. Y que los nombres de la 013, la
 012 y la 014 en los que se apoya el plan 015 (§5) siguen ahí, y que ``reserves`` puede importar
 ``design`` (ARQ-07; T32).
@@ -593,7 +593,7 @@ class EntityProjectTest(efx.EntityProjectCase):
 
 class DeclaredConstraintFixtureTest(efx.DeclaredConstraintsProjectCase):
     """La restricción declarada de prueba (T16; RF-012-29, RF-015-10): la variante de
-    ``constraints_project`` con ``DEC-PLT-001`` en la tabla de V01 (``des_decl_v01``), que ya no es
+    ``constraints_project`` con ``dec__plt_001`` en la tabla de V01 (``des_decl_v01``), que ya no es
     un hueco: la escribe ``core.constraints.declared.write_declared`` con una operación de prueba."""
 
     def declared_rows(self, version: object) -> tuple[object, ...]:
@@ -604,7 +604,7 @@ class DeclaredConstraintFixtureTest(efx.DeclaredConstraintsProjectCase):
     def test_the_declared_constraint_is_in_the_table_of_v01(self) -> None:
         """RF-012-29, RF-015-10: V01 tiene su tabla ``des_decl_v01`` viva y **no editable en QGIS**,
         escrita por una operación de ``des.declare_constraints`` de esa versión con una restricción,
-        ``DEC-PLT-001`` («sin relleno», entidad «P1», su motivo generado, el decisor y la fecha de la
+        ``dec__plt_001`` («sin relleno», entidad «P1», su motivo generado, el decisor y la fecha de la
         decisión, el resguardo de 4 m y activa); V02 no tiene ninguna ni la del proyecto cambia."""
         declared = import_geoblender("core.constraints.declared")
         record = self.record("des_decl", self.v1)
@@ -642,10 +642,10 @@ class DeclaredConstraintFixtureTest(efx.DeclaredConstraintsProjectCase):
         self.assertEqual(item.entity_code, efx.DECLARED_ENTITY)
 
     def test_the_code_and_zone_are_free(self) -> None:
-        """El código ``DEC-<entidad>`` (``DEC-PLT-001``) no choca con las restricciones de
+        """El código ``dec__<entidad>`` (``dec__plt_001``) no choca con las restricciones de
         ``constraints_project`` ni con las de la cantera, y su caja cabe en el sitio de
         ``constraints_project`` (300 celdas de 2 m) sin tocar su balsa, su torre ni su cuneta."""
-        self.assertEqual(efx.DECLARED_CODE, f"DEC-{efx.DECLARED_ENTITY}")
+        self.assertEqual(efx.DECLARED_CODE, "dec__plt_001")
         self.assertRegex(efx.DECLARED_ENTITY, r"^PLT-\d{3}$")
         taken = {item.code for item in cp.constraints()} | {item.code for item in qfx.constraints()}
         self.assertNotIn(efx.DECLARED_CODE, taken)

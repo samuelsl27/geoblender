@@ -21,7 +21,7 @@ calcula aquí, como la vista previa de la 013 no calcula envolventes: se calcula
 Con una entidad de diseño (spec 015, T12; RF-015-03, RF-015-13; plan 015 §5.3.2), el resumen de
 «Calcular» (:class:`PlatformSummary`) junta las cifras, los avisos y **lo que quedará obsoleto al
 crearla** (:class:`Obsolete`, :func:`obsolete_notices`), y :func:`held_notices` dice qué restricción
-impide mover unas celdas: la que declara otra entidad (código ``DEC-…``), con esa entidad, o una
+impide mover unas celdas: la que declara otra entidad (código ``dec__…``), con esa entidad, o una
 restricción normal, con su nombre. Sin proyecto: las funciones de este módulo reciben lo que ya se
 leyó (``design.entity_store`` lo lee).
 
@@ -591,9 +591,9 @@ def held_notices(entity: str, masks: MaskSet, window: tuple[slice, slice], *, cu
     rejilla de ``masks``). Cada zona de las máscaras que impide lo que se le pide a esas celdas (un
     intocable o una exclusión, «sin corte», «solo relleno», «solo restauración», la banda de resguardo,
     «sin relleno» y la banda hacia dentro de un límite legal) da un aviso con sus celdas: si su
-    código empieza por ``DEC-`` (la declara una entidad, RF-015-10), ``des.entity_held`` con esa
+    código empieza por ``dec__`` (la declara una entidad, RF-015-10), ``des.entity_held`` con esa
     entidad (``declared``: código de la restricción → nombre de la entidad; sin ella, el código de la
-    entidad); si no, ``des.entity_held_constraint`` con su nombre (``names``: código → nombre) y su
+    entidad, ``PLT-001`` de ``dec__plt_001``); si no, ``des.entity_held_constraint`` con su nombre (``names``: código → nombre) y su
     código. Lo que ninguna zona explica (fuera del límite…) sale en ``des.entity_held_masks``. Una
     celda en dos zonas cuenta en las dos. Sin celdas, ninguno."""
     held = cut | fill | edge
@@ -633,7 +633,7 @@ def held_notices(entity: str, masks: MaskSet, window: tuple[slice, slice], *, cu
         area = int(np.count_nonzero(hit)) * grid.cell_area
         x, y = _place(grid, (low, west), hit)
         if base.startswith(DECLARED_PREFIX):
-            other = declared.get(base, base[len(DECLARED_PREFIX):])
+            other = declared.get(base, base[len(DECLARED_PREFIX):].upper().replace("_", "-"))
             found.append(Notice("des.entity_held", {
                 "entity": entity, "area": area, "constraint": base, "other": other,
                 "x": x, "y": y}))

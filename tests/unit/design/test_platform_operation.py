@@ -519,7 +519,7 @@ class SummaryTest(OperationCase):
 class HeldNoticesTest(unittest.TestCase):
     """RF-015-13: a partir de lo que no se mueve (la huella que no se corta ni se rellena, y el borde) y
     las zonas de las máscaras, ``preview.held_notices`` dice qué restricción lo impide: con el nombre
-    de la entidad si la declara una (código ``DEC-…``), con su nombre si es una restricción normal y,
+    de la entidad si la declara una (código ``dec__…``), con su nombre si es una restricción normal y,
     si no es ninguna zona, que las máscaras no lo admiten."""
 
     GRID = gis.Grid(725_000.0, 4_400_000.0, 2.0, 2.0, 10, 8)
@@ -557,25 +557,25 @@ class HeldNoticesTest(unittest.TestCase):
             names=names or {}, declared=declared or {})
 
     def test_a_declared_constraint_names_the_entity_that_declares_it(self) -> None:
-        """RF-015-13, RF-015-10: la zona ``DEC-PLT-001`` (sin relleno) impide rellenar 4 celdas de la
+        """RF-015-13, RF-015-10: la zona ``dec__plt_001`` (sin relleno) impide rellenar 4 celdas de la
         huella: el aviso dice 16 m², la restricción, la entidad del registro y la primera celda (de
         norte a sur y de oeste a este) con sus coordenadas absolutas en float64."""
         zone = self.region(slice(3, 5), slice(4, 6))
-        found = self.notices({"DEC-PLT-001": ("no_fill", zone)}, fill=zone,
-                             declared={"DEC-PLT-001": "Plataforma P1"})
+        found = self.notices({"dec__plt_001": ("no_fill", zone)}, fill=zone,
+                             declared={"dec__plt_001": "Plataforma P1"})
         (held,) = found
         self.assertEqual(held.code, "des.entity_held")
         self.assertEqual(dict(held.values), {
-            "entity": "P2", "area": 16.0, "constraint": "DEC-PLT-001", "other": "Plataforma P1",
+            "entity": "P2", "area": 16.0, "constraint": "dec__plt_001", "other": "Plataforma P1",
             "x": 725_000.0 + (4 + 0.5) * 2.0, "y": 4_400_000.0 - (3 + 0.5) * 2.0})
         self.assertIn("«Plataforma P1»", held.text("es"))
-        self.assertIn("DEC-PLT-001", held.text("en"))
+        self.assertIn("dec__plt_001", held.text("en"))
 
     def test_a_declared_constraint_of_an_unknown_entity_gives_its_code(self) -> None:
-        """RF-015-13: una ``DEC-…`` cuya entidad el registro no tiene (la borraron) se nombra con el
+        """RF-015-13: una ``dec__…`` cuya entidad el registro no tiene (la borraron) se nombra con el
         código de la entidad; no se pierde el aviso."""
         zone = self.region(slice(2, 3), slice(3, 6))
-        (held,) = self.notices({"DEC-PLT-009": ("no_cut", zone)}, cut=zone)
+        (held,) = self.notices({"dec__plt_009": ("no_cut", zone)}, cut=zone)
         self.assertEqual((held.code, held.values["other"]), ("des.entity_held", "PLT-009"))
         self.assertEqual(held.values["area"], 12.0)
 
@@ -651,7 +651,7 @@ class HeldNoticesTest(unittest.TestCase):
 
 
 class HeldByDeclaredTest(OperationCase):
-    """RF-015-13, RF-015-10: con una restricción declarada por otra entidad (``DEC-PLT-001``, de la
+    """RF-015-13, RF-015-10: con una restricción declarada por otra entidad (``dec__plt_001``, de la
     «Plataforma P1» del registro) que impide cortar, el resumen dice el área que no mueve y esa
     entidad. La declarada es un doble (la tabla de las declaradas es de la T16)."""
 
@@ -677,19 +677,19 @@ class HeldByDeclaredTest(OperationCase):
         cls.declared_zone = zone
         cls.double = dataclasses.replace(
             cls.masks_v1, classes=classes,
-            zones={**cls.masks_v1.zones, "DEC-PLT-001": zones_mod.Runs.from_mask(zone)},
-            ctypes={**cls.masks_v1.ctypes, "DEC-PLT-001": "no_cut"})
+            zones={**cls.masks_v1.zones, "dec__plt_001": zones_mod.Runs.from_mask(zone)},
+            ctypes={**cls.masks_v1.ctypes, "dec__plt_001": "no_cut"})
 
     def test_a_the_summary_names_the_entity_that_declares_the_constraint(self) -> None:
         """RF-015-13: la «Plataforma de carga» (PLT-002, tras la P1) no corta las 100 celdas de la
-        zona declarada: el resumen dice 400 m², ``DEC-PLT-001`` y la entidad «Plataforma P1»; y, aparte,
+        zona declarada: el resumen dice 400 m², ``dec__plt_001`` y la entidad «Plataforma P1»; y, aparte,
         lo que su borde oeste no mueve por «Sin corte» (una restricción normal, con su nombre): entre
         las dos, todo lo que no mueve (y no hay aviso de máscaras sueltas)."""
         calculation = self.calculate(prep.request(), masks=self.double)
         self.assertEqual(calculation.entity.code, "PLT-002")
         held = only(calculation.summary, "des.entity_held")
         self.assertEqual((held.values["constraint"], held.values["other"], held.values["area"]),
-                         ("DEC-PLT-001", self.P1, 400.0))
+                         ("dec__plt_001", self.P1, 400.0))
         normal = only(calculation.summary, "des.entity_held_constraint")
         self.assertEqual(normal.values["constraint"], "Sin corte (sin_corte)")
         self.assertGreater(normal.values["area"], 0.0)
@@ -2323,16 +2323,13 @@ class ReproduceFunctionsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             design_reproduce.reproduce_platform(other)
 
-    def test_d2_the_declaration_and_the_layer_are_not_reproducible_yet(self) -> None:
-        """RF-015-10, RF-015-27: la declaración de restricciones (T17) y la capa de entidades (T30) aún no
-        tienen su reproducción: lo dicen con un ``NotImplementedError`` que nombra la tarea, no con un
-        ``AttributeError``."""
-        for function, task in ((design_reproduce.reproduce_declare_constraints, "T17"),
-                               (design_reproduce.reproduce_entity_layer, "T30")):
-            with self.subTest(function=function.__name__):
-                with self.assertRaises(NotImplementedError) as caught:
-                    function(None)
-                self.assertIn(task, str(caught.exception))
+    def test_d2_the_layer_is_not_reproducible_yet(self) -> None:
+        """RF-015-27: la capa de entidades (T30) aún no tiene su reproducción: lo dice con un
+        ``NotImplementedError`` que nombra la tarea, no con un ``AttributeError``. La de la declaración de
+        restricciones es real desde la T17 (``test_declare_operation``)."""
+        with self.assertRaises(NotImplementedError) as caught:
+            design_reproduce.reproduce_entity_layer(None)
+        self.assertIn("T30", str(caught.exception))
 
 
 if __name__ == "__main__":

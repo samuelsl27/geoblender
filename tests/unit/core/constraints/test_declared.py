@@ -4,7 +4,7 @@ RF-012-29, RF-012-02, RF-015-10; plan 015 §5.1, §5.2.3 y P-8; D-23).
 
 ``core.constraints.declared`` guarda las restricciones que declaran las entidades de diseño en
 **una tabla de la versión** (``des_decl_<vNN>``: una capa de polígonos ``MULTIPOLYGON``, **no
-editable a mano**, RF-008-56): de cada una, su código ``DEC-<código de la entidad>`` (único en las
+editable a mano**, RF-008-56): de cada una, su código ``dec__<código de la entidad>`` (único en las
 tres capas del proyecto por su prefijo), su tipo (uno de los once), su nombre, su motivo, su
 decisor, la fecha **de la decisión** (nunca ``now``), la entidad de origen, el contorno de las
 celdas de la entidad (absoluto, float64, bit a bit), el resguardo hacia fuera y si está activa
@@ -99,35 +99,62 @@ def _digest(conn: sqlite3.Connection, table: str = TABLE) -> str:
 
 
 class CodeTest(unittest.TestCase):
-    """RF-012-29, D-22: el código ``DEC-<entidad>`` y el ``uid`` determinista."""
+    """RF-012-29, D-22: el código ``dec__<entidad>`` y el ``uid`` determinista."""
 
     def test_code_is_the_prefix_and_the_entity(self) -> None:
-        """RF-012-29: ``DEC-<código de la entidad>``; un código que no es de una entidad
-        (``PLT-001``: letras mayúsculas, un guion y al menos tres cifras) es un error."""
-        self.assertEqual(declared.DECLARED_PREFIX, "DEC-")
-        self.assertEqual(declared.declared_code("PLT-001"), "DEC-PLT-001")
-        self.assertEqual(declared.declared_code("BUT-1204"), "DEC-BUT-1204")
-        for entity in ("plt-001", "PLT-1", "PLT001", "DEC-PLT-001", "", " PLT-001", "PLT-001 "):
+        """RF-012-29: ``dec__<código de la entidad>`` (en minúsculas y con «_»); un código que no es de
+        una entidad (``PLT-001``: letras mayúsculas, un guion y al menos tres cifras) es un error; y
+        ``declared_entity`` es su inversa."""
+        self.assertEqual(declared.DECLARED_PREFIX, "dec__")
+        self.assertEqual(declared.declared_code("PLT-001"), "dec__plt_001")
+        self.assertEqual(declared.declared_code("BUT-1204"), "dec__but_1204")
+        for entity in ("plt-001", "PLT-1", "PLT001", "dec__plt_001", "", " PLT-001", "PLT-001 "):
             with self.subTest(entity=entity), self.assertRaises(ValueError):
                 declared.declared_code(entity)
         with self.assertRaises(TypeError):
             declared.declared_code(None)
-        self.assertTrue(declared.is_declared_code("DEC-PLT-001"))
-        for code in ("PLT-001", "dec-plt-001", "DEC-PLT-1", "dec_plt_001", "", "DEC-", None, 5):
+        self.assertTrue(declared.is_declared_code("dec__plt_001"))
+        for code in ("PLT-001", "dec-plt-001", "DEC-PLT-001", "dec__plt_1", "dec_plt_001", "dec__PLT_001",
+                     "", "dec__", None, 5):
             with self.subTest(code=code):
                 self.assertFalse(declared.is_declared_code(code))
+        for entity in ("PLT-001", "BUT-1204"):
+            self.assertEqual(declared.declared_entity(declared.declared_code(entity)), entity)
+        for code in ("PLT-001", "dec_plt_001", "r_1", ""):
+            with self.subTest(code=code), self.assertRaises(ValueError):
+                declared.declared_entity(code)
+        with self.assertRaises(TypeError):
+            declared.declared_entity(None)
+
+    def test_code_is_a_valid_code_of_the_012(self) -> None:
+        """RF-012-29, RF-012-02, D-22 (el hallazgo de la T16: ``DEC-PLT-001`` no lo era): ``dec__plt_001``
+        es un código de la 012 —``is_code``, ``Constraint.param_key`` y ``params.param_key`` lo aceptan y
+        ``checks.incomplete`` no lo trata como inválido—, con lo que la compilación puede inyectar bajo él
+        el resguardo y «activa» de la tabla (P-8, T18)."""
+        params = import_geoblender("core.constraints.params")
+        code = declared.declared_code("PLT-001")
+        self.assertTrue(model.is_code(code))
+        self.assertEqual(params.param_key(code, model.ConstraintParam.BUFFER_OUT),
+                         "core.constraint.dec__plt_001.buffer_out_m")
+        found = _row().as_constraint()
+        self.assertEqual(found.param_key(model.ConstraintParam.ACTIVE),
+                         "core.constraint.dec__plt_001.active")
+        problems = checks.incomplete((found,), {})
+        self.assertNotIn("core.constraint_code_invalid", {item.problem for item in problems})
 
     def test_code_never_collides_with_a_project_code(self) -> None:
-        """RF-012-29, D-22: el prefijo ``DEC-`` (mayúsculas y guion) no es un código de las tres
-        capas del proyecto (``[a-z][a-z0-9_]*``): ni lo genera ``constraint_code`` a partir de
-        ningún nombre (``DEC-PLT-001`` da ``dec_plt_001``) ni vale como tal para ``is_code``."""
+        """RF-012-29, D-22: el doble guion bajo de ``dec__`` no lo genera ``constraint_code`` desde
+        ningún nombre (junta lo que no son letras ni cifras en **un** «_»: ``DEC-PLT-001`` da
+        ``dec_plt_001``), así que un código del proyecto nunca es el de una declarada (el precedente
+        es ``perimeter__``, ADR-0029); y no la reconoce ``is_declared_code``."""
         code = declared.declared_code("PLT-001")
-        self.assertFalse(model.is_code(code))
-        for name in ("DEC-PLT-001", "dec-plt-001", "Plataforma P1", "DEC", "PLT-001", ""):
+        for name in ("DEC-PLT-001", "dec-plt-001", "dec__plt_001", "dec  plt  001", "Plataforma P1",
+                     "DEC", "PLT-001", ""):
             made = model.constraint_code(name, {code, "dec_plt_001"})
             with self.subTest(name=name):
                 self.assertTrue(model.is_code(made))
                 self.assertNotEqual(made, code)
+                self.assertNotIn("__", made)
                 self.assertFalse(declared.is_declared_code(made))
 
     def test_uid_is_deterministic_from_the_entity_and_the_version(self) -> None:
@@ -149,16 +176,16 @@ class ModelTest(unittest.TestCase):
     """RF-012-29, RF-012-02: lo que es una restricción declarada y su origen «entidad»."""
 
     def test_the_row_is_checked(self) -> None:
-        """RF-012-02, RF-012-29: una restricción declarada lleva su código ``DEC-<entidad>``, uno de
+        """RF-012-02, RF-012-29: una restricción declarada lleva su código ``dec__<entidad>``, uno de
         los once tipos, nombre, motivo, decisor y entidad con algo escrito, una fecha, un resguardo
         finito ≥ 0 (sin valor por defecto: D-19) y una geometría de polígonos."""
         found = _row()
-        self.assertEqual((found.code, found.entity_code, found.ctype), ("DEC-PLT-001", "PLT-001",
+        self.assertEqual((found.code, found.entity_code, found.ctype), ("dec__plt_001", "PLT-001",
                                                                        T.NO_FILL))
         self.assertEqual((found.buffer_out_m, found.active, found.fid, found.layer), (4.0, True,
                                                                                     0, ""))
         for field, value in (
-                ("code", "DEC-PLT-002"), ("code", "plt_001"), ("entity_code", "plt-001"),
+                ("code", "dec__plt_002"), ("code", "plt_001"), ("entity_code", "plt-001"),
                 ("ctype", "rareza"), ("name", "  "), ("reason", ""), ("decided_by", " "),
                 ("entity_name", ""), ("decided_on", "2026-11-14"), ("buffer_out_m", -1.0),
                 ("buffer_out_m", float("nan")), ("buffer_out_m", float("inf")),
@@ -168,7 +195,7 @@ class ModelTest(unittest.TestCase):
                 _row(**{field: value})
         with self.assertRaises(TypeError):
             declared.DeclaredConstraint(
-                uid="a" * 32, code="DEC-PLT-001", ctype=T.NO_FILL, name="P1", reason="r",
+                uid="a" * 32, code="dec__plt_001", ctype=T.NO_FILL, name="P1", reason="r",
                 decided_by="d", decided_on=date(2026, 11, 14), entity_code="PLT-001",
                 entity_name="P1", parts=_parts())  # sin resguardo: no hay valor por defecto
 
@@ -198,7 +225,7 @@ class ModelTest(unittest.TestCase):
         self.assertTrue(found.declared)
         self.assertEqual((found.entity_code, found.entity_name), ("PLT-001", "P1"))
         self.assertEqual((found.code, found.layer, found.fid, found.kind, found.priority),
-                         ("DEC-PLT-001", TABLE, 3, G.POLYGON, declared.DECLARED_PRIORITY))
+                         ("dec__plt_001", TABLE, 3, G.POLYGON, declared.DECLARED_PRIORITY))
         self.assertEqual((found.reason, found.decided_by, found.decided_on, found.ctype),
                          ("declarada por la plataforma P1", "Samuel (IMGA)", date(2026, 11, 14),
                           T.NO_FILL))
@@ -280,7 +307,7 @@ class TableTest(unittest.TestCase):
             with _read(db) as conn:
                 found = declared.read_declared(conn, TABLE)
                 self.assertEqual(store.read_constraints(conn), ())  # nada en las tres capas
-            self.assertEqual([item.code for item in found], ["DEC-PLT-001", "DEC-PLT-002"])
+            self.assertEqual([item.code for item in found], ["dec__plt_001", "dec__plt_002"])
             first, second = found
             self.assertEqual((first.fid, first.layer, second.fid), (1, TABLE, 2))
             self.assertEqual((first.name, first.reason, first.decided_by, first.decided_on),
@@ -319,7 +346,7 @@ class TableTest(unittest.TestCase):
                 declared.write_declared(conn, TABLE, rows[:1], srs_id=SRS)
             with _read(db) as conn:
                 self.assertEqual([item.code for item in declared.read_declared(conn, TABLE)],
-                                 ["DEC-PLT-001"])
+                                 ["dec__plt_001"])
                 self.assertEqual(_digest(conn) != digest, True)
             with db.transaction() as conn:  # y otra vez las dos: vuelve el mismo contenido
                 declared.write_declared(conn, TABLE, rows, srs_id=SRS)
@@ -332,6 +359,19 @@ class TableTest(unittest.TestCase):
                 self.assertEqual(declared.read_declared(conn, TABLE), ())
                 self.assertEqual(conn.execute(f'SELECT count(*) FROM "{TABLE}"').fetchone()[0], 0)
 
+    def test_the_hash_does_not_depend_on_the_name_of_the_table(self) -> None:
+        """RF-015-10, RF-009-11 (T17): las mismas filas en tablas con otro nombre (la de V01 del proyecto, la
+        «V01» con que la reproducción escribe la suya, la de otra versión) dan el mismo hash de contenido:
+        reproducir una declaración congelada compara con el que registró la operación."""
+        rows = [_row("PLT-001", "P1"), _row("PLT-002", "P2")]
+        with project_tmp() as tmp, _new(tmp / "p.gpkg") as db:
+            with db.transaction() as conn:
+                for table in (TABLE, "des_decl_v02", "des_decl_v10"):
+                    declared.write_declared(conn, table, rows, srs_id=SRS)
+            with _read(db) as conn:
+                found = {_digest(conn, table) for table in (TABLE, "des_decl_v02", "des_decl_v10")}
+        self.assertEqual(len(found), 1)
+
     def test_a_rewrite_rolls_back_with_its_transaction(self) -> None:
         """RF-012-29: ``write_declared`` no confirma nada: si la transacción se deshace, queda la
         tabla de antes."""
@@ -343,7 +383,7 @@ class TableTest(unittest.TestCase):
                 raise RuntimeError("deshacer")
             with _read(db) as conn:
                 self.assertEqual([item.code for item in declared.read_declared(conn, TABLE)],
-                                 ["DEC-PLT-001"])
+                                 ["dec__plt_001"])
 
     def test_rows_that_cannot_be_written_are_rejected(self) -> None:
         """RF-012-29, D-22: dos filas con el mismo código o el mismo ``uid`` se rechazan sin
@@ -364,7 +404,7 @@ class TableTest(unittest.TestCase):
                     declared.write_declared(conn, "no es una tabla", [_row()], srs_id=SRS)
                 # Un código con el aspecto de una declarada en una de las tres capas (la escribió
                 # alguien a mano): no se pisa.
-                clash = cp._constraint("DEC-PLT-009", "Intrusa", T.NO_FILL, G.POLYGON,
+                clash = cp._constraint("dec__plt_009", "Intrusa", T.NO_FILL, G.POLYGON,
                                        ((_ring(0, 0, 10, 10),),))
                 store.write_constraints(conn, [clash], srs_id=SRS)
                 with self.assertRaises(messages.ConstraintError) as caught:
@@ -372,7 +412,7 @@ class TableTest(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "core.constraint_code_taken")
             with _read(db) as conn:  # lo anterior sigue como estaba
                 self.assertEqual([item.code for item in declared.read_declared(conn, TABLE)],
-                                 ["DEC-PLT-001"])
+                                 ["dec__plt_001"])
 
 
 class CodesTest(unittest.TestCase):
@@ -382,7 +422,7 @@ class CodesTest(unittest.TestCase):
         """RF-012-29: sumadas a las del proyecto (``tests.support.constraints_project``: las cinco
         en las tres capas), ninguna restricción declarada repite el código de otra
         (``core.constraint_code_repeated`` no sale), y los códigos que usan las tres capas
-        (``taken_codes``) no incluyen ninguno ``DEC-``."""
+        (``taken_codes``) no incluyen ninguno ``dec__``."""
         project = cp.constraints()
         resolved = cp.project_values()
         mine = _row().as_constraint()

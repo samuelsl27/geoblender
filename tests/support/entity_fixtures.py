@@ -435,8 +435,9 @@ DECLARED_ENTITY = "PLT-001"
 """El código de la entidad que declara (``PLT-nnn``, T02)."""
 DECLARED_ENTITY_NAME = "P1"
 """El nombre de la entidad que declara (el motivo generado, «declarada por la plataforma P1»)."""
-DECLARED_CODE = f"DEC-{DECLARED_ENTITY}"
-"""El código de la restricción declarada: ``DEC-<entidad>`` (único en las tres capas)."""
+DECLARED_CODE = "dec__plt_001"
+"""El código de la restricción declarada: ``dec__<entidad>`` (``declared_code``: un código válido de la
+012, único en las tres capas)."""
 DECLARED_BOX_LOCAL = (130.0, 140.0, 170.0, 170.0)
 """La huella de la entidad que declara, en el sitio de ``constraints_project`` (local: izquierda,
 abajo, derecha, arriba): 40 × 30 m = 300 celdas de 2 m, dentro del perímetro y lejos de su balsa, su

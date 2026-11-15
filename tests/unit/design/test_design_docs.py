@@ -187,6 +187,11 @@ PENDING_015_API = frozenset({
     # T16: la zona que declara una entidad (design.entities) y las componentes 4-conexas de una vez
     # (design.grids).
     "DeclaredZone", "declared_zone", "declared_zone_of_runs", "label_components",
+    # T17: la declaración de restricciones de las entidades (design.entity_store y design.provenance;
+    # reproduce_declare_constraints, de design.reproduce, está ya en T14).
+    "DeclaredSource", "EntityFootprint", "PreparedDeclaration", "declare_constraints_steps",
+    "declared_rows_steps", "declared_sources", "prepare_declaration", "read_entity_footprint",
+    "recompute_declaration", "run_declaration", "settings_decisions", "settings_version",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({
@@ -207,7 +212,10 @@ PENDING_015_MODULES = frozenset({
     # platform_entity_rows, platform_report_rows, footprint_runs, runs_mask, geometry_sha256 y
     # detected_supports (crearla: su tabla, su informe y el gancho de las dependencias); T14:
     # run_platform, recompute_platform, platform_parameters, read_geometry, feature_index y
-    # entity_values (recalcularla con sus parámetros de la versión y reproducirla sin proyecto)
+    # entity_values (recalcularla con sus parámetros de la versión y reproducirla sin proyecto); T17:
+    # prepare_declaration, run_declaration, declare_constraints_steps, recompute_declaration,
+    # declared_sources, declared_rows_steps, DeclaredSource, PreparedDeclaration, EntityFootprint y
+    # read_entity_footprint (la declaración de restricciones de las entidades de una versión)
 })
 
 

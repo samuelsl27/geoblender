@@ -89,11 +89,12 @@ __all__ = [
 PERIMETER_SEGMENT = "perimeter__"
 """El código del perímetro de actuación como sector único, en la clave de un parámetro por sector
 (``des.sector.perimeter__.max_general_slope_deg``; ADR-0029, D-23)."""
-DECLARED_PREFIX = "DEC-"
-"""El principio del código de una restricción que declara una entidad (``DEC-PLT-001``; RF-015-10,
-plan 015 §5.4 A8): el resto es el código de la entidad. La tabla de las declaradas es de la T16
-(``core.constraints.declared``, que tiene el mismo prefijo); el resumen de «Calcular» (T12) lo usa para
-decir qué entidad impide mover unas celdas."""
+DECLARED_PREFIX = "dec__"
+"""El principio del código de una restricción que declara una entidad (``dec__plt_001``; RF-015-10,
+plan 015 §5.4 A8): el resto es el código de la entidad en minúsculas y con «_». Es un código válido de la
+012 (``is_code``: el ``DEC-PLT-001`` del plan no lo era) y ningún nombre lo genera (T17). La tabla de las
+declaradas es de la T16 (``core.constraints.declared``, que tiene el mismo prefijo); el resumen de
+«Calcular» (T12) lo usa para decir qué entidad impide mover unas celdas."""
 
 
 class Direction(StrEnum):

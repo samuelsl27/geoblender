@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Preparar la plataforma —lo que se lee y se rechaza antes de calcular—, calcularla, crearla y recalcularla
-(spec 015, T11 a T14; HU-015-1, HU-015-2, HU-015-3; RF-015-01, RF-015-02, RF-015-03, RF-015-04, RF-015-06,
-RF-015-07, RF-015-08, RF-015-09, RF-015-13, RF-015-16, RF-015-29; plan 015 §5.1, §5.2.1, §5.2.2, §5.2.3, §5.3.1
-y §5.3.2; ADR-0030).
+"""Preparar la plataforma —lo que se lee y se rechaza antes de calcular—, calcularla, crearla y recalcularla, y
+declarar las restricciones de las entidades de una versión (spec 015, T11 a T14 y T17; HU-015-1, HU-015-2, HU-015-3; RF-015-01, RF-015-02, RF-015-03, RF-015-04, RF-015-06,
+RF-015-07, RF-015-08, RF-015-09, RF-015-10, RF-015-12, RF-015-13, RF-015-16, RF-015-29; plan 015 §5.1, §5.2.1,
+§5.2.2, §5.2.3, §5.3.1 y §5.3.2; ADR-0030).
 
 El homólogo, para las entidades de diseño, de ``prepare_quarry`` y ``prepare_quarry_units`` de
 ``design.store``: **solo lee**. Nada se escribe en el proyecto (RF-015-03: hasta que el usuario
@@ -73,6 +73,19 @@ La reproducción desde lo congelado, sin proyecto, es
 ``design.reproduce.reproduce_platform``, con el mismo cálculo (:func:`platform_compute_steps`,
 :func:`entity_values` y :func:`read_geometry`).
 
+**Declarar** (T17; RF-015-10, RF-015-12, RF-012-29; plan 015 §5.2.3, §5.3.2 y §5.4 A8): la declaración de
+restricciones es una operación **de la versión** (``des.declare_constraints``, repetible), no de una entidad:
+:func:`declared_sources` lee las entidades vivas y calculadas de la versión —cada una con sus parámetros
+vigentes, su decisor y la fecha de su decisión y su huella—, :func:`declared_rows_steps` es el cálculo
+(compartido con la reproducción) de una restricción por entidad que protege —«sin relleno», el contorno de su
+huella, su resguardo obligatorio (D-19), el motivo generado o el que editó la persona, el decisor y la fecha de
+**la decisión**, no la de ahora— y :func:`prepare_declaration`, :func:`run_declaration`,
+:func:`declare_constraints_steps` y :func:`recompute_declaration` la preparan (rechazando proteger sin
+resguardo y proteger en «corte y relleno», RF-015-12), la registran en **una** transacción reescribiendo la
+tabla entera ``des_decl_<vNN>`` y la repiten. El mismo contenido de entidades da el mismo hash. Encadenarla
+tras cada orden y recompilar las máscaras son de la T19; la reproducción desde lo congelado,
+``design.reproduce.reproduce_declare_constraints``.
+
 La capa solo da la **geometría** y los **valores iniciales**: se copian a parámetros de la entidad
 (con el origen «capa X, campo Y, entidad Z») y cambian después en ella; la capa no se modifica. Del
 terreno (RF-015-09) se comprueba la superficie de partida y la de apoyo, que son las que lee el
@@ -90,23 +103,30 @@ import json
 import math
 import sqlite3
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from datetime import date
 from types import MappingProxyType
 from typing import Any
 
 import numpy as np
 
+from ..core.constraints.declared import DeclaredConstraint, declared_code, declared_uid
+from ..core.constraints.model import ConstraintType
 from ..core.constraints.store import constraint_names
+from ..core.datasets import registry as dataset_registry
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterRecord, ParameterStore, definition
 from ..core.params.store import default_reason
 from ..core.project.model import Progress
 from ..core.timeutil import format_utc
+from ..core.provenance.graph import DATASET
 from ..core.provenance.operations import OperationHandle, OperationStatus, Use
 from ..core.provenance.recompute import RecomputeRequest
 from ..core.versions import read as versions_read
 from ..core.versions.model import Version
 from ..gis.masks import access
 from ..gis.masks import provenance as masks_provenance
+from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, load_features
@@ -117,7 +137,6 @@ from .entities import EntityKind, EntityRecord, EntityRegistry, EntityState
 from .envelopes import reach_steps
 from .messages import DesignError
 from .model import (
-    DECLARED_PREFIX,
     BenchSense,
     LayerField,
     Metric,
@@ -175,10 +194,16 @@ from .surfaces import project_frame, read_surface
 
 __all__ = [
     "LAYER_FIELDS",
+    "DeclaredSource",
+    "EntityFootprint",
     "EntityParamRow",
+    "PreparedDeclaration",
     "PreparedPlatform",
     "compute_platform_steps",
     "create_platform",
+    "declare_constraints_steps",
+    "declared_rows_steps",
+    "declared_sources",
     "detected_supports",
     "entity_values",
     "feature_index",
@@ -192,11 +217,15 @@ __all__ = [
     "platform_previous",
     "platform_report_rows",
     "platform_summary",
+    "prepare_declaration",
     "prepare_platform",
     "prepare_platform_units",
     "quarry_order",
+    "read_entity_footprint",
     "read_geometry",
+    "recompute_declaration",
     "recompute_platform",
+    "run_declaration",
     "run_platform",
     "runs_mask",
     "set_entity_params",
@@ -1497,11 +1526,11 @@ def _restrictions(project: StoreProject, version: Version
                   ) -> tuple[dict[str, str], dict[str, str]]:
     """Lo que hace falta para nombrar la restricción que impide mover unas celdas: el nombre de cada
     restricción por su código (las tres capas de la 012) y la entidad que declara cada
-    ``DEC-<código>`` (su nombre, del registro de la versión). Solo lee."""
+    ``dec__<código>`` (su nombre, del registro de la versión). Solo lee."""
     with project.read() as conn:
         named = {code: name for code, (name, _ctype) in constraint_names(conn).items()}
         registry = entities.registry(project, version.uid, conn=conn)
-    declared = {f"{DECLARED_PREFIX}{entry.record.code}": entry.record.name for entry in registry}
+    declared = {declared_code(entry.record.code): entry.record.name for entry in registry}
     return named, declared
 
 
@@ -1525,3 +1554,336 @@ def platform_summary(project: StoreProject, version: Version, prepared: Prepared
                *obsolete_notices(outcome.name, version.code, obsolete))
     return PlatformSummary(outcome.name, outcome.code, version.code, outcome.figures, notices,
                            obsolete)
+
+
+# --- La declaración de restricciones (spec 015, T17; RF-015-10, RF-015-12, RF-012-29) ------------------
+
+_DECLARE_PHASE = "declare_constraints"
+_DECLARES: Mapping[EntityKind, ConstraintType] = MappingProxyType({
+    EntityKind.PLATFORM: ConstraintType.NO_FILL})
+"""Lo que declara cada tipo de entidad cuando protege su zona (D-4): la plataforma, «sin relleno». Un tipo
+que declara otra cosa (en la 016, el contrafuerte, «sin corte») añade aquí su fila."""
+_LIVE_STATES = frozenset({EntityState.CURRENT, EntityState.STALE, EntityState.SUPPORT_REMOVED})
+"""Los estados de una entidad **viva y calculada** (RF-015-25): tiene operación vigente y datos que no están
+descartados. Una «sin calcular» no tiene huella y una «descartada» ya no es de la versión: ninguna declara."""
+_DECISION_PARAMS = (PlatformParam.NAME, PlatformParam.PROTECT, PlatformParam.GUARD, PlatformParam.REASON)
+"""Los parámetros de los que sale lo que declara una entidad (su nombre, si protege, su resguardo y su
+motivo): la decisión de la restricción es la más reciente de ellos (``decided_by`` y ``decided_at`` de su
+historial)."""
+_ENTITY_DATA = (
+    "SELECT d.locator FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "WHERE io.operation_uid = ? AND io.direction = 'out' AND io.item_kind = ? AND io.role = ? "
+    "ORDER BY io.fid")
+
+
+@dataclass(frozen=True, slots=True)
+class EntityFootprint:
+    """Lo que la declaración lee de la tabla ``des_epr_`` de una entidad (:func:`read_entity_footprint`):
+    su ``code``, el ``name`` con que se calculó (el de su dato ``des_epr_<nombre>``), su ``kind``, la
+    ``layer`` de su geometría de origen y su huella en ``runs`` (tramos de fila ``(fila, col0, col1)`` de la
+    rejilla entera, ``col1`` excluida: :func:`footprint_runs`)."""
+
+    code: str
+    name: str
+    kind: str
+    layer: str
+    runs: tuple[tuple[int, int, int], ...]
+
+
+def read_entity_footprint(conn: sqlite3.Connection, table: str) -> EntityFootprint:
+    """La fila de la tabla ``des_epr_`` ``table`` (``conn`` la ve: la del proyecto o la congelada): su
+    código, su nombre, su tipo, su capa y su huella en tramos. ``ValueError`` si no tiene exactamente una
+    fila o su huella no son tramos."""
+    rows = conn.execute(f'SELECT code, name, kind, layer, footprint FROM "{table}"').fetchall()
+    if len(rows) != 1:
+        raise ValueError(f"la tabla de una entidad «{table}» tiene una fila, no {len(rows)}")
+    ((code, name, kind, layer, footprint),) = rows
+    runs = tuple((int(row), int(first), int(last)) for row, first, last in json.loads(footprint))
+    return EntityFootprint(str(code), str(name), str(kind), str(layer), runs)
+
+
+@dataclass(frozen=True, slots=True)
+class DeclaredSource:
+    """Lo que la declaración sabe de una entidad viva y calculada de la versión (RF-015-10): su ``code`` y su
+    ``kind``, el ``name`` de ahora (``calc_name`` es el con que se calculó: el de su dato ``des_epr_``), la
+    ``layer`` de su geometría de origen, si protege (``protect``), su ``mode`` (``cut`` o ``cut_fill``), su
+    resguardo (``guard_m``, sin valor por defecto: D-19), el motivo que editó la persona (``reason``; ``None``:
+    el generado), quién la creó o cambió y cuándo se decidió (``decided_by`` y ``decided_on``: la decisión más
+    reciente de :data:`_DECISION_PARAMS`, no la fecha de ahora) y su huella en tramos (``runs``)."""
+
+    code: str
+    kind: EntityKind
+    name: str
+    calc_name: str
+    layer: str
+    protect: bool
+    mode: str
+    guard_m: float | None
+    reason: str | None
+    decided_by: str | None
+    decided_on: date | None
+    runs: tuple[tuple[int, int, int], ...]
+
+
+def _check_declares(source: DeclaredSource) -> None:
+    """Lo que una entidad que protege ha de cumplir para declarar (RF-015-10, RF-015-12): su resguardo, sin
+    valor por defecto y obligatorio (D-19: ``des.entity_param_missing`` o ``des.entity_param_range``, con la
+    entidad, el campo y el valor), y no proteger en el modo «en corte y relleno», en el que rellena su propia
+    huella y su restricción «sin relleno» prohibiría su propio movimiento (D-21: ``des.platform_protect_cut_fill``;
+    defensa en profundidad: la preparación ya lo rechaza al crearla). No escribe nada."""
+    if not source.protect:
+        return
+    check_entity_param(source.name, source.code, PlatformParam.GUARD, source.guard_m,
+                       layer=source.layer, required=True)
+    if source.mode == PlatformMode.CUT_FILL.value:
+        raise DesignError("des.platform_protect_cut_fill", obj=f"Plataforma «{source.name}»",
+                          field=entity_key(source.code, PlatformParam.MODE), value=source.mode,
+                          layer=source.layer, entity=source.name)
+
+
+def declared_rows_steps(sources: Sequence[DeclaredSource], grid: Grid, version_uid: str
+                        ) -> Generator[Progress, None, tuple[DeclaredConstraint, ...]]:
+    """**El cálculo de la declaración**, compartido por «Declarar», el recálculo y la reproducción (plan 015
+    §5.3.1; sin proyecto dentro: recibe lo leído): de cada entidad de ``sources`` que protege, una
+    :class:`~..core.constraints.declared.DeclaredConstraint` de la versión ``version_uid`` —el tipo que
+    declara su clase (``sin relleno`` una plataforma), el contorno de su huella en la rejilla ``grid``
+    (``declared_zone_of_runs``, A8), su resguardo (``buffer_out_m``, obligatorio: D-19), «activa», el motivo
+    que editó la persona o el generado («declarada por la plataforma P1»), su decisor, la fecha de **su
+    decisión** (no la de ahora), la entidad como origen y un ``uid`` derivado de la versión y del código de la
+    entidad—, **por código** y una por paso. Las que no protegen no declaran nada. Lo mismo da el mismo
+    contenido de tabla (A8): repetir la declaración no cambia su hash. Rechaza lo de
+    :func:`_check_declares` antes de calcular nada; ``ValueError`` si una que protege no lleva decisor o
+    fecha (un error del programa)."""
+    protecting = sorted((source for source in sources if source.protect), key=lambda item: item.code)
+    for source in protecting:
+        _check_declares(source)
+    rows: list[DeclaredConstraint] = []
+    for index, source in enumerate(protecting):
+        yield Progress(_DECLARE_PHASE, index, len(protecting),
+                       f"Restricción declarada por «{source.name}»…")
+        if source.decided_by is None or source.decided_on is None or source.guard_m is None:
+            raise ValueError(f"la entidad {source.code} protege y no lleva su decisor, la fecha de su "
+                             "decisión o su resguardo: no se puede declarar su restricción")
+        zone = entities.declared_zone_of_runs(source.runs, grid, source.guard_m)
+        rows.append(DeclaredConstraint(
+            uid=declared_uid(version_uid, source.code), code=declared_code(source.code),
+            ctype=_DECLARES[source.kind], name=source.name,
+            reason=source.reason or entities.declared_reason(source.kind, source.name),
+            decided_by=source.decided_by, decided_on=source.decided_on, entity_code=source.code,
+            entity_name=source.name, parts=zone.parts, buffer_out_m=source.guard_m, active=True))
+    return tuple(rows)
+
+
+@contextmanager
+def _consistent(project: StoreProject) -> Iterator[sqlite3.Connection]:
+    """Una conexión de lectura con todas las lecturas en la misma instantánea (como el registro de las
+    entidades)."""
+    with project.read() as conn:
+        conn.execute("BEGIN")
+        try:
+            yield conn
+        finally:
+            conn.execute("ROLLBACK")
+
+
+def _decision(store: ParameterStore, conn: sqlite3.Connection, version: Version, code: str
+              ) -> tuple[str, date]:
+    """Quién creó o cambió la entidad ``code`` y cuándo se decidió: de los parámetros que dan lo que declara
+    (:data:`_DECISION_PARAMS`, propios de la versión), el de la decisión más reciente (a igual hora, el
+    primero de la lista). Todos llevan su decisor y su fecha (RF-008-01): es **la fecha del parámetro**, no
+    la de ahora, así que recalcular no la cambia."""
+    latest: ParameterRecord | None = None
+    for param in _DECISION_PARAMS:
+        record = store.get(entity_key(code, param), version=version.uid, conn=conn)
+        if record is not None and (latest is None or record.decided_at > latest.decided_at):
+            latest = record
+    if latest is None:
+        raise ValueError(f"la entidad {code} no tiene ninguno de los parámetros de lo que declara en "
+                         f"{version.code}")
+    return latest.decided_by, date.fromisoformat(latest.decided_at[:10])
+
+
+def declared_sources(project: StoreProject, version: Version, *,
+                     conn: sqlite3.Connection | None = None) -> tuple[DeclaredSource, ...]:
+    """Las entidades **vivas y calculadas** de la versión ``version`` como las ve la declaración (RF-015-10;
+    solo lee): las del registro de la versión (``entities.registry``) con operación vigente y datos sin
+    descartar (:data:`_LIVE_STATES`: no declaran ni una «sin calcular» ni una descartada), cada una con sus
+    parámetros vigentes en la versión (si protege, su modo, su resguardo y el motivo que editó la persona,
+    :func:`~.entity_store.platform_parameters`), su decisor y la fecha de su decisión (:func:`_decision`) y su
+    huella, leída de su tabla ``des_epr_`` vigente (:func:`read_entity_footprint`). Por orden de código.
+    ``conn`` es una conexión de lectura de quien llama; sin ella, una propia."""
+    if conn is None:
+        with _consistent(project) as reading:
+            return declared_sources(project, version, conn=reading)
+    registry = entities.registry(project, version.uid, conn=conn)
+    live = [entry for entry in registry
+            if entry.operation_uid is not None and entry.record.state in _LIVE_STATES]
+    keys = {entity_key(entry.record.code, param): (entry.record.code, param)
+            for entry in live for param in (PlatformParam.PROTECT, PlatformParam.MODE,
+                                            PlatformParam.GUARD, PlatformParam.REASON)}
+    found = ParameterStore(project).resolve_many(
+        conn, tuple(keys), (VERSION_SCOPE, PROJECT_SCOPE), version=version.uid)
+    values: dict[tuple[str, PlatformParam], Any] = {}
+    for key, (code, param) in keys.items():
+        resolved = found.get(key)
+        values[code, param] = (resolved.value if resolved is not None else _default(param))
+    store = ParameterStore(project)
+    sources: list[DeclaredSource] = []
+    for entry in live:
+        record = entry.record
+        code = record.code
+        tables = conn.execute(_ENTITY_DATA, (entry.operation_uid, DATASET,
+                                             provenance.ENTITY_ROLE)).fetchall()
+        if len(tables) != 1:
+            raise ValueError(f"la operación {entry.operation_uid} de la entidad {code} escribió "
+                             f"{len(tables)} tablas de la entidad, no una")
+        data = read_entity_footprint(conn, str(tables[0][0]))
+        protect = bool(values[code, PlatformParam.PROTECT])
+        guard, reason = values[code, PlatformParam.GUARD], values[code, PlatformParam.REASON]
+        who, when = _decision(store, conn, version, code) if protect else (None, None)
+        sources.append(DeclaredSource(
+            code=code, kind=EntityKind(record.kind), name=record.name, calc_name=data.name,
+            layer=data.layer, protect=protect, mode=str(values[code, PlatformParam.MODE]),
+            guard_m=None if guard is None else float(guard),
+            reason=(reason.strip() or None) if isinstance(reason, str) else None, decided_by=who,
+            decided_on=when, runs=data.runs))
+    return tuple(sources)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PreparedDeclaration:
+    """Lo que se lee y se comprueba antes de declarar (:func:`prepare_declaration`): la ``version``, las
+    entidades vivas que recoge (``sources``, todas: de las que no protegen solo se anota su dato y que
+    protegen o no), la rejilla del proyecto (``grid``) y lo que anotará la operación (``start``)."""
+
+    version: Version
+    sources: tuple[DeclaredSource, ...]
+    grid: Grid
+    start: OperationStart
+
+
+def _live_declaration(conn: sqlite3.Connection, version: Version) -> str | None:
+    """El uid de la operación de declaración que escribió la tabla vigente de la versión (``des_decl``), la
+    que sustituye la nueva; ``None`` si todavía no se declaró."""
+    record = dataset_registry.get(conn, provenance.dataset_name(provenance.DECLARED_TABLE),
+                                  version_uid=version.uid)
+    return record.operation_uid if record is not None and record.live else None
+
+
+def prepare_declaration(project: StoreProject, version: Version | str | None, *,
+                        supersedes: str | None = None) -> PreparedDeclaration:
+    """Prepara ``des.declare_constraints`` en la versión editable ``version`` (spec 015, T17; RF-015-10): lee
+    las entidades vivas (:func:`declared_sources`), **rechaza** antes de empezar lo que no puede declarar
+    (:func:`_check_declares`: proteger sin resguardo, D-19, o en «corte y relleno», RF-015-12) y arma lo que
+    anotará la operación: de **todas** las entidades vivas calculadas, su dato ``des_epr_`` como entrada
+    (papel ``entity``) y sus ajustes (con la versión y, de las que protegen, su decisor y la fecha de su
+    decisión) y los parámetros que lee (``protect`` de cada una; ``mode`` y ``guard_m`` de las que protegen;
+    ``reason`` de las que editaron su motivo: :func:`~.provenance.declare_params`). No pide máscaras al día
+    (la declaración las deja obsoletas: RF-012-06; las recompila la orden, T19). ``supersedes``: la
+    declaración que sustituye (por defecto, la vigente de la versión, si la hay).
+
+    Rechazos, sin escribir nada: los de :func:`~.store.require_version` (RF-009-21: sin versión activa,
+    desconocida o no editable), ``des.entity_param_missing``/``_range``, ``des.platform_protect_cut_fill`` y
+    ``des.operation_name_repeated``."""
+    wanted = version.uid if isinstance(version, Version) else version
+    found = require_version(project, wanted, provenance.DECLARE_CONSTRAINTS)
+    with _consistent(project) as conn:
+        sources = declared_sources(project, found, conn=conn)
+        before = _live_declaration(conn, found) if supersedes is None else supersedes
+    for source in sources:
+        _check_declares(source)
+    protecting = [source.code for source in sources if source.protect]
+    settings = provenance.declare_settings(
+        [(source.code, source.calc_name) for source in sources], version_uid=found.uid,
+        decisions={source.code: (source.decided_by, source.decided_on) for source in sources
+                   if source.protect and source.decided_by is not None
+                   and source.decided_on is not None})
+    inputs = provenance.declare_inputs(source.calc_name for source in sources)
+    params = provenance.declare_params(
+        [source.code for source in sources], protecting=protecting,
+        reasoned=[source.code for source in sources if source.protect and source.reason is not None])
+    begun = _start(project, provenance.DECLARE_CONSTRAINTS, "", found, None, settings, inputs, params,
+                   before)
+    return PreparedDeclaration(found, sources, project_frame(project).grid, begun)
+
+
+def _declaration_message(count: int, version_code: str) -> str:
+    """El mensaje de la operación: cuántas restricciones declaran las entidades de la versión."""
+    if count == 0:
+        return f"Ninguna entidad de {version_code} declara restricciones"
+    if count == 1:
+        return f"1 restricción declarada por las entidades de {version_code}"
+    return f"{count} restricciones declaradas por las entidades de {version_code}"
+
+
+def _check_declared_recorded(handle: OperationHandle, sources: Sequence[DeclaredSource]) -> None:
+    """Los parámetros que anotó la operación al empezar son los que leyó la preparación (como
+    :func:`_check_recorded`): si uno cambió entre las dos cosas, las filas ya no le corresponden
+    (``des.input_changed``, con el parámetro)."""
+    read: dict[str, object] = {}
+    for source in sources:
+        read[entity_key(source.code, PlatformParam.PROTECT)] = source.protect
+        if source.protect:
+            read[entity_key(source.code, PlatformParam.MODE)] = source.mode
+            read[entity_key(source.code, PlatformParam.GUARD)] = source.guard_m
+            if source.reason is not None:
+                read[entity_key(source.code, PlatformParam.REASON)] = source.reason
+    for param in handle.params:
+        if param.key in read and param.value != read[param.key]:
+            raise DesignError("des.input_changed", obj=f"Parámetro «{param.key}»",
+                              field="parámetros", value=param.key)
+
+
+def _declaration_run(project: StoreProject, handle: OperationHandle, prepared: PreparedDeclaration,
+                     budget_s: float) -> Generator[Progress, None, None]:
+    with DesignWriter(project, provenance.DECLARE_CONSTRAINTS, "", version=handle.version_uid,
+                      handle=handle) as writer:
+        _check_declared_recorded(handle, prepared.sources)
+        rows = yield from declared_rows_steps(prepared.sources, prepared.grid, handle.version_uid)
+        yield from pipeline.forward(_store_steps(
+            writer.declared_steps(rows), budget_s, "las restricciones declaradas"))
+        message = _declaration_message(len(rows), prepared.version.code)
+        stored = writer.commit(figures=provenance.declare_figures(len(rows)), message=message)
+        yield Progress(_STORE_PHASE, 1, 1, message, result=stored)
+
+
+def run_declaration(project: StoreProject, *, version: Version | str | None,
+                    supersedes: str | None = None, budget_s: float = STEP_BUDGET_S
+                    ) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Declara y registra las restricciones de las entidades de la versión ``version`` **de una vez**, sin
+    pedir confirmación (spec 015, T17; RF-015-10, RF-015-16; plan 015 §5.3.2: una orden aparte que cada
+    transacción hace por su cuenta): empieza la operación ``des.declare_constraints`` —si ``supersedes`` es la
+    de una declaración anterior (por defecto, la vigente de la versión), la sustituye— con lo que lee hoy y
+    devuelve su ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama: calculan las filas
+    (:func:`declared_rows_steps`), reescriben la tabla entera ``des_decl_<vNN>`` y completan la operación en
+    **una** transacción; el último lleva el :class:`~.store.Stored`. Cerrarlos antes, o un fallo, no dejan
+    nada y la operación queda cancelada o fallida. Al llamar, sin empezar nada: los rechazos de
+    :func:`prepare_declaration`."""
+    prepared = prepare_declaration(project, version, supersedes=supersedes)
+    handle = prepared.start.begin(project)
+    return handle, _declaration_run(project, handle, prepared, budget_s)
+
+
+def declare_constraints_steps(project: StoreProject, version: Version | str | None, *,
+                              supersedes: str | None = None, budget_s: float = STEP_BUDGET_S
+                              ) -> Generator[Progress, None, None]:
+    """Los pasos de **declarar** las restricciones de las entidades de la versión ``version`` (spec 015, T17;
+    RF-015-10; plan 015 §5.3.2: la declaración es una operación propia, repetible, que las órdenes de
+    entidades encadenan tras su commit, T19): lo de :func:`run_declaration` empezando al avanzar, sin
+    devolver el ``OperationHandle``; el último paso lleva el :class:`~.store.Stored`. Repetirla con las
+    mismas entidades da la misma tabla y el mismo hash (A8) y sustituye a la vigente."""
+    _handle, work = run_declaration(project, version=version, supersedes=supersedes,
+                                    budget_s=budget_s)
+    yield from work
+
+
+def recompute_declaration(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
+                          ) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Repite la operación ``des.declare_constraints`` de ``request`` (:func:`~.store.recompute_run`;
+    «Recalcular lo obsoleto», RF-008-26; spec 015, T17; RF-015-10): la declaración es de la **versión**, no
+    de una entidad, así que se rehace entera con las entidades vivas de la versión y sus parámetros de hoy,
+    sustituyendo a la que se repite. Devuelve lo de :func:`run_declaration`. ``VersionError`` si la petición
+    no es de una versión editable."""
+    project: StoreProject = request.project  # type: ignore[assignment]
+    return run_declaration(project, version=request.version, supersedes=request.operation_uid,
+                           budget_s=budget_s)

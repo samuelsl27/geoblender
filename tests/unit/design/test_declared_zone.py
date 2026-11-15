@@ -62,7 +62,7 @@ def zone_of(mask: np.ndarray, guard_m: float = 0.0, *, offset=OFFSET, grid=GRID)
 def constraint_of(zone, *, ctype=model.ConstraintType.NO_FILL) -> object:
     """La zona como una restricción de la 012 (para sus comprobaciones y su regla de la celda)."""
     return model.Constraint(
-        uid="a" * 32, code="DEC-PLT-001", name="P1", ctype=ctype, kind=model.GeometryKind.POLYGON,
+        uid="a" * 32, code="dec__plt_001", name="P1", ctype=ctype, kind=model.GeometryKind.POLYGON,
         parts=zone.parts, priority=0, reason="declarada por la plataforma P1", decided_by="Samuel",
         decided_on=date(2026, 11, 14), decision_uid=None, intention_uid=None, source_input=None,
         source_fid=None, layer="des_decl_v01", fid=1)
@@ -447,7 +447,9 @@ class CoreConsistencyTest(unittest.TestCase):
             self.assertEqual(getattr(ours, name), getattr(theirs, name), name)
         self.assertFalse(ours.qgis_editable)
         entity = "PLT-014"
-        self.assertEqual(declared.declared_code(entity), f"{design_model.DECLARED_PREFIX}{entity}")
+        design_params = import_geoblender("design.params")
+        self.assertEqual(declared.declared_code(entity),
+                         f"{design_model.DECLARED_PREFIX}{design_params.entity_segment(entity)}")
 
 
 if __name__ == "__main__":

@@ -105,7 +105,11 @@ lo suyo **aparte** de lo de las dos specs anteriores, con el prefijo ``ENTITY_``
   capas del proyecto: consumen los datos ``des_epr_`` de las entidades vivas (:data:`ENTITY_ROLE`;
   :func:`declare_inputs`, :func:`entity_layer_inputs`), con las entidades en sus ajustes
   (:func:`declare_settings`, :func:`entity_layer_settings`, :func:`settings_entities`) y, la
-  declaración, los parámetros ``protect``, ``guard_m`` y ``reason`` (:func:`declare_params`).
+  declaración, los parámetros ``protect``, ``guard_m`` y ``reason`` (:func:`declare_params`). La
+  declaración anota además en sus ajustes la versión (de ella sale el ``uid`` de cada restricción
+  declarada, :func:`settings_version`) y, de cada entidad que declara, su decisor y la fecha de su
+  decisión (:func:`settings_decisions`): sin proyecto, la reproducción no tiene otro sitio de donde
+  sacarlos (T17).
 - :data:`ENTITY_FIGURES`: las cifras de la plataforma (:data:`PLATFORM_FIGURES`), la de lo apoyado
   (:data:`SUPPORT_FIGURES`: ``des.supported_m3``, también de las operaciones de la 013 y la 014 que
   rellenan sobre una entidad) y la de la declaración (:data:`DECLARE_FIGURES`). Su ámbito
@@ -121,6 +125,7 @@ import math
 import numbers
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
+from datetime import date
 from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
@@ -369,11 +374,13 @@ __all__ = [
     "refit_settings",
     "refit_source",
     "sector_inputs",
+    "settings_decisions",
     "settings_entities",
     "side_role",
     "settings_pending",
     "settings_previous",
     "settings_touched",
+    "settings_version",
     "supported_figures",
     "transition_inputs",
     "transition_settings",
@@ -1970,12 +1977,37 @@ def _entity_pairs(entities: Iterable[tuple[str, str]], what: str) -> list[dict[s
     return found
 
 
-def declare_settings(entities: Iterable[tuple[str, str]]) -> dict[str, Any]:
-    """Los ajustes de ``des.declare_constraints`` (spec 015, T04; RF-015-10; JSON sin rutas): las
-    entidades que recoge, por orden, cada una con su código y su nombre (lo que hace falta para
-    nombrar sus datos al recalcular y reproducir). Es un diccionario nuevo; ``ValueError`` si un
-    código no es el de una entidad, un nombre está en blanco o una entidad sale dos veces."""
-    return {"entities": _entity_pairs(entities, "de la declaración")}
+def declare_settings(entities: Iterable[tuple[str, str]], *, version_uid: str | None = None,
+                     decisions: Mapping[str, tuple[str, date]] | None = None) -> dict[str, Any]:
+    """Los ajustes de ``des.declare_constraints`` (spec 015, T04 y T17; RF-015-10; JSON sin rutas): las
+    entidades que recoge, por orden, cada una con su código y el nombre de su dato ``des_epr_`` (lo que hace
+    falta para nombrar sus datos al recalcular y reproducir: el nombre con que se calculó). Es un
+    diccionario nuevo; ``ValueError`` si un código no es el de una entidad, un nombre está en blanco o una
+    entidad sale dos veces.
+
+    ``version_uid`` (T17): el uid de la versión que declara, de donde sale el ``uid`` de cada restricción
+    declarada (``core.constraints.declared.declared_uid``); ``decisions`` (T17): de cada entidad que declara
+    (por su código, y ha de ser una de ``entities``), quién la creó o cambió y la fecha de esa decisión: lo
+    que la reproducción, sin proyecto, no puede leer de su historial de parámetros. Sin ellos, los ajustes
+    son los de la T04 (:func:`settings_version` y :func:`settings_decisions` no dan nada)."""
+    found: dict[str, Any] = {"entities": _entity_pairs(entities, "de la declaración")}
+    if version_uid is not None:
+        if not isinstance(version_uid, str) or not version_uid.strip():
+            raise ValueError(f"el uid de la versión de la declaración es un texto, no {version_uid!r}")
+        found["version"] = version_uid
+    if decisions:
+        listed = {item["code"]: item for item in found["entities"]}
+        for code, (who, when) in decisions.items():
+            if code not in listed:
+                raise ValueError(f"la decisión es de «{code}», que no es una de las entidades de la "
+                                 "declaración")
+            if not isinstance(who, str) or not who.strip():
+                raise ValueError(f"el decisor de «{code}» es un texto con algo escrito, no {who!r}")
+            if not isinstance(when, date) or hasattr(when, "hour"):
+                raise TypeError(f"la fecha de la decisión de «{code}» es una fecha, no {when!r}")
+            listed[code]["decided_by"] = who
+            listed[code]["decided_on"] = when.isoformat()
+    return found
 
 
 def entity_layer_settings(entities: Iterable[tuple[str, str]]) -> dict[str, Any]:
@@ -1998,6 +2030,41 @@ def settings_entities(settings: Mapping[str, Any]) -> tuple[tuple[str, str], ...
         found.append((_required_text(data, "code", f"{what}, «entities»,"),
                       _required_text(data, "name", f"{what}, «entities»,")))
     return tuple(found)
+
+
+def settings_version(settings: Mapping[str, Any]) -> str | None:
+    """El uid de la versión que anotan los ajustes de ``des.declare_constraints``
+    (:func:`declare_settings`, ``version_uid``); ``None`` si no lo llevan. ``ValueError`` si no es un
+    texto."""
+    what = "los ajustes de la declaración"
+    value = _mapping(settings, what).get("version")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{what} llevan «version» como un texto, no {value!r}")
+    return value
+
+
+def settings_decisions(settings: Mapping[str, Any]) -> dict[str, tuple[str, date]]:
+    """Quién creó o cambió cada entidad que declara y la fecha de su decisión, de los ajustes de
+    ``des.declare_constraints`` (:func:`declare_settings`, ``decisions``): código de la entidad → ``(decisor,
+    fecha)``; solo las entidades que la llevan. ``ValueError`` si una decisión no es un decisor y una fecha
+    ISO."""
+    what = "los ajustes de la declaración, «entities»,"
+    items = _mapping(settings, "los ajustes de la declaración").get("entities", [])
+    if not isinstance(items, list):
+        raise ValueError(f"los ajustes de la declaración llevan «entities» como una lista, no {items!r}")
+    found: dict[str, tuple[str, date]] = {}
+    for item in items:
+        data = _mapping(item, what)
+        who, when = data.get("decided_by"), data.get("decided_on")
+        if who is None and when is None:
+            continue
+        if not isinstance(who, str) or not who.strip() or not isinstance(when, str):
+            raise ValueError(f"{what} llevan «decided_by» y «decided_on» (un texto y una fecha), no "
+                             f"{who!r} y {when!r}")
+        found[_required_text(data, "code", what)] = (who, date.fromisoformat(when))
+    return found
 
 
 def settings_pending(settings: Mapping[str, Any]) -> tuple[str, ...]:

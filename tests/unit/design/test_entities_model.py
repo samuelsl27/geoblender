@@ -749,10 +749,10 @@ class EntityMessagesTest(unittest.TestCase):
         self.assertIn("1250 m²", nodata.text)
         self.assertIn("«gis_dtm» (partida)", nodata.text)
         self.assertIn("x = 10,5 m, y = 20,5 m", nodata.text)
-        held = messages.render("des.entity_held", entity="P2", area=300.0, constraint="DEC-PLT-001",
+        held = messages.render("des.entity_held", entity="P2", area=300.0, constraint="dec__plt_001",
                                other="P1", x=1, y=2)
         self.assertIn("300 m²", held)
-        self.assertIn("«DEC-PLT-001»", held)
+        self.assertIn("«dec__plt_001»", held)
         self.assertIn("«P1»", held)
         taken = messages.DesignError("des.entity_start_taken", obj="Plataforma «P2»",
                                      field="start", value="gis_dtm", entity="P2", other="P1")

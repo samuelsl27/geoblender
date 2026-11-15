@@ -36,7 +36,11 @@ la envolvente, la superficie de partida y las anclas por su papel y la capa de l
 nombre). De la plataforma (spec 015, T14): :func:`reproduce_platform` (con el cálculo que comparte
 con el proyecto, ``entity_store.platform_compute_steps``; la capa de plataformas, la de los ejes, la
 superficie de partida y la de apoyo, por su papel, y los parámetros de la entidad, los congelados: **no**
-los atributos de la capa).
+los atributos de la capa). De la declaración de restricciones de las entidades (spec 015, T17):
+:func:`reproduce_declare_constraints` (con el cálculo que comparte con el proyecto,
+``entity_store.declared_rows_steps``; las tablas ``des_epr_`` congeladas de las entidades que recogió, por
+el nombre de su dato, y los parámetros congelados de cada una; el decisor, la fecha de su decisión y la
+versión, de los ajustes de la operación).
 
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con otros,
 ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹ relativo, plan
@@ -51,12 +55,14 @@ import sqlite3
 import sys
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, closing, contextmanager
+from datetime import date
 from pathlib import Path
 from types import MappingProxyType
 
 import numpy as np
 
 from ..core.constraints import store as constraints_store
+from ..core.constraints.declared import write_declared
 from ..core.gpkg.base import create_attribute_table, create_base
 from ..core.georef import CrsRef
 from ..core.gpkg.connection import GpkgConnection
@@ -83,7 +89,14 @@ from ..gis.vector import FeatureLayer
 from . import entities, entity_store, fronts, pipeline, provenance, quarry, store
 from .compose import admitted
 from .model import BenchSense, EnvelopeRequest, PlatformRequest, SeedKind, Surface
-from .params import TOLERANCE_FACE, VERIFY_MIN_THICKNESS, WARNING_RATIO
+from .params import (
+    PLATFORM_PARAMS,
+    TOLERANCE_FACE,
+    VERIFY_MIN_THICKNESS,
+    WARNING_RATIO,
+    PlatformParam,
+    entity_key,
+)
 from .platform import PlatformJob
 from .seeds import (
     SectorRef,
@@ -629,11 +642,71 @@ def _reproduce_platform(request: ReproduceRequest, budget_s: float) -> Iterator[
 
 def reproduce_declare_constraints(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
                                   ) -> Iterator[Progress]:
-    """La reproducción de ``des.declare_constraints``: **es de la T17 de la spec 015** (la declaración
-    todavía no existe, así que no hay ninguna operación de ese tipo que reproducir). ``bl`` la registra por
-    este nombre y, hasta entonces, dice qué falta en lugar de dar un ``AttributeError``."""
-    raise NotImplementedError("reproducir «des.declare_constraints» es de la T17 de la spec 015: aún no "
-                              "hay declaración de restricciones de las entidades")
+    """Reproduce ``des.declare_constraints`` (spec 015, T17; RF-015-10, RF-015-02, RF-009-11) con las tablas
+    ``des_epr_`` congeladas de las entidades que recogió (papel ``entity``, por el nombre de su dato), los
+    parámetros congelados de cada una (``des.platform.{e}.protect``, ``mode``, ``guard_m``, ``reason`` y
+    ``name``) y los ajustes de su operación (las entidades, la versión y, de las que declaran, su decisor y
+    la fecha de su decisión), **sin el proyecto**: el mismo cálculo (``entity_store.declared_rows_steps``).
+    Sus pasos y, el último, el ``ReproducedResult`` con la tabla de las declaradas (``des_decl_``, una capa
+    de polígonos con las mismas filas, los mismos bytes y el mismo hash) y su cifra. Lo que no es una
+    ``ReproduceRequest`` es ``TypeError``; una de otro tipo, ``ValueError``."""
+    return _reproduce_declaration(_check(request, provenance.DECLARE_CONSTRAINTS), budget_s)
+
+
+def _frozen_source(frozen: _Frozen, code: str, calc_name: str, decisions: Mapping[str, tuple[str, date]]
+                   ) -> entity_store.DeclaredSource:
+    """Lo que la declaración sabe de la entidad ``code`` según lo congelado: su tabla ``des_epr_`` (el dato
+    ``des_epr_<calc_name>``), sus parámetros congelados y la decisión de los ajustes."""
+    item = frozen.named(provenance.dataset_name(provenance.ENTITY_TABLE, calc_name))
+    with _open(Path(item.files["main"])) as conn:
+        found = entity_store.read_entity_footprint(conn, str(item.settings["layer"]))
+    if found.code != code:
+        raise ValueError(f"el dato congelado «{item.name}» es de la entidad {found.code}, no de {code}")
+
+    def value(param: PlatformParam) -> object:
+        return frozen.values.get(entity_key(code, param))
+
+    name = value(PlatformParam.NAME)
+    protect = value(PlatformParam.PROTECT)
+    guard, reason, mode = value(PlatformParam.GUARD), value(PlatformParam.REASON), value(PlatformParam.MODE)
+    who, when = decisions.get(code, (None, None))
+    return entity_store.DeclaredSource(
+        code=code, kind=entities.EntityKind(found.kind), name=str(name or found.name),
+        calc_name=calc_name, layer=found.layer, protect=bool(protect),
+        mode=str(PLATFORM_PARAMS[PlatformParam.MODE.value].default if mode is None else mode),
+        guard_m=None if guard is None else float(guard),  # type: ignore[arg-type]
+        reason=(reason.strip() or None) if isinstance(reason, str) else None, decided_by=who,
+        decided_on=when, runs=found.runs)
+
+
+def _declared_output(request: ReproduceRequest, rows: Sequence[object], crs: CrsRef
+                     ) -> ReproducedOutput:
+    """Escribe ``rows`` (``DeclaredConstraint``) como la tabla de las declaradas de la operación, en su
+    GeoPackage de la carpeta de trabajo (``write_declared``: la misma capa que escribe el proyecto)."""
+    found = provenance.FAMILIES_BY_CODE[provenance.DECLARED_TABLE]
+    table = provenance.dataset_locator(provenance.DECLARED_TABLE, "", "V01")
+    path = Path(request.workdir) / f"{found.role}.gpkg"
+    check_path_length(path, obj=_OBJ)
+    with GpkgConnection.open_write(path, create=True) as gpkg, gpkg.transaction() as conn:
+        create_base(conn, crs)
+        write_declared(conn, table, rows, srs_id=crs.epsg)  # type: ignore[arg-type]
+    return ReproducedOutput(found.role, found.reader, {"main": path}, {"layer": table})
+
+
+def _reproduce_declaration(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    version_uid = provenance.settings_version(request.settings)
+    if version_uid is None:
+        raise ValueError("los ajustes de la declaración no anotan su versión: sin ella no se puede "
+                         "reproducir el uid de sus restricciones")
+    decisions = provenance.settings_decisions(request.settings)
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    sources = [_frozen_source(frozen, code, calc_name, decisions)
+               for code, calc_name in provenance.settings_entities(request.settings)]
+    rows = yield from entity_store.declared_rows_steps(sources, frozen.grid, version_uid)
+    output = _declared_output(request, rows, frozen.crs)
+    yield Progress(_PHASE, 1, 1, "Restricciones declaradas reproducidas",
+                   result=ReproducedResult((output,), provenance.declare_figures(len(rows))))
 
 
 def reproduce_entity_layer(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S

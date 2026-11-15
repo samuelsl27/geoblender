@@ -11,9 +11,11 @@ editable a mano** (RF-008-56): si se toca en QGIS, se bloquea y no se compila co
 acepte la edición con un motivo o la entidad la vuelva a poner (T20).
 
 - :class:`DeclaredConstraint`: una fila de la tabla de la versión. Su ``code`` es
-  ``DEC-<código de la entidad>`` (:func:`declared_code`: ``DEC-PLT-001``), único en las tres capas
-  del proyecto **por su prefijo** (un código del proyecto es ``[a-z][a-z0-9_]*``, D-22: nunca lleva
-  mayúsculas ni guion); su ``ctype`` es uno de los once tipos; su nombre, motivo y decisor los da la
+  ``dec__<código de la entidad>`` (:func:`declared_code`: ``dec__plt_001``), un código **válido de
+  la 012** (``[a-z][a-z0-9_]*``, D-22: lo aceptan ``is_code`` y ``param_key``, que la compilación
+  usa para sus resguardos y su «activa») y único en las tres capas del proyecto **por su doble guion
+  bajo** (``constraint_code`` junta lo que no son letras ni cifras en **un** «_»: ningún nombre da un
+  ``dec__…``; el precedente es ``perimeter__``, ADR-0029); su ``ctype`` es uno de los once tipos; su nombre, motivo y decisor los da la
   entidad; su ``decided_on`` es la fecha **de la decisión**, no la de ahora; su ``uid`` es
   **determinista** (:func:`declared_uid`: del código de la entidad y de la versión, para que repetir
   la declaración no cambie el hash de la tabla); su geometría es el contorno alineado a la rejilla de
@@ -72,6 +74,7 @@ __all__ = [
     "create_declared_table",
     "declared_code",
     "declared_dataset_spec",
+    "declared_entity",
     "declared_table",
     "declared_uid",
     "is_declared_code",
@@ -86,9 +89,11 @@ DATASET_NAME = "des_decl"
 DECLARED_ROLE = "constraints_declared"
 """El papel de la tabla de las declaradas: la salida de ``des.declare_constraints`` y lo que consume
 la compilación de la 012 (el mismo texto que ``design.provenance.DECLARED_ROLE``)."""
-DECLARED_PREFIX = "DEC-"
-"""El principio del código de una declarada (``DEC-PLT-001``): el resto es el código de la entidad
-(el mismo que ``design.model.DECLARED_PREFIX``)."""
+DECLARED_PREFIX = "dec__"
+"""El principio del código de una declarada (``dec__plt_001``): el resto es el código de la entidad en
+minúsculas y con «_» (como el segmento de la clave de sus parámetros, ``plt_001``); el mismo que
+``design.model.DECLARED_PREFIX``. Es un código válido de la 012 (``is_code``) que ningún nombre genera
+(``constraint_code`` no deja dos «_» seguidos), así que no choca con los de las tres capas."""
 DECLARED_PRIORITY = 0
 """La prioridad de toda restricción declarada: una constante estable (plan 015 §5.4 A8). No es una
 cifra minera: la prioridad solo ordena informes y leyenda (D-13 de la 012) y ninguna le quita una
@@ -99,7 +104,7 @@ IDENTIFIER = "Restricciones declaradas por las entidades"
 """El principio del identificador de la capa en ``gpkg_contents`` (lleva el código de la versión)."""
 
 _ENTITY = re.compile(r"[A-Z]{2,5}-[0-9]{3,}")
-_DECLARED = re.compile(re.escape(DECLARED_PREFIX) + r"[A-Z]{2,5}-[0-9]{3,}")
+_DECLARED = re.compile(re.escape(DECLARED_PREFIX) + r"(?P<entity>[a-z]{2,5}_[0-9]{3,})")
 _TABLE = re.compile(r"[a-z][a-z0-9_]{0,62}")
 _VERSION_SUFFIX = re.compile(r"v[0-9]+")
 _NAMESPACE = uuid.UUID("0c2f6a50-9d3e-5b7a-8e41-6d1f3b9a7c25")
@@ -139,17 +144,32 @@ def _entity(code: object) -> str:
 
 
 def declared_code(entity_code: str) -> str:
-    """El código de la restricción que declara la entidad ``entity_code``: ``DEC-PLT-001``
-    (RF-012-29). Único en las tres capas del proyecto por su prefijo (:data:`DECLARED_PREFIX`).
+    """El código de la restricción que declara la entidad ``entity_code``: ``dec__plt_001``
+    (RF-012-29): :data:`DECLARED_PREFIX` y el código de la entidad en minúsculas y con «_». Es un
+    código válido de la 012 (``is_code``, ``param_key``: la compilación inyecta bajo él el resguardo
+    y «activa» de la tabla, P-8) y es único en las tres capas del proyecto por su doble guion bajo.
     ``TypeError`` si no es un texto y ``ValueError`` si no es el código de una entidad
     (``PLT-001``): errores del programa."""
-    return DECLARED_PREFIX + _entity(entity_code)
+    return DECLARED_PREFIX + _entity(entity_code).lower().replace("-", "_")
 
 
 def is_declared_code(code: object) -> bool:
-    """Si ``code`` es el código de una restricción declarada (``DEC-PLT-001``). Un código del
-    proyecto (:func:`~.model.is_code`) nunca lo es, y al revés."""
+    """Si ``code`` es el código de una restricción declarada (``dec__plt_001``). Un código que genera
+    ``constraint_code`` desde un nombre (:func:`~.model.constraint_code`) nunca lo es."""
     return isinstance(code, str) and _DECLARED.fullmatch(code) is not None
+
+
+def declared_entity(code: str) -> str:
+    """El código de la entidad que declara la restricción de código ``code`` (``dec__plt_001`` →
+    ``PLT-001``; la inversa de :func:`declared_code`). ``TypeError`` si no es un texto y
+    ``ValueError`` si no es el código de una declarada: errores del programa."""
+    if not isinstance(code, str):
+        raise TypeError(f"el código de una restricción es un texto, no {code!r}")
+    found = _DECLARED.fullmatch(code)
+    if found is None:
+        raise ValueError(f"el código {code!r} no es el de una restricción declarada "
+                         f"({DECLARED_PREFIX}plt_001)")
+    return found["entity"].upper().replace("_", "-")
 
 
 def declared_uid(version_uid: str, entity_code: str) -> str:
@@ -181,7 +201,7 @@ def _text(value: object, what: str) -> str:
 class DeclaredConstraint:
     """Una restricción declarada por una entidad (RF-012-29; una fila de ``des_decl_<vNN>``).
 
-    ``code`` es :func:`declared_code` de ``entity_code``; ``ctype``, uno de los once tipos (de
+    ``code`` es :func:`declared_code` de ``entity_code`` (``dec__plt_001``); ``ctype``, uno de los once tipos (de
     ``forbids_*`` depende lo que prohíbe en su zona); ``decided_by`` y ``decided_on``, quien creó
     o cambió la entidad y cuándo se **decidió** (no ``now``); ``parts``, el contorno de las celdas
     de la entidad: por cada parte, sus anillos cerrados (exterior y huecos) en coordenadas
