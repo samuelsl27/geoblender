@@ -81,6 +81,11 @@ RES_MODULES = ("reserves.compliance", "reserves.compliance_store")
 PENDING_015_MODULES = frozenset({
     "core.constraints.declared",  # T16: la restricción declarada por una entidad (RF-012-29)
 })
+# Lo que la spec 015 añade a la API pública de módulos que ya tienen ficha (``gis.md``, «API pública»)
+# mientras se construye: la T34 (documentación) lo lleva a la ficha y vacía esto.
+PENDING_015_API = frozenset({
+    "gis.masks.provenance.declared_resolved",  # T18: las columnas de una declarada bajo las claves
+})
 CORE_MODULES = tuple(f"core.constraints.{info.name}"
                      for info in pkgutil.iter_modules(constraints.__path__)
                      if f"core.constraints.{info.name}" not in PENDING_015_MODULES)
@@ -159,7 +164,8 @@ def missing_names(text: str, modules: Iterable[str]) -> list[str]:
     """Lo público de ``modules`` que ``text`` no nombra como ``<módulo>.<nombre>``."""
     tokens = names_of(text)
     return sorted(f"{dotted}.{name}" for dotted in modules for name in public_api(dotted)
-                  if f"{dotted}.{name}" not in tokens)
+                  if f"{dotted}.{name}" not in tokens
+                  and f"{dotted}.{name}" not in PENDING_015_API)
 
 
 def normalized(sql: str) -> str:

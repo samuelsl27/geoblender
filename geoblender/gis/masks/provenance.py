@@ -13,10 +13,16 @@ RF-012-16; plan 012 §5.2.3, D-24, D-37).
   (``gis_mskg_<vNN>``, polígonos con su código y su tipo: lo que lee la compilación siguiente
   para lo ganado y lo perdido, A5; decisión de la T10). Las tablas, con ``core.gpkg_layer@1``;
   ninguna editable en QGIS.
-- **Entradas** (:func:`compile_inputs`): las tres capas de restricciones, los sectores y las
-  búsquedas (las que están registradas); **parámetros** (:func:`compile_params`): de cada
-  restricción con código, su «activa» y, si lo está, lo que pide su tipo (resueltos versión →
-  proyecto al empezar, RF-009-24); **ajustes** (:func:`compile_settings`): la rejilla, lo de la
+- **Entradas** (:func:`compile_inputs`): las tres capas de restricciones, **la tabla de las
+  restricciones declaradas por las entidades de la versión** si está viva (spec 015, T18;
+  RF-012-16, RF-012-29: ``des_decl_<vNN>``, papel :data:`DECLARED_ROLE`; sin ella, las de siempre),
+  los sectores y las búsquedas (las que están registradas); **parámetros** (:func:`compile_params`):
+  de cada restricción **del proyecto** con código, su «activa» y, si lo está, lo que pide su tipo
+  (resueltos versión → proyecto al empezar, RF-009-24). Las **declaradas** no tienen parámetros en
+  el almacén (P-8 de la 015): su resguardo hacia fuera y su «activa» son columnas de su tabla, que
+  es una entrada (si cambian, la compilación queda obsoleta), y :func:`declared_resolved` los da
+  bajo las **mismas claves** (``core.constraint.dec__plt_001.buffer_out_m``) para que la compilación
+  las trate como a las demás; **ajustes** (:func:`compile_settings`): la rejilla, lo de la
   compilación anterior (A5) y los sectores sin búsqueda vigente (RF-012-10, D-26).
 - **Cifras** (:data:`FIGURES`): las áreas de los límites y de las máscaras, y la de cada zona y
   la que queda fuera de la rejilla (ámbito ``{"constraint": código}``).
@@ -31,6 +37,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
+from ...core.constraints.declared import DATASET_NAME as DECLARED_NAME
+from ...core.constraints.declared import DECLARED_ROLE, DeclaredConstraint
 from ...core.constraints.model import Constraint, ConstraintParam, GeometryKind, is_code
 from ...core.constraints.params import param_key
 from ...core.constraints.store import CONSTRAINT_LAYERS, SEARCH_TABLE, SECTOR_TABLE
@@ -54,6 +62,8 @@ __all__ = [
     "COMMAND",
     "COMPILE",
     "CONSTRAINT_ROLES",
+    "DECLARED_NAME",
+    "DECLARED_ROLE",
     "FAMILIES",
     "FAMILIES_BY_CODE",
     "FIGURES",
@@ -73,6 +83,7 @@ __all__ = [
     "dataset_locator",
     "dataset_name",
     "dataset_spec",
+    "declared_resolved",
     "grid_of",
     "operation_def",
 ]
@@ -190,10 +201,14 @@ FIGURES: tuple[FigureDef, ...] = (
 
 
 def compile_inputs(available: Collection[str]) -> tuple[Use, ...]:
-    """Lo que consume la compilación: cada capa de restricciones, los sectores y las búsquedas
-    que estén en ``available`` (los nombres de los datos registrados del proyecto)."""
+    """Lo que consume la compilación: cada capa de restricciones, la tabla de las declaradas por las
+    entidades de la versión (:data:`DECLARED_NAME`, papel :data:`DECLARED_ROLE`; RF-012-16,
+    RF-012-29), los sectores y las búsquedas que estén en ``available`` (los nombres de los datos
+    registrados del proyecto y, de la versión que se compila, el de sus declaradas vivas:
+    ``gis.masks.store.available_tables``). Sin declaradas vivas, son exactamente las de la 012."""
     found = [Use(table, CONSTRAINT_ROLES[kind]) for kind, table in CONSTRAINT_LAYERS.items()
              if table in available]
+    found += [Use(DECLARED_NAME, DECLARED_ROLE)] if DECLARED_NAME in available else []
     found += [Use(table, role) for table, role in ((SECTOR_TABLE, SECTORS_ROLE),
                                                    (SEARCH_TABLE, SEARCHES_ROLE))
               if table in available]
@@ -202,12 +217,15 @@ def compile_inputs(available: Collection[str]) -> tuple[Use, ...]:
 
 def compile_params(constraints: Iterable[Constraint], resolved: Mapping[str, object]
                    ) -> tuple[str, ...]:
-    """Las claves que lee la compilación (RF-012-16): de cada restricción con código, su
-    «activa» y, si está activa, lo que pide su tipo; solo las que tienen valor en
-    ``resolved`` (una que falta la lista ``checks`` como incompleta)."""
+    """Las claves que lee la compilación (RF-012-16): de cada restricción **del proyecto** con
+    código, su «activa» y, si está activa, lo que pide su tipo; solo las que tienen valor en
+    ``resolved`` (una que falta la lista ``checks`` como incompleta). Las **declaradas** por una
+    entidad quedan fuera: sus resguardos y su «activa» son columnas de su tabla, no parámetros del
+    almacén (``begin_operation`` solo resuelve claves del almacén: de otro modo, crearía filas o
+    fallaría; P-8 de la 015)."""
     keys: list[str] = []
     for item in constraints:
-        if not is_code(item.code):
+        if not is_code(item.code) or item.declared:
             continue
         active = param_key(item.code, ConstraintParam.ACTIVE)
         wanted = [active]
@@ -218,6 +236,20 @@ def compile_params(constraints: Iterable[Constraint], resolved: Mapping[str, obj
                        if param is not ConstraintParam.ACTIVE]
         keys += [key for key in wanted if resolved.get(key) is not None and key not in keys]
     return tuple(keys)
+
+
+def declared_resolved(rows: Iterable[DeclaredConstraint]) -> dict[str, object]:
+    """Los valores de las **columnas** de las restricciones declaradas ``rows`` bajo las claves de los
+    parámetros de una restricción (``core.constraint.<código>.buffer_out_m`` y ``.active``; T18, P-8
+    de la 015): lo que la compilación suma al ``resolved`` del almacén para tratarlas como a las
+    demás. Valores sueltos (``float`` y ``bool``), sin ``ResolvedParam``: ninguna es un parámetro, no
+    hay fila ni historial; los da la entidad. El peso y el resguardo hacia dentro no se usan en
+    ``no_fill`` (ni en ningún tipo que declare una entidad): no se inyectan."""
+    found: dict[str, object] = {}
+    for item in rows:
+        found[param_key(item.code, ConstraintParam.BUFFER_OUT)] = float(item.buffer_out_m)
+        found[param_key(item.code, ConstraintParam.ACTIVE)] = bool(item.active)
+    return found
 
 
 def compile_settings(grid: Grid, *, previous: Mapping[str, Any] | None,

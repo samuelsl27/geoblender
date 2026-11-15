@@ -362,11 +362,14 @@ def read_constraints(conn: sqlite3.Connection,
     return tuple(found)
 
 
-def constraint_names(conn: sqlite3.Connection) -> dict[str, tuple[str, ConstraintType | None]]:
+def constraint_names(conn: sqlite3.Connection, *, version_uid: str | None = None
+                     ) -> dict[str, tuple[str, ConstraintType | None]]:
     """Código → (nombre, tipo) de las restricciones de las tres capas con código (sin leer su
     geometría: lo que enseña la ventana de una verificación, spec 012, T28). Un nombre vacío
     queda vacío y un tipo que no es uno de los once, ``None``; ninguna si no existen las
-    tablas."""
+    tablas. Con ``version_uid``, también las **declaradas por las entidades** de esa versión
+    (spec 015, T18; RF-012-29: ``dec__plt_001`` con el nombre de su entidad, que ningún código de
+    las tres capas puede repetir); sin él, solo las del proyecto, como siempre."""
     present = {str(row[0]) for row in conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table'")}
     found: dict[str, tuple[str, ConstraintType | None]] = {}
@@ -378,6 +381,11 @@ def constraint_names(conn: sqlite3.Connection) -> dict[str, tuple[str, Constrain
             found.setdefault(str(code), (str(name or ""),
                                          ConstraintType(ctype) if ctype in ConstraintType
                                          else None))
+    if version_uid:
+        from . import declared  # el módulo de las declaradas importa este: al usarlo, no al cargar
+
+        for code, (name, ctype) in declared.names_in_version(conn, version_uid).items():
+            found.setdefault(code, (name, ctype))
     return found
 
 

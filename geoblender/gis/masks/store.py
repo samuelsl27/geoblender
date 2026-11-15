@@ -2,7 +2,10 @@
 """La compilación de las restricciones en el proyecto (spec 012; RF-012-06, RF-012-11,
 RF-012-16, RF-012-28; plan 012 §5.2.3, A5, A11, D-24).
 
-- :func:`gather` lee lo que se compila en una versión (sin escribir): las restricciones, sus
+- :func:`gather` lee lo que se compila en una versión (sin escribir): las restricciones **del
+  proyecto y las declaradas por las entidades de la versión** (spec 015, T18; RF-012-16, RF-012-29:
+  la tabla ``des_decl_<vNN>`` viva, de la que salen además, como columnas, su resguardo hacia fuera
+  y su «activa»: :func:`_constraints_in` los inyecta bajo las claves de siempre), sus
   parámetros resueltos versión → proyecto, los sectores, las búsquedas, la rejilla del proyecto,
   los datos registrados que se consumen y **lo de la compilación anterior vigente** de la versión
   (A5): de cada restricción cuya huella cambió (``gis.masks.compile.changed_codes``), su polígono
@@ -51,6 +54,7 @@ from typing import Any
 
 import numpy as np
 
+from ...core.constraints import declared as declared_store
 from ...core.constraints import store as cstore
 from ...core.constraints.checks import Incomplete
 from ...core.constraints.messages import ConstraintError
@@ -515,17 +519,43 @@ def _previous_steps(project: StoreProject, version_uid: str, request: CompileReq
     return PreviousMasks(operation, MappingProxyType(changed)), operation
 
 
-def _available(conn: sqlite3.Connection) -> frozenset[str]:
-    """Las tablas de las restricciones, los sectores y las búsquedas que son datos registrados."""
-    return frozenset(table for table in cstore.TABLES
-                     if dataset_registry.get(conn, table) is not None)
+def _available(conn: sqlite3.Connection, version_uid: str | None = None) -> frozenset[str]:
+    """Las tablas de las restricciones, los sectores y las búsquedas que son datos registrados y,
+    con ``version_uid``, el de las declaradas por las entidades de esa versión
+    (:data:`~.provenance.DECLARED_NAME`) si está vivo (T18; RF-012-16)."""
+    found = {table for table in cstore.TABLES if dataset_registry.get(conn, table) is not None}
+    if declared_store.live_table(conn, version_uid) is not None:
+        found.add(declared.DECLARED_NAME)
+    return frozenset(found)
 
 
-def available_tables(project: StoreProject) -> frozenset[str]:
+def available_tables(project: StoreProject, version_uid: str | None = None) -> frozenset[str]:
     """Los nombres de los datos que consumiría una compilación (:func:`_available`), sin leer
-    las restricciones: lo que la puerta de la 008 comprueba antes de empezar (T23)."""
+    las restricciones: lo que la puerta de la 008 comprueba antes de empezar (T23). Con
+    ``version_uid`` (el uid de la versión que se compila), también el de sus restricciones
+    declaradas si está vivo (T18); sin él, solo los del proyecto."""
     with project.read() as conn:
-        return _available(conn)
+        return _available(conn, version_uid)
+
+
+def _constraints_in(conn: sqlite3.Connection, project: StoreProject | None,
+                    version_uid: str | None, *, uid: str | None = None
+                    ) -> tuple[tuple[Constraint, ...], dict[str, object]]:
+    """Las restricciones que se compilan en la versión ``version_uid`` y sus parámetros resueltos
+    (T18; RF-012-16, RF-012-29): las de las tres capas del proyecto (con ``uid``, solo la de ese
+    ``uid``) **más** las declaradas por las entidades de la versión
+    (``core.constraints.declared.read_in_version``, tras las del proyecto, por ``fid``), y los
+    parámetros versión → proyecto de las primeras con, de las segundas, su resguardo hacia fuera y
+    su «activa» (**columnas** de su tabla, P-8) bajo las mismas claves
+    (:func:`~.provenance.declared_resolved`), que mandan sobre cualquier fila del almacén. Sin
+    versión (los valores del proyecto) o sin declaradas vivas, es exactamente lo de siempre."""
+    own = cstore.read_constraints(conn, uid=uid)
+    entity = declared_store.read_in_version(conn, version_uid, uid=uid)
+    resolved = _resolved(conn, project, own, version_uid)
+    if not entity:
+        return own, resolved
+    resolved.update(declared.declared_resolved(entity))
+    return (*own, *(item.as_constraint() for item in entity)), resolved
 
 
 def gather(project: StoreProject, *, version: str) -> CompileInputs:
@@ -545,12 +575,11 @@ def gather_steps(project: StoreProject, *, version: str) -> Generator[None, None
         raise ValueError(f"el proyecto «{project.name}» se abrió solo con su cabecera")
     with project.read() as conn:
         found = versions_store.require_editable(conn, version)
-        constraints = cstore.read_constraints(conn)
-        resolved = _resolved(conn, project, constraints, found.uid)
+        constraints, resolved = _constraints_in(conn, project, found.uid)
         sectors = cstore.read_sectors(conn)
         searches = cstore.read_searches(conn)
         live = live_searches(conn, searches)
-        available = _available(conn)
+        available = _available(conn, found.uid)
         grid = project_grid(record.window, float(record.grid_step_m))
         request = CompileRequest(constraints, MappingProxyType(resolved), sectors, searches,
                                  grid)
@@ -699,11 +728,29 @@ _INVALID_PROBLEMS = frozenset({
 @dataclass(frozen=True, slots=True, eq=False)
 class ListedConstraint:
     """Una restricción de la lista: la fila del proyecto, su estado (:data:`STATES`) y los
-    problemas que la hacen incompleta o no válida (vacíos si está activa o desactivada)."""
+    problemas que la hacen incompleta o no válida (vacíos si está activa o desactivada). Si la
+    declara una entidad de diseño (spec 015, RF-012-29), ``constraint.entity_code`` y
+    ``constraint.entity_name`` son su **origen** (:attr:`declared`, :attr:`entity_code`,
+    :attr:`entity_name`)."""
 
     constraint: Constraint
     state: str
     problems: tuple[Incomplete, ...]
+
+    @property
+    def declared(self) -> bool:
+        """Si la declara una entidad de diseño (RF-012-29) y no es de las tres capas del proyecto."""
+        return self.constraint.declared
+
+    @property
+    def entity_code(self) -> str | None:
+        """El código de la entidad que la declara (``PLT-001``); ``None`` si es del proyecto."""
+        return self.constraint.entity_code
+
+    @property
+    def entity_name(self) -> str | None:
+        """El nombre de la entidad que la declara; ``None`` si es del proyecto."""
+        return self.constraint.entity_name
 
 
 def _switched_off(item: Constraint, resolved: Mapping[str, object]) -> bool:
@@ -731,15 +778,15 @@ def _listed(item: Constraint, resolved: Mapping[str, object],
 
 def listed_constraints_steps(project: StoreProject, *, version: str | None = None
                              ) -> Generator[None, None, tuple[ListedConstraint, ...]]:
-    """Las restricciones del proyecto (las tres capas, en su orden) con su estado en la versión
+    """Las restricciones del proyecto (las tres capas, en su orden) y, tras ellas, las declaradas
+    por las entidades de la versión (T18; RF-012-29), con su estado en la versión
     ``version`` (su uid; ``None``: los valores del proyecto) y lo que les falta, por pasos (uno
     por la lectura y uno por restricción y polígono de la comprobación: RNF-012-06). Una
     desactivada en la versión no se comprueba (``inactive``); una con un problema de geometría
     es ``invalid``, una con cualquier otro, ``incomplete`` (la dibujada en QGIS, sin código, tipo,
     motivo ni decisor); lo demás, ``active``. Solo lee."""
     with project.read() as conn:
-        constraints = cstore.read_constraints(conn)
-        resolved = _resolved(conn, project, constraints, version)
+        constraints, resolved = _constraints_in(conn, project, version)
     yield
     problems = yield from check_steps(constraints, resolved)
     by_item: dict[tuple[str, int], list[Incomplete]] = {}
@@ -760,13 +807,12 @@ def listed_constraint(project: StoreProject, uid: str, *, version: str | None = 
     """La restricción ``uid`` con su estado en la versión ``version`` (su uid; ``None``: los
     valores del proyecto) y lo que le falta, como la da :func:`listed_constraints_steps` (el mismo
     estado y los mismos problemas), pero leyendo y comprobando solo esa (T27; RF-012-19: la barra N
-    de la restricción seleccionada no espera a la lista entera). ``None`` si el proyecto no la
-    tiene. Solo lee."""
+    de la restricción seleccionada no espera a la lista entera). Puede ser una declarada por una
+    entidad de la versión (T18). ``None`` si el proyecto (y la versión) no la tiene. Solo lee."""
     with project.read() as conn:
-        found = cstore.read_constraints(conn, uid=uid)
+        found, resolved = _constraints_in(conn, project, version, uid=uid)
         if not found:
             return None
-        resolved = _resolved(conn, project, found, version)
     problems = drain(check_steps(found, resolved))
     return _listed(found[0], resolved, tuple(problems))
 
@@ -778,10 +824,9 @@ def shown_constraints_steps(project: StoreProject, *, version: str | None = None
     ``version`` (su uid; ``None``: los valores del proyecto) y **sin comprobarlas**: ``active`` o
     ``inactive`` (una incompleta o una no válida es ``active``, y ninguna lleva problemas). Lo que
     cuesta una lectura y los parámetros, no la comprobación de cada polígono. Un paso (la lectura).
-    Solo lee."""
+    Con las declaradas por las entidades de la versión tras las del proyecto (T18). Solo lee."""
     with project.read() as conn:
-        constraints = cstore.read_constraints(conn)
-        resolved = _resolved(conn, project, constraints, version)
+        constraints, resolved = _constraints_in(conn, project, version)
     yield
     return tuple(ListedConstraint(item, "inactive" if _switched_off(item, resolved) else "active",
                                   ()) for item in constraints)
@@ -1073,8 +1118,11 @@ def _run(project: StoreProject, handle: OperationHandle, budget_s: float
     with MaskWriter(project, handle) as out:
         with project.read() as conn:
             constraints = cstore.read_constraints(conn)
+            entity = declared_store.read_in_version(conn, handle.version_uid)
+        constraints = (*constraints, *(item.as_constraint() for item in entity))
         yield Progress(_COMPILE_PHASE, 0, planned_steps(len(constraints)) + 2, _COMPILE_TEXT)
         resolved = {param.key: param for param in handle.params}
+        resolved.update(declared.declared_resolved(entity))  # columnas de su tabla (T18, P-8)
         request = _request(handle, constraints, resolved, declared.grid_of(handle.settings))
         final, temporary = out.classes_paths()
         steps = compile_steps(request, budget_s=budget_s, classes_path=final,

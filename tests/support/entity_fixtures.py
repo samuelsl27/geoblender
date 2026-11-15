@@ -499,13 +499,14 @@ def declared_registered() -> Iterator[None]:
         yield
 
 
-def declare_platform_constraint(project: Any, clock: Any, *, version: Any = None) -> str:
+def declare_rows(project: Any, clock: Any, rows: Any, *, version: Any = None,
+                 supersedes: str | None = None) -> str:
     """Escribe en ``project`` la tabla de restricciones declaradas de ``version`` (por defecto V01) con
-    una, :data:`DECLARED_CODE` («sin relleno», la huella :data:`DECLARED_BOX_LOCAL` y
-    :data:`DECLARED_GUARD_M`), con una operación de prueba de ``des.declare_constraints`` (como
-    ``constraints_project.edit_constraints``; sin entradas: no hay entidades) que usa
-    ``core.constraints.declared.write_declared``, y devuelve el uid de la operación. Registra los
-    tipos de ``des`` que falten mientras escribe."""
+    ``rows`` (``core.constraints.declared.DeclaredConstraint``; ninguna la deja vacía) con una operación de
+    prueba de ``des.declare_constraints`` (como ``constraints_project.edit_constraints``; sin entradas: no
+    hay entidades) que usa ``write_declared``, y devuelve el uid de la operación. Con ``supersedes`` (el uid
+    de la declaración vigente), la sustituye (como repetirla: ``des.declare_constraints`` es repetible).
+    Registra los tipos de ``des`` que falten mientras escribe."""
     declared = import_geoblender(DECLARED_MODULE)
     operations = import_geoblender("core.provenance.operations")
     versions_read = import_geoblender("core.versions.read")
@@ -513,21 +514,36 @@ def declare_platform_constraint(project: Any, clock: Any, *, version: Any = None
     if version is None:
         with project.read() as conn:
             version = versions_read.version(conn, "V01")
-    row = declared_constraint(version.uid)
+    rows = tuple(rows)
     srs = project.record.crs_epsg
     table = provenance.dataset_locator(provenance.DECLARED_TABLE, "", version.code)
     with declared_registered():
         clock.advance(minutes=1)
         handle = operations.begin_operation(
             project, provenance.DECLARE_CONSTRAINTS, executor="blender", version=version.uid,
-            settings=provenance.declare_settings([(DECLARED_ENTITY, DECLARED_ENTITY_NAME)]))
+            supersedes=supersedes,
+            settings=provenance.declare_settings([(row.entity_code, row.entity_name)
+                                                  for row in rows]))
         with project.write_transaction() as conn:
-            declared.write_declared(conn, table, [row], srs_id=srs)
+            declared.write_declared(conn, table, rows, srs_id=srs)
             handle.complete(
                 conn, outputs=(provenance.dataset_spec(provenance.DECLARED_TABLE, "", version.code,
                                                        crs_epsg=srs),),
-                figures=provenance.declare_figures(1), message="Restricción declarada de prueba")
+                figures=provenance.declare_figures(len(rows)),
+                message="Restricción declarada de prueba")
     return str(handle.uid)
+
+
+def declare_platform_constraint(project: Any, clock: Any, *, version: Any = None) -> str:
+    """Escribe en ``project`` la tabla de restricciones declaradas de ``version`` (por defecto V01) con
+    una, :data:`DECLARED_CODE` («sin relleno», la huella :data:`DECLARED_BOX_LOCAL` y
+    :data:`DECLARED_GUARD_M`), con :func:`declare_rows` (``core.constraints.declared.write_declared``), y
+    devuelve el uid de la operación."""
+    versions_read = import_geoblender("core.versions.read")
+    if version is None:
+        with project.read() as conn:
+            version = versions_read.version(conn, "V01")
+    return declare_rows(project, clock, [declared_constraint(version.uid)], version=version)
 
 
 class DeclaredConstraintsProjectCase(cp.ConstraintsProjectCase):

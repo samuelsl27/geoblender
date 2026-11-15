@@ -35,6 +35,11 @@ acepte la edición con un motivo o la entidad la vuelva a poner (T20).
   contenido.
 - :func:`declared_dataset_spec`: su dato (``des_decl``, un ``vector`` de ``des`` leído con
   ``core.gpkg_layer@1``, papel :data:`DECLARED_ROLE`) con ``qgis_editable=False``.
+- :func:`live_table`, :func:`read_in_version` y :func:`names_in_version` (T18): lo que lee la
+  compilación de la 012 y quien necesita sus nombres. La tabla de las declaradas **vivas** de una
+  versión se busca en el registro de datos por el nombre :data:`DATASET_NAME` y el uid de la versión
+  (no hay ninguna si ninguna entidad declaró nunca: entonces la compilación consume lo mismo que
+  siempre).
 
 Todas reciben la conexión de una transacción de escritura (o una de lectura para leer) y no la
 confirman. Python puro (``core``): no importa ``design``.
@@ -56,6 +61,7 @@ import numpy as np
 from ..content.builtin import GPKG_LAYER
 from ..content.encoder import ContentDigest
 from ..datasets import DatasetSpec, Store
+from ..datasets import registry as dataset_registry
 from ..gpkg.base import ColumnDef, create_feature_table, set_column_titles
 from ..gpkg.wkb import decode_geometry, encode_geometry
 from ..versions.model import version_locator
@@ -78,7 +84,10 @@ __all__ = [
     "declared_table",
     "declared_uid",
     "is_declared_code",
+    "live_table",
+    "names_in_version",
     "read_declared",
+    "read_in_version",
     "write_declared",
 ]
 
@@ -426,3 +435,42 @@ def read_declared(conn: sqlite3.Connection, table: str) -> tuple[DeclaredConstra
             entity_code=entity_code, entity_name=entity_name, parts=_polygons(blob),
             buffer_out_m=float(outward), active=bool(active), layer=table, fid=int(fid)))
     return tuple(found)
+
+
+# --- Las de una versión (T18) -------------------------------------------------------------------
+
+
+def live_table(conn: sqlite3.Connection, version_uid: str | None) -> str | None:
+    """La tabla de las declaradas **vivas** de la versión de uid ``version_uid`` (``des_decl_v01``: la
+    ubicación del dato :data:`DATASET_NAME` en el registro de datos de esa versión) o ``None`` si
+    ninguna operación la escribió o ya no está viva. Sin versión (``None`` o ``""``: el proyecto)
+    tampoco hay ninguna: son de una versión (RF-012-29). Solo lee."""
+    if not version_uid:
+        return None
+    record = dataset_registry.get(conn, DATASET_NAME, version_uid=version_uid)
+    return None if record is None else str(record.locator)
+
+
+def read_in_version(conn: sqlite3.Connection, version_uid: str | None, *,
+                    uid: str | None = None) -> tuple[DeclaredConstraint, ...]:
+    """Las restricciones declaradas vivas de la versión de uid ``version_uid`` (:func:`live_table`), por
+    ``fid``; ninguna sin versión, sin tabla viva o con la tabla sin filas. Con ``uid``, solo la de ese
+    ``uid`` (la barra N de una restricción). Es lo que **suma** la compilación de la 012 (RF-012-16) a
+    las restricciones del proyecto: las declaradas no están en sus tres capas. Solo lee."""
+    table = live_table(conn, version_uid)
+    if table is None:
+        return ()
+    found = read_declared(conn, table)
+    return found if uid is None else tuple(item for item in found if item.uid == uid)
+
+
+def names_in_version(conn: sqlite3.Connection, version_uid: str | None
+                     ) -> dict[str, tuple[str, ConstraintType]]:
+    """Código → (nombre, tipo) de las declaradas vivas de la versión ``version_uid``, **sin leer su
+    geometría** (como ``core.constraints.store.constraint_names``); ninguna sin versión o sin tabla
+    viva. El nombre es el de su entidad. Solo lee."""
+    table = live_table(conn, version_uid)
+    if table is None or not _exists(conn, _check_table(table)):
+        return {}
+    return {str(code): (str(name), ConstraintType(ctype)) for code, name, ctype in conn.execute(
+        f'SELECT code, name, ctype FROM "{table}" ORDER BY fid')}
