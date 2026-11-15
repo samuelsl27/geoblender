@@ -484,15 +484,22 @@ def _never(request: Any) -> Any:
 
 
 @contextmanager
-def declared_registered() -> Iterator[None]:
+def declared_registered(*, reproducible: bool = True) -> Iterator[None]:
     """Registra lo que declara ``des`` para las declaradas (lo hará ``bl``): los tres tipos de la 015
     (``des.declare_constraints`` entre ellos, con funciones de recálculo y reproducción que no se
-    llaman) y sus cifras, los que falten; al salir, quita lo que registró."""
+    llaman) y sus cifras, los que falten; al salir, quita lo que registró. Con ``reproducible`` falso
+    **sin** función de reproducción: la operación de prueba de las declaradas (que no tiene entidades
+    de las que reproducirse) queda entre las que ``core.versions.reproduce`` da por no reproducibles y no
+    llama a ninguna (T19: congelar y reproducir la compilación de las máscaras)."""
     contract = import_geoblender("core.provenance.contract")
     provenance = import_geoblender("design.provenance")
     types = provenance.ENTITY_VERSION_TYPES
-    definitions = provenance.entity_operation_defs({name: _never for name in types},
-                                                   {name: _never for name in types})
+    if reproducible:
+        definitions = provenance.entity_operation_defs({name: _never for name in types},
+                                                       {name: _never for name in types})
+    else:
+        definitions = tuple(declared.definition(_never)
+                            for declared in provenance.ENTITY_OPERATION_TYPES)
     wanted = [item for item in definitions if item.op_type not in contract.OPERATIONS]
     wanted += [item for item in provenance.ENTITY_FIGURES if item.key not in contract.FIGURES]
     with registered(*wanted):

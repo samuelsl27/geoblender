@@ -1625,6 +1625,60 @@ CATALOG: tuple[Message, ...] = (
         one_es="Al sustituir la operación que hizo la plataforma «{entity}», quedará obsoleta "
         "{operations} operación que dependía de ella: {items}.",
     ),
+    # Tras la orden de una entidad (RF-015-10, RF-012-06; T19): la declaración, las máscaras de nuevo, lo
+    # ganado y perdido por restricción, lo que quedó obsoleto y lo que no se pudo hacer.
+    Message(
+        "des.entity_chain_declared",
+        "The constraints declared by the entities of {version} are up to date: {count} in all.",
+        "Las restricciones que declaran las entidades de {version} están al día: {count} en total.",
+        "note",
+    ),
+    Message(
+        "des.entity_chain_masks",
+        "The masks of {version} have been compiled again with the constraints the entities declare.",
+        "Las máscaras de {version} se han compilado de nuevo con las restricciones que declaran las "
+        "entidades.",
+        "note",
+    ),
+    Message(
+        "des.entity_chain_change",
+        "{name} (declared constraint): polygon +{gained} m² −{lost} m², zone +{zone_gained} m² "
+        "−{zone_lost} m²",
+        "{name} (restricción declarada): polígono +{gained} m² −{lost} m², zona +{zone_gained} m² "
+        "−{zone_lost} m²",
+        "note",
+    ),
+    Message(
+        "des.entity_chain_obsolete",
+        "With the new masks, {operations} operations that used the old ones are now stale: {items}; "
+        "Project ▸ Recompute the stale results computes them again.",
+        "Con las máscaras nuevas han quedado obsoletas {operations} operaciones que usaron las "
+        "anteriores: {items}; Proyecto ▸ Recalcular lo obsoleto las vuelve a calcular.",
+        "note",
+        count="operations",
+        one_msgid="With the new masks, {operations} operation that used the old ones is now stale: "
+        "{items}; Project ▸ Recompute the stale results computes it again.",
+        one_es="Con las máscaras nuevas ha quedado obsoleta {operations} operación que usó las "
+        "anteriores: {items}; Proyecto ▸ Recalcular lo obsoleto la vuelve a calcular.",
+    ),
+    Message(
+        "des.entity_chain_declare_failed",
+        "The constraints declared by the entities of {version} could not be updated: {reason} The "
+        "entity is created; they are updated the next time an entity is created or changed.",
+        "No se pudieron poner al día las restricciones que declaran las entidades de {version}: "
+        "{reason} La entidad está creada; se ponen al día la próxima vez que se cree o cambie una "
+        "entidad.",
+        "warning",
+    ),
+    Message(
+        "des.entity_chain_masks_failed",
+        "The masks of {version} could not be compiled again with the declared constraints: {reason} "
+        "They stay stale and are compiled again before the next operation that uses them.",
+        "No se pudieron compilar de nuevo las máscaras de {version} con las restricciones "
+        "declaradas: {reason} Siguen obsoletas y se compilan de nuevo antes de la próxima "
+        "operación que las use.",
+        "warning",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

@@ -44,7 +44,10 @@ design_reproduce = import_geoblender("design.reproduce")
 design_store = import_geoblender("design.store")
 entities = import_geoblender("design.entities")
 entity_store = import_geoblender("design.entity_store")
+contract = import_geoblender("core.provenance.contract")
 freeze = import_geoblender("core.versions.freeze")
+masks_provenance = import_geoblender("gis.masks.provenance")
+masks_store = import_geoblender("gis.masks.store")
 messages = import_geoblender("design.messages")
 provenance = import_geoblender("design.provenance")
 recompute_mod = import_geoblender("core.provenance.recompute")
@@ -87,14 +90,68 @@ def reason_key(code: str) -> str:
     return design_params.entity_key(code, "reason")
 
 
+def compile_recompute(request: Any) -> Any:
+    """Lo que registra ``bl`` como función de recálculo de ``gis.compile_constraints``: lleva sus pasos hasta
+    el final."""
+    handle, work = masks_store.recompute_run(request)
+    ops.finish(work)
+    return handle
+
+
+def real_compile_registered(case: type[Any]) -> None:
+    """Registra la compilación de las máscaras con **su recálculo real** (el de las pruebas de la 012 se niega a
+    recalcular) mientras dura la clase ``case``; al salir, deja la que había (T19: desde el hueco H-1, recalcular
+    una entidad que protege compila las máscaras, y «Recalcular lo obsoleto» las repite)."""
+    old = contract.OPERATIONS[masks_provenance.COMPILE]
+    contract.unregister_operation(masks_provenance.COMPILE)
+    contract.register_operation(masks_provenance.operation_def(compile_recompute,
+                                                               masks_store.REPRODUCE[masks_provenance.COMPILE]))
+
+    def restore() -> None:
+        contract.unregister_operation(masks_provenance.COMPILE)
+        contract.register_operation(old)
+
+    case.addClassCleanup(restore)
+
+
 class DeclareCase(ops.RecomputeCase):
-    """Lo de ``RecomputeCase`` con la declaración registrada con sus funciones reales y los ayudantes de las
-    pruebas de esta tarea: declarar, leer la tabla y la operación vigente y cambiar o crear los parámetros de
-    una entidad (cada cosa, un minuto después de la anterior)."""
+    """Lo de ``RecomputeCase`` con la declaración registrada con sus funciones reales (y la compilación de las
+    máscaras con su recálculo real) y los ayudantes de las pruebas de esta tarea: declarar, leer la tabla y la
+    operación vigente y cambiar o crear los parámetros de una entidad (cada cosa, un minuto después de la
+    anterior)."""
 
     @classmethod
     def definitions(cls) -> tuple[Any, ...]:
         return declare_definitions()
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        real_compile_registered(cls)
+
+    @classmethod
+    def settle(cls, rounds: int = 12) -> list[Any]:
+        """«Recalcular lo obsoleto» **tantas veces como haga falta** (T19): desde el hueco H-1 una entidad que
+        protege cierra el ciclo entidad → declarada → máscaras → entidad (D-21) y cada pasada rehace una sola
+        unidad (lo recalculado que vuelve a quedar obsoleto espera, RF-008-27). Devuelve las unidades hechas, en
+        orden; se para en cuanto no queda nada que recalcular."""
+        results: list[Any] = []
+        for _ in range(rounds):
+            cls.clock.advance(minutes=1)
+            done = ops.finish(recompute_mod.recompute_steps(cls.project))
+            results.extend(done.results)
+            if not done.remaining.units:
+                break
+        return results
+
+    @classmethod
+    def entities_declared(cls) -> None:
+        """Lo que sigue a la orden de una entidad (``after_entity_change``: declarar y compilar las máscaras con lo
+        declarado) y «Recalcular lo obsoleto» hasta que no quede nada obsoleto: el punto de partida de quien mira
+        lo que pasa **después** (el ciclo ya resuelto)."""
+        cls.clock.advance(minutes=1)
+        ops.finish(entity_store.after_entity_change(cls.project, cls.v1))
+        cls.settle()
 
     @classmethod
     def declare(cls, version: Any = None) -> Any:
@@ -182,6 +239,13 @@ class DeclareCase(ops.RecomputeCase):
         return str(cls.query_of("SELECT uid FROM gb_revision WHERE version_uid = ? AND state = 'open'",
                                 cls.v1.uid)[0][0])
 
+    def declare_plan(self) -> list[tuple[str, ...]]:
+        """Las unidades de «Recalcular lo obsoleto» que son la **declaración** (T19): desde el hueco H-1, recalcular
+        una entidad que protege compila las máscaras con su zona (la declaración vigente no la consumían) y deja
+        obsoletas las operaciones que las usaron (el ciclo entidad → declarada → máscaras → entidad, D-21): lo
+        que estas pruebas miran es la obsolescencia **de la declaración**, no la de ellas."""
+        return [unit for unit in self.recompute_plan() if unit == (DECLARE,)]
+
     def entity_datasets(self) -> dict[str, str]:
         """El hash de contenido de cada dato de ``des_epr_`` y de ``des_psf_`` de V01, por su nombre."""
         return dict(self.query("SELECT name, content_sha256 FROM gb_dataset WHERE (name LIKE 'des!_epr!_%' "
@@ -210,6 +274,11 @@ class DeclareTest(DeclareCase):
         cls.clock.advance(minutes=1)
         cls.made(prep.request(WORKSHOP, start="entity:PLT-001", protect=True, guard_m=GUARD_M))
         cls.created_on = cls.clock.now().date()
+        # T19: desde el hueco H-1, lo que sigue a crear una entidad que protege declara y compila las máscaras con
+        # su zona (el ciclo D-21, que «Recalcular lo obsoleto» resuelve): las pruebas de abajo miran lo que pasa
+        # con la declaración **después**, con las máscaras ya al día.
+        cls.entities_declared()
+        assert cls.clock.now().date() == cls.created_on
         cls.clock.advance(minutes=5 * DAY_MINUTES)  # declarar cinco días después: la fecha no es la de ahora
         assert cls.clock.now().date() != cls.created_on
 
@@ -336,7 +405,7 @@ class DeclareTest(DeclareCase):
         self.assertEqual(self.current_declaration(), str(handle.uid))
         self.assertEqual(self.record_of().content_sha256, digest)
         self.assertEqual(self.declared_dump(), dump)
-        self.assertEqual(self.recompute_plan(), [])
+        self.assertEqual(self.declare_plan(), [])
 
     # --- (b) Cambiar el resguardo -----------------------------------------------------------------
 
@@ -352,16 +421,18 @@ class DeclareTest(DeclareCase):
         self.assertGreater(changed_on, self.created_on)
         self.assertEqual(self.stale_causes(self.current_declaration()),
                          {("parameter_changed", guard_key("PLT-002"))})
-        self.assertEqual(self.recompute_plan(), [(DECLARE,)])
+        self.assertEqual(self.declare_plan(), [(DECLARE,)])
         self.clock.advance(minutes=1)
-        done = ops.finish(recompute_mod.recompute_steps(self.project))
-        self.assertEqual([result.status for result in done.results], [recompute_mod.UnitStatus.DONE])
+        done = self.settle()  # el ciclo entidad → declarada → máscaras → entidad: varias pasadas (T19, D-21)
+        self.assertTrue(done and all(result.status is recompute_mod.UnitStatus.DONE for result in done), done)
+        self.assertIn((DECLARE,), [tuple(self.query("SELECT op_type FROM gb_operation WHERE uid = ?", uid)[0][0]
+                                         for uid in result.unit.operations) for result in done])
         (found,) = self.declared()
         self.assertEqual((found.buffer_out_m, found.decided_by, found.decided_on),
                          (6.0, EDITOR, changed_on))
         self.assertNotEqual(self.record_of().content_sha256, digest)
         self.assertNotEqual(self.declared_dump(), dump)
-        self.assertEqual(self.recompute_plan(), [])
+        self.assertEqual(self.declare_plan(), [])
 
     # --- (c) Editar el motivo ---------------------------------------------------------------------
 
@@ -379,12 +450,12 @@ class DeclareTest(DeclareCase):
         self.assertIn(reason_key("PLT-002"), {key for (key,) in self.query(
             "SELECT key FROM gb_operation_param WHERE operation_uid = ?", self.current_declaration())})
         self.change_as(reason_key("PLT-002"), "Zona de pistas protegida", USER)
-        self.assertEqual(self.recompute_plan(), [(DECLARE,)])
+        self.assertEqual(self.declare_plan(), [(DECLARE,)])
         self.clock.advance(minutes=1)
-        ops.finish(recompute_mod.recompute_steps(self.project))
+        self.settle()
         (found,) = self.declared()
         self.assertEqual((found.reason, found.decided_by), ("Zona de pistas protegida", USER))
-        self.assertEqual(self.recompute_plan(), [])
+        self.assertEqual(self.declare_plan(), [])
 
     # --- (d) Retirar la protección ----------------------------------------------------------------
 
@@ -395,9 +466,9 @@ class DeclareTest(DeclareCase):
         mismo ``uid``."""
         uid_before = declared_mod.declared_uid(self.v1.uid, "PLT-002")
         self.change_as(protect_key("PLT-002"), False, USER)
-        self.assertEqual(self.recompute_plan(), [(DECLARE,)])
+        self.assertEqual(self.declare_plan(), [(DECLARE,)])
         self.clock.advance(minutes=1)
-        ops.finish(recompute_mod.recompute_steps(self.project))
+        self.settle()
         self.assertEqual(self.declared(), ())
         with self.project.read() as conn:
             self.assertEqual(conn.execute("SELECT name FROM sqlite_master WHERE name = ?", (TABLE,)
@@ -406,7 +477,7 @@ class DeclareTest(DeclareCase):
         self.assertEqual(self.record_of().operation_uid, self.current_declaration())
         self.change_as(protect_key("PLT-002"), True, USER)
         self.clock.advance(minutes=1)
-        ops.finish(recompute_mod.recompute_steps(self.project))
+        self.settle()
         (found,) = self.declared()
         self.assertEqual((found.uid, found.entity_code), (uid_before, "PLT-002"))
 
@@ -661,7 +732,7 @@ class ReproduceTest(DeclareCase):
         self.change_as(guard_key("PLT-002"), 9.0, USER)
         self.assertEqual(self.recompute_plan(), [(DECLARE,)])
         self.clock.advance(minutes=1)
-        ops.finish(recompute_mod.recompute_steps(self.project))
+        self.settle()
         (found,) = self.declared()
         self.assertEqual(found.buffer_out_m, 9.0)
         self.assertEqual(self.query("SELECT content_sha256 FROM gb_operation_io WHERE operation_uid = ? "

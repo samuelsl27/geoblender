@@ -8894,6 +8894,15 @@ es = "Plataforma «{name}» creada en {version}"
 ["Computing the platform… {percent} % · Esc: cancel"]
 es = "Calculando la plataforma… {percent} % · Esc: cancelar"
 
+["Updating the declared constraints and the masks… {percent} % · Esc: cancel"]
+es = "Poniendo al día las restricciones declaradas y las máscaras… {percent} % · Esc: cancelar"
+
+["Cancelled: the platform is created; the declared constraints and the masks are brought up to date before the next operation that uses them"]
+es = "Cancelado: la plataforma está creada; las restricciones declaradas y las máscaras se ponen al día antes de la próxima operación que las use"
+
+["The platform is created: only the declared constraints and the masks have not been brought up to date"]
+es = "La plataforma está creada: solo las restricciones declaradas y las máscaras no se han puesto al día"
+
 ["There are no layers of lines or polygons in the project"]
 es = "No hay capas de líneas ni de polígonos en el proyecto"
 

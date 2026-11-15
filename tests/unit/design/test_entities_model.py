@@ -101,6 +101,12 @@ CODES: dict[str, str] = {
     "des.entity_obsolete_consumers": "note",    # RF-015-03 (T12)
     "des.entity_obsolete_successor": "note",    # RF-015-03, RF-015-05 (T12)
     "des.entity_obsolete_dependents": "note",   # RF-015-03 (T12)
+    "des.entity_chain_declared": "note",        # RF-015-10 (T19)
+    "des.entity_chain_masks": "note",           # RF-015-10 (T19)
+    "des.entity_chain_change": "note",          # RF-012-06 (T19)
+    "des.entity_chain_obsolete": "note",        # RF-015-16 (T19)
+    "des.entity_chain_declare_failed": "warning",  # RF-015-10 (T19)
+    "des.entity_chain_masks_failed": "warning",  # RF-015-10 (T19)
     "des.entity_edge_outside": "warning",       # RF-015-13
     "des.entity_quarry_order": "warning",       # RF-015-14
     "des.platform_declared_reason": "note",     # RF-015-10
@@ -791,7 +797,10 @@ class EntityMessagesTest(unittest.TestCase):
              "quedarán obsoletas 2 entidades", "2 entities of the chain"),
             ("des.entity_obsolete_dependents", "operations", {"entity": "P1", "items": "«Q»"},
              "quedará obsoleta 1 operación", "1 operation that depended",
-             "quedarán obsoletas 2 operaciones", "2 operations that depended"))
+             "quedarán obsoletas 2 operaciones", "2 operations that depended"),
+            ("des.entity_chain_obsolete", "operations", {"items": "«P1»"},
+             "ha quedado obsoleta 1 operación", "1 operation that used the old ones is now stale",
+             "han quedado obsoletas 2 operaciones", "2 operations that used the old ones are now stale"))
         for code, count, rest, one_es, one_en, many_es, many_en in cases:
             self.assertEqual(messages.MESSAGES[code].count, count)
             with self.subTest(code=code):

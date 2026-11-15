@@ -192,6 +192,8 @@ PENDING_015_API = frozenset({
     "DeclaredSource", "EntityFootprint", "PreparedDeclaration", "declare_constraints_steps",
     "declared_rows_steps", "declared_sources", "prepare_declaration", "read_entity_footprint",
     "recompute_declaration", "run_declaration", "settings_decisions", "settings_version",
+    # T19: lo que sigue a cada orden de entidades (design.entity_store): declarar y recompilar las máscaras.
+    "ChainFailure", "ChainStage", "EntityChain", "after_entity_change",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({

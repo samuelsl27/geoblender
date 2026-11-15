@@ -223,6 +223,17 @@ que pasa de su tolerancia el botón de crear dice «Confirmar la contrapendiente
 confirmación expresa (RF-015-23); desde un guion, ``confirm_counterslope``. Disponible con el proyecto en
 escritura y la versión activa editable y, si no, desactivada con su motivo (RF-015-28:
 :class:`DesignCommandAware`). Las cuentas y los rechazos son de ``design``.
+
+**Lo que sigue a crear una entidad** (spec 015, T19; RF-015-10, RF-012-06; plan 015 §5.3.2 y P-7): tras el
+commit de «Crear», la orden encadena ``design.entity_store.after_entity_change`` por pasos, con el avance y
+Esc (como el escalonado tras la envolvente): repite la declaración de las restricciones de las entidades
+de la versión y, si las máscaras ya no están al día, las compila de nuevo, y dice qué quedó obsoleto con el
+área (m²) ganada y perdida por restricción; cada etapa, su operación y su transacción. La plataforma ya
+está creada: si una etapa falla o se cierra con Esc, las máscaras quedan obsoletas con su causa
+(``gis.masks.access.MaskCause``) y se compilan de nuevo antes de que un operador las use. «Recalcular lo
+obsoleto» no encadena nada: la declaración y las máscaras son operaciones de la 008 que ella recalcula por el
+grafo (el recálculo de una plataforma no declara por su cuenta). Descartar y retirar (T25, T26) encadenarán
+la misma función.
 """
 
 from __future__ import annotations
@@ -3821,16 +3832,76 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
                     self.report({"ERROR"}, design_error_text(exc))
                 return {"CANCELLED"}
             opened.confirm_counterslope()
-        return _CalculateAndCreate._create(self, context)
+        created = _CalculateAndCreate._create(self, context)
+        if opened is None or "FINISHED" not in created:
+            return created
+        return self._update_declared(context, opened)
+
+    # --- Lo que sigue a crearla (RF-015-10, RF-012-06; plan 015 §5.3.2, P-7) -------------------
+
+    _chain = False
+    """Si los pasos que corren son los de lo que sigue a crear la plataforma (y no los de calcularla)."""
+
+    def _update_declared(self, context: Any, opened: Calculation) -> set[str]:
+        """Tras crear la plataforma, **pone al día** las restricciones que declaran las entidades de la
+        versión y las máscaras (``design.entity_store.after_entity_change``: declarar, recompilar si ya no
+        están al día y decir qué quedó obsoleto, con lo ganado y perdido por restricción), por pasos con el
+        avance y Esc, como el escalonado tras la envolvente: la plataforma **ya está creada** (cada etapa es
+        una operación y una transacción propias); cerrar o fallar a mitad deja las máscaras obsoletas con su
+        causa y se compilan de nuevo antes de que un operador las use."""
+        from ...design import entity_store  # al usarlo: habilitar no carga el cálculo
+
+        project = SESSION.project
+        self._chain = True
+        steps = entity_store.after_entity_change(project, opened.version,
+                                                 budget_s=self.STEP_BUDGET_S)
+        started = self._run_steps(context, project, opened.name, steps)
+        return {"FINISHED"} if started == {"CANCELLED"} else started  # ya creada: el fallo está dicho
+
+    def _finished(self, context: Any, opened: Any) -> set[str]:
+        """Con los pasos de lo que sigue a crearla, dice lo que hizo (:meth:`_report_chain`); si no, como
+        las demás órdenes."""
+        if self._chain:
+            self._chain = False
+            self._report_chain(opened)
+            return {"FINISHED"}
+        return _CalculateAndCreate._finished(self, context, opened)
+
+    def _report_chain(self, chain: Any) -> None:
+        """Lo que hizo ``chain`` (``design.entity_store.EntityChain``), en el informe y en el registro: la
+        declaración, las máscaras recompiladas, por restricción el polígono y la zona ganados y perdidos (m²),
+        lo que quedó obsoleto y, en alerta, lo que no se pudo hacer (RF-012-06)."""
+        shown = i18n.language()
+        for notice in chain.notices():
+            self._report({"WARNING" if notice.severity == "warning" else "INFO"}, notice.text(shown))
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
 
     def _created_text(self, opened: Calculation) -> str:
         return tr("Platform «{name}» created in {version}", name=opened.name,
                   version=opened.version)
 
     def _status_text(self, step: Progress) -> str:
-        """El avance en la barra de estado: «Calculando la plataforma… 40 % · Esc: cancelar»."""
+        """El avance en la barra de estado: «Calculando la plataforma… 40 % · Esc: cancelar» o, tras
+        crearla, «Poniendo al día las restricciones declaradas… 40 % · Esc: cancelar»."""
         percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        if self._chain:
+            return tr("Updating the declared constraints and the masks… {percent} % · Esc: cancel",
+                      percent=percent)
         return tr("Computing the platform… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        if self._chain:
+            return tr("Cancelled: the platform is created; the declared constraints and the masks "
+                      "are brought up to date before the next operation that uses them")
+        return _CalculateAndCreate._cancelled_text(self)
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        found = _CalculateAndCreate._error_text(self, exc)
+        if self._chain:
+            return f"{found} " + tr("The platform is created: only the declared constraints and the "
+                                    "masks have not been brought up to date")
+        return found
 
 
 # --- Vista previa de semillas, dominios y restricciones (T25; HU-013-1; RF-013-01, RF-013-02,

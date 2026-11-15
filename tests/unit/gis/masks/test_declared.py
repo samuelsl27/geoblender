@@ -29,13 +29,30 @@ las claves de siempre (P-8), sin parámetros del almacén.
 - **RF-012-15** (``DeclaredOutsideGridTest``): una zona que con su resguardo se sale de la rejilla se avisa.
 - **Sin declaradas** (``NoDeclaredTest``): las entradas son exactamente las de la 012 y ``OP_VERSION`` no
   sube: lo compilado antes de la 015 sigue al día.
+
+La T19 cierra **el hueco H-1** (``gis.masks.access``; plan 015 §5.8) y congela y reproduce lo declarado
+(RF-012-06, RF-012-29, RF-015-10, RF-015-16):
+
+- **RF-012-06, RF-012-29, RF-015-10** (``DeclaredHoleTest``, ``BeforeThe015Test``): un dato nuevo no deja
+  obsoleto lo que ya se calculó (el grafo deduce solo de lo que la operación consumió), así que una
+  declarada que aparece **después** de compilar dejaría las máscaras «al día» sin su prohibición (el error
+  51): ``mask_state`` las da obsoletas, con su causa (``MaskCause.DECLARED_NEW`` y el mensaje
+  ``core.constraint_masks_declared_new``), y quien las pide las recompila; lo que las usó queda obsoleto al
+  recompilarlas. Una versión compilada antes de la 015 sigue al día mientras no haya una tabla de declaradas
+  viva; una compilación que la consumió (aunque esté vacía) está al día mientras su hash no cambie.
+- **RF-012-29** (``DeclaredOtherVersionTest``): la declarada de V01 no hace obsoletas las máscaras de V02, que
+  no la ve ni la consume, y V01 recompila sola con ella.
+- **RF-012-16, RF-012-29, RF-015-10** (``DeclaredReproduceTest``): congelar V01.r1 y reproducirla da las
+  **mismas máscaras con la declarada**, bit a bit, aunque lo vivo ya sea otro.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
 import unittest
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -44,8 +61,16 @@ from tests.support import constraints_fixtures as fx
 from tests.support import constraints_project as cp
 from tests.support import entity_fixtures as efx
 from tests.support.package import import_geoblender
+from tests.support.provenance_contract import registered
+from tests.support.versions_fixtures import change_counter, files
 
 access = import_geoblender("gis.masks.access")
+cmessages = import_geoblender("core.constraints.messages")
+contract = import_geoblender("core.provenance.contract")
+figures_mod = import_geoblender("core.provenance.figures")
+freeze = import_geoblender("core.versions.freeze")
+operations = import_geoblender("core.provenance.operations")
+reproduce = import_geoblender("core.versions.reproduce")
 combine = import_geoblender("gis.masks.combine")
 provenance = import_geoblender("gis.masks.provenance")
 masks_store = import_geoblender("gis.masks.store")
@@ -491,8 +516,8 @@ class DeclaredNewTest(cp.ConstraintsProjectCase):
         efx.declare_rows(cls.project, cls.clock, [declared_row(cls.v1.uid, guard=0.0)],
                          version=cls.v1)
         cls.clock.advance(minutes=1)
-        # Compilar a mano: que las máscaras queden obsoletas al llegar la primera declarada lo cierra el
-        # hueco H-1 (T19), no esta tarea; aquí se comprueba lo que da la compilación con ella.
+        # Compilar a mano: que las máscaras queden obsoletas al llegar la primera declarada es el hueco H-1
+        # (``DeclaredHoleTest``, T19); aquí se comprueba lo que da la compilación con ella.
         handle = masks_store.begin_compile(cls.project, version=cls.v1.uid)
         cls.stored = _last(masks_store.compile_run(cls.project, handle))
         cls.operation = str(handle.uid)
@@ -644,6 +669,314 @@ class NoDeclaredTest(cp.ConstraintsProjectCase):
         state, _pending = access.mask_state(self.project, self.v1.uid)
         self.assertIs(state, access.MaskState.CURRENT)
         self.assertEqual(len(masks_store.listed_constraints(self.project, version=self.v1.uid)), 5)
+
+
+# ---------------------------------------------------------------------------------------------
+# El hueco H-1 (T19)
+# ---------------------------------------------------------------------------------------------
+
+CONSUMER = "des.test_consumer"
+CAUSE_DATASET_CHANGED = "dataset_changed"
+
+
+
+@contextmanager
+def consumer_registered() -> Iterator[None]:
+    """Un tipo de operación de ``des`` de prueba que consume las máscaras de su versión, como un diseño de la 013
+    o de la 014 (``des.envelope``, ``des.quarry``…): lo que «las usó» y debe quedar obsoleto."""
+    with registered(contract.OperationDef(CONSUMER, "1.0", "des", "Design that uses the masks (tests)",
+                                          False, scope="version")):
+        yield
+
+
+class _HoleCase(cp.ConstraintsProjectCase):
+    """Ayudas comunes de las pruebas del hueco: compilar por el contrato de los operadores, una operación que
+    usó las máscaras, el estado de las de una versión y las causas de obsolescencia que deduce el grafo."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.enterClassContext(efx.declared_registered())
+        cls.enterClassContext(consumer_registered())
+
+    @classmethod
+    def compile_version(cls, version: Any = None) -> Any:
+        """Las máscaras de ``version`` (por defecto V01) por ``ensure_masks_steps``: compila si no están al día."""
+        cls.clock.advance(minutes=1)
+        return _last(access.ensure_masks_steps(cls.project, (version or cls.v1).uid))
+
+    @classmethod
+    def consume(cls, masks: Any, version: Any = None) -> str:
+        """Una operación de prueba de ``des`` que usó ``masks`` (las de ``version``, por defecto V01); su uid."""
+        cls.clock.advance(minutes=1)
+        handle = operations.begin_operation(
+            cls.project, CONSUMER, settings={"name": "Diseño de prueba"}, executor="blender",
+            inputs=masks.uses(), version=(version or cls.v1).uid)
+        with cls.project.write_transaction() as conn:
+            handle.complete(conn, outputs=(), message="Diseño de prueba")
+        return str(handle.uid)
+
+    @classmethod
+    def declare(cls, rows: Any, *, supersedes: str | None = None) -> str:
+        """Escribe la tabla de las declaradas de V01 con ``rows`` (sustituye a la vigente si se da)."""
+        return efx.declare_rows(cls.project, cls.clock, rows, version=cls.v1, supersedes=supersedes)
+
+    def state(self, version: Any = None) -> Any:
+        return access.mask_state(self.project, (version or self.v1).uid)[0]
+
+    def cause(self, version: Any = None) -> Any:
+        return access.mask_cause(self.project, (version or self.v1).uid)
+
+    def graph_causes(self, uid: str) -> set[str]:
+        """Las causas de obsolescencia que el **grafo** de la 008 da a la operación ``uid``."""
+        return {str(kind) for (kind,) in self.query(
+            "SELECT cause_kind FROM gb_stale WHERE item_kind = 'operation' AND item_uid = ?", uid)}
+
+    @classmethod
+    def compile_op(cls, version: Any = None) -> str:
+        """El uid de la compilación vigente de ``version`` (por defecto V01)."""
+        with cls.project.read() as conn:
+            return str(conn.execute(
+                "SELECT o.uid FROM gb_operation AS o JOIN gb_revision AS r ON r.uid = o.revision_uid "
+                "WHERE o.op_type = ? AND r.version_uid = ? AND o.superseded_by IS NULL "
+                "ORDER BY o.rowid DESC LIMIT 1", (provenance.COMPILE, (version or cls.v1).uid)).fetchone()[0])
+
+    def inputs(self, uid: str) -> list[str]:
+        """Los nombres de lo que consumió la operación ``uid``."""
+        return [str(name) for (name,) in self.query(
+            "SELECT d.name FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+            "WHERE io.operation_uid = ? AND io.direction = 'in' ORDER BY io.fid", uid)]
+
+
+class DeclaredHoleTest(_HoleCase):
+    """RF-012-06, RF-012-29, RF-015-10 (el error 51): V01 compilada **sin** declaradas, usada por un diseño de
+    prueba, y una declarada que llega **después**, en el orden de las pruebas: (a) lo compilado, (b) la
+    declarada que llega, (c) quien pide las máscaras las recompila."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.masks_before = cls.compile_version()
+        cls.consumer = cls.consume(cls.masks_before)
+        cls.compile_before = cls.compile_op()
+
+    def test_a_compiled_without_declared_is_current(self) -> None:
+        """RF-012-17: antes de que llegue ninguna declarada, las máscaras de V01 están al día, sin causa de
+        obsolescencia, y se entregan."""
+        self.assertIs(self.state(), access.MaskState.CURRENT)
+        self.assertIsNone(self.cause())
+        self.assertNotIn(CODE, access.load_masks(self.project, self.v1.uid).zones)
+        self.assertEqual(self.graph_causes(self.consumer), set())
+
+    def test_b_a_declared_that_arrives_after_compiling_makes_the_masks_stale_with_its_cause(self) -> None:
+        """RF-012-06, RF-012-29, RF-015-10 (H-1): una declarada que llega **después** de compilar deja las
+        máscaras de V01 **obsoletas** con su causa (``MaskCause.DECLARED_NEW``) aunque el grafo de la 008 no lo sepa
+        (un dato nuevo no deja obsoleto lo que ya se calculó: ni la compilación ni lo que las usó tienen causa
+        todavía); ``load_masks`` se niega nombrándola, en los dos idiomas, y dice qué hacer."""
+        self.declare([declared_row(self.v1.uid)])
+        self.assertEqual(self.graph_causes(self.compile_op()), set(), "el grafo no lo sabe: el hueco")
+        self.assertEqual(self.graph_causes(self.consumer), set())
+        self.assertIs(self.state(), access.MaskState.STALE)
+        self.assertIs(self.cause(), access.MaskCause.DECLARED_NEW)
+        with self.assertRaises(access.MaskError) as caught:
+            access.load_masks(self.project, self.v1.uid)
+        error = caught.exception
+        self.assertEqual(error.code, "core.constraint_masks_declared_new")
+        self.assertIn("V01", error.message)
+        self.assertIn("declarada", error.message)
+        self.assertIn("compílelas de nuevo", error.message)
+        self.assertIn("(geoblender.gis_compile_constraints)", error.message)
+        english = cmessages.render("core.constraint_masks_declared_new", language="en",
+                                   version="V01", command=provenance.COMMAND)
+        self.assertIn("declared", english)
+        self.assertNotEqual(english, error.message)
+        with self.assertRaises(access.MaskError) as asked:  # quien las pide por el contrato (ADR-0028 §4)
+            access.require_current(self.project, self.v1.uid)
+        self.assertEqual(asked.exception.code, "core.constraint_masks_declared_new")
+
+    def test_c_asking_for_the_masks_compiles_them_with_the_declared_and_makes_their_users_stale(self) -> None:
+        """RF-012-06, RF-012-17, RF-015-10: ``ensure_masks_steps`` (lo que piden los operadores) las recompila
+        con la declarada, que ahora es una entrada: las máscaras vuelven a estar al día, con la zona y sin el
+        relleno de la huella, y lo que usó las anteriores queda obsoleto con su causa (otro contenido de un dato
+        que consumió); la compilación leyó la tabla y, al día, ya no tiene causa."""
+        before = self.compile_op()
+        masks = self.compile_version()
+        self.assertIs(self.state(), access.MaskState.CURRENT)
+        self.assertIsNone(self.cause())
+        self.assertNotEqual(self.compile_op(), before)
+        self.assertIn("des_decl", self.inputs(self.compile_op()))
+        self.assertTrue((masks.zone(CODE).mask(GRID.shape) == zone_cells(BOX, GUARD)).all())
+        self.assertFalse(masks.fill_allowed()[zone_cells(BOX, GUARD)].any())
+        self.assertEqual(self.graph_causes(self.consumer), {CAUSE_DATASET_CHANGED})
+        compiled = self.compile_op()
+        again = _last(access.ensure_masks_steps(self.project, self.v1.uid))  # al día: nada que compilar
+        self.assertEqual(self.compile_op(), compiled)
+        self.assertEqual(again.operation_uid, masks.operation_uid)
+
+
+class BeforeThe015Test(_HoleCase):
+    """RF-012-16, RF-012-29, RF-015-10: lo compilado **antes de la 015** (sin ninguna tabla de declaradas) sigue
+    válido hasta que aparece una viva; una compilación que la consumió, aunque esté vacía, está al día mientras
+    su hash no cambie. En el orden de las pruebas."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.compile_version()
+        cls.first_compile = cls.compile_op()
+
+    def test_a_compiled_before_the_015_is_valid_without_a_live_declared_table(self) -> None:
+        """RF-012-16: sin tabla de declaradas viva (ninguna operación de ``des`` la escribió) la compilación de
+        la 012, con las entradas de siempre y ``OP_VERSION`` «1.1», está al día y se entrega."""
+        self.assertEqual(provenance.OP_VERSION, "1.1")
+        self.assertNotIn("des_decl", masks_store.available_tables(self.project, self.v1.uid))
+        self.assertNotIn("des_decl", self.inputs(self.first_compile))
+        self.assertIs(self.state(), access.MaskState.CURRENT)
+        self.assertIsNone(self.cause())
+        access.load_masks(self.project, self.v1.uid)
+
+    def test_b_an_empty_declared_table_that_appears_makes_them_stale(self) -> None:
+        """RF-012-29, RF-015-10: la tabla de las declaradas aparece (aunque **vacía**: ninguna entidad protege
+        todavía): la compilación no la consumió, así que las máscaras están obsoletas con su causa; la compilación
+        de antes no cambia (sigue siendo la vigente hasta recompilar)."""
+        type(self).first_declaration = self.declare([])
+        self.assertIs(self.state(), access.MaskState.STALE)
+        self.assertIs(self.cause(), access.MaskCause.DECLARED_NEW)
+        self.assertEqual(self.compile_op(), self.first_compile)
+
+    def test_c_compiling_again_consumes_the_empty_table_and_leaves_them_current(self) -> None:
+        """RF-012-16, RF-015-10: recompiladas, consumen la tabla vacía (entrada ``constraints_declared``) y
+        están al día; son las máscaras de sin declaradas (ninguna zona declarada)."""
+        masks = self.compile_version()
+        self.assertIs(self.state(), access.MaskState.CURRENT)
+        self.assertIn("des_decl", self.inputs(self.compile_op()))
+        self.assertFalse([code for code in masks.zones if code.startswith("dec__")])
+
+    def test_d_the_same_empty_table_written_again_does_not_make_them_stale(self) -> None:
+        """RF-012-06, RF-015-10: repetir la declaración con las mismas filas (la vacía) deja el mismo hash: las
+        máscaras, que la consumieron, siguen al día, sin recompilar."""
+        before = self.compile_op()
+        self.declare([], supersedes=self.first_declaration)
+        self.assertIs(self.state(), access.MaskState.CURRENT)
+        self.assertIsNone(self.cause())
+        self.assertEqual(self.compile_op(), before)
+
+    def test_e_a_row_that_changes_the_table_is_a_cause_of_the_graph_not_a_new_one(self) -> None:
+        """RF-012-06: una fila que cambia la tabla que la compilación **sí** consumió la deja obsoleta por el
+        grafo de la 008 (otro contenido de un dato que consumió), no por el hueco: ``mask_cause`` no da
+        ``MaskCause.DECLARED_NEW`` y la compilación tiene su causa en ``gb_stale``."""
+        self.declare([declared_row(self.v1.uid)], supersedes=self.query(
+            "SELECT o.uid FROM gb_operation AS o JOIN gb_revision AS r ON r.uid = o.revision_uid "
+            "WHERE o.op_type = 'des.declare_constraints' AND r.version_uid = ? AND o.superseded_by IS NULL",
+            self.v1.uid)[0][0])
+        self.assertIs(self.state(), access.MaskState.STALE)
+        self.assertIsNone(self.cause())
+        self.assertEqual(self.graph_causes(self.compile_op()), {CAUSE_DATASET_CHANGED})
+
+
+class DeclaredOtherVersionTest(_HoleCase):
+    """RF-012-29: la declarada de V01 es de V01. V01 y V02 compiladas, y una declarada que llega a V01."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.masks_1 = cls.compile_version(cls.v1)
+        cls.masks_2 = cls.compile_version(cls.v2)
+        cls.compile_2 = cls.compile_op(cls.v2)
+        cls.declare([declared_row(cls.v1.uid)])
+
+    def test_a_the_declared_of_v01_makes_only_the_masks_of_v01_stale(self) -> None:
+        """RF-012-29, RF-015-10: V01 tiene una declarada nueva (obsoletas, con su causa); V02, que no la ve,
+        sigue al día y se entrega: el hueco se mide **por versión**."""
+        self.assertIs(self.state(self.v1), access.MaskState.STALE)
+        self.assertIs(self.cause(self.v1), access.MaskCause.DECLARED_NEW)
+        self.assertIs(self.state(self.v2), access.MaskState.CURRENT)
+        self.assertIsNone(self.cause(self.v2))
+        access.load_masks(self.project, self.v2.uid)
+        with self.project.read() as conn:
+            self.assertNotIn("des_decl", masks_store._available(conn, self.v2.uid))
+            self.assertIn("des_decl", masks_store._available(conn, self.v1.uid))
+
+    def test_b_v01_compiles_with_it_and_v02_neither_sees_it_nor_consumes_it(self) -> None:
+        """RF-012-29, RF-012-16: V01 se recompila con la declarada; la compilación de V02 es la misma (no se
+        recompila: ni la ve ni la consume), sin su zona y con las mismas máscaras bit a bit."""
+        masks = self.compile_version(self.v1)
+        self.assertIn(CODE, masks.zones)
+        self.assertEqual(self.compile_op(self.v2), self.compile_2)
+        self.assertNotIn("des_decl", self.inputs(self.compile_2))
+        again = access.load_masks(self.project, self.v2.uid)
+        self.assertNotIn(CODE, again.zones)
+        self.assertTrue((again.classes == self.masks_2.classes).all())
+        self.assertIs(self.state(self.v2), access.MaskState.CURRENT)
+
+
+class DeclaredReproduceTest(cp.ConstraintsProjectCase):
+    """RF-012-16, RF-012-29, RF-015-10, RF-009-11: V01 con una declarada, compilada con ella, congelada en V01.r1
+    y reproducida desde lo congelado (la operación de prueba que escribió la tabla no se reproduce, sin
+    entidades: es de ``des``, no de lo que se prueba aquí)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.enterClassContext(efx.declared_registered(reproducible=False))
+        efx.declare_rows(cls.project, cls.clock, [declared_row(cls.v1.uid)], version=cls.v1)
+        cls.clock.advance(minutes=1)
+        cls.masks = _last(access.ensure_masks_steps(cls.project, cls.v1.uid))
+        cls.compile_uid = str(cls.masks.operation_uid)
+        cls.clock.advance(minutes=1)
+        outcome = _last(freeze.freeze_steps(cls.project, cls.v1.uid, reason="Entrega de la prueba"))
+        cls.r1 = str(outcome.frozen.uid)
+
+    def reproduce(self) -> Any:
+        before = (files(self.root, skip=(), skip_dirs=("cache",)), change_counter(self.root))
+        report = _last(reproduce.reproduce_steps(self.project, self.r1))
+        self.assertEqual((files(self.root, skip=(), skip_dirs=("cache",)), change_counter(self.root)),
+                         before, "reproducir no escribe nada en el proyecto")
+        return report
+
+    def test_a_reproducing_v01_r1_gives_the_same_masks_with_the_declared(self) -> None:
+        """RF-012-16, RF-012-29, RF-015-10: la compilación congelada **consumió** la tabla de las declaradas
+        (papel ``constraints_declared``); reproducirla da las cinco salidas con el mismo hash que registró (la
+        rejilla de clases, las zonas con la de la declarada, el informe, las partes y las formas) y las
+        mismas cifras bit a bit, sin escribir nada en el proyecto."""
+        self.assertIn(("des_decl", "constraints_declared"), [(str(name), str(role)) for name, role in self.query(
+            "SELECT d.name, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+            "WHERE io.operation_uid = ? AND io.direction = 'in'", self.compile_uid)])
+        self.assertIn(CODE, self.masks.zones)
+        report = self.reproduce()
+        mine = [check for check in report.outputs if check.op_type == provenance.COMPILE]
+        self.assertEqual(sorted(check.role for check in mine),
+                         sorted(family.role for family in provenance.FAMILIES))
+        self.assertTrue(all(check.same for check in mine), [check for check in mine if not check.same])
+        frozen = {(key, figures_mod.scope_json(json.loads(scope))): value for key, scope, value in self.query(
+            "SELECT key, scope, value FROM gb_figure WHERE operation_uid = ?", self.compile_uid)}
+        reproduced = {(check.key, figures_mod.scope_json(check.scope)): check.reproduced
+                      for check in report.figures if check.operation_uid == self.compile_uid}
+        self.assertEqual(reproduced, frozen)
+        self.assertIn(("gis.zone_area_m2", figures_mod.scope_json({"constraint": CODE})), reproduced)
+        self.assertEqual(report.not_reproducible, ())
+        self.assertEqual(sorted(note.op_type for note in report.taken_frozen),
+                         ["core.test_constraints", "des.declare_constraints"])  # lo que no se reproduce, congelado
+
+    def test_b_changing_what_is_live_after_freezing_does_not_change_the_frozen_masks(self) -> None:
+        """RF-009-19, RF-012-29: congelada V01.r1, una declarada de otro resguardo (y las máscaras recompiladas
+        con ella) cambia lo vivo; reproducir V01.r1 da lo mismo que antes (la declarada congelada, no la de
+        hoy) y V01 sigue al día."""
+        current = str(self.query(
+            "SELECT o.uid FROM gb_operation AS o JOIN gb_revision AS r ON r.uid = o.revision_uid "
+            "WHERE o.op_type = 'des.declare_constraints' AND r.version_uid = ? AND o.superseded_by IS NULL",
+            self.v1.uid)[0][0])
+        efx.declare_rows(self.project, self.clock, [declared_row(self.v1.uid, guard=0.0)], version=self.v1,
+                         supersedes=current)
+        self.clock.advance(minutes=1)
+        live = _last(access.ensure_masks_steps(self.project, self.v1.uid))
+        self.assertEqual(int(live.zone(CODE).mask(GRID.shape).sum()), FOOTPRINT_CELLS)
+        self.assertEqual(int(self.masks.zone(CODE).mask(GRID.shape).sum()), ZONE_CELLS)
+        report = self.reproduce()
+        mine = [check for check in report.outputs if check.op_type == provenance.COMPILE
+                and check.operation_uid == self.compile_uid]
+        self.assertEqual(len(mine), len(provenance.FAMILIES))
+        self.assertTrue(all(check.same for check in mine))
 
 
 if __name__ == "__main__":

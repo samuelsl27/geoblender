@@ -85,6 +85,10 @@ PENDING_015_MODULES = frozenset({
 # mientras se construye: la T34 (documentación) lo lleva a la ficha y vacía esto.
 PENDING_015_API = frozenset({
     "gis.masks.provenance.declared_resolved",  # T18: las columnas de una declarada bajo las claves
+    # T19: el hueco H-1 (gis.masks.access): por qué están obsoletas unas máscaras que el grafo da al día,
+    # el rechazo de quien las pide y compilarlas sin cargarlas.
+    "gis.masks.access.MaskCause", "gis.masks.access.mask_cause", "gis.masks.access.require_current",
+    "gis.masks.access.compile_masks_steps",
 })
 CORE_MODULES = tuple(f"core.constraints.{info.name}"
                      for info in pkgutil.iter_modules(constraints.__path__)

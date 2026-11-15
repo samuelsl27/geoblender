@@ -512,18 +512,12 @@ def _check_name(conn: sqlite3.Connection, op_type: str, name: str, version: Vers
 # --- Empezar la operación -----------------------------------------------------------------------
 
 
-def _require_current_masks(project: StoreProject, version: Version | str,
-                           code: str | None = None) -> None:
+def _require_current_masks(project: StoreProject, version: Version | str) -> None:
     """RF-013-04: las máscaras de ``version`` (su uid o la ``Version``) están al día; si no,
-    ``MaskError`` (``core.constraint_masks_missing``/``_stale``) con la versión y la orden de
+    ``MaskError`` (``core.constraint_masks_missing``/``_stale``/``_declared_new``) con la versión y la orden de
     compilar. Solo lee."""
-    uid, label = (version.uid, version.code) if isinstance(version, Version) else (version, code)
-    state, _pending = access.mask_state(project, uid)
-    if state is not access.MaskState.CURRENT:
-        why = ("core.constraint_masks_missing" if state is access.MaskState.MISSING
-               else "core.constraint_masks_stale")
-        raise access.MaskError(why, field="máscaras", value=state.value, version=label,
-                               command=masks_declared.COMMAND)
+    uid = version.uid if isinstance(version, Version) else version
+    access.require_current(project, uid)  # MaskError, con su causa: también la de una declarada nueva (H-1)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -554,7 +548,7 @@ class OperationStart:
         parte de máscaras (``masks`` ``None``) no lo comprueba."""
         if self.masks is None:
             return
-        _require_current_masks(project, self.version_uid, self.version_code)
+        _require_current_masks(project, self.version_uid)
 
     def begin(self, project: StoreProject, *, conn: sqlite3.Connection | None = None,
               executor: str = "blender") -> OperationHandle:

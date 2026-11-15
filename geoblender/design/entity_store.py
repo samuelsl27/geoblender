@@ -82,9 +82,17 @@ huella, su resguardo obligatorio (D-19), el motivo generado o el que editó la p
 **la decisión**, no la de ahora— y :func:`prepare_declaration`, :func:`run_declaration`,
 :func:`declare_constraints_steps` y :func:`recompute_declaration` la preparan (rechazando proteger sin
 resguardo y proteger en «corte y relleno», RF-015-12), la registran en **una** transacción reescribiendo la
-tabla entera ``des_decl_<vNN>`` y la repiten. El mismo contenido de entidades da el mismo hash. Encadenarla
-tras cada orden y recompilar las máscaras son de la T19; la reproducción desde lo congelado,
-``design.reproduce.reproduce_declare_constraints``.
+tabla entera ``des_decl_<vNN>`` y la repiten. El mismo contenido de entidades da el mismo hash. La reproducción
+desde lo congelado, ``design.reproduce.reproduce_declare_constraints``.
+
+**Tras la orden de una entidad** (T19; RF-015-10, RF-015-16, RF-012-06; P-7; D-21): :func:`after_entity_change` es
+lo que encadena cada orden de entidades tras su commit —y, con la misma función, descartar y retirar (T25, T26)—,
+por pasos con progreso y Esc: repite la declaración y, si las máscaras ya no están al día (la declaración cambió, o
+la compilación vigente no la había consumido nunca: el hueco H-1 de ``gis.masks.access``), las compila de nuevo y
+da un :class:`EntityChain` con lo que quedó obsoleto y el área ganada y perdida por restricción. Cada etapa es una
+operación y una transacción propias: si una falla, queda dicho (:class:`ChainFailure`) y las máscaras, obsoletas
+con su causa. «Recalcular lo obsoleto» no la encadena: la declaración y las máscaras son operaciones de la 008 que
+ella recalcula por el grafo.
 
 La capa solo da la **geometría** y los **valores iniciales**: se copian a parámetros de la entidad
 (con el origen «capa X, campo Y, entidad Z») y cambian después en ella; la capa no se modifica. Del
@@ -103,9 +111,10 @@ import json
 import math
 import sqlite3
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from datetime import date
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
@@ -115,6 +124,7 @@ from ..core.constraints.declared import DeclaredConstraint, declared_code, decla
 from ..core.constraints.model import ConstraintType
 from ..core.constraints.store import constraint_names
 from ..core.datasets import registry as dataset_registry
+from ..core.errors import GeoblenderError
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterRecord, ParameterStore, definition
 from ..core.params.store import default_reason
 from ..core.project.model import Progress
@@ -126,8 +136,9 @@ from ..core.versions import read as versions_read
 from ..core.versions.model import Version
 from ..gis.masks import access
 from ..gis.masks import provenance as masks_provenance
+from ..gis.masks.store import StoredMasks
 from ..gis.grid import Grid
-from ..gis.masks.compile import STEP_BUDGET_S
+from ..gis.masks.compile import STEP_BUDGET_S, Change
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, load_features
 from ..gis.vector import FeatureLayer
@@ -165,7 +176,15 @@ from .platform import (
     platform_outcome,
     summary_notices,
 )
-from .preview import Obsolete, ObsoleteKind, PlatformSummary, held_notices, obsolete_notices
+from .preview import (
+    SUMMARY_ITEMS,
+    Notice,
+    Obsolete,
+    ObsoleteKind,
+    PlatformSummary,
+    held_notices,
+    obsolete_notices,
+)
 from .quarry import _level_column
 from .report import Previous
 from .sectors import design_sectors, refuse_pending
@@ -194,11 +213,15 @@ from .surfaces import project_frame, read_surface
 
 __all__ = [
     "LAYER_FIELDS",
+    "ChainFailure",
+    "ChainStage",
     "DeclaredSource",
+    "EntityChain",
     "EntityFootprint",
     "EntityParamRow",
     "PreparedDeclaration",
     "PreparedPlatform",
+    "after_entity_change",
     "compute_platform_steps",
     "create_platform",
     "declare_constraints_steps",
@@ -1887,3 +1910,186 @@ def recompute_declaration(request: RecomputeRequest, *, budget_s: float = STEP_B
     project: StoreProject = request.project  # type: ignore[assignment]
     return run_declaration(project, version=request.version, supersedes=request.operation_uid,
                            budget_s=budget_s)
+
+
+# --- Tras la orden de una entidad (spec 015, T19; RF-015-10, RF-015-16, RF-012-06; plan 015 §5.3.2) ---
+
+_CHAIN_PHASE = "entity_chain"
+_CHAIN_TOTAL = 100
+"""El total de los pasos de :func:`after_entity_change`: un porcentaje (cada etapa tiene su tramo)."""
+_CHAIN_DECLARE_SHARE = 40
+"""El tramo, de ese porcentaje, que ocupa la declaración; el resto es de la compilación de las máscaras."""
+_STAGE_ERRORS = (GeoblenderError, sqlite3.Error, OSError, ValueError)
+"""Lo que una etapa de :func:`after_entity_change` da por un fallo suyo (un rechazo, el disco, la base): se
+cuenta en el resultado y no se lanza; lo demás (un error del programa) sigue."""
+_CHAIN_OWN = frozenset({provenance.DECLARE_CONSTRAINTS, masks_provenance.COMPILE})
+"""Las operaciones que hace la propia cadena: no se cuentan como «lo que quedó obsoleto». Con una entidad que
+protege, el grafo da también por obsoletas la declaración y las máscaras que acaba de hacer (el eco del ciclo
+entidad → declarada → máscaras → entidad, D-21): se ponen al día cuando se recalcula la entidad."""
+_STALE_OPERATIONS = (
+    "SELECT o.uid, o.op_type, o.settings FROM gb_operation AS o "
+    "JOIN gb_revision AS r ON r.uid = o.revision_uid "
+    "WHERE o.status = 'done' AND o.superseded_by IS NULL AND r.version_uid = ? AND r.state = 'open' "
+    "AND EXISTS (SELECT 1 FROM gb_stale AS s WHERE s.item_kind = 'operation' AND s.item_uid = o.uid) "
+    "ORDER BY o.fid")
+
+
+class ChainStage(StrEnum):
+    """Una etapa de :func:`after_entity_change`: declarar las restricciones de las entidades o recompilar las
+    máscaras con ellas."""
+
+    DECLARE = "declare"
+    MASKS = "masks"
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ChainFailure:
+    """La etapa que falló (``stage``) y su error. Lo que falló queda como estaba (cada etapa es una operación y
+    una transacción propias: P-7) y, si fueron las máscaras, **obsoletas**, con su causa
+    (``gis.masks.access.MaskCause``), hasta que quien las pida las recompile."""
+
+    stage: ChainStage
+    error: Exception
+
+    @property
+    def reason(self) -> str:
+        """Por qué falló, en español, como lo da el error."""
+        return str(getattr(self.error, "text", None) or getattr(self.error, "message", None) or self.error)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class EntityChain:
+    """Lo que hizo :func:`after_entity_change` en la versión ``version`` (su código): cuántas restricciones
+    declaran ahora sus entidades (``declared``; ``None`` si no se pudo declarar), si la declaración **cambió**
+    (otro hash que la anterior o la primera: ``declaration_changed``), si recompiló las máscaras
+    (``masks_compiled``), lo ganado y perdido por restricción que da esa compilación (``changes``,
+    RF-012-06: ``gis.masks.compile.Change`` con el área de su polígono y de su zona), lo que **quedó obsoleto**
+    por ella (``obsolete``: las operaciones de la revisión abierta que usaron las máscaras anteriores, como
+    ``ObsoleteKind.CONSUMER``, y lo que depende de ellas), el estado de las máscaras al terminar
+    (``masks_state``) y lo que falló (``failure``)."""
+
+    version: str
+    declared: int | None
+    declaration_changed: bool
+    masks_compiled: bool
+    changes: tuple[Change, ...] = ()
+    obsolete: tuple[Obsolete, ...] = ()
+    masks_state: access.MaskState = access.MaskState.CURRENT
+    failure: ChainFailure | None = None
+
+    def notices(self) -> tuple[Notice, ...]:
+        """Lo que se dice al terminar la orden, en el orden en que se enseña: la declaración (si cambió), las
+        máscaras recompiladas, por restricción lo ganado y perdido en m², lo que quedó obsoleto y, si falló
+        una etapa, el aviso con el porqué. Ninguno si no cambió nada."""
+        found: list[Notice] = []
+        if self.declaration_changed and self.declared is not None:
+            found.append(Notice("des.entity_chain_declared",
+                                {"version": self.version, "count": self.declared}))
+        if self.masks_compiled:
+            found.append(Notice("des.entity_chain_masks", {"version": self.version}))
+        for change in self.changes:
+            found.append(Notice("des.entity_chain_change", {
+                "name": change.name or change.code, "gained": round(change.polygon_gained_m2),
+                "lost": round(change.polygon_lost_m2), "zone_gained": round(change.zone_gained_m2),
+                "zone_lost": round(change.zone_lost_m2)}))
+        if self.obsolete:
+            names = [f"«{item.name}»" for item in self.obsolete]
+            found.append(Notice("des.entity_chain_obsolete", {
+                "operations": len(names), "items": tuple(names[:SUMMARY_ITEMS])
+                + (("…",) if len(names) > SUMMARY_ITEMS else ())}))
+        if self.failure is not None:
+            code = ("des.entity_chain_declare_failed" if self.failure.stage is ChainStage.DECLARE
+                    else "des.entity_chain_masks_failed")
+            found.append(Notice(code, {"version": self.version, "reason": self.failure.reason}))
+        return tuple(found)
+
+
+def _stale_operations(conn: sqlite3.Connection, version: Version) -> dict[str, Obsolete]:
+    """Las operaciones **obsoletas** de la revisión abierta de ``version`` (hechas, sin sustituir y con alguna
+    causa en la caché de la 008, ``gb_stale``), por su uid, como ``Obsolete`` (``CONSUMER``). Una revisión
+    congelada no se marca (RF-009-19). Solo lee."""
+    return {str(uid): Obsolete(ObsoleteKind.CONSUMER, _name_of(str(op_type), settings), str(op_type),
+                               str(uid))
+            for uid, op_type, settings in conn.execute(_STALE_OPERATIONS, (version.uid,))}
+
+
+def _scaled(steps: Iterator[Progress], low: int, high: int) -> Generator[Progress, None, Any]:
+    """Los pasos de una etapa (``steps``: ``Progress``, el último con su ``result``) como un tramo ``low`` a
+    ``high`` del porcentaje de :func:`after_entity_change`; devuelve el resultado. Cerrar el generador cierra
+    ``steps``."""
+    with closing(steps):  # type: ignore[type-var]
+        for step in steps:
+            if step.result is not None:
+                return step.result
+            fraction = min(max(step.done / step.total, 0.0), 1.0) if step.total else 0.0
+            yield Progress(_CHAIN_PHASE, low + int((high - low) * fraction), _CHAIN_TOTAL, step.message)
+    raise RuntimeError("los pasos de la etapa terminaron sin dar resultado")
+
+
+def after_entity_change(project: StoreProject, version: Version | str | None, *,
+                        budget_s: float = STEP_BUDGET_S) -> Generator[Progress, None, None]:
+    """**Lo que sigue a cada orden de entidades** en la versión ``version`` (uid, código o ``Version``) por
+    pasos de ``budget_s`` como mucho (spec 015, T19; RF-015-10, RF-015-16, RF-012-06; plan 015 §5.3.2 y P-7;
+    ADR-0030 §5): tras el commit de una entidad creada, cambiada, retirada o descartada, **(a)** repite la
+    declaración de las restricciones de las entidades vivas de la versión (:func:`declare_constraints_steps`:
+    ``des_decl_<vNN>`` entera, que sustituye a la vigente; con las mismas entidades da el mismo hash) y **(b)**
+    si las máscaras ya no están al día —la declaración cambió, o la compilación vigente no la había consumido
+    nunca: el hueco H-1, ``gis.masks.access.MaskCause.DECLARED_NEW``— las compila de nuevo
+    (``gis.masks.access.compile_masks_steps``) y cuenta **qué quedó obsoleto con ello** (las operaciones de la
+    revisión abierta que usaron las máscaras anteriores: la propia plataforma que protege, cuya restricción
+    cambió lo que consumió, es lo esperado, CE-015-04 y D-21; «Recalcular lo obsoleto» la rehace y quita la
+    marca de lo que dependía de ella si su salida no cambia, RF-008-26) y **lo ganado y lo perdido por
+    restricción** (RF-012-06: el informe de la compilación). Sin cambio, no recompila.
+
+    Cada etapa es una operación propia y **una transacción propia** (P-7): si una falla (un rechazo, el
+    disco), no queda nada a medias de ella y el fallo va en el resultado (:class:`ChainFailure`) en lugar de
+    lanzarse; si fueron las máscaras, quedan **obsoletas con su causa** y se compilan de nuevo antes de que un
+    operador las use (``ensure_masks_steps``) o con «Compilar las máscaras». Cerrar el generador a mitad
+    (Esc) cierra la etapa en curso (que no deja nada) y deja lo de las anteriores. El último ``Progress``
+    lleva el :class:`EntityChain`.
+
+    Al avanzar, antes de escribir nada: los rechazos de :func:`~.store.require_version` (RF-009-21: sin
+    versión activa, desconocida o no editable)."""
+    found = require_version(project, None if version is None else (
+        version.uid if isinstance(version, Version) else version), provenance.DECLARE_CONSTRAINTS)
+    yield Progress(_CHAIN_PHASE, 0, _CHAIN_TOTAL, "Poniendo al día las restricciones declaradas…")
+    with project.read() as conn:
+        before = dataset_registry.get(conn, provenance.dataset_name(provenance.DECLARED_TABLE),
+                                      version_uid=found.uid)
+        stale = _stale_operations(conn, found)
+    declared: int | None = None
+    changed = compiled = False
+    changes: tuple[Change, ...] = ()
+    failure: ChainFailure | None = None
+    try:  # (a) la declaración
+        stored: Stored = yield from _scaled(
+            declare_constraints_steps(project, found, budget_s=budget_s), 0, _CHAIN_DECLARE_SHARE)
+        (record,) = stored.records
+        with project.read() as conn:
+            (declared,) = conn.execute(f'SELECT COUNT(*) FROM "{record.locator}"').fetchone()
+        changed = before is None or before.content_sha256 != record.content_sha256
+    except _STAGE_ERRORS as error:
+        failure = ChainFailure(ChainStage.DECLARE, error)
+    if failure is None:  # (b) las máscaras, si ya no están al día
+        state, _pending = access.mask_state(project, found.uid)
+        if state is not access.MaskState.CURRENT:
+            yield Progress(_CHAIN_PHASE, _CHAIN_DECLARE_SHARE, _CHAIN_TOTAL,
+                           "Compilando las máscaras con las restricciones declaradas…")
+            try:
+                recompiled: StoredMasks = yield from _scaled(
+                    access.compile_masks_steps(project, found.uid, budget_s=budget_s),
+                    _CHAIN_DECLARE_SHARE, _CHAIN_TOTAL)
+                compiled = True
+                changes = recompiled.result.changes
+            except _STAGE_ERRORS as error:
+                failure = ChainFailure(ChainStage.MASKS, error)
+    with project.read() as conn:
+        now = _stale_operations(conn, found)
+    after, _pending = access.mask_state(project, found.uid)
+    chain = EntityChain(
+        found.code, declared, changed, compiled, changes,
+        tuple(item for uid, item in now.items()
+              if uid not in stale and item.op_type not in _CHAIN_OWN), after, failure)
+    yield Progress(_CHAIN_PHASE, _CHAIN_TOTAL, _CHAIN_TOTAL,
+                   "Restricciones declaradas y máscaras al día" if failure is None
+                   else "Restricciones declaradas y máscaras: no se pudo terminar", result=chain)

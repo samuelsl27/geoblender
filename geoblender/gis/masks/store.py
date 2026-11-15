@@ -57,6 +57,7 @@ import numpy as np
 from ...core.constraints import declared as declared_store
 from ...core.constraints import store as cstore
 from ...core.constraints.checks import Incomplete
+from ...core.constraints.declared import DeclaredConstraint
 from ...core.constraints.messages import ConstraintError
 from ...core.constraints.model import (
     Constraint,
@@ -1170,6 +1171,22 @@ def _frozen_constraints(request: ReproduceRequest) -> tuple[Constraint, ...]:
     return tuple(found)
 
 
+def _frozen_declared(request: ReproduceRequest) -> tuple[DeclaredConstraint, ...]:
+    """Las restricciones **declaradas por las entidades** que consumió la compilación congelada (T19;
+    RF-012-29, RF-015-10): la tabla ``des_decl`` de la versión que congeló la revisión (la entrada con el papel
+    ``constraints_declared``, su capa en ``settings["layer"]``), por ``fid``. Ninguna si la compilación no la
+    consumió (una de antes de la 015, o de una versión sin entidades que declaren)."""
+    items = [item for item in request.inputs if item.role == declared.DECLARED_ROLE]
+    if not items:
+        return ()
+    item = items[0]
+    layer = item.settings.get("layer")
+    if not layer:
+        raise ValueError("la tabla congelada de las restricciones declaradas no dice su capa")
+    with GpkgConnection.open_read(Path(item.files["main"])) as gpkg:
+        return declared_store.read_declared(gpkg.connection, str(layer))
+
+
 def _reproduced_table(request: ReproduceRequest, family: str, rows: Sequence[tuple[Any, ...]],
                       crs: CrsRef, code: str) -> ReproducedOutput:
     found = declared.FAMILIES_BY_CODE[family]
@@ -1195,8 +1212,10 @@ def reproduce_compile(request: ReproduceRequest, *,
 
 def _reproduce(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
     crs, vertical = request.references()
-    constraints = _frozen_constraints(request)
+    entity = _frozen_declared(request)
+    constraints = (*_frozen_constraints(request), *(item.as_constraint() for item in entity))
     resolved = {key: value for key, (value, _unit) in request.params.items()}
+    resolved.update(declared.declared_resolved(entity))  # columnas de su tabla (T19, P-8): como en _run
     grid = declared.grid_of(request.settings)
     compiled = CompileRequest(constraints, MappingProxyType(resolved), grid=grid,
                               previous=PreviousMasks.from_settings(

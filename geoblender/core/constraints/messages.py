@@ -211,6 +211,14 @@ CATALOG: tuple[Message, ...] = (
         "Las máscaras de {version} están obsoletas: cambió una restricción, un sector, una "
         "búsqueda o un parámetro después de compilarlas; compílelas de nuevo ({command}).",
     ),
+    Message(
+        "core.constraint_masks_declared_new",
+        "The masks of {version} are stale: a constraint declared by a design entity is not in "
+        "them (it was declared after they were compiled); compile them again ({command}).",
+        "Las máscaras de {version} están obsoletas: una restricción declarada por una entidad de "
+        "diseño no está en ellas (se declaró después de compilarlas); compílelas de nuevo "
+        "({command}).",
+    ),
     # Exportar las máscaras (RF-012-20; gis.masks.export) --------------------------------------
     Message(
         "core.constraint_export_read_only",

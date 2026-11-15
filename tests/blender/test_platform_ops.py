@@ -46,6 +46,7 @@ from tests.support.trees import remove_tree
 PLATFORM = "geoblender.des_create_platform"
 PLATFORM_CLASS = "GEOBLENDER_OT_des_create_platform"
 PLATFORM_TYPE = "des.platform"
+DECLARE_TYPE = "des.declare_constraints"
 REASON = "Prueba de la orden «Plataforma…»"
 PERSON = "Samuel (IMGA)"
 WEST = 700_000.0
@@ -540,6 +541,16 @@ class CreatePlatformTest(unittest.TestCase):
         ((uid, status),) = self.rows("SELECT uid, status FROM gb_operation WHERE op_type = ?",
                                      PLATFORM_TYPE)
         self.assertEqual(status, "done")
+        # Lo que sigue a crearla (T19; RF-015-10, plan 015 §5.3.2): la declaración de las restricciones de la
+        # versión (aquí vacía: «Carga» no protege) y, como la compilación de las máscaras no la había consumido
+        # (el hueco H-1), las máscaras de nuevo, al día, con la tabla como entrada.
+        self.assertEqual(self.rows("SELECT status FROM gb_operation WHERE op_type = ?", DECLARE_TYPE),
+                         [("done",)])
+        access = _module("gis.masks.access")
+        self.assertEqual(access.mask_state(self.project, self.v01.uid)[0], access.MaskState.CURRENT)
+        self.assertEqual(self.rows("SELECT count(*) FROM gb_operation WHERE op_type = ? AND status = 'done' "
+                                   "AND superseded_by IS NULL", "gis.compile_constraints"), [(1,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM gb_stale"), [(0,)], "unas máscaras iguales")
         psf = self.dprov.dataset_name("psf", LOADING)
         written = self.surfaces.read_surface(self.project, psf, version_uid=self.v01.uid).values
         inside = np.zeros(written.shape, dtype=bool)
@@ -761,11 +772,38 @@ class CreatePlatformTest(unittest.TestCase):
                          {"FINISHED"})
         self.assertTrue(poll())
 
+    def test_g_a_platform_that_protects_declares_its_zone_and_the_masks_are_compiled_with_it(self) -> None:
+        """RF-015-10, RF-012-06, RF-015-16, D-21, CE-015-04 (T19, plan 015 §5.3.2): una plataforma que
+        **protege** (4 m de resguardo) se crea y lo que sigue a crearla —declarar y recompilar las máscaras— la
+        deja en las restricciones de V01 (``dec__plt_004``, con el nombre de la entidad) y en las máscaras, al
+        día, con su zona sin relleno; y quedan obsoletas, con su causa, las operaciones que usaron las máscaras
+        anteriores (también las de las plataformas): lo esperado, que «Recalcular lo obsoleto» resuelve."""
+        self.refresh()
+        self.calculate(name="Protegida", feature=WORKSHOP, start="entity:PLT-003", reach="6", protect=True,
+                       guard="4")
+        self.assertEqual(self.create(), {"FINISHED"})
+        declared, access = _module("core.constraints.declared"), _module("gis.masks.access")
+        with self.project.read() as conn:
+            (found,) = declared.read_in_version(conn, self.v01.uid)
+        self.assertEqual((found.code, found.entity_code, found.entity_name, found.buffer_out_m),
+                         ("dec__plt_004", "PLT-004", "Protegida", 4.0))
+        self.assertEqual(access.mask_state(self.project, self.v01.uid)[0], access.MaskState.CURRENT)
+        masks = access.load_masks(self.project, self.v01.uid)
+        zone = masks.zone("dec__plt_004").mask(masks.classes.shape)
+        self.assertTrue(zone.any())
+        self.assertFalse(masks.fill_allowed()[zone].any(), "su zona queda sin relleno")
+        stale = self.rows("SELECT DISTINCT o.fid, o.settings FROM gb_stale AS s JOIN gb_operation AS o "
+                          "ON o.uid = s.item_uid WHERE s.item_kind = 'operation' AND o.op_type = ? "
+                          "AND o.status = 'done' AND o.superseded_by IS NULL ORDER BY o.fid", PLATFORM_TYPE)
+        self.assertEqual([json.loads(settings)["name"] for _fid, settings in stale],
+                         [LOADING, WORKSHOP, RAMP, "Protegida"],
+                         "la propia plataforma que protege, y las que usaron las máscaras anteriores")
+
     def test_z_disabling_geoblender_removes_the_command_and_leaves_no_temporary(self) -> None:
         """Principio 8, D-14 de la 013: con un cálculo abierto, desactivar Geoblender lo descarta (no queda
         ningún temporal) y quita la orden."""
         self.refresh()
-        self.calculate(name="Al apagar", feature=WORKSHOP, start="entity:PLT-003")
+        self.calculate(name="Al apagar", feature=WORKSHOP, start="entity:PLT-004")
         self.assertTrue(any(".tmp" in name for name in self.names()))
         blender_ext.release()
         self.assertIsNone(getattr(bpy.types, PLATFORM_CLASS, None))
