@@ -113,6 +113,14 @@ repitiéndolo con ``supersedes`` sin esa entrada, con el motivo y el decisor en 
 (``provenance.SUPPORTS_RELEASED``) y un evento: su salida no cambia, así que lo que dependía de ella no se
 recalcula (RF-008-26).
 
+**Traer las entidades de otra versión** (T26; RF-015-18, RF-009-01; D-18; plan 015 P-4): :func:`bring_entities` copia a la
+versión editable las **definiciones** de las entidades de cualquier otra —sus parámetros ``des.platform.{e}.*`` con su
+decisor, su fecha y su origen y un historial «Traído de V09.r2», como «Heredado de…» de ``ParameterStore.inherit``, que
+es lo que recibe la versión que parte de otra—, **sin resultados ni cifras**, «sin calcular»; reasigna el código si está
+ocupado (y las referencias entre las traídas), cambia el nombre si choca, deja **sin valor** la partida que era un
+resultado de la otra versión o la de la que ya parte otra entidad, no trae las descartadas y escribe todo en una
+transacción. Al calcularlas (:func:`create_platform` con su código), sus dependencias se detectan de nuevo.
+
 La capa solo da la **geometría** y los **valores iniciales**: se copian a parámetros de la entidad
 (con el origen «capa X, campo Y, entidad Z») y cambian después en ella; la capa no se modifica. Del
 terreno (RF-015-09) se comprueba la superficie de partida y la de apoyo, que son las que lee el
@@ -159,7 +167,14 @@ from ..core.datasets import external as dataset_external
 from ..core.datasets import registry as dataset_registry
 from ..core.datasets.model import FINAL_STATUSES
 from ..core.errors import GeoblenderError
-from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterRecord, ParameterStore, definition
+from ..core.params import (
+    PROJECT_SCOPE,
+    VERSION_SCOPE,
+    ParameterRecord,
+    ParameterStore,
+    ParamKind,
+    definition,
+)
 from ..core.params.store import default_reason
 from ..core.project.events import EventKind, record_event
 from ..core.project.model import Progress
@@ -250,6 +265,8 @@ from .surfaces import project_frame, read_surface
 
 __all__ = [
     "LAYER_FIELDS",
+    "Brought",
+    "BroughtEntity",
     "ChainFailure",
     "ChainStage",
     "DeclaredSource",
@@ -265,6 +282,7 @@ __all__ = [
     "SupportSurvey",
     "add_supports",
     "after_entity_change",
+    "bring_entities",
     "compute_platform_steps",
     "create_platform",
     "declaration_diverges",
@@ -2788,3 +2806,287 @@ def _record_release(project: StoreProject, found: Version, operation: str, name:
                             entities=shown, reason=first.reason),
                      session=project.session, at=format_utc(project.clock.now()), entity_kind="operation",
                      entity_uid=operation, data=data)
+
+
+# --- Traer las entidades de otra versión (spec 015, T26; RF-015-18, RF-009-01; D-18; plan 015 P-4) ---------
+
+_BROUGHT = "Traído de {label}"
+"""El motivo de la fila de historial de cada parámetro traído (como «Heredado de V10.r2» de ``inherit``)."""
+_OF_VERSION = "SELECT 1 FROM gb_dataset WHERE version_uid = ? AND name = ? LIMIT 1"
+"""Si la versión de origen tiene un dato **propio** con ese nombre (un resultado suyo, no del proyecto)."""
+_NOT_BROUGHT = frozenset({PlatformParam.DISCARDED})
+"""Los parámetros de la entidad que no se traen: ``discarded`` solo existe en las descartadas sin calcular, que no se
+traen (lo descartado es un estado de la versión de origen)."""
+_FOLLOW_CODES = "; sus referencias siguen los códigos de las entidades traídas"
+_REFERENCES = frozenset({PlatformParam.START, PlatformParam.SUPPORT, PlatformParam.SUPPORTS})
+
+
+@dataclass(frozen=True, slots=True)
+class BroughtEntity:
+    """Una entidad que trajo :func:`bring_entities`: su código (``source_code``) y su nombre (``source_name``) en la
+    versión de origen, los que tiene ahora en la de destino (``code``, ``name``: otros si los de origen estaban
+    ocupados), su partida (``start``) y su superficie de apoyo (``support``) **en el destino** (``None``: sin valor,
+    porque eran un resultado de la versión de origen o la superficie de la que ya parte otra entidad) y cuántos
+    parámetros se copiaron (``parameters``)."""
+
+    source_code: str
+    code: str
+    source_name: str
+    name: str
+    start: str | None
+    support: str | None
+    parameters: int
+
+    @property
+    def recoded(self) -> bool:
+        """Si el código de origen estaba ocupado en el destino y recibió el siguiente."""
+        return self.code != self.source_code
+
+    @property
+    def renamed(self) -> bool:
+        """Si el nombre de origen estaba ocupado en el destino (por otra entidad o por un dato con ese nombre)."""
+        return self.name != self.source_name
+
+
+@dataclass(frozen=True, slots=True)
+class Brought:
+    """Lo que hizo :func:`bring_entities`: la versión de origen (``source``, su código), la de destino (``version``), la
+    revisión de la que se tomó el valor de los parámetros (``label``, «V09.r2»), las entidades traídas
+    (``entities``, por el código de origen) y los avisos, en el orden en que se enseñan (``notices``: cuántas, los
+    códigos y los nombres cambiados, lo que quedó sin valor)."""
+
+    source: str
+    version: str
+    label: str
+    entities: tuple[BroughtEntity, ...]
+    notices: tuple[Notice, ...]
+
+    @property
+    def parameters(self) -> int:
+        """Cuántas filas de parámetros se escribieron en el destino."""
+        return sum(item.parameters for item in self.entities)
+
+
+@dataclass(frozen=True, slots=True)
+class _BringRow:
+    """Un parámetro que se escribe en el destino: su clave nueva, la fila de la versión de origen de la que sale
+    (``record``: su tipo, su origen, su decisor y la fecha de su decisión), su valor (el mismo, salvo lo que sigue
+    los códigos y los nombres nuevos) y su motivo."""
+
+    key: str
+    record: ParameterRecord
+    value: object
+    reason: str
+
+
+def _revision_label(conn: sqlite3.Connection, version: Version) -> str:
+    """La revisión de ``version`` en que sus parámetros tienen hoy su valor: la abierta o, si no hay, la última
+    («V09.r2»; sin revisiones, su código): lo que dice «Traído de V09.r2», como ``inherit``."""
+    current = versions_read.open_revision(conn, version.uid)
+    if current is not None:
+        return current.label(version.code)
+    known = versions_read.revisions(conn, version.uid)
+    return known[-1].label(version.code) if known else version.code
+
+
+def _chosen(listed: EntityRegistry, source: Version, wanted: Iterable[str] | None) -> list[entities.EntityEntry]:
+    """Las entidades de la versión de origen que se traen: todas las que no están descartadas (``wanted`` ``None``) o
+    las que se piden por su código o su nombre. Una descartada es un registro y no se trae
+    (``des.entity_bring_discarded`` si se pide); una que no hay, ``des.entity_bring_unknown``. Por el orden de sus
+    códigos."""
+    if wanted is None:
+        return [entry for entry in listed if entry.record.state is not EntityState.DISCARDED]
+    found: dict[str, entities.EntityEntry] = {}
+    for ref in wanted:
+        entry = listed.get(ref)
+        if entry is None:
+            raise DesignError("des.entity_bring_unknown", obj=f"Versión {source.code}", field="entidad", value=ref,
+                              entity=ref, source=source.code)
+        if entry.record.state is EntityState.DISCARDED:
+            raise DesignError("des.entity_bring_discarded", obj=f"Entidad «{entry.record.name}»", field="estado",
+                              value=str(entry.record.state), entity=entry.record.name, source=source.code)
+        found[entry.record.code] = entry
+    return sorted(found.values(), key=lambda entry: entities.code_order(entry.record.code))
+
+
+def _new_codes(chosen: Sequence[entities.EntityEntry], taken: Collection[str]) -> dict[str, str]:
+    """El código que tiene cada entidad de ``chosen`` en el destino: el suyo si no está ocupado en él (``taken``: los
+    de todas las entidades de la versión, también las descartadas, que siguen en ella) y, si no, el siguiente de su
+    tipo (``entities.next_code``, que nunca reutiliza uno)."""
+    used = set(taken)
+    found = {entry.record.code: entry.record.code for entry in chosen if entry.record.code not in used}
+    used.update(found)
+    for entry in chosen:
+        if entry.record.code not in found:
+            found[entry.record.code] = entities.next_code(entry.record.kind, used)
+            used.add(found[entry.record.code])
+    return found
+
+
+def _free_name(name: str, version: str, names: set[str], data: set[str]) -> str:
+    """``name`` si el destino no lo tiene (ni otra entidad con ese nombre ni su dato de superficie, que es el mismo
+    nombre en ASCII: la regla de ``_identify``) y, si no, ``name (V09)`` y, si también está ocupado, ``name (V09) 2``,
+    ``3``… Lo apunta entre los nombres ocupados."""
+    surface = provenance.ENTITY_SURFACE_GRID
+
+    def taken(text: str) -> bool:
+        return text in names or provenance.dataset_name(surface, text) in data
+
+    candidate = name
+    if taken(candidate):
+        candidate, number = f"{name} ({version})", 1
+        while taken(candidate):
+            number += 1
+            candidate = f"{name} ({version}) {number}"
+    names.add(candidate)
+    data.add(provenance.dataset_name(surface, candidate))
+    return candidate
+
+
+def _brought_surface(conn: sqlite3.Connection, source: Version, listed: EntityRegistry, ref: str | None,
+                     new: Mapping[str, str]) -> tuple[str | None, str | None]:
+    """La superficie ``ref`` (la partida o el apoyo de una entidad de la versión de origen) como vale en el destino:
+    ``(valor, nombre de lo que se pierde)``. ``entity:<código>`` de una entidad que se trae pasa a su código nuevo; la
+    de una que no, y el nombre de un dato propio de la versión de origen (una superficie de diseño suya), no existen
+    en el destino y quedan **sin valor**, con el nombre que se enseña en el aviso (el de la entidad o el del dato); el
+    terreno y lo demás del proyecto se conservan."""
+    if ref is None or not ref.strip():
+        return None, None
+    code = entities.ref_code(ref)
+    if code is not None:
+        if code in new:
+            return entities.surface_ref(new[code]), None
+        other = listed.get(code)
+        return None, other.record.name if other is not None else ref.strip()
+    if conn.execute(_OF_VERSION, (source.uid, ref.strip())).fetchone() is not None:
+        return None, ref.strip()
+    return ref, None
+
+
+def _brought_supports(text: str | None, new: Mapping[str, str]) -> tuple[str | None, tuple[str, ...]]:
+    """Lo que la persona declaró que la entidad apoya (``supports``: códigos separados por comas) como vale en el
+    destino: ``(texto, lo que no se trae)``. Cada código pasa al nuevo; el de una entidad que no se trae se pierde (aunque
+    el destino tenga otra con ese código: no es la misma entidad)."""
+    declared = _declared(text)
+    kept = [new[part] for part in declared if part in new]
+    return (", ".join(kept) or None), tuple(part for part in declared if part not in new)
+
+
+def _entity_rows(store: ParameterStore, conn: sqlite3.Connection, source: Version, record: EntityRecord, fresh: str,
+                 label: str, changed: Mapping[PlatformParam, object]) -> list[_BringRow]:
+    """Los parámetros de la entidad ``record`` de la versión de origen que se escriben en el destino con el código
+    ``fresh``: los que tienen valor (``changed`` da el de los que cambian: el nombre, la partida, el apoyo y lo
+    declarado; si es ``None``, no se escribe), con su motivo, «Traído de V09.r2» y lo que cambió. Solo lee."""
+    rows: list[_BringRow] = []
+    for param in PlatformParam:
+        found = None if param in _NOT_BROUGHT else store.get(entity_key(record.code, param), version=source.uid,
+                                                             conn=conn)
+        if found is None or found.value is None:
+            continue
+        value = changed[param] if param in changed else found.value
+        if value is None:
+            continue
+        why = _BROUGHT.format(label=label)
+        if param is PlatformParam.NAME and (fresh != record.code or value != record.name):
+            why += f"; era la entidad {record.code} «{record.name}» de {source.code}"
+        elif param in _REFERENCES and value != found.value:
+            why += _FOLLOW_CODES
+        if found.kind is ParamKind.CALCULADO:
+            why += f"; era CALCULADO en {source.code}: se trae su valor, no la cifra"
+        rows.append(_BringRow(entity_key(fresh, param), found, value, why))
+    return rows
+
+
+def bring_entities(project: StoreProject, source_version: Version | str, target_version: Version | str, *,
+                   codes: Iterable[str] | None = None) -> Brought:
+    """**Trae a la versión editable ``target_version`` las entidades de otra versión** (``source_version``; ``Version``,
+    uid o código; cualquiera: no solo la madre; spec 015, T26; RF-015-18, D-18; plan 015 P-4): copia sus **definiciones**
+    —los parámetros ``des.platform.{e}.*`` de cada una con su valor, su tipo, su origen, su decisor y la fecha de su
+    decisión, y una entrada de historial «Traído de V09.r2», como ``ParameterStore.inherit`` («Heredado de…»); la capa y
+    la geometría de origen, que son parámetros, y lo que la persona declaró que apoya (``supports``)—, **sin sus
+    resultados ni sus cifras** (RF-009-01: ni superficies, ni tablas, ni informes, ni cifras, ni las restricciones que
+    declaraban, que son derivadas y se regeneran al calcular): quedan **sin calcular**, y sus dependencias se detectan de
+    nuevo al calcularlas (el gancho de ``DesignWriter.commit``, :func:`create_platform` con su código). La versión que
+    **parte de otra** ya las recibe así, por ``inherit`` (RF-009-01).
+
+    ``codes``: las que se traen, por su código o su nombre en la versión de origen (por defecto, todas las que no están
+    descartadas; una descartada es un registro y no se trae, y pedirla se rechaza). **Códigos y nombres**: si el código
+    de una ya está ocupado en el destino (también por una descartada), recibe el siguiente (``entities.next_code``) y las
+    referencias entre las traídas (``start``, ``support`` y ``supports``) siguen el código nuevo; si su nombre ya lo tiene
+    una entidad o un dato del destino, se le añade la versión de origen entre paréntesis («Carga (V09)»; con otro
+    número si también está ocupado). **Partidas**: una superficie de la versión de origen que no existe en el destino
+    —la de una entidad que no se trae, o un dato suyo— queda **sin valor**, con un aviso (la entidad no se puede
+    calcular hasta que se elija otra); el terreno y lo demás del proyecto se conservan; y una que ya es la de otra
+    entidad del destino también (de cada superficie parte una entidad: RF-015-04). Lo declarado en ``supports`` sobre una
+    entidad que no se trae se pierde, con su aviso.
+
+    **Una sola transacción**: si algo falla, no queda nada. Nada se escribe si no hay nada que traer. No encadena la
+    declaración ni las máscaras (lo que se trae no está calculado, no declara nada) ni deja ningún evento: el historial
+    de cada parámetro lo dice. Rechazos, sin escribir nada: los de :func:`~.store.require_version` (``VersionError``,
+    RF-009-21: el destino no existe o no es editable; el origen no existe), ``des.entity_bring_same``,
+    ``des.entity_bring_unknown`` y ``des.entity_bring_discarded``."""
+    wanted = target_version.uid if isinstance(target_version, Version) else target_version
+    target = require_version(project, wanted, provenance.PLATFORM)
+    store = ParameterStore(project)
+    with project.write_transaction() as conn:
+        source = _version_in(conn, source_version)
+        if source.uid == target.uid:
+            raise DesignError("des.entity_bring_same", obj=f"Versión {target.code}", field="versión de origen",
+                              value=source.code, version=target.code)
+        listed = entities.registry(project, source.uid, conn=conn)
+        mine = entities.registry(project, target.uid, conn=conn)
+        label = _revision_label(conn, source)
+        chosen = _chosen(listed, source, (codes,) if isinstance(codes, str) else (
+            None if codes is None else tuple(codes)))
+        if not chosen:
+            return Brought(source.code, target.code, label, (),
+                           (Notice("des.entity_bring_nothing", {"source": source.code}),))
+        new = _new_codes(chosen, [entry.record.code for entry in mine])
+        names = {entry.record.name for entry in mine}
+        data = {provenance.dataset_name(provenance.ENTITY_SURFACE_GRID, name) for name in names}
+        records = list(mine.records)
+        brought: list[BroughtEntity] = []
+        notices: list[Notice] = []
+        rows: list[_BringRow] = []
+        for entry in chosen:
+            record = entry.record
+            fresh = new[record.code]
+            name = _free_name(record.name, source.code, names, data)
+            start, lost_start = _brought_surface(conn, source, listed, record.start, new)
+            support, lost_support = _brought_surface(conn, source, listed, record.support, new)
+            taken = entities.start_conflict(records, start)
+            if taken is not None:  # de cada superficie parte una entidad: la traída no puede ser la segunda
+                notices.append(Notice("des.entity_bring_start_taken", {
+                    "name": name, "surface": start, "other": taken.name, "version": target.code}))
+                start = None
+            records.append(EntityRecord(fresh, name, record.kind, start, support))
+            declared = store.get(entity_key(record.code, PlatformParam.SUPPORTS), version=source.uid, conn=conn)
+            supports, lost_supports = _brought_supports(
+                None if declared is None or declared.value is None else str(declared.value), new)
+            made = _entity_rows(store, conn, source, record, fresh, label, {
+                PlatformParam.NAME: name, PlatformParam.START: start, PlatformParam.SUPPORT: support,
+                PlatformParam.SUPPORTS: supports})
+            rows.extend(made)
+            brought.append(BroughtEntity(record.code, fresh, record.name, name, start, support, len(made)))
+            if fresh != record.code:
+                notices.append(Notice("des.entity_bring_recoded", {
+                    "name": name, "old": record.code, "code": fresh, "source": source.code,
+                    "version": target.code}))
+            if name != record.name:
+                notices.append(Notice("des.entity_bring_renamed", {
+                    "old": record.name, "name": name, "version": target.code}))
+            for role, surface in (("start", lost_start), ("support", lost_support)):
+                if surface is not None:
+                    notices.append(Notice(f"des.entity_bring_{role}_lost", {
+                        "name": name, "surface": surface, "source": source.code, "version": target.code}))
+            if lost_supports:
+                notices.append(Notice("des.entity_bring_supports_lost", {
+                    "name": name, "entities": ", ".join(f"«{part}»" for part in lost_supports)}))
+        entities.check_chain(records)  # la cadena del destino sigue siendo válida: si no, no se escribe nada
+        for row in rows:
+            kind = ParamKind.ADOPTADO if row.record.kind is ParamKind.CALCULADO else row.record.kind
+            store.create(conn, row.key, row.value, kind=kind, source=row.record.source,  # type: ignore[arg-type]
+                         source_kind=row.record.source_kind, decided_by=row.record.decided_by,
+                         decided_at=row.record.decided_at, reason=row.reason, version=target.uid)
+    done = Notice("des.entity_bring_done", {"count": len(brought), "source": source.code, "version": target.code})
+    return Brought(source.code, target.code, label, tuple(brought), (done, *notices))

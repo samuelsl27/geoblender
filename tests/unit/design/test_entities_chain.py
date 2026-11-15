@@ -257,6 +257,17 @@ class ChainTailsTest(unittest.TestCase):
         superficie que verificar."""
         self.assertEqual(numbers(entities.chain_tails([rec(1, GROUND), rec(2, None)])), [1])
 
+    def test_an_entity_without_start_that_another_starts_from_opens_its_chain(self) -> None:
+        """RF-015-04, RF-015-18 (T26): lo que deja «Traer las entidades de…» cuando la partida de la primera era un
+        resultado de otra versión: P1 sin partida y P2 y P3, que parten de su superficie y de la de P2: la cadena la
+        abre P1 (aún sin superficie de la que partir), su cola es P3 y **no es un ciclo**; si nadie parte de su
+        superficie, sigue sin estar en ninguna cadena."""
+        records = [rec(1, None), rec(2, ref(1)), rec(3, ref(2))]
+        self.assertEqual(numbers(entities.chain_tails(records)), [3])
+        self.assertIsNone(entities.check_chain(records))
+        self.assertEqual(numbers(entities.chain_tails([rec(1, None), rec(2, GROUND)])), [2])
+        self.assertEqual(numbers(entities.chain_tails([rec(2, ref(1)), rec(1, None), rec(3, GROUND)])), [2, 3])
+
     def test_a_discarded_entity_is_not_a_tail(self) -> None:
         """RF-015-04, RF-015-17: descartada la última, la anterior vuelve a ser la cola; descartada
         la única, la cadena desaparece; lo que partía de una descartada abre una cadena."""

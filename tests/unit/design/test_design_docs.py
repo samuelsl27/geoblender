@@ -203,6 +203,8 @@ PENDING_015_API = frozenset({
     "RetiredEntity", "RetiredSupport", "retired_supports", "DiscardPlan", "DiscardResult", "Discarded",
     "discard_entity", "discard_entity_steps", "discard_plan", "release_support", "ReleasedSupport",
     "merge_released", "released_supports",
+    # T26: traer las entidades de otra versión (design.entity_store).
+    "Brought", "BroughtEntity", "bring_entities",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({
@@ -234,7 +236,8 @@ PENDING_015_MODULES = frozenset({
     # survey_supports, SupportSurvey, add_supports, entity_surfaces, EntitySurface y declared_supports
     # (lo que apoya una operación sobre las entidades de su versión, que añade ``DesignWriter.commit``); T25:
     # discard_plan, DiscardPlan, discard_entity, discard_entity_steps, DiscardResult, Discarded y release_support
-    # (descartar una entidad, «apoyo retirado» y soltar el apoyo: RF-015-17)
+    # (descartar una entidad, «apoyo retirado» y soltar el apoyo: RF-015-17); T26: bring_entities, Brought y
+    # BroughtEntity (traer las entidades de otra versión, sin resultados: RF-015-18)
 })
 
 

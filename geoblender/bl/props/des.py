@@ -22,6 +22,9 @@ ventanas «Perfiles de banco…», «Sectores de diseño…» y «Envolventes y 
 :class:`GEOBLENDER_PG_des_refit_surface` es una fila de la ventana de «Ajustar el diseño a un límite
 nuevo…» (spec 014, T33): una superficie de diseño de la versión activa, lo que deja fuera del límite
 vigente y si se ajusta; la orden la lleva en su propia colección, no en ``WindowManager``.
+:class:`GEOBLENDER_PG_des_bring_row` es una fila de la ventana de «Traer las entidades de…» (spec 015, T26): una
+versión de la que traer o una entidad de la versión elegida, con si se trae; también en las colecciones de la
+orden.
 
 El nombre del grupo lleva su acción (``panels``, como el de la cubicación) porque NOM-01 la pide;
 el plan 013 §5.2.4 lo llamaba ``GEOBLENDER_PG_des``.
@@ -173,6 +176,15 @@ class GEOBLENDER_PG_des_refit_surface(bpy.types.PropertyGroup):
     selected: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
 
 
+class GEOBLENDER_PG_des_bring_row(bpy.types.PropertyGroup):
+    """Una fila de la ventana de «Traer las entidades de…» (spec 015, T26; RF-015-18; plan 015 §5.3.3): una versión de la
+    que traer entidades (``name``: su código; ``label``: su nombre como se enseña) o una entidad viva de la versión
+    elegida (``name``: su código; ``label``: su nombre y su código; ``selected``: se trae, marcada de entrada)."""
+
+    label: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    selected: BoolProperty(default=True, options=_STATIC)  # type: ignore[valid-type]
+
+
 class GEOBLENDER_PG_des_panels(bpy.types.PropertyGroup):
     """Lo que dibujan las ventanas del diseño (una vista; véase el módulo)."""
 
@@ -216,7 +228,8 @@ class GEOBLENDER_PG_des_panels(bpy.types.PropertyGroup):
 # En orden de registro: cada grupo, después de los que contiene.
 classes: tuple[type, ...] = (GEOBLENDER_PG_des_param, GEOBLENDER_PG_des_profile,
                              GEOBLENDER_PG_des_sector, GEOBLENDER_PG_des_line,
-                             GEOBLENDER_PG_des_refit_surface, GEOBLENDER_PG_des_panels)
+                             GEOBLENDER_PG_des_refit_surface, GEOBLENDER_PG_des_bring_row,
+                             GEOBLENDER_PG_des_panels)
 
 
 def register() -> None:

@@ -281,9 +281,9 @@ class EntityDiscardTest(platform_ops.CreatePlatformTest):
             "EXEC_DEFAULT", target="PLT-003", reason=WHY, in_steps=False), {"FINISHED"})
         new = self.entities.registry(self.project, self.v01.uid).get("PLT-003").operation_uid
         self.assertNotEqual(new, old)
-        # P2 (que parte de la superficie de P1) sigue en «apoyo retirado» y la declaración consume la tabla de
-        # cada entidad viva: mientras tanto la declaración y las máscaras quedan obsoletas en cascada, con ellas lo que
-        # las usó (la propia P3, recién repetida) y no vuelve a estar «al día» hasta que se resuelva P2.
+        # P2 (que parte de la superficie de P1) sigue en «apoyo retirado». (Hasta la T26 la declaración consumía la tabla de
+        # cada entidad viva y, con P2 así, la declaración, las máscaras y lo que las usó quedaban obsoletos en cascada;
+        # ahora solo consume las de las que protegen, que aquí no hay.)
         self.assertNotEqual(self.states()["PLT-003"], "support_removed")
         self.assertEqual(self.states()["PLT-002"], "support_removed")
         self.assertEqual(self.rows("SELECT d.name, io.content_sha256 FROM gb_operation_io AS io JOIN gb_dataset AS d "

@@ -248,6 +248,17 @@ en sus ajustes y un evento (``release_support``, por pasos con el avance y Esc);
 de ella no se recalcula. Las dos van con el proyecto en escritura y la versión activa editable y, si no, desactivadas
 con su motivo (:class:`DesignCommandAware`); la entrada de R-36 las entrega la T31 (menú «Entidad ▾»). Todas las
 cuentas y los rechazos son de ``design``.
+
+**Traer las entidades de otra versión** (spec 015, T26; HU-015-2; RF-015-18, RF-009-01; D-18; plan 015 §5.3.3):
+:class:`GEOBLENDER_OT_des_entity_bring` (``geoblender.des_entity_bring``) abre un diálogo con la versión de origen
+—cualquiera de las del proyecto menos la activa— y sus entidades vivas (las descartadas no se traen), una casilla cada
+una, todas marcadas de entrada; al aceptar copia sus definiciones a la versión activa
+(``design.entity_store.bring_entities``: sus parámetros con su historial «Traído de V09.r2», **sin resultados ni
+cifras**, «sin calcular», en una sola transacción) y dice lo que hizo: cuántas, los códigos y los nombres que cambiaron
+y lo que quedó sin valor (una partida que era un resultado de la otra versión). No encadena nada: lo traído no está
+calculado y no declara restricciones; sus dependencias se detectan de nuevo al calcularlo. Con el proyecto en escritura
+y la versión activa editable y, si no, desactivada con su motivo (:class:`DesignCommandAware`); la entrada de R-36 la
+entrega la T31 (menú «Entidad ▾»).
 """
 
 from __future__ import annotations
@@ -283,7 +294,7 @@ from ...design.model import PERIMETER_SEGMENT
 from ...gis import provenance as gis_provenance
 from ...gis.messages import GisError
 from ..props.core import OBJECT_PROPERTY
-from ..props.des import PREVIEW_PROPERTY, GEOBLENDER_PG_des_refit_surface
+from ..props.des import PREVIEW_PROPERTY, GEOBLENDER_PG_des_bring_row, GEOBLENDER_PG_des_refit_surface
 from ..scene import des_views, project_session, undo_watch
 from ..scene import versions as scene_versions
 from ..ui import constraint_panels, des_panels, labels
@@ -4557,6 +4568,141 @@ class GEOBLENDER_OT_des_entity_release_support(_EntitySteps, DesignCommandAware,
         return tr("Cancelled: nothing has been left half-done")
 
 
+# --- Traer las entidades de otra versión (spec 015, T26; HU-015-2; RF-015-18; plan 015 §5.3.3) -----------------
+
+BRING_ENTITIES = "geoblender.des_entity_bring"
+
+
+def _bring_entities_of(self: Any, _context: Any) -> None:
+    """El ``update`` de la versión de origen de «Traer las entidades de…» (T26): pone en ``rows`` las entidades vivas de
+    esa versión (no se traen las descartadas), todas marcadas (``design.entities.registry``; solo lee). Lo que no se
+    puede leer (una versión que no existe, un proyecto cerrado) deja la lista vacía."""
+    self.rows.clear()
+    project, wanted = SESSION.project, self.source.strip()
+    if project is None or not wanted:
+        return
+    from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+    try:
+        listed = entities.registry(project, wanted)
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.debug("No se pudieron leer las entidades de la versión «%s»", wanted, exc_info=True)
+        return
+    for entry in listed:
+        if entry.record.state is entities.EntityState.DISCARDED:
+            continue
+        row = self.rows.add()
+        row.name, row.selected = entry.record.code, True
+        row.label = f"{entry.record.name} ({entry.record.code})"
+
+
+class GEOBLENDER_OT_des_entity_bring(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Bring the entities of another version to the active one, without their results: they are left as «not calculated»"""
+
+    bl_idname = BRING_ENTITIES
+    bl_label = "Bring the entities of…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.PLATFORM
+
+    source: StringProperty(  # type: ignore[valid-type]
+        name="Version", description="Code of the version the entities are brought from: any but the active one",
+        options=_FIELD, update=_bring_entities_of)
+    entities: StringProperty(  # type: ignore[valid-type]
+        name="Entities",
+        description="Codes or names of the entities to bring, separated by commas (empty: the ones chosen in the "
+                    "window or, without it, every one that is not discarded)", options=_FIELD)
+    versions: CollectionProperty(type=GEOBLENDER_PG_des_bring_row, options=_FIELD)  # type: ignore[valid-type]
+    rows: CollectionProperty(type=GEOBLENDER_PG_des_bring_row, options=_FIELD)  # type: ignore[valid-type]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo con la versión de origen (cualquiera de las del proyecto menos la activa) y sus entidades
+        vivas, todas marcadas; no escribe nada. Sin versión editable o sin otra versión, lo dice."""
+        self.provenance_dialog = True
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        active = scene_versions.active_version()
+        others = [item for item in scene_versions.versions() if item.uid != active]
+        if not others:
+            self.report({"ERROR"}, tr("The project has no other version to bring entities from"))
+            return {"CANCELLED"}
+        self.versions.clear()
+        for item in others:
+            row = self.versions.add()
+            row.name, row.label = item.code, item.name()
+        if self.source.strip() not in {item.code for item in others}:
+            self.source = others[-1].code
+        _bring_entities_of(self, context)
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=tr("Bring the entities of…"),
+            confirm_text=tr("Bring"))
+
+    def draw(self, context: Any) -> None:
+        """La versión de origen y sus entidades vivas, una casilla cada una, y lo que pasará con ellas."""
+        layout = self.layout
+        layout.prop_search(self, "source", self, "versions", text=tr("Version"), translate=False)
+        if not self.source.strip():
+            return
+        if len(self.rows) == 0:
+            layout.label(text=tr("«{version}» has no entities to bring (the discarded ones are not brought)",
+                                 version=self.source.strip()), translate=False)
+            return
+        layout.label(text=tr("Entities to bring:"), translate=False)
+        box = layout.box()
+        for row in self.rows:
+            box.prop(row, "selected", text=row.label, translate=False)
+        layout.label(text=tr("They are brought without their results, as «not calculated»."), translate=False)
+        layout.label(text=tr("Their dependencies are detected again when you calculate them."), translate=False)
+
+    def _wanted(self) -> list[str] | None:
+        """Las entidades que se piden: las que se teclean en ``entities`` (por su código o su nombre), o las marcadas en la
+        ventana (todas: ``None``), o, sin ventana ni nada tecleado, todas las vivas (``None``)."""
+        typed = [part.strip() for part in self.entities.split(",") if part.strip()]
+        if typed:
+            return typed
+        if len(self.rows) == 0:
+            return None
+        chosen = [row.name for row in self.rows if row.selected]
+        if not chosen:
+            raise ValueError(tr("Choose at least one entity to bring"))
+        return None if len(chosen) == len(self.rows) else chosen
+
+    def execute(self, context: Any) -> set[str]:
+        """Trae a la versión activa las entidades pedidas de la de origen (``design.entity_store.bring_entities``):
+        sus definiciones, sin resultados ni cifras, «sin calcular», en una sola transacción; dice lo que hizo y lo que
+        quedó sin valor. Los rechazos (la misma versión, una descartada, sin versión de origen…) son de ``design``: nada
+        se escribe."""
+        from ...design import entity_store  # al usarlo: habilitar no carga el cálculo
+
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project, version = SESSION.project, scene_versions.active_version() or ""
+        try:
+            if not self.source.strip():
+                raise ValueError(tr("Choose the version to bring the entities from"))
+            found = entity_store.bring_entities(project, self.source.strip(), version, codes=self._wanted())
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError, TypeError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        if found.entities:
+            undo_watch.record(UndoKind.OPERATION, "des.entity_bring")  # Ctrl+Z no lo deshace
+        shown = i18n.language()
+        for notice in found.notices:
+            self.report({"WARNING" if notice.severity == "warning" else "INFO"}, notice.text(shown))
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
@@ -4572,7 +4718,8 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_refit_to_limit,
                              GEOBLENDER_OT_des_create_platform,
                              GEOBLENDER_OT_des_entity_discard,
-                             GEOBLENDER_OT_des_entity_release_support)
+                             GEOBLENDER_OT_des_entity_release_support,
+                             GEOBLENDER_OT_des_entity_bring)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
@@ -4580,4 +4727,4 @@ T44, la que declara de nuevo los sectores desde su ventana; de la 014, la T20 po
 perímetro…», la T21 «Cantera con dos superficies…», la T28 «Transiciones con el terreno no
 afectado», la T30 «Solo relleno…» y la T33 «Ajustar el diseño a un límite nuevo…», de la entrada
 «014», que la T58 entrega; de la 015, la T15 pone «Plataforma…», de la entrada «R-36», que entrega la
-T31; la T25, «Descartar…» y «Soltar el apoyo…», internas hasta que la T31 las ponga en el menú «Entidad ▾»)."""
+T31; la T25, «Descartar…» y «Soltar el apoyo…», internas hasta que la T31 las ponga en el menú «Entidad ▾»; la T26, «Traer las entidades de…», también interna)."""

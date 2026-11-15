@@ -1793,6 +1793,97 @@ CATALOG: tuple[Message, ...] = (
         "operación que las use.",
         "warning",
     ),
+    # Traer las entidades de otra versión (RF-015-18, RF-009-01; D-18; T26): lo que se rechaza y lo que se avisa.
+    Message(
+        "des.entity_bring_same",
+        "«{version}» is the version the entities are brought to: choose another version as the source; "
+        "nothing is brought.",
+        "«{version}» es la versión a la que se traen las entidades: elija otra de origen; no se trae "
+        "nada.",
+    ),
+    Message(
+        "des.entity_bring_unknown",
+        "{source} has no entity «{entity}»; nothing is brought.",
+        "{source} no tiene ninguna entidad «{entity}»; no se trae nada.",
+    ),
+    Message(
+        "des.entity_bring_discarded",
+        "The entity «{entity}» is discarded in {source}: it is a record, not to be used, so it is not "
+        "brought; nothing is brought.",
+        "La entidad «{entity}» está descartada en {source}: es un registro, no se usa, así que no se "
+        "trae; no se trae nada.",
+    ),
+    Message(
+        "des.entity_bring_nothing",
+        "{source} has no entity to bring (the discarded ones are not brought); nothing is done.",
+        "{source} no tiene ninguna entidad que traer (las descartadas no se traen); no se hace nada.",
+        "note",
+    ),
+    Message(
+        "des.entity_bring_done",
+        "{count} entities brought from {source} to {version}, without their results: they are left "
+        "as «not calculated» and their dependencies are detected again when they are calculated.",
+        "{count} entidades traídas de {source} a {version}, sin sus resultados: quedan «sin "
+        "calcular» y sus dependencias se detectan de nuevo al calcularlas.",
+        "note",
+        count="count",
+        one_msgid="{count} entity brought from {source} to {version}, without its results: it is left "
+        "as «not calculated» and its dependencies are detected again when it is calculated.",
+        one_es="{count} entidad traída de {source} a {version}, sin sus resultados: queda «sin "
+        "calcular» y sus dependencias se detectan de nuevo al calcularla.",
+    ),
+    Message(
+        "des.entity_bring_recoded",
+        "«{name}» was {old} in {source}; here it is {code}, because {old} is already taken in "
+        "{version} (the references between the entities brought follow the new code).",
+        "«{name}» era {old} en {source}; aquí es {code}, porque {old} ya está ocupado en {version} "
+        "(las referencias entre las entidades traídas siguen el código nuevo).",
+        "note",
+    ),
+    Message(
+        "des.entity_bring_renamed",
+        "«{old}» is called «{name}» here, because {version} already has an entity or a result with "
+        "that name.",
+        "«{old}» se llama aquí «{name}», porque {version} ya tiene una entidad o un resultado con "
+        "ese nombre.",
+        "warning",
+    ),
+    Message(
+        "des.entity_bring_start_lost",
+        "«{name}»: its start surface «{surface}» is a result of {source} and does not exist in "
+        "{version}; the entity is left without a start surface and cannot be calculated until you "
+        "choose one.",
+        "«{name}»: su superficie de partida «{surface}» es un resultado de {source} y no existe en "
+        "{version}; la entidad queda sin superficie de partida y no se puede calcular hasta que "
+        "elija una.",
+        "warning",
+    ),
+    Message(
+        "des.entity_bring_support_lost",
+        "«{name}»: its support surface «{surface}» is a result of {source} and does not exist in "
+        "{version}; the entity is left without a support surface.",
+        "«{name}»: su superficie de apoyo «{surface}» es un resultado de {source} y no existe en "
+        "{version}; la entidad queda sin superficie de apoyo.",
+        "warning",
+    ),
+    Message(
+        "des.entity_bring_start_taken",
+        "«{name}»: the surface «{surface}» is already the start of «{other}» in {version}, and each "
+        "surface is the start of one entity at most; the entity is left without a start surface and "
+        "cannot be calculated until you choose another.",
+        "«{name}»: la superficie «{surface}» ya es la de partida de «{other}» en {version}, y de cada "
+        "superficie parte una entidad como mucho; la entidad queda sin superficie de partida y no "
+        "se puede calcular hasta que elija otra.",
+        "warning",
+    ),
+    Message(
+        "des.entity_bring_supports_lost",
+        "«{name}»: it was declared to rest on {entities}, which are not brought; that dependency is "
+        "not copied (declare it again if it still holds).",
+        "«{name}»: se declaró apoyada en {entities}, que no se traen; esa dependencia no se copia "
+        "(declárela de nuevo si sigue valiendo).",
+        "warning",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

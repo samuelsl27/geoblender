@@ -9000,6 +9000,43 @@ es = "Repitiendo «{name}» sin su apoyo… {percent} % · Esc: cancelar"
 ["Cancelled: nothing has been left half-done"]
 es = "Cancelado: no queda nada a medias"
 
+# Traer las entidades de otra versión (spec 015, T26; RF-015-18; la orden de bl/ops/des.py).
+["Bring the entities of…"]
+es = "Traer las entidades de…"
+
+["Code of the version the entities are brought from: any but the active one"]
+es = "Código de la versión de la que se traen las entidades: cualquiera menos la activa"
+
+["Entities"]
+es = "Entidades"
+
+["Codes or names of the entities to bring, separated by commas (empty: the ones chosen in the window or, without it, every one that is not discarded)"]
+es = "Códigos o nombres de las entidades que se traen, separados por comas (vacío: las elegidas en la ventana o, sin ella, todas las que no están descartadas)"
+
+["The project has no other version to bring entities from"]
+es = "El proyecto no tiene otra versión de la que traer entidades"
+
+["Bring"]
+es = "Traer"
+
+["«{version}» has no entities to bring (the discarded ones are not brought)"]
+es = "«{version}» no tiene entidades que traer (las descartadas no se traen)"
+
+["Entities to bring:"]
+es = "Entidades que se traen:"
+
+["They are brought without their results, as «not calculated»."]
+es = "Se traen sin sus resultados, «sin calcular»."
+
+["Their dependencies are detected again when you calculate them."]
+es = "Sus dependencias se detectan de nuevo al calcularlas."
+
+["Choose at least one entity to bring"]
+es = "Elija al menos una entidad que traer"
+
+["Choose the version to bring the entities from"]
+es = "Elija la versión de la que se traen las entidades"
+
 ["There are no layers of lines or polygons in the project"]
 es = "No hay capas de líneas ni de polígonos en el proyecto"
 

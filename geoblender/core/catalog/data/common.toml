@@ -600,3 +600,15 @@ description.es = "Da por bueno lo que perdió su apoyo porque se descartó una e
 entry = "R-36"
 action = "D"
 frequency = 1
+
+# Traer las entidades de otra versión (spec 015, T26; RF-015-18): internas hasta que la T31 la ponga en el menú «Entidad ▾».
+[[command]]
+key = "geoblender.des_entity_bring"
+kind = "internal"
+label.en = "Bring the entities of…"
+label.es = "Traer las entidades de…"
+description.en = "Bring the entities of another version to the active one, without their results: they are left as «not calculated»"
+description.es = "Trae las entidades de otra versión a la activa, sin sus resultados: quedan «sin calcular»"
+entry = "R-36"
+action = "D"
+frequency = 1

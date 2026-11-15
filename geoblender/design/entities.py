@@ -465,11 +465,14 @@ def chain_tails(records: Iterable[EntityRecord]) -> tuple[EntityRecord, ...]:
     es la superficie de otra entidad viva abre una cadena (parte del terreno, de una superficie de
     diseño o de la de una descartada) y la que ninguna otra tiene como partida es su cola; salen en
     el orden en que aparece el principio de cada cadena. Sin partida o descartada, una entidad no
-    está en ninguna. ``DesignError`` ``des.entity_chain_cycle`` si alguna da la vuelta (no tiene
+    está en ninguna, **salvo que otra viva parta de su superficie** (T26: lo que deja «Traer las entidades de…»
+    cuando la partida de la primera era un resultado de otra versión): abre entonces la cadena, aunque aún no tenga
+    superficie de la que partir. ``DesignError`` ``des.entity_chain_cycle`` si alguna da la vuelta (no tiene
     principio, y no se pierde) y ``des.entity_start_taken`` si dos parten de la misma superficie."""
     items = _records(records)
     index = _index(items)
-    placed = [item for item in items if _live(item) and item.start is not None]
+    placed = [item for item in items if _live(item)
+              and (item.start is not None or index.following(item) is not None)]
     live_codes = {item.code for item in items if _live(item)}
     visited: set[str] = set()
     tails: list[EntityRecord] = []
