@@ -28,9 +28,10 @@ protegidas con 5 m, con 40 m de alcance, cada una de la superficie de la anterio
   capa de entidades que cada orden encadena), tras cambiar la cota de la primera: «Recalcular lo obsoleto» hasta
   que no queda nada, ≤ 60 s (en ``Z:``, ≤ 2 min).
 - RNF-015-09 (:class:`ChainTest`, de las mismas veinte): lo que guarda en el proyecto cada una —su superficie en
-  la rejilla entera comprimida (DEFLATE con predictor) más sus tablas— ≤ 16 MB y la revisión con las 20 ≤ 0,35 GB.
-  **MB y GB son de 2^20 y 2^30 bytes**, como las cifras medidas de la spec (13,6 y 15,8 MB son MiB: unas colinas
-  y las mismas con ruido de 5 cm, sobre las 2,81 M celdas, dan 13,7 y 15,7 MiB).
+  la rejilla entera comprimida (DEFLATE con predictor) más sus tablas— ≤ 17 MiB y la revisión con las 20 ≤ 0,35 GiB
+  (spec 0.5, 15/11/2026: la 0.4 decía «≤ 16 MB», pero medía 16,3 MiB con el terreno de §2.2 de la 013, y Samuel aceptó
+  17 MiB). **MiB y GiB son de 2^20 y 2^30 bytes**, como las cifras medidas de la spec (13,7 y 15,7 MiB: unas colinas
+  y las mismas con ruido de 5 cm, sobre las 2,81 M celdas).
 
 Lo que hace Geoblender en cada llamada del hilo de Blender con las órdenes reales (RNF-015-03, 05 y 06) se mide
 dentro de Blender (``perf_entities.py``).
@@ -70,8 +71,8 @@ LISTS_BUDGET_S = 1.0  # RNF-015-02, en disco local
 LISTS_NETWORK_BUDGET_S = 3.0  # RNF-015-02 en Z:
 CASCADE_BUDGET_S = 60.0  # RNF-015-08, en disco local
 CASCADE_NETWORK_BUDGET_S = 120.0  # RNF-015-08 en Z:: 2 min
-ENTITY_BUDGET_BYTES = 16 * 1024**2  # RNF-015-09: 16 MB por entidad
-REVISION_BUDGET_BYTES = int(0.35 * 1024**3)  # RNF-015-09: 0,35 GB con 20
+ENTITY_BUDGET_BYTES = 17 * 1024**2  # RNF-015-09: 17 MiB por entidad (spec 0.5; la 0.4 decía 16 «MB»)
+REVISION_BUDGET_BYTES = int(0.35 * 1024**3)  # RNF-015-09: 0,35 GiB con 20
 RUNS = 5  # como la 013 y la 014 (su spec §5): mediana de 5
 NETWORK_RUNS = 3  # en Z: cada ejecución escribe superficies de 17 MB: mediana de 3
 MACHINE = gis_perf.MACHINE
@@ -343,8 +344,9 @@ class ChainTest(unittest.TestCase):
 
     def test_a_disk(self) -> None:
         """RNF-015-09: lo que guarda en el proyecto cada una de las 20 —su superficie en la rejilla entera
-        comprimida (DEFLATE con predictor) más sus tablas, las del crecimiento de la base al crearla— ≤ 16 MB y la
-        revisión con las 20 ≤ 0,35 GB (MB y GB de 2^20 y 2^30 bytes)."""
+        comprimida (DEFLATE con predictor) más sus tablas, las del crecimiento de la base al crearla— ≤ 17 MiB (spec
+        0.5; la mayor, con el terreno de §2.2 de la 013 y ruido de 5 cm, mide 16,29 MiB) y la revisión con las 20
+        ≤ 0,35 GiB (MiB y GiB de 2^20 y 2^30 bytes)."""
         per_entity = [raster + tables for raster, tables in self.sizes]
         total = sum(per_entity)
         worst = max(per_entity)

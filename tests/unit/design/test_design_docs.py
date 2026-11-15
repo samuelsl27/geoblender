@@ -129,8 +129,9 @@ TASKS_RELPATH = "specs/013-des-envolventes-y-escalonado/tasks.md"
 ENTITIES_GUIDE_RELPATH = "docs/usuario/entidades-de-diseno.md"
 ENTITY_ORDERS = ("geoblender.des_create_platform", "geoblender.des_entity_dependents",
                  "geoblender.des_entity_insert", "geoblender.des_entity_bring",
-                 "geoblender.des_entity_discard", "geoblender.des_entity_release_support",
-                 "geoblender.des_entity_preview", "geoblender.des_export_design_grid")
+                 "geoblender.des_entity_calculate", "geoblender.des_entity_discard",
+                 "geoblender.des_entity_release_support", "geoblender.des_entity_preview",
+                 "geoblender.des_export_design_grid")
 # De lo que la guía de las entidades pone entre «», lo que no está en el catálogo: nombres de ejemplo, el nombre
 # de una carpeta de comandos y términos que la guía explica. La prueba exige que siga en la guía y que no haya
 # ninguno más.
@@ -153,20 +154,9 @@ API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
 # El mecanismo de la 014 y la 015 para una spec que añade API pública mientras se construye: cada tarea
 # añade aquí sus nombres (y los módulos nuevos, que aún no tienen fila en la ficha) y la tarea de
 # documentación los lleva a la ficha y vacía estos dos conjuntos. Vacíos desde la T34 de la 015 (la ficha,
-# ``des.md`` §4.3, nombra todo lo público de ``design``); la 016 los usará con los suyos. La convergencia de la
-# 015 (T38 a T47) añade los suyos aquí y **la T47 los lleva a la ficha** y los vacía.
-PENDING_015_API: frozenset[str] = frozenset({
-    "declaration_pending",  # T38: ``entity_store``, lo que pregunta el gancho de la declaración
-    "has_platform_operation",  # T38: ``provenance``, su primera consulta
-    "check_parameter_change",  # T39: ``entity_store``, las reglas de crear al cambiar un parámetro de una entidad
-    "unsupportable",  # T39: ``entities``, donde una entidad no puede apoyarse (ciclo)
-    "entity_request",  # T41: ``entity_store``, la petición de una entidad sin calcular (traída o heredada)
-    "layer_pending",  # T43: ``entity_store``, si la capa de entidades no dice lo que el registro (la marca)
-    "layer_sync_steps",  # T43: ``entity_store``, ponerla al día solo si está marcada
-    "layers_sync_steps",  # T43: ``entity_store``, la de cada versión editable que la tenga marcada (lo que hace ``bl``)
-    "axis_abscissa_units",  # T44: ``quarry``, la abscisa de un eje por unidades que ceden el hilo
-    "platform_footprint_units",  # T44: ``platform``, la huella por unidades que ceden el hilo y se cancelan
-})
+# ``des.md`` §4.3, nombra todo lo público de ``design``) y otra vez desde su T47, que llevó a la ficha lo que
+# añadió la convergencia (T38 a T49); la 016 los usará con los suyos.
+PENDING_015_API: frozenset[str] = frozenset()
 PENDING_015_MODULES: frozenset[str] = frozenset()
 
 
@@ -954,22 +944,66 @@ class EntitiesGuideDocTest(unittest.TestCase):
                 self.assertIn(token, parameters)
 
     def test_the_known_limits_are_told(self) -> None:
-        """T34: «Lo que no hace todavía» dice los límites de hoy (las plataformas sin calcular sin objeto, las
-        entidades nuevas que no detecta «Recalcular lo obsoleto», el estado atrasado de la capa de QGIS) y el
-        tamaño por entidad sin prometer los 16 MB: RNF-015-09 sigue abierto. **Ya no** dice (T40, hallazgos C-2,
-        C-4 y E-3) que aceptar con motivo la edición de una tabla de versión no limpia «Recalcular lo obsoleto» ni
-        que una plataforma descartada con una operación vieja sigue en su plan: están corregidos."""
+        """T34 y T47: «Lo que no hace todavía» dice los límites de **hoy**: las plataformas sin calcular sin objeto,
+        lo que Esc deja a medias tras «Crear» y que «Recalcular lo obsoleto» no ve, el estado atrasado de la capa de
+        QGIS, aceptar la edición de lo declarado y recalcular sin compilar antes las máscaras (T40 (c)), las dos
+        pasadas (T42 (c), C-14), el enlace de un polígono con su eje que no pasa a la versión que trae la entidad y la
+        entidad traída sin su partida (T41 (e)), el diseño cuya partida es una entidad descartada (C-17), declarar una
+        dependencia solo por parámetro o API (C-13), la superficie de la 014 que congelar pide y el sector pendiente
+        conservador (decisiones del 15/11/2026), y el tamaño por entidad sin prometer los 16 MB: RNF-015-09 está
+        resuelto en 17 MiB. **Ya no** dice (T40, hallazgos C-2, C-4 y E-3) que aceptar con motivo la edición de una
+        tabla de versión no limpia «Recalcular lo obsoleto» ni que una plataforma descartada con una operación vieja
+        sigue en su plan, ni (T41, C-12) que una entidad traída no se pueda calcular por la interfaz, ni que
+        «Recalcular lo obsoleto» no detecte las entidades nuevas (T38, E-1): están corregidos."""
         limits = self.guide_section("## 16. Lo que no hace todavía")
         for fact in ("Límites conocidos de esta versión",
                      "no tiene objeto en la escena",
-                     "no detecta las entidades nuevas", "estado atrasado",
-                     "unos 16 MiB", "unos 0,3 GiB", "RNF-015-09"):
+                     "no ve lo que Esc dejó a medias", "estado atrasado",
+                     "sin compilar antes las máscaras", "dos pasadas",
+                     "no es un parámetro", "sin su partida",
+                     "una entidad descartada no se puede rehacer", "solo se puede por el parámetro",
+                     "la superficie de la 014 de la que parte", "sector pendiente es conservadora",
+                     "unos 16 MiB", "unos 0,3 GiB", "RNF-015-09", "17 MiB"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, limits)
-        for gone in ("no limpia «Recalcular lo obsoleto»", "sigue en el plan de «Recalcular lo obsoleto»"):
+        for gone in ("no limpia «Recalcular lo obsoleto»", "sigue en el plan de «Recalcular lo obsoleto»",
+                     "no detecta las entidades nuevas", "sigue pendiente de decisión"):
             with self.subTest(gone=gone):
                 self.assertNotIn(gone, limits)
         self.assertNotIn("16 MB", self.guide)
+
+    def test_the_convergence_is_told(self) -> None:
+        """T47 (hallazgos de la verificación única, T38 a T49): la guía dice lo que cambió la convergencia y el
+        ingeniero de minas ve: «Calcular…» calcula una entidad traída (C-12, §10), «Cambiar parámetro…» rechaza lo que
+        crear rechazaría (A-2, A-1, B-1, §11), la huella que la rejilla recorta se avisa y no se rechaza (D-1/A-7, §5),
+        «Calcular» compila antes las máscaras obsoletas, con una operación propia que Esc no deshace (A-5, §5), el
+        apoyo se detecta también al recalcular (C-1, §9), Esc vale mientras se pone al día la capa (F-1, §14), el
+        factor de malla es de (0; 1] y un eje sobre el contorno se rechaza (D-3, D-7, §4), la abscisa 0 es donde
+        entra la línea enlazada (D-8, §1) y lo que decidió Samuel (A-4, B-5, C-16, C-13)."""
+        guide = one_line(self.guide)
+        for fact in (
+                "**Calcular…** (menú «Entidad ▾») calcula las entidades que quedan sin calcular",
+                "sin escribir ningún parámetro", "detecta de nuevo aquello que se le apoya",
+                "**rechaza lo que crear rechazaría**", "una superficie de apoyo que sería un ciclo",
+                "no se rechaza", "los m² de huella que quedan fuera",
+                "la plataforma **se calcula con la parte de dentro y no se rechaza**",
+                "**Calcular** las compila antes", "una vez terminada **no se deshace** con Esc",
+                "al crearla **y al recalcularla, aunque la entidad apareciera después**",
+                "**Esc vale también mientras «Recalcular lo obsoleto» pone al día la capa de entidades**",
+                "El factor es de **(0; 1]**", "tampoco el que discurre sobre su contorno",
+                "donde la línea entra en él", "**el borde no avisa la pared que el terreno ya tenía**",
+                "**solo con la otra superficie de la cantera**", "aguas arriba o a media plataforma",
+                "congelar pide además esa superficie", "no hay todavía una orden de la interfaz"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, guide)
+        self.assertEqual(guide.count("«la rejilla del proyecto recorta su huella"), 1)
+        clipped = dmessages.render("des.platform_footprint_clipped", entity="Carga", area=1200.0, cells=300,
+                                   x=480000.0, y=4400000.0)
+        self.assertIn("la rejilla del proyecto recorta su huella", clipped)
+        # El código y el mensaje que la guía cita son los reales: el rango del factor de malla.
+        self.assertEqual(dparams.ENTITY_RANGES["mesh_factor"].maximum, 1.0)
+        self.assertTrue(dparams.ENTITY_RANGES["mesh_factor"].min_exclusive)
+        self.assertFalse(dparams.ENTITY_RANGES["mesh_factor"].max_exclusive)
 
 
 if __name__ == "__main__":

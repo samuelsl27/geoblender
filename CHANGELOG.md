@@ -35,7 +35,7 @@ a conservar, la superficie final y la de explotación con su orden y su clasific
 relleno, la transición del borde con el terreno no afectado, el diseño «solo relleno» y el ajuste a
 un límite nuevo (spec 014, en curso; sus órdenes ya están disponibles en sus menús). Y pone sobre ella
 las entidades de diseño: la plataforma, que se aplica en cadena sobre una superficie, declara lo que
-prohíbe a los demás operadores y dice en qué se apoya (spec 015, en curso). Lo de
+prohíbe a los demás operadores y dice en qué se apoya (spec 015, hecha a falta de verla en pantalla). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
@@ -121,7 +121,7 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Añadido
 
-- **Entidades de diseño paramétricas** (spec 015, R-36, en curso). Lo que se pone encima de una cantera
+- **Entidades de diseño paramétricas** (spec 015, R-36, hecha a falta de verla en pantalla). Lo que se pone encima de una cantera
   (la plataforma de la planta, una balsa, un acopio) se hizo en el proyecto de referencia como
   recortes de ráster y scripts sueltos, y ninguno sabía qué prohibía a los demás ni en qué se apoyaba:
   una plataforma impuesta como cota mínima quedó como un lomo de 5 m; su corredor de extremos
@@ -148,13 +148,31 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     huella, el eje con su flecha, las cotas de los extremos, lo que se le apoya y lo que declarará; y
     solo **Crear** registra, en una transacción. Un valor sin valor por defecto que falta, una
     geometría que se corta a sí misma o falta dato en la huella se rechazan nombrando la capa, la
-    entidad, el campo y el valor.
+    entidad, el campo y el valor. Tras su verificación (15/11/2026): el factor de malla del borde es de 0
+    a 1, como el de la envolvente (con más de 1, toda la pared salía como una pared de más); un eje enlazado
+    que discurre sobre el contorno del polígono se rechaza, y su abscisa 0 es donde la línea entra en el
+    polígono, que es lo que dicen ahora la vista previa y el diálogo; el borde **no avisa la pared que el
+    terreno ya tenía** en esa celda, porque no la crea; y la barra N enseña «En corte» y «Euclídea exacta»
+    en vez de «cut» y «exact». **Si la geometría sale de la rejilla del proyecto**, la plataforma se calcula
+    con la parte de dentro y el resumen, la vista previa y el informe dicen cuántos m² de huella quedan fuera
+    y dónde está la primera (antes se calculaba recortada y sin aviso: un eje de 80 m pegado al borde daba la
+    mitad de la huella); no se rechaza. **Calcular** con las máscaras obsoletas las compila antes, como
+    operación propia que no se deshace con Esc una vez terminada.
   - **Lo que declara**: con **Proteger** y un resguardo, la huella de la plataforma es una zona
     **sin relleno** para **todos** los operadores, por las máscaras de la 012 (el error 51: un
     «solo relleno» y otra plataforma que la solapa rellenan 0 m³ en ella y la verificación da
     «cumple»). En «Ver restricciones y límites» la restricción lleva su entidad («Plataforma P1
     (declarada)») y no se cambia desde ahí: se cambia en la entidad. Si se edita en QGIS, se
-    bloquea y las máscaras no se compilan hasta aceptar la edición con un motivo.
+    bloquea y las máscaras no se compilan hasta aceptar la edición con un motivo. Tras la verificación:
+    si Esc o un fallo cortan lo que sigue a «Crear» antes de la primera declaración de una versión, las
+    máscaras salen obsoletas con su causa y la próxima plataforma o **Compilar las máscaras** declara y
+    compila antes (antes, una plataforma «en corte y relleno» sobre su huella rellenaba 420 m³ sin ningún
+    aviso: el error 51 por otro camino); cambiar el resguardo de una plataforma que protege deja al día la
+    entidad, las máscaras y la capa en **una** pasada de «Recalcular lo obsoleto» (antes, tres); editar en QGIS
+    la tabla de la propia entidad (su huella) bloquea la declaración y las máscaras con un error que nombra la
+    entidad (antes, la zona pasaba de 1.653 a 133 celdas sin avisar); aceptar con un motivo la edición de la
+    tabla de lo declarado limpia lo que esperaba a esa edición sin deshacer lo aceptado; y la restricción de
+    un proyecto con el código de una declarada se rechaza con un texto que dice que la declara una entidad.
   - **La cadena y lo que se apoya**: de cada superficie parte una sola entidad; **insertar antes o
     después** de otra rehace el orden y deja obsoletas las siguientes con su causa. Una operación
     que rellena sobre la huella de una entidad **se apoya en ella** (al crearla y también al
@@ -162,15 +180,29 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     enseña la lista única (con los m³), **Descartar…** no borra nada y deja lo apoyado en
     «apoyo retirado» (fuera de «Recalcular lo obsoleto» hasta que se rehaga, se descarte o se dé por
     bueno con **Soltar el apoyo…** y un motivo), y **Traer las entidades de…** copia sus definiciones
-    de otra versión «sin calcular».
+    de otra versión «sin calcular». Tras la verificación: **Calcular…** (menú **Entidad ▾**) calcula las
+    entidades que quedan sin calcular, traídas o heredadas, con los parámetros que ya tienen y sin escribir
+    ninguno, y se detecta de nuevo aquello que se les apoya (antes no se podían calcular desde la interfaz:
+    «Plataforma…» las tomaba por nuevas y chocaba con su nombre o su partida); «Cambiar parámetro…» rechaza
+    lo que crear rechazaría (un nombre repetido o vacío, una partida que otra entidad ya usa o en ciclo, un
+    apoyo en ciclo y proteger en el modo «en corte y relleno»), nombrando la entidad, el campo y el valor, e
+    insertar antes de una entidad ya no ofrece como apoyo lo que sería un ciclo; una entidad descartada
+    **no vuelve** al plan de «Recalcular lo obsoleto» ni falla en cada pasada, y lo que se apoyaba en ella se
+    rechaza diciendo que espera una decisión; y un «solo relleno» creado antes que la plataforma sobre la que
+    rellena gana su dependencia al recalcularlo (antes solo la ganaba al crearse).
   - **Cambiar una entidad** deja obsoleta la plataforma y, en cascada, todo lo que depende de ella;
     **Recalcular lo obsoleto** lo rehace en orden de dependencia. **Congelar** pide verificar la
-    última superficie de cada cadena (las intermedias se verifican a petición), y la revisión
-    congelada no cambia y se reproduce.
+    última superficie de cada cadena (las intermedias se verifican a petición; si la cadena parte de la
+    superficie de una cantera de la 014, también esa: nunca pide de menos, decisión de Samuel del
+    15/11/2026), y la revisión congelada no cambia y se reproduce.
   - **En la vista y en QGIS**: la barra N **Entidad** enseña el estado con su causa, los parámetros
     con su origen, lo que declara, la cadena, en qué se apoya y lo que se le apoya y las cifras; la
     capa de entidades (`des_enl_<vNN>`) abre en QGIS con un estilo por tipo y por estado, y la
-    superficie de cada entidad se exporta a GeoTIFF.
+    superficie de cada entidad se exporta a GeoTIFF. El estado que dice la capa es el del registro: se pone
+    al día también tras cambiar un parámetro, al dar por bueno un apoyo y al terminar «Recalcular lo
+    obsoleto»; si Esc o un fallo cortan lo que sigue a una orden antes de la capa, queda marcada y se pone al
+    día con la próxima orden de entidades. **Esc vale también mientras «Recalcular lo obsoleto» pone al día
+    la capa** (acaba en ese momento y la capa queda marcada).
   - **Cambios en la spec 012** (0.3 y 0.4): la compilación de las máscaras consume también las
     restricciones que declaran las entidades (RF-012-29) y unas máscaras se dan por obsoletas si
     llega una declarada que no consumieron (el hueco por el que el error 51 se habría repetido);
@@ -185,16 +217,22 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     el de 1,8 km con 400 vértices tardaba 8 s de una sola llamada, sin progreso ni Esc, y ahora, 0,1 s en
     pasos de pocos milisegundos que se cancelan (con 2.000 vértices, de 44 s a 0,3 s); la huella y las
     cotas son las mismas, bit a bit. Cada entidad guarda su superficie en la rejilla entera:
-    unos 16 MiB (con ruido en las cotas) y unos 0,3 GiB con 20 entidades; el tope de 16 MB de la
-    spec (RNF-015-09) sigue pendiente de decisión.
+    unos 16 MiB (con ruido en las cotas) y unos 0,3 GiB con 20 entidades; el tope (RNF-015-09), de 17 MiB
+    por entidad, lo decidió Samuel el 15/11/2026. Activar la vista previa con 200 entidades tarda 0,77 s,
+    y Esc en «Recalcular lo obsoleto» acaba en menos de 0,2 s.
   - Lo de la spec 015 está comprobado con Blender 5.2.1 sin su interfaz, con las órdenes reales y
     proyectos sintéticos, con casos de referencia calculados a mano (CE-015-01 a CE-015-05 y
-    CE-015-07) y con datos del tamaño de un proyecto real y cadenas de 20 entidades; faltan verlo en
+    CE-015-07) y con datos del tamaño de un proyecto real y cadenas de 20 entidades, y pasó su verificación
+    única (15/11/2026, cinco verificadores independientes con sus propios cálculos a mano y pruebas de
+    mutación: 46 hallazgos, ya corregidos o decididos); faltan verlo en
     pantalla (el diálogo, la vista previa, la barra N, el menú «Entidad ▾»), la capa abierta en QGIS
-    4.2 con su ventana, su verificación única y que un ingeniero de IMGA cree una plataforma, la
+    4.2 con su ventana y que un ingeniero de IMGA cree una plataforma, la
     proteja y vea lo que queda obsoleto al cambiarla en menos de 20 minutos (CE-015-06). Aún no hay
-    objeto en la escena para una plataforma sin calcular; ni «Recalcular lo obsoleto» detecta las
-    entidades creadas desde la última compilación hasta que algo las deja obsoletas.
+    objeto en la escena para una plataforma sin calcular; «Recalcular lo obsoleto» no ve lo que Esc dejó a
+    medias tras «Crear» (la próxima operación que use las máscaras o **Compilar las máscaras** lo hace) y a
+    veces necesita dos pasadas; el enlace de un polígono con su eje no pasa a la versión que trae o hereda la
+    entidad; y declarar que algo se apoya en una entidad solo se puede por parámetro o por la API (decisiones
+    de Samuel, 15/11/2026: para la spec 016 o después).
 - **Cantera con dos superficies** (spec 014, en curso). Con las envolventes y el escalonado se hace
   una corta, pero no la cantera completa de un proyecto; lo que pasó en el proyecto de referencia
   (semillas en toda la ladera y fondos altísimos; una ladera a conservar enterrada, 58.167 m³; un
@@ -1420,8 +1458,17 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
   deja obsoletas las máscaras (antes, el grafo no lo habría visto y los operadores habrían diseñado sin su
   prohibición). Las máscaras que solo están obsoletas por el ciclo de una entidad que protege (la entidad
   consume las máscaras, que consumen lo que ella declara) se entregan como al día, excepción de RF-012-17
-  que aprobó Samuel el 15/11/2026; cualquier otra causa las sigue dejando obsoletas. Sin entidades que
+  que aprobó Samuel el 15/11/2026; cualquier otra causa las sigue dejando obsoletas (cada una de las cuatro
+  tiene ahora su prueba: tres de las cuatro mutaciones de esa comprobación sobrevivían a las pruebas). También
+  una versión **sin** tabla de declaradas con una entidad que protege deja las máscaras obsoletas hasta que se
+  declara, y **Compilar las máscaras** y todo operador de diseño declaran antes de compilar. Sin entidades que
   declaren, todo es como antes.
+- **Procedencia** (spec 008, hecho con la spec 015; cambios aditivos y revisables): una operación en curso puede
+  anotar al terminar las entradas que solo conoce entonces (el apoyo que se detecta al recalcular); lo que se
+  descartó por completo no vuelve al plan de «Recalcular lo obsoleto» (sigue obsoleto como historia); una
+  operación puede ofrecer «darla por buena» sin lo que consumió, y su rechazo dice que espera esa decisión; y
+  dar por buena una operación de una versión, también al aceptar la edición de una de sus tablas, no deshace
+  lo aceptado. Nada cambia sin entidades de diseño.
 - **Formato del proyecto, versión 3** (spec 009): la base del proyecto lleva las tablas de las
   versiones, las revisiones y las decisiones de la propiedad (QGIS las ve y no las puede cambiar,
   como las demás internas), y el proyecto, cuando se congela una revisión, la carpeta
