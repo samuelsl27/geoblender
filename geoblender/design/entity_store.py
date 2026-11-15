@@ -67,7 +67,9 @@ entidad, RF-015-01, no la capa ni lo que leyó la operación anterior) por :func
 (con su ``code``: la cota inicial, la pendiente y el ancho salen de **su fila de la versión**, no de la capa),
 empieza la operación que sustituye a la anterior, calcula con :func:`platform_compute_steps` y completa sin
 escribir parámetros de la entidad. Lo llama ``design.store.recompute_run``. El recálculo no confirma una
-contrapendiente (``des.platform_counter_unconfirmed``). La reproducción desde lo congelado, sin proyecto, es
+contrapendiente por la persona (``des.platform_counter_unconfirmed``) y solo reutiliza la que ella confirmó al
+crear (T15: ``counterslope_confirmed`` de los ajustes) si la nueva no pasa de la confirmada más la tolerancia.
+La reproducción desde lo congelado, sin proyecto, es
 ``design.reproduce.reproduce_platform``, con el mismo cálculo (:func:`platform_compute_steps`,
 :func:`entity_values` y :func:`read_geometry`).
 
@@ -98,6 +100,7 @@ from ..core.constraints.store import constraint_names
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterRecord, ParameterStore, definition
 from ..core.params.store import default_reason
 from ..core.project.model import Progress
+from ..core.timeutil import format_utc
 from ..core.provenance.operations import OperationHandle, OperationStatus, Use
 from ..core.provenance.recompute import RecomputeRequest
 from ..core.versions import read as versions_read
@@ -118,6 +121,7 @@ from .model import (
     BenchSense,
     LayerField,
     Metric,
+    PlatformFields,
     PlatformMode,
     PlatformRequest,
 )
@@ -180,6 +184,7 @@ __all__ = [
     "feature_index",
     "footprint_runs",
     "geometry_sha256",
+    "layer_values",
     "platform_compute_steps",
     "platform_entity_rows",
     "platform_obsolete",
@@ -411,6 +416,47 @@ def _layer_number(layer: FeatureLayer, index: int, name: str, request: PlatformR
         raise DesignError("des.entity_field_value", obj=_object(request), field=name, value=shown,
                           layer=request.layer, entity=request.name)
     return number_
+
+
+def _layer_number_or_none(layer: FeatureLayer, index: int, name: str, request: PlatformRequest
+                          ) -> float | None:
+    """Como :func:`_layer_number`, pero ``None`` si el campo no tiene valor en esa geometría (la capa no
+    da la cota, la pendiente o el ancho y la persona los escribió en el diálogo, T15); un campo que la
+    capa no tiene o no es numérico se rechaza igual (``des.quarry_layer_field``)."""
+    try:
+        return _layer_number(layer, index, name, request)
+    except DesignError as error:
+        if error.code == "des.entity_field_value":
+            return None
+        raise
+
+
+def layer_values(project: StoreProject, fields: PlatformFields, feature: str
+                 ) -> dict[PlatformParam, float | None]:
+    """Los valores iniciales que da la capa de ``fields`` de su geometría ``feature`` (su nombre o su
+    ``fid``): la cota inicial, la pendiente y, de una capa de líneas, el ancho (los de
+    :data:`LAYER_FIELDS`), por parámetro; ``None`` el que la geometría no tiene (sin valor en su campo o
+    sin campo). Es lo que **propone** el diálogo de «Plataforma…» (T15; RF-015-19: la persona lo corrige
+    o lo deja) y no rechaza lo que falta: lo rechaza el cálculo. Solo lee. ``DesignError``
+    ``des.entity_feature_unknown`` o ``_ambiguous`` si la capa no tiene esa geometría (o varias llevan
+    ese nombre), ``des.quarry_layer_field`` si un campo no es numérico suyo y ``ValueError`` si no es
+    una capa de entidades."""
+    layer = _layer(project, fields.layer)
+    asked = PlatformRequest("Propuesta", fields, feature, "Propuesta")
+    index = feature_index(layer, asked, "PLT-001")
+    found: dict[PlatformParam, float | None] = {}
+    for param, attribute in LAYER_FIELDS.items():
+        field = getattr(fields, attribute)
+        found[param] = None if field is None else _layer_number_or_none(layer, index, field, asked)
+    return found
+
+
+def _corrected(request: PlatformRequest) -> dict[PlatformParam, float]:
+    """Los valores iniciales que la persona corrigió en el diálogo (``PlatformRequest.start_level_m``,
+    ``gradient_pct`` y ``width_m``), por parámetro; los que no corrigió, no salen (se leen de la capa)."""
+    asked = {PlatformParam.START_LEVEL: request.start_level_m,
+             PlatformParam.GRADIENT: request.gradient_pct, PlatformParam.WIDTH: request.width_m}
+    return {param: value for param, value in asked.items() if value is not None}
 
 
 def _linked_axis(layers: Callable[[str], FeatureLayer], layer: FeatureLayer, index: int,
@@ -701,6 +747,7 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
     geometry = read_geometry(lambda name: _layer(project, name), layer, index, request)
     fields = request.fields
     kept = {} if code is None else _kept_numbers(project, version, chosen)
+    corrected = _corrected(request)
     from_layer: dict[PlatformParam, float] = {}
     layer_fields: dict[PlatformParam, str] = {}
     for param, attribute in LAYER_FIELDS.items():
@@ -708,9 +755,19 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
         if field is not None:  # sin campo (un polígono no tiene ancho): el valor no sale de la capa
             # Una entidad que ya está en la versión (recalcularla, o la que dejó «Traer…») tiene ya sus
             # valores de la capa como parámetros, con su historial (P-3): manda su fila, no la capa.
-            from_layer[param] = (kept[param] if param in kept
-                                 else _layer_number(layer, index, field, request))
-            layer_fields[param] = field
+            if param in kept:
+                from_layer[param], layer_fields[param] = kept[param], field
+                continue
+            asked = corrected.get(param)
+            if asked is None:
+                from_layer[param], layer_fields[param] = _layer_number(
+                    layer, index, field, request), field
+                continue
+            # Lo que corrige el diálogo manda sobre la capa y se copia con su origen; si es igual al de la
+            # capa, conserva el origen de la capa.
+            from_layer[param] = asked
+            if _layer_number_or_none(layer, index, field, request) == asked:
+                layer_fields[param] = field
     fid = layer.fids[index]
     values = entity_values(request, chosen, fid, from_layer, line=line)
     yield
@@ -1112,6 +1169,41 @@ def _with_supports(project: StoreProject, start: OperationStart, names: Iterable
     return replace(start, inputs=(*start.inputs, *extra), seen=MappingProxyType(seen))
 
 
+def _confirmation(project: StoreProject, outcome: PlatformOutcome, decided_by: str | None
+                  ) -> provenance.CounterslopeConfirmation | None:
+    """La contrapendiente que la persona confirmó expresamente (``outcome.confirmed``) y que se anota en los
+    ajustes al crear (RF-015-23; T15): la cuantía y la abscisa de su peor tramo, quién la confirmó
+    (``decided_by``; por defecto, quien tiene abierto el proyecto) y cuándo (ahora, UTC). ``None`` si el
+    resultado no tiene contrapendiente que pase de la tolerancia: no hay nada que confirmar."""
+    profile = outcome.profile
+    index = profile.worst
+    if index is None or not outcome.confirmed:
+        return None
+    return provenance.counterslope_confirmation(
+        float(profile.rise_m[index]), float(profile.chainage_m[index]),
+        decided_by or project.session.user_host, format_utc(project.clock.now()))
+
+
+def _with_confirmation(start: OperationStart, confirmed: provenance.CounterslopeConfirmation
+                       ) -> OperationStart:
+    """``start`` con la contrapendiente confirmada en sus ajustes (:data:`~.provenance.COUNTERSLOPE_CONFIRMED`)."""
+    return replace(start, settings={**start.settings,
+                                    provenance.COUNTERSLOPE_CONFIRMED: confirmed.settings()})
+
+
+def _reuse_confirmation(outcome: PlatformOutcome, confirmed: provenance.CounterslopeConfirmation | None
+                        ) -> PlatformOutcome:
+    """El ``outcome`` de un recálculo con la contrapendiente ya confirmada por la persona, **si la nueva no
+    pasa de la confirmada más la tolerancia de la entidad** (T15; RF-015-23): ``outcome.confirm()``. Si
+    la pasa, o no había confirmada, el mismo ``outcome``: ``ensure_creatable`` vuelve a pedirla."""
+    index = outcome.profile.worst
+    if index is None or confirmed is None:
+        return outcome
+    if confirmed.covers(float(outcome.profile.rise_m[index]), outcome.profile.tolerance_m):
+        return outcome.confirm()
+    return outcome
+
+
 def create_platform(project: StoreProject, writer: DesignWriter, prepared: PreparedPlatform,
                     outcome: PlatformOutcome, *, decided_by: str | None = None) -> Stored:
     """**«Crear» una plataforma** (spec 015, T13; RF-015-01, RF-015-02, RF-015-04): registra en **una**
@@ -1126,9 +1218,15 @@ def create_platform(project: StoreProject, writer: DesignWriter, prepared: Prepa
     los tiene). Si algo falla, o lo que consume cambió desde que se calculó (``des.input_changed``), no
     queda nada y el error sigue; **no modifica ninguna capa de entrada**. ``DesignError``
     ``des.platform_counter_unconfirmed`` si el resultado tiene una contrapendiente sin confirmar
-    (RF-015-23), antes de escribir nada."""
+    (RF-015-23), antes de escribir nada. Si la tiene y la persona la confirmó, queda en los ajustes de la
+    operación (:data:`~.provenance.COUNTERSLOPE_CONFIRMED`: cuánto, en qué abscisa, quién la confirmó y
+    cuándo; ``decided_by``, por defecto quien tiene abierto el proyecto) y un recálculo la reutiliza
+    mientras la nueva no pase de la confirmada más la tolerancia (T15)."""
     outcome.ensure_creatable()
     start = _with_supports(project, prepared.start, detected_supports(project, prepared, outcome))
+    confirmed = _confirmation(project, outcome, decided_by)
+    if confirmed is not None:  # RF-015-23: quién la confirmó, cuánto y cuándo, para el recálculo (T15)
+        start = _with_confirmation(start, confirmed)
 
     def parameters(conn: sqlite3.Connection) -> None:
         key = entity_key(prepared.code, PlatformParam.NAME)
@@ -1163,6 +1261,7 @@ def platform_parameters(project: StoreProject, version: Version, code: str) -> d
 
 def run_platform(project: StoreProject, request: PlatformRequest, *, version: str | None,
                  code: str, masks: access.MaskSet | None = None, supersedes: str | None = None,
+                 confirmed: provenance.CounterslopeConfirmation | None = None,
                  budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
     """Calcula y registra ``request`` —una entidad que ya está en la versión ``version``: su ``code``— de
     **una vez**, sin pedir confirmación (spec 015, T14; RF-015-02, RF-015-16; el recálculo de lo obsoleto,
@@ -1180,13 +1279,19 @@ def run_platform(project: StoreProject, request: PlatformRequest, *, version: st
     los campos, la partida, la falta de dato, un sector pendiente…). Al avanzar, antes de escribir: un
     parámetro que cambió entre prepararla y empezar (``des.input_changed``) y una contrapendiente que pasa de
     la tolerancia (``des.platform_counter_unconfirmed``: un recálculo **no confirma** por la persona, que
-    vuelve a «Calcular» y la confirma)."""
+    vuelve a «Calcular» y la confirma). Con ``confirmed`` (la contrapendiente que ella confirmó al crear la
+    operación que se sustituye, de sus ajustes: :func:`~.provenance.counterslope_confirmed`; T15), el
+    recálculo la **reutiliza si la nueva no pasa de la confirmada más la tolerancia** (y la operación nueva
+    la lleva en sus ajustes, la misma: quién la confirmó y cuándo); si la pasa, vuelve a pedirla
+    (``des.platform_counter_unconfirmed``) y la operación que sustituye sigue vigente."""
     found = require_version(project, version, provenance.PLATFORM)
     loaded = _loaded_masks(project, found, masks)
     prepared: PreparedPlatform = _result_of(prepare_platform_units(
         project, request, found, loaded, code=code, supersedes=supersedes))
+    if confirmed is not None:  # se arrastra a la operación nueva (la misma decisión, no una nueva)
+        prepared = replace(prepared, start=_with_confirmation(prepared.start, confirmed))
     handle = prepared.start.begin(project)
-    return handle, _platform_run(project, handle, prepared, budget_s)
+    return handle, _platform_run(project, handle, prepared, budget_s, confirmed)
 
 
 def recompute_platform(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
@@ -1203,7 +1308,9 @@ def recompute_platform(request: RecomputeRequest, *, budget_s: float = STEP_BUDG
     asked = provenance.platform_request(request.settings,
                                         platform_parameters(project, found, code))
     return run_platform(project, asked, version=found.uid, code=code,
-                        supersedes=request.operation_uid, budget_s=budget_s)
+                        supersedes=request.operation_uid,
+                        confirmed=provenance.counterslope_confirmed(request.settings),
+                        budget_s=budget_s)
 
 
 def _check_recorded(handle: OperationHandle, prepared: PreparedPlatform) -> None:
@@ -1220,11 +1327,13 @@ def _check_recorded(handle: OperationHandle, prepared: PreparedPlatform) -> None
 
 
 def _platform_run(project: StoreProject, handle: OperationHandle, prepared: PreparedPlatform,
-                  budget_s: float) -> Generator[Progress, None, None]:
+                  budget_s: float, confirmed: provenance.CounterslopeConfirmation | None = None
+                  ) -> Generator[Progress, None, None]:
     with DesignWriter.resume(project, handle) as writer:
         _check_recorded(handle, prepared)
         outcome: PlatformOutcome = yield from compute_platform_steps(
             writer, prepared, operation=prepared.job.request.name, budget_s=budget_s)
+        outcome = _reuse_confirmation(outcome, confirmed)
         outcome.ensure_creatable()
         stored = writer.commit(figures=outcome.figures, message=outcome.message)
         yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)

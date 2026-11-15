@@ -138,7 +138,17 @@ lo que deja fuera del límite vigente; las que lo dejan, marcadas), el resumen d
 (:func:`show_summary`: «Ajuste «…» en V01» y, por superficie, su volumen de ajuste con la cara de su
 perfil) y la ficha de cada superficie ajustada (la superficie de la que sale y su partida). El botón
 «Exportar rejilla a GeoTIFF…» vale ya para todas las rejillas de la 014 (la clasificación y el
-recinto, con su leyenda en los metadatos: ``design.export``)."""
+recinto, con su leyenda en los metadatos: ``design.export``).
+
+**«Plataforma…»** (spec 015, T15; HU-015-3; RF-015-03, RF-015-28; plan 015 §5.3.3, §5.5): las listas de
+su diálogo (:func:`refresh_platform_choices`: las capas de líneas o de polígonos del proyecto con su
+geometría, :func:`platform_layer_items` y :func:`platform_layer_kind`; las superficies de partida —el
+terreno, las de diseño y la de cada plataforma de la versión activa como ``entity:PLT-001``—,
+:func:`platform_start_items` y :func:`platform_default_start`, que propone **la última de la cadena**; y
+las de apoyo, :func:`platform_support_items`) y el resumen de su cálculo (:func:`show_summary`,
+:func:`_platform_lines`: «Plataforma «Carga» (PLT-001) en V01», su huella, su rasante, el corte y el
+relleno de la huella y del borde, la pared más alta y «sin contrapendientes», y sus avisos y lo que
+quedará obsoleto: el resumen de ``design.preview.PlatformSummary``)."""
 
 from __future__ import annotations
 
@@ -591,6 +601,12 @@ class _Choices:
     conserve: list[tuple[str, str, str]] = field(default_factory=list)
     designs: list[tuple[str, str, str]] = field(default_factory=list)
     envelopes: list[tuple[str, str, str]] = field(default_factory=list)
+    platform_layers: list[tuple[str, str, str]] = field(default_factory=list)
+    platform_kinds: dict[str, str] = field(default_factory=dict)
+    platform_starts: list[tuple[str, str, str]] = field(default_factory=list)
+    platform_supports: list[tuple[str, str, str]] = field(default_factory=list)
+    platform_names: list[str] = field(default_factory=list)
+    platform_start: str | None = None
     by_id: dict[str, res_surfaces.SurfaceChoice] = field(default_factory=dict)
     key: tuple[str, str, str] | None = None
 
@@ -616,6 +632,7 @@ def _fixed_choices() -> None:
     _CHOICES.designs = [(NO_ZONE, NOT_SHOWN,
                          tr("There are no design surfaces in the active version"))]
     _CHOICES.envelopes = [(NO_ZONE, NOT_SHOWN, tr("There are no envelopes in the active version"))]
+    _fixed_choices_platform()
 
 
 DESIGN_SURFACE_PREFIXES: tuple[str, ...] = tuple(
@@ -819,12 +836,131 @@ def envelope_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
     return _CHOICES.envelopes
 
 
+def _platform_entities(project: Any, version: str) -> tuple[list[tuple[str, str, str]], list[str],
+                                                           str | None]:
+    """Las plataformas de la versión ``version`` (uid): las superficies de las calculadas como
+    ``entity:<código>`` (con su nombre y si es la última de su cadena), los nombres de todas (la
+    propuesta del nombre de la nueva no repite ninguno) y la última de la cadena (:func:`platform_default_start`;
+    ``None`` sin ninguna). Una cadena que da la vuelta (un dato roto) no ofrece cola."""
+    from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+    if not version:
+        return [], [], None
+    registry = entities.registry(project, version)
+    try:
+        tails = [record.code for record in entities.chain_tails(registry.records)]
+    except design_messages.DesignError:
+        LOGGER.warning("Una cadena de entidades no tiene cola: no se propone partida", exc_info=True)
+        tails = []
+    items: list[tuple[str, str, str]] = []
+    for entry in registry:
+        record = entry.record
+        if record.state in (entities.EntityState.UNCALCULATED, entities.EntityState.DISCARDED):
+            continue  # sin superficie que leer
+        last = record.code in tails
+        items.append((entities.surface_ref(record.code),
+                      tr("Platform «{name}» ({code})", name=record.name, code=record.code),
+                      tr("Surface of the platform, the last of its chain") if last
+                      else tr("Surface of a platform that another one starts from")))
+    usable = {item[0] for item in items}
+    start = next((entities.surface_ref(code) for code in reversed(tails)
+                  if entities.surface_ref(code) in usable), None)
+    return items, [entry.record.name for entry in registry], start
+
+
+def refresh_platform_choices(project: Any) -> None:
+    """Vuelve a leer de ``project`` las listas del diálogo de «Plataforma…» (spec 015, T15; plan 015
+    §5.3.3): las capas «entidades» de líneas o de polígonos (:func:`platform_layer_items`, con su
+    geometría: :func:`platform_layer_kind`), las superficies de partida (:func:`platform_start_items`:
+    las plataformas calculadas de la versión activa como ``entity:<código>`` y, después, las superficies y
+    rejillas de cotas de :func:`surface_items` sin las de las plataformas, que se eligen por su
+    entidad para que la cadena las conozca), la última de su cadena como la propuesta
+    (:func:`platform_default_start`) y las de apoyo (:func:`platform_support_items`: «ninguna» y las
+    mismas). Se llama tras :func:`refresh_choices`. Si no se puede leer, el error sigue."""
+    _ensure_choices()
+    version = scene_versions.active_version() or ""
+    layers = [(name, kind) for name, kind in constraint_panels.search_layers(project)
+              if kind in ("line", "polygon")]
+    entities, names, last = _platform_entities(project, version)
+    prefix = design_provenance.FAMILIES_BY_CODE[design_provenance.ENTITY_SURFACE_GRID].prefix
+    surfaces = [item for item in _CHOICES.surfaces
+                if item[0] == NO_ZONE or not item[0].startswith(prefix)]
+    starts = [*entities, *(item for item in surfaces if item[0] != NO_ZONE)]
+    _fixed_choices_platform()
+    if layers:
+        _CHOICES.platform_layers = [
+            (name, constraint_panels.layer_label(name),
+             tr("Layer of lines") if kind == "line" else tr("Layer of polygons"))
+            for name, kind in layers]
+        _CHOICES.platform_kinds = dict(layers)
+    if starts:
+        _CHOICES.platform_starts = starts
+        _CHOICES.platform_supports = [*_CHOICES.platform_supports, *starts]
+    _CHOICES.platform_names, _CHOICES.platform_start = names, last
+
+
+def _fixed_choices_platform() -> None:
+    """Las listas de «Plataforma…» sin nada del proyecto (:func:`_fixed_choices` la llama; sin capas, sin
+    superficies, sin plataformas): «—» y «sin apoyo»."""
+    _CHOICES.platform_layers = [(NO_LAYER, NOT_SHOWN,
+                                 tr("There are no layers of lines or polygons in the project"))]
+    _CHOICES.platform_kinds = {}
+    _CHOICES.platform_starts = [(NO_ZONE, NOT_SHOWN, tr("There are no grids in the project"))]
+    _CHOICES.platform_supports = [(NO_ZONE, tr("No support surface"),
+                                   tr("The platform rests on no other surface"))]
+    _CHOICES.platform_names, _CHOICES.platform_start = [], None
+
+
+def platform_layer_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las capas de líneas o de polígonos que ofrece «Plataforma…» (spec 015, T15; plan 015 §5.2.1; una
+    lista viva del módulo); sin ninguna, «—»."""
+    _ensure_choices()
+    return _CHOICES.platform_layers
+
+
+def platform_layer_kind(layer: str) -> str | None:
+    """La geometría (``"line"`` o ``"polygon"``) de la capa ``layer`` de la lista de :func:`platform_layer_items`;
+    ``None`` si no es de la lista."""
+    _ensure_choices()
+    return _CHOICES.platform_kinds.get(layer)
+
+
+def platform_start_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las superficies de partida de una plataforma (spec 015, T15; plan 015 §5.3.3): las plataformas de la
+    versión activa y las superficies y rejillas de cotas (una lista viva del módulo)."""
+    _ensure_choices()
+    return _CHOICES.platform_starts
+
+
+def platform_support_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las superficies de apoyo de una plataforma (spec 015, T15): «ninguna» y las de partida (una lista
+    viva del módulo)."""
+    _ensure_choices()
+    return _CHOICES.platform_supports
+
+
+def platform_default_start() -> str | None:
+    """La superficie de partida que propone el diálogo de «Plataforma…»: **la última de la cadena** de la
+    versión activa (la de la plataforma que ninguna otra tiene como partida, ``entity:PLT-001``); ``None`` sin
+    plataformas calculadas (parte del terreno o de una superficie de diseño: lo propone el diálogo con la
+    selección de la vista)."""
+    return _CHOICES.platform_start
+
+
+def platform_names() -> list[str]:
+    """Los nombres de las plataformas de la versión activa (los leyó :func:`refresh_platform_choices`)."""
+    return list(_CHOICES.platform_names)
+
+
 def forget_choices() -> None:
     """Olvida las listas leídas (al desregistrar)."""
     _CHOICES.key = None
     _CHOICES.surfaces, _CHOICES.anchors, _CHOICES.zones, _CHOICES.layers = [], [], [], []
     _CHOICES.optional_layers, _CHOICES.lines, _CHOICES.conserve = [], [], []
     _CHOICES.designs, _CHOICES.envelopes = [], []
+    _CHOICES.platform_layers, _CHOICES.platform_kinds = [], {}
+    _CHOICES.platform_starts, _CHOICES.platform_supports = [], []
+    _CHOICES.platform_names, _CHOICES.platform_start = [], None
     _CHOICES.by_id = {}
 
 
@@ -1097,6 +1233,42 @@ def refit_rows(project: Any, version_uid: str) -> tuple[list[tuple[str, str, boo
     raise AssertionError("la comprobación acaba siempre con sus filas")  # pragma: no cover
 
 
+def _platform_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+    """El resumen de una plataforma calculada (``design.platform.PlatformOutcome``; spec 015, T15;
+    RF-015-03, RF-015-23, RF-015-24; E1): su huella (celdas, área y la longitud de su eje), su rasante (las
+    cotas de sus extremos y su pendiente), el corte y el relleno de la huella y del borde por separado, la
+    pared más alta del borde y **«sin contrapendientes»** si el perfil no sube más que la tolerancia. Sus
+    avisos (la contrapendiente, lo que queda por debajo de la rasante, la restricción que no deja mover…) y lo
+    que quedará obsoleto los añade :func:`summary_lines` (son los ``notices`` del cálculo)."""
+    outcome = calculation.outcome
+    values = calculation.entity.values if calculation.entity is not None else {}
+    lines = [(tr("Platform «{name}» ({code}): footprint {area} m² in {cells} cells · axis {axis} m",
+                 name=calculation.name, code=outcome.code,  # type: ignore[union-attr]
+                 area=_number(_figure(calculation, "des.plat_area_m2")),
+                 cells=_number(outcome.footprint.cell_count),  # type: ignore[union-attr]
+                 axis=_number(_figure(calculation, "des.plat_axis_m"), 1)), False)]
+    gradient = values.get("gradient_pct")
+    lines.append((tr("Platform level: elevation {start} m at the start and {end} m at the end of "
+                     "the axis · gradient {gradient} %",
+                     start=_number(_figure(calculation, "des.plat_start_level_m"), 2),
+                     end=_number(_figure(calculation, "des.plat_end_level_m"), 2),
+                     gradient=_number(gradient if isinstance(gradient, int | float) else None, 2)),
+                  False))
+    lines.append((tr("Footprint: cut {cut} m³ · fill {fill} m³ · edge: cut {edge_cut} m³ · fill "
+                     "{edge_fill} m³",
+                     cut=_number(_figure(calculation, "des.plat_cut_m3")),
+                     fill=_number(_figure(calculation, "des.plat_fill_m3")),
+                     edge_cut=_number(_figure(calculation, "des.edge_cut_m3")),
+                     edge_fill=_number(_figure(calculation, "des.edge_fill_m3"))), False))
+    wall = _figure(calculation, "des.edge_wall_max_m")
+    if wall is not None:
+        lines.append((tr("Highest wall of the edge: {wall} m", wall=_number(wall, 2)), False))
+    if not outcome.counter_slope:  # type: ignore[union-attr]
+        lines.append((tr("No counter-slopes (tolerance {tolerance} m)",
+                         tolerance=_number(outcome.profile.tolerance_m, 2)), False))  # type: ignore[union-attr]
+    return lines
+
+
 def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de un cálculo hecho y sin registrar (RF-013-31), línea a línea y en el idioma de
     Geoblender, con los avisos al final y en alerta: de una envolvente, sus celdas, su área, sus
@@ -1108,7 +1280,9 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     :func:`_transition_lines`; de un diseño «solo relleno» (T30), lo de :func:`_fill_only_lines`;
     de un ajuste a un límite nuevo (T33), lo de :func:`_refit_lines`. Aquí solo se escriben."""
     lines: list[tuple[str, bool]] = []
-    if calculation.op_type == design_provenance.QUARRY:
+    if calculation.op_type == design_provenance.PLATFORM:
+        lines.extend(_platform_lines(calculation))
+    elif calculation.op_type == design_provenance.QUARRY:
         lines.extend(_quarry_lines(calculation.outcome))
     elif calculation.op_type == design_provenance.REFIT:
         lines.extend(_refit_lines(calculation))
@@ -1236,6 +1410,9 @@ def show_summary(calculation: Calculation | None) -> None:
                    version=calculation.version)
     elif calculation.op_type == design_provenance.REFIT:
         title = tr("Refit «{name}» in {version}", name=calculation.name,
+                   version=calculation.version)
+    elif calculation.op_type == design_provenance.PLATFORM:
+        title = tr("Platform «{name}» in {version}", name=calculation.name,
                    version=calculation.version)
     else:
         title = tr("Benching «{name}» in {version}", name=calculation.name,

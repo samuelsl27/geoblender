@@ -91,6 +91,7 @@ preview = import_geoblender("design.preview")
 provenance = import_geoblender("design.provenance")
 res_provenance = import_geoblender("reserves.provenance")
 steps = import_geoblender("design.steps")
+timeutil = import_geoblender("core.timeutil")
 zones_mod = import_geoblender("gis.masks.zones")
 combine = import_geoblender("gis.masks.combine")
 
@@ -2055,15 +2056,18 @@ class RecomputeRefusalTest(RecomputeCase):
 
 
 class RecomputeCounterSlopeTest(RecomputeCase):
-    """RF-015-23: un recálculo no confirma una contrapendiente por la persona."""
+    """RF-015-23: un recálculo no confirma por la persona una contrapendiente mayor que la que ella confirmó
+    (T14; con la confirmada de T15, véase ``RecomputeConfirmedCounterSlopeTest``)."""
 
     def test_c4_a_counter_slope_that_is_not_confirmed_is_not_registered(self) -> None:
-        """RF-015-23: la «Plataforma de la torre», creada con la confirmación de su contrapendiente, al
-        recalcularla vuelve a tenerla y el recálculo **no la confirma por la persona**: se rechaza al
-        avanzar (``des.platform_counter_unconfirmed``), la operación nueva queda fallida, la anterior sigue
+        """RF-015-23: la «Plataforma de la torre», creada con la confirmación de su contrapendiente y con su
+        cota inicial 3 m más baja (la contrapendiente crece más que la tolerancia sobre la confirmada), al
+        recalcularla **no la confirma por la persona**: se rechaza al avanzar
+        (``des.platform_counter_unconfirmed``), la operación nueva queda fallida, la anterior sigue
         vigente y no queda ningún dato, cifra ni temporal más."""
         self.clock.advance(minutes=1)
         old = self.calculate_in(prep.request(TOWER), confirm_counterslope=True).create().handle.uid
+        self.change(design_params.entity_key("PLT-001", "start_level_m"), 212.0)
         before = self.written()
         self.clock.advance(minutes=1)
         handle, work = design_store.recompute_run(self.request_for(old))
@@ -2076,6 +2080,138 @@ class RecomputeCounterSlopeTest(RecomputeCase):
         after = self.written()
         for key in ("datasets", "parameters", "figures", "tables", "files"):
             self.assertEqual(after[key], before[key], key)
+
+
+class ConfirmedCounterSlopeTest(RecomputeCase):
+    """RF-015-23, RF-015-02, RF-008-26 (T15; decisión de la sesión principal, revisable): la contrapendiente
+    que la persona confirmó al crear queda en los ajustes de la operación (cuánto, en qué abscisa, quién y
+    cuándo) y un recálculo la reutiliza mientras la nueva no pase de la confirmada más la tolerancia; si
+    pasa, vuelve a pedirla. La «Plataforma de la torre» (cota inicial de la capa, 215 m) creada con su
+    contrapendiente confirmada y recalculada por el orden de los nombres de las pruebas: (f1) lo que se
+    anota, (f2) la que se reutiliza y (f3) la que se vuelve a pedir."""
+
+    KEY = "counterslope_confirmed"
+    LEVEL = design_params.entity_key("PLT-001", "start_level_m")
+    TOLERANCE_M = 0.1
+    """La tolerancia de contrapendiente por defecto (D-8)."""
+    plain_worst: ClassVar[tuple[float, float]]
+    first: ClassVar[str]
+    created_on: ClassVar[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        plain = cls.calculate_in(prep.request(TOWER))
+        cls.plain_worst = cls.worst(plain)
+        plain.discard()
+        cls.clock.advance(minutes=1)
+        cls.first = cls.calculate_in(prep.request(TOWER),
+                                     confirm_counterslope=True).create().handle.uid
+        cls.created_on = timeutil.format_utc(cls.clock.now())
+
+    @staticmethod
+    def worst(calculation: Any) -> tuple[float, float]:
+        """La contrapendiente de su peor tramo y su abscisa."""
+        profile = calculation.outcome.profile
+        index = profile.worst
+        assert index is not None
+        return float(profile.rise_m[index]), float(profile.chainage_m[index])
+
+    def settings_of(self, uid: str) -> dict[str, Any]:
+        ((settings,),) = self.query("SELECT settings FROM gb_operation WHERE uid = ?", uid)
+        return dict(json.loads(settings))
+
+    def rise_with(self, level: float) -> float:
+        """Cambia la cota inicial de la torre en la versión a ``level`` y da lo que sube su
+        contrapendiente así (calculada sin crear)."""
+        self.change(self.LEVEL, level)
+        calculation = self.calculate_in(prep.request(TOWER), code="PLT-001",
+                                        supersedes=self.current("PLT-001"))
+        try:
+            return self.worst(calculation)[0]
+        finally:
+            calculation.discard()  # no deja su temporal
+
+    def test_f1_creating_with_the_confirmation_records_what_was_confirmed(self) -> None:
+        """RF-015-23: lo confirmado se anota en los ajustes de la operación al crear: la cuantía y la
+        abscisa del peor tramo (los del perfil), quién lo confirmó (quien tiene abierto el proyecto) y
+        cuándo; una plataforma sin contrapendiente no lleva nada (los ajustes de siempre)."""
+        recorded = self.settings_of(self.first)[self.KEY]
+        self.assertEqual(sorted(recorded), ["abscissa_m", "amount_m", "decided_by", "decided_on"])
+        self.assertEqual((recorded["amount_m"], recorded["abscissa_m"]), self.plain_worst)
+        self.assertGreater(recorded["amount_m"], self.TOLERANCE_M)
+        self.assertEqual(recorded["decided_by"], self.project.session.user_host)
+        self.assertEqual(recorded["decided_on"], self.created_on)
+        self.clock.advance(minutes=1)
+        free = self.calculate_in(prep.request(LOADING, start=EDGE_HOLE_DATASET),
+                                 confirm_counterslope=True).create()
+        self.assertNotIn(self.KEY, self.settings_of(free.handle.uid), "sin contrapendiente, nada")
+        self.assertEqual(self.settings_of(free.handle.uid), provenance.platform_settings(
+            prep.request(LOADING, start=EDGE_HOLE_DATASET), "PLT-002"))
+
+    def test_f2_a_recompute_reuses_the_confirmation_while_the_counter_slope_does_not_grow(self) -> None:
+        """RF-015-23, RF-008-26: recalcular la torre sin cambiar nada, o con un cambio que sube la
+        contrapendiente menos que la tolerancia (0,1 m), da una operación nueva que sustituye a la
+        anterior **sin pedir la confirmación otra vez** y que lleva la **misma** confirmación (la cuantía
+        y el decisor de la primera: no se actualiza a la del recálculo); «Recalcular lo obsoleto» tampoco
+        la rechaza."""
+        confirmed = self.settings_of(self.first)[self.KEY]
+        self.clock.advance(minutes=1)
+        handle, work = design_store.recompute_run(self.request_for(self.first))
+        stored = finish(work)
+        self.assertEqual(stored.handle.uid, handle.uid)
+        self.assertEqual(self.query("SELECT status, supersedes_uid FROM gb_operation WHERE uid = ?",
+                                    handle.uid), [("done", self.first)])
+        self.assertEqual(self.settings_of(handle.uid)[self.KEY], confirmed)
+        self.assertEqual(self.current("PLT-001"), handle.uid)
+        rise = self.rise_with(214.95)  # 5 cm más baja que la de la capa: sube la contrapendiente 5 cm
+        self.assertGreater(rise, confirmed["amount_m"])
+        self.assertLessEqual(rise, confirmed["amount_m"] + self.TOLERANCE_M)
+        self.assertEqual(self.stale_causes(handle.uid), {("parameter_changed", self.LEVEL)})
+        self.clock.advance(minutes=1)
+        outcome = finish(recompute_mod.recompute_steps(self.project))
+        self.assertEqual([result.status for result in outcome.results],
+                         [recompute_mod.UnitStatus.DONE])
+        (newest,) = outcome.results[0].operations
+        self.assertEqual(self.settings_of(newest)[self.KEY], confirmed)
+        self.assertEqual(self.current("PLT-001"), newest)
+        self.assertEqual(self.recompute_plan(), [])
+
+    def test_f3_a_counter_slope_over_the_confirmed_one_is_asked_again(self) -> None:
+        """RF-015-23: si la contrapendiente nueva pasa de la confirmada más la tolerancia, el recálculo
+        vuelve a pedir la confirmación (falla con ``des.platform_counter_unconfirmed``, la operación
+        vigente no cambia y no queda nada más) y quien la quiere vuelve a «Calcular», la confirma y la
+        crea con la cuantía nueva: la que se reutilizará desde entonces."""
+        current = self.current("PLT-001")
+        confirmed = self.settings_of(current)[self.KEY]
+        rise = self.rise_with(212.0)
+        self.assertGreater(rise, confirmed["amount_m"] + self.TOLERANCE_M,
+                           "el caso: crece más que la tolerancia")
+        before = self.written()
+        self.clock.advance(minutes=1)
+        handle, work = design_store.recompute_run(self.request_for(current))
+        with self.assertRaises(messages.DesignError) as caught:
+            finish(work)
+        self.assertEqual(caught.exception.code, "des.platform_counter_unconfirmed")
+        self.assertEqual(self.query("SELECT status, supersedes_uid FROM gb_operation WHERE uid = ?",
+                                    handle.uid), [("failed", current)])
+        self.assertEqual(self.current("PLT-001"), current)
+        after = self.written()
+        for key in ("datasets", "parameters", "figures", "tables", "files"):
+            self.assertEqual(after[key], before[key], key)
+        self.clock.advance(minutes=1)
+        again = self.calculate_in(prep.request(TOWER), code="PLT-001", supersedes=current)
+        self.assertTrue(again.needs_confirmation)
+        again.confirm_counterslope()
+        self.clock.advance(minutes=1)
+        newest = again.create().handle.uid
+        renewed = self.settings_of(newest)[self.KEY]
+        self.assertEqual(renewed["amount_m"], rise)
+        self.assertGreater(renewed["amount_m"], confirmed["amount_m"])
+        self.assertEqual(self.current("PLT-001"), newest)
+        self.clock.advance(minutes=1)  # y recalcular ya no la pide
+        _handle, work = design_store.recompute_run(self.request_for(newest))
+        self.assertEqual(finish(work).handle.op_type, "des.platform")
 
 
 class ReproduceTest(RecomputeCase):

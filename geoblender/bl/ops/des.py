@@ -204,6 +204,25 @@ Las marcas salen de la caché de la comprobación (spec 014, T35; RNF-014-02:
 (``des_panels.refit_rows_steps``, con el texto en la barra de estado y Esc, que no abre nada; cerrar
 el proyecto mientras tanto tampoco, ni en el último paso: T54) y después vuelve a abrirse con las
 filas ya marcadas.
+
+**Plataforma…** (spec 015, T15; HU-015-3; RF-015-03, RF-015-28, RF-015-29; plan 015 §5.3.3):
+:class:`GEOBLENDER_OT_des_create_platform` (``geoblender.des_create_platform``, Diseño ▸ Pistas y
+entidades ▸ Entidades; la entrada de R-36 la entrega la T31) calcula ``des.platform`` de la versión activa con
+``design.steps.platform_run``: la huella y la rasante de una geometría de una capa de líneas (con su ancho) o de
+polígonos (con su eje enlazado o el principal), aplicadas a su superficie de partida, con el borde que la
+une con el terreno. Su diálogo pide el nombre; la capa y la geometría (por su nombre o su ``fid``) con sus
+campos; **la cota inicial, la pendiente y el ancho que da la capa, que propone y deja corregir**
+(:func:`_propose_values`: el ``update`` de la capa y la geometría; ``PlatformRequest.start_level_m``,
+``gradient_pct`` y ``width_m``, que se copian a los parámetros de la entidad al crear con su origen:
+``design.entity_store.create_platform`` los escribe en la transacción de «Crear», no el cálculo); **la
+partida, que propone la última de la cadena** (o el terreno si no hay plataformas), y el apoyo; el modo,
+el ángulo, el alcance, el factor de malla y la métrica del borde; la tolerancia de contrapendiente y si
+protege, con su resguardo. Calcular, Crear, Cancelar y Esc, los de :class:`_CalculateAndCreate`: nada se
+registra hasta Crear (RF-015-03) y cerrarlo a mitad no deja nada (RF-015-29). Con una **contrapendiente**
+que pasa de su tolerancia el botón de crear dice «Confirmar la contrapendiente y crear»: pulsarlo es la
+confirmación expresa (RF-015-23); desde un guion, ``confirm_counterslope``. Disponible con el proyecto en
+escritura y la versión activa editable y, si no, desactivada con su motivo (RF-015-28:
+:class:`DesignCommandAware`). Las cuentas y los rechazos son de ``design``.
 """
 
 from __future__ import annotations
@@ -1978,18 +1997,21 @@ class _CalculateAndCreate:
         if held is None:
             self.report({"ERROR"}, tr("There is no open calculation: compute first"))
             return {"CANCELLED"}
-        count = len(held.warnings())
-        if not count:
-            confirm_text = tr("Create")
-        elif count == 1:
-            confirm_text = tr("Create with 1 warning")
-        else:
-            confirm_text = tr("Create with {count} warnings", count=count)
+        confirm_text = self._confirm_text(held)
         shown = des_panels.view()
         title = shown.summary_title if shown is not None and shown.summary_title else (
             command_text(catalog().commands[command_idname(self.COMMAND)].label))
         return context.window_manager.invoke_props_dialog(
             self, width=DIALOG_WIDTH, translate=False, title=title, confirm_text=confirm_text)
+
+    def _confirm_text(self, held: Calculation) -> str:
+        """Lo que dice el botón de crear el cálculo abierto ``held``: «Crear» o «Crear con N avisos»."""
+        count = len(held.warnings())
+        if not count:
+            return tr("Create")
+        if count == 1:
+            return tr("Create with 1 warning")
+        return tr("Create with {count} warnings", count=count)
 
     def _run_steps(self, context: Any, project: Any, name: str,
                    steps: Iterator[Progress]) -> set[str]:
@@ -3428,6 +3450,387 @@ class GEOBLENDER_OT_des_refit_to_limit(_CalculateAndCreate, DesignCommandAware,
         return {"FINISHED"}
 
 
+# --- Plataforma… (spec 015, T15; HU-015-3; RF-015-03, RF-015-28, RF-015-29; plan 015 §5.3.3, §5.5) ----
+
+CREATE_PLATFORM = provenance.PLATFORM_COMMAND
+PLATFORM_MODE_ITEMS = [
+    ("CUT", "In cut", "The platform lowers the ground to its level and never raises it: it is "
+                      "the floor of its footprint, not a minimum elevation"),
+    ("CUT_FILL", "In cut and fill", "The platform also raises the ground to its level where "
+                                    "fill is admitted")]
+"""El modo de la plataforma (``design.model.PlatformMode``; D-5: «en corte» por defecto)."""
+AXIS_LINK_FIELD = "eje"
+"""El campo que propone el diálogo para el enlace de un polígono con su eje (plan 015 §5.2.1)."""
+_PLATFORM_HIDDEN = frozenset({"confirm", "in_steps", "confirm_counterslope"})
+"""Las propiedades ocultas de «Plataforma…»: las pone quien la lanza (o su ventana de confirmar)."""
+
+
+def _typed(value: float | None) -> str:
+    """Un valor leído de la capa como se teclea (el más corto que vuelve a dar el mismo número: lo que la
+    capa dice, sin redondeos); vacío si no lo tiene."""
+    return "" if value is None else repr(float(value))
+
+
+def _propose_values(self: Any, _context: Any) -> None:
+    """El ``update`` de la capa, de la geometría y de los campos de «Plataforma…» (T15; plan 015 §5.2.1:
+    «el diálogo deja corregirlos»): **propone** la cota inicial, la pendiente y el ancho que da la capa
+    para esa geometría (``design.entity_store.layer_values``), que la persona puede corregir. Lo que la capa
+    no da, o no se puede leer, queda vacío: vacío es «el de la capa» y lo rechaza el cálculo si falta (no se
+    elige ninguno por ella). Solo lee."""
+    project = SESSION.project
+    kind = des_panels.platform_layer_kind(self.layer)
+    if project is None or kind is None or not self.feature.strip():
+        return
+    from ...design import entity_store  # al usarlo: habilitar no carga el cálculo
+    from ...design.params import PlatformParam
+
+    try:
+        fields = design_model.PlatformFields(
+            self.layer, self.start_level_field, self.gradient_field,
+            self.width_field if kind == "line" else None)
+        found = entity_store.layer_values(project, fields, self.feature.strip())
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.debug("No se pudieron leer los valores de «%s» de la capa «%s»", self.feature,
+                     self.layer, exc_info=True)
+        found = {}
+    self.start_level = _typed(found.get(PlatformParam.START_LEVEL))
+    self.gradient = _typed(found.get(PlatformParam.GRADIENT))
+    self.width = _typed(found.get(PlatformParam.WIDTH))
+
+
+class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
+                                        ProvenanceAwareOperator, _StepsModal, bpy.types.Operator):
+    """Platform of a layer of the project: its footprint and its level applied to its start surface,
+    with the edge that joins it with the ground"""
+
+    bl_idname = CREATE_PLATFORM
+    bl_label = "Platform"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.PLATFORM
+    COMMAND = CREATE_PLATFORM
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the platform, unique in the active version",
+        options=_FIELD)
+    layer: EnumProperty(  # type: ignore[valid-type]
+        name="Layer",
+        description="Layer of the project the platform is taken from: a layer of lines (the axis and "
+                    "the width of each platform) or of polygons (the shape of each platform)",
+        items=des_panels.platform_layer_items, options=_FIELD, update=_propose_values)
+    feature: StringProperty(  # type: ignore[valid-type]
+        name="Platform of the layer",
+        description="Name or number (fid) of the geometry of the layer that is the platform",
+        options=_FIELD, update=_propose_values)
+    start_level_field: StringProperty(  # type: ignore[valid-type]
+        name="Start elevation field",
+        description="Numeric field of the layer with the elevation of the platform level at the "
+                    "start of the axis in metres", default=START_LEVEL_FIELD, options=_FIELD,
+        update=_propose_values)
+    gradient_field: StringProperty(  # type: ignore[valid-type]
+        name="Gradient field",
+        description="Numeric field of the layer with the gradient of the platform level in %, positive "
+                    "when it rises along the axis", default=GRADIENT_FIELD, options=_FIELD,
+        update=_propose_values)
+    width_field: StringProperty(  # type: ignore[valid-type]
+        name="Width field",
+        description="Numeric field of the layer of lines with the width of each platform in metres",
+        default=WIDTH_FIELD, options=_FIELD, update=_propose_values)
+    axis_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Layer of axes",
+        description="Layer of lines with the axis of each polygon (none: the main axis of the "
+                    "polygon)", items=des_panels.line_layer_items, options=_FIELD)
+    axis_field: StringProperty(  # type: ignore[valid-type]
+        name="Axis link field",
+        description="Numeric field of the layer of polygons with the number (fid) of its axis in the "
+                    "layer of axes", default=AXIS_LINK_FIELD, options=_FIELD)
+    start_level: StringProperty(  # type: ignore[valid-type]
+        name="Start elevation (m)",
+        description="Elevation of the platform level at the start of the axis in metres: the one of the "
+                    "layer, which you can correct (empty: the one of the layer)", options=_FIELD)
+    gradient: StringProperty(  # type: ignore[valid-type]
+        name="Gradient (%)",
+        description="Gradient of the platform level in %, positive when it rises along the axis: the one "
+                    "of the layer, which you can correct (empty: the one of the layer)",
+        options=_FIELD)
+    width: StringProperty(  # type: ignore[valid-type]
+        name="Width (m)",
+        description="Width of the platform in metres: the one of the layer, which you can correct "
+                    "(empty: the one of the layer)", options=_FIELD)
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Surface the platform starts from: the ground, a design surface or the surface "
+                    "of another platform (by default, the last of the chain)",
+        items=des_panels.platform_start_items, options=_FIELD)
+    support: EnumProperty(  # type: ignore[valid-type]
+        name="Support surface",
+        description="Surface the platform rests on, if it rests on one (none: it rests on no other "
+                    "surface)", items=des_panels.platform_support_items, options=_FIELD)
+    mode: EnumProperty(  # type: ignore[valid-type]
+        name="Mode",
+        description="In cut: the platform only lowers the ground to its level; in cut and fill: "
+                    "it also raises it where fill is admitted", items=PLATFORM_MODE_ITEMS,
+        default="CUT", options=_FIELD)
+    edge_angle: StringProperty(  # type: ignore[valid-type]
+        name="Edge angle (°)",
+        description="Angle of the slope that joins the platform with the ground, in degrees",
+        options=_FIELD)
+    reach: StringProperty(  # type: ignore[valid-type]
+        name="Reach of the edge (m)",
+        description="Farthest distance from the footprint the edge can reach, in metres",
+        options=_FIELD)
+    mesh_factor: StringProperty(  # type: ignore[valid-type]
+        name="Mesh factor",
+        description="Factor of the mesh of the edge (empty: the default value)", options=_FIELD)
+    metric: EnumProperty(  # type: ignore[valid-type]
+        name="Metric",
+        description="How the distance to the footprint is measured: the 5×5 chamfer (fast, with the "
+                    "scale of the grid) or the exact Euclidean distance", items=METRIC_ITEMS,
+        default="EXACT", options=_FIELD)
+    counter_tolerance: StringProperty(  # type: ignore[valid-type]
+        name="Counter-slope tolerance (m)",
+        description="How much the longitudinal profile can rise against the sense in which the "
+                    "platform level falls before it has to be confirmed, in metres (empty: the "
+                    "default value)",
+        options=_FIELD)
+    protect: BoolProperty(  # type: ignore[valid-type]
+        name="Protect",
+        description="Declare the footprint a protected zone: the other designs neither cut nor fill "
+                    "in it", default=False, options=_FIELD)
+    guard: StringProperty(  # type: ignore[valid-type]
+        name="Guard (m)",
+        description="Distance around the footprint that is also protected, in metres; required to "
+                    "protect", options=_FIELD)
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con
+    # el avance y Esc: los pone invoke; desde un guion, sin ellos, de una vez. La confirmación expresa de
+    # la contrapendiente (RF-015-23): la pone el botón de su ventana, que lo dice; desde un guion, quien
+    # la lanza.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    confirm_counterslope: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué.
+        Con ``confirm``, el diálogo de crear el cálculo abierto. Si no, las listas de capas y de
+        superficies leídas de nuevo, la propuesta (el nombre, la capa y la partida: la última de la
+        cadena) y el diálogo del cálculo: Intro calcula."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.refresh_choices(project)
+            des_panels.refresh_platform_choices(project)
+            self._propose(context, project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.COMMAND)].label),
+            confirm_text=tr("Calculate"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """Lo que propone el diálogo si quien lo lanza no lo dio (plan 015 §5.3.3): un nombre que no repite
+        el de ninguna plataforma de la versión («Plataforma 1»…), la primera capa y la **partida: la última
+        de la cadena** (``des_panels.platform_default_start``) o, sin plataformas calculadas, el terreno
+        (``surface_proposal.ground_item``, con lo seleccionado en la vista)."""
+        given = self.properties.is_property_set
+        if not self.name.strip():
+            names, number = des_panels.platform_names(), len(des_panels.platform_names()) + 1
+            while f"{tr('Platform')} {number}" in names:
+                number += 1
+            self.name = f"{tr('Platform')} {number}"
+        layers = [identifier for identifier, _name, _about in des_panels.platform_layer_items(None, None)]
+        if layers and layers[0] != des_panels.NO_LAYER and not given("layer"):
+            self.layer = layers[0]
+        if not given("start"):
+            start = des_panels.platform_default_start()
+            if start is None and des_panels.has_surfaces():
+                items = [identifier for identifier, _name, _about
+                         in des_panels.platform_start_items(None, None)
+                         if identifier != des_panels.NO_ZONE and not identifier.startswith("entity:")]
+                start = surface_proposal.ground_item(context, project, items,
+                                                     des_panels.surface_choice)
+            if start is not None:
+                self.start = start
+
+    def draw(self, context: Any) -> None:
+        """Arriba el nombre; la capa, la geometría y sus campos; los valores que da la capa (la cota
+        inicial, la pendiente y el ancho), que se corrigen aquí; la partida, el apoyo y el modo; el borde
+        (su ángulo, su alcance, su factor de malla y la métrica); la tolerancia de contrapendiente y si
+        protege, con su resguardo. En la confirmación de crear, el resumen."""
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        kind = des_panels.platform_layer_kind(self.layer)
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        box = layout.box()
+        box.label(text=tr("Geometry of the platform"), translate=False)
+        box.prop(self, "layer", text=tr("Layer"), translate=False)
+        box.prop(self, "feature", text=tr("Platform of the layer"), translate=False)
+        box.prop(self, "start_level_field", text=tr("Start elevation field"), translate=False)
+        box.prop(self, "gradient_field", text=tr("Gradient field"), translate=False)
+        if kind == "line":
+            box.prop(self, "width_field", text=tr("Width field"), translate=False)
+        elif kind == "polygon":
+            box.prop(self, "axis_layer", text=tr("Layer of axes"), translate=False)
+            if _chosen(self.axis_layer):
+                box.prop(self, "axis_field", text=tr("Axis link field"), translate=False)
+        values = layout.box()
+        values.label(text=tr("Values of the layer (you can correct them)"), translate=False)
+        values.prop(self, "start_level", text=tr("Start elevation (m)"), translate=False)
+        values.prop(self, "gradient", text=tr("Gradient (%)"), translate=False)
+        if kind == "line":
+            values.prop(self, "width", text=tr("Width (m)"), translate=False)
+        layout.prop(self, "start", text=tr("Start surface"), translate=False)
+        layout.prop(self, "support", text=tr("Support surface"), translate=False)
+        layout.prop(self, "mode", text=tr("Mode"), translate=False)
+        edge = layout.box()
+        edge.label(text=tr("Edge of the platform"), translate=False)
+        edge.prop(self, "edge_angle", text=tr("Edge angle (°)"), translate=False)
+        edge.prop(self, "reach", text=tr("Reach of the edge (m)"), translate=False)
+        edge.prop(self, "mesh_factor", text=tr("Mesh factor"), translate=False)
+        edge.prop(self, "metric", text=tr("Metric"), translate=False)
+        layout.prop(self, "counter_tolerance", text=tr("Counter-slope tolerance (m)"),
+                    translate=False)
+        layout.prop(self, "protect", text=tr("Protect"), translate=False)
+        if self.protect:
+            layout.prop(self, "guard", text=tr("Guard (m)"), translate=False)
+
+    # --- Lo pedido ----------------------------------------------------------------------------
+
+    def _request(self) -> design_model.PlatformRequest:
+        """Lo pedido en el diálogo como la ``design.model.PlatformRequest`` (RF-015-01, RF-015-19),
+        comprobado sin escribir ni calcular nada. Lo que se deja vacío (el factor de malla, la tolerancia
+        de contrapendiente y los valores de la capa) lo resuelve el dominio: el valor por defecto de su
+        parámetro o el de la capa; el ángulo, el alcance y el resguardo de quien protege no tienen
+        ninguno y los rechaza el dominio si faltan (RF-015-08). :class:`ComputeFormError` si falta algo
+        del diálogo."""
+        name = self.name.strip()
+        if not name:
+            raise ComputeFormError(tr("Write the name of the platform"))
+        kind = des_panels.platform_layer_kind(self.layer)
+        if kind is None:
+            raise ComputeFormError(tr("Choose the layer of the platform"))
+        feature = self.feature.strip()
+        if not feature:
+            raise ComputeFormError(tr("Write the name or the number of the platform in its layer"))
+        if self.start in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the start surface of the platform"))
+        layer = self.layer
+        start_field = _field(self.start_level_field, tr("Start elevation field"), layer)
+        gradient_field = _field(self.gradient_field, tr("Gradient field"), layer)
+        line = kind == "line"
+        axis = kind == "polygon" and _chosen(self.axis_layer)
+        fields = design_model.PlatformFields(
+            layer, start_field, gradient_field,
+            width_field=_field(self.width_field, tr("Width field"), layer) if line else None,
+            axis_field=_field(self.axis_field, tr("Axis link field"), layer) if axis else None,
+            axis_layer=self.axis_layer if axis else None)
+        return design_model.PlatformRequest(
+            name, fields, feature, self.start,
+            support=None if self.support in ("", des_panels.NO_ZONE) else self.support,
+            mode=self.mode.lower(),
+            edge_angle_deg=typed_number(self.edge_angle, tr("Edge angle (°)")),
+            reach_m=typed_number(self.reach, tr("Reach of the edge (m)")),
+            mesh_factor=typed_number(self.mesh_factor, tr("Mesh factor")),
+            counter_tol_m=typed_number(self.counter_tolerance, tr("Counter-slope tolerance (m)")),
+            metric=self.metric.lower(), protect=self.protect,
+            guard_m=typed_number(self.guard, tr("Guard (m)")) if self.protect else None,
+            start_level_m=typed_number(self.start_level, tr("Start elevation (m)")),
+            gradient_pct=typed_number(self.gradient, tr("Gradient (%)")),
+            width_m=typed_number(self.width, tr("Width (m)")) if line else None)
+
+    # --- Calcular y crear ---------------------------------------------------------------------
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Si no, comprueba lo pedido
+        (sin escribir nada si falta algo), pasa por la puerta de la 008 y calcula la plataforma por
+        pasos con ``design.steps.platform_run`` —compila las máscaras antes si no están al día—, sin
+        registrar nada (RF-015-03): desde la interfaz, en el modal con el avance y Esc (RF-015-29); desde un
+        guion, de una vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar. Los rechazos
+        (la geometría, los campos de la capa, los parámetros que faltan, la partida, la falta de dato, un
+        sector con la búsqueda pendiente, el nombre repetido) y todas las cuentas son de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        try:
+            request = self._request()
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report,
+                             dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        steps = design_steps.platform_run(project, request, version=version,
+                                          budget_s=self.STEP_BUDGET_S)
+        return self._run_steps(context, project, request.name, steps)
+
+    def _confirmation(self, context: Any) -> set[str]:
+        """El diálogo de crear el cálculo abierto. Con una contrapendiente que pasa de su tolerancia
+        (RF-015-23: no se crea sin la confirmación expresa), su botón la dice («Confirmar la
+        contrapendiente y crear»): pulsarlo es la confirmación; «Cancelar» y cerrarlo no crean nada."""
+        held = calculation()
+        self.confirm_counterslope = held is not None and held.needs_confirmation
+        return _CalculateAndCreate._confirmation(self, context)
+
+    def _confirm_text(self, held: Calculation) -> str:
+        if held.needs_confirmation:
+            return tr("Confirm the counter-slope and create")
+        return _CalculateAndCreate._confirm_text(self, held)
+
+    def _create(self, context: Any) -> set[str]:
+        """«Crear» (RF-015-01, RF-015-02): como las demás, y con una contrapendiente sin confirmar
+        (RF-015-23) no la crea sin ``confirm_counterslope``: lo dice y el cálculo sigue abierto (se
+        confirma, o se calcula otra vez). Con ella, la confirma en el cálculo antes de crearlo."""
+        opened = calculation()
+        if opened is not None and opened.needs_confirmation:
+            if not self.confirm_counterslope:
+                try:
+                    opened.outcome.ensure_creatable()  # type: ignore[union-attr]
+                except design_messages.DesignError as exc:
+                    self.report({"ERROR"}, design_error_text(exc))
+                return {"CANCELLED"}
+            opened.confirm_counterslope()
+        return _CalculateAndCreate._create(self, context)
+
+    def _created_text(self, opened: Calculation) -> str:
+        return tr("Platform «{name}» created in {version}", name=opened.name,
+                  version=opened.version)
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Calculando la plataforma… 40 % · Esc: cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Computing the platform… {percent} % · Esc: cancel", percent=percent)
+
+
 # --- Vista previa de semillas, dominios y restricciones (T25; HU-013-1; RF-013-01, RF-013-02,
 #     RF-013-03, RF-013-33; plan §5.3.3, §5.5, D-29) ----------------------------------------------
 
@@ -3762,11 +4165,13 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_design_quarry,
                              GEOBLENDER_OT_des_create_transitions,
                              GEOBLENDER_OT_des_design_fill_only,
-                             GEOBLENDER_OT_des_refit_to_limit)
+                             GEOBLENDER_OT_des_refit_to_limit,
+                             GEOBLENDER_OT_des_create_platform)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
 T44, la que declara de nuevo los sectores desde su ventana; de la 014, la T20 pone «Límite desde el
 perímetro…», la T21 «Cantera con dos superficies…», la T28 «Transiciones con el terreno no
 afectado», la T30 «Solo relleno…» y la T33 «Ajustar el diseño a un límite nuevo…», de la entrada
-«014», que la T58 entrega)."""
+«014», que la T58 entrega; de la 015, la T15 pone «Plataforma…», de la entrada «R-36», que entrega la
+T31)."""

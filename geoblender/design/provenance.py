@@ -222,6 +222,7 @@ __all__ = [
     "ENTITY_LAYER",
     "ENTITY_LAYER_ROLE",
     "ENTITY_MAP_ROLE",
+    "COUNTERSLOPE_CONFIRMED",
     "ENTITY_MAP_TABLE",
     "ENTITY_OPERATION_TYPES",
     "ENTITY_REPORT_ROLE",
@@ -270,6 +271,7 @@ __all__ = [
     "PLATFORM_COMMON_PARAMS",
     "PLATFORM_FIGURES",
     "PLATFORM_SETTINGS",
+    "CounterslopeConfirmation",
     "QUARRY",
     "QUARRY_COMMAND",
     "QUARRY_FAMILIES",
@@ -339,6 +341,8 @@ __all__ = [
     "fill_only_inputs",
     "fill_only_request",
     "fill_only_settings",
+    "counterslope_confirmation",
+    "counterslope_confirmed",
     "operation_def",
     "operation_defs",
     "platform_code",
@@ -893,11 +897,11 @@ DECLARE_CONSTRAINTS = "des.declare_constraints"
 ENTITY_LAYER = "des.entity_layer"
 """Los tres tipos de la 015 (plan 015 §5.2.3). «Soltar el apoyo…» no es un tipo: es una
 ``des.platform`` repetida con ``supersedes`` (T25)."""
-PLATFORM_COMMAND = "geoblender.des_draw_platform"
-"""La orden del catálogo que lanza los tres: «Plataforma» (entrada «R-36»; la declaración y la capa
-de entidades las encadena la orden que crea la entidad, plan 015 §5.3.2). Es la clave que ya trae el
-catálogo; la T15 la sustituye por la definitiva (``geoblender.des_create_platform``, plan 015
-§5.3.3) en el catálogo, la documentación y aquí."""
+PLATFORM_COMMAND = "geoblender.des_create_platform"
+"""La orden del catálogo que lanza los tres: «Plataforma…» (entrada «R-36» hasta que la T31 la entregue;
+la declaración y la capa de entidades las encadena la orden que crea la entidad, plan 015 §5.3.2). Es
+la definitiva del plan 015 §5.3.3 (spec 015, T15): sustituye a la clave marcador que traía el catálogo
+(``geoblender.des_draw_platform``)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1769,8 +1773,9 @@ def platform_settings(request: PlatformRequest, code: str) -> dict[str, Any]:
     ancho, el campo del eje y la capa de ese eje; ``None`` los que no lleva). **Ninguna otra cosa**:
     la capa, la geometría, la partida, el modo, el borde y lo demás son **parámetros de la
     entidad** (``des.platform.{e}.*``, :func:`platform_values`): guardarlos aquí los duplicaría y
-    cambiar uno no cambiaría el otro. Es un diccionario nuevo; ``ValueError`` si ``code`` no es el
-    de una entidad."""
+    cambiar uno no cambiaría el otro. Lo único que se añade después es la contrapendiente que la
+    persona confirmó al crear (:data:`COUNTERSLOPE_CONFIRMED`; T15), que se decide tras calcular. Es un
+    diccionario nuevo; ``ValueError`` si ``code`` no es el de una entidad."""
     if not isinstance(request, PlatformRequest):
         raise TypeError(f"los ajustes de una plataforma salen de una PlatformRequest, no "
                         f"{request!r}")
@@ -1796,6 +1801,71 @@ def platform_code(settings: Mapping[str, Any]) -> str:
     code = _required_text(_mapping(settings, what), "code", what)
     entity_segment(code)
     return code
+
+
+COUNTERSLOPE_CONFIRMED = "counterslope_confirmed"
+"""La clave de los ajustes de ``des.platform`` donde queda la contrapendiente que la persona confirmó
+expresamente al crearla (RF-015-23; spec 015, T15; decisión de la sesión principal, revisable):
+:class:`CounterslopeConfirmation`. No es de :func:`platform_settings` (que no la conoce: se confirma
+después de calcular): la añade quien crea (``entity_store.create_platform``) y la arrastra el recálculo."""
+
+
+@dataclass(frozen=True, slots=True)
+class CounterslopeConfirmation:
+    """La contrapendiente de una plataforma que la persona confirmó al crearla (RF-015-23): su cuantía
+    (``amount_m``, m: la del peor tramo del perfil) y su abscisa (``abscissa_m``, m), quién la confirmó
+    (``decided_by``) y cuándo (``decided_on``, UTC). Un recálculo la reutiliza solo si la contrapendiente
+    nueva no pasa de la confirmada más la tolerancia (:meth:`covers`); si pasa, vuelve a pedirla."""
+
+    amount_m: float
+    abscissa_m: float
+    decided_by: str
+    decided_on: str
+
+    def covers(self, rise_m: float, tolerance_m: float) -> bool:
+        """Si la contrapendiente ``rise_m`` (m) del recálculo entra en lo confirmado: no pasa de la cuantía
+        confirmada más la tolerancia ``tolerance_m`` de la entidad (``counter_tol_m``)."""
+        return rise_m <= self.amount_m + tolerance_m
+
+    def settings(self) -> dict[str, Any]:
+        """Lo que se anota en los ajustes de la operación (JSON)."""
+        return {"amount_m": self.amount_m, "abscissa_m": self.abscissa_m,
+                "decided_by": self.decided_by, "decided_on": self.decided_on}
+
+
+def counterslope_confirmation(amount_m: float, abscissa_m: float, decided_by: str, decided_on: str
+                              ) -> CounterslopeConfirmation:
+    """La confirmación de una contrapendiente de ``amount_m`` m en la abscisa ``abscissa_m`` m, de
+    ``decided_by`` en ``decided_on``. ``ValueError`` si la cuantía o la abscisa no son finitas, la
+    cuantía no es positiva o falta quién o cuándo (no se anota una decisión sin decisor)."""
+    for what, value in (("la cuantía", amount_m), ("la abscisa", abscissa_m)):
+        if isinstance(value, bool) or not isinstance(value, numbers.Real) or not math.isfinite(value):
+            raise ValueError(f"{what} de la contrapendiente confirmada es un número finito, no "
+                             f"{value!r}")
+    if amount_m <= 0:
+        raise ValueError(f"la contrapendiente confirmada es positiva, no {amount_m}")
+    for what, text in (("quién", decided_by), ("cuándo", decided_on)):
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"falta {what} confirmó la contrapendiente")
+    return CounterslopeConfirmation(float(amount_m), float(abscissa_m), decided_by, decided_on)
+
+
+def counterslope_confirmed(settings: Mapping[str, Any]) -> CounterslopeConfirmation | None:
+    """La contrapendiente confirmada que guardan los ajustes ``settings`` de una operación
+    ``des.platform`` (:data:`COUNTERSLOPE_CONFIRMED`), o ``None`` si no la llevan (no tuvo que
+    confirmarse o es de antes). ``ValueError`` si la llevan y no es una confirmación (nombrando el
+    campo)."""
+    data = _mapping(settings, "los ajustes de una plataforma")
+    found = data.get(COUNTERSLOPE_CONFIRMED)
+    if found is None:
+        return None
+    what = f"los ajustes de una plataforma, «{COUNTERSLOPE_CONFIRMED}»,"
+    item = _mapping(found, what)
+    amount = _number(item, "amount_m", what, required=True)
+    abscissa = _number(item, "abscissa_m", what, required=True)
+    assert amount is not None and abscissa is not None  # required
+    return counterslope_confirmation(amount, abscissa, _required_text(item, "decided_by", what),
+                                     _required_text(item, "decided_on", what))
 
 
 def platform_values(code: str, parameters: Mapping[str, Any]) -> dict[str, Any]:

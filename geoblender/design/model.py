@@ -739,7 +739,14 @@ class PlatformRequest:
     petición no lleva ninguna cifra minera a mano) o, si no lo tiene, el rechazo de RF-015-08. Las
     cotas, la pendiente y el ancho no se piden: salen de los campos de la capa y se copian a los
     parámetros de la entidad al crearla (P-3). Lo leído (rejilla, partida, máscaras y geometría)
-    no es parte de la petición: lo recoge el cálculo."""
+    no es parte de la petición: lo recoge el cálculo.
+
+    **Lo que corrige el diálogo** (spec 015, T15; plan §5.2.1): el diálogo de «Plataforma…» propone la
+    cota inicial, la pendiente y el ancho que lee de los campos de la capa y deja corregirlos; los
+    valores corregidos (``start_level_m``, ``gradient_pct`` y ``width_m``; ``None`` los que no se
+    corrigen) mandan sobre los de la capa y se copian a los parámetros de la entidad con el origen del
+    diálogo; un valor igual al de la capa conserva su origen. El ancho, solo de una capa de líneas
+    (``ValueError``: es un error del programa pedirlo de un polígono)."""
 
     name: str
     fields: PlatformFields
@@ -756,6 +763,9 @@ class PlatformRequest:
     protect: bool = False
     guard_m: float | None = None
     reason: str | None = None
+    start_level_m: float | None = None
+    gradient_pct: float | None = None
+    width_m: float | None = None
 
     def __post_init__(self) -> None:
         name = _text(self.name, "el nombre de una plataforma")
@@ -777,11 +787,15 @@ class PlatformRequest:
         if self.metric is not None:
             object.__setattr__(self, "metric", Metric(self.metric))
         for attr in ("edge_angle_deg", "reach_m", "mesh_factor", "counter_tol_m",
-                     "max_slope_pct", "guard_m"):
+                     "max_slope_pct", "guard_m", "start_level_m", "gradient_pct", "width_m"):
             object.__setattr__(self, attr, _real_or_none(getattr(self, attr),
                                                          f"«{attr}» de una plataforma"))
         if not isinstance(self.protect, bool):
             raise TypeError(f"«protect» de una plataforma es un sí/no, no {self.protect!r}")
+        if self.width_m is not None and self.fields.width_field is None:
+            raise ValueError("una plataforma de polígono no lleva ancho (RF-015-19): su capa "
+                             f"«{self.fields.layer}» no tiene campo de ancho, y se pidió un ancho de "
+                             f"{self.width_m} m")
 
     @property
     def layer(self) -> str:

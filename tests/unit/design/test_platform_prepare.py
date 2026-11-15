@@ -406,6 +406,87 @@ class PreparedPlatformTest(PrepareCase):
         for row in prepared.rows:
             self.assertTrue(row.reason.strip(), row.key)
 
+    def test_the_values_corrected_in_the_dialog_win_over_the_layer(self) -> None:
+        """RF-015-01, RF-015-19, RF-008-01 (T15; plan §5.2.1: «el diálogo deja corregirlos»): la cota inicial,
+        la pendiente y el ancho que la persona corrige en el diálogo (``start_level_m``, ``gradient_pct`` y
+        ``width_m`` de la petición) son los de la entidad, con el origen del diálogo, y la capa no se lee
+        para ellos; un valor igual al de la capa conserva su origen «capa X, campo Y, entidad Z»; lo que no se
+        corrige sale de la capa como siempre; la capa no se toca."""
+        before = self.state()
+        plain = {row.param.value: row for row in self.units(request()).rows}
+        corrected = self.units(request(start_level_m=249.0, gradient_pct=0.5, width_m=20.0))
+        rows = {row.param.value: row for row in corrected.rows}
+        values = corrected.job.values
+        self.assertEqual((values["start_level_m"], values["gradient_pct"], values["width_m"]),
+                         (249.0, 0.5, 20.0))
+        dialog = f"diálogo de «Plataforma…», entidad «{LOADING}»"
+        for param in ("start_level_m", "gradient_pct"):
+            self.assertEqual((rows[param].source, rows[param].source_kind), (dialog, "person"))
+            self.assertIn(LOADING, rows[param].reason)
+            self.assertNotEqual(rows[param].reason, plain[param].reason)
+        self.assertEqual((rows["start_level_m"].value, rows["gradient_pct"].value), (249.0, 0.5))
+        self.assertEqual(rows["width_m"], plain["width_m"], "20 m es lo que dice la capa: su origen")
+        self.assertEqual(rows["width_m"].source,
+                         f"capa «{efx.AXES_LAYER}», campo «ancho», entidad «{LOADING}»")
+        # la rasante con los valores corregidos (249 m al 0,5 %: de 249,005 a 249,995 m), no con los de la capa
+        levels = corrected.footprint.levels[corrected.footprint.cells]
+        self.assertAlmostEqual(float(levels.min()), 249.005, delta=1e-9)
+        self.assertAlmostEqual(float(levels.max()), 249.995, delta=1e-9)
+        self.assertEqual(self.state(), before)
+
+    def test_a_value_the_layer_does_not_have_can_be_typed_in_the_dialog(self) -> None:
+        """RF-015-08, RF-015-19 (T15): la capa no da la cota de «Eje sin cota»: sin más, se rechaza
+        (``des.entity_field_value``, sin elegir ninguna por la persona); con la que escribe ella en el
+        diálogo, se prepara, con el origen del diálogo. Un nombre de campo que la capa no tiene se rechaza
+        igual, con o sin valor escrito."""
+        asked = request("Eje sin cota", fields=line_fields(BAD_LAYER))
+        self.refused(asked, "des.entity_field_value")
+        prepared = self.units(request("Eje sin cota", fields=line_fields(BAD_LAYER),
+                                      start_level_m=250.0))
+        rows = {row.param.value: row for row in prepared.rows}
+        self.assertEqual(rows["start_level_m"].value, 250.0)
+        self.assertIn("diálogo", rows["start_level_m"].source)
+        self.assertIn("capa", rows["gradient_pct"].source, "la pendiente sí sale de la capa")
+        error = self.refused(request(fields=line_fields(gradient_field="inclinacion"),
+                                     gradient_pct=1.0), "des.quarry_layer_field")
+        self.assertEqual(error.values["value"], "inclinacion")
+
+    def test_the_dialog_proposes_the_values_of_the_layer_without_refusing_what_is_missing(self) -> None:
+        """RF-015-19 (T15): ``layer_values`` da la cota inicial, la pendiente y el ancho de la geometría
+        elegida de la capa (por su nombre o su ``fid``), sin escribir nada; de un polígono, sin ancho; el que
+        la geometría no tiene (sin valor) sale ``None`` en lugar de rechazarse (lo rechaza el cálculo); una
+        geometría que la capa no tiene o un campo que no es suyo, sí."""
+        param = design_params.PlatformParam
+        before = self.state()
+        found = entity_store.layer_values(self.project, line_fields(), LOADING)
+        self.assertEqual(found, {param.START_LEVEL: 250.0, param.GRADIENT: 1.0, param.WIDTH: 20.0})
+        self.assertEqual(entity_store.layer_values(self.project, line_fields(), "1"), found)
+        polygon = entity_store.layer_values(self.project, polygon_fields(), WITH_AXIS)
+        self.assertEqual(polygon, {param.START_LEVEL: 235.0, param.GRADIENT: 1.5, param.WIDTH: None})
+        missing = entity_store.layer_values(self.project, line_fields(BAD_LAYER), "Eje sin cota")
+        self.assertEqual((missing[param.START_LEVEL], missing[param.WIDTH]), (None, 20.0))
+        for feature, code in (("No existe", "des.entity_feature_unknown"),
+                              ("Duplicada", "des.entity_feature_ambiguous")):
+            with self.assertRaises(DesignError) as caught:
+                entity_store.layer_values(self.project, line_fields(BAD_LAYER), feature)
+            self.assertEqual(caught.exception.code, code)
+        with self.assertRaises(DesignError) as caught:
+            entity_store.layer_values(self.project, line_fields(width_field="ancho_malo"), LOADING)
+        self.assertEqual(caught.exception.code, "des.quarry_layer_field")
+        self.assertEqual(self.state(), before)
+
+    def test_a_corrected_value_out_of_range_is_refused_and_a_width_of_a_polygon_is_a_program_error(
+            self) -> None:
+        """RF-015-08 (T15): un valor corregido fuera de rango se rechaza como el de la capa
+        (``des.entity_param_range``); un ancho para una capa de polígonos no es del diálogo: un error del
+        programa (``ValueError``) al formar la petición."""
+        error = self.refused(request(width_m=-5.0), "des.entity_param_range")
+        self.assertEqual(error.field, "des.platform.plt_001.width_m")
+        with self.assertRaises(ValueError):
+            polygon_request(width_m=20.0)
+        with self.assertRaises(TypeError):
+            request(start_level_m="250")
+
 
 # ---------------------------------------------------------------------------------------------
 # Los rechazos (sin escribir nada)

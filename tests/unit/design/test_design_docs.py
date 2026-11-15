@@ -179,6 +179,11 @@ PENDING_015_API = frozenset({
     # la declaración y la capa de entidades de design.reproduce son de la T17 y la T30).
     "entity_values", "feature_index", "platform_parameters", "read_geometry", "recompute_platform",
     "run_platform", "reproduce_platform", "reproduce_declare_constraints", "reproduce_entity_layer",
+    # T15: la contrapendiente que la persona confirmó al crear (design.provenance: se anota en los
+    # ajustes y un recálculo la reutiliza).
+    "CounterslopeConfirmation", "counterslope_confirmation", "counterslope_confirmed",
+    # T15: lo que propone el diálogo de «Plataforma…» desde la capa (design.entity_store).
+    "layer_values",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({

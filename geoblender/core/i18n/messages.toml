@@ -8754,3 +8754,178 @@ es = "Volumen apoyado sobre una entidad"
 
 ["Constraints declared by the entities"]
 es = "Restricciones declaradas por las entidades"
+
+# La orden «Plataforma…» (spec 015, T15; HU-015-3; RF-015-03, RF-015-28, RF-015-29; plan 015 §5.3.3 y
+# §5.5): su diálogo (propiedades, listas y errores), su resumen y su informe, de bl/ops/des.py y
+# bl/ui/des_panels.py.
+
+["Name of the platform, unique in the active version"]
+es = "Nombre de la plataforma, único en la versión activa"
+
+["Layer of the project the platform is taken from: a layer of lines (the axis and the width of each platform) or of polygons (the shape of each platform)"]
+es = "Capa del proyecto de la que sale la plataforma: una capa de líneas (el eje y el ancho de cada plataforma) o de polígonos (la forma de cada plataforma)"
+
+["Platform of the layer"]
+es = "Plataforma de la capa"
+
+["Name or number (fid) of the geometry of the layer that is the platform"]
+es = "Nombre o número (fid) de la geometría de la capa que es la plataforma"
+
+["Numeric field of the layer with the elevation of the platform level at the start of the axis in metres"]
+es = "Campo numérico de la capa con la cota de la rasante al principio del eje, en metros"
+
+["Numeric field of the layer with the gradient of the platform level in %, positive when it rises along the axis"]
+es = "Campo numérico de la capa con la pendiente de la rasante en %, positiva si sube a lo largo del eje"
+
+["Numeric field of the layer of lines with the width of each platform in metres"]
+es = "Campo numérico de la capa de líneas con el ancho de cada plataforma, en metros"
+
+["Layer of axes"]
+es = "Capa de ejes"
+
+["Layer of lines with the axis of each polygon (none: the main axis of the polygon)"]
+es = "Capa de líneas con el eje de cada polígono (ninguna: el eje principal del polígono)"
+
+["Axis link field"]
+es = "Campo del enlace con el eje"
+
+["Numeric field of the layer of polygons with the number (fid) of its axis in the layer of axes"]
+es = "Campo numérico de la capa de polígonos con el número (fid) de su eje en la capa de ejes"
+
+["Elevation of the platform level at the start of the axis in metres: the one of the layer, which you can correct (empty: the one of the layer)"]
+es = "Cota de la rasante al principio del eje, en metros: la de la capa, que puede corregir (vacío: la de la capa)"
+
+["Gradient (%)"]
+es = "Pendiente (%)"
+
+["Gradient of the platform level in %, positive when it rises along the axis: the one of the layer, which you can correct (empty: the one of the layer)"]
+es = "Pendiente de la rasante en %, positiva si sube a lo largo del eje: la de la capa, que puede corregir (vacío: la de la capa)"
+
+["Width (m)"]
+es = "Ancho (m)"
+
+["Width of the platform in metres: the one of the layer, which you can correct (empty: the one of the layer)"]
+es = "Ancho de la plataforma, en metros: el de la capa, que puede corregir (vacío: el de la capa)"
+
+["Surface the platform starts from: the ground, a design surface or the surface of another platform (by default, the last of the chain)"]
+es = "Superficie de la que parte la plataforma: el terreno, una superficie de diseño o la superficie de otra plataforma (por defecto, la última de la cadena)"
+
+["Support surface"]
+es = "Superficie de apoyo"
+
+["Surface the platform rests on, if it rests on one (none: it rests on no other surface)"]
+es = "Superficie en la que se apoya la plataforma, si se apoya en alguna (ninguna: no se apoya en otra superficie)"
+
+["In cut: the platform only lowers the ground to its level; in cut and fill: it also raises it where fill is admitted"]
+es = "En corte: la plataforma solo baja el terreno hasta su rasante; en corte y relleno: también lo sube donde se admite el relleno"
+
+["In cut"]
+es = "En corte"
+
+["The platform lowers the ground to its level and never raises it: it is the floor of its footprint, not a minimum elevation"]
+es = "La plataforma baja el terreno hasta su rasante y no lo sube nunca: es el fondo de su huella, no una cota mínima"
+
+["In cut and fill"]
+es = "En corte y relleno"
+
+["The platform also raises the ground to its level where fill is admitted"]
+es = "La plataforma también sube el terreno hasta su rasante donde se admite el relleno"
+
+["Edge angle (°)"]
+es = "Ángulo del borde (°)"
+
+["Angle of the slope that joins the platform with the ground, in degrees"]
+es = "Ángulo del talud que une la plataforma con el terreno, en grados"
+
+["Reach of the edge (m)"]
+es = "Alcance del borde (m)"
+
+["Farthest distance from the footprint the edge can reach, in metres"]
+es = "Mayor distancia a la huella a la que puede llegar el borde, en metros"
+
+["Factor of the mesh of the edge (empty: the default value)"]
+es = "Factor de malla del borde (vacío: el valor por defecto)"
+
+["How the distance to the footprint is measured: the 5×5 chamfer (fast, with the scale of the grid) or the exact Euclidean distance"]
+es = "Cómo se mide la distancia a la huella: el chamfer 5×5 (rápido, con la escala de la rejilla) o la distancia euclídea exacta"
+
+["Counter-slope tolerance (m)"]
+es = "Tolerancia de contrapendiente (m)"
+
+["How much the longitudinal profile can rise against the sense in which the platform level falls before it has to be confirmed, in metres (empty: the default value)"]
+es = "Cuánto puede subir el perfil longitudinal en contra del sentido en que baja la rasante antes de tener que confirmarlo, en metros (vacío: el valor por defecto)"
+
+["Declare the footprint a protected zone: the other designs neither cut nor fill in it"]
+es = "Declara la huella zona protegida: los demás diseños no cortan ni rellenan en ella"
+
+["Guard (m)"]
+es = "Resguardo (m)"
+
+["Distance around the footprint that is also protected, in metres; required to protect"]
+es = "Distancia alrededor de la huella que también se protege, en metros; obligatoria para proteger"
+
+["Write the name of the platform"]
+es = "Escriba el nombre de la plataforma"
+
+["Choose the layer of the platform"]
+es = "Elija la capa de la plataforma"
+
+["Write the name or the number of the platform in its layer"]
+es = "Escriba el nombre o el número de la plataforma en su capa"
+
+["Choose the start surface of the platform"]
+es = "Elija la superficie de partida de la plataforma"
+
+["Geometry of the platform"]
+es = "Geometría de la plataforma"
+
+["Values of the layer (you can correct them)"]
+es = "Valores de la capa (puede corregirlos)"
+
+["Edge of the platform"]
+es = "Borde de la plataforma"
+
+["Confirm the counter-slope and create"]
+es = "Confirmar la contrapendiente y crear"
+
+["Platform «{name}» created in {version}"]
+es = "Plataforma «{name}» creada en {version}"
+
+["Computing the platform… {percent} % · Esc: cancel"]
+es = "Calculando la plataforma… {percent} % · Esc: cancelar"
+
+["There are no layers of lines or polygons in the project"]
+es = "No hay capas de líneas ni de polígonos en el proyecto"
+
+["No support surface"]
+es = "Sin superficie de apoyo"
+
+["The platform rests on no other surface"]
+es = "La plataforma no se apoya en otra superficie"
+
+["Platform «{name}» ({code})"]
+es = "Plataforma «{name}» ({code})"
+
+["Surface of the platform, the last of its chain"]
+es = "Superficie de la plataforma, la última de su cadena"
+
+["Surface of a platform that another one starts from"]
+es = "Superficie de una plataforma de la que parte otra"
+
+["Platform «{name}» ({code}): footprint {area} m² in {cells} cells · axis {axis} m"]
+es = "Plataforma «{name}» ({code}): huella de {area} m² en {cells} celdas · eje de {axis} m"
+
+["Platform level: elevation {start} m at the start and {end} m at the end of the axis · gradient {gradient} %"]
+es = "Rasante: cota de {start} m al principio y de {end} m al final del eje · pendiente del {gradient} %"
+
+["Footprint: cut {cut} m³ · fill {fill} m³ · edge: cut {edge_cut} m³ · fill {edge_fill} m³"]
+es = "Huella: desmonte {cut} m³ · relleno {fill} m³ · borde: desmonte {edge_cut} m³ · relleno {edge_fill} m³"
+
+["Highest wall of the edge: {wall} m"]
+es = "Pared más alta del borde: {wall} m"
+
+["No counter-slopes (tolerance {tolerance} m)"]
+es = "Sin contrapendientes (tolerancia de {tolerance} m)"
+
+["Platform «{name}» in {version}"]
+es = "Plataforma «{name}» en {version}"

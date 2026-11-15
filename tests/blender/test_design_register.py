@@ -11,9 +11,9 @@
   ajuste) y sus quince cifras, con sus cinco órdenes reales de la entrada «014» (entregada desde
   la T58); y lo de la 015 (T04; RF-015-02): las 19 familias de parámetros de una plataforma, sus tres
   tipos de operación de la versión (repetibles y reproducibles: ``des.platform``,
-  ``des.declare_constraints`` y ``des.entity_layer``, con la orden «Plataforma» de la entrada de R-36,
-  aún provisional) y sus catorce cifras, sin las órdenes; ``bl/ops/des.py`` lo quita y lo vuelve a
-  poner con los mismos objetos y deja lo que otro registró antes con las mismas claves.
+  ``des.declare_constraints`` y ``des.entity_layer``, con la orden «Plataforma…» de la entrada de R-36,
+  real desde la T15 y sin entregar hasta la T31) y sus catorce cifras; ``bl/ops/des.py`` lo quita y lo
+  vuelve a poner con los mismos objetos y deja lo que otro registró antes con las mismas claves.
 - El contrato de registro de la 008 (RF-008-26, RF-009-05, RF-009-11): cada tipo con su versión
   1.0, su ámbito, sus órdenes en el catálogo y, los dos que se repiten, su recálculo (por la cola
   de ``des``), su reproducción (la de ``design.reproduce``, al usarla) y la tolerancia de sus
@@ -62,10 +62,9 @@ QUARRY_TYPES = ("des.excavation_area", "des.quarry", "des.edge_transition", "des
 """Los cinco tipos de la 014 (T05): de la versión y repetibles."""
 ENTITY_TYPES = ("des.platform", "des.declare_constraints", "des.entity_layer")
 """Los tres tipos de la 015 (T04): de la versión, repetibles y reproducibles."""
-PLATFORM_COMMAND = "geoblender.des_draw_platform"
-"""La orden de los tres: la «Plataforma» de la entrada de R-36, que la T15 sustituye por la
-definitiva (``geoblender.des_create_platform``). Aún no tiene clase real: la genera ``bl.ui`` como
-provisional y el catálogo la deja sin entregar."""
+PLATFORM_COMMAND = "geoblender.des_create_platform"
+"""La orden de los tres: la «Plataforma…» de la entrada de R-36 (T15: la clave definitiva, que sustituyó a
+``des_draw_platform``). Tiene su clase real; el catálogo deja la entrada sin entregar hasta la T31."""
 ENTRY_R36 = "R-36"
 REPRODUCED = {"des.envelope": "reproduce_envelope", "des.stepped_design": "reproduce_design",
               "des.excavation_area": "reproduce_excavation_area",
@@ -409,6 +408,11 @@ class DesignRegisteredTest(unittest.TestCase):
         platform = self.cat.commands[PLATFORM_COMMAND]  # de la entrada de R-36, sin entregar
         self.assertEqual((platform.entry, platform.module), (ENTRY_R36, "des"))
         self.assertFalse(self.cat.entries[ENTRY_R36].delivered)
+        platform_class = m.commands.registered_class(PLATFORM_COMMAND)  # T15: su clase real
+        self.assertIn(platform_class, des_ops.classes)
+        self.assertFalse(m.commands.is_provisional(platform_class))
+        self.assertFalse(m.commands.is_available(PLATFORM_COMMAND))  # la entrada la entrega la T31
+        self.assertNotIn("geoblender.des_draw_platform", self.cat.commands)  # la clave marcador, sustituida
         for idname in sorted(set(launched) - COMMANDS_014 - {PLATFORM_COMMAND}):
             with self.subTest(orden=idname):
                 self.assertIn(idname, DELIVERED)

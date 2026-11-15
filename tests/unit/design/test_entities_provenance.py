@@ -52,7 +52,7 @@ CODE, NAME = "PLT-001", "Plataforma de carga"
 OTHER_CODE, OTHER_NAME = "PLT-002", "Plataforma de taller"
 GROUND = "gis_dtm_ladera"
 ENTITY_TYPES = ("des.platform", "des.declare_constraints", "des.entity_layer")
-PLATFORM_COMMAND = "geoblender.des_draw_platform"
+PLATFORM_COMMAND = "geoblender.des_create_platform"
 THICKNESS = "res.verify.min_thickness_m"
 COMMON_PARAMS = ("des.tolerance.face_deg", "des.warning.magnitude_ratio", THICKNESS,
                  "des.edge.max_created_step_m", "des.edge.min_share")
@@ -362,9 +362,9 @@ class EntityOperationTypesTest(unittest.TestCase):
                 self.assertNotEqual(table[msgid], msgid)
 
     def test_their_commands_are_in_the_catalog(self) -> None:
-        """RF-008-61 (ADR-0025 §2): la orden de cada tipo está en el catálogo, de ``des``. Hasta
-        que la T15 le dé su clave definitiva (``geoblender.des_create_platform``), es la de la
-        entrada de R-36 que ya trae el catálogo («Plataforma»); la T31 entrega la entrada."""
+        """RF-008-61 (ADR-0025 §2): la orden de cada tipo está en el catálogo, de ``des``: la
+        definitiva (``geoblender.des_create_platform``, T15, que sustituye a la clave marcador
+        ``des_draw_platform`` de la entrada de R-36); la T31 entrega la entrada."""
         self.assertEqual(provenance.PLATFORM_COMMAND, PLATFORM_COMMAND)
         cat = import_geoblender("core.catalog").load()
         for declared in provenance.ENTITY_OPERATION_TYPES:
