@@ -1561,8 +1561,9 @@ def platform_report_rows(outcome: PlatformOutcome) -> list[Row]:
     """Las filas de ``des_prp_`` (``quantity, value, unit_code, note``, formato largo como ``des_rpt_`` y
     ``des_qrp_``) de la plataforma ``outcome`` (RF-015-02, RF-015-13, RF-015-23, RF-015-24), en este
     orden: lo de la huella (área, celdas, longitudes del eje y de la huella, las cotas y la pendiente de la
-    rasante); lo aplicado (corte y relleno, celdas, lo que las máscaras no dejan mover, lo que no queda en
-    la rasante y lo que no se mueve) con una fila por grupo de celdas por encima o por debajo
+    rasante) y lo que la rejilla le recorta (T46: las celdas y el área de huella fuera de la rejilla, con el
+    lugar de la primera en la nota); lo aplicado (corte y relleno, celdas, lo que las máscaras no dejan
+    mover, lo que no queda en la rasante y lo que no se mueve) con una fila por grupo de celdas por encima o por debajo
     (``off_level_above`` y ``off_level_below``) y por grupo de lo que no se mueve (``held_group``), con su
     número, causa, celdas, área y lugar en la nota (JSON); el borde (su ángulo, factor de malla, alcance y
     límite, su corte y relleno, las celdas movidas, las que no se mueven, las más empinadas y las que llegan
@@ -1594,6 +1595,9 @@ def platform_report_rows(outcome: PlatformOutcome) -> list[Row]:
             ("off_level_max_m", outcome.off_level_max_m, "m"),
             ("held_cells", outcome.held_cells, "-"), ("held_area_m2", outcome.held_area_m2, "m2")):
         scalar(key, value, unit)
+    scalar("footprint_outside_cells", footprint.outside_cells, "-")
+    scalar("footprint_outside_area_m2", footprint.outside_area_m2, "m2",
+           _place(footprint.outside_x, footprint.outside_y, "footprint_outside"))
     for side, groups in (("above", applied.above), ("below", applied.below)):
         for item in groups:
             scalar(f"off_level_{side}", item.max_m, "m", _json({

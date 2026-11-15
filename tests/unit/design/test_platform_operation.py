@@ -366,8 +366,25 @@ class CalculateTest(OperationCase):
 # ---------------------------------------------------------------------------------------------
 
 
+CLIPPED_LAYER = "gis_fea_plataformas_recortadas"
+CLIPPED_NAME = "Eje recortado"
+CLIPPED_AXIS = ((-60.0, 200.0), (20.0, 200.0))
+"""Un eje de 80 m de oeste a este y 20 m de ancho que sale 60 m por el oeste de la rejilla (locales): con las
+celdas de 2 m, 40 columnas × 10 filas = 400 celdas, 100 dentro y 300 (1.200 m²) fuera; la primera de las de fuera, la
+más al norte y al oeste, la de centro (−59; 209)."""
+
+
 class SummaryTest(OperationCase):
     """RF-015-03 y RF-015-13: el resumen lleva las cifras y los avisos de lo que calcula."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        layer = qfx.LayerData(
+            CLIPPED_LAYER, "line", (((cfx.absolute(CLIPPED_AXIS),),),), (CLIPPED_NAME,),
+            {"ancho": (20.0,), "cota_inicial": (250.0,), "pendiente": (1.0,)})
+        qfx.write_feature_layer(cls.project, cls.clock, layer)
+        cls.clock.advance(minutes=1)
 
     def test_a_the_summary_has_the_figures_and_the_notices(self) -> None:
         """RF-015-03: el resumen de la cuenta lleva el nombre, el código y la versión, las cifras (las
@@ -421,6 +438,30 @@ class SummaryTest(OperationCase):
         self.assertTrue(195.0 < outside.values["x"] - efx.BASE[0] < 215.0)
         calm = self.calculate(prep.request()).summary
         self.assertNotIn("des.entity_edge_outside", codes(calm))
+
+    def test_a_a_footprint_the_grid_cuts_says_how_much_and_where(self) -> None:
+        """RF-015-13, RF-015-08 (T46; D-1/A-7): un eje que sale de la rejilla se calcula **sin rechazo** y el
+        resumen avisa del área de huella que queda fuera de ella (300 celdas, 1.200 m²) y su lugar, con el
+        nombre de la entidad, en los dos idiomas; la «Plataforma de carga», que cabe, no lo lleva."""
+        asked = prep.request(CLIPPED_NAME, fields=prep.line_fields(CLIPPED_LAYER), feature=CLIPPED_NAME)
+        calculation = self.calculate(asked)
+        summary = calculation.summary
+        cut = only(summary, "des.platform_footprint_clipped")
+        x, y = (round(float(v), 2) for v in cfx.absolute([(-59.0, 209.0)])[0])
+        self.assertEqual(dict(cut.values), {"entity": CLIPPED_NAME, "cells": 300, "area": 1200.0,
+                                            "x": x, "y": y})
+        self.assertEqual(calculation.outcome.footprint.cell_count, 100)
+        self.assertTrue(any("la rejilla del proyecto recorta su huella" in line
+                            for line in summary.warnings("es")))
+        self.assertTrue(any("the project grid cuts its footprint" in line
+                            for line in summary.warnings("en")))
+        self.assertNotIn("des.platform_footprint_clipped", codes(self.calculate(prep.request()).summary))
+        # La vista previa (RF-015-26, la ficha antes de calcular) lo dice con los mismos datos.
+        shown = finish(preview.entity_preview_steps(self.project, asked, self.v1.uid))
+        self.assertIsNone(shown.refusal)
+        self.assertEqual(only(shown, "des.platform_footprint_clipped").values, cut.values)
+        self.assertTrue(any("la rejilla del proyecto recorta su huella" in line
+                            for line, alert in shown.lines("es") if alert))
 
     def test_a_the_magnitude_against_the_last_frozen_revision(self) -> None:
         """RF-015-13, RF-013-30: sin revisión congelada, la nota de que no hay con qué comparar (con

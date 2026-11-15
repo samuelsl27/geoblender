@@ -29,6 +29,7 @@ import math
 import unittest
 from collections.abc import Mapping
 from typing import Any
+from unittest import mock
 
 import numpy as np
 
@@ -617,6 +618,205 @@ class AxisOfPolygonTest(unittest.TestCase):
         """Sin ninguna celda no hay eje (``ValueError``; lo rechaza antes ``platform_footprint``)."""
         with self.assertRaises(ValueError):
             platform.axis_of_polygon(np.zeros(GRID.shape, dtype=bool), GRID)
+
+
+# --- La rejilla recorta la huella --------------------------------------------------------------
+
+CLIPPED = "des.platform_footprint_clipped"
+
+
+def at(x: float, y: float) -> tuple[float, float]:
+    """El punto local (m desde ``BASE``) en absolutas, al cm: como lo lleva el aviso."""
+    point = cfx.absolute([(x, y)])[0]
+    return round(float(point[0]), 2), round(float(point[1]), 2)
+
+
+def ring(*points: tuple[float, float]) -> Any:
+    """Un anillo cerrado local, en absolutas."""
+    return cfx.absolute((*points, points[0]))
+
+
+def polygon_path(*rings: Any) -> Any:
+    """Una geometría de un polígono (su exterior y sus huecos, ya en absolutas)."""
+    return platform.PlatformGeometry("polygon", ((*rings,),))
+
+
+def clipped_notices(found: Any) -> list[Any]:
+    return [notice for notice in found.notices if notice.code == CLIPPED]
+
+
+def extended() -> Any:
+    """La rejilla de la cantera ampliada 120 m por cada lado (640 × 640 celdas de 1 m): con ella, la
+    huella entera, sin recortar, es el oráculo de lo que recorta la de 400 × 400."""
+    return gis.Grid(GRID.west - 120.0, GRID.north + 120.0, 1.0, 1.0, 640, 640)
+
+
+class ClippedByTheGridTest(unittest.TestCase):
+    """RF-015-13, RF-015-08 (spec 0.5, T46; hallazgos D-1 y A-7): si la rejilla recorta la huella, la
+    huella da el área (m²) de ella que queda fuera de la rejilla y su lugar, con el aviso
+    ``des.platform_footprint_clipped``, **sin rechazar** el cálculo (solo se rechaza una huella sin
+    ninguna celda en la rejilla). Las cuentas, a mano, con celdas de 1 m."""
+
+    def test_a_line_on_the_west_edge_loses_the_half_of_its_footprint(self) -> None:
+        """D-1 (``o7c_trunc``): un eje de 80 m y 20 m de ancho (de x = −40 a 40 m, y = 200 m) pegado al
+        borde oeste: la huella son 80 columnas × 20 filas = 1.600 celdas, la mitad (800 celdas, 800 m²)
+        fuera de la rejilla; el lugar es la primera celda de lo que falta, la más al norte y al oeste
+        (x = −39,5; y = 209,5 m); la huella de dentro, 800 celdas."""
+        job = make_job(line_path(((-40.0, 200.0), (40.0, 200.0))), line_request(),
+                       values(width_m=20.0))
+        found = platform.platform_footprint(job)
+        self.assertEqual(found.cell_count, 800)
+        self.assertEqual(found.outside_cells, 800)
+        self.assertEqual(found.outside_area_m2, 800.0)
+        self.assertEqual((found.outside_x, found.outside_y),
+                         tuple(float(v) for v in cfx.absolute([(-39.5, 209.5)])[0]))
+        (notice,) = clipped_notices(found)
+        self.assertEqual(notice.values["entity"], "Plataforma de carga")
+        self.assertEqual((notice.values["cells"], notice.values["area"]), (800, 800.0))
+        self.assertEqual((notice.values["x"], notice.values["y"]), at(-39.5, 209.5))
+        self.assertEqual(notice.severity, "warning")
+
+    def test_a_line_that_leaves_by_the_east_says_so_beside_its_axis_figure(self) -> None:
+        """D-1: un eje de 110 m (de x = 340 a 450 m, y = 100 m, 10 m de ancho) que sale por el este: dentro,
+        60 columnas × 10 filas = 600 celdas; fuera, 50 × 10 = 500 celdas (500 m²). La cifra del eje sigue
+        diciendo 110 m y la huella mide 59 m: el aviso es lo que lo explica."""
+        job = make_job(line_path(((340.0, 100.0), (450.0, 100.0))), line_request(),
+                       values(width_m=10.0))
+        found = platform.platform_footprint(job)
+        self.assertEqual((found.axis.length_m, found.length_m), (110.0, 59.0))
+        self.assertEqual((found.cell_count, found.outside_cells, found.outside_area_m2),
+                         (600, 500, 500.0))
+        self.assertEqual(clipped_notices(found)[0].values["area"], 500.0)
+        self.assertEqual((found.outside_x, found.outside_y),
+                         tuple(float(v) for v in cfx.absolute([(400.5, 104.5)])[0]))
+
+    def test_a_polygon_across_the_south_edge(self) -> None:
+        """Un rectángulo de 40 × 60 m (x de 180 a 220, y de −30 a 30): 40 × 60 = 2.400 celdas, la mitad
+        (1.200) bajo el borde sur; el eje principal se calcula con la parte de dentro y su aviso va antes
+        del del recorte."""
+        geometry = polygon_path(ring((180.0, -30.0), (220.0, -30.0), (220.0, 30.0), (180.0, 30.0)))
+        job = make_job(geometry, polygon_request("P", linked=False), values())
+        found = platform.platform_footprint(job)
+        self.assertEqual((found.cell_count, found.outside_cells), (1200, 1200))
+        self.assertEqual([n.code for n in found.notices],
+                         ["des.platform_axis_principal", CLIPPED])
+        self.assertEqual((found.outside_x, found.outside_y),
+                         tuple(float(v) for v in cfx.absolute([(180.5, -0.5)])[0]))
+
+    def test_a_polygon_with_a_hole_counts_only_the_ring_cells(self) -> None:
+        """El par-impar con un hueco al otro lado del borde oeste: 60 × 60 menos el hueco de 20 × 20 =
+        3.200 celdas, de ellas 1.600 al oeste del borde (1.800 menos las 200 del hueco que caen allí)."""
+        outer = ring((-30.0, 100.0), (30.0, 100.0), (30.0, 160.0), (-30.0, 160.0))
+        hole = ring((-10.0, 120.0), (10.0, 120.0), (10.0, 140.0), (-10.0, 140.0))
+        job = make_job(polygon_path(outer, hole), polygon_request("P", linked=False), values())
+        found = platform.platform_footprint(job)
+        self.assertEqual((found.cell_count, found.outside_cells), (1600, 1600))
+
+    def test_a_footprint_with_one_column_inside_is_not_refused(self) -> None:
+        """Sin rechazo (RF-015-08 solo rechaza una huella **sin** celdas en la rejilla): un eje casi
+        entero fuera (de x = −300 a 1 m) con una sola columna dentro se calcula, avisando de las 300
+        columnas de fuera; uno entero fuera sigue rechazándose."""
+        job = make_job(line_path(((-300.0, 200.0), (1.0, 200.0))), line_request(), values(width_m=10.0))
+        found = platform.platform_footprint(job)
+        self.assertEqual(found.cell_count, 10)
+        self.assertEqual(found.outside_cells, 3000)
+        job = make_job(line_path(((-300.0, 200.0), (-100.0, 200.0))), line_request(),
+                       values(width_m=10.0))
+        with self.assertRaises(DesignError) as caught:
+            platform.platform_footprint(job)
+        self.assertEqual(caught.exception.code, "des.platform_no_cells")
+
+    def test_a_footprint_that_fits_says_nothing(self) -> None:
+        """Una huella dentro de la rejilla, o pegada a su borde sin sobrepasarlo, o cuya caja lo pasa
+        sin que ningún centro caiga fuera (un extremo plano a 0,3 m del borde), no avisa ni tiene lugar."""
+        for path in (((100.0, 100.0), (140.0, 100.0)), ((0.0, 200.0), (40.0, 200.0)),
+                     ((-0.3, 200.0), (40.0, 200.0)), ((360.0, 390.0), (400.0, 390.0))):
+            with self.subTest(path=path):
+                found = platform.platform_footprint(make_job(
+                    line_path(path), line_request(), values(width_m=10.0)))
+                self.assertEqual((found.outside_cells, found.outside_area_m2), (0, 0.0))
+                self.assertIsNone(found.outside_x)
+                self.assertEqual(clipped_notices(found), [])
+        box = polygon_path(ring((0.0, 100.0), (40.0, 100.0), (40.0, 120.0), (0.0, 120.0)))
+        found = platform.platform_footprint(make_job(box, polygon_request("P", linked=False), values()))
+        self.assertEqual((found.outside_cells, clipped_notices(found)), (0, []))
+
+    def test_it_is_what_a_bigger_grid_would_have_measured(self) -> None:
+        """Contra la fuerza bruta: la misma plataforma sobre una rejilla 120 m mayor por cada lado (sin
+        recortar) tiene las celdas de la de 400 × 400 más las que esta pierde, con una línea quebrada que sale
+        por el noroeste, otra que sale por el sureste, un polígono en L que sale por el este y por el norte y
+        un polígono de dos partes que se solapan al oeste (su unión, una vez)."""
+        wide = extended()
+        l_shape = ring((350.0, 350.0), (450.0, 350.0), (450.0, 450.0), (380.0, 450.0),
+                       (380.0, 380.0), (350.0, 380.0))
+        two = platform.PlatformGeometry("polygon", (
+            (ring((-30.0, 100.0), (30.0, 100.0), (30.0, 140.0), (-30.0, 140.0)),),
+            (ring((-10.0, 120.0), (50.0, 120.0), (50.0, 160.0), (-10.0, 160.0)),)))
+        cases = (
+            ("noroeste", line_path(((60.0, 350.0), (-40.0, 380.0), (-30.0, 440.0), (50.0, 470.0),
+                                    (120.0, 420.0))), line_request(), values(width_m=24.0)),
+            ("sureste", line_path(((380.0, 20.0), (420.0, -30.0), (470.0, 40.0))), line_request(),
+             values(width_m=16.0)),
+            ("L", polygon_path(l_shape), polygon_request("P", linked=False), values()),
+            ("dos partes", two, polygon_request("P", linked=False), values()),
+            # Con vértices que no caen en el borde de una celda (la caja de lo que falta, redondeada hacia fuera).
+            ("línea fraccionaria al oeste", line_path(((-39.7, 200.3), (40.2, 200.3))), line_request(),
+             values(width_m=19.4)),
+            ("línea fraccionaria al sur", line_path(((200.3, -39.6), (200.3, 40.4))), line_request(),
+             values(width_m=13.7)),
+            ("polígono fraccionario", polygon_path(ring((-30.3, 100.7), (30.4, 100.2), (30.1, 160.9),
+                                                       (-30.6, 160.4))), polygon_request("P", linked=False),
+             values()),
+            ("polígono fraccionario al sur y al este", polygon_path(ring((370.4, -20.3), (420.6, -19.7),
+                                                                         (421.7, 25.5), (369.8, 24.9))),
+             polygon_request("P", linked=False), values()))
+        for name, geometry, request, parameters in cases:
+            with self.subTest(case=name):
+                real = platform.platform_footprint(make_job(geometry, request, parameters))
+                full = platform.platform_footprint(make_job(geometry, request, parameters, grid=wide))
+                self.assertGreater(real.outside_cells, 0)
+                self.assertEqual(real.cell_count + real.outside_cells, full.cell_count)
+                self.assertEqual(real.outside_area_m2, real.outside_cells * 1.0)
+
+    def test_the_blocks_it_is_measured_in_do_not_change_the_count(self) -> None:
+        """Lo que falta se mide por bloques de celdas acotados (memoria y unidades de pocos ms): con un bloque
+        de 37 celdas, la cuenta y el lugar son los de siempre, en la línea y en el polígono."""
+        geometry = polygon_path(ring((-30.0, 100.0), (30.0, 100.0), (30.0, 160.0), (-30.0, 160.0)))
+        jobs = (make_job(line_path(((-40.0, 200.0), (40.0, 200.0))), line_request(), values(width_m=20.0)),
+                make_job(geometry, polygon_request("P", linked=False), values()))
+        for job in jobs:
+            whole = platform.platform_footprint(job)
+            with mock.patch.object(platform, "_OUTSIDE_BLOCK_CELLS", 37):
+                small = platform.platform_footprint(job)
+            self.assertGreater(whole.outside_cells, 0)
+            self.assertEqual((small.outside_cells, small.outside_x, small.outside_y),
+                             (whole.outside_cells, whole.outside_x, whole.outside_y))
+            np.testing.assert_array_equal(small.cells, whole.cells)
+
+    def test_the_units_of_a_clipped_footprint_yield_and_can_be_closed(self) -> None:
+        """RF-015-29: medir lo que falta no es una unidad larga: la huella recortada cede el hilo más veces
+        que la que cabe y se puede cerrar a mitad sin que nada cambie (la entrada, tampoco)."""
+        inside = make_job(line_path(((100.0, 200.0), (180.0, 200.0))), line_request(), values(width_m=20.0))
+        clipped = make_job(line_path(((-40.0, 200.0), (40.0, 200.0))), line_request(), values(width_m=20.0))
+
+        def units(job: Any) -> int:
+            return sum(1 for _ in _each(platform.platform_footprint_units(job)))
+
+        with mock.patch.object(platform, "_OUTSIDE_BLOCK_CELLS", 100):
+            self.assertGreater(units(clipped), units(inside))
+            work = platform.platform_footprint_units(clipped)
+            next(work)
+            work.close()
+        np.testing.assert_array_equal(clipped.geometry.parts[0][0], cfx.absolute(((-40.0, 200.0), (40.0, 200.0))))
+
+
+def _each(work: Any) -> Any:
+    """Las unidades de ``work`` (``yield`` a ``yield``) hasta el final."""
+    while True:
+        try:
+            yield next(work)
+        except StopIteration:
+            return
 
 
 # --- Los rechazos ------------------------------------------------------------------------------

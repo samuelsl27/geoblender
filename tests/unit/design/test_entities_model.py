@@ -152,6 +152,7 @@ CODES: dict[str, str] = {
     "des.platform_no_cells": "error",           # RF-015-08
     "des.platform_axis_not_crossing": "error",  # RF-015-08
     "des.platform_axis_principal": "warning",   # RF-015-19
+    "des.platform_footprint_clipped": "warning",  # RF-015-13 (T46, D-1/A-7)
     "des.platform_level_range": "error",        # RF-015-08
     "des.platform_max_slope": "error",          # RF-015-08 (D-6)
     "des.platform_protect_cut_fill": "error",   # RF-015-12
@@ -822,6 +823,8 @@ class EntityMessagesTest(unittest.TestCase):
              ": 1 celda,", ": 1 cell,", ": 2 celdas,", ": 2 cells,"),
             ("des.platform_more_groups", "groups", {},
              "y 1 grupo más", "and 1 more group", "y 2 grupos más", "and 2 more groups"),
+            ("des.platform_footprint_clipped", "cells", {"entity": "P1", "area": 1, "x": 1, "y": 2},
+             "(1 celda)", "(1 cell)", "(2 celdas)", "(2 cells)"),
             ("des.entity_obsolete_consumers", "operations", {"items": "«Cantera»"},
              "Con ellas quedará obsoleta 1 operación", "With them, 1 operation",
              "quedarán obsoletas 2 operaciones", "2 operations"),

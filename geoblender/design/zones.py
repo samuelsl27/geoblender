@@ -94,12 +94,15 @@ def _size(nrows: object, ncols: object) -> tuple[int, int]:
     return rows, cols
 
 
-def _spans(rings: Iterable[object], nrows: int, ncols: int) -> _Spans:
+def _spans(rings: Iterable[object], nrows: int, ncols: int, *, row0: int = 0, col0: int = 0) -> _Spans:
     """Los tramos de fila de los centros dentro de ``rings`` (unidades de celda, par-impar),
     recortados a la rejilla y sin tramos vacíos. Una fila ``i`` está cruzada por una arista si
     ``ylo ≤ i + ½ < yhi`` (semiabierto: un vértice sobre el centro cuenta una sola vez); una
     columna ``j`` está dentro de una pareja de cruces ``[a, b)`` si ``a ≤ j + ½ < b``; las dos
-    cuentas son ``ceil(v − ½)``."""
+    cuentas son ``ceil(v − ½)``. ``row0`` y ``col0`` (T46 de la 015) mueven el recorte a la caja de
+    ``nrows × ncols`` celdas que empieza en la fila ``row0`` y la columna ``col0`` (pueden ser negativas:
+    celdas fuera de la rejilla, para medir lo que ella recorta), sin cambiar las cuentas: las filas y
+    las columnas que salen son las mismas, bit a bit, que con la rejilla entera; por defecto, la rejilla."""
     pieces = []
     for ring in rings:
         array = _ring(ring)
@@ -109,8 +112,8 @@ def _spans(rings: Iterable[object], nrows: int, ncols: int) -> _Spans:
     if not pieces:
         return empty, empty, empty
     ax, ay, bx, by = np.concatenate(pieces).T  # los extremos de cada arista (no el GeoOrigin)
-    first = np.clip(np.ceil(np.minimum(ay, by) - 0.5), 0, nrows).astype(np.int64)
-    stop = np.clip(np.ceil(np.maximum(ay, by) - 0.5), 0, nrows).astype(np.int64)
+    first = np.clip(np.ceil(np.minimum(ay, by) - 0.5), row0, row0 + nrows).astype(np.int64)
+    stop = np.clip(np.ceil(np.maximum(ay, by) - 0.5), row0, row0 + nrows).astype(np.int64)
     count = stop - first
     total = int(count.sum())
     if total == 0:
@@ -123,8 +126,8 @@ def _spans(rings: Iterable[object], nrows: int, ncols: int) -> _Spans:
     row, crossing = row[order], crossing[order]
     if total % 2:  # un anillo cerrado cruza cada fila un número par de veces
         raise AssertionError("un anillo cruza una fila un número impar de veces")
-    begin = np.clip(np.ceil(crossing[0::2] - 0.5), 0, ncols).astype(np.int64)
-    end = np.clip(np.ceil(crossing[1::2] - 0.5), 0, ncols).astype(np.int64)
+    begin = np.clip(np.ceil(crossing[0::2] - 0.5), col0, col0 + ncols).astype(np.int64)
+    end = np.clip(np.ceil(crossing[1::2] - 0.5), col0, col0 + ncols).astype(np.int64)
     keep = end > begin
     return row[0::2][keep], begin[keep], end[keep]
 
@@ -187,9 +190,14 @@ def to_cell_units(rings: Iterable[object], grid: Grid) -> tuple[np.ndarray, ...]
     return tuple(found)
 
 
-def _polygon_spans(polygons: Iterable[Iterable[object]], grid: Grid) -> _Spans:
-    """Los tramos de la unión de ``polygons`` absolutos (cada uno, sus anillos par-impar)."""
-    parts = [_spans(to_cell_units(polygon, grid), grid.nrows, grid.ncols) for polygon in polygons]
+def _polygon_spans(polygons: Iterable[Iterable[object]], grid: Grid, *,
+                   box: tuple[slice, slice] | None = None) -> _Spans:
+    """Los tramos de la unión de ``polygons`` absolutos (cada uno, sus anillos par-impar), recortados a la
+    rejilla o, con ``box`` (filas y columnas de la rejilla, que pueden salirse de ella: T46 de la 015), a esa
+    caja."""
+    rows, cols = (slice(0, grid.nrows), slice(0, grid.ncols)) if box is None else box
+    parts = [_spans(to_cell_units(polygon, grid), rows.stop - rows.start, cols.stop - cols.start,
+                    row0=rows.start, col0=cols.start) for polygon in polygons]
     if not parts:
         empty = np.empty(0, dtype=np.int64)
         return empty, empty, empty

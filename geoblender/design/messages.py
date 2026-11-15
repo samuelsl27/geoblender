@@ -1416,6 +1416,24 @@ CATALOG: tuple[Message, ...] = (
         "warning",
     ),
     Message(
+        "des.platform_footprint_clipped",
+        "Platform «{entity}»: the project grid cuts its footprint: {area} m² of it ({cells} cells) "
+        "fall outside the grid, the first at x = {x} m, y = {y} m; only the part inside is "
+        "calculated; enlarge the working window of the project or move the platform.",
+        "Plataforma «{entity}»: la rejilla del proyecto recorta su huella: {area} m² de ella "
+        "({cells} celdas) quedan fuera de la rejilla, la primera en x = {x} m, y = {y} m; solo se "
+        "calcula la parte de dentro; amplíe la ventana de trabajo del proyecto o mueva la "
+        "plataforma.",
+        "warning",
+        count="cells",
+        one_msgid="Platform «{entity}»: the project grid cuts its footprint: {area} m² of it "
+        "({cells} cell) fall outside the grid, at x = {x} m, y = {y} m; only the part inside is "
+        "calculated; enlarge the working window of the project or move the platform.",
+        one_es="Plataforma «{entity}»: la rejilla del proyecto recorta su huella: {area} m² de ella "
+        "({cells} celda) quedan fuera de la rejilla, en x = {x} m, y = {y} m; solo se calcula la "
+        "parte de dentro; amplíe la ventana de trabajo del proyecto o mueva la plataforma.",
+    ),
+    Message(
         "des.platform_level_range",
         "Layer «{layer}», platform «{entity}»: «{field}» = {value} m is outside the terrain "
         "elevations ± 1 000 m ({low} to {high} m); correct it (no level is chosen for it); "

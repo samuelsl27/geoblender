@@ -51,7 +51,10 @@ de varias partes, sin longitud, cerrada o que se corta a sí misma (``des.platfo
 sin celdas (``des.platform_area_zero``, ``_self_intersects`` y ``_no_cells``); un eje enlazado que no
 cruza su polígono de lado a lado (``des.platform_axis_not_crossing``); una cota inicial o final de la
 rasante fuera de las del terreno ± 1.000 m (``des.platform_level_range``); y una línea fuera de la
-rejilla (``des.platform_no_cells``).
+rejilla (``des.platform_no_cells``). **Una huella que la rejilla solo recorta no se rechaza** (T46 de la 015,
+hallazgos D-1 y A-7; RF-015-13): se calcula la parte que cae dentro y el resumen avisa del área (m²) que queda
+fuera, con su lugar (``des.platform_footprint_clipped``, :attr:`Footprint.outside_cells`): la cifra del eje y
+la longitud medida de la huella divergen entonces, y el aviso es lo que lo explica.
 
 **Aplicar** (A2): en el modo «en corte» (el de por defecto, D-5) la superficie es ``z' = mín(z,
 rasante)`` en las celdas de la huella donde el corte se admite (``cut_allowed``) y **ninguna celda
@@ -411,7 +414,14 @@ class Footprint:
     (:class:`~.model.Axis`, con su sentido, su longitud y si es el principal), ``length_m`` la
     longitud medida de la huella (m; el máximo menos el mínimo de la abscisa sin recortar de sus
     celdas: error 20, no los 220 m de un *buffer*), ``start_level_m`` y ``gradient_pct`` los de la
-    rasante, ``cell_area_m2`` el área de una celda y ``notices`` los avisos (el eje principal)."""
+    rasante, ``cell_area_m2`` el área de una celda y ``notices`` los avisos (el eje principal y, si
+    la rejilla recorta la huella, ``des.platform_footprint_clipped``).
+
+    **Lo que la rejilla recorta** (T46 de la 015, hallazgos D-1 y A-7; RF-015-13): ``outside_cells`` son las
+    celdas que tendría la huella **fuera de la rejilla del proyecto** (las del corredor o del polígono por
+    su centro, como las de dentro, que sí están en ``cells``) y ``outside_x`` y ``outside_y`` el lugar, absoluto
+    (float64), de la primera de ellas (la más al norte y, a igual fila, la más al oeste); ``None`` si no
+    falta ninguna. :attr:`outside_area_m2` es su área."""
 
     window: tuple[slice, slice]
     cells: np.ndarray
@@ -423,11 +433,19 @@ class Footprint:
     gradient_pct: float
     cell_area_m2: float
     notices: tuple[Notice, ...] = ()
+    outside_cells: int = 0
+    outside_x: float | None = None
+    outside_y: float | None = None
 
     @property
     def cell_count(self) -> int:
         """Las celdas de la huella."""
         return int(np.count_nonzero(self.cells))
+
+    @property
+    def outside_area_m2(self) -> float:
+        """El área (m²) de la huella que queda fuera de la rejilla: sus celdas por el área de una."""
+        return self.outside_cells * self.cell_area_m2
 
     @property
     def area_m2(self) -> float:
@@ -1004,6 +1022,114 @@ def _nearest_abscissa_units(path: np.ndarray, grid: Grid, rows: slice, cols: sli
     return sigma, reach
 
 
+# --- Lo que la rejilla recorta de la huella (T46) ----------------------------------------------
+
+_OUTSIDE_BLOCK_CELLS = 1 << 19
+"""Las celdas de un bloque con que se mide lo que la rejilla recorta de la huella (T46): acota la memoria
+(dos rejillas de float64 por bloque en una línea, 8 MiB) y la unidad de trabajo del polígono (unos pocos ms)
+con una geometría muy grande o muy lejos de la rejilla. No es una cifra minera: no cambia el resultado."""
+
+
+def _ideal_box(points: np.ndarray, half: float, grid: Grid) -> tuple[slice, slice]:
+    """La caja de filas y columnas **sin recortar a la rejilla** (pueden ser negativas o pasar de ``nrows`` y
+    ``ncols``) que puede tener celdas a ≤ ``half`` de ``points`` (absolutos, ``(k, 2)``): la de
+    :func:`~.quarry.corridor_window` sin su recorte."""
+    west, south = points.min(axis=0) - half
+    east, north = points.max(axis=0) + half
+    col0 = math.floor((west - grid.west) / grid.dx)
+    row0 = math.floor((grid.north - north) / grid.dy)
+    col1 = max(math.ceil((east - grid.west) / grid.dx), col0)
+    row1 = max(math.ceil((grid.north - south) / grid.dy), row0)
+    return slice(row0, row1), slice(col0, col1)
+
+
+def _outside_rectangles(box: tuple[slice, slice], grid: Grid) -> list[tuple[int, int, int, int]]:
+    """Lo que de ``box`` queda fuera de la rejilla, en rectángulos ``(fila 0, fila 1, columna 0, columna 1)``
+    sin celdas repetidas: la franja del norte, las de las filas de la rejilla al oeste y al este de ella y la
+    del sur."""
+    (r0, r1), (c0, c1) = (box[0].start, box[0].stop), (box[1].start, box[1].stop)
+    middle = (max(r0, 0), min(r1, grid.nrows))
+    found = [(r0, min(r1, 0), c0, c1),
+             (*middle, c0, min(c1, 0)),
+             (*middle, max(c0, grid.ncols), c1),
+             (max(r0, grid.nrows), r1, c0, c1)]
+    return [rectangle for rectangle in found if rectangle[1] > rectangle[0] and rectangle[3] > rectangle[2]]
+
+
+def _line_block_units(path: np.ndarray, half: float, grid: Grid, window: tuple[slice, slice]
+                      ) -> Generator[None, None, np.ndarray]:
+    """Las celdas del corredor de ``path`` en ``window`` (filas y columnas que pueden salirse de ``grid``): la
+    misma medición de :func:`~.quarry.axis_abscissa_units` que da la huella, celda a celda."""
+    sigma, _ = yield from axis_abscissa_units([path], half, grid, window)
+    return np.isfinite(sigma)  # type: ignore[no-any-return]
+
+
+def _polygon_block_units(spans: tuple[np.ndarray, np.ndarray, np.ndarray], window: tuple[slice, slice]
+                         ) -> Generator[None, None, np.ndarray]:
+    """Las celdas de los tramos ``spans`` (``(fila, primera columna, columna siguiente a la última)``
+    ordenados por fila, en coordenadas de la rejilla) dentro de ``window``: su unión, una vez cada celda
+    (como :func:`~.zones._paint`, por una suma acumulada de diferencias por fila)."""
+    yield
+    rows, begin, end = spans
+    r0, r1, c0, c1 = window[0].start, window[0].stop, window[1].start, window[1].stop
+    lo, hi = np.searchsorted(rows, [r0, r1])
+    first = np.clip(begin[lo:hi], c0, c1) - c0
+    last = np.clip(end[lo:hi], c0, c1) - c0
+    line = rows[lo:hi] - r0
+    keep = last > first
+    marks = np.zeros((r1 - r0, c1 - c0 + 1), dtype=np.int32)
+    np.add.at(marks, (line[keep], first[keep]), 1)
+    np.add.at(marks, (line[keep], last[keep]), -1)
+    return np.cumsum(marks[:, :-1], axis=1, dtype=np.int32) > 0  # type: ignore[no-any-return]
+
+
+def _clipped_units(job: PlatformJob, path: np.ndarray | None, half: float
+                   ) -> Generator[None, None, tuple[int, float, float] | None]:
+    """**Lo que la rejilla recorta de la huella** (T46, hallazgos D-1 y A-7; RF-015-13), por unidades: las celdas
+    que la huella de ``job`` tendría **fuera de la rejilla** del proyecto y el lugar absoluto de la primera
+    (``(celdas, x, y)``; ``None`` si no falta ninguna). Con una línea (``path``: su camino absoluto, y ``half``,
+    la mitad del ancho) son las del corredor de extremos planos y, con un polígono, las de su centro dentro
+    de él (par-impar, la unión de sus partes), medidas **como las de dentro** sobre la caja de la geometría sin
+    recortar y solo en lo que queda fuera de la rejilla, por bloques de :data:`_OUTSIDE_BLOCK_CELLS` celdas.
+    Una geometría dentro de la rejilla no cuesta más que su caja."""
+    grid = job.grid
+    if path is not None:
+        box = _ideal_box(path, half, grid)
+    else:
+        rings = [np.asarray(ring, dtype=np.float64)[:, :2] for part in job.geometry.parts for ring in part]
+        box = _ideal_box(np.concatenate(rings), 0.0, grid)
+    rectangles = _outside_rectangles(box, grid)
+    if not rectangles:
+        return None
+    spans = None
+    if path is None:
+        rows, begin, end = _polygon_spans(job.geometry.parts, grid, box=box)
+        order = np.argsort(rows, kind="stable")
+        spans = (rows[order], begin[order], end[order])
+        yield
+    count, first = 0, None
+    for r0, r1, c0, c1 in rectangles:
+        step = max(1, _OUTSIDE_BLOCK_CELLS // (c1 - c0))
+        for top in range(r0, r1, step):
+            window = (slice(top, min(top + step, r1)), slice(c0, c1))
+            if spans is None:
+                assert path is not None
+                found = yield from _line_block_units(path, half, grid, window)
+            else:
+                found = yield from _polygon_block_units(spans, window)
+            here = int(np.count_nonzero(found))
+            if here:
+                count += here
+                row, col = divmod(int(found.argmax()), c1 - c0)  # la primera de las verdaderas, por filas
+                cell = (top + row, c0 + col)
+                first = cell if first is None or cell < first else first
+            yield
+    if first is None:
+        return None
+    return (count, float(grid.west + (first[1] + 0.5) * grid.dx),
+            float(grid.north - (first[0] + 0.5) * grid.dy))
+
+
 # --- A0 y A1: la huella y la rasante -----------------------------------------------------------
 
 
@@ -1017,9 +1143,10 @@ def platform_footprint_units(job: PlatformJob) -> Generator[None, None, Footprin
     cancelar. Ahora ceden el hilo, en unidades de pocos milisegundos, la comprobación de que el eje no se
     corta (un tramo con los siguientes), la del contorno del polígono, la de su eje enlazado, la abscisa de
     cada celda (:func:`~.quarry.axis_abscissa_units` y :func:`_nearest_abscissa_units`: por teselas y con los
-    tramos que llegan a cada una) y el armado de las rejillas de la ventana de trabajo; los rechazos son los
-    mismos y salen en el mismo orden al avanzar. Cerrar el generador a mitad (Esc) no deja nada: no escribe
-    nada y no modifica la entrada."""
+    tramos que llegan a cada una), la medida de lo que la rejilla recorta de la huella (:func:`_clipped_units`:
+    por bloques acotados, solo si la caja de la geometría sale de la rejilla; T46) y el armado de las rejillas
+    de la ventana de trabajo; los rechazos son los mismos y salen en el mismo orden al avanzar. Cerrar el
+    generador a mitad (Esc) no deja nada: no escribe nada y no modifica la entrada."""
     request, geometry, grid = job.request, job.geometry, job.grid
     if geometry.kind not in ("line", "polygon"):
         raise _reject("des.platform_layer_kind", request, _GEOMETRY, _KINDS_ES[geometry.kind])
@@ -1027,6 +1154,7 @@ def platform_footprint_units(job: PlatformJob) -> Generator[None, None, Footprin
     start_level, gradient, reach_m, width = _resolved(job, line=line)
     metric = _metric(job)
     notices: list[Notice] = []
+    path: np.ndarray | None = None
     if line:
         assert width is not None
         path = yield from _line_path_units(job)
@@ -1063,6 +1191,12 @@ def platform_footprint_units(job: PlatformJob) -> Generator[None, None, Footprin
         sigma, reach = yield from _nearest_abscissa_units(np.array(axis.vertices), grid, rows, cols, cells)
         sigma, reach = np.where(cells, sigma, np.nan), np.where(cells, reach, np.nan)
     yield
+    clipped = yield from _clipped_units(job, path, 0.0 if width is None else width / 2.0)
+    outside_cells, outside_x, outside_y = clipped or (0, None, None)
+    if clipped is not None:
+        notices.append(Notice("des.platform_footprint_clipped", {
+            "entity": request.name, "cells": outside_cells, "area": outside_cells * grid.cell_area,
+            "x": round(clipped[1], 2), "y": round(clipped[2], 2)}))
     window = work_window(rows, cols, reach_m, grid, metric)
     shape = (window[0].stop - window[0].start, window[1].stop - window[1].start)
     at = (slice(rows.start - window[0].start, rows.stop - window[0].start),
@@ -1076,7 +1210,8 @@ def platform_footprint_units(job: PlatformJob) -> Generator[None, None, Footprin
     levels[footprint] = start_level + abscissa[footprint] * gradient / 100.0
     found = reach[cells]
     return Footprint(window, footprint, abscissa, levels, axis, float(found.max() - found.min()),
-                     start_level, gradient, grid.cell_area, tuple(notices))
+                     start_level, gradient, grid.cell_area, tuple(notices), outside_cells, outside_x,
+                     outside_y)
 
 
 def platform_footprint(job: PlatformJob) -> Footprint:

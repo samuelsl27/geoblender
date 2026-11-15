@@ -27,6 +27,7 @@ Las cuentas están hechas a mano y se comparan a ≤ 10⁻⁹ (D-9):
 from __future__ import annotations
 
 import dataclasses
+import json
 import math
 import unittest
 from typing import Any
@@ -107,7 +108,8 @@ def tilted_grid(nrows: int, ncols: int) -> Any:
 
 
 def small_job(gradient_pct: float, *, depth: float = 5.0, above: float = 6.0, mode: str = "cut",
-              cut_allowed: np.ndarray | None = None, **values: object) -> Any:
+              cut_allowed: np.ndarray | None = None,
+              axis: tuple[tuple[float, float], ...] = SMALL_AXIS, **values: object) -> Any:
     """La plataforma de 80 m de eje a 100 m con la pendiente dada: el terreno queda ``above`` m por
     encima de la rasante salvo entre las abscisas 30 y 50 m, donde queda ``depth`` m por debajo."""
     grid = tilted_grid(SMALL_ROWS, SMALL_COLS)
@@ -121,7 +123,7 @@ def small_job(gradient_pct: float, *, depth: float = 5.0, above: float = 6.0, mo
     allowed = np.ones(grid.shape, dtype=bool)
     return platform.PlatformJob(
         request(), "PLT-001", grid, terrain, platform.PlatformGeometry(
-            "line", ((cfx.absolute(SMALL_AXIS),),)), parameters,
+            "line", ((cfx.absolute(axis),),)), parameters,
         allowed.copy() if cut_allowed is None else cut_allowed, allowed.copy())
 
 
@@ -742,6 +744,63 @@ class OffLevelNoticesTest(unittest.TestCase):
         self.assertEqual((notice.values["area"], notice.values["groups"]), (1600.0, 1))
         self.assertIn("máscaras", notice.text("es"))
         self.assertIn("masks", notice.text("en"))
+
+
+class ClippedFootprintTest(unittest.TestCase):
+    """RF-015-13, RF-015-24, RF-015-02 (spec 0.5, T46; hallazgos D-1 y A-7): lo que la rejilla recorta de la huella
+    llega al resultado: el aviso entre los de la huella (los primeros), las celdas y el área en el informe, con su
+    lugar; ninguna cifra más de las de RF-015-24."""
+
+    CLIPPED_AXIS = ((-20.0, 15.0), (60.0, 15.0))
+    """Un eje de 80 m de oeste a este, 10 m de ancho, que sale 20 m por el oeste de la rejilla de 30 × 100."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.clipped = outcome_of(small_job(-1.0, axis=cls.CLIPPED_AXIS))
+        cls.inside = outcome_of(small_job(-1.0))
+
+    def test_the_notice_comes_first_with_the_area_and_the_place(self) -> None:
+        """800 celdas de huella (80 × 10), 200 de ellas (20 columnas × 10 filas) al oeste de la rejilla: el aviso
+        de la huella lleva 200 celdas y 200 m², y la primera (la más al norte y al oeste: x = −19,5; y = 19,5 m
+        locales); va el primero de los avisos del resultado y en los dos idiomas dice los m²."""
+        first = self.clipped.notices[0]
+        self.assertEqual(first.code, "des.platform_footprint_clipped")
+        self.assertEqual(self.clipped.footprint.cell_count, 600)
+        x, y = rounded(-19.5, 19.5)
+        self.assertEqual(dict(first.values), {"entity": "P1", "cells": 200, "area": 200.0, "x": x, "y": y})
+        self.assertEqual(first.severity, "warning")
+        self.assertIn("200 m² de ella (200 celdas)", first.text("es"))
+        self.assertIn("200 m² of it (200 cells)", first.text("en"))
+        self.assertNotIn("des.platform_footprint_clipped", codes(self.inside))
+
+    def test_the_summary_keeps_it_and_the_figures_are_still_the_twelve(self) -> None:
+        """El resumen de «Calcular» (``summary_notices``) lo conserva entero; y no hay una cifra nueva: las de
+        RF-015-24 son las mismas (el área recortada es del informe y del aviso)."""
+        self.assertIn("des.platform_footprint_clipped", [n.code for n in platform.summary_notices(
+            self.clipped.notices)])
+        keys = {figure.key for figure in self.clipped.figures}
+        self.assertLessEqual(keys, {figure.key for figure in provenance.PLATFORM_FIGURES})
+        self.assertEqual(keys, {figure.key for figure in self.inside.figures})
+        self.assertEqual(dict(self.clipped.footprint.notices[0].values)["cells"], 200)
+
+    def test_the_report_has_the_cells_and_the_area_with_their_unit_and_place(self) -> None:
+        """El informe ``des_prp_`` (lo que registra y reproduce la operación) tiene siempre las filas
+        ``footprint_outside_cells`` (celdas) y ``footprint_outside_area_m2`` (m²), esta con el lugar absoluto
+        de la primera en su nota; sin recorte, 0 y sin lugar; y el aviso va en el informe."""
+        entity_store = import_geoblender("design.entity_store")
+        rows = {row[0]: row for row in entity_store.platform_report_rows(self.clipped)}
+        self.assertEqual(rows["footprint_outside_cells"][1:3], (200.0, "-"))
+        area = rows["footprint_outside_area_m2"]
+        self.assertEqual(area[1:3], (200.0, "m2"))
+        x, y = absolute(-19.5, 19.5)
+        self.assertEqual(area[3], f"{x!r};{y!r}")
+        calm = {row[0]: row for row in entity_store.platform_report_rows(self.inside)}
+        self.assertEqual(calm["footprint_outside_cells"][1:3], (0.0, "-"))
+        self.assertEqual(calm["footprint_outside_area_m2"][1:], (0.0, "m2", None))
+        warnings = [json.loads(row[3]) for row in entity_store.platform_report_rows(self.clipped)
+                    if row[0] == "warning"]
+        self.assertIn({"code": "des.platform_footprint_clipped", "values": dict(
+            self.clipped.notices[0].values)}, warnings)
 
 
 # --- El orden de las dos superficies de una cantera ---------------------------------------------
