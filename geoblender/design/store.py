@@ -84,7 +84,11 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   la misma transacción y antes de abrir la operación, los parámetros de la entidad, y
   :meth:`DesignWriter.declared_steps` prepara la capa de las restricciones declaradas de la versión
   (``des_decl_``, que ``commit`` reescribe entera con ``core.constraints.declared.write_declared``); la
-  preparación, el cálculo y «Crear» son de ``design.entity_store``, que también hace la declaración.
+  preparación, el cálculo y «Crear» son de ``design.entity_store``, que también hace la declaración. **El
+  estilo QGIS de esas capas** (T22; RF-012-20, RF-015-27, RF-009-05): ``commit`` escribe la fila por
+  defecto de ``layer_styles`` de cada capa de versión **en la misma transacción** y anota el dato
+  ``core_layer_styles`` del proyecto, sin declararlo como salida de la operación
+  (``core.constraints.styles.write_version_styles``).
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -114,6 +118,7 @@ import numpy as np
 
 from ..core.constraints.declared import DeclaredConstraint, write_declared
 from ..core.constraints.store import constraint_names
+from ..core.constraints.styles import write_version_styles
 from ..core.content import builtin as core_builtin
 from ..core.content.encoder import NORMALIZER, ContentDigest, ContentHasher
 from ..core.datasets import external as dataset_external
@@ -1442,6 +1447,15 @@ class DesignWriter:
         self._check_place(conn, declared.spec)
         write_declared(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg)
 
+    def _write_styles(self, conn: sqlite3.Connection, handle: OperationHandle) -> None:
+        """El estilo QGIS por defecto de las capas de la versión que escribe la operación (spec 015, T22;
+        RF-012-20, RF-015-27, RF-009-05): su fila de ``layer_styles`` **en esta transacción** y el dato
+        ``core_layer_styles`` del proyecto anotado, sin que la operación lo declare como salida
+        (``core.constraints.styles.write_version_styles``)."""
+        layers = [declared.spec.locator for declared in self._vectors.values()]
+        if layers:
+            write_version_styles(conn, self.project, layers, operation_uid=handle.uid)
+
     def commit(self, start: OperationStart | None = None, *, figures: Sequence[FigureSpec] = (),
                message: str | None = None,
                before_begin: Callable[[sqlite3.Connection], object] | None = None) -> Stored:
@@ -1478,6 +1492,7 @@ class DesignWriter:
                     self._write_table(conn, table)
                 for declared in self._vectors.values():
                     self._write_declared(conn, declared)
+                self._write_styles(conn, handle)
                 records = handle.complete(conn, outputs=self.specs, figures=figures,
                                           message=message)
         except BaseException as error:

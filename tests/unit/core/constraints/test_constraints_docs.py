@@ -89,6 +89,10 @@ PENDING_015_API = frozenset({
     # el rechazo de quien las pide y compilarlas sin cargarlas.
     "gis.masks.access.MaskCause", "gis.masks.access.mask_cause", "gis.masks.access.require_current",
     "gis.masks.access.compile_masks_steps",
+    # T22: el estilo QGIS de las capas de una versión (``core.constraints.styles``: las filas de
+    # ``layer_styles`` de ``des_decl_<vNN>`` y ``des_enl_<vNN>`` y la anotación del dato del proyecto).
+    "core.constraints.styles.VersionLayer", "core.constraints.styles.version_layer",
+    "core.constraints.styles.insert_version_styles", "core.constraints.styles.write_version_styles",
 })
 CORE_MODULES = tuple(f"core.constraints.{info.name}"
                      for info in pkgutil.iter_modules(constraints.__path__)

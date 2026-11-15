@@ -42,6 +42,7 @@ registry = import_geoblender("core.datasets.registry")
 model = import_geoblender("core.datasets.model")
 datasets = import_geoblender("core.datasets")
 tracking = import_geoblender("core.datasets.tracking")
+external = import_geoblender("core.datasets.external")
 schema = import_geoblender("core.provenance.schema")
 content = import_geoblender("core.content")
 builtin = import_geoblender("core.content.builtin")
@@ -445,6 +446,103 @@ class SetContentTest(RegistryCase):
             lambda conn: registry.set_content(conn, self.project, UNKNOWN, _spec(),
                                               operation_uid=OP_2),
         )
+
+
+class NoteContentTest(RegistryCase):
+    """RF-009-05, RF-008-21 (spec 015, T22): ``note_content`` anota el contenido que una operación **de
+    versión** dejó en la tabla de un dato **del proyecto** sin poder declararlo como salida: su hash y su
+    seguimiento al día, su cambio en la historia, y nada más."""
+
+    def written(self) -> Any:
+        """El dato de la capa de límites, escrito por ``OP_1`` (hecha), y ``OP_2`` en curso, que cambia
+        una fila de su tabla como lo haría la operación de versión."""
+        self.begin(OP_1)
+        record = self.register(_spec(detail=DETAIL), OP_1)
+        self.finish(OP_1)
+        self.begin(OP_2)
+        self.project.clock.advance(minutes=5)
+        self.write(lambda conn: conn.execute(f"UPDATE {LAYER} SET tipo = 'exclusion' WHERE codigo = 'P-02'"))
+        return record
+
+    def note(self, uid: str, operation: str | None = OP_2, **changes: Any) -> Any:
+        return self.write(lambda conn: registry.note_content(
+            conn, self.project, uid, operation_uid=operation, **changes))
+
+    def test_hash_and_tracking_are_brought_up_to_date_without_an_output(self) -> None:
+        """RF-009-05, RF-008-21: tras anotar, el hash es el de la tabla (con el lector y el normalizador del
+        dato), el seguimiento es el que dejó la escritura (el prefiltro de la comprobación de datos no salta)
+        y la historia tiene su cambio con la operación y el detalle; la operación **no** tiene el dato como
+        salida y el dato sigue siendo de la que lo escribió y vigente."""
+        record = self.written()
+        written = tables.last_change(self.conn, LAYER)
+        second = _layer(self.conn, self.path, "vector", LAYER)
+        self.assertNotEqual(second.content_sha256, record.content_sha256)
+        states = tracking.table_states(self.conn, [LAYER])
+        self.assertIs(external.probe_dataset(self.project, record, states).signal, external.Signal.MOVED)
+        noted = self.note(record.uid, detail={"capas": ["P-02"]})
+        later = timeutil.format_utc(self.project.clock.now())
+        self.assertEqual(noted.content_sha256, second.content_sha256)
+        self.assertEqual((noted.tracked_last_change, noted.operation_uid, noted.status),
+                         (written, OP_1, model.DatasetStatus.CURRENT))
+        self.assertEqual((noted.created_at, noted.modified_at, noted.checked_at),
+                         (record.created_at, later, later))
+        self.assertIs(external.probe_dataset(self.project, noted, tracking.table_states(
+            self.conn, [LAYER])).signal, external.Signal.UNCHANGED)
+        self.assertEqual(self.changes(record.uid)[1],
+                         (record.content_sha256, second.content_sha256, OP_2, '{"capas":["P-02"]}', later))
+        self.assertEqual(self.outputs(OP_2), [])
+        self.assertEqual(registry.get(self.conn, record.uid), noted)
+
+    def test_the_same_content_adds_no_change(self) -> None:
+        """RF-008-17: si el contenido no cambió, solo se pone al día el seguimiento: ninguna fila de cambio."""
+        self.begin(OP_1)
+        record = self.register(_spec(), OP_1)
+        self.finish(OP_1)
+        self.begin(OP_2)
+        noted = self.note(record.uid)
+        self.assertEqual(noted.content_sha256, record.content_sha256)
+        self.assertEqual(len(self.changes(record.uid)), 1)
+        self.assertEqual(self.outputs(OP_2), [])
+
+    def test_without_a_running_operation_or_a_dataset_it_is_rejected(self) -> None:
+        """RF-008-17: sin operación (o una que no existe o ya terminó) y con un dato que no existe se rechaza
+        con el código de ``core.datasets``, sin escribir nada."""
+        record = self.written()
+        self.finish(OP_2)
+        self.begin(OP_3)
+        for code, operation in (("core.dataset_operation_missing", None),
+                                ("core.dataset_operation_unknown", UNKNOWN),
+                                ("core.dataset_operation_finished", OP_2)):
+            with self.subTest(code):
+                self.assertRejected(code, lambda conn, op=operation: registry.note_content(
+                    conn, self.project, record.uid, operation_uid=op))
+        self.assertRejected("core.dataset_unknown", lambda conn: registry.note_content(
+            conn, self.project, UNKNOWN, operation_uid=OP_3))
+
+    def test_only_a_current_tracked_table_of_the_project_is_noted(self) -> None:
+        """RF-008-52, RF-008-57: lo importado (inmutable), lo que falta y lo que no es una tabla seguida
+        (``exports``) no se anota: errores del programa (``ValueError``), sin escribir nada."""
+        self.begin(OP_1)
+        self.add_input(A, "Límites de la concesión", OP_1)
+        imported = self.register(_spec(input_uid=A, immutable=True, role="imported"), OP_1)
+        plan = self.root / "exports" / "plano.pdf"
+        plan.parent.mkdir(parents=True)
+        plan.write_bytes(b"%PDF-1.4 plano\n")
+        with registered(builtin.DOCUMENT):
+            report = self.register(_spec(name="core_plano", kind="report", store="exports",
+                                         locator="exports/plano.pdf", reader=builtin.DOCUMENT.id,
+                                         role="deliverable"), OP_1)
+        self.finish(OP_1)
+        self.begin(OP_2)
+        for record in (imported, report):
+            with self.subTest(record.name), self.assertRaises(ValueError):
+                self.note(record.uid)
+        self.write(lambda conn: registry.set_status(conn, self.project, report.uid,
+                                                    model.DatasetStatus.DISCARDED))
+        with self.assertRaises(ValueError):
+            self.note(report.uid)
+        with self.assertRaises(TypeError):
+            self.note(None)  # type: ignore[arg-type]
 
 
 class ImmutableTest(RegistryCase):

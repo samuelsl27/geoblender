@@ -13,6 +13,9 @@ escribió su contenido actual: sin ella no se registra (RF-008-17, D-2). Lo llam
   que faltaba o estaba bloqueado, recalculado): su fila de cambio (si el hash cambia) con el
   detalle del módulo y su salida. Lo importado (``immutable``) no admite contenido nuevo
   (RF-008-52).
+- :func:`note_content`: el contenido que una operación de **versión** escribió en la tabla de un dato
+  **del proyecto** sin poder declararlo como salida (el estilo de QGIS de una capa de versión,
+  spec 015, T22): su hash y su seguimiento al día, para que no parezca una edición externa.
 - :func:`get`, :func:`successor`, :func:`supersede` y :func:`set_status`: buscar un dato por
   su uid o por el nombre de su dato vivo en su ámbito (el proyecto o, con la spec 009, una
   versión: :func:`register_dataset` anota la de un dato de versión), el sucesor vivo de uno
@@ -58,7 +61,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -66,6 +69,7 @@ from ..content import builtin
 from ..content.encoder import NORMALIZER, NORMALIZERS, ContentDigest, content_sha256
 from ..content.readers import ReadCancelled, read_steps, reader
 from ..errors import ValidationError
+from ..hashing import canonical_json
 from ..ids import new_uid
 from ..timeutil import Clock, format_utc
 from . import tracking
@@ -578,6 +582,50 @@ def set_content(conn: sqlite3.Connection, project: DatasetProject, uid: str, spe
         (*changes.values(), record.uid),
     )
     _record_change(conn, record.uid, record.content_sha256, sha, spec, operation, now)
+    return _require(conn, record.uid, record.name)
+
+
+def note_content(conn: sqlite3.Connection, project: DatasetProject, uid: str, *,
+                 operation_uid: str | None,
+                 detail: Mapping[str, object] | None = None) -> DatasetRecord:
+    """Anota el contenido que tiene **ahora** la tabla del dato vivo ``uid``, que acaba de escribir
+    Geoblender en la transacción ``conn`` dentro de la operación en curso ``operation_uid`` **sin que
+    esa operación lo declare como salida**: su hash (con **su** lector y su normalizador), su
+    seguimiento (``last_change`` y la huella del SQL), su fecha y, si el hash cambia, su fila de
+    cambio con ``detail`` y esa operación. Es lo que hace una operación **de versión** con un dato
+    **del proyecto** que no puede escribir como suyo (spec 009, RF-009-05: sus salidas son de su
+    versión): el dato sigue siendo de la operación que lo escribió, no se le añade ninguna salida, y
+    la comprobación de datos no lo toma luego por una edición hecha fuera de Geoblender
+    (RF-008-21), ni lo bloquea (RF-008-56).
+
+    Quien llama comprueba **antes de escribir** que el dato estaba al día (``external.probe_dataset``:
+    lo que ya cambió fuera se queda como edición y no se da por bueno aquí). ``ValueError`` (un error
+    del programa) si el dato no es una tabla del proyecto vigente y seguida, o es lo importado;
+    ``ValidationError`` (``core.dataset_*``) si no existe o la operación falta o no está en curso, y
+    si su hash no se puede calcular. No cambia el estado ni la operación del dato."""
+    if not isinstance(uid, str):
+        raise TypeError(f"un dato se indica por su uid, no {uid!r}")
+    record = _require(conn, uid)
+    operation = _check_operation(conn, record.name, operation_uid)
+    if (record.store is not Store.GPKG or not record.tracked or record.immutable
+            or record.status is not DatasetStatus.CURRENT):
+        raise ValueError(f"el dato «{record.name}» no es una tabla del proyecto vigente y seguida "
+                         f"(almacén {record.store}, estado {record.status}): no se anota su contenido")
+    sha = content_digest(conn, project, record).content_sha256
+    state = tracking.table_states(conn, [record.locator])[record.locator]
+    now = format_utc(project.clock.now())
+    conn.execute(
+        "UPDATE gb_dataset SET content_sha256 = ?, tracked_last_change = ?, "
+        "tracked_schema_sha256 = ?, checked_at = ?, modified_at = ? WHERE uid = ?",
+        (sha, state.last_change, state.schema_sha256, now, now, record.uid),
+    )
+    if sha != record.content_sha256:
+        conn.execute(
+            "INSERT INTO gb_dataset_change (dataset_uid, from_sha256, to_sha256, operation_uid, "
+            "detail, at) VALUES (?, ?, ?, ?, ?, ?)",
+            (record.uid, record.content_sha256, sha, operation,
+             None if detail is None else canonical_json(dict(detail)).decode("utf-8"), now),
+        )
     return _require(conn, record.uid, record.name)
 
 
