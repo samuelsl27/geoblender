@@ -384,7 +384,11 @@ def constraint_names(conn: sqlite3.Connection, *, version_uid: str | None = None
     if version_uid:
         from . import declared  # el módulo de las declaradas importa este: al usarlo, no al cargar
 
-        for code, (name, ctype) in declared.names_in_version(conn, version_uid).items():
+        try:
+            named = declared.names_in_version(conn, version_uid)
+        except (ValueError, sqlite3.Error):  # una tabla editada fuera de Geoblender (T21): solo nombra
+            named = {}
+        for code, (name, ctype) in named.items():
             found.setdefault(code, (name, ctype))
     return found
 

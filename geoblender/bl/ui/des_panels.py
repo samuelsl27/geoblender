@@ -164,7 +164,7 @@ from typing import TYPE_CHECKING, Any
 import bpy
 
 from ...core.catalog.search import path_text
-from ...core.constraints import store as constraint_store
+from ...core.constraints.declared import is_declared_code
 from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, language, tr, translate
 from ...core.params import ParameterStore, ParamKind, format_value, parameter_label
@@ -181,7 +181,7 @@ from ...gis import store as gis_store
 from ...gis.masks import provenance as masks_provenance
 from ...reserves import surfaces as res_surfaces
 from ..props.des import WINDOW_MANAGER_PROPERTY
-from ..scene import des_views, project_session
+from ..scene import constraint_views, des_views, project_session
 from ..scene import versions as scene_versions
 from . import constraint_panels, labels, provenance, view_panels
 from .commands import catalog
@@ -682,7 +682,9 @@ def refresh_choices(project: Any) -> None:
              if choice.revision is None and not choice.name.startswith(CODE_GRID_PREFIXES)]
     envelope_prefix = design_provenance.FAMILIES_BY_CODE[design_provenance.ENVELOPE_GRID].prefix
     with project.read() as conn:
-        constraints = constraint_store.read_constraints(conn)
+        # Las restricciones del proyecto y las que declaran las entidades de la versión activa (spec
+        # 015, T21; RF-012-18): cada una con su nombre (la declarada, por su entidad, no por su código).
+        constraints = constraint_views.shown_names(conn, version)
         envelopes = _envelope_names(conn, [choice for choice in found if choice.version_uid
                                            and choice.name.startswith(envelope_prefix)])
     layers = constraint_panels.polygon_layers(project)
@@ -700,8 +702,9 @@ def refresh_choices(project: Any) -> None:
     _CHOICES.anchors = [*_CHOICES.anchors, *_CHOICES.surfaces] if found else _CHOICES.anchors
     _CHOICES.zones = [
         *_CHOICES.zones,
-        *((CONSTRAINT_ZONE + item.code, item.name, tr("Zone of a constraint"))
-          for item in constraints if item.code),
+        *((CONSTRAINT_ZONE + code, name or code,
+           tr("Zone of a constraint declared by an entity") if is_declared_code(code)
+           else tr("Zone of a constraint")) for code, (name, _ctype) in constraints.items()),
         *((SECTOR_ZONE + code, name, tr("Design sector")) for code, name in sectors),
         *((LAYER_ZONE + name, constraint_panels.layer_label(name), tr("Layer of polygons"))
           for name in layers)]
@@ -2152,7 +2155,8 @@ def _constraint_lines(listed: Sequence[Any], version_code: str) -> list[CardLine
     lines: list[CardLine] = []
     for item in active[:MAX_CONSTRAINT_LINES]:
         kind = constraint_panels.type_label("" if item.ctype is None else item.ctype.value)
-        lines.append(CardLine(ROW_FIELD, f"{kind} · {item.shown_name(shown)}"))
+        name = constraint_views.constraint_text(item, shown)  # la declarada, por su entidad
+        lines.append(CardLine(ROW_FIELD, f"{kind} · {name}"))
     if len(active) > MAX_CONSTRAINT_LINES:
         lines.append(CardLine(ROW_NONE, tr("… and {count} more",
                                            count=len(active) - MAX_CONSTRAINT_LINES)))
@@ -2209,7 +2213,7 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
                  if found.stale else None)
         owner = versions_read.dataset_versions(conn, [uid]).get(uid, "")
         constraints = {code: name for code, (name, _kind) in
-                       constraint_store.constraint_names(conn).items()}
+                       constraint_views.shown_names(conn, owner or None).items()}
         profile_names = design_profiles.profile_names(conn)
         settings = link.settings
         area = link.op_type == design_provenance.EXCAVATION_AREA  # un recinto: sin semillas

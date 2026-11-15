@@ -89,6 +89,17 @@ cambiar la versión activa y al llenar la lista. Esas mismas líneas (:func:`obj
 enseñan también «Elemento activo» y «Cifras de la selección» de la 010 (``view_panels``): el dato de
 una restricción es su capa, que no lleva las cifras de otra operación.
 
+**Las declaradas por una entidad de diseño** (spec 015, T21; HU-015-1; RF-012-19, RF-012-02, RF-012-29,
+RF-015-11): la lista de Restricciones… y la barra N las llevan tras las del proyecto con su **origen** (la
+entidad: «Origen: Plataforma P1 (PLT-001)», ``item.origin``) y su estado, que además de «activa» o «inactiva»
+(lo da la entidad) puede ser «Bloqueada por una edición fuera de Geoblender» (``blocked``: la tabla de la
+versión se editó en QGIS, :func:`state_text`; en alerta y con qué hacer). Su resguardo se enseña como lo da su
+tabla («4 m · la da la entidad»), sin «Cambiar…»; no tienen «Editar…» ni «Completar…»: el resguardo, el motivo y
+si está activa se cambian en la entidad. Si la declaración vigente difiere de la que darían las entidades (se
+aceptó una edición, ``design.entity_store.declaration_diverges``), lo avisa (``item.diverges``). Los nombres de
+las verificaciones (:func:`zone_name`) y los demás lectores nombran la declarada por su entidad, nunca por su
+código (``bl.scene.constraint_views.shown_names``).
+
 **Verificar un diseño por recinto…** (T28; HU-012-5; RF-012-21 a RF-012-24, RF-012-28): el diálogo
 de ``geoblender.res_verify_constraints`` (``bl.ops.res``) ofrece como finales las rejillas del
 proyecto (:func:`fill_verify_choices`: las de las listas de la cubicación, no la de clases de las
@@ -119,7 +130,13 @@ from ...core.catalog.search import path_text
 from ...core.constraints import checks as constraint_checks
 from ...core.constraints import provenance as constraint_provenance
 from ...core.constraints import store as constraint_store
-from ...core.constraints.model import ConstraintType, GeometryKind, IntentionRole, is_code
+from ...core.constraints.model import (
+    ConstraintParam,
+    ConstraintType,
+    GeometryKind,
+    IntentionRole,
+    is_code,
+)
 from ...core.constraints.params import SEARCH_DISTANCE, family, param_key
 from ...core.errors import GeoblenderError
 from ...core.i18n import format_number, language, translate, tr
@@ -140,7 +157,14 @@ from ..props.core_constraints import (
 )
 from ..scene import project_session
 from ..scene import versions as scene_versions
-from ..scene.constraint_views import CONSTRAINT_KIND, CONSTRAINT_PROPERTY, terrain_choices
+from ..scene.constraint_views import (
+    CONSTRAINT_KIND,
+    CONSTRAINT_PROPERTY,
+    constraint_text,
+    entity_text,
+    shown_names,
+    terrain_choices,
+)
 from . import labels, provenance, res_panels, view_panels
 from .commands import catalog, text
 from .context import active_object, object_kind
@@ -510,13 +534,21 @@ def type_label(ctype: str) -> str:
     return ConstraintType(ctype).label(language())
 
 
+BAD_STATES = ("incomplete", "invalid", "blocked")
+"""Los estados que se dibujan en alerta: lo que impide compilar (RF-012-04, RF-015-11)."""
+
+
 def state_text(state: str, where: str) -> str:
     """El estado de una restricción como se lee (RF-012-19): «Incompleta», «No válida»,
-    «Activa» o «Inactiva en V01» (``where``, la versión activa o «el proyecto»)."""
+    «Bloqueada por una edición fuera de Geoblender» (una declarada por una entidad cuya tabla se
+    editó fuera: RF-015-11), «Activa» o «Inactiva en V01» (``where``, la versión activa o «el
+    proyecto»)."""
     if state == "incomplete":
         return tr("Incomplete")
     if state == "invalid":
         return tr("Not valid")
+    if state == "blocked":
+        return tr("Blocked by an edit outside Geoblender")
     if state == "inactive":
         return tr("Inactive in {version}", version=where)
     return tr("Active")
@@ -545,6 +577,32 @@ def parameter_text(store: ParameterStore, conn: Any, key: str, version: Any
               project=project_text), registered
 
 
+def _origin_text(entry: Any) -> str:
+    """El origen de una restricción de la lista (RF-012-19): la entidad que la declara con su
+    código, «Plataforma P1 (PLT-001)»; vacío si es de una capa del proyecto."""
+    if not entry.declared:
+        return ""
+    code = str(entry.entity_code)
+    return f"{entity_text(code, entry.entity_name or code)} ({code})"
+
+
+def _diverges(project: Any, version: Any) -> bool:
+    """Si la declaración vigente de la versión ``version`` (la activa; ``None``: ninguna) **difiere** de
+    la que darían sus entidades (``design.entity_store.declaration_diverges``: se aceptó una edición
+    hecha fuera de Geoblender; RF-015-11, RF-012-19). Solo lee; si no se puede decir (las entidades
+    ya no pueden declarar, el proyecto no se lee), no hay aviso y queda en el registro técnico."""
+    if version is None:
+        return False
+    from ...design import entity_store  # al usarlo: habilitar no lo carga (T38)
+
+    try:
+        return bool(entity_store.declaration_diverges(project, version.uid))
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.info("No se pudo comparar la declaración de la versión con la de las entidades",
+                    exc_info=True)
+        return False
+
+
 def _put_constraint(target: Any, entry: Any, store: ParameterStore, conn: Any,
                     version: Any, decisions: Mapping[str, str]) -> None:
     """Una restricción de la lista (``gis.masks.store.ListedConstraint``) en la fila ``target``
@@ -553,8 +611,11 @@ def _put_constraint(target: Any, entry: Any, store: ParameterStore, conn: Any,
     valor en la versión y en el proyecto."""
     shown = language()
     row = entry.constraint
-    target.name = row.shown_name(shown)
+    target.name = constraint_text(row, shown)
     target.uid, target.code = row.uid, row.code
+    target.declared = entry.declared
+    target.origin = _origin_text(entry)
+    target.diverges = False  # lo pone read_selected / fill_constraints: es de la tabla entera
     target.ctype = "" if row.ctype is None else row.ctype.value
     target.kind, target.layer, target.fid = row.kind.value, row.layer, int(row.fid)
     target.state = entry.state
@@ -565,6 +626,15 @@ def _put_constraint(target: Any, entry: Any, store: ParameterStore, conn: Any,
     target.decision = decisions.get(row.decision_uid, row.decision_uid) if row.decision_uid else ""
     target.parameters.clear()
     if not is_code(row.code):
+        return
+    if entry.declared:  # sus valores son columnas de su tabla: los da la entidad (P-8, RF-012-02)
+        line = target.parameters.add()
+        line.key = param_key(row.code, ConstraintParam.BUFFER_OUT)
+        line.name = translate(shown, family(ConstraintParam.BUFFER_OUT).template.label_msgid)
+        line.text = (res_panels.NOT_SHOWN if entry.buffer_out_m is None else
+                     tr("{value} m · given by the entity",
+                        value=format_value(float(entry.buffer_out_m), shown)))
+        line.registered = False  # no es un parámetro del almacén: no hay nada que «Cambiar…»
         return
     wanted = () if row.ctype is None else row.ctype.requires
     for param in wanted:
@@ -599,6 +669,10 @@ def fill_constraints(project: Any) -> int:
                  if any(entry.constraint.decision_uid for entry in listed) else {})
         for entry in listed:
             _put_constraint(shown.constraints.add(), entry, store, conn, version, named)
+    if any(entry.declared and entry.state != "blocked" for entry in listed):
+        differs = _diverges(project, version)  # una vez por versión: es de la tabla entera
+        for item in shown.constraints:
+            item.diverges = differs and item.declared and item.state != "blocked"
     shown.item_index = next((index for index, item in enumerate(shown.constraints)
                              if item.uid == chosen), 0)
     shown.source_layers.clear()
@@ -729,7 +803,7 @@ class GEOBLENDER_UL_core_constraints(bpy.types.UIList):
         split.label(text=type_label(item.ctype), translate=False)
         names = split.split(factor=NAME_FACTOR, align=True)
         names.label(text=item.name, translate=False)
-        bad = item.state in ("incomplete", "invalid")
+        bad = item.state in BAD_STATES
         cell = names.row(align=True)
         cell.alert = bad
         cell.label(text=state_text(item.state, _where()), icon="ERROR" if bad else "NONE",
@@ -758,18 +832,27 @@ def _draw_chosen(layout: Any, item: Any, width: float, writable: bool) -> None:
     box = layout.box()
     title = f"{type_label(item.ctype)} · {item.name}"
     box.label(text=title, translate=False)
-    bad = item.state in ("incomplete", "invalid")
+    bad = item.state in BAD_STATES
     state = box.row()
     state.alert = bad
     state.label(text=state_text(item.state, _where()), icon="ERROR" if bad else "NONE",
                 translate=False)
+    if item.declared and item.state == "blocked":  # RF-015-11: qué hacer, en el dato
+        _draw_line(box, Line(tr("Accept the edit with a reason or recalculate the declaration: the "
+                                "entity puts it back"), alert=True), width)
+    if item.declared and item.diverges:
+        _draw_line(box, Line(tr("The declaration differs from the one of the entities"),
+                             alert=True), width)
     for problem in item.problems.splitlines():
         _draw_line(box, Line(problem, alert=True), width)
     details = box.column(align=True)
-    texts = [tr("Reason: {value}", value=item.reason or res_panels.NOT_SHOWN),
-             tr("Decided by: {value}", value=item.decided_by or res_panels.NOT_SHOWN),
-             tr("Date of the decision: {value}", value=item.decided_on or res_panels.NOT_SHOWN),
-             tr("Priority: {value}", value=item.priority)]
+    texts = []
+    if item.declared:  # su origen: la entidad que la declara (RF-012-19, RF-012-29)
+        texts.append(tr("Origin: {entity}", entity=item.origin))
+    texts += [tr("Reason: {value}", value=item.reason or res_panels.NOT_SHOWN),
+              tr("Decided by: {value}", value=item.decided_by or res_panels.NOT_SHOWN),
+              tr("Date of the decision: {value}", value=item.decided_on or res_panels.NOT_SHOWN),
+              tr("Priority: {value}", value=item.priority)]
     if item.decision:
         texts.append(tr("Linked decision: {value}", value=item.decision))
     for shown_text in texts:
@@ -781,9 +864,13 @@ def _draw_chosen(layout: Any, item: Any, width: float, writable: bool) -> None:
         block.enabled = writable
         labels.draw_wrapped(block, f"{line.name}:", width)
         labels.draw_wrapped(block, line.text, width)
-        if line.registered:
+        if line.registered and not item.declared:
             button = block.operator(SET_PARAMETER, text=tr("Change…"), translate=False)
             button.key = line.key
+    if item.declared:  # ni «Cambiar…» ni «Editar…»: el resguardo, el motivo y «activa» son de la entidad
+        labels.draw_wrapped(box, tr("Declared by an entity: its buffer, its reason and whether it "
+                                    "is active are changed in the entity"), width, icon="INFO")
+        return
     edit = box.row()
     edit.enabled = writable
     button = edit.operator(
@@ -1624,6 +1711,8 @@ def read_selected(context: Any = None) -> bool:
                     named = (_linked_decisions(conn) if entry.constraint.decision_uid else {})
                     _put_constraint(shown.selected, entry, store, conn, version, named)
                     lines = _zone_lines(project, conn, entry.constraint.code)
+                if entry.declared and entry.state != "blocked":  # la declaración aceptada tras una edición
+                    shown.selected.diverges = _diverges(project, version)
                 _put_lines(shown.selected_lines, [Line(line.text, line.alert) for line in lines])
                 # Mientras hay una restricción en la barra N, la versión activa la cambia; sin
                 # ella, nadie escucha (habilitar Geoblender no deja ninguna escucha de versión).
@@ -1885,7 +1974,7 @@ def fill_verification(project: Any, version_uid: str | None, name: str | None = 
         if found is None and chosen is not None:  # la elegida ya no está: la más reciente
             found = compliance_store.read_verification(conn, version_uid, None)
         listed = compliance_store.verification_names(conn, version_uid)
-        names = constraint_store.constraint_names(conn)
+        names = shown_names(conn, version_uid)  # con las declaradas de la versión, por su entidad
     for each in listed:
         shown.verify_names.add().name = each
     if found is None:

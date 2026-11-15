@@ -38,6 +38,13 @@ coordenadas absolutas de la marca. El nombre generado es «Intención del client
 · papel», y el uid de la intención va en el objeto (:data:`INTENTION_PROPERTY`). Se carga **en
 pasos** (un objeto cada uno, RNF-012-06): si se cierran antes de terminar, lo creado se borra.
 
+**Cómo se nombra una restricción declarada por una entidad** (spec 015, T21; RF-012-18, RF-012-19):
+:func:`entity_text` («Plataforma P1»), :func:`declared_text` («Plataforma P1 (declarada)»),
+:func:`constraint_text` (el nombre de cualquier restricción en una etiqueta o una lista) y
+:func:`shown_names` (código → nombre y tipo de todas, con las declaradas de una versión) las comparten
+la superposición, las ventanas y los desplegables de zonas: nunca se enseña el código
+``dec__plt_001``.
+
 El **estilo** de las intenciones (:data:`INTENTION_STYLE`) es el mismo para todas y distinto del de
 las restricciones: alambre, delante de lo demás y un violeta que ninguno de los once tipos de
 restricción usa. Nada de la vista entra en una máscara ni se escribe en el proyecto: leer las
@@ -58,6 +65,7 @@ from ...core.constraints.model import Constraint, ConstraintType, GeometryKind, 
 from ...core.constraints.store import (
     CONSTRAINT_LAYERS,
     INTENTION_TABLE,
+    constraint_names,
     read_constraints,
     read_intentions,
 )
@@ -72,8 +80,9 @@ from .mesh import mesh_from_arrays, mesh_steps, mesh_vertices_local, set_attribu
 __all__ = ["COMPLIANCE_KIND", "COMPLIANCE_LABEL", "COMPLIANCE_PREFIX", "CONSTRAINT_KIND",
            "CONSTRAINT_LABEL", "CONSTRAINT_PREFIX", "CONSTRAINT_PROPERTY", "INTENTION_PROPERTY",
            "INTENTION_STYLE", "KIND", "LABEL", "MARK_ARM_M", "PREFIX", "IntentionStyle",
-           "constraint_arrays", "constraint_color", "intention_arrays", "load_compliance_grid",
-           "load_constraints", "load_intentions", "register", "terrain_choices", "unregister"]
+           "constraint_arrays", "constraint_color", "constraint_text", "declared_text",
+           "entity_text", "intention_arrays", "load_compliance_grid", "load_constraints",
+           "load_intentions", "register", "shown_names", "terrain_choices", "unregister"]
 
 CONSTRAINT_KIND = "CONSTRAINT"
 """El tipo (``Object.geoblender.kind``) del objeto de una restricción o de un límite."""
@@ -343,6 +352,53 @@ def load_compliance_grid(request: views.ViewRequest) -> Generator[float, None, v
     except BaseException:
         bpy.data.meshes.remove(mesh)
         raise
+
+
+_ENTITY_KIND_MSGID = {"platform": "Platform"}
+"""El ``msgid`` del tipo de cada entidad de diseño (``design.entities.EntityKind``) para nombrarla
+(«Plataforma P1»); la 016 añade los suyos."""
+
+
+def entity_text(entity_code: str, entity_name: str) -> str:
+    """Cómo se nombra la entidad de código ``entity_code`` (``PLT-001``) y nombre ``entity_name``
+    (``P1``): su tipo y su nombre, «Plataforma P1»; solo el nombre si no se conoce el tipo de su
+    código (RF-012-18, RF-012-19)."""
+    from ...design.entities import EntityKind  # al usarlo: habilitar no lo carga (T38)
+
+    kind = next((item for item in EntityKind if entity_code.startswith(f"{item.prefix}-")), None)
+    msgid = None if kind is None else _ENTITY_KIND_MSGID.get(kind.value)
+    return entity_name if msgid is None else tr("{kind} {name}", kind=translate(language(), msgid),
+                                                name=entity_name)
+
+
+def declared_text(entity_code: str, entity_name: str) -> str:
+    """El nombre de una restricción declarada por una entidad como se lee en una etiqueta, una
+    leyenda o una lista: «Plataforma P1 (declarada)» (RF-012-18; nunca su código ``dec__plt_001``)."""
+    return tr("{entity} (declared)", entity=entity_text(entity_code, entity_name))
+
+
+def constraint_text(item: Constraint, language_code: str | None = None) -> str:
+    """El nombre de ``item`` para una etiqueta o una lista: el suyo (:meth:`Constraint.shown_name`) o,
+    si la declara una entidad de diseño, :func:`declared_text` (RF-012-18, RF-012-19)."""
+    if item.entity_code is None:
+        return item.shown_name(language_code or language())
+    return declared_text(item.entity_code, item.entity_name or item.entity_code)
+
+
+def shown_names(conn: Any, version_uid: str | None
+                ) -> dict[str, tuple[str, ConstraintType | None]]:
+    """Código → (nombre, tipo) de las restricciones de las tres capas y de las declaradas por las
+    entidades de la versión ``version_uid`` (``core.constraints.store.constraint_names``), con el
+    nombre de una declarada como se lee (:func:`declared_text`, no su código ``dec__plt_001``): lo
+    que usan los desplegables de zonas, las fichas y la tabla de una verificación."""
+    from ...core.constraints import declared  # al usarlo: habilitar no lo carga (T38)
+
+    found = constraint_names(conn, version_uid=version_uid or None)
+    for code, (name, ctype) in list(found.items()):
+        if declared.is_declared_code(code):
+            entity = declared.declared_entity(code)
+            found[code] = (declared_text(entity, name or entity), ctype)
+    return found
 
 
 def terrain_choices(project: Any, version_uid: str | None) -> tuple[Any, ...]:

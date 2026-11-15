@@ -22,8 +22,12 @@ RF-012-16, RF-012-28; plan 012 §5.2.3, A5, A11, D-24).
   llamada del hilo de Blender pasa de 0,2 s mientras compila (RNF-012-06), tampoco al compilar
   otra vez tras cambiar un resguardo (T31).
 - :func:`listed_constraints` (T23; RF-012-04, RF-012-19) lista las restricciones con su estado en
-  una versión (incompleta, no válida, activa o inactiva) y lo que les falta;
+  una versión (incompleta, no válida, bloqueada —una declarada por una entidad cuya tabla se editó
+  fuera de Geoblender, T21—, activa o inactiva) y lo que les falta;
   :func:`listed_constraint` (T27) lo mismo de una sola, por su ``uid`` (la barra N «Restricción»).
+  Las que **muestran** las listas, la barra N y la superposición (:func:`listed_constraints_steps`,
+  :func:`listed_constraint`, :func:`shown_constraints_steps`) no tumban una tabla de declaradas que
+  ya no se puede leer: no la enseñan (compilar sí se niega, con su mensaje).
 - :func:`compile_run` da sus pasos (``gis.masks.compile.compile_steps``) y guarda el resultado
   con :class:`MaskWriter` (A11): la rejilla de clases por teselas en su temporal con su hash, los
   hashes de las tablas fuera de la transacción (por tramos de filas, T35: ningún paso pasa de
@@ -553,11 +557,44 @@ def _constraints_in(conn: sqlite3.Connection, project: StoreProject | None,
     versión (los valores del proyecto) o sin declaradas vivas, es exactamente lo de siempre."""
     own = cstore.read_constraints(conn, uid=uid)
     entity = declared_store.read_in_version(conn, version_uid, uid=uid)
+    return _assemble(conn, project, version_uid, own, entity)
+
+
+def _assemble(conn: sqlite3.Connection, project: StoreProject | None, version_uid: str | None,
+              own: tuple[Constraint, ...], entity: tuple[DeclaredConstraint, ...]
+              ) -> tuple[tuple[Constraint, ...], dict[str, object]]:
+    """Las restricciones del proyecto ``own`` y, tras ellas, las declaradas ``entity`` como
+    restricciones de la 012, con los parámetros resueltos de las primeras y, de las segundas, los
+    de sus columnas (véase :func:`_constraints_in`)."""
     resolved = _resolved(conn, project, own, version_uid)
     if not entity:
         return own, resolved
     resolved.update(declared.declared_resolved(entity))
     return (*own, *(item.as_constraint() for item in entity)), resolved
+
+
+_UNREADABLE = (ValueError, TypeError, sqlite3.Error)
+"""Lo que da leer una tabla de declaradas que se editó fuera de Geoblender (una fila que ya no es
+una declarada, una columna que falta): ``read_declared`` lanza ``ValueError``."""
+
+
+def _shown_in(conn: sqlite3.Connection, project: StoreProject | None, version_uid: str | None,
+              *, uid: str | None = None
+              ) -> tuple[tuple[Constraint, ...], dict[str, object], frozenset[str]]:
+    """Lo de :func:`_constraints_in` **para mostrarlo** (las listas, la barra N y la superposición:
+    T21; RF-012-18, RF-012-19, RF-015-11) y los códigos de las declaradas cuya tabla **no se puede
+    usar** (:func:`~...core.constraints.declared.unusable_record`: la editó una persona fuera de
+    Geoblender y está bloqueada, falta o está dañada). Mostrar no compila: una tabla que ya no se
+    puede leer (una fila editada fuera) no tumba la lista; sus declaradas no se enseñan y la
+    compilación se niega con su mensaje (``require_usable``, antes de leerla)."""
+    own = cstore.read_constraints(conn, uid=uid)
+    unusable = declared_store.unusable_record(conn, version_uid) is not None
+    try:
+        entity = declared_store.read_in_version(conn, version_uid, uid=uid)
+    except _UNREADABLE:
+        entity = ()
+    constraints, resolved = _assemble(conn, project, version_uid, own, entity)
+    return constraints, resolved, frozenset(item.code for item in entity if unusable)
 
 
 def gather(project: StoreProject, *, version: str) -> CompileInputs:
@@ -662,9 +699,11 @@ class DeclaredLimits:
     report: LimitsReport | None
 
 
-def _number(resolved: Mapping[str, object], item: Constraint) -> float | None:
-    """El resguardo hacia dentro resuelto de ``item``, si lo tiene."""
-    found = resolved.get(param_key(item.code, ConstraintParam.BUFFER_IN))
+def _number(resolved: Mapping[str, object], item: Constraint,
+            param: ConstraintParam = ConstraintParam.BUFFER_IN) -> float | None:
+    """El parámetro numérico ``param`` (por defecto, el resguardo hacia dentro) resuelto de
+    ``item``, si lo tiene."""
+    found = resolved.get(param_key(item.code, param))
     value = found.value if isinstance(found, ResolvedParam) else found
     return None if isinstance(value, bool) or not isinstance(value, int | float) else float(value)
 
@@ -720,9 +759,11 @@ def declared_limits(project: StoreProject, *, version: str | None = None) -> Dec
 
 # --- La lista de las restricciones (T23; RF-012-04, RF-012-19) ----------------------------------
 
-STATES: tuple[str, ...] = ("incomplete", "invalid", "active", "inactive")
+STATES: tuple[str, ...] = ("incomplete", "invalid", "blocked", "active", "inactive")
 """El estado de una restricción en una versión: le falta algo que su tipo pide
-(``incomplete``), su geometría no vale (``invalid``), activa o desactivada en ella
+(``incomplete``), su geometría no vale (``invalid``), es una declarada por una entidad y su tabla
+se editó fuera de Geoblender (``blocked``: RF-015-11, RF-012-19; no se compila con ella hasta que
+se acepte la edición o la entidad la vuelva a poner), activa o desactivada en ella
 (``inactive``)."""
 _INVALID_PROBLEMS = frozenset({
     "core.constraint_no_geometry", "core.constraint_self_intersecting",
@@ -736,11 +777,14 @@ class ListedConstraint:
     problemas que la hacen incompleta o no válida (vacíos si está activa o desactivada). Si la
     declara una entidad de diseño (spec 015, RF-012-29), ``constraint.entity_code`` y
     ``constraint.entity_name`` son su **origen** (:attr:`declared`, :attr:`entity_code`,
-    :attr:`entity_name`)."""
+    :attr:`entity_name`) y ``buffer_out_m`` es su resguardo hacia fuera (m), una **columna** de su
+    tabla que da la entidad (P-8: no es un parámetro del almacén y no se cambia aquí); ``None`` en
+    una del proyecto."""
 
     constraint: Constraint
     state: str
     problems: tuple[Incomplete, ...]
+    buffer_out_m: float | None = None
 
     @property
     def declared(self) -> bool:
@@ -766,11 +810,15 @@ def _switched_off(item: Constraint, resolved: Mapping[str, object]) -> bool:
     return (found.value if isinstance(found, ResolvedParam) else found) is False
 
 
-def _listed(item: Constraint, resolved: Mapping[str, object],
-            problems: tuple[Incomplete, ...]) -> ListedConstraint:
+def _listed(item: Constraint, resolved: Mapping[str, object], problems: tuple[Incomplete, ...],
+            blocked: frozenset[str] = frozenset()) -> ListedConstraint:
     """La restricción ``item`` con su estado, dados sus parámetros resueltos y lo que le falta
-    (``problems``, que solo cuenta si no está desactivada)."""
-    if _switched_off(item, resolved):
+    (``problems``, que solo cuenta si no está desactivada); ``blocked``, los códigos de las
+    declaradas cuya tabla no se puede usar (T21; RF-015-11): su estado es ``blocked`` aunque la
+    entidad la desactive."""
+    if item.code in blocked:
+        state = "blocked"
+    elif _switched_off(item, resolved):
         state = "inactive"
     elif any(problem.problem in _INVALID_PROBLEMS for problem in problems):
         state = "invalid"
@@ -778,7 +826,13 @@ def _listed(item: Constraint, resolved: Mapping[str, object],
         state = "incomplete"
     else:
         state = "active"
-    return ListedConstraint(item, state, problems)
+    return ListedConstraint(item, state, problems, _buffer_out(resolved, item))
+
+
+def _buffer_out(resolved: Mapping[str, object], item: Constraint) -> float | None:
+    """El resguardo hacia fuera de una declarada por una entidad (su columna); ``None`` si
+    ``item`` es del proyecto."""
+    return _number(resolved, item, ConstraintParam.BUFFER_OUT) if item.declared else None
 
 
 def listed_constraints_steps(project: StoreProject, *, version: str | None = None
@@ -791,13 +845,13 @@ def listed_constraints_steps(project: StoreProject, *, version: str | None = Non
     es ``invalid``, una con cualquier otro, ``incomplete`` (la dibujada en QGIS, sin código, tipo,
     motivo ni decisor); lo demás, ``active``. Solo lee."""
     with project.read() as conn:
-        constraints, resolved = _constraints_in(conn, project, version)
+        constraints, resolved, blocked = _shown_in(conn, project, version)
     yield
     problems = yield from check_steps(constraints, resolved)
     by_item: dict[tuple[str, int], list[Incomplete]] = {}
     for found in problems:
         by_item.setdefault((found.layer, found.fid), []).append(found)
-    return tuple(_listed(item, resolved, tuple(by_item.get((item.layer, item.fid), ())))
+    return tuple(_listed(item, resolved, tuple(by_item.get((item.layer, item.fid), ())), blocked)
                  for item in constraints)
 
 
@@ -815,11 +869,11 @@ def listed_constraint(project: StoreProject, uid: str, *, version: str | None = 
     de la restricción seleccionada no espera a la lista entera). Puede ser una declarada por una
     entidad de la versión (T18). ``None`` si el proyecto (y la versión) no la tiene. Solo lee."""
     with project.read() as conn:
-        found, resolved = _constraints_in(conn, project, version, uid=uid)
+        found, resolved, blocked = _shown_in(conn, project, version, uid=uid)
         if not found:
             return None
     problems = drain(check_steps(found, resolved))
-    return _listed(found[0], resolved, tuple(problems))
+    return _listed(found[0], resolved, tuple(problems), blocked)
 
 
 def shown_constraints_steps(project: StoreProject, *, version: str | None = None
@@ -831,10 +885,12 @@ def shown_constraints_steps(project: StoreProject, *, version: str | None = None
     cuesta una lectura y los parámetros, no la comprobación de cada polígono. Un paso (la lectura).
     Con las declaradas por las entidades de la versión tras las del proyecto (T18). Solo lee."""
     with project.read() as conn:
-        constraints, resolved = _constraints_in(conn, project, version)
+        constraints, resolved, blocked = _shown_in(conn, project, version)
     yield
-    return tuple(ListedConstraint(item, "inactive" if _switched_off(item, resolved) else "active",
-                                  ()) for item in constraints)
+    return tuple(ListedConstraint(
+        item, "blocked" if item.code in blocked
+        else "inactive" if _switched_off(item, resolved) else "active", (),
+        _buffer_out(resolved, item)) for item in constraints)
 
 
 # --- Escribir el resultado (A11) ---------------------------------------------------------------

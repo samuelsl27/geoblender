@@ -172,9 +172,13 @@ class GEOBLENDER_PG_core_constraint_item(bpy.types.PropertyGroup):
     """Una restricción de la lista de Restricciones… (RF-012-19), ya leída del proyecto: su nombre
     (``name``), su ``uid`` y su código, el tipo (``ctype``, el valor de ``ConstraintType``;
     vacío si no tiene), la geometría (``kind``) y la capa y el ``fid`` donde está, su estado en
-    la versión activa (``state``: ``incomplete``, ``invalid``, ``active`` o ``inactive``) con lo
-    que le falta (``problems``, un texto por línea), la prioridad, el motivo, el decisor, la fecha
-    (DD/MM/AAAA) y la decisión enlazada, y sus parámetros. Todo en texto o entero: ninguna
+    la versión activa (``state``: ``incomplete``, ``invalid``, ``blocked``, ``active`` o
+    ``inactive``) con lo que le falta (``problems``, un texto por línea), la prioridad, el motivo, el
+    decisor, la fecha (DD/MM/AAAA) y la decisión enlazada, y sus parámetros. Si la declara una
+    entidad de diseño (spec 015, T21; RF-012-19, RF-012-29), ``declared`` es verdadero y ``origin``
+    dice la entidad («Plataforma P1 (PLT-001)»): el resguardo, el motivo y si está activa los da la
+    entidad y se cambian allí; ``diverges``, si la declaración vigente difiere de la que darían las
+    entidades (se aceptó una edición hecha fuera de Geoblender). Todo en texto o entero: ninguna
     coordenada (ADR-0005)."""
 
     uid: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
@@ -190,6 +194,9 @@ class GEOBLENDER_PG_core_constraint_item(bpy.types.PropertyGroup):
     decided_by: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     decided_on: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     decision: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    declared: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+    origin: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    diverges: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
     parameters: CollectionProperty(  # type: ignore[valid-type]
         type=GEOBLENDER_PG_core_param_line)
 

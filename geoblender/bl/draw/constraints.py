@@ -18,7 +18,11 @@ dicen las restricciones de la versión activa:
 - **sus nombres** (``blf``, junto a un punto de cada una; como mucho :data:`MAX_LABELS`, los
   más cercanos al centro de la vista) y **una leyenda** abajo a la derecha: una fila con el color
   de cada tipo presente (y cuántas hay), el dominio y la franja, y una nota si faltan las máscaras
-  (sin compilar u obsoletas) o si no hay versión activa.
+  (sin compilar u obsoletas) o si no hay versión activa. **Una restricción declarada por una
+  entidad de diseño** (spec 015, T21; RF-012-18, RF-012-29) se dibuja como las demás —contorno,
+  zona y color por su tipo—, con **su entidad** en su nombre y en la leyenda («Plataforma P1
+  (declarada)», nunca su código ``dec__plt_001``) y, si su tabla se editó fuera de Geoblender
+  (RF-015-11), una nota en la leyenda.
 
 Todo va **sobre la superficie elegida** en la ventana Restricciones… (``overlay_surface``) o, si no
 hay ninguna, sobre la rejilla del proyecto más reciente, o, sin ninguna, a la cota del GeoOrigin;
@@ -78,7 +82,7 @@ from ...reserves import surfaces as res_surfaces
 from ..props.core_constraints import WINDOW_MANAGER_PROPERTY
 from ..scene import project_session
 from ..scene import versions as scene_versions
-from ..scene.constraint_views import terrain_choices
+from ..scene.constraint_views import constraint_text, terrain_choices
 from . import dh_overlay
 from .dh_overlay import Box, LegendRow, Text
 
@@ -146,6 +150,8 @@ STRIP_COLOR = (0.96, 0.96, 0.6, 0.9)
 
 MAX_LABELS = 60
 """Los nombres que se dibujan como mucho en cada Vista 3D."""
+MAX_DECLARED_ROWS = 8
+"""Las filas como mucho de la leyenda para las restricciones declaradas por entidades (el resto, contado)."""
 LABEL_OFFSET = (8.0, 6.0)
 """Dónde va un nombre respecto a su sitio, en px (arriba a la derecha)."""
 CULL_PX = 64.0
@@ -538,7 +544,8 @@ def build_steps(request: Request, *, budget_s: float = STEP_BUDGET_S,
 
     outlines: dict[tuple[str, bool], list[np.ndarray]] = {}
     counts: dict[str, int] = {}
-    switched_off = 0
+    switched_off = blocked = 0
+    declared_rows: list[tuple[str, str]] = []
     anchors: list[tuple[str, tuple[float, float], Color]] = []
     types: dict[str, ConstraintType | None] = {}
     for number, entry in enumerate(listed, start=1):
@@ -554,11 +561,15 @@ def build_steps(request: Request, *, budget_s: float = STEP_BUDGET_S,
             switched_off += 1
         else:
             counts[key] = counts.get(key, 0) + 1
+        name = constraint_text(item, shown)  # una declarada: «Plataforma P1 (declarada)», no su código
+        if entry.declared:
+            declared_rows.append((name, key))
+            if entry.state == "blocked":
+                blocked += 1
         place = _anchor(item)
         if place is not None:
             base = color_of(key)
-            anchors.append((item.shown_name(shown), place,
-                            (*base[:3], INACTIVE_ALPHA + 0.2 if dim else 1.0)))
+            anchors.append((name, place, (*base[:3], INACTIVE_ALPHA + 0.2 if dim else 1.0)))
         if number % CONSTRAINTS_PER_STEP == 0 and pace.due():
             yield
 
@@ -609,15 +620,19 @@ def build_steps(request: Request, *, budget_s: float = STEP_BUDGET_S,
                    for (text, _place, color), (x, y, z) in zip(anchors, spots.tolist(),
                                                                strict=True))
     legend = _legend(request, state, counts, switched_off, bool(len(domain)), bool(len(strip)),
-                     surface)
+                     surface, declared_rows, blocked)
     return Built(version_uid, request.version_code, state, "" if surface is None else surface.name,
                  tuple(batches), labels, legend, request.stamp)
 
 
 def _legend(request: Request, state: str, counts: dict[str, int], switched_off: int,
-            has_domain: bool, has_strip: bool, surface: Surface | None) -> tuple[LegendRow, ...]:
-    """La leyenda: el título con la versión, una fila por tipo presente (con cuántas hay), las
-    desactivadas, el dominio y la franja, y las notas (máscaras, superficie)."""
+            has_domain: bool, has_strip: bool, surface: Surface | None,
+            declared: Sequence[tuple[str, str]] = (), blocked: int = 0) -> tuple[LegendRow, ...]:
+    """La leyenda: el título con la versión, una fila por tipo presente (con cuántas hay), una por
+    cada restricción declarada por una entidad con su entidad (``declared``: su texto y la clave de su
+    tipo, que da el color; RF-012-18) y, si alguna está bloqueada por una edición fuera de Geoblender
+    (``blocked``), una nota; las desactivadas, el dominio y la franja, y las notas (máscaras,
+    superficie)."""
     rows = [LegendRow(tr("Constraints and limits · {version}",
                          version=request.version_code or tr("No version")))]
     for ctype in ConstraintType:
@@ -627,6 +642,14 @@ def _legend(request: Request, state: str, counts: dict[str, int], switched_off: 
     if counts.get(UNTYPED):
         rows.append(LegendRow(tr("{type} ({count})", type=tr("Without a type"),
                                  count=counts[UNTYPED]), _hex(color_of(UNTYPED))))
+    for name, key in declared[:MAX_DECLARED_ROWS]:
+        rows.append(LegendRow(name, _hex(color_of(key))))
+    if len(declared) > MAX_DECLARED_ROWS:
+        rows.append(LegendRow(tr("… and {count} more declared by entities",
+                                 count=len(declared) - MAX_DECLARED_ROWS)))
+    if blocked:
+        rows.append(LegendRow(tr("Declared constraints blocked by an edit outside Geoblender "
+                                 "({count})", count=blocked)))
     if switched_off:
         rows.append(LegendRow(tr("Switched off in {version} ({count})",
                                  version=request.version_code, count=switched_off),

@@ -131,6 +131,7 @@ from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from ...core import i18n
 from ...core import params as core_params
 from ...core.catalog.search import path_text
+from ...core.constraints import declared as constraint_declared
 from ...core.constraints import messages as constraint_messages
 from ...core.constraints import params as constraint_params
 from ...core.constraints import provenance as constraint_provenance
@@ -155,7 +156,7 @@ from ...core.versions import freezing as freeze_registry
 from ...gis import store as gis_store
 from ...reserves import provenance as res_provenance
 from ..props.core_constraints import MARK_FIELD
-from ..scene import project_session, undo_watch
+from ..scene import constraint_views, project_session, undo_watch
 from ..scene import versions as scene_versions
 from ..ui import constraint_panels
 from ..ui import views as ui_views
@@ -1062,15 +1063,34 @@ class GEOBLENDER_OT_core_complete_constraint(ProvenanceAwareOperator, bpy.types.
         return about if note is None else with_note(about, note)
 
     def _row(self, project: Any) -> Constraint:
-        """La restricción de :attr:`uid` en el proyecto; ``ConstraintFormError`` si ya no
-        está."""
+        """La restricción de :attr:`uid` en el proyecto; ``ConstraintFormError`` si ya no está o si
+        la declara una entidad de diseño (RF-012-02, RF-012-29: su resguardo, su motivo y si está activa
+        se cambian en la entidad, no aquí)."""
         with project.read() as conn:
             found = [item for item in constraint_store.read_constraints(conn)
                      if item.uid == self.uid]
         if not found:
+            entity = self._declared_by(project)
+            if entity is not None:
+                raise ConstraintFormError(tr(
+                    "This constraint is declared by {entity}: its buffer, its reason and whether "
+                    "it is active are changed in the entity, not here",
+                    entity=constraint_views.entity_text(entity.entity_code, entity.entity_name)))
             raise ConstraintFormError(tr("The constraint is no longer in the project: open the "
                                          "list again"))
         return found[0]
+
+    def _declared_by(self, project: Any) -> Any:
+        """La restricción declarada por una entidad de la versión activa que es :attr:`uid`
+        (``core.constraints.declared.DeclaredConstraint``), o ``None`` si no lo es (o la tabla de las
+        declaradas ya no se puede leer)."""
+        try:
+            with project.read() as conn:
+                found = constraint_declared.read_in_version(
+                    conn, scene_versions.active_version() or None, uid=self.uid)
+        except (ValueError, TypeError, sqlite3.Error):
+            return None
+        return found[0] if found else None
 
     def invoke(self, context: Any, event: Any) -> set[str]:
         """Abre el diálogo con lo que tiene la restricción (y, de sus parámetros, lo que ya vale

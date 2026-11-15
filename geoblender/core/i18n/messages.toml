@@ -8938,3 +8938,43 @@ es = "Sin contrapendientes (tolerancia de {tolerance} m)"
 
 ["Platform «{name}» in {version}"]
 es = "Plataforma «{name}» en {version}"
+
+# La vista de la 012 con las restricciones declaradas por las entidades (spec 015, T21; RF-012-18,
+# RF-012-19, RF-015-11): bl/scene/constraint_views.py, bl/draw/constraints.py,
+# bl/ui/constraint_panels.py, bl/ui/des_panels.py y bl/ops/core_constraints.py.
+
+["{kind} {name}"]
+es = "{kind} {name}"
+
+["{entity} (declared)"]
+es = "{entity} (declarada)"
+
+["Blocked by an edit outside Geoblender"]
+es = "Bloqueada por una edición fuera de Geoblender"
+
+["Accept the edit with a reason or recalculate the declaration: the entity puts it back"]
+es = "Acepte la edición con un motivo o recalcule la declaración: la entidad la vuelve a poner"
+
+["The declaration differs from the one of the entities"]
+es = "La declaración difiere de la de las entidades"
+
+["Origin: {entity}"]
+es = "Origen: {entity}"
+
+["{value} m · given by the entity"]
+es = "{value} m · la da la entidad"
+
+["Declared by an entity: its buffer, its reason and whether it is active are changed in the entity"]
+es = "La declara una entidad: su resguardo, su motivo y si está activa se cambian en la entidad"
+
+["This constraint is declared by {entity}: its buffer, its reason and whether it is active are changed in the entity, not here"]
+es = "Esta restricción la declara {entity}: su resguardo, su motivo y si está activa se cambian en la entidad, no aquí"
+
+["… and {count} more declared by entities"]
+es = "… y {count} más declaradas por entidades"
+
+["Declared constraints blocked by an edit outside Geoblender ({count})"]
+es = "Restricciones declaradas bloqueadas por una edición fuera de Geoblender ({count})"
+
+["Zone of a constraint declared by an entity"]
+es = "Zona de una restricción declarada por una entidad"

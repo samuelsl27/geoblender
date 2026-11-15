@@ -19,6 +19,9 @@ las claves de siempre (P-8), sin parámetros del almacén.
 - **RF-012-14** (``DeclaredSumTest``): una declarada y una del proyecto sobre las mismas celdas se suman
   (una prohibición no la quita ninguna prioridad); el código declarado no choca con el de una del proyecto
   con un nombre parecido.
+- **RF-012-19, RF-015-11** (``DeclaredListingBlockedTest``, T21): la declarada lleva su resguardo (columna de su
+  tabla) en las listas; con su dato bloqueado por una edición fuera de Geoblender, su estado es ``blocked``; una
+  tabla que ya no se puede leer no tumba las listas (no la enseñan) y compilar no la ignora.
 - **RF-012-06, RF-015-10** (``DeclaredChangesTest``): repetir la declaración con las mismas filas no deja
   las máscaras obsoletas; cambiar el resguardo o el contorno las deja y la compilación da lo ganado y lo
   perdido de la declarada, por su código; quitarla devuelve las máscaras de antes.
@@ -88,6 +91,7 @@ TOWER_KEY = cparams.buffer_out_key("torre")
 OUTWARD = cparams.buffer_out_key(CODE)
 ACTIVE = cparams.active_key(CODE)
 BOX = efx.DECLARED_BOX_LOCAL
+TABLE = "des_decl_v01"
 GUARD = efx.DECLARED_GUARD_M
 CELL_M2 = GRID.dx * GRID.dy
 FOOTPRINT_CELLS = efx.DECLARED_CELLS
@@ -669,6 +673,68 @@ class NoDeclaredTest(cp.ConstraintsProjectCase):
         state, _pending = access.mask_state(self.project, self.v1.uid)
         self.assertIs(state, access.MaskState.CURRENT)
         self.assertEqual(len(masks_store.listed_constraints(self.project, version=self.v1.uid)), 5)
+
+
+class DeclaredListingBlockedTest(efx.DeclaredConstraintsProjectCase):
+    """Lo que **muestran** las listas, la barra N y la superposición de la declarada cuando su tabla se
+    editó fuera de Geoblender (T21; RF-012-19, RF-015-11), por el orden de los nombres de las pruebas."""
+
+    def _block(self, status: str) -> None:
+        """Deja el dato de las declaradas de V01 en ``status`` (lo que hace la puerta de la 008 al ver la
+        edición de QGIS)."""
+        registry = import_geoblender("core.datasets.registry")
+        with self.project.write_transaction() as conn:
+            record = registry.get(conn, declared.DATASET_NAME, version_uid=self.v1.uid)
+            registry.set_status(conn, self.project, record.uid, status)
+
+    def _listings(self) -> tuple[Any, Any, Any]:
+        listed = masks_store.listed_constraints(self.project, version=self.v1.uid)
+        shown = polygons.drain(masks_store.shown_constraints_steps(self.project, version=self.v1.uid))
+        one = masks_store.listed_constraint(self.project, declared_row(self.v1.uid).uid,
+                                            version=self.v1.uid)
+        return listed, shown, one
+
+    def test_a_the_declared_carries_its_buffer_from_the_table(self) -> None:
+        """RF-012-19, RF-012-02, P-8: la declarada lleva su resguardo hacia fuera, que es una columna de su
+        tabla y da la entidad (no un parámetro del almacén); las del proyecto no llevan ninguno."""
+        for found in self._listings()[:2]:
+            self.assertEqual([item.buffer_out_m for item in found], [None] * 5 + [GUARD])
+        self.assertEqual(self._listings()[2].buffer_out_m, GUARD)
+
+    def test_b_a_blocked_table_lists_its_constraints_as_blocked(self) -> None:
+        """RF-015-11, RF-012-19, RF-008-56: con el dato de las declaradas bloqueado por una edición fuera de
+        Geoblender, su restricción está **bloqueada** en las tres listas (la de la ventana, la de la barra N y
+        la de la superposición), con su entidad y su resguardo; las del proyecto no se bloquean y V02, que
+        no la tiene, no la lista; «bloqueada» manda sobre «inactiva»."""
+        self.assertIn("blocked", masks_store.STATES)
+        self._block("blocked")
+        for found in self._listings():
+            entry = found[-1] if isinstance(found, tuple) else found
+            self.assertEqual((entry.state, entry.entity_code, entry.entity_name, entry.buffer_out_m),
+                             ("blocked", efx.DECLARED_ENTITY, "P1", GUARD))
+        listed, shown, _one = self._listings()
+        self.assertEqual([item.state for item in listed[:5]], ["active"] * 5)
+        self.assertEqual([item.state for item in shown[:5]], ["active"] * 5)
+        self.assertEqual(len(masks_store.listed_constraints(self.project, version=self.v2.uid)), 5)
+        self._block("current")  # las pruebas siguientes parten de la tabla vigente
+
+    def test_c_an_unreadable_table_is_not_shown_but_compiling_still_refuses_it(self) -> None:
+        """RF-015-11 (T21): una fila de la tabla que ya no es una declarada (QGIS la dejó con un tipo que no
+        existe) no tumba las listas ni los nombres: la declarada no se enseña y las del proyecto, como
+        siempre; **compilar no la ignora**: el ``ValueError`` de la lectura sigue (con el dato bloqueado, la
+        puerta lo corta antes con su mensaje: ``require_usable``)."""
+        with self.project.write_transaction() as conn:
+            conn.execute(f'UPDATE "{TABLE}" SET ctype = ?', ("no_existe",))
+        listed, shown, one = self._listings()
+        self.assertEqual(len(listed), 5)
+        self.assertEqual(len(shown), 5)
+        self.assertIsNone(one)
+        self.assertFalse([item for item in listed if item.declared])
+        with self.project.read() as conn:
+            self.assertEqual(cstore.constraint_names(conn, version_uid=self.v1.uid),
+                             cstore.constraint_names(conn))
+        with self.assertRaises(ValueError):
+            masks_store.gather(self.project, version=self.v1.uid)
 
 
 # ---------------------------------------------------------------------------------------------
