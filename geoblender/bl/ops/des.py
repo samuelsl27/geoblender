@@ -349,8 +349,10 @@ from .core_provenance import (
     ensure_ready,
     error_text,
     read_only_dirs,
+    register_parameter_check,
     scope_choice,
     typed_value,
+    unregister_parameter_check,
     write_unavailable,
 )
 from .incorporation import StepQueue
@@ -636,6 +638,23 @@ operadores, «Compilar las máscaras») declara antes de compilar. Es :data:`des
 sus importaciones al usarlo, no al habilitar (:func:`register` lo registra)."""
 
 
+# --- Las reglas entre entidades al cambiar un parámetro (spec 015, T39; RF-015-01, RF-015-04, RF-015-12) ---
+
+PARAMETER_PREFIX = f"{design_params.PLATFORM_PREFIX}."
+"""El principio de las claves de los parámetros de una entidad (``des.platform.``): las que vigila
+:func:`_check_entity_parameter`."""
+
+
+def _check_entity_parameter(project: Any, key: str, value: Any, version_uid: str) -> None:
+    """Lo que ``des`` registra en «Cambiar parámetro…» (:func:`~.core_provenance.register_parameter_check`):
+    ``design.entity_store.check_parameter_change``, que aplica al cambio de un parámetro de una entidad las reglas
+    entre entidades de crearla (nombre único, una entidad por superficie y sin ciclos, sin proteger en «en corte y
+    relleno» ni sin resguardo). Importa el almacén al usarlo, no al habilitar."""
+    from ...design import entity_store  # al usarlo: habilitar no carga las entidades
+
+    entity_store.check_parameter_change(project, key, value, version=version_uid)
+
+
 # --- Registro ------------------------------------------------------------------------------------
 
 
@@ -643,7 +662,8 @@ def register() -> None:
     """Instala los textos del diseño en ``core.i18n`` y registra sus definiciones de parámetros
     (:data:`DEFINITIONS`), sus familias, sus tipos de operación (:data:`OPERATION_DEFS`) y sus
     cifras (:data:`FIGURES`) que aún no están, **el gancho de la declaración de las restricciones de las entidades**
-    (:data:`DECLARATION_HOOK`, T38) y se apunta a los cambios de proyecto de la sesión
+    (:data:`DECLARATION_HOOK`, T38), **la comprobación de las reglas entre entidades al cambiar un parámetro de una**
+    (:func:`_check_entity_parameter`, T39) y se apunta a los cambios de proyecto de la sesión
     (:func:`project_changed`); idempotente."""
     i18n.install(design_messages.CATALOG_ES)
     missing = tuple(defn for defn in DEFINITIONS if defn.key not in core_params.DEFINITIONS)
@@ -668,6 +688,8 @@ def register() -> None:
     if declaring.current() is not DECLARATION_HOOK:
         declaring.register(DECLARATION_HOOK)
         _UNDO.append(functools.partial(declaring.unregister, DECLARATION_HOOK))
+    register_parameter_check(PARAMETER_PREFIX, _check_entity_parameter)
+    _UNDO.append(functools.partial(unregister_parameter_check, PARAMETER_PREFIX, _check_entity_parameter))
     if project_changed not in project_session.listeners():
         project_session.add_listener(project_changed)
         _UNDO.append(functools.partial(project_session.remove_listener, project_changed))
@@ -3810,7 +3832,7 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
         project = SESSION.project
         try:
             des_panels.refresh_choices(project)
-            des_panels.refresh_platform_choices(project)
+            des_panels.refresh_platform_choices(project, insert_before=self.insert_before.strip() or None)
             self._propose(context, project)
             self._insert_name = self._insertion_name(project)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:

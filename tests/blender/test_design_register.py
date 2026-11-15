@@ -295,15 +295,19 @@ class DesignRegisteredTest(unittest.TestCase):
         others: list[tuple[str, str, Any]] = []
         self.addCleanup(lambda: self.forget_others(others)())
         declaring = _module("gis.masks.declaring")
+        checks = _module("bl.ops.core_provenance")._PARAMETER_CHECKS  # noqa: SLF001
         self.assertIs(declaring.current(), m.des_ops.DECLARATION_HOOK)  # el gancho de la declaración (T38)
+        self.assertIs(checks.get(m.des_ops.PARAMETER_PREFIX), m.des_ops._check_entity_parameter)  # noqa: SLF001  (T39)
         for _ in range(2):
             m.des_ops.unregister()
             self.assertSameRegistries(m.registries(), bare)
             self.assertIsNone(declaring.current())
+            self.assertNotIn(m.des_ops.PARAMETER_PREFIX, checks, "desregistrar quita la comprobación de «Cambiar…» (T39)")
         for _ in range(2):
             m.des_ops.register()
             self.assertSameRegistries(m.registries(), enabled)
             self.assertIs(declaring.current(), m.des_ops.DECLARATION_HOOK)
+            self.assertIs(checks.get(m.des_ops.PARAMETER_PREFIX), m.des_ops._check_entity_parameter)  # noqa: SLF001
 
         m.des_ops.unregister()
         others.extend(self.register_others())
@@ -685,10 +689,14 @@ class DesignRegisteredTest(unittest.TestCase):
         m.des_ops.hold_calculation(held)
 
         declaring = _module("gis.masks.declaring")
+        checks = _module("bl.ops.core_provenance")._PARAMETER_CHECKS  # noqa: SLF001
+        prefix = m.des_ops.PARAMETER_PREFIX
         self.assertIs(declaring.current(), m.des_ops.DECLARATION_HOOK)
+        self.assertIn(prefix, checks)
         self.addCleanup(blender_ext.enable)  # las demás pruebas de la clase, habilitada
         blender_ext.disable()
         self.assertIsNone(declaring.current(), "deshabilitar quita el gancho de la declaración (T38)")
+        self.assertNotIn(prefix, checks, "…y la comprobación de «Cambiar parámetro…» (T39)")
         self.assertEqual([cls.__name__ for cls in props.classes if cls.is_registered], [])
         self.assertEqual([name for name in dir(bpy.types)
                           if name.startswith("GEOBLENDER_") and "_des_" in name], [])

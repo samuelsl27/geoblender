@@ -891,7 +891,25 @@ def _platform_entities(project: Any, version: str) -> tuple[list[tuple[str, str,
     return items, [entry.record.name for entry in registry], start
 
 
-def refresh_platform_choices(project: Any) -> None:
+def _cyclic_supports(project: Any, version: str, insert_before: str | None) -> set[str]:
+    """Las superficies (``entity:<código>``) en las que una plataforma **nueva** que se inserta antes de la entidad
+    ``insert_before`` no puede apoyarse (spec 015, T39; hallazgo A-1): esa entidad y las que la siguen, que pasarán a
+    partir de la nueva (``design.entities.unsupportable``: sería un ciclo). Vacío sin versión ni inserción."""
+    from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+    if not version or not insert_before:
+        return set()
+    records = entities.registry(project, version).records
+    new = entities.next_code(entities.EntityKind.PLATFORM, (item.code for item in records))
+    try:
+        return {entities.surface_ref(code)
+                for code in entities.unsupportable(records, new, insert_before=insert_before)}
+    except design_messages.DesignError:  # una cadena rota (un dato roto): lo rechaza «Calcular», con su texto
+        LOGGER.warning("Una cadena de entidades está rota: no se filtran los apoyos", exc_info=True)
+        return set()
+
+
+def refresh_platform_choices(project: Any, *, insert_before: str | None = None) -> None:
     """Vuelve a leer de ``project`` las listas del diálogo de «Plataforma…» (spec 015, T15; plan 015
     §5.3.3): las capas «entidades» de líneas o de polígonos (:func:`platform_layer_items`, con su
     geometría: :func:`platform_layer_kind`), las superficies de partida (:func:`platform_start_items`:
@@ -899,7 +917,9 @@ def refresh_platform_choices(project: Any) -> None:
     rejillas de cotas de :func:`surface_items` sin las de las plataformas, que se eligen por su
     entidad para que la cadena las conozca), la última de su cadena como la propuesta
     (:func:`platform_default_start`) y las de apoyo (:func:`platform_support_items`: «ninguna» y las
-    mismas). Se llama tras :func:`refresh_choices`. Si no se puede leer, el error sigue."""
+    mismas, **sin las que serían un ciclo**: con ``insert_before`` —la entidad ante la que se inserta la nueva—, esa y
+    las que la siguen, T39, hallazgo A-1). Se llama tras :func:`refresh_choices`. Si no se puede leer, el error
+    sigue."""
     _ensure_choices()
     version = scene_versions.active_version() or ""
     layers = [(name, kind) for name, kind in constraint_panels.search_layers(project)
@@ -917,8 +937,10 @@ def refresh_platform_choices(project: Any) -> None:
             for name, kind in layers]
         _CHOICES.platform_kinds = dict(layers)
     if starts:
+        cyclic = _cyclic_supports(project, version, insert_before)
         _CHOICES.platform_starts = starts
-        _CHOICES.platform_supports = [*_CHOICES.platform_supports, *starts]
+        _CHOICES.platform_supports = [*_CHOICES.platform_supports,
+                                      *(item for item in starts if item[0] not in cyclic)]
     _CHOICES.platform_names, _CHOICES.platform_start = names, last
 
 

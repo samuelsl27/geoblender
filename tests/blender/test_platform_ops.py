@@ -920,6 +920,61 @@ class CreatePlatformTest(unittest.TestCase):
                                     for text in summary), summary)
                 self.assertEqual(access.mask_state(self.project, version.uid)[0], access.MaskState.CURRENT)
 
+    def test_j_changing_a_parameter_of_an_entity_follows_the_rules_of_creating_it(self) -> None:
+        """RF-015-01, RF-015-04, RF-015-05, RF-015-12 (T39; hallazgos A-2, A-1 y B-1): «Cambiar parámetro…»
+        (``core_set_parameter``, la orden real) de una entidad pasa por las reglas de crearla antes de escribir: un
+        nombre que ya tiene otra (también el que da el mismo nombre de dato), un nombre vacío, la partida de otra
+        entidad, un ciclo y el modo «en corte y relleno» en una que protege se rechazan con un mensaje que nombra la
+        entidad, en el idioma de Geoblender y **sin escribir nada**; renombrar con un nombre libre sigue admitido. El
+        diálogo de «Plataforma…» al insertar antes de una entidad no ofrece de apoyo la superficie de esa entidad ni
+        la de las que la siguen (serían un ciclo)."""
+        self.assertEqual(bpy.ops.geoblender.core_set_active_version(version_uid=self.v01.uid), {"FINISHED"})
+        listed = {entry.record.name: entry.record.code
+                  for entry in self.entities.registry(self.project, self.v01.uid)}
+        self.assertEqual((listed[LOADING], listed[WORKSHOP], listed["Protegida"]), ("PLT-001", "PLT-002", "PLT-004"))
+
+        def change(code: str, param: str, value: str) -> set[str]:
+            return bpy.ops.geoblender.core_set_parameter(
+                "EXEC_DEFAULT", key=f"des.platform.{code.lower().replace('-', '_')}.{param}", value=value,
+                scope="VERSION", source="Criterio de la prueba", decided_by=PERSON, reason=REASON)
+
+        refused = (
+            ("PLT-002", "name", LOADING, f"ya lo tiene la entidad «{LOADING}»"),
+            ("PLT-002", "name", LOADING.upper(), f"ya lo tiene la entidad «{LOADING}»"),  # el mismo nombre de dato
+            ("PLT-002", "name", "", "no tiene valor"),
+            ("PLT-002", "start", self.ground, f"ya parte la entidad «{LOADING}»"),
+            ("PLT-001", "start", "entity:PLT-004", "se cierra sobre sí misma"),  # la cola de la cadena: un ciclo
+            ("PLT-004", "mode", "cut_fill", "plataforma «Protegida»: en el modo «en corte y relleno»"))
+        before = self.state()
+        for code, param, value, text in refused:
+            with self.subTest(code=code, param=param, value=value):
+                with self.assertRaises(RuntimeError) as caught:
+                    change(code, param, value)
+                self.assertIn(text, str(caught.exception))
+                self.assertNotIn("Traceback", str(caught.exception))
+                self.assertEqual(self.state(), before, "el rechazo no escribe nada")
+        self.i18n.set_language("en")
+        with self.assertRaises(RuntimeError) as caught:
+            change("PLT-002", "name", LOADING)
+        self.assertIn(f"is already used by entity «{LOADING}»", str(caught.exception))
+        self.i18n.set_language("es")
+        self.assertEqual(self.state(), before)
+
+        self.assertEqual(change("PLT-002", "name", "Taller 2"), {"FINISHED"})
+        self.assertEqual(self.parameter("PLT-002", "name")[0], "Taller 2")
+        names = [entry.record.name for entry in self.entities.registry(self.project, self.v01.uid)]
+        self.assertEqual(sorted(names), sorted(set(names)), "ninguna entidad con el nombre de otra")
+
+        self.addCleanup(self.refresh)  # las listas del diálogo, como siempre
+        fake, context, _dialog = self.fake_dialog(insert_before="PLT-003", start="entity:PLT-002")
+        self.cls.invoke(fake, context, None)
+        offered = [item[0] for item in self.panels.platform_support_items(None, None)]
+        self.assertEqual([item for item in offered if item.startswith("entity:")], ["entity:PLT-001", "entity:PLT-002"])
+        self.refresh()
+        offered = [item[0] for item in self.panels.platform_support_items(None, None)]
+        self.assertEqual([item for item in offered if item.startswith("entity:")],
+                         [f"entity:PLT-00{number}" for number in range(1, 5)])
+
     def test_z_disabling_geoblender_removes_the_command_and_leaves_no_temporary(self) -> None:
         """Principio 8, D-14 de la 013: con un cálculo abierto, desactivar Geoblender lo descarta (no queda
         ningún temporal) y quita la orden."""

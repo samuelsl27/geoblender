@@ -158,6 +158,8 @@ API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
 PENDING_015_API: frozenset[str] = frozenset({
     "declaration_pending",  # T38: ``entity_store``, lo que pregunta el gancho de la declaración
     "has_platform_operation",  # T38: ``provenance``, su primera consulta
+    "check_parameter_change",  # T39: ``entity_store``, las reglas de crear al cambiar un parámetro de una entidad
+    "unsupportable",  # T39: ``entities``, donde una entidad no puede apoyarse (ciclo)
 })
 PENDING_015_MODULES: frozenset[str] = frozenset()
 

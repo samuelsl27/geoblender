@@ -152,6 +152,7 @@ __all__ = [
     "strongest",
     "successor_of",
     "surface_ref",
+    "unsupportable",
 ]
 
 
@@ -504,6 +505,25 @@ def check_chain(records: Iterable[EntityRecord]) -> None:
     """Comprueba la cadena de ``records`` (RF-015-04): sin ciclos y con como mucho una entidad viva
     desde cada superficie; si no, el mismo ``DesignError`` que :func:`chain_tails`."""
     chain_tails(records)
+
+
+def unsupportable(records: Iterable[EntityRecord], own_code: str, *,
+                  insert_before: str | None = None) -> frozenset[str]:
+    """Los códigos de las entidades en cuya superficie la entidad ``own_code`` **no** puede apoyarse porque sería un
+    ciclo del grafo (RF-015-15, RF-015-05; spec 015, T39, hallazgo A-1): ella misma y las que parten de su
+    superficie, **aguas abajo de su cadena** (``chain_of``: lo que ella deja es lo que lee la siguiente). Con
+    ``insert_before`` (el código o el nombre de la entidad ante la que se inserta la que aún no está en ``records``),
+    también esa y las que la siguen, que **pasarán** a partir de la nueva: apoyarse en ellas sería un ciclo desde la
+    inserción, aunque hoy no lo sea. Una entidad que no está en ``records`` (la nueva) solo cuenta consigo misma y
+    con lo que le sigue por la inserción. No escribe nada. :class:`TypeError` si no son entidades;
+    ``DesignError`` si la cadena ya está rota (``chain_of``)."""
+    items = _records(records)
+    found = {own_code}
+    if (own := _find(items, own_code)) is not None:
+        found |= {item.code for item in chain_of(items, own.code)}
+    if insert_before is not None and (successor := _find(items, insert_before)) is not None:
+        found |= {item.code for item in chain_of(items, successor.code)}
+    return frozenset(found)
 
 
 # --- Insertar antes o después de otra entidad (RF-015-05) -----------------------------------------

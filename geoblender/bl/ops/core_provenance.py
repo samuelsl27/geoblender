@@ -834,7 +834,8 @@ def error_text(exc: BaseException) -> str:
     if isinstance(exc, VersionError):
         return version_render(exc.code, language=i18n.language(), **exc.values)
     if isinstance(exc, GeoblenderError):
-        return exc.message
+        in_language = getattr(exc, "text_in", None)  # un error que lleva su texto en cada idioma (el del diseño)
+        return str(in_language(i18n.language())) if callable(in_language) else exc.message
     return str(exc) or type(exc).__name__
 
 
@@ -1667,6 +1668,40 @@ def _write_poll(cls: type) -> bool:
     return True
 
 
+# --- Las reglas de un módulo al cambiar sus parámetros (spec 015, T39) -------------------------
+
+type ParameterCheck = Callable[[Any, str, Any, str], None]
+"""Lo que un módulo registra para vigilar el cambio de **sus** parámetros con «Cambiar parámetro…»:
+``check(proyecto, clave, valor, uid de la versión)``, que lanza un error de Geoblender (con su texto en el idioma de
+la persona: :func:`error_text`) si el ``valor`` nuevo rompe una regla que el tipo y el rango de la definición no
+pueden decir (las reglas **entre** entidades de la 015: nombre único, una entidad por superficie, sin ciclos, no
+proteger en «en corte y relleno»), y **solo lee**: se llama antes de abrir la transacción que escribe."""
+_PARAMETER_CHECKS: dict[str, ParameterCheck] = {}
+
+
+def register_parameter_check(prefix: str, check: ParameterCheck) -> None:
+    """Registra ``check`` para las claves de parámetro que empiezan por ``prefix`` (``des.platform.``); el que había
+    con ese principio, si lo había, se sustituye (idempotente)."""
+    _PARAMETER_CHECKS[prefix] = check
+
+
+def unregister_parameter_check(prefix: str, check: ParameterCheck) -> None:
+    """Quita la comprobación de ``prefix`` si es ``check`` (lo que otro registró después es suyo); idempotente."""
+    if _PARAMETER_CHECKS.get(prefix) is check:
+        del _PARAMETER_CHECKS[prefix]
+
+
+def check_parameter_change(project: Any, key: str, value: Any, version_uid: str | None) -> None:
+    """Las comprobaciones registradas (:func:`register_parameter_check`) del cambio del valor de ``key`` a ``value`` en
+    la versión ``version_uid`` (``None``: el cambio es del proyecto, sin versión: ninguna de las de un módulo
+    se aplica). Lo que rechazan, lo lanzan; no escribe nada."""
+    if version_uid is None:
+        return
+    for prefix, check in tuple(_PARAMETER_CHECKS.items()):
+        if key.startswith(prefix):
+            check(project, key, value, version_uid)
+
+
 class GEOBLENDER_OT_core_show_parameters(bpy.types.Operator):
     """Parameters with their type, provenance and history"""
 
@@ -1910,6 +1945,9 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
             if version is not None:  # sin valor propio, se crea a partir del del proyecto
                 record = store.get(self.key, version=version.uid) or record
             changes = self._changes(record, i18n.language())
+            if "value" in changes:  # las reglas entre entidades de un módulo, antes de abrir la transacción (T39)
+                check_parameter_change(project, self.key, changes["value"],
+                                       None if version is None else version.uid)
             with project.write_transaction() as conn:
                 changed = store.change(conn, self.key, **changes,
                                        version=None if version is None else version.uid)
