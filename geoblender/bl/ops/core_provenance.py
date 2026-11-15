@@ -174,7 +174,9 @@ ADR-0025).
   una comprobación del cambio de **sus** parámetros antes de escribirlo (:func:`register_parameter_check`: las reglas
   entre entidades de la 015), lo que lanza **tras** escribirlo (:func:`register_parameter_after`: lo que sigue a cambiar
   una entidad, por pasos y con Esc en un operador suyo) y lo que pone al día **al terminar** «Recalcular lo obsoleto»
-  (:func:`register_recompute_after`: sus pasos corren en el mismo modal antes de decir lo que pasó, y no si se canceló).
+  (:func:`register_recompute_after`: sus pasos corren en el mismo modal antes de decir lo que pasó, y no si se canceló;
+  **Esc vale también mientras corren** —se cierra el paso en curso, no corre lo que falta y el resultado dice que se
+  canceló—, T49: hasta entonces se ignoraba y la capa de entidades se escribía entera tras Esc).
 
 ``core.i18n`` no tiene cómo quitar traducciones: :func:`unregister` las deja (como los
 trabajos de la 004), y volver a registrar las instala otra vez sin cambiar nada.
@@ -196,7 +198,7 @@ import textwrap
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
@@ -1764,10 +1766,17 @@ def unregister_recompute_after(after: RecomputeAfter) -> None:
         _RECOMPUTE_AFTERS.remove(after)
 
 
-def _with_afters(project: Any, steps: Iterator[Progress]) -> Iterator[Progress]:
+def _with_afters(project: Any, steps: Iterator[Progress],
+                 cancelled: Callable[[], bool] | None = None) -> Iterator[Progress]:
     """Los pasos ``steps`` de «Recalcular lo obsoleto» y, **antes de su último paso** (el del resultado), los de lo
     registrado con :func:`register_recompute_after`, salvo si se canceló (Esc: lo demás sigue obsoleto y no se hace
-    más). Un fallo de lo registrado se anota y no impide el resultado; cerrar el generador cierra ``steps``."""
+    más). Un fallo de lo registrado se anota y no impide el resultado; cerrar el generador cierra ``steps``.
+
+    **Esc también vale mientras corre lo registrado** (spec 015, T49; RF-015-29, RNF-015-05; hasta entonces se ignoraba y
+    acababa lo registrado entero tras Esc): ``cancelled()`` (la bandera de Esc del modal, que se pone antes de reanudar los
+    pasos) se mira tras cada paso de lo registrado y antes de empezar cada uno; con Esc se **cierra** el que está en curso
+    (cada uno es una operación y una transacción: nada a medias), no corre lo que falta y el último paso lleva el mismo
+    resultado **cancelado**: lo recalculado queda y lo que no se hizo se pone al día con la próxima orden de su módulo."""
     from ...core.project.model import Progress
     from ...core.provenance.recompute import RecomputeOutcome
 
@@ -1781,15 +1790,27 @@ def _with_afters(project: Any, steps: Iterator[Progress]) -> Iterator[Progress]:
     if held is None:
         return
     if not held.result.cancelled:
+        stopped = False
         for after in tuple(_RECOMPUTE_AFTERS):
+            if cancelled is not None and cancelled():  # Esc entre dos: la siguiente no empieza
+                stopped = True
+                break
             try:
                 extra = after(project)
                 if extra is not None:
                     with _closing(extra):
                         for step in extra:
                             yield Progress(step.phase, step.done, step.total, step.message)
+                            if cancelled is not None and cancelled():  # Esc: se cierra el paso en curso, sin nada a medias
+                                stopped = True
+                                break
             except (GeoblenderError, sqlite3.Error, OSError):
                 LOGGER.warning("No se pudo terminar lo que sigue a «Recalcular lo obsoleto»", exc_info=True)
+            if stopped:
+                break
+        if stopped:
+            held = Progress(held.phase, held.done, held.total, "Recalcular lo obsoleto: cancelado.",
+                            replace(held.result, cancelled=True))
     yield held
 
 
@@ -2860,8 +2881,9 @@ class GEOBLENDER_OT_core_recompute_stale(_RecomputeModal, bpy.types.Operator):
         project = SESSION.project
         self._cancel = False
         try:
-            steps = _with_afters(project, recompute_steps(  # lo que un módulo pone al día al terminar (T43)
-                project, scope=self._scope(project), cancelled=lambda: self._cancel))
+            steps = _with_afters(project, recompute_steps(  # lo que un módulo pone al día al terminar (T43), con Esc (T49)
+                project, scope=self._scope(project), cancelled=lambda: self._cancel),
+                cancelled=lambda: self._cancel)
         except _NothingToDo as exc:
             if not str(exc):
                 self.report({"ERROR"}, tr("Indicate what to recompute: the uid of what changed "

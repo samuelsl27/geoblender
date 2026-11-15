@@ -38,7 +38,9 @@ habilitada, como una persona.
 - **RNF-015-05** (:meth:`CallsTest.test_d_esc`): Esc a mitad de cada cálculo —«Calcular» (a mitad de sus eventos
   y en cuanto tiene su superficie en el temporal), lo que encadena crear la entidad y «Recalcular lo obsoleto»—:
   la llamada más larga del cálculo más lo que tarda Esc ≤ 2 s y nada a medias en el proyecto (ni operación «en
-  curso», ni temporal; «Calcular» no deja ni operación, ni dato, ni cifra, ni fichero).
+  curso», ni temporal; «Calcular» no deja ni operación, ni dato, ni cifra, ni fichero). Esc en «Recalcular lo obsoleto»
+  vale también **tras** el recálculo, mientras se pone al día la capa de entidades (T49: acaba el modal en el mismo
+  evento de Esc, con la capa marcada).
 - **RNF-015-06** (:meth:`CallsTest.test_e_the_preview_with_200_entities`): con **200 entidades** en la versión
   (las de verdad —la cadena, la grande y la de Esc— y las demás hasta 200, que se apoyan en la primera, con sus
   huellas), activar la vista previa de la primera (``geoblender.des_entity_preview``: la orden y los pasos de su
@@ -599,17 +601,33 @@ class CallsTest(_Case):
         self.assertEqual(self.state(), before, f"{where}: Esc dejó algo en el proyecto")
         return Stopped(where, events, longest, (wall, cpu), waiting)
 
-    def esc_in_recompute(self, delta: float, des_ticks: int, code: str = "PLT-001") -> Stopped:
+    def esc_in_recompute(self, delta: float, des_ticks: int, code: str = "PLT-001", *,
+                         in_what_follows: bool = False) -> Stopped:
         """Cambia la cota de la plataforma ``code`` (``delta`` m), lanza «Recalcular lo obsoleto» y, tras ``des_ticks`` pasos de la
         cola de ``des`` (con 1 acaba de empezar su primera unidad: lo peor para Esc, que acaba la unidad en curso),
         pulsa Esc: lo que tardó la llamada más larga hasta entonces y lo que tardó el modal en acabar; lo hecho
-        queda y lo demás sigue obsoleto, sin nada a medias. Al final lo deja todo al día."""
+        queda y lo demás sigue obsoleto, sin nada a medias. Al final lo deja todo al día.
+
+        Con ``in_what_follows`` (spec 015, T49; la regresión de la T43: Esc se ignoraba **mientras** se ponía al día la
+        capa de entidades, lo que ``des`` hace tras recalcular) no cuenta pasos: da eventos hasta que el modal enseña un
+        paso de lo que sigue al recálculo (``Progress.phase`` distinta de la del recálculo), y pulsa Esc entonces: el
+        modal acaba en ese mismo evento, ``CANCELLED``, con la capa a medias cerrada y marcada."""
         self.change_first(delta, code)
         cls = self.core_ops.GEOBLENDER_OT_core_recompute_stale
+        recompute_phase = _module("core.provenance.recompute").RECOMPUTE_PHASE
         queues = (("cola de des", self.des_ops.des_tick), ("cola de las máscaras", self.gis_ops.masks_tick),
                   ("cola de la verificación", self.res_ops.res_tick))
+        phases: list[str] = []
+        shown = cls._show  # lo que enseña el modal: la fase de cada paso (no la dice su texto)
+
+        def spy(operator: Any, context: Any, step: Any) -> None:
+            phases.append(step.phase)
+            return shown(operator, context, step)
+
         gc.collect()
-        with Recorder() as recorder, mock.patch.object(self.des_ops, "_ask_confirmation"),                 mock.patch.object(_module("bl.ops.incorporation"), "status_text"):
+        with Recorder() as recorder, mock.patch.object(self.des_ops, "_ask_confirmation"), \
+                mock.patch.object(_module("bl.ops.incorporation"), "status_text"), \
+                mock.patch.object(self.core_ops._RecomputeModal, "_show", spy):  # noqa: SLF001
             ticks = 0
             for _turn in range(5):
                 # Una pasada puede acabar antes (lo recalculado que vuelve a quedar obsoleto espera a la
@@ -617,8 +635,10 @@ class CallsTest(_Case):
                 self.assertEqual(recorder.call("Intro", bpy.ops.geoblender.core_recompute_stale, "EXEC_DEFAULT"),
                                  {"RUNNING_MODAL"})
                 operator = pc.running(cls)
+                phases.clear()
                 finished = False
-                while ticks < des_ticks:  # unas cuantas unidades hechas y otra en curso
+                while (not (phases and phases[-1] != recompute_phase) if in_what_follows
+                       else ticks < des_ticks):  # unas cuantas unidades hechas y otra en curso (o lo que sigue)
                     state = recorder.call("evento del modal", operator.modal, bpy.context, pc.TIMER)
                     if state != {"RUNNING_MODAL"}:
                         finished = True
@@ -629,7 +649,8 @@ class CallsTest(_Case):
                 if not finished:
                     break
             else:
-                self.fail(f"«Recalcular lo obsoleto» (cota {delta:+g}) no llega a {des_ticks} pasos de su cola")
+                self.fail(f"«Recalcular lo obsoleto» (cota {delta:+g}) no llega a "
+                          f"{'lo que sigue al recálculo' if in_what_follows else f'{des_ticks} pasos de su cola'}")
             events = len(recorder.calls)
             longest = max(((call.seconds, call.cpu) for call in recorder.calls), key=lambda call: call[1])
             started, cpu = time.perf_counter(), time.process_time()
@@ -646,7 +667,15 @@ class CallsTest(_Case):
         self.assertTrue(operator.result.cancelled)
         self.assertGreater(len(operator.result.remaining.units), 0, "Esc recalculó todo")
         self.assert_nothing_half_done("Esc a mitad de «Recalcular lo obsoleto»")
+        if in_what_follows:  # la capa a medias se cierra en el mismo evento de Esc y queda marcada
+            self.assertEqual(tail, 0, "Esc no acaba el modal en el mismo evento")
+            with self.project().read() as conn:
+                self.assertTrue(_module("design.entity_store").layer_pending(self.project(), conn,
+                                                                             self.built.version_uid))
         self.recompute_all("terminar de recalcular")  # lo que falta, para dejar el estado al día
+        if in_what_follows:
+            return Stopped(f"«Recalcular lo obsoleto» de {code}, en lo que sigue al recálculo (la capa de entidades a "
+                           f"medias)", events, longest, (wall, spent), 0, calls=tail + 1)
         return Stopped(f"«Recalcular lo obsoleto» de {code}, tras {des_ticks} "
                        f"{'paso' if des_ticks == 1 else 'pasos'} de su cola (acaba la unidad en curso)", events,
                        longest, (wall, spent), 0, calls=tail + 1)
@@ -654,7 +683,8 @@ class CallsTest(_Case):
     def test_d_esc(self) -> None:
         """RNF-015-05 (plan 015 §7.3; RF-015-29): Esc a mitad de cada cálculo de las entidades —«Calcular» una
         plataforma (a la mitad de sus eventos y, otra vez, en cuanto su superficie está en el temporal), lo que
-        encadena crearla (a la mitad de sus eventos) y «Recalcular lo obsoleto» (a la mitad)—: la llamada más
+        encadena crearla (a la mitad de sus eventos) y «Recalcular lo obsoleto» (a la mitad de una unidad y, T49, en lo
+        que sigue al recálculo: la capa de entidades)—: la llamada más
         larga del cálculo más lo que tarda Esc ≤ 2 s y nada a medias en el proyecto: «Calcular» no deja ni
         operación, ni dato, ni cifra, ni fichero, y lo demás, ni operación «en curso» ni temporal."""
         index = ORDERED + 1  # la plataforma 08 de la capa (la grande es PLT-007): cada superficie, una entidad
@@ -697,6 +727,9 @@ class CallsTest(_Case):
         big = f"PLT-{ORDERED + 1:03d}"  # la grande: la unidad más larga del recálculo
         for delta, ticks, code in ((+0.5, 1, "PLT-001"), (-0.5, 12, "PLT-001"), (+0.5, 1, big), (-0.5, 12, big)):
             stops.append(self.esc_in_recompute(delta, ticks, code))
+        # Esc en lo que sigue al recálculo (T49): la capa de entidades que ``des`` pone al día al terminar; no cuenta pasos
+        # de la cola (antes de la T49 solo se tocaba si los pasos pedidos caían ahí por casualidad, y Esc se ignoraba).
+        stops.append(self.esc_in_recompute(+0.5, 0, "PLT-001", in_what_follows=True))
 
         worst = max(stops, key=lambda stop: stop.wall)
         report(f"RNF-015-05: Esc a mitad de cada cálculo de las entidades sobre {count(CELLS)} celdas con "

@@ -10,7 +10,8 @@ con pasos sintéticos.
   registrar es idempotente, sustituye lo del mismo principio y quitar lo de otro no quita lo propio.
 - **Al terminar «Recalcular lo obsoleto»** (``_with_afters``): los pasos de lo registrado corren **antes** del último paso
   (el del resultado), sin su ``result`` (que no termine el modal), en el orden en que se registraron; con el recálculo
-  **cancelado** no corren; un fallo suyo no impide el resultado; sin nada registrado, los pasos de siempre; y cerrar el
+  **cancelado** no corren; **Esc mientras corren** (T49) cierra el que está en curso, no corre lo que falta y el resultado
+  llega cancelado; un fallo suyo no impide el resultado; sin nada registrado, los pasos de siempre; y cerrar el
   generador cierra los pasos del recálculo.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
@@ -184,6 +185,62 @@ class AftersTest(unittest.TestCase):
         self.assertEqual(next(wrapped).message, "uno")
         wrapped.close()
         self.assertEqual((closed, ran), (["cerrados"], []))
+
+
+    # --- Esc mientras corre lo que sigue (T49) -------------------------------------------------------
+
+    def test_h_esc_while_an_after_runs_closes_its_steps_skips_the_rest_and_the_result_says_cancelled(self) -> None:
+        """RF-015-29, RNF-015-05 (T49; la regresión de la T43): Esc **mientras corren los pasos de lo registrado** (el recálculo
+        ya había acabado) no se ignora: al reanudar se cierra el generador en curso (cada uno es una operación y una transacción:
+        nada a medias), no corre lo demás registrado y el último paso lleva el mismo resultado **cancelado**, con lo
+        recalculado (hasta la T43 corrían todos hasta el final y el modal acababa «FINISHED»)."""
+        progress, flag = self.model.Progress, [False]
+        order: list[str] = []
+
+        def after(tag: str) -> Any:
+            def make(_project: Any) -> Any:
+                order.append(f"empieza {tag}")
+                try:
+                    for number in range(1, 4):
+                        yield progress("after", number, 3, f"{tag}{number}")
+                finally:
+                    order.append(f"cierra {tag}")
+
+            return make
+
+        self.cp.register_recompute_after(after("a"))
+        self.cp.register_recompute_after(after("b"))
+        closed: list[str] = []
+        work, outcome = self.steps(closed)
+        wrapped = self.cp._with_afters("proyecto", work, cancelled=lambda: flag[0])  # noqa: SLF001
+        found = [next(wrapped), next(wrapped), next(wrapped), next(wrapped)]
+        self.assertEqual([step.message for step in found], ["uno", "dos", "a1", "a2"])
+        flag[0] = True  # Esc: el modal lo pone y avanza otra vez
+        last = next(wrapped)
+        self.assertIs(type(last.result), type(outcome))
+        self.assertTrue(last.result.cancelled, "el resultado dice que se canceló")
+        self.assertEqual((last.result.results, last.result.remaining), (outcome.results, outcome.remaining))
+        self.assertEqual(order, ["empieza a", "cierra a"], "a se cierra a mitad y b no empieza")
+        self.assertEqual(closed, ["cerrados"], "los pasos del recálculo se cerraron al acabar")
+        self.assertEqual(list(wrapped), [], "nada más tras el resultado")
+
+    def test_i_esc_before_the_next_after_starts_does_not_start_it(self) -> None:
+        """RF-015-29 (T49): Esc entre dos de lo registrado (la primera ya acabó): la segunda no empieza y el resultado dice
+        que se canceló; sin Esc, corren las dos (como hasta ahora)."""
+        progress, flag, order = self.model.Progress, [False], []
+
+        def first(_project: Any) -> Any:
+            order.append("a")
+            yield progress("after", 1, 1, "a")
+            flag[0] = True  # Esc justo tras su último paso
+
+        self.cp.register_recompute_after(first)
+        self.cp.register_recompute_after(lambda _project: order.append("b"))
+        work, _outcome = self.steps([])
+        found = list(self.cp._with_afters("proyecto", work, cancelled=lambda: flag[0]))  # noqa: SLF001
+        self.assertEqual(order, ["a"])
+        self.assertTrue(found[-1].result.cancelled)
+        self.assertEqual([step.message for step in found], ["uno", "dos", "a", "Recalcular lo obsoleto: cancelado."])
 
 
 if __name__ == "__main__":
