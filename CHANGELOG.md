@@ -181,7 +181,10 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     «Crear», en 1,5 s; recalcular una plataforma de 1 ha lee 8 de 98 teselas de la superficie y de
     las máscaras (de 0,25 a 0,11 s de CPU en el núcleo; la peor llamada del hilo de Blender, de 0,09 a
     0,13 s); recalcular una cadena de 20 plataformas, en unos 24 s; lo que se apoya en una
-    entidad, con 200 entidades, en 0,02 s. Cada entidad guarda su superficie en la rejilla entera:
+    entidad, con 200 entidades, en 0,02 s. Un eje digitalizado con muchos vértices ya no bloquea Blender:
+    el de 1,8 km con 400 vértices tardaba 8 s de una sola llamada, sin progreso ni Esc, y ahora, 0,1 s en
+    pasos de pocos milisegundos que se cancelan (con 2.000 vértices, de 44 s a 0,3 s); la huella y las
+    cotas son las mismas, bit a bit. Cada entidad guarda su superficie en la rejilla entera:
     unos 16 MiB (con ruido en las cotas) y unos 0,3 GiB con 20 entidades; el tope de 16 MB de la
     spec (RNF-015-09) sigue pendiente de decisión.
   - Lo de la spec 015 está comprobado con Blender 5.2.1 sin su interfaz, con las órdenes reales y

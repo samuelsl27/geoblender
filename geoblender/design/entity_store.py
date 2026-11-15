@@ -271,7 +271,7 @@ from .platform import (
     _window_grid,
     apply_platform_steps,
     platform_edge_steps,
-    platform_footprint,
+    platform_footprint_units,
     platform_outcome,
     reading_window,
     summary_notices,
@@ -1056,7 +1056,7 @@ def _platform_job(project: StoreProject, version: Version, request: PlatformRequ
     read = start.window
     cut, fill = admitted_pair(masks, read)
     job = PlatformJob(request, code, masks.grid, start.values, geometry, values, cut, fill, region=read)
-    footprint = platform_footprint(job)
+    footprint = yield from platform_footprint_units(job)
     if not all(_covers(found.window, footprint.window) for found in (start, support) if found is not None):
         raise NeedsWholeSurface("la ventana leída no contiene la de trabajo de la huella")
     yield
@@ -1363,20 +1363,25 @@ def platform_compute_steps(job: PlatformJob, common: Mapping[str, object], *,
     """Los pasos que calculan la plataforma de ``job`` (RF-015-03, RF-015-29; plan 015 §5.3.1: el
     ``platform_compute_steps`` que **comparten «Calcular», el recálculo y la reproducción**), sin
     proyecto y sin escribir nada (``yield from``; cerrar el generador no deja nada): la huella y la
-    rasante (``footprint``, si ya se calculó al preparar; si no, aquí), aplicarla
+    rasante (``footprint``, si ya se calculó al preparar; si no, aquí, por pasos:
+    :func:`~.platform.platform_footprint_units`), aplicarla
     (``apply_platform_steps``), el borde (``platform_edge_steps``) y el perfil con las cifras y los
     avisos (``platform_outcome``), por pasos de ``budget_s`` como mucho. ``common`` son los parámetros del
     proyecto que lee el cálculo (``provenance.PLATFORM_COMMON_PARAMS``: la tolerancia de cara, el umbral de
     magnitud, el espesor mínimo y el salto creado, ya resueltos). ``confirm_counterslope``, ``previous``
     (con qué se compara la magnitud), ``operation`` (el nombre que da la nota de que no hay con qué
     compararla) y ``quarry`` (la otra superficie de la cantera, RF-015-14) son los de
-    ``platform.platform_outcome``. Los rechazos son los de esas funciones y salen al avanzar. La huella
-    y el perfil no se parten (7 ms una línea de 300 m, 37 ms 1,2 M celdas): son una unidad cada uno.
+    ``platform.platform_outcome``. Los rechazos son los de esas funciones y salen al avanzar. El perfil no
+    se parte (37 ms con 1,2 M celdas): es una unidad; la huella sí (T44, hallazgos D-2 y A-3: un eje
+    digitalizado de muchos vértices tardaba segundos de una sola llamada).
     Devuelve el :class:`~.platform.PlatformOutcome`."""
     name = job.request.name
     yield Progress(_COMPUTE_PHASE, 0, 1, f"Calculando la plataforma «{name}»…")
     if footprint is None:
-        footprint = platform_footprint(job)
+        footprint = yield from pipeline.forward(pace_progress(
+            platform_footprint_units(job), budget_s, phase=_COMPUTE_PHASE,
+            running=f"Calculando la plataforma «{name}»…",
+            finished=f"Huella de la plataforma «{name}» calculada"))
         yield Progress(_COMPUTE_PHASE, 0, 1, f"Huella de la plataforma «{name}» calculada")
     applied = yield from pipeline.forward(apply_platform_steps(job, footprint, budget_s=budget_s))
     edge = yield from pipeline.forward(

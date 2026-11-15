@@ -164,6 +164,8 @@ PENDING_015_API: frozenset[str] = frozenset({
     "layer_pending",  # T43: ``entity_store``, si la capa de entidades no dice lo que el registro (la marca)
     "layer_sync_steps",  # T43: ``entity_store``, ponerla al día solo si está marcada
     "layers_sync_steps",  # T43: ``entity_store``, la de cada versión editable que la tenga marcada (lo que hace ``bl``)
+    "axis_abscissa_units",  # T44: ``quarry``, la abscisa de un eje por unidades que ceden el hilo
+    "platform_footprint_units",  # T44: ``platform``, la huella por unidades que ceden el hilo y se cancelan
 })
 PENDING_015_MODULES: frozenset[str] = frozenset()
 

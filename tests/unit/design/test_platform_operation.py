@@ -195,7 +195,7 @@ class ComputeStepsTest(OperationCase):
         np.testing.assert_array_equal(stepped.result, direct.result)
         self.assertEqual(stepped.figures, direct.figures)
         self.assertEqual([n.code for n in stepped.notices], [n.code for n in direct.notices])
-        with mock.patch.object(entity_store, "platform_footprint",
+        with mock.patch.object(entity_store, "platform_footprint_units",
                                side_effect=AssertionError("la huella ya estaba calculada")):
             _last(entity_store.platform_compute_steps(prepared.job, prepared.common,
                                                       footprint=prepared.footprint))

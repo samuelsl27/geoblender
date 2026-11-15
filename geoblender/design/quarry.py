@@ -50,7 +50,9 @@
   que nombra el corredor, T51).
 - :func:`axis_abscissa` (T05 de la 015; plan 015 §5.4 A1): la abscisa ``σ`` de cada celda de una
   ventana a lo largo de un eje de varios tramos, la que usa la rasante de un corredor y la de una
-  plataforma con eje (promovida a pública sin cambio de comportamiento).
+  plataforma con eje (promovida a pública sin cambio de comportamiento) y :func:`axis_abscissa_units`
+  (T44; hallazgos D-2 y A-3), la misma por unidades que ceden el hilo: por teselas y con los tramos que
+  llegan a cada una, el mismo resultado bit a bit sin el coste de todo el eje en toda la ventana.
 
 - :func:`conservation_ceiling_steps` (T10; RF-014-07; A5): el **techo de conservación** ``U =
   ENV↑(z en Z, tan(talud de conservación))`` de las zonas a conservar (:class:`ConserveZone`)
@@ -221,6 +223,7 @@ __all__ = [
     "area_outcome",
     "area_parts",
     "axis_abscissa",
+    "axis_abscissa_units",
     "axis_paths",
     "check_order",
     "classification_figures",
@@ -839,6 +842,216 @@ def _segment_frame(a: np.ndarray, b: np.ndarray, length: float, geometry: Grid,
     return px * ux + py * uy, py * ux - px * uy
 
 
+# --- La abscisa de un eje, por teselas -------------------------------------------------------------
+
+_TILE_CELLS = 64
+"""El lado (celdas) de la tesela con que se mide un eje: cada tesela se mide solo con los tramos que pueden
+llegarle (:func:`_reaching`), y es la unidad de trabajo que cede el hilo (T44; RNF-015-03, RF-015-29)."""
+_UNIT_WORK = 120_000
+"""Las evaluaciones de «celda × tramo» de una unidad (≈ 10 ms): una tesela con muchos tramos cede el hilo
+a mitad."""
+_EMPTY_TILES = 256
+"""Las teselas sin ningún tramo que alcance su caja que se saltan sin ceder el hilo (cada una cuesta unos
+microsegundos)."""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _Segments:
+    """Los tramos **con longitud** de unos caminos, en su orden (todos los de un camino y luego los del
+    siguiente), con lo que hace falta para medirlos por teselas: ``start`` y ``end`` (``(n, 2)``, absolutos),
+    ``step`` (``end − start``) y ``length2`` (su longitud al cuadrado), ``length`` y ``walked`` (la longitud
+    de cada tramo y la abscisa de su principio, m, **como las suma el eje**: en ``float`` de Python, en el
+    orden del eje, con las partes seguidas), ``owner`` (el camino de cada tramo), ``first`` y ``last`` (el
+    primer y el último tramo de cada camino que tiene alguno: sus índices en esta lista) y las cajas
+    ``low`` y ``high`` (``(n, 2)``)."""
+
+    start: np.ndarray
+    end: np.ndarray
+    step: np.ndarray
+    length2: np.ndarray
+    length: tuple[float, ...]
+    walked: tuple[float, ...]
+    owner: tuple[int, ...]
+    first: dict[int, int]
+    last: dict[int, int]
+    low: np.ndarray
+    high: np.ndarray
+
+
+def _axis_segments(paths: Sequence[np.ndarray]) -> _Segments | None:
+    """Los tramos con longitud de ``paths`` (:class:`_Segments`); ``None`` si no hay ninguno. La longitud de cada
+    tramo es la que daba siempre ``np.hypot(*np.diff(path).T)`` y la abscisa de su principio, la suma
+    corrida de las anteriores (``walked += length``), para que cada abscisa sea la de siempre bit a bit."""
+    starts: list[np.ndarray] = []
+    ends: list[np.ndarray] = []
+    lengths: list[float] = []
+    walked: list[float] = []
+    owner: list[int] = []
+    first: dict[int, int] = {}
+    last: dict[int, int] = {}
+    total = 0.0
+    for index, path in enumerate(paths):
+        measured = np.hypot(*np.diff(path, axis=0).T)
+        for i in range(measured.size):
+            length = float(measured[i])
+            if not length > 0.0:
+                continue
+            first.setdefault(index, len(lengths))
+            last[index] = len(lengths)
+            starts.append(path[i])
+            ends.append(path[i + 1])
+            lengths.append(length)
+            walked.append(total)
+            owner.append(index)
+            total += length
+    if not lengths:
+        return None
+    start, end = np.array(starts, dtype=np.float64), np.array(ends, dtype=np.float64)
+    step = end - start
+    return _Segments(start, end, step, (step * step).sum(axis=1), tuple(lengths), tuple(walked),
+                     tuple(owner), first, last, np.minimum(start, end), np.maximum(start, end))
+
+
+def _tile_box(geometry: Grid, tile: tuple[int, int, int, int]
+              ) -> tuple[float, float, float, float, np.ndarray, float]:
+    """La caja de la tesela ``(fila 0, fila 1, columna 0, columna 1)`` de ``geometry`` en coordenadas
+    absolutas —oeste, este, sur, norte—, su centro y la mitad de su diagonal (m)."""
+    r0, r1, c0, c1 = tile
+    west, east = geometry.west + c0 * geometry.dx, geometry.west + c1 * geometry.dx
+    north, south = geometry.north - r0 * geometry.dy, geometry.north - r1 * geometry.dy
+    centre = np.array([0.5 * (west + east), 0.5 * (south + north)])
+    return west, east, south, north, centre, 0.5 * math.hypot(east - west, north - south)
+
+
+def _centre_distance(segments: _Segments, centre: np.ndarray, which: np.ndarray | None = None) -> np.ndarray:
+    """La distancia (m) de ``centre`` a cada tramo de ``segments`` (los de índices ``which``; todos sin ellos)."""
+    begin, step, length2 = ((segments.start, segments.step, segments.length2) if which is None
+                            else (segments.start[which], segments.step[which], segments.length2[which]))
+    offset = centre - begin
+    along = np.clip((offset * step).sum(axis=1) / length2, 0.0, 1.0)
+    near = offset - along[:, None] * step
+    return np.hypot(near[:, 0], near[:, 1])
+
+
+def _slack(geometry: Grid) -> float:
+    """Lo que se amplía una distancia al elegir los tramos que pueden llegar a una tesela (m): mucho más que lo
+    que difieren las cuentas en coma flotante, y nada frente a una celda."""
+    return 0.01 * max(geometry.dx, geometry.dy)
+
+
+def _reaching(segments: _Segments, geometry: Grid, tile: tuple[int, int, int, int], half: float) -> np.ndarray:
+    """Los índices (ascendentes: el orden del eje) de los tramos que pueden estar a ≤ ``half`` del centro de
+    alguna celda de la tesela: los que quedan a ≤ ``half`` de su caja y de su centro más media diagonal. **Ni
+    uno menos** de los que miden, a ≤ ``half`` de una celda, lo que deciden (cualquier otro queda más lejos
+    que ``half``: no gana a ninguno ni entra en su banda), así que medir solo estos da lo mismo que medirlos
+    todos."""
+    west, east, south, north, centre, diagonal = _tile_box(geometry, tile)
+    wide = half + _slack(geometry)
+    near = np.flatnonzero((segments.high[:, 0] >= west - wide) & (segments.low[:, 0] <= east + wide)
+                          & (segments.high[:, 1] >= south - wide) & (segments.low[:, 1] <= north + wide))
+    if near.size == 0:
+        return near
+    return near[_centre_distance(segments, centre, near) <= wide + diagonal]
+
+
+def _tiles(window: tuple[slice, slice], size: int = _TILE_CELLS) -> Iterator[tuple[int, int, int, int]]:
+    """Las teselas de ``size`` celdas de lado (las del borde, menores) de ``window``, de norte a sur y de oeste a
+    este: ``(fila 0, fila 1, columna 0, columna 1)`` absolutas."""
+    for row in range(window[0].start, window[0].stop, size):
+        for col in range(window[1].start, window[1].stop, size):
+            yield row, min(row + size, window[0].stop), col, min(col + size, window[1].stop)
+
+
+def _run_units[T](units: Generator[None, None, T]) -> T:
+    """Lo que devuelve ``units`` (unas unidades de cálculo) llevadas hasta el final."""
+    while True:
+        try:
+            next(units)
+        except StopIteration as done:
+            return done.value  # type: ignore[no-any-return]
+
+
+def _past_the_ends(segments: _Segments, path: int, geometry: Grid, row_index: np.ndarray,
+                   col_index: np.ndarray) -> np.ndarray:
+    """Las celdas (de las filas ``row_index`` y columnas ``col_index``) que quedan antes del plano perpendicular
+    del principio del primer tramo del camino ``path`` o después del del final de su último: de ahí no pasa
+    la unión redonda de un vértice (extremos planos, T41)."""
+    first, last = segments.first[path], segments.last[path]
+    before, _ = _segment_frame(segments.start[first], segments.end[first], segments.length[first],
+                               geometry, row_index, col_index)
+    after, _ = _segment_frame(segments.start[last], segments.end[last], segments.length[last], geometry,
+                              row_index, col_index)
+    return (before < 0.0) | (after > segments.length[last])  # type: ignore[no-any-return]
+
+
+def axis_abscissa_units(paths: list[np.ndarray], half: float, geometry: Grid,
+                        window: tuple[slice, slice]
+                        ) -> Generator[None, None, tuple[np.ndarray, np.ndarray]]:
+    """:func:`axis_abscissa` por **unidades** (cada ``yield``, una; para componerlas con ``pace_units``; T44 de
+    la 015, hallazgos D-2 y A-3; RNF-015-03, RNF-015-05, RF-015-29): lo mismo, **bit a bit**, y devuelve las
+    dos rejillas en ``StopIteration.value``. La ventana se mide por teselas de 64 × 64 celdas y cada una
+    solo con los tramos que pueden llegarle (:func:`_reaching`: los que pasan a ≤ ``half`` de ella), no con
+    todo el eje: el coste era O(tramos × celdas de la ventana) y un eje digitalizado de 400 vértices tardaba
+    9 s sobre 2,81 M celdas sin ceder el hilo; ahora es O(celdas del corredor × tramos que lo tocan) y cada
+    unidad pasa de pocos milisegundos. Cerrar el generador a mitad no deja nada (no escribe nada y las
+    rejillas son suyas)."""
+    rows = window[0].stop - window[0].start
+    cols = window[1].stop - window[1].start
+    sigma = np.full((max(rows, 0), max(cols, 0)), np.nan)
+    reach = np.full(sigma.shape, np.nan)
+    segments = _axis_segments([np.asarray(path, dtype=np.float64) for path in paths])
+    if segments is None or sigma.size == 0:
+        return sigma, reach
+    yield
+    limit = half * half
+    skipped = 0
+    for tile in _tiles(window):
+        found = _reaching(segments, geometry, tile, half)
+        if found.size == 0:
+            skipped += 1
+            if skipped >= _EMPTY_TILES:
+                skipped = 0
+                yield
+            continue
+        r0, r1, c0, c1 = tile
+        row_index = np.arange(r0, r1, dtype=np.float64)
+        col_index = np.arange(c0, c1, dtype=np.float64)
+        shape = (row_index.size, col_index.size)
+        best = np.full(shape, np.inf)
+        here = np.full(shape, np.nan)
+        beyond = np.full(shape, np.nan)
+        band = np.zeros(shape, dtype=bool)
+        passes = np.zeros(shape, dtype=bool)
+        past: dict[int, np.ndarray] = {}
+        per_unit = max(1, _UNIT_WORK // (shape[0] * shape[1]))
+        for count, k in enumerate(found.tolist(), start=1):
+            path = segments.owner[k]
+            if path not in past:
+                past[path] = _past_the_ends(segments, path, geometry, row_index, col_index)
+            length, walked = segments.length[k], segments.walked[k]
+            along, across = _segment_frame(segments.start[k], segments.end[k], length, geometry,
+                                           row_index, col_index)
+            clamped = np.clip(along, 0.0, length)
+            d2 = across * across + (along - clamped) ** 2
+            band |= (along >= 0.0) & (along <= length) & (across * across <= limit)
+            better = d2 < best
+            best[better] = d2[better]
+            here[better] = (walked + clamped)[better]
+            beyond[better] = (walked + along)[better]
+            passes[better] = past[path][better]
+            if count % per_unit == 0:
+                yield
+        inside = band | ((best <= limit) & ~passes)
+        here[~inside] = np.nan
+        beyond[~inside] = np.nan
+        at = (slice(r0 - window[0].start, r1 - window[0].start),
+              slice(c0 - window[1].start, c1 - window[1].start))
+        sigma[at] = here
+        reach[at] = beyond
+        yield
+    return sigma, reach
+
+
 def axis_abscissa(paths: list[np.ndarray], half: float, geometry: Grid,
                   window: tuple[slice, slice]) -> tuple[np.ndarray, np.ndarray]:
     """La abscisa ``σ`` (m, a lo largo del eje desde su principio; las partes, seguidas) de cada
@@ -859,44 +1072,11 @@ def axis_abscissa(paths: list[np.ndarray], half: float, geometry: Grid,
     principio de su primer tramo o después del del final del último). Así los extremos son planos
     también con un tramo extremo más corto que medio ancho (T41, F-2: la unión redonda del
     vértice vecino no deja pasar del extremo) y un gancho corto al final no abre un hueco en la
-    banda del tramo anterior."""
-    rows = np.arange(window[0].start, window[0].stop, dtype=np.float64)
-    cols = np.arange(window[1].start, window[1].stop, dtype=np.float64)
-    shape = (rows.size, cols.size)
-    best = np.full(shape, np.inf)
-    sigma = np.full(shape, np.nan)
-    reach = np.full(shape, np.nan)
-    band = np.zeros(shape, dtype=bool)
-    passes = np.zeros(shape, dtype=bool)
-    limit = half * half
-    walked = 0.0
-    for path in paths:
-        lengths = np.hypot(*np.diff(path, axis=0).T)
-        segments = [i for i in range(lengths.size) if lengths[i] > 0.0]
-        if not segments:
-            continue
-        first, last = segments[0], segments[-1]
-        before, _ = _segment_frame(path[first], path[first + 1], float(lengths[first]),
-                                   geometry, rows, cols)
-        after, _ = _segment_frame(path[last], path[last + 1], float(lengths[last]), geometry,
-                                  rows, cols)
-        out = (before < 0.0) | (after > float(lengths[last]))
-        for i in segments:
-            length = float(lengths[i])
-            along, across = _segment_frame(path[i], path[i + 1], length, geometry, rows, cols)
-            clamped = np.clip(along, 0.0, length)
-            d2 = across * across + (along - clamped) ** 2
-            band |= (along >= 0.0) & (along <= length) & (across * across <= limit)
-            better = d2 < best
-            best[better] = d2[better]
-            sigma[better] = (walked + clamped)[better]
-            reach[better] = (walked + along)[better]
-            passes[better] = out[better]
-            walked += length
-    inside = band | ((best <= limit) & ~passes)
-    sigma[~inside] = np.nan
-    reach[~inside] = np.nan
-    return sigma, reach
+    banda del tramo anterior.
+
+    Es :func:`axis_abscissa_units` llevada hasta el final (T44: por teselas y con los tramos que
+    llegan a cada una, el mismo resultado bit a bit que medir todo el eje en toda la ventana)."""
+    return _run_units(axis_abscissa_units(paths, half, geometry, window))
 
 
 def corridor_cells(layer: FeatureLayer, fields: CorridorFields, geometry: Grid, *,

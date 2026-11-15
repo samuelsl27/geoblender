@@ -171,6 +171,8 @@ class PublicNamesTest(unittest.TestCase):
         documentación."""
         names = ("Footprint", "PlatformGeometry", "PlatformJob", "axis_of_polygon",
                  "platform_footprint", "work_window",
+                 # T44: la huella por unidades (test_long_axes.py).
+                 "platform_footprint_units",
                  # T07: aplicar la plataforma (test_platform_apply.py).
                  "Applied", "OffLevel", "OffLevelCause", "apply_platform", "apply_platform_steps",
                  # T08: el borde (test_platform_edge.py).

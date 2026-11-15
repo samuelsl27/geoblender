@@ -158,8 +158,16 @@ from .provenance import platform_figures
 from .quarry import (
     FLOOR_LEVEL_MARGIN_M,
     ORDER_TOLERANCE_M,
+    _EMPTY_TILES,
+    _UNIT_WORK,
+    _axis_segments,
+    _centre_distance,
+    _run_units,
     _segment_frame,
-    axis_abscissa,
+    _slack,
+    _tile_box,
+    _tiles,
+    axis_abscissa_units,
     axis_paths,
     corridor_window,
 )
@@ -191,6 +199,7 @@ __all__ = [
     "platform_edge",
     "platform_edge_steps",
     "platform_footprint",
+    "platform_footprint_units",
     "platform_outcome",
     "platform_profile",
     "reading_window",
@@ -570,12 +579,16 @@ def _hits(p: np.ndarray, r: np.ndarray, a: np.ndarray, s: np.ndarray
     return crossing | overlap, np.where(overlap, first, t)
 
 
-def _first_crossing(rings: Sequence[np.ndarray], *, closed: bool) -> tuple[float, float] | None:
+def _first_crossing_units(rings: Sequence[np.ndarray], *, closed: bool
+                          ) -> Generator[None, None, tuple[float, float] | None]:
     """El primer punto (locales) en que una polilínea, o los anillos de un polígono, se tocan a sí
     mismos: un cruce, un contacto o un solape de dos tramos que no son vecinos, o un tramo que
-    vuelve sobre el anterior por la misma recta; ``None`` si no. ``rings``: cada camino (``closed``
-    falso) o anillo (``closed`` verdadero, **sin** repetir el primer vértice al final) en
-    locales, sin vértices repetidos seguidos. Un anillo con otro (un hueco con su exterior) cuenta."""
+    vuelve sobre el anterior por la misma recta; ``None`` si no (en ``StopIteration.value``). ``rings``:
+    cada camino (``closed`` falso) o anillo (``closed`` verdadero, **sin** repetir el primer vértice al
+    final) en locales, sin vértices repetidos seguidos. Un anillo con otro (un hueco con su exterior)
+    cuenta. **Por unidades** (T44; D-2 y A-3; RNF-015-03): una por tramo, que se mide con todos los
+    siguientes (O(n²) en total: 0,3 s de una sola llamada con 3.000 vértices), en el orden de siempre y con el
+    mismo primer punto."""
     first_edges, last_edges, identity, position, size = [], [], [], [], []
     for index, ring in enumerate(rings):
         if ring.shape[0] < 2:
@@ -594,6 +607,7 @@ def _first_crossing(rings: Sequence[np.ndarray], *, closed: bool) -> tuple[float
     ids, pos, count = np.concatenate(identity), np.concatenate(position), np.concatenate(size)
     r = b - a
     for i in range(a.shape[0] - 1):
+        yield
         j = np.arange(i + 1, a.shape[0])
         gap = pos[j] - pos[i]
         neighbours = (ids[j] == ids[i]) & ((gap == 1) | ((gap == count[i] - 1) & closed))
@@ -634,6 +648,23 @@ def _inside(points: np.ndarray, parts: Sequence[Sequence[np.ndarray]]) -> np.nda
             at = a[:, 0] + (py - a[:, 1]) * (b[:, 0] - a[:, 0]) / rise
             parity ^= ((straddles & (px < at)).sum(axis=1) % 2) == 1
         found |= parity
+    return found
+
+
+_INSIDE_WORK = 400_000
+"""Los pares «punto × vértice» de una unidad de :func:`_inside_units` (≈ 20 ms)."""
+
+
+def _inside_units(points: np.ndarray, parts: Sequence[Sequence[np.ndarray]]
+                  ) -> Generator[None, None, np.ndarray]:
+    """:func:`_inside` **por unidades** (T44; A-3; RNF-015-03): los puntos de ``points`` en bloques, uno por
+    unidad (cada punto es independiente de los demás: el mismo resultado bit a bit). Con 2.000 pasos del eje
+    y un contorno de 3.000 vértices, :func:`_inside` es una sola llamada con una matriz de 6 M de pares."""
+    found = np.zeros(points.shape[0], dtype=bool)
+    block = max(1, _INSIDE_WORK // max(1, sum(ring.shape[0] for rings in parts for ring in rings)))
+    for first in range(0, points.shape[0], block):
+        found[first:first + block] = _inside(points[first:first + block], parts)
+        yield
     return found
 
 
@@ -690,11 +721,12 @@ def _origin(grid: Grid) -> np.ndarray:
 # --- A1: el eje de una línea -------------------------------------------------------------------
 
 
-def _line_path(job: PlatformJob) -> np.ndarray:
+def _line_path_units(job: PlatformJob) -> Generator[None, None, np.ndarray]:
     """El camino (absoluto, ``(k, 2)``) de la línea de la plataforma, comprobado (RF-015-08): una
     sola parte (``des.platform_axis_parts``), con longitud (``des.platform_axis_length_zero``), abierta
     (``des.platform_axis_closed``) y que no se corta a sí misma (``des.platform_self_intersects``,
-    con el punto, absoluto)."""
+    con el punto, absoluto). Por unidades (T44): la comprobación de los cruces cede el hilo tramo a tramo
+    (:func:`_first_crossing_units`)."""
     request = job.request
     paths = [path for path in axis_paths(job.geometry.parts) if path.shape[0] > 0]
     if len(paths) > 1:
@@ -707,7 +739,7 @@ def _line_path(job: PlatformJob) -> np.ndarray:
     if path.shape[0] >= 3 and math.hypot(*(path[-1] - path[0])) <= _TOL_M:
         raise _reject("des.platform_axis_closed", request, _GEOMETRY, length)
     origin = _origin(job.grid)
-    hit = _first_crossing([_dedupe(path - origin)], closed=False)
+    hit = yield from _first_crossing_units([_dedupe(path - origin)], closed=False)
     if hit is not None:
         x, y = hit[0] + float(origin[0]), hit[1] + float(origin[1])
         raise _reject("des.platform_self_intersects", request, _GEOMETRY, f"{x:.3f}, {y:.3f}",
@@ -765,11 +797,12 @@ def axis_of_polygon(cells: np.ndarray, grid: Grid, *, offset: tuple[int, int] = 
                 principal=True)
 
 
-def _polygon_rings(job: PlatformJob) -> list[list[np.ndarray]]:
+def _polygon_rings_units(job: PlatformJob) -> Generator[None, None, list[list[np.ndarray]]]:
     """Los anillos (locales, cerrados sin repetir el primer vértice) de cada parte con área del
     polígono, comprobados (RF-015-08): sin área (``des.platform_area_zero``: todas las partes
     degeneradas o un área neta de 0) o que se corta a sí misma o a un hueco
-    (``des.platform_self_intersects``, con el punto, absoluto)."""
+    (``des.platform_self_intersects``, con el punto, absoluto). Por unidades (T44): los cruces ceden el hilo
+    tramo a tramo."""
     request, origin = job.request, _origin(job.grid)
     live: list[list[np.ndarray]] = []
     for part in job.geometry.parts:
@@ -780,7 +813,7 @@ def _polygon_rings(job: PlatformJob) -> list[list[np.ndarray]]:
     if not live:
         raise _reject("des.platform_area_zero", request, _GEOMETRY, 0.0)
     for rings in live:
-        hit = _first_crossing(rings, closed=True)
+        hit = yield from _first_crossing_units(rings, closed=True)
         if hit is not None:
             x, y = hit[0] + float(origin[0]), hit[1] + float(origin[1])
             raise _reject("des.platform_self_intersects", request, _GEOMETRY,
@@ -792,13 +825,15 @@ def _polygon_rings(job: PlatformJob) -> list[list[np.ndarray]]:
     return live
 
 
-def _linked_axis(job: PlatformJob, parts: list[list[np.ndarray]]) -> Axis:
+def _linked_axis_units(job: PlatformJob, parts: list[list[np.ndarray]]) -> Generator[None, None, Axis]:
     """El eje de un polígono con su línea enlazada: **la parte de la línea que está dentro del
     polígono** (de su entrada a su salida, con los vértices de la línea que haya dentro), que ha de
     cruzarlo de lado a lado: una sola parte dentro, con sus dos extremos en el contorno y con
     longitud. Si no (la línea empieza o acaba dentro, no lo toca, lo cruza varias veces o roza el
     contorno), ``des.platform_axis_not_crossing`` con el campo del enlace y el nombre del eje; una línea de
-    varias partes, ``des.platform_axis_parts``. ``parts``: los anillos de :func:`_polygon_rings`."""
+    varias partes, ``des.platform_axis_parts``. ``parts``: los anillos de :func:`_polygon_rings_units`. Por
+    unidades (T44): cada tramo de la línea frente al contorno y los puntos medios dentro del polígono, por
+    bloques."""
     request, geometry, grid = job.request, job.geometry, job.grid
     assert geometry.axis_parts is not None
     paths = [path for path in axis_paths(geometry.axis_parts) if path.shape[0] > 0]
@@ -816,12 +851,14 @@ def _linked_axis(job: PlatformJob, parts: list[list[np.ndarray]]) -> Axis:
     begin = np.concatenate([ring for rings in parts for ring in rings])
     end = np.concatenate([np.roll(ring, -1, axis=0) for rings in parts for ring in rings])
     pieces: list[tuple[int, float, float]] = []
+    edges = end - begin
     for k in range(line.shape[0] - 1):
+        yield
         step = line[k + 1] - line[k]
         length = math.hypot(step[0], step[1])
         if not length > 0.0:
             continue
-        hit, t = _hits(line[k], step, begin, end - begin)
+        hit, t = _hits(line[k], step, begin, edges)
         cuts = np.unique(np.concatenate(([0.0, 1.0], np.clip(t[hit], 0.0, 1.0))))
         pieces.extend((k, float(t0), float(t1)) for t0, t1 in zip(cuts[:-1], cuts[1:], strict=True)
                       if (t1 - t0) * length > _TOL_M)
@@ -832,7 +869,7 @@ def _linked_axis(job: PlatformJob, parts: list[list[np.ndarray]]) -> Axis:
     middles = line[k_of] + mid_t[:, None] * (line[k_of + 1] - line[k_of])
     runs: list[list[int]] = []
     current: list[int] | None = None
-    for index, inside in enumerate(_inside(middles, parts)):
+    for index, inside in enumerate((yield from _inside_units(middles, parts))):
         if not inside:
             current = None
             continue
@@ -870,38 +907,147 @@ def _linked_axis(job: PlatformJob, parts: list[list[np.ndarray]]) -> Axis:
     return Axis(tuple(points))
 
 
-def _nearest_abscissa(path: np.ndarray, grid: Grid, rows: slice, cols: slice
-                      ) -> tuple[np.ndarray, np.ndarray]:
+_NEAR_TILE_CELLS = 32
+"""El lado (celdas) de la tesela con que se mide el eje de un polígono (:func:`_nearest_abscissa_units`): menor
+que la de un corredor porque cada celda toma el tramo más próximo de todo el eje, y las de una tesela pequeña
+tienen pocos candidatos."""
+
+
+def _nearest_abscissa_units(path: np.ndarray, grid: Grid, rows: slice, cols: slice,
+                            needed: np.ndarray | None = None
+                            ) -> Generator[None, None, tuple[np.ndarray, np.ndarray]]:
     """La abscisa σ (m desde el primer vértice de ``path``, absoluto) del punto del camino más
     próximo al centro de cada celda de las filas ``rows`` y columnas ``cols`` (fijada en los
     extremos del camino: es la de su vértice; a igual distancia de dos tramos, la menor) y la
     abscisa **sin recortar** (la de la proyección sobre la recta de ese tramo), dos rejillas de la
-    forma de la ventana. Todas las celdas, a diferencia de :func:`~.quarry.axis_abscissa`, que mide
-    un corredor."""
-    row_index = np.arange(rows.start, rows.stop, dtype=np.float64)
-    col_index = np.arange(cols.start, cols.stop, dtype=np.float64)
-    shape = (row_index.size, col_index.size)
-    best = np.full(shape, np.inf)
+    forma de la ventana (en ``StopIteration.value``). Todas las celdas, a diferencia de
+    :func:`~.quarry.axis_abscissa`, que mide un corredor: con ``needed`` (la forma de la ventana), solo las
+    de esa máscara (las demás, ``NaN``), que es lo que usa la huella (las celdas del polígono).
+
+    **Por unidades** (T44; D-2 y A-3; RNF-015-03, RF-015-29): la ventana, por teselas de 32 × 32 celdas, y
+    cada una con los tramos que pueden ser el más próximo de alguna de sus celdas —los que quedan, de su centro,
+    a no más de la distancia del tramo más próximo más una diagonal—, en el orden del eje, no con todos: lo que
+    era O(tramos × celdas de la caja) es ahora O(celdas × tramos cercanos), con **el mismo resultado bit a
+    bit** (el tramo más próximo y su desempate, el anterior, son los de siempre: los que se dejan fuera quedan
+    más lejos que el que gana)."""
+    shape = (max(rows.stop - rows.start, 0), max(cols.stop - cols.start, 0))
     sigma = np.full(shape, np.nan)
     reach = np.full(shape, np.nan)
-    lengths = np.hypot(*np.diff(path, axis=0).T)
-    walked = 0.0
-    for i in range(lengths.size):
-        length = float(lengths[i])
-        if not length > 0.0:
+    segments = _axis_segments([np.asarray(path, dtype=np.float64)])
+    if segments is None or sigma.size == 0:
+        return sigma, reach
+    yield
+    slack = _slack(grid)
+    skipped = 0
+    for tile in _tiles((rows, cols), _NEAR_TILE_CELLS):
+        r0, r1, c0, c1 = tile
+        at = (slice(r0 - rows.start, r1 - rows.start), slice(c0 - cols.start, c1 - cols.start))
+        if needed is not None and not needed[at].any():
+            skipped += 1
+            if skipped >= _EMPTY_TILES:
+                skipped = 0
+                yield
             continue
-        along, across = _segment_frame(path[i], path[i + 1], length, grid, row_index, col_index)
-        clamped = np.clip(along, 0.0, length)
-        distance2 = across * across + (along - clamped) ** 2
-        better = distance2 < best
-        best[better] = distance2[better]
-        sigma[better] = (walked + clamped)[better]
-        reach[better] = (walked + along)[better]
-        walked += length
+        centre, diagonal = _tile_box(grid, tile)[4:]
+        distance = _centre_distance(segments, centre)
+        found = np.flatnonzero(distance <= float(distance.min()) + 2.0 * (diagonal + slack))
+        row_index = np.arange(r0, r1, dtype=np.float64)
+        col_index = np.arange(c0, c1, dtype=np.float64)
+        best = np.full((row_index.size, col_index.size), np.inf)
+        here = np.full(best.shape, np.nan)
+        beyond = np.full(best.shape, np.nan)
+        per_unit = max(1, _UNIT_WORK // best.size)
+        for count, k in enumerate(found.tolist(), start=1):
+            length, walked = segments.length[k], segments.walked[k]
+            along, across = _segment_frame(segments.start[k], segments.end[k], length, grid,
+                                           row_index, col_index)
+            clamped = np.clip(along, 0.0, length)
+            distance2 = across * across + (along - clamped) ** 2
+            better = distance2 < best
+            best[better] = distance2[better]
+            here[better] = (walked + clamped)[better]
+            beyond[better] = (walked + along)[better]
+            if count % per_unit == 0:
+                yield
+        sigma[at] = here
+        reach[at] = beyond
+        yield
     return sigma, reach
 
 
 # --- A0 y A1: la huella y la rasante -----------------------------------------------------------
+
+
+def platform_footprint_units(job: PlatformJob) -> Generator[None, None, Footprint]:
+    """**A0 y A1** (RF-015-19, RF-015-08; plan 015 §5.4): la huella y la rasante de la plataforma de
+    ``job`` en su ventana de trabajo, **por unidades** (cada ``yield``, una; para componerlas con
+    ``pace_units``; T44 de la 015, hallazgos D-2 y A-3; RNF-015-03, RNF-015-05, RF-015-29): lo mismo que
+    :func:`platform_footprint` —que es esta llevada hasta el final—, con la :class:`Footprint` en
+    ``StopIteration.value`` y **el mismo resultado bit a bit**. Una huella no es una sola llamada: un eje
+    digitalizado de 400 vértices sobre 2,81 M celdas tardaba 9 s sin ceder el hilo de Blender ni dejarse
+    cancelar. Ahora ceden el hilo, en unidades de pocos milisegundos, la comprobación de que el eje no se
+    corta (un tramo con los siguientes), la del contorno del polígono, la de su eje enlazado, la abscisa de
+    cada celda (:func:`~.quarry.axis_abscissa_units` y :func:`_nearest_abscissa_units`: por teselas y con los
+    tramos que llegan a cada una) y el armado de las rejillas de la ventana de trabajo; los rechazos son los
+    mismos y salen en el mismo orden al avanzar. Cerrar el generador a mitad (Esc) no deja nada: no escribe
+    nada y no modifica la entrada."""
+    request, geometry, grid = job.request, job.geometry, job.grid
+    if geometry.kind not in ("line", "polygon"):
+        raise _reject("des.platform_layer_kind", request, _GEOMETRY, _KINDS_ES[geometry.kind])
+    line = geometry.kind == "line"
+    start_level, gradient, reach_m, width = _resolved(job, line=line)
+    metric = _metric(job)
+    notices: list[Notice] = []
+    if line:
+        assert width is not None
+        path = yield from _line_path_units(job)
+        axis = Axis(tuple((float(x), float(y)) for x, y in path))
+        _check_levels(job, axis.length_m, start_level, gradient)
+        yield
+        window = corridor_window([path], width / 2.0, grid)
+        sigma, reach = yield from axis_abscissa_units([path], width / 2.0, grid, window)
+        cells = np.isfinite(sigma)
+        box = _trim(cells, *window)
+        if box is None:
+            raise _reject("des.platform_no_cells", request, _GEOMETRY, 0)
+        rows, cols, _ = box
+        inner = (slice(rows.start - window[0].start, rows.stop - window[0].start),
+                 slice(cols.start - window[1].start, cols.stop - window[1].start))
+        cells, sigma, reach = cells[inner], sigma[inner], reach[inner]
+    else:
+        parts = yield from _polygon_rings_units(job)
+        top, left, block = _paint(_polygon_spans(geometry.parts, grid), grid.nrows, grid.ncols)
+        yield
+        box = _trim(block, slice(top, top + block.shape[0]), slice(left, left + block.shape[1]))
+        if box is None:
+            raise _reject("des.platform_no_cells", request, _GEOMETRY, 0)
+        rows, cols, cells = box
+        if geometry.axis_parts is None:
+            axis = axis_of_polygon(cells, grid, offset=(rows.start, cols.start))
+            (xa, ya), (xb, yb) = axis.vertices
+            notices.append(Notice("des.platform_axis_principal", {
+                "entity": request.name, "x": xa, "y": ya, "x_end": xb, "y_end": yb}))
+        else:
+            axis = yield from _linked_axis_units(job, parts)
+        _check_levels(job, axis.length_m, start_level, gradient)
+        yield
+        sigma, reach = yield from _nearest_abscissa_units(np.array(axis.vertices), grid, rows, cols, cells)
+        sigma, reach = np.where(cells, sigma, np.nan), np.where(cells, reach, np.nan)
+    yield
+    window = work_window(rows, cols, reach_m, grid, metric)
+    shape = (window[0].stop - window[0].start, window[1].stop - window[1].start)
+    at = (slice(rows.start - window[0].start, rows.stop - window[0].start),
+          slice(cols.start - window[1].start, cols.stop - window[1].start))
+    footprint = np.zeros(shape, dtype=bool)
+    footprint[at] = cells
+    abscissa = np.full(shape, np.nan)
+    abscissa[at] = sigma
+    yield
+    levels = np.full(shape, np.nan)
+    levels[footprint] = start_level + abscissa[footprint] * gradient / 100.0
+    found = reach[cells]
+    return Footprint(window, footprint, abscissa, levels, axis, float(found.max() - found.min()),
+                     start_level, gradient, grid.cell_area, tuple(notices))
 
 
 def platform_footprint(job: PlatformJob) -> Footprint:
@@ -913,59 +1059,9 @@ def platform_footprint(job: PlatformJob) -> Footprint:
     principal (:func:`axis_of_polygon`), con el aviso ``des.platform_axis_principal``. La rasante de
     cada celda es ``cota inicial + σ · pendiente / 100`` (sección horizontal), a ≤ 10⁻⁹ m del
     cálculo a mano. Los rechazos, en el orden de la documentación del módulo; no modifica la
-    entrada."""
-    request, geometry, grid = job.request, job.geometry, job.grid
-    if geometry.kind not in ("line", "polygon"):
-        raise _reject("des.platform_layer_kind", request, _GEOMETRY, _KINDS_ES[geometry.kind])
-    line = geometry.kind == "line"
-    start_level, gradient, reach_m, width = _resolved(job, line=line)
-    metric = _metric(job)
-    notices: list[Notice] = []
-    if line:
-        assert width is not None
-        path = _line_path(job)
-        axis = Axis(tuple((float(x), float(y)) for x, y in path))
-        _check_levels(job, axis.length_m, start_level, gradient)
-        window = corridor_window([path], width / 2.0, grid)
-        sigma, reach = axis_abscissa([path], width / 2.0, grid, window)
-        cells = np.isfinite(sigma)
-        box = _trim(cells, *window)
-        if box is None:
-            raise _reject("des.platform_no_cells", request, _GEOMETRY, 0)
-        rows, cols, _ = box
-        inner = (slice(rows.start - window[0].start, rows.stop - window[0].start),
-                 slice(cols.start - window[1].start, cols.stop - window[1].start))
-        cells, sigma, reach = cells[inner], sigma[inner], reach[inner]
-    else:
-        parts = _polygon_rings(job)
-        top, left, block = _paint(_polygon_spans(geometry.parts, grid), grid.nrows, grid.ncols)
-        box = _trim(block, slice(top, top + block.shape[0]), slice(left, left + block.shape[1]))
-        if box is None:
-            raise _reject("des.platform_no_cells", request, _GEOMETRY, 0)
-        rows, cols, cells = box
-        if geometry.axis_parts is None:
-            axis = axis_of_polygon(cells, grid, offset=(rows.start, cols.start))
-            (xa, ya), (xb, yb) = axis.vertices
-            notices.append(Notice("des.platform_axis_principal", {
-                "entity": request.name, "x": xa, "y": ya, "x_end": xb, "y_end": yb}))
-        else:
-            axis = _linked_axis(job, parts)
-        _check_levels(job, axis.length_m, start_level, gradient)
-        sigma, reach = _nearest_abscissa(np.array(axis.vertices), grid, rows, cols)
-        sigma, reach = np.where(cells, sigma, np.nan), np.where(cells, reach, np.nan)
-    window = work_window(rows, cols, reach_m, grid, metric)
-    shape = (window[0].stop - window[0].start, window[1].stop - window[1].start)
-    at = (slice(rows.start - window[0].start, rows.stop - window[0].start),
-          slice(cols.start - window[1].start, cols.stop - window[1].start))
-    footprint = np.zeros(shape, dtype=bool)
-    footprint[at] = cells
-    abscissa = np.full(shape, np.nan)
-    abscissa[at] = sigma
-    levels = np.full(shape, np.nan)
-    levels[footprint] = start_level + abscissa[footprint] * gradient / 100.0
-    found = reach[cells]
-    return Footprint(window, footprint, abscissa, levels, axis, float(found.max() - found.min()),
-                     start_level, gradient, grid.cell_area, tuple(notices))
+    entrada. Es :func:`platform_footprint_units` llevada hasta el final, sin ceder el hilo: quien
+    calcula en Blender usa las unidades."""
+    return _run_units(platform_footprint_units(job))
 
 
 # --- A2: aplicar la plataforma -----------------------------------------------------------------
