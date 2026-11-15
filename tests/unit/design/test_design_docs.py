@@ -184,11 +184,16 @@ PENDING_015_API = frozenset({
     "CounterslopeConfirmation", "counterslope_confirmation", "counterslope_confirmed",
     # T15: lo que propone el diálogo de «Plataforma…» desde la capa (design.entity_store).
     "layer_values",
+    # T16: la zona que declara una entidad (design.entities) y las componentes 4-conexas de una vez
+    # (design.grids).
+    "DeclaredZone", "declared_zone", "declared_zone_of_runs", "label_components",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({
     "design.entities",  # T02: EntityKind, EntityRecord, EntityState, next_code, declared_reason;
-    # T03: la cadena (start_conflict, insert_after, chain_of, chain_tails) y registry
+    # T03: la cadena (start_conflict, insert_after, chain_of, chain_tails) y registry; T16:
+    # DeclaredZone, declared_zone y declared_zone_of_runs (la zona que declara una entidad: el
+    # contorno de su huella para la restricción declarada de la 012)
     "design.platform",  # T06: PlatformJob, PlatformGeometry, Footprint, platform_footprint,
     # axis_of_polygon y work_window (la huella y la rasante de la plataforma); T07: Applied,
     # OffLevel, OffLevelCause, apply_platform y apply_platform_steps (aplicarla); T08: Edge,

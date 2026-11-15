@@ -6,8 +6,9 @@ Recorre ``tests.support.entity_fixtures`` antes de que la usen las pruebas de la
 existen), con cuentas a mano: la cantera de la 014 con sus capas de plataformas (cinco válidas,
 tres de eje y dos de polígono, y los defectos de geometría que rechaza RF-015-08), el terreno
 inclinado de 400 × 400 celdas de 1 m, la franja de 40 m con un tramo 5 m por debajo de la rasante
-(CE-015-02) y su variante con un intocable que cruza la huella, el hueco de la restricción declarada
-(que es de la T16) y que la plantilla se construye en ≤ 2 s de CPU. Y que los nombres de la 013, la
+(CE-015-02) y su variante con un intocable que cruza la huella, la restricción declarada de prueba
+(``DEC-PLT-001`` en la tabla de V01, que escribe la T16) y que la plantilla se construye en ≤ 2 s de
+CPU. Y que los nombres de la 013, la
 012 y la 014 en los que se apoya el plan 015 (§5) siguen ahí, y que ``reserves`` puede importar
 ``design`` (ARQ-07; T32).
 
@@ -590,23 +591,55 @@ class EntityProjectTest(efx.EntityProjectCase):
         self.assertTrue((crossing <= _footprint("Plataforma de la torre")).all())
 
 
-class DeclaredHoleTest(unittest.TestCase):
-    """La restricción declarada es de la T16: de la variante de ``constraints_project`` solo está
-    el hueco, documentado (plan 015 §5.2.3 y T16: ``core/constraints/declared.py``)."""
+class DeclaredConstraintFixtureTest(efx.DeclaredConstraintsProjectCase):
+    """La restricción declarada de prueba (T16; RF-012-29, RF-015-10): la variante de
+    ``constraints_project`` con ``DEC-PLT-001`` en la tabla de V01 (``des_decl_v01``), que ya no es
+    un hueco: la escribe ``core.constraints.declared.write_declared`` con una operación de prueba."""
 
-    def test_the_hole_is_documented(self) -> None:
-        """Hoy no existe ``core.constraints.declared``: pedir la declarada dice que es la T16. Si
-        esta prueba falla porque ya existe, la T16 tiene que rellenar
-        ``declare_platform_constraint`` (escribir la tabla de declaradas de V01, ``DEC-PLT-001``,
-        con ``write_declared``) y cambiar esta prueba por la comprobación de la declarada."""
-        if efx.declared_schema_ready():
-            self.fail("core.constraints.declared ya existe: la T16 completa "
-                      "efx.declare_platform_constraint y cambia esta prueba (T01 dejó el hueco)")
-        with self.assertRaises(efx.DeclaredSchemaPending) as caught:
-            efx.declare_platform_constraint(None, None)
-        self.assertIn("T16", str(caught.exception))
-        self.assertIn("core.constraints.declared", str(caught.exception))
-        self.assertTrue(issubclass(efx.DeclaredConstraintsProjectCase, cp.ConstraintsProjectCase))
+    def declared_rows(self, version: object) -> tuple[object, ...]:
+        declared = import_geoblender("core.constraints.declared")
+        with self.project.read() as conn:
+            return declared.read_declared(conn, declared.declared_table(version.code))
+
+    def test_the_declared_constraint_is_in_the_table_of_v01(self) -> None:
+        """RF-012-29, RF-015-10: V01 tiene su tabla ``des_decl_v01`` viva y **no editable en QGIS**,
+        escrita por una operación de ``des.declare_constraints`` de esa versión con una restricción,
+        ``DEC-PLT-001`` («sin relleno», entidad «P1», su motivo generado, el decisor y la fecha de la
+        decisión, el resguardo de 4 m y activa); V02 no tiene ninguna ni la del proyecto cambia."""
+        declared = import_geoblender("core.constraints.declared")
+        record = self.record("des_decl", self.v1)
+        self.assertIsNotNone(record)
+        self.assertEqual((record.locator, record.module, record.kind, record.live,
+                          record.qgis_editable, record.operation_uid),
+                         ("des_decl_v01", "des", "vector", True, False, self.declared_operation))
+        self.assertIsNone(self.record("des_decl", self.v2))
+        self.assertEqual(self.declared_rows(self.v2), ())
+        (row,) = self.declared_rows(self.v1)
+        self.assertEqual((row.code, row.entity_code, row.entity_name, row.name, row.ctype.value),
+                         (efx.DECLARED_CODE, efx.DECLARED_ENTITY, "P1", "P1", "no_fill"))
+        self.assertEqual((row.reason, row.decided_by, row.decided_on, row.buffer_out_m, row.active),
+                         ("declarada por la plataforma P1", efx.DECLARED_BY, efx.DECLARED_ON,
+                          efx.DECLARED_GUARD_M, True))
+        self.assertEqual(row.uid, declared.declared_uid(self.v1.uid, efx.DECLARED_ENTITY))
+        self.assertEqual(len(self.stored_constraints()), 5)  # nada en las tres capas del proyecto
+        self.assertFalse(any(item.code == efx.DECLARED_CODE for item in self.stored_constraints()))
+
+    def test_the_cell_rule_gives_the_footprint_and_grows_with_the_guard(self) -> None:
+        """RF-012-29, D-23: con la regla de la celda de la 012 la restricción guardada da las 300 celdas
+        de la huella con resguardo 0 y, con su resguardo de 4 m (dos celdas), el bloque de 24 × 19
+        celdas; ninguna toca la balsa, la torre ni la cuneta."""
+        zones = import_geoblender("gis.masks.zones")
+        (row,) = self.declared_rows(self.v1)
+        item = row.as_constraint()
+        footprint = efx.declared_footprint()
+        self.assertEqual(int(footprint.sum()), efx.DECLARED_CELLS)
+        self.assertTrue(np.array_equal(zones.zone_runs(item, cfx.SITE_GRID, 0.0).mask(
+            cfx.SITE_GRID.shape), footprint))
+        grown = zones.zone_runs(item, cfx.SITE_GRID, row.buffer_out_m).mask(cfx.SITE_GRID.shape)
+        self.assertEqual(int(grown.sum()), 24 * 19)
+        self.assertTrue(grown[footprint].all())
+        self.assertTrue(item.declared)
+        self.assertEqual(item.entity_code, efx.DECLARED_ENTITY)
 
     def test_the_code_and_zone_are_free(self) -> None:
         """El código ``DEC-<entidad>`` (``DEC-PLT-001``) no choca con las restricciones de
@@ -630,6 +663,28 @@ class DeclaredHoleTest(unittest.TestCase):
             self.assertFalse(left - cp.DITCH_OUTWARD_M < point[0] < right + cp.DITCH_OUTWARD_M
                              and bottom - cp.DITCH_OUTWARD_M < point[1] < top + cp.DITCH_OUTWARD_M)
         self.assertGreater(efx.DECLARED_GUARD_M, 0.0)
+
+
+class DeclaredInOtherVersionTest(efx.DeclaredConstraintsProjectCase):
+    """RF-012-29: una declarada es de **su versión**: declarar en V02 escribe ``des_decl_v02`` (con
+    otro ``uid``, que sale de la versión) y deja la de V01 como estaba."""
+
+    def test_declaring_in_v02_does_not_touch_v01(self) -> None:
+        declared = import_geoblender("core.constraints.declared")
+        with self.project.read() as conn:
+            before = declared.read_declared(conn, "des_decl_v01")
+            digest = self.record("des_decl", self.v1).content_sha256
+        operation = efx.declare_platform_constraint(self.project, self.clock, version=self.v2)
+        self.assertNotEqual(operation, self.declared_operation)
+        self.assertEqual(self.record("des_decl", self.v2).locator, "des_decl_v02")
+        with self.project.read() as conn:
+            (first,) = declared.read_declared(conn, "des_decl_v01")
+            (second,) = declared.read_declared(conn, "des_decl_v02")
+        self.assertEqual(before[0].uid, first.uid)
+        self.assertEqual(self.record("des_decl", self.v1).content_sha256, digest)
+        self.assertEqual((first.code, second.code), (efx.DECLARED_CODE, efx.DECLARED_CODE))
+        self.assertNotEqual(first.uid, second.uid)
+        self.assertEqual(second.uid, declared.declared_uid(self.v2.uid, efx.DECLARED_ENTITY))
 
 
 class PlanNamesTest(unittest.TestCase):

@@ -34,11 +34,13 @@ hechas a mano; las comprueba ``tests/unit/design/test_entity_fixtures.py``.
   cerradas, terreno, las cinco capas y las máscaras de V01) más las dos capas de plataformas. Se
   crea **una vez por proceso** y paso de rejilla (en ≤ 2 s de CPU: :data:`BUILD_BUDGET_S`, lo que
   añade a la cantera) y cada clase trabaja en su copia.
-- **La restricción declarada** (:class:`DeclaredConstraintsProjectCase`): la variante de
-  ``constraints_project`` con una restricción declarada por una entidad es de la **T16** (el
-  esquema, ``core.constraints.declared``, no existe aún): de ella solo hay el hueco, documentado
-  (:func:`declare_platform_constraint` dice que falta) y el código, la caja y el resguardo de la
-  declarada de prueba.
+- **La restricción declarada** (:class:`DeclaredConstraintsProjectCase`; T16): la variante de
+  ``constraints_project`` con una restricción declarada por una entidad en V01.
+  :func:`declare_platform_constraint` escribe su tabla (``des_decl_v01``, con
+  ``core.constraints.declared.write_declared``) con una operación de prueba
+  (``des.declare_constraints``, sin entradas: no hay entidades) y devuelve su uid:
+  :data:`DECLARED_CODE` («sin relleno», la huella :data:`DECLARED_BOX_LOCAL`, 300 celdas de 2 m, y
+  :data:`DECLARED_GUARD_M`).
 """
 
 from __future__ import annotations
@@ -50,7 +52,7 @@ import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from importlib import util
+from datetime import date
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -61,6 +63,7 @@ from tests.support import constraints_project as cp
 from tests.support import quarry_fixtures as qfx
 from tests.support.core_fixtures import FakeClock, FakePids, project_tmp
 from tests.support.package import import_geoblender
+from tests.support.provenance_contract import registered
 
 gis = import_geoblender("gis")
 
@@ -424,59 +427,118 @@ class EntityProjectCase(qfx.QuarryProjectCase):
             cls.v1, cls.v2 = (versions_read.version(conn, uid) for uid in made["versions"])
 
 
-# --- La restricción declarada: el hueco de la T16 --------------------------------------------
+# --- La restricción declarada (T16; RF-012-29, RF-015-10) ---------------------------------------
 
 DECLARED_MODULE = "core.constraints.declared"
 """El módulo del esquema de las declaradas (T16; plan 015 §5.1)."""
 DECLARED_ENTITY = "PLT-001"
 """El código de la entidad que declara (``PLT-nnn``, T02)."""
+DECLARED_ENTITY_NAME = "P1"
+"""El nombre de la entidad que declara (el motivo generado, «declarada por la plataforma P1»)."""
 DECLARED_CODE = f"DEC-{DECLARED_ENTITY}"
 """El código de la restricción declarada: ``DEC-<entidad>`` (único en las tres capas)."""
 DECLARED_BOX_LOCAL = (130.0, 140.0, 170.0, 170.0)
 """La huella de la entidad que declara, en el sitio de ``constraints_project`` (local: izquierda,
 abajo, derecha, arriba): 40 × 30 m = 300 celdas de 2 m, dentro del perímetro y lejos de su balsa, su
-torre y su cuneta. Provisional: la T16 la ajusta si necesita otra."""
+torre y su cuneta."""
+DECLARED_CELLS = 300
+"""Las celdas de la huella de la declarada de prueba."""
 DECLARED_GUARD_M = 4.0
-"""El resguardo de la declarada de prueba (m); provisional, como la caja."""
+"""El resguardo de la declarada de prueba (m): dos celdas del sitio."""
+DECLARED_BY = "Samuel (IMGA)"
+DECLARED_ON = date(2026, 11, 14)
+"""El decisor y la fecha de la decisión de la declarada de prueba (la de la aprobación del DIFF-012;
+nunca ``now``)."""
 
 
-class DeclaredSchemaPending(RuntimeError):
-    """Se ha pedido la restricción declarada de prueba y su esquema aún no existe (T16)."""
+def declared_footprint() -> np.ndarray:
+    """La huella de la declarada de prueba como máscara de ``cfx.SITE_GRID`` (de ``DECLARED_CELLS``
+    celdas)."""
+    x, y = cfx.site_centers()
+    left, bottom, right, top = DECLARED_BOX_LOCAL
+    return (x > left) & (x < right) & (y > bottom) & (y < top)
 
 
-def declared_schema_ready() -> bool:
-    """Si ya existe ``core.constraints.declared`` (hoy, no: lo crea la T16)."""
-    return util.find_spec(f"{import_geoblender('core').__name__}.constraints.declared") is not None
+def declared_constraint(version_uid: str) -> Any:
+    """La restricción declarada de prueba (``core.constraints.declared.DeclaredConstraint``) de la
+    versión de uid ``version_uid``: :data:`DECLARED_CODE`, «sin relleno», con el contorno de
+    :func:`declared_footprint` (``design.entities.declared_zone``), :data:`DECLARED_GUARD_M`, el
+    motivo generado de la entidad, :data:`DECLARED_BY` y :data:`DECLARED_ON`."""
+    declared = import_geoblender(DECLARED_MODULE)
+    entities = import_geoblender("design.entities")
+    constraint_model = import_geoblender("core.constraints.model")
+    zone = entities.declared_zone(declared_footprint(), cfx.SITE_GRID, DECLARED_GUARD_M)
+    return declared.DeclaredConstraint(
+        uid=declared.declared_uid(version_uid, DECLARED_ENTITY),
+        code=declared.declared_code(DECLARED_ENTITY),
+        ctype=constraint_model.ConstraintType.NO_FILL, name=DECLARED_ENTITY_NAME,
+        reason=entities.declared_reason(entities.EntityKind.PLATFORM, DECLARED_ENTITY_NAME),
+        decided_by=DECLARED_BY, decided_on=DECLARED_ON, entity_code=DECLARED_ENTITY,
+        entity_name=DECLARED_ENTITY_NAME, parts=zone.parts, buffer_out_m=DECLARED_GUARD_M,
+        active=True)
+
+
+def _never(request: Any) -> Any:
+    raise AssertionError("las pruebas de las declaradas no recalculan ni reproducen")
+
+
+@contextmanager
+def declared_registered() -> Iterator[None]:
+    """Registra lo que declara ``des`` para las declaradas (lo hará ``bl``): los tres tipos de la 015
+    (``des.declare_constraints`` entre ellos, con funciones de recálculo y reproducción que no se
+    llaman) y sus cifras, los que falten; al salir, quita lo que registró."""
+    contract = import_geoblender("core.provenance.contract")
+    provenance = import_geoblender("design.provenance")
+    types = provenance.ENTITY_VERSION_TYPES
+    definitions = provenance.entity_operation_defs({name: _never for name in types},
+                                                   {name: _never for name in types})
+    wanted = [item for item in definitions if item.op_type not in contract.OPERATIONS]
+    wanted += [item for item in provenance.ENTITY_FIGURES if item.key not in contract.FIGURES]
+    with registered(*wanted):
+        yield
 
 
 def declare_platform_constraint(project: Any, clock: Any, *, version: Any = None) -> str:
-    """**El hueco de la T16.** Escribirá en ``project`` la tabla de restricciones declaradas de
-    ``version`` (por defecto V01) con una, :data:`DECLARED_CODE` («sin relleno», la huella
-    :data:`DECLARED_BOX_LOCAL` y :data:`DECLARED_GUARD_M`), con una operación de prueba como
-    ``constraints_project.edit_constraints`` (``core.constraints.declared.write_declared``), y
-    devolverá el uid de la operación. Mientras ``core.constraints.declared`` no exista,
-    ``DeclaredSchemaPending``; cuando exista, ``NotImplementedError`` hasta que la T16 lo rellene
-    (y cambie ``DeclaredHoleTest``)."""
-    if not declared_schema_ready():
-        raise DeclaredSchemaPending(
-            f"El esquema de las restricciones declaradas ({DECLARED_MODULE}) lo crea la T16 de la "
-            "spec 015: hasta entonces la variante de constraints_project con una declarada no se "
-            "puede construir")
-    raise NotImplementedError(
-        f"{DECLARED_MODULE} ya existe: la T16 rellena declare_platform_constraint (escribir "
-        f"{DECLARED_CODE} con write_declared)")
+    """Escribe en ``project`` la tabla de restricciones declaradas de ``version`` (por defecto V01) con
+    una, :data:`DECLARED_CODE` («sin relleno», la huella :data:`DECLARED_BOX_LOCAL` y
+    :data:`DECLARED_GUARD_M`), con una operación de prueba de ``des.declare_constraints`` (como
+    ``constraints_project.edit_constraints``; sin entradas: no hay entidades) que usa
+    ``core.constraints.declared.write_declared``, y devuelve el uid de la operación. Registra los
+    tipos de ``des`` que falten mientras escribe."""
+    declared = import_geoblender(DECLARED_MODULE)
+    operations = import_geoblender("core.provenance.operations")
+    versions_read = import_geoblender("core.versions.read")
+    provenance = import_geoblender("design.provenance")
+    if version is None:
+        with project.read() as conn:
+            version = versions_read.version(conn, "V01")
+    row = declared_constraint(version.uid)
+    srs = project.record.crs_epsg
+    table = provenance.dataset_locator(provenance.DECLARED_TABLE, "", version.code)
+    with declared_registered():
+        clock.advance(minutes=1)
+        handle = operations.begin_operation(
+            project, provenance.DECLARE_CONSTRAINTS, executor="blender", version=version.uid,
+            settings=provenance.declare_settings([(DECLARED_ENTITY, DECLARED_ENTITY_NAME)]))
+        with project.write_transaction() as conn:
+            declared.write_declared(conn, table, [row], srs_id=srs)
+            handle.complete(
+                conn, outputs=(provenance.dataset_spec(provenance.DECLARED_TABLE, "", version.code,
+                                                       crs_epsg=srs),),
+                figures=provenance.declare_figures(1), message="Restricción declarada de prueba")
+    return str(handle.uid)
 
 
 class DeclaredConstraintsProjectCase(cp.ConstraintsProjectCase):
     """Una copia por clase del proyecto de ``constraints_project`` (V01 y V02; 160 × 160 celdas de
-    2 m) con una restricción declarada por una entidad (:func:`declare_platform_constraint`) en V01.
-    **Pendiente de la T16**: ``setUpClass`` da ``DeclaredSchemaPending`` mientras el esquema no
-    exista."""
+    2 m) con una restricción declarada por una entidad (:func:`declare_platform_constraint`) en V01 y
+    los tipos de ``des`` registrados (:func:`declared_registered`) mientras dura la clase."""
 
     declared_operation: ClassVar[str]
 
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
+        cls.enterClassContext(declared_registered())
         cls.declared_operation = declare_platform_constraint(cls.project, cls.clock,
                                                               version=cls.v1)

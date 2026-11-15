@@ -75,8 +75,15 @@ CITING_RELPATHS = ("docs/usuario/topografia.md", "docs/usuario/versiones.md",
 GIS_MODULES = ("gis.search", "gis.polygons", "gis.coverage",
                *(f"gis.masks.{info.name}" for info in pkgutil.iter_modules(masks.__path__)))
 RES_MODULES = ("reserves.compliance", "reserves.compliance_store")
+# Los módulos de ``core.constraints`` que la spec 015 añade mientras se construye: la ficha
+# ``core.md`` (la API de ``core.constraints`` y «Datos que posee», la tabla ``des_decl_<vNN>``) los
+# describe en su T34 (documentación), que vacía esto. Cada tarea de la 015 añade aquí lo suyo.
+PENDING_015_MODULES = frozenset({
+    "core.constraints.declared",  # T16: la restricción declarada por una entidad (RF-012-29)
+})
 CORE_MODULES = tuple(f"core.constraints.{info.name}"
-                     for info in pkgutil.iter_modules(constraints.__path__))
+                     for info in pkgutil.iter_modules(constraints.__path__)
+                     if f"core.constraints.{info.name}" not in PENDING_015_MODULES)
 # De lo que la 012 declara, lo que no es una clase ni una función pero la ficha tiene que decir.
 CORE_CONSTANTS = ("TABLES", "CONSTRAINT_LAYERS", "CTYPE_ENUM", "FAMILIES", "DEFINITIONS",
                   "SEARCH_DISTANCE", "OPERATIONS", "COLORS", "MESSAGES", "PROBLEMS")

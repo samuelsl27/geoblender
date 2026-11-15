@@ -91,8 +91,9 @@ PERIMETER_SEGMENT = "perimeter__"
 (``des.sector.perimeter__.max_general_slope_deg``; ADR-0029, D-23)."""
 DECLARED_PREFIX = "DEC-"
 """El principio del código de una restricción que declara una entidad (``DEC-PLT-001``; RF-015-10,
-plan 015 §5.4 A8): el resto es el código de la entidad. La tabla de las declaradas es de la T16; el
-resumen de «Calcular» (T12) lo usa para decir qué entidad impide mover unas celdas."""
+plan 015 §5.4 A8): el resto es el código de la entidad. La tabla de las declaradas es de la T16
+(``core.constraints.declared``, que tiene el mismo prefijo); el resumen de «Calcular» (T12) lo usa para
+decir qué entidad impide mover unas celdas."""
 
 
 class Direction(StrEnum):

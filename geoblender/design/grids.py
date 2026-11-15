@@ -58,6 +58,7 @@ __all__ = [
     "Labels",
     "Nearest",
     "dilate_square",
+    "label_components",
     "label_components_steps",
     "nearest_value_steps",
 ]
@@ -135,6 +136,18 @@ def label_components_steps(mask: np.ndarray, *, budget_s: float = STEP_BUDGET_S
     ``mask`` no es de 2 dimensiones. Cerrar el generador a mitad no deja nada."""
     return pace_progress(_label_units(mask), budget_s, phase="components",
                          running="Buscando las zonas conexas…", finished="Zonas conexas encontradas")
+
+
+def label_components(mask: np.ndarray) -> Labels:
+    """:func:`label_components_steps` de una vez: las :class:`Labels` de las componentes 4-conexas
+    de ``mask`` (spec 015, T16: el contorno de la zona que declara una entidad, de una huella de
+    pocas celdas, no necesita pasos). ``ValueError`` si ``mask`` no es de 2 dimensiones."""
+    last: Progress | None = None
+    for last in label_components_steps(mask):
+        pass
+    if last is None or not isinstance(last.result, Labels):  # inalcanzable: el último paso lo lleva
+        raise RuntimeError("las componentes conexas no dieron resultado")
+    return last.result
 
 
 @dataclass(frozen=True, eq=False)

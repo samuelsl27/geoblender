@@ -13,7 +13,9 @@ RF-012-01, RF-012-02, RF-012-04, RF-012-13, RF-012-26; D-16, D-22 y D-23).
 - :class:`GeometryKind`: polígono, línea o punto (una capa del proyecto por geometría, D-20).
 - :class:`Constraint`, :class:`Intention`, :class:`Sector`, :class:`SearchRecord` y
   :class:`SearchHit` (:class:`HitDecision`): las filas de las tablas del proyecto, con la
-  geometría **absoluta en float64** (de solo lectura) tal como se guarda.
+  geometría **absoluta en float64** (de solo lectura) tal como se guarda. Una restricción puede
+  tener como origen una **entidad de diseño** (``Constraint.entity_code``, :attr:`Constraint.declared`;
+  spec 015, RF-012-29): la declarada, de su versión, en :mod:`.declared`.
 - :func:`constraint_code` y :func:`is_code`: el código inmutable de una restricción (D-22), que
   sale de su nombre al crearla o completarla y no cambia al renombrarla.
 
@@ -275,7 +277,13 @@ class Constraint:
     ``parts``: por cada parte, sus anillos (polígono: exterior y huecos), su camino (línea) o su
     punto, en coordenadas **absolutas** float64 ``(k, 2)`` de solo lectura. ``ctype`` es
     ``None`` si no tiene un tipo válido (dibujada en QGIS sin rellenarlo); ``code`` es ``''``
-    hasta que se completa (D-22). ``layer`` y ``fid``: la capa del proyecto y la fila."""
+    hasta que se completa (D-22). ``layer`` y ``fid``: la capa del proyecto y la fila.
+
+    **El origen «entidad»** (spec 015, T16; RF-012-29): ``entity_code`` y ``entity_name`` son el
+    código y el nombre de la entidad de diseño que la declara (``PLT-001``, «P1»), y ``None``
+    —el valor por defecto, que deja la construcción de siempre— en las que vienen de una capa
+    del proyecto. Una declarada es de su versión (su ``layer`` es la tabla ``des_decl_<vNN>``,
+    :mod:`.declared`) y no se edita a mano."""
 
     uid: str
     code: str
@@ -293,6 +301,14 @@ class Constraint:
     source_fid: int | None
     layer: str
     fid: int
+    entity_code: str | None = None
+    entity_name: str | None = None
+
+    @property
+    def declared(self) -> bool:
+        """Si la declara una entidad de diseño (RF-012-29): su origen es la entidad, no una capa
+        del proyecto."""
+        return self.entity_code is not None
 
     def __post_init__(self) -> None:
         if self.ctype is not None:

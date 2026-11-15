@@ -40,20 +40,31 @@ calcular, al día, obsoleta (con sus causas, de la caché ``gb_stale``), descart
 que escribió están descartados) o «apoyo retirado» (consumió, como ``surface`` o ``supported_on``,
 un dato descartado).
 
+**La zona que declara una entidad** (T16; RF-012-29, RF-015-10; A8; D-23): :func:`declared_zone` (de
+una máscara) y :func:`declared_zone_of_runs` (de los tramos de fila de ``des_epr_``) dan el
+:class:`DeclaredZone` de una huella: **un polígono por componente 4-conexa**, con sus huecos, válido
+para las comprobaciones de la 012, con las coordenadas exactas de la rejilla y de modo que la regla de
+la celda de la 012 (RF-012-12) devuelva exactamente esas celdas con resguardo 0 (D-23).
+
 ``design.entities`` es un módulo pesado de la 015: lo importan el almacén y las órdenes al usarlo, no
 ``bl`` al registrarse ni ``design.provenance`` (``tests/unit/architecture/test_lazy_registration.py``).
 """
 
 from __future__ import annotations
 
+import hashlib
+import math
+import numbers
 import re
 import sqlite3
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from ..core.datasets.model import DatasetStatus
 from ..core.i18n import LANGUAGES
@@ -63,12 +74,17 @@ from ..core.provenance.stale import OPERATION as STALE_OPERATION
 from ..core.provenance.stale import item_causes
 from ..core.versions import read as versions_read
 from ..core.versions.model import Version, VersionError
+from .grids import label_components
 from .messages import DesignError, render
 from .params import PLATFORM_PREFIX, PlatformParam, entity_key, entity_segment, segment_code
 from .provenance import PLATFORM, SUPPORTED_ON_ROLE, SURFACE_ROLE
 
+if TYPE_CHECKING:
+    from ..gis.grid import Grid
+
 __all__ = [
     "ENTITY_PREFIX",
+    "DeclaredZone",
     "EntityEntry",
     "EntityKind",
     "EntityRecord",
@@ -79,6 +95,8 @@ __all__ = [
     "chain_tails",
     "check_chain",
     "declared_reason",
+    "declared_zone",
+    "declared_zone_of_runs",
     "find_entity",
     "format_code",
     "insert_after",
@@ -735,3 +753,268 @@ def _deduce(conn: sqlite3.Connection, operation: str | None,
     if causes:
         return EntityState.STALE, causes, ()
     return EntityState.CURRENT, causes, ()
+
+
+# --- La zona que declara una entidad (spec 015, T16; RF-012-29, RF-015-10; A8; D-23) ---------------
+
+_EAST, _NORTH, _WEST, _SOUTH = range(4)
+"""Los cuatro sentidos de una arista de celda, en el orden en que giran hacia la izquierda: este,
+norte, oeste y sur. Girar a la derecha es el sentido anterior."""
+_STEP_ROW = (0, -1, 0, 1)
+_STEP_COL = (1, 0, -1, 0)
+"""Cuánto cambian la línea de filas (hacia el sur) y la de columnas (hacia el este) al recorrer una
+arista de cada sentido."""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class DeclaredZone:
+    """La zona que declara una entidad (RF-012-29, A8): el contorno alineado a la rejilla de las
+    celdas de su huella, listo para ser la geometría de una restricción declarada.
+
+    ``parts``: un polígono por componente 4-conexa de la huella —sus anillos cerrados, el exterior
+    antihorario y los huecos horarios, con las coordenadas **absolutas** float64 ``(k, 2)`` de
+    solo lectura que dan ``grid.west + columna·dx`` y ``grid.north − fila·dy``— o, de la componente
+    cuyo contorno se tocaría a sí mismo (``split``), varios rectángulos que se tocan; ``cells`` y
+    ``area_m2``: las celdas de la huella y su área exacta; ``guard_m``: el resguardo hacia fuera con
+    que se declara (lo amplía la compilación de la 012, no el contorno); ``components``: las
+    componentes 4-conexas; ``split``: cuántas hubo que partir; ``sha256``: el hash del contorno
+    (sin el resguardo), el mismo para la misma huella."""
+
+    parts: tuple[tuple[np.ndarray, ...], ...]
+    cells: int
+    area_m2: float
+    guard_m: float
+    components: int
+    split: int
+    sha256: str
+
+
+def _guard(value: object) -> float:
+    """El resguardo ``value`` como ``float``: un número real finito ≥ 0 (``TypeError`` si no es un
+    número, ``ValueError`` si no es finito o es negativo: errores del programa)."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise TypeError(f"el resguardo de una zona es un número, no {value!r}")
+    guard = float(value)
+    if not math.isfinite(guard) or guard < 0.0:
+        raise ValueError(f"el resguardo de una zona es un número finito ≥ 0, no {value!r}")
+    return guard
+
+
+def _line_of(offset: object, what: str) -> int:
+    if isinstance(offset, bool) or not isinstance(offset, numbers.Integral):
+        raise TypeError(f"{what} es un número entero, no {offset!r}")
+    return int(offset)
+
+
+def _boundary(labels: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Las aristas del borde de las componentes de ``labels`` (0 fuera, ``1…n`` dentro): fila y
+    columna de su vértice de salida (líneas de la rejilla, desde la de arriba a la izquierda de
+    ``labels``), su sentido (:data:`_EAST` …) y la etiqueta de su componente. Cada arista deja a su
+    izquierda la celda de dentro: recorrerlas así da el exterior antihorario y los huecos horarios."""
+    padded = np.pad(labels, 1)
+    inner = padded[1:-1, 1:-1]
+    inside = inner > 0
+    rows: list[np.ndarray] = []
+    cols: list[np.ndarray] = []
+    senses: list[np.ndarray] = []
+    names: list[np.ndarray] = []
+    for sense, neighbour, shift_row, shift_col in (
+            (_WEST, padded[:-2, 1:-1], 0, 1),   # la de arriba va al oeste desde su esquina este
+            (_EAST, padded[2:, 1:-1], 1, 0),    # la de abajo, al este desde su esquina oeste
+            (_SOUTH, padded[1:-1, :-2], 0, 0),  # la de la izquierda, al sur
+            (_NORTH, padded[1:-1, 2:], 1, 1)):  # la de la derecha, al norte
+        row, col = np.nonzero(inside & (neighbour == 0))
+        rows.append(row + shift_row)
+        cols.append(col + shift_col)
+        senses.append(np.full(row.size, sense, dtype=np.int64))
+        names.append(inner[row, col].astype(np.int64))
+    return (np.concatenate(rows).astype(np.int64), np.concatenate(cols).astype(np.int64),
+            np.concatenate(senses), np.concatenate(names))
+
+
+def _trace(rows: np.ndarray, cols: np.ndarray, senses: np.ndarray, width: int
+           ) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Los anillos que forman las aristas de **una** componente (``rows``, ``cols`` y ``senses`` de
+    :func:`_boundary`): de cada uno, las líneas de fila y de columna de sus esquinas (sin vértices
+    en los lados rectos), empezando por la esquina de más arriba y, a igual fila, más a la izquierda.
+    En un vértice donde se tocan dos celdas en diagonal salen dos aristas y se **gira a la derecha**:
+    cada anillo rodea una sola región de fuera (4-conexa), así que un anillo nunca se toca a sí mismo
+    y solo roza a otro (un hueco que toca el exterior) en ese vértice."""
+    count = rows.size
+    start = rows * width + cols
+    end = (rows + np.asarray(_STEP_ROW)[senses]) * width + cols + np.asarray(_STEP_COL)[senses]
+    leaving: dict[int, list[int]] = {}
+    for index, vertex in enumerate(start.tolist()):
+        leaving.setdefault(vertex, []).append(index)
+    ends = end.tolist()
+    turns = senses.tolist()
+    used = [False] * count
+    found: list[tuple[np.ndarray, np.ndarray]] = []
+    for first in range(count):
+        if used[first]:
+            continue
+        ring: list[int] = []
+        edge = first
+        while True:
+            used[edge] = True
+            ring.append(edge)
+            options = leaving[ends[edge]]
+            chosen = options[0]
+            if len(options) > 1:
+                right = (turns[edge] - 1) % 4
+                chosen = next((other for other in options if turns[other] == right), chosen)
+            if chosen == first:
+                break
+            edge = chosen
+        order = np.asarray(ring, dtype=np.int64)
+        directions = senses[order]
+        corner = order[directions != np.roll(directions, 1)]
+        ring_rows, ring_cols = rows[corner], cols[corner]
+        begin = int(np.lexsort((ring_cols, ring_rows))[0])
+        found.append((np.roll(ring_rows, -begin), np.roll(ring_cols, -begin)))
+    return found
+
+
+def _twice(rings: Sequence[tuple[np.ndarray, np.ndarray]], width: int) -> bool:
+    """Si dos esquinas de los anillos son el mismo vértice (un hueco que toca el exterior, o a otro
+    hueco, por una esquina): el polígono se tocaría a sí mismo."""
+    vertices = np.concatenate([row * width + col for row, col in rings])
+    return bool(np.unique(vertices).size != vertices.size)
+
+
+def _rectangles(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """Los rectángulos ``(fila_ini, fila_fin, col_ini, col_fin)`` (fin excluido) en que se parte
+    ``mask``: los tramos de cada fila, unidos con el de la fila siguiente cuando tienen las mismas
+    columnas. Sin solapes y por fila y columna."""
+    padded = np.zeros((mask.shape[0], mask.shape[1] + 2), dtype=np.int8)
+    padded[:, 1:-1] = mask
+    change = np.diff(padded, axis=1)
+    found: list[tuple[int, int, int, int]] = []
+    open_runs: dict[tuple[int, int], int] = {}
+    for row in range(mask.shape[0]):
+        first = np.flatnonzero(change[row] == 1).tolist()
+        last = np.flatnonzero(change[row] == -1).tolist()
+        now = set(zip(first, last, strict=True))
+        for key in sorted(open_runs):
+            if key not in now:
+                found.append((open_runs.pop(key), row, key[0], key[1]))
+        for key in sorted(now):
+            open_runs.setdefault(key, row)
+    for key in sorted(open_runs):
+        found.append((open_runs[key], mask.shape[0], key[0], key[1]))
+    return sorted(found, key=lambda rectangle: (rectangle[0], rectangle[2]))
+
+
+def _absolute(grid: Grid, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
+    """El anillo **cerrado** de las líneas de fila ``rows`` y de columna ``cols`` de la rejilla
+    entera, en coordenadas absolutas: ``west + columna·dx`` y ``north − fila·dy`` en float64, sin más
+    aritmética (principio 6), de solo lectura."""
+    closed_rows = np.append(rows, rows[0]).astype(np.float64)
+    closed_cols = np.append(cols, cols[0]).astype(np.float64)
+    ring = np.column_stack((grid.west + closed_cols * grid.dx, grid.north - closed_rows * grid.dy))
+    ring.flags.writeable = False
+    return ring
+
+
+def _zone_hash(parts: Sequence[Sequence[np.ndarray]]) -> str:
+    """El hash del contorno: sus partes y anillos con los vértices tal cual (``<f8``)."""
+    digest = hashlib.sha256(b"geoblender.declared_zone/1;")
+    for part in parts:
+        digest.update(b"part:%d;" % len(part))
+        for ring in part:
+            digest.update(b"ring:%d;" % len(ring))
+            digest.update(np.ascontiguousarray(ring, dtype="<f8").tobytes())
+    return digest.hexdigest()
+
+
+def declared_zone(footprint_cells: np.ndarray, grid: Grid, guard_m: float, *,
+                  offset: tuple[int, int] = (0, 0)) -> DeclaredZone:
+    """La zona que declara una entidad cuya huella son las celdas verdaderas de ``footprint_cells``
+    (RF-012-29, RF-015-10; A8; D-23).
+
+    ``footprint_cells``: una máscara booleana de 2 dimensiones, la de toda la rejilla de ``grid`` o
+    la de una ventana suya cuya celda ``[0, 0]`` es la de la fila y la columna ``offset`` (el
+    resultado es el mismo); ``guard_m``: el resguardo hacia fuera (m, finito ≥ 0: lo que la
+    compilación de la 012 suma a la zona, D-19; no cambia el contorno). Las celdas forman componentes
+    **4-conexas** (``design.grids.label_components``) y el contorno de cada una, con sus huecos, es un
+    polígono **válido para las comprobaciones de la 012** —sin vértices de más, sus coordenadas
+    exactas desde ``grid.west`` y ``grid.north``, el exterior antihorario y los huecos horarios—; dos
+    celdas que solo se tocan por una esquina son componentes distintas, y por tanto partes distintas.
+    Una componente cuyo hueco toca el exterior por una esquina (la 012 daría por no válido un polígono
+    que se toca a sí mismo) se parte en rectángulos que se tocan: ``DeclaredZone.split`` lo cuenta.
+    Con resguardo 0, la regla de la celda de RF-012-12 devuelve **exactamente** las celdas de la
+    huella (D-23); con resguardo, crece como con cualquier otra restricción. Determinista: la misma
+    huella da los mismos bits (``DeclaredZone.sha256``). No modifica la máscara.
+
+    ``TypeError`` o ``ValueError`` (errores del programa) si ``guard_m`` no es un número finito ≥ 0,
+    la máscara no es de 2 dimensiones o no tiene ninguna celda, o la ventana no cabe en la rejilla."""
+    guard = _guard(guard_m)
+    mask = np.asarray(footprint_cells)
+    if mask.ndim != 2:
+        raise ValueError(f"la huella es una máscara de 2 dimensiones, no de {mask.ndim}")
+    mask = mask.astype(bool, copy=False)
+    shift_row = _line_of(offset[0], "la fila de la ventana")
+    shift_col = _line_of(offset[1], "la columna de la ventana")
+    if (shift_row < 0 or shift_col < 0 or shift_row + mask.shape[0] > grid.nrows
+            or shift_col + mask.shape[1] > grid.ncols):
+        raise ValueError(f"la ventana de {mask.shape[0]} × {mask.shape[1]} celdas en la fila "
+                         f"{shift_row} y la columna {shift_col} no cabe en la rejilla de "
+                         f"{grid.nrows} × {grid.ncols} celdas")
+    used_rows = np.flatnonzero(mask.any(axis=1))
+    if used_rows.size == 0:
+        raise ValueError("la huella no tiene ninguna celda: una entidad sin huella no declara nada")
+    used_cols = np.flatnonzero(mask.any(axis=0))
+    top, left = int(used_rows[0]), int(used_cols[0])
+    mask = mask[top:int(used_rows[-1]) + 1, left:int(used_cols[-1]) + 1]
+    shift_row, shift_col = shift_row + top, shift_col + left
+    labels = label_components(mask)
+    width = mask.shape[1] + 1
+    rows, cols, senses, names = _boundary(labels.grid)
+    order = np.argsort(names, kind="stable")
+    rows, cols, senses, names = rows[order], cols[order], senses[order], names[order]
+    bounds = np.searchsorted(names, np.arange(1, labels.count + 2))
+    parts: list[tuple[np.ndarray, ...]] = []
+    split = 0
+    for number in range(labels.count):
+        lo, hi = int(bounds[number]), int(bounds[number + 1])
+        rings = _trace(rows[lo:hi], cols[lo:hi], senses[lo:hi], width)
+        if _twice(rings, width):
+            split += 1
+            inside = labels.grid == number + 1
+            for first, last, begin, end in _rectangles(inside):
+                parts.append((_absolute(grid, np.array([first, last, last, first]) + shift_row,
+                                        np.array([begin, begin, end, end]) + shift_col),))
+            continue
+        # El exterior es el único anillo antihorario; los huecos, por su esquina de más arriba.
+        area = [int(np.sum(col * np.roll(-row, -1) - np.roll(col, -1) * -row))
+                for row, col in rings]
+        shell = [index for index, value in enumerate(area) if value > 0]
+        holes = sorted((index for index, value in enumerate(area) if value < 0),
+                       key=lambda index: (int(rings[index][0][0]), int(rings[index][1][0])))
+        parts.append(tuple(_absolute(grid, rings[index][0] + shift_row, rings[index][1] + shift_col)
+                           for index in (*shell, *holes)))
+    cells = int(mask.sum())
+    return DeclaredZone(tuple(parts), cells, cells * grid.cell_area, guard, labels.count, split,
+                        _zone_hash(parts))
+
+
+def declared_zone_of_runs(runs: Iterable[Sequence[int]], grid: Grid, guard_m: float
+                          ) -> DeclaredZone:
+    """:func:`declared_zone` de la huella que dicen ``runs``: los tramos de fila
+    ``(fila, col0, col1)`` absolutos de la rejilla entera, ``col1`` excluida, que guarda ``des_epr_``
+    (``entity_store.footprint_runs``), en cualquier orden. Solo construye la máscara de la caja que
+    los contiene, no la de toda la rejilla. ``ValueError`` si no hay ninguno o un tramo no cabe en la
+    rejilla o no tiene celdas."""
+    found = [tuple(int(value) for value in run) for run in runs]
+    if not found:
+        raise ValueError("la huella no tiene ningún tramo: una entidad sin huella no declara nada")
+    for row, first, last in found:
+        if not (0 <= row < grid.nrows and 0 <= first < last <= grid.ncols):
+            raise ValueError(f"el tramo ({row}, {first}, {last}) no cabe en una rejilla de "
+                             f"{grid.nrows} × {grid.ncols} celdas")
+    top, bottom = min(run[0] for run in found), max(run[0] for run in found)
+    left, right = min(run[1] for run in found), max(run[2] for run in found)
+    mask = np.zeros((bottom - top + 1, right - left), dtype=bool)
+    for row, first, last in found:
+        mask[row - top, first - left:last - left] = True
+    return declared_zone(mask, grid, guard_m, offset=(top, left))
