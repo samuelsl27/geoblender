@@ -601,6 +601,19 @@ entry = "015"
 action = "D"
 frequency = 1
 
+# Lo que sigue a cambiar un parámetro de una entidad (spec 015, T43; RF-015-10, RF-015-27; hallazgos E-2 y E-4): interna, sin menú;
+# la lanza «Cambiar parámetro…» con el cambio ya escrito.
+[[command]]
+key = "geoblender.des_entity_refresh"
+kind = "internal"
+label.en = "Update the entity constraints and layer"
+label.es = "Poner al día las restricciones y la capa de las entidades"
+description.en = "Bring up to date the constraints declared by the design entities, the masks and the entity layer of the active version after one of them changed"
+description.es = "Pone al día las restricciones que declaran las entidades de diseño, las máscaras y la capa de entidades de la versión activa tras cambiar una"
+entry = "015"
+action = "A"
+frequency = 1
+
 # Traer las entidades de otra versión (spec 015, T26; RF-015-18): interna, en el menú «Entidad ▾» (T31).
 [[command]]
 key = "geoblender.des_entity_bring"

@@ -1804,6 +1804,26 @@ CATALOG: tuple[Message, ...] = (
         "obsoleto la pone al día); se pone al día la próxima vez que se cree, cambie o descarte una entidad.",
         "warning",
     ),
+    # La tabla de la entidad editada fuera de Geoblender (RF-015-11, RF-008-56, RF-008-57; B-2; T43): la huella de la que
+    # sale su zona declarada y su fila de la capa.
+    Message(
+        "des.entity_footprint_blocked",
+        "The table «{table}» of entity «{entity}» (the footprint its declared zone comes from) was edited outside "
+        "Geoblender and is not edited by hand: accept the edit with a reason or recompute the entity so it writes the "
+        "table again; its constraints are not declared and the masks of {version} are not compiled meanwhile.",
+        "La tabla «{table}» de la entidad «{entity}» (la huella de la que sale su zona declarada) se editó fuera de "
+        "Geoblender y no se edita a mano: acepte la edición con un motivo o recalcule la entidad para que vuelva a "
+        "escribirla; mientras tanto no se declaran sus restricciones ni se compilan las máscaras de {version}.",
+    ),
+    Message(
+        "des.entity_footprint_unusable",
+        "The table «{table}» of entity «{entity}» (the footprint its declared zone comes from) is missing, damaged or "
+        "is no longer an entity table (its row was deleted outside Geoblender): recompute the entity so it writes the "
+        "table again; its constraints are not declared and the masks of {version} are not compiled meanwhile.",
+        "La tabla «{table}» de la entidad «{entity}» (la huella de la que sale su zona declarada) falta, está dañada o "
+        "ya no es la tabla de una entidad (se borró su fila fuera de Geoblender): recalcule la entidad para que vuelva "
+        "a escribirla; mientras tanto no se declaran sus restricciones ni se compilan las máscaras de {version}.",
+    ),
     # Traer las entidades de otra versión (RF-015-18, RF-009-01; D-18; T26): lo que se rechaza y lo que se avisa.
     Message(
         "des.entity_bring_same",

@@ -295,19 +295,28 @@ class DesignRegisteredTest(unittest.TestCase):
         others: list[tuple[str, str, Any]] = []
         self.addCleanup(lambda: self.forget_others(others)())
         declaring = _module("gis.masks.declaring")
-        checks = _module("bl.ops.core_provenance")._PARAMETER_CHECKS  # noqa: SLF001
+        core_prov = _module("bl.ops.core_provenance")
+        checks, afters = core_prov._PARAMETER_CHECKS, core_prov._PARAMETER_AFTERS  # noqa: SLF001
+        after_recompute = core_prov._RECOMPUTE_AFTERS  # noqa: SLF001
         self.assertIs(declaring.current(), m.des_ops.DECLARATION_HOOK)  # el gancho de la declaración (T38)
         self.assertIs(checks.get(m.des_ops.PARAMETER_PREFIX), m.des_ops._check_entity_parameter)  # noqa: SLF001  (T39)
+        self.assertIs(afters.get(m.des_ops.PARAMETER_PREFIX), m.des_ops._after_entity_parameter)  # noqa: SLF001  (T43)
+        self.assertIn(m.des_ops._layers_after_recompute, after_recompute)  # noqa: SLF001  (T43)
         for _ in range(2):
             m.des_ops.unregister()
             self.assertSameRegistries(m.registries(), bare)
             self.assertIsNone(declaring.current())
             self.assertNotIn(m.des_ops.PARAMETER_PREFIX, checks, "desregistrar quita la comprobación de «Cambiar…» (T39)")
+            self.assertNotIn(m.des_ops.PARAMETER_PREFIX, afters, "…y lo que sigue a cambiarlo (T43)")
+            self.assertNotIn(m.des_ops._layers_after_recompute, after_recompute,  # noqa: SLF001
+                             "…y lo que sigue a «Recalcular lo obsoleto» (T43)")
         for _ in range(2):
             m.des_ops.register()
             self.assertSameRegistries(m.registries(), enabled)
             self.assertIs(declaring.current(), m.des_ops.DECLARATION_HOOK)
             self.assertIs(checks.get(m.des_ops.PARAMETER_PREFIX), m.des_ops._check_entity_parameter)  # noqa: SLF001
+            self.assertIs(afters.get(m.des_ops.PARAMETER_PREFIX), m.des_ops._after_entity_parameter)  # noqa: SLF001
+            self.assertEqual(after_recompute.count(m.des_ops._layers_after_recompute), 1)  # noqa: SLF001
 
         m.des_ops.unregister()
         others.extend(self.register_others())
@@ -689,14 +698,20 @@ class DesignRegisteredTest(unittest.TestCase):
         m.des_ops.hold_calculation(held)
 
         declaring = _module("gis.masks.declaring")
-        checks = _module("bl.ops.core_provenance")._PARAMETER_CHECKS  # noqa: SLF001
+        core_prov = _module("bl.ops.core_provenance")
+        checks, afters = core_prov._PARAMETER_CHECKS, core_prov._PARAMETER_AFTERS  # noqa: SLF001
+        after_recompute, layers = core_prov._RECOMPUTE_AFTERS, m.des_ops._layers_after_recompute  # noqa: SLF001
         prefix = m.des_ops.PARAMETER_PREFIX
         self.assertIs(declaring.current(), m.des_ops.DECLARATION_HOOK)
         self.assertIn(prefix, checks)
+        self.assertIn(prefix, afters)
+        self.assertIn(layers, after_recompute)
         self.addCleanup(blender_ext.enable)  # las demás pruebas de la clase, habilitada
         blender_ext.disable()
         self.assertIsNone(declaring.current(), "deshabilitar quita el gancho de la declaración (T38)")
         self.assertNotIn(prefix, checks, "…y la comprobación de «Cambiar parámetro…» (T39)")
+        self.assertNotIn(prefix, afters, "…y lo que sigue a cambiarlo (T43)")
+        self.assertNotIn(layers, after_recompute, "…y lo que sigue a «Recalcular lo obsoleto» (T43)")
         self.assertEqual([cls.__name__ for cls in props.classes if cls.is_registered], [])
         self.assertEqual([name for name in dir(bpy.types)
                           if name.startswith("GEOBLENDER_") and "_des_" in name], [])

@@ -58,7 +58,7 @@ PLATFORM = "geoblender.des_create_platform"
 INTERNAL_015 = (  # orden → (acción, frecuencia)
     "geoblender.des_entity_discard", "geoblender.des_entity_release_support", "geoblender.des_entity_bring",
     "geoblender.des_entity_preview", "geoblender.des_entity_dependents", "geoblender.des_entity_insert",
-    "geoblender.des_entity_calculate")
+    "geoblender.des_entity_calculate", "geoblender.des_entity_refresh")
 ENTITY_MENU = ("geoblender.des_entity_dependents", "geoblender.des_entity_insert", "geoblender.des_entity_bring",
                "geoblender.des_entity_calculate", "geoblender.des_entity_discard", "geoblender.des_entity_release_support",
                "geoblender.des_entity_preview", "geoblender.des_export_design_grid")

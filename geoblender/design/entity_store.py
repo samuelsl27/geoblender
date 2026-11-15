@@ -123,7 +123,15 @@ registro de la versión, con las dependencias y la cadena de cada una), :func:`e
 de las filas (sin proyecto dentro: recibe lo leído) y :func:`prepare_entity_layer`, :func:`run_entity_layer`,
 :func:`entity_layer_steps` y :func:`recompute_entity_layer` la preparan, la registran en **una** transacción
 reescribiendo la tabla entera y la repiten. La orden de una entidad la regenera como **etapa aparte**
-(:func:`after_entity_change`); si falla, la capa queda como estaba y el aviso lo dice.
+(:func:`after_entity_change`); si falla, la capa queda como estaba y el aviso lo dice. **Su estado es el del registro**
+(T43; hallazgo E-4 / C-11): la capa escribe el que deduce el grafo al escribirla, y :func:`layer_pending` dice, sin leer
+geometrías, si ya no es el del registro de las entidades (la marca: tras cambiar un parámetro, recalcular una entidad con
+la misma salida, dar por bueno un apoyo o cerrar con Esc lo que sigue a una orden); :func:`layer_sync_steps` la regenera
+solo si está marcada y :func:`layers_sync_steps`, la de cada versión editable (lo hace ``bl`` al terminar «Recalcular lo
+obsoleto» y :func:`release_support`, en sus mismos pasos). **La tabla de la entidad editada fuera de Geoblender**
+(T43; hallazgo B-2; RF-015-11): la declaración y la capa leen la huella de ``des_epr_`` con :func:`_usable_footprint`, que
+se niega con la entidad (``des.entity_footprint_blocked`` o ``_unusable``) si la 008 la tiene bloqueada, falta, está
+dañada o ya no es la tabla de una entidad.
 
 **Descartar, «apoyo retirado» y soltar el apoyo** (T25; RF-015-17, RF-009-12; D-12; plan 015 §5.4 A7, P-6; ADR-0030 §4):
 :func:`discard_plan` es **la lista** que se enseña antes de descartar (una sola: lo que se apoya en la entidad y lo que
@@ -169,6 +177,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import sqlite3
 from collections.abc import (
@@ -200,7 +209,7 @@ from ..core.constraints.model import ConstraintType
 from ..core.constraints.store import constraint_names
 from ..core.datasets import external as dataset_external
 from ..core.datasets import registry as dataset_registry
-from ..core.datasets.model import FINAL_STATUSES
+from ..core.datasets.model import FINAL_STATUSES, DatasetStatus
 from ..core.errors import GeoblenderError
 from ..core.params import (
     PROJECT_SCOPE,
@@ -305,6 +314,8 @@ from .store import (
 )
 from .surfaces import SurfaceWindow, project_frame, read_surface, read_surface_steps, read_surface_window
 
+LOGGER = logging.getLogger(__name__)
+
 __all__ = [
     "LAYER_FIELDS",
     "Brought",
@@ -349,8 +360,11 @@ __all__ = [
     "feature_index",
     "footprint_runs",
     "geometry_sha256",
+    "layer_pending",
     "layer_sources",
+    "layer_sync_steps",
     "layer_values",
+    "layers_sync_steps",
     "platform_compute_steps",
     "platform_entity_rows",
     "platform_obsolete",
@@ -2307,9 +2321,12 @@ _DECISION_PARAMS = (PlatformParam.NAME, PlatformParam.PROTECT, PlatformParam.GUA
 motivo): la decisión de la restricción es la más reciente de ellos (``decided_by`` y ``decided_at`` de su
 historial)."""
 _ENTITY_DATA = (
-    "SELECT d.locator FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "SELECT d.locator, d.name, d.status FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
     "WHERE io.operation_uid = ? AND io.direction = 'out' AND io.item_kind = ? AND io.role = ? "
     "ORDER BY io.fid")
+_UNUSABLE_STATUSES = frozenset(str(status) for status in dataset_external.UNUSABLE_STATUSES)
+"""Los estados de un dato que no se puede usar (``core.datasets.external.UNUSABLE_STATUSES``): lo editado fuera sin ser
+editable a mano (``blocked``), lo que falta y lo dañado."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -2339,6 +2356,43 @@ def read_entity_footprint(conn: sqlite3.Connection, table: str) -> EntityFootpri
     runs = tuple((int(row), int(first), int(last)) for row, first, last in json.loads(footprint))
     vertices = tuple((float(x), float(y)) for x, y in json.loads(axis))
     return EntityFootprint(str(code), str(name), str(kind), str(layer), runs, vertices)
+
+
+def _usable_footprint(conn: sqlite3.Connection, entry: entities.EntityEntry, version: Version
+                      ) -> EntityFootprint:
+    """La huella de la entidad **viva y calculada** ``entry`` (:func:`read_entity_footprint` de su ``des_epr_`` vigente),
+    de la que salen su zona declarada y su fila de la capa, **si se puede usar** (spec 015, T43; RF-015-11, RF-008-56,
+    RF-008-57; hallazgo B-2): el equivalente, para la tabla de la entidad, de ``core.constraints.declared.require_usable``.
+    La tabla es una **salida** de la entidad, no editable a mano: si la 008 la tiene **bloqueada** (se editó en QGIS) la
+    declaración no la lee —se editó la huella de la que sale una restricción— y lo dice con la entidad
+    (``des.entity_footprint_blocked``: aceptar la edición con un motivo o recalcular la entidad); si falta, está dañada
+    o ya no es la tabla de una entidad (QGIS borró su fila, o ya no existe), ``des.entity_footprint_unusable``. Su
+    ``name`` es el del **dato registrado** (el ``des_epr_<nombre>`` que escribió la operación) aunque el atributo de la
+    tabla se haya cambiado a mano: de él sale el dato que consume la declaración. Solo lee."""
+    record = entry.record
+    rows = conn.execute(_ENTITY_DATA, (entry.operation_uid, DATASET, provenance.ENTITY_ROLE)).fetchall()
+    if len(rows) != 1:
+        raise ValueError(f"la operación {entry.operation_uid} de la entidad {record.code} escribió "
+                         f"{len(rows)} tablas de la entidad, no una")
+    ((table, dataset, status),) = rows
+    where = {"obj": f"Entidad «{record.name}»", "field": "huella", "value": str(table), "entity": record.name,
+             "table": str(table), "version": version.code}
+    if str(status) == DatasetStatus.BLOCKED.value:
+        raise DesignError("des.entity_footprint_blocked", **where)
+    if str(status) in _UNUSABLE_STATUSES:
+        raise DesignError("des.entity_footprint_unusable", **where)
+    try:
+        data = read_entity_footprint(conn, str(table))
+    except (ValueError, TypeError, KeyError, sqlite3.Error) as error:  # la fila que falta o la huella que no son tramos
+        raise DesignError("des.entity_footprint_unusable", **where) from error
+    try:
+        written = provenance.dataset_name(provenance.ENTITY_TABLE, data.name) == dataset
+    except GeoblenderError:  # un nombre sin ninguna letra ni cifra
+        written = False
+    if not written:  # el atributo ``name`` cambiado a mano: el dato es el registrado
+        prefix = provenance.dataset_name(provenance.ENTITY_TABLE, "x")[:-1]
+        data = replace(data, name=str(dataset).removeprefix(prefix))
+    return data
 
 
 @dataclass(frozen=True, slots=True)
@@ -2477,12 +2531,7 @@ def declared_sources(project: StoreProject, version: Version, *,
     for entry in live:
         record = entry.record
         code = record.code
-        tables = conn.execute(_ENTITY_DATA, (entry.operation_uid, DATASET,
-                                             provenance.ENTITY_ROLE)).fetchall()
-        if len(tables) != 1:
-            raise ValueError(f"la operación {entry.operation_uid} de la entidad {code} escribió "
-                             f"{len(tables)} tablas de la entidad, no una")
-        data = read_entity_footprint(conn, str(tables[0][0]))
+        data = _usable_footprint(conn, entry, version)
         protect = bool(values[code, PlatformParam.PROTECT])
         guard, reason = values[code, PlatformParam.GUARD], values[code, PlatformParam.REASON]
         who, when = _decision(store, conn, version, code) if protect else (None, None)
@@ -2843,11 +2892,7 @@ def layer_sources(project: StoreProject, version: Version, *, conn: sqlite3.Conn
     found: list[LayerSource] = []
     for entry in shown:
         record = entry.record
-        tables = conn.execute(_ENTITY_DATA, (entry.operation_uid, DATASET, provenance.ENTITY_ROLE)).fetchall()
-        if len(tables) != 1:
-            raise ValueError(f"la operación {entry.operation_uid} de la entidad {record.code} escribió "
-                             f"{len(tables)} tablas de la entidad, no una")
-        data = read_entity_footprint(conn, str(tables[0][0]))
+        data = _usable_footprint(conn, entry, version)
         rests = entities.dependencies_of(project, version.uid, record.code, conn=conn, listed=listed)
         found.append(LayerSource(
             code=record.code, name=record.name, calc_name=data.name, kind=EntityKind(record.kind),
@@ -2977,6 +3022,81 @@ def recompute_entity_layer(request: RecomputeRequest, *, budget_s: float = STEP_
     no es de una versión editable."""
     project: StoreProject = request.project  # type: ignore[assignment]
     return run_entity_layer(project, version=request.version, supersedes=request.operation_uid, budget_s=budget_s)
+
+
+def layer_pending(project: StoreProject, conn: sqlite3.Connection, version_uid: str) -> bool:
+    """Si la capa de entidades de la versión ``version_uid`` (su uid) **no dice lo que dice el registro** de sus
+    entidades (spec 015, T43; RF-015-27, RF-015-29; hallazgo E-4 / C-11): alguna entidad calculada no tiene su fila
+    (la tabla ni existe, si es la primera de la versión), o la fila de alguna tiene otro nombre u otro **estado**
+    (al día, obsoleta, con el apoyo retirado o descartada), o queda una fila de lo que ya no sale en la capa. Es **la
+    marca** de una capa atrasada: la capa escribe el estado que deduce el grafo en el momento de escribirla, y el
+    grafo cambia después por vías que no la regeneran (cambiar un parámetro, recalcular una entidad con la misma
+    salida —la 008 no toca lo que depende de lo que no cambió—, dar por bueno un apoyo, o cerrar con Esc o un fallo lo
+    que sigue a crear una entidad antes de la capa). Quien la pone al día es :func:`layer_sync_steps`.
+    Barata y de solo lectura (con la instantánea de ``conn``): sin ninguna operación ``des.platform`` vigente en la
+    versión, una consulta; con ellas, el registro de las entidades y la columna de código, nombre y estado de la
+    tabla, **sin leer su geometría**. Una capa que no se puede usar (editada fuera de Geoblender y bloqueada, o
+    dañada) no se marca: no es de la capa decidirlo, y la 008 ofrece resolverla. Si no se puede saber (un registro
+    roto, una tabla ilegible), **está marcada**: lo seguro es no darla por buena, y quien intente ponerla al día dirá
+    el motivo."""
+    if not provenance.has_platform_operation(conn, version_uid):
+        return False
+    try:
+        listed = entities.registry(project, version_uid, conn=conn)
+        wanted = {entry.record.code: (entry.record.name, str(EntityState(entry.record.state)))
+                  for entry in listed
+                  if entry.operation_uid is not None and EntityState(entry.record.state) in LAYER_STATES}
+        record = dataset_registry.get(conn, provenance.dataset_name(provenance.ENTITY_MAP_TABLE),
+                                      version_uid=version_uid)
+        if record is None or not record.live:
+            return bool(wanted)
+        if str(record.status) in _UNUSABLE_STATUSES:
+            return False
+        shown = {str(code): (str(name), str(state)) for code, name, state in conn.execute(
+            f'SELECT code, name, state FROM "{record.locator}"')}
+        return shown != wanted
+    except (DesignError, ValueError, sqlite3.Error):
+        return True
+
+
+def layer_sync_steps(project: StoreProject, version: Version | str | None, *, budget_s: float = STEP_BUDGET_S
+                     ) -> Generator[Progress, None, bool]:
+    """Los pasos de **poner al día la capa de entidades de la versión** ``version`` **si está marcada**
+    (:func:`layer_pending`; spec 015, T43; RF-015-27, RF-015-29): lo de :func:`entity_layer_steps` solo si la capa no
+    dice lo que el registro y, si no, **nada** (ni un paso: no se escribe ninguna operación). Devuelve si la
+    regeneró. Lo hacen, tras lo suyo, :func:`release_support` (la 008 no recalcula lo que dependía de lo que se dio por
+    bueno) y, por ``bl``, «Recalcular lo obsoleto» (:func:`layers_sync_steps`). Cada paso es de ``budget_s`` como mucho y
+    cerrarlos (Esc) no deja nada a medias (una operación y una transacción). Rechazos, sin escribir nada: los de
+    :func:`~.store.require_version` (RF-009-21)."""
+    wanted = None if version is None else (version.uid if isinstance(version, Version) else version)
+    found = require_version(project, wanted, provenance.ENTITY_LAYER)
+    with _consistent(project) as conn:
+        if not layer_pending(project, conn, found.uid):
+            return False
+    yield from entity_layer_steps(project, found, budget_s=budget_s)
+    return True
+
+
+def layers_sync_steps(project: StoreProject, *, budget_s: float = STEP_BUDGET_S
+                      ) -> Generator[Progress, None, tuple[str, ...]]:
+    """Los pasos de poner al día la capa de entidades **de cada versión editable del proyecto que la tenga marcada**
+    (:func:`layer_sync_steps`; spec 015, T43; RF-015-27, RF-015-29): lo que hace ``bl`` al terminar «Recalcular lo
+    obsoleto», que rehace las entidades por el grafo de la 008 sin pasar por lo que sigue a una orden de entidades.
+    Devuelve los códigos de las versiones cuya capa regeneró (``()`` si todas decían lo que el registro: no se escribe
+    nada). Una capa que no se puede regenerar (un rechazo, el disco) se deja como estaba, **marcada**, y queda en el
+    registro técnico: no impide las demás ni lo que ya terminó."""
+    with _consistent(project) as conn:
+        due = [found for found in versions_read.versions(conn)
+               if found.editable and layer_pending(project, conn, found.uid)]
+    refreshed: list[str] = []
+    for found in due:
+        try:
+            if (yield from layer_sync_steps(project, found, budget_s=budget_s)):
+                refreshed.append(found.code)
+        except _STAGE_ERRORS:
+            LOGGER.warning("No se pudo poner al día la capa de entidades de %s: sigue marcada", found.code,
+                           exc_info=True)
+    return tuple(refreshed)
 
 
 # --- Tras la orden de una entidad (spec 015, T19; RF-015-10, RF-015-16, RF-012-06; plan 015 §5.3.2) ---
@@ -3490,16 +3610,22 @@ def release_support(project: StoreProject, version: Version | str, target: str, 
 
 class _ReleaseSteps:
     """Los pasos de ``work`` (la operación repetida sin su apoyo) y, **cuando está completa** (el último trae su
-    resultado), el evento ``support_released`` en su propia transacción. Cerrarlos antes (Esc, desactivar
-    Geoblender) no deja evento ni operación: los pasos empezados ya cancelan la suya; si **no empezaron**, la operación
-    que abrió ``recompute_run`` queda «cancelada» aquí (como las de la cola de ``des``)."""
+    resultado), el evento ``support_released`` en su propia transacción y, tras él, **la capa de entidades puesta al
+    día** si ya no dice lo que el registro (:func:`layer_sync_steps`; T43, hallazgo E-4: la salida no cambia, así que
+    la 008 no toca lo que dependía de ella, y la capa decía «apoyo retirado» sobre una entidad al día); el último paso,
+    el de la operación, va después. Cerrarlos antes (Esc, desactivar Geoblender) no deja evento ni operación: los pasos
+    empezados ya cancelan la suya; si **no empezaron**, la operación que abrió ``recompute_run`` queda «cancelada» aquí
+    (como las de la cola de ``des``). Cerrarlos **durante la capa** deja lo hecho (la operación y su evento están
+    completos) y la capa marcada (:func:`layer_pending`); un fallo de la capa tampoco deshace nada."""
 
     def __init__(self, project: StoreProject, found: Version, handle: OperationHandle, work: Iterator[Progress],
                  name: str, superseded: str, picked: Sequence[entities.RetiredEntity],
                  released: Sequence[provenance.ReleasedSupport]) -> None:
         self._project, self._found, self._handle, self._work = project, found, handle, work
         self._name, self._superseded, self._picked, self._released = name, superseded, picked, released
-        self._started = self._finished = False
+        self._started = self._finished = self._completed = False
+        self._held: Progress | None = None
+        self._tail: Iterator[Progress] | None = None
 
     def __iter__(self) -> _ReleaseSteps:
         return self
@@ -3507,29 +3633,50 @@ class _ReleaseSteps:
     def __next__(self) -> Progress:
         if self._finished:
             raise StopIteration
-        self._started = True
-        try:
-            step = next(self._work)
-        except BaseException:  # los pasos ya dejan la operación fallida o cancelada
-            self._finished = True
-            raise
-        if step.result is not None:
-            self._finished = True
+        if not self._completed:
+            self._started = True
+            try:
+                step = next(self._work)
+            except BaseException:  # los pasos ya dejan la operación fallida o cancelada
+                self._finished = True
+                raise
+            if step.result is None:
+                return step
+            self._completed = True
             _record_release(self._project, self._found, self._handle.uid, self._name, self._superseded,
                             self._picked, self._released)
-        return step
+            self._held = step
+            self._tail = self._layer_steps()
+        assert self._tail is not None and self._held is not None
+        try:
+            return next(self._tail)
+        except StopIteration:
+            held, self._held, self._finished = self._held, None, True
+            return held
+
+    def _layer_steps(self) -> Iterator[Progress]:
+        """Los pasos de la capa (sin su resultado: el último paso es el de la operación); un rechazo o un fallo del disco
+        la dejan marcada y no cambian lo que ya está hecho."""
+        try:
+            for step in layer_sync_steps(self._project, self._found):
+                yield replace(step, result=None)
+        except _STAGE_ERRORS:
+            LOGGER.warning("No se pudo poner al día la capa de entidades de %s tras dar por bueno un apoyo: sigue "
+                           "marcada", self._found.code, exc_info=True)
 
     def close(self) -> None:
-        """Cierra los pasos: si no empezaron, la operación nueva queda «cancelada»; si no, la cancelan ellos."""
+        """Cierra los pasos: si no empezaron, la operación nueva queda «cancelada»; si no, la cancelan ellos (o,
+        completa, queda como está)."""
         if not self._started and not self._finished:
             try:
                 self._handle.cancel(CANCELLED_REASON)
             except (GeoblenderError, sqlite3.Error, OSError):  # ya no estaba en curso: nada que dejar
                 pass
         self._finished = True
-        close = getattr(self._work, "close", None)
-        if callable(close):
-            close()
+        for steps in (self._tail, self._work):
+            close = getattr(steps, "close", None)
+            if callable(close):
+                close()
 
 
 def _record_release(project: StoreProject, found: Version, operation: str, name: str, superseded: str,

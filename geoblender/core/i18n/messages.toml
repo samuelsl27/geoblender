@@ -8900,8 +8900,8 @@ es = "Calculando la plataforma… {percent} % · Esc: cancelar"
 ["Updating the declared constraints and the masks… {percent} % · Esc: cancel"]
 es = "Poniendo al día las restricciones declaradas y las máscaras… {percent} % · Esc: cancelar"
 
-["Cancelled: the platform is created; the declared constraints and the masks are brought up to date before the next operation that uses them"]
-es = "Cancelado: la plataforma está creada; las restricciones declaradas y las máscaras se ponen al día antes de la próxima operación que las use"
+["Cancelled: the platform is created; the declared constraints and the masks are brought up to date before the next operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»"]
+es = "Cancelado: la plataforma está creada; las restricciones declaradas y las máscaras se ponen al día antes de la próxima operación que las use, y la capa de entidades con la próxima orden de entidades o con «Recalcular lo obsoleto»"
 
 ["The platform is created: only the declared constraints and the masks have not been brought up to date"]
 es = "La plataforma está creada: solo las restricciones declaradas y las máscaras no se han puesto al día"
@@ -8958,11 +8958,21 @@ es = "Entidad «{name}» descartada en {version}: no se ha borrado nada"
 ["Left as «support removed»: {items}"]
 es = "Quedan como «apoyo retirado»: {items}"
 
-["Cancelled: the entity is discarded; the declared constraints and the masks are brought up to date before the next operation that uses them"]
-es = "Cancelado: la entidad está descartada; las restricciones declaradas y las máscaras se ponen al día antes de la próxima operación que las use"
+["Cancelled: the entity is discarded; the declared constraints and the masks are brought up to date before the next operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»"]
+es = "Cancelado: la entidad está descartada; las restricciones declaradas y las máscaras se ponen al día antes de la próxima operación que las use, y la capa de entidades con la próxima orden de entidades o con «Recalcular lo obsoleto»"
 
 ["The entity is discarded: only the declared constraints and the masks have not been brought up to date"]
 es = "La entidad está descartada: solo las restricciones declaradas y las máscaras no se han puesto al día"
+
+# Lo que sigue a cambiar un parámetro de una entidad (spec 015, T43; RF-015-10, RF-015-27; bl/ops/des.py).
+["Updating the declared constraints, the masks and the entity layer… {percent} % · Esc: cancel"]
+es = "Poniendo al día las restricciones declaradas, las máscaras y la capa de entidades… {percent} % · Esc: cancelar"
+
+["Cancelled: the change is written; the declared constraints and the masks are brought up to date before the next operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»"]
+es = "Cancelado: el cambio está escrito; las restricciones declaradas y las máscaras se ponen al día antes de la próxima operación que las use, y la capa de entidades con la próxima orden de entidades o con «Recalcular lo obsoleto»"
+
+["The change is written: only the declared constraints, the masks and the entity layer have not been brought up to date"]
+es = "El cambio está escrito: solo las restricciones declaradas, las máscaras y la capa de entidades no se han puesto al día"
 
 ["The project was closed while «{name}» was being done: nothing has been left half-done"]
 es = "Se cerró el proyecto mientras se hacía «{name}»: no queda nada a medias"

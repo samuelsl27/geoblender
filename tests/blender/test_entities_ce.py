@@ -33,7 +33,7 @@ import bpy
 import numpy as np
 
 from tests.blender import test_platform_ops as platform_ops
-from tests.support import blender_ext
+from tests.support import blender_ext, step_modals
 from tests.support.fake_layout import operator_self
 
 DISCARD = "geoblender.des_entity_discard"
@@ -474,20 +474,46 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
         self.assertIn(LOADING, self.names_of(operator, "done"))
         self.assertEqual(set(self.states(self.v03).values()), {"current"})
 
+    def layer_vs_registry(self, version: Any) -> tuple[dict[str, str], dict[str, str]]:
+        """Lo que dice la capa de entidades de ``version`` de cada entidad y lo que dice el registro (el grafo)."""
+        layer = dict(self.rows(f"SELECT code, state FROM des_enl_{version.code.lower()}"))
+        return layer, self.states(version)
+
     def test_h_changing_its_own_restriction_leaves_it_obsolete_and_recomputing_does_not_change_its_output(self) -> None:
-        """CE-015-04, RF-008-26, D-21 (lo que da el código, con «Recalcular lo obsoleto» real): P1 pasa de 4 a 6 m de resguardo y
-        queda obsoleta (por ese parámetro); las máscaras se siguen entregando; lo que sigue a cambiarlo declara y recompila; **una
-        sola pasada** de «Recalcular lo obsoleto» rehace P1, P2 y la verificación, **sin recalcular la declaración ni las
-        máscaras** (pierden su marca) y la salida de P1 **no cambia**."""
+        """CE-015-04, RF-015-10, RF-015-16, RF-015-27, RF-008-26, D-21 (T43, hallazgos E-2 y E-4; las órdenes reales): P1 pasa
+        de 4 a 6 m de resguardo con «Cambiar parámetro…» (``core_set_parameter``) y queda obsoleta (por ese parámetro); las
+        máscaras se siguen entregando; **la propia orden lanza lo que sigue** (``des_entity_refresh``: declara, recompila las
+        máscaras y pone al día la capa, por pasos con Esc); **una sola pasada** de «Recalcular lo obsoleto» rehace P1, P2 y la
+        verificación **sin recalcular la declaración ni las máscaras** (la salida de P1 **no cambia**) y deja **entidad,
+        máscaras y capa al día**: la capa dice lo que el registro (hasta la T43 solo la tercera pasada dejaba al día a la
+        entidad y la capa seguía diciendo «obsoleta»). La barra de estado, la capa y el registro, de acuerdo."""
         access, ui = _module("gis.masks.access"), _module("bl.ui.provenance")
+        entity_store = _module("design.entity_store")
         key = "des.platform.plt_001.guard_m"
         first, second = self.current(self.v03, "PLT-001"), self.current(self.v03, "PLT-002")
         hashes = self.hashes(first)
-        self.change(self.v03, key, 6.0)
-        self.assertEqual(self.causes(first), {("parameter_changed", key)})
+        before = self.layer_vs_registry(self.v03)
+        self.assertEqual(before[0], before[1], "antes de cambiar, la capa dice lo que el registro")
         self.assertIs(access.mask_state(self.project, self.v03.uid)[0], access.MaskState.CURRENT)
-        chain = _last(_module("design.entity_store").after_entity_change(self.project, self.v03))
-        self.assertEqual((chain.declared, chain.declaration_changed, chain.masks_compiled), (1, True, True))
+        self.assertEqual(bpy.ops.geoblender.core_set_parameter(
+            "EXEC_DEFAULT", key=key, value="6", scope="VERSION", source="Criterio de la prueba",
+            decided_by=platform_ops.PERSON, reason=platform_ops.REASON), {"FINISHED"})
+        self.assertEqual(self.causes(first), {("parameter_changed", key)})
+        modal = self.refresh_modal()
+        self.assertIsNotNone(modal, "«Cambiar parámetro…» lanza lo que sigue, por pasos y con Esc")
+        for _ in range(MAX_TICKS):
+            if modal.modal(bpy.context, TIMER) != {"RUNNING_MODAL"}:
+                break
+        else:
+            self.fail("lo que sigue a cambiar el parámetro no termina")
+        self.assertIsNone(self.refresh_modal())
+        self.assertIsNone(modal._steps)
+        shown = " ".join(modal.report_log)
+        self.assertIn("Las restricciones que declaran las entidades de V03 están al día", shown)
+        self.assertIs(access.mask_state(self.project, self.v03.uid)[0], access.MaskState.CURRENT)
+        self.assertEqual(self.layer_vs_registry(self.v03), ({"PLT-001": "stale", "PLT-002": "stale"},
+                                                            {"PLT-001": "stale", "PLT-002": "stale"}),
+                         "la capa dice lo que dice el registro tras cambiar")
         ui.refresh(force=True)
         declaration = self.rows("SELECT uid FROM gb_operation WHERE op_type = ? AND status = 'done' AND superseded_by "
                                 "IS NULL AND settings LIKE '%PLT-001%'", platform_ops.DECLARE_TYPE)
@@ -501,7 +527,52 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
         self.assertEqual(self.hashes(self.current(self.v03, "PLT-002")), self.hashes(second), "ni la de P2")
         self.assertEqual(self.states(self.v03), {"PLT-001": "current", "PLT-002": "current"})
         self.assertEqual(self.stale_in(self.v03), [])
+        self.assertIs(access.mask_state(self.project, self.v03.uid)[0], access.MaskState.CURRENT)
+        self.assertEqual(self.layer_vs_registry(self.v03), ({"PLT-001": "current", "PLT-002": "current"},
+                                                            {"PLT-001": "current", "PLT-002": "current"}),
+                         "una sola pasada deja la capa al día: la pone al día lo que sigue a «Recalcular lo obsoleto»")
+        with self.project.read() as conn:
+            self.assertFalse(entity_store.layer_pending(self.project, conn, self.v03.uid))
         self.assertTrue(declaration)
+
+    def test_h_esc_in_what_follows_a_change_leaves_the_layer_marked_and_recompute_stale_brings_it_up_to_date(self) -> None:
+        """RF-015-29, RF-015-27, RF-015-10, CE-015-04 (T43, hallazgo E-4; las órdenes reales): P1 pasa de 6 a 8 m de resguardo
+        y **Esc** cancela lo que sigue a cambiarlo tras el primer evento: el cambio sigue escrito (y la entidad, obsoleta),
+        la orden lo dice —también lo de la capa—, no queda ninguna operación en curso y **la capa queda marcada**
+        (``layer_pending``: dice «al día» sobre una entidad obsoleta). «Recalcular lo obsoleto», pedido hasta que no quede
+        nada obsoleto, deja entidad, máscaras y capa al día: lo que sigue a cada pasada pone al día la capa."""
+        access = _module("gis.masks.access")
+        entity_store = _module("design.entity_store")
+        key = "des.platform.plt_001.guard_m"
+        self.assertEqual(bpy.ops.geoblender.core_set_parameter(
+            "EXEC_DEFAULT", key=key, value="8", scope="VERSION", source="Criterio de la prueba",
+            decided_by=platform_ops.PERSON, reason=platform_ops.REASON), {"FINISHED"})
+        modal = self.refresh_modal()
+        self.assertIsNotNone(modal)
+        modal.STEP_BUDGET_S = step_modals.ONE_STEP_S
+        self.assertEqual(modal.modal(bpy.context, TIMER), {"RUNNING_MODAL"})
+        self.assertEqual(modal.modal(bpy.context, platform_ops.ESCAPE), {"CANCELLED"})
+        self.assertIn("Cancelado: el cambio está escrito; las restricciones declaradas y las máscaras se ponen al día "
+                      "antes de la próxima operación que las use, y la capa de entidades con la próxima orden de "
+                      "entidades o con «Recalcular lo obsoleto»", modal.report_log)
+        self.assertIsNone(modal._steps)
+        self.assertIsNone(self.refresh_modal())
+        self.assertEqual(self.rows("SELECT count(*) FROM gb_operation WHERE status = 'running'"), [(0,)])
+        self.assertEqual(self.states(self.v03)["PLT-001"], "stale", "el cambio está escrito")
+        layer, registry = self.layer_vs_registry(self.v03)
+        self.assertEqual((layer["PLT-001"], registry["PLT-001"]), ("current", "stale"))
+        with self.project.read() as conn:
+            self.assertTrue(entity_store.layer_pending(self.project, conn, self.v03.uid), "la capa queda marcada")
+        for _ in range(6):
+            self.recompute()
+            if not self.stale_in(self.v03):
+                break
+        self.assertEqual(self.stale_in(self.v03), [])
+        self.assertIs(access.mask_state(self.project, self.v03.uid)[0], access.MaskState.CURRENT)
+        layer, registry = self.layer_vs_registry(self.v03)
+        self.assertEqual((layer, registry), ({"PLT-001": "current", "PLT-002": "current"},) * 2)
+        with self.project.read() as conn:
+            self.assertFalse(entity_store.layer_pending(self.project, conn, self.v03.uid))
 
     def test_i_a_cut_and_fill_platform_cannot_declare_its_own_prohibition_and_discarding_takes_the_restriction_out(self) -> None:
         """CE-015-04, RF-015-12, RF-015-10, RF-015-17, E3 (la orden real): «Plataforma…» «en corte y relleno» que protege se

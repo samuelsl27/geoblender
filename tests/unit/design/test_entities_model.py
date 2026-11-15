@@ -112,6 +112,8 @@ CODES: dict[str, str] = {
     "des.entity_chain_declare_failed": "warning",  # RF-015-10 (T19)
     "des.entity_chain_masks_failed": "warning",  # RF-015-10 (T19)
     "des.entity_chain_layer_failed": "warning",  # RF-015-27 (T30)
+    "des.entity_footprint_blocked": "error",    # RF-015-11 (T43)
+    "des.entity_footprint_unusable": "error",   # RF-015-11 (T43)
     "des.entity_bring_same": "error",           # RF-015-18 (T26)
     "des.entity_bring_unknown": "error",        # RF-015-18 (T26)
     "des.entity_bring_discarded": "error",      # RF-015-18 (T26)

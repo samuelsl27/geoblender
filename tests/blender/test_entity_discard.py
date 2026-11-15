@@ -318,7 +318,8 @@ class EntityDiscardTest(platform_ops.CreatePlatformTest):
         self.assertEqual(modal.modal(bpy.context, step_modals.TIMER), {"RUNNING_MODAL"})
         self.assertEqual(modal.modal(bpy.context, platform_ops.ESCAPE), {"CANCELLED"})
         self.assertIn("Cancelado: la entidad está descartada; las restricciones declaradas y las máscaras se ponen al "
-                      "día antes de la próxima operación que las use", modal.report_log)
+                      "día antes de la próxima operación que las use, y la capa de entidades con la próxima orden de "
+                      "entidades o con «Recalcular lo obsoleto»", modal.report_log)
         self.assertIsNone(modal._steps)
         self.assertEqual(self.states()["PLT-002"], "discarded")
         self.assertEqual(len(self.events("entity_discarded")), 2)

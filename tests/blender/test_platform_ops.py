@@ -398,6 +398,24 @@ class CreatePlatformTest(unittest.TestCase):
         self.assertEqual(len(found), 1, f"{PLATFORM} no está en marcha")
         return found[0]
 
+    def refresh_modal(self) -> Any:
+        """El modal de lo que sigue a cambiar un parámetro de una entidad (``des_entity_refresh``, T43), si está en marcha."""
+        found = [op for op in bpy.context.window.modal_operators
+                 if isinstance(op, self.des_ops.GEOBLENDER_OT_des_entity_refresh)
+                 and getattr(op, "_steps", None) is not None]
+        self.assertLessEqual(len(found), 1)
+        return found[0] if found else None
+
+    def finish_refresh(self) -> list[str]:
+        """Lleva hasta el final lo que sigue a cambiar un parámetro de una entidad (lo lanza «Cambiar parámetro…»; sus
+        temporizadores no corren en ``blender -b``): lo que dijo la orden. El modal tiene que estar en marcha."""
+        modal = self.refresh_modal()
+        self.assertIsNotNone(modal, "«Cambiar parámetro…» lanza lo que sigue (T43)")
+        for _ in range(step_modals.MAX_EVENTS):
+            if modal.modal(bpy.context, step_modals.TIMER) != {"RUNNING_MODAL"}:
+                return list(modal.report_log)
+        self.fail("lo que sigue a cambiar el parámetro no termina")
+
     def calculate(self, **values: Any) -> Any:
         """«Calcular» desde un guion: el cálculo abierto de la sesión."""
         self.assertEqual(bpy.ops.geoblender.des_create_platform("EXEC_DEFAULT", **self.form(**values)),
@@ -845,7 +863,8 @@ class CreatePlatformTest(unittest.TestCase):
     # --- Esc antes de la primera declaración de una versión (T38; hallazgo E-1) ---------------------------
 
     CANCELLED_TEXT = ("Cancelado: la plataforma está creada; las restricciones declaradas y las máscaras se ponen "
-                      "al día antes de la próxima operación que las use")
+                      "al día antes de la próxima operación que las use, y la capa de entidades con la próxima "
+                      "orden de entidades o con «Recalcular lo obsoleto»")
 
     def other_version(self, feature: str) -> Any:
         """Una versión nueva, **activa**, con sus máscaras compiladas (las de la 012, sin ninguna declarada): una
@@ -962,6 +981,7 @@ class CreatePlatformTest(unittest.TestCase):
 
         self.assertEqual(change("PLT-002", "name", "Taller 2"), {"FINISHED"})
         self.assertEqual(self.parameter("PLT-002", "name")[0], "Taller 2")
+        self.finish_refresh()  # T43: cambiar un parámetro de una entidad lanza lo que sigue, por pasos
         names = [entry.record.name for entry in self.entities.registry(self.project, self.v01.uid)]
         self.assertEqual(sorted(names), sorted(set(names)), "ninguna entidad con el nombre de otra")
 

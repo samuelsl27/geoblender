@@ -38,6 +38,7 @@ from unittest import mock
 import numpy as np
 
 from tests.support import constraints_fixtures as cfx
+from tests.support import entity_fixtures as efx
 from tests.support import quarry_fixtures as qfx
 from tests.support.core_fixtures import project_tmp
 from tests.support.package import import_geoblender
@@ -49,8 +50,10 @@ from tests.unit.design import test_platform_prepare as prep
 
 access = import_geoblender("gis.masks.access")
 base = import_geoblender("core.gpkg.base")
+core_params = import_geoblender("core.params")
 cstyles = import_geoblender("core.constraints.styles")
 design_params = import_geoblender("design.params")
+design_store = import_geoblender("design.store")
 dataset_registry = import_geoblender("core.datasets.registry")
 entities = import_geoblender("design.entities")
 entity_layer = import_geoblender("design.entity_layer")
@@ -704,6 +707,262 @@ class LayerExportTest(LayerCase):
         self.assertEqual(other.read_bytes(), original)
         self.assertEqual(sorted(path.name for path in self.out.iterdir()), ["carga.tif", "otra.tif"])
         self.assertEqual(self.counts(), before)
+
+
+# ---------------------------------------------------------------------------------------------
+# El estado de la capa nunca dice «al día» cuando no lo está (T43; hallazgo E-4 / C-11)
+# ---------------------------------------------------------------------------------------------
+
+WORKSHOP = prep.WORKSHOP
+GUARD = design_params.entity_key("PLT-001", "guard_m")
+BY = "Samuel (IMGA)"
+WHY = "Prueba de la T43"
+
+
+def returned(work: Any) -> Any:
+    """Lo que devuelve el generador ``work`` al acabar (``StopIteration.value``), tras dar todos sus pasos."""
+    while True:
+        try:
+            next(work)
+        except StopIteration as stop:
+            return stop.value
+
+
+class LayerStateTest(LayerCase):
+    """RF-015-27, RF-015-29, RF-008-26 (T43; hallazgo E-4 de la verificación única, que incluye el C-11): la capa de
+    entidades escribe el **estado** de cada entidad (al día, obsoleta, con el apoyo retirado, descartada) tal como lo
+    deduce el grafo **en el momento de escribirla**; sin más, lo contradecía en cuanto el grafo cambiaba por una vía
+    que no la regeneraba: tras **cambiar** un parámetro (la entidad queda obsoleta y la capa dice «al día»), tras
+    **recalcular sin cambiar la salida** (RF-008-26: la capa, que no depende de nada que cambió, seguía diciendo
+    «obsoleta»), tras **soltar un apoyo** (la 008 no recalcula lo que depende de ella) y tras **cancelar la cadena** (la
+    entidad nueva no estaba en la capa, ni la tabla si era la primera). Ahora la capa se pone al día por esas vías o
+    queda **marcada**: ``entity_store.layer_pending`` dice si no es lo que dice el registro y ``layer_sync_steps`` y
+    ``layers_sync_steps`` la regeneran solo si hace falta.
+
+    P1 (la «Plataforma de carga», del terreno, que **protege** con 4 m: es el caso típico de recalcular sin cambiar la
+    salida, D-21) y el taller (P2, de otro terreno, que **declara** apoyarse en P1: no parte de su superficie, así
+    que se puede dar por bueno sin ella), en el orden de las pruebas: (a) cambiar, (b) recalcular sin cambiar la
+    salida, (c) cancelar la cadena y (d) soltar el apoyo. El punto de partida (la declaración, las máscaras y
+    «Recalcular lo obsoleto» hasta no dejar nada) ya es el caso (b): la capa dice «obsoleta» sobre entidades al día,
+    y se pone al día como lo hace ``bl``."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.made(prep.request(protect=True, guard_m=chain_test.GUARD_M))
+        cls.made(prep.request(WORKSHOP, start=prep.HOLE_DATASET))
+        cls.clock.advance(minutes=1)
+        with cls.project.write_transaction() as conn:
+            core_params.ParameterStore(cls.project).create(
+                conn, design_params.entity_key("PLT-002", "supports"), "PLT-001", kind="ADOPTADO",
+                source="Prueba de la T43", source_kind="person", decided_by=BY, reason="Dependencia declarada",
+                version=cls.v1.uid)
+        cls.recompute_entity("PLT-002")
+        cls.chain()
+        cls.settle()
+        cls.clock.advance(minutes=1)
+        assert tuple(returned(entity_store.layers_sync_steps(cls.project))) == ("V01",)
+
+    @classmethod
+    def recompute_entity(cls, code: str) -> None:
+        """Repite la operación vigente de la entidad ``code`` con sus parámetros de ahora."""
+        entry = entities.registry(cls.project, cls.v1.uid).get(code)
+        ((settings,),) = cls.query_of("SELECT settings FROM gb_operation WHERE uid = ?", entry.operation_uid)
+        request = recompute_mod.RecomputeRequest(cls.project, str(entry.operation_uid), provenance.PLATFORM,
+                                                 json.loads(settings), (), (), version=cls.v1.uid)
+        cls.clock.advance(minutes=1)
+        _handle, work = design_store.recompute_run(request)
+        sup.finish(work)
+
+    def registry_states(self) -> dict[str, str]:
+        """Lo que dice el registro (el grafo) de cada entidad que sale en la capa."""
+        return {entry.record.code: str(entry.record.state)
+                for entry in entities.registry(self.project, self.v1.uid)
+                if entry.operation_uid is not None and entry.record.state in entity_layer.LAYER_STATES}
+
+    def layer_states(self) -> dict[str, str]:
+        """Lo que dice la capa."""
+        return {code: str(row.state) for code, row in self.layer_rows().items()}
+
+    def pending(self) -> bool:
+        with self.project.read() as conn:
+            return entity_store.layer_pending(self.project, conn, self.v1.uid)
+
+    def sync(self) -> bool:
+        """«Poner al día la capa si hace falta» hasta el final: si la regeneró."""
+        self.clock.advance(minutes=1)
+        return bool(returned(entity_store.layer_sync_steps(self.project, self.v1)))
+
+    def sync_all(self) -> tuple[str, ...]:
+        """«Poner al día la capa de cada versión que la tenga atrasada»: los códigos de las que regeneró."""
+        self.clock.advance(minutes=1)
+        return tuple(returned(entity_store.layers_sync_steps(self.project)))
+
+    def test_a_after_changing_a_parameter_the_layer_says_what_the_registry_says(self) -> None:
+        """RF-015-27, RF-015-16 (E-4): el punto de partida —capa y registro dicen «al día», nada pendiente—; cambiar
+        la pendiente de P1 deja obsoletas a P1 y a P2 (la cascada de la 008) y **la capa sigue diciendo «al día»**: está
+        marcada (``layer_pending``). Ponerla al día la deja como el registro, solo escribe si hace falta (la segunda
+        vez no hace nada) y «Recalcular lo obsoleto» —que rehace la capa porque cambió la salida— la deja al día."""
+        self.assertEqual(self.registry_states(), {"PLT-001": "current", "PLT-002": "current"})
+        self.assertEqual((self.layer_states(), self.pending()), (self.registry_states(), False))
+        self.change(GRADIENT, 0.5)
+        self.assertEqual(self.registry_states(), {"PLT-001": "stale", "PLT-002": "stale"})
+        self.assertEqual(self.layer_states(), {"PLT-001": "current", "PLT-002": "current"})
+        self.assertTrue(self.pending(), "la capa dice «al día» y el registro, «obsoleta»")
+        layer = self.current_layer()
+        self.assertTrue(self.sync())
+        self.assertNotEqual(self.current_layer(), layer)
+        self.assertEqual((self.layer_states(), self.pending()), ({"PLT-001": "stale", "PLT-002": "stale"}, False))
+        again = self.current_layer()
+        self.assertFalse(self.sync(), "al día: no se escribe nada")
+        self.assertEqual(self.current_layer(), again)
+        self.settle()
+        self.assertEqual(self.registry_states(), {"PLT-001": "current", "PLT-002": "current"})
+        self.assertEqual((self.layer_states(), self.pending()), (self.registry_states(), False))
+
+    def test_b_after_recomputing_without_changing_the_output_the_layer_is_marked_and_brought_up_to_date(self) -> None:
+        """RF-015-27, RF-008-26 (E-4, el caso típico de la entidad que protege): cambiar el resguardo de P1 la deja
+        obsoleta y lo que sigue a la orden (la declaración, las máscaras y la capa) deja la capa diciendo «obsoleta»;
+        «Recalcular lo obsoleto» rehace P1 con la **misma salida** (los mismos hash), así que la 008 no toca la capa
+        (no depende de nada que cambió): el registro dice «al día» y la capa **seguía diciendo «obsoleta»**. Está
+        marcada y ``layers_sync_steps`` —lo que hace ``bl`` tras «Recalcular lo obsoleto»— la pone al día."""
+        first = self.hashes_of(self.current("PLT-001"))
+        self.change(GUARD, 6.0)
+        self.assertEqual(self.registry_states()["PLT-001"], "stale")
+        self.assertEqual(self.chain().layer_failure, None)
+        self.assertEqual(self.layer_states()["PLT-001"], "stale")
+        layer = self.current_layer()
+        done = self.settle()
+        self.assertEqual(self.hashes_of(self.current("PLT-001")), first, "la salida de P1 no cambia")
+        types = [self.query("SELECT op_type FROM gb_operation WHERE uid = ?", uid)[0][0]
+                 for result in done for uid in result.operations]
+        self.assertIn(provenance.PLATFORM, types)
+        self.assertNotIn(LAYER, types, "la 008 no rehace la capa: no depende de nada que cambió")
+        self.assertEqual(self.current_layer(), layer)
+        self.assertEqual(self.registry_states(), {"PLT-001": "current", "PLT-002": "current"})
+        self.assertEqual(self.layer_states()["PLT-001"], "stale", "lo que dice la capa, sin ponerla al día")
+        self.assertTrue(self.pending(), "marcada: no dice lo que el registro")
+        self.assertEqual(self.sync_all(), ("V01",))
+        self.assertEqual((self.layer_states(), self.pending()), (self.registry_states(), False))
+        self.assertEqual(self.sync_all(), (), "sin nada que poner al día no se escribe")
+
+    def test_c_closing_the_chain_before_the_layer_leaves_it_marked_and_it_is_brought_up_to_date_later(self) -> None:
+        """RF-015-27, RF-015-29 (E-4): una entidad nueva (P3, de la superficie de P2) se crea y lo que sigue se cierra
+        (Esc) justo antes de la capa: la entidad está creada y **no sale en la capa**; la capa está marcada
+        (``layer_pending``) y ``layers_sync_steps`` (lo que hace ``bl`` tras «Recalcular lo obsoleto») la pone al día
+        con las tres entidades."""
+        self.made_confirmed(sup.asked(sup.DRAG, start="entity:PLT-002"))
+        self.clock.advance(minutes=1)
+        work = entity_store.after_entity_change(self.project, self.v1)
+        try:
+            for step in work:
+                if "capa de entidades" in step.message:
+                    break  # justo antes de escribirla
+        finally:
+            work.close()
+        self.assertEqual(list(self.layer_rows()), ["PLT-001", "PLT-002"], "la entidad nueva no está en la capa")
+        self.assertTrue(self.pending())
+        self.assertEqual(self.sync_all(), ("V01",))
+        self.assertEqual(list(self.layer_rows()), ["PLT-001", "PLT-002", "PLT-003"])
+        self.assertEqual((self.layer_states(), self.pending()), (self.registry_states(), False))
+
+    def test_d_giving_the_support_as_good_brings_the_layer_up_to_date_in_the_same_steps(self) -> None:
+        """RF-015-27, RF-015-17, RF-008-26 (E-4): descartar P1 deja al taller con el «apoyo retirado» (la cadena de
+        «Descartar» lo escribe en la capa); **darlo por bueno** (``release_support``) repite la operación con la misma
+        salida y la 008 no recalcula nada de lo que dependía de ella: el registro pasa a «al día» y la capa **seguía
+        diciendo «apoyo retirado»**. Los pasos de ``release_support`` terminan poniendo la capa al día: nada que
+        hacer después y nada marcado."""
+        self.clock.advance(minutes=1)
+        ops.finish(entity_store.discard_entity_steps(self.project, self.v1.uid, "PLT-001", reason=WHY,
+                                                     decided_by=BY))
+        self.assertEqual(self.registry_states()["PLT-002"], "support_removed")
+        self.assertEqual((self.layer_states(), self.pending()), (self.registry_states(), False))
+        # Si la capa no se puede escribir (el disco), darlo por bueno ya está hecho —la operación y su evento—, el último
+        # paso llega y la capa queda marcada: en una copia, antes de hacerlo de verdad.
+        with efx.open_copy_of(self.project, self.clock, self.STEP_M) as (project, _clock):
+            handle, work = entity_store.release_support(project, self.v1.uid, "PLT-002", "PLT-001", reason=WHY,
+                                                        decided_by=BY)
+            with mock.patch.object(entity_store, "entity_layer_steps", side_effect=OSError("disco lleno")),                     self.assertLogs("geoblender.design.entity_store", "WARNING"):
+                self.assertIsNotNone(sup.finish(work))
+            with project.read() as conn:
+                self.assertEqual(conn.execute("SELECT status FROM gb_operation WHERE uid = ?",
+                                              (handle.uid,)).fetchall(), [("done",)])
+                self.assertEqual(conn.execute("SELECT count(*) FROM gb_event WHERE kind = 'support_released'"
+                                              ).fetchone(), (1,))
+                self.assertTrue(entity_store.layer_pending(project, conn, self.v1.uid), "la capa sigue marcada")
+        self.clock.advance(minutes=1)
+        handle, work = entity_store.release_support(self.project, self.v1.uid, "PLT-002", "PLT-001", reason=WHY,
+                                                    decided_by=BY)
+        steps = list(work)
+        self.assertEqual([step.result is not None for step in steps], [False] * (len(steps) - 1) + [True],
+                         "solo el último paso lleva el resultado (los de la capa, no: el modal acabaría con ellos)")
+        self.assertEqual(self.query("SELECT status FROM gb_operation WHERE uid = ?", handle.uid), [("done",)])
+        self.assertEqual(self.registry_states()["PLT-002"], "current")
+        self.assertEqual((self.layer_states(), self.pending()), (self.registry_states(), False))
+
+    def test_e_a_row_with_another_name_or_a_missing_one_marks_the_layer(self) -> None:
+        """RF-015-27 (E-4): ``layer_pending`` compara el nombre y el estado de cada fila con el registro y que no sobre
+        ni falte ninguna: en una copia del proyecto, la fila de P2 con otro nombre, sin la de P1 o con una fila de más
+        (de lo que no está calculado) marcan la capa; la capa tal cual está, no."""
+        with efx.open_copy_of(self.project, self.clock, self.STEP_M) as (project, _clock):
+            def pending() -> bool:
+                with project.read() as conn:
+                    return entity_store.layer_pending(project, conn, self.v1.uid)
+
+            def edit(sql: str, *args: Any) -> None:
+                with project.write_transaction() as conn:
+                    conn.execute(sql, args)
+
+            self.assertFalse(pending())
+            edit(f'UPDATE "{TABLE}" SET name = ? WHERE code = ?', "Otro nombre", "PLT-002")
+            self.assertTrue(pending(), "otro nombre")
+        with efx.open_copy_of(self.project, self.clock, self.STEP_M) as (project, _clock):
+            with project.write_transaction() as conn:
+                conn.execute(f'DELETE FROM "{TABLE}" WHERE code = ?', ("PLT-001",))
+            with project.read() as conn:
+                self.assertTrue(entity_store.layer_pending(project, conn, self.v1.uid), "falta una fila")
+        with efx.open_copy_of(self.project, self.clock, self.STEP_M) as (project, _clock):
+            with project.write_transaction() as conn:
+                conn.execute(f'UPDATE "{TABLE}" SET code = ? WHERE code = ?', ("PLT-009", "PLT-001"))
+            with project.read() as conn:
+                self.assertTrue(entity_store.layer_pending(project, conn, self.v1.uid), "una fila de lo que no está")
+
+
+class FirstLayerTest(LayerCase):
+    """RF-015-27, RF-015-29 (E-4): una versión sin capa de entidades (la tabla ni existe) con una entidad calculada
+    —lo que deja «Crear» si lo que sigue se cierra antes de escribir la primera capa— está **marcada**, y
+    ``layers_sync_steps`` la crea."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.made(prep.request())
+
+    def test_a_without_its_table_the_layer_is_marked_and_it_is_created(self) -> None:
+        with self.project.read() as conn:
+            self.assertFalse(entity_store.layer_pending(self.project, conn, self.v2.uid), "V02: sin entidades, nada")
+            self.assertIsNone(conn.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (TABLE,)).fetchone())
+            self.assertTrue(entity_store.layer_pending(self.project, conn, self.v1.uid))
+        self.clock.advance(minutes=1)
+        self.assertEqual(tuple(returned(entity_store.layers_sync_steps(self.project))), ("V01",))
+        self.assertEqual({code: str(row.state) for code, row in self.layer_rows().items()}, {"PLT-001": "current"})
+        with self.project.read() as conn:
+            self.assertFalse(entity_store.layer_pending(self.project, conn, self.v1.uid))
+
+    def test_b_a_layer_that_cannot_be_written_does_not_stop_the_others(self) -> None:
+        """RF-015-27: ``layers_sync_steps`` deja marcada y anota la capa que no se puede poner al día (aquí, V01: el disco)
+        y sigue con las demás (V02) sin lanzar nada; devuelve solo las que regeneró."""
+        progress = import_geoblender("core.project.model").Progress
+
+        def sync(_project: Any, version: Any, **_options: Any) -> Any:
+            if version.code == "V01":
+                raise OSError("disco lleno")
+            yield progress("entity_layer", 1, 1, "V02")
+            return True
+
+        with mock.patch.object(entity_store, "layer_pending", return_value=True),                 mock.patch.object(entity_store, "layer_sync_steps", sync),                 self.assertLogs("geoblender.design.entity_store", "WARNING") as logged:
+            self.assertEqual(tuple(returned(entity_store.layers_sync_steps(self.project))), ("V02",))
+        self.assertTrue(any("V01" in line and "sigue marcada" in line for line in logged.output), logged.output)
 
 
 if __name__ == "__main__":

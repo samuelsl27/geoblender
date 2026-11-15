@@ -161,6 +161,9 @@ PENDING_015_API: frozenset[str] = frozenset({
     "check_parameter_change",  # T39: ``entity_store``, las reglas de crear al cambiar un parámetro de una entidad
     "unsupportable",  # T39: ``entities``, donde una entidad no puede apoyarse (ciclo)
     "entity_request",  # T41: ``entity_store``, la petición de una entidad sin calcular (traída o heredada)
+    "layer_pending",  # T43: ``entity_store``, si la capa de entidades no dice lo que el registro (la marca)
+    "layer_sync_steps",  # T43: ``entity_store``, ponerla al día solo si está marcada
+    "layers_sync_steps",  # T43: ``entity_store``, la de cada versión editable que la tenga marcada (lo que hace ``bl``)
 })
 PENDING_015_MODULES: frozenset[str] = frozenset()
 

@@ -241,6 +241,16 @@ obsoleto» no encadena nada: la declaración y las máscaras son operaciones de 
 grafo (el recálculo de una plataforma no declara por su cuenta). Descartar (T25) y retirar (T26) encadenan
 la misma función.
 
+**Lo que sigue a cambiar un parámetro de una entidad y a «Recalcular lo obsoleto»** (spec 015, T43; RF-015-10,
+RF-015-27, RF-015-29; hallazgos E-2, B-2 y E-4): «Cambiar parámetro…» de un parámetro ``des.platform.<e>.<p>`` de la
+versión activa lanza, con el cambio ya escrito (:func:`_after_entity_parameter`, registrado en
+``core_provenance.register_parameter_after``), :class:`GEOBLENDER_OT_des_entity_refresh` (interna, sin menú): lo que
+sigue a crear o descartar una entidad (``design.entity_store.after_entity_change``) por pasos con el avance y Esc;
+así una sola pasada de «Recalcular lo obsoleto» deja al día la entidad, las máscaras y la capa. Al terminar
+«Recalcular lo obsoleto» (:func:`_layers_after_recompute`, ``core_provenance.register_recompute_after``) se pone al día la
+capa de entidades de las versiones en que no dice lo que el registro (``design.entity_store.layers_sync_steps``: la
+008 no rehace lo que depende de una salida que no cambió).
+
 **Descartar una entidad y soltar el apoyo** (spec 015, T25; HU-015-2; RF-015-17, RF-009-12, RF-015-28, RF-015-29; D-12;
 plan 015 §5.3.3 y §5.4 A7, P-6): :class:`GEOBLENDER_OT_des_entity_discard` (``geoblender.des_entity_discard``) **enseña
 antes una sola lista** —lo que se apoya en la entidad y lo que parte de ella, con su tipo y sus m³:
@@ -359,10 +369,14 @@ from .core_provenance import (
     ensure_ready,
     error_text,
     read_only_dirs,
+    register_parameter_after,
     register_parameter_check,
+    register_recompute_after,
     scope_choice,
     typed_value,
+    unregister_parameter_after,
     unregister_parameter_check,
+    unregister_recompute_after,
     write_unavailable,
 )
 from .incorporation import StepQueue
@@ -665,6 +679,41 @@ def _check_entity_parameter(project: Any, key: str, value: Any, version_uid: str
     entity_store.check_parameter_change(project, key, value, version=version_uid)
 
 
+# --- Lo que sigue a cambiar una entidad y a «Recalcular lo obsoleto» (spec 015, T43; RF-015-10, RF-015-27) ---
+
+REFRESH_ENTITIES = "geoblender.des_entity_refresh"
+
+
+def _after_entity_parameter(project: Any, key: str, version_uid: str) -> None:
+    """Lo que ``des`` registra tras «Cambiar parámetro…» (:func:`~.core_provenance.register_parameter_after`): el cambio
+    de un parámetro de una entidad de la versión (``des.platform.<e>.<p>``) hace lo que hace crear o descartar una
+    —declarar sus restricciones, recompilar las máscaras si hace falta y poner al día la capa de entidades—, por pasos
+    con el avance y Esc en :class:`GEOBLENDER_OT_des_entity_refresh`: sin esto, «Recalcular lo obsoleto» tardaba tres
+    pasadas en dejar al día una entidad cuyo resguardo cambió y la capa decía «al día» sobre una entidad obsoleta
+    (hallazgos E-2 y E-4). «Cambiar parámetro…» cambia el de la versión **activa** (``scope = VERSION``): es la que pone
+    al día la orden; si ya no lo es, no hace nada."""
+    if scene_versions.active_version() != version_uid:
+        return
+    bpy.ops.geoblender.des_entity_refresh("EXEC_DEFAULT", in_steps=True)
+
+
+def _layers_after_recompute(project: Any) -> Iterator[Progress] | None:
+    """Lo que ``des`` registra al terminar «Recalcular lo obsoleto» (:func:`~.core_provenance.register_recompute_after`):
+    la capa de entidades de cada versión que no diga lo que el registro de sus entidades (``design.entity_store.
+    layers_sync_steps``). La 008 rehace las entidades por el grafo y, si la salida de una no cambia (RF-008-26), no toca
+    lo que depende de ella: la capa seguía diciendo «obsoleta» sobre una entidad al día (hallazgo E-4). Sin ninguna
+    operación de entidades en el proyecto es una consulta y no importa el almacén (habilitar ni recalcular proyectos sin
+    ellas lo cargan)."""
+    with project.read() as conn:
+        found = conn.execute("SELECT 1 FROM gb_operation WHERE op_type = ? AND status = 'done' "
+                             "AND superseded_by IS NULL LIMIT 1", (provenance.PLATFORM,)).fetchone()
+    if found is None:
+        return None
+    from ...design import entity_store  # al usarlo: habilitar no carga las entidades
+
+    return entity_store.layers_sync_steps(project)
+
+
 # --- Registro ------------------------------------------------------------------------------------
 
 
@@ -700,6 +749,10 @@ def register() -> None:
         _UNDO.append(functools.partial(declaring.unregister, DECLARATION_HOOK))
     register_parameter_check(PARAMETER_PREFIX, _check_entity_parameter)
     _UNDO.append(functools.partial(unregister_parameter_check, PARAMETER_PREFIX, _check_entity_parameter))
+    register_parameter_after(PARAMETER_PREFIX, _after_entity_parameter)
+    _UNDO.append(functools.partial(unregister_parameter_after, PARAMETER_PREFIX, _after_entity_parameter))
+    register_recompute_after(_layers_after_recompute)
+    _UNDO.append(functools.partial(unregister_recompute_after, _layers_after_recompute))
     if project_changed not in project_session.listeners():
         project_session.add_listener(project_changed)
         _UNDO.append(functools.partial(project_session.remove_listener, project_changed))
@@ -4184,7 +4237,8 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
     def _cancelled_text(self) -> str:
         if self._chain:
             return tr("Cancelled: the platform is created; the declared constraints and the masks "
-                      "are brought up to date before the next operation that uses them")
+                      "are brought up to date before the next operation that uses them, and the entity "
+                      "layer with the next entity order or «Recompute the stale results»")
         return _CalculateAndCreate._cancelled_text(self)
 
     def _error_text(self, exc: GeoblenderError) -> str:
@@ -4707,7 +4761,8 @@ class GEOBLENDER_OT_des_entity_discard(_EntitySteps, DesignCommandAware, Provena
 
     def _cancelled_text(self) -> str:
         return tr("Cancelled: the entity is discarded; the declared constraints and the masks are brought up to "
-                  "date before the next operation that uses them")
+                  "date before the next operation that uses them, and the entity layer with the next entity "
+                  "order or «Recompute the stale results»")
 
     def _error_text(self, exc: GeoblenderError) -> str:
         return f"{design_error_text(exc)} " + tr("The entity is discarded: only the declared constraints and the "
@@ -4837,6 +4892,67 @@ class GEOBLENDER_OT_des_entity_release_support(_EntitySteps, DesignCommandAware,
 
     def _cancelled_text(self) -> str:
         return tr("Cancelled: nothing has been left half-done")
+
+
+# --- Lo que sigue a cambiar un parámetro de una entidad (spec 015, T43; RF-015-10, RF-015-27, RF-015-29) ----------
+
+
+class GEOBLENDER_OT_des_entity_refresh(_EntitySteps, DesignCommand, _StepsModal, bpy.types.Operator):
+    """Bring up to date the constraints declared by the design entities, the masks and the entity layer of the active version after one of them changed"""
+
+    bl_idname = REFRESH_ENTITIES
+    bl_label = "Update the entity constraints and layer"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER", "INTERNAL"}
+
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    def execute(self, context: Any) -> set[str]:
+        """Lo que sigue a cambiar un parámetro de una entidad (``design.entity_store.after_entity_change``, lo mismo que a
+        crear o descartar una): declara las restricciones de las entidades vivas, recompila las máscaras si ya no están al
+        día y pone al día la capa de entidades, por pasos con el avance y Esc; desde un guion, de una vez. La que lo
+        lanza es «Cambiar parámetro…» (:func:`_after_entity_parameter`), con el cambio **ya escrito**: cerrar o fallar a
+        mitad no lo deshace, deja las máscaras obsoletas con su causa y la capa marcada
+        (``design.entity_store.layer_pending``) hasta la próxima orden de entidades o «Recalcular lo obsoleto»."""
+        from ...design import entity_store  # al usarlo: habilitar no carga el cálculo
+
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        project, version = SESSION.project, scene_versions.active_version() or ""
+        try:
+            steps = entity_store.after_entity_change(project, version, budget_s=self.STEP_BUDGET_S)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError, TypeError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        started = self._run_steps(context, project, version, steps)
+        return {"FINISHED"} if started == {"CANCELLED"} else started  # el cambio ya está escrito: el fallo está dicho
+
+    def _finished(self, context: Any, result: Any) -> set[str]:
+        """Lo que hizo lo que sigue (``design.entity_store.EntityChain``): la declaración, las máscaras de nuevo, lo ganado y
+        perdido por restricción, lo que quedó obsoleto y, en alerta, lo que no se pudo poner al día."""
+        undo_watch.record(UndoKind.OPERATION, provenance.DECLARE_CONSTRAINTS)  # Ctrl+Z no lo deshace
+        shown = i18n.language()
+        for notice in result.notices():
+            self._report({"WARNING" if notice.severity == "warning" else "INFO"}, notice.text(shown))
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
+        return {"FINISHED"}
+
+    def _status_text(self, step: Progress) -> str:
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Updating the declared constraints, the masks and the entity layer… {percent} % · Esc: cancel",
+                  percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Cancelled: the change is written; the declared constraints and the masks are brought up to date "
+                  "before the next operation that uses them, and the entity layer with the next entity order or "
+                  "«Recompute the stale results»")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return f"{design_error_text(exc)} " + tr("The change is written: only the declared constraints, the masks and "
+                                                 "the entity layer have not been brought up to date")
 
 
 # --- Traer las entidades de otra versión (spec 015, T26; HU-015-2; RF-015-18; plan 015 §5.3.3) -----------------
@@ -5433,6 +5549,7 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_create_platform,
                              GEOBLENDER_OT_des_entity_discard,
                              GEOBLENDER_OT_des_entity_release_support,
+                             GEOBLENDER_OT_des_entity_refresh,
                              GEOBLENDER_OT_des_entity_bring,
                              GEOBLENDER_OT_des_entity_preview,
                              GEOBLENDER_OT_des_entity_dependents,
@@ -5446,4 +5563,5 @@ perímetro…», la T21 «Cantera con dos superficies…», la T28 «Transicione
 afectado», la T30 «Solo relleno…» y la T33 «Ajustar el diseño a un límite nuevo…», de la entrada
 «014», que la T58 entrega; de la 015, la T15 pone «Plataforma…», la T25 «Descartar…» y «Soltar el apoyo…», la T26 «Traer las
 entidades de…» y la T29 la vista previa de una entidad, todas de la entrada «015», que entrega la T31 con el menú «Entidad ▾»
-(las dos internas nuevas de la T31, «Lo que se apoya en ella» e «Insertar antes o después de…», también; y la T41, «Calcular…»))."""
+(las dos internas nuevas de la T31, «Lo que se apoya en ella» e «Insertar antes o después de…», también; y la T41, «Calcular…»;
+y la T43, la interna que lanza «Cambiar parámetro…», sin menú))."""

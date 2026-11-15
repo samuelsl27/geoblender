@@ -170,6 +170,12 @@ ADR-0025).
   dato e Ignorar algo sin registrar no son ninguna de las tres clases del diario y no se
   apuntan.
 
+- Lo que un módulo hace con sus parámetros y tras recalcular (spec 015, T39 y T43): un módulo registra
+  una comprobación del cambio de **sus** parámetros antes de escribirlo (:func:`register_parameter_check`: las reglas
+  entre entidades de la 015), lo que lanza **tras** escribirlo (:func:`register_parameter_after`: lo que sigue a cambiar
+  una entidad, por pasos y con Esc en un operador suyo) y lo que pone al día **al terminar** «Recalcular lo obsoleto»
+  (:func:`register_recompute_after`: sus pasos corren en el mismo modal antes de decir lo que pasó, y no si se canceló).
+
 ``core.i18n`` no tiene cómo quitar traducciones: :func:`unregister` las deja (como los
 trabajos de la 004), y volver a registrar las instala otra vez sin cambiar nada.
 
@@ -1702,6 +1708,102 @@ def check_parameter_change(project: Any, key: str, value: Any, version_uid: str 
             check(project, key, value, version_uid)
 
 
+# --- Lo que un módulo hace tras cambiar sus parámetros y tras recalcular (spec 015, T43) -------
+
+type ParameterAfter = Callable[[Any, str, str], None]
+"""Lo que un módulo registra para ponerse al día **tras** «Cambiar parámetro…» de **sus** parámetros de una versión:
+``after(proyecto, clave, uid de la versión)``, ya escrito el cambio (la 015: lo que sigue a cambiar una entidad, que
+declara sus restricciones, recompila las máscaras y pone al día la capa). Lo que tarde lo hace por pasos con Esc, en un
+operador suyo: aquí no se espera. Un error suyo no deshace el cambio (queda en el registro técnico)."""
+_PARAMETER_AFTERS: dict[str, ParameterAfter] = {}
+
+
+def register_parameter_after(prefix: str, after: ParameterAfter) -> None:
+    """Registra ``after`` para las claves de parámetro que empiezan por ``prefix`` (``des.platform.``); el que había con
+    ese principio, si lo había, se sustituye (idempotente)."""
+    _PARAMETER_AFTERS[prefix] = after
+
+
+def unregister_parameter_after(prefix: str, after: ParameterAfter) -> None:
+    """Quita lo registrado para ``prefix`` si es ``after`` (lo que otro registró después es suyo); idempotente."""
+    if _PARAMETER_AFTERS.get(prefix) is after:
+        del _PARAMETER_AFTERS[prefix]
+
+
+def parameter_changed(project: Any, key: str, version_uid: str | None) -> None:
+    """Lo registrado (:func:`register_parameter_after`) tras haber escrito el cambio de ``key`` en la versión
+    ``version_uid`` (``None``: el cambio es del proyecto, sin versión: ninguno se aplica). Un fallo de lo suyo se anota y
+    no cambia lo escrito."""
+    if version_uid is None:
+        return
+    for prefix, after in tuple(_PARAMETER_AFTERS.items()):
+        if key.startswith(prefix):
+            try:
+                after(project, key, version_uid)
+            except Exception:  # noqa: BLE001 - el cambio ya está escrito: lo de después no lo deshace
+                LOGGER.warning("No se pudo lanzar lo que sigue al cambio de «%s»", key, exc_info=True)
+
+
+type RecomputeAfter = Callable[[Any], Iterator[Progress] | None]
+"""Lo que un módulo registra para ponerse al día **al terminar** «Recalcular lo obsoleto»: ``after(proyecto)`` da
+sus pasos (``Progress``), que el modal avanza con el avance y Esc antes de decir lo que pasó, o ``None`` si no hay nada
+que hacer (la 015: la capa de entidades que ``des`` rehace por el grafo sin pasar por lo que sigue a una orden de
+entidades, que se queda atrasada si la salida de una entidad no cambió, RF-008-26). Solo lee y escribe lo suyo."""
+_RECOMPUTE_AFTERS: list[RecomputeAfter] = []
+
+
+def register_recompute_after(after: RecomputeAfter) -> None:
+    """Registra ``after`` (idempotente)."""
+    if after not in _RECOMPUTE_AFTERS:
+        _RECOMPUTE_AFTERS.append(after)
+
+
+def unregister_recompute_after(after: RecomputeAfter) -> None:
+    """Quita ``after``; idempotente."""
+    if after in _RECOMPUTE_AFTERS:
+        _RECOMPUTE_AFTERS.remove(after)
+
+
+def _with_afters(project: Any, steps: Iterator[Progress]) -> Iterator[Progress]:
+    """Los pasos ``steps`` de «Recalcular lo obsoleto» y, **antes de su último paso** (el del resultado), los de lo
+    registrado con :func:`register_recompute_after`, salvo si se canceló (Esc: lo demás sigue obsoleto y no se hace
+    más). Un fallo de lo registrado se anota y no impide el resultado; cerrar el generador cierra ``steps``."""
+    from ...core.project.model import Progress
+    from ...core.provenance.recompute import RecomputeOutcome
+
+    held = None
+    with _closing(steps):
+        for step in steps:
+            if isinstance(step.result, RecomputeOutcome):
+                held = step
+                break
+            yield step
+    if held is None:
+        return
+    if not held.result.cancelled:
+        for after in tuple(_RECOMPUTE_AFTERS):
+            try:
+                extra = after(project)
+                if extra is not None:
+                    with _closing(extra):
+                        for step in extra:
+                            yield Progress(step.phase, step.done, step.total, step.message)
+            except (GeoblenderError, sqlite3.Error, OSError):
+                LOGGER.warning("No se pudo terminar lo que sigue a «Recalcular lo obsoleto»", exc_info=True)
+    yield held
+
+
+@contextmanager
+def _closing(steps: Iterator[Progress]) -> Iterator[Iterator[Progress]]:
+    """``steps`` y, al salir, su ``close()`` si lo tiene (un generador lo tiene; un iterador cualquiera, no)."""
+    try:
+        yield steps
+    finally:
+        close = getattr(steps, "close", None)
+        if callable(close):
+            close()
+
+
 class GEOBLENDER_OT_core_show_parameters(bpy.types.Operator):
     """Parameters with their type, provenance and history"""
 
@@ -1970,6 +2072,7 @@ class GEOBLENDER_OT_core_set_parameter(bpy.types.Operator):
             self.report({"INFO"}, tr("Parameter «{key}» = {value} {kind} in {version}",
                                      key=changed.key, value=shown, kind=badge(changed.kind),
                                      version=version.code))
+        parameter_changed(project, changed.key, None if version is None else version.uid)  # lo que sigue (T43)
         return {"FINISHED"}
 
 
@@ -2757,8 +2860,8 @@ class GEOBLENDER_OT_core_recompute_stale(_RecomputeModal, bpy.types.Operator):
         project = SESSION.project
         self._cancel = False
         try:
-            steps = recompute_steps(project, scope=self._scope(project),
-                                    cancelled=lambda: self._cancel)
+            steps = _with_afters(project, recompute_steps(  # lo que un módulo pone al día al terminar (T43)
+                project, scope=self._scope(project), cancelled=lambda: self._cancel))
         except _NothingToDo as exc:
             if not str(exc):
                 self.report({"ERROR"}, tr("Indicate what to recompute: the uid of what changed "
