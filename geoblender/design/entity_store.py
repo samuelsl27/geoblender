@@ -1933,25 +1933,28 @@ class EntityFootprint:
     """Lo que la declaración lee de la tabla ``des_epr_`` de una entidad (:func:`read_entity_footprint`):
     su ``code``, el ``name`` con que se calculó (el de su dato ``des_epr_<nombre>``), su ``kind``, la
     ``layer`` de su geometría de origen y su huella en ``runs`` (tramos de fila ``(fila, col0, col1)`` de la
-    rejilla entera, ``col1`` excluida: :func:`footprint_runs`)."""
+    rejilla entera, ``col1`` excluida: :func:`footprint_runs`) y, aparte (T28: lo dibuja la vista,
+    ``bl.scene.entity_views``), los vértices de su eje en ``axis`` (``(x, y)`` absolutos, float64)."""
 
     code: str
     name: str
     kind: str
     layer: str
     runs: tuple[tuple[int, int, int], ...]
+    axis: tuple[tuple[float, float], ...] = ()
 
 
 def read_entity_footprint(conn: sqlite3.Connection, table: str) -> EntityFootprint:
     """La fila de la tabla ``des_epr_`` ``table`` (``conn`` la ve: la del proyecto o la congelada): su
-    código, su nombre, su tipo, su capa y su huella en tramos. ``ValueError`` si no tiene exactamente una
-    fila o su huella no son tramos."""
-    rows = conn.execute(f'SELECT code, name, kind, layer, footprint FROM "{table}"').fetchall()
+    código, su nombre, su tipo, su capa, su huella en tramos y los vértices de su eje. ``ValueError`` si no
+    tiene exactamente una fila o su huella no son tramos."""
+    rows = conn.execute(f'SELECT code, name, kind, layer, footprint, axis FROM "{table}"').fetchall()
     if len(rows) != 1:
         raise ValueError(f"la tabla de una entidad «{table}» tiene una fila, no {len(rows)}")
-    ((code, name, kind, layer, footprint),) = rows
+    ((code, name, kind, layer, footprint, axis),) = rows
     runs = tuple((int(row), int(first), int(last)) for row, first, last in json.loads(footprint))
-    return EntityFootprint(str(code), str(name), str(kind), str(layer), runs)
+    vertices = tuple((float(x), float(y)) for x, y in json.loads(axis))
+    return EntityFootprint(str(code), str(name), str(kind), str(layer), runs, vertices)
 
 
 @dataclass(frozen=True, slots=True)

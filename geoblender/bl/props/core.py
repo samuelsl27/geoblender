@@ -215,6 +215,10 @@ OBJECT_KINDS: list[tuple[str, str, str]] = [
     # rejilla de cotas de berma de un diseño.
     ("DESIGN", "Design",
      "The envelope, the design surface or the berm elevations of a design, drawn as a surface"),
+    # Spec 015 (T28; RF-015-25; plan 015 §5.1): una entidad de diseño de una versión (en esta spec, la
+    # plataforma), con su huella y su eje.
+    ("DESIGN_ENTITY", "Design entity",
+     "A parametric design entity of a version (a platform), drawn by its footprint and its axis"),
 ]
 # El estado del dato al cargarlo (gb_dataset.status de un dato vivo, en mayúsculas).
 OBJECT_STATUSES: list[tuple[str, str, str]] = [

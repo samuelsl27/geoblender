@@ -720,8 +720,8 @@ class PlanNamesTest(unittest.TestCase):
 
     def test_blender_names(self) -> None:
         """``bl/scene/views.BRANCHES`` y ``bl/props/core.OBJECT_KINDS`` (que ``bl`` no deja
-        importar aquí) se leen del código: hoy llevan el ``DESIGN`` de la 013 y todavía no el
-        ``DESIGN_ENTITY`` de la 015 (T28)."""
+        importar aquí) se leen del código: llevan el ``DESIGN`` de la 013 y, desde la T28
+        (RF-015-25), el ``DESIGN_ENTITY`` de la 015."""
         for module, name in (("scene/views.py", "BRANCHES"), ("props/core.py", "OBJECT_KINDS")):
             source = (EXTENSION_DIR / "bl" / module).read_text(encoding="utf-8")
             texts = None
@@ -733,6 +733,7 @@ class PlanNamesTest(unittest.TestCase):
                              if isinstance(part, ast.Constant) and isinstance(part.value, str)}
             self.assertIsNotNone(texts, f"{module} no declara {name}")
             self.assertIn("DESIGN", texts)
+            self.assertIn("DESIGN_ENTITY", texts)
 
     def test_reserves_may_import_design(self) -> None:
         """T32: ARQ-07 (nivel 8 de ``design``, nivel 9 de ``reserves``) deja a ``reserves``

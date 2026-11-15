@@ -150,6 +150,9 @@ BRANCHES: dict[str, tuple[tuple[str, str], ...]] = {
     # 013, T27; RF-013-32, D-32): siempre de una versión, van en la colección de su versión; sin
     # ella, en «Diseño».
     "DESIGN": (("design", "Design"),),
+    # Una entidad de diseño (spec 015, T28; RF-015-25): siempre de una versión, va en la colección de su
+    # versión; sin ella, en «Diseño», como las rejillas de un diseño.
+    "DESIGN_ENTITY": (("design", "Design"),),
 }
 # El estado de un dato vivo en su nombre generado y en Object.geoblender.status.
 STATUS_TEXT: dict[DatasetStatus, str] = {

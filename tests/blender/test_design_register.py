@@ -96,6 +96,7 @@ PREVIEW_PROPERTY = "geoblender_design_preview"
 PREVIEW_NAME = "Preview of seeds, domains and constraints"
 PREVIEW_ABOUT = "Show the seeds, domains and constraints before computing"
 GROUP = "GEOBLENDER_PG_des_panels"
+ENTITY_PANEL = "GEOBLENDER_PT_des_entity"
 STATUS_MSGID = "Recomputing «{name}»… {percent} %"
 STATUS = "Recalculando «{name}»… {percent} %"
 DROPPED = "cancelada durante la operación: se desactivó Geoblender antes de empezar"
@@ -640,8 +641,10 @@ class DesignRegisteredTest(unittest.TestCase):
         empieza apagado); deshabilitarla, con unos pasos esperando en su cola sin haber empezado
         y un cálculo abierto, deja su operación cancelada (no «en curso») sin dar ningún paso, el
         cálculo descartado y no deja ninguna clase, propiedad, temporizador, parámetro, familia,
-        operación ni cifra de la 013, y la huella entera de Blender (clases, propiedades,
-        manejadores, temporizadores, traducciones…) vuelve a la del principio de la sesión."""
+        operación ni cifra de la 013 (ni, de la 015, el cargador de la tabla de la entidad, la barra N
+        «Entidad» y las líneas más de «Elemento activo» de su tipo: T28, RF-015-25), y la huella entera
+        de Blender (clases, propiedades, manejadores, temporizadores, traducciones…) vuelve a la del
+        principio de la sesión."""
         m = self.m
         props = _module("bl.props.des")
         self.assertTrue(all(cls.is_registered for cls in props.classes))
@@ -649,6 +652,12 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertEqual((rna.type, rna.fixed_type.identifier), ("POINTER", GROUP))
         self.assertIsInstance(getattr(bpy.context.window_manager, WM_PROPERTY),
                               props.GEOBLENDER_PG_des_panels)
+        # Lo de la 015 en la vista (T28; RF-015-25): el cargador de la tabla de la entidad, el panel de la barra N «Entidad»
+        # y las líneas más de «Elemento activo» del tipo ``DESIGN_ENTITY``.
+        views, view_panels = _module("bl.scene.views"), _module("bl.ui.view_panels")
+        self.assertEqual(views.loader_for("des_epr_carga").kind, "DESIGN_ENTITY")
+        self.assertTrue(getattr(bpy.types, ENTITY_PANEL).is_registered)
+        self.assertIn("DESIGN_ENTITY", view_panels._OBJECT_LINES)  # noqa: SLF001
         preview = bpy.types.WindowManager.bl_rna.properties[PREVIEW_PROPERTY]
         self.assertEqual(preview.type, "BOOLEAN")
         self.assertTrue(preview.is_skip_save)
@@ -677,6 +686,9 @@ class DesignRegisteredTest(unittest.TestCase):
                           if name.startswith("GEOBLENDER_") and "_des_" in name], [])
         self.assertFalse(hasattr(bpy.types.WindowManager, WM_PROPERTY))
         self.assertFalse(hasattr(bpy.types.WindowManager, PREVIEW_PROPERTY))
+        self.assertIsNone(getattr(bpy.types, ENTITY_PANEL, None))
+        self.assertIsNone(views.loader_for("des_epr_carga"))
+        self.assertNotIn("DESIGN_ENTITY", view_panels._OBJECT_LINES)  # noqa: SLF001
         self.assertEqual(m.ours(), {name: [] for name in COUNTS})
         self.assertEqual(m.des_ops.pending_runs(), [])
         self.assertEqual(closed, [])  # nunca empezó: cerrarlo no da ningún paso

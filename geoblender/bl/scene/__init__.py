@@ -24,6 +24,8 @@ coordenadas locales respecto al GeoOrigin (ADR-0005).
   intenciones del cliente, un objeto por intención con su estilo), después;
 - ``des_views``: los cargadores de las rejillas de un diseño (spec 013, T27: la envolvente, la
   superficie de diseño y la rejilla de cotas de berma, objetos ``DESIGN``), después;
+- ``entity_views``: el cargador de la tabla de una entidad de diseño (spec 015, T28: su huella y su
+  eje, objeto ``DESIGN_ENTITY``), después;
 - ``live``: la marca en vivo de la vista (spec 010, T08): lo cargado, al día de lo que dice el
   proyecto sin volver a cargarlo, tras cada lectura de los indicadores de la procedencia y tras
   deshacer, rehacer, abrir un ``.blend``, cargar o descargar (``undo_post``, ``redo_post``,
@@ -48,6 +50,7 @@ from . import (
     constraint_views,
     des_views,
     dh_view,
+    entity_views,
     georef,
     gis_views,
     live,
@@ -77,11 +80,13 @@ def register() -> None:
         res_views.register()
         constraint_views.register()
         des_views.register()
+        entity_views.register()
         live.register()
         versions.register()
     except BaseException:
         versions.unregister()
         live.unregister()
+        entity_views.unregister()
         des_views.unregister()
         constraint_views.unregister()
         res_views.unregister()
@@ -102,6 +107,7 @@ def unregister() -> None:
     try:
         versions.unregister()
         live.unregister()
+        entity_views.unregister()
         des_views.unregister()
         constraint_views.unregister()
         res_views.unregister()

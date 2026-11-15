@@ -148,7 +148,23 @@ terreno, las de diseño y la de cada plataforma de la versión activa como ``ent
 las de apoyo, :func:`platform_support_items`) y el resumen de su cálculo (:func:`show_summary`,
 :func:`_platform_lines`: «Plataforma «Carga» (PLT-001) en V01», su huella, su rasante, el corte y el
 relleno de la huella y del borde, la pared más alta y «sin contrapendientes», y sus avisos y lo que
-quedará obsoleto: el resumen de ``design.preview.PlatformSummary``)."""
+quedará obsoleto: el resumen de ``design.preview.PlatformSummary``).
+
+**La barra N «Entidad»** (spec 015, T28; HU-015-1; RF-015-25, RF-010-06; D-12): el panel
+``GEOBLENDER_PT_des_entity`` (de la Vista 3D) enseña, del objeto ``DESIGN_ENTITY`` activo (la huella y el eje de una
+entidad cargados en la vista por ``bl.scene.entity_views``), lo que dice de ella el proyecto
+(:func:`entity_lines`; **todo lo da el proyecto, nada se calcula aquí**): su **estado** (al día; obsoleta o con el apoyo
+retirado, con su causa, ``design.entities.stale_reason``; descartada, un registro que no se usa; o sin calcular), sus
+**parámetros** con su insignia de tipo y su origen (los de su familia ``des.platform.{e}.*``: «capa X, campo Y, entidad
+Z»), **sus restricciones declaradas** (si protege: su tipo, su resguardo, su motivo, quién la decidió y su estado, activa,
+bloqueada o divergente), su **cadena** (de qué superficie parte, qué entidad parte de la suya y cuál es la última),
+**en qué se apoya** y **lo que se le apoya** (``design.entities.dependencies_of`` y ``dependents``: una sola lista cada
+uno, con sus m³ y el estado de cada fila) y sus **cifras** con su insignia. :func:`entity_card` lo lee por el código de la
+entidad (también una **sin calcular**, que no tiene datos y por tanto objeto); :func:`entity_lines`, por el dato del
+objeto, en una sola instantánea. Las mismas líneas, sin las cifras, las enseñan «Elemento activo» y «Cifras de la
+selección» de la 010 (:func:`entity_object_lines`, ``view_panels.register_object_lines``). La lectura es la de la barra
+N «Diseño»: :func:`read_selected` regenera las líneas al cambiar el objeto activo, tras cada lectura del proyecto
+cambiado y tras cargar un ``.blend`` (``WindowManager.geoblender_design.item``), y nada se lee al dibujar."""
 
 from __future__ import annotations
 
@@ -181,7 +197,7 @@ from ...gis import store as gis_store
 from ...gis.masks import provenance as masks_provenance
 from ...reserves import surfaces as res_surfaces
 from ..props.des import WINDOW_MANAGER_PROPERTY
-from ..scene import constraint_views, des_views, project_session
+from ..scene import constraint_views, des_views, entity_views, project_session
 from ..scene import versions as scene_versions
 from . import constraint_panels, labels, provenance, view_panels
 from .commands import catalog
@@ -2292,6 +2308,277 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     return ItemLines(f"{_family_label(found.record.name)} · {name}", tuple(lines), tuple(figures))
 
 
+# --- La barra N «Entidad»: la entidad de diseño del objeto activo (T28; RF-015-25) ----------------
+
+ENTITY_PANEL = "GEOBLENDER_PT_des_entity"
+ENTITY_TAB = "Entity"  # msgid de la pestaña y del título de la barra N «Entidad»
+_NOT_CURRENT_TEXT = {
+    "stale": "out of date",
+    "support_removed": "support removed",
+    "discarded": "discarded",
+}
+"""El estado (``design.entities.EntityState``) de una entidad que no está al día, como se lee junto a su nombre en la
+lista de lo que se apoya en otra: el ``msgid`` de su texto."""
+_SKIPPED_PARAMS = frozenset({"name", "discarded"})
+"""Los parámetros de una entidad que su ficha no repite entre los demás: el nombre es su título y si está descartada lo
+dice su estado."""
+
+
+def entity_wanted(context: Any = None) -> str:
+    """El ``uid`` del dato que enseña la barra N «Entidad»: el del objeto ``DESIGN_ENTITY`` activo si es de un dato del
+    proyecto abierto; si no, ``""``. No lee el proyecto."""
+    context = bpy.context if context is None else context
+    project = project_session.current()
+    if project is None:
+        return ""
+    obj = active_object(context)
+    if object_kind(obj) != entity_views.KIND:
+        return ""
+    props = obj.geoblender
+    return str(props.dataset_uid) if str(props.project_uid) == project.uid else ""
+
+
+def _entity_name(record: Any) -> str:
+    """Una entidad como se nombra en una línea: su nombre y su código, «Carga (PLT-002)»."""
+    return f"{record.name} ({record.code})"
+
+
+def _entity_state_line(project: Any, conn: sqlite3.Connection, version: Any, entry: Any) -> CardLine:
+    """El estado de la entidad (RF-015-25, D-12): al día; obsoleta o con el apoyo retirado, con su causa
+    (``design.entities.stale_reason``), en alerta; descartada (un registro: no se usa), en alerta; o sin calcular."""
+    from ...design import entities  # al usarlo: habilitar no lo carga
+
+    state = str(entry.record.state)
+    if state == "discarded":
+        return CardLine(ROW_FIELD, tr("Discarded: it stays in the project as a record and is not used"), alert=True)
+    if state == "uncalculated":
+        return CardLine(ROW_FIELD, tr("Not calculated: it has its parameters in this version and no result"))
+    if state in ("stale", "support_removed"):
+        cause = entities.stale_reason(project, version.uid, entry.record.code, language=language(), conn=conn)
+        return CardLine(ROW_FIELD, cause or tr("Out of date"), alert=True)
+    return CardLine(ROW_FIELD, tr("Up to date"))
+
+
+def _entity_value_text(param: Any, stored: Any, listed: Any) -> str:
+    """El valor de un parámetro de la entidad con su insignia de tipo (y «sin confirmar»): como los de una operación
+    (:func:`~.res_panels.record_text`) y, de la superficie de partida o de apoyo que es la de otra entidad
+    (``entity:PLT-001``), la entidad con su código."""
+    from ...design import entities
+    from ...design.params import PlatformParam
+
+    if param in (PlatformParam.START, PlatformParam.SUPPORT) and isinstance(stored.value, str):
+        code = entities.ref_code(stored.value)
+        other = None if code is None else listed.get(code)
+        if other is not None:
+            text = f"{_entity_name(other.record)} {provenance.badge(stored.kind)}"
+            return f"{text} {tr('unconfirmed')}" if stored.unconfirmed else text
+    return record_text(stored)
+
+
+def _entity_parameter_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any, listed: Any
+                            ) -> tuple[list[CardLine], dict[Any, Any]]:
+    """Los parámetros de la entidad con su insignia de tipo y su origen (RF-015-25; ADR-0013): cada valor de su familia
+    ``des.platform.{e}.*`` que tiene el valor propio de la versión o, si no, el del proyecto, como una línea de una
+    operación (:func:`parameter_line`): «Pendiente de la rasante de la plataforma: 0 % [ADO] · V01 · capa «x», campo
+    «pendiente», entidad «Carga» · decidido por …». Sin valor, solo la superficie de partida (sin elegir, «—»). También
+    devuelve los valores almacenados por parámetro (``None``: sin fila), para lo que declara la entidad."""
+    from ...design.params import PlatformParam, entity_key
+
+    shown = language()
+    store = ParameterStore(project)
+    found: dict[Any, Any] = {}
+    lines: list[CardLine] = []
+    for param in PlatformParam:
+        key = entity_key(entry.record.code, param)
+        stored = store.get(key, version=version.uid, conn=conn) or store.get(key, conn=conn)
+        found[param] = stored
+        if param.value in _SKIPPED_PARAMS or stored is None:
+            continue
+        if stored.value is None and param is not PlatformParam.START:
+            continue
+        defn = param_definition(key)
+        label = translate(shown, defn.label_msgid) if defn is not None and defn.label_msgid else key
+        scope = version.code if stored.scope == "version" else tr("the project")
+        origin = [str(stored.source or ""), tr("decided by {person}", person=stored.decided_by)
+                  if stored.decided_by else ""]
+        parts = [f"{label}: {_entity_value_text(param, stored, listed)}", scope, *(part for part in origin if part)]
+        lines.append(CardLine(ROW_FIELD, " · ".join(parts)))
+    return lines, found
+
+
+def _entity_declared_lines(project: Any, version: Any, entry: Any, stored: Mapping[Any, Any]
+                           ) -> list[CardLine]:
+    """Las restricciones que declara la entidad (RF-015-25, RF-015-10, RF-015-11): si protege su zona, la restricción de la
+    tabla de las declaradas de la versión con su tipo, su nombre como se lee, su **estado** (activa; bloqueada por una edición
+    fuera de Geoblender, con qué hacer; «divergente» si lo vigente no es lo que declararían las entidades), su resguardo, su
+    motivo y quién la decidió; si protege y su restricción aún no está declarada, lo dice; si no protege, que no declara
+    ninguna. Una descartada o sin calcular no declara."""
+    from ...design.params import PlatformParam
+    from ...gis.masks import store as masks_store  # al usarlo: habilitar no lo carga
+
+    shown = language()
+    protect = stored.get(PlatformParam.PROTECT)
+    if str(entry.record.state) in ("discarded", "uncalculated") or protect is None or protect.value is not True:
+        return [CardLine(ROW_NONE, tr("It declares no constraint"))]
+    code = entry.record.code
+    guard = stored.get(PlatformParam.GUARD)
+    wanted = [item for item in masks_store.listed_constraints(project, version=version.uid)
+              if item.declared and item.entity_code == code]
+    if not wanted:
+        return [CardLine(ROW_FIELD, tr("It protects its zone with {guard} m of guard: its constraint is not declared yet",
+                                       guard=NOT_SHOWN if guard is None or guard.value is None
+                                       else format_value(guard.value, shown)), alert=True)]
+    lines: list[CardLine] = []
+    for item in wanted:
+        row = item.constraint
+        bad = item.state in constraint_panels.BAD_STATES
+        kind = constraint_panels.type_label("" if row.ctype is None else row.ctype.value)
+        lines.append(CardLine(ROW_FIELD, f"{kind} · {constraint_views.declared_text(code, item.entity_name or code)}",
+                              alert=bad))
+        lines.append(CardLine(ROW_FIELD, constraint_panels.state_text(item.state, version.code), alert=bad))
+        if item.state == "blocked":
+            lines.append(CardLine(ROW_FIELD, tr("Accept the edit with a reason or recalculate the declaration: the "
+                                                "entity puts it back"), alert=True))
+        elif constraint_panels._diverges(project, version):  # noqa: SLF001 - la misma comparación que la ventana
+            lines.append(CardLine(ROW_FIELD, tr("The declaration differs from the one of the entities"), alert=True))
+        lines.append(CardLine(ROW_FIELD, tr("Guard: {value} m", value=NOT_SHOWN if item.buffer_out_m is None
+                                            else format_value(float(item.buffer_out_m), shown))))
+        lines.append(CardLine(ROW_FIELD, tr("Reason: {value}", value=row.reason or NOT_SHOWN)))
+        lines.append(CardLine(ROW_FIELD, tr("Decided by: {value}", value=row.decided_by or NOT_SHOWN)))
+    return lines
+
+
+def _entity_chain_lines(listed: Any, entry: Any) -> list[CardLine]:
+    """La cadena de la entidad (RF-015-25, RF-015-04): de qué superficie parte (el terreno, una de diseño o la de otra
+    entidad), qué entidad parte de la suya y cuál es la última de su cadena; si los datos de la cadena no son válidos
+    (un ciclo, dos entidades desde la misma superficie), lo dice."""
+    from ...design import entities
+
+    record = entry.record
+    if record.start is None:
+        start = CardLine(ROW_FIELD, tr("Starts from: {surface}", surface=NOT_SHOWN))
+    elif (code := entities.ref_code(record.start)) is not None and (before := listed.get(code)) is not None:
+        start = CardLine(ROW_FIELD, tr("Starts from the surface of {entity}", entity=_entity_name(before.record)),
+                         alert=str(before.record.state) == "discarded")
+    else:
+        start = CardLine(ROW_FIELD, tr("Starts from: {surface}", surface=record.start))
+    lines = [start]
+    try:
+        following = entities.successor_of(listed.records, record.code)
+        tail = entities.chain_of(listed.records, record.code)[-1]
+    except design_messages.DesignError as exc:
+        return [*lines, CardLine(ROW_FIELD, tr("The chain cannot be read: {error}", error=design_error_text(exc)),
+                                 alert=True)]
+    lines.append(CardLine(ROW_FIELD, tr("The entity that starts from its surface: {entity}", entity=_entity_name(following))
+                          if following is not None else tr("No entity starts from its surface")))
+    lines.append(CardLine(ROW_FIELD, tr("It is the last of its chain") if tail.code == record.code
+                          else tr("Last of its chain: {entity}", entity=_entity_name(tail))))
+    return lines
+
+
+def _entity_dependent_line(item: Any) -> CardLine:
+    """Una fila de la lista de lo que se apoya en la entidad (o de en qué se apoya; ``design.entities.Dependent``): su
+    texto —el nombre, el tipo y los m³ apoyados, o «superficie de partida»— y, si no está al día, su estado, en alerta."""
+    shown = language()
+    if item.op_type.startswith("des."):
+        text = item.text(shown)
+    else:  # una superficie que no es de una entidad ni de un diseño: el terreno de partida
+        text = tr("{name}: start surface", name=item.name)
+    msgid = _NOT_CURRENT_TEXT.get(str(item.state))
+    if msgid is None:
+        return CardLine(ROW_FIELD, text)
+    return CardLine(ROW_FIELD, f"{text} · {translate(shown, msgid)}", alert=True)
+
+
+def _entity_figures(conn: sqlite3.Connection, entry: Any) -> list[CardLine]:
+    """Las cifras registradas de la operación de la entidad con su insignia de tipo (CALCULADO, con su unidad), menos el
+    volumen apoyado de cada entidad (``des.supported_m3``: va en la lista de en qué se apoya). Sin operación, ninguna."""
+    from ...core.provenance import figures as prov_figures  # al usarlo: habilitar no lo carga
+
+    shown = language()
+    found: list[Any] = []
+    if entry.operation_uid is not None:
+        found = [prov_figures.FigureRecord.from_row(row) for row in conn.execute(
+            f"SELECT {prov_figures.RECORD_COLUMNS} FROM gb_figure AS f WHERE f.operation_uid = ? ORDER BY f.fid",
+            (entry.operation_uid,))]
+    lines = [CardLine(ROW_FIGURE, f"{provenance.badge(figure.kind)} {design_provenance.figure_text(figure, language=shown)}",
+                      uid=figure.uid)
+             for figure in found if figure.key != design_provenance.SUPPORTED_M3]
+    return lines or [CardLine(ROW_NONE, tr("No figures recorded"))]
+
+
+def entity_card(project: Any, version_uid: str, code: str, *, conn: sqlite3.Connection) -> ItemLines | None:
+    """Lo que dice el proyecto de la entidad ``code`` (código o nombre) de la versión ``version_uid`` (véase el módulo),
+    leído con ``conn`` (una instantánea de lectura de quien llama) y sin escribir nada: su título («Plataforma Carga
+    (PLT-002)»), su **estado** (al día; obsoleta o con el apoyo retirado, con su causa; descartada; sin calcular), sus
+    **parámetros** con su insignia de tipo y su origen, sus **restricciones declaradas**, su **cadena**, **en qué se
+    apoya** y **lo que se le apoya** (una sola lista cada uno, con sus m³) y, aparte, sus **cifras**. ``None`` si la
+    versión o la entidad no existen. Funciona también con una entidad sin calcular (que no tiene objeto en la vista)."""
+    from ...core.versions import read as versions_read
+    from ...design import entities
+
+    version = versions_read.version(conn, version_uid)
+    if version is None:
+        return None
+    listed = entities.registry(project, version.uid, conn=conn)
+    entry = listed.get(code)
+    if entry is None:
+        return None
+    record = entry.record
+    params, stored = _entity_parameter_lines(project, conn, version, entry, listed)
+    rests_on = entities.dependencies_of(project, version.uid, record.code, conn=conn)
+    on_it = entities.dependents(project, version.uid, record.code, conn=conn)
+    lines: list[CardLine] = [_entity_state_line(project, conn, version, entry),
+                             CardLine(ROW_HEADING, tr("Parameters")),
+                             *(params or [CardLine(ROW_NONE, tr("No parameters recorded"))]),
+                             CardLine(ROW_HEADING, tr("Declared constraints")),
+                             *_entity_declared_lines(project, version, entry, stored),
+                             CardLine(ROW_HEADING, tr("Chain")), *_entity_chain_lines(listed, entry),
+                             CardLine(ROW_HEADING, tr("Rests on")),
+                             *([_entity_dependent_line(item) for item in rests_on]
+                               or [CardLine(ROW_NONE, tr("It rests on nothing"))]),
+                             CardLine(ROW_HEADING, tr("What rests on it")),
+                             *([_entity_dependent_line(item) for item in on_it]
+                               or [CardLine(ROW_NONE, tr("Nothing rests on it"))])]
+    figures = [CardLine(ROW_HEADING, tr("Figures")), *_entity_figures(conn, entry)]
+    return ItemLines(f"{constraint_views.entity_text(record.code, record.name)} ({record.code})", tuple(lines),
+                     tuple(figures))
+
+
+def entity_lines(project: Any, uid: str) -> ItemLines | None:
+    """Lo que dice el proyecto de la entidad del dato ``uid`` (la tabla ``des_epr_`` que muestra un objeto
+    ``DESIGN_ENTITY``): :func:`entity_card` de su entidad en su versión, en **una** instantánea; ``None`` si el proyecto ya
+    no tiene el dato o no es de una versión. Los errores del proyecto (``GeoblenderError``, ``sqlite3.Error``) siguen."""
+    from ...core.versions import read as versions_read
+    from ...core.views import card
+    from ...design import entity_store
+
+    with project.read() as conn:
+        conn.execute("BEGIN")
+        try:
+            found = card.item_card(project, uid, conn=conn)
+            owner = versions_read.dataset_versions(conn, [uid]).get(uid, "") if found is not None else ""
+            if found is None or not owner:
+                return None
+            shape = entity_store.read_entity_footprint(conn, found.record.locator)
+            return entity_card(project, owner, shape.code, conn=conn)
+        finally:
+            conn.execute("ROLLBACK")
+
+
+def entity_object_lines(project: Any, obj: Any) -> list[CardLine]:
+    """Las líneas más que enseñan «Elemento activo» y «Cifras de la selección» de un objeto ``DESIGN_ENTITY``
+    (``view_panels.register_object_lines``): las de :func:`entity_lines`, sin las cifras (las de su ficha). Ninguna si el
+    proyecto ya no tiene su dato."""
+    uid = str(getattr(getattr(obj, "geoblender", None), "dataset_uid", "") or "")
+    try:
+        found = entity_lines(project, uid) if uid else None
+    except ValueError:  # un dato que ya no es el de una entidad
+        LOGGER.info("No se pudieron leer las líneas de la entidad de «%s»", getattr(obj, "name", ""), exc_info=True)
+        return []
+    return [] if found is None else list(found.lines)
+
+
 def object_lines(project: Any, obj: Any) -> list[CardLine]:
     """Las líneas más que enseñan «Elemento activo» y «Cifras de la selección» de un objeto
     ``DESIGN`` (``view_panels.register_object_lines``): las de :func:`item_lines`, sin las cifras
@@ -2336,7 +2623,8 @@ def _put_item(shown: Any, uid: str, project_uid: str, found: ItemLines | None) -
 
 
 def read_selected(context: Any = None) -> bool:
-    """Lee del proyecto de la sesión el dato del objeto de diseño activo (:func:`wanted`) y lo deja en
+    """Lee del proyecto de la sesión el dato del objeto de diseño activo (:func:`wanted`: una rejilla, con
+    :func:`item_lines`) o de entidad (:func:`entity_wanted`, T28: su ficha, con :func:`entity_lines`) y lo deja en
     ``WindowManager.geoblender_design`` (``item_title`` e ``item``); sin ninguno, o si el proyecto ya
     no lo tiene, lo olvida. No escribe en el proyecto; mientras esta sesión escribe en él o está en
     WAL, no lo lee (lo hará la siguiente lectura de los indicadores). Devuelve si hay un dato. Si no se
@@ -2344,7 +2632,9 @@ def read_selected(context: Any = None) -> bool:
     shown = view()
     if shown is None:
         return False
-    uid = wanted(context)
+    uid, reader = wanted(context), item_lines  # un objeto DESIGN…
+    if not uid:  # …o uno DESIGN_ENTITY (T28; RF-015-25): la barra N «Entidad»
+        uid, reader = entity_wanted(context), entity_lines
     project = project_session.current()
     if not uid or project is None:
         changed, found = _clear_item(shown), False
@@ -2352,7 +2642,7 @@ def read_selected(context: Any = None) -> bool:
         return bool(shown.item_uid)
     else:
         try:
-            read = item_lines(project, uid)
+            read = reader(project, uid)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError):
             LOGGER.info("No se pudo leer del proyecto el dato del diseño seleccionado",
                         exc_info=True)
@@ -2389,14 +2679,10 @@ def on_project_changed(_project: Any) -> None:
         _redraw()
 
 
-def draw_selected(layout: Any, context: Any) -> None:
-    """La barra N «Diseño» (véase el módulo), de lo ya leído: el dato del objeto activo y, mientras
-    lo hay, el resumen de la vista previa de las semillas."""
-    shown = view()
-    if shown is None:
-        return
-    width = labels.sidebar_width(context)
-    uid = wanted(context)
+def _draw_item(layout: Any, shown: Any, uid: str, width: float) -> bool:
+    """El dato ya leído del objeto activo (``uid``; vacío: ninguno) como lo enseñan la barra N «Diseño» y la «Entidad»: su
+    título y sus líneas, con un apartado por título; «leyendo…» mientras no se leyó el suyo y, si el proyecto ya no lo
+    tiene, lo dice. Devuelve si dibujó la ficha de un dato."""
     if uid and shown.item_uid != uid:
         _draw_text(layout, tr("Reading the project data of the active object…"), width)
     elif uid and not shown.item_found:
@@ -2410,6 +2696,26 @@ def draw_selected(layout: Any, context: Any) -> None:
             sub = layout.column(align=True)
             sub.active = row.kind != ROW_NONE
             _draw_text(sub, row.name, width, alert=bool(row.alert))
+        return True
+    return False
+
+
+def draw_entity(layout: Any, context: Any) -> None:
+    """La barra N «Entidad» (véase el módulo), de lo ya leído: la entidad del objeto ``DESIGN_ENTITY`` activo."""
+    shown = view()
+    if shown is not None:
+        _draw_item(layout, shown, entity_wanted(context), labels.sidebar_width(context))
+
+
+def draw_selected(layout: Any, context: Any) -> None:
+    """La barra N «Diseño» (véase el módulo), de lo ya leído: el dato del objeto activo y, mientras
+    lo hay, el resumen de la vista previa de las semillas."""
+    shown = view()
+    if shown is None:
+        return
+    width = labels.sidebar_width(context)
+    uid = wanted(context)
+    if _draw_item(layout, shown, uid, width):
         layout.separator()
         export = layout.row()  # exportar no escribe en el proyecto: vale también en solo lectura
         export.operator(EXPORT_GRID, text=_label(EXPORT_GRID), icon="EXPORT", translate=False)
@@ -2440,17 +2746,38 @@ class GEOBLENDER_PT_des_design(bpy.types.Panel):
         draw_selected(self.layout, context)
 
 
+class GEOBLENDER_PT_des_entity(bpy.types.Panel):
+    """The design entity shown by the active object: state, parameters, declared constraints, chain, what it rests
+    on, what rests on it and figures"""
+
+    bl_idname = ENTITY_PANEL
+    bl_label = ENTITY_TAB
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = ENTITY_TAB
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        return bool(entity_wanted(context))
+
+    def draw(self, context: Any) -> None:
+        draw_entity(self.layout, context)
+
+
 def localize() -> None:
-    """La pestaña y el título de la barra N «Diseño» en el idioma de la interfaz (antes de
+    """La pestaña y el título de las barras N «Diseño» y «Entidad» en el idioma de la interfaz (antes de
     registrar, y otra vez al cambiar el idioma)."""
     GEOBLENDER_PT_des_design.bl_category = tr("Design")
     GEOBLENDER_PT_des_design.bl_label = tr("Design")
+    GEOBLENDER_PT_des_entity.bl_category = tr("Entity")
+    GEOBLENDER_PT_des_entity.bl_label = tr("Entity")
 
 
 # En orden de registro (las listas, antes de la ventana que las dibuja).
 classes: tuple[type, ...] = (GEOBLENDER_UL_des_profiles, GEOBLENDER_PT_des_profiles,
                              GEOBLENDER_UL_des_sectors, GEOBLENDER_PT_des_sectors,
-                             GEOBLENDER_PT_des_design)
+                             GEOBLENDER_PT_des_design, GEOBLENDER_PT_des_entity)
 
 
 def install() -> None:
@@ -2462,6 +2789,7 @@ def install() -> None:
     provenance.add_change_listener(on_project_read)
     view_panels.add_card_listener(on_card_read)
     view_panels.register_object_lines(des_views.KIND, object_lines)
+    view_panels.register_object_lines(entity_views.KIND, entity_object_lines)
     project_session.add_listener(on_project_changed)
     constraint_panels.add_compile_check(limit_steps)
 
@@ -2475,6 +2803,7 @@ def uninstall() -> None:
     if bpy.app.timers.is_registered(limit_tick):
         bpy.app.timers.unregister(limit_tick)
     project_session.remove_listener(on_project_changed)
+    view_panels.unregister_object_lines(entity_views.KIND, entity_object_lines)
     view_panels.unregister_object_lines(des_views.KIND, object_lines)
     view_panels.remove_card_listener(on_card_read)
     provenance.remove_change_listener(on_project_read)

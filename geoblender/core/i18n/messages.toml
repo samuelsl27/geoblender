@@ -9112,3 +9112,78 @@ es = "Restricciones declaradas bloqueadas por una edición fuera de Geoblender (
 
 ["Zone of a constraint declared by an entity"]
 es = "Zona de una restricción declarada por una entidad"
+
+# La entidad de diseño en la vista y la barra N «Entidad» (spec 015, T28; RF-015-25): bl/props/core.py,
+# bl/scene/entity_views.py y bl/ui/des_panels.py.
+
+["Design entity"]
+es = "Entidad de diseño"
+
+["A parametric design entity of a version (a platform), drawn by its footprint and its axis"]
+es = "Una entidad de diseño paramétrica de una versión (una plataforma), dibujada por su huella y su eje"
+
+["Discarded: it stays in the project as a record and is not used"]
+es = "Descartada: queda en el proyecto como registro y no se usa"
+
+["Not calculated: it has its parameters in this version and no result"]
+es = "Sin calcular: tiene sus parámetros en esta versión y ningún resultado"
+
+["Out of date"]
+es = "Obsoleta"
+
+["support removed"]
+es = "apoyo retirado"
+
+["discarded"]
+es = "descartada"
+
+["Declared constraints"]
+es = "Restricciones declaradas"
+
+["It declares no constraint"]
+es = "No declara ninguna restricción"
+
+["It protects its zone with {guard} m of guard: its constraint is not declared yet"]
+es = "Protege su zona con {guard} m de resguardo: su restricción aún no está declarada"
+
+["Guard: {value} m"]
+es = "Resguardo: {value} m"
+
+["Chain"]
+es = "Cadena"
+
+["Starts from: {surface}"]
+es = "Parte de: {surface}"
+
+["Starts from the surface of {entity}"]
+es = "Parte de la superficie de {entity}"
+
+["The chain cannot be read: {error}"]
+es = "La cadena no se puede leer: {error}"
+
+["The entity that starts from its surface: {entity}"]
+es = "De su superficie parte: {entity}"
+
+["No entity starts from its surface"]
+es = "Ninguna entidad parte de su superficie"
+
+["It is the last of its chain"]
+es = "Es la última de su cadena"
+
+["Last of its chain: {entity}"]
+es = "Última de su cadena: {entity}"
+
+["Rests on"]
+es = "Se apoya en"
+
+["It rests on nothing"]
+es = "No se apoya en nada"
+
+["What rests on it"]
+es = "Lo que se apoya en ella"
+
+["Nothing rests on it"]
+es = "Nada se apoya en ella"
+
+["{name}: start surface"]
+es = "{name}: superficie de partida"
