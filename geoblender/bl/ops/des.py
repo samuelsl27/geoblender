@@ -213,7 +213,7 @@ filas ya marcadas.
 
 **Plataforma…** (spec 015, T15; HU-015-3; RF-015-03, RF-015-28, RF-015-29; plan 015 §5.3.3):
 :class:`GEOBLENDER_OT_des_create_platform` (``geoblender.des_create_platform``, Diseño ▸ Pistas y
-entidades ▸ Entidades; la entrada de R-36 la entrega la T31) calcula ``des.platform`` de la versión activa con
+entidades ▸ Entidades; la entrada «015» la entrega la T31) calcula ``des.platform`` de la versión activa con
 ``design.steps.platform_run``: la huella y la rasante de una geometría de una capa de líneas (con su ancho) o de
 polígonos (con su eje enlazado o el principal), aplicadas a su superficie de partida, con el borde que la
 une con el terreno. Su diálogo pide el nombre; la capa y la geometría (por su nombre o su ``fid``) con sus
@@ -252,7 +252,8 @@ en «apoyo retirado» y «Recalcular lo obsoleto» no lo recalcula.
 perdió su apoyo —una entidad o un diseño de la 013 o la 014— repitiéndolo sin ese apoyo, con el motivo y el decisor
 en sus ajustes y un evento (``release_support``, por pasos con el avance y Esc); su salida no cambia y lo que dependía
 de ella no se recalcula. Las dos van con el proyecto en escritura y la versión activa editable y, si no, desactivadas
-con su motivo (:class:`DesignCommandAware`); la entrada de R-36 las entrega la T31 (menú «Entidad ▾»). Todas las
+con su motivo (:class:`DesignCommandAware`); la T31 las pone en el menú «Entidad ▾» (entrada «015»), donde toman la entidad
+seleccionada en la vista si no se les da otra. Todas las
 cuentas y los rechazos son de ``design``.
 
 **Traer las entidades de otra versión** (spec 015, T26; HU-015-2; RF-015-18, RF-009-01; D-18; plan 015 §5.3.3):
@@ -263,8 +264,8 @@ una, todas marcadas de entrada; al aceptar copia sus definiciones a la versión 
 cifras**, «sin calcular», en una sola transacción) y dice lo que hizo: cuántas, los códigos y los nombres que cambiaron
 y lo que quedó sin valor (una partida que era un resultado de la otra versión). No encadena nada: lo traído no está
 calculado y no declara restricciones; sus dependencias se detectan de nuevo al calcularlo. Con el proyecto en escritura
-y la versión activa editable y, si no, desactivada con su motivo (:class:`DesignCommandAware`); la entrada de R-36 la
-entrega la T31 (menú «Entidad ▾»).
+y la versión activa editable y, si no, desactivada con su motivo (:class:`DesignCommandAware`); la T31 la pone
+en el menú «Entidad ▾» (entrada «015»).
 
 **La vista previa de una entidad** (spec 015, T29; HU-015-3; RF-015-26; RNF-015-06; plan 015 §5.3.3 y §5.5; comprobación
 manual M4): el botón «Vista previa» del diálogo de «Plataforma…» (:func:`_draw_platform_preview_button`: la misma orden con
@@ -276,6 +277,23 @@ extremos, lo que se le apoya y las restricciones que declarará, con su leyenda.
 redibuja (:func:`_refresh_preview`: el ``update`` de cada uno); se quita al **cancelar** la orden (su diálogo, su
 ventana de confirmar o Esc a mitad), al crear la plataforma, con su mismo control y al conmutar a la interfaz de
 Blender. Lo que rechazaría «Calcular» sale como aviso de la vista previa, no como un error.
+
+**El menú «Entidad ▾» e insertar antes o después** (spec 015, T31; HU-015-2, HU-015-3; RF-015-28, RF-015-05, RF-015-15; D-11,
+D-14; plan 015 §5.3.3 y §5.5; comprobación manual M5): el menú contextual de las entidades
+(``GEOBLENDER_MT_des_context_entity``, ``contexts.toml``, entrada «015») lleva las órdenes reales:
+:class:`GEOBLENDER_OT_des_entity_dependents` («Lo que se apoya en ella») abre una ventana con **la lista única** de lo que se
+apoya en la entidad o parte de su superficie (``design.entities.dependents``: nombre, tipo y m³) y en qué se apoya ella
+(``dependencies_of``), las mismas filas de la barra N, sin escribir nada; :class:`GEOBLENDER_OT_des_entity_insert`
+(«Insertar antes o después de…») elige la entidad de referencia (por defecto, la seleccionada) y antes o después, dice lo que
+pasará (``design.entities.insertion_point``: la partida de la nueva y la sucesora) y abre **«Plataforma…»** con esa partida y
+``insert_before`` (la entidad que pasará a partir de la nueva); al crear, la sucesora pasa a partir de la nueva con su motivo
+y ella y las que la siguen quedan obsoletas con su causa (``design.entity_store.apply_insertion``, RF-015-05); sin
+``insert_before``, dos entidades desde la misma superficie se rechazan (RF-015-04). Con «Traer las entidades de…»,
+«Descartar…», «Soltar el apoyo…» y «Vista previa» —que toman la entidad seleccionada en la vista si no se les da otra:
+:func:`_entity_or_selected`— y «Exportar rejilla a GeoTIFF…» (la de la T30), son las del menú. Todas, salvo la última,
+**activas con el proyecto en escritura y la versión activa editable y, si no, desactivadas con su motivo**
+(:class:`DesignCommandAware`, RF-015-28); exportar no es una operación (RF-013-34, D-29 de la 011) y vale también en solo
+lectura y con la versión superada.
 """
 
 from __future__ import annotations
@@ -3510,7 +3528,7 @@ PLATFORM_MODE_ITEMS = [
 """El modo de la plataforma (``design.model.PlatformMode``; D-5: «en corte» por defecto)."""
 AXIS_LINK_FIELD = "eje"
 """El campo que propone el diálogo para el enlace de un polígono con su eje (plan 015 §5.2.1)."""
-_PLATFORM_HIDDEN = frozenset({"confirm", "in_steps", "confirm_counterslope", "preview"})
+_PLATFORM_HIDDEN = frozenset({"confirm", "in_steps", "confirm_counterslope", "preview", "insert_before"})
 """Las propiedades ocultas de «Plataforma…»: las pone quien la lanza (o su ventana de confirmar)."""
 ENTITY_PREVIEW = "geoblender.des_entity_preview"
 ENTITY_DRAW_MODULE = "draw.entity"
@@ -3561,6 +3579,7 @@ def _draw_platform_preview_button(layout: Any, operator: Any) -> None:
             setattr(shown, name, getattr(operator, name))
         except (TypeError, ValueError):
             LOGGER.debug("El campo %s no pasa a la vista previa de la plataforma", name, exc_info=True)
+    shown.insert_before = operator.insert_before  # una inserción se previsualiza como tal (RF-015-05)
     shown.preview = True
 
 
@@ -3575,7 +3594,7 @@ def _refresh_preview(self: Any, _context: Any) -> None:
         request = GEOBLENDER_OT_des_create_platform._request(self)
     except ProfileFormError:
         return
-    loaded.replace(loaded.EntityPlan(request=request))
+    loaded.replace(loaded.EntityPlan(request=request, insert_before=self.insert_before.strip() or None))
 
 
 def _propose_and_refresh(self: Any, context: Any) -> None:
@@ -3624,7 +3643,7 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
     with the edge that joins it with the ground"""
 
     bl_idname = CREATE_PLATFORM
-    bl_label = "Platform"
+    bl_label = "Platform…"
     bl_translation_context = TRANSLATION_CONTEXT
     bl_options = {"REGISTER"}
     provenance_op_type = provenance.PLATFORM
@@ -3730,6 +3749,12 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
     confirm_counterslope: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
     # La vista previa (T29; RF-015-26): el botón «Vista previa» del diálogo la pone y la orden enseña lo pedido.
     preview: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    # Insertar antes o después de otra entidad (T31; RF-015-05): la entidad (su código) que hoy parte de la misma superficie y
+    # que pasará a partir de la de la nueva; la pone «Insertar antes o después de…» al abrir el diálogo.
+    insert_before: StringProperty(default="", options=_HIDDEN)  # type: ignore[valid-type]
+
+    _insert_name = ""
+    """El nombre de la entidad ``insert_before`` como lo enseña el diálogo (lo lee ``invoke``)."""
 
     # --- El diálogo ---------------------------------------------------------------------------
 
@@ -3752,6 +3777,7 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
             des_panels.refresh_choices(project)
             des_panels.refresh_platform_choices(project)
             self._propose(context, project)
+            self._insert_name = self._insertion_name(project)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
@@ -3785,17 +3811,33 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
             if start is not None:
                 self.start = start
 
+    def _insertion_name(self, project: Any) -> str:
+        """El nombre de la entidad ``insert_before`` (T31; RF-015-05) como lo enseña el diálogo: el de la entidad de la versión
+        activa o, si no es de ella, lo que dice la propiedad; vacío si no se inserta."""
+        wanted = self.insert_before.strip()
+        if not wanted:
+            return ""
+        from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+        found = entities.registry(project, scene_versions.active_version() or "").get(wanted)
+        return wanted if found is None else found.record.name
+
     def draw(self, context: Any) -> None:
-        """Arriba el nombre; la capa, la geometría y sus campos; los valores que da la capa (la cota
-        inicial, la pendiente y el ancho), que se corrigen aquí; la partida, el apoyo y el modo; el borde
-        (su ángulo, su alcance, su factor de malla y la métrica); la tolerancia de contrapendiente y si
-        protege, con su resguardo. En la confirmación de crear, el resumen."""
+        """Arriba el nombre (y, si se inserta antes de otra entidad, lo que pasará con ella); la capa, la geometría y sus
+        campos; los valores que da la capa (la cota inicial, la pendiente y el ancho), que se corrigen aquí; la partida, el
+        apoyo y el modo; el borde (su ángulo, su alcance, su factor de malla y la métrica); la tolerancia de
+        contrapendiente y si protege, con su resguardo. En la confirmación de crear, el resumen."""
         layout = self.layout
         if self.confirm:  # el resumen del cálculo abierto
             des_panels.draw_summary(layout, DIALOG_WIDTH)
             return
         layout.use_property_split = True
         kind = des_panels.platform_layer_kind(self.layer)
+        if self.insert_before.strip():  # una inserción (RF-015-05): lo que pasará con la que la sigue
+            layout.label(text=tr("It is inserted before «{entity}»: «{entity}» will start from its surface and, with "
+                                 "what follows it, will be out of date until it is recomputed",
+                                 entity=self._insert_name or self.insert_before.strip()),
+                         icon="INFO", translate=False)
         layout.prop(self, "name", text=tr("Name"), translate=False)
         box = layout.box()
         box.label(text=tr("Geometry of the platform"), translate=False)
@@ -3916,6 +3958,7 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
 
         discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
         steps = design_steps.platform_run(project, request, version=version,
+                                          insert_before=self.insert_before.strip() or None,
                                           budget_s=self.STEP_BUDGET_S)
         return self._run_steps(context, project, request.name, steps)
 
@@ -3945,7 +3988,7 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
             return {"CANCELLED"}
         preview = _entity_preview()
         try:
-            preview.enable(preview.EntityPlan(request=request))
+            preview.enable(preview.EntityPlan(request=request, insert_before=self.insert_before.strip() or None))
         except (RuntimeError, GeoblenderError, sqlite3.Error, OSError) as exc:
             self.report({"ERROR"}, tr("The preview of the entity could not be shown: {detail}",
                                       detail=design_error_text(exc)))
@@ -4485,6 +4528,7 @@ class GEOBLENDER_OT_des_entity_discard(_EntitySteps, DesignCommandAware, Provena
                 self.report({"ERROR"}, refusal)
             return {"CANCELLED"}
         try:
+            self.entity = _entity_or_selected(self.entity, context)  # del menú «Entidad ▾»: la seleccionada (T31)
             self._plan = self._read_plan()
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
@@ -4640,6 +4684,7 @@ class GEOBLENDER_OT_des_entity_release_support(_EntitySteps, DesignCommandAware,
                 self.report({"ERROR"}, refusal)
             return {"CANCELLED"}
         try:
+            self.target = _entity_or_selected(self.target, context)  # del menú «Entidad ▾»: la seleccionada (T31)
             self._lost = self._read_lost()
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
@@ -4866,6 +4911,19 @@ def _selected_entity(context: Any) -> tuple[str, str]:
     return shape.code, owner
 
 
+def _entity_or_selected(given: str, context: Any) -> str:
+    """La entidad a la que se refiere una orden del menú «Entidad ▾» (T31; RF-015-28, D-14): la que se tecleó (``given``: su
+    código o su nombre) o, sin ella, la del objeto de entidad seleccionado en la vista (``_selected_entity``); ``""`` si no hay
+    ninguna. :class:`ValueError` si la seleccionada es de otra versión que la activa."""
+    typed = given.strip()
+    if typed:
+        return typed
+    code, owner = _selected_entity(context)
+    if code and owner and owner != scene_versions.active_version():
+        raise ValueError(tr("The selected entity is not of the active version: make its version the active one first"))
+    return code
+
+
 class GEOBLENDER_OT_des_entity_preview(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
     """Show, before calculating, the footprint of a platform, its axis with its sense, the levels at its ends, what rests on it and the constraints it will declare"""
 
@@ -4937,6 +4995,247 @@ class GEOBLENDER_OT_des_entity_preview(DesignCommandAware, ProvenanceAwareOperat
         return {"FINISHED"}
 
 
+# --- El menú «Entidad ▾»: lo que se apoya en la entidad (spec 015, T31; HU-015-2; RF-015-15, RF-015-28; D-11, D-14) ----------
+
+DEPENDENTS = "geoblender.des_entity_dependents"
+INSERT_ENTITY = "geoblender.des_entity_insert"
+
+
+@dataclass(frozen=True, slots=True)
+class _Dependents:
+    """Lo que enseña la ventana de «Lo que se apoya en ella»: el ``name`` y el ``code`` de la entidad, **la lista única** de
+    lo que se apoya en ella o parte de su superficie (``on_it``: ``design.entities.dependents``) y en qué se apoya ella
+    (``rests_on``: ``design.entities.dependencies_of``)."""
+
+    name: str
+    code: str
+    on_it: tuple[Any, ...]
+    rests_on: tuple[Any, ...]
+
+
+class GEOBLENDER_OT_des_entity_dependents(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Show the single list of what rests on the entity or starts from its surface, with the volume that rests on it, and what the entity rests on"""
+
+    bl_idname = DEPENDENTS
+    bl_label = "What rests on it"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.PLATFORM
+
+    entity: StringProperty(  # type: ignore[valid-type]
+        name="Entity", description="Code or name of the design entity (empty: the one of the object selected in the 3D "
+                                   "view)", options=_FIELD)
+
+    _listed = None
+    """Lo que enseña la ventana (:class:`_Dependents`), leído al abrirla."""
+
+    def _read(self, context: Any) -> _Dependents:
+        """La entidad pedida (o la seleccionada en la vista) con lo que se apoya en ella y en qué se apoya, leído del proyecto
+        en **una** instantánea y sin escribir nada. :class:`ValueError` si no hay entidad o no es de la versión activa."""
+        from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+        code = _entity_or_selected(self.entity, context)
+        if not code:
+            raise ValueError(tr("Choose the entity: select its object in the 3D view or give its code"))
+        project, version = SESSION.project, scene_versions.active()
+        if project is None or version is None:
+            raise ValueError(tr("There is no active version: the entities are those of a version"))
+        with project.read() as conn:
+            conn.execute("BEGIN")
+            try:
+                listed = entities.registry(project, version.uid, conn=conn)
+                entry = listed.get(code)
+                if entry is None:
+                    raise ValueError(tr("«{entity}» is not an entity of {version}", entity=code, version=version.code))
+                found = entry.record.code
+                return _Dependents(
+                    entry.record.name, found, entities.dependents(project, version.uid, found, conn=conn),
+                    entities.dependencies_of(project, version.uid, found, conn=conn, listed=listed))
+            finally:
+                conn.execute("ROLLBACK")
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre la ventana con la lista de lo que se apoya en la entidad (y en qué se apoya); no escribe nada. Sin versión
+        editable, sin entidad o con una que no es de la versión activa, lo dice."""
+        self.provenance_dialog = True
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        try:
+            self._listed = self._read(context)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_popup(self, width=DIALOG_WIDTH)
+
+    def draw(self, context: Any) -> None:
+        """La entidad, **la lista única** de lo que se apoya en ella o parte de su superficie (nombre, tipo y m³, o «superficie
+        de partida»; en alerta lo que no está al día) y, debajo, en qué se apoya ella."""
+        found = self._listed
+        if found is None:
+            return
+        layout = self.layout
+        layout.label(text=tr("Design entity «{name}» ({code})", name=found.name, code=found.code), translate=False)
+        for heading, rows, nothing in ((tr("What rests on it"), found.on_it, tr("Nothing rests on it")),
+                                       (tr("Rests on"), found.rests_on, tr("It rests on nothing"))):
+            layout.label(text=heading, translate=False)
+            box = layout.box()
+            for text, alert in des_panels.dependent_texts(rows):
+                row = box.row()
+                row.alert = alert
+                row.label(text=text, icon="DOT", translate=False)
+            if not rows:
+                box.label(text=nothing, translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Desde un guion: informa la lista, línea a línea (la entidad, lo que se apoya en ella y en qué se apoya), sin
+        escribir nada."""
+        try:
+            found = self._read(context)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Design entity «{name}» ({code})", name=found.name, code=found.code))
+        for heading, rows, nothing in ((tr("What rests on it"), found.on_it, tr("Nothing rests on it")),
+                                       (tr("Rests on"), found.rests_on, tr("It rests on nothing"))):
+            self.report({"INFO"}, heading)
+            for text, _alert in des_panels.dependent_texts(rows):
+                self.report({"INFO"}, text)
+            if not rows:
+                self.report({"INFO"}, nothing)
+        return {"FINISHED"}
+
+
+# --- Insertar antes o después de otra entidad (spec 015, T31; HU-015-2; RF-015-05, RF-015-04; D-2, D-14) --------------------
+
+PLACEMENT_ITEMS = [
+    ("AFTER", "After", "The new platform starts from the surface of the entity and the one that followed it starts from "
+                       "the new one"),
+    ("BEFORE", "Before", "The new platform starts from the surface the entity starts from and the entity starts from "
+                         "the new one")]
+"""Dónde se inserta la nueva respecto de la entidad de referencia (``design.entities.insertion_point``)."""
+
+
+class GEOBLENDER_OT_des_entity_insert(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Insert a new platform before or after another entity of its chain: the one that follows starts from the new one and is left out of date with what follows it"""
+
+    bl_idname = INSERT_ENTITY
+    bl_label = "Insert before or after…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.PLATFORM
+
+    reference: StringProperty(  # type: ignore[valid-type]
+        name="Entity", description="Name or code of the entity the new platform is inserted next to (empty: the one of "
+                                   "the object selected in the 3D view)", options=_FIELD)
+    placement: EnumProperty(  # type: ignore[valid-type]
+        name="Position", description="Insert the new platform after or before that entity", items=PLACEMENT_ITEMS,
+        default="AFTER", options=_FIELD)
+    references: CollectionProperty(type=GEOBLENDER_PG_des_bring_row, options=_FIELD)  # type: ignore[valid-type]
+
+    _records = ()
+    """Las entidades de la versión activa como las leyó ``invoke`` (``design.entities.EntityRecord``): lo que dibuja el
+    diálogo no lee el proyecto."""
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo con las entidades vivas de la versión activa (por su nombre) y propone la del objeto seleccionado en la
+        vista o, sin ella, la primera; no escribe nada. Sin versión editable o sin entidades, lo dice."""
+        from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+        self.provenance_dialog = True
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        try:
+            wanted = _entity_or_selected(self.reference, context)
+            self._records = entities.registry(SESSION.project, scene_versions.active_version() or "").records
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        live = [item for item in self._records if item.state is not entities.EntityState.DISCARDED]
+        if not live:
+            self.report({"ERROR"}, tr("The active version has no entities to insert next to: create a platform first"))
+            return {"CANCELLED"}
+        self.references.clear()
+        for item in live:
+            row = self.references.add()
+            row.name, row.label = item.name, f"{item.name} ({item.code})"
+        found = entities.find_entity(live, wanted) if wanted else None
+        self.reference = (found or live[0]).name
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=tr("Insert before or after…"),
+            confirm_text=tr("Continue"))
+
+    def draw(self, context: Any) -> None:
+        """La entidad de referencia (de la lista de las vivas) y antes o después de ella; y, según lo elegido, de qué superficie
+        parte la nueva y qué pasará con la sucesora (pasa a partir de la nueva y, con lo que la sigue, queda obsoleta) o que se
+        añade al final de su cadena."""
+        from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+        layout = self.layout
+        layout.prop_search(self, "reference", self, "references", text=tr("Entity"), translate=False)
+        layout.prop(self, "placement", expand=True)
+        wanted = self.reference.strip()
+        if not wanted:
+            return
+        try:
+            found = entities.insertion_point(self._records, wanted, before=self.placement == "BEFORE")
+        except (GeoblenderError, ValueError) as exc:
+            layout.label(text=tr("It cannot be inserted: {reason}", reason=design_error_text(exc)), icon="ERROR",
+                         translate=False)
+            return
+        name = found.reference.name
+        layout.label(text=tr("The new platform starts from the same surface as «{entity}»", entity=name) if found.before
+                     else tr("The new platform starts from the surface of «{entity}»", entity=name), translate=False)
+        layout.label(text=tr("«{entity}» will start from the new platform and, with what follows it, will be out of "
+                             "date until it is recomputed", entity=found.successor.name) if found.successor is not None
+                     else tr("Nothing starts from the surface of «{entity}»: the new platform is added at the end of "
+                             "its chain", entity=name), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Abre la creación de la plataforma (**«Plataforma…»**, :data:`CREATE_PLATFORM`) con la partida de la nueva
+        (``design.entities.insertion_point``: la superficie que deja la entidad de referencia o la de la que parte) y, si la
+        hay, la entidad que pasará a partir de ella (``insert_before``); no escribe nada: al crear, la sucesora pasa a partir
+        de la nueva y queda obsoleta con las que la siguen (``design.entity_store.apply_insertion``). Sin entidad, con una que no
+        es de la versión o descartada, o con una partida que la plataforma aún no puede tener (una entidad sin calcular no tiene
+        superficie), lo dice y no abre nada."""
+        from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            wanted = _entity_or_selected(self.reference, context)
+            if not wanted:
+                raise ValueError(tr("Choose the entity the new platform is inserted next to"))
+            found = entities.insertion_point(
+                entities.registry(project, scene_versions.active_version() or "").records, wanted,
+                before=self.placement == "BEFORE")
+            des_panels.refresh_choices(project)
+            des_panels.refresh_platform_choices(project)
+            if found.start not in {item[0] for item in des_panels.platform_start_items(None, None)}:
+                raise ValueError(tr("«{start}» cannot be the start surface yet: a platform that is not calculated has "
+                                    "no surface", start=found.start))
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        values: dict[str, Any] = {"start": found.start}
+        if found.successor is not None:
+            values["insert_before"] = found.successor.code
+        _invoke_later(CREATE_PLATFORM, getattr(context, "window", None) or _first_window(), **values)
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
@@ -4954,12 +5253,15 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_entity_discard,
                              GEOBLENDER_OT_des_entity_release_support,
                              GEOBLENDER_OT_des_entity_bring,
-                             GEOBLENDER_OT_des_entity_preview)
+                             GEOBLENDER_OT_des_entity_preview,
+                             GEOBLENDER_OT_des_entity_dependents,
+                             GEOBLENDER_OT_des_entity_insert)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
 T44, la que declara de nuevo los sectores desde su ventana; de la 014, la T20 pone «Límite desde el
 perímetro…», la T21 «Cantera con dos superficies…», la T28 «Transiciones con el terreno no
 afectado», la T30 «Solo relleno…» y la T33 «Ajustar el diseño a un límite nuevo…», de la entrada
-«014», que la T58 entrega; de la 015, la T15 pone «Plataforma…», de la entrada «R-36», que entrega la
-T31; la T25, «Descartar…» y «Soltar el apoyo…», internas hasta que la T31 las ponga en el menú «Entidad ▾»; la T26, «Traer las entidades de…», también interna; la T29, la vista previa de una entidad, interna)."""
+«014», que la T58 entrega; de la 015, la T15 pone «Plataforma…», la T25 «Descartar…» y «Soltar el apoyo…», la T26 «Traer las
+entidades de…» y la T29 la vista previa de una entidad, todas de la entrada «015», que entrega la T31 con el menú «Entidad ▾»
+(las dos internas nuevas de la T31, «Lo que se apoya en ella» e «Insertar antes o después de…», también))."""

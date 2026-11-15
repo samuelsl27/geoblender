@@ -120,8 +120,8 @@ class EntityBringTest(platform_ops.CreatePlatformTest):
     # --- Pruebas ------------------------------------------------------------------------------
 
     def test_a_the_command_is_a_real_internal_command_with_named_properties(self) -> None:
-        """RF-015-18, RF-015-28 (plan §5.3.3): «Traer las entidades de…» es una orden real de ``des``, de la entrada de
-        R-36 que entrega la T31, interna hasta que la T31 la ponga en el menú «Entidad ▾»; con la puerta de la
+        """RF-015-18, RF-015-28 (plan §5.3.3): «Traer las entidades de…» es una orden real de ``des``, de la entrada
+        015 que entrega la T31, interna y en el menú «Entidad ▾» (T31); con la puerta de la
         procedencia y el ``poll`` común de Diseño, propiedades con nombre y descripción (registradas ya en español) y su
         descripción es la del catálogo; la desactivación y el registro simétrico los mira la prueba de registro."""
         cls = self.command()
@@ -136,7 +136,7 @@ class EntityBringTest(platform_ops.CreatePlatformTest):
         catalog = self.commands.catalog()
         command = catalog.commands[BRING]
         self.assertEqual((command.kind, command.entry, command.module, command.label, command.label_es),
-                         ("internal", "R-36", "des", "Bring the entities of…", "Traer las entidades de…"))
+                         ("internal", "015", "des", "Bring the entities of…", "Traer las entidades de…"))
         self.assertEqual(command.description, DESCRIPTION)
         self.assertEqual(cls.__doc__.strip(), DESCRIPTION)
         self.assertNotIn(BRING, {name for defn in self.dprov.ENTITY_OPERATION_TYPES for name in defn.commands})
@@ -151,7 +151,7 @@ class EntityBringTest(platform_ops.CreatePlatformTest):
         props = platform_ops._module("bl.props.des")
         self.assertIn(props.GEOBLENDER_PG_des_bring_row, props.classes)
         self.assertTrue(props.GEOBLENDER_PG_des_bring_row.is_registered)
-        self.assertFalse(catalog.entries["R-36"].delivered, "la entrega la T31")
+        self.assertTrue(catalog.entries["015"].delivered, "la entrega la T31")
 
     def test_b_two_platforms_of_a_version_are_calculated_and_created(self) -> None:
         """RF-015-18 (el mundo de estas pruebas): P1 «Carga» y P2 «Taller» (de la superficie de P1) creadas en V01, al día;

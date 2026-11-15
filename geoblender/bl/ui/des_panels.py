@@ -167,7 +167,8 @@ N «Diseño»: :func:`read_selected` regenera las líneas al cambiar el objeto a
 cambiado y tras cargar un ``.blend`` (``WindowManager.geoblender_design.item``), y nada se lee al dibujar. Con una
 entidad leída, al final de la barra N está el botón «Exportar rejilla a GeoTIFF…» (T30; RF-015-27: la misma
 ``geoblender.des_export_design_grid``, que con el objeto de una entidad exporta **su superficie**, ``des_psf_``): como el
-de la barra N «Diseño», siempre activo, porque exportar no escribe en el proyecto."""
+de la barra N «Diseño», siempre activo, porque exportar no escribe en el proyecto. La ventana de «Lo que se apoya en ella» del
+menú «Entidad ▾» (T31; RF-015-28) dibuja esas mismas filas de dependencias (:func:`dependent_texts`)."""
 
 from __future__ import annotations
 
@@ -2491,6 +2492,14 @@ def _entity_dependent_line(item: Any) -> CardLine:
     if msgid is None:
         return CardLine(ROW_FIELD, text)
     return CardLine(ROW_FIELD, f"{text} · {translate(shown, msgid)}", alert=True)
+
+
+def dependent_texts(items: Sequence[Any]) -> list[tuple[str, bool]]:
+    """Las filas de una lista de dependencias de una entidad (``design.entities.Dependent``: lo que se apoya en ella o en
+    qué se apoya) como las enseña la barra N «Entidad» (:func:`_entity_dependent_line`): ``(texto, alerta)``, el texto con el
+    nombre, el tipo y los m³ apoyados (o «superficie de partida») y, si no está al día, su estado; la alerta, para lo que no lo
+    está. La ventana de «Lo que se apoya en ella» del menú «Entidad ▾» (T31; RF-015-28) la dibuja con ellas."""
+    return [(line.text, line.alert) for line in map(_entity_dependent_line, items)]
 
 
 def _entity_figures(conn: sqlite3.Connection, entry: Any) -> list[CardLine]:

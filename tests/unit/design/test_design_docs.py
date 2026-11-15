@@ -207,6 +207,8 @@ PENDING_015_API = frozenset({
     "Brought", "BroughtEntity", "bring_entities",
     # T29: la vista previa de una entidad antes de calcularla (design.preview).
     "EntityEnd", "EntityPreview", "RestingItem", "entity_preview_steps",
+    # T31: insertar antes o después de otra entidad (design.entities: dónde se inserta; design.entity_store: aplicarlo al crear).
+    "Insertion", "insertion_point", "apply_insertion",
     # T30: la capa de entidades para QGIS (design.entity_layer: la tabla; design.entity_store: la operación).
     "EntityLayerRow", "create_entity_layer_table", "entity_layer_table", "read_entity_layer", "write_entity_layer",
     "LayerSource", "PreparedEntityLayer", "entity_layer_rows_steps", "entity_layer_steps", "layer_sources",

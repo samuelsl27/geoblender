@@ -117,7 +117,7 @@ class EntityDiscardTest(platform_ops.CreatePlatformTest):
 
     def test_a_the_commands_are_real_internal_commands_with_named_properties(self) -> None:
         """RF-015-17, RF-015-28 (plan §5.3.3): «Descartar…» y «Soltar el apoyo…» son órdenes reales de ``des``, de la
-        entrada de R-36 que entrega la T31, internas hasta que la T31 las ponga en el menú «Entidad ▾»; con la puerta
+        entrada 015 que entrega la T31, internas y en el menú «Entidad ▾» (T31); con la puerta
         de la procedencia y los pasos con Esc, el ``poll`` común de Diseño y propiedades con nombre y descripción
         (registradas ya en español); su descripción es la del catálogo; la desactivación y el registro simétrico los
         mira la prueba de registro."""
@@ -139,7 +139,7 @@ class EntityDiscardTest(platform_ops.CreatePlatformTest):
                 self.assertEqual(cls.STEP_BUDGET_S, 0.05)
                 command = catalog.commands[idname]
                 self.assertEqual((command.kind, command.entry, command.module, command.label, command.label_es),
-                                 ("internal", "R-36", "des", label, label_es))
+                                 ("internal", "015", "des", label, label_es))
                 self.assertEqual(command.description, DESCRIPTIONS[idname])
                 self.assertEqual(cls.__doc__.strip(), DESCRIPTIONS[idname])
                 self.assertNotIn(idname, {name for defn in self.dprov.ENTITY_OPERATION_TYPES for name in defn.commands})
@@ -153,7 +153,7 @@ class EntityDiscardTest(platform_ops.CreatePlatformTest):
                 for prop in HIDDEN:
                     self.assertNotIn("name", cls.__annotations__[prop].keywords)
                 self.assertTrue(cls.poll(bpy.context))
-        self.assertFalse(catalog.entries["R-36"].delivered, "la entrega la T31")
+        self.assertTrue(catalog.entries["015"].delivered, "la entrega la T31")
 
     def test_b_a_platform_that_rests_on_another_without_starting_from_it_and_one_that_starts_from_it(self) -> None:
         """RF-015-15, RF-015-17 (el mundo de estas pruebas): P1 «Carga», P2 «Taller» (de la superficie de P1: solo

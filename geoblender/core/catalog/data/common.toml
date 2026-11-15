@@ -577,8 +577,8 @@ entry = "013"
 action = "A"
 frequency = 2
 
-# Entidades de diseño (spec 015, T25; RF-015-17): descartar una entidad y dar por bueno lo que perdió su apoyo.
-# Internas hasta que la T31 las ponga en el menú «Entidad ▾» (con «Descartar…» y la lista de lo que se apoya).
+# Entidades de diseño (spec 015, T25; RF-015-17): descartar una entidad y dar por bueno lo que perdió su apoyo. Internas: están en
+# el menú «Entidad ▾» (T31; RF-015-28).
 [[command]]
 key = "geoblender.des_entity_discard"
 kind = "internal"
@@ -586,7 +586,7 @@ label.en = "Discard…"
 label.es = "Descartar…"
 description.en = "Discard a design entity: it stays in the project as a record, nothing is deleted, and what rests on it is left as «support removed»"
 description.es = "Descarta una entidad de diseño: queda en el proyecto como registro, no se borra nada y lo que se apoya en ella queda como «apoyo retirado»"
-entry = "R-36"
+entry = "015"
 action = "D"
 frequency = 1
 
@@ -597,11 +597,11 @@ label.en = "Release the support…"
 label.es = "Soltar el apoyo…"
 description.en = "Give as good what lost its support because an entity was discarded: it is repeated without that support, with a reason that is recorded"
 description.es = "Da por bueno lo que perdió su apoyo porque se descartó una entidad: se repite sin ese apoyo, con un motivo que queda registrado"
-entry = "R-36"
+entry = "015"
 action = "D"
 frequency = 1
 
-# Traer las entidades de otra versión (spec 015, T26; RF-015-18): internas hasta que la T31 la ponga en el menú «Entidad ▾».
+# Traer las entidades de otra versión (spec 015, T26; RF-015-18): interna, en el menú «Entidad ▾» (T31).
 [[command]]
 key = "geoblender.des_entity_bring"
 kind = "internal"
@@ -609,12 +609,12 @@ label.en = "Bring the entities of…"
 label.es = "Traer las entidades de…"
 description.en = "Bring the entities of another version to the active one, without their results: they are left as «not calculated»"
 description.es = "Trae las entidades de otra versión a la activa, sin sus resultados: quedan «sin calcular»"
-entry = "R-36"
+entry = "015"
 action = "D"
 frequency = 1
 
-# La vista previa de una entidad (spec 015, T29; RF-015-26): interna hasta que la T31 la ponga en el menú «Entidad ▾». El
-# botón «Vista previa» del diálogo de «Plataforma…» es la misma orden de la plataforma con la propiedad oculta ``preview``.
+# La vista previa de una entidad (spec 015, T29; RF-015-26): interna, en el menú «Entidad ▾» (T31). El botón «Vista previa» del
+# diálogo de «Plataforma…» es la misma orden de la plataforma con la propiedad oculta ``preview``.
 [[command]]
 key = "geoblender.des_entity_preview"
 kind = "internal"
@@ -622,6 +622,29 @@ label.en = "Preview of the entity"
 label.es = "Vista previa de la entidad"
 description.en = "Show, before calculating, the footprint of a platform, its axis with its sense, the levels at its ends, what rests on it and the constraints it will declare"
 description.es = "Enseña, antes de calcular, la huella de una plataforma, su eje con su sentido, las cotas en sus extremos, lo que se le apoya y las restricciones que declarará"
-entry = "R-36"
+entry = "015"
 action = "T"
 frequency = 2
+
+# El menú «Entidad ▾» (spec 015, T31; RF-015-28, RF-015-05; D-14): lo que se apoya en la entidad y insertar antes o después de otra.
+[[command]]
+key = "geoblender.des_entity_dependents"
+kind = "internal"
+label.en = "What rests on it"
+label.es = "Lo que se apoya en ella"
+description.en = "Show the single list of what rests on the entity or starts from its surface, with the volume that rests on it, and what the entity rests on"
+description.es = "Enseña la lista única de lo que se apoya en la entidad o parte de su superficie, con el volumen que se le apoya, y en qué se apoya ella"
+entry = "015"
+action = "P"
+frequency = 2
+
+[[command]]
+key = "geoblender.des_entity_insert"
+kind = "internal"
+label.en = "Insert before or after…"
+label.es = "Insertar antes o después de…"
+description.en = "Insert a new platform before or after another entity of its chain: the one that follows starts from the new one and is left out of date with what follows it"
+description.es = "Inserta una plataforma nueva antes o después de otra entidad de su cadena: la que la sigue pasa a partir de la nueva y queda obsoleta con lo que la sigue"
+entry = "015"
+action = "D"
+frequency = 1

@@ -854,9 +854,10 @@ def _entity_request(project: StoreProject, version: Any, code: str) -> Any:
         settings, entity_store.platform_parameters(project, version, entry.record.code))
 
 
-def _entity_units(project: StoreProject, request: Any, code: str | None, version_uid: str
-                  ) -> Generator[None, None, EntityPreview]:
-    """Las unidades de :func:`entity_preview_steps`."""
+def _entity_units(project: StoreProject, request: Any, code: str | None, version_uid: str,
+                  insert_before: str | None = None) -> Generator[None, None, EntityPreview]:
+    """Las unidades de :func:`entity_preview_steps` (``insert_before``: la entidad que pasaría a partir de la nueva, si se
+    previsualiza una inserción: RF-015-05)."""
     from . import entities, entity_store  # al usarlo: importan Notice de aquí
     from .entities import EntityKind
 
@@ -888,7 +889,8 @@ def _entity_units(project: StoreProject, request: Any, code: str | None, version
     try:
         prepared = yield from entity_store.prepare_platform_units(
             project, request, version, masks, code=None if existing is None else named,
-            supersedes=None if existing is None else existing.operation_uid)  # como lo recalcularía la orden
+            supersedes=None if existing is None else existing.operation_uid,  # como lo recalcularía la orden
+            insert_before=insert_before)
     except (DesignError, GeoblenderError) as refused:  # lo que rechazaría «Calcular»: es el aviso
         return EntityPreview(name, named, version.code, state, refusal=refused)
     grid = prepared.job.grid
@@ -934,8 +936,8 @@ def _entity_units(project: StoreProject, request: Any, code: str | None, version
 
 
 def entity_preview_steps(project: StoreProject, request: Any, version_uid: str, *,
-                         code: str | None = None, budget_s: float = STEP_BUDGET_S
-                         ) -> Iterator[Progress]:
+                         code: str | None = None, insert_before: str | None = None,
+                         budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
     """El :class:`EntityPreview` de una plataforma **antes de calcularla** (RF-015-26) para la versión
     ``version_uid`` (uid o código), por pasos de ``budget_s`` como mucho: el último ``Progress`` lleva el
     resumen. Dos maneras de pedirla: ``request`` (``design.model.PlatformRequest``, la que se prepara en el
@@ -946,10 +948,15 @@ def entity_preview_steps(project: StoreProject, request: Any, version_uid: str, 
     máscaras**, que no compila (si faltan o están obsoletas, lo dice en lugar de dibujar). Un rechazo de la
     preparación (RF-015-08, RF-015-09: la geometría, los campos, los parámetros, la partida, la falta de dato…)
     no es un error: es ``EntityPreview.refusal``, con el mismo mensaje que «Calcular». Otros errores (una
-    versión que no existe, una entidad que no es de la versión: ``ValueError``) sí se lanzan al avanzar."""
+    versión que no existe, una entidad que no es de la versión: ``ValueError``) sí se lanzan al avanzar. ``insert_before``
+    (T31; RF-015-05): la entidad que pasaría a partir de la nueva si ``request`` se inserta antes de ella (la misma
+    preparación que «Calcular»: la partida ocupada por ella no se rechaza); solo con ``request``."""
     if (request is None) == (code is None):
         raise ValueError("la vista previa de una entidad es de una petición (la que se prepara) o de una "
                          "entidad de la versión (su código), no de las dos ni de ninguna")
-    return pace_progress(_entity_units(project, request, code, version_uid), budget_s,
+    if insert_before is not None and request is None:
+        raise ValueError("«insert_before» solo vale con la plataforma que se prepara (su petición), no con una entidad "
+                         "que ya está en la versión")
+    return pace_progress(_entity_units(project, request, code, version_uid, insert_before), budget_s,
                          phase=_ENTITY_PHASE, running="Preparando la vista previa de la entidad…",
                          finished="Vista previa de la entidad lista", total=10)

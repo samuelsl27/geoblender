@@ -9264,3 +9264,69 @@ es = "«{entity}» no es una entidad de {version}"
 
 ["Code or name of the design entity to preview (empty: the one of the object selected in the 3D view)"]
 es = "Código o nombre de la entidad de diseño de la que ver la vista previa (vacío: la del objeto seleccionado en la Vista 3D)"
+
+["Design entity «{name}» ({code})"]
+es = "Entidad de diseño «{name}» ({code})"
+
+["Choose the entity: select its object in the 3D view or give its code"]
+es = "Elija la entidad: seleccione su objeto en la Vista 3D o dé su código"
+
+["There is no active version: the entities are those of a version"]
+es = "No hay ninguna versión activa: las entidades son las de una versión"
+
+["Code or name of the design entity (empty: the one of the object selected in the 3D view)"]
+es = "Código o nombre de la entidad de diseño (vacío: la del objeto seleccionado en la Vista 3D)"
+
+["Name or code of the entity the new platform is inserted next to (empty: the one of the object selected in the 3D view)"]
+es = "Nombre o código de la entidad junto a la que se inserta la nueva plataforma (vacío: la del objeto seleccionado en la Vista 3D)"
+
+["Position"]
+es = "Posición"
+
+["Insert the new platform after or before that entity"]
+es = "Inserta la nueva plataforma después o antes de esa entidad"
+
+["After"]
+es = "Después"
+
+["The new platform starts from the surface of the entity and the one that followed it starts from the new one"]
+es = "La nueva plataforma parte de la superficie de la entidad y la que la seguía pasa a partir de la nueva"
+
+["Before"]
+es = "Antes"
+
+["The new platform starts from the surface the entity starts from and the entity starts from the new one"]
+es = "La nueva plataforma parte de la superficie de la que parte la entidad y la entidad pasa a partir de la nueva"
+
+["The active version has no entities to insert next to: create a platform first"]
+es = "La versión activa no tiene entidades junto a las que insertar: cree antes una plataforma"
+
+["Continue"]
+es = "Continuar"
+
+["It cannot be inserted: {reason}"]
+es = "No se puede insertar: {reason}"
+
+["The new platform starts from the same surface as «{entity}»"]
+es = "La nueva plataforma parte de la misma superficie que «{entity}»"
+
+["The new platform starts from the surface of «{entity}»"]
+es = "La nueva plataforma parte de la superficie de «{entity}»"
+
+["«{entity}» will start from the new platform and, with what follows it, will be out of date until it is recomputed"]
+es = "«{entity}» pasará a partir de la nueva plataforma y, con lo que la sigue, quedará obsoleta hasta que se recalcule"
+
+["Nothing starts from the surface of «{entity}»: the new platform is added at the end of its chain"]
+es = "Nada parte de la superficie de «{entity}»: la nueva plataforma se añade al final de su cadena"
+
+["Choose the entity the new platform is inserted next to"]
+es = "Elija la entidad junto a la que se inserta la nueva plataforma"
+
+["«{start}» cannot be the start surface yet: a platform that is not calculated has no surface"]
+es = "«{start}» aún no puede ser la superficie de partida: una plataforma sin calcular no tiene superficie"
+
+["It is inserted before «{entity}»: «{entity}» will start from its surface and, with what follows it, will be out of date until it is recomputed"]
+es = "Se inserta antes de «{entity}»: «{entity}» pasará a partir de su superficie y, con lo que la sigue, quedará obsoleta hasta que se recalcule"
+
+["Insert before or after…"]
+es = "Insertar antes o después de…"

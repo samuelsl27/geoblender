@@ -64,9 +64,9 @@ ENTITY_TYPES = ("des.platform", "des.declare_constraints", "des.entity_layer")
 """Los tres tipos de la 015 (T04): de la versión y repetibles; se reproducen los dos primeros (la capa de entidades, T30,
 es una vista regenerable)."""
 PLATFORM_COMMAND = "geoblender.des_create_platform"
-"""La orden de los tres: la «Plataforma…» de la entrada de R-36 (T15: la clave definitiva, que sustituyó a
-``des_draw_platform``). Tiene su clase real; el catálogo deja la entrada sin entregar hasta la T31."""
-ENTRY_R36 = "R-36"
+"""La orden de los tres: la «Plataforma…» de la entrada 015 (T15: la clave definitiva, que sustituyó a
+``des_draw_platform``). Tiene su clase real; la entrada la entrega la T31."""
+ENTRY_015 = "015"
 REPRODUCED = {"des.envelope": "reproduce_envelope", "des.stepped_design": "reproduce_design",
               "des.excavation_area": "reproduce_excavation_area",
               "des.quarry": "reproduce_quarry",
@@ -407,13 +407,13 @@ class DesignRegisteredTest(unittest.TestCase):
                                                    PLATFORM_COMMAND, *COMMANDS_014}))
         self.assertEqual(launched["geoblender.des_compute_envelope"], list(VERSION_TYPES))
         self.assertEqual(launched[PLATFORM_COMMAND], list(ENTITY_TYPES))  # RF-015-02 (T04)
-        platform = self.cat.commands[PLATFORM_COMMAND]  # de la entrada de R-36, sin entregar
-        self.assertEqual((platform.entry, platform.module), (ENTRY_R36, "des"))
-        self.assertFalse(self.cat.entries[ENTRY_R36].delivered)
+        platform = self.cat.commands[PLATFORM_COMMAND]  # de la entrada 015, entregada (T31)
+        self.assertEqual((platform.entry, platform.module), (ENTRY_015, "des"))
+        self.assertTrue(self.cat.entries[ENTRY_015].delivered)
         platform_class = m.commands.registered_class(PLATFORM_COMMAND)  # T15: su clase real
         self.assertIn(platform_class, des_ops.classes)
         self.assertFalse(m.commands.is_provisional(platform_class))
-        self.assertFalse(m.commands.is_available(PLATFORM_COMMAND))  # la entrada la entrega la T31
+        self.assertTrue(m.commands.is_available(PLATFORM_COMMAND))  # la entrada la entrega la T31
         self.assertNotIn("geoblender.des_draw_platform", self.cat.commands)  # la clave marcador, sustituida
         for idname in sorted(set(launched) - COMMANDS_014 - {PLATFORM_COMMAND}):
             with self.subTest(orden=idname):

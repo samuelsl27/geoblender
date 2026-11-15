@@ -3,7 +3,7 @@
 RF-015-01; plan 015 §5.3.3 y §5.5; comprobación manual M1).
 
 :class:`GEOBLENDER_OT_des_create_platform` (``geoblender.des_create_platform``, en Diseño ▸ Pistas y
-entidades ▸ Entidades; la entrada de R-36 la entrega la T31) calcula con ``design.steps.platform_run`` la
+entidades ▸ Entidades; la entrada 015 la entrega la T31) calcula con ``design.steps.platform_run`` la
 operación ``des.platform`` de la versión activa: la huella y la rasante de una geometría de una capa de
 líneas (con su ancho) o de polígonos, aplicadas a su superficie de partida, con el borde que la une con el
 terreno. Su diálogo pide el nombre; la capa y la geometría (por su nombre o su ``fid``) con sus campos; **la
@@ -128,7 +128,7 @@ PROPERTIES = {
 }
 """Las propiedades del diálogo con el ``msgid`` de su nombre y de su descripción (las ocultas, que pone
 quien lanza la orden, no los llevan)."""
-HIDDEN = ("confirm", "in_steps", "confirm_counterslope", "preview")
+HIDDEN = ("confirm", "in_steps", "confirm_counterslope", "preview", "insert_before")
 
 
 def _module(name: str) -> ModuleType:
@@ -377,7 +377,7 @@ class CreatePlatformTest(unittest.TestCase):
                                   window_manager=SimpleNamespace(invoke_props_dialog=dialog))
         fields: dict[str, Any] = {
             "name": "", "layer": "", "start": "", "feature": "", "confirm": False,
-            "in_steps": False, "confirm_counterslope": False,
+            "in_steps": False, "confirm_counterslope": False, "insert_before": "",
             "properties": SimpleNamespace(is_property_set=lambda name: False), **values}
         return operator_self(self.cls, report=lambda kind, text: None, **fields), context, dialog
 
@@ -389,7 +389,7 @@ class CreatePlatformTest(unittest.TestCase):
             "axis_field": "eje", "start_level": "", "gradient": "", "width": "", "start": self.ground,
             "support": "none", "mode": "CUT", "edge_angle": "", "reach": "", "mesh_factor": "",
             "metric": "EXACT", "counter_tolerance": "", "protect": False, "guard": "",
-            "confirm": False, **values}
+            "confirm": False, "insert_before": "", "_insert_name": "", **values}
         return draw(self.cls, bpy.context, **shown).texts()
 
     def running(self) -> Any:
@@ -425,7 +425,7 @@ class CreatePlatformTest(unittest.TestCase):
     def test_a_the_command_its_dialog_and_the_proposal(self) -> None:
         """RF-015-28, RF-015-01 (plan §5.3.3, §5.5): «Plataforma…» es una orden real de ``des.platform``
         con la puerta de la procedencia y los pasos con Esc; es la clave definitiva del catálogo, de la
-        entrada de R-36 que entrega la T31; sus propiedades tienen nombre y descripción en español; su
+        entrada 015, que entrega la T31; sus propiedades tienen nombre y descripción en español; su
         diálogo propone un nombre que no repite el de ninguna plataforma, la primera capa y, sin plataformas,
         el terreno de partida; lo dado no cambia; la cota inicial, la pendiente y el ancho que da la capa
         los propone al elegir la geometría (el ``update``: vacíos si la capa no los da o no la tiene) y los
@@ -445,10 +445,10 @@ class CreatePlatformTest(unittest.TestCase):
         catalog = self.commands.catalog()
         command = catalog.commands[PLATFORM]
         self.assertEqual((command.label_es, command.entry, command.module),
-                         ("Plataforma", "R-36", "des"))
-        self.assertFalse(catalog.entries["R-36"].delivered, "la entrega la T31")
+                         ("Plataforma…", "015", "des"))
+        self.assertTrue(catalog.entries["015"].delivered, "la entrega la T31")
         self.assertNotIn("geoblender.des_draw_platform", catalog.commands)
-        self.assertFalse(self.commands.is_available(PLATFORM))
+        self.assertTrue(self.commands.is_available(PLATFORM))
         annotated = {name for name in cls.__annotations__ if name not in HIDDEN}
         self.assertEqual(annotated, set(PROPERTIES))
         for prop, (label, about) in PROPERTIES.items():  # registradas ya en español
@@ -462,7 +462,7 @@ class CreatePlatformTest(unittest.TestCase):
 
         fake, context, dialog = self.fake_dialog()
         self.assertEqual(cls.invoke(fake, context, None), {"RUNNING_MODAL"})
-        self.assertEqual(dialog.call_args.kwargs["title"], "Plataforma")
+        self.assertEqual(dialog.call_args.kwargs["title"], "Plataforma…")
         self.assertEqual(dialog.call_args.kwargs["confirm_text"], "Calcular")
         self.assertTrue(fake.in_steps)
         self.assertEqual((fake.name, fake.layer, fake.start), ("Plataforma 1", LAYER, self.ground))

@@ -105,15 +105,21 @@ ARROW_HEAD_MAX_M = 20.0
 class EntityPlan:
     """Lo que se previsualiza: la plataforma **que se prepara** (``request``, la ``design.model.PlatformRequest`` del
     diálogo de «Plataforma…»: una entidad nueva) o **una que ya está en la versión** (``code``: su código o su
-    nombre, con sus parámetros vigentes). Uno de los dos, no los dos."""
+    nombre, con sus parámetros vigentes). Uno de los dos, no los dos. ``insert_before`` (T31; RF-015-05): si la que se
+    prepara se **inserta** antes de otra entidad de la versión, el código de esa entidad (la que pasaría a partir de la
+    nueva); solo con ``request``."""
 
     request: Any = None
     code: str | None = None
+    insert_before: str | None = None
 
     def __post_init__(self) -> None:
         if (self.request is None) == (self.code is None):
             raise ValueError("la vista previa de una entidad es de la plataforma que se prepara (su petición) o "
                              "de una entidad de la versión (su código), no de las dos ni de ninguna")
+        if self.insert_before is not None and self.request is None:
+            raise ValueError("una inserción se previsualiza con la plataforma que se prepara (su petición), no con una "
+                             "entidad que ya está en la versión")
 
 
 @dataclass(frozen=True, eq=False)
@@ -246,7 +252,7 @@ def _build(request: Request, budget_s: float
     if version_uid:
         asked = request.plan
         steps = design_preview.entity_preview_steps(project, asked.request, version_uid, code=asked.code,
-                                                    budget_s=budget_s)
+                                                    insert_before=asked.insert_before, budget_s=budget_s)
         try:
             for step in steps:
                 if step.result is not None:

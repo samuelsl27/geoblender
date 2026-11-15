@@ -183,7 +183,7 @@ class EntityPreviewTest(platform_ops.CreatePlatformTest):
     def test_a_the_command_the_property_and_the_button_of_the_dialog(self) -> None:
         """RF-015-26, RF-015-28 (plan §5.3.3, §5.5; M4): ``geoblender.des_entity_preview`` es una orden real (no la
         provisional) con el ``poll`` de las de Diseño —dice por qué no está disponible—, salvo para quitar la vista
-        previa; su propiedad tiene nombre y descripción; es una interna del catálogo de la entrada de R-36. El diálogo
+        previa; su propiedad tiene nombre y descripción; es una interna del catálogo de la entrada 015. El diálogo
         de «Plataforma…» dibuja el botón «Vista previa»: la misma orden con ``preview`` y todo lo pedido, sin abrir
         otro diálogo; ``preview`` es una propiedad oculta (sin nombre ni descripción)."""
         cls = self.commands.registered_class(PREVIEW)
@@ -193,7 +193,7 @@ class EntityPreviewTest(platform_ops.CreatePlatformTest):
         self.assertTrue(issubclass(cls, self.des_ops.DesignCommandAware))
         self.assertEqual((cls.bl_idname, cls.bl_options, cls.provenance_op_type), (PREVIEW, {"REGISTER"}, "des.platform"))
         command = self.commands.catalog().commands[PREVIEW]
-        self.assertEqual((command.kind, command.entry, command.label_es), ("internal", "R-36", "Vista previa de la entidad"))
+        self.assertEqual((command.kind, command.entry, command.label_es), ("internal", "015", "Vista previa de la entidad"))
         keywords = cls.__annotations__["entity"].keywords
         self.assertEqual((keywords["name"], keywords["description"]),
                          ("Entidad", self.i18n.translate("es", "Code or name of the design entity to preview (empty: the "
@@ -214,12 +214,14 @@ class EntityPreviewTest(platform_ops.CreatePlatformTest):
         self.assertEqual(vars(button.properties), {**self.drawn_fields(), "name": NEW, "feature": LOADING, "preview": True})
 
     def drawn_fields(self) -> dict[str, Any]:
-        """Lo que dibuja el diálogo por defecto (los campos de la orden, sin las propiedades ocultas)."""
+        """Lo que dibuja el diálogo por defecto (los campos de la orden, sin las propiedades ocultas salvo ``insert_before``
+        —la entidad que se inserta, vacía—, que el botón «Vista previa» también lleva: T31)."""
         return {"name": platform_ops.LOADING, "layer": platform_ops.LAYER, "feature": platform_ops.LOADING,
                 "start_level_field": "cota_inicial", "gradient_field": "pendiente", "width_field": "ancho",
                 "axis_layer": "none", "axis_field": "eje", "start_level": "", "gradient": "", "width": "",
                 "start": self.ground3, "support": "none", "mode": "CUT", "edge_angle": "35", "reach": "10",
-                "mesh_factor": "", "metric": "EXACT", "counter_tolerance": "", "protect": False, "guard": ""}
+                "mesh_factor": "", "metric": "EXACT", "counter_tolerance": "", "protect": False, "guard": "",
+                "insert_before": ""}
 
     def test_b_three_entities_are_made_with_the_real_commands(self) -> None:
         """RF-015-26 (el mundo de estas pruebas): «Carga» corta del todo; «Taller» parte de la superficie de «Carga» y

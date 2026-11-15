@@ -337,11 +337,11 @@ frequency = 2
 
 [[menu.group.item.item]]
 key = "geoblender.des_create_platform"
-label.en = "Platform"
-label.es = "Plataforma"
+label.en = "Platform…"
+label.es = "Plataforma…"
 description.en = "Draw a platform with its slopes"
 description.es = "Dibuja una plataforma con sus taludes"
-entry = "R-36"
+entry = "015"
 action = "H"
 frequency = 2
 

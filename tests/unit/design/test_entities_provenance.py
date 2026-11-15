@@ -370,14 +370,14 @@ class EntityOperationTypesTest(unittest.TestCase):
     def test_their_commands_are_in_the_catalog(self) -> None:
         """RF-008-61 (ADR-0025 §2): la orden de cada tipo está en el catálogo, de ``des``: la
         definitiva (``geoblender.des_create_platform``, T15, que sustituye a la clave marcador
-        ``des_draw_platform`` de la entrada de R-36); la T31 entrega la entrada."""
+        ``des_draw_platform`` de la entrada de R-36, que la T31 pasa a la entrada 015 y entrega)."""
         self.assertEqual(provenance.PLATFORM_COMMAND, PLATFORM_COMMAND)
         cat = import_geoblender("core.catalog").load()
         for declared in provenance.ENTITY_OPERATION_TYPES:
             with self.subTest(op_type=declared.op_type):
                 self.assertEqual(declared.commands, (PLATFORM_COMMAND,))
                 command = cat.commands[PLATFORM_COMMAND]
-                self.assertEqual((command.entry, command.module), ("R-36", "des"))
+                self.assertEqual((command.entry, command.module), ("015", "des"))
 
     def test_registration_leaves_no_trace(self) -> None:
         """RF-008-17 (principio 8): lo de las entidades se registra sin chocar con otra cosa y se

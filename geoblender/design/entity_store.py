@@ -64,7 +64,12 @@ genérico de ``DesignWriter.commit`` (:func:`survey_supports`, con ``design.enti
 crearla, las entradas ``supported_on`` y ``support_footprint`` de cada entidad en cuya huella rellena y la cifra
 ``des.supported_m3``; lo que declara la persona (``des.platform.{e}.supports``, :func:`declared_supports`) y la
 superficie de apoyo de la petición ya son entradas al preparar (:func:`prepare_platform_units`), con la tabla de
-su huella, y se registran **aunque no apoyen nada**. :func:`detected_supports` lo enseña antes de crear.
+su huella, y se registran **aunque no apoyen nada**. :func:`detected_supports` lo enseña antes de crear. **Insertar
+antes o después de otra** (T31; RF-015-05): con ``insert_before`` (la entidad que hoy parte de la misma superficie) la
+preparación no rechaza esa partida ocupada y lleva en ``PreparedPlatform.insertion`` el cambio de la partida de esa
+entidad (``entities.insert_before``, con su motivo); :func:`apply_insertion` lo escribe con el gancho de «Crear», en la
+misma transacción que la entidad —el parámetro ``start`` de la sucesora, con su historial y su decisor—, y la 008 deja
+obsoleta a la sucesora y, en cascada, a las que la siguen (también antes de la primera de una cadena).
 
 **Recalcular** (T14; RF-015-02, RF-015-16, RF-008-26): :func:`recompute_platform` repite la operación con
 los **parámetros vigentes de su entidad en su versión** (:func:`platform_parameters`: la definición de una
@@ -297,6 +302,7 @@ __all__ = [
     "SupportSurvey",
     "add_supports",
     "after_entity_change",
+    "apply_insertion",
     "bring_entities",
     "compute_platform_steps",
     "create_platform",
@@ -393,7 +399,10 @@ class PreparedPlatform:
     (``start_surface``) y de apoyo (``support_surface``; ``None`` sin ella), ya resueltos.
     ``existing`` (spec 015, T13): la entidad ya estaba en la versión (se preparó con su ``code``:
     recalcularla o calcular la que dejó «Traer las entidades de…»), así que «Crear» no escribe otra
-    vez sus parámetros."""
+    vez sus parámetros. ``insertion`` (T31; RF-015-05): si es una **inserción** (``insert_before``), el cambio
+    de la partida de la entidad que pasa a partir de la nueva (``entities.ParamChange``, con su motivo); lo
+    escribe «Crear» en la misma transacción que la entidad y deja obsoleta, por la cascada de la 008, a la
+    sucesora y a las que la siguen."""
 
     job: PlatformJob
     footprint: Footprint
@@ -405,6 +414,7 @@ class PreparedPlatform:
     start_surface: str
     support_surface: str | None
     existing: bool = False
+    insertion: tuple[entities.ParamChange, ...] = ()
 
     @property
     def values(self) -> Mapping[str, object]:
@@ -472,6 +482,19 @@ def _check_chain(registry: EntityRegistry, request: PlatformRequest, code: str,
                    for item in records]
     this = EntityRecord(code, request.name, EntityKind.PLATFORM, request.start, request.support)
     entities.check_chain([*records, this])
+
+
+def _insertion(registry: EntityRegistry, request: PlatformRequest, code: str,
+               insert_before: str | None) -> tuple[entities.ParamChange, ...]:
+    """El cambio de la partida de la entidad ``insert_before`` (RF-015-05; T31), que pasa a partir de la
+    superficie de la plataforma ``request`` de código ``code`` que se inserta antes de ella: el de
+    ``entities.insert_before``, con su motivo en español (sin escribir nada). Sin ``insert_before``, nada.
+    Lo que comprueba :func:`_check_chain` (que existe y parte de la misma superficie) no se repite aquí."""
+    if insert_before is None:
+        return ()
+    others = [item for item in registry.records if item.code != code]
+    new = EntityRecord(code, request.name, EntityKind.PLATFORM, request.start, request.support)
+    return entities.insert_before(others, insert_before, new)
 
 
 def _surface_dataset(registry: EntityRegistry, version: Version, request: PlatformRequest,
@@ -964,6 +987,7 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
     require_version(project, version.uid, provenance.PLATFORM)
     chosen, registry = _identify(project, version, request, code)
     _check_chain(registry, request, chosen, insert_before)
+    insertion = _insertion(registry, request, chosen, insert_before)
     yield
     layer = _layer(project, request.layer)
     index = feature_index(layer, request, chosen)
@@ -1027,7 +1051,7 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
     yield
     rows = _rows(request, chosen, values, layer_fields)
     return PreparedPlatform(job, footprint, begun, chosen, fid, rows, MappingProxyType(common),
-                            start_name, support_name, code is not None)
+                            start_name, support_name, code is not None, insertion)
 
 
 def prepare_platform(project: StoreProject, request: PlatformRequest, *, version: str | None,
@@ -1596,6 +1620,24 @@ def _reuse_confirmation(outcome: PlatformOutcome, confirmed: provenance.Counters
     return outcome
 
 
+def apply_insertion(project: StoreProject, prepared: PreparedPlatform, *, version: str,
+                    decided_by: str | None = None, conn: sqlite3.Connection) -> tuple[ParameterRecord, ...]:
+    """**Aplica la inserción** de una plataforma (spec 015, T31; RF-015-05; RF-008-02, RF-008-24): cambia, en la
+    transacción ``conn`` de quien crea la entidad, la partida de la sucesora (``prepared.insertion``: el
+    parámetro ``start`` de la entidad que pasa a partir de la nueva, ADOPTADO, de ``decided_by`` —por defecto, quien
+    tiene abierto el proyecto— con **su motivo**, el de ``entities.insert_after`` o ``insert_before``, y su
+    historial). El cambio pone al día en la misma transacción la obsolescencia de la 008: la sucesora y, en
+    cascada, las que la siguen quedan obsoletas con su causa, y las demás no. Sin inserción, nada. Devuelve los
+    parámetros cambiados. ``ParamError`` si la sucesora ya parte de esa superficie (``core.param_unchanged``) o no
+    tiene el parámetro: un error del programa, y nada queda a medias (la transacción es de quien llama)."""
+    store = ParameterStore(project)
+    who = _decider(decided_by, project)
+    return tuple(store.change(conn, change.key, value=change.new,
+                              source=_INSERT_SOURCE.format(name=prepared.job.request.name),
+                              source_kind="person", decided_by=who, reason=change.reason, version=version)
+                 for change in prepared.insertion)
+
+
 def create_platform(project: StoreProject, writer: DesignWriter, prepared: PreparedPlatform,
                     outcome: PlatformOutcome, *, decided_by: str | None = None) -> Stored:
     """**«Crear» una plataforma** (spec 015, T13; RF-015-01, RF-015-02, RF-015-04): registra en **una**
@@ -1629,6 +1671,7 @@ def create_platform(project: StoreProject, writer: DesignWriter, prepared: Prepa
         else:
             set_entity_params(project, prepared.rows, version=start.version_uid,
                               decided_by=decided_by, conn=conn)
+        apply_insertion(project, prepared, version=start.version_uid, decided_by=decided_by, conn=conn)
 
     return writer.commit(start, figures=outcome.figures, message=outcome.message,
                          before_begin=parameters)
@@ -2793,6 +2836,7 @@ _OUTPUTS_OF = (
     "WHERE io.operation_uid = ? AND io.direction = 'out' AND io.item_kind = ? ORDER BY io.fid")
 _FINAL = frozenset(str(status) for status in FINAL_STATUSES)
 _DISCARD_SOURCE = "orden «Descartar…», entidad «{name}»"
+_INSERT_SOURCE = "orden «Insertar antes o después de…», entidad «{name}»"
 """El origen del parámetro ``discarded`` de una entidad sin calcular (RF-008-01): quién y desde dónde."""
 _OPERATION_ROW = (
     "SELECT o.uid, o.op_type, o.settings FROM gb_operation AS o JOIN gb_revision AS r ON r.uid = o.revision_uid "

@@ -28,7 +28,8 @@ de esa superficie), :func:`successor_of`, :func:`predecessor_of`, :func:`chain_o
 rechazan: ``des.entity_chain_cycle`` y ``des.entity_start_taken``) y, para «Insertar antes o
 después de…» (RF-015-05), :func:`insertion_start`, :func:`insert_after` e :func:`insert_before`,
 que dan el cambio de partida de la sucesora (:class:`ParamChange`, con su motivo) sin escribir
-nada. **Una entidad descartada es un registro**: no ocupa su superficie ni está en ninguna cadena
+nada, e :func:`insertion_point` (T31: lo que pide el diálogo de «Insertar antes o después de…»: la partida de la
+nueva y la sucesora, :class:`Insertion`). **Una entidad descartada es un registro**: no ocupa su superficie ni está en ninguna cadena
 (salvo la que se pregunta por ella), y lo que parte de la suya queda al principio de su propia
 cadena («apoyo retirado», RF-015-17).
 
@@ -116,6 +117,7 @@ __all__ = [
     "EntityRecord",
     "EntityRegistry",
     "EntityState",
+    "Insertion",
     "ParamChange",
     "RetiredEntity",
     "RetiredSupport",
@@ -134,6 +136,7 @@ __all__ = [
     "format_code",
     "insert_after",
     "insert_before",
+    "insertion_point",
     "insertion_start",
     "kind_label",
     "next_code",
@@ -536,6 +539,36 @@ def insertion_start(records: Iterable[EntityRecord], ref: str, *, before: bool =
         raise ValueError(f"la entidad «{target.name}» no parte de ninguna superficie: no hay nada "
                          "antes de ella donde insertar")
     return target.start
+
+
+@dataclass(frozen=True, slots=True)
+class Insertion:
+    """**Dónde se inserta** una entidad junto a otra (RF-015-05; spec 015, T31; «Insertar antes o después de…»): la
+    entidad de referencia (``reference``), si se inserta antes de ella (``before``) o después, la superficie de la
+    que ha de partir la nueva (``start``: :func:`insertion_start`) y la entidad viva que hoy parte de esa superficie
+    (``successor``), que pasará a partir de la nueva y queda obsoleta con las que la siguen (RF-008-24); ``None``
+    si la de referencia es la última de su cadena y, después de ella, no cambia ninguna otra."""
+
+    reference: EntityRecord
+    before: bool
+    start: str
+    successor: EntityRecord | None
+
+
+def insertion_point(records: Iterable[EntityRecord], ref: str, *, before: bool = False) -> Insertion:
+    """Dónde se inserta una entidad nueva **junto a** la de código o nombre ``ref`` (RF-015-05, RF-015-04; el diálogo
+    de «Insertar antes o después de…»): la superficie de la que parte la nueva (:func:`insertion_start`: la que
+    deja ``ref`` si se inserta después, la de la que parte ``ref`` si se inserta antes) y la **sucesora**, la entidad
+    viva que hoy parte de ella —la que pasará a partir de la nueva, el mismo cambio de partida que dan
+    :func:`insert_after` e :func:`insert_before`—, con la que la nueva **no** se rechaza por partir de una
+    superficie ocupada (RF-015-04: se crea con ``entity_store.prepare_platform_units(insert_before=…)``). No
+    escribe nada. :class:`ValueError` si ``ref`` no es de ``records``, está descartada o, antes, no parte de ninguna
+    superficie; ``DesignError`` si la cadena ya está rota (:func:`check_chain`)."""
+    items = _records(records)
+    target = _need(items, ref)
+    start = insertion_start(items, ref, before=before)
+    check_chain(items)
+    return Insertion(target, before, start, _index(items).by_start.get(start))
 
 
 def _insert(items: tuple[EntityRecord, ...], surface: str, new: EntityRecord,

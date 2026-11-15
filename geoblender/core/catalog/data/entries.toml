@@ -98,6 +98,15 @@ title.en = "Quarry with two surfaces"
 title.es = "Cantera con dos superficies"
 delivered = true
 
+# La spec 015 (entidades de diseño paramétricas) es la primera de R-36 (plan 015 §5.6, T31): «Plataforma…», las internas de
+# las entidades (descartar, soltar el apoyo, traer, insertar, lo que se apoya en ella y la vista previa) y el menú
+# contextual «Entidad ▾» pasan de R-36 a la 015 y los entrega. Lo de la 016 (Acopio…, Contrafuerte…, Cuerpo apoyado…) sigue
+# en R-36, sin entregar, hasta ella. R-36 sigue como entrada del roadmap.
+["015"]
+title.en = "Parametric design entities"
+title.es = "Entidades de diseño paramétricas"
+delivered = true
+
 ["R-07"]
 title.en = "Versions and provenance"
 title.es = "Versiones y procedencia"

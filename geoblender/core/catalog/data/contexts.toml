@@ -347,6 +347,8 @@ ref = "geoblender.core_recompute_stale"
 [[context.icon]]
 ref = "geoblender.des_check_rules"
 
+# El menú «Entidad ▾» (spec 015, T31; RF-015-28; D-14; PC §3.11): las órdenes reales de las entidades de diseño; lo que aún no es
+# una orden (editar el eje, las restricciones que declara) y lo de la 016 (Acopio…) sigue marcado en R-36.
 [[context]]
 kind = "DESIGN_ENTITY"
 id = "GEOBLENDER_MT_des_context_entity"
@@ -354,7 +356,7 @@ label.en = "Entity"
 label.es = "Entidad"
 description.en = "Commands for the active design entity"
 description.es = "Órdenes para la entidad de diseño activa"
-entry = "R-36"
+entry = "015"
 
 [[context.item]]
 placeholder.en = "Edit the axis or the outline"
@@ -373,7 +375,28 @@ placeholder.es = "Restricciones que declara…"
 entry = "R-36"
 
 [[context.item]]
+ref = "geoblender.des_entity_dependents"
+
+[[context.item]]
 ref = "geoblender.core_show_lineage"
+
+[[context.item]]
+ref = "geoblender.des_entity_insert"
+
+[[context.item]]
+ref = "geoblender.des_entity_bring"
+
+[[context.item]]
+ref = "geoblender.des_entity_discard"
+
+[[context.item]]
+ref = "geoblender.des_entity_release_support"
+
+[[context.item]]
+ref = "geoblender.des_entity_preview"
+
+[[context.item]]
+ref = "geoblender.des_export_design_grid"
 
 [[context.item]]
 ref = "geoblender.des_edit_stockpile"
