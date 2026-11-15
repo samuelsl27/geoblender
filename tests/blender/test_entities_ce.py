@@ -203,6 +203,9 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
                 self.tick()
                 if state != {"RUNNING_MODAL"}:
                     ask.assert_not_called()
+                    # Lo descartado no vuelve al plan (T40, hallazgos C-4 y E-3): antes la P1 descartada de V01 fallaba
+                    # en cada «Recalcular lo obsoleto» del proyecto, también en las demás versiones (``test_j``).
+                    self.assertEqual(self.names_of(operator, "failed"), [], "ninguna unidad falla")
                     return operator
         self.fail("el recálculo no termina")
 
@@ -344,7 +347,7 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
         operator = self.recompute()
         self.assertEqual(self.names_of(operator, "done"), [])
         refused = {str(result.code) for result in operator.result.results if str(result.status) == "refused"}
-        self.assertEqual(refused, {"core.recompute_no_successor"})
+        self.assertEqual(refused, {"core.recompute_no_successor_release"})
         self.assertEqual(self.rows("SELECT uid, status FROM gb_operation ORDER BY fid"), before, "no se crea nada")
         self.assertEqual(self.states(self.v01)["PLT-002"], "support_removed")
 

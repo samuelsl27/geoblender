@@ -148,6 +148,8 @@ INACTIVE_CAUSES: Mapping[str, CauseKind] = MappingProxyType({
     "discarded": CauseKind.INPUT_DISCARDED,
 })
 """La causa de una entrada sustituida o descartada (y de lo importado de ella)."""
+_DISCARDED = "discarded"
+"""El estado de un dato descartado (``gb_dataset.status``): no vive y no tiene sucesor."""
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -1189,7 +1191,10 @@ def deduce_steps(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None =
     causes = yield from _with_group(graph, roots, lap)
     data: dict[str, frozenset[Cause]] = {}
     writers: set[str] = set()  # las que escribieron el contenido actual de un dato vivo
+    thrown: set[str] = set()  # las que escribieron el contenido actual de un dato descartado
+    kept: set[str] = set()  # … y de uno que no lo está
     for dataset in graph.datasets.values():
+        (thrown if dataset.status == _DISCARDED else kept).add(dataset.operation_uid)
         if dataset.live:
             writers.add(dataset.operation_uid)
             found = roots.get(dataset.operation_uid)
@@ -1197,10 +1202,11 @@ def deduce_steps(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None =
                 data[dataset.uid] = frozenset(found)
         if lap is not None and lap():
             yield
+    discarded = thrown - kept  # su resultado se tiró entero (spec 015, T40)
     current_figures, version_figures = _current_figures(graph, causes)
     figure_operations = {figure.uid: figure.operation_uid for figure in graph.figures}
     figure_writers = {figure_operations[uid]
-                      for uid in (*current_figures.values(), *version_figures.values())}
+                      for uid in (*current_figures.values(), *version_figures.values())} - discarded
     operations: dict[str, frozenset[Cause]] = {}
     review: set[str] = set()
     figure_only: set[str] = set()
@@ -1224,6 +1230,7 @@ def deduce_steps(graph: ProvenanceGraph, *, versions: Mapping[str, str] | None =
         figure_only=frozenset(figure_only),
         current_figures=MappingProxyType(current_figures),
         current_version_figures=MappingProxyType(version_figures),
+        discarded=frozenset(discarded),
     )
 
 
@@ -1250,6 +1257,11 @@ class Staleness:
     - ``current_figures``: la cifra vigente (uid) de cada clave y ámbito (``scope_key``) de
       las operaciones de proyecto; ``current_version_figures``, la de cada versión (su uid,
       la clave y el ámbito; spec 009, A4 (5));
+    - ``discarded`` (spec 015, T40): las operaciones cuyos datos se descartaron **todos** (escribieron el
+      contenido actual de uno o más datos y ninguno vive ni está sustituido): su resultado se tiró, así que
+      sus cifras ya no hacen de ellas «una que solo deja cifras» ni una que espera revisión a mano, aunque
+      sigan siendo las vigentes de su clave y su ámbito, y «Recalcular lo obsoleto» no las repite; siguen
+      obsoletas (``operations``) como historia;
     - ``versions``: las versiones instaladas de los algoritmos con que se dedujo.
     """
 
@@ -1262,6 +1274,7 @@ class Staleness:
     figure_only: frozenset[str]
     current_figures: Mapping[tuple[str, str], str]
     current_version_figures: Mapping[tuple[str, str, str], str] = MappingProxyType({})
+    discarded: frozenset[str] = frozenset()
 
     @property
     def current_figure_uids(self) -> frozenset[str]:

@@ -303,6 +303,30 @@ class PlanLeftOutTest(RecomputeCase):
                          "Calculado con res.step_c 1.0: actualice Geoblender")
 
 
+class PlanDiscardedTest(RecomputeCase):
+    def test_operation_whose_data_were_all_discarded_is_not_planned(self) -> None:
+        """RF-008-26, RF-015-17 (spec 015, T40; hallazgos C-4 y E-3): una operación obsoleta cuyos datos se
+        descartaron **todos** no entra en el plan, aunque su cifra siga siendo la vigente de su clave: su
+        resultado se tiró y repetirla no tiene sentido (la de las entidades de diseño fallaba en cada
+        «Recalcular lo obsoleto» del proyecto). Lo demás, también lo que no tiene que ver con ella, se recalcula;
+        mientras le quede un dato vivo, o si solo deja cifras, sigue en el plan."""
+        a = self.run_op("res.step_a", {"res_a": [1.0]}, params=["res.production"])
+        c = self.run_op("res.step_c", {"res_c": [4.0], "res_c2": [5.0]}, reads=["res_a"], figure=4.0)
+        z = self.run_op("res.step_d", {"res_z": [6.0]}, reads=["res_a"])
+        self.change("res.production", 80000.0)
+        self.assertEqual(self.units(self.plan()), [(a.uid,), (c.uid,), (z.uid,)])
+        self.set_status("res_c", "discarded")
+        self.assertEqual(self.units(self.plan()), [(a.uid,), (c.uid,), (z.uid,)], "le queda un dato vivo")
+        self.set_status("res_c2", "discarded")
+        plan = self.plan()
+        self.assertEqual(self.units(plan), [(a.uid,), (z.uid,)])
+        self.assertNotIn(c.uid, {*plan.operations, *self.reasons(plan)})
+        self.assertIn(c.uid, self.stale().operations, "sigue obsoleta: es historia")
+        self.assertEqual(self.units(self.plan(self.dataset("res_c"))), [(a.uid,)])
+        only = self.run_op("res.step_b", reads=["res_a"], figure=7.0)  # sin datos: solo cifras
+        self.assertEqual(self.units(self.plan()), [(a.uid,), (z.uid,), (only.uid,)])
+
+
 class PlanScopeTest(RecomputeCase):
     def test_all_by_cause_and_by_item(self) -> None:
         """RF-008-26: los tres ámbitos de «Recalcular lo obsoleto»: todo; lo que tiene una
@@ -382,9 +406,11 @@ def _redo(request: Any) -> Any:
     return _RUNNING[-1].redo(request)
 
 
-def _redo_op(op_type: str, *, group: str | None = None, drops_discarded: bool = False) -> Any:
+def _redo_op(op_type: str, *, group: str | None = None, drops_discarded: bool = False,
+             offers_release: bool = False) -> Any:
     return provenance.OperationDef(op_type, "1.0", "res", f"Test {op_type}", True, group=group,
-                                   recompute=_redo, drops_discarded=drops_discarded)
+                                   recompute=_redo, drops_discarded=drops_discarded,
+                                   offers_release=offers_release)
 
 
 RUN_DECLARATIONS = (
@@ -840,6 +866,54 @@ class RunTest(RunCase):
         self.assertNotIn(new, state.operations)
         self.assertIn(k.uid, state.operations)
         self.assertEqual(self.units(outcome.remaining), [(k.uid,)])
+
+    def test_operation_whose_data_were_all_discarded_is_neither_recomputed_nor_failed(self) -> None:
+        """RF-008-26, RF-015-17 (spec 015, T40; hallazgos C-4 y E-3): lo descartado no vuelve al plan ni falla en
+        cada «Recalcular lo obsoleto»: aunque repetirla fallaría (``self.broken``, como el fichero que ya existe
+        de la entidad), la operación cuyos datos se descartaron todos no se intenta, ninguna pasada deja una
+        operación fallida, y lo demás se recalcula."""
+        a = self.run_op("res.redo_a", {"res_a": [1.0]}, params=["res.production"])
+        c = self.run_op("res.redo_c", {"res_c": [4.0]}, reads=["res_a"], figure=4.0)
+        z = self.run_op("res.redo_b", {"res_z": [6.0]}, reads=["res_a"])
+        self.change("res.production", 80000.0)
+        self.set_status("res_c", "discarded")
+        self.broken = {c.uid}
+        self.values = {"res_a": [0.9], "res_z": [6.5]}
+        outcome, _progress = self.run_all()
+        self.assertEqual(self.results(outcome), [((a.uid,), DONE), ((z.uid,), DONE)])
+        self.assertEqual([request.operation_uid for request in self.requests], [a.uid, z.uid])
+        self.assertEqual(self.units(outcome.remaining), [])
+        for _ in range(2):  # y en las pasadas siguientes del proyecto
+            again, _progress = self.run_all()
+            self.assertEqual(again.results, ())
+        self.assertEqual(self.column("SELECT count(*) FROM gb_operation WHERE status <> 'done'"), [0],
+                         "ninguna operación fallida ni cancelada")
+
+    def test_type_that_offers_release_says_the_operation_waits_for_a_decision(self) -> None:
+        """RF-008-26, RF-015-17 (spec 015, T40; E3): lo que consumía algo descartado sin sucesor se rehúsa en cada
+        pasada; si su tipo ofrece darla por buena (``OperationDef.offers_release``: ``des``), el motivo dice que
+        **espera una decisión** (rehacerla sobre otra cosa, descartarla o darla por buena con un motivo); el de un
+        tipo que no lo ofrece, el de siempre (``core.recompute_no_successor``)."""
+        self.enterContext(registered(_redo_op("res.redo_released", offers_release=True)))
+        self.import_input(INPUT_1, "Entrada_1", "res_im1")
+        k = self.run_op("res.redo_released", {"res_k": [4.0]}, reads=["res_im1"])
+        q = self.run_op("res.redo_c", {"res_q": [5.0]}, reads=["res_im1"])
+        self.write(lambda conn: inputs.discard(conn, self.project, INPUT_1, "entrega anulada"))
+        outcome, _progress = self.run_all()
+        self.assertEqual(self.results(outcome), [((k.uid,), REFUSED), ((q.uid,), REFUSED)])
+        waiting, generic = outcome.results
+        self.assertEqual((waiting.code, generic.code),
+                         ("core.recompute_no_successor_release", "core.recompute_no_successor"))
+        self.assertEqual(waiting.reason,
+                         "No se recalcula: «res_im1», que consumía, se descartó y no tiene sucesor. Espera a "
+                         "que se rehaga sobre otra cosa, se descarte o se dé por buena con un motivo.")
+        self.assertEqual(waiting.text(language="en"),
+                         "Not recomputed: «res_im1», which it consumed, was discarded and has no successor. "
+                         "It waits until it is redone on something else, discarded or given as good with a "
+                         "reason.")
+        self.assertEqual(generic.reason,
+                         "No se recalcula: «res_im1», que consumía, se descartó y no tiene sucesor.")
+        self.assertEqual(self.requests, [], "ninguna se recalcula")
 
     def test_blocked_or_missing_dataset_is_recomputed_with_its_writer(self) -> None:
         """RF-008-56, RF-008-57, RF-008-25 (plan §5.4.9; T54): un dato bloqueado por una

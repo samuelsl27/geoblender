@@ -934,7 +934,9 @@ class OperationType:
     cifras (``figures``), las órdenes que lo lanzan (``commands``; por defecto, :data:`COMMAND`), si
     se reproduce (``reproducible``) y si su recálculo reúne él mismo todo lo vigente que consume
     (``drops_discarded``: la declaración de restricciones, que lee las entidades vivas de la versión;
-    spec 015, T20). Todos son de versión (RF-009-05) y se repiten solos."""
+    spec 015, T20). Todos son de versión (RF-009-05) y se repiten solos; los que no reúnen ellos mismos lo vigente
+    pueden apoyarse en una entidad que se descarta, y entonces su recálculo **espera una decisión** (rehacerlos,
+    descartarlos o darlos por buenos, ``entity_store.release_support``: ``OperationDef.offers_release``, T40)."""
 
     op_type: str
     label_msgid: str
@@ -957,8 +959,8 @@ class OperationType:
         return OperationDef(
             self.op_type, OP_VERSION, MODULE, self.label_msgid, True, scope="version",
             commands=self.commands, recompute=recompute, settings=self.settings,
-            drops_discarded=self.drops_discarded, reproduce=reproduce,
-            figure_tolerance=FIGURE_TOLERANCE if reproduce is not None else None)
+            drops_discarded=self.drops_discarded, offers_release=not self.drops_discarded,
+            reproduce=reproduce, figure_tolerance=FIGURE_TOLERANCE if reproduce is not None else None)
 
 
 OPERATION_TYPES: tuple[OperationType, ...] = (

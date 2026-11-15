@@ -73,6 +73,7 @@ from typing import Any
 
 from .contract import (
     ACCEPT_REVIEW,
+    ACCEPT_REVIEW_VERSION,
     CORE_OPERATIONS,
     EXTERNAL_EDIT,
     EXTERNAL_EDIT_VERSION,
@@ -303,6 +304,7 @@ def __dir__() -> list[str]:
 
 __all__ = [
     "ACCEPT_REVIEW",
+    "ACCEPT_REVIEW_VERSION",
     "CATALOG_ES",
     "CORE_IMPORTERS",
     "CORE_OPERATIONS",

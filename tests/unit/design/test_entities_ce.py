@@ -410,7 +410,7 @@ class DependenciesTest(chain_test.ChainCase, dep.DependentsCase, HandCase):
         le apoyaba; P2, P4, P5 y «Balsa 2», que se apoyaban en ella, quedan en **«apoyo retirado»**, con la causa
         («Apoyo retirado: se descartó la plataforma …»); P3, que parte de P2, obsoleta; y «Recalcular lo obsoleto»
         **no recalcula** nada de eso: la primera unidad se rehúsa («se descartó y no tiene sucesor»,
-        ``core.recompute_no_successor``) y no se crea ninguna operación."""
+        ``core.recompute_no_successor_release``) y no se crea ninguna operación."""
         listed = entity_store.discard_plan(self.project, self.v1.uid, "PLT-001")
         before = self.written()
         files = sorted(path.name for path in (self.root / "rasters").iterdir())
@@ -443,7 +443,7 @@ class DependenciesTest(chain_test.ChainCase, dep.DependentsCase, HandCase):
         outcome = ops_test.finish(recompute_mod.recompute_steps(self.project))
         self.assertTrue(outcome.results)
         refused = [result for result in outcome.results if result.status is recompute_mod.UnitStatus.REFUSED]
-        self.assertEqual({result.code for result in refused}, {"core.recompute_no_successor"})
+        self.assertEqual({result.code for result in refused}, {"core.recompute_no_successor_release"})
         self.assertIn("se descartó y no tiene sucesor", refused[0].reason)
         self.assertEqual([result.status for result in outcome.results].count(recompute_mod.UnitStatus.DONE), 0)
         self.assertEqual(self.query("SELECT uid, status FROM gb_operation ORDER BY fid"), operations,
@@ -559,8 +559,8 @@ class DependenciesTest(chain_test.ChainCase, dep.DependentsCase, HandCase):
 
     def test_k_what_is_left_to_recompute_is_what_can_be_and_the_rest_waits_for_its_decision(self) -> None:
         """CE-015-01, RF-015-17, E3: con P2 rehecha, P4 dada por buena y P5 descartada, «Recalcular lo obsoleto» rehace
-        **lo que se puede** (P3, que parte de la superficie nueva de P2, y la verificación de P2) y **sigue sin recalcular**
-        «Balsa 2», que se apoya en P1 descartada y aún espera su decisión (``core.recompute_no_successor``); no se
+        **lo que se puede** (P3, que parte de la superficie nueva de P2, la verificación de P2 y la capa de entidades) y **sigue sin recalcular**
+        «Balsa 2», que se apoya en P1 descartada y aún espera su decisión (``core.recompute_no_successor_release``); no se
         inventa ninguna decisión y P1 sigue siendo un registro."""
         self.assertIn(TWIN, {row.name for row in entities.retired_supports(self.project, self.v1.uid)})
         twin = self.fill_uid()
@@ -570,10 +570,13 @@ class DependenciesTest(chain_test.ChainCase, dep.DependentsCase, HandCase):
                 if result.status is recompute_mod.UnitStatus.DONE}
         refused = {self.name_of(result.unit.operations[0]) for result in outcome.results
                    if result.status is recompute_mod.UnitStatus.REFUSED}
-        self.assertEqual(done, {DRAG, dep.CHECK})
+        self.assertEqual(done, {DRAG, dep.CHECK, "des.entity_layer"},
+                         "y la capa de entidades: P5, descartada, ya no la retiene (T40, C-4 y E-3)")
         self.assertIn(TWIN, refused)
-        self.assertLessEqual(refused, {TWIN, WITH_AXIS},
-                             "P5, descartada, puede seguir en el plan y rehusarse: ``docs/trampas.md`` §6 (T27); aquí no se afirma")
+        self.assertEqual(refused, {TWIN}, "P5, descartada, ya no vuelve al plan ni se rehúsa (T40, hallazgos C-4 y E-3)")
+        self.assertEqual({result.status for result in outcome.results} - {recompute_mod.UnitStatus.DONE,
+                                                                          recompute_mod.UnitStatus.REFUSED}, set(),
+                         "ninguna unidad falla")
         self.assertEqual(self.fill_uid(), twin, "«Balsa 2» sigue siendo la de antes: espera su decisión")
         self.assertEqual(self.states(), {
             "PLT-001": EntityState.DISCARDED, "PLT-002": EntityState.CURRENT, "PLT-003": EntityState.CURRENT,

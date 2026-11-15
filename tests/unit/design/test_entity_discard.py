@@ -9,7 +9,7 @@ CE-015-01 y CE-015-04): el caso del **error 59** (un relleno seguía apoyado en 
   RF-009-12) o, si no está calculada, el parámetro de versión ``des.platform.{e}.discarded``; con un **evento**
   (``entity_discarded``) y el motivo. Lo que se le apoyaba queda en **«apoyo retirado»**, con la causa
   («Apoyo retirado: se descartó la plataforma P1»), y «Recalcular lo obsoleto» **no lo recalcula**
-  (``core.recompute_no_successor``) hasta que la persona lo rehaga sobre otra superficie, lo descarte o lo dé
+  (``core.recompute_no_successor_release``) hasta que la persona lo rehaga sobre otra superficie, lo descarte o lo dé
   por bueno con un motivo.
 - **Soltar el apoyo** (``entity_store.release_support``, A7, P-6): repetir la operación **con** ``supersedes`` sin
   esa entrada, con el motivo y el decisor en sus ajustes (``supports_released``, acumulada) y un evento
@@ -239,7 +239,7 @@ class DiscardTest(DiscardCase, dep.DependentsCase):
 
     def test_c_recompute_stale_does_not_recompute_what_lost_its_support(self) -> None:
         """RF-015-17, RF-008-26 (error 59): «Recalcular lo obsoleto» **no recalcula** lo que se apoyaba en P1
-        (``core.recompute_no_successor``: lo que consumía se descartó y no tiene sucesor): no se crea ninguna
+        (``core.recompute_no_successor_release``: lo que consumía se descartó y no tiene sucesor): no se crea ninguna
         operación, P2, P3, «Balsa 2» y la verificación siguen obsoletas y en la lista del plan, y P2 sigue en
         «apoyo retirado»."""
         before = self.query("SELECT uid, status FROM gb_operation ORDER BY fid")
@@ -247,7 +247,7 @@ class DiscardTest(DiscardCase, dep.DependentsCase):
         self.clock.advance(minutes=1)
         outcome = sup.finish(recompute_mod.recompute_steps(self.project))
         first = outcome.results[0]
-        self.assertEqual((first.status, first.code), (recompute_mod.UnitStatus.REFUSED, "core.recompute_no_successor"))
+        self.assertEqual((first.status, first.code), (recompute_mod.UnitStatus.REFUSED, "core.recompute_no_successor_release"))
         self.assertIn("se descartó y no tiene sucesor", first.reason)
         self.assertEqual([result.status for result in outcome.results].count(recompute_mod.UnitStatus.DONE), 0)
         self.assertEqual(self.query("SELECT uid, status FROM gb_operation ORDER BY fid"), before,

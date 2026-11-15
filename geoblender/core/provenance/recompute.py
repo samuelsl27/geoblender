@@ -11,7 +11,9 @@ usuario lo pida (D-4): el plan responde a «Recalcular lo obsoleto».
 - **Qué hay que rehacer**: las operaciones obsoletas sin sustituir que escribieron el contenido
   actual de un dato vivo o la cifra vigente de su clave y su ámbito (el mismo criterio que la
   revisión a mano de :func:`.graph.deduce`). Una obsoleta cuyo resultado ya reescribió otra no
-  tiene nada que rehacer: recalcularla borraría lo de la otra (una edición a mano, por ejemplo).
+  tiene nada que rehacer: recalcularla borraría lo de la otra (una edición a mano, por ejemplo);
+  tampoco la que descartó todos sus datos (``Staleness.discarded``, spec 015, T40: su resultado se
+  tiró; sus cifras no bastan): sigue obsoleta como historia y no vuelve al plan ni falla.
 - **Unidades** (:class:`RecomputeUnit`): una ejecución de un grupo acoplado entera (sus
   operaciones obsoletas sin sustituir), en el orden de su :class:`~.contract.CoupledGroupDef`
   (si el grupo no está registrado, en el que se ejecutó), o una operación sola (RF-008-25).
@@ -73,7 +75,10 @@ el motivo, que consume las versiones vigentes de lo que consumía la revisada (m
 ella misma escribió: es lo que se da por bueno), «produce» las mismas versiones de sus datos
 vigentes y su cifra vigente (el mismo contenido) y la sustituye, en una sola transacción y con
 su evento ``review_accepted``; lo de aguas abajo deja de esperar. No se da por buena mientras
-lo que consume siga obsoleto, ni lo importado de una entrada (se actualiza o se reimporta).
+lo que consume siga obsoleto, ni lo importado de una entrada (se actualiza o se reimporta). La
+de una operación **de una versión** (la edición externa de una tabla de versión, que
+``core.datasets.external.accept_edit`` da por buena al aceptarla con su motivo: spec 015, T40;
+RF-015-11) es una ``core.accept_review_version``, de esa versión.
 
 Python puro (ADR-0004).
 """
@@ -98,7 +103,14 @@ from ..errors import GeoblenderError
 from ..ids import new_uid
 from ..project.model import Progress
 from ..timeutil import format_utc
-from .contract import ACCEPT_REVIEW, GROUPS, OPERATIONS, operation_def, parse_version
+from .contract import (
+    ACCEPT_REVIEW,
+    ACCEPT_REVIEW_VERSION,
+    GROUPS,
+    OPERATIONS,
+    operation_def,
+    parse_version,
+)
 from .figures import RECORD_COLUMNS as FIGURE_COLUMNS
 from .figures import FigureRecord, FigureSpec
 from .graph import (
@@ -307,7 +319,8 @@ class _Planner:
         self.stale: Mapping[str, frozenset[Cause]] = state.operations
         figures = {figure.uid: figure.operation_uid for figure in graph.figures}
         writers = {dataset.operation_uid for dataset in graph.datasets.values() if dataset.live}
-        writers |= {figures[uid] for uid in state.current_figure_uids}
+        # Una operación cuyos datos se descartaron todos (spec 015, T40) no se repite por la cifra que le queda.
+        writers |= {figures[uid] for uid in state.current_figure_uids} - state.discarded
         self.relevant = frozenset(uid for uid in self.stale if uid in writers)
         members: dict[str, list[OperationNode]] = defaultdict(list)
         for uid in self.stale:
@@ -872,9 +885,13 @@ def _refusal(graph: ProvenanceGraph, unit: RecomputeUnit,
              built: list[tuple[RecomputeRequest, str | None]]) -> UnitResult | None:
     """Si la unidad no se ejecuta al empezar (sus entradas ya no siguen vigentes), su
     resultado con el motivo; si se ejecuta, ``None``."""
-    for _request_item, dropped in built:
+    for request_item, dropped in built:
         if dropped is not None:
-            return UnitResult(unit, UnitStatus.REFUSED, (), "core.recompute_no_successor",
+            definition = OPERATIONS.get(request_item.op_type)
+            code = ("core.recompute_no_successor_release"  # espera una decisión (spec 015, T40; RF-015-17)
+                    if definition is not None and definition.offers_release
+                    else "core.recompute_no_successor")
+            return UnitResult(unit, UnitStatus.REFUSED, (), code,
                               MappingProxyType({"name": dropped}))
     for request, _dropped in built:
         for use in request.inputs:
@@ -970,35 +987,47 @@ def accept_review(project: OperationProject, op_uid: str, reason: str) -> str:
         raise TypeError(f"el motivo de dar por buena una operación es un texto, no {reason!r}")
     _require_writable(project)
     with project.write_transaction() as conn:
-        graph = load_graph(conn)
-        node = graph.operations.get(op_uid)
-        if node is None:
-            raise ProvenanceError("core.operation_unknown", operation=op_uid,
-                                  project=project.name)
-        if not reason.strip():
-            raise ProvenanceError("core.accept_review_reason_missing", op_type=node.op_type)
-        text = _clean(reason.strip())
-        state = deduce(graph)
-        if op_uid not in state.review:
-            raise ProvenanceError("core.accept_review_not_review", op_type=node.op_type,
-                                  operation=op_uid)
-        outputs = _accepted_outputs(conn, graph, node)
-        uses = _accepted_uses(conn, state, node, {uid for uid, _spec, _sha in outputs})
-        handle = begin_in_transaction(
-            conn, project, ACCEPT_REVIEW, settings={"accepted": op_uid, "reason": text},
-            inputs=uses, params=tuple(dict.fromkeys(use.key for use in node.params)),
-            executor=Executor.BLENDER, supersedes=op_uid,
-        )
-        records = handle.complete(conn, outputs=[spec for _uid, spec, _sha in outputs],
-                                  figures=_accepted_figures(conn, state, node))
-        for record, (_uid, _spec, expected) in zip(records, outputs, strict=True):
-            if record.content_sha256 != expected:
-                raise ProvenanceError("core.accept_review_changed", name=record.name,
-                                      op_type=node.op_type)
-        _record(conn, project, "REVIEW_ACCEPTED", op_uid,
-                f"Operación «{node.op_type}» dada por buena: {text}",
-                {"op_type": node.op_type, "accepted_by": handle.uid, "reason": text},
-                format_utc(project.clock.now()))
+        return _accept_review(conn, project, op_uid, reason)
+
+
+def _accept_review(conn: sqlite3.Connection, project: OperationProject, op_uid: str,
+                   reason: str) -> str:
+    """:func:`accept_review` en la transacción de escritura ``conn`` de quien llama (la de aceptar la
+    edición externa de una tabla de versión, ``core.datasets.external.accept_edit``: spec 015, T40). La
+    de una operación **de una versión** es una ``core.accept_review_version``, de esa versión y de su
+    revisión abierta (una de proyecto no puede consumir ni producir datos de una versión, D-14 de la
+    009); la de las demás, una ``core.accept_review``."""
+    graph = load_graph(conn)
+    node = graph.operations.get(op_uid)
+    if node is None:
+        raise ProvenanceError("core.operation_unknown", operation=op_uid,
+                              project=project.name)
+    if not reason.strip():
+        raise ProvenanceError("core.accept_review_reason_missing", op_type=node.op_type)
+    text = _clean(reason.strip())
+    state = deduce(graph)
+    if op_uid not in state.review:
+        raise ProvenanceError("core.accept_review_not_review", op_type=node.op_type,
+                              operation=op_uid)
+    outputs = _accepted_outputs(conn, graph, node)
+    uses = _accepted_uses(conn, state, node, {uid for uid, _spec, _sha in outputs})
+    version = graph.version_of(op_uid) or None
+    handle = begin_in_transaction(
+        conn, project, ACCEPT_REVIEW if version is None else ACCEPT_REVIEW_VERSION,
+        settings={"accepted": op_uid, "reason": text},
+        inputs=uses, params=tuple(dict.fromkeys(use.key for use in node.params)),
+        executor=Executor.BLENDER, supersedes=op_uid, version=version,
+    )
+    records = handle.complete(conn, outputs=[spec for _uid, spec, _sha in outputs],
+                              figures=_accepted_figures(conn, state, node))
+    for record, (_uid, _spec, expected) in zip(records, outputs, strict=True):
+        if record.content_sha256 != expected:
+            raise ProvenanceError("core.accept_review_changed", name=record.name,
+                                  op_type=node.op_type)
+    _record(conn, project, "REVIEW_ACCEPTED", op_uid,
+            f"Operación «{node.op_type}» dada por buena: {text}",
+            {"op_type": node.op_type, "accepted_by": handle.uid, "reason": text},
+            format_utc(project.clock.now()))
     return handle.uid
 
 

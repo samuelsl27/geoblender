@@ -100,11 +100,10 @@ def edited_text(language: str = "es") -> str:
     return "se editó fuera de Geoblender" if language == "es" else "was edited outside Geoblender"
 
 
-class DeclaredBlockedTest(decl.DeclareCase):
-    """P1 y P2 creadas en V01, declaradas y con las máscaras al día; cada prueba parte de lo que dejó la
-    anterior (por el orden de los nombres): (a) la edición bloquea y la puerta se niega, (b) las máscaras no
-    se compilan, (c) recalcular desbloquea, (d) cada clase de edición, (e) aceptar con motivo, (f) la entidad
-    lo vuelve a poner tras aceptar, (g) la protección retirada y (h) la entidad descartada."""
+class DeclaredBlockedCase(decl.DeclareCase):
+    """P1 y P2 creadas en V01, declaradas y con las máscaras al día, y los ayudantes de editar la tabla de las
+    declaradas como QGIS y de lo que queda registrado (:class:`DeclaredBlockedTest` y, en
+    ``test_declared_accepted``, la T40)."""
 
     initial: ClassVar[str]
     edits: ClassVar[int] = 0
@@ -198,6 +197,14 @@ class DeclaredBlockedTest(decl.DeclareCase):
             self.assertEqual(self.record_of().content_sha256, self.initial)
         self.assertFalse(entity_store.declaration_diverges(self.project, self.v1))
         self.assertIsInstance(self.gate_result(), gate.Ready)
+
+
+
+class DeclaredBlockedTest(DeclaredBlockedCase):
+    """Cada prueba parte de lo que dejó la anterior (por el orden de los nombres): (a) la edición bloquea y la
+    puerta se niega, (b) las máscaras no se compilan, (c) recalcular desbloquea, (d) cada clase de edición, (e)
+    aceptar con motivo, (f) la entidad lo vuelve a poner tras aceptar, (g) la protección retirada, (h) la entidad
+    descartada, (i) la tabla eliminada y (j) V02."""
 
     # --- (a) La edición bloquea y la puerta se niega ----------------------------------------------
 

@@ -948,18 +948,21 @@ class EntitiesGuideDocTest(unittest.TestCase):
                 self.assertIn(token, parameters)
 
     def test_the_known_limits_are_told(self) -> None:
-        """T34: «Lo que no hace todavía» dice los límites de hoy (las plataformas sin calcular sin objeto,
-        aceptar con motivo, descartada con una operación vieja, las entidades nuevas que no detecta
-        «Recalcular lo obsoleto», el estado atrasado de la capa de QGIS) y el tamaño por entidad sin
-        prometer los 16 MB: RNF-015-09 sigue abierto."""
+        """T34: «Lo que no hace todavía» dice los límites de hoy (las plataformas sin calcular sin objeto, las
+        entidades nuevas que no detecta «Recalcular lo obsoleto», el estado atrasado de la capa de QGIS) y el
+        tamaño por entidad sin prometer los 16 MB: RNF-015-09 sigue abierto. **Ya no** dice (T40, hallazgos C-2,
+        C-4 y E-3) que aceptar con motivo la edición de una tabla de versión no limpia «Recalcular lo obsoleto» ni
+        que una plataforma descartada con una operación vieja sigue en su plan: están corregidos."""
         limits = self.guide_section("## 16. Lo que no hace todavía")
         for fact in ("Límites conocidos de esta versión",
-                     "no tiene objeto en la escena", "no limpia «Recalcular lo obsoleto»",
-                     "sigue en el plan de «Recalcular lo obsoleto»",
+                     "no tiene objeto en la escena",
                      "no detecta las entidades nuevas", "estado atrasado",
                      "unos 16 MiB", "unos 0,3 GiB", "RNF-015-09"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, limits)
+        for gone in ("no limpia «Recalcular lo obsoleto»", "sigue en el plan de «Recalcular lo obsoleto»"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, limits)
         self.assertNotIn("16 MB", self.guide)
 
 

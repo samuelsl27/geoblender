@@ -576,9 +576,12 @@ _LAST_WRITER = (
     "SELECT o.uid, o.repeatable FROM gb_operation_io AS io JOIN gb_operation AS o "
     "ON o.uid = io.operation_uid WHERE io.item_uid = ? AND io.direction = 'out' "
     "AND +io.item_kind = 'dataset' AND o.status = 'done' AND o.executor <> 'external' "
+    "AND o.op_type NOT IN ('core.accept_review', 'core.accept_review_version') "
     "ORDER BY io.fid DESC LIMIT 1"
 )
-"""La última operación hecha en Geoblender (no una edición externa) que escribió un dato."""
+"""La última operación hecha en Geoblender que escribió un dato: no una edición externa ni una que
+la da por buena (``core.accept_review*``, que «produce» el mismo contenido que otra: spec 015, T40),
+que no es quien lo calcula ni lo repite."""
 
 
 UNUSABLE_STATUSES: tuple[DatasetStatus, ...] = (DatasetStatus.BLOCKED, DatasetStatus.MISSING,
@@ -588,8 +591,8 @@ ADR-0025 §4)."""
 
 
 def last_writer(conn: sqlite3.Connection, uid: str) -> str | None:
-    """La última operación hecha en Geoblender (no una edición externa) que escribió el dato
-    ``uid``, o ``None``. Solo lee."""
+    """La última operación hecha en Geoblender (no una edición externa ni una que la da por
+    buena) que escribió el dato ``uid``, o ``None``. Solo lee."""
     found = conn.execute(_LAST_WRITER, (uid,)).fetchone()
     return None if found is None else str(found[0])
 
@@ -711,7 +714,24 @@ def accept_edit(conn: sqlite3.Connection, project: Any, key: str, reason: str) -
                "content_sha256": current.content_sha256,
                "operation_uid": current.operation_uid,
            }, now)
+    if _owner_version(conn, current.uid):
+        _review_accepted(conn, project, current.operation_uid, text)
     return written
+
+
+def _review_accepted(conn: sqlite3.Connection, project: Any, edit_uid: str, reason: str) -> None:
+    """Da por buena, con ``reason``, la operación ``edit_uid`` de la edición externa que se acaba de
+    aceptar si espera revisión a mano (spec 015, T40; RF-015-11, RF-008-27): una edición de la tabla
+    de una **versión** (``core.external_edit_version``) queda en «revisar a mano» cuando lo que la
+    precede está obsoleto (el ciclo de la declaración de las entidades: tabla, máscaras, entidad y
+    otra vez tabla), y con ella todo lo que espera a la tabla en «Recalcular lo obsoleto». Aceptar la
+    edición **ya es** esa decisión: la operación nueva conserva el contenido del dato (no deshace lo
+    aceptado) y lo de aguas abajo deja de esperar. Si no espera revisión, no hace nada."""
+    from ..provenance.graph import deduce, load_graph
+    from ..provenance.recompute import _accept_review
+
+    if edit_uid in deduce(load_graph(conn)).review:
+        _accept_review(conn, project, edit_uid, reason)
 
 
 # --- Originales --------------------------------------------------------------------------------

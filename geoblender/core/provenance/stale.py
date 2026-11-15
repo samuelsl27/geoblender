@@ -216,6 +216,19 @@ _LIVE_WRITERS = (
     f"AND d.operation_uid = io.operation_uid AND d.status IN ({_LIVE}) "
     "AND io.operation_uid IN ({marks})"
 )
+# Las que escribieron el contenido actual de algún dato y **todos** están descartados (spec 015, T40):
+# su resultado se tiró, así que sus cifras no cuentan como «solo dejan cifras» ni como revisión a mano
+# (como ``Staleness.discarded``). Como ``_LIVE_WRITERS``, de la salida al dato; la que conserva otro
+# dato que no está descartado (vivo o sustituido) no es.
+_DISCARDED_WRITERS = (
+    "SELECT DISTINCT io.operation_uid FROM gb_operation_io AS io JOIN gb_dataset AS d "
+    "ON d.uid = io.item_uid WHERE io.direction = 'out' AND io.item_kind = 'dataset' "
+    "AND d.operation_uid = io.operation_uid AND d.status = 'discarded' "
+    "AND io.operation_uid IN ({marks}) AND NOT EXISTS (SELECT 1 FROM gb_operation_io AS o "
+    "JOIN gb_dataset AS k ON k.uid = o.item_uid WHERE o.operation_uid = io.operation_uid "
+    "AND o.direction = 'out' AND o.item_kind = 'dataset' AND k.operation_uid = o.operation_uid "
+    "AND k.status <> 'discarded')"
+)
 _STALE_COUNT = (
     "SELECT COUNT(DISTINCT s.item_uid) FROM gb_stale AS s JOIN gb_dataset AS d "
     f"ON d.uid = s.item_uid WHERE s.item_kind = '{DATASET}' AND d.status IN ({_LIVE})"
@@ -806,9 +819,11 @@ def _current_writers(conn: sqlite3.Connection,
     """De las operaciones ``candidates``: las que escribieron el contenido actual de un dato
     vivo y, de las demás, las que escribieron la cifra vigente de su clave y su ámbito (la
     más reciente de una operación al día o, si todas están obsoletas, la más reciente), entre
-    las del proyecto o entre las de su versión (spec 009, A4 (5))."""
+    las del proyecto o entre las de su versión (spec 009, A4 (5)). No cuentan por sus cifras las
+    que descartaron todos sus datos (``_DISCARDED_WRITERS``: spec 015, T40)."""
     data = _column(conn, _LIVE_WRITERS, candidates)
     rest = candidates - data
+    rest -= _column(conn, _DISCARDED_WRITERS, rest)  # su resultado se tiró: no hay cifra que rehacer
     figures: set[str] = set()
     pairs = sorted({tuple(row) for row in _select(conn, _FIGURE_KEYS, rest)})
     if not pairs:

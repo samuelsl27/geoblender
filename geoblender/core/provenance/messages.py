@@ -574,6 +574,13 @@ _CATALOG: tuple[Message, ...] = (
         "No se recalcula: «{name}», que consumía, se descartó y no tiene sucesor.",
     ),
     Message(
+        "core.recompute_no_successor_release",
+        "Not recomputed: «{name}», which it consumed, was discarded and has no successor. It "
+        "waits until it is redone on something else, discarded or given as good with a reason.",
+        "No se recalcula: «{name}», que consumía, se descartó y no tiene sucesor. Espera a que "
+        "se rehaga sobre otra cosa, se descarte o se dé por buena con un motivo.",
+    ),
+    Message(
         "core.recompute_failed",
         "Operation «{op_type}» could not be recomputed: {reason}",
         "No se pudo recalcular la operación «{op_type}»: {reason}",

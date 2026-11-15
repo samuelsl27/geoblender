@@ -849,6 +849,79 @@ class StaleTest(GraphCase):
         self.assertEqual(state.figure_only, {again.uid})
         self.assertNotIn(c.uid, state.operations)
 
+    def discarded_figures(self, op_type: str, writes: Mapping[str, Sequence[float]]) -> tuple[Any, ...]:
+        """Una operación de ``op_type`` que escribe ``writes`` y deja la cifra vigente, obsoleta por la producción, y
+        su obsolescencia (``Staleness``) con lo que dicen la deducción y la caché (SQL) de ``figure_only`` y de
+        ``review``."""
+        self.run_op("res.step_a", {"res_a": [1.0]}, params=["res.production"])
+        op = self.run_op(op_type, writes, reads=["res_a"], figure=4.0)
+        self.change("res.production", 80000.0)
+        return op, self.deduced()
+
+    def deduced(self) -> Any:
+        state = self.stale()
+        with self.project.read() as conn:  # lo mismo en SQL (la barra de estado y la lista)
+            self.assertEqual(stale_mod.figure_only_operations(conn), state.figure_only)
+            self.assertEqual(stale_mod.review_operations(conn), state.review)
+        return state
+
+    def test_operation_whose_data_were_all_discarded_leaves_no_figures_to_redo(self) -> None:
+        """RF-008-28, RF-008-26, RF-015-17 (spec 015, T40; hallazgos C-4 y E-3): una operación obsoleta que se repite
+        sola y cuyos datos se descartaron **todos** (su resultado se tiró: sigue obsoleta como historia) ya no es
+        «una que solo deja cifras»: no cuenta en ``figure_only`` (la deducción y la caché, en SQL, lo mismo), aunque
+        su cifra siga siendo la vigente. Mientras conserve un dato vivo, cuenta por él, y la que descartó solo parte
+        de los suyos sigue contando."""
+        c, state = self.discarded_figures("res.step_c", {"res_c": [4.0]})
+        self.assertIn(c.uid, state.operations)
+        self.assertEqual((state.figure_only, state.discarded), (frozenset(), frozenset()), "su dato vive: cuenta por él")
+        self.set_status("res_c", "discarded")
+        state = self.deduced()
+        self.assertIn(c.uid, state.operations, "sigue obsoleta: es historia")
+        self.assertEqual(state.discarded, {c.uid})
+        self.assertEqual(state.figure_only, frozenset(), "se tiró todo lo que escribió: nada que rehacer")
+        self.assertEqual(stale_mod.counts(self.project).figures, 0)
+
+    def test_operation_that_discarded_only_part_of_its_data_is_not_discarded(self) -> None:
+        """RF-008-28, RF-015-17 (spec 015, T40): la que escribió dos datos y descartó uno conserva el otro: no está
+        descartada y cuenta por su dato vivo; descartado el segundo, sí."""
+        d, state = self.discarded_figures("res.step_c", {"res_d1": [5.0], "res_d2": [6.0]})
+        self.set_status("res_d1", "discarded")
+        state = self.deduced()
+        self.assertEqual((state.discarded, state.figure_only), (frozenset(), frozenset()))
+        self.assertIn(self.dataset("res_d2"), state.datasets, "cuenta por su dato vivo")
+        self.assertNotIn(self.dataset("res_d1"), state.datasets)
+        self.set_status("res_d2", "discarded")
+        state = self.deduced()
+        self.assertEqual((state.discarded, state.figure_only), ({d.uid}, frozenset()))
+
+    def test_operation_whose_other_data_were_superseded_is_not_discarded(self) -> None:
+        """RF-008-28 (spec 015, T40): «descartada» es que **todos** sus datos lo están: si uno se descartó y otro lo
+        sustituyó un dato de otra operación (``superseded``: ni vive ni se tiró), la operación no está descartada y
+        sigue contando como la que solo deja cifras, en la deducción y en la caché (SQL) por igual."""
+        d, _state = self.discarded_figures("res.step_c", {"res_d1": [5.0], "res_d2": [6.0]})
+        self.run_op("res.step_b", {"res_x": [7.0]})
+        old, new = self.dataset("res_d2"), self.dataset("res_x")
+        self.write(lambda conn: dataset_registry.supersede(conn, self.project, old, by=new))
+        self.set_status("res_d1", "discarded")
+        state = self.deduced()
+        self.assertEqual((state.discarded, state.figure_only), (frozenset(), {d.uid}))
+
+    def test_operation_that_only_leaves_figures_is_not_discarded(self) -> None:
+        """RF-008-28 (spec 015, T40): la que no escribe ningún dato (solo cifras) no está «descartada»: no tiene
+        resultado que tirar y sigue siendo «la que solo deja cifras»."""
+        b, state = self.discarded_figures("res.step_b", {})
+        self.assertEqual((state.figure_only, state.discarded), ({b.uid}, frozenset()))
+
+    def test_review_by_hand_goes_when_what_the_operation_wrote_was_discarded(self) -> None:
+        """RF-008-27 (spec 015, T40): la operación que espera revisión a mano deja de esperarla si se tiró todo lo
+        que escribió (nadie va a revisar un resultado descartado); mientras viva un dato suyo, la espera."""
+        r, state = self.discarded_figures("res.digitize", {"res_r": [2.0]})
+        self.assertEqual((state.review, state.discarded), ({r.uid}, frozenset()))
+        self.set_status("res_r", "discarded")
+        state = self.deduced()
+        self.assertEqual((state.review, state.discarded), (frozenset(), {r.uid}))
+        self.assertEqual(stale_mod.counts(self.project).review, 0)
+
 
 # --- Caché por región (T27) -------------------------------------------------------------------
 

@@ -280,6 +280,11 @@ class OperationDef:
       lo que consumió y después se descartó sin sucesor sale de su recálculo en vez de
       impedirlo (``core.recompute_no_successor``, RF-008-55); solo en una que se repite sola.
       Por defecto, no;
+    - ``offers_release`` (spec 015, T40; RF-015-17): si su módulo ofrece, además de rehacerla o
+      descartarla, **darla por buena sin lo que consumió** y se descartó sin sucesor, con un motivo
+      (``des``: «Dar por bueno el apoyo»). Solo cambia el texto con que se rehúsa su recálculo —espera
+      esa decisión: ``core.recompute_no_successor_release``—; solo en una que se repite sola y no
+      reúne ella misma lo vigente (``drops_discarded``). Por defecto, no;
     - ``reproduce`` (spec 009, RF-009-11; plan 009 §5.3.3): la función que la vuelve a
       ejecutar fuera del proyecto con lo congelado (:data:`ReproduceFunction`); sin ella (una
       importación, una edición a mano), al reproducir se toma lo congelado. Por defecto, ninguna;
@@ -300,6 +305,7 @@ class OperationDef:
     recompute: RecomputeFunction | None = None
     settings: tuple[SettingDef, ...] = ()
     drops_discarded: bool = False
+    offers_release: bool = False
     reproduce: ReproduceFunction | None = None
     figure_tolerance: Tolerance | None = None
 
@@ -344,6 +350,12 @@ class OperationDef:
             raise ValueError(
                 f"la operación «{op_type}» no se puede repetir sola: «drops_discarded» solo lo "
                 "declara una que se recalcula reuniendo lo vigente"
+            )
+        _check_bool(self.offers_release, "offers_release", op_type)
+        if self.offers_release and (not self.repeatable or self.drops_discarded):
+            raise ValueError(
+                f"la operación «{op_type}» no se puede repetir sola o reúne ella misma lo vigente: "
+                "«offers_release» solo lo declara una que se rehúsa si lo que consumió se descartó"
             )
         if self.group is not None and _module_name(self.group, _OP_TYPE) is None:
             raise ValueError(
@@ -737,6 +749,12 @@ versión."""
 ACCEPT_REVIEW = "core.accept_review"
 """«Dar por buena» una operación que espera revisión a mano (RF-008-27; D8): consume las
 versiones vigentes, «produce» las mismas salidas y sustituye a la revisada."""
+ACCEPT_REVIEW_VERSION = "core.accept_review_version"
+"""Lo mismo que :data:`ACCEPT_REVIEW`, de una operación **de una versión** (spec 015, T40; RF-008-27,
+RF-015-11): una operación de la versión de la revisada y de su revisión abierta, que es el único ámbito en
+que puede consumir y producir datos de esa versión (una de proyecto no puede: ``core.version_data_in_project``,
+D-14 de la 009). La registra :func:`~.recompute.accept_review` en lugar de la de proyecto cuando la operación
+que se da por buena es de una versión (la edición externa de una tabla de versión, :data:`EXTERNAL_EDIT_VERSION`)."""
 IMPORT_LAYER = "core.import_layer"
 """Registrar una capa de un GeoPackage como entrada (RF-008-62; D14), con lo importado en
 ``core_imported_<slug>`` (``core.provenance.importer``)."""
@@ -746,6 +764,7 @@ CORE_OPERATIONS: tuple[OperationDef, ...] = (
     OperationDef(EXTERNAL_EDIT_VERSION, "1.0", "core", EXTERNAL_EDIT_MSGID, False, scope="version"),
     OperationDef(ACCEPT_REVIEW, "1.0", "core", ACCEPT_REVIEW_MSGID, False,
                  commands=("geoblender.core_accept_review",)),
+    OperationDef(ACCEPT_REVIEW_VERSION, "1.0", "core", ACCEPT_REVIEW_MSGID, False, scope="version"),
     OperationDef(IMPORT_LAYER, "1.0", "core", IMPORT_LAYER_MSGID, False,
                  commands=("geoblender.core_resolve_unregistered",)),
 )
