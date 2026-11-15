@@ -8703,6 +8703,9 @@ es = "Motivo de la restricción declarada"
 ["Entities the platform is declared to rest on"]
 es = "Entidades en las que se declara apoyada la plataforma"
 
+["The entity is discarded"]
+es = "La entidad está descartada"
+
 # Procedencia de las entidades de diseño (spec 015, T04; RF-015-01, RF-015-02, RF-015-10, RF-015-15,
 # RF-015-24; plan 015 §5.2.3): el nombre de cada operación («Platform» ya está arriba) y de cada
 # cifra de design/provenance.py.
@@ -8902,6 +8905,100 @@ es = "Cancelado: la plataforma está creada; las restricciones declaradas y las 
 
 ["The platform is created: only the declared constraints and the masks have not been brought up to date"]
 es = "La plataforma está creada: solo las restricciones declaradas y las máscaras no se han puesto al día"
+
+# Descartar una entidad y soltar el apoyo (spec 015, T25; RF-015-17; las órdenes de bl/ops/des.py).
+["Entity"]
+es = "Entidad"
+
+["Code or name of the design entity to discard"]
+es = "Código o nombre de la entidad de diseño que se descarta"
+
+["Why the entity is discarded; it is recorded with the decision"]
+es = "Por qué se descarta la entidad; queda registrado con la decisión"
+
+["Entity or design"]
+es = "Entidad o diseño"
+
+["Code or name of the entity, or uid or name of the design, that lost its support"]
+es = "Código o nombre de la entidad, o uid o nombre del diseño, que perdió su apoyo"
+
+["Discarded entity"]
+es = "Entidad descartada"
+
+["Code or name of the discarded entity it no longer rests on (empty: every one it lost)"]
+es = "Código o nombre de la entidad descartada en la que ya no se apoya (vacío: todas las que perdió)"
+
+["Why it is given as good without that support; it is recorded with the decision"]
+es = "Por qué se da por bueno sin ese apoyo; queda registrado con la decisión"
+
+["Discard «{name}»"]
+es = "Descartar «{name}»"
+
+["Choose the entity to discard"]
+es = "Elija la entidad que se descarta"
+
+["«{name}» ({code}) will be discarded: it stays in the project as a record and nothing is deleted"]
+es = "«{name}» ({code}) se descartará: queda en el proyecto como registro y no se borra nada"
+
+["These rest on the entity or start from it:"]
+es = "Esto se apoya en la entidad o parte de ella:"
+
+["They are left as «support removed»."]
+es = "Quedan como «apoyo retirado»."
+
+["«Recompute the stale results» does not recompute them until you remake them on another surface, discard them or give them as good with a reason."]
+es = "«Recalcular lo obsoleto» no los recalcula hasta que los rehaga sobre otra superficie, los descarte o los dé por buenos con un motivo."
+
+["Nothing rests on the entity and nothing starts from it."]
+es = "Nada se apoya en la entidad ni parte de ella."
+
+["Entity «{name}» discarded in {version}: nothing has been deleted"]
+es = "Entidad «{name}» descartada en {version}: no se ha borrado nada"
+
+["Left as «support removed»: {items}"]
+es = "Quedan como «apoyo retirado»: {items}"
+
+["Cancelled: the entity is discarded; the declared constraints and the masks are brought up to date before the next operation that uses them"]
+es = "Cancelado: la entidad está descartada; las restricciones declaradas y las máscaras se ponen al día antes de la próxima operación que las use"
+
+["The entity is discarded: only the declared constraints and the masks have not been brought up to date"]
+es = "La entidad está descartada: solo las restricciones declaradas y las máscaras no se han puesto al día"
+
+["The project was closed while «{name}» was being done: nothing has been left half-done"]
+es = "Se cerró el proyecto mientras se hacía «{name}»: no queda nada a medias"
+
+["Choose what to give as good: an entity or a design that lost its support"]
+es = "Elija lo que se da por bueno: una entidad o un diseño que perdió su apoyo"
+
+["«{name}» starts from the surface of a discarded entity: remake it on another surface or discard it; it cannot be given as good"]
+es = "«{name}» parte de la superficie de una entidad descartada: rehágala sobre otra superficie o descártela; no se puede dar por buena"
+
+["«{name}» has not lost its support: nothing it rests on was discarded"]
+es = "«{name}» no ha perdido su apoyo: nada en lo que se apoya se descartó"
+
+["Release the support of «{name}»"]
+es = "Soltar el apoyo de «{name}»"
+
+["Give as good"]
+es = "Dar por bueno"
+
+["«{name}» ({kind}) lost its support:"]
+es = "«{name}» ({kind}) perdió su apoyo:"
+
+["It is repeated without that support, with the reason you give."]
+es = "Se repite sin ese apoyo, con el motivo que dé."
+
+["What depends on it is not recomputed if its result does not change."]
+es = "Lo que depende de ello no se recalcula si su resultado no cambia."
+
+["«{name}» given as good without its support: its result is registered with the reason"]
+es = "«{name}» dado por bueno sin su apoyo: su resultado queda registrado con el motivo"
+
+["Repeating «{name}» without its support… {percent} % · Esc: cancel"]
+es = "Repitiendo «{name}» sin su apoyo… {percent} % · Esc: cancelar"
+
+["Cancelled: nothing has been left half-done"]
+es = "Cancelado: no queda nada a medias"
 
 ["There are no layers of lines or polygons in the project"]
 es = "No hay capas de líneas ni de polígonos en el proyecto"

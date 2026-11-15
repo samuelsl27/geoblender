@@ -277,6 +277,7 @@ __all__ = [
     "PLATFORM_FIGURES",
     "PLATFORM_SETTINGS",
     "CounterslopeConfirmation",
+    "ReleasedSupport",
     "QUARRY",
     "QUARRY_COMMAND",
     "QUARRY_FAMILIES",
@@ -303,6 +304,7 @@ __all__ = [
     "SUPPORTED_ON_ROLE",
     "SUPPORT_FIGURES",
     "SUPPORT_FOOTPRINT_ROLE",
+    "SUPPORTS_RELEASED",
     "SURFACE_ROLE",
     "SURFACE_SCOPE_KEY",
     "SURFACE_SCOPE_NAMES",
@@ -349,6 +351,8 @@ __all__ = [
     "fill_only_settings",
     "counterslope_confirmation",
     "counterslope_confirmed",
+    "merge_released",
+    "released_supports",
     "operation_def",
     "operation_defs",
     "platform_code",
@@ -1882,6 +1886,66 @@ def counterslope_confirmed(settings: Mapping[str, Any]) -> CounterslopeConfirmat
     assert amount is not None and abscissa is not None  # required
     return counterslope_confirmation(amount, abscissa, _required_text(item, "decided_by", what),
                                      _required_text(item, "decided_on", what))
+
+
+SUPPORTS_RELEASED = "supports_released"
+"""La clave de los ajustes de una operación de ``des`` donde queda **lo que se dio por bueno sin su apoyo** (RF-015-17,
+A7, P-6; spec 015, T25): una lista de :class:`ReleasedSupport` (la entidad, el motivo, el decisor y la fecha),
+**acumulada**: la operación que repite a otra se queda con la lista de la que sustituye y le suma lo nuevo. No es de
+los ajustes que da cada tipo (``platform_settings``…): la anota quien suelta el apoyo
+(``design.entity_store.release_support``) y la arrastran los recálculos (``design.store.OperationStart``)."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReleasedSupport:
+    """Un apoyo que la persona dio por bueno **sin** la entidad en la que se apoyaba, que se descartó (RF-015-17;
+    plan 015 §5.4 A7, P-6): el código de la entidad (``entity``: ``PLT-001``), el motivo (``reason``), quién lo
+    decidió (``by``) y cuándo (``when``, UTC). Es lo que se anota en los ajustes de la operación repetida
+    (:data:`SUPPORTS_RELEASED`) y en el evento ``support_released``."""
+
+    entity: str
+    reason: str
+    by: str
+    when: str
+
+    def __post_init__(self) -> None:
+        entity_segment(self.entity)
+        for what, text in (("el motivo", self.reason), ("quién lo decidió", self.by),
+                           ("cuándo", self.when)):
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError(f"falta {what} en el apoyo que se da por bueno ({self.entity})")
+
+    def settings(self) -> dict[str, str]:
+        """Lo que se anota en los ajustes de la operación (JSON)."""
+        return {"entity": self.entity, "reason": self.reason, "by": self.by, "when": self.when}
+
+
+def released_supports(settings: Mapping[str, Any]) -> tuple[ReleasedSupport, ...]:
+    """Los apoyos que dan por buenos los ajustes ``settings`` de una operación (:data:`SUPPORTS_RELEASED`), por orden;
+    ninguno si no los llevan. ``ValueError`` si los llevan y no son una lista de apoyos (nombrando el campo)."""
+    data = _mapping(settings, "los ajustes de una operación del diseño")
+    found = data.get(SUPPORTS_RELEASED)
+    if found is None:
+        return ()
+    what = f"los ajustes de una operación del diseño, «{SUPPORTS_RELEASED}»,"
+    if isinstance(found, str | bytes | Mapping) or not isinstance(found, Iterable):
+        raise ValueError(f"{what} son una lista de apoyos dados por buenos, no {found!r}")
+    items: list[ReleasedSupport] = []
+    for item in found:
+        entry = _mapping(item, what)
+        items.append(ReleasedSupport(_required_text(entry, "entity", what), _required_text(entry, "reason", what),
+                                     _required_text(entry, "by", what), _required_text(entry, "when", what)))
+    return tuple(items)
+
+
+def merge_released(*groups: Iterable[ReleasedSupport]) -> tuple[ReleasedSupport, ...]:
+    """Los apoyos de ``groups`` en el orden en que llegan y **sin repetir la entidad** (el primero que la dio por
+    buena manda: su motivo y su decisor no se pisan)."""
+    found: dict[str, ReleasedSupport] = {}
+    for group in groups:
+        for item in group:
+            found.setdefault(item.entity, item)
+    return tuple(found.values())
 
 
 def platform_values(code: str, parameters: Mapping[str, Any]) -> dict[str, Any]:

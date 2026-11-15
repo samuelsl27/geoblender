@@ -117,6 +117,11 @@ class EventKind(Enum):
     # Una decisión de la propiedad registrada, con sus enlaces a parámetros y versiones
     # (RF-009-13).
     DECISION_RECORDED = "decision_recorded"
+    # Spec 015 (RF-015-17; D-12): una entidad de diseño descartada («registro, no usar»: nada se borra,
+    # RF-009-12), con el motivo, quién y la lista de lo que se le apoyaba; y lo que se apoyaba en una entidad
+    # descartada, dado por bueno sin ese apoyo, con su motivo y su decisor (plan 015 §5.4 A7, P-6).
+    ENTITY_DISCARDED = "entity_discarded"
+    SUPPORT_RELEASED = "support_released"
 
 
 @dataclass(frozen=True)

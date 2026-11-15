@@ -51,9 +51,9 @@ from tests.support.trees import temp_folder
 
 ENTRY = "013"
 ENTRY_TITLE = ("Envelopes and benching", "Envolventes y escalonado")
-COUNTS = {"parámetros": 9, "familias": 25, "operaciones": 11, "grupos": 0, "cifras": 44}
-"""Lo de ``des`` en ``core``: 2 + 7 definiciones (013 y 014), 6 + 19 familias (013 y 015), 3 + 5 + 3
-tipos de operación (013, 014 y 015) y 15 + 15 + 14 cifras (T04 de la 015)."""
+COUNTS = {"parámetros": 9, "familias": 26, "operaciones": 11, "grupos": 0, "cifras": 44}
+"""Lo de ``des`` en ``core``: 2 + 7 definiciones (013 y 014), 6 + 20 familias (013 y 015; la 20.ª, ``discarded``,
+es de la T25), 3 + 5 + 3 tipos de operación (013, 014 y 015) y 15 + 15 + 14 cifras (T04 de la 015)."""
 OURS = ("des.", "des_")  # las claves de la 013 en los registros de core
 VERSION_TYPES = ("des.envelope", "des.stepped_design")
 PROFILES_TYPE = "des.edit_bench_profiles"
@@ -277,7 +277,7 @@ class DesignRegisteredTest(unittest.TestCase):
     def test_a_register_and_unregister_leave_core_as_it_was(self) -> None:
         """ADR-0025 §2, ADR-0027, principio 8 (RF-013-33; RF-015-02): habilitada, la 013 tiene en
         ``core`` sus 2 definiciones de parámetros, sus 6 familias, sus 3 tipos de operación y sus 15
-        cifras (ningún grupo acoplado) y, con la 014 y la 015, sus 7 parámetros, sus 19 familias de
+        cifras (ningún grupo acoplado) y, con la 014 y la 015, sus 7 parámetros, sus 20 familias de
         una plataforma, sus 8 tipos de operación y sus 29 cifras. ``bl/ops/des.py`` lo quita todo
         (dos veces: nada más cambia) y lo vuelve a poner (dos veces) con los mismos objetos. Con lo
         que «otro» registró antes con las mismas claves, registrar pone solo lo que falta (lo de

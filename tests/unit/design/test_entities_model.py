@@ -59,12 +59,13 @@ PLATFORM_PARAMS: dict[str, tuple[str, str, object, float | None, float | None, b
     "guard_m": ("float", "m", None, 0.0, 1000.0, False, False, (), ("RF-015-10", "RF-015-12")),
     "reason": ("text", "-", None, None, None, False, False, (), ("RF-015-10", "RF-015-12")),
     "supports": ("text", "-", None, None, None, False, False, (), ("RF-015-15",)),
+    "discarded": ("bool", "-", False, None, None, False, False, (), ("RF-015-17",)),
 }
 # Los opcionales: sin valor es válido (el resto sin valor se rechaza, RF-015-08).
 OPTIONAL = ("support", "max_slope_pct", "reason", "supports")
 # Los que tienen valor por defecto (D-4, D-5, D-7, D-8, D-22): el resto, «sin valor».
 WITH_DEFAULT = {"mode": "cut", "mesh_factor": 1.0, "counter_tol_m": 0.1, "metric": "exact",
-                "protect": False}
+                "protect": False, "discarded": False}
 
 # Los valores que cada número admite y los que rechaza (con ``nan`` e infinito).
 BOUNDS: dict[str, tuple[tuple[float, ...], tuple[float, ...]]] = {
@@ -110,6 +111,19 @@ CODES: dict[str, str] = {
     "des.entity_chain_obsolete": "note",        # RF-015-16 (T19)
     "des.entity_chain_declare_failed": "warning",  # RF-015-10 (T19)
     "des.entity_chain_masks_failed": "warning",  # RF-015-10 (T19)
+    "des.entity_discard_reason": "error",       # RF-015-17 (T25)
+    "des.entity_already_discarded": "error",    # RF-015-17 (T25)
+    "des.entity_release_reason": "error",       # RF-015-17 (T25)
+    "des.entity_release_unknown": "error",      # RF-015-17 (T25)
+    "des.entity_release_nothing": "error",      # RF-015-17 (T25)
+    "des.entity_release_start": "error",        # RF-015-17 (T25)
+    "des.entity_release_support_param": "error",  # RF-015-17 (T25)
+    "des.entity_release_others": "error",       # RF-015-17 (T25)
+    "des.support_removed": "note",              # RF-015-17 (T25)
+    "des.support_removed_platform": "note",     # RF-015-17 (T25)
+    "des.support_removed_dataset": "note",      # RF-015-17 (T25)
+    "des.event_entity_discarded": "note",       # RF-015-17 (T25)
+    "des.event_support_released": "note",       # RF-015-17 (T25)
     "des.entity_edge_outside": "warning",       # RF-015-13
     "des.entity_quarry_order": "warning",       # RF-015-14
     "des.platform_declared_reason": "note",     # RF-015-10
@@ -137,7 +151,7 @@ CODES: dict[str, str] = {
     "des.platform_edge_steep": "warning",       # RF-015-22 (T08)
     "des.platform_more_groups": "note",         # RF-015-24 (T12)
 }
-FAMILIES = ("des.entity_", "des.platform_")
+FAMILIES = ("des.entity_", "des.platform_", "des.support_", "des.event_")
 
 
 def key_of(last: str, code: str = "PLT-001") -> str:
@@ -302,16 +316,16 @@ class DeclaredReasonTest(unittest.TestCase):
 
 
 class PlatformParamsTest(unittest.TestCase):
-    def test_the_nineteen_families_of_the_plan(self) -> None:
+    def test_the_twenty_families_of_the_plan(self) -> None:
         """RF-015-01, RF-015-08, RF-015-19 a RF-015-23 (plan §5.2.2; ADR-0027): la definición de
-        una plataforma son sus parámetros de versión en 19 familias ``des.platform.{e}.<valor>``,
+        una plataforma son sus parámetros de versión en 20 familias ``des.platform.{e}.<valor>``,
         en el orden del plan, cada una con su tipo de valor, su unidad, su rango, sus opciones
         (modo y métrica), sus RF y su valor por defecto solo donde lo dicen D-4, D-5, D-7, D-8 y
         D-22; todo lo demás, ADOPTADO, de versión y sin valor por defecto (que lo declara una
         persona al crear la entidad)."""
         self.assertEqual([family.pattern for family in params.ENTITY_FAMILIES],
                          [f"des.platform.{{e}}.{last}" for last in PLATFORM_PARAMS])
-        self.assertEqual(len(params.ENTITY_FAMILIES), 19)
+        self.assertEqual(len(params.ENTITY_FAMILIES), 20)
         self.assertEqual([item.value for item in params.PlatformParam], list(PLATFORM_PARAMS))
         for family, (last, spec) in zip(params.ENTITY_FAMILIES, PLATFORM_PARAMS.items(),
                                         strict=True):
@@ -357,7 +371,7 @@ class PlatformParamsTest(unittest.TestCase):
         self.assertEqual(other.key, "des.platform.plt_002.reach_m")
 
     def test_the_families_do_not_overlap_with_the_other_ones_of_design(self) -> None:
-        """RF-015-01 (ADR-0027, ``register_families``): ninguna de las 19 familias solapa con otra
+        """RF-015-01 (ADR-0027, ``register_families``): ninguna de las 20 familias solapa con otra
         ni con las de los perfiles y los sectores de la 013, ni casa con un parámetro del
         proyecto de ``design``: así ``bl`` las registra todas juntas (T04). Van aparte de
         ``FAMILIES`` (las de la 013), como los siete de la cantera de la 014."""

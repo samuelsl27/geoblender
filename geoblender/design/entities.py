@@ -55,6 +55,13 @@ m³ y estado) de entidades y de diseños de la 013 y la 014, sin leer ninguna su
 que cambió por su nombre y lo que cambió. La cascada, el orden de recalcular y lo congelado son los de la 008
 (RF-008-24, RF-008-26, RF-009-19): aquí no se apunta nada.
 
+**Descartada y «apoyo retirado»** (T25; RF-015-17, RF-009-12; D-12): una entidad está **descartada** si todos los datos
+que escribió lo están, o, si no está calculada (no tiene datos que descartar), si su parámetro de versión
+``des.platform.{e}.discarded`` es verdadero. :func:`retired_supports` es la lista de lo que perdió su apoyo —las
+operaciones vigentes de la versión que consumieron, como ``surface`` o ``supported_on``, el dato de una entidad
+descartada— y :func:`stale_reason` y :func:`operation_reason` dan de ello la causa («Apoyo retirado: se descartó la
+plataforma P1»), no el «Obsoleto» de la 008.
+
 ``design.entities`` es un módulo pesado de la 015: lo importan el almacén y las órdenes al usarlo, no
 ``bl`` al registrarse ni ``design.provenance`` (``tests/unit/architecture/test_lazy_registration.py``).
 """
@@ -110,6 +117,8 @@ __all__ = [
     "EntityRegistry",
     "EntityState",
     "ParamChange",
+    "RetiredEntity",
+    "RetiredSupport",
     "Support",
     "chain_of",
     "chain_tails",
@@ -132,6 +141,7 @@ __all__ = [
     "predecessor_of",
     "ref_code",
     "registry",
+    "retired_supports",
     "runs_cells",
     "stale_reason",
     "start_conflict",
@@ -693,7 +703,9 @@ def registry(project: Any, version: str, *, conn: sqlite3.Connection | None = No
     estado, **deducido** y no apuntado: sin operación, ``UNCALCULATED``; con todos los datos que
     escribió descartados, ``DISCARDED``; si consumió un dato descartado como ``surface`` o
     ``supported_on``, ``SUPPORT_REMOVED``; si la caché de obsolescencia le da causas, ``STALE``; si
-    no, ``CURRENT``. ``conn`` es una conexión de lectura de quien llama (con su instantánea); sin
+    no, ``CURRENT``. Una entidad con su parámetro de versión ``discarded`` verdadero (la que se descartó **sin
+    calcular**, T25) es ``DISCARDED`` tenga o no operación. ``conn`` es una conexión de lectura de quien llama
+    (con su instantánea); sin
     ella, el registro abre una. :class:`~core.versions.model.VersionError`
     (``core.version_unknown``) si la versión no existe; ``DesignError`` ``des.entity_name_missing``
     si una entidad con parámetros no tiene nombre (un dato roto, que no se lista a medias)."""
@@ -724,10 +736,13 @@ def _registry(project: Any, conn: sqlite3.Connection, version: Version) -> Entit
     store = ParameterStore(project)
     entries: list[EntityEntry] = []
     for kind, (prefix, op_type) in _FAMILIES.items():
-        codes = {code for (key,) in conn.execute(
-            _PARAMETER_ROWS, (VERSION_SCOPE, version.uid, f"{prefix}.%")).fetchall()
-            if (code := _segment_of(str(key), prefix)) is not None
-            and code.startswith(f"{kind.prefix}-")}
+        keys = [str(key) for (key,) in conn.execute(
+            _PARAMETER_ROWS, (VERSION_SCOPE, version.uid, f"{prefix}.%")).fetchall()]
+        codes = {code for key in keys if (code := _segment_of(key, prefix)) is not None
+                 and code.startswith(f"{kind.prefix}-")}
+        flagged = {code for key in keys if key.endswith(_DISCARDED_SUFFIX)
+                   and (code := _segment_of(key, prefix)) is not None and code in codes
+                   and _is_discarded(store, conn, version, code)}
         operations = _operations(conn, version, prefix, op_type)
         links = _links(conn, operations.values())
 
@@ -737,13 +752,25 @@ def _registry(project: Any, conn: sqlite3.Connection, version: Version) -> Entit
                 raise DesignError("des.entity_name_missing", obj=f"Entidad «{code}»",
                                   field=entity_key(code, PlatformParam.NAME), value=name)
             uid = operations.get(code)
-            state, causes, retired = _deduce(conn, uid, links.get(uid, ()) if uid else ())
+            state, causes, retired = _deduce(conn, uid, links.get(uid, ()) if uid else (),
+                                             discarded=code in flagged)
             entries.append(EntityEntry(
                 EntityRecord(code, name, kind,
                              _text(store, conn, version, code, PlatformParam.START),
                              _text(store, conn, version, code, PlatformParam.SUPPORT), state),
                 uid, causes, retired))
     return EntityRegistry(version.code, tuple(entries))
+
+
+_DISCARDED_SUFFIX = f".{PlatformParam.DISCARDED.value}"
+"""El final de la clave del parámetro que descarta una entidad sin calcular (``des.platform.plt_001.discarded``)."""
+
+
+def _is_discarded(store: ParameterStore, conn: sqlite3.Connection, version: Version, code: str) -> bool:
+    """Si la entidad ``code`` está descartada por su parámetro de versión ``discarded`` (verdadero): lo que descarta
+    una entidad sin calcular (T25; RF-015-17). Sin fila, falso."""
+    row = store.get(entity_key(code, PlatformParam.DISCARDED), version=version.uid, conn=conn)
+    return row is not None and row.value is True
 
 
 def _operations(conn: sqlite3.Connection, version: Version, prefix: str, op_type: str
@@ -774,10 +801,13 @@ def _links(conn: sqlite3.Connection, operations: Iterable[str]
 
 
 def _deduce(conn: sqlite3.Connection, operation: str | None,
-            links: Iterable[tuple[str, str, str, str]]
+            links: Iterable[tuple[str, str, str, str]], *, discarded: bool = False
             ) -> tuple[EntityState, frozenset[Cause], tuple[str, ...]]:
     """El estado de una entidad con la operación ``operation`` (``None``: sin calcular), sus causas
-    de obsolescencia y los datos descartados que consumió (véase :func:`registry`)."""
+    de obsolescencia y los datos descartados que consumió (véase :func:`registry`). ``discarded``: su parámetro
+    ``discarded`` es verdadero (T25): está descartada, calculada o no."""
+    if discarded:
+        return EntityState.DISCARDED, frozenset(), ()
     if operation is None:
         return EntityState.UNCALCULATED, frozenset(), ()
     discarded = str(DatasetStatus.DISCARDED)
@@ -1131,10 +1161,49 @@ def _named_parameters(conn: sqlite3.Connection, listed: EntityRegistry, causes: 
     return found
 
 
+_SUPPORT_REMOVED_KIND: Mapping[EntityKind, str] = MappingProxyType({
+    EntityKind.PLATFORM: "des.support_removed_platform"})
+"""Por tipo de entidad, el mensaje de la causa de «apoyo retirado» (``se descartó la plataforma P1``)."""
+_DATASETS = "SELECT uid, name, operation_uid FROM gb_dataset WHERE uid IN ({marks})"
+
+
+def _support_removed(conn: sqlite3.Connection, listed: EntityRegistry, retired: Iterable[str], language: str
+                     ) -> str:
+    """La causa de «apoyo retirado» (RF-015-17; D-12): «Apoyo retirado: se descartó la plataforma P1», con el
+    **nombre** de cada entidad descartada en la que se apoyaba (o, de un dato que no es de una entidad, el del
+    dato), por orden y sin repetir."""
+    uids = sorted(set(retired))
+    by_operation = {item.operation_uid: item for item in listed if item.operation_uid is not None}
+    found = {str(uid): (str(name), str(writer)) for uid, name, writer in conn.execute(
+        _DATASETS.format(marks=", ".join("?" for _ in uids)), uids)}
+    parts: list[str] = []
+    for uid in uids:
+        name, writer = found.get(uid, (uid, ""))
+        owner = by_operation.get(writer)
+        text = (render(_SUPPORT_REMOVED_KIND[EntityKind(owner.record.kind)], language=language,
+                       name=owner.record.name) if owner is not None
+                else render("des.support_removed_dataset", language=language, name=name))
+        if text not in parts:
+            parts.append(text)
+    return render("des.support_removed", language=language, what="; ".join(parts))
+
+
+def _retired_of(conn: sqlite3.Connection, operation: str) -> tuple[str, ...]:
+    """Los datos descartados que consumió la operación ``operation`` como ``surface`` o ``supported_on`` (su
+    «apoyo retirado»); ninguno si no consumió ninguno o si todo lo que escribió está descartado (es un registro)."""
+    links = _links(conn, [operation])
+    return _deduce(conn, operation, links.get(operation, ()))[2]
+
+
 def _reason(conn: sqlite3.Connection, listed: EntityRegistry, operation: str, language: str) -> str | None:
-    """«Obsoleto: …» de la operación ``operation`` según la caché de la 008 (``item_text``: las causas raíz, por
-    clase y por nombre, con «mientras se calculaba») con el nombre de cada entidad cuyo parámetro cambió en
-    lugar de su código; ``None`` si está al día."""
+    """La causa de que la operación ``operation`` no esté al día: si le han **retirado el apoyo** (consumió, como
+    superficie de partida o de apoyo, el dato de una entidad descartada), «Apoyo retirado: se descartó la
+    plataforma P1»; si no, «Obsoleto: …» según la caché de la 008 (``item_text``: las causas raíz, por clase y por
+    nombre, con «mientras se calculaba») con el nombre de cada entidad cuyo parámetro cambió en lugar de su
+    código; ``None`` si está al día."""
+    retired = _retired_of(conn, operation)
+    if retired:
+        return _support_removed(conn, listed, retired, language)
     causes = item_causes(conn, STALE_OPERATION, operation)
     text = item_text(conn, STALE_OPERATION, operation, language=language)
     if text is None:
@@ -1150,15 +1219,20 @@ def stale_reason(project: Any, version: str, code: str, *, language: str = "es",
     en ``language`` (RF-015-16): el «Obsoleto: cambió …» de la 008 con las **causas raíz** de su operación (la
     cascada ya las propagó: la entidad de la que parte, la que cambió un parámetro, las máscaras…), cada
     parámetro de una entidad con el nombre de **la entidad** que cambió y lo que cambió («Obsoleto: cambió
-    Pendiente de la rasante de la plataforma · P1»). ``None`` si está al día o sin calcular. Lo que lee la barra
-    N (RF-015-25). Solo lee. :class:`ValueError` si la entidad no es de la versión;
+    Pendiente de la rasante de la plataforma · P1»); si le han retirado el apoyo (T25: consumió la superficie de
+    una entidad descartada), «Apoyo retirado: se descartó la plataforma P1». ``None`` si está al día o sin
+    calcular. Lo que lee la barra N (RF-015-25). Solo lee. :class:`ValueError` si la entidad no es de la versión;
     :class:`~core.versions.model.VersionError` si la versión no existe."""
     _language(language)
     with _snapshot(project, conn) as reading:
         found = _version(reading, version)
         listed = _registry(project, reading, found)
         entry = _entry(listed, code, found)
-        if entry.operation_uid is None or not entry.causes:
+        if entry.operation_uid is None:
+            return None
+        if entry.retired:  # «apoyo retirado» (RF-015-17): la causa es el descarte, no los datos que «cambiaron»
+            return _support_removed(reading, listed, entry.retired, language)
+        if not entry.causes:
             return None
         return _reason(reading, listed, entry.operation_uid, language)
 
@@ -1177,7 +1251,7 @@ def operation_reason(project: Any, version: str, operation_uid: str, *, language
             "WHERE o.uid = ? AND r.version_uid = ?", (operation_uid, found.uid)).fetchone()
         if row is None:
             raise ValueError(f"la operación «{operation_uid}» no es de la versión {found.code}")
-        if not item_causes(reading, STALE_OPERATION, operation_uid):
+        if not item_causes(reading, STALE_OPERATION, operation_uid) and not _retired_of(reading, operation_uid):
             return None
         return _reason(reading, _registry(project, reading, found), operation_uid, language)
 
@@ -1185,6 +1259,93 @@ def operation_reason(project: Any, version: str, operation_uid: str, *, language
 def _language(language: str) -> None:
     if language not in LANGUAGES:
         raise ValueError(f"el idioma «{language}» no es de Geoblender: {', '.join(LANGUAGES)}")
+
+
+# --- Lo que perdió su apoyo (spec 015, T25; RF-015-17; D-12; plan 015 §5.4 A7) -----------------------------
+
+_RETIRED = (
+    "SELECT o.uid, o.fid, o.op_type, o.settings, io.role, d.uid, d.name, d.operation_uid "
+    "FROM gb_operation_io AS io JOIN gb_operation AS o ON o.uid = io.operation_uid "
+    "JOIN gb_revision AS r ON r.uid = o.revision_uid JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "WHERE io.direction = 'in' AND io.item_kind = ? AND io.role IN (?, ?) AND d.status = ? "
+    "AND o.status = 'done' AND o.superseded_by IS NULL AND r.version_uid = ? ORDER BY o.fid, io.fid")
+
+
+@dataclass(frozen=True, slots=True)
+class RetiredEntity:
+    """Lo descartado en lo que se apoyaba una operación (:class:`RetiredSupport`): el dato descartado
+    (``dataset_uid`` y ``dataset``), la entidad a la que pertenecía (``code`` y su ``name``; sin código, un dato
+    que no es de una entidad, con el nombre del dato) y los papeles con que lo consumía la operación (``roles``:
+    ``supported_on``, si rellenaba sobre él o lo declaró la persona, y ``surface``, si partía de su superficie)."""
+
+    code: str | None
+    name: str
+    dataset_uid: str
+    dataset: str
+    roles: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RetiredSupport:
+    """Una operación vigente de la versión que **perdió su apoyo** (RF-015-17, D-12): consumió, como superficie de
+    partida o de apoyo, el dato de una entidad descartada. Es una entidad (``entity``: su código) o un diseño de la
+    013 o la 014 (sin código), con su ``name``, su tipo (``op_type``) y lo que perdió (``retired``, por orden de
+    registro). ``releasable``: si se puede **dar por buena** sin ese apoyo (A7, P-6): solo si no parte de la
+    superficie de ninguna entidad descartada; una que parte de ella se rehace sobre otra superficie o se descarta."""
+
+    operation_uid: str
+    name: str
+    op_type: str
+    entity: str | None
+    retired: tuple[RetiredEntity, ...]
+
+    @property
+    def releasable(self) -> bool:
+        return all("surface" not in item.roles for item in self.retired)
+
+    def text(self, language: str = "es") -> str:
+        """Su causa: «Apoyo retirado: se descartó la plataforma P1», en ``language``."""
+        what: list[str] = []
+        for item in self.retired:
+            text = (render("des.support_removed_dataset", language=language, name=item.name) if item.code is None
+                    else render(_SUPPORT_REMOVED_KIND[EntityKind.PLATFORM], language=language, name=item.name))
+            if text not in what:
+                what.append(text)
+        return render("des.support_removed", language=language, what="; ".join(what))
+
+
+def retired_supports(project: Any, version: str, *, conn: sqlite3.Connection | None = None
+                     ) -> tuple[RetiredSupport, ...]:
+    """**Lo que perdió su apoyo** en la versión ``version`` (uid o código; RF-015-17, D-12): las operaciones hechas y
+    sin sustituir que consumieron, como ``surface`` o ``supported_on``, el dato de una entidad descartada
+    —entidades y diseños de la 013 y la 014—, cada una con lo que perdió, por orden de registro. Una entidad que
+    está también descartada no cuenta (es un registro). Es lo que ofrece «Soltar el apoyo…» y lo que dice la
+    comprobación de :func:`~.entity_store.release_support`. Una consulta de entradas, sin leer ninguna superficie.
+    :class:`~core.versions.model.VersionError` si la versión no existe."""
+    with _snapshot(project, conn) as reading:
+        found = _version(reading, version)
+        listed = _registry(project, reading, found)
+        by_operation = {item.operation_uid: item for item in listed if item.operation_uid is not None}
+        rows: dict[str, tuple[int, str, str, dict[str, tuple[str, str, set[str]]]]] = {}
+        for uid, fid, op_type, settings, role, dataset, name, writer in reading.execute(
+                _RETIRED, (DATASET, *_SUPPORT_ROLES, str(DatasetStatus.DISCARDED), found.uid)):
+            row = rows.setdefault(str(uid), (int(fid), str(op_type), str(settings), {}))
+            row[3].setdefault(str(dataset), (str(name), str(writer), set()))[2].add(str(role))
+        result: list[RetiredSupport] = []
+        for uid, (_fid, op_type, settings, datasets) in sorted(rows.items(), key=lambda item: item[1][0]):
+            item = by_operation.get(uid)
+            if item is not None and item.record.state is EntityState.DISCARDED:
+                continue
+            lost: list[RetiredEntity] = []
+            for dataset, (name, writer, roles) in datasets.items():
+                owner = by_operation.get(writer)
+                lost.append(RetiredEntity(
+                    None if owner is None else owner.record.code, name if owner is None else owner.record.name,
+                    dataset, name, _ordered(roles)))
+            result.append(RetiredSupport(
+                uid, item.record.name if item is not None else _settings_name(op_type, settings), op_type,
+                None if item is None else item.record.code, tuple(lost)))
+        return tuple(result)
 
 
 # --- La zona que declara una entidad (spec 015, T16; RF-012-29, RF-015-10; A8; D-23) ---------------

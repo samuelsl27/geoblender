@@ -53,7 +53,7 @@ Y los siete de la cantera con dos superficies (spec 014, T02; plan 014 §5.2.2;
 El umbral «sin explotar» de RF-014-17 (0,3 m) no es un parámetro: es la definición de la spec.
 
 Y los de una entidad de diseño (spec 015, T02; plan 015 §5.2.2; ADR-0027 y ADR-0030): la
-definición de una **plataforma** son sus parámetros de versión, 19 **familias**
+definición de una **plataforma** son sus parámetros de versión, 20 **familias**
 ``des.platform.{e}.<valor>`` (:data:`ENTITY_FAMILIES`, aparte de :data:`FAMILIES`; sus plantillas por
 valor en :data:`PLATFORM_PARAMS`, sus rangos en :data:`ENTITY_RANGES`, su comprobación en
 :func:`check_entity_param`). ``{e}`` es el código de la entidad (``PLT-001``) como segmento de clave
@@ -63,7 +63,9 @@ inicial y la pendiente de la rasante (``start_level_m`` y ``gradient_pct``, como
 §14), la pendiente máxima (opcional, D-6), el ángulo de borde (D-7), el alcance (D-20), el
 resguardo (D-19), el motivo y las dependencias declaradas. Con valor, ADOPTADO «sin confirmar»: el
 modo «en corte» (D-5), el factor de malla 1,0 (D-7), la tolerancia de contrapendiente 0,1 m (D-8),
-la métrica exacta (D-22) y «no proteger» (D-4).
+la métrica exacta (D-22), «no proteger» (D-4) y «no descartada» (``discarded``, T25: RF-015-17, D-12; la
+persona lo pone en verdadero para descartar una entidad **sin calcular**, que no tiene datos que
+descartar: nada se borra, RF-009-12; una calculada se descarta con sus datos).
 
 El espesor mínimo del informe es el de la 012, ``res.verify.min_thickness_m``
 (:data:`VERIFY_MIN_THICKNESS`), que ``design`` lee **por su clave** con ``core.params`` sin
@@ -445,7 +447,7 @@ _ENTITY_SEGMENT = re.compile(r"[a-z]{2,5}_[0-9]{3,}")
 
 
 class PlatformParam(StrEnum):
-    """Los 19 valores de una plataforma: el último segmento de su clave
+    """Los 20 valores de una plataforma: el último segmento de su clave
     ``des.platform.{e}.<valor>`` (plan 015 §5.2.2), en su orden."""
 
     NAME = "name"
@@ -467,6 +469,7 @@ class PlatformParam(StrEnum):
     GUARD = "guard_m"
     REASON = "reason"
     SUPPORTS = "supports"
+    DISCARDED = "discarded"
 
 
 _OPTIONAL = frozenset({PlatformParam.SUPPORT, PlatformParam.MAX_SLOPE, PlatformParam.REASON,
@@ -526,6 +529,9 @@ _015_REASON = ("Spec 015, RF-015-10: el motivo generado («declarada por la plat
                "la persona puede editar en la entidad (Samuel, IMGA, 14/11/2026)")
 _015_SUPPORTS = ("Spec 015, RF-015-15: las entidades en las que la persona declara que se apoya; "
                  "vacío por defecto (Samuel, IMGA, 14/11/2026)")
+_015_DISCARDED = ("Spec 015, RF-015-17 y D-12: falso por defecto; la persona lo pone en verdadero para "
+                  "descartar una entidad sin calcular («registro, no usar»: nada se borra, RF-009-12); "
+                  "decidido por la sesión principal (15/11/2026), revisable")
 
 _MODE_CHOICES = ("cut", "cut_fill")
 _METRIC_CHOICES = ("exact", "chamfer5")
@@ -568,6 +574,8 @@ _ENTITY_SPECS: tuple[tuple[PlatformParam, str, ParamValue | None, tuple[str, ...
      "Reason of the declared constraint"),
     (PlatformParam.SUPPORTS, "text", None, (), ("RF-015-15",), _015_SUPPORTS,
      "Entities the platform is declared to rest on"),
+    (PlatformParam.DISCARDED, "bool", False, (), ("RF-015-17",), _015_DISCARDED,
+     "The entity is discarded"),
 )
 
 
@@ -591,14 +599,14 @@ def _entity_family(param: PlatformParam, value_type: str, default: ParamValue | 
 
 
 ENTITY_FAMILIES: tuple[ParamFamily, ...] = tuple(_entity_family(*spec) for spec in _ENTITY_SPECS)
-"""Las 19 familias de una plataforma (plan 015 §5.2.2), de versión, en su orden. Van aparte de
+"""Las 20 familias de una plataforma (plan 015 §5.2.2 y T25), de versión, en su orden. Van aparte de
 :data:`FAMILIES` (las de la 013): ``bl`` las registra junto a ellas cuando registre las operaciones
 de la 015 (T04)."""
 
 PLATFORM_PARAMS: Mapping[str, ParamDef] = MappingProxyType(
     {PlatformParam(family.pattern.rsplit(".", 1)[1]).value: family.template
      for family in ENTITY_FAMILIES})
-"""Las plantillas de las 19 familias por último segmento de la clave (solo lectura)."""
+"""Las plantillas de las 20 familias por último segmento de la clave (solo lectura)."""
 
 
 def entity_segment(code: str) -> str:

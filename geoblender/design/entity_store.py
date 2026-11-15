@@ -102,6 +102,17 @@ operación y una transacción propias: si una falla, queda dicho (:class:`ChainF
 con su causa. «Recalcular lo obsoleto» no la encadena: la declaración y las máscaras son operaciones de la 008 que
 ella recalcula por el grafo.
 
+**Descartar, «apoyo retirado» y soltar el apoyo** (T25; RF-015-17, RF-009-12; D-12; plan 015 §5.4 A7, P-6; ADR-0030 §4):
+:func:`discard_plan` es **la lista** que se enseña antes de descartar (una sola: lo que se apoya en la entidad y lo que
+parte de ella, con sus m³: ``entities.dependents``) y :func:`discard_entity` descarta —los datos que escribió pasan a
+``DISCARDED`` y **nada se borra**; una entidad sin calcular, con su parámetro ``discarded``—, con un evento y el
+motivo; lo que se le apoyaba queda en «apoyo retirado» y «Recalcular lo obsoleto» no lo recalcula
+(``core.recompute_no_successor``). Después la orden encadena :func:`after_entity_change` (la restricción de lo
+descartado sale de la declaración y de las máscaras). :func:`release_support` **da por bueno** lo que perdió el apoyo
+repitiéndolo con ``supersedes`` sin esa entrada, con el motivo y el decisor en sus ajustes
+(``provenance.SUPPORTS_RELEASED``) y un evento: su salida no cambia, así que lo que dependía de ella no se
+recalcula (RF-008-26).
+
 La capa solo da la **geometría** y los **valores iniciales**: se copian a parámetros de la entidad
 (con el origen «capa X, campo Y, entidad Z») y cambian después en ella; la capa no se modifica. Del
 terreno (RF-015-09) se comprueba la superficie de partida y la de apoyo, que son las que lee el
@@ -146,9 +157,11 @@ from ..core.constraints.model import ConstraintType
 from ..core.constraints.store import constraint_names
 from ..core.datasets import external as dataset_external
 from ..core.datasets import registry as dataset_registry
+from ..core.datasets.model import FINAL_STATUSES
 from ..core.errors import GeoblenderError
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterRecord, ParameterStore, definition
 from ..core.params.store import default_reason
+from ..core.project.events import EventKind, record_event
 from ..core.project.model import Progress
 from ..core.timeutil import format_utc
 from ..core.provenance.graph import DATASET
@@ -158,7 +171,7 @@ from ..core.versions import read as versions_read
 from ..core.versions.model import Version, VersionError
 from ..gis.masks import access
 from ..gis.masks import provenance as masks_provenance
-from ..gis.masks.store import StoredMasks
+from ..gis.masks.store import CANCELLED_REASON, StoredMasks
 from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S, Change
 from ..gis.raster import Raster
@@ -168,7 +181,7 @@ from . import entities, pipeline, provenance
 from .compose import admitted
 from .entities import EntityKind, EntityRecord, EntityRegistry, EntityState
 from .envelopes import reach_steps
-from .messages import DesignError
+from .messages import DesignError, render
 from .model import (
     BenchSense,
     LayerField,
@@ -230,6 +243,7 @@ from .store import (
     _store_steps,
     design_surface_of,
     number,
+    recompute_run,
     require_version,
 )
 from .surfaces import project_frame, read_surface
@@ -239,6 +253,9 @@ __all__ = [
     "ChainFailure",
     "ChainStage",
     "DeclaredSource",
+    "DiscardPlan",
+    "DiscardResult",
+    "Discarded",
     "EntityChain",
     "EntityFootprint",
     "EntityParamRow",
@@ -256,6 +273,9 @@ __all__ = [
     "declared_supports",
     "declared_sources",
     "detected_supports",
+    "discard_entity",
+    "discard_entity_steps",
+    "discard_plan",
     "entity_surfaces",
     "entity_values",
     "feature_index",
@@ -277,6 +297,7 @@ __all__ = [
     "read_geometry",
     "recompute_declaration",
     "recompute_platform",
+    "release_support",
     "run_declaration",
     "run_platform",
     "runs_mask",
@@ -600,6 +621,11 @@ def _default(param: PlatformParam) -> Any:
     return PLATFORM_PARAMS[param.value].default
 
 
+_NOT_CALCULATED = frozenset({PlatformParam.SUPPORTS, PlatformParam.DISCARDED})
+"""Los valores de la entidad que **no** entran en el cálculo ni se piden al calcularla: lo que declara la persona
+(``supports``, RF-015-15) y si se descartó sin calcular (``discarded``, RF-015-17); los resuelve quien los usa."""
+
+
 def entity_values(request: PlatformRequest, code: str, fid: int,
                   from_layer: Mapping[PlatformParam, float], *, line: bool) -> dict[str, Any]:
     """Los parámetros resueltos y comprobados de la entidad, por último segmento de su clave
@@ -632,7 +658,7 @@ def entity_values(request: PlatformRequest, code: str, fid: int,
     required = {PlatformParam.WIDTH: line, PlatformParam.GUARD: request.protect}
     values: dict[str, Any] = {}
     for param in PlatformParam:
-        if param is PlatformParam.SUPPORTS or (param is PlatformParam.WIDTH and not line):
+        if param in _NOT_CALCULATED or (param is PlatformParam.WIDTH and not line):
             continue
         checked = check_entity_param(request.name, code, param, asked[param], layer=request.layer,
                                      required=required.get(param))
@@ -784,7 +810,7 @@ _SUPPORT_CYCLE = "parte de la superficie de esta entidad, o de lo que ella deja:
 
 
 def _support_inputs(project: StoreProject, version: Version, request: PlatformRequest, code: str,
-                    registry: EntityRegistry, support_name: str | None
+                    registry: EntityRegistry, support_name: str | None, released: Collection[str] = ()
                     ) -> tuple[tuple[str, ...], tuple[Use, ...], bool]:
     """Las entradas ``supported_on`` que la plataforma ``code`` **ya** tiene al prepararla, sin esperar al
     resultado (RF-015-15; T23): los datos de las superficies en las que se apoya —la de apoyo de la petición
@@ -795,9 +821,11 @@ def _support_inputs(project: StoreProject, version: Version, request: PlatformRe
     parte de ella (un ciclo) se rechaza: ``des.entity_supports_unknown``, sin escribir nada. El tercer valor
     dice si la entidad tiene la fila ``supports`` en la versión: solo entonces la operación **lee** ese
     parámetro (``begin_operation`` crearía en el proyecto una fila «sin confirmar» por cada entidad que no
-    declara nada: trampa de la T04) y cambiar lo declarado la deja obsoleta (RF-015-16)."""
+    declara nada: trampa de la T04) y cambiar lo declarado la deja obsoleta (RF-015-16). Lo declarado en una
+    entidad que la persona **dio por buena sin su apoyo** (``released``: los códigos que sueltan los ajustes de la
+    operación que se sustituye y los de la nueva, T25; RF-015-17) se salta: ni se pide ni se rechaza (se descartó)."""
     row = _declared_row(project, version, code)
-    declared = _declared(row)
+    declared = tuple(target for target in _declared(row) if target not in released)
     with project.read() as conn:
         found = entity_surfaces(conn, registry)
     skip = _unsupportable(registry, code, ())
@@ -855,9 +883,23 @@ def _pending_zone(job: PlatformJob, footprint: Footprint, values: Mapping[str, A
     return footprint.cells | movable
 
 
+def _released_codes(project: StoreProject, supersedes: str | None,
+                    released: Iterable[provenance.ReleasedSupport]) -> frozenset[str]:
+    """Los códigos de las entidades que la operación que se prepara da por buenas sin su apoyo (RF-015-17, T25): las
+    que suelta ahora (``released``) y las que ya soltaba la operación que sustituye (``supersedes``; sus ajustes)."""
+    found = {item.entity for item in released}
+    if supersedes is not None:
+        with project.read() as conn:
+            row = conn.execute("SELECT settings FROM gb_operation WHERE uid = ?", (supersedes,)).fetchone()
+        if row is not None and row[0]:
+            found |= {item.entity for item in provenance.released_supports(json.loads(str(row[0])))}
+    return frozenset(found)
+
+
 def prepare_platform_units(project: StoreProject, request: PlatformRequest, version: Version,
                            masks: access.MaskSet, *, code: str | None = None,
-                           supersedes: str | None = None, insert_before: str | None = None
+                           supersedes: str | None = None, insert_before: str | None = None,
+                           released: Sequence[provenance.ReleasedSupport] = ()
                            ) -> Generator[None, None, PreparedPlatform]:
     """Las unidades (cada ``yield``, una; para componerlas con ``pace_units``) que preparan la
     plataforma ``request`` de la versión editable ``version`` con sus ``masks`` ya al día
@@ -868,7 +910,9 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
     sectores con la búsqueda pendiente y lo que anotará la operación. ``supersedes``: la operación hecha
     a la que sustituye (un recálculo). ``insert_before`` (spec 015, T12; RF-015-05): la entidad que
     hoy parte de la misma superficie y que pasará a partir de la de la nueva (una inserción: sin ello,
-    esa superficie ocupada se rechaza). Devuelve la :class:`PreparedPlatform`. **Nada se escribe**;
+    esa superficie ocupada se rechaza). ``released`` (T25; RF-015-17, A7): las entidades descartadas que la
+    nueva da por buenas sin su apoyo (las declaradas en ``supports`` no se piden ni se rechazan: se suman a las
+    que ya soltaba la operación que sustituye). Devuelve la :class:`PreparedPlatform`. **Nada se escribe**;
     los rechazos salen al avanzar, en este orden: versión (``VersionError``), nombre y partida
     (``des.entity_name_repeated``, ``des.entity_start_taken``, ``des.entity_chain_cycle``), capa y
     geometría (``des.entity_feature_unknown`` y ``_ambiguous``, ``des.quarry_layer_field``,
@@ -933,8 +977,9 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
         refuse_pending(item for item in sectors if item.code in touched)  # RF-015-07
     yield
     common = _common(project, version)
-    supported, footprints, reads = _support_inputs(project, version, request, chosen, registry,
-                                                   support_name)
+    supported, footprints, reads = _support_inputs(
+        project, version, request, chosen, registry, support_name,
+        _released_codes(project, supersedes, released))
     inputs = provenance.platform_inputs(request, start_name, masks.uses(), supported)
     inputs = (*inputs, *(use for use in footprints if use not in inputs))
     begun = _start(project, provenance.PLATFORM, request.name, version, masks,
@@ -1387,8 +1432,8 @@ class SupportSurvey:
 
 def survey_supports(project: StoreProject, version: Version, results: Sequence[np.ndarray], start: str, *,
                     own_code: str | None = None, written: Collection[str] = (),
-                    inputs: Iterable[tuple[str, str]] = (), start_values: np.ndarray | None = None
-                    ) -> SupportSurvey:
+                    inputs: Iterable[tuple[str, str]] = (), start_values: np.ndarray | None = None,
+                    released: Collection[str] = ()) -> SupportSurvey:
     """**Lo que apoya una operación sobre las entidades de su versión** (spec 015, T23; RF-015-15, D-11;
     plan 015 A6): la operación que deja las superficies ``results`` (``(filas, columnas)`` en la rejilla del
     proyecto) desde la de partida ``start`` (el nombre del dato; ``start_values`` si ya está leída) se apoya
@@ -1397,8 +1442,10 @@ def survey_supports(project: StoreProject, version: Version, results: Sequence[n
     con el volumen), y en las que ya lo eran (``inputs``: los pares ``(dato, papel)`` de lo que consume; las
     que declara la persona, la de apoyo de la petición y las que arrastra un recálculo) **aunque no apoye
     nada**. No se apoya en sí misma (``own_code``) ni en lo que parte de ella o de lo que escribe
-    (``written``: los datos de sus superficies; :func:`_unsupportable`). De varias superficies (las de una
-    cantera, las de un ajuste) cuenta la que más apoya (:func:`~.entities.strongest`).
+    (``written``: los datos de sus superficies; :func:`_unsupportable`) ni en las que da por buenas sin su
+    apoyo (``released``: los códigos que soltó la persona, T25; RF-015-17: el gancho no vuelve a registrarlas).
+    De varias superficies (las de una cantera, las de un ajuste) cuenta la que más apoya
+    (:func:`~.entities.strongest`).
 
     **Coste:** con la versión sin entidades, ni se llama (``design.store`` lo comprueba con una consulta).
     Si no hay celdas que suban más del espesor mínimo y nada declarado, solo se lee el registro; las huellas
@@ -1407,7 +1454,7 @@ def survey_supports(project: StoreProject, version: Version, results: Sequence[n
     held = {name for name, role in inputs if role == provenance.SUPPORTED_ON_ROLE}
     with _consistent(project) as conn:
         found = entities.registry(project, version.uid, conn=conn)
-        wanted = entity_surfaces(conn, found, skip=_unsupportable(found, own_code, set(written)))
+        wanted = entity_surfaces(conn, found, skip={*_unsupportable(found, own_code, set(written)), *released})
         thickness = _min_thickness(conn, project, version)
     if not wanted:
         return SupportSurvey()
@@ -1568,7 +1615,8 @@ def platform_parameters(project: StoreProject, version: Version, code: str) -> d
 def run_platform(project: StoreProject, request: PlatformRequest, *, version: str | None,
                  code: str, masks: access.MaskSet | None = None, supersedes: str | None = None,
                  confirmed: provenance.CounterslopeConfirmation | None = None,
-                 budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+                 budget_s: float = STEP_BUDGET_S, released: Sequence[provenance.ReleasedSupport] = ()
+                 ) -> tuple[OperationHandle, Iterator[Progress]]:
     """Calcula y registra ``request`` —una entidad que ya está en la versión ``version``: su ``code``— de
     **una vez**, sin pedir confirmación (spec 015, T14; RF-015-02, RF-015-16; el recálculo de lo obsoleto,
     :func:`~.store.recompute_run`; el «Crear» tras «Calcular» es :meth:`~.steps.Calculation.create`):
@@ -1589,25 +1637,31 @@ def run_platform(project: StoreProject, request: PlatformRequest, *, version: st
     operación que se sustituye, de sus ajustes: :func:`~.provenance.counterslope_confirmed`; T15), el
     recálculo la **reutiliza si la nueva no pasa de la confirmada más la tolerancia** (y la operación nueva
     la lleva en sus ajustes, la misma: quién la confirmó y cuándo); si la pasa, vuelve a pedirla
-    (``des.platform_counter_unconfirmed``) y la operación que sustituye sigue vigente."""
+    (``des.platform_counter_unconfirmed``) y la operación que sustituye sigue vigente.
+
+    ``released`` (T25; RF-015-17, A7, P-6): las entidades descartadas que la operación nueva **da por buenas sin su
+    apoyo**: no lleva sus entradas, lo declarado en ``supports`` sobre ellas no se rechaza y el motivo y el decisor
+    van en sus ajustes (``provenance.SUPPORTS_RELEASED``, acumulados con los de la que sustituye)."""
     found = require_version(project, version, provenance.PLATFORM)
     loaded = _loaded_masks(project, found, masks)
     prepared: PreparedPlatform = _result_of(prepare_platform_units(
-        project, request, found, loaded, code=code, supersedes=supersedes))
+        project, request, found, loaded, code=code, supersedes=supersedes, released=released))
     if confirmed is not None:  # se arrastra a la operación nueva (la misma decisión, no una nueva)
         prepared = replace(prepared, start=_with_confirmation(prepared.start, confirmed))
-    handle = prepared.start.begin(project)
+    handle = prepared.start.with_released(released).begin(project)
     return handle, _platform_run(project, handle, prepared, budget_s, confirmed)
 
 
-def recompute_platform(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
+def recompute_platform(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
+                       released: Sequence[provenance.ReleasedSupport] = ()
                        ) -> tuple[OperationHandle, Iterator[Progress]]:
     """Repite la operación ``des.platform`` de ``request`` (:func:`~.store.recompute_run`; «Recalcular lo
     obsoleto», RF-008-26; spec 015, T14; RF-015-02, RF-015-16): la plataforma de sus ajustes (el nombre, el
     código y los campos de su capa) con los **parámetros vigentes de su entidad en su versión**
     (:func:`platform_parameters`) y no los que leyó la operación que sustituye: una entidad se define por
-    sus parámetros (RF-015-01). Devuelve lo de :func:`run_platform`. ``ValueError`` si los ajustes no son los
-    de una plataforma o la petición no es de una versión."""
+    sus parámetros (RF-015-01). Devuelve lo de :func:`run_platform`; ``released``, también (T25: lo que da por
+    bueno sin su apoyo). ``ValueError`` si los ajustes no son los de una plataforma o la petición no es de una
+    versión."""
     project: StoreProject = request.project  # type: ignore[assignment]
     code = provenance.platform_code(request.settings)
     found = require_version(project, request.version, provenance.PLATFORM)
@@ -1616,7 +1670,7 @@ def recompute_platform(request: RecomputeRequest, *, budget_s: float = STEP_BUDG
     return run_platform(project, asked, version=found.uid, code=code,
                         supersedes=request.operation_uid,
                         confirmed=provenance.counterslope_confirmed(request.settings),
-                        budget_s=budget_s)
+                        budget_s=budget_s, released=released)
 
 
 def _check_recorded(handle: OperationHandle, prepared: PreparedPlatform) -> None:
@@ -2385,3 +2439,345 @@ def after_entity_change(project: StoreProject, version: Version | str | None, *,
     yield Progress(_CHAIN_PHASE, _CHAIN_TOTAL, _CHAIN_TOTAL,
                    "Restricciones declaradas y máscaras al día" if failure is None
                    else "Restricciones declaradas y máscaras: no se pudo terminar", result=chain)
+
+
+# --- Descartar, «apoyo retirado» y soltar el apoyo (spec 015, T25; RF-015-17, RF-009-12; D-12; A7, P-6) --------
+
+_OUTPUTS_OF = (
+    "SELECT d.uid, d.name, d.status FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "WHERE io.operation_uid = ? AND io.direction = 'out' AND io.item_kind = ? ORDER BY io.fid")
+_FINAL = frozenset(str(status) for status in FINAL_STATUSES)
+_DISCARD_SOURCE = "orden «Descartar…», entidad «{name}»"
+"""El origen del parámetro ``discarded`` de una entidad sin calcular (RF-008-01): quién y desde dónde."""
+_OPERATION_ROW = (
+    "SELECT o.uid, o.op_type, o.settings FROM gb_operation AS o JOIN gb_revision AS r ON r.uid = o.revision_uid "
+    "WHERE r.version_uid = ? AND o.status = 'done' AND o.superseded_by IS NULL ORDER BY o.fid")
+
+
+def _version_in(conn: sqlite3.Connection, version: Version | str) -> Version:
+    """La versión ``version`` (``Version``, uid o código) leída con ``conn``; ``VersionError``
+    (``core.version_unknown``) si no existe."""
+    wanted = version.uid if isinstance(version, Version) else version
+    found = versions_read.version(conn, wanted)
+    if found is None:
+        raise VersionError("core.version_unknown", field="versión", value=wanted, version=wanted)
+    return found
+
+
+def _decider(person: str | None, project: StoreProject) -> str:
+    """Quien decide: ``person`` o, sin él, quien tiene abierto el proyecto."""
+    return (person or "").strip() or project.session.user_host
+
+
+def _need_reason(reason: object, code: str, entity: str) -> str:
+    """El motivo de una decisión (``reason``, sin los espacios de los extremos): ``DesignError`` ``code`` si falta
+    (una decisión sin motivo no se registra). :class:`TypeError` si no es un texto."""
+    if not isinstance(reason, str):
+        raise TypeError(f"el motivo es un texto, no {reason!r}")
+    if not reason.strip():
+        raise DesignError(code, obj=f"Entidad «{entity}»", field="motivo", value=reason, entity=entity)
+    return reason.strip()
+
+
+@dataclass(frozen=True, slots=True)
+class DiscardPlan:
+    """**Lo que se enseña antes de descartar** una entidad (RF-015-17): su ``code``, su ``name``, su tipo (``kind``),
+    su estado (``state``), si está calculada (``calculated``: si no, no tiene datos que descartar) y **una sola
+    lista** de lo que se le apoya y de lo que parte de ella (``dependents``: nombre, tipo y volumen apoyado en m³ de
+    cada uno, la de ``entities.dependents``)."""
+
+    code: str
+    name: str
+    kind: EntityKind
+    state: EntityState
+    calculated: bool
+    dependents: tuple[entities.Dependent, ...]
+
+    def lines(self, language: str = "es") -> tuple[str, ...]:
+        """La lista, una línea por fila, en ``language`` («Sobre la balsa (Plataforma): 8 000 m³ apoyados»)."""
+        return tuple(row.text(language) for row in self.dependents)
+
+
+@dataclass(frozen=True, slots=True)
+class Discarded:
+    """Lo que hizo :func:`discard_entity`: la entidad (``code``, ``name``) de la versión ``version`` (su código), la
+    operación que la había calculado (``operation_uid``; ``None`` si no estaba calculada), los datos que pasaron a
+    ``DISCARDED`` (``datasets``, sus nombres; ninguno si no estaba calculada), la lista de lo que se le apoyaba
+    (``dependents``: la que se enseñó antes) y el motivo y el decisor."""
+
+    code: str
+    name: str
+    version: str
+    operation_uid: str | None
+    datasets: tuple[str, ...]
+    dependents: tuple[entities.Dependent, ...]
+    reason: str
+    decided_by: str
+
+
+def discard_plan(project: StoreProject, version: Version | str, code: str) -> DiscardPlan:
+    """**La lista de antes de descartar** la entidad ``code`` (código o nombre) de la versión ``version`` (``Version``,
+    uid o código; RF-015-17): **una sola lista** de lo que se le apoya y de lo que parte de ella —nombre, tipo y
+    volumen apoyado en m³, entidades y diseños de la 013 y la 014: ``entities.dependents``— y su estado. Solo lee
+    (no pide una versión editable). :class:`ValueError` si la entidad no es de la versión;
+    ``VersionError`` si la versión no existe."""
+    with _consistent(project) as conn:
+        found = _version_in(conn, version)
+        entry = entities.registry(project, found.uid, conn=conn).get(code)
+        if entry is None:
+            raise ValueError(f"la entidad «{code}» no es de la versión {found.code}")
+        record = entry.record
+        listed = entities.dependents(project, found.uid, record.code, conn=conn)
+        return DiscardPlan(record.code, record.name, EntityKind(record.kind), EntityState(record.state),
+                           entry.operation_uid is not None, listed)
+
+
+def _set_discarded_flag(project: StoreProject, conn: sqlite3.Connection, found: Version, code: str, name: str,
+                        who: str, why: str) -> None:
+    """Descarta una entidad **sin calcular** (T25; RF-015-17; D-12): su parámetro de versión ``discarded`` en
+    verdadero, ADOPTADO, de la persona, con su motivo y su historial."""
+    store = ParameterStore(project)
+    key = entity_key(code, PlatformParam.DISCARDED)
+    if store.get(key, version=found.uid, conn=conn) is None:
+        store.create(conn, key, True, kind="ADOPTADO", source=_DISCARD_SOURCE.format(name=name),
+                     source_kind="person", decided_by=who, reason=why, version=found.uid)
+    else:
+        store.change(conn, key, value=True, source=_DISCARD_SOURCE.format(name=name), source_kind="person",
+                     decided_by=who, reason=why, version=found.uid)
+
+
+def discard_entity(project: StoreProject, version: Version | str, code: str, *, reason: str,
+                   decided_by: str | None = None) -> Discarded:
+    """**Descarta** la entidad ``code`` (código o nombre) de la versión editable ``version`` (``Version``, uid o
+    código; RF-015-17, D-12; HU-015-2) **sin borrar nada** (RF-009-12): los datos que escribió su operación
+    vigente (la superficie, la tabla y el informe) pasan a ``DISCARDED`` (``core.datasets.registry.set_status``) o,
+    si no está calculada (no tiene datos), su parámetro de versión ``des.platform.{e}.discarded`` pasa a verdadero,
+    con su historial. En **una** transacción, con un evento ``entity_discarded`` (``reason``, ``decided_by``, los
+    datos y la lista de lo que se le apoyaba, con sus m³). Lo que se le apoyaba queda en «apoyo retirado» (el grafo
+    de la 008 lo deduce: :func:`~.entities.retired_supports`) y «Recalcular lo obsoleto» no lo recalcula hasta que la
+    persona lo rehaga sobre otra superficie, lo descarte o lo dé por bueno con un motivo (:func:`release_support`).
+    **No encadena** lo que sigue (:func:`after_entity_change`: la restricción que declaraba sale de la declaración y de
+    las máscaras): lo hace la orden, con su avance y Esc. ``decided_by``: por defecto, quien tiene abierto el proyecto.
+
+    Rechazos, sin escribir nada: los de :func:`~.store.require_version` (``VersionError``, RF-009-21: la versión
+    no existe o no es editable), ``des.entity_discard_reason`` (sin motivo), ``des.entity_already_discarded``;
+    :class:`ValueError` si la entidad no es de la versión."""
+    wanted = version.uid if isinstance(version, Version) else version
+    found = require_version(project, wanted, provenance.PLATFORM)
+    who = _decider(decided_by, project)
+    with project.write_transaction() as conn:
+        entry = entities.registry(project, found.uid, conn=conn).get(code)
+        if entry is None:
+            raise ValueError(f"la entidad «{code}» no es de la versión {found.code}")
+        record = entry.record
+        why = _need_reason(reason, "des.entity_discard_reason", record.name)
+        if record.state is EntityState.DISCARDED:
+            raise DesignError("des.entity_already_discarded", obj=f"Entidad «{record.name}»", field="estado",
+                              value=str(record.state), entity=record.name, version=found.code)
+        listed = entities.dependents(project, found.uid, record.code, conn=conn)
+        datasets: list[str] = []
+        if entry.operation_uid is None:  # sin calcular: no hay datos que descartar
+            _set_discarded_flag(project, conn, found, record.code, record.name, who, why)
+        else:
+            for uid, name, status in conn.execute(_OUTPUTS_OF, (entry.operation_uid, DATASET)).fetchall():
+                if str(status) not in _FINAL:
+                    dataset_registry.set_status(conn, project, str(uid), "discarded")
+                    datasets.append(str(name))
+        data: dict[str, Any] = {
+            "version": found.code, "entity": record.code, "name": record.name, "reason": why,
+            "decided_by": who, "operation": entry.operation_uid, "datasets": datasets,
+            "dependents": [{"operation": row.operation_uid, "name": row.name, "type": row.op_type,
+                            "state": str(row.state), "volume_m3": row.volume_m3} for row in listed]}
+        record_event(conn, EventKind.ENTITY_DISCARDED,
+                     render("des.event_entity_discarded", language="es", name=record.name, code=record.code,
+                            version=found.code, reason=why),
+                     session=project.session, at=format_utc(project.clock.now()), entity_kind="entity",
+                     entity_uid=record.code, data=data)
+    return Discarded(record.code, record.name, found.code, entry.operation_uid, tuple(datasets), listed, why, who)
+
+
+@dataclass(frozen=True, slots=True)
+class DiscardResult:
+    """El resultado de :func:`discard_entity_steps`: lo que se descartó (``discarded``) y lo que siguió
+    (``chain``, el :class:`EntityChain` de :func:`after_entity_change`: la declaración, las máscaras y lo que quedó
+    obsoleto)."""
+
+    discarded: Discarded
+    chain: EntityChain
+
+
+def discard_entity_steps(project: StoreProject, version: Version | str, code: str, *, reason: str,
+                         decided_by: str | None = None, budget_s: float = STEP_BUDGET_S
+                         ) -> Generator[Progress, None, None]:
+    """**Descartar y lo que sigue, de una vez** (spec 015, T25; RF-015-17; plan 015 §5.3.2): descarta la entidad
+    (:func:`discard_entity`, **a partir del segundo paso**: el primero solo dice que empieza y antes no se escribe
+    nada) y encadena
+    :func:`after_entity_change` por pasos de ``budget_s`` como mucho —su restricción sale de la declaración y de las
+    máscaras—; el último ``Progress`` lleva el :class:`DiscardResult`. Cerrar el generador después de descartar
+    (Esc) deja la entidad **descartada** (ya está: nada se deshace) y lo que sigue sin hacer; las máscaras quedan
+    obsoletas con su causa hasta que se compilen de nuevo. Los rechazos son los de :func:`discard_entity`."""
+    yield Progress(_CHAIN_PHASE, 0, _CHAIN_TOTAL, "Descartando la entidad…")
+    found = discard_entity(project, version, code, reason=reason, decided_by=decided_by)
+    chain: EntityChain | None = None
+    for step in after_entity_change(project, found.version, budget_s=budget_s):
+        if isinstance(step.result, EntityChain):
+            chain = step.result
+            continue
+        yield step
+    assert chain is not None  # after_entity_change acaba siempre con su resultado
+    yield Progress(_CHAIN_PHASE, _CHAIN_TOTAL, _CHAIN_TOTAL, "Entidad descartada", result=DiscardResult(found, chain))
+
+
+def _operation_to_release(conn: sqlite3.Connection, listed: EntityRegistry, found: Version, target: str
+                          ) -> tuple[str, str, dict[str, Any]]:
+    """La operación vigente de la versión ``found`` que se da por buena: la de la entidad ``target`` (código o
+    nombre) o la operación de uid ``target`` o de nombre ``target`` (un diseño de la 013 o la 014); como ``(uid,
+    tipo, ajustes)``. :class:`ValueError` si no hay ninguna, es ambigua o es una entidad sin calcular."""
+    entry = listed.get(target)
+    if entry is not None:
+        if entry.operation_uid is None:
+            raise ValueError(f"la entidad «{target}» no está calculada: no hay operación que dar por buena")
+        wanted = entry.operation_uid
+        rows = [row for row in conn.execute(_OPERATION_ROW, (found.uid,)).fetchall() if row[0] == wanted]
+    else:
+        rows = [row for row in conn.execute(_OPERATION_ROW, (found.uid,)).fetchall()
+                if row[0] == target or _name_of(str(row[1]), row[2]) == target]
+    if len(rows) != 1:
+        raise ValueError(f"«{target}» no es una operación vigente de {found.code}" if not rows else
+                         f"«{target}» es el nombre de {len(rows)} operaciones vigentes de {found.code}: "
+                         "indique su uid")
+    ((uid, op_type, settings),) = rows
+    return str(uid), str(op_type), dict(json.loads(str(settings))) if settings else {}
+
+
+def release_support(project: StoreProject, version: Version | str, target: str, entity_code: str | None = None,
+                    *, reason: str, decided_by: str | None = None, budget_s: float = STEP_BUDGET_S
+                    ) -> tuple[OperationHandle, Iterator[Progress]]:
+    """**Da por bueno** lo que perdió su apoyo (RF-015-17, RF-008-27; plan 015 §5.4 A7, P-6): repite la operación
+    ``target`` —el código o el nombre de una entidad, o el uid o el nombre de un diseño de la 013 o la 014— de la
+    versión editable ``version`` **con ``supersedes``, sin esa entrada**, sin pasar por el plan de «Recalcular lo
+    obsoleto», que la rehúsa (``core.recompute_no_successor``): ``design.store.recompute_run(released=…)`` (la
+    plataforma, con los parámetros vigentes de su entidad). Lo que deja de apoyar es el de ``entity_code`` (una
+    entidad descartada en la que se apoyaba) o, sin él, **todo** lo que perdió: no puede conservar un apoyo
+    descartado, así que soltar uno y dejar otro se rechaza (``des.entity_release_others``). El motivo y el
+    decisor (``decided_by``; por defecto, quien tiene abierto el proyecto) quedan en sus **ajustes**
+    (``provenance.SUPPORTS_RELEASED``, acumulados) y en un **evento** ``support_released`` al terminar. Su salida no
+    cambia (los mismos hash) y lo que dependía de ella **no se recalcula** (RF-008-26).
+
+    Devuelve la ``OperationHandle`` «en curso» de la operación nueva y sus pasos (como ``recompute_run``), que
+    avanza quien la llama; el último lleva el ``Stored``. Rechazos al llamar, **sin escribir nada**: los de
+    :func:`~.store.require_version`; ``des.entity_release_reason`` (sin motivo), ``des.entity_release_unknown`` y
+    ``des.entity_release_nothing`` (no tiene retirado ese apoyo), ``des.entity_release_start`` (parte de la superficie
+    de la entidad descartada: no se puede dar por buena; se rehace sobre otra o se descarta),
+    ``des.entity_release_support_param`` (la tiene como superficie de apoyo) y ``des.entity_release_others``;
+    :class:`ValueError` si ``target`` o ``entity_code`` no son de la versión."""
+    wanted = version.uid if isinstance(version, Version) else version
+    found = require_version(project, wanted, provenance.PLATFORM)
+    with _consistent(project) as conn:
+        listed = entities.registry(project, found.uid, conn=conn)
+        uid, op_type, settings = _operation_to_release(conn, listed, found, target)
+        chosen_entry = None
+        if entity_code is not None:
+            chosen_entry = listed.get(entity_code)
+            if chosen_entry is None:
+                raise ValueError(f"la entidad «{entity_code}» no es de la versión {found.code}")
+        lost = {item.operation_uid: item for item in entities.retired_supports(project, found.uid, conn=conn)}
+    name = _name_of(op_type, json.dumps(settings))
+    why = _need_reason(reason, "des.entity_release_reason", name)
+    who = _decider(decided_by, project)
+    obj = f"Operación «{name}»"
+    retired = lost.get(uid)
+    if chosen_entry is None:
+        if retired is None:
+            raise DesignError("des.entity_release_nothing", obj=obj, field="entidad", value=None, entity=name,
+                              version=found.code)
+        picked = list(retired.retired)
+    else:
+        picked = [] if retired is None else [item for item in retired.retired if item.code == chosen_entry.record.code]
+        if not picked:
+            raise DesignError("des.entity_release_unknown", obj=obj, field="entidad", value=entity_code,
+                              entity=name, target=chosen_entry.record.name, version=found.code)
+        others = [item for item in retired.retired if item not in picked] if retired is not None else []
+        if others:
+            raise DesignError("des.entity_release_others", obj=obj, field="entidad", value=entity_code,
+                              entity=name, others=", ".join(f"«{item.name}»" for item in others))
+    for item in picked:
+        if "surface" in item.roles:
+            raise DesignError("des.entity_release_start", obj=obj, field="superficie de partida",
+                              value=item.name, entity=name, target=item.name)
+    if op_type == provenance.PLATFORM:
+        code = provenance.platform_code(settings)
+        support = platform_parameters(project, found, code).get(PlatformParam.SUPPORT.value)
+        for item in picked:
+            if item.code is not None and entities.ref_code(support if isinstance(support, str) else None) == item.code:
+                raise DesignError("des.entity_release_support_param", obj=obj, field="superficie de apoyo",
+                                  value=support, entity=name, target=item.name)
+    stamp = format_utc(project.clock.now())
+    released = tuple(provenance.ReleasedSupport(str(item.code), why, who, stamp)
+                     for item in picked if item.code is not None)
+    request = RecomputeRequest(project, uid, op_type, settings, (), (), version=found.uid)  # type: ignore[arg-type]
+    handle, work = recompute_run(request, budget_s=budget_s, released=released)
+    return handle, _ReleaseSteps(project, found, handle, work, name, uid, picked, released)
+
+
+class _ReleaseSteps:
+    """Los pasos de ``work`` (la operación repetida sin su apoyo) y, **cuando está completa** (el último trae su
+    resultado), el evento ``support_released`` en su propia transacción. Cerrarlos antes (Esc, desactivar
+    Geoblender) no deja evento ni operación: los pasos empezados ya cancelan la suya; si **no empezaron**, la operación
+    que abrió ``recompute_run`` queda «cancelada» aquí (como las de la cola de ``des``)."""
+
+    def __init__(self, project: StoreProject, found: Version, handle: OperationHandle, work: Iterator[Progress],
+                 name: str, superseded: str, picked: Sequence[entities.RetiredEntity],
+                 released: Sequence[provenance.ReleasedSupport]) -> None:
+        self._project, self._found, self._handle, self._work = project, found, handle, work
+        self._name, self._superseded, self._picked, self._released = name, superseded, picked, released
+        self._started = self._finished = False
+
+    def __iter__(self) -> _ReleaseSteps:
+        return self
+
+    def __next__(self) -> Progress:
+        if self._finished:
+            raise StopIteration
+        self._started = True
+        try:
+            step = next(self._work)
+        except BaseException:  # los pasos ya dejan la operación fallida o cancelada
+            self._finished = True
+            raise
+        if step.result is not None:
+            self._finished = True
+            _record_release(self._project, self._found, self._handle.uid, self._name, self._superseded,
+                            self._picked, self._released)
+        return step
+
+    def close(self) -> None:
+        """Cierra los pasos: si no empezaron, la operación nueva queda «cancelada»; si no, la cancelan ellos."""
+        if not self._started and not self._finished:
+            try:
+                self._handle.cancel(CANCELLED_REASON)
+            except (GeoblenderError, sqlite3.Error, OSError):  # ya no estaba en curso: nada que dejar
+                pass
+        self._finished = True
+        close = getattr(self._work, "close", None)
+        if callable(close):
+            close()
+
+
+def _record_release(project: StoreProject, found: Version, operation: str, name: str, superseded: str,
+                    picked: Sequence[entities.RetiredEntity], released: Sequence[provenance.ReleasedSupport]
+                    ) -> None:
+    """El evento ``support_released`` de la operación ``operation`` (la que da por bueno el apoyo): quién, por qué,
+    de qué entidades y qué operación sustituye."""
+    first = released[0]
+    shown = ", ".join(f"«{item.name}»" for item in picked)
+    data: dict[str, Any] = {
+        "version": found.code, "name": name, "operation": operation, "superseded": superseded,
+        "entities": [item.entity for item in released], "names": [item.name for item in picked],
+        "reason": first.reason, "decided_by": first.by}
+    with project.write_transaction() as conn:
+        record_event(conn, EventKind.SUPPORT_RELEASED,
+                     render("des.event_support_released", language="es", name=name, version=found.code,
+                            entities=shown, reason=first.reason),
+                     session=project.session, at=format_utc(project.clock.now()), entity_kind="operation",
+                     entity_uid=operation, data=data)

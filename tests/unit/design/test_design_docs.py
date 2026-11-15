@@ -198,6 +198,11 @@ PENDING_015_API = frozenset({
     "declaration_diverges",
     # T24: la lista de dependencias de una entidad y la causa de lo obsoleto (design.entities).
     "Dependent", "dependencies_of", "dependents", "kind_label", "operation_reason", "stale_reason",
+    # T25: descartar una entidad, «apoyo retirado» y soltar el apoyo (design.entities, design.entity_store y
+    # design.provenance: lo que se da por bueno sin su apoyo, en los ajustes de la operación).
+    "RetiredEntity", "RetiredSupport", "retired_supports", "DiscardPlan", "DiscardResult", "Discarded",
+    "discard_entity", "discard_entity_steps", "discard_plan", "release_support", "ReleasedSupport",
+    "merge_released", "released_supports",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({
@@ -207,7 +212,8 @@ PENDING_015_MODULES = frozenset({
     # contorno de su huella para la restricción declarada de la 012); T23: Support, detect_supports,
     # strongest, runs_cells y code_order (lo que se apoya en una entidad: A6, RF-015-15); T24:
     # Dependent, dependents, dependencies_of, stale_reason, operation_reason y kind_label (la lista de
-    # dependencias y la causa de lo obsoleto: RF-015-15, RF-015-16)
+    # dependencias y la causa de lo obsoleto: RF-015-15, RF-015-16); T25: retired_supports, RetiredSupport y
+    # RetiredEntity (lo que perdió su apoyo: RF-015-17)
     "design.platform",  # T06: PlatformJob, PlatformGeometry, Footprint, platform_footprint,
     # axis_of_polygon y work_window (la huella y la rasante de la plataforma); T07: Applied,
     # OffLevel, OffLevelCause, apply_platform y apply_platform_steps (aplicarla); T08: Edge,
@@ -226,7 +232,9 @@ PENDING_015_MODULES = frozenset({
     # declared_sources, declared_rows_steps, DeclaredSource, PreparedDeclaration, EntityFootprint y
     # read_entity_footprint (la declaración de restricciones de las entidades de una versión); T23:
     # survey_supports, SupportSurvey, add_supports, entity_surfaces, EntitySurface y declared_supports
-    # (lo que apoya una operación sobre las entidades de su versión, que añade ``DesignWriter.commit``)
+    # (lo que apoya una operación sobre las entidades de su versión, que añade ``DesignWriter.commit``); T25:
+    # discard_plan, DiscardPlan, discard_entity, discard_entity_steps, DiscardResult, Discarded y release_support
+    # (descartar una entidad, «apoyo retirado» y soltar el apoyo: RF-015-17)
 })
 
 

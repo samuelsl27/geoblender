@@ -576,3 +576,27 @@ description.es = "Declara de nuevo los sectores desde la capa de polígonos de l
 entry = "013"
 action = "A"
 frequency = 2
+
+# Entidades de diseño (spec 015, T25; RF-015-17): descartar una entidad y dar por bueno lo que perdió su apoyo.
+# Internas hasta que la T31 las ponga en el menú «Entidad ▾» (con «Descartar…» y la lista de lo que se apoya).
+[[command]]
+key = "geoblender.des_entity_discard"
+kind = "internal"
+label.en = "Discard…"
+label.es = "Descartar…"
+description.en = "Discard a design entity: it stays in the project as a record, nothing is deleted, and what rests on it is left as «support removed»"
+description.es = "Descarta una entidad de diseño: queda en el proyecto como registro, no se borra nada y lo que se apoya en ella queda como «apoyo retirado»"
+entry = "R-36"
+action = "D"
+frequency = 1
+
+[[command]]
+key = "geoblender.des_entity_release_support"
+kind = "internal"
+label.en = "Release the support…"
+label.es = "Soltar el apoyo…"
+description.en = "Give as good what lost its support because an entity was discarded: it is repeated without that support, with a reason that is recorded"
+description.es = "Da por bueno lo que perdió su apoyo porque se descartó una entidad: se repite sin ese apoyo, con un motivo que queda registrado"
+entry = "R-36"
+action = "D"
+frequency = 1

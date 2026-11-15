@@ -98,7 +98,11 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   ``des.supported_m3`` con su ámbito. Una versión **sin entidades** no lo paga (una consulta,
   :func:`_has_entities`). Una operación hecha es inmutable: la de un recálculo empieza antes de calcular y
   lleva lo que apoyaba la sustituida (:meth:`OperationStart.carried`) y lo vuelve a medir sobre el resultado
-  nuevo; una entidad que antes no estaba no se detecta hasta que se crea de nuevo.
+  nuevo; una entidad que antes no estaba no se detecta hasta que se crea de nuevo. **Lo que se da por bueno sin su
+  apoyo** (T25; RF-015-17, A7, P-6): una operación que repite a otra puede **soltar** una entidad descartada
+  (``OperationStart.with_released``; ``recompute_run(released=…)``): su motivo y su decisor van en sus ajustes
+  (``provenance.SUPPORTS_RELEASED``, acumulados: :meth:`OperationStart.released_of`), no lleva sus entradas
+  (:meth:`OperationStart.carried`) y el gancho no vuelve a registrarla.
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -579,21 +583,56 @@ class OperationStart:
             return
         _require_current_masks(project, self.version_uid)
 
+    def with_released(self, released: Iterable[provenance.ReleasedSupport]) -> OperationStart:
+        """``self`` con lo que ``released`` da por bueno sin su apoyo (RF-015-17, A7, P-6; spec 015, T25) sumado, en
+        sus ajustes (:data:`~.provenance.SUPPORTS_RELEASED`), a lo que ya daba (sin repetir la entidad). Sin nada
+        nuevo, ``self``. Lo que dio por bueno la operación a la que sustituye se suma al empezar
+        (:meth:`released_of`)."""
+        own = provenance.released_supports(self.settings)
+        merged = provenance.merge_released(own, released)
+        if merged == own:
+            return self
+        return replace(self, settings={**self.settings,
+                                       provenance.SUPPORTS_RELEASED: [item.settings() for item in merged]})
+
+    def released_of(self, conn: sqlite3.Connection) -> tuple[provenance.ReleasedSupport, ...]:
+        """Lo que da por bueno sin su apoyo la operación que empezará (RF-015-17, T25): lo de la operación a la que
+        sustituye (``supersedes``: sus ajustes, que ``conn`` lee) y, después, lo suyo (:meth:`with_released`), sin
+        repetir la entidad. La lista es **acumulada**: un recálculo no la pierde."""
+        own = provenance.released_supports(self.settings)
+        if self.supersedes is None:
+            return own
+        row = conn.execute("SELECT settings FROM gb_operation WHERE uid = ?", (self.supersedes,)).fetchone()
+        before = () if row is None or not row[0] else provenance.released_supports(json.loads(str(row[0])))
+        return provenance.merge_released(before, own)
+
+    def _released_settings(self, conn: sqlite3.Connection) -> dict[str, Any]:
+        """Los ajustes con que empieza la operación: los suyos y, si da algo por bueno, su lista acumulada."""
+        found = dict(self.settings)
+        released = self.released_of(conn)
+        if released:
+            found[provenance.SUPPORTS_RELEASED] = [item.settings() for item in released]
+        return found
+
     def carried(self, project: StoreProject) -> OperationStart:
         """``self`` con las entradas de lo que **apoyaba** la operación a la que sustituye (``supersedes``;
         spec 015, T23; ADR-0030 §4): su superficie en cada entidad (``supported_on``) y la tabla de su huella
         (``support_footprint``) que sigan vivas y que aún no lleve, con el hash que tienen ahora. Una operación
         hecha es inmutable y la de un recálculo empieza antes de calcular: lo que apoyaba se arrastra y se
         vuelve a medir sobre el resultado nuevo (:meth:`DesignWriter.commit`). Sin ``supersedes``, o sin nada
-        que arrastrar, ``self``: una consulta."""
+        que arrastrar, ``self``: una consulta. **No** arrastra lo de una entidad que la operación da por buena sin
+        su apoyo (T25; :meth:`released_of`)."""
         if self.supersedes is None:
             return self
         with project.read() as conn:
             version = versions_store.require_editable(conn, self.version_uid)
             have = {(use.item, str(use.role)) for use in self.inputs}
+            released = {item.entity for item in self.released_of(conn)}
             found: list[Use] = []
-            for name, role in conn.execute(_CARRIED, (self.supersedes, provenance.SUPPORTED_ON_ROLE,
-                                                      provenance.SUPPORT_FOOTPRINT_ROLE)).fetchall():
+            for name, role, writer in conn.execute(_CARRIED, (self.supersedes, provenance.SUPPORTED_ON_ROLE,
+                                                              provenance.SUPPORT_FOOTPRINT_ROLE)).fetchall():
+                if released and _entity_of(writer) in released:
+                    continue
                 record = dataset_registry.get(conn, str(name), version_uid=version.uid)
                 if record is not None and record.live and (str(name), str(role)) not in have:
                     found.append(Use(str(name), str(role)))
@@ -621,6 +660,7 @@ class OperationStart:
             "executor": executor, "supersedes": self.supersedes, "version": self.version_uid}
         if conn is not None:
             self._check_name(conn)
+            values["settings"] = self._released_settings(conn)  # lo que da por bueno, acumulado (T25)
             handle = begin_in_transaction(conn, project, self.op_type, **values)
             self._check_unchanged(handle)
             return handle
@@ -629,6 +669,7 @@ class OperationStart:
         values["inputs"] = carried.inputs
         with project.read() as reading:
             self._check_name(reading)
+            values["settings"] = self._released_settings(reading)
         handle = begin_operation(project, self.op_type, **values)
         try:
             carried._check_unchanged(handle)
@@ -651,9 +692,21 @@ class OperationStart:
 
 
 _CARRIED = (
-    "SELECT d.name, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "SELECT d.name, io.role, p.settings FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "LEFT JOIN gb_operation AS p ON p.uid = d.operation_uid "
     "WHERE io.operation_uid = ? AND io.direction = 'in' AND io.item_kind = 'dataset' "
     "AND io.role IN (?, ?) ORDER BY io.fid")
+
+
+def _entity_of(settings: object) -> str | None:
+    """El código de la entidad (``PLT-001``) que escribió un dato, de los ajustes de su operación (``code``); ``None``
+    si no los lleva (un diseño de la 013 o la 014)."""
+    try:
+        found = json.loads(str(settings)) if settings else {}
+    except ValueError:
+        return None
+    code = found.get("code") if isinstance(found, dict) else None
+    return code if isinstance(code, str) else None
 
 
 def _check_profiles(project: StoreProject, version: Version, codes: Iterable[str],
@@ -1596,11 +1649,14 @@ class DesignWriter:
             start = start.carried(self.project)
             inputs = [(use.item, str(use.role)) for use in start.inputs]
             settings: Mapping[str, Any] = start.settings
+            with self.project.read() as conn:
+                released = {item.entity for item in start.released_of(conn)}
         else:
             assert self.handle is not None
             inputs = [(item.name, str(item.role)) for item in self.handle.inputs
                       if item.kind is ItemKind.DATASET]
             settings = self.handle.settings
+            released = {item.entity for item in provenance.released_supports(settings)}
         starts = [name for name, role in inputs if role == provenance.SURFACE_ROLE]
         if len(starts) != 1:
             return start, ()
@@ -1609,7 +1665,7 @@ class DesignWriter:
             self.project, self._version, results, starts[0],
             own_code=code if isinstance(code, str) else None,
             written=[grid.spec.name for grid in self._grids.values() if grid.values is not None],
-            inputs=inputs)
+            inputs=inputs, released=released)
         if start is not None:
             start = entity_store.add_supports(self.project, start, survey)
             return start, survey.figures(self.name)
@@ -3454,7 +3510,8 @@ def run_envelope(project: StoreProject, request: EnvelopeRequest, *, version: st
 
 def run_design(project: StoreProject, request: DesignRequest, surface: str, *,
                version: str | None, masks: access.MaskSet | None = None,
-               supersedes: str | None = None, budget_s: float = STEP_BUDGET_S
+               supersedes: str | None = None, budget_s: float = STEP_BUDGET_S,
+               released: Sequence[provenance.ReleasedSupport] = ()
                ) -> tuple[OperationHandle, Iterator[Progress]]:
     """Lo mismo que :func:`run_envelope` para ``des.stepped_design``: escalona la envolvente
     ``request.envelope`` de la versión sobre la superficie de partida ``surface`` (el nombre de su
@@ -3466,7 +3523,7 @@ def run_design(project: StoreProject, request: DesignRequest, surface: str, *,
     loaded = _loaded_masks(project, found, masks)
     prepared = _result_of(prepare_design_units(project, request, surface, found, loaded,
                                                supersedes=supersedes))
-    handle = prepared.start.begin(project)
+    handle = prepared.start.with_released(released).begin(project)
     return handle, _design_run(project, handle, request, surface, loaded, prepared, budget_s)
 
 
@@ -3488,7 +3545,8 @@ def run_excavation_area(project: StoreProject, name: str, surface: str, *, versi
 
 def run_quarry(project: StoreProject, request: QuarryRequest, *, version: str | None,
                masks: access.MaskSet | None = None, supersedes: str | None = None,
-               budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+               budget_s: float = STEP_BUDGET_S, released: Sequence[provenance.ReleasedSupport] = ()
+               ) -> tuple[OperationHandle, Iterator[Progress]]:
     """Lo mismo que :func:`run_envelope` para ``des.quarry`` (spec 014, T19; RF-014-29,
     RF-014-31): las dos superficies de ``request`` en la versión, de una vez y sin confirmar (el
     recálculo de lo obsoleto, :func:`recompute_run`), con lo que lee hoy: las máscaras de la
@@ -3500,13 +3558,14 @@ def run_quarry(project: StoreProject, request: QuarryRequest, *, version: str | 
     loaded = _loaded_masks(project, found, masks)
     prepared = _result_of(prepare_quarry_units(project, request, found, loaded,
                                                supersedes=supersedes))
-    handle = prepared.start.begin(project)
+    handle = prepared.start.with_released(released).begin(project)
     return handle, _quarry_run(project, handle, request, loaded, prepared, budget_s)
 
 
 def run_edge_transition(project: StoreProject, name: str, surface: str, start: str, *,
                         version: str | None, masks: access.MaskSet | None = None,
-                        supersedes: str | None = None, budget_s: float = STEP_BUDGET_S
+                        supersedes: str | None = None, budget_s: float = STEP_BUDGET_S,
+                        released: Sequence[provenance.ReleasedSupport] = ()
                         ) -> tuple[OperationHandle, Iterator[Progress]]:
     """Lo mismo que :func:`run_envelope` para ``des.edge_transition`` (spec 014, T28; RF-014-19,
     RF-014-31): la transición ``name`` de la superficie de diseño ``surface`` sobre la de partida
@@ -3519,13 +3578,14 @@ def run_edge_transition(project: StoreProject, name: str, surface: str, start: s
     loaded = _loaded_masks(project, found, masks)
     prepared = _result_of(prepare_transition_units(project, name, surface, start, found, loaded,
                                                    supersedes=supersedes))
-    handle = prepared.start.begin(project)
+    handle = prepared.start.with_released(released).begin(project)
     return handle, _transition_run(project, handle, name, loaded, prepared, budget_s)
 
 
 def run_fill_only(project: StoreProject, request: FillOnlyRequest, *, version: str | None,
                   masks: access.MaskSet | None = None, supersedes: str | None = None,
-                  budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+                  budget_s: float = STEP_BUDGET_S, released: Sequence[provenance.ReleasedSupport] = ()
+                  ) -> tuple[OperationHandle, Iterator[Progress]]:
     """Lo mismo que :func:`run_design` para ``des.fill_only`` (spec 014, T30; RF-014-22,
     RF-014-31): el diseño «solo relleno» ``request`` de la versión, de una vez y sin confirmar (el
     recálculo de lo obsoleto, :func:`recompute_run`), con lo que lee hoy: las máscaras de la
@@ -3537,13 +3597,14 @@ def run_fill_only(project: StoreProject, request: FillOnlyRequest, *, version: s
     loaded = _loaded_masks(project, found, masks)
     prepared = _result_of(prepare_fill_only_units(project, request, found, loaded,
                                                   supersedes=supersedes))
-    handle = prepared.start.begin(project)
+    handle = prepared.start.with_released(released).begin(project)
     return handle, _fill_only_run(project, handle, request, loaded, prepared, budget_s)
 
 
 def run_refit(project: StoreProject, request: RefitRequest, *, version: str | None,
               masks: access.MaskSet | None = None, supersedes: str | None = None,
-              budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+              budget_s: float = STEP_BUDGET_S, released: Sequence[provenance.ReleasedSupport] = ()
+              ) -> tuple[OperationHandle, Iterator[Progress]]:
     """Lo mismo que :func:`run_envelope` para ``des.refit`` (spec 014, T32; RF-014-27,
     RF-014-31): el ajuste ``request`` de la versión, de una vez y sin confirmar (el recálculo de lo
     obsoleto, :func:`recompute_run`), con lo que lee hoy: las máscaras de la versión (el límite
@@ -3554,11 +3615,12 @@ def run_refit(project: StoreProject, request: RefitRequest, *, version: str | No
     loaded = _loaded_masks(project, found, masks)
     prepared = _result_of(prepare_refit_units(project, request, found, loaded,
                                               supersedes=supersedes))
-    handle = prepared.start.begin(project)
+    handle = prepared.start.with_released(released).begin(project)
     return handle, _refit_run(project, handle, request, loaded, prepared, budget_s)
 
 
-def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
+def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
+                  released: Sequence[provenance.ReleasedSupport] = ()
                   ) -> tuple[OperationHandle, Iterator[Progress]]:
     """Repite la operación de ``des`` de ``request`` (``RecomputeRequest`` de «Recalcular lo
     obsoleto», RF-008-26; RF-013-17; plan 013 §5.3.2): **sin pedir confirmación** —la operación ya
@@ -3574,14 +3636,25 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
     ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama (en Blender, la cola de
     recálculo); el último lleva el :class:`Stored`.
 
+    ``released`` (spec 015, T25; RF-015-17, A7, P-6): lo que la operación nueva **da por bueno sin su apoyo** —una
+    entidad descartada en la que se apoyaba—: no lleva sus entradas, el motivo y el decisor van en sus ajustes y el
+    gancho no vuelve a registrarla; solo vale de lo que deja una superficie (la plataforma y los diseños de la 013 y
+    la 014), y es lo que repite :func:`~.entity_store.release_support` **sin pasar por el plan de «Recalcular lo
+    obsoleto»**, que lo rehúsa (``core.recompute_no_successor``).
+
     Al llamar, sin empezar nada: ``TypeError``/``ValueError`` si no es una petición de un tipo de
-    :data:`RECOMPUTED` o sus ajustes no son los de su tipo; los rechazos de :func:`run_envelope` y
+    :data:`RECOMPUTED` o sus ajustes no son los de su tipo, o si se suelta algo de un tipo que no deja una
+    superficie; los rechazos de :func:`run_envelope` y
     :func:`run_design` (un recálculo tampoco diseña en un sector sin búsqueda: RF-013-05)."""
     if not isinstance(request, RecomputeRequest):
         raise TypeError(f"se recalcula una RecomputeRequest, no {request!r}")
     if request.op_type not in RECOMPUTED:
         raise ValueError(f"recompute_run repite {', '.join(RECOMPUTED)}, no «{request.op_type}»")
     project: StoreProject = request.project  # type: ignore[assignment]
+    if released and request.op_type in (provenance.ENVELOPE, provenance.EXCAVATION_AREA,
+                                        provenance.DECLARE_CONSTRAINTS, provenance.ENTITY_LAYER):
+        raise ValueError(f"«{request.op_type}» no deja una superficie que se apoye en una entidad: no da por "
+                         "bueno ningún apoyo")
     if request.op_type == provenance.ENVELOPE:
         return run_envelope(project, provenance.envelope_request(request.settings),
                             version=request.version, supersedes=request.operation_uid,
@@ -3593,30 +3666,31 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
     if request.op_type == provenance.QUARRY:
         return run_quarry(project, provenance.quarry_request(request.settings),
                           version=request.version, supersedes=request.operation_uid,
-                          budget_s=budget_s)
+                          budget_s=budget_s, released=released)
     if request.op_type == provenance.EDGE_TRANSITION:
         name, surface, start = provenance.transition_start(request.settings)
         return run_edge_transition(project, name, surface, start, version=request.version,
-                                   supersedes=request.operation_uid, budget_s=budget_s)
+                                   supersedes=request.operation_uid, budget_s=budget_s,
+                                   released=released)
     if request.op_type == provenance.FILL_ONLY:
         return run_fill_only(project, provenance.fill_only_request(request.settings),
                              version=request.version, supersedes=request.operation_uid,
-                             budget_s=budget_s)
+                             budget_s=budget_s, released=released)
     if request.op_type == provenance.REFIT:
         return run_refit(project, provenance.refit_request(request.settings),
                          version=request.version, supersedes=request.operation_uid,
-                         budget_s=budget_s)
+                         budget_s=budget_s, released=released)
     if request.op_type == provenance.PLATFORM:
         from . import entity_store  # al usarlo: entity_store importa este módulo
 
-        return entity_store.recompute_platform(request, budget_s=budget_s)
+        return entity_store.recompute_platform(request, budget_s=budget_s, released=released)
     if request.op_type == provenance.DECLARE_CONSTRAINTS:
         from . import entity_store  # al usarlo: entity_store importa este módulo
 
         return entity_store.recompute_declaration(request, budget_s=budget_s)
     return run_design(project, provenance.design_request(request.settings),
                       provenance.design_start(request.settings), version=request.version,
-                      supersedes=request.operation_uid, budget_s=budget_s)
+                      supersedes=request.operation_uid, budget_s=budget_s, released=released)
 
 
 def _envelope_run(project: StoreProject, handle: OperationHandle, envelope: EnvelopeRequest,

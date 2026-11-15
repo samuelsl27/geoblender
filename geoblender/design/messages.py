@@ -1648,6 +1648,97 @@ CATALOG: tuple[Message, ...] = (
         "{name} ({kind}): superficie de partida",
         "note",
     ),
+    # Descartar una entidad, «apoyo retirado» y soltar el apoyo (RF-015-17, RF-009-12; D-12; A7, P-6; T25).
+    Message(
+        "des.entity_discard_reason",
+        "Entity «{entity}»: write the reason to discard it; it is recorded with the decision; nothing "
+        "is discarded.",
+        "Entidad «{entity}»: escriba el motivo para descartarla; queda registrado con la decisión; no "
+        "se descarta nada.",
+    ),
+    Message(
+        "des.entity_already_discarded",
+        "Entity «{entity}» is already discarded in {version}: it is a record, not to be used; nothing "
+        "is done.",
+        "La entidad «{entity}» ya está descartada en {version}: es un registro, no se usa; no se hace "
+        "nada.",
+    ),
+    Message(
+        "des.entity_release_reason",
+        "«{entity}»: write the reason to give it as good without the support it has lost; it is "
+        "recorded with the decision; nothing is done.",
+        "«{entity}»: escriba el motivo para darla por buena sin el apoyo que ha perdido; queda "
+        "registrado con la decisión; no se hace nada.",
+    ),
+    Message(
+        "des.entity_release_unknown",
+        "«{entity}» does not have its support on «{target}» removed in {version}: only what rests on "
+        "an entity that was discarded can be given as good without that support; nothing is done.",
+        "«{entity}» no tiene retirado su apoyo en «{target}» en {version}: solo se da por bueno sin "
+        "su apoyo lo que se apoyaba en una entidad que se descartó; no se hace nada.",
+    ),
+    Message(
+        "des.entity_release_nothing",
+        "«{entity}» has no support removed in {version}: nothing rests on a discarded entity; nothing "
+        "is done.",
+        "«{entity}» no tiene ningún apoyo retirado en {version}: nada se apoya en una entidad "
+        "descartada; no se hace nada.",
+    ),
+    Message(
+        "des.entity_release_start",
+        "«{entity}» starts from the surface of «{target}», which was discarded: without it there is "
+        "nothing to repeat it on, so it cannot be given as good; remake it on another surface (change "
+        "its start surface) or discard it; nothing is done.",
+        "«{entity}» parte de la superficie de «{target}», que se descartó: sin ella no hay sobre qué "
+        "repetirla, así que no se puede dar por buena; rehágala sobre otra superficie (cambie su "
+        "superficie de partida) o descártela; no se hace nada.",
+    ),
+    Message(
+        "des.entity_release_support_param",
+        "«{entity}» has the surface of «{target}», which was discarded, as its support surface: it "
+        "cannot be given as good with it; change its support surface or discard it; nothing is done.",
+        "«{entity}» tiene la superficie de «{target}», que se descartó, como superficie de apoyo: no "
+        "se puede dar por buena con ella; cambie su superficie de apoyo o descártela; no se hace nada.",
+    ),
+    Message(
+        "des.entity_release_others",
+        "«{entity}» has also lost its support on {others}: all the supports it has lost are given as "
+        "good together, because it cannot keep one that was discarded; do not name the entity; nothing "
+        "is done.",
+        "«{entity}» ha perdido también su apoyo en {others}: se dan por buenos todos los apoyos "
+        "perdidos a la vez, porque no puede conservar uno que se descartó; no indique la entidad; no "
+        "se hace nada.",
+    ),
+    Message(
+        "des.support_removed",
+        "Support removed: {what}",
+        "Apoyo retirado: {what}",
+        "note",
+    ),
+    Message(
+        "des.support_removed_platform",
+        "the platform {name} was discarded",
+        "se descartó la plataforma {name}",
+        "note",
+    ),
+    Message(
+        "des.support_removed_dataset",
+        "«{name}» was discarded",
+        "se descartó «{name}»",
+        "note",
+    ),
+    Message(
+        "des.event_entity_discarded",
+        "Entity «{name}» ({code}) discarded in {version}: {reason}",
+        "Entidad «{name}» ({code}) descartada en {version}: {reason}",
+        "note",
+    ),
+    Message(
+        "des.event_support_released",
+        "«{name}» given as good in {version} without its support on {entities}: {reason}",
+        "«{name}» dada por buena en {version} sin su apoyo en {entities}: {reason}",
+        "note",
+    ),
     # Tras la orden de una entidad (RF-015-10, RF-012-06; T19): la declaración, las máscaras de nuevo, lo
     # ganado y perdido por restricción, lo que quedó obsoleto y lo que no se pudo hacer.
     Message(

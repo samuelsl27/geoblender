@@ -19,7 +19,7 @@ constantes del módulo construidas una vez:
   (``design.params.QUARRY_DEFINITIONS``), sus cinco tipos de operación de la versión, repetibles
   (:data:`QUARRY_RECOMPUTE`) y reproducibles salvo el ajuste (:data:`QUARRY_REPRODUCE`), y sus
   cifras (``design.provenance.QUARRY_FIGURES``);
-- lo de la **015** (T04; plan 015 §5.2.2 y §5.2.3): las 19 familias de parámetros de una plataforma
+- lo de la **015** (T04; plan 015 §5.2.2 y §5.2.3): las 20 familias de parámetros de una plataforma
   (``design.params.ENTITY_FAMILIES``, ``des.platform.{e}.*``, junto a las de la 013), sus tres tipos de
   operación de la versión, repetibles y reproducibles (``des.platform``, ``des.declare_constraints`` y
   ``des.entity_layer``: :data:`ENTITY_RECOMPUTE`, :data:`ENTITY_REPRODUCE`) y sus cifras
@@ -232,8 +232,22 @@ de la versión y, si las máscaras ya no están al día, las compila de nuevo, y
 está creada: si una etapa falla o se cierra con Esc, las máscaras quedan obsoletas con su causa
 (``gis.masks.access.MaskCause``) y se compilan de nuevo antes de que un operador las use. «Recalcular lo
 obsoleto» no encadena nada: la declaración y las máscaras son operaciones de la 008 que ella recalcula por el
-grafo (el recálculo de una plataforma no declara por su cuenta). Descartar y retirar (T25, T26) encadenarán
+grafo (el recálculo de una plataforma no declara por su cuenta). Descartar (T25) y retirar (T26) encadenan
 la misma función.
+
+**Descartar una entidad y soltar el apoyo** (spec 015, T25; HU-015-2; RF-015-17, RF-009-12, RF-015-28, RF-015-29; D-12;
+plan 015 §5.3.3 y §5.4 A7, P-6): :class:`GEOBLENDER_OT_des_entity_discard` (``geoblender.des_entity_discard``) **enseña
+antes una sola lista** —lo que se apoya en la entidad y lo que parte de ella, con su tipo y sus m³:
+``design.entity_store.discard_plan``— y pide confirmar con el motivo; al aceptar descarta la entidad **sin borrar
+nada** (``discard_entity``: sus datos pasan a ``DISCARDED``, con un evento y el motivo) y encadena
+``after_entity_change`` por pasos con el avance y Esc (su restricción sale de las máscaras). Lo que se le apoyaba queda
+en «apoyo retirado» y «Recalcular lo obsoleto» no lo recalcula.
+:class:`GEOBLENDER_OT_des_entity_release_support` (``geoblender.des_entity_release_support``) **da por bueno** lo que
+perdió su apoyo —una entidad o un diseño de la 013 o la 014— repitiéndolo sin ese apoyo, con el motivo y el decisor
+en sus ajustes y un evento (``release_support``, por pasos con el avance y Esc); su salida no cambia y lo que dependía
+de ella no se recalcula. Las dos van con el proyecto en escritura y la versión activa editable y, si no, desactivadas
+con su motivo (:class:`DesignCommandAware`); la entrada de R-36 las entrega la T31 (menú «Entidad ▾»). Todas las
+cuentas y los rechazos son de ``design``.
 """
 
 from __future__ import annotations
@@ -543,7 +557,7 @@ DEFINITIONS: tuple[core_params.ParamDef, ...] = (
 (plan 014 §5.2.2)."""
 FAMILIES: tuple[core_params.ParamFamily, ...] = (*design_params.FAMILIES,
                                                 *design_params.ENTITY_FAMILIES)
-"""Las familias de parámetros de ``des`` (ADR-0027): las seis de la 013 y las 19 de una plataforma
+"""Las familias de parámetros de ``des`` (ADR-0027): las seis de la 013 y las 20 de una plataforma
 (``des.platform.{e}.*``, T04)."""
 FIGURES: tuple[contract.FigureDef, ...] = (*provenance.FIGURES, *provenance.QUARRY_FIGURES,
                                            *provenance.ENTITY_FIGURES)
@@ -4226,6 +4240,323 @@ class GEOBLENDER_OT_des_export_design_grid(_StepsModal, bpy.types.Operator):
             return self._fail(context, error_text(exc))
 
 
+# --- Descartar una entidad y soltar el apoyo (spec 015, T25; HU-015-2; RF-015-17, RF-015-29; plan 015 §5.3.3) --
+
+DISCARD_ENTITY = "geoblender.des_entity_discard"
+RELEASE_SUPPORT = "geoblender.des_entity_release_support"
+_ITEMS_SHOWN = 5
+"""Cuántos nombres lleva el aviso de lo que quedó en «apoyo retirado» (los demás, «…»)."""
+
+
+class _EntitySteps:
+    """Lo común de las dos órdenes de decisión sobre las entidades (T25): corren por pasos con el avance y Esc
+    (``_StepsModal``) o, desde un guion, de una vez; al acabar dicen lo que hicieron (:meth:`_finished`, de cada
+    una). Se pone **antes** de las bases de la orden."""
+
+    STEP_BUDGET_S = 0.05
+    in_steps = False
+    _name = ""
+
+    def _run_steps(self, context: Any, project: Any, name: str, steps: Iterator[Progress]) -> set[str]:
+        """Corre los pasos ``steps`` de ``name`` de ``project``: en el modal, o de una vez desde un guion (al acabar,
+        :meth:`_finished`; si fallan, ya dicho y ``CANCELLED``)."""
+        self._project, self._name = project, name
+        if self.in_steps and getattr(context, "window", None) is not None:
+            self._start(context, steps)  # type: ignore[attr-defined]
+            return {"RUNNING_MODAL"}
+        self.report_log: list[str] = []
+        found = _drain(self, steps)
+        if found is None:
+            return {"CANCELLED"}
+        return self._finished(context, found)
+
+    def _finished(self, context: Any, result: Any) -> set[str]:  # pragma: no cover - cada orden la suya
+        raise NotImplementedError
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        """Con el proyecto cerrado se para sin dejar nada y lo dice; si no, sigue o, con el resultado, acaba."""
+        if project_session.current() is not getattr(self, "_project", None):
+            return self._fail(context, tr(  # type: ignore[attr-defined]
+                "The project was closed while «{name}» was being done: nothing has been left half-done",
+                name=self._name))
+        if step.result is None:
+            return None
+        self._done(context)  # type: ignore[attr-defined]
+        return self._finished(context, step.result)
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return design_error_text(exc)
+
+    def modal(self, context: Any, event: Any) -> set[str]:
+        try:
+            return super().modal(context, event)  # type: ignore[misc]
+        except Exception as exc:  # noqa: BLE001 - los pasos cerrados no dejan nada a medias
+            LOGGER.error("«%s» se ha parado", getattr(self, "bl_idname", ""), exc_info=exc)
+            return self._fail(context, design_error_text(exc))  # type: ignore[attr-defined]
+
+
+def _shown_items(names: list[str]) -> str:
+    """Los nombres de ``names`` para un aviso: los primeros (:data:`_ITEMS_SHOWN`) y «…» si hay más."""
+    found = [f"«{name}»" for name in names]
+    return ", ".join([*found[:_ITEMS_SHOWN], *(["…"] if len(found) > _ITEMS_SHOWN else [])])
+
+
+class GEOBLENDER_OT_des_entity_discard(_EntitySteps, DesignCommandAware, ProvenanceAwareOperator, _StepsModal,
+                                       bpy.types.Operator):
+    """Discard a design entity: it stays in the project as a record, nothing is deleted, and what rests on it is left as «support removed»"""
+
+    bl_idname = DISCARD_ENTITY
+    bl_label = "Discard…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.PLATFORM
+
+    entity: StringProperty(  # type: ignore[valid-type]
+        name="Entity", description="Code or name of the design entity to discard", options=_FIELD)
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason", description="Why the entity is discarded; it is recorded with the decision",
+        options=_FIELD)
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    _plan = None
+    """La lista que se enseña antes de descartar (``design.entity_store.DiscardPlan``)."""
+    _discarded = None
+    """Lo que hizo ``discard_entity`` (``design.entity_store.Discarded``), mientras corre lo que sigue."""
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Enseña **antes** la lista de lo que se apoya en la entidad y de lo que parte de ella (nombre, tipo y m³) y pide
+        confirmar con el motivo; no cambia nada hasta que se acepta. Sin versión editable o sin entidad, lo dice."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        try:
+            self._plan = self._read_plan()
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=tr("Discard «{name}»", name=self._plan.name), confirm_text=tr("Discard"))
+
+    def _read_plan(self) -> Any:
+        """La lista de antes de descartar la entidad pedida de la versión activa (``design.entity_store.discard_plan``)."""
+        from ...design import entity_store  # al usarlo: habilitar no carga el cálculo
+
+        if not self.entity.strip():
+            raise ValueError(tr("Choose the entity to discard"))
+        return entity_store.discard_plan(SESSION.project, scene_versions.active_version() or "",
+                                         self.entity.strip())
+
+    def draw(self, context: Any) -> None:
+        """La lista de lo que se apoya en la entidad y de lo que parte de ella, una línea cada uno (el nombre, el tipo y los
+        m³ apoyados), lo que le pasará y el motivo."""
+        layout = self.layout
+        plan = self._plan
+        if plan is None:
+            layout.prop(self, "reason", text=tr("Reason"), translate=False)
+            return
+        layout.label(text=tr("«{name}» ({code}) will be discarded: it stays in the project as a record and "
+                             "nothing is deleted", name=plan.name, code=plan.code), translate=False)
+        if plan.dependents:
+            layout.label(text=tr("These rest on the entity or start from it:"), translate=False)
+            box = layout.box()
+            for line in plan.lines(i18n.language()):
+                box.label(text=line, icon="DOT", translate=False)
+            layout.label(text=tr("They are left as «support removed»."), translate=False)
+            layout.label(text=tr("«Recompute the stale results» does not recompute them until you remake them on "
+                                 "another surface, discard them or give them as good with a reason."),
+                         translate=False)
+        else:
+            layout.label(text=tr("Nothing rests on the entity and nothing starts from it."), translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Descarta la entidad (``design.entity_store.discard_entity``: nada se borra, un evento con el motivo) y encadena lo
+        que sigue (``after_entity_change``: su restricción sale de las máscaras) por pasos con el avance y Esc; desde un
+        guion, de una vez. Los rechazos (sin motivo, ya descartada, sin entidad) son de ``design``: nada se escribe."""
+        from ...design import entity_store  # al usarlo: habilitar no carga el cálculo
+
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project, version = SESSION.project, scene_versions.active_version() or ""
+        try:
+            if not self.entity.strip():
+                raise ValueError(tr("Choose the entity to discard"))
+            found = entity_store.discard_entity(project, version, self.entity.strip(), reason=self.reason,
+                                                decided_by=project.session.user_host)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError, TypeError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, "des.entity_discard")  # Ctrl+Z no lo deshace
+        self._discarded = found
+        self.report({"INFO"}, tr("Entity «{name}» discarded in {version}: nothing has been deleted",
+                                 name=found.name, version=found.version))
+        if found.dependents:
+            self.report({"WARNING"}, tr("Left as «support removed»: {items}",
+                                        items=_shown_items([row.name for row in found.dependents])))
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
+        steps = entity_store.after_entity_change(project, version, budget_s=self.STEP_BUDGET_S)
+        started = self._run_steps(context, project, found.name, steps)
+        return {"FINISHED"} if started == {"CANCELLED"} else started  # ya descartada: el fallo está dicho
+
+    def _finished(self, context: Any, result: Any) -> set[str]:
+        """Lo que hizo lo que sigue (``design.entity_store.EntityChain``): la declaración, las máscaras de nuevo, lo ganado y
+        perdido por restricción y lo que quedó obsoleto."""
+        shown = i18n.language()
+        for notice in result.notices():
+            self._report({"WARNING" if notice.severity == "warning" else "INFO"}, notice.text(shown))
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
+        return {"FINISHED"}
+
+    def _status_text(self, step: Progress) -> str:
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Updating the declared constraints and the masks… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Cancelled: the entity is discarded; the declared constraints and the masks are brought up to "
+                  "date before the next operation that uses them")
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        return f"{design_error_text(exc)} " + tr("The entity is discarded: only the declared constraints and the "
+                                                 "masks have not been brought up to date")
+
+
+class GEOBLENDER_OT_des_entity_release_support(_EntitySteps, DesignCommandAware, ProvenanceAwareOperator,
+                                               _StepsModal, bpy.types.Operator):
+    """Give as good what lost its support because an entity was discarded: it is repeated without that support, with a reason that is recorded"""
+
+    bl_idname = RELEASE_SUPPORT
+    bl_label = "Release the support…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.PLATFORM
+
+    target: StringProperty(  # type: ignore[valid-type]
+        name="Entity or design",
+        description="Code or name of the entity, or uid or name of the design, that lost its support",
+        options=_FIELD)
+    entity: StringProperty(  # type: ignore[valid-type]
+        name="Discarded entity",
+        description="Code or name of the discarded entity it no longer rests on (empty: every one it lost)",
+        options=_FIELD)
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason",
+        description="Why it is given as good without that support; it is recorded with the decision",
+        options=_FIELD)
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    _lost = None
+    """Lo que perdió su apoyo y se da por bueno (``design.entities.RetiredSupport``)."""
+
+    def _read_lost(self) -> Any:
+        """Lo que perdió su apoyo en la versión activa y se pide dar por bueno (``design.entities.retired_supports``):
+        :class:`ValueError` con su porqué si no hay nada que dar por bueno."""
+        from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+        wanted = self.target.strip()
+        if not wanted:
+            raise ValueError(tr("Choose what to give as good: an entity or a design that lost its support"))
+        found = entities.retired_supports(SESSION.project, scene_versions.active_version() or "")
+        for item in found:
+            if wanted in (item.operation_uid, item.name, item.entity):
+                if not item.releasable:
+                    raise ValueError(tr(
+                        "«{name}» starts from the surface of a discarded entity: remake it on another surface "
+                        "or discard it; it cannot be given as good", name=item.name))
+                return item
+        raise ValueError(tr("«{name}» has not lost its support: nothing it rests on was discarded", name=wanted))
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Enseña lo que perdió su apoyo (la causa) y lo que pasará, y pide confirmar con el motivo; no cambia nada hasta
+        que se acepta."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        try:
+            self._lost = self._read_lost()
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=tr("Release the support of «{name}»", name=self._lost.name), confirm_text=tr("Give as good"))
+
+    def draw(self, context: Any) -> None:
+        layout = self.layout
+        lost = self._lost
+        if lost is not None:
+            from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+            layout.label(text=tr("«{name}» ({kind}) lost its support:", name=lost.name,
+                                 kind=entities.kind_label(lost.op_type, i18n.language())), translate=False)
+            layout.label(text=lost.text(i18n.language()), icon="DOT", translate=False)
+            layout.label(text=tr("It is repeated without that support, with the reason you give."), translate=False)
+            layout.label(text=tr("What depends on it is not recomputed if its result does not change."),
+                         translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Repite la operación sin ese apoyo (``design.entity_store.release_support``) por pasos con el avance y Esc; desde un
+        guion, de una vez. Los rechazos (sin motivo, parte de la superficie descartada, sin ese apoyo retirado…) son de
+        ``design``: nada se escribe."""
+        from ...design import entity_store  # al usarlo: habilitar no carga el cálculo
+
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project, version = SESSION.project, scene_versions.active_version() or ""
+        try:
+            if not self.target.strip():
+                raise ValueError(tr("Choose what to give as good: an entity or a design that lost its support"))
+            handle, steps = entity_store.release_support(
+                project, version, self.target.strip(), self.entity.strip() or None, reason=self.reason,
+                decided_by=project.session.user_host, budget_s=self.STEP_BUDGET_S)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError, TypeError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        name = _shown_name(handle)
+        self._project, self._name = project, name
+        return self._run_steps(context, project, name, steps)
+
+    def _finished(self, context: Any, result: Any) -> set[str]:
+        """Lo que hizo: la operación repetida sin su apoyo, con su motivo."""
+        undo_watch.record(UndoKind.OPERATION, provenance.PLATFORM)  # Ctrl+Z no lo deshace
+        self._report({"INFO"}, tr("«{name}» given as good without its support: its result is registered with the "
+                                  "reason", name=self._name))
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
+        return {"FINISHED"}
+
+    def _status_text(self, step: Progress) -> str:
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Repeating «{name}» without its support… {percent} % · Esc: cancel", name=self._name,
+                  percent=percent)
+
+    def _cancelled_text(self) -> str:
+        return tr("Cancelled: nothing has been left half-done")
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
@@ -4239,7 +4570,9 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_create_transitions,
                              GEOBLENDER_OT_des_design_fill_only,
                              GEOBLENDER_OT_des_refit_to_limit,
-                             GEOBLENDER_OT_des_create_platform)
+                             GEOBLENDER_OT_des_create_platform,
+                             GEOBLENDER_OT_des_entity_discard,
+                             GEOBLENDER_OT_des_entity_release_support)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
@@ -4247,4 +4580,4 @@ T44, la que declara de nuevo los sectores desde su ventana; de la 014, la T20 po
 perímetro…», la T21 «Cantera con dos superficies…», la T28 «Transiciones con el terreno no
 afectado», la T30 «Solo relleno…» y la T33 «Ajustar el diseño a un límite nuevo…», de la entrada
 «014», que la T58 entrega; de la 015, la T15 pone «Plataforma…», de la entrada «R-36», que entrega la
-T31)."""
+T31; la T25, «Descartar…» y «Soltar el apoyo…», internas hasta que la T31 las ponga en el menú «Entidad ▾»)."""
