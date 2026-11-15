@@ -25,6 +25,14 @@ impide mover unas celdas: la que declara otra entidad (código ``dec__…``), co
 restricción normal, con su nombre. Sin proyecto: las funciones de este módulo reciben lo que ya se
 leyó (``design.entity_store`` lo lee).
 
+Y **antes de calcular** (spec 015, T29; RF-015-26; plan 015 §5.5), :func:`entity_preview_steps` prepara, por
+pasos y solo leyendo, el :class:`EntityPreview` de la plataforma que se está preparando (o de una que ya
+está en la versión): su huella, su eje con su sentido (la abscisa 0 en el primer vértice), la cota de la
+rasante en sus extremos, lo que se le apoya (las huellas de lo que se apoya en ella, con su nombre y su
+volumen) y la zona que declarará si protege, con su resguardo. Un rechazo de la preparación (RF-015-08,
+RF-015-09: los mismos mensajes que «Calcular») no es un error: es el aviso de la vista previa en lugar
+del dibujo.
+
 Lo que dice son avisos y notas con código (:class:`Notice`, de ``design.messages``): el texto en
 cada idioma sale de :meth:`Notice.text` y de :meth:`PreviewSummary.lines`, con la coma decimal y el
 espacio fino de miles del español o el punto y la coma del inglés.
@@ -36,11 +44,12 @@ from collections.abc import Generator, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from ..core.constraints.model import ConstraintType
+from ..core.errors import GeoblenderError
 from ..core.i18n import THIN_SPACE
 from ..core.project.model import Progress
 from ..core.provenance.figures import FigureSpec
@@ -50,7 +59,7 @@ from ..gis.masks.access import MaskSet, MaskState
 from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.store import StoreProject, load_features
 from ..gis.vector import FeatureLayer
-from .messages import lookup, render
+from .messages import DesignError, lookup, render
 from .model import DECLARED_PREFIX, QuarryRequest, SeedKind, Zone, ZoneKind
 from .seeds import DomainSet, SeedPlan, SeedSet, pace_progress, seed_units
 from .surfaces import project_frame, read_surface
@@ -61,13 +70,17 @@ if TYPE_CHECKING:  # design.quarry importa design.report, que importa Notice de 
     from .quarry import ConserveZone, CorridorMap, FloorMap
 
 __all__ = [
+    "EntityEnd",
+    "EntityPreview",
     "Notice",
     "Obsolete",
     "ObsoleteKind",
     "PlatformSummary",
     "PreviewSummary",
     "QuarryPreview",
+    "RestingItem",
     "SectorStatus",
+    "entity_preview_steps",
     "held_notices",
     "obsolete_notices",
     "quarry_summarize_steps",
@@ -77,10 +90,12 @@ __all__ = [
 
 _HECTARE_M2 = 10_000.0
 _DECIMALS = {"hectares": 1, "coverage": 1, "low": 1, "high": 1, "thickness": 3, "face": 2,
-             "berm": 2, "step": 2, "drop": 3, "above": 3, "amount": 3}
+             "berm": 2, "step": 2, "drop": 3, "above": 3, "amount": 3, "start_level": 2,
+             "end_level": 2, "gradient": 2}
 """Los decimales de los números que no son enteros (el área, entera o con uno). ``amount``: la
 contrapendiente de una plataforma (spec 015, T09), que ronda la tolerancia de 0,1 m: con un decimal
-«0,12 m» se leería «0,1 m», que no pasa de ella."""
+«0,12 m» se leería «0,1 m», que no pasa de ella. ``start_level``, ``end_level`` y ``gradient``: la rasante
+de la vista previa de una entidad (T29), al centímetro y a la centésima de por ciento."""
 
 
 def _number(value: float, decimals: int, language: str) -> str:
@@ -649,3 +664,292 @@ def held_notices(entity: str, masks: MaskSet, window: tuple[slice, slice], *, cu
             "entity": entity, "area": int(np.count_nonzero(loose)) * grid.cell_area, "x": x,
             "y": y}))
     return tuple(found)
+
+
+# --- La vista previa de una entidad de diseño (spec 015, T29; RF-015-26) ------------------------
+
+_ENTITY_PHASE = "preview_entity"
+_ITEMS_LISTED = SUMMARY_ITEMS
+"""Los nombres de lo que se apoya que enseña la nota del resumen; el resto, un «…» (la lista entera va en
+:attr:`EntityPreview.resting`)."""
+
+
+@dataclass(frozen=True, slots=True)
+class EntityEnd:
+    """Un extremo del eje de una entidad con la cota de su rasante: ``which`` (``"start"``: el primer vértice,
+    la **abscisa 0** que decide el signo de la pendiente; ``"end"``: el último), sus coordenadas absolutas
+    ``x`` e ``y`` (m, float64) y ``level_m``, la cota de la rasante ahí (m)."""
+
+    which: str
+    x: float
+    y: float
+    level_m: float
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RestingItem:
+    """Algo que se apoya en la entidad o parte de su superficie (``design.entities.Dependent``): su ``name``, su
+    código si es una entidad (``entity``), el tipo de su operación (``op_type``), su estado (``state``, el valor
+    de ``design.entities.EntityState``), lo que se le apoya en m³ (``volume_m3``; ``None`` si solo parte de la
+    superficie) y, si es una entidad viva, los anillos de su huella (``rings``: ``(k, 2)`` absolutos, float64;
+    vacío si es un diseño, que no tiene huella propia)."""
+
+    name: str
+    entity: str | None
+    op_type: str
+    state: str
+    volume_m3: float | None
+    rings: tuple[np.ndarray, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class EntityPreview:
+    """Lo que enseña la vista previa de una entidad **antes de calcularla** (RF-015-26): su ``name``, su ``code``
+    (``PLT-001``; el que tendría), la ``version`` (su código) y el estado de las máscaras (``masks``), la
+    superficie de partida (``start_surface``, el nombre de su dato: sobre la que se dibuja), la huella
+    (``outline``: los anillos de su contorno, con sus huecos, ``(k, 2)`` absolutos float64), el eje (``axis``: sus
+    vértices ``(x, y)`` absolutos, en el sentido de digitalización, con la abscisa 0 en el primero), la cota de la
+    rasante en sus extremos (``ends``), la huella en celdas y m², el lado de las celdas de la rejilla (``cell_m``, m: lo
+    que mide una celda en el dibujo), la longitud del eje (m) y su pendiente (%), lo
+    que se le apoya (``resting``: **solo** si la entidad ya está en la versión; una nueva no tiene nada apoyado),
+    si protege (``protects``) y, entonces, el resguardo (``guard_m``), el contorno de la zona con su resguardo
+    (``zone``: los anillos de las celdas a ≤ resguardo de la huella, ajustado a la rejilla), las celdas y el área
+    de esa zona, y el tipo de restricción que declara (``declares``).
+
+    Con **máscaras que no están al día**, **sin resultado** (una entidad sin calcular) o con el **rechazo** de la
+    preparación (``refusal``: lo que rechazaría «Calcular», RF-015-08 y RF-015-09), no hay dibujo: solo el aviso
+    (``notices`` y ``refusal``). :meth:`lines` es todo lo que dice, línea a línea."""
+
+    name: str
+    code: str
+    version: str
+    masks: MaskState
+    start_surface: str = ""
+    outline: tuple[np.ndarray, ...] = ()
+    axis: tuple[tuple[float, float], ...] = ()
+    principal: bool = False
+    ends: tuple[EntityEnd, ...] = ()
+    cells: int = 0
+    area_m2: float = 0.0
+    cell_m: float = 0.0
+    length_m: float = 0.0
+    gradient_pct: float = 0.0
+    resting: tuple[RestingItem, ...] = ()
+    protects: bool = False
+    guard_m: float | None = None
+    zone: tuple[np.ndarray, ...] = ()
+    zone_cells: int = 0
+    zone_area_m2: float = 0.0
+    declares: ConstraintType | None = None
+    notices: tuple[Notice, ...] = ()
+    refusal: GeoblenderError | None = None
+
+    @property
+    def drawable(self) -> bool:
+        """Si hay algo que dibujar (la huella): sin máscaras al día, sin resultado o rechazada, no."""
+        return bool(self.outline)
+
+    def lines(self, language: str = "es") -> tuple[tuple[str, bool], ...]:
+        """Todo lo que dice la vista previa en ``language``, línea a línea con si va en alerta: el rechazo de
+        «Calcular», con los mismos mensajes (en alerta), y los avisos y notas en su orden."""
+        found: list[tuple[str, bool]] = []
+        if self.refusal is not None:
+            text = (self.refusal.text_in(language) if isinstance(self.refusal, DesignError)
+                    else self.refusal.message)
+            found.append((text, True))
+        found.extend((notice.text(language), notice.severity == "warning") for notice in self.notices)
+        return tuple(found)
+
+
+def _rings(zone: Any) -> tuple[np.ndarray, ...]:
+    """Los anillos de una ``design.entities.DeclaredZone`` (el exterior y sus huecos, de cada parte)."""
+    return tuple(ring for part in zone.parts for ring in part)
+
+
+def _listed_names(items: Iterable[RestingItem]) -> tuple[str, ...]:
+    """Los nombres de ``items`` entre «», los :data:`_ITEMS_LISTED` primeros y, si hay más, un «…»."""
+    names = [f"«{item.name}»" for item in items]
+    return tuple(names[:_ITEMS_LISTED]) + (("…",) if len(names) > _ITEMS_LISTED else ())
+
+
+def _guard_units(footprint: Any, grid: Grid, guard_m: float
+                 ) -> Generator[None, None, tuple[tuple[np.ndarray, ...], int]]:
+    """El contorno de la zona de la huella con su resguardo ``guard_m`` (m) y sus celdas: las de la ventana de
+    ``footprint`` (``design.platform.Footprint``) y las que quedan a ≤ resguardo de ella con la distancia
+    euclídea entre centros de celda (``design.envelopes.reach_steps``): lo que la compilación de la 012
+    admitirá, a una celda como mucho. Con resguardo 0, la propia huella."""
+    from . import entities, platform  # al usarlo: platform importa Notice de aquí
+    from .envelopes import reach_steps
+    from .model import Metric
+
+    cells = np.asarray(footprint.cells, dtype=bool)
+    top, left = footprint.window[0].start, footprint.window[1].start
+    if guard_m <= 0.0:
+        zone = entities.declared_zone(cells, grid, 0.0, offset=(top, left))
+        yield
+        return _rings(zone), zone.cells
+    rows, cols = np.flatnonzero(cells.any(axis=1)), np.flatnonzero(cells.any(axis=0))
+    box = (slice(top + int(rows[0]), top + int(rows[-1]) + 1),
+           slice(left + int(cols[0]), left + int(cols[-1]) + 1))
+    window = platform.work_window(box[0], box[1], guard_m, grid, Metric.EXACT)
+    around = platform._window_grid(grid, window)  # noqa: SLF001 - la ventana de la rejilla del proyecto
+    seed = np.full(around.shape, np.nan, dtype=np.float64)
+    inside_box = cells[int(rows[0]):int(rows[-1]) + 1, int(cols[0]):int(cols[-1]) + 1]
+    first, second = box[0].start - window[0].start, box[1].start - window[1].start
+    block = seed[first:first + inside_box.shape[0], second:second + inside_box.shape[1]]
+    block[inside_box] = 0.0
+    distance = yield from platform._drain(  # noqa: SLF001 - las unidades de un cálculo por pasos
+        reach_steps(seed, around, guard_m, Metric.EXACT, name="resguardo"))
+    inside = np.isfinite(distance)
+    zone = entities.declared_zone(inside, grid, 0.0, offset=(window[0].start, window[1].start))
+    yield
+    return _rings(zone), zone.cells
+
+
+def _resting_units(project: StoreProject, version_uid: str, code: str, grid: Grid
+                   ) -> Generator[None, None, tuple[RestingItem, ...]]:
+    """Lo que se apoya en la entidad ``code`` o parte de su superficie (``design.entities.dependents``, una sola
+    lista) con, de las entidades vivas, su huella (``design.entity_store.read_entity_footprint``). Solo lee."""
+    from . import entities, entity_store  # al usarlo: entity_store importa Notice de aquí
+
+    rows = entities.dependents(project, version_uid, code)
+    yield
+    if not rows:
+        return ()
+    listed = entities.registry(project, version_uid)
+    yield
+    found: list[RestingItem] = []
+    with project.read() as conn:
+        surfaces = entity_store.entity_surfaces(conn, listed)
+        for row in rows:
+            rings: tuple[np.ndarray, ...] = ()
+            where = surfaces.get(row.entity) if row.entity is not None else None
+            if where is not None:
+                shape = entity_store.read_entity_footprint(conn, where.locator)
+                rings = _rings(entities.declared_zone_of_runs(shape.runs, grid, 0.0))
+            found.append(RestingItem(row.name, row.entity, row.op_type, str(row.state.value),
+                                     row.volume_m3, rings))
+            yield
+    return tuple(found)
+
+
+def _entity_request(project: StoreProject, version: Any, code: str) -> Any:
+    """La petición de la entidad ``code`` que ya está en la versión ``version``: su operación vigente (los campos de
+    su capa) con los **parámetros vigentes** de la entidad (``entity_store.platform_parameters``, RF-015-01), como
+    la que recalcularía «Recalcular lo obsoleto»; ``None`` si no tiene operación (sin calcular)."""
+    import json
+
+    from . import entities, entity_store, provenance  # al usarlo: importan Notice de aquí
+
+    entry = entities.registry(project, version.uid).get(code)
+    if entry is None:
+        raise ValueError(f"la entidad «{code}» no es de la versión {version.code}")
+    if entry.operation_uid is None:
+        return None
+    with project.read() as conn:
+        row = conn.execute("SELECT settings FROM gb_operation WHERE uid = ?",
+                           (entry.operation_uid,)).fetchone()
+    settings = json.loads(str(row[0])) if row is not None and row[0] else {}
+    return provenance.platform_request(
+        settings, entity_store.platform_parameters(project, version, entry.record.code))
+
+
+def _entity_units(project: StoreProject, request: Any, code: str | None, version_uid: str
+                  ) -> Generator[None, None, EntityPreview]:
+    """Las unidades de :func:`entity_preview_steps`."""
+    from . import entities, entity_store  # al usarlo: importan Notice de aquí
+    from .entities import EntityKind
+
+    state, _pending = access.mask_state(project, version_uid)
+    with project.read() as conn:
+        version = versions_read.version(conn, version_uid)
+    assert version is not None  # mask_state ya lo comprobó
+    yield
+    existing = None
+    name = getattr(request, "name", "") or ""
+    if code is not None:
+        existing = entities.registry(project, version.uid).get(code)
+        if existing is None:
+            raise ValueError(f"la entidad «{code}» no es de la versión {version.code}")
+        name = existing.record.name
+    named = "" if existing is None else existing.record.code
+    if state is not MaskState.CURRENT:
+        found = ("des.preview_entity_masks_missing" if state is MaskState.MISSING
+                 else "des.preview_entity_masks_stale")
+        return EntityPreview(name, named, version.code, state, notices=(
+            Notice(found, {"version": version.code, "entity": name}),))
+    if existing is not None:
+        request = _entity_request(project, version, existing.record.code)
+        if request is None:
+            return EntityPreview(name, named, version.code, state, notices=(
+                Notice("des.preview_entity_uncalculated", {"entity": name, "code": named}),))
+    yield
+    masks: MaskSet = yield from access.load_masks_steps(project, version.uid)
+    try:
+        prepared = yield from entity_store.prepare_platform_units(
+            project, request, version, masks, code=None if existing is None else named,
+            supersedes=None if existing is None else existing.operation_uid)  # como lo recalcularía la orden
+    except (DesignError, GeoblenderError) as refused:  # lo que rechazaría «Calcular»: es el aviso
+        return EntityPreview(name, named, version.code, state, refusal=refused)
+    grid = prepared.job.grid
+    foot = prepared.footprint
+    shape = entities.declared_zone(foot.cells, grid, 0.0,
+                                   offset=(foot.window[0].start, foot.window[1].start))
+    yield
+    axis = foot.axis
+    start, end = axis.vertices[0], axis.vertices[-1]
+    ends = (EntityEnd("start", start[0], start[1], float(foot.start_level_m)),
+            EntityEnd("end", end[0], end[1], float(foot.end_level_m)))
+    protects = bool(prepared.values.get("protect"))
+    guard = prepared.values.get("guard_m") if protects else None
+    zone: tuple[np.ndarray, ...] = ()
+    zone_cells = 0
+    declares: ConstraintType | None = None
+    notices = [Notice("des.preview_entity", {
+        "entity": name, "code": prepared.code, "version": version.code, "cells": foot.cell_count,
+        "area": float(foot.area_m2), "length": float(axis.length_m),
+        "start_level": float(foot.start_level_m), "end_level": float(foot.end_level_m),
+        "gradient": float(foot.gradient_pct)}), *foot.notices]
+    if protects and guard is not None:
+        zone, zone_cells = yield from _guard_units(foot, grid, float(guard))
+        declares = ConstraintType.NO_FILL  # lo que declara una plataforma que protege (D-4)
+        notices.append(Notice("des.preview_entity_declares", {
+            "guard": float(guard), "area": zone_cells * float(grid.cell_area)}))
+    else:
+        notices.append(Notice("des.preview_entity_declares_none"))
+    resting: tuple[RestingItem, ...] = ()
+    if existing is not None:
+        resting = yield from _resting_units(project, version.uid, named, grid)
+        if resting:
+            notices.append(Notice("des.preview_entity_supported", {
+                "count": len(resting), "items": _listed_names(resting)}))
+        else:
+            notices.append(Notice("des.preview_entity_supported_none"))
+    return EntityPreview(
+        name, prepared.code, version.code, state, prepared.start_surface, _rings(shape),
+        tuple(axis.vertices), bool(axis.principal), ends, foot.cell_count, float(foot.area_m2),
+        float(max(grid.dx, grid.dy)), float(axis.length_m), float(foot.gradient_pct), resting, protects,
+        None if guard is None else float(guard), zone, zone_cells,
+        zone_cells * float(grid.cell_area), declares, tuple(notices))
+
+
+def entity_preview_steps(project: StoreProject, request: Any, version_uid: str, *,
+                         code: str | None = None, budget_s: float = STEP_BUDGET_S
+                         ) -> Iterator[Progress]:
+    """El :class:`EntityPreview` de una plataforma **antes de calcularla** (RF-015-26) para la versión
+    ``version_uid`` (uid o código), por pasos de ``budget_s`` como mucho: el último ``Progress`` lleva el
+    resumen. Dos maneras de pedirla: ``request`` (``design.model.PlatformRequest``, la que se prepara en el
+    diálogo de «Plataforma…»; una entidad nueva, con el código que tendría) o ``code`` (el código o el nombre de
+    una entidad que ya está en la versión, con sus parámetros vigentes: lo que recalcularía; ``request`` es
+    entonces ``None``). Es la **preparación entera** de la orden (``entity_store.prepare_platform_units``), sin
+    calcular la plataforma ni escribir nada: ni los parámetros, ni la operación, ni los datos, ni **las
+    máscaras**, que no compila (si faltan o están obsoletas, lo dice en lugar de dibujar). Un rechazo de la
+    preparación (RF-015-08, RF-015-09: la geometría, los campos, los parámetros, la partida, la falta de dato…)
+    no es un error: es ``EntityPreview.refusal``, con el mismo mensaje que «Calcular». Otros errores (una
+    versión que no existe, una entidad que no es de la versión: ``ValueError``) sí se lanzan al avanzar."""
+    if (request is None) == (code is None):
+        raise ValueError("la vista previa de una entidad es de una petición (la que se prepara) o de una "
+                         "entidad de la versión (su código), no de las dos ni de ninguna")
+    return pace_progress(_entity_units(project, request, code, version_uid), budget_s,
+                         phase=_ENTITY_PHASE, running="Preparando la vista previa de la entidad…",
+                         finished="Vista previa de la entidad lista", total=10)

@@ -205,6 +205,8 @@ PENDING_015_API = frozenset({
     "merge_released", "released_supports",
     # T26: traer las entidades de otra versión (design.entity_store).
     "Brought", "BroughtEntity", "bring_entities",
+    # T29: la vista previa de una entidad antes de calcularla (design.preview).
+    "EntityEnd", "EntityPreview", "RestingItem", "entity_preview_steps",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({

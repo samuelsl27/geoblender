@@ -53,12 +53,19 @@ conmutar a la interfaz de Blender (``bl.ui.switcher.add_blender_hook``) y al des
 (:func:`unregister`, principio 8). Un error al dibujar se registra una vez y deja de dibujar: nunca
 una traza por fotograma. Las posiciones son locales respecto al GeoOrigin (float64 hasta el último
 paso, ADR-0005).
+
+**La vista previa de una entidad de diseño** (spec 015, T29; RF-015-26) es otro módulo, ``bl.draw.entity``,
+que reutiliza de aquí lo que se dibuja (:class:`Built`, :func:`screen_items`, el resumen y la leyenda) y
+las ayudas con nombre público (:data:`region_ready`, :data:`measure`, :data:`publish`, :data:`redraw`,
+:data:`error_text`, :data:`ring_segments`, :data:`ring_center`). Las dos comparten el resumen de la
+vista, así que **solo una está activa a la vez**: activar una quita la otra (:func:`enable`).
 """
 
 from __future__ import annotations
 
 import logging
 import sqlite3
+import sys
 import time
 from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass, field, replace
@@ -95,9 +102,11 @@ __all__ = [
     "PENDING_COLOR", "RAMP", "SECTOR", "SECTOR_COLOR", "SECTOR_PENDING", "SEED_PX",
     "Built", "Plan", "Points", "QuarryPlan", "Request", "build_steps", "building", "built",
     "crown_points_steps", "crown_ring_cells", "default_plan", "disable", "draw_points", "drawing",
-    "edges_steps", "elevation_colors", "enable", "enabled", "on_project_changed", "on_project_read",
-    "on_version_changed", "plan", "rebuild", "register", "screen_items", "seed_points_steps", "stamp",
-    "summary_items", "summary_lines", "tick", "toolbar_covered_px", "unregister", "wrap_text",
+    "edges_steps", "elevation_colors", "enable", "enabled", "error_text", "measure",
+    "on_project_changed", "on_project_read", "on_version_changed", "plan", "publish", "rebuild",
+    "redraw", "region_ready", "register", "ring_center", "ring_segments", "screen_items",
+    "seed_points_steps", "stamp", "summary_items", "summary_lines", "tick", "toolbar_covered_px",
+    "unregister", "wrap_text",
 ]
 
 LOGGER = logging.getLogger("geoblender.bl.draw")
@@ -1091,6 +1100,18 @@ def _error_text(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
 
 
+region_ready = _region_ready
+measure = _measure
+publish = _publish
+redraw = _redraw
+error_text = _error_text
+ring_segments = _ring_segments
+ring_center = _ring_center
+"""Las ayudas de esta vista previa con nombre público, para la de una entidad de diseño
+(``bl.draw.entity``, spec 015, T29): :func:`_region_ready`, :func:`_measure`, :func:`_publish`,
+:func:`_redraw`, :func:`_error_text`, :func:`_ring_segments` y :func:`_ring_center`."""
+
+
 def rebuild(project: Any = None, version_uid: str | None = None) -> None:
     """Empieza a construir de nuevo lo que dibuja la vista previa para la versión activa (o
     ``version_uid``) del proyecto de la sesión (o ``project``), y deja un temporizador que da los
@@ -1207,6 +1228,18 @@ def default_plan() -> Plan:
     return Plan(SeedSource(SeedKind.SURFACE, surface=des_panels.surface_items(None, None)[0][0]))
 
 
+ENTITY_MODULE = f"{__package__}.entity"
+"""El módulo de la vista previa de una entidad de diseño (se importa al activarla)."""
+
+
+def _entity_off() -> None:
+    """Quita la vista previa de una entidad de diseño (``bl.draw.entity``) si está importada y activa: las
+    dos comparten el resumen de la vista."""
+    lazy = sys.modules.get(ENTITY_MODULE)
+    if lazy is not None:
+        lazy.disable()
+
+
 def enable(wanted: Plan | QuarryPlan | None = None) -> None:
     """Activa la vista previa de ``wanted`` (unas semillas de la 013, :class:`Plan`, o un diseño de la
     cantera de la 014, :class:`QuarryPlan`; sin él, :func:`default_plan`): pone los manejadores de
@@ -1217,6 +1250,7 @@ def enable(wanted: Plan | QuarryPlan | None = None) -> None:
     project = project_session.current()
     if project is None:
         raise RuntimeError("no hay un proyecto abierto: no hay semillas que ver")
+    _entity_off()  # comparten el resumen de la vista: solo una a la vez (T29)
     chosen = wanted if wanted is not None else default_plan()
     _STATE.failed = False
     _STATE.enabled = True

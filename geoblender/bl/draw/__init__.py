@@ -13,6 +13,8 @@
 - ``design``: la vista previa de semillas, dominios y restricciones (spec 013, T25): igual que la
   anterior, solo existe mientras está activa, la importa su orden (o su propiedad) y
   :func:`unregister` la quita.
+- ``entity``: la vista previa de una entidad de diseño (spec 015, T29): como la anterior, solo existe
+  mientras está activa, la importa su orden y :func:`unregister` la quita.
 """
 
 from __future__ import annotations
@@ -30,6 +32,8 @@ CONSTRAINTS_MODULE = f"{__name__}.constraints"
 """El módulo de la superposición de las restricciones (se importa al activarla)."""
 DESIGN_MODULE = f"{__name__}.design"
 """El módulo de la vista previa de semillas, dominios y restricciones (se importa al activarla)."""
+ENTITY_MODULE = f"{__name__}.entity"
+"""El módulo de la vista previa de una entidad de diseño (se importa al activarla)."""
 
 
 def register() -> None:
@@ -50,7 +54,7 @@ def unregister() -> None:
     """Quita las superposiciones (también la de las restricciones, si está activa) y desregistra
     ``classes``, en orden inverso."""
     try:
-        for name in (DESIGN_MODULE, CONSTRAINTS_MODULE):
+        for name in (ENTITY_MODULE, DESIGN_MODULE, CONSTRAINTS_MODULE):
             lazy = sys.modules.get(name)
             if lazy is not None:
                 lazy.unregister()

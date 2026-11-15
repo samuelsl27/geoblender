@@ -612,3 +612,16 @@ description.es = "Trae las entidades de otra versión a la activa, sin sus resul
 entry = "R-36"
 action = "D"
 frequency = 1
+
+# La vista previa de una entidad (spec 015, T29; RF-015-26): interna hasta que la T31 la ponga en el menú «Entidad ▾». El
+# botón «Vista previa» del diálogo de «Plataforma…» es la misma orden de la plataforma con la propiedad oculta ``preview``.
+[[command]]
+key = "geoblender.des_entity_preview"
+kind = "internal"
+label.en = "Preview of the entity"
+label.es = "Vista previa de la entidad"
+description.en = "Show, before calculating, the footprint of a platform, its axis with its sense, the levels at its ends, what rests on it and the constraints it will declare"
+description.es = "Enseña, antes de calcular, la huella de una plataforma, su eje con su sentido, las cotas en sus extremos, lo que se le apoya y las restricciones que declarará"
+entry = "R-36"
+action = "T"
+frequency = 2

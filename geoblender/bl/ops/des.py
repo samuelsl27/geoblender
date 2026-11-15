@@ -259,6 +259,17 @@ y lo que quedó sin valor (una partida que era un resultado de la otra versión)
 calculado y no declara restricciones; sus dependencias se detectan de nuevo al calcularlo. Con el proyecto en escritura
 y la versión activa editable y, si no, desactivada con su motivo (:class:`DesignCommandAware`); la entrada de R-36 la
 entrega la T31 (menú «Entidad ▾»).
+
+**La vista previa de una entidad** (spec 015, T29; HU-015-3; RF-015-26; RNF-015-06; plan 015 §5.3.3 y §5.5; comprobación
+manual M4): el botón «Vista previa» del diálogo de «Plataforma…» (:func:`_draw_platform_preview_button`: la misma orden con
+la propiedad oculta ``preview`` y todo lo pedido en el diálogo, como el de la cantera) y
+:class:`GEOBLENDER_OT_des_entity_preview` (``geoblender.des_entity_preview``: activa o quita la de la entidad
+seleccionada, o de la que dice ``entity``) activan ``bl.draw.entity``: dibuja antes de calcular y **sin escribir nada
+en el proyecto ni crear objetos** la huella, el eje con la flecha de su sentido y las cotas de la rasante en sus
+extremos, lo que se le apoya y las restricciones que declarará, con su leyenda. Al cambiar los campos del diálogo se
+redibuja (:func:`_refresh_preview`: el ``update`` de cada uno); se quita al **cancelar** la orden (su diálogo, su
+ventana de confirmar o Esc a mitad), al crear la plataforma, con su mismo control y al conmutar a la interfaz de
+Blender. Lo que rechazaría «Calcular» sale como aviso de la vista previa, no como un error.
 """
 
 from __future__ import annotations
@@ -268,6 +279,7 @@ import json
 import logging
 import math
 import sqlite3
+import sys
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -3499,8 +3511,79 @@ PLATFORM_MODE_ITEMS = [
 """El modo de la plataforma (``design.model.PlatformMode``; D-5: «en corte» por defecto)."""
 AXIS_LINK_FIELD = "eje"
 """El campo que propone el diálogo para el enlace de un polígono con su eje (plan 015 §5.2.1)."""
-_PLATFORM_HIDDEN = frozenset({"confirm", "in_steps", "confirm_counterslope"})
+_PLATFORM_HIDDEN = frozenset({"confirm", "in_steps", "confirm_counterslope", "preview"})
 """Las propiedades ocultas de «Plataforma…»: las pone quien la lanza (o su ventana de confirmar)."""
+ENTITY_PREVIEW = "geoblender.des_entity_preview"
+ENTITY_DRAW_MODULE = "draw.entity"
+"""El módulo de la vista previa de una entidad dentro de ``bl`` (``bl.draw.entity``)."""
+
+
+def _entity_preview() -> Any:
+    """El módulo de la vista previa de una entidad (``bl.draw.entity``), importado al usarlo."""
+    from ..draw import entity as preview  # al usarlo: nada pesado al registrar
+
+    return preview
+
+
+def _entity_preview_loaded() -> Any:
+    """El módulo de la vista previa de una entidad **si ya está importado** (si no, ``None``: no puede estar
+    activa y no hace falta importarlo para saberlo)."""
+    return sys.modules.get(f"{__package__.rsplit('.', 1)[0]}.{ENTITY_DRAW_MODULE}")
+
+
+def _entity_preview_on() -> bool:
+    """Si la vista previa de una entidad está activa."""
+    loaded = _entity_preview_loaded()
+    return bool(loaded is not None and loaded.enabled())
+
+
+def _entity_preview_off() -> None:
+    """Quita la vista previa de una entidad si está activa (cancelar la orden, crear la plataforma)."""
+    loaded = _entity_preview_loaded()
+    if loaded is not None:
+        loaded.disable()
+
+
+def _platform_fields() -> tuple[str, ...]:
+    """Los campos del diálogo de «Plataforma…»: sus propiedades no ocultas."""
+    return tuple(name for name in GEOBLENDER_OT_des_create_platform.__annotations__
+                 if name not in _PLATFORM_HIDDEN)
+
+
+def _draw_platform_preview_button(layout: Any, operator: Any) -> None:
+    """El botón «Vista previa» del diálogo de «Plataforma…» (T29; RF-015-26): la misma orden con ``preview`` y todo lo
+    pedido en el diálogo (cada campo, tal como está), que se ejecuta sin abrir otro diálogo. Un valor que su lista ya
+    no ofrece se queda en el de por defecto (y lo rechaza la orden si falta)."""
+    row = layout.row()
+    row.operator_context = "EXEC_DEFAULT"
+    shown = row.operator(CREATE_PLATFORM, text=tr("Preview"), icon="HIDE_OFF")
+    for name in _platform_fields():
+        try:
+            setattr(shown, name, getattr(operator, name))
+        except (TypeError, ValueError):
+            LOGGER.debug("El campo %s no pasa a la vista previa de la plataforma", name, exc_info=True)
+    shown.preview = True
+
+
+def _refresh_preview(self: Any, _context: Any) -> None:
+    """El ``update`` de cada campo de «Plataforma…» (T29; RF-015-26): con la vista previa de **esa plataforma** activa
+    (la de una entidad de la versión no), la redibuja con lo que dice ahora el diálogo. Un diálogo a medias (un campo
+    sin escribir, un número que no lo es) no la cambia: sigue la última completa. Solo lee."""
+    loaded = _entity_preview_loaded()
+    if loaded is None or not loaded.enabled() or loaded.plan() is None or loaded.plan().request is None:
+        return
+    try:
+        request = GEOBLENDER_OT_des_create_platform._request(self)
+    except ProfileFormError:
+        return
+    loaded.replace(loaded.EntityPlan(request=request))
+
+
+def _propose_and_refresh(self: Any, context: Any) -> None:
+    """El ``update`` de la capa, la geometría y sus campos: propone la cota inicial, la pendiente y el ancho de la capa
+    (:func:`_propose_values`) y redibuja la vista previa (:func:`_refresh_preview`)."""
+    _propose_values(self, context)
+    _refresh_preview(self, context)
 
 
 def _typed(value: float | None) -> str:
@@ -3555,90 +3638,90 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
         name="Layer",
         description="Layer of the project the platform is taken from: a layer of lines (the axis and "
                     "the width of each platform) or of polygons (the shape of each platform)",
-        items=des_panels.platform_layer_items, options=_FIELD, update=_propose_values)
+        items=des_panels.platform_layer_items, options=_FIELD, update=_propose_and_refresh)
     feature: StringProperty(  # type: ignore[valid-type]
         name="Platform of the layer",
         description="Name or number (fid) of the geometry of the layer that is the platform",
-        options=_FIELD, update=_propose_values)
+        options=_FIELD, update=_propose_and_refresh)
     start_level_field: StringProperty(  # type: ignore[valid-type]
         name="Start elevation field",
         description="Numeric field of the layer with the elevation of the platform level at the "
                     "start of the axis in metres", default=START_LEVEL_FIELD, options=_FIELD,
-        update=_propose_values)
+        update=_propose_and_refresh)
     gradient_field: StringProperty(  # type: ignore[valid-type]
         name="Gradient field",
         description="Numeric field of the layer with the gradient of the platform level in %, positive "
                     "when it rises along the axis", default=GRADIENT_FIELD, options=_FIELD,
-        update=_propose_values)
+        update=_propose_and_refresh)
     width_field: StringProperty(  # type: ignore[valid-type]
         name="Width field",
         description="Numeric field of the layer of lines with the width of each platform in metres",
-        default=WIDTH_FIELD, options=_FIELD, update=_propose_values)
+        default=WIDTH_FIELD, options=_FIELD, update=_propose_and_refresh)
     axis_layer: EnumProperty(  # type: ignore[valid-type]
         name="Layer of axes",
         description="Layer of lines with the axis of each polygon (none: the main axis of the "
-                    "polygon)", items=des_panels.line_layer_items, options=_FIELD)
+                    "polygon)", items=des_panels.line_layer_items, options=_FIELD, update=_refresh_preview)
     axis_field: StringProperty(  # type: ignore[valid-type]
         name="Axis link field",
         description="Numeric field of the layer of polygons with the number (fid) of its axis in the "
-                    "layer of axes", default=AXIS_LINK_FIELD, options=_FIELD)
+                    "layer of axes", default=AXIS_LINK_FIELD, options=_FIELD, update=_refresh_preview)
     start_level: StringProperty(  # type: ignore[valid-type]
         name="Start elevation (m)",
         description="Elevation of the platform level at the start of the axis in metres: the one of the "
-                    "layer, which you can correct (empty: the one of the layer)", options=_FIELD)
+                    "layer, which you can correct (empty: the one of the layer)", options=_FIELD, update=_refresh_preview)
     gradient: StringProperty(  # type: ignore[valid-type]
         name="Gradient (%)",
         description="Gradient of the platform level in %, positive when it rises along the axis: the one "
                     "of the layer, which you can correct (empty: the one of the layer)",
-        options=_FIELD)
+        options=_FIELD, update=_refresh_preview)
     width: StringProperty(  # type: ignore[valid-type]
         name="Width (m)",
         description="Width of the platform in metres: the one of the layer, which you can correct "
-                    "(empty: the one of the layer)", options=_FIELD)
+                    "(empty: the one of the layer)", options=_FIELD, update=_refresh_preview)
     start: EnumProperty(  # type: ignore[valid-type]
         name="Start surface",
         description="Surface the platform starts from: the ground, a design surface or the surface "
                     "of another platform (by default, the last of the chain)",
-        items=des_panels.platform_start_items, options=_FIELD)
+        items=des_panels.platform_start_items, options=_FIELD, update=_refresh_preview)
     support: EnumProperty(  # type: ignore[valid-type]
         name="Support surface",
         description="Surface the platform rests on, if it rests on one (none: it rests on no other "
-                    "surface)", items=des_panels.platform_support_items, options=_FIELD)
+                    "surface)", items=des_panels.platform_support_items, options=_FIELD, update=_refresh_preview)
     mode: EnumProperty(  # type: ignore[valid-type]
         name="Mode",
         description="In cut: the platform only lowers the ground to its level; in cut and fill: "
                     "it also raises it where fill is admitted", items=PLATFORM_MODE_ITEMS,
-        default="CUT", options=_FIELD)
+        default="CUT", options=_FIELD, update=_refresh_preview)
     edge_angle: StringProperty(  # type: ignore[valid-type]
         name="Edge angle (°)",
         description="Angle of the slope that joins the platform with the ground, in degrees",
-        options=_FIELD)
+        options=_FIELD, update=_refresh_preview)
     reach: StringProperty(  # type: ignore[valid-type]
         name="Reach of the edge (m)",
         description="Farthest distance from the footprint the edge can reach, in metres",
-        options=_FIELD)
+        options=_FIELD, update=_refresh_preview)
     mesh_factor: StringProperty(  # type: ignore[valid-type]
         name="Mesh factor",
-        description="Factor of the mesh of the edge (empty: the default value)", options=_FIELD)
+        description="Factor of the mesh of the edge (empty: the default value)", options=_FIELD, update=_refresh_preview)
     metric: EnumProperty(  # type: ignore[valid-type]
         name="Metric",
         description="How the distance to the footprint is measured: the 5×5 chamfer (fast, with the "
                     "scale of the grid) or the exact Euclidean distance", items=METRIC_ITEMS,
-        default="EXACT", options=_FIELD)
+        default="EXACT", options=_FIELD, update=_refresh_preview)
     counter_tolerance: StringProperty(  # type: ignore[valid-type]
         name="Counter-slope tolerance (m)",
         description="How much the longitudinal profile can rise against the sense in which the "
                     "platform level falls before it has to be confirmed, in metres (empty: the "
                     "default value)",
-        options=_FIELD)
+        options=_FIELD, update=_refresh_preview)
     protect: BoolProperty(  # type: ignore[valid-type]
         name="Protect",
         description="Declare the footprint a protected zone: the other designs neither cut nor fill "
-                    "in it", default=False, options=_FIELD)
+                    "in it", default=False, options=_FIELD, update=_refresh_preview)
     guard: StringProperty(  # type: ignore[valid-type]
         name="Guard (m)",
         description="Distance around the footprint that is also protected, in metres; required to "
-                    "protect", options=_FIELD)
+                    "protect", options=_FIELD, update=_refresh_preview)
     # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con
     # el avance y Esc: los pone invoke; desde un guion, sin ellos, de una vez. La confirmación expresa de
     # la contrapendiente (RF-015-23): la pone el botón de su ventana, que lo dice; desde un guion, quien
@@ -3646,6 +3729,8 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
     confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
     in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
     confirm_counterslope: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    # La vista previa (T29; RF-015-26): el botón «Vista previa» del diálogo la pone y la orden enseña lo pedido.
+    preview: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
 
     # --- El diálogo ---------------------------------------------------------------------------
 
@@ -3745,6 +3830,7 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
         layout.prop(self, "protect", text=tr("Protect"), translate=False)
         if self.protect:
             layout.prop(self, "guard", text=tr("Guard (m)"), translate=False)
+        _draw_platform_preview_button(layout, self)
 
     # --- Lo pedido ----------------------------------------------------------------------------
 
@@ -3799,9 +3885,12 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
         registrar nada (RF-015-03): desde la interfaz, en el modal con el avance y Esc (RF-015-29); desde un
         guion, de una vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar. Los rechazos
         (la geometría, los campos de la capa, los parámetros que faltan, la partida, la falta de dato, un
-        sector con la búsqueda pendiente, el nombre repetido) y todas las cuentas son de ``design``."""
+        sector con la búsqueda pendiente, el nombre repetido) y todas las cuentas son de ``design``. Con ``preview``, la
+        vista previa de lo pedido (:meth:`_show_preview`)."""
         if self.confirm:
             return self._create(context)
+        if self.preview:
+            return self._show_preview()
         blocked = write_unavailable()
         if blocked is not None:
             self.report({"ERROR"}, blocked)
@@ -3830,6 +3919,54 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
         steps = design_steps.platform_run(project, request, version=version,
                                           budget_s=self.STEP_BUDGET_S)
         return self._run_steps(context, project, request.name, steps)
+
+    def _show_preview(self) -> set[str]:
+        """«Vista previa» (T29; RF-015-26): comprueba lo pedido como al calcular (:meth:`_request`, sin escribir ni
+        calcular nada) y activa con ello la vista previa de la entidad (``bl.draw.entity``: la huella, el eje con la
+        flecha de su sentido y las cotas de la rasante en sus extremos, lo que se le apoya y las restricciones que
+        declarará, con su leyenda); la que hubiera activa se cambia por la nueva (pulsarlo otra vez, o cambiar un
+        campo del diálogo: :func:`_refresh_preview`). Lo que falta del diálogo se rechaza sin tocar la vista previa; lo
+        que rechazaría «Calcular» (RF-015-08, RF-015-09) sale en la propia vista previa, como aviso. Se quita al
+        cancelar la orden, al crear la plataforma, con su control y al conmutar a la interfaz de Blender."""
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        try:
+            request = self._request()
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        preview = _entity_preview()
+        try:
+            preview.enable(preview.EntityPlan(request=request))
+        except (RuntimeError, GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, tr("The preview of the entity could not be shown: {detail}",
+                                      detail=design_error_text(exc)))
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Showing the preview of the platform «{name}»", name=request.name))
+        return {"FINISHED"}
+
+    def cancel(self, context: Any) -> None:
+        """Lo que Blender llama al cancelar: quita la vista previa de la entidad (RF-015-26: se quita al cancelar) y
+        hace lo de siempre (:meth:`_CalculateAndCreate.cancel`: un modal en curso cierra sus pasos, la ventana de
+        la confirmación cerrada sin crear descarta el cálculo abierto)."""
+        _entity_preview_off()
+        _CalculateAndCreate.cancel(self, context)
+
+    def _stop(self, context: Any, *, after: bool = True) -> set[str]:
+        """Esc a mitad del cálculo (y la cancelación al desactivar Geoblender): los pasos se cierran como siempre
+        (``_StepsModal._stop``) y la vista previa de la entidad se quita (RF-015-26: se quita al cancelar)."""
+        stopped = super()._stop(context, after=after)
+        _entity_preview_off()
+        return stopped
 
     def _confirmation(self, context: Any) -> set[str]:
         """El diálogo de crear el cálculo abierto. Con una contrapendiente que pasa de su tolerancia
@@ -3860,6 +3997,7 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
         created = _CalculateAndCreate._create(self, context)
         if opened is None or "FINISHED" not in created:
             return created
+        _entity_preview_off()  # la entidad ya existe: ya no se prepara (RF-015-26)
         return self._update_declared(context, opened)
 
     # --- Lo que sigue a crearla (RF-015-10, RF-012-06; plan 015 §5.3.2, P-7) -------------------
@@ -4703,6 +4841,100 @@ class GEOBLENDER_OT_des_entity_bring(DesignCommandAware, ProvenanceAwareOperator
         return {"FINISHED"}
 
 
+# --- La vista previa de una entidad (spec 015, T29; HU-015-3; RF-015-26; plan 015 §5.3.3) -----------------------
+
+
+def _selected_entity(context: Any) -> tuple[str, str]:
+    """El código y la versión (uid) de la entidad del objeto ``DESIGN_ENTITY`` activo de la Vista 3D
+    (``des_panels.entity_wanted``); ``("", "")`` si no hay ninguno. Solo lee el proyecto."""
+    from ...core.versions import read as versions_read  # al usarlo: habilitar no lo carga
+    from ...core.views import card
+    from ...design import entity_store
+
+    uid = des_panels.entity_wanted(context)
+    project = SESSION.project
+    if not uid or project is None:
+        return "", ""
+    with project.read() as conn:
+        found = card.item_card(project, uid, conn=conn)
+        owner = versions_read.dataset_versions(conn, [uid]).get(uid, "") if found is not None else ""
+        if found is None or not owner:
+            return "", ""
+        shape = entity_store.read_entity_footprint(conn, found.record.locator)
+    return shape.code, owner
+
+
+class GEOBLENDER_OT_des_entity_preview(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Show, before calculating, the footprint of a platform, its axis with its sense, the levels at its ends, what rests on it and the constraints it will declare"""
+
+    bl_idname = ENTITY_PREVIEW
+    bl_label = "Preview of the entity"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.PLATFORM
+
+    entity: StringProperty(  # type: ignore[valid-type]
+        name="Entity",
+        description="Code or name of the design entity to preview (empty: the one of the object selected in the "
+                    "3D view)", options=_FIELD)
+
+    @classmethod
+    def poll(cls, context: Any) -> bool:
+        """Con la vista previa activa, se puede quitar siempre; si no, lo de las órdenes de Diseño (RF-015-28): con
+        un proyecto en escritura y la versión activa editable o ninguna."""
+        return True if _entity_preview_on() else _write_poll(cls)
+
+    def execute(self, context: Any) -> set[str]:
+        """Con la vista previa de una entidad activa, la quita. Si no, activa la de la entidad pedida (``entity``) o,
+        sin ella, la del objeto de entidad seleccionado, **con sus parámetros vigentes** (lo que recalcularía), sin
+        escribir ni calcular nada (``bl.draw.entity``). Sin versión editable, sin entidad o con una de otra versión,
+        lo dice y no activa nada."""
+        if _entity_preview_on():
+            _entity_preview_off()
+            self.report({"INFO"}, tr("Preview of the entity hidden"))
+            return {"FINISHED"}
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        active = scene_versions.active()
+        try:
+            code, owner = self.entity.strip(), ""
+            if not code:
+                code, owner = _selected_entity(context)
+            if not code:
+                self.report({"ERROR"}, tr("Choose the entity to preview: select its object in the 3D view or "
+                                          "give its code"))
+                return {"CANCELLED"}
+            if owner and owner != active.uid:
+                self.report({"ERROR"}, tr("The selected entity is not of the active version: make its version "
+                                          "the active one first"))
+                return {"CANCELLED"}
+            from ...design import entities  # al usarlo: habilitar no carga el cálculo
+
+            found = entities.registry(SESSION.project, active.uid).get(code)
+            if found is None:
+                self.report({"ERROR"}, tr("«{entity}» is not an entity of {version}", entity=code,
+                                          version=active.code))
+                return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        preview = _entity_preview()
+        try:
+            preview.enable(preview.EntityPlan(code=found.record.code))
+        except (RuntimeError, GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, tr("The preview of the entity could not be shown: {detail}",
+                                      detail=design_error_text(exc)))
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Showing the preview of the entity «{name}»", name=found.record.name))
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
@@ -4719,7 +4951,8 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_create_platform,
                              GEOBLENDER_OT_des_entity_discard,
                              GEOBLENDER_OT_des_entity_release_support,
-                             GEOBLENDER_OT_des_entity_bring)
+                             GEOBLENDER_OT_des_entity_bring,
+                             GEOBLENDER_OT_des_entity_preview)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
@@ -4727,4 +4960,4 @@ T44, la que declara de nuevo los sectores desde su ventana; de la 014, la T20 po
 perímetro…», la T21 «Cantera con dos superficies…», la T28 «Transiciones con el terreno no
 afectado», la T30 «Solo relleno…» y la T33 «Ajustar el diseño a un límite nuevo…», de la entrada
 «014», que la T58 entrega; de la 015, la T15 pone «Plataforma…», de la entrada «R-36», que entrega la
-T31; la T25, «Descartar…» y «Soltar el apoyo…», internas hasta que la T31 las ponga en el menú «Entidad ▾»; la T26, «Traer las entidades de…», también interna)."""
+T31; la T25, «Descartar…» y «Soltar el apoyo…», internas hasta que la T31 las ponga en el menú «Entidad ▾»; la T26, «Traer las entidades de…», también interna; la T29, la vista previa de una entidad, interna)."""

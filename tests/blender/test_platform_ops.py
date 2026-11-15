@@ -128,7 +128,7 @@ PROPERTIES = {
 }
 """Las propiedades del diálogo con el ``msgid`` de su nombre y de su descripción (las ocultas, que pone
 quien lanza la orden, no los llevan)."""
-HIDDEN = ("confirm", "in_steps", "confirm_counterslope")
+HIDDEN = ("confirm", "in_steps", "confirm_counterslope", "preview")
 
 
 def _module(name: str) -> ModuleType:

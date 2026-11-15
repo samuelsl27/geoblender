@@ -1884,6 +1884,74 @@ CATALOG: tuple[Message, ...] = (
         "(declárela de nuevo si sigue valiendo).",
         "warning",
     ),
+    # La vista previa de una entidad de diseño (T29; RF-015-26): lo que dice antes de calcular ---
+    Message(
+        "des.preview_entity",
+        "Preview of «{entity}» ({code}) in {version}: footprint of {cells} cells ({area} m²), "
+        "axis of {length} m, level from {start_level} m at its first vertex (abscissa 0) to "
+        "{end_level} m at its last, gradient {gradient} %.",
+        "Vista previa de «{entity}» ({code}) en {version}: huella de {cells} celdas ({area} m²), "
+        "eje de {length} m, rasante de {start_level} m en su primer vértice (abscisa 0) a "
+        "{end_level} m en el último, pendiente del {gradient} %.",
+        "note",
+    ),
+    Message(
+        "des.preview_entity_declares",
+        "It will declare its footprint as a protected zone with a guard of {guard} m: {area} m² "
+        "with the guard.",
+        "Declarará su huella como una zona protegida con un resguardo de {guard} m: {area} m² con "
+        "el resguardo.",
+        "note",
+    ),
+    Message(
+        "des.preview_entity_declares_none",
+        "It does not protect its footprint: it declares no constraint.",
+        "No protege su huella: no declara ninguna restricción.",
+        "note",
+    ),
+    Message(
+        "des.preview_entity_supported",
+        "{count} designs rest on it or start from it: {items}.",
+        "Se apoyan en ella o parten de ella {count} diseños: {items}.",
+        "note",
+        count="count",
+        one_msgid="{count} design rests on it or starts from it: {items}.",
+        one_es="Se apoya en ella o parte de ella {count} diseño: {items}.",
+    ),
+    Message(
+        "des.preview_entity_supported_none",
+        "Nothing rests on it and nothing starts from it.",
+        "Nada se apoya en ella ni parte de ella.",
+        "note",
+    ),
+    Message(
+        "des.preview_entity_masks_missing",
+        "The masks of {version} have not been compiled, so the preview of «{entity}» cannot be "
+        "drawn; they are compiled before calculating (Design ▸ Legal limits and constraints ▸ "
+        "Constraints…).",
+        "Las máscaras de {version} no se han compilado, así que no se puede dibujar la vista "
+        "previa de «{entity}»; se compilan antes de calcular (Diseño ▸ Límites y restricciones ▸ "
+        "Restricciones…).",
+        "warning",
+    ),
+    Message(
+        "des.preview_entity_masks_stale",
+        "The masks of {version} are stale: a constraint, a sector, a search or a parameter changed "
+        "after compiling them, so the preview of «{entity}» cannot be drawn; they are compiled "
+        "again before calculating.",
+        "Las máscaras de {version} están obsoletas: cambió una restricción, un sector, una "
+        "búsqueda o un parámetro después de compilarlas, así que no se puede dibujar la vista "
+        "previa de «{entity}»; se compilan de nuevo antes de calcular.",
+        "warning",
+    ),
+    Message(
+        "des.preview_entity_uncalculated",
+        "«{entity}» ({code}) has no result yet, so there is nothing to preview it from; calculate "
+        "it first (Design ▸ Haul roads and entities ▸ Entities ▸ Platform…).",
+        "«{entity}» ({code}) aún no tiene resultado, así que no hay de dónde sacar su vista "
+        "previa; calcúlela antes (Diseño ▸ Pistas y entidades ▸ Entidades ▸ Plataforma…).",
+        "warning",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

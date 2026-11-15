@@ -9187,3 +9187,80 @@ es = "Nada se apoya en ella"
 
 ["{name}: start surface"]
 es = "{name}: superficie de partida"
+
+# La vista previa de una entidad de diseño (spec 015, T29; RF-015-26) ------------------------------
+
+["Preview of «{name}» ({code}) · {version}"]
+es = "Vista previa de «{name}» ({code}) · {version}"
+
+["Preview of «{name}» · {version}"]
+es = "Vista previa de «{name}» · {version}"
+
+["Preview of an entity"]
+es = "Vista previa de una entidad"
+
+["No active version: nothing to preview"]
+es = "Sin versión activa: no hay nada que previsualizar"
+
+["There is no active version: the preview of an entity needs one"]
+es = "No hay ninguna versión activa: la vista previa de una entidad la necesita"
+
+["Footprint ({area} m²)"]
+es = "Huella ({area} m²)"
+
+["Axis: the arrow shows its sense; the abscissa 0 is at its first vertex"]
+es = "Eje: la flecha muestra su sentido; la abscisa 0 está en su primer vértice"
+
+["Level of the platform at the ends of the axis (m)"]
+es = "Cota de la rasante de la plataforma en los extremos del eje (m)"
+
+["Rests on it or starts from it ({count})"]
+es = "Se apoya en ella o parte de ella ({count})"
+
+["Rests on it or starts from it ({count}), without a footprint of its own"]
+es = "Se apoya en ella o parte de ella ({count}), sin una huella propia"
+
+["Declares «{type}» with a guard of {guard} m ({area} m²)"]
+es = "Declara «{type}» con un resguardo de {guard} m ({area} m²)"
+
+["Start (abscissa 0) · level {level} m"]
+es = "Inicio (abscisa 0) · rasante {level} m"
+
+["End · level {level} m"]
+es = "Final · rasante {level} m"
+
+["«{name}» · {volume} m³ rest on it"]
+es = "«{name}» · {volume} m³ apoyados en ella"
+
+["«{name}» starts from its surface"]
+es = "«{name}» parte de su superficie"
+
+["{name} · guard {guard} m"]
+es = "{name} · resguardo {guard} m"
+
+["The preview of the entity could not be prepared: {detail}"]
+es = "No se pudo preparar la vista previa de la entidad: {detail}"
+
+["The preview of the entity could not be shown: {detail}"]
+es = "No se pudo mostrar la vista previa de la entidad: {detail}"
+
+["Showing the preview of the platform «{name}»"]
+es = "Mostrando la vista previa de la plataforma «{name}»"
+
+["Showing the preview of the entity «{name}»"]
+es = "Mostrando la vista previa de la entidad «{name}»"
+
+["Preview of the entity hidden"]
+es = "Vista previa de la entidad quitada"
+
+["Choose the entity to preview: select its object in the 3D view or give its code"]
+es = "Elija la entidad de la que ver la vista previa: seleccione su objeto en la Vista 3D o dé su código"
+
+["The selected entity is not of the active version: make its version the active one first"]
+es = "La entidad seleccionada no es de la versión activa: active antes su versión"
+
+["«{entity}» is not an entity of {version}"]
+es = "«{entity}» no es una entidad de {version}"
+
+["Code or name of the design entity to preview (empty: the one of the object selected in the 3D view)"]
+es = "Código o nombre de la entidad de diseño de la que ver la vista previa (vacío: la del objeto seleccionado en la Vista 3D)"
