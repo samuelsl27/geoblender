@@ -408,6 +408,26 @@ def open_entity_project(prefix: str = "gb-ep-", step_m: float = qfx.STEP_M
             project.close()
 
 
+@contextmanager
+def open_copy_of(project: Any, clock: FakeClock, step_m: float = qfx.STEP_M
+                 ) -> Iterator[tuple[Any, FakeClock]]:
+    """Una copia propia de ``project`` **tal como está ahora** (la carpeta entera del proyecto, que sigue abierto y
+    no se toca), abierta en escritura con un reloj nuevo que parte de la hora de ``clock``: ``(project, clock)``.
+    Al salir se cierra y se borra (spec 015, T38: partir cada caso de una instantánea del estado en que dejó la
+    clase, sin recrearlo). ``project`` ha de estar quieto (sin una transacción en curso). ``step_m``: el paso de
+    rejilla de la plantilla de la que salió (el de su clase). Hace falta
+    ``constraints_project.constraints_registered()`` activo, como en :func:`open_entity_project`."""
+    made = project_template(step_m)
+    with project_tmp("gb-oc-") as folder:
+        shutil.copytree(Path(project.root).parent, folder / "proyectos")
+        copy_clock = FakeClock(clock.now())
+        opened = _open(folder, made, copy_clock)
+        try:
+            yield opened, copy_clock
+        finally:
+            opened.close()
+
+
 class EntityProjectCase(qfx.QuarryProjectCase):
     """Una copia **por clase** del proyecto de la cantera con las capas de plataformas, abierta en
     escritura: lo de :class:`~tests.support.quarry_fixtures.QuarryProjectCase` (``cls.project``,

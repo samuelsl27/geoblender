@@ -4430,15 +4430,25 @@ _HIDDEN = {"HIDDEN", "SKIP_SAVE"}  # las pone quien la lanza (la ventana)
 
 
 def _compile_steps(owner: Any, project: Any, version_uid: str) -> Iterator[Progress]:
-    """Los pasos de la orden «Compilar las máscaras» de la versión ``version_uid``: los de antes
+    """Los pasos de la orden «Compilar las máscaras» de la versión ``version_uid``: **declarar antes lo que una
+    entidad de diseño que protege aún no declaró** (``gis.masks.access.declare_pending_steps``: la cadena que sigue
+    a «Crear» se cortó con Esc o falló antes de escribir la primera declaración; spec 015, T38; sin entidades,
+    nada), los de antes
     de empezar la operación (``gis.masks.store.begin_compile_steps``: la lectura y la
     comprobación de cada restricción y de cada polígono, ninguno de más de 0,05 s en frío:
     RNF-012-06) como ``Progress`` sin avance, la operación «en curso» (queda en ``owner.handle``)
     y los de ``compile_run``, el último con lo guardado. Cerrarlos antes de la operación no
     deja nada; cerrarlos después, la deja «cancelada» (``compile_run`` lo hace al cerrarse) y no
     deja nada en el proyecto."""
-    from ...gis.masks import store as masks_store  # al usarlo: habilitar no lo carga (T38)
+    from ...gis.masks import access  # al usarlo: habilitar no lo carga (T38)
+    from ...gis.masks import store as masks_store
 
+    declaring = access.declare_pending_steps(project, version_uid)  # lo que una entidad que protege no declaró
+    try:
+        for _declared in declaring:
+            yield Progress(PREPARE_PHASE, 0, 1, tr("Compiling the constraints…"))
+    finally:
+        declaring.close()
     begin = masks_store.begin_compile_steps(project, version=version_uid)
     handle = None
     try:

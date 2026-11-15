@@ -25,6 +25,13 @@ Un operador de otro módulo (diseño, verificación…) pide las máscaras **sol
   **no se compilan** mientras tanto (``gis.masks.store.gather_steps`` se niega con
   ``core.constraint_declared_blocked`` antes de leer la tabla) hasta que la persona acepte la edición con un
   motivo o la entidad la vuelva a poner.
+  **La primera declaración de una versión** (spec 015, T38; hallazgo E-1 de la verificación única): mientras no se
+  escribe la tabla no hay nada que la compilación no haya consumido, y la plataforma que protege (cuya orden de
+  crear ya hizo su commit) quedaría sin su restricción en ningún sitio si Esc o un fallo cortan lo que sigue antes
+  de declararla. Por eso, con un :class:`~.declaring.DeclarationHook` registrado (lo da ``design`` a través de
+  ``bl``; ``gis`` no puede importarlo), las máscaras también están **obsoletas** con la misma causa
+  (``DECLARED_NEW``) mientras una entidad viva que protege **no tenga su restricción en la declaración
+  vigente** (:func:`_declared_pending`): nunca al día sin la zona de una entidad que protege.
 - :func:`mask_cause`: por qué están obsoletas, si es por lo que no ve el grafo (H-1) o por una tabla de
   declaradas que no se puede usar.
 - :func:`require_current`: ``MaskError`` si las máscaras de una versión no están al día, con la
@@ -40,10 +47,13 @@ Un operador de otro módulo (diseño, verificación…) pide las máscaras **sol
   empezar su operación en una llamada del hilo de Blender sin leer 2,81 M de celdas para tocar unas pocas.
 - :func:`mask_uses` (o :meth:`MaskSet.uses`): sus ``Use``, para registrarlas como **entradas**
   de la operación que las usa, que así queda obsoleta cuando lo quedan ellas (ADR-0025).
-- :func:`ensure_masks_steps` (D-15, D-43): si no están al día, empieza una
-  ``gis.compile_constraints`` propia y da sus pasos; el último ``Progress`` lleva el
+- :func:`ensure_masks_steps` (D-15, D-43): si no están al día, **declara antes lo que una entidad que protege
+  aún no declaró** (:func:`declare_pending_steps`, T38: la próxima operación que las use lo pone al día) y
+  empieza una ``gis.compile_constraints`` propia y da sus pasos; el último ``Progress`` lleva el
   :class:`MaskSet`. Si no se pueden compilar, se rechaza con lo mismo que la compilación
-  (``gis.masks.store.begin_compile``), antes de dar ningún paso y sin registrar nada.
+  (``gis.masks.store.begin_compile``), antes de dar ningún paso de ella y sin registrar nada de ella (lo único
+  que puede haber escrito antes es esa declaración, que es de una operación propia y no depende de si se
+  compila).
 - :func:`compile_masks_steps` (T19): lo mismo sin cargarlas: la compilación propia por pasos; el último
   ``Progress`` lleva su :class:`~.store.StoredMasks` (con el informe de lo ganado y perdido por
   restricción, RF-012-06); lo que usa la orden de una entidad al recompilar tras declarar.
@@ -93,6 +103,7 @@ from ...core.versions.model import Version, VersionError
 from ..geotiff.reader import GeoTiffHeader, read_header, read_rows, read_window
 from ..grid import Grid
 from ..store import StoreProject
+from . import declaring
 from . import provenance as declared
 from .combine import ClassBit
 from .compile import STEP_BUDGET_S, pace_units
@@ -109,6 +120,7 @@ __all__ = [
     "MaskSource",
     "MaskState",
     "compile_masks_steps",
+    "declare_pending_steps",
     "ensure_masks_steps",
     "load_masks",
     "load_masks_steps",
@@ -330,6 +342,16 @@ def _declared_unseen(conn: sqlite3.Connection, version_uid: str, operation: str)
                                              version_uid)).fetchone() is None
 
 
+def _declared_pending(conn: sqlite3.Connection, project: StoreProject, version_uid: str) -> bool:
+    """El hueco H-1 **de la primera declaración** (spec 015, T38; hallazgo E-1; véase :mod:`.declaring`): una
+    entidad viva de la versión que protege **no tiene su restricción en la declaración vigente** (la versión no
+    tiene tabla viva, o a la suya le falta su fila), según el gancho que registró ``design``
+    (:class:`~.declaring.DeclarationHook`); sin gancho, nunca. Mientras sea así, unas máscaras compiladas sin ella
+    no pueden estar al día: serían las de una entidad que protege **sin su prohibición**."""
+    hook = declaring.current()
+    return hook is not None and hook.pending(project, conn, version_uid)
+
+
 def _state(conn: sqlite3.Connection, project: StoreProject,
            records: Mapping[str, DatasetRecord | None], version_uid: str
            ) -> tuple[MaskState, str | None, MaskCause | None]:
@@ -351,6 +373,8 @@ def _state(conn: sqlite3.Connection, project: StoreProject,
     if declared_store.unusable_record(conn, version_uid) is not None:  # RF-015-11: la tabla, editada fuera
         return MaskState.STALE, operation, MaskCause.DECLARED_BLOCKED
     if _declared_unseen(conn, version_uid, operation):  # H-1: lo que el grafo no ve
+        return MaskState.STALE, operation, MaskCause.DECLARED_NEW
+    if _declared_pending(conn, project, version_uid):  # H-1, la primera declaración (T38): aún no está escrita
         return MaskState.STALE, operation, MaskCause.DECLARED_NEW
     uids = [operation, *(record.uid for record in records.values() if record is not None)]
     marks = ", ".join("?" for _ in uids)
@@ -560,15 +584,48 @@ def ensure_masks_steps(project: StoreProject, version_uid: str, *,
 
 _COMPILE_PHASE = "compile"
 _COMPILE_TEXT = "Compilando las restricciones…"
+_DECLARE_TEXT = "Declarando las restricciones de las entidades…"
+
+
+def declare_pending_steps(project: StoreProject, version_uid: str, *, budget_s: float = STEP_BUDGET_S
+                          ) -> Generator[Progress, None, bool]:
+    """**Declara antes de compilar** (spec 015, T38; RF-015-10, RF-015-29, CE-015-04; hallazgo E-1; véase
+    :mod:`.declaring`): si una entidad viva de la versión ``version_uid`` (uid o código) que protege no tiene su
+    restricción en la declaración vigente —la cadena que sigue a «Crear» se cortó con Esc o falló antes de escribir
+    la primera tabla—, la declara ahora (``des.declare_constraints``: una operación y una transacción propias) para
+    que la compilación que sigue la lea. Da un ``Progress`` sin resultado por cada paso de la declaración y devuelve
+    si declaró algo. Sin gancho registrado o sin nada pendiente, no hace nada, y **tampoco con la tabla de las
+    declaradas bloqueada** por una edición hecha en QGIS (RF-015-11: lo que la persona editó no se pisa sin que
+    lo acepte o la entidad lo vuelva a poner; la compilación se niega con su motivo). Los rechazos de declarar (proteger sin
+    resguardo o en «corte y relleno», una versión que no se puede editar…) salen tal cual, nombrando la entidad:
+    es lo que impide diseñar con una protección que no se puede declarar. Cerrar el generador a mitad no deja nada
+    a medias (la declaración es una sola transacción)."""
+    hook = declaring.current()
+    if hook is None:
+        return False
+    with project.read() as conn:
+        version = _version(conn, version_uid)
+        if declared_store.unusable_record(conn, version.uid) is not None:
+            return False  # editada fuera (RF-015-11): no se pisa; la compilación se niega, con su motivo
+        pending = hook.pending(project, conn, version.uid)
+    if not pending:
+        return False
+    steps = hook.declare(project, version.uid, budget_s)
+    with closing(steps):
+        for _step in steps:
+            yield Progress(_COMPILE_PHASE, 0, 1, _DECLARE_TEXT)
+    return True
 
 
 def _compile(project: StoreProject, version_uid: str, budget_s: float
              ) -> Generator[Progress, None, tuple[StoredMasks, int]]:
-    """Una ``gis.compile_constraints`` propia de la versión ``version_uid`` por pasos: sus rechazos y la
-    lectura de lo que se compila (:func:`~.store.begin_compile_steps`, sin registrar nada) y la compilación
+    """Una ``gis.compile_constraints`` propia de la versión ``version_uid`` por pasos: la declaración de lo que una
+    entidad que protege aún no declaró (:func:`declare_pending_steps`, T38), sus rechazos y la lectura de lo que
+    se compila (:func:`~.store.begin_compile_steps`, sin registrar nada) y la compilación
     (:func:`~.store.compile_run`). Devuelve lo guardado (:class:`~.store.StoredMasks`) y el total de pasos
     que dio, para seguir contándolos."""
     total = 1
+    yield from declare_pending_steps(project, version_uid, budget_s=budget_s)
     begin = begin_compile_steps(project, version=version_uid)
     with closing(begin):
         while True:

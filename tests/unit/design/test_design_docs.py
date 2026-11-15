@@ -153,8 +153,12 @@ API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
 # El mecanismo de la 014 y la 015 para una spec que añade API pública mientras se construye: cada tarea
 # añade aquí sus nombres (y los módulos nuevos, que aún no tienen fila en la ficha) y la tarea de
 # documentación los lleva a la ficha y vacía estos dos conjuntos. Vacíos desde la T34 de la 015 (la ficha,
-# ``des.md`` §4.3, nombra todo lo público de ``design``); la 016 los usará con los suyos.
-PENDING_015_API: frozenset[str] = frozenset()
+# ``des.md`` §4.3, nombra todo lo público de ``design``); la 016 los usará con los suyos. La convergencia de la
+# 015 (T38 a T47) añade los suyos aquí y **la T47 los lleva a la ficha** y los vacía.
+PENDING_015_API: frozenset[str] = frozenset({
+    "declaration_pending",  # T38: ``entity_store``, lo que pregunta el gancho de la declaración
+    "has_platform_operation",  # T38: ``provenance``, su primera consulta
+})
 PENDING_015_MODULES: frozenset[str] = frozenset()
 
 

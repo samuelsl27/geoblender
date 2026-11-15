@@ -126,6 +126,7 @@ from __future__ import annotations
 
 import math
 import numbers
+import sqlite3
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import date
@@ -354,6 +355,7 @@ __all__ = [
     "fill_only_settings",
     "counterslope_confirmation",
     "counterslope_confirmed",
+    "has_platform_operation",
     "merge_released",
     "released_supports",
     "operation_def",
@@ -1227,6 +1229,20 @@ def design_figures(report: DesignReport, *, name: str, berm_count: int
 ENTITY_SCOPE_KEY = "entity"
 """La clave del ámbito de una cifra de las entidades además del nombre: el código de la entidad
 (``PLT-001``; inmutable por versión: no cambia al renombrarla)."""
+
+
+_LIVE_PLATFORM = (
+    "SELECT 1 FROM gb_operation AS o JOIN gb_revision AS r ON r.uid = o.revision_uid "
+    "WHERE r.version_uid = ? AND o.op_type = ? AND o.status = 'done' AND o.superseded_by IS NULL LIMIT 1")
+
+
+def has_platform_operation(conn: sqlite3.Connection, version_uid: str) -> bool:
+    """Si la versión ``version_uid`` (su uid) tiene **alguna** operación ``des.platform`` hecha y sin sustituir, en
+    cualquier revisión (spec 015, T38): sin ella ninguna entidad está viva y calculada. Una sola consulta, sin
+    cargar nada de las entidades: es lo primero que mira el gancho de la declaración pendiente
+    (``gis.masks.declaring``) cada vez que se pregunta por el estado de las máscaras, también al dibujar la
+    interfaz. Solo lee."""
+    return conn.execute(_LIVE_PLATFORM, (version_uid, PLATFORM)).fetchone() is not None
 
 
 def entity_figure_scope(name: str, code: str) -> dict[str, str]:

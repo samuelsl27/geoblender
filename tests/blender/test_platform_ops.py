@@ -842,6 +842,84 @@ class CreatePlatformTest(unittest.TestCase):
         access = _module("gis.masks.access")
         self.assertEqual(access.mask_state(self.project, self.v01.uid)[0], access.MaskState.CURRENT)
 
+    # --- Esc antes de la primera declaración de una versión (T38; hallazgo E-1) ---------------------------
+
+    CANCELLED_TEXT = ("Cancelado: la plataforma está creada; las restricciones declaradas y las máscaras se ponen "
+                      "al día antes de la próxima operación que las use")
+
+    def other_version(self, feature: str) -> Any:
+        """Una versión nueva, **activa**, con sus máscaras compiladas (las de la 012, sin ninguna declarada): una
+        versión sin ``des_decl_<vNN>``. Al terminar la prueba vuelve V01 a ser la activa."""
+        store = _module("core.versions.store")
+        with self.project.write_transaction() as conn:
+            version, _revision = store.create_version(conn, self.project, feature=feature, title=feature,
+                                                      reason=REASON)
+        self.project.refresh_header()
+        self.addCleanup(bpy.ops.geoblender.core_set_active_version, version_uid=self.v01.uid)
+        self.assertEqual(bpy.ops.geoblender.core_set_active_version(version_uid=version.uid), {"FINISHED"})
+        self.assertEqual(bpy.ops.geoblender.gis_compile_constraints(), {"FINISHED"})
+        return version
+
+    def protecting_platform_escaped(self, version: Any, events: int) -> list[str]:
+        """Crea «Carga» **protegiendo** (4 m) en ``version``, con lo que sigue a «Crear» por pasos de un evento, y
+        manda Esc tras ``events`` eventos: lo que dijo la orden. Cuenta con un terreno propio (cada versión tiene su
+        cadena de partidas)."""
+        start = self.write_grid(f"Ladera de {version.code}", ground())
+        self.refresh()
+        with mock.patch.object(self.des_ops, "_ask_confirmation"):
+            self.assertEqual(bpy.ops.geoblender.des_create_platform(
+                "EXEC_DEFAULT", **self.form(name="Protegida", feature=LOADING, start=start, protect=True, guard="4",
+                                            in_steps=False)), {"FINISHED"})
+            self.assertEqual(bpy.ops.geoblender.des_create_platform("EXEC_DEFAULT", confirm=True, in_steps=True),
+                             {"RUNNING_MODAL"})
+            modal = self.running()
+            modal.STEP_BUDGET_S = step_modals.ONE_STEP_S
+            state, _count = step_modals.drive(modal, bpy.context, stop_after=events)
+            self.assertEqual(state, {"RUNNING_MODAL"}, "la cadena no debía haber acabado")
+            self.assertEqual(modal.modal(bpy.context, ESCAPE), {"CANCELLED"})
+        self.des_ops.discard_calculation()
+        return list(modal.report_log)
+
+    def test_i_esc_before_the_first_declaration_leaves_the_masks_stale_and_the_next_operation_declares(self) -> None:
+        """RF-015-10, RF-015-29, CE-015-04, HU-015-1 (el error 51; T38, hallazgo E-1): en una versión **sin** ninguna
+        declaración, Esc en el primer evento de lo que sigue a «Crear» una plataforma que **protege** dejaba la
+        entidad creada, sin tabla de declaradas y con las máscaras «al día» sin su zona (una «en corte y relleno»
+        sobre su huella rellenaba 420 m³ sin ningún aviso). Ahora: (1) la orden dice lo que ha pasado
+        («…se ponen al día antes de la próxima operación que las use»); (2) la tabla no existe y las máscaras
+        están **obsoletas con su causa** (``DECLARED_NEW``) y ``load_masks`` se niega; (3) **la próxima plataforma**
+        que se calcula declara y compila antes: su relleno sobre la huella protegida es **0 m³**, con el aviso de la
+        restricción y de la entidad que la declara; (4) «Compilar las máscaras» hace lo mismo."""
+        access, declared = _module("gis.masks.access"), _module("core.constraints.declared")
+        for command in ("compile", "design"):
+            with self.subTest(next_operation=command):
+                version = self.other_version(f"esc-{command}")
+                log = self.protecting_platform_escaped(version, 0)
+                self.assertIn(self.CANCELLED_TEXT, log)
+                self.assertEqual({entry.record.code: str(entry.record.state)
+                                  for entry in self.entities.registry(self.project, version.uid)},
+                                 {"PLT-001": "current"})
+                with self.project.read() as conn:
+                    self.assertIsNone(declared.live_table(conn, version.uid), "la declaración no llegó a escribirse")
+                self.assertEqual(access.mask_state(self.project, version.uid)[0], access.MaskState.STALE)
+                self.assertIs(access.mask_cause(self.project, version.uid), access.MaskCause.DECLARED_NEW)
+                with self.assertRaises(access.MaskError):
+                    access.load_masks(self.project, version.uid)
+                if command == "compile":
+                    self.assertEqual(bpy.ops.geoblender.gis_compile_constraints(), {"FINISHED"})
+                    masks = access.load_masks(self.project, version.uid)
+                    footprint = masks.zone("dec__plt_001").mask(masks.classes.shape)
+                    self.assertTrue(footprint.any() and not masks.fill_allowed()[footprint].any())
+                    continue
+                other = self.write_grid(f"Otra de {version.code}", ground())
+                self.refresh()
+                self.calculate(name="Rellena", feature=LOADING, start=other, start_level="115", mode="CUT_FILL")
+                summary = [line.name for line in self.view.summary]
+                (volumes,) = [text for text in summary if text.startswith("Huella:")]
+                self.assertIn("relleno 0 m³ · borde: desmonte 0 m³ · relleno 0 m³", volumes)
+                self.assertTrue(any("no se mueven por la restricción" in text and "«Protegida»" in text
+                                    for text in summary), summary)
+                self.assertEqual(access.mask_state(self.project, version.uid)[0], access.MaskState.CURRENT)
+
     def test_z_disabling_geoblender_removes_the_command_and_leaves_no_temporary(self) -> None:
         """Principio 8, D-14 de la 013: con un cálculo abierto, desactivar Geoblender lo descarta (no queda
         ningún temporal) y quita la orden."""

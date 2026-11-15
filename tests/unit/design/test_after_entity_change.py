@@ -26,16 +26,26 @@ la plataforma, de la declaración y de la compilación de las máscaras (lo que 
   declaración, no se escribe nada y se cuenta.
 - **Esc y los pasos** (:class:`StepsTest`): el progreso es un porcentaje que no retrocede entre etapas; cerrar
   a mitad de una etapa no la deja a medias; sin versión editable no se hace nada (RF-009-21).
+- **La primera declaración de una versión** (:class:`FirstDeclarationTest`, :class:`EveryEventTest`; T38, hallazgo
+  E-1 de la verificación única; CE-015-04): una plataforma que **protege** recién creada en una versión sin
+  ``des_decl_<vNN>`` y la cadena que se corta —con Esc en cualquier evento o con un fallo de la etapa de declarar—
+  antes de escribir la primera tabla: **nunca** las máscaras al día sin la zona de la entidad (obsoletas con su
+  causa, ``DECLARED_NEW``) y quien las pide declara y compila antes. Cada caso trabaja en una **copia** del
+  proyecto tal como lo dejó la clase (``entity_fixtures.open_copy_of``).
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, ClassVar
 from unittest import mock
 
 import numpy as np
 
+from tests.support import entity_fixtures as efx
+from tests.support import step_modals
 from tests.support.package import import_geoblender
 from tests.support.versions_fixtures import freeze_rows
 from tests.unit.design import test_declare_operation as decl
@@ -47,6 +57,7 @@ compile_mod = import_geoblender("gis.masks.compile")
 contract = import_geoblender("core.provenance.contract")
 declared_mod = import_geoblender("core.constraints.declared")
 design_messages = import_geoblender("design.messages")
+entities = import_geoblender("design.entities")
 entity_store = import_geoblender("design.entity_store")
 masks_provenance = import_geoblender("gis.masks.provenance")
 masks_store = import_geoblender("gis.masks.store")
@@ -498,6 +509,183 @@ class StepsTest(ChainCase):
             ops.finish(entity_store.after_entity_change(self.project, self.v2))
         self.assertEqual(caught.exception.code, "core.version_not_editable")
         self.assertEqual(json.dumps(self.written(), default=str), json.dumps(before, default=str))
+
+
+# ---------------------------------------------------------------------------------------------
+# La primera declaración de una versión (T38; hallazgo E-1)
+# ---------------------------------------------------------------------------------------------
+
+P1_CODE = declared_mod.declared_code("PLT-001")
+"""El código de la restricción que declara la primera entidad."""
+SAMPLED_EVENTS = 8
+"""Los eventos de lo que sigue a «Crear» que, repartidos por toda la cadena, cierra :class:`EveryEventTest` además de
+los cinco primeros."""
+
+
+class FirstDeclarationCase(ChainCase):
+    """Una versión **sin** ``des_decl_<vNN>`` con la plataforma P1 que **protege** (4 m) recién creada: lo que deja
+    «Crear» tras su commit y **antes** de que la cadena escriba la primera declaración. La clase no toca su proyecto
+    (es la instantánea): cada caso trabaja en una **copia** (:meth:`fresh`)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.made(prep.request(protect=True, guard_m=GUARD_M))
+
+    @contextmanager
+    def fresh(self) -> Iterator[Any]:
+        """Una copia de la instantánea, abierta; al salir se borra."""
+        with efx.open_copy_of(self.project, self.clock, self.STEP_M) as (project, _clock):
+            yield project
+
+    def declaration_exists(self, project: Any) -> bool:
+        with project.read() as conn:
+            return declared_mod.live_table(conn, self.v1.uid) is not None
+
+    def close_after(self, project: Any, events: int, **patch: Any) -> int:
+        """Lo que sigue a crear la plataforma, con un paso por evento, **cerrado** (Esc) tras ``events`` eventos:
+        cuántos dio (menos que ``events`` si acabó antes)."""
+        work = entity_store.after_entity_change(project, self.v1, budget_s=step_modals.ONE_STEP_S)
+        given = 0
+        try:
+            for _ in range(events):
+                next(work)
+                given += 1
+        except StopIteration:
+            pass
+        finally:
+            work.close()
+        return given
+
+    def never_current_without_its_zone(self, project: Any) -> access.MaskState:
+        """**El invariante de CE-015-04**: las máscaras de V01 no están al día sin la zona de la entidad viva que
+        protege. Si lo están, la tienen (y el relleno de su huella no se admite); si no, ``load_masks`` se niega.
+        Devuelve su estado."""
+        state, _pending = access.mask_state(project, self.v1.uid)
+        if state is access.MaskState.CURRENT:
+            masks = access.load_masks(project, self.v1.uid)
+            self.assertIn(P1_CODE, masks.zones, "máscaras al día sin la zona de la entidad que protege")
+            self.assertFalse(masks.fill_allowed()[self.footprint("PLT-001")].any())
+        else:
+            self.assertIs(state, access.MaskState.STALE)
+            with self.assertRaises(access.MaskError) as refused:
+                access.load_masks(project, self.v1.uid)
+            self.assertEqual(refused.exception.code, "core.constraint_masks_declared_new")
+        return state
+
+    def nothing_left_open(self, project: Any) -> None:
+        with project.read() as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM gb_operation WHERE status = 'running'").fetchone(),
+                             (0,))
+            self.assertEqual(conn.execute("PRAGMA integrity_check").fetchall(), [("ok",)])
+
+
+class FirstDeclarationTest(FirstDeclarationCase):
+    """RF-015-10, RF-015-29, CE-015-04, HU-015-1 (el error 51; hallazgo E-1): sin ninguna declaración en la versión
+    (la primera de todas), la plataforma que protege **ya existe** (``Crear`` hizo su commit) y lo que sigue falla o
+    se cierra con Esc **antes** de escribirla: la entidad no tiene su restricción en ningún sitio y, si las máscaras
+    siguen «al día», un operador rellenaría sobre su huella sin ningún aviso (420 m³ en la sonda de la verificación).
+    Hasta que se escriba la tabla, las máscaras están **obsoletas con su causa** y quien las pide declara y compila
+    antes."""
+
+    def test_a_the_state_it_starts_from_has_a_live_protecting_entity_and_no_declaration(self) -> None:
+        """RF-015-10: el punto de partida (la instantánea): P1 viva y calculada, protege, ninguna tabla de
+        declaradas, y las máscaras (las de la 012, compiladas antes de que existiera) obsoletas por una restricción
+        que **aún no está declarada**."""
+        entry = entities.registry(self.project, self.v1.uid).get("PLT-001")
+        self.assertEqual(str(entry.record.state), "current")
+        self.assertFalse(self.declaration_exists(self.project))
+        self.assertIs(self.never_current_without_its_zone(self.project), access.MaskState.STALE)
+        self.assertIs(access.mask_cause(self.project, self.v1.uid), access.MaskCause.DECLARED_NEW)
+
+    def test_b_a_declaration_that_fails_leaves_the_masks_stale_with_their_cause(self) -> None:
+        """RF-015-10, RF-015-29: la etapa de declarar falla (un fallo del disco): no se escribe nada de ella, el
+        fallo va en el resultado (la etapa de declarar y su aviso) y **no se recompila nada** (la compilación no
+        puede leer una tabla que no existe); las máscaras no pueden estar al día sin la zona."""
+        with self.fresh() as project, mock.patch.object(entity_store, "declared_rows_steps",
+                                                        side_effect=OSError("disco lleno")):
+            chain = ops.finish(entity_store.after_entity_change(project, self.v1))
+            self.assertIs(chain.failure.stage, entity_store.ChainStage.DECLARE)
+            self.assertFalse(self.declaration_exists(project))
+            self.assertFalse(chain.masks_compiled)
+            self.assertIs(self.never_current_without_its_zone(project), access.MaskState.STALE)
+            self.assertIs(chain.masks_state, access.MaskState.STALE)
+            self.assertIs(access.mask_cause(project, self.v1.uid), access.MaskCause.DECLARED_NEW)
+            self.nothing_left_open(project)
+
+    def test_c_closing_it_before_the_first_declaration_is_written_leaves_nothing_and_the_masks_stale(self) -> None:
+        """RF-015-29, RF-015-10, CE-015-04: Esc tras 0, 1, 2… eventos, hasta que la declaración se escribe: **ninguno
+        deja las máscaras al día sin la zona** (la sonda de la verificación: tras 0, 1 y 2 eventos, 420 m³ de
+        relleno y 296 m³ de borde sin aviso), sin operaciones en curso ni la base dañada; la tabla no existe
+        mientras no se escribe y, escrita, las máscaras salen obsoletas por ella."""
+        absent = 0
+        for events in range(0, 6):
+            with self.subTest(events=events), self.fresh() as project:
+                self.close_after(project, events)
+                self.nothing_left_open(project)
+                self.assertIs(self.never_current_without_its_zone(project), access.MaskState.STALE)
+                if not self.declaration_exists(project):
+                    absent += 1
+                    self.assertIs(access.mask_cause(project, self.v1.uid), access.MaskCause.DECLARED_NEW)
+        self.assertGreaterEqual(absent, 3, "Esc en los eventos 0, 1 y 2 no dejaba rastro: es lo que se prueba")
+
+    def test_d_the_next_operator_declares_and_compiles_before_it_designs(self) -> None:
+        """RF-015-10, RF-015-29, CE-015-04: tras lo anterior, quien pide las máscaras por el contrato de los
+        operadores (``ensure_masks_steps``) **declara antes**: la restricción de P1 (4 m de resguardo) entra en la
+        tabla y en las máscaras, que vuelven a estar al día con su zona; el relleno de su huella no se admite
+        (lo que un «en corte y relleno» sobre ella nunca debe rellenar); la declaración es una operación propia y la
+        compilación la consume."""
+        with self.fresh() as project:
+            self.close_after(project, 0)
+            self.assertFalse(self.declaration_exists(project))
+            masks = ops.finish(access.ensure_masks_steps(project, self.v1.uid))
+            self.assertIs(masks.state, access.MaskState.CURRENT)
+            self.assertIs(self.never_current_without_its_zone(project), access.MaskState.CURRENT)
+            self.assertTrue(self.declaration_exists(project))
+            footprint, zone = self.footprint("PLT-001"), masks.zone(P1_CODE).mask(self.grid.shape)
+            self.assertTrue((zone == dilate(footprint, 2)).all())
+            self.assertFalse(masks.fill_allowed()[footprint].any())
+            with project.read() as conn:
+                (declarations,) = conn.execute(
+                    "SELECT count(*) FROM gb_operation WHERE op_type = ? AND status = 'done' AND "
+                    "superseded_by IS NULL", (DECLARE,)).fetchone()
+                (consumed,) = conn.execute(
+                    "SELECT count(*) FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+                    "WHERE io.operation_uid = ? AND io.direction = 'in' AND d.name = 'des_decl'",
+                    (masks.operation_uid,)).fetchone()
+            self.assertEqual((declarations, consumed), (1, 1))
+            again = ops.finish(access.ensure_masks_steps(project, self.v1.uid))
+            self.assertEqual(again.operation_uid, masks.operation_uid, "al día: nada que declarar ni compilar")
+            self.nothing_left_open(project)
+
+    def test_e_a_protecting_entity_that_is_no_longer_live_needs_no_declaration(self) -> None:
+        """RF-015-10: lo que la declaración recoge son las entidades **vivas** que protegen. Con la única entidad
+        que protege **descartada** (ya no es de la versión) y sin tabla, no hay nada pendiente: las máscaras de la
+        012 siguen al día, como antes de la 015."""
+        with self.fresh() as project:
+            self.assertIs(access.mask_state(project, self.v1.uid)[0], access.MaskState.STALE)
+            entity_store.discard_entity(project, self.v1.uid, "PLT-001", reason="Prueba de la T38",
+                                        decided_by=EDITOR)
+            self.assertIs(access.mask_state(project, self.v1.uid)[0], access.MaskState.CURRENT)
+
+
+class EveryEventTest(FirstDeclarationCase):
+    """RF-015-29, RF-015-10, CE-015-04: Esc en **cualquier** evento de lo que sigue a «Crear» (87 con el presupuesto
+    mínimo; aquí, los cinco primeros y otros ocho repartidos hasta el último, cada uno en una copia de la
+    instantánea) con una plataforma que protege **no deja nunca** las máscaras al día sin su zona, ni operaciones
+    en curso, ni la base dañada (que la cadena siguiente lo termina, ya lo prueba ``StepsTest``)."""
+
+    def test_a_closing_at_any_event_never_leaves_the_masks_current_without_the_zone(self) -> None:
+        with self.fresh() as project:
+            total = sum(1 for _ in entity_store.after_entity_change(
+                project, self.v1, budget_s=step_modals.ONE_STEP_S))
+        self.assertGreater(total, 60)
+        events = sorted({*range(0, 5), *(round(total * index / SAMPLED_EVENTS) for index in range(1, SAMPLED_EVENTS + 1))})
+        for count in events:
+            with self.subTest(events=count), self.fresh() as project:
+                self.close_after(project, count)
+                self.nothing_left_open(project)
+                self.never_current_without_its_zone(project)
 
 
 if __name__ == "__main__":

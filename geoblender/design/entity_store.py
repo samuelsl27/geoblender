@@ -106,7 +106,13 @@ la compilación vigente no la había consumido nunca: el hueco H-1 de ``gis.mask
 da un :class:`EntityChain` con lo que quedó obsoleto y el área ganada y perdida por restricción. Cada etapa es una
 operación y una transacción propias: si una falla, queda dicho (:class:`ChainFailure`) y las máscaras, obsoletas
 con su causa. «Recalcular lo obsoleto» no la encadena: la declaración y las máscaras son operaciones de la 008 que
-ella recalcula por el grafo.
+ella recalcula por el grafo. **Nunca una plataforma que protege sin su restricción vigente** (T38; RF-015-10, RF-015-29,
+CE-015-04; hallazgo E-1): si Esc o un fallo cortan la cadena **antes de escribir la primera declaración de la
+versión**, no hay tabla que la compilación no haya consumido (el hueco H-1 no lo ve) y la entidad quedaría protegiendo
+sin su restricción en ningún sitio, con las máscaras «al día»; :func:`declaration_pending` dice si una entidad viva que
+protege no tiene su fila en la declaración vigente y :data:`DECLARATION_HOOK` lo da a ``gis.masks.access``
+(``gis.masks.declaring``; lo registra ``bl``): mientras sea así las máscaras están obsoletas (``DECLARED_NEW``) y quien
+las pide declara antes de compilar (``gis.masks.access.declare_pending_steps``).
 
 **La capa de entidades** (T30; RF-015-27, D-13; plan 015 §5.2.3, §5.3.2 y P-7; ADR-0030 §5): la operación de la versión
 ``des.entity_layer`` (repetible, no reproducible: su contenido incluye el estado de cada entidad, que deduce el grafo)
@@ -188,6 +194,7 @@ from ..core.constraints.declared import (
     content_sha256_of,
     declared_code,
     declared_uid,
+    names_in_version,
 )
 from ..core.constraints.model import ConstraintType
 from ..core.constraints.store import constraint_names
@@ -212,7 +219,7 @@ from ..core.provenance.operations import OperationHandle, OperationStatus, Use
 from ..core.provenance.recompute import RecomputeRequest
 from ..core.versions import read as versions_read
 from ..core.versions.model import Version, VersionError
-from ..gis.masks import access
+from ..gis.masks import access, declaring
 from ..gis.masks import provenance as masks_provenance
 from ..gis.masks.store import CANCELLED_REASON, StoredMasks
 from ..gis.grid import Grid
@@ -322,6 +329,7 @@ __all__ = [
     "compute_platform_steps",
     "create_platform",
     "declaration_diverges",
+    "declaration_pending",
     "declare_constraints_steps",
     "declared_rows_steps",
     "declared_supports",
@@ -2405,6 +2413,53 @@ def declare_constraints_steps(project: StoreProject, version: Version | str | No
     _handle, work = run_declaration(project, version=version, supersedes=supersedes,
                                     budget_s=budget_s)
     yield from work
+
+
+def declaration_pending(project: StoreProject, conn: sqlite3.Connection, version_uid: str) -> bool:
+    """Si una entidad **viva y calculada** de la versión ``version_uid`` (su uid) que **protege** no tiene su
+    restricción (``dec__<entidad>``) en la declaración vigente —la versión no tiene tabla viva, o a la suya le falta
+    su fila— (spec 015, T38; RF-015-10, RF-015-29, CE-015-04; hallazgo E-1): lo que deja «Crear» si Esc o un fallo
+    cortan lo que sigue antes de que se escriba la primera declaración. Es lo que ``gis.masks.access`` pregunta
+    (por el gancho :data:`DECLARATION_HOOK`, que registra ``bl``) cada vez que mira el estado de las máscaras, también
+    al dibujar la interfaz: **barata** y de solo lectura (con la instantánea de ``conn``). Sin ninguna operación
+    ``des.platform`` vigente en la versión, una sola consulta (:func:`~.provenance.has_platform_operation`); con
+    ellas, el registro de las entidades (``entities.registry``), el parámetro ``protect`` de las vivas y los
+    códigos de la tabla de declaradas, **sin leer su geometría ni la huella de nadie**. Compara con **lo que falta**,
+    no con lo que difiere: que una fila declare un resguardo anterior lo dice el hash de la tabla (el grafo de la
+    008, :func:`declaration_diverges`). Una entidad ``UNCALCULATED`` o ``DISCARDED`` no declara (:data:`_LIVE_STATES`,
+    como :func:`declared_sources`). Si no se puede saber (un registro roto: ``des.entity_name_missing``, una tabla
+    ilegible), **está pendiente**: lo seguro es no dar las máscaras por buenas, y la operación que lo intente
+    declarar dirá el motivo."""
+    if not provenance.has_platform_operation(conn, version_uid):
+        return False
+    try:
+        registry = entities.registry(project, version_uid, conn=conn)
+        live = [entry.record.code for entry in registry
+                if entry.operation_uid is not None and entry.record.state in _LIVE_STATES]
+        if not live:
+            return False
+        keys = {entity_key(code, PlatformParam.PROTECT): code for code in live}
+        found = ParameterStore(project).resolve_many(
+            conn, tuple(keys), (VERSION_SCOPE, PROJECT_SCOPE), version=version_uid)
+        wanted = {declared_code(code) for key, code in keys.items()
+                  if bool(found[key].value if found.get(key) is not None else _default(PlatformParam.PROTECT))}
+        return bool(wanted) and not wanted <= set(names_in_version(conn, version_uid))
+    except (DesignError, ValueError, sqlite3.Error):
+        return True
+
+
+def _declare_for_masks(project: StoreProject, version_uid: str, budget_s: float
+                       ) -> Generator[Progress, None, None]:
+    """Los pasos de declarar las restricciones de las entidades de la versión ``version_uid`` que da el gancho a
+    ``gis.masks.access`` (:func:`declare_constraints_steps`; el último paso lleva el ``Stored``)."""
+    return declare_constraints_steps(project, version_uid, budget_s=budget_s)
+
+
+DECLARATION_HOOK = declaring.DeclarationHook(pending=declaration_pending, declare=_declare_for_masks)
+"""El gancho de la declaración (``gis.masks.declaring``; spec 015, T38; hallazgo E-1): **lo que registra ``bl`` al
+habilitar Geoblender** (con funciones que importan este módulo al usarlas, no al habilitar) y lo que registran las
+pruebas de ``design``. Con él, las máscaras de una versión no están al día mientras una entidad viva que protege no
+tenga su restricción en la declaración vigente, y quien las pide declara antes de compilar."""
 
 
 def declaration_diverges(project: StoreProject, version: Version | str) -> bool:

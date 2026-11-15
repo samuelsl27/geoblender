@@ -294,12 +294,16 @@ class DesignRegisteredTest(unittest.TestCase):
                 for name, found in enabled.items()}
         others: list[tuple[str, str, Any]] = []
         self.addCleanup(lambda: self.forget_others(others)())
+        declaring = _module("gis.masks.declaring")
+        self.assertIs(declaring.current(), m.des_ops.DECLARATION_HOOK)  # el gancho de la declaración (T38)
         for _ in range(2):
             m.des_ops.unregister()
             self.assertSameRegistries(m.registries(), bare)
+            self.assertIsNone(declaring.current())
         for _ in range(2):
             m.des_ops.register()
             self.assertSameRegistries(m.registries(), enabled)
+            self.assertIs(declaring.current(), m.des_ops.DECLARATION_HOOK)
 
         m.des_ops.unregister()
         others.extend(self.register_others())
@@ -680,8 +684,11 @@ class DesignRegisteredTest(unittest.TestCase):
         held = FakeCalculation()
         m.des_ops.hold_calculation(held)
 
+        declaring = _module("gis.masks.declaring")
+        self.assertIs(declaring.current(), m.des_ops.DECLARATION_HOOK)
         self.addCleanup(blender_ext.enable)  # las demás pruebas de la clase, habilitada
         blender_ext.disable()
+        self.assertIsNone(declaring.current(), "deshabilitar quita el gancho de la declaración (T38)")
         self.assertEqual([cls.__name__ for cls in props.classes if cls.is_registered], [])
         self.assertEqual([name for name in dir(bpy.types)
                           if name.startswith("GEOBLENDER_") and "_des_" in name], [])

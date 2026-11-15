@@ -72,17 +72,23 @@ CHANGELOG_PATH = ROOT / "CHANGELOG.md"
 CITING_RELPATHS = ("docs/usuario/topografia.md", "docs/usuario/versiones.md",
                    "docs/usuario/cubicacion.md", "README.md")
 
+# El mecanismo de la spec 015 para lo que añade mientras se construye: los módulos (``gis.masks``, ``core.constraints``)
+# que aún no tienen ficha y lo público de módulos que ya la tienen (``gis.md``, ``core.md``). Cada tarea añade aquí
+# lo suyo y la de documentación lo lleva a la ficha y lo vacía: vacíos desde la T34 de la 015
+# (``core.constraints.declared`` y los nombres nuevos de ``gis.masks`` y de ``core.constraints.styles`` están en
+# ``core.md`` y ``gis.md``); la 016 los usará con lo suyo. La convergencia (T38 a T47) añade los suyos y **la T47 los
+# lleva a la ficha**.
+PENDING_015_MODULES: frozenset[str] = frozenset({
+    "gis.masks.declaring",  # T38: el gancho de la declaración pendiente (``DeclarationHook``, ``register``…)
+})
+PENDING_015_API: frozenset[str] = frozenset({
+    "gis.masks.access.declare_pending_steps",  # T38: declarar antes de compilar lo que una entidad no declaró
+})
 # Los módulos de gis y de reserves de la 012 cuya API pública tiene que nombrar su ficha.
 GIS_MODULES = ("gis.search", "gis.polygons", "gis.coverage",
-               *(f"gis.masks.{info.name}" for info in pkgutil.iter_modules(masks.__path__)))
+               *(f"gis.masks.{info.name}" for info in pkgutil.iter_modules(masks.__path__)
+                 if f"gis.masks.{info.name}" not in PENDING_015_MODULES))
 RES_MODULES = ("reserves.compliance", "reserves.compliance_store")
-# El mecanismo de la spec 015 para lo que añade mientras se construye: los módulos de ``core.constraints``
-# que aún no tienen ficha (``core.md``) y lo público de módulos que ya la tienen (``gis.md``, ``core.md``).
-# Cada tarea añade aquí lo suyo y la de documentación lo lleva a la ficha y lo vacía: vacíos desde la T34 de
-# la 015 (``core.constraints.declared`` y los nombres nuevos de ``gis.masks`` y de ``core.constraints.styles``
-# están en ``core.md`` y ``gis.md``); la 016 los usará con lo suyo.
-PENDING_015_MODULES: frozenset[str] = frozenset()
-PENDING_015_API: frozenset[str] = frozenset()
 CORE_MODULES = tuple(f"core.constraints.{info.name}"
                      for info in pkgutil.iter_modules(constraints.__path__)
                      if f"core.constraints.{info.name}" not in PENDING_015_MODULES)

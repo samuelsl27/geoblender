@@ -328,6 +328,7 @@ from ...design import model as design_model
 from ...design import provenance
 from ...design.model import PERIMETER_SEGMENT
 from ...gis import provenance as gis_provenance
+from ...gis.masks import declaring
 from ...gis.messages import GisError
 from ..props.core import OBJECT_PROPERTY
 from ..props.des import PREVIEW_PROPERTY, GEOBLENDER_PG_des_bring_row, GEOBLENDER_PG_des_refit_surface
@@ -605,13 +606,44 @@ FIGURES: tuple[contract.FigureDef, ...] = (*provenance.FIGURES, *provenance.QUAR
 entidades (015)."""
 
 
+# --- El gancho de la declaración (spec 015, T38; RF-015-10, RF-015-29; CE-015-04) ---------------------
+
+
+def _declaration_pending(project: Any, conn: Any, version_uid: str) -> bool:
+    """Si una entidad viva de la versión que protege aún no tiene su restricción declarada (el gancho
+    ``pending`` de ``gis.masks.declaring``: ``design.entity_store.declaration_pending``). Se pregunta con cada
+    ``mask_state``, también al dibujar la interfaz: sin ninguna operación de plataforma vigente es **una consulta**
+    y no importa las entidades (habilitar ni mirar las máscaras de una versión sin ellas las cargan)."""
+    if not provenance.has_platform_operation(conn, version_uid):
+        return False
+    from ...design import entity_store  # al usarlo: habilitar no carga las entidades
+
+    return entity_store.declaration_pending(project, conn, version_uid)
+
+
+def _declaration_steps(project: Any, version_uid: str, budget_s: float) -> Iterator[Progress]:
+    """Los pasos de declarar las restricciones de las entidades de la versión (el gancho ``declare``:
+    ``design.entity_store.declare_constraints_steps``)."""
+    from ...design import entity_store  # al usarlo: habilitar no carga las entidades
+
+    return entity_store.declare_constraints_steps(project, version_uid, budget_s=budget_s)
+
+
+DECLARATION_HOOK = declaring.DeclarationHook(pending=_declaration_pending, declare=_declaration_steps)
+"""Lo que ``des`` da a ``gis.masks.access`` (:mod:`geoblender.gis.masks.declaring`): las máscaras no están al día
+mientras una entidad viva que protege no tenga su restricción en la declaración vigente, y quien las pide (los
+operadores, «Compilar las máscaras») declara antes de compilar. Es :data:`design.entity_store.DECLARATION_HOOK` con
+sus importaciones al usarlo, no al habilitar (:func:`register` lo registra)."""
+
+
 # --- Registro ------------------------------------------------------------------------------------
 
 
 def register() -> None:
     """Instala los textos del diseño en ``core.i18n`` y registra sus definiciones de parámetros
     (:data:`DEFINITIONS`), sus familias, sus tipos de operación (:data:`OPERATION_DEFS`) y sus
-    cifras (:data:`FIGURES`) que aún no están, y se apunta a los cambios de proyecto de la sesión
+    cifras (:data:`FIGURES`) que aún no están, **el gancho de la declaración de las restricciones de las entidades**
+    (:data:`DECLARATION_HOOK`, T38) y se apunta a los cambios de proyecto de la sesión
     (:func:`project_changed`); idempotente."""
     i18n.install(design_messages.CATALOG_ES)
     missing = tuple(defn for defn in DEFINITIONS if defn.key not in core_params.DEFINITIONS)
@@ -633,6 +665,9 @@ def register() -> None:
             contract.register_figure(figure)
             _UNDO.append(_unregister_if(contract.FIGURES, figure.key, figure,
                                         contract.unregister_figure))
+    if declaring.current() is not DECLARATION_HOOK:
+        declaring.register(DECLARATION_HOOK)
+        _UNDO.append(functools.partial(declaring.unregister, DECLARATION_HOOK))
     if project_changed not in project_session.listeners():
         project_session.add_listener(project_changed)
         _UNDO.append(functools.partial(project_session.remove_listener, project_changed))

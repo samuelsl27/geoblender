@@ -70,6 +70,8 @@ from tests.support.versions_fixtures import change_counter, files
 access = import_geoblender("gis.masks.access")
 cmessages = import_geoblender("core.constraints.messages")
 contract = import_geoblender("core.provenance.contract")
+core_params = import_geoblender("core.params")
+design_provenance = import_geoblender("design.provenance")
 figures_mod = import_geoblender("core.provenance.figures")
 freeze = import_geoblender("core.versions.freeze")
 operations = import_geoblender("core.provenance.operations")
@@ -974,6 +976,132 @@ class DeclaredOtherVersionTest(_HoleCase):
         self.assertNotIn(CODE, again.zones)
         self.assertTrue((again.classes == self.masks_2.classes).all())
         self.assertIs(self.state(self.v2), access.MaskState.CURRENT)
+
+
+class OnlyThroughDeclaredTest(_HoleCase):
+    """RF-012-17 (la excepción que Samuel aprobó el 15/11/2026, spec 012 0.4), RF-015-10, D-21; hallazgo B-3 de la
+    verificación única (T38): ``access._only_through_declared`` entrega unas máscaras que el grafo da por obsoletas
+    **solo si** la obsolescencia llega por la declaración (el ciclo entidad → declarada → máscaras → entidad) y la
+    compilación **no tiene ninguna causa directa**. Las pruebas de antes solo mataban la mutación de los datos
+    directos; aquí, **una por cada rama** (un dato, un parámetro, la fila propia de la versión de un parámetro, la
+    versión del algoritmo).
+
+    V01: una declarada viva y **consumida** por la compilación y una operación de declaración que leyó un parámetro
+    que la compilación **no** lee (el resguardo de la declarada, ``OUTWARD``), de modo que cambiarlo deja obsoleta
+    la declaración y, **por herencia**, la compilación, sin ninguna causa directa en ella: las máscaras se entregan
+    (el caso base). Cada causa directa que se añade, por orden de las pruebas, las deja ``STALE`` y ``load_masks``
+    se niega; recompiladas, vuelven a entregarse (la herencia sigue)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.compile_version()
+        row = declared_row(cls.v1.uid)
+        table = design_provenance.dataset_locator(design_provenance.DECLARED_TABLE, "", cls.v1.code)
+        srs = cls.project.record.crs_epsg
+        cls.clock.advance(minutes=1)
+        handle = operations.begin_operation(  # la declaración lee un parámetro que la compilación no lee
+            cls.project, design_provenance.DECLARE_CONSTRAINTS, executor="blender", version=cls.v1.uid,
+            params=(OUTWARD,), settings=design_provenance.declare_settings([(row.entity_code, row.entity_name)]))
+        with cls.project.write_transaction() as conn:
+            declared.write_declared(conn, table, [row], srs_id=srs)
+            handle.complete(conn, outputs=(design_provenance.dataset_spec(
+                design_provenance.DECLARED_TABLE, "", cls.v1.code, crs_epsg=srs),),
+                figures=design_provenance.declare_figures(1), message="Declarada de prueba")
+        cls.masks = cls.compile_version()  # consume la tabla
+        cls.clock.advance(minutes=1)
+        with cls.project.write_transaction() as conn:  # y ahora cambia lo que leyó la declaración, no la compilación
+            core_params.ParameterStore(cls.project).change(
+                conn, OUTWARD, value=GUARD + 3.0, reason="Prueba de la excepción de RF-012-17", **cp.PARAMS_BY_HAND)
+
+    def stale_and_refused(self) -> None:
+        """El estado de las máscaras es ``STALE`` (sin la causa del hueco H-1: la da el grafo) y quien las pide se
+        niega."""
+        self.assertIs(self.state(), access.MaskState.STALE)
+        self.assertIsNone(self.cause())
+        with self.assertRaises(access.MaskError) as refused:
+            access.load_masks(self.project, self.v1.uid)
+        self.assertEqual(refused.exception.code, "core.constraint_masks_stale")
+
+    def base_again(self) -> None:
+        """Recompila (lo que hace quien las pide) y vuelve al caso base: al día **aunque el grafo las dé por
+        obsoletas por herencia**."""
+        self.compile_version()
+        access.load_masks(self.project, self.v1.uid)  # al día: se entregan
+        self.assertIs(self.state(), access.MaskState.CURRENT)
+        self.assertTrue(self.graph_causes(self.compile_op()), "la herencia sigue: es lo que la excepción cubre")
+
+    def test_a_the_base_case_only_inherited_staleness_is_delivered(self) -> None:
+        """RF-012-17 (excepción), D-21: la compilación consumió la tabla viva, la declaración que la escribió está
+        obsoleta (cambió el parámetro que leyó) y **por herencia** la compilación también: el grafo la da por
+        obsoleta con una causa que **no es suya** (``parameter_changed`` de otro) y, sin ninguna causa directa, las
+        máscaras se entregan."""
+        self.assertEqual(self.graph_causes(self.compile_op()), {"parameter_changed"})
+        self.assertIn("des_decl", self.inputs(self.compile_op()))
+        self.assertIs(self.state(), access.MaskState.CURRENT)
+        self.assertIsNone(self.cause())
+        self.assertIn(CODE, access.load_masks(self.project, self.v1.uid).zones)
+
+    def test_b_a_changed_data_it_consumed_is_a_direct_cause(self) -> None:
+        """RF-012-17, D-21 (rama de los datos): una capa de restricciones del proyecto editada (el perímetro
+        redibujado, como en ``test_compile``) cambia un dato que la compilación consumió: obsoletas."""
+        (perimeter,) = [item for item in self.stored_constraints() if item.code == "perimetro"]
+        redrawn = cp.constraints(perimeter=fx.REDRAWN_PERIMETER_LOCAL)[1]
+        self.clock.advance(minutes=1)
+        cp.edit_constraints(self.project, [type(redrawn)(**{
+            **{name: getattr(redrawn, name) for name in redrawn.__dataclass_fields__},
+            "uid": perimeter.uid, "fid": perimeter.fid})])
+        self.stale_and_refused()
+        self.base_again()
+
+    def test_c_a_new_search_sector_is_a_direct_cause(self) -> None:
+        """RF-012-17, D-21 (rama de los datos): un sector de búsqueda nuevo (``core_sector`` es entrada de la
+        compilación) cambia lo que consumió: obsoletas."""
+        self.clock.advance(minutes=1)
+        cp.edit_constraints(self.project, [], sector_rows=[cmodel.Sector(
+            "sector3" + "0" * 25, "sector_3", "Sector 3", (fx.rectangle(10.0, 10.0, 40.0, 40.0),))])
+        self.stale_and_refused()
+        self.base_again()
+
+    def test_d_a_parameter_of_the_version_it_read_is_a_direct_cause(self) -> None:
+        """RF-012-17, D-21 (rama de los parámetros): el resguardo de la torre, que la compilación leyó (propio de
+        V01), cambia de valor: obsoletas."""
+        self.clock.advance(minutes=1)
+        with self.project.write_transaction() as conn:
+            core_params.ParameterStore(self.project).change(
+                conn, TOWER_KEY, value=cp.TOWER_V01_M + 2.0, reason="Prueba de la excepción de RF-012-17",
+                version=self.v1.code)
+        self.stale_and_refused()
+        self.base_again()
+
+    def test_e_an_own_row_of_the_version_for_a_parameter_it_read_from_the_project_is_a_direct_cause(self) -> None:
+        """RF-012-17, D-21 (rama de la fila propia de la versión; A4 (4) de la 008): la cuneta, cuyo resguardo la
+        compilación leyó **del proyecto**, gana una fila propia en V01: obsoletas, aunque el valor sea el mismo."""
+        key = cparams.buffer_out_key("cuneta")
+        before = self.query("SELECT value FROM gb_parameter WHERE key = ? AND scope = 'project'", key)
+        self.assertEqual(self.query("SELECT count(*) FROM gb_parameter WHERE key = ? AND scope = 'version'", key),
+                         [(0,)])
+        cp.declare(self.project, self.clock, {key: cp.DITCH_OUTWARD_M}, version=self.v1)
+        self.assertEqual(self.query("SELECT value FROM gb_parameter WHERE key = ? AND scope = 'project'", key),
+                         before, "el valor del proyecto no cambia")
+        self.stale_and_refused()
+        self.base_again()
+
+    def test_f_a_newer_version_of_the_algorithm_is_a_direct_cause(self) -> None:
+        """RF-012-17, RF-008-24, D-21 (rama de la versión del algoritmo): con una versión de la compilación mayor
+        que la que las compiló, obsoletas; recompiladas con ella, al día."""
+        older = contract.OPERATIONS[provenance.COMPILE]
+        newer = dataclasses.replace(older, version="9.9")
+        contract.unregister_operation(provenance.COMPILE)
+        contract.register_operation(newer)
+
+        def restore() -> None:
+            contract.unregister_operation(provenance.COMPILE)
+            contract.register_operation(older)
+
+        self.addCleanup(restore)
+        self.stale_and_refused()
+        self.base_again()
 
 
 class DeclaredReproduceTest(cp.ConstraintsProjectCase):

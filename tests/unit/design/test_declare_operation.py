@@ -34,6 +34,7 @@ from tests.unit.design import test_platform_operation as ops
 from tests.unit.design import test_platform_prepare as prep
 
 access = import_geoblender("gis.masks.access")
+declaring = import_geoblender("gis.masks.declaring")
 combine = import_geoblender("gis.masks.combine")
 polygons = import_geoblender("gis.polygons")
 core_params = import_geoblender("core.params")
@@ -128,6 +129,8 @@ class DeclareCase(ops.RecomputeCase):
     def setUpClass(cls) -> None:
         super().setUpClass()
         real_compile_registered(cls)
+        declaring.register(entity_store.DECLARATION_HOOK)  # lo que registra ``bl`` (T38)
+        cls.addClassCleanup(declaring.unregister, entity_store.DECLARATION_HOOK)
 
     @classmethod
     def settle(cls, rounds: int = 12) -> list[Any]:
@@ -550,6 +553,17 @@ class OnlyProtectingTest(DeclareCase):
     hueco) y P4 (la «Explanada sin eje», de la superficie de P3); por el orden de las pruebas: (a) lo que
     consume, (b) descartar P3, que deja a P4 en «apoyo retirado», (c) descartar P4, (d) cambiar la huella de la
     que protege y (e) cambiar el ``protect`` de una que no protege."""
+
+    @classmethod
+    def made(cls, asked: Any) -> Any:
+        """«Calcula» (con las máscaras que den ``ensure_masks_steps``) y «crea» ``asked``, y **lo que sigue a crearla**
+        (``after_entity_change``, como la orden de ``bl``): con la entidad que protege creada y sin declarar, las
+        máscaras ya no están al día (T38: nunca sin la zona de lo que protege) y no se puede calcular con ellas."""
+        cls.clock.advance(minutes=1)
+        stored = cls.calculate_in(asked, masks=None).create()
+        cls.clock.advance(minutes=1)
+        ops.finish(entity_store.after_entity_change(cls.project, cls.v1))
+        return stored
 
     @classmethod
     def setUpClass(cls) -> None:
