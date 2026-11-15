@@ -46,6 +46,15 @@ una máscara) y :func:`declared_zone_of_runs` (de los tramos de fila de ``des_ep
 para las comprobaciones de la 012, con las coordenadas exactas de la rejilla y de modo que la regla de
 la celda de la 012 (RF-012-12) devuelva exactamente esas celdas con resguardo 0 (D-23).
 
+**La lista de dependencias y la causa** (T24; RF-015-15, RF-015-16; RNF-015-02): :func:`dependents` («lo que se
+apoya en E») y :func:`dependencies_of` («en qué se apoya E») son **una consulta de entradas y cifras** del grafo de la
+008 —los papeles ``supported_on`` y ``surface`` sobre el dato ``des_psf_`` de la entidad, y la cifra
+``des.supported_m3`` con su ámbito— y dan **una sola lista** de :class:`Dependent` (nombre, tipo, volumen apoyado en
+m³ y estado) de entidades y de diseños de la 013 y la 014, sin leer ninguna superficie. :func:`stale_reason` y
+:func:`operation_reason` dan el motivo legible de lo obsoleto: el «Obsoleto: cambió …» de la 008, con la **entidad**
+que cambió por su nombre y lo que cambió. La cascada, el orden de recalcular y lo congelado son los de la 008
+(RF-008-24, RF-008-26, RF-009-19): aquí no se apunta nada.
+
 ``design.entities`` es un módulo pesado de la 015: lo importan el almacén y las órdenes al usarlo, no
 ``bl`` al registrarse ni ``design.provenance`` (``tests/unit/architecture/test_lazy_registration.py``).
 """
@@ -53,6 +62,7 @@ la celda de la 012 (RF-012-12) devuelva exactamente esas celdas con resguardo 0 
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import numbers
 import re
@@ -67,17 +77,25 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from ..core.datasets.model import DatasetStatus
-from ..core.i18n import LANGUAGES
-from ..core.params import VERSION_SCOPE, ParameterStore
-from ..core.provenance.graph import DATASET, Cause
+from ..core.i18n import LANGUAGES, translate
+from ..core.params import VERSION_SCOPE, ParameterStore, parameter_label
+from ..core.provenance.graph import DATASET, Cause, CauseKind
 from ..core.provenance.stale import OPERATION as STALE_OPERATION
-from ..core.provenance.stale import item_causes
+from ..core.provenance.stale import item_causes, item_text
 from ..core.versions import read as versions_read
 from ..core.versions.model import Version, VersionError
 from .grids import label_components
 from .messages import DesignError, render
 from .params import PLATFORM_PREFIX, PlatformParam, entity_key, entity_segment, segment_code
-from .provenance import PLATFORM, SUPPORTED_ON_ROLE, SURFACE_ROLE
+from .provenance import (
+    ENTITY_SCOPE_KEY,
+    ENTITY_SURFACE_ROLE,
+    OPERATION_TYPES_BY_NAME,
+    PLATFORM,
+    SUPPORTED_M3,
+    SUPPORTED_ON_ROLE,
+    SURFACE_ROLE,
+)
 
 if TYPE_CHECKING:
     from ..gis.grid import Grid
@@ -85,6 +103,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ENTITY_PREFIX",
     "DeclaredZone",
+    "Dependent",
     "EntityEntry",
     "EntityKind",
     "EntityRecord",
@@ -99,17 +118,22 @@ __all__ = [
     "declared_reason",
     "declared_zone",
     "declared_zone_of_runs",
+    "dependencies_of",
+    "dependents",
     "detect_supports",
     "find_entity",
     "format_code",
     "insert_after",
     "insert_before",
     "insertion_start",
+    "kind_label",
     "next_code",
+    "operation_reason",
     "predecessor_of",
     "ref_code",
     "registry",
     "runs_cells",
+    "stale_reason",
     "start_conflict",
     "strongest",
     "successor_of",
@@ -673,14 +697,19 @@ def registry(project: Any, version: str, *, conn: sqlite3.Connection | None = No
     ella, el registro abre una. :class:`~core.versions.model.VersionError`
     (``core.version_unknown``) si la versión no existe; ``DesignError`` ``des.entity_name_missing``
     si una entidad con parámetros no tiene nombre (un dato roto, que no se lista a medias)."""
+    with _snapshot(project, conn) as reading:
+        return _registry(project, reading, _version(reading, version))
+
+
+def _version(conn: sqlite3.Connection, version: str) -> Version:
+    """La versión ``version`` (uid o código) leída con ``conn``; :class:`TypeError` si no es un texto y
+    :class:`~core.versions.model.VersionError` (``core.version_unknown``) si no existe."""
     if not isinstance(version, str):
         raise TypeError(f"una versión se indica por su uid o su código, no {version!r}")
-    with _snapshot(project, conn) as reading:
-        found = versions_read.version(reading, version)
-        if found is None:
-            raise VersionError("core.version_unknown", field="versión", value=version,
-                               version=version)
-        return _registry(project, reading, found)
+    found = versions_read.version(conn, version)
+    if found is None:
+        raise VersionError("core.version_unknown", field="versión", value=version, version=version)
+    return found
 
 
 def _text(store: ParameterStore, conn: sqlite3.Connection, version: Version, code: str,
@@ -877,6 +906,285 @@ def strongest(found: Iterable[Support]) -> tuple[Support, ...]:
         elif item.declared and not before.declared:
             best[item.code] = replace(before, declared=True)
     return tuple(best[code] for code in sorted(best, key=_number))
+
+
+# --- La lista de dependencias y la causa de lo obsoleto (spec 015, T24; RF-015-15, RF-015-16; RNF-015-02) --
+
+_LIST_ROLES = (SUPPORTED_ON_ROLE, SURFACE_ROLE)
+"""Los papeles de la lista de dependencias, en el orden en que se enseñan: lo que se **apoya** (la operación
+rellena sobre la superficie de la entidad, o la persona lo declaró: ``supported_on``) y lo que **parte** de ella
+(``surface``, la superficie de partida). Una operación que hace las dos cosas es una sola fila con los dos."""
+_DEPENDENTS = (
+    "SELECT o.uid, o.fid, o.op_type, o.settings, io.role FROM gb_operation_io AS io "
+    "JOIN gb_operation AS o ON o.uid = io.operation_uid "
+    "JOIN gb_revision AS r ON r.uid = o.revision_uid "
+    "WHERE io.direction = 'in' AND io.item_kind = ? AND io.item_uid = ? AND io.role IN (?, ?) "
+    "AND o.status = 'done' AND o.superseded_by IS NULL AND r.version_uid = ? ORDER BY o.fid, io.fid")
+_REST_ON = (
+    "SELECT io.role, d.uid, d.name, d.operation_uid, p.op_type, p.settings FROM gb_operation_io AS io "
+    "JOIN gb_dataset AS d ON d.uid = io.item_uid LEFT JOIN gb_operation AS p ON p.uid = d.operation_uid "
+    "WHERE io.operation_uid = ? AND io.direction = 'in' AND io.item_kind = ? AND io.role IN (?, ?) "
+    "ORDER BY io.fid")
+_SURFACES_OF = (
+    "SELECT item_uid FROM gb_operation_io WHERE operation_uid = ? AND direction = 'out' AND item_kind = ? "
+    "AND role = ? ORDER BY fid")
+_VOLUMES = (
+    "SELECT operation_uid, scope, value FROM gb_figure WHERE key = ? AND operation_uid IN ({marks}) "
+    "ORDER BY fid")
+_PARAMETER_KEYS = "SELECT uid, key FROM gb_parameter WHERE uid IN ({marks})"
+
+
+def kind_label(op_type: str, language: str = "es") -> str:
+    """El tipo de una operación de ``des`` como lo lee una persona en ``language`` («Plataforma», «Solo
+    relleno»): el nombre visible de su ``OperationDef``; el propio ``op_type`` si no es de ``des``."""
+    found = OPERATION_TYPES_BY_NAME.get(op_type)
+    return op_type if found is None else translate(language, found.label_msgid)
+
+
+@dataclass(frozen=True, slots=True)
+class Dependent:
+    """Una fila de la **lista de dependencias** de una entidad (RF-015-15, D-11; RF-015-17): la operación
+    ``operation_uid`` con su ``name`` (el de la entidad o el del diseño), su ``op_type`` (``des.platform``,
+    ``des.fill_only``…), si es una entidad su código (``entity``; ``None`` en un diseño) y su ``state``
+    **deducido** (los de :class:`EntityState`: al día, obsoleta, «apoyo retirado» o descartada; con sus ``causes``
+    de obsolescencia). Los ``roles`` dicen cómo se relaciona con la entidad de la que se pregunta —``supported_on``
+    (se apoya en ella: rellena sobre su superficie o lo declaró la persona) y ``surface`` (parte de su
+    superficie)— y el ``volume_m3`` es lo apoyado (la cifra ``des.supported_m3`` con ese ámbito; cero si la persona
+    lo declaró y no rellena nada) o ``None`` si solo parte de su superficie, sin apoyarse.
+
+    En :func:`dependents` es lo que se apoya en la entidad; en :func:`dependencies_of`, aquello en lo que se apoya
+    la entidad (su partida incluida), y el volumen es lo suyo apoyado en ello."""
+
+    operation_uid: str
+    name: str
+    op_type: str
+    state: EntityState
+    roles: tuple[str, ...]
+    entity: str | None = None
+    volume_m3: float | None = None
+    causes: frozenset[Cause] = frozenset()
+
+    def text(self, language: str = "es") -> str:
+        """La fila como una línea de la lista, en ``language``: «Sobre la balsa (Plataforma): 8 000 m³
+        apoyados» o, sin volumen, «Arrastra el terreno (Plataforma): superficie de partida». Es lo que enseñan la
+        barra N (RF-015-25) y el aviso antes de descartar (RF-015-17)."""
+        values: dict[str, object] = {"name": self.name, "kind": kind_label(self.op_type, language)}
+        if self.volume_m3 is None:
+            return render("des.entity_dependent_start", language=language, **values)
+        return render("des.entity_dependent_volume", language=language, volume=round(self.volume_m3), **values)
+
+
+def _entry(listed: EntityRegistry, ref: str, version: Version) -> EntityEntry:
+    """La entrada de la entidad ``ref`` (código o nombre) en el registro de ``version``; :class:`ValueError` si no
+    es de la versión (un error del programa: quien llama sacó el código del registro)."""
+    found = listed.get(ref)
+    if found is None:
+        raise ValueError(f"la entidad «{ref}» no es de la versión {version.code}")
+    return found
+
+
+def _settings_name(op_type: str, settings: object) -> str:
+    """El nombre de una operación hecha: el ``name`` de sus ajustes (JSON) o, sin él, su tipo."""
+    try:
+        found = json.loads(str(settings)) if settings else {}
+    except ValueError:
+        found = {}
+    name = found.get("name") if isinstance(found, dict) else None
+    return name if isinstance(name, str) and name else op_type
+
+
+def _supported(conn: sqlite3.Connection, operations: Iterable[str]) -> dict[tuple[str, str], float]:
+    """Lo apoyado que registró cada operación de ``operations``: ``(operación, código de la entidad)`` → m³, de
+    sus cifras ``des.supported_m3`` (una consulta por cada 400 operaciones; el ámbito dice la entidad)."""
+    found: dict[tuple[str, str], float] = {}
+    uids = sorted(set(operations))
+    for first in range(0, len(uids), _CHUNK):
+        part = uids[first:first + _CHUNK]
+        sql = _VOLUMES.format(marks=", ".join("?" for _ in part))
+        for uid, scope, value in conn.execute(sql, (SUPPORTED_M3, *part)):
+            try:
+                code = json.loads(str(scope)).get(ENTITY_SCOPE_KEY)
+            except (ValueError, AttributeError):
+                continue
+            if isinstance(code, str) and value is not None:
+                found[(str(uid), code)] = float(value)
+    return found
+
+
+def _ordered(roles: Iterable[str]) -> tuple[str, ...]:
+    """Los papeles de ``roles`` sin repetir, en el orden de :data:`_LIST_ROLES`."""
+    kept = set(roles)
+    return tuple(role for role in _LIST_ROLES if role in kept)
+
+
+def dependents(project: Any, version: str, code: str, *, conn: sqlite3.Connection | None = None
+               ) -> tuple[Dependent, ...]:
+    """**Lo que se apoya en la entidad** ``code`` (código o nombre) de la versión ``version`` (uid o código):
+    las operaciones hechas y sin sustituir de la versión que consumen la superficie de la entidad (su
+    ``des_psf_``) con el papel ``supported_on`` o ``surface`` —otras entidades y los diseños de la 013 y la 014
+    que rellenan sobre ella, como un «solo relleno»— **en una sola lista** (RF-015-15, D-11; RF-015-17), por orden
+    de registro, cada una con su nombre, su tipo, el volumen apoyado en m³ y su estado (:class:`Dependent`). Una
+    operación que parte de la superficie y rellena sobre ella es una fila con los dos papeles. Una entidad **sin
+    calcular** no tiene superficie: ``()``; una **descartada** sí la tiene (lo que se le apoyaba queda en la
+    lista, «apoyo retirado»).
+
+    Es **una consulta de entradas y cifras** (RNF-015-02: con 200 entidades, ≤ 1 s en disco local): no lee ninguna
+    superficie ni recorre las entidades más que para su nombre y su estado. ``conn`` es una conexión de lectura de
+    quien llama; sin ella, se abre una. :class:`ValueError` si la entidad no es de la versión;
+    :class:`~core.versions.model.VersionError` si la versión no existe."""
+    with _snapshot(project, conn) as reading:
+        found = _version(reading, version)
+        listed = _registry(project, reading, found)
+        entry = _entry(listed, code, found)
+        if entry.operation_uid is None:
+            return ()
+        wanted = entry.record.code
+        rows: dict[str, tuple[int, str, str, set[str]]] = {}
+        for surface in [str(uid) for (uid,) in reading.execute(
+                _SURFACES_OF, (entry.operation_uid, DATASET, ENTITY_SURFACE_ROLE))]:
+            for uid, fid, op_type, settings, role in reading.execute(
+                    _DEPENDENTS, (DATASET, surface, *_LIST_ROLES, found.uid)):
+                row = rows.setdefault(str(uid), (int(fid), str(op_type), str(settings), set()))
+                row[3].add(str(role))
+        volumes = _supported(reading, rows)
+        by_operation = {item.operation_uid: item for item in listed if item.operation_uid is not None}
+        links = _links(reading, [uid for uid in rows if uid not in by_operation])
+        result: list[Dependent] = []
+        for uid, (_fid, op_type, settings, roles) in sorted(rows.items(), key=lambda item: item[1][0]):
+            item = by_operation.get(uid)
+            if item is not None:
+                result.append(Dependent(uid, item.record.name, op_type, EntityState(item.record.state),
+                                        _ordered(roles), item.record.code, volumes.get((uid, wanted)),
+                                        item.causes))
+            else:
+                state, causes, _retired = _deduce(reading, uid, links.get(uid, ()))
+                result.append(Dependent(uid, _settings_name(op_type, settings), op_type, state,
+                                        _ordered(roles), None, volumes.get((uid, wanted)), causes))
+        return tuple(result)
+
+
+def dependencies_of(project: Any, version: str, code: str, *, conn: sqlite3.Connection | None = None
+                    ) -> tuple[Dependent, ...]:
+    """**En qué se apoya la entidad** ``code`` (código o nombre) de la versión ``version`` (uid o código): lo que
+    su operación vigente consume con el papel ``supported_on`` (las entidades en cuya huella rellena, o que la
+    persona declaró) y ``surface`` (su superficie de partida: otra entidad, un diseño de la 013 o la 014 o el
+    terreno), **en una sola lista** de :class:`Dependent`: lo que se apoya primero y su partida después. De cada
+    fila, el nombre y el tipo de quien la escribió (de un dato que no es de ``des``, el nombre del dato), su
+    código si es una entidad, su estado y el volumen **de esta entidad apoyado en ella** (``des.supported_m3`` con
+    ese ámbito; ``None`` si solo es su partida). Sin operación (sin calcular): ``()``. Una consulta de entradas y
+    cifras, como :func:`dependents` (RNF-015-02). Los mismos rechazos."""
+    with _snapshot(project, conn) as reading:
+        found = _version(reading, version)
+        listed = _registry(project, reading, found)
+        entry = _entry(listed, code, found)
+        if entry.operation_uid is None:
+            return ()
+        rows: dict[str, tuple[int, str, str, str, str, set[str]]] = {}
+        for position, (role, dataset, name, producer, op_type, settings) in enumerate(reading.execute(
+                _REST_ON, (entry.operation_uid, DATASET, *_LIST_ROLES))):
+            row = rows.setdefault(str(dataset), (position, str(producer), str(name),
+                                                 "" if op_type is None else str(op_type), str(settings), set()))
+            row[5].add(str(role))
+        volumes = _supported(reading, [entry.operation_uid])
+        by_operation = {item.operation_uid: item for item in listed if item.operation_uid is not None}
+        links = _links(reading, {row[1] for row in rows.values() if row[1] not in by_operation})
+        result: list[Dependent] = []
+        for _dataset, (_position, producer, name, op_type, settings, roles) in sorted(
+                rows.items(), key=lambda item: (SUPPORTED_ON_ROLE not in item[1][5], item[1][0])):
+            item = by_operation.get(producer)
+            if item is not None:
+                result.append(Dependent(producer, item.record.name, op_type, EntityState(item.record.state),
+                                        _ordered(roles), item.record.code,
+                                        volumes.get((entry.operation_uid, item.record.code)), item.causes))
+            else:
+                state, causes, _retired = _deduce(reading, producer, links.get(producer, ()))
+                shown = _settings_name(op_type, settings) if op_type.startswith("des.") else name
+                result.append(Dependent(producer, shown, op_type, state, _ordered(roles), None, None, causes))
+        return tuple(result)
+
+
+def _named_parameters(conn: sqlite3.Connection, listed: EntityRegistry, causes: Iterable[Cause],
+                      language: str) -> list[tuple[str, str]]:
+    """De las causas ``causes`` de una operación, los parámetros que son de una entidad de ``listed`` como
+    ``(lo que dice la 008, lo que decimos)``: el nombre visible del parámetro de una familia de entidades
+    («Pendiente de la rasante de la plataforma · plt_001», ADR-0027) con el **nombre** de la entidad en lugar de
+    su código («… · P1»). Sin etiqueta o de una entidad que no es de la versión, nada."""
+    subjects = sorted({cause.subject for cause in causes if cause.kind is CauseKind.PARAMETER_CHANGED})
+    if not subjects:
+        return []
+    keys = {str(uid): str(key) for uid, key in conn.execute(
+        _PARAMETER_KEYS.format(marks=", ".join("?" for _ in subjects)), subjects)}
+    found: list[tuple[str, str]] = []
+    for uid in subjects:
+        key = keys.get(uid)
+        if key is None:
+            continue
+        for prefix, _op_type in _FAMILIES.values():
+            code = _segment_of(key, prefix)
+            item = None if code is None else listed.get(code)
+            label = parameter_label(key, language)
+            if code is None or item is None or label is None:
+                continue
+            segment = entity_segment(code)
+            if label.endswith(f" · {segment}"):
+                found.append((label, label[:-len(segment)] + item.record.name))
+    return found
+
+
+def _reason(conn: sqlite3.Connection, listed: EntityRegistry, operation: str, language: str) -> str | None:
+    """«Obsoleto: …» de la operación ``operation`` según la caché de la 008 (``item_text``: las causas raíz, por
+    clase y por nombre, con «mientras se calculaba») con el nombre de cada entidad cuyo parámetro cambió en
+    lugar de su código; ``None`` si está al día."""
+    causes = item_causes(conn, STALE_OPERATION, operation)
+    text = item_text(conn, STALE_OPERATION, operation, language=language)
+    if text is None:
+        return None
+    for old, new in _named_parameters(conn, listed, causes, language):
+        text = re.sub(re.escape(old) + r"(?!\w)", lambda _match, new=new: new, text)
+    return text
+
+
+def stale_reason(project: Any, version: str, code: str, *, language: str = "es",
+                 conn: sqlite3.Connection | None = None) -> str | None:
+    """**Por qué está obsoleta la entidad** ``code`` (código o nombre) de la versión ``version`` (uid o código),
+    en ``language`` (RF-015-16): el «Obsoleto: cambió …» de la 008 con las **causas raíz** de su operación (la
+    cascada ya las propagó: la entidad de la que parte, la que cambió un parámetro, las máscaras…), cada
+    parámetro de una entidad con el nombre de **la entidad** que cambió y lo que cambió («Obsoleto: cambió
+    Pendiente de la rasante de la plataforma · P1»). ``None`` si está al día o sin calcular. Lo que lee la barra
+    N (RF-015-25). Solo lee. :class:`ValueError` si la entidad no es de la versión;
+    :class:`~core.versions.model.VersionError` si la versión no existe."""
+    _language(language)
+    with _snapshot(project, conn) as reading:
+        found = _version(reading, version)
+        listed = _registry(project, reading, found)
+        entry = _entry(listed, code, found)
+        if entry.operation_uid is None or not entry.causes:
+            return None
+        return _reason(reading, listed, entry.operation_uid, language)
+
+
+def operation_reason(project: Any, version: str, operation_uid: str, *, language: str = "es",
+                     conn: sqlite3.Connection | None = None) -> str | None:
+    """Como :func:`stale_reason`, de **cualquier operación** de la versión ``version`` (uid o código): un diseño
+    de la 013 o la 014 que se apoya en una entidad, una verificación o una cubicación que usa su superficie
+    (lo obsoleto «en cascada», RF-015-16). ``None`` si está al día. :class:`ValueError` si la operación no es de
+    la versión."""
+    _language(language)
+    with _snapshot(project, conn) as reading:
+        found = _version(reading, version)
+        row = reading.execute(
+            "SELECT 1 FROM gb_operation AS o JOIN gb_revision AS r ON r.uid = o.revision_uid "
+            "WHERE o.uid = ? AND r.version_uid = ?", (operation_uid, found.uid)).fetchone()
+        if row is None:
+            raise ValueError(f"la operación «{operation_uid}» no es de la versión {found.code}")
+        if not item_causes(reading, STALE_OPERATION, operation_uid):
+            return None
+        return _reason(reading, _registry(project, reading, found), operation_uid, language)
+
+
+def _language(language: str) -> None:
+    if language not in LANGUAGES:
+        raise ValueError(f"el idioma «{language}» no es de Geoblender: {', '.join(LANGUAGES)}")
 
 
 # --- La zona que declara una entidad (spec 015, T16; RF-012-29, RF-015-10; A8; D-23) ---------------

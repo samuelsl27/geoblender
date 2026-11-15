@@ -196,6 +196,8 @@ PENDING_015_API = frozenset({
     "ChainFailure", "ChainStage", "EntityChain", "after_entity_change",
     # T20: si lo vigente en la tabla de las declaradas difiere de lo que declaran las entidades (design.entity_store).
     "declaration_diverges",
+    # T24: la lista de dependencias de una entidad y la causa de lo obsoleto (design.entities).
+    "Dependent", "dependencies_of", "dependents", "kind_label", "operation_reason", "stale_reason",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({
@@ -203,7 +205,9 @@ PENDING_015_MODULES = frozenset({
     # T03: la cadena (start_conflict, insert_after, chain_of, chain_tails) y registry; T16:
     # DeclaredZone, declared_zone y declared_zone_of_runs (la zona que declara una entidad: el
     # contorno de su huella para la restricción declarada de la 012); T23: Support, detect_supports,
-    # strongest, runs_cells y code_order (lo que se apoya en una entidad: A6, RF-015-15)
+    # strongest, runs_cells y code_order (lo que se apoya en una entidad: A6, RF-015-15); T24:
+    # Dependent, dependents, dependencies_of, stale_reason, operation_reason y kind_label (la lista de
+    # dependencias y la causa de lo obsoleto: RF-015-15, RF-015-16)
     "design.platform",  # T06: PlatformJob, PlatformGeometry, Footprint, platform_footprint,
     # axis_of_polygon y work_window (la huella y la rasante de la plataforma); T07: Applied,
     # OffLevel, OffLevelCause, apply_platform y apply_platform_steps (aplicarla); T08: Edge,

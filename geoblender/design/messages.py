@@ -1634,6 +1634,20 @@ CATALOG: tuple[Message, ...] = (
         one_es="Al sustituir la operación que hizo la plataforma «{entity}», quedará obsoleta "
         "{operations} operación que dependía de ella: {items}.",
     ),
+    # La lista de dependencias de una entidad (RF-015-15, RF-015-17; T24): una línea por fila, con el nombre, el
+    # tipo (el de la operación) y los m³ apoyados o, si solo parte de su superficie, «superficie de partida».
+    Message(
+        "des.entity_dependent_volume",
+        "{name} ({kind}): {volume} m³ supported",
+        "{name} ({kind}): {volume} m³ apoyados",
+        "note",
+    ),
+    Message(
+        "des.entity_dependent_start",
+        "{name} ({kind}): start surface",
+        "{name} ({kind}): superficie de partida",
+        "note",
+    ),
     # Tras la orden de una entidad (RF-015-10, RF-012-06; T19): la declaración, las máscaras de nuevo, lo
     # ganado y perdido por restricción, lo que quedó obsoleto y lo que no se pudo hacer.
     Message(

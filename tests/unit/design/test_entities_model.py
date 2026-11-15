@@ -102,6 +102,8 @@ CODES: dict[str, str] = {
     "des.entity_obsolete_consumers": "note",    # RF-015-03 (T12)
     "des.entity_obsolete_successor": "note",    # RF-015-03, RF-015-05 (T12)
     "des.entity_obsolete_dependents": "note",   # RF-015-03 (T12)
+    "des.entity_dependent_volume": "note",      # RF-015-15, RF-015-17 (T24)
+    "des.entity_dependent_start": "note",       # RF-015-15, RF-015-17 (T24)
     "des.entity_chain_declared": "note",        # RF-015-10 (T19)
     "des.entity_chain_masks": "note",           # RF-015-10 (T19)
     "des.entity_chain_change": "note",          # RF-012-06 (T19)
