@@ -128,7 +128,7 @@ PROPERTIES = {
 }
 """Las propiedades del diálogo con el ``msgid`` de su nombre y de su descripción (las ocultas, que pone
 quien lanza la orden, no los llevan)."""
-HIDDEN = ("confirm", "in_steps", "confirm_counterslope", "preview", "insert_before")
+HIDDEN = ("confirm", "in_steps", "confirm_counterslope", "preview", "insert_before", "code")
 
 
 def _module(name: str) -> ModuleType:
@@ -377,7 +377,7 @@ class CreatePlatformTest(unittest.TestCase):
                                   window_manager=SimpleNamespace(invoke_props_dialog=dialog))
         fields: dict[str, Any] = {
             "name": "", "layer": "", "start": "", "feature": "", "confirm": False,
-            "in_steps": False, "confirm_counterslope": False, "insert_before": "",
+            "in_steps": False, "confirm_counterslope": False, "insert_before": "", "code": "",
             "properties": SimpleNamespace(is_property_set=lambda name: False), **values}
         return operator_self(self.cls, report=lambda kind, text: None, **fields), context, dialog
 

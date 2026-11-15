@@ -110,6 +110,18 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
         self.calculate(**values)
         self.assertEqual(self.create(), {"FINISHED"})
 
+    def calculate_entity(self, code: str) -> None:
+        """«Calcular…» (``des_entity_calculate``) y «Crear» una entidad sin calcular de la versión activa, con las órdenes reales
+        (T41): la primera lanza «Plataforma…» con el código de la entidad (el temporizador que lo hace no corre en ``blender
+        -b``: se hace ya) y la segunda registra el cálculo abierto."""
+        def launch(idname: str, _window: Any, **values: Any) -> None:
+            self.assertEqual(idname, platform_ops.PLATFORM)
+            self.assertEqual(bpy.ops.geoblender.des_create_platform("EXEC_DEFAULT", in_steps=False, **values), {"FINISHED"})
+
+        with mock.patch.object(self.des_ops, "_invoke_later", side_effect=launch):
+            self.assertEqual(bpy.ops.geoblender.des_entity_calculate("EXEC_DEFAULT", entity=code), {"FINISHED"})
+        self.assertEqual(self.create(), {"FINISHED"})
+
     def states(self, version: Any) -> dict[str, str]:
         registry = self.entities.registry(self.project, version.uid)
         return {entry.record.code: str(entry.record.state) for entry in registry}
@@ -295,9 +307,10 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
         self.assertAlmostEqual(FILL_AFTER_M3, 1112.0, places=9)
 
     def test_c_brought_to_another_version_they_are_not_calculated_and_the_dependency_is_detected_again(self) -> None:
-        """CE-015-01, RF-015-18, RF-009-01, D-18: «Traer las entidades de V01» (la orden real) a V02 trae las definiciones de
-        P1 y P2 **sin calcular** (ningún resultado en V02); calculadas allí (con su código, como lo hará el diálogo de la
-        T31) **la dependencia se detecta de nuevo** con lo mismo que en V01 (1.112 m³ a mano)."""
+        """CE-015-01, RF-015-18, RF-009-01, D-18, C-12: «Traer las entidades de V01» (la orden real) a V02 trae las definiciones
+        de P1 y P2 **sin calcular** (ningún resultado en V02); calculadas allí **con la orden real, «Calcular…» del menú «Entidad
+        ▾»** (T41; antes, por la API con su código: en la interfaz no se podían calcular) **la dependencia se detecta de nuevo**
+        con lo mismo que en V01 (1.112 m³ a mano)."""
         self.activate(self.v02)
         self.addCleanup(self.activate, self.v01)
         self.assertEqual(bpy.ops.geoblender.des_entity_bring("EXEC_DEFAULT", source="V01", entities="PLT-001, PLT-002"),
@@ -305,16 +318,8 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
         self.assertEqual(self.states(self.v02), {"PLT-001": "uncalculated", "PLT-002": "uncalculated"})
         self.assertEqual(self.rows("SELECT count(*) FROM gb_dataset WHERE version_uid = ? AND name LIKE 'des!_%' ESCAPE '!'",
                                    self.v02.uid), [(0,)])
-        steps = _module("design.steps")
-        model = _module("design.model")
-        fields = model.PlatformFields(layer=platform_ops.LAYER, start_level_field="cota_inicial",
-                                      gradient_field="pendiente", width_field="ancho")
-        for code, name in (("PLT-001", LOADING), ("PLT-002", OVER)):
-            asked = model.PlatformRequest(name=name, fields=fields, feature=name,
-                                          start=self.ground if code == "PLT-001" else "entity:PLT-001",
-                                          mode=model.PlatformMode.CUT_FILL if code == "PLT-002" else model.PlatformMode.CUT,
-                                          edge_angle_deg=35.0, reach_m=10.0)
-            _last(steps.platform_run(self.project, asked, version=self.v02.uid, code=code)).create()
+        for code in ("PLT-001", "PLT-002"):  # por el orden de la cadena: P2 parte de la superficie de P1
+            self.calculate_entity(code)
         self.assertEqual(self.states(self.v02), {"PLT-001": "current", "PLT-002": "current"})
         again = self.volumes(self.current(self.v02, "PLT-002"))
         self.assertTrue(_close(again["PLT-001"], FILL_AFTER_M3), again)

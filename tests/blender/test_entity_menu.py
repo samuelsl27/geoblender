@@ -4,7 +4,7 @@ RF-015-05, RF-015-04, RF-015-17, RF-015-18, RF-015-26; D-14; plan 015 §5.3.3 y 
 
 - **El menú** (``GEOBLENDER_MT_des_context_entity``, ``contexts.toml``): con las órdenes reales en lugar de los
   marcadores —«Lo que se apoya en ella» (``des_entity_dependents``, nueva), «Insertar antes o después de…»
-  (``des_entity_insert``, nueva), «Traer las entidades de…», «Descartar…», «Soltar el apoyo…», «Vista previa» y
+  (``des_entity_insert``, nueva), «Traer las entidades de…», «Calcular…» (T41), «Descartar…», «Soltar el apoyo…», «Vista previa» y
   «Exportar la superficie» (la orden de exportar de la T30)—; «Plataforma…» y las internas pasan a la entrada
   ``015``, entregada; lo de la 016 (Acopio…, Contrafuerte…) sigue marcado en R-36 hasta ella.
 - **La activación** (RF-015-28): cada orden, con el proyecto en escritura y la versión activa editable, activa; con el
@@ -47,6 +47,7 @@ PLATFORM = platform_ops.PLATFORM
 DISCARD = "geoblender.des_entity_discard"
 RELEASE = "geoblender.des_entity_release_support"
 BRING = "geoblender.des_entity_bring"
+CALCULATE = "geoblender.des_entity_calculate"
 PREVIEW = "geoblender.des_entity_preview"
 EXPORT = "geoblender.des_export_design_grid"
 MENU = "GEOBLENDER_MT_des_context_entity"
@@ -75,7 +76,7 @@ PROPERTIES = {
 """Las propiedades de cada orden con el ``msgid`` de su nombre y de su descripción (las colecciones de filas, que llena el
 diálogo, no los llevan)."""
 HIDDEN = ("references",)
-WRITING = (DEPENDENTS, INSERT, BRING, DISCARD, RELEASE, PREVIEW)
+WRITING = (DEPENDENTS, INSERT, BRING, CALCULATE, DISCARD, RELEASE, PREVIEW)
 """Las órdenes del menú que se desactivan con el proyecto en solo lectura o la versión no editable (RF-015-28)."""
 NOT_EDITABLE = "V02 está en estado SUPERADO: cree una versión nueva a partir de ella"
 
@@ -208,7 +209,7 @@ class EntityMenuTest(platform_ops.CreatePlatformTest):
         platform = catalog.commands[PLATFORM]
         self.assertEqual((platform.entry, platform.module, platform.label, platform.label_es),
                          (ENTRY, "des", "Platform…", "Plataforma…"))
-        for idname in (PLATFORM, DEPENDENTS, INSERT, BRING, DISCARD, RELEASE, PREVIEW):
+        for idname in (PLATFORM, DEPENDENTS, INSERT, BRING, CALCULATE, DISCARD, RELEASE, PREVIEW):
             with self.subTest(orden=idname):
                 self.assertEqual(catalog.commands[idname].entry, ENTRY)
                 self.assertTrue(self.commands.is_available(idname))
@@ -227,16 +228,17 @@ class EntityMenuTest(platform_ops.CreatePlatformTest):
         operators = [(item.target, item.enabled) for item in shown.items if item.kind == "operator"]
         self.assertEqual([target for target, _enabled in operators], [
             "geoblender.ui_show_context_panel", "geoblender.core_recompute_stale", DEPENDENTS,
-            "geoblender.core_show_lineage", INSERT, BRING, DISCARD, RELEASE, PREVIEW, EXPORT,
+            "geoblender.core_show_lineage", INSERT, BRING, CALCULATE, DISCARD, RELEASE, PREVIEW, EXPORT,
             "geoblender.des_edit_stockpile"])
         enabled = dict(operators)
-        for idname in (DEPENDENTS, INSERT, BRING, DISCARD, RELEASE, PREVIEW, EXPORT):
+        for idname in (DEPENDENTS, INSERT, BRING, CALCULATE, DISCARD, RELEASE, PREVIEW, EXPORT):
             self.assertTrue(enabled[idname], idname)
         self.assertFalse(enabled["geoblender.des_edit_stockpile"])
         labels = [item.text for item in shown.items if item.kind in ("operator", "label")]
         self.assertIn("Lo que se apoya en ella", labels)
         self.assertIn("Insertar antes o después de…", labels)
         self.assertIn("Traer las entidades de…", labels)
+        self.assertIn("Calcular…", labels)
         self.assertIn("Descartar…", labels)
         self.assertIn("Soltar el apoyo…", labels)
         self.assertIn("Editar el eje o el contorno", labels)

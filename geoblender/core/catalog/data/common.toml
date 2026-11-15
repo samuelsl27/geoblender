@@ -638,6 +638,18 @@ entry = "015"
 action = "P"
 frequency = 2
 
+# Calcular una entidad traída o heredada «sin calcular» (spec 015, T41; RF-015-18; hallazgo C-12): interna, en el menú «Entidad ▾».
+[[command]]
+key = "geoblender.des_entity_calculate"
+kind = "internal"
+label.en = "Calculate…"
+label.es = "Calcular…"
+description.en = "Calculate a design entity that has no result yet, brought from another version or inherited: with the parameters it has in the version, and what rests on it is detected again"
+description.es = "Calcula una entidad de diseño que aún no tiene resultado, traída de otra versión o heredada: con los parámetros que ya tiene en la versión, y se detecta de nuevo lo que se apoya en ella"
+entry = "015"
+action = "D"
+frequency = 1
+
 [[command]]
 key = "geoblender.des_entity_insert"
 kind = "internal"

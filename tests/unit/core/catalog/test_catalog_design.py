@@ -57,9 +57,10 @@ TITLE_015 = ("Parametric design entities", "Entidades de diseño paramétricas")
 PLATFORM = "geoblender.des_create_platform"
 INTERNAL_015 = (  # orden → (acción, frecuencia)
     "geoblender.des_entity_discard", "geoblender.des_entity_release_support", "geoblender.des_entity_bring",
-    "geoblender.des_entity_preview", "geoblender.des_entity_dependents", "geoblender.des_entity_insert")
+    "geoblender.des_entity_preview", "geoblender.des_entity_dependents", "geoblender.des_entity_insert",
+    "geoblender.des_entity_calculate")
 ENTITY_MENU = ("geoblender.des_entity_dependents", "geoblender.des_entity_insert", "geoblender.des_entity_bring",
-               "geoblender.des_entity_discard", "geoblender.des_entity_release_support",
+               "geoblender.des_entity_calculate", "geoblender.des_entity_discard", "geoblender.des_entity_release_support",
                "geoblender.des_entity_preview", "geoblender.des_export_design_grid")
 """Las órdenes reales del menú «Entidad ▾» (T31), en su orden."""
 
@@ -160,7 +161,7 @@ class DesignCatalogTest(unittest.TestCase):
 
     def test_entry_015_delivers_its_commands(self) -> None:
         """RF-015-28 (plan 015 §5.6, T31): la entrada ``015`` tiene el título de la spec en los dos idiomas y entrega sus
-        comandos: «Plataforma…», las seis internas de las entidades y el menú «Entidad ▾» son suyos; ``R-36`` sigue como entrada del roadmap, sin
+        comandos: «Plataforma…», las siete internas de las entidades y el menú «Entidad ▾» son suyos; ``R-36`` sigue como entrada del roadmap, sin
         entregar, con lo de la 016 (Acopio…, Contrafuerte…)."""
         entry = self.cat.entries["015"]
         self.assertEqual((entry.title, entry.title_es), TITLE_015)

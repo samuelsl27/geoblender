@@ -1895,6 +1895,28 @@ CATALOG: tuple[Message, ...] = (
         "(declárela de nuevo si sigue valiendo).",
         "warning",
     ),
+    # Calcular una entidad traída o heredada «sin calcular» (RF-015-18, CE-015-01; hallazgo C-12; T41): lo que se rechaza.
+    Message(
+        "des.entity_calculate_done",
+        "Entity «{entity}» ({code}) already has a result in {version}: «Calculate…» is for the entities "
+        "brought or inherited without one; «Recompute the stale results» redoes a stale one; nothing is "
+        "calculated.",
+        "La entidad «{entity}» ({code}) ya tiene resultado en {version}: «Calcular…» es para las que se "
+        "traen o se heredan sin él; «Recalcular lo obsoleto» rehace la que está obsoleta; no se calcula "
+        "nada.",
+    ),
+    Message(
+        "des.entity_calculate_missing",
+        "Entity «{entity}» ({code}) cannot be calculated in {version}: «{field}» has no value (for "
+        "example, when it was brought and the surface it started from was not in {version}, or another "
+        "entity already started from it); discard it with «Discard…» and create the platform again "
+        "with «Platform…», under another name (the name of a discarded entity stays taken); nothing is "
+        "calculated.",
+        "La entidad «{entity}» ({code}) no se puede calcular en {version}: «{field}» no tiene valor "
+        "(por ejemplo, si al traerla la superficie de la que partía no estaba en {version} o ya partía "
+        "de ella otra entidad); descártela con «Descartar…» y cree de nuevo la plataforma con "
+        "«Plataforma…», con otro nombre (el de una descartada sigue ocupado); no se calcula nada.",
+    ),
     # La vista previa de una entidad de diseño (T29; RF-015-26): lo que dice antes de calcular ---
     Message(
         "des.preview_entity",
@@ -1958,9 +1980,9 @@ CATALOG: tuple[Message, ...] = (
     Message(
         "des.preview_entity_uncalculated",
         "«{entity}» ({code}) has no result yet, so there is nothing to preview it from; calculate "
-        "it first (Design ▸ Haul roads and entities ▸ Entities ▸ Platform…).",
+        "it first (menu Entity ▾ ▸ Calculate…).",
         "«{entity}» ({code}) aún no tiene resultado, así que no hay de dónde sacar su vista "
-        "previa; calcúlela antes (Diseño ▸ Pistas y entidades ▸ Entidades ▸ Plataforma…).",
+        "previa; calcúlela antes (menú Entidad ▾ ▸ Calcular…).",
         "warning",
     ),
 )

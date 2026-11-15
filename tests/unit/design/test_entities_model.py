@@ -123,6 +123,8 @@ CODES: dict[str, str] = {
     "des.entity_bring_support_lost": "warning",  # RF-015-18 (T26)
     "des.entity_bring_start_taken": "warning",  # RF-015-18 (T26)
     "des.entity_bring_supports_lost": "warning",  # RF-015-18 (T26)
+    "des.entity_calculate_done": "error",  # RF-015-18 (T41)
+    "des.entity_calculate_missing": "error",  # RF-015-18 (T41)
     "des.entity_discard_reason": "error",       # RF-015-17 (T25)
     "des.entity_already_discarded": "error",    # RF-015-17 (T25)
     "des.entity_release_reason": "error",       # RF-015-17 (T25)

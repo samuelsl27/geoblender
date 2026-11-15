@@ -532,7 +532,7 @@ class EntityPreviewTest(platform_ops.CreatePlatformTest):
         bare = self.pump()
         self.assertEqual((bare.lines.batches, entity.preview().drawable), ((), False))
         self.assertEqual(bare.summary, (("«Carga» (PLT-001) aún no tiene resultado, así que no hay de dónde sacar su vista previa; "
-                                         "calcúlela antes (Diseño ▸ Pistas y entidades ▸ Entidades ▸ Plataforma…).", True),))
+                                         "calcúlela antes (menú Entidad ▾ ▸ Calcular…).", True),))
         entity.disable()
         self.set_active(self.v01)
 

@@ -9330,3 +9330,22 @@ es = "Se inserta antes de «{entity}»: «{entity}» pasará a partir de su supe
 
 ["Insert before or after…"]
 es = "Insertar antes o después de…"
+
+# Calcular una entidad traída o heredada «sin calcular» (spec 015, T41; RF-015-18; la orden de bl/ops/des.py).
+["Calculate…"]
+es = "Calcular…"
+
+["Code or name of the design entity to calculate: one brought from another version or inherited, without a result (empty: the one chosen in the window)"]
+es = "Código o nombre de la entidad de diseño que se calcula: una traída de otra versión o heredada, sin resultado (vacío: la elegida en la ventana)"
+
+["The active version has no entity without a result: the ones brought from another version or inherited from the version it starts from are left without one"]
+es = "La versión activa no tiene ninguna entidad sin resultado: quedan así las que se traen de otra versión o se heredan de la versión de la que parte"
+
+["It is calculated with the parameters it has in the version; nothing is chosen again."]
+es = "Se calcula con los parámetros que ya tiene en la versión; no se elige nada de nuevo."
+
+["Calculating shows its summary and registers nothing: only «Create» does, and then what rests on it is detected again."]
+es = "Calcular enseña su resumen y no registra nada: solo «Crear» lo hace, y entonces se detecta de nuevo lo que se apoya en ella."
+
+["Choose the entity to calculate"]
+es = "Elija la entidad que se calcula"

@@ -160,6 +160,7 @@ PENDING_015_API: frozenset[str] = frozenset({
     "has_platform_operation",  # T38: ``provenance``, su primera consulta
     "check_parameter_change",  # T39: ``entity_store``, las reglas de crear al cambiar un parámetro de una entidad
     "unsupportable",  # T39: ``entities``, donde una entidad no puede apoyarse (ciclo)
+    "entity_request",  # T41: ``entity_store``, la petición de una entidad sin calcular (traída o heredada)
 })
 PENDING_015_MODULES: frozenset[str] = frozenset()
 

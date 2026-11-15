@@ -294,6 +294,16 @@ y ella y las que la siguen quedan obsoletas con su causa (``design.entity_store.
 **activas con el proyecto en escritura y la versión activa editable y, si no, desactivadas con su motivo**
 (:class:`DesignCommandAware`, RF-015-28); exportar no es una operación (RF-013-34, D-29 de la 011) y vale también en solo
 lectura y con la versión superada.
+
+**Calcular una entidad traída o heredada** (spec 015, T41; HU-015-2; RF-015-18; CE-015-01; hallazgo C-12): «Traer las
+entidades de…» y la versión que parte de otra dejan la entidad con sus parámetros y **sin resultado**, y «Plataforma…» no podía
+calcularla (``des.entity_name_repeated``, ``des.entity_start_taken``: «sin calcular» ocupa su nombre y su partida).
+:class:`GEOBLENDER_OT_des_entity_calculate` («Calcular…» del menú «Entidad ▾») abre una ventana con las entidades **sin calcular**
+de la versión activa (por su nombre: sin resultado no tiene objeto en la vista) y lanza **«Plataforma…» con su** ``code`` (la
+propiedad oculta): sin diálogo, calcula con los parámetros que la entidad ya tiene en la versión
+(``design.entity_store.entity_request``) y con su código, enseña el resumen y pide confirmar; «Crear» la registra **sin
+escribir ningún parámetro** (conserva su código y su historial) y la dependencia «se apoya en» se detecta de nuevo. Se calculan
+por el orden de la cadena (la partida de una es la superficie de la anterior).
 """
 
 from __future__ import annotations
@@ -3585,7 +3595,7 @@ PLATFORM_MODE_ITEMS = [
 """El modo de la plataforma (``design.model.PlatformMode``; D-5: «en corte» por defecto)."""
 AXIS_LINK_FIELD = "eje"
 """El campo que propone el diálogo para el enlace de un polígono con su eje (plan 015 §5.2.1)."""
-_PLATFORM_HIDDEN = frozenset({"confirm", "in_steps", "confirm_counterslope", "preview", "insert_before"})
+_PLATFORM_HIDDEN = frozenset({"confirm", "in_steps", "confirm_counterslope", "preview", "insert_before", "code"})
 """Las propiedades ocultas de «Plataforma…»: las pone quien la lanza (o su ventana de confirmar)."""
 ENTITY_PREVIEW = "geoblender.des_entity_preview"
 ENTITY_DRAW_MODULE = "draw.entity"
@@ -3692,6 +3702,16 @@ def _propose_values(self: Any, _context: Any) -> None:
     self.start_level = _typed(found.get(PlatformParam.START_LEVEL))
     self.gradient = _typed(found.get(PlatformParam.GRADIENT))
     self.width = _typed(found.get(PlatformParam.WIDTH))
+
+
+def _entity_request(project: Any, version: str, code: str) -> design_model.PlatformRequest:
+    """La petición de la entidad **sin calcular** ``code`` de la versión ``version`` (T41; RF-015-18; hallazgo C-12;
+    ``design.entity_store.entity_request``: de los parámetros que ya tiene la versión, con los campos de la capa de por
+    defecto del diálogo de «Plataforma…»; solo lee)."""
+    from ...design import entity_store  # al usarlo: habilitar no carga el cálculo
+
+    return entity_store.entity_request(project, version, code, start_level_field=START_LEVEL_FIELD,
+                                       gradient_field=GRADIENT_FIELD, width_field=WIDTH_FIELD)
 
 
 class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
@@ -3809,6 +3829,10 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
     # Insertar antes o después de otra entidad (T31; RF-015-05): la entidad (su código) que hoy parte de la misma superficie y
     # que pasará a partir de la de la nueva; la pone «Insertar antes o después de…» al abrir el diálogo.
     insert_before: StringProperty(default="", options=_HIDDEN)  # type: ignore[valid-type]
+    # Calcular una entidad traída o heredada «sin calcular» (T41; RF-015-18; hallazgo C-12): el código de la entidad que ya está en
+    # la versión; la pone «Calcular…» del menú «Entidad ▾». Con él no hay diálogo: se calcula con los parámetros que la entidad ya
+    # tiene en la versión (``design.entity_store.entity_request``), con su código, sin escribir ninguno.
+    code: StringProperty(default="", options=_HIDDEN)  # type: ignore[valid-type]
 
     _insert_name = ""
     """El nombre de la entidad ``insert_before`` como lo enseña el diálogo (lo lee ``invoke``)."""
@@ -3817,13 +3841,15 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
 
     def invoke(self, context: Any, event: Any) -> set[str]:
         """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué.
-        Con ``confirm``, el diálogo de crear el cálculo abierto. Si no, las listas de capas y de
-        superficies leídas de nuevo, la propuesta (el nombre, la capa y la partida: la última de la
-        cadena) y el diálogo del cálculo: Intro calcula."""
+        Con ``confirm``, el diálogo de crear el cálculo abierto. Con ``code`` (una entidad sin calcular, T41), sin
+        diálogo: calcula (:meth:`execute`). Si no, las listas de capas y de superficies leídas de nuevo, la propuesta
+        (el nombre, la capa y la partida: la última de la cadena) y el diálogo del cálculo: Intro calcula."""
         self.provenance_dialog = True
         self.in_steps = getattr(context, "window", None) is not None
         if self.confirm:
             return self._confirmation(context)
+        if self.code.strip():  # una entidad sin calcular: todo lo que hace falta ya lo tiene la versión (T41)
+            return self.execute(context)
         refusal = self._version_refusal()
         if refusal is not None:
             if scene_versions.active_version() is not None:
@@ -3984,7 +4010,9 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
         guion, de una vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar. Los rechazos
         (la geometría, los campos de la capa, los parámetros que faltan, la partida, la falta de dato, un
         sector con la búsqueda pendiente, el nombre repetido) y todas las cuentas son de ``design``. Con ``preview``, la
-        vista previa de lo pedido (:meth:`_show_preview`)."""
+        vista previa de lo pedido (:meth:`_show_preview`). Con ``code`` (T41), la entidad **sin calcular** de la versión
+        con ese código (:func:`_entity_request`: la que dejó «Traer las entidades de…» o heredó una versión que parte de
+        otra): se calcula con los parámetros que ya tiene y con su código, sin escribir ninguno."""
         if self.confirm:
             return self._create(context)
         if self.preview:
@@ -3999,8 +4027,9 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
             return {"CANCELLED"}
         project = SESSION.project
         version = scene_versions.active_version() or ""
+        code = self.code.strip()
         try:
-            request = self._request()
+            request = _entity_request(project, version, code) if code else self._request()
         except ProfileFormError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
@@ -4014,7 +4043,7 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
         from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
 
         discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
-        steps = design_steps.platform_run(project, request, version=version,
+        steps = design_steps.platform_run(project, request, version=version, code=code or None,
                                           insert_before=self.insert_before.strip() or None,
                                           budget_s=self.STEP_BUDGET_S)
         return self._run_steps(context, project, request.name, steps)
@@ -5293,6 +5322,101 @@ class GEOBLENDER_OT_des_entity_insert(DesignCommandAware, ProvenanceAwareOperato
         return {"FINISHED"}
 
 
+# --- Calcular una entidad traída o heredada «sin calcular» (spec 015, T41; HU-015-2; RF-015-18; CE-015-01; hallazgo C-12) ------
+
+CALCULATE_ENTITY = "geoblender.des_entity_calculate"
+
+
+class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Calculate a design entity that has no result yet, brought from another version or inherited: with the parameters it has in the version, and what rests on it is detected again"""
+
+    bl_idname = CALCULATE_ENTITY
+    bl_label = "Calculate…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.PLATFORM
+
+    entity: StringProperty(  # type: ignore[valid-type]
+        name="Entity",
+        description="Code or name of the design entity to calculate: one brought from another version or inherited, "
+                    "without a result (empty: the one chosen in the window)", options=_FIELD)
+    candidates: CollectionProperty(type=GEOBLENDER_PG_des_bring_row, options=_FIELD)  # type: ignore[valid-type]
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre la ventana con las entidades **sin calcular** de la versión activa (por su nombre: una sin calcular no tiene
+        objeto en la vista, así que no se elige seleccionándolo) y propone la dada o la primera; no escribe nada. Sin
+        versión editable o sin ninguna entidad sin calcular, lo dice."""
+        from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+        self.provenance_dialog = True
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        try:
+            listed = entities.registry(SESSION.project, scene_versions.active_version() or "")
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        waiting = [entry.record for entry in listed if entry.record.state is entities.EntityState.UNCALCULATED]
+        if not waiting:
+            self.report({"ERROR"}, tr("The active version has no entity without a result: the ones brought from another "
+                                      "version or inherited from the version it starts from are left without one"))
+            return {"CANCELLED"}
+        self.candidates.clear()
+        for record in waiting:
+            row = self.candidates.add()
+            row.name, row.label = record.name, f"{record.name} ({record.code})"
+        wanted = self.entity.strip()
+        found = entities.find_entity(waiting, wanted) if wanted else None
+        self.entity = (found or waiting[0]).name
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=tr("Calculate…"), confirm_text=tr("Calculate"))
+
+    def draw(self, context: Any) -> None:
+        """La entidad (de la lista de las que no tienen resultado) y lo que pasará: se calcula con los parámetros que ya
+        tiene en la versión y Calcular no registra nada (solo «Crear» lo hace, y entonces se detecta de nuevo lo que se
+        apoya en ella)."""
+        layout = self.layout
+        layout.prop_search(self, "entity", self, "candidates", text=tr("Entity"), translate=False)
+        layout.label(text=tr("It is calculated with the parameters it has in the version; nothing is chosen again."),
+                     translate=False)
+        layout.label(text=tr("Calculating shows its summary and registers nothing: only «Create» does, and then what "
+                             "rests on it is detected again."), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Abre el cálculo de la entidad elegida (**«Plataforma…»**, :data:`CREATE_PLATFORM`, con su ``code``): sin
+        diálogo, calcula con los parámetros que la entidad ya tiene en la versión, enseña el resumen y pide confirmar; no
+        escribe nada (al crear, la entidad conserva su código y sus parámetros y la dependencia «se apoya en» se detecta de
+        nuevo). Sin entidad, con una que no es de la versión, que ya tiene resultado o está descartada, o sin su
+        partida, lo dice (``design.entity_store.entity_request``) y no abre nada."""
+        from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project, active = SESSION.project, scene_versions.active()
+        try:
+            wanted = self.entity.strip()
+            if not wanted:
+                raise ValueError(tr("Choose the entity to calculate"))
+            found = entities.registry(project, active.uid).get(wanted)
+            if found is None:
+                raise ValueError(tr("«{entity}» is not an entity of {version}", entity=wanted, version=active.code))
+            _entity_request(project, active.uid, found.record.code)  # lo que rechazaría el cálculo, antes de abrir nada
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        _invoke_later(CREATE_PLATFORM, getattr(context, "window", None) or _first_window(), code=found.record.code)
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
@@ -5312,7 +5436,8 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_entity_bring,
                              GEOBLENDER_OT_des_entity_preview,
                              GEOBLENDER_OT_des_entity_dependents,
-                             GEOBLENDER_OT_des_entity_insert)
+                             GEOBLENDER_OT_des_entity_insert,
+                             GEOBLENDER_OT_des_entity_calculate)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
@@ -5321,4 +5446,4 @@ perímetro…», la T21 «Cantera con dos superficies…», la T28 «Transicione
 afectado», la T30 «Solo relleno…» y la T33 «Ajustar el diseño a un límite nuevo…», de la entrada
 «014», que la T58 entrega; de la 015, la T15 pone «Plataforma…», la T25 «Descartar…» y «Soltar el apoyo…», la T26 «Traer las
 entidades de…» y la T29 la vista previa de una entidad, todas de la entrada «015», que entrega la T31 con el menú «Entidad ▾»
-(las dos internas nuevas de la T31, «Lo que se apoya en ella» e «Insertar antes o después de…», también))."""
+(las dos internas nuevas de la T31, «Lo que se apoya en ella» e «Insertar antes o después de…», también; y la T41, «Calcular…»))."""

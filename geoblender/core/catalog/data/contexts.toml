@@ -387,6 +387,9 @@ ref = "geoblender.des_entity_insert"
 ref = "geoblender.des_entity_bring"
 
 [[context.item]]
+ref = "geoblender.des_entity_calculate"
+
+[[context.item]]
 ref = "geoblender.des_entity_discard"
 
 [[context.item]]

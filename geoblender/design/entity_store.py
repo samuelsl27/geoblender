@@ -343,6 +343,7 @@ __all__ = [
     "discard_plan",
     "entity_layer_rows_steps",
     "entity_layer_steps",
+    "entity_request",
     "entity_surfaces",
     "entity_values",
     "feature_index",
@@ -1946,6 +1947,58 @@ def platform_parameters(project: StoreProject, version: Version, code: str) -> d
             conn, tuple(keys), (VERSION_SCOPE, PROJECT_SCOPE), version=version.uid)
     return {param.value: item.value for key, param in keys.items()
             if (item := found.get(key)) is not None and item.value is not None}
+
+
+_CALCULATED_FROM = (PlatformParam.LAYER, PlatformParam.FEATURE, PlatformParam.START)
+"""Los parámetros sin los que una entidad sin calcular no tiene de dónde salir (su capa, su geometría y su
+partida): :func:`entity_request` pide que los tenga."""
+
+
+def entity_request(project: StoreProject, version: Version | str, code: str, *, start_level_field: str,
+                   gradient_field: str, width_field: str) -> PlatformRequest:
+    """**La petición de una entidad sin calcular** de la versión editable ``version`` (``Version``, uid o código; spec 015,
+    T41; RF-015-18, CE-015-01; hallazgo C-12): la que dejan «Traer las entidades de…» y la versión que parte de otra, con sus
+    parámetros y **ningún resultado**, a partir de lo que **ya tiene la versión** —sus parámetros vigentes,
+    :func:`platform_parameters` (el nombre, la capa, la geometría, la partida, el apoyo, el modo, el borde, lo que protege)—
+    como :func:`recompute_platform` hace con una entidad calculada. Es lo que se da a :func:`run_platform` (o a
+    ``design.steps.platform_run`` con ``code=``) para calcularla: con su **código**, sin crear otra entidad ni escribir
+    ningún parámetro (la cota inicial, la pendiente y el ancho salen de su fila de la versión, no de la capa), de modo que
+    su historial es el de siempre y la dependencia «se apoya en» se detecta de nuevo al crearla (el gancho de
+    ``DesignWriter.commit``).
+
+    Los campos de la capa (``start_level_field``, ``gradient_field`` y, de una capa de líneas, ``width_field``) no son
+    parámetros de la entidad —solo marcan de dónde salieron sus valores—: los da quien llama (los de por defecto del diálogo
+    de «Plataforma…»); una capa de polígonos no lleva ancho ni **eje enlazado** (el campo y la capa del eje tampoco son
+    parámetros: una plataforma de polígono que lo tenía se calcula con el eje principal del polígono, con su aviso).
+
+    Solo lee. Rechazos, sin escribir nada: los de :func:`~.store.require_version` (``VersionError``, RF-009-21),
+    ``des.entity_already_discarded`` (una descartada es un registro, no se calcula), ``des.entity_calculate_done`` (la
+    entidad ya tiene resultado: se rehace con «Recalcular lo obsoleto») y ``des.entity_calculate_missing`` (sin capa,
+    geometría o partida: la partida de una entidad traída que no existía en la versión queda sin valor); :class:`ValueError`
+    si la versión no tiene ninguna entidad con ese código o nombre."""
+    found = require_version(project, version.uid if isinstance(version, Version) else version, provenance.PLATFORM)
+    entry = entities.registry(project, found.uid).get(code)
+    if entry is None:
+        raise ValueError(f"la versión {found.code} no tiene ninguna entidad con el código o el nombre {code!r}")
+    record = entry.record
+    obj = f"Plataforma «{record.name}»"
+    if record.state is EntityState.DISCARDED:
+        raise DesignError("des.entity_already_discarded", obj=obj, field="estado", value=str(record.state),
+                          entity=record.name, version=found.code)
+    if record.state is not EntityState.UNCALCULATED:
+        raise DesignError("des.entity_calculate_done", obj=obj, field="estado", value=str(record.state),
+                          entity=record.name, code=record.code, version=found.code)
+    values = platform_parameters(project, found, record.code)
+    for param in _CALCULATED_FROM:
+        text = values.get(param.value)
+        if not isinstance(text, str) or not text.strip():
+            raise DesignError("des.entity_calculate_missing", obj=obj, field=entity_key(record.code, param),
+                              value=None, entity=record.name, code=record.code, version=found.code)
+    line = _layer(project, str(values[PlatformParam.LAYER.value])).kind == "line"
+    settings = {"name": record.name, "code": record.code,
+                "fields": {"start_level_field": start_level_field, "gradient_field": gradient_field,
+                           "width_field": width_field if line else None, "axis_field": None, "axis_layer": None}}
+    return provenance.platform_request(settings, values)
 
 
 def _masks_to_read(project: StoreProject, version: Version, masks: access.MaskSet | None
