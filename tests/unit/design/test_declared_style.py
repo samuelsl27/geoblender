@@ -146,7 +146,8 @@ class DeclaredStyleTest(StyleCase):
         self.assertEqual([row[0] for row in self.before_declaring], list(PROJECT_LAYERS))
         rows = self.style_rows(TABLE)
         self.assertEqual([row[:4] for row in rows], [(TABLE, "geom", cstyles.DECLARED_STYLE_NAME, 1)])
-        self.assertEqual([row[0] for row in self.style_rows()], [*PROJECT_LAYERS, TABLE])
+        # La capa de entidades (T30) escribe la suya en su propia operación, tras la declaración.
+        self.assertEqual([row[0] for row in self.style_rows()], [*PROJECT_LAYERS, TABLE, "des_enl_v01"])
         with self.project.read() as conn:
             columns = [row[1] for row in conn.execute(f'PRAGMA table_info("{TABLE}")') if row[1] != "geom"]
         self.assertEqual(columns, ["fid", *declared_mod.COLUMN_NAMES])
@@ -185,8 +186,10 @@ class DeclaredStyleTest(StyleCase):
         record = self.styles_record()
         history = self.styles_changes()
         types = [item[2] for item in history]
-        self.assertTrue(all(kind.startswith("core.") for kind in types[:-1]), types)  # la 012 lo creó
-        self.assertEqual(types[-1], "des.declare_constraints")
+        # La 012 lo creó; después, la primera declaración y (T30) la primera capa de entidades, que es otra
+        # operación de versión que anota su fila de estilo igual, cada una en su transacción.
+        self.assertTrue(all(kind.startswith("core.") for kind in types[:-2]), types)
+        self.assertEqual(types[-2:], ["des.declare_constraints", "des.entity_layer"])
         self.assertEqual(types.count("des.declare_constraints"), 1)
         self.assertEqual(history[-1][0], history[-2][1])
         self.assertEqual(history[-1][1], record.content_sha256)
@@ -234,7 +237,7 @@ class DeclaredStyleTest(StyleCase):
                                  ("geom", "Restricciones por tipo", 1))
                 self.assertEqual(hashlib.sha256(rows[table][4].encode("utf-8")).hexdigest(), digest)
         self.assertEqual({row[0] for row in self.style_rows()} - set(PROJECT_LAYERS) - {
-            "des_decl_v01", "des_decl_v02"}, set())
+            "des_decl_v01", "des_decl_v02", "des_enl_v01"}, set())
 
 
 class OutsideEditNotSwallowedTest(StyleCase):

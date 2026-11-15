@@ -10,9 +10,11 @@ rejilla de cotas de berma (``des_brm_``); de la 014 (T33; RF-014-32; :data:`QUAR
 superficies de una cantera (``des_exp_``, ``des_fin_``) y sus envolventes (``des_xen_``,
 ``des_fen_``), la transición (``des_trn_``), la superficie ajustada a un límite nuevo
 (``des_adj_``), la clasificación de una cantera (``des_cls_``) y el recinto excavable
-(``des_rcn_``); las tablas no son rejillas y no se exportan aquí. :func:`stored_grid` (T28) dice
-cuál es y de qué versión el dato que elige quien exporta (su uid o su nombre): solo una rejilla
-**viva** del diseño (``des.export_not_grid``).
+(``des_rcn_``); de la 015 (T30; RF-015-27; :data:`ENTITY_GRIDS`), la superficie que deja una entidad
+(``des_psf_``), como las de la 013; las tablas no son rejillas y no se exportan aquí. :func:`stored_grid` (T28)
+dice cuál es y de qué versión el dato que elige quien exporta (su uid o su nombre): solo una rejilla
+**viva** del diseño (``des.export_not_grid``); de una entidad, también por su tabla (``des_epr_``, la que
+enseña la vista), que da su superficie.
 
 **Las rejillas de códigos** (spec 014, T33; RF-014-32; plan 014 P-1): la clasificación y el recinto
 no son cotas sino un **código por celda** (:data:`LEGENDS`: 0 sin diferencia, 1 desdoblado y 2
@@ -50,6 +52,7 @@ no deja nada. Python puro (nivel 8).
 
 from __future__ import annotations
 
+import sqlite3
 import sys
 from collections.abc import Generator, Mapping
 from contextlib import closing
@@ -77,6 +80,7 @@ from .quarry import CLASS_NAMES
 
 __all__ = [
     "CODE_UNIT",
+    "ENTITY_GRIDS",
     "GRIDS",
     "LEGENDS",
     "LEGEND_KEY",
@@ -99,10 +103,13 @@ QUARRY_GRIDS: tuple[str, ...] = (
     declared.CLASSIFICATION_GRID, declared.EXCAVATION_AREA_GRID)
 """Las rejillas de la 014 que se pueden exportar (T33; RF-014-32): las cotas de las superficies y
 de las envolventes y las dos rejillas de códigos (:data:`LEGENDS`)."""
+ENTITY_GRIDS: tuple[str, ...] = (declared.ENTITY_SURFACE_GRID,)
+"""Las rejillas de la 015 que se pueden exportar (T30; RF-015-27): la superficie que deja una entidad, de cotas
+como las de la 013."""
 GRIDS: tuple[str, ...] = (declared.ENVELOPE_GRID, declared.DESIGN_GRID, declared.BERMS_GRID,
-                          *QUARRY_GRIDS)
+                          *QUARRY_GRIDS, *ENTITY_GRIDS)
 """Las familias de datos de ``des`` que son una rejilla (de cotas o de códigos) y se pueden
-exportar: las tres de la 013 y las de :data:`QUARRY_GRIDS`."""
+exportar: las tres de la 013, las de :data:`QUARRY_GRIDS` y las de :data:`ENTITY_GRIDS`."""
 LEGENDS: Mapping[str, tuple[tuple[int, str], ...]] = MappingProxyType({
     declared.CLASSIFICATION_GRID: tuple((item.code, CLASS_NAMES[item]) for item in CellClass),
     declared.EXCAVATION_AREA_GRID: ((1, "recinto excavable"),),
@@ -220,14 +227,29 @@ def _grid_family(record: DatasetRecord | None) -> str | None:
                  if record.name.startswith(declared.FAMILIES_BY_CODE[family].prefix)), None)
 
 
+def _surface_of_entity(conn: sqlite3.Connection, record: DatasetRecord | None) -> DatasetRecord | None:
+    """La superficie (``des_psf_<nombre>``) de la entidad cuya tabla (``des_epr_<nombre>``) es ``record``, en la
+    versión de la tabla; ``None`` si ``record`` no es la tabla de una entidad o su versión no tiene la superficie."""
+    table = declared.FAMILIES_BY_CODE[declared.ENTITY_TABLE]
+    if record is None or record.module != declared.MODULE or not record.name.startswith(table.prefix):
+        return None
+    owner = versions_read.dataset_versions(conn, [record.uid]).get(record.uid, "")
+    if not owner:
+        return None
+    surface = declared.FAMILIES_BY_CODE[declared.ENTITY_SURFACE_GRID].prefix + record.name[len(table.prefix):]
+    return dataset_registry.get(conn, surface, version_uid=owner)
+
+
 def stored_grid(project: ExportProject, ref: str, *, version: str = "") -> StoredGrid:
     """La rejilla del diseño ``ref`` —el uid de su dato o su nombre en la versión ``version`` (su
     uid)— con lo que pide :func:`export_grid_steps`: su familia, el nombre de su operación y su
     versión. ``DesignError`` ``des.export_not_grid`` si no es una rejilla **viva** del diseño
     de una versión, de :data:`GRIDS`: una envolvente, una superficie de diseño o una rejilla de
     cotas de berma de la 013; una superficie, una envolvente, la clasificación o el recinto de la
-    014): una tabla, un dato de otro módulo, uno que no existe, uno sustituido o descartado, o uno por su
-    nombre sin la versión que lo tiene. ``TypeError`` si ``ref`` o ``version`` no son textos (o
+    014; la superficie de una entidad de la 015: una tabla, un dato de otro módulo, uno que no existe, uno
+    sustituido o descartado, o uno por su nombre sin la versión que lo tiene. **La tabla de una entidad**
+    (``des_epr_<nombre>``: la que enseña la vista, T30) da la **superficie** de esa entidad
+    (``des_psf_<nombre>``) de su versión. ``TypeError`` si ``ref`` o ``version`` no son textos (o
     ``ref``, vacío). No escribe nada."""
     if not isinstance(ref, str) or not ref:
         raise TypeError(f"una rejilla del diseño se indica por el uid o el nombre de su dato, "
@@ -236,6 +258,7 @@ def stored_grid(project: ExportProject, ref: str, *, version: str = "") -> Store
         raise TypeError(f"la versión se indica por su uid ('' sin ninguna), no {version!r}")
     with project.read() as conn:
         record = dataset_registry.get(conn, ref, version_uid=version)
+        record = _surface_of_entity(conn, record) or record
         family = _grid_family(record)
         owner = ("" if record is None
                  else versions_read.dataset_versions(conn, [record.uid]).get(record.uid, ""))

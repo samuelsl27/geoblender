@@ -85,7 +85,7 @@ def never(request: Any) -> Any:  # solo declara que se repite sola
 def entity_definitions() -> tuple[Any, ...]:
     """Los tres tipos de las entidades con sus funciones y sus cifras, como los registrará ``bl``."""
     return (*provenance.entity_operation_defs({t: never for t in ENTITY_TYPES},
-                                              {t: never for t in ENTITY_TYPES}),
+                                              {t: never for t in provenance.ENTITY_REPRODUCIBLE}),
             *provenance.ENTITY_FIGURES)
 
 

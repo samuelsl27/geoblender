@@ -281,8 +281,10 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
         operator = self.recompute()
         self.assertEqual(operator.result.cancelled, False)
         done = self.names_of(operator, "done")
-        self.assertEqual(sorted(done), sorted([LOADING, OVER, WORKSHOP, RAMP]))
+        layer = "des.entity_layer"  # T30: la capa de entidades consume los datos de las cuatro y se rehace la última
+        self.assertEqual(sorted(done), sorted([LOADING, OVER, WORKSHOP, RAMP, layer]))
         self.assertLess(done.index(LOADING), done.index(OVER), "orden de dependencia")
+        self.assertEqual(done.index(layer), len(done) - 1, "la capa de entidades, tras las entidades que enseña")
         self.assertEqual(set(self.states(self.v01).values()), {"current"})
         self.assertEqual(self.stale_in(self.v01), [])
         listed = {row.name: row.volume_m3 for row in self.entities.dependents(self.project, self.v01.uid, "PLT-001")}
@@ -336,8 +338,8 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
         wanted = f"Apoyo retirado: se descartó la plataforma {LOADING}"
         for code in ("PLT-002", "PLT-003", "PLT-004"):
             self.assertEqual(self.entities.stale_reason(self.project, self.v01.uid, code), wanted)
-        self.assertEqual(self.rows("SELECT count(*) FROM gb_operation"), [(len(operations) + 1,)],
-                         "solo la declaración nueva (lo que sigue a descartar)")
+        self.assertEqual(self.rows("SELECT count(*) FROM gb_operation"), [(len(operations) + 2,)],
+                         "solo la declaración nueva y la capa de entidades nueva (lo que sigue a descartar)")
         before = self.rows("SELECT uid, status FROM gb_operation ORDER BY fid")
         operator = self.recompute()
         self.assertEqual(self.names_of(operator, "done"), [])
@@ -527,7 +529,7 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
             self.assertEqual(self.causes(uid), {("parameter_changed", GRADIENT)}, code)
         self.assertEqual(self.states(self.v04), {"PLT-001": "stale", "PLT-002": "stale"})
         operator = self.recompute()
-        self.assertEqual(sorted(self.names_of(operator, "done")), sorted([LOADING, OVER]))
+        self.assertEqual(sorted(self.names_of(operator, "done")), sorted([LOADING, OVER, "des.entity_layer"]))
         for code in old:
             self.assertNotEqual(self.hashes(self.current(self.v04, code)), before[code], f"{code}: cambió")
         self.assertTrue(_close(self.supported(self.v04, "PLT-001")[OVER], FILL_AFTER_M3))

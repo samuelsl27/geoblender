@@ -103,6 +103,17 @@ operación y una transacción propias: si una falla, queda dicho (:class:`ChainF
 con su causa. «Recalcular lo obsoleto» no la encadena: la declaración y las máscaras son operaciones de la 008 que
 ella recalcula por el grafo.
 
+**La capa de entidades** (T30; RF-015-27, D-13; plan 015 §5.2.3, §5.3.2 y P-7; ADR-0030 §5): la operación de la versión
+``des.entity_layer`` (repetible, no reproducible: su contenido incluye el estado de cada entidad, que deduce el grafo)
+pone en ``des_enl_<vNN>`` una fila por entidad **calculada** —el contorno de su huella (``des_epr_``), su tipo, su
+nombre, su estado, de qué parte, en qué se apoya, su cadena y sus cifras principales—, una capa de QGIS **no editable a
+mano** y con su estilo por tipo y por estado (:mod:`.entity_layer`, T22). :func:`layer_sources` lee las entidades (el
+registro de la versión, con las dependencias y la cadena de cada una), :func:`entity_layer_rows_steps` es el cálculo
+de las filas (sin proyecto dentro: recibe lo leído) y :func:`prepare_entity_layer`, :func:`run_entity_layer`,
+:func:`entity_layer_steps` y :func:`recompute_entity_layer` la preparan, la registran en **una** transacción
+reescribiendo la tabla entera y la repiten. La orden de una entidad la regenera como **etapa aparte**
+(:func:`after_entity_change`); si falla, la capa queda como estaba y el aviso lo dice.
+
 **Descartar, «apoyo retirado» y soltar el apoyo** (T25; RF-015-17, RF-009-12; D-12; plan 015 §5.4 A7, P-6; ADR-0030 §4):
 :func:`discard_plan` es **la lista** que se enseña antes de descartar (una sola: lo que se apoya en la entidad y lo que
 parte de ella, con sus m³: ``entities.dependents``) y :func:`discard_entity` descarta —los datos que escribió pasan a
@@ -196,6 +207,7 @@ from ..gis.vector import FeatureLayer
 from . import entities, pipeline, provenance
 from .compose import admitted
 from .entities import EntityKind, EntityRecord, EntityRegistry, EntityState
+from .entity_layer import LAYER_STATES, EntityLayerRow
 from .envelopes import reach_steps
 from .messages import DesignError, render
 from .model import (
@@ -278,7 +290,9 @@ __all__ = [
     "EntityFootprint",
     "EntityParamRow",
     "EntitySurface",
+    "LayerSource",
     "PreparedDeclaration",
+    "PreparedEntityLayer",
     "PreparedPlatform",
     "SupportSurvey",
     "add_supports",
@@ -295,11 +309,14 @@ __all__ = [
     "discard_entity",
     "discard_entity_steps",
     "discard_plan",
+    "entity_layer_rows_steps",
+    "entity_layer_steps",
     "entity_surfaces",
     "entity_values",
     "feature_index",
     "footprint_runs",
     "geometry_sha256",
+    "layer_sources",
     "layer_values",
     "platform_compute_steps",
     "platform_entity_rows",
@@ -309,15 +326,18 @@ __all__ = [
     "platform_report_rows",
     "platform_summary",
     "prepare_declaration",
+    "prepare_entity_layer",
     "prepare_platform",
     "prepare_platform_units",
     "quarry_order",
     "read_entity_footprint",
     "read_geometry",
     "recompute_declaration",
+    "recompute_entity_layer",
     "recompute_platform",
     "release_support",
     "run_declaration",
+    "run_entity_layer",
     "run_platform",
     "runs_mask",
     "set_entity_params",
@@ -2289,20 +2309,276 @@ def recompute_declaration(request: RecomputeRequest, *, budget_s: float = STEP_B
                            budget_s=budget_s)
 
 
+# --- La capa de entidades (spec 015, T30; RF-015-27; D-13; plan 015 §5.2.3, §5.3.2 y P-7; ADR-0030 §5) -------
+
+_LAYER_PHASE = "entity_layer"
+_LAYER_LANGUAGE = "es"
+"""El idioma del texto de la capa (en qué se apoya la entidad): es un dato del proyecto, como el motivo de una
+restricción declarada, y no cambia con el idioma de la interfaz."""
+_LAYER_FIGURES: tuple[tuple[str, str], ...] = (
+    ("area_m2", "des.plat_area_m2"), ("cut_m3", "des.plat_cut_m3"), ("fill_m3", "des.plat_fill_m3"),
+    ("edge_cut_m3", "des.edge_cut_m3"), ("edge_fill_m3", "des.edge_fill_m3"))
+"""Las cifras principales de la capa: la columna de ``des_enl_<vNN>`` y la cifra de la operación de la entidad de
+la que sale (``gb_figure``)."""
+_FIGURES_OF = ("SELECT operation_uid, key, value FROM gb_figure WHERE key IN ({keys}) "
+               "AND operation_uid IN ({marks})")
+_CHAIN_ARROW = " → "
+_DISCARDED_TEXT = "descartada"
+
+
+@dataclass(frozen=True, slots=True)
+class LayerSource:
+    """Lo que la capa de entidades sabe de una entidad **calculada** de la versión (:func:`layer_sources`): su
+    ``code``, su ``name`` de ahora (``calc_name`` es el con que se calculó: el de su dato ``des_epr_``), su ``kind``,
+    su ``state`` (el que deduce el grafo: al día, obsoleta, con el apoyo retirado o descartada), de qué superficie
+    parte (``start``: el nombre de la entidad si parte de la de otra, o la superficie tal cual), su huella en tramos
+    (``runs``), en qué se apoya (``supports``, un texto), su cadena (``chain``) y sus cifras principales
+    (``figures``: la clave de la cifra de la operación → su valor)."""
+
+    code: str
+    name: str
+    calc_name: str
+    kind: EntityKind
+    state: EntityState
+    start: str | None
+    runs: tuple[tuple[int, int, int], ...]
+    supports: str
+    chain: str
+    figures: Mapping[str, float]
+
+    @property
+    def live(self) -> bool:
+        """Si sus datos están vivos: una entidad **descartada** sale en la capa (es un registro, atenuada) pero
+        sus datos ya no son entrada de ninguna operación."""
+        return self.state is not EntityState.DISCARDED
+
+
+def _start_text(listed: EntityRegistry, record: EntityRecord) -> str | None:
+    """De qué parte la entidad ``record``, para la capa: el nombre de la entidad de cuya superficie parte (con el
+    código si no se encuentra) o la superficie tal cual; ``None`` si no tiene partida."""
+    if record.start is None:
+        return None
+    code = entities.ref_code(record.start)
+    if code is None:
+        return record.start
+    before = listed.get(code)
+    return code if before is None else before.record.name
+
+
+def _chain_text(listed: EntityRegistry, record: EntityRecord) -> str:
+    """La cadena de la entidad ``record`` como texto, «partida → … → última» (RF-015-04, RF-015-27): de la superficie
+    de la que parte la primera de su cadena (el terreno, una de diseño o la de una entidad **descartada**, con
+    «(descartada)») y, una tras otra, las entidades que parten de la superficie de la anterior, hasta la última. Es la
+    misma para todas las de una cadena. Si los datos de la cadena no son válidos (un ciclo, dos entidades desde la
+    misma superficie), lo dice en lugar de la cadena: no impide ponerla al día (la capa enseña lo que hay)."""
+    records = listed.records
+    try:
+        head, seen = record, {record.code}
+        while True:
+            before = entities.predecessor_of(records, head.code)
+            if before is None or before.code in seen or before.state is EntityState.DISCARDED:
+                break
+            head = before
+            seen.add(head.code)
+        names = [item.name for item in entities.chain_of(records, head.code)]
+        discarded = entities.predecessor_of(records, head.code)
+    except DesignError as error:
+        return f"cadena no válida: {error}"
+    if discarded is not None and discarded.code not in seen:
+        origin: str | None = f"{discarded.name} ({_DISCARDED_TEXT})"
+    else:
+        origin = _start_text(listed, head)
+    return _CHAIN_ARROW.join([origin, *names] if origin else names)
+
+
+def _layer_figures(conn: sqlite3.Connection, operations: Iterable[str]) -> dict[str, dict[str, float]]:
+    """Las cifras principales (:data:`_LAYER_FIGURES`) de cada operación de ``operations``, por su uid (una consulta
+    por cada 400 operaciones); las que no tiene, no salen."""
+    keys = [key for _column, key in _LAYER_FIGURES]
+    found: dict[str, dict[str, float]] = {}
+    uids = sorted(set(operations))
+    for first in range(0, len(uids), _CHUNK):
+        part = uids[first:first + _CHUNK]
+        sql = _FIGURES_OF.format(keys=", ".join("?" for _ in keys), marks=", ".join("?" for _ in part))
+        for uid, key, value in conn.execute(sql, (*keys, *part)):
+            if value is not None:
+                found.setdefault(str(uid), {})[str(key)] = float(value)
+    return found
+
+
+def layer_sources(project: StoreProject, version: Version, *, conn: sqlite3.Connection | None = None
+                  ) -> tuple[LayerSource, ...]:
+    """Las entidades **calculadas** de la versión ``version`` como las ve la capa de entidades (RF-015-27; solo lee):
+    las del registro de la versión (``entities.registry``) con operación vigente y huella (:data:`~.entity_layer.
+    LAYER_STATES`: al día, obsoletas, con el apoyo retirado y **descartadas**, que siguen en el proyecto; no las «sin
+    calcular», que no tienen geometría), cada una con su estado, de qué parte, **en qué se apoya** (lo que
+    ``entities.dependencies_of`` dice que apoya con el papel ``supported_on``, con sus m³), su cadena
+    (:func:`_chain_text`), sus cifras principales y su huella, leída de su tabla ``des_epr_`` vigente
+    (:func:`read_entity_footprint`; la de una descartada, de su dato descartado, que sigue en el proyecto). Por orden
+    de código. ``conn`` es una conexión de lectura de quien llama (una instantánea); sin ella, una propia."""
+    if conn is None:
+        with _consistent(project) as reading:
+            return layer_sources(project, version, conn=reading)
+    listed = entities.registry(project, version.uid, conn=conn)
+    shown = [entry for entry in listed
+             if entry.operation_uid is not None and EntityState(entry.record.state) in LAYER_STATES]
+    figures = _layer_figures(conn, (str(entry.operation_uid) for entry in shown))
+    found: list[LayerSource] = []
+    for entry in shown:
+        record = entry.record
+        tables = conn.execute(_ENTITY_DATA, (entry.operation_uid, DATASET, provenance.ENTITY_ROLE)).fetchall()
+        if len(tables) != 1:
+            raise ValueError(f"la operación {entry.operation_uid} de la entidad {record.code} escribió "
+                             f"{len(tables)} tablas de la entidad, no una")
+        data = read_entity_footprint(conn, str(tables[0][0]))
+        rests = entities.dependencies_of(project, version.uid, record.code, conn=conn, listed=listed)
+        found.append(LayerSource(
+            code=record.code, name=record.name, calc_name=data.name, kind=EntityKind(record.kind),
+            state=EntityState(record.state), start=_start_text(listed, record), runs=data.runs,
+            supports="; ".join(item.text(_LAYER_LANGUAGE) for item in rests
+                               if provenance.SUPPORTED_ON_ROLE in item.roles),
+            chain=_chain_text(listed, record), figures=figures.get(str(entry.operation_uid), {})))
+    return tuple(found)
+
+
+def entity_layer_rows_steps(sources: Sequence[LayerSource], grid: Grid
+                            ) -> Generator[Progress, None, tuple[EntityLayerRow, ...]]:
+    """**El cálculo de la capa de entidades**, compartido por la orden, el recálculo y lo que sigue a cada orden de
+    entidades (sin proyecto dentro: recibe lo leído): de cada entidad de ``sources`` una
+    :class:`~.entity_layer.EntityLayerRow` con el contorno de su huella en la rejilla ``grid``
+    (``entities.declared_zone_of_runs`` con resguardo 0: las celdas, con sus huecos, con coordenadas exactas desde
+    ``grid.west`` y ``grid.north``) y lo demás de su fuente, **por código** y una por paso. Lo mismo da la misma
+    tabla (el mismo hash)."""
+    ordered = sorted(sources, key=lambda item: entities.code_order(item.code))
+    rows: list[EntityLayerRow] = []
+    for index, source in enumerate(ordered):
+        yield Progress(_LAYER_PHASE, index, len(ordered), f"Capa de entidades: «{source.name}»…")
+        zone = entities.declared_zone_of_runs(source.runs, grid, 0.0)
+        rows.append(EntityLayerRow(
+            code=source.code, name=source.name, kind=source.kind, state=source.state, start=source.start,
+            supports=source.supports, chain=source.chain, parts=zone.parts,
+            **{column: source.figures.get(key) for column, key in _LAYER_FIGURES}))
+    return tuple(rows)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PreparedEntityLayer:
+    """Lo que se lee antes de poner al día la capa de entidades (:func:`prepare_entity_layer`): la ``version``, las
+    entidades calculadas (``sources``), la rejilla del proyecto (``grid``) y lo que anotará la operación (``start``)."""
+
+    version: Version
+    sources: tuple[LayerSource, ...]
+    grid: Grid
+    start: OperationStart
+
+
+def _live_layer(conn: sqlite3.Connection, version: Version) -> str | None:
+    """El uid de la operación que escribió la capa vigente de la versión (``des_enl``), la que sustituye la nueva;
+    ``None`` si todavía no se escribió. Si la capa se editó fuera de Geoblender, la última operación de Geoblender
+    que la escribió (``core.datasets.external.last_writer``)."""
+    record = dataset_registry.get(conn, provenance.dataset_name(provenance.ENTITY_MAP_TABLE),
+                                  version_uid=version.uid)
+    if record is None or not record.live:
+        return None
+    return dataset_external.last_writer(conn, record.uid)
+
+
+def prepare_entity_layer(project: StoreProject, version: Version | str | None, *,
+                         supersedes: str | None = None) -> PreparedEntityLayer:
+    """Prepara ``des.entity_layer`` en la versión editable ``version`` (spec 015, T30; RF-015-27): lee las entidades
+    calculadas (:func:`layer_sources`) y arma lo que anotará la operación: sus ajustes (las entidades que recoge) y, como
+    entradas, el dato ``des_epr_`` (papel ``entity``: la huella) y el informe ``des_prp_`` (papel ``entity_report``: las
+    cifras) de las **vivas**; la descartada sale en la capa pero no es entrada (sus datos están descartados). No lee
+    parámetros: lo que cambia una entidad (sus parámetros, su partida, lo que se apoya, su estado) cambia sus datos o
+    la deja obsoleta, y la capa, que los consume, también (la cascada de la 008). ``supersedes``: la capa que
+    sustituye (por defecto, la vigente de la versión, si la hay).
+
+    Rechazos, sin escribir nada: los de :func:`~.store.require_version` (RF-009-21: sin versión activa,
+    desconocida o no editable)."""
+    wanted = version.uid if isinstance(version, Version) else version
+    found = require_version(project, wanted, provenance.ENTITY_LAYER)
+    with _consistent(project) as conn:
+        sources = layer_sources(project, found, conn=conn)
+        before = _live_layer(conn, found) if supersedes is None else supersedes
+    settings = provenance.entity_layer_settings([(source.code, source.calc_name) for source in sources])
+    inputs = provenance.entity_layer_inputs(source.calc_name for source in sources if source.live)
+    begun = _start(project, provenance.ENTITY_LAYER, "", found, None, settings, inputs, (), before)
+    return PreparedEntityLayer(found, sources, project_frame(project).grid, begun)
+
+
+def _layer_message(count: int, version_code: str) -> str:
+    """El mensaje de la operación: cuántas entidades enseña la capa de la versión."""
+    if count == 0:
+        return f"La capa de entidades de {version_code} no tiene ninguna entidad calculada"
+    if count == 1:
+        return f"La capa de entidades de {version_code} enseña 1 entidad"
+    return f"La capa de entidades de {version_code} enseña {count} entidades"
+
+
+def _layer_run(project: StoreProject, handle: OperationHandle, prepared: PreparedEntityLayer, budget_s: float
+               ) -> Generator[Progress, None, None]:
+    with DesignWriter(project, provenance.ENTITY_LAYER, "", version=handle.version_uid, handle=handle) as writer:
+        rows = yield from entity_layer_rows_steps(prepared.sources, prepared.grid)
+        yield from pipeline.forward(_store_steps(
+            writer.entity_layer_steps(rows), budget_s, "la capa de entidades"))
+        message = _layer_message(len(rows), prepared.version.code)
+        stored = writer.commit(message=message)
+        yield Progress(_STORE_PHASE, 1, 1, message, result=stored)
+
+
+def run_entity_layer(project: StoreProject, *, version: Version | str | None, supersedes: str | None = None,
+                     budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Pone al día la capa de entidades de la versión ``version`` **de una vez**, sin pedir confirmación (spec 015, T30;
+    RF-015-27; plan 015 §5.3.2: una operación aparte que cada orden de entidades hace en su propia transacción): empieza
+    la operación ``des.entity_layer`` —si ``supersedes`` es la de una capa anterior (por defecto, la vigente de la
+    versión), la sustituye— con lo que lee hoy y devuelve su ``OperationHandle`` «en curso» y sus pasos, que avanza
+    quien la llama: calculan las filas (:func:`entity_layer_rows_steps`), reescriben la tabla entera ``des_enl_<vNN>`` con
+    su fila de estilo y completan la operación en **una** transacción; el último lleva el :class:`~.store.Stored`.
+    Cerrarlos antes, o un fallo, no dejan nada y la operación queda cancelada o fallida. Al llamar, sin empezar nada:
+    los rechazos de :func:`prepare_entity_layer`."""
+    prepared = prepare_entity_layer(project, version, supersedes=supersedes)
+    handle = prepared.start.begin(project)
+    return handle, _layer_run(project, handle, prepared, budget_s)
+
+
+def entity_layer_steps(project: StoreProject, version: Version | str | None, *, supersedes: str | None = None,
+                       budget_s: float = STEP_BUDGET_S) -> Generator[Progress, None, None]:
+    """Los pasos de **poner al día la capa de entidades** de la versión ``version`` (spec 015, T30; RF-015-27; plan 015
+    §5.3.2: es lo que las órdenes de entidades encadenan tras su commit, :func:`after_entity_change`): lo de
+    :func:`run_entity_layer` empezando al avanzar, sin devolver el ``OperationHandle``; el último paso lleva el
+    :class:`~.store.Stored`. Repetirla con las mismas entidades da la misma tabla y el mismo hash y sustituye a la vigente."""
+    _handle, work = run_entity_layer(project, version=version, supersedes=supersedes, budget_s=budget_s)
+    yield from work
+
+
+def recompute_entity_layer(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
+                           ) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Repite la operación ``des.entity_layer`` de ``request`` (:func:`~.store.recompute_run`; «Recalcular lo obsoleto»,
+    RF-008-26; spec 015, T30; RF-015-27): la capa es de la **versión**, no de una entidad, así que se rehace entera con las
+    entidades calculadas de la versión y sus estados de hoy, sustituyendo a la que se repite (lo descartado sale de sus
+    entradas: ``OperationDef.drops_discarded``). Devuelve lo de :func:`run_entity_layer`. ``VersionError`` si la petición
+    no es de una versión editable."""
+    project: StoreProject = request.project  # type: ignore[assignment]
+    return run_entity_layer(project, version=request.version, supersedes=request.operation_uid, budget_s=budget_s)
+
+
 # --- Tras la orden de una entidad (spec 015, T19; RF-015-10, RF-015-16, RF-012-06; plan 015 §5.3.2) ---
 
 _CHAIN_PHASE = "entity_chain"
 _CHAIN_TOTAL = 100
 """El total de los pasos de :func:`after_entity_change`: un porcentaje (cada etapa tiene su tramo)."""
 _CHAIN_DECLARE_SHARE = 40
-"""El tramo, de ese porcentaje, que ocupa la declaración; el resto es de la compilación de las máscaras."""
+"""El tramo, de ese porcentaje, que ocupa la declaración (de 0 a 40 %)."""
+_CHAIN_MASKS_END = 90
+"""Dónde acaba el tramo de la compilación de las máscaras (de 40 a 90 %); el resto, hasta 100 %, es de la capa de
+entidades (T30)."""
 _STAGE_ERRORS = (GeoblenderError, sqlite3.Error, OSError, ValueError)
 """Lo que una etapa de :func:`after_entity_change` da por un fallo suyo (un rechazo, el disco, la base): se
 cuenta en el resultado y no se lanza; lo demás (un error del programa) sigue."""
-_CHAIN_OWN = frozenset({provenance.DECLARE_CONSTRAINTS, masks_provenance.COMPILE})
+_CHAIN_OWN = frozenset({provenance.DECLARE_CONSTRAINTS, masks_provenance.COMPILE, provenance.ENTITY_LAYER})
 """Las operaciones que hace la propia cadena: no se cuentan como «lo que quedó obsoleto». Con una entidad que
-protege, el grafo da también por obsoletas la declaración y las máscaras que acaba de hacer (el eco del ciclo
-entidad → declarada → máscaras → entidad, D-21): se ponen al día cuando se recalcula la entidad."""
+protege, el grafo da también por obsoletas la declaración, las máscaras y la capa de entidades que acaba de hacer
+(el eco del ciclo entidad → declarada → máscaras → entidad, D-21): se ponen al día cuando se recalcula la entidad."""
 _STALE_OPERATIONS = (
     "SELECT o.uid, o.op_type, o.settings FROM gb_operation AS o "
     "JOIN gb_revision AS r ON r.uid = o.revision_uid "
@@ -2312,11 +2588,12 @@ _STALE_OPERATIONS = (
 
 
 class ChainStage(StrEnum):
-    """Una etapa de :func:`after_entity_change`: declarar las restricciones de las entidades o recompilar las
-    máscaras con ellas."""
+    """Una etapa de :func:`after_entity_change`: declarar las restricciones de las entidades, recompilar las
+    máscaras con ellas o poner al día la capa de entidades (T30)."""
 
     DECLARE = "declare"
     MASKS = "masks"
+    LAYER = "layer"
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -2343,7 +2620,9 @@ class EntityChain:
     RF-012-06: ``gis.masks.compile.Change`` con el área de su polígono y de su zona), lo que **quedó obsoleto**
     por ella (``obsolete``: las operaciones vigentes de la versión que usaron las máscaras anteriores, como
     ``ObsoleteKind.CONSUMER``, y lo que depende de ellas), el estado de las máscaras al terminar
-    (``masks_state``) y lo que falló (``failure``)."""
+    (``masks_state``) y lo que falló de la declaración o las máscaras (``failure``). De la capa de entidades
+    (T30), aparte: cuántas entidades enseña ahora (``layer``; ``None`` si no se pudo poner al día), si su
+    contenido **cambió** (``layer_changed``) y lo que falló (``layer_failure``)."""
 
     version: str
     declared: int | None
@@ -2353,6 +2632,9 @@ class EntityChain:
     obsolete: tuple[Obsolete, ...] = ()
     masks_state: access.MaskState = access.MaskState.CURRENT
     failure: ChainFailure | None = None
+    layer: int | None = None
+    layer_changed: bool = False
+    layer_failure: ChainFailure | None = None
 
     def notices(self) -> tuple[Notice, ...]:
         """Lo que se dice al terminar la orden, en el orden en que se enseña: la declaración (si cambió), las
@@ -2378,6 +2660,9 @@ class EntityChain:
             code = ("des.entity_chain_declare_failed" if self.failure.stage is ChainStage.DECLARE
                     else "des.entity_chain_masks_failed")
             found.append(Notice(code, {"version": self.version, "reason": self.failure.reason}))
+        if self.layer_failure is not None:
+            found.append(Notice("des.entity_chain_layer_failed",
+                                {"version": self.version, "reason": self.layer_failure.reason}))
         return tuple(found)
 
 
@@ -2392,14 +2677,17 @@ def _stale_operations(conn: sqlite3.Connection, version: Version) -> dict[str, O
 
 def _scaled(steps: Iterator[Progress], low: int, high: int) -> Generator[Progress, None, Any]:
     """Los pasos de una etapa (``steps``: ``Progress``, el último con su ``result``) como un tramo ``low`` a
-    ``high`` del porcentaje de :func:`after_entity_change`; devuelve el resultado. Cerrar el generador cierra
-    ``steps``."""
+    ``high`` del porcentaje de :func:`after_entity_change`; devuelve el resultado. El porcentaje **no retrocede**
+    (una etapa con dos fases, como calcular las filas y guardarlas, cuenta cada una de 0 a 1). Cerrar el generador
+    cierra ``steps``."""
+    shown = low
     with closing(steps):  # type: ignore[type-var]
         for step in steps:
             if step.result is not None:
                 return step.result
             fraction = min(max(step.done / step.total, 0.0), 1.0) if step.total else 0.0
-            yield Progress(_CHAIN_PHASE, low + int((high - low) * fraction), _CHAIN_TOTAL, step.message)
+            shown = max(shown, low + int((high - low) * fraction))  # no retrocede aunque la etapa cambie de fase
+            yield Progress(_CHAIN_PHASE, shown, _CHAIN_TOTAL, step.message)
     raise RuntimeError("los pasos de la etapa terminaron sin dar resultado")
 
 
@@ -2416,12 +2704,19 @@ def after_entity_change(project: StoreProject, version: Version | str | None, *,
     de la versión que usaron las máscaras anteriores: la propia plataforma que protege, cuya restricción
     cambió lo que consumió, es lo esperado, CE-015-04 y D-21; «Recalcular lo obsoleto» la rehace y quita la
     marca de lo que dependía de ella si su salida no cambia, RF-008-26) y **lo ganado y lo perdido por
-    restricción** (RF-012-06: el informe de la compilación). Sin cambio, no recompila.
+    restricción** (RF-012-06: el informe de la compilación). Sin cambio, no recompila. **(c)** Pone al día la
+    **capa de entidades** de la versión (T30; RF-015-27: :func:`entity_layer_steps`, ``des_enl_<vNN>`` entera con
+    todas las entidades calculadas), siempre: es independiente de las otras dos etapas (no depende de lo declarado
+    ni de las máscaras), así que se hace aunque una de ellas falle.
 
     Cada etapa es una operación propia y **una transacción propia** (P-7): si una falla (un rechazo, el
     disco), no queda nada a medias de ella y el fallo va en el resultado (:class:`ChainFailure`) en lugar de
     lanzarse; si fueron las máscaras, quedan **obsoletas con su causa** y se compilan de nuevo antes de que un
-    operador las use (``ensure_masks_steps``) o con «Compilar las máscaras». Cerrar el generador a mitad
+    operador las use (``ensure_masks_steps``) o con «Compilar las máscaras»; si fue la capa de entidades,
+    **conserva lo que tenía** (``layer_failure``): si lo que falló es el cambio de una entidad que enseña, la 008 la
+    da por obsoleta **con su causa** (consume los datos de la entidad que cambió) y «Recalcular lo obsoleto» la
+    rehace; si falló al crear una entidad nueva, no es entrada de la capa de antes y no hay causa en el grafo (el aviso
+    lo dice): la rehace la orden siguiente de entidades. Cerrar el generador a mitad
     (Esc) cierra la etapa en curso (que no deja nada) y deja lo de las anteriores. El último ``Progress``
     lleva el :class:`EntityChain`.
 
@@ -2455,21 +2750,40 @@ def after_entity_change(project: StoreProject, version: Version | str | None, *,
             try:
                 recompiled: StoredMasks = yield from _scaled(
                     access.compile_masks_steps(project, found.uid, budget_s=budget_s),
-                    _CHAIN_DECLARE_SHARE, _CHAIN_TOTAL)
+                    _CHAIN_DECLARE_SHARE, _CHAIN_MASKS_END)
                 compiled = True
                 changes = recompiled.result.changes
             except _STAGE_ERRORS as error:
                 failure = ChainFailure(ChainStage.MASKS, error)
+    layer: int | None = None
+    layer_changed = False
+    layer_failure: ChainFailure | None = None
+    yield Progress(_CHAIN_PHASE, _CHAIN_MASKS_END, _CHAIN_TOTAL, "Poniendo al día la capa de entidades…")
+    with project.read() as conn:
+        layer_before = dataset_registry.get(conn, provenance.dataset_name(provenance.ENTITY_MAP_TABLE),
+                                            version_uid=found.uid)
+    try:  # (c) la capa de entidades
+        written: Stored = yield from _scaled(
+            entity_layer_steps(project, found, budget_s=budget_s), _CHAIN_MASKS_END, _CHAIN_TOTAL)
+        (record,) = written.records
+        with project.read() as conn:
+            (layer,) = conn.execute(f'SELECT COUNT(*) FROM "{record.locator}"').fetchone()
+        layer_changed = layer_before is None or layer_before.content_sha256 != record.content_sha256
+    except _STAGE_ERRORS as error:
+        layer_failure = ChainFailure(ChainStage.LAYER, error)
     with project.read() as conn:
         now = _stale_operations(conn, found)
     after, _pending = access.mask_state(project, found.uid)
     chain = EntityChain(
         found.code, declared, changed, compiled, changes,
         tuple(item for uid, item in now.items()
-              if uid not in stale and item.op_type not in _CHAIN_OWN), after, failure)
+              if uid not in stale and item.op_type not in _CHAIN_OWN), after, failure, layer, layer_changed,
+        layer_failure)
+    done = failure is None and layer_failure is None
     yield Progress(_CHAIN_PHASE, _CHAIN_TOTAL, _CHAIN_TOTAL,
-                   "Restricciones declaradas y máscaras al día" if failure is None
-                   else "Restricciones declaradas y máscaras: no se pudo terminar", result=chain)
+                   "Restricciones declaradas, máscaras y capa de entidades al día" if done
+                   else "Restricciones declaradas, máscaras y capa de entidades: no se pudo terminar",
+                   result=chain)
 
 
 # --- Descartar, «apoyo retirado» y soltar el apoyo (spec 015, T25; RF-015-17, RF-009-12; D-12; A7, P-6) --------

@@ -61,7 +61,8 @@ QUARRY_TYPES = ("des.excavation_area", "des.quarry", "des.edge_transition", "des
                 "des.refit")
 """Los cinco tipos de la 014 (T05): de la versión y repetibles."""
 ENTITY_TYPES = ("des.platform", "des.declare_constraints", "des.entity_layer")
-"""Los tres tipos de la 015 (T04): de la versión, repetibles y reproducibles."""
+"""Los tres tipos de la 015 (T04): de la versión y repetibles; se reproducen los dos primeros (la capa de entidades, T30,
+es una vista regenerable)."""
 PLATFORM_COMMAND = "geoblender.des_create_platform"
 """La orden de los tres: la «Plataforma…» de la entrada de R-36 (T15: la clave definitiva, que sustituyó a
 ``des_draw_platform``). Tiene su clase real; el catálogo deja la entrada sin entregar hasta la T31."""
@@ -72,9 +73,9 @@ REPRODUCED = {"des.envelope": "reproduce_envelope", "des.stepped_design": "repro
               "des.edge_transition": "reproduce_edge_transition",
               "des.fill_only": "reproduce_fill_only",
               "des.platform": "reproduce_platform",
-              "des.declare_constraints": "reproduce_declare_constraints",
-              "des.entity_layer": "reproduce_entity_layer"}
-"""Los tipos que se reproducen y su función de ``design.reproduce`` (el ajuste no se reproduce)."""
+              "des.declare_constraints": "reproduce_declare_constraints"}
+"""Los tipos que se reproducen y su función de ``design.reproduce`` (el ajuste de la 014 y la capa de entidades de
+la 015, T30, no se reproducen)."""
 ENTRY_014 = "014"
 COMMANDS_014: frozenset[str] = frozenset({"geoblender.des_create_limit_from_perimeter",
                                           "geoblender.des_design_quarry",
@@ -344,7 +345,7 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertEqual(sorted(des_ops.QUARRY_RECOMPUTE), sorted(QUARRY_TYPES))
         self.assertEqual(sorted(des_ops.QUARRY_REPRODUCE), sorted(QUARRY_TYPES[:4]))
         self.assertEqual(sorted(des_ops.ENTITY_RECOMPUTE), sorted(ENTITY_TYPES))
-        self.assertEqual(sorted(des_ops.ENTITY_REPRODUCE), sorted(ENTITY_TYPES))
+        self.assertEqual(sorted(des_ops.ENTITY_REPRODUCE), sorted(ENTITY_TYPES[:2]))
         recomputed = {**des_ops.RECOMPUTE, **des_ops.QUARRY_RECOMPUTE, **des_ops.ENTITY_RECOMPUTE}
         reproduced = {**des_ops.REPRODUCE, **des_ops.QUARRY_REPRODUCE, **des_ops.ENTITY_REPRODUCE}
         self.assertEqual(sorted(defn.op_type for defn in des_ops.OPERATION_DEFS),

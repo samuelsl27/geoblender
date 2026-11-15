@@ -21,8 +21,9 @@ constantes del módulo construidas una vez:
   cifras (``design.provenance.QUARRY_FIGURES``);
 - lo de la **015** (T04; plan 015 §5.2.2 y §5.2.3): las 20 familias de parámetros de una plataforma
   (``design.params.ENTITY_FAMILIES``, ``des.platform.{e}.*``, junto a las de la 013), sus tres tipos de
-  operación de la versión, repetibles y reproducibles (``des.platform``, ``des.declare_constraints`` y
-  ``des.entity_layer``: :data:`ENTITY_RECOMPUTE`, :data:`ENTITY_REPRODUCE`) y sus cifras
+  operación de la versión, repetibles (``des.platform``, ``des.declare_constraints`` y
+  ``des.entity_layer``: :data:`ENTITY_RECOMPUTE`) y reproducibles salvo la capa de entidades, que es una vista
+  regenerable (:data:`ENTITY_REPRODUCE`) y sus cifras
   (``design.provenance.ENTITY_FIGURES``); sin las órdenes (T15 y siguientes);
 - sus textos (``design.messages``) en ``core.i18n``.
 
@@ -133,7 +134,12 @@ versión que ya no es editable; sobre un fichero que ya existe pregunta antes de
 ``design.export.stored_grid``. **Recalcular lo obsoleto** ya estaba integrado (T21, véase arriba): la
 T28 lo prueba de punta a punta sobre un proyecto real. Desde la 014 (T33; RF-014-32) exporta también
 las rejillas de la cantera, la transición, la superficie ajustada y el recinto; la clasificación y
-el recinto, con un código por celda y su leyenda en los metadatos (``design.export.LEGENDS``).
+el recinto, con un código por celda y su leyenda en los metadatos (``design.export.LEGENDS``). Desde
+la 015 (T30; RF-015-27) exporta también **la superficie de una entidad** (``des_psf_``): con el objeto de una
+entidad activo (o su tabla ``des_epr_`` como ``source``) toma su superficie, y el botón está también en la barra
+N «Entidad». **La capa de entidades** (T30; RF-015-27): la regeneran, como operación aparte y tras la entidad,
+las órdenes que encadenan ``design.entity_store.after_entity_change`` (crear, descartar…) y «Recalcular lo
+obsoleto» (:func:`recompute_entity_layer`); no tiene orden propia.
 
 **Los cargadores de la vista** (T27): el de las rejillas ``des_env_``, ``des_srf_`` y ``des_brm_``
 (objetos ``DESIGN``) es de ``bl/scene/des_views.py``, que registra ``bl.scene`` junto al tipo de
@@ -481,9 +487,9 @@ def reproduce_fill_only(request: ReproduceRequest) -> Iterator[Progress]:
 # ya tiene las dos (T13 y T14: ``design.entity_store.recompute_platform``, que ``recompute_run`` llama, y
 # ``design.reproduce.reproduce_platform``) y la declaración de restricciones también (T17:
 # ``design.entity_store.recompute_declaration``, que ``recompute_run`` llama, y
-# ``design.reproduce.reproduce_declare_constraints``); la capa de entidades (T30) aún no: no hay ninguna
-# operación de ese tipo que recalcular ni reproducir, y ``recompute_run`` la rechaza y ``design.reproduce``
-# dice la tarea que falta (``NotImplementedError``).
+# ``design.reproduce.reproduce_declare_constraints``); la capa de entidades (T30) se recalcula
+# (``design.entity_store.recompute_entity_layer``, que ``recompute_run`` llama) y **no se reproduce**: su contenido
+# incluye el estado de cada entidad, que deduce el grafo del proyecto (como ``des.refit``).
 
 
 def recompute_platform(request: RecomputeRequest) -> OperationHandle:
@@ -513,13 +519,6 @@ def reproduce_declare_constraints(request: ReproduceRequest) -> Iterator[Progres
     from ...design import reproduce  # al usarla: habilitar no carga la reproducción
 
     return reproduce.reproduce_declare_constraints(request)
-
-
-def reproduce_entity_layer(request: ReproduceRequest) -> Iterator[Progress]:
-    """La reproducción de ``des.entity_layer``: la de ``design.reproduce``."""
-    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
-
-    return reproduce.reproduce_entity_layer(request)
 
 
 # --- Declaraciones de la procedencia (ADR-0025 §2; plan §5.2.3) ----------------------------------
@@ -557,14 +556,14 @@ ENTITY_RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = 
         provenance.DECLARE_CONSTRAINTS: recompute_declare_constraints,
         provenance.ENTITY_LAYER: recompute_entity_layer,
     }))
-"""La función de recálculo de cada tipo de la 015 (todos se repiten solos; RF-015-02)."""
+"""La función de recálculo de cada tipo de la 015 (todos se repiten solos; RF-015-02, RF-015-27)."""
 ENTITY_REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]] = (
     MappingProxyType({
         provenance.PLATFORM: reproduce_platform,
         provenance.DECLARE_CONSTRAINTS: reproduce_declare_constraints,
-        provenance.ENTITY_LAYER: reproduce_entity_layer,
     }))
-"""La función de reproducción de cada tipo de la 015 (todos se reproducen; RF-015-02)."""
+"""La función de reproducción de cada tipo de la 015 que se reproduce: la plataforma y la declaración de
+restricciones (RF-015-02); la capa de entidades no (T30)."""
 OPERATION_DEFS: tuple[contract.OperationDef, ...] = (
     *provenance.operation_defs(RECOMPUTE, REPRODUCE), *design_profiles.OPERATIONS,
     *provenance.quarry_operation_defs(QUARRY_RECOMPUTE, QUARRY_REPRODUCE),
@@ -573,7 +572,7 @@ OPERATION_DEFS: tuple[contract.OperationDef, ...] = (
 la versión y repetibles, y la edición de los perfiles de banco, del proyecto; de la 014, el recinto,
 la cantera con dos superficies, la transición, «solo relleno» y el ajuste, de la versión y
 repetibles (T05); de la 015, la plataforma, la declaración de restricciones y la capa de entidades,
-de la versión, repetibles y reproducibles (T04)."""
+de la versión y repetibles (T04); la capa de entidades no se reproduce (T30)."""
 DEFINITIONS: tuple[core_params.ParamDef, ...] = (
     *design_params.DEFINITIONS, *design_params.QUARRY_DEFINITIONS)
 """Las definiciones de parámetros de ``des``: las dos del proyecto de la 013 y las siete de la 014
@@ -4212,6 +4211,7 @@ class GEOBLENDER_OT_des_toggle_preview(DesignCommandAware, ProvenanceAwareOperat
 
 
 # --- Exportar una rejilla del diseño a GeoTIFF (T28; HU-013-6; RF-013-34; plan §5.3.3, D-29) -------
+# T30 (RF-015-27): también la superficie de una entidad, con la misma orden (botón de la barra N «Entidad»).
 
 EXPORT_DESIGN_GRID = "geoblender.des_export_design_grid"
 EXPORT_TICKS = 1000
@@ -4240,8 +4240,9 @@ def _export_progress(steps: Iterator[float], name: str) -> Iterator[Progress]:
 
 class GEOBLENDER_OT_des_export_design_grid(_StepsModal, bpy.types.Operator):
     """Write a registered grid of the design (an envelope, a design surface, the berm elevations,
-    the classification of a quarry or an excavation boundary) as a deliverable GeoTIFF (it is not
-    an operation: also from a superseded version and, outside the project, in read-only)"""
+    the classification of a quarry or an excavation boundary, or the surface of an entity) as a
+    deliverable GeoTIFF (it is not an operation: also from a superseded version and, outside the
+    project, in read-only)"""
 
     bl_idname = EXPORT_DESIGN_GRID
     bl_label = "Export grid to GeoTIFF…"
@@ -4276,11 +4277,12 @@ class GEOBLENDER_OT_des_export_design_grid(_StepsModal, bpy.types.Operator):
 
     def _stored(self, context: Any) -> Any:
         """La rejilla que se exporta (``design.export.StoredGrid``): la de :attr:`source` o la del
-        objeto de diseño activo de la vista; ``ValueError`` sin ninguna, y ``DesignError`` si no es
-        una rejilla viva del diseño."""
+        objeto de diseño activo de la vista o, si es una **entidad** (T30; RF-015-27), su superficie (la tabla de
+        la entidad que enseña la vista da la ``des_psf_`` de su versión); ``ValueError`` sin ninguna, y
+        ``DesignError`` si no es una rejilla viva del diseño."""
         from ...design import export  # al usarlo: habilitar no lo carga
 
-        ref = self.source.strip() or des_panels.wanted(context)
+        ref = self.source.strip() or des_panels.wanted(context) or des_panels.entity_wanted(context)
         if not ref:
             raise ValueError(tr("Choose the design grid: select it in the view"))
         return export.stored_grid(SESSION.project, ref,

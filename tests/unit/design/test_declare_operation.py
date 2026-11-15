@@ -67,13 +67,12 @@ NO_SCOPE = "{}"
 
 
 def declare_definitions() -> tuple[Any, ...]:
-    """Los tipos de las entidades con las funciones **reales** de la plataforma y de la declaración (recalcular
-    y reproducir), la de la capa de entidades sin llamar (es de la T30) y las cifras, como los registra
-    ``bl``."""
+    """Los tipos de las entidades con las funciones **reales** de la plataforma, de la declaración y de la capa de
+    entidades (recalcular; la capa de entidades no se reproduce: T30) y de reproducir las de la plataforma y la
+    declaración, y las cifras, como los registra ``bl``."""
     types = prep.ENTITY_TYPES
-    recompute = {kind: prep.never for kind in types}
-    recompute[provenance.PLATFORM] = recompute[DECLARE] = ops.recompute_function
-    reproduce = {kind: prep.never for kind in types}
+    recompute = dict.fromkeys(types, ops.recompute_function)
+    reproduce = {kind: prep.never for kind in provenance.ENTITY_REPRODUCIBLE}
     reproduce[provenance.PLATFORM] = design_reproduce.reproduce_platform
     reproduce[DECLARE] = design_reproduce.reproduce_declare_constraints
     return (*provenance.entity_operation_defs(recompute, reproduce), *provenance.ENTITY_FIGURES)
@@ -872,9 +871,9 @@ class ReproduceFunctionTest(unittest.TestCase):
 
     def test_the_declaration_is_recomputed_by_the_function_of_the_008(self) -> None:
         """RF-015-02, RF-008-26: ``recompute_run`` repite también ``des.declare_constraints`` (es de
-        ``RECOMPUTED``), y rechaza lo que no es de su lista."""
+        ``RECOMPUTED``) y, desde la T30, la capa de entidades, y rechaza lo que no es de su lista."""
         self.assertIn(DECLARE, design_store.RECOMPUTED)
-        self.assertNotIn(provenance.ENTITY_LAYER, design_store.RECOMPUTED)
+        self.assertIn(provenance.ENTITY_LAYER, design_store.RECOMPUTED)
 
 
 if __name__ == "__main__":

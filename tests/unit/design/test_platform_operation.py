@@ -1798,13 +1798,15 @@ def recompute_function(request: Any) -> Any:
 
 
 def real_definitions() -> tuple[Any, ...]:
-    """Los tipos de las entidades con las funciones **reales** de la plataforma (recalcular y reproducir),
-    las de los otros dos tipos sin llamar y las cifras, como los registra ``bl``."""
+    """Los tipos de las entidades con las funciones **reales** de la plataforma y de la capa de entidades
+    (recalcular) y de la plataforma (reproducir), las de la declaración sin llamar y las cifras, como los
+    registra ``bl``."""
     types = prep.ENTITY_TYPES
+    real = (provenance.PLATFORM, provenance.ENTITY_LAYER)
     return (*provenance.entity_operation_defs(
-        {kind: recompute_function if kind == provenance.PLATFORM else prep.never for kind in types},
+        {kind: recompute_function if kind in real else prep.never for kind in types},
         {kind: design_reproduce.reproduce_platform if kind == provenance.PLATFORM else prep.never
-         for kind in types}), *provenance.ENTITY_FIGURES)
+         for kind in provenance.ENTITY_REPRODUCIBLE}), *provenance.ENTITY_FIGURES)
 
 
 class RecomputeCase(CreateCase):
@@ -2347,13 +2349,19 @@ class ReproduceFunctionsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             design_reproduce.reproduce_platform(other)
 
-    def test_d2_the_layer_is_not_reproducible_yet(self) -> None:
-        """RF-015-27: la capa de entidades (T30) aún no tiene su reproducción: lo dice con un
-        ``NotImplementedError`` que nombra la tarea, no con un ``AttributeError``. La de la declaración de
-        restricciones es real desde la T17 (``test_declare_operation``)."""
-        with self.assertRaises(NotImplementedError) as caught:
-            design_reproduce.reproduce_entity_layer(None)
-        self.assertIn("T30", str(caught.exception))
+    def test_d2_the_layer_of_the_entities_is_not_reproducible(self) -> None:
+        """RF-015-27, RF-015-02 (T30): la capa de entidades **no se reproduce** (su contenido incluye el estado de
+        cada entidad, que deduce el grafo del proyecto: es una vista regenerable, como ``des.refit``): no tiene función
+        de reproducir ni en ``design.reproduce`` ni en la definición de su tipo, que sí se repite sola. La de la
+        declaración de restricciones es real desde la T17 (``test_declare_operation``)."""
+        self.assertFalse(hasattr(design_reproduce, "reproduce_entity_layer"))
+        self.assertNotIn(provenance.ENTITY_LAYER, provenance.ENTITY_REPRODUCIBLE)
+        declared = provenance.OPERATION_TYPES_BY_NAME[provenance.ENTITY_LAYER]
+        self.assertFalse(declared.reproducible)
+        self.assertIn(provenance.ENTITY_LAYER, provenance.ENTITY_VERSION_TYPES)
+        defined = declared.definition(recompute_function)
+        self.assertEqual((defined.repeatable, defined.drops_discarded, defined.reproduce, defined.figure_tolerance),
+                         (True, True, None, None))
 
 
 if __name__ == "__main__":

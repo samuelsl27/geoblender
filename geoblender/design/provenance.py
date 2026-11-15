@@ -91,10 +91,12 @@ lo suyo **aparte** de lo de las dos specs anteriores, con el prefijo ``ENTITY_``
   versión** y sin el nombre de una operación (``DatasetFamily.named``), la tabla de las restricciones
   que declaran las entidades (``des_decl_<vNN>``) y la capa de entidades para QGIS
   (``des_enl_<vNN>``). :data:`FAMILIES_BY_CODE` tiene las de las tres specs.
-- :data:`ENTITY_OPERATION_TYPES`: tres tipos de la versión, repetibles y reproducibles:
-  ``des.platform`` (:data:`PLATFORM`), ``des.declare_constraints`` (:data:`DECLARE_CONSTRAINTS`) y
-  ``des.entity_layer`` (:data:`ENTITY_LAYER`), con :func:`entity_operation_defs`. «Soltar el apoyo»
-  (T25) no es un tipo: es una ``des.platform`` repetida con ``supersedes``.
+- :data:`ENTITY_OPERATION_TYPES`: tres tipos de la versión, repetibles: ``des.platform``
+  (:data:`PLATFORM`), ``des.declare_constraints`` (:data:`DECLARE_CONSTRAINTS`) y ``des.entity_layer``
+  (:data:`ENTITY_LAYER`), con :func:`entity_operation_defs`; se reproducen los dos primeros
+  (:data:`ENTITY_REPRODUCIBLE`): la capa de entidades **no** (T30: su contenido incluye el estado de cada
+  entidad, que deduce el grafo del proyecto y no se reproduce sin él: es una vista regenerable, como
+  ``des.refit``). «Soltar el apoyo» (T25) no es un tipo: es una ``des.platform`` repetida con ``supersedes``.
 - La plataforma (``des.platform``): sus ajustes (:func:`platform_settings`, :func:`platform_request`:
   el nombre, el código y los campos de su capa; lo demás son los **parámetros** de la entidad,
   ``des.platform.{e}.*``, :func:`platform_values`), lo que consume con su papel
@@ -103,7 +105,8 @@ lo suyo **aparte** de lo de las dos specs anteriores, con el prefijo ``ENTITY_``
   que se apoya, :data:`SUPPORTED_ON_ROLE`) y los parámetros que lee (:func:`platform_params`).
 - La declaración (``des.declare_constraints``) y la capa (``des.entity_layer``) no tienen entradas de
   capas del proyecto: consumen los datos ``des_epr_`` de las entidades vivas (:data:`ENTITY_ROLE`;
-  :func:`declare_inputs`, :func:`entity_layer_inputs`), con las entidades en sus ajustes
+  :func:`declare_inputs`, :func:`entity_layer_inputs`; la capa, además, su informe ``des_prp_``, de donde
+  salen sus cifras, :data:`ENTITY_REPORT_ROLE`), con las entidades en sus ajustes
   (:func:`declare_settings`, :func:`entity_layer_settings`, :func:`settings_entities`) y, la
   declaración, los parámetros ``protect``, ``guard_m`` y ``reason`` (:func:`declare_params`). La
   declaración anota además en sus ajustes la versión (de ella sale el ``uid`` de cada restricción
@@ -985,10 +988,12 @@ ENTITY_OPERATION_TYPES: tuple[OperationType, ...] = (
     OperationType(DECLARE_CONSTRAINTS, "Constraints of the entities", (DECLARED_TABLE,), (),
                   DECLARE_FIGURES, (PLATFORM_COMMAND,), drops_discarded=True),
     OperationType(ENTITY_LAYER, "Layer of the entities", (ENTITY_MAP_TABLE,), (), (),
-                  (PLATFORM_COMMAND,)),
+                  (PLATFORM_COMMAND,), reproducible=False, drops_discarded=True),
 )
 """Los tipos de operación de la 015, en el orden del plan 015 §5.2.3, aparte de los de la 013 y la
-014: repetibles y reproducibles (:data:`ENTITY_REPRODUCIBLE`)."""
+014: repetibles y reproducibles (:data:`ENTITY_REPRODUCIBLE`) salvo la capa de entidades (T30: es una vista
+regenerable que incluye el estado de cada entidad, deducido del grafo; ``drops_discarded``: su recálculo
+reúne él mismo las entidades vivas, como la declaración)."""
 OPERATION_TYPES_BY_NAME: Mapping[str, OperationType] = MappingProxyType(
     {declared.op_type: declared
      for declared in (*OPERATION_TYPES, *QUARRY_OPERATION_TYPES, *ENTITY_OPERATION_TYPES)})
@@ -1007,8 +1012,8 @@ ENTITY_VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in ENTITY_OPERATIO
 """Los tipos de versión de la 015, que se repiten solos (RF-015-02)."""
 ENTITY_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in ENTITY_OPERATION_TYPES
                                              if t.reproducible)
-"""Los tipos de la 015 que se reproducen: los tres (RF-015-02: bit a bit desde una revisión
-congelada, con :data:`FIGURE_TOLERANCE` en las cifras)."""
+"""Los tipos de la 015 que se reproducen: la plataforma y la declaración de restricciones (RF-015-02: bit a bit
+desde una revisión congelada, con :data:`FIGURE_TOLERANCE` en las cifras). La capa de entidades no (T30)."""
 
 
 def operation_def(op_type: str, recompute: RecomputeFunction | None = None,
@@ -1056,11 +1061,12 @@ def entity_operation_defs(recompute: Mapping[str, RecomputeFunction],
                           reproduce: Mapping[str, ReproduceFunction]
                           ) -> tuple[OperationDef, ...]:
     """Los ``OperationDef`` de los tres tipos de la 015, en su orden: cada uno con su función de
-    ``recompute`` (todos se repiten solos) y de ``reproduce`` (todos se reproducen). ``ValueError``
-    si sobra o falta alguna."""
+    ``recompute`` (todos se repiten solos) y, los de :data:`ENTITY_REPRODUCIBLE` (la plataforma y la
+    declaración; no la capa de entidades), con la de ``reproduce``. ``ValueError`` si sobra o falta
+    alguna."""
     _check_functions("recálculo", recompute, ENTITY_VERSION_TYPES)
     _check_functions("reproducción", reproduce, ENTITY_REPRODUCIBLE)
-    return tuple(declared.definition(recompute[declared.op_type], reproduce[declared.op_type])
+    return tuple(declared.definition(recompute[declared.op_type], reproduce.get(declared.op_type))
                  for declared in ENTITY_OPERATION_TYPES)
 
 
@@ -2398,10 +2404,16 @@ def declare_inputs(names: Iterable[str]) -> tuple[Use, ...]:
 
 
 def entity_layer_inputs(names: Iterable[str]) -> tuple[Use, ...]:
-    """Lo que consume ``des.entity_layer`` (spec 015, T04; RF-015-27; plan 015 §5.2.3): los datos
-    ``des_epr_`` de **todas** las entidades vivas (papel :data:`ENTITY_ROLE`), por el nombre de cada
-    una. Como :func:`declare_inputs`."""
-    return _entity_inputs(names, "las entidades de la capa")
+    """Lo que consume ``des.entity_layer`` (spec 015, T04 y T30; RF-015-27; plan 015 §5.2.3): de **todas** las
+    entidades vivas, por el nombre de cada una, su dato ``des_epr_`` (papel :data:`ENTITY_ROLE`: la huella) y su
+    informe ``des_prp_`` (papel :data:`ENTITY_REPORT_ROLE`: de donde salen sus cifras principales; T30: sin él,
+    cambiar la cota o la pendiente de una entidad cambia el corte y el relleno y no la huella, y la capa se
+    quedaría con las cifras de antes sin avisar). Como :func:`declare_inputs` en lo demás."""
+    found: list[Use] = []
+    for name in _codes(names, "las entidades de la capa"):
+        found.append(Use(dataset_name(ENTITY_TABLE, name), ENTITY_ROLE))
+        found.append(Use(dataset_name(ENTITY_REPORT_TABLE, name), ENTITY_REPORT_ROLE))
+    return _unique(found)
 
 
 # --- Los parámetros que lee una operación -------------------------------------------------------

@@ -1,16 +1,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """La capa de las restricciones declaradas por las entidades y la de entidades frente a QGIS 4.2 (spec 015,
-T22; HU-015-1; RF-012-20, RF-015-27, RF-009-05, RF-008-56; plan 015 §5.7, §5.8 y §8; como
+T22 y T30; HU-015-1; RF-012-20, RF-015-27, RF-009-05, RF-008-56; plan 015 §5.7, §5.8 y §8; D-13; como
 ``test_ref_constraints_qgis``).
 
 Caso de referencia: V01 con la «Plataforma de carga» (que no protege) y la «Plataforma de taller» (que
 protege con 4 m) creadas y declaradas con las operaciones de verdad (``tests.unit.design.test_declare_operation``:
 ``des_decl_v01`` con la restricción de la segunda y su fila de estilo en ``layer_styles``, escrita por la
-operación de versión) y, en una **copia** del GeoPackage del proyecto, una capa de entidades de prueba
-(``des_enl_v01``: la de ``design`` es de la T30) con los campos del contrato del estilo
-(``core.constraints.styles.ENTITY_FIELDS``) y uno más, con su estilo escrito por
-``insert_version_styles``. La referencia externa es QGIS 4.2 (``GEOBLENDER_QGIS_DIR``): PyQGIS sin interfaz, con
-su GDAL y un perfil temporal, sobre esa copia (QGIS puede pasar a WAL lo que abre: ``docs/trampas.md`` §6):
+operación de versión) y **la capa de entidades de verdad** (``des_enl_v01``, T30: la que escribe ``des.entity_layer``
+tras cada orden de entidades, con su estilo, en la misma transacción), tras **descartar la primera** (la segunda
+queda con el «apoyo retirado»); y, en una **copia** del GeoPackage del proyecto, una capa de entidades de prueba
+(``des_enl_v99``) con los campos del contrato del estilo (``core.constraints.styles.ENTITY_FIELDS``) y uno más, y
+siete entidades de dos tipos en todos los estados, con su estilo escrito por ``insert_version_styles``. La referencia
+externa es QGIS 4.2 (``GEOBLENDER_QGIS_DIR``): PyQGIS sin interfaz, con su GDAL y un perfil temporal, sobre esa copia
+(QGIS puede pasar a WAL lo que abre: ``docs/trampas.md`` §6):
 
 - **El estilo por tipo** (RF-012-20): ``des_decl_v01`` se abre con el estilo por defecto de ``layer_styles``, un
   renderizador por reglas con **el mismo** estilo que la capa de polígonos del proyecto (una regla por tipo, su
@@ -24,6 +26,12 @@ su GDAL y un perfil temporal, sobre esa copia (QGIS puede pasar a WAL lo que abr
 - **La capa de entidades** (RF-015-27): por tipo de entidad y por estado: la plataforma, con su color; la
   descartada, atenuada; la de «apoyo retirado», marcada; los tipos sin estilo propio, como «otra entidad»;
   cada entidad cae en **una** sola regla (las reglas no se solapan).
+- **La capa de entidades de verdad** (T30, RF-015-27, D-13): ``des_enl_v01`` se abre en QGIS **con su estilo**
+  (el mismo de las reglas anteriores, escrito por la operación): la entidad descartada en la regla atenuada y la que
+  perdió el apoyo en la marcada, con sus campos (``fid``, el código, el nombre, el tipo, el estado, de qué parte, en
+  qué se apoya, la cadena y las cifras) **todos de solo lectura** y su nota, los **mismos valores** que la tabla (el
+  estado, la cadena, las cifras) y la **geometría de la huella**: el área que mide QGIS es la de las celdas de la
+  entidad.
 - **Las capas del proyecto**, igual que antes: sus tres estilos, con sus doce reglas y sin campos de solo
   lectura (la 015 no los toca).
 
@@ -45,6 +53,7 @@ from tests.support.core_fixtures import project_tmp
 from tests.support.package import import_geoblender
 from tests.support.resources import requires
 from tests.unit.design import test_declare_operation as decl
+from tests.unit.design import test_platform_operation as ops
 from tests.unit.design import test_platform_prepare as prep
 
 cstore = import_geoblender("core.constraints.store")
@@ -54,10 +63,16 @@ declared_mod = import_geoblender("core.constraints.declared")
 gpkg = import_geoblender("core.gpkg")
 gbase = import_geoblender("core.gpkg.base")
 gwkb = import_geoblender("core.gpkg.wkb")
+entities = import_geoblender("design.entities")
+entity_layer = import_geoblender("design.entity_layer")
+entity_store = import_geoblender("design.entity_store")
 
 T = cmodel.ConstraintType
 DECLARED = decl.TABLE
-ENTITIES = "des_enl_v01"
+ENTITIES = "des_enl_v99"
+"""La capa de entidades **de prueba**, en la copia (una versión que el proyecto no tiene: no choca con la real)."""
+REAL_ENTITIES = "des_enl_v01"
+"""La capa de entidades de verdad de V01 (``des.entity_layer``, T30)."""
 PROJECT_LAYERS = tuple(cstore.CONSTRAINT_LAYERS.values())
 FILL = 2
 """``Qgis.SymbolType.Fill``."""
@@ -131,6 +146,9 @@ for name in names:
     info["layer_read_only"] = layer.readOnly()
     info["matches"] = [[[str(value) for value in feature.attributes()], matching(layer, feature)]
                        for feature in layer.getFeatures()] if rules else []
+    info["areas"] = [feature.geometry().area() for feature in layer.getFeatures()]
+    info["geometry"] = [[feature.geometry().isGeosValid(), feature.geometry().wkbType() in (6, 1006, 2006)]
+                        for feature in layer.getFeatures()]
     found["layers"][name] = info
 # la marca de capa de solo lectura en el QML: ¿la aplica QGIS 4.2 al aplicar un estilo?
 connection = sqlite3.connect(f"file:{gpkg}?mode=ro", uri=True)
@@ -162,6 +180,7 @@ class QgisDeclaredReferenceTest(decl.DeclareCase):
 
     seen: ClassVar[dict[str, Any]]
     qml: ClassVar[str]
+    discarded: ClassVar[Any]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -172,13 +191,17 @@ class QgisDeclaredReferenceTest(decl.DeclareCase):
         cls.clock.advance(minutes=1)
         cls.made(prep.request(decl.WORKSHOP, start="entity:PLT-001", protect=True, guard_m=decl.GUARD_M))
         cls.entities_declared()
+        cls.clock.advance(minutes=1)
+        cls.discarded = ops.finish(entity_store.discard_entity_steps(
+            cls.project, cls.v1.uid, "PLT-001", reason="Prueba de la T30", decided_by=decl.EDITOR))
         out = cls.enterClassContext(project_tmp("gb-dq-"))
         copy = out / "copia"
         copy.mkdir()
         target = copy / "project.gpkg"
         shutil.copyfile(cls.project.database_path, target)
         cls.write_entity_layer(target)
-        result = started.finish(str(target), json.dumps([DECLARED, ENTITIES, *PROJECT_LAYERS]), DECLARED)
+        result = started.finish(str(target), json.dumps([DECLARED, ENTITIES, REAL_ENTITIES, *PROJECT_LAYERS]),
+                                DECLARED)
         if result.returncode != 0:
             raise RuntimeError(f"PyQGIS no abrió las capas: {qgis.output_of(result)}")
         (line,) = [text for text in result.stdout.splitlines() if text.startswith("RESULT")]
@@ -307,6 +330,55 @@ class QgisDeclaredReferenceTest(decl.DeclareCase):
         self.assertEqual(info["fields"], ["fid", *ENTITY_FIELDS])
         self.assertTrue(all(info["read_only"]))
         self.assertIn("no se edita a mano", info["notes"])
+
+    def test_g_the_real_entity_layer_opens_with_its_style_and_every_field_read_only(self) -> None:
+        """RF-015-27, RF-012-20, RF-008-56, D-13 (T30): ``des_enl_v01``, la que escribe ``des.entity_layer`` (no una de
+        prueba), se abre en QGIS **con su estilo por defecto**, escrito por la operación en su transacción: un
+        renderizador por reglas con las seis del estilo de entidades; la «Plataforma de carga» (**descartada**) cae en
+        la regla atenuada y la «Plataforma de taller» (que perdió el apoyo al descartar la otra) en la marcada, cada
+        una en **una** sola regla; sus campos (``fid`` y las doce columnas de la capa) son de solo lectura todos y la
+        capa lleva su nota."""
+        info = self.layer(REAL_ENTITIES)
+        self.assertEqual(info["renderer"], "RuleRenderer")
+        self.assertEqual(len(info["rules"]), 6)
+        self.assertEqual(info["rules"], self.layer(ENTITIES)["rules"], "el mismo estilo que el de la capa de prueba")
+        found = {attributes[1]: matched for attributes, matched in info["matches"]}
+        self.assertEqual(found, {"PLT-001": ["Plataforma descartada"],
+                                 "PLT-002": ["Plataforma con el apoyo retirado"]})
+        self.assertEqual(info["fields"], ["fid", *entity_layer.COLUMN_NAMES])
+        self.assertTrue(all(info["read_only"]), dict(zip(info["fields"], info["read_only"], strict=True)))
+        self.assertIn("no se edita a mano", info["notes"])
+        self.assertFalse(info["layer_read_only"], "la marca de capa no viaja en el estilo (RF-008-56 la protege)")
+        self.assertFalse(self.layer_record().qgis_editable)
+
+    def test_h_the_real_entity_layer_has_the_values_of_the_table_and_the_footprint_geometry(self) -> None:
+        """RF-015-27 (T30): lo que QGIS lee de ``des_enl_v01`` son **los valores de la tabla** que escribió
+        ``design`` (el código, el nombre, el tipo, el estado, la cadena y las cifras, que son las de la operación de
+        cada entidad) y la geometría es **la de la huella**: un polígono válido cuya área, medida por QGIS, es la de
+        las celdas de la entidad (``des.plat_area_m2``), con coordenadas del proyecto."""
+        info = self.layer(REAL_ENTITIES)
+        with self.project.read() as conn:
+            rows = {item.code: item for item in entity_layer.read_entity_layer(conn, REAL_ENTITIES)}
+        self.assertEqual(list(rows), ["PLT-001", "PLT-002"])
+        by_code = {attributes[1]: attributes for attributes, _matched in info["matches"]}
+        for code, item in rows.items():
+            with self.subTest(code=code):
+                names = dict(zip(["fid", *entity_layer.COLUMN_NAMES], by_code[code], strict=True))
+                self.assertEqual((names["name"], names["kind"], names["state"], names["chain"]),
+                                 (item.name, "platform", str(item.state), item.chain))
+                self.assertEqual(float(names["area_m2"]), item.area_m2)
+                self.assertEqual(float(names["cut_m3"]), item.cut_m3)
+        self.assertEqual(rows["PLT-001"].state, entities.EntityState.DISCARDED)
+        self.assertEqual(rows["PLT-002"].state, entities.EntityState.SUPPORT_REMOVED)
+        self.assertEqual(info["features"], 2)
+        for (valid, multi), area, code in zip(info["geometry"], info["areas"], rows, strict=True):
+            with self.subTest(geometry=code):
+                self.assertTrue(valid and multi)
+                self.assertAlmostEqual(area, rows[code].area_m2, delta=1e-6 * rows[code].area_m2)
+
+    def layer_record(self) -> Any:
+        with self.project.read() as conn:
+            return import_geoblender("core.datasets.registry").get(conn, "des_enl", version_uid=self.v1.uid)
 
     def test_f_the_project_layers_keep_their_style_and_stay_editable(self) -> None:
         """RF-012-20: las tres capas de restricciones del proyecto se abren como antes de la 015: sus doce

@@ -34,6 +34,9 @@ pruebas, en el orden de sus letras sobre el mismo estado:
 - RF-015-25, D-12 (i): una entidad **sin calcular** (la que deja «Traer las entidades de…»).
 - RF-015-25, principio 10 (j): en inglés todo sale en inglés; cada lectura del proyecto tarda menos de 0,2 s de CPU; un
   objeto del usuario o de otro proyecto no tiene ficha.
+- RF-015-27, RF-013-34 (k, T30): con el objeto de una entidad activo, la barra N «Entidad» ofrece «Exportar rejilla a
+  GeoTIFF…» (la orden de la 013, sin ``source``), que escribe **la superficie de la entidad** como GeoTIFF entregable, sin
+  escribir nada en el proyecto y sin sustituir un fichero que ya existe.
 - Principio 8 (z): desactivar Geoblender quita el cargador, la barra N y su lectura y deja Blender como estaba.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
@@ -42,6 +45,7 @@ Se ejecuta con ``tools/run_blender_tests.py``.
 import hashlib
 import json
 import sqlite3
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -264,6 +268,9 @@ class EntityViewsTest(platform_ops.CreatePlatformTest):
                          {name: (code, "current") for name, code in CODES.items()})
         type(self).uids = {name: self.rows("SELECT uid FROM gb_dataset WHERE name = ? AND status = 'current'",
                                            self.dprov.dataset_name("epr", name))[0][0] for name in CODES}
+        # RF-015-27 (T30): cada orden de entidades dejó puesta al día la capa de entidades de V01 (una fila por entidad).
+        self.assertEqual(self.rows('SELECT code, name, state FROM "des_enl_v01" ORDER BY code'),
+                         [(code, name, "current") for name, code in sorted(CODES.items(), key=lambda item: item[1])])
 
     def test_c_load_one_object_per_entity_on_the_surface_and_regenerate_it(self) -> None:
         """RF-015-25, ADR-0005 (M3): «Cargar en la vista» de una entidad da un objeto ``DESIGN_ENTITY`` con el nombre de la
@@ -523,6 +530,11 @@ class EntityViewsTest(platform_ops.CreatePlatformTest):
         self.choose(LOADING)
         self.refresh_card()
         self.assertEqual(self.entry(LOADING).record.state.value, "discarded")
+        # RF-015-27 (T30): la orden dejó la capa de entidades al día: «Carga», descartada (sigue en la capa), y las dos que
+        # partían de ella o se apoyaban en ella, con el apoyo retirado.
+        self.assertEqual(self.rows('SELECT code, state FROM "des_enl_v01" ORDER BY code'),
+                         [("PLT-001", "current"), ("PLT-002", "discarded"), ("PLT-003", "support_removed"),
+                          ("PLT-004", "support_removed")])
         self.assertEqual(self.state_line(), ("Descartada: queda en el proyecto como registro y no se usa", True))
         self.assertTrue(self.view.item_found)
         retired = [text for text, _alert in self.section("Lo que se apoya en ella")]
@@ -597,6 +609,49 @@ class EntityViewsTest(platform_ops.CreatePlatformTest):
             self.view_panels.on_active_changed()
             self.assertEqual(self.view.item_uid, "", obj.name)
             self.assertFalse(panel.poll(bpy.context), obj.name)
+
+    def test_k_the_surface_of_the_active_entity_is_exported_to_geotiff(self) -> None:
+        """RF-015-27, RF-013-34 (T30; M5): con el objeto de «Rampa» activo, la barra N «Entidad» ofrece el botón «Exportar
+        rejilla a GeoTIFF…» (``geoblender.des_export_design_grid``, la de la 013, sin ``source``: toma la entidad activa) y la
+        orden escribe **la superficie de la entidad** (``des_psf_rampa``) como GeoTIFF entregable (las cotas guardadas pasadas
+        a float32, el «sin dato» −9999 y el CRS del proyecto), sin escribir nada en el proyecto (ni ficheros ni operaciones);
+        sobre un fichero que ya existe se rechaza si no se pide sustituirlo; y la de una entidad **descartada** («Carga», en
+        la prueba h) no se exporta: ya no es una rejilla viva."""
+        self.choose(RAMP)
+        self.assertTrue(self.panels.read_selected(bpy.context))
+        buttons = draw(getattr(bpy.types, PANEL), bpy.context).of_kind("operator")
+        self.assertEqual([item.target for item in buttons], ["geoblender.des_export_design_grid"])
+        self.assertEqual(buttons[0].text, "Exportar rejilla a GeoTIFF…")
+        reader = _module("gis.geotiff.reader")
+        files, operations = self.files(), self.operations()
+        with tempfile.TemporaryDirectory(prefix="gb-d30-") as folder:
+            target = Path(folder, "rampa.tif")
+            self.assertEqual(bpy.ops.geoblender.des_export_design_grid("EXEC_DEFAULT", filepath=str(target)),
+                             {"FINISHED"})
+            locator = self.rows("SELECT locator FROM gb_dataset WHERE name = ? AND status = 'current'",
+                                self.dprov.dataset_name("psf", RAMP))[0][0]
+            stored = reader.read_geotiff(Path(self.project.root, *locator.split("/")), max_cells=10 ** 7)
+            found = reader.read_geotiff(target, max_cells=10 ** 7)
+            self.assertEqual(found.grid, stored.grid)
+            self.assertEqual((found.declared_crs.epsg, found.source_dtype, found.nodata_value),
+                             (self.project.record.crs_epsg, "float32", -9999.0))
+            self.assertTrue(np.isfinite(found.values).any())
+            np.testing.assert_array_equal(found.values, stored.values.astype(np.float32).astype(np.float64))
+            self.assertEqual((self.files(), self.operations()), (files, operations))
+            kept = target.read_bytes()
+            with self.assertRaises(RuntimeError) as raised:
+                bpy.ops.geoblender.des_export_design_grid("EXEC_DEFAULT", filepath=str(target))
+            self.assertIn("Ya existe «rampa.tif»", str(raised.exception))
+            self.assertEqual(target.read_bytes(), kept)
+            self.assertEqual(bpy.ops.geoblender.des_export_design_grid("EXEC_DEFAULT", filepath=str(target),
+                                                                        overwrite=True), {"FINISHED"})
+            self.assertEqual(target.read_bytes(), kept)
+            with self.assertRaises(RuntimeError) as raised:  # «Carga» está descartada: su superficie es un registro
+                bpy.ops.geoblender.des_export_design_grid("EXEC_DEFAULT", source=self.uids[LOADING],
+                                                          filepath=str(Path(folder, "carga.tif")))
+            self.assertIn("no es una rejilla viva del diseño", str(raised.exception))
+            self.assertEqual(sorted(path.name for path in Path(folder).iterdir()), ["rampa.tif"])
+        self.assertEqual((self.files(), self.operations()), (files, operations))
 
     def test_z_disable_leaves_nothing_of_the_entity_views(self) -> None:
         """Principio 8: con un objeto de entidad seleccionado, desactivar Geoblender quita el cargador, el panel de la barra

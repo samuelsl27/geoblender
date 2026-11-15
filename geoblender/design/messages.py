@@ -1793,6 +1793,17 @@ CATALOG: tuple[Message, ...] = (
         "operación que las use.",
         "warning",
     ),
+    Message(
+        "des.entity_chain_layer_failed",
+        "The layer of the entities of {version} could not be updated: {reason} The entity is created; the "
+        "layer keeps what it had and is stale if an entity it shows changed (Project ▸ Recompute the stale "
+        "results brings it up to date); it is updated the next time an entity is created, changed or "
+        "discarded.",
+        "No se pudo poner al día la capa de entidades de {version}: {reason} La entidad está creada; la capa "
+        "conserva lo que tenía y queda obsoleta si cambió una entidad que enseña (Proyecto ▸ Recalcular lo "
+        "obsoleto la pone al día); se pone al día la próxima vez que se cree, cambie o descarte una entidad.",
+        "warning",
+    ),
     # Traer las entidades de otra versión (RF-015-18, RF-009-01; D-18; T26): lo que se rechaza y lo que se avisa.
     Message(
         "des.entity_bring_same",

@@ -164,7 +164,10 @@ entidad (también una **sin calcular**, que no tiene datos y por tanto objeto); 
 objeto, en una sola instantánea. Las mismas líneas, sin las cifras, las enseñan «Elemento activo» y «Cifras de la
 selección» de la 010 (:func:`entity_object_lines`, ``view_panels.register_object_lines``). La lectura es la de la barra
 N «Diseño»: :func:`read_selected` regenera las líneas al cambiar el objeto activo, tras cada lectura del proyecto
-cambiado y tras cargar un ``.blend`` (``WindowManager.geoblender_design.item``), y nada se lee al dibujar."""
+cambiado y tras cargar un ``.blend`` (``WindowManager.geoblender_design.item``), y nada se lee al dibujar. Con una
+entidad leída, al final de la barra N está el botón «Exportar rejilla a GeoTIFF…» (T30; RF-015-27: la misma
+``geoblender.des_export_design_grid``, que con el objeto de una entidad exporta **su superficie**, ``des_psf_``): como el
+de la barra N «Diseño», siempre activo, porque exportar no escribe en el proyecto."""
 
 from __future__ import annotations
 
@@ -2703,8 +2706,10 @@ def _draw_item(layout: Any, shown: Any, uid: str, width: float) -> bool:
 def draw_entity(layout: Any, context: Any) -> None:
     """La barra N «Entidad» (véase el módulo), de lo ya leído: la entidad del objeto ``DESIGN_ENTITY`` activo."""
     shown = view()
-    if shown is not None:
-        _draw_item(layout, shown, entity_wanted(context), labels.sidebar_width(context))
+    if shown is not None and _draw_item(layout, shown, entity_wanted(context), labels.sidebar_width(context)):
+        layout.separator()
+        export = layout.row()  # exportar no escribe en el proyecto: vale también en solo lectura (T30, RF-015-27)
+        export.operator(EXPORT_GRID, text=_label(EXPORT_GRID), icon="EXPORT", translate=False)
 
 
 def draw_selected(layout: Any, context: Any) -> None:

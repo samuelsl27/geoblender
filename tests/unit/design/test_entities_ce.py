@@ -845,7 +845,9 @@ class ProtectedPlatformTest(chain_test.ChainCase, sup.SupportsCase, HandCase):
         declaration, masks_op = self.current_declaration(), self.compile_op()
         plan = [unit[0] for unit in self.plan_names()]
         self.assertEqual(plan[:2], [BALSA, "des.declare_constraints"], "P1 es lo primero que se rehace")
-        self.assertEqual(len(plan), 8, "el plan: P1, la declaración, las máscaras, la envolvente, «Balsa 2», P2 y dos verificaciones")
+        self.assertEqual(len(plan), 9, "el plan: P1, la declaración, las máscaras, la capa de entidades (T30, que consume los "
+                                       "datos de P1), la envolvente, «Balsa 2», P2 y dos verificaciones")
+        self.assertIn("des.entity_layer", plan)
         passes = self.passes()
         self.assertEqual(len(passes), 1, "una sola pasada")
         done = str(recompute_mod.UnitStatus.DONE)

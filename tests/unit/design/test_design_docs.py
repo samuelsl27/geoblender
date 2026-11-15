@@ -175,10 +175,10 @@ PENDING_015_API = frozenset({
     # T13: «Crear» la plataforma (design.entity_store; ENTITY_COLUMNS de design.store es una constante).
     "create_platform", "detected_supports", "footprint_runs", "geometry_sha256",
     "platform_entity_rows", "platform_report_rows", "runs_mask",
-    # T14: recalcular y reproducir la plataforma (design.entity_store y design.reproduce; las de
-    # la declaración y la capa de entidades de design.reproduce son de la T17 y la T30).
+    # T14: recalcular y reproducir la plataforma (design.entity_store y design.reproduce; la de la declaración
+    # de design.reproduce es de la T17; la capa de entidades no se reproduce: T30).
     "entity_values", "feature_index", "platform_parameters", "read_geometry", "recompute_platform",
-    "run_platform", "reproduce_platform", "reproduce_declare_constraints", "reproduce_entity_layer",
+    "run_platform", "reproduce_platform", "reproduce_declare_constraints",
     # T15: la contrapendiente que la persona confirmó al crear (design.provenance: se anota en los
     # ajustes y un recálculo la reutiliza).
     "CounterslopeConfirmation", "counterslope_confirmation", "counterslope_confirmed",
@@ -207,6 +207,10 @@ PENDING_015_API = frozenset({
     "Brought", "BroughtEntity", "bring_entities",
     # T29: la vista previa de una entidad antes de calcularla (design.preview).
     "EntityEnd", "EntityPreview", "RestingItem", "entity_preview_steps",
+    # T30: la capa de entidades para QGIS (design.entity_layer: la tabla; design.entity_store: la operación).
+    "EntityLayerRow", "create_entity_layer_table", "entity_layer_table", "read_entity_layer", "write_entity_layer",
+    "LayerSource", "PreparedEntityLayer", "entity_layer_rows_steps", "entity_layer_steps", "layer_sources",
+    "prepare_entity_layer", "recompute_entity_layer", "run_entity_layer",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({
@@ -218,6 +222,8 @@ PENDING_015_MODULES = frozenset({
     # Dependent, dependents, dependencies_of, stale_reason, operation_reason y kind_label (la lista de
     # dependencias y la causa de lo obsoleto: RF-015-15, RF-015-16); T25: retired_supports, RetiredSupport y
     # RetiredEntity (lo que perdió su apoyo: RF-015-17)
+    "design.entity_layer",  # T30: EntityLayerRow, entity_layer_table, create_entity_layer_table,
+    # write_entity_layer y read_entity_layer (la tabla ``des_enl_<vNN>`` de la capa de entidades para QGIS)
     "design.platform",  # T06: PlatformJob, PlatformGeometry, Footprint, platform_footprint,
     # axis_of_polygon y work_window (la huella y la rasante de la plataforma); T07: Applied,
     # OffLevel, OffLevelCause, apply_platform y apply_platform_steps (aplicarla); T08: Edge,
@@ -239,7 +245,9 @@ PENDING_015_MODULES = frozenset({
     # (lo que apoya una operación sobre las entidades de su versión, que añade ``DesignWriter.commit``); T25:
     # discard_plan, DiscardPlan, discard_entity, discard_entity_steps, DiscardResult, Discarded y release_support
     # (descartar una entidad, «apoyo retirado» y soltar el apoyo: RF-015-17); T26: bring_entities, Brought y
-    # BroughtEntity (traer las entidades de otra versión, sin resultados: RF-015-18)
+    # BroughtEntity (traer las entidades de otra versión, sin resultados: RF-015-18); T30: layer_sources,
+    # LayerSource, entity_layer_rows_steps, prepare_entity_layer, PreparedEntityLayer, run_entity_layer,
+    # entity_layer_steps y recompute_entity_layer (la capa de entidades para QGIS: RF-015-27)
 })
 
 

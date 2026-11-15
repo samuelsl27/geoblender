@@ -495,8 +495,8 @@ def declared_registered(*, reproducible: bool = True) -> Iterator[None]:
     provenance = import_geoblender("design.provenance")
     types = provenance.ENTITY_VERSION_TYPES
     if reproducible:
-        definitions = provenance.entity_operation_defs({name: _never for name in types},
-                                                       {name: _never for name in types})
+        definitions = provenance.entity_operation_defs(
+            {name: _never for name in types}, {name: _never for name in provenance.ENTITY_REPRODUCIBLE})
     else:
         definitions = tuple(declared.definition(_never)
                             for declared in provenance.ENTITY_OPERATION_TYPES)

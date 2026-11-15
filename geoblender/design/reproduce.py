@@ -44,7 +44,10 @@ reproducir deja la operación como no reproducida. De la declaración de restric
 :func:`reproduce_declare_constraints` (con el cálculo que comparte con el proyecto,
 ``entity_store.declared_rows_steps``; las tablas ``des_epr_`` congeladas de las entidades que recogió, por
 el nombre de su dato, y los parámetros congelados de cada una; el decisor, la fecha de su decisión y la
-versión, de los ajustes de la operación).
+versión, de los ajustes de la operación). **La capa de entidades** (``des.entity_layer``, spec 015, T30) **no se
+reproduce**: su contenido incluye el estado de cada entidad (al día, obsoleta, descartada, «apoyo retirado»), que
+deduce el grafo del proyecto y no se reproduce sin él; es una vista regenerable (como ``des.refit``, spec 010) y, en
+una revisión congelada, se toma lo congelado (``core.versions.reproduce`` la da por no reproducible).
 
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con otros,
 ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹ relativo, plan
@@ -121,7 +124,6 @@ __all__ = [
     "reproduce_declare_constraints",
     "reproduce_design",
     "reproduce_edge_transition",
-    "reproduce_entity_layer",
     "reproduce_envelope",
     "reproduce_excavation_area",
     "reproduce_fill_only",
@@ -757,14 +759,6 @@ def _reproduce_declaration(request: ReproduceRequest, budget_s: float) -> Iterat
     output = _declared_output(request, rows, frozen.crs)
     yield Progress(_PHASE, 1, 1, "Restricciones declaradas reproducidas",
                    result=ReproducedResult((output,), provenance.declare_figures(len(rows))))
-
-
-def reproduce_entity_layer(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
-                           ) -> Iterator[Progress]:
-    """La reproducción de ``des.entity_layer``: **es de la T30 de la spec 015** (la capa de entidades
-    todavía no existe); como :func:`reproduce_declare_constraints`."""
-    raise NotImplementedError("reproducir «des.entity_layer» es de la T30 de la spec 015: aún no hay capa "
-                              "de entidades")
 
 
 REPRODUCE:Mapping[str, ReproduceFunction] = MappingProxyType({

@@ -1096,8 +1096,8 @@ def dependents(project: Any, version: str, code: str, *, conn: sqlite3.Connectio
         return tuple(result)
 
 
-def dependencies_of(project: Any, version: str, code: str, *, conn: sqlite3.Connection | None = None
-                    ) -> tuple[Dependent, ...]:
+def dependencies_of(project: Any, version: str, code: str, *, conn: sqlite3.Connection | None = None,
+                    listed: EntityRegistry | None = None) -> tuple[Dependent, ...]:
     """**En qué se apoya la entidad** ``code`` (código o nombre) de la versión ``version`` (uid o código): lo que
     su operación vigente consume con el papel ``supported_on`` (las entidades en cuya huella rellena, o que la
     persona declaró) y ``surface`` (su superficie de partida: otra entidad, un diseño de la 013 o la 014 o el
@@ -1105,10 +1105,13 @@ def dependencies_of(project: Any, version: str, code: str, *, conn: sqlite3.Conn
     fila, el nombre y el tipo de quien la escribió (de un dato que no es de ``des``, el nombre del dato), su
     código si es una entidad, su estado y el volumen **de esta entidad apoyado en ella** (``des.supported_m3`` con
     ese ámbito; ``None`` si solo es su partida). Sin operación (sin calcular): ``()``. Una consulta de entradas y
-    cifras, como :func:`dependents` (RNF-015-02). Los mismos rechazos."""
+    cifras, como :func:`dependents` (RNF-015-02). Los mismos rechazos. ``listed`` (T30): el registro de las entidades
+    de la versión **leído con ``conn``** por quien llama (:func:`registry`), para no leerlo de nuevo en cada
+    entidad cuando se pide la de todas (la capa de entidades); sin él, se lee."""
     with _snapshot(project, conn) as reading:
         found = _version(reading, version)
-        listed = _registry(project, reading, found)
+        if listed is None:
+            listed = _registry(project, reading, found)
         entry = _entry(listed, code, found)
         if entry.operation_uid is None:
             return ()

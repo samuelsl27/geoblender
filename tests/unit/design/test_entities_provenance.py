@@ -89,7 +89,7 @@ def reproduce(request: Any) -> Iterator[Any]:  # idem
 def entity_definitions() -> tuple[Any, ...]:
     """Los tres tipos con sus funciones y las cifras, como los registrará ``bl``."""
     return (*provenance.entity_operation_defs({t: recompute for t in ENTITY_TYPES},
-                                              {t: reproduce for t in ENTITY_TYPES}),
+                                              {t: reproduce for t in ENTITY_TYPES[:2]}),
             *provenance.ENTITY_FIGURES)
 
 
@@ -266,15 +266,16 @@ class EntityOperationTypesTest(unittest.TestCase):
 
     def test_three_version_operations(self) -> None:
         """RF-015-02, RF-008-24, RF-009-05, RF-009-11 (plan 015 §5.2.3): del módulo ``des``, versión
-        1.0, de la versión, repetibles y reproducibles con 10⁻⁹ relativo; sin grupo acoplado. Van
-        aparte de los de la 013 y la 014, que siguen como estaban, y están en
-        ``OPERATION_TYPES_BY_NAME``."""
+        1.0, de la versión, repetibles y, la plataforma y la declaración, reproducibles con 10⁻⁹ relativo (la
+        capa de entidades, T30, **no**: es una vista regenerable que incluye el estado de cada entidad, que
+        deduce el grafo; como ``des.refit``); sin grupo acoplado. Van aparte de los de la 013 y la 014, que
+        siguen como estaban, y están en ``OPERATION_TYPES_BY_NAME``."""
         self.assertEqual((provenance.PLATFORM, provenance.DECLARE_CONSTRAINTS,
                           provenance.ENTITY_LAYER), ENTITY_TYPES)
         self.assertEqual([t.op_type for t in provenance.ENTITY_OPERATION_TYPES],
                          list(ENTITY_TYPES))
         self.assertEqual(provenance.ENTITY_VERSION_TYPES, ENTITY_TYPES)
-        self.assertEqual(provenance.ENTITY_REPRODUCIBLE, ENTITY_TYPES)
+        self.assertEqual(provenance.ENTITY_REPRODUCIBLE, ENTITY_TYPES[:2])
         self.assertEqual(provenance.OP_VERSION, "1.0")
         self.assertEqual(provenance.VERSION_TYPES, ("des.envelope", "des.stepped_design"))
         self.assertEqual(provenance.REPRODUCIBLE, ("des.envelope", "des.stepped_design"))
@@ -287,30 +288,35 @@ class EntityOperationTypesTest(unittest.TestCase):
             op_type = declared.op_type
             with self.subTest(op_type=op_type):
                 self.assertIs(provenance.OPERATION_TYPES_BY_NAME[op_type], declared)
-                self.assertTrue(declared.reproducible)
-                built = provenance.operation_def(op_type, recompute, reproduce)
+                layer = op_type == provenance.ENTITY_LAYER
+                self.assertEqual(declared.reproducible, not layer)
+                built = provenance.operation_def(op_type, recompute, None if layer else reproduce)
                 self.assertIsInstance(built, contract.OperationDef)
                 self.assertEqual((built.op_type, built.version, built.module, built.scope,
                                   built.repeatable, built.group),
                                  (op_type, "1.0", "des", "version", True, None))
                 self.assertIs(built.recompute, recompute)
-                self.assertIs(built.reproduce, reproduce)
-                self.assertEqual(built.figure_tolerance, contract.Tolerance(relative=1e-9))
+                self.assertIs(built.reproduce, None if layer else reproduce)
+                self.assertEqual(built.figure_tolerance, None if layer else contract.Tolerance(relative=1e-9))
+                self.assertEqual(built.drops_discarded, op_type != provenance.PLATFORM)
                 self.assertEqual(built.settings, declared.settings)
                 self.assertEqual(built.commands, declared.commands)
                 self.assertTrue(declared.label_msgid.strip())
 
     def test_entity_operation_defs_need_the_functions_of_every_type(self) -> None:
         """RF-008-26, RF-009-11: ``entity_operation_defs`` da los tres en su orden con el recálculo
-        y la reproducción de cada uno (ni de más ni de menos)."""
+        de cada uno y la reproducción de los que se reproducen (la plataforma y la declaración; ni de más ni de
+        menos: la capa de entidades no, T30)."""
         built = provenance.entity_operation_defs({t: recompute for t in ENTITY_TYPES},
-                                                 {t: reproduce for t in ENTITY_TYPES})
+                                                 {t: reproduce for t in ENTITY_TYPES[:2]})
         self.assertEqual([item.op_type for item in built], list(ENTITY_TYPES))
+        self.assertEqual([callable(item.reproduce) for item in built], [True, True, False])
         every = {t: recompute for t in ENTITY_TYPES}
-        same = {t: reproduce for t in ENTITY_TYPES}
+        same = {t: reproduce for t in ENTITY_TYPES[:2]}
         for bad_recompute, bad_reproduce in (
                 ({t: recompute for t in ENTITY_TYPES[:2]}, same),
-                (every, {t: reproduce for t in ENTITY_TYPES[1:]}),
+                (every, {t: reproduce for t in ENTITY_TYPES[1:2]}),
+                (every, {t: reproduce for t in ENTITY_TYPES}),
                 ({**every, "des.quarry": recompute}, same),
                 (every, {**same, "des.envelope": reproduce})):
             with self.subTest(recompute=sorted(bad_recompute), reproduce=sorted(bad_reproduce)):
@@ -536,13 +542,20 @@ class EntityInputsAndParamsTest(unittest.TestCase):
     def test_the_inputs_of_the_declaration_and_of_the_layer(self) -> None:
         """RF-015-10, RF-015-27 (plan 015 §5.2.3): los datos ``des_epr_`` de las entidades vivas
         (papel ``entity``), por el nombre de cada entidad y sin repetir; ninguna entrada de la capa
-        del proyecto."""
+        del proyecto. La capa de entidades (T30) consume además el informe ``des_prp_`` de cada una (papel
+        ``entity_report``: de donde salen sus cifras, para que cambiar la cota o la pendiente la deje obsoleta
+        aunque la huella no cambie)."""
+        expected = {
+            provenance.declare_inputs: [("des_epr_plataforma_de_carga", "entity"),
+                                        ("des_epr_plataforma_de_taller", "entity")],
+            provenance.entity_layer_inputs: [("des_epr_plataforma_de_carga", "entity"),
+                                             ("des_prp_plataforma_de_carga", "entity_report"),
+                                             ("des_epr_plataforma_de_taller", "entity"),
+                                             ("des_prp_plataforma_de_taller", "entity_report")]}
         for make in (provenance.declare_inputs, provenance.entity_layer_inputs):
             with self.subTest(make=make.__name__):
                 found = make([NAME, OTHER_NAME, NAME])
-                self.assertEqual([(use.item, use.role) for use in found], [
-                    ("des_epr_plataforma_de_carga", "entity"),
-                    ("des_epr_plataforma_de_taller", "entity")])
+                self.assertEqual([(use.item, use.role) for use in found], expected[make])
                 self.assertEqual(make([]), ())
                 with self.assertRaises(Exception):
                     make([""])
@@ -942,7 +955,8 @@ class EntityRegistrationTest(efx.EntityProjectCase):
         self.assertEqual([item.value_json for item in declare.params][1], "false")
         layer = self.begin("des.entity_layer", settings=provenance.entity_layer_settings(pairs),
                            inputs=provenance.entity_layer_inputs([name]))
-        self.assertEqual(self.roles(layer), [("des_epr_plataforma_c", "entity")])
+        self.assertEqual(self.roles(layer), [("des_epr_plataforma_c", "entity"),
+                                             ("des_prp_plataforma_c", "entity_report")])
         self.assertEqual(layer.params, ())
         ((text,),) = self.query("SELECT settings FROM gb_operation WHERE uid = ?", declare.uid)
         self.assertEqual(provenance.settings_entities(json.loads(text)), pairs)

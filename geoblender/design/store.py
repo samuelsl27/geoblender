@@ -83,8 +83,10 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   :data:`REPORT_COLUMNS`), :meth:`DesignWriter.commit` admite ``before_begin``, una función que escribe, en
   la misma transacción y antes de abrir la operación, los parámetros de la entidad, y
   :meth:`DesignWriter.declared_steps` prepara la capa de las restricciones declaradas de la versión
-  (``des_decl_``, que ``commit`` reescribe entera con ``core.constraints.declared.write_declared``); la
-  preparación, el cálculo y «Crear» son de ``design.entity_store``, que también hace la declaración. **El
+  (``des_decl_``, que ``commit`` reescribe entera con ``core.constraints.declared.write_declared``) y, desde la
+  T30, :meth:`DesignWriter.entity_layer_steps` la capa de entidades para QGIS (``des_enl_``, que ``commit``
+  reescribe entera con ``design.entity_layer.write_entity_layer``); la
+  preparación, el cálculo y «Crear» son de ``design.entity_store``, que también hace la declaración y la capa. **El
   estilo QGIS de esas capas** (T22; RF-012-20, RF-015-27, RF-009-05): ``commit`` escribe la fila por
   defecto de ``layer_styles`` de cada capa de versión **en la misma transacción** y anota el dato
   ``core_layer_styles`` del proyecto, sin declararlo como salida de la operación
@@ -182,6 +184,7 @@ from ..gis.raster import Raster
 from ..gis.store import StoreProject, backup_path, insert_rows, project_references, temporary_path
 from ..gis.vector import FeatureLayer
 from . import edges, fronts, pipeline, provenance, quarry, refit
+from .entity_layer import EntityLayerRow, write_entity_layer
 from .messages import DesignError
 from .model import (
     DesignRequest,
@@ -1282,11 +1285,13 @@ class _Table:
 
 @dataclass(frozen=True, slots=True)
 class _Declared:
-    """La tabla de las restricciones declaradas por las entidades preparada: su declaración (sin hash: la
-    operación lo calcula al registrarla, de lo escrito en su transacción) y sus filas."""
+    """Una capa de versión preparada (la tabla de las restricciones declaradas por las entidades o la capa de
+    entidades): su ``family`` (``decl`` o ``enl``), su declaración (sin hash: la operación lo calcula al
+    registrarla, de lo escrito en su transacción) y sus filas (``DeclaredConstraint`` o ``EntityLayerRow``)."""
 
+    family: str
     spec: DatasetSpec
-    rows: tuple[DeclaredConstraint, ...]
+    rows: tuple[Any, ...]
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -1497,7 +1502,32 @@ class DesignWriter:
         with self.project.read() as conn:
             self._check_place(conn, planned)
         yield
-        self._vectors[provenance.DECLARED_TABLE] = _Declared(planned, rows)
+        self._vectors[provenance.DECLARED_TABLE] = _Declared(provenance.DECLARED_TABLE, planned, rows)
+        return planned
+
+    def entity_layer_steps(self, rows: Iterable[EntityLayerRow]) -> Generator[None, None, DatasetSpec]:
+        """Prepara la capa de entidades de la versión (``enl``; spec 015, T30; RF-015-27, D-13) con ``rows``
+        (una por entidad **calculada**: la capa se reescribe **entera**, ``design.entity_layer.write_entity_layer``),
+        **sin registrar nada**: una capa de polígonos del GeoPackage del proyecto, no editable en QGIS (RF-008-56) y
+        con su estilo por tipo de entidad y por estado (``commit`` lo escribe en su transacción: T22), de la que la
+        operación calcula el hash al registrarla. Devuelve su ``DatasetSpec`` en ``StopIteration.value``. Se
+        rechaza al llamar, como :meth:`declared_steps` (``ValueError``; ``TypeError`` si una fila no es una
+        :class:`~.entity_layer.EntityLayerRow`); dos filas con el mismo código las rechaza
+        :func:`~.entity_layer.write_entity_layer` al confirmar, sin escribir nada."""
+        self._produces(provenance.ENTITY_MAP_TABLE, "vector")
+        chosen = tuple(rows)
+        for item in chosen:
+            if not isinstance(item, EntityLayerRow):
+                raise TypeError(f"una fila de la capa de entidades es una EntityLayerRow, no {item!r}")
+        return self._entity_layer_steps(chosen)
+
+    def _entity_layer_steps(self, rows: tuple[EntityLayerRow, ...]) -> Generator[None, None, DatasetSpec]:
+        planned = provenance.dataset_spec(provenance.ENTITY_MAP_TABLE, "", self.version_code,
+                                          crs_epsg=self.crs.epsg)
+        with self.project.read() as conn:
+            self._check_place(conn, planned)
+        yield
+        self._vectors[provenance.ENTITY_MAP_TABLE] = _Declared(provenance.ENTITY_MAP_TABLE, planned, rows)
         return planned
 
     @property
@@ -1559,8 +1589,11 @@ class DesignWriter:
         insert_rows(conn, spec.locator, _names(columns), table.rows)
 
     def _write_declared(self, conn: sqlite3.Connection, declared: _Declared) -> None:
+        """Escribe la capa de versión ``declared`` entera: las declaradas (``write_declared``) o la de entidades
+        (``write_entity_layer``)."""
         self._check_place(conn, declared.spec)
-        write_declared(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg)
+        write = write_entity_layer if declared.family == provenance.ENTITY_MAP_TABLE else write_declared
+        write(conn, declared.spec.locator, declared.rows, srs_id=self.crs.epsg)
 
     def _write_styles(self, conn: sqlite3.Connection, handle: OperationHandle) -> None:
         """El estilo QGIS por defecto de las capas de la versión que escribe la operación (spec 015, T22;
@@ -1743,12 +1776,12 @@ class DesignWriter:
 RECOMPUTED: tuple[str, ...] = (*provenance.REPRODUCIBLE, provenance.EXCAVATION_AREA,
                                 provenance.QUARRY, provenance.EDGE_TRANSITION,
                                 provenance.FILL_ONLY, provenance.REFIT, provenance.PLATFORM,
-                                provenance.DECLARE_CONSTRAINTS)
+                                provenance.DECLARE_CONSTRAINTS, provenance.ENTITY_LAYER)
 """Los tipos que repite «Recalcular lo obsoleto» aquí: los dos de la 013, de la 014 el recinto
 y la cantera (T19), la transición (T28), «solo relleno» (T30) y el ajuste (T32) y, de la 015, la plataforma
 (T14 de la 015; ``design.entity_store.recompute_platform``) y la declaración de restricciones de las
-entidades (T17; ``design.entity_store.recompute_declaration``). La capa de entidades (T30) de la 015 lo
-añadirá con su cálculo."""
+entidades (T17; ``design.entity_store.recompute_declaration``) y la capa de entidades (T30;
+``design.entity_store.recompute_entity_layer``)."""
 _STORE_PHASE = "store"
 
 
@@ -3629,8 +3662,9 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
     :func:`run_excavation_area`, :func:`run_quarry`, :func:`run_edge_transition`,
     :func:`run_fill_only` y :func:`run_refit`; RF-014-31; de la 015, la plataforma,
     ``design.entity_store.recompute_platform``, con los parámetros vigentes de su entidad en su versión,
-    RF-015-02, y la declaración de restricciones de las entidades, ``recompute_declaration``, con las
-    entidades vivas de la versión, RF-015-10), con lo que
+    RF-015-02, la declaración de restricciones de las entidades, ``recompute_declaration``, con las
+    entidades vivas de la versión, RF-015-10, y la capa de entidades, ``recompute_entity_layer``, con todas las
+    calculadas, RF-015-27), con lo que
     lee hoy: las máscaras de la versión, los sectores, las superficies y los parámetros, resueltos
     de nuevo versión → proyecto (un perfil cambiado solo en V02 se lee de V02). Devuelve su
     ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama (en Blender, la cola de
@@ -3688,6 +3722,10 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         from . import entity_store  # al usarlo: entity_store importa este módulo
 
         return entity_store.recompute_declaration(request, budget_s=budget_s)
+    if request.op_type == provenance.ENTITY_LAYER:
+        from . import entity_store  # al usarlo: entity_store importa este módulo
+
+        return entity_store.recompute_entity_layer(request, budget_s=budget_s)
     return run_design(project, provenance.design_request(request.settings),
                       provenance.design_start(request.settings), version=request.version,
                       supersedes=request.operation_uid, budget_s=budget_s, released=released)
