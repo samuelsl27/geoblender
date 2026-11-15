@@ -138,6 +138,17 @@ ocupado (y las referencias entre las traídas), cambia el nombre si choca, deja 
 resultado de la otra versión o la de la que ya parte otra entidad, no trae las descartadas y escribe todo en una
 transacción. Al calcularlas (:func:`create_platform` con su código), sus dependencias se detectan de nuevo.
 
+**Leer solo la ventana** (T37; RNF-015-03, RNF-015-08; plan 015 §5.4 A0): la preparación de una plataforma lee la
+superficie de partida (y la de apoyo) y las máscaras **solo en la ventana que el cálculo va a tocar**
+(:func:`~.platform.reading_window`: la caja de su geometría con el ancho, el alcance y dos celdas), con unas
+máscaras sin cargar si no se le dan cargadas (:func:`~geoblender.gis.masks.access.open_masks`): la llamada que
+empieza la operación al recalcular (:func:`run_platform`, una llamada del hilo de Blender) no decodifica las 98
+teselas de 2,81 M de celdas para tocar unas pocas. La rejilla entera de la partida, que solo hace falta para
+escribir la superficie de salida, se lee **por pasos** dentro del cálculo (:func:`compute_platform_steps`). Lo que la
+ventana no basta para decidir (el rango de cotas de RF-015-08, una ventana sin dato) cae a leer la rejilla entera
+(:class:`~.platform.NeedsWholeSurface`), con el mismo resultado y el mismo rechazo: el resultado es **igual bit a bit**
+al de leerla entera.
+
 La capa solo da la **geometría** y los **valores iniciales**: se copian a parámetros de la entidad
 (con el origen «capa X, campo Y, entidad Z») y cambian después en ella; la capa no se modifica. Del
 terreno (RF-015-09) se comprueba la superficie de partida y la de apoyo, que son las que lee el
@@ -210,7 +221,7 @@ from ..gis.raster import Raster
 from ..gis.store import StoreProject, load_features, project_references
 from ..gis.vector import FeatureLayer
 from . import entities, pipeline, provenance
-from .compose import admitted
+from .compose import admitted_pair
 from .entities import EntityKind, EntityRecord, EntityRegistry, EntityState
 from .entity_layer import LAYER_STATES, EntityLayerRow
 from .envelopes import reach_steps
@@ -232,17 +243,21 @@ from .params import (
 )
 from .platform import (
     Footprint,
+    NeedsWholeSurface,
     PlatformGeometry,
     PlatformJob,
     PlatformOutcome,
     QuarryOrder,
+    Window,
     _drain,
     _window_grid,
     apply_platform_steps,
     platform_edge_steps,
     platform_footprint,
     platform_outcome,
+    reading_window,
     summary_notices,
+    window_part,
 )
 from .preview import (
     SUMMARY_ITEMS,
@@ -256,7 +271,7 @@ from .preview import (
 from .quarry import _level_column
 from .report import Previous
 from .sectors import design_sectors, refuse_pending
-from .seeds import sector_layout
+from .seeds import pace_progress, sector_layout
 from .store import (
     _STORE_PHASE,
     DesignWriter,
@@ -279,7 +294,7 @@ from .store import (
     recompute_run,
     require_version,
 )
-from .surfaces import project_frame, read_surface
+from .surfaces import SurfaceWindow, project_frame, read_surface, read_surface_steps, read_surface_window
 
 __all__ = [
     "LAYER_FIELDS",
@@ -815,14 +830,14 @@ def _common(project: StoreProject, version: Version) -> dict[str, float]:
 
 
 def _check_no_data(request: PlatformRequest, code: str, param: PlatformParam, surface: str,
-                   role: str, raster: Raster, cells: np.ndarray, window: tuple[slice, slice]
+                   role: str, grid: Grid, found: SurfaceWindow, cells: np.ndarray, window: tuple[slice, slice]
                    ) -> None:
-    """RF-015-09: ninguna celda de la huella ``cells`` (de la ventana ``window``) sin dato en la
-    superficie ``raster`` (de nombre ``surface``): si no, ``des.entity_nodata`` con la entidad, la
-    superficie, su ``role`` (partida o apoyo), el área sin dato (m²) y el centro absoluto de la
-    primera celda (de norte a sur y de oeste a este)."""
-    grid = raster.grid
-    missing = cells & ~np.isfinite(raster.values[window])
+    """RF-015-09: ninguna celda de la huella ``cells`` (de la ventana ``window`` de la rejilla ``grid``) sin dato en la
+    superficie de nombre ``surface`` (``found``: lo leído de ella, de su ventana o entera; ``ValueError`` si
+    ``window`` no está dentro de lo leído): si no, ``des.entity_nodata`` con la entidad, la superficie, su ``role``
+    (partida o apoyo), el área sin dato (m²) y el centro absoluto de la primera celda (de norte a sur y de oeste a
+    este)."""
+    missing = cells & ~np.isfinite(window_part(found.values, found.window, window))
     if not missing.any():
         return
     rows, cols = np.nonzero(missing)
@@ -834,15 +849,14 @@ def _check_no_data(request: PlatformRequest, code: str, param: PlatformParam, su
 
 
 def _check_has_data(request: PlatformRequest, code: str, param: PlatformParam, surface: str,
-                    role: str, raster: Raster) -> None:
+                    role: str, grid: Grid, found: SurfaceWindow) -> None:
     """Una superficie sin ninguna celda con dato no tiene huella que comprobar (ni cotas con que
-    comprobar las de la rasante): ``des.entity_nodata`` con toda la rejilla."""
-    if np.isfinite(raster.values).any():
+    comprobar las de la rasante): ``des.entity_nodata`` con toda la rejilla (``found`` es entera: una ventana sin
+    dato no se queda en ella, :func:`_read_surface`)."""
+    if np.isfinite(found.values).any():
         return
-    grid = raster.grid
     full = (slice(0, grid.nrows), slice(0, grid.ncols))
-    _check_no_data(request, code, param, surface, role, raster,
-                   np.ones(grid.shape, dtype=bool), full)
+    _check_no_data(request, code, param, surface, role, grid, found, np.ones(grid.shape, dtype=bool), full)
 
 
 # --- Preparar ------------------------------------------------------------------------------------
@@ -909,25 +923,71 @@ def _support_inputs(project: StoreProject, version: Version, request: PlatformRe
     return tuple(dict.fromkeys(names)), tuple(dict.fromkeys(tables)), row is not None
 
 
+def _read_surface(project: StoreProject, name: str, version: Version, frame: Any, role: str,
+                  window: Window | None) -> SurfaceWindow:
+    """La superficie ``name`` tal como está en su fichero, comparada con la rejilla del proyecto (``frame``) **antes de
+    leer una celda** (RF-013-16): solo las celdas de ``window`` (las teselas que la tocan) o, sin ventana, la rejilla
+    entera. Una ventana **sin ninguna celda con dato** no basta para saber si la superficie tiene alguna
+    (``gis.raster_empty``) ni para decidir sobre una huella sin dato: se lee entera (T37)."""
+    if window is not None:
+        found = read_surface_window(project, name, window, version_uid=version.uid, expect=frame, role=role)
+        if np.isfinite(found.values).any():
+            return found
+    raster = read_surface(project, name, version_uid=version.uid, expect=frame, role=role)
+    return SurfaceWindow(name, (slice(0, raster.grid.nrows), slice(0, raster.grid.ncols)), raster.values)
+
+
 def _surfaces(project: StoreProject, version: Version, request: PlatformRequest, code: str,
-              registry: EntityRegistry, masks: access.MaskSet
-              ) -> tuple[str, Raster, str | None, Raster | None]:
-    """El dato y la rejilla de la superficie de partida y, si se pide, los de la de apoyo, leídos
-    tal como están en su fichero y comparados con la rejilla del proyecto (RF-011-02, RF-011-03: ni
-    se remuestrean ni se interpolan) y con la de las máscaras."""
+              registry: EntityRegistry, masks: access.MaskSet | access.MaskSource, window: Window | None
+              ) -> tuple[str, SurfaceWindow, str | None, SurfaceWindow | None]:
+    """El dato y las celdas de la superficie de partida y, si se pide, los de la de apoyo, leídos tal como están
+    en su fichero y comparados con la rejilla del proyecto (RF-011-02, RF-011-03: ni se remuestrean ni se
+    interpolan) y con la de las máscaras: solo en ``window`` (:func:`_read_surface`) o, sin ella, enteros."""
     frame = project_frame(project)
     start = _surface_dataset(registry, version, request, code, PlatformParam.START, request.start)
-    found = read_surface(project, start, version_uid=version.uid, expect=frame,
-                         role="superficie de partida")
+    found = _read_surface(project, start, version, frame, "superficie de partida", window)
     support = rest = None
     if request.support is not None:
         support = _surface_dataset(registry, version, request, code, PlatformParam.SUPPORT,
                                    request.support)
-        rest = read_surface(project, support, version_uid=version.uid, expect=frame,
-                            role="superficie de apoyo")
-    if not found.grid.same_geometry(masks.grid):
+        rest = _read_surface(project, support, version, frame, "superficie de apoyo", window)
+    if not frame.grid.same_geometry(masks.grid):
         raise ValueError("la rejilla de las máscaras no es la del proyecto")
     return start, found, support, rest
+
+
+def _covers(read: Window, needed: Window) -> bool:
+    """Si la ventana leída ``read`` contiene la que se necesita."""
+    return all(have.start <= want.start and want.stop <= have.stop for have, want in zip(read, needed, strict=True))
+
+
+def _platform_job(project: StoreProject, version: Version, request: PlatformRequest, code: str,
+                  registry: EntityRegistry, masks: access.MaskSet | access.MaskSource,
+                  geometry: PlatformGeometry, values: Mapping[str, Any], window: Window | None
+                  ) -> Generator[None, None, tuple[str, str | None, PlatformJob, Footprint]]:
+    """Lo que depende de lo que se lee de las rejillas, **en** ``window`` (o enteras, sin ella): las superficies, la
+    falta de dato de la partida, el trabajo con las máscaras de esa ventana, la huella (que comprueba la geometría y
+    las cotas) y la falta de dato en la huella de la partida y de la de apoyo, en este orden y con las unidades de
+    :func:`prepare_platform_units`. Devuelve el nombre de la partida y de la de apoyo, el trabajo y la huella.
+    :class:`~.platform.NeedsWholeSurface` si la ventana no basta para decidir (el rango de cotas de RF-015-08 es el de
+    la rejilla entera) o no contiene la ventana de trabajo de la huella (no pasa: :func:`~.platform.reading_window` la
+    contiene siempre; es la red de seguridad): quien llama repite con la rejilla entera."""
+    start_name, start, support_name, support = _surfaces(project, version, request, code, registry, masks, window)
+    _check_has_data(request, code, PlatformParam.START, start_name, _START_ROLE, masks.grid, start)
+    yield
+    read = start.window
+    cut, fill = admitted_pair(masks, read)
+    job = PlatformJob(request, code, masks.grid, start.values, geometry, values, cut, fill, region=read)
+    footprint = platform_footprint(job)
+    if not all(_covers(found.window, footprint.window) for found in (start, support) if found is not None):
+        raise NeedsWholeSurface("la ventana leída no contiene la de trabajo de la huella")
+    yield
+    _check_no_data(request, code, PlatformParam.START, start_name, _START_ROLE, masks.grid, start,
+                   footprint.cells, footprint.window)
+    if support is not None and support_name is not None:
+        _check_no_data(request, code, PlatformParam.SUPPORT, support_name, _SUPPORT_ROLE, masks.grid, support,
+                       footprint.cells, footprint.window)
+    return start_name, support_name, job, footprint
 
 
 def _pending_zone(job: PlatformJob, footprint: Footprint, values: Mapping[str, Any]
@@ -941,7 +1001,7 @@ def _pending_zone(job: PlatformJob, footprint: Footprint, values: Mapping[str, A
     distance = yield from _drain(reach_steps(
         origin, _window_grid(grid, window), float(values["reach_m"]), Metric(values["metric"]),
         name=f"{job.request.name} (alcance)"))
-    movable = np.isfinite(distance) & (job.cut_allowed[window] | job.fill_allowed[window])
+    movable = np.isfinite(distance) & (job.cut_in(window) | job.fill_in(window))
     return footprint.cells | movable
 
 
@@ -959,7 +1019,7 @@ def _released_codes(project: StoreProject, supersedes: str | None,
 
 
 def prepare_platform_units(project: StoreProject, request: PlatformRequest, version: Version,
-                           masks: access.MaskSet, *, code: str | None = None,
+                           masks: access.MaskSet | access.MaskSource, *, code: str | None = None,
                            supersedes: str | None = None, insert_before: str | None = None,
                            released: Sequence[provenance.ReleasedSupport] = ()
                            ) -> Generator[None, None, PreparedPlatform]:
@@ -969,7 +1029,10 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
     que ya está en la versión, que no choca consigo misma; si no, el siguiente, ``PLT-001``), la
     partida y la cadena, la capa con su geometría y sus campos, los parámetros resueltos, las
     superficies de partida y de apoyo, la huella (que comprueba la geometría), la falta de dato, los
-    sectores con la búsqueda pendiente y lo que anotará la operación. ``supersedes``: la operación hecha
+    sectores con la búsqueda pendiente y lo que anotará la operación. Lee las superficies y las máscaras **solo en la
+    ventana que el cálculo toca** (T37; :func:`~.platform.reading_window`; ``masks`` puede ser un
+    :class:`~geoblender.gis.masks.access.MaskSource`, sin celdas) y cae a leerlas enteras si la ventana no basta para
+    decidir: el trabajo (``job.region``) es de esa ventana, el resultado, el mismo. ``supersedes``: la operación hecha
     a la que sustituye (un recálculo). ``insert_before`` (spec 015, T12; RF-015-05): la entidad que
     hoy parte de la misma superficie y que pasará a partir de la de la nueva (una inserción: sin ello,
     esa superficie ocupada se rechaza). ``released`` (T25; RF-015-17, A7): las entidades descartadas que la
@@ -1019,19 +1082,15 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
     fid = layer.fids[index]
     values = entity_values(request, chosen, fid, from_layer, line=line)
     yield
-    start_name, start_raster, support_name, support_raster = _surfaces(
-        project, version, request, chosen, registry, masks)
-    _check_has_data(request, chosen, PlatformParam.START, start_name, _START_ROLE, start_raster)
-    yield
-    job = PlatformJob(request, chosen, masks.grid, start_raster.values, geometry, values,
-                      admitted(masks, BenchSense.CUT), admitted(masks, BenchSense.FILL))
-    footprint = platform_footprint(job)
-    yield
-    _check_no_data(request, chosen, PlatformParam.START, start_name, _START_ROLE, start_raster,
-                   footprint.cells, footprint.window)
-    if support_raster is not None and support_name is not None:
-        _check_no_data(request, chosen, PlatformParam.SUPPORT, support_name, _SUPPORT_ROLE,
-                       support_raster, footprint.cells, footprint.window)
+    wanted = reading_window(geometry, values, masks.grid)
+    try:
+        start_name, support_name, job, footprint = yield from _platform_job(
+            project, version, request, chosen, registry, masks, geometry, values, wanted)
+    except NeedsWholeSurface:
+        if wanted is None:  # la rejilla entera no puede pedir más: un error del programa
+            raise
+        start_name, support_name, job, footprint = yield from _platform_job(
+            project, version, request, chosen, registry, masks, geometry, values, None)
     sectors = design_sectors(project, version.uid)
     if any(item.pending for item in sectors):
         zone = yield from _pending_zone(job, footprint, values)
@@ -1146,6 +1205,30 @@ def platform_compute_steps(job: PlatformJob, common: Mapping[str, object], *,
                             operation=operation, quarry=quarry)
 
 
+def _whole_start_steps(project: StoreProject, prepared: PreparedPlatform, budget_s: float
+                       ) -> Generator[Progress, None, np.ndarray]:
+    """La superficie de partida **entera** (un array nuevo que el llamador puede modificar), por pasos: la copia del
+    trabajo si leyó la rejilla entera o, si solo leyó su ventana (T37: lo que basta para calcular), la rejilla
+    entera de la partida leída por bandas de filas dentro del cálculo, que es lo que hace falta para escribir la
+    superficie de salida. La ventana leída antes ha de ser **igual** a la de ahora (bit a bit, el NaN incluido): si
+    el dato cambió en medio, ``des.input_changed`` (RF-013-17, D-14) y no se escribe nada."""
+    job = prepared.job
+    if job.whole:
+        return np.array(job.start, dtype=np.float64, copy=True)
+    name = prepared.job.request.name
+    raster = yield from pipeline.forward(pace_progress(
+        read_surface_steps(project, prepared.start_surface, version_uid=prepared.start.version_uid,
+                           expect=project_frame(project), role="superficie de partida"),
+        budget_s, phase=_COMPUTE_PHASE, running=f"Leyendo la superficie de partida de «{name}»…",
+        finished="Superficie de partida leída"))
+    whole = np.array(raster.values, dtype=np.float64, copy=False)
+    region = job.window
+    if not np.array_equal(whole[region], job.start, equal_nan=True):
+        raise DesignError("des.input_changed", obj=f"Superficie «{prepared.start_surface}»", field="entradas",
+                          value=prepared.start_surface)
+    return whole
+
+
 def compute_platform_steps(writer: DesignWriter, prepared: PreparedPlatform, *,
                            confirm_counterslope: bool = False, previous: Previous | None = None,
                            operation: str = "", quarry: QuarryOrder | None = None,
@@ -1163,7 +1246,7 @@ def compute_platform_steps(writer: DesignWriter, prepared: PreparedPlatform, *,
         prepared.job, prepared.common, footprint=prepared.footprint,
         confirm_counterslope=confirm_counterslope, previous=previous, operation=operation,
         quarry=quarry, budget_s=budget_s)
-    surface = np.array(prepared.job.start, dtype=np.float64, copy=True)
+    surface = yield from _whole_start_steps(writer.project, prepared, budget_s)
     surface[outcome.footprint.window] = outcome.result
     raster = Raster(prepared.job.grid, surface, writer.crs, writer.vertical)
     yield from pipeline.forward(_store_steps(
@@ -1575,14 +1658,18 @@ def detected_supports(project: StoreProject, prepared: PreparedPlatform, outcome
     su resultado en la ventana de la huella) y lo que ya consume. Es lo que añade ``DesignWriter.commit`` al
     crearla (el gancho genérico de ``design.store``: sus entradas ``supported_on`` y la cifra
     ``des.supported_m3``); sirve para enseñarlo antes. Solo lee."""
-    surface = np.array(prepared.job.start, dtype=np.float64, copy=True)
+    job = prepared.job
+    ground = job.start if job.whole else read_surface(
+        project, prepared.start_surface, version_uid=prepared.start.version_uid,
+        expect=project_frame(project), role="superficie de partida").values  # lo leído es solo la ventana
+    surface = np.array(ground, dtype=np.float64, copy=True)
     surface[outcome.footprint.window] = outcome.result
     version = require_version(project, prepared.start.version_uid, provenance.PLATFORM)
     written = {provenance.dataset_name(provenance.ENTITY_SURFACE_GRID, prepared.job.request.name)}
     return survey_supports(
         project, version, [surface], prepared.start_surface, own_code=prepared.code, written=written,
         inputs=[(use.item, str(use.role)) for use in prepared.start.inputs],
-        start_values=prepared.job.start).supports
+        start_values=ground).supports
 
 
 def _confirmation(project: StoreProject, outcome: PlatformOutcome, decided_by: str | None
@@ -1694,6 +1781,20 @@ def platform_parameters(project: StoreProject, version: Version, code: str) -> d
             if (item := found.get(key)) is not None and item.value is not None}
 
 
+def _masks_to_read(project: StoreProject, version: Version, masks: access.MaskSet | None
+                   ) -> access.MaskSet | access.MaskSource:
+    """Las máscaras con que se prepara una plataforma que se calcula de una vez (:func:`run_platform`): las que se
+    dan (al día: :func:`~.store._loaded_masks`) o, sin ellas, las de la versión **sin cargar sus celdas**
+    (:func:`~geoblender.gis.masks.access.open_masks`: la preparación lee solo la ventana de la plataforma, T37;
+    RNF-015-03) y, si no están al día, como siempre: se compilan por pasos y se cargan (RF-013-04)."""
+    if masks is not None:
+        return _loaded_masks(project, version, masks)
+    try:
+        return access.open_masks(project, version.uid)
+    except access.MaskError:
+        return _loaded_masks(project, version, None)
+
+
 def run_platform(project: StoreProject, request: PlatformRequest, *, version: str | None,
                  code: str, masks: access.MaskSet | None = None, supersedes: str | None = None,
                  confirmed: provenance.CounterslopeConfirmation | None = None,
@@ -1725,7 +1826,7 @@ def run_platform(project: StoreProject, request: PlatformRequest, *, version: st
     apoyo**: no lleva sus entradas, lo declarado en ``supports`` sobre ellas no se rechaza y el motivo y el decisor
     van en sus ajustes (``provenance.SUPPORTS_RELEASED``, acumulados con los de la que sustituye)."""
     found = require_version(project, version, provenance.PLATFORM)
-    loaded = _loaded_masks(project, found, masks)
+    loaded = _masks_to_read(project, found, masks)
     prepared: PreparedPlatform = _result_of(prepare_platform_units(
         project, request, found, loaded, code=code, supersedes=supersedes, released=released))
     if confirmed is not None:  # se arrastra a la operación nueva (la misma decisión, no una nueva)

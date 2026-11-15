@@ -20,6 +20,12 @@ nada (RF-013-16):
 - :func:`read_surface`: lee la superficie (:class:`~geoblender.gis.raster.Raster`, float64, NaN =
   sin dato). Con ``expect`` compara antes **la cabecera** del fichero con esa referencia y rechaza
   sin leer una sola celda.
+- :func:`read_surface_window` y :func:`read_surface_steps` (spec 015, T37; RNF-015-03): lo mismo
+  **solo en una ventana** de la rejilla (:class:`SurfaceWindow`: decodifica solo las teselas que la
+  tocan) y **por pasos** (la rejilla entera, por bandas de filas, una unidad cada una): una plataforma
+  prepara su cálculo con la ventana que va a tocar y lee la rejilla entera, que solo hace falta para
+  escribir su superficie, dentro del cálculo y sin pasarse del hilo de Blender. Las mismas celdas, bit a
+  bit, que ``read_surface(...).values``, con la misma comparación de la cabecera.
 
 Nada se escribe en el proyecto. Python puro (nivel 8).
 """
@@ -28,15 +34,18 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+
+import numpy as np
 
 from ..core.datasets import registry as dataset_registry
 from ..core.datasets.model import LIVE_STATUSES, DatasetRecord
 from ..core.georef import CrsCatalog, CrsRef, VerticalRef
 from ..core.versions import read as versions_read
-from ..gis.geotiff.reader import read_geotiff, read_header
+from ..gis.geotiff.reader import GeoTiffHeader, read_geotiff, read_header, read_rows, read_window
 from ..gis.grid import Grid, geometry_mismatch, project_grid
 from ..gis.messages import GisError
 from ..gis.ports import Cancelled, Progress
@@ -219,3 +228,90 @@ def read_surface(
     crs, vertical = project_references(project, catalog=catalog)
     return Raster(source.grid, source.values, source.declared_crs or crs,
                   source.declared_vertical or vertical)
+
+
+# --- Leerla por ventana y por pasos (spec 015, T37) ---------------------------------------------
+
+_READ_ROWS = 256
+"""Las filas de la rejilla que se leen en cada unidad de :func:`read_surface_steps` (se redondea a un múltiplo del
+alto de bloque del fichero: cada tesela se decodifica una sola vez)."""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class SurfaceWindow:
+    """Las celdas de una **ventana** de una superficie (:func:`read_surface_window`): el ``name`` de su dato, la
+    ventana (``window``: filas y columnas de la rejilla del proyecto) y sus ``values`` (float64, NaN = sin dato, de
+    la forma de la ventana)."""
+
+    name: str
+    window: tuple[slice, slice]
+    values: np.ndarray
+
+
+def _opened(project: StoreProject, name: str, version_uid: str, expect: Frame | None, role: str,
+            catalog: CrsCatalog | None) -> tuple[DatasetRecord, Path, GeoTiffHeader, CrsRef, VerticalRef]:
+    """Lo que tienen en común las lecturas por ventana y por pasos con :func:`read_surface`: el dato de la
+    superficie, su fichero y su cabecera, comparada (con ``expect``) con la rejilla del proyecto **antes de leer una
+    celda** (RF-013-16), y el CRS y el datum vertical con que se lee (los que declara el fichero o, si no, los del
+    proyecto)."""
+    record = find_surface(project, name, version_uid=version_uid)
+    path = _path(project, record)
+    crs, vertical = project_references(project, catalog=catalog)
+    with path.open("rb") as stream:
+        header = read_header(stream, path.stat().st_size, path.name, catalog=catalog)
+    crs, vertical = header.crs or crs, header.vertical or vertical
+    if expect is not None:
+        check_grid(ProjectFrame(header.grid, crs, vertical), expect, role=role, name=record.name)
+    return record, path, header, crs, vertical
+
+
+def read_surface_window(
+    project: StoreProject,
+    name: str,
+    window: tuple[slice, slice],
+    *,
+    version_uid: str = "",
+    expect: Frame | None = None,
+    role: str = "superficie",
+    catalog: CrsCatalog | None = None,
+) -> SurfaceWindow:
+    """Las celdas de la ventana ``window`` (filas y columnas de la rejilla, ``slice`` de enteros sin paso) de la
+    superficie ``name`` del proyecto o de la versión activa ``version_uid``: las mismas, bit a bit, que
+    ``read_surface(...).values[window]``, decodificando **solo** las teselas que la tocan. Los mismos rechazos que
+    :func:`read_surface` y con ``expect`` la misma comparación previa de la cabecera (sin leer una celda). Una
+    ventana vacía o que se sale de la rejilla es un error del programa (``ValueError``). No comprueba que la
+    superficie tenga algún dato (``gis.raster_empty``): lo sabe quien la lee entera."""
+    record, path, header, _crs, _vertical = _opened(project, name, version_uid, expect, role, catalog)
+    rows, cols = window
+    for part in (rows, cols):
+        if part.step not in (None, 1) or not isinstance(part.start, int) or not isinstance(part.stop, int):
+            raise ValueError(f"la ventana {window!r} se indica con filas y columnas enteras, sin paso")
+    with path.open("rb") as stream:
+        values = read_window(stream, header, (rows.start, rows.stop), (cols.start, cols.stop))
+    return SurfaceWindow(record.name, (slice(rows.start, rows.stop), slice(cols.start, cols.stop)), values)
+
+
+def read_surface_steps(
+    project: StoreProject,
+    name: str,
+    *,
+    version_uid: str = "",
+    expect: Frame | None = None,
+    role: str = "superficie",
+    catalog: CrsCatalog | None = None,
+) -> Generator[None, None, Raster]:
+    """:func:`read_surface` por pasos: una unidad (un ``yield``) por cada banda de filas de la rejilla, sin sostener
+    el fichero abierto entre unidades; devuelve la misma :class:`~geoblender.gis.raster.Raster`, bit a bit. Los
+    mismos rechazos (``expect`` compara la cabecera antes de leer una celda, y una superficie sin ningún dato es
+    ``gis.raster_empty``). Cerrarlo a mitad no deja nada (solo lee)."""
+    record, path, header, crs, vertical = _opened(project, name, version_uid, expect, role, catalog)
+    values = np.empty((header.height, header.width), np.float64)
+    band = header.layout.block_h * max(1, _READ_ROWS // header.layout.block_h)
+    for top in range(0, header.height, band):
+        stop = min(top + band, header.height)
+        with path.open("rb") as stream:
+            values[top:stop] = read_rows(stream, header, top, stop)
+        yield None
+    if np.isnan(values).all():
+        raise GisError("gis.raster_empty", obj=path.name, field="valores", file=path.name)
+    return Raster(header.grid, values, crs, vertical)

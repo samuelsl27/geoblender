@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..gis.masks.access import MaskSet
+from ..gis.masks.access import MaskSet, MaskSource
+from ..gis.masks.combine import ClassBit
 from .model import BenchSense
 
 __all__ = [
@@ -44,6 +45,33 @@ def admitted(masks: MaskSet, sense: BenchSense | str) -> np.ndarray:
     if way is BenchSense.CUT:
         return masks.cut_allowed()
     return masks.fill_allowed() | masks.fill_strip()
+
+
+def _admitted_of(classes: np.ndarray, sense: BenchSense | str) -> np.ndarray:
+    """:func:`admitted` de unas celdas de la rejilla de clases (``uint16``)."""
+
+    def bit(found: ClassBit) -> np.ndarray:
+        return (classes & np.uint16(int(found))) != 0
+
+    if BenchSense(sense) is BenchSense.CUT:
+        return bit(ClassBit.CUT_ALLOWED)
+    return bit(ClassBit.FILL_ALLOWED) | bit(ClassBit.FILL_STRIP)
+
+
+def admitted_in(masks: MaskSet | MaskSource, sense: BenchSense | str, window: tuple[slice, slice]
+                ) -> np.ndarray:
+    """:func:`admitted` **solo en una ventana** de la rejilla (``window``: filas y columnas; spec 015, T37;
+    RNF-015-03): lo que ``admitted(masks, sense)[window]`` da, bit a bit, sin construir la máscara de la rejilla entera
+    y, con unas máscaras sin cargar (:class:`~geoblender.gis.masks.access.MaskSource`), leyendo de la rejilla de clases
+    solo las teselas de la ventana. Una máscara booleana nueva de la forma de la ventana."""
+    return _admitted_of(masks.classes_window(window), sense)
+
+
+def admitted_pair(masks: MaskSet | MaskSource, window: tuple[slice, slice]) -> tuple[np.ndarray, np.ndarray]:
+    """Las celdas de ``window`` donde se admite el corte y donde se admite el relleno (:func:`admitted_in` de cada
+    sentido), leyendo la ventana de la rejilla de clases **una sola vez**."""
+    classes = masks.classes_window(window)
+    return _admitted_of(classes, BenchSense.CUT), _admitted_of(classes, BenchSense.FILL)
 
 
 def allowed_cells(masks: MaskSet, sense: BenchSense | str, domain: np.ndarray | None = None

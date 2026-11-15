@@ -440,6 +440,10 @@ class CallsTest(_Case):
                f"{number(seconds, 1)} s; {MACHINE}); la peor ejecución, "
                f"{pd.calls_line(worst, f'«{worst.label}», con el proyecto en disco local', network_waits=False)}"
                f"; {free_space(built.root)}")
+        if len(runs) > 1:  # la peor llamada de cada ejecución (T37: cada pasada de «Recalcular lo obsoleto»)
+            report(f"{rnf}: la peor llamada de cada ejecución (CPU, sin la transacción final): "
+                   + "; ".join(f"{run.label} {ms(run.worst_cpu.budgeted_cpu)} ms ({run.worst_cpu.what})"
+                               for run in runs))
         for run in runs:
             warn_slow(run, run.label)
         return worst

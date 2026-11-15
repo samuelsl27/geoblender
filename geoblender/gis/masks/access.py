@@ -33,6 +33,11 @@ Un operador de otro módulo (diseño, verificación…) pide las máscaras **sol
   tipo desde la rejilla de clases, cada zona por su código, el peso de las «preferible no
   afectar», su estado y la marca de búsqueda pendiente con los códigos y los nombres de los
   sectores); :class:`MaskError` si no lo están: nunca se entregan máscaras obsoletas.
+- :func:`open_masks` (spec 015, T37; RNF-015-03): lo mismo que :func:`load_masks` **sin leer las celdas**: comprueba
+  que están al día (los mismos rechazos) y da un :class:`MaskSource` con lo que las identifica (la rejilla, la
+  versión, la compilación y sus ``Use``); ``classes_window`` lee de la rejilla de clases **solo las teselas de una
+  ventana** (y :meth:`MaskSet.classes_window`, lo mismo de las ya cargadas). Es lo que usa una plataforma para
+  empezar su operación en una llamada del hilo de Blender sin leer 2,81 M de celdas para tocar unas pocas.
 - :func:`mask_uses` (o :meth:`MaskSet.uses`): sus ``Use``, para registrarlas como **entradas**
   de la operación que las usa, que así queda obsoleta cuando lo quedan ellas (ADR-0025).
 - :func:`ensure_masks_steps` (D-15, D-43): si no están al día, empieza una
@@ -85,7 +90,7 @@ from ...core.provenance.graph import DATASET_STATUS_CAUSES, INACTIVE_CAUSES
 from ...core.provenance.operations import OperationStatus, Use
 from ...core.versions import read as versions_read
 from ...core.versions.model import Version, VersionError
-from ..geotiff.reader import read_header, read_rows
+from ..geotiff.reader import GeoTiffHeader, read_header, read_rows, read_window
 from ..grid import Grid
 from ..store import StoreProject
 from . import provenance as declared
@@ -155,6 +160,35 @@ class _Use:
     role: str
 
 
+Window = tuple[slice, slice]
+"""Una ventana de la rejilla: sus filas y sus columnas (``slice`` de enteros, sin paso)."""
+
+
+def _bounds(window: Window, shape: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Las filas ``(desde, hasta)`` y las columnas de ``window``, comprobadas contra una rejilla de ``shape``:
+    ``ValueError`` (un error del programa) si no son enteros sin paso, si están vacías o se salen de ella."""
+    found: list[tuple[int, int]] = []
+    for part, size in zip(window, shape, strict=True):
+        start, stop = part.start, part.stop
+        if (part.step not in (None, 1) or isinstance(start, bool) or isinstance(stop, bool)
+                or not isinstance(start, int) or not isinstance(stop, int) or not 0 <= start < stop <= size):
+            raise ValueError(f"la ventana {window!r} no es de filas y columnas enteras dentro de la rejilla "
+                             f"de {shape[0]} × {shape[1]}")
+        found.append((start, stop))
+    return found[0], found[1]
+
+
+def _classes_of(values: np.ndarray) -> np.ndarray:
+    """La rejilla de clases (``uint16``) de lo leído del GeoTIFF: el sin dato, 0."""
+    return np.where(np.isfinite(values), values, 0.0).astype(np.uint16)
+
+
+def _used_of(records: Mapping[str, DatasetRecord]) -> tuple[_Use, ...]:
+    return tuple(_Use(record.uid, record.name,
+                      _ROLE_PREFIX + declared.FAMILIES_BY_CODE[family].role)
+                 for family, record in records.items())
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class MaskSet:
     """Las máscaras de una versión al día, como las recibe un operador (ADR-0028 §4): la
@@ -210,6 +244,44 @@ class MaskSet:
     def uses(self) -> tuple[Use, ...]:
         """Sus ``Use``, para registrarlas como entradas de la operación que las usa."""
         return tuple(Use(item.uid, item.role) for item in self.used)
+
+    def classes_window(self, window: Window) -> np.ndarray:
+        """Las celdas de la rejilla de clases (``uint16``) en ``window`` (filas y columnas de la rejilla): una
+        vista, no una copia (spec 015, T37). ``ValueError`` si la ventana está vacía o se sale de la rejilla."""
+        _bounds(window, self.classes.shape)
+        return self.classes[window]
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class MaskSource:
+    """Las máscaras de una versión al día **sin sus celdas** (spec 015, T37; RNF-015-03; :func:`open_masks`): lo que
+    las identifica —la rejilla (``grid``), la versión, la compilación de la que salen (``operation_uid``), su estado
+    (siempre al día), los sectores sin búsqueda vigente y sus nombres y lo que consumen (``used``)— y el modo de
+    leer de la rejilla de clases **solo la ventana** que se pide (:meth:`classes_window`). No lleva las zonas ni los
+    pesos: quien los necesita carga el :class:`MaskSet`. Da, bit a bit, lo que
+    ``load_masks(...).classes[ventana]``."""
+
+    grid: Grid
+    version_uid: str
+    operation_uid: str
+    state: MaskState
+    pending_sectors: tuple[str, ...]
+    pending_names: tuple[str, ...]
+    used: tuple[_Use, ...] = field(repr=False)
+    path: Path = field(repr=False)
+    header: GeoTiffHeader = field(repr=False)
+
+    def uses(self) -> tuple[Use, ...]:
+        """Sus ``Use``, para registrarlas como entradas de la operación que las usa (como :meth:`MaskSet.uses`)."""
+        return tuple(Use(item.uid, item.role) for item in self.used)
+
+    def classes_window(self, window: Window) -> np.ndarray:
+        """Las celdas de la rejilla de clases (``uint16``, fila 0 al norte) en ``window``, leyendo **solo** las
+        teselas que la tocan (un array nuevo de la forma de la ventana). ``ValueError`` si la ventana está vacía o se
+        sale de la rejilla; ``GisError`` si un bloque está dañado."""
+        rows, cols = _bounds(window, self.grid.shape)
+        with self.path.open("rb") as stream:
+            return _classes_of(read_window(stream, self.header, rows, cols))
 
 
 def mask_uses(masks: MaskSet) -> tuple[Use, ...]:
@@ -436,14 +508,36 @@ def load_masks_steps(project: StoreProject, version_uid: str) -> Generator[None,
         for top in range(0, grid.nrows, _READ_ROWS):
             stop = min(top + _READ_ROWS, grid.nrows)
             values = read_rows(stream, header, top, stop)
-            classes[top:stop] = np.where(np.isfinite(values), values, 0.0).astype(np.uint16)
+            classes[top:stop] = _classes_of(values)
             yield None
-    used = tuple(_Use(record.uid, record.name,
-                      _ROLE_PREFIX + declared.FAMILIES_BY_CODE[family].role)
-                 for family, record in records.items())
+    used = _used_of(records)
     return MaskSet(grid, found.version.uid, found.operation_uid, MaskState.CURRENT,
                    found.pending, classes, found.names, MappingProxyType(zones),
                    MappingProxyType(weights), used, MappingProxyType(ctypes))
+
+
+def open_masks(project: StoreProject, version_uid: str) -> MaskSource:
+    """Las máscaras de la versión ``version_uid`` (uid o código) al día **sin leer sus celdas** (spec 015, T37;
+    RNF-015-03): lo mismo que :func:`load_masks` menos las zonas y la rejilla de clases, que se leen por ventanas
+    (:meth:`MaskSource.classes_window`). Los mismos rechazos: :class:`MaskError` si no están al día
+    (``core.constraint_masks_missing``, ``_stale``, ``_declared_new`` o ``_declared_blocked``) y, si la rejilla de
+    clases no es la de la compilación, ``core.constraint_masks_stale``. Solo lee la cabecera de la rejilla de
+    clases."""
+    found = _find(project, version_uid)
+    if found.state is not MaskState.CURRENT or found.operation_uid is None:
+        raise _refuse(found)
+    records = found.records
+    with project.read() as conn:
+        (settings,) = conn.execute("SELECT settings FROM gb_operation WHERE uid = ?",
+                                   (found.operation_uid,)).fetchone()
+    grid = declared.grid_of(json.loads(settings))
+    path = Path(project.root, *records[declared.CLASSES].locator.split("/"))
+    with path.open("rb") as stream:
+        header = read_header(stream, path.stat().st_size, path.name)
+    if (header.height, header.width) != grid.shape:
+        raise _refuse(_Found(found.version, MaskState.STALE, records, None, (), ()))
+    return MaskSource(grid, found.version.uid, found.operation_uid, MaskState.CURRENT, found.pending,
+                      found.names, _used_of(records), path, header)
 
 
 def ensure_masks_steps(project: StoreProject, version_uid: str, *,

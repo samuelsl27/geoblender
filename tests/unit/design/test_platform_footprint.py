@@ -180,7 +180,9 @@ class PublicNamesTest(unittest.TestCase):
                  "HeldGroup", "LongProfile", "OrderBreach", "PlatformOutcome", "QuarryOrder",
                  "order_check", "platform_outcome", "platform_profile",
                  # T12: el resumen de «Calcular» (test_platform_operation.py).
-                 "summary_notices")
+                 "summary_notices",
+                 # T37: leer solo la ventana de la plataforma (test_platform_window.py).
+                 "NeedsWholeSurface", "reading_window", "window_part")
         self.assertEqual(sorted(platform.__all__), sorted(names))
         for name in names:
             with self.subTest(name=name):

@@ -259,11 +259,16 @@ class PreparedPlatformTest(PrepareCase):
         self.assertEqual(job.code, "PLT-001")
         self.assertEqual(prepared.fid, efx.axis_fid(LOADING))
         self.assertTrue(job.grid.same_geometry(self.masks_v1.grid))
-        self.assertTrue(np.array_equal(job.start, qfx.terrain(GRID)))
-        self.assertTrue(np.array_equal(job.cut_allowed, self.masks_v1.cut_allowed()))
+        # T37: se lee solo la ventana que el cálculo toca (la de la huella con su alcance, como mínimo), y es la
+        # de la superficie y de las máscaras, bit a bit
+        window = job.window
+        self.assertTrue(all(read.start <= used.start and used.stop <= read.stop
+                            for read, used in zip(window, prepared.footprint.window, strict=True)))
+        self.assertTrue(np.array_equal(job.start, qfx.terrain(GRID)[window]))
+        self.assertTrue(np.array_equal(job.cut_allowed, self.masks_v1.cut_allowed()[window]))
         # RF-012-13: el relleno admitido incluye la franja de solo relleno (de x = 20 a 40 m)
         fill = self.masks_v1.fill_allowed() | self.masks_v1.fill_strip()
-        self.assertTrue(np.array_equal(job.fill_allowed, fill))
+        self.assertTrue(np.array_equal(job.fill_allowed, fill[window]))
         self.assertTrue((fill & ~self.masks_v1.fill_allowed()).any())
         self.assertEqual(job.geometry.kind, "line")
         self.assertTrue(cp.same_parts(job.geometry.parts, self.read_layer(efx.AXES_LAYER).parts[0]))
@@ -371,8 +376,11 @@ class PreparedPlatformTest(PrepareCase):
         prepared = self.units(request(WORKSHOP, start=HOLE_DATASET))
         self.assertEqual(prepared.start_surface, HOLE_DATASET)
         window = prepared.footprint.window
-        self.assertFalse(np.isnan(prepared.job.start[window][prepared.footprint.cells]).any())
-        self.assertTrue(np.isnan(prepared.job.start).any())
+        self.assertFalse(np.isnan(prepared.job.start_in(window)[prepared.footprint.cells]).any())
+        # el hueco está en la superficie, fuera de la huella (y de lo que se lee de ella: T37)
+        hole = import_geoblender("design.surfaces").read_surface(self.project, HOLE_DATASET,
+                                                                version_uid=self.v1.uid)
+        self.assertTrue(np.isnan(hole.values).any())
 
     def test_the_rows_of_the_entity_with_their_origin(self) -> None:
         """RF-015-01, RF-015-02, RF-008-01: las filas que escribirá ``set_entity_params`` son todas las

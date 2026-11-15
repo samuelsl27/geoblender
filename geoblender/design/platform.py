@@ -104,6 +104,14 @@ cantera de la 014 contra la otra (un aviso: no impide crear). Los avisos de lo q
 la restricción de **otra entidad**, con su nombre, son de quien lee las restricciones (T12): aquí
 quedan los datos (:attr:`PlatformOutcome.held`, :attr:`PlatformOutcome.held_groups`).
 
+**Leer solo la ventana** (spec 015, T37; RNF-015-03, plan 015 §5.4 A0): el cálculo solo toca la ventana de
+trabajo de la huella, así que :class:`PlatformJob` puede llevar la superficie de partida y las máscaras **de una
+ventana** de la rejilla (``region``) y no de toda ella; :func:`reading_window` da la ventana que basta leer (la caja
+de la geometría ampliada por el ancho, el alcance y dos celdas: **nunca menos** de lo que el cálculo toca) y
+:meth:`PlatformJob.start_in`, ``cut_in`` y ``fill_in`` dan una parte de lo leído en coordenadas de la rejilla. Lo que
+la ventana no basta para decidir (el rango de cotas de RF-015-08 es el de la superficie entera) es
+:class:`NeedsWholeSurface`: quien prepara lee la rejilla entera y repite, con el mismo resultado y el mismo rechazo.
+
 Las coordenadas absolutas son float64 y se pasan a locales respecto a la esquina de la rejilla solo
 dentro del cálculo (principio 6, ADR-0005). Ninguna entrada se modifica.
 """
@@ -166,6 +174,7 @@ __all__ = [
     "Footprint",
     "HeldGroup",
     "LongProfile",
+    "NeedsWholeSurface",
     "OffLevel",
     "OffLevelCause",
     "OrderBreach",
@@ -184,7 +193,9 @@ __all__ = [
     "platform_footprint",
     "platform_outcome",
     "platform_profile",
+    "reading_window",
     "summary_notices",
+    "window_part",
     "work_window",
 ]
 
@@ -249,11 +260,57 @@ class PlatformGeometry:
             object.__setattr__(self, "axis_parts", _parts(self.axis_parts))
 
 
-def _grid_array(values: object, grid: Grid, dtype: type, what: str) -> np.ndarray:
-    """``values`` como array de la forma de ``grid`` (``ValueError`` si no lo es)."""
+Window = tuple[slice, slice]
+"""Una ventana de la rejilla: sus filas y sus columnas (``slice`` de enteros, sin paso)."""
+
+
+class NeedsWholeSurface(Exception):
+    """El cálculo de una plataforma preparada con **una ventana** de la rejilla (:attr:`PlatformJob.region`) necesita
+    saber algo de la rejilla entera que la ventana no basta para decidir (el rango de cotas de RF-015-08, que la
+    superficie tenga algún dato): no es un rechazo de la persona, es la señal de que quien prepara ha de leer la
+    rejilla entera y repetir, con el mismo resultado y el mismo rechazo que si la hubiera leído entera (spec 015,
+    T37)."""
+
+
+def _whole(grid: Grid) -> Window:
+    return slice(0, grid.nrows), slice(0, grid.ncols)
+
+
+def _ends(part: slice) -> tuple[int, int]:
+    """Los extremos enteros de ``part`` (``ValueError`` si no los tiene o lleva paso)."""
+    start, stop = part.start, part.stop
+    if part.step not in (None, 1) or not isinstance(start, int) or not isinstance(stop, int):
+        raise ValueError(f"una ventana se indica con filas y columnas enteras sin paso, no {part!r}")
+    return start, stop
+
+
+def _window_of(window: Window, grid: Grid) -> Window:
+    """``window`` comprobada contra ``grid`` (``ValueError`` si no es de enteros, está vacía o se sale de ella)."""
+    found: list[slice] = []
+    for part, size in zip(window, grid.shape, strict=True):
+        start, stop = _ends(part)
+        if not 0 <= start < stop <= size:
+            raise ValueError(f"la ventana {window!r} no está dentro de la rejilla de {grid.nrows} × {grid.ncols}")
+        found.append(slice(start, stop))
+    return found[0], found[1]
+
+
+def window_part(array: np.ndarray, region: Window, window: Window) -> np.ndarray:
+    """La parte de ``array`` —que es de la ventana ``region`` de la rejilla— que cae en ``window`` (también de la
+    rejilla): una vista. ``ValueError`` (un error del programa: se pidió algo que no se leyó) si ``window`` no está
+    dentro de ``region`` o está vacía."""
+    (r0, r1), (c0, c1) = _ends(region[0]), _ends(region[1])
+    (top, bottom), (left, right) = _ends(window[0]), _ends(window[1])
+    if not (r0 <= top < bottom <= r1 and c0 <= left < right <= c1):
+        raise ValueError(f"la ventana {window!r} no está dentro de lo leído ({region!r})")
+    return array[top - r0 : bottom - r0, left - c0 : right - c0]
+
+
+def _shaped_array(values: object, shape: tuple[int, int], dtype: type, what: str, where: str) -> np.ndarray:
+    """``values`` como array de forma ``shape`` (``ValueError`` si no lo es); ``where``, de qué es la forma."""
     array = np.asarray(values, dtype=dtype)
-    if array.shape != grid.shape:
-        raise ValueError(f"{what} es de la forma de la rejilla {grid.shape}, no {array.shape}")
+    if array.shape != shape:
+        raise ValueError(f"{what} es de la forma {where} {shape}, no {array.shape}")
     return array
 
 
@@ -262,13 +319,18 @@ class PlatformJob:
     """Lo que necesita calcular una plataforma, ya leído y sin proyecto (plan 015 §5.3.1; lo que
     ``quarry.QuarryJob`` a la 014): la ``request`` (su nombre y la capa con sus campos), el ``code``
     de la entidad (``PLT-001``, para nombrar la clave de un parámetro en un rechazo), la rejilla
-    (``grid``), la superficie de partida ``start`` (m, float64 de la forma de la rejilla; ``NaN``,
-    sin dato), la ``geometry`` de origen, los parámetros resueltos (``values``: por último segmento
-    de su clave, los de :class:`~.params.PlatformParam`: ``width_m`` —solo con una línea—,
+    (``grid``), la superficie de partida ``start`` (m, float64; ``NaN``, sin dato), la ``geometry`` de
+    origen, los parámetros resueltos (``values``: por último segmento de su clave, los de
+    :class:`~.params.PlatformParam`: ``width_m`` —solo con una línea—,
     ``start_level_m``, ``gradient_pct``, ``reach_m``…) y las máscaras de la versión como arrays
-    booleanos de la forma de la rejilla (``cut_allowed`` y ``fill_allowed``: las usan la
-    aplicación y el borde, T07 y T08). ``ValueError`` (errores del programa) si el código no es el
-    de una entidad, una clave no es de una plataforma o un array no es de la forma de la rejilla."""
+    booleanos (``cut_allowed`` y ``fill_allowed``: las usan la aplicación y el borde, T07 y T08).
+
+    Los tres arrays son de la **rejilla entera** o, con ``region`` (spec 015, T37; RNF-015-03), **de esa ventana** de
+    la rejilla (filas y columnas): es lo que basta leer para calcular la plataforma (:func:`reading_window`: el
+    cálculo solo toca la ventana de trabajo de su huella). Se piden por coordenadas de la rejilla con
+    :meth:`start_in`, :meth:`cut_in` y :meth:`fill_in`. ``ValueError`` (errores del programa) si el código no es el
+    de una entidad, una clave no es de una plataforma, la ventana no está dentro de la rejilla o un array no es de la
+    forma de la rejilla (o de la ventana)."""
 
     request: PlatformRequest
     code: str
@@ -278,21 +340,54 @@ class PlatformJob:
     values: Mapping[str, object]
     cut_allowed: np.ndarray
     fill_allowed: np.ndarray
+    region: Window | None = None
 
     def __post_init__(self) -> None:
         entity_segment(self.code)
+        if self.region is not None:
+            object.__setattr__(self, "region", _window_of(self.region, self.grid))
+        window = self.window
+        shape = (window[0].stop - window[0].start, window[1].stop - window[1].start)
+        where = "de la rejilla" if self.region is None else "de su ventana"
         object.__setattr__(self, "start",
-                           _grid_array(self.start, self.grid, np.float64,
-                                       "la superficie de partida"))
+                           _shaped_array(self.start, shape, np.float64, "la superficie de partida", where))
         for name in ("cut_allowed", "fill_allowed"):
-            object.__setattr__(self, name, _grid_array(getattr(self, name), self.grid, np.bool_,
-                                                       f"la máscara «{name}»"))
+            object.__setattr__(self, name, _shaped_array(getattr(self, name), shape, np.bool_,
+                                                         f"la máscara «{name}»", where))
         known = {param.value for param in PlatformParam}
         unknown = sorted(set(self.values) - known)
         if unknown:
             raise ValueError(f"los valores de una plataforma son de {', '.join(sorted(known))}, "
                              f"no «{unknown[0]}»")
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
+
+    @property
+    def window(self) -> Window:
+        """La ventana de la rejilla que cubren ``start``, ``cut_allowed`` y ``fill_allowed``: ``region`` o, sin
+        ella, la rejilla entera."""
+        return _whole(self.grid) if self.region is None else self.region
+
+    @property
+    def whole(self) -> bool:
+        """Si lo leído es la rejilla entera (sin ``region`` o con una que la cubre)."""
+        return self.region is None or all(
+            (part.start, part.stop) == (0, size) for part, size in zip(self.region, self.grid.shape, strict=True))
+
+    def _in(self, array: np.ndarray, window: Window) -> np.ndarray:
+        return array[window] if self.region is None else window_part(array, self.region, window)
+
+    def start_in(self, window: Window) -> np.ndarray:
+        """La superficie de partida en ``window`` (filas y columnas de la rejilla): una vista; ``ValueError`` si
+        ``window`` no está dentro de lo leído."""
+        return self._in(self.start, window)
+
+    def cut_in(self, window: Window) -> np.ndarray:
+        """La máscara de corte admitido en ``window`` (como :meth:`start_in`)."""
+        return self._in(self.cut_allowed, window)
+
+    def fill_in(self, window: Window) -> np.ndarray:
+        """La máscara de relleno admitido en ``window`` (como :meth:`start_in`)."""
+        return self._in(self.fill_allowed, window)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -355,6 +450,37 @@ def work_window(rows: slice, cols: slice, reach_m: float, grid: Grid,
             slice(max(cols.start - across_cols, 0), min(cols.stop + across_cols, grid.ncols)))
 
 
+def reading_window(geometry: PlatformGeometry, values: Mapping[str, object], grid: Grid) -> Window | None:
+    """**A0**, antes de leer nada (spec 015, T37; RNF-015-03): la ventana de la rejilla que basta leer para calcular
+    la plataforma de ``geometry`` con los parámetros ``values`` (los resueltos: ``width_m``, ``reach_m``,
+    ``metric``): la caja de toda su geometría —los vértices de sus partes y, en un polígono, de su eje enlazado—
+    ampliada por la mitad del ancho (la del corredor de una línea; un polígono, sin ancho) y, como en
+    :func:`work_window`, por el alcance y dos celdas, recortada a la rejilla. **Contiene siempre la ventana de trabajo
+    de la huella** (la huella cabe en la caja de la geometría y :func:`work_window` es monótona), así que leer solo
+    ella no cambia ni un bit del cálculo. ``None`` si no se puede juzgar —una geometría que no es de líneas ni de
+    polígonos, sin vértices o fuera de la rejilla, un alcance o un ancho que faltan o no son un número no negativo,
+    una métrica que no es de la lista—: se lee la rejilla entera y la preparación da los rechazos de siempre."""
+    if geometry.kind not in ("line", "polygon"):
+        return None
+    try:
+        reach = float(values[PlatformParam.REACH.value])  # type: ignore[arg-type]
+        half = (float(values[PlatformParam.WIDTH.value]) / 2.0  # type: ignore[arg-type]
+                if geometry.kind == "line" else 0.0)
+        found = values.get(PlatformParam.METRIC.value)
+        metric = Metric(PLATFORM_PARAMS[PlatformParam.METRIC.value].default if found is None else found)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (math.isfinite(reach) and reach >= 0.0 and math.isfinite(half) and half >= 0.0):
+        return None
+    paths = [path for part in (*geometry.parts, *(geometry.axis_parts or ())) for path in part if path.shape[0]]
+    if not paths:
+        return None
+    box = corridor_window([np.concatenate(paths)], half, grid)
+    if box[0].stop <= box[0].start or box[1].stop <= box[1].start:
+        return None
+    return work_window(box[0], box[1], reach, grid, metric)
+
+
 # --- Rechazos ----------------------------------------------------------------------------------
 
 
@@ -400,6 +526,8 @@ def _check_levels(job: PlatformJob, axis_m: float, start_level: float, gradient:
     superficie de partida no tiene ninguna celda con dato (lo rechaza antes la preparación)."""
     finite = np.isfinite(job.start)
     if not finite.any():
+        if not job.whole:  # una ventana sin dato: la rejilla entera lo decide
+            raise NeedsWholeSurface("la ventana leída de la superficie de partida no tiene ninguna celda con dato")
         raise ValueError("la superficie de partida no tiene ninguna celda con dato")
     low = float(np.min(job.start, where=finite, initial=np.inf)) - FLOOR_LEVEL_MARGIN_M
     high = float(np.max(job.start, where=finite, initial=-np.inf)) + FLOOR_LEVEL_MARGIN_M
@@ -408,6 +536,8 @@ def _check_levels(job: PlatformJob, axis_m: float, start_level: float, gradient:
     for field, level in ((fields.start_level_field, start_level),
                          (f"{fields.start_level_field} + {fields.gradient_field}", end_level)):
         if not low <= level <= high:
+            if not job.whole:  # el rango de la ventana está dentro del de la rejilla entera: ella decide
+                raise NeedsWholeSurface(f"la cota {level} no cabe en el rango de la ventana leída")
             raise _reject("des.platform_level_range", job.request, field, level, low=low,
                           high=high)
 
@@ -972,7 +1102,7 @@ def _apply_units(job: PlatformJob, footprint: Footprint, mode: PlatformMode
     """Las unidades de :func:`apply_platform_steps`: las celdas de la huella (sin bucle por celda,
     sobre las de la huella y no sobre la ventana), la superficie y los grupos."""
     window, cells, grid = footprint.window, footprint.cells, job.grid
-    start = job.start[window]
+    start = job.start_in(window)
     z = start[cells]
     level = footprint.levels[cells]
     missing = int(np.count_nonzero(~np.isfinite(z)))
@@ -982,9 +1112,9 @@ def _apply_units(job: PlatformJob, footprint: Footprint, mode: PlatformMode
             "su huella (o una rasante sin cota): la preparación lo rechaza antes de calcular "
             "(RF-015-09)")
     yield None
-    new = np.where(job.cut_allowed[window][cells], np.minimum(z, level), z)
+    new = np.where(job.cut_in(window)[cells], np.minimum(z, level), z)
     if mode is PlatformMode.CUT_FILL:
-        new = np.where(job.fill_allowed[window][cells] & (z < level), level, new)
+        new = np.where(job.fill_in(window)[cells] & (z < level), level, new)
     drop = z - new
     gap = new - level
     near = np.abs(gap) <= _TOL_M
@@ -1356,10 +1486,10 @@ def _edge_units(job: PlatformJob, footprint: Footprint, applied: Applied, settin
     borde de la rejilla y el salto creado."""
     window, fp, grid = footprint.window, footprint.cells, job.grid
     shape = fp.shape
-    z = job.start[window]
+    z = job.start_in(window)
     base = applied.surface
-    cut_ok = job.cut_allowed[window]
-    fill_ok = job.fill_allowed[window]
+    cut_ok = job.cut_in(window)
+    fill_ok = job.fill_in(window)
     sub = _window_grid(grid, window)
     area = grid.cell_area
     name = job.request.name

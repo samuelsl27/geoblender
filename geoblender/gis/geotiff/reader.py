@@ -33,7 +33,9 @@ cargar la rejilla entera: :func:`read_header` (la cabecera comprobada, con la re
 celda del noroeste tal como la da el fichero) y :func:`read_bands` (las celdas por bandas de
 filas, con el sin dato y los bloques que faltan en NaN, como :func:`read_geotiff`). La
 cubicación de la 011 lee además unas filas sueltas (:func:`read_rows`, solo los bloques que las
-tocan) y la rejilla de la cabecera (``GeoTiffHeader.grid``).
+tocan) y la rejilla de la cabecera (``GeoTiffHeader.grid``); las entidades de la 015, una ventana de filas
+y columnas (:func:`read_window`, solo las teselas que la tocan: una plataforma lee lo que va a calcular y no
+la rejilla entera).
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ from ..raster import RasterSource
 from . import geokeys, tiff
 from .codecs import COMPRESSIONS, CodecError, compression_name, decode_block
 
-__all__ = ["GeoTiffHeader", "read_bands", "read_geotiff", "read_header", "read_rows"]
+__all__ = ["GeoTiffHeader", "read_bands", "read_geotiff", "read_header", "read_rows", "read_window"]
 
 MAX_CELLS_KEY = "gis.import.max_cells"
 
@@ -231,6 +233,40 @@ def read_rows(stream: BinaryIO, header: GeoTiffHeader, top: int, stop: int) -> n
         piece = None if part is None else part[upper - first : lower - first]
         _place(band[upper - top : lower - top, left : left + cols], piece, match)
     return band
+
+
+def read_window(
+    stream: BinaryIO, header: GeoTiffHeader, rows: tuple[int, int], cols: tuple[int, int]
+) -> np.ndarray:
+    """Las celdas de las filas ``[rows[0], rows[1])`` y las columnas ``[cols[0], cols[1])`` del
+    GeoTIFF de ``header`` (0, la fila del norte y la columna del oeste) en float64, con NaN en el sin
+    dato y en los bloques que no están en el fichero (como :func:`read_rows`), leyendo **solo** los
+    bloques —teselas o tiras— que las tocan (cada uno se decodifica entero): un array nuevo de la forma
+    de la ventana. Son las mismas celdas que ``read_geotiff(...).values[filas, columnas]``, bit a bit.
+    Una ventana vacía o que no está en la imagen es un error del programa (``ValueError``);
+    ``GisError`` si un bloque está dañado."""
+    layout = header.layout
+    for value in (*rows, *cols):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"la ventana se indica con enteros, no {value!r}")
+    (top, stop), (left, right) = rows, cols
+    if not (0 <= top < stop <= layout.height and 0 <= left < right <= layout.width):
+        raise ValueError(f"la ventana de filas [{top}, {stop}) y columnas [{left}, {right}) no está en "
+                         f"los {layout.height} × {layout.width} de «{header.name}»")
+    match = _nodata_sample(layout.dtype, header.nodata)
+    window = np.empty((stop - top, right - left), np.float64)
+    for first, start, count, width, part in _blocks(
+        stream, header, within=(top, stop), between=(left, right)
+    ):
+        upper, lower = max(first, top), min(first + count, stop)
+        before, after = max(start, left), min(start + width, right)
+        piece = (
+            None
+            if part is None
+            else part[upper - first : lower - first, before - start : after - start]
+        )
+        _place(window[upper - top : lower - top, before - left : after - left], piece, match)
+    return window
 
 
 def read_geotiff(
@@ -566,13 +602,14 @@ def _blocks(
     header: GeoTiffHeader,
     cancelled: Cancelled | None = None,
     within: tuple[int, int] | None = None,
+    between: tuple[int, int] | None = None,
 ) -> Iterator[tuple[int, int, int, int, np.ndarray | None]]:
     """Los bloques (tiras o teselas) en el orden del fichero: su fila y su columna de
     arriba a la izquierda, sus filas y columnas dentro de la imagen y sus muestras en el tipo
     del fichero, recortadas a ellas, o ``None`` si el bloque no está en el fichero
     (``SPARSE_OK`` de GDAL: sin dato). ``cancelled`` se consulta antes de cada bloque;
-    ``within`` (filas ``[desde, hasta)``): solo los bloques que las tocan, sin leer los
-    demás."""
+    ``within`` (filas ``[desde, hasta)``) y ``between`` (columnas ``[desde, hasta)``): solo los
+    bloques que las tocan, sin leer los demás."""
     layout = header.layout
     name = header.name
     across = -(-layout.width // layout.block_w)
@@ -590,6 +627,8 @@ def _blocks(
         if within is not None and (top + rows <= within[0] or top >= within[1]):
             continue
         cols = min(layout.block_w, layout.width - left)
+        if between is not None and (left + cols <= between[0] or left >= between[1]):
+            continue
         part = None
         if count != 0:
             samples = _block(stream, header.size, layout, offset, count, coded, name, index,
