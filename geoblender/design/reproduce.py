@@ -33,7 +33,10 @@ papel que tengan). De la transición con el terreno no afectado (spec 014, T28):
 ``store.transition_compute_steps``; la superficie de diseño y la de partida, por su papel). De
 «Solo relleno…» (spec 014, T30): :func:`reproduce_fill_only` (con ``store.fill_only_compute_steps``;
 la envolvente, la superficie de partida y las anclas por su papel y la capa de láminas por su
-nombre).
+nombre). De la plataforma (spec 015, T14): :func:`reproduce_platform` (con el cálculo que comparte
+con el proyecto, ``entity_store.platform_compute_steps``; la capa de plataformas, la de los ejes, la
+superficie de partida y la de apoyo, por su papel, y los parámetros de la entidad, los congelados: **no**
+los atributos de la capa).
 
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con otros,
 ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹ relativo, plan
@@ -77,9 +80,11 @@ from ..gis.masks.store import PERIMETER_SECTOR_NAME, read_report, zone_runs_step
 from ..gis.raster import Raster
 from ..gis.store import insert_rows, read_features
 from ..gis.vector import FeatureLayer
-from . import fronts, pipeline, provenance, quarry, store
-from .model import EnvelopeRequest, SeedKind, Surface
+from . import entities, entity_store, fronts, pipeline, provenance, quarry, store
+from .compose import admitted
+from .model import BenchSense, EnvelopeRequest, PlatformRequest, SeedKind, Surface
 from .params import TOLERANCE_FACE, VERIFY_MIN_THICKNESS, WARNING_RATIO
+from .platform import PlatformJob
 from .seeds import (
     SectorRef,
     SeedSet,
@@ -95,11 +100,14 @@ from .zones import frozen_polygons, polygons_cells, sector_labels
 
 __all__ = [
     "REPRODUCE",
+    "reproduce_declare_constraints",
     "reproduce_design",
     "reproduce_edge_transition",
+    "reproduce_entity_layer",
     "reproduce_envelope",
     "reproduce_excavation_area",
     "reproduce_fill_only",
+    "reproduce_platform",
     "reproduce_quarry",
 ]
 
@@ -543,6 +551,97 @@ def _reproduce_fill_only(request: ReproduceRequest, budget_s: float) -> Iterator
                            frozen.crs)
     yield Progress(_PHASE, 1, 1, "Diseño «solo relleno» reproducido",
                    result=ReproducedResult((surface, report), outcome.figures))
+
+
+# --- La plataforma (spec 015, T14) --------------------------------------------------------------
+
+
+def reproduce_platform(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
+                       ) -> Iterator[Progress]:
+    """Reproduce ``des.platform`` (spec 015, T14; RF-015-02, RF-015-04, RF-009-11) con su capa de
+    plataformas y, si un polígono enlaza su eje, la capa de ejes, su superficie de partida, su apoyo y sus
+    máscaras congelados y los parámetros congelados de su entidad (``des.platform.{e}.*``: la capa, la
+    geometría, la partida, la cota inicial, la pendiente, el ancho, el modo y el borde; **no** los
+    atributos de la capa, que se copiaron a ellos al crearla, P-3) y del proyecto (el espesor mínimo, la
+    tolerancia de cara, el umbral de magnitud y el salto creado), con los ajustes de su operación (el
+    nombre, el código y los campos), **sin el proyecto**: el mismo cálculo
+    (``entity_store.platform_compute_steps``). Sus pasos y, el último, el ``ReproducedResult`` con la
+    superficie (``des_psf_``), la tabla de la entidad (``des_epr_``), su informe (``des_prp_``) y sus
+    cifras.
+
+    El informe no lleva lo que depende de lo que la operación no consume (la revisión congelada con que se
+    comparó la magnitud y la otra superficie de una cantera), así que sale sin ello. Lo que no es una
+    ``ReproduceRequest`` es ``TypeError``; una de otro tipo, ``ValueError``."""
+    return _reproduce_platform(_check(request, provenance.PLATFORM), budget_s)
+
+
+def _support_dataset(request: ReproduceRequest, asked: PlatformRequest) -> str | None:
+    """El nombre del dato de la superficie de apoyo de la plataforma que se reproduce: ``None`` sin apoyo;
+    el nombre de la superficie si el parámetro es uno; y si es ``entity:<código>``, el primero de sus
+    entradas ``supported_on`` (la de la petición se anota antes que las que añade el cálculo al crear, y la
+    008 las guarda por orden de registro)."""
+    if asked.support is None:
+        return None
+    if entities.ref_code(asked.support) is None:
+        return asked.support
+    found = [item.name for item in request.inputs if item.role == provenance.SUPPORTED_ON_ROLE]
+    if not found:
+        raise ValueError(f"la plataforma «{asked.name}» se apoya en {asked.support!r} y su operación no "
+                         "anotó ninguna superficie «supported_on»")
+    return found[0]
+
+
+def _reproduce_platform(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    code = provenance.platform_code(request.settings)
+    kept = provenance.platform_values(code, frozen.values)
+    asked = provenance.platform_request(request.settings, kept)
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = frozen.masks()
+    start_item = frozen.item(provenance.SURFACE_ROLE)
+    start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida")
+    layer = frozen.features(asked.layer)
+    index = entity_store.feature_index(layer, asked, code)
+    geometry = entity_store.read_geometry(frozen.features, layer, index, asked)
+    copied = {param: store.number(kept, param.value)
+              for param, attribute in entity_store.LAYER_FIELDS.items()
+              if getattr(asked.fields, attribute) is not None}
+    fid = layer.fids[index]
+    values = entity_store.entity_values(asked, code, fid, copied, line=layer.kind == "line")
+    job = PlatformJob(asked, code, masks.grid, start.values, geometry, values,
+                      admitted(masks, BenchSense.CUT), admitted(masks, BenchSense.FILL))
+    common = {key: store.number(frozen.values, key) for key in provenance.PLATFORM_COMMON_PARAMS}
+    outcome = yield from entity_store.platform_compute_steps(
+        job, common, operation=asked.name, budget_s=budget_s)
+    surface = np.array(job.start, dtype=np.float64, copy=True)
+    surface[outcome.footprint.window] = outcome.result
+    raster = Raster(job.grid, surface, frozen.crs, frozen.vertical)
+    made = yield from _grid_output(request, provenance.ENTITY_SURFACE_GRID, raster, budget_s)
+    entity = entity_store.platform_entity_rows(
+        job, outcome, fid=fid, start_surface=start_item.name,
+        support_surface=_support_dataset(request, asked))
+    table = _table_output(request, provenance.ENTITY_TABLE, entity, frozen.crs)
+    report = _table_output(request, provenance.ENTITY_REPORT_TABLE,
+                           entity_store.platform_report_rows(outcome), frozen.crs)
+    yield Progress(_PHASE, 1, 1, "Plataforma reproducida",
+                   result=ReproducedResult((made, table, report), outcome.figures))
+
+
+def reproduce_declare_constraints(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
+                                  ) -> Iterator[Progress]:
+    """La reproducción de ``des.declare_constraints``: **es de la T17 de la spec 015** (la declaración
+    todavía no existe, así que no hay ninguna operación de ese tipo que reproducir). ``bl`` la registra por
+    este nombre y, hasta entonces, dice qué falta en lugar de dar un ``AttributeError``."""
+    raise NotImplementedError("reproducir «des.declare_constraints» es de la T17 de la spec 015: aún no "
+                              "hay declaración de restricciones de las entidades")
+
+
+def reproduce_entity_layer(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
+                           ) -> Iterator[Progress]:
+    """La reproducción de ``des.entity_layer``: **es de la T30 de la spec 015** (la capa de entidades
+    todavía no existe); como :func:`reproduce_declare_constraints`."""
+    raise NotImplementedError("reproducir «des.entity_layer» es de la T30 de la spec 015: aún no hay capa "
+                              "de entidades")
 
 
 REPRODUCE:Mapping[str, ReproduceFunction] = MappingProxyType({

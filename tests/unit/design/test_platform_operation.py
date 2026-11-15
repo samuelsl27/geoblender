@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """«Calcular» una plataforma y su resumen (spec 015, T12; HU-015-3; RF-015-03, RF-015-13, RF-015-29;
-plan 015 §5.3.2 y §5.4; E1 y E2 de la spec) y «Crear» (T13; HU-015-1; RF-015-01, RF-015-02, RF-015-04):
-casos (a) y (b) de ``test_platform_operation`` (los (c), (d) y (e) los añade la T14).
+plan 015 §5.3.2 y §5.4; E1 y E2 de la spec), «Crear» (T13; HU-015-1; RF-015-01, RF-015-02, RF-015-04) y
+recalcular y reproducir (T14; HU-015-1, HU-015-2; RF-015-02, RF-015-04, RF-015-16): casos (a), (b), (c), (d) y
+(e) de ``test_platform_operation``.
 
 Sobre la cantera sintética de la 014 con las capas de plataformas (``tests.support.entity_fixtures``)
 y su rejilla gruesa de 2 m:
@@ -25,6 +26,20 @@ y su rejilla gruesa de 2 m:
   mitad no queda nada; no modifica la capa de origen; una plataforma que parte de otra consume su
   superficie y queda obsoleta, con la causa, si cambia la de la primera; una contrapendiente sin
   confirmar no se crea.
+- **Recalcular** (T14, casos (c); RF-015-02, RF-015-16, RF-008-26): ``store.recompute_run`` repite la
+  plataforma como una operación **nueva** que sustituye a la anterior (queda como historia) con los
+  parámetros vigentes **de la versión** (no los de la capa: la cota, la pendiente y el ancho se copiaron al
+  crearla, P-3), y da las mismas cifras y los mismos datos si nada cambió; un cambio que deja la superficie
+  como estaba quita la marca de la siguiente sin recalcularla (RF-008-26); un parámetro que cambia entre
+  preparar y empezar, o una contrapendiente que ya no está confirmada, no se registran.
+- **Reproducir** (T14, casos (d); RF-015-02, RF-009-11): ``design.reproduce.reproduce_platform`` rehace, **sin
+  proyecto**, desde lo congelado de V01.r1 (la capa, la partida, el apoyo, las máscaras y los parámetros
+  congelados) la superficie, la tabla y el informe de cada plataforma con el **mismo hash** y las mismas
+  cifras, sin escribir nada.
+- **La cascada** (T14, casos (e); RF-015-16, RF-008-24, RF-009-19): cambiar un parámetro de P1 deja obsoleta
+  P1 y, con su causa, P2, que consumió su superficie; «Recalcular lo obsoleto» las repite **en orden de
+  dependencia** (P1 antes que P2, aunque la operación de P1 sea posterior a la de P2) y deja la revisión
+  congelada como estaba (sus elementos no cambian y se reproduce igual).
 """
 
 from __future__ import annotations
@@ -46,7 +61,7 @@ from tests.support import quarry_fixtures as qfx
 from tests.support import res_fixtures
 from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
-from tests.support.versions_fixtures import change_counter, freeze_rows
+from tests.support.versions_fixtures import change_counter, files, freeze_rows
 from tests.unit.design import test_edges_operation as edges_test
 from tests.unit.design import test_platform_prepare as prep
 
@@ -61,6 +76,10 @@ design_params = import_geoblender("design.params")
 design_report = import_geoblender("design.report")
 entities_module = import_geoblender("design.entities")
 entity_store = import_geoblender("design.entity_store")
+design_reproduce = import_geoblender("design.reproduce")
+freeze = import_geoblender("core.versions.freeze")
+recompute_mod = import_geoblender("core.provenance.recompute")
+reproduce_mod = import_geoblender("core.versions.reproduce")
 figures_mod = import_geoblender("core.provenance.figures")
 design_store = import_geoblender("design.store")
 geotiff_reader = import_geoblender("gis.geotiff.reader")
@@ -1735,6 +1754,449 @@ class EntityTableTest(unittest.TestCase):
         self.assertEqual(design_store.columns_of("des.platform", "prp"), design_store.REPORT_COLUMNS)
         with self.assertRaises(KeyError):
             design_store.columns_of("des.platform", "psf")
+
+
+# ---------------------------------------------------------------------------------------------
+# Recalcular y reproducir (T14; casos (c), (d) y (e))
+# ---------------------------------------------------------------------------------------------
+
+PSF2 = provenance.dataset_name("psf", WORKSHOP)
+"""El nombre de la superficie de la «Plataforma de taller»."""
+
+
+def recompute_function(request: Any) -> Any:
+    """Lo que registra ``bl`` como función de recálculo de ``des.platform``: lleva los pasos hasta el
+    final."""
+    handle, work = design_store.recompute_run(request)
+    finish(work)
+    return handle
+
+
+def real_definitions() -> tuple[Any, ...]:
+    """Los tipos de las entidades con las funciones **reales** de la plataforma (recalcular y reproducir),
+    las de los otros dos tipos sin llamar y las cifras, como los registra ``bl``."""
+    types = prep.ENTITY_TYPES
+    return (*provenance.entity_operation_defs(
+        {kind: recompute_function if kind == provenance.PLATFORM else prep.never for kind in types},
+        {kind: design_reproduce.reproduce_platform if kind == provenance.PLATFORM else prep.never
+         for kind in types}), *provenance.ENTITY_FIGURES)
+
+
+class RecomputeCase(CreateCase):
+    """Lo de ``CreateCase`` con los tipos de las entidades registrados con sus funciones reales y los
+    ayudantes de las historias de recalcular y reproducir."""
+
+    @classmethod
+    def definitions(cls) -> tuple[Any, ...]:
+        return real_definitions()
+
+    @classmethod
+    def made(cls, asked: Any) -> Any:
+        """«Calcula» y «crea» ``asked`` en V01 (un minuto después de lo anterior): su ``Stored``."""
+        cls.clock.advance(minutes=1)
+        return cls.calculate_in(asked).create()
+
+    def current(self, code: str) -> str:
+        """El uid de la operación vigente de la entidad ``code`` de V01 (el registro de las entidades)."""
+        entry = entities_module.registry(self.project, self.v1.uid).get(code)
+        assert entry is not None and entry.operation_uid is not None, code
+        return str(entry.operation_uid)
+
+    def request_for(self, uid: str) -> Any:
+        """Lo que recibe ``bl`` para recalcular la operación ``uid``: sus ajustes y su versión."""
+        ((settings,),) = self.query("SELECT settings FROM gb_operation WHERE uid = ?", uid)
+        return recompute_mod.RecomputeRequest(self.project, uid, provenance.PLATFORM,
+                                              json.loads(settings), (), (), version=self.v1.uid)
+
+    @classmethod
+    def change(cls, key: str, value: object) -> None:
+        """Cambia el parámetro de la versión ``key`` (un minuto después)."""
+        cls.clock.advance(minutes=1)
+        with cls.project.write_transaction() as conn:
+            core_params.ParameterStore(cls.project).change(
+                conn, key, value=value, version=cls.v1.uid, reason="Prueba de la T14")
+
+    def hashes_of(self, uid: str) -> dict[str, str]:
+        """El hash que anotó la operación ``uid`` de cada dato que escribió (por su nombre)."""
+        return dict(self.query(
+            "SELECT d.name, io.content_sha256 FROM gb_operation_io AS io JOIN gb_dataset AS d "
+            "ON d.uid = io.item_uid WHERE io.operation_uid = ? AND io.direction = 'out'", uid))
+
+    def version_rows(self) -> list[tuple[Any, ...]]:
+        """Los parámetros propios de las versiones, con su historial."""
+        return self.query("SELECT key, value, rev, decided_by FROM gb_parameter "
+                          "WHERE scope = 'version' ORDER BY fid")
+
+    def plan_units(self) -> list[tuple[str, ...]]:
+        """Las operaciones (su uid) de cada unidad del plan de «Recalcular lo obsoleto», en su orden."""
+        graph = import_geoblender("core.provenance.graph")
+        with self.project.read() as conn:
+            return [tuple(unit.operations) for unit in
+                    recompute_mod.plan_recompute(graph.load_graph(conn)).units]
+
+
+class RecomputeTest(RecomputeCase):
+    """RF-015-02, RF-015-04, RF-015-16, RF-008-24, RF-008-26: P1 (la «Plataforma de carga», del terreno) y
+    P2 (la «Plataforma de taller», de la superficie de P1) creadas en V01 y recalculadas, por el orden de
+    los nombres de las pruebas: (c1) sin cambiar nada, (c2) con un cambio que no toca la superficie y (e1)
+    con uno que sí la toca."""
+
+    first: ClassVar[Any]
+    second: ClassVar[Any]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.first = cls.made(prep.request())
+        cls.second = cls.made(prep.request(WORKSHOP, start="entity:PLT-001"))
+
+    # --- (c) Recalcular -----------------------------------------------------------------------
+
+    def test_c1_recomputing_repeats_the_platform_with_what_it_was(self) -> None:
+        """RF-015-02, RF-008-26: recalcular P1 sin que nada cambie da una operación **nueva** que sustituye a
+        la anterior (queda como historia) con los mismos ajustes, entradas, cifras y datos (el mismo hash de
+        la superficie, de la tabla y del informe, en su mismo sitio); no escribe los parámetros de la entidad
+        (ya están en la versión); la entidad sigue al día con la operación nueva y P2, que consumió su
+        superficie, no queda obsoleta."""
+        old = self.first.handle.uid
+        rows, figures, hashes = self.version_rows(), self.figures_of(old), self.hashes_of(old)
+        inputs = self.query("SELECT item_uid, role FROM gb_operation_io WHERE operation_uid = ? "
+                            "AND direction = 'in' ORDER BY fid", old)
+        ((settings,),) = self.query("SELECT settings FROM gb_operation WHERE uid = ?", old)
+        self.assertEqual(sorted(hashes), sorted((PSF, EPR, PRP)))
+        self.clock.advance(minutes=1)
+        handle, work = design_store.recompute_run(self.request_for(old))
+        stored = finish(work)
+        self.assertEqual(stored.handle.uid, handle.uid)
+        self.assertEqual(self.query("SELECT op_type, status, supersedes_uid FROM gb_operation "
+                                    "WHERE uid = ?", handle.uid),
+                         [("des.platform", "done", old)])
+        self.assertEqual(self.query("SELECT superseded_by FROM gb_operation WHERE uid = ?", old),
+                         [(handle.uid,)])
+        self.assertEqual(self.hashes_of(handle.uid), hashes)
+        self.assertEqual(self.figures_of(handle.uid), figures)
+        self.assertEqual(self.query("SELECT settings FROM gb_operation WHERE uid = ?", handle.uid),
+                         [(settings,)])
+        self.assertEqual(self.query("SELECT item_uid, role FROM gb_operation_io WHERE "
+                                    "operation_uid = ? AND direction = 'in' ORDER BY fid",
+                                    handle.uid), inputs)
+        self.assertEqual(self.version_rows(), rows, "no escribe los parámetros de la entidad")
+        self.assertEqual(self.current("PLT-001"), handle.uid)
+        self.assertEqual(self.current("PLT-002"), self.second.handle.uid)
+        self.assertEqual(self.stale_causes(self.second.handle.uid), set())
+        self.assertEqual(self.recompute_plan(), [])
+        self.assertFalse([name for name in self.written()["files"] if ".tmp-" in name])
+
+    def test_c2_a_change_that_leaves_the_surface_as_it_was_clears_the_mark_of_the_next(self) -> None:
+        """RF-008-26, RF-015-16: la tolerancia de contrapendiente de P1 cambia: P1 queda obsoleta por ese
+        parámetro y P2, que consumió su superficie, también (en cascada). «Recalcular lo obsoleto» repite P1,
+        cuya superficie sale **igual** (la tolerancia solo está en su informe, que cambia): P2 se queda sin
+        causa y **no se recalcula** (sigue siendo su operación) y no queda nada obsoleto."""
+        key = design_params.entity_key("PLT-001", "counter_tol_m")
+        first, second = self.current("PLT-001"), self.current("PLT-002")
+        before = self.hashes_of(first)
+        self.change(key, 0.25)
+        self.assertEqual(self.stale_causes(first), {("parameter_changed", key)})
+        self.assertIn(("parameter_changed", key), self.stale_causes(second))
+        self.assertEqual(self.plan_units(), [(first,), (second,)])
+        self.clock.advance(minutes=1)
+        outcome = finish(recompute_mod.recompute_steps(self.project))
+        self.assertEqual([(result.status, len(result.operations)) for result in outcome.results],
+                         [(recompute_mod.UnitStatus.DONE, 1)])
+        (made,) = outcome.results[0].operations
+        after = self.hashes_of(made)
+        self.assertEqual(after[PSF], before[PSF], "la superficie es la misma")
+        self.assertEqual(after[EPR], before[EPR])
+        self.assertNotEqual(after[PRP], before[PRP], "el informe lleva la tolerancia")
+        self.assertEqual(self.rows_of(PRP_TABLE)["counter_tolerance_m"][0][:2], (0.25, "m"))
+        self.assertEqual(self.current("PLT-001"), made)
+        self.assertEqual(self.current("PLT-002"), second, "P2 no se recalculó")
+        self.assertEqual(self.stale_causes(second), set())
+        self.assertEqual(self.recompute_plan(), [])
+
+    def test_c5_recomputing_uses_the_parameters_of_the_version_and_not_the_layer(self) -> None:
+        """RF-015-01, RF-015-02, RF-015-16 (P-3): la cota inicial de la rasante se copió de la capa a la
+        entidad al crearla (250 m) y es un parámetro de su versión con su historial: cambiada en la versión
+        (248 m), P1 queda obsoleta por ella y recalcular la usa (el informe y la cifra, a 248 m) **aunque la
+        capa siga diciendo 250**, que no se toca (el mismo registro y el mismo contenido); la superficie
+        baja, la de P2 la sigue y la geometría de origen es la misma."""
+        key = design_params.entity_key("PLT-001", "start_level_m")
+        first, second = self.current("PLT-001"), self.current("PLT-002")
+        layers = self.layers()
+        sha = self.hashes_of(first)
+        self.change(key, 248.0)
+        self.assertEqual(self.stale_causes(first), {("parameter_changed", key)})
+        self.clock.advance(minutes=1)
+        outcome = finish(recompute_mod.recompute_steps(self.project))
+        self.assertEqual([result.status for result in outcome.results],
+                         [recompute_mod.UnitStatus.DONE] * 2)
+        (new_first,), (new_second,) = (result.operations for result in outcome.results)
+        self.assertEqual(self.rows_of(PRP_TABLE)["start_level_m"][0][:2], (248.0, "m"))
+        self.assertEqual(self.figures_of(new_first)[("des.plat_start_level_m", figures_mod.scope_json(
+            provenance.entity_figure_scope(LOADING, "PLT-001")))], 248.0)
+        self.assertEqual(self.layers(), layers, "la capa no se toca (sigue diciendo 250 m)")
+        after = self.hashes_of(new_first)
+        self.assertNotEqual(after[PSF], sha[PSF])
+        self.assertEqual(after[EPR], sha[EPR], "la huella y el eje son los mismos")
+        self.assertNotEqual(self.hashes_of(new_second)[PSF2], self.hashes_of(second)[PSF2])
+        self.assertEqual(self.recompute_plan(), [])
+        self.assertEqual((self.current("PLT-001"), self.current("PLT-002")), (new_first, new_second))
+        self.assertNotEqual(first, new_first)
+
+    # --- (e) La cascada de la cadena -------------------------------------------------------------
+
+    def test_e1_changing_the_first_stales_the_next_and_recomputing_goes_in_dependency_order(self) -> None:
+        """RF-015-16, RF-008-24, RF-008-26: se vuelve a registrar la operación de P1 (queda **después** de la
+        de P2) y se cambia el alcance de P1 (``reach_m``): P1 queda obsoleta por ese parámetro y P2 con la
+        misma causa (``parameter_changed`` de la clave de **P1**, no de P2). El plan de «Recalcular lo
+        obsoleto» las pone en orden de dependencia, P1 y P2 (no en el de registro, que es P2 y P1), y
+        recalculadas cada una sustituye a la suya: P1 usa el alcance nuevo (de su fila de la versión, no de la
+        capa), la superficie de P2 sigue a la de P1 fuera de su ventana y nada queda obsoleto."""
+        reach = design_params.entity_key("PLT-001", "reach_m")
+        self.clock.advance(minutes=1)
+        recompute_function(self.request_for(self.current("PLT-001")))
+        first, second = self.current("PLT-001"), self.current("PLT-002")
+        order = dict(self.query("SELECT uid, fid FROM gb_operation WHERE uid IN (?, ?)",
+                                first, second))
+        self.assertGreater(order[first], order[second], "P1 se registró después que P2")
+        self.assertEqual((self.stale_causes(first), self.stale_causes(second)), (set(), set()))
+        surfaces = (self.hashes_of(first)[PSF], self.hashes_of(second)[PSF2])
+        self.change(reach, 25.0)
+        self.assertEqual(self.stale_causes(first), {("parameter_changed", reach)})
+        self.assertIn(("parameter_changed", reach), self.stale_causes(second))
+        self.assertNotIn(("parameter_changed", design_params.entity_key("PLT-002", "reach_m")),
+                         self.stale_causes(second))
+        self.assertEqual(self.plan_units(), [(first,), (second,)])
+        self.clock.advance(minutes=1)
+        outcome = finish(recompute_mod.recompute_steps(self.project))
+        self.assertEqual([result.status for result in outcome.results],
+                         [recompute_mod.UnitStatus.DONE] * 2)
+        (new_first,), (new_second,) = (result.operations for result in outcome.results)
+        self.assertEqual(self.query("SELECT supersedes_uid FROM gb_operation WHERE uid IN (?, ?) "
+                                    "ORDER BY fid", new_first, new_second), [(first,), (second,)])
+        self.assertEqual((self.current("PLT-001"), self.current("PLT-002")), (new_first, new_second))
+        self.assertEqual(self.rows_of(PRP_TABLE)["edge_reach_m"][0][:2], (25.0, "m"))
+        self.assertNotEqual(self.hashes_of(new_first)[PSF], surfaces[0])
+        self.assertNotEqual(self.hashes_of(new_second)[PSF2], surfaces[1], "P2 sigue a P1")
+        ((bounds,),) = self.query(
+            f'SELECT bounds FROM "{provenance.dataset_locator("epr", WORKSHOP, "V01")}"')
+        row0, row1, col0, col1 = json.loads(bounds)
+        outside = np.ones(GRID.shape, dtype=bool)
+        outside[row0:row1, col0:col1] = False
+        np.testing.assert_array_equal(self.grid_of(PSF2)[outside], self.grid_of(PSF)[outside])
+        self.assertEqual(self.recompute_plan(), [])
+        self.assertEqual((self.stale_causes(new_first), self.stale_causes(new_second)), (set(), set()))
+        entry = entities_module.registry(self.project, self.v1.uid).get("PLT-001")
+        self.assertEqual(str(entry.record.state), "current")
+
+
+class RecomputeRefusalTest(RecomputeCase):
+    """RF-015-02, RF-013-17 (``des.input_changed``): lo que impide registrar un recálculo, con P1 creada."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.made(prep.request())
+
+    def test_c3_a_dataset_that_changes_before_it_starts_is_not_registered(self) -> None:
+        """RF-013-04, RF-013-17: si la superficie de partida cambia entre que se prepara el recálculo y que la
+        operación nueva empieza, el resultado no le corresponde: ``des.input_changed`` al empezar (con el
+        dato), la operación nueva queda fallida, la anterior sigue vigente sin sustituir y no queda ningún
+        temporal."""
+        old = self.current("PLT-001")
+        real = design_store.OperationStart.begin
+        shifted = gis.Raster(GRID, qfx.terrain(GRID) + 1.0, efx.CRS, efx.VERTICAL)
+
+        def racing(start: Any, project: Any, **options: Any) -> Any:
+            self.clock.advance(minutes=1)
+            res_fixtures.write_grids(self.project, [(START.removeprefix("gis_dtm_"), shifted)],
+                                     message="La partida cambia justo antes de empezar")
+            return real(start, project, **options)
+
+        self.clock.advance(minutes=1)
+        with mock.patch.object(design_store.OperationStart, "begin", racing):
+            with self.assertRaises(messages.DesignError) as caught:
+                design_store.recompute_run(self.request_for(old))
+        self.assertEqual(caught.exception.code, "des.input_changed")
+        self.assertIn(START, caught.exception.text)
+        self.assertEqual(self.query("SELECT status FROM gb_operation WHERE supersedes_uid = ?", old),
+                         [("failed",)])
+        self.assertEqual(self.query("SELECT superseded_by FROM gb_operation WHERE uid = ?", old),
+                         [(None,)])
+        self.assertEqual(self.current("PLT-001"), old)
+        self.assertFalse([name for name in self.written()["files"] if ".tmp-" in name])
+
+    def test_c3_a_parameter_that_changes_before_it_starts_is_not_registered(self) -> None:
+        """RF-013-17, RF-015-16: si el alcance de P1 cambia entre que se prepara el recálculo y que la
+        operación nueva empieza (y anota los valores que lee), el cálculo no le corresponde: al avanzar,
+        ``des.input_changed`` con el parámetro, la operación nueva queda fallida y la anterior, vigente, sin
+        sustituir."""
+        old = self.current("PLT-001")
+        reach = design_params.entity_key("PLT-001", "reach_m")
+        real = design_store.OperationStart.begin
+
+        def racing(start: Any, project: Any, **options: Any) -> Any:
+            self.change(reach, 26.0)  # cambia justo antes de empezar
+            return real(start, project, **options)
+
+        self.clock.advance(minutes=1)
+        with mock.patch.object(design_store.OperationStart, "begin", racing):
+            handle, work = design_store.recompute_run(self.request_for(old))
+        with self.assertRaises(messages.DesignError) as caught:
+            finish(work)
+        self.assertEqual(caught.exception.code, "des.input_changed")
+        self.assertIn(reach, caught.exception.text)
+        self.assertEqual(self.query("SELECT status, supersedes_uid FROM gb_operation WHERE uid = ?",
+                                    handle.uid), [("failed", old)])
+        self.assertEqual(self.query("SELECT superseded_by FROM gb_operation WHERE uid = ?", old),
+                         [(None,)])
+        self.assertEqual(self.current("PLT-001"), old)
+        self.assertFalse([name for name in self.written()["files"] if ".tmp-" in name])
+
+
+class RecomputeCounterSlopeTest(RecomputeCase):
+    """RF-015-23: un recálculo no confirma una contrapendiente por la persona."""
+
+    def test_c4_a_counter_slope_that_is_not_confirmed_is_not_registered(self) -> None:
+        """RF-015-23: la «Plataforma de la torre», creada con la confirmación de su contrapendiente, al
+        recalcularla vuelve a tenerla y el recálculo **no la confirma por la persona**: se rechaza al
+        avanzar (``des.platform_counter_unconfirmed``), la operación nueva queda fallida, la anterior sigue
+        vigente y no queda ningún dato, cifra ni temporal más."""
+        self.clock.advance(minutes=1)
+        old = self.calculate_in(prep.request(TOWER), confirm_counterslope=True).create().handle.uid
+        before = self.written()
+        self.clock.advance(minutes=1)
+        handle, work = design_store.recompute_run(self.request_for(old))
+        with self.assertRaises(messages.DesignError) as caught:
+            finish(work)
+        self.assertEqual(caught.exception.code, "des.platform_counter_unconfirmed")
+        self.assertEqual(self.query("SELECT status, supersedes_uid FROM gb_operation WHERE uid = ?",
+                                    handle.uid), [("failed", old)])
+        self.assertEqual(self.current("PLT-001"), old)
+        after = self.written()
+        for key in ("datasets", "parameters", "figures", "tables", "files"):
+            self.assertEqual(after[key], before[key], key)
+
+
+class ReproduceTest(RecomputeCase):
+    """RF-015-02, RF-009-11, RF-009-19: P1 (línea), P2 (de la superficie de P1) y P3 (un polígono con su eje
+    enlazado, que parte de otro terreno y se apoya en la superficie de P1) creadas en V01; la cota inicial de
+    P1 se cambia en la versión (249 m, no los 250 de su capa) y las tres se recalculan; congeladas en
+    V01.r1 (las operaciones de ``uids`` son las del recálculo)."""
+
+    NAME = "Explanada con eje"
+    revision: ClassVar[str]
+    uids: ClassVar[tuple[str, ...]]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.made(prep.request())
+        cls.made(prep.request(WORKSHOP, start="entity:PLT-001"))
+        cls.made(prep.polygon_request(cls.NAME, start=EDGE_HOLE_DATASET, support="entity:PLT-001"))
+        cls.change(design_params.entity_key("PLT-001", "start_level_m"), 249.0)
+        cls.clock.advance(minutes=1)
+        again = finish(recompute_mod.recompute_steps(cls.project))
+        assert [result.status for result in again.results] == [recompute_mod.UnitStatus.DONE] * 3
+        registry = entities_module.registry(cls.project, cls.v1.uid)
+        cls.uids = tuple(str(registry.get(code).operation_uid)
+                         for code in ("PLT-001", "PLT-002", "PLT-003"))
+        cls.clock.advance(minutes=1)
+        frozen = finish(freeze.freeze_steps(cls.project, cls.v1.uid, reason="Entrega de la prueba"))
+        cls.revision = str(frozen.frozen.uid)
+        cls.clock.advance(minutes=1)
+
+    def reproduce(self) -> Any:
+        """La reproducción de V01.r1, comprobando que **no escribió** nada en el proyecto (los ficheros y el
+        contador de cambios de la base, sin la caché donde reproduce)."""
+        before = (files(self.root, skip=(), skip_dirs=("cache",)), change_counter(self.root))
+        report = finish(reproduce_mod.reproduce_steps(self.project, self.revision))
+        self.assertEqual((files(self.root, skip=(), skip_dirs=("cache",)),
+                          change_counter(self.root)), before, "reproducir no escribe en el proyecto")
+        return report
+
+    def assert_same(self, report: Any) -> None:
+        """Las tres plataformas reprodujeron sus tres salidas y sus cifras, todas iguales."""
+        mine = [check for check in report.outputs if check.operation_uid in self.uids]
+        self.assertEqual(sorted((check.operation_uid, check.role) for check in mine),
+                         sorted((uid, role) for uid in self.uids
+                                for role in ("entity", "entity_report", "entity_surface")))
+        self.assertTrue(all(check.same for check in mine), [c for c in mine if not c.same])
+        for uid in self.uids:
+            found = [check for check in report.figures if check.operation_uid == uid]
+            self.assertEqual({check.key for check in found},
+                             {key for key, _scope in self.figures_of(uid)})
+            self.assertGreaterEqual(len(found), 9)
+            self.assertTrue(all(check.same for check in found), [c for c in found if not c.same])
+        self.assertFalse(report.not_reproducible)
+        self.assertTrue(report.matches)
+
+    def test_d1_reproducing_the_frozen_revision_gives_the_same_without_writing(self) -> None:
+        """RF-015-02, RF-009-11: reproducir V01.r1 —sin proyecto, desde la capa (y la de los ejes), la
+        partida, el apoyo, las máscaras y los parámetros congelados— da, de cada plataforma, la superficie,
+        la tabla y el informe con el **mismo hash** que registró su operación (la de P2 parte de la
+        superficie de P1; la de P3, de otro terreno, con el apoyo ``entity:PLT-001`` y un polígono con su eje
+        enlazado) y las mismas cifras, sin escribir nada en el proyecto."""
+        self.assert_same(self.reproduce())
+
+    def test_e2_changing_and_recomputing_after_freezing_leaves_the_frozen_revision_as_it_was(self) -> None:
+        """RF-015-16, RF-009-19, RF-009-11, RF-008-26: congelada V01.r1, cambiar el alcance de P1 deja
+        obsoletas (en curso, en la revisión abierta, D-23) las tres operaciones y «Recalcular lo obsoleto» las
+        repite en orden de dependencia (P1 primero) **registrando las nuevas en la revisión abierta**; lo
+        congelado no cambia (la revisión sigue congelada, sus elementos son los mismos, las operaciones
+        sustituidas quedan en ella como historia, no se marca nada de ella) y V01.r1 se reproduce otra vez
+        igual, con los hash de cuando se congeló (aunque lo vivo ya sea otro)."""
+        reach = design_params.entity_key("PLT-001", "reach_m")
+        items = self.query("SELECT * FROM gb_revision_item WHERE revision_uid = ? ORDER BY fid",
+                           self.revision)
+        self.assertTrue(items)
+        frozen = {uid: self.hashes_of(uid) for uid in self.uids}
+        self.change(reach, 25.0)
+        self.assertEqual(self.plan_units(), [(self.uids[0],), (self.uids[1],), (self.uids[2],)])
+        self.clock.advance(minutes=1)
+        outcome = finish(recompute_mod.recompute_steps(self.project))
+        self.assertEqual([result.status for result in outcome.results],
+                         [recompute_mod.UnitStatus.DONE] * 3)
+        (opened,) = self.query("SELECT uid FROM gb_revision WHERE version_uid = ? AND state = 'open'",
+                               self.v1.uid)[0]
+        made = [result.operations[0] for result in outcome.results]
+        self.assertEqual(self.query("SELECT supersedes_uid, revision_uid FROM gb_operation "
+                                    "WHERE uid IN (?, ?, ?) ORDER BY fid", *made),
+                         [(old, opened) for old in self.uids])
+        self.assertEqual(self.query("SELECT revision_uid FROM gb_operation WHERE uid IN (?, ?, ?) "
+                                    "ORDER BY fid", *self.uids), [(self.revision,)] * 3)
+        self.assertEqual(self.query("SELECT state FROM gb_revision WHERE uid = ?", self.revision),
+                         [("frozen",)])
+        self.assertEqual(self.query("SELECT * FROM gb_revision_item WHERE revision_uid = ? "
+                                    "ORDER BY fid", self.revision), items)
+        self.assertEqual({uid: self.hashes_of(uid) for uid in self.uids}, frozen)
+        self.assertNotEqual(self.hashes_of(made[0])[PSF], frozen[self.uids[0]][PSF], "lo vivo cambió")
+        self.assertEqual(self.recompute_plan(), [])
+        self.assert_same(self.reproduce())
+
+
+class ReproduceFunctionsTest(unittest.TestCase):
+    """RF-015-02: las funciones de reproducir de los tipos de las entidades."""
+
+    def test_d2_what_is_not_a_request_or_not_a_platform_is_a_program_error(self) -> None:
+        """RF-015-02: lo que no es una petición de reproducir, o es la de otro tipo de operación, es un error
+        del programa."""
+        with self.assertRaises(TypeError):
+            design_reproduce.reproduce_platform("petición")
+        other = reproduce_mod.ReproduceRequest("des.quarry", {}, (), {}, ".", None)  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            design_reproduce.reproduce_platform(other)
+
+    def test_d2_the_declaration_and_the_layer_are_not_reproducible_yet(self) -> None:
+        """RF-015-10, RF-015-27: la declaración de restricciones (T17) y la capa de entidades (T30) aún no
+        tienen su reproducción: lo dicen con un ``NotImplementedError`` que nombra la tarea, no con un
+        ``AttributeError``."""
+        for function, task in ((design_reproduce.reproduce_declare_constraints, "T17"),
+                               (design_reproduce.reproduce_entity_layer, "T30")):
+            with self.subTest(function=function.__name__):
+                with self.assertRaises(NotImplementedError) as caught:
+                    function(None)
+                self.assertIn(task, str(caught.exception))
 
 
 if __name__ == "__main__":

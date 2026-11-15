@@ -410,9 +410,11 @@ def reproduce_fill_only(request: ReproduceRequest) -> Iterator[Progress]:
 
 
 # Los tres tipos de la 015 (T04; plan 015 §5.2.3): el mismo camino que los de la 013 y la 014. Su
-# recálculo lo hace ``design.store.recompute_run`` y su reproducción, ``design.reproduce`` (las tareas
-# que crean cada operación, T13, T14, T17 y T19, les dan su cálculo: hasta entonces no hay ninguna
-# operación de esos tipos que recalcular ni reproducir).
+# recálculo lo hace ``design.store.recompute_run`` y su reproducción, ``design.reproduce``. La plataforma
+# ya tiene las dos (T13 y T14: ``design.entity_store.recompute_platform``, que ``recompute_run`` llama, y
+# ``design.reproduce.reproduce_platform``); la declaración de restricciones (T17) y la capa de entidades
+# (T30) aún no: no hay ninguna operación de esos tipos que recalcular ni reproducir, y ``recompute_run``
+# las rechaza y ``design.reproduce`` dice la tarea que falta (``NotImplementedError``).
 
 
 def recompute_platform(request: RecomputeRequest) -> OperationHandle:

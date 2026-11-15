@@ -168,6 +168,13 @@ class PrepareCase(efx.EntityProjectCase):
     masks_v1: ClassVar[Any]
 
     @classmethod
+    def definitions(cls) -> tuple[Any, ...]:
+        """Los tipos de las entidades que registra la clase, con sus cifras: las funciones de recalcular y
+        reproducir no se llaman (:func:`entity_definitions`); una historia que las usa de verdad (T14)
+        da las reales."""
+        return entity_definitions()
+
+    @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
         core_params.register_definitions((*design_params.DEFINITIONS,
@@ -177,7 +184,7 @@ class PrepareCase(efx.EntityProjectCase):
         cls.addClassCleanup(core_params.unregister_definitions, "res")
         core_params.register_families(design_params.ENTITY_FAMILIES)
         cls.addClassCleanup(core_params.unregister_families, "des")
-        cls.enterClassContext(registered(*entity_definitions()))
+        cls.enterClassContext(registered(*cls.definitions()))
         for layer in (bad_layer(), points_layer()):
             qfx.write_feature_layer(cls.project, cls.clock, layer)
         cls.clock.advance(minutes=1)

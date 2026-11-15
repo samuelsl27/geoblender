@@ -1491,9 +1491,11 @@ class DesignWriter:
 
 RECOMPUTED: tuple[str, ...] = (*provenance.REPRODUCIBLE, provenance.EXCAVATION_AREA,
                                 provenance.QUARRY, provenance.EDGE_TRANSITION,
-                                provenance.FILL_ONLY, provenance.REFIT)
-"""Los tipos que repite «Recalcular lo obsoleto» aquí: los dos de la 013 y, de la 014, el recinto
-y la cantera (T19), la transición (T28), «solo relleno» (T30) y el ajuste (T32)."""
+                                provenance.FILL_ONLY, provenance.REFIT, provenance.PLATFORM)
+"""Los tipos que repite «Recalcular lo obsoleto» aquí: los dos de la 013, de la 014 el recinto
+y la cantera (T19), la transición (T28), «solo relleno» (T30) y el ajuste (T32) y, de la 015, la plataforma
+(T14 de la 015; ``design.entity_store.recompute_platform``). La declaración de restricciones (T17) y la
+capa de entidades (T30) de la 015 los añadirán con su cálculo."""
 _STORE_PHASE = "store"
 
 
@@ -3366,7 +3368,9 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
     existe y se repite con sus ajustes—, empieza la operación nueva, que sustituye a la anterior en
     la revisión abierta de **su** versión (:func:`run_envelope`, :func:`run_design` y, de la 014,
     :func:`run_excavation_area`, :func:`run_quarry`, :func:`run_edge_transition`,
-    :func:`run_fill_only` y :func:`run_refit`; RF-014-31), con lo que
+    :func:`run_fill_only` y :func:`run_refit`; RF-014-31; de la 015, la plataforma,
+    ``design.entity_store.recompute_platform``, con los parámetros vigentes de su entidad en su versión,
+    RF-015-02), con lo que
     lee hoy: las máscaras de la versión, los sectores, las superficies y los parámetros, resueltos
     de nuevo versión → proyecto (un perfil cambiado solo en V02 se lee de V02). Devuelve su
     ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama (en Blender, la cola de
@@ -3404,6 +3408,10 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
         return run_refit(project, provenance.refit_request(request.settings),
                          version=request.version, supersedes=request.operation_uid,
                          budget_s=budget_s)
+    if request.op_type == provenance.PLATFORM:
+        from . import entity_store  # al usarlo: entity_store importa este módulo
+
+        return entity_store.recompute_platform(request, budget_s=budget_s)
     return run_design(project, provenance.design_request(request.settings),
                       provenance.design_start(request.settings), version=request.version,
                       supersedes=request.operation_uid, budget_s=budget_s)

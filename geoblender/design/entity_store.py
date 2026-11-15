@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Preparar la plataforma —lo que se lee y se rechaza antes de calcular—, calcularla y crearla (spec 015,
-T11, T12 y T13; HU-015-1, HU-015-3; RF-015-01, RF-015-02, RF-015-03, RF-015-04, RF-015-06, RF-015-07,
-RF-015-08, RF-015-09, RF-015-13, RF-015-29; plan 015 §5.1, §5.2.1, §5.2.2, §5.2.3, §5.3.1 y §5.3.2;
-ADR-0030).
+"""Preparar la plataforma —lo que se lee y se rechaza antes de calcular—, calcularla, crearla y recalcularla
+(spec 015, T11 a T14; HU-015-1, HU-015-2, HU-015-3; RF-015-01, RF-015-02, RF-015-03, RF-015-04, RF-015-06,
+RF-015-07, RF-015-08, RF-015-09, RF-015-13, RF-015-16, RF-015-29; plan 015 §5.1, §5.2.1, §5.2.2, §5.2.3, §5.3.1
+y §5.3.2; ADR-0030).
 
 El homólogo, para las entidades de diseño, de ``prepare_quarry`` y ``prepare_quarry_units`` de
 ``design.store``: **solo lee**. Nada se escribe en el proyecto (RF-015-03: hasta que el usuario
@@ -61,6 +61,16 @@ las tablas se calcula fuera de la transacción, R4). Una plataforma que parte de
 segunda con la causa (la 008). El gancho de las dependencias (:func:`detected_supports`, RF-015-15) es de la
 T23 y hoy no añade ninguna.
 
+**Recalcular** (T14; RF-015-02, RF-015-16, RF-008-26): :func:`recompute_platform` repite la operación con
+los **parámetros vigentes de su entidad en su versión** (:func:`platform_parameters`: la definición de una
+entidad, RF-015-01, no la capa ni lo que leyó la operación anterior) por :func:`run_platform`: la prepara
+(con su ``code``: la cota inicial, la pendiente y el ancho salen de **su fila de la versión**, no de la capa),
+empieza la operación que sustituye a la anterior, calcula con :func:`platform_compute_steps` y completa sin
+escribir parámetros de la entidad. Lo llama ``design.store.recompute_run``. El recálculo no confirma una
+contrapendiente (``des.platform_counter_unconfirmed``). La reproducción desde lo congelado, sin proyecto, es
+``design.reproduce.reproduce_platform``, con el mismo cálculo (:func:`platform_compute_steps`,
+:func:`entity_values` y :func:`read_geometry`).
+
 La capa solo da la **geometría** y los **valores iniciales**: se copian a parámetros de la entidad
 (con el origen «capa X, campo Y, entidad Z») y cambian después en ella; la capa no se modifica. Del
 terreno (RF-015-09) se comprueba la superficie de partida y la de apoyo, que son las que lee el
@@ -77,7 +87,7 @@ import hashlib
 import json
 import math
 import sqlite3
-from collections.abc import Generator, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
@@ -88,7 +98,8 @@ from ..core.constraints.store import constraint_names
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterRecord, ParameterStore, definition
 from ..core.params.store import default_reason
 from ..core.project.model import Progress
-from ..core.provenance.operations import OperationStatus, Use
+from ..core.provenance.operations import OperationHandle, OperationStatus, Use
+from ..core.provenance.recompute import RecomputeRequest
 from ..core.versions import read as versions_read
 from ..core.versions.model import Version
 from ..gis.masks import access
@@ -137,6 +148,7 @@ from .report import Previous
 from .sectors import design_sectors, refuse_pending
 from .seeds import sector_layout
 from .store import (
+    _STORE_PHASE,
     DesignWriter,
     OperationStart,
     Row,
@@ -158,22 +170,29 @@ from .store import (
 from .surfaces import project_frame, read_surface
 
 __all__ = [
+    "LAYER_FIELDS",
     "EntityParamRow",
     "PreparedPlatform",
     "compute_platform_steps",
     "create_platform",
     "detected_supports",
+    "entity_values",
+    "feature_index",
     "footprint_runs",
     "geometry_sha256",
     "platform_compute_steps",
     "platform_entity_rows",
     "platform_obsolete",
+    "platform_parameters",
     "platform_previous",
     "platform_report_rows",
     "platform_summary",
     "prepare_platform",
     "prepare_platform_units",
     "quarry_order",
+    "read_geometry",
+    "recompute_platform",
+    "run_platform",
     "runs_mask",
     "set_entity_params",
 ]
@@ -187,7 +206,7 @@ _START_ROLE = "partida"
 _SUPPORT_ROLE = "apoyo"
 _DIALOG = "diálogo de «Plataforma…»"
 """El origen de lo que elige la persona en el diálogo de la orden (entidad al final)."""
-_LAYER_FIELDS: Mapping[PlatformParam, str] = MappingProxyType({
+LAYER_FIELDS: Mapping[PlatformParam, str] = MappingProxyType({
     PlatformParam.START_LEVEL: "start_level_field", PlatformParam.GRADIENT: "gradient_field",
     PlatformParam.WIDTH: "width_field"})
 """Los valores que se copian de un campo de la capa y el atributo de
@@ -347,7 +366,7 @@ def _names(layer: FeatureLayer) -> tuple[str | None, ...]:
     return (None,) * len(layer)
 
 
-def _feature(layer: FeatureLayer, request: PlatformRequest, code: str) -> int:
+def feature_index(layer: FeatureLayer, request: PlatformRequest, code: str) -> int:
     """El índice (en el orden de la capa) de la geometría que elige la petición, por su ``fid`` (un
     número que está en la capa) o por su nombre. ``des.entity_param_missing`` si no se eligió
     ninguna, ``des.entity_feature_unknown`` si la capa no la tiene y ``des.entity_feature_ambiguous``
@@ -394,18 +413,18 @@ def _layer_number(layer: FeatureLayer, index: int, name: str, request: PlatformR
     return number_
 
 
-def _linked_axis(project: StoreProject, layer: FeatureLayer, index: int, request: PlatformRequest
-                 ) -> tuple[Any, str] | None:
-    """El eje que enlaza el campo ``eje`` del polígono: las partes de su línea en la capa de ejes y
-    su nombre; ``None`` si el campo va vacío (sin eje enlazado: el principal, con su aviso). La
-    capa de ejes ha de ser de líneas (``des.corridor_not_lines``) y tener esa línea
-    (``des.entity_feature_unknown``)."""
+def _linked_axis(layers: Callable[[str], FeatureLayer], layer: FeatureLayer, index: int,
+                 request: PlatformRequest) -> tuple[Any, str] | None:
+    """El eje que enlaza el campo ``eje`` del polígono: las partes de su línea en la capa de ejes
+    (``layers(nombre)``: la del proyecto al preparar, la congelada al reproducir) y su nombre; ``None`` si
+    el campo va vacío (sin eje enlazado: el principal, con su aviso). La capa de ejes ha de ser de
+    líneas (``des.corridor_not_lines``) y tener esa línea (``des.entity_feature_unknown``)."""
     fields = request.fields
     assert fields.axis_field is not None and fields.axis_layer is not None
     link = _field_value(layer, index, fields.axis_field, request)
     if link is None:
         return None
-    axes = _layer(project, fields.axis_layer)
+    axes = layers(fields.axis_layer)
     if axes.kind != "line":
         raise DesignError("des.corridor_not_lines", obj=f"Capa de líneas «{fields.axis_layer}»",
                           field="geometría", value=_KINDS_ES.get(axes.kind, axes.kind),
@@ -421,12 +440,13 @@ def _linked_axis(project: StoreProject, layer: FeatureLayer, index: int, request
     return axes.parts[at], _names(axes)[at] or str(axes.fids[at])
 
 
-def _read_geometry(project: StoreProject, layer: FeatureLayer, index: int,
-                   request: PlatformRequest) -> PlatformGeometry:
+def read_geometry(layers: Callable[[str], FeatureLayer], layer: FeatureLayer, index: int,
+                  request: PlatformRequest) -> PlatformGeometry:
     """La geometría de la plataforma: la de la capa y, de un polígono con eje enlazado, la de su
-    línea. Una capa de puntos no es de plataformas (``des.platform_layer_kind``); un ancho en una capa
-    de polígonos o un enlace en una de líneas son un error del programa (``ValueError``: el
-    diálogo no los ofrece)."""
+    línea (que da ``layers``, :func:`_linked_axis`: la capa de ejes del proyecto al preparar, la
+    congelada al reproducir, T14). Una capa de puntos no es de plataformas
+    (``des.platform_layer_kind``); un ancho en una capa de polígonos o un enlace en una de líneas son un
+    error del programa (``ValueError``: el diálogo no los ofrece)."""
     fields = request.fields
     if layer.kind == "point":
         raise DesignError("des.platform_layer_kind", obj=_object(request), field="geometría",
@@ -439,7 +459,7 @@ def _read_geometry(project: StoreProject, layer: FeatureLayer, index: int,
                          f"la propia línea de la capa «{request.layer}»")
     parts = layer.parts[index]
     if layer.kind == "polygon" and fields.axis_field is not None:
-        linked = _linked_axis(project, layer, index, request)
+        linked = _linked_axis(layers, layer, index, request)
         if linked is not None:
             return PlatformGeometry("polygon", parts, axis_parts=linked[0], axis_name=linked[1])
     return PlatformGeometry(layer.kind, parts)
@@ -452,15 +472,17 @@ def _default(param: PlatformParam) -> Any:
     return PLATFORM_PARAMS[param.value].default
 
 
-def _entity_values(request: PlatformRequest, code: str, fid: int,
-                   from_layer: Mapping[PlatformParam, float], *, line: bool) -> dict[str, Any]:
+def entity_values(request: PlatformRequest, code: str, fid: int,
+                  from_layer: Mapping[PlatformParam, float], *, line: bool) -> dict[str, Any]:
     """Los parámetros resueltos y comprobados de la entidad, por último segmento de su clave
     (RF-015-08): lo que se pide, lo que sale de la capa (la cota inicial, la pendiente y, de una
-    línea, el ancho) y, de lo que no se pide, el valor por defecto de su parámetro (D-4, D-5, D-7, D-8
+    línea, el ancho: ``from_layer``; al recalcular o reproducir, los de la fila de la versión, que ya se
+    copiaron de ella) y, de lo que no se pide, el valor por defecto de su parámetro (D-4, D-5, D-7, D-8
     y D-22); sin él, ``des.entity_param_missing`` (no se elige ninguno por la persona). Un número
     fuera de su rango es ``des.entity_param_range``; la pendiente que pasa de la máxima fijada
     (D-6, ``des.platform_max_slope``: es una rampa) y proteger en el modo «en corte y relleno»
-    (RF-015-12, ``des.platform_protect_cut_fill``) se rechazan después."""
+    (RF-015-12, ``des.platform_protect_cut_fill``) se rechazan después. Es lo que comparten preparar y
+    reproducir (T14: sin proyecto)."""
     mode = request.mode.value if request.mode is not None else _default(PlatformParam.MODE)
     asked: dict[PlatformParam, object] = {
         PlatformParam.NAME: request.name, PlatformParam.LAYER: request.layer,
@@ -533,6 +555,24 @@ def _rows(request: PlatformRequest, code: str, values: Mapping[str, Any],
             reason = f"Elegido al crear la plataforma «{name}»"
         rows.append(EntityParamRow(entity_key(code, param), param, value, source, kind, reason))
     return tuple(rows)
+
+
+def _kept_numbers(project: StoreProject, version: Version, code: str
+                  ) -> dict[PlatformParam, float]:
+    """Los valores que se copiaron de la capa (:data:`LAYER_FIELDS`: la cota inicial, la pendiente y el
+    ancho) de la entidad ``code``, tal como están **en la versión** (su fila propia, no la del proyecto:
+    una versión sin valor propio no tiene el de la entidad); los que no tienen fila, no salen (se leen de la
+    capa). Solo lee."""
+    store = ParameterStore(project)
+    found: dict[PlatformParam, float] = {}
+    with project.read() as conn:
+        for param in LAYER_FIELDS:
+            record = store.get(entity_key(code, param), version=version.uid, conn=conn)
+            value = None if record is None else record.value
+            if isinstance(value, int | float) and not isinstance(value, bool) \
+                    and math.isfinite(float(value)):
+                found[param] = float(value)
+    return found
 
 
 def _common(project: StoreProject, version: Version) -> dict[str, float]:
@@ -656,19 +696,23 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
     _check_chain(registry, request, chosen, insert_before)
     yield
     layer = _layer(project, request.layer)
-    index = _feature(layer, request, chosen)
+    index = feature_index(layer, request, chosen)
     line = layer.kind == "line"
-    geometry = _read_geometry(project, layer, index, request)
+    geometry = read_geometry(lambda name: _layer(project, name), layer, index, request)
     fields = request.fields
+    kept = {} if code is None else _kept_numbers(project, version, chosen)
     from_layer: dict[PlatformParam, float] = {}
     layer_fields: dict[PlatformParam, str] = {}
-    for param, attribute in _LAYER_FIELDS.items():
+    for param, attribute in LAYER_FIELDS.items():
         field = getattr(fields, attribute)
         if field is not None:  # sin campo (un polígono no tiene ancho): el valor no sale de la capa
-            from_layer[param] = _layer_number(layer, index, field, request)
+            # Una entidad que ya está en la versión (recalcularla, o la que dejó «Traer…») tiene ya sus
+            # valores de la capa como parámetros, con su historial (P-3): manda su fila, no la capa.
+            from_layer[param] = (kept[param] if param in kept
+                                 else _layer_number(layer, index, field, request))
             layer_fields[param] = field
     fid = layer.fids[index]
-    values = _entity_values(request, chosen, fid, from_layer, line=line)
+    values = entity_values(request, chosen, fid, from_layer, line=line)
     yield
     start_name, start_raster, support_name, support_raster = _surfaces(
         project, version, request, chosen, registry, masks)
@@ -1100,9 +1144,95 @@ def create_platform(project: StoreProject, writer: DesignWriter, prepared: Prepa
                          before_begin=parameters)
 
 
+# --- Recalcular (spec 015, T14; RF-015-02, RF-015-16, RF-008-26) ---------------------------------
+
+
+def platform_parameters(project: StoreProject, version: Version, code: str) -> dict[str, Any]:
+    """Los parámetros vigentes de la entidad de código ``code`` en la versión ``version``, por último
+    segmento de su clave (:func:`~.provenance.platform_values`): los resuelve una operación que empezara
+    ahora (el de la fila de la versión y, si no la tiene, el del proyecto), sin los que no tienen valor.
+    Es la definición de la entidad (RF-015-01: sus parámetros de versión, no la capa ni los ajustes de la
+    operación anterior) con la que se recalcula. Solo lee."""
+    keys = {entity_key(code, param): param for param in PlatformParam}
+    with project.read() as conn:
+        found = ParameterStore(project).resolve_many(
+            conn, tuple(keys), (VERSION_SCOPE, PROJECT_SCOPE), version=version.uid)
+    return {param.value: item.value for key, param in keys.items()
+            if (item := found.get(key)) is not None and item.value is not None}
+
+
+def run_platform(project: StoreProject, request: PlatformRequest, *, version: str | None,
+                 code: str, masks: access.MaskSet | None = None, supersedes: str | None = None,
+                 budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Calcula y registra ``request`` —una entidad que ya está en la versión ``version``: su ``code``— de
+    **una vez**, sin pedir confirmación (spec 015, T14; RF-015-02, RF-015-16; el recálculo de lo obsoleto,
+    :func:`~.store.recompute_run`; el «Crear» tras «Calcular» es :meth:`~.steps.Calculation.create`):
+    empieza la operación ``des.platform`` —si ``supersedes`` es la de una anterior, la sustituye, quedándose
+    con los nombres de sus datos— con lo que lee hoy (las máscaras de la versión, la capa, la superficie de
+    partida y de apoyo y los parámetros de la entidad: la cota, la pendiente y el ancho **de su fila de la
+    versión**, no de la capa) y devuelve su ``OperationHandle`` «en curso» y sus pasos, que avanza quien la
+    llama: calculan (:func:`platform_compute_steps`), escriben la superficie, la tabla y el informe y
+    completan la operación en una transacción; el último lleva el :class:`~.store.Stored`. No escribe
+    parámetros de la entidad (ya están). Cerrarlos antes, o un fallo, no dejan nada y la operación queda
+    cancelada o fallida.
+
+    Al llamar, sin empezar nada: los rechazos de :func:`prepare_platform_units` (la versión, la geometría,
+    los campos, la partida, la falta de dato, un sector pendiente…). Al avanzar, antes de escribir: un
+    parámetro que cambió entre prepararla y empezar (``des.input_changed``) y una contrapendiente que pasa de
+    la tolerancia (``des.platform_counter_unconfirmed``: un recálculo **no confirma** por la persona, que
+    vuelve a «Calcular» y la confirma)."""
+    found = require_version(project, version, provenance.PLATFORM)
+    loaded = _loaded_masks(project, found, masks)
+    prepared: PreparedPlatform = _result_of(prepare_platform_units(
+        project, request, found, loaded, code=code, supersedes=supersedes))
+    handle = prepared.start.begin(project)
+    return handle, _platform_run(project, handle, prepared, budget_s)
+
+
+def recompute_platform(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
+                       ) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Repite la operación ``des.platform`` de ``request`` (:func:`~.store.recompute_run`; «Recalcular lo
+    obsoleto», RF-008-26; spec 015, T14; RF-015-02, RF-015-16): la plataforma de sus ajustes (el nombre, el
+    código y los campos de su capa) con los **parámetros vigentes de su entidad en su versión**
+    (:func:`platform_parameters`) y no los que leyó la operación que sustituye: una entidad se define por
+    sus parámetros (RF-015-01). Devuelve lo de :func:`run_platform`. ``ValueError`` si los ajustes no son los
+    de una plataforma o la petición no es de una versión."""
+    project: StoreProject = request.project  # type: ignore[assignment]
+    code = provenance.platform_code(request.settings)
+    found = require_version(project, request.version, provenance.PLATFORM)
+    asked = provenance.platform_request(request.settings,
+                                        platform_parameters(project, found, code))
+    return run_platform(project, asked, version=found.uid, code=code,
+                        supersedes=request.operation_uid, budget_s=budget_s)
+
+
+def _check_recorded(handle: OperationHandle, prepared: PreparedPlatform) -> None:
+    """Los parámetros que anotó la operación al empezar son los que leyó el cálculo al prepararse (RF-013-17,
+    D-14, como ``Calculation.create``): si uno cambió entre las dos cosas, el resultado ya no le corresponde
+    (``des.input_changed``, con el parámetro)."""
+    read: dict[str, object] = {entity_key(prepared.code, PlatformParam(name)): value
+                               for name, value in prepared.values.items()}
+    read.update(prepared.common)
+    for param in handle.params:
+        if param.key in read and param.value != read[param.key]:
+            raise DesignError("des.input_changed", obj=f"Parámetro «{param.key}»",
+                              field="parámetros", value=param.key)
+
+
+def _platform_run(project: StoreProject, handle: OperationHandle, prepared: PreparedPlatform,
+                  budget_s: float) -> Generator[Progress, None, None]:
+    with DesignWriter.resume(project, handle) as writer:
+        _check_recorded(handle, prepared)
+        outcome: PlatformOutcome = yield from compute_platform_steps(
+            writer, prepared, operation=prepared.job.request.name, budget_s=budget_s)
+        outcome.ensure_creatable()
+        stored = writer.commit(figures=outcome.figures, message=outcome.message)
+        yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
+
+
 # --- Con qué se compara, y lo que sale del proyecto para el resumen -----------------------------
 
-_MAGNITUDE_CUT = ("des.plat_cut_m3", "des.edge_cut_m3")
+_MAGNITUDE_CUT =("des.plat_cut_m3", "des.edge_cut_m3")
 _MAGNITUDE_FILL = ("des.plat_fill_m3", "des.edge_fill_m3")
 
 
