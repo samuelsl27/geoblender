@@ -45,9 +45,9 @@ PENDING_REFS: frozenset[str] = frozenset()
 # Diseño ▸ Límites y restricciones de la 012 (plan 012 D-38: de R-32 a 012 al llegar su clase
 # real, T22 a T28), desde la T34 de la 012 (BS §8.7 y §8.9). Las cinco órdenes de R-34 que pasaron
 # a la 014 (plan 014 §5.6, T05), desde la T36 de la 014 (BS §8.7 y §8.8). «Plataforma…» pasa de R-36 a la
-# entrada 015 al entregarla la T31 (plan 015 §5.6); la T34 de la 015 la escribe en BS §8.7 y vacía esto.
+# entrada 015 al entregarla la T31 (plan 015 §5.6); la T34 de la 015 la escribió en BS §8.7 y vació esto.
 # identificador → entrada.
-APPROVED_ENTRIES: dict[str, str] = {"des_create_platform": "015"}
+APPROVED_ENTRIES: dict[str, str] = {}
 
 # Filas ↗ de BS que no dicen lo mismo que la casa de su comando (manda la casa: un comando,
 # una definición): ninguna (la T37 corrigió el «D·2p» de ``io_import_block_model`` en

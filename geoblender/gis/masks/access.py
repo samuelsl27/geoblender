@@ -106,6 +106,7 @@ __all__ = [
     "MaskCause",
     "MaskError",
     "MaskSet",
+    "MaskSource",
     "MaskState",
     "compile_masks_steps",
     "ensure_masks_steps",
@@ -114,6 +115,7 @@ __all__ = [
     "mask_cause",
     "mask_state",
     "mask_uses",
+    "open_masks",
     "require_current",
     "sector_states",
 ]
@@ -391,7 +393,11 @@ def _only_through_declared(conn: sqlite3.Connection, version_uid: str, operation
     cambió: si cambia, es una causa directa de la compilación), así que las máscaras son las que dan las
     restricciones de hoy; «Recalcular lo obsoleto» rehace la entidad y, si su salida no cambia, quita la marca de
     lo que dependía de ella (RF-008-26). Una causa directa de la compilación (una restricción, un sector, un
-    parámetro, la propia declaración con otro contenido) sí las deja obsoletas."""
+    parámetro, la propia declaración con otro contenido) sí las deja obsoletas.
+
+    Es **la excepción a RF-012-17 que Samuel aprobó el 15/11/2026** («Mantén la excepción»; spec 012 0.4,
+    RF-012-17, que la dice con este mismo alcance): solo vale con una tabla de declaradas viva y sin ninguna
+    causa directa, y sin declaradas todo es como en la 012."""
     if declared_store.live_table(conn, version_uid) is None or _declared_unseen(conn, version_uid, operation):
         return False
     if conn.execute(_DIRECT_DATA, (operation,)).fetchone() is not None:

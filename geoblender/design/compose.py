@@ -32,6 +32,8 @@ from .model import BenchSense
 
 __all__ = [
     "admitted",
+    "admitted_in",
+    "admitted_pair",
     "allowed_cells",
     "compose",
 ]

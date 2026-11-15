@@ -58,10 +58,13 @@ from .messages import DesignError
 __all__ = [
     "Frame",
     "ProjectFrame",
+    "SurfaceWindow",
     "check_grid",
     "find_surface",
     "project_frame",
     "read_surface",
+    "read_surface_steps",
+    "read_surface_window",
 ]
 
 _OBJ = "Superficie"

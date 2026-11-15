@@ -51,6 +51,7 @@ dparams = import_geoblender("design.params")
 dprofiles = import_geoblender("design.profiles")
 dprov = import_geoblender("design.provenance")
 dsectors = import_geoblender("design.sectors")
+enlayer = import_geoblender("design.entity_layer")
 dstore = import_geoblender("design.store")
 gpkg_base = import_geoblender("core.gpkg.base")
 i18n = import_geoblender("core.i18n")
@@ -123,137 +124,38 @@ AMBER_IN_THE_GUIDE = (
 AMBER_IN_THE_CHANGELOG = ("(en ámbar si su búsqueda está pendiente)",)
 TASKS_RELPATH = "specs/013-des-envolventes-y-escalonado/tasks.md"
 
-# Las secciones de la API de la ficha ``des.md``: lo de la 013 y lo que añade la 014 (su T36). Un
-# módulo puede tener fila en las dos (lo de la 014 en un módulo de la 013, como ``design.store``):
-# la prueba junta sus celdas.
-API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
-                "### 4.2 Lo que entrega la spec 014 (R-34)")
+# La guía de las entidades de diseño (spec 015, T34) y las órdenes de las entidades que nombra con el texto de
+# su catálogo.
+ENTITIES_GUIDE_RELPATH = "docs/usuario/entidades-de-diseno.md"
+ENTITY_ORDERS = ("geoblender.des_create_platform", "geoblender.des_entity_dependents",
+                 "geoblender.des_entity_insert", "geoblender.des_entity_bring",
+                 "geoblender.des_entity_discard", "geoblender.des_entity_release_support",
+                 "geoblender.des_entity_preview", "geoblender.des_export_design_grid")
+# De lo que la guía de las entidades pone entre «», lo que no está en el catálogo: nombres de ejemplo, el nombre
+# de una carpeta de comandos y términos que la guía explica. La prueba exige que siga en la guía y que no haya
+# ninguno más.
+ENTITY_EXAMPLES: tuple[str, ...] = (
+    # Nombres de ejemplo de plataformas y de capas, y los mensajes que los llevan en un marcador.
+    "P1", "P2", "Carga",
+    "Origen: Plataforma P1 (PLT-001)", "Plataforma P1 (declarada)", "declarada por la plataforma P1",
+    # Lo que arma la interfaz con partes del catálogo (el menú contextual) y un botón de la ventana de
+    # restricciones de la 012.
+    "Entidad ▾", "Completar…",
+)
 
-# Lo que la spec 015 añade a la API pública de ``design`` mientras se construye: la ficha
-# (``des.md`` §4.3, hoy «API prevista») la escribe su T34 (documentación). Cada tarea de la 015 añade
-# aquí sus nombres; la T34 los lleva a la ficha (una sección «Lo que entrega la spec 015 (R-36)» que
-# entra en ``API_SECTIONS``) y vacía estos dos conjuntos.
-PENDING_015_API = frozenset({
-    # T02: design.model, design.params y design.entities.
-    "Axis", "PlatformFields", "PlatformMode", "PlatformRequest",
-    "PlatformParam", "check_entity_param", "entity_key", "entity_segment", "segment_code",
-    "EntityKind", "EntityRecord", "EntityState", "declared_reason", "format_code", "next_code",
-    # T03: design.entities (la cadena y el registro de las entidades de una versión).
-    "EntityEntry", "EntityRegistry", "ParamChange", "chain_of", "chain_tails", "check_chain",
-    "find_entity", "insert_after", "insert_before", "insertion_start", "predecessor_of",
-    "ref_code", "registry", "start_conflict", "successor_of", "surface_ref",
-    # T04: design.provenance (los tipos de operación, los ajustes, las entradas, los parámetros y las
-    # cifras de las entidades).
-    "entity_operation_defs", "entity_figure_scope", "platform_figures", "supported_figures",
-    "declare_figures", "platform_settings", "platform_code", "platform_values",
-    "platform_request", "declare_settings", "entity_layer_settings", "settings_entities",
-    "platform_inputs", "declare_inputs", "entity_layer_inputs", "platform_params",
-    "declare_params",
-    # T05: los tres privados de la 014 que pasan a públicos (design.quarry, design.edges y
-    # design.store).
-    "axis_abscissa", "seed_envelope_steps", "created_step_steps",
-    # T06: los dos ayudantes del corredor que pasan a públicos (design.quarry) y la huella y la
-    # rasante de la plataforma (design.platform).
-    "axis_paths", "corridor_window",
-    "Footprint", "PlatformGeometry", "PlatformJob", "axis_of_polygon", "platform_footprint",
-    "work_window",
-    # T07: aplicar la plataforma (design.platform).
-    "Applied", "OffLevel", "OffLevelCause", "apply_platform", "apply_platform_steps",
-    # T08: el borde de la plataforma y el aviso de magnitud (design.platform).
-    "Edge", "EdgeWall", "WallCause", "magnitude_notices", "platform_edge", "platform_edge_steps",
-    # T09: la contrapendiente, las cifras y los avisos de la plataforma (design.platform).
-    "HeldGroup", "LongProfile", "OrderBreach", "PlatformOutcome", "QuarryOrder", "order_check",
-    "platform_outcome", "platform_profile",
-    # T11: preparar la plataforma (design.entity_store).
-    "EntityParamRow", "PreparedPlatform", "prepare_platform", "prepare_platform_units",
-    "set_entity_params",
-    # T12: calcular la plataforma y su resumen (design.entity_store, design.steps, design.preview y
-    # design.platform).
-    "compute_platform_steps", "platform_compute_steps", "platform_obsolete", "platform_previous",
-    "platform_summary", "quarry_order", "platform_run", "Obsolete", "ObsoleteKind",
-    "PlatformSummary", "held_notices", "obsolete_notices", "summary_notices",
-    # T13: «Crear» la plataforma (design.entity_store; ENTITY_COLUMNS de design.store es una constante).
-    "create_platform", "detected_supports", "footprint_runs", "geometry_sha256",
-    "platform_entity_rows", "platform_report_rows", "runs_mask",
-    # T14: recalcular y reproducir la plataforma (design.entity_store y design.reproduce; la de la declaración
-    # de design.reproduce es de la T17; la capa de entidades no se reproduce: T30).
-    "entity_values", "feature_index", "platform_parameters", "read_geometry", "recompute_platform",
-    "run_platform", "reproduce_platform", "reproduce_declare_constraints",
-    # T15: la contrapendiente que la persona confirmó al crear (design.provenance: se anota en los
-    # ajustes y un recálculo la reutiliza).
-    "CounterslopeConfirmation", "counterslope_confirmation", "counterslope_confirmed",
-    # T15: lo que propone el diálogo de «Plataforma…» desde la capa (design.entity_store).
-    "layer_values",
-    # T16: la zona que declara una entidad (design.entities) y las componentes 4-conexas de una vez
-    # (design.grids).
-    "DeclaredZone", "declared_zone", "declared_zone_of_runs", "label_components",
-    # T17: la declaración de restricciones de las entidades (design.entity_store y design.provenance;
-    # reproduce_declare_constraints, de design.reproduce, está ya en T14).
-    "DeclaredSource", "EntityFootprint", "PreparedDeclaration", "declare_constraints_steps",
-    "declared_rows_steps", "declared_sources", "prepare_declaration", "read_entity_footprint",
-    "recompute_declaration", "run_declaration", "settings_decisions", "settings_version",
-    # T19: lo que sigue a cada orden de entidades (design.entity_store): declarar y recompilar las máscaras.
-    "ChainFailure", "ChainStage", "EntityChain", "after_entity_change",
-    # T20: si lo vigente en la tabla de las declaradas difiere de lo que declaran las entidades (design.entity_store).
-    "declaration_diverges",
-    # T24: la lista de dependencias de una entidad y la causa de lo obsoleto (design.entities).
-    "Dependent", "dependencies_of", "dependents", "kind_label", "operation_reason", "stale_reason",
-    # T25: descartar una entidad, «apoyo retirado» y soltar el apoyo (design.entities, design.entity_store y
-    # design.provenance: lo que se da por bueno sin su apoyo, en los ajustes de la operación).
-    "RetiredEntity", "RetiredSupport", "retired_supports", "DiscardPlan", "DiscardResult", "Discarded",
-    "discard_entity", "discard_entity_steps", "discard_plan", "release_support", "ReleasedSupport",
-    "merge_released", "released_supports",
-    # T26: traer las entidades de otra versión (design.entity_store).
-    "Brought", "BroughtEntity", "bring_entities",
-    # T29: la vista previa de una entidad antes de calcularla (design.preview).
-    "EntityEnd", "EntityPreview", "RestingItem", "entity_preview_steps",
-    # T31: insertar antes o después de otra entidad (design.entities: dónde se inserta; design.entity_store: aplicarlo al crear).
-    "Insertion", "insertion_point", "apply_insertion",
-    # T30: la capa de entidades para QGIS (design.entity_layer: la tabla; design.entity_store: la operación).
-    "EntityLayerRow", "create_entity_layer_table", "entity_layer_table", "read_entity_layer", "write_entity_layer",
-    "LayerSource", "PreparedEntityLayer", "entity_layer_rows_steps", "entity_layer_steps", "layer_sources",
-    "prepare_entity_layer", "recompute_entity_layer", "run_entity_layer",
-    # T32: las superficies de la última de cada cadena, lo que congelar pide verificar (design.entities).
-    "chain_tail_surfaces",
-})
-# Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
-PENDING_015_MODULES = frozenset({
-    "design.entities",  # T02: EntityKind, EntityRecord, EntityState, next_code, declared_reason;
-    # T03: la cadena (start_conflict, insert_after, chain_of, chain_tails) y registry; T16:
-    # DeclaredZone, declared_zone y declared_zone_of_runs (la zona que declara una entidad: el
-    # contorno de su huella para la restricción declarada de la 012); T23: Support, detect_supports,
-    # strongest, runs_cells y code_order (lo que se apoya en una entidad: A6, RF-015-15); T24:
-    # Dependent, dependents, dependencies_of, stale_reason, operation_reason y kind_label (la lista de
-    # dependencias y la causa de lo obsoleto: RF-015-15, RF-015-16); T25: retired_supports, RetiredSupport y
-    # RetiredEntity (lo que perdió su apoyo: RF-015-17); T32: chain_tail_surfaces (las superficies de la
-    # última de cada cadena, que congelar pide verificar: RF-015-04)
-    "design.entity_layer",  # T30: EntityLayerRow, entity_layer_table, create_entity_layer_table,
-    # write_entity_layer y read_entity_layer (la tabla ``des_enl_<vNN>`` de la capa de entidades para QGIS)
-    "design.platform",  # T06: PlatformJob, PlatformGeometry, Footprint, platform_footprint,
-    # axis_of_polygon y work_window (la huella y la rasante de la plataforma); T07: Applied,
-    # OffLevel, OffLevelCause, apply_platform y apply_platform_steps (aplicarla); T08: Edge,
-    # EdgeWall, WallCause, platform_edge, platform_edge_steps y magnitude_notices (el borde); T09:
-    # LongProfile, platform_profile, QuarryOrder, OrderBreach, order_check, HeldGroup,
-    # PlatformOutcome y platform_outcome (la contrapendiente, las cifras y los avisos)
-    "design.entity_store",  # T11: prepare_platform, prepare_platform_units, PreparedPlatform,
-    # EntityParamRow y set_entity_params (preparar la plataforma y escribir sus parámetros); T12:
-    # platform_compute_steps, compute_platform_steps, platform_summary, platform_previous,
-    # quarry_order y platform_obsolete (calcularla y su resumen); T13: create_platform,
-    # platform_entity_rows, platform_report_rows, footprint_runs, runs_mask, geometry_sha256 y
-    # detected_supports (crearla: su tabla, su informe y el gancho de las dependencias); T14:
-    # run_platform, recompute_platform, platform_parameters, read_geometry, feature_index y
-    # entity_values (recalcularla con sus parámetros de la versión y reproducirla sin proyecto); T17:
-    # prepare_declaration, run_declaration, declare_constraints_steps, recompute_declaration,
-    # declared_sources, declared_rows_steps, DeclaredSource, PreparedDeclaration, EntityFootprint y
-    # read_entity_footprint (la declaración de restricciones de las entidades de una versión); T23:
-    # survey_supports, SupportSurvey, add_supports, entity_surfaces, EntitySurface y declared_supports
-    # (lo que apoya una operación sobre las entidades de su versión, que añade ``DesignWriter.commit``); T25:
-    # discard_plan, DiscardPlan, discard_entity, discard_entity_steps, DiscardResult, Discarded y release_support
-    # (descartar una entidad, «apoyo retirado» y soltar el apoyo: RF-015-17); T26: bring_entities, Brought y
-    # BroughtEntity (traer las entidades de otra versión, sin resultados: RF-015-18); T30: layer_sources,
-    # LayerSource, entity_layer_rows_steps, prepare_entity_layer, PreparedEntityLayer, run_entity_layer,
-    # entity_layer_steps y recompute_entity_layer (la capa de entidades para QGIS: RF-015-27)
-})
+# Las secciones de la API de la ficha ``des.md``: lo de la 013, lo que añade la 014 (su T36) y lo de la 015
+# (su T34). Un módulo puede tener fila en varias (lo de la 014 en un módulo de la 013, como
+# ``design.store``): la prueba junta sus celdas.
+API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
+                "### 4.2 Lo que entrega la spec 014 (R-34)",
+                "### 4.3 Lo que entrega la spec 015 (R-36)")
+
+# El mecanismo de la 014 y la 015 para una spec que añade API pública mientras se construye: cada tarea
+# añade aquí sus nombres (y los módulos nuevos, que aún no tienen fila en la ficha) y la tarea de
+# documentación los lleva a la ficha y vacía estos dos conjuntos. Vacíos desde la T34 de la 015 (la ficha,
+# ``des.md`` §4.3, nombra todo lo público de ``design``); la 016 los usará con los suyos.
+PENDING_015_API: frozenset[str] = frozenset()
+PENDING_015_MODULES: frozenset[str] = frozenset()
 
 
 def one_line(text: str) -> str:
@@ -289,17 +191,26 @@ def documented_tables(document: str) -> dict[str, list[str]]:
 
 
 def code_tables() -> dict[str, str]:
-    """El SQL con que el código crea cada tabla de la 013 (normalizado), con el nombre de ejemplo
-    ``Hoyo`` y la versión ``V01`` para las de una versión."""
+    """El SQL con que el código crea cada tabla de la 013 y de la 015 (normalizado), con el nombre de
+    ejemplo ``Hoyo`` (la 015, ``Carga``) y la versión ``V01`` para las de una versión."""
     berms = dprov.dataset_locator(dprov.BERM_TABLE, "Hoyo", "V01")
     report = dprov.dataset_locator(dprov.REPORT_TABLE, "Hoyo", "V01")
+    entity = dprov.dataset_locator(dprov.ENTITY_TABLE, "Carga", "V01")
+    entity_report = dprov.dataset_locator(dprov.ENTITY_REPORT_TABLE, "Carga", "V01")
+    entity_map = enlayer.entity_layer_table("V01")
     with closing(sqlite3.connect(":memory:")) as conn:
         gpkg_base.create_structure(conn)
+        conn.execute("INSERT INTO gpkg_spatial_ref_sys (srs_name, srs_id, organization, "
+                     "organization_coordsys_id, definition) VALUES ('t', 25830, 'EPSG', 25830, 'x')")
         dprofiles.create_table(conn)
         gpkg_base.create_attribute_table(conn, berms, dstore.BERM_COLUMNS, "bermas")
         gpkg_base.create_attribute_table(conn, report, dstore.REPORT_COLUMNS, "informe")
+        gpkg_base.create_attribute_table(conn, entity, dstore.ENTITY_COLUMNS, "entidad")
+        gpkg_base.create_attribute_table(conn, entity_report, dstore.REPORT_COLUMNS,
+                                         "informe de la entidad")
+        enlayer.create_entity_layer_table(conn, entity_map, 25830)
         rows = conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table'").fetchall()
-    wanted = (dprofiles.TABLE, berms, report)
+    wanted = (dprofiles.TABLE, berms, report, entity, entity_report, entity_map)
     return {str(name): normalized(str(sql)) for name, sql in rows if name in wanted}
 
 
@@ -501,15 +412,21 @@ class ProjectFormatDocTest(unittest.TestCase):
         cls.text = docs.read(FORMAT_RELPATH)
 
     def test_tables_as_in_the_code(self) -> None:
-        """RF-013-18, RF-013-28, RF-013-30 (plan 013 §5.2.1 y §5.2.3, D-17, D-24, D-26): §3.11 tiene
-        una vez el SQL de ``des_bench_profile``, de ``des_bmt_`` (las cotas reales de las bermas) y
-        de ``des_rpt_`` (el informe), el que escribe el código."""
+        """RF-013-18, RF-013-28, RF-013-30 (plan 013 §5.2.1 y §5.2.3, D-17, D-24, D-26), RF-015-02 y
+        RF-015-27 (plan 015 §5.2.3; T34): §3.11 tiene una vez el SQL de ``des_bench_profile``, de
+        ``des_bmt_`` (las cotas reales de las bermas) y de ``des_rpt_`` (el informe) y, de la 015, de
+        ``des_epr_`` (la entidad), ``des_prp_`` (su informe) y ``des_enl_`` (la capa de entidades), el
+        que escribe el código; ``des_decl_`` (las restricciones declaradas) está en §3.9
+        (``test_constraints_docs``)."""
         documented = documented_tables(section(self.text, "### 3.11 Tablas de los módulos"))
         in_code = code_tables()
-        self.assertEqual(len(in_code), 3)
+        self.assertEqual(len(in_code), 6)
         for name in (dprofiles.TABLE, *(
                 dprov.dataset_locator(code, "Hoyo", "V01")
-                for code in (dprov.BERM_TABLE, dprov.REPORT_TABLE))):
+                for code in (dprov.BERM_TABLE, dprov.REPORT_TABLE)),
+                *(dprov.dataset_locator(code, "Carga", "V01")
+                  for code in (dprov.ENTITY_TABLE, dprov.ENTITY_REPORT_TABLE)),
+                enlayer.entity_layer_table("V01")):
             with self.subTest(table=name):
                 self.assertEqual(documented.get(name, []), [in_code[name]])
         self.assertEqual(sorted(documented), sorted(in_code), "una tabla des_ que el código no crea")
@@ -956,6 +873,88 @@ class ColourDocTest(unittest.TestCase):
         self.assertIn("un perfil «no resuelto por la rejilla» en rojo, con un triángulo", m2)
         m1 = one_line(tasks[tasks.index("- **M1 — E5"):tasks.index("- **M2 — Perfiles")])
         self.assertIn("(ámbar si están pendientes)", m1)
+
+
+@docs.requires_docs
+class EntitiesGuideDocTest(unittest.TestCase):
+    """La guía de uso de las entidades de diseño (``docs/usuario/entidades-de-diseno.md``; spec 015,
+    T34) dice lo que el código hace: todo texto entre «» sale del catálogo o es un ejemplo que esta
+    prueba lista, las órdenes llevan el texto de su catálogo, los datos, los parámetros y las cifras son
+    los del código, y «Límites conocidos» dice lo que hoy no hace y no promete lo que la spec deja
+    abierto (RNF-015-09)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.guide = docs.read(ENTITIES_GUIDE_RELPATH)
+        cls.index = QuoteIndex(catalog_texts())
+
+    def guide_section(self, heading: str) -> str:
+        return one_line(section(self.guide, heading))
+
+    def test_every_quoted_text_is_in_the_catalog_or_is_a_listed_example(self) -> None:
+        """Principio 10, RF-015-03, RF-015-26, RF-015-28 (T34): todo texto de la guía entre «» sale del
+        catálogo (``messages.toml``, ``design.messages``, las órdenes y las familias de datos), con otras
+        cifras y otros nombres y con lo que omite con «…», o está en :data:`ENTITY_EXAMPLES`; y todo lo de
+        la lista sigue en la guía."""
+        found = quotes(self.guide)
+        self.assertGreater(len(found), 60)
+        unknown = sorted({quote for quote in found
+                          if quote not in ENTITY_EXAMPLES and not self.index.has(quote)})
+        self.assertEqual(unknown, [], "textos de la guía que el catálogo no dice (cámbielos en la guía, "
+                                      "o en el código si es él el que está mal)")
+        self.assertEqual(sorted(set(ENTITY_EXAMPLES) - set(found)), [],
+                         "ejemplos que la guía ya no cita: quítelos de ENTITY_EXAMPLES")
+
+    def test_every_listed_example_is_not_in_the_catalog(self) -> None:
+        """Un ejemplo de :data:`ENTITY_EXAMPLES` que sí está en el catálogo sobra: la lista solo tiene lo
+        que no sale de él."""
+        for example in ENTITY_EXAMPLES:
+            with self.subTest(example=example):
+                self.assertFalse(self.index.has(example))
+
+    def test_orders_are_named_with_their_catalog_text(self) -> None:
+        """RF-015-28 (plan 015 §5.3.3): la guía nombra cada orden de las entidades con el texto de su
+        catálogo y dice dónde está."""
+        cat = catalog.load()
+        for key in ENTITY_ORDERS:
+            with self.subTest(order=key):
+                self.assertIn(cat.commands[key].label_es, self.guide)
+        self.assertIn("Diseño ▸ Pistas y entidades ▸ Entidades ▸ Plataforma…", self.guide)
+
+    def test_data_parameters_and_figures_are_the_code_s(self) -> None:
+        """RF-015-01, RF-015-02, RF-015-10, RF-015-24, RF-015-27 (plan 015 §5.2): §17 da la ruta de cada
+        rejilla y de cada tabla de las entidades, la familia de parámetros de la plataforma y cada cifra
+        como las nombra el código."""
+        where = inline_tokens(self.guide_section("## 17. Dónde queda cada cosa en el proyecto"))
+        for family in dprov.ENTITY_FAMILIES:
+            locator = dprov.dataset_locator(family.code, "Mi nombre" if family.named else "", "V01")
+            shown = locator.replace("mi_nombre", "<nombre>").replace("v01", "<vNN>")
+            with self.subTest(dataset=family.code):
+                self.assertTrue(any(shown in token for token in where), shown)
+        self.assertIn("des.platform.{e}.*", where)
+        for figure in dprov.ENTITY_FIGURES:
+            with self.subTest(figure=figure.key):
+                self.assertIn(figure.key, where)
+        parameters = inline_tokens(self.guide)
+        self.assertEqual(dparams.entity_segment("PLT-001"), "plt_001")
+        for token in ("PLT-001", "plt_001", "dec__plt_001"):
+            with self.subTest(token=token):
+                self.assertIn(token, parameters)
+
+    def test_the_known_limits_are_told(self) -> None:
+        """T34: «Lo que no hace todavía» dice los límites de hoy (las plataformas sin calcular sin objeto,
+        aceptar con motivo, descartada con una operación vieja, las entidades nuevas que no detecta
+        «Recalcular lo obsoleto», el estado atrasado de la capa de QGIS) y el tamaño por entidad sin
+        prometer los 16 MB: RNF-015-09 sigue abierto."""
+        limits = self.guide_section("## 16. Lo que no hace todavía")
+        for fact in ("Límites conocidos de esta versión",
+                     "no tiene objeto en la escena", "no limpia «Recalcular lo obsoleto»",
+                     "sigue en el plan de «Recalcular lo obsoleto»",
+                     "no detecta las entidades nuevas", "estado atrasado",
+                     "unos 16 MiB", "unos 0,3 GiB", "RNF-015-09"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, limits)
+        self.assertNotIn("16 MB", self.guide)
 
 
 if __name__ == "__main__":

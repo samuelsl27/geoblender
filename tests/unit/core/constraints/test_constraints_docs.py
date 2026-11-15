@@ -57,6 +57,7 @@ rprov = import_geoblender("reserves.provenance")
 masks = import_geoblender("gis.masks")
 mprov = import_geoblender("gis.masks.provenance")
 mstore = import_geoblender("gis.masks.store")
+cdeclared = import_geoblender("core.constraints.declared")
 chk = import_geoblender("reserves.compliance_store")
 catalog = import_geoblender("core.catalog")
 
@@ -75,25 +76,13 @@ CITING_RELPATHS = ("docs/usuario/topografia.md", "docs/usuario/versiones.md",
 GIS_MODULES = ("gis.search", "gis.polygons", "gis.coverage",
                *(f"gis.masks.{info.name}" for info in pkgutil.iter_modules(masks.__path__)))
 RES_MODULES = ("reserves.compliance", "reserves.compliance_store")
-# Los módulos de ``core.constraints`` que la spec 015 añade mientras se construye: la ficha
-# ``core.md`` (la API de ``core.constraints`` y «Datos que posee», la tabla ``des_decl_<vNN>``) los
-# describe en su T34 (documentación), que vacía esto. Cada tarea de la 015 añade aquí lo suyo.
-PENDING_015_MODULES = frozenset({
-    "core.constraints.declared",  # T16: la restricción declarada por una entidad (RF-012-29)
-})
-# Lo que la spec 015 añade a la API pública de módulos que ya tienen ficha (``gis.md``, «API pública»)
-# mientras se construye: la T34 (documentación) lo lleva a la ficha y vacía esto.
-PENDING_015_API = frozenset({
-    "gis.masks.provenance.declared_resolved",  # T18: las columnas de una declarada bajo las claves
-    # T19: el hueco H-1 (gis.masks.access): por qué están obsoletas unas máscaras que el grafo da al día,
-    # el rechazo de quien las pide y compilarlas sin cargarlas.
-    "gis.masks.access.MaskCause", "gis.masks.access.mask_cause", "gis.masks.access.require_current",
-    "gis.masks.access.compile_masks_steps",
-    # T22: el estilo QGIS de las capas de una versión (``core.constraints.styles``: las filas de
-    # ``layer_styles`` de ``des_decl_<vNN>`` y ``des_enl_<vNN>`` y la anotación del dato del proyecto).
-    "core.constraints.styles.VersionLayer", "core.constraints.styles.version_layer",
-    "core.constraints.styles.insert_version_styles", "core.constraints.styles.write_version_styles",
-})
+# El mecanismo de la spec 015 para lo que añade mientras se construye: los módulos de ``core.constraints``
+# que aún no tienen ficha (``core.md``) y lo público de módulos que ya la tienen (``gis.md``, ``core.md``).
+# Cada tarea añade aquí lo suyo y la de documentación lo lleva a la ficha y lo vacía: vacíos desde la T34 de
+# la 015 (``core.constraints.declared`` y los nombres nuevos de ``gis.masks`` y de ``core.constraints.styles``
+# están en ``core.md`` y ``gis.md``); la 016 los usará con lo suyo.
+PENDING_015_MODULES: frozenset[str] = frozenset()
+PENDING_015_API: frozenset[str] = frozenset()
 CORE_MODULES = tuple(f"core.constraints.{info.name}"
                      for info in pkgutil.iter_modules(constraints.__path__)
                      if f"core.constraints.{info.name}" not in PENDING_015_MODULES)
@@ -115,6 +104,8 @@ DOTTED = re.compile(r"^(?:core|gis|reserves)(?:\.[A-Za-z_]\w*)+$")
 # llevan un nombre de ejemplo y el código de la versión).
 PROJECT_TABLES = (*cstore.TABLES, cstyles.STYLES_TABLE)
 VERSION_TABLES = ("gis_mskz_", "gis_mskr_", "gis_mskp_", "gis_mskg_", "res_chk_", "res_chkg_")
+# La tabla de las restricciones que declaran las entidades de la V01 (spec 015; formato-proyecto.md §3.9).
+DECLARED_TABLE = cdeclared.declared_table("V01")
 
 
 def public_api(dotted: str) -> list[str]:
@@ -213,10 +204,11 @@ def code_tables() -> dict[str, str]:
         chk._create(conn, chk.TABLE, "res_chk_verificacion_v01", 25830, "c")
         chk._create(conn, chk.GROUPS, "res_chkg_verificacion_v01", 25830, "d")
         conn.execute(cstyles._STYLES_DDL)
+        cdeclared.create_declared_table(conn, DECLARED_TABLE, 25830)
         rows = conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table'").fetchall()
     wanted = (*cstore.TABLES, cstyles.STYLES_TABLE, "gis_mskz_v01", "gis_mskr_v01",
               "gis_mskp_v01", "gis_mskg_v01", "res_chk_verificacion_v01",
-              "res_chkg_verificacion_v01")
+              "res_chkg_verificacion_v01", DECLARED_TABLE)
     return {str(name): normalized(str(sql)) for name, sql in rows if name in wanted}
 
 
@@ -237,7 +229,7 @@ class CoreModuleDocTest(unittest.TestCase):
         named = named_in(self.api, "core.constraints")
         self.assertGreater(len(named), 70)
         self.assertEqual(sorted(name for name in named if not resolves(name)), [])
-        self.assertEqual(len(CORE_MODULES), 7)
+        self.assertEqual(len(CORE_MODULES), 8)
         for dotted in CORE_MODULES:
             with self.subTest(module=dotted):
                 self.assertIn(dotted, named)
@@ -364,6 +356,22 @@ class ProjectFormatDocTest(unittest.TestCase):
                 self.assertEqual(len(names), 1, f"{prefix}: {names}")
                 (name,) = names
                 self.assertEqual(documented[name], [in_code[name]])
+
+    def test_declared_table_as_in_the_code(self) -> None:
+        """RF-012-29, RF-015-10, RF-015-11 (spec 012 0.3; plan 015 §5.2.3 y P-8; T34): §3.9 tiene una vez
+        el SQL de ``des_decl_<vNN>``, la tabla de las restricciones que declaran las entidades de una
+        versión, el que escribe el código, y dice su código (``dec__plt_001``), su tipo, sus columnas
+        ``buffer_out_m`` y ``active`` (no son parámetros) y que no se edita a mano."""
+        text = section(self.text, "### 3.9 Restricciones y límites")
+        documented = documented_tables(text)
+        in_code = code_tables()
+        self.assertEqual(documented.get(DECLARED_TABLE, []), [in_code[DECLARED_TABLE]])
+        tokens = inline_tokens(text)
+        for token in ("des_decl_<vNN>", cdeclared.declared_code("PLT-001"), "buffer_out_m", "active",
+                      "no_fill", "des.declare_constraints", "core.external_edit_version",
+                      "core.constraint_declared_blocked", "qgis_editable = false"):
+            with self.subTest(token=token):
+                self.assertIn(token, tokens)
 
     def test_types_roles_and_labels(self) -> None:
         """RF-012-02, RF-012-26 (plan 012 §5.2.1, D-16, D-23): §3.9 dice, cada una en su

@@ -33,7 +33,9 @@ confirmado antes de escribirse (spec 013). Y diseña la cantera completa: el rec
 restricciones con las semillas en su coronación, los fondos por polígonos, los corredores, las zonas
 a conservar, la superficie final y la de explotación con su orden y su clasificación en desdoblado y
 relleno, la transición del borde con el terreno no afectado, el diseño «solo relleno» y el ajuste a
-un límite nuevo (spec 014, en curso; sus órdenes ya están disponibles en sus menús). Lo de
+un límite nuevo (spec 014, en curso; sus órdenes ya están disponibles en sus menús). Y pone sobre ella
+las entidades de diseño: la plataforma, que se aplica en cadena sobre una superficie, declara lo que
+prohíbe a los demás operadores y dice en qué se apoya (spec 015, en curso). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
@@ -119,6 +121,76 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Añadido
 
+- **Entidades de diseño paramétricas** (spec 015, R-36, en curso). Lo que se pone encima de una cantera
+  (la plataforma de la planta, una balsa, un acopio) se hizo en el proyecto de referencia como
+  recortes de ráster y scripts sueltos, y ninguno sabía qué prohibía a los demás ni en qué se apoyaba:
+  una plataforma impuesta como cota mínima quedó como un lomo de 5 m; su corredor de extremos
+  redondos la alargó 140 m; la programación lineal rellenó un 17 % de una balsa (4.300 m³) porque
+  ningún operador sabía que no se rellenaba, y un relleno siguió apoyado en un acopio que la versión
+  siguiente retiraba. En Geoblender, una **entidad de diseño** se aplica **en cadena** sobre una
+  superficie, **declara lo que prohíbe** a los demás operadores y **dice en qué se apoya**; la
+  primera es la **plataforma** (los acopios, el contrafuerte y los cuerpos apoyados usarán el mismo
+  marco en la spec 016). Guía de uso: `docs/usuario/entidades-de-diseno.md` de la documentación. Menú
+  **Diseño ▸ Pistas y entidades ▸ Entidades ▸ Plataforma…** y menú contextual **Entidad ▾** (con una
+  entidad seleccionada): disponibles con un proyecto en escritura y una versión activa que se puede
+  editar, y en gris con su motivo en los demás casos.
+  - **Plataforma…**: un eje con su ancho (una capa de líneas) o un polígono (con su eje enlazado o, sin
+    él, su eje principal, con aviso), con la cota inicial y la pendiente de su rasante, que el diálogo
+    propone de la capa y deja corregir. En el modo **en corte** (el de por defecto) baja el terreno
+    hasta la rasante dentro de su huella y **no sube nunca** (el lomo de 5 m no se repite); en
+    **en corte y relleno**, también lo sube donde se admite el relleno. Su **borde** la une con el
+    terreno con su ángulo y su alcance (obligatorio: sin tope, en una ladera empinada el talud
+    cortaría toda la ladera), solo donde las máscaras de las restricciones lo admiten, y avisa de las
+    paredes más empinadas, de lo que queda por debajo de la rasante, de lo que no mueve por una
+    restricción de otra entidad y del salto creado. Un perfil que sube en contra del sentido de la
+    rasante no se crea sin confirmación expresa. **Calcular** enseña el resumen sin escribir nada,
+    con lo que quedará obsoleto al crearla; el botón **Vista previa** dibuja antes de calcular la
+    huella, el eje con su flecha, las cotas de los extremos, lo que se le apoya y lo que declarará; y
+    solo **Crear** registra, en una transacción. Un valor sin valor por defecto que falta, una
+    geometría que se corta a sí misma o falta dato en la huella se rechazan nombrando la capa, la
+    entidad, el campo y el valor.
+  - **Lo que declara**: con **Proteger** y un resguardo, la huella de la plataforma es una zona
+    **sin relleno** para **todos** los operadores, por las máscaras de la 012 (el error 51: un
+    «solo relleno» y otra plataforma que la solapa rellenan 0 m³ en ella y la verificación da
+    «cumple»). En «Ver restricciones y límites» la restricción lleva su entidad («Plataforma P1
+    (declarada)») y no se cambia desde ahí: se cambia en la entidad. Si se edita en QGIS, se
+    bloquea y las máscaras no se compilan hasta aceptar la edición con un motivo.
+  - **La cadena y lo que se apoya**: de cada superficie parte una sola entidad; **insertar antes o
+    después** de otra rehace el orden y deja obsoletas las siguientes con su causa. Una operación
+    que rellena sobre la huella de una entidad **se apoya en ella**; **Lo que se apoya en ella**
+    enseña la lista única (con los m³), **Descartar…** no borra nada y deja lo apoyado en
+    «apoyo retirado» (fuera de «Recalcular lo obsoleto» hasta que se rehaga, se descarte o se dé por
+    bueno con **Soltar el apoyo…** y un motivo), y **Traer las entidades de…** copia sus definiciones
+    de otra versión «sin calcular».
+  - **Cambiar una entidad** deja obsoleta la plataforma y, en cascada, todo lo que depende de ella;
+    **Recalcular lo obsoleto** lo rehace en orden de dependencia. **Congelar** pide verificar la
+    última superficie de cada cadena (las intermedias se verifican a petición), y la revisión
+    congelada no cambia y se reproduce.
+  - **En la vista y en QGIS**: la barra N **Entidad** enseña el estado con su causa, los parámetros
+    con su origen, lo que declara, la cadena, en qué se apoya y lo que se le apoya y las cifras; la
+    capa de entidades (`des_enl_<vNN>`) abre en QGIS con un estilo por tipo y por estado, y la
+    superficie de cada entidad se exporta a GeoTIFF.
+  - **Cambios en la spec 012** (0.3 y 0.4): la compilación de las máscaras consume también las
+    restricciones que declaran las entidades (RF-012-29) y unas máscaras se dan por obsoletas si
+    llega una declarada que no consumieron (el hueco por el que el error 51 se habría repetido);
+    una entidad que protege queda obsoleta al crearse y «Recalcular lo obsoleto» le quita la marca
+    si su resultado no cambia, para lo cual las máscaras que solo están obsoletas por ese ciclo se
+    entregan como al día: es la excepción de RF-012-17 que aprobó Samuel el 15/11/2026.
+  - **Medido** (2,81 millones de celdas, en disco local): una plataforma de 10 ha, de «Calcular» a
+    «Crear», en 1,5 s; recalcular una plataforma de 1 ha lee 8 de 98 teselas de la superficie y de
+    las máscaras (de 0,25 a 0,11 s de CPU en el núcleo; la peor llamada del hilo de Blender, de 0,09 a
+    0,13 s); recalcular una cadena de 20 plataformas, en unos 24 s; lo que se apoya en una
+    entidad, con 200 entidades, en 0,02 s. Cada entidad guarda su superficie en la rejilla entera:
+    unos 16 MiB (con ruido en las cotas) y unos 0,3 GiB con 20 entidades; el tope de 16 MB de la
+    spec (RNF-015-09) sigue pendiente de decisión.
+  - Lo de la spec 015 está comprobado con Blender 5.2.1 sin su interfaz, con las órdenes reales y
+    proyectos sintéticos, con casos de referencia calculados a mano (CE-015-01 a CE-015-05 y
+    CE-015-07) y con datos del tamaño de un proyecto real y cadenas de 20 entidades; faltan verlo en
+    pantalla (el diálogo, la vista previa, la barra N, el menú «Entidad ▾»), la capa abierta en QGIS
+    4.2 con su ventana, su verificación única y que un ingeniero de IMGA cree una plataforma, la
+    proteja y vea lo que queda obsoleto al cambiarla en menos de 20 minutos (CE-015-06). Aún no hay
+    objeto en la escena para una plataforma sin calcular; ni «Recalcular lo obsoleto» detecta las
+    entidades creadas desde la última compilación hasta que algo las deja obsoletas.
 - **Cantera con dos superficies** (spec 014, en curso). Con las envolventes y el escalonado se hace
   una corta, pero no la cantera completa de un proyecto; lo que pasó en el proyecto de referencia
   (semillas en toda la ladera y fondos altísimos; una ladera a conservar enterrada, 58.167 m³; un
@@ -1329,6 +1401,14 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Cambiado
 
+- **Límites y restricciones** (spec 012, versiones 0.3 y 0.4; hechos con la spec 015): la compilación de
+  las máscaras consume también las restricciones que declaran las entidades de diseño, que son de la
+  versión y no de las tres capas del proyecto (RF-012-29), y una declarada que llega después de compilar
+  deja obsoletas las máscaras (antes, el grafo no lo habría visto y los operadores habrían diseñado sin su
+  prohibición). Las máscaras que solo están obsoletas por el ciclo de una entidad que protege (la entidad
+  consume las máscaras, que consumen lo que ella declara) se entregan como al día, excepción de RF-012-17
+  que aprobó Samuel el 15/11/2026; cualquier otra causa las sigue dejando obsoletas. Sin entidades que
+  declaren, todo es como antes.
 - **Formato del proyecto, versión 3** (spec 009): la base del proyecto lleva las tablas de las
   versiones, las revisiones y las decisiones de la propiedad (QGIS las ve y no las puede cambiar,
   como las demás internas), y el proyecto, cuando se congela una revisión, la carpeta
