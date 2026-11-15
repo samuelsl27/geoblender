@@ -25,6 +25,7 @@ Se ejecuta con ``tools/run_blender_tests.py``.
 
 import importlib
 import json
+import sqlite3
 import tempfile
 import unittest
 import uuid
@@ -798,6 +799,48 @@ class CreatePlatformTest(unittest.TestCase):
         self.assertEqual([json.loads(settings)["name"] for _fid, settings in stale],
                          [LOADING, WORKSHOP, RAMP, "Protegida"],
                          "la propia plataforma que protege, y las que usaron las máscaras anteriores")
+
+    def test_h_the_table_of_the_declared_edited_in_qgis_stops_the_compilation_until_the_edit_is_accepted(
+            self) -> None:
+        """RF-015-11, RF-008-56 (T20; plan 015 §2.1): «Compilar las máscaras» pasa por la puerta de la 008 **con la
+        tabla de las declaradas como entrada** (``available_tables`` con la versión activa); cambiada en QGIS, la
+        tabla queda bloqueada (``core.external_edit_version``) y la orden se niega sin compilar nada; una orden de
+        diseño que pide las máscaras se niega con el error de dominio (las entidades, qué hacer), no con una
+        traza; aceptar la edición con un motivo (``core_resolve_dataset``) la desbloquea y las máscaras se
+        compilan con ella."""
+        compiled = "SELECT count(*) FROM gb_operation WHERE op_type = 'gis.compile_constraints'"
+        status = "SELECT uid, status FROM gb_dataset WHERE name = 'des_decl' AND version_uid = ?"
+        ((before,),) = self.rows(compiled)
+        ((uid, was),) = self.rows(status, self.v01.uid)
+        self.assertEqual(was, "current")
+        conn = sqlite3.connect(self.project.database_path, isolation_level=None)  # QGIS, con su propia conexión
+        try:
+            conn.execute('UPDATE "des_decl_v01" SET reason = ?', ("Retocada en QGIS",))
+            conn.execute("UPDATE gpkg_contents SET last_change = ? WHERE table_name = 'des_decl_v01'",
+                         ("2031-01-01T00:00:00.000Z",))
+        finally:
+            conn.close()
+        with self.assertRaises(RuntimeError) as refused:  # una orden que informa de un error lo lanza así desde un guion
+            bpy.ops.geoblender.gis_compile_constraints()
+        self.assertIn("se editó fuera de Geoblender", str(refused.exception))
+        self.assertEqual(self.rows(status, self.v01.uid), [(uid, "blocked")])
+        self.assertEqual(self.rows(compiled), [(before,)], "la puerta se negó: no se compiló nada")
+        self.assertEqual(self.rows("SELECT executor FROM gb_operation WHERE op_type = 'core.external_edit_version'"),
+                         [("external",)])
+        self.refresh()
+        with self.assertRaises(RuntimeError) as asked:  # un operador que pide las máscaras: error de dominio
+            self.calculate(name="Con la tabla bloqueada", feature=WORKSHOP, start="entity:PLT-004")
+        self.assertIn("«Protegida»", str(asked.exception))
+        self.assertIn("vuelvan a poner", str(asked.exception))
+        self.assertNotIn("Traceback", str(asked.exception))
+        self.assertEqual(self.rows(compiled), [(before,)])
+        self.assertEqual(bpy.ops.geoblender.core_resolve_dataset(
+            "EXEC_DEFAULT", dataset_uid=uid, decision="ACCEPT", reason="La propiedad lo pide"), {"FINISHED"})
+        self.assertEqual(self.rows(status, self.v01.uid), [(uid, "current")])
+        self.assertEqual(bpy.ops.geoblender.gis_compile_constraints(), {"FINISHED"})
+        self.assertEqual(self.rows(compiled), [(before + 1,)])
+        access = _module("gis.masks.access")
+        self.assertEqual(access.mask_state(self.project, self.v01.uid)[0], access.MaskState.CURRENT)
 
     def test_z_disabling_geoblender_removes_the_command_and_leaves_no_temporary(self) -> None:
         """Principio 8, D-14 de la 013: con un cálculo abierto, desactivar Geoblender lo descarta (no queda

@@ -504,13 +504,16 @@ class RegistryTest(_RegistryCase):
 class CoreOperationsTest(_RegistryCase):
     def test_core_operations(self) -> None:
         """RF-008-17, RF-008-21, RF-008-27, RF-008-62 (plan §5.4.4, §5.4.9; D8, D9, D14): las
-        operaciones de ``core`` son la edición externa, «dar por buena» y registrar una capa
-        como entrada; ninguna se repite sola ni tiene recálculo, y ``core.import_layer`` no
-        tiene importador hasta T34."""
+        operaciones de ``core`` son la edición externa (la de proyecto y, desde la spec 015, T20,
+        la de un dato **de una versión**, RF-008-56, RF-015-11: una operación de proyecto no
+        puede usarlo, D-14 de la 009), «dar por buena» y registrar una capa como entrada;
+        ninguna se repite sola ni tiene recálculo, y ``core.import_layer`` no tiene importador
+        hasta T34."""
         by_type = {defn.op_type: defn for defn in contract.CORE_OPERATIONS}
-        self.assertEqual(set(by_type), {"core.external_edit", "core.accept_review",
-                                        "core.import_layer"})
+        self.assertEqual(set(by_type), {"core.external_edit", "core.external_edit_version",
+                                        "core.accept_review", "core.import_layer"})
         self.assertEqual(contract.EXTERNAL_EDIT, "core.external_edit")
+        self.assertEqual(contract.EXTERNAL_EDIT_VERSION, "core.external_edit_version")
         self.assertEqual(contract.ACCEPT_REVIEW, "core.accept_review")
         self.assertEqual(contract.IMPORT_LAYER, "core.import_layer")
         for defn in contract.CORE_OPERATIONS:
@@ -520,9 +523,13 @@ class CoreOperationsTest(_RegistryCase):
                 self.assertFalse(defn.repeatable)
                 self.assertIsNone(defn.recompute)
                 self.assertIsNone(defn.group)
-                self.assertEqual(defn.scope, "project")
+                self.assertEqual(defn.scope, "version" if defn.op_type == contract.EXTERNAL_EDIT_VERSION
+                                 else "project")
                 self.assertIn(defn.label_msgid, messages.CATALOG_ES)
         self.assertEqual(by_type["core.external_edit"].commands, ())
+        self.assertEqual(by_type["core.external_edit_version"].commands, ())
+        self.assertEqual(by_type["core.external_edit_version"].label_msgid,
+                         by_type["core.external_edit"].label_msgid)
         self.assertEqual(by_type["core.accept_review"].commands,
                          ("geoblender.core_accept_review",))
         self.assertEqual(by_type["core.import_layer"].commands,

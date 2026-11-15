@@ -116,6 +116,7 @@ from ..core.constraints.declared import DeclaredConstraint, write_declared
 from ..core.constraints.store import constraint_names
 from ..core.content import builtin as core_builtin
 from ..core.content.encoder import NORMALIZER, ContentDigest, ContentHasher
+from ..core.datasets import external as dataset_external
 from ..core.datasets import registry as dataset_registry
 from ..core.datasets.model import (
     DATASET_DECLARATIONS,
@@ -487,14 +488,26 @@ def _editable(conn: sqlite3.Connection, version: str | None, op_type: str) -> Ve
     return versions_store.require_editable(conn, str(version))
 
 
+def _written_by(conn: sqlite3.Connection, record: DatasetRecord, operation_uid: str | None) -> bool:
+    """Si el contenido del dato ``record`` lo escribió la operación ``operation_uid``: ella misma o, si se editó
+    fuera de Geoblender (su último escritor es la edición externa), la última de Geoblender que lo escribió
+    (``core.datasets.external.last_writer``; spec 015, T20). Con ``None``, no."""
+    if operation_uid is None:
+        return False
+    return (record.operation_uid == operation_uid
+            or dataset_external.last_writer(conn, record.uid) == operation_uid)
+
+
 def _check_name(conn: sqlite3.Connection, op_type: str, name: str, version: Version,
                 replacing: str | None, parts: Sequence[str] = ()) -> None:
     """RF-013-17: ningún dato vigente de la versión tiene ya el nombre de alguna de las salidas de
     ``op_type`` para ``name`` (el mismo nombre en ASCII), salvo uno escrito por la operación
-    ``replacing`` a la que sustituye la nueva. Con ``parts`` (un ajuste, T32: una salida de cada
-    familia por parte), las salidas son las de ``f"{name} {parte}"``, y dos partes que dan el mismo
-    nombre también se rechazan. ``DesignError`` ``des.operation_name_repeated``; ``GisError``
-    ``gis.dataset_name_invalid`` si el nombre no tiene ninguna letra ni cifra."""
+    ``replacing`` a la que sustituye la nueva (la que lo escribió o, si se editó fuera de Geoblender,
+    la última de Geoblender que lo escribió: ``core.datasets.external.last_writer``, spec 015, T20).
+    Con ``parts`` (un ajuste, T32: una salida de cada familia por parte), las salidas son las de
+    ``f"{name} {parte}"``, y dos partes que dan el mismo nombre también se rechazan.
+    ``DesignError`` ``des.operation_name_repeated``; ``GisError`` ``gis.dataset_name_invalid`` si el
+    nombre no tiene ninguna letra ni cifra."""
     labels = [f"{name} {part}" for part in parts] or [name]
     seen: set[str] = set()
     for family in provenance.OPERATION_TYPES_BY_NAME[op_type].outputs:
@@ -502,7 +515,7 @@ def _check_name(conn: sqlite3.Connection, op_type: str, name: str, version: Vers
             dataset = provenance.dataset_name(family, label)
             record = dataset_registry.get(conn, dataset, version_uid=version.uid)
             if dataset in seen or (record is not None and record.live
-                                   and record.operation_uid != replacing):
+                                   and not _written_by(conn, record, replacing)):
                 raise DesignError("des.operation_name_repeated", obj=f"Operación «{name}»",
                                   field="nombre", value=name, dataset=dataset,
                                   version=version.code)

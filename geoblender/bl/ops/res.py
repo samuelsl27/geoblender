@@ -3091,7 +3091,8 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
             request = verify_request(self, project)
             inputs = (*compliance_store.verify_inputs(project, version_uid, request.start,
                                                       request.finals),
-                      *masks_provenance.compile_inputs(masks_store.available_tables(project)))
+                      *masks_provenance.compile_inputs(
+                          masks_store.available_tables(project, version_uid)))  # con las declaradas (RF-015-11)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}

@@ -219,6 +219,38 @@ CATALOG: tuple[Message, ...] = (
         "diseño no está en ellas (se declaró después de compilarlas); compílelas de nuevo "
         "({command}).",
     ),
+    Message(
+        "core.constraint_masks_declared_blocked",
+        "The masks of {version} cannot be used: the constraints declared by the design entities cannot "
+        "be used (they were edited outside Geoblender, or their table is missing); accept the edit "
+        "with a reason or recompute the declaration so the entities put them back, and then compile "
+        "the masks again ({command}).",
+        "Las máscaras de {version} no se pueden usar: las restricciones declaradas por las entidades de "
+        "diseño no se pueden usar (se editaron fuera de Geoblender o falta su tabla); acepte la edición "
+        "con un motivo o recalcule la declaración para que las entidades las vuelvan a poner, y "
+        "compile las máscaras de nuevo ({command}).",
+    ),
+    # Las restricciones declaradas por las entidades, editadas fuera de Geoblender (spec 015, T20;
+    # RF-015-11, RF-008-56; gis.masks.store y gis.masks.access) --------------------------------------
+    Message(
+        "core.constraint_declared_blocked",
+        "The constraints declared by the design entities of {version} ({names}) were edited outside "
+        "Geoblender and are not edited by hand: accept the edit with a reason or have the entities put "
+        "them back (recompute «{table}»); the masks are not compiled meanwhile.",
+        "Las restricciones declaradas por las entidades de diseño de {version} ({names}) se editaron "
+        "fuera de Geoblender y no se editan a mano: acepte la edición con un motivo o haga que las "
+        "entidades las vuelvan a poner (recalcule «{table}»); mientras tanto no se compilan las "
+        "máscaras.",
+    ),
+    Message(
+        "core.constraint_declared_unusable",
+        "The table «{table}» with the constraints declared by the design entities of {version} is "
+        "missing or damaged: recompute it so the entities put the constraints back; the masks are "
+        "not compiled meanwhile.",
+        "La tabla «{table}» con las restricciones declaradas por las entidades de diseño de {version} "
+        "falta o está dañada: recalcúlela para que las entidades vuelvan a poner las restricciones; "
+        "mientras tanto no se compilan las máscaras.",
+    ),
     # Exportar las máscaras (RF-012-20; gis.masks.export) --------------------------------------
     Message(
         "core.constraint_export_read_only",

@@ -13,7 +13,8 @@ RF-012-16, RF-012-28; plan 012 §5.2.3, A5, A11, D-24).
   varios pasos: las zonas anteriores, 182.753 filas con 500 restricciones, se leen por trozos
   (0,27 s de una vez; RNF-012-06).
 - :func:`begin_compile` rechaza antes de registrar nada lo que no se puede compilar (sin versión
-  activa o en una no editable, RF-012-16; restricciones incompletas o no válidas, RF-012-04; sin
+  activa o en una no editable, RF-012-16; la tabla de las declaradas bloqueada por una edición fuera de
+  Geoblender, RF-015-11; restricciones incompletas o no válidas, RF-012-04; sin
   límite legal, RF-012-15) y empieza ``gis.compile_constraints`` «en curso» (sustituyendo a la
   anterior) con sus entradas, sus parámetros y sus ajustes. :func:`begin_compile_steps` (T23) es
   lo mismo en varios pasos (la lectura, la comprobación de cada restricción y de cada polígono, la
@@ -570,12 +571,15 @@ def gather_steps(project: StoreProject, *, version: str) -> Generator[None, None
     """:func:`gather` por pasos (T31; RNF-012-06): una unidad por la lectura de las
     restricciones, los parámetros, los sectores y las búsquedas, y las de lo de la compilación
     anterior (:func:`_previous_steps`: sus zonas, por trozos de filas). Devuelve lo mismo que
-    :func:`gather`; los rechazos (``VersionError``), al avanzar. Cerrarlo a mitad no deja nada."""
+    :func:`gather`; los rechazos (``VersionError``; ``ConstraintError`` ``core.constraint_declared_blocked`` si la
+    tabla de las declaradas de la versión se editó fuera de Geoblender, RF-015-11: se comprueba **antes de leerla**),
+    al avanzar. Cerrarlo a mitad no deja nada."""
     record = project.record
     if record is None:
         raise ValueError(f"el proyecto «{project.name}» se abrió solo con su cabecera")
     with project.read() as conn:
         found = versions_store.require_editable(conn, version)
+        declared_store.require_usable(conn, found.uid, found.code)  # RF-015-11: no se compila con ella editada
         constraints, resolved = _constraints_in(conn, project, found.uid)
         sectors = cstore.read_sectors(conn)
         searches = cstore.read_searches(conn)

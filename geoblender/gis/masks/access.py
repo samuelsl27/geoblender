@@ -19,7 +19,14 @@ Un operador de otro módulo (diseño, verificación…) pide las máscaras **sol
   ``core.constraint_masks_declared_new``). Es **por versión** (la tabla de V01 no es de V02) y una
   versión compilada antes de la 015, sin tabla viva, sigue al día; una compilación que la
   consumió, aunque esté vacía, está al día mientras su hash no cambie (eso lo da el grafo).
-- :func:`mask_cause`: por qué están obsoletas, si es por lo que no ve el grafo (H-1).
+  **Editar la tabla fuera de Geoblender** (spec 015, T20; RF-015-11, RF-008-56): si la tabla de declaradas viva
+  de la versión está **bloqueada** por una edición hecha en QGIS (o falta o está dañada), las máscaras están
+  obsoletas con su causa (:class:`MaskCause` ``DECLARED_BLOCKED``; ``core.constraint_masks_declared_blocked``) y
+  **no se compilan** mientras tanto (``gis.masks.store.gather_steps`` se niega con
+  ``core.constraint_declared_blocked`` antes de leer la tabla) hasta que la persona acepte la edición con un
+  motivo o la entidad la vuelva a poner.
+- :func:`mask_cause`: por qué están obsoletas, si es por lo que no ve el grafo (H-1) o por una tabla de
+  declaradas que no se puede usar.
 - :func:`require_current`: ``MaskError`` si las máscaras de una versión no están al día, con la
   causa nombrada; lo que usan los operadores antes de registrar nada.
 - :func:`load_masks`: el :class:`MaskSet` de una versión al día (la rejilla, cada máscara por su
@@ -127,12 +134,18 @@ class MaskCause(StrEnum):
     DECLARED_NEW = "declared_new"
     """La versión tiene una tabla de restricciones declaradas por sus entidades (``des_decl_<vNN>``) viva que
     la compilación vigente no consumió: una declarada nueva (RF-012-29)."""
+    DECLARED_BLOCKED = "declared_blocked"
+    """La tabla de restricciones declaradas de la versión está **bloqueada** por una edición hecha fuera de
+    Geoblender (o falta o está dañada): no se compilan las máscaras con ella hasta que la persona acepte la
+    edición con un motivo o la entidad la vuelva a poner (RF-015-11, RF-008-56)."""
 
 
 class MaskError(ConstraintError):
     """Las máscaras pedidas no están al día (RF-012-17): ``core.constraint_masks_missing``,
     ``core.constraint_masks_stale`` o, si lo que falta es una restricción declarada por una entidad
-    (:class:`MaskCause`), ``core.constraint_masks_declared_new``, con la versión y la orden de compilar."""
+    (:class:`MaskCause`), ``core.constraint_masks_declared_new`` (una nueva) o
+    ``core.constraint_masks_declared_blocked`` (la tabla se editó fuera de Geoblender), con la versión y la
+    orden de compilar."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +274,8 @@ def _state(conn: sqlite3.Connection, project: StoreProject,
     assert raster is not None
     if not Path(project.root, *raster.locator.split("/")).is_file():
         return MaskState.MISSING, None, None
+    if declared_store.unusable_record(conn, version_uid) is not None:  # RF-015-11: la tabla, editada fuera
+        return MaskState.STALE, operation, MaskCause.DECLARED_BLOCKED
     if _declared_unseen(conn, version_uid, operation):  # H-1: lo que el grafo no ve
         return MaskState.STALE, operation, MaskCause.DECLARED_NEW
     uids = [operation, *(record.uid for record in records.values() if record is not None)]
@@ -346,8 +361,9 @@ def mask_state(project: StoreProject, version_uid: str) -> tuple[MaskState, tupl
 def mask_cause(project: StoreProject, version_uid: str) -> MaskCause | None:
     """Por qué las máscaras de la versión ``version_uid`` (uid o código) están obsoletas **cuando no lo
     dice el grafo de la 008** (el hueco H-1; véase el módulo): ``MaskCause.DECLARED_NEW`` si tiene una tabla
-    de declaradas viva que la compilación no consumió; ``None`` en cualquier otro caso (al día, sin
-    compilar, u obsoletas por una causa del grafo, que está en ``gb_stale``). Solo lee."""
+    de declaradas viva que la compilación no consumió; ``MaskCause.DECLARED_BLOCKED`` si esa tabla está
+    bloqueada por una edición fuera de Geoblender (o falta o está dañada); ``None`` en cualquier otro caso (al
+    día, sin compilar, u obsoletas por una causa del grafo, que está en ``gb_stale``). Solo lee."""
     return _find(project, version_uid).cause
 
 
@@ -359,6 +375,8 @@ def _refuse(found: _Found) -> MaskError:
         code = "core.constraint_masks_missing"
     elif found.cause is MaskCause.DECLARED_NEW:
         code = "core.constraint_masks_declared_new"
+    elif found.cause is MaskCause.DECLARED_BLOCKED:
+        code = "core.constraint_masks_declared_blocked"
     else:
         code = "core.constraint_masks_stale"
     return MaskError(code, field="máscaras", value=found.state.value,
@@ -368,7 +386,8 @@ def _refuse(found: _Found) -> MaskError:
 def require_current(project: StoreProject, version_uid: str) -> None:
     """``MaskError`` si las máscaras de la versión ``version_uid`` (uid o código) no están al día
     (``core.constraint_masks_missing``, ``core.constraint_masks_stale`` o, por el hueco H-1,
-    ``core.constraint_masks_declared_new``: RF-012-17; véase el módulo), con la versión y la orden de
+    ``core.constraint_masks_declared_new`` y, por una tabla de declaradas editada fuera,
+    ``core.constraint_masks_declared_blocked``: RF-012-17; véase el módulo), con la versión y la orden de
     compilar. Solo lee: es lo que comprueba un operador antes de registrar nada."""
     found = _find(project, version_uid)
     if found.state is not MaskState.CURRENT:

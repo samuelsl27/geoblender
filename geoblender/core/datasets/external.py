@@ -417,20 +417,38 @@ def _status_data(record: DatasetRecord) -> dict[str, Any]:
             "input_uid": record.input_uid}
 
 
+def _owner_version(conn: sqlite3.Connection, uid: str) -> str:
+    """El uid de la versión de la que es el dato ``uid`` (``''``: del proyecto, o un proyecto del
+    esquema 2, que aún no tiene versiones)."""
+    from ..versions.read import dataset_versions
+
+    try:
+        return dataset_versions(conn, [uid]).get(uid, "")
+    except sqlite3.OperationalError as exc:  # el esquema 2: sin versiones
+        if "version_uid" not in str(exc):
+            raise
+        return ""
+
+
 def _external_edit(conn: sqlite3.Connection, project: OperationProject,
                    finding: DatasetFinding, now: str) -> DatasetFinding:
     """La edición externa (RF-008-21, D9): una operación ``core.external_edit`` que consume la
     versión anterior del dato y produce la nueva, completada en ``conn``; si su módulo no lo
-    declara editable a mano, el dato queda bloqueado (RF-008-56). Con su evento."""
-    from ..provenance.contract import EXTERNAL_EDIT
+    declara editable a mano, el dato queda bloqueado (RF-008-56). Con su evento. Si el dato es
+    **de una versión** (spec 009, D-14: una operación de proyecto no puede usarlo), la operación
+    es ``core.external_edit_version``, de esa versión y de su revisión abierta (spec 015, T20;
+    RF-015-11)."""
+    from ..provenance.contract import EXTERNAL_EDIT, EXTERNAL_EDIT_VERSION
     from ..provenance.operations import Executor, Use, begin_in_transaction
 
     record = finding.record
     blocked = finding.status is DatasetStatus.BLOCKED
     text = finding.text() or ""
+    owner = _owner_version(conn, record.uid)
     handle = begin_in_transaction(
-        conn, project, EXTERNAL_EDIT, settings={"dataset": record.name},
-        inputs=[Use(record.uid, EDITED_ROLE)], executor=Executor.EXTERNAL,
+        conn, project, EXTERNAL_EDIT_VERSION if owner else EXTERNAL_EDIT,
+        settings={"dataset": record.name}, inputs=[Use(record.uid, EDITED_ROLE)],
+        executor=Executor.EXTERNAL, version=owner or None,
     )
     (written,) = handle.complete(conn, outputs=[spec_of(record, role=EDITED_ROLE,
                                                         content=finding.digest)],

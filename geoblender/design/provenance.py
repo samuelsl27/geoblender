@@ -916,8 +916,10 @@ class OperationType:
     """Un tipo de operación de ``des`` sin sus funciones (plan §5.2.3): ``op_type``, su nombre
     visible (``label_msgid``, con su español en ``core/i18n/messages.toml``), las familias de
     datos que produce y los ajustes de su orden que enseña su procedencia; con su nombre, sus
-    cifras (``figures``), las órdenes que lo lanzan (``commands``; por defecto, :data:`COMMAND`) y
-    si se reproduce (``reproducible``). Todos son de versión (RF-009-05) y se repiten solos."""
+    cifras (``figures``), las órdenes que lo lanzan (``commands``; por defecto, :data:`COMMAND`), si
+    se reproduce (``reproducible``) y si su recálculo reúne él mismo todo lo vigente que consume
+    (``drops_discarded``: la declaración de restricciones, que lee las entidades vivas de la versión;
+    spec 015, T20). Todos son de versión (RF-009-05) y se repiten solos."""
 
     op_type: str
     label_msgid: str
@@ -926,6 +928,7 @@ class OperationType:
     figures: tuple[FigureDef, ...] = ()
     commands: tuple[str, ...] = (COMMAND,)
     reproducible: bool = True
+    drops_discarded: bool = False
 
     def definition(self, recompute: RecomputeFunction | None = None,
                    reproduce: ReproduceFunction | None = None) -> OperationDef:
@@ -939,7 +942,7 @@ class OperationType:
         return OperationDef(
             self.op_type, OP_VERSION, MODULE, self.label_msgid, True, scope="version",
             commands=self.commands, recompute=recompute, settings=self.settings,
-            reproduce=reproduce,
+            drops_discarded=self.drops_discarded, reproduce=reproduce,
             figure_tolerance=FIGURE_TOLERANCE if reproduce is not None else None)
 
 
@@ -970,7 +973,7 @@ ENTITY_OPERATION_TYPES: tuple[OperationType, ...] = (
     OperationType(PLATFORM, "Platform", (ENTITY_SURFACE_GRID, ENTITY_TABLE, ENTITY_REPORT_TABLE),
                   PLATFORM_SETTINGS, (*PLATFORM_FIGURES, *SUPPORT_FIGURES), (PLATFORM_COMMAND,)),
     OperationType(DECLARE_CONSTRAINTS, "Constraints of the entities", (DECLARED_TABLE,), (),
-                  DECLARE_FIGURES, (PLATFORM_COMMAND,)),
+                  DECLARE_FIGURES, (PLATFORM_COMMAND,), drops_discarded=True),
     OperationType(ENTITY_LAYER, "Layer of the entities", (ENTITY_MAP_TABLE,), (), (),
                   (PLATFORM_COMMAND,)),
 )

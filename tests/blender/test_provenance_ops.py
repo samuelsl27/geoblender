@@ -176,10 +176,11 @@ EMPTY_TEXT = ("No hay ninguna carpeta de solo lectura: ni la variable GEOBLENDER
 IGNORED_TEXT = ("No se tiene en cuenta la carpeta de solo lectura «relativa»: no es una ruta "
                 "completa, con su unidad o de red.")
 CORE_OPERATIONS = ("core.accept_review", "core.declare_sectors", "core.edit_constraints",
-                   "core.edit_intentions", "core.external_edit", "core.find_untouchables",
-                   "core.import_layer")
-"""Las operaciones de ``core`` registradas: las de la 008 y, con la 012 (T21), las cuatro de las
-restricciones (``bl/ops/core_constraints.py``; su registro, en ``test_constraints_registration``)."""
+                   "core.edit_intentions", "core.external_edit", "core.external_edit_version",
+                   "core.find_untouchables", "core.import_layer")
+"""Las operaciones de ``core`` registradas: las de la 008 (la edición externa, también la de un dato de una
+versión: spec 015, T20) y, con la 012 (T21), las cuatro de las restricciones (``bl/ops/core_constraints.py``; su
+registro, en ``test_constraints_registration``)."""
 CORE_READERS = ("core.document@1", "core.gpkg_layer@1", "core.npz_mesh@1")
 CORE_IMPORTERS = ("core.gpkg_layer",)
 CORE_PARAMETERS = ("core.constraints.search_distance_m", "core.original_copy_limit")

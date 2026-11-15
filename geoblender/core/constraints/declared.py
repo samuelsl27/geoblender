@@ -35,6 +35,14 @@ acepte la edición con un motivo o la entidad la vuelva a poner (T20).
   contenido.
 - :func:`declared_dataset_spec`: su dato (``des_decl``, un ``vector`` de ``des`` leído con
   ``core.gpkg_layer@1``, papel :data:`DECLARED_ROLE`) con ``qgis_editable=False``.
+- :func:`unusable_record` y :func:`require_usable` (T20; RF-015-11, RF-008-56): si la tabla viva de la versión
+  está **bloqueada** por una edición hecha fuera de Geoblender (o falta o está dañada), la compilación de las
+  máscaras no se ejecuta con ella (``core.constraint_declared_blocked``: un error de dominio que nombra las
+  entidades, nunca el ``ValueError`` de :func:`read_declared`); la persona acepta la edición con un motivo o
+  recalcula la declaración (las entidades la vuelven a poner).
+- :func:`content_sha256_of` (T20): el hash de contenido que tendría la tabla con unas filas, **sin escribir en el
+  proyecto** (en un GeoPackage en memoria, con el lector y el normalizador del dato): con él se sabe si lo que hay
+  en el proyecto —tras aceptar una edición— difiere de lo que declararían las entidades.
 - :func:`live_table`, :func:`read_in_version` y :func:`names_in_version` (T18): lo que lee la
   compilación de la 012 y quien necesita sus nombres. La tabla de las declaradas **vivas** de una
   versión se busca en el registro de datos por el nombre :data:`DATASET_NAME` y el uid de la versión
@@ -54,15 +62,19 @@ import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from types import MappingProxyType
 
 import numpy as np
 
-from ..content.builtin import GPKG_LAYER
-from ..content.encoder import ContentDigest
+from ..content.builtin import GPKG_LAYER, layer_steps
+from ..content.encoder import NORMALIZER, ContentDigest
 from ..datasets import DatasetSpec, Store
 from ..datasets import registry as dataset_registry
-from ..gpkg.base import ColumnDef, create_feature_table, set_column_titles
+from ..datasets.external import UNUSABLE_STATUSES
+from ..datasets.model import DATASET_DECLARATIONS, DatasetRecord, DatasetStatus
+from ..georef import CrsRef
+from ..gpkg.base import ColumnDef, create_base, create_feature_table, set_column_titles
 from ..gpkg.wkb import decode_geometry, encode_geometry
 from ..versions.model import version_locator
 from .messages import ConstraintError
@@ -77,6 +89,7 @@ __all__ = [
     "DECLARED_PRIORITY",
     "DECLARED_ROLE",
     "DeclaredConstraint",
+    "content_sha256_of",
     "create_declared_table",
     "declared_code",
     "declared_dataset_spec",
@@ -88,6 +101,8 @@ __all__ = [
     "names_in_version",
     "read_declared",
     "read_in_version",
+    "require_usable",
+    "unusable_record",
     "write_declared",
 ]
 
@@ -403,6 +418,27 @@ def write_declared(conn: sqlite3.Connection, table: str, rows: Iterable[Declared
     return tuple(fids)
 
 
+def content_sha256_of(rows: Iterable[DeclaredConstraint], table: str, crs: CrsRef, *,
+                      normalizer: str = NORMALIZER) -> str:
+    """El hash de contenido que tendría la tabla ``table`` de las declaradas con ``rows`` (T20; RF-015-11),
+    **sin escribir en el proyecto**: la escribe con :func:`write_declared` en un GeoPackage en memoria con el CRS
+    ``crs`` (el del proyecto) y la lee con el lector de las capas (``core.gpkg_layer@1``) y el ``normalizer`` del
+    dato, como lo hace el registro de datos. Las mismas filas dan el mismo hash que dejó la declaración al
+    escribirlas. Los errores de :func:`write_declared`."""
+    found = tuple(rows)
+    conn = sqlite3.connect(":memory:")
+    try:
+        create_base(conn, crs)
+        write_declared(conn, table, found, srs_id=crs.epsg)  # type: ignore[arg-type]
+        request = GPKG_LAYER.request("vector", DATASET_DECLARATIONS, {"main": Path(":memory:")},
+                                     {"layer": table, "selector": None}, normalizer=normalizer)
+        for _progress in layer_steps(conn, request):
+            pass
+        return request.hasher.digest().content_sha256
+    finally:
+        conn.close()
+
+
 def _polygons(blob: object) -> tuple[tuple[np.ndarray, ...], ...]:
     """Las partes absolutas (anillos ``(k, 2)``) de un blob ``MULTIPOLYGON`` o ``POLYGON``."""
     geometry = decode_geometry(bytes(blob), external=True)  # type: ignore[arg-type]
@@ -449,6 +485,47 @@ def live_table(conn: sqlite3.Connection, version_uid: str | None) -> str | None:
         return None
     record = dataset_registry.get(conn, DATASET_NAME, version_uid=version_uid)
     return None if record is None else str(record.locator)
+
+
+def unusable_record(conn: sqlite3.Connection, version_uid: str | None) -> DatasetRecord | None:
+    """El dato de las declaradas **vivo** de la versión ``version_uid`` si **no se puede usar**: lo editó una
+    persona fuera de Geoblender y el módulo lo declara no editable a mano (``blocked``: RF-015-11, RF-008-56), o
+    falta o está dañado (RF-008-57); ``None`` sin versión, sin tabla viva o con una que se puede usar. Solo
+    lee."""
+    if not version_uid:
+        return None
+    record = dataset_registry.get(conn, DATASET_NAME, version_uid=version_uid)
+    return record if record is not None and record.status in UNUSABLE_STATUSES else None
+
+
+def _entity_names(conn: sqlite3.Connection, table: str) -> str:
+    """Los nombres de las entidades de la tabla ``table`` entre «», por ``fid``, sin leer su geometría; el
+    nombre de la tabla si no se pueden leer (la tabla falta o ya no tiene la columna: se editó fuera)."""
+    try:
+        found = [str(name) for (name,) in conn.execute(
+            f'SELECT DISTINCT entity_name FROM "{_check_table(table)}" ORDER BY entity_code, fid')]
+    except sqlite3.Error:
+        found = []
+    return ", ".join(f"«{name}»" for name in found if name) or f"«{table}»"
+
+
+def require_usable(conn: sqlite3.Connection, version_uid: str | None, version_code: str) -> None:
+    """``ConstraintError`` si la tabla de las declaradas de la versión ``version_uid`` (``version_code``, para el
+    mensaje) no se puede usar (:func:`unusable_record`): ``core.constraint_declared_blocked`` si la editó una
+    persona fuera de Geoblender (con las entidades que declaran y la tabla), o
+    ``core.constraint_declared_unusable`` si falta o está dañada. Es lo que la compilación de las máscaras
+    comprueba **antes de leer** la tabla (RF-015-11: no se compila con ella mientras tanto, y una fila editada no
+    llega a ``read_declared``). Solo lee."""
+    record = unusable_record(conn, version_uid)
+    if record is None:
+        return
+    table = str(record.locator)
+    if record.status is DatasetStatus.BLOCKED:
+        raise ConstraintError("core.constraint_declared_blocked", version=version_code, table=table,
+                              names=_entity_names(conn, table), field="restricciones declaradas",
+                              value=table)
+    raise ConstraintError("core.constraint_declared_unusable", version=version_code, table=table,
+                          field="restricciones declaradas", value=table)
 
 
 def read_in_version(conn: sqlite3.Connection, version_uid: str | None, *,

@@ -83,7 +83,11 @@ huella, su resguardo obligatorio (D-19), el motivo generado o el que editó la p
 :func:`declare_constraints_steps` y :func:`recompute_declaration` la preparan (rechazando proteger sin
 resguardo y proteger en «corte y relleno», RF-015-12), la registran en **una** transacción reescribiendo la
 tabla entera ``des_decl_<vNN>`` y la repiten. El mismo contenido de entidades da el mismo hash. La reproducción
-desde lo congelado, ``design.reproduce.reproduce_declare_constraints``.
+desde lo congelado, ``design.reproduce.reproduce_declare_constraints``. **Editarla fuera de Geoblender** (T20;
+RF-015-11, RF-008-56): la tabla es de las entidades, así que una edición en QGIS la bloquea y no se compilan las
+máscaras con ella hasta que se acepte con un motivo o la entidad la vuelva a poner (declarar o recalcular la
+declaración, que reescribe la tabla entera); :func:`declaration_diverges` dice, sin recalcular, si lo vigente
+—p. ej. tras aceptar una edición— difiere de lo que declaran las entidades.
 
 **Tras la orden de una entidad** (T19; RF-015-10, RF-015-16, RF-012-06; P-7; D-21): :func:`after_entity_change` es
 lo que encadena cada orden de entidades tras su commit —y, con la misma función, descartar y retirar (T25, T26)—,
@@ -120,9 +124,15 @@ from typing import Any
 
 import numpy as np
 
-from ..core.constraints.declared import DeclaredConstraint, declared_code, declared_uid
+from ..core.constraints.declared import (
+    DeclaredConstraint,
+    content_sha256_of,
+    declared_code,
+    declared_uid,
+)
 from ..core.constraints.model import ConstraintType
 from ..core.constraints.store import constraint_names
+from ..core.datasets import external as dataset_external
 from ..core.datasets import registry as dataset_registry
 from ..core.errors import GeoblenderError
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterRecord, ParameterStore, definition
@@ -133,14 +143,14 @@ from ..core.provenance.graph import DATASET
 from ..core.provenance.operations import OperationHandle, OperationStatus, Use
 from ..core.provenance.recompute import RecomputeRequest
 from ..core.versions import read as versions_read
-from ..core.versions.model import Version
+from ..core.versions.model import Version, VersionError
 from ..gis.masks import access
 from ..gis.masks import provenance as masks_provenance
 from ..gis.masks.store import StoredMasks
 from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S, Change
 from ..gis.raster import Raster
-from ..gis.store import StoreProject, load_features
+from ..gis.store import StoreProject, load_features, project_references
 from ..gis.vector import FeatureLayer
 from . import entities, pipeline, provenance
 from .compose import admitted
@@ -224,6 +234,7 @@ __all__ = [
     "after_entity_change",
     "compute_platform_steps",
     "create_platform",
+    "declaration_diverges",
     "declare_constraints_steps",
     "declared_rows_steps",
     "declared_sources",
@@ -1787,10 +1798,14 @@ class PreparedDeclaration:
 
 def _live_declaration(conn: sqlite3.Connection, version: Version) -> str | None:
     """El uid de la operación de declaración que escribió la tabla vigente de la versión (``des_decl``), la
-    que sustituye la nueva; ``None`` si todavía no se declaró."""
+    que sustituye la nueva; ``None`` si todavía no se declaró. Si la tabla se editó fuera de Geoblender
+    (RF-015-11: su dato lo escribió la edición externa), la última declaración de Geoblender que la escribió
+    (``core.datasets.external.last_writer``): es la que repite la entidad al volver a ponerla."""
     record = dataset_registry.get(conn, provenance.dataset_name(provenance.DECLARED_TABLE),
                                   version_uid=version.uid)
-    return record.operation_uid if record is not None and record.live else None
+    if record is None or not record.live:
+        return None
+    return dataset_external.last_writer(conn, record.uid)
 
 
 def prepare_declaration(project: StoreProject, version: Version | str | None, *,
@@ -1898,6 +1913,40 @@ def declare_constraints_steps(project: StoreProject, version: Version | str | No
     _handle, work = run_declaration(project, version=version, supersedes=supersedes,
                                     budget_s=budget_s)
     yield from work
+
+
+def declaration_diverges(project: StoreProject, version: Version | str) -> bool:
+    """Si lo que hay hoy en la tabla de las declaradas de la versión ``version`` (``Version``, uid o código)
+    **difiere** de lo que declararían sus entidades vivas (spec 015, T20; RF-015-11, RF-008-56; plan 015 §5.8):
+    el hash de contenido registrado de ``des_decl_<vNN>`` frente al que saldría de declarar ahora
+    (:func:`declared_sources` y :func:`declared_rows_steps`, escritos en un GeoPackage en memoria:
+    ``core.constraints.declared.content_sha256_of``), **sin recalcular ni escribir nada**. Pasa tras **aceptar con
+    un motivo una edición** hecha en QGIS: lo vigente es lo aceptado, y hasta que una entidad lo vuelva a poner
+    (declarar de nuevo, lo que hace toda orden de entidades) no coincide con lo que declaran. Es la cifra que
+    enseñará la barra N. ``False`` si la versión no tiene tabla viva (nada declarado: nada que difiera).
+    ``VersionError`` (``core.version_unknown``) si la versión no existe; los rechazos de
+    :func:`declared_rows_steps` (proteger sin resguardo o en «corte y relleno»: ``DesignError``) si lo que
+    declararían las entidades hoy no se puede declarar."""
+    wanted = version.uid if isinstance(version, Version) else version
+    with _consistent(project) as conn:
+        found = versions_read.version(conn, wanted)
+        if found is None:
+            raise VersionError("core.version_unknown", field="versión", value=wanted, version=wanted)
+        record = dataset_registry.get(conn, provenance.dataset_name(provenance.DECLARED_TABLE),
+                                      version_uid=found.uid)
+        if record is None or not record.live:
+            return False
+        sources = declared_sources(project, found, conn=conn)
+    rows = declared_rows_steps(sources, project_frame(project).grid, found.uid)
+    while True:
+        try:
+            next(rows)
+        except StopIteration as stop:
+            expected = stop.value
+            break
+    crs, _vertical = project_references(project)
+    return content_sha256_of(expected, record.locator, crs,
+                             normalizer=record.normalizer) != record.content_sha256
 
 
 def recompute_declaration(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S

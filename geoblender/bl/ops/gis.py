@@ -4525,7 +4525,8 @@ class GEOBLENDER_OT_gis_compile_constraints(ProvenanceAwareOperator, _StepsModal
         from ...gis.masks import store as masks_store  # al usarlo: habilitar no lo carga (T38)
 
         try:
-            inputs = masks_provenance.compile_inputs(masks_store.available_tables(project))
+            inputs = masks_provenance.compile_inputs(
+                masks_store.available_tables(project, version_uid))  # con las declaradas (RF-015-11)
         except (GeoblenderError, sqlite3.Error, OSError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}

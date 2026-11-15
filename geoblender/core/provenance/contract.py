@@ -35,7 +35,8 @@ no se quita mientras su grupo está registrado) y su búsqueda, que da un
 grupo se registra después de sus tipos y se quita antes.
 
 ``core`` declara sus operaciones en :data:`CORE_OPERATIONS` (las registra ``bl/``):
-``core.external_edit`` (una edición hecha fuera de Geoblender, D9), ``core.accept_review``
+``core.external_edit`` (una edición hecha fuera de Geoblender, D9) y ``core.external_edit_version``
+(la misma, de un dato **de una versión**: spec 015, T20), ``core.accept_review``
 («dar por buena» una operación que espera revisión a mano, D8) y ``core.import_layer``
 (registrar una capa de un GeoPackage como entrada, D14; su importador, el del lector
 ``core.gpkg_layer``, está en ``core.provenance.importer``). Ninguna se repite sola. Python
@@ -727,6 +728,12 @@ def importer_def(reader_id: str) -> ImporterDef:
 EXTERNAL_EDIT = "core.external_edit"
 """Edición hecha fuera de Geoblender en un dato no inmutable (RF-008-21; D9): consume la
 versión anterior del dato y produce la nueva, con ejecutor ``external``."""
+EXTERNAL_EDIT_VERSION = "core.external_edit_version"
+"""Lo mismo que :data:`EXTERNAL_EDIT`, de un dato **de una versión** (spec 015, T20; RF-008-21, RF-008-56,
+RF-012-29, RF-015-11): una operación **de la versión del dato** y de su revisión abierta, que es el único ámbito
+en que puede consumir y producir un dato de esa versión (una de proyecto no puede: ``core.version_data_in_project``,
+D-14 de la 009). La registra ``core.datasets.external`` en lugar de la de proyecto cuando el dato es de una
+versión."""
 ACCEPT_REVIEW = "core.accept_review"
 """«Dar por buena» una operación que espera revisión a mano (RF-008-27; D8): consume las
 versiones vigentes, «produce» las mismas salidas y sustituye a la revisada."""
@@ -736,6 +743,7 @@ IMPORT_LAYER = "core.import_layer"
 
 CORE_OPERATIONS: tuple[OperationDef, ...] = (
     OperationDef(EXTERNAL_EDIT, "1.0", "core", EXTERNAL_EDIT_MSGID, False),
+    OperationDef(EXTERNAL_EDIT_VERSION, "1.0", "core", EXTERNAL_EDIT_MSGID, False, scope="version"),
     OperationDef(ACCEPT_REVIEW, "1.0", "core", ACCEPT_REVIEW_MSGID, False,
                  commands=("geoblender.core_accept_review",)),
     OperationDef(IMPORT_LAYER, "1.0", "core", IMPORT_LAYER_MSGID, False,
