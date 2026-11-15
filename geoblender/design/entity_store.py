@@ -2084,8 +2084,9 @@ def declared_sources(project: StoreProject, version: Version, *,
 @dataclass(frozen=True, slots=True, eq=False)
 class PreparedDeclaration:
     """Lo que se lee y se comprueba antes de declarar (:func:`prepare_declaration`): la ``version``, las
-    entidades vivas que recoge (``sources``, todas: de las que no protegen solo se anota su dato y que
-    protegen o no), la rejilla del proyecto (``grid``) y lo que anotará la operación (``start``)."""
+    entidades vivas que recoge (``sources``, todas: de las que no protegen solo se lee que protegen o no, su
+    parámetro ``protect``; su dato ``des_epr_`` no es entrada de la operación), la rejilla del proyecto
+    (``grid``) y lo que anotará la operación (``start``)."""
 
     version: Version
     sources: tuple[DeclaredSource, ...]
@@ -2110,10 +2111,13 @@ def prepare_declaration(project: StoreProject, version: Version | str | None, *,
     """Prepara ``des.declare_constraints`` en la versión editable ``version`` (spec 015, T17; RF-015-10): lee
     las entidades vivas (:func:`declared_sources`), **rechaza** antes de empezar lo que no puede declarar
     (:func:`_check_declares`: proteger sin resguardo, D-19, o en «corte y relleno», RF-015-12) y arma lo que
-    anotará la operación: de **todas** las entidades vivas calculadas, su dato ``des_epr_`` como entrada
-    (papel ``entity``) y sus ajustes (con la versión y, de las que protegen, su decisor y la fecha de su
-    decisión) y los parámetros que lee (``protect`` de cada una; ``mode`` y ``guard_m`` de las que protegen;
-    ``reason`` de las que editaron su motivo: :func:`~.provenance.declare_params`). No pide máscaras al día
+    anotará la operación: **solo de las entidades vivas calculadas que protegen** (plan 015 §5.2.3; corregido
+    en la T26: antes eran las de todas, y una que no protegía, retirada o descartada, dejaba obsoleta en
+    cascada la declaración, las máscaras y lo que las usó), su dato ``des_epr_`` como entrada (papel
+    ``entity``) y sus ajustes (las entidades, la versión y su decisor y la fecha de su decisión); y los
+    parámetros que lee, de **todas** las vivas (``protect`` y ``name``; ``mode`` y ``guard_m`` de las que
+    protegen; ``reason`` de las que editaron su motivo: :func:`~.provenance.declare_params`), de modo que
+    cambiar el ``protect`` de una la deja obsoleta. No pide máscaras al día
     (la declaración las deja obsoletas: RF-012-06; las recompila la orden, T19). ``supersedes``: la
     declaración que sustituye (por defecto, la vigente de la versión, si la hay).
 
@@ -2127,16 +2131,19 @@ def prepare_declaration(project: StoreProject, version: Version | str | None, *,
         before = _live_declaration(conn, found) if supersedes is None else supersedes
     for source in sources:
         _check_declares(source)
-    protecting = [source.code for source in sources if source.protect]
+    # Solo las que protegen aportan su dato (plan 015 §5.2.3): una que no protege, retirada o descartada, no
+    # deja obsoleta la declaración, ni en cascada las máscaras y lo que las usó. Lo que cambia si una pasa a
+    # proteger o deja de hacerlo es su parámetro ``protect``, que sí lee la operación de todas las vivas.
+    protecting_sources = [source for source in sources if source.protect]
+    protecting = [source.code for source in protecting_sources]
     settings = provenance.declare_settings(
-        [(source.code, source.calc_name) for source in sources], version_uid=found.uid,
-        decisions={source.code: (source.decided_by, source.decided_on) for source in sources
-                   if source.protect and source.decided_by is not None
-                   and source.decided_on is not None})
-    inputs = provenance.declare_inputs(source.calc_name for source in sources)
+        [(source.code, source.calc_name) for source in protecting_sources], version_uid=found.uid,
+        decisions={source.code: (source.decided_by, source.decided_on) for source in protecting_sources
+                   if source.decided_by is not None and source.decided_on is not None})
+    inputs = provenance.declare_inputs(source.calc_name for source in protecting_sources)
     params = provenance.declare_params(
         [source.code for source in sources], protecting=protecting,
-        reasoned=[source.code for source in sources if source.protect and source.reason is not None])
+        reasoned=[source.code for source in protecting_sources if source.reason is not None])
     begun = _start(project, provenance.DECLARE_CONSTRAINTS, "", found, None, settings, inputs, params,
                    before)
     return PreparedDeclaration(found, sources, project_frame(project).grid, begun)
