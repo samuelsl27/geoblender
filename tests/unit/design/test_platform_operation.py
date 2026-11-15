@@ -956,20 +956,41 @@ class ObsoleteTest(ObsoleteCase):
 
 
 class FrozenConsumersTest(ObsoleteCase):
-    """RF-015-16 (RF-009-19): lo que usó las máscaras en una revisión **congelada** no se marca
-    obsoleto."""
+    """RF-015-16 (RF-009-19): lo que **está en** una revisión congelada no cambia ni se marca (sus elementos),
+    pero lo **vigente** de la versión, aunque lo registrara una revisión que luego se congeló, sigue siendo lo
+    vigente y el grafo de la 008 lo marca obsoleto en la revisión abierta («en curso», D-23 de la 009): el resumen
+    de lo que quedará obsoleto lo cuenta (T27: antes filtraba por ``r.state = 'open'`` y tras congelar daba
+    ``[]``, y avisaba de menos)."""
 
-    def test_a_the_operations_of_a_frozen_revision_are_not_marked(self) -> None:
-        """RF-015-16: tras congelar V01, la cantera y su transición (ya en la revisión congelada) no
-        salen entre lo que quedará obsoleto; las máscaras de la versión, sí."""
+    def test_a_what_is_live_in_a_frozen_revision_is_counted_with_what_will_be_obsolete(self) -> None:
+        """RF-015-16, RF-015-03, RF-009-19 (T27; cambia lo que describía la T12: «la cantera y su transición no
+        salen»): tras congelar V01, la cantera y su transición siguen siendo las operaciones vigentes de la
+        versión —la 008 las marcaría obsoletas si cambiaran las máscaras— y salen entre lo que quedará obsoleto,
+        con las máscaras de la versión."""
         with self.project.write_transaction() as conn:
             freeze_rows(conn, self.v1, now=self.clock.now().isoformat(timespec="seconds"),
                         reason="Siguiente")
         calculation = self.calculate(prep.request(start="gis_dtm_borde", protect=True,
                                                   guard_m=4.0))
-        self.assertEqual([item.kind for item in calculation.summary.obsolete],
-                         [preview.ObsoleteKind.MASKS])
-        self.assertNotIn("des.entity_obsolete_consumers", codes(calculation.summary))
+        found = calculation.summary.obsolete
+        self.assertEqual(found[0].kind, preview.ObsoleteKind.MASKS)
+        self.assertEqual({(item.kind, item.name, item.uid) for item in found[1:]},
+                         {(preview.ObsoleteKind.CONSUMER, self.QUARRY, self.quarry.handle.uid),
+                          (preview.ObsoleteKind.CONSUMER, self.TRANSITION, self.transition.handle.uid)})
+        used = only(calculation.summary, "des.entity_obsolete_consumers")
+        self.assertEqual(used.values["operations"], 2)
+
+    def test_b_what_depends_on_an_entity_after_freezing_is_still_counted(self) -> None:
+        """RF-015-16, RF-015-03, RF-008-24 (T27): congelada V01, sustituir la operación de una entidad (P2) sigue
+        dejando obsoletas las que consumieron su superficie, P3 y, en cascada, P4, que están en la revisión
+        congelada y son lo vigente (antes de congelar daba ese mismo resultado: ``test_a_the_cascade_goes_as_far_
+        as_the_chain_does``)."""
+        prepared = self.units(prep.request(start="gis_dtm_borde"))
+        found = entity_store.platform_obsolete(self.project, self.v1, prepared, self.masks_v1,
+                                               supersedes=self.chain["P2"])
+        self.assertEqual([(item.kind, item.name, item.uid) for item in found],
+                         [(preview.ObsoleteKind.DEPENDENT, "P3", self.chain["P3"]),
+                          (preview.ObsoleteKind.DEPENDENT, "P4", self.chain["P4"])])
 
 
 # ---------------------------------------------------------------------------------------------

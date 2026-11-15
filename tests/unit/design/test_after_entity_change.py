@@ -37,6 +37,7 @@ from unittest import mock
 import numpy as np
 
 from tests.support.package import import_geoblender
+from tests.support.versions_fixtures import freeze_rows
 from tests.unit.design import test_declare_operation as decl
 from tests.unit.design import test_platform_operation as ops
 from tests.unit.design import test_platform_prepare as prep
@@ -309,6 +310,42 @@ class ChainTest(ChainCase):
         masks = access.load_masks(self.project, self.v1.uid)
         self.assertNotIn(CODE, masks.zones)
         self.assertTrue(masks.fill_allowed()[self.footprint("PLT-002")].any())
+
+
+# ---------------------------------------------------------------------------------------------
+# Con una revisión congelada
+# ---------------------------------------------------------------------------------------------
+
+
+class FrozenChainTest(ChainCase):
+    """RF-015-16, RF-009-19, RF-015-10 (T27): lo **vigente** de la versión sigue siéndolo aunque lo registrara una
+    revisión que luego se congeló, y la 008 lo marca obsoleto en la revisión abierta; la cadena lo cuenta entre
+    «lo que quedó obsoleto» (antes filtraba por la revisión abierta y no contaba lo congelado)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.made(prep.request())
+        cls.chain()
+        cls.clock.advance(minutes=1)
+        with cls.project.write_transaction() as conn:  # P1, ya hecha, pasa a la revisión congelada V01.r1
+            freeze_rows(conn, cls.v1, now=cls.clock.now().isoformat(timespec="seconds"), reason="Siguiente")
+
+    def test_a_what_is_live_in_the_frozen_revision_is_counted_with_what_became_obsolete(self) -> None:
+        """RF-015-16, RF-009-19: P1 (en V01.r1, congelada, y vigente) usó las máscaras; P2 (que protege, creada en
+        la revisión abierta) cambia las máscaras al declarar: la cadena da obsoletas **las dos**, P1 con la causa de
+        las máscaras, y V01.r1 no cambia (sigue congelada, con los mismos elementos)."""
+        revision = self.query("SELECT uid FROM gb_revision WHERE version_uid = ? AND state = 'frozen'",
+                              self.v1.uid)[0][0]
+        items = self.query("SELECT * FROM gb_revision_item WHERE revision_uid = ? ORDER BY fid", revision)
+        self.made(prep.request(WORKSHOP, start="entity:PLT-001", protect=True, guard_m=GUARD_M))
+        chain = self.chain()
+        self.assertEqual((chain.declared, chain.masks_compiled), (1, True))
+        self.assertEqual(sorted(item.name for item in chain.obsolete), sorted([LOADING, WORKSHOP]))
+        self.assertEqual({kind for kind, _name in self.stale_causes(self.current("PLT-001"))}, {CAUSE_DATASET})
+        self.assertEqual(self.query("SELECT state FROM gb_revision WHERE uid = ?", revision), [("frozen",)])
+        self.assertEqual(self.query("SELECT * FROM gb_revision_item WHERE revision_uid = ? ORDER BY fid",
+                                    revision), items, "lo congelado no cambia")
 
 
 # ---------------------------------------------------------------------------------------------

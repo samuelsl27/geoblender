@@ -33,6 +33,7 @@ import numpy as np
 
 from tests.support import quarry_fixtures as qfx
 from tests.support.package import import_geoblender
+from tests.support.versions_fixtures import create_version
 from tests.unit.design import test_after_entity_change as chain_test
 from tests.unit.design import test_entity_dependents as dep
 from tests.unit.design import test_entity_supports as sup
@@ -335,6 +336,36 @@ class DiscardTest(DiscardCase, dep.DependentsCase):
         self.assertEqual([row.name for row in entities.dependents(self.project, self.v1.uid, "PLT-002")], [TWIN])
         (rests,) = entities.dependencies_of(self.project, self.v1.uid, "PLT-003")
         self.assertEqual((rests.name, rests.entity), (fill_test.START, None), "parte del terreno")
+
+    # --- (g) La que se descartó con datos llega descartada a la versión hija (T27, hallazgo de la T26) -----
+
+    def test_g_what_was_discarded_with_its_data_arrives_discarded_in_a_version_that_starts_from_it(self) -> None:
+        """RF-015-17, RF-015-18, RF-009-01, D-12 (hallazgo (a) de la T26, decisión de la sesión principal en la
+        T27): descartar una entidad **calculada** escribe también su parámetro de versión ``discarded`` (verdadero,
+        con su historial), no solo los estados de sus datos: la versión hija que hereda los parámetros (RF-009-01,
+        sin resultados) la recibe **descartada** —sin ocupar su partida ni su nombre— y no «viva y sin calcular»,
+        y «Traer las entidades de…» no la trae. Lo que sigue vivo (P3, rehecha en (f)) llega «sin calcular»."""
+        store = core_params.ParameterStore(self.project)
+        for code, why in (("PLT-001", WHY), ("PLT-002", WHY)):
+            key = design_params.entity_key(code, "discarded")
+            found = store.get(key, version=self.v1.uid)
+            self.assertIsNotNone(found, f"{code}: sin el parámetro, una versión hija la recibe viva")
+            self.assertIs(found.value, True)
+            self.assertEqual((found.decided_by, found.kind.name), (BY, "ADOPTADO"))
+            (entry,) = store.history(key, version=self.v1.uid)
+            self.assertEqual(entry.reason, why)
+        self.assertEqual(self.states(), {"PLT-001": EntityState.DISCARDED, "PLT-002": EntityState.DISCARDED,
+                                         "PLT-003": EntityState.CURRENT})
+        self.clock.advance(minutes=1)
+        child = create_version(self.project, feature="Hija", title="Hija de V01", parent="V01")
+        mine = {entry.record.code: entry.record.state for entry in entities.registry(self.project, child.uid)}
+        self.assertEqual(mine, {"PLT-001": EntityState.DISCARDED, "PLT-002": EntityState.DISCARDED,
+                                "PLT-003": EntityState.UNCALCULATED})
+        with self.assertRaises(DesignError) as asked:
+            entity_store.bring_entities(self.project, "V01", "V02", codes=["PLT-001"])
+        self.assertEqual(asked.exception.code, "des.entity_bring_discarded")
+        brought = entity_store.bring_entities(self.project, "V01", "V02")
+        self.assertEqual([item.source_code for item in brought.entities], ["PLT-003"], "la descartada no se trae")
 
 
 # ---------------------------------------------------------------------------------------------

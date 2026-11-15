@@ -46,7 +46,8 @@ dato, ni cifra todavía**. Del resumen (:func:`platform_summary`: las cifras, lo
 obsoleto al crearla), lo que sale del proyecto: con qué se compara la magnitud (:func:`platform_previous`, la
 revisión congelada más reciente), el orden de la cantera de la 014 (:func:`quarry_order`), qué restricción
 impide mover unas celdas (nombres y entidades que declaran, ``preview.held_notices``) y lo obsoleto
-(:func:`platform_obsolete`, del grafo de la 008: no se marca nada de una revisión congelada, RF-009-19).
+(:func:`platform_obsolete`, del grafo de la 008: lo vigente de la versión, también lo registrado en una
+revisión que luego se congeló; los elementos de la congelada no cambian ni se marcan, RF-009-19).
 
 **Crear** (T13; RF-015-01, RF-015-02, RF-015-04): :func:`create_platform` registra lo calculado en **una**
 transacción del ``DesignWriter`` (:meth:`~.store.DesignWriter.commit`): los parámetros de la entidad como
@@ -1779,8 +1780,7 @@ _CONSUMERS = (
     "JOIN gb_operation AS o ON o.uid = io.operation_uid "
     "JOIN gb_revision AS r ON r.uid = o.revision_uid "
     "WHERE io.direction = 'in' AND io.item_kind = 'dataset' AND io.item_uid IN ({marks}) "
-    "AND o.status = 'done' AND o.superseded_by IS NULL AND r.version_uid = ? "
-    "AND r.state = 'open'")
+    "AND o.status = 'done' AND o.superseded_by IS NULL AND r.version_uid = ?")
 _OUTPUTS = (
     "SELECT DISTINCT item_uid FROM gb_operation_io WHERE direction = 'out' "
     "AND item_kind = 'dataset' AND operation_uid IN ({marks})")
@@ -1800,10 +1800,12 @@ def _name_of(op_type: str, settings: object) -> str:
 
 def _dependents(conn: sqlite3.Connection, datasets: Iterable[str], version_uid: str, *,
                 exclude: Iterable[str | None] = ()) -> list[tuple[str, str, str]]:
-    """Lo que depende de los datos ``datasets`` en la revisión **abierta** de la versión
-    ``version_uid`` (RF-015-16; la 008): las operaciones hechas y no sustituidas que los consumen y,
-    en cascada, las que consumen lo que escribieron esas, por orden de registro; como ``(uid, tipo,
-    nombre)``. Sin las de ``exclude``. Una revisión congelada no se marca (RF-009-19). Solo lee."""
+    """Lo que depende de los datos ``datasets`` en la versión ``version_uid`` (RF-015-16; la 008): las
+    operaciones **vigentes** de la versión (hechas y no sustituidas, estén en la revisión que estén: lo
+    registrado en una revisión que luego se congeló sigue siendo lo vigente, y el grafo de la 008 lo marca
+    obsoleto en la revisión abierta, D-23 de la 009) que los consumen y, en cascada, las que consumen lo que
+    escribieron esas, por orden de registro; como ``(uid, tipo, nombre)``. Sin las de ``exclude``. Lo
+    **congelado** (los elementos de una revisión congelada) no cambia ni se marca (RF-009-19). Solo lee."""
     skip = {uid for uid in exclude if uid is not None}
     found: dict[str, tuple[int, str, str]] = {}
     frontier = list(dict.fromkeys(datasets))
@@ -1833,7 +1835,8 @@ def platform_obsolete(project: StoreProject, version: Version, prepared: Prepare
                       masks: access.MaskSet, *, insert_before: str | None = None,
                       supersedes: str | None = None) -> tuple[Obsolete, ...]:
     """**Lo que quedará obsoleto al crear la plataforma** ``prepared`` en ``version`` (RF-015-03,
-    RF-015-16; del grafo de la 008, sin escribir; una revisión congelada no se marca, RF-009-19): si
+    RF-015-16; del grafo de la 008, sin escribir; lo vigente de la versión aunque lo registrara una revisión
+    ya congelada, cuyos elementos no cambian ni se marcan, RF-009-19): si
     **protege** (``protect``), las máscaras de la versión (declarará una restricción y se compilan de
     nuevo) y lo que las consumió, en cascada (``ObsoleteKind.MASKS`` y ``CONSUMER``); si es una
     **inserción** (``insert_before``: la entidad que pasa a partir de la nueva), esa entidad y las que le
@@ -2300,7 +2303,7 @@ entidad → declarada → máscaras → entidad, D-21): se ponen al día cuando 
 _STALE_OPERATIONS = (
     "SELECT o.uid, o.op_type, o.settings FROM gb_operation AS o "
     "JOIN gb_revision AS r ON r.uid = o.revision_uid "
-    "WHERE o.status = 'done' AND o.superseded_by IS NULL AND r.version_uid = ? AND r.state = 'open' "
+    "WHERE o.status = 'done' AND o.superseded_by IS NULL AND r.version_uid = ? "
     "AND EXISTS (SELECT 1 FROM gb_stale AS s WHERE s.item_kind = 'operation' AND s.item_uid = o.uid) "
     "ORDER BY o.fid")
 
@@ -2335,7 +2338,7 @@ class EntityChain:
     (otro hash que la anterior o la primera: ``declaration_changed``), si recompiló las máscaras
     (``masks_compiled``), lo ganado y perdido por restricción que da esa compilación (``changes``,
     RF-012-06: ``gis.masks.compile.Change`` con el área de su polígono y de su zona), lo que **quedó obsoleto**
-    por ella (``obsolete``: las operaciones de la revisión abierta que usaron las máscaras anteriores, como
+    por ella (``obsolete``: las operaciones vigentes de la versión que usaron las máscaras anteriores, como
     ``ObsoleteKind.CONSUMER``, y lo que depende de ellas), el estado de las máscaras al terminar
     (``masks_state``) y lo que falló (``failure``)."""
 
@@ -2376,9 +2379,9 @@ class EntityChain:
 
 
 def _stale_operations(conn: sqlite3.Connection, version: Version) -> dict[str, Obsolete]:
-    """Las operaciones **obsoletas** de la revisión abierta de ``version`` (hechas, sin sustituir y con alguna
-    causa en la caché de la 008, ``gb_stale``), por su uid, como ``Obsolete`` (``CONSUMER``). Una revisión
-    congelada no se marca (RF-009-19). Solo lee."""
+    """Las operaciones **obsoletas** de ``version`` (las vigentes: hechas y sin sustituir, estén en la revisión que
+    estén, y con alguna causa en la caché de la 008, ``gb_stale``), por su uid, como ``Obsolete`` (``CONSUMER``).
+    Lo congelado (los elementos de una revisión congelada) no cambia ni se marca (RF-009-19). Solo lee."""
     return {str(uid): Obsolete(ObsoleteKind.CONSUMER, _name_of(str(op_type), settings), str(op_type),
                                str(uid))
             for uid, op_type, settings in conn.execute(_STALE_OPERATIONS, (version.uid,))}
@@ -2406,8 +2409,8 @@ def after_entity_change(project: StoreProject, version: Version | str | None, *,
     ``des_decl_<vNN>`` entera, que sustituye a la vigente; con las mismas entidades da el mismo hash) y **(b)**
     si las máscaras ya no están al día —la declaración cambió, o la compilación vigente no la había consumido
     nunca: el hueco H-1, ``gis.masks.access.MaskCause.DECLARED_NEW``— las compila de nuevo
-    (``gis.masks.access.compile_masks_steps``) y cuenta **qué quedó obsoleto con ello** (las operaciones de la
-    revisión abierta que usaron las máscaras anteriores: la propia plataforma que protege, cuya restricción
+    (``gis.masks.access.compile_masks_steps``) y cuenta **qué quedó obsoleto con ello** (las operaciones vigentes
+    de la versión que usaron las máscaras anteriores: la propia plataforma que protege, cuya restricción
     cambió lo que consumió, es lo esperado, CE-015-04 y D-21; «Recalcular lo obsoleto» la rehace y quita la
     marca de lo que dependía de ella si su salida no cambia, RF-008-26) y **lo ganado y lo perdido por
     restricción** (RF-012-06: el informe de la compilación). Sin cambio, no recompila.
@@ -2559,8 +2562,10 @@ def discard_plan(project: StoreProject, version: Version | str, code: str) -> Di
 
 def _set_discarded_flag(project: StoreProject, conn: sqlite3.Connection, found: Version, code: str, name: str,
                         who: str, why: str) -> None:
-    """Descarta una entidad **sin calcular** (T25; RF-015-17; D-12): su parámetro de versión ``discarded`` en
-    verdadero, ADOPTADO, de la persona, con su motivo y su historial."""
+    """Marca descartada una entidad (T25 y T27; RF-015-17; D-12): su parámetro de versión ``discarded`` en
+    verdadero, ADOPTADO, de la persona, con su motivo y su historial. Lo único que descarta a una entidad **sin
+    calcular** y, con datos, lo que hace que una versión hija (que hereda parámetros, no resultados: RF-009-01) la
+    reciba descartada."""
     store = ParameterStore(project)
     key = entity_key(code, PlatformParam.DISCARDED)
     if store.get(key, version=found.uid, conn=conn) is None:
@@ -2575,9 +2580,10 @@ def discard_entity(project: StoreProject, version: Version | str, code: str, *, 
                    decided_by: str | None = None) -> Discarded:
     """**Descarta** la entidad ``code`` (código o nombre) de la versión editable ``version`` (``Version``, uid o
     código; RF-015-17, D-12; HU-015-2) **sin borrar nada** (RF-009-12): los datos que escribió su operación
-    vigente (la superficie, la tabla y el informe) pasan a ``DISCARDED`` (``core.datasets.registry.set_status``) o,
-    si no está calculada (no tiene datos), su parámetro de versión ``des.platform.{e}.discarded`` pasa a verdadero,
-    con su historial. En **una** transacción, con un evento ``entity_discarded`` (``reason``, ``decided_by``, los
+    vigente (la superficie, la tabla y el informe) pasan a ``DISCARDED`` (``core.datasets.registry.set_status``) y
+    su parámetro de versión ``des.platform.{e}.discarded`` pasa a verdadero, con su historial (también si no está
+    calculada: entonces es lo único que se escribe; con él, una versión hija la recibe descartada, RF-009-01). En
+    **una** transacción, con un evento ``entity_discarded`` (``reason``, ``decided_by``, los
     datos y la lista de lo que se le apoyaba, con sus m³). Lo que se le apoyaba queda en «apoyo retirado» (el grafo
     de la 008 lo deduce: :func:`~.entities.retired_supports`) y «Recalcular lo obsoleto» no lo recalcula hasta que la
     persona lo rehaga sobre otra superficie, lo descarte o lo dé por bueno con un motivo (:func:`release_support`).
@@ -2601,9 +2607,11 @@ def discard_entity(project: StoreProject, version: Version | str, code: str, *, 
                               value=str(record.state), entity=record.name, version=found.code)
         listed = entities.dependents(project, found.uid, record.code, conn=conn)
         datasets: list[str] = []
-        if entry.operation_uid is None:  # sin calcular: no hay datos que descartar
-            _set_discarded_flag(project, conn, found, record.code, record.name, who, why)
-        else:
+        # Calculada o no, el parámetro de versión ``discarded``: una versión que parte de otra hereda los
+        # parámetros y no los resultados (RF-009-01), así que sin él la entidad descartada con datos llegaría
+        # «viva y sin calcular» a la versión hija (T27, hallazgo de la T26).
+        _set_discarded_flag(project, conn, found, record.code, record.name, who, why)
+        if entry.operation_uid is not None:  # con datos: nada se borra, pasan a ``DISCARDED``
             for uid, name, status in conn.execute(_OUTPUTS_OF, (entry.operation_uid, DATASET)).fetchall():
                 if str(status) not in _FINAL:
                     dataset_registry.set_status(conn, project, str(uid), "discarded")
