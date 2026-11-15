@@ -182,6 +182,12 @@ class DesignCatalogTest(unittest.TestCase):
         self.assertEqual((platform.entry, platform.module, platform.kind, platform.home), (
             "015", "des", "operator", "GEOBLENDER_MT_des_entities"))
         self.assertEqual((platform.label, platform.label_es), ("Platform…", "Plataforma…"))
+        # T45, E-7: lo que hace hoy (un diálogo desde una capa), no «dibuja una plataforma con sus taludes» (la herramienta H)
+        self.assertEqual(platform.action, "D")
+        self.assertIn("layer", platform.description)
+        self.assertIn("capa", platform.description_es)
+        self.assertNotIn("Draw", platform.description)
+        self.assertNotIn("Dibuja", platform.description_es)
         for key in INTERNAL_015:
             with self.subTest(key=key):
                 command = self.cat.commands[key]

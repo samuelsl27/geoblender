@@ -923,7 +923,8 @@ class MetricTest(unittest.TestCase):
 
 class MeshFactorTest(unittest.TestCase):
     """RF-015-22 (D-7): la pendiente de la envolvente es ``tan(ángulo de borde) · factor de malla``
-    (la de la entidad, de (0; 10]): con 0,5 el corte es más tendido, con 2,0 más empinado."""
+    (la de la entidad, de (0; 1], como la de la 013: T45, D-3): con 0,5 y con 0,8 el corte es más tendido que con
+    1,0 (un factor de más de 1 haría la envolvente más empinada que el ángulo de borde: se rechaza)."""
 
     ROWS, COLS = 12, 100
 
@@ -938,10 +939,10 @@ class MeshFactorTest(unittest.TestCase):
         return run(job)[2]
 
     def test_the_cut_by_hand_with_each_factor(self) -> None:
-        """RF-015-22 (D-7): con ``t = 0,5 · tan 20°`` y con ``2 · tan 20°`` el corte de cada lado es
+        """RF-015-22 (D-7): con ``t = 0,5 · tan 20°`` y con ``0,8 · tan 20°`` el corte de cada lado es
         ``Σ máx(0, depth_k)`` en las 20 celdas del alcance, por el este ``14,75 + 0,5 k − t k`` y por
         el oeste ``10,25 − 0,5 k − t k``, a ≤ 10⁻⁹ relativo; el factor queda en el borde."""
-        for mesh in (0.5, 2.0):
+        for mesh in (0.5, 0.8):
             with self.subTest(mesh=mesh):
                 t = math.tan(math.radians(20.0)) * mesh
                 east = math.fsum(max(0.0, 14.75 + 0.5 * k - t * k) for k in range(1, 21))
@@ -1067,10 +1068,10 @@ class RejectionTest(unittest.TestCase):
             self.assertEqual(caught.exception.code, "des.entity_param_range")
 
     def test_the_mesh_factor_and_the_metric_are_checked(self) -> None:
-        """RF-015-08: un factor de malla fuera de (0; 10] es ``des.entity_param_range`` y una
+        """RF-015-08: un factor de malla fuera de (0; 1] es ``des.entity_param_range`` y una
         métrica que no es de la lista, ``des.entity_param_choice``; sin ellos, los de por
         defecto (1,0 y exacta)."""
-        for value in (0.0, 11.0):
+        for value in (0.0, 1.0000001, 11.0):
             with self.subTest(mesh=value), self.assertRaises(DesignError) as caught:
                 self.edge_with(mesh_factor=value)
             self.assertEqual(caught.exception.code, "des.entity_param_range")

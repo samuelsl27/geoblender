@@ -559,17 +559,20 @@ class HeldNoticesTest(unittest.TestCase):
     def test_a_declared_constraint_names_the_entity_that_declares_it(self) -> None:
         """RF-015-13, RF-015-10: la zona ``dec__plt_001`` (sin relleno) impide rellenar 4 celdas de la
         huella: el aviso dice 16 m², la restricción, la entidad del registro y la primera celda (de
-        norte a sur y de oeste a este) con sus coordenadas absolutas en float64."""
+        norte a sur y de oeste a este) con sus coordenadas absolutas en float64. El texto nombra la
+        restricción como «Ver restricciones y límites» («Plataforma P1 (declarada)», T45, E-8), no por su
+        código."""
         zone = self.region(slice(3, 5), slice(4, 6))
         found = self.notices({"dec__plt_001": ("no_fill", zone)}, fill=zone,
-                             declared={"dec__plt_001": "Plataforma P1"})
+                             declared={"dec__plt_001": "P1"})
         (held,) = found
         self.assertEqual(held.code, "des.entity_held")
         self.assertEqual(dict(held.values), {
-            "entity": "P2", "area": 16.0, "constraint": "dec__plt_001", "other": "Plataforma P1",
+            "entity": "P2", "area": 16.0, "constraint": "dec__plt_001", "other": "P1",
             "x": 725_000.0 + (4 + 0.5) * 2.0, "y": 4_400_000.0 - (3 + 0.5) * 2.0})
-        self.assertIn("«Plataforma P1»", held.text("es"))
-        self.assertIn("dec__plt_001", held.text("en"))
+        self.assertIn("«Plataforma P1 (declarada)»", held.text("es"))
+        self.assertIn("«Platform P1 (declared)»", held.text("en"))
+        self.assertNotIn("dec__plt_001", held.text("es") + held.text("en"))
 
     def test_a_declared_constraint_of_an_unknown_entity_gives_its_code(self) -> None:
         """RF-015-13: una ``dec__…`` cuya entidad el registro no tiene (la borraron) se nombra con el
@@ -697,7 +700,7 @@ class HeldByDeclaredTest(OperationCase):
                          calculation.outcome.held_area_m2)
         self.assertNotIn("des.entity_held_masks", codes(calculation.summary))
         text = calculation.summary.lines("es")[codes(calculation.summary).index("des.entity_held")]
-        self.assertIn(f"«{self.P1}»", text)
+        self.assertIn(f"«Plataforma {self.P1} (declarada)»", text)  # como «Ver restricciones y límites» (T45, E-8)
         self.assertEqual(len(self.temporaries()), 1)
 
     def test_a_without_the_declared_zone_only_the_normal_constraint_is_named(self) -> None:

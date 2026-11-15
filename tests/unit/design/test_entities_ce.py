@@ -408,7 +408,7 @@ class DependenciesTest(chain_test.ChainCase, dep.DependentsCase, HandCase):
         """CE-015-01, RF-015-17, RF-009-12, E3, error 59: descartar P1 (con el motivo y quién; lo que sigue con
         ``discard_entity_steps``) pone sus tres datos «descartados» **sin borrar nada** y un evento con la lista de lo que se
         le apoyaba; P2, P4, P5 y «Balsa 2», que se apoyaban en ella, quedan en **«apoyo retirado»**, con la causa
-        («Apoyo retirado: se descartó la plataforma …»); P3, que parte de P2, obsoleta; y «Recalcular lo obsoleto»
+        («Apoyo retirado: se descartó «…»»); P3, que parte de P2, obsoleta; y «Recalcular lo obsoleto»
         **no recalcula** nada de eso: la primera unidad se rehúsa («se descartó y no tiene sucesor»,
         ``core.recompute_no_successor_release``) y no se crea ninguna operación."""
         listed = entity_store.discard_plan(self.project, self.v1.uid, "PLT-001")
@@ -428,7 +428,7 @@ class DependenciesTest(chain_test.ChainCase, dep.DependentsCase, HandCase):
         self.assertEqual(self.states(), {
             "PLT-001": EntityState.DISCARDED, "PLT-002": EntityState.SUPPORT_REMOVED, "PLT-003": EntityState.STALE,
             "PLT-004": EntityState.SUPPORT_REMOVED, "PLT-005": EntityState.SUPPORT_REMOVED})
-        wanted = f"Apoyo retirado: se descartó la plataforma {BALSA}"
+        wanted = f"Apoyo retirado: se descartó «{BALSA}»"
         for code in ("PLT-002", "PLT-004", "PLT-005"):
             self.assertEqual(entities.stale_reason(self.project, self.v1.uid, code), wanted, code)
         self.assertEqual(entities.operation_reason(self.project, self.v1.uid, self.fill_uid()), wanted)
@@ -761,8 +761,9 @@ class ProtectedPlatformTest(chain_test.ChainCase, sup.SupportsCase, HandCase):
         self.assertEqual((held.values["entity"], held.values["constraint"], held.values["other"], held.values["area"]),
                          (ON_TOP, self.CODE, BALSA, FOOTPRINT_CELLS * CELL_M2))
         self.assertEqual(calculation.outcome.held_area_m2, 192.0)
-        self.assertIn(f"«{BALSA}»", calculation.summary.lines("es")[[item.code for item in
-                                                                      calculation.summary.notices].index("des.entity_held")])
+        self.assertIn(f"«Plataforma {BALSA} (declarada)»",  # como «Ver restricciones y límites» (T45, E-8)
+                      calculation.summary.lines("es")[[item.code for item in
+                                                       calculation.summary.notices].index("des.entity_held")])
         stored = calculation.create()
         mine, theirs = self.read(dep.PSF2), self.read(dep.PSF1)
         np.testing.assert_array_equal(mine[foot], theirs[foot])

@@ -227,9 +227,9 @@ class EntityDiscardTest(platform_ops.CreatePlatformTest):
                          ("PLT-001", WHY, self.project.session.user_host))
         self.assertEqual([item["name"] for item in event.data["dependents"]], [platform_ops.WORKSHOP, OVER])
         self.assertEqual(self.entities.stale_reason(self.project, self.v01.uid, "PLT-002"),
-                         "Apoyo retirado: se descartó la plataforma Carga")
+                         "Apoyo retirado: se descartó «Carga»")
         self.assertEqual(self.entities.stale_reason(self.project, self.v01.uid, OVER),
-                         "Apoyo retirado: se descartó la plataforma Carga")
+                         "Apoyo retirado: se descartó «Carga»")
         self.assertEqual(self.layer_state(), self.layer_before, "la capa de origen no se toca")
         access = platform_ops._module("gis.masks.access")  # descartar no deja las máscaras sin poder usarse
         self.assertEqual(access.mask_state(self.project, self.v01.uid)[0], access.MaskState.CURRENT)
@@ -259,7 +259,7 @@ class EntityDiscardTest(platform_ops.CreatePlatformTest):
         self.assertEqual(dialog.call_args.kwargs["confirm_text"], "Dar por bueno")
         shown = draw(cls, bpy.context, target="PLT-003", reason="", _lost=fake._lost).texts()
         self.assertEqual(shown[0], f"«{OVER}» (Plataforma) perdió su apoyo:")
-        self.assertEqual(shown[1], "Apoyo retirado: se descartó la plataforma Carga")
+        self.assertEqual(shown[1], "Apoyo retirado: se descartó «Carga»")
         self.assertIn("Se repite sin ese apoyo, con el motivo que dé.", shown)
         self.assertEqual(shown[-1], "Motivo")
         for target, text in (("PLT-002", "parte de la superficie de una entidad descartada"),

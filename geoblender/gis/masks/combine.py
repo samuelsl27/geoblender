@@ -358,7 +358,7 @@ def check(constraints: Iterable[Constraint],
 
 _ORDER = (
     "core.constraint_no_code", "core.constraint_code_invalid", "core.constraint_code_repeated",
-    "core.constraint_no_type", "core.constraint_no_reason", "core.constraint_no_decider",
+    "core.constraint_code_repeated_declared", "core.constraint_no_type", "core.constraint_no_reason", "core.constraint_no_decider",
     "core.constraint_limit_not_polygon", "core.constraint_no_geometry",
     "core.constraint_self_intersecting", "core.constraint_no_area",
     "core.constraint_hole_outside", "core.constraint_parts_overlap", "core.constraint_no_length",

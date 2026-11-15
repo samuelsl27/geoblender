@@ -874,16 +874,19 @@ PLATFORM_FIGURES: tuple[FigureDef, ...] = (
     FigureDef("des.plat_fill_m3", "m3", "Fill of the platform footprint"),
     FigureDef("des.edge_cut_m3", "m3", "Cut of the platform edge"),
     FigureDef("des.edge_fill_m3", "m3", "Fill of the platform edge"),
-    FigureDef("des.edge_wall_max_m", "m", "Highest wall of the platform edge"),
-    FigureDef("des.plat_below_m2", "m2", "Area of the footprint not left at the platform level"),
+    FigureDef("des.edge_wall_max_m", "m", "Largest cut or fill of the platform edge"),
+    FigureDef("des.plat_below_m2", "m2",
+              "Area of the footprint not left at the platform level (above or below it)"),
     FigureDef("des.plat_below_max_m", "m",
-              "Largest gap between the footprint and the platform level"),
+              "Largest gap between the footprint and the platform level (above or below it)"),
 )
 """Las cifras de ``des.platform`` (RF-015-24, RF-015-22; plan 015 §5.2.3), con el ámbito de
 :func:`entity_figure_scope`: el área de su huella, las longitudes de su eje y de su huella, las cotas
 de la rasante en sus extremos (pueden ser negativas), el corte y el relleno de la huella y del borde
-por separado, la altura máxima de la pared del borde y, de las celdas de la huella que no quedan en
-la rasante, su área y la diferencia máxima. Las dos cotas son ``plat_start_level_m`` y
+por separado, el mayor desmonte o relleno de una celda del borde (``des.edge_wall_max_m``: la «altura máxima
+de su pared» del plan, [I]; T45, D-11) y, de las celdas de la huella que no quedan en la rasante, por
+encima **o** por debajo (por las máscaras), su área y la diferencia máxima (``des.plat_below_*``: la clave dice
+«below» por el modo «en corte», que no rellena; T45, D-10). Las dos cotas son ``plat_start_level_m`` y
 ``plat_end_level_m`` (el plan las llamaba con la palabra que el glosario §14 reserva a la ley)."""
 SUPPORT_FIGURES: tuple[FigureDef, ...] = (
     FigureDef(SUPPORTED_M3, "m3", "Volume resting on an entity"),

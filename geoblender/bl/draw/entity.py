@@ -8,8 +8,9 @@ previa de la 013, ``bl.draw.design``, de la que reutiliza lo que se dibuja: :cla
 resumen y la leyenda), lo que va a ser una plataforma **antes de calcularla** (``design.preview.EntityPreview``):
 
 - **la huella**, el contorno de sus celdas con sus huecos (:data:`FOOTPRINT`);
-- **el eje con la flecha de su sentido** (:data:`AXIS` y :data:`ARROW`): la abscisa 0 está en el primer vértice,
-  que es lo que decide el signo de la pendiente, y la flecha apunta al último; con **la cota de la rasante en sus
+- **el eje con la flecha de su sentido** (:data:`AXIS` y :data:`ARROW`): la abscisa 0 está en el inicio del eje (el
+  primer vértice de una línea; en un polígono con línea enlazada, donde la línea entra: T45, D-8), que es lo que
+  decide el signo de la pendiente, y la flecha apunta al final; con **la cota de la rasante en sus
   dos extremos** escrita junto a cada uno;
 - **lo que se le apoya** (:data:`RESTING`): las huellas de lo que se apoya en ella o parte de su superficie, con
   su nombre y su volumen (solo si la entidad ya está en la versión; una nueva no tiene nada apoyado);
@@ -209,7 +210,8 @@ def _legend(request: Request, found: EntityPreview, ground: Any, drawn: set[str]
         rows.append(LegendRow(tr("Footprint ({area} m²)", area=format_number(found.area_m2, 0)),
                               _hex(FOOTPRINT_COLOR)))
     if AXIS in drawn:
-        rows.append(LegendRow(tr("Axis: the arrow shows its sense; the abscissa 0 is at its first vertex"),
+        rows.append(LegendRow(tr("Axis: the arrow shows its sense; the abscissa 0 is at its start (in a polygon with a "
+                                "linked line, where the line enters)"),
                               _hex(AXIS_COLOR)))
         rows.append(LegendRow(tr("Level of the platform at the ends of the axis (m)")))
     if RESTING in drawn:

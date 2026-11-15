@@ -543,6 +543,28 @@ class ScaleTest(ops_test.RecomputeCase):
         self.assertLessEqual(listing_s, 1.0, f"«lo que se apoya en E» con {self.ENTITIES} entidades")
         self.assertLessEqual(resting_s, 1.0, f"«en qué se apoya E» con {self.ENTITIES} entidades")
 
+    def test_b_the_registry_reads_the_names_and_starts_in_a_few_queries(self) -> None:
+        """RNF-015-06 (T45; la regresión de T38 que midió T49): con 200 entidades, el registro de la versión —lo que
+        pregunta ``mask_state`` (``declaration_pending``) con cada activación de la vista previa— lee el nombre, la
+        partida y el apoyo de todas con una consulta por trozo de claves, no con tres por entidad: una por entidad
+        (la de su estado) y unas pocas más, menos de 2 por entidad (eran 1.404 con 200 entidades), y lo mismo que antes
+        (nombre, partida y apoyo de cada una)."""
+        with self.project.read() as conn:
+            statements: list[str] = []
+            conn.set_trace_callback(statements.append)
+            try:
+                registry = entities.registry(self.project, self.v1.uid, conn=conn)
+            finally:
+                conn.set_trace_callback(None)
+        self.assertEqual(len(registry), self.ENTITIES)
+        self.assertLess(len(statements), 2 * self.ENTITIES,
+                        f"{len(statements)} sentencias para {self.ENTITIES} entidades")
+        by_code = {entry.record.code: entry.record for entry in registry}
+        self.assertEqual(by_code["PLT-001"].name, prep.LOADING)
+        self.assertEqual((by_code["PLT-002"].name, by_code["PLT-002"].start), ("E2", "entity:PLT-001"))
+        self.assertEqual((by_code["PLT-200"].name, by_code["PLT-200"].start), ("E200", "entity:PLT-199"))
+        self.assertIsNone(by_code["PLT-200"].support)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -383,7 +383,11 @@ class EntityViewsTest(platform_ops.CreatePlatformTest):
         self.assertIn("105 m [ADO]", start)
         self.assertIn("campo «cota_inicial»", start)
         mode = next(text for text in params if text.startswith("Modo de la plataforma: "))
-        self.assertIn("cut [ADO] · V01 · diálogo de «Plataforma…», entidad «Carga»", mode)  # lo elegido en el diálogo
+        # lo elegido en el diálogo, con el rótulo de su opción y no el valor crudo «cut» (T45, E-6)
+        self.assertIn("En corte [ADO] · V01 · diálogo de «Plataforma…», entidad «Carga»", mode)
+        metric = next(text for text in params if text.startswith("Métrica de distancia del borde de la plataforma: "))
+        self.assertIn("Euclídea exacta [ADO]", metric)
+        self.assertNotIn("exact ", metric)
         mesh = next(text for text in params if text.startswith("Factor de malla del borde de la plataforma: "))
         self.assertIn("1 [ADO] · V01 · Spec 015, D-7", mesh)  # un valor por defecto: el origen es el de su definición
         surface = next(text for text in params if text.startswith("Superficie de partida de la entidad: "))
@@ -523,8 +527,8 @@ class EntityViewsTest(platform_ops.CreatePlatformTest):
 
     def test_h_a_discarded_entity_is_a_record_and_what_rested_on_it_has_its_support_removed(self) -> None:
         """RF-015-25, RF-015-17, D-12 (M3): descartada «Carga», su barra N dice «Descartada» (queda como registro, no se
-        usa), en alerta; «Taller» y «Sobre Carga», que se apoyaban en ella, «Apoyo retirado: se descartó la plataforma
-        Carga», en alerta, y la lista de lo que se apoya en «Carga» las sigue enseñando, en «apoyo retirado»."""
+        usa), en alerta; «Taller» y «Sobre Carga», que se apoyaban en ella, «Apoyo retirado: se descartó
+        «Carga»», en alerta, y la lista de lo que se apoya en «Carga» las sigue enseñando, en «apoyo retirado»."""
         self.assertEqual(bpy.ops.geoblender.des_entity_discard("EXEC_DEFAULT", entity="PLT-002", reason=WHY, in_steps=False),
                          {"FINISHED"})
         self.choose(LOADING)
@@ -543,7 +547,7 @@ class EntityViewsTest(platform_ops.CreatePlatformTest):
         for name in (WORKSHOP, OVER):
             self.choose(name)
             self.assertEqual(self.entry(name).record.state.value, "support_removed")
-            self.assertEqual(self.state_line(), (f"Apoyo retirado: se descartó la plataforma {LOADING}", True))
+            self.assertEqual(self.state_line(), (f"Apoyo retirado: se descartó «{LOADING}»", True))
             self.assertNotIn("Al día", self.texts())
         self.choose(RAMP)
         self.assertEqual(self.state_line(), ("Al día", False))

@@ -8,7 +8,7 @@ CE-015-01 y CE-015-04): el caso del **error 59** (un relleno seguía apoyado en 
 - **Descartar** (``entity_store.discard_entity``): poner ``DISCARDED`` los datos que escribió (nada se borra,
   RF-009-12) o, si no está calculada, el parámetro de versión ``des.platform.{e}.discarded``; con un **evento**
   (``entity_discarded``) y el motivo. Lo que se le apoyaba queda en **«apoyo retirado»**, con la causa
-  («Apoyo retirado: se descartó la plataforma P1»), y «Recalcular lo obsoleto» **no lo recalcula**
+  («Apoyo retirado: se descartó «P1»»), y «Recalcular lo obsoleto» **no lo recalcula**
   (``core.recompute_no_successor_release``) hasta que la persona lo rehaga sobre otra superficie, lo descarte o lo dé
   por bueno con un motivo.
 - **Soltar el apoyo** (``entity_store.release_support``, A7, P-6): repetir la operación **con** ``supersedes`` sin
@@ -165,7 +165,7 @@ class DiscardTest(DiscardCase, dep.DependentsCase):
         escribió (la superficie, la tabla y el informe) con **un evento** (``entity_discarded``: quién, por qué,
         qué datos y la lista de lo que se le apoyaba, con sus m³); **nada se borra** (las filas, los ficheros, las
         tablas, las operaciones y las cifras siguen); P1 queda «descartada» y lo que se le apoyaba, **«apoyo
-        retirado»**, con la causa: P2 y «Balsa 2» lo dicen («Apoyo retirado: se descartó la plataforma …») y P3,
+        retirado»**, con la causa: P2 y «Balsa 2» lo dicen («Apoyo retirado: se descartó «…»») y P3,
         que parte de P2, obsoleta con la 008."""
         listed = entity_store.discard_plan(self.project, self.v1.uid, "PLT-001")
         before = self.everything()
@@ -203,11 +203,11 @@ class DiscardTest(DiscardCase, dep.DependentsCase):
         plataforma P1», con su **nombre** (no los datos que cambiaron), para la entidad (P2) y para un diseño
         de la 013 o la 014 («Balsa 2»); en inglés, el suyo; P3, que no se apoyaba en P1 sino en P2, conserva el
         «Obsoleto» de la 008."""
-        wanted = f"Apoyo retirado: se descartó la plataforma {BALSA}"
+        wanted = f"Apoyo retirado: se descartó «{BALSA}»"
         self.assertEqual(entities.stale_reason(self.project, self.v1.uid, "PLT-002"), wanted)
         self.assertEqual(entities.operation_reason(self.project, self.v1.uid, self.fill_uid()), wanted)
         self.assertEqual(entities.stale_reason(self.project, self.v1.uid, "PLT-002", language="en"),
-                         f"Support removed: the platform {BALSA} was discarded")
+                         f"Support removed: the entity «{BALSA}» was discarded")
         self.assertTrue(entities.stale_reason(self.project, self.v1.uid, "PLT-003").startswith("Obsoleto: "))
         retired = {row.name: row for row in entities.retired_supports(self.project, self.v1.uid)}
         self.assertEqual(sorted(retired), sorted([ON_TOP, TWIN]))

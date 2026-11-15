@@ -1269,11 +1269,11 @@ CATALOG: tuple[Message, ...] = (
     Message(
         "des.entity_held",
         "Entity «{entity}»: {area} m² of its footprint or its edge do not move because of the "
-        "constraint «{constraint}», declared by entity «{other}» (around x = {x} m, y = {y} m); "
-        "they stay as in the start surface.",
+        "constraint «Platform {other} (declared)» (around x = {x} m, y = {y} m); they stay as in "
+        "the start surface.",
         "Entidad «{entity}»: {area} m² de su huella o de su borde no se mueven por la "
-        "restricción «{constraint}», declarada por la entidad «{other}» (en torno a x = {x} m, "
-        "y = {y} m); quedan como en la superficie de partida.",
+        "restricción «Plataforma {other} (declarada)» (en torno a x = {x} m, y = {y} m); quedan "
+        "como en la superficie de partida.",
         "warning",
     ),
     Message(
@@ -1372,10 +1372,12 @@ CATALOG: tuple[Message, ...] = (
     Message(
         "des.platform_axis_parts",
         "Layer «{layer}», platform «{entity}»: its axis has {value} parts; a platform axis is a "
-        "single line (the abscissa 0 is its first vertex); join them into one line in QGIS; "
+        "single line (the abscissa 0 is at its start: the first vertex of a line or, in a polygon "
+        "with a linked line, where the line enters the polygon); join them into one line in QGIS; "
         "nothing is calculated.",
         "Capa «{layer}», plataforma «{entity}»: su eje tiene {value} partes; el eje de una "
-        "plataforma es una sola línea (la abscisa 0 está en su primer vértice); únalas en una "
+        "plataforma es una sola línea (la abscisa 0 está en su inicio: el primer vértice de una "
+        "línea o, en un polígono con línea enlazada, donde la línea entra en él); únalas en una "
         "línea en QGIS; no se calcula nada.",
     ),
     Message(
@@ -1717,8 +1719,8 @@ CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "des.support_removed_platform",
-        "the platform {name} was discarded",
-        "se descartó la plataforma {name}",
+        "the entity «{name}» was discarded",
+        "se descartó «{name}»",
         "note",
     ),
     Message(
@@ -1941,11 +1943,11 @@ CATALOG: tuple[Message, ...] = (
     Message(
         "des.preview_entity",
         "Preview of «{entity}» ({code}) in {version}: footprint of {cells} cells ({area} m²), "
-        "axis of {length} m, level from {start_level} m at its first vertex (abscissa 0) to "
-        "{end_level} m at its last, gradient {gradient} %.",
+        "axis of {length} m, level from {start_level} m at the start of the axis (abscissa 0) to "
+        "{end_level} m at its end, gradient {gradient} %.",
         "Vista previa de «{entity}» ({code}) en {version}: huella de {cells} celdas ({area} m²), "
-        "eje de {length} m, rasante de {start_level} m en su primer vértice (abscisa 0) a "
-        "{end_level} m en el último, pendiente del {gradient} %.",
+        "eje de {length} m, rasante de {start_level} m al inicio del eje (abscisa 0) a "
+        "{end_level} m al final, pendiente del {gradient} %.",
         "note",
     ),
     Message(

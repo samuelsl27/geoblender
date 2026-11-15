@@ -3815,8 +3815,10 @@ class GEOBLENDER_OT_des_create_platform(_CalculateAndCreate, DesignCommandAware,
                     "layer of axes", default=AXIS_LINK_FIELD, options=_FIELD, update=_refresh_preview)
     start_level: StringProperty(  # type: ignore[valid-type]
         name="Start elevation (m)",
-        description="Elevation of the platform level at the start of the axis in metres: the one of the "
-                    "layer, which you can correct (empty: the one of the layer)", options=_FIELD, update=_refresh_preview)
+        description="Elevation of the platform level at the start of the axis in metres (abscissa 0: the first "
+                    "vertex of a line; in a polygon with a linked line, where the line enters the polygon): the one "
+                    "of the layer, which you can correct (empty: the one of the layer)", options=_FIELD,
+        update=_refresh_preview)
     gradient: StringProperty(  # type: ignore[valid-type]
         name="Gradient (%)",
         description="Gradient of the platform level in %, positive when it rises along the axis: the one "

@@ -51,7 +51,7 @@ PLATFORM_PARAMS: dict[str, tuple[str, str, object, float | None, float | None, b
              ("RF-015-20", "RF-015-21")),
     "edge_angle_deg": ("float", "deg", None, 0.0, 90.0, True, True, (), ("RF-015-22",)),
     "reach_m": ("float", "m", None, 0.0, 10000.0, True, False, (), ("RF-015-22",)),
-    "mesh_factor": ("float", "-", 1.0, 0.0, 10.0, True, False, (), ("RF-015-22",)),
+    "mesh_factor": ("float", "-", 1.0, 0.0, 1.0, True, False, (), ("RF-015-22",)),
     "counter_tol_m": ("float", "m", 0.1, 0.0, 10.0, False, False, (), ("RF-015-23",)),
     "metric": ("text", "-", "exact", None, None, False, False, ("exact", "chamfer5"),
                ("RF-015-22",)),
@@ -75,7 +75,7 @@ BOUNDS: dict[str, tuple[tuple[float, ...], tuple[float, ...]]] = {
     "max_slope_pct": ((0.001, 10.0, 1.0e9), (0.0, -1.0, math.nan, math.inf)),
     "edge_angle_deg": ((0.001, 35.0, 89.999), (0.0, 90.0, -1.0, 91.0, math.nan)),
     "reach_m": ((0.001, 50.0, 10000.0), (0.0, 10000.001, -3.0, math.inf)),
-    "mesh_factor": ((0.001, 1.0, 10.0), (0.0, 10.001, -1.0, math.nan)),
+    "mesh_factor": ((0.001, 0.5, 1.0), (0.0, 1.0000001, 1.5, 10.0, -1.0, math.nan)),  # (0; 1] como la 013 (T45, D-3)
     "counter_tol_m": ((0.0, 0.1, 10.0), (-0.001, 10.001, math.nan)),
     "guard_m": ((0.0, 5.0, 1000.0), (-0.001, 1000.001, math.nan)),
 }
@@ -491,7 +491,7 @@ class CheckEntityParamTest(unittest.TestCase):
         self.assertEqual(spaced["counter_tol_m"], "[0; 10] m")
         self.assertEqual(spaced["max_slope_pct"], "(0; +∞) %")
         self.assertEqual(spaced["start_level_m"], "(-∞; +∞) m")
-        self.assertEqual(params.ENTITY_RANGES["mesh_factor"].text("en"), "(0, 10]")
+        self.assertEqual(params.ENTITY_RANGES["mesh_factor"].text("en"), "(0, 1]")  # T45, D-3: como la 013
 
     def test_without_a_value(self) -> None:
         """RF-015-08, RF-015-10 (D-6, D-7, D-19, D-20): uno sin valor se rechaza nombrando la
@@ -791,8 +791,8 @@ class EntityMessagesTest(unittest.TestCase):
         held = messages.render("des.entity_held", entity="P2", area=300.0, constraint="dec__plt_001",
                                other="P1", x=1, y=2)
         self.assertIn("300 m²", held)
-        self.assertIn("«dec__plt_001»", held)
-        self.assertIn("«P1»", held)
+        self.assertIn("«Plataforma P1 (declarada)»", held)  # T45, E-8: como «Ver restricciones y límites»
+        self.assertNotIn("dec__plt_001", held)
         taken = messages.DesignError("des.entity_start_taken", obj="Plataforma «P2»",
                                      field="start", value="gis_dtm", entity="P2", other="P1")
         self.assertIn("«gis_dtm»", taken.text)

@@ -147,7 +147,7 @@ terreno, las de diseño y la de cada plataforma de la versión activa como ``ent
 :func:`platform_start_items` y :func:`platform_default_start`, que propone **la última de la cadena**; y
 las de apoyo, :func:`platform_support_items`) y el resumen de su cálculo (:func:`show_summary`,
 :func:`_platform_lines`: «Plataforma «Carga» (PLT-001) en V01», su huella, su rasante, el corte y el
-relleno de la huella y del borde, la pared más alta y «sin contrapendientes», y sus avisos y lo que
+relleno de la huella y del borde, el mayor desmonte o relleno del borde y «sin contrapendientes», y sus avisos y lo que
 quedará obsoleto: el resumen de ``design.preview.PlatformSummary``).
 
 **La barra N «Entidad»** (spec 015, T28; HU-015-1; RF-015-25, RF-010-06; D-12): el panel
@@ -1281,8 +1281,8 @@ def refit_rows(project: Any, version_uid: str) -> tuple[list[tuple[str, str, boo
 def _platform_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de una plataforma calculada (``design.platform.PlatformOutcome``; spec 015, T15;
     RF-015-03, RF-015-23, RF-015-24; E1): su huella (celdas, área y la longitud de su eje), su rasante (las
-    cotas de sus extremos y su pendiente), el corte y el relleno de la huella y del borde por separado, la
-    pared más alta del borde y **«sin contrapendientes»** si el perfil no sube más que la tolerancia. Sus
+    cotas de sus extremos y su pendiente), el corte y el relleno de la huella y del borde por separado, el
+    mayor desmonte o relleno del borde (la «pared» del plan: T45, D-11) y **«sin contrapendientes»** si el perfil no sube más que la tolerancia. Sus
     avisos (la contrapendiente, lo que queda por debajo de la rasante, la restricción que no deja mover…) y lo
     que quedará obsoleto los añade :func:`summary_lines` (son los ``notices`` del cálculo)."""
     outcome = calculation.outcome
@@ -1307,7 +1307,7 @@ def _platform_lines(calculation: Calculation) -> list[tuple[str, bool]]:
                      edge_fill=_number(_figure(calculation, "des.edge_fill_m3"))), False))
     wall = _figure(calculation, "des.edge_wall_max_m")
     if wall is not None:
-        lines.append((tr("Highest wall of the edge: {wall} m", wall=_number(wall, 2)), False))
+        lines.append((tr("Largest cut or fill of the edge: {wall} m", wall=_number(wall, 2)), False))
     if not outcome.counter_slope:  # type: ignore[union-attr]
         lines.append((tr("No counter-slopes (tolerance {tolerance} m)",
                          tolerance=_number(outcome.profile.tolerance_m, 2)), False))  # type: ignore[union-attr]
@@ -2385,10 +2385,28 @@ def _entity_state_line(project: Any, conn: sqlite3.Connection, version: Any, ent
     return CardLine(ROW_FIELD, tr("Up to date"))
 
 
+def _badged(text: str, stored: Any) -> str:
+    """``text`` con la insignia de tipo de ``stored`` y, si lo está, «sin confirmar»."""
+    shown = f"{text} {provenance.badge(stored.kind)}"
+    return f"{shown} {tr('unconfirmed')}" if stored.unconfirmed else shown
+
+
+def _choice_label(param: Any, value: object) -> str | None:
+    """El rótulo de la opción de un parámetro de lista cerrada (el modo y la métrica del borde de la plataforma), el que
+    lleva en el diálogo de «Plataforma…»: «En corte», no ``cut`` (T45, E-6); ``None`` si no es uno de ellos."""
+    from ...design.params import PlatformParam
+
+    if param is PlatformParam.MODE:
+        return {"cut": tr("In cut"), "cut_fill": tr("In cut and fill")}.get(str(value))
+    if param is PlatformParam.METRIC:
+        return {"exact": tr("Exact Euclidean"), "chamfer5": tr("Chamfer 5×5")}.get(str(value))
+    return None
+
+
 def _entity_value_text(param: Any, stored: Any, listed: Any) -> str:
     """El valor de un parámetro de la entidad con su insignia de tipo (y «sin confirmar»): como los de una operación
-    (:func:`~.res_panels.record_text`) y, de la superficie de partida o de apoyo que es la de otra entidad
-    (``entity:PLT-001``), la entidad con su código."""
+    (:func:`~.res_panels.record_text`); de la superficie de partida o de apoyo que es la de otra entidad
+    (``entity:PLT-001``), la entidad con su código; y del modo y la métrica, el rótulo de su opción (T45, E-6)."""
     from ...design import entities
     from ...design.params import PlatformParam
 
@@ -2396,9 +2414,9 @@ def _entity_value_text(param: Any, stored: Any, listed: Any) -> str:
         code = entities.ref_code(stored.value)
         other = None if code is None else listed.get(code)
         if other is not None:
-            text = f"{_entity_name(other.record)} {provenance.badge(stored.kind)}"
-            return f"{text} {tr('unconfirmed')}" if stored.unconfirmed else text
-    return record_text(stored)
+            return _badged(_entity_name(other.record), stored)
+    label = _choice_label(param, stored.value)
+    return record_text(stored) if label is None else _badged(label, stored)
 
 
 def _entity_parameter_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any, listed: Any

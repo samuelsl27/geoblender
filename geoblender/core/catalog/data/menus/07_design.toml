@@ -339,10 +339,10 @@ frequency = 2
 key = "geoblender.des_create_platform"
 label.en = "Platform…"
 label.es = "Plataforma…"
-description.en = "Draw a platform with its slopes"
-description.es = "Dibuja una plataforma con sus taludes"
+description.en = "Calculate and create a platform from a layer: footprint, level and edge, with a preview"
+description.es = "Calcula y crea una plataforma desde una capa: huella, rasante y borde, con vista previa"
 entry = "015"
-action = "H"
+action = "D"
 frequency = 2
 
 [[menu.group.item.item]]

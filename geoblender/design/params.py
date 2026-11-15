@@ -486,13 +486,15 @@ ENTITY_RANGES: Mapping[str, ValueRange] = MappingProxyType({
     PlatformParam.EDGE_ANGLE.value: ValueRange(0.0, 90.0, "deg", min_exclusive=True,
                                                max_exclusive=True),
     PlatformParam.REACH.value: ValueRange(0.0, 10000.0, "m", min_exclusive=True),
-    PlatformParam.MESH_FACTOR.value: ValueRange(0.0, 10.0, "-", min_exclusive=True),
+    PlatformParam.MESH_FACTOR.value: ValueRange(0.0, 1.0, "-", min_exclusive=True),
     PlatformParam.COUNTER_TOL.value: ValueRange(0.0, 10.0, "m"),
     PlatformParam.GUARD.value: ValueRange(0.0, 1000.0, "m"),
 })
 """Los rangos de los valores numéricos de una plataforma (plan 015 §5.2.2) por último segmento de
 la clave (solo lectura): la única fuente de los de :data:`ENTITY_FAMILIES` y de lo que
-:func:`check_entity_param` acepta (con el 90° excluido que ``ParamDef`` no puede decir)."""
+:func:`check_entity_param` acepta (con el 90° excluido que ``ParamDef`` no puede decir). El factor de malla es
+de (0; 1], como el de la 013 (T45, hallazgo D-3: con más de 1 la envolvente sería más empinada que el
+ángulo de borde por construcción y toda su pared saldría como «no debería haber»)."""
 
 _015_NAME = ("Spec 015, RF-015-01: sin valor por defecto; lo elige una persona al crear la entidad "
              "(Samuel, IMGA, 14/11/2026)")

@@ -5,8 +5,11 @@
 «activa» falta: no se sabe si lo está), lo que impide compilar las máscaras, un
 :class:`Incomplete` por problema, en este orden:
 
-1. el código: vacío (dibujada en QGIS), mal formado o repetido en las tres capas (D-22); sin un
-   código válido no hay claves de parámetros y no se miran;
+1. el código: vacío (dibujada en QGIS), mal formado o repetido en las tres capas (D-22) o con el de una
+   restricción **declarada por una entidad** (``dec__…``: el de una restricción del proyecto que lo copia o
+   lo escribe a mano, y el de la declarada, con un mensaje propio que no manda a «Restricciones…»: una
+   declarada no se corrige a mano; spec 015, T45, B-6); sin un código válido no hay claves de parámetros y no
+   se miran;
 2. el tipo (``None``: ninguno de los once), el motivo y el decisor (vacíos o solo espacios);
 3. un límite (legal o perímetro) que no es un polígono (D-23);
 4. cada parámetro que pide su tipo, en el orden de ``ConstraintType.requires``: sin valor, con
@@ -47,6 +50,7 @@ PROBLEMS: tuple[str, ...] = (
     "core.constraint_no_code",
     "core.constraint_code_invalid",
     "core.constraint_code_repeated",
+    "core.constraint_code_repeated_declared",
     "core.constraint_no_type",
     "core.constraint_no_reason",
     "core.constraint_no_decider",
@@ -132,7 +136,8 @@ def _problems(item: Constraint, resolved: Mapping[str, Resolved],
     elif not keyed:
         found.append(problem("core.constraint_code_invalid", "code", item.code))
     elif counts[item.code] > 1:
-        found.append(problem("core.constraint_code_repeated", "code", item.code))
+        found.append(problem("core.constraint_code_repeated_declared" if item.declared
+                             else "core.constraint_code_repeated", "code", item.code))
     if item.ctype is None:
         found.append(problem("core.constraint_no_type", "ctype", None))
     if _blank(item.reason):

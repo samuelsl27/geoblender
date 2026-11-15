@@ -304,13 +304,14 @@ class EntityPreviewTest(platform_ops.CreatePlatformTest):
                          ("start", 105.0, "end", 105.4))
         self.assertEqual(self.legend(built), [
             "Vista previa de «Previa» (PLT-004) · V01", "Huella (160 m²)",
-            "Eje: la flecha muestra su sentido; la abscisa 0 está en su primer vértice",
+            "Eje: la flecha muestra su sentido; la abscisa 0 está en su inicio (en un polígono con línea enlazada, "
+            "donde la línea entra)",  # T45, D-8
             "Cota de la rasante de la plataforma en los extremos del eje (m)", f"Sobre la superficie «{self.ground3}»"])
         self.assertEqual([row.color is None for row in built.lines.legend], [True, False, False, True, True])
         self.assertEqual(
             built.summary,
             (("Vista previa de «Previa» (PLT-004) en V01: huella de 40 celdas (160 m²), eje de 20,0 m, rasante de 105,00 m "
-              "en su primer vértice (abscisa 0) a 105,40 m en el último, pendiente del 2,00 %.", False),
+              "al inicio del eje (abscisa 0) a 105,40 m al final, pendiente del 2,00 %.", False),
              ("No protege su huella: no declara ninguna restricción.", False)))
         self.assertEqual([(line.name, line.alert) for line in self.view.preview], list(built.summary))
         self.assertEqual(self.untouched(), before)  # nada escrito en el proyecto ni creado en la escena
@@ -563,13 +564,13 @@ class EntityPreviewTest(platform_ops.CreatePlatformTest):
         self.assertFalse(entity.enabled())
         self.assertEqual(self.show(), {"FINISHED"})
         first = self.pump()
-        self.assertIn("rasante de 105,00 m en su primer vértice (abscisa 0) a 105,00 m en el último", first.summary[0][0])
+        self.assertIn("rasante de 105,00 m al inicio del eje (abscisa 0) a 105,00 m al final", first.summary[0][0])
         fake.gradient = "-1"
         self.des_ops._refresh_preview(fake, None)
         self.assertTrue(entity.building())
         second = self.pump()
         self.assertIsNot(second, first)
-        self.assertIn("a 104,80 m en el último, pendiente del -1,00 %", second.summary[0][0])
+        self.assertIn("a 104,80 m al final, pendiente del -1,00 %", second.summary[0][0])
         self.assertIn("Final · rasante 104,80 m", {label.text for label in second.lines.labels})
         fake.feature = ""  # a medias: sigue la última completa
         self.des_ops._refresh_preview(fake, None)

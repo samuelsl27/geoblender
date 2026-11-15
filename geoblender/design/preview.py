@@ -608,8 +608,10 @@ def held_notices(entity: str, masks: MaskSet, window: tuple[slice, slice], *, cu
     «sin relleno» y la banda hacia dentro de un límite legal) da un aviso con sus celdas: si su
     código empieza por ``dec__`` (la declara una entidad, RF-015-10), ``des.entity_held`` con esa
     entidad (``declared``: código de la restricción → nombre de la entidad; sin ella, el código de la
-    entidad, ``PLT-001`` de ``dec__plt_001``); si no, ``des.entity_held_constraint`` con su nombre (``names``: código → nombre) y su
-    código. Lo que ninguna zona explica (fuera del límite…) sale en ``des.entity_held_masks``. Una
+    entidad, ``PLT-001`` de ``dec__plt_001``) y el texto la nombra como «Ver restricciones y límites»
+    («Plataforma P1 (declarada)», nunca por su código interno: T45, E-8; el tipo de la entidad, «Plataforma», va en el
+    texto del mensaje: la 016 añade el suyo); si no, ``des.entity_held_constraint`` con su nombre (``names``: código →
+    nombre) y su código. Lo que ninguna zona explica (fuera del límite…) sale en ``des.entity_held_masks``. Una
     celda en dos zonas cuenta en las dos. Sin celdas, ninguno."""
     held = cut | fill | edge
     if not held.any():

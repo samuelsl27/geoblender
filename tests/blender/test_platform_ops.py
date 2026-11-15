@@ -97,8 +97,10 @@ PROPERTIES = {
     "axis_field": ("Axis link field", "Numeric field of the layer of polygons with the number (fid) "
                                       "of its axis in the layer of axes"),
     "start_level": ("Start elevation (m)", "Elevation of the platform level at the start of the axis "
-                                           "in metres: the one of the layer, which you can correct "
-                                           "(empty: the one of the layer)"),
+                                           "in metres (abscissa 0: the first vertex of a line; in a "
+                                           "polygon with a linked line, where the line enters the "
+                                           "polygon): the one of the layer, which you can correct "
+                                           "(empty: the one of the layer)"),  # T45, D-8
     "gradient": ("Gradient (%)", "Gradient of the platform level in %, positive when it rises along the "
                                  "axis: the one of the layer, which you can correct (empty: the one "
                                  "of the layer)"),
@@ -935,8 +937,8 @@ class CreatePlatformTest(unittest.TestCase):
                 summary = [line.name for line in self.view.summary]
                 (volumes,) = [text for text in summary if text.startswith("Huella:")]
                 self.assertIn("relleno 0 m³ · borde: desmonte 0 m³ · relleno 0 m³", volumes)
-                self.assertTrue(any("no se mueven por la restricción" in text and "«Protegida»" in text
-                                    for text in summary), summary)
+                self.assertTrue(any("no se mueven por la restricción" in text and "«Plataforma Protegida (declarada)»" in text
+                                    for text in summary), summary)  # como «Ver restricciones y límites» (T45, E-8)
                 self.assertEqual(access.mask_state(self.project, version.uid)[0], access.MaskState.CURRENT)
 
     def test_j_changing_a_parameter_of_an_entity_follows_the_rules_of_creating_it(self) -> None:

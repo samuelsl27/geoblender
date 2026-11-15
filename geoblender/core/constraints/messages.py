@@ -78,6 +78,15 @@ CATALOG: tuple[Message, ...] = (
         + _WHERE_ES,
     ),
     Message(
+        "core.constraint_code_repeated_declared",
+        "{name} ({ctype}): the code «{value}» is also used by another constraint of the three "
+        "constraint layers; this one is declared by an entity and is not completed by hand: change "
+        "the code of the other constraint (the «dec__…» codes belong to the entities)",
+        "{name} ({ctype}): el código «{value}» lo usa también otra restricción de las tres capas de "
+        "restricciones; esta la declara una entidad y no se completa a mano: cambie el código de la "
+        "otra restricción (los códigos «dec__…» son de las entidades)",
+    ),
+    Message(
         "core.constraint_no_type",
         "{name}: it has no valid type; choose one of the eleven in " + _WHERE_EN,
         "{name}: no tiene un tipo válido; elija uno de los once en " + _WHERE_ES,

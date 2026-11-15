@@ -789,6 +789,18 @@ def _text(store: ParameterStore, conn: sqlite3.Connection, version: Version, cod
     return None if row is None or row.value is None else str(row.value)
 
 
+def _texts(store: ParameterStore, conn: sqlite3.Connection, version: Version, codes: Iterable[str],
+           param: PlatformParam) -> dict[str, str | None]:
+    """:func:`_text` de muchas entidades a la vez (T45; el coste de ``mask_state`` con 200 entidades): el valor de
+    texto del parámetro ``param`` propio de ``version`` de cada código de ``codes``, ``None`` si no tiene fila o no
+    tiene valor. La versión y las filas se leen con **una** consulta por trozo de claves (``resolve_many``), no con
+    tres por entidad."""
+    keys = {entity_key(code, param): code for code in codes}
+    found = store.resolve_many(conn, tuple(keys), (VERSION_SCOPE,), version=version.uid) if keys else {}
+    return {code: None if (row := found.get(key)) is None or row.value is None else str(row.value)
+            for key, code in keys.items()}
+
+
 def _registry(project: Any, conn: sqlite3.Connection, version: Version) -> EntityRegistry:
     store = ParameterStore(project)
     entries: list[EntityEntry] = []
@@ -802,9 +814,12 @@ def _registry(project: Any, conn: sqlite3.Connection, version: Version) -> Entit
                    and _is_discarded(store, conn, version, code)}
         operations = _operations(conn, version, prefix, op_type)
         links = _links(conn, operations.values())
+        names = _texts(store, conn, version, codes, PlatformParam.NAME)
+        starts = _texts(store, conn, version, codes, PlatformParam.START)
+        supports = _texts(store, conn, version, codes, PlatformParam.SUPPORT)
 
         for code in sorted(codes, key=_number):
-            name = _text(store, conn, version, code, PlatformParam.NAME)
+            name = names[code]
             if name is None or not name.strip():
                 raise DesignError("des.entity_name_missing", obj=f"Entidad «{code}»",
                                   field=entity_key(code, PlatformParam.NAME), value=name)
@@ -812,9 +827,7 @@ def _registry(project: Any, conn: sqlite3.Connection, version: Version) -> Entit
             state, causes, retired = _deduce(conn, uid, links.get(uid, ()) if uid else (),
                                              discarded=code in flagged)
             entries.append(EntityEntry(
-                EntityRecord(code, name, kind,
-                             _text(store, conn, version, code, PlatformParam.START),
-                             _text(store, conn, version, code, PlatformParam.SUPPORT), state),
+                EntityRecord(code, name, kind, starts[code], supports[code], state),
                 uid, causes, retired))
     return EntityRegistry(version.code, tuple(entries))
 

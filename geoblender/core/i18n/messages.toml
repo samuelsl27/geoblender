@@ -8743,14 +8743,14 @@ es = "Corte del borde de la plataforma"
 ["Fill of the platform edge"]
 es = "Relleno del borde de la plataforma"
 
-["Highest wall of the platform edge"]
-es = "Pared más alta del borde de la plataforma"
+["Largest cut or fill of the platform edge"]
+es = "Mayor desmonte o relleno del borde de la plataforma"
 
-["Area of the footprint not left at the platform level"]
-es = "Área de la huella que no queda en la rasante"
+["Area of the footprint not left at the platform level (above or below it)"]
+es = "Área de la huella que no queda en la rasante (por encima o por debajo)"
 
-["Largest gap between the footprint and the platform level"]
-es = "Mayor diferencia entre la huella y la rasante"
+["Largest gap between the footprint and the platform level (above or below it)"]
+es = "Mayor diferencia entre la huella y la rasante (por encima o por debajo)"
 
 ["Volume resting on an entity"]
 es = "Volumen apoyado sobre una entidad"
@@ -8795,8 +8795,8 @@ es = "Campo del enlace con el eje"
 ["Numeric field of the layer of polygons with the number (fid) of its axis in the layer of axes"]
 es = "Campo numérico de la capa de polígonos con el número (fid) de su eje en la capa de ejes"
 
-["Elevation of the platform level at the start of the axis in metres: the one of the layer, which you can correct (empty: the one of the layer)"]
-es = "Cota de la rasante al principio del eje, en metros: la de la capa, que puede corregir (vacío: la de la capa)"
+["Elevation of the platform level at the start of the axis in metres (abscissa 0: the first vertex of a line; in a polygon with a linked line, where the line enters the polygon): the one of the layer, which you can correct (empty: the one of the layer)"]
+es = "Cota de la rasante al principio del eje, en metros (abscisa 0: el primer vértice de una línea; en un polígono con línea enlazada, donde la línea entra en el polígono): la de la capa, que puede corregir (vacío: la de la capa)"
 
 ["Gradient (%)"]
 es = "Pendiente (%)"
@@ -9074,8 +9074,8 @@ es = "Rasante: cota de {start} m al principio y de {end} m al final del eje · p
 ["Footprint: cut {cut} m³ · fill {fill} m³ · edge: cut {edge_cut} m³ · fill {edge_fill} m³"]
 es = "Huella: desmonte {cut} m³ · relleno {fill} m³ · borde: desmonte {edge_cut} m³ · relleno {edge_fill} m³"
 
-["Highest wall of the edge: {wall} m"]
-es = "Pared más alta del borde: {wall} m"
+["Largest cut or fill of the edge: {wall} m"]
+es = "Mayor desmonte o relleno del borde: {wall} m"
 
 ["No counter-slopes (tolerance {tolerance} m)"]
 es = "Sin contrapendientes (tolerancia de {tolerance} m)"
@@ -9218,8 +9218,8 @@ es = "No hay ninguna versión activa: la vista previa de una entidad la necesita
 ["Footprint ({area} m²)"]
 es = "Huella ({area} m²)"
 
-["Axis: the arrow shows its sense; the abscissa 0 is at its first vertex"]
-es = "Eje: la flecha muestra su sentido; la abscisa 0 está en su primer vértice"
+["Axis: the arrow shows its sense; the abscissa 0 is at its start (in a polygon with a linked line, where the line enters)"]
+es = "Eje: la flecha muestra su sentido; la abscisa 0 está en su inicio (en un polígono con línea enlazada, donde la línea entra)"
 
 ["Level of the platform at the ends of the axis (m)"]
 es = "Cota de la rasante de la plataforma en los extremos del eje (m)"

@@ -74,7 +74,9 @@ D-20: la distancia a la semilla más próxima con la misma métrica; lo que pasa
 ``z' = mín(z, ENV↑)`` donde el corte se admite y ``z' = máx(z, ENV↓)`` donde se admite el relleno. El
 volumen del borde (corte y relleno por separado, m³) es la suma celda a celda de ``|z − z'|`` por el
 área de la celda; la **altura máxima de su pared** es ``máx(|z − z'|)`` en las celdas que el borde
-mueve (interpretación del plan, [I]). Una celda que el borde mueve queda **más empinada que el ángulo
+mueve (interpretación del plan, [I]): el mayor desmonte (o relleno) de una celda, no la altura de la cara del
+talud ni el escalón del límite del alcance, y así la rotula la interfaz (T45, D-11). Una celda que el borde
+mueve queda **más empinada que el ángulo
 de borde más la tolerancia de cara** de la 013 si su mayor inclinación a sus 8 vecinas con dato (la de
 D-13) la pasa **y** pasa de la que el terreno ya tenía en esa celda (lo que el terreno ya tenía no
 cuenta, como en el salto creado de la 014, error 48): solo se admite en el límite del alcance y en el
@@ -678,6 +680,28 @@ def _on_boundary(point: np.ndarray, begin: np.ndarray, end: np.ndarray) -> bool:
     return bool((np.hypot(near[:, 0] - point[0], near[:, 1] - point[1]) <= _TOL_M).any())
 
 
+def _on_boundary_units(points: np.ndarray, begin: np.ndarray, end: np.ndarray
+                       ) -> Generator[None, None, np.ndarray]:
+    """Si cada punto de ``points`` (``(m, 2)``, locales) está a ≤ :data:`_TOL_M` de algún tramo ``begin → end``
+    (:func:`_on_boundary` de todos a la vez) **por unidades** (los puntos en bloques, uno por unidad: cada uno es
+    independiente de los demás, y el mismo resultado bit a bit que punto a punto)."""
+    found = np.zeros(points.shape[0], dtype=bool)
+    step = end - begin
+    length2 = (step * step).sum(axis=1)
+    safe = np.where(length2 > 0.0, length2, 1.0)
+    block = max(1, _INSIDE_WORK // max(1, begin.shape[0]))
+    for first in range(0, points.shape[0], block):
+        point = points[first:first + block]
+        along = np.where(length2[None, :] > 0.0,
+                         ((point[:, None, :] - begin[None, :, :]) * step[None, :, :]).sum(axis=2) / safe[None, :],
+                         0.0)
+        near = begin[None, :, :] + np.clip(along, 0.0, 1.0)[:, :, None] * step[None, :, :]
+        distance = np.hypot(near[:, :, 0] - point[:, None, 0], near[:, :, 1] - point[:, None, 1])
+        found[first:first + block] = (distance <= _TOL_M).any(axis=1)
+        yield
+    return found
+
+
 def _dedupe(points: np.ndarray) -> np.ndarray:
     """``points`` sin los vértices que repiten al anterior (a ≤ :data:`_TOL_M`)."""
     if points.shape[0] < 2:
@@ -829,11 +853,14 @@ def _linked_axis_units(job: PlatformJob, parts: list[list[np.ndarray]]) -> Gener
     """El eje de un polígono con su línea enlazada: **la parte de la línea que está dentro del
     polígono** (de su entrada a su salida, con los vértices de la línea que haya dentro), que ha de
     cruzarlo de lado a lado: una sola parte dentro, con sus dos extremos en el contorno y con
-    longitud. Si no (la línea empieza o acaba dentro, no lo toca, lo cruza varias veces o roza el
-    contorno), ``des.platform_axis_not_crossing`` con el campo del enlace y el nombre del eje; una línea de
-    varias partes, ``des.platform_axis_parts``. ``parts``: los anillos de :func:`_polygon_rings_units`. Por
-    unidades (T44): cada tramo de la línea frente al contorno y los puntos medios dentro del polígono, por
-    bloques."""
+    longitud. **Su abscisa 0 es el punto donde la línea entra en el polígono, no su primer vértice** (que puede
+    estar a decenas de metros fuera: T45, D-8), y el sentido es el de la línea. Si no cruza (la línea empieza o
+    acaba dentro, no lo toca, lo cruza varias veces, roza el contorno por un vértice o **discurre sobre el
+    contorno**, aunque sea un trecho: ningún trozo de la línea, de entre los que parten sus cortes con el contorno,
+    tiene su punto medio en él; T45, D-7), ``des.platform_axis_not_crossing`` con el campo del enlace y el nombre
+    del eje; una línea de varias partes, ``des.platform_axis_parts``. ``parts``: los anillos de
+    :func:`_polygon_rings_units`. Por unidades (T44): cada tramo de la línea frente al contorno, los puntos
+    medios sobre el contorno y los puntos medios dentro del polígono, por bloques."""
     request, geometry, grid = job.request, job.geometry, job.grid
     assert geometry.axis_parts is not None
     paths = [path for path in axis_paths(geometry.axis_parts) if path.shape[0] > 0]
@@ -867,6 +894,8 @@ def _linked_axis_units(job: PlatformJob, parts: list[list[np.ndarray]]) -> Gener
     k_of = np.array([piece[0] for piece in pieces])
     mid_t = np.array([0.5 * (piece[1] + piece[2]) for piece in pieces])
     middles = line[k_of] + mid_t[:, None] * (line[k_of + 1] - line[k_of])
+    if (yield from _on_boundary_units(middles, begin, end)).any():
+        raise not_crossing()  # discurre sobre el contorno (D-7): ni dentro ni fuera, no cruza
     runs: list[list[int]] = []
     current: list[int] | None = None
     for index, inside in enumerate((yield from _inside_units(middles, parts))):
@@ -1333,7 +1362,8 @@ class Edge:
     son el corte y el relleno **del borde** (m³, por separado; ``Σ |z − z'|`` por el área de la
     celda) y ``cut_cells`` y ``fill_cells``, las celdas que bajan y que suben. ``wall_max_m`` es la
     **altura máxima de su pared**, ``máx(|z − z'|)`` sobre las celdas que el borde mueve (m; 0 sin
-    ninguna: interpretación del plan, [I], que CE-015-07 comprueba a mano), con su lugar
+    ninguna: interpretación del plan, [I], que CE-015-07 comprueba a mano; la interfaz la rotula «mayor desmonte o
+    relleno del borde», T45, D-11), con su lugar
     (``wall_x``, ``wall_y``: absolutos, la primera de norte a sur y de oeste a este; ``None`` sin
     borde). ``walls`` son las celdas de ``steep`` por causa (:class:`EdgeWall`, las que tienen
     alguna, en el orden de :class:`WallCause`) y ``created`` el salto creado de la 014 (A11,

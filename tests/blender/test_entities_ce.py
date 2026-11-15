@@ -359,7 +359,7 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
                                                                in_steps=False), {"FINISHED"})
         self.assertEqual(self.states(self.v01), {"PLT-001": "discarded", "PLT-002": "support_removed",
                                                  "PLT-003": "support_removed", "PLT-004": "support_removed"})
-        wanted = f"Apoyo retirado: se descartó la plataforma {LOADING}"
+        wanted = f"Apoyo retirado: se descartó «{LOADING}»"
         for code in ("PLT-002", "PLT-003", "PLT-004"):
             self.assertEqual(self.entities.stale_reason(self.project, self.v01.uid, code), wanted)
         self.assertEqual(self.rows("SELECT count(*) FROM gb_operation"), [(len(operations) + 2,)],
