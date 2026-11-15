@@ -33,7 +33,12 @@ Se ejecuta con el Python de Blender, desde la raíz del repositorio::
    paso se omite por el recurso ``runtime`` con la orden que lo crea: «VERDE CON
    OMISIONES») y, justo después, «arnés» (``tests/arnes`` como «unitarias»: las pruebas
    del propio arnés que lanzan Blender entero; sin pruebas, fallo; spec 001 0.6, D-9 de
-   la spec 002). Sin la opción no se ejecutan (ni se busca el motor), y el resumen lo dice
+   la spec 002) y, tras él, «hito» (spec 015, T48; plan 015 §7.4: las pruebas de hito, que
+   pesan demasiado para la comprobación de cada tarea: los ``milestone_*.py`` de ``tests/unit``,
+   con ``unittest``, y de ``tests/blender``, dentro de Blender, cada grupo en sus partes y todas
+   a la vez; sin pruebas, fallo; ``tests.unit.repo.test_test_folders`` y la regla TST-02 las
+   admiten con ese nombre y el «verde» no las descubre). Sin la opción no se ejecutan (ni se
+   busca el motor), y el resumen lo dice
    antes de ``RESULTADO``: la comprobación de cada tarea va sin ella (RNF-001-01, ≤ 48 s;
    «motor» solo con ella desde la spec 004 0.4 y la 001 0.7, tarea 005/T50) y
    ``tools/publish.py`` la pide siempre. Solo si se piden, y después de los obligatorios:
@@ -297,12 +302,24 @@ OPTIONS: tuple[str, ...] = (OPTION_COMPLETE, OPTION_PERFORMANCE, OPTION_BANK, OP
 HARNESS_STEP = "arnés"
 HARNESS_FOLDER = layout.HARNESS_TESTS_RELPATH
 RUNTIME_STEP = "motor"
+# El paso de las pruebas de hito (spec 015, T48; plan 015 §7.4; solo con ``--completo``): las
+# ``milestone_*.py`` de ``tests/unit`` (``unittest``) y de ``tests/blender`` (dentro de Blender),
+# que pesan demasiado para la comprobación de cada tarea. Van en partes, como sus hermanas: las
+# unitarias de hito suman ≈ 85 s de módulos (8 partes ≈ 11 s) y las de Blender ≈ 30 s (4 partes,
+# una por módulo, ≈ 10 s con el arranque de la extensión), y corren a la vez.
+MILESTONE_STEP = "hito"
+MILESTONE_PATTERN = discovery.MILESTONE_PATTERN
+MILESTONE_UNIT_FOLDER = "tests/unit"
+MILESTONE_BLENDER_FOLDER = "tests/blender"
+MILESTONE_UNIT_PARTS = 8
+MILESTONE_BLENDER_PARTS = 4
 # La línea del resumen sin --completo (RF-001-06; spec 001 0.7, spec 004 0.4: RF-004-28).
 NOT_COMPLETE = (
     f"Sin {OPTION_COMPLETE}: no se han ejecutado las pruebas del arnés que lanzan Blender "
     f"entero ({HARNESS_FOLDER}) ni las unitarias de los paquetes de dominio con el motor "
-    f"de cálculo de pruebas («{RUNTIME_STEP}», RF-004-28); las ejecuta tools/check.py "
-    f"{OPTION_COMPLETE}, y la publicación (tools/publish.py) las pide siempre."
+    f"de cálculo de pruebas («{RUNTIME_STEP}», RF-004-28) ni las pruebas de hito "
+    f"(«{MILESTONE_STEP}», {MILESTONE_PATTERN} de tests/unit y de tests/blender); las ejecuta "
+    f"tools/check.py {OPTION_COMPLETE}, y la publicación (tools/publish.py) las pide siempre."
 )
 RUNTIME_RESOURCE = "runtime"  # el recurso de tests/support/resources.py (spec 004)
 DOMAIN_TESTS = "tests/unit"  # tests/unit/<paquete de dominio> (imports.LEVELS)
@@ -348,8 +365,10 @@ USAGE = """Uso (con el Python de Blender, desde la raíz del repositorio):
   --completo        añade, a la vez que «blender», las pruebas unitarias de los
                     paquetes de dominio con el motor de cálculo de pruebas («motor»,
                     tools/make_runtime.py) y, tras ellas, las del arnés que lanzan
-                    Blender entero (tests/arnes); la publicación (tools/publish.py) la
-                    pide siempre, y la comprobación de cada tarea va sin ella
+                    Blender entero (tests/arnes) y las pruebas de hito («hito»:
+                    milestone_*.py de tests/unit y de tests/blender); la publicación
+                    (tools/publish.py) la pide siempre, y la comprobación de cada tarea
+                    va sin ella
   --rendimiento     añade las pruebas de rendimiento (también las de dentro de Blender)
   --banco           añade los bancos privados: Silvestre (GEOBLENDER_SILVESTRE_DIR) y
                     la base de RecMin (GEOBLENDER_RECMIN_BANK_DIR)
@@ -711,15 +730,18 @@ class Context:
             part,
         )
 
-    def unittest_parts(self, folder: str, limit: int, empty: str | None = None) -> list[Run]:
+    def unittest_parts(
+        self, folder: str, limit: int, empty: str | None = None, pattern: str | None = None
+    ) -> list[Run]:
         """Las pruebas de ``folder`` (``unittest``) en tantas partes como
         :meth:`parts_of`; con una, la orden de siempre (T40). ``empty``, el de cada orden
-        (:meth:`unittest`)."""
-        count = self.parts_of(folder, UNITTEST_PATTERN, limit)
+        y ``pattern``, el de sus ficheros (:meth:`unittest`)."""
+        count = self.parts_of(folder, UNITTEST_PATTERN if pattern is None else pattern, limit)
         if count == 1:
-            return [self.unittest(folder, empty=empty)]
+            return [self.unittest(folder, pattern=pattern, empty=empty)]
         return [
-            self.unittest(folder, empty=empty, part=(i, count)) for i in range(1, count + 1)
+            self.unittest(folder, pattern=pattern, empty=empty, part=(i, count))
+            for i in range(1, count + 1)
         ]
 
     def blender_tests(
@@ -753,13 +775,17 @@ class Context:
             part,
         )
 
-    def blender_tests_parts(self, folder: str, limit: int) -> list[Run]:
-        """Las pruebas de ``folder`` (lanzador) en tantas partes como :meth:`parts_of`;
-        con una, la orden de siempre (T40)."""
-        count = self.parts_of(folder, LAUNCHER_PATTERN, limit)
+    def blender_tests_parts(
+        self, folder: str, limit: int, pattern: str | None = None
+    ) -> list[Run]:
+        """Las pruebas de ``folder`` (lanzador, con ``pattern`` si se da) en tantas partes
+        como :meth:`parts_of`; con una, la orden de siempre (T40)."""
+        count = self.parts_of(folder, LAUNCHER_PATTERN if pattern is None else pattern, limit)
         if count == 1:
-            return [self.blender_tests(folder)]
-        return [self.blender_tests(folder, part=(i, count)) for i in range(1, count + 1)]
+            return [self.blender_tests(folder, pattern)]
+        return [
+            self.blender_tests(folder, pattern, part=(i, count)) for i in range(1, count + 1)
+        ]
 
     def extension(self, *args: str) -> Run:
         """``blender --factory-startup --command extension …`` con el perfil temporal."""
@@ -938,6 +964,20 @@ def _harness(ctx: Context) -> list[Run]:
     return [ctx.unittest(HARNESS_FOLDER)]
 
 
+def _milestone(ctx: Context) -> list[Run]:
+    """Paso «hito» (spec 015, T48; plan 015 §7.4; solo con ``--completo``): las pruebas de
+    hito, ``milestone_*.py``, de ``tests/unit`` (``unittest``, como «unitarias») y de
+    ``tests/blender`` (dentro de Blender, como «blender»), cada grupo en sus partes, todas a la
+    vez. Sin pruebas, o con un fichero sin cargar, falla como «unitarias» (RF-001-06,
+    RF-001-07)."""
+    return [
+        *ctx.unittest_parts(MILESTONE_UNIT_FOLDER, MILESTONE_UNIT_PARTS, pattern=MILESTONE_PATTERN),
+        *ctx.blender_tests_parts(
+            MILESTONE_BLENDER_FOLDER, MILESTONE_BLENDER_PARTS, pattern=MILESTONE_PATTERN
+        ),
+    ]
+
+
 def _performance(ctx: Context) -> list[Run]:
     return [
         ctx.unittest("tests/rendimiento", pattern="test_*.py", empty=NO_TESTS),
@@ -1008,6 +1048,7 @@ STEPS: tuple[Step, ...] = (
         empty=NO_CASES,
     ),
     Step(HARNESS_STEP, _harness, option=OPTION_COMPLETE),
+    Step(MILESTONE_STEP, _milestone, option=OPTION_COMPLETE),
     Step("rendimiento", _performance, option=OPTION_PERFORMANCE,
          timeout_s=LONG_STEP_TIMEOUT_S),
     Step("banco", _bank, option=OPTION_BANK, timeout_s=LONG_STEP_TIMEOUT_S),

@@ -146,6 +146,10 @@ class TestFileNamesTest(unittest.TestCase):
             "tests/blender/testx.py",  # test*.py sí; test_*.py no
             "tests/rendimiento/perf_x.py",
             "tests/rendimiento/blender/test_x.py",
+            "tests/referencia/milestone_x.py",  # las de hito solo en tests/unit y tests/blender
+            "tests/rendimiento/blender/milestone_y.py",
+            "tests/unit/milestone-z.py",  # el patrón de hito, pero no es un módulo
+            "tests/unit/hito_w.py",
             "tests/referencia/caso/__init__.py",
             "tests/referencia/caso/datos.py",
             "tests/banco/silvestre/comparar.py",
@@ -171,6 +175,8 @@ class TestFileNamesTest(unittest.TestCase):
             "tests/unit/testb.py",
             "tests/unit/tools/test_c.py",
             "tests/blender/test_d.py",
+            "tests/unit/tools/milestone_a.py",  # pruebas de hito (spec 015, T48): paso «hito»
+            "tests/blender/milestone_b.py",
             "tests/rendimiento/test_e.py",
             "tests/rendimiento/blender/perf_f.py",
             "tests/referencia/test_g.py",

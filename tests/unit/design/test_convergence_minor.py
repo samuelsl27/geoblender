@@ -2,7 +2,7 @@
 """Los hallazgos menores de la verificación única de la 015 (spec 015, T45; RF-015-08, RF-015-13, RF-015-17,
 RF-015-19, RF-015-22, RF-015-24; hallazgos D-3, B-6, C-15, E-8, D-7, D-8, D-9, D-10, D-11 y D-12 de
 ``verificacion.md``). Cada prueba cita el suyo; los que se ven en Blender (E-6, E-7) están en
-``tests/blender/test_entity_views.py`` y ``tests/unit/core/catalog/test_catalog_design.py``.
+``tests/blender/milestone_entity_views.py`` y ``tests/unit/core/catalog/test_catalog_design.py``.
 
 - **D-3**: el factor de malla de una plataforma es de (0; 1], como el de la 013: con más de 1, la envolvente es más
   empinada que el ángulo de borde por construcción y toda su pared sale como «no debería haber».

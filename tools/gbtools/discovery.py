@@ -23,6 +23,11 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 UNITTEST_PATTERN = "test*.py"  # el patrón por defecto de ``unittest discover``
+# Las pruebas de hito (spec 015, T48; plan §7.4): las que pesan demasiado para la comprobación
+# de cada tarea. Viven junto a las demás de ``tests/unit`` y ``tests/blender``, con este
+# nombre en vez de ``test_*``: el «verde» no las descubre y el paso «hito» de
+# ``tools/check.py --completo`` (que la publicación pide siempre) las ejecuta.
+MILESTONE_PATTERN = "milestone_*.py"
 CACHE_FOLDER = "__pycache__"
 
 # Cabecera de una prueba en la salida de ``unittest -v``: «test_x (paquete.módulo.Clase.

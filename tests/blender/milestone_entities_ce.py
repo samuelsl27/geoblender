@@ -6,7 +6,7 @@ dominio de las pruebas unitarias), en ``blender -b`` y sin pantalla: «Plataform
 «Descartar…», «Soltar el apoyo…» y «Traer las entidades de…» de la T25 y la T26, **«Recalcular lo obsoleto»**
 (``geoblender.core_recompute_stale``, el modal con su plan) y, con las funciones del dominio que las órdenes llaman, congelar,
 reproducir y la verificación por recinto de la 012. Lo exhaustivo (las cuentas a mano de cada cifra, el «solo relleno» de la 014,
-la lista de «Ver restricciones y límites» con su entidad) está en ``tests/unit/design/test_entities_ce.py``; aquí, que **lo
+la lista de «Ver restricciones y límites» con su entidad) está en ``tests/unit/design/milestone_entities_ce.py``; aquí, que **lo
 mismo ocurre con lo que registra la extensión**.
 
 El proyecto de ``test_platform_ops`` (ventana de 60 × 60 m con celdas de 2 m y la ladera ``100 + 0,25·y + 0,0625·x``), con

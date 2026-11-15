@@ -25,7 +25,7 @@ import json
 from typing import Any
 
 from tests.support.package import import_geoblender
-from tests.unit.design import test_entities_ce as ce
+from tests.unit.design import milestone_entities_ce as ce
 from tests.unit.design import test_entity_dependents as dep
 from tests.unit.design import test_entity_supports as sup
 from tests.unit.design import test_platform_operation as ops_test

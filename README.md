@@ -92,7 +92,7 @@ línea» de Blender activado. Va a los datos de usuario de la extensión (`runti
 | --- | --- |
 | `geoblender/` | La extensión (id `geoblender`): lo único que se empaqueta |
 | `tools/` | Herramientas de desarrollo, solo con la biblioteca estándar |
-| `tests/` | Pruebas unitarias, dentro de Blender, del propio arnés (`tests/arnes`, con `--completo`), de referencia, de rendimiento y de los bancos privados |
+| `tests/` | Pruebas unitarias, dentro de Blender, del propio arnés (`tests/arnes`, con `--completo`), de referencia, de rendimiento y de los bancos privados; las pesadas de una spec, junto a las demás pero llamadas `milestone_*.py`, solo las ejecuta `--completo` |
 | `assets/` | Fuentes SVG de los iconos y de la imagen de bienvenida (CC0); sus PNG los genera `tools/build_icons.py` |
 | `packaging/` | Plantilla de aplicación «Geoblender» (con sus ficheros generados) y lanzador `Geoblender.cmd`; no se empaquetan en la extensión |
 | `LICENSE`, `LICENSES/`, `REUSE.toml` | Licencia del código y licencias de los activos y de los datos de terceros |
@@ -116,7 +116,7 @@ Desde la raíz de este repositorio, en PowerShell y siempre con el Python de Ble
 ```powershell
 $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe"
 & $PY -B tools/check.py          # la definición de «verde» (≤ 48 s, sin el paso «motor»)
-& $PY -B tools/check.py --completo  # además, el paso «motor» y las del arnés (unos 130 s)
+& $PY -B tools/check.py --completo  # además, los pasos «motor», «arnés» y «hito» (unos 210 s)
 & $PY -B tools/check_docs.py     # comprobación de la documentación
 & $PY -B tools/dev_install.py    # instala la extensión en un perfil de Blender aislado
 & $PY -B tools/build.py          # valida el manifiesto y genera el zip en dist/
@@ -133,7 +133,7 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 
 | Orden | Opciones |
 | --- | --- |
-| `tools/check.py` | `--completo` (añade las pruebas unitarias de los paquetes de dominio con el motor de cálculo de pruebas, el paso «motor», y las del arnés que lanzan Blender entero, `tests/arnes`: la publicación las pide siempre), `--rendimiento` (requisitos de rendimiento, también dentro de Blender), `--banco` (bancos privados) y `--documentacion` (añade la comprobación de la documentación; sin ella, «omitido») |
+| `tools/check.py` | `--completo` (añade las pruebas unitarias de los paquetes de dominio con el motor de cálculo de pruebas, el paso «motor», las del arnés que lanzan Blender entero, `tests/arnes`, y las pruebas de hito, `milestone_*.py` de `tests/unit` y de `tests/blender`, el paso «hito»: la publicación las pide siempre), `--rendimiento` (requisitos de rendimiento, también dentro de Blender), `--banco` (bancos privados) y `--documentacion` (añade la comprobación de la documentación; sin ella, «omitido») |
 | `tools/check_docs.py` | `CARPETA` (la documentación, si no es la carpeta madre ni la de `GEOBLENDER_DOCS_DIR`) |
 | `tools/dev_install.py` | `--perfil CARPETA`, `--abrir` (Blender con interfaz) y `--desinstalar` |
 | `tools/build.py` | `--probar-instalacion` (instala el zip en un perfil limpio y lo desinstala) |
@@ -150,9 +150,10 @@ $PY = "C:\Program Files\Blender Foundation\Blender 5.2\5.2\python\bin\python.exe
 `tools/check.py` ejecuta las pruebas, también dentro de Blender, y comprueba por máquina las
 reglas de arquitectura, licencias y codificación. Termina en `VERDE`, en `VERDE CON
 OMISIONES (n)` si falta un recurso opcional (con la orden que lo instala) o en `NO VERDE`.
-Sin `--completo` (la comprobación de cada tarea, en ≤ 48 s; con `--completo`, unos 130 s)
-no ejecuta las pruebas del propio arnés que lanzan Blender entero ni el paso «motor», y lo
-dice antes del resultado. Solo se ejecuta un
+Sin `--completo` (la comprobación de cada tarea, en ≤ 48 s; con `--completo`, unos 210 s)
+no ejecuta las pruebas del propio arnés que lanzan Blender entero, ni el paso «motor», ni
+las pruebas de hito (`milestone_*.py`: lo que pesa de una spec, que el «verde» no descubre), y
+lo dice antes del resultado. Solo se ejecuta un
 `tools/check.py` a la vez en el equipo, sea de la carpeta que sea (de este repositorio o de
 un *worktree*): dos a la vez compiten por los procesadores, tardan más y las pruebas que miden
 tiempos fallan. El cerrojo es `%LOCALAPPDATA%\Geoblender\check.lock`, que el sistema suelta

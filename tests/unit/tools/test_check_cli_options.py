@@ -13,6 +13,9 @@ opcionales y la orden que descarga las ruedas que faltan.
   sin la opción no se ejecuta, y el resumen lo dice antes de ``RESULTADO``. Lo mismo el
   paso «motor» (RF-004-28; spec 001 0.7, spec 004 0.4 y spec 005, T50), que con la opción
   va a la vez que «blender».
+- RF-001-06 (spec 015, T48; plan 015 §7.4): con ``--completo``, tras «arnés», el paso «hito»: las
+  pruebas de hito (``milestone_*.py`` de ``tests/unit``, con ``unittest``, y de ``tests/blender``,
+  dentro de Blender), repartidas en partes; sin la opción no se ejecuta y el resumen lo dice.
 - RF-007-14 (spec 007, T18): con ``--documentacion``, tras los obligatorios y los demás
   opcionales, ``tools/check_docs.py`` sobre la documentación que encuentra
   ``repo.find_docs``; sin documentación, «omitido» con el motivo, sin ser un fallo.
@@ -36,6 +39,8 @@ from tests.support.check_cli import (
     FAKE_SITE,
     FakeRunner,
     HARNESS,
+    HITO,
+    HITO_BLENDER,
     INSTALL,
     MANDATORY,
     NOT_COMPLETE_NOTE,
@@ -389,6 +394,77 @@ class CompleteStepTest(unittest.TestCase):
         self.assertIn("1 fichero sin cargar", line)
         self.assertIn("tests/arnes/otra/test_falla.py", result.out)
 
+    def test_completo_runs_the_milestone_tests_after_the_harness(self) -> None:
+        """RF-001-06 (spec 015, T48; plan 015 §7.4): con ``--completo``, el paso «hito» va tras
+        «arnés» y antes de los opcionales: las pruebas ``milestone_*.py`` de ``tests/unit``
+        (``tools/unittest_part.py``, en partes) y de ``tests/blender`` (el lanzador, en partes),
+        a la vez; su línea suma las pruebas de las dos. Sin la opción no se ejecuta, y la nota del
+        resumen lo nombra."""
+        result = run_check("--completo")
+        self.assertEqual(result.code, 0, result.out)
+        runner = result.runner
+        unit, blender_runs = runner.calls_of(HITO), runner.calls_of(HITO_BLENDER)
+        self.assertTrue(unit and blender_runs)
+        for call in unit:
+            after = call.cmd[call.cmd.index("discover"):]
+            self.assertEqual(after[after.index("-p") + 1], "milestone_*.py")
+            self.assertEqual(after[after.index("-s") + 1], "tests/unit")
+        for call in blender_runs:
+            self.assertEqual(call.cmd[call.cmd.index("--patron") + 1], "milestone_*.py")
+            self.assertEqual(call.cmd[call.cmd.index("--carpeta") + 1], "tests/blender")
+        files = {
+            "tests/__init__.py": SPDX,
+            "tests/unit/__init__.py": SPDX,
+            "tests/unit/milestone_a.py": SPDX,
+            "tests/unit/milestone_b.py": SPDX,
+            "tests/unit/milestone_c.py": SPDX,
+            "tests/blender/__init__.py": SPDX,
+            "tests/blender/milestone_d.py": SPDX,
+            "tests/blender/milestone_e.py": SPDX,
+        }
+        with _manifest_root(files) as tmp:
+            parted = run_check("--completo", root=tmp)
+        self.assertEqual(parted.code, 0, parted.out)
+        for step, expected in ((HITO, "unittest_part.py"), (HITO_BLENDER, "run_blender_tests.py")):
+            calls = parted.runner.calls_of(step)
+            self.assertGreaterEqual(len(calls), 2, step)  # en partes: hasta 3 y 2 módulos
+            self.assertEqual({call.part[1] for call in calls if call.part}, {len(calls)})
+            self.assertIn(expected, " ".join(calls[0].cmd).replace("\\", "/"))
+        names = [HARNESS, HITO]
+        positions = [result.out.index(_step_line(result.out, name)) for name in names]
+        self.assertEqual(positions, sorted(positions))
+        self.assertRegex(
+            _step_line(result.out, HITO), rf"^  correcto  {HITO}\s+\d+,\d s  \(40 pruebas\)$"
+        )
+        self.assertEqual(runner.steps(), [*EXECUTED, HARNESS])
+        options = {step.name: step.option for step in check.STEPS}
+        self.assertEqual(options[HITO], "--completo")
+
+        result = run_check()
+        self.assertEqual(result.code, 0, result.out)
+        self.assertEqual(result.runner.calls_of(HITO) + result.runner.calls_of(HITO_BLENDER), [])
+        self.assertNotRegex(result.out, rf"(?m)^  \S+\s+{HITO}\s")
+        (note,) = self._note_lines(result.out)
+        self.assertIn("hito", note)
+
+    def test_milestone_failures(self) -> None:
+        """RF-001-06, RF-001-07 (spec 015, T48): una prueba de hito que falla (de ``tests/unit`` o
+        de Blender), o un paso «hito» sin ninguna prueba, lo ponen en fallo («NO VERDE»)."""
+        red = _unittest_output(31, "FAILED (failures=1)", "FAIL: test_a_milestone")
+        result = run_check("--completo", runner=FakeRunner({HITO: (1, "", red)}))
+        self.assertEqual(result.code, 1, result.out)
+        self.assertTrue(_step_line(result.out, HITO).lstrip().startswith("fallo"))
+        self.assertIn(f"«{HITO}»", result.out.strip().splitlines()[-1])
+
+        red_blender = _launcher_output(9, "FAILED (failures=1)", "FAIL: test_in_blender", code=1)
+        result = run_check("--completo", runner=FakeRunner({HITO_BLENDER: (1, "", red_blender)}))
+        self.assertEqual(result.code, 1, result.out)
+        self.assertTrue(_step_line(result.out, HITO).lstrip().startswith("fallo"))
+
+        result = run_check("--completo", runner=FakeRunner({HITO: (5, "", NO_TESTS)}))
+        self.assertEqual(result.code, 1, result.out)
+        self.assertIn("sin pruebas", _step_line(result.out, HITO))
+
     def test_usage_names_completo(self) -> None:
         """RF-001-06, RF-004-28: la ayuda explica ``--completo``: las pruebas del arnés y
         las unitarias con el motor de cálculo de pruebas."""
@@ -399,6 +475,7 @@ class CompleteStepTest(unittest.TestCase):
         usage = result.out[result.out.index("Uso (con el Python de Blender"):]
         option = usage[usage.index("  --completo"):usage.index("  --rendimiento")]
         self.assertIn("motor de cálculo", option)
+        self.assertIn("hito", option)
 
 
 class DocsStepTest(unittest.TestCase):

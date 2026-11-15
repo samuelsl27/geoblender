@@ -12,7 +12,9 @@ sin avisar.
   ``tests/unit``, ``tests/arnes`` (``--completo``; spec 001 0.6), ``tests/referencia`` y
   ``tests/banco``; ``test_*.py`` en
   ``tests/blender`` y ``tests/rendimiento``; ``perf_*.py`` en
-  ``tests/rendimiento/blender``) y es un nombre de módulo válido; y no hay ``.py`` en
+  ``tests/rendimiento/blender``; además ``milestone_*.py``, las pruebas de hito del paso
+  «hito» de ``--completo``, en ``tests/unit`` y ``tests/blender``; spec 015, T48) y es un
+  nombre de módulo válido; y no hay ``.py`` en
   ``tests/`` fuera de esas carpetas, de ``tests/support/`` (las ayudas) y de
   ``tests/data/`` (los datos sintéticos), porque ningún paso los carga.
 - TST-03 (T44): en una subclase de ``unittest.TestCase`` (directa, de otra clase del
@@ -78,7 +80,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
-from ..discovery import UNITTEST_PATTERN
+from ..discovery import MILESTONE_PATTERN, UNITTEST_PATTERN
 from ..findings import Finding
 from ..repo import iter_py_files, relpath
 from . import pyast
@@ -100,12 +102,16 @@ MESSAGE = (
 )
 
 # Carpeta de pruebas → patrón de los ficheros que carga su paso (``tools/check.py``, el
-# lanzador de Blender y ``tools/bench_silvestre.py``). La más concreta, primero.
+# lanzador de Blender y ``tools/bench_silvestre.py``). La más concreta, primero. Una carpeta
+# puede llevar dos patrones, uno por paso: en ``tests/unit`` y ``tests/blender``, el de las
+# pruebas de hito (spec 015, T48), que carga el paso «hito» de ``--completo``.
 SUITE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("tests/rendimiento/blender/", "perf_*.py"),
     ("tests/rendimiento/", "test_*.py"),
     ("tests/blender/", "test_*.py"),
+    ("tests/blender/", MILESTONE_PATTERN),
     ("tests/unit/", UNITTEST_PATTERN),
+    ("tests/unit/", MILESTONE_PATTERN),
     ("tests/arnes/", UNITTEST_PATTERN),
     ("tests/referencia/", UNITTEST_PATTERN),
     ("tests/banco/", UNITTEST_PATTERN),
@@ -146,14 +152,16 @@ def _name_problem(rel: str) -> str | None:
     name = rel.rpartition("/")[2]
     if name == INIT or rel.startswith(NOT_SUITES):
         return None
-    for folder, pattern in SUITE_PATTERNS:
+    for folder in dict.fromkeys(folder for folder, _pattern in SUITE_PATTERNS):
         if not rel.startswith(folder):
             continue
-        if not fnmatch.fnmatchcase(name, pattern):
+        patterns = [pattern for other, pattern in SUITE_PATTERNS if other == folder]
+        if not any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns):
+            listed = " o ".join(f"«{pattern}»" for pattern in patterns)
             return (
-                f"«{name}» no casa con «{pattern}», el patrón con que se cargan las "
-                f"pruebas de «{folder}»: unittest no lo carga y sus pruebas no se "
-                f"ejecutarían nunca (falso verde); renómbrelo o, {MOVE_HINT}"
+                f"«{name}» no casa con {listed}, lo que cargan los pasos de pruebas de "
+                f"«{folder}»: unittest no lo carga y sus pruebas no se ejecutarían nunca "
+                f"(falso verde); renómbrelo o, {MOVE_HINT}"
             )
         if not name.removesuffix(".py").isidentifier():
             return (
@@ -161,9 +169,10 @@ def _name_problem(rel: str) -> str | None:
                 "sin avisar (falso verde); use solo letras, números y «_»"
             )
         return None
+    folders = dict.fromkeys(folder for folder, _pattern in SUITE_PATTERNS)
     return (
         "está en tests/ fuera de las carpetas de pruebas ("
-        + ", ".join(f"«{folder}»" for folder, _pattern in SUITE_PATTERNS)
+        + ", ".join(f"«{folder}»" for folder in folders)
         + f"): ningún paso lo carga (falso verde); muévalo a la suya o, {MOVE_HINT}"
     )
 

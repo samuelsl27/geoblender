@@ -1405,6 +1405,15 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Cambiado
 
+- **La comprobación de cada tarea deja fuera las pruebas pesadas de la spec 015** (RNF-015-07; plan
+  015 §7.4): las clases con proyecto que repiten un escenario por variante (la cascada de lo
+  declarado, descartar y soltar, traer, insertar, la capa de entidades, congelar, la edición de la
+  tabla de lo declarado…) y los módulos de Blender «Entidad ▾» más pesados pasan a ficheros `milestone_*.py`, sin
+  cambiar una aserción: `tools/check.py` no los descubre y los ejecuta el paso nuevo «hito» de
+  `--completo`, que la publicación pide siempre (y el resumen lo dice sin la opción). Cada requisito
+  de la 015 sigue teniendo en el «verde» al menos una prueba (lo guarda
+  `tests/unit/design/test_milestone_coverage.py`) y la regla TST-02 admite ese nombre en
+  `tests/unit` y `tests/blender`. `--completo` tarda unos 20 s más.
 - **Límites y restricciones** (spec 012, versiones 0.3 y 0.4; hechos con la spec 015): la compilación de
   las máscaras consume también las restricciones que declaran las entidades de diseño, que son de la
   versión y no de las tres capas del proyecto (RF-012-29), y una declarada que llega después de compilar

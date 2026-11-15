@@ -50,6 +50,8 @@ from tests.support.check_cli import (
     FAKE_SITE,
     FakeRunner,
     HARNESS,
+    HITO,
+    HITO_BLENDER,
     INSTALL,
     MANDATORY,
     OPTIONAL,
@@ -789,7 +791,9 @@ class RuntimeStepTest(unittest.TestCase):
             self.assertTrue(call.env["PYTHONPATH"].startswith(tmp + os.pathsep), call.env)
         self.assertRegex(result.out.strip().splitlines()[-1], r"^RESULTADO: VERDE \(")
 # Los pasos con partes (spec 004, T39; «referencia», spec 006, T59).
-TIMED_STEPS = ("unitarias", "referencia", "blender", RUNTIME)
+# Los pasos con partes y tiempos: con ``--completo``, «motor» y «hito» (spec 015, T48: sus partes de
+# ``tests/unit`` y de Blender, con el patrón ``milestone_*.py``) también guardan los suyos.
+TIMED_STEPS = ("unitarias", "referencia", "blender", RUNTIME, HITO, HITO_BLENDER)
 
 
 def _option(cmd: Sequence[str], name: str) -> str | None:
@@ -825,7 +829,8 @@ def _measured_suites(runner: FakeRunner, skip: Sequence[tuple[str, int]] = ()
                 continue
             folder, pattern = suite_of(step, call.cmd)
             flavor = {"unitarias": check.TIMES_PYTHON, "referencia": check.TIMES_PYTHON,
-                      "blender": check.TIMES_BLENDER, RUNTIME: check.TIMES_RUNTIME}[step]
+                      "blender": check.TIMES_BLENDER, RUNTIME: check.TIMES_RUNTIME,
+                      HITO: check.TIMES_PYTHON, HITO_BLENDER: check.TIMES_BLENDER}[step]
             key = check.times_key(flavor, folder, pattern)
             found.setdefault(key, {})[_measured_module(call)] = float(call.part[0])
     return found

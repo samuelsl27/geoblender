@@ -59,6 +59,10 @@ _WITH_BLENDER_BLOCK = (*WITH_BLENDER, "blender")
 # pruebas, tras «blender» (desde la tarea 011/T36; antes, a la vez que él), con --completo (spec 004 0.4; spec 005, T50). Salvo en
 # RuntimeStepTest, el motor es este, simulado.
 RUNTIME = "motor"
+# El paso de las pruebas de hito (spec 015, T48; plan §7.4), tras «arnés», con --completo: las de
+# ``tests/unit`` (HITO) y las de ``tests/blender`` (HITO_BLENDER), con el patrón ``milestone_*.py``.
+HITO = "hito"
+HITO_BLENDER = "hito-blender"
 FAKE_SITE = Path(tempfile.gettempdir()) / "geoblender-falso" / "motor" / "site"
 DOMAIN_FOLDERS = [
     f"tests/unit/{name}" for name in imports.LEVELS if (ROOT / "tests" / "unit" / name).is_dir()
@@ -139,6 +143,8 @@ DEFAULT_RESULTS: Mapping[str, tuple[int, str, str]] = {
     ),
     "arnés": (0, "", _unittest_output(23)),
     RUNTIME: (0, "", _unittest_output(40)),
+    HITO: (0, "", _unittest_output(31)),
+    HITO_BLENDER: (0, "", _launcher_output(9)),
 }
 OPTIONAL = ["rendimiento", "rendimiento-blender", "banco"]
 HARNESS = "arnés"  # el paso de --completo (spec 001 0.6; spec 002, T48)
@@ -163,11 +169,15 @@ def step_of(cmd: Sequence[str]) -> str:
     if any(part.endswith("run_blender_tests.py") for part in parts):
         if "tests/rendimiento/blender" in parts:
             return "rendimiento-blender"
+        if discovery.MILESTONE_PATTERN in parts:
+            return HITO_BLENDER
         return "blender"
     if "-S" in parts:  # el Python de Blender sin su site-packages: el numpy del motor
         return RUNTIME
     if "discover" in parts:  # «-m unittest discover» o tools/unittest_part.py (T40)
         folder = parts[parts.index("-s", parts.index("discover")) + 1]
+        if discovery.MILESTONE_PATTERN in parts:
+            return HITO
         return {
             "tests/unit": "unitarias",
             "tests/referencia": "referencia",
@@ -185,6 +195,8 @@ TEST_STEPS = (
     "rendimiento-blender",
     HARNESS,
     RUNTIME,
+    HITO,
+    HITO_BLENDER,
 )
 
 
@@ -192,7 +204,7 @@ def suite_of(step: str, cmd: Sequence[str]) -> tuple[str, str]:
     """Carpeta y patrón de una orden de pruebas simulada (los de ``unittest`` y del
     lanzador por defecto si la orden no los da)."""
     parts = [str(part) for part in cmd]
-    if step in ("blender", "rendimiento-blender"):
+    if step in LAUNCHER_STEPS:
         folder = parts[parts.index("--carpeta") + 1]
         pattern = parts[parts.index("--patron") + 1] if "--patron" in parts else "test_*.py"
     else:
@@ -225,7 +237,7 @@ class Call:
 
 
 Result = tuple[int, str, str] | BaseException
-LAUNCHER_STEPS = ("blender", "rendimiento-blender")
+LAUNCHER_STEPS = ("blender", "rendimiento-blender", HITO_BLENDER)
 
 
 def part_of(cmd: Sequence[str]) -> tuple[int, int] | None:
@@ -342,7 +354,7 @@ class FakeRunner:
         spec 001 0.8) se mezclan: las seguidas cuentan como un bloque, que da sus pasos en el
         orden de :data:`EXECUTED` (los que van con él y «blender» al final); el bloque acaba en
         una orden de otro paso o en una que ya tiene (la misma parte de un paso, o un paso sin
-        partes). El paso «motor» no cuenta (se mira aparte, con ``calls_of``)."""
+        partes). Los pasos «motor» y «hito» no cuentan (se miran aparte, con ``calls_of``)."""
         found: list[str] = []
         block: dict[str, set[tuple[int, int] | None]] = {}
 
@@ -352,7 +364,7 @@ class FakeRunner:
 
         previous: Call | None = None
         for call in self.calls:
-            if call.step == RUNTIME:
+            if call.step in (RUNTIME, HITO, HITO_BLENDER):
                 continue
             if call.step in _WITH_BLENDER_BLOCK:
                 seen = block.get(call.step)
