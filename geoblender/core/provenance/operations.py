@@ -887,6 +887,41 @@ class OperationHandle:
                                    "reclama rutas")
             self._claims.update(found)
 
+    def add_inputs(self, conn: sqlite3.Connection, inputs: Sequence[Use]) -> tuple[Consumed, ...]:
+        """Anota **entradas que la operación solo conoce al terminar** (spec 015, T42; RF-015-15, ADR-0030 §4,
+        RF-008-51): cada ``Use`` de ``inputs``, con su hash de contenido **de ahora** y su papel, en la
+        transacción de escritura del módulo ``conn`` —la misma que va a completar la operación
+        (:meth:`complete`; ninguna de las dos la confirma)—, y devuelve lo anotado, en su orden. Es lo que
+        necesita una operación que depende de lo que **sale de su cálculo** (el diseño que rellena sobre una
+        entidad, que no se sabe hasta medir su resultado) y que **empezó antes de calcular**, como un recálculo:
+        sin esto, su dependencia no constaría y la cascada de la 008 no la vigilaría.
+
+        Solo de una operación «en curso» (``core.operation_not_running``): una **hecha** sigue siendo inmutable. Se
+        resuelve en el ámbito de la operación (el proyecto o su versión) como al empezar, y lo anotado al empezar
+        (:attr:`inputs`) no cambia. Rechazos, sin escribir nada: los de :func:`begin_operation` para sus entradas
+        (``core.operation_dataset_unknown``…), ``ValueError`` si repite una (clase, dato, papel) que ya consume o
+        que se da dos veces, ``TypeError`` si ``inputs`` no son ``Use`` o ``conn`` no es una conexión, y
+        ``ValueError`` fuera de una transacción de escritura. Si la transacción se deshace, no queda nada."""
+        conn = _in_transaction(conn, "add_inputs")
+        uses = _uses(inputs)
+        row = conn.execute("SELECT status FROM gb_operation WHERE uid = ?", (self.uid,)).fetchone()
+        if row is None:
+            raise ProvenanceError("core.operation_unknown", operation=self.uid, project=self.project.name)
+        if row[0] != OperationStatus.RUNNING:
+            raise ProvenanceError("core.operation_not_running", op_type=self.op_type, operation=self.uid)
+        scope = _scope_of(conn, self.definition, self.version_uid or None)
+        consumed = tuple(_resolve_use(conn, self.definition, use, scope) for use in uses)
+        held = [Consumed(ItemKind(kind), str(uid), "", "", str(role)) for kind, uid, role in conn.execute(
+            "SELECT item_kind, item_uid, role FROM gb_operation_io WHERE operation_uid = ? "
+            "AND direction = 'in'", (self.uid,))]
+        _check_repeated((*held, *consumed))
+        conn.executemany(
+            "INSERT INTO gb_operation_io (operation_uid, direction, item_kind, item_uid, "
+            "content_sha256, role) VALUES (?, 'in', ?, ?, ?, ?)",
+            [(self.uid, str(item.kind), item.uid, item.content_sha256, item.role) for item in consumed],
+        )
+        return consumed
+
     def complete(
         self,
         conn: sqlite3.Connection,

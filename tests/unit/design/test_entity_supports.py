@@ -11,8 +11,10 @@ ADR-0030 §4; CE-015-01): el marco del error 59 (un relleno seguía apoyado en u
   o de entidad —la plataforma de la 015, «solo relleno» de la 014— añade, al crear, la superficie de cada
   entidad en la que se apoya (``supported_on``) y la tabla de su huella (``support_footprint``) a sus
   entradas, y la cifra ``des.supported_m3`` con su ámbito. Una operación **hecha** es inmutable (ADR-0030 §4):
-  al recalcular se arrastra lo que apoyaba y se vuelve a medir, no se copia el volumen; con la versión **sin
-  entidades** nada cambia (ni se lee una superficie).
+  al recalcular se arrastra lo que apoyaba y se vuelve a medir, no se copia el volumen, y **también se
+  detectan las entidades que antes no estaban** (T42, C-1: «Balsa», creada antes que P1, gana la dependencia
+  al recalcularse, con ``OperationHandle.add_inputs``); con la versión **sin entidades** nada cambia (ni se
+  lee una superficie).
 - **Lo que declara la persona** (``des.platform.{e}.supports``) se registra aunque el volumen sea cero; se
   rechaza lo que no existe, no está calculado, es ella misma o parte de ella (un ciclo).
 - **Reproducir** (RF-009-11): una revisión congelada con lo apoyado se reproduce **con las mismas cifras**
@@ -567,6 +569,17 @@ class DragSupportsTest(SupportsCase):
         self.assertEqual(self.by_hand(provenance.dataset_name("psf", DRAG), prep.hole_raster().values,
                                       PSF1, EPR1), 0.0)
 
+    def test_d_recomputing_a_design_that_rests_on_nothing_gains_no_dependency(self) -> None:
+        """RF-015-15 (C-1, el reverso): recalcular «Arrastra el terreno», que cruza la huella de P1 sin rellenar
+        encima, **no** gana ninguna entrada ni cifra (como al crearla: la versión tiene entidades, pero ninguna
+        bajo lo que rellena)."""
+        self.clock.advance(minutes=1)
+        handle, work = design_store.recompute_run(self.request_for(self.other.handle.uid))
+        finish(work)
+        self.assertNotEqual(handle.uid, self.other.handle.uid)
+        self.assertEqual(self.supports_of(handle.uid), [])
+        self.assertEqual(self.volumes_of(handle.uid), {})
+
 
 class DeclaredSupportsTest(SupportsCase):
     """RF-015-15, D-11: lo que la persona **declara** (``des.platform.{e}.supports``) se registra aunque no apoye
@@ -718,17 +731,10 @@ class ThicknessRecomputeTest(ThicknessCase):
 # ---------------------------------------------------------------------------------------------
 
 
-class FillOnlySupportsTest(SupportsCase):
-    """RF-015-15, D-11 (y, sin entidades, la 013 y la 014 como antes): sobre la cantera de la 014, con el diseño
-    «solo relleno» «Balsa» creado **antes** de que la versión tenga entidades (el gancho ni se llama: la
-    versión no tiene ninguna), la «Plataforma de la balsa» (corta a 255 m, en la lámina de agua) y «Balsa 2»,
-    que rellena sobre su huella y se apoya en ella."""
-
-    before_stored: ClassVar[Any]
-    after_stored: ClassVar[Any]
-    twin_request: ClassVar[Any]
-    had_entities: ClassVar[tuple[bool, bool]]
-    revision: ClassVar[str]
+class FillOnlyCase(SupportsCase):
+    """Lo de ``SupportsCase`` más lo de la cantera de la 014 con el diseño «solo relleno»: los tipos de la 013 y
+    la 014 registrados, el perfil y la envolvente de la prueba en V01 (:meth:`build`) y :meth:`fill`, que
+    «calcula» y «crea» un «solo relleno» con la orden real."""
 
     @classmethod
     def definitions(cls) -> tuple[Any, ...]:
@@ -747,8 +753,8 @@ class FillOnlySupportsTest(SupportsCase):
             return bool(design_store._has_entities(conn, cls.v1.uid))
 
     @classmethod
-    def setUpClass(cls) -> None:
-        super().setUpClass()
+    def build(cls) -> None:
+        """Los parámetros del perfil de la prueba y su envolvente en V01 (sin ninguna entidad todavía)."""
         core_params.register_families(design_params.FAMILIES)
         cls.addClassCleanup(core_params.unregister_families, "des")
         for param in ("height_m", "face_deg", "berm_m", "anchor_m", "mesh_factor"):
@@ -762,6 +768,32 @@ class FillOnlySupportsTest(SupportsCase):
         cls.clock.advance(minutes=1)
         fill_test.drive(steps.envelope_run(cls.project, envelope, version=cls.v1.uid,
                                            masks=cls.masks_v1)).result.create()
+
+    def current_fill_of(self, name: str) -> str:
+        """El uid de la operación vigente del «solo relleno» ``name``."""
+        rows = self.query("SELECT uid, settings FROM gb_operation WHERE op_type = 'des.fill_only' AND "
+                          "status = 'done' AND superseded_by IS NULL ORDER BY fid")
+        (found,) = [uid for uid, settings in rows if json.loads(settings).get("name") == name]
+        return str(found)
+
+
+class FillOnlySupportsTest(FillOnlyCase):
+    """RF-015-15, D-11 (y, sin entidades, la 013 y la 014 como antes): sobre la cantera de la 014, con el diseño
+    «solo relleno» «Balsa» creado **antes** de que la versión tenga entidades (el gancho ni se llama: la
+    versión no tiene ninguna), la «Plataforma de la balsa» (corta a 255 m, en la lámina de agua) y «Balsa 2»,
+    que rellena sobre su huella y se apoya en ella."""
+
+    before_stored: ClassVar[Any]
+    after_stored: ClassVar[Any]
+    twin_request: ClassVar[Any]
+    had_entities: ClassVar[tuple[bool, bool]]
+    revision: ClassVar[str]
+    recomputed: ClassVar[Any] = None
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.build()
         first = cls.exists()
         with mock.patch.object(entity_store, "survey_supports",
                                side_effect=AssertionError("sin entidades, el gancho ni se llama")):
@@ -806,10 +838,23 @@ class FillOnlySupportsTest(SupportsCase):
         scope = figures_mod.scope_json(provenance.entity_figure_scope("Balsa 2", "PLT-001"))
         self.assertEqual(self.figures_of(uid)[("des.supported_m3", scope)], found["PLT-001"])
 
+    @classmethod
+    def recompute_older(cls) -> Any:
+        """Recalcula «Balsa» —el «solo relleno» creado **antes** de la entidad— con ``recompute_run``, una vez por
+        clase (los dos casos que la usan no dependen de su orden): su ``OperationHandle``, ya completa."""
+        if cls.recomputed is None:
+            older = cls.before_stored.handle.uid
+            ((settings,),) = cls.query_of("SELECT settings FROM gb_operation WHERE uid = ?", older)
+            cls.clock.advance(minutes=1)
+            handle, work = design_store.recompute_run(recompute_mod.RecomputeRequest(
+                cls.project, older, provenance.FILL_ONLY, json.loads(settings), (), (), version=cls.v1.uid))
+            fill_test.drive(work)
+            cls.recomputed = handle
+        return cls.recomputed
+
     def test_c_recomputing_the_fill_only_keeps_what_it_rested_on(self) -> None:
         """RF-015-15, ADR-0030 §4: recalcular «Balsa 2» arrastra la superficie y la huella de la plataforma y
-        mide otra vez lo apoyado (el mismo, nada cambió); «Balsa», que no tenía entidad al crearse, no gana una
-        al recalcularse: no se pueden añadir entradas a una operación ya empezada (se vuelve a crear)."""
+        mide otra vez lo apoyado (el mismo, nada cambió)."""
         old = self.after_stored.handle.uid
         settings = json.loads(self.query("SELECT settings FROM gb_operation WHERE uid = ?", old)[0][0])
         before = self.volumes_of(old)
@@ -820,36 +865,175 @@ class FillOnlySupportsTest(SupportsCase):
         fill_test.drive(work)
         self.assertEqual(self.supports_of(handle.uid), self.supports_of(old))
         self.assertEqual(self.volumes_of(handle.uid), before)
-        older = self.before_stored.handle.uid
-        settings = json.loads(self.query("SELECT settings FROM gb_operation WHERE uid = ?", older)[0][0])
-        self.clock.advance(minutes=1)
-        again, work = design_store.recompute_run(recompute_mod.RecomputeRequest(
-            self.project, older, provenance.FILL_ONLY, settings, (), (), version=self.v1.uid))
-        fill_test.drive(work)
-        self.assertEqual(self.supports_of(again.uid), [])
+
+    def test_c_recomputing_a_fill_only_made_before_the_entity_gains_the_dependency(self) -> None:
+        """RF-015-15, ADR-0030 §4, CE-015-01 (C-1, error 59): «Balsa», creada **antes** de la plataforma, rellena
+        sobre su huella como «Balsa 2» y, **al recalcularse**, gana la dependencia (antes no: la operación ya
+        empezada no admitía entradas nuevas): la superficie y la tabla de la huella de P1 como entradas, con
+        el hash que tenían y el volumen del cálculo a mano (≤ 10⁻⁹ relativo), y la cifra con el ámbito de P1.
+        Lo que se le apoya a P1 y lo que lista descartarla son ya las dos, y la dependencia es la de «Crear»:
+        la misma que registraría una operación calculada después."""
+        before = self.before_stored.handle.uid
+        self.assertEqual(self.supports_of(before), [], "creada sin entidades: sin dependencia")
+        handle = self.recompute_older()
+        new = handle.uid
+        self.assertNotEqual(new, before)
+        psf, epr = provenance.dataset_name("psf", BALSA), provenance.dataset_name("epr", BALSA)
+        self.assertEqual(self.supports_of(new), [(psf, "supported_on"), (epr, "support_footprint")])
+        found = self.volumes_of(new)
+        self.assertEqual(list(found), ["PLT-001"])
+        oracle = self.by_hand(provenance.dataset_name("srf", "Balsa"), qfx.terrain(self.grid), psf, epr)
+        self.assertGreater(oracle, 100.0)
+        self.assertLessEqual(abs(found["PLT-001"] - oracle) / oracle, 1e-9)
+        scope = figures_mod.scope_json(provenance.entity_figure_scope("Balsa", "PLT-001"))
+        self.assertEqual(self.figures_of(new)[("des.supported_m3", scope)], found["PLT-001"])
+        marked = self.query(
+            "SELECT d.name, io.role, io.content_sha256 = d.content_sha256 FROM gb_operation_io AS io "
+            "JOIN gb_dataset AS d ON d.uid = io.item_uid WHERE io.operation_uid = ? AND io.direction = 'in' "
+            "AND io.role IN ('supported_on', 'support_footprint') ORDER BY io.fid", new)
+        self.assertEqual([(name, role) for name, role, _same in marked],
+                         [(psf, "supported_on"), (epr, "support_footprint")])
+        self.assertTrue(all(same for _name, _role, same in marked), "con el hash que tienen ahora")
+        listed = entities.dependents(self.project, self.v1.uid, "PLT-001")
+        self.assertEqual(sorted(item.name for item in listed), ["Balsa", "Balsa 2"])
+        self.assertEqual({item.name: item.state for item in listed},
+                         {"Balsa": entities.EntityState.CURRENT, "Balsa 2": entities.EntityState.CURRENT})
+        plan = entity_store.discard_plan(self.project, self.v1.uid, "PLT-001")
+        self.assertEqual(sorted(item.name for item in plan.dependents), ["Balsa", "Balsa 2"])
+        listed_volume = {item.name: item.volume_m3 for item in plan.dependents}
+        self.assertEqual(listed_volume["Balsa"], found["PLT-001"])
+        self.assertEqual(self.current_fill_of("Balsa"), new, "es la operación vigente de «Balsa»")
 
     def test_d_reproducing_the_frozen_fill_only_gives_the_supported_volume_too(self) -> None:
         """RF-015-15, RF-009-11: congelada V01, la reproducción de «Balsa 2» da la misma cifra de lo apoyado
-        (desde la superficie de partida y la superficie y la huella congeladas de la plataforma) y todo igual."""
+        (desde la superficie de partida y la superficie y la huella congeladas de la plataforma) y todo igual;
+        también la de «Balsa», recalculada con su dependencia nueva (C-1)."""
+        late = self.recompute_older().uid
         self.clock.advance(minutes=1)
         frozen = fill_test.drive(freeze.freeze_steps(self.project, self.v1.uid, reason="Entrega")).result
         revision = str(frozen.frozen.uid)
         self.clock.advance(minutes=1)
         report = fill_test.drive(reproduce_mod.reproduce_steps(self.project, revision)).result
-        uid = self.current_fill()
-        found = [check for check in report.figures if check.operation_uid == uid
-                 and check.key == "des.supported_m3"]
-        self.assertEqual(len(found), 1)
-        self.assertTrue(found[0].same, found)
-        self.assertTrue(all(check.same for check in report.figures if check.operation_uid == uid))
+        for uid in (self.current_fill_of("Balsa 2"), late):
+            with self.subTest(operation=uid):
+                found = [check for check in report.figures if check.operation_uid == uid
+                         and check.key == "des.supported_m3"]
+                self.assertEqual(len(found), 1)
+                self.assertTrue(found[0].same, found)
+                self.assertTrue(all(check.same for check in report.figures if check.operation_uid == uid))
         self.assertTrue(report.matches, report.not_reproducible)
 
-    def current_fill(self) -> str:
-        """El uid de la operación vigente de «Balsa 2»."""
-        rows = self.query("SELECT uid, settings FROM gb_operation WHERE op_type = 'des.fill_only' AND "
-                          "status = 'done' AND superseded_by IS NULL ORDER BY fid")
-        (found,) = [uid for uid, settings in rows if json.loads(settings).get("name") == "Balsa 2"]
-        return str(found)
+
+class LateSupportTest(FillOnlyCase):
+    """RF-015-15, RF-015-16, RF-015-17, CE-015-01 (C-1, el patrón del error 59), por el camino de la persona
+    («Recalcular lo obsoleto»): «Balsa», un «solo relleno», se creó **antes** de que existiera la plataforma P1
+    y «Balsa 2», después; las dos rellenan lo mismo sobre su huella. En el orden de las pruebas: (a) lo que se le
+    apoya a P1 antes, (b) tras cambiar la altura de banco y repetir las dos, (c) la cascada desde P1 y (d)
+    descartarla."""
+
+    old: ClassVar[Any]
+    twin: ClassVar[Any]
+    HEIGHT_KEY: ClassVar[str] = design_params.bench_key(fill_test.REST.code, "height_m")
+    FILLED_M3: ClassVar[float] = 936.0
+    """A mano, con la altura de banco 0,5 m mayor (la sonda de la verificación): lo que rellenan las dos sobre
+    la huella de P1."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.build()
+        cls.old = cls.fill(fill_test.REQUEST)  # «Balsa»: antes de que exista ninguna entidad
+        cls.made(asked(BALSA))
+        cls.twin = cls.fill(model.FillOnlyRequest("Balsa 2", fill_test.ENVELOPE, fill_test.START,
+                                                  fill_test.REST.code, water=fill_test.WATER))
+
+    def listed(self) -> dict[str, float | None]:
+        """Lo que se le apoya a P1 (``dependents``), por nombre, con su volumen."""
+        return {item.name: item.volume_m3 for item in entities.dependents(self.project, self.v1.uid, "PLT-001")}
+
+    def test_a_before_recalculating_only_the_design_made_after_the_entity_rests_on_it(self) -> None:
+        """RF-015-15 (la premisa de C-1): «Balsa» no tiene la dependencia (se creó sin entidades) y solo «Balsa 2»
+        figura entre lo que se le apoya a P1 y entre lo que lista descartarla."""
+        self.assertEqual(list(self.listed()), ["Balsa 2"])
+        plan = entity_store.discard_plan(self.project, self.v1.uid, "PLT-001")
+        self.assertEqual([item.name for item in plan.dependents], ["Balsa 2"])
+        self.assertEqual(self.supports_of(self.old.handle.uid), [])
+
+    def test_a_if_the_entity_changes_while_it_is_measured_the_recompute_fails_and_registers_nothing(self) -> None:
+        """RF-015-15, RF-013-17 (como ``des.input_changed`` al empezar una operación): si el dato de la entidad cambia
+        entre que se mide el resultado y se anota la dependencia, la medida ya no le corresponde: el recálculo
+        falla con ``des.input_changed``, nombrando el dato, y no deja ni la dependencia, ni la cifra, ni la
+        operación como buena (la anterior sigue vigente)."""
+        older = self.old.handle.uid
+        ((settings,),) = self.query("SELECT settings FROM gb_operation WHERE uid = ?", older)
+        self.clock.advance(minutes=1)
+        handle, work = design_store.recompute_run(recompute_mod.RecomputeRequest(
+            self.project, older, provenance.FILL_ONLY, json.loads(settings), (), (), version=self.v1.uid))
+        psf = provenance.dataset_name("psf", BALSA)
+        genuine = self.record(psf, self.v1).content_sha256
+        measure = design_store._seen
+
+        def changed(conn: Any, uses: Any, version: Any) -> Any:
+            found = measure(conn, uses, version)
+            with self.project.write_transaction() as writing:  # alguien cambia la superficie de P1 justo después
+                writing.execute("UPDATE gb_dataset SET content_sha256 = ? WHERE name = ?", ("0" * 64, psf))
+            return found
+
+        try:
+            with mock.patch.object(design_store, "_seen", changed), self.assertRaises(DesignError) as caught:
+                fill_test.drive(work)
+        finally:
+            with self.project.write_transaction() as writing:
+                writing.execute("UPDATE gb_dataset SET content_sha256 = ? WHERE name = ?", (genuine, psf))
+        self.assertEqual(caught.exception.code, "des.input_changed")
+        self.assertIn(psf, caught.exception.text)
+        self.assertEqual(self.query("SELECT status FROM gb_operation WHERE uid = ?", handle.uid), [("failed",)])
+        self.assertEqual(self.supports_of(handle.uid), [])
+        self.assertEqual(self.volumes_of(handle.uid), {})
+        self.assertEqual(self.query("SELECT superseded_by FROM gb_operation WHERE uid = ?", older), [(None,)])
+
+    def test_b_recalculating_the_stale_registers_the_dependency_of_the_older_design_too(self) -> None:
+        """RF-015-15, RF-015-17, CE-015-01 (C-1): tras cambiar la altura de banco, «Recalcular lo obsoleto» repite
+        las dos (ninguna falla) y lo que se le apoya a P1 y lo que lista descartarla son **las dos**, cada una con
+        sus metros cúbicos del cálculo a mano (≤ 10⁻⁹ relativo; 936 m³ las dos, como midió la sonda), no solo
+        la que se creó después."""
+        self.change(self.HEIGHT_KEY, fill_test.REST.height_m + 0.5)
+        self.assertEqual(self.recompute_plan(), [(provenance.FILL_ONLY,), (provenance.FILL_ONLY,)])
+        self.clock.advance(minutes=1)
+        outcome = finish(recompute_mod.recompute_steps(self.project))
+        self.assertEqual([(str(result.status), result.unit.op_types) for result in outcome.results],
+                         [("done", (provenance.FILL_ONLY,))] * 2)
+        psf, epr = provenance.dataset_name("psf", BALSA), provenance.dataset_name("epr", BALSA)
+        terrain = qfx.terrain(self.grid)
+        found = self.listed()
+        self.assertEqual(sorted(found), ["Balsa", "Balsa 2"])
+        for name in ("Balsa", "Balsa 2"):
+            with self.subTest(design=name):
+                oracle = self.by_hand(provenance.dataset_name("srf", name), terrain, psf, epr)
+                self.assertLessEqual(abs(oracle - self.FILLED_M3) / self.FILLED_M3, 1e-9)
+                self.assertLessEqual(abs(found[name] - oracle) / oracle, 1e-9)
+                self.assertEqual(self.supports_of(self.current_fill_of(name)),
+                                 [(psf, "supported_on"), (epr, "support_footprint")])
+        plan = entity_store.discard_plan(self.project, self.v1.uid, "PLT-001")
+        self.assertEqual({item.name: item.volume_m3 for item in plan.dependents}, found)
+
+    def test_c_changing_the_entity_leaves_both_designs_stale_with_their_cause(self) -> None:
+        """RF-015-16, RF-008-24 (C-1): con la dependencia registrada, cambiar la cota de P1 deja obsoletas las dos
+        (en cascada: antes, «Balsa» quedaba al día aunque rellenaba sobre ella)."""
+        names = ("Balsa", "Balsa 2")
+        self.assertEqual([self.stale_causes(self.current_fill_of(name)) for name in names], [set(), set()])
+        self.change(design_params.entity_key("PLT-001", "start_level_m"), 254.0)
+        for name in names:
+            with self.subTest(design=name):
+                self.assertNotEqual(self.stale_causes(self.current_fill_of(name)), set())
+
+    def test_d_discarding_the_entity_leaves_both_designs_in_support_removed(self) -> None:
+        """RF-015-17 (C-1, error 59): descartar P1 deja en «apoyo retirado» a las dos, no solo a «Balsa 2»."""
+        self.clock.advance(minutes=1)
+        entity_store.discard_entity(self.project, self.v1.uid, "PLT-001", reason="La balsa no se hace",
+                                    decided_by="Samuel (IMGA)")
+        self.assertEqual(sorted((item.name, item.op_type) for item in entities.retired_supports(
+            self.project, self.v1.uid)), [("Balsa", provenance.FILL_ONLY), ("Balsa 2", provenance.FILL_ONLY)])
 
 
 if __name__ == "__main__":  # pragma: no cover

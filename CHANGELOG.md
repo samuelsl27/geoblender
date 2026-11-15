@@ -157,7 +157,8 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     bloquea y las máscaras no se compilan hasta aceptar la edición con un motivo.
   - **La cadena y lo que se apoya**: de cada superficie parte una sola entidad; **insertar antes o
     después** de otra rehace el orden y deja obsoletas las siguientes con su causa. Una operación
-    que rellena sobre la huella de una entidad **se apoya en ella**; **Lo que se apoya en ella**
+    que rellena sobre la huella de una entidad **se apoya en ella** (al crearla y también al
+    recalcularla, aunque la entidad apareciera después); **Lo que se apoya en ella**
     enseña la lista única (con los m³), **Descartar…** no borra nada y deja lo apoyado en
     «apoyo retirado» (fuera de «Recalcular lo obsoleto» hasta que se rehaga, se descarte o se dé por
     bueno con **Soltar el apoyo…** y un motivo), y **Traer las entidades de…** copia sus definiciones

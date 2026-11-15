@@ -687,6 +687,106 @@ class CompleteTest(OperationsCase):
             lambda: self.begin("res.survey", supersedes=survey.uid))
 
 
+class AddInputsTest(OperationsCase):
+    """RF-008-51, RF-008-18 y, para quien la usa, RF-015-15 (spec 015, T42; C-1): ``OperationHandle.add_inputs``
+    anota, en la transacción del módulo que va a completar la operación, entradas que una operación **en curso**
+    solo conoce al terminar (lo que detecta su resultado), cada una con su hash de contenido de ahora y su papel:
+    una operación **hecha** sigue siendo inmutable (ADR-0030 §4)."""
+
+    def add(self, handle: Any, *uses: Any) -> Any:
+        """``add_inputs`` de ``uses`` en una transacción de escritura propia (que se confirma)."""
+        return self.write(lambda conn: handle.add_inputs(conn, list(uses)))
+
+    def test_adds_what_the_result_depends_on_with_the_hash_it_has_now(self) -> None:
+        """RF-008-51: la entrada nueva consta como las del principio (clase, dato, hash y papel) tras confirmar
+        la transacción, ``add_inputs`` la devuelve y la operación sigue en curso; las que anotó al empezar, no
+        cambian (``inputs`` es lo anotado al empezar); al completarse, es una entrada más suya."""
+        _survey, terrain = self.survey()
+        handle = self.begin(inputs=[operations.Use("res_terreno", "terrain")])
+        before = [(item.uid, item.role) for item in handle.inputs]
+        self.tick()
+
+        def work(conn: sqlite3.Connection) -> Any:
+            added = handle.add_inputs(conn, [operations.Use("res_terreno", "supported_on")])
+            _write_table(conn, "res_resultado", (3.0,))
+            handle.complete(conn, outputs=[_table_spec("res_resultado", "summary")], software=SOFTWARE)
+            return added
+
+        (added,) = self.write(work)
+        self.assertEqual((str(added.kind), added.uid, added.name, added.content_sha256, added.role),
+                         ("dataset", terrain.uid, "res_terreno", terrain.content_sha256, "supported_on"))
+        self.assertEqual([(item.uid, item.role) for item in handle.inputs], before)
+        self.assertEqual(
+            self.query("SELECT item_kind, item_uid, content_sha256, role FROM gb_operation_io "
+                       "WHERE operation_uid = ? AND direction = 'in' ORDER BY fid", (handle.uid,)),
+            [("dataset", terrain.uid, terrain.content_sha256, "terrain"),
+             ("dataset", terrain.uid, terrain.content_sha256, "supported_on")])
+        self.assertEqual(self.status(handle.uid), "done")
+
+    def test_what_it_adds_takes_part_in_the_cascade(self) -> None:
+        """RF-008-24 (la razón de ser, C-1): lo que se anota al terminar se vigila como lo anotado al empezar: si
+        el dato cambia después, la operación queda obsoleta con esa causa."""
+        survey, terrain = self.survey((1.0, 2.0))
+        handle = self.begin()
+
+        def work(conn: sqlite3.Connection) -> None:
+            handle.add_inputs(conn, [operations.Use("res_terreno", "supported_on")])
+            _write_table(conn, "res_resultado", (3.0,))
+            handle.complete(conn, outputs=[_table_spec("res_resultado", "summary")], software=SOFTWARE)
+
+        self.write(work)
+        stale = "SELECT cause_kind FROM gb_stale WHERE item_kind = 'operation' AND item_uid = ?"
+        self.assertEqual(self.query(stale, (handle.uid,)), [])
+        self.tick()
+        again = self.begin("res.survey", supersedes=survey.uid)
+
+        def change(conn: sqlite3.Connection) -> None:
+            conn.execute('DELETE FROM "res_terreno"')
+            _write_table(conn, "res_terreno", (1.0, 2.5))
+            again.complete(conn, outputs=[_table_spec("res_terreno", "terrain")])
+
+        self.write(change)
+        self.assertNotEqual(self.query(stale, (handle.uid,)), [], terrain.name)
+
+    def test_rejections_write_nothing(self) -> None:
+        """RF-008-51, RF-008-18: un dato que no existe, uno repetido (con el mismo papel que ya consume la operación
+        o dos veces en la misma llamada), una operación que ya no está en curso y llamar fuera de una transacción
+        de escritura se rechazan sin escribir nada."""
+        self.survey()
+        handle = self.begin(inputs=[operations.Use("res_terreno", "terrain")])
+        self.assertRejected(provenance.ProvenanceError, "core.operation_dataset_unknown",
+                            lambda: self.add(handle, operations.Use("res_nada", "supported_on")))
+        self.assertRejected(ValueError, None, lambda: self.add(handle, operations.Use("res_terreno", "terrain")))
+        self.assertRejected(ValueError, None, lambda: self.add(
+            handle, operations.Use("res_terreno", "supported_on"), operations.Use("res_terreno", "supported_on")))
+        self.assertRejected(TypeError, None, lambda: self.add(handle, "res_terreno"))
+        with self.project.read() as conn, self.assertRaises(ValueError):
+            handle.add_inputs(conn, [operations.Use("res_terreno", "supported_on")])
+        self.assertRejected(TypeError, None, lambda: handle.add_inputs(object(), []))
+        self.assertEqual(self.status(handle.uid), "running")
+        self.write(lambda conn: handle.complete(conn, software=SOFTWARE))
+        self.assertRejected(provenance.ProvenanceError, "core.operation_not_running",
+                            lambda: self.add(handle, operations.Use("res_terreno", "supported_on")))
+
+    def test_module_rollback_leaves_nothing_and_it_can_be_added_again(self) -> None:
+        """RF-008-18: si la transacción del módulo se deshace después de ``add_inputs``, no queda la entrada, la
+        operación sigue en curso y se puede volver a intentar (no cuenta como repetida)."""
+        self.survey()
+        handle = self.begin()
+        before = self.snapshot()
+
+        def work(conn: sqlite3.Connection) -> None:
+            handle.add_inputs(conn, [operations.Use("res_terreno", "supported_on")])
+            raise _Abort("el módulo falla después de anotar")
+
+        with self.assertRaises(_Abort):
+            self.write(work)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.status(handle.uid), "running")
+        (again,) = self.add(handle, operations.Use("res_terreno", "supported_on"))
+        self.assertEqual(again.role, "supported_on")
+
+
 class ClaimsTest(OperationsCase):
     def test_claimed_while_running(self) -> None:
         """ADR-0025 §3, RF-008-51: las rutas que reclama una operación (relativas a la raíz

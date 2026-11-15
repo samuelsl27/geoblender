@@ -54,6 +54,7 @@ seeds_mod = import_geoblender("design.seeds")
 provenance = import_geoblender("design.provenance")
 design_params = import_geoblender("design.params")
 design_reproduce = import_geoblender("design.reproduce")
+entity_store = import_geoblender("design.entity_store")
 core_params = import_geoblender("core.params")
 res_provenance = import_geoblender("reserves.provenance")
 freeze = import_geoblender("core.versions.freeze")
@@ -516,7 +517,8 @@ class FillOnlyOperationTest(qfx.QuarryProjectCase):
     def test_c_recomputing_repeats_the_design(self) -> None:
         """RF-014-31, RF-008-26: el recálculo de ``des.fill_only`` repite el diseño con sus ajustes
         (sustituye al anterior) y da la misma superficie y las mismas cifras: nada de lo que lee ha
-        cambiado."""
+        cambiado. RF-015-15 (T42): la versión no tiene entidades, y el gancho de las dependencias, que ahora
+        también mide al recalcular, ni se llama."""
         old = self.stored.handle.uid
         settings = json.loads(self.query_of("SELECT settings FROM gb_operation WHERE uid = ?",
                                             old)[0][0])
@@ -525,8 +527,10 @@ class FillOnlyOperationTest(qfx.QuarryProjectCase):
         request = recompute_mod.RecomputeRequest(self.project, old, provenance.FILL_ONLY,
                                                  settings, (), (), version=self.v1.uid)
         self.clock.advance(minutes=1)
-        handle, work = store.recompute_run(request)
-        stored = drive(work).result
+        with mock.patch.object(entity_store, "survey_supports",
+                               side_effect=AssertionError("sin entidades, el gancho ni se llama")):
+            handle, work = store.recompute_run(request)  # RF-015-15 (T42): tampoco al recalcular
+            stored = drive(work).result
         self.assertEqual(stored.handle.uid, handle.uid)
         self.assertEqual(self.query_of("SELECT op_type, status, supersedes_uid FROM gb_operation "
                                        "WHERE uid = ?", handle.uid),

@@ -51,6 +51,8 @@ SLOPE_PCT = 0.5
 FILL_AFTER_M3 = 4 * sum(7.0 - SLOPE_PCT / 100.0 * sigma for sigma in range(1, 20, 2)) * CELL_M2
 """Con la pendiente de 0,5 % de «Carga»: la columna de abscisa σ (1, 3… 19 m desde el primer vértice del eje) rellena
 ``7 − 0,005·σ`` m en cuatro filas: 1.112 m³."""
+RAMP_BOX, RAMP_CELLS = (20.0, 40.0, 16.0, 20.0), 10 * 2
+"""La huella de «Rampa» (eje de 20 m en y = 18, 4 m de ancho): los centros de x = 21… 39 (10) por los de y = 17 y 19 (2)."""
 HELD_M2 = FOOTPRINT_CELLS * CELL_M2
 """El área que «Sobre Carga» no rellena sobre «Carga» protegida: toda su huella, 160 m² a mano."""
 GRADIENT = "des.platform.plt_001.gradient_pct"
@@ -240,13 +242,16 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
                                   "provenance_dialog": False, "report": lambda kind, text: None, **values}
         return operator_self(self.commands.registered_class(idname), **fields), context, dialog
 
-    def hand_volume(self, version: Any, result: str, start: str, entity: str) -> float:
+    def hand_volume(self, version: Any, result: str, start: str, entity: str, *,
+                    box: tuple[float, float, float, float] = (20.0, 40.0, 26.0, 34.0),
+                    cells: int = FOOTPRINT_CELLS) -> float:
         """Lo que ``result`` apoya en ``entity`` desde ``start`` **por los ficheros** (RF-015-15): ``r − máx(s, e)`` sobre
-        la huella de «Carga» (40 celdas, a mano) y el espesor mínimo de la 012 (0,02 m)."""
+        la huella de ``box`` (``x`` de, a; ``y`` de, a; por defecto la de «Carga»: 40 celdas, a mano) y el espesor mínimo de
+        la 012 (0,02 m)."""
         read = lambda name: self.surfaces.read_surface(self.project, name, version_uid=version.uid).values  # noqa: E731
         x, y = platform_ops.centers()
-        footprint = (x > 20.0) & (x < 40.0) & (y > 26.0) & (y < 34.0)
-        self.assertEqual(int(footprint.sum()), FOOTPRINT_CELLS)
+        footprint = (x > box[0]) & (x < box[1]) & (y > box[2]) & (y < box[3])
+        self.assertEqual(int(footprint.sum()), cells)
         thick = (read(result) - np.maximum(platform_ops.ground() if start == "ground" else read(start), read(entity)))[footprint]
         return float(thick[thick > 0.02].sum()) * CELL_M2
 
@@ -305,6 +310,15 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
         listed = {row.name: row.volume_m3 for row in self.entities.dependents(self.project, self.v01.uid, "PLT-001")}
         self.assertTrue(_close(listed[OVER], FILL_AFTER_M3), (listed[OVER], FILL_AFTER_M3))
         self.assertAlmostEqual(FILL_AFTER_M3, 1112.0, places=9)
+        # T42 (C-1): «Sobre Carga» se creó antes que «Rampa», y su borde (6 m) llega a rellenar sobre la huella de «Rampa»;
+        # al recalcularla se detecta («Rampa» no existía al crearla): se apoya también en ella, con los m³ de los ficheros.
+        rest = self.volumes(self.current(self.v01, "PLT-002"))
+        self.assertEqual(sorted(rest), ["PLT-001", "PLT-004"])
+        psf = lambda name: self.dprov.dataset_name("psf", name)  # noqa: E731
+        by_files = self.hand_volume(self.v01, psf(OVER), psf(LOADING), psf(RAMP), box=RAMP_BOX, cells=RAMP_CELLS)
+        self.assertGreater(by_files, 0.0)
+        self.assertTrue(_close(rest["PLT-004"], by_files), (rest, by_files))
+        self.assertEqual([row.name for row in self.entities.dependents(self.project, self.v01.uid, "PLT-004")], [OVER])
 
     def test_c_brought_to_another_version_they_are_not_calculated_and_the_dependency_is_detected_again(self) -> None:
         """CE-015-01, RF-015-18, RF-009-01, D-18, C-12: «Traer las entidades de V01» (la orden real) a V02 trae las definiciones
@@ -323,7 +337,9 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
         self.assertEqual(self.states(self.v02), {"PLT-001": "current", "PLT-002": "current"})
         again = self.volumes(self.current(self.v02, "PLT-002"))
         self.assertTrue(_close(again["PLT-001"], FILL_AFTER_M3), again)
-        self.assertEqual(again, self.volumes(self.current(self.v01, "PLT-002")))
+        # La «Sobre Carga» de V01 se apoya también en «Rampa» (test_b: se detectó al recalcularla, C-1); «Rampa» no se trajo
+        # a V02, así que allí solo se apoya en «Carga», con los mismos m³ que en V01.
+        self.assertEqual(again, {"PLT-001": self.volumes(self.current(self.v01, "PLT-002"))["PLT-001"]})
 
     def test_d_discarding_the_first_lists_what_rests_on_it_before_and_leaves_it_as_support_removed(self) -> None:
         """CE-015-01, RF-015-17, RF-009-12, E3, error 59 (la orden real): el diálogo de «Descartar…» enseña **una sola lista**

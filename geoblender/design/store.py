@@ -100,7 +100,10 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   ``des.supported_m3`` con su ámbito. Una versión **sin entidades** no lo paga (una consulta,
   :func:`_has_entities`). Una operación hecha es inmutable: la de un recálculo empieza antes de calcular y
   lleva lo que apoyaba la sustituida (:meth:`OperationStart.carried`) y lo vuelve a medir sobre el resultado
-  nuevo; una entidad que antes no estaba no se detecta hasta que se crea de nuevo. **Lo que se da por bueno sin su
+  nuevo; **una entidad que antes no estaba también se detecta al recalcular** (T42, hallazgo C-1: el diseño
+  creado antes de que existiera la plataforma): el gancho mide todas las entidades vivas y anota las entradas
+  que la operación no tenía con :meth:`~OperationHandle.add_inputs` (``core.provenance.operations``), en la
+  transacción que la completa (:class:`_LateSupports`). **Lo que se da por bueno sin su
   apoyo** (T25; RF-015-17, A7, P-6): una operación que repite a otra puede **soltar** una entidad descartada
   (``OperationStart.with_released``; ``recompute_run(released=…)``): su motivo y su decisor van en sus ajustes
   (``provenance.SUPPORTS_RELEASED``, acumulados: :meth:`OperationStart.released_of`), no lleva sus entradas
@@ -1259,6 +1262,30 @@ def _has_entities(conn: sqlite3.Connection, version_uid: str) -> bool:
         (VERSION_SCOPE, version_uid, f"{PLATFORM_PREFIX}.%")).fetchone() is not None
 
 
+@dataclass(frozen=True, slots=True)
+class _LateSupports:
+    """Las entradas de dependencia que una operación **ya empezada** descubre al medir su resultado (spec 015,
+    T42; C-1; :meth:`DesignWriter._supports`): ``uses`` (la superficie de cada entidad nueva en la que se apoya, con
+    ``supported_on``, y su tabla, con ``support_footprint``) y ``seen`` (uid → el hash que tenía cada dato cuando
+    se midió). Una operación en curso no admite entradas con ``replace`` como una que va a empezar: las anota
+    :meth:`~OperationHandle.add_inputs` en la transacción que la completa (:meth:`register`)."""
+
+    uses: tuple[Use, ...] = ()
+    seen: Mapping[str, str] = MappingProxyType({})
+
+    def register(self, conn: sqlite3.Connection, handle: OperationHandle) -> None:
+        """Anota ``uses`` en ``handle`` (en ``conn``, la transacción de quien la completa) y comprueba que cada
+        dato tiene el hash que se midió: si cambió mientras se calculaba, el resultado ya no le corresponde
+        (``des.input_changed``, como al empezar: :meth:`OperationStart.begin`) y se deshace todo. Sin ``uses``, no
+        hace nada."""
+        if not self.uses:
+            return
+        for item in handle.add_inputs(conn, self.uses):
+            if self.seen.get(item.uid) != item.content_sha256:
+                raise DesignError("des.input_changed", obj=f"Entrada «{item.name}»", field="entradas",
+                                  value=item.name)
+
+
 @dataclass(slots=True)
 class _Grid:
     """Una rejilla preparada: su declaración (con el hash), su destino, su temporal y dónde se
@@ -1622,19 +1649,23 @@ class DesignWriter:
         en el proyecto si faltaran: trampa de la T04). Si falla, o falla algo después, se deshace
         con todo lo demás. Sin ella (la 013 y la 014), no hace nada.
 
-        **El gancho de las dependencias** (spec 015, T23; RF-015-15, D-11; ADR-0030 §4): de toda operación
-        que deja una superficie de diseño o de entidad (:data:`_SURFACE_ROLES`), antes de abrirla y **fuera**
-        de la transacción, :meth:`_supports` mide sobre qué entidades vivas de la versión rellena más del
-        espesor mínimo de la 012 por encima de ``máx(partida, entidad)`` y añade a sus entradas, con
-        ``dataclasses.replace``, la superficie de cada una (``supported_on``) y su tabla (``support_footprint``),
-        y a sus cifras ``des.supported_m3`` con su ámbito. Una versión sin entidades no lo paga: una consulta."""
+        **El gancho de las dependencias** (spec 015, T23 y T42; RF-015-15, D-11; ADR-0030 §4): de toda operación
+        que deja una superficie de diseño o de entidad (:data:`_SURFACE_ROLES`), antes de la transacción,
+        :meth:`_supports` mide sobre qué entidades vivas de la versión rellena más del espesor mínimo de la 012
+        por encima de ``máx(partida, entidad)`` y anota la superficie de cada una (``supported_on``) y su tabla
+        (``support_footprint``) entre sus entradas, y ``des.supported_m3`` con su ámbito entre sus cifras: al
+        crear, añadiéndolas a ``start`` con ``dataclasses.replace`` antes de abrirla; en una operación que **ya
+        empezó** (un recálculo: empieza antes de calcular), las que no tenía las anota
+        :meth:`~OperationHandle.add_inputs` en esta transacción, justo antes de completarla (C-1: una entidad que
+        apareció después de crearla también se detecta al recalcular). Una versión sin entidades no lo paga: una
+        consulta."""
         if self._closed or self._committed:
             raise RuntimeError("el escritor ya se confirmó o se cerró")
         self._check_ready(start)  # un error del programa no cierra el escritor
         try:
             if start is not None:
                 start.check_masks(self.project)
-            start, supported = self._supports(start)
+            start, supported, late = self._supports(start)
             with self.project.write_transaction() as conn:
                 if before_begin is not None:
                     before_begin(conn)
@@ -1642,6 +1673,8 @@ class DesignWriter:
                 if handle is None:
                     assert start is not None
                     handle = start.begin(self.project, conn=conn)
+                else:
+                    late.register(conn, handle)
                 handle.claim_paths(*self._paths())
                 self._install()
                 for table in self._tables.values():
@@ -1660,22 +1693,25 @@ class DesignWriter:
         return Stored(handle, records)
 
     def _supports(self, start: OperationStart | None
-                  ) -> tuple[OperationStart | None, tuple[FigureSpec, ...]]:
+                  ) -> tuple[OperationStart | None, tuple[FigureSpec, ...], _LateSupports]:
         """El gancho de las dependencias de :meth:`commit` (RF-015-15, D-11; ADR-0030 §4): ``start`` con las
-        entradas de lo que apoya la operación y las cifras ``des.supported_m3`` (una por entidad, con su
-        ámbito). **Coste cero si no hay entidades**: sin superficie de diseño o de entidad, o con una versión
-        sin ellas, ``(start, ())`` tras una consulta. Con ``start``, lleva antes las entradas de lo que apoyaba
-        la operación a la que sustituye (:meth:`OperationStart.carried`) y añade las de lo que detecta ahora;
-        con una operación que ya empezó (un recálculo: sus entradas no se pueden tocar, ADR-0030 §4) mide las
-        que **ya tiene** —las que arrastró al empezar, las declaradas y la de apoyo de la petición— sobre el
-        resultado nuevo (no copia el volumen anterior). Sin la superficie de partida (``surface``) de la
-        operación, no mide nada."""
+        entradas de lo que apoya la operación, las cifras ``des.supported_m3`` (una por entidad, con su ámbito)
+        y las entradas que **una operación ya empezada** ha de anotar al completarse (:class:`_LateSupports`).
+        **Coste cero si no hay entidades**: sin superficie de diseño o de entidad, o con una versión sin ellas,
+        ``(start, (), _LateSupports())`` tras una consulta. Con ``start``, lleva antes las entradas de lo que
+        apoyaba la operación a la que sustituye (:meth:`OperationStart.carried`) y añade las de lo que detecta
+        ahora. Con una operación que ya empezó (un recálculo: empieza antes de calcular y sus entradas no se
+        pueden añadir con ``replace``) mide **todas** las entidades vivas sobre el resultado nuevo, no solo las
+        que ya tenía (las que arrastró al empezar, las declaradas y la de apoyo de la petición: no copia el
+        volumen anterior): las que no eran entradas suyas —una entidad que apareció después de crearla, C-1— se
+        anotan con :meth:`~OperationHandle.add_inputs` al completarla (``late``). Sin la superficie de partida
+        (``surface``) de la operación, no mide nada."""
         results = [grid.values for grid in self._grids.values() if grid.values is not None]
         if not results:
-            return start, ()
+            return start, (), _LateSupports()
         with self.project.read() as conn:
             if not _has_entities(conn, self.version_uid):
-                return start, ()
+                return start, (), _LateSupports()
         from . import entity_store  # al usarlo: entity_store importa este módulo
 
         if start is not None:
@@ -1692,7 +1728,7 @@ class DesignWriter:
             released = {item.entity for item in provenance.released_supports(settings)}
         starts = [name for name, role in inputs if role == provenance.SURFACE_ROLE]
         if len(starts) != 1:
-            return start, ()
+            return start, (), _LateSupports()
         code = settings.get("code") if self.op_type == provenance.PLATFORM else None
         survey = entity_store.survey_supports(
             self.project, self._version, results, starts[0],
@@ -1701,11 +1737,13 @@ class DesignWriter:
             inputs=inputs, released=released)
         if start is not None:
             start = entity_store.add_supports(self.project, start, survey)
-            return start, survey.figures(self.name)
-        have = set(inputs)  # ya empezada: solo lo que consumió con su tabla (lo que se reproduce)
-        volumes = {item.code: item.volume_m3 for item in survey.supports
-                   if (survey.surfaces[item.code].table, provenance.SUPPORT_FOOTPRINT_ROLE) in have}
-        return start, provenance.supported_figures(self.name, volumes)
+            return start, survey.figures(self.name), _LateSupports()
+        late = survey.uses(set(inputs))  # ya empezada: lo que mide y no tenía anotado (C-1)
+        if not late:
+            return start, survey.figures(self.name), _LateSupports()
+        with self.project.read() as conn:
+            seen = MappingProxyType(_seen(conn, late, self._version))
+        return start, survey.figures(self.name), _LateSupports(late, seen)
 
     def _check_ready(self, start: OperationStart | None) -> None:
         made = ({grid.family for grid in self._grids.values()} | set(self._tables)
