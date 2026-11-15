@@ -47,8 +47,9 @@ RF-012-28; plan 012 §5.2.3, A11, D-15, D-28, D-40, D-42, D-43).
   que ``bl`` registra con ``core.versions.freeze.register_freeze_check``: las verificaciones de
   la versión obsoletas, con recintos que no cumplen (m³ por recinto) o con la marca de
   RF-012-10, y las superficies de diseño sin verificación al día (las que fueron final de una
-  verificación sustituida y las del papel ``design_surface`` de ``design.provenance``, T18 de
-  la 013).
+  verificación sustituida, las del papel ``design_surface`` de ``design.provenance``, T18 de
+  la 013, y la última de cada cadena de entidades de la 015, T32: RF-015-04; las superficies
+  intermedias de una cadena, ``entity_surface``, son de trabajo y se verifican a petición).
 
 Python puro (nivel 9).
 """
@@ -109,7 +110,8 @@ from ..core.versions import store as versions_store
 from ..core.versions.freeze import FreezeFinding
 from ..core.versions.model import ItemKind, VersionError, version_locator
 from ..core.versions.reproduce import ReproducedOutput, ReproducedResult, ReproduceRequest
-from ..design.provenance import DESIGN_SURFACE_ROLE
+from ..design.entities import chain_tail_surfaces
+from ..design.provenance import DESIGN_SURFACE_ROLE, ENTITY_SURFACE_ROLE
 from ..gis.content import GEOTIFF
 from ..gis.geotiff.reader import read_geotiff
 from ..gis.geotiff.writer import target_locked, write_failed
@@ -1348,8 +1350,14 @@ def freeze_findings(conn: sqlite3.Connection, version_uid: str) -> tuple[FreezeF
     sustituida y la que ``design`` declara con el papel
     :data:`~geoblender.design.provenance.DESIGN_SURFACE_ROLE` (el del escalonado, RF-013-31) en
     esta versión, si ya no es final de ninguna verificación vigente (una vigente obsoleta ya se
-    lista por obsoleta) y sigue viva y es del proyecto o de la versión. Una superficie que cae en
-    las dos se lista una vez. Una verificación cuya tabla no se puede leer no se da por buena
+    lista por obsoleta) y sigue viva y es del proyecto o de la versión. Desde la 015 (T32;
+    RF-015-04, P-2) cuenta también **la última de cada cadena de entidades**
+    (:func:`~geoblender.design.entities.chain_tail_surfaces`: su ``des_psf_`` vivo, con el papel
+    :data:`~geoblender.design.provenance.ENTITY_SURFACE_ROLE`) como una de diseño; las
+    **intermedias** de una cadena son superficies de trabajo (se verifican a petición) y no se
+    piden, tampoco por haber sido final de una verificación sustituida, y una entidad descartada
+    o sin calcular no cuenta (la que queda como última de su cadena, sí). Una superficie que cae
+    en varias se lista una vez. Una verificación cuya tabla no se puede leer no se da por buena
     (``res.freeze_unreadable``)."""
     found: list[FreezeFinding] = []
     current: set[str] = set()
@@ -1367,13 +1375,17 @@ def freeze_findings(conn: sqlite3.Connection, version_uid: str) -> tuple[FreezeF
         found += _verification_findings(conn, version_uid, str(uid),
                                         settings if isinstance(settings, Mapping) else {},
                                         pending)
-    unchecked = dict(replaced)  # las sustituidas y las de diseño, cada una una vez
+    unchecked = dict(replaced)  # las sustituidas, las de diseño y las últimas de cada cadena, una vez
     unchecked.update(dict.fromkeys(
         str(row[0]) for row in conn.execute(_DESIGN_SURFACES, (version_uid, DESIGN_SURFACE_ROLE))))
+    tails = dict.fromkeys(chain_tail_surfaces(conn, version_uid))
+    unchecked.update(tails)
+    working = {str(row[0]) for row in conn.execute(  # las de las entidades que no son la última
+        _DESIGN_SURFACES, (version_uid, ENTITY_SURFACE_ROLE))}.difference(tails)
     surfaces: list[FreezeFinding] = []
     for uid in unchecked:
         row = conn.execute(_DATASET, (uid,)).fetchone()
-        if (uid in current or row is None or str(row[2]) not in _LIVE
+        if (uid in current or uid in working or row is None or str(row[2]) not in _LIVE
                 or str(row[1]) not in ("", version_uid)):
             continue
         surfaces.append(FreezeFinding(MODULE, ItemKind.DATASET, uid, str(row[0]),

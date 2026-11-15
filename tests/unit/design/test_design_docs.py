@@ -213,6 +213,8 @@ PENDING_015_API = frozenset({
     "EntityLayerRow", "create_entity_layer_table", "entity_layer_table", "read_entity_layer", "write_entity_layer",
     "LayerSource", "PreparedEntityLayer", "entity_layer_rows_steps", "entity_layer_steps", "layer_sources",
     "prepare_entity_layer", "recompute_entity_layer", "run_entity_layer",
+    # T32: las superficies de la última de cada cadena, lo que congelar pide verificar (design.entities).
+    "chain_tail_surfaces",
 })
 # Los módulos nuevos de la 015 que aún no tienen fila en la ficha (la T34 se la da y vacía esto).
 PENDING_015_MODULES = frozenset({
@@ -223,7 +225,8 @@ PENDING_015_MODULES = frozenset({
     # strongest, runs_cells y code_order (lo que se apoya en una entidad: A6, RF-015-15); T24:
     # Dependent, dependents, dependencies_of, stale_reason, operation_reason y kind_label (la lista de
     # dependencias y la causa de lo obsoleto: RF-015-15, RF-015-16); T25: retired_supports, RetiredSupport y
-    # RetiredEntity (lo que perdió su apoyo: RF-015-17)
+    # RetiredEntity (lo que perdió su apoyo: RF-015-17); T32: chain_tail_surfaces (las superficies de la
+    # última de cada cadena, que congelar pide verificar: RF-015-04)
     "design.entity_layer",  # T30: EntityLayerRow, entity_layer_table, create_entity_layer_table,
     # write_entity_layer y read_entity_layer (la tabla ``des_enl_<vNN>`` de la capa de entidades para QGIS)
     "design.platform",  # T06: PlatformJob, PlatformGeometry, Footprint, platform_footprint,

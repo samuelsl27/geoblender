@@ -515,7 +515,11 @@ class EntitiesCETest(platform_ops.CreatePlatformTest):
         self.made(name=OVER, feature=OVER, start="entity:PLT-001", mode="CUT_FILL")
         self.assertTrue(_close(self.supported(self.v04, "PLT-001")[OVER], FILL_M3))
         freeze, reproduce = _module("core.versions.freeze"), _module("core.versions.reproduce")
-        frozen = _last(freeze.freeze_steps(self.project, self.v04.uid, reason="Entrega de la prueba"))
+        plan = freeze.freeze_plan(self.project, self.v04.uid)  # T32 (RF-015-04, RF-012-25): pide verificar la última
+        self.assertEqual([entry.name for entry in plan.accept if entry.finding], ["des_psf_sobre_carga"],
+                         "la última de la cadena (P2), no la intermedia (P1)")
+        frozen = _last(freeze.freeze_steps(self.project, self.v04.uid, reason="Entrega de la prueba",
+                                           accepted=freeze.Acceptance.of(plan)))  # aceptada sin verificar
         revision = str(frozen.frozen.uid)
         items = self.rows("SELECT * FROM gb_revision_item WHERE revision_uid = ? ORDER BY fid", revision)
         files = {str(path): str(sha) for path, sha in self.rows(

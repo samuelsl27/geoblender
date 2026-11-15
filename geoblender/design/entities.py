@@ -123,6 +123,7 @@ __all__ = [
     "RetiredSupport",
     "Support",
     "chain_of",
+    "chain_tail_surfaces",
     "chain_tails",
     "check_chain",
     "code_order",
@@ -859,6 +860,27 @@ def _deduce(conn: sqlite3.Connection, operation: str | None,
     if causes:
         return EntityState.STALE, causes, ()
     return EntityState.CURRENT, causes, ()
+
+
+def chain_tail_surfaces(conn: sqlite3.Connection, version: str) -> tuple[str, ...]:
+    """Los uid de las superficies (``des_psf_``, papel ``entity_surface``) de **la última de cada cadena** de
+    entidades de la versión ``version`` (uid o código): lo que congelar pide verificar de las entidades
+    (RF-015-04; RF-012-25; plan 015 §5.1 y §5.7, P-2), en el orden de las cadenas (:func:`chain_tails`). Una
+    entidad **sin calcular** no tiene superficie (nada que verificar), una **descartada** es un registro y no es la
+    última de ninguna (la que queda como última de su cadena es la anterior) y las intermedias son superficies de
+    trabajo, que se verifican a petición: ninguna sale. Lee solo con ``conn`` (la de la instantánea de congelar:
+    ``reserves.compliance_store.freeze_findings`` no recibe el proyecto) y no escribe. Sin entidades, ``()``.
+    :class:`~core.versions.model.VersionError` (``core.version_unknown``) si la versión no existe;
+    ``DesignError`` ``des.entity_chain_cycle`` o ``des.entity_start_taken`` si los datos rompen la regla de la
+    cadena (:func:`chain_tails`: no se elige una cola) y ``des.entity_name_missing`` si una entidad no tiene nombre
+    (:func:`registry`)."""
+    listed = _registry(None, conn, _version(conn, version))  # con conn, el proyecto no se usa
+    if not len(listed):
+        return ()
+    operations = [entry.operation_uid for tail in chain_tails(listed.records)
+                  if (entry := listed.get(tail.code)) is not None and entry.operation_uid is not None]
+    return tuple(str(uid) for operation in operations
+                 for (uid,) in conn.execute(_SURFACES_OF, (operation, DATASET, ENTITY_SURFACE_ROLE)))
 
 
 # --- Lo que se apoya en una entidad (spec 015, T23; RF-015-15, D-11; plan 015 A6, P-5) -----------------
