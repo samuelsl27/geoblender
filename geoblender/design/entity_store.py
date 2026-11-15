@@ -58,8 +58,12 @@ operación), la operación con sus entradas y ajustes, la superficie ``des_psf_`
 de la entidad. «Calcular» deja ya preparadas las tres salidas (:func:`compute_platform_steps`: el hash de
 las tablas se calcula fuera de la transacción, R4). Una plataforma que parte de otra consume su superficie
 (``des_psf_<nombre>``) como entrada ``surface``, y cambiar un parámetro de la primera deja obsoleta la
-segunda con la causa (la 008). El gancho de las dependencias (:func:`detected_supports`, RF-015-15) es de la
-T23 y hoy no añade ninguna.
+segunda con la causa (la 008). **Lo que se apoya en otras entidades** (T23; RF-015-15, D-11): el gancho
+genérico de ``DesignWriter.commit`` (:func:`survey_supports`, con ``design.entities.detect_supports``) añade, al
+crearla, las entradas ``supported_on`` y ``support_footprint`` de cada entidad en cuya huella rellena y la cifra
+``des.supported_m3``; lo que declara la persona (``des.platform.{e}.supports``, :func:`declared_supports`) y la
+superficie de apoyo de la petición ya son entradas al preparar (:func:`prepare_platform_units`), con la tabla de
+su huella, y se registran **aunque no apoyen nada**. :func:`detected_supports` lo enseña antes de crear.
 
 **Recalcular** (T14; RF-015-02, RF-015-16, RF-008-26): :func:`recompute_platform` repite la operación con
 los **parámetros vigentes de su entidad en su versión** (:func:`platform_parameters`: la definición de una
@@ -114,7 +118,15 @@ import hashlib
 import json
 import math
 import sqlite3
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import (
+    Callable,
+    Collection,
+    Generator,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from datetime import date
@@ -207,6 +219,7 @@ from .store import (
     Stored,
     _check_014_params,
     _loaded_masks,
+    _min_thickness,
     _notice_text,
     _other_surface,
     _quarry_link,
@@ -229,16 +242,21 @@ __all__ = [
     "EntityChain",
     "EntityFootprint",
     "EntityParamRow",
+    "EntitySurface",
     "PreparedDeclaration",
     "PreparedPlatform",
+    "SupportSurvey",
+    "add_supports",
     "after_entity_change",
     "compute_platform_steps",
     "create_platform",
     "declaration_diverges",
     "declare_constraints_steps",
     "declared_rows_steps",
+    "declared_supports",
     "declared_sources",
     "detected_supports",
+    "entity_surfaces",
     "entity_values",
     "feature_index",
     "footprint_runs",
@@ -263,6 +281,7 @@ __all__ = [
     "run_platform",
     "runs_mask",
     "set_entity_params",
+    "survey_supports",
 ]
 
 _KINDS_ES = MappingProxyType({"point": "puntos", "line": "líneas", "polygon": "polígonos"})
@@ -741,6 +760,65 @@ def _check_has_data(request: PlatformRequest, code: str, param: PlatformParam, s
 # --- Preparar ------------------------------------------------------------------------------------
 
 
+def declared_supports(project: StoreProject, version: Version, code: str) -> tuple[str, ...]:
+    """Los códigos de las entidades en las que la persona **declara** que se apoya la entidad ``code`` en
+    la versión ``version`` (RF-015-15; ``des.platform.{e}.supports``: códigos separados por comas, sin
+    repetir y en el orden en que se declararon; sin fila o vacío, ninguno). Solo lee."""
+    return _declared(_declared_row(project, version, code))
+
+
+def _declared_row(project: StoreProject, version: Version, code: str) -> str | None:
+    """El texto de la fila ``des.platform.{e}.supports`` propia de la versión de la entidad ``code``
+    (``None`` si no la tiene: la entidad no declara ni ha declarado nada)."""
+    record = ParameterStore(project).get(entity_key(code, PlatformParam.SUPPORTS), version=version.uid)
+    return None if record is None else ("" if record.value is None else str(record.value))
+
+
+def _declared(text: str | None) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(part.strip() for part in (text or "").split(",") if part.strip()))
+
+
+_SUPPORT_MISSING = "no existe en la versión, no está calculada o se descartó"
+_SUPPORT_ITSELF = "es la propia entidad"
+_SUPPORT_CYCLE = "parte de la superficie de esta entidad, o de lo que ella deja: sería un ciclo"
+
+
+def _support_inputs(project: StoreProject, version: Version, request: PlatformRequest, code: str,
+                    registry: EntityRegistry, support_name: str | None
+                    ) -> tuple[tuple[str, ...], tuple[Use, ...], bool]:
+    """Las entradas ``supported_on`` que la plataforma ``code`` **ya** tiene al prepararla, sin esperar al
+    resultado (RF-015-15; T23): los datos de las superficies en las que se apoya —la de apoyo de la petición
+    (``support_name``) y las que declara la persona (:func:`declared_supports`), cada una **con la tabla de su
+    huella**, ``support_footprint``, que es lo que permite reproducir lo apoyado sin el proyecto— como
+    ``(superficies, tablas)`` (los nombres de los datos, que :func:`~.provenance.platform_inputs` anota, y las
+    entradas de las tablas). Una declarada que no existe, no está calculada, se descartó, es ella misma o
+    parte de ella (un ciclo) se rechaza: ``des.entity_supports_unknown``, sin escribir nada. El tercer valor
+    dice si la entidad tiene la fila ``supports`` en la versión: solo entonces la operación **lee** ese
+    parámetro (``begin_operation`` crearía en el proyecto una fila «sin confirmar» por cada entidad que no
+    declara nada: trampa de la T04) y cambiar lo declarado la deja obsoleta (RF-015-16)."""
+    row = _declared_row(project, version, code)
+    declared = _declared(row)
+    with project.read() as conn:
+        found = entity_surfaces(conn, registry)
+    skip = _unsupportable(registry, code, ())
+    names = [] if support_name is None else [support_name]
+    tables: list[Use] = []
+    for target in declared:
+        where = found.get(target)
+        if where is None or target in skip:
+            reason = (_SUPPORT_ITSELF if target == code else _SUPPORT_CYCLE if where is not None
+                      else _SUPPORT_MISSING)
+            raise DesignError("des.entity_supports_unknown", obj=_object(request),
+                              field=entity_key(code, PlatformParam.SUPPORTS), value=", ".join(declared),
+                              entity=request.name, target=target, reason=reason, version=version.code)
+        names.append(where.surface)
+        tables.append(Use(where.table, provenance.SUPPORT_FOOTPRINT_ROLE))
+    for where in found.values():  # la de apoyo de la petición, si es la de una entidad
+        if support_name is not None and where.surface == support_name and where.code not in skip:
+            tables.append(Use(where.table, provenance.SUPPORT_FOOTPRINT_ROLE))
+    return tuple(dict.fromkeys(names)), tuple(dict.fromkeys(tables)), row is not None
+
+
 def _surfaces(project: StoreProject, version: Version, request: PlatformRequest, code: str,
               registry: EntityRegistry, masks: access.MaskSet
               ) -> tuple[str, Raster, str | None, Raster | None]:
@@ -855,11 +933,13 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
         refuse_pending(item for item in sectors if item.code in touched)  # RF-015-07
     yield
     common = _common(project, version)
-    inputs = provenance.platform_inputs(
-        request, start_name, masks.uses(), () if support_name is None else (support_name,))
+    supported, footprints, reads = _support_inputs(project, version, request, chosen, registry,
+                                                   support_name)
+    inputs = provenance.platform_inputs(request, start_name, masks.uses(), supported)
+    inputs = (*inputs, *(use for use in footprints if use not in inputs))
     begun = _start(project, provenance.PLATFORM, request.name, version, masks,
                    provenance.platform_settings(request, chosen), inputs,
-                   provenance.platform_params(chosen, request), supersedes)
+                   provenance.platform_params(chosen, request, supports=reads), supersedes)
     yield
     rows = _rows(request, chosen, values, layer_fields)
     return PreparedPlatform(job, footprint, begun, chosen, fid, rows, MappingProxyType(common),
@@ -1206,30 +1286,193 @@ def platform_report_rows(outcome: PlatformOutcome) -> list[Row]:
 # --- Crear (spec 015, T13; RF-015-01, RF-015-02, RF-015-04) -------------------------------------
 
 
-def detected_supports(project: StoreProject, prepared: PreparedPlatform,
-                      outcome: PlatformOutcome) -> tuple[str, ...]:
-    """**El gancho de las dependencias** (RF-015-15; ADR-0030 §4): los nombres de los datos de las
-    superficies de las entidades en cuya huella rellena la plataforma (y las que declara el usuario), que
-    :func:`create_platform` añade a las entradas de la operación como ``supported_on``. Es de la **T23**
-    (``detect_supports``, A6); hoy no detecta nada y devuelve ``()``: la superficie de apoyo de la petición
-    ya es una entrada ``supported_on`` desde que se prepara (:func:`~.provenance.platform_inputs`)."""
-    return ()
+_SUPPORTABLE = frozenset({EntityState.CURRENT, EntityState.STALE, EntityState.SUPPORT_REMOVED})
+"""Los estados de una entidad **en la que se puede apoyar** algo (RF-015-15): tiene operación vigente y su
+superficie existe (RF-015-25). Una «sin calcular» no tiene superficie y una «descartada» ya no es de la
+versión."""
+_SUPPORT_DATA = (
+    "SELECT io.operation_uid, io.role, d.name, d.locator FROM gb_operation_io AS io "
+    "JOIN gb_dataset AS d ON d.uid = io.item_uid WHERE io.direction = 'out' AND io.item_kind = ? "
+    "AND io.role IN (?, ?) AND io.operation_uid IN ({marks})")
 
 
-def _with_supports(project: StoreProject, start: OperationStart, names: Iterable[str]
-                   ) -> OperationStart:
-    """``start`` con las entradas ``supported_on`` de ``names`` que aún no lleva (una operación hecha es
-    inmutable: se añaden aquí, antes de abrirla, con ``dataclasses.replace``) y el hash que tiene cada una
-    ahora, para que ``des.input_changed`` las vigile como las demás. Sin nombres nuevos, ``start``."""
-    have = {(use.item, str(use.role)) for use in start.inputs}
-    extra = tuple(Use(name, provenance.SUPPORTED_ON_ROLE) for name in dict.fromkeys(names)
-                  if (name, provenance.SUPPORTED_ON_ROLE) not in have)
+@dataclass(frozen=True, slots=True)
+class EntitySurface:
+    """Lo que hace falta de una entidad viva y calculada para apoyar algo en ella (RF-015-15, plan 015 A6):
+    su ``code``, el nombre del dato de su superficie (``surface``, ``des_psf_``), el de su tabla (``table``,
+    ``des_epr_``) y la ubicación de esa tabla (``locator``) con su huella."""
+
+    code: str
+    surface: str
+    table: str
+    locator: str
+
+
+def entity_surfaces(conn: sqlite3.Connection, registry: EntityRegistry, *,
+                    skip: Iterable[str] = ()) -> dict[str, EntitySurface]:
+    """Las entidades de ``registry`` en las que se puede apoyar algo (:data:`_SUPPORTABLE`), salvo las de
+    ``skip``, cada una con su superficie y su tabla vigentes (las que escribió su operación vigente), por
+    código. Una consulta por cada 400 entidades. Solo lee."""
+    omitted = set(skip)
+    live = {entry.operation_uid: entry.record.code for entry in registry
+            if entry.operation_uid is not None and entry.record.state in _SUPPORTABLE
+            and entry.record.code not in omitted}
+    found: dict[str, dict[str, tuple[str, str]]] = {}
+    uids = sorted(live)
+    for first in range(0, len(uids), 400):
+        part = uids[first:first + 400]
+        sql = _SUPPORT_DATA.format(marks=", ".join("?" for _ in part))
+        for uid, role, name, locator in conn.execute(
+                sql, (DATASET, provenance.ENTITY_SURFACE_ROLE, provenance.ENTITY_ROLE, *part)):
+            found.setdefault(live[str(uid)], {})[str(role)] = (str(name), str(locator))
+    result: dict[str, EntitySurface] = {}
+    for code in sorted(found, key=entities.code_order):
+        data = found[code]
+        surface, table = data.get(provenance.ENTITY_SURFACE_ROLE), data.get(provenance.ENTITY_ROLE)
+        if surface is not None and table is not None:
+            result[code] = EntitySurface(code, surface[0], table[0], table[1])
+    return result
+
+
+def _unsupportable(registry: EntityRegistry, own_code: str | None, written: Collection[str]) -> set[str]:
+    """Las entidades en las que una operación **no** se apoya (RF-015-15): ella misma si es una entidad
+    (``own_code``) y las que parten de su superficie, aguas abajo de la cadena; y, de una operación que no
+    es una entidad, las que parten de alguna de las superficies que escribe (``written``) y las que les
+    siguen: apoyarse en ellas sería un ciclo en el grafo."""
+    records = registry.records
+    skip: set[str] = set()
+    if own_code is not None:
+        skip.add(own_code)
+        if entities.find_entity(records, own_code) is not None:
+            skip |= {item.code for item in entities.chain_of(records, own_code)}
+    for item in records:
+        if item.start is not None and item.start in written:
+            skip |= {other.code for other in entities.chain_of(records, item.code)}
+    return skip
+
+
+@dataclass(frozen=True, slots=True)
+class SupportSurvey:
+    """Lo que apoya una operación sobre las entidades de su versión (:func:`survey_supports`): los
+    ``supports`` (los detectados y los que ya eran entradas suyas, por orden de código) y, de cada entidad
+    de ellos, su superficie y su tabla (``surfaces``)."""
+
+    supports: tuple[entities.Support, ...] = ()
+    surfaces: Mapping[str, EntitySurface] = MappingProxyType({})
+
+    @property
+    def volumes(self) -> dict[str, float]:
+        """El volumen apoyado (m³) en cada entidad de ``supports``, por su código."""
+        return {item.code: item.volume_m3 for item in self.supports}
+
+    def uses(self, have: Iterable[tuple[str, str]] = ()) -> tuple[Use, ...]:
+        """Las entradas que la operación ha de anotar por cada entidad de ``supports`` —su superficie con el
+        papel ``supported_on`` y su tabla con el ``support_footprint``, con la que se reproduce lo apoyado— y
+        que aún no tiene (``have``: pares ``(dato, papel)`` de sus entradas)."""
+        held = set(have)
+        found: list[Use] = []
+        for item in self.supports:
+            where = self.surfaces[item.code]
+            for name, role in ((where.surface, provenance.SUPPORTED_ON_ROLE),
+                               (where.table, provenance.SUPPORT_FOOTPRINT_ROLE)):
+                if (name, role) not in held:
+                    found.append(Use(name, role))
+                    held.add((name, role))
+        return tuple(found)
+
+    def figures(self, name: str) -> tuple[Any, ...]:
+        """Las cifras ``des.supported_m3`` de la operación ``name`` (una por entidad apoyada)."""
+        return provenance.supported_figures(name, self.volumes)
+
+
+def survey_supports(project: StoreProject, version: Version, results: Sequence[np.ndarray], start: str, *,
+                    own_code: str | None = None, written: Collection[str] = (),
+                    inputs: Iterable[tuple[str, str]] = (), start_values: np.ndarray | None = None
+                    ) -> SupportSurvey:
+    """**Lo que apoya una operación sobre las entidades de su versión** (spec 015, T23; RF-015-15, D-11;
+    plan 015 A6): la operación que deja las superficies ``results`` (``(filas, columnas)`` en la rejilla del
+    proyecto) desde la de partida ``start`` (el nombre del dato; ``start_values`` si ya está leída) se apoya
+    en cada entidad viva y calculada de ``version`` (:data:`_SUPPORTABLE`) en cuya huella rellena más del
+    espesor mínimo de la 012 por encima de ``máx(partida, entidad)`` (:func:`~.entities.detect_supports`,
+    con el volumen), y en las que ya lo eran (``inputs``: los pares ``(dato, papel)`` de lo que consume; las
+    que declara la persona, la de apoyo de la petición y las que arrastra un recálculo) **aunque no apoye
+    nada**. No se apoya en sí misma (``own_code``) ni en lo que parte de ella o de lo que escribe
+    (``written``: los datos de sus superficies; :func:`_unsupportable`). De varias superficies (las de una
+    cantera, las de un ajuste) cuenta la que más apoya (:func:`~.entities.strongest`).
+
+    **Coste:** con la versión sin entidades, ni se llama (``design.store`` lo comprueba con una consulta).
+    Si no hay celdas que suban más del espesor mínimo y nada declarado, solo se lee el registro; las huellas
+    se leen solo si las hay, y la superficie de una entidad solo si su huella tiene relleno encima o ya era
+    una entrada. Solo lee."""
+    held = {name for name, role in inputs if role == provenance.SUPPORTED_ON_ROLE}
+    with _consistent(project) as conn:
+        found = entities.registry(project, version.uid, conn=conn)
+        wanted = entity_surfaces(conn, found, skip=_unsupportable(found, own_code, set(written)))
+        thickness = _min_thickness(conn, project, version)
+    if not wanted:
+        return SupportSurvey()
+    frame = project_frame(project)
+    ground = (start_values if start_values is not None else read_surface(
+        project, start, version_uid=version.uid, expect=frame, role="superficie de partida").values)
+    arrays = [np.asarray(item, dtype=np.float64) for item in results]
+    filled = np.zeros(ground.shape, dtype=bool)
+    with np.errstate(invalid="ignore"):
+        for array in arrays:
+            if array.shape != ground.shape:
+                raise ValueError(f"la superficie resultante {array.shape} no es de la forma de la de "
+                                 f"partida {ground.shape}")
+            filled |= (array - ground) > thickness
+    registered = {code for code, where in wanted.items() if where.surface in held}
+    candidates = list(wanted) if filled.any() else sorted(registered, key=entities.code_order)
+    if not candidates:
+        return SupportSurvey()
+    cells: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    with project.read() as conn:
+        for code in candidates:
+            rows, cols = entities.runs_cells(read_entity_footprint(conn, wanted[code].locator).runs)
+            inside = (rows.size > 0 and int(rows.max()) < ground.shape[0]
+                      and int(cols.max()) < ground.shape[1])
+            if inside and (code in registered or bool(filled[rows, cols].any())):
+                cells[code] = (rows, cols)
+    if not cells:
+        return SupportSurvey()
+    surfaces = {code: read_surface(project, wanted[code].surface, version_uid=version.uid, expect=frame,
+                                   role="superficie de apoyo").values for code in cells}
+    area = float(frame.grid.cell_area)
+    best = entities.strongest(
+        item for array in arrays for item in entities.detect_supports(
+            array, ground, surfaces, cells, thickness, area, declared=sorted(registered & set(cells))))
+    return SupportSurvey(best, MappingProxyType({item.code: wanted[item.code] for item in best}))
+
+
+def add_supports(project: StoreProject, start: OperationStart, survey: SupportSurvey) -> OperationStart:
+    """``start`` con las entradas de ``survey`` que aún no lleva (:meth:`SupportSurvey.uses`; una operación
+    hecha es inmutable: se añaden aquí, antes de abrirla, con ``dataclasses.replace``) y el hash que tiene
+    cada una ahora, para que ``des.input_changed`` las vigile como las demás. Sin nada nuevo, ``start``."""
+    extra = survey.uses((use.item, str(use.role)) for use in start.inputs)
     if not extra:
         return start
     version = require_version(project, start.version_uid, start.op_type)
     with project.read() as conn:
         seen = {**start.seen, **_seen(conn, extra, version)}
     return replace(start, inputs=(*start.inputs, *extra), seen=MappingProxyType(seen))
+
+
+def detected_supports(project: StoreProject, prepared: PreparedPlatform, outcome: PlatformOutcome
+                      ) -> tuple[entities.Support, ...]:
+    """**Lo que apoyaría la plataforma** calculada (``prepared`` y ``outcome``) sobre las demás entidades de
+    su versión (RF-015-15, T23): :func:`survey_supports` con la superficie que dejaría (la de partida con
+    su resultado en la ventana de la huella) y lo que ya consume. Es lo que añade ``DesignWriter.commit`` al
+    crearla (el gancho genérico de ``design.store``: sus entradas ``supported_on`` y la cifra
+    ``des.supported_m3``); sirve para enseñarlo antes. Solo lee."""
+    surface = np.array(prepared.job.start, dtype=np.float64, copy=True)
+    surface[outcome.footprint.window] = outcome.result
+    version = require_version(project, prepared.start.version_uid, provenance.PLATFORM)
+    written = {provenance.dataset_name(provenance.ENTITY_SURFACE_GRID, prepared.job.request.name)}
+    return survey_supports(
+        project, version, [surface], prepared.start_surface, own_code=prepared.code, written=written,
+        inputs=[(use.item, str(use.role)) for use in prepared.start.inputs],
+        start_values=prepared.job.start).supports
 
 
 def _confirmation(project: StoreProject, outcome: PlatformOutcome, decided_by: str | None
@@ -1286,7 +1529,7 @@ def create_platform(project: StoreProject, writer: DesignWriter, prepared: Prepa
     cuándo; ``decided_by``, por defecto quien tiene abierto el proyecto) y un recálculo la reutiliza
     mientras la nueva no pase de la confirmada más la tolerancia (T15)."""
     outcome.ensure_creatable()
-    start = _with_supports(project, prepared.start, detected_supports(project, prepared, outcome))
+    start = prepared.start
     confirmed = _confirmation(project, outcome, decided_by)
     if confirmed is not None:  # RF-015-23: quién la confirmó, cuánto y cuándo, para el recálculo (T15)
         start = _with_confirmation(start, confirmed)

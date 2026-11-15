@@ -91,6 +91,7 @@ CODES: dict[str, str] = {
     "des.entity_feature_ambiguous": "error",    # RF-015-01 (T11)
     "des.entity_start_taken": "error",          # RF-015-04
     "des.entity_start_unknown": "error",        # RF-015-04 (T11)
+    "des.entity_supports_unknown": "error",     # RF-015-15 (T23)
     "des.entity_chain_cycle": "error",          # RF-015-04 (T03)
     "des.entity_insert_reason": "note",         # RF-015-05 (T03)
     "des.entity_nodata": "error",               # RF-015-09

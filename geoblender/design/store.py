@@ -89,6 +89,16 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   defecto de ``layer_styles`` de cada capa de versión **en la misma transacción** y anota el dato
   ``core_layer_styles`` del proyecto, sin declararlo como salida de la operación
   (``core.constraints.styles.write_version_styles``).
+- **Lo que se apoya en una entidad** (spec 015, T23; RF-015-15, D-11, ADR-0030 §4): toda operación que deja una
+  superficie de diseño o de entidad (la 013, la 014 y la plataforma) mide, **al confirmar** y fuera de la
+  transacción (:meth:`DesignWriter.commit`, que guarda las celdas de esas rejillas), sobre qué entidades vivas
+  de su versión rellena más del espesor mínimo de la 012 por encima de ``máx(partida, entidad)``
+  (``design.entities.detect_supports``, vía ``design.entity_store.survey_supports``) y añade a sus entradas la
+  superficie de cada una (``supported_on``) y la tabla de su huella (``support_footprint``) y a sus cifras
+  ``des.supported_m3`` con su ámbito. Una versión **sin entidades** no lo paga (una consulta,
+  :func:`_has_entities`). Una operación hecha es inmutable: la de un recálculo empieza antes de calcular y
+  lleva lo que apoyaba la sustituida (:meth:`OperationStart.carried`) y lo vuelve a medir sobre el resultado
+  nuevo; una entidad que antes no estaba no se detecta hasta que se crea de nuevo.
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -187,6 +197,7 @@ from .params import (
     CROWN_RING,
     EDGE_MAX_STEP,
     EDGE_MIN_SHARE,
+    PLATFORM_PREFIX,
     TOLERANCE_FACE,
     UNSPLIT_MIN_AREA,
     UNSPLIT_THRESHOLD,
@@ -568,6 +579,30 @@ class OperationStart:
             return
         _require_current_masks(project, self.version_uid)
 
+    def carried(self, project: StoreProject) -> OperationStart:
+        """``self`` con las entradas de lo que **apoyaba** la operación a la que sustituye (``supersedes``;
+        spec 015, T23; ADR-0030 §4): su superficie en cada entidad (``supported_on``) y la tabla de su huella
+        (``support_footprint``) que sigan vivas y que aún no lleve, con el hash que tienen ahora. Una operación
+        hecha es inmutable y la de un recálculo empieza antes de calcular: lo que apoyaba se arrastra y se
+        vuelve a medir sobre el resultado nuevo (:meth:`DesignWriter.commit`). Sin ``supersedes``, o sin nada
+        que arrastrar, ``self``: una consulta."""
+        if self.supersedes is None:
+            return self
+        with project.read() as conn:
+            version = versions_store.require_editable(conn, self.version_uid)
+            have = {(use.item, str(use.role)) for use in self.inputs}
+            found: list[Use] = []
+            for name, role in conn.execute(_CARRIED, (self.supersedes, provenance.SUPPORTED_ON_ROLE,
+                                                      provenance.SUPPORT_FOOTPRINT_ROLE)).fetchall():
+                record = dataset_registry.get(conn, str(name), version_uid=version.uid)
+                if record is not None and record.live and (str(name), str(role)) not in have:
+                    found.append(Use(str(name), str(role)))
+            extra = tuple(found)
+            seen = _seen(conn, extra, version) if extra else {}
+        if not extra:
+            return self
+        return replace(self, inputs=(*self.inputs, *extra), seen=MappingProxyType({**self.seen, **seen}))
+
     def begin(self, project: StoreProject, *, conn: sqlite3.Connection | None = None,
               executor: str = "blender") -> OperationHandle:
         """Registra la operación «en curso» en la versión. Sin ``conn``, en su propia transacción
@@ -590,11 +625,13 @@ class OperationStart:
             self._check_unchanged(handle)
             return handle
         self.check_masks(project)
+        carried = self.carried(project)  # lo que apoyaba la que sustituye (T23)
+        values["inputs"] = carried.inputs
         with project.read() as reading:
             self._check_name(reading)
         handle = begin_operation(project, self.op_type, **values)
         try:
-            self._check_unchanged(handle)
+            carried._check_unchanged(handle)
         except BaseException as error:
             handle.fail(failure_reason(error))
             raise
@@ -611,6 +648,12 @@ class OperationStart:
             if item.kind is ItemKind.DATASET and self.seen.get(item.uid) != item.content_sha256:
                 raise DesignError("des.input_changed", obj=f"Entrada «{item.name}»",
                                   field="entradas", value=item.name)
+
+
+_CARRIED = (
+    "SELECT d.name, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "WHERE io.operation_uid = ? AND io.direction = 'in' AND io.item_kind = 'dataset' "
+    "AND io.role IN (?, ?) ORDER BY io.fid")
 
 
 def _check_profiles(project: StoreProject, version: Version, codes: Iterable[str],
@@ -1146,6 +1189,20 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
                         "lower(name) = lower(?)", (name,)).fetchone() is not None
 
 
+_SURFACE_ROLES = (provenance.DESIGN_SURFACE_ROLE, provenance.ENTITY_SURFACE_ROLE)
+"""Los papeles de las superficies de las que se mide lo que apoyan sobre las entidades (RF-015-15): las de
+diseño de la 013 y la 014 y la de una entidad de la 015."""
+
+
+def _has_entities(conn: sqlite3.Connection, version_uid: str) -> bool:
+    """Si la versión ``version_uid`` tiene alguna entidad de diseño (spec 015, T23): alguna fila propia de la
+    familia ``des.platform.{e}.*`` (``design.entities.registry``). Una consulta con ``LIMIT 1``: lo que paga
+    toda operación de la 013 y la 014 que deja una superficie en una versión **sin** entidades."""
+    return conn.execute(
+        "SELECT 1 FROM gb_parameter WHERE scope = ? AND scope_uid = ? AND key LIKE ? LIMIT 1",
+        (VERSION_SCOPE, version_uid, f"{PLATFORM_PREFIX}.%")).fetchone() is not None
+
+
 @dataclass(slots=True)
 class _Grid:
     """Una rejilla preparada: su declaración (con el hash), su destino, su temporal y dónde se
@@ -1158,6 +1215,9 @@ class _Grid:
     backup: Path
     installed: bool = False
     replaced: bool = False
+    values: np.ndarray | None = None
+    """Las celdas de una superficie de diseño o de entidad (se guarda la referencia, no una copia): con
+    ellas ``commit`` mide lo que apoya sobre las entidades de la versión (T23)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1214,6 +1274,7 @@ class DesignWriter:
             _check_name(conn, op_type, name, record, self.supersedes)
         self.version_uid = record.uid
         self.version_code = record.code
+        self._version = record
         self.crs, self.vertical = project_references(project)
         self._grids: dict[str, _Grid] = {}
         self._tables: dict[str, _Table] = {}
@@ -1326,8 +1387,9 @@ class DesignWriter:
                 yield
         spec = provenance.dataset_spec(family, label, self.version_code,
                                        content=hasher.digest(), crs_epsg=self.crs.epsg)
+        surface = provenance.FAMILIES_BY_CODE[family].role in _SURFACE_ROLES
         self._grids[family if part is None else f"{family}/{part}"] = _Grid(
-            family, spec, final, temporary, backup)
+            family, spec, final, temporary, backup, values=raster.values if surface else None)
         if self.handle is not None:
             self.handle.claim_paths(temporary, final, backup)
         return spec
@@ -1472,13 +1534,21 @@ class DesignWriter:
         transacción, antes de abrir la operación**, para escribir en ella lo que la operación ha de
         leer al empezar (los parámetros de una entidad de diseño, que ``begin_operation`` crearía
         en el proyecto si faltaran: trampa de la T04). Si falla, o falla algo después, se deshace
-        con todo lo demás. Sin ella (la 013 y la 014), no hace nada."""
+        con todo lo demás. Sin ella (la 013 y la 014), no hace nada.
+
+        **El gancho de las dependencias** (spec 015, T23; RF-015-15, D-11; ADR-0030 §4): de toda operación
+        que deja una superficie de diseño o de entidad (:data:`_SURFACE_ROLES`), antes de abrirla y **fuera**
+        de la transacción, :meth:`_supports` mide sobre qué entidades vivas de la versión rellena más del
+        espesor mínimo de la 012 por encima de ``máx(partida, entidad)`` y añade a sus entradas, con
+        ``dataclasses.replace``, la superficie de cada una (``supported_on``) y su tabla (``support_footprint``),
+        y a sus cifras ``des.supported_m3`` con su ámbito. Una versión sin entidades no lo paga: una consulta."""
         if self._closed or self._committed:
             raise RuntimeError("el escritor ya se confirmó o se cerró")
         self._check_ready(start)  # un error del programa no cierra el escritor
         try:
             if start is not None:
                 start.check_masks(self.project)
+            start, supported = self._supports(start)
             with self.project.write_transaction() as conn:
                 if before_begin is not None:
                     before_begin(conn)
@@ -1493,7 +1563,7 @@ class DesignWriter:
                 for declared in self._vectors.values():
                     self._write_declared(conn, declared)
                 self._write_styles(conn, handle)
-                records = handle.complete(conn, outputs=self.specs, figures=figures,
+                records = handle.complete(conn, outputs=self.specs, figures=(*figures, *supported),
                                           message=message)
         except BaseException as error:
             self.close(error)
@@ -1502,6 +1572,51 @@ class DesignWriter:
         self.close()
         assert handle is not None
         return Stored(handle, records)
+
+    def _supports(self, start: OperationStart | None
+                  ) -> tuple[OperationStart | None, tuple[FigureSpec, ...]]:
+        """El gancho de las dependencias de :meth:`commit` (RF-015-15, D-11; ADR-0030 §4): ``start`` con las
+        entradas de lo que apoya la operación y las cifras ``des.supported_m3`` (una por entidad, con su
+        ámbito). **Coste cero si no hay entidades**: sin superficie de diseño o de entidad, o con una versión
+        sin ellas, ``(start, ())`` tras una consulta. Con ``start``, lleva antes las entradas de lo que apoyaba
+        la operación a la que sustituye (:meth:`OperationStart.carried`) y añade las de lo que detecta ahora;
+        con una operación que ya empezó (un recálculo: sus entradas no se pueden tocar, ADR-0030 §4) mide las
+        que **ya tiene** —las que arrastró al empezar, las declaradas y la de apoyo de la petición— sobre el
+        resultado nuevo (no copia el volumen anterior). Sin la superficie de partida (``surface``) de la
+        operación, no mide nada."""
+        results = [grid.values for grid in self._grids.values() if grid.values is not None]
+        if not results:
+            return start, ()
+        with self.project.read() as conn:
+            if not _has_entities(conn, self.version_uid):
+                return start, ()
+        from . import entity_store  # al usarlo: entity_store importa este módulo
+
+        if start is not None:
+            start = start.carried(self.project)
+            inputs = [(use.item, str(use.role)) for use in start.inputs]
+            settings: Mapping[str, Any] = start.settings
+        else:
+            assert self.handle is not None
+            inputs = [(item.name, str(item.role)) for item in self.handle.inputs
+                      if item.kind is ItemKind.DATASET]
+            settings = self.handle.settings
+        starts = [name for name, role in inputs if role == provenance.SURFACE_ROLE]
+        if len(starts) != 1:
+            return start, ()
+        code = settings.get("code") if self.op_type == provenance.PLATFORM else None
+        survey = entity_store.survey_supports(
+            self.project, self._version, results, starts[0],
+            own_code=code if isinstance(code, str) else None,
+            written=[grid.spec.name for grid in self._grids.values() if grid.values is not None],
+            inputs=inputs)
+        if start is not None:
+            start = entity_store.add_supports(self.project, start, survey)
+            return start, survey.figures(self.name)
+        have = set(inputs)  # ya empezada: solo lo que consumió con su tabla (lo que se reproduce)
+        volumes = {item.code: item.volume_m3 for item in survey.supports
+                   if (survey.surfaces[item.code].table, provenance.SUPPORT_FOOTPRINT_ROLE) in have}
+        return start, provenance.supported_figures(self.name, volumes)
 
     def _check_ready(self, start: OperationStart | None) -> None:
         made = ({grid.family for grid in self._grids.values()} | set(self._tables)

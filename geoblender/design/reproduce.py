@@ -36,7 +36,11 @@ la envolvente, la superficie de partida y las anclas por su papel y la capa de l
 nombre). De la plataforma (spec 015, T14): :func:`reproduce_platform` (con el cálculo que comparte
 con el proyecto, ``entity_store.platform_compute_steps``; la capa de plataformas, la de los ejes, la
 superficie de partida y la de apoyo, por su papel, y los parámetros de la entidad, los congelados: **no**
-los atributos de la capa). De la declaración de restricciones de las entidades (spec 015, T17):
+los atributos de la capa). **Lo apoyado en las entidades** (spec 015, T23; RF-015-15, RF-009-11): las de la 013,
+la 014 y la plataforma que se apoyan en una entidad devuelven también ``des.supported_m3``
+(:func:`_support_figures`: la superficie y la tabla de la huella congeladas de cada entidad, con la partida y
+el resultado; el mismo cálculo que el gancho de ``DesignWriter.commit``): sin ello, una cifra congelada sin
+reproducir deja la operación como no reproducida. De la declaración de restricciones de las entidades (spec 015, T17):
 :func:`reproduce_declare_constraints` (con el cálculo que comparte con el proyecto,
 ``entity_store.declared_rows_steps``; las tablas ``des_epr_`` congeladas de las entidades que recogió, por
 el nombre de su dato, y los parámetros congelados de cada una; el decisor, la fecha de su decisión y la
@@ -69,6 +73,7 @@ from ..core.gpkg.connection import GpkgConnection
 from ..core.paths import check_path_length
 from ..core.project.model import Progress
 from ..core.provenance.contract import ReproduceFunction
+from ..core.provenance.figures import FigureSpec
 from ..core.versions.reproduce import (
     FrozenInput,
     ReproducedOutput,
@@ -314,6 +319,43 @@ def _table_output(request: ReproduceRequest, family: str, rows: list[tuple[objec
     return ReproducedOutput(found.role, found.reader, {"main": path}, {"layer": table})
 
 
+def _support_figures(frozen: _Frozen, results: Sequence[np.ndarray], start: np.ndarray
+                     ) -> tuple[FigureSpec, ...]:
+    """Las cifras ``des.supported_m3`` de la operación que se reproduce (spec 015, T23; RF-015-15, RF-009-11):
+    lo que apoyan sus superficies ``results`` (desde ``start``) sobre cada entidad cuya superficie
+    (``supported_on``) y cuya huella (``support_footprint``, la tabla ``des_epr_`` de la entidad) consumió, con
+    lo **congelado** y el espesor mínimo congelado: el mismo cálculo que el gancho de ``DesignWriter.commit``
+    (``entities.detect_supports``), con el mismo ``máx(partida, entidad)``, sin el proyecto. Una entrada
+    ``supported_on`` que no es la superficie de una entidad (la de apoyo de una plataforma puede ser
+    cualquiera) o sin la tabla de su huella no da cifra. Sin entidades, ninguna."""
+    inputs = frozen.request.inputs
+    held = [item for item in inputs if item.role == provenance.SUPPORTED_ON_ROLE]
+    if not held:
+        return ()
+    surface_prefix = provenance.FAMILIES_BY_CODE[provenance.ENTITY_SURFACE_GRID].prefix
+    table_prefix = provenance.FAMILIES_BY_CODE[provenance.ENTITY_TABLE].prefix
+    tables = {item.name: item for item in inputs if item.role == provenance.SUPPORT_FOOTPRINT_ROLE}
+    surfaces: dict[str, np.ndarray] = {}
+    cells: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for item in held:
+        table = tables.get(table_prefix + item.name.removeprefix(surface_prefix))
+        if not item.name.startswith(surface_prefix) or table is None:
+            continue
+        with _open(Path(table.files["main"])) as conn:
+            found = entity_store.read_entity_footprint(conn, str(table.settings["layer"]))
+        surfaces[found.code] = frozen.named_raster(item.name, what="superficie de apoyo").values
+        cells[found.code] = entities.runs_cells(found.runs)
+    if not cells:
+        return ()
+    thickness = store.number(frozen.values, VERIFY_MIN_THICKNESS)
+    area = float(frozen.grid.cell_area)
+    best = entities.strongest(
+        item for array in results for item in entities.detect_supports(
+            array, start, surfaces, cells, thickness, area, declared=sorted(cells)))
+    return provenance.supported_figures(str(frozen.request.settings.get("name", "")),
+                                        {item.code: item.volume_m3 for item in best})
+
+
 def _check(request: object, op_type: str) -> ReproduceRequest:
     if not isinstance(request, ReproduceRequest):
         raise TypeError(f"se reproduce una ReproduceRequest, no {request!r}")
@@ -419,7 +461,8 @@ def _reproduce_design(request: ReproduceRequest, budget_s: float) -> Iterator[Pr
         request, provenance.REPORT_TABLE,
         store.report_rows(outcome.report, unassigned_area_m2=outcome.unassigned_area_m2), crs))
     yield Progress(_PHASE, 1, 1, "Escalonado reproducido",
-                   result=ReproducedResult(tuple(outputs), outcome.figures))
+                   result=ReproducedResult(tuple(outputs), (
+                       *outcome.figures, *_support_figures(frozen, [outcome.design], start.values))))
 
 
 # --- La cantera con dos superficies y su recinto (spec 014, T19) -------------------------------
@@ -478,16 +521,20 @@ def _reproduce_quarry(request: ReproduceRequest, budget_s: float) -> Iterator[Pr
         budget_s=budget_s)
     outcome = calculated.outcome
     outputs = []
+    surfaces = []
     for family, grid, _what in store.quarry_grids(outcome):
         outputs.append((yield from _grid_output(
             request, family, Raster(start.grid, grid, frozen.crs, frozen.vertical), budget_s)))
+        if provenance.FAMILIES_BY_CODE[family].role == provenance.DESIGN_SURFACE_ROLE:
+            surfaces.append(grid)
     outputs.append(_table_output(request, provenance.BERM_TABLE,
                                  store.quarry_berm_rows(outcome), frozen.crs))
     outputs.append(_table_output(request, provenance.QUARRY_REPORT_TABLE,
                                  store.quarry_report_rows(outcome, calculated.notices),
                                  frozen.crs))
     yield Progress(_PHASE, 1, 1, "Cantera reproducida",
-                   result=ReproducedResult(tuple(outputs), outcome.figures))
+                   result=ReproducedResult(tuple(outputs), (
+                       *outcome.figures, *_support_figures(frozen, surfaces, start.values))))
 
 
 # --- La transición con el terreno no afectado (spec 014, T28) ----------------------------------
@@ -518,7 +565,8 @@ def _reproduce_transition(request: ReproduceRequest, budget_s: float) -> Iterato
     report = _table_output(request, provenance.EDGE_REPORT_TABLE,
                            store.edge_report_rows(outcome), frozen.crs)
     yield Progress(_PHASE, 1, 1, "Transición reproducida",
-                   result=ReproducedResult((output, report), outcome.figures))
+                   result=ReproducedResult((output, report), (
+                       *outcome.figures, *_support_figures(frozen, [outcome.grid], start.values))))
 
 
 # --- Solo relleno (spec 014, T30) ----------------------------------------------------------------
@@ -563,7 +611,8 @@ def _reproduce_fill_only(request: ReproduceRequest, budget_s: float) -> Iterator
     report = _table_output(request, provenance.REPORT_TABLE, store.fill_only_report_rows(outcome),
                            frozen.crs)
     yield Progress(_PHASE, 1, 1, "Diseño «solo relleno» reproducido",
-                   result=ReproducedResult((surface, report), outcome.figures))
+                   result=ReproducedResult((surface, report), (
+                       *outcome.figures, *_support_figures(frozen, [outcome.surface], start.values))))
 
 
 # --- La plataforma (spec 015, T14) --------------------------------------------------------------
@@ -637,7 +686,8 @@ def _reproduce_platform(request: ReproduceRequest, budget_s: float) -> Iterator[
     report = _table_output(request, provenance.ENTITY_REPORT_TABLE,
                            entity_store.platform_report_rows(outcome), frozen.crs)
     yield Progress(_PHASE, 1, 1, "Plataforma reproducida",
-                   result=ReproducedResult((made, table, report), outcome.figures))
+                   result=ReproducedResult((made, table, report), (
+                       *outcome.figures, *_support_figures(frozen, [surface], start.values))))
 
 
 def reproduce_declare_constraints(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S

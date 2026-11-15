@@ -202,7 +202,8 @@ PENDING_015_MODULES = frozenset({
     "design.entities",  # T02: EntityKind, EntityRecord, EntityState, next_code, declared_reason;
     # T03: la cadena (start_conflict, insert_after, chain_of, chain_tails) y registry; T16:
     # DeclaredZone, declared_zone y declared_zone_of_runs (la zona que declara una entidad: el
-    # contorno de su huella para la restricción declarada de la 012)
+    # contorno de su huella para la restricción declarada de la 012); T23: Support, detect_supports,
+    # strongest, runs_cells y code_order (lo que se apoya en una entidad: A6, RF-015-15)
     "design.platform",  # T06: PlatformJob, PlatformGeometry, Footprint, platform_footprint,
     # axis_of_polygon y work_window (la huella y la rasante de la plataforma); T07: Applied,
     # OffLevel, OffLevelCause, apply_platform y apply_platform_steps (aplicarla); T08: Edge,
@@ -219,7 +220,9 @@ PENDING_015_MODULES = frozenset({
     # entity_values (recalcularla con sus parámetros de la versión y reproducirla sin proyecto); T17:
     # prepare_declaration, run_declaration, declare_constraints_steps, recompute_declaration,
     # declared_sources, declared_rows_steps, DeclaredSource, PreparedDeclaration, EntityFootprint y
-    # read_entity_footprint (la declaración de restricciones de las entidades de una versión)
+    # read_entity_footprint (la declaración de restricciones de las entidades de una versión); T23:
+    # survey_supports, SupportSurvey, add_supports, entity_surfaces, EntitySurface y declared_supports
+    # (lo que apoya una operación sobre las entidades de su versión, que añade ``DesignWriter.commit``)
 })
 
 

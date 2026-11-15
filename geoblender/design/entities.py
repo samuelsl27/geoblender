@@ -59,7 +59,7 @@ import re
 import sqlite3
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
@@ -91,12 +91,15 @@ __all__ = [
     "EntityRegistry",
     "EntityState",
     "ParamChange",
+    "Support",
     "chain_of",
     "chain_tails",
     "check_chain",
+    "code_order",
     "declared_reason",
     "declared_zone",
     "declared_zone_of_runs",
+    "detect_supports",
     "find_entity",
     "format_code",
     "insert_after",
@@ -106,7 +109,9 @@ __all__ = [
     "predecessor_of",
     "ref_code",
     "registry",
+    "runs_cells",
     "start_conflict",
+    "strongest",
     "successor_of",
     "surface_ref",
 ]
@@ -648,6 +653,12 @@ def _number(code: str) -> tuple[str, int]:
     return prefix, int(number)
 
 
+def code_order(code: str) -> tuple[str, int]:
+    """La clave de orden de un código de entidad: su tipo y su número (``PLT-002`` antes que
+    ``PLT-010``). ``ValueError`` si no es un código (``PLT-001``)."""
+    return _number(code)
+
+
 def registry(project: Any, version: str, *, conn: sqlite3.Connection | None = None
              ) -> EntityRegistry:
     """Las entidades de la versión ``version`` (uid o código) del proyecto, leídas sin escribir
@@ -753,6 +764,119 @@ def _deduce(conn: sqlite3.Connection, operation: str | None,
     if causes:
         return EntityState.STALE, causes, ()
     return EntityState.CURRENT, causes, ()
+
+
+# --- Lo que se apoya en una entidad (spec 015, T23; RF-015-15, D-11; plan 015 A6, P-5) -----------------
+
+
+@dataclass(frozen=True, slots=True)
+class Support:
+    """Lo que una operación que rellena apoya sobre la huella de una entidad (RF-015-15, D-11): el
+    código de la entidad (``code``), las celdas de su huella donde rellena más del espesor mínimo por
+    encima de ``máx(partida, entidad)`` (``cells``), el volumen apoyado en m³ (``volume_m3``: ``Σ a·área
+    de celda`` en ellas; cero si no apoya nada) y si la persona lo declaró (``declared``: se registra
+    **aunque no apoye nada**, o la operación ya lo tenía como entrada)."""
+
+    code: str
+    cells: int
+    volume_m3: float
+    declared: bool = False
+
+
+def runs_cells(runs: Iterable[Sequence[int]]) -> tuple[np.ndarray, np.ndarray]:
+    """Las celdas de una huella dada en tramos ``(fila, col0, col1)`` (``col1`` excluida: la tabla
+    ``des_epr_``) como sus índices ``(filas, columnas)``, de norte a sur y de oeste a este: lo que se
+    usa para indexar una rejilla sin construir una máscara de toda ella (vectorizado: sin bucle por
+    celda). Sin tramos, dos vectores vacíos. ``ValueError`` si un tramo no tiene celdas o va al revés."""
+    chosen = np.asarray([tuple(run) for run in runs], dtype=np.int64).reshape(-1, 3)
+    if chosen.size == 0:
+        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+    first, last = chosen[:, 1], chosen[:, 2]
+    if (last <= first).any():
+        raise ValueError("un tramo de la huella de una entidad tiene al menos una celda "
+                         "(col1 > col0)")
+    lengths = last - first
+    rows = np.repeat(chosen[:, 0], lengths)
+    ends = np.cumsum(lengths)
+    cols = np.arange(int(ends[-1]), dtype=np.int64) - np.repeat(ends - lengths, lengths) \
+        + np.repeat(first, lengths)
+    return rows, cols
+
+
+def _positive(value: object, what: str, *, zero: bool) -> float:
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise TypeError(f"{what} es un número, no {value!r}")
+    number = float(value)
+    if not math.isfinite(number) or number < 0 or (number == 0 and not zero):
+        raise ValueError(f"{what} es un número finito {'no negativo' if zero else 'mayor que cero'}, "
+                         f"no {value!r}")
+    return number
+
+
+def detect_supports(result: np.ndarray, start: np.ndarray, entity_surfaces: Mapping[str, np.ndarray],
+                    footprints: Mapping[str, tuple[np.ndarray, np.ndarray]], min_thickness_m: float,
+                    cell_area: float, *, declared: Iterable[str] = ()) -> tuple[Support, ...]:
+    """**A6, los apoyos** (RF-015-15, D-11; plan 015 §5.4 A6 y P-5; puro, vectorizado y sin bucle por
+    celda): de la superficie ``result`` que deja una operación desde la de partida ``start`` (las dos
+    ``(filas, columnas)`` de la misma rejilla, en m, ``NaN`` sin dato), sobre cada entidad ``code`` de
+    ``footprints`` (los índices ``(filas, columnas)`` de su huella, :func:`runs_cells`) y con la
+    superficie que deja ella, ``entity_surfaces[code]`` (de la misma rejilla), el apoyo es
+
+        a(c) = result(c) − máx(start(c), entidad(c))    en las celdas c de su huella,
+
+    se cuentan las celdas con ``a`` **mayor** que el espesor mínimo de la 012 (``min_thickness_m``, m) y
+    el volumen apoyado es ``Σ a · cell_area`` en ellas (m³; ``cell_area`` en m²), a ≤ 10⁻⁹ relativo del
+    cálculo a mano. Sin el ``máx`` (P-5), todo diseño que **arrastra el terreno** (``result = start``)
+    sobre una plataforma «cortada» (``entidad < start``) contaría como apoyado: con él, el relleno sobre
+    la propia entidad (``start = entidad``), sobre el terreno que quedaba por encima (``start >
+    entidad``) y la parte por encima de la entidad (``start < entidad``) cuentan y lo que solo se arrastra
+    no. Una celda sin dato en alguna de las tres no cuenta.
+
+    Una entidad que apoya algo es un :class:`Support`; una que no, no sale (salvo las de ``declared``: los
+    códigos que la persona declara, que salen **siempre** con el volumen que den, cero incluido, y han de
+    tener su huella y su superficie). Por orden de código. ``KeyError`` si una entidad de ``footprints`` o de
+    ``declared`` no tiene superficie (o una de ``declared`` no tiene huella); ``ValueError`` si las
+    rejillas no tienen la misma forma o un número no es finito (errores del programa)."""
+    thickness = _positive(min_thickness_m, "el espesor mínimo", zero=True)
+    area = _positive(cell_area, "el área de una celda", zero=False)
+    surface = np.asarray(result, dtype=np.float64)
+    origin = np.asarray(start, dtype=np.float64)
+    if surface.ndim != 2 or surface.shape != origin.shape:
+        raise ValueError(f"la superficie resultante {surface.shape} y la de partida {origin.shape} "
+                         "son dos rejillas de la misma forma")
+    chosen = tuple(dict.fromkeys(declared))
+    missing = [code for code in chosen if code not in footprints]
+    if missing:
+        raise KeyError(f"las entidades declaradas {', '.join(missing)} no tienen huella")
+    found: list[Support] = []
+    for code in sorted(footprints, key=_number):
+        rows, cols = footprints[code]
+        ground = np.asarray(entity_surfaces[code], dtype=np.float64)
+        if ground.shape != surface.shape:
+            raise ValueError(f"la superficie de la entidad {code} {ground.shape} no es de la forma de "
+                             f"la rejilla {surface.shape}")
+        with np.errstate(invalid="ignore"):
+            thickness_on = surface[rows, cols] - np.maximum(origin[rows, cols], ground[rows, cols])
+            counted = thickness_on > thickness  # NaN no es mayor que nada: la celda sin dato no cuenta
+        cells = int(np.count_nonzero(counted))
+        if cells or code in chosen:
+            found.append(Support(code, cells, float(np.sum(thickness_on[counted])) * area if cells
+                                 else 0.0, code in chosen))
+    return tuple(found)
+
+
+def strongest(found: Iterable[Support]) -> tuple[Support, ...]:
+    """Un :class:`Support` por entidad de ``found`` —lo apoyado en ella por **varias** superficies de una
+    misma operación (las dos de una cantera, las de un ajuste), que son alternativas y no se suman—: el de
+    mayor volumen (a igual volumen, el primero), declarado si alguno lo era. Por orden de código."""
+    best: dict[str, Support] = {}
+    for item in found:
+        before = best.get(item.code)
+        if before is None or item.volume_m3 > before.volume_m3:
+            best[item.code] = replace(item, declared=item.declared or (before is not None and before.declared))
+        elif item.declared and not before.declared:
+            best[item.code] = replace(before, declared=True)
+    return tuple(best[code] for code in sorted(best, key=_number))
 
 
 # --- La zona que declara una entidad (spec 015, T16; RF-012-29, RF-015-10; A8; D-23) ---------------

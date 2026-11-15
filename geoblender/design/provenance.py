@@ -302,6 +302,7 @@ __all__ = [
     "SUPPORTED_M3",
     "SUPPORTED_ON_ROLE",
     "SUPPORT_FIGURES",
+    "SUPPORT_FOOTPRINT_ROLE",
     "SURFACE_ROLE",
     "SURFACE_SCOPE_KEY",
     "SURFACE_SCOPE_NAMES",
@@ -457,6 +458,11 @@ SUPPORTED_ON_ROLE = "supported_on"
 """El papel de la superficie de una entidad en la que se apoya la operación que rellena sobre ella
 (RF-015-15; ADR-0030 §4): las que detecta el cálculo y las que declara el usuario, añadidas al crear
 (una operación hecha es inmutable). Si ese dato se descarta, «apoyo retirado» (RF-015-17)."""
+SUPPORT_FOOTPRINT_ROLE = "support_footprint"
+"""El papel de la tabla ``des_epr_`` de la entidad en la que se apoya una operación (spec 015, T23): su
+huella, con la que se mide el volumen apoyado (``des.supported_m3``). Va **junto a** cada entrada
+:data:`SUPPORTED_ON_ROLE` de una entidad, para que lo apoyado se reproduzca sin el proyecto (la
+reproducción no tiene otro sitio de donde sacar la huella) y se vigile como cualquier entrada."""
 ENTITY_ROLE = "entity"
 """El papel de la tabla de una entidad (huella, eje y atributos): salida de ``des.platform`` y
 entrada de la declaración y de la capa de entidades, que recogen las entidades vivas."""

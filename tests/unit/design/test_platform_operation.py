@@ -1674,22 +1674,25 @@ class RacedEntityTest(CreateCase):
 
 
 class SupportsHookTest(CreateCase):
-    """RF-015-15 (T23): el gancho de las dependencias queda preparado y vacío: hoy no añade ninguna
-    entrada ``supported_on``; lo que devuelva se añade como entrada de la operación al crearla."""
+    """RF-015-15 (T23): el gancho de las dependencias es el genérico de ``DesignWriter.commit``
+    (``design.store``; ``test_entity_supports``): la primera plataforma de una versión **sin entidades** no se
+    apoya en nada, ``detected_supports`` da ``()`` y crearla ni llama a la medida de lo apoyado."""
 
-    def test_b_the_hook_is_empty_and_what_it_returns_is_an_input_of_the_operation(self) -> None:
+    def test_b_the_first_platform_of_a_version_rests_on_nothing_and_pays_nothing_for_the_hook(self) -> None:
         calculation = self.calculate_in(prep.request())
         self.assertEqual(entity_store.detected_supports(
             self.project, calculation.entity, calculation.outcome), ())
         self.clock.advance(minutes=1)
-        with mock.patch.object(entity_store, "detected_supports",
-                               return_value=(prep.HOLE_DATASET,)):
+        with mock.patch.object(entity_store, "survey_supports",
+                               side_effect=AssertionError("sin entidades en la versión, ni se llama")):
             stored = calculation.create()
         inputs = self.query(
             "SELECT d.name, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON "
-            "d.uid = io.item_uid WHERE io.operation_uid = ? AND io.role = 'supported_on'",
-            stored.handle.uid)
-        self.assertEqual(inputs, [(prep.HOLE_DATASET, "supported_on")])
+            "d.uid = io.item_uid WHERE io.operation_uid = ? AND io.role IN ('supported_on', "
+            "'support_footprint')", stored.handle.uid)
+        self.assertEqual(inputs, [])
+        self.assertEqual(self.query("SELECT key FROM gb_figure WHERE operation_uid = ? AND key = "
+                                    "'des.supported_m3'", stored.handle.uid), [])
 
 
 # ---------------------------------------------------------------------------------------------

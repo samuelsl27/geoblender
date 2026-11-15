@@ -1232,6 +1232,15 @@ CATALOG: tuple[Message, ...] = (
         "superficie de diseño o la superficie de otra entidad; no se calcula nada.",
     ),
     Message(
+        "des.entity_supports_unknown",
+        "Entity «{entity}»: «{field}» = {value} declares that it rests on {target}, which is not a "
+        "calculated entity of {version} on which it can rest ({reason}); correct the declared "
+        "dependencies; nothing is calculated.",
+        "Entidad «{entity}»: «{field}» = {value} declara que se apoya en {target}, que no es una "
+        "entidad calculada de {version} en la que pueda apoyarse ({reason}); corrija las "
+        "dependencias declaradas; no se calcula nada.",
+    ),
+    Message(
         "des.entity_chain_cycle",
         "The chain of entities {chain} loops back on itself: an entity cannot start, directly or "
         "through others, from its own surface; change the start surface of one of them; nothing "
