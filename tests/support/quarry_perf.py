@@ -28,6 +28,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -78,12 +79,14 @@ def _never(request: Any) -> Any:
 
 
 @contextmanager
-def scale_project() -> Iterator[dperf.DesignScale]:
+def scale_project(*, folder: Path | None = None, userdata: Path | None = None
+                  ) -> Iterator[dperf.DesignScale]:
     """El proyecto de escala de la 013 (``design_perf.scale_project``) con lo que registra ``bl``
     para la 014 y el ángulo de transición :data:`TRANSITION_DEG` declarado en el proyecto. Al
-    salir quita lo registrado, cierra el proyecto y borra su carpeta."""
+    salir quita lo registrado, cierra el proyecto y borra su carpeta (si es suya; ``folder`` y
+    ``userdata``, como en ``design_perf.scale_project``)."""
     with ExitStack() as stack:
-        data = stack.enter_context(dperf.scale_project())
+        data = stack.enter_context(dperf.scale_project(folder=folder, userdata=userdata))
         core_params.register_definitions(design_params.QUARRY_DEFINITIONS)
         stack.callback(core_params.unregister_definitions, "des")
         stack.enter_context(registered(

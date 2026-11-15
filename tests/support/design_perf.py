@@ -27,6 +27,7 @@ from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -199,9 +200,12 @@ def _declare_design(project: Any, clock: FakeClock, v1: Any) -> None:
 
 
 @contextmanager
-def scale_project() -> Iterator[DesignScale]:
+def scale_project(*, folder: Path | None = None, userdata: Path | None = None
+                  ) -> Iterator[DesignScale]:
     """El proyecto de escala (véase el módulo), con lo que registrará ``bl`` para que ``design``
-    calcule y registre. Al salir lo cierra, quita lo registrado y borra la carpeta."""
+    calcule y registre. Al salir lo cierra y quita lo registrado; la carpeta (por defecto, una temporal
+    propia en ``%TEMP%``, que se borra) la pone quien llama con ``folder`` (spec 015, T33: la de la red,
+    que borra él) y los datos de usuario, en ``userdata`` (por defecto, dentro de ella)."""
     rows, values = _constraints()
     sectors = _sectors()
     with ExitStack() as stack:
@@ -217,12 +221,14 @@ def scale_project() -> Iterator[DesignScale]:
                 {t: _recompute for t in design_provenance.REPRODUCIBLE},
                 {t: _reproduce for t in design_provenance.REPRODUCIBLE}),
             *design_provenance.FIGURES))
-        folder = stack.enter_context(project_tmp("gb-diseno-"))
+        if folder is None:
+            folder = stack.enter_context(project_tmp("gb-diseno-"))
         clock = FakeClock()
         (folder / "proyectos").mkdir()
         settings = make_settings(window=cdata.window(), grid_step_m=STEP_M)
-        project = create.create_project(folder / "proyectos", settings, make_session(),
-                                        userdata_mod.UserData(folder / "u"), clock=clock).project
+        user = userdata_mod.UserData(userdata or folder / "u")
+        project = create.create_project(folder / "proyectos", settings, make_session(), user,
+                                        clock=clock).project
         stack.callback(project.close)
         versions = []
         for feature, title in (("diseno", "Diseño"), ("alternativa", "Alternativa")):
