@@ -67,6 +67,18 @@ la métrica exacta (D-22), «no proteger» (D-4) y «no descartada» (``discarde
 persona lo pone en verdadero para descartar una entidad **sin calcular**, que no tiene datos que
 descartar: nada se borra, RF-009-12; una calculada se descarta con sus datos).
 
+**Más de un tipo de entidad** (spec 016, T02; plan 016 §5.1 y §5.7 P-11; ADR-0031 §1): la plataforma es un tipo
+entre varios y su familia es la de su tipo. :class:`EntityParams` dice de cada tipo su **valor** (el segmento
+``des.<tipo>.{e}.*`` de su clave), el **prefijo de su código** (``PLT``), los **valores** de su familia
+(:data:`COMMON_ENTITY_PARAMS`, los comunes a todos los tipos, y los propios) y las familias que ``bl`` registra;
+:func:`register_entity_params` y :func:`unregister_entity_params` son su registro (la plataforma es del programa y no se
+quita; los demás, de quien los declara), :func:`entity_params` y :func:`entity_params_of` lo consultan por tipo y por
+código, :func:`entity_key` da la clave de un valor en la familia **del tipo de su código** y :func:`parse_entity_key` la
+lee de vuelta. :func:`entity_family` construye las familias de cualquier tipo (con la misma plantilla que las de la
+plataforma). Un tipo **sin** ``start`` es un tipo **sin cadena** (:attr:`EntityParams.chained`): no parte de ninguna
+superficie ni nadie parte de la suya (``design.entities``). La plataforma no cambia de claves, de plantillas ni de
+rangos.
+
 El espesor mínimo del informe es el de la 012, ``res.verify.min_thickness_m``
 (:data:`VERIFY_MIN_THICKNESS`), que ``design`` lee **por su clave** con ``core.params`` sin
 importar ``reserves`` (D-24); una prueba de arquitectura comprueba que sigue declarada.
@@ -96,6 +108,7 @@ from ..core.params import ParamDef, ParamFamily, ParamValue, format_range
 from .messages import DesignError
 
 __all__ = [
+    "COMMON_ENTITY_PARAMS",
     "CONSERVE_SLOPE",
     "CROWN_RING",
     "DEFINITIONS",
@@ -118,6 +131,7 @@ __all__ = [
     "VERIFY_MIN_THICKNESS",
     "WARNING_RATIO",
     "BenchParam",
+    "EntityParams",
     "ParamDef",
     "ParamValue",
     "PlatformParam",
@@ -127,11 +141,18 @@ __all__ = [
     "check_entity_param",
     "check_quarry_param",
     "check_sector_slope",
+    "entity_family",
     "entity_key",
+    "entity_params",
+    "entity_params_of",
     "entity_segment",
     "is_code",
+    "parse_entity_key",
+    "register_entity_params",
+    "registered_entity_params",
     "sector_slope_key",
     "segment_code",
+    "unregister_entity_params",
 ]
 
 TOLERANCE_FACE = "des.tolerance.face_deg"
@@ -472,6 +493,14 @@ class PlatformParam(StrEnum):
     DISCARDED = "discarded"
 
 
+COMMON_ENTITY_PARAMS: tuple[str, ...] = (
+    PlatformParam.NAME.value, PlatformParam.START.value, PlatformParam.SUPPORT.value,
+    PlatformParam.SUPPORTS.value, PlatformParam.DISCARDED.value, PlatformParam.PROTECT.value,
+    PlatformParam.GUARD.value, PlatformParam.REASON.value)
+"""Los valores **comunes a todos los tipos de entidad** (plan 016 §5.2.2): los de la 015 que no son de la geometría de
+la plataforma (``name``, ``start``, ``support``, ``supports``, ``discarded``, ``protect``, ``guard_m`` y ``reason``),
+bajo el prefijo de cada tipo (P-11). Un tipo sin cadena no tiene ``start``."""
+
 _OPTIONAL = frozenset({PlatformParam.SUPPORT, PlatformParam.MAX_SLOPE, PlatformParam.REASON,
                        PlatformParam.SUPPORTS})
 """Los valores que pueden quedarse sin valor: la superficie de apoyo («si la hay»), la pendiente
@@ -581,23 +610,31 @@ _ENTITY_SPECS: tuple[tuple[PlatformParam, str, ParamValue | None, tuple[str, ...
 )
 
 
-def _entity_family(param: PlatformParam, value_type: str, default: ParamValue | None,
-                   choices: tuple[str, ...], rfs: tuple[str, ...], source: str,
-                   label: str) -> ParamFamily:
-    """La familia ``des.platform.{e}.<param>`` (de versión) con la plantilla de clave
-    ``des.platform.e.<param>``: el rango de :data:`ENTITY_RANGES` (sin tope en un extremo
-    infinito), ADOPTADO «sin confirmar» de origen ``algorithm`` con valor por defecto, o ADOPTADO
-    sin valor que declara una persona (origen ``person``)."""
-    span = ENTITY_RANGES.get(param.value)
+def entity_family(prefix: str, param: str, value_type: str, default: ParamValue | None,
+                  choices: tuple[str, ...], rfs: tuple[str, ...], source: str, label: str, *,
+                  span: ValueRange | None = None, scope: str = "version") -> ParamFamily:
+    """La familia ``<prefix>.{e}.<param>`` de un tipo de entidad (``prefix``: ``des.platform``, ``des.stockpile``…;
+    spec 016, T02) con la plantilla de clave ``<prefix>.e.<param>``: el rango ``span`` (sin tope en un extremo
+    infinito), ADOPTADO «sin confirmar» de origen ``algorithm`` con valor por defecto, o ADOPTADO sin valor que
+    declara una persona (origen ``person``), de ``scope`` de versión (por defecto) o de proyecto. Es la
+    construcción de las 20 familias de la plataforma, sin cambiar nada de ellas."""
     unit = "-" if span is None else span.unit
     minimum = None if span is None or span.minimum == -math.inf else span.minimum
     maximum = None if span is None or span.maximum == math.inf else span.maximum
     template = ParamDef(
-        f"{PLATFORM_PREFIX}.e.{param.value}", value_type, unit, default, minimum, maximum, rfs,
+        f"{prefix}.e.{param}", value_type, unit, default, minimum, maximum, rfs,
         source, min_exclusive=span is not None and span.min_exclusive, allow_empty=default is None,
         choices=choices, kind="ADOPTADO", source_kind="person" if default is None else "algorithm",
-        scope="version", label_msgid=label)
-    return ParamFamily(f"{PLATFORM_PREFIX}.{{e}}.{param.value}", template)
+        scope=scope, label_msgid=label)
+    return ParamFamily(f"{prefix}.{{e}}.{param}", template)
+
+
+def _entity_family(param: PlatformParam, value_type: str, default: ParamValue | None,
+                   choices: tuple[str, ...], rfs: tuple[str, ...], source: str,
+                   label: str) -> ParamFamily:
+    """La familia ``des.platform.{e}.<param>`` (de versión) con el rango de :data:`ENTITY_RANGES`."""
+    return entity_family(PLATFORM_PREFIX, param.value, value_type, default, choices, rfs, source, label,
+                         span=ENTITY_RANGES.get(param.value))
 
 
 ENTITY_FAMILIES: tuple[ParamFamily, ...] = tuple(_entity_family(*spec) for spec in _ENTITY_SPECS)
@@ -636,11 +673,164 @@ def segment_code(segment: str) -> str:
     return segment.upper().replace("_", "-")
 
 
+_KEY_SEGMENT = re.compile(r"[a-z][a-z0-9_]*")
+_CODE_PREFIX = re.compile(r"[A-Z]{2,5}")
+_KEY_PARTS = 4  # des.<tipo>.<código>.<valor>
+
+
+@dataclass(frozen=True, slots=True)
+class EntityParams:
+    """Los parámetros de un **tipo de entidad** (spec 016, T02; plan 016 §5.2.2 y P-11; ADR-0027): su ``kind`` (el
+    segmento de su clave: ``des.<kind>.{e}.<valor>``; ``platform``), el principio de su código (``code_prefix``:
+    ``PLT`` de ``PLT-001``), los valores de su familia (``names``, en su orden: el último segmento de cada clave;
+    todo tipo tiene ``name``) y las ``families`` que registra ``bl`` (una por valor, con su plantilla).
+
+    Un tipo cuya familia **no** tiene ``start`` es un tipo **sin cadena** (:attr:`chained`): no parte de ninguna
+    superficie y nadie parte de la suya (``design.entities``). Un tipo mal formado es un error del programa
+    (:class:`ValueError`): el ``kind`` y los valores son segmentos de clave (``[a-z][a-z0-9_]*``), el prefijo son de
+    dos a cinco mayúsculas, no hay valores repetidos y cada familia es la ``des.<kind>.{e}.<valor>`` de uno de ellos."""
+
+    kind: str
+    code_prefix: str
+    names: tuple[str, ...]
+    families: tuple[ParamFamily, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "names", tuple(self.names))
+        object.__setattr__(self, "families", tuple(self.families))
+        if not isinstance(self.kind, str) or _KEY_SEGMENT.fullmatch(self.kind) is None:
+            raise ValueError(f"el tipo de una entidad es un segmento de clave ([a-z][a-z0-9_]*), no {self.kind!r}")
+        if not isinstance(self.code_prefix, str) or _CODE_PREFIX.fullmatch(self.code_prefix) is None:
+            raise ValueError(f"el prefijo del código de una entidad son de dos a cinco mayúsculas, no "
+                             f"{self.code_prefix!r}")
+        for name in self.names:
+            if not isinstance(name, str) or _KEY_SEGMENT.fullmatch(name) is None:
+                raise ValueError(f"un valor de {self.kind} es un segmento de clave ([a-z][a-z0-9_]*), no {name!r}")
+        if len(set(self.names)) != len(self.names):
+            raise ValueError(f"los valores de {self.kind} no se repiten: {', '.join(self.names)}")
+        if PlatformParam.NAME.value not in self.names:
+            raise ValueError(f"toda entidad tiene nombre: {self.kind} no tiene el valor «name»")
+        for family in self.families:
+            prefix, _, last = family.pattern.rpartition(".")
+            if prefix != f"{self.key_prefix}.{{e}}" or last not in self.names:
+                raise ValueError(f"la familia {family.pattern!r} no es de {self.key_prefix}.{{e}}.<valor> de "
+                                 f"{self.kind}")
+
+    @property
+    def key_prefix(self) -> str:
+        """El principio de la clave de un valor de este tipo, sin el código: ``des.platform``."""
+        return f"des.{self.kind}"
+
+    @property
+    def chained(self) -> bool:
+        """Si el tipo encadena: su familia tiene ``start`` (la superficie de la que parte). Sin él, es un tipo
+        sin cadena."""
+        return PlatformParam.START.value in self.names
+
+
+_ENTITY_PARAMS: dict[str, EntityParams] = {}
+_ENTITY_BY_PREFIX: dict[str, EntityParams] = {}
+_PERMANENT: set[str] = set()
+
+
+def register_entity_params(spec: EntityParams, *, permanent: bool = False) -> None:
+    """Registra los parámetros de un tipo de entidad (spec 016, T02). ``permanent``: es del programa y no se quita
+    (la plataforma); los demás los quita quien los registró. :class:`TypeError` si ``spec`` no es un
+    :class:`EntityParams`; :class:`ValueError` si el tipo o el prefijo de su código ya están registrados (el prefijo es
+    el tipo de un código: no se comparte). No deja nada a medias."""
+    if not isinstance(spec, EntityParams):
+        raise TypeError(f"se registra un EntityParams, no {type(spec).__name__} ({spec!r})")
+    if spec.kind in _ENTITY_PARAMS:
+        raise ValueError(f"el tipo de entidad «{spec.kind}» ya está registrado")
+    if spec.code_prefix in _ENTITY_BY_PREFIX:
+        raise ValueError(f"el prefijo de código «{spec.code_prefix}» ya es el del tipo de entidad "
+                         f"«{_ENTITY_BY_PREFIX[spec.code_prefix].kind}»")
+    _ENTITY_PARAMS[spec.kind] = spec
+    _ENTITY_BY_PREFIX[spec.code_prefix] = spec
+    if permanent:
+        _PERMANENT.add(spec.kind)
+
+
+def unregister_entity_params(kind: str) -> None:
+    """Quita los parámetros del tipo de entidad ``kind`` (spec 016, T02). :class:`ValueError` si es del programa
+    (la plataforma) o no está registrado."""
+    if kind in _PERMANENT:
+        raise ValueError(f"el tipo de entidad «{kind}» es del programa: no se quita")
+    spec = _ENTITY_PARAMS.pop(kind, None) if isinstance(kind, str) else None
+    if spec is None:
+        raise ValueError(f"el tipo de entidad {kind!r} no está registrado")
+    del _ENTITY_BY_PREFIX[spec.code_prefix]
+
+
+def registered_entity_params() -> tuple[EntityParams, ...]:
+    """Los parámetros de los tipos de entidad registrados, en el orden en que se registraron (la plataforma,
+    primero)."""
+    return tuple(_ENTITY_PARAMS.values())
+
+
+def entity_params(kind: str) -> EntityParams:
+    """Los parámetros del tipo de entidad ``kind`` (``platform``). :class:`ValueError` si no está registrado: un
+    error del programa."""
+    found = _ENTITY_PARAMS.get(kind) if isinstance(kind, str) else None
+    if found is None:
+        raise ValueError(f"el tipo de entidad {kind!r} no está registrado")
+    return found
+
+
+def _parts(code: str) -> tuple[EntityParams, str]:
+    """Los parámetros del tipo de la entidad de código ``code`` (el de su prefijo) y su segmento de clave."""
+    segment = entity_segment(code)
+    found = _ENTITY_BY_PREFIX.get(code.partition("-")[0])
+    if found is None:
+        raise ValueError(f"el código {code!r} no es de ningún tipo de entidad registrado "
+                         f"({', '.join(sorted(_ENTITY_BY_PREFIX))})")
+    return found, segment
+
+
+def entity_params_of(code: str) -> EntityParams:
+    """Los parámetros del tipo de la entidad de código ``code``: el que tiene el prefijo de su código.
+    :class:`TypeError` si no es un texto; :class:`ValueError` si no es un código de entidad o ningún tipo
+    registrado tiene su prefijo."""
+    return _parts(code)[0]
+
+
 def entity_key(code: str, param: PlatformParam | str) -> str:
-    """La clave del valor ``param`` de la plataforma de código ``code``
-    (``des.platform.plt_001.width_m``); :class:`ValueError` si el código no es de una entidad o
-    ``param`` no es un valor de una plataforma (un error del programa)."""
-    return f"{PLATFORM_PREFIX}.{entity_segment(code)}.{PlatformParam(param).value}"
+    """La clave del valor ``param`` de la entidad de código ``code`` **en la familia de su tipo**
+    (``des.platform.plt_001.width_m``, ``des.stockpile.stk_001.margin_m``): el tipo es el del prefijo de su código y
+    ``param`` ha de ser un valor de su familia (:attr:`EntityParams.names`). :class:`ValueError` si el código no es
+    de una entidad de un tipo registrado o ``param`` no es un valor de ese tipo (un error del programa)."""
+    spec, segment = _parts(code)
+    name = str(param)
+    if name not in spec.names:
+        raise ValueError(f"«{name}» no es un valor de {spec.kind} ({spec.key_prefix}.{{e}}.<valor>)")
+    return f"{spec.key_prefix}.{segment}.{name}"
+
+
+def parse_entity_key(key: object) -> tuple[str, str, str] | None:
+    """El código, el tipo y el valor de la clave de un valor de una entidad (``des.platform.plt_001.width_m`` →
+    ``("PLT-001", "platform", "width_m")``); ``None`` si no es de la forma ``des.<tipo>.<segmento>.<valor>`` de un
+    tipo registrado con un código de su prefijo y un valor de su familia."""
+    if not isinstance(key, str):
+        return None
+    parts = key.split(".")
+    if len(parts) != _KEY_PARTS or parts[0] != "des":
+        return None
+    spec = _ENTITY_PARAMS.get(parts[1])
+    if spec is None:
+        return None
+    try:
+        code = segment_code(parts[2])
+    except ValueError:
+        return None
+    if not code.startswith(f"{spec.code_prefix}-") or parts[3] not in spec.names:
+        return None
+    return code, spec.kind, parts[3]
+
+
+PLATFORM_ENTITY = EntityParams("platform", "PLT", tuple(item.value for item in PlatformParam), ENTITY_FAMILIES)
+"""Los parámetros del tipo plataforma: sus 20 valores y sus 20 familias (:data:`ENTITY_FAMILIES`), registrados al
+importar y del programa."""
+register_entity_params(PLATFORM_ENTITY, permanent=True)
 
 
 def check_entity_param(entity: str, code: str, param: PlatformParam | str, value: object, *,

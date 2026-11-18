@@ -7,7 +7,13 @@ sin fila no hay entidad; con fila y sin operación, está «sin calcular». Su e
 grafo (ADR-0025 §5), no se apunta. Python puro, sin leer el proyecto (la lectura es de la T03).
 
 - :class:`EntityKind`: el tipo (en esta spec, la plataforma; la 016 añade los suyos) y su prefijo
-  de código.
+  de código. **El registro por tipo** (spec 016, T02; plan 016 §5.1, P-1, P-3 y P-11; H-2 y H-9;
+  ADR-0031 §1): lo que el dominio sabe de cada tipo —su prefijo de código, la familia de sus parámetros, el tipo
+  de su operación, los papeles de su superficie y su tabla, el mensaje de su motivo y el de «apoyo retirado» y si
+  encadena— es un :class:`EntityType`, registrado con :func:`register_entity_type`; la plataforma es el único del
+  programa y los demás los registra quien los declara (:func:`registered_types`, :func:`entity_type`,
+  :func:`kind_of_code`). Un tipo **sin** ``start`` es un tipo **sin cadena**: ``chain_tails`` lo deja fuera, no
+  encadena y **nadie puede partir de su superficie** (``des.chainless_start``).
 - :class:`EntityState`: el estado de una entidad (RF-015-25): sin calcular, al día, obsoleta,
   descartada o «apoyo retirado».
 - :class:`EntityRecord`: lo que el dominio sabe de una entidad: su código, su nombre, su tipo, su
@@ -94,8 +100,19 @@ from ..core.versions import read as versions_read
 from ..core.versions.model import Version, VersionError
 from .grids import label_components
 from .messages import DesignError, render
-from .params import PLATFORM_PREFIX, PlatformParam, entity_key, entity_segment, segment_code
+from .params import (
+    EntityParams,
+    PlatformParam,
+    entity_key,
+    entity_params,
+    entity_params_of,
+    entity_segment,
+    register_entity_params,
+    segment_code,
+    unregister_entity_params,
+)
 from .provenance import (
+    ENTITY_ROLE,
     ENTITY_SCOPE_KEY,
     ENTITY_SURFACE_ROLE,
     OPERATION_TYPES_BY_NAME,
@@ -117,6 +134,7 @@ __all__ = [
     "EntityRecord",
     "EntityRegistry",
     "EntityState",
+    "EntityType",
     "Insertion",
     "ParamChange",
     "RetiredEntity",
@@ -133,6 +151,7 @@ __all__ = [
     "dependencies_of",
     "dependents",
     "detect_supports",
+    "entity_type",
     "find_entity",
     "format_code",
     "insert_after",
@@ -140,10 +159,13 @@ __all__ = [
     "insertion_point",
     "insertion_start",
     "kind_label",
+    "kind_of_code",
     "next_code",
     "operation_reason",
     "predecessor_of",
     "ref_code",
+    "register_entity_type",
+    "registered_types",
     "registry",
     "retired_supports",
     "runs_cells",
@@ -152,6 +174,7 @@ __all__ = [
     "strongest",
     "successor_of",
     "surface_ref",
+    "unregister_entity_type",
     "unsupportable",
 ]
 
@@ -159,19 +182,137 @@ __all__ = [
 class EntityKind(StrEnum):
     """El tipo de una entidad (RF-015-01): en esta spec, la plataforma; el acopio, el contrafuerte
     y el cuerpo apoyado son de la 016. El valor es el que va en la clave de sus parámetros
-    (``des.platform.{e}.*``); :attr:`prefix`, el principio de su código (``PLT``)."""
+    (``des.platform.{e}.*``); :attr:`prefix`, el principio de su código (``PLT``).
+
+    Lo que se sabe de cada tipo lo dice su :class:`EntityType` (:func:`entity_type`). Un tipo **registrado**
+    (:func:`register_entity_type`) que no es de la enumeración —el de una prueba (spec 016, T02)— también se lee
+    como ``EntityKind`` (``EntityKind("probe")``, siempre el mismo objeto, igual a su valor) mientras esté
+    registrado; la enumeración (``for kind in EntityKind``) es solo la de los tipos del programa."""
 
     PLATFORM = "platform"
+
+    @classmethod
+    def _missing_(cls, value: object) -> EntityKind | None:
+        """Un tipo registrado que no es de la enumeración: su miembro (el mismo cada vez; se quita con el
+        tipo); ``None`` (el :class:`ValueError` de siempre) si no está registrado."""
+        if not isinstance(value, str) or value not in _TYPES:
+            return None
+        member = str.__new__(cls, value)
+        member._name_ = value.upper()
+        member._value_ = value
+        return cls._value2member_map_.setdefault(value, member)  # type: ignore[no-any-return]
 
     @property
     def prefix(self) -> str:
         """El principio del código de una entidad de este tipo: ``PLT`` de ``PLT-001``."""
-        return _PREFIXES[self]
+        return entity_type(self).prefix
+
+    @property
+    def chained(self) -> bool:
+        """Si las entidades de este tipo encadenan (tienen ``start``) o son de un tipo sin cadena."""
+        return entity_type(self).chained
 
 
-_PREFIXES: dict[EntityKind, str] = {EntityKind.PLATFORM: "PLT"}
-_REASONS: dict[EntityKind, str] = {EntityKind.PLATFORM: "des.platform_declared_reason"}
 _CODE = re.compile(r"(?P<prefix>[A-Z]{2,5})-(?P<number>[0-9]{3,})")
+
+
+@dataclass(frozen=True, slots=True)
+class EntityType:
+    """Lo que el dominio sabe de un **tipo de entidad** (spec 016, T02; plan 016 §5.1): sus parámetros
+    (``params``: el ``kind``, el prefijo de su código y los valores de su familia ``des.<kind>.{e}.*``;
+    :class:`~design.params.EntityParams`), el tipo de su operación de versión (``op_type``: ``des.platform``), los
+    mensajes de su motivo declarado (``reason``) y de «se descartó la plataforma P1» (``removed``: la causa de «apoyo
+    retirado») y los papeles con que su operación escribe la superficie y la tabla en las que se apoya otra
+    (``surface_role`` y ``table_role``; sin ellos, el tipo no deja una superficie en la que apoyarse).
+
+    Un tipo cuya familia no tiene ``start`` es un tipo **sin cadena** (:attr:`chained`)."""
+
+    params: EntityParams
+    op_type: str
+    reason: str
+    removed: str
+    surface_role: str | None = None
+    table_role: str | None = None
+
+    @property
+    def kind(self) -> str:
+        """El tipo: el segmento ``des.<kind>.{e}.*`` de la clave de sus parámetros."""
+        return self.params.kind
+
+    @property
+    def prefix(self) -> str:
+        """El principio de su código: ``PLT`` de ``PLT-001``."""
+        return self.params.code_prefix
+
+    @property
+    def key_prefix(self) -> str:
+        """El principio de la clave de sus parámetros, sin el código: ``des.platform``."""
+        return self.params.key_prefix
+
+    @property
+    def chained(self) -> bool:
+        """Si encadena: tiene ``start``. Sin él, es un tipo sin cadena."""
+        return self.params.chained
+
+
+_TYPES: dict[str, EntityType] = {}
+_PERMANENT_TYPES: set[str] = set()
+
+
+def register_entity_type(spec: EntityType) -> None:
+    """Registra un tipo de entidad (spec 016, T02): el suyo y sus parámetros (:func:`~design.params.
+    register_entity_params`), para que el registro de las versiones, el código ``<PREFIJO>-nnn`` y la clave de sus
+    valores lo conozcan. Lo hace quien declara el tipo (la 016, al registrar sus operaciones) y, en las pruebas, la
+    prueba que lo usa, que lo quita al acabar (:func:`unregister_entity_type`). :class:`TypeError` si no es un
+    :class:`EntityType`; :class:`ValueError` si el tipo o su prefijo ya están registrados: no deja nada a medias."""
+    if not isinstance(spec, EntityType):
+        raise TypeError(f"se registra un EntityType, no {type(spec).__name__} ({spec!r})")
+    if spec.kind in _TYPES:
+        raise ValueError(f"el tipo de entidad «{spec.kind}» ya está registrado")
+    register_entity_params(spec.params)
+    _TYPES[spec.kind] = spec
+
+
+def unregister_entity_type(kind: str) -> None:
+    """Quita el tipo de entidad ``kind`` y sus parámetros. :class:`ValueError` si es del programa (la plataforma) o
+    no está registrado."""
+    if kind in _PERMANENT_TYPES:
+        raise ValueError(f"el tipo de entidad «{kind}» es del programa: no se quita")
+    if not isinstance(kind, str) or kind not in _TYPES:
+        raise ValueError(f"el tipo de entidad {kind!r} no está registrado")
+    unregister_entity_params(kind)
+    del _TYPES[kind]
+    if kind not in {member.value for member in EntityKind}:  # un miembro de la enumeración se queda
+        EntityKind._value2member_map_.pop(kind, None)
+
+
+def registered_types() -> tuple[EntityType, ...]:
+    """Los tipos de entidad registrados, en el orden en que se registraron (la plataforma, primero): el orden en
+    que el registro de una versión recorre sus familias."""
+    return tuple(_TYPES.values())
+
+
+def entity_type(kind: EntityKind | str) -> EntityType:
+    """El :class:`EntityType` de ``kind`` (un :class:`EntityKind` o su valor). :class:`ValueError` si no está
+    registrado: un error del programa."""
+    found = _TYPES.get(kind) if isinstance(kind, str) else None
+    if found is None:
+        raise ValueError(f"el tipo de entidad {kind!r} no está registrado")
+    return found
+
+
+def kind_of_code(code: str) -> EntityKind:
+    """El tipo de la entidad de código ``code``: el que tiene el prefijo de su código (``PLT-001`` → plataforma).
+    :class:`TypeError` si no es un texto; :class:`ValueError` si no es un código de entidad o ningún tipo registrado
+    tiene su prefijo."""
+    return EntityKind(entity_params_of(code).kind)
+
+
+# La plataforma, el único tipo del programa: sus parámetros los registra ``design.params`` al importarse.
+_TYPES["platform"] = EntityType(
+    entity_params("platform"), PLATFORM, "des.platform_declared_reason", "des.support_removed_platform",
+    ENTITY_SURFACE_ROLE, ENTITY_ROLE)
+_PERMANENT_TYPES.add("platform")
 
 
 class EntityState(StrEnum):
@@ -243,7 +384,8 @@ class EntityRecord:
     hasta que se eligen, y su ``state``, deducido del grafo («sin calcular» por defecto).
 
     Una entidad sin nombre se rechaza (``DesignError`` ``des.entity_name_missing``); un código que
-    no es de su tipo es un error del programa (:class:`ValueError`)."""
+    no es de su tipo, o una partida en una entidad de un tipo sin cadena (que no tiene ``start``), es un
+    error del programa (:class:`ValueError`)."""
 
     code: str
     name: str
@@ -269,7 +411,11 @@ class EntityRecord:
             raise DesignError("des.entity_name_missing", obj=f"Entidad «{self.code}»",
                               field="name", value=self.name)
         object.__setattr__(self, "name", name)
-        object.__setattr__(self, "start", _text_or_none(self.start, "la superficie de partida"))
+        start = _text_or_none(self.start, "la superficie de partida")
+        if start is not None and not kind.chained:
+            raise ValueError(f"una entidad de tipo {kind.value} no tiene partida (es de un tipo sin cadena), no "
+                             f"parte de {start!r}")
+        object.__setattr__(self, "start", start)
         object.__setattr__(self, "support", _text_or_none(self.support, "la superficie de apoyo"))
 
     @property
@@ -290,7 +436,7 @@ def declared_reason(kind: EntityKind | str, name: str, *, language: str = "es") 
     shown = name.strip()
     if not shown:
         raise ValueError("una entidad sin nombre no declara nada (RF-015-01)")
-    return render(_REASONS[EntityKind(kind)], language=language, name=shown)
+    return render(entity_type(kind).reason, language=language, name=shown)
 
 
 # --- La partida de una entidad y la cadena (spec 015, T03; RF-015-04, RF-015-05; D-2) -------------
@@ -404,11 +550,19 @@ class _Index:
 
 def _index(items: tuple[EntityRecord, ...]) -> _Index:
     """El índice de ``items``; ``DesignError`` ``des.entity_start_taken`` si dos entidades vivas
-    parten de la misma superficie (los datos rompen la regla de la cadena: no se elige una)."""
+    parten de la misma superficie (los datos rompen la regla de la cadena: no se elige una) y
+    ``des.chainless_start`` si una viva parte de la superficie de una entidad de un tipo sin cadena, en el
+    estado que esté (spec 016, T02; H-9: nadie parte de ella)."""
     by_start: dict[str, EntityRecord] = {}
+    by_code = {item.code: item for item in items}
     for item in items:
         if not _live(item) or item.start is None:
             continue
+        origin = by_code.get(ref_code(item.start) or "")
+        if origin is not None and not EntityKind(origin.kind).chained:
+            raise DesignError("des.chainless_start", obj=f"Entidad «{item.name}»",
+                              field=entity_key(item.code, PlatformParam.START), value=item.start,
+                              entity=item.name, other=origin.name)
         first = by_start.get(item.start)
         if first is not None:
             raise DesignError("des.entity_start_taken", obj=f"Entidad «{item.name}»",
@@ -472,11 +626,14 @@ def chain_tails(records: Iterable[EntityRecord]) -> tuple[EntityRecord, ...]:
     el orden en que aparece el principio de cada cadena. Sin partida o descartada, una entidad no
     está en ninguna, **salvo que otra viva parta de su superficie** (T26: lo que deja «Traer las entidades de…»
     cuando la partida de la primera era un resultado de otra versión): abre entonces la cadena, aunque aún no tenga
-    superficie de la que partir. ``DesignError`` ``des.entity_chain_cycle`` si alguna da la vuelta (no tiene
+    superficie de la que partir. **Una entidad de un tipo sin cadena** (sin ``start``: la detección de acopios, el
+    cuerpo «bajo un techo»; spec 016, T02, H-9) **no está en ninguna cadena ni es la cola de ninguna**, en el estado
+    que esté: no deja una superficie de diseño que congelar, y nadie parte de la suya (:func:`_index`:
+    ``des.chainless_start``). ``DesignError`` ``des.entity_chain_cycle`` si alguna da la vuelta (no tiene
     principio, y no se pierde) y ``des.entity_start_taken`` si dos parten de la misma superficie."""
     items = _records(records)
     index = _index(items)
-    placed = [item for item in items if _live(item)
+    placed = [item for item in items if _live(item) and EntityKind(item.kind).chained
               and (item.start is not None or index.following(item) is not None)]
     live_codes = {item.code for item in items if _live(item)}
     visited: set[str] = set()
@@ -549,11 +706,15 @@ def insertion_start(records: Iterable[EntityRecord], ref: str, *, before: bool =
     nombre ``ref`` (RF-015-05): detrás de ella (por defecto), la superficie que deja
     (``entity:<código>``); delante (``before``), la de la que parte ella, sea un nombre de
     superficie o la de otra entidad. :class:`ValueError` si ``ref`` no es de ``records``, está
-    descartada (no tiene sitio en la cadena) o, con ``before``, no parte de ninguna superficie."""
+    descartada (no tiene sitio en la cadena), es de un tipo sin cadena (no deja una superficie de la que
+    partir ni parte de ninguna: spec 016, T02) o, con ``before``, no parte de ninguna superficie."""
     target = _need(_records(records), ref)
     if not _live(target):
         raise ValueError(f"la entidad «{target.name}» está descartada: no admite que se inserte "
                          "otra junto a ella")
+    if not EntityKind(target.kind).chained:
+        raise ValueError(f"la entidad «{target.name}» es de un tipo sin cadena ({target.kind}): no admite que "
+                         "se inserte otra junto a ella")
     if not before:
         return surface_ref(target.code)
     if target.start is None:
@@ -644,11 +805,6 @@ def insert_before(records: Iterable[EntityRecord], ref: str, new: EntityRecord, 
 
 # --- El registro de las entidades de una versión (RF-015-01, RF-015-25; plan 015 §5.2.3) ----------
 
-_FAMILIES: Mapping[EntityKind, tuple[str, str]] = MappingProxyType({
-    EntityKind.PLATFORM: (PLATFORM_PREFIX, PLATFORM),
-})
-"""Por tipo de entidad: el principio de la clave de sus parámetros (``des.platform``, que sigue
-``.{e}.<valor>``) y el tipo de su operación de versión (``des.platform``, ``provenance.PLATFORM``)."""
 _SUPPORT_ROLES = (SURFACE_ROLE, SUPPORTED_ON_ROLE)
 """Los papeles con que una entidad consume la superficie de la que parte (``surface``) y las de las
 que se apoya (``supported_on``; ``provenance``): si uno de esos datos se descarta, a la entidad le
@@ -804,19 +960,23 @@ def _texts(store: ParameterStore, conn: sqlite3.Connection, version: Version, co
 def _registry(project: Any, conn: sqlite3.Connection, version: Version) -> EntityRegistry:
     store = ParameterStore(project)
     entries: list[EntityEntry] = []
-    for kind, (prefix, op_type) in _FAMILIES.items():
+    for spec in registered_types():
+        kind, prefix = EntityKind(spec.kind), spec.key_prefix
         keys = [str(key) for (key,) in conn.execute(
             _PARAMETER_ROWS, (VERSION_SCOPE, version.uid, f"{prefix}.%")).fetchall()]
         codes = {code for key in keys if (code := _segment_of(key, prefix)) is not None
-                 and code.startswith(f"{kind.prefix}-")}
+                 and code.startswith(f"{spec.prefix}-")}
         flagged = {code for key in keys if key.endswith(_DISCARDED_SUFFIX)
                    and (code := _segment_of(key, prefix)) is not None and code in codes
                    and _is_discarded(store, conn, version, code)}
-        operations = _operations(conn, version, prefix, op_type)
+        operations = _operations(conn, version, prefix, spec.op_type)
         links = _links(conn, operations.values())
         names = _texts(store, conn, version, codes, PlatformParam.NAME)
-        starts = _texts(store, conn, version, codes, PlatformParam.START)
-        supports = _texts(store, conn, version, codes, PlatformParam.SUPPORT)
+        # Un tipo sin cadena no tiene ``start``; uno sin ``support``, tampoco (no hay fila que leer).
+        starts = (_texts(store, conn, version, codes, PlatformParam.START) if spec.chained
+                  else dict.fromkeys(codes))
+        supports = (_texts(store, conn, version, codes, PlatformParam.SUPPORT)
+                    if PlatformParam.SUPPORT.value in spec.params.names else dict.fromkeys(codes))
 
         for code in sorted(codes, key=_number):
             name = names[code]
@@ -1243,8 +1403,8 @@ def _named_parameters(conn: sqlite3.Connection, listed: EntityRegistry, causes: 
         key = keys.get(uid)
         if key is None:
             continue
-        for prefix, _op_type in _FAMILIES.values():
-            code = _segment_of(key, prefix)
+        for spec in registered_types():
+            code = _segment_of(key, spec.key_prefix)
             item = None if code is None else listed.get(code)
             label = parameter_label(key, language)
             if code is None or item is None or label is None:
@@ -1255,9 +1415,6 @@ def _named_parameters(conn: sqlite3.Connection, listed: EntityRegistry, causes: 
     return found
 
 
-_SUPPORT_REMOVED_KIND: Mapping[EntityKind, str] = MappingProxyType({
-    EntityKind.PLATFORM: "des.support_removed_platform"})
-"""Por tipo de entidad, el mensaje de la causa de «apoyo retirado» (``se descartó la plataforma P1``)."""
 _DATASETS = "SELECT uid, name, operation_uid FROM gb_dataset WHERE uid IN ({marks})"
 
 
@@ -1274,7 +1431,7 @@ def _support_removed(conn: sqlite3.Connection, listed: EntityRegistry, retired: 
     for uid in uids:
         name, writer = found.get(uid, (uid, ""))
         owner = by_operation.get(writer)
-        text = (render(_SUPPORT_REMOVED_KIND[EntityKind(owner.record.kind)], language=language,
+        text = (render(entity_type(owner.record.kind).removed, language=language,
                        name=owner.record.name) if owner is not None
                 else render("des.support_removed_dataset", language=language, name=name))
         if text not in parts:
@@ -1402,7 +1559,7 @@ class RetiredSupport:
         what: list[str] = []
         for item in self.retired:
             text = (render("des.support_removed_dataset", language=language, name=item.name) if item.code is None
-                    else render(_SUPPORT_REMOVED_KIND[EntityKind.PLATFORM], language=language, name=item.name))
+                    else render(entity_type(kind_of_code(item.code)).removed, language=language, name=item.name))
             if text not in what:
                 what.append(text)
         return render("des.support_removed", language=language, what="; ".join(what))

@@ -252,12 +252,11 @@ from .model import (
 )
 from .params import (
     PLATFORM_PARAMS,
-    PLATFORM_PREFIX,
     PlatformParam,
     check_entity_param,
     entity_key,
     entity_segment,
-    segment_code,
+    parse_entity_key,
 )
 from .platform import (
     Footprint,
@@ -1255,19 +1254,17 @@ _RULED_PARAMS = frozenset({PlatformParam.NAME, PlatformParam.LAYER, PlatformPara
 opciones de cada valor, y los demás parámetros, los comprueba su definición (``core.params.ParamDef``)."""
 _TEXT_RULED = frozenset({PlatformParam.NAME, PlatformParam.LAYER, PlatformParam.FEATURE, PlatformParam.START,
                          PlatformParam.SUPPORT, PlatformParam.MODE})
-_KEY_PARTS = 4
 
 
 def _entity_parameter(key: str) -> tuple[str, PlatformParam] | None:
     """El código de la entidad y el parámetro de la clave ``des.platform.{e}.<valor>``; ``None`` si la clave no es
-    de esa forma (un segmento que no es el de un código de entidad o un valor que no es de una plataforma)."""
-    parts = key.split(".")
-    if len(parts) != _KEY_PARTS or f"{parts[0]}.{parts[1]}" != PLATFORM_PREFIX:
+    de esa forma (otro tipo de entidad, un segmento que no es el de un código de plataforma o un valor que no es
+    de una plataforma). Las reglas de cambiar un parámetro (:func:`check_parameter_change`) son, hasta que otro
+    tipo las pida, las de la plataforma (``parse_entity_key`` da el tipo de cualquier clave de entidad)."""
+    found = parse_entity_key(key)
+    if found is None or found[1] != "platform":
         return None
-    try:
-        return segment_code(parts[2]), PlatformParam(parts[3])
-    except ValueError:
-        return None
+    return found[0], PlatformParam(found[2])
 
 
 def _has_type(param: PlatformParam, value: object) -> bool:
@@ -1675,44 +1672,68 @@ versión."""
 _SUPPORT_DATA = (
     "SELECT io.operation_uid, io.role, d.name, d.locator FROM gb_operation_io AS io "
     "JOIN gb_dataset AS d ON d.uid = io.item_uid WHERE io.direction = 'out' AND io.item_kind = ? "
-    "AND io.role IN (?, ?) AND io.operation_uid IN ({marks})")
+    "AND io.role IN ({roles}) AND io.operation_uid IN ({marks})")
 
 
 @dataclass(frozen=True, slots=True)
 class EntitySurface:
     """Lo que hace falta de una entidad viva y calculada para apoyar algo en ella (RF-015-15, plan 015 A6):
     su ``code``, el nombre del dato de su superficie (``surface``, ``des_psf_``), el de su tabla (``table``,
-    ``des_epr_``) y la ubicación de esa tabla (``locator``) con su huella."""
+    ``des_epr_``) y la ubicación de esa tabla (``locator``) con su huella; y, desde la 016 (T02), su tipo
+    (``kind``) y el uid de su operación vigente (``operation_uid``), con cuyos papeles se leyó."""
 
     code: str
     surface: str
     table: str
     locator: str
+    kind: entities.EntityKind = entities.EntityKind.PLATFORM
+    operation_uid: str = ""
 
 
 def entity_surfaces(conn: sqlite3.Connection, registry: EntityRegistry, *,
-                    skip: Iterable[str] = ()) -> dict[str, EntitySurface]:
+                    skip: Iterable[str] = (), kinds: Iterable[entities.EntityKind | str] | None = None
+                    ) -> dict[str, EntitySurface]:
     """Las entidades de ``registry`` en las que se puede apoyar algo (:data:`_SUPPORTABLE`), salvo las de
     ``skip``, cada una con su superficie y su tabla vigentes (las que escribió su operación vigente), por
-    código. Una consulta por cada 400 entidades. Solo lee."""
+    código (tipo y número). Una consulta por cada 400 entidades. Solo lee.
+
+    **Por tipo** (spec 016, T02; plan 016 §2.1): cada entidad se lee con los **papeles de su tipo**
+    (:attr:`~.entities.EntityType.surface_role` y ``table_role``: los de la plataforma son ``entity_surface`` y
+    ``entity``; un tipo que no deja una superficie en la que apoyarse, sin papeles, no sale) y por el uid de su
+    operación vigente; ``kinds`` (los tipos o sus valores) deja solo los de esos tipos (:class:`ValueError` si
+    alguno no está registrado). Dos entidades de **una misma operación** salen las dos (cada una con su
+    ``operation_uid``): el dato se busca por la operación, no se queda con el de la última."""
     omitted = set(skip)
-    live = {entry.operation_uid: entry.record.code for entry in registry
-            if entry.operation_uid is not None and entry.record.state in _SUPPORTABLE
-            and entry.record.code not in omitted}
+    wanted = None if kinds is None else {entities.EntityKind(kind) for kind in kinds}
+    live: dict[str, list[tuple[str, entities.EntityKind]]] = {}
+    for entry in registry:
+        kind = entities.EntityKind(entry.record.kind)
+        if (entry.operation_uid is None or entry.record.state not in _SUPPORTABLE
+                or entry.record.code in omitted or (wanted is not None and kind not in wanted)
+                or entities.entity_type(kind).surface_role is None):
+            continue
+        live.setdefault(entry.operation_uid, []).append((entry.record.code, kind))
+    roles = sorted({role for owners in live.values() for _code, kind in owners
+                    for role in (entities.entity_type(kind).surface_role, entities.entity_type(kind).table_role)
+                    if role is not None})
     found: dict[str, dict[str, tuple[str, str]]] = {}
     uids = sorted(live)
     for first in range(0, len(uids), 400):
         part = uids[first:first + 400]
-        sql = _SUPPORT_DATA.format(marks=", ".join("?" for _ in part))
-        for uid, role, name, locator in conn.execute(
-                sql, (DATASET, provenance.ENTITY_SURFACE_ROLE, provenance.ENTITY_ROLE, *part)):
-            found.setdefault(live[str(uid)], {})[str(role)] = (str(name), str(locator))
+        sql = _SUPPORT_DATA.format(roles=", ".join("?" for _ in roles), marks=", ".join("?" for _ in part))
+        for uid, role, name, locator in conn.execute(sql, (DATASET, *roles, *part)):
+            for code, _kind in live[str(uid)]:
+                found.setdefault(code, {})[str(role)] = (str(name), str(locator))
+    by_code = {code: (uid, kind) for uid, owners in live.items() for code, kind in owners}
     result: dict[str, EntitySurface] = {}
     for code in sorted(found, key=entities.code_order):
         data = found[code]
-        surface, table = data.get(provenance.ENTITY_SURFACE_ROLE), data.get(provenance.ENTITY_ROLE)
+        uid, kind = by_code[code]
+        spec = entities.entity_type(kind)
+        surface = data.get(spec.surface_role) if spec.surface_role is not None else None
+        table = data.get(spec.table_role) if spec.table_role is not None else None
         if surface is not None and table is not None:
-            result[code] = EntitySurface(code, surface[0], table[0], table[1])
+            result[code] = EntitySurface(code, surface[0], table[0], table[1], kind, uid)
     return result
 
 

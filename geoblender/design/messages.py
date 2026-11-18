@@ -32,7 +32,9 @@ superficies y «explotación hasta la final»), ``des.floor_*``, ``des.conserve_
 ``des.corridor_*``, ``des.edge_*``, ``des.fill_only_*`` y ``des.refit_*``. Los de las entidades de
 diseño de la 015 (T02, plan 015 §5.1) van detrás de los de la 014: ``des.entity_*`` (el marco
 común: nombre, parámetros, partida, falta de dato, lo que no se mueve) y ``des.platform_*`` (la
-plataforma: su geometría, su rasante, su contrapendiente y lo que deja fuera de ella). Un campo
+plataforma: su geometría, su rasante, su contrapendiente y lo que deja fuera de ella). Los de la 016
+(plan 016 §5.1, T02) empiezan por ``des.chainless_start`` (nadie parte de la superficie de una entidad de un
+tipo sin cadena; va aparte de ``des.entity_*``, que es la familia cerrada de la 015). Un campo
 que es un texto de una lista cerrada que la persona ve (el papel de una superficie, el tipo de
 geometría de una capa) llega ya en el idioma de quien lo llama: ``render`` no lo traduce; por
 eso, lo que cambia con el idioma va en otro código (las partes que vacían el recinto, notas detrás
@@ -1248,6 +1250,17 @@ CATALOG: tuple[Message, ...] = (
         "La cadena de entidades {chain} se cierra sobre sí misma: una entidad no puede partir, "
         "directa ni indirectamente, de su propia superficie; cambie la superficie de partida de "
         "una de ellas; no se calcula nada.",
+    ),
+    Message(
+        "des.chainless_start",
+        "Entity «{entity}» cannot start from «{value}»: «{other}» does not leave a surface to "
+        "start from (it only keeps its own data) and no entity can start from it; choose the "
+        "terrain, a design surface or the surface of an entity that changes the surface; nothing "
+        "is calculated.",
+        "La entidad «{entity}» no puede partir de «{value}»: «{other}» no deja una superficie de "
+        "la que partir (solo guarda sus propios datos) y ninguna entidad puede partir de ella; "
+        "elija el terreno, una superficie de diseño o la superficie de una entidad que cambie la "
+        "superficie; no se calcula nada.",
     ),
     Message(
         "des.entity_insert_reason",
