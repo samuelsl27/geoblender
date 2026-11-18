@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """La detección de acopios: el plano de base robusto y su límite de inclinación (A2, spec 016, T06; RF-016-02,
-RF-016-04, RF-016-05, RF-016-07), y la huella iterativa, sus avisos y el reparto de las celdas comunes (A3, T07;
-RF-016-02, RF-016-04, RF-016-05, RF-016-06); plan 016 A2, A3, §5.2.2, §7.1, §7.3; D-3, D-16, D-17, D-18. Las demás
-piezas (los candidatos, las bases, los espesores y el terreno sin acopios) las añaden T08 y T09 a este módulo.
+RF-016-04, RF-016-05, RF-016-07), la huella iterativa, sus avisos y el reparto de las celdas comunes (A3, T07;
+RF-016-02, RF-016-04, RF-016-05, RF-016-06) y los candidatos sin marca con la regla de identidad al repetir (A4, T08;
+RF-016-08, RF-016-10); plan 016 A2, A3, A4, §5.2.2, §7.1, §7.3; D-3, D-10, D-16, D-17, D-18, D-23. Las demás piezas (las
+bases, los espesores y el terreno sin acopios) las añade T09 a este módulo.
 
 **A2.** Sobre la ventana de una marca (una rejilla pequeña del proyecto, en coordenadas absolutas float64), con ``H`` la
 huella (al principio, las celdas de la marca):
@@ -75,6 +76,34 @@ de la 011 tienen las mismas celdas solo si leen el mismo):
   centro de las celdas comunes): el aviso de RF-016-06 (``des.stockpile_shared_cells``). Las máscaras de todas las marcas
   son de **la misma ventana** (quien tiene una ventana por marca calcula las que se tocan en una ventana común).
 
+**A4.** Los candidatos **sin marca** (RF-016-08, D-10), sobre la superficie ``z`` de la rejilla entera:
+
+- :func:`candidates_steps` (y :func:`find_candidates`, de una vez) — en el **perímetro de actuación**, las celdas con
+  ``z − apertura(z, ⌀ = open_diameter_m) > min_height_m`` (estrictamente: :func:`design.morphology.opening_steps` con
+  el disco exacto de A1; una celda sin dato no cuenta), sus componentes 4-conexas (:func:`design.grids.label_components`)
+  y el **filtro** de cada zona: no es candidata si **contiene o se solapa con** alguna celda de ``marked`` (las celdas
+  de las marcas: quien llama da la unión de sus huellas, y de las propias marcas si alguna se rechazó, para que no
+  vuelva como candidata: decisión de la sesión principal sobre «sin marca», 18/11/2026), si su área (celdas por el área de
+  celda, m²) queda fuera de ``[min_area_m2, max_area_m2]`` (**ambos incluidos**). A las que pasan, A2 y A3 **como si la
+  zona fuera una marca** (:func:`grow_footprint`, con el margen de ``footprint``) en **su ventana de trabajo** (A0:
+  :func:`mark_window`, la caja de la zona ampliada por el margen más la corona y dos celdas, recortada a la rejilla: lo
+  mismo que sobre la rejilla entera, sin pagarla por candidato). **No sale ningún candidato sin filtrar:** lo que el
+  filtro descarta **solo se cuenta** (``on_marks``, ``too_small``, ``too_large``; nunca una lista), y una zona que pasa
+  los filtros pero cuyo plano o huella no se pueden formar (:class:`StockpileRejected`: A2 y A3 rechazan una marca así)
+  se cuenta en ``rejected`` y no sale. Los contadores no se solapan: ``zones`` = candidatos + ``on_marks`` +
+  ``too_small`` + ``too_large`` + ``rejected`` (una zona con marca no es «pequeña» aunque lo sea). Salen en el orden de
+  la primera celda de su zona recorriendo la rejilla fila a fila. Los candidatos entre sí y con las marcas **no se
+  reparten** celdas (la spec no lo pide): un candidato cuya huella llegue a la de una marca la solapa. **Los bordes de
+  la rejilla:** lo de fuera no cuenta en la apertura (T05, decisión 4: el disco se recorta), así que un montón que
+  **toca** el borde de la rejilla puede quedar entero bajo el disco recortado y no dar zona (o solo trozos), y cerca del
+  borde la apertura se aparta del plano hasta unos decímetros; quien lo quiera de otro modo rellena ``z`` antes de llamar.
+- :func:`carry_decisions` — la **regla de identidad al repetir** (RF-016-10, D-23): un candidato nuevo conserva la
+  decisión (convertido o descartado, con su motivo) de uno anterior si sus huellas comparten **más de la mitad del área
+  de cada una** (estrictamente: justo la mitad no basta; con las celdas de una misma rejilla, las celdas valen
+  áreas iguales y se cuentan con enteros). Una decisión se conserva **una sola vez**: ante varias parejas gana la que
+  más celdas comparte (a igualdad, el candidato nuevo y después el anterior de índice menor). Función pura sobre las
+  celdas de cada huella en la rejilla entera (:attr:`Candidate.cells`).
+
 Ninguna entrada se modifica. Python puro (nivel 8), con numpy.
 """
 
@@ -91,15 +120,20 @@ import numpy as np
 from ..core.project.model import Progress
 from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
-from .grids import label_components, nearest_value_steps
+from .grids import label_components, label_components_steps, nearest_value_steps
 from .messages import lookup
-from .morphology import dilate, fill_holes
+from .morphology import dilate, fill_holes, opening_steps
 from .params import STOCKPILE_RANGES, StockpileParam
 from .pipeline import forward
+from .platform import work_window
 from .preview import Notice
+from .seeds import pace_progress
 
 __all__ = [
     "BasePlane",
+    "Candidate",
+    "CandidateParams",
+    "Candidates",
     "Claim",
     "Footprint",
     "FootprintCut",
@@ -110,14 +144,19 @@ __all__ = [
     "SiteMessage",
     "StockpileRejected",
     "base_plane",
+    "candidates_steps",
+    "carry_decisions",
     "cell_slope_deg",
     "crown_of",
+    "find_candidates",
     "fit_plane",
     "footprint_above",
     "footprint_volume",
     "grow_footprint",
+    "mark_window",
     "share_cells",
     "share_cells_steps",
+    "window_grid",
 ]
 
 _NO_CROWN_CELLS = "des.stockpile_no_crown_cells"
@@ -722,3 +761,259 @@ def _share_run(prepared: tuple[tuple[Claim, ...], np.ndarray, Grid, float], budg
                 pairs.append(SharedCells(claims[k].name, claims[later].name, int(common.sum()),
                                          float(common.sum()) * grid.cell_area, place[0], place[1]))
     yield Progress("share", 1, 1, "Celdas comunes repartidas", result=Shared(tuple(results), tuple(pairs)))
+
+
+# --- A4: los candidatos sin marca -------------------------------------------------------------------------------------
+
+
+def window_grid(grid: Grid, window: tuple[slice, slice]) -> Grid:
+    """La rejilla de la ventana ``window`` (filas y columnas de ``grid``) de ``grid``: la esquina noroeste de su primera
+    celda, los mismos pasos. ``ValueError`` si la ventana está vacía o sale de la rejilla."""
+    rows, cols = window
+    if not (0 <= rows.start < rows.stop <= grid.nrows and 0 <= cols.start < cols.stop <= grid.ncols):
+        raise ValueError(f"la ventana ({rows}, {cols}) no cabe en una rejilla de {grid.shape} celdas")
+    return Grid(grid.west + cols.start * grid.dx, grid.north - rows.start * grid.dy, grid.dx, grid.dy,
+                cols.stop - cols.start, rows.stop - rows.start)
+
+
+def _box_window(rows: slice, cols: slice, grid: Grid, params: FootprintParams) -> tuple[slice, slice]:
+    """La ventana de trabajo de la caja ``rows`` × ``cols`` (A0): el alcance de A2 y A3 es el margen más la corona
+    exterior (la huella no sale de la marca ampliada y la corona, de la huella dilatada), y ``work_window`` añade las
+    dos celdas de la pendiente."""
+    return work_window(rows, cols, params.margin_m + params.plane.crown_outer_m, grid)
+
+
+def mark_window(mark: np.ndarray, grid: Grid, params: FootprintParams) -> tuple[slice, slice]:
+    """**A0** de un acopio (plan 016 §5.4): la ventana de la rejilla ``grid`` en la que calcular A2 y A3 de la marca
+    ``mark`` (máscara de ``grid``) sin cambiar un bit del resultado frente a la rejilla entera: la caja de la marca
+    ampliada por el margen y la corona exterior de ``params`` y por dos celdas (la pendiente de la corona lee a sus
+    vecinas), recortada a la rejilla (:func:`design.platform.work_window`). ``ValueError`` si la marca no tiene celdas o
+    no es de la forma de ``grid``."""
+    marked = _mask(mark, grid.shape, "la marca")
+    rows, cols = np.flatnonzero(marked.any(axis=1)), np.flatnonzero(marked.any(axis=0))
+    if rows.size == 0:
+        raise ValueError("la marca no tiene ninguna celda")
+    return _box_window(slice(int(rows[0]), int(rows[-1]) + 1), slice(int(cols[0]), int(cols[-1]) + 1), grid, params)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateParams:
+    """Los umbrales de A4 (plan 016 §5.2.2, ``stockpile``): el diámetro del disco de la apertura (``open_diameter_m``,
+    m), la altura mínima que sobresale (``min_height_m``, m), el área mínima y máxima de una zona (``min_area_m2`` y
+    ``max_area_m2``, m²; ambas incluidas) y los de A2 y A3 con que se forma el acopio de cada zona (``footprint``).
+    **Sin valor por defecto**: los pone quien resuelve los parámetros. Un valor fuera de su rango
+    (``STOCKPILE_RANGES``) es un ``ValueError`` que lo nombra, y también un área mínima mayor que la máxima."""
+
+    open_diameter_m: float
+    min_height_m: float
+    min_area_m2: float
+    max_area_m2: float
+    footprint: FootprintParams
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.footprint, FootprintParams):
+            raise TypeError(f"los umbrales de la huella de un candidato son FootprintParams, no {self.footprint!r}")
+        for param in (StockpileParam.OPEN_DIAMETER, StockpileParam.MIN_HEIGHT, StockpileParam.MIN_AREA,
+                      StockpileParam.MAX_AREA):
+            object.__setattr__(self, param.value, _check_value(param.value, getattr(self, param.value)))
+        if self.min_area_m2 > self.max_area_m2:
+            raise ValueError(f"«{StockpileParam.MIN_AREA.value}» ({self.min_area_m2}) no puede pasar de "
+                             f"«{StockpileParam.MAX_AREA.value}» ({self.max_area_m2})")
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Candidate:
+    """Un candidato sin marca (A4): su ``zone`` (la componente que lo da, máscara de su ventana), su ``footprint`` (A2 y
+    A3 sobre la zona como si fuera una marca: huella, plano de base, volumen y notas, de la **ventana**), su
+    ``window`` (filas y columnas de la rejilla entera, de la ventana de trabajo), la rejilla de esa ventana
+    (``grid``) y las celdas de su huella en la rejilla entera (``cells``: ``fila · columnas + columna``, ``int64``,
+    ordenadas y sin repetir), que usa :func:`carry_decisions`."""
+
+    zone: np.ndarray
+    footprint: Footprint
+    window: tuple[slice, slice]
+    grid: Grid
+    cells: np.ndarray
+
+    @property
+    def centre(self) -> tuple[float, float]:
+        """El centro de su huella (la media de los centros de celda, m absolutos): el lugar al que «ir»."""
+        x, y = self.grid.centers()
+        return _centre(self.footprint.mask, x, y)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Candidates:
+    """Los candidatos sin marca de una superficie (A4): la ``grid`` entera, los ``items`` que pasan los filtros y se
+    pudieron formar, en el orden de lectura de su zona, y los **contadores** de lo demás, que nunca se lista: las
+    ``zones`` que salieron de la apertura antes de filtrar, las que tienen marca (``on_marks``), las que no llegan al
+    área mínima (``too_small``) o pasan de la máxima (``too_large``) y las que pasan los filtros pero A2 o A3 rechazan
+    (``rejected``). No se solapan: ``zones`` es la suma de los candidatos y de los cuatro contadores."""
+
+    grid: Grid
+    items: tuple[Candidate, ...]
+    zones: int
+    on_marks: int
+    too_small: int
+    too_large: int
+    rejected: int
+
+    @property
+    def filtered(self) -> int:
+        """Las zonas que descartó el filtro del área (el informe las cuenta, sin listarlas)."""
+        return self.too_small + self.too_large
+
+
+_CandidateInputs = tuple[np.ndarray, Grid, np.ndarray, np.ndarray, CandidateParams]
+
+
+def _candidate_inputs(z: object, grid: Grid, perimeter: object, marked: object | None,
+                      params: object) -> _CandidateInputs:
+    """Las entradas de A4 comprobadas (``ValueError`` o ``TypeError`` que nombra la que falla): la superficie, la
+    rejilla de celdas cuadradas, el perímetro y las celdas con marca (ninguna si ``marked`` es ``None``)."""
+    if not isinstance(params, CandidateParams):
+        raise TypeError(f"los parámetros de A4 son CandidateParams, no {params!r}")
+    if grid.dx != grid.dy:
+        raise ValueError(f"la rejilla de los acopios es la del proyecto, de celdas cuadradas, no {grid.dx} × {grid.dy}")
+    heights = np.asarray(z, dtype=np.float64)
+    if heights.shape != grid.shape:
+        raise ValueError(f"la superficie tiene {heights.shape} celdas y la rejilla {grid.shape}")
+    region = _mask(perimeter, grid.shape, "el perímetro")
+    taken = np.zeros(grid.shape, dtype=bool) if marked is None else _mask(marked, grid.shape, "las celdas con marca")
+    return heights, grid, region, taken, params
+
+
+def candidates_steps(z: np.ndarray, grid: Grid, perimeter: np.ndarray, marked: np.ndarray | None,
+                     params: CandidateParams, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """A4 por pasos de ``budget_s`` como mucho (la apertura por bandas, las zonas y un candidato por unidad): el último
+    ``Progress`` (fase ``candidates``) lleva los :class:`Candidates` de la superficie ``z`` de la rejilla ``grid`` (el
+    ``surface`` del plan 016 §5.3.1, con la rejilla que el plan da por supuesta), dentro de ``perimeter`` y sin las
+    zonas que contienen o se solapan con las celdas de ``marked`` (ver el módulo; ``None``: ninguna marca). Todo lo que
+    se rechaza de la entrada (formas, máscaras que no son booleanas, celdas no cuadradas, infinitos, parámetros) sale
+    **en la llamada**. Ninguna entrada se modifica; cerrar el generador a mitad no deja nada."""
+    prepared = _candidate_inputs(z, grid, perimeter, marked, params)
+    opening = opening_steps(prepared[0], params.open_diameter_m / 2.0, grid.dx, budget_s=budget_s)
+    return _candidates_run(prepared, opening, budget_s)
+
+
+def find_candidates(z: np.ndarray, grid: Grid, perimeter: np.ndarray, marked: np.ndarray | None,
+                    params: CandidateParams) -> Candidates:
+    """:func:`candidates_steps` de una vez (ver el módulo)."""
+    last: Progress | None = None
+    for last in candidates_steps(z, grid, perimeter, marked, params):
+        pass
+    if last is None or not isinstance(last.result, Candidates):  # inalcanzable: el último paso lo lleva
+        raise RuntimeError("la búsqueda de candidatos no dio resultado")
+    return last.result
+
+
+def _candidates_run(prepared: _CandidateInputs, opening: Iterator[Progress], budget_s: float
+                    ) -> Generator[Progress, None, None]:
+    """Los pasos de :func:`candidates_steps`: la apertura, las zonas y un candidato por unidad."""
+    heights, grid, region, taken, params = prepared
+    opened = yield from forward(opening)
+    with np.errstate(invalid="ignore"):
+        above = region & ((heights - opened) > params.min_height_m)
+    del opened
+    yield Progress("candidates", 0, 1, "Buscando las zonas que sobresalen…")
+    labels = yield from forward(label_components_steps(above, budget_s=budget_s))
+    found = yield from forward(pace_progress(
+        _candidate_units(heights, grid, taken, labels, params), budget_s, phase="candidates",
+        running="Formando los candidatos…", finished="Candidatos formados"))
+    yield Progress("candidates", 1, 1, "Candidatos encontrados", result=found)
+
+
+def _candidate_units(heights: np.ndarray, grid: Grid, taken: np.ndarray, labels: object, params: CandidateParams
+                     ) -> Generator[None, None, Candidates]:
+    """Las unidades de A4 tras etiquetar las zonas: el filtro y, por unidad, A2 y A3 de cada zona que pasa."""
+    count = labels.count  # type: ignore[attr-defined]
+    cell_ids = labels.grid  # type: ignore[attr-defined]
+    area = labels.sizes * grid.cell_area  # type: ignore[attr-defined]
+    on_marks = np.bincount(cell_ids[taken], minlength=count + 1)[1:] > 0
+    free = ~on_marks
+    too_small = free & (area < params.min_area_m2)
+    too_large = free & (area > params.max_area_m2)
+    wanted = np.flatnonzero(free & ~too_small & ~too_large) + 1  # las etiquetas de los candidatos
+    yield
+    # Las celdas de cada etiqueta que pasa, agrupadas por etiqueta (orden estable: el de lectura dentro de cada una).
+    flat = cell_ids.ravel()
+    selected = np.zeros(count + 1, dtype=bool)
+    selected[wanted] = True
+    cells = np.flatnonzero(selected[flat])
+    tags = flat[cells]
+    order = np.argsort(tags, kind="stable")
+    cells, tags = cells[order], tags[order]
+    first = np.searchsorted(tags, wanted, side="left")
+    last = np.searchsorted(tags, wanted, side="right")
+    yield
+    items: list[Candidate] = []
+    rejected = 0
+    for label, begin, end in zip(wanted.tolist(), first.tolist(), last.tolist(), strict=True):
+        rows, cols = np.divmod(cells[begin:end], grid.ncols)
+        window = _box_window(slice(int(rows.min()), int(rows.max()) + 1), slice(int(cols.min()), int(cols.max()) + 1),
+                             grid, params.footprint)
+        zone = cell_ids[window] == label
+        place = window_grid(grid, window)
+        try:
+            footprint = grow_footprint(heights[window], zone, place, params.footprint)
+        except StockpileRejected:
+            rejected += 1
+        else:
+            inside_rows, inside_cols = np.nonzero(footprint.mask)
+            keys = (inside_rows.astype(np.int64) + window[0].start) * grid.ncols + (inside_cols + window[1].start)
+            items.append(Candidate(zone, footprint, window, place, keys))
+        yield
+    return Candidates(grid, tuple(items), count, int(on_marks.sum()), int(too_small.sum()), int(too_large.sum()),
+                      rejected)
+
+
+# --- A4: la regla de identidad al repetir (D-23) ---------------------------------------------------------------------
+
+
+def _footprint_cells(value: object, what: str) -> np.ndarray:
+    """Las celdas de una huella como ``int64`` ordenadas y sin repetir; ``ValueError`` si no son un array de 1
+    dimensión de enteros."""
+    found = np.asarray(value)
+    if found.ndim != 1 or found.dtype.kind not in "iu":
+        raise ValueError(f"{what}: las celdas de una huella son un array de 1 dimensión de enteros, no un array "
+                         f"{found.dtype} de {found.ndim}")
+    return np.unique(found.astype(np.int64, copy=False))
+
+
+def carry_decisions(new: Sequence[np.ndarray], previous: Sequence[np.ndarray]) -> tuple[int | None, ...]:
+    """La regla de identidad al repetir una detección (RF-016-10, D-23; ver el módulo): para cada huella de ``new`` (las
+    celdas de un candidato nuevo en la rejilla entera, como :attr:`Candidate.cells`), el índice en ``previous`` del
+    candidato anterior cuya **decisión conserva**, o ``None`` si hay que volver a preguntar. Conserva la de aquel con el
+    que comparte **más de la mitad del área de cada uno** (más celdas comunes que la mitad de las de cada huella:
+    enteros, sin redondeos); si varios cumplen, gana la pareja con más celdas comunes (a igualdad, el candidato nuevo
+    y después el anterior de índice menor) y cada decisión anterior se conserva **una sola vez**. Función pura: no
+    lee más que las celdas. ``ValueError`` si una huella no es un array de 1 dimensión de enteros."""
+    fresh = [_footprint_cells(cells, f"la huella nueva {k}") for k, cells in enumerate(new)]
+    old = [_footprint_cells(cells, f"la huella anterior {k}") for k, cells in enumerate(previous)]
+    kept: list[int | None] = [None] * len(fresh)
+    if not fresh or not old:
+        return tuple(kept)
+    where = np.concatenate(old)
+    owners = np.concatenate([np.full(cells.size, k, dtype=np.int64) for k, cells in enumerate(old)])
+    order = np.argsort(where, kind="stable")
+    where, owners = where[order], owners[order]
+    old_sizes = np.array([cells.size for cells in old], dtype=np.int64)
+    pairs: list[tuple[int, int, int]] = []
+    for i, cells in enumerate(fresh):
+        if cells.size == 0 or where.size == 0:
+            continue
+        low = np.searchsorted(where, cells, side="left")
+        counts = np.searchsorted(where, cells, side="right") - low
+        total = int(counts.sum())
+        if total == 0:
+            continue
+        starts = np.repeat(low, counts) + np.arange(total) - np.repeat(np.cumsum(counts) - counts, counts)
+        shared = np.bincount(owners[starts], minlength=len(old))
+        for j in np.flatnonzero((2 * shared > cells.size) & (2 * shared > old_sizes)).tolist():
+            pairs.append((-int(shared[j]), i, j))
+    used: set[int] = set()
+    for _negative, i, j in sorted(pairs):
+        if kept[i] is None and j not in used:
+            kept[i] = j
+            used.add(j)
+    return tuple(kept)
