@@ -1615,6 +1615,20 @@ CATALOG: tuple[Message, ...] = (
         "máscaras de {version}: se compilan de nuevo con la restricción que declara.",
         "note",
     ),
+    # El nombre de una operación de la versión que no lo lleva en sus ajustes (la capa de entidades, la declaración): lo que
+    # las notas de lo que queda obsoleto enseñan en vez del identificador del tipo («des.entity_layer», spec 015, T51, H3-1).
+    Message(
+        "des.entity_layer_name",
+        "the entity layer of {version}",
+        "la capa de entidades de {version}",
+        "note",
+    ),
+    Message(
+        "des.entity_declaration_name",
+        "the declared restrictions of {version}",
+        "las restricciones declaradas de {version}",
+        "note",
+    ),
     Message(
         "des.entity_obsolete_consumers",
         "With them, {operations} operations that used the masks will be stale: {items}; Project ▸ "

@@ -271,7 +271,8 @@ class ListsTest(unittest.TestCase):
 @dataclass(frozen=True, slots=True)
 class Cascaded:
     """Una cascada: lo que tardó de cambiar la primera a que no quedara nada obsoleto, las operaciones que rehízo,
-    las vueltas de «Recalcular lo obsoleto» que hicieron falta y las plataformas que rehízo."""
+    las pasadas que dio la orden de «Recalcular lo obsoleto» (**una sola orden**, spec 015, T51) y las plataformas
+    que rehízo."""
 
     seconds: float
     units: int
@@ -320,8 +321,10 @@ class ChainTest(unittest.TestCase):
                 f"SELECT op_type FROM gb_operation WHERE uid IN ({marks})", tuple(result.operations))}
 
     def cascade(self, flip: int) -> Cascaded:
-        """Cambia la cota de la primera (``flip`` par: media cota más abajo; impar: la de antes) y lleva «Recalcular
-        lo obsoleto» hasta que no queda nada obsoleto: lo que tardó."""
+        """Cambia la cota de la primera (``flip`` par: media cota más abajo; impar: la de antes) y da **una sola** orden de
+        «Recalcular lo obsoleto» (``recompute_settled_steps``, lo que ejecuta el modal; spec 015, T51: antes se repetía la
+        orden hasta que no quedaba nada, lo que ocultaba que cada una rehacía una sola unidad con el ciclo de lo declarado
+        y hacían falta 22 para las 20): lo que tardó; no deja nada obsoleto ni por recalcular."""
         data = self.data
         value = self.level - 0.5 if flip % 2 == 0 else self.level
         gc.collect()
@@ -330,17 +333,13 @@ class ChainTest(unittest.TestCase):
         with data.project.write_transaction() as conn:
             core_params.ParameterStore(data.project).change(
                 conn, FIRST_KEY, value=value, version=data.v1.uid, reason="Medición de rendimiento")
-        units = platforms = rounds = 0
-        while True:
-            data.clock.advance(minutes=1)
-            outcome = ep.finish(recompute_mod.recompute_steps(data.project))
-            rounds += 1
-            units += len(outcome.results)
-            platforms += sum(1 for result in outcome.results if provenance.PLATFORM in self.types_of(result))
-            if not outcome.remaining.units:
-                break
-            self.assertLess(rounds, 5 * edata.CHAIN_LENGTH, "«Recalcular lo obsoleto» no acaba")
-        return Cascaded(time.perf_counter() - began, units, rounds, platforms)
+        data.clock.advance(minutes=1)
+        outcome = ep.finish(recompute_mod.recompute_settled_steps(data.project))
+        seconds = time.perf_counter() - began
+        self.assertEqual(outcome.remaining.units, (), "una sola orden de «Recalcular lo obsoleto» no lo deja al día")
+        self.assertFalse(outcome.limit_reached or outcome.cancelled)
+        platforms = sum(1 for result in outcome.results if provenance.PLATFORM in self.types_of(result))
+        return Cascaded(seconds, len(outcome.results), outcome.passes, platforms)
 
     def test_a_disk(self) -> None:
         """RNF-015-09: lo que guarda en el proyecto cada una de las 20 —su superficie en la rejilla entera
@@ -367,8 +366,8 @@ class ChainTest(unittest.TestCase):
     def test_b_cascade(self) -> None:
         """RNF-015-08: recalcular en cascada una cadena de 20 entidades de ≤ 1 ha con su borde (protegidas, con la
         declaración y la capa de entidades que cada orden encadena), tras cambiar la cota de la primera, sobre
-        2,81 M celdas: «Recalcular lo obsoleto» hasta que no queda nada obsoleto, en disco local, en ≤ 60 s (mediana
-        de 5; la primera, que calienta la caché, no cuenta)."""
+        2,81 M celdas: **una sola orden** de «Recalcular lo obsoleto» (T51) que no deja nada obsoleto, en disco local, en
+        ≤ 60 s (mediana de 5; la primera, que calienta la caché, no cuenta)."""
         for index, item in enumerate(self.made):
             self.assertLessEqual(item.outcome.footprint.cell_count, edata.FOOTPRINT_LIMIT_CELLS,
                                  f"la plataforma {index + 1} pasa de 1 ha")
@@ -381,7 +380,7 @@ class ChainTest(unittest.TestCase):
             f"{number(edata.CHAIN_REACH_M, 0)} m de alcance, distancia exacta) con lo que encadena cada una "
             f"(declaración, máscaras y capa), tras cambiar la cota de la primera, sobre {count(dperf.CELLS)} "
             f"celdas de 1 m ({self.WHERE}; {MACHINE}): {seconds_of(times)}; {found[-1].platforms} plataformas y "
-            f"{found[-1].units} operaciones rehechas en {found[-1].rounds} vueltas de «Recalcular lo obsoleto»; "
+            f"{found[-1].units} operaciones rehechas en {found[-1].rounds} pasadas de una sola orden de «Recalcular lo obsoleto»; "
             f"la primera, en frío, {number(first.seconds, 2)} s; crear las {edata.CHAIN_LENGTH} (cada una con lo "
             f"que sigue) {number(self.created_s, 1)} s; presupuesto {number(self.BUDGET_S, 0)} s")
         for item in found:

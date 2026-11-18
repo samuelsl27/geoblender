@@ -524,10 +524,10 @@ class CallsTest(_Case):
         return pd.Run(label, tuple(recorder.calls), seconds), operator.result
 
     def recompute_all(self, label: str) -> list[pd.Run]:
-        """«Recalcular lo obsoleto» tantas veces como haga falta hasta que no queda nada obsoleto (lo recalculado
-        que vuelve a quedar obsoleto espera a la siguiente pasada, RF-008-27: desde que una entidad protege, el
-        ciclo entidad → declarada → máscaras → entidad, D-21, deja el eco de la declaración, las máscaras y la capa
-        de entidades): cada pasada, medida."""
+        """«Recalcular lo obsoleto» (la orden real y su modal) hasta que no queda nada obsoleto: **una sola vez** basta
+        (spec 015, T51: la orden vuelve a planificar dentro de sí misma; antes, con el ciclo entidad → declarada →
+        máscaras → entidad, D-21, cada orden rehacía una unidad y hacían falta varias), y el bucle es solo una guardia que
+        mide cada una; cada orden, medida."""
         runs = []
         for turn in range(1, 11):
             run, outcome = self.recompute_run(f"{label} (pasada {turn})")
@@ -611,8 +611,12 @@ class CallsTest(_Case):
         Con ``in_what_follows`` (spec 015, T49; la regresión de la T43: Esc se ignoraba **mientras** se ponía al día la
         capa de entidades, lo que ``des`` hace tras recalcular) no cuenta pasos: da eventos hasta que el modal enseña un
         paso de lo que sigue al recálculo (``Progress.phase`` distinta de la del recálculo), y pulsa Esc entonces: el
-        modal acaba en ese mismo evento, ``CANCELLED``, con la capa a medias cerrada y marcada."""
-        self.change_first(delta, code)
+        modal acaba en ese mismo evento, ``CANCELLED``, con la capa a medias cerrada y marcada. Desde la T51 la orden
+        rehace de una vez todo lo obsoleto, también la capa, así que lo que sigue solo tiene trabajo con la capa
+        **atrasada sin que el grafo la dé por obsoleta** (Esc cortó antes de la capa lo que sigue a crear una entidad):
+        en ese caso no se cambia ninguna cota (``delta`` no se usa) y se parte de esa capa atrasada."""
+        if not in_what_follows:
+            self.change_first(delta, code)
         cls = self.core_ops.GEOBLENDER_OT_core_recompute_stale
         recompute_phase = _module("core.provenance.recompute").RECOMPUTE_PHASE
         queues = (("cola de des", self.des_ops.des_tick), ("cola de las máscaras", self.gis_ops.masks_tick),
@@ -665,7 +669,8 @@ class CallsTest(_Case):
             wall, spent = time.perf_counter() - started, time.process_time() - cpu
         self.assertEqual(state, {"CANCELLED"})
         self.assertTrue(operator.result.cancelled)
-        self.assertGreater(len(operator.result.remaining.units), 0, "Esc recalculó todo")
+        if not in_what_follows:
+            self.assertGreater(len(operator.result.remaining.units), 0, "Esc recalculó todo")
         self.assert_nothing_half_done("Esc a mitad de «Recalcular lo obsoleto»")
         if in_what_follows:  # la capa a medias se cierra en el mismo evento de Esc y queda marcada
             self.assertEqual(tail, 0, "Esc no acaba el modal en el mismo evento")
@@ -674,7 +679,7 @@ class CallsTest(_Case):
                                                                              self.built.version_uid))
         self.recompute_all("terminar de recalcular")  # lo que falta, para dejar el estado al día
         if in_what_follows:
-            return Stopped(f"«Recalcular lo obsoleto» de {code}, en lo que sigue al recálculo (la capa de entidades a "
+            return Stopped(f"«Recalcular lo obsoleto», en lo que sigue al recálculo (la capa de entidades a "
                            f"medias)", events, longest, (wall, spent), 0, calls=tail + 1)
         return Stopped(f"«Recalcular lo obsoleto» de {code}, tras {des_ticks} "
                        f"{'paso' if des_ticks == 1 else 'pasos'} de su cola (acaba la unidad en curso)", events,
@@ -722,14 +727,16 @@ class CallsTest(_Case):
         self.assert_nothing_half_done("Esc a mitad de lo que encadena crear la plataforma")
         stops.append(Stopped("lo que encadena crear la plataforma, a mitad de sus eventos", events, longest,
                              (wall, cpu), 0))
+        # Esc en lo que sigue al recálculo (T49): la capa de entidades que ``des`` pone al día al terminar; no cuenta pasos
+        # de la cola (antes de la T49 solo se tocaba si los pasos pedidos caían ahí por casualidad, y Esc se ignoraba). Desde
+        # la T51 parte de la capa que Esc dejó atrasada al cortar lo que encadena crear la plataforma (justo arriba), sin
+        # cambiar ninguna cota: con una cota cambiada la orden rehace la capa por el grafo y no queda nada para después.
+        stops.append(self.esc_in_recompute(0.0, 0, "PLT-001", in_what_follows=True))
 
         # Esc a mitad de «Recalcular lo obsoleto»: acaba la unidad en curso (lo hecho queda; lo demás, obsoleto).
         big = f"PLT-{ORDERED + 1:03d}"  # la grande: la unidad más larga del recálculo
         for delta, ticks, code in ((+0.5, 1, "PLT-001"), (-0.5, 12, "PLT-001"), (+0.5, 1, big), (-0.5, 12, big)):
             stops.append(self.esc_in_recompute(delta, ticks, code))
-        # Esc en lo que sigue al recálculo (T49): la capa de entidades que ``des`` pone al día al terminar; no cuenta pasos
-        # de la cola (antes de la T49 solo se tocaba si los pasos pedidos caían ahí por casualidad, y Esc se ignoraba).
-        stops.append(self.esc_in_recompute(+0.5, 0, "PLT-001", in_what_follows=True))
 
         worst = max(stops, key=lambda stop: stop.wall)
         report(f"RNF-015-05: Esc a mitad de cada cálculo de las entidades sobre {count(CELLS)} celdas con "

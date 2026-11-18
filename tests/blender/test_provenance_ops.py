@@ -1658,6 +1658,28 @@ class ProvenanceSessionTest(unittest.TestCase):
             bpy.ops.geoblender.core_recompute_stale()
         self.assertIn(READ_ONLY, str(caught.exception))
 
+    def test_recompute_that_stops_at_the_limit_of_passes_says_so(self) -> None:
+        """RF-008-26 (spec 015, T51): la orden recalcula en varias pasadas, volviendo a planificar (``recompute_settled_steps``);
+        si llega al tope contra los bucles con lo obsoleto sin asentar, **lo dice** (un aviso con las pasadas) y lo que sigue
+        obsoleto lo recalcula la orden siguiente; sin tope, no hay aviso. El modal avanza los pasos de esa función y cuenta las
+        operaciones de todas las pasadas."""
+        demo = self.enterContext(Demo(module_name()).registered())
+        self.stockpile_chain(demo)
+        self.run_checks()
+        recompute = _module("core.provenance.recompute")
+        model = _module("core.project.model")
+        plan = recompute.RecomputePlan(recompute.SCOPE_ALL, (), ())
+        for limit_reached in (True, False):
+            outcome = recompute.RecomputeOutcome((), plan, False, 5, limit_reached)
+            steps = iter([model.Progress(recompute.RECOMPUTE_PHASE, 0, 0, "Recalculado lo obsoleto.", outcome)])
+            with self.subTest(limit_reached=limit_reached),                     mock.patch.object(recompute, "recompute_settled_steps", return_value=steps) as settled:
+                operator = self.recompute()
+                self.assertEqual(self.drive(operator), {"FINISHED"})
+            settled.assert_called_once()
+            said = [text for text in operator.report_log if "pasadas" in text]
+            self.assertEqual(said, ["El recálculo se paró tras 5 pasadas: lo que sigue obsoleto no se asienta; revise lo "
+                                    "que lo cambió"] if limit_reached else [])
+
     # Lo que no se puede usar, dar por buena, capas sin registrar y cancelar (T54) ---------
 
     def check_everything(self) -> None:

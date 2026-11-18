@@ -107,6 +107,20 @@ def _number(value: float, decimals: int, language: str) -> str:
     return text.translate(str.maketrans({",": THIN_SPACE, ".": ","}))
 
 
+@dataclass(frozen=True, slots=True)
+class Named:
+    """El nombre de algo que no lo trae él mismo (spec 015, T51, H3-1: la capa de entidades o la declaración entre lo que
+    queda obsoleto, que se nombraban por el identificador de su tipo): el ``code`` del mensaje del catálogo que lo dice,
+    con sus ``values``. Va entre los elementos de una lista de un aviso y se escribe, entre « », al mostrarlo, en el idioma
+    pedido."""
+
+    code: str
+    values: Mapping[str, object] = field(default_factory=dict)
+
+    def text(self, language: str = "es") -> str:
+        return f"«{render(self.code, language=language, **_shown(self.values, language))}»"
+
+
 def _shown(values: Mapping[str, object], language: str) -> dict[str, str]:
     """Los valores de un aviso ya escritos para una persona."""
     found: dict[str, str] = {}
@@ -120,7 +134,8 @@ def _shown(values: Mapping[str, object], language: str) -> dict[str, str]:
                 name, 1)
             found[name] = _number(value, decimals, language)
         elif isinstance(value, tuple | list):
-            found[name] = ", ".join(str(item) for item in value)
+            found[name] = ", ".join(item.text(language) if isinstance(item, Named) else str(item)
+                                    for item in value)
         else:
             found[name] = str(value)
     return found
@@ -499,12 +514,15 @@ class ObsoleteKind(StrEnum):
 class Obsolete:
     """Algo que quedará obsoleto al crear la entidad: su ``kind``, su ``name`` (el de la operación o la
     entidad; el código de la versión en las máscaras), el tipo de su operación (``op_type``, vacío
-    en una entidad sin calcular) y su ``uid`` (de la operación; ``""`` si no la tiene)."""
+    en una entidad sin calcular), su ``uid`` (de la operación; ``""`` si no la tiene) y, si la operación no
+    trae su nombre en sus ajustes y ``name`` es el de su tipo, el ``label`` (spec 015, T51; H3-1): el código del
+    mensaje de ``design.messages`` que la nombra para una persona («la capa de entidades de V01»)."""
 
     kind: ObsoleteKind
     name: str
     op_type: str = ""
     uid: str = ""
+    label: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", ObsoleteKind(self.kind))
@@ -541,9 +559,12 @@ class PlatformSummary:
                      if notice.severity == "warning")
 
 
-def _listed(items: Iterable[Obsolete]) -> tuple[str, ...]:
-    """Los nombres de ``items`` entre «», los :data:`SUMMARY_ITEMS` primeros y, si hay más, un «…»."""
-    names = [f"«{item.name}»" for item in items]
+def obsolete_names(items: Iterable[Obsolete], version: str) -> tuple[str | Named, ...]:
+    """Los nombres de ``items`` entre «», los :data:`SUMMARY_ITEMS` primeros y, si hay más, un «…»: el de una operación
+    sin nombre propio (``label``), como :class:`Named` de ``version`` (se escribe en el idioma de quien lo lee), y los
+    demás, tal cual (spec 015, T51, H3-1: no el identificador de su tipo)."""
+    names: list[str | Named] = [Named(item.label, {"version": version}) if item.label else f"«{item.name}»"
+                                for item in items]
     return tuple(names[:SUMMARY_ITEMS]) + (("…",) if len(names) > SUMMARY_ITEMS else ())
 
 
@@ -564,7 +585,7 @@ def obsolete_notices(entity: str, version: str, items: Iterable[Obsolete]) -> tu
                                "operations")):
         if by_kind[kind]:
             found.append(Notice(code, {"entity": entity, count: len(by_kind[kind]),
-                                       "items": _listed(by_kind[kind])}))
+                                       "items": obsolete_names(by_kind[kind], version)}))
     return tuple(found)
 
 

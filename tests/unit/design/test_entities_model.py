@@ -103,6 +103,8 @@ CODES: dict[str, str] = {
     "des.entity_obsolete_consumers": "note",    # RF-015-03 (T12)
     "des.entity_obsolete_successor": "note",    # RF-015-03, RF-015-05 (T12)
     "des.entity_obsolete_dependents": "note",   # RF-015-03 (T12)
+    "des.entity_layer_name": "note",            # RF-015-03, RF-015-16 (T51, H3-1)
+    "des.entity_declaration_name": "note",      # RF-015-03, RF-015-16 (T51, H3-1)
     "des.entity_dependent_volume": "note",      # RF-015-15, RF-015-17 (T24)
     "des.entity_dependent_start": "note",       # RF-015-15, RF-015-17 (T24)
     "des.entity_chain_declared": "note",        # RF-015-10 (T19)
@@ -848,6 +850,41 @@ class EntityMessagesTest(unittest.TestCase):
                         r"\b1 (celdas|grupos|cells|groups)\b")
                 self.assertIn(many_es, messages.render(code, **{count: 2}, **rest))
                 self.assertIn(many_en, messages.render(code, language="en", **{count: 2}, **rest))
+
+    def test_what_becomes_stale_names_the_layer_and_the_declaration_in_both_languages(self) -> None:
+        """RF-015-03, RF-015-16 (T51, H3-1): entre lo que queda obsoleto, la capa de entidades y la declaración (operaciones
+        sin nombre en sus ajustes) se nombran para una persona, en el idioma pedido («la capa de entidades de V01», «the entity
+        layer of V01»), y **no** por el identificador de su tipo («des.entity_layer»), tanto en el resumen de «Calcular» como
+        en lo que dice la orden al terminar; una plataforma sigue con su nombre."""
+        preview = import_geoblender("design.preview")
+        store = import_geoblender("design.entity_store")
+        kind = preview.ObsoleteKind.CONSUMER
+        layer = store._consumer(kind, "u2", "des.entity_layer", "des.entity_layer")
+        declaration = store._consumer(kind, "u3", "des.declare_constraints", "des.declare_constraints")
+        platform = store._consumer(kind, "u1", "des.platform", "Carga")
+        self.assertEqual((layer.label, declaration.label, platform.label),
+                         ("des.entity_layer_name", "des.entity_declaration_name", ""))
+        self.assertEqual(store._consumer(kind, "u4", "des.entity_layer", "Mi capa").label, "", "con nombre propio, el suyo")
+        items = (platform, layer, declaration)
+        expected = {"es": "«Carga», «la capa de entidades de V01», «las restricciones declaradas de V01»",
+                    "en": "«Carga», «the entity layer of V01», «the declared restrictions of V01»"}
+        masks = preview.Obsolete(preview.ObsoleteKind.MASKS, "V01", "gis.compile_constraints", "u0")
+        chain = store.EntityChain("V01", 1, True, True, obsolete=items)
+        notices = {
+            "des.entity_obsolete_consumers": next(n for n in preview.obsolete_notices("Taller", "V01", (masks, *items))
+                                                   if n.code == "des.entity_obsolete_consumers"),
+            "des.entity_chain_obsolete": next(n for n in chain.notices() if n.code == "des.entity_chain_obsolete")}
+        for code, notice in notices.items():
+            for language, text in expected.items():
+                with self.subTest(code=code, language=language):
+                    shown = notice.text(language)
+                    self.assertIn(text, shown)
+                    self.assertNotIn("des.entity_layer", shown)
+                    self.assertNotIn("des.declare_constraints", shown)
+                    self.assertIn("3", shown)
+        many = [preview.Obsolete(kind, f"P{n}", "des.platform", f"p{n}") for n in range(preview.SUMMARY_ITEMS)]
+        listed = preview.obsolete_names((*many, layer), "V01")
+        self.assertEqual((len(listed), listed[-1]), (preview.SUMMARY_ITEMS + 1, "…"), "los diez primeros y un «…»")
 
     def test_the_catalog_still_checks_itself(self) -> None:
         """Los mensajes nuevos pasan la comprobación del catálogo (``_check_catalog``: códigos y

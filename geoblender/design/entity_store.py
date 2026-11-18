@@ -278,12 +278,12 @@ from .platform import (
     window_part,
 )
 from .preview import (
-    SUMMARY_ITEMS,
     Notice,
     Obsolete,
     ObsoleteKind,
     PlatformSummary,
     held_notices,
+    obsolete_names,
     obsolete_notices,
 )
 from .quarry import _level_column
@@ -2195,6 +2195,20 @@ _CHUNK = 400
 """Los uid por consulta (el límite de variables de SQLite es mayor)."""
 
 
+_OPERATION_LABELS = {
+    provenance.ENTITY_LAYER: "des.entity_layer_name",
+    provenance.DECLARE_CONSTRAINTS: "des.entity_declaration_name",
+}
+"""Las operaciones de la versión sin nombre en sus ajustes y el mensaje que las nombra para una persona (spec 015, T51; H3-1)."""
+
+
+def _consumer(kind: ObsoleteKind, uid: str, op_type: str, name: str) -> Obsolete:
+    """Una operación que queda obsoleta: la de ``op_type`` que no trae nombre (``name`` es el de su tipo) lleva el mensaje que la
+    nombra (``Obsolete.label``), no el identificador de su tipo."""
+    label = _OPERATION_LABELS.get(op_type, "") if name == op_type else ""
+    return Obsolete(kind, name, op_type, uid, label)
+
+
 def _name_of(op_type: str, settings: object) -> str:
     """El nombre de una operación hecha: el ``name`` de sus ajustes o, sin él, su tipo."""
     try:
@@ -2259,7 +2273,7 @@ def platform_obsolete(project: StoreProject, version: Version, prepared: Prepare
                                   masks.operation_uid))
             for uid, op_type, name in _dependents(conn, [item.uid for item in masks.used],
                                                   version.uid, exclude=(supersedes,)):
-                found.append(Obsolete(ObsoleteKind.CONSUMER, name, op_type, uid))
+                found.append(_consumer(ObsoleteKind.CONSUMER, uid, op_type, name))
                 listed.add(uid)
         if insert_before is not None:
             registry = entities.registry(project, version.uid, conn=conn)
@@ -2277,7 +2291,7 @@ def platform_obsolete(project: StoreProject, version: Version, prepared: Prepare
                 "AND direction = 'out' AND item_kind = 'dataset' ORDER BY fid", (supersedes,))]
             for uid, op_type, name in _dependents(conn, written, version.uid,
                                                   exclude=(supersedes, *listed)):
-                found.append(Obsolete(ObsoleteKind.DEPENDENT, name, op_type, uid))
+                found.append(_consumer(ObsoleteKind.DEPENDENT, uid, op_type, name))
     return tuple(found)
 
 
@@ -3198,10 +3212,8 @@ class EntityChain:
                 "lost": round(change.polygon_lost_m2), "zone_gained": round(change.zone_gained_m2),
                 "zone_lost": round(change.zone_lost_m2)}))
         if self.obsolete:
-            names = [f"«{item.name}»" for item in self.obsolete]
             found.append(Notice("des.entity_chain_obsolete", {
-                "operations": len(names), "items": tuple(names[:SUMMARY_ITEMS])
-                + (("…",) if len(names) > SUMMARY_ITEMS else ())}))
+                "operations": len(self.obsolete), "items": obsolete_names(self.obsolete, self.version)}))
         if self.failure is not None:
             code = ("des.entity_chain_declare_failed" if self.failure.stage is ChainStage.DECLARE
                     else "des.entity_chain_masks_failed")
@@ -3216,8 +3228,7 @@ def _stale_operations(conn: sqlite3.Connection, version: Version) -> dict[str, O
     """Las operaciones **obsoletas** de ``version`` (las vigentes: hechas y sin sustituir, estén en la revisión que
     estén, y con alguna causa en la caché de la 008, ``gb_stale``), por su uid, como ``Obsolete`` (``CONSUMER``).
     Lo congelado (los elementos de una revisión congelada) no cambia ni se marca (RF-009-19). Solo lee."""
-    return {str(uid): Obsolete(ObsoleteKind.CONSUMER, _name_of(str(op_type), settings), str(op_type),
-                               str(uid))
+    return {str(uid): _consumer(ObsoleteKind.CONSUMER, str(uid), str(op_type), _name_of(str(op_type), settings))
             for uid, op_type, settings in conn.execute(_STALE_OPERATIONS, (version.uid,))}
 
 

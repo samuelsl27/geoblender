@@ -196,16 +196,37 @@ class RecomputeEscTest(platform_ops.CreatePlatformTest):
         self.assertTrue(self.layer_pending(), "la capa dice lo de antes de cambiar la cota: marcada")
         self.finish()
 
+    def leave_the_layer_behind(self) -> None:
+        """Crea «Rampa» (de la superficie de P2) con lo que sigue a «Crear» por pasos de un evento y manda Esc en el primero,
+        antes de que llegue a la capa de entidades: la entidad está creada y la capa no tiene su fila (marcada). Es lo
+        que **«Recalcular lo obsoleto» pone al día tras recalcular** (``des``), sin que el grafo de la 008 tenga nada obsoleto
+        que lo haga por la capa (la entidad nueva no es entrada de la capa de antes)."""
+        self.refresh()
+        with mock.patch.object(self.des_ops, "_ask_confirmation"):
+            self.assertEqual(bpy.ops.geoblender.des_create_platform(
+                "EXEC_DEFAULT", **self.form_of(name=platform_ops.RAMP, feature=platform_ops.RAMP, start="entity:PLT-002")),
+                {"FINISHED"})
+            self.assertEqual(bpy.ops.geoblender.des_create_platform("EXEC_DEFAULT", confirm=True, in_steps=True),
+                             {"RUNNING_MODAL"})
+            modal = self.running()
+            modal.STEP_BUDGET_S = step_modals.ONE_STEP_S
+            state, _count = step_modals.drive(modal, bpy.context, stop_after=0)
+            self.assertEqual(state, {"RUNNING_MODAL"}, "la cadena no debía haber acabado")
+            self.assertEqual(modal.modal(bpy.context, ESCAPE), {"CANCELLED"})
+        self.des_ops.discard_calculation()
+        self.assertTrue(self.layer_pending(), "la capa no tiene la entidad nueva: marcada")
+
     def test_b_esc_while_what_follows_the_recompute_runs_stops_it_at_once_and_writes_nothing_more(self) -> None:
         """RF-015-29, RNF-015-05, RF-015-27, RF-008-19 (T49; la regresión de la T43, ``perf_entities.py::test_d_esc``): la
-        cota de P1, que protege, baja 0,5 m: la primera pasada de «Recalcular lo obsoleto» rehace P1 y deja para la siguiente
-        el eco de lo que P1 declara (la declaración, las máscaras, P2 y la capa) y, **al terminar el recálculo, la capa de
-        entidades se pone al día** (lo que registra ``des`` para después). Con Esc **mientras la capa se pone al día**, el
-        modal acaba **en el mismo evento**, ``CANCELLED``, con el resultado cancelado y lo recalculado; no se escribe nada
+        capa de entidades de V01 está atrasada (Esc cortó lo que sigue a crear «Rampa» antes de la capa) y **al terminar el
+        recálculo, la capa de entidades se pone al día** (lo que registra ``des`` para después: con la 015, T51, «Recalcular lo
+        obsoleto» rehace de una vez todo lo que el grafo da por obsoleto, también la capa, así que lo de después solo tiene
+        trabajo si el grafo no lo marcó). Con Esc **mientras la capa se pone al día**, el
+        modal acaba **en el mismo evento**, ``CANCELLED``, con el resultado cancelado; no se escribe nada
         más: el proyecto queda como antes de empezar la capa salvo la operación de la capa, **cancelada**, sin operación en
         curso ni temporal (antes de la T49 Esc se ignoraba: la capa se escribía entera y el modal acababa ``FINISHED``). La
         capa queda marcada y «Recalcular lo obsoleto», después, la deja al día."""
-        self.change_level(-0.5)
+        self.leave_the_layer_behind()
         operator, phases = self.start()
         state: set[str] = {"RUNNING_MODAL"}
         before: tuple[Any, ...] = ()
@@ -223,8 +244,7 @@ class RecomputeEscTest(platform_ops.CreatePlatformTest):
         self.assertEqual(operator.modal(bpy.context, ESCAPE), {"CANCELLED"}, "Esc acaba el modal en el mismo evento")
         self.assertEqual(len(phases), shown, "Esc no enseña un paso más de lo que sigue")
         self.assertTrue(operator.result.cancelled)
-        self.assertGreaterEqual(len([r for r in operator.result.results if str(r.status) == "done"]), 1, "lo recalculado queda")
-        self.assertGreater(len(operator.result.remaining.units), 0, "lo demás sigue obsoleto (el eco de lo que P1 declara)")
+        self.assertEqual([r for r in operator.result.results if str(r.status) != "done"], [], "nada rechazado ni fallado")
         self.assertIsNone(operator._steps)  # noqa: SLF001
         self.assert_nothing_half_done("Esc en lo que sigue al recálculo")
         ended = self.operations()

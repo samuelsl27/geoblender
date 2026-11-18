@@ -128,7 +128,10 @@ ADR-0025).
 
 - Recalcular lo obsoleto (T53; RF-008-26, RF-008-25, RF-008-58; plan §5.3.2 y §5.4.4):
   ``geoblender.core_recompute_stale`` es un modal con un temporizador de la ventana que avanza
-  ``core.provenance.recompute.recompute_steps`` una unidad por evento (o una espera a su
+  ``core.provenance.recompute.recompute_settled_steps`` (spec 015, T51: ``recompute_steps`` las
+  veces que haga falta, **volviendo a planificar** entre pasadas, hasta que no queda nada que
+  recalcular: una cadena de entidades que protegen, con su ciclo, se recorre de una vez y no
+  una unidad por pulsación) una unidad por evento (o una espera a su
   trabajo de la 004), con el progreso en la barra de estado («Recalculando lo obsoleto: 1 de
   2… Esc: cancelar»); Esc para al acabar la unidad en curso (lo hecho queda). Su ámbito
   (``scope``): todo (``ALL``, Proyecto ▸ Control), lo que depende de un cambio (``CAUSE``, con
@@ -2826,6 +2829,9 @@ class _RecomputeModal:
         for result in outcome.results:
             if result.status is not UnitStatus.DONE:
                 self._report({"WARNING"}, result.text(language=language) or "")
+        if outcome.limit_reached:  # T51: el tope de pasadas contra los bucles; lo obsoleto lo recalcula la orden siguiente
+            self._report({"WARNING"}, tr("Recompute stopped after {passes} passes: what is still stale does not "
+                                         "settle; check what changed it", passes=outcome.passes))
         for skipped in outcome.remaining.skipped:
             self._report({"WARNING"}, skipped.text(language=language))
         return {"CANCELLED"} if outcome.cancelled else {"FINISHED"}
@@ -2876,12 +2882,12 @@ class GEOBLENDER_OT_core_recompute_stale(_RecomputeModal, bpy.types.Operator):
             return {"CANCELLED"}
         if not self._can_start(context):
             return {"CANCELLED"}
-        from ...core.provenance.recompute import recompute_steps
+        from ...core.provenance.recompute import recompute_settled_steps
 
         project = SESSION.project
         self._cancel = False
         try:
-            steps = _with_afters(project, recompute_steps(  # lo que un módulo pone al día al terminar (T43), con Esc (T49)
+            steps = _with_afters(project, recompute_settled_steps(  # de una vez (T51); lo que un módulo pone al día al terminar (T43), con Esc (T49)
                 project, scope=self._scope(project), cancelled=lambda: self._cancel),
                 cancelled=lambda: self._cancel)
         except _NothingToDo as exc:

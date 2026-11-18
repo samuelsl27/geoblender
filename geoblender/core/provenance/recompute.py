@@ -59,6 +59,13 @@ con progreso y cancelación):
 - cancelar (``cancelled``) para al acabar la unidad en curso: lo ya recalculado queda (cada
   operación es completa) y lo demás sigue obsoleto (:class:`RecomputeOutcome`).
 
+**Una orden, varias pasadas** (:func:`recompute_settled_steps`, spec 015, T51): lo recalculado que vuelve
+a quedar obsoleto espera a la siguiente ejecución (arriba), y con un ciclo (una entidad de diseño que
+protege: entidad → declarada → máscaras → entidad) eso hace que cada ejecución rehaga una sola
+unidad. La orden de la interfaz no es una ejecución sino varias, **una tras otra y volviendo a
+planificar** entre ellas, hasta que una no recalcula nada, no queda plan o se llega a un tope; la
+ejecución de :func:`recompute_steps` y su contrato no cambian.
+
 **Con versiones** (spec 009, plan A4 (6)): lo de una versión SUPERADO o DESCARTADO nunca está
 obsoleto, así que no se recalcula; una operación de versión se repite en la revisión abierta de
 **su** versión (:attr:`RecomputeRequest.version`), no en la activa de la sesión, y lo que tomó
@@ -90,7 +97,7 @@ import json
 import sqlite3
 from collections import defaultdict, deque
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, closing
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
@@ -663,11 +670,17 @@ class UnitResult:
 @dataclass(frozen=True, slots=True)
 class RecomputeOutcome:
     """El final de «Recalcular lo obsoleto»: cada unidad intentada, en orden; el plan de lo
-    que queda (lo que sigue obsoleto, con lo que se deja fuera y su motivo); y si se canceló."""
+    que queda (lo que sigue obsoleto, con lo que se deja fuera y su motivo); y si se canceló.
+
+    De :func:`recompute_settled_steps` (spec 015, T51), además, las pasadas que hizo (``passes``;
+    1 en :func:`recompute_steps`) y si paró por el tope de pasadas con lo obsoleto sin asentar
+    (``limit_reached``: lo que sigue obsoleto se vuelve a recalcular con la orden siguiente)."""
 
     results: tuple[UnitResult, ...]
     remaining: RecomputePlan
     cancelled: bool = False
+    passes: int = 1
+    limit_reached: bool = False
 
 
 def recompute_steps(
@@ -692,11 +705,22 @@ def recompute_steps(
     return _steps(project, scope, versions, cancelled, len(plan.units))
 
 
+def _abandoned(results: Iterable[UnitResult]) -> set[str]:
+    """Las operaciones de lo que se rechazó o falló en ``results`` (y lo que se creó a medias): no se vuelve a intentar."""
+    return {uid for result in results if result.status is not UnitStatus.DONE
+            for uid in (*result.unit.operations, *result.operations)}
+
+
 def _steps(project: OperationProject, scope: Scope, versions: Mapping[str, str] | None,
-           cancelled: Callable[[], bool] | None, total: int) -> Iterator[Progress]:
+           cancelled: Callable[[], bool] | None, total: int, before: Iterable[str] = (),
+           resume: list[bool] | None = None) -> Iterator[Progress]:
+    """La ejecución de :func:`recompute_steps`. ``before`` (spec 015, T51): lo que las pasadas anteriores de la misma orden
+    rechazaron o fallaron, que no se vuelve a intentar; ``resume``, si se da, recibe al acabar (sin cancelar) si **otra**
+    pasada tendría algo que hacer: si queda una unidad que solo lo rechazado o fallado (y lo que depende de ello) detiene,
+    y no lo recalculado que volvió a quedar obsoleto, que esta pasada deja para la siguiente."""
     yield Progress(RECOMPUTE_PHASE, 0, total, "Recalculando lo obsoleto…")
     results: list[UnitResult] = []
-    blocked: set[str] = set()  # lo intentado y lo creado en esta ejecución
+    blocked: set[str] = set(before)  # lo intentado y lo creado en esta ejecución (y ``before``: de las pasadas anteriores)
     stopped = False
     while project.writable:
         if cancelled is not None and cancelled():
@@ -708,6 +732,9 @@ def _steps(project: OperationProject, scope: Scope, versions: Mapping[str, str] 
             held = planner.held(blocked)
             ready = [unit for unit in plan.units if planner.key_of(unit) not in held]
             if not ready:
+                if resume is not None:
+                    left = planner.held({*before, *_abandoned(results)})
+                    resume.append(any(planner.key_of(unit) not in left for unit in plan.units))
                 break
             unit = ready[0]
             group_uid = None if unit.group_uid is None else new_uid()
@@ -728,6 +755,90 @@ def _steps(project: OperationProject, scope: Scope, versions: Mapping[str, str] 
     message = "Recalcular lo obsoleto: cancelado." if stopped else "Recalculado lo obsoleto."
     yield Progress(RECOMPUTE_PHASE, done, done, message,
                    RecomputeOutcome(tuple(results), remaining, stopped))
+
+
+def recompute_settled_steps(
+    project: OperationProject,
+    *,
+    scope: Scope = SCOPE_ALL,
+    versions: Mapping[str, str] | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    max_passes: int | None = None,
+) -> Iterator[Progress]:
+    """«Recalcular lo obsoleto» **de una vez** (spec 015, T51; RF-008-26; hallazgo H3-2): lo que haría quien
+    pulsara la orden una y otra vez hasta que no quedara nada, en una sola orden y con el progreso y la cancelación
+    de :func:`recompute_steps`.
+
+    Una **pasada** es una ejecución de :func:`recompute_steps` (con su contrato intacto: lo recalculado que
+    vuelve a quedar obsoleto **no** se recalcula en la misma pasada, ni lo de aguas abajo, RF-008-27 y D-4; lo prueba
+    ``test_parameter_changed_while_running``). Cuando una pasada acaba y **hizo algo** (alguna unidad recalculada)
+    y aún queda algo en el plan, **vuelve a planificar** y empieza otra, hasta que una pasada no recalcula nada,
+    queda el plan vacío, se cancela o se llega al **tope** de pasadas. Es lo que pasa con el ciclo entidad →
+    declarada → máscaras → entidad (spec 015, D-21): lo recalculado consumió unas máscaras que aún estaban
+    obsoletas, así que vuelve a estarlo y cada pasada solo rehace una unidad, la siguiente de la cadena, hasta
+    que las máscaras se recompilan con el mismo contenido y todo pierde la marca.
+
+    Lo que una pasada **rechazó** (sus entradas ya no siguen vigentes, o lo apoyado en lo descartado, RF-015-17) o
+    **falló** no se vuelve a intentar en las siguientes, ni lo que depende de ello (saldría igual: el motivo se da una
+    vez), y ni una pasada ni el plan recalculan nunca lo que RF-008-26 y RF-008-27 prohíben (lo «revisar a mano» y lo
+    que espera por ello, lo calculado con un algoritmo más nuevo, lo descartado, spec 015, T40): la planificación es la
+    misma. El **tope** contra los bucles es ``max_passes`` (por defecto, **el doble de las unidades del plan inicial
+    más dos**: una cadena que se asienta rehace cada unidad una vez, y la vuelta que no cuadra a la primera, otra); al
+    llegar a él con lo obsoleto sin asentar, el resultado lo dice (:attr:`RecomputeOutcome.limit_reached`) y lo que sigue
+    obsoleto lo recalcula la orden siguiente.
+
+    Los pasos son los de las pasadas, con ``done`` y ``total`` acumulados (``total`` se reajusta al volver a planificar);
+    el último lleva el :class:`RecomputeOutcome` de todas (``results`` de todas las pasadas, en orden; ``remaining`` de
+    la última; ``passes``; ``cancelled``). ``cancelled()`` y cerrar el generador, como en :func:`recompute_steps`: lo ya
+    recalculado queda, nada a medias.
+
+    Al llamarla, sin escribir nada: lo mismo que :func:`recompute_steps`; además :class:`TypeError` o
+    :class:`ValueError` si ``max_passes`` no es un entero de 1 o más."""
+    if max_passes is not None and (isinstance(max_passes, bool) or not isinstance(max_passes, int)):
+        raise TypeError(f"el tope de pasadas es un número entero, no {max_passes!r}")
+    if max_passes is not None and max_passes < 1:
+        raise ValueError(f"el tope de pasadas es de 1 o más, no {max_passes}")
+    _require_writable(project)
+    with project.read() as conn:
+        _planner, plan = _plan(load_graph(conn), scope, versions)
+    limit = 2 * len(plan.units) + 2 if max_passes is None else max_passes
+    return _settled(project, scope, versions, cancelled, len(plan.units), limit)
+
+
+def _settled(project: OperationProject, scope: Scope, versions: Mapping[str, str] | None,
+             cancelled: Callable[[], bool] | None, total: int, limit: int) -> Iterator[Progress]:
+    results: list[UnitResult] = []
+    left: set[str] = set()  # lo rechazado o fallado: no se vuelve a intentar en otra pasada
+    passes = 0
+    limit_reached = False
+    while True:
+        passes += 1
+        offset = len(results)
+        last: Progress | None = None
+        resume: list[bool] = []
+        steps = _steps(project, scope, versions, cancelled, total, left, resume)
+        with closing(steps):
+            for step in steps:
+                if isinstance(step.result, RecomputeOutcome):
+                    last = step
+                    break
+                yield Progress(step.phase, offset + step.done, offset + step.total, step.message)
+        if last is None:  # pragma: no cover - _steps acaba siempre con su resultado
+            raise RuntimeError("«Recalcular lo obsoleto» terminó sin dar su resultado")
+        outcome: RecomputeOutcome = last.result
+        results.extend(outcome.results)
+        left |= _abandoned(outcome.results)
+        progressed = any(result.status is UnitStatus.DONE for result in outcome.results)
+        if outcome.cancelled or not progressed or not (resume and resume[0]):
+            break  # cancelado, o sin nada más que hacer: lo que quede obsoleto sigue siéndolo, con su motivo
+        if passes >= limit:
+            limit_reached = True
+            break
+        total = len(outcome.remaining.units)
+    done = len(results)
+    yield Progress(RECOMPUTE_PHASE, done, done, last.message,
+                   RecomputeOutcome(tuple(results), outcome.remaining, outcome.cancelled, passes,
+                                    limit_reached))
 
 
 def recompute_dataset_steps(

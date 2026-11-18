@@ -29,8 +29,9 @@
 - :mod:`.recompute`: el plan de «Recalcular lo obsoleto» (:func:`plan_recompute`,
   :class:`RecomputePlan`): unidades en orden de dependencia y lo que se deja fuera, con su
   motivo (:class:`Skipped`, :class:`SkipReason`); su ejecución por unidades
-  (:func:`recompute_steps`, :class:`RecomputeRequest`, :class:`RecomputeOutcome`) y «dar por
-  buena» una operación que espera revisión a mano (:func:`accept_review`).
+  (:func:`recompute_steps`, y de una vez, en varias pasadas, :func:`recompute_settled_steps`;
+  :class:`RecomputeRequest`, :class:`RecomputeOutcome`) y «dar por buena» una operación que
+  espera revisión a mano (:func:`accept_review`).
 - :mod:`.gate`: la puerta antes de operar (:func:`can_run` → :class:`Ready`,
   :class:`Blocked` o :class:`Pending`) y lo que la comprobación de apertura aún no ha
   comprobado (:class:`CheckState`).
@@ -183,6 +184,7 @@ RECOMPUTE_API: tuple[str, ...] = (
     "accept_review",
     "plan_recompute",
     "recompute_dataset_steps",
+    "recompute_settled_steps",
     "recompute_steps",
 )
 """Lo de :mod:`.recompute` que se reexporta al usarlo."""
@@ -438,6 +440,7 @@ __all__ = [
     "parse_version",
     "plan_recompute",
     "recompute_dataset_steps",
+    "recompute_settled_steps",
     "recompute_steps",
     "record_figure",
     "refresh_all",

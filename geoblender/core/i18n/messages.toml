@@ -3284,6 +3284,9 @@ es = "Operaciones recalculadas: {done}"
 ["Nothing to recompute"]
 es = "No hay nada que recalcular"
 
+["Recompute stopped after {passes} passes: what is still stale does not settle; check what changed it"]
+es = "El recálculo se paró tras {passes} pasadas: lo que sigue obsoleto no se asienta; revise lo que lo cambió"
+
 # Lo que no se puede usar, dar por buena, capas sin registrar y cancelar las comprobaciones
 # (RF-008-56, RF-008-57, RF-008-27, RF-008-62, RF-008-58; T54): sus diálogos, sus
 # propiedades, lo que dicen y lo que se dibuja en los paneles

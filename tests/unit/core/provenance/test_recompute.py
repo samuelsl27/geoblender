@@ -25,6 +25,10 @@ entradas siguen vigentes (si no, no la ejecuta y sigue obsoleta) y llama a la fu
 recálculo de cada tipo, que crea operaciones nuevas que sustituyen a las anteriores; cancelar
 entre unidades deja lo hecho. ``accept_review`` «da por buena» una operación que espera
 revisión a mano (``core.accept_review``), con su motivo, y quita la espera de lo de aguas abajo.
+(spec 015, T51) ``recompute_settled_steps`` repite esas ejecuciones, volviendo a planificar entre ellas,
+hasta que no queda nada que recalcular (con un tope contra los bucles): lo recalculado que vuelve a
+quedar obsoleto se rehace en la pasada siguiente de la misma orden, sin tocar el contrato de
+``recompute_steps`` y sin repetir lo rechazado ni lo fallado.
 
 Las pruebas usan el proyecto de ``test_graph`` (``GraphCase``), con tipos que se recalculan de
 verdad (``RunCase``), y, para las propiedades del plan, sus grafos aleatorios en memoria
@@ -34,6 +38,7 @@ verdad (``RunCase``), y, para las propiedades del plan, sus grafos aleatorios en
 from __future__ import annotations
 
 import ast
+import itertools
 import json
 import random
 import sqlite3
@@ -442,6 +447,7 @@ class RunCase(RecomputeCase):
         self.values: dict[str, list[float]] = {}
         self.requests: list[Any] = []
         self.hooks: dict[str, Callable[[], None]] = {}
+        self.afters: dict[str, Callable[[], None]] = {}
         self.broken: set[str] = set()
         self.deferred: dict[str, Callable[[], None] | None] = {}
         self.jobs: dict[str, Any] = {}
@@ -477,6 +483,9 @@ class RunCase(RecomputeCase):
             if request.operation_uid in self.broken:
                 raise RuntimeError("fallo de prueba al recalcular")
             self.finish(handle, names)
+        after = self.afters.pop(request.operation_uid, None)
+        if after is not None:  # lo que pasa **después** de recalcularla (un cambio que la deja obsoleta otra vez)
+            after()
         return handle
 
     def finish(self, handle: Any, names: list[str]) -> None:
@@ -961,6 +970,197 @@ class RunTest(RunCase):
             with self.subTest(rechazo=name):
                 self.assertRejected(error, code, lambda name=name: list(
                     recompute.recompute_dataset_steps(self.project, name)))
+
+
+class _Every(dict):  # type: ignore[type-arg]
+    """Los ganchos de ``RunCase.redo`` (``hooks`` o ``afters``: uno por operación, que se gasta al usarse): el mismo en
+    **cada** recálculo."""
+
+    def __init__(self, action: Callable[[], None]) -> None:
+        super().__init__()
+        self.action = action
+
+    def pop(self, key: Any, default: Any = None) -> Any:
+        return self.action
+
+
+class SettledTest(RunCase):
+    """``recompute_settled_steps`` (spec 015, T51; RF-008-26, RF-008-27, RF-015-17): lo que haría quien pulsara
+    «Recalcular lo obsoleto» una y otra vez, en una orden: varias ejecuciones de ``recompute_steps`` (cuyo contrato
+    no cambia: ``test_parameter_changed_while_running``) volviendo a planificar entre ellas."""
+
+    def settled(self, **kw: Any) -> tuple[Any, list[Any]]:
+        """Todo el recálculo de una vez: su resultado y sus pasos (solo el último lleva el resultado)."""
+        progress = list(recompute.recompute_settled_steps(self.project, **kw))
+        outcome = progress[-1].result
+        self.assertIsInstance(outcome, recompute.RecomputeOutcome)
+        self.assertTrue(all(step.result is None for step in progress[:-1]))
+        self.assertEqual({step.phase for step in progress}, {recompute.RECOMPUTE_PHASE})
+        return outcome, progress
+
+    def test_what_becomes_stale_again_is_recomputed_in_the_next_pass_of_the_same_order(self) -> None:
+        """RF-008-26 (T51, H3-2): un parámetro que cambia mientras corre el recálculo deja obsoleto otra vez lo ya
+        recalculado, que ``recompute_steps`` deja para la ejecución siguiente (el contrato de la 008); la orden de una
+        vez planifica de nuevo y lo recalcula **en la misma orden**: ``a`` y ``b``, y ``a`` otra vez (da el mismo
+        contenido: ``b`` queda al día sin recalcularse). Nada queda obsoleto, ni por recalcular, y el progreso no
+        retrocede."""
+        a = self.run_op("res.redo_a", {"res_a": [1.0]}, params=["res.production"])
+        b = self.run_op("res.redo_b", {"res_b": [2.0]}, reads=["res_a"])
+        self.change("res.production", 120000.0)
+        self.values = {"res_a": [1.2], "res_b": [2.4]}
+        self.hooks[b.uid] = lambda: self.change("res.production", 130000.0)
+        outcome, progress = self.settled()
+        new = self.replaced(outcome)
+        self.assertEqual(self.results(outcome), [((a.uid,), DONE), ((b.uid,), DONE), ((new[a.uid],), DONE)])
+        self.assertEqual((outcome.passes, outcome.limit_reached, outcome.cancelled), (2, False, False))
+        self.assertEqual((outcome.remaining.units, outcome.remaining.skipped), ((), ()))
+        self.assertEqual([request.operation_uid for request in self.requests], [a.uid, b.uid, new[a.uid]])
+        self.assertNothingStale(self.stale())
+        done = [step.done for step in progress]
+        self.assertEqual(done, sorted(done), "el progreso no retrocede")
+        self.assertEqual((progress[-1].done, progress[-1].total), (3, 3))
+        self.assertTrue(all(step.done <= step.total for step in progress))
+        again, steps = self.settled()  # ya no hay nada
+        self.assertEqual((again.results, again.passes, [(step.done, step.total) for step in steps]),
+                         ((), 1, [(0, 0), (0, 0)]))
+
+    def test_what_a_pass_refused_or_failed_is_not_tried_again_in_the_next_one(self) -> None:
+        """RF-008-26, RF-008-10, RF-015-17 (T51): una unidad **rechazada** (su entrada cambió sin decidir; lo apoyado en lo
+        descartado) o **fallada** en una pasada sale **una vez** en el resultado y no se vuelve a intentar en la siguiente (ni
+        se ejecuta otra vez la que falla); lo demás sigue: la recalculada cuyo parámetro cambió mientras tanto se rehace."""
+        self.import_input(INPUT_1, "Entrada_1", "res_im1")
+        y = self.run_op("res.redo_a", {"res_y": [1.0]}, params=["res.production"])
+        x = self.run_op("res.redo_b", {"res_x": [2.0]}, reads=["res_im1"], params=["res.density"])
+        g = self.run_op("res.redo_c", {"res_g": [3.0]}, params=["res.density"])
+        self.change("res.production", 120000.0)
+        self.change("res.density", 2.6)
+        self.mark_changed(INPUT_1)  # x se rechaza
+        self.values = {"res_y": [1.5], "res_x": [2.5], "res_g": [3.5]}
+        self.afters[y.uid] = lambda: self.change("res.production", 130000.0)  # y vuelve a quedar obsoleta
+        self.broken = {g.uid}
+        outcome, _progress = self.settled()
+        new_y = self.replaced(outcome)[y.uid]
+        self.assertEqual(self.results(outcome), [((y.uid,), DONE), ((x.uid,), REFUSED), ((g.uid,), FAILED),
+                                                 ((new_y,), DONE)])
+        self.assertEqual(outcome.passes, 2)
+        self.assertEqual([request.operation_uid for request in self.requests], [y.uid, g.uid, new_y],
+                         "la fallada se intentó una vez")
+        self.assertEqual(self.units(outcome.remaining), [(x.uid,), (g.uid,)])
+        self.assertIsNone(self.row(x.uid)["superseded_by"])
+        self.assertIsNone(self.row(g.uid)["superseded_by"])
+
+    def test_a_pass_that_does_nothing_ends_the_order(self) -> None:
+        """RF-008-26, RF-008-27 (T51): sin que nada se pueda recalcular (una entrada cambiada sin decidir) no hay segunda
+        pasada que dé vueltas: una pasada, la unidad rechazada una vez y nada recalculado."""
+        self.import_input(INPUT_1, "Entrada_1", "res_im1")
+        x = self.run_op("res.redo_b", {"res_x": [2.0]}, reads=["res_im1"], params=["res.density"])
+        self.change("res.density", 2.6)
+        self.mark_changed(INPUT_1)
+        outcome, progress = self.settled()
+        self.assertEqual(self.results(outcome), [((x.uid,), REFUSED)])
+        self.assertEqual((outcome.passes, outcome.limit_reached, self.requests), (1, False, []))
+        self.assertEqual(self.units(outcome.remaining), [(x.uid,)])
+        self.assertEqual((progress[-1].done, progress[-1].total), (1, 1))
+
+    def test_the_limit_of_passes_stops_what_never_settles(self) -> None:
+        """RF-008-26 (T51): lo que vuelve a quedar obsoleto en **cada** recálculo no se asienta nunca: el tope de pasadas
+        —por defecto, el doble de las unidades del plan inicial más dos; o ``max_passes``— para la orden con lo
+        hecho (cada recálculo, una vez por pasada), dice que llegó al tope y deja lo que sigue obsoleto (lo recalcula la
+        orden siguiente); con ``max_passes=1`` es una sola ejecución de ``recompute_steps``."""
+        self.run_op("res.redo_a", {"res_a": [1.0]}, params=["res.production"])
+        self.change("res.production", 120000.0)
+        self.values = {"res_a": [1.2]}
+        values = itertools.count(130000.0, 1000.0)
+        self.afters = _Every(lambda: self.change("res.production", next(values)))  # type: ignore[assignment]
+        outcome, _progress = self.settled()
+        self.assertEqual((outcome.passes, outcome.limit_reached, outcome.cancelled), (4, True, False),
+                         "2 × 1 unidad + 2")
+        self.assertEqual([status for _unit, status in self.results(outcome)], [DONE] * 4)
+        self.assertEqual(len(self.requests), 4)
+        self.assertEqual(len(outcome.remaining.units), 1, "lo último recalculado sigue obsoleto")
+        self.requests.clear()
+        for limit in (1, 2):
+            with self.subTest(max_passes=limit):
+                outcome, _progress = self.settled(max_passes=limit)
+                self.assertEqual((outcome.passes, outcome.limit_reached, len(outcome.results), len(self.requests)),
+                                 (limit, True, limit, limit))
+                self.requests.clear()
+        self.afters = {}  # sin el gancho, lo que queda se asienta
+        outcome, _progress = self.settled()
+        self.assertEqual((outcome.limit_reached, outcome.remaining.units), (False, ()))
+        self.assertNothingStale(self.stale())
+
+    def test_cancelling_in_a_later_pass_keeps_what_is_done(self) -> None:
+        """RF-008-26, RNF-015-05 (T51): Esc en una pasada posterior a la primera acaba la unidad en curso y para la orden:
+        ``cancelled``, lo hecho en las dos pasadas queda y lo demás sigue obsoleto, sin tercera pasada."""
+        a = self.run_op("res.redo_a", {"res_a": [1.0]}, params=["res.production"])
+        self.change("res.production", 120000.0)
+        self.values = {"res_a": [1.2]}
+        cancel: list[bool] = []
+        calls = itertools.count(1)
+        values = itertools.count(130000.0, 1000.0)
+
+        def meanwhile() -> None:  # en el segundo recálculo (la segunda pasada), Esc
+            if next(calls) == 2:
+                cancel.append(True)
+            self.change("res.production", next(values))
+
+        self.afters = _Every(meanwhile)  # type: ignore[assignment]
+        outcome, _progress = self.settled(cancelled=lambda: bool(cancel))
+        self.assertEqual((outcome.cancelled, outcome.passes, outcome.limit_reached), (True, 2, False))
+        self.assertEqual(len(outcome.results), 2)
+        self.assertEqual([status for _unit, status in self.results(outcome)], [DONE, DONE])
+        self.assertEqual(len(self.requests), 2)
+        self.assertEqual(len(outcome.remaining.units), 1, "lo demás sigue obsoleto")
+        self.assertEqual(self.row(a.uid)["status"], "done")
+        self.assertEqual(self.column("SELECT count(*) FROM gb_operation WHERE status = 'running'"), [0])
+
+    def test_what_the_plan_leaves_out_is_not_recomputed_in_any_pass(self) -> None:
+        """RF-008-26, RF-008-27 (T51): lo que el plan deja fuera (una operación que no se repite sola y lo que depende de
+        ella) no se recalcula en **ninguna** pasada, como con ``recompute_steps``, aunque haya una segunda pasada para lo
+        demás: sigue obsoleto, con su motivo, en lo que queda."""
+        a = self.run_op("res.redo_a", {"res_a": [1.0]}, params=["res.production"])
+        r = self.run_op("res.digitize", {"res_r": [2.0]}, reads=["res_a"])
+        x = self.run_op("res.redo_b", {"res_x": [3.0]}, reads=["res_r"])
+        e = self.run_op("res.redo_c", {"res_e": [5.0]}, params=["res.density"])
+        self.change("res.production", 120000.0)
+        self.change("res.density", 2.6)
+        self.values = {"res_a": [1.2], "res_e": [5.5]}
+        self.afters[e.uid] = lambda: self.change("res.density", 2.7)  # e vuelve a quedar obsoleta: otra pasada
+        outcome, _progress = self.settled()
+        new = self.replaced(outcome)
+        self.assertEqual(self.results(outcome), [((a.uid,), DONE), ((e.uid,), DONE), ((new[e.uid],), DONE)])
+        self.assertEqual(outcome.passes, 2)
+        self.assertEqual(outcome.remaining.units, ())
+        self.assertEqual({item.operation_uid: item.reason for item in outcome.remaining.skipped},
+                         {r.uid: SkipReason.REVIEW, x.uid: SkipReason.WAITS})
+        for uid in (r.uid, x.uid):
+            self.assertIsNone(self.row(uid)["superseded_by"], "lo que se deja fuera no se recalcula")
+        self.assertEqual([request.operation_uid for request in self.requests], [a.uid, e.uid, new[e.uid]])
+
+    def test_wrong_arguments_and_read_only_are_refused_before_writing(self) -> None:
+        """RF-008-26 (T51): como ``recompute_steps``, al llamarla y sin escribir nada: ``max_passes`` que no es un entero de
+        1 o más, un ámbito que no vale y el proyecto en solo lectura."""
+        for wrong in ("2", 1.5, True):
+            with self.subTest(max_passes=wrong), self.assertRaises(TypeError):
+                recompute.recompute_settled_steps(self.project, max_passes=wrong)
+        for wrong in (0, -1):
+            with self.subTest(max_passes=wrong), self.assertRaises(ValueError):
+                recompute.recompute_settled_steps(self.project, max_passes=wrong)
+        with self.assertRaises(TypeError):
+            recompute.recompute_settled_steps(self.project, scope=3)
+        with self.assertRaises(ValueError):
+            recompute.recompute_settled_steps(self.project, scope="no-es-nada")
+        self.project.set_read_only(project_model.ReadOnlyCode.LOCK_LOST, "prueba")
+        with self.assertRaises(ProvenanceError) as caught:
+            recompute.recompute_settled_steps(self.project)
+        self.assertEqual(caught.exception.code, "core.read_only")
+
+    def test_public_api(self) -> None:
+        """RF-008-26 (plan §5.3.1; T51): ``core.provenance`` reexporta al usarlo ``recompute_settled_steps``."""
+        self.assertIn("recompute_settled_steps", provenance.RECOMPUTE_API)
+        self.assertIn("recompute_settled_steps", provenance.__all__)
+        self.assertIs(provenance.recompute_settled_steps, recompute.recompute_settled_steps)
 
 
 class AcceptReviewTest(RunCase):
