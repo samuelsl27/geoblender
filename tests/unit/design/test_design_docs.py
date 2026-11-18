@@ -170,6 +170,8 @@ PENDING_015_API: frozenset[str] = frozenset({
     "stockpile_figure_scope", "stockpile_figures", "stockpile_inputs", "stockpile_params", "stockpile_request",
     "stockpile_settings", "supported_code", "supported_operation_defs", "supported_values",
     "reproduce_body", "reproduce_buttress", "reproduce_stockpile_detect", "reproduce_stockpile_removal",
+    # La 016, T04: el escritor de proyecto, el registro y los parámetros del ámbito del proyecto.
+    "ProjectDesignWriter", "design_writer", "project_registry", "entity_parameters",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset()
 

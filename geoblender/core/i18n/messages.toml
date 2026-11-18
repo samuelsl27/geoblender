@@ -9370,6 +9370,9 @@ es = "Elija la entidad que se calcula"
 ["Stockpile detection"]
 es = "Detección de acopios"
 
+["Stockpile detection of the project"]
+es = "Detección de acopios del proyecto"
+
 ["Stockpile removal"]
 es = "Retirada de acopio"
 

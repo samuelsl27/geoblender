@@ -27,9 +27,10 @@ constantes del módulo construidas una vez:
   (``design.provenance.ENTITY_FIGURES``); sin las órdenes (T15 y siguientes);
 - lo de la **016** (T03; plan 016 §5.2.2 y §5.2.3): las familias de parámetros de sus cuatro tipos
   (``design.params.SUPPORTED_FAMILIES``: ``des.stockpile.{e}.*``, ``des.removal.{e}.*``, ``des.buttress.{e}.*`` y
-  ``des.body.{e}.*``), sus cuatro tipos de operación de la versión, repetibles (:data:`SUPPORTED_RECOMPUTE`) y
-  reproducibles (:data:`SUPPORTED_REPRODUCE`) y sus cifras (``design.provenance.SUPPORTED_FIGURES``); **sin
-  comportamiento ni órdenes todavía** (las tareas siguientes);
+  ``des.body.{e}.*``), sus cuatro tipos de operación de la versión y, desde la T04, el **de proyecto** de la detección
+  de acopios (``des.stockpile_detect_project``: D-15, el mismo algoritmo con otro ámbito), repetibles
+  (:data:`SUPPORTED_RECOMPUTE`) y reproducibles (:data:`SUPPORTED_REPRODUCE`) y sus cifras
+  (``design.provenance.SUPPORTED_FIGURES``); **sin comportamiento ni órdenes todavía** (las tareas siguientes);
 - sus textos (``design.messages``) en ``core.i18n``.
 
 :func:`register` pone lo que falta y apunta cómo quitarlo; :func:`unregister` quita solo eso, en
@@ -671,19 +672,23 @@ restricciones (RF-015-02); la capa de entidades no (T30)."""
 SUPPORTED_RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = (
     MappingProxyType({
         provenance.STOCKPILE_DETECT: recompute_stockpile_detect,
+        provenance.STOCKPILE_DETECT_PROJECT: recompute_stockpile_detect,
         provenance.STOCKPILE_REMOVAL: recompute_stockpile_removal,
         provenance.BUTTRESS: recompute_buttress,
         provenance.BODY: recompute_body,
     }))
-"""La función de recálculo de cada tipo de la 016 (todos se repiten solos; RF-016-10)."""
+"""La función de recálculo de cada tipo de la 016 (todos se repiten solos; RF-016-10): la detección de versión y la de
+proyecto (T04, D-15) con la misma, el mismo algoritmo en otro ámbito."""
 SUPPORTED_REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]] = (
     MappingProxyType({
         provenance.STOCKPILE_DETECT: reproduce_stockpile_detect,
+        provenance.STOCKPILE_DETECT_PROJECT: reproduce_stockpile_detect,
         provenance.STOCKPILE_REMOVAL: reproduce_stockpile_removal,
         provenance.BUTTRESS: reproduce_buttress,
         provenance.BODY: reproduce_body,
     }))
-"""La función de reproducción de cada tipo de la 016 (los cuatro se reproducen; RF-009-11)."""
+"""La función de reproducción de cada tipo de la 016 (todos se reproducen; RF-009-11): la detección de versión y la de
+proyecto (T04, D-15) con la misma."""
 OPERATION_DEFS: tuple[contract.OperationDef, ...] = (
     *provenance.operation_defs(RECOMPUTE, REPRODUCE), *design_profiles.OPERATIONS,
     *provenance.quarry_operation_defs(QUARRY_RECOMPUTE, QUARRY_REPRODUCE),

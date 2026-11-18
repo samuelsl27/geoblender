@@ -782,8 +782,11 @@ def _not_yet(request: object, op_type: str, task: str) -> Iterator[Progress]:
 
 def reproduce_stockpile_detect(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
                                ) -> Iterator[Progress]:
-    """Reproduce ``des.stockpile_detect`` (RF-016-02, RF-009-11): sin comportamiento todavía (T14)."""
-    return _not_yet(request, provenance.STOCKPILE_DETECT, "la T14")
+    """Reproduce ``des.stockpile_detect`` y ``des.stockpile_detect_project`` (RF-016-02, RF-009-11; T04, D-15: la misma
+    operación en los dos ámbitos): sin comportamiento todavía (T14)."""
+    named = getattr(request, "op_type", None)
+    return _not_yet(request, named if named in provenance.STOCKPILE_DETECT_TYPES else provenance.STOCKPILE_DETECT,
+                    "la T14")
 
 
 def reproduce_stockpile_removal(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S

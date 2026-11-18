@@ -108,6 +108,17 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   (``OperationStart.with_released``; ``recompute_run(released=…)``): su motivo y su decisor van en sus ajustes
   (``provenance.SUPPORTS_RELEASED``, acumulados: :meth:`OperationStart.released_of`), no lleva sus entradas
   (:meth:`OperationStart.carried`) y el gancho no vuelve a registrarla.
+- **La detección de acopios del proyecto** (spec 016, T04; RF-016-02, D-15, H-3; ADR-0031 §2): :class:`ProjectDesignWriter`
+  es el homólogo **de proyecto** de :class:`DesignWriter` (la misma preparación por pasos, los mismos temporales y la
+  misma transacción de escritura), que escribe los datos **sin código de versión en la ruta**
+  (``rasters/des_stb_<det>.tif``, ``des_stk_<det>``: ``DatasetSpec`` con ``version_code`` ``None``) como datos del
+  proyecto, de una operación de **proyecto** (``OperationDef.scope``; los tipos de proyecto de
+  ``design.provenance``: ``des.stockpile_detect_project``). :func:`design_writer` da el escritor del ámbito del tipo.
+  Una operación de proyecto no usa la versión activa y **no puede consumir un dato de versión** (RF-009-05:
+  ``core.version_data_in_project``); una de versión sí consume uno del proyecto. :class:`OperationStart` y
+  :func:`_start` admiten el proyecto (``version_uid`` ``""``; sin máscaras: son de versión). Los parámetros de la entidad
+  se escriben en el ámbito de su operación (``design.entity_store.set_entity_params``, ``version=None``) y el registro
+  del proyecto es :func:`design.entities.project_registry`.
 - Un **nombre** es único en la versión (RF-013-17): el dato ``des_env_<nombre>`` vigente (o el de
   cualquiera de las salidas de su tipo) lo ocupa, salvo que lo escriba la operación a la que la
   nueva sustituye (``supersedes``). Una envolvente y un escalonado pueden llamarse igual.
@@ -131,7 +142,7 @@ from contextlib import closing
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType, TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 
@@ -258,6 +269,7 @@ __all__ = [
     "PreparedQuarry",
     "PreparedRefit",
     "PreparedTransition",
+    "ProjectDesignWriter",
     "QuarryCalculated",
     "QuarryParts",
     "REFIT_SOURCES",
@@ -277,6 +289,7 @@ __all__ = [
     "compute_refit_steps",
     "compute_transition_steps",
     "created_step_steps",
+    "design_writer",
     "edge_report_rows",
     "fill_only_compute_steps",
     "fill_only_report_rows",
@@ -524,24 +537,29 @@ def _written_by(conn: sqlite3.Connection, record: DatasetRecord, operation_uid: 
             or dataset_external.last_writer(conn, record.uid) == operation_uid)
 
 
-def _check_name(conn: sqlite3.Connection, op_type: str, name: str, version: Version,
+def _check_name(conn: sqlite3.Connection, op_type: str, name: str, version: Version | None,
                 replacing: str | None, parts: Sequence[str] = ()) -> None:
     """RF-013-17: ningún dato vigente de la versión tiene ya el nombre de alguna de las salidas de
     ``op_type`` para ``name`` (el mismo nombre en ASCII), salvo uno escrito por la operación
     ``replacing`` a la que sustituye la nueva (la que lo escribió o, si se editó fuera de Geoblender,
     la última de Geoblender que lo escribió: ``core.datasets.external.last_writer``, spec 015, T20).
     Con ``parts`` (un ajuste, T32: una salida de cada familia por parte), las salidas son las de
-    ``f"{name} {parte}"``, y dos partes que dan el mismo nombre también se rechazan.
-    ``DesignError`` ``des.operation_name_repeated``; ``GisError`` ``gis.dataset_name_invalid`` si el
-    nombre no tiene ninguna letra ni cifra."""
+    ``f"{name} {parte}"``, y dos partes que dan el mismo nombre también se rechazan. Sin ``version`` (una operación
+    **de proyecto**, spec 016, T04), el nombre es único entre los datos del proyecto: dos versiones, y una versión y el
+    proyecto, pueden tener un dato con el mismo nombre (spec 009).
+    ``DesignError`` ``des.operation_name_repeated`` (``des.operation_name_repeated_project`` en el proyecto);
+    ``GisError`` ``gis.dataset_name_invalid`` si el nombre no tiene ninguna letra ni cifra."""
     labels = [f"{name} {part}" for part in parts] or [name]
     seen: set[str] = set()
     for family in provenance.OPERATION_TYPES_BY_NAME[op_type].outputs:
         for label in labels:
             dataset = provenance.dataset_name(family, label)
-            record = dataset_registry.get(conn, dataset, version_uid=version.uid)
+            record = dataset_registry.get(conn, dataset, version_uid="" if version is None else version.uid)
             if dataset in seen or (record is not None and record.live
                                    and not _written_by(conn, record, replacing)):
+                if version is None:
+                    raise DesignError("des.operation_name_repeated_project", obj=f"Operación «{name}»",
+                                      field="nombre", value=name, dataset=dataset)
                 raise DesignError("des.operation_name_repeated", obj=f"Operación «{name}»",
                                   field="nombre", value=name, dataset=dataset,
                                   version=version.code)
@@ -565,7 +583,12 @@ class OperationStart:
     versión, los ajustes (JSON), las entradas, los parámetros que lee, las máscaras de las que
     parte (``None``: no parte de ninguna, como la declaración de restricciones de las entidades, que las
     deja obsoletas y no las consume: no se exige que estén al día) y el hash que tenía cada dato que
-    consume cuando se preparó (``seen``: uid → hash)."""
+    consume cuando se preparó (``seen``: uid → hash).
+
+    **De proyecto** (spec 016, T04; D-15): con ``version_uid`` y ``version_code`` vacíos (:attr:`is_project`), la
+    operación es de un tipo de proyecto (``OperationDef.scope``): no tiene versión ni máscaras (son de versión), el
+    nombre es único entre los datos del proyecto, no consume ningún dato de versión (RF-009-05) y no arrastra lo que
+    apoyaba la que sustituye (no se apoya en las entidades de una versión)."""
 
     op_type: str
     name: str
@@ -580,6 +603,11 @@ class OperationStart:
     parts: tuple[str, ...] = ()
     """Las partes de sus salidas, si escribe una de cada familia por parte (un ajuste, T32: la
     de cada superficie, ``provenance.refit_part``); ninguna, una salida por familia."""
+
+    @property
+    def is_project(self) -> bool:
+        """Si es una operación **de proyecto** (sin versión; T04)."""
+        return not self.version_uid
 
     def check_masks(self, project: StoreProject) -> None:
         """RF-013-04: las máscaras de la versión siguen al día; si no, ``MaskError``
@@ -628,7 +656,7 @@ class OperationStart:
         vuelve a medir sobre el resultado nuevo (:meth:`DesignWriter.commit`). Sin ``supersedes``, o sin nada
         que arrastrar, ``self``: una consulta. **No** arrastra lo de una entidad que la operación da por buena sin
         su apoyo (T25; :meth:`released_of`)."""
-        if self.supersedes is None:
+        if self.supersedes is None or self.is_project:
             return self
         with project.read() as conn:
             version = versions_store.require_editable(conn, self.version_uid)
@@ -663,7 +691,7 @@ class OperationStart:
         (``VersionError``, ``ProvenanceError`` si un dato que consume ya no está vigente)."""
         values: dict[str, Any] = {
             "settings": dict(self.settings), "inputs": self.inputs, "params": self.params,
-            "executor": executor, "supersedes": self.supersedes, "version": self.version_uid}
+            "executor": executor, "supersedes": self.supersedes, "version": self.version_uid or None}
         if conn is not None:
             self._check_name(conn)
             values["settings"] = self._released_settings(conn)  # lo que da por bueno, acumulado (T25)
@@ -685,7 +713,7 @@ class OperationStart:
         return handle
 
     def _check_name(self, conn: sqlite3.Connection) -> None:
-        version = versions_store.require_editable(conn, self.version_uid)
+        version = None if self.is_project else versions_store.require_editable(conn, self.version_uid)
         _check_name(conn, self.op_type, self.name, version, self.supersedes, self.parts)
 
     def _check_unchanged(self, handle: OperationHandle) -> None:
@@ -765,14 +793,14 @@ def _loaded_masks(project: StoreProject, version: Version, masks: access.MaskSet
     return _result_of(masks_steps(project, version, masks))
 
 
-def _seen(conn: sqlite3.Connection, uses: Iterable[Use], version: Version) -> dict[str, str]:
+def _seen(conn: sqlite3.Connection, uses: Iterable[Use], version: Version | None) -> dict[str, str]:
     """El uid y el hash de contenido de cada dato que consumirán ``uses`` ahora (el de la
-    versión antes que el del proyecto, como lo resuelve la 008)."""
+    versión antes que el del proyecto, como lo resuelve la 008; sin versión, el del proyecto)."""
     found: dict[str, str] = {}
     for use in uses:
         if use.kind is not ItemKind.DATASET:
             continue
-        record = dataset_registry.get(conn, use.item, version_uid=version.uid)
+        record = dataset_registry.get(conn, use.item, version_uid="" if version is None else version.uid)
         if record is None:
             record = dataset_registry.get(conn, use.item)
         if record is not None:
@@ -780,14 +808,24 @@ def _seen(conn: sqlite3.Connection, uses: Iterable[Use], version: Version) -> di
     return found
 
 
-def _start(project: StoreProject, op_type: str, name: str, version: Version,
+def _start(project: StoreProject, op_type: str, name: str, version: Version | None,
            masks: access.MaskSet | None, settings: Mapping[str, Any], inputs: tuple[Use, ...],
            params: tuple[str, ...], supersedes: str | None, parts: Sequence[str] = ()
            ) -> OperationStart:
+    """Lo que anota al empezar una operación de ``op_type`` en ``version`` (o, sin ella, en el **proyecto**: un tipo de
+    proyecto, spec 016, T04; sin máscaras). ``ValueError`` si el ámbito del tipo no es el de ``version`` (un error del
+    programa: ``begin_operation`` ignoraría la versión de un tipo de proyecto)."""
+    declared = provenance.OPERATION_TYPES_BY_NAME.get(op_type)
+    if declared is not None and (declared.scope == "project") != (version is None):
+        raise ValueError(f"«{op_type}» es de {declared.scope}: "
+                         + ("no lleva versión" if version is None else "necesita versión"))
+    if version is None and masks is not None:
+        raise ValueError("una operación de proyecto no parte de las máscaras de una versión")
     with project.read() as conn:
         _check_name(conn, op_type, name, version, supersedes, parts)
         seen = MappingProxyType(_seen(conn, inputs, version))
-    return OperationStart(op_type, name, version.uid, version.code, dict(settings), inputs,
+    return OperationStart(op_type, name, "" if version is None else version.uid,
+                          "" if version is None else version.code, dict(settings), inputs,
                           params, masks, seen, supersedes, tuple(parts))
 
 
@@ -1337,7 +1375,14 @@ class DesignWriter:
     contexto: al salir sin haber confirmado, borra los temporales (y, de una operación que ya
     empezó, la deja «cancelada» o «fallida»). ``supersedes``: la operación hecha a la que
     sustituye la nueva (puede quedarse con los nombres de sus datos). Rechaza al crearlo lo que no
-    se puede escribir (:func:`require_version`; ``des.operation_name_repeated``)."""
+    se puede escribir (:func:`require_version`; ``des.operation_name_repeated``).
+
+    Es el escritor de los tipos **de versión** (``OperationDef.scope`` ``version``; el de los de proyecto es
+    :class:`ProjectDesignWriter`, spec 016, T04, y :func:`design_writer` da el de su ámbito): uno de proyecto aquí es
+    un error del programa (``ValueError``)."""
+
+    SCOPE: ClassVar[str] = "version"
+    """El ámbito de los tipos de operación que escribe (``OperationDef.scope``)."""
 
     def __init__(self, project: StoreProject, op_type: str, name: str, *, version: str | None,
                  supersedes: str | None = None, handle: OperationHandle | None = None) -> None:
@@ -1345,6 +1390,10 @@ class DesignWriter:
         if found is None:
             raise ValueError(f"«{op_type}» no es un tipo de operación del diseño: es uno de "
                              f"{', '.join(provenance.OPERATION_TYPES_BY_NAME)}")
+        if found.scope != self.SCOPE:
+            raise ValueError(f"«{op_type}» es de {found.scope}: lo escribe "
+                             f"{'ProjectDesignWriter' if found.scope == 'project' else 'DesignWriter'} "
+                             "(design_writer da el escritor de su ámbito)")
         if handle is not None and (not isinstance(handle, OperationHandle)
                                    or handle.op_type != op_type):
             raise ValueError(f"la operación empezada no es una {op_type}")
@@ -1355,16 +1404,25 @@ class DesignWriter:
         self.supersedes = supersedes if handle is None else handle.supersedes
         self._type = found
         with project.read() as conn:
-            record = _editable(conn, version, op_type)
+            record = self._scope_of(conn, version, op_type)
             _check_name(conn, op_type, name, record, self.supersedes)
-        self.version_uid = record.uid
-        self.version_code = record.code
+        self.version_uid: str = "" if record is None else record.uid
+        self.version_code: str | None = None if record is None else record.code
         self._version = record
         self.crs, self.vertical = project_references(project)
         self._grids: dict[str, _Grid] = {}
         self._tables: dict[str, _Table] = {}
         self._vectors: dict[str, _Declared] = {}
         self._committed = self._closed = False
+
+    def _scope_of(self, conn: sqlite3.Connection, version: str | None, op_type: str) -> Version | None:
+        """La versión en la que escribe (``require_version``: editable) o, en el escritor de proyecto, ninguna."""
+        return _editable(conn, version, op_type)
+
+    def _table_titles(self, label: str) -> tuple[str, str]:
+        """El título y la descripción de la tabla ``label`` en el GeoPackage del proyecto."""
+        return (f"{label} {self.name} {self.version_code}",
+                f"{label} «{self.name}» de la versión {self.version_code}, de Geoblender")
 
     @classmethod
     def resume(cls, project: StoreProject, handle: OperationHandle) -> DesignWriter:
@@ -1609,10 +1667,8 @@ class DesignWriter:
             conn.execute(f'DELETE FROM "{spec.locator}"')
         else:
             label = provenance.FAMILIES_BY_CODE[table.family].label
-            create_attribute_table(
-                conn, spec.locator, columns,
-                f"{label} {self.name} {self.version_code}",
-                f"{label} «{self.name}» de la versión {self.version_code}, de Geoblender")
+            title, description = self._table_titles(label)
+            create_attribute_table(conn, spec.locator, columns, title, description)
         insert_rows(conn, spec.locator, _names(columns), table.rows)
 
     def _write_declared(self, conn: sqlite3.Connection, declared: _Declared) -> None:
@@ -1709,6 +1765,7 @@ class DesignWriter:
         results = [grid.values for grid in self._grids.values() if grid.values is not None]
         if not results:
             return start, (), _LateSupports()
+        assert self._version is not None  # un escritor de versión
         with self.project.read() as conn:
             if not _has_entities(conn, self.version_uid):
                 return start, (), _LateSupports()
@@ -1809,20 +1866,66 @@ class DesignWriter:
         return None
 
 
+class ProjectDesignWriter(DesignWriter):
+    """El homólogo **de proyecto** de :class:`DesignWriter` (spec 016, T04; RF-016-02, D-15, H-3; ADR-0031 §2; P-2): el
+    resultado de **una** operación de ``des`` de un tipo de **proyecto** (``OperationDef.scope`` ``project``: la
+    detección de acopios sobre una superficie del proyecto, ``des.stockpile_detect_project``). Es **el mismo escritor**
+    parametrizado por ámbito —los mismos pasos que preparan cada salida en su temporal, la misma transacción que
+    reclama las rutas, instala las rejillas, escribe las tablas y completa, el mismo ``close``—; solo cambia **dónde**
+    escribe: los datos son **del proyecto** (``DatasetSpec`` con ``version_code`` ``None``: la ruta
+    ``rasters/des_stb_<det>.tif`` y la tabla ``des_stk_<det>``, sin el código de la versión; ``version_uid`` vacío) y la
+    operación, de ámbito ``project`` (sin revisión).
+
+    **No usa la versión activa** (como ``begin_operation`` con un tipo de proyecto): ``version`` se ignora, y
+    :attr:`version_uid` es ``""`` y :attr:`version_code`, ``None``. El nombre es único entre los datos **del proyecto**
+    (``des.operation_name_repeated_project``). **No puede consumir un dato de versión** (RF-009-05:
+    ``core.version_data_in_project``, al abrir la operación en :meth:`commit`; una de versión sí consume uno del
+    proyecto). No escribe las capas de versión (las declaradas ni la de entidades) ni mide lo que apoya sobre las
+    entidades de una versión. Un tipo de versión aquí es un error del programa (``ValueError``)."""
+
+    SCOPE: ClassVar[str] = "project"
+
+    def __init__(self, project: StoreProject, op_type: str, name: str, *, version: str | None = None,
+                 supersedes: str | None = None, handle: OperationHandle | None = None) -> None:
+        super().__init__(project, op_type, name, version=version, supersedes=supersedes, handle=handle)
+
+    def _scope_of(self, conn: sqlite3.Connection, version: str | None, op_type: str) -> Version | None:
+        """Ninguna: una operación de proyecto no tiene versión (la activa no cuenta)."""
+        return None
+
+    def _table_titles(self, label: str) -> tuple[str, str]:
+        return f"{label} {self.name}", f"{label} «{self.name}» del proyecto, de Geoblender"
+
+    def _supports(self, start: OperationStart | None
+                  ) -> tuple[OperationStart | None, tuple[FigureSpec, ...], _LateSupports]:
+        """Nada que medir: una operación de proyecto no se apoya en las entidades de una versión (ADR-0030 §4)."""
+        return start, (), _LateSupports()
+
+
+def design_writer(project: StoreProject, op_type: str, name: str, *, version: str | None,
+                  supersedes: str | None = None, handle: OperationHandle | None = None) -> DesignWriter:
+    """El escritor del ámbito del tipo de operación ``op_type`` (spec 016, T04; D-15): :class:`ProjectDesignWriter` si es de
+    proyecto (``version`` se ignora) y :class:`DesignWriter`, con ``version``, si es de versión. Los mismos argumentos
+    y rechazos que los dos (``ValueError`` si ``op_type`` no es un tipo de operación del diseño)."""
+    declared = provenance.OPERATION_TYPES_BY_NAME.get(op_type)
+    writer = ProjectDesignWriter if declared is not None and declared.scope == "project" else DesignWriter
+    return writer(project, op_type, name, version=version, supersedes=supersedes, handle=handle)
+
+
 # --- Recalcular lo obsoleto ---------------------------------------------------------------------
 
 RECOMPUTED: tuple[str, ...] = (*provenance.REPRODUCIBLE, provenance.EXCAVATION_AREA,
                                 provenance.QUARRY, provenance.EDGE_TRANSITION,
                                 provenance.FILL_ONLY, provenance.REFIT, provenance.PLATFORM,
                                 provenance.DECLARE_CONSTRAINTS, provenance.ENTITY_LAYER,
-                                *provenance.SUPPORTED_VERSION_TYPES)
+                                *provenance.SUPPORTED_TYPES)
 """Los tipos que repite «Recalcular lo obsoleto» aquí: los dos de la 013, de la 014 el recinto
 y la cantera (T19), la transición (T28), «solo relleno» (T30) y el ajuste (T32) y, de la 015, la plataforma
 (T14 de la 015; ``design.entity_store.recompute_platform``) y la declaración de restricciones de las
 entidades (T17; ``design.entity_store.recompute_declaration``) y la capa de entidades (T30;
 ``design.entity_store.recompute_entity_layer``) y, de la 016 (T03), los cuatro tipos de entidad
-(:data:`~.provenance.SUPPORTED_VERSION_TYPES`: la detección de acopios, su retirada, el contrafuerte y el cuerpo
-apoyado), **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace (``NotImplementedError``) en vez de
+(:data:`~.provenance.SUPPORTED_TYPES`: la detección de acopios, de versión y **de proyecto** —T04, D-15—, su retirada, el
+contrafuerte y el cuerpo apoyado), **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace (``NotImplementedError``) en vez de
 repetir otra operación."""
 _STORE_PHASE = "store"
 
@@ -3729,7 +3832,7 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
     project: StoreProject = request.project  # type: ignore[assignment]
     if released and request.op_type in (provenance.ENVELOPE, provenance.EXCAVATION_AREA,
                                         provenance.DECLARE_CONSTRAINTS, provenance.ENTITY_LAYER,
-                                        provenance.STOCKPILE_DETECT):
+                                        *provenance.STOCKPILE_DETECT_TYPES):
         raise ValueError(f"«{request.op_type}» no deja una superficie que se apoye en una entidad: no da por "
                          "bueno ningún apoyo")
     if request.op_type == provenance.ENVELOPE:
@@ -3769,9 +3872,10 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         from . import entity_store  # al usarlo: entity_store importa este módulo
 
         return entity_store.recompute_entity_layer(request, budget_s=budget_s)
-    if request.op_type in provenance.SUPPORTED_VERSION_TYPES:
-        # Los cuatro tipos de la 016 (T03): sin cálculo todavía; las tareas que crean cada operación lo ponen aquí
-        # (T14 la detección, T20 la retirada, T27 el contrafuerte y T25 el cuerpo). Nunca cae en un escalonado.
+    if request.op_type in provenance.SUPPORTED_TYPES:
+        # Los tipos de la 016 (T03 y T04): sin cálculo todavía; las tareas que crean cada operación lo ponen aquí
+        # (T14 la detección, de versión y de proyecto, T20 la retirada, T27 el contrafuerte y T25 el cuerpo). Nunca cae
+        # en un escalonado.
         raise NotImplementedError(f"«{request.op_type}» aún no se recalcula: lo hace la tarea de la 016 que crea "
                                   "su operación")
     return run_design(project, provenance.design_request(request.settings),

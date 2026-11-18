@@ -51,10 +51,11 @@ from tests.support.trees import temp_folder
 
 ENTRY = "013"
 ENTRY_TITLE = ("Envelopes and benching", "Envolventes y escalonado")
-COUNTS = {"parámetros": 9, "familias": 95, "operaciones": 15, "grupos": 0, "cifras": 66}
+COUNTS = {"parámetros": 9, "familias": 95, "operaciones": 16, "grupos": 0, "cifras": 66}
 """Lo de ``des`` en ``core``: 2 + 7 definiciones (013 y 014), 6 + 20 + 69 familias (013, 015 y 016; la 20.ª de la 015,
-``discarded``, es de la T25; las 69 de la 016 son las de sus cuatro tipos: 25 + 13 + 14 + 17), 3 + 5 + 3 + 4 tipos de
-operación (013, 014, 015 y 016) y 15 + 15 + 14 + 22 cifras (T04 de la 015; T03 de la 016)."""
+``discarded``, es de la T25; las 69 de la 016 son las de sus cuatro tipos: 25 + 13 + 14 + 17), 3 + 5 + 3 + 5 tipos de
+operación (013, 014, 015 y 016; la 016, con el de la detección del proyecto, T04) y 15 + 15 + 14 + 22 cifras (T04 de la 015;
+T03 de la 016)."""
 OURS = ("des.", "des_")  # las claves de la 013 en los registros de core
 VERSION_TYPES = ("des.envelope", "des.stepped_design")
 PROFILES_TYPE = "des.edit_bench_profiles"
@@ -64,9 +65,14 @@ QUARRY_TYPES = ("des.excavation_area", "des.quarry", "des.edge_transition", "des
 ENTITY_TYPES = ("des.platform", "des.declare_constraints", "des.entity_layer")
 """Los tres tipos de la 015 (T04): de la versión y repetibles; se reproducen los dos primeros (la capa de entidades, T30,
 es una vista regenerable)."""
-SUPPORTED_TYPES = ("des.stockpile_detect", "des.stockpile_removal", "des.buttress", "des.body")
-"""Los cuatro tipos de la 016 (T03): de la versión, repetibles y reproducibles, sin comportamiento todavía."""
+SUPPORTED_TYPES = ("des.stockpile_detect", "des.stockpile_detect_project", "des.stockpile_removal", "des.buttress",
+                   "des.body")
+"""Los cinco tipos de la 016 (T03 y T04): repetibles y reproducibles, sin comportamiento todavía; cuatro de la versión y
+la detección de acopios **del proyecto** (T04, D-15: el mismo algoritmo con otro ámbito)."""
+PROJECT_TYPES_016 = ("des.stockpile_detect_project",)
+"""Los tipos de la 016 que son de ``project`` (el resto, de ``version``)."""
 COMMANDS_016: dict[str, str] = {"des.stockpile_detect": "geoblender.des_detect_stockpiles",
+                                "des.stockpile_detect_project": "geoblender.des_detect_stockpiles",
                                 "des.stockpile_removal": "geoblender.des_remove_stockpile",
                                 "des.buttress": "geoblender.des_add_buttress",
                                 "des.body": "geoblender.des_create_body"}
@@ -87,10 +93,11 @@ REPRODUCED = {"des.envelope": "reproduce_envelope", "des.stepped_design": "repro
               "des.platform": "reproduce_platform",
               "des.declare_constraints": "reproduce_declare_constraints",
               "des.stockpile_detect": "reproduce_stockpile_detect",
+              "des.stockpile_detect_project": "reproduce_stockpile_detect",
               "des.stockpile_removal": "reproduce_stockpile_removal",
               "des.buttress": "reproduce_buttress", "des.body": "reproduce_body"}
 """Los tipos que se reproducen y su función de ``design.reproduce`` (el ajuste de la 014 y la capa de entidades de
-la 015, T30, no se reproducen; los cuatro de la 016, sí)."""
+la 015, T30, no se reproducen; los cinco de la 016, sí)."""
 ENTRY_014 = "014"
 COMMANDS_014: frozenset[str] = frozenset({"geoblender.des_create_limit_from_perimeter",
                                           "geoblender.des_design_quarry",
@@ -379,7 +386,7 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertEqual(sorted(des_ops.QUARRY_REPRODUCE), sorted(QUARRY_TYPES[:4]))
         self.assertEqual(sorted(des_ops.ENTITY_RECOMPUTE), sorted(ENTITY_TYPES))
         self.assertEqual(sorted(des_ops.ENTITY_REPRODUCE), sorted(ENTITY_TYPES[:2]))
-        self.assertEqual(sorted(des_ops.SUPPORTED_RECOMPUTE), sorted(SUPPORTED_TYPES))  # los cuatro de la 016 (T03)
+        self.assertEqual(sorted(des_ops.SUPPORTED_RECOMPUTE), sorted(SUPPORTED_TYPES))  # los cinco de la 016 (T03, T04)
         self.assertEqual(sorted(des_ops.SUPPORTED_REPRODUCE), sorted(SUPPORTED_TYPES))
         recomputed = {**des_ops.RECOMPUTE, **des_ops.QUARRY_RECOMPUTE, **des_ops.ENTITY_RECOMPUTE,
                       **des_ops.SUPPORTED_RECOMPUTE}
@@ -394,8 +401,9 @@ class DesignRegisteredTest(unittest.TestCase):
                 repeats = op_type in (*VERSION_TYPES, *QUARRY_TYPES, *ENTITY_TYPES, *SUPPORTED_TYPES)
                 self.assertEqual((defn.version, defn.group, defn.repeatable),
                                  ("1.0", None, repeats))
-                self.assertEqual(defn.scope, "version" if repeats else "project")
-                self.assertEqual(session.requires_version(op_type), repeats)
+                is_version = repeats and op_type not in PROJECT_TYPES_016  # la detección del proyecto es de proyecto (T04)
+                self.assertEqual(defn.scope, "version" if is_version else "project")
+                self.assertEqual(session.requires_version(op_type), is_version)
                 self.assertTrue(defn.commands)
                 for idname in defn.commands:
                     if idname in PENDING_COMMANDS_016:  # la T35 la da de alta: entonces se quita de PENDING_…
@@ -452,8 +460,11 @@ class DesignRegisteredTest(unittest.TestCase):
                                                    *COMMANDS_016.values()}))
         self.assertEqual(launched["geoblender.des_compute_envelope"], list(VERSION_TYPES))
         self.assertEqual(launched[PLATFORM_COMMAND], list(ENTITY_TYPES))  # RF-015-02 (T04)
+        by_command: dict[str, list[str]] = {}
         for op_type, idname in COMMANDS_016.items():  # una orden por tipo de la 016 (T03); sus clases, la T35
-            self.assertEqual(launched[idname], [op_type])
+            by_command.setdefault(idname, []).append(op_type)
+        for idname, op_types in by_command.items():  # la de la detección lanza sus dos tipos, uno por ámbito (T04, D-15)
+            self.assertEqual(launched[idname], op_types)
         platform = self.cat.commands[PLATFORM_COMMAND]  # de la entrada 015, entregada (T31)
         self.assertEqual((platform.entry, platform.module), (ENTRY_015, "des"))
         self.assertTrue(self.cat.entries[ENTRY_015].delivered)

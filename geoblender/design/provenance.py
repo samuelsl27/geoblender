@@ -132,11 +132,17 @@ operación):
   que las leen la 011, la 012 y R-18 sin importar ``design``: ADR-0031 §3). Su nombre y su ubicación valen **en los dos
   ámbitos**: :func:`dataset_locator` con el código de la versión (``rasters/des_stb_<det>_<mat>_v02.tif``) o con ``None``
   si la detección es del proyecto (``rasters/des_stb_<det>_<mat>.tif``, D-15). :data:`FAMILIES_BY_CODE` las incluye.
-- :data:`SUPPORTED_OPERATION_TYPES`: cuatro tipos de la versión, repetibles y reproducibles
-  (:data:`SUPPORTED_VERSION_TYPES`, :data:`SUPPORTED_REPRODUCIBLE`): ``des.stockpile_detect``
-  (:data:`STOCKPILE_DETECT`), ``des.stockpile_removal`` (:data:`STOCKPILE_REMOVAL`), ``des.buttress``
-  (:data:`BUTTRESS`) y ``des.body`` (:data:`BODY`), con :func:`supported_operation_defs`. **Aviso:** la detección del
-  proyecto (D-15) pide un tipo de **proyecto**, y ``OperationDef.scope`` es uno por tipo: queda para la T04 y la T13.
+- :data:`SUPPORTED_OPERATION_TYPES`: cinco tipos, repetibles y reproducibles (:data:`SUPPORTED_TYPES`,
+  :data:`SUPPORTED_REPRODUCIBLE`): ``des.stockpile_detect`` (:data:`STOCKPILE_DETECT`), ``des.stockpile_detect_project``
+  (:data:`STOCKPILE_DETECT_PROJECT`), ``des.stockpile_removal`` (:data:`STOCKPILE_REMOVAL`), ``des.buttress``
+  (:data:`BUTTRESS`) y ``des.body`` (:data:`BODY`), con :func:`supported_operation_defs`. **La detección tiene dos tipos,
+  uno por ámbito** (spec 016, T04; D-15, ADR-0031 §2; decisión de la sesión principal, 18/11/2026): ``OperationDef.scope``
+  es uno por tipo (contrato de ``core``, spec 009), así que la detección **del proyecto** (sobre una superficie del
+  proyecto) es ``des.stockpile_detect_project``, **de proyecto**, y la de una versión es ``des.stockpile_detect``, **de
+  versión**: el mismo algoritmo, las mismas salidas, los mismos ajustes y cifras, las mismas familias de parámetros y el
+  mismo escritor, parametrizado por ámbito (:class:`~.store.ProjectDesignWriter` junto a :class:`~.store.DesignWriter`).
+  :data:`SUPPORTED_VERSION_TYPES` son los cuatro de versión y :data:`SUPPORTED_PROJECT_TYPES`, el de proyecto;
+  :data:`STOCKPILE_DETECT_TYPES`, los dos de la detección.
 - Los ajustes, lo que consume y los parámetros que lee cada tipo: :func:`stockpile_settings`, :func:`stockpile_request`,
   :func:`stockpile_inputs` y :func:`stockpile_params` y los homólogos de la retirada, el contrafuerte y el cuerpo; los
   valores de la entidad por su código, :func:`supported_values` y :func:`supported_code`. El umbral de la huella (011) y el
@@ -367,6 +373,8 @@ __all__ = [
     "STOCKPILE_CANDIDATES_TABLE",
     "STOCKPILE_COMMAND",
     "STOCKPILE_DETECT",
+    "STOCKPILE_DETECT_PROJECT",
+    "STOCKPILE_DETECT_TYPES",
     "STOCKPILE_FIGURES",
     "STOCKPILE_GROUND_GRID",
     "STOCKPILE_GROUND_ROLE",
@@ -381,7 +389,9 @@ __all__ = [
     "SUPPORTED_M3",
     "SUPPORTED_ON_ROLE",
     "SUPPORTED_OPERATION_TYPES",
+    "SUPPORTED_PROJECT_TYPES",
     "SUPPORTED_REPRODUCIBLE",
+    "SUPPORTED_TYPES",
     "SUPPORTED_VERSION_TYPES",
     "SUPPORT_FIGURES",
     "SUPPORT_FOOTPRINT_ROLE",
@@ -1163,11 +1173,15 @@ la definitiva del plan 015 §5.3.3 (spec 015, T15): sustituye a la clave marcado
 (``geoblender.des_draw_platform``)."""
 
 STOCKPILE_DETECT = "des.stockpile_detect"
+STOCKPILE_DETECT_PROJECT = "des.stockpile_detect_project"
 STOCKPILE_REMOVAL = "des.stockpile_removal"
 BUTTRESS = "des.buttress"
 BODY = "des.body"
-"""Los cuatro tipos de la 016 (spec 016, T03; plan 016 §5.2.3): la detección de acopios, su retirada, el contrafuerte y
-el cuerpo apoyado. «Como plataforma» no es un tipo: es una ``des.platform`` con la huella como geometría (P-3)."""
+"""Los tipos de la 016 (spec 016, T03 y T04; plan 016 §5.2.3): la detección de acopios **de una versión** y **del
+proyecto** (el mismo algoritmo con otro ámbito: D-15, ADR-0031 §2), su retirada, el contrafuerte y el cuerpo apoyado.
+«Como plataforma» no es un tipo: es una ``des.platform`` con la huella como geometría (P-3)."""
+STOCKPILE_DETECT_TYPES: tuple[str, ...] = (STOCKPILE_DETECT, STOCKPILE_DETECT_PROJECT)
+"""Los dos tipos de operación de la detección: de versión y de proyecto (T04)."""
 STOCKPILE_COMMAND = "geoblender.des_detect_stockpiles"
 REMOVAL_COMMAND = "geoblender.des_remove_stockpile"
 BUTTRESS_COMMAND = "geoblender.des_add_buttress"
@@ -1186,7 +1200,8 @@ class OperationType:
     cifras (``figures``), las órdenes que lo lanzan (``commands``; por defecto, :data:`COMMAND`), si
     se reproduce (``reproducible``) y si su recálculo reúne él mismo todo lo vigente que consume
     (``drops_discarded``: la declaración de restricciones, que lee las entidades vivas de la versión;
-    spec 015, T20). Todos son de versión (RF-009-05) y se repiten solos; los que no reúnen ellos mismos lo vigente
+    spec 015, T20). Todos son de versión (RF-009-05; ``scope``) salvo la detección de acopios del proyecto (T04, D-15) y
+    se repiten solos; los que no reúnen ellos mismos lo vigente
     pueden apoyarse en una entidad que se descarta, y entonces su recálculo **espera una decisión** (rehacerlos,
     descartarlos o darlos por buenos, ``entity_store.release_support``: ``OperationDef.offers_release``, T40)."""
 
@@ -1198,6 +1213,9 @@ class OperationType:
     commands: tuple[str, ...] = (COMMAND,)
     reproducible: bool = True
     drops_discarded: bool = False
+    scope: str = "version"
+    """Su ámbito (``OperationDef.scope``: ``version`` o ``project``; spec 016, T04): todos son de versión salvo la
+    detección de acopios del proyecto (:data:`STOCKPILE_DETECT_PROJECT`, D-15)."""
 
     def definition(self, recompute: RecomputeFunction | None = None,
                    reproduce: ReproduceFunction | None = None) -> OperationDef:
@@ -1209,7 +1227,7 @@ class OperationType:
             raise ValueError(f"«{self.op_type}» no se reproduce (depende de lo vigente): no lleva "
                              "función de reproducción")
         return OperationDef(
-            self.op_type, OP_VERSION, MODULE, self.label_msgid, True, scope="version",
+            self.op_type, OP_VERSION, MODULE, self.label_msgid, True, scope=self.scope,
             commands=self.commands, recompute=recompute, settings=self.settings,
             drops_discarded=self.drops_discarded, offers_release=not self.drops_discarded,
             reproduce=reproduce, figure_tolerance=FIGURE_TOLERANCE if reproduce is not None else None)
@@ -1255,6 +1273,10 @@ SUPPORTED_OPERATION_TYPES: tuple[OperationType, ...] = (
                   (STOCKPILES_TABLE, STOCKPILE_CANDIDATES_TABLE, STOCKPILE_BASE_GRID, STOCKPILE_THICKNESS_GRID,
                    STOCKPILE_GROUND_GRID, STOCKPILE_SURFACE_GRID, ENTITY_REPORT_TABLE),
                   (), STOCKPILE_FIGURES, (STOCKPILE_COMMAND,)),
+    OperationType(STOCKPILE_DETECT_PROJECT, "Stockpile detection of the project",
+                  (STOCKPILES_TABLE, STOCKPILE_CANDIDATES_TABLE, STOCKPILE_BASE_GRID, STOCKPILE_THICKNESS_GRID,
+                   STOCKPILE_GROUND_GRID, STOCKPILE_SURFACE_GRID, ENTITY_REPORT_TABLE),
+                  (), STOCKPILE_FIGURES, (STOCKPILE_COMMAND,), scope="project"),
     OperationType(STOCKPILE_REMOVAL, "Stockpile removal",
                   (ENTITY_SURFACE_GRID, ENTITY_TABLE, ENTITY_REPORT_TABLE),
                   (), (*REMOVAL_FIGURES, *SUPPORT_FIGURES), (REMOVAL_COMMAND,)),
@@ -1273,7 +1295,9 @@ coronación) y su informe; el cuerpo, su espesor disperso y, «sobre una base»,
 base dispersa. La retirada y el contrafuerte dejan también ``des.supported_m3`` (lo que apoyan: ADR-0031 §4).
 
 **La detección del proyecto** (D-15; ADR-0031 §2) es la misma operación con otro escritor, pero ``OperationDef.scope`` es
-uno por tipo (``version``): un tipo de proyecto con el mismo cálculo lo resuelven la T04 y la T13."""
+uno por tipo: el segundo tipo de la detección, :data:`STOCKPILE_DETECT_PROJECT`, **de proyecto**, tiene las mismas salidas, los
+mismos ajustes y las mismas cifras que el de versión (spec 016, T04; decisión de la sesión principal, 18/11/2026). Los
+parámetros no tienen el problema: una familia de versión admite el valor del proyecto."""
 OPERATION_TYPES_BY_NAME: Mapping[str, OperationType] = MappingProxyType(
     {declared.op_type: declared
      for declared in (*OPERATION_TYPES, *QUARRY_OPERATION_TYPES, *ENTITY_OPERATION_TYPES,
@@ -1295,10 +1319,14 @@ ENTITY_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in ENTITY_OPERATION
                                              if t.reproducible)
 """Los tipos de la 015 que se reproducen: la plataforma y la declaración de restricciones (RF-015-02: bit a bit
 desde una revisión congelada, con :data:`FIGURE_TOLERANCE` en las cifras). La capa de entidades no (T30)."""
-SUPPORTED_VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in SUPPORTED_OPERATION_TYPES)
-"""Los tipos de versión de la 016, que se repiten solos (RF-016-10)."""
+SUPPORTED_TYPES: tuple[str, ...] = tuple(t.op_type for t in SUPPORTED_OPERATION_TYPES)
+"""Todos los tipos de la 016, de versión y de proyecto, en su orden: los que se repiten solos (RF-016-10)."""
+SUPPORTED_VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in SUPPORTED_OPERATION_TYPES if t.scope == "version")
+"""Los tipos de versión de la 016."""
+SUPPORTED_PROJECT_TYPES: tuple[str, ...] = tuple(t.op_type for t in SUPPORTED_OPERATION_TYPES if t.scope == "project")
+"""Los tipos de proyecto de la 016 (T04): la detección de acopios sobre una superficie del proyecto (D-15)."""
 SUPPORTED_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in SUPPORTED_OPERATION_TYPES if t.reproducible)
-"""Los tipos de la 016 que se reproducen: los cuatro (bit a bit desde una revisión congelada, con
+"""Los tipos de la 016 que se reproducen: todos (bit a bit desde una revisión congelada, con
 :data:`FIGURE_TOLERANCE` en las cifras)."""
 
 
@@ -1358,10 +1386,10 @@ def entity_operation_defs(recompute: Mapping[str, RecomputeFunction],
 
 def supported_operation_defs(recompute: Mapping[str, RecomputeFunction],
                              reproduce: Mapping[str, ReproduceFunction]) -> tuple[OperationDef, ...]:
-    """Los ``OperationDef`` de los cuatro tipos de la 016 (spec 016, T03), en su orden: cada uno con su función de
-    ``recompute`` (todos se repiten solos) y de ``reproduce`` (:data:`SUPPORTED_REPRODUCIBLE`: los cuatro).
-    ``ValueError`` si sobra o falta alguna."""
-    _check_functions("recálculo", recompute, SUPPORTED_VERSION_TYPES)
+    """Los ``OperationDef`` de los cinco tipos de la 016 (spec 016, T03 y T04), en su orden (los dos de la detección,
+    el de versión y el de proyecto, juntos): cada uno con su función de ``recompute`` (todos se repiten solos) y de
+    ``reproduce`` (:data:`SUPPORTED_REPRODUCIBLE`: todos). ``ValueError`` si sobra o falta alguna."""
+    _check_functions("recálculo", recompute, SUPPORTED_TYPES)
     _check_functions("reproducción", reproduce, SUPPORTED_REPRODUCIBLE)
     return tuple(declared.definition(recompute[declared.op_type], reproduce[declared.op_type])
                  for declared in SUPPORTED_OPERATION_TYPES)

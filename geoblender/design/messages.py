@@ -513,6 +513,15 @@ CATALOG: tuple[Message, ...] = (
         "ni se registra nada.",
     ),
     Message(
+        "des.operation_name_repeated_project",
+        "«{value}» is already the name of an operation of the design in the project: its data "
+        "«{dataset}» is alive. Choose another name, or recalculate that operation; nothing is "
+        "calculated or recorded.",
+        "«{value}» ya es el nombre de una operación del diseño en el proyecto: su dato "
+        "«{dataset}» está vigente. Elija otro nombre, o recalcule esa operación; no se calcula "
+        "ni se registra nada.",
+    ),
+    Message(
         "des.input_changed",
         "«{value}» changed after the calculation started, so the result no longer matches it. "
         "Calculate again; nothing is recorded.",

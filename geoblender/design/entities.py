@@ -47,6 +47,14 @@ calcular, al día, obsoleta (con sus causas, de la caché ``gb_stale``), descart
 que escribió están descartados) o «apoyo retirado» (consumió, como ``surface`` o ``supported_on``,
 un dato descartado).
 
+**Los dos ámbitos** (spec 016, T04; D-15, H-3; ADR-0031 §2): la detección de acopios es **del proyecto** si su superficie lo
+es y de la versión si no, con dos tipos de operación (``EntityType.op_type`` y ``project_op_type``) y los parámetros de
+su familia en el ámbito de la operación. :func:`registry` sigue siendo el de **una versión** (sus parámetros propios) y
+:func:`project_registry`, el del **proyecto** (los parámetros del proyecto de los tipos que tienen una operación de
+proyecto): el código ``<PREFIJO>-nnn`` es correlativo **por ámbito** (``STK-001`` en el proyecto y en cada versión) y cada
+:class:`EntityRecord` dice de cuál es (``scope``). Una operación de versión deja en el proyecto filas «sin confirmar» de las
+claves que lee (``docs/trampas.md`` §6): en el registro del proyecto **no son una entidad** —sin nombre, no hay entidad—.
+
 **La zona que declara una entidad** (T16; RF-012-29, RF-015-10; A8; D-23): :func:`declared_zone` (de
 una máscara) y :func:`declared_zone_of_runs` (de los tramos de fila de ``des_epr_``) dan el
 :class:`DeclaredZone` de una huella: **un polígono por componente 4-conexa**, con sus huecos, válido
@@ -92,7 +100,7 @@ import numpy as np
 
 from ..core.datasets.model import DatasetStatus
 from ..core.i18n import LANGUAGES, translate
-from ..core.params import VERSION_SCOPE, ParameterStore, parameter_label
+from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, parameter_label
 from ..core.provenance.graph import DATASET, Cause, CauseKind
 from ..core.provenance.stale import OPERATION as STALE_OPERATION
 from ..core.provenance.stale import item_causes, item_text
@@ -120,6 +128,7 @@ from .provenance import (
     OPERATION_TYPES_BY_NAME,
     PLATFORM,
     STOCKPILE_DETECT,
+    STOCKPILE_DETECT_PROJECT,
     STOCKPILE_REMOVAL,
     STOCKPILE_SURFACE_ROLE,
     STOCKPILES_ROLE,
@@ -169,6 +178,7 @@ __all__ = [
     "next_code",
     "operation_reason",
     "predecessor_of",
+    "project_registry",
     "ref_code",
     "register_entity_type",
     "registered_types",
@@ -236,7 +246,9 @@ class EntityType:
     retirado») y los papeles con que su operación escribe la superficie y la tabla en las que se apoya otra
     (``surface_role`` y ``table_role``; sin ellos, el tipo no deja una superficie en la que apoyarse).
 
-    Un tipo cuya familia no tiene ``start`` es un tipo **sin cadena** (:attr:`chained`)."""
+    Un tipo cuya familia no tiene ``start`` es un tipo **sin cadena** (:attr:`chained`). Un tipo **del proyecto o de la
+    versión según su superficie** (la detección de acopios, D-15; spec 016, T04) tiene dos tipos de operación con el
+    mismo algoritmo: ``op_type``, el de versión, y ``project_op_type``, el de proyecto (:attr:`op_types`)."""
 
     params: EntityParams
     op_type: str
@@ -244,6 +256,7 @@ class EntityType:
     removed: str
     surface_role: str | None = None
     table_role: str | None = None
+    project_op_type: str | None = None
 
     @property
     def kind(self) -> str:
@@ -264,6 +277,11 @@ class EntityType:
     def chained(self) -> bool:
         """Si encadena: tiene ``start``. Sin él, es un tipo sin cadena."""
         return self.params.chained
+
+    @property
+    def op_types(self) -> tuple[str, ...]:
+        """Sus tipos de operación: el de versión y, si el tipo también se crea en el proyecto, el de proyecto."""
+        return (self.op_type,) if self.project_op_type is None else (self.op_type, self.project_op_type)
 
 
 _TYPES: dict[str, EntityType] = {}
@@ -326,7 +344,7 @@ _TYPES["platform"] = EntityType(
     ENTITY_SURFACE_ROLE, ENTITY_ROLE)
 _TYPES["stockpile"] = EntityType(
     entity_params("stockpile"), STOCKPILE_DETECT, "des.stockpile_declared_reason", "des.stockpile_support_removed",
-    STOCKPILE_SURFACE_ROLE, STOCKPILES_ROLE)
+    STOCKPILE_SURFACE_ROLE, STOCKPILES_ROLE, STOCKPILE_DETECT_PROJECT)
 _TYPES["removal"] = EntityType(
     entity_params("removal"), STOCKPILE_REMOVAL, "des.removal_declared_reason", "des.removal_support_removed",
     ENTITY_SURFACE_ROLE, ENTITY_ROLE)
@@ -409,7 +427,11 @@ class EntityRecord:
 
     Una entidad sin nombre se rechaza (``DesignError`` ``des.entity_name_missing``); un código que
     no es de su tipo, o una partida en una entidad de un tipo sin cadena (que no tiene ``start``), es un
-    error del programa (:class:`ValueError`)."""
+    error del programa (:class:`ValueError`).
+
+    ``scope`` (spec 016, T04; D-15): el ámbito de la entidad, el del tipo de la operación que la crea: ``version`` (la
+    de siempre) o ``project`` (la detección de acopios sobre una superficie del proyecto). El código es correlativo y
+    único **por ámbito**."""
 
     code: str
     name: str
@@ -417,8 +439,11 @@ class EntityRecord:
     start: str | None = None
     support: str | None = None
     state: EntityState | str = EntityState.UNCALCULATED
+    scope: str = VERSION_SCOPE
 
     def __post_init__(self) -> None:
+        if self.scope not in (PROJECT_SCOPE, VERSION_SCOPE):
+            raise ValueError(f"el ámbito de una entidad es {PROJECT_SCOPE} o {VERSION_SCOPE}, no {self.scope!r}")
         kind = EntityKind(self.kind)
         object.__setattr__(self, "kind", kind)
         object.__setattr__(self, "state", EntityState(self.state))
@@ -843,6 +868,11 @@ _OPERATION_ROWS = (
     "JOIN gb_operation_param AS p ON p.operation_uid = o.uid "
     "WHERE r.version_uid = ? AND o.op_type = ? AND o.status = 'done' "
     "AND o.superseded_by IS NULL AND p.key LIKE ?")
+_PROJECT_OPERATION_ROWS = (
+    "SELECT o.uid, o.fid, p.key FROM gb_operation AS o "
+    "JOIN gb_operation_param AS p ON p.operation_uid = o.uid "
+    "WHERE o.scope = 'project' AND o.op_type = ? AND o.status = 'done' "
+    "AND o.superseded_by IS NULL AND p.key LIKE ?")
 _DATASET_ROWS = (
     "SELECT io.operation_uid, io.direction, io.role, io.item_uid, d.status "
     "FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
@@ -866,10 +896,12 @@ class EntityEntry:
 @dataclass(frozen=True, slots=True)
 class EntityRegistry:
     """Las entidades de la versión de código ``version``, por código (``PLT-001``, ``PLT-002``…),
-    cada una como :class:`EntityEntry`; las de cada tipo juntas y en el orden de su numeración."""
+    cada una como :class:`EntityEntry`; las de cada tipo juntas y en el orden de su numeración. Con ``scope``
+    ``project`` (:func:`project_registry`; T04, D-15), las del **proyecto**: ``version`` es ``""``."""
 
     version: str
     entries: tuple[EntityEntry, ...]
+    scope: str = VERSION_SCOPE
 
     @property
     def records(self) -> tuple[EntityRecord, ...]:
@@ -950,6 +982,19 @@ def registry(project: Any, version: str, *, conn: sqlite3.Connection | None = No
         return _registry(project, reading, _version(reading, version))
 
 
+def project_registry(project: Any, *, conn: sqlite3.Connection | None = None) -> EntityRegistry:
+    """Las entidades del **proyecto** (spec 016, T04; D-15, H-3; ADR-0031 §2), leídas sin escribir: las de los tipos que
+    tienen una operación de proyecto (``EntityType.project_op_type``: la detección de acopios), cada código con
+    parámetros ``des.<tipo>.{e}.*`` **del proyecto** y **con nombre**, su operación vigente (la última hecha y sin
+    sustituir de ``project_op_type`` que leyó sus parámetros) y su estado, deducido del grafo como el de
+    :func:`registry`. El código es correlativo **por ámbito**: ``STK-001`` es la primera del proyecto y también la primera
+    de cada versión. Las filas «sin confirmar» que una operación de **versión** deja en el proyecto (``begin_operation``
+    crea la de cada clave que lee: ``docs/trampas.md`` §6) **no son una entidad**: sin nombre, no hay entidad.
+    ``conn``, como en :func:`registry`."""
+    with _snapshot(project, conn) as reading:
+        return _registry(project, reading, None)
+
+
 def _version(conn: sqlite3.Connection, version: str) -> Version:
     """La versión ``version`` (uid o código) leída con ``conn``; :class:`TypeError` si no es un texto y
     :class:`~core.versions.model.VersionError` (``core.version_unknown``) si no existe."""
@@ -961,41 +1006,53 @@ def _version(conn: sqlite3.Connection, version: str) -> Version:
     return found
 
 
-def _text(store: ParameterStore, conn: sqlite3.Connection, version: Version, code: str,
+def _text(store: ParameterStore, conn: sqlite3.Connection, version: Version | None, code: str,
           param: PlatformParam) -> str | None:
-    """El valor de texto del parámetro ``param`` de la entidad ``code`` propio de ``version``;
+    """El valor de texto del parámetro ``param`` de la entidad ``code`` propio de ``version`` (sin ella, del proyecto);
     ``None`` si no tiene fila o no tiene valor."""
-    row = store.get(entity_key(code, param), version=version.uid, conn=conn)
+    row = store.get(entity_key(code, param), version=None if version is None else version.uid, conn=conn)
     return None if row is None or row.value is None else str(row.value)
 
 
-def _texts(store: ParameterStore, conn: sqlite3.Connection, version: Version, codes: Iterable[str],
+def _texts(store: ParameterStore, conn: sqlite3.Connection, version: Version | None, codes: Iterable[str],
            param: PlatformParam) -> dict[str, str | None]:
     """:func:`_text` de muchas entidades a la vez (T45; el coste de ``mask_state`` con 200 entidades): el valor de
-    texto del parámetro ``param`` propio de ``version`` de cada código de ``codes``, ``None`` si no tiene fila o no
-    tiene valor. La versión y las filas se leen con **una** consulta por trozo de claves (``resolve_many``), no con
-    tres por entidad."""
+    texto del parámetro ``param`` propio de ``version`` (sin ella, del proyecto) de cada código de ``codes``, ``None`` si
+    no tiene fila o no tiene valor. La versión y las filas se leen con **una** consulta por trozo de claves
+    (``resolve_many``), no con tres por entidad."""
     keys = {entity_key(code, param): code for code in codes}
-    found = store.resolve_many(conn, tuple(keys), (VERSION_SCOPE,), version=version.uid) if keys else {}
+    found: dict[str, Any] = {}
+    if keys:
+        found = (store.resolve_many(conn, tuple(keys), (PROJECT_SCOPE,)) if version is None
+                 else store.resolve_many(conn, tuple(keys), (VERSION_SCOPE,), version=version.uid))
     return {code: None if (row := found.get(key)) is None or row.value is None else str(row.value)
             for key, code in keys.items()}
 
 
-def _registry(project: Any, conn: sqlite3.Connection, version: Version) -> EntityRegistry:
+def _registry(project: Any, conn: sqlite3.Connection, version: Version | None) -> EntityRegistry:
+    """El registro de ``version`` o, sin ella, del proyecto (:func:`project_registry`): el mismo recorrido de los tipos
+    registrados con sus parámetros y su operación en el ámbito que toca."""
     store = ParameterStore(project)
+    scope, scope_uid = (PROJECT_SCOPE, "") if version is None else (VERSION_SCOPE, version.uid)
     entries: list[EntityEntry] = []
     for spec in registered_types():
+        op_type = spec.op_type if version is not None else spec.project_op_type
+        if op_type is None:  # un tipo que no se crea en el proyecto no tiene entidades en él
+            continue
         kind, prefix = EntityKind(spec.kind), spec.key_prefix
         keys = [str(key) for (key,) in conn.execute(
-            _PARAMETER_ROWS, (VERSION_SCOPE, version.uid, f"{prefix}.%")).fetchall()]
+            _PARAMETER_ROWS, (scope, scope_uid, f"{prefix}.%")).fetchall()]
         codes = {code for key in keys if (code := _segment_of(key, prefix)) is not None
                  and code.startswith(f"{spec.prefix}-")}
+        names = _texts(store, conn, version, codes, PlatformParam.NAME)
+        if version is None:  # las filas «sin confirmar» que dejó una operación de versión no son una entidad
+            codes = {code for code in codes if (names[code] or "").strip()}
         flagged = {code for key in keys if key.endswith(_DISCARDED_SUFFIX)
                    and (code := _segment_of(key, prefix)) is not None and code in codes
                    and _is_discarded(store, conn, version, code)}
-        operations = _operations(conn, version, prefix, spec.op_type)
+        operations = (_operations(conn, version, prefix, op_type) if version is not None
+                      else _project_operations(conn, prefix, op_type))
         links = _links(conn, operations.values())
-        names = _texts(store, conn, version, codes, PlatformParam.NAME)
         # Un tipo sin cadena no tiene ``start``; uno sin ``support``, tampoco (no hay fila que leer).
         starts = (_texts(store, conn, version, codes, PlatformParam.START) if spec.chained
                   else dict.fromkeys(codes))
@@ -1011,19 +1068,20 @@ def _registry(project: Any, conn: sqlite3.Connection, version: Version) -> Entit
             state, causes, retired = _deduce(conn, uid, links.get(uid, ()) if uid else (),
                                              discarded=code in flagged)
             entries.append(EntityEntry(
-                EntityRecord(code, name, kind, starts[code], supports[code], state),
+                EntityRecord(code, name, kind, starts[code], supports[code], state, scope),
                 uid, causes, retired))
-    return EntityRegistry(version.code, tuple(entries))
+    return EntityRegistry("" if version is None else version.code, tuple(entries), scope)
 
 
 _DISCARDED_SUFFIX = f".{PlatformParam.DISCARDED.value}"
 """El final de la clave del parámetro que descarta una entidad sin calcular (``des.platform.plt_001.discarded``)."""
 
 
-def _is_discarded(store: ParameterStore, conn: sqlite3.Connection, version: Version, code: str) -> bool:
-    """Si la entidad ``code`` está descartada por su parámetro de versión ``discarded`` (verdadero): lo que descarta
-    una entidad sin calcular (T25; RF-015-17). Sin fila, falso."""
-    row = store.get(entity_key(code, PlatformParam.DISCARDED), version=version.uid, conn=conn)
+def _is_discarded(store: ParameterStore, conn: sqlite3.Connection, version: Version | None, code: str) -> bool:
+    """Si la entidad ``code`` está descartada por su parámetro ``discarded`` propio de ``version`` (sin ella, del
+    proyecto) verdadero: lo que descarta una entidad sin calcular (T25; RF-015-17). Sin fila, falso."""
+    row = store.get(entity_key(code, PlatformParam.DISCARDED), version=None if version is None else version.uid,
+                    conn=conn)
     return row is not None and row.value is True
 
 
@@ -1033,6 +1091,17 @@ def _operations(conn: sqlite3.Connection, version: Version, prefix: str, op_type
     sustituir de tipo ``op_type`` en las revisiones de ``version`` que leyó un parámetro suyo."""
     latest: dict[str, tuple[int, str]] = {}
     for uid, fid, key in conn.execute(_OPERATION_ROWS, (version.uid, op_type, f"{prefix}.%")):
+        code = _segment_of(str(key), prefix)
+        if code is not None and (code not in latest or int(fid) > latest[code][0]):
+            latest[code] = (int(fid), str(uid))
+    return {code: uid for code, (_fid, uid) in latest.items()}
+
+
+def _project_operations(conn: sqlite3.Connection, prefix: str, op_type: str) -> dict[str, str]:
+    """Código de entidad → uid de su operación vigente **de proyecto** (T04): la última hecha (por ``fid``) y sin
+    sustituir de tipo ``op_type`` (``scope`` ``project``) que leyó un parámetro suyo."""
+    latest: dict[str, tuple[int, str]] = {}
+    for uid, fid, key in conn.execute(_PROJECT_OPERATION_ROWS, (op_type, f"{prefix}.%")):
         code = _segment_of(str(key), prefix)
         if code is not None and (code not in latest or int(fid) > latest[code][0]):
             latest[code] = (int(fid), str(uid))

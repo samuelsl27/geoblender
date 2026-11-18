@@ -212,6 +212,7 @@ from ..core.datasets import registry as dataset_registry
 from ..core.datasets.model import FINAL_STATUSES, DatasetStatus
 from ..core.errors import GeoblenderError
 from ..core.params import (
+    DEFAULT_DECIDER,
     PROJECT_SCOPE,
     VERSION_SCOPE,
     ParameterRecord,
@@ -255,6 +256,8 @@ from .params import (
     PlatformParam,
     check_entity_param,
     entity_key,
+    entity_params,
+    entity_params_of,
     entity_segment,
     parse_entity_key,
 )
@@ -353,6 +356,7 @@ __all__ = [
     "discard_plan",
     "entity_layer_rows_steps",
     "entity_layer_steps",
+    "entity_parameters",
     "entity_request",
     "entity_surfaces",
     "entity_values",
@@ -416,10 +420,11 @@ class EntityParamRow:
     su procedencia (RF-008-01): el ``source`` (el origen, «capa X, campo Y, entidad Z» si se copió
     de la capa), su clase (``source_kind``: ``person``; ``algorithm`` el valor por defecto de su
     definición) y el ``reason`` de la fila nueva. Siempre ADOPTADO; el decisor es quien la escribe
-    (:func:`set_entity_params`)."""
+    (:func:`set_entity_params`). De **cualquier tipo** de entidad (spec 016, T04): ``des.<tipo>.{e}.<valor>``, con
+    ``param`` el valor de su familia (un :class:`~.params.PlatformParam` o, de otro tipo, su nombre)."""
 
     key: str
-    param: PlatformParam
+    param: PlatformParam | str
     value: float | str | bool
     source: str
     source_kind: str
@@ -1215,7 +1220,35 @@ def prepare_platform(project: StoreProject, request: PlatformRequest, *, version
 # --- Escribir los parámetros --------------------------------------------------------------------
 
 
-def set_entity_params(project: StoreProject, rows: Iterable[EntityParamRow], *, version: str,
+def _row_kind(row: EntityParamRow) -> str:
+    """El tipo del valor de ``row`` (MEDIDO, ADOPTADO o HIPÓTESIS): el de la plantilla de su familia, la del tipo de su
+    clave (``des.<tipo>.{e}.<valor>``). ``ValueError`` si no es la clave de un valor de una entidad."""
+    found = parse_entity_key(row.key)
+    if found is None:
+        raise ValueError(f"«{row.key}» no es la clave de un valor de una entidad (des.<tipo>.<código>.<valor>)")
+    return entity_params(found[1]).template(found[2]).kind
+
+
+def _write_param(store: ParameterStore, target: sqlite3.Connection, row: EntityParamRow, who: str,
+                 decided_at: Any, version: str | None) -> ParameterRecord:
+    """Escribe ``row`` en ``version`` o, sin ella, **en el proyecto** (T04). Una fila del proyecto que ya existe **sin
+    confirmar y con el decisor por defecto** la dejó ``begin_operation`` al abrir la operación de una entidad **de una
+    versión** del mismo código (``docs/trampas.md`` §6: crea la de cada clave que lee): no es una entidad y no impide
+    crear la del proyecto, así que se convierte en la de la persona (``ParameterStore.change``: queda su historial, el
+    valor por defecto y el cambio). Cualquier otra fila que exista no se pisa (``core.param_exists``)."""
+    kind = _row_kind(row)
+    if version is None:
+        existing = store.get(row.key, conn=target)
+        if existing is not None and existing.unconfirmed and existing.decided_by == DEFAULT_DECIDER:
+            return store.change(
+                target, row.key, value=row.value, kind=kind, source=row.source, source_kind=row.source_kind,
+                decided_by=who, decided_at=decided_at, reason=row.reason)
+    return store.create(
+        target, row.key, row.value, kind=kind, source=row.source, source_kind=row.source_kind, decided_by=who,
+        decided_at=decided_at, reason=row.reason, version=version)
+
+
+def set_entity_params(project: StoreProject, rows: Iterable[EntityParamRow], *, version: str | None,
                       decided_by: str | None = None, decided_at: Any = None,
                       conn: sqlite3.Connection | None = None) -> tuple[ParameterRecord, ...]:
     """Escribe ``rows`` (``PreparedPlatform.rows``) como **parámetros de la versión** ``version`` (uid
@@ -1227,16 +1260,19 @@ def set_entity_params(project: StoreProject, rows: Iterable[EntityParamRow], *, 
     todos de la versión (también los de los valores por defecto: sin su fila, los crearía en el
     proyecto; trampa de la T04). Con ``conn`` (la transacción de quien llama, la del ``commit``), en
     ella; si no, en una propia. Devuelve las filas escritas. ``ParamError`` ``core.param_exists`` si
-    la entidad ya tiene alguna (no se pisa nada), ``VersionError`` si la versión no se edita."""
+    la entidad ya tiene alguna (no se pisa nada), ``VersionError`` si la versión no se edita.
+
+    **En el ámbito de la operación** (spec 016, T04; D-15, H-3): ``version`` ``None`` escribe **los parámetros del
+    proyecto**, los de una entidad cuya operación es de proyecto (la detección de acopios sobre una superficie del
+    proyecto), con las mismas filas y la misma procedencia; y las filas **de cualquier tipo** de entidad (la clave dice
+    el tipo: ``des.stockpile.stk_001.margin_m``). Las filas «sin confirmar» que una operación de versión dejó en el
+    proyecto con el mismo código se convierten en las de la entidad (:func:`_write_param`)."""
     items = tuple(rows)
     store = ParameterStore(project)
     who = decided_by or project.session.user_host
 
     def write(target: sqlite3.Connection) -> tuple[ParameterRecord, ...]:
-        return tuple(store.create(
-            target, row.key, row.value, kind=PLATFORM_PARAMS[row.param.value].kind,
-            source=row.source, source_kind=row.source_kind, decided_by=who,
-            decided_at=decided_at, reason=row.reason, version=version) for row in items)
+        return tuple(_write_param(store, target, row, who, decided_at, version) for row in items)
 
     if conn is not None:
         return write(conn)
@@ -1979,18 +2015,30 @@ def create_platform(project: StoreProject, writer: DesignWriter, prepared: Prepa
 # --- Recalcular (spec 015, T14; RF-015-02, RF-015-16, RF-008-26) ---------------------------------
 
 
+def entity_parameters(project: StoreProject, code: str, *, version: Version | None = None) -> dict[str, Any]:
+    """Los parámetros vigentes de la entidad de código ``code`` (de cualquier tipo registrado) **en su ámbito** (spec 016,
+    T04; D-15, H-3), por último segmento de su clave (:func:`~.provenance.supported_values`): los resuelve una operación
+    que empezara ahora, sin los que no tienen valor. En una ``version``, el de la fila de la versión y, si no la tiene,
+    el del proyecto (versión → proyecto, RF-009-24); **sin versión, el del proyecto** (la detección de acopios de una
+    superficie del proyecto). Es la definición de la entidad (sus parámetros, no la capa ni los ajustes de la operación
+    anterior) con la que se recalcula. Solo lee. ``ValueError`` si ``code`` no es el de una entidad de un tipo
+    registrado."""
+    keys = {entity_key(code, name): name for name in entity_params_of(code).names}
+    store = ParameterStore(project)
+    with project.read() as conn:
+        found = (store.resolve_many(conn, tuple(keys), (PROJECT_SCOPE,)) if version is None
+                 else store.resolve_many(conn, tuple(keys), (VERSION_SCOPE, PROJECT_SCOPE), version=version.uid))
+    return {name: item.value for key, name in keys.items()
+            if (item := found.get(key)) is not None and item.value is not None}
+
+
 def platform_parameters(project: StoreProject, version: Version, code: str) -> dict[str, Any]:
     """Los parámetros vigentes de la entidad de código ``code`` en la versión ``version``, por último
     segmento de su clave (:func:`~.provenance.platform_values`): los resuelve una operación que empezara
     ahora (el de la fila de la versión y, si no la tiene, el del proyecto), sin los que no tienen valor.
     Es la definición de la entidad (RF-015-01: sus parámetros de versión, no la capa ni los ajustes de la
-    operación anterior) con la que se recalcula. Solo lee."""
-    keys = {entity_key(code, param): param for param in PlatformParam}
-    with project.read() as conn:
-        found = ParameterStore(project).resolve_many(
-            conn, tuple(keys), (VERSION_SCOPE, PROJECT_SCOPE), version=version.uid)
-    return {param.value: item.value for key, param in keys.items()
-            if (item := found.get(key)) is not None and item.value is not None}
+    operación anterior) con la que se recalcula. Solo lee. Es :func:`entity_parameters` de una plataforma."""
+    return entity_parameters(project, code, version=version)
 
 
 _CALCULATED_FROM = (PlatformParam.LAYER, PlatformParam.FEATURE, PlatformParam.START)

@@ -31,14 +31,19 @@ i18n = import_geoblender("core.i18n")
 figures_mod = import_geoblender("core.provenance.figures")
 
 SPANISH_LETTERS = frozenset("áéíóúüñÁÉÍÓÚÜÑ¿¡")
-TYPES = {"stockpile": "des.stockpile_detect", "removal": "des.stockpile_removal", "buttress": "des.buttress",
-         "body": "des.body"}
-LABELS = {"des.stockpile_detect": "Stockpile detection", "des.stockpile_removal": "Stockpile removal",
-          "des.buttress": "Buttress", "des.body": "Supported body"}
+TYPES = {"stockpile": "des.stockpile_detect", "stockpile_project": "des.stockpile_detect_project",
+         "removal": "des.stockpile_removal", "buttress": "des.buttress", "body": "des.body"}
+"""Los tipos de operación de la 016 en su orden: la detección de versión y la **de proyecto** (T04, D-15: el mismo
+algoritmo con otro ámbito), la retirada, el contrafuerte y el cuerpo."""
+PROJECT_TYPES = ("des.stockpile_detect_project",)
+LABELS = {"des.stockpile_detect": "Stockpile detection", "des.stockpile_detect_project": "Stockpile detection of the project",
+          "des.stockpile_removal": "Stockpile removal", "des.buttress": "Buttress", "des.body": "Supported body"}
 COMMANDS = {"des.stockpile_detect": "geoblender.des_detect_stockpiles",
+            "des.stockpile_detect_project": "geoblender.des_detect_stockpiles",
             "des.stockpile_removal": "geoblender.des_remove_stockpile",
             "des.buttress": "geoblender.des_add_buttress", "des.body": "geoblender.des_create_body"}
 OUTPUTS = {"des.stockpile_detect": ("stk", "stc", "stb", "stt", "stg", "stp", "prp"),
+           "des.stockpile_detect_project": ("stk", "stc", "stb", "stt", "stg", "stp", "prp"),
            "des.stockpile_removal": ("psf", "epr", "prp"), "des.buttress": ("psf", "epr", "prp"),
            "des.body": ("bdt", "bds", "psf", "epr", "prp")}
 # Código → (tipo, almacén, lector, papel, extensión) de las ocho familias de datos nuevas (plan 016 §5.2.3).
@@ -53,10 +58,11 @@ FAMILIES = {
     "bds": ("raster", "rasters", "gis.geotiff@1", "body_base", ".tif"),
 }
 # Las cifras de plan §5.2.3 por tipo: clave → unidad.
+STOCKPILE_FIGURES = {"des.stk_count": "-", "des.stk_candidates": "-", "des.stk_area_m2": "m2",
+                     "des.stk_volume_m3": "m3", "des.stk_thickness_max_m": "m", "des.stk_plane_tilt_deg": "deg"}
 FIGURES = {
-    "des.stockpile_detect": {"des.stk_count": "-", "des.stk_candidates": "-", "des.stk_area_m2": "m2",
-                             "des.stk_volume_m3": "m3", "des.stk_thickness_max_m": "m",
-                             "des.stk_plane_tilt_deg": "deg"},
+    "des.stockpile_detect": STOCKPILE_FIGURES,
+    "des.stockpile_detect_project": STOCKPILE_FIGURES,
     "des.stockpile_removal": {"des.rmv_removed_m3": "m3", "des.rmv_resting_m3": "m3",
                               "des.rmv_transition_m3": "m3", "des.rmv_kept_m3": "m3",
                               "des.rmv_transition_m2": "m2", "des.rmv_wall_max_m": "m"},
@@ -77,14 +83,17 @@ def reproduce(request: Any) -> Any:  # pragma: no cover
 
 class OperationTypesTest(unittest.TestCase):
     def test_the_four_types(self) -> None:
-        """RF-016-02, 11, 17, 20 (plan 016 §5.2.3; ADR-0025): cuatro tipos de operación de la versión, del módulo
-        ``des``, versión 1.0, repetibles y reproducibles con 10⁻⁹ relativo, sin grupo acoplado, cada uno con su orden
-        del catálogo (las definitivas de la T35: ``des_edit_stockpile`` y ``des_add_buttress`` no se renombran), sus
-        familias de datos y sus cifras; van aparte de los de las tres specs anteriores, que siguen como estaban."""
-        self.assertEqual((provenance.STOCKPILE_DETECT, provenance.STOCKPILE_REMOVAL, provenance.BUTTRESS,
-                          provenance.BODY), tuple(TYPES.values()))
+        """RF-016-02, 11, 17, 20 (plan 016 §5.2.3; ADR-0025): cuatro tipos de operación de la versión y, desde la T04, el
+        **de proyecto** de la detección (D-15), del módulo ``des``, versión 1.0, repetibles y reproducibles con 10⁻⁹
+        relativo, sin grupo acoplado, cada uno con su orden del catálogo (las definitivas de la T35: ``des_edit_stockpile``
+        y ``des_add_buttress`` no se renombran), sus familias de datos y sus cifras; van aparte de los de las tres specs
+        anteriores, que siguen como estaban."""
+        self.assertEqual((provenance.STOCKPILE_DETECT, provenance.STOCKPILE_DETECT_PROJECT, provenance.STOCKPILE_REMOVAL,
+                          provenance.BUTTRESS, provenance.BODY), tuple(TYPES.values()))
         self.assertEqual([t.op_type for t in provenance.SUPPORTED_OPERATION_TYPES], list(TYPES.values()))
-        self.assertEqual(provenance.SUPPORTED_VERSION_TYPES, tuple(TYPES.values()))
+        self.assertEqual(provenance.SUPPORTED_TYPES, tuple(TYPES.values()))
+        self.assertEqual(provenance.SUPPORTED_VERSION_TYPES, tuple(t for t in TYPES.values() if t not in PROJECT_TYPES))
+        self.assertEqual(provenance.SUPPORTED_PROJECT_TYPES, PROJECT_TYPES)
         self.assertEqual(provenance.SUPPORTED_REPRODUCIBLE, tuple(TYPES.values()))
         self.assertEqual(provenance.OP_VERSION, "1.0")
         for declared in provenance.SUPPORTED_OPERATION_TYPES:
@@ -103,12 +112,13 @@ class OperationTypesTest(unittest.TestCase):
                 self.assertIsInstance(built, contract.OperationDef)
                 self.assertEqual((built.op_type, built.version, built.module, built.scope, built.repeatable,
                                   built.group, built.reproduce, built.recompute),
-                                 (op_type, "1.0", "des", "version", True, None, reproduce, recompute))
+                                 (op_type, "1.0", "des", "project" if op_type in PROJECT_TYPES else "version", True,
+                                  None, reproduce, recompute))
                 self.assertEqual(built.figure_tolerance, provenance.FIGURE_TOLERANCE)
         for older in (*provenance.OPERATION_TYPES, *provenance.QUARRY_OPERATION_TYPES,
                       *provenance.ENTITY_OPERATION_TYPES):
             self.assertIs(provenance.OPERATION_TYPES_BY_NAME[older.op_type], older)
-        self.assertEqual(len(provenance.OPERATION_TYPES_BY_NAME), 2 + 5 + 3 + 4)
+        self.assertEqual(len(provenance.OPERATION_TYPES_BY_NAME), 2 + 5 + 3 + 5)
 
     def test_the_support_figure_is_also_left_by_what_fills_on_a_stockpile(self) -> None:
         """RF-016-14, RF-015-15 (ADR-0031 §4): la retirada y el contrafuerte —lo que rellena sobre una huella—
@@ -120,13 +130,14 @@ class OperationTypesTest(unittest.TestCase):
                 self.assertEqual(provenance.SUPPORTED_M3 in {item.key for item in declared.figures}, expected)
 
     def test_the_functions_of_the_definitions_are_checked(self) -> None:
-        """RF-008-26, RF-009-11: ``supported_operation_defs`` arma las cuatro definiciones, en su orden, con su
+        """RF-008-26, RF-009-11: ``supported_operation_defs`` arma las cinco definiciones, en su orden, con su
         función de recálculo y de reproducción; ``ValueError`` si sobra o falta alguna."""
         functions = {op_type: recompute for op_type in TYPES.values()}
         replays = {op_type: reproduce for op_type in TYPES.values()}
         built = provenance.supported_operation_defs(functions, replays)
         self.assertEqual([item.op_type for item in built], list(TYPES.values()))
-        self.assertTrue(all(item.scope == "version" and item.repeatable for item in built))
+        self.assertTrue(all(item.repeatable for item in built))
+        self.assertEqual([item.scope for item in built], ["project" if t in PROJECT_TYPES else "version" for t in TYPES.values()])
         with self.assertRaises(ValueError):
             provenance.supported_operation_defs({"des.body": recompute}, replays)
         with self.assertRaises(ValueError):
@@ -489,11 +500,11 @@ class ClosedListsTest(unittest.TestCase):
     ponen las tareas que crean cada operación (T14, T20, T25 y T27)."""
 
     def test_recomputed_lists_the_four_types(self) -> None:
-        """RF-008-26, RF-016-02: ``RECOMPUTED`` (lo que repite «Recalcular lo obsoleto») lleva los cuatro tipos
-        después de los de la 015, sin cambiar lo que ya llevaba."""
+        """RF-008-26, RF-016-02: ``RECOMPUTED`` (lo que repite «Recalcular lo obsoleto») lleva los cinco tipos (los dos
+        de la detección, T04) después de los de la 015, sin cambiar lo que ya llevaba."""
         for op_type in TYPES.values():
             self.assertIn(op_type, store.RECOMPUTED)
-        self.assertEqual(store.RECOMPUTED[:len(store.RECOMPUTED) - 4][-3:],
+        self.assertEqual(store.RECOMPUTED[:len(store.RECOMPUTED) - 5][-3:],
                          (provenance.PLATFORM, provenance.DECLARE_CONSTRAINTS, provenance.ENTITY_LAYER))
         self.assertEqual(len(set(store.RECOMPUTED)), len(store.RECOMPUTED))
 
@@ -522,6 +533,7 @@ class ClosedListsTest(unittest.TestCase):
         usarla); sin comportamiento todavía: ``NotImplementedError`` con el tipo; lo que no es una petición,
         ``TypeError``; una de otro tipo, ``ValueError`` (errores del programa)."""
         for op_type, name in (("des.stockpile_detect", "reproduce_stockpile_detect"),
+                              ("des.stockpile_detect_project", "reproduce_stockpile_detect"),
                               ("des.stockpile_removal", "reproduce_stockpile_removal"),
                               ("des.buttress", "reproduce_buttress"), ("des.body", "reproduce_body")):
             function = getattr(reproduce_mod, name)
