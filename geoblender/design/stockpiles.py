@@ -162,9 +162,13 @@ from .provenance import StockpileFigures, entity_figure_scope, stockpile_figures
 from .seeds import pace_progress
 
 __all__ = [
+    "CANDIDATE_CONVERTED",
+    "CANDIDATE_DISCARDED",
+    "CANDIDATE_PENDING",
     "BasePlane",
     "Candidate",
     "CandidateParams",
+    "CandidateState",
     "Candidates",
     "Claim",
     "Footprint",
@@ -1318,6 +1322,27 @@ class RejectedMark:
     notice: Notice
 
 
+CANDIDATE_PENDING, CANDIDATE_CONVERTED, CANDIDATE_DISCARDED = "pending", "converted", "discarded"
+"""Los estados de un candidato (RF-016-08, RF-016-10): sin decidir (se pregunta), convertido en acopio o descartado con un
+motivo."""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class CandidateState:
+    """El estado de un candidato de una detección (RF-016-08, RF-016-10, D-23; spec 016, T13): su ``key`` (``c03``: la del
+    candidato anterior cuya decisión conserva y, si no, la primera libre), su ``state`` (:data:`CANDIDATE_PENDING`,
+    :data:`CANDIDATE_CONVERTED` —ya es un acopio de la detección con esa clave— o :data:`CANDIDATE_DISCARDED`), el
+    ``candidate`` (A4: su zona, su huella y su plano, calculados sobre la superficie de esta detección) y, si lo hay, el
+    ``reason``, el ``decided_by`` y la fecha (``decided_on``, ISO) de su decisión."""
+
+    key: str
+    state: str
+    candidate: Candidate
+    reason: str | None = None
+    decided_by: str | None = None
+    decided_on: str | None = None
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class StockpileOutcome:
     """La detección de una superficie (A2 a A5; RF-016-01, RF-016-02, RF-016-03, RF-016-06, RF-016-09): ``stockpiles``
@@ -1325,7 +1350,9 @@ class StockpileOutcome:
     en su orden), ``shared`` (una :class:`SharedCells` por pareja de acopios que se repartieron celdas, con las **claves**
     de sus marcas), ``candidates`` (los candidatos sin marca, o ``None`` si no se pidieron), las ``figures`` CALCULADO
     (``des.stk_*``) y los ``notices`` en orden estable: los acopios rechazados, los avisos de cada acopio (A3, A2) y, la
-    primera vez que se les llega, los del reparto (cada pareja, una vez).
+    primera vez que se les llega, los del reparto (cada pareja, una vez). ``states``: el estado de cada candidato
+    (:class:`CandidateState`, spec 016, T13; vacío mientras nadie decide: ``design.stockpile_store.detection_compute_steps``
+    lo pone con las decisiones de la entidad y deja en ``candidates`` los que **no** se convirtieron en acopio).
 
     Los datos dispersos de la detección (P-4, P-5) los montan, de los índices y los valores de cada acopio,
     :meth:`base_grid` y :meth:`thickness_grid` (por material: D-19), :meth:`ground_grid` (el terreno sin acopios, solo en
@@ -1341,6 +1368,7 @@ class StockpileOutcome:
     candidates: Candidates | None
     figures: tuple[FigureSpec, ...]
     notices: tuple[Notice, ...]
+    states: tuple[CandidateState, ...] = ()
 
     @property
     def count(self) -> int:

@@ -2156,6 +2156,32 @@ CATALOG: tuple[Message, ...] = (
         "El nombre «{value}» ya lo tiene la entidad «{other}» en el proyecto; dé a cada detección del proyecto su "
         "propio nombre; no se calcula nada.",
     ),
+    # Lo que rechaza **al calcular** una detección con decisiones sobre sus candidatos (T13; RF-016-10, P-14).
+    Message(
+        "des.stockpile_decisions_invalid",
+        "The decisions on the candidates of the stockpile detection «{entity}» are not valid ({detail}); the list of "
+        "candidates writes them, do not edit them by hand; nothing is calculated.",
+        "Las decisiones sobre los candidatos de la detección de acopios «{entity}» no son válidas ({detail}); las "
+        "escribe la lista de candidatos, no las edite a mano; no se calcula nada.",
+    ),
+    Message(
+        "des.stockpile_candidate_key_taken",
+        "A mark of the layer is called «{value}», the key that the candidate converted into a stockpile needs; the "
+        "name of a mark is the key of its stockpile and each one needs its own; rename the mark in QGIS; nothing is "
+        "calculated.",
+        "Una marca de la capa se llama «{value}», la clave que necesita el candidato convertido en acopio; el nombre "
+        "de una marca es la clave de su acopio y cada una necesita la suya; cámbiele el nombre a la marca en QGIS; no "
+        "se calcula nada.",
+    ),
+    Message(
+        "des.stockpile_material_repeated",
+        "Layer «{layer}» has the materials «{value}» and «{other}», which give the same name of data; each material "
+        "has its own base and thickness (one data each), so write each one in the same way; correct the field in "
+        "QGIS; nothing is calculated.",
+        "La capa «{layer}» tiene los materiales «{value}» y «{other}», que dan el mismo nombre de dato; cada material "
+        "tiene su propia base y su espesor (un dato cada uno), así que escriba cada uno de la misma manera; corrija el "
+        "campo en QGIS; no se calcula nada.",
+    ),
     Message(
         "des.stockpile_footprint_at_edge",
         "Stockpile «{mark}»: its footprint reaches the edge of its mark enlarged by the margin (at x = {x} m, "

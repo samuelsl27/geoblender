@@ -3178,22 +3178,22 @@ _STOCKPILE_READ = (StockpileParam.LAYER, StockpileParam.SURFACE, StockpileParam.
                    StockpileParam.CROWN_FLAT_MIN, StockpileParam.MAX_RESIDUAL, StockpileParam.FIT_ROUNDS,
                    StockpileParam.TURNS, StockpileParam.TILT_MAX, StockpileParam.SUPPORT_QUANTILE,
                    StockpileParam.OPEN_DIAMETER, StockpileParam.MIN_HEIGHT, StockpileParam.MIN_AREA,
-                   StockpileParam.MAX_AREA)
-"""Los valores de la entidad que lee siempre ``des.stockpile_detect``: los que cambian su resultado. No lee su nombre ni
-lo que declara (``protect``, ``guard_m`` y ``reason``: lo lee la declaración)."""
+                   StockpileParam.MAX_AREA, StockpileParam.DECISIONS)
+"""Los valores de la entidad que lee siempre ``des.stockpile_detect``: los que cambian su resultado, **también las decisiones
+sobre los candidatos** (spec 016, T13; P-14: toda detección las lleva, vacías si nadie decide, así que decidir las cambia y la
+deja obsoleta con su causa). No lee su nombre ni lo que declara (``protect``, ``guard_m`` y ``reason``: lo lee la
+declaración)."""
 
 
 def stockpile_params(code: str, request: StockpileRequest) -> tuple[str, ...]:
     """Los parámetros que lee ``des.stockpile_detect`` de la entidad de código ``code`` (``begin_operation(params=…)``;
     spec 016, T03; RF-016-02, RF-016-10; plan 016 §5.2.2): la capa, la superficie, los candidatos y los 14 umbrales
-    (:data:`_STOCKPILE_READ`), las decisiones sobre los candidatos si la ``request`` las lleva y, **por su clave, sin
+    (:data:`_STOCKPILE_READ`: con las decisiones sobre los candidatos, que toda detección lleva) y, **por su clave, sin
     copiarlo**, el umbral de la huella de la 011 (:data:`~.params.ANTHROPIC_PRESENCE`, D-17): cambiar un umbral, la
     capa (su geometría) o ese parámetro deja obsoleta la operación entera con su causa (CE-016-01). ``ValueError`` si
     ``code`` no es el de una detección."""
     _typed_code(code, "stockpile", "una detección de acopios")
     read = [entity_key(code, param) for param in _STOCKPILE_READ]
-    if request.decisions is not None:
-        read.append(entity_key(code, StockpileParam.DECISIONS))
     return _unique([*read, ANTHROPIC_PRESENCE])
 
 

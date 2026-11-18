@@ -41,8 +41,10 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
   (``des.stockpile_detect``, de una versión, o ``des.stockpile_detect_project``, del proyecto, D-15) del mismo modo: deja el
   **resultado** (``design.stockpiles.StockpileOutcome``) y el **resumen** (:class:`~.preview.StockpileSummary`: cada acopio con
   su plano, huella, volumen, espesor máximo y notas, los avisos con su lugar, las marcas rechazadas, los candidatos y lo que
-  quedará obsoleto al repetirla) y **nada en el proyecto**: ni la base de datos, ni los ficheros, ni temporales. Crearla es
-  de la T13.
+  quedará obsoleto al repetirla) y **nada en el proyecto**: ni la base de datos, ni los ficheros, ni temporales. Crearla
+  (T13; RF-016-02, RF-015-02, RNF-016-03) es :meth:`Calculation.create` o, por pasos, :meth:`Calculation.create_steps`: las
+  tablas y las rejillas dispersas se preparan en su temporal y **una** transacción registra los parámetros de la entidad, la
+  operación, los datos y las cifras (:func:`~.stockpile_store.create_detection_steps`).
 - :class:`Calculation`: lo calculado y todavía sin registrar. :meth:`~Calculation.create`
   (**«Crear»**) abre la operación, mueve los temporales, escribe las tablas y las cifras y completa,
   todo en **una** transacción (``DesignWriter.commit``); :meth:`~Calculation.discard`
@@ -122,6 +124,7 @@ _PREPARE_PHASE = "prepare"
 _DONE_PHASE = "calculated"
 _SUMMARY_PHASE = "platform_summary"  # el resumen de una plataforma (T12)
 _STOCKPILE_SUMMARY_PHASE = "stockpile_summary"  # el resumen de una detección de acopios (016, T12)
+_CREATED_PHASE = "created"  # la detección de acopios guardada (016, T13)
 _OUTSIDE_PHASE = "seeds_outside"  # la cantera parada por sus semillas fuera (T43; RF-014-03)
 _READY, _CREATED, _DISCARDED = "ready", "created", "discarded"
 
@@ -168,7 +171,7 @@ class Calculation:
     lo que anotará la operación) y ``summary`` (el :class:`~.preview.PlatformSummary`); **crearla** (T13) es
     :meth:`create`, que escribe además los parámetros de su entidad. De una **detección de acopios** (spec 016, T12) lleva
     en ``entity`` la :class:`~.stockpile_store.PreparedDetection` y en ``summary`` el :class:`~.preview.StockpileSummary`;
-    crearla es la T13. Mientras esté abierta
+    crearla es :meth:`create` o :meth:`create_steps` (T13). Mientras esté abierta
     (:attr:`open`), sus rejillas esperan en temporales junto a su destino: hay que crearla o
     descartarla."""
 
@@ -251,7 +254,7 @@ class Calculation:
         return tuple(notice.text(language) for notice in self.notices
                      if notice.severity == "warning")
 
-    def create(self) -> store.Stored:
+    def create(self, *, decided_by: str | None = None) -> store.Stored:
         """**«Crear»**: registra el cálculo, en una sola transacción de escritura
         (``DesignWriter.commit``: abre la operación, mueve los temporales, escribe las tablas y las
         cifras y completa). Antes comprueba que los parámetros que leyó siguen valiendo lo mismo, y
@@ -265,20 +268,30 @@ class Calculation:
         parámetros de su entidad como filas de la versión, con su origen, antes de abrir la operación.
         Si tiene una contrapendiente sin confirmar (``needs_confirmation``, RF-015-23), se rechaza
         (``DesignError`` ``des.platform_counter_unconfirmed``) **antes de escribir nada y sin cerrar el
-        cálculo**: se confirma (:meth:`confirm_counterslope`) y se vuelve a crear."""
+        cálculo**: se confirma (:meth:`confirm_counterslope`) y se vuelve a crear.
+
+        **Una detección de acopios** (spec 016, T13; RF-016-02, RF-015-02) se registra con
+        :func:`~.stockpile_store.create_detection_steps`, la misma en el proyecto (``des.stockpile_detect_project``) y en una
+        versión (``des.stockpile_detect``): las tablas y las rejillas dispersas se preparan y se escriben en su temporal, y
+        una sola transacción registra los parámetros de la entidad, la operación, los datos y las cifras. Es
+        :meth:`create_steps` llevado hasta el final. ``decided_by``: el decisor de los parámetros de la entidad (por defecto,
+        quien tiene abierto el proyecto)."""
+        if isinstance(self.entity, stockpile_store.PreparedDetection):
+            stored: store.Stored | None = None
+            for step in self.create_steps(decided_by=decided_by):
+                if step.result is not None:
+                    stored = step.result
+            assert stored is not None  # el último paso lo lleva
+            return stored
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
-        if isinstance(self.entity, stockpile_store.PreparedDetection):
-            raise NotImplementedError(  # sin cerrar el cálculo: lo que crea la detección es la T13 de la spec 016
-                f"crear la detección de acopios «{self.name}» es la T13 de la spec 016: «Calcular» ya deja su resultado y "
-                "su resumen, y nada escrito")
         if self.entity is not None:
             self._platform().ensure_creatable()  # sin cerrar el cálculo: se confirma y se crea
         try:
             self._check_parameters()
             if self.entity is not None:
                 stored = entity_store.create_platform(self._project, self._writer, self.entity,
-                                                      self._platform())
+                                                      self._platform(), decided_by=decided_by)
             else:
                 stored = self._writer.commit(self._start, figures=self.outcome.figures,
                                              message=self.outcome.message)
@@ -287,6 +300,31 @@ class Calculation:
             raise
         self._state = _CREATED
         return stored
+
+    def create_steps(self, *, decided_by: str | None = None, budget_s: float = STEP_BUDGET_S
+                     ) -> Generator[Progress, None, None]:
+        """**«Crear» una detección de acopios por pasos** (spec 016, T13; RF-016-02, RNF-016-03 y 05): lo que hace
+        :meth:`create`, con cada llamada del hilo de Blender de ``budget_s`` como mucho (montar y escribir cada rejilla dispersa
+        y cada tabla en su temporal, por pasos) y la transacción final como último paso; el último ``Progress`` lleva lo
+        guardado (:class:`~.store.Stored`) en ``result``. Cerrar el generador antes (Esc), un fallo o lo que consume cambiado
+        desde que se calculó (``des.input_changed``) **no dejan nada** y descartan el cálculo. ``RuntimeError`` si ya no está
+        abierto; ``TypeError`` si no es una detección de acopios."""
+        found = self.entity
+        if not isinstance(found, stockpile_store.PreparedDetection):
+            raise TypeError(f"solo una detección de acopios se crea por pasos, no «{self.op_type}»")
+        if self._state != _READY:
+            raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
+        outcome = self.outcome
+        assert isinstance(outcome, stockpiles.StockpileOutcome)
+        try:
+            self._check_parameters()
+            stored: store.Stored = yield from stockpile_store.create_detection_steps(
+                self._project, self._writer, found, outcome, decided_by=decided_by, budget_s=budget_s)
+        except BaseException:  # un fallo o cerrar el generador: no queda nada
+            self.discard()
+            raise
+        self._state = _CREATED
+        yield Progress(_CREATED_PHASE, 1, 1, f"Detección «{self.name}» guardada", result=stored)
 
     def _platform(self) -> platform.PlatformOutcome:
         """El resultado de una plataforma (``TypeError`` si el cálculo no lo es: un error del programa)."""
@@ -485,7 +523,7 @@ def stockpile_run(project: StoreProject, request: StockpileRequest, *, version: 
     Los rechazos salen **al avanzar**, antes de calcular y sin escribir nada: los de ``prepare_detection_units`` (versión,
     capa y campos, marcas solapadas, parámetros, falta de dato…, RF-016-02, 03 y 04). Los acopios que no se pueden formar no
     paran el cálculo: salen en el resumen sin registrarse. Cerrar el generador a mitad (Esc) o un fallo después de calcular no
-    dejan nada (RF-015-29). Crear la detección es la T13."""
+    dejan nada (RF-015-29). Crear la detección es :meth:`Calculation.create` (T13)."""
     return _stockpile_steps(project, request, version, masks, code, supersedes, budget_s)
 
 
@@ -686,7 +724,7 @@ def _stockpile_steps(project: StoreProject, request: StockpileRequest, version: 
                                  supersedes=supersedes)
     try:
         outcome: stockpiles.StockpileOutcome = yield from stockpile_store.detection_compute_steps(
-            prepared.job, budget_s=budget_s)
+            prepared.job, decisions=prepared.decisions, budget_s=budget_s)
         yield Progress(_STOCKPILE_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
         summary = stockpile_store.detection_summary(project, prepared, outcome, supersedes=supersedes)
         calculation = Calculation(

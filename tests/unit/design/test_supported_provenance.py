@@ -356,13 +356,13 @@ class InputsAndParametersTest(unittest.TestCase):
         self.assertEqual(stock[:3], (key("STK-001", "layer"), key("STK-001", "surface"), key("STK-001", "candidates")))
         for last in ("margin_m", "crown_inner_m", "crown_outer_m", "crown_slope_deg", "crown_flat_min_m2",
                      "max_residual_m", "fit_rounds", "turns", "tilt_max_deg", "support_quantile", "open_diameter_m",
-                     "min_height_m", "min_area_m2", "max_area_m2"):
+                     "min_height_m", "min_area_m2", "max_area_m2", "decisions"):
             self.assertIn(key("STK-001", last), stock)
         self.assertEqual(stock[-1], params.ANTHROPIC_PRESENCE)
-        for last in ("name", "protect", "guard_m", "reason", "discarded", "decisions"):
+        for last in ("name", "protect", "guard_m", "reason", "discarded"):
             self.assertNotIn(key("STK-001", last), stock)
-        self.assertIn(key("STK-001", "decisions"),
-                      provenance.stockpile_params("STK-001", stockpile_request(decisions="c03: convertido")))
+        # T13 (P-14): toda detección lee sus decisiones, vacías o no: decidir sobre un candidato la deja obsoleta.
+        self.assertEqual(provenance.stockpile_params("STK-001", stockpile_request(decisions="c03: convertido")), stock)
         removal = model.RemovalRequest(name="R", stockpile="STK-001#m07", start="gis_dtm_patio")
         found = provenance.removal_params("RMV-001", removal)
         self.assertEqual(found, (key("RMV-001", "stockpile"), key("RMV-001", "start"),

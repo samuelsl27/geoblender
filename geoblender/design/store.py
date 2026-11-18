@@ -254,11 +254,13 @@ if TYPE_CHECKING:  # solo para los tipos: importarlos arrastraría los cálculos
 
 __all__ = [
     "BERM_COLUMNS",
+    "CANDIDATE_COLUMNS",
     "ENTITY_COLUMNS",
     "NO_DATA_NOTE",
     "NO_MOVEMENT_NOTE",
     "QUARRY_BERM_COLUMNS",
     "REPORT_COLUMNS",
+    "STOCKPILE_COLUMNS",
     "DesignWriter",
     "FillOnlyParts",
     "OperationStart",
@@ -386,10 +388,43 @@ segundas excluidas, JSON), la huella en tramos de fila (``footprint``: ``[[fila,
 ``col1`` excluida, JSON) y los vértices de su eje (``axis``: ``[[x, y], …]`` absolutos en float64, JSON; con
 ``axis_principal`` si es el eje principal de un polígono sin eje enlazado). De ella salen la zona
 declarada (T16), el cargador (T28) y la capa de entidades (T30)."""
+STOCKPILE_COLUMNS: tuple[ColumnDef, ...] = (
+    ColumnDef("key", "TEXT", True), ColumnDef("name", "TEXT", True), ColumnDef("origin", "TEXT", True),
+    ColumnDef("layer", "TEXT", False), ColumnDef("source_fid", "INTEGER", False),
+    ColumnDef("material", "TEXT", False), ColumnDef("base_surface", "TEXT", False),
+    ColumnDef("margin_m", "DOUBLE", False), ColumnDef("cells", "INTEGER", True),
+    ColumnDef("area_m2", "DOUBLE", True), ColumnDef("volume_m3", "DOUBLE", True),
+    ColumnDef("thickness_max_m", "DOUBLE", True), ColumnDef("x", "DOUBLE", True), ColumnDef("y", "DOUBLE", True),
+    ColumnDef("plane_level_m", "DOUBLE", False), ColumnDef("plane_slope_percent", "DOUBLE", False),
+    ColumnDef("plane_azimuth_deg", "DOUBLE", False), ColumnDef("plane_tilt_deg", "DOUBLE", False),
+    ColumnDef("turns", "INTEGER", True), ColumnDef("converged", "INTEGER", True),
+    ColumnDef("footprint", "TEXT", True), ColumnDef("notes", "TEXT", True))
+"""Las columnas de ``des_stk_`` (spec 016, T13; plan 016 §5.2.3: «clave, nombre, material, plano, huella en tramos, área,
+volumen, espesor máximo, notas y avisos»): **una fila por acopio** con su clave (la de su marca o, de un candidato
+convertido, ``c03``), su nombre y su **procedencia** (``origin``: ``mark`` o ``candidate``; ``layer`` y ``source_fid``, la capa
+de marcas y la marca de la que salen, y ``margin_m``, el margen que se le aplicó), el material y la superficie de su base
+propia si la tiene (``base_surface``: vacía, su base es el plano ajustado; RF-016-03), el plano en el centro de su huella
+(``plane_level_m``, ``plane_slope_percent``, ``plane_azimuth_deg`` y la inclinación **limitada**, ``plane_tilt_deg``; sin
+ellos con base propia), las vueltas de A2 y A3, si convergió, la huella en tramos (``footprint``:
+``[[fila, col0, col1], …]`` absolutos, ``col1`` excluida, JSON) y sus avisos y notas (``notes``: JSON con el código, la
+gravedad y los valores, no el texto, como el informe)."""
+CANDIDATE_COLUMNS: tuple[ColumnDef, ...] = (
+    ColumnDef("key", "TEXT", True), ColumnDef("state", "TEXT", True), ColumnDef("reason", "TEXT", False),
+    ColumnDef("decided_by", "TEXT", False), ColumnDef("decided_on", "TEXT", False),
+    ColumnDef("cells", "INTEGER", True), ColumnDef("area_m2", "DOUBLE", True), ColumnDef("volume_m3", "DOUBLE", True),
+    ColumnDef("x", "DOUBLE", True), ColumnDef("y", "DOUBLE", True), ColumnDef("plane_level_m", "DOUBLE", True),
+    ColumnDef("plane_slope_percent", "DOUBLE", True), ColumnDef("plane_azimuth_deg", "DOUBLE", True),
+    ColumnDef("footprint", "TEXT", True))
+"""Las columnas de ``des_stc_`` (spec 016, T13; plan 016 §5.2.3: «candidatos y su estado»): **una fila por candidato sin
+marca** que pasó los filtros (también los ya convertidos o descartados; nunca los que no los pasan, RF-016-08), con su clave
+(``c03``, estable al repetir por la regla de D-23), su estado (``pending``, ``converted`` o ``discarded``), el motivo, el decisor
+y la fecha de su decisión, su huella en tramos (``footprint``, como en ``des_stk_``), su área, su volumen sobre su plano y el
+plano en el centro (cota, pendiente en % y azimut)."""
 _COLUMNS: Mapping[str, tuple[ColumnDef, ...]] = MappingProxyType({
     provenance.BERM_TABLE: BERM_COLUMNS, provenance.REPORT_TABLE: REPORT_COLUMNS,
     provenance.QUARRY_REPORT_TABLE: REPORT_COLUMNS, provenance.EDGE_REPORT_TABLE: REPORT_COLUMNS,
-    provenance.ENTITY_TABLE: ENTITY_COLUMNS, provenance.ENTITY_REPORT_TABLE: REPORT_COLUMNS})
+    provenance.ENTITY_TABLE: ENTITY_COLUMNS, provenance.ENTITY_REPORT_TABLE: REPORT_COLUMNS,
+    provenance.STOCKPILES_TABLE: STOCKPILE_COLUMNS, provenance.STOCKPILE_CANDIDATES_TABLE: CANDIDATE_COLUMNS})
 
 
 def columns_of(op_type: str, family: str) -> tuple[ColumnDef, ...]:
@@ -1413,7 +1448,24 @@ class DesignWriter:
         self._grids: dict[str, _Grid] = {}
         self._tables: dict[str, _Table] = {}
         self._vectors: dict[str, _Declared] = {}
+        self._omitted: set[str] = set()
         self._committed = self._closed = False
+
+    def omit(self, *families: str) -> None:
+        """Declara que la operación **no escribe** las ``families`` de su tipo (spec 016, T13): una detección de acopios
+        sin ningún acopio no tiene la base ni el espesor de ningún material. Lo demás que falte sigue siendo un error del
+        programa al confirmar (:meth:`commit`). ``ValueError`` si una familia no es una salida del tipo o ya está
+        preparada."""
+        if self._closed or self._committed:
+            raise RuntimeError("el escritor ya se confirmó o se cerró")
+        prepared = {grid.family for grid in self._grids.values()} | set(self._tables) | set(self._vectors)
+        for family in families:
+            if family not in self._type.outputs:
+                raise ValueError(f"«{self.op_type}» no escribe la familia «{family}»: escribe "
+                                 f"{', '.join(self._type.outputs)}")
+            if family in prepared:
+                raise ValueError(f"la salida «{family}» ya está preparada: no se puede omitir")
+            self._omitted.add(family)
 
     def _scope_of(self, conn: sqlite3.Connection, version: str | None, op_type: str) -> Version | None:
         """La versión en la que escribe (``require_version``: editable) o, en el escritor de proyecto, ninguna."""
@@ -1458,6 +1510,8 @@ class DesignWriter:
         wanted = family if key is None else key
         if wanted in self._grids or wanted in self._tables or wanted in self._vectors:
             raise ValueError(f"la salida «{wanted}» ya está preparada")
+        if family in self._omitted:
+            raise ValueError(f"la familia «{family}» se omitió: no se puede preparar")
 
     def _check_place(self, conn: sqlite3.Connection, spec: DatasetSpec) -> None:
         """Su sitio está libre o es del mismo dato vigente (una operación que lo sustituye)."""
@@ -1805,7 +1859,7 @@ class DesignWriter:
     def _check_ready(self, start: OperationStart | None) -> None:
         made = ({grid.family for grid in self._grids.values()} | set(self._tables)
                 | set(self._vectors))
-        missing = [family for family in self._type.outputs if family not in made]
+        missing = [family for family in self._type.outputs if family not in made and family not in self._omitted]
         if missing:
             raise ValueError(f"faltan salidas de «{self.op_type}» por preparar: "
                              f"{', '.join(missing)}")

@@ -336,16 +336,21 @@ class PreparedDetectionTest(PrepareCase):
             self.assertEqual(owners[record.uid], "", use.item)
 
     def test_the_default_parameters_are_all_written_with_their_origin(self) -> None:
-        """RF-016-02, RF-008-01 (trampa de la T04 de la 015): las 19 filas de la entidad —**todas**, también las de los
+        """RF-016-02, RF-008-01 (trampa de la T04 de la 015): las 20 filas de la entidad —**todas**, también las de los
         valores por defecto— con la clave ``des.stockpile.stk_001.*`` y su procedencia: los de D-3 ADOPTADO «sin confirmar»
-        de origen ``algorithm`` (la inclinación máxima y el cuantil, HIPÓTESIS), y lo que se pidió en el diálogo, de la persona."""
+        de origen ``algorithm`` (la inclinación máxima y el cuantil, HIPÓTESIS), y lo que se pidió en el diálogo, de la persona.
+        Las **decisiones** sobre los candidatos (T13, P-14) también: sin decidir nadie es el texto vacío válido, con el origen
+        de su familia («vacío por defecto», de la persona que decide), para que la operación lo lea y decidir la deje obsoleta."""
         prepared = self.prepare(request(margin_m=12.5, turns=3))
         rows = {row.param: row for row in prepared.rows}
-        self.assertEqual(len(rows), 19)
+        self.assertEqual(len(rows), 20)
         self.assertEqual(set(rows), {"name", "layer", "surface", "candidates", "margin_m", "crown_inner_m",
                                      "crown_outer_m", "crown_slope_deg", "crown_flat_min_m2", "max_residual_m",
                                      "fit_rounds", "turns", "tilt_max_deg", "support_quantile", "open_diameter_m",
-                                     "min_height_m", "min_area_m2", "max_area_m2", "protect"})
+                                     "min_height_m", "min_area_m2", "max_area_m2", "decisions", "protect"})
+        self.assertEqual((rows["decisions"].value, rows["decisions"].source_kind),
+                         (stockpile_store.EMPTY_DECISIONS, "person"))
+        self.assertIn("vacío por defecto", rows["decisions"].source)
         for row in rows.values():
             self.assertEqual(row.key, f"des.stockpile.stk_001.{row.param}")
         self.assertEqual((rows["name"].value, rows["layer"].value, rows["surface"].value, rows["candidates"].value),

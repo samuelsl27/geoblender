@@ -63,15 +63,42 @@ es de la preparación: el cálculo lo informa en el resumen sin registrarlo (RF-
   su lugar), los candidatos y **lo que quedará obsoleto al crear** (:func:`detection_obsolete`: con el mecanismo de la 015,
   ``entity_store._dependents``, lo que depende de lo que escribió la detección a la que sustituye).
 
+**Crear, repetir y decidir** (T13; RF-016-02, RF-016-08, RF-016-09, RF-016-10, RF-015-01, RF-015-02, RF-015-04, RF-015-16;
+RNF-016-03 y 07; D-15, D-23; P-14):
+
+- :func:`create_detection_steps` (y :func:`create_detection`, de una vez; ``Calculation.create`` y ``create_steps``): prepara
+  por pasos cada salida de la detección en su temporal —la tabla de acopios ``des_stk_`` y la de candidatos ``des_stc_``
+  (:func:`stockpile_rows`, :func:`candidate_rows`), por material la base y el espesor dispersos ``des_stb_`` y ``des_stt_``, el
+  terreno sin acopios ``des_stg_`` y la superficie con que se detectó ``des_stp_`` (solo en las huellas, P-4 y P-5) y el informe
+  ``des_prp_`` (:func:`detection_report_rows`)— y las registra en **una** transacción con los parámetros de la entidad (todas
+  sus filas, con su origen), la operación, los datos y las cifras con su ámbito (el acopio y el material). Es **la misma**
+  operación en el proyecto y en una versión: el escritor de su ámbito (``design_writer``) es lo único que cambia. Sin ningún
+  acopio no hay base, espesor, terreno ni superficie (``DesignWriter.omit``). **No modifica ninguna capa de entrada.**
+- **Repetir** (RF-016-10): la identidad de un acopio es su marca (su clave): se calcula con el código de la entidad y
+  sustituyendo a la operación vigente (``supersedes``); lo que dependía de lo que escribió queda obsoleto con su causa por la
+  008 (el dato cambió) y los datos que la nueva ya no escribe (el material que dejó de tener acopios) pasan a «sustituidos»
+  (:func:`_retire_vanished`).
+- **Decidir** (RF-016-08, RF-016-10; P-14): las decisiones sobre los candidatos son el parámetro de texto ``decisions`` de la
+  entidad (:func:`format_decisions`, :func:`parse_decisions`; sin decidir, :data:`EMPTY_DECISIONS`: toda detección lo lee), con
+  la huella en tramos de cada candidato al decidir (:class:`CandidateDecision`). :func:`decide_candidate` lo cambia (historial,
+  decisor y motivo; la detección queda obsoleta con su causa) y :func:`detection_compute_steps` las aplica: cada candidato tiene
+  su clave ``c03`` y su estado (``StockpileOutcome.states``); el que comparte más de la mitad del área de cada huella con una
+  decisión conserva su clave y su decisión (:func:`~.stockpiles.carry_decisions`); el convertido es un acopio más (una marca
+  más del trabajo, con su clave) y deja de ser candidato.
+
 Python puro (nivel 8), con numpy. ``design.stockpile_store`` es un módulo pesado de la 016: lo importan las órdenes al
 usarlo, no ``bl`` al registrarse (``tests/unit/architecture/test_lazy_registration.py``).
 """
 
 from __future__ import annotations
 
+import json
 import math
-from collections.abc import Generator, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+import re
+import sqlite3
+from collections import Counter
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
 
@@ -81,10 +108,13 @@ from ..core.constraints.messages import ConstraintError
 from ..core.constraints.model import ConstraintParam, GeometryKind, is_code
 from ..core.constraints.params import param_key
 from ..core.constraints.store import CONSTRAINT_LAYERS
-from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
+from ..core.datasets import registry as dataset_registry
+from ..core.datasets.model import LIVE_STATUSES
+from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterRecord, ParameterStore, definition
 from ..core.params.store import default_reason
 from ..core.project.model import Progress
 from ..core.provenance.operations import Use
+from ..core.timeutil import format_utc
 from ..core.versions import read as versions_read
 from ..core.versions.model import Version, VersionError
 from ..gis.grid import Grid
@@ -94,12 +124,15 @@ from ..gis.masks.combine import LEGAL_COMMAND, ClassBit, IncompleteConstraints
 from ..gis.masks.provenance import CONSTRAINT_ROLES
 from ..gis.masks.store import available_tables, declared_limits
 from ..gis.masks.zones import limit_runs
+from ..gis.messages import GisError
 from ..gis.polygons import overlay, problem_steps
+from ..gis.provenance import dataset_slug
+from ..gis.raster import Raster
 from ..gis.store import StoreProject, load_features
 from ..gis.vector import FeatureLayer
 from . import entities, pipeline, provenance
 from .entities import EntityKind, EntityRegistry
-from .entity_store import EntityParamRow, _consumer, _dependents
+from .entity_store import EntityParamRow, _consumer, _dependents, entity_parameters, set_entity_params
 from .messages import DesignError
 from .model import StockpileRequest
 from .params import ANTHROPIC_PRESENCE, StockpileParam, check_entity_param, entity_key, entity_params
@@ -116,32 +149,64 @@ from .preview import (
     stockpile_obsolete_notices,
 )
 from .stockpiles import (
+    CANDIDATE_CONVERTED,
+    CANDIDATE_DISCARDED,
+    CANDIDATE_PENDING,
     Candidate,
     CandidateParams,
+    CandidateState,
     FootprintParams,
     PlaneParams,
     Stockpile,
     StockpileJob,
     StockpileMark,
     StockpileOutcome,
+    _figures,
+    _window_cells,
+    carry_decisions,
     detect_steps,
+    footprint_runs,
+    runs_cells,
 )
-from .store import OperationStart, _loaded_masks, _start, require_version
+from .store import (
+    DesignWriter,
+    OperationStart,
+    Stored,
+    _loaded_masks,
+    _start,
+    _store_steps,
+    columns_of,
+    require_version,
+)
 from .surfaces import find_surface, project_frame, read_surface_steps
 from .zones import _paint, _polygon_spans, to_cell_units
 
 __all__ = [
+    "EMPTY_DECISIONS",
     "PROJECT",
     "VERSION",
+    "CandidateDecision",
     "PreparedDetection",
+    "candidate_decision",
+    "candidate_rows",
+    "create_detection",
+    "create_detection_steps",
+    "decide_candidate",
     "detection_compute_steps",
     "detection_obsolete",
+    "detection_report_rows",
     "detection_scope",
     "detection_summary",
     "detection_values",
+    "format_decisions",
     "mark_cells",
+    "material_dataset",
+    "material_label",
+    "parse_decisions",
     "prepare_detection",
     "prepare_detection_units",
+    "read_detection_table",
+    "stockpile_rows",
     "stockpile_summary",
 ]
 
@@ -165,6 +230,8 @@ _DIALOG = "diálogo de «Acopio (detectar, retirar)…»"
 _SURFACE_ROLE = "superficie de detección"
 _NO_VALUE = "—"
 _COMPUTE_PHASE = "stockpile_compute"
+_DECIDE_PHASE = "stockpile_decide"
+_DECIDE_SOURCE = "lista de candidatos de la detección «{name}»"
 
 
 # --- Lo que se prepara --------------------------------------------------------------------------
@@ -182,7 +249,8 @@ class PreparedDetection:
     ``fid``), las ``rows`` de los parámetros de la entidad —**todas**: sin su fila, ``begin_operation`` crearía la del valor
     por defecto en el proyecto, trampa de la T04 de la 015— y sus ``values`` resueltos y comprobados (por último segmento
     de su clave). ``existing``: la entidad ya estaba en su ámbito (se preparó con su ``code``: recalcularla), así que
-    «Crear» no escribe otra vez sus parámetros."""
+    «Crear» no escribe otra vez sus parámetros. ``decisions``: las decisiones sobre los candidatos de la entidad (el parámetro
+    ``decisions``, P-14), que aplica el cálculo (:func:`detection_compute_steps`)."""
 
     job: StockpileJob
     start: OperationStart
@@ -195,6 +263,7 @@ class PreparedDetection:
     rows: tuple[EntityParamRow, ...]
     values: Mapping[str, Any]
     existing: bool = False
+    decisions: tuple[CandidateDecision, ...] = ()
 
     @property
     def op_type(self) -> str:
@@ -258,9 +327,13 @@ def detection_values(request: StockpileRequest, code: str) -> tuple[dict[str, An
     spec = entity_params("stockpile")
     layer = request.fields.layer
     defaulted: set[str] = set()
+    decisions = request.decisions
+    if decisions is None:  # sin decisiones: el texto vacío válido, que la operación lee (cambiarlo la deja obsoleta)
+        decisions = EMPTY_DECISIONS
+        defaulted.add(StockpileParam.DECISIONS.value)
     asked: dict[StockpileParam, object] = {
         StockpileParam.NAME: request.name, StockpileParam.LAYER: layer, StockpileParam.SURFACE: request.surface,
-        StockpileParam.CANDIDATES: bool(request.candidates), StockpileParam.DECISIONS: request.decisions,
+        StockpileParam.CANDIDATES: bool(request.candidates), StockpileParam.DECISIONS: decisions,
         StockpileParam.GUARD: request.guard_m, StockpileParam.REASON: request.reason}
     for param in (*_FLOATS, *_INTEGERS):
         given = getattr(request, param.value)
@@ -571,6 +644,21 @@ def _perimeter_inputs(project: StoreProject, keys: Sequence[str]) -> tuple[tuple
     return uses, tuple(key for key in keys if key in found)
 
 
+def _check_materials(marks: Sequence[StockpileMark], layer: str) -> None:
+    """Los materiales de las marcas dan, cada uno, un nombre de dato distinto (D-19: una base y un espesor por material, un
+    dato cada uno): «Estéril» y «estéril» darían el mismo (``des_stb_<det>_esteril``) y se pisarían al crear. También el que
+    daría «sin material» a los acopios sin él. ``des.stockpile_material_repeated`` nombrando los dos."""
+    seen = {dataset_slug(_NO_MATERIAL): _NO_MATERIAL}
+    for mark in marks:
+        if mark.material is None:
+            continue
+        slug = dataset_slug(mark.material)
+        other = seen.setdefault(slug, mark.material)
+        if other != mark.material:
+            raise DesignError("des.stockpile_material_repeated", obj=f"Marca «{mark.name}»", field="material",
+                              value=mark.material, other=other, layer=layer)
+
+
 # --- Preparar -----------------------------------------------------------------------------------
 
 
@@ -598,7 +686,9 @@ def prepare_detection_units(project: StoreProject, request: StockpileRequest, *,
     frame = project_frame(project)
     grid = frame.grid
     marks, fids = yield from _read_marks(project, request, grid, candidates=candidates)
+    _check_materials(marks, layer_name)
     values, defaulted = detection_values(request, chosen)
+    decisions = parse_decisions(values[StockpileParam.DECISIONS.value], entity=request.name)
     yield
     threshold = _presence_threshold(project, found)
     surface = yield from read_surface_steps(project, request.surface, version_uid="" if found is None else found.uid,
@@ -644,7 +734,7 @@ def prepare_detection_units(project: StoreProject, request: StockpileRequest, *,
     yield
     rows = _rows(request, chosen, values, defaulted)
     return PreparedDetection(job, begun, chosen, scope, found, request.surface, layer_name, fids, rows,
-                             MappingProxyType(values), code is not None)
+                             MappingProxyType(values), code is not None, decisions)
 
 
 def prepare_detection(project: StoreProject, request: StockpileRequest, *, version: str | None,
@@ -664,8 +754,8 @@ def prepare_detection(project: StoreProject, request: StockpileRequest, *, versi
 # --- Calcular por pasos (spec 016, T12; RF-016-04, 05, 08, RF-015-29, RNF-016-03, 05) ------------
 
 
-def detection_compute_steps(job: StockpileJob, *, budget_s: float = STEP_BUDGET_S
-                            ) -> Generator[Progress, None, StockpileOutcome]:
+def detection_compute_steps(job: StockpileJob, *, decisions: Sequence[CandidateDecision] = (),
+                            budget_s: float = STEP_BUDGET_S) -> Generator[Progress, None, StockpileOutcome]:
     """Los pasos que calculan la detección de ``job`` (RF-016-04, 05, 08, RF-015-29; plan 016 §5.3.2: el
     ``detection_compute_steps`` que **comparten «Calcular», el recálculo y la reproducción**, como
     ``entity_store.platform_compute_steps`` lo es de la plataforma), sin proyecto y sin escribir nada (``yield from``;
@@ -674,12 +764,18 @@ def detection_compute_steps(job: StockpileJob, *, budget_s: float = STEP_BUDGET_
     candidatos— por pasos de ``budget_s`` como mucho. El primer paso sale antes de calcular nada. Los acopios que no se
     pueden formar (RF-016-04) **no paran** el cálculo: salen en ``StockpileOutcome.rejected``. Un ``job`` que no es un
     ``StockpileJob`` es un ``TypeError`` (un error del programa) al avanzar. Devuelve el
-    :class:`~.stockpiles.StockpileOutcome`."""
+    :class:`~.stockpiles.StockpileOutcome`.
+
+    ``decisions`` (spec 016, T13; RF-016-08, RF-016-10, D-23): las decisiones de las personas sobre los candidatos (el
+    parámetro ``decisions`` de la entidad, :func:`parse_decisions`). Con candidatos pedidos, cada uno recibe su clave y su
+    estado (``StockpileOutcome.states``) y los convertidos pasan a ser acopios de la detección (:func:`_decide_steps`);
+    sin ellas, todos son ``pending`` con las claves ``c01``…"""
     if not isinstance(job, StockpileJob):
         raise TypeError(f"la detección calcula un StockpileJob, no {job!r}")
     name = job.name
     yield Progress(_COMPUTE_PHASE, 0, 1, f"Detectando los acopios de «{name}»…")
     outcome: StockpileOutcome = yield from pipeline.forward(detect_steps(job, budget_s=budget_s))
+    outcome = yield from _decide_steps(job, outcome, tuple(decisions), budget_s)
     yield Progress(_COMPUTE_PHASE, 1, 1, f"Acopios de «{name}» detectados")
     return outcome
 
@@ -796,3 +892,473 @@ def detection_summary(project: StoreProject, prepared: PreparedDetection, outcom
     obsolete = detection_obsolete(project, prepared, supersedes=supersedes)
     return stockpile_summary(outcome, version=None if prepared.version is None else prepared.version.code,
                              scope=prepared.scope, obsolete=obsolete)
+
+
+# --- Las decisiones sobre los candidatos (spec 016, T13; RF-016-08, RF-016-10, D-23; plan 016 P-14) --------------------
+
+
+EMPTY_DECISIONS = '{"decisions":[]}'
+"""El valor del parámetro ``decisions`` de una detección **sin** decisiones: un texto válido (no en blanco: el almacén de
+parámetros no guarda un texto vacío) con la lista vacía. Toda detección lo lleva desde que se crea, así que decidir sobre un
+candidato es **cambiar** un parámetro que la operación ya lee y la deja obsoleta con su causa."""
+_CANDIDATE_KEY = re.compile(r"^c\d{2,}$")
+_DECISION_STATES = (CANDIDATE_CONVERTED, CANDIDATE_DISCARDED)
+_NO_MATERIAL = "sin material"
+"""La etiqueta del dato de la base y del espesor de los acopios sin material (los de las marcas que no lo dan y los
+candidatos convertidos)."""
+_CANDIDATE_NAME = "Candidato {key}"
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateDecision:
+    """La decisión de una persona sobre un candidato sin marca (RF-016-08, RF-016-10; P-14): su ``key`` (``c03``), el
+    ``state`` (:data:`~.stockpiles.CANDIDATE_CONVERTED` —pasa a ser un acopio de la detección con esa clave— o
+    :data:`~.stockpiles.CANDIDATE_DISCARDED`), el ``reason`` (siempre), el decisor, la fecha (``decided_on``, ISO) y **la
+    huella en tramos** (``runs``: ``(fila, primera columna, columna final excluida)``) que tenía el candidato al decidir: con
+    ella se reconoce al repetir la detección (D-23: más de la mitad del área de cada huella), sin el proyecto ni la operación
+    anterior."""
+
+    key: str
+    state: str
+    reason: str
+    decided_by: str
+    decided_on: str
+    runs: tuple[tuple[int, int, int], ...]
+
+    def cells(self, ncols: int) -> np.ndarray:
+        """Las celdas de la huella (``fila · ncols + columna``, ``int64``) en una rejilla de ``ncols`` columnas."""
+        return runs_cells(np.array(self.runs, dtype=np.int64).reshape(-1, 3), ncols)
+
+
+def _invalid_decisions(entity: str, detail: str) -> DesignError:
+    return DesignError("des.stockpile_decisions_invalid", obj=f"Detección de acopios «{entity}»",
+                       field=StockpileParam.DECISIONS.value, value=None, entity=entity, detail=detail)
+
+
+def _decision_from(entity: str, found: object) -> CandidateDecision:
+    """Una decisión leída del JSON ``found`` (``des.stockpile_decisions_invalid`` si no lo es)."""
+    if not isinstance(found, dict):
+        raise _invalid_decisions(entity, "cada decisión es un objeto")
+    texts = []
+    for name in ("key", "state", "reason", "decided_by", "decided_on"):
+        value = found.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise _invalid_decisions(entity, f"falta «{name}» o no es un texto")
+        texts.append(value)
+    key, state, reason, who, when = texts
+    if _CANDIDATE_KEY.match(key) is None:
+        raise _invalid_decisions(entity, f"«{key}» no es la clave de un candidato (c01, c02…)")
+    if state not in _DECISION_STATES:
+        raise _invalid_decisions(entity, f"el estado de «{key}» es «{state}»: es «{CANDIDATE_CONVERTED}» o "
+                                         f"«{CANDIDATE_DISCARDED}»")
+    runs = found.get("runs")
+    if not isinstance(runs, list):
+        raise _invalid_decisions(entity, f"la huella de «{key}» no es una lista de tramos")
+    parsed: list[tuple[int, int, int]] = []
+    for run in runs:
+        if (not isinstance(run, list) or len(run) != 3
+                or any(isinstance(item, bool) or not isinstance(item, int) for item in run)
+                or run[0] < 0 or not 0 <= run[1] < run[2]):
+            raise _invalid_decisions(entity, f"un tramo de la huella de «{key}» no es [fila, columna primera, columna "
+                                             "final] (0 ≤ primera < final)")
+        parsed.append((run[0], run[1], run[2]))
+    return CandidateDecision(key, state, reason, who, when, tuple(parsed))
+
+
+def parse_decisions(text: str | None, *, entity: str = _NO_VALUE) -> tuple[CandidateDecision, ...]:
+    """Las decisiones del texto del parámetro ``decisions`` (:data:`EMPTY_DECISIONS` o lo que da
+    :func:`format_decisions`): ``None``, un texto en blanco y la lista vacía no tienen ninguna. ``des.stockpile_decisions_invalid``
+    (nombrando ``entity`` y qué falla) si no es JSON, no es la lista de decisiones, una decisión no lleva sus campos o su
+    estado es otro que convertido o descartado, o dos llevan la misma clave."""
+    if text is None or not text.strip():
+        return ()
+    try:
+        loaded = json.loads(text)
+    except ValueError:
+        raise _invalid_decisions(entity, "no es JSON") from None
+    items = loaded.get("decisions") if isinstance(loaded, dict) else None
+    if not isinstance(items, list):
+        raise _invalid_decisions(entity, "falta la lista «decisions»")
+    found = tuple(_decision_from(entity, item) for item in items)
+    keys = [item.key for item in found]
+    for key in keys:
+        if keys.count(key) > 1:
+            raise _invalid_decisions(entity, f"la clave «{key}» está dos veces")
+    return found
+
+
+def format_decisions(decisions: Iterable[CandidateDecision]) -> str:
+    """El texto del parámetro ``decisions`` con ``decisions`` (JSON compacto y estable: :func:`parse_decisions` lo lee
+    igual, en el mismo orden)."""
+    return json.dumps({"decisions": [
+        {"key": item.key, "state": item.state, "reason": item.reason, "decided_by": item.decided_by,
+         "decided_on": item.decided_on, "runs": [list(run) for run in item.runs]} for item in decisions]},
+        separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def candidate_decision(item: CandidateState, ncols: int, *, state: str, reason: str, decided_by: str,
+                       decided_on: str) -> CandidateDecision:
+    """La decisión ``state`` (convertido o descartado) con su ``reason`` de ``decided_by`` el día ``decided_on`` (ISO) sobre
+    el candidato ``item`` (``StockpileOutcome.states``), con su huella en tramos en una rejilla de ``ncols`` columnas.
+    ``ValueError`` si el estado no es convertido ni descartado o falta el motivo."""
+    if state not in _DECISION_STATES:
+        raise ValueError(f"se decide «{CANDIDATE_CONVERTED}» o «{CANDIDATE_DISCARDED}», no «{state}»")
+    if not reason.strip():
+        raise ValueError("una decisión sobre un candidato lleva su motivo")
+    runs = tuple((int(row), int(first), int(last)) for row, first, last in footprint_runs(item.candidate.cells, ncols))
+    return CandidateDecision(item.key, state, reason.strip(), decided_by, decided_on, runs)
+
+
+def _decide_steps(job: StockpileJob, outcome: StockpileOutcome, decisions: Sequence[CandidateDecision], budget_s: float
+                  ) -> Generator[Progress, None, StockpileOutcome]:
+    """Da su clave y su estado a cada candidato de ``outcome`` (spec 016, T13; RF-016-08, RF-016-10, D-23) y convierte en
+    acopios los que se decidió convertir: un candidato nuevo cuya huella comparte **más de la mitad del área de cada una**
+    con la de una decisión (:func:`~.stockpiles.carry_decisions`, una decisión una sola vez) **conserva su clave y su
+    decisión**; los demás son ``pending`` con la primera clave libre (``c01``, ``c02``… sin ninguna de las de las
+    decisiones, que no se reutilizan aunque no coincidan con nadie). Cada convertido pasa a ser una **marca más** del
+    trabajo (su zona, con la clave del candidato) y se detecta otra vez con ella (A2 a A5 y el reparto de las celdas: el mismo
+    plano, la misma huella y el mismo volumen que como candidato, y el reparto con las demás marcas si se tocan); los
+    candidatos que quedan son los no convertidos (los descartados siguen en la lista) y la zona del convertido cuenta como
+    «con marca». Sin candidatos pedidos, el resultado no cambia."""
+    found = outcome.candidates
+    if found is None:
+        return outcome
+    yield Progress(_DECIDE_PHASE, 0, 1, "Aplicando las decisiones sobre los candidatos…")
+    items, ncols = found.items, job.grid.ncols
+    try:
+        previous = [decision.cells(ncols) for decision in decisions]
+    except ValueError as error:
+        raise _invalid_decisions(job.name, str(error)) from None
+    kept = carry_decisions([item.cells for item in items], previous)
+    used = {decision.key for decision in decisions}
+    states: list[CandidateState] = []
+    number = 0
+    for index, item in enumerate(items):
+        carried = kept[index]
+        if carried is not None:
+            chosen = decisions[carried]
+            states.append(CandidateState(chosen.key, chosen.state, item, chosen.reason, chosen.decided_by,
+                                         chosen.decided_on))
+            continue
+        while True:
+            number += 1
+            key = f"c{number:02d}"
+            if key not in used:
+                break
+        used.add(key)
+        states.append(CandidateState(key, CANDIDATE_PENDING, item))
+    converted = [state for state in states if state.state == CANDIDATE_CONVERTED]
+    if not converted:
+        return replace(outcome, states=tuple(states))
+    taken = {mark.key for mark in job.marks}
+    marks = []
+    for state in converted:
+        if state.key in taken:
+            raise DesignError("des.stockpile_candidate_key_taken", obj=f"Marca «{state.key}»", field="nombre",
+                              value=state.key)
+        item = state.candidate
+        marks.append(StockpileMark(state.key, _window_cells(item.zone, item.window, ncols),
+                                   name=_CANDIDATE_NAME.format(key=state.key)))
+    again = replace(job, marks=(*job.marks, *marks), candidates=None, perimeter=None)
+    detected: StockpileOutcome = yield from pipeline.forward(detect_steps(again, budget_s=budget_s))
+    rest = replace(found, items=tuple(state.candidate for state in states if state.state != CANDIDATE_CONVERTED),
+                   on_marks=found.on_marks + len(converted))
+    return replace(detected, candidates=rest, figures=_figures(again, detected.stockpiles, rest), states=tuple(states))
+
+
+# --- Crear (spec 016, T13; RF-016-02, RF-016-08, RF-016-09, RF-015-01, RF-015-02, RF-015-04; RNF-016-03 y 07) ------------
+
+
+_STORE_PHASE = "stockpile_store"
+
+
+def _json(value: object) -> str:
+    """``value`` como JSON compacto y estable (``allow_nan`` falso: nada que no sea finito; un escalar de numpy, su valor)."""
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False, default=_plain)
+
+
+def _plain(value: object) -> object:
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"el valor {value!r} no se puede guardar como JSON")
+
+
+def _finite(value: float | None, what: str) -> float | None:
+    """``value`` como real finito (``None`` si no lo hay); ``ValueError`` si es NaN o infinito: lo guardado nunca lo es."""
+    if value is None:
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{what} no es un número finito: {value!r}")
+    return number
+
+
+def _notice_json(notice: Notice) -> dict[str, object]:
+    return {"code": notice.code, "severity": notice.severity, "values": dict(notice.values)}
+
+
+def stockpile_rows(prepared: PreparedDetection, outcome: StockpileOutcome) -> list[tuple[Any, ...]]:
+    """Las filas de ``des_stk_`` (:data:`~.store.STOCKPILE_COLUMNS`; RF-016-02, RF-016-09) de la detección ``prepared`` con su
+    resultado ``outcome``: **una por acopio**, en su orden, con su procedencia (``mark`` y la capa, el ``fid`` y el margen que
+    se le aplicó, o ``candidate`` si salió de convertir un candidato), el plano en el centro de su huella, la huella en
+    tramos y sus avisos y notas con su código (no su texto). Nada es NaN ni infinito (``ValueError``)."""
+    marks = {mark.key: mark for mark in prepared.job.marks}
+    default_margin = prepared.job.params.margin_m
+    rows: list[tuple[Any, ...]] = []
+    for item in outcome.stockpiles:
+        mark = marks.get(item.key)
+        origin = "candidate" if mark is None else "mark"
+        margin = default_margin if mark is None or mark.margin_m is None else mark.margin_m
+        rows.append((
+            item.key, item.name, origin, prepared.layer if mark is not None else None,
+            prepared.fids.get(item.key) if mark is not None else None, item.material, item.base_surface,
+            _finite(margin, "el margen"), int(item.cells.size), _finite(item.area_m2, "el área"),
+            _finite(item.volume_m3, "el volumen"), _finite(item.thickness_max_m, "el espesor máximo"),
+            _finite(item.x, "x"), _finite(item.y, "y"), _finite(item.plane_level_m, "la cota del plano"),
+            _finite(item.plane_slope_percent, "la pendiente del plano"),
+            _finite(item.plane_azimuth_deg, "el azimut del plano"),
+            _finite(item.plane_tilt_deg, "la inclinación del plano"), int(item.turns), int(bool(item.converged)),
+            _json(item.runs.tolist()), _json([_notice_json(note) for note in item.notes])))
+    return rows
+
+
+def candidate_rows(outcome: StockpileOutcome, ncols: int) -> list[tuple[Any, ...]]:
+    """Las filas de ``des_stc_`` (:data:`~.store.CANDIDATE_COLUMNS`; RF-016-08, RF-016-10) del resultado ``outcome``: **una
+    por candidato** que pasó los filtros (los pendientes, los descartados y los convertidos: nunca los que no los pasan), con
+    su clave, su estado y la decisión, su huella en tramos (``ncols``, las columnas de la rejilla) y su plano en el centro.
+    Sin candidatos pedidos, ninguna."""
+    rows: list[tuple[Any, ...]] = []
+    for state in outcome.states:
+        item = state.candidate
+        plane = item.footprint.plane
+        assert plane is not None  # un candidato se forma como una marca: con plano
+        x, y = item.centre
+        rows.append((
+            state.key, state.state, state.reason, state.decided_by, state.decided_on, int(item.cells.size),
+            _finite(item.footprint.area_m2, "el área"), _finite(item.footprint.volume_m3, "el volumen"),
+            _finite(x, "x"), _finite(y, "y"), _finite(float(plane.at(x, y)), "la cota del plano"),
+            _finite(plane.slope_percent, "la pendiente del plano"), _finite(plane.azimuth_deg, "el azimut del plano"),
+            _json(footprint_runs(item.cells, ncols).tolist())))
+    return rows
+
+
+def detection_report_rows(outcome: StockpileOutcome) -> list[tuple[Any, ...]]:
+    """Las filas de ``des_prp_`` (formato largo: ``quantity, value, unit_code, note``; RF-016-04 a 08) del resultado
+    ``outcome``: los acopios, su área y su volumen, las marcas rechazadas, los candidatos (los que salieron, los que
+    descartó el filtro del área y las zonas con marca o rechazadas, **contadas y sin listar**, y cuántos se convirtieron y se
+    descartaron) y, al final, **cada aviso y nota con su código y sus valores** en JSON (no su texto), en su orden."""
+    found = outcome.stockpiles
+    rows: list[tuple[Any, ...]] = [
+        ("stockpiles", float(len(found)), "-", None),
+        ("area_m2", _finite(math.fsum(item.area_m2 for item in found), "el área"), "m2", None),
+        ("volume_m3", _finite(math.fsum(item.volume_m3 for item in found), "el volumen"), "m3", None),
+        ("rejected_marks", float(len(outcome.rejected)), "-", None)]
+    if outcome.candidates is not None:
+        counts = outcome.candidates
+        decided = Counter(state.state for state in outcome.states)
+        rows += [("candidates", float(len(counts.items)), "-", None), ("candidate_zones", float(counts.zones), "-", None),
+                 ("candidates_on_marks", float(counts.on_marks), "-", None),
+                 ("candidates_filtered", float(counts.filtered), "-", None),
+                 ("candidates_rejected", float(counts.rejected), "-", None),
+                 ("candidates_converted", float(decided[CANDIDATE_CONVERTED]), "-", None),
+                 ("candidates_discarded", float(decided[CANDIDATE_DISCARDED]), "-", None)]
+    for notice in outcome.notices:
+        rows.append((notice.severity, None, None, _json(_notice_json(notice))))
+    return rows
+
+
+def material_label(material: str | None) -> str:
+    """La etiqueta del material en el nombre de los datos de la base y del espesor (``des_stb_<det>_<mat>``): el material y,
+    sin él, «sin material»."""
+    return _NO_MATERIAL if material is None else material
+
+
+def material_dataset(family: str, detection: str, material: str | None) -> str:
+    """El nombre del dato de la familia ``family`` (``stb`` o ``stt``: la base o el espesor) de los acopios de ``material`` de
+    la detección ``detection`` (``des_stb_<det>_<mat>``): lo que busca quien lee un material por su papel."""
+    return provenance.dataset_name(family, f"{detection} {material_label(material)}")
+
+
+def _grid_units(writer: DesignWriter, grid: Grid, family: str, make: Callable[[], np.ndarray], part: str | None
+                ) -> Generator[None, None, Any]:
+    """Las unidades de preparar una rejilla dispersa: montarla de los índices y los valores de cada acopio (una unidad) y
+    escribirla en su temporal con su hash (:meth:`~.store.DesignWriter.grid_steps`: una unidad por banda)."""
+    values = make()
+    yield
+    raster = Raster(grid, values, writer.crs, writer.vertical)
+    return (yield from writer.grid_steps(family, raster, part=part))
+
+
+def create_detection_steps(project: StoreProject, writer: DesignWriter, prepared: PreparedDetection,
+                           outcome: StockpileOutcome, *, decided_by: str | None = None, budget_s: float = STEP_BUDGET_S
+                           ) -> Generator[Progress, None, Stored]:
+    """**«Crear» una detección de acopios** por pasos (spec 016, T13; RF-016-02, RF-016-08, RF-016-09, RF-015-01, RF-015-02,
+    RF-015-04; RNF-016-03 y 07): prepara cada salida en su temporal —la tabla de acopios (``des_stk_``), la de candidatos
+    (``des_stc_``), por material la base y el espesor dispersos (``des_stb_`` y ``des_stt_``), el terreno sin acopios y la
+    superficie con que se detectó, solo en las huellas (``des_stg_`` y ``des_stp_``) y el informe (``des_prp_``)—, cada una
+    montada y escrita por pasos de ``budget_s`` como mucho, y las registra en **una** transacción
+    (:meth:`~.store.DesignWriter.commit` de ``writer``, el del ámbito de la detección: ``design_writer``): **los parámetros
+    de la entidad** —todas sus filas, con su origen y el decisor ``decided_by`` (por defecto quien tiene abierto el
+    proyecto)—, la operación con sus entradas y ajustes, los datos, las cifras con su ámbito (el acopio y el material) y el
+    mensaje. Es **la misma** operación en el proyecto (``des.stockpile_detect_project``: datos y parámetros del proyecto, sin
+    código de versión) y en una versión (``des.stockpile_detect``): lo único que cambia es dónde se escribe (D-15).
+
+    Sin ningún acopio (todas las marcas se rechazaron y los candidatos, si se pidieron, no se convirtieron) no hay base,
+    espesor, terreno ni superficie que guardar y se omiten. Una entidad que ya estaba en su ámbito (``prepared.existing``:
+    repetirla, T14) no vuelve a escribir sus parámetros. Si algo falla, o lo que consume cambió desde que se calculó, no queda
+    nada y el error sigue; **no modifica ninguna capa de entrada**. Cerrar el generador antes de que termine borra los
+    temporales. Devuelve lo guardado (:class:`~.store.Stored`)."""
+    if not isinstance(outcome, StockpileOutcome):
+        raise TypeError(f"se crea la detección de un StockpileOutcome, no {outcome!r}")
+    grid = prepared.job.grid
+    ncols = grid.ncols
+    yield Progress(_STORE_PHASE, 0, 1, f"Guardando la detección «{prepared.job.name}»…")
+    chosen = outcome.stockpiles
+    yield from pipeline.forward(_store_steps(
+        writer.table_steps(provenance.STOCKPILES_TABLE, stockpile_rows(prepared, outcome)), budget_s,
+        "la tabla de acopios"))
+    yield from pipeline.forward(_store_steps(
+        writer.table_steps(provenance.STOCKPILE_CANDIDATES_TABLE, candidate_rows(outcome, ncols)), budget_s,
+        "la tabla de candidatos"))
+    if chosen:
+        for material in outcome.materials:
+            part = material_label(material)
+            yield from pipeline.forward(_store_steps(_grid_units(
+                writer, grid, provenance.STOCKPILE_BASE_GRID, lambda material=material: outcome.base_grid(material), part),
+                budget_s, f"la base de los acopios de «{part}»"))
+            yield from pipeline.forward(_store_steps(_grid_units(
+                writer, grid, provenance.STOCKPILE_THICKNESS_GRID, lambda material=material: outcome.thickness_grid(material),
+                part), budget_s, f"el espesor de los acopios de «{part}»"))
+        yield from pipeline.forward(_store_steps(_grid_units(
+            writer, grid, provenance.STOCKPILE_GROUND_GRID, outcome.ground_grid, None), budget_s,
+            "el terreno sin acopios"))
+        yield from pipeline.forward(_store_steps(_grid_units(
+            writer, grid, provenance.STOCKPILE_SURFACE_GRID, outcome.surface_grid, None), budget_s,
+            "la superficie con que se detectó"))
+    else:
+        writer.omit(provenance.STOCKPILE_BASE_GRID, provenance.STOCKPILE_THICKNESS_GRID,
+                    provenance.STOCKPILE_GROUND_GRID, provenance.STOCKPILE_SURFACE_GRID)
+    yield from pipeline.forward(_store_steps(
+        writer.table_steps(provenance.ENTITY_REPORT_TABLE, detection_report_rows(outcome)), budget_s,
+        "el informe de la detección"))
+    yield Progress(_STORE_PHASE, 1, 1, f"Registrando la detección «{prepared.job.name}»…")
+    start = prepared.start
+
+    def parameters(conn: sqlite3.Connection) -> None:
+        if prepared.existing:
+            if ParameterStore(project).get(entity_key(prepared.code, StockpileParam.NAME), version=prepared.version_uid,
+                                           conn=conn) is None:
+                raise ValueError(f"la entidad {prepared.code} no tiene sus parámetros en su ámbito: no está en él (se "
+                                 "prepara sin su código)")
+        else:
+            set_entity_params(project, prepared.rows, version=prepared.version_uid, decided_by=decided_by, conn=conn)
+        if start.supersedes is not None:
+            _retire_vanished(project, conn, start.supersedes, {spec.name for spec in writer.specs})
+
+    return writer.commit(start, figures=outcome.figures, message=outcome.message, before_begin=parameters)
+
+
+def _retire_vanished(project: StoreProject, conn: sqlite3.Connection, supersedes: str, written: set[str]) -> None:
+    """Retira, en la transacción de «Crear», los datos vigentes que escribió la operación ``supersedes`` y **la nueva no
+    escribe** (spec 016, T13; RF-016-10, RF-015-16): al repetir una detección, la base y el espesor de un material que ya no
+    tiene ningún acopio (la marca cambió de material, el candidato dejó de estar convertido…) quedarían vigentes en el proyecto
+    sin operación que los respalde, y quien lee por su papel (la 011, la 012, R-18) los tomaría por una unidad de acopios. Pasan a
+    «sustituidos» (conservan su contenido como historia) y lo que los consumía queda obsoleto con su causa."""
+    live = tuple(str(status) for status in LIVE_STATUSES)
+    rows = conn.execute(
+        "SELECT d.uid, d.name FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+        f"WHERE io.operation_uid = ? AND io.direction = 'out' AND io.item_kind = 'dataset' AND d.status IN "
+        f"({', '.join('?' for _ in live)}) ORDER BY io.fid", (supersedes, *live)).fetchall()
+    for uid, name in rows:
+        if name not in written:
+            dataset_registry.supersede(conn, project, str(uid))
+
+
+def create_detection(project: StoreProject, writer: DesignWriter, prepared: PreparedDetection,
+                     outcome: StockpileOutcome, *, decided_by: str | None = None) -> Stored:
+    """:func:`create_detection_steps` de una vez (sin ceder el hilo): lo guardado (:class:`~.store.Stored`), con los mismos
+    rechazos y la misma transacción."""
+    work = create_detection_steps(project, writer, prepared, outcome, decided_by=decided_by)
+    while True:
+        try:
+            next(work)
+        except StopIteration as stop:
+            result: Stored = stop.value
+            return result
+
+
+# --- Leer lo guardado y decidir (spec 016, T13; RF-016-10, P-14) ---------------------------------------------------
+
+
+def read_detection_table(project: StoreProject, family: str, name: str, *, version_uid: str = "",
+                         conn: sqlite3.Connection | None = None) -> tuple[dict[str, Any], ...]:
+    """Las filas de la tabla ``family`` (``stk``, ``stc`` o ``prp``) de la detección ``name`` **vigente** en el ámbito
+    (``version_uid`` vacío: el proyecto), cada una por el nombre de su columna (``STOCKPILE_COLUMNS``, ``CANDIDATE_COLUMNS``
+    o ``REPORT_COLUMNS``), en su orden. Las huellas (``footprint``) son JSON de tramos y las rejillas dispersas se leen
+    por su papel con :func:`~.surfaces.read_surface`. Solo lee. ``ValueError`` si ``family`` no es una tabla de la detección
+    y ``des.stockpile_decisions_invalid`` no: si el dato no está, ``gis.dataset_unknown``."""
+    if family not in (provenance.STOCKPILES_TABLE, provenance.STOCKPILE_CANDIDATES_TABLE, provenance.ENTITY_REPORT_TABLE):
+        raise ValueError(f"«{family}» no es una tabla de la detección de acopios")
+    columns = [column.name for column in columns_of(provenance.STOCKPILE_DETECT, family)]
+    dataset = provenance.dataset_name(family, name)
+
+    def read(reading: sqlite3.Connection) -> tuple[dict[str, Any], ...]:
+        record = dataset_registry.get(reading, dataset, version_uid=version_uid)
+        if record is None or not record.live:
+            raise GisError("gis.dataset_unknown", obj=dataset, field="nombre", value=dataset, name=dataset)
+        found = reading.execute(f'SELECT {", ".join(columns)} FROM "{record.locator}" ORDER BY fid').fetchall()
+        return tuple(dict(zip(columns, row, strict=True)) for row in found)
+
+    if conn is not None:
+        return read(conn)
+    with project.read() as reading:
+        return read(reading)
+
+
+def decide_candidate(project: StoreProject, code: str, key: str, state: str, reason: str, *,
+                     version: Version | None = None, decided_by: str | None = None,
+                     decided_at: Any = None) -> ParameterRecord:
+    """**Decide** sobre el candidato ``key`` (``c03``) de la lista vigente de la detección de código ``code`` en su ámbito
+    (la ``version`` o, sin ella, el proyecto; spec 016, T13; RF-016-08, RF-016-10; P-14): ``state`` es
+    :data:`~.stockpiles.CANDIDATE_CONVERTED`, :data:`~.stockpiles.CANDIDATE_DISCARDED` o
+    :data:`~.stockpiles.CANDIDATE_PENDING` (volver a preguntar: quita la decisión), siempre con su ``reason``. Es un **cambio del
+    parámetro** ``decisions`` de la entidad (con su historial, su decisor ``decided_by`` —por defecto quien tiene abierto el
+    proyecto— y su fecha ``decided_at``): la detección lo lee, así que **queda obsoleta con su causa** (RF-015-16) y se
+    repite con la decisión aplicada (:func:`detection_compute_steps`; el recálculo, T14). La decisión guarda la huella del
+    candidato **tal como la enseña la lista** (la tabla ``des_stc_`` vigente), con la que se reconoce al repetir (D-23).
+    ``des.stockpile_decisions_invalid`` si la detección no tiene ningún candidato con esa clave; ``ValueError`` si el
+    estado es otro o falta el motivo."""
+    if state not in (*_DECISION_STATES, CANDIDATE_PENDING):
+        raise ValueError(f"se decide «{CANDIDATE_CONVERTED}», «{CANDIDATE_DISCARDED}» o «{CANDIDATE_PENDING}», no «{state}»")
+    if not reason.strip():
+        raise ValueError("una decisión sobre un candidato lleva su motivo")
+    values = entity_parameters(project, code, version=version)
+    name = values.get(StockpileParam.NAME.value)
+    if not isinstance(name, str):
+        raise ValueError(f"la detección {code} no tiene nombre en su ámbito")
+    version_uid = "" if version is None else version.uid
+    parameter = entity_key(code, StockpileParam.DECISIONS)
+    who = decided_by or project.session.user_host
+    store = ParameterStore(project)
+    with project.write_transaction() as conn:
+        rows = read_detection_table(project, provenance.STOCKPILE_CANDIDATES_TABLE, name, version_uid=version_uid,
+                                    conn=conn)
+        current = parse_decisions(values.get(StockpileParam.DECISIONS.value), entity=name)
+        others = tuple(item for item in current if item.key != key)
+        if state != CANDIDATE_PENDING:
+            row = next((item for item in rows if item["key"] == key), None)
+            if row is None:
+                raise _invalid_decisions(name, f"la detección no tiene ningún candidato «{key}»")
+            runs = tuple((int(a), int(b), int(c)) for a, b, c in json.loads(row["footprint"]))
+            stamp = (format_utc(project.clock.now()) if decided_at is None
+                     else decided_at if isinstance(decided_at, str) else decided_at.isoformat())
+            when = stamp[:10]
+            others = (*others, CandidateDecision(key, state, reason.strip(), who, when, runs))
+        text = format_decisions(others)
+        if text == format_decisions(current):  # nada que cambiar (volver a preguntar lo que no estaba decidido)
+            unchanged = store.get(parameter, version=None if version is None else version.uid, conn=conn)
+            assert unchanged is not None
+            return unchanged
+        return store.change(conn, parameter, value=text, source=_DECIDE_SOURCE.format(name=name),
+                            source_kind="person", decided_by=who, decided_at=decided_at, reason=reason.strip(),
+                            version=version.uid if version is not None else None)

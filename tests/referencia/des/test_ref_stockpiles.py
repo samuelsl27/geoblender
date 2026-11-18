@@ -953,8 +953,11 @@ class SurveyTest(unittest.TestCase):
                 left, bottom, right, top = mound.foot_box
                 for x, y in places:
                     self.assertFalse(left <= x - sdata.BASE[0] <= right and bottom <= y - sdata.BASE[1] <= top)
+        # T13: ``states`` es el estado de cada candidato que **pasó** los filtros (su clave y su decisión), nunca una lista de
+        # lo que el filtro descarta.
         self.assertEqual(set(outcome.__dataclass_fields__), {"name", "code", "grid", "stockpiles", "rejected", "shared",
-                                                             "candidates", "figures", "notices"})
+                                                             "candidates", "figures", "notices", "states"})
+        self.assertEqual(outcome.states, (), "sin decisiones, el resultado de A2 a A5 no da estados")
         self.assertEqual(set(outcome.candidates.__dataclass_fields__),
                          {"grid", "items", "zones", "on_marks", "too_small", "too_large", "rejected"})
 

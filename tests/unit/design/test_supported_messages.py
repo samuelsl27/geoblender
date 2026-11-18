@@ -37,6 +37,10 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.stockpile_mark_no_cells": ("error", "RF-016-04", {"layer", "entity"}),
     "des.stockpile_no_marks": ("error", "RF-016-02", {"layer"}),
     "des.stockpile_name_repeated_project": ("error", "RF-015-01", {"value", "other"}),
+    # T13: lo que rechaza el cálculo de una detección con decisiones sobre sus candidatos.
+    "des.stockpile_decisions_invalid": ("error", "RF-016-10", {"entity", "detail"}),
+    "des.stockpile_candidate_key_taken": ("error", "RF-016-10", {"value"}),
+    "des.stockpile_material_repeated": ("error", "RF-016-09", {"layer", "value", "other"}),
     # RF-016-05: lo que se avisa y se anota en el acopio.
     "des.stockpile_footprint_at_edge": ("warning", "RF-016-05", {"mark", *POSITION}),
     "des.stockpile_several_zones": ("warning", "RF-016-05", {"mark", "zones", *POSITION}),
@@ -129,7 +133,7 @@ class SupportedMessagesTest(unittest.TestCase):
                   "volume": 640.25, "items": "«Relleno V09»", "height": 12.0, "angle": 52.0,
                   "min_angle": 45.0, "min_height": 3.0, "layer": "gis_fea_zonas", "entity": "BTR-001",
                   "profile": "EXPL_10_60_6", "anchor": 250.0, "footprint": "Cuerpo 1", "distance": 30.0,
-                  "fids": "3, 7", "fields": "nombre, margen"}
+                  "fids": "3, 7", "fields": "nombre, margen", "detail": "no es JSON"}
         for code, (severity, _rf, _marks) in CODES.items():
             with self.subTest(code=code):
                 if severity == "error":
