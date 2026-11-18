@@ -2108,6 +2108,54 @@ CATALOG: tuple[Message, ...] = (
         "Las marcas «{mark}» y «{other}» se solapan en {area} m² (en torno a x = {x} m, y = {y} m): cada acopio tiene "
         "su propia marca; dibújelas de modo que no se solapen; no se detecta nada.",
     ),
+    # Lo que rechaza **antes de calcular** la preparación de la detección (T11; RF-016-02, RF-016-04, RF-015-08): la capa
+    # de marcas, sus campos, sus polígonos y el nombre de la detección. Un acopio que se rechaza al calcularlo no está aquí.
+    Message(
+        "des.stockpile_layer_field",
+        "Layer «{layer}» has no field «{value}» that can be read as «{field}» (text for the name, the material and "
+        "the base; a number for the margin); the fields of the layer are: {fields}; choose another one in the dialog; "
+        "nothing is calculated.",
+        "La capa «{layer}» no tiene ningún campo «{value}» que se pueda leer como «{field}» (de texto para el nombre, "
+        "el material y la base; un número para el margen); sus campos son: {fields}; elija otro en el diálogo; no se "
+        "calcula nada.",
+    ),
+    Message(
+        "des.stockpile_mark_repeated",
+        "Layer «{layer}» has several marks called «{value}» (fid {fids}); the name of a mark is the key of its "
+        "stockpile and each one needs its own; rename them in QGIS; nothing is calculated.",
+        "La capa «{layer}» tiene varias marcas llamadas «{value}» (fid {fids}); el nombre de una marca es la clave de "
+        "su acopio y cada una necesita el suyo; cámbieles el nombre en QGIS; no se calcula nada.",
+    ),
+    Message(
+        "des.stockpile_mark_geometry",
+        "Layer «{layer}», mark «{entity}»: its polygon is not valid ({value}: self_intersecting, it crosses itself; "
+        "no_area, it has no area; hole_outside, a hole is outside its outline or inside another hole; overlap, two "
+        "of its parts overlap); correct it in QGIS; nothing is calculated.",
+        "Capa «{layer}», marca «{entity}»: su polígono no es válido ({value}: self_intersecting, se corta a sí "
+        "mismo; no_area, no tiene área; hole_outside, un hueco queda fuera de su contorno o dentro de otro hueco; "
+        "overlap, dos de sus partes se solapan); corríjalo en QGIS; no se calcula nada.",
+    ),
+    Message(
+        "des.stockpile_mark_no_cells",
+        "Layer «{layer}», mark «{entity}»: its polygon has no cell in the project grid (a cell is part of it if its "
+        "centre is inside); check its position and its size; nothing is calculated.",
+        "Capa «{layer}», marca «{entity}»: su polígono no tiene ninguna celda en la rejilla del proyecto (una celda "
+        "es suya si su centro queda dentro); revise su posición y su tamaño; no se calcula nada.",
+    ),
+    Message(
+        "des.stockpile_no_marks",
+        "Layer «{layer}» has no marks and the candidates were not asked for, so there is nothing to detect; draw the "
+        "marks in QGIS or ask for the candidates; nothing is calculated.",
+        "La capa «{layer}» no tiene ninguna marca y no se pidieron los candidatos, así que no hay nada que detectar; "
+        "dibuje las marcas en QGIS o pida los candidatos; no se calcula nada.",
+    ),
+    Message(
+        "des.stockpile_name_repeated_project",
+        "The name «{value}» is already used by entity «{other}» in the project; give each detection of the project "
+        "its own name; nothing is calculated.",
+        "El nombre «{value}» ya lo tiene la entidad «{other}» en el proyecto; dé a cada detección del proyecto su "
+        "propio nombre; no se calcula nada.",
+    ),
     Message(
         "des.stockpile_footprint_at_edge",
         "Stockpile «{mark}»: its footprint reaches the edge of its mark enlarged by the margin (at x = {x} m, "

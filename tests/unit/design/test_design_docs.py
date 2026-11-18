@@ -179,6 +179,8 @@ PENDING_015_MODULES: frozenset[str] = frozenset({
     "design.morphology",
     # La 016, T06: el plano de base robusto y su límite de inclinación (A2); T07 a T09 le añaden el resto de la detección.
     "design.stockpiles",
+    # La 016, T11: preparar y rechazar la detección de acopios (el homólogo de ``prepare_platform_units``).
+    "design.stockpile_store",
 })
 
 

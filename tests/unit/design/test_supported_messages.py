@@ -30,6 +30,13 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.stockpile_no_terrain_crown": ("warning", "RF-016-04", {"mark", "cells", *POSITION}),
     "des.stockpile_no_crown_cells": ("warning", "RF-016-04", {"mark", "inner", "outer", *POSITION}),
     "des.stockpile_marks_overlap": ("error", "RF-016-04", {"mark", "other", "area", *POSITION}),
+    # T11: lo que rechaza la preparación antes de calcular (la capa de marcas, sus campos y polígonos, los nombres).
+    "des.stockpile_layer_field": ("error", "RF-015-08", {"layer", "field", "value", "fields"}),
+    "des.stockpile_mark_repeated": ("error", "RF-016-02", {"layer", "value", "fids"}),
+    "des.stockpile_mark_geometry": ("error", "RF-016-04", {"layer", "entity", "value"}),
+    "des.stockpile_mark_no_cells": ("error", "RF-016-04", {"layer", "entity"}),
+    "des.stockpile_no_marks": ("error", "RF-016-02", {"layer"}),
+    "des.stockpile_name_repeated_project": ("error", "RF-015-01", {"value", "other"}),
     # RF-016-05: lo que se avisa y se anota en el acopio.
     "des.stockpile_footprint_at_edge": ("warning", "RF-016-05", {"mark", *POSITION}),
     "des.stockpile_several_zones": ("warning", "RF-016-05", {"mark", "zones", *POSITION}),
@@ -109,7 +116,8 @@ class SupportedMessagesTest(unittest.TestCase):
                   "stockpile": "STK-001#m07", "detection": "Detección 1", "cause": "cambió «margin_m»",
                   "volume": 640.25, "items": "«Relleno V09»", "height": 12.0, "angle": 52.0,
                   "min_angle": 45.0, "min_height": 3.0, "layer": "gis_fea_zonas", "entity": "BTR-001",
-                  "profile": "EXPL_10_60_6", "anchor": 250.0, "footprint": "Cuerpo 1", "distance": 30.0}
+                  "profile": "EXPL_10_60_6", "anchor": 250.0, "footprint": "Cuerpo 1", "distance": 30.0,
+                  "fids": "3, 7", "fields": "nombre, margen"}
         for code, (severity, _rf, _marks) in CODES.items():
             with self.subTest(code=code):
                 if severity == "error":
