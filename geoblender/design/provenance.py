@@ -395,6 +395,7 @@ __all__ = [
     "SUPPORTED_VERSION_TYPES",
     "SUPPORT_FIGURES",
     "SUPPORT_FOOTPRINT_ROLE",
+    "SUPPORT_REF_SEPARATOR",
     "SUPPORTS_RELEASED",
     "SURFACE_ROLE",
     "SURFACE_SCOPE_KEY",
@@ -500,6 +501,8 @@ __all__ = [
     "stockpile_params",
     "stockpile_request",
     "stockpile_settings",
+    "split_support_ref",
+    "support_ref",
     "supported_code",
     "supported_figures",
     "supported_operation_defs",
@@ -1619,16 +1622,52 @@ def platform_figures(name: str, code: str, values: Mapping[str, float | None]
     return tuple(found)
 
 
+SUPPORT_REF_SEPARATOR = "#"
+"""Lo que separa, en la referencia de un **acopio** (``STK-001#m07``), el código de su detección de la clave de su marca (spec 016,
+T15; P-1, ADR-0031 §4): el código de una entidad no lleva ``#`` y la clave de una marca (su nombre) puede llevarlo, así que se
+parte por el primero."""
+
+
+def support_ref(code: str, stockpile: str | None = None) -> str:
+    """La referencia de aquello en lo que se apoya una operación (spec 016, T15; plan 016 §5.2.3 «Dependencias», A13; P-1): el código
+    de la entidad (``PLT-001``) o, de un **acopio**, el de su detección y la clave de su marca (``STK-001#m07``, el que ``des.supported_m3``
+    lleva en su ámbito como ``entity`` y ``stockpile``). ``ValueError`` si ``code`` no es de una entidad o la clave está en blanco (no
+    cita ningún acopio); sin clave (``None``), el código tal cual."""
+    entity_segment(code)  # el código de una entidad (ValueError, TypeError)
+    if stockpile is None:
+        return code
+    if not isinstance(stockpile, str) or not stockpile.strip():
+        raise ValueError(f"la clave de un acopio es un texto con algo, no {stockpile!r}")
+    return f"{code}{SUPPORT_REF_SEPARATOR}{stockpile}"
+
+
+def split_support_ref(ref: str) -> tuple[str, str | None]:
+    """El código de la entidad y la clave del acopio de una referencia de :func:`support_ref` (``"STK-001#m07"`` →
+    ``("STK-001", "m07")``; ``"PLT-001"`` → ``("PLT-001", None)``), partida por el primer ``#``. ``ValueError`` si el código no es el
+    de una entidad o hay ``#`` y la clave está en blanco."""
+    code, separator, key = ref.partition(SUPPORT_REF_SEPARATOR)
+    stockpile = key if separator else None
+    support_ref(code, stockpile)  # los mismos rechazos
+    return code, stockpile
+
+
 def supported_figures(name: str, volumes: Mapping[str, float]) -> tuple[FigureSpec, ...]:
     """Las cifras ``des.supported_m3`` de la operación ``name`` (spec 015, T04; RF-015-15; ADR-0030
     §4): una por entidad en la que se apoya, por orden de código, con el volumen apoyado (m³; cero
     si lo declara el usuario y no rellena nada) y el ámbito de :func:`entity_figure_scope` con **esa**
-    entidad (``volumes``: código → volumen). Sin entidades, ninguna. ``ValueError`` si un volumen
-    no es un número finito y no negativo o un código no es el de una entidad."""
-    scope_of = {code: entity_figure_scope(name, code) for code in volumes}
-    return tuple(FigureSpec(SUPPORTED_M3, _non_negative(SUPPORTED_M3, volumes[code]), "m3",
-                            scope=scope_of[code])
-                 for code in sorted(scope_of))
+    entidad (``volumes``: código → volumen). **Una por acopio** (spec 016, T15; RF-016-14, P-1): si la clave es la
+    referencia de un acopio (:func:`support_ref`, ``STK-001#m07``), el ámbito es el de :func:`stockpile_figure_scope`: la entidad (la
+    detección) **y la clave del acopio** (sin ella, las cifras de dos acopios de una detección se pisarían, RF-009-20). Sin
+    entidades, ninguna. ``ValueError`` si un volumen no es un número finito y no negativo o un código no es el de una
+    entidad."""
+    scope_of: dict[str, dict[str, str]] = {}
+    for ref in volumes:
+        code, stockpile = split_support_ref(ref)
+        scope_of[ref] = (entity_figure_scope(name, code) if stockpile is None
+                         else stockpile_figure_scope(name, code, stockpile))
+    return tuple(FigureSpec(SUPPORTED_M3, _non_negative(SUPPORTED_M3, volumes[ref]), "m3",
+                            scope=scope_of[ref])
+                 for ref in sorted(scope_of))
 
 
 def declare_figures(count: int) -> tuple[FigureSpec, ...]:

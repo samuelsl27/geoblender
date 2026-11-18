@@ -175,6 +175,8 @@ PENDING_015_API: frozenset[str] = frozenset({
     # La 016, T12: «Calcular» la detección de acopios y su resumen (``design.steps`` y ``design.preview``).
     "stockpile_run", "StockpileSummary", "StockpileLine", "RejectedLine", "CandidateLine", "CandidateCounts",
     "stockpile_obsolete_notices",
+    # La 016, T15: la referencia de un acopio apoyable (``STK-001#m07``) y la huella de cada acopio de una detección.
+    "support_ref", "split_support_ref", "read_stockpile_footprints",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 016, T05: la morfología con un disco exacto (A1). Su fila de la ficha (``des.md`` §4.4) la lleva la T38,

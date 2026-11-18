@@ -64,7 +64,10 @@ genérico de ``DesignWriter.commit`` (:func:`survey_supports`, con ``design.enti
 crearla, las entradas ``supported_on`` y ``support_footprint`` de cada entidad en cuya huella rellena y la cifra
 ``des.supported_m3``; lo que declara la persona (``des.platform.{e}.supports``, :func:`declared_supports`) y la
 superficie de apoyo de la petición ya son entradas al preparar (:func:`prepare_platform_units`), con la tabla de
-su huella, y se registran **aunque no apoyen nada**. :func:`detected_supports` lo enseña antes de crear. **Insertar
+su huella, y se registran **aunque no apoyen nada**. :func:`detected_supports` lo enseña antes de crear. **En un acopio** (spec 016,
+T15; RF-016-14, P-1): :func:`survey_supports` mide además sobre **cada acopio** de las detecciones de acopios de la versión
+(:func:`read_stockpile_footprints`: la huella de cada fila de su ``des_stk_``), todos sobre la superficie con que se detectó
+(``des_stp_``), y cada uno que recibe relleno es un :class:`~.entities.Support` con su clave. **Insertar
 antes o después de otra** (T31; RF-015-05): con ``insert_before`` (la entidad que hoy parte de la misma superficie) la
 preparación no rechaza esa partida ocupada y lleva en ``PreparedPlatform.insertion`` el cambio de la partida de esa
 entidad (``entities.insert_before``, con su motivo); :func:`apply_insertion` lo escribe con el gancho de «Crear», en la
@@ -382,6 +385,7 @@ __all__ = [
     "quarry_order",
     "read_entity_footprint",
     "read_geometry",
+    "read_stockpile_footprints",
     "recompute_declaration",
     "recompute_entity_layer",
     "recompute_platform",
@@ -1801,13 +1805,15 @@ class SupportSurvey:
 
     @property
     def volumes(self) -> dict[str, float]:
-        """El volumen apoyado (m³) en cada entidad de ``supports``, por su código."""
-        return {item.code: item.volume_m3 for item in self.supports}
+        """El volumen apoyado (m³) en cada entidad de ``supports``, por su referencia: su código (``PLT-001``) o, de un
+        **acopio** (spec 016, T15; P-1), el de su detección y la clave de su marca (``STK-001#m07``)."""
+        return {item.ref: item.volume_m3 for item in self.supports}
 
     def uses(self, have: Iterable[tuple[str, str]] = ()) -> tuple[Use, ...]:
         """Las entradas que la operación ha de anotar por cada entidad de ``supports`` —su superficie con el
         papel ``supported_on`` y su tabla con el ``support_footprint``, con la que se reproduce lo apoyado— y
-        que aún no tiene (``have``: pares ``(dato, papel)`` de sus entradas)."""
+        que aún no tiene (``have``: pares ``(dato, papel)`` de sus entradas). Los acopios de una detección **comparten**
+        la superficie con que se detectó y la tabla de sus acopios: se anotan una sola vez (spec 016, T15)."""
         held = set(have)
         found: list[Use] = []
         for item in self.supports:
@@ -1820,7 +1826,8 @@ class SupportSurvey:
         return tuple(found)
 
     def figures(self, name: str) -> tuple[Any, ...]:
-        """Las cifras ``des.supported_m3`` de la operación ``name`` (una por entidad apoyada)."""
+        """Las cifras ``des.supported_m3`` de la operación ``name`` (una por entidad apoyada y, de una detección de acopios, **una por
+        acopio**, con su clave en el ámbito: RF-016-14)."""
         return provenance.supported_figures(name, self.volumes)
 
 
@@ -1840,6 +1847,12 @@ def survey_supports(project: StoreProject, version: Version, results: Sequence[n
     apoyo (``released``: los códigos que soltó la persona, T25; RF-015-17: el gancho no vuelve a registrarlas).
     De varias superficies (las de una cantera, las de un ajuste) cuenta la que más apoya
     (:func:`~.entities.strongest`).
+
+    **Los acopios** (spec 016, T15; RF-016-14, P-1; plan 016 A13): una detección de acopios de la versión se mide **por acopio** (una
+    fila de su ``des_stk_`` cada uno, :func:`_footprints_of`), todos sobre la superficie con que se detectó (``des_stp_``, que se lee
+    una sola vez), y cada acopio que recibe relleno es un :class:`~.entities.Support` con su clave. Lo que la operación ya tenía como
+    entrada de una detección no se «declara» acopio por acopio (la entrada no dice cuáles se apoyaban): un acopio sobre el que ya no se
+    rellena no sale. Las detecciones **del proyecto** no están en el registro de la versión y no se miden.
 
     **Coste:** con la versión sin entidades, ni se llama (``design.store`` lo comprueba con una consulta).
     Si no hay celdas que suban más del espesor mínimo y nada declarado, solo se lee el registro; las huellas
@@ -1863,27 +1876,47 @@ def survey_supports(project: StoreProject, version: Version, results: Sequence[n
                 raise ValueError(f"la superficie resultante {array.shape} no es de la forma de la de "
                                  f"partida {ground.shape}")
             filled |= (array - ground) > thickness
-    registered = {code for code, where in wanted.items() if where.surface in held}
+    # Lo que la operación ya tenía como entrada se registra aunque no apoye nada, salvo en una detección de acopios (spec 016, T15): sus
+    # acopios comparten la superficie con que se detectó y la entrada no dice **cuáles** se apoyaban; uno que ya no se apoya no sale.
+    registered = {code for code, where in wanted.items()
+                  if where.surface in held and where.kind is not entities.EntityKind.STOCKPILE}
     candidates = list(wanted) if filled.any() else sorted(registered, key=entities.code_order)
     if not candidates:
         return SupportSurvey()
     cells: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     with project.read() as conn:
         for code in candidates:
-            rows, cols = entities.runs_cells(read_entity_footprint(conn, wanted[code].locator).runs)
-            inside = (rows.size > 0 and int(rows.max()) < ground.shape[0]
-                      and int(cols.max()) < ground.shape[1])
-            if inside and (code in registered or bool(filled[rows, cols].any())):
-                cells[code] = (rows, cols)
+            for ref, runs in _footprints_of(conn, wanted[code]).items():
+                rows, cols = entities.runs_cells(runs)
+                inside = (rows.size > 0 and int(rows.max()) < ground.shape[0]
+                          and int(cols.max()) < ground.shape[1])
+                if inside and (ref in registered or bool(filled[rows, cols].any())):
+                    cells[ref] = (rows, cols)
     if not cells:
         return SupportSurvey()
-    surfaces = {code: read_surface(project, wanted[code].surface, version_uid=version.uid, expect=frame,
-                                   role="superficie de apoyo").values for code in cells}
+    read: dict[str, np.ndarray] = {}  # la superficie de una detección es una sola para todos sus acopios
+    surfaces: dict[str, np.ndarray] = {}
+    for ref in cells:
+        where = wanted[provenance.split_support_ref(ref)[0]]
+        if where.surface not in read:
+            read[where.surface] = read_surface(project, where.surface, version_uid=version.uid, expect=frame,
+                                               role="superficie de apoyo").values
+        surfaces[ref] = read[where.surface]
     area = float(frame.grid.cell_area)
     best = entities.strongest(
         item for array in arrays for item in entities.detect_supports(
             array, ground, surfaces, cells, thickness, area, declared=sorted(registered & set(cells))))
     return SupportSurvey(best, MappingProxyType({item.code: wanted[item.code] for item in best}))
+
+
+def _footprints_of(conn: sqlite3.Connection, where: EntitySurface) -> dict[str, tuple[tuple[int, int, int], ...]]:
+    """La huella en tramos de lo que se puede apoyar en la entidad ``where``, por la referencia de cada cosa (spec 016, T15; A13): la de
+    una plataforma (y de la retirada, el contrafuerte y el cuerpo), la huella de su fila de ``des_epr_`` por su código; la de una
+    **detección de acopios**, la de **cada fila** de su ``des_stk_`` por ``STK-001#clave``, en el orden de la tabla. Solo lee."""
+    if where.kind is entities.EntityKind.STOCKPILE:
+        return {provenance.support_ref(where.code, key): runs
+                for key, runs in read_stockpile_footprints(conn, where.locator)[1].items()}
+    return {where.code: read_entity_footprint(conn, where.locator).runs}
 
 
 def add_supports(project: StoreProject, start: OperationStart, survey: SupportSurvey) -> OperationStart:
@@ -2460,6 +2493,27 @@ def read_entity_footprint(conn: sqlite3.Connection, table: str) -> EntityFootpri
     runs = tuple((int(row), int(first), int(last)) for row, first, last in json.loads(footprint))
     vertices = tuple((float(x), float(y)) for x, y in json.loads(axis))
     return EntityFootprint(str(code), str(name), str(kind), str(layer), runs, vertices)
+
+
+def read_stockpile_footprints(conn: sqlite3.Connection, table: str
+                              ) -> tuple[str, dict[str, tuple[tuple[int, int, int], ...]]]:
+    """La huella de **cada acopio** de la tabla de acopios ``table`` de una detección (``des_stk_``; ``conn`` la ve: la del proyecto o la
+    congelada; spec 016, T15; RF-016-14, P-1): el código de la detección (``code``, ``STK-001``: lo dice la tabla, como la
+    ``des_epr_`` de una entidad) y, de cada acopio, su clave (la de su marca) → su huella en tramos de fila ``(fila, col0, col1)``
+    absolutos, ``col1`` excluida (``footprint``, JSON), en el orden de la tabla. Es lo que se apoya sobre cada acopio
+    (:func:`~.entities.detect_supports`). Una tabla sin filas da ``("", {})``. ``ValueError`` si una clave se repite, las filas
+    son de más de una detección o una huella no son tramos. Solo lee."""
+    found: dict[str, tuple[tuple[int, int, int], ...]] = {}
+    codes: set[str] = set()
+    for code, key, footprint in conn.execute(f'SELECT code, key, footprint FROM "{table}" ORDER BY fid').fetchall():
+        if str(key) in found:
+            raise ValueError(f"la tabla de acopios «{table}» tiene la clave «{key}» más de una vez")
+        codes.add(str(code))
+        found[str(key)] = tuple((int(row), int(first), int(last)) for row, first, last in json.loads(footprint))
+    if len(codes) > 1:
+        raise ValueError(f"la tabla de acopios «{table}» tiene las filas de {len(codes)} detecciones "
+                         f"({', '.join(sorted(codes))}), no de una")
+    return (next(iter(codes)) if codes else ""), found
 
 
 def _usable_footprint(conn: sqlite3.Connection, entry: entities.EntityEntry, version: Version

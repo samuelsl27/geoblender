@@ -1153,7 +1153,7 @@ def stockpile_rows_of(job: StockpileJob, layer: str, fids: Mapping[str, int], ou
         origin = "candidate" if mark is None else "mark"
         margin = default_margin if mark is None or mark.margin_m is None else mark.margin_m
         rows.append((
-            item.key, item.name, origin, layer if mark is not None else None,
+            job.code, item.key, item.name, origin, layer if mark is not None else None,
             fids.get(item.key) if mark is not None else None, item.material, item.base_surface,
             _finite(margin, "el margen"), int(item.cells.size), _finite(item.area_m2, "el área"),
             _finite(item.volume_m3, "el volumen"), _finite(item.thickness_max_m, "el espesor máximo"),

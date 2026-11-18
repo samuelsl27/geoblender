@@ -97,8 +97,10 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   de su versión rellena más del espesor mínimo de la 012 por encima de ``máx(partida, entidad)``
   (``design.entities.detect_supports``, vía ``design.entity_store.survey_supports``) y añade a sus entradas la
   superficie de cada una (``supported_on``) y la tabla de su huella (``support_footprint``) y a sus cifras
-  ``des.supported_m3`` con su ámbito. Una versión **sin entidades** no lo paga (una consulta,
-  :func:`_has_entities`). Una operación hecha es inmutable: la de un recálculo empieza antes de calcular y
+  ``des.supported_m3`` con su ámbito. **Un acopio de una detección** (spec 016, T15; RF-016-14, P-1) es apoyable como una
+  entidad: se apoya en él por **cada acopio** de la tabla de la detección (la superficie, ``des_stp_``, y la tabla,
+  ``des_stk_``, se anotan una sola vez y la cifra lleva la clave del acopio en su ámbito). Una versión **sin entidades** (de
+  ningún tipo: también cuenta una que solo tiene una detección) no lo paga (una consulta, :func:`_has_entities`). Una operación hecha es inmutable: la de un recálculo empieza antes de calcular y
   lleva lo que apoyaba la sustituida (:meth:`OperationStart.carried`) y lo vuelve a medir sobre el resultado
   nuevo; **una entidad que antes no estaba también se detecta al recalcular** (T42, hallazgo C-1: el diseño
   creado antes de que existiera la plataforma): el gancho mide todas las entidades vivas y anota las entradas
@@ -218,7 +220,6 @@ from .params import (
     CROWN_RING,
     EDGE_MAX_STEP,
     EDGE_MIN_SHARE,
-    PLATFORM_PREFIX,
     TOLERANCE_FACE,
     UNSPLIT_MIN_AREA,
     UNSPLIT_THRESHOLD,
@@ -228,6 +229,7 @@ from .params import (
     bench_key,
     check_bench_value,
     check_quarry_param,
+    registered_entity_params,
 )
 from .params import EDGE_TRANSITION as EDGE_TRANSITION_DEG
 from .preview import Notice, _features, _quarry_warnings
@@ -389,6 +391,7 @@ segundas excluidas, JSON), la huella en tramos de fila (``footprint``: ``[[fila,
 ``axis_principal`` si es el eje principal de un polígono sin eje enlazado). De ella salen la zona
 declarada (T16), el cargador (T28) y la capa de entidades (T30)."""
 STOCKPILE_COLUMNS: tuple[ColumnDef, ...] = (
+    ColumnDef("code", "TEXT", True),
     ColumnDef("key", "TEXT", True), ColumnDef("name", "TEXT", True), ColumnDef("origin", "TEXT", True),
     ColumnDef("layer", "TEXT", False), ColumnDef("source_fid", "INTEGER", False),
     ColumnDef("material", "TEXT", False), ColumnDef("base_surface", "TEXT", False),
@@ -400,7 +403,9 @@ STOCKPILE_COLUMNS: tuple[ColumnDef, ...] = (
     ColumnDef("turns", "INTEGER", True), ColumnDef("converged", "INTEGER", True),
     ColumnDef("footprint", "TEXT", True), ColumnDef("notes", "TEXT", True))
 """Las columnas de ``des_stk_`` (spec 016, T13; plan 016 §5.2.3: «clave, nombre, material, plano, huella en tramos, área,
-volumen, espesor máximo, notas y avisos»): **una fila por acopio** con su clave (la de su marca o, de un candidato
+volumen, espesor máximo, notas y avisos»): **una fila por acopio** con el código de su detección (``code``, ``STK-001``: como
+``des_epr_``, la tabla dice de quién es; lo que reproduce lo apoyado sobre un acopio lo necesita sin el proyecto, spec 016, T15), su
+clave (la de su marca o, de un candidato
 convertido, ``c03``), su nombre y su **procedencia** (``origin``: ``mark`` o ``candidate``; ``layer`` y ``source_fid``, la capa
 de marcas y la marca de la que salen, y ``margin_m``, el margen que se le aplicó), el material y la superficie de su base
 propia si la tiene (``base_surface``: vacía, su base es el plano ajustado; RF-016-03), el plano en el centro de su huella
@@ -1328,11 +1333,15 @@ diseño de la 013 y la 014 y la de una entidad de la 015."""
 
 def _has_entities(conn: sqlite3.Connection, version_uid: str) -> bool:
     """Si la versión ``version_uid`` tiene alguna entidad de diseño (spec 015, T23): alguna fila propia de la
-    familia ``des.platform.{e}.*`` (``design.entities.registry``). Una consulta con ``LIMIT 1``: lo que paga
-    toda operación de la 013 y la 014 que deja una superficie en una versión **sin** entidades."""
+    familia ``des.<tipo>.{e}.*`` de un tipo de entidad registrado —la plataforma de la 015 y, de la 016 (T15), la detección de
+    acopios, la retirada, el contrafuerte y el cuerpo: una versión con **solo** una detección ya tiene en qué apoyarse— (``design.
+    entities.registry``). Una consulta con ``LIMIT 1``: lo que paga toda operación de la 013 y la 014 que deja una superficie en una
+    versión **sin** entidades."""
+    prefixes = [f"{spec.key_prefix}.%" for spec in registered_entity_params()]
     return conn.execute(
-        "SELECT 1 FROM gb_parameter WHERE scope = ? AND scope_uid = ? AND key LIKE ? LIMIT 1",
-        (VERSION_SCOPE, version_uid, f"{PLATFORM_PREFIX}.%")).fetchone() is not None
+        "SELECT 1 FROM gb_parameter WHERE scope = ? AND scope_uid = ? AND ("
+        + " OR ".join("key LIKE ?" for _ in prefixes) + ") LIMIT 1",
+        (VERSION_SCOPE, version_uid, *prefixes)).fetchone() is not None
 
 
 @dataclass(frozen=True, slots=True)

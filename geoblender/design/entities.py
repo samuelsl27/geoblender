@@ -70,6 +70,16 @@ m³ y estado) de entidades y de diseños de la 013 y la 014, sin leer ninguna su
 que cambió por su nombre y lo que cambió. La cascada, el orden de recalcular y lo congelado son los de la 008
 (RF-008-24, RF-008-26, RF-009-19): aquí no se apunta nada.
 
+**Los acopios apoyables** (spec 016, T15; RF-016-14, RF-015-15 y 17; plan 016 §5.2.3 «Dependencias» y §5.4 A13; P-1; ADR-0031 §4): una
+detección de acopios es **una** entidad (``STK-001``) y cada acopio, una fila de su tabla identificada por la clave de su marca, así
+que lo que una operación apoya se mide **por acopio**: :func:`detect_supports` y :func:`strongest` trabajan con la **referencia** de
+aquello en lo que se apoya (``PLT-001``, o ``STK-001#m07``: :func:`~.provenance.support_ref`), un :class:`Support` por acopio con su
+clave (``Support.stockpile``) sobre la superficie con que se detectó (``des_stp_``, la misma para todos) y la huella de su fila; la
+cifra ``des.supported_m3`` lleva la clave del acopio en su ámbito; y :func:`dependents` y :func:`dependencies_of` dan «lo que se apoya
+en un acopio» (``dependents(…, stockpile=clave)``) y «en qué acopio se apoya» como las mismas consultas de entradas y cifras. Solo las
+detecciones **de la versión** se apoyan (las del proyecto no están en su registro: ``STK-001`` de la versión y del proyecto son dos
+entidades). «Apoyo retirado» por una retirada viva (P-9) es de la T18.
+
 **Descartada y «apoyo retirado»** (T25; RF-015-17, RF-009-12; D-12): una entidad está **descartada** si todos los datos
 que escribió lo están, o, si no está calculada (no tiene datos que descartar), si su parámetro de versión
 ``des.platform.{e}.discarded`` es verdadero. :func:`retired_supports` es la lista de lo que perdió su apoyo —las
@@ -130,11 +140,15 @@ from .provenance import (
     STOCKPILE_DETECT,
     STOCKPILE_DETECT_PROJECT,
     STOCKPILE_REMOVAL,
+    STOCKPILE_SCOPE_KEY,
     STOCKPILE_SURFACE_ROLE,
     STOCKPILES_ROLE,
     SUPPORTED_M3,
     SUPPORTED_ON_ROLE,
+    SUPPORT_REF_SEPARATOR,
     SURFACE_ROLE,
+    split_support_ref,
+    support_ref,
 )
 
 if TYPE_CHECKING:
@@ -1178,12 +1192,23 @@ class Support:
     código de la entidad (``code``), las celdas de su huella donde rellena más del espesor mínimo por
     encima de ``máx(partida, entidad)`` (``cells``), el volumen apoyado en m³ (``volume_m3``: ``Σ a·área
     de celda`` en ellas; cero si no apoya nada) y si la persona lo declaró (``declared``: se registra
-    **aunque no apoye nada**, o la operación ya lo tenía como entrada)."""
+    **aunque no apoye nada**, o la operación ya lo tenía como entrada).
+
+    **Un acopio** (spec 016, T15; RF-016-14, P-1, A13): una detección es una entidad (``code``, ``STK-001``) y cada acopio, una fila
+    suya identificada por la clave de su marca (``stockpile``, ``m07``): lo que se apoya se mide **por acopio**, y un :class:`Support`
+    lo es de **uno** (``stockpile`` ``None`` en el de una plataforma, que es el de la 015 sin cambios). :attr:`ref` es la referencia
+    de aquello en lo que se apoya (``STK-001#m07`` o ``PLT-001``: la clave de los mapas de :func:`detect_supports`)."""
 
     code: str
     cells: int
     volume_m3: float
     declared: bool = False
+    stockpile: str | None = None
+
+    @property
+    def ref(self) -> str:
+        """La referencia de aquello en lo que se apoya: el código de la entidad y, de un acopio, su clave (``STK-001#m07``)."""
+        return self.code if self.stockpile is None else support_ref(self.code, self.stockpile)
 
 
 def runs_cells(runs: Iterable[Sequence[int]]) -> tuple[np.ndarray, np.ndarray]:
@@ -1239,7 +1264,15 @@ def detect_supports(result: np.ndarray, start: np.ndarray, entity_surfaces: Mapp
     códigos que la persona declara, que salen **siempre** con el volumen que den, cero incluido, y han de
     tener su huella y su superficie). Por orden de código. ``KeyError`` si una entidad de ``footprints`` o de
     ``declared`` no tiene superficie (o una de ``declared`` no tiene huella); ``ValueError`` si las
-    rejillas no tienen la misma forma o un número no es finito (errores del programa)."""
+    rejillas no tienen la misma forma o un número no es finito (errores del programa).
+
+    **Los acopios** (spec 016, T15; RF-016-14, RF-015-15, P-1; plan 016 A13): una detección es una entidad y cada acopio, una fila de
+    su tabla con su huella. Los mapas ``entity_surfaces``, ``footprints`` y ``declared`` se indexan por la **referencia** de aquello en
+    lo que se apoya (:func:`~.provenance.support_ref`): el código de la entidad (``PLT-001``) o, de un acopio, el de su detección y la
+    clave de su marca (``STK-001#m07``); la superficie de **todos** los acopios de una detección es la misma (``des_stp_``, la superficie
+    con que se detectó, solo en las huellas: NaN fuera) y la huella de cada uno, la de su fila. Cada acopio sale como un
+    :class:`Support` con su ``stockpile`` (la clave): un acopio por cada clave, en el orden en que vienen en ``footprints`` (el de su
+    tabla) dentro de su detección. Lo de la plataforma sale **igual** que antes."""
     thickness = _positive(min_thickness_m, "el espesor mínimo", zero=True)
     area = _positive(cell_area, "el área de una celda", zero=False)
     surface = np.asarray(result, dtype=np.float64)
@@ -1248,38 +1281,48 @@ def detect_supports(result: np.ndarray, start: np.ndarray, entity_surfaces: Mapp
         raise ValueError(f"la superficie resultante {surface.shape} y la de partida {origin.shape} "
                          "son dos rejillas de la misma forma")
     chosen = tuple(dict.fromkeys(declared))
-    missing = [code for code in chosen if code not in footprints]
+    missing = [ref for ref in chosen if ref not in footprints]
     if missing:
         raise KeyError(f"las entidades declaradas {', '.join(missing)} no tienen huella")
     found: list[Support] = []
-    for code in sorted(footprints, key=_number):
-        rows, cols = footprints[code]
-        ground = np.asarray(entity_surfaces[code], dtype=np.float64)
+    for ref in sorted(footprints, key=_ref_order):  # estable: los acopios de una detección, en el orden de su tabla
+        rows, cols = footprints[ref]
+        ground = np.asarray(entity_surfaces[ref], dtype=np.float64)
         if ground.shape != surface.shape:
-            raise ValueError(f"la superficie de la entidad {code} {ground.shape} no es de la forma de "
+            raise ValueError(f"la superficie de la entidad {ref} {ground.shape} no es de la forma de "
                              f"la rejilla {surface.shape}")
         with np.errstate(invalid="ignore"):
             thickness_on = surface[rows, cols] - np.maximum(origin[rows, cols], ground[rows, cols])
             counted = thickness_on > thickness  # NaN no es mayor que nada: la celda sin dato no cuenta
         cells = int(np.count_nonzero(counted))
-        if cells or code in chosen:
+        if cells or ref in chosen:
+            code, stockpile = split_support_ref(ref)
             found.append(Support(code, cells, float(np.sum(thickness_on[counted])) * area if cells
-                                 else 0.0, code in chosen))
+                                 else 0.0, ref in chosen, stockpile))
     return tuple(found)
+
+
+def _ref_order(ref: str) -> tuple[str, int]:
+    """La clave de orden de la referencia de aquello en lo que se apoya una operación (``PLT-002``, ``STK-001#m07``): el tipo y el
+    número del código de la entidad (:func:`code_order`); los acopios de una detección empatan y salen en el orden en que vienen."""
+    return _number(ref.partition(SUPPORT_REF_SEPARATOR)[0])
 
 
 def strongest(found: Iterable[Support]) -> tuple[Support, ...]:
     """Un :class:`Support` por entidad de ``found`` —lo apoyado en ella por **varias** superficies de una
     misma operación (las dos de una cantera, las de un ajuste), que son alternativas y no se suman—: el de
-    mayor volumen (a igual volumen, el primero), declarado si alguno lo era. Por orden de código."""
+    mayor volumen (a igual volumen, el primero), declarado si alguno lo era. Por orden de código. **Por acopio** (spec 016, T15;
+    RF-016-14, P-1): los de una detección se agrupan **por su clave** —dos acopios de una detección son dos grupos, no uno—, en el
+    orden en que aparecen dentro de su detección; un :class:`Support` sin clave (una plataforma) se agrupa por su código, como antes."""
     best: dict[str, Support] = {}
     for item in found:
-        before = best.get(item.code)
+        ref = item.ref
+        before = best.get(ref)
         if before is None or item.volume_m3 > before.volume_m3:
-            best[item.code] = replace(item, declared=item.declared or (before is not None and before.declared))
+            best[ref] = replace(item, declared=item.declared or (before is not None and before.declared))
         elif item.declared and not before.declared:
-            best[item.code] = replace(before, declared=True)
-    return tuple(best[code] for code in sorted(best, key=_number))
+            best[ref] = replace(before, declared=True)
+    return tuple(best[ref] for ref in sorted(best, key=_ref_order))
 
 
 # --- La lista de dependencias y la causa de lo obsoleto (spec 015, T24; RF-015-15, RF-015-16; RNF-015-02) --
@@ -1327,7 +1370,11 @@ class Dependent:
     lo declaró y no rellena nada) o ``None`` si solo parte de su superficie, sin apoyarse.
 
     En :func:`dependents` es lo que se apoya en la entidad; en :func:`dependencies_of`, aquello en lo que se apoya
-    la entidad (su partida incluida), y el volumen es lo suyo apoyado en ello."""
+    la entidad (su partida incluida), y el volumen es lo suyo apoyado en ello.
+
+    **En un acopio** (spec 016, T15; RF-016-14, P-1): una detección de acopios es **una** entidad y lo que se apoya, se apoya en **un
+    acopio** suyo: ``stockpile`` es la clave de su marca (``Acopio 4``) y ``volume_m3`` lo apoyado **en ese acopio**; una fila por
+    operación y acopio. ``None`` en todo lo demás (lo de la 015, sin cambios)."""
 
     operation_uid: str
     name: str
@@ -1337,6 +1384,7 @@ class Dependent:
     entity: str | None = None
     volume_m3: float | None = None
     causes: frozenset[Cause] = frozenset()
+    stockpile: str | None = None
 
     def text(self, language: str = "es") -> str:
         """La fila como una línea de la lista, en ``language``: «Sobre la balsa (Plataforma): 8 000 m³
@@ -1368,8 +1416,9 @@ def _settings_name(op_type: str, settings: object) -> str:
 
 
 def _supported(conn: sqlite3.Connection, operations: Iterable[str]) -> dict[tuple[str, str], float]:
-    """Lo apoyado que registró cada operación de ``operations``: ``(operación, código de la entidad)`` → m³, de
-    sus cifras ``des.supported_m3`` (una consulta por cada 400 operaciones; el ámbito dice la entidad)."""
+    """Lo apoyado que registró cada operación de ``operations``: ``(operación, referencia)`` → m³, de sus cifras
+    ``des.supported_m3`` (una consulta por cada 400 operaciones; el ámbito dice la entidad y, de un **acopio**, su clave: la
+    referencia es el código de la entidad o ``STK-001#m07``, spec 016, T15; RF-016-14). En el orden de las cifras."""
     found: dict[tuple[str, str], float] = {}
     uids = sorted(set(operations))
     for first in range(0, len(uids), _CHUNK):
@@ -1377,11 +1426,24 @@ def _supported(conn: sqlite3.Connection, operations: Iterable[str]) -> dict[tupl
         sql = _VOLUMES.format(marks=", ".join("?" for _ in part))
         for uid, scope, value in conn.execute(sql, (SUPPORTED_M3, *part)):
             try:
-                code = json.loads(str(scope)).get(ENTITY_SCOPE_KEY)
+                where = json.loads(str(scope))
+                code = where.get(ENTITY_SCOPE_KEY)
+                key = where.get(STOCKPILE_SCOPE_KEY)
             except (ValueError, AttributeError):
                 continue
             if isinstance(code, str) and value is not None:
-                found[(str(uid), code)] = float(value)
+                found[(str(uid), code if not isinstance(key, str) else f"{code}{SUPPORT_REF_SEPARATOR}{key}")] = float(value)
+    return found
+
+
+def _stockpile_shares(volumes: Mapping[tuple[str, str], float]) -> dict[tuple[str, str], list[tuple[str, float]]]:
+    """Lo apoyado **por acopio** de ``volumes`` (:func:`_supported`): ``(operación, código de la detección)`` → ``[(clave del acopio,
+    m³), …]`` en el orden de las cifras. Solo las cifras de un acopio (con clave): lo de una plataforma no está."""
+    found: dict[tuple[str, str], list[tuple[str, float]]] = {}
+    for (uid, ref), value in volumes.items():
+        code, separator, key = ref.partition(SUPPORT_REF_SEPARATOR)
+        if separator:
+            found.setdefault((uid, code), []).append((key, value))
     return found
 
 
@@ -1391,8 +1453,8 @@ def _ordered(roles: Iterable[str]) -> tuple[str, ...]:
     return tuple(role for role in _LIST_ROLES if role in kept)
 
 
-def dependents(project: Any, version: str, code: str, *, conn: sqlite3.Connection | None = None
-               ) -> tuple[Dependent, ...]:
+def dependents(project: Any, version: str, code: str, *, conn: sqlite3.Connection | None = None,
+               stockpile: str | None = None) -> tuple[Dependent, ...]:
     """**Lo que se apoya en la entidad** ``code`` (código o nombre) de la versión ``version`` (uid o código):
     las operaciones hechas y sin sustituir de la versión que consumen la superficie de la entidad (su
     ``des_psf_``) con el papel ``supported_on`` o ``surface`` —otras entidades y los diseños de la 013 y la 014
@@ -1405,35 +1467,57 @@ def dependents(project: Any, version: str, code: str, *, conn: sqlite3.Connectio
     Es **una consulta de entradas y cifras** (RNF-015-02: con 200 entidades, ≤ 1 s en disco local): no lee ninguna
     superficie ni recorre las entidades más que para su nombre y su estado. ``conn`` es una conexión de lectura de
     quien llama; sin ella, se abre una. :class:`ValueError` si la entidad no es de la versión;
-    :class:`~core.versions.model.VersionError` si la versión no existe."""
+    :class:`~core.versions.model.VersionError` si la versión no existe.
+
+    **Lo que se apoya en un acopio** (spec 016, T15; RF-016-14, RF-015-15 y 17, P-1; plan 016 §5.2.3 «Dependencias»): ``code`` puede ser una
+    **detección de acopios** (``STK-001``), cuya superficie es la que se detectó (``des_stp_``, el papel ``stockpile_surface``) y de la
+    que se apoya una operación **en un acopio suyo**: la cifra ``des.supported_m3`` lleva en su ámbito la clave del acopio, y la lista
+    tiene **una fila por operación y acopio** (``Dependent.stockpile`` con la clave y ``volume_m3`` lo apoyado en él). Con ``stockpile``
+    (la clave de un acopio de la detección), solo lo que se apoya en **ese** acopio (``()`` si en él no se apoya nada: también si
+    la clave no es de ningún acopio; lo dice la tabla, que esta consulta no lee). Una operación que consume la superficie del acopio
+    sin cifra (un recálculo que la arrastró y ya no rellena sobre él) sale una vez, sin acopio y con 0 m³, en la lista de la
+    detección entera. ``stockpile`` de una entidad que no es una detección de acopios es un error del programa
+    (:class:`ValueError`)."""
     with _snapshot(project, conn) as reading:
         found = _version(reading, version)
         listed = _registry(project, reading, found)
         entry = _entry(listed, code, found)
-        if entry.operation_uid is None:
-            return ()
         wanted = entry.record.code
+        is_stockpile = entry.record.kind == EntityKind.STOCKPILE
+        if stockpile is not None and not is_stockpile:
+            raise ValueError(f"«{stockpile}» no es un acopio: la entidad {wanted} no es una detección de acopios")
+        role = entity_type(entry.record.kind).surface_role
+        if entry.operation_uid is None or role is None:
+            return ()
         rows: dict[str, tuple[int, str, str, set[str]]] = {}
         for surface in [str(uid) for (uid,) in reading.execute(
-                _SURFACES_OF, (entry.operation_uid, DATASET, ENTITY_SURFACE_ROLE))]:
-            for uid, fid, op_type, settings, role in reading.execute(
+                _SURFACES_OF, (entry.operation_uid, DATASET, role))]:
+            for uid, fid, op_type, settings, role_in in reading.execute(
                     _DEPENDENTS, (DATASET, surface, *_LIST_ROLES, found.uid)):
                 row = rows.setdefault(str(uid), (int(fid), str(op_type), str(settings), set()))
-                row[3].add(str(role))
+                row[3].add(str(role_in))
         volumes = _supported(reading, rows)
+        shares = _stockpile_shares(volumes) if is_stockpile else {}
         by_operation = {item.operation_uid: item for item in listed if item.operation_uid is not None}
         links = _links(reading, [uid for uid in rows if uid not in by_operation])
         result: list[Dependent] = []
         for uid, (_fid, op_type, settings, roles) in sorted(rows.items(), key=lambda item: item[1][0]):
+            if is_stockpile:  # una fila por acopio en el que se apoya
+                parts: list[tuple[str | None, float | None]] = [(key, volume) for key, volume in shares.get((uid, wanted), ())
+                                                                if stockpile in (None, key)]
+                if not parts and stockpile is None:
+                    parts = [(None, 0.0)]
+            else:
+                parts = [(None, volumes.get((uid, wanted)))]
             item = by_operation.get(uid)
             if item is not None:
-                result.append(Dependent(uid, item.record.name, op_type, EntityState(item.record.state),
-                                        _ordered(roles), item.record.code, volumes.get((uid, wanted)),
-                                        item.causes))
+                name, owner, state, causes = (item.record.name, item.record.code, EntityState(item.record.state),
+                                              item.causes)
             else:
                 state, causes, _retired = _deduce(reading, uid, links.get(uid, ()))
-                result.append(Dependent(uid, _settings_name(op_type, settings), op_type, state,
-                                        _ordered(roles), None, volumes.get((uid, wanted)), causes))
+                name, owner = _settings_name(op_type, settings), None
+            for key, volume in parts:
+                result.append(Dependent(uid, name, op_type, state, _ordered(roles), owner, volume, causes, key))
         return tuple(result)
 
 
@@ -1463,13 +1547,22 @@ def dependencies_of(project: Any, version: str, code: str, *, conn: sqlite3.Conn
                                                  "" if op_type is None else str(op_type), str(settings), set()))
             row[5].add(str(role))
         volumes = _supported(reading, [entry.operation_uid])
+        shares = _stockpile_shares(volumes)
         by_operation = {item.operation_uid: item for item in listed if item.operation_uid is not None}
         links = _links(reading, {row[1] for row in rows.values() if row[1] not in by_operation})
         result: list[Dependent] = []
         for _dataset, (_position, producer, name, op_type, settings, roles) in sorted(
                 rows.items(), key=lambda item: (SUPPORTED_ON_ROLE not in item[1][5], item[1][0])):
             item = by_operation.get(producer)
-            if item is not None:
+            if item is not None and item.record.kind == EntityKind.STOCKPILE:
+                # se apoya **en un acopio** de la detección (spec 016, T15): una fila por acopio, con lo suyo apoyado en él
+                parts: list[tuple[str | None, float | None]] = list(shares.get((entry.operation_uid, item.record.code), ()))
+                if not parts:  # la consumió sin cifra (la arrastró un recálculo y ya no rellena sobre un acopio suyo)
+                    parts = [(None, 0.0 if SUPPORTED_ON_ROLE in roles else None)]
+                for key, volume in parts:
+                    result.append(Dependent(producer, item.record.name, op_type, EntityState(item.record.state),
+                                            _ordered(roles), item.record.code, volume, item.causes, key))
+            elif item is not None:
                 result.append(Dependent(producer, item.record.name, op_type, EntityState(item.record.state),
                                         _ordered(roles), item.record.code,
                                         volumes.get((entry.operation_uid, item.record.code)), item.causes))

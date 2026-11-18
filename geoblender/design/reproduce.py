@@ -345,17 +345,35 @@ def _support_figures(frozen: _Frozen, results: Sequence[np.ndarray], start: np.n
     lo **congelado** y el espesor mínimo congelado: el mismo cálculo que el gancho de ``DesignWriter.commit``
     (``entities.detect_supports``), con el mismo ``máx(partida, entidad)``, sin el proyecto. Una entrada
     ``supported_on`` que no es la superficie de una entidad (la de apoyo de una plataforma puede ser
-    cualquiera) o sin la tabla de su huella no da cifra. Sin entidades, ninguna."""
+    cualquiera) o sin la tabla de su huella no da cifra. Sin entidades, ninguna.
+
+    **Los acopios** (spec 016, T15; RF-016-14, P-1): la superficie con que se detectó una detección (``des_stp_``) y su tabla de acopios
+    (``des_stk_``) dan **un acopio por cada fila** de la tabla (``STK-001#clave``, el código de la detección lo dice la tabla), todos
+    sobre la misma superficie; y, como en el gancho, solo salen los acopios sobre los que se rellena (no se declaran los demás)."""
     inputs = frozen.request.inputs
     held = [item for item in inputs if item.role == provenance.SUPPORTED_ON_ROLE]
     if not held:
         return ()
     surface_prefix = provenance.FAMILIES_BY_CODE[provenance.ENTITY_SURFACE_GRID].prefix
     table_prefix = provenance.FAMILIES_BY_CODE[provenance.ENTITY_TABLE].prefix
+    detected_prefix = provenance.FAMILIES_BY_CODE[provenance.STOCKPILE_SURFACE_GRID].prefix
+    stockpiles_prefix = provenance.FAMILIES_BY_CODE[provenance.STOCKPILES_TABLE].prefix
     tables = {item.name: item for item in inputs if item.role == provenance.SUPPORT_FOOTPRINT_ROLE}
     surfaces: dict[str, np.ndarray] = {}
     cells: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for item in held:
+        if item.name.startswith(detected_prefix):  # lo apoyado en un acopio de una detección
+            stockpiles = tables.get(stockpiles_prefix + item.name.removeprefix(detected_prefix))
+            if stockpiles is None:
+                continue
+            with _open(Path(stockpiles.files["main"])) as conn:
+                code, found_stockpiles = entity_store.read_stockpile_footprints(conn, str(stockpiles.settings["layer"]))
+            detected = frozen.named_raster(item.name, what="superficie de apoyo").values
+            for key, runs in found_stockpiles.items():
+                ref = provenance.support_ref(code, key)
+                surfaces[ref] = detected
+                cells[ref] = entities.runs_cells(runs)
+            continue
         table = tables.get(table_prefix + item.name.removeprefix(surface_prefix))
         if not item.name.startswith(surface_prefix) or table is None:
             continue
@@ -369,9 +387,10 @@ def _support_figures(frozen: _Frozen, results: Sequence[np.ndarray], start: np.n
     area = float(frozen.grid.cell_area)
     best = entities.strongest(
         item for array in results for item in entities.detect_supports(
-            array, start, surfaces, cells, thickness, area, declared=sorted(cells)))
+            array, start, surfaces, cells, thickness, area,
+            declared=sorted(ref for ref in cells if provenance.SUPPORT_REF_SEPARATOR not in ref)))
     return provenance.supported_figures(str(frozen.request.settings.get("name", "")),
-                                        {item.code: item.volume_m3 for item in best})
+                                        {item.ref: item.volume_m3 for item in best})
 
 
 def _check(request: object, op_type: str) -> ReproduceRequest:
