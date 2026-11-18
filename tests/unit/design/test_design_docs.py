@@ -53,6 +53,8 @@ dprov = import_geoblender("design.provenance")
 dsectors = import_geoblender("design.sectors")
 enlayer = import_geoblender("design.entity_layer")
 dstore = import_geoblender("design.store")
+dpreview = import_geoblender("design.preview")
+provenance = import_geoblender("core.provenance")
 gpkg_base = import_geoblender("core.gpkg.base")
 i18n = import_geoblender("core.i18n")
 catalog = import_geoblender("core.catalog")
@@ -946,20 +948,22 @@ class EntitiesGuideDocTest(unittest.TestCase):
     def test_the_known_limits_are_told(self) -> None:
         """T34 y T47: «Lo que no hace todavía» dice los límites de **hoy**: las plataformas sin calcular sin objeto,
         lo que Esc deja a medias tras «Crear» y que «Recalcular lo obsoleto» no ve, el estado atrasado de la capa de
-        QGIS, aceptar la edición de lo declarado y recalcular sin compilar antes las máscaras (T40 (c)), las dos
-        pasadas (T42 (c), C-14), el enlace de un polígono con su eje que no pasa a la versión que trae la entidad y la
+        QGIS, aceptar la edición de lo declarado y recalcular sin compilar antes las máscaras (T40 (c)), la entidad
+        insertada que se rehace dos veces (T42 (c), C-14: dentro de la misma orden), el enlace de un polígono con su
+        eje que no pasa a la versión que trae la entidad y la
         entidad traída sin su partida (T41 (e)), el diseño cuya partida es una entidad descartada (C-17), declarar una
         dependencia solo por parámetro o API (C-13), la superficie de la 014 que congelar pide y el sector pendiente
         conservador (decisiones del 15/11/2026), y el tamaño por entidad sin prometer los 16 MB: RNF-015-09 está
         resuelto en 17 MiB. **Ya no** dice (T40, hallazgos C-2, C-4 y E-3) que aceptar con motivo la edición de una
         tabla de versión no limpia «Recalcular lo obsoleto» ni que una plataforma descartada con una operación vieja
         sigue en su plan, ni (T41, C-12) que una entidad traída no se pueda calcular por la interfaz, ni que
-        «Recalcular lo obsoleto» no detecte las entidades nuevas (T38, E-1): están corregidos."""
+        «Recalcular lo obsoleto» no detecte las entidades nuevas (T38, E-1): están corregidos. **Ni** (T51, T52; H3-2)
+        que a veces hagan falta dos pasadas de «Recalcular lo obsoleto»: una pulsación recorre toda la cadena."""
         limits = self.guide_section("## 16. Lo que no hace todavía")
         for fact in ("Límites conocidos de esta versión",
                      "no tiene objeto en la escena",
                      "no ve lo que Esc dejó a medias", "estado atrasado",
-                     "sin compilar antes las máscaras", "dos pasadas",
+                     "sin compilar antes las máscaras", "se rehace dos veces",
                      "no es un parámetro", "sin su partida",
                      "una entidad descartada no se puede rehacer", "solo se puede por el parámetro",
                      "la superficie de la 014 de la que parte", "sector pendiente es conservadora",
@@ -967,7 +971,8 @@ class EntitiesGuideDocTest(unittest.TestCase):
             with self.subTest(fact=fact):
                 self.assertIn(fact, limits)
         for gone in ("no limpia «Recalcular lo obsoleto»", "sigue en el plan de «Recalcular lo obsoleto»",
-                     "no detecta las entidades nuevas", "sigue pendiente de decisión"):
+                     "no detecta las entidades nuevas", "sigue pendiente de decisión",
+                     "dos pasadas", "A veces hacen falta"):
             with self.subTest(gone=gone):
                 self.assertNotIn(gone, limits)
         self.assertNotIn("16 MB", self.guide)
@@ -1004,6 +1009,104 @@ class EntitiesGuideDocTest(unittest.TestCase):
         self.assertEqual(dparams.ENTITY_RANGES["mesh_factor"].maximum, 1.0)
         self.assertTrue(dparams.ENTITY_RANGES["mesh_factor"].min_exclusive)
         self.assertFalse(dparams.ENTITY_RANGES["mesh_factor"].max_exclusive)
+
+    def test_the_recompute_goes_through_the_chain_in_one_order(self) -> None:
+        """RF-008-26, HU-015-2 (T52; T51, hallazgos H3-2 y H3-1): la guía dice que **una pulsación** de «Recalcular lo
+        obsoleto» deja al día toda la cadena (la orden vuelve a planificar sola), con Esc como siempre, lo rechazado una
+        sola vez y un tope contra los bucles que se avisa con el mensaje del código; que el resumen nombra la capa de
+        entidades y la declaración con palabras («la capa de entidades de V01»), y **ya no dice** «dos pasadas» ni
+        «varias pasadas» ni cuenta las pasadas que antes eran tres (§11 y §16)."""
+        guide = one_line(self.guide)
+        changing = self.guide_section("## 11. Cambiar una entidad: obsoleto y recalcular en cascada")
+        for fact in ("**una sola pulsación deja al día toda la cadena**",
+                     "no hay que volver a pulsar", "vuelve a planificar sola mientras quede algo que rehacer",
+                     "**Esc** vale como siempre", "sale **una vez** con su motivo y no se reintenta",
+                     "tiene un **tope**", "lo que sigue obsoleto lo rehace la próxima pulsación"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, changing)
+        for fact in ("**«la capa de entidades de V01»**", "**«las restricciones declaradas de V01»**"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, one_line(self.guide_section("## 5. Calcular y Crear: el resumen")))
+        for gone in ("dos pasadas", "tres pasadas", "varias pasadas", "A veces hacen falta"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, guide)
+        # Lo que la guía cita es lo que hace el código: la función de una vez, su resultado y el aviso del tope.
+        self.assertIn("recompute_settled_steps", provenance.RECOMPUTE_API)
+        self.assertEqual({"passes", "limit_reached"} - set(provenance.RecomputeOutcome.__dataclass_fields__), set())
+        self.assertTrue(any(text.startswith("El recálculo se paró tras {passes} pasadas")
+                            for text in i18n.load_messages().values()))
+        for code, text in (("des.entity_layer_name", "la capa de entidades de V01"),
+                           ("des.entity_declaration_name", "las restricciones declaradas de V01")):
+            with self.subTest(code=code):
+                self.assertEqual(dmessages.render(code, version="V01"), text)
+
+
+@docs.requires_docs
+class RecomputeCardDocTest(unittest.TestCase):
+    """Las fichas de arquitectura dicen lo que cambió «Recalcular lo obsoleto» de una vez (spec 015, T52; T51,
+    RF-008-26): ``core.md`` (la 008, de forma aditiva) y ``des.md`` (los nombres de lo que queda obsoleto)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.core = one_line(docs.read("docs/arquitectura/modulos/core.md"))
+        cls.des = docs.read(DES_RELPATH)
+
+    def test_core_card_names_the_settled_recompute(self) -> None:
+        """RF-008-26, RF-008-27 (T52; T51): ``core.md`` nombra ``core.provenance.recompute_settled_steps`` (varias
+        ejecuciones de ``recompute_steps``, volviendo a planificar entre ellas, con tope ``max_passes``),
+        ``RecomputeOutcome.passes`` y ``limit_reached``, y que ``recompute_steps`` y su contrato no cambian; y todo eso
+        existe."""
+        for fact in ("`core.provenance.recompute_settled_steps`", "`max_passes`",
+                     "`core.provenance.RecomputeOutcome.passes`", "`core.provenance.RecomputeOutcome.limit_reached`",
+                     "`recompute_steps` y su contrato no cambian", "vuelve a planificar"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, self.core)
+        settled = provenance.recompute_settled_steps
+        self.assertIn("max_passes", inspect.signature(settled).parameters)
+        fields = provenance.RecomputeOutcome.__dataclass_fields__
+        self.assertEqual((fields["passes"].default, fields["limit_reached"].default), (1, False))
+
+    def test_des_card_names_what_the_summary_calls_things(self) -> None:
+        """RF-015-16, HU-015-2 (T52; T51, H3-1): la API de ``design.preview`` nombra ``Named`` y ``obsolete_names``
+        (están en su ``__all__``) y §1.7 y §4.3, ``Obsolete.label`` y los dos mensajes que nombran la capa de
+        entidades y la declaración entre lo que queda obsoleto, que existen; y el módulo de ``core`` que lo hace de
+        una vez (``recompute_settled_steps``)."""
+        for name in ("Named", "obsolete_names"):
+            with self.subTest(name=name):
+                self.assertIn(name, dpreview.__all__)
+        tokens = inline_tokens(self.des)
+        for token in ("Obsolete.label", "des.entity_layer_name", "des.entity_declaration_name",
+                      "core.provenance.recompute_settled_steps"):
+            with self.subTest(token=token):
+                self.assertIn(token, tokens)
+        self.assertIn("label", dpreview.Obsolete.__dataclass_fields__)
+        for code in ("des.entity_layer_name", "des.entity_declaration_name"):
+            with self.subTest(code=code):
+                self.assertIn(code, dmessages.MESSAGES)
+        self.assertNotIn("necesita **dos pasadas**", self.des)
+
+
+class EntitiesChangelogTest(unittest.TestCase):
+    """El ``CHANGELOG.md`` del código dice, para el ingeniero de minas y sin jerga, lo que cambió «Recalcular lo
+    obsoleto» (spec 015, T52; T51, RF-008-26, H3-1 y H3-2)."""
+
+    def test_the_changelog_says_the_recompute_goes_through_the_chain(self) -> None:
+        """RF-008-26, HU-015-2 (T52): «Recalcular lo obsoleto» recorre ahora una cadena de entidades de **una vez**
+        (una pulsación), con su tope; el resumen nombra «la capa de entidades» y «las restricciones declaradas»; y ya no
+        dice que a veces necesite dos pasadas."""
+        text = one_line(CHANGELOG_PATH.read_text(encoding="utf-8"))
+        entry = text[text.index("- **Entidades de diseño paramétricas** (spec 015"):
+                     text.index("- **Cantera con dos superficies** (spec 014")]
+        for fact in ("**una sola pulsación** de «Recalcular lo obsoleto» recorre toda la cadena",
+                     "con un tope contra los bucles", "la capa de entidades de V01",
+                     "las restricciones declaradas de V01"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, entry)
+        self.assertNotIn("dos pasadas", text)
+        self.assertNotIn("pasada", entry, "la entrada de la 015 se escribe sin la jerga de las pasadas")
+        changed = text[text.index("- **Procedencia** (spec 008, hecho con la spec 015"):
+                       text.index("- **Formato del proyecto, versión 3**")]
+        self.assertIn("recorre el plan de una vez", changed)
 
 
 if __name__ == "__main__":

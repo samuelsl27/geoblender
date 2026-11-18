@@ -72,6 +72,7 @@ if TYPE_CHECKING:  # design.quarry importa design.report, que importa Notice de 
 __all__ = [
     "EntityEnd",
     "EntityPreview",
+    "Named",
     "Notice",
     "Obsolete",
     "ObsoleteKind",
@@ -82,6 +83,7 @@ __all__ = [
     "SectorStatus",
     "entity_preview_steps",
     "held_notices",
+    "obsolete_names",
     "obsolete_notices",
     "quarry_summarize_steps",
     "seed_notices",

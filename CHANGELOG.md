@@ -168,7 +168,7 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     máscaras salen obsoletas con su causa y la próxima plataforma o **Compilar las máscaras** declara y
     compila antes (antes, una plataforma «en corte y relleno» sobre su huella rellenaba 420 m³ sin ningún
     aviso: el error 51 por otro camino); cambiar el resguardo de una plataforma que protege deja al día la
-    entidad, las máscaras y la capa en **una** pasada de «Recalcular lo obsoleto» (antes, tres); editar en QGIS
+    entidad, las máscaras y la capa con «Recalcular lo obsoleto» sin repetirlo (antes, tres veces); editar en QGIS
     la tabla de la propia entidad (su huella) bloquea la declaración y las máscaras con un error que nombra la
     entidad (antes, la zona pasaba de 1.653 a 133 celdas sin avisar); aceptar con un motivo la edición de la
     tabla de lo declarado limpia lo que esperaba a esa edición sin deshacer lo aceptado; y la restricción de
@@ -187,11 +187,18 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     lo que crear rechazaría (un nombre repetido o vacío, una partida que otra entidad ya usa o en ciclo, un
     apoyo en ciclo y proteger en el modo «en corte y relleno»), nombrando la entidad, el campo y el valor, e
     insertar antes de una entidad ya no ofrece como apoyo lo que sería un ciclo; una entidad descartada
-    **no vuelve** al plan de «Recalcular lo obsoleto» ni falla en cada pasada, y lo que se apoyaba en ella se
+    **no vuelve** al plan de «Recalcular lo obsoleto» ni falla cada vez que se recalcula, y lo que se apoyaba en ella se
     rechaza diciendo que espera una decisión; y un «solo relleno» creado antes que la plataforma sobre la que
     rellena gana su dependencia al recalcularlo (antes solo la ganaba al crearse).
   - **Cambiar una entidad** deja obsoleta la plataforma y, en cascada, todo lo que depende de ella;
-    **Recalcular lo obsoleto** lo rehace en orden de dependencia. **Congelar** pide verificar la
+    **Recalcular lo obsoleto** lo rehace en orden de dependencia, y **una sola pulsación** de «Recalcular lo
+    obsoleto» recorre toda la cadena (al verlo en pantalla, el 18/11/2026, con cuatro plataformas encadenadas y
+    la cota de la primera cambiada, cada pulsación rehacía una sola y había que pulsar de nuevo hasta que no
+    quedara nada obsoleto): la orden vuelve a planificar sola mientras quede algo que rehacer, con su avance y
+    Esc como siempre, sin rehacer lo apoyado en una entidad descartada y sin repetir lo que ya no se puede
+    rehacer, con un tope contra los bucles que avisa si se alcanza. El resumen de «Calcular» y lo que dice la orden
+    al terminar nombran **la capa de entidades de V01** y **las restricciones declaradas de V01** (antes, el
+    identificador interno de su tipo, «des.entity_layer»). **Congelar** pide verificar la
     última superficie de cada cadena (las intermedias se verifican a petición; si la cadena parte de la
     superficie de una cantera de la 014, también esa: nunca pide de menos, decisión de Samuel del
     15/11/2026), y la revisión congelada no cambia y se reproduce.
@@ -229,8 +236,8 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     4.2 con su ventana y que un ingeniero de IMGA cree una plataforma, la
     proteja y vea lo que queda obsoleto al cambiarla en menos de 20 minutos (CE-015-06). Aún no hay
     objeto en la escena para una plataforma sin calcular; «Recalcular lo obsoleto» no ve lo que Esc dejó a
-    medias tras «Crear» (la próxima operación que use las máscaras o **Compilar las máscaras** lo hace) y a
-    veces necesita dos pasadas; el enlace de un polígono con su eje no pasa a la versión que trae o hereda la
+    medias tras «Crear» (la próxima operación que use las máscaras o **Compilar las máscaras** lo hace); el
+    enlace de un polígono con su eje no pasa a la versión que trae o hereda la
     entidad; y declarar que algo se apoya en una entidad solo se puede por parámetro o por la API (decisiones
     de Samuel, 15/11/2026: para la spec 016 o después).
 - **Cantera con dos superficies** (spec 014, en curso). Con las envolventes y el escalonado se hace
@@ -1468,7 +1475,10 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
   descartó por completo no vuelve al plan de «Recalcular lo obsoleto» (sigue obsoleto como historia); una
   operación puede ofrecer «darla por buena» sin lo que consumió, y su rechazo dice que espera esa decisión; y
   dar por buena una operación de una versión, también al aceptar la edición de una de sus tablas, no deshace
-  lo aceptado. Nada cambia sin entidades de diseño.
+  lo aceptado; y «Recalcular lo obsoleto» recorre el plan de una vez, volviendo a planificar entre una operación
+  y otra, cuando lo recalculado vuelve a quedar obsoleto por un ciclo entre operaciones (hasta que no queda nada
+  que se pueda rehacer, se cancela con Esc o llega a un tope que avisa), en vez de rehacer una sola por pulsación.
+  Nada cambia sin entidades de diseño.
 - **Formato del proyecto, versión 3** (spec 009): la base del proyecto lleva las tablas de las
   versiones, las revisiones y las decisiones de la propiedad (QGIS las ve y no las puede cambiar,
   como las demás internas), y el proyecto, cuando se congela una revisión, la carpeta
