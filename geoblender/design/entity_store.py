@@ -2257,6 +2257,14 @@ _CONSUMERS = (
     "JOIN gb_revision AS r ON r.uid = o.revision_uid "
     "WHERE io.direction = 'in' AND io.item_kind = 'dataset' AND io.item_uid IN ({marks}) "
     "AND o.status = 'done' AND o.superseded_by IS NULL AND r.version_uid = ?")
+_CONSUMERS_ANYWHERE = (
+    "SELECT DISTINCT o.fid, o.uid, o.op_type, o.settings FROM gb_operation_io AS io "
+    "JOIN gb_operation AS o ON o.uid = io.operation_uid "
+    "WHERE io.direction = 'in' AND io.item_kind = 'dataset' AND io.item_uid IN ({marks}) "
+    "AND o.status = 'done' AND o.superseded_by IS NULL")
+"""Lo mismo que :data:`_CONSUMERS` **sin acotar a una versión** (spec 016, T12): las operaciones vigentes del proyecto y de
+cualquier versión. Es la pregunta de lo que depende de un dato **del proyecto** (el de una detección de acopios sobre una
+superficie del proyecto, D-15), que consumen operaciones del proyecto (la cubicación de la 011) y de las versiones."""
 _OUTPUTS = (
     "SELECT DISTINCT item_uid FROM gb_operation_io WHERE direction = 'out' "
     "AND item_kind = 'dataset' AND operation_uid IN ({marks})")
@@ -2288,14 +2296,16 @@ def _name_of(op_type: str, settings: object) -> str:
     return name if isinstance(name, str) and name else op_type
 
 
-def _dependents(conn: sqlite3.Connection, datasets: Iterable[str], version_uid: str, *,
+def _dependents(conn: sqlite3.Connection, datasets: Iterable[str], version_uid: str | None, *,
                 exclude: Iterable[str | None] = ()) -> list[tuple[str, str, str]]:
     """Lo que depende de los datos ``datasets`` en la versión ``version_uid`` (RF-015-16; la 008): las
     operaciones **vigentes** de la versión (hechas y no sustituidas, estén en la revisión que estén: lo
     registrado en una revisión que luego se congeló sigue siendo lo vigente, y el grafo de la 008 lo marca
     obsoleto en la revisión abierta, D-23 de la 009) que los consumen y, en cascada, las que consumen lo que
     escribieron esas, por orden de registro; como ``(uid, tipo, nombre)``. Sin las de ``exclude``. Lo
-    **congelado** (los elementos de una revisión congelada) no cambia ni se marca (RF-009-19). Solo lee."""
+    **congelado** (los elementos de una revisión congelada) no cambia ni se marca (RF-009-19). Con
+    ``version_uid`` ``None`` (spec 016, T12: los datos son **del proyecto**) las operaciones vigentes del proyecto y de
+    cualquier versión (:data:`_CONSUMERS_ANYWHERE`). Solo lee."""
     skip = {uid for uid in exclude if uid is not None}
     found: dict[str, tuple[int, str, str]] = {}
     frontier = list(dict.fromkeys(datasets))
@@ -2304,8 +2314,10 @@ def _dependents(conn: sqlite3.Connection, datasets: Iterable[str], version_uid: 
         fresh: list[str] = []
         for first in range(0, len(frontier), _CHUNK):
             part = frontier[first:first + _CHUNK]
-            sql = _CONSUMERS.format(marks=", ".join("?" for _ in part))
-            for fid, uid, op_type, settings in conn.execute(sql, (*part, version_uid)):
+            sql = (_CONSUMERS_ANYWHERE if version_uid is None else _CONSUMERS).format(
+                marks=", ".join("?" for _ in part))
+            for fid, uid, op_type, settings in conn.execute(sql, part if version_uid is None
+                                                            else (*part, version_uid)):
                 if uid not in found and uid not in skip:
                     found[str(uid)] = (int(fid), str(op_type), _name_of(str(op_type), settings))
                     fresh.append(str(uid))

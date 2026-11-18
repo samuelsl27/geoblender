@@ -150,6 +150,7 @@ from ..core.project.model import Progress
 from ..core.provenance.figures import FigureSpec
 from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
+from ..gis.messages import format_value
 from .grids import label_components, label_components_steps, nearest_value_steps
 from .messages import lookup
 from .morphology import dilate, fill_holes, opening_steps
@@ -1345,6 +1346,23 @@ class StockpileOutcome:
     def count(self) -> int:
         """Los acopios registrados."""
         return len(self.stockpiles)
+
+    @property
+    def message(self) -> str:
+        """El mensaje de la operación (spec 016, T12): lo que dice el resumen de lo calculado, en español: la detección,
+        su código, cuántos acopios, el área y el volumen de sus huellas juntas y, si los hay, las marcas rechazadas y los
+        candidatos. Es lo que recibe ``DesignWriter.commit`` al crearla (``Calculation.message``)."""
+        found = self.stockpiles
+        text = (f"Detección de acopios «{self.name}» ({self.code}) calculada: {len(found)} "
+                f"{'acopio' if len(found) == 1 else 'acopios'}, "
+                f"{format_value(round(math.fsum(item.area_m2 for item in found), 2))} m² de huella y "
+                f"{format_value(round(math.fsum(item.volume_m3 for item in found), 2))} m³")
+        if self.rejected:
+            text += f"; {len(self.rejected)} {'marca rechazada' if len(self.rejected) == 1 else 'marcas rechazadas'}"
+        if self.candidates is not None:
+            items = len(self.candidates.items)
+            text += f"; {items} {'candidato' if items == 1 else 'candidatos'}"
+        return text
 
     @property
     def materials(self) -> tuple[str | None, ...]:

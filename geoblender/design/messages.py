@@ -2210,6 +2210,86 @@ CATALOG: tuple[Message, ...] = (
         "nota.",
         "warning",
     ),
+    # El resumen de «Calcular» la detección (T12; RF-016-04 a 08, RF-015-03): la cabecera, un renglón por acopio y por
+    # candidato, los candidatos y lo que quedará obsoleto al repetir la detección. Notas: lo que avisan son los de arriba.
+    Message(
+        "des.stockpile_summary",
+        "Stockpile detection «{entity}» ({code}): {stockpiles} stockpiles with {area} m² of footprint and {volume} "
+        "m³ in total.",
+        "Detección de acopios «{entity}» ({code}): {stockpiles} acopios con {area} m² de huella y {volume} m³ en "
+        "total.",
+        "note",
+        count="stockpiles",
+        one_msgid="Stockpile detection «{entity}» ({code}): {stockpiles} stockpile with {area} m² of footprint and "
+        "{volume} m³ in total.",
+        one_es="Detección de acopios «{entity}» ({code}): {stockpiles} acopio con {area} m² de huella y {volume} m³ "
+        "en total.",
+    ),
+    Message(
+        "des.stockpile_item",
+        "Stockpile «{mark}» (material {material}): footprint {area} m², volume {volume} m³, maximum thickness "
+        "{thickness} m; base plane at {level} m at its centre, sloping {slope} % towards {azimuth}° (around x = {x} "
+        "m, y = {y} m).",
+        "Acopio «{mark}» (material {material}): huella de {area} m², volumen de {volume} m³, espesor máximo de "
+        "{thickness} m; plano de base a {level} m en su centro, con una pendiente del {slope} % hacia el azimut "
+        "{azimuth}° (en torno a x = {x} m, y = {y} m).",
+        "note",
+    ),
+    Message(
+        "des.stockpile_item_own_base",
+        "Stockpile «{mark}» (material {material}): footprint {area} m², volume {volume} m³, maximum thickness "
+        "{thickness} m; its base is the surface «{base}» (around x = {x} m, y = {y} m).",
+        "Acopio «{mark}» (material {material}): huella de {area} m², volumen de {volume} m³, espesor máximo de "
+        "{thickness} m; su base es la superficie «{base}» (en torno a x = {x} m, y = {y} m).",
+        "note",
+    ),
+    Message(
+        "des.stockpile_candidates",
+        "{candidates} candidates without a mark found among {zones} zones that stand out: {on_marks} over a mark, "
+        "{out_of_range} out of the area range and {rejected} that could not be formed; none is a stockpile until you "
+        "convert it, or discard it with a reason, in the list of candidates.",
+        "{candidates} candidatos sin marca entre {zones} zonas que sobresalen: {on_marks} sobre una marca, "
+        "{out_of_range} fuera del rango de área y {rejected} que no se pudieron formar; ninguno es un acopio hasta "
+        "que lo convierta, o lo descarte con un motivo, en la lista de candidatos.",
+        "note",
+        count="candidates",
+        one_msgid="{candidates} candidate without a mark found among {zones} zones that stand out: {on_marks} over a "
+        "mark, {out_of_range} out of the area range and {rejected} that could not be formed; it is not a stockpile "
+        "until you convert it, or discard it with a reason, in the list of candidates.",
+        one_es="{candidates} candidato sin marca entre {zones} zonas que sobresalen: {on_marks} sobre una marca, "
+        "{out_of_range} fuera del rango de área y {rejected} que no se pudieron formar; no es un acopio hasta que lo "
+        "convierta, o lo descarte con un motivo, en la lista de candidatos.",
+    ),
+    Message(
+        "des.stockpile_candidate_item",
+        "Candidate {candidate}: footprint {area} m², volume {volume} m³, base plane at {level} m at its centre, "
+        "sloping {slope} % towards {azimuth}° (around x = {x} m, y = {y} m).",
+        "Candidato {candidate}: huella de {area} m², volumen de {volume} m³, plano de base a {level} m en su centro, "
+        "con una pendiente del {slope} % hacia el azimut {azimuth}° (en torno a x = {x} m, y = {y} m).",
+        "note",
+    ),
+    Message(
+        "des.stockpile_more_candidates",
+        "… and {candidates} more candidates (in the list of candidates)",
+        "… y {candidates} candidatos más (en la lista de candidatos)",
+        "note",
+        count="candidates",
+        one_msgid="… and {candidates} more candidate (in the list of candidates)",
+        one_es="… y {candidates} candidato más (en la lista de candidatos)",
+    ),
+    Message(
+        "des.stockpile_obsolete_dependents",
+        "Repeating the stockpile detection «{entity}» will make {operations} operations that depended on it stale: "
+        "{items}.",
+        "Al repetir la detección de acopios «{entity}», quedarán obsoletas {operations} operaciones que dependían "
+        "de ella: {items}.",
+        "note",
+        count="operations",
+        one_msgid="Repeating the stockpile detection «{entity}» will make {operations} operation that depended on "
+        "it stale: {items}.",
+        one_es="Al repetir la detección de acopios «{entity}», quedará obsoleta {operations} operación que dependía "
+        "de ella: {items}.",
+    ),
     Message(
         "des.stockpile_declared_reason",
         "declared by stockpile detection {name}",

@@ -37,6 +37,12 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
   quedará obsoleto al crearla) y **nada en el proyecto**; crearla (T13; RF-015-01, RF-015-02,
   RF-015-04) es :meth:`Calculation.create`: los parámetros de su entidad, la operación, la superficie, su
   tabla y su informe y las cifras, en **una** transacción.
+- :func:`stockpile_run` (spec 016, T12; RF-016-04 a 08, RF-015-03, RF-015-29): «Calcular» una detección de acopios
+  (``des.stockpile_detect``, de una versión, o ``des.stockpile_detect_project``, del proyecto, D-15) del mismo modo: deja el
+  **resultado** (``design.stockpiles.StockpileOutcome``) y el **resumen** (:class:`~.preview.StockpileSummary`: cada acopio con
+  su plano, huella, volumen, espesor máximo y notas, los avisos con su lugar, las marcas rechazadas, los candidatos y lo que
+  quedará obsoleto al repetirla) y **nada en el proyecto**: ni la base de datos, ni los ficheros, ni temporales. Crearla es
+  de la T13.
 - :class:`Calculation`: lo calculado y todavía sin registrar. :meth:`~Calculation.create`
   (**«Crear»**) abre la operación, mueve los temporales, escribe las tablas y las cifras y completa,
   todo en **una** transacción (``DesignWriter.commit``); :meth:`~Calculation.discard`
@@ -79,6 +85,8 @@ from . import (
     provenance,
     quarry,
     refit,
+    stockpile_store,
+    stockpiles,
     store,
 )
 from .messages import DesignError
@@ -89,7 +97,9 @@ from .model import (
     PlatformRequest,
     QuarryRequest,
     RefitRequest,
+    StockpileRequest,
 )
+from .params import ANTHROPIC_PRESENCE
 from .preview import Notice
 from .seeds import SeedPlan, SeedSet, pace_progress
 
@@ -105,11 +115,13 @@ __all__ = [
     "quarry_run",
     "refit_run",
     "resolve_values",
+    "stockpile_run",
 ]
 
 _PREPARE_PHASE = "prepare"
 _DONE_PHASE = "calculated"
 _SUMMARY_PHASE = "platform_summary"  # el resumen de una plataforma (T12)
+_STOCKPILE_SUMMARY_PHASE = "stockpile_summary"  # el resumen de una detección de acopios (016, T12)
 _OUTSIDE_PHASE = "seeds_outside"  # la cantera parada por sus semillas fuera (T43; RF-014-03)
 _READY, _CREATED, _DISCARDED = "ready", "created", "discarded"
 
@@ -120,11 +132,12 @@ def resolve_values(project: StoreProject, version_uid: str, keys: Iterable[str]
     operación que empezara ahora (versión → proyecto, RF-009-24), **sin escribir**: el de su fila o,
     si no la tiene, el valor por defecto de su definición (``None`` si no lo hay). Es lo que hace
     falta para calcular sin haber empezado la operación (``begin_operation`` crearía las filas que
-    faltan, y la operación aún no existe: D-14)."""
+    faltan, y la operación aún no existe: D-14). Con ``version_uid`` vacío (spec 016, T12: una operación **de proyecto**, la
+    detección de acopios sobre una superficie del proyecto) solo cuenta el ámbito del proyecto."""
     wanted = tuple(dict.fromkeys(keys))
+    chain = (VERSION_SCOPE, PROJECT_SCOPE) if version_uid else (PROJECT_SCOPE,)
     with project.read() as conn:
-        found = ParameterStore(project).resolve_many(conn, wanted, (VERSION_SCOPE, PROJECT_SCOPE),
-                                                     version=version_uid)
+        found = ParameterStore(project).resolve_many(conn, wanted, chain, version=version_uid or None)
     values: dict[str, object] = {}
     for key in wanted:
         resolved = found.get(key)
@@ -141,7 +154,8 @@ class Calculation:
     (``pipeline.EnvelopeOutcome``, ``pipeline.DesignOutcome`` o, de un recinto,
     ``quarry.AreaOutcome``, de una cantera, ``quarry.QuarryOutcome``, de una transición,
     ``edges.EdgeTransition``, de un diseño «solo relleno», ``fronts.FillOnlyOutcome``, de un
-    ajuste, ``refit.RefitOutcome``, y de una plataforma, ``platform.PlatformOutcome``), los
+    ajuste, ``refit.RefitOutcome``, de una plataforma, ``platform.PlatformOutcome``, y de una detección
+    de acopios, ``stockpiles.StockpileOutcome``), los
     ``notices`` que enseña
     la ventana junto a su resumen —de la envolvente, los de sus semillas; del escalonado, los de su
     informe; de la cantera, los suyos y los del informe de cada lado; de cada aviso del salto
@@ -152,7 +166,9 @@ class Calculation:
     ``name`` y la ``version`` (su código). De una plataforma (spec 015, T12) lleva además ``entity``
     (la :class:`~.entity_store.PreparedPlatform`: su código, su geometría, sus parámetros con su origen,
     lo que anotará la operación) y ``summary`` (el :class:`~.preview.PlatformSummary`); **crearla** (T13) es
-    :meth:`create`, que escribe además los parámetros de su entidad. Mientras esté abierta
+    :meth:`create`, que escribe además los parámetros de su entidad. De una **detección de acopios** (spec 016, T12) lleva
+    en ``entity`` la :class:`~.stockpile_store.PreparedDetection` y en ``summary`` el :class:`~.preview.StockpileSummary`;
+    crearla es la T13. Mientras esté abierta
     (:attr:`open`), sus rejillas esperan en temporales junto a su destino: hay que crearla o
     descartarla."""
 
@@ -160,12 +176,12 @@ class Calculation:
                  start: store.OperationStart, outcome: pipeline.EnvelopeOutcome
                  | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome
                  | edges.EdgeTransition | fronts.FillOnlyOutcome | refit.RefitOutcome
-                 | platform.PlatformOutcome,
+                 | platform.PlatformOutcome | stockpiles.StockpileOutcome,
                  notices: Sequence[Notice],
                  seeds: SeedSet | None,
                  values: Mapping[str, object],
-                 entity: entity_store.PreparedPlatform | None = None,
-                 summary: preview.PlatformSummary | None = None) -> None:
+                 entity: entity_store.PreparedPlatform | stockpile_store.PreparedDetection | None = None,
+                 summary: preview.PlatformSummary | preview.StockpileSummary | None = None) -> None:
         self._project = project
         self._writer = writer
         self._start = start
@@ -252,6 +268,10 @@ class Calculation:
         cálculo**: se confirma (:meth:`confirm_counterslope`) y se vuelve a crear."""
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
+        if isinstance(self.entity, stockpile_store.PreparedDetection):
+            raise NotImplementedError(  # sin cerrar el cálculo: lo que crea la detección es la T13 de la spec 016
+                f"crear la detección de acopios «{self.name}» es la T13 de la spec 016: «Calcular» ya deja su resultado y "
+                "su resumen, y nada escrito")
         if self.entity is not None:
             self._platform().ensure_creatable()  # sin cerrar el cálculo: se confirma y se crea
         try:
@@ -445,6 +465,30 @@ def platform_run(project: StoreProject, request: PlatformRequest, *, version: st
                            confirm_counterslope, budget_s)
 
 
+def stockpile_run(project: StoreProject, request: StockpileRequest, *, version: str | None,
+                  masks: MaskSet | None = None, code: str | None = None,
+                  supersedes: str | None = None, budget_s: float = STEP_BUDGET_S
+                  ) -> Iterator[Progress]:
+    """**«Calcular»** la detección de acopios ``request`` por pasos de ``budget_s`` como mucho (spec 016, T12; RF-016-04
+    a 08, RF-015-03, RF-015-29; RNF-016-03 y 05; «Acopio (detectar, retirar)…»): el último ``Progress`` lleva la
+    :class:`Calculation` de ``des.stockpile_detect`` (la superficie es de la versión ``version``) o de
+    ``des.stockpile_detect_project`` (la superficie es del proyecto, también sin versión activa, D-15), con su resultado
+    (``Calculation.outcome``: ``design.stockpiles.StockpileOutcome``), su resumen (``Calculation.summary``: los acopios con su
+    plano, huella, volumen, espesor máximo y notas, los avisos con su lugar, las marcas **rechazadas** nombrando marca, caso y
+    lugar sin registrarlas, los candidatos y lo que quedará obsoleto al crearla) y **nada registrado ni escrito en el
+    proyecto**: ni la base de datos, ni las operaciones, los datos, los parámetros o los ficheros. ``version`` es la versión
+    activa (uid o código; ``None`` si no hay: solo vale una superficie del proyecto) y ``masks``, las de esa versión (al día;
+    sin ellas se cargan, compilándolas antes si faltan: la preparación). ``code``, ``supersedes``: los de
+    ``stockpile_store.prepare_detection_units`` (recalcular o repetir una detección que ya está en su ámbito y sustituir su
+    operación; con ``supersedes`` el resumen dice lo que quedará obsoleto).
+
+    Los rechazos salen **al avanzar**, antes de calcular y sin escribir nada: los de ``prepare_detection_units`` (versión,
+    capa y campos, marcas solapadas, parámetros, falta de dato…, RF-016-02, 03 y 04). Los acopios que no se pueden formar no
+    paran el cálculo: salen en el resumen sin registrarse. Cerrar el generador a mitad (Esc) o un fallo después de calcular no
+    dejan nada (RF-015-29). Crear la detección es la T13."""
+    return _stockpile_steps(project, request, version, masks, code, supersedes, budget_s)
+
+
 def refit_run(project: StoreProject, request: RefitRequest, *, version: str | None,
               masks: MaskSet | None = None, budget_s: float = STEP_BUDGET_S
               ) -> Iterator[Progress]:
@@ -627,6 +671,29 @@ def _refit_steps(project: StoreProject, request: RefitRequest, version: str | No
                                   outcome=outcome, notices=outcome.notices, seeds=None,
                                   values=values)
     except BaseException as error:  # un fallo o cerrar el generador: no quedan los temporales
+        writer.close(error)
+        raise
+    yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
+
+
+def _stockpile_steps(project: StoreProject, request: StockpileRequest, version: str | None,
+                     masks: MaskSet | None, code: str | None, supersedes: str | None, budget_s: float
+                     ) -> Generator[Progress, None, None]:
+    prepared: stockpile_store.PreparedDetection = yield from _prepare_steps(
+        stockpile_store.prepare_detection_units(project, request, version=version, masks=masks, code=code,
+                                                supersedes=supersedes), budget_s)
+    writer = store.design_writer(project, prepared.op_type, request.name, version=prepared.version_uid,
+                                 supersedes=supersedes)
+    try:
+        outcome: stockpiles.StockpileOutcome = yield from stockpile_store.detection_compute_steps(
+            prepared.job, budget_s=budget_s)
+        yield Progress(_STOCKPILE_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
+        summary = stockpile_store.detection_summary(project, prepared, outcome, supersedes=supersedes)
+        calculation = Calculation(
+            project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices,
+            seeds=None, values={ANTHROPIC_PRESENCE: prepared.job.params.threshold_m}, entity=prepared,
+            summary=summary)
+    except BaseException as error:  # un fallo o cerrar el generador: no queda nada
         writer.close(error)
         raise
     yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)

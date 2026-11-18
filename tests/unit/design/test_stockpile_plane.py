@@ -372,7 +372,7 @@ class TiltLimitTest(unittest.TestCase):
         notice = self.found.notes[0].notice("Acopio 7", 699_760.0, 4_399_760.0)
         self.assertEqual((notice.code, notice.severity), ("des.stockpile_tilt_limited", "warning"))
         text = notice.text("es")
-        for part in ("«Acopio 7»", "8,0°", "4,0°", "0,6"):
+        for part in ("«Acopio 7»", "8,00°", "4,00°", "0,60"):  # T12: las inclinaciones y el cuantil, a la centésima
             self.assertIn(part, text)
 
     def test_the_plane_is_the_hand_calculation(self) -> None:

@@ -45,6 +45,18 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # RF-016-06 y 07.
     "des.stockpile_shared_cells": ("warning", "RF-016-06", {"mark", "other", "area", *POSITION}),
     "des.stockpile_tilt_limited": ("warning", "RF-016-07", {"mark", "fitted", "limit", "quantile", *POSITION}),
+    # T12: el resumen de «Calcular» la detección: la cabecera, un renglón por acopio (con su plano o su base propia) y por
+    # candidato, los candidatos y lo que quedará obsoleto al repetirla.
+    "des.stockpile_summary": ("note", "RF-015-03", {"entity", "code", "stockpiles", "area", "volume"}),
+    "des.stockpile_item": ("note", "RF-016-04", {"mark", "material", "area", "volume", "thickness", "level", "slope",
+                                                 "azimuth", *POSITION}),
+    "des.stockpile_item_own_base": ("note", "RF-016-03", {"mark", "material", "area", "volume", "thickness", "base",
+                                                          *POSITION}),
+    "des.stockpile_candidates": ("note", "RF-016-08", {"candidates", "zones", "on_marks", "out_of_range", "rejected"}),
+    "des.stockpile_candidate_item": ("note", "RF-016-08", {"candidate", "area", "volume", "level", "slope", "azimuth",
+                                                           *POSITION}),
+    "des.stockpile_more_candidates": ("note", "RF-016-08", {"candidates"}),
+    "des.stockpile_obsolete_dependents": ("note", "RF-015-16", {"entity", "operations", "items"}),
     "des.stockpile_declared_reason": ("note", "RF-015-10", {"name"}),
     "des.stockpile_support_removed": ("note", "RF-015-17", {"name"}),
     # RF-016-12 a 15: la retirada.

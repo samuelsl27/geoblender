@@ -172,6 +172,9 @@ PENDING_015_API: frozenset[str] = frozenset({
     "reproduce_body", "reproduce_buttress", "reproduce_stockpile_detect", "reproduce_stockpile_removal",
     # La 016, T04: el escritor de proyecto, el registro y los parámetros del ámbito del proyecto.
     "ProjectDesignWriter", "design_writer", "project_registry", "entity_parameters",
+    # La 016, T12: «Calcular» la detección de acopios y su resumen (``design.steps`` y ``design.preview``).
+    "stockpile_run", "StockpileSummary", "StockpileLine", "RejectedLine", "CandidateLine", "CandidateCounts",
+    "stockpile_obsolete_notices",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 016, T05: la morfología con un disco exacto (A1). Su fila de la ficha (``des.md`` §4.4) la lleva la T38,

@@ -25,6 +25,14 @@ impide mover unas celdas: la que declara otra entidad (código ``dec__…``), co
 restricción normal, con su nombre. Sin proyecto: las funciones de este módulo reciben lo que ya se
 leyó (``design.entity_store`` lo lee).
 
+Con una **detección de acopios** (spec 016, T12; RF-016-04 a 08, RF-015-03; plan 016 §5.3.2), el resumen de «Calcular» es el
+:class:`StockpileSummary`: cada acopio (:class:`StockpileLine`: plano, huella, volumen, espesor máximo y notas), las marcas
+**rechazadas** con su caso y su lugar (:class:`RejectedLine`; no se registran), los candidatos (:class:`CandidateLine` y
+:class:`CandidateCounts`, nunca una zona sin filtrar) y lo que quedará obsoleto al repetirla (:func:`stockpile_obsolete_notices`,
+con el mismo :class:`Obsolete` de la 015). Lo arma ``design.stockpile_store.stockpile_summary`` (este módulo no importa
+``design.stockpiles``). Los avisos de los acopios dicen la inclinación, el límite y el umbral a la centésima
+(:data:`_CODE_DECIMALS`: por mensaje, sin cambiar los de la 013, la 014 y la 015).
+
 Y **antes de calcular** (spec 015, T29; RF-015-26; plan 015 §5.5), :func:`entity_preview_steps` prepara, por
 pasos y solo leyendo, el :class:`EntityPreview` de la plataforma que se está preparando (o de una que ya
 está en la versión): su huella, su eje con su sentido (la abscisa 0 en el primer vértice), la cota de la
@@ -43,6 +51,7 @@ from __future__ import annotations
 from collections.abc import Generator, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 
 from typing import TYPE_CHECKING, Any
 
@@ -70,6 +79,8 @@ if TYPE_CHECKING:  # design.quarry importa design.report, que importa Notice de 
     from .quarry import ConserveZone, CorridorMap, FloorMap
 
 __all__ = [
+    "CandidateCounts",
+    "CandidateLine",
     "EntityEnd",
     "EntityPreview",
     "Named",
@@ -79,14 +90,18 @@ __all__ = [
     "PlatformSummary",
     "PreviewSummary",
     "QuarryPreview",
+    "RejectedLine",
     "RestingItem",
     "SectorStatus",
+    "StockpileLine",
+    "StockpileSummary",
     "entity_preview_steps",
     "held_notices",
     "obsolete_names",
     "obsolete_notices",
     "quarry_summarize_steps",
     "seed_notices",
+    "stockpile_obsolete_notices",
     "summarize_steps",
 ]
 
@@ -98,6 +113,19 @@ _DECIMALS = {"hectares": 1, "coverage": 1, "low": 1, "high": 1, "thickness": 3, 
 contrapendiente de una plataforma (spec 015, T09), que ronda la tolerancia de 0,1 m: con un decimal
 «0,12 m» se leería «0,1 m», que no pasa de ella. ``start_level``, ``end_level`` y ``gradient``: la rasante
 de la vista previa de una entidad (T29), al centímetro y a la centésima de por ciento."""
+
+
+_CODE_DECIMALS: Mapping[str, Mapping[str, int]] = MappingProxyType({
+    "des.stockpile_no_cells": MappingProxyType({"threshold": 2}),
+    "des.stockpile_tilt_limited": MappingProxyType({"fitted": 2, "limit": 2, "quantile": 2}),
+    "des.stockpile_item": MappingProxyType({"level": 2, "slope": 2}),
+    "des.stockpile_candidate_item": MappingProxyType({"level": 2, "slope": 2}),
+})
+"""Los decimales de los números de **un mensaje concreto** (spec 016, T12), que mandan sobre :data:`_DECIMALS`: los avisos de
+los acopios dicen una inclinación de 4,04° frente a un límite de 4° (``fitted``, ``limit``) y un umbral de huella de 0,25 m
+(``threshold``) a la centésima; con el decimal de siempre se leerían «4,0° … 4,0°» y «0,2 m». Van **por código** y no por el
+nombre del valor porque ``limit`` y ``threshold`` también son valores de los avisos de la 013, la 014 y la 015, que
+conservan su decimal."""
 
 
 def _number(value: float, decimals: int, language: str) -> str:
@@ -123,8 +151,10 @@ class Named:
         return f"«{render(self.code, language=language, **_shown(self.values, language))}»"
 
 
-def _shown(values: Mapping[str, object], language: str) -> dict[str, str]:
-    """Los valores de un aviso ya escritos para una persona."""
+def _shown(values: Mapping[str, object], language: str, places: Mapping[str, int] | None = None
+           ) -> dict[str, str]:
+    """Los valores de un aviso ya escritos para una persona (``places``: los decimales propios de su mensaje, que mandan
+    sobre los de siempre; :data:`_CODE_DECIMALS`)."""
     found: dict[str, str] = {}
     for name, value in values.items():
         if isinstance(value, bool):
@@ -132,8 +162,11 @@ def _shown(values: Mapping[str, object], language: str) -> dict[str, str]:
         elif isinstance(value, int):
             found[name] = _number(value, 0, language)
         elif isinstance(value, float):
-            decimals = (0 if value.is_integer() else 1) if name == "area" else _DECIMALS.get(
-                name, 1)
+            if places is not None and name in places:
+                decimals = places[name]
+            else:
+                decimals = (0 if value.is_integer() else 1) if name == "area" else _DECIMALS.get(
+                    name, 1)
             found[name] = _number(value, decimals, language)
         elif isinstance(value, tuple | list):
             found[name] = ", ".join(item.text(language) if isinstance(item, Named) else str(item)
@@ -163,7 +196,7 @@ class Notice:
         message = lookup(self.code)
         number = self.values.get(message.count) if message.count else None
         return render(self.code, language=language, number=number,
-                      **_shown(self.values, language))
+                      **_shown(self.values, language, _CODE_DECIMALS.get(self.code)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -589,6 +622,120 @@ def obsolete_notices(entity: str, version: str, items: Iterable[Obsolete]) -> tu
             found.append(Notice(code, {"entity": entity, count: len(by_kind[kind]),
                                        "items": obsolete_names(by_kind[kind], version)}))
     return tuple(found)
+
+
+# --- El resumen de una detección de acopios (spec 016, T12; RF-016-04 a 08, RF-015-03) ----------
+
+
+@dataclass(frozen=True, slots=True)
+class StockpileLine:
+    """Un acopio **registrado** en el resumen de «Calcular» la detección (RF-016-04, RF-016-02): su clave y su ``name`` (los de
+    su marca), su ``material`` (``None``: sin material), la ``base_surface`` de la que sale su base si es propia (RF-016-03; si no,
+    ``None`` y la base es su plano), el área de su huella (``area_m2``), su volumen (``volume_m3``), su espesor máximo
+    (``thickness_max_m``), el plano en su centro (``plane_level_m``: la cota, ``plane_slope_percent``, ``plane_azimuth_deg`` y
+    ``plane_tilt_deg``; ninguno si la base es propia), el lugar de su centro (``x``, ``y``: absolutas, m: el de «ir a») y sus
+    ``notes`` (los avisos y notas de RF-016-05, 06 y 07, con su marca y su lugar)."""
+
+    key: str
+    name: str
+    material: str | None
+    base_surface: str | None
+    area_m2: float
+    volume_m3: float
+    thickness_max_m: float
+    plane_level_m: float | None
+    plane_slope_percent: float | None
+    plane_azimuth_deg: float | None
+    plane_tilt_deg: float | None
+    x: float
+    y: float
+    notes: tuple[Notice, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RejectedLine:
+    """Una marca que no da acopio y **no se registra** (RF-016-04): su clave y su ``name`` y el aviso con el caso y el lugar
+    (``notice``: un ``des.stockpile_*`` con la marca, ``x`` e ``y``)."""
+
+    key: str
+    name: str
+    notice: Notice
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateLine:
+    """Un candidato sin marca del resumen (RF-016-08): su ``number`` (desde 1, en el orden de lectura de su zona), el área de su
+    huella (``area_m2``), su volumen (``volume_m3``), su plano en el centro (``plane_level_m``, ``plane_slope_percent`` y
+    ``plane_azimuth_deg``) y el lugar de su centro (``x``, ``y``: absolutas, m)."""
+
+    number: int
+    area_m2: float
+    volume_m3: float
+    plane_level_m: float
+    plane_slope_percent: float
+    plane_azimuth_deg: float
+    x: float
+    y: float
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateCounts:
+    """Lo que la búsqueda de candidatos descartó **sin listarlo nunca** (RF-016-08, error 64): las ``zones`` que salieron de la
+    apertura antes de filtrar, las que tienen marca (``on_marks``), las que no llegan al área mínima (``too_small``) o pasan de la
+    máxima (``too_large``) y las que pasan los filtros pero no se pudieron formar (``rejected``)."""
+
+    zones: int
+    on_marks: int
+    too_small: int
+    too_large: int
+    rejected: int
+
+    @property
+    def filtered(self) -> int:
+        """Las zonas que descartó el filtro del área."""
+        return self.too_small + self.too_large
+
+
+@dataclass(frozen=True, slots=True)
+class StockpileSummary:
+    """El resumen de «Calcular» una detección de acopios (RF-015-03, RF-016-04 a 08): su ``name`` y su ``code`` (``STK-001``), la
+    ``version`` (su código; ``None`` si es **del proyecto**) y el ``scope`` (``project`` o ``version``), las ``figures`` que se
+    registrarán (CALCULADO, con su ámbito), los acopios (``stockpiles``), las marcas que no dan acopio (``rejected``) y, si se
+    pidieron, los candidatos (``candidates``, con la lista entera, y ``counts``; ambos ``None`` si no se pidieron), los
+    ``notices`` en el orden en que se enseñan (la cabecera, las marcas rechazadas, cada acopio con sus avisos y notas, los
+    candidatos y, al final, lo que quedará obsoleto) y ``obsolete``, lo que quedará obsoleto al crearla, con su lista entera."""
+
+    name: str
+    code: str
+    version: str | None
+    scope: str
+    figures: tuple[FigureSpec, ...]
+    stockpiles: tuple[StockpileLine, ...]
+    rejected: tuple[RejectedLine, ...]
+    candidates: tuple[CandidateLine, ...] | None
+    counts: CandidateCounts | None
+    notices: tuple[Notice, ...]
+    obsolete: tuple[Obsolete, ...] = ()
+
+    def lines(self, language: str = "es") -> tuple[str, ...]:
+        """Todo lo que dice el resumen, línea a línea, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices)
+
+    def warnings(self, language: str = "es") -> tuple[str, ...]:
+        """Solo los avisos, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices if notice.severity == "warning")
+
+
+def stockpile_obsolete_notices(entity: str, version: str, items: Iterable[Obsolete]) -> tuple[Notice, ...]:
+    """La nota de lo que quedará obsoleto al **repetir** la detección ``entity`` (RF-015-03, RF-016-10, RF-015-16): las
+    operaciones que dependían de lo que escribió la anterior (``ObsoleteKind.DEPENDENT``), con su cuenta (con singular) y los
+    nombres de las :data:`SUMMARY_ITEMS` primeras. Ninguna si no hay nada. Como :func:`obsolete_notices` para una plataforma,
+    con el texto de una detección: una detección no protege ni se inserta en ninguna cadena, así que solo tiene esta clase."""
+    found = [item for item in items if item.kind is ObsoleteKind.DEPENDENT]
+    if not found:
+        return ()
+    return (Notice("des.stockpile_obsolete_dependents", {"entity": entity, "operations": len(found),
+                                                         "items": obsolete_names(found, version)}),)
 
 
 _INNER = ":inner"

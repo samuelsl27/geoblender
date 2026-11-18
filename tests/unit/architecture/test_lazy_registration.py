@@ -62,6 +62,8 @@ HEAVY: frozenset[str] = frozenset({
     # Las entidades de diseño de la 015 (spec 015, T02, T06 y T11): ``design.entities``,
     # ``design.platform`` y ``design.entity_store``.
     "design.entities", "design.platform", "design.entity_store",
+    # La detección de acopios de la 016 (spec 016, T11 y T12): preparar, calcular por pasos y el resumen.
+    "design.stockpiles", "design.stockpile_store",
 })
 """Los módulos de la 012, la 013 y la 015 (y la cadena que arrastran) que se importan al primer uso."""
 

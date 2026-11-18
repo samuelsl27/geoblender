@@ -50,6 +50,19 @@ falta de dato de la superficie (``des.surface_mismatch``, ``gis.raster_empty``),
 rechaza de **un** acopio al calcularlo (la marca no da celdas sobre el umbral, falta terreno en su huella o su corona…) no
 es de la preparación: el cálculo lo informa en el resumen sin registrarlo (RF-016-04).
 
+**Calcular por pasos y el resumen** (T12; RF-016-04 a 08, RF-015-03, RF-015-13, RF-015-29, RNF-016-03 y 05): el homólogo de
+``entity_store.platform_compute_steps`` y de ``platform_summary``.
+
+- :func:`detection_compute_steps`: el cálculo que **comparten «Calcular», el recálculo y la reproducción**, sobre
+  ``design.stockpiles.detect_steps`` (cada marca en su ventana de trabajo, A0, y todo por pasos de ``budget_s`` como mucho):
+  sin proyecto y sin escribir nada; cerrar el generador a mitad lo cierra todo y no deja nada. **Devuelve** (``yield from``) el
+  ``StockpileOutcome``.
+- :func:`stockpile_summary` (puro) y :func:`detection_summary` (con el proyecto, para lo obsoleto): el
+  :class:`~.preview.StockpileSummary` de lo calculado: la cabecera, las marcas **rechazadas** (marca, caso y lugar; no se
+  registran), cada acopio con su plano, huella, volumen, espesor máximo y sus avisos y notas (RF-016-05, 06 y 07, una vez, con
+  su lugar), los candidatos y **lo que quedará obsoleto al crear** (:func:`detection_obsolete`: con el mecanismo de la 015,
+  ``entity_store._dependents``, lo que depende de lo que escribió la detección a la que sustituye).
+
 Python puro (nivel 8), con numpy. ``design.stockpile_store`` es un módulo pesado de la 016: lo importan las órdenes al
 usarlo, no ``bl`` al registrarse (``tests/unit/architecture/test_lazy_registration.py``).
 """
@@ -57,7 +70,7 @@ usarlo, no ``bl`` al registrarse (``tests/unit/architecture/test_lazy_registrati
 from __future__ import annotations
 
 import math
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
@@ -70,11 +83,13 @@ from ..core.constraints.params import param_key
 from ..core.constraints.store import CONSTRAINT_LAYERS
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
 from ..core.params.store import default_reason
+from ..core.project.model import Progress
 from ..core.provenance.operations import Use
 from ..core.versions import read as versions_read
 from ..core.versions.model import Version, VersionError
 from ..gis.grid import Grid
 from ..gis.masks import access
+from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.masks.combine import LEGAL_COMMAND, ClassBit, IncompleteConstraints
 from ..gis.masks.provenance import CONSTRAINT_ROLES
 from ..gis.masks.store import available_tables, declared_limits
@@ -82,18 +97,34 @@ from ..gis.masks.zones import limit_runs
 from ..gis.polygons import overlay, problem_steps
 from ..gis.store import StoreProject, load_features
 from ..gis.vector import FeatureLayer
-from . import entities, provenance
+from . import entities, pipeline, provenance
 from .entities import EntityKind, EntityRegistry
-from .entity_store import EntityParamRow
+from .entity_store import EntityParamRow, _consumer, _dependents
 from .messages import DesignError
 from .model import StockpileRequest
 from .params import ANTHROPIC_PRESENCE, StockpileParam, check_entity_param, entity_key, entity_params
+from .preview import (
+    SUMMARY_ITEMS,
+    CandidateCounts,
+    CandidateLine,
+    Notice,
+    Obsolete,
+    ObsoleteKind,
+    RejectedLine,
+    StockpileLine,
+    StockpileSummary,
+    stockpile_obsolete_notices,
+)
 from .stockpiles import (
+    Candidate,
     CandidateParams,
     FootprintParams,
     PlaneParams,
+    Stockpile,
     StockpileJob,
     StockpileMark,
+    StockpileOutcome,
+    detect_steps,
 )
 from .store import OperationStart, _loaded_masks, _start, require_version
 from .surfaces import find_surface, project_frame, read_surface_steps
@@ -103,11 +134,15 @@ __all__ = [
     "PROJECT",
     "VERSION",
     "PreparedDetection",
+    "detection_compute_steps",
+    "detection_obsolete",
     "detection_scope",
+    "detection_summary",
     "detection_values",
     "mark_cells",
     "prepare_detection",
     "prepare_detection_units",
+    "stockpile_summary",
 ]
 
 PROJECT = "project"
@@ -129,6 +164,7 @@ _DIALOG = "diálogo de «Acopio (detectar, retirar)…»"
 """El origen de lo que elige la persona en el diálogo de la orden (la entidad al final)."""
 _SURFACE_ROLE = "superficie de detección"
 _NO_VALUE = "—"
+_COMPUTE_PHASE = "stockpile_compute"
 
 
 # --- Lo que se prepara --------------------------------------------------------------------------
@@ -623,3 +659,140 @@ def prepare_detection(project: StoreProject, request: StockpileRequest, *, versi
         except StopIteration as stop:
             result: PreparedDetection = stop.value
             return result
+
+
+# --- Calcular por pasos (spec 016, T12; RF-016-04, 05, 08, RF-015-29, RNF-016-03, 05) ------------
+
+
+def detection_compute_steps(job: StockpileJob, *, budget_s: float = STEP_BUDGET_S
+                            ) -> Generator[Progress, None, StockpileOutcome]:
+    """Los pasos que calculan la detección de ``job`` (RF-016-04, 05, 08, RF-015-29; plan 016 §5.3.2: el
+    ``detection_compute_steps`` que **comparten «Calcular», el recálculo y la reproducción**, como
+    ``entity_store.platform_compute_steps`` lo es de la plataforma), sin proyecto y sin escribir nada (``yield from``;
+    cerrar el generador no deja nada y no toca ninguna entrada): ``design.stockpiles.detect_steps`` —cada marca en su ventana de
+    trabajo (A0), el reparto de las celdas comunes, las bases, los espesores y el terreno sin acopios y, si se piden, los
+    candidatos— por pasos de ``budget_s`` como mucho. El primer paso sale antes de calcular nada. Los acopios que no se
+    pueden formar (RF-016-04) **no paran** el cálculo: salen en ``StockpileOutcome.rejected``. Un ``job`` que no es un
+    ``StockpileJob`` es un ``TypeError`` (un error del programa) al avanzar. Devuelve el
+    :class:`~.stockpiles.StockpileOutcome`."""
+    if not isinstance(job, StockpileJob):
+        raise TypeError(f"la detección calcula un StockpileJob, no {job!r}")
+    name = job.name
+    yield Progress(_COMPUTE_PHASE, 0, 1, f"Detectando los acopios de «{name}»…")
+    outcome: StockpileOutcome = yield from pipeline.forward(detect_steps(job, budget_s=budget_s))
+    yield Progress(_COMPUTE_PHASE, 1, 1, f"Acopios de «{name}» detectados")
+    return outcome
+
+
+# --- El resumen (spec 016, T12; RF-016-04 a 08, RF-015-03, RF-015-13) ----------------------------
+
+
+def detection_obsolete(project: StoreProject, prepared: PreparedDetection, *, supersedes: str | None = None
+                       ) -> tuple[Obsolete, ...]:
+    """**Lo que quedará obsoleto al crear** la detección ``prepared`` (RF-015-03, RF-016-10, RF-015-16; del grafo de la 008,
+    sin escribir; con el mecanismo de la 015, ``entity_store._dependents``): una detección nueva no deja obsoleto nada; la que
+    **sustituye** una operación (``supersedes``: un recálculo o repetirla) deja obsoleto lo que dependía de lo que escribió, en
+    cascada (``ObsoleteKind.DEPENDENT``: una retirada, un contrafuerte, una plataforma sobre su huella, la cubicación…), sin la
+    propia sustituida. Si la detección es **de una versión**, las operaciones vigentes de esa versión; si es **del proyecto**,
+    las del proyecto y las de cualquier versión (una versión puede consumir un dato del proyecto, no al revés, RF-009-05). Solo
+    lee."""
+    if supersedes is None:
+        return ()
+    with project.read() as conn:
+        written = [str(row[0]) for row in conn.execute(
+            "SELECT item_uid FROM gb_operation_io WHERE operation_uid = ? AND direction = 'out' "
+            "AND item_kind = 'dataset' ORDER BY fid", (supersedes,))]
+        found = _dependents(conn, written, prepared.version_uid, exclude=(supersedes,))
+    if prepared.version is None:  # sin versión no hay a qué versión llamar «la capa de entidades de V01»
+        return tuple(Obsolete(ObsoleteKind.DEPENDENT, name, op_type, uid) for uid, op_type, name in found)
+    return tuple(_consumer(ObsoleteKind.DEPENDENT, uid, op_type, name) for uid, op_type, name in found)
+
+
+def _stockpile_line(item: Stockpile) -> StockpileLine:
+    """El renglón de un acopio registrado."""
+    return StockpileLine(item.key, item.name, item.material, item.base_surface, item.area_m2, item.volume_m3,
+                         item.thickness_max_m, item.plane_level_m, item.plane_slope_percent, item.plane_azimuth_deg,
+                         item.plane_tilt_deg, item.x, item.y, item.notes)
+
+
+def _candidate_line(number: int, item: Candidate) -> CandidateLine:
+    """El renglón de un candidato: su huella, su volumen y su plano en el centro (``Candidate.footprint``)."""
+    plane = item.footprint.plane
+    assert plane is not None  # un candidato se forma como una marca: con plano (la base propia es de las marcas)
+    x, y = item.centre
+    return CandidateLine(number, item.footprint.area_m2, item.footprint.volume_m3, float(plane.at(x, y)),
+                         plane.slope_percent, plane.azimuth_deg, x, y)
+
+
+def _item_notice(item: Stockpile) -> Notice:
+    """La línea del resumen de un acopio: su huella, volumen y espesor máximo y su plano o la superficie de su base."""
+    values: dict[str, object] = {
+        "mark": item.name, "material": _NO_VALUE if item.material is None else item.material, "area": item.area_m2,
+        "volume": item.volume_m3, "thickness": item.thickness_max_m, "x": item.x, "y": item.y}
+    if item.plane is None:
+        return Notice("des.stockpile_item_own_base", {**values, "base": str(item.base_surface)})
+    return Notice("des.stockpile_item", {**values, "level": item.plane_level_m, "slope": item.plane_slope_percent,
+                                         "azimuth": item.plane_azimuth_deg})
+
+
+def _candidate_notices(lines: tuple[CandidateLine, ...], counts: CandidateCounts) -> tuple[Notice, ...]:
+    """Las notas de los candidatos: cuántos hay y qué se descartó sin listarlo, los :data:`SUMMARY_ITEMS` primeros y una nota
+    con los que faltan."""
+    found = [Notice("des.stockpile_candidates", {
+        "candidates": len(lines), "zones": counts.zones, "on_marks": counts.on_marks, "out_of_range": counts.filtered,
+        "rejected": counts.rejected})]
+    for line in lines[:SUMMARY_ITEMS]:
+        found.append(Notice("des.stockpile_candidate_item", {
+            "candidate": line.number, "area": line.area_m2, "volume": line.volume_m3, "level": line.plane_level_m,
+            "slope": line.plane_slope_percent, "azimuth": line.plane_azimuth_deg, "x": line.x, "y": line.y}))
+    if len(lines) > SUMMARY_ITEMS:
+        found.append(Notice("des.stockpile_more_candidates", {"candidates": len(lines) - SUMMARY_ITEMS}))
+    return tuple(found)
+
+
+def stockpile_summary(outcome: StockpileOutcome, *, version: str | None, scope: str,
+                      obsolete: Iterable[Obsolete] = ()) -> StockpileSummary:
+    """El resumen de «Calcular» la detección ``outcome`` (RF-015-03, RF-016-04 a 08; puro: sin proyecto): la cabecera, las
+    marcas **rechazadas** nombrando marca, caso y lugar (no se registran), cada acopio con su línea (huella, volumen, espesor
+    máximo y plano o base propia) y sus avisos y notas (RF-016-05, 06 y 07; los del reparto de celdas, **una vez** aunque estén en
+    los dos acopios), los candidatos (si se pidieron: cuántos, lo que se descartó sin listarlo y los primeros
+    :data:`~.preview.SUMMARY_ITEMS`) y, al final, lo que quedará obsoleto (``obsolete``: :func:`detection_obsolete`). ``version``
+    es el código de la versión (``None``: es del proyecto) y ``scope``, :data:`PROJECT` o :data:`VERSION`."""
+    kept = tuple(obsolete)
+    lines = tuple(_stockpile_line(item) for item in outcome.stockpiles)
+    rejected = tuple(RejectedLine(item.key, item.name, item.notice) for item in outcome.rejected)
+    candidates: tuple[CandidateLine, ...] | None = None
+    counts: CandidateCounts | None = None
+    found = outcome.candidates
+    if found is not None:
+        candidates = tuple(_candidate_line(number, item) for number, item in enumerate(found.items, start=1))
+        counts = CandidateCounts(found.zones, found.on_marks, found.too_small, found.too_large, found.rejected)
+    head: dict[str, object] = {
+        "entity": outcome.name, "code": outcome.code, "stockpiles": len(lines),
+        "area": math.fsum(item.area_m2 for item in outcome.stockpiles),
+        "volume": math.fsum(item.volume_m3 for item in outcome.stockpiles), "rejected": len(rejected)}
+    if candidates is not None:
+        head["candidates"] = len(candidates)
+    notices: list[Notice] = [Notice("des.stockpile_summary", head), *(line.notice for line in rejected)]
+    told: set[int] = set()
+    for item in outcome.stockpiles:
+        notices.append(_item_notice(item))
+        for note in item.notes:
+            if id(note) not in told:  # el aviso de dos acopios que se reparten celdas es uno, y está en los dos
+                told.add(id(note))
+                notices.append(note)
+    if candidates is not None and counts is not None:
+        notices.extend(_candidate_notices(candidates, counts))
+    notices.extend(stockpile_obsolete_notices(outcome.name, version or "", kept))
+    return StockpileSummary(outcome.name, outcome.code, version, scope, outcome.figures, lines, rejected, candidates,
+                            counts, tuple(notices), kept)
+
+
+def detection_summary(project: StoreProject, prepared: PreparedDetection, outcome: StockpileOutcome, *,
+                      supersedes: str | None = None) -> StockpileSummary:
+    """El resumen de «Calcular» la detección ``prepared`` (RF-015-03, RF-016-04 a 08): :func:`stockpile_summary` de su
+    ``outcome``, con lo que quedará obsoleto al crearla (:func:`detection_obsolete`: lo que dependía de la operación
+    ``supersedes``, si la hay). Solo lee."""
+    obsolete = detection_obsolete(project, prepared, supersedes=supersedes)
+    return stockpile_summary(outcome, version=None if prepared.version is None else prepared.version.code,
+                             scope=prepared.scope, obsolete=obsolete)
