@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""La detección de acopios: el plano de base robusto y su límite de inclinación (spec 016, T06; RF-016-02, RF-016-04,
-RF-016-05, RF-016-07; plan 016 A2, §5.2.2, §7.1, §7.3; D-3). Las demás piezas de A3 a A5 (la huella iterativa y el
-reparto, los candidatos, las bases y los espesores) las añaden T07 a T09 a este módulo.
+"""La detección de acopios: el plano de base robusto y su límite de inclinación (A2, spec 016, T06; RF-016-02,
+RF-016-04, RF-016-05, RF-016-07), y la huella iterativa, sus avisos y el reparto de las celdas comunes (A3, T07;
+RF-016-02, RF-016-04, RF-016-05, RF-016-06); plan 016 A2, A3, §5.2.2, §7.1, §7.3; D-3, D-16, D-17, D-18. Las demás
+piezas (los candidatos, las bases, los espesores y el terreno sin acopios) las añaden T08 y T09 a este módulo.
 
 **A2.** Sobre la ventana de una marca (una rejilla pequeña del proyecto, en coordenadas absolutas float64), con ``H`` la
 huella (al principio, las celdas de la marca):
@@ -38,6 +39,42 @@ va en :attr:`BasePlane.notes` (el acopio la lleva); un **rechazo** (RF-016-04: u
 que no ajusta un plano) es la excepción :class:`StockpileRejected`, con su mensaje: el acopio no se registra y se
 informa en el resumen (``Notice.severity`` no admite un error), sin parar a las otras marcas.
 
+**A3.** Sobre la misma ventana, con la **marca** ``M`` (una máscara de la rejilla) y su **ampliada** ``M⁺`` (la marca
+dilatada ``margin_m`` con el disco de A1), y ``u`` el umbral de la huella de la 011 (``res.anthropic_presence_m``, que
+la detección lee por su clave y se pasa en ``FootprintParams.threshold_m``: la huella de un acopio y la unidad antrópica
+de la 011 tienen las mismas celdas solo si leen el mismo):
+
+- :func:`footprint_above` — **una vuelta de A3 sobre un plano ya dado** (o sobre una superficie de base propia,
+  RF-016-03): de las celdas de ``M⁺`` con ``z − base > u`` (estrictamente: un valor justo en el umbral no cuenta; una
+  celda sin dato no está por encima de nada), la **zona conexa mayor que toca la marca** (4-conexión,
+  :func:`design.grids.label_components`; a igual tamaño, la que tiene la primera celda en el orden de lectura) con los
+  **huecos interiores rellenos** (D-18: :func:`design.morphology.fill_holes`; un hueco cuenta en el área de la huella,
+  y en el volumen solo donde pasa del umbral). Rechaza el acopio (:class:`StockpileRejected`, RF-016-04) si ninguna zona
+  toca la marca (``des.stockpile_no_cells``: la marca no da ninguna celda sobre el umbral) o si en la huella falta
+  terreno (``des.stockpile_no_terrain``: una celda de un hueco rellenado sin dato, en la superficie o en la base;
+  con cuántas son y el lugar de la primera en el orden de lectura). Da las **notas** de RF-016-05: ``des.stockpile_
+  footprint_at_edge`` si una celda de la huella tiene un vecino 4 que no es de la marca ampliada ni de la huella (el
+  borde de la ventana cuenta como fuera), con el lugar de la primera en el orden de lectura, y
+  ``des.stockpile_several_zones`` si otras zonas que tocan la marca quedan fuera de la huella (una isla dentro de un
+  hueco rellenado no cuenta), con cuántas zonas hay y en torno al centro de la mayor de las demás.
+- :func:`grow_footprint` — **A2 y A3 en vueltas**: ``turns`` veces, el plano de A2 sobre la huella de la vuelta
+  anterior (la **marca** en la primera: «al principio, las celdas de la marca») y la huella de ese plano
+  (:func:`footprint_above`), hasta que la huella no cambie (**convergida**: el plano es el de la huella final). Si se
+  acaban las vueltas con la huella aún cambiando, se queda con el último plano y la última huella y lo anota
+  (``des.stockpile_not_converged``, en torno al centro de las celdas que cambiaron en la última vuelta). Mide el
+  **volumen** (:func:`footprint_volume`): ``math.fsum((z − plano)·área de celda)`` en las celdas de la huella con
+  ``z − plano > u``, como la 011. Las notas, en este orden: llega al borde, más de una zona, corona con pocas celdas
+  llanas (A2), plano limitado (A2) y no se estabiliza; las del plano y de la huella son las de la **última** vuelta.
+- :func:`share_cells` — el **reparto** de las celdas comunes de las huellas de varias marcas (RF-016-06, D-16): cada
+  celda en más de una huella va a la marca que la contiene si la contiene una sola de las que la reclaman y, si la
+  contienen varias o ninguna, a la **más próxima** de entre las que la reclaman: por la distancia exacta al conjunto de
+  celdas de la marca (:func:`design.grids.nearest_value_steps`, enteros, sobre la ventana de las marcas que se tocan),
+  que para la marca que contiene la celda es 0 (así que una sola regla da las dos); a igual distancia, la primera de la
+  lista. Da las huellas nuevas (con su volumen y su área recalculados sobre lo que les queda y su propio plano) y, por
+  cada pareja de marcas con celdas comunes, un :class:`SharedCells` con las dos marcas, el área repartida y el lugar (el
+  centro de las celdas comunes): el aviso de RF-016-06 (``des.stockpile_shared_cells``). Las máscaras de todas las marcas
+  son de **la misma ventana** (quien tiene una ventana por marca calcula las que se tocan en una ventana común).
+
 Ninguna entrada se modifica. Python puro (nivel 8), con numpy.
 """
 
@@ -45,33 +82,54 @@ from __future__ import annotations
 
 import math
 import numbers
-from collections.abc import Mapping
+from collections.abc import Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
 import numpy as np
 
+from ..core.project.model import Progress
 from ..gis.grid import Grid
+from ..gis.masks.compile import STEP_BUDGET_S
+from .grids import label_components, nearest_value_steps
 from .messages import lookup
-from .morphology import dilate
+from .morphology import dilate, fill_holes
 from .params import STOCKPILE_RANGES, StockpileParam
+from .pipeline import forward
 from .preview import Notice
 
 __all__ = [
     "BasePlane",
+    "Claim",
+    "Footprint",
+    "FootprintCut",
+    "FootprintParams",
     "PlaneParams",
+    "Shared",
+    "SharedCells",
     "SiteMessage",
     "StockpileRejected",
     "base_plane",
     "cell_slope_deg",
     "crown_of",
     "fit_plane",
+    "footprint_above",
+    "footprint_volume",
+    "grow_footprint",
+    "share_cells",
+    "share_cells_steps",
 ]
 
 _NO_CROWN_CELLS = "des.stockpile_no_crown_cells"
 _NO_TERRAIN_CROWN = "des.stockpile_no_terrain_crown"
 _CROWN_FEW_FLAT = "des.stockpile_crown_few_flat"
 _TILT_LIMITED = "des.stockpile_tilt_limited"
+_NO_CELLS = "des.stockpile_no_cells"
+_NO_TERRAIN = "des.stockpile_no_terrain"
+_AT_EDGE = "des.stockpile_footprint_at_edge"
+_SEVERAL_ZONES = "des.stockpile_several_zones"
+_NOT_CONVERGED = "des.stockpile_not_converged"
+_SHARED_CELLS = "des.stockpile_shared_cells"
 _MIN_CELLS = 3
 """Las celdas que hacen falta para determinar un plano."""
 
@@ -352,3 +410,315 @@ def base_plane(z: np.ndarray, footprint: np.ndarray, grid: Grid, params: PlanePa
             raise error.with_values(**ring) from None
         raise
     return replace(plane, notes=notes + plane.notes)
+
+
+# --- A3: la huella ---------------------------------------------------------------------------------------------------
+
+
+def _threshold(value: object) -> float:
+    """El umbral de la huella (m): un número real finito no negativo; ``ValueError`` que lo nombra si no. Lo lee la
+    detección de ``res.anthropic_presence_m`` (la 011, [0; 10] m): su rango lo comprueba ``core.params``."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Real) or not math.isfinite(float(value)) \
+            or value < 0:  # type: ignore[operator]
+        raise ValueError(f"«threshold_m» es un número finito no negativo, no {value!r}")
+    return float(value)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True, slots=True)
+class FootprintParams:
+    """Los umbrales de A3 (plan 016 §5.2.2, ``stockpile``): los de A2 (``plane``), el margen de la marca ampliada
+    (``margin_m``, m), las vueltas (``turns``) y el umbral de la huella (``threshold_m``, m: el
+    ``res.anthropic_presence_m`` de la 011, que la detección lee por su clave). **Sin valor por defecto**: los pone
+    quien resuelve los parámetros. Un valor fuera de su rango (``STOCKPILE_RANGES``; el umbral, finito y no negativo) es
+    un ``ValueError`` que lo nombra. El margen de cada marca (el campo ``margen`` de la capa) se cambia con
+    ``dataclasses.replace``."""
+
+    plane: PlaneParams
+    margin_m: float
+    turns: int
+    threshold_m: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plane, PlaneParams):
+            raise TypeError(f"los umbrales de A2 son PlaneParams, no {self.plane!r}")
+        object.__setattr__(self, StockpileParam.MARGIN.value, _check_value(StockpileParam.MARGIN.value,
+                                                                           self.margin_m))
+        object.__setattr__(self, StockpileParam.TURNS.value,
+                           _check_value(StockpileParam.TURNS.value, self.turns, integer=True))
+        object.__setattr__(self, "threshold_m", _threshold(self.threshold_m))
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class FootprintCut:
+    """La huella que corta una superficie de base de la superficie (:func:`footprint_above`): ``mask`` (las celdas de
+    la zona elegida con sus huecos rellenos), ``zones`` (las zonas conexas que tocan la marca y no quedaron dentro de la
+    huella: la elegida y las demás) y las ``notes`` de RF-016-05 (llega al borde, más de una zona), en ese orden."""
+
+    mask: np.ndarray
+    zones: int
+    notes: tuple[SiteMessage, ...]
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Footprint:
+    """La huella de un acopio con su volumen (A3): ``mask`` (las celdas de la huella, con sus huecos), ``base`` (la
+    superficie de base en toda la ventana, m: el plano evaluado en los centros de celda o la superficie de base propia),
+    ``plane`` (el :class:`BasePlane` con que se formó, o ``None`` si la base es propia, RF-016-03), ``volume_m3`` (``fsum``
+    de ``(z − base)·área de celda`` donde ``z − base`` pasa del umbral), ``area_m2`` (el área de todas las celdas de la
+    huella, huecos incluidos), ``turns`` (las vueltas que se hicieron), ``converged`` (si la huella dejó de cambiar) y
+    las ``notes`` del acopio, en el orden documentado en el módulo."""
+
+    mask: np.ndarray
+    base: np.ndarray
+    plane: BasePlane | None
+    volume_m3: float
+    area_m2: float
+    turns: int
+    converged: bool
+    notes: tuple[SiteMessage, ...] = ()
+
+
+def _centre(mask: np.ndarray, x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """El centro (la media de los centros de celda, m absolutos) de las celdas de ``mask``."""
+    return float(x[mask].mean()), float(y[mask].mean())
+
+
+def footprint_above(z: np.ndarray, base: np.ndarray, mark: np.ndarray, enlarged: np.ndarray, grid: Grid,
+                    threshold_m: float) -> FootprintCut:
+    """La huella de ``mark`` sobre la superficie de base ``base`` (A3, RF-016-02, RF-016-04, RF-016-05; con una base
+    propia, RF-016-03): la zona conexa mayor que toca la marca de las celdas de ``enlarged`` (la marca ampliada por su
+    margen) con ``z − base > threshold_m``, con sus huecos interiores rellenos, y sus notas (ver el módulo). Todo, de la
+    forma de ``grid`` (``mark`` y ``enlarged``, máscaras booleanas).
+
+    :class:`StockpileRejected` si ninguna zona toca la marca (``des.stockpile_no_cells``, con el umbral) o si en la huella
+    falta terreno (``des.stockpile_no_terrain``, con cuántas celdas y el lugar absoluto de la primera). ``ValueError`` si
+    las formas no cuadran, una máscara no es booleana o el umbral no es válido. Ninguna entrada se modifica."""
+    heights, ground = (np.asarray(array, dtype=np.float64) for array in (z, base))
+    if heights.shape != grid.shape or ground.shape != grid.shape:
+        raise ValueError(f"la superficie ({heights.shape}), la base ({ground.shape}) y la ventana ({grid.shape}) "
+                         "tienen que ser de la misma forma")
+    marked = _mask(mark, grid.shape, "la marca")
+    region = _mask(enlarged, grid.shape, "la marca ampliada")
+    limit = _threshold(threshold_m)
+    with np.errstate(invalid="ignore"):
+        above = region & ((heights - ground) > limit)
+    labels = label_components(above)
+    touched = np.unique(labels.grid[marked])
+    touched = touched[touched > 0]
+    if touched.size == 0:
+        raise StockpileRejected(_NO_CELLS, threshold=limit)
+    chosen = int(touched[int(np.argmax(labels.sizes[touched - 1]))])  # a igual tamaño, la primera en leerse
+    footprint = fill_holes(labels.grid == chosen)
+    x, y = grid.centers()
+    missing = footprint & ~(np.isfinite(heights) & np.isfinite(ground))
+    if missing.any():
+        row, col = np.argwhere(missing)[0]
+        raise StockpileRejected(_NO_TERRAIN, cells=int(missing.sum()), x=float(x[row, col]), y=float(y[row, col]))
+    notes: list[SiteMessage] = []
+    reach = np.pad(region | footprint, 1)
+    inside = (reach[1:-1, 1:-1] & reach[:-2, 1:-1] & reach[2:, 1:-1] & reach[1:-1, :-2] & reach[1:-1, 2:])
+    edge = footprint & ~inside
+    if edge.any():
+        row, col = np.argwhere(edge)[0]
+        notes.append(SiteMessage(_AT_EDGE, {"x": float(x[row, col]), "y": float(y[row, col])}))
+    outside = labels.grid[(labels.grid > 0) & ~footprint]
+    left = np.bincount(outside, minlength=labels.count + 1)
+    others = [int(label) for label in touched if label != chosen and left[label] > 0]
+    if others:
+        biggest = others[int(np.argmax([left[label] for label in others]))]
+        place = _centre((labels.grid == biggest) & ~footprint, x, y)
+        notes.append(SiteMessage(_SEVERAL_ZONES, {"zones": 1 + len(others), "x": place[0], "y": place[1]}))
+    return FootprintCut(footprint, 1 + len(others), tuple(notes))
+
+
+def footprint_volume(z: np.ndarray, base: np.ndarray, mask: np.ndarray, cell_area: float,
+                     threshold_m: float) -> float:
+    """El volumen de una huella (m³, A3, RF-016-02): ``math.fsum((z − base)·cell_area)`` en las celdas de ``mask`` con
+    ``z − base > threshold_m``, como la 011 (los huecos de la huella cuentan en su área, no en el volumen).
+    ``ValueError`` si las formas no cuadran, ``mask`` no es booleana o el área o el umbral no son válidos."""
+    heights, ground = (np.asarray(array, dtype=np.float64) for array in (z, base))
+    if heights.shape != ground.shape:
+        raise ValueError(f"la superficie ({heights.shape}) y la base ({ground.shape}) son de la misma forma")
+    counted = _mask(mask, heights.shape, "la huella")
+    area = _step(cell_area, "el área de la celda")
+    limit = _threshold(threshold_m)
+    with np.errstate(invalid="ignore"):
+        excess = heights - ground
+        counted = counted & (excess > limit)
+    return math.fsum((excess[counted] * area).tolist())
+
+
+def grow_footprint(z: np.ndarray, mark: np.ndarray, grid: Grid, params: FootprintParams) -> Footprint:
+    """El acopio de la marca ``mark`` en la ventana ``grid`` sobre la superficie ``z`` (A2 y A3 enteros, RF-016-02,
+    RF-016-04, RF-016-05, RF-016-07): hasta ``params.turns`` vueltas del plano de A2 sobre la huella de la vuelta anterior
+    (la marca, en la primera) y de la huella de ese plano (:func:`footprint_above`), hasta que la huella no cambie; el
+    volumen sobre el plano (:func:`footprint_volume`) y las notas (ver el módulo).
+
+    :class:`StockpileRejected` con el caso de A2 (la corona sin celdas o sin terreno) o de A3 (la marca sin ninguna
+    celda sobre el umbral o sin terreno en la huella): la marca no da acopio. ``ValueError`` si la rejilla no tiene celdas
+    cuadradas o ``z`` y ``mark`` no son de su forma; ``TypeError`` si ``params`` no son :class:`FootprintParams`.
+    Ninguna entrada se modifica."""
+    if not isinstance(params, FootprintParams):
+        raise TypeError(f"los parámetros de A3 son FootprintParams, no {params!r}")
+    if grid.dx != grid.dy:
+        raise ValueError(f"la rejilla de los acopios es la del proyecto, de celdas cuadradas, no {grid.dx} × {grid.dy}")
+    heights = np.asarray(z, dtype=np.float64)
+    if heights.shape != grid.shape:
+        raise ValueError(f"la superficie tiene {heights.shape} celdas y la ventana {grid.shape}")
+    marked = _mask(mark, grid.shape, "la marca")
+    enlarged = dilate(marked, params.margin_m, grid.dx)
+    current = previous = marked
+    converged = False
+    plane: BasePlane | None = None
+    ground: np.ndarray | None = None
+    cut: FootprintCut | None = None
+    turns = 0
+    for turns in range(1, params.turns + 1):
+        plane = base_plane(heights, current, grid, params.plane)
+        ground = plane.values(grid)
+        cut = footprint_above(heights, ground, marked, enlarged, grid, params.threshold_m)
+        if np.array_equal(cut.mask, current):
+            converged = True
+            break
+        previous, current = current, cut.mask
+    assert plane is not None and ground is not None and cut is not None  # params.turns ≥ 1
+    notes = cut.notes + plane.notes
+    if not converged:
+        x, y = grid.centers()
+        place = _centre(cut.mask ^ previous, x, y)
+        notes += (SiteMessage(_NOT_CONVERGED, {"turns": params.turns, "x": place[0], "y": place[1]}),)
+    return Footprint(cut.mask, ground, plane, footprint_volume(heights, ground, cut.mask, grid.cell_area,
+                                                              params.threshold_m),
+                     float(cut.mask.sum()) * grid.cell_area, turns, converged, notes)
+
+
+# --- A3: el reparto de las celdas comunes ------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Claim:
+    """Lo que una marca reclama: su ``name`` (única entre las reclamaciones), su ``mark`` (máscara de la ventana común)
+    y su :class:`Footprint` (de la misma ventana, ya formado con :func:`grow_footprint`)."""
+
+    name: str
+    mark: np.ndarray
+    footprint: Footprint
+
+
+@dataclass(frozen=True, slots=True)
+class SharedCells:
+    """Dos marcas cuyas huellas comparten celdas (RF-016-06): sus nombres (``mark``, ``other``, en el orden de las
+    reclamaciones), cuántas celdas comparten antes de repartirlas (``cells``), su área (``area_m2``) y el centro de esas
+    celdas (``x``, ``y``, m absolutos). :attr:`message` es el aviso, con las dos marcas, el área repartida y el lugar."""
+
+    mark: str
+    other: str
+    cells: int
+    area_m2: float
+    x: float
+    y: float
+
+    @property
+    def message(self) -> SiteMessage:
+        """El aviso ``des.stockpile_shared_cells`` de la pareja, completo (sus valores mandan sobre los de
+        :meth:`SiteMessage.notice`)."""
+        return SiteMessage(_SHARED_CELLS, {"mark": self.mark, "other": self.other, "area": self.area_m2,
+                                           "x": self.x, "y": self.y})
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Shared:
+    """Lo que da el reparto: las huellas (``footprints``, en el orden de las reclamaciones; el **mismo objeto** si no
+    tuvo celdas comunes, y si no, otro con su máscara, su volumen y su área sobre lo que le queda) y un
+    :class:`SharedCells` por cada pareja con celdas comunes (``shared``, por parejas en el orden de las reclamaciones)."""
+
+    footprints: tuple[Footprint, ...]
+    shared: tuple[SharedCells, ...]
+
+
+def _share_inputs(claims: Sequence[Claim], z: np.ndarray, grid: Grid, threshold_m: float
+                  ) -> tuple[tuple[Claim, ...], np.ndarray, Grid, float]:
+    found = tuple(claims)
+    if not found:
+        raise ValueError("el reparto necesita al menos una reclamación")
+    if grid.dx != grid.dy:
+        raise ValueError(f"la rejilla de los acopios es la del proyecto, de celdas cuadradas, no {grid.dx} × {grid.dy}")
+    heights = np.asarray(z, dtype=np.float64)
+    if heights.shape != grid.shape:
+        raise ValueError(f"la superficie tiene {heights.shape} celdas y la ventana {grid.shape}")
+    names = [claim.name for claim in found]
+    if len(set(names)) != len(names):
+        raise ValueError(f"los nombres de las marcas se repiten: {names}")
+    for claim in found:
+        _mask(claim.mark, grid.shape, f"la marca «{claim.name}»")
+        _mask(claim.footprint.mask, grid.shape, f"la huella de «{claim.name}»")
+    return found, heights, grid, _threshold(threshold_m)
+
+
+def share_cells_steps(claims: Sequence[Claim], z: np.ndarray, grid: Grid, threshold_m: float, *,
+                      budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """:func:`share_cells` por pasos de ``budget_s`` como mucho (la distancia exacta a cada marca, de
+    :func:`design.grids.nearest_value_steps`): el último ``Progress`` (fase ``share``) lleva el :class:`Shared`. Los
+    rechazos (``ValueError``: sin reclamaciones, nombres repetidos, máscaras que no son de la ventana) salen **en la
+    llamada**. Cerrar el generador a mitad no deja nada."""
+    return _share_run(_share_inputs(claims, z, grid, threshold_m), budget_s)
+
+
+def share_cells(claims: Sequence[Claim], z: np.ndarray, grid: Grid, threshold_m: float) -> Shared:
+    """El reparto de las celdas comunes de las huellas de ``claims`` (RF-016-06, D-16; ver el módulo), sobre la
+    superficie ``z`` de la ventana ``grid`` y con el umbral ``threshold_m`` (m) del volumen que se recalcula:
+    :func:`share_cells_steps` de una vez."""
+    last: Progress | None = None
+    for last in share_cells_steps(claims, z, grid, threshold_m):
+        pass
+    if last is None or not isinstance(last.result, Shared):  # inalcanzable: el último paso lo lleva
+        raise RuntimeError("el reparto no dio resultado")
+    return last.result
+
+
+def _share_run(prepared: tuple[tuple[Claim, ...], np.ndarray, Grid, float], budget_s: float
+               ) -> Generator[Progress, None, None]:
+    """Los pasos de :func:`share_cells_steps`."""
+    claims, heights, grid, limit = prepared
+    footprints = [claim.footprint.mask for claim in claims]
+    marks = [claim.mark for claim in claims]
+    count = np.sum(np.stack(footprints), axis=0)
+    if not (count >= 2).any():
+        yield Progress("share", 1, 1, "Sin celdas comunes que repartir",
+                       result=Shared(tuple(claim.footprint for claim in claims), ()))
+        return
+    involved = [k for k, footprint in enumerate(footprints) if (footprint & (count >= 2)).any()]
+    reach = np.logical_or.reduce([footprints[k] | marks[k] for k in involved])
+    rows, cols = np.flatnonzero(reach.any(axis=1)), np.flatnonzero(reach.any(axis=0))
+    box = (slice(int(rows[0]), int(rows[-1]) + 1), slice(int(cols[0]), int(cols[-1]) + 1))
+    zeros = np.zeros(reach[box].shape)
+    unreachable = np.iinfo(np.int64).max
+    distances = []
+    for k in involved:
+        nearest = yield from forward(nearest_value_steps(marks[k][box], zeros, grid.dx, budget_s=budget_s))
+        distances.append(np.where(nearest.cells2 >= 0, nearest.cells2, unreachable - 1))
+    claimed = np.stack([footprints[k][box] for k in involved])
+    # La marca que contiene la celda está a distancia 0, así que es la más próxima de las que la reclaman (y si la
+    # contienen varias, o ninguna, es la más próxima): una sola regla; a igual distancia, la primera de la lista.
+    owner = np.where(claimed, np.stack(distances), unreachable).argmin(axis=0)
+    shared_here = claimed.sum(axis=0) >= 2
+    kept = claimed & (~shared_here[None] | (np.arange(len(involved))[:, None, None] == owner[None]))
+    results = [claim.footprint for claim in claims]
+    for index, k in enumerate(involved):
+        if np.array_equal(kept[index], claimed[index]):
+            continue
+        mask = footprints[k].copy()
+        mask[box] = kept[index]
+        results[k] = replace(claims[k].footprint, mask=mask, area_m2=float(mask.sum()) * grid.cell_area,
+                             volume_m3=footprint_volume(heights, claims[k].footprint.base, mask, grid.cell_area,
+                                                        limit))
+    x, y = grid.centers()
+    pairs = []
+    for first, k in enumerate(involved):
+        for later in involved[first + 1:]:
+            common = footprints[k] & footprints[later]
+            if common.any():
+                place = _centre(common, x, y)
+                pairs.append(SharedCells(claims[k].name, claims[later].name, int(common.sum()),
+                                         float(common.sum()) * grid.cell_area, place[0], place[1]))
+    yield Progress("share", 1, 1, "Celdas comunes repartidas", result=Shared(tuple(results), tuple(pairs)))

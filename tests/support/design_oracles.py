@@ -23,6 +23,11 @@ después), para rejillas pequeñas (≤ 90 × 90 celdas):
   base robusto, la pendiente de cada celda y la corona **a mano**: bucles de Python sin numpy, el ajuste por las
   ecuaciones normales en **aritmética racional exacta** (``fractions``: sin redondeos ni ``lstsq``), la mediana y
   el cuantil ordenando, para comparar con ``design.stockpiles`` (RF-016-02, RF-016-07).
+- :func:`hand_dilate`, :func:`hand_zones`, :func:`hand_footprint`, :func:`hand_volume` y :func:`hand_share` (spec 016,
+  T07; plan 016 A3): la dilatación, las zonas conexas (una búsqueda en anchura), la huella con sus huecos rellenos
+  (otra, desde fuera), el volumen y el reparto de las celdas comunes **a mano**: bucles de Python sin numpy ni
+  ``design.grids`` ni ``design.morphology``, la distancia entre marcas por fuerza bruta con enteros, para comparar con
+  ``design.stockpiles`` (RF-016-02, RF-016-04, RF-016-05, RF-016-06).
 
 Convenciones: ``seed`` es la rejilla de semillas (fila 0 al norte): una celda es semilla si su cota
 es finita; ``+inf``, ``−inf`` y NaN no lo son. ``direction="up"`` es ``E_up = mín_q [s + t·d]`` y
@@ -46,14 +51,20 @@ __all__ = [
     "CHAMFER5",
     "CHAMFER_SCALE",
     "Displacement",
+    "HandFootprint",
     "HandPlane",
     "brute_force_euclidean",
     "dijkstra",
     "euclidean_displacements",
     "hand_cell_slope_deg",
     "hand_crown",
+    "hand_dilate",
+    "hand_footprint",
     "hand_plane",
+    "hand_share",
     "hand_stairs",
+    "hand_volume",
+    "hand_zones",
     "relaxation_violation",
     "seed_violation",
 ]
@@ -424,4 +435,129 @@ def hand_crown(footprint: Sequence[Sequence[bool]], cell: float, inner_m: float,
         for c in range(cols):
             nearest = min((math.hypot((r - i) * cell, (c - j) * cell) for i, j in cells), default=math.inf)
             found[r, c] = nearest <= outer_m + 1e-9 and not nearest <= inner_m + 1e-9
+    return found
+
+
+# --- La huella de un acopio y el reparto de las celdas comunes, a mano (spec 016, T07; plan 016 A3) ---------------
+
+
+def hand_dilate(mask: Sequence[Sequence[bool]], cell: float, radius_m: float) -> np.ndarray:
+    """Las celdas a no más de ``radius_m`` m de alguna de ``mask`` (centro con centro, con la tolerancia de 10⁻⁹ m del
+    disco de A1): la marca ampliada por su margen. Fuerza bruta (cada celda contra cada celda de la máscara)."""
+    rows, cols = len(mask), len(mask[0])
+    cells = [(r, c) for r in range(rows) for c in range(cols) if mask[r][c]]
+    found = np.zeros((rows, cols), dtype=bool)
+    for r in range(rows):
+        for c in range(cols):
+            found[r, c] = any(math.hypot((r - i) * cell, (c - j) * cell) <= radius_m + 1e-9 for i, j in cells)
+    return found
+
+
+def _neighbours(r: int, c: int) -> tuple[tuple[int, int], ...]:
+    return ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1))
+
+
+def hand_zones(mask: Sequence[Sequence[bool]]) -> list[tuple[tuple[int, int], ...]]:
+    """Las zonas 4-conexas de ``mask`` (cada una, sus celdas ``(fila, columna)`` en orden de lectura) en el orden de su
+    primera celda recorriendo la rejilla fila a fila. Una búsqueda en anchura: ni ``design.grids`` ni numpy."""
+    rows, cols = len(mask), len(mask[0])
+    seen = [[False] * cols for _ in range(rows)]
+    zones: list[tuple[tuple[int, int], ...]] = []
+    for r in range(rows):
+        for c in range(cols):
+            if not mask[r][c] or seen[r][c]:
+                continue
+            seen[r][c] = True
+            queue, found = [(r, c)], []
+            while queue:
+                i, j = queue.pop()
+                found.append((i, j))
+                for a, b in _neighbours(i, j):
+                    if 0 <= a < rows and 0 <= b < cols and mask[a][b] and not seen[a][b]:
+                        seen[a][b] = True
+                        queue.append((a, b))
+            zones.append(tuple(sorted(found)))
+    return zones
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class HandFootprint:
+    """La huella de :func:`hand_footprint`: ``mask`` (la zona elegida con sus huecos rellenos), ``zones`` (las zonas
+    conexas que tocan la marca y no se quedaron dentro de la huella: la elegida y las demás), ``other`` (las celdas de
+    la mayor de las demás que quedan fuera de la huella, o ``None``) y ``first_edge`` (la primera celda en orden de
+    lectura que llega al borde de la marca ampliada, o ``None``)."""
+
+    mask: np.ndarray
+    zones: int
+    other: tuple[tuple[int, int], ...] | None
+    first_edge: tuple[int, int] | None
+
+
+def hand_footprint(z: Sequence[Sequence[float]], base: Sequence[Sequence[float]], mark: Sequence[Sequence[bool]],
+                   enlarged: Sequence[Sequence[bool]], threshold: float) -> HandFootprint | None:
+    """La huella de A3 a mano (RF-016-02, RF-016-04, RF-016-05): de las celdas de ``enlarged`` con ``z − base >
+    threshold``, la zona conexa mayor (la primera si empatan) que toca ``mark``, con los huecos interiores rellenos
+    (las celdas que no son de la zona y no se alcanzan desde fuera de la rejilla sin pasar por ella). ``None`` si
+    ninguna zona toca la marca. Una celda sin dato (NaN) no está por encima de nada."""
+    rows, cols = len(z), len(z[0])
+    above = [[bool(enlarged[r][c]) and z[r][c] - base[r][c] > threshold for c in range(cols)] for r in range(rows)]
+    touching = [zone for zone in hand_zones(above) if any(mark[r][c] for r, c in zone)]
+    if not touching:
+        return None
+    chosen = max(touching, key=len)  # ante un empate, la primera
+    inside = set(chosen)
+    outside = {(-1, -1)}
+    queue = [(-1, -1)]
+    while queue:
+        i, j = queue.pop()
+        for a, b in _neighbours(i, j):
+            if -1 <= a <= rows and -1 <= b <= cols and (a, b) not in outside and (a, b) not in inside:
+                outside.add((a, b))
+                queue.append((a, b))
+    found = np.array([[(r, c) not in outside for c in range(cols)] for r in range(rows)])
+    rest = [tuple(cell for cell in zone if not found[cell]) for zone in touching if zone is not chosen]
+    rest = [cells for cells in rest if cells]
+    region = [[bool(enlarged[r][c]) or bool(found[r, c]) for c in range(cols)] for r in range(rows)]
+
+    def outer(i: int, j: int) -> bool:
+        return not (0 <= i < rows and 0 <= j < cols and region[i][j])
+
+    edge = next(((r, c) for r in range(rows) for c in range(cols)
+                 if found[r, c] and any(outer(a, b) for a, b in _neighbours(r, c))), None)
+    return HandFootprint(found, 1 + len(rest), max(rest, key=len) if rest else None, edge)
+
+
+def hand_volume(z: Sequence[Sequence[float]], base: Sequence[Sequence[float]], mask: Sequence[Sequence[bool]],
+                cell_area: float, threshold: float) -> float:
+    """El volumen de A3 a mano (RF-016-02): ``fsum`` de ``(z − base)·área de celda`` en las celdas de ``mask`` donde
+    ``z − base > threshold``, con un bucle de Python."""
+    rows, cols = len(z), len(z[0])
+    return math.fsum((z[r][c] - base[r][c]) * cell_area for r in range(rows) for c in range(cols)
+                     if mask[r][c] and z[r][c] - base[r][c] > threshold)
+
+
+def hand_share(footprints: Sequence[Sequence[Sequence[bool]]], marks: Sequence[Sequence[Sequence[bool]]]
+               ) -> list[np.ndarray]:
+    """El reparto de las celdas comunes de A3 a mano (RF-016-06): cada celda en las huellas de varias marcas va a la
+    marca que la contiene si es una sola y, si la contienen varias o ninguna, a la **más próxima** de entre las que
+    la contienen (o, si ninguna, de entre las que tienen la celda en su huella), por la distancia exacta al conjunto
+    de celdas de la marca (el cuadrado de la distancia entre centros, en celdas², con enteros); a igual distancia,
+    la primera. Devuelve las huellas nuevas, en el orden dado. Fuerza bruta."""
+    rows, cols = len(footprints[0]), len(footprints[0][0])
+    mark_cells = [[(r, c) for r in range(rows) for c in range(cols) if mark[r][c]] for mark in marks]
+
+    def distance2(k: int, r: int, c: int) -> int | float:
+        return min(((r - i) ** 2 + (c - j) ** 2 for i, j in mark_cells[k]), default=math.inf)
+
+    found = [np.array(footprint, dtype=bool) for footprint in footprints]
+    for r in range(rows):
+        for c in range(cols):
+            claimants = [k for k in range(len(footprints)) if footprints[k][r][c]]
+            if len(claimants) < 2:
+                continue
+            containing = [k for k in claimants if marks[k][r][c]]
+            pool = containing if containing else claimants
+            owner = min(pool, key=lambda k: (distance2(k, r, c), k)) if len(pool) > 1 else pool[0]
+            for k in claimants:
+                found[k][r, c] = k == owner
     return found
