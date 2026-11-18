@@ -28,6 +28,9 @@ después), para rejillas pequeñas (≤ 90 × 90 celdas):
   (otra, desde fuera), el volumen y el reparto de las celdas comunes **a mano**: bucles de Python sin numpy ni
   ``design.grids`` ni ``design.morphology``, la distancia entre marcas por fuerza bruta con enteros, para comparar con
   ``design.stockpiles`` (RF-016-02, RF-016-04, RF-016-05, RF-016-06).
+- :func:`hand_layers` (spec 016, T09; plan 016 A5): la base, el espesor ``máx(z − base, 0)``, el terreno sin acopios
+  ``mín(z, base)``, la superficie y el volumen de las celdas de una huella **a mano**, un bucle de Python por celda
+  con ``fsum``, para comparar con las bases y los espesores de ``design.stockpiles`` (RF-016-01, RF-016-09).
 
 Convenciones: ``seed`` es la rejilla de semillas (fila 0 al norte): una celda es semilla si su cota
 es finita; ``+inf``, ``−inf`` y NaN no lo son. ``direction="up"`` es ``E_up = mín_q [s + t·d]`` y
@@ -52,6 +55,7 @@ __all__ = [
     "CHAMFER_SCALE",
     "Displacement",
     "HandFootprint",
+    "HandLayers",
     "HandPlane",
     "brute_force_euclidean",
     "dijkstra",
@@ -60,6 +64,7 @@ __all__ = [
     "hand_crown",
     "hand_dilate",
     "hand_footprint",
+    "hand_layers",
     "hand_plane",
     "hand_share",
     "hand_stairs",
@@ -561,3 +566,37 @@ def hand_share(footprints: Sequence[Sequence[Sequence[bool]]], marks: Sequence[S
             for k in claimants:
                 found[k][r, c] = k == owner
     return found
+
+
+@dataclass(frozen=True, slots=True)
+class HandLayers:
+    """Lo que da :func:`hand_layers`, por celda ``(fila, columna)`` de la huella: ``base``, ``thickness`` (``máx(z −
+    base, 0)``), ``ground`` (``mín(z, base)``) y ``surface`` (``z``); ``volume`` (m³), el volumen de la huella (las
+    celdas que pasan del umbral) y ``thickness_max`` (m)."""
+
+    base: dict[tuple[int, int], float]
+    thickness: dict[tuple[int, int], float]
+    ground: dict[tuple[int, int], float]
+    surface: dict[tuple[int, int], float]
+    volume: float
+    thickness_max: float
+
+
+def hand_layers(z: Sequence[Sequence[float]], base: Sequence[Sequence[float]], mask: Sequence[Sequence[bool]],
+                cell_area: float, threshold: float) -> HandLayers:
+    """A5 a mano (RF-016-01, RF-016-09): en cada celda de ``mask`` (la huella), la base, el espesor ``máx(z − base, 0)``
+    (nunca negativo: donde el terreno queda bajo la base, 0), el terreno sin acopios ``mín(z, base)`` y la superficie
+    ``z``, y el volumen de la huella (``fsum`` de ``(z − base)·área de celda`` donde ``z − base > threshold``, como la
+    011). Un bucle de Python por celda."""
+    layers: tuple[dict[tuple[int, int], float], ...] = ({}, {}, {}, {})
+    for r, row in enumerate(z):
+        for c, level in enumerate(row):
+            if not mask[r][c]:
+                continue
+            floor = base[r][c]
+            layers[0][r, c] = floor
+            layers[1][r, c] = level - floor if level - floor > 0.0 else 0.0
+            layers[2][r, c] = level if level < floor else floor
+            layers[3][r, c] = level
+    volume = math.fsum((z[r][c] - base[r][c]) * cell_area for r, c in layers[1] if z[r][c] - base[r][c] > threshold)
+    return HandLayers(*layers, volume, max(layers[1].values(), default=0.0))

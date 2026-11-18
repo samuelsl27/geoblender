@@ -2,8 +2,9 @@
 """La detección de acopios: el plano de base robusto y su límite de inclinación (A2, spec 016, T06; RF-016-02,
 RF-016-04, RF-016-05, RF-016-07), la huella iterativa, sus avisos y el reparto de las celdas comunes (A3, T07;
 RF-016-02, RF-016-04, RF-016-05, RF-016-06) y los candidatos sin marca con la regla de identidad al repetir (A4, T08;
-RF-016-08, RF-016-10); plan 016 A2, A3, A4, §5.2.2, §7.1, §7.3; D-3, D-10, D-16, D-17, D-18, D-23. Las demás piezas (las
-bases, los espesores y el terreno sin acopios) las añade T09 a este módulo.
+RF-016-08, RF-016-10) y, de principio a fin, las bases, los espesores y el terreno sin acopios por material con la base
+propia de una marca (A5 y la detección entera, T09; RF-016-01, RF-016-03, RF-016-09); plan 016 A2 a A5, §5.2.2, §5.2.3,
+§7.1, §7.3; D-3, D-10, D-16, D-17, D-18, D-19, D-20, D-23.
 
 **A2.** Sobre la ventana de una marca (una rejilla pequeña del proyecto, en coordenadas absolutas float64), con ``H`` la
 huella (al principio, las celdas de la marca):
@@ -104,6 +105,34 @@ de la 011 tienen las mismas celdas solo si leen el mismo):
   más celdas comparte (a igualdad, el candidato nuevo y después el anterior de índice menor). Función pura sobre las
   celdas de cada huella en la rejilla entera (:attr:`Candidate.cells`).
 
+**A5 y la detección de principio a fin** (T09; RF-016-01, RF-016-03, RF-016-09; plan 016 A5, §5.2.3, §5.3.1; ADR-0031 §3;
+P-4, P-5): :class:`StockpileJob` es todo lo leído (la rejilla, la superficie, las marcas con sus celdas, las superficies
+de base propias, los umbrales ya resueltos y, si se piden los candidatos, el perímetro; nada del proyecto) y
+:func:`detect_steps` (o :func:`detect_stockpiles`, de una vez) da el :class:`StockpileOutcome`:
+
+- por **marca**, en su ventana de trabajo (A0: :func:`mark_window`), A2 y A3 (:func:`grow_footprint`) o, con una **base
+  propia** (RF-016-03, D-20), la huella sobre esa superficie sin corona, ajuste ni límite de inclinación
+  (:func:`footprint_above`) y su nota de qué superficie es (:attr:`Stockpile.base_surface`); las marcas que A2 o A3
+  rechazan (RF-016-04) salen en :attr:`StockpileOutcome.rejected` con su aviso y no se registran;
+- el **reparto** de las celdas comunes (:func:`share_cells`, RF-016-06) entre las marcas cuyas huellas se tocan, en una
+  ventana común, con las marcas ordenadas **por clave** (a igual distancia gana la menor: el resultado no depende del
+  orden en que llegan) y el aviso de cada pareja en las notas de los dos acopios (el resumen lo cuenta una vez);
+- los **candidatos** sin marca (A4, si se piden), con las celdas de las marcas (también las rechazadas) y de las huellas
+  repartidas como celdas con marca, para que una marca rechazada no vuelva como candidata;
+- **A5**, por acopio y solo en las celdas de su huella (en índices de la rejilla entera, ordenados): la **base** (el plano
+  en esas celdas o la superficie de base propia), el **espesor** ``máx(z − base, 0)`` (RF-016-01: nunca negativo, y el
+  techo es la base más el espesor donde la superficie no baja de la base), el **terreno sin acopios** ``mín(z, base)``
+  (P-5: fuera de las huellas es la superficie de la operación, que ya es su entrada) y la **superficie** con que se
+  detectó (``z``); el volumen vuelve a medirse sobre esos mismos valores (``fsum`` donde ``z − base`` pasa del umbral:
+  la suma del espesor por el área de celda donde pasa de ``res.anthropic_presence_m`` **es** el volumen), el área, el
+  espesor máximo, la huella en tramos (:func:`footprint_runs`) y el plano en su centro (cota, pendiente en %, azimut);
+- **por material** (D-19): la base y el espesor de los acopios de un material como rejillas dispersas, con NaN fuera de
+  sus huellas (:meth:`StockpileOutcome.base_grid` y :meth:`StockpileOutcome.thickness_grid`; también las del terreno
+  sin acopios y de la superficie, de todas las huellas), que quien escribe los datos (T13) monta de los índices y los
+  valores de cada acopio, sin tener todas las rejillas enteras a la vez;
+- las **cifras** CALCULADO de la detección (``des.stk_*``, :func:`design.provenance.stockpile_figures`) y los **avisos** en
+  un orden estable: los acopios rechazados, los de cada acopio (A2 y A3, y el reparto) y el de cada pareja, una vez.
+
 Ninguna entrada se modifica. Python puro (nivel 8), con numpy.
 """
 
@@ -111,13 +140,14 @@ from __future__ import annotations
 
 import math
 import numbers
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
 import numpy as np
 
 from ..core.project.model import Progress
+from ..core.provenance.figures import FigureSpec
 from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
 from .grids import label_components, label_components_steps, nearest_value_steps
@@ -127,6 +157,7 @@ from .params import STOCKPILE_RANGES, StockpileParam
 from .pipeline import forward
 from .platform import work_window
 from .preview import Notice
+from .provenance import StockpileFigures, entity_figure_scope, stockpile_figures
 from .seeds import pace_progress
 
 __all__ = [
@@ -139,21 +170,30 @@ __all__ = [
     "FootprintCut",
     "FootprintParams",
     "PlaneParams",
+    "RejectedMark",
     "Shared",
     "SharedCells",
     "SiteMessage",
+    "Stockpile",
+    "StockpileJob",
+    "StockpileMark",
+    "StockpileOutcome",
     "StockpileRejected",
     "base_plane",
     "candidates_steps",
     "carry_decisions",
     "cell_slope_deg",
     "crown_of",
+    "detect_steps",
+    "detect_stockpiles",
     "find_candidates",
     "fit_plane",
     "footprint_above",
+    "footprint_runs",
     "footprint_volume",
     "grow_footprint",
     "mark_window",
+    "runs_cells",
     "share_cells",
     "share_cells_steps",
     "window_grid",
@@ -1017,3 +1057,575 @@ def carry_decisions(new: Sequence[np.ndarray], previous: Sequence[np.ndarray]) -
             kept[i] = j
             used.add(j)
     return tuple(kept)
+
+
+# --- A5: la detección de principio a fin (bases, espesores y terreno sin acopios) ----------------------------------------
+
+
+def _columns(value: object) -> int:
+    """El número de columnas de la rejilla: un entero positivo; ``ValueError`` si no."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral) or value < 1:
+        raise ValueError(f"el número de columnas de la rejilla es un entero positivo, no {value!r}")
+    return int(value)
+
+
+def runs_cells(runs: np.ndarray, ncols: int) -> np.ndarray:
+    """Las celdas (``fila · ncols + columna``, ``int64``) de una huella dada en tramos (:func:`footprint_runs`), en el orden
+    de los tramos. ``ValueError`` si ``runs`` no es un array de enteros de la forma ``(n, 3)``, un tramo está vacío o al
+    revés, o sale de su fila (``0 ≤ primera < final ≤ ncols``)."""
+    width = _columns(ncols)
+    found = np.asarray(runs)
+    if found.ndim != 2 or found.shape[1] != 3 or found.dtype.kind not in "iu":
+        raise ValueError("los tramos de una huella son un array de enteros de la forma (n, 3): fila, primera columna y "
+                         "columna final (excluida)")
+    found = found.astype(np.int64, copy=False)
+    rows, begin, end = found[:, 0], found[:, 1], found[:, 2]
+    if (rows < 0).any() or (begin < 0).any() or (begin >= end).any() or (end > width).any():
+        raise ValueError(f"un tramo va de 0 ≤ primera < final ≤ {width} en una fila que no es negativa")
+    lengths = end - begin
+    total = int(lengths.sum())
+    shift = np.repeat(np.cumsum(lengths) - lengths, lengths)
+    return np.repeat(rows * width + begin, lengths) + (np.arange(total, dtype=np.int64) - shift)
+
+
+def footprint_runs(cells: np.ndarray, ncols: int) -> np.ndarray:
+    """La huella de ``cells`` (celdas ``fila · ncols + columna`` de la rejilla entera) **en tramos**, un tramo por cada
+    serie de celdas contiguas de una fila: un array ``int64`` de la forma ``(n, 3)`` de ``(fila, primera columna, columna
+    final excluida)``, en el orden de lectura (es lo que guarda la tabla de acopios; :func:`runs_cells` es su inversa).
+    ``ValueError`` si ``cells`` no es un array de 1 dimensión de enteros o ``ncols`` no es un entero positivo."""
+    width = _columns(ncols)
+    found = _footprint_cells(cells, "las celdas de la huella")
+    if found.size == 0:
+        return np.zeros((0, 3), dtype=np.int64)
+    rows, cols = np.divmod(found, width)
+    breaks = np.flatnonzero((rows[1:] != rows[:-1]) | (cols[1:] != cols[:-1] + 1)) + 1
+    first = np.concatenate(([0], breaks))
+    last = np.concatenate((breaks, [found.size])) - 1
+    return np.column_stack((rows[first], cols[first], cols[last] + 1)).astype(np.int64, copy=False)
+
+
+def _label(value: object, what: str) -> str:
+    """``value`` como texto con algo (sin espacios de más en los extremos); ``TypeError`` si no es un texto y
+    ``ValueError`` si está en blanco."""
+    if not isinstance(value, str):
+        raise TypeError(f"{what} es un texto, no {value!r}")
+    if not value.strip():
+        raise ValueError(f"{what} no puede estar en blanco")
+    return value.strip()
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class StockpileMark:
+    """Una marca de acopio ya leída (RF-016-02, RF-016-03, D-19, D-20): su ``key`` (la clave del acopio: el ``nombre`` de
+    la marca o su ``fid``; única en el trabajo), sus ``cells`` (celdas de la rejilla entera como ``fila · columnas +
+    columna``, ``int64``, ordenadas y sin repetir: las de la geometría de la marca, rasterizadas), su ``name`` (el que se
+    muestra; por defecto, la clave), su ``margin_m`` (el campo ``margen``: ``None``, el de la detección), su
+    ``material`` (``None``, sin material) y su ``base`` (``None``, el plano de su corona; si no, el nombre de la superficie
+    de :attr:`StockpileJob.bases` que le sirve de base). ``ValueError`` o ``TypeError`` (errores del programa) si la clave
+    o el nombre están en blanco, no tiene celdas o no son enteros no negativos, el margen está fuera de su rango o el
+    material o la base están en blanco."""
+
+    key: str
+    cells: np.ndarray
+    name: str | None = None
+    margin_m: float | None = None
+    material: str | None = None
+    base: str | None = None
+
+    def __post_init__(self) -> None:
+        key = _label(self.key, "la clave de una marca")
+        object.__setattr__(self, "key", key)
+        cells = _footprint_cells(self.cells, f"las celdas de la marca «{key}»")
+        if cells.size == 0 or int(cells[0]) < 0:
+            raise ValueError(f"la marca «{key}» tiene que tener celdas, todas con un índice no negativo")
+        object.__setattr__(self, "cells", cells)
+        object.__setattr__(self, "name",
+                           key if self.name is None else _label(self.name, f"el nombre de la marca «{key}»"))
+        if self.margin_m is not None:
+            object.__setattr__(self, StockpileParam.MARGIN.value,
+                               _check_value(StockpileParam.MARGIN.value, self.margin_m))
+        for attribute, what in (("material", "el material"), ("base", "la base")):
+            value = getattr(self, attribute)
+            if value is not None:
+                object.__setattr__(self, attribute, _label(value, f"{what} de la marca «{key}»"))
+
+
+def _finite_surface(value: object, shape: tuple[int, int], what: str) -> np.ndarray:
+    """``value`` como array ``float64`` de la forma ``shape`` sin infinitos (NaN es «sin dato»); ``ValueError`` si no."""
+    found = np.asarray(value, dtype=np.float64)
+    if found.shape != shape:
+        raise ValueError(f"{what} tiene {found.shape} celdas y la rejilla {shape}")
+    if np.isinf(found).any():
+        raise ValueError(f"{what} tiene un valor infinito: lo que no se mide es NaN")
+    return found
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class StockpileJob:
+    """Lo que necesita calcular una detección de acopios, ya leído y sin proyecto (plan 016 §5.3.1; lo que ``PlatformJob``
+    a la 015): su ``name`` y su ``code`` (``STK-001``; para las cifras), la ``grid`` (del proyecto, de celdas cuadradas),
+    la ``surface`` (m, float64; NaN, sin dato) sobre la que se detecta, las ``marks`` (:class:`StockpileMark`: sin celdas
+    en común), los umbrales de huella ya resueltos (``params``: los de A2 y A3, con el umbral de la 011 y el margen por
+    defecto), las superficies de base propias por nombre (``bases``: cada una de la rejilla entera; las usan las marcas
+    con ``base``, RF-016-03) y, si se buscan también los candidatos sin marca (RF-016-08), sus umbrales (``candidates``: los
+    de su huella son los de ``params``) y el perímetro de actuación (``perimeter``, máscara booleana de la rejilla entera).
+
+    ``ValueError`` o ``TypeError`` (errores del programa, no del usuario: eso lo rechaza antes la preparación; y
+    ``GisError`` ``gis.dataset_name_invalid`` si el nombre no da ningún nombre de dato) si algo
+    no es de la forma o del tipo que dice, una superficie tiene un infinito, dos marcas comparten una clave o una celda,
+    una marca nombra una base que no está, se piden candidatos sin perímetro, no hay ni marcas ni candidatos o los
+    candidatos traen otros umbrales de huella que ``params``."""
+
+    name: str
+    code: str
+    grid: Grid
+    surface: np.ndarray
+    marks: tuple[StockpileMark, ...]
+    params: FootprintParams
+    bases: Mapping[str, np.ndarray] | None = None
+    candidates: CandidateParams | None = None
+    perimeter: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _label(self.name, "el nombre de una detección"))
+        entity_figure_scope(self.name, self.code)  # el nombre da un dato y el código es el de una entidad (si no, falla)
+        if not isinstance(self.grid, Grid):
+            raise TypeError(f"la rejilla de los acopios es una gis.Grid, no {self.grid!r}")
+        if self.grid.dx != self.grid.dy:
+            raise ValueError(f"la rejilla de los acopios es la del proyecto, de celdas cuadradas, no {self.grid.dx} × "
+                             f"{self.grid.dy}")
+        if not isinstance(self.params, FootprintParams):
+            raise TypeError(f"los umbrales de la huella son FootprintParams, no {self.params!r}")
+        shape = self.grid.shape
+        object.__setattr__(self, "surface", _finite_surface(self.surface, shape, "la superficie"))
+        marks = tuple(self.marks)
+        for mark in marks:
+            if not isinstance(mark, StockpileMark):
+                raise TypeError(f"las marcas de una detección son StockpileMark, no {mark!r}")
+        object.__setattr__(self, "marks", marks)
+        bases = {_label(name, "el nombre de una base"): _finite_surface(found, shape, f"la base «{name}»")
+                 for name, found in dict({} if self.bases is None else self.bases).items()}
+        object.__setattr__(self, "bases", MappingProxyType(bases))
+        self._check_marks(marks, bases)
+        if self.candidates is not None:
+            if not isinstance(self.candidates, CandidateParams):
+                raise TypeError(f"los umbrales de los candidatos son CandidateParams, no {self.candidates!r}")
+            if self.candidates.footprint != self.params:
+                raise ValueError("los candidatos se forman con los mismos umbrales de huella que las marcas "
+                                 "(el margen de un candidato es el de la detección)")
+            if self.perimeter is None:
+                raise ValueError("buscar candidatos necesita el perímetro de actuación")
+            object.__setattr__(self, "perimeter", _mask(self.perimeter, shape, "el perímetro"))
+        elif not marks:
+            raise ValueError("una detección sin marcas ni candidatos no tiene nada que detectar")
+
+    def _check_marks(self, marks: tuple[StockpileMark, ...], bases: Mapping[str, np.ndarray]) -> None:
+        """Las marcas del trabajo: claves únicas, celdas dentro de la rejilla, bases que están y ninguna celda en dos
+        marcas."""
+        size = self.grid.nrows * self.grid.ncols
+        keys = [mark.key for mark in marks]
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"las claves de las marcas se repiten: {keys}")
+        for mark in marks:
+            if int(mark.cells[-1]) >= size:
+                raise ValueError(f"la marca «{mark.key}» tiene celdas fuera de la rejilla ({size} celdas)")
+            if mark.base is not None and mark.base not in bases:
+                raise ValueError(f"la marca «{mark.key}» pide la base «{mark.base}», que no está entre las dadas: "
+                                 f"{', '.join(bases) or 'ninguna'}")
+        if not marks:
+            return
+        every = np.concatenate([mark.cells for mark in marks])
+        owners = np.repeat(np.arange(len(marks)), [mark.cells.size for mark in marks])
+        order = np.argsort(every, kind="stable")
+        twice = np.flatnonzero(every[order][1:] == every[order][:-1])
+        if twice.size:
+            first, second = owners[order][twice[0]], owners[order][twice[0] + 1]
+            raise ValueError(f"las marcas «{marks[first].key}» y «{marks[second].key}» comparten celdas: la "
+                             "preparación las rechaza antes de calcular")
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Stockpile:
+    """Un acopio detectado: una fila de la tabla de acopios de la detección (plan 016 §5.2.3; ADR-0031 §1) y sus datos
+    dispersos. ``key`` y ``name`` (los de su marca), ``material`` (``None``, sin material) y ``base_surface`` (el nombre de
+    la superficie de la que sale su base propia, RF-016-03, o ``None``: su base es el ``plane`` de su corona).
+
+    ``cells`` son las celdas de su huella en la rejilla entera (``fila · ncols + columna``, ``int64``, ordenadas) y, uno
+    por celda y en ese orden, ``base``, ``thickness`` (``máx(z − base, 0)``, nunca negativo: RF-016-01), ``ground`` (el
+    terreno sin acopios, ``mín(z, base)``) y ``surface`` (``z``), en m. ``area_m2`` es el de todas las celdas de la huella
+    (también los huecos rellenos), ``volume_m3`` la suma de ``(z − base)·área de celda`` donde pasa del umbral de huella
+    (y es la del espesor por el área donde éste pasa del umbral: la presencia de la 011), ``thickness_max_m`` el mayor
+    espesor, ``turns`` y ``converged`` las vueltas de A2 y A3 (1 y ``True`` con base propia) y ``plane`` el
+    :class:`BasePlane` (``None`` con base propia). ``(x, y)`` es el centro de la huella (m absolutos): el lugar de «ir a».
+    ``notes`` son los avisos y notas del acopio (:class:`design.preview.Notice`, con su marca y su lugar), en el orden de
+    A3, A2 y el reparto, y ``ncols`` las columnas de la rejilla entera (para :attr:`runs`)."""
+
+    key: str
+    name: str
+    material: str | None
+    base_surface: str | None
+    cells: np.ndarray
+    base: np.ndarray
+    thickness: np.ndarray
+    ground: np.ndarray
+    surface: np.ndarray
+    plane: BasePlane | None
+    area_m2: float
+    volume_m3: float
+    thickness_max_m: float
+    turns: int
+    converged: bool
+    x: float
+    y: float
+    ncols: int
+    notes: tuple[Notice, ...] = ()
+
+    @property
+    def runs(self) -> np.ndarray:
+        """La huella en tramos (:func:`footprint_runs`): ``(fila, primera columna, columna final excluida)``."""
+        return footprint_runs(self.cells, self.ncols)
+
+    @property
+    def plane_level_m(self) -> float | None:
+        """La cota del plano en el centro de la huella (m); ``None`` con base propia."""
+        return None if self.plane is None else float(self.plane.at(self.x, self.y))
+
+    @property
+    def plane_slope_percent(self) -> float | None:
+        """La pendiente del plano (%); ``None`` con base propia."""
+        return None if self.plane is None else self.plane.slope_percent
+
+    @property
+    def plane_azimuth_deg(self) -> float | None:
+        """El azimut de la máxima pendiente del plano (°, desde el norte, en sentido horario); ``None`` con base
+        propia."""
+        return None if self.plane is None else self.plane.azimuth_deg
+
+    @property
+    def plane_tilt_deg(self) -> float | None:
+        """La inclinación del plano (°; la limitada, si lo estaba); ``None`` con base propia."""
+        return None if self.plane is None else self.plane.tilt_deg
+
+
+@dataclass(frozen=True, slots=True)
+class RejectedMark:
+    """Una marca que no da acopio (RF-016-04): su ``key``, su ``name`` y el aviso con su caso y su lugar (``notice``: un
+    ``des.stockpile_*`` con la marca, ``x`` e ``y``). No se registra ni sale en las cifras."""
+
+    key: str
+    name: str
+    notice: Notice
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class StockpileOutcome:
+    """La detección de una superficie (A2 a A5; RF-016-01, RF-016-02, RF-016-03, RF-016-06, RF-016-09): ``stockpiles``
+    (los acopios que se registran, en el orden de las marcas del trabajo), ``rejected`` (las marcas que no dan acopio,
+    en su orden), ``shared`` (una :class:`SharedCells` por pareja de acopios que se repartieron celdas, con las **claves**
+    de sus marcas), ``candidates`` (los candidatos sin marca, o ``None`` si no se pidieron), las ``figures`` CALCULADO
+    (``des.stk_*``) y los ``notices`` en orden estable: los acopios rechazados, los avisos de cada acopio (A3, A2) y, la
+    primera vez que se les llega, los del reparto (cada pareja, una vez).
+
+    Los datos dispersos de la detección (P-4, P-5) los montan, de los índices y los valores de cada acopio,
+    :meth:`base_grid` y :meth:`thickness_grid` (por material: D-19), :meth:`ground_grid` (el terreno sin acopios, solo en
+    las huellas: fuera de ellas es la superficie de la operación) y :meth:`surface_grid` (la superficie con que se
+    detectó, solo en las huellas): rejillas enteras con NaN fuera de las huellas."""
+
+    name: str
+    code: str
+    grid: Grid
+    stockpiles: tuple[Stockpile, ...]
+    rejected: tuple[RejectedMark, ...]
+    shared: tuple[SharedCells, ...]
+    candidates: Candidates | None
+    figures: tuple[FigureSpec, ...]
+    notices: tuple[Notice, ...]
+
+    @property
+    def count(self) -> int:
+        """Los acopios registrados."""
+        return len(self.stockpiles)
+
+    @property
+    def materials(self) -> tuple[str | None, ...]:
+        """Los materiales de los acopios, cada uno una vez y en el orden en que aparecen (``None``: sin material)."""
+        return tuple(dict.fromkeys(item.material for item in self.stockpiles))
+
+    def _scatter(self, found: Iterable[tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
+        grid = np.full(self.grid.shape, np.nan)
+        flat = grid.reshape(-1)
+        for cells, values in found:
+            flat[cells] = values
+        return grid
+
+    def _of_material(self, material: str | None) -> tuple[Stockpile, ...]:
+        if material not in self.materials:
+            raise ValueError(f"ningún acopio de la detección es del material {material!r}: son "
+                             f"{', '.join(repr(found) for found in self.materials) or 'ninguno'}")
+        return tuple(item for item in self.stockpiles if item.material == material)
+
+    def base_grid(self, material: str | None) -> np.ndarray:
+        """La base de los acopios del ``material`` (m): una rejilla entera nueva con NaN fuera de sus huellas
+        (``stockpile_base``). ``ValueError`` si ningún acopio es de ese material."""
+        return self._scatter((item.cells, item.base) for item in self._of_material(material))
+
+    def thickness_grid(self, material: str | None) -> np.ndarray:
+        """El espesor de los acopios del ``material`` (m, ≥ 0): una rejilla entera nueva con NaN fuera de sus huellas
+        (``stockpile_thickness``). ``ValueError`` si ningún acopio es de ese material."""
+        return self._scatter((item.cells, item.thickness) for item in self._of_material(material))
+
+    def ground_grid(self) -> np.ndarray:
+        """El terreno sin acopios en las huellas de todos los acopios (m): ``mín(z, base)``, con NaN fuera de ellas
+        (``stockpile_ground``)."""
+        return self._scatter((item.cells, item.ground) for item in self.stockpiles)
+
+    def surface_grid(self) -> np.ndarray:
+        """La superficie con que se detectó, en las huellas de todos los acopios (m), con NaN fuera de ellas
+        (``stockpile_surface``)."""
+        return self._scatter((item.cells, item.surface) for item in self.stockpiles)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _Grown:
+    """Una marca formada, mientras dura la detección: la marca, su ventana de trabajo, su huella de esa ventana (con su
+    plano y sus notas) y las celdas de la huella en la rejilla entera (que el reparto puede reducir)."""
+
+    mark: StockpileMark
+    window: tuple[slice, slice]
+    footprint: Footprint
+    cells: np.ndarray
+
+
+def _window_cells(mask: np.ndarray, window: tuple[slice, slice], ncols: int) -> np.ndarray:
+    """Las celdas de ``mask`` (de ``window``) en la rejilla entera de ``ncols`` columnas: ``fila · ncols + columna``,
+    ``int64``, en el orden de lectura (que es el orden de los índices)."""
+    rows, cols = np.nonzero(mask)
+    return (rows.astype(np.int64) + window[0].start) * ncols + (cols.astype(np.int64) + window[1].start)
+
+
+def _cells_mask(cells: np.ndarray, window: tuple[slice, slice], ncols: int) -> np.ndarray:
+    """La máscara de ``window`` con las celdas ``cells`` de la rejilla entera (todas dentro de la ventana)."""
+    rows, cols = np.divmod(cells, ncols)
+    mask = np.zeros((window[0].stop - window[0].start, window[1].stop - window[1].start), dtype=bool)
+    mask[rows - window[0].start, cols - window[1].start] = True
+    return mask
+
+
+def _centre_of(cells: np.ndarray, grid: Grid) -> tuple[float, float]:
+    """El centro (m absolutos) de las celdas ``cells`` de la rejilla entera: la media de sus centros de celda, con la
+    fórmula de :meth:`gis.grid.Grid.centers`."""
+    rows, cols = np.divmod(cells, grid.ncols)
+    return (float((grid.west + (cols + 0.5) * grid.dx).mean()), float((grid.north - (rows + 0.5) * grid.dy).mean()))
+
+
+def _own_base_footprint(z: np.ndarray, base: np.ndarray, mark: np.ndarray, grid: Grid, params: FootprintParams
+                        ) -> Footprint:
+    """La huella de ``mark`` sobre una **superficie de base propia** (RF-016-03, D-20): una sola vuelta de A3 sobre
+    ``base`` (:func:`footprint_above`), sin corona, ajuste ni límite de inclinación; ni plano ni más notas que las de la
+    huella."""
+    enlarged = dilate(mark, params.margin_m, grid.dx)
+    cut = footprint_above(z, base, mark, enlarged, grid, params.threshold_m)
+    return Footprint(cut.mask, base, None, footprint_volume(z, base, cut.mask, grid.cell_area, params.threshold_m),
+                     float(cut.mask.sum()) * grid.cell_area, 1, True, cut.notes)
+
+
+def _mark_units(job: StockpileJob) -> Generator[None, None, list[_Grown | RejectedMark]]:
+    """Las unidades de la primera parte de :func:`detect_steps`: una por marca, A2 y A3 (o la huella sobre su base propia)
+    en su ventana de trabajo (A0). Da, en el orden del trabajo, la marca formada o su rechazo."""
+    grid, found = job.grid, []
+    for mark in job.marks:
+        rows, cols = np.divmod(mark.cells, grid.ncols)
+        params = job.params if mark.margin_m is None else replace(job.params, margin_m=mark.margin_m)
+        window = _box_window(slice(int(rows.min()), int(rows.max()) + 1), slice(int(cols.min()), int(cols.max()) + 1),
+                             grid, params)
+        place = window_grid(grid, window)
+        inside = np.zeros(place.shape, dtype=bool)
+        inside[rows - window[0].start, cols - window[1].start] = True
+        try:
+            if mark.base is None:
+                footprint = grow_footprint(job.surface[window], inside, place, params)
+            else:
+                footprint = _own_base_footprint(job.surface[window], job.bases[mark.base][window], inside, place,
+                                                params)
+        except StockpileRejected as refused:
+            x, y = _centre_of(mark.cells, grid)
+            found.append(RejectedMark(mark.key, mark.name, refused.message.notice(mark.name, x, y)))
+        else:
+            found.append(_Grown(mark, window, footprint, _window_cells(footprint.mask, window, grid.ncols)))
+        yield
+    return found
+
+
+def _clusters(formed: Sequence[_Grown]) -> list[list[int]]:
+    """Los grupos de acopios (índices de ``formed``, en orden) cuyas huellas se tocan, directa o indirectamente: solo los
+    de dos o más."""
+    if len(formed) < 2:
+        return []
+    cells = np.concatenate([item.cells for item in formed])
+    owners = np.repeat(np.arange(len(formed)), [item.cells.size for item in formed])
+    order = np.argsort(cells, kind="stable")
+    cells, owners = cells[order], owners[order]
+    twice = cells[1:] == cells[:-1]
+    if not twice.any():
+        return []
+    parent = list(range(len(formed)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for first, second in np.unique(np.stack((owners[:-1][twice], owners[1:][twice])), axis=1).T.tolist():
+        low, high = sorted((find(first), find(second)))
+        parent[high] = low
+    groups: dict[int, list[int]] = {}
+    for index in range(len(formed)):
+        groups.setdefault(find(index), []).append(index)
+    return [group for group in groups.values() if len(group) > 1]
+
+
+def _share_groups(job: StockpileJob, formed: list[_Grown], budget_s: float
+                  ) -> Generator[Progress, None, tuple[list[_Grown], list[SharedCells]]]:
+    """El reparto de las celdas comunes (RF-016-06): por cada grupo de huellas que se tocan, en una ventana común, con las
+    marcas **por clave** (a igual distancia gana la menor, sea cual sea el orden del trabajo). Da los acopios con sus
+    huellas repartidas y las parejas con celdas comunes."""
+    grid, pairs = job.grid, []
+    formed = list(formed)
+    for group in _clusters(formed):
+        box = (slice(min(formed[k].window[0].start for k in group), max(formed[k].window[0].stop for k in group)),
+               slice(min(formed[k].window[1].start for k in group), max(formed[k].window[1].stop for k in group)))
+        place = window_grid(grid, box)
+        order = sorted(group, key=lambda k: formed[k].mark.key)
+        claims = []
+        for k in order:
+            item = formed[k]
+            base = (item.footprint.plane.values(place) if item.footprint.plane is not None
+                    else job.bases[item.mark.base][box])
+            claims.append(Claim(item.mark.key, _cells_mask(item.mark.cells, box, grid.ncols),
+                                replace(item.footprint, mask=_cells_mask(item.cells, box, grid.ncols), base=base)))
+        shared = yield from forward(share_cells_steps(claims, job.surface[box], place, job.params.threshold_m,
+                                                      budget_s=budget_s))
+        for k, kept in zip(order, shared.footprints, strict=True):
+            formed[k] = replace(formed[k], cells=_window_cells(kept.mask, box, grid.ncols))
+        pairs.extend(shared.shared)
+    return formed, pairs
+
+
+def _layers(job: StockpileJob, grown: _Grown, pairs: Sequence[Notice]) -> Stockpile:
+    """A5 de un acopio: su base, su espesor, su terreno sin acopios y su superficie en las celdas de su huella; el volumen
+    medido sobre esos valores, el área, el centro y sus notas (más las ``pairs`` del reparto)."""
+    grid, mark = job.grid, grown.mark
+    rows, cols = np.divmod(grown.cells, grid.ncols)
+    easting = grid.west + (cols + 0.5) * grid.dx
+    northing = grid.north - (rows + 0.5) * grid.dy
+    level = job.surface[rows, cols]
+    plane = grown.footprint.plane
+    base = plane.at(easting, northing) if plane is not None else job.bases[mark.base][rows, cols]
+    count = grown.cells.size
+    volume = footprint_volume(level[None, :], base[None, :], np.ones((1, count), dtype=bool), grid.cell_area,
+                              job.params.threshold_m)
+    thickness = np.maximum(level - base, 0.0)
+    cx, cy = float(easting.mean()), float(northing.mean())
+    notes = tuple(note.notice(mark.name, cx, cy) for note in grown.footprint.notes) + tuple(pairs)
+    return Stockpile(mark.key, mark.name, mark.material, mark.base, grown.cells, base, thickness,
+                     np.minimum(level, base), level, plane, float(count) * grid.cell_area, volume,
+                     float(thickness.max()), grown.footprint.turns, grown.footprint.converged, cx, cy, grid.ncols, notes)
+
+
+def _stockpile_units(job: StockpileJob, formed: Sequence[_Grown], pairs: Mapping[str, list[Notice]]
+                     ) -> Generator[None, None, list[Stockpile]]:
+    """Las unidades de A5: un acopio cada una."""
+    found = []
+    for grown in formed:
+        found.append(_layers(job, grown, pairs.get(grown.mark.key, ())))
+        yield
+    return found
+
+
+def _pair_notices(job: StockpileJob, shared: Sequence[SharedCells]) -> tuple[dict[str, list[Notice]], list[Notice]]:
+    """El aviso de cada pareja que se repartió celdas (RF-016-06) con los **nombres** de las dos marcas: por clave de
+    acopio, los de cada uno (el mismo objeto en los dos) y, aparte, el de cada pareja una vez."""
+    names = {mark.key: mark.name for mark in job.marks}
+    by_key: dict[str, list[Notice]] = {}
+    once = []
+    for pair in shared:
+        notice = Notice(_SHARED_CELLS, {**pair.message.values, "mark": names[pair.mark], "other": names[pair.other]})
+        once.append(notice)
+        for key in (pair.mark, pair.other):
+            by_key.setdefault(key, []).append(notice)
+    return by_key, once
+
+
+def _figures(job: StockpileJob, items: Sequence[Stockpile], candidates: Candidates | None
+             ) -> tuple[FigureSpec, ...]:
+    """Las cifras de la detección (``provenance.stockpile_figures``): cuántos acopios y candidatos y, por acopio, su área,
+    su volumen, su espesor máximo y la inclinación de su plano (si lo tiene)."""
+    return stockpile_figures(
+        job.name, job.code, count=len(items), candidates=None if candidates is None else len(candidates.items),
+        stockpiles=[StockpileFigures(item.key, item.material, item.area_m2, item.volume_m3, item.thickness_max_m,
+                                     item.plane_tilt_deg) for item in items])
+
+
+def _ordered_notices(rejected: Sequence[RejectedMark], items: Sequence[Stockpile], once: Sequence[Notice]
+                     ) -> tuple[Notice, ...]:
+    """Los avisos de la detección en orden estable: los rechazos, los de cada acopio y, la primera vez que se llega a él,
+    el de cada pareja (el mismo objeto en los dos acopios, que se cuenta una vez)."""
+    found = [mark.notice for mark in rejected]
+    told: set[int] = set()
+    pairs = {id(notice) for notice in once}
+    for item in items:
+        for notice in item.notes:
+            if id(notice) in pairs:
+                if id(notice) in told:
+                    continue
+                told.add(id(notice))
+            found.append(notice)
+    return tuple(found)
+
+
+def detect_steps(job: StockpileJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """La detección de acopios de ``job`` por pasos de ``budget_s`` como mucho (A2 a A5): cada marca en su ventana de
+    trabajo, el reparto de las celdas comunes, los candidatos (si se piden) y las bases, los espesores y el terreno sin
+    acopios; el último ``Progress`` (fase ``stockpiles``) lleva el :class:`StockpileOutcome` (ver el módulo). Nada se
+    escribe en ninguna parte y ninguna entrada se modifica; cerrar el generador a mitad no deja nada. Un trabajo mal
+    formado ya lo rechazó su construcción; ``TypeError`` si ``job`` no es un :class:`StockpileJob`."""
+    if not isinstance(job, StockpileJob):
+        raise TypeError(f"la detección calcula un StockpileJob, no {job!r}")
+    return _detect_run(job, budget_s)
+
+
+def detect_stockpiles(job: StockpileJob) -> StockpileOutcome:
+    """:func:`detect_steps` de una vez (ver el módulo)."""
+    last: Progress | None = None
+    for last in detect_steps(job):
+        pass
+    if last is None or not isinstance(last.result, StockpileOutcome):  # inalcanzable: el último paso lo lleva
+        raise RuntimeError("la detección no dio resultado")
+    return last.result
+
+
+def _detect_run(job: StockpileJob, budget_s: float) -> Generator[Progress, None, None]:
+    """Los pasos de :func:`detect_steps`."""
+    grown = yield from forward(pace_progress(
+        _mark_units(job), budget_s, phase="stockpiles", running="Formando los acopios…", finished="Acopios formados"))
+    formed = [item for item in grown if isinstance(item, _Grown)]
+    rejected = tuple(item for item in grown if isinstance(item, RejectedMark))
+    formed, shared = yield from _share_groups(job, formed, budget_s)
+    by_key, once = _pair_notices(job, shared)
+    items = yield from forward(pace_progress(
+        _stockpile_units(job, formed, by_key), budget_s, phase="stockpiles",
+        running="Midiendo las bases y los espesores…", finished="Bases y espesores medidos"))
+    found: Candidates | None = None
+    if job.candidates is not None and job.perimeter is not None:
+        taken = np.zeros(job.grid.shape, dtype=bool)
+        flat = taken.reshape(-1)
+        for mark in job.marks:  # también las marcas rechazadas: su zona no vuelve como candidata
+            flat[mark.cells] = True
+        for item in items:
+            flat[item.cells] = True
+        found = yield from forward(candidates_steps(job.surface, job.grid, job.perimeter, taken, job.candidates,
+                                                    budget_s=budget_s))
+    outcome = StockpileOutcome(job.name, job.code, job.grid, tuple(items), rejected, tuple(shared), found,
+                               _figures(job, items, found), _ordered_notices(rejected, items, once))
+    yield Progress("stockpiles", 1, 1, "Acopios detectados", result=outcome)
