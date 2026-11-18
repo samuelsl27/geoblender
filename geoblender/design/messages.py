@@ -2183,6 +2183,17 @@ CATALOG: tuple[Message, ...] = (
         "campo en QGIS; no se calcula nada.",
     ),
     Message(
+        "des.stockpile_scope_changed",
+        "The stockpile detection «{name}» was made on a surface of its own scope (the project or a version) and its "
+        "surface is now «{surface}», which belongs to another one: a detection takes its scope from its surface (on a "
+        "surface of the project it belongs to the project, on one of a version, to that version), so it cannot be "
+        "recalculated as the same operation; create the detection again on the surface you want; nothing is calculated.",
+        "La detección de acopios «{name}» se hizo sobre una superficie de su ámbito (el proyecto o una versión) y su "
+        "superficie es ahora «{surface}», de otro: una detección toma su ámbito de su superficie (sobre una superficie del "
+        "proyecto es del proyecto; sobre una de una versión, de esa versión), así que no se puede recalcular como la misma "
+        "operación; cree la detección otra vez sobre la superficie que quiera; no se calcula nada.",
+    ),
+    Message(
         "des.stockpile_footprint_at_edge",
         "Stockpile «{mark}»: its footprint reaches the edge of its mark enlarged by the margin (at x = {x} m, "
         "y = {y} m), so the stockpile may be larger than its mark; the stockpile carries this note.",

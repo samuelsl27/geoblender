@@ -47,10 +47,15 @@ el nombre de su dato, y los parámetros congelados de cada una; el decisor, la f
 versión, de los ajustes de la operación). **La capa de entidades** (``des.entity_layer``, spec 015, T30) **no se
 reproduce**: su contenido incluye el estado de cada entidad (al día, obsoleta, descartada, «apoyo retirado»), que
 deduce el grafo del proyecto y no se reproduce sin él; es una vista regenerable (como ``des.refit``, spec 010) y, en
-una revisión congelada, se toma lo congelado (``core.versions.reproduce`` la da por no reproducible). **Los cuatro tipos
-de la 016** (spec 016, T03: :func:`reproduce_stockpile_detect`, :func:`reproduce_stockpile_removal`,
-:func:`reproduce_buttress` y :func:`reproduce_body`) existen pero **sin comportamiento todavía**: dicen qué tarea los
-hace (``NotImplementedError``); no hay ninguna operación de esos tipos que reproducir hasta que se crean.
+una revisión congelada, se toma lo congelado (``core.versions.reproduce`` la da por no reproducible). **La detección de
+acopios** (spec 016, T14; RF-016-10, RF-009-11): :func:`reproduce_stockpile_detect` (con el cálculo que comparte con el
+proyecto, ``stockpile_store.detection_compute_steps`` sobre el mismo ``StockpileJob``: la capa de marcas, la superficie, las
+bases propias y las máscaras congeladas por su nombre y su papel, y los parámetros de la entidad y el umbral de la huella
+congelados, con las decisiones sobre los candidatos; las siete salidas, la base y el espesor de cada material **en el orden en
+que las escribió** la operación, que es el que casa un papel repetido). **Los otros tres tipos de la 016**
+(:func:`reproduce_stockpile_removal`, :func:`reproduce_buttress` y :func:`reproduce_body`; spec 016, T03) existen pero **sin
+comportamiento todavía**: dicen qué tarea los hace (``NotImplementedError``); no hay ninguna operación de esos tipos que
+reproducir hasta que se crean.
 
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con otros,
 ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹ relativo, plan
@@ -97,15 +102,17 @@ from ..gis.masks.store import PERIMETER_SECTOR_NAME, read_report, zone_runs_step
 from ..gis.raster import Raster
 from ..gis.store import insert_rows, read_features
 from ..gis.vector import FeatureLayer
-from . import entities, entity_store, fronts, pipeline, provenance, quarry, store
+from . import entities, entity_store, fronts, pipeline, provenance, quarry, stockpile_store, store
 from .compose import admitted
 from .model import BenchSense, EnvelopeRequest, PlatformRequest, SeedKind, Surface
 from .params import (
+    ANTHROPIC_PRESENCE,
     PLATFORM_PARAMS,
     TOLERANCE_FACE,
     VERIFY_MIN_THICKNESS,
     WARNING_RATIO,
     PlatformParam,
+    StockpileParam,
     entity_key,
 )
 from .platform import PlatformJob
@@ -295,11 +302,13 @@ def _paced[T](work: Generator[None, None, T], budget_s: float, text: str
     return result
 
 
-def _grid_output(request: ReproduceRequest, family: str, raster: Raster, budget_s: float
+def _grid_output(request: ReproduceRequest, family: str, raster: Raster, budget_s: float, *, part: str | None = None
                  ) -> Generator[Progress, None, ReproducedOutput]:
-    """Escribe ``raster`` como la salida ``family`` de la operación, en la carpeta de trabajo."""
+    """Escribe ``raster`` como la salida ``family`` de la operación, en la carpeta de trabajo. ``part``: una familia con
+    varias rejillas (la base de cada material de una detección) las distingue en el nombre del fichero."""
     found = provenance.FAMILIES_BY_CODE[family]
-    path = Path(request.workdir) / f"{found.role}_{family}.tif"  # dos superficies, un papel
+    suffix = "" if part is None else f"_{part}"
+    path = Path(request.workdir) / f"{found.role}_{family}{suffix}.tif"  # dos superficies, un papel
     temporary = path.with_name(path.name + ".tmp")
     check_path_length(temporary, obj=_OBJ)
     steps = writer.write_steps(raster, path, profile="project", temporary=temporary,
@@ -782,11 +791,63 @@ def _not_yet(request: object, op_type: str, task: str) -> Iterator[Progress]:
 
 def reproduce_stockpile_detect(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
                                ) -> Iterator[Progress]:
-    """Reproduce ``des.stockpile_detect`` y ``des.stockpile_detect_project`` (RF-016-02, RF-009-11; T04, D-15: la misma
-    operación en los dos ámbitos): sin comportamiento todavía (T14)."""
+    """Reproduce ``des.stockpile_detect`` y ``des.stockpile_detect_project`` (spec 016, T14; RF-016-10, RF-016-02, RF-009-11;
+    T04, D-15: la misma operación en los dos ámbitos) con la capa de marcas, la superficie sobre la que se detectó, las
+    superficies de base propia de las marcas y, en una versión, sus máscaras congeladas, y los parámetros congelados de su
+    entidad (``des.stockpile.{e}.*``: la capa, la superficie, los candidatos, los umbrales y las decisiones sobre los
+    candidatos) y el umbral de la huella (``res.anthropic_presence_m``), con los ajustes de su operación (el nombre, el código y
+    los campos de la capa), **sin el proyecto**: el mismo cálculo (``stockpile_store.detection_compute_steps``). Sus pasos y,
+    el último, el ``ReproducedResult`` con las tablas de acopios, de candidatos y del informe, la base y el espesor de cada
+    material, el terreno sin acopios y la superficie con que se detectó, y sus cifras. Una detección **del proyecto** con
+    candidatos no se reproduce (su perímetro sale de la restricción del proyecto, que ninguna revisión congela: ``ValueError``).
+    Lo que no es una ``ReproduceRequest`` es ``TypeError``; una de otro tipo, ``ValueError``."""
     named = getattr(request, "op_type", None)
-    return _not_yet(request, named if named in provenance.STOCKPILE_DETECT_TYPES else provenance.STOCKPILE_DETECT,
-                    "la T14")
+    return _reproduce_stockpile_detect(
+        _check(request, named if named in provenance.STOCKPILE_DETECT_TYPES else provenance.STOCKPILE_DETECT), budget_s)
+
+
+def _reproduce_stockpile_detect(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    code = provenance.supported_code(request.settings)
+    asked = provenance.stockpile_request(request.settings, provenance.supported_values(code, frozen.values))
+    values, _defaulted = stockpile_store.detection_values(asked, code)
+    candidates = bool(values[StockpileParam.CANDIDATES.value])
+    if candidates and request.op_type == provenance.STOCKPILE_DETECT_PROJECT:
+        raise ValueError(f"la detección «{asked.name}» del proyecto pide candidatos: su perímetro sale de la restricción del "
+                         "proyecto, que ninguna revisión congela, así que no se reproduce")
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    layer = frozen.features(asked.fields.layer)
+    marks, fids = yield from _paced(stockpile_store.marks_of_layer(layer, asked, frozen.grid, candidates=candidates),
+                                    budget_s, "Leyendo las marcas…")
+    surface = frozen.named_raster(asked.surface, what="superficie de detección").values
+    bases: dict[str, np.ndarray] = {}
+    for mark in marks:
+        if mark.base is not None and mark.base not in bases:
+            bases[mark.base] = frozen.named_raster(
+                mark.base, what=f"superficie de base de la marca «{mark.key}»").values
+    perimeter = stockpile_store.version_perimeter(frozen.masks(), frozen.grid) if candidates else None
+    job = stockpile_store.detection_job(asked, code, values, frozen.grid, surface, marks, bases, perimeter,
+                                        store.number(frozen.values, ANTHROPIC_PRESENCE))
+    decisions = stockpile_store.parse_decisions(values[StockpileParam.DECISIONS.value], entity=asked.name)
+    outcome = yield from stockpile_store.detection_compute_steps(job, decisions=decisions, budget_s=budget_s)
+    crs, vertical = frozen.crs, frozen.vertical
+    made = [
+        _table_output(request, provenance.STOCKPILES_TABLE,
+                      stockpile_store.stockpile_rows_of(job, asked.fields.layer, fids, outcome), crs),
+        _table_output(request, provenance.STOCKPILE_CANDIDATES_TABLE,
+                      stockpile_store.candidate_rows(outcome, job.grid.ncols), crs)]
+    if outcome.stockpiles:  # sin ningún acopio no hay base, espesor, terreno ni superficie (como al crearla)
+        for family, make in ((provenance.STOCKPILE_BASE_GRID, outcome.base_grid),
+                             (provenance.STOCKPILE_THICKNESS_GRID, outcome.thickness_grid)):
+            for number, material in enumerate(outcome.materials, start=1):
+                made.append((yield from _grid_output(
+                    request, family, Raster(job.grid, make(material), crs, vertical), budget_s, part=str(number))))
+        for family, whole in ((provenance.STOCKPILE_GROUND_GRID, outcome.ground_grid),
+                              (provenance.STOCKPILE_SURFACE_GRID, outcome.surface_grid)):
+            made.append((yield from _grid_output(request, family, Raster(job.grid, whole(), crs, vertical), budget_s)))
+    made.append(_table_output(request, provenance.ENTITY_REPORT_TABLE, stockpile_store.detection_report_rows(outcome), crs))
+    yield Progress(_PHASE, 1, 1, "Detección de acopios reproducida",
+                   result=ReproducedResult(tuple(made), tuple(outcome.figures)))
 
 
 def reproduce_stockpile_removal(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S

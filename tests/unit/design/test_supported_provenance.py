@@ -496,8 +496,8 @@ class FiguresTest(unittest.TestCase):
 
 class ClosedListsTest(unittest.TestCase):
     """Las listas cerradas por tipo de operación del lado del dominio (plan 016 §2.1): cada tipo nuevo está en
-    todas, o la prueba lo nombra. Sin comportamiento todavía: lo que repite, lo que reproduce y lo que calcula lo
-    ponen las tareas que crean cada operación (T14, T20, T25 y T27)."""
+    todas, o la prueba lo nombra. Sin comportamiento todavía, salvo la detección (T14: se repite y se reproduce): lo que
+    repite, lo que reproduce y lo que calcula lo ponen las tareas que crean cada operación (T20, T25 y T27)."""
 
     def test_recomputed_lists_the_four_types(self) -> None:
         """RF-008-26, RF-016-02: ``RECOMPUTED`` (lo que repite «Recalcular lo obsoleto») lleva los cinco tipos (los dos
@@ -511,9 +511,15 @@ class ClosedListsTest(unittest.TestCase):
     def test_recompute_run_has_a_branch_for_each_type_and_none_falls_to_another_design(self) -> None:
         """RF-008-26: ``recompute_run`` repite cada tipo de ``RECOMPUTED`` por su rama y **ninguno cae en la última**
         (que repite un escalonado): un tipo sin cálculo todavía dice qué tarea lo hace (``NotImplementedError``), no
-        repite otra operación."""
+        repite otra operación; la detección (T14, de versión y de proyecto) tiene el suyo: unos ajustes que no son los de
+        una detección son un error del programa (``ValueError``), no el aviso de «aún no»."""
         for op_type in TYPES.values():
             request = recompute_mod.RecomputeRequest(object(), "uid", op_type, {}, (), ())
+            if op_type in provenance.STOCKPILE_DETECT_TYPES:
+                with self.subTest(op_type=op_type), self.assertRaises(ValueError) as caught:
+                    store.recompute_run(request)
+                self.assertNotIn("aún no", str(caught.exception))
+                continue
             with self.subTest(op_type=op_type), self.assertRaises(NotImplementedError) as caught:
                 store.recompute_run(request)
             self.assertIn(op_type, str(caught.exception))
@@ -530,8 +536,9 @@ class ClosedListsTest(unittest.TestCase):
 
     def test_the_reproduce_functions_exist_for_each_type(self) -> None:
         """RF-009-11: ``design.reproduce`` tiene la función de reproducir de cada tipo (la de ``bl`` la importa al
-        usarla); sin comportamiento todavía: ``NotImplementedError`` con el tipo; lo que no es una petición,
-        ``TypeError``; una de otro tipo, ``ValueError`` (errores del programa)."""
+        usarla); sin comportamiento todavía: ``NotImplementedError`` con el tipo, salvo la detección (T14: reproduce, sus
+        errores salen al avanzar los pasos, como los de la plataforma); lo que no es una petición, ``TypeError``; una de
+        otro tipo, ``ValueError`` (errores del programa)."""
         for op_type, name in (("des.stockpile_detect", "reproduce_stockpile_detect"),
                               ("des.stockpile_detect_project", "reproduce_stockpile_detect"),
                               ("des.stockpile_removal", "reproduce_stockpile_removal"),
@@ -539,9 +546,12 @@ class ClosedListsTest(unittest.TestCase):
             function = getattr(reproduce_mod, name)
             request = versions_reproduce.ReproduceRequest(op_type, {}, (), {}, ".", None)
             with self.subTest(op_type=op_type):
-                with self.assertRaises(NotImplementedError) as caught:
-                    function(request)
-                self.assertIn(op_type, str(caught.exception))
+                if op_type in provenance.STOCKPILE_DETECT_TYPES:
+                    self.assertTrue(hasattr(function(request), "__next__"), "los pasos, que no se avanzan aquí")
+                else:
+                    with self.assertRaises(NotImplementedError) as caught:
+                        function(request)
+                    self.assertIn(op_type, str(caught.exception))
                 with self.assertRaises(TypeError):
                     function("petición")
                 with self.assertRaises(ValueError):

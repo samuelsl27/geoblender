@@ -2,8 +2,9 @@
 """«Calcular» la detección de acopios y su resumen (spec 016, T12; HU-016-1; RF-016-04, RF-016-05, RF-016-06, RF-016-07,
 RF-016-08; RF-015-03, RF-015-13, RF-015-29; RNF-016-03, RNF-016-05; plan 016 §5.3.2 y §5.4 A0) y crearla (spec 016, T13;
 RF-016-02, RF-016-08, RF-016-09, RF-016-10, RF-015-01, RF-015-02, RF-015-04, RF-015-16, RNF-016-07): casos (a), (b) y (c) de
-``test_stockpile_operation`` (recalcular, reproducir y consultar —(d) y (e)— son de la T14; repetir con candidatos, el
-hito ``milestone_stockpile_repeat``).
+``test_stockpile_operation`` (repetir con candidatos, el hito ``milestone_stockpile_repeat``); y recalcularla y consultar lo
+que dejó (spec 016, T14; RF-016-10, RF-015-02, RF-015-04, RF-015-16, CE-016-01: casos (d) y (e); reproducirla desde lo
+congelado, el hito ``milestone_stockpile_recompute``).
 
 Sobre la cantera sintética de los acopios (``tests.support.stockpile_data``, T01), con las cuentas hechas a mano:
 
@@ -27,6 +28,10 @@ Sobre la cantera sintética de los acopios (``tests.support.stockpile_data``, T0
   (acopio y material); una detección sin ningún acopio; y por pasos de la interfaz (RNF-016-03).
 - **Las decisiones sobre los candidatos** (:class:`DecisionsTest`, sin proyecto): el formato del parámetro, la clave
   ``c03`` de cada candidato (estable al repetir por la regla de D-23) y la conversión de un candidato en acopio.
+- **Recalcular y consultar** (:class:`RecomputeTest`, ``store.recompute_run`` y ``stockpile_store.detections_on``; T14): la
+  detección de V01 y la del proyecto, recalculadas como operación nueva que sustituye a la anterior **con la misma
+  identidad**, lo que dejó, consultable por superficie (solo las al día), y el umbral de la 011 cambiado: las dos obsoletas con
+  su causa y «Recalcular lo obsoleto» las repite.
 """
 
 from __future__ import annotations
@@ -61,6 +66,10 @@ provenance = import_geoblender("design.provenance")
 steps = import_geoblender("design.steps")
 store = import_geoblender("design.store")
 surfaces = import_geoblender("design.surfaces")
+design_params = import_geoblender("design.params")
+entities_module = import_geoblender("design.entities")
+entity_store = import_geoblender("design.entity_store")
+recompute_mod = import_geoblender("core.provenance.recompute")
 stockpile_store = import_geoblender("design.stockpile_store")
 stockpiles = import_geoblender("design.stockpiles")
 
@@ -1271,6 +1280,301 @@ class DecisionsComputeTest(unittest.TestCase):
         self.assertEqual(len(self.job.marks), 5)
         self.assertEqual(len(self.first.stockpiles), 5)
         self.assertTrue(np.array_equal(self.job.surface, sdata.survey(GRID), equal_nan=True))
+
+
+# ---------------------------------------------------------------------------------------------
+# Recalcular y consultar (T14; RF-016-10, RF-015-02, RF-015-04, RF-015-16, CE-016-01: casos (d) y (e))
+# ---------------------------------------------------------------------------------------------
+
+CODE = "STK-001"
+THRESHOLD_KEY = "res.anthropic_presence_m"
+"""El umbral de la huella de la 011: una entrada de la operación entera (CE-016-01)."""
+
+
+def finish(work: Iterator[Any]) -> Any:
+    """Los pasos de ``work`` hasta el final: lo que lleva el último (lo guardado)."""
+    return last(work)
+
+
+def recompute_function(request: Any) -> Any:
+    """Lo que registra ``bl`` como función de recálculo de la detección: lleva los pasos hasta el final."""
+    handle, work = store.recompute_run(request)
+    finish(work)
+    return handle
+
+
+class RecomputeCase(tp.PrepareCase):
+    """Lo de ``PrepareCase`` con los dos tipos de la detección registrados con su función real de recalcular (la de ``bl``) y
+    las cifras, y las ayudas de las historias de recalcular ``STK-001`` en V01 y en el proyecto."""
+
+    @classmethod
+    def definitions(cls) -> tuple[Any, ...]:
+        """Los tipos de la detección con lo que registra ``bl``; las clases que reproducen añaden su función."""
+        return tuple(provenance.OPERATION_TYPES_BY_NAME[op_type].definition(recompute_function)
+                     for op_type in provenance.STOCKPILE_DETECT_TYPES)
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.enterClassContext(registered(*cls.definitions(), *provenance.STOCKPILE_FIGURES))
+
+    @classmethod
+    def create(cls, asked: Any, **options: Any) -> tuple[Any, Any]:
+        """«Calcula» y «Crea» ``asked`` (V01 y sus máscaras por defecto; con ``version=None``, en el proyecto): la
+        ``Calculation`` y lo guardado."""
+        options.setdefault("masks", cls.masks_v1)
+        options.setdefault("version", cls.v1.uid)
+        calculation = last(steps.stockpile_run(cls.project, asked, **options))
+        stored = calculation.create(decided_by=USER)
+        cls.clock.advance(minutes=1)
+        return calculation, stored
+
+    def current(self, *, version: bool = True) -> str:
+        """El uid de la operación vigente de ``STK-001`` en V01 o, sin ``version``, en el proyecto (el registro de entidades)."""
+        registry = (entities_module.registry(self.project, self.v1.uid) if version
+                    else entities_module.project_registry(self.project))
+        entry = registry.get(CODE)
+        assert entry is not None and entry.operation_uid is not None
+        return str(entry.operation_uid)
+
+    def request_for(self, uid: str, *, version: bool = True) -> Any:
+        """Lo que recibe ``bl`` para recalcular la operación ``uid``: su tipo, sus ajustes y su versión (``None``: de proyecto)."""
+        ((op_type, settings),) = self.query("SELECT op_type, settings FROM gb_operation WHERE uid = ?", uid)
+        return recompute_mod.RecomputeRequest(self.project, uid, op_type, json.loads(settings), (), (),
+                                              version=self.v1.uid if version else None)
+
+    def hashes_of(self, uid: str) -> dict[str, str]:
+        """El hash que anotó la operación ``uid`` de cada dato que escribió, por su nombre."""
+        return dict(self.query(
+            "SELECT d.name, io.content_sha256 FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+            "WHERE io.operation_uid = ? AND io.direction = 'out'", uid))
+
+    def figures_of(self, uid: str) -> list[tuple[str, str, float]]:
+        return self.query("SELECT key, scope, value FROM gb_figure WHERE operation_uid = ? ORDER BY fid", uid)
+
+    def parameter_rows(self) -> list[tuple[Any, ...]]:
+        """Los parámetros de la entidad, con su historial (los del proyecto y los de V01)."""
+        return self.query("SELECT key, scope, value, rev FROM gb_parameter WHERE key LIKE 'des.stockpile.stk_001.%' "
+                          "ORDER BY key, scope")
+
+    def table(self, family: str, *, version: bool = True) -> list[dict[str, Any]]:
+        return list(stockpile_store.read_detection_table(self.project, family, "Acopios",
+                                                         version_uid=self.v1.uid if version else ""))
+
+    def change(self, key: str, value: Any, *, version: bool = True) -> None:
+        """Cambia el parámetro ``key`` (de V01 o, sin ``version``, del proyecto) un minuto después."""
+        self.clock.advance(minutes=1)
+        with self.project.write_transaction() as conn:
+            core_params.ParameterStore(self.project).change(
+                conn, key, value=value, source="prueba de recalcular (T14)", source_kind="person", decided_by=USER,
+                reason="Se cambia el parámetro de la detección", version=self.v1.uid if version else None)
+
+    def change_threshold(self, value: float) -> None:
+        """Cambia el umbral de la huella del proyecto (un minuto después)."""
+        self.change(THRESHOLD_KEY, value, version=False)
+
+    def temporaries(self) -> list[str]:
+        return sorted(name for name in self.state()["files"] if ".tmp" in name)
+
+
+class RecomputeTest(RecomputeCase):
+    """RF-016-10, RF-015-02, RF-015-04, RF-015-16, CE-016-01 (casos (d) y (e)): la detección de V01 (las cinco marcas y los
+    candidatos, sobre el levantamiento de V01) y la del proyecto (lo mismo sobre el del proyecto) recalculadas como operación
+    nueva, consultables por superficie y obsoletas con su causa al cambiar el umbral. **En orden** (``test_a`` a ``test_d``):
+    cada una parte de lo que dejó la anterior."""
+
+    version_calculation: ClassVar[Any]
+    project_calculation: ClassVar[Any]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls.version_calculation, _ = cls.create(tp.request(surface=tp.VERSION_SURFACE, candidates=True))
+        cls.project_calculation, _ = cls.create(tp.request(candidates=True), version=None, masks=None)
+
+    def test_a_the_detections_on_a_surface_are_the_current_ones_made_on_it(self) -> None:
+        """RF-016-10, RF-015-16 (lo que leen la T15 y la T30): ``detections_on(version, surface)`` da la detección **al día**
+        hecha sobre esa superficie con su código, su nombre, su ámbito, la operación que la escribió y sus datos —la tabla de
+        acopios, la de candidatos, el informe, y por material (en el orden de los acopios) su base y su espesor dispersos,
+        el terreno sin acopios y la superficie con que se detectó— con su nombre, su ubicación y su papel; la de V01 sobre una
+        superficie de V01 y la del proyecto sobre una del proyecto (que ve también V01); un proyecto no ve lo de una versión; y
+        ninguna sobre otra superficie."""
+        version_op, project_op = self.current(), self.current(version=False)
+        found = stockpile_store.detections_on(self.project, self.v1.uid, tp.VERSION_SURFACE)
+        self.assertEqual([(item.code, item.name, item.scope, item.version, item.surface, item.operation) for item in found],
+                         [(CODE, "Acopios", stockpile_store.VERSION, "V01", tp.VERSION_SURFACE, version_op)])
+        mine = found[0]
+        self.assertEqual(mine.version_uid, self.v1.uid)
+        for data, family, role in ((mine.stockpiles, "stk", "stockpiles"), (mine.candidates, "stc", "stockpile_candidates"),
+                                   (mine.report, "prp", provenance.ENTITY_REPORT_ROLE),
+                                   (mine.ground, "stg", "stockpile_ground"), (mine.detected, "stp", "stockpile_surface")):
+            self.assertEqual((data.name, data.locator, data.role),
+                             (provenance.dataset_name(family, "Acopios"),
+                              provenance.dataset_locator(family, "Acopios", "V01"), role), family)
+        self.assertEqual([(item.material, item.base.name, item.thickness.name, item.base.role, item.thickness.role)
+                          for item in mine.materials],
+                         [(material, provenance.dataset_name("stb", f"Acopios {material}"),
+                           provenance.dataset_name("stt", f"Acopios {material}"), "stockpile_base", "stockpile_thickness")
+                          for material in ("mineral", "estéril")])
+        self.assertEqual(mine.materials[0].base.locator, provenance.dataset_locator("stb", "Acopios mineral", "V01"))
+        for item, wanted in zip(mine.materials, ("mineral", "estéril"), strict=True):  # lo que leerá la 011: por su papel
+            self.assertEqual(self.query("SELECT role FROM gb_operation_io WHERE operation_uid = ? AND item_uid = ?",
+                                        version_op, item.base.uid), [("stockpile_base",)], wanted)
+            read = tp.drive(surfaces.read_surface_steps(self.project, item.base.name, version_uid=mine.version_uid)).values
+            np.testing.assert_array_equal(read, self.version_calculation.outcome.base_grid(item.material))
+        project_found = stockpile_store.detections_on(self.project, self.v1.uid, sdata.SURVEY_DATASET)
+        self.assertEqual([(item.scope, item.version, item.version_uid, item.operation, item.stockpiles.locator)
+                          for item in project_found],
+                         [(stockpile_store.PROJECT, None, "", project_op, provenance.dataset_locator("stk", "Acopios", None))])
+        self.assertEqual(stockpile_store.detections_on(self.project, None, sdata.SURVEY_DATASET), project_found,
+                         "sin versión, lo del proyecto")
+        self.assertEqual(stockpile_store.detections_on(self.project, None, tp.VERSION_SURFACE), (),
+                         "un proyecto no ve lo de una versión")
+        self.assertEqual(stockpile_store.detections_on(self.project, self.v1.uid, sdata.PREVIOUS_DATASET), ())
+        self.assertEqual(stockpile_store.detections_on(self.project, self.v2.uid, tp.VERSION_SURFACE), (),
+                         "otra versión no ve lo de V01")
+        self.assertEqual([item.scope for item in stockpile_store.detections_on(self.project, "V01", sdata.SURVEY_DATASET)],
+                         [stockpile_store.PROJECT], "la versión, también por su código")
+        with self.assertRaises(tp.versions_model.VersionError) as unknown:
+            stockpile_store.detections_on(self.project, "V99", tp.VERSION_SURFACE)
+        self.assertEqual(unknown.exception.code, "core.version_unknown")
+
+    def test_b_recomputing_a_version_detection_repeats_it_as_a_new_operation_with_the_same_identity(self) -> None:
+        """RF-016-10, RF-015-02, RF-015-04, RF-008-26: recalcular la detección de V01 sin que nada cambie da una operación
+        **nueva** (``des.stockpile_detect``) que sustituye a la anterior —queda como historia— con los mismos ajustes, entradas,
+        cifras y datos (el mismo hash de cada uno, con el mismo nombre); no escribe los parámetros de la entidad (ya están); la
+        entidad sigue siendo ``STK-001`` y está al día con la operación nueva, y la consulta la da; no deja temporales."""
+        old = self.current()
+        hashes, figures = self.hashes_of(old), self.figures_of(old)
+        inputs = self.query("SELECT item_uid, role FROM gb_operation_io WHERE operation_uid = ? AND direction = 'in' "
+                            "ORDER BY fid", old)
+        settings = self.query("SELECT settings FROM gb_operation WHERE uid = ?", old)
+        rows = self.parameter_rows()
+        before = self.table("stk")
+        self.clock.advance(minutes=1)
+        handle, work = store.recompute_run(self.request_for(old))
+        stored = finish(work)
+        self.assertEqual(stored.handle.uid, handle.uid)
+        self.assertEqual(self.query("SELECT op_type, scope, status, supersedes_uid FROM gb_operation WHERE uid = ?",
+                                    handle.uid), [(provenance.STOCKPILE_DETECT, "version", "done", old)])
+        self.assertEqual(self.query("SELECT superseded_by FROM gb_operation WHERE uid = ?", old), [(handle.uid,)])
+        self.assertEqual(self.hashes_of(handle.uid), hashes)
+        self.assertEqual(self.figures_of(handle.uid), figures)
+        self.assertEqual(self.query("SELECT settings FROM gb_operation WHERE uid = ?", handle.uid), settings)
+        self.assertEqual(self.query("SELECT item_uid, role FROM gb_operation_io WHERE operation_uid = ? AND "
+                                    "direction = 'in' ORDER BY fid", handle.uid), inputs)
+        self.assertEqual(self.parameter_rows(), rows, "no escribe los parámetros de la entidad")
+        self.assertEqual(self.table("stk"), before)
+        self.assertEqual(self.current(), handle.uid)
+        self.assertEqual(self.stale_causes(handle.uid), set())
+        self.assertEqual(self.recompute_plan(), [])
+        self.assertEqual(self.temporaries(), [])
+        (mine,) = stockpile_store.detections_on(self.project, self.v1.uid, tp.VERSION_SURFACE)
+        self.assertEqual(mine.operation, handle.uid)
+
+    def test_c_recomputing_a_project_detection_repeats_it_in_the_project(self) -> None:
+        """RF-016-10, RF-015-02, D-15: lo mismo con la detección **del proyecto** (``des.stockpile_detect_project``, sin
+        versión: ``RecomputeRequest.version`` ``None``): operación nueva de proyecto que sustituye a la anterior, los mismos
+        datos y cifras, ninguna fila de parámetros escrita, y la entidad del proyecto al día con la operación nueva."""
+        old = self.current(version=False)
+        hashes, figures = self.hashes_of(old), self.figures_of(old)
+        rows = self.parameter_rows()
+        self.clock.advance(minutes=1)
+        handle, work = store.recompute_run(self.request_for(old, version=False))
+        finish(work)
+        self.assertEqual(self.query("SELECT op_type, scope, status, supersedes_uid FROM gb_operation WHERE uid = ?",
+                                    handle.uid), [(provenance.STOCKPILE_DETECT_PROJECT, "project", "done", old)])
+        self.assertEqual(self.query("SELECT superseded_by FROM gb_operation WHERE uid = ?", old), [(handle.uid,)])
+        self.assertEqual(self.hashes_of(handle.uid), hashes)
+        self.assertEqual(self.figures_of(handle.uid), figures)
+        self.assertEqual(self.parameter_rows(), rows)
+        self.assertEqual(self.current(version=False), handle.uid)
+        self.assertEqual(self.stale_causes(handle.uid), set())
+        self.assertEqual(self.temporaries(), [])
+        self.assertEqual([item.operation for item in
+                          stockpile_store.detections_on(self.project, self.v1.uid, sdata.SURVEY_DATASET)], [handle.uid])
+
+    def test_d_changing_the_threshold_makes_the_whole_operation_stale_and_recomputing_gives_the_new_footprints(self) -> None:
+        """CE-016-01 (la última frase), RF-016-10, RF-015-16: cambiar el umbral de la huella (``res.anthropic_presence_m``, de
+        la 011) deja obsoleta **la operación entera**, la de V01 y la del proyecto, con su causa (``parameter_changed`` de esa
+        clave); ya no son «al día» (``detections_on`` no las da) y «Recalcular lo obsoleto» repite las dos —cada una sustituye a
+        la suya— con el umbral nuevo (las huellas de las mismas cinco marcas; las de las cuatro sin base propia, las de la
+        detección a 0,6 m calculada aparte, y alguna cambia) y las deja al día."""
+        wanted = stockpiles.detect_stockpiles(dataclasses.replace(
+            survey_job(flat=False), params=params_of(threshold_m=0.6)))
+        expected = {item.key: int(item.cells.size) for item in wanted.stockpiles if item.key != "Acopio 5"}
+        old = {"version": self.current(), "project": self.current(version=False)}
+        before = {"version": {row["key"]: row["cells"] for row in self.table("stk")},
+                  "project": {row["key"]: row["cells"] for row in self.table("stk", version=False)}}
+        for uid in old.values():
+            self.assertEqual(self.stale_causes(uid), set())
+        self.change_threshold(0.6)
+        for uid in old.values():
+            self.assertEqual(self.stale_causes(uid), {("parameter_changed", THRESHOLD_KEY)})
+        self.assertEqual(stockpile_store.detections_on(self.project, self.v1.uid, tp.VERSION_SURFACE), ())
+        self.assertEqual(stockpile_store.detections_on(self.project, self.v1.uid, sdata.SURVEY_DATASET), ())
+        self.assertEqual(sorted(self.recompute_plan()),
+                         [(provenance.STOCKPILE_DETECT,), (provenance.STOCKPILE_DETECT_PROJECT,)])
+        self.clock.advance(minutes=1)
+        outcome = finish(recompute_mod.recompute_steps(self.project))
+        self.assertEqual([result.status for result in outcome.results], [recompute_mod.UnitStatus.DONE] * 2)
+        new = {"version": self.current(), "project": self.current(version=False)}
+        for scope in old:
+            self.assertNotEqual(new[scope], old[scope])
+            self.assertEqual(self.stale_causes(new[scope]), set())
+            self.assertEqual(self.query("SELECT supersedes_uid FROM gb_operation WHERE uid = ?", new[scope]),
+                             [(old[scope],)])
+        after = {"version": {row["key"]: row["cells"] for row in self.table("stk")},
+                 "project": {row["key"]: row["cells"] for row in self.table("stk", version=False)}}
+        for scope in old:
+            with self.subTest(scope=scope):
+                self.assertEqual(list(after[scope]), list(before[scope]), "la misma identidad: las mismas marcas")
+                self.assertEqual({key: after[scope][key] for key in expected}, expected)
+                self.assertNotEqual(after[scope], before[scope], "el umbral cambió la huella de alguna")
+        self.assertEqual(self.recompute_plan(), [])
+        self.assertEqual([item.operation for item in
+                          stockpile_store.detections_on(self.project, self.v1.uid, tp.VERSION_SURFACE)], [new["version"]])
+        self.assertEqual([item.operation for item in
+                          stockpile_store.detections_on(self.project, self.v1.uid, sdata.SURVEY_DATASET)], [new["project"]])
+
+    def test_e_recomputing_uses_the_parameters_of_the_entity_in_its_own_scope(self) -> None:
+        """RF-016-10, RF-015-01, RF-015-02, RF-009-24 (P-3 de la 015): una entidad se define por sus parámetros **de su
+        ámbito**, no por los que leyó la operación anterior ni por los del otro ámbito: cambiado el margen de ``STK-001`` en
+        V01 (4 m), la detección de V01 queda obsoleta por ese parámetro y recalcularla lo usa (la columna de margen de cada
+        acopio, salvo el Acopio 3, que lleva el suyo en la capa) y la del proyecto, que tiene su fila de 10 m, ni se entera."""
+        key = design_params.entity_key(CODE, "margin_m")
+        project_old, version_old = self.current(version=False), self.current()
+        self.assertEqual(self.stale_causes(version_old), set())
+        self.change(key, 4.0)
+        self.assertEqual(self.stale_causes(version_old), {("parameter_changed", key)})
+        self.assertEqual(self.stale_causes(project_old), set(), "el parámetro de V01 no es el del proyecto")
+        self.clock.advance(minutes=1)
+        recompute_function(self.request_for(version_old))
+        self.assertEqual({row["key"]: row["margin_m"] for row in self.table("stk")},
+                         {"Acopio 1": 4.0, "Acopio 2": 4.0, "Acopio 3": 6.0, "Acopio 4": 4.0, "Acopio 5": 4.0})
+        self.assertEqual({row["margin_m"] for row in self.table("stk", version=False) if row["key"] != "Acopio 3"}, {10.0})
+        self.assertEqual(self.current(version=False), project_old)
+        self.assertEqual(self.stale_causes(project_old), set())
+
+    def test_f_a_project_detection_with_candidates_is_not_reproduced(self) -> None:
+        """RF-009-11, RF-016-10, D-15: la detección del proyecto con candidatos saca su perímetro de la restricción del
+        proyecto, que ninguna revisión congela, así que **no se reproduce** (``ValueError`` al avanzar, antes de leer nada de lo
+        congelado); y lo que no es una petición de ese tipo es un error del programa al llamar."""
+        reproduce_mod = import_geoblender("core.versions.reproduce")
+        design_reproduce = import_geoblender("design.reproduce")
+        uid = self.current(version=False)
+        ((settings,),) = self.query("SELECT settings FROM gb_operation WHERE uid = ?", uid)
+        found = entity_store.entity_parameters(self.project, CODE)
+        params = {design_params.entity_key(CODE, name): (value, "") for name, value in found.items()}
+        params[THRESHOLD_KEY] = (0.3, "m")
+        self.assertIs(found["candidates"], True)
+        request = reproduce_mod.ReproduceRequest(provenance.STOCKPILE_DETECT_PROJECT, json.loads(settings), (), params,
+                                                 self.root, self.project.record)
+        with self.assertRaises(ValueError) as caught:
+            next(design_reproduce.reproduce_stockpile_detect(request))
+        self.assertIn("«Acopios»", str(caught.exception))
+        with self.assertRaises(ValueError):
+            design_reproduce.reproduce_stockpile_detect(dataclasses.replace(request, op_type="des.quarry"))
 
 
 if __name__ == "__main__":

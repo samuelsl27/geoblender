@@ -1979,8 +1979,9 @@ y la cantera (T19), la transición (T28), «solo relleno» (T30) y el ajuste (T3
 entidades (T17; ``design.entity_store.recompute_declaration``) y la capa de entidades (T30;
 ``design.entity_store.recompute_entity_layer``) y, de la 016 (T03), los cuatro tipos de entidad
 (:data:`~.provenance.SUPPORTED_TYPES`: la detección de acopios, de versión y **de proyecto** —T04, D-15—, su retirada, el
-contrafuerte y el cuerpo apoyado), **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace (``NotImplementedError``) en vez de
-repetir otra operación."""
+contrafuerte y el cuerpo apoyado). La detección de acopios se repite desde la T14
+(``design.stockpile_store.recompute_detection``, en el proyecto o en su versión); los otros tres, **sin cálculo todavía**:
+``recompute_run`` dice qué tarea lo hace (``NotImplementedError``) en vez de repetir otra operación."""
 _STORE_PHASE = "store"
 
 
@@ -3863,7 +3864,8 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
     ``design.entity_store.recompute_platform``, con los parámetros vigentes de su entidad en su versión,
     RF-015-02, la declaración de restricciones de las entidades, ``recompute_declaration``, con las
     entidades vivas de la versión, RF-015-10, y la capa de entidades, ``recompute_entity_layer``, con todas las
-    calculadas, RF-015-27), con lo que
+    calculadas, RF-015-27; de la 016, la detección de acopios, ``stockpile_store.recompute_detection``, con los parámetros
+    vigentes de su entidad en su ámbito —**el proyecto o su versión**—, RF-016-10), con lo que
     lee hoy: las máscaras de la versión, los sectores, las superficies y los parámetros, resueltos
     de nuevo versión → proyecto (un perfil cambiado solo en V02 se lee de V02). Devuelve su
     ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama (en Blender, la cola de
@@ -3926,10 +3928,13 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         from . import entity_store  # al usarlo: entity_store importa este módulo
 
         return entity_store.recompute_entity_layer(request, budget_s=budget_s)
+    if request.op_type in provenance.STOCKPILE_DETECT_TYPES:
+        from . import stockpile_store  # al usarlo: stockpile_store importa este módulo
+
+        return stockpile_store.recompute_detection(request, budget_s=budget_s)
     if request.op_type in provenance.SUPPORTED_TYPES:
-        # Los tipos de la 016 (T03 y T04): sin cálculo todavía; las tareas que crean cada operación lo ponen aquí
-        # (T14 la detección, de versión y de proyecto, T20 la retirada, T27 el contrafuerte y T25 el cuerpo). Nunca cae
-        # en un escalonado.
+        # Los demás tipos de la 016 (T03): sin cálculo todavía; las tareas que crean cada operación lo ponen aquí
+        # (T20 la retirada, T27 el contrafuerte y T25 el cuerpo). Nunca cae en un escalonado.
         raise NotImplementedError(f"«{request.op_type}» aún no se recalcula: lo hace la tarea de la 016 que crea "
                                   "su operación")
     return run_design(project, provenance.design_request(request.settings),

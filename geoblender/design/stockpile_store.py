@@ -97,7 +97,7 @@ import math
 import re
 import sqlite3
 from collections import Counter
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
@@ -113,7 +113,8 @@ from ..core.datasets.model import LIVE_STATUSES
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterRecord, ParameterStore, definition
 from ..core.params.store import default_reason
 from ..core.project.model import Progress
-from ..core.provenance.operations import Use
+from ..core.provenance.operations import OperationHandle, Use
+from ..core.provenance.recompute import RecomputeRequest
 from ..core.timeutil import format_utc
 from ..core.versions import read as versions_read
 from ..core.versions.model import Version, VersionError
@@ -176,6 +177,7 @@ from .store import (
     _start,
     _store_steps,
     columns_of,
+    design_writer,
     require_version,
 )
 from .surfaces import find_surface, project_frame, read_surface_steps
@@ -186,6 +188,9 @@ __all__ = [
     "PROJECT",
     "VERSION",
     "CandidateDecision",
+    "Detection",
+    "DetectionData",
+    "DetectionMaterial",
     "PreparedDetection",
     "candidate_decision",
     "candidate_rows",
@@ -193,21 +198,28 @@ __all__ = [
     "create_detection_steps",
     "decide_candidate",
     "detection_compute_steps",
+    "detection_job",
     "detection_obsolete",
     "detection_report_rows",
     "detection_scope",
     "detection_summary",
     "detection_values",
+    "detections_on",
     "format_decisions",
     "mark_cells",
+    "marks_of_layer",
     "material_dataset",
     "material_label",
     "parse_decisions",
     "prepare_detection",
     "prepare_detection_units",
     "read_detection_table",
+    "recompute_detection",
+    "run_detection",
     "stockpile_rows",
+    "stockpile_rows_of",
     "stockpile_summary",
+    "version_perimeter",
 ]
 
 PROJECT = "project"
@@ -438,7 +450,12 @@ def _identify(project: StoreProject, request: StockpileRequest, version: Version
 def _marks_layer(project: StoreProject, name: str) -> FeatureLayer:
     """La capa de marcas ``name`` del proyecto (solo lee): una capa de entidades de **polígonos**
     (``des.layer_not_polygons``); ``ValueError`` si no es una capa de entidades (``gis_fea_``)."""
-    found = load_features(project, name)
+    return _polygon_layer(load_features(project, name), name)
+
+
+def _polygon_layer(found: object, name: str) -> FeatureLayer:
+    """``found`` (la capa de marcas ``name``) como capa de **polígonos** (``des.layer_not_polygons``); ``ValueError`` si no es
+    una capa de entidades. Lo comparten preparar (del proyecto) y reproducir (de lo congelado)."""
     if not isinstance(found, FeatureLayer):
         raise ValueError(f"«{name}» no es una capa de entidades del proyecto (gis_fea_)")
     if found.kind != "polygon":
@@ -581,8 +598,17 @@ def _read_marks(project: StoreProject, request: StockpileRequest, grid: Grid, *,
     """Las marcas de la capa de la petición como ``StockpileMark`` (rasterizadas, con su margen, material y base) y el
     ``fid`` de cada una por su clave, con los rechazos de la capa, sus campos, sus nombres, sus márgenes, sus polígonos y
     una capa sin marcas ni candidatos (:func:`prepare_detection_units` da el orden)."""
+    layer = _marks_layer(project, request.fields.layer)
+    return (yield from marks_of_layer(layer, request, grid, candidates=candidates))
+
+
+def marks_of_layer(layer: object, request: StockpileRequest, grid: Grid, *, candidates: bool
+                   ) -> Generator[None, None, tuple[tuple[StockpileMark, ...], Mapping[str, int]]]:
+    """Las marcas de ``layer`` —la capa de marcas de la petición, leída del proyecto (:func:`prepare_detection_units`) o de
+    lo congelado (``design.reproduce``: el mismo cálculo)— como ``StockpileMark`` (rasterizadas en ``grid``, con su margen,
+    material y base) y el ``fid`` de cada una por su clave. Los rechazos son los de :func:`_read_marks`."""
     fields, layer_name = request.fields, request.fields.layer
-    layer = _marks_layer(project, layer_name)
+    layer = _polygon_layer(layer, layer_name)
     name_column = _field(layer, layer_name, "name_field", fields.name_field, numeric=False)
     margin_column = _field(layer, layer_name, "margin_field", fields.margin_field, numeric=True)
     material_column = _field(layer, layer_name, "material_field", fields.material_field, numeric=False)
@@ -606,7 +632,7 @@ def _read_marks(project: StoreProject, request: StockpileRequest, grid: Grid, *,
 # --- El perímetro de actuación ------------------------------------------------------------------
 
 
-def _version_perimeter(masks: access.MaskSet | access.MaskSource, grid: Grid) -> np.ndarray:
+def version_perimeter(masks: access.MaskSet | access.MaskSource, grid: Grid) -> np.ndarray:
     """El perímetro de actuación de las máscaras de la versión (el bit ``PERIMETER`` de su rejilla de clases: las celdas
     enteras dentro del perímetro o, sin él, del límite legal, RF-012-15), como máscara de la rejilla entera."""
     classes = (masks.classes if isinstance(masks, access.MaskSet)
@@ -662,6 +688,26 @@ def _check_materials(marks: Sequence[StockpileMark], layer: str) -> None:
 # --- Preparar -----------------------------------------------------------------------------------
 
 
+def detection_job(request: StockpileRequest, code: str, values: Mapping[str, Any], grid: Grid, surface: np.ndarray,
+                  marks: Sequence[StockpileMark], bases: Mapping[str, np.ndarray], perimeter: np.ndarray | None,
+                  threshold: float) -> StockpileJob:
+    """El ``StockpileJob`` de la detección ``request`` de código ``code``: todo lo leído y nada del proyecto. ``values``
+    son los parámetros resueltos (:func:`detection_values`), ``surface`` y ``bases`` las rejillas leídas, ``marks`` las marcas
+    rasterizadas, ``perimeter`` el de actuación (solo si se piden candidatos) y ``threshold`` el umbral de la huella de la 011.
+    Lo comparten preparar (del proyecto) y reproducir (de lo congelado): el mismo trabajo, el mismo cálculo."""
+    plane = PlaneParams(
+        values[StockpileParam.CROWN_INNER.value], values[StockpileParam.CROWN_OUTER.value],
+        values[StockpileParam.CROWN_SLOPE.value], values[StockpileParam.CROWN_FLAT_MIN.value],
+        values[StockpileParam.MAX_RESIDUAL.value], values[StockpileParam.FIT_ROUNDS.value],
+        values[StockpileParam.TILT_MAX.value], values[StockpileParam.SUPPORT_QUANTILE.value])
+    footprint = FootprintParams(plane, values[StockpileParam.MARGIN.value], values[StockpileParam.TURNS.value],
+                                threshold)
+    wanted = None if not values[StockpileParam.CANDIDATES.value] else CandidateParams(
+        values[StockpileParam.OPEN_DIAMETER.value], values[StockpileParam.MIN_HEIGHT.value],
+        values[StockpileParam.MIN_AREA.value], values[StockpileParam.MAX_AREA.value], footprint)
+    return StockpileJob(request.name, code, grid, surface, tuple(marks), footprint, bases, wanted, perimeter)
+
+
 def prepare_detection_units(project: StoreProject, request: StockpileRequest, *, version: str | None,
                             masks: access.MaskSet | access.MaskSource | None = None, code: str | None = None,
                             supersedes: str | None = None) -> Generator[None, None, PreparedDetection]:
@@ -706,24 +752,14 @@ def prepare_detection_units(project: StoreProject, request: StockpileRequest, *,
     if found is not None:
         loaded = masks if masks is not None else _loaded_masks(project, found, None)
         if candidates:
-            perimeter = _version_perimeter(loaded, grid)
+            perimeter = version_perimeter(loaded, grid)
     else:
         loaded = None
         if candidates:
             perimeter, keys = _project_perimeter(project, grid)
             perimeter_uses, perimeter_params = _perimeter_inputs(project, keys)
     yield
-    plane = PlaneParams(
-        values[StockpileParam.CROWN_INNER.value], values[StockpileParam.CROWN_OUTER.value],
-        values[StockpileParam.CROWN_SLOPE.value], values[StockpileParam.CROWN_FLAT_MIN.value],
-        values[StockpileParam.MAX_RESIDUAL.value], values[StockpileParam.FIT_ROUNDS.value],
-        values[StockpileParam.TILT_MAX.value], values[StockpileParam.SUPPORT_QUANTILE.value])
-    footprint = FootprintParams(plane, values[StockpileParam.MARGIN.value], values[StockpileParam.TURNS.value],
-                                threshold)
-    wanted = None if not candidates else CandidateParams(
-        values[StockpileParam.OPEN_DIAMETER.value], values[StockpileParam.MIN_HEIGHT.value],
-        values[StockpileParam.MIN_AREA.value], values[StockpileParam.MAX_AREA.value], footprint)
-    job = StockpileJob(request.name, chosen, grid, surface.values, marks, footprint, bases, wanted, perimeter)
+    job = detection_job(request, chosen, values, grid, surface.values, marks, bases, perimeter, threshold)
     inputs = (*provenance.stockpile_inputs(request, request.surface, () if loaded is None else loaded.uses(),
                                            perimeter_uses),
               *(Use(base, provenance.SURFACE_ROLE) for base in bases))
@@ -1102,16 +1138,23 @@ def stockpile_rows(prepared: PreparedDetection, outcome: StockpileOutcome) -> li
     resultado ``outcome``: **una por acopio**, en su orden, con su procedencia (``mark`` y la capa, el ``fid`` y el margen que
     se le aplicó, o ``candidate`` si salió de convertir un candidato), el plano en el centro de su huella, la huella en
     tramos y sus avisos y notas con su código (no su texto). Nada es NaN ni infinito (``ValueError``)."""
-    marks = {mark.key: mark for mark in prepared.job.marks}
-    default_margin = prepared.job.params.margin_m
+    return stockpile_rows_of(prepared.job, prepared.layer, prepared.fids, outcome)
+
+
+def stockpile_rows_of(job: StockpileJob, layer: str, fids: Mapping[str, int], outcome: StockpileOutcome
+                      ) -> list[tuple[Any, ...]]:
+    """:func:`stockpile_rows` de un trabajo ``job`` con la capa de marcas ``layer`` y el ``fid`` de cada marca en ella
+    (``fids``), sin la preparación: lo que reproducir (``design.reproduce``) tiene de lo congelado."""
+    marks = {mark.key: mark for mark in job.marks}
+    default_margin = job.params.margin_m
     rows: list[tuple[Any, ...]] = []
     for item in outcome.stockpiles:
         mark = marks.get(item.key)
         origin = "candidate" if mark is None else "mark"
         margin = default_margin if mark is None or mark.margin_m is None else mark.margin_m
         rows.append((
-            item.key, item.name, origin, prepared.layer if mark is not None else None,
-            prepared.fids.get(item.key) if mark is not None else None, item.material, item.base_surface,
+            item.key, item.name, origin, layer if mark is not None else None,
+            fids.get(item.key) if mark is not None else None, item.material, item.base_surface,
             _finite(margin, "el margen"), int(item.cells.size), _finite(item.area_m2, "el área"),
             _finite(item.volume_m3, "el volumen"), _finite(item.thickness_max_m, "el espesor máximo"),
             _finite(item.x, "x"), _finite(item.y, "y"), _finite(item.plane_level_m, "la cota del plano"),
@@ -1242,7 +1285,8 @@ def create_detection_steps(project: StoreProject, writer: DesignWriter, prepared
         writer.table_steps(provenance.ENTITY_REPORT_TABLE, detection_report_rows(outcome)), budget_s,
         "el informe de la detección"))
     yield Progress(_STORE_PHASE, 1, 1, f"Registrando la detección «{prepared.job.name}»…")
-    start = prepared.start
+    resumed = writer.handle is not None  # un recálculo: la operación empezó antes de calcular (``run_detection``)
+    supersedes = writer.supersedes if resumed else prepared.start.supersedes
 
     def parameters(conn: sqlite3.Connection) -> None:
         if prepared.existing:
@@ -1252,10 +1296,11 @@ def create_detection_steps(project: StoreProject, writer: DesignWriter, prepared
                                  "prepara sin su código)")
         else:
             set_entity_params(project, prepared.rows, version=prepared.version_uid, decided_by=decided_by, conn=conn)
-        if start.supersedes is not None:
-            _retire_vanished(project, conn, start.supersedes, {spec.name for spec in writer.specs})
+        if supersedes is not None:
+            _retire_vanished(project, conn, supersedes, {spec.name for spec in writer.specs})
 
-    return writer.commit(start, figures=outcome.figures, message=outcome.message, before_begin=parameters)
+    return writer.commit(None if resumed else prepared.start, figures=outcome.figures, message=outcome.message,
+                         before_begin=parameters)
 
 
 def _retire_vanished(project: StoreProject, conn: sqlite3.Connection, supersedes: str, written: set[str]) -> None:
@@ -1285,6 +1330,88 @@ def create_detection(project: StoreProject, writer: DesignWriter, prepared: Prep
         except StopIteration as stop:
             result: Stored = stop.value
             return result
+
+
+# --- Recalcular (spec 016, T14; RF-016-10, RF-015-02, RF-015-04, RF-015-16; CE-016-01) -----------------------------------
+
+
+def run_detection(project: StoreProject, request: StockpileRequest, *, version: str | None, code: str,
+                  masks: access.MaskSet | access.MaskSource | None = None, supersedes: str | None = None,
+                  op_type: str | None = None, budget_s: float = STEP_BUDGET_S
+                  ) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Calcula y registra ``request`` —la detección de la entidad ``code``, que ya está en su ámbito— de **una vez**, sin
+    pedir confirmación (el recálculo de lo obsoleto, :func:`~.store.recompute_run`; el «Crear» tras «Calcular» es
+    :meth:`~.steps.Calculation.create`): prepara (:func:`prepare_detection`: la entidad se reconoce por su ``code``), empieza la
+    operación **antes de calcular** —sustituye a ``supersedes``, quedándose con los nombres de sus datos— con lo que lee hoy
+    (la capa de marcas, la superficie, las bases, el umbral de la huella y, en una versión, sus máscaras) y devuelve su
+    ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama: calculan (:func:`detection_compute_steps`, con las
+    decisiones de la entidad), escriben cada salida en su temporal y completan la operación en una transacción
+    (:func:`create_detection_steps` con el escritor reanudado: no escribe los parámetros, que ya están); el último paso lleva
+    lo guardado (:class:`~.store.Stored`). Cerrarlos antes, o un fallo, no dejan nada y la operación queda cancelada o fallida.
+
+    Es **la misma** operación en el proyecto (``des.stockpile_detect_project``, ``version`` ``None``) y en una versión
+    (``des.stockpile_detect``): el escritor de su ámbito. ``op_type``, si se da, es el de la operación que se repite: la
+    detección no puede cambiar de ámbito al recalcularla.
+
+    Al llamar, sin empezar nada: ``des.stockpile_scope_changed`` (la superficie de la entidad es ahora de otro ámbito que la
+    operación: se comprueba antes de preparar, para no rechazar por un nombre que ya es de otro ámbito) y los rechazos de
+    :func:`prepare_detection`. Al avanzar, antes de escribir nada, ``des.input_changed`` si un parámetro cambió entre
+    prepararla y empezar la operación."""
+    if op_type is not None:
+        scope, _found = detection_scope(project, request, version)
+        if (provenance.STOCKPILE_DETECT_PROJECT if scope == PROJECT else provenance.STOCKPILE_DETECT) != op_type:
+            raise DesignError("des.stockpile_scope_changed", obj=f"Detección de acopios «{request.name}»", field="surface",
+                              value=request.surface, name=request.name, surface=request.surface)
+    prepared = prepare_detection(project, request, version=version, masks=masks, code=code, supersedes=supersedes)
+    handle = prepared.start.begin(project)
+    return handle, _detection_run(project, handle, prepared, budget_s)
+
+
+def recompute_detection(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
+                        ) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Repite la operación ``des.stockpile_detect`` o ``des.stockpile_detect_project`` de ``request``
+    (:func:`~.store.recompute_run`; «Recalcular lo obsoleto», RF-008-26; spec 016, T14; RF-016-10, RF-015-02, RF-015-16): la
+    detección de sus ajustes (el nombre, el código y los campos de su capa de marcas) con los **parámetros vigentes de su
+    entidad en su ámbito** (:func:`~.entity_store.entity_parameters`: la capa, la superficie, los candidatos, los umbrales de
+    D-3 y las decisiones sobre los candidatos; los de la versión y, si no, los del proyecto, y en una detección **del proyecto**
+    los del proyecto) y no los que leyó la operación que sustituye: una entidad se define por sus parámetros (RF-015-01). El
+    umbral de la huella (``res.anthropic_presence_m``), la capa de marcas (su geometría) y la superficie son entradas de la
+    operación: cambiar una la deja obsoleta **entera** y recalcular la repite con lo nuevo. Es el camino de las operaciones de
+    proyecto que ya hay (``gis``, ``reserves``): ``RecomputeRequest.version`` ``None`` y la operación sin revisión. Devuelve lo de
+    :func:`run_detection`. ``ValueError`` si los ajustes no son los de una detección o la petición no es de su tipo."""
+    if not isinstance(request, RecomputeRequest):
+        raise TypeError(f"se recalcula una RecomputeRequest, no {request!r}")
+    if request.op_type not in provenance.STOCKPILE_DETECT_TYPES:
+        raise ValueError(f"recompute_detection repite {', '.join(provenance.STOCKPILE_DETECT_TYPES)}, no «{request.op_type}»")
+    project: StoreProject = request.project  # type: ignore[assignment]
+    code = provenance.supported_code(request.settings)
+    found = None
+    if request.op_type == provenance.STOCKPILE_DETECT:
+        found = require_version(project, request.version, request.op_type)
+    asked = provenance.stockpile_request(request.settings, entity_parameters(project, code, version=found))
+    return run_detection(project, asked, version=None if found is None else found.uid, code=code,
+                         supersedes=request.operation_uid, op_type=request.op_type, budget_s=budget_s)
+
+
+def _check_recorded(handle: OperationHandle, prepared: PreparedDetection) -> None:
+    """Los parámetros que anotó la operación al empezar son los que leyó el cálculo al prepararse (RF-013-17, D-14): si uno
+    cambió entre las dos cosas, el resultado ya no le corresponde (``des.input_changed``, con el parámetro)."""
+    read: dict[str, object] = {entity_key(prepared.code, StockpileParam(name)): value
+                               for name, value in prepared.values.items()}
+    read[ANTHROPIC_PRESENCE] = prepared.job.params.threshold_m
+    for param in handle.params:
+        if param.key in read and param.value != read[param.key]:
+            raise DesignError("des.input_changed", obj=f"Parámetro «{param.key}»", field="parámetros", value=param.key)
+
+
+def _detection_run(project: StoreProject, handle: OperationHandle, prepared: PreparedDetection, budget_s: float
+                   ) -> Generator[Progress, None, None]:
+    with design_writer(project, handle.op_type, prepared.job.name, version=handle.version_uid, handle=handle) as writer:
+        _check_recorded(handle, prepared)
+        outcome: StockpileOutcome = yield from detection_compute_steps(prepared.job, decisions=prepared.decisions,
+                                                                      budget_s=budget_s)
+        stored: Stored = yield from create_detection_steps(project, writer, prepared, outcome, budget_s=budget_s)
+        yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
 
 
 # --- Leer lo guardado y decidir (spec 016, T13; RF-016-10, P-14) ---------------------------------------------------
@@ -1362,3 +1489,139 @@ def decide_candidate(project: StoreProject, code: str, key: str, state: str, rea
         return store.change(conn, parameter, value=text, source=_DECIDE_SOURCE.format(name=name),
                             source_kind="person", decided_by=who, decided_at=decided_at, reason=reason.strip(),
                             version=version.uid if version is not None else None)
+
+
+# --- Consultar (spec 016, T14; RF-016-10; plan 016 §5.3.1: lo que leen la 012, la 011 y las entidades) ---------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionData:
+    """Un dato que escribió una detección: su ``uid``, su ``name`` (``des_stb_acopios_mineral``), su ``locator`` —dónde está en
+    el proyecto: la tabla de su GeoPackage o la ruta relativa de su GeoTIFF (``rasters/des_stb_acopios_mineral_v01.tif``)— y el
+    ``role`` con que lo anotó la operación (``stockpile_base``…), que es por lo que lo lee quien lo consume."""
+
+    uid: str
+    name: str
+    locator: str
+    role: str
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionMaterial:
+    """La base y el espesor de los acopios de un ``material`` de una detección (``None``: los que no lo tienen, «sin
+    material»), dispersos: solo tienen dato en las huellas de esos acopios (NaN fuera de ellas)."""
+
+    material: str | None
+    base: DetectionData
+    thickness: DetectionData
+
+
+@dataclass(frozen=True, slots=True)
+class Detection:
+    """Una detección de acopios **al día** (spec 016, T14; plan 016 §5.3.1; :func:`detections_on`) con lo que necesitan sus
+    consumidores: su ``code`` (``STK-001``), su ``name``, su ``scope`` (:data:`PROJECT` o :data:`VERSION`), la ``version`` (el
+    código de la versión de la detección; ``None`` si es del proyecto) y su ``version_uid`` (``""`` en el proyecto: lo que
+    reciben ``design.surfaces.read_surface`` y :func:`read_detection_table` para leer sus datos), la ``operation`` (el uid de la
+    vigente, la que los escribió) y la ``surface`` sobre la que se detectó (el nombre de su dato). Y sus datos
+    (:class:`DetectionData`, por su papel): la tabla de acopios (``stockpiles``; una fila por acopio, con su clave), la de
+    candidatos, el informe, y de lo que hay acopio, **por material y en el orden de los acopios** su base y su espesor
+    (``materials``), el terreno sin acopios en las huellas (``ground``) y la superficie con que se detectó, también en las
+    huellas (``detected``; la 015 y la 011 la componen entera con la superficie de la que parte). Una detección sin ningún
+    acopio no tiene ``materials``, ``ground`` ni ``detected``."""
+
+    code: str
+    name: str
+    scope: str
+    version: str | None
+    version_uid: str
+    operation: str
+    surface: str
+    stockpiles: DetectionData
+    candidates: DetectionData
+    report: DetectionData
+    materials: tuple[DetectionMaterial, ...] = ()
+    ground: DetectionData | None = None
+    detected: DetectionData | None = None
+
+
+_DETECTION_OUTPUTS = (
+    "SELECT d.uid, d.name, d.locator, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "WHERE io.operation_uid = ? AND io.direction = 'out' AND io.item_kind = 'dataset' ORDER BY io.fid")
+
+
+def detections_on(project: StoreProject, version: str | None, surface: str, *, conn: sqlite3.Connection | None = None
+                  ) -> tuple[Detection, ...]:
+    """Las detecciones de acopios **al día** hechas sobre la superficie ``surface`` (el nombre de su dato) que ve la
+    ``version`` (su uid o su código; ``None``: solo el proyecto) (spec 016, T14; RF-016-10, RF-015-16; plan 016 §5.3.1; lo que leen
+    la T15 —los acopios apoyables— y la T30 —la verificación de la 012— y la 011): las del **proyecto** (D-15; una versión puede
+    consumir un dato del proyecto, RF-009-05) y, después, las de la versión, que son de una superficie suya. Solo cuenta la
+    operación vigente de cada entidad (``entities.registry``/``project_registry``) y solo si está **al día**: una obsoleta (un
+    umbral, la capa o la superficie cambiaron: la 008 le da causas), descartada o sin calcular no se da, que es lo que protege a
+    quien la lee de una base que ya no vale. La superficie es la de **su parámetro** ``surface``, que coincide con la que
+    consumió la operación mientras está al día. Solo lee; ``conn`` es una conexión de lectura de quien llama (con su
+    instantánea). ``VersionError`` (``core.version_unknown``) si la versión no existe; ``ValueError`` si una detección al día
+    no tiene alguno de sus datos (un proyecto dañado: no se lista a medias)."""
+
+    def read(reading: sqlite3.Connection) -> tuple[Detection, ...]:
+        found = None if version is None else versions_read.version(reading, str(version))
+        if version is not None and found is None:
+            raise VersionError("core.version_unknown", field="versión", value=version, version=version)
+        store = ParameterStore(project)
+        detections: list[Detection] = []
+        for scope in (None,) if found is None else (None, found):
+            if scope is None:
+                registry = entities.project_registry(project, conn=reading)
+            else:
+                registry = entities.registry(project, scope.uid, conn=reading)
+            for entry in registry.entries:
+                record = entry.record
+                if (record.kind != EntityKind.STOCKPILE or record.state != entities.EntityState.CURRENT
+                        or entry.operation_uid is None):
+                    continue
+                parameter = store.get(entity_key(record.code, StockpileParam.SURFACE),
+                                      version=None if scope is None else scope.uid, conn=reading)
+                if parameter is None or parameter.value != surface:
+                    continue
+                detections.append(_detection_of(project, reading, scope, record.code, record.name, entry.operation_uid,
+                                                surface))
+        return tuple(detections)
+
+    if conn is not None:
+        return read(conn)
+    with project.read() as reading:
+        return read(reading)
+
+
+def _detection_of(project: StoreProject, conn: sqlite3.Connection, scope: Version | None, code: str, name: str,
+                  operation: str, surface: str) -> Detection:
+    """La :class:`Detection` de la entidad ``code`` cuya operación vigente es ``operation``: sus datos por su papel y, por
+    material, su base y su espesor (los nombres que da :func:`material_dataset` a los materiales de su tabla de acopios)."""
+    written = [DetectionData(str(uid), str(found), str(locator), str(role))
+               for uid, found, locator, role in conn.execute(_DETECTION_OUTPUTS, (operation,)).fetchall()]
+    by_name = {item.name: item for item in written}
+
+    def one(role: str) -> DetectionData:
+        found = [item for item in written if item.role == role]
+        if len(found) != 1:
+            raise ValueError(f"la detección {code} («{name}») tiene {len(found)} datos con el papel «{role}» en su "
+                             f"operación {operation}: tiene que tener uno")
+        return found[0]
+
+    def named(family: str, material: str | None) -> DetectionData:
+        wanted = material_dataset(family, name, material)
+        if wanted not in by_name:
+            raise ValueError(f"la detección {code} («{name}») no tiene el dato «{wanted}» de los acopios de "
+                             f"«{material_label(material)}» en su operación {operation}")
+        return by_name[wanted]
+
+    stockpiles = one(provenance.STOCKPILES_ROLE)
+    version_uid = "" if scope is None else scope.uid
+    rows = read_detection_table(project, provenance.STOCKPILES_TABLE, name, version_uid=version_uid, conn=conn)
+    materials = tuple(DetectionMaterial(material, named(provenance.STOCKPILE_BASE_GRID, material),
+                                        named(provenance.STOCKPILE_THICKNESS_GRID, material))
+                      for material in dict.fromkeys(row["material"] for row in rows))
+    ground = one(provenance.STOCKPILE_GROUND_ROLE) if rows else None
+    detected = one(provenance.STOCKPILE_SURFACE_ROLE) if rows else None
+    return Detection(code, name, PROJECT if scope is None else VERSION, None if scope is None else scope.code, version_uid,
+                     operation, surface, stockpiles, one(provenance.STOCKPILE_CANDIDATES_ROLE),
+                     one(provenance.ENTITY_REPORT_ROLE), materials, ground, detected)

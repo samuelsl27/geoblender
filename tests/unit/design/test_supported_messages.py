@@ -41,6 +41,8 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.stockpile_decisions_invalid": ("error", "RF-016-10", {"entity", "detail"}),
     "des.stockpile_candidate_key_taken": ("error", "RF-016-10", {"value"}),
     "des.stockpile_material_repeated": ("error", "RF-016-09", {"layer", "value", "other"}),
+    # T14: lo que rechaza recalcular una detección cuya superficie cambió de ámbito.
+    "des.stockpile_scope_changed": ("error", "RF-016-10", {"name", "surface"}),
     # RF-016-05: lo que se avisa y se anota en el acopio.
     "des.stockpile_footprint_at_edge": ("warning", "RF-016-05", {"mark", *POSITION}),
     "des.stockpile_several_zones": ("warning", "RF-016-05", {"mark", "zones", *POSITION}),
@@ -133,7 +135,8 @@ class SupportedMessagesTest(unittest.TestCase):
                   "volume": 640.25, "items": "«Relleno V09»", "height": 12.0, "angle": 52.0,
                   "min_angle": 45.0, "min_height": 3.0, "layer": "gis_fea_zonas", "entity": "BTR-001",
                   "profile": "EXPL_10_60_6", "anchor": 250.0, "footprint": "Cuerpo 1", "distance": 30.0,
-                  "fids": "3, 7", "fields": "nombre, margen", "detail": "no es JSON"}
+                  "fids": "3, 7", "fields": "nombre, margen", "detail": "no es JSON", "name": "Acopios",
+                  "surface": "gis_dtm_levantamiento"}
         for code, (severity, _rf, _marks) in CODES.items():
             with self.subTest(code=code):
                 if severity == "error":
