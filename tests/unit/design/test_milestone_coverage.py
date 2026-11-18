@@ -22,6 +22,9 @@ REQUIREMENTS = range(1, 30)
 VERDE_FOLDERS = ("tests/unit", "tests/blender", "tests/referencia")
 """Donde el «verde» busca sus pruebas (con ``test*.py``)."""
 CITATION = re.compile(r"\bRF-015-(\d\d)\b")
+MILESTONE_CITATION = re.compile(r"\bRF-01[56]-(\d\d)\b")
+"""Lo que cita una prueba de hito: un requisito de la 015 o de la 016 (spec 016, T10: los ``milestone_*.py`` de la 016
+usan este mismo paso; la cobertura del «verde» de la 015, arriba, no cambia)."""
 
 
 def _files(pattern: str) -> list[Path]:
@@ -78,17 +81,17 @@ class MilestoneCoverageTest(unittest.TestCase):
                 self.assertEqual(repeated, [], f"también en {sibling.name}")
 
     def test_every_milestone_is_a_real_test_module(self) -> None:
-        """RNF-015-07: cada ``milestone_*.py`` tiene pruebas y cita algún requisito de la 015 (si
-        no, el paso «hito» no le serviría a ninguno)."""
+        """RNF-015-07: cada ``milestone_*.py`` tiene pruebas y cita algún requisito de la 015 o de la
+        016 (si no, el paso «hito» no le serviría a ninguno)."""
         for path in _files("milestone_*.py"):
             with self.subTest(hito=path.name):
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
                 found = _tests(path)
                 self.assertTrue(found, "sin pruebas")
-                cited = set(CITATION.findall(ast.get_docstring(tree) or ""))
+                cited = set(MILESTONE_CITATION.findall(ast.get_docstring(tree) or ""))
                 for docstring in found.values():
-                    cited.update(CITATION.findall(docstring))
-                self.assertTrue(cited, "no cita ningún RF-015")
+                    cited.update(MILESTONE_CITATION.findall(docstring))
+                self.assertTrue(cited, "no cita ningún RF-015 ni RF-016")
 
 
 if __name__ == "__main__":
