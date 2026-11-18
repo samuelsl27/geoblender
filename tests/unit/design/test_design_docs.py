@@ -186,6 +186,9 @@ PENDING_015_MODULES: frozenset[str] = frozenset({
     "design.stockpiles",
     # La 016, T11: preparar y rechazar la detección de acopios (el homólogo de ``prepare_platform_units``).
     "design.stockpile_store",
+    # La 016, T17: la retirada de un acopio, su transición y su dominio (A6); T18 a T21 le añaden lo apoyado, la pared y
+    # «como plataforma».
+    "design.removal",
 })
 
 

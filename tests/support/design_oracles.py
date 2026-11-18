@@ -31,6 +31,11 @@ después), para rejillas pequeñas (≤ 90 × 90 celdas):
 - :func:`hand_layers` (spec 016, T09; plan 016 A5): la base, el espesor ``máx(z − base, 0)``, el terreno sin acopios
   ``mín(z, base)``, la superficie y el volumen de las celdas de una huella **a mano**, un bucle de Python por celda
   con ``fsum``, para comparar con las bases y los espesores de ``design.stockpiles`` (RF-016-01, RF-016-09).
+- :func:`hand_removal` (spec 016, T17; plan 016 A6): la retirada de un acopio **a mano**: el dominio de la retirada, su
+  anillo de semillas, la envolvente descendente (la euclídea por fuerza bruta o el *chamfer* de :func:`dijkstra`), la
+  superficie ``mín(z, máx(base, envolvente))`` y las cuatro cifras (retirado, apoyado, transición y no retirado) como
+  longitud de la columna ``[z', z]`` a cada lado de la superficie de detección, un bucle de Python por celda con
+  ``fsum``, para comparar con ``design.removal`` (RF-016-11, RF-016-13).
 
 Convenciones: ``seed`` es la rejilla de semillas (fila 0 al norte): una celda es semilla si su cota
 es finita; ``+inf``, ``−inf`` y NaN no lo son. ``direction="up"`` es ``E_up = mín_q [s + t·d]`` y
@@ -57,6 +62,7 @@ __all__ = [
     "HandFootprint",
     "HandLayers",
     "HandPlane",
+    "HandRemoval",
     "brute_force_euclidean",
     "dijkstra",
     "euclidean_displacements",
@@ -66,6 +72,7 @@ __all__ = [
     "hand_footprint",
     "hand_layers",
     "hand_plane",
+    "hand_removal",
     "hand_share",
     "hand_stairs",
     "hand_volume",
@@ -600,3 +607,81 @@ def hand_layers(z: Sequence[Sequence[float]], base: Sequence[Sequence[float]], m
             layers[3][r, c] = level
     volume = math.fsum((z[r][c] - base[r][c]) * cell_area for r, c in layers[1] if z[r][c] - base[r][c] > threshold)
     return HandLayers(*layers, volume, max(layers[1].values(), default=0.0))
+
+
+@dataclass(frozen=True, slots=True)
+class HandRemoval:
+    """Lo que da :func:`hand_removal`: la superficie ``surface`` (``(filas, columnas)``, m), las cifras (m³) ``removed``
+    (la columna retirada por debajo de la superficie de detección), ``resting`` (la de por encima), ``transition`` (lo
+    que queda sobre la base en el dominio), ``kept`` (lo que queda en la huella donde el dominio no admite la retirada)
+    y ``above`` (todo lo que la huella tiene sobre la base), las ``transition_cells`` y las celdas de la huella que se
+    retiran (``admitted``), las que no (``held``) y las semillas (``ring``), por ``(fila, columna)``."""
+
+    surface: np.ndarray
+    removed: float
+    resting: float
+    transition: float
+    kept: float
+    above: float
+    transition_cells: int
+    admitted: frozenset[tuple[int, int]]
+    held: frozenset[tuple[int, int]]
+    ring: frozenset[tuple[int, int]]
+
+
+def _overlap(low: float, high: float, floor: float, ceiling: float) -> float:
+    """La longitud de ``[low, high]`` que cae en ``[floor, ceiling]`` (0 si no se tocan)."""
+    return max(min(high, ceiling) - max(low, floor), 0.0)
+
+
+def hand_removal(z: Sequence[Sequence[float]], base: Sequence[Sequence[float]],
+                 detected: Sequence[Sequence[float]], footprint: Sequence[Sequence[bool]],
+                 domain: Sequence[Sequence[bool]], *, step: float, tan: float, metric: str = "exact"
+                 ) -> HandRemoval:
+    """A6 a mano (RF-016-11, RF-016-13): la retirada de un acopio de ``footprint`` (con su ``base`` y la superficie con que
+    se detectó, ``detected``, que solo se leen en la huella) de la superficie ``z`` (NaN, sin dato), con celdas de
+    ``step`` m de lado, en el ``domain`` que admite la retirada y con la tangente efectiva ``tan`` (``tan θ`` por el
+    factor de malla). Se retira lo que está en la huella, en el dominio y con dato; sus semillas son las celdas con dato que no se retiran y tocan (8
+    vecinas) una que sí; la envolvente descendente de las semillas es ``máx_s [z_s − tan·paso·d]`` con la distancia
+    euclídea entre centros (``metric="exact"``) o el *chamfer* 5×5 de :func:`dijkstra` (``"chamfer5"``), y la superficie
+    nueva ``mín(z, máx(base, envolvente))`` en lo que se retira; lo demás, ``z``. Las cifras son la longitud de la
+    columna que se quita ``[z', z]`` a cada lado de ``detected`` (retirado y apoyado), lo que queda sobre la base en lo
+    que se retira (transición) y la columna sobre la base de la huella que el dominio no deja retirar (no retirado)."""
+    nrows, ncols = len(z), len(z[0])
+    cells = [(r, c) for r in range(nrows) for c in range(ncols)]
+    has_data = {(r, c): math.isfinite(z[r][c]) for r, c in cells}
+    admitted = {(r, c) for r, c in cells if footprint[r][c] and domain[r][c] and has_data[r, c]}
+    held = {(r, c) for r, c in cells if footprint[r][c] and not (domain[r][c] and has_data[r, c]) and has_data[r, c]}
+    ring = {(r, c) for r, c in cells if (r, c) not in admitted and has_data[r, c]
+            and any((r + dr, c + dc) in admitted for dr in (-1, 0, 1) for dc in (-1, 0, 1))}
+    if metric == "exact":
+        def envelope(r: int, c: int) -> float:
+            return max((z[rs][cs] - tan * step * math.hypot(r - rs, c - cs) for rs, cs in ring), default=-math.inf)
+    elif metric == "chamfer5":
+        seeds = np.full((nrows, ncols), np.nan)
+        for r, c in ring:
+            seeds[r, c] = z[r][c]
+        found = dijkstra(seeds, tan, step, direction="down")
+
+        def envelope(r: int, c: int) -> float:
+            return float(found[r, c])
+    else:
+        raise ValueError(f"la métrica es «exact» o «chamfer5», no {metric!r}")
+    surface = np.array([[z[r][c] for c in range(ncols)] for r in range(nrows)], dtype=np.float64)
+    removed: list[float] = []
+    resting: list[float] = []
+    transition: list[float] = []
+    for r, c in sorted(admitted):
+        level, floor = z[r][c], base[r][c]
+        new = min(level, max(floor, envelope(r, c)))
+        surface[r, c] = new
+        removed.append(_overlap(new, level, -math.inf, detected[r][c]))
+        resting.append(_overlap(new, level, detected[r][c], math.inf))
+        transition.append(max(new - floor, 0.0))
+    area = step * step
+    above = [max(z[r][c] - base[r][c], 0.0) for r, c in cells if footprint[r][c] and has_data[r, c]]
+    kept = [max(z[r][c] - base[r][c], 0.0) for r, c in sorted(held)]
+    return HandRemoval(surface, math.fsum(removed) * area, math.fsum(resting) * area, math.fsum(transition) * area,
+                       math.fsum(kept) * area, math.fsum(above) * area,
+                       sum(1 for value in transition if value > 0.0), frozenset(admitted), frozenset(held),
+                       frozenset(ring))
