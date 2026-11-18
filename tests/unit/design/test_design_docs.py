@@ -173,7 +173,11 @@ PENDING_015_API: frozenset[str] = frozenset({
     # La 016, T04: el escritor de proyecto, el registro y los parámetros del ámbito del proyecto.
     "ProjectDesignWriter", "design_writer", "project_registry", "entity_parameters",
 })
-PENDING_015_MODULES: frozenset[str] = frozenset()
+PENDING_015_MODULES: frozenset[str] = frozenset({
+    # La 016, T05: la morfología con un disco exacto (A1). Su fila de la ficha (``des.md`` §4.4) la lleva la T38,
+    # que también vacía este conjunto.
+    "design.morphology",
+})
 
 
 def one_line(text: str) -> str:
