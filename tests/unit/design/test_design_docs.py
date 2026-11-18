@@ -177,6 +177,8 @@ PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 016, T05: la morfología con un disco exacto (A1). Su fila de la ficha (``des.md`` §4.4) la lleva la T38,
     # que también vacía este conjunto.
     "design.morphology",
+    # La 016, T06: el plano de base robusto y su límite de inclinación (A2); T07 a T09 le añaden el resto de la detección.
+    "design.stockpiles",
 })
 
 

@@ -19,6 +19,10 @@ después), para rejillas pequeñas (≤ 90 × 90 celdas):
 - :func:`hand_stairs` (T09, A8): el escalonado en corte o en relleno celda a celda, con el piso
   ``n`` y la fracción ``f`` en **aritmética racional exacta** (``fractions``) y la fórmula del RF
   escrita tal cual, para comparar con ``design.benching`` (RF-013-22, RF-013-23).
+- :func:`hand_plane`, :func:`hand_cell_slope_deg` y :func:`hand_crown` (spec 016, T06; plan 016 A2): el plano de
+  base robusto, la pendiente de cada celda y la corona **a mano**: bucles de Python sin numpy, el ajuste por las
+  ecuaciones normales en **aritmética racional exacta** (``fractions``: sin redondeos ni ``lstsq``), la mediana y
+  el cuantil ordenando, para comparar con ``design.stockpiles`` (RF-016-02, RF-016-07).
 
 Convenciones: ``seed`` es la rejilla de semillas (fila 0 al norte): una celda es semilla si su cota
 es finita; ``+inf``, ``−inf`` y NaN no lo son. ``direction="up"`` es ``E_up = mín_q [s + t·d]`` y
@@ -33,6 +37,7 @@ from __future__ import annotations
 import heapq
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 from fractions import Fraction
 
 import numpy as np
@@ -41,9 +46,13 @@ __all__ = [
     "CHAMFER5",
     "CHAMFER_SCALE",
     "Displacement",
+    "HandPlane",
     "brute_force_euclidean",
     "dijkstra",
     "euclidean_displacements",
+    "hand_cell_slope_deg",
+    "hand_crown",
+    "hand_plane",
     "hand_stairs",
     "relaxation_violation",
     "seed_violation",
@@ -254,4 +263,165 @@ def hand_stairs(surface: object, height: object, tan_face: object, berm: object,
     for index in np.ndindex(found.shape):
         s, h, t, b, z = (float(array[index]) for array in arrays)
         found[index] = _stair(s, h, t, b, z, fill)
+    return found
+
+
+# --- El plano de base de un acopio, a mano (spec 016, T06; plan 016 A2) --------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class HandPlane:
+    """El plano ``z = pivot_z + b·(x − pivot_x) + c·(y − pivot_y)`` de :func:`hand_plane`: su pivote
+    ``(pivot_x, pivot_y)`` (la media de las celdas dadas), ``pivot_z`` y las pendientes al este (``east_slope``, ``b``)
+    y al norte (``north_slope``, ``c``), la inclinación del ajuste (``fitted_tilt_deg``), si se limitó (``limited``)
+    y, por cada celda dada en su orden, si entró en el último ajuste (``kept``)."""
+
+    pivot_x: float
+    pivot_y: float
+    pivot_z: float
+    east_slope: float
+    north_slope: float
+    fitted_tilt_deg: float
+    limited: bool
+    kept: tuple[bool, ...]
+
+    def at(self, x: float, y: float) -> float:
+        """La cota del plano en ``(x, y)``."""
+        return self.pivot_z + self.east_slope * (x - self.pivot_x) + self.north_slope * (y - self.pivot_y)
+
+
+def _determinant(m: Sequence[Sequence[Fraction]]) -> Fraction:
+    return (m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]))
+
+
+def _exact_fit(cells: Sequence[tuple[Fraction, Fraction, Fraction]]) -> tuple[Fraction, Fraction, Fraction]:
+    """``(a, b, c)`` de ``z = a + b·x + c·y`` por mínimos cuadrados, de las ecuaciones normales resueltas con la regla
+    de Cramer en racionales (``ValueError`` si no determinan un plano: menos de tres celdas o alineadas)."""
+    zero = Fraction(0)
+    n = Fraction(len(cells))
+    sx = sum((x for x, _, _ in cells), zero)
+    sy = sum((y for _, y, _ in cells), zero)
+    sxx = sum((x * x for x, _, _ in cells), zero)
+    sxy = sum((x * y for x, y, _ in cells), zero)
+    syy = sum((y * y for _, y, _ in cells), zero)
+    sz = sum((z for _, _, z in cells), zero)
+    sxz = sum((x * z for x, _, z in cells), zero)
+    syz = sum((y * z for _, y, z in cells), zero)
+    matrix = ((n, sx, sy), (sx, sxx, sxy), (sy, sxy, syy))
+    rhs = (sz, sxz, syz)
+    det = _determinant(matrix)
+    if det == 0:
+        raise ValueError("las celdas no determinan un plano")
+    found = []
+    for column in range(3):
+        swapped = [list(row) for row in matrix]
+        for row in range(3):
+            swapped[row][column] = rhs[row]
+        found.append(_determinant(swapped) / det)
+    return found[0], found[1], found[2]
+
+
+def _median(values: Sequence[Fraction]) -> Fraction:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def _linear_quantile(values: Sequence[Fraction], q: Fraction) -> Fraction:
+    """El cuantil ``q`` de ``values`` por interpolación lineal entre los dos valores ordenados que rodean al índice
+    ``q·(n − 1)`` (el método por defecto de ``numpy.quantile``)."""
+    ordered = sorted(values)
+    position = q * (len(ordered) - 1)
+    low = math.floor(position)
+    high = min(low + 1, len(ordered) - 1)
+    return ordered[low] + (position - low) * (ordered[high] - ordered[low])
+
+
+def hand_plane(cells: Sequence[tuple[float, float, float]], *, rounds: int, max_residual_m: float,
+               tilt_max_deg: float, quantile: float) -> HandPlane:
+    """El plano de base de A2 a mano (RF-016-02, RF-016-07): ``cells`` son ``(x, y, z)`` de las celdas de la corona
+    que cuentan (las llanas o toda la corona), en el orden de lectura.
+
+    Ajuste por mínimos cuadrados exactos (racionales; coordenadas desde la media de las celdas) y, ``rounds`` veces,
+    se descartan las celdas cuyo residuo se aparta de la **mediana** de los residuos de las que quedan más que
+    ``max_residual_m`` (``>``; un descarte que dejaría menos de tres celdas o alineadas no se hace, y si no se
+    descarta nada se acaba). Si la inclinación del ajuste, ``atan(√(b² + c²))``, pasa de ``tilt_max_deg``, las
+    pendientes se escalan hasta ella sin cambiar su dirección y ``pivot_z`` es el cuantil ``quantile`` (interpolación
+    lineal) de ``z − b'·(x − pivot_x) − c'·(y − pivot_y)`` en las celdas que quedaron. Solo bucles y racionales:
+    ``ValueError`` si las celdas no determinan un plano."""
+    if len(cells) < 3:
+        raise ValueError("un plano necesita al menos tres celdas")
+    pivot_x = math.fsum(x for x, _, _ in cells) / len(cells)
+    pivot_y = math.fsum(y for _, y, _ in cells) / len(cells)
+    relative = [(Fraction(x) - Fraction(pivot_x), Fraction(y) - Fraction(pivot_y), Fraction(z)) for x, y, z in cells]
+    kept = list(range(len(cells)))
+    a, b, c = _exact_fit([relative[i] for i in kept])
+    limit = Fraction(max_residual_m)
+    for _ in range(rounds):
+        residuals = [relative[i][2] - (a + b * relative[i][0] + c * relative[i][1]) for i in kept]
+        median = _median(residuals)
+        staying = [i for i, r in zip(kept, residuals, strict=True) if abs(r - median) <= limit]
+        if len(staying) == len(kept) or len(staying) < 3:
+            break
+        try:
+            refit = _exact_fit([relative[i] for i in staying])
+        except ValueError:
+            break
+        kept, (a, b, c) = staying, refit
+    east, north = float(b), float(c)
+    gradient = math.hypot(east, north)
+    fitted = math.degrees(math.atan(gradient))
+    limited = fitted > tilt_max_deg
+    pivot_z = float(a)
+    if limited:
+        scale = math.tan(math.radians(tilt_max_deg)) / gradient
+        east, north = east * scale, north * scale
+        levels = [relative[i][2] - (Fraction(east) * relative[i][0] + Fraction(north) * relative[i][1])
+                  for i in kept]
+        pivot_z = float(_linear_quantile(levels, Fraction(quantile)))
+    staying_set = set(kept)
+    flags = tuple(i in staying_set for i in range(len(cells)))
+    return HandPlane(pivot_x, pivot_y, pivot_z, east, north, fitted, limited, flags)
+
+
+def hand_cell_slope_deg(z: Sequence[Sequence[float]], dx: float, dy: float) -> np.ndarray:
+    """La pendiente de cada celda (°): ``atan(√(∂z/∂x² + ∂z/∂y²))`` con la diferencia centrada entre las dos celdas
+    vecinas (``(z₊ − z₋)/(2·paso)``) y, en el borde de la rejilla, la de un lado (``(z₁ − z₀)/paso``); una celda sin
+    dato (NaN), o con alguna de las que usa sin dato, sale NaN. Bucles de Python (RF-016-02)."""
+    rows, cols = len(z), len(z[0])
+    found = np.empty((rows, cols))
+    for r in range(rows):
+        for c in range(cols):
+            if math.isnan(z[r][c]):
+                found[r, c] = math.nan
+                continue
+            if c == 0:
+                east = (z[r][1] - z[r][0]) / dx
+            elif c == cols - 1:
+                east = (z[r][c] - z[r][c - 1]) / dx
+            else:
+                east = (z[r][c + 1] - z[r][c - 1]) / (2.0 * dx)
+            if r == 0:
+                south = (z[1][c] - z[0][c]) / dy
+            elif r == rows - 1:
+                south = (z[r][c] - z[r - 1][c]) / dy
+            else:
+                south = (z[r + 1][c] - z[r - 1][c]) / (2.0 * dy)
+            found[r, c] = math.degrees(math.atan(math.hypot(east, south)))
+    return found
+
+
+def hand_crown(footprint: Sequence[Sequence[bool]], cell: float, inner_m: float, outer_m: float) -> np.ndarray:
+    """La corona de A2 (RF-016-02): las celdas a no más de ``outer_m`` m de alguna celda de la huella y a más de
+    ``inner_m`` m de todas (centro con centro, en metros, con la tolerancia de 10⁻⁹ m del disco de A1). Fuerza
+    bruta: cada celda contra cada celda de la huella; para rejillas pequeñas."""
+    rows, cols = len(footprint), len(footprint[0])
+    cells = [(r, c) for r in range(rows) for c in range(cols) if footprint[r][c]]
+    found = np.zeros((rows, cols), dtype=bool)
+    for r in range(rows):
+        for c in range(cols):
+            nearest = min((math.hypot((r - i) * cell, (c - j) * cell) for i, j in cells), default=math.inf)
+            found[r, c] = nearest <= outer_m + 1e-9 and not nearest <= inner_m + 1e-9
     return found
