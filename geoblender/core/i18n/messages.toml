@@ -9362,3 +9362,199 @@ es = "Calcular enseña su resumen y no registra nada: solo «Crear» lo hace, y 
 
 ["Choose the entity to calculate"]
 es = "Elija la entidad que se calcula"
+
+# Procedencia y parámetros de los cuatro tipos de entidad de la 016 (spec 016, T03; RF-016-02 a 22; plan 016 §5.2.2 y
+# §5.2.3): el nombre de cada tipo de operación, de cada cifra y de cada parámetro de design/provenance.py y
+# design/params.py. Los comunes a todos los tipos («Name of the entity»…) ya están arriba.
+
+["Stockpile detection"]
+es = "Detección de acopios"
+
+["Stockpile removal"]
+es = "Retirada de acopio"
+
+["Buttress"]
+es = "Contrafuerte"
+
+["Supported body"]
+es = "Cuerpo apoyado"
+
+["Stockpiles detected"]
+es = "Acopios detectados"
+
+["Candidates without a mark"]
+es = "Candidatos sin marca"
+
+["Footprint area of the stockpile"]
+es = "Área de la huella del acopio"
+
+["Volume of the stockpile above its base"]
+es = "Volumen del acopio sobre su base"
+
+["Largest thickness of the stockpile"]
+es = "Mayor espesor del acopio"
+
+["Tilt of the base plane of the stockpile"]
+es = "Inclinación del plano de base del acopio"
+
+["Volume removed from the stockpile"]
+es = "Volumen retirado del acopio"
+
+["Volume of the material that rested on the stockpile"]
+es = "Volumen del material que se apoyaba en el acopio"
+
+["Volume of the transition of the removal"]
+es = "Volumen de la transición de la retirada"
+
+["Volume not removed where the masks do not allow it"]
+es = "Volumen que no se retira donde las máscaras no lo admiten"
+
+["Area of the transition of the removal"]
+es = "Área de la transición de la retirada"
+
+["Largest wall left by the removal"]
+es = "Mayor pared que deja la retirada"
+
+["Volume of the buttress"]
+es = "Volumen del contrafuerte"
+
+["Area of the buttress"]
+es = "Área del contrafuerte"
+
+["Largest height of the buttress"]
+es = "Mayor altura del contrafuerte"
+
+["Area of the foot of the buttress that is cut off"]
+es = "Área del pie del contrafuerte que queda cortado"
+
+["Volume of the foot of the buttress that is cut off"]
+es = "Volumen del pie del contrafuerte que queda cortado"
+
+["Volume of the supported body"]
+es = "Volumen del cuerpo apoyado"
+
+["Largest thickness of the supported body"]
+es = "Mayor espesor del cuerpo apoyado"
+
+["Area of the body far from the thickness data"]
+es = "Área del cuerpo lejos de los datos de espesor"
+
+["Volume of the body far from the thickness data"]
+es = "Volumen del cuerpo lejos de los datos de espesor"
+
+["Thickness data ignored outside the footprint"]
+es = "Datos de espesor ignorados fuera de la huella"
+
+["Entities the entity is declared to rest on"]
+es = "Entidades en las que se declara apoyada la entidad"
+
+["The entity protects its area"]
+es = "La entidad protege su zona"
+
+["Layer of the stockpile marks"]
+es = "Capa de las marcas de los acopios"
+
+["Surface the stockpiles are detected on"]
+es = "Superficie sobre la que se detectan los acopios"
+
+["Look for candidates without a mark"]
+es = "Buscar candidatos sin marca"
+
+["Margin around the mark of a stockpile"]
+es = "Margen alrededor de la marca de un acopio"
+
+["Inner distance of the crown ring"]
+es = "Separación interior del anillo de la corona"
+
+["Outer distance of the crown ring"]
+es = "Separación exterior del anillo de la corona"
+
+["Slope of the flat terrain of the crown"]
+es = "Pendiente del terreno llano de la corona"
+
+["Minimum flat area of the crown"]
+es = "Área llana mínima de la corona"
+
+["Maximum residual of the base plane"]
+es = "Residuo máximo del plano de base"
+
+["Rounds of the robust fit of the plane"]
+es = "Vueltas del ajuste robusto del plano"
+
+["Rounds of plane and footprint"]
+es = "Vueltas de plano y huella"
+
+["Maximum tilt of the base plane"]
+es = "Inclinación máxima del plano de base"
+
+["Support quantile of the base plane"]
+es = "Cuantil de apoyo del plano de base"
+
+["Diameter of the opening of the candidates"]
+es = "Diámetro de la apertura de los candidatos"
+
+["Minimum height of a candidate"]
+es = "Altura mínima de un candidato"
+
+["Minimum area of a candidate"]
+es = "Área mínima de un candidato"
+
+["Maximum area of a candidate"]
+es = "Área máxima de un candidato"
+
+["Decisions on the candidates"]
+es = "Decisiones sobre los candidatos"
+
+["Stockpile that is removed"]
+es = "Acopio que se retira"
+
+["Transition angle of the removal"]
+es = "Ángulo de transición de la retirada"
+
+["Mesh factor of the transition of the removal"]
+es = "Factor de malla de la transición de la retirada"
+
+["Distance metric of the transition of the removal"]
+es = "Métrica de distancia de la transición de la retirada"
+
+["Reason for the wall left by the removal"]
+es = "Motivo de la pared que deja la retirada"
+
+["Layer of the crown zones"]
+es = "Capa de las zonas de coronación"
+
+["Bench profile of the buttress"]
+es = "Perfil de banco del contrafuerte"
+
+["Reach of the buttress"]
+es = "Alcance del contrafuerte"
+
+["Crown level of the buttress"]
+es = "Cota de coronación del contrafuerte"
+
+["Distance metric of the buttress slopes"]
+es = "Métrica de distancia de los taludes del contrafuerte"
+
+["Layer of the footprints of the bodies"]
+es = "Capa de las huellas de los cuerpos"
+
+["Layer of the thickness data"]
+es = "Capa de los datos de espesor"
+
+["Field of the thickness data"]
+es = "Campo de los datos de espesor"
+
+["Where the thickness is read from"]
+es = "De dónde se lee el espesor"
+
+["Known surface of the body"]
+es = "Superficie conocida del cuerpo"
+
+["Sense of the supported body"]
+es = "Sentido del cuerpo apoyado"
+
+["Maximum distance to the thickness data"]
+es = "Distancia máxima a los datos de espesor"
+
+["Thickness zero at the edge of the footprint"]
+es = "Espesor cero en el borde de la huella"

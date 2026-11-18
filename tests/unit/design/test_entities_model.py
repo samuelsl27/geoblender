@@ -195,13 +195,15 @@ def request(**changes: object) -> object:
 
 class EntityCodeTest(unittest.TestCase):
     def test_the_kind_and_its_prefix(self) -> None:
-        """RF-015-01 (plan §5.1, ADR-0030): en esta spec hay un tipo, la plataforma, y su código
-        es ``PLT-nnn``; el tipo es el valor que va en la clave de sus parámetros."""
-        self.assertEqual([item.value for item in entities.EntityKind], ["platform"])
+        """RF-015-01 (plan §5.1, ADR-0030): la plataforma es un tipo y su código es ``PLT-nnn``; el
+        tipo es el valor que va en la clave de sus parámetros. La 016 (T03) añade los suyos, después
+        de ella: el acopio, la retirada, el contrafuerte y el cuerpo apoyado; uno que no es de
+        ninguno no es un tipo."""
+        self.assertEqual([item.value for item in entities.EntityKind][0], "platform")
         self.assertEqual(PLATFORM.prefix, "PLT")
         self.assertEqual(entities.EntityKind("platform"), PLATFORM)
         with self.assertRaises(ValueError):
-            entities.EntityKind("stockpile")
+            entities.EntityKind("island")
 
     def test_the_next_code_is_correlative_and_never_reused(self) -> None:
         """RF-015-01 (ADR-0030, como el código de una restricción, D-22 de la 012): el código es

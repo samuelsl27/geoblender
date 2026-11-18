@@ -120,6 +120,32 @@ lo suyo **aparte** de lo de las dos specs anteriores, con el prefijo ``ENTITY_``
   (``entity``); las arman :func:`platform_figures`, :func:`supported_figures` y
   :func:`declare_figures`. La cota inicial y la final de la rasante son ``des.plat_start_level_m`` y
   ``des.plat_end_level_m`` (glosario §14: la pendiente de la rasante es «gradient»).
+
+**Los cuatro tipos de entidad de la 016** (spec 016, T03; RF-016-02 a 22; plan 016 §2.1, §5.2.3; ADR-0031 §3) declaran lo
+suyo **aparte**, con el prefijo ``SUPPORTED_`` y **sin comportamiento todavía** (las tareas siguientes crean cada
+operación):
+
+- :data:`SUPPORTED_FAMILIES`: ocho familias de datos, de la detección (``des_stk_``, la tabla de acopios, papel
+  ``stockpiles``; ``des_stc_``, los candidatos; ``des_stb_``, la base de cada material; ``des_stt_``, su espesor;
+  ``des_stg_``, el terreno sin acopios en las huellas; ``des_stp_``, la superficie con que se detectó) y del cuerpo bajo un
+  techo (``des_bdt_``, su espesor; ``des_bds_``, su base), tablas y rejillas **dispersas**, cada una con su papel (por el
+  que las leen la 011, la 012 y R-18 sin importar ``design``: ADR-0031 §3). Su nombre y su ubicación valen **en los dos
+  ámbitos**: :func:`dataset_locator` con el código de la versión (``rasters/des_stb_<det>_<mat>_v02.tif``) o con ``None``
+  si la detección es del proyecto (``rasters/des_stb_<det>_<mat>.tif``, D-15). :data:`FAMILIES_BY_CODE` las incluye.
+- :data:`SUPPORTED_OPERATION_TYPES`: cuatro tipos de la versión, repetibles y reproducibles
+  (:data:`SUPPORTED_VERSION_TYPES`, :data:`SUPPORTED_REPRODUCIBLE`): ``des.stockpile_detect``
+  (:data:`STOCKPILE_DETECT`), ``des.stockpile_removal`` (:data:`STOCKPILE_REMOVAL`), ``des.buttress``
+  (:data:`BUTTRESS`) y ``des.body`` (:data:`BODY`), con :func:`supported_operation_defs`. **Aviso:** la detección del
+  proyecto (D-15) pide un tipo de **proyecto**, y ``OperationDef.scope`` es uno por tipo: queda para la T04 y la T13.
+- Los ajustes, lo que consume y los parámetros que lee cada tipo: :func:`stockpile_settings`, :func:`stockpile_request`,
+  :func:`stockpile_inputs` y :func:`stockpile_params` y los homólogos de la retirada, el contrafuerte y el cuerpo; los
+  valores de la entidad por su código, :func:`supported_values` y :func:`supported_code`. El umbral de la huella (011) y el
+  espesor mínimo (012) se leen por su clave, no se copian.
+- :data:`SUPPORTED_FIGURES`: las cifras de los cuatro tipos (:data:`STOCKPILE_FIGURES`, :data:`REMOVAL_FIGURES`,
+  :data:`BUTTRESS_FIGURES` y :data:`BODY_FIGURES`), con el ámbito de las entidades (:func:`entity_figure_scope`) y, las
+  de un acopio, **su clave y su material** (:func:`stockpile_figure_scope`: sin la clave, las de dos acopios se
+  pisarían); las arman :func:`stockpile_figures`, :func:`removal_figures`, :func:`buttress_figures` y
+  :func:`body_figures`.
 """
 
 from __future__ import annotations
@@ -155,6 +181,10 @@ from ..gis.provenance import dataset_slug
 from .model import (
     AnchorMode,
     BenchSense,
+    BodyRequest,
+    BodySense,
+    ButtressFields,
+    ButtressRequest,
     CorridorFields,
     DesignRequest,
     Direction,
@@ -168,9 +198,12 @@ from .model import (
     QuarryRequest,
     QuarrySide,
     RefitRequest,
+    RemovalRequest,
     SeedKind,
     SeedSource,
     SlopeMode,
+    StockpileFields,
+    StockpileRequest,
     Surface,
     ToFinalMode,
     WorkDomain,
@@ -178,6 +211,7 @@ from .model import (
     ZoneKind,
 )
 from .params import (
+    ANTHROPIC_PRESENCE,
     CONSERVE_SLOPE,
     CROWN_RING,
     EDGE_MAX_STEP,
@@ -189,9 +223,14 @@ from .params import (
     VERIFY_MIN_THICKNESS,
     WARNING_RATIO,
     BenchParam,
+    BodyParam,
+    ButtressParam,
     PlatformParam,
+    RemovalParam,
+    StockpileParam,
     bench_key,
     entity_key,
+    entity_params_of,
     entity_segment,
 )
 from .params import EDGE_TRANSITION as EDGE_TRANSITION_DEG
@@ -204,6 +243,17 @@ __all__ = [
     "AREA_FIGURES",
     "BERMS_GRID",
     "BERM_TABLE",
+    "BODY",
+    "BODY_BASE_GRID",
+    "BODY_BASE_ROLE",
+    "BODY_COMMAND",
+    "BODY_DATA_ROLE",
+    "BODY_FIGURES",
+    "BODY_THICKNESS_GRID",
+    "BODY_THICKNESS_ROLE",
+    "BUTTRESS",
+    "BUTTRESS_COMMAND",
+    "BUTTRESS_FIGURES",
     "CLASSIFICATION_GRID",
     "CLASSIFICATION_ROLE",
     "COMMAND",
@@ -271,6 +321,8 @@ __all__ = [
     "FINAL_GRID",
     "FLOORS_LAYER_ROLE",
     "LIMIT_COMMAND",
+    "MARKS_LAYER_ROLE",
+    "MATERIAL_SCOPE_KEY",
     "MODULE",
     "OPERATION_TYPES",
     "OPERATION_TYPES_BY_NAME",
@@ -297,6 +349,9 @@ __all__ = [
     "REFIT_FIGURES",
     "REFIT_GRID",
     "REFIT_PROFILE_PARAMS",
+    "REMOVAL_COMMAND",
+    "REMOVAL_FIGURES",
+    "REMOVED_STOCKPILE_ROLE",
     "REPORT_TABLE",
     "REPRODUCIBLE",
     "SEARCHES_ROLE",
@@ -304,8 +359,30 @@ __all__ = [
     "SECTOR_SCOPE_KEY",
     "SEEDS_GRID_ROLE",
     "STEPPED",
+    "STOCKPILES_ROLE",
+    "STOCKPILES_TABLE",
+    "STOCKPILE_BASE_GRID",
+    "STOCKPILE_BASE_ROLE",
+    "STOCKPILE_CANDIDATES_ROLE",
+    "STOCKPILE_CANDIDATES_TABLE",
+    "STOCKPILE_COMMAND",
+    "STOCKPILE_DETECT",
+    "STOCKPILE_FIGURES",
+    "STOCKPILE_GROUND_GRID",
+    "STOCKPILE_GROUND_ROLE",
+    "STOCKPILE_REMOVAL",
+    "STOCKPILE_SCOPE_KEY",
+    "STOCKPILE_SURFACE_GRID",
+    "STOCKPILE_SURFACE_ROLE",
+    "STOCKPILE_THICKNESS_GRID",
+    "STOCKPILE_THICKNESS_ROLE",
+    "SUPPORTED_FAMILIES",
+    "SUPPORTED_FIGURES",
     "SUPPORTED_M3",
     "SUPPORTED_ON_ROLE",
+    "SUPPORTED_OPERATION_TYPES",
+    "SUPPORTED_REPRODUCIBLE",
+    "SUPPORTED_VERSION_TYPES",
     "SUPPORT_FIGURES",
     "SUPPORT_FOOTPRINT_ROLE",
     "SUPPORTS_RELEASED",
@@ -323,6 +400,17 @@ __all__ = [
     "ZONE_LAYER_ROLE",
     "DatasetFamily",
     "OperationType",
+    "StockpileFigures",
+    "body_figures",
+    "body_inputs",
+    "body_params",
+    "body_request",
+    "body_settings",
+    "buttress_figures",
+    "buttress_inputs",
+    "buttress_params",
+    "buttress_request",
+    "buttress_settings",
     "dataset_locator",
     "dataset_name",
     "dataset_spec",
@@ -383,6 +471,11 @@ __all__ = [
     "refit_request",
     "refit_settings",
     "refit_source",
+    "removal_figures",
+    "removal_inputs",
+    "removal_params",
+    "removal_request",
+    "removal_settings",
     "sector_inputs",
     "settings_decisions",
     "settings_entities",
@@ -391,7 +484,16 @@ __all__ = [
     "settings_previous",
     "settings_touched",
     "settings_version",
+    "stockpile_figure_scope",
+    "stockpile_figures",
+    "stockpile_inputs",
+    "stockpile_params",
+    "stockpile_request",
+    "stockpile_settings",
+    "supported_code",
     "supported_figures",
+    "supported_operation_defs",
+    "supported_values",
     "transition_inputs",
     "transition_settings",
     "transition_start",
@@ -482,6 +584,40 @@ DECLARED_ROLE = "constraints_declared"
 ``des.declare_constraints`` y, con el mismo texto, lo que consume la compilación de la 012 (T18)."""
 ENTITY_MAP_ROLE = "entity_map"
 """El papel de la capa de entidades que se abre en QGIS (``des.entity_layer``)."""
+
+# Los papeles de los cuatro tipos de la 016 (spec 016, T03; plan 016 §5.2.3; ADR-0031 §3): los de lo que producen la
+# detección y el cuerpo bajo un techo, por los que leen sus datos la 011, la 012 y R-18 sin importar ``design``, y los
+# de lo que consumen.
+STOCKPILES_ROLE = "stockpiles"
+"""El papel de la tabla de acopios de una detección (``des_stk_``: la clave, el nombre, el material, el plano, la huella
+en tramos, el área, el volumen, el espesor máximo, las notas y los avisos de cada acopio)."""
+STOCKPILE_CANDIDATES_ROLE = "stockpile_candidates"
+"""El papel de la tabla de candidatos sin marca de una detección y su estado (``des_stc_``)."""
+STOCKPILE_BASE_ROLE = "stockpile_base"
+"""El papel de la base de los acopios de **un material** (``des_stb_``): la base (m) de la unidad antrópica que toma la
+011 (RF-011-14) y la que lee la verificación de la 012 (RF-012-30). Dispersa: sin dato fuera de las huellas."""
+STOCKPILE_THICKNESS_ROLE = "stockpile_thickness"
+"""El papel del espesor de los acopios de **un material** (``des_stt_``; m, ≥ 0: RF-016-01): la rejilla de espesores de
+su unidad antrópica en la 011. Dispersa."""
+STOCKPILE_GROUND_ROLE = "stockpile_ground"
+"""El papel del terreno sin acopios **en las huellas** (``des_stg_``: el menor de la superficie detectada y de la base;
+P-5): fuera de ellas es la superficie de la que parte la detección. De él compone R-18 el terreno in situ (D-22)."""
+STOCKPILE_SURFACE_ROLE = "stockpile_surface"
+"""El papel de la superficie con que se detectó, en las huellas (``des_stp_``): **sobre la que se apoya** lo que
+rellena encima (RF-015-15), con el contrato de ``entity_surface`` sin ser una superficie de diseño ni de una cadena."""
+BODY_THICKNESS_ROLE = "body_thickness"
+"""El papel del espesor de un cuerpo apoyado (``des_bdt_``; m, ≥ 0), disperso."""
+BODY_BASE_ROLE = "body_base"
+"""El papel de la base de un cuerpo «bajo un techo» (``des_bds_``), dispersa: el techo menos el espesor."""
+MARKS_LAYER_ROLE = "marks_layer"
+"""El papel de la capa de marcas de acopios que consume ``des.stockpile_detect`` (polígonos; su geometría y su hash: un
+cambio de geometría en QGIS deja obsoleta la detección, uno de un campo no, P-3 de la 015)."""
+REMOVED_STOCKPILE_ROLE = "removed_stockpile"
+"""El papel del acopio que retira ``des.stockpile_removal``: su tabla (``des_stk_``) y su base (``des_stb_``). Si una
+retirada viva lo consume, el dato del acopio cuenta como retirado para lo que se apoyaba en él (P-9, «apoyo
+retirado»)."""
+BODY_DATA_ROLE = "body_data"
+"""El papel de la capa con los datos de espesor que consume ``des.body`` (puntos, líneas 3D o polígonos)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -631,10 +767,53 @@ La superficie de una entidad lleva :data:`ENTITY_SURFACE_ROLE` y **no** :data:`D
 las de una cadena son de trabajo, y la última la añade congelar (P-2, T32). La tabla de la entidad es
 una tabla (``table``: su huella y su eje van como columnas); las de las restricciones declaradas y la
 capa de entidades son capas (``vector``) para QGIS, una por versión."""
+# Las de la detección de acopios y el cuerpo bajo un techo (spec 016, T03; plan 016 §5.2.3; ADR-0031 §3; P-4, P-5).
+STOCKPILES_TABLE = "stk"
+"""La tabla de acopios de una detección (``des_stk_<detección>``; papel :data:`STOCKPILES_ROLE`)."""
+STOCKPILE_CANDIDATES_TABLE = "stc"
+"""La tabla de candidatos sin marca y su estado (``des_stc_<detección>``)."""
+STOCKPILE_BASE_GRID = "stb"
+"""La base de los acopios de un material, dispersa (``rasters/des_stb_<detección>_<material>[_<vNN>].tif``)."""
+STOCKPILE_THICKNESS_GRID = "stt"
+"""El espesor de los acopios de un material, disperso (``des_stt_<detección>_<material>``)."""
+STOCKPILE_GROUND_GRID = "stg"
+"""El terreno sin acopios, solo en las huellas (``des_stg_<detección>``; P-5)."""
+STOCKPILE_SURFACE_GRID = "stp"
+"""La superficie con que se detectó, solo en las huellas (``des_stp_<detección>``)."""
+BODY_THICKNESS_GRID = "bdt"
+"""El espesor de un cuerpo apoyado, disperso (``des_bdt_<cuerpo>``)."""
+BODY_BASE_GRID = "bds"
+"""La base de un cuerpo «bajo un techo», dispersa (``des_bds_<cuerpo>``)."""
+
+SUPPORTED_FAMILIES: tuple[DatasetFamily, ...] = (
+    DatasetFamily(STOCKPILES_TABLE, "table", Store.GPKG, GPKG_LAYER.id, STOCKPILES_ROLE, "",
+                  "Tabla de acopios"),
+    DatasetFamily(STOCKPILE_CANDIDATES_TABLE, "table", Store.GPKG, GPKG_LAYER.id, STOCKPILE_CANDIDATES_ROLE, "",
+                  "Candidatos sin marca y su estado"),
+    DatasetFamily(STOCKPILE_BASE_GRID, "raster", Store.RASTERS, GEOTIFF.id, STOCKPILE_BASE_ROLE, ".tif",
+                  "Base de los acopios de un material"),
+    DatasetFamily(STOCKPILE_THICKNESS_GRID, "raster", Store.RASTERS, GEOTIFF.id, STOCKPILE_THICKNESS_ROLE, ".tif",
+                  "Espesor de los acopios de un material"),
+    DatasetFamily(STOCKPILE_GROUND_GRID, "raster", Store.RASTERS, GEOTIFF.id, STOCKPILE_GROUND_ROLE, ".tif",
+                  "Terreno sin acopios en sus huellas"),
+    DatasetFamily(STOCKPILE_SURFACE_GRID, "raster", Store.RASTERS, GEOTIFF.id, STOCKPILE_SURFACE_ROLE, ".tif",
+                  "Superficie con que se detectaron los acopios, en sus huellas"),
+    DatasetFamily(BODY_THICKNESS_GRID, "raster", Store.RASTERS, GEOTIFF.id, BODY_THICKNESS_ROLE, ".tif",
+                  "Espesor de un cuerpo apoyado"),
+    DatasetFamily(BODY_BASE_GRID, "raster", Store.RASTERS, GEOTIFF.id, BODY_BASE_ROLE, ".tif",
+                  "Base de un cuerpo bajo un techo"),
+)
+"""Las familias de datos de la detección de acopios y del cuerpo bajo un techo (plan 016 §5.2.3), aparte de las de las
+tres specs anteriores. **Dispersas** (sin dato fuera de las huellas: 0,4 MiB frente a 15,1 MiB enteras, P-4) y cada una
+con su papel, por el que las leen la 011, la 012 y R-18 (ADR-0031 §3); ninguna lleva el papel de una superficie de
+diseño. Su nombre y su ubicación valen en los dos ámbitos de la detección, del proyecto o de la versión (D-15; véase
+:func:`dataset_locator`)."""
 FAMILIES_BY_CODE: Mapping[str, DatasetFamily] = MappingProxyType(
-    {family.code: family for family in (*FAMILIES, *QUARRY_FAMILIES, *ENTITY_FAMILIES)})
-"""Las familias de las tres specs por código (solo lectura)."""
-if len(FAMILIES_BY_CODE) != len(FAMILIES) + len(QUARRY_FAMILIES) + len(ENTITY_FAMILIES):
+    {family.code: family
+     for family in (*FAMILIES, *QUARRY_FAMILIES, *ENTITY_FAMILIES, *SUPPORTED_FAMILIES)})
+"""Las familias de las cuatro specs por código (solo lectura)."""
+if len(FAMILIES_BY_CODE) != (len(FAMILIES) + len(QUARRY_FAMILIES) + len(ENTITY_FAMILIES)
+                              + len(SUPPORTED_FAMILIES)):
     raise RuntimeError("dos familias de datos del diseño con el mismo código")  # pragma: no cover
 
 
@@ -662,23 +841,30 @@ def dataset_name(family: str, name: str = "") -> str:
     return found.prefix + dataset_slug(name)
 
 
-def dataset_locator(family: str, name: str, version_code: str) -> str:
+def dataset_locator(family: str, name: str, version_code: str | None) -> str:
     """La ubicación del dato de la familia ``family`` de la operación ``name`` en la versión
     ``version_code`` («V03»): la tabla (``des_bmt_<nombre>_v03``) o la ruta en su almacén
     (``rasters/des_srf_<nombre>_v03.tif``; D-34 de la 009). Con una familia sin nombre
-    (``des_decl_v03``), ``name`` es ``""``."""
+    (``des_decl_v03``), ``name`` es ``""``.
+
+    ``version_code`` ``None`` (spec 016, T03; ADR-0031 §2; D-15): el dato **del proyecto**, sin código de versión
+    (``des_stk_<nombre>``, ``rasters/des_stb_<nombre>.tif``): el de una detección de acopios sobre una superficie del
+    proyecto, que lee R-18 sin consumir un dato de versión (RF-009-05). Es el mismo dato, el mismo nombre y las mismas
+    familias; solo cambia dónde se escribe."""
     found = _family(family)
     base = dataset_name(family, name)
     if found.store is Store.GPKG:
-        return version_locator(base, version_code)
-    return version_locator(f"{found.store}/{base}{found.extension}", version_code)
+        return base if version_code is None else version_locator(base, version_code)
+    locator = f"{found.store}/{base}{found.extension}"
+    return locator if version_code is None else version_locator(locator, version_code)
 
 
-def dataset_spec(family: str, name: str, version_code: str, *,
+def dataset_spec(family: str, name: str, version_code: str | None, *,
                  content: ContentDigest | None = None,
                  crs_epsg: int | None = None) -> DatasetSpec:
     """La ``DatasetSpec`` del dato de la familia ``family`` de la operación ``name`` en la
-    versión ``version_code`` (RF-008-17, RF-013-31): su nombre, su tipo, su almacén, su
+    versión ``version_code`` (RF-008-17, RF-013-31; ``None``: el del proyecto, sin código de versión,
+    :func:`dataset_locator`): su nombre, su tipo, su almacén, su
     ubicación, su lector y su papel; sin selector y no editable en QGIS. ``content``: su hash,
     calculado fuera de la transacción (R4); ``crs_epsg``, el de una rejilla o una capa. Con una
     familia sin nombre (:func:`dataset_name`), ``name`` es ``""``."""
@@ -901,6 +1087,54 @@ DECLARE_FIGURES: tuple[FigureDef, ...] = (
 ENTITY_FIGURES: tuple[FigureDef, ...] = (*PLATFORM_FIGURES, *SUPPORT_FIGURES, *DECLARE_FIGURES)
 """Las cifras que declara la 015 (plan 015 §5.2.3), aparte de las de la 013 y la 014."""
 
+# Las cifras de los cuatro tipos de la 016 (spec 016, T03; plan 016 §5.2.3; RF-016-02, 09, 13, 17, 19, 20, 21).
+STOCKPILE_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("des.stk_count", "-", "Stockpiles detected"),
+    FigureDef("des.stk_candidates", "-", "Candidates without a mark"),
+    FigureDef("des.stk_area_m2", "m2", "Footprint area of the stockpile"),
+    FigureDef("des.stk_volume_m3", "m3", "Volume of the stockpile above its base"),
+    FigureDef("des.stk_thickness_max_m", "m", "Largest thickness of the stockpile"),
+    FigureDef("des.stk_plane_tilt_deg", "deg", "Tilt of the base plane of the stockpile"),
+)
+"""Las cifras de ``des.stockpile_detect`` (RF-016-02, RF-016-08; plan 016 §5.2.3): cuántos acopios y cuántos candidatos
+da la detección (con el ámbito de :func:`entity_figure_scope`) y, **por acopio y material** (ámbito de
+:func:`stockpile_figure_scope`: la clave del acopio y su material), su área, su volumen sobre su base, su espesor máximo y
+la inclinación de su plano de base (un acopio con superficie de base propia, RF-016-03, no tiene plano ni inclinación)."""
+REMOVAL_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("des.rmv_removed_m3", "m3", "Volume removed from the stockpile"),
+    FigureDef("des.rmv_resting_m3", "m3", "Volume of the material that rested on the stockpile"),
+    FigureDef("des.rmv_transition_m3", "m3", "Volume of the transition of the removal"),
+    FigureDef("des.rmv_kept_m3", "m3", "Volume not removed where the masks do not allow it"),
+    FigureDef("des.rmv_transition_m2", "m2", "Area of the transition of the removal"),
+    FigureDef("des.rmv_wall_max_m", "m", "Largest wall left by the removal"),
+)
+"""Las cifras de ``des.stockpile_removal`` (RF-016-13; plan 016 §5.2.3), con el ámbito de las entidades: el volumen
+retirado del acopio, el del material que se le apoyaba, el de la transición, el que no se retira donde las máscaras no
+lo admiten, el área de la transición y la mayor pared. Las deja también la plataforma que sale de retirar un acopio
+«como plataforma» (RF-016-16). La cifra de lo apoyado, ``des.supported_m3``, es de :data:`SUPPORT_FIGURES`."""
+BUTTRESS_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("des.btr_volume_m3", "m3", "Volume of the buttress"),
+    FigureDef("des.btr_area_m2", "m2", "Area of the buttress"),
+    FigureDef("des.btr_height_max_m", "m", "Largest height of the buttress"),
+    FigureDef("des.btr_cutoff_m2", "m2", "Area of the foot of the buttress that is cut off"),
+    FigureDef("des.btr_cutoff_m3", "m3", "Volume of the foot of the buttress that is cut off"),
+)
+"""Las cifras de ``des.buttress`` (RF-016-17, RF-016-19; plan 016 §5.2.3): su volumen, su área y su altura máxima y el
+área y el volumen que faltan del pie cortado por el borde del relleno admitido."""
+BODY_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("des.bdy_volume_m3", "m3", "Volume of the supported body"),
+    FigureDef("des.bdy_thickness_max_m", "m", "Largest thickness of the supported body"),
+    FigureDef("des.bdy_far_m2", "m2", "Area of the body far from the thickness data"),
+    FigureDef("des.bdy_far_m3", "m3", "Volume of the body far from the thickness data"),
+    FigureDef("des.bdy_ignored", "-", "Thickness data ignored outside the footprint"),
+)
+"""Las cifras de ``des.body`` (RF-016-20, RF-016-21; plan 016 §5.2.3): su volumen y su espesor máximo, el área y el
+volumen de lo que queda a más de la distancia máxima de los datos y cuántos datos se ignoraron por caer fuera de la
+huella."""
+SUPPORTED_FIGURES: tuple[FigureDef, ...] = (*STOCKPILE_FIGURES, *REMOVAL_FIGURES, *BUTTRESS_FIGURES, *BODY_FIGURES)
+"""Las cifras que declara la 016 (plan 016 §5.2.3), aparte de las de las tres specs anteriores (``des.supported_m3``
+ya es de la 015)."""
+
 
 # --- Tipos de operación ------------------------------------------------------------------------
 
@@ -927,6 +1161,21 @@ PLATFORM_COMMAND = "geoblender.des_create_platform"
 la declaración y la capa de entidades las encadena la orden que crea la entidad, plan 015 §5.3.2). Es
 la definitiva del plan 015 §5.3.3 (spec 015, T15): sustituye a la clave marcador que traía el catálogo
 (``geoblender.des_draw_platform``)."""
+
+STOCKPILE_DETECT = "des.stockpile_detect"
+STOCKPILE_REMOVAL = "des.stockpile_removal"
+BUTTRESS = "des.buttress"
+BODY = "des.body"
+"""Los cuatro tipos de la 016 (spec 016, T03; plan 016 §5.2.3): la detección de acopios, su retirada, el contrafuerte y
+el cuerpo apoyado. «Como plataforma» no es un tipo: es una ``des.platform`` con la huella como geometría (P-3)."""
+STOCKPILE_COMMAND = "geoblender.des_detect_stockpiles"
+REMOVAL_COMMAND = "geoblender.des_remove_stockpile"
+BUTTRESS_COMMAND = "geoblender.des_add_buttress"
+BODY_COMMAND = "geoblender.des_create_body"
+"""Las órdenes que los lanzan (plan 016 §5.3.3; la decisión de la sesión principal sobre la T35, 18/11/2026: se conservan
+los nombres que ya tiene el catálogo, ``des_add_buttress`` y ``des_edit_stockpile``, y la «Unidad por espesor sobre su
+apoyo…» pasa a ser ``des_create_body``). Las de acopios, la retirada y el cuerpo **aún no están en el catálogo** (las
+crea la T35): una orden que lanza una operación se declara en ``OperationDef.commands``, que solo comprueba su forma."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1001,10 +1250,35 @@ ENTITY_OPERATION_TYPES: tuple[OperationType, ...] = (
 014: repetibles y reproducibles (:data:`ENTITY_REPRODUCIBLE`) salvo la capa de entidades (T30: es una vista
 regenerable que incluye el estado de cada entidad, deducido del grafo; ``drops_discarded``: su recálculo
 reúne él mismo las entidades vivas, como la declaración)."""
+SUPPORTED_OPERATION_TYPES: tuple[OperationType, ...] = (
+    OperationType(STOCKPILE_DETECT, "Stockpile detection",
+                  (STOCKPILES_TABLE, STOCKPILE_CANDIDATES_TABLE, STOCKPILE_BASE_GRID, STOCKPILE_THICKNESS_GRID,
+                   STOCKPILE_GROUND_GRID, STOCKPILE_SURFACE_GRID, ENTITY_REPORT_TABLE),
+                  (), STOCKPILE_FIGURES, (STOCKPILE_COMMAND,)),
+    OperationType(STOCKPILE_REMOVAL, "Stockpile removal",
+                  (ENTITY_SURFACE_GRID, ENTITY_TABLE, ENTITY_REPORT_TABLE),
+                  (), (*REMOVAL_FIGURES, *SUPPORT_FIGURES), (REMOVAL_COMMAND,)),
+    OperationType(BUTTRESS, "Buttress", (ENTITY_SURFACE_GRID, ENTITY_TABLE, ENTITY_REPORT_TABLE),
+                  (), (*BUTTRESS_FIGURES, *SUPPORT_FIGURES), (BUTTRESS_COMMAND,)),
+    OperationType(BODY, "Supported body",
+                  (BODY_THICKNESS_GRID, BODY_BASE_GRID, ENTITY_SURFACE_GRID, ENTITY_TABLE, ENTITY_REPORT_TABLE),
+                  (), BODY_FIGURES, (BODY_COMMAND,)),
+)
+"""Los tipos de operación de la 016 (plan 016 §5.2.3), aparte de los de las tres specs anteriores: de la versión,
+repetibles y reproducibles, **sin comportamiento todavía** (cada tarea que crea una operación le da su cálculo). Como en
+la plataforma, la definición de cada entidad son sus **parámetros** (``des.<tipo>.{e}.*``): los ajustes no declaran
+ninguno. Salidas: la detección, sus tablas y rejillas dispersas (el papel de cada una es el de su familia); la retirada
+y el contrafuerte, su superficie entera (``des_psf_``), su tabla (``des_epr_``: la huella y, el contrafuerte, la zona de
+coronación) y su informe; el cuerpo, su espesor disperso y, «sobre una base», su superficie entera o, «bajo un techo», su
+base dispersa. La retirada y el contrafuerte dejan también ``des.supported_m3`` (lo que apoyan: ADR-0031 §4).
+
+**La detección del proyecto** (D-15; ADR-0031 §2) es la misma operación con otro escritor, pero ``OperationDef.scope`` es
+uno por tipo (``version``): un tipo de proyecto con el mismo cálculo lo resuelven la T04 y la T13."""
 OPERATION_TYPES_BY_NAME: Mapping[str, OperationType] = MappingProxyType(
     {declared.op_type: declared
-     for declared in (*OPERATION_TYPES, *QUARRY_OPERATION_TYPES, *ENTITY_OPERATION_TYPES)})
-"""Los tipos de las tres specs por nombre (solo lectura)."""
+     for declared in (*OPERATION_TYPES, *QUARRY_OPERATION_TYPES, *ENTITY_OPERATION_TYPES,
+                      *SUPPORTED_OPERATION_TYPES)})
+"""Los tipos de las cuatro specs por nombre (solo lectura)."""
 VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in OPERATION_TYPES)
 """Los tipos de versión de la 013 (RF-013-17, RF-013-31)."""
 REPRODUCIBLE: tuple[str, ...] = VERSION_TYPES
@@ -1021,11 +1295,16 @@ ENTITY_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in ENTITY_OPERATION
                                              if t.reproducible)
 """Los tipos de la 015 que se reproducen: la plataforma y la declaración de restricciones (RF-015-02: bit a bit
 desde una revisión congelada, con :data:`FIGURE_TOLERANCE` en las cifras). La capa de entidades no (T30)."""
+SUPPORTED_VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in SUPPORTED_OPERATION_TYPES)
+"""Los tipos de versión de la 016, que se repiten solos (RF-016-10)."""
+SUPPORTED_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in SUPPORTED_OPERATION_TYPES if t.reproducible)
+"""Los tipos de la 016 que se reproducen: los cuatro (bit a bit desde una revisión congelada, con
+:data:`FIGURE_TOLERANCE` en las cifras)."""
 
 
 def operation_def(op_type: str, recompute: RecomputeFunction | None = None,
                   reproduce: ReproduceFunction | None = None) -> OperationDef:
-    """El ``OperationDef`` de ``op_type`` (de la 013, la 014 o la 015) con las funciones de recálculo y
+    """El ``OperationDef`` de ``op_type`` (de la 013, la 014, la 015 o la 016) con las funciones de recálculo y
     de reproducción que le da ``bl``. ``ValueError`` si el tipo no es de ``des``, falta la
     función de recálculo o se da la de reproducción a uno que no se reproduce."""
     found = OPERATION_TYPES_BY_NAME.get(op_type) if isinstance(op_type, str) else None
@@ -1075,6 +1354,17 @@ def entity_operation_defs(recompute: Mapping[str, RecomputeFunction],
     _check_functions("reproducción", reproduce, ENTITY_REPRODUCIBLE)
     return tuple(declared.definition(recompute[declared.op_type], reproduce.get(declared.op_type))
                  for declared in ENTITY_OPERATION_TYPES)
+
+
+def supported_operation_defs(recompute: Mapping[str, RecomputeFunction],
+                             reproduce: Mapping[str, ReproduceFunction]) -> tuple[OperationDef, ...]:
+    """Los ``OperationDef`` de los cuatro tipos de la 016 (spec 016, T03), en su orden: cada uno con su función de
+    ``recompute`` (todos se repiten solos) y de ``reproduce`` (:data:`SUPPORTED_REPRODUCIBLE`: los cuatro).
+    ``ValueError`` si sobra o falta alguna."""
+    _check_functions("recálculo", recompute, SUPPORTED_VERSION_TYPES)
+    _check_functions("reproducción", reproduce, SUPPORTED_REPRODUCIBLE)
+    return tuple(declared.definition(recompute[declared.op_type], reproduce[declared.op_type])
+                 for declared in SUPPORTED_OPERATION_TYPES)
 
 
 # --- Las cifras: armarlas -----------------------------------------------------------------------
@@ -2599,3 +2889,488 @@ def declare_params(codes: Iterable[str], *, protecting: Iterable[str] = (),
         if code in edited:
             found.append(entity_key(code, PlatformParam.REASON))
     return _unique(found)
+
+
+# --- Los cuatro tipos de entidad de la 016 (spec 016, T03; plan 016 §5.2.2 y §5.2.3; ADR-0025, ADR-0031) -----------
+# Sin comportamiento todavía: los ajustes, lo que consume, los parámetros que lee y las cifras de cada tipo, como los
+# de la plataforma (``platform_*``); las tareas siguientes crean cada operación con ellos.
+
+STOCKPILE_SCOPE_KEY = "stockpile"
+"""La clave del ámbito de una cifra de un acopio además de la del nombre y la entidad: **la clave del acopio** (la de
+su marca: ``m07``). La detección es una sola operación con muchos acopios (P-1): sin ella, las cifras de dos acopios se
+pisarían (la vigente de una clave es la última de cada ámbito, RF-009-20)."""
+MATERIAL_SCOPE_KEY = "material"
+"""La clave del ámbito de una cifra de un acopio con material (D-19): una base y un espesor por material."""
+
+
+def stockpile_figure_scope(name: str, code: str, stockpile: str, material: str | None = None) -> dict[str, str]:
+    """El ámbito de una cifra de **un acopio** de la detección ``name`` de código ``code`` (spec 016, T03; plan 016
+    §2.1; ``docs/trampas.md`` §6): el de :func:`entity_figure_scope` (el nombre de la operación y el código de la
+    detección), la clave del acopio (:data:`STOCKPILE_SCOPE_KEY`, ``m07``) y, si lo tiene, su material
+    (:data:`MATERIAL_SCOPE_KEY`). ``ValueError`` si ``code`` no es un código de entidad, o la clave o el material están en
+    blanco."""
+    scope = entity_figure_scope(name, code)
+    for key, value in ((STOCKPILE_SCOPE_KEY, stockpile), (MATERIAL_SCOPE_KEY, material)):
+        if value is None and key == MATERIAL_SCOPE_KEY:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"el {key} del ámbito de una cifra de un acopio es un texto con algo, no {value!r}")
+        scope[key] = value
+    return scope
+
+
+@dataclass(frozen=True, slots=True)
+class StockpileFigures:
+    """Las cifras de **un acopio** de una detección (RF-016-02; plan 016 §5.2.3): su clave (``stockpile``), su material
+    (``material``, ``None`` si la marca no lo da), su área (m²), su volumen sobre su base (m³), su espesor máximo (m) y la
+    inclinación de su plano de base (°; ``None`` si no tiene plano: su base es una superficie propia, RF-016-03)."""
+
+    stockpile: str
+    material: str | None
+    area_m2: float
+    volume_m3: float
+    thickness_max_m: float
+    plane_tilt_deg: float | None = None
+
+
+def stockpile_figures(name: str, code: str, *, count: int, candidates: int | None,
+                      stockpiles: Iterable[StockpileFigures]) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO de la detección ``name`` de código ``code`` (spec 016, T03; RF-016-02, RF-016-08; plan 016
+    §5.2.3), en el orden de :data:`STOCKPILE_FIGURES`: ``des.stk_count`` (los acopios) y ``des.stk_candidates`` (si se
+    pidieron los candidatos: ``candidates`` no es ``None``), con el ámbito de :func:`entity_figure_scope`, y, de cada
+    acopio de ``stockpiles`` y en su orden, su área, su volumen, su espesor máximo y la inclinación de su plano (si lo
+    tiene), con el ámbito de :func:`stockpile_figure_scope`. Ninguna es negativa ni NaN ni infinita; los recuentos son
+    enteros (``ValueError``; ``TypeError`` si no son números)."""
+    scope = entity_figure_scope(name, code)
+    found = [FigureSpec("des.stk_count", _count("des.stk_count", count), "-", scope=scope)]
+    if candidates is not None:
+        found.append(FigureSpec("des.stk_candidates", _count("des.stk_candidates", candidates), "-", scope=scope))
+    for item in stockpiles:
+        each = stockpile_figure_scope(name, code, item.stockpile, item.material)
+        values = (("des.stk_area_m2", item.area_m2, "m2"), ("des.stk_volume_m3", item.volume_m3, "m3"),
+                  ("des.stk_thickness_max_m", item.thickness_max_m, "m"),
+                  ("des.stk_plane_tilt_deg", item.plane_tilt_deg, "deg"))
+        found += [FigureSpec(key, _non_negative(key, value), unit, scope=each)
+                  for key, value, unit in values if value is not None]
+    return tuple(found)
+
+
+def _entity_figures(declared: tuple[FigureDef, ...], what: str, name: str, code: str,
+                    values: Mapping[str, float | None]) -> tuple[FigureSpec, ...]:
+    """Las cifras de ``declared`` de la entidad ``name`` de código ``code`` con el ámbito de
+    :func:`entity_figure_scope`, en el orden de ``declared`` y con su unidad: ``values`` da cada una por su clave (todas,
+    ninguna de más ni de menos). Una que no existe (``None``) no se registra; un recuento (unidad ``-``) es un entero no
+    negativo y las demás, un real finito no negativo (``ValueError``)."""
+    keys = {figure.key: figure for figure in declared}
+    given = _mapping(values, f"las cifras de {what}")
+    extra = sorted(str(key) for key in given if key not in keys)
+    if extra:
+        raise ValueError(f"{', '.join(extra)} no son cifras de {what}: son {', '.join(keys)}")
+    missing = [key for key in keys if key not in given]
+    if missing:
+        raise ValueError(f"faltan las cifras de {what} «{name}»: {', '.join(missing)} "
+                         "(las que no existen se dan como None)")
+    scope = entity_figure_scope(name, code)
+    found = []
+    for key, figure in keys.items():
+        value = given[key]
+        if value is None:
+            continue
+        number = _count(key, value) if figure.unit == "-" else _non_negative(key, value)
+        found.append(FigureSpec(key, number, figure.unit, scope=scope))
+    return tuple(found)
+
+
+def removal_figures(name: str, code: str, values: Mapping[str, float | None]) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO de la retirada ``name`` de código ``code`` (spec 016, T03; RF-016-13; plan 016 §5.2.3),
+    con el ámbito de :func:`entity_figure_scope`, en el orden de :data:`REMOVAL_FIGURES`: ``values`` da cada una por su
+    clave (las seis; ``None`` la que no existe: sin pared no hay ``des.rmv_wall_max_m``). Ninguna es negativa ni NaN
+    (``ValueError``)."""
+    return _entity_figures(REMOVAL_FIGURES, "una retirada", name, code, values)
+
+
+def buttress_figures(name: str, code: str, values: Mapping[str, float | None]) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO del contrafuerte ``name`` de código ``code`` (spec 016, T03; RF-016-17, RF-016-19; plan 016
+    §5.2.3): como :func:`removal_figures`, con :data:`BUTTRESS_FIGURES` (las cinco)."""
+    return _entity_figures(BUTTRESS_FIGURES, "un contrafuerte", name, code, values)
+
+
+def body_figures(name: str, code: str, values: Mapping[str, float | None]) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO del cuerpo apoyado ``name`` de código ``code`` (spec 016, T03; RF-016-20, RF-016-21; plan 016
+    §5.2.3): como :func:`removal_figures`, con :data:`BODY_FIGURES` (las cinco; ``des.bdy_ignored`` es un recuento)."""
+    return _entity_figures(BODY_FIGURES, "un cuerpo apoyado", name, code, values)
+
+
+def _typed_code(code: str, kind: str, what: str) -> str:
+    """``code`` si es el código de una entidad de tipo ``kind`` (``STK-001``); :class:`ValueError` si no es un código de
+    entidad, no es de un tipo registrado o es de otro tipo: un error del programa."""
+    found = entity_params_of(code)
+    if found.kind != kind:
+        raise ValueError(f"el código {code!r} no es el de {what} ({found.code_prefix}-… es de {found.kind})")
+    return code
+
+
+def supported_code(settings: Mapping[str, Any]) -> str:
+    """El código de la entidad que guardan unos ajustes de un tipo de la 016 (:func:`stockpile_settings`,
+    :func:`removal_settings`, :func:`buttress_settings` y :func:`body_settings`). ``ValueError`` si no lo llevan o no es
+    el de una entidad."""
+    what = "los ajustes de una entidad de la 016"
+    code = _required_text(_mapping(settings, what), "code", what)
+    entity_segment(code)
+    return code
+
+
+def supported_values(code: str, parameters: Mapping[str, Any]) -> dict[str, Any]:
+    """Los valores de la entidad de código ``code`` (de cualquier tipo registrado) entre los parámetros resueltos
+    ``parameters`` (clave completa → valor, como los anota una operación: ``des.stockpile.stk_001.margin_m``): por su
+    último segmento (``margin_m``), sin los de otra entidad ni los del proyecto. Es lo que reciben
+    :func:`stockpile_request`, :func:`removal_request`, :func:`buttress_request` y :func:`body_request`.
+    ``ValueError`` si ``code`` no es el de una entidad de un tipo registrado."""
+    prefix = f"{entity_params_of(code).key_prefix}.{entity_segment(code)}."
+    return {key[len(prefix):]: value for key, value in _mapping(
+        parameters, "los parámetros de una entidad").items()
+        if isinstance(key, str) and key.startswith(prefix)}
+
+
+def _values_of(members: type[StrEnum], parameters: Mapping[str, Any], what: str) -> dict[str, Any]:
+    """Los valores ``parameters`` (por último segmento) de ``what``; ``ValueError`` si uno no es de su tipo."""
+    found: dict[str, Any] = {}
+    names = {item.value for item in members}
+    for key, value in _mapping(parameters, what).items():
+        if key not in names:
+            raise ValueError(f"{what} son de {', '.join(sorted(names))}, no «{key}»")
+        found[key] = value
+    return found
+
+
+def _value_text(values: Mapping[str, Any], name: str, what: str, *, required: bool = False) -> str | None:
+    """El valor de texto ``name`` de ``values``; ``None`` si no lo hay y no es obligatorio; ``ValueError`` si falta
+    siendo obligatorio o no es un texto con algo."""
+    value = values.get(name)
+    if value is None:
+        if required:
+            raise ValueError(f"falta «{name}» en {what}")
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{what} llevan «{name}» como un texto, no {value!r}")
+    return value
+
+
+def _value_flag(values: Mapping[str, Any], name: str, what: str) -> bool | None:
+    """El valor sí/no ``name`` de ``values`` (``None`` si no lo hay); ``ValueError`` si no es un sí/no."""
+    value = values.get(name)
+    if value is not None and not isinstance(value, bool):
+        raise ValueError(f"{what} llevan «{name}» como sí o no, no {value!r}")
+    return value
+
+
+def _value_integer(values: Mapping[str, Any], name: str, what: str) -> int | None:
+    """El valor entero ``name`` de ``values`` (``None`` si no lo hay); ``ValueError`` si no es un entero."""
+    value = values.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        raise ValueError(f"{what} llevan «{name}» como un número entero, no {value!r}")
+    return int(value)
+
+
+_STOCKPILE_NUMBERS = (StockpileParam.MARGIN, StockpileParam.CROWN_INNER, StockpileParam.CROWN_OUTER,
+                      StockpileParam.CROWN_SLOPE, StockpileParam.CROWN_FLAT_MIN, StockpileParam.MAX_RESIDUAL,
+                      StockpileParam.TILT_MAX, StockpileParam.SUPPORT_QUANTILE, StockpileParam.OPEN_DIAMETER,
+                      StockpileParam.MIN_HEIGHT, StockpileParam.MIN_AREA, StockpileParam.MAX_AREA,
+                      StockpileParam.GUARD)
+
+
+def stockpile_settings(request: StockpileRequest, code: str) -> dict[str, Any]:
+    """Los ajustes de ``des.stockpile_detect`` (spec 016, T03; RF-016-02, RF-015-02; JSON sin rutas): el nombre de la
+    detección, su ``code`` (``STK-001``) y los campos de su capa de marcas de los que salen la clave, el margen, el
+    material y la superficie de base de cada marca (``fields``; ``None`` los que no lleva). **Ninguna otra cosa**: la
+    capa, la superficie, los umbrales de D-3 y las decisiones son **parámetros de la entidad**
+    (``des.stockpile.{e}.*``, :func:`supported_values`), como en la plataforma. Es un diccionario nuevo;
+    ``ValueError`` si ``code`` no es el de una entidad."""
+    if not isinstance(request, StockpileRequest):
+        raise TypeError(f"los ajustes de una detección de acopios salen de una StockpileRequest, no {request!r}")
+    _typed_code(code, "stockpile", "una detección de acopios")
+    fields = request.fields
+    return {"name": request.name, "code": code,
+            "fields": {"name_field": fields.name_field, "margin_field": fields.margin_field,
+                       "material_field": fields.material_field, "base_field": fields.base_field}}
+
+
+def stockpile_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]) -> StockpileRequest:
+    """La detección que repiten los ajustes ``settings`` de una operación ``des.stockpile_detect`` (los de
+    :func:`stockpile_settings`) con los valores de los parámetros de su entidad ``parameters`` (por último segmento:
+    :func:`supported_values`): al recalcularla y al reproducirla. La capa, la superficie, los candidatos, los umbrales
+    y las decisiones salen de los parámetros (cambiar uno repite la operación con el nuevo) y los campos de la capa, de
+    los ajustes; lo que no tiene valor queda ``None`` sin pedirlo. ``ValueError`` si no son los de una detección
+    (nombrando el campo)."""
+    what = "los ajustes de una detección de acopios"
+    values_what = "los valores de una detección de acopios"
+    data = _mapping(settings, what)
+    fields_what = f"{what}, «fields»,"
+    fields = _mapping(data.get("fields"), fields_what)
+    values = _values_of(StockpileParam, parameters, values_what)
+    layer = _value_text(values, "layer", values_what, required=True)
+    surface = _value_text(values, "surface", values_what, required=True)
+    assert layer is not None and surface is not None
+    numbers_found = {param.value: _number(values, param.value, values_what) for param in _STOCKPILE_NUMBERS}
+    return StockpileRequest(
+        name=_required_text(data, "name", what),
+        fields=StockpileFields(
+            layer=layer, name_field=_optional_text(fields, "name_field", fields_what),
+            margin_field=_optional_text(fields, "margin_field", fields_what),
+            material_field=_optional_text(fields, "material_field", fields_what),
+            base_field=_optional_text(fields, "base_field", fields_what)),
+        surface=surface, candidates=_value_flag(values, "candidates", values_what),
+        fit_rounds=_value_integer(values, "fit_rounds", values_what),
+        turns=_value_integer(values, "turns", values_what),
+        decisions=_value_text(values, "decisions", values_what),
+        protect=_value_flag(values, "protect", values_what),
+        reason=_value_text(values, "reason", values_what), **numbers_found)
+
+
+def stockpile_inputs(request: StockpileRequest, surface: str, masks: Iterable[Use] = (),
+                     perimeter: Iterable[Use] = ()) -> tuple[Use, ...]:
+    """Lo que consume ``des.stockpile_detect`` (spec 016, T03; RF-016-02, RF-016-08; plan 016 §5.2.3; ADR-0031 §3), en su
+    orden: la capa de marcas (:data:`MARKS_LAYER_ROLE`: la geometría y su hash; un cambio de geometría en QGIS deja
+    obsoleta la operación, uno de un campo no), la superficie en la que se detecta ``surface`` (:data:`SURFACE_ROLE`; el
+    nombre de su dato), las máscaras de la versión ``masks`` (``MaskSet.uses()``; las de una detección **de versión**) y
+    el perímetro de actuación ``perimeter`` (lo que consume la detección **del proyecto**, que no tiene máscaras de
+    versión: RF-012-13), sin repetir. Si una cambia, la detección queda obsoleta. ``ValueError`` si faltan los nombres.
+    (La superficie de base propia de una marca, RF-016-03, la añade la T13.)"""
+    if not isinstance(request, StockpileRequest):
+        raise TypeError(f"las entradas de una detección de acopios salen de una StockpileRequest, no {request!r}")
+    return _unique([Use(_named(request.layer, "de la capa de las marcas"), MARKS_LAYER_ROLE),
+                    Use(_named(surface, "de la superficie en la que se detecta"), SURFACE_ROLE),
+                    *masks, *perimeter])
+
+
+_STOCKPILE_READ = (StockpileParam.LAYER, StockpileParam.SURFACE, StockpileParam.CANDIDATES, StockpileParam.MARGIN,
+                   StockpileParam.CROWN_INNER, StockpileParam.CROWN_OUTER, StockpileParam.CROWN_SLOPE,
+                   StockpileParam.CROWN_FLAT_MIN, StockpileParam.MAX_RESIDUAL, StockpileParam.FIT_ROUNDS,
+                   StockpileParam.TURNS, StockpileParam.TILT_MAX, StockpileParam.SUPPORT_QUANTILE,
+                   StockpileParam.OPEN_DIAMETER, StockpileParam.MIN_HEIGHT, StockpileParam.MIN_AREA,
+                   StockpileParam.MAX_AREA)
+"""Los valores de la entidad que lee siempre ``des.stockpile_detect``: los que cambian su resultado. No lee su nombre ni
+lo que declara (``protect``, ``guard_m`` y ``reason``: lo lee la declaración)."""
+
+
+def stockpile_params(code: str, request: StockpileRequest) -> tuple[str, ...]:
+    """Los parámetros que lee ``des.stockpile_detect`` de la entidad de código ``code`` (``begin_operation(params=…)``;
+    spec 016, T03; RF-016-02, RF-016-10; plan 016 §5.2.2): la capa, la superficie, los candidatos y los 14 umbrales
+    (:data:`_STOCKPILE_READ`), las decisiones sobre los candidatos si la ``request`` las lleva y, **por su clave, sin
+    copiarlo**, el umbral de la huella de la 011 (:data:`~.params.ANTHROPIC_PRESENCE`, D-17): cambiar un umbral, la
+    capa (su geometría) o ese parámetro deja obsoleta la operación entera con su causa (CE-016-01). ``ValueError`` si
+    ``code`` no es el de una detección."""
+    _typed_code(code, "stockpile", "una detección de acopios")
+    read = [entity_key(code, param) for param in _STOCKPILE_READ]
+    if request.decisions is not None:
+        read.append(entity_key(code, StockpileParam.DECISIONS))
+    return _unique([*read, ANTHROPIC_PRESENCE])
+
+
+def removal_settings(request: RemovalRequest, code: str) -> dict[str, Any]:
+    """Los ajustes de ``des.stockpile_removal`` (spec 016, T03; RF-016-11): el nombre de la retirada y su ``code``
+    (``RMV-001``); el acopio, la partida, la transición y lo demás son **parámetros** de la entidad
+    (``des.removal.{e}.*``). ``ValueError`` si ``code`` no es el de una retirada."""
+    if not isinstance(request, RemovalRequest):
+        raise TypeError(f"los ajustes de una retirada salen de una RemovalRequest, no {request!r}")
+    _typed_code(code, "removal", "una retirada")
+    return {"name": request.name, "code": code}
+
+
+def removal_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]) -> RemovalRequest:
+    """La retirada que repiten los ajustes ``settings`` de ``des.stockpile_removal`` con los valores de los parámetros
+    de su entidad ``parameters`` (por último segmento: :func:`supported_values`). ``ValueError`` si no son los de una
+    retirada (nombrando el campo)."""
+    what = "los ajustes de una retirada"
+    values_what = "los valores de una retirada"
+    data = _mapping(settings, what)
+    values = _values_of(RemovalParam, parameters, values_what)
+    stockpile = _value_text(values, "stockpile", values_what, required=True)
+    start = _value_text(values, "start", values_what, required=True)
+    assert stockpile is not None and start is not None
+    return RemovalRequest(
+        name=_required_text(data, "name", what), stockpile=stockpile, start=start,
+        support=_value_text(values, "support", values_what),
+        transition_deg=_number(values, "transition_deg", values_what),
+        mesh_factor=_number(values, "mesh_factor", values_what), metric=_value_text(values, "metric", values_what),
+        wall_reason=_value_text(values, "wall_reason", values_what),
+        protect=_value_flag(values, "protect", values_what), guard_m=_number(values, "guard_m", values_what),
+        reason=_value_text(values, "reason", values_what))
+
+
+def removal_inputs(request: RemovalRequest, start: str, removed: Iterable[str], masks: Iterable[Use] = (),
+                   supports: Iterable[str] = ()) -> tuple[Use, ...]:
+    """Lo que consume ``des.stockpile_removal`` (spec 016, T03; RF-016-11, RF-016-14; plan 016 §5.2.3), en su orden: la
+    superficie de partida ``start`` (:data:`SURFACE_ROLE`; **ya resuelta**: el nombre de su dato), el acopio que se
+    retira, ``removed`` (:data:`REMOVED_STOCKPILE_ROLE`: los nombres de su tabla ``des_stk_`` y de su base ``des_stb_``),
+    las máscaras de la versión ``masks`` y, **añadidas al crear** (una operación hecha es inmutable), lo que apoya
+    ``supports`` (:data:`SUPPORTED_ON_ROLE`: las superficies sobre las que se apoyaba lo que la retirada atribuye,
+    RF-016-14), sin repetir. ``ValueError`` si faltan los nombres; ``TypeError`` si ``removed`` o ``supports`` es un
+    texto."""
+    if not isinstance(request, RemovalRequest):
+        raise TypeError(f"las entradas de una retirada salen de una RemovalRequest, no {request!r}")
+    found = [Use(_named(start, "de la superficie de partida"), SURFACE_ROLE)]
+    found += [Use(_named(name, "del acopio que se retira"), REMOVED_STOCKPILE_ROLE)
+              for name in _codes(removed, "los datos del acopio que se retira")]
+    found += list(masks)
+    found += [Use(_named(name, "de una superficie en la que se apoya"), SUPPORTED_ON_ROLE)
+              for name in _codes(supports, "las superficies de apoyo")]
+    return _unique(found)
+
+
+def _supported_read(code: str, kind: str, what: str, params: Iterable[str], *, optional: Iterable[
+        tuple[bool, str]] = (), supports: bool = False) -> list[str]:
+    """Las claves de ``params`` de la entidad ``code`` de tipo ``kind`` y, de ``optional`` (pares ``(se lee, valor)``),
+    las que se leen; las dependencias declaradas si ``supports``."""
+    _typed_code(code, kind, what)
+    read = [entity_key(code, param) for param in params]
+    read += [entity_key(code, param) for used, param in optional if used]
+    if supports:
+        read.append(entity_key(code, "supports"))
+    return read
+
+
+def removal_params(code: str, request: RemovalRequest, *, supports: bool = False) -> tuple[str, ...]:
+    """Los parámetros que lee ``des.stockpile_removal`` de la entidad de código ``code`` (spec 016, T03; RF-016-11,
+    RF-016-15; plan 016 §5.2.2): el acopio, la partida, el ángulo de transición, el factor de malla y la métrica; la
+    superficie de apoyo, si la ``request`` la lleva; las dependencias declaradas, si ``supports``; y los del proyecto
+    que lee toda entidad que mide un borde (:data:`PLATFORM_COMMON_PARAMS`: la tolerancia de cara, el umbral de
+    magnitud, el espesor mínimo de la 012 y el salto creado de la 014). No lee su nombre ni su motivo de la pared ni lo
+    que declara. ``ValueError`` si ``code`` no es el de una retirada."""
+    read = _supported_read(
+        code, "removal", "una retirada",
+        (RemovalParam.STOCKPILE, RemovalParam.START, RemovalParam.TRANSITION, RemovalParam.MESH_FACTOR,
+         RemovalParam.METRIC), optional=((request.support is not None, RemovalParam.SUPPORT),), supports=supports)
+    return _unique([*read, *PLATFORM_COMMON_PARAMS])
+
+
+def buttress_settings(request: ButtressRequest, code: str) -> dict[str, Any]:
+    """Los ajustes de ``des.buttress`` (spec 016, T03; RF-016-17): el nombre del contrafuerte, su ``code`` (``BTR-001``)
+    y el campo de la cota de coronación de su capa de zonas (``fields``; ``None`` si no lo lleva). La capa, la
+    geometría, la partida, el perfil, la cota y lo demás son **parámetros** (``des.buttress.{e}.*``). ``ValueError`` si
+    ``code`` no es el de un contrafuerte."""
+    if not isinstance(request, ButtressRequest):
+        raise TypeError(f"los ajustes de un contrafuerte salen de una ButtressRequest, no {request!r}")
+    _typed_code(code, "buttress", "un contrafuerte")
+    return {"name": request.name, "code": code, "fields": {"crown_field": request.fields.crown_field}}
+
+
+def buttress_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]) -> ButtressRequest:
+    """El contrafuerte que repiten los ajustes ``settings`` de ``des.buttress`` con los valores de los parámetros de su
+    entidad ``parameters`` (por último segmento: :func:`supported_values`). ``ValueError`` si no son los de un
+    contrafuerte (nombrando el campo)."""
+    what = "los ajustes de un contrafuerte"
+    values_what = "los valores de un contrafuerte"
+    data = _mapping(settings, what)
+    fields_what = f"{what}, «fields»,"
+    fields = _mapping(data.get("fields"), fields_what)
+    values = _values_of(ButtressParam, parameters, values_what)
+    texts = {name: _value_text(values, name, values_what, required=True) for name in ("layer", "feature", "start",
+                                                                                      "profile")}
+    assert all(texts.values())
+    return ButtressRequest(
+        name=_required_text(data, "name", what),
+        fields=ButtressFields(layer=texts["layer"], crown_field=_optional_text(fields, "crown_field", fields_what)),
+        feature=texts["feature"], start=texts["start"], profile=texts["profile"],
+        support=_value_text(values, "support", values_what), crown_m=_number(values, "crown_m", values_what),
+        reach_m=_number(values, "reach_m", values_what), metric=_value_text(values, "metric", values_what),
+        protect=_value_flag(values, "protect", values_what), guard_m=_number(values, "guard_m", values_what),
+        reason=_value_text(values, "reason", values_what))
+
+
+def buttress_inputs(request: ButtressRequest, start: str, masks: Iterable[Use] = (),
+                    supports: Iterable[str] = ()) -> tuple[Use, ...]:
+    """Lo que consume ``des.buttress`` (spec 016, T03; RF-016-17; plan 016 §5.2.3), en su orden: la capa de las zonas de
+    coronación (:data:`ENTITY_LAYER_ROLE`: la geometría y su hash), la superficie de partida ``start``
+    (:data:`SURFACE_ROLE`; ya resuelta), las máscaras de la versión ``masks`` y, **añadidas al crear**, las superficies
+    en las que se apoya, ``supports`` (:data:`SUPPORTED_ON_ROLE`: las que detecta el cálculo, las que declara el usuario y
+    la de apoyo de la petición, resuelta), sin repetir. ``ValueError`` si faltan los nombres."""
+    if not isinstance(request, ButtressRequest):
+        raise TypeError(f"las entradas de un contrafuerte salen de una ButtressRequest, no {request!r}")
+    found = [Use(_named(request.layer, "de la capa de las zonas de coronación"), ENTITY_LAYER_ROLE),
+             Use(_named(start, "de la superficie de partida"), SURFACE_ROLE), *masks]
+    found += [Use(_named(name, "de una superficie en la que se apoya"), SUPPORTED_ON_ROLE)
+              for name in _codes(supports, "las superficies de apoyo")]
+    return _unique(found)
+
+
+def buttress_params(code: str, request: ButtressRequest, *, supports: bool = False) -> tuple[str, ...]:
+    """Los parámetros que lee ``des.buttress`` de la entidad de código ``code`` (spec 016, T03; RF-016-17, RF-016-18;
+    plan 016 §5.2.2): la capa, la geometría, la partida, el perfil, la cota de coronación y la métrica; el alcance y la
+    superficie de apoyo, si la ``request`` los lleva; las dependencias declaradas, si ``supports``; **los cinco valores
+    del perfil de la 013** (``des.bench.{p}.*``: su altura, su cara, su berma, su ancla y su factor de malla; ``ValueError``
+    si el perfil no es un código válido); y los del proyecto (:data:`PLATFORM_COMMON_PARAMS`). ``ValueError`` si
+    ``code`` no es el de un contrafuerte."""
+    read = _supported_read(
+        code, "buttress", "un contrafuerte",
+        (ButtressParam.LAYER, ButtressParam.FEATURE, ButtressParam.START, ButtressParam.PROFILE,
+         ButtressParam.CROWN, ButtressParam.METRIC),
+        optional=((request.reach_m is not None, ButtressParam.REACH), (request.support is not None,
+                                                                      ButtressParam.SUPPORT)),
+        supports=supports)
+    return _unique([*read, *profile_params([request.profile]), *PLATFORM_COMMON_PARAMS])
+
+
+def body_settings(request: BodyRequest, code: str) -> dict[str, Any]:
+    """Los ajustes de ``des.body`` (spec 016, T03; RF-016-20): el nombre del cuerpo y su ``code`` (``BDY-001``); la
+    huella, los datos de espesor, la superficie, el sentido y la distancia máxima son **parámetros**
+    (``des.body.{e}.*``). ``ValueError`` si ``code`` no es el de un cuerpo."""
+    if not isinstance(request, BodyRequest):
+        raise TypeError(f"los ajustes de un cuerpo apoyado salen de una BodyRequest, no {request!r}")
+    _typed_code(code, "body", "un cuerpo apoyado")
+    return {"name": request.name, "code": code}
+
+
+def body_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]) -> BodyRequest:
+    """El cuerpo apoyado que repiten los ajustes ``settings`` de ``des.body`` con los valores de los parámetros de su
+    entidad ``parameters`` (por último segmento: :func:`supported_values`). ``ValueError`` si no son los de un cuerpo
+    (nombrando el campo)."""
+    what = "los ajustes de un cuerpo apoyado"
+    values_what = "los valores de un cuerpo apoyado"
+    data = _mapping(settings, what)
+    values = _values_of(BodyParam, parameters, values_what)
+    texts = {name: _value_text(values, name, values_what, required=True)
+             for name in ("layer", "feature", "data_layer", "data_field", "data_from", "surface", "sense")}
+    assert all(texts.values())
+    return BodyRequest(
+        name=_required_text(data, "name", what), **texts,  # type: ignore[arg-type]
+        start=_value_text(values, "start", values_what), max_distance_m=_number(values, "max_distance_m", values_what),
+        zero_at_edge=_value_flag(values, "zero_at_edge", values_what),
+        support=_value_text(values, "support", values_what), protect=_value_flag(values, "protect", values_what),
+        guard_m=_number(values, "guard_m", values_what), reason=_value_text(values, "reason", values_what))
+
+
+def body_inputs(request: BodyRequest, surface: str, masks: Iterable[Use] = (),
+                supports: Iterable[str] = ()) -> tuple[Use, ...]:
+    """Lo que consume ``des.body`` (spec 016, T03; RF-016-20; plan 016 §5.2.3), en su orden: la huella (la capa de
+    entidades, :data:`ENTITY_LAYER_ROLE`), los datos de espesor (:data:`BODY_DATA_ROLE`: su geometría y su hash), la
+    superficie conocida ``surface`` (:data:`SURFACE_ROLE`; ya resuelta), las máscaras de la versión ``masks`` y,
+    **añadidas al crear**, lo que apoya, ``supports`` (:data:`SUPPORTED_ON_ROLE`), sin repetir. ``ValueError`` si
+    faltan los nombres."""
+    if not isinstance(request, BodyRequest):
+        raise TypeError(f"las entradas de un cuerpo apoyado salen de una BodyRequest, no {request!r}")
+    found = [Use(_named(request.layer, "de la capa de la huella"), ENTITY_LAYER_ROLE),
+             Use(_named(request.data_layer, "de la capa de los datos de espesor"), BODY_DATA_ROLE),
+             Use(_named(surface, "de la superficie conocida"), SURFACE_ROLE), *masks]
+    found += [Use(_named(name, "de una superficie en la que se apoya"), SUPPORTED_ON_ROLE)
+              for name in _codes(supports, "las superficies de apoyo")]
+    return _unique(found)
+
+
+def body_params(code: str, request: BodyRequest, *, supports: bool = False) -> tuple[str, ...]:
+    """Los parámetros que lee ``des.body`` de la entidad de código ``code`` (spec 016, T03; RF-016-20 a RF-016-22; plan
+    016 §5.2.2): la huella (capa y geometría), los datos de espesor (capa, campo y de dónde se leen), la superficie
+    conocida, el sentido, la distancia máxima y el «cero en el borde»; la partida (solo «sobre una base») y la superficie
+    de apoyo, si la ``request`` los lleva; las dependencias declaradas, si ``supports``; y, del proyecto, el espesor
+    mínimo de la 012 por su clave. ``ValueError`` si ``code`` no es el de un cuerpo."""
+    read = _supported_read(
+        code, "body", "un cuerpo apoyado",
+        (BodyParam.LAYER, BodyParam.FEATURE, BodyParam.DATA_LAYER, BodyParam.DATA_FIELD, BodyParam.DATA_FROM,
+         BodyParam.SURFACE, BodyParam.SENSE),
+        optional=((request.start is not None and BodySense(request.sense) is BodySense.ON_BASE, BodyParam.START),
+                  (True, BodyParam.MAX_DISTANCE), (True, BodyParam.ZERO_AT_EDGE),
+                  (request.support is not None, BodyParam.SUPPORT)),
+        supports=supports)
+    return _unique([*read, VERIFY_MIN_THICKNESS])

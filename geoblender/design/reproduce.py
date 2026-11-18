@@ -47,7 +47,10 @@ el nombre de su dato, y los parámetros congelados de cada una; el decisor, la f
 versión, de los ajustes de la operación). **La capa de entidades** (``des.entity_layer``, spec 015, T30) **no se
 reproduce**: su contenido incluye el estado de cada entidad (al día, obsoleta, descartada, «apoyo retirado»), que
 deduce el grafo del proyecto y no se reproduce sin él; es una vista regenerable (como ``des.refit``, spec 010) y, en
-una revisión congelada, se toma lo congelado (``core.versions.reproduce`` la da por no reproducible).
+una revisión congelada, se toma lo congelado (``core.versions.reproduce`` la da por no reproducible). **Los cuatro tipos
+de la 016** (spec 016, T03: :func:`reproduce_stockpile_detect`, :func:`reproduce_stockpile_removal`,
+:func:`reproduce_buttress` y :func:`reproduce_body`) existen pero **sin comportamiento todavía**: dicen qué tarea los
+hace (``NotImplementedError``); no hay ninguna operación de esos tipos que reproducir hasta que se crean.
 
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con otros,
 ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹ relativo, plan
@@ -121,6 +124,8 @@ from .zones import frozen_polygons, polygons_cells, sector_labels
 
 __all__ = [
     "REPRODUCE",
+    "reproduce_body",
+    "reproduce_buttress",
     "reproduce_declare_constraints",
     "reproduce_design",
     "reproduce_edge_transition",
@@ -129,6 +134,8 @@ __all__ = [
     "reproduce_fill_only",
     "reproduce_platform",
     "reproduce_quarry",
+    "reproduce_stockpile_detect",
+    "reproduce_stockpile_removal",
 ]
 
 _OBJ = "Reproducción del diseño"
@@ -759,6 +766,40 @@ def _reproduce_declaration(request: ReproduceRequest, budget_s: float) -> Iterat
     output = _declared_output(request, rows, frozen.crs)
     yield Progress(_PHASE, 1, 1, "Restricciones declaradas reproducidas",
                    result=ReproducedResult((output,), provenance.declare_figures(len(rows))))
+
+
+# --- Los cuatro tipos de la 016 (spec 016, T03): sin comportamiento todavía ---------------------------------------
+
+
+def _not_yet(request: object, op_type: str, task: str) -> Iterator[Progress]:
+    """La reproducción de un tipo de la 016 que aún no tiene su cálculo: comprueba que es una
+    ``ReproduceRequest`` de ``op_type`` (``TypeError`` y ``ValueError``, errores del programa) y dice qué tarea lo hace
+    (``NotImplementedError``). No hay ninguna operación de estos tipos que reproducir hasta que las tareas siguientes
+    las crean."""
+    _check(request, op_type)
+    raise NotImplementedError(f"«{op_type}» aún no se reproduce: lo hace {task} de la 016")
+
+
+def reproduce_stockpile_detect(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
+                               ) -> Iterator[Progress]:
+    """Reproduce ``des.stockpile_detect`` (RF-016-02, RF-009-11): sin comportamiento todavía (T14)."""
+    return _not_yet(request, provenance.STOCKPILE_DETECT, "la T14")
+
+
+def reproduce_stockpile_removal(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
+                                ) -> Iterator[Progress]:
+    """Reproduce ``des.stockpile_removal`` (RF-016-11, RF-009-11): sin comportamiento todavía (T20)."""
+    return _not_yet(request, provenance.STOCKPILE_REMOVAL, "la T20")
+
+
+def reproduce_buttress(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """Reproduce ``des.buttress`` (RF-016-17, RF-009-11): sin comportamiento todavía (T27)."""
+    return _not_yet(request, provenance.BUTTRESS, "la T27")
+
+
+def reproduce_body(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """Reproduce ``des.body`` (RF-016-20, RF-009-11): sin comportamiento todavía (T25)."""
+    return _not_yet(request, provenance.BODY, "la T25")
 
 
 REPRODUCE:Mapping[str, ReproduceFunction] = MappingProxyType({

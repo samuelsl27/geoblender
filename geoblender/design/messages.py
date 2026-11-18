@@ -34,7 +34,11 @@ diseño de la 015 (T02, plan 015 §5.1) van detrás de los de la 014: ``des.enti
 común: nombre, parámetros, partida, falta de dato, lo que no se mueve) y ``des.platform_*`` (la
 plataforma: su geometría, su rasante, su contrapendiente y lo que deja fuera de ella). Los de la 016
 (plan 016 §5.1, T02) empiezan por ``des.chainless_start`` (nadie parte de la superficie de una entidad de un
-tipo sin cadena; va aparte de ``des.entity_*``, que es la familia cerrada de la 015). Un campo
+tipo sin cadena; va aparte de ``des.entity_*``, que es la familia cerrada de la 015) y siguen, por familias y detrás
+de los de la 015 (T03; RF-016-04 a 07, 12 a 15, 18 a 22), ``des.stockpile_*`` (la detección de acopios: el acopio que se
+rechaza o se avisa, con su marca y su lugar), ``des.removal_*`` (la retirada, su pared y lo que se le apoya),
+``des.buttress_*`` y ``des.body_*``, con el motivo de la restricción que declara cada tipo y la causa de «apoyo
+retirado». Un campo
 que es un texto de una lista cerrada que la persona ve (el papel de una superficie, el tipo de
 geometría de una capa) llega ya en el idioma de quien lo llama: ``render`` no lo traduce; por
 eso, lo que cambia con el idioma va en otro código (las partes que vacían el recinto, notas detrás
@@ -2051,6 +2055,260 @@ CATALOG: tuple[Message, ...] = (
         "«{entity}» ({code}) aún no tiene resultado, así que no hay de dónde sacar su vista "
         "previa; calcúlela antes (menú Entidad ▾ ▸ Calcular…).",
         "warning",
+    ),
+    # Los cuatro tipos de entidad de la 016 (T03; plan 016 §5.1 y §5.5; RF-016-04 a 07, 12 a 15, 18 a 22). La detección de
+    # acopios: el acopio que se rechaza (se informa en el resumen y no se registra) nombra su marca, el caso y su lugar.
+    Message(
+        "des.stockpile_no_cells",
+        "Stockpile «{mark}» is not registered: no cell of its mark rises more than {threshold} m above its base "
+        "(mark centred at x = {x} m, y = {y} m); check the mark and the surface it is detected on.",
+        "El acopio «{mark}» no se registra: ninguna celda de su marca queda a más de {threshold} m sobre su base "
+        "(marca centrada en x = {x} m, y = {y} m); revise la marca y la superficie sobre la que se detecta.",
+        "warning",
+    ),
+    Message(
+        "des.stockpile_no_terrain",
+        "Stockpile «{mark}» is not registered: the surface has no data in its footprint (cells without data: "
+        "{cells}; the first one at x = {x} m, y = {y} m); stockpiles are only detected on terrain that exists.",
+        "El acopio «{mark}» no se registra: la superficie no tiene dato en su huella (celdas sin dato: {cells}; la "
+        "primera en x = {x} m, y = {y} m); los acopios solo se detectan sobre terreno que existe.",
+        "warning",
+    ),
+    Message(
+        "des.stockpile_no_terrain_crown",
+        "Stockpile «{mark}» is not registered: the surface has no data in its crown, the ring around its footprint "
+        "where its base plane is fitted (cells without data: {cells}; the first one at x = {x} m, y = {y} m).",
+        "El acopio «{mark}» no se registra: la superficie no tiene dato en su corona, el anillo alrededor de su "
+        "huella donde se ajusta su plano de base (celdas sin dato: {cells}; la primera en x = {x} m, y = {y} m).",
+        "warning",
+    ),
+    Message(
+        "des.stockpile_no_crown_cells",
+        "Stockpile «{mark}» is not registered: its crown, the ring from {inner} m to {outer} m around its "
+        "footprint, has no cell to fit its base plane on (mark centred at x = {x} m, y = {y} m); widen the crown or "
+        "give the mark a base surface.",
+        "El acopio «{mark}» no se registra: su corona, el anillo de {inner} m a {outer} m alrededor de su huella, no "
+        "tiene ninguna celda en la que ajustar su plano de base (marca centrada en x = {x} m, y = {y} m); amplíe la "
+        "corona o dé a la marca una superficie de base.",
+        "warning",
+    ),
+    Message(
+        "des.stockpile_marks_overlap",
+        "Marks «{mark}» and «{other}» overlap by {area} m² (around x = {x} m, y = {y} m): each stockpile has its "
+        "own mark; redraw them so that they do not overlap; nothing is detected.",
+        "Las marcas «{mark}» y «{other}» se solapan en {area} m² (en torno a x = {x} m, y = {y} m): cada acopio tiene "
+        "su propia marca; dibújelas de modo que no se solapen; no se detecta nada.",
+    ),
+    Message(
+        "des.stockpile_footprint_at_edge",
+        "Stockpile «{mark}»: its footprint reaches the edge of its mark enlarged by the margin (at x = {x} m, "
+        "y = {y} m), so the stockpile may be larger than its mark; the stockpile carries this note.",
+        "Acopio «{mark}»: su huella llega al borde de su marca ampliada por el margen (en x = {x} m, y = {y} m), de "
+        "modo que el acopio puede ser mayor que su marca; el acopio lleva esta nota.",
+        "warning",
+    ),
+    Message(
+        "des.stockpile_several_zones",
+        "Stockpile «{mark}»: its mark touches more than one connected zone above its base (zones: {zones}; around "
+        "x = {x} m, y = {y} m); the largest one is taken as the stockpile and the stockpile carries this note.",
+        "Acopio «{mark}»: su marca toca más de una zona conexa por encima de su base (zonas: {zones}; en torno a "
+        "x = {x} m, y = {y} m); se toma la mayor como acopio y el acopio lleva esta nota.",
+        "warning",
+    ),
+    Message(
+        "des.stockpile_crown_few_flat",
+        "Stockpile «{mark}»: only {area} m² of its crown are flatter than {slope}°, less than the {minimum} m² "
+        "needed, so the whole crown is used to fit its base plane (around x = {x} m, y = {y} m); the stockpile "
+        "carries this note.",
+        "Acopio «{mark}»: solo {area} m² de su corona son más llanos que {slope}°, menos de los {minimum} m² que "
+        "hacen falta, así que se usa toda la corona para ajustar su plano de base (en torno a x = {x} m, "
+        "y = {y} m); el acopio lleva esta nota.",
+        "warning",
+    ),
+    Message(
+        "des.stockpile_not_converged",
+        "Stockpile «{mark}»: its base plane and its footprint did not settle in {turns} rounds (around x = {x} m, "
+        "y = {y} m); the last ones are kept and the stockpile carries this note.",
+        "Acopio «{mark}»: su plano de base y su huella no se estabilizaron en {turns} vueltas (en torno a "
+        "x = {x} m, y = {y} m); se quedan los últimos y el acopio lleva esta nota.",
+        "warning",
+    ),
+    Message(
+        "des.stockpile_shared_cells",
+        "Stockpiles «{mark}» and «{other}» share {area} m² of footprint (around x = {x} m, y = {y} m): each shared "
+        "cell is given to the mark that contains it or, if both or neither contain it, to the nearest one.",
+        "Los acopios «{mark}» y «{other}» comparten {area} m² de huella (en torno a x = {x} m, y = {y} m): cada "
+        "celda común se da a la marca que la contiene o, si la contienen las dos o ninguna, a la más próxima.",
+        "warning",
+    ),
+    Message(
+        "des.stockpile_tilt_limited",
+        "The base plane of stockpile «{mark}» is tilted {fitted}°, more than the maximum of {limit}° (a "
+        "hypothesis): it is limited to {limit}°, keeping the azimuth of its steepest slope and resting its level on "
+        "the {quantile} quantile of the residuals of its crown (around x = {x} m, y = {y} m); the stockpile carries "
+        "this note.",
+        "El plano de base del acopio «{mark}» está inclinado {fitted}°, más que el máximo de {limit}° (una "
+        "hipótesis): se limita a {limit}°, conservando el azimut de su máxima pendiente y apoyando su nivel en el "
+        "cuantil {quantile} de los residuos de su corona (en torno a x = {x} m, y = {y} m); el acopio lleva esta "
+        "nota.",
+        "warning",
+    ),
+    Message(
+        "des.stockpile_declared_reason",
+        "declared by stockpile detection {name}",
+        "declarada por la detección de acopios {name}",
+        "note",
+    ),
+    Message(
+        "des.stockpile_support_removed",
+        "the stockpile detection «{name}» was discarded",
+        "se descartó la detección de acopios «{name}»",
+        "note",
+    ),
+    # La retirada de un acopio (RF-016-12 a 15).
+    Message(
+        "des.removal_detection_stale",
+        "Stockpile «{stockpile}» cannot be removed: its detection «{detection}» is stale ({cause}); recompute the "
+        "detection first; nothing is created.",
+        "El acopio «{stockpile}» no se puede retirar: su detección «{detection}» está obsoleta ({cause}); "
+        "recalcule antes la detección; no se crea nada.",
+    ),
+    Message(
+        "des.removal_nothing",
+        "Stockpile «{stockpile}» is no longer on the start surface: 0 m³ are removed.",
+        "El acopio «{stockpile}» ya no está en la superficie de partida: se retiran 0 m³.",
+        "warning",
+    ),
+    Message(
+        "des.removal_resting",
+        "{volume} m³ of material rest on stockpile «{stockpile}», placed by {items}; the stockpile is not removed "
+        "without your express confirmation.",
+        "Sobre el acopio «{stockpile}» se apoyan {volume} m³ de material, que puso {items}; el acopio no se retira "
+        "sin su confirmación expresa.",
+        "warning",
+    ),
+    Message(
+        "des.removal_resting_unconfirmed",
+        "Stockpile «{stockpile}» is not removed: {volume} m³ rest on it and the removal is not created without your "
+        "express confirmation; confirm it, or decide what to do with what rests on it; nothing is created.",
+        "El acopio «{stockpile}» no se retira: se apoyan en él {volume} m³ y la retirada no se crea sin su "
+        "confirmación expresa; confírmela, o decida qué hacer con lo que se apoya en él; no se crea nada.",
+    ),
+    Message(
+        "des.removal_wall",
+        "Removing stockpile «{stockpile}» leaves a wall of {height} m at {angle}°, steeper than the transition angle "
+        "plus the face tolerance ({limit}°), where the masks do not allow the removal (at x = {x} m, y = {y} m; "
+        "created step of that edge: {step} m); it is not created without your express confirmation.",
+        "Retirar el acopio «{stockpile}» deja una pared de {height} m a {angle}°, más empinada que el ángulo de "
+        "transición más la tolerancia de cara ({limit}°), donde las máscaras no admiten la retirada (en "
+        "x = {x} m, y = {y} m; salto creado de ese borde: {step} m); no se crea sin su confirmación expresa.",
+        "warning",
+    ),
+    Message(
+        "des.removal_wall_unconfirmed",
+        "The removal of stockpile «{stockpile}» is not created: it leaves a wall of {height} m at {angle}° and it is "
+        "not created without your express confirmation; confirm the wall, or change the transition or the masks; "
+        "nothing is created.",
+        "La retirada del acopio «{stockpile}» no se crea: deja una pared de {height} m a {angle}° y no se crea sin "
+        "su confirmación expresa; confirme la pared, o cambie la transición o las máscaras; no se crea nada.",
+    ),
+    Message(
+        "des.removal_wall_reason",
+        "The wall that removing stockpile «{stockpile}» leaves, {height} m at {angle}°, is steeper than {min_angle}° "
+        "and {min_height} m high or more: it needs a reason that stays recorded; nothing is created.",
+        "La pared que deja retirar el acopio «{stockpile}», de {height} m a {angle}°, es más empinada que "
+        "{min_angle}° y de {min_height} m o más: pide un motivo que queda registrado; no se crea nada.",
+    ),
+    Message(
+        "des.removal_declared_reason",
+        "declared by removal {name}",
+        "declarada por la retirada {name}",
+        "note",
+    ),
+    Message(
+        "des.removal_support_removed",
+        "the removal «{name}» was discarded",
+        "se descartó la retirada «{name}»",
+        "note",
+    ),
+    # El contrafuerte (RF-016-18 y 19).
+    Message(
+        "des.buttress_crown_off_anchor",
+        "Layer «{layer}», buttress «{entity}»: the crown level {value} m is not on the anchor of profile "
+        "«{profile}» (z₀ + n·h); the nearest anchor level is {anchor} m; no level is chosen for you; nothing is "
+        "created.",
+        "Capa «{layer}», contrafuerte «{entity}»: la cota de coronación {value} m no es del ancla del perfil "
+        "«{profile}» (z₀ + n·h); la cota del ancla más próxima es {anchor} m; no se elige ninguna cota por usted; no "
+        "se crea nada.",
+    ),
+    Message(
+        "des.buttress_crown_below_support",
+        "Layer «{layer}», buttress «{entity}»: the crown level {value} m is below its support in the whole crown "
+        "zone, so there is no buttress; nothing is created.",
+        "Capa «{layer}», contrafuerte «{entity}»: la cota de coronación {value} m queda por debajo de su apoyo en "
+        "toda la zona de coronación, así que no hay contrafuerte; no se crea nada.",
+    ),
+    Message(
+        "des.buttress_foot_cut",
+        "Buttress «{entity}»: its foot is cut by the edge of the admitted fill: {area} m² and {volume} m³ are "
+        "missing, with a created step of {step} m at x = {x} m, y = {y} m; it can still be created.",
+        "Contrafuerte «{entity}»: su pie queda cortado por el borde del relleno admitido: faltan {area} m² y "
+        "{volume} m³, con un salto creado de {step} m en x = {x} m, y = {y} m; se puede crear igualmente.",
+        "warning",
+    ),
+    Message(
+        "des.buttress_declared_reason",
+        "declared by buttress {name}",
+        "declarada por el contrafuerte {name}",
+        "note",
+    ),
+    Message(
+        "des.buttress_support_removed",
+        "the buttress «{name}» was discarded",
+        "se descartó el contrafuerte «{name}»",
+        "note",
+    ),
+    # El cuerpo apoyado (RF-016-20 a 22).
+    Message(
+        "des.body_data_outside",
+        "Supported body «{entity}»: some thickness data fall outside its footprint and are ignored (data: "
+        "{ignored}).",
+        "Cuerpo apoyado «{entity}»: hay datos de espesor fuera de su huella y se ignoran (datos: {ignored}).",
+        "warning",
+    ),
+    Message(
+        "des.body_far",
+        "Supported body «{entity}»: {area} m² ({volume} m³) are farther than {distance} m from the thickness data "
+        "(around x = {x} m, y = {y} m); it can still be created.",
+        "Cuerpo apoyado «{entity}»: {area} m² ({volume} m³) quedan a más de {distance} m de los datos de espesor "
+        "(en torno a x = {x} m, y = {y} m); se puede crear igualmente.",
+        "warning",
+    ),
+    Message(
+        "des.body_no_data",
+        "Supported body «{entity}»: no thickness datum of layer «{layer}» falls inside its footprint "
+        "«{footprint}»; nothing is created.",
+        "Cuerpo apoyado «{entity}»: ningún dato de espesor de la capa «{layer}» cae en su huella «{footprint}»; no "
+        "se crea nada.",
+    ),
+    Message(
+        "des.body_all_far",
+        "Supported body «{entity}»: no cell of its footprint «{footprint}» is within {distance} m of the thickness "
+        "data; nothing is created.",
+        "Cuerpo apoyado «{entity}»: ninguna celda de su huella «{footprint}» queda a menos de {distance} m de los "
+        "datos de espesor; no se crea nada.",
+    ),
+    Message(
+        "des.body_declared_reason",
+        "declared by supported body {name}",
+        "declarada por el cuerpo apoyado {name}",
+        "note",
+    ),
+    Message(
+        "des.body_support_removed",
+        "the supported body «{name}» was discarded",
+        "se descartó el cuerpo apoyado «{name}»",
+        "note",
     ),
 )
 

@@ -158,7 +158,19 @@ API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
 # documentación los lleva a la ficha y vacía estos dos conjuntos. Vacíos desde la T34 de la 015 (la ficha,
 # ``des.md`` §4.3, nombra todo lo público de ``design``) y otra vez desde su T47, que llevó a la ficha lo que
 # añadió la convergencia (T38 a T49); la 016 los usará con los suyos.
-PENDING_015_API: frozenset[str] = frozenset()
+PENDING_015_API: frozenset[str] = frozenset({
+    # La 016, T03 (la tarea de documentación, T38, los lleva a la ficha, ``des.md`` §4.4, y vacía este conjunto):
+    # las peticiones de sus cuatro tipos, los valores de sus parámetros y lo que arma su procedencia.
+    "BodyRequest", "BodySense", "ButtressFields", "ButtressRequest", "RemovalRequest", "StockpileFields",
+    "StockpileRequest", "ThicknessSource",
+    "BodyParam", "ButtressParam", "RemovalParam", "StockpileParam",
+    "StockpileFigures", "body_figures", "body_inputs", "body_params", "body_request", "body_settings",
+    "buttress_figures", "buttress_inputs", "buttress_params", "buttress_request", "buttress_settings",
+    "removal_figures", "removal_inputs", "removal_params", "removal_request", "removal_settings",
+    "stockpile_figure_scope", "stockpile_figures", "stockpile_inputs", "stockpile_params", "stockpile_request",
+    "stockpile_settings", "supported_code", "supported_operation_defs", "supported_values",
+    "reproduce_body", "reproduce_buttress", "reproduce_stockpile_detect", "reproduce_stockpile_removal",
+})
 PENDING_015_MODULES: frozenset[str] = frozenset()
 
 

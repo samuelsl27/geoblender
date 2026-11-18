@@ -51,9 +51,10 @@ from tests.support.trees import temp_folder
 
 ENTRY = "013"
 ENTRY_TITLE = ("Envelopes and benching", "Envolventes y escalonado")
-COUNTS = {"parámetros": 9, "familias": 26, "operaciones": 11, "grupos": 0, "cifras": 44}
-"""Lo de ``des`` en ``core``: 2 + 7 definiciones (013 y 014), 6 + 20 familias (013 y 015; la 20.ª, ``discarded``,
-es de la T25), 3 + 5 + 3 tipos de operación (013, 014 y 015) y 15 + 15 + 14 cifras (T04 de la 015)."""
+COUNTS = {"parámetros": 9, "familias": 95, "operaciones": 15, "grupos": 0, "cifras": 66}
+"""Lo de ``des`` en ``core``: 2 + 7 definiciones (013 y 014), 6 + 20 + 69 familias (013, 015 y 016; la 20.ª de la 015,
+``discarded``, es de la T25; las 69 de la 016 son las de sus cuatro tipos: 25 + 13 + 14 + 17), 3 + 5 + 3 + 4 tipos de
+operación (013, 014, 015 y 016) y 15 + 15 + 14 + 22 cifras (T04 de la 015; T03 de la 016)."""
 OURS = ("des.", "des_")  # las claves de la 013 en los registros de core
 VERSION_TYPES = ("des.envelope", "des.stepped_design")
 PROFILES_TYPE = "des.edit_bench_profiles"
@@ -63,6 +64,17 @@ QUARRY_TYPES = ("des.excavation_area", "des.quarry", "des.edge_transition", "des
 ENTITY_TYPES = ("des.platform", "des.declare_constraints", "des.entity_layer")
 """Los tres tipos de la 015 (T04): de la versión y repetibles; se reproducen los dos primeros (la capa de entidades, T30,
 es una vista regenerable)."""
+SUPPORTED_TYPES = ("des.stockpile_detect", "des.stockpile_removal", "des.buttress", "des.body")
+"""Los cuatro tipos de la 016 (T03): de la versión, repetibles y reproducibles, sin comportamiento todavía."""
+COMMANDS_016: dict[str, str] = {"des.stockpile_detect": "geoblender.des_detect_stockpiles",
+                                "des.stockpile_removal": "geoblender.des_remove_stockpile",
+                                "des.buttress": "geoblender.des_add_buttress",
+                                "des.body": "geoblender.des_create_body"}
+"""La orden de cada uno (las definitivas de la T35: se conservan los nombres del catálogo, ``des_add_buttress``, y la
+«Unidad por espesor sobre su apoyo…» pasa a ser ``des_create_body``). **Aún no están en el catálogo** salvo la del
+contrafuerte (las crea la T35): ``OperationDef.commands`` solo comprueba su forma."""
+PENDING_COMMANDS_016: frozenset[str] = frozenset(COMMANDS_016.values()) - {"geoblender.des_add_buttress"}
+"""Las órdenes de la 016 que la T35 todavía no ha dado de alta en el catálogo."""
 PLATFORM_COMMAND = "geoblender.des_create_platform"
 """La orden de los tres: la «Plataforma…» de la entrada 015 (T15: la clave definitiva, que sustituyó a
 ``des_draw_platform``). Tiene su clase real; la entrada la entrega la T31."""
@@ -73,9 +85,12 @@ REPRODUCED = {"des.envelope": "reproduce_envelope", "des.stepped_design": "repro
               "des.edge_transition": "reproduce_edge_transition",
               "des.fill_only": "reproduce_fill_only",
               "des.platform": "reproduce_platform",
-              "des.declare_constraints": "reproduce_declare_constraints"}
+              "des.declare_constraints": "reproduce_declare_constraints",
+              "des.stockpile_detect": "reproduce_stockpile_detect",
+              "des.stockpile_removal": "reproduce_stockpile_removal",
+              "des.buttress": "reproduce_buttress", "des.body": "reproduce_body"}
 """Los tipos que se reproducen y su función de ``design.reproduce`` (el ajuste de la 014 y la capa de entidades de
-la 015, T30, no se reproducen)."""
+la 015, T30, no se reproducen; los cuatro de la 016, sí)."""
 ENTRY_014 = "014"
 COMMANDS_014: frozenset[str] = frozenset({"geoblender.des_create_limit_from_perimeter",
                                           "geoblender.des_design_quarry",
@@ -289,7 +304,8 @@ class DesignRegisteredTest(unittest.TestCase):
         ours = m.ours()
         self.assertEqual({name: len(keys) for name, keys in ours.items()}, COUNTS)
         self.assertEqual(ours["familias"], sorted(
-            family.pattern for family in (*m.des_params.FAMILIES, *m.des_params.ENTITY_FAMILIES)))
+            family.pattern for family in (*m.des_params.FAMILIES, *m.des_params.ENTITY_FAMILIES,
+                                          *m.des_params.SUPPORTED_FAMILIES)))
         bare = {name: {key: item for key, item in found.items() if not key.startswith(OURS)}
                 for name, found in enabled.items()}
         others: list[tuple[str, str, Any]] = []
@@ -356,29 +372,36 @@ class DesignRegisteredTest(unittest.TestCase):
         found = {op_type: defn for op_type, defn in m.contract.OPERATIONS.items()
                  if defn.module == "des"}
         self.assertEqual(sorted(found), sorted((*VERSION_TYPES, PROFILES_TYPE, *QUARRY_TYPES,
-                                                *ENTITY_TYPES)))
+                                                *ENTITY_TYPES, *SUPPORTED_TYPES)))
         self.assertEqual(sorted(des_ops.RECOMPUTE), sorted(declared.REPRODUCIBLE))
         self.assertEqual(sorted(des_ops.REPRODUCE), sorted(declared.REPRODUCIBLE))
         self.assertEqual(sorted(des_ops.QUARRY_RECOMPUTE), sorted(QUARRY_TYPES))
         self.assertEqual(sorted(des_ops.QUARRY_REPRODUCE), sorted(QUARRY_TYPES[:4]))
         self.assertEqual(sorted(des_ops.ENTITY_RECOMPUTE), sorted(ENTITY_TYPES))
         self.assertEqual(sorted(des_ops.ENTITY_REPRODUCE), sorted(ENTITY_TYPES[:2]))
-        recomputed = {**des_ops.RECOMPUTE, **des_ops.QUARRY_RECOMPUTE, **des_ops.ENTITY_RECOMPUTE}
-        reproduced = {**des_ops.REPRODUCE, **des_ops.QUARRY_REPRODUCE, **des_ops.ENTITY_REPRODUCE}
+        self.assertEqual(sorted(des_ops.SUPPORTED_RECOMPUTE), sorted(SUPPORTED_TYPES))  # los cuatro de la 016 (T03)
+        self.assertEqual(sorted(des_ops.SUPPORTED_REPRODUCE), sorted(SUPPORTED_TYPES))
+        recomputed = {**des_ops.RECOMPUTE, **des_ops.QUARRY_RECOMPUTE, **des_ops.ENTITY_RECOMPUTE,
+                      **des_ops.SUPPORTED_RECOMPUTE}
+        reproduced = {**des_ops.REPRODUCE, **des_ops.QUARRY_REPRODUCE, **des_ops.ENTITY_REPRODUCE,
+                      **des_ops.SUPPORTED_REPRODUCE}
         self.assertEqual(sorted(defn.op_type for defn in des_ops.OPERATION_DEFS),
                          sorted(found))
         for defn in des_ops.OPERATION_DEFS:
             op_type = defn.op_type
             with self.subTest(operación=op_type):
                 self.assertIs(found[op_type], defn)
-                repeats = op_type in (*VERSION_TYPES, *QUARRY_TYPES, *ENTITY_TYPES)
+                repeats = op_type in (*VERSION_TYPES, *QUARRY_TYPES, *ENTITY_TYPES, *SUPPORTED_TYPES)
                 self.assertEqual((defn.version, defn.group, defn.repeatable),
                                  ("1.0", None, repeats))
                 self.assertEqual(defn.scope, "version" if repeats else "project")
                 self.assertEqual(session.requires_version(op_type), repeats)
                 self.assertTrue(defn.commands)
                 for idname in defn.commands:
-                    self.assertIn(idname, self.cat.commands)
+                    if idname in PENDING_COMMANDS_016:  # la T35 la da de alta: entonces se quita de PENDING_…
+                        self.assertNotIn(idname, self.cat.commands)
+                    else:
+                        self.assertIn(idname, self.cat.commands)
                 self.assertIs(defn.recompute, recomputed.get(op_type))
                 self.assertIs(defn.reproduce, reproduced.get(op_type))
                 self.assertEqual(callable(defn.recompute), repeats)
@@ -390,11 +413,14 @@ class DesignRegisteredTest(unittest.TestCase):
                                            return_value="pasos") as function:
                         self.assertEqual(defn.reproduce("petición"), "pasos")
                     function.assert_called_once_with("petición")
-        for figure in (*declared.FIGURES, *declared.QUARRY_FIGURES, *declared.ENTITY_FIGURES):
+        self.assertEqual({op_type: defn.commands[0] for op_type, defn in found.items()
+                          if op_type in SUPPORTED_TYPES}, COMMANDS_016)
+        for figure in (*declared.FIGURES, *declared.QUARRY_FIGURES, *declared.ENTITY_FIGURES,
+                       *declared.SUPPORTED_FIGURES):
             self.assertIs(m.contract.FIGURES[figure.key], figure)
         for definition in (*m.des_params.DEFINITIONS, *m.des_params.QUARRY_DEFINITIONS):
             self.assertIs(m.params.DEFINITIONS[definition.key], definition)
-        for family in (*m.des_params.FAMILIES, *m.des_params.ENTITY_FAMILIES):
+        for family in (*m.des_params.FAMILIES, *m.des_params.ENTITY_FAMILIES, *m.des_params.SUPPORTED_FAMILIES):
             self.assertIs(m.params.FAMILIES[family.pattern], family)
         msgids = {defn.label_msgid for defn in des_ops.OPERATION_DEFS}
         msgids |= {setting.label_msgid for defn in des_ops.OPERATION_DEFS
@@ -402,11 +428,12 @@ class DesignRegisteredTest(unittest.TestCase):
         msgids |= {label for defn in des_ops.OPERATION_DEFS for setting in defn.settings
                    for _value, label in setting.choices or ()}
         msgids |= {figure.label_msgid for figure in (*declared.FIGURES, *declared.QUARRY_FIGURES,
-                                                     *declared.ENTITY_FIGURES)}
+                                                     *declared.ENTITY_FIGURES, *declared.SUPPORTED_FIGURES)}
         msgids |= {defn.label_msgid for defn in (*m.des_params.DEFINITIONS,
                                                  *m.des_params.QUARRY_DEFINITIONS)}
         msgids |= {family.template.label_msgid
-                   for family in (*m.des_params.FAMILIES, *m.des_params.ENTITY_FAMILIES)}
+                   for family in (*m.des_params.FAMILIES, *m.des_params.ENTITY_FAMILIES,
+                                  *m.des_params.SUPPORTED_FAMILIES)}
         self.assertNotIn(None, msgids)
         self.assertEqual(m.i18n.untranslated(msgids), [])
         catalog = _module("design.messages").CATALOG_ES  # los mensajes con código, instalados
@@ -421,9 +448,12 @@ class DesignRegisteredTest(unittest.TestCase):
                 launched.setdefault(idname, []).append(defn.op_type)
         self.assertEqual(sorted(launched), sorted({"geoblender.des_compute_envelope",
                                                    "geoblender.des_edit_bench_profiles",
-                                                   PLATFORM_COMMAND, *COMMANDS_014}))
+                                                   PLATFORM_COMMAND, *COMMANDS_014,
+                                                   *COMMANDS_016.values()}))
         self.assertEqual(launched["geoblender.des_compute_envelope"], list(VERSION_TYPES))
         self.assertEqual(launched[PLATFORM_COMMAND], list(ENTITY_TYPES))  # RF-015-02 (T04)
+        for op_type, idname in COMMANDS_016.items():  # una orden por tipo de la 016 (T03); sus clases, la T35
+            self.assertEqual(launched[idname], [op_type])
         platform = self.cat.commands[PLATFORM_COMMAND]  # de la entrada 015, entregada (T31)
         self.assertEqual((platform.entry, platform.module), (ENTRY_015, "des"))
         self.assertTrue(self.cat.entries[ENTRY_015].delivered)
@@ -432,7 +462,7 @@ class DesignRegisteredTest(unittest.TestCase):
         self.assertFalse(m.commands.is_provisional(platform_class))
         self.assertTrue(m.commands.is_available(PLATFORM_COMMAND))  # la entrada la entrega la T31
         self.assertNotIn("geoblender.des_draw_platform", self.cat.commands)  # la clave marcador, sustituida
-        for idname in sorted(set(launched) - COMMANDS_014 - {PLATFORM_COMMAND}):
+        for idname in sorted(set(launched) - COMMANDS_014 - {PLATFORM_COMMAND} - set(COMMANDS_016.values())):
             with self.subTest(orden=idname):
                 self.assertIn(idname, DELIVERED)
         entry_014 = self.cat.entries[ENTRY_014]  # la T58 la entrega, antes del H3

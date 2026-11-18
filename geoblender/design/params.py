@@ -79,9 +79,25 @@ plataforma). Un tipo **sin** ``start`` es un tipo **sin cadena** (:attr:`EntityP
 superficie ni nadie parte de la suya (``design.entities``). La plataforma no cambia de claves, de plantillas ni de
 rangos.
 
+**Los cuatro tipos de la 016** (spec 016, T03; plan 016 §5.2.2; D-1, D-2, D-3, D-9, D-19, D-21 y D-22): el acopio
+(``stockpile``, la detección, ``STK-001``: **sin cadena**, sin ``start``), la retirada (``removal``, ``RMV``), el
+contrafuerte (``buttress``, ``BTR``) y el cuerpo apoyado (``body``, ``BDY``) son cuatro tipos del programa
+(:data:`STOCKPILE_ENTITY`, :data:`REMOVAL_ENTITY`, :data:`BUTTRESS_ENTITY` y :data:`BODY_ENTITY`, registrados al importar
+como la plataforma) con sus valores en :class:`StockpileParam`, :class:`RemovalParam`, :class:`ButtressParam` y
+:class:`BodyParam` y sus familias de versión (:data:`SUPPORTED_FAMILIES`; admiten también el valor del proyecto: la
+detección sobre una superficie del proyecto, D-15). **Valor por defecto solo donde lo dice el plan**: ADOPTADO «sin
+confirmar» los de D-3 (margen 10 m, corona de 1 a 3 m, pendiente de corona 12°, área llana mínima 10 m², residuo
+máximo 1 m, 4 vueltas del ajuste y 6 de plano y huella, apertura de 31 m —P-6: el diámetro en metros—, altura mínima 2 m
+y áreas de 150 a 20.000 m²), el factor de malla 1,0 y la métrica exacta; HIPÓTESIS la inclinación máxima (4°) y el
+cuantil de apoyo (0,6); «proteger» solo en el contrafuerte (D-1) y «cero en el borde» falso. **Sin valor** (lo declara
+una persona): la transición (D-2), la cota de coronación (D-21), la distancia máxima (D-9) y el resguardo (D-19 de la
+015). Los rangos (:data:`STOCKPILE_RANGES`…) son los límites de validez que fija la T03 (no una cifra minera), y
+:func:`check_entity_param` rechaza un valor sin valor o fuera de ellos, para cualquier tipo.
+
 El espesor mínimo del informe es el de la 012, ``res.verify.min_thickness_m``
-(:data:`VERIFY_MIN_THICKNESS`), que ``design`` lee **por su clave** con ``core.params`` sin
-importar ``reserves`` (D-24); una prueba de arquitectura comprueba que sigue declarada.
+(:data:`VERIFY_MIN_THICKNESS`), y el umbral de la huella de un acopio es el de la 011, ``res.anthropic_presence_m``
+(:data:`ANTHROPIC_PRESENCE`, D-17): ``design`` los lee **por su clave** con ``core.params`` sin
+importar ``reserves`` (D-24), sin copiarlos; una prueba de arquitectura comprueba que siguen declarados.
 
 **El 90 °.** ``ParamDef`` solo sabe excluir el mínimo de un rango; el máximo, no. Un ángulo de 0 a
 90 ° ambos excluidos se declara con ``(0; 90]`` y :data:`RANGES` (:class:`ValueRange`) lleva el
@@ -108,6 +124,13 @@ from ..core.params import ParamDef, ParamFamily, ParamValue, format_range
 from .messages import DesignError
 
 __all__ = [
+    "ANTHROPIC_PRESENCE",
+    "BODY_ENTITY",
+    "BODY_FAMILIES",
+    "BODY_RANGES",
+    "BUTTRESS_ENTITY",
+    "BUTTRESS_FAMILIES",
+    "BUTTRESS_RANGES",
     "COMMON_ENTITY_PARAMS",
     "CONSERVE_SLOPE",
     "CROWN_RING",
@@ -124,17 +147,28 @@ __all__ = [
     "QUARRY_PARAMS",
     "QUARRY_RANGES",
     "RANGES",
+    "REMOVAL_ENTITY",
+    "REMOVAL_FAMILIES",
+    "REMOVAL_RANGES",
     "SECTOR_SLOPE",
+    "STOCKPILE_ENTITY",
+    "STOCKPILE_FAMILIES",
+    "STOCKPILE_RANGES",
+    "SUPPORTED_FAMILIES",
     "TOLERANCE_FACE",
     "UNSPLIT_MIN_AREA",
     "UNSPLIT_THRESHOLD",
     "VERIFY_MIN_THICKNESS",
     "WARNING_RATIO",
     "BenchParam",
+    "BodyParam",
+    "ButtressParam",
     "EntityParams",
     "ParamDef",
     "ParamValue",
     "PlatformParam",
+    "RemovalParam",
+    "StockpileParam",
     "ValueRange",
     "bench_key",
     "check_bench_value",
@@ -501,9 +535,9 @@ COMMON_ENTITY_PARAMS: tuple[str, ...] = (
 la plataforma (``name``, ``start``, ``support``, ``supports``, ``discarded``, ``protect``, ``guard_m`` y ``reason``),
 bajo el prefijo de cada tipo (P-11). Un tipo sin cadena no tiene ``start``."""
 
-_OPTIONAL = frozenset({PlatformParam.SUPPORT, PlatformParam.MAX_SLOPE, PlatformParam.REASON,
-                       PlatformParam.SUPPORTS})
-"""Los valores que pueden quedarse sin valor: la superficie de apoyo («si la hay»), la pendiente
+_PLATFORM_OPTIONAL = (PlatformParam.SUPPORT.value, PlatformParam.MAX_SLOPE.value, PlatformParam.REASON.value,
+                      PlatformParam.SUPPORTS.value)
+"""Los valores de la plataforma que pueden quedarse sin valor: la superficie de apoyo («si la hay»), la pendiente
 máxima (opcional, D-6), el motivo (el generado, editable) y las dependencias declaradas (vacío)."""
 
 _INF = math.inf
@@ -612,19 +646,21 @@ _ENTITY_SPECS: tuple[tuple[PlatformParam, str, ParamValue | None, tuple[str, ...
 
 def entity_family(prefix: str, param: str, value_type: str, default: ParamValue | None,
                   choices: tuple[str, ...], rfs: tuple[str, ...], source: str, label: str, *,
-                  span: ValueRange | None = None, scope: str = "version") -> ParamFamily:
+                  span: ValueRange | None = None, scope: str = "version",
+                  kind: str = "ADOPTADO") -> ParamFamily:
     """La familia ``<prefix>.{e}.<param>`` de un tipo de entidad (``prefix``: ``des.platform``, ``des.stockpile``…;
     spec 016, T02) con la plantilla de clave ``<prefix>.e.<param>``: el rango ``span`` (sin tope en un extremo
     infinito), ADOPTADO «sin confirmar» de origen ``algorithm`` con valor por defecto, o ADOPTADO sin valor que
-    declara una persona (origen ``person``), de ``scope`` de versión (por defecto) o de proyecto. Es la
-    construcción de las 20 familias de la plataforma, sin cambiar nada de ellas."""
+    declara una persona (origen ``person``), de ``scope`` de versión (por defecto) o de proyecto. ``kind`` (T03): el
+    tipo del valor por defecto, ``ADOPTADO`` (el de siempre) o ``HIPÓTESIS`` (la inclinación máxima y el cuantil de
+    apoyo de la detección, D-3). Es la construcción de las 20 familias de la plataforma, sin cambiar nada de ellas."""
     unit = "-" if span is None else span.unit
     minimum = None if span is None or span.minimum == -math.inf else span.minimum
     maximum = None if span is None or span.maximum == math.inf else span.maximum
     template = ParamDef(
         f"{prefix}.e.{param}", value_type, unit, default, minimum, maximum, rfs,
         source, min_exclusive=span is not None and span.min_exclusive, allow_empty=default is None,
-        choices=choices, kind="ADOPTADO", source_kind="person" if default is None else "algorithm",
+        choices=choices, kind=kind, source_kind="person" if default is None else "algorithm",
         scope=scope, label_msgid=label)
     return ParamFamily(f"{prefix}.{{e}}.{param}", template)
 
@@ -694,10 +730,15 @@ class EntityParams:
     code_prefix: str
     names: tuple[str, ...]
     families: tuple[ParamFamily, ...] = ()
+    optional: tuple[str, ...] = ()
+    label: str = ""
+    ranges: tuple[tuple[str, ValueRange], ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "names", tuple(self.names))
         object.__setattr__(self, "families", tuple(self.families))
+        object.__setattr__(self, "optional", tuple(self.optional))
+        object.__setattr__(self, "ranges", tuple(self.ranges))
         if not isinstance(self.kind, str) or _KEY_SEGMENT.fullmatch(self.kind) is None:
             raise ValueError(f"el tipo de una entidad es un segmento de clave ([a-z][a-z0-9_]*), no {self.kind!r}")
         if not isinstance(self.code_prefix, str) or _CODE_PREFIX.fullmatch(self.code_prefix) is None:
@@ -715,6 +756,14 @@ class EntityParams:
             if prefix != f"{self.key_prefix}.{{e}}" or last not in self.names:
                 raise ValueError(f"la familia {family.pattern!r} no es de {self.key_prefix}.{{e}}.<valor> de "
                                  f"{self.kind}")
+        for name in self.optional:
+            if name not in self.names:
+                raise ValueError(f"el valor opcional {name!r} no es de {self.kind}")
+        for name, span in self.ranges:
+            if name not in self.names or not isinstance(span, ValueRange):
+                raise ValueError(f"el rango de {name!r} no es el de un valor numérico de {self.kind}")
+        if not isinstance(self.label, str):
+            raise ValueError(f"el nombre de {self.kind} para las personas es un texto, no {self.label!r}")
 
     @property
     def key_prefix(self) -> str:
@@ -726,6 +775,22 @@ class EntityParams:
         """Si el tipo encadena: su familia tiene ``start`` (la superficie de la que parte). Sin él, es un tipo
         sin cadena."""
         return PlatformParam.START.value in self.names
+
+    def template(self, name: str) -> ParamDef:
+        """La plantilla del valor ``name`` de este tipo (la de su familia ``des.<tipo>.{e}.<valor>``).
+        :class:`ValueError` si no es un valor suyo o su familia no está declarada: un error del programa."""
+        for family in self.families:
+            if family.pattern.rpartition(".")[2] == name:
+                return family.template
+        raise ValueError(f"«{name}» no es un valor de {self.kind} con su familia declarada")
+
+    def range(self, name: str) -> ValueRange | None:
+        """El rango del valor numérico ``name`` de este tipo (:class:`ValueRange`, con los extremos abiertos o
+        cerrados que ``ParamDef`` no puede decir); ``None`` si no lo tiene (un texto, un sí/no)."""
+        for found, span in self.ranges:
+            if found == name:
+                return span
+        return None
 
 
 _ENTITY_PARAMS: dict[str, EntityParams] = {}
@@ -827,32 +892,364 @@ def parse_entity_key(key: object) -> tuple[str, str, str] | None:
     return code, spec.kind, parts[3]
 
 
-PLATFORM_ENTITY = EntityParams("platform", "PLT", tuple(item.value for item in PlatformParam), ENTITY_FAMILIES)
-"""Los parámetros del tipo plataforma: sus 20 valores y sus 20 familias (:data:`ENTITY_FAMILIES`), registrados al
-importar y del programa."""
+PLATFORM_ENTITY = EntityParams(
+    "platform", "PLT", tuple(item.value for item in PlatformParam), ENTITY_FAMILIES,
+    optional=_PLATFORM_OPTIONAL, label="Plataforma", ranges=tuple(ENTITY_RANGES.items()))
+"""Los parámetros del tipo plataforma: sus 20 valores y sus 20 familias (:data:`ENTITY_FAMILIES`), sus opcionales y
+sus rangos, registrados al importar y del programa."""
 register_entity_params(PLATFORM_ENTITY, permanent=True)
 
 
-def check_entity_param(entity: str, code: str, param: PlatformParam | str, value: object, *,
-                       layer: str, required: bool | None = None) -> float | str | bool | None:
-    """El valor ``param`` de la plataforma de nombre ``entity`` y código ``code`` de la capa
-    ``layer``, ya comprobado: ``float`` un número, ``str`` un texto (sin los espacios de los
+# --- Los cuatro tipos de entidad de la 016 (spec 016, T03; plan 016 §5.2.2; D-1, D-2, D-3, D-9, D-21, D-22) -------
+
+ANTHROPIC_PRESENCE = "res.anthropic_presence_m"
+"""El umbral único de presencia de antrópicas de la 011 (RF-011-14, D-7 de la 011; 0,30 m): **el umbral de la huella de
+un acopio** (D-17 de la 016). ``design`` lo lee **por su clave** con ``core.params`` sin importar ``reserves`` (como
+:data:`VERIFY_MIN_THICKNESS`, D-24): no se copia a la familia del acopio, para que la unidad antrópica de la 011 y la
+huella tengan las mismas celdas; una prueba comprueba que la clave sigue declarada en ``reserves.params``."""
+
+
+class StockpileParam(StrEnum):
+    """Los valores de una detección de acopios (``des.stockpile.{e}.<valor>``; plan 016 §5.2.2), en su orden: los
+    propios (la capa de marcas, la superficie, los candidatos, los umbrales de D-3 y las decisiones) y los comunes a
+    todos los tipos, menos ``start``: la detección es un tipo **sin cadena** (T02)."""
+
+    NAME = "name"
+    LAYER = "layer"
+    SURFACE = "surface"
+    CANDIDATES = "candidates"
+    MARGIN = "margin_m"
+    CROWN_INNER = "crown_inner_m"
+    CROWN_OUTER = "crown_outer_m"
+    CROWN_SLOPE = "crown_slope_deg"
+    CROWN_FLAT_MIN = "crown_flat_min_m2"
+    MAX_RESIDUAL = "max_residual_m"
+    FIT_ROUNDS = "fit_rounds"
+    TURNS = "turns"
+    TILT_MAX = "tilt_max_deg"
+    SUPPORT_QUANTILE = "support_quantile"
+    OPEN_DIAMETER = "open_diameter_m"
+    MIN_HEIGHT = "min_height_m"
+    MIN_AREA = "min_area_m2"
+    MAX_AREA = "max_area_m2"
+    DECISIONS = "decisions"
+    SUPPORT = "support"
+    SUPPORTS = "supports"
+    DISCARDED = "discarded"
+    PROTECT = "protect"
+    GUARD = "guard_m"
+    REASON = "reason"
+
+
+class RemovalParam(StrEnum):
+    """Los valores de la retirada de un acopio (``des.removal.{e}.<valor>``; plan 016 §5.2.2), en su orden."""
+
+    NAME = "name"
+    STOCKPILE = "stockpile"
+    START = "start"
+    SUPPORT = "support"
+    SUPPORTS = "supports"
+    TRANSITION = "transition_deg"
+    MESH_FACTOR = "mesh_factor"
+    METRIC = "metric"
+    WALL_REASON = "wall_reason"
+    DISCARDED = "discarded"
+    PROTECT = "protect"
+    GUARD = "guard_m"
+    REASON = "reason"
+
+
+class ButtressParam(StrEnum):
+    """Los valores de un contrafuerte (``des.buttress.{e}.<valor>``; plan 016 §5.2.2), en su orden."""
+
+    NAME = "name"
+    LAYER = "layer"
+    FEATURE = "feature"
+    START = "start"
+    SUPPORT = "support"
+    PROFILE = "profile"
+    REACH = "reach_m"
+    CROWN = "crown_m"
+    METRIC = "metric"
+    PROTECT = "protect"
+    GUARD = "guard_m"
+    REASON = "reason"
+    SUPPORTS = "supports"
+    DISCARDED = "discarded"
+
+
+class BodyParam(StrEnum):
+    """Los valores de un cuerpo apoyado (``des.body.{e}.<valor>``; plan 016 §5.2.2), en su orden."""
+
+    NAME = "name"
+    LAYER = "layer"
+    FEATURE = "feature"
+    DATA_LAYER = "data_layer"
+    DATA_FIELD = "data_field"
+    DATA_FROM = "data_from"
+    SURFACE = "surface"
+    SENSE = "sense"
+    START = "start"
+    MAX_DISTANCE = "max_distance_m"
+    ZERO_AT_EDGE = "zero_at_edge"
+    SUPPORT = "support"
+    SUPPORTS = "supports"
+    DISCARDED = "discarded"
+    PROTECT = "protect"
+    GUARD = "guard_m"
+    REASON = "reason"
+
+
+STOCKPILE_RANGES: Mapping[str, ValueRange] = MappingProxyType({
+    StockpileParam.MARGIN.value: ValueRange(0.0, 1000.0, "m"),
+    StockpileParam.CROWN_INNER.value: ValueRange(0.0, 1000.0, "m"),
+    StockpileParam.CROWN_OUTER.value: ValueRange(0.0, 1000.0, "m", min_exclusive=True),
+    StockpileParam.CROWN_SLOPE.value: ValueRange(0.0, 90.0, "deg", min_exclusive=True, max_exclusive=True),
+    StockpileParam.CROWN_FLAT_MIN.value: ValueRange(0.0, 1.0e6, "m2"),
+    StockpileParam.MAX_RESIDUAL.value: ValueRange(0.0, 1000.0, "m", min_exclusive=True),
+    StockpileParam.FIT_ROUNDS.value: ValueRange(1, 100, "-"),
+    StockpileParam.TURNS.value: ValueRange(1, 100, "-"),
+    StockpileParam.TILT_MAX.value: ValueRange(0.0, 90.0, "deg", max_exclusive=True),
+    StockpileParam.SUPPORT_QUANTILE.value: ValueRange(0.0, 1.0, "-"),
+    StockpileParam.OPEN_DIAMETER.value: ValueRange(0.0, 1000.0, "m", min_exclusive=True),
+    StockpileParam.MIN_HEIGHT.value: ValueRange(0.0, 1000.0, "m"),
+    StockpileParam.MIN_AREA.value: ValueRange(0.0, 1.0e7, "m2", min_exclusive=True),
+    StockpileParam.MAX_AREA.value: ValueRange(0.0, 1.0e9, "m2", min_exclusive=True),
+    StockpileParam.GUARD.value: ENTITY_RANGES[PlatformParam.GUARD.value],
+})
+REMOVAL_RANGES: Mapping[str, ValueRange] = MappingProxyType({
+    RemovalParam.TRANSITION.value: ValueRange(0.0, 90.0, "deg", min_exclusive=True, max_exclusive=True),
+    RemovalParam.MESH_FACTOR.value: ENTITY_RANGES[PlatformParam.MESH_FACTOR.value],
+    RemovalParam.GUARD.value: ENTITY_RANGES[PlatformParam.GUARD.value],
+})
+BUTTRESS_RANGES: Mapping[str, ValueRange] = MappingProxyType({
+    ButtressParam.REACH.value: ENTITY_RANGES[PlatformParam.REACH.value],
+    ButtressParam.CROWN.value: ValueRange(-_INF, _INF, "m"),
+    ButtressParam.GUARD.value: ENTITY_RANGES[PlatformParam.GUARD.value],
+})
+BODY_RANGES: Mapping[str, ValueRange] = MappingProxyType({
+    BodyParam.MAX_DISTANCE.value: ValueRange(0.0, 100000.0, "m", min_exclusive=True),
+    BodyParam.GUARD.value: ENTITY_RANGES[PlatformParam.GUARD.value],
+})
+"""Los rangos de los valores numéricos de cada tipo por último segmento de la clave (solo lectura): la única fuente
+de los de sus familias y de lo que :func:`check_entity_param` acepta. **El plan 016 §5.2.2 no los da**: son los
+límites de validez que esta tarea fija (revisables), ninguno una cifra minera; ninguno excluye un valor por defecto
+de la tabla. Los del resguardo, el factor de malla y el alcance son los de la plataforma."""
+
+_016_NAME = _015_NAME
+_016_D3 = ("Spec 016, D-3: el valor del proyecto de referencia (00 §3.10; s99 y s99b); ADOPTADO «sin confirmar» "
+           "(Samuel, IMGA, 14/11/2026)")
+_016_D3_OPEN = ("Spec 016, D-3 y P-6: apertura de 31 m = diámetro en metros (radio 15,5 m sobre la rejilla del "
+                "proyecto), la lectura de s99b que cabe en las demás; ADOPTADO «sin confirmar» (Samuel, IMGA, "
+                "14/11/2026); lo confirma el banco (CE-016-08)")
+_016_D3_HYPOTHESIS = ("Spec 016, D-3: HIPÓTESIS, como en el origen (TILT_MAX y el cuantil de apoyo de s99); la cifra "
+                      "que sale con ella lleva su marca y su sensibilidad (R-41) (Samuel, IMGA, 14/11/2026)")
+_016_D3_NONE = ("Spec 016, RF-016-02 y RF-016-08: sin valor por defecto; lo elige una persona al crear la detección "
+                "(Samuel, IMGA, 14/11/2026)")
+_016_D3_DECISIONS = ("Spec 016, RF-016-08, RF-016-10 y P-14: las decisiones sobre los candidatos (convertido o "
+                     "descartado, con motivo, decisor y fecha); vacío por defecto (decidida por la sesión principal, "
+                     "14/11/2026, revisable)")
+_016_D2_NONE = ("Spec 016, D-2: sin valor por defecto, propio de la retirada (no el de la 014: cambiar la transición "
+                "de una cantera no debe dejar obsoletas las retiradas); lo declara una persona con su origen (en el "
+                "proyecto de referencia, 35°) (Samuel, IMGA, 14/11/2026)")
+_016_D2_MESH = ("Spec 016, D-2: 1,0, como el factor de malla de la 013 (D-7 de la 013); en el proyecto de referencia "
+                "×0,93 con el chamfer; sin confirmar (Samuel, IMGA, 14/11/2026)")
+_016_REMOVAL = ("Spec 016, RF-016-11 y RF-016-12: sin valor por defecto; lo elige una persona al crear la retirada "
+                "(Samuel, IMGA, 14/11/2026)")
+_016_WALL = ("Spec 016, RF-016-15 y D-6: el motivo que queda registrado con una pared de más de 45° y 3 m o más; "
+             "vacío por defecto (Samuel, IMGA, 14/11/2026)")
+_016_BUTTRESS = ("Spec 016, RF-016-17 y D-7: sin valor por defecto; lo elige una persona al crear el contrafuerte "
+                 "(Samuel, IMGA, 14/11/2026)")
+_016_BUTTRESS_REACH = ("Spec 016, RF-016-17: el alcance es opcional y sin valor por defecto; si se fija, la "
+                       "envolvente no pasa de él (Samuel, IMGA, 14/11/2026)")
+_016_D21 = ("Spec 016, D-21: sin valor por defecto; la cota de coronación es del ancla de su perfil (z₀ + n·h) o se "
+            "rechaza con la del ancla más próxima (Samuel, IMGA, 14/11/2026)")
+_016_D1_BUTTRESS = ("Spec 016, D-1: el contrafuerte declara «sin corte» en su zona de coronación por defecto; se "
+                    "puede cambiar con motivo y decisor; sin confirmar (Samuel, IMGA, 14/11/2026)")
+_016_D1_NONE = ("Spec 016, D-1: este tipo no declara nada por defecto; «proteger» se elige con motivo; sin confirmar "
+                "(Samuel, IMGA, 14/11/2026)")
+_016_BODY = ("Spec 016, RF-016-20 y D-8: sin valor por defecto; lo elige una persona al crear el cuerpo apoyado "
+             "(Samuel, IMGA, 14/11/2026)")
+_016_BODY_START = ("Spec 016, RF-016-20: solo un cuerpo «sobre una base» parte de una superficie (el apoyo); «bajo un "
+                   "techo» no cambia la superficie y no tiene partida (Samuel, IMGA, 14/11/2026)")
+_016_D9 = ("Spec 016, D-9 (B9): obligatoria y sin valor por defecto, el análisis no da cifra; lo declara una "
+           "persona con su origen (Samuel, IMGA, 14/11/2026)")
+_016_ZERO = ("Spec 016, RF-016-20: falso por defecto; si es verdadero el espesor vale 0 en el borde de la huella "
+             "(Samuel, IMGA, 14/11/2026)")
+_016_REASON = ("Spec 015, RF-015-10: el motivo generado («declarada por …»), que la persona puede editar en la "
+               "entidad (Samuel, IMGA, 14/11/2026)")
+_016_SUPPORTS = ("Spec 015, RF-015-15: las entidades en las que la persona declara que se apoya; vacío por defecto "
+                 "(Samuel, IMGA, 14/11/2026)")
+
+_SupportedSpec = tuple[str, str, "ParamValue | None", tuple[str, ...], tuple[str, ...], str, str, str]
+"""Un valor de un tipo de la 016: su nombre, su tipo de valor, su valor por defecto, sus opciones, sus RF, su
+procedencia, su etiqueta y el tipo de su valor por defecto (``ADOPTADO`` o ``HIPÓTESIS``)."""
+
+_COMMON_LABELS = {
+    "name": "Name of the entity", "start": "Start surface of the entity", "support": "Support surface of the entity",
+    "supports": "Entities the entity is declared to rest on", "discarded": "The entity is discarded",
+    "protect": "The entity protects its area", "guard_m": "Buffer of the protected area",
+    "reason": "Reason of the declared constraint"}
+"""Las etiquetas de los valores comunes a todos los tipos (plan 016 §5.2.2): las mismas en los cuatro."""
+
+
+def _item(name: str, value_type: str, default: ParamValue | None, rfs: tuple[str, ...], source: str,
+          label: str | None = None, *, choices: tuple[str, ...] = (), kind: str = "ADOPTADO") -> _SupportedSpec:
+    return (name, value_type, default, choices, rfs, source, label or _COMMON_LABELS[name], kind)
+
+
+def _common(name: str, *, protect: bool = False) -> _SupportedSpec:
+    """Un valor común a todos los tipos (los de la 015 bajo el prefijo de cada tipo, P-11)."""
+    rfs, source = {
+        "name": (("RF-015-01",), _016_NAME),
+        "start": (("RF-015-04", "RF-015-05"), _015_START),
+        "support": (("RF-015-04", "RF-015-05"), _015_START),
+        "supports": (("RF-015-15",), _016_SUPPORTS),
+        "discarded": (("RF-015-17",), _015_DISCARDED),
+        "guard_m": (("RF-015-10", "RF-015-12"), _015_D19),
+        "reason": (("RF-015-10", "RF-015-12"), _016_REASON),
+    }.get(name, (("RF-015-10", "RF-015-12"), _016_D1_BUTTRESS if protect else _016_D1_NONE))
+    default: ParamValue | None = (protect if name == "protect" else False if name == "discarded" else None)
+    return _item(name, "bool" if name in ("protect", "discarded") else "float" if name == "guard_m" else "text",
+                 default, rfs, source)
+
+
+def _supported_entity(kind: str, prefix: str, label: str, members: type[StrEnum],
+                      specs: tuple[_SupportedSpec, ...], ranges: Mapping[str, ValueRange],
+                      optional: tuple[str, ...]) -> EntityParams:
+    """Los parámetros de un tipo de la 016: una familia ``des.<kind>.{e}.<valor>`` por cada valor de ``members``, en
+    su orden, con la procedencia, el rango y las opciones de ``specs``; registrado como del programa (ADOPTADO sin
+    valor lo que decide una persona, ADOPTADO «sin confirmar» o HIPÓTESIS lo que lleva valor por defecto)."""
+    found = {item[0]: item for item in specs}
+    order = tuple(item.value for item in members)
+    if tuple(found) != order or len(found) != len(specs):
+        raise RuntimeError(f"los valores de {kind} no son los de su enumeración: {', '.join(found)}")
+    families = tuple(
+        entity_family(f"des.{kind}", name, value_type, default, choices, rfs, source, family_label,
+                      span=ranges.get(name), kind=family_kind)
+        for name, value_type, default, choices, rfs, source, family_label, family_kind in specs)
+    entity = EntityParams(kind, prefix, order, families, optional=optional, label=label,
+                          ranges=tuple(ranges.items()))
+    register_entity_params(entity, permanent=True)
+    return entity
+
+
+STOCKPILE_ENTITY = _supported_entity(
+    "stockpile", "STK", "Detección de acopios", StockpileParam, (
+        _common("name"),
+        _item("layer", "text", None, ("RF-016-02",), _016_D3_NONE, "Layer of the stockpile marks"),
+        _item("surface", "text", None, ("RF-016-02",), _016_D3_NONE, "Surface the stockpiles are detected on"),
+        _item("candidates", "bool", None, ("RF-016-08",), _016_D3_NONE, "Look for candidates without a mark"),
+        _item("margin_m", "float", 10.0, ("RF-016-02",), _016_D3, "Margin around the mark of a stockpile"),
+        _item("crown_inner_m", "float", 1.0, ("RF-016-02",), _016_D3, "Inner distance of the crown ring"),
+        _item("crown_outer_m", "float", 3.0, ("RF-016-02",), _016_D3, "Outer distance of the crown ring"),
+        _item("crown_slope_deg", "float", 12.0, ("RF-016-02",), _016_D3, "Slope of the flat terrain of the crown"),
+        _item("crown_flat_min_m2", "float", 10.0, ("RF-016-02", "RF-016-05"), _016_D3,
+              "Minimum flat area of the crown"),
+        _item("max_residual_m", "float", 1.0, ("RF-016-02",), _016_D3, "Maximum residual of the base plane"),
+        _item("fit_rounds", "int", 4, ("RF-016-02",), _016_D3, "Rounds of the robust fit of the plane"),
+        _item("turns", "int", 6, ("RF-016-02", "RF-016-05"), _016_D3, "Rounds of plane and footprint"),
+        _item("tilt_max_deg", "float", 4.0, ("RF-016-07",), _016_D3_HYPOTHESIS, "Maximum tilt of the base plane",
+              kind="HIPÓTESIS"),
+        _item("support_quantile", "float", 0.6, ("RF-016-07",), _016_D3_HYPOTHESIS,
+              "Support quantile of the base plane", kind="HIPÓTESIS"),
+        _item("open_diameter_m", "float", 31.0, ("RF-016-08",), _016_D3_OPEN,
+              "Diameter of the opening of the candidates"),
+        _item("min_height_m", "float", 2.0, ("RF-016-08",), _016_D3, "Minimum height of a candidate"),
+        _item("min_area_m2", "float", 150.0, ("RF-016-08",), _016_D3, "Minimum area of a candidate"),
+        _item("max_area_m2", "float", 20000.0, ("RF-016-08",), _016_D3, "Maximum area of a candidate"),
+        _item("decisions", "text", None, ("RF-016-08", "RF-016-10"), _016_D3_DECISIONS,
+              "Decisions on the candidates"),
+        _common("support"), _common("supports"), _common("discarded"), _common("protect"), _common("guard_m"),
+        _common("reason"),
+    ), STOCKPILE_RANGES, ("decisions", "support", "supports", "reason"))
+"""Los parámetros de la detección de acopios (``stockpile``, ``STK-001``): sin cadena (sin ``start``)."""
+
+REMOVAL_ENTITY = _supported_entity(
+    "removal", "RMV", "Retirada de acopio", RemovalParam, (
+        _common("name"),
+        _item("stockpile", "text", None, ("RF-016-11", "RF-016-12"), _016_REMOVAL, "Stockpile that is removed"),
+        _common("start"), _common("support"), _common("supports"),
+        _item("transition_deg", "float", None, ("RF-016-11",), _016_D2_NONE, "Transition angle of the removal"),
+        _item("mesh_factor", "float", 1.0, ("RF-016-11",), _016_D2_MESH, "Mesh factor of the transition of the removal"),
+        _item("metric", "text", "exact", ("RF-016-11",), _015_D22, "Distance metric of the transition of the removal",
+              choices=_METRIC_CHOICES),
+        _item("wall_reason", "text", None, ("RF-016-15",), _016_WALL, "Reason for the wall left by the removal"),
+        _common("discarded"), _common("protect"), _common("guard_m"), _common("reason"),
+    ), REMOVAL_RANGES, ("support", "supports", "wall_reason", "reason"))
+"""Los parámetros de la retirada de un acopio (``removal``, ``RMV-001``): encadena."""
+
+BUTTRESS_ENTITY = _supported_entity(
+    "buttress", "BTR", "Contrafuerte", ButtressParam, (
+        _common("name"),
+        _item("layer", "text", None, ("RF-016-17",), _016_BUTTRESS, "Layer of the crown zones"),
+        _item("feature", "text", None, ("RF-016-17",), _016_BUTTRESS, "Feature of the layer the entity comes from"),
+        _common("start"), _common("support"),
+        _item("profile", "text", None, ("RF-016-17",), _016_BUTTRESS, "Bench profile of the buttress"),
+        _item("reach_m", "float", None, ("RF-016-17",), _016_BUTTRESS_REACH, "Reach of the buttress"),
+        _item("crown_m", "float", None, ("RF-016-17", "RF-016-18"), _016_D21, "Crown level of the buttress"),
+        _item("metric", "text", "exact", ("RF-016-17",), _015_D22, "Distance metric of the buttress slopes",
+              choices=_METRIC_CHOICES),
+        _common("protect", protect=True), _common("guard_m"), _common("reason"), _common("supports"),
+        _common("discarded"),
+    ), BUTTRESS_RANGES, ("support", "reason", "reach_m", "supports"))
+"""Los parámetros de un contrafuerte (``buttress``, ``BTR-001``): encadena y protege por defecto (D-1)."""
+
+BODY_ENTITY = _supported_entity(
+    "body", "BDY", "Cuerpo apoyado", BodyParam, (
+        _common("name"),
+        _item("layer", "text", None, ("RF-016-20",), _016_BODY, "Layer of the footprints of the bodies"),
+        _item("feature", "text", None, ("RF-016-20",), _016_BODY, "Feature of the layer the entity comes from"),
+        _item("data_layer", "text", None, ("RF-016-20",), _016_BODY, "Layer of the thickness data"),
+        _item("data_field", "text", None, ("RF-016-20",), _016_BODY, "Field of the thickness data"),
+        _item("data_from", "text", None, ("RF-016-20",), _016_BODY, "Where the thickness is read from",
+              choices=("field", "z", "m")),
+        _item("surface", "text", None, ("RF-016-20",), _016_BODY, "Known surface of the body"),
+        _item("sense", "text", None, ("RF-016-20",), _016_BODY, "Sense of the supported body",
+              choices=("on_base", "under_roof")),
+        _item("start", "text", None, ("RF-016-20", "RF-015-04"), _016_BODY_START, "Start surface of the entity"),
+        _item("max_distance_m", "float", None, ("RF-016-21", "RF-016-22"), _016_D9,
+              "Maximum distance to the thickness data"),
+        _item("zero_at_edge", "bool", False, ("RF-016-20",), _016_ZERO,
+              "Thickness zero at the edge of the footprint"),
+        _common("support"), _common("supports"), _common("discarded"), _common("protect"), _common("guard_m"),
+        _common("reason"),
+    ), BODY_RANGES, ("start", "support", "supports", "reason"))
+"""Los parámetros de un cuerpo apoyado (``body``, ``BDY-001``): encadena su instancia «sobre una base»; la de
+«bajo un techo» no tiene partida (``start`` es opcional)."""
+
+STOCKPILE_FAMILIES: tuple[ParamFamily, ...] = STOCKPILE_ENTITY.families
+REMOVAL_FAMILIES: tuple[ParamFamily, ...] = REMOVAL_ENTITY.families
+BUTTRESS_FAMILIES: tuple[ParamFamily, ...] = BUTTRESS_ENTITY.families
+BODY_FAMILIES: tuple[ParamFamily, ...] = BODY_ENTITY.families
+SUPPORTED_FAMILIES: tuple[ParamFamily, ...] = (*STOCKPILE_FAMILIES, *REMOVAL_FAMILIES, *BUTTRESS_FAMILIES,
+                                               *BODY_FAMILIES)
+"""Las familias de los cuatro tipos de la 016 (plan 016 §5.2.2), de versión (que admiten también el valor del
+proyecto: la detección sobre una superficie del proyecto, D-15), en su orden. Van aparte de :data:`FAMILIES` (las de la
+013) y de :data:`ENTITY_FAMILIES` (las de la plataforma): ``bl`` las registra junto a ellas."""
+
+
+def check_entity_param(entity: str, code: str, param: str, value: object, *,
+                       layer: str, required: bool | None = None) -> float | int | str | bool | None:
+    """El valor ``param`` de la entidad de nombre ``entity`` y código ``code`` (de cualquier tipo registrado: la
+    plataforma, el acopio, la retirada, el contrafuerte o el cuerpo apoyado) de la capa ``layer``, ya comprobado:
+    ``float`` un número, ``int`` un entero (las vueltas del ajuste), ``str`` un texto (sin los espacios de los
     extremos), ``bool`` el sí/no y ``None`` un opcional sin valor.
 
     :class:`~design.messages.DesignError` ``des.entity_param_missing`` si no tiene valor
     (``None`` o un texto en blanco: ninguno elige un valor por la persona, RF-015-08),
-    ``des.entity_param_range`` si un número está fuera de su rango (:data:`ENTITY_RANGES`; ``nan`` y
-    el infinito también) o ``des.entity_param_choice`` si un texto no es de su lista cerrada,
-    nombrando la capa, la plataforma, la clave del campo y el valor (RF-015-08: «la capa, la
+    ``des.entity_param_range`` si un número está fuera de su rango (el de su tipo, :meth:`EntityParams.range`;
+    ``nan`` y el infinito también) o ``des.entity_param_choice`` si un texto no es de su lista cerrada,
+    nombrando la capa, la entidad, la clave del campo y el valor (RF-015-08: «la capa, la
     entidad, el campo y el valor»; la capa, desde la T11). ``required`` (por defecto, todo salvo lo
-    opcional: la superficie de apoyo, la pendiente máxima, el motivo y las dependencias declaradas)
-    lo cambia: ``False`` deja pasar un valor que no hace falta (el ancho de un eje que no es de
-    línea, el resguardo de quien no protege); ``True`` exige uno opcional. :class:`TypeError` si el
-    valor no es del tipo del parámetro (un número que llega como texto o como booleano);
-    :class:`ValueError` si el código o el parámetro no existen (errores del programa)."""
-    param = PlatformParam(param)
-    key = entity_key(code, param)
-    definition = PLATFORM_PARAMS[param.value]
+    opcional de su tipo: :attr:`EntityParams.optional`) lo cambia: ``False`` deja pasar un valor que no hace falta
+    (el ancho de un eje que no es de línea, el resguardo de quien no protege); ``True`` exige uno opcional.
+    :class:`TypeError` si el valor no es del tipo del parámetro (un número que llega como texto o como booleano, un
+    decimal donde va un entero); :class:`ValueError` si el código o el parámetro no existen (errores del programa)."""
+    spec = entity_params_of(code)
+    name = str(param)
+    key = entity_key(code, name)
+    definition = spec.template(name)
     value_type = str(definition.value_type)
     if value is not None:
         if value_type == "bool":
@@ -862,11 +1259,15 @@ def check_entity_param(entity: str, code: str, param: PlatformParam | str, value
             if not isinstance(value, str):
                 raise TypeError(f"el valor {key} es un texto, no {value!r}")
             value = value.strip() or None
+        elif value_type == "int":
+            if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+                raise TypeError(f"el valor {key} es un número entero, no {value!r}")
+            value = int(value)
         else:
             value = _real(value, f"el valor {key}")
-    obj = f"Plataforma «{entity}»"
+    obj = f"{spec.label or 'Entidad'} «{entity}»"
     if value is None:
-        if (param not in _OPTIONAL) if required is None else required:
+        if (name not in spec.optional) if required is None else required:
             raise DesignError("des.entity_param_missing", obj=obj, field=key, value=None,
                               entity=entity, layer=layer)
         return None
@@ -874,10 +1275,10 @@ def check_entity_param(entity: str, code: str, param: PlatformParam | str, value
         listed = ", ".join(f"«{choice}»" for choice in definition.choices)
         raise DesignError("des.entity_param_choice", obj=obj, field=key, value=value,
                           entity=entity, layer=layer, choices=listed)
-    span = ENTITY_RANGES.get(param.value)
+    span = spec.range(name)
     if span is not None:
         if not span.contains(value):
             raise DesignError("des.entity_param_range", obj=obj, field=key, value=value,
                               entity=entity, layer=layer, range=span.text())
-        return float(value)  # type: ignore[arg-type]
+        return int(value) if value_type == "int" else float(value)  # type: ignore[arg-type]
     return value  # type: ignore[return-value]

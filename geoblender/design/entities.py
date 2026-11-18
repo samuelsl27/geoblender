@@ -6,8 +6,8 @@ Una entidad es una operación de versión con su nombre y un **código inmutable
 sin fila no hay entidad; con fila y sin operación, está «sin calcular». Su estado se **deduce** del
 grafo (ADR-0025 §5), no se apunta. Python puro, sin leer el proyecto (la lectura es de la T03).
 
-- :class:`EntityKind`: el tipo (en esta spec, la plataforma; la 016 añade los suyos) y su prefijo
-  de código. **El registro por tipo** (spec 016, T02; plan 016 §5.1, P-1, P-3 y P-11; H-2 y H-9;
+- :class:`EntityKind`: el tipo (la plataforma de la 015 y, de la 016, el acopio, la retirada, el contrafuerte y el
+  cuerpo apoyado, T03: del programa, registrados al importar) y su prefijo de código. **El registro por tipo** (spec 016, T02; plan 016 §5.1, P-1, P-3 y P-11; H-2 y H-9;
   ADR-0031 §1): lo que el dominio sabe de cada tipo —su prefijo de código, la familia de sus parámetros, el tipo
   de su operación, los papeles de su superficie y su tabla, el mensaje de su motivo y el de «apoyo retirado» y si
   encadena— es un :class:`EntityType`, registrado con :func:`register_entity_type`; la plataforma es el único del
@@ -112,11 +112,17 @@ from .params import (
     unregister_entity_params,
 )
 from .provenance import (
+    BODY,
+    BUTTRESS,
     ENTITY_ROLE,
     ENTITY_SCOPE_KEY,
     ENTITY_SURFACE_ROLE,
     OPERATION_TYPES_BY_NAME,
     PLATFORM,
+    STOCKPILE_DETECT,
+    STOCKPILE_REMOVAL,
+    STOCKPILE_SURFACE_ROLE,
+    STOCKPILES_ROLE,
     SUPPORTED_M3,
     SUPPORTED_ON_ROLE,
     SURFACE_ROLE,
@@ -180,9 +186,10 @@ __all__ = [
 
 
 class EntityKind(StrEnum):
-    """El tipo de una entidad (RF-015-01): en esta spec, la plataforma; el acopio, el contrafuerte
-    y el cuerpo apoyado son de la 016. El valor es el que va en la clave de sus parámetros
-    (``des.platform.{e}.*``); :attr:`prefix`, el principio de su código (``PLT``).
+    """El tipo de una entidad (RF-015-01): la plataforma (015) y, de la 016 (T03), el acopio (``stockpile``: la
+    detección, ``STK``, **sin cadena**), la retirada de un acopio (``removal``, ``RMV``), el contrafuerte
+    (``buttress``, ``BTR``) y el cuerpo apoyado (``body``, ``BDY``). El valor es el que va en la clave de sus
+    parámetros (``des.platform.{e}.*``); :attr:`prefix`, el principio de su código (``PLT``).
 
     Lo que se sabe de cada tipo lo dice su :class:`EntityType` (:func:`entity_type`). Un tipo **registrado**
     (:func:`register_entity_type`) que no es de la enumeración —el de una prueba (spec 016, T02)— también se lee
@@ -190,6 +197,10 @@ class EntityKind(StrEnum):
     registrado; la enumeración (``for kind in EntityKind``) es solo la de los tipos del programa."""
 
     PLATFORM = "platform"
+    STOCKPILE = "stockpile"
+    REMOVAL = "removal"
+    BUTTRESS = "buttress"
+    BODY = "body"
 
     @classmethod
     def _missing_(cls, value: object) -> EntityKind | None:
@@ -308,11 +319,24 @@ def kind_of_code(code: str) -> EntityKind:
     return EntityKind(entity_params_of(code).kind)
 
 
-# La plataforma, el único tipo del programa: sus parámetros los registra ``design.params`` al importarse.
+# Los tipos del programa: la plataforma (015) y los cuatro de la 016 (T03); sus parámetros los registra
+# ``design.params`` al importarse.
 _TYPES["platform"] = EntityType(
     entity_params("platform"), PLATFORM, "des.platform_declared_reason", "des.support_removed_platform",
     ENTITY_SURFACE_ROLE, ENTITY_ROLE)
-_PERMANENT_TYPES.add("platform")
+_TYPES["stockpile"] = EntityType(
+    entity_params("stockpile"), STOCKPILE_DETECT, "des.stockpile_declared_reason", "des.stockpile_support_removed",
+    STOCKPILE_SURFACE_ROLE, STOCKPILES_ROLE)
+_TYPES["removal"] = EntityType(
+    entity_params("removal"), STOCKPILE_REMOVAL, "des.removal_declared_reason", "des.removal_support_removed",
+    ENTITY_SURFACE_ROLE, ENTITY_ROLE)
+_TYPES["buttress"] = EntityType(
+    entity_params("buttress"), BUTTRESS, "des.buttress_declared_reason", "des.buttress_support_removed",
+    ENTITY_SURFACE_ROLE, ENTITY_ROLE)
+_TYPES["body"] = EntityType(
+    entity_params("body"), BODY, "des.body_declared_reason", "des.body_support_removed",
+    ENTITY_SURFACE_ROLE, ENTITY_ROLE)
+_PERMANENT_TYPES.update(("platform", "stockpile", "removal", "buttress", "body"))
 
 
 class EntityState(StrEnum):

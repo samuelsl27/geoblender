@@ -25,6 +25,11 @@ constantes del módulo construidas una vez:
   ``des.entity_layer``: :data:`ENTITY_RECOMPUTE`) y reproducibles salvo la capa de entidades, que es una vista
   regenerable (:data:`ENTITY_REPRODUCE`) y sus cifras
   (``design.provenance.ENTITY_FIGURES``); sin las órdenes (T15 y siguientes);
+- lo de la **016** (T03; plan 016 §5.2.2 y §5.2.3): las familias de parámetros de sus cuatro tipos
+  (``design.params.SUPPORTED_FAMILIES``: ``des.stockpile.{e}.*``, ``des.removal.{e}.*``, ``des.buttress.{e}.*`` y
+  ``des.body.{e}.*``), sus cuatro tipos de operación de la versión, repetibles (:data:`SUPPORTED_RECOMPUTE`) y
+  reproducibles (:data:`SUPPORTED_REPRODUCE`) y sus cifras (``design.provenance.SUPPORTED_FIGURES``); **sin
+  comportamiento ni órdenes todavía** (las tareas siguientes);
 - sus textos (``design.messages``) en ``core.i18n``.
 
 :func:`register` pone lo que falta y apunta cómo quitarlo; :func:`unregister` quita solo eso, en
@@ -566,6 +571,60 @@ def reproduce_declare_constraints(request: ReproduceRequest) -> Iterator[Progres
     return reproduce.reproduce_declare_constraints(request)
 
 
+# Los cuatro tipos de la 016 (T03; plan 016 §5.2.3): el mismo camino que los de las specs anteriores. Su recálculo lo hace
+# ``design.store.recompute_run`` y su reproducción, ``design.reproduce``; **sin comportamiento todavía** (las tareas que
+# crean cada operación, T14, T20, T25 y T27, les dan su cálculo: hasta entonces no hay ninguna operación de esos tipos
+# que recalcular ni reproducir y ambas dicen qué tarea falta).
+
+
+def recompute_stockpile_detect(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.stockpile_detect`` (RF-016-10; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def recompute_stockpile_removal(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.stockpile_removal`` (RF-016-11; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def recompute_buttress(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.buttress`` (RF-016-17; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def recompute_body(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.body`` (RF-016-20; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def reproduce_stockpile_detect(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.stockpile_detect``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_stockpile_detect(request)
+
+
+def reproduce_stockpile_removal(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.stockpile_removal``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_stockpile_removal(request)
+
+
+def reproduce_buttress(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.buttress``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_buttress(request)
+
+
+def reproduce_body(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.body``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_body(request)
+
+
 # --- Declaraciones de la procedencia (ADR-0025 §2; plan §5.2.3) ----------------------------------
 
 RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = MappingProxyType({
@@ -609,27 +668,48 @@ ENTITY_REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]]
     }))
 """La función de reproducción de cada tipo de la 015 que se reproduce: la plataforma y la declaración de
 restricciones (RF-015-02); la capa de entidades no (T30)."""
+SUPPORTED_RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = (
+    MappingProxyType({
+        provenance.STOCKPILE_DETECT: recompute_stockpile_detect,
+        provenance.STOCKPILE_REMOVAL: recompute_stockpile_removal,
+        provenance.BUTTRESS: recompute_buttress,
+        provenance.BODY: recompute_body,
+    }))
+"""La función de recálculo de cada tipo de la 016 (todos se repiten solos; RF-016-10)."""
+SUPPORTED_REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]] = (
+    MappingProxyType({
+        provenance.STOCKPILE_DETECT: reproduce_stockpile_detect,
+        provenance.STOCKPILE_REMOVAL: reproduce_stockpile_removal,
+        provenance.BUTTRESS: reproduce_buttress,
+        provenance.BODY: reproduce_body,
+    }))
+"""La función de reproducción de cada tipo de la 016 (los cuatro se reproducen; RF-009-11)."""
 OPERATION_DEFS: tuple[contract.OperationDef, ...] = (
     *provenance.operation_defs(RECOMPUTE, REPRODUCE), *design_profiles.OPERATIONS,
     *provenance.quarry_operation_defs(QUARRY_RECOMPUTE, QUARRY_REPRODUCE),
-    *provenance.entity_operation_defs(ENTITY_RECOMPUTE, ENTITY_REPRODUCE))
-"""Los ``OperationDef`` de los once tipos de ``des``: de la 013, la envolvente y el escalonado, de
+    *provenance.entity_operation_defs(ENTITY_RECOMPUTE, ENTITY_REPRODUCE),
+    *provenance.supported_operation_defs(SUPPORTED_RECOMPUTE, SUPPORTED_REPRODUCE))
+"""Los ``OperationDef`` de los quince tipos de ``des``: de la 013, la envolvente y el escalonado, de
 la versión y repetibles, y la edición de los perfiles de banco, del proyecto; de la 014, el recinto,
 la cantera con dos superficies, la transición, «solo relleno» y el ajuste, de la versión y
 repetibles (T05); de la 015, la plataforma, la declaración de restricciones y la capa de entidades,
-de la versión y repetibles (T04); la capa de entidades no se reproduce (T30)."""
+de la versión y repetibles (T04); la capa de entidades no se reproduce (T30); de la 016 (T03), la
+detección de acopios, su retirada, el contrafuerte y el cuerpo apoyado, de la versión, repetibles y
+reproducibles, sin comportamiento todavía."""
 DEFINITIONS: tuple[core_params.ParamDef, ...] = (
     *design_params.DEFINITIONS, *design_params.QUARRY_DEFINITIONS)
 """Las definiciones de parámetros de ``des``: las dos del proyecto de la 013 y las siete de la 014
 (plan 014 §5.2.2)."""
 FAMILIES: tuple[core_params.ParamFamily, ...] = (*design_params.FAMILIES,
-                                                *design_params.ENTITY_FAMILIES)
-"""Las familias de parámetros de ``des`` (ADR-0027): las seis de la 013 y las 20 de una plataforma
-(``des.platform.{e}.*``, T04)."""
+                                                *design_params.ENTITY_FAMILIES,
+                                                *design_params.SUPPORTED_FAMILIES)
+"""Las familias de parámetros de ``des`` (ADR-0027): las seis de la 013, las 20 de una plataforma
+(``des.platform.{e}.*``, T04) y las de los cuatro tipos de la 016 (``des.stockpile.{e}.*``, ``des.removal.{e}.*``,
+``des.buttress.{e}.*`` y ``des.body.{e}.*``, T03)."""
 FIGURES: tuple[contract.FigureDef, ...] = (*provenance.FIGURES, *provenance.QUARRY_FIGURES,
-                                           *provenance.ENTITY_FIGURES)
-"""Las cifras de ``des``: las de la envolvente y las del escalonado (013), las de la 014 y las de las
-entidades (015)."""
+                                           *provenance.ENTITY_FIGURES, *provenance.SUPPORTED_FIGURES)
+"""Las cifras de ``des``: las de la envolvente y las del escalonado (013), las de la 014, las de las
+entidades (015) y las de los cuatro tipos de la 016 (T03)."""
 
 
 # --- El gancho de la declaración (spec 015, T38; RF-015-10, RF-015-29; CE-015-04) ---------------------

@@ -51,6 +51,8 @@ gpkg_base = import_geoblender("core.gpkg.base")
 versions_model = import_geoblender("core.versions.model")
 
 PLATFORM = entities.EntityKind.PLATFORM
+PROGRAM_KINDS = ["platform", "stockpile", "removal", "buttress", "body"]
+"""Los tipos del programa, en su orden: la plataforma (015) y los cuatro de la 016 (T03)."""
 State = entities.EntityState
 PROBE, ISLAND = "probe", "island"
 GROUND = "gis_dtm_ladera"
@@ -124,14 +126,15 @@ def codes(found: Any) -> list[str]:
 
 
 class TypeRegistryTest(unittest.TestCase):
-    """RF-016-02, RF-015-01: el registro de los tipos de entidad: la plataforma es el único de verdad y un tipo
-    de prueba existe solo mientras una prueba lo registra."""
+    """RF-016-02, RF-015-01: el registro de los tipos de entidad: la plataforma y los cuatro de la 016 (T03) son
+    los de verdad y un tipo de prueba existe solo mientras una prueba lo registra."""
 
-    def test_the_platform_is_the_only_type_registered_by_default(self) -> None:
+    def test_the_types_of_the_program_are_registered_by_default(self) -> None:
         """RF-016-02, RF-015-01, RF-015-02, RF-015-25: lo que la 015 sabía de la plataforma es lo que el registro
         sabe de su tipo, sin cambiar un valor: su prefijo, su familia de parámetros, su operación, los papeles de
-        su superficie y su tabla y los mensajes de su motivo y de «apoyo retirado»; y no hay otro tipo."""
-        self.assertEqual([item.kind for item in entities.registered_types()], ["platform"])
+        su superficie y su tabla y los mensajes de su motivo y de «apoyo retirado»; y, detrás, los cuatro de la 016
+        (T03), sin más tipo."""
+        self.assertEqual([item.kind for item in entities.registered_types()], PROGRAM_KINDS)
         spec = entities.entity_type("platform")
         self.assertEqual((spec.kind, spec.prefix, spec.key_prefix, spec.op_type, spec.chained),
                          ("platform", "PLT", "des.platform", provenance.PLATFORM, True))
@@ -142,7 +145,7 @@ class TypeRegistryTest(unittest.TestCase):
         self.assertIs(entities.entity_type(PLATFORM), spec)
         self.assertIs(spec.params, params.entity_params("platform"))
         self.assertEqual(spec.params.names, tuple(item.value for item in params.PlatformParam))
-        self.assertEqual(list(entities.EntityKind), [PLATFORM])
+        self.assertEqual([item.value for item in entities.EntityKind], PROGRAM_KINDS)
         self.assertEqual((PLATFORM.prefix, PLATFORM.chained), ("PLT", True))
         self.assertEqual(entities.declared_reason(PLATFORM, "P1"), "declarada por la plataforma P1")
 
@@ -162,8 +165,8 @@ class TypeRegistryTest(unittest.TestCase):
             self.assertIs(entities.EntityKind(kind), kind)
             self.assertFalse(entities.EntityKind(ISLAND).chained)
             self.assertEqual([item.kind for item in entities.registered_types()],
-                             ["platform", "probe", "island"])
-            self.assertEqual(list(entities.EntityKind), [PLATFORM])
+                             [*PROGRAM_KINDS, "probe", "island"])
+            self.assertEqual([item.value for item in entities.EntityKind], PROGRAM_KINDS)
             self.assertIs(entities.entity_type(kind), probe)
             self.assertIs(entities.entity_type("island"), island)
         self.assertEqual((entities.registered_types(), params.registered_entity_params()), before)
@@ -195,10 +198,10 @@ class TypeRegistryTest(unittest.TestCase):
             self.assertEqual((entities.registered_types(), params.registered_entity_params()), before)
 
     def test_the_platform_cannot_be_unregistered_nor_what_is_not_registered(self) -> None:
-        """RF-016-02, RF-015-01: la plataforma es del programa, no de una prueba: quitarla (o un tipo que no
-        está) es un error del programa y lo registrado sigue igual."""
+        """RF-016-02, RF-015-01: la plataforma y los cuatro tipos de la 016 son del programa, no de una prueba:
+        quitarlos (o un tipo que no está) es un error del programa y lo registrado sigue igual."""
         before = (entities.registered_types(), params.registered_entity_params())
-        for kind in ("platform", PROBE):
+        for kind in (*PROGRAM_KINDS, PROBE):
             with self.subTest(kind=kind):
                 with self.assertRaises(ValueError):
                     entities.unregister_entity_type(kind)
@@ -290,9 +293,9 @@ class CodeTest(unittest.TestCase):
             with self.subTest(number=number), self.assertRaises(TypeError):
                 entities.format_code(self.probe, number)  # type: ignore[arg-type]
         with self.assertRaises(ValueError):
-            entities.next_code("stockpile", ())
+            entities.next_code("sandbar", ())
         with self.assertRaises(ValueError):
-            entities.format_code("stockpile", 1)
+            entities.format_code("sandbar", 1)
 
 
 class ParamFamilyTest(unittest.TestCase):
@@ -633,7 +636,7 @@ class RegistryProjectTest(efx.EntityProjectCase):
         self.assertEqual(by_kind["PLT-001"], everything["PLT-001"])
         with self.assertRaises(ValueError):
             with self.project.read() as conn:
-                entity_store.entity_surfaces(conn, self.registry(), kinds=["stockpile"])
+                entity_store.entity_surfaces(conn, self.registry(), kinds=["sandbar"])
 
     def test_two_entities_of_one_operation_do_not_overwrite_each_other(self) -> None:
         """RF-016-02, plan 016 §2.1 (trampa del registro con un código por operación): dos entidades que leyeron

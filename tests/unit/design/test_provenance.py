@@ -201,10 +201,11 @@ class OperationTypesTest(unittest.TestCase):
                          ["des.envelope", "des.stepped_design"])
         self.assertEqual(provenance.REPRODUCIBLE, ("des.envelope", "des.stepped_design"))
         self.assertEqual(provenance.VERSION_TYPES, ("des.envelope", "des.stepped_design"))
-        self.assertEqual(dict(provenance.OPERATION_TYPES_BY_NAME),  # también los de la 014 y la 015
+        self.assertEqual(dict(provenance.OPERATION_TYPES_BY_NAME),  # también los de la 014, la 015 y la 016
                          {t.op_type: t for t in (*provenance.OPERATION_TYPES,
                                                  *provenance.QUARRY_OPERATION_TYPES,
-                                                 *provenance.ENTITY_OPERATION_TYPES)})
+                                                 *provenance.ENTITY_OPERATION_TYPES,
+                                                 *provenance.SUPPORTED_OPERATION_TYPES)})
         self.assertEqual(provenance.MODULE, "des")
         self.assertEqual(provenance.OP_VERSION, "1.0")
         self.assertEqual(provenance.FIGURE_TOLERANCE, contract.Tolerance(relative=1e-9))
@@ -298,10 +299,11 @@ class DatasetsTest(unittest.TestCase):
         self.assertEqual([family.code for family in provenance.FAMILIES], list(expected))
         self.assertEqual((provenance.ENVELOPE_GRID, provenance.DESIGN_GRID, provenance.BERMS_GRID,
                           provenance.BERM_TABLE, provenance.REPORT_TABLE), tuple(expected))
-        self.assertEqual(dict(provenance.FAMILIES_BY_CODE),  # también las de la 014 y la 015
+        self.assertEqual(dict(provenance.FAMILIES_BY_CODE),  # también las de la 014, la 015 y la 016
                          {family.code: family for family in (*provenance.FAMILIES,
                                                              *provenance.QUARRY_FAMILIES,
-                                                             *provenance.ENTITY_FAMILIES)})
+                                                             *provenance.ENTITY_FAMILIES,
+                                                             *provenance.SUPPORTED_FAMILIES)})
         self.assertEqual(provenance.DESIGN_SURFACE_ROLE, "design_surface")
         for family in provenance.FAMILIES:
             kind, store, reader, role = expected[family.code]
@@ -1215,7 +1217,7 @@ class QuarryDatasetsTest(unittest.TestCase):
                 self.assertEqual(family.prefix, f"des_{family.code}_")
                 self.assertEqual(family.extension, ".tif" if kind == "raster" else "")
                 self.assertTrue(family.label.strip())
-        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 20)  # con las cinco de la 015 (T04)
+        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 28)  # con las cinco de la 015 (T04) y las ocho de la 016 (T03)
 
     def test_names_locators_and_specs(self) -> None:
         """RF-008-17, D-34 de la 009: el nombre ``des_<familia>_<nombre>`` y la ubicación con el

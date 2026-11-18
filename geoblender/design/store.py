@@ -1814,12 +1814,16 @@ class DesignWriter:
 RECOMPUTED: tuple[str, ...] = (*provenance.REPRODUCIBLE, provenance.EXCAVATION_AREA,
                                 provenance.QUARRY, provenance.EDGE_TRANSITION,
                                 provenance.FILL_ONLY, provenance.REFIT, provenance.PLATFORM,
-                                provenance.DECLARE_CONSTRAINTS, provenance.ENTITY_LAYER)
+                                provenance.DECLARE_CONSTRAINTS, provenance.ENTITY_LAYER,
+                                *provenance.SUPPORTED_VERSION_TYPES)
 """Los tipos que repite «Recalcular lo obsoleto» aquí: los dos de la 013, de la 014 el recinto
 y la cantera (T19), la transición (T28), «solo relleno» (T30) y el ajuste (T32) y, de la 015, la plataforma
 (T14 de la 015; ``design.entity_store.recompute_platform``) y la declaración de restricciones de las
 entidades (T17; ``design.entity_store.recompute_declaration``) y la capa de entidades (T30;
-``design.entity_store.recompute_entity_layer``)."""
+``design.entity_store.recompute_entity_layer``) y, de la 016 (T03), los cuatro tipos de entidad
+(:data:`~.provenance.SUPPORTED_VERSION_TYPES`: la detección de acopios, su retirada, el contrafuerte y el cuerpo
+apoyado), **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace (``NotImplementedError``) en vez de
+repetir otra operación."""
 _STORE_PHASE = "store"
 
 
@@ -3724,7 +3728,8 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         raise ValueError(f"recompute_run repite {', '.join(RECOMPUTED)}, no «{request.op_type}»")
     project: StoreProject = request.project  # type: ignore[assignment]
     if released and request.op_type in (provenance.ENVELOPE, provenance.EXCAVATION_AREA,
-                                        provenance.DECLARE_CONSTRAINTS, provenance.ENTITY_LAYER):
+                                        provenance.DECLARE_CONSTRAINTS, provenance.ENTITY_LAYER,
+                                        provenance.STOCKPILE_DETECT):
         raise ValueError(f"«{request.op_type}» no deja una superficie que se apoye en una entidad: no da por "
                          "bueno ningún apoyo")
     if request.op_type == provenance.ENVELOPE:
@@ -3764,6 +3769,11 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         from . import entity_store  # al usarlo: entity_store importa este módulo
 
         return entity_store.recompute_entity_layer(request, budget_s=budget_s)
+    if request.op_type in provenance.SUPPORTED_VERSION_TYPES:
+        # Los cuatro tipos de la 016 (T03): sin cálculo todavía; las tareas que crean cada operación lo ponen aquí
+        # (T14 la detección, T20 la retirada, T27 el contrafuerte y T25 el cuerpo). Nunca cae en un escalonado.
+        raise NotImplementedError(f"«{request.op_type}» aún no se recalcula: lo hace la tarea de la 016 que crea "
+                                  "su operación")
     return run_design(project, provenance.design_request(request.settings),
                       provenance.design_start(request.settings), version=request.version,
                       supersedes=request.operation_uid, budget_s=budget_s, released=released)
