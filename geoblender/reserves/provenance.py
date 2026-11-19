@@ -476,8 +476,10 @@ VERIFY_FIGURES: tuple[FigureDef, ...] = (
     FigureDef("res.check_moved_area_m2", "m2", "Area with movement in the zone"),
     FigureDef("res.check_nodata_area_m2", "m2", "Area without data in the zone"),
     FigureDef("res.check_avoid_weighted_m3", "m3", "Weighted volume in the area to avoid"),
+    FigureDef("res.check_stockpile_cut_m3", "m3", "Stockpile cut volume in the zone"),
 )
-"""Las cifras de la verificación (plan 012 §5.2.3)."""
+"""Las cifras de la verificación (plan 012 §5.2.3; la del corte de acopios, de la 016, T30: solo con la base de los
+acopios, en las zonas que cuentan el corte de terreno, RF-012-30)."""
 
 
 # --- Lo que anota una operación al empezar ---------------------------------------------------

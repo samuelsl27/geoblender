@@ -251,6 +251,9 @@ ventana Restricciones…."""
 VERDICT_FAILS = "fails"
 VERDICT_COMPLIES = "complies"
 COUNTS_CUT = "cut"
+COUNTS_CUT_TERRAIN = "cut_terrain"
+"""Con la base de los acopios (spec 016, T30; RF-012-30), lo que cuenta en las zonas sin corte, de solo relleno, de solo
+restauración, de resguardo y en la banda hacia dentro de un límite: el corte de terreno, que se enseña como corte."""
 COUNTS_FILL = "fill"
 COUNTS_ANY = "any"
 
@@ -1592,7 +1595,7 @@ def _final_text(final: Any) -> str:
     movimiento."""
     verdict = _verdict_text(final.verdict)
     volume = "" if final.counted_m3 is None else format_number(final.counted_m3, 0)
-    if volume and final.counts == COUNTS_CUT:
+    if volume and final.counts in (COUNTS_CUT, COUNTS_CUT_TERRAIN):
         return tr("«{surface}»: {verdict} · {volume} m³ of cut", surface=final.surface,
                   verdict=verdict, volume=volume)
     if volume and final.counts == COUNTS_FILL:
@@ -1887,7 +1890,7 @@ def _group_text(group: Any, zone: str, counts: str) -> str:
     volume, area = _volume(group.volume_m3), _volume(group.area_m2)
     thickness = _volume(group.max_m)
     x, y = format_number(group.x, 1), format_number(group.y, 1)
-    if counts == COUNTS_CUT:
+    if counts in (COUNTS_CUT, COUNTS_CUT_TERRAIN):
         return tr("{zone}: does not comply · cut {volume} m³ · {area} m² · max. thickness "
                   "{thickness} m · at ({x}; {y})", zone=zone, volume=volume, area=area,
                   thickness=thickness, x=x, y=y)

@@ -6174,6 +6174,9 @@ es = "Área sin dato en el recinto"
 ["Weighted volume in the area to avoid"]
 es = "Volumen ponderado en la zona preferible no afectar"
 
+["Stockpile cut volume in the zone"]
+es = "Volumen de corte de acopios en el recinto"
+
 # Límites legales y restricciones (spec 012, T20): la leyenda de la rejilla de clases (D-25) ---
 # («Preferably avoid», «Restoration only» y «Requires access» ya están, con los tipos)
 

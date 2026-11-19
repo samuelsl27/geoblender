@@ -83,6 +83,11 @@ PENDING_015_API: frozenset[str] = frozenset({
     # La 016, T29 (la tarea de documentación, T38, lo lleva a la ficha, ``res.md``, y vacía este conjunto): la menor de
     # varias bases de acopios para la verificación con la base (``reserves.compliance``, A12).
     "reserves.compliance.lowest_base",
+    # La 016, T30: la base de los acopios en la verificación del proyecto (``reserves.compliance_store``, A12): elegirla,
+    # sus papeles y lo que se anota de las detecciones que usa y las que no.
+    "reserves.compliance_store.BaseSelection", "reserves.compliance_store.SkippedDetection",
+    "reserves.compliance_store.StockpileBase", "reserves.compliance_store.base_role",
+    "reserves.compliance_store.select_bases",
 })
 # Los módulos de gis y de reserves de la 012 cuya API pública tiene que nombrar su ficha.
 GIS_MODULES = ("gis.search", "gis.polygons", "gis.coverage",

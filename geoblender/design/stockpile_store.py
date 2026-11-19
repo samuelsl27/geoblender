@@ -115,6 +115,8 @@ from ..core.params.store import default_reason
 from ..core.project.model import Progress
 from ..core.provenance.operations import OperationHandle, Use
 from ..core.provenance.recompute import RecomputeRequest
+from ..core.provenance.stale import OPERATION as STALE_OPERATION
+from ..core.provenance.stale import item_text
 from ..core.timeutil import format_utc
 from ..core.versions import read as versions_read
 from ..core.versions.model import Version, VersionError
@@ -191,6 +193,7 @@ __all__ = [
     "Detection",
     "DetectionData",
     "DetectionMaterial",
+    "ExcludedDetection",
     "PreparedDetection",
     "candidate_decision",
     "candidate_rows",
@@ -204,6 +207,7 @@ __all__ = [
     "detection_scope",
     "detection_summary",
     "detection_values",
+    "detections_excluded",
     "detections_on",
     "format_decisions",
     "mark_cells",
@@ -222,6 +226,10 @@ __all__ = [
     "version_perimeter",
 ]
 
+EXCLUDED_OTHER_SURFACE = "other_surface"
+"""Por qué una detección no se usa sobre una superficie: se hizo sobre otra (:class:`ExcludedDetection`)."""
+EXCLUDED_STALE = "stale"
+"""Por qué una detección no se usa sobre una superficie: está obsoleta (:class:`ExcludedDetection`)."""
 PROJECT = "project"
 """El ámbito de una detección sobre una superficie **del proyecto** (``des.stockpile_detect_project``; D-15)."""
 VERSION = "version"
@@ -1563,28 +1571,84 @@ def detections_on(project: StoreProject, version: str | None, surface: str, *, c
     no tiene alguno de sus datos (un proyecto dañado: no se lista a medias)."""
 
     def read(reading: sqlite3.Connection) -> tuple[Detection, ...]:
-        found = None if version is None else versions_read.version(reading, str(version))
-        if version is not None and found is None:
-            raise VersionError("core.version_unknown", field="versión", value=version, version=version)
-        store = ParameterStore(project)
-        detections: list[Detection] = []
-        for scope in (None,) if found is None else (None, found):
-            if scope is None:
-                registry = entities.project_registry(project, conn=reading)
-            else:
-                registry = entities.registry(project, scope.uid, conn=reading)
-            for entry in registry.entries:
-                record = entry.record
-                if (record.kind != EntityKind.STOCKPILE or record.state != entities.EntityState.CURRENT
-                        or entry.operation_uid is None):
-                    continue
-                parameter = store.get(entity_key(record.code, StockpileParam.SURFACE),
-                                      version=None if scope is None else scope.uid, conn=reading)
-                if parameter is None or parameter.value != surface:
-                    continue
-                detections.append(_detection_of(project, reading, scope, record.code, record.name, entry.operation_uid,
-                                                surface))
-        return tuple(detections)
+        return tuple(
+            _detection_of(project, reading, scope, entry.record.code, entry.record.name, str(entry.operation_uid), surface)
+            for scope, entry, detected_on in _stockpile_entries(project, reading, version)
+            if entry.record.state == entities.EntityState.CURRENT and detected_on == surface)
+
+    if conn is not None:
+        return read(conn)
+    with project.read() as reading:
+        return read(reading)
+
+
+def _stockpile_entries(project: StoreProject, reading: sqlite3.Connection, version: str | None
+                       ) -> Iterator[tuple[Version | None, entities.EntityEntry, Any]]:
+    """Las detecciones de acopios **con operación vigente** que ve la ``version`` (uid o código; ``None``: solo el proyecto) con
+    el ámbito de cada una (``None``: del proyecto), su entrada del registro y el valor de su parámetro ``surface`` (``None`` si
+    no tiene): las del proyecto y, después, las de la versión, cada una en su orden de código. Lo comparten
+    :func:`detections_on` y :func:`detections_excluded`. ``VersionError`` (``core.version_unknown``) si la versión no existe."""
+    found = None if version is None else versions_read.version(reading, str(version))
+    if version is not None and found is None:
+        raise VersionError("core.version_unknown", field="versión", value=version, version=version)
+    store = ParameterStore(project)
+    for scope in (None,) if found is None else (None, found):
+        if scope is None:
+            registry = entities.project_registry(project, conn=reading)
+        else:
+            registry = entities.registry(project, scope.uid, conn=reading)
+        for entry in registry.entries:
+            if entry.record.kind != EntityKind.STOCKPILE or entry.operation_uid is None:
+                continue
+            parameter = store.get(entity_key(entry.record.code, StockpileParam.SURFACE),
+                                  version=None if scope is None else scope.uid, conn=reading)
+            yield scope, entry, None if parameter is None else parameter.value
+
+
+@dataclass(frozen=True, slots=True)
+class ExcludedDetection:
+    """Una detección de acopios que ve una versión y que **no se usa** sobre una superficie (spec 016, T30; RF-012-31): su ``code``
+    (``STK-001``), su ``name``, su ``scope`` (:data:`PROJECT` o :data:`VERSION`), la ``version`` (el código de la versión de la
+    detección; ``None`` si es del proyecto), la ``surface`` sobre la que está hecha (el nombre de su dato; vacío si no tiene), el
+    ``reason`` (:data:`EXCLUDED_OTHER_SURFACE`: se hizo sobre otra superficie; :data:`EXCLUDED_STALE`: está obsoleta) y, de una
+    obsoleta, su ``cause`` en español (lo que cambió, según la 008)."""
+
+    code: str
+    name: str
+    scope: str
+    version: str | None
+    surface: str
+    reason: str
+    cause: str = ""
+
+
+def detections_excluded(project: StoreProject, version: str | None, surface: str | None, *,
+                        conn: sqlite3.Connection | None = None) -> tuple[ExcludedDetection, ...]:
+    """Las detecciones de acopios que ve la ``version`` (uid o código; ``None``: solo el proyecto) y que **no** da
+    :func:`detections_on` para ``surface``, con su causa (spec 016, T30; RF-012-31; plan 016 §5.4 A12): las **hechas sobre otra
+    superficie** (:data:`EXCLUDED_OTHER_SURFACE`, estén al día o no) y las **obsoletas** sobre ``surface``
+    (:data:`EXCLUDED_STALE`, con lo que cambió: la causa de la 008). Con ``surface`` ``None`` (una superficie que no es el dato
+    de ninguna detección: una cota constante, un dato congelado), todas son de otra superficie. Una descartada, una sin calcular o
+    una con su entrada descartada no se avisa: no son una base que se esperaba. Las del proyecto y, después, las de la versión.
+    Solo lee; ``conn`` y los errores, como en :func:`detections_on`."""
+
+    def read(reading: sqlite3.Connection) -> tuple[ExcludedDetection, ...]:
+        found: list[ExcludedDetection] = []
+        for scope, entry, detected_on in _stockpile_entries(project, reading, version):
+            record, state = entry.record, entry.record.state
+            if state not in (entities.EntityState.CURRENT, entities.EntityState.STALE):
+                continue
+            on_it = surface is not None and detected_on == surface
+            if state == entities.EntityState.CURRENT and on_it:
+                continue  # la que se usa
+            where = (PROJECT if scope is None else VERSION, None if scope is None else scope.code)
+            if not on_it:
+                found.append(ExcludedDetection(record.code, record.name, *where, "" if detected_on is None else str(detected_on),
+                                               EXCLUDED_OTHER_SURFACE))
+                continue
+            cause = item_text(reading, STALE_OPERATION, str(entry.operation_uid), language="es") or "cambió algo de lo que lee"
+            found.append(ExcludedDetection(record.code, record.name, *where, str(surface), EXCLUDED_STALE, cause))
+        return tuple(found)
 
     if conn is not None:
         return read(conn)

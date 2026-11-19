@@ -50,6 +50,15 @@ RF-012-28; plan 012 §5.2.3, A11, D-15, D-28, D-40, D-42, D-43).
   verificación sustituida, las del papel ``design_surface`` de ``design.provenance``, T18 de
   la 013, y la última de cada cadena de entidades de la 015, T32: RF-015-04; las superficies
   intermedias de una cadena, ``entity_surface``, son de trabajo y se verifican a petición).
+- **La base de los acopios (spec 016, T30; RF-012-24, RF-012-30, RF-012-31; plan 016 A12, P-10)**:
+  :func:`select_bases` elige, de la partida, las detecciones de acopios **al día hechas sobre ella**
+  (``design.stockpile_store.detections_on``) —una base por detección y material— y avisa de las que no
+  usa y por qué (obsoleta u hecha sobre otra superficie: ``detections_excluded``); cada base es una
+  **entrada** de la operación (el papel :func:`base_role`, ``stockpile_base_<k>``), va en sus ajustes y
+  en la tabla (``stockpile_base`` y ``stockpile_skipped``, del final 0) y, por zona que cuenta el
+  corte de terreno, también el corte de acopios (``stockpile_cut_m3`` y su cifra CALCULADO). Una base
+  en otra rejilla, CRS o datum se rechaza como RF-011-03 (:func:`check_sources`). Si hay varias, rige
+  la menor (``compliance.lowest_base``). Sin detecciones, lo de siempre.
 
 Python puro (nivel 9).
 """
@@ -64,7 +73,7 @@ import sys
 import time
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType, TracebackType
 from typing import Any
@@ -110,8 +119,9 @@ from ..core.versions import store as versions_store
 from ..core.versions.freeze import FreezeFinding
 from ..core.versions.model import ItemKind, VersionError, version_locator
 from ..core.versions.reproduce import ReproducedOutput, ReproducedResult, ReproduceRequest
+from ..design import stockpile_store
 from ..design.entities import chain_tail_surfaces
-from ..design.provenance import DESIGN_SURFACE_ROLE, ENTITY_SURFACE_ROLE
+from ..design.provenance import DESIGN_SURFACE_ROLE, ENTITY_SURFACE_ROLE, STOCKPILE_BASE_ROLE
 from ..gis.content import GEOTIFF
 from ..gis.geotiff.reader import read_geotiff
 from ..gis.geotiff.writer import target_locked, write_failed
@@ -136,6 +146,7 @@ from .compliance import (
     FinalCheck,
     Verdict,
     check_zones_steps,
+    lowest_base,
     zone_index_steps,
 )
 from .messages import render
@@ -180,7 +191,10 @@ __all__ = [
     "TABLE",
     "VERIFY",
     "VIOLATIONS",
+    "BaseSelection",
     "CheckWriter",
+    "SkippedDetection",
+    "StockpileBase",
     "StoredCheck",
     "StoredGroup",
     "StoredVerification",
@@ -189,6 +203,7 @@ __all__ = [
     "VerifyResult",
     "ZoneCheck",
     "ZoneFinal",
+    "base_role",
     "begin_verify",
     "check_sources",
     "dataset_locator",
@@ -205,6 +220,7 @@ __all__ = [
     "read_verification",
     "recompute_run",
     "reproduce_verify",
+    "select_bases",
     "stored_violations",
     "verification_names",
     "verify_inputs",
@@ -414,6 +430,166 @@ def read_groups(conn: sqlite3.Connection, table: str
     return found
 
 
+# --- La base de los acopios (spec 016, T30; RF-012-30, RF-012-31; plan 016 A12, P-10) ------------
+
+
+def base_role(position: int) -> str:
+    """El papel de la base de acopios número ``position`` (desde 1) entre las entradas de la verificación:
+    ``stockpile_base_<k>`` (el papel con que la detección escribe su base, con el número)."""
+    if isinstance(position, bool) or not isinstance(position, int) or position < 1:
+        raise ValueError(f"las bases de los acopios se cuentan desde 1, no {position!r}")
+    return f"{STOCKPILE_BASE_ROLE}_{position}"
+
+
+@dataclass(frozen=True, slots=True)
+class StockpileBase:
+    """Una base de acopios que usa la verificación: la de los acopios de un ``material`` (``None``: «sin material») de la
+    detección ``detection`` (``STK-001``) llamada ``name``, de ámbito ``scope`` (``project`` o ``version``), con su ``ref``
+    (la rejilla de esa base: el uid de su dato, para que no se confunda con la de otra detección de igual nombre en otro
+    ámbito; su ``label`` nombra la detección y el material, que es como se la nombra en un rechazo)."""
+
+    detection: str
+    name: str
+    scope: str
+    material: str | None
+    ref: SurfaceRef
+
+    def text(self, language: str = "es") -> str:
+        """Cómo se nombra al usarla: «Base de acopios: detección STK-001 «Acopios» (mineral)»."""
+        return render("res.verify_base_used", language=language, detection=self.detection, name=self.name,
+                      material=stockpile_store.material_label(self.material))
+
+
+@dataclass(frozen=True, slots=True)
+class SkippedDetection:
+    """Una detección de acopios que la verificación **no usa** (RF-012-31): su ``detection``, su ``name`` y su ``scope``, la
+    ``reason`` (``other_surface``: se hizo sobre otra superficie que la de partida; ``stale``: está obsoleta), la ``surface``
+    sobre la que está hecha y, si está obsoleta, su ``cause`` (lo que cambió)."""
+
+    detection: str
+    name: str
+    scope: str
+    reason: str
+    surface: str
+    cause: str = ""
+
+    def text(self, start: str, language: str = "es") -> str:
+        """El aviso, con la partida ``start`` de la verificación: nombra la detección y la causa; todo el corte cuenta."""
+        if self.reason == stockpile_store.EXCLUDED_STALE:
+            return render("res.verify_base_stale", language=language, detection=self.detection, name=self.name,
+                          cause=self.cause)
+        return render("res.verify_base_other_surface", language=language, detection=self.detection, name=self.name,
+                      surface=self.surface or "—", start=start)
+
+
+@dataclass(frozen=True, slots=True)
+class BaseSelection:
+    """La base de los acopios de una verificación (D-a de la 012: **automática**): las bases que usa (``bases``, una por
+    detección al día hecha sobre la partida y material, en el orden del registro) y las detecciones que no usa con su causa
+    (``skipped``; RF-012-31). Vacía: sin acopios detectados, la verificación de siempre (RF-012-30)."""
+
+    bases: tuple[StockpileBase, ...] = ()
+    skipped: tuple[SkippedDetection, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "bases", tuple(self.bases))
+        object.__setattr__(self, "skipped", tuple(self.skipped))
+        if not all(isinstance(item, StockpileBase) for item in self.bases):
+            raise ValueError("las bases de los acopios son StockpileBase")
+        if not all(isinstance(item, SkippedDetection) for item in self.skipped):
+            raise ValueError("lo que no se usa de los acopios son SkippedDetection")
+
+    @property
+    def refs(self) -> tuple[SurfaceRef, ...]:
+        """Las rejillas de las bases, en su orden: ``ComplianceRequest.bases``."""
+        return tuple(item.ref for item in self.bases)
+
+    def settings(self) -> dict[str, Any]:
+        """Lo que se anota en los ajustes de la operación (JSON sin rutas): ``bases`` y ``skipped``, y solo las que no están
+        vacías (sin acopios, los ajustes de siempre)."""
+        found: dict[str, Any] = {}
+        if self.bases:
+            found["bases"] = [{"dataset": item.ref.dataset, "label": item.ref.label, "detection": item.detection,
+                               "name": item.name, "scope": item.scope, "material": item.material}
+                              for item in self.bases]
+        if self.skipped:
+            found["skipped"] = [{"detection": item.detection, "name": item.name, "scope": item.scope,
+                                 "reason": item.reason, "surface": item.surface, "cause": item.cause}
+                                for item in self.skipped]
+        return found
+
+    @classmethod
+    def of_settings(cls, settings: Mapping[str, Any]) -> BaseSelection:
+        """La selección que anotan los ajustes ``settings`` de una verificación (:meth:`settings`); sin ella, la vacía.
+        ``ValueError`` si lo anotado no es lo que escribe :meth:`settings`."""
+        bases: list[StockpileBase] = []
+        skipped: list[SkippedDetection] = []
+        try:
+            for item in settings.get("bases") or ():
+                material = item["material"]
+                bases.append(StockpileBase(str(item["detection"]), str(item["name"]), str(item["scope"]),
+                                           None if material is None else str(material),
+                                           SurfaceRef(dataset=item["dataset"], label=str(item.get("label") or ""))))
+            for item in settings.get("skipped") or ():
+                skipped.append(SkippedDetection(str(item["detection"]), str(item["name"]), str(item["scope"]),
+                                                str(item["reason"]), str(item["surface"]), str(item.get("cause") or "")))
+        except (KeyError, TypeError, AttributeError) as error:
+            raise ValueError(f"los ajustes de la verificación anotan mal la base de los acopios: {error!r}") from None
+        return cls(tuple(bases), tuple(skipped))
+
+
+def _start_dataset(conn: sqlite3.Connection, start: SurfaceRef, version_uid: str) -> tuple[str | None, str]:
+    """El nombre del dato de la partida ``start`` y el uid de la versión a la que pertenece (``''``: del proyecto), como lo
+    resuelve ``reserves.surfaces.surface_source`` (el de la versión activa y, si no, el del proyecto); ``(None, '')`` si
+    la partida no es un dato vivo (una cota constante o un dato congelado: ninguna detección se hizo sobre ella)."""
+    if start.dataset is None:
+        return None, ""
+    record = dataset_registry.get(conn, start.dataset, version_uid=version_uid)
+    if record is None and version_uid:
+        record = dataset_registry.get(conn, start.dataset)
+    if record is None or not record.live:
+        return None, ""
+    owner = (versions_read.dataset_versions(conn, [record.uid]).get(record.uid, "")
+             if versions_read.has_versions(conn) else "")
+    return record.name, owner
+
+
+def select_bases(project: StoreProject, version: str | None, start: SurfaceRef, *,
+                 conn: sqlite3.Connection | None = None) -> BaseSelection:
+    """La base de los acopios de verificar, en la ``version`` (uid o código; ``None``: solo el proyecto), a partir de
+    ``start`` (RF-012-30, RF-012-31; plan 016 A12, P-10): una base por detección de acopios **al día hecha sobre la partida**
+    (``design.stockpile_store.detections_on``: las del proyecto y las de la versión; una versión solo si el dato de la
+    partida es suyo) y por material, y, de las demás detecciones que ve la versión, las que **no usa** con su causa
+    (obsoleta, u hecha sobre otra superficie: también todas si la partida es una cota constante o un dato congelado).
+    Sin detecciones, la selección vacía. Solo lee; ``conn`` es una conexión de lectura de quien llama (con su
+    instantánea). ``VersionError`` (``core.version_unknown``) si la versión no existe."""
+
+    def read(reading: sqlite3.Connection) -> BaseSelection:
+        found = None if version is None else versions_read.version(reading, str(version))
+        if version is not None and found is None:
+            raise VersionError("core.version_unknown", field="versión", value=version, version=version)
+        surface, owner = _start_dataset(reading, start, "" if found is None else found.uid)
+        skipped = [SkippedDetection(item.code, item.name, item.scope, item.reason, item.surface, item.cause)
+                   for item in stockpile_store.detections_excluded(project, version, surface, conn=reading)]
+        bases: list[StockpileBase] = []
+        for detection in (() if surface is None else
+                          stockpile_store.detections_on(project, version, surface, conn=reading)):
+            if (detection.version_uid or "") != owner:  # el mismo nombre, pero otro dato (el de otro ámbito)
+                skipped.append(SkippedDetection(detection.code, detection.name, detection.scope,
+                                                stockpile_store.EXCLUDED_OTHER_SURFACE, detection.surface))
+                continue
+            for material in detection.materials:
+                shown = StockpileBase(detection.code, detection.name, detection.scope, material.material,
+                                      SurfaceRef(dataset=material.base.uid))
+                bases.append(replace(shown, ref=SurfaceRef(dataset=material.base.uid, label=shown.text())))
+        return BaseSelection(tuple(bases), tuple(skipped))
+
+    if conn is not None:
+        return read(conn)
+    with project.read() as reading:
+        return read(reading)
+
+
 # --- El cálculo por pasos ----------------------------------------------------------------------
 
 
@@ -421,7 +597,9 @@ def read_groups(conn: sqlite3.Connection, table: str
 class VerifyResult:
     """Lo verificado: el nombre, el de cada final, lo de cada final (``FinalCheck``, en su
     orden), las rejillas de incumplimientos escritas (final desde 1 → rejilla en su temporal),
-    los sectores sin búsqueda vigente (la marca de RF-012-10, sus nombres) y las cifras."""
+    los sectores sin búsqueda vigente (la marca de RF-012-10, sus nombres) y las cifras. Con la
+    base de los acopios (T30), la selección que se usó (``selection``) y el nombre de la partida
+    (``start_name``) para nombrar lo que no se usó en la tabla."""
 
     name: str
     final_names: tuple[str, ...]
@@ -429,6 +607,8 @@ class VerifyResult:
     grids: Mapping[int, ClassesGrid]
     pending_names: tuple[str, ...]
     figures: tuple[FigureSpec, ...]
+    selection: BaseSelection = BaseSelection()
+    start_name: str = ""
 
     @property
     def fails(self) -> tuple[bool, ...]:
@@ -439,6 +619,9 @@ class VerifyResult:
         """Las filas de ``res_chk_`` (formato largo; el final 0, lo de toda la verificación)."""
         rows: list[tuple[str, int, str, float | None, str | None, str | None]] = [
             ("", 0, "pending_sector", None, None, name) for name in self.pending_names]
+        rows += [("", 0, "stockpile_base", None, None, base.text("es")) for base in self.selection.bases]
+        rows += [("", 0, "stockpile_skipped", None, None, item.text(self.start_name, "es"))
+                 for item in self.selection.skipped]
         for position, (shown, found) in enumerate(zip(self.final_names, self.finals,
                                                       strict=True), start=1):
             rows.append(("", position, "surface", None, None, shown))
@@ -450,6 +633,8 @@ class VerifyResult:
                          (code, position, "nodata_area_m2", item.nodata_m2, "m2", None),
                          (code, position, "counted_m3", item.counted_m3, "m3",
                           item.counts.value)]
+                if item.counts is Counts.CUT_TERRAIN:  # con la base de los acopios (RF-012-30)
+                    rows.append((code, position, "stockpile_cut_m3", item.stockpile_cut_m3, "m3", None))
                 if item.weighted_m3 is not None:
                     rows += [(code, position, "weight", item.weight, "-", None),
                              (code, position, "weighted_m3", item.weighted_m3, "m3", None)]
@@ -475,6 +660,8 @@ def _figures(name: str, finals: Sequence[FinalCheck]) -> tuple[FigureSpec, ...]:
                       FigureSpec("res.check_fill_m3", item.fill_m3, "m3", scope=scope),
                       FigureSpec("res.check_moved_area_m2", item.moved_m2, "m2", scope=scope),
                       FigureSpec("res.check_nodata_area_m2", item.nodata_m2, "m2", scope=scope)]
+            if item.counts is Counts.CUT_TERRAIN:  # el corte de acopios, solo con la base (RF-012-30)
+                found.append(FigureSpec("res.check_stockpile_cut_m3", item.stockpile_cut_m3, "m3", scope=scope))
             if item.weighted_m3 is not None:
                 found.append(FigureSpec("res.check_avoid_weighted_m3", item.weighted_m3, "m3",
                                         scope=scope))
@@ -496,60 +683,74 @@ def check_sources(sources: Mapping[str, SurfaceSource], masks: MaskSet,
 def verify_steps(request: ComplianceRequest, sources: Mapping[str, SurfaceSource], *,
                  references: tuple[CrsRef, VerticalRef], budget_s: float = STEP_BUDGET_S,
                  grid_paths: Mapping[int, tuple[Path, Path | None]] | None = None,
-                 band_rows: int = BAND_ROWS) -> Iterator[Progress]:
+                 band_rows: int = BAND_ROWS, selection: BaseSelection | None = None
+                 ) -> Iterator[Progress]:
     """Los pasos de verificar ``request`` (véase el módulo) con ``sources`` (papel →
-    ``SurfaceSource``: :data:`START_ROLE` y :func:`final_role` de cada final), de ``budget_s``
-    como mucho. Con ``grid_paths`` (final desde 1 → destino y temporal), la rejilla de
-    incumplimientos de cada final que incumple queda escrita en su temporal con el CRS y el datum
-    de ``references``. El último ``Progress`` lleva el :class:`VerifyResult`. Al llamar:
-    ``TypeError``/``ValueError`` si la petición no casa, y el rechazo de RF-011-03."""
+    ``SurfaceSource``: :data:`START_ROLE`, :func:`final_role` de cada final y :func:`base_role` de
+    cada base de ``request.bases``), de ``budget_s`` como mucho. Con ``grid_paths`` (final desde 1
+    → destino y temporal), la rejilla de incumplimientos de cada final que incumple queda escrita
+    en su temporal con el CRS y el datum de ``references``. ``selection`` (T30), la selección de la
+    que salen ``request.bases``, para nombrarla en la tabla; si se da con bases, sus rejillas son
+    las de la petición. El último ``Progress`` lleva el :class:`VerifyResult`. Al llamar:
+    ``TypeError``/``ValueError`` si la petición no casa, y el rechazo de RF-011-03 (también el de
+    una base en otra rejilla, RF-012-31)."""
     if not isinstance(request, ComplianceRequest):
         raise TypeError(f"se verifica una ComplianceRequest, no {type(request).__name__}")
     if isinstance(budget_s, bool) or not isinstance(budget_s, int | float) or budget_s <= 0:
         raise ValueError(f"el presupuesto de un paso es un número positivo, no {budget_s!r}")
-    roles = [START_ROLE, *(final_role(k) for k in range(1, len(request.finals) + 1))]
+    selection = BaseSelection() if selection is None else selection
+    if selection.bases and selection.refs != request.bases:
+        raise ValueError("la selección de las bases de los acopios no es la de la petición")
+    roles = [START_ROLE, *(final_role(k) for k in range(1, len(request.finals) + 1)),
+             *(base_role(k) for k in range(1, len(request.bases) + 1))]
     missing = [role for role in roles if role not in sources]
     if missing:
         raise ValueError(f"faltan las superficies {missing}")
     ordered = [sources[role] for role in roles]
     check_sources(dict(zip(roles, ordered, strict=True)), request.masks, references)
-    work = _work(request, ordered, references, dict(grid_paths or {}), band_rows)
+    work = _work(request, ordered, references, dict(grid_paths or {}), band_rows, selection)
     return _paced(work, float(budget_s),
-                  planned_units(request.masks.grid, len(ordered), len(request.finals), band_rows))
+                  planned_units(request.masks.grid, len(ordered), len(request.finals), band_rows,
+                                with_base=bool(request.bases)))
 
 
-def planned_units(grid: Grid, surfaces: int, finals: int, band_rows: int = BAND_ROWS) -> int:
+def planned_units(grid: Grid, surfaces: int, finals: int, band_rows: int = BAND_ROWS, *,
+                  with_base: bool = False) -> int:
     """Las unidades que se prevén al empezar a verificar ``finals`` finales de ``surfaces``
-    superficies en ``grid`` (crece si hacen falta más; el total del primer aviso de avance):
-    leer cada superficie y sumar cada final en cada banda; de cada final, los grupos (tres
-    modos de contar por cada 64 filas y unas 120 más entre vueltas y trozos de celdas) y las
-    unidades de su rejilla de incumplimientos (hash y teselas); y lo que se prepara al guardar."""
+    superficies (las bases de los acopios, también) en ``grid`` (crece si hacen falta más; el
+    total del primer aviso de avance): leer cada superficie y sumar cada final en cada banda; de
+    cada final, los grupos (tres modos de contar por cada 64 filas, cuatro con la base de los
+    acopios —el corte de terreno—, y unas 120 más entre vueltas y trozos de celdas) y las unidades
+    de su rejilla de incumplimientos (hash y teselas); y lo que se prepara al guardar."""
     bands = -(-grid.nrows // band_rows)
     cells = grid.nrows * grid.ncols
     tiles = -(-grid.nrows // 256) * -(-grid.ncols // 256) + -(-cells // (1 << 18))
-    groups = 3 * -(-grid.nrows // 64) + 120
+    groups = (4 if with_base else 3) * -(-grid.nrows // 64) + 120
     return bands * (surfaces + finals) + finals * (groups + tiles) + 180
 
 
 def _work(request: ComplianceRequest, ordered: Sequence[SurfaceSource],
           references: tuple[CrsRef, VerticalRef],
-          grid_paths: Mapping[int, tuple[Path, Path | None]], band_rows: int
-          ) -> Generator[None, None, VerifyResult]:
+          grid_paths: Mapping[int, tuple[Path, Path | None]], band_rows: int,
+          selection: BaseSelection) -> Generator[None, None, VerifyResult]:
     masks = request.masks
     grid = masks.grid
-    zones = yield from check_zones_steps(masks.classes, masks.zones, masks.ctypes, masks.weights)
+    zones = yield from check_zones_steps(masks.classes, masks.zones, masks.ctypes, masks.weights,
+                                         with_base=bool(request.bases))
     index = yield from zone_index_steps(grid, zones)  # una vez, para todas las finales
     checkers = [Checker(grid, zones, request.min_thickness_m, index=index)
                 for _ in request.finals]
     readers = [band_reader(source, grid, rows=band_rows) for source in ordered]
+    first_base = 1 + len(request.finals)
     try:  # cerrar los pasos cierra los ficheros
         for top in range(0, grid.nrows, band_rows):
             values = []
-            for reader in readers:  # cada superficie, una unidad
+            for reader in readers:  # cada superficie, y cada base, una unidad
                 values.append(next(reader)[1])
                 yield None
+            base = lowest_base(values[first_base:])  # la menor de las bases (P-10); None sin ellas
             for position, checker in enumerate(checkers, start=1):
-                checker.add(top, values[0], values[position])
+                checker.add(top, values[0], values[position], base)
                 yield None
     finally:
         for reader in readers:
@@ -567,7 +768,7 @@ def _work(request: ComplianceRequest, ordered: Sequence[SurfaceSource],
                 Raster(grid, found.violations, *references), Path(path), temporary)
         return VerifyResult(request.name, tuple(item.shown for item in request.finals),
                             tuple(finals), MappingProxyType(written), masks.pending_names,
-                            _figures(request.name, finals))
+                            _figures(request.name, finals), selection, ordered[0].name)
     except BaseException:
         for item in written.values():
             item.path.unlink(missing_ok=True)
@@ -640,13 +841,16 @@ def _surface_ref(value: object) -> SurfaceRef:
 
 def verify_settings(name: str, start: SurfaceRef, finals: Sequence[SurfaceRef],
                     pending_sectors: Sequence[str] = (),
-                    pending_names: Sequence[str] = ()) -> dict[str, Any]:
+                    pending_names: Sequence[str] = (), bases: BaseSelection | None = None
+                    ) -> dict[str, Any]:
     """Los ajustes de la verificación (JSON sin rutas): el nombre, la partida, las finales y los
     sectores sin búsqueda vigente al verificar, sus códigos y sus nombres (la marca de
-    RF-012-10)."""
+    RF-012-10) y, con acopios detectados (T30), la base que usó y las detecciones que no
+    (:meth:`BaseSelection.settings`); sin ellos, los de siempre."""
     return {"name": name, "start": _surface_setting(start),
             "finals": [_surface_setting(ref) for ref in finals],
-            "pending_sectors": list(pending_sectors), "pending_names": list(pending_names)}
+            "pending_sectors": list(pending_sectors), "pending_names": list(pending_names),
+            **({} if bases is None else bases.settings())}
 
 
 def _settings_request(settings: Mapping[str, Any]) -> tuple[str, SurfaceRef,
@@ -669,13 +873,26 @@ def _check_request(name: object, start: object, finals: Sequence[object]) -> Non
 
 
 def project_sources(project: StoreProject, start: SurfaceRef, finals: Sequence[SurfaceRef], *,
-                    version_uid: str) -> dict[str, SurfaceSource]:
+                    version_uid: str, bases: Sequence[SurfaceRef] = ()) -> dict[str, SurfaceSource]:
     """Las superficies de la verificación en ``project`` con la versión ``version_uid`` (por
-    papel): ``reserves.surfaces.surface_source`` (un dato de otra versión, un TIN o uno que no
-    está, sus rechazos)."""
+    papel: :data:`START_ROLE`, :func:`final_role` y, de cada base de los acopios de ``bases``,
+    :func:`base_role`): ``reserves.surfaces.surface_source`` (un dato de otra versión, un TIN o
+    uno que no está, sus rechazos)."""
     found = {START_ROLE: surface_source(project, start, version_uid=version_uid)}
     for position, ref in enumerate(finals, start=1):
         found[final_role(position)] = surface_source(project, ref, version_uid=version_uid)
+    for position, ref in enumerate(bases, start=1):
+        found[base_role(position)] = surface_source(project, ref, version_uid=version_uid)
+    return found
+
+
+def _with_bases(project: StoreProject, sources: Mapping[str, SurfaceSource],
+                bases: Sequence[SurfaceRef], version_uid: str) -> dict[str, SurfaceSource]:
+    """``sources`` con las bases de los acopios que le falten (las ya leídas se respetan)."""
+    found = dict(sources)
+    for position, ref in enumerate(bases, start=1):
+        if base_role(position) not in found:
+            found[base_role(position)] = surface_source(project, ref, version_uid=version_uid)
     return found
 
 
@@ -700,31 +917,41 @@ def previous_check(project: StoreProject, name: str, *, version: str) -> str | N
 
 def begin_verify(project: StoreProject, masks: MaskSet, *, name: str, start: SurfaceRef,
                  finals: Sequence[SurfaceRef], executor: str = "blender",
-                 sources: Mapping[str, SurfaceSource] | None = None) -> OperationHandle:
+                 sources: Mapping[str, SurfaceSource] | None = None,
+                 bases: BaseSelection | None = None) -> OperationHandle:
     """Empieza :data:`VERIFY` «en curso» en la versión de ``masks`` (al día): las máscaras
-    (``MaskSet.uses``) y las superficies como entradas, el espesor mínimo del proyecto y los
-    ajustes de :func:`verify_settings`; sustituye a la anterior con su nombre. Rechazos de la
-    versión (RF-009-04) y de las superficies (RF-011-03) sin registrar nada. ``sources``: las
-    superficies ya leídas de esas referencias (:func:`project_sources`), si las hay."""
+    (``MaskSet.uses``), las superficies y, si las hay, las bases de los acopios (:func:`base_role`)
+    como entradas, el espesor mínimo del proyecto y los ajustes de :func:`verify_settings`;
+    sustituye a la anterior con su nombre. Rechazos de la versión (RF-009-04) y de las
+    superficies, también de una base (RF-011-03, RF-012-31) sin registrar nada. ``sources``: las
+    superficies ya leídas de esas referencias (:func:`project_sources`), si las hay. ``bases``: la
+    selección de las bases de los acopios (:func:`select_bases`, de la partida y la versión de
+    ``masks``); sin ella, la que corresponde ahora (D-a, la automática), y
+    ``BaseSelection()``, sin base."""
     finals = tuple(finals)
     _check_request(name, start, finals)
     if not isinstance(masks, MaskSet) or masks.state is not MaskState.CURRENT:
         raise ValueError("se verifica con las máscaras al día (gis.masks.access)")
     with project.read() as conn:
         version = versions_store.require_editable(conn, masks.version_uid)
+    selection = select_bases(project, version.uid, start) if bases is None else bases
     if sources is None:
-        sources = project_sources(project, start, finals, version_uid=version.uid)
+        sources = project_sources(project, start, finals, version_uid=version.uid,
+                                  bases=selection.refs)
+    else:
+        sources = _with_bases(project, sources, selection.refs, version.uid)
     check_sources(sources, masks, project_references(project))
     parent = version.parent_revision_uid
     inputs = list(masks.uses())
     for role, ref in ((START_ROLE, start),
-                      *((final_role(k), ref) for k, ref in enumerate(finals, start=1))):
+                      *((final_role(k), ref) for k, ref in enumerate(finals, start=1)),
+                      *((base_role(k), ref) for k, ref in enumerate(selection.refs, start=1))):
         use = _surface_use(ref, role, parent)
         if use is not None:
             inputs.append(use)
     return begin_operation(project, VERIFY,
                            settings=verify_settings(name, start, finals, masks.pending_sectors,
-                                                    masks.pending_names),
+                                                    masks.pending_names, selection),
                            inputs=inputs, params=(MIN_THICKNESS,), executor=executor,
                            supersedes=previous_check(project, name, version=version.uid),
                            version=version.uid)
@@ -732,12 +959,15 @@ def begin_verify(project: StoreProject, masks: MaskSet, *, name: str, start: Sur
 
 def verify_project_steps(project: StoreProject, *, version: str | None, name: str,
                          start: SurfaceRef, finals: Sequence[SurfaceRef],
-                         budget_s: float = STEP_BUDGET_S, executor: str = "blender"
-                         ) -> Iterator[Progress]:
+                         budget_s: float = STEP_BUDGET_S, executor: str = "blender",
+                         bases: BaseSelection | None = None) -> Iterator[Progress]:
     """Lo que lanza la orden «Verificar un diseño por recinto…» (véase el módulo). Al llamar,
     sin registrar nada: ``VersionError`` sin versión o en una no editable; los rechazos de las
-    superficies (RF-011-03); los de compilar, si hay que hacerlo (D-43). El último ``Progress``
-    lleva el :class:`StoredCheck`."""
+    superficies, también el de una base de los acopios (RF-011-03, RF-012-31); los de compilar, si
+    hay que hacerlo (D-43). ``bases``: la selección de las bases de los acopios
+    (:func:`select_bases`); sin ella, la de ahora (D-a, la automática: las detecciones al día
+    hechas sobre la partida) y ``BaseSelection()``, sin base. El último ``Progress`` lleva el
+    :class:`StoredCheck`."""
     if version is None or not str(version).strip():
         raise VersionError("core.version_required", field="versión activa", value=version,
                            op_type=VERIFY)
@@ -748,20 +978,21 @@ def verify_project_steps(project: StoreProject, *, version: str | None, name: st
         raise ValueError(f"el proyecto «{project.name}» se abrió solo con su cabecera")
     with project.read() as conn:
         found = versions_store.require_editable(conn, str(version))
-    sources = project_sources(project, start, finals, version_uid=found.uid)
+    selection = select_bases(project, found.uid, start) if bases is None else bases
+    sources = project_sources(project, start, finals, version_uid=found.uid, bases=selection.refs)
     grid = project_grid(record.window, float(record.grid_step_m))
     header = SurfaceHeader(_MASKS_NAME, grid, *project_references(project))
     for source in sources.values():
         check_pair(header, source)
     masks_steps = ensure_masks_steps(project, found.uid, budget_s=budget_s)
     return _project_steps(project, masks_steps, name, start, finals, sources, budget_s,
-                          executor)
+                          executor, selection)
 
 
 def _project_steps(project: StoreProject, masks_steps: Iterator[Progress], name: str,
                    start: SurfaceRef, finals: tuple[SurfaceRef, ...],
                    sources: Mapping[str, SurfaceSource], budget_s: float,
-                   executor: str) -> Iterator[Progress]:
+                   executor: str, selection: BaseSelection) -> Iterator[Progress]:
     masks: MaskSet | None = None
     with closing(masks_steps):  # type: ignore[type-var]
         for step in masks_steps:
@@ -771,7 +1002,7 @@ def _project_steps(project: StoreProject, masks_steps: Iterator[Progress], name:
             yield step
     assert isinstance(masks, MaskSet)
     handle = begin_verify(project, masks, name=name, start=start, finals=finals,
-                          executor=executor, sources=sources)
+                          executor=executor, sources=sources, bases=selection)
     steps = verify_run(project, handle, budget_s=budget_s, masks=masks, sources=sources)
     with closing(steps):  # type: ignore[type-var]
         yield Progress(_PHASE, 0, 1, _TEXT)  # empezar la operación es un paso
@@ -785,7 +1016,9 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
     sustituye a la anterior en la revisión abierta de **su** versión, con el nombre, la partida
     y las finales de sus ajustes (las superficies vigentes que designan), las máscaras de hoy
     de esa versión (:func:`~..gis.masks.access.load_masks`) y el espesor mínimo resuelto de
-    nuevo, y devuelve su ``OperationHandle`` «en curso» y sus pasos (:func:`verify_run`), que
+    nuevo y la base de los acopios de hoy (T30: las detecciones al día hechas sobre su partida,
+    :func:`select_bases`: la repetición vuelve a elegirla, no copia la de antes), y devuelve su
+    ``OperationHandle`` «en curso» y sus pasos (:func:`verify_run`), que
     avanza quien la llama (en Blender, la cola de ``res``; la operación sigue «en curso» hasta
     el último). Las máscaras han de estar al día: si se recalculan también, «Recalcular lo
     obsoleto» las compila antes (son su entrada) y esta las lee ya nuevas.
@@ -1095,13 +1328,18 @@ def _run(project: StoreProject, handle: OperationHandle, budget_s: float,
         if masks is None:
             masks = load_masks(project, handle.version_uid)
         name, start, finals = _settings_request(handle.settings)
-        request = ComplianceRequest(name, start, finals, masks, _thickness(handle))
+        selection = BaseSelection.of_settings(handle.settings)
+        request = ComplianceRequest(name, start, finals, masks, _thickness(handle),
+                                    bases=selection.refs)
         if sources is None:
-            sources = project_sources(project, start, finals, version_uid=handle.version_uid)
+            sources = project_sources(project, start, finals, version_uid=handle.version_uid,
+                                      bases=selection.refs)
+        else:
+            sources = _with_bases(project, sources, selection.refs, handle.version_uid)
         paths = out.grid_paths(name, len(finals))
         yield Progress(_PHASE, 0, 1, _TEXT)
         steps = verify_steps(request, sources, references=(out.crs, out.vertical),
-                             budget_s=budget_s, grid_paths=paths)
+                             budget_s=budget_s, grid_paths=paths, selection=selection)
         last: Progress | None = None
         with closing(steps):
             for step in steps:
@@ -1204,9 +1442,13 @@ def _reproduce(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]
         raise ValueError(f"«{VERIFY}» no tiene «{MIN_THICKNESS}» entre sus parámetros")
     thickness = convert(float(value), unit, "m")  # type: ignore[arg-type]
     masks = _frozen_masks(request)
+    selection = BaseSelection.of_settings(request.settings)
     sources = {START_ROLE: _frozen_source(request, START_ROLE, start, references)}
     for position, ref in enumerate(finals, start=1):
         role = final_role(position)
+        sources[role] = _frozen_source(request, role, ref, references)
+    for position, ref in enumerate(selection.refs, start=1):  # las bases de los acopios (T30)
+        role = base_role(position)
         sources[role] = _frozen_source(request, role, ref, references)
     paths: dict[int, tuple[Path, Path | None]] = {}
     for position in range(1, len(finals) + 1):
@@ -1214,8 +1456,10 @@ def _reproduce(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]
         temporary = path.with_name(path.name + ".tmp")
         check_path_length(temporary, obj=_OBJ)
         paths[position] = (path, temporary)
-    steps = verify_steps(ComplianceRequest(name, start, finals, masks, thickness), sources,
-                         references=references, budget_s=budget_s, grid_paths=paths)
+    steps = verify_steps(ComplianceRequest(name, start, finals, masks, thickness,
+                                           bases=selection.refs), sources,
+                         references=references, budget_s=budget_s, grid_paths=paths,
+                         selection=selection)
     last: Progress | None = None
     with closing(steps):
         for step in steps:
@@ -1260,7 +1504,8 @@ _DESIGN_SURFACES = (  # por los índices gb_dataset_version y gb_operation_io_it
 _STALE = "SELECT 1 FROM gb_stale WHERE item_kind = 'operation' AND item_uid = ? LIMIT 1"
 _DATASET = "SELECT name, version_uid, status FROM gb_dataset WHERE uid = ?"
 _COUNTS_MESSAGE = {Counts.CUT.value: "res.freeze_cut", Counts.FILL.value: "res.freeze_fill",
-                   Counts.ANY.value: "res.freeze_any"}
+                   Counts.ANY.value: "res.freeze_any",
+                   Counts.CUT_TERRAIN.value: "res.freeze_cut_terrain"}
 """Qué se cuenta en un recinto (la nota de su fila ``counted_m3``) → su mensaje."""
 _LIVE = frozenset(str(status) for status in LIVE_STATUSES)
 
@@ -1519,7 +1764,9 @@ class StoredZone:
     (``counts``: ``cut``, ``fill``, ``any``, ``nothing``, ``avoid`` o ``access``), el corte y el
     relleno (m³), el área con movimiento y sin dato (m²), los m³ que cuentan, el peso y el
     volumen por el peso (``None`` si no es de «preferible no afectar») y el veredicto
-    (:class:`~.compliance.Verdict`)."""
+    (:class:`~.compliance.Verdict`). Con la base de los acopios (T30), ``counts`` de las zonas que
+    cuentan el corte de terreno es ``cut_terrain``, ``counted_m3`` es el corte de terreno y
+    ``stockpile_cut_m3`` el de acopios (``None`` en las demás y sin base)."""
 
     zone: str
     final: int
@@ -1532,6 +1779,7 @@ class StoredZone:
     weight: float | None
     weighted_m3: float | None
     verdict: str
+    stockpile_cut_m3: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1558,7 +1806,9 @@ class StoredVerification:
     grupos que incumplen, los sectores sin búsqueda vigente al verificar (la marca de RF-012-10,
     sus nombres), los avisos de cada final (final, texto) y, de cada final que incumplía, el
     ``uid`` del dato de su rejilla de incumplimientos si sigue vivo (``grids``; un dato de una
-    versión solo se indica por su uid)."""
+    versión solo se indica por su uid). Con acopios detectados (T30), las bases que usó
+    (``bases``: «Base de acopios: detección STK-001 «Acopios» (mineral)») y los avisos de las
+    detecciones que no usó con su causa (``skipped``), tal como los escribió la tabla."""
 
     operation_uid: str
     name: str
@@ -1569,6 +1819,8 @@ class StoredVerification:
     pending: tuple[str, ...]
     notices: tuple[tuple[int, str], ...]
     grids: Mapping[int, str]
+    bases: tuple[str, ...] = ()
+    skipped: tuple[str, ...] = ()
 
 
 def _setting_name(text: object, uid: str) -> str:
@@ -1606,7 +1858,8 @@ def _stored_zones(rows: Sequence[tuple[str, int, str, float | None, str | None, 
         _quantity(found, "cut_m3"), _quantity(found, "fill_m3"),
         _quantity(found, "moved_area_m2"), _quantity(found, "nodata_area_m2"),
         _quantity(found, "counted_m3"), _optional(found, "weight"),
-        _optional(found, "weighted_m3"), str(found.get("verdict", (None, ""))[1] or ""))
+        _optional(found, "weighted_m3"), str(found.get("verdict", (None, ""))[1] or ""),
+        _optional(found, "stockpile_cut_m3"))
         for (zone, final), found in by_zone.items())
 
 
@@ -1654,21 +1907,30 @@ def read_verification(conn: sqlite3.Connection, version_uid: str, name: str | No
               if quantity == "pending_sector" and not zone),
         tuple((final, str(note)) for zone, final, quantity, _v, _u, note in rows
               if quantity == "notice" and not zone),
-        MappingProxyType(grids))
+        MappingProxyType(grids),
+        tuple(str(note) for zone, final, quantity, _v, _u, note in rows
+              if quantity == "stockpile_base" and not zone),
+        tuple(str(note) for zone, final, quantity, _v, _u, note in rows
+              if quantity == "stockpile_skipped" and not zone))
 
 
 def verify_inputs(project: StoreProject, version: str, start: SurfaceRef,
-                  finals: Sequence[SurfaceRef]) -> tuple[Use, ...]:
+                  finals: Sequence[SurfaceRef], bases: BaseSelection | None = None
+                  ) -> tuple[Use, ...]:
     """Las superficies de la verificación como entradas de la operación (``Use``, por su papel:
-    :data:`START_ROLE` y :func:`final_role`), las que consume la puerta de la 008 antes de
-    empezarla; una cota constante no es entrada. ``VersionError`` si ``version`` (uid o código)
+    :data:`START_ROLE`, :func:`final_role` y, de cada base de los acopios, :func:`base_role`), las
+    que consume la puerta de la 008 antes de empezarla; una cota constante no es entrada.
+    ``bases``: la selección de las bases (:func:`select_bases`); sin ella, la de ahora (D-a, la
+    automática) y ``BaseSelection()``, sin base. ``VersionError`` si ``version`` (uid o código)
     no existe o no es editable; ``ValueError`` si una superficie congelada no parte de una
     revisión."""
     with project.read() as conn:
         found = versions_store.require_editable(conn, str(version))
+    selection = select_bases(project, found.uid, start) if bases is None else bases
     inputs: list[Use] = []
     for role, ref in ((START_ROLE, start),
-                      *((final_role(k), item) for k, item in enumerate(finals, start=1))):
+                      *((final_role(k), item) for k, item in enumerate(finals, start=1)),
+                      *((base_role(k), item) for k, item in enumerate(selection.refs, start=1))):
         use = _surface_use(ref, role, found.parent_revision_uid)
         if use is not None:
             inputs.append(use)

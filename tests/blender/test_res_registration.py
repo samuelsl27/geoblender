@@ -51,10 +51,10 @@ ENTRY = "011"
 ENTRY_TITLE = ("Volumetrics between surfaces", "Cubicación entre superficies")
 OURS = ("res.", "res_")  # las claves de la 011 en los registros de core
 VERIFY_CONSTRAINTS = "res.verify_constraints"  # la de la 012 (T21), con sus pruebas aparte
-COUNTS = {"parámetros": 4, "familias": 5, "operaciones": 6, "grupos": 0, "cifras": 28}
+COUNTS = {"parámetros": 4, "familias": 5, "operaciones": 6, "grupos": 0, "cifras": 29}
 """Lo de ``res`` en ``core``: la cubicación (3 parámetros, 5 familias, 5 operaciones, 23 cifras) y,
 con la 012 (T21), la verificación por recinto (el espesor mínimo, ``res.verify_constraints`` y sus
-5 cifras)."""
+5 cifras y, con la 016, T30, la sexta: el corte de acopios)."""
 VERSION_TYPES = ("res.volume", "res.tonnage", "res.difference", "res.stages")
 REPRODUCED = {"res.volume": "reproduce_volume", "res.difference": "reproduce_volume",
               "res.tonnage": "reproduce_tonnage", "res.stages": "reproduce_stages"}

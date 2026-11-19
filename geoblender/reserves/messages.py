@@ -426,12 +426,37 @@ CATALOG: tuple[Message, ...] = (
             "note"),
     Message("res.freeze_any", "{zone}: {volume} m³ moved", "{zone}: {volume} m³ de movimiento",
             "note"),
+    Message("res.freeze_cut_terrain", "{zone}: {volume} m³ of terrain cut",
+            "{zone}: {volume} m³ de corte de terreno", "note"),
     Message("res.freeze_zone_outside_perimeter", "outside the action perimeter",
             "fuera del perímetro de actuación", "note"),
     Message("res.freeze_zone_outside_legal", "outside the legal limit",
             "fuera del límite legal", "note"),
     Message("res.freeze_zone_inner", "«{zone}» (inward band)", "«{zone}» (banda hacia dentro)",
             "note"),
+    # La base de los acopios en la verificación (spec 016, T30; RF-012-30, RF-012-31) -----------
+    Message(
+        "res.verify_base_used",
+        "Stockpile base: detection {detection} «{name}» ({material})",
+        "Base de acopios: detección {detection} «{name}» ({material})",
+        "note",
+    ),
+    Message(
+        "res.verify_base_stale",
+        "The stockpile detection {detection} «{name}» is not used as a base: it is stale ({cause}); recompute it and "
+        "verify again. All the cut counts as terrain cut.",
+        "La detección de acopios {detection} «{name}» no se usa como base: está obsoleta ({cause}); recalcúlela y "
+        "verifique otra vez. Todo el corte cuenta como corte de terreno.",
+        "warning",
+    ),
+    Message(
+        "res.verify_base_other_surface",
+        "The stockpile detection {detection} «{name}» is not used as a base: it was made on «{surface}», not on the "
+        "start surface «{start}». All the cut counts as terrain cut.",
+        "La detección de acopios {detection} «{name}» no se usa como base: se hizo sobre «{surface}», no sobre la "
+        "superficie de partida «{start}». Todo el corte cuenta como corte de terreno.",
+        "warning",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

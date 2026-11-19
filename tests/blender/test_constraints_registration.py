@@ -6,7 +6,8 @@ RF-012-28; plan 012 §5.3.3, D-31, D-38; ADR-0025 §2, ADR-0027; principio 8).
   cuatro familias de parámetros de una restricción (resguardo hacia fuera y hacia dentro, peso y
   «activa»), la distancia de búsqueda de intocables y el espesor mínimo de la verificación, sus
   seis tipos de operación (cuatro de ``core``, ``gis.compile_constraints`` y
-  ``res.verify_constraints``), sus quince cifras y la comprobación de congelar de ``res``;
+  ``res.verify_constraints``), sus dieciséis cifras (la última, la del corte de acopios, de la 016, T30) y la
+  comprobación de congelar de ``res``;
   ``bl/ops/core_constraints.py`` lo quita y lo vuelve a poner con los mismos objetos y deja lo
   que otro registró antes con las mismas claves.
 - El contrato de registro de la 008 (RF-008-26, RF-009-05, RF-009-11; RF-012-16): cada tipo con
@@ -64,7 +65,7 @@ STEP_M = 1.0
 REASON = "Prueba del registro de las restricciones"
 INWARD_M = 2.0
 CHANGED_INWARD_M = 4.0
-COUNTS = {"parámetros": 2, "familias": 4, "operaciones": 6, "grupos": 0, "cifras": 15,
+COUNTS = {"parámetros": 2, "familias": 4, "operaciones": 6, "grupos": 0, "cifras": 16,
           "comprobaciones": 1}
 CORE_TYPES = ("core.declare_sectors", "core.find_untouchables", "core.edit_constraints",
               "core.edit_intentions")

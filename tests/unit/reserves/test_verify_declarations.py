@@ -34,8 +34,8 @@ class VerifyDeclarationsTest(unittest.TestCase):
 
     def test_what_is_declared(self) -> None:
         """RF-012-16, RF-012-21: la operación es de la versión, se repite sola y se reproduce con
-        10⁻⁹ relativo; su parámetro del proyecto es el espesor mínimo (0,02 m); sus cinco cifras
-        son las de la verificación; se declaran en ``res``."""
+        10⁻⁹ relativo; su parámetro del proyecto es el espesor mínimo (0,02 m); sus cifras son las
+        de la verificación (cinco, y la sexta, la del corte de acopios, de la 016: T30); se declaran en ``res``."""
         self.assertEqual((provenance.VERIFY, provenance.VERIFY_COMMAND, provenance.MODULE),
                          ("res.verify_constraints", "geoblender.res_verify_constraints", "res"))
         definition = provenance.verify_operation_def(lambda request: None, lambda request: iter(()))
@@ -51,7 +51,8 @@ class VerifyDeclarationsTest(unittest.TestCase):
                          [("res.verify.min_thickness_m", 0.02, "m")])
         self.assertEqual([figure.key for figure in provenance.VERIFY_FIGURES],
                          ["res.check_cut_m3", "res.check_fill_m3", "res.check_moved_area_m2",
-                          "res.check_nodata_area_m2", "res.check_avoid_weighted_m3"])
+                          "res.check_nodata_area_m2", "res.check_avoid_weighted_m3",
+                          "res.check_stockpile_cut_m3"])
 
 
 if __name__ == "__main__":
