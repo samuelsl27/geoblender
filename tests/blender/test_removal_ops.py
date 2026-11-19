@@ -21,6 +21,7 @@ Se ejecuta con ``tools/run_blender_tests.py``.
 
 import dataclasses
 import json
+import math
 import time
 import unittest
 from collections.abc import Iterator
@@ -58,16 +59,28 @@ PROPERTIES = {
                                "(by default, the last of the chain)"),
     "transition_angle": ("Transition angle (°)", "Angle of the slope that joins the removed footprint with the rest of the surface, "
                                                  "in degrees; it has no default value: you choose it"),
-    "mesh_factor": ("Mesh factor", "Factor of the mesh of the transition (empty: the default value)"),
-    "metric": ("Metric", "How the distance to the footprint is measured in the transition: the 5×5 chamfer (fast, with the scale of "
-                         "the grid) or the exact Euclidean distance"),
+    "mesh_factor": ("Mesh factor", "Factor of the mesh of the transition, or of the edge of the platform (empty: the default value)"),
+    "metric": ("Metric", "How the distance to the footprint is measured in the transition or in the edge of the platform: the 5×5 "
+                         "chamfer (fast, with the scale of the grid) or the exact Euclidean distance"),
     "wall_reason": ("Reason for the wall", "Why you accept the wall that removing the stockpile may leave at the edge of what is "
                                            "removed: it is needed only if the wall passes the height and the angle that ask for a "
                                            "reason, and it is recorded with the removal"),
+    "as_platform": ("As a platform", "Remove the stockpile as a platform: its whole footprint is left in the plane of its base and a "
+                                     "platform of the chain is made with it, with its edge, its checks and its constraints; the "
+                                     "transition angle and the wall do not apply"),
+    "edge_angle": ("Edge angle (°)", "Angle of the slope that joins the platform with the ground, in degrees"),
+    "reach": ("Reach of the edge (m)", "Farthest distance from the footprint the edge can reach, in metres"),
 }
 """Las propiedades del diálogo con el ``msgid`` de su nombre y de su descripción (las ocultas, que pone quien lanza la orden, no los
 llevan)."""
 HIDDEN = ("confirm", "in_steps", "confirm_resting", "confirm_wall")
+EDGE_ANGLE, REACH = "35", "10"
+"""El borde de «como plataforma»: ángulo y alcance (no tienen valor por defecto: D-7 y D-20 de la 015)."""
+AS_PLATFORM = "Acopio 1 como plataforma"
+OVER_PLATFORM = "Acopio 2 como plataforma"
+PLATFORM_TYPE = "des.platform"
+CHAIN_CANCELLED_TEXT = ("Cancelado: la retirada está creada; las restricciones declaradas y las máscaras se ponen al día antes de la "
+                        "siguiente operación que las use, y la capa de entidades con la siguiente orden de entidades o «Recalcular lo obsoleto»")
 
 
 def survey() -> np.ndarray:
@@ -181,7 +194,8 @@ class RemoveStockpileTest(platform_ops.CreatePlatformTest):
         said: list[tuple[Any, str]] = []
         fields: dict[str, Any] = {
             "name": "", "stockpile": "", "start": "", "transition_angle": "", "mesh_factor": "", "metric": "EXACT",
-            "wall_reason": "", "confirm": False, "in_steps": False, "confirm_resting": False, "confirm_wall": False,
+            "wall_reason": "", "as_platform": False, "edge_angle": "", "reach": "", "confirm": False, "in_steps": False,
+            "confirm_resting": False, "confirm_wall": False,
             "provenance_dialog": False, "report": lambda kind, text: said.append((kind, text)),
             "properties": SimpleNamespace(is_property_set=lambda name: False), **values}
         return operator_self(self.cls, **fields), context, dialog, said
@@ -215,6 +229,25 @@ class RemoveStockpileTest(platform_ops.CreatePlatformTest):
 
     def states(self) -> dict[str, str]:
         return {entry.record.code: str(entry.record.state) for entry in self.entities.registry(self.project, self.v01.uid)}
+
+    def layer_rows(self) -> dict[str, Any]:
+        """Las filas de la capa de entidades de V01 (``des_enl_v01``), por código; ninguna si aún no se escribió (T34, T41)."""
+        layer = platform_ops._module("design.entity_layer")
+        table = layer.entity_layer_table(self.v01.code)
+        with self.project.read() as conn:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
+                return {}
+            return {item.code: item for item in layer.read_entity_layer(conn, table)}
+
+    def declared(self) -> tuple[Any, ...]:
+        """Las restricciones que declaran las entidades de V01."""
+        declared = platform_ops._module("core.constraints.declared")
+        with self.project.read() as conn:
+            return tuple(declared.read_in_version(conn, self.v01.uid))
+
+    def platform_form(self, **values: Any) -> dict[str, Any]:
+        """Lo pedido en el diálogo «como plataforma»: el Acopio 1 desde la superficie de la plataforma, con el borde a 35° y 10 m."""
+        return self.form(**{"name": AS_PLATFORM, "as_platform": True, "edge_angle": EDGE_ANGLE, "reach": REACH, **values})
 
     # --- Pruebas ------------------------------------------------------------------------------
 
@@ -302,11 +335,21 @@ class RemoveStockpileTest(platform_ops.CreatePlatformTest):
         self.assertEqual((row.name, row.op_type, row.entity), (OVER[0], "des.platform", "PLT-001"))
         self.assertGreater(row.volume_m3, 100.0)
         shown = draw(cls, bpy.context, name="x", stockpile="STK-001#Acopio 2", start="entity:PLT-001", transition_angle="",
-                     mesh_factor="", metric="EXACT", wall_reason="", confirm=False).texts()
-        for heading in ("Nombre", "Acopio", "Superficie de partida", "Lo que se apoya en el acopio", lines[0][0],
+                     mesh_factor="", metric="EXACT", wall_reason="", as_platform=False, edge_angle="", reach="", confirm=False).texts()
+        for heading in ("Nombre", "Acopio", "Superficie de partida", "Lo que se apoya en el acopio", lines[0][0], "Como plataforma",
                         "Transición en el borde del acopio", "Ángulo de transición (°)", "Factor de malla", "Métrica",
                         "Motivo de la pared"):
             self.assertIn(heading, shown)
+        for gone in ("Borde de la plataforma", "Ángulo del borde (°)", "Alcance del borde (m)"):
+            self.assertNotIn(gone, shown, "sin «como plataforma», el diálogo es el de la T20")
+        as_platform = draw(cls, bpy.context, name="x", stockpile="STK-001#Acopio 2", start="entity:PLT-001", transition_angle="",
+                           mesh_factor="", metric="EXACT", wall_reason="", as_platform=True, edge_angle="", reach="",
+                           confirm=False).texts()
+        for heading in ("Nombre", "Acopio", "Superficie de partida", "Lo que se apoya en el acopio", lines[0][0], "Como plataforma",
+                        "Borde de la plataforma", "Ángulo del borde (°)", "Alcance del borde (m)", "Factor de malla", "Métrica"):
+            self.assertIn(heading, as_platform)
+        for gone in ("Transición en el borde del acopio", "Ángulo de transición (°)", "Motivo de la pared"):
+            self.assertNotIn(gone, as_platform, "«como plataforma» no lleva transición ni pared: el borde es el de la plataforma")
         given.stockpile = "STK-009#Nada"  # un acopio que la detección no tiene: sale como aviso, no como error
         self.des_ops._refresh_resting(given, None)
         ((text, alert),) = self.panels.resting_lines()
@@ -399,13 +442,144 @@ class RemoveStockpileTest(platform_ops.CreatePlatformTest):
                 self.assertIsNone(self.des_ops.calculation())
                 self.assertEqual(self.state(), before)
 
-    def test_d_create_registers_the_removal_in_one_transaction_and_chains_nothing(self) -> None:
-        """RF-016-11, RF-016-13, RF-015-02, RF-015-01, M1: «Crear» la retirada del Acopio 1 (nada se le apoya) registra
+    def test_c_as_a_platform_calculates_with_the_platform_and_the_removal_figures_and_asks_for_what_rests_on_it(self) -> None:
+        """RF-016-16, RF-016-14, RF-015-03, RF-015-17, E3, M1 (T41): con «como plataforma» la orden **calcula una plataforma de la 015 con la huella
+        del acopio** (``PlatformRequest.of_stockpile`` + ``platform_run``: una sola operación ``des.platform``, sin ninguna capa) y no escribe
+        nada; su resumen enseña **las cifras de la plataforma y las de la retirada** (las mismas que da el dominio, T21), con el título «como
+        plataforma»; retirando el Acopio 2 desde la superficie que lo rellena, **lo apoyado** sale en una sola lista, en ámbar, y el botón de
+        crear dice «Confirmar lo que se le apoya y crear»; sin la confirmación expresa, Crear se rechaza, no escribe nada y deja el cálculo
+        abierto."""
+        steps, model = platform_ops._module("design.steps"), platform_ops._module("design.model")
+        self.refresh()
+        before = self.state()
+        form = self.platform_form(name=OVER_PLATFORM, stockpile="STK-001#Acopio 2", start="entity:PLT-001")
+        held = self.calculate(**form)
+        self.assertEqual((held.op_type, held.name, held.version, held.entity.code), (PLATFORM_TYPE, OVER_PLATFORM, "V01", "PLT-002"))
+        self.assertIsNotNone(held.entity.removed, "es la plataforma de un acopio")
+        self.assertEqual(held.entity.origin.ref, "STK-001#Acopio 2")
+        self.assertEqual(self.state()[:4], before[:4], "calcular no registra nada")
+        self.assertEqual(sorted(set(self.state()[4]) - set(before[4])), [name for name in self.state()[4] if ".tmp" in name], "solo el temporal")
+        self.assertTrue(held.needs_resting_confirmation)
+        self.assertFalse(held.needs_wall_confirmation, "su pared es la de su borde: un aviso de la plataforma")
+        (row,) = held.entity.resting
+        self.assertEqual((row.name, row.op_type, row.entity), (OVER[0], "des.platform", "PLT-001"))
+        self.assertEqual(self.view.summary_title, f"Retirada de un acopio «{OVER_PLATFORM}» como plataforma en V01")
+        summary = [(line.name, bool(line.alert)) for line in self.view.summary]
+        self.assertTrue(summary[0][0].startswith(f"Plataforma «{OVER_PLATFORM}» (PLT-002): huella "), summary[0])
+        self.assertTrue(summary[1][0].startswith("Rasante: cota de "), summary[1])
+        self.assertTrue(summary[2][0].startswith("Huella: desmonte "), summary[2])
+        removal_line = [text for text, _alert in summary if text.startswith("Retirada del acopio «Acopio 2»: ")]
+        self.assertEqual(len(removal_line), 1, summary)
+        self.assertIn(" m³ retirados · apoyado en él: ", removal_line[0])
+        self.assertIn(" · no retirado: ", removal_line[0])
+        resting = [(text, alert) for text, alert in summary if text.startswith("Sobre el acopio «Acopio 2» se apoyan ")]
+        self.assertEqual(len(resting), 1, "lo apoyado, una sola nota (la de RF-016-14)")
+        self.assertTrue(resting[0][1], "lo apoyado, en ámbar")
+        self.assertIn(f"«{OVER[0]}»", resting[0][0], "con lo que lo puso")
+        self.assertIn("sin su confirmación expresa", resting[0][0])
+        self.assertFalse(any("Transición a" in text for text, _alert in summary), "no hay transición: la huella entera queda en su plano")
+        figures = sorted((spec.key, spec.value) for spec in held.figures)
+        keys = {key for key, _value in figures}
+        for wanted in ("des.plat_area_m2", "des.plat_axis_m", "des.plat_cut_m3", "des.edge_cut_m3", "des.rmv_removed_m3",
+                       "des.rmv_resting_m3", "des.rmv_transition_m3", "des.rmv_kept_m3", "des.rmv_transition_m2"):
+            self.assertIn(wanted, keys)
+        self.assertGreater(dict(figures)["des.rmv_resting_m3"], 0.0)
+        self.assertEqual((dict(figures)["des.rmv_transition_m3"], dict(figures)["des.rmv_transition_m2"]), (0.0, 0.0))
+        dialog = mock.Mock(return_value={"RUNNING_MODAL"})
+        context = SimpleNamespace(window=platform_ops.window(), window_manager=SimpleNamespace(invoke_props_dialog=dialog))
+        asked = operator_self(self.cls, confirm_resting=False, confirm_wall=False)
+        self.cls._confirmation(asked, context)
+        self.assertEqual(dialog.call_args.kwargs["confirm_text"], "Confirmar lo que se le apoya y crear")
+        self.assertEqual(dialog.call_args.kwargs["title"], f"Retirada de un acopio «{OVER_PLATFORM}» como plataforma en V01")
+        self.assertTrue(asked.confirm_resting and not asked.confirm_wall)
+        with self.assertRaises(RuntimeError) as caught:  # sin la confirmación expresa
+            self.create()
+        self.assertIn("se apoyan en él", str(caught.exception))
+        self.assertIn("confirmación expresa", str(caught.exception))
+        self.assertIs(self.des_ops.calculation(), held)
+        self.assertTrue(held.open)
+        self.assertEqual(self.state()[:4], before[:4])
+        self.i18n.set_language("en")
+        self.panels.show_summary(held)
+        self.assertEqual(self.view.summary_title, f"Removal of a stockpile «{OVER_PLATFORM}» as a platform in V01")
+        self.assertTrue(self.view.summary[0].name.startswith(f"Platform «{OVER_PLATFORM}» (PLT-002): footprint "))
+        self.assertTrue(any(line.name.startswith("Removal of the stockpile «Acopio 2»: ") for line in self.view.summary))
+        self.i18n.set_language("es")
+        self.panels.show_summary(held)
+        self.des_ops.discard_calculation()
+        self.assertEqual(self.state(), before, "descartar borra el temporal")
+
+        direct = None  # lo que calcula el dominio con la misma petición (T21): las mismas cifras, a ≤ 10⁻⁹ relativo
+        request = model.PlatformRequest.of_stockpile(OVER_PLATFORM, "STK-001#Acopio 2", "entity:PLT-001", edge_angle_deg=35.0,
+                                                     reach_m=10.0, metric="exact")
+        for step in steps.platform_run(self.project, request, version=self.v01.uid):
+            direct = step.result or direct
+        self.assertIsNotNone(direct)
+        try:
+            expected = sorted((spec.key, spec.value) for spec in direct.figures)
+        finally:
+            direct.discard()
+        self.assertEqual([key for key, _value in figures], [key for key, _value in expected])
+        for (key, found), (_key, wanted) in zip(figures, expected, strict=True):
+            self.assertAlmostEqual(found, wanted, delta=1e-9 * max(abs(wanted), 1.0), msg=key)
+        self.assertEqual(self.state(), before)
+
+    def test_c_as_a_platform_esc_cancel_and_what_is_missing_leave_nothing(self) -> None:
+        """RF-016-16, RF-015-03, RF-015-29, RNF-016-05, M1 (T41): con «como plataforma», Esc **a mitad** (con su temporal ya escrito), cancelar la
+        confirmación y lo que falta o se rechaza (el ángulo del borde y el alcance, que no tienen valor por defecto; un ángulo que no es un
+        número o está fuera de rango; el nombre) no dejan nada: ni operación, ni dato, ni parámetro, ni cifra, ni temporal; el ángulo de
+        transición, que aquí no vale, no se pide."""
+        self.refresh()
+        before = self.state()
+        with mock.patch.object(self.des_ops, "_ask_confirmation"):
+            self.assertEqual(bpy.ops.geoblender.des_remove_stockpile("EXEC_DEFAULT", **self.platform_form(name="Esc", in_steps=True)),
+                             {"RUNNING_MODAL"})
+        modal = self.running()
+        modal.STEP_BUDGET_S = step_modals.ONE_STEP_S  # un paso por evento
+        for _ in range(step_modals.MAX_EVENTS):
+            self.assertEqual(modal.modal(bpy.context, step_modals.TIMER), {"RUNNING_MODAL"})
+            if any(".tmp" in name for name in self.names()):
+                break
+        else:
+            self.fail("el cálculo no llegó a escribir su temporal")
+        stopped = time.perf_counter()
+        self.assertEqual(modal.modal(bpy.context, platform_ops.ESCAPE), {"CANCELLED"})
+        self.assertLessEqual(time.perf_counter() - stopped, 2.0, "Esc responde en ≤ 2 s (RNF-016-05)")
+        self.assertIn("Cálculo cancelado: no queda nada a medias", modal.report_log)
+        self.assertIsNone(modal._steps)
+        self.assertIsNone(self.des_ops.calculation())
+        self.assertEqual(self.state(), before)
+
+        self.calculate(**self.platform_form(name="Cancelada"))
+        self.assertTrue(any(".tmp" in name for name in self.names()))
+        self.cls.cancel(operator_self(self.cls, confirm=True, in_steps=False), bpy.context)
+        self.assertIsNone(self.des_ops.calculation())
+        self.assertEqual(self.state(), before)
+
+        for changes, text in (
+                ({"edge_angle": ""}, "edge_angle_deg"),
+                ({"reach": ""}, "reach_m"),
+                ({"edge_angle": "abc"}, "«abc» no es un número"),
+                ({"edge_angle": "0"}, "edge_angle_deg"),
+                ({"edge_angle": "95"}, "edge_angle_deg"),
+                ({"mesh_factor": "99"}, "mesh_factor"),
+                ({"name": " "}, "Escriba el nombre de la retirada")):
+            with self.subTest(cambios=changes):
+                with self.assertRaises(RuntimeError) as caught:
+                    bpy.ops.geoblender.des_remove_stockpile("EXEC_DEFAULT", **self.platform_form(transition_angle="", **changes))
+                self.assertIn(text, str(caught.exception))
+                self.assertIsNone(self.des_ops.calculation())
+                self.assertEqual(self.state(), before)
+
+    def test_d_create_registers_the_removal_in_one_transaction_and_chains_what_follows(self) -> None:
+        """RF-016-11, RF-016-13, RF-015-02, RF-015-01, RF-015-27, RF-016-24, M1: «Crear» la retirada del Acopio 1 (nada se le apoya) registra
         ``des.stockpile_removal`` hecha en V01 con su superficie, su huella y su informe, las cifras CALCULADO y los parámetros de la
         entidad como filas de la versión (de quien tiene abierto el proyecto; el ángulo con el origen del diálogo), y la entidad al día;
-        no declara restricciones ni recompila nada (D-1: una retirada no protege) y no toca la detección ni el levantamiento."""
+        **encadena lo que sigue** (T41: ``entity_store.after_entity_change``): la capa de entidades (``des_enl_v01``) tiene ya su fila sin
+        otra orden; **no declara nada** (D-1: una retirada no protege) y no toca la detección ni el levantamiento."""
         self.refresh()
-        declared = self.rows("SELECT count(*) FROM gb_operation WHERE op_type = ?", DECLARE_TYPE)
+        declared = self.declared()
+        self.assertEqual(list(self.layer_rows()), ["PLT-001"], "la capa de entidades solo tiene la plataforma que la llenó")
         held = self.calculate()
         removed = held.outcome.removed_m3
         self.assertEqual(self.create(), {"FINISHED"})
@@ -425,8 +599,12 @@ class RemoveStockpileTest(platform_ops.CreatePlatformTest):
         self.assertEqual(self.parameter_of("RMV-001", "stockpile")[0], "STK-001#Acopio 1")
         self.assertEqual(self.parameter_of("RMV-001", "start")[0], "entity:PLT-001")
         self.assertEqual(self.states(), {"PLT-001": "current", "RMV-001": "current"})
-        self.assertEqual(self.rows("SELECT count(*) FROM gb_operation WHERE op_type = ?", DECLARE_TYPE), declared,
-                         "una retirada no encadena la declaración de restricciones")
+        self.assertEqual(self.declared(), declared, "una retirada no protege: lo que sigue no declara nada nuevo (D-1)")
+        rows = self.layer_rows()
+        self.assertEqual(sorted(rows), ["PLT-001", "RMV-001"], "la capa de entidades tiene ya la fila de la retirada, sin otra orden")
+        row = rows["RMV-001"]
+        self.assertEqual((row.name, str(row.kind), str(row.state)), (FIRST, "removal", "current"))
+        self.assertTrue(math.isclose(row.volume_m3, figures["des.rmv_removed_m3"], rel_tol=1e-9), "con lo retirado entre sus cifras")
         self.assertNotIn("removal_confirmed", self.settings_of(FIRST), "nada que confirmar")
         self.assertEqual(self.layer_state(), self.layer_before, "la capa de plataformas no se toca")
 
@@ -479,6 +657,7 @@ class RemoveStockpileTest(platform_ops.CreatePlatformTest):
         self.assertEqual({code: state for code, state in self.states().items() if code != "PLT-001"},
                          {"RMV-001": "current", "RMV-002": "current"})
         self.assertEqual(self.rows("SELECT count(*) FROM gb_dataset WHERE status = 'discarded'"), [(0,)], "nada se descartó")
+        self.assertEqual(sorted(self.layer_rows()), ["PLT-001", "RMV-001", "RMV-002"], "la capa de entidades, al día sin otra orden (T41)")
 
     def test_f_a_wall_is_not_created_without_the_express_confirmation_and_one_over_the_limits_needs_its_reason(self) -> None:
         """RF-016-15 (error 47), CA-9, M1: la pared que dejara la retirada (aquí forzada: la transición de A6 nunca la deja, T19) sale en
@@ -587,12 +766,85 @@ class RemoveStockpileTest(platform_ops.CreatePlatformTest):
         self.assertIsNone(self.des_ops.calculation())
         self.assertEqual(self.state(), before)
 
+    def platform_param(self, code: str, param: str) -> tuple[Any, ...]:
+        """La fila de la versión del parámetro ``param`` de la plataforma ``code`` (``des.platform.plt_002.*``): valor, origen, tipo y decisor."""
+        ((value, source, kind, decider),) = self.rows(
+            "SELECT value, source, kind, decided_by FROM gb_parameter WHERE key = ? AND scope = 'version' AND scope_uid = ?",
+            f"des.platform.{code.lower().replace('-', '_')}.{param}", self.v01.uid)
+        return json.loads(value), source, kind, decider
+
+    def test_i_as_a_platform_creates_the_platform_of_the_stockpile_and_chains_what_follows(self) -> None:
+        """RF-016-16, RF-015-01, RF-015-02, RF-015-27, A9, E3, M1 (T41): «Crear» con «como plataforma» registra **una sola operación**
+        ``des.platform`` (la plataforma de la 015 con la huella del acopio: sin capa de entrada, con las tres entradas ``removed_stockpile``
+        de la detección) con las cifras que se calcularon, los parámetros de la entidad (el acopio que retira, el borde elegido en el diálogo,
+        de quien tiene abierto el proyecto) y la entidad al día; **encadena lo que sigue** (T41): la capa de entidades tiene ya su fila sin
+        otra orden y la declaración no cambia (no protege). Nada se le apoya (el acopio ya se retiró): no pide confirmación."""
+        self.refresh()
+        declared = self.declared()
+        start = self.panels.platform_default_start()
+        self.assertEqual(start, "entity:RMV-003", "la última de la cadena")
+        held = self.calculate(**self.platform_form(start=start))
+        self.assertEqual((held.op_type, held.entity.code, held.name), (PLATFORM_TYPE, "PLT-002", AS_PLATFORM))
+        self.assertFalse(held.needs_resting_confirmation, "ya se retiró: nada se le apoya")
+        calculated = sorted((spec.key, spec.value) for spec in held.figures)
+        self.assertEqual(self.create(), {"FINISHED"})
+        self.assertIsNone(self.des_ops.calculation())
+        done = [(uid, status) for uid, status in self.rows("SELECT uid, status FROM gb_operation WHERE op_type = ? ORDER BY fid", PLATFORM_TYPE)]
+        self.assertEqual([status for _uid, status in done], ["done", "done"], "la plataforma de la 015 y esta")
+        uid = done[-1][0]
+        self.assertEqual(sorted(self.rows("SELECT key, value FROM gb_figure WHERE operation_uid = ?", uid)), calculated,
+                         "lo registrado es lo calculado")
+        roles = [role for (role,) in self.rows("SELECT role FROM gb_operation_io WHERE operation_uid = ? AND direction = 'in'", uid)]
+        self.assertEqual(roles.count("removed_stockpile"), 3, roles)
+        self.assertFalse([role for role in roles if role in ("entity_layer", "entity_axis_layer")], "no lee ninguna capa de entidades")
+        for family in ("psf", "epr", "prp"):
+            self.assertEqual(self.rows("SELECT count(*) FROM gb_dataset WHERE status = 'current' AND name = ?",
+                                       self.dprov.dataset_name(family, AS_PLATFORM)), [(1,)], family)
+        for param, value in (("stockpile", "STK-001#Acopio 1"), ("start", start), ("edge_angle_deg", 35.0), ("reach_m", 10.0)):
+            self.assertEqual(self.platform_param("PLT-002", param)[0], value, param)
+        found = self.platform_param("PLT-002", "edge_angle_deg")
+        self.assertEqual((found[2], found[3]), ("ADOPTADO", self.project.session.user_host))
+        self.assertIn(self.states()["PLT-002"], ("current", "stale"), "creada y calculada")
+        self.assertEqual(self.declared(), declared, "no protege: lo que sigue no declara nada nuevo")
+        rows = self.layer_rows()
+        self.assertEqual(sorted(rows), ["PLT-001", "PLT-002", "RMV-001", "RMV-002", "RMV-003"],
+                         "la capa de entidades tiene ya la fila de la plataforma, sin otra orden")
+        self.assertEqual((rows["PLT-002"].name, str(rows["PLT-002"].kind)), (AS_PLATFORM, "platform"))
+        self.assertTrue(math.isclose(rows["PLT-002"].area_m2, dict(calculated)["des.plat_area_m2"], rel_tol=1e-9))
+
+    def test_j_esc_in_what_follows_creating_the_removal_says_it_is_created_and_the_next_order_updates_the_layer(self) -> None:
+        """RF-015-10, RF-015-29, RNF-016-05, RF-015-27, M1 (T41): Esc **en lo que sigue a «Crear»** (la declaración, las máscaras y la capa de
+        entidades, por pasos con su avance) deja la retirada **creada** —la orden lo dice— y la capa de entidades sin su fila, hasta que lo que
+        sigue se hace de nuevo (aquí, ``after_entity_change``, que encadena también la orden siguiente): lo creado no se pierde."""
+        self.refresh()
+        start = self.panels.platform_default_start()
+        self.assertEqual(start, "entity:PLT-002", "la última de la cadena")
+        self.calculate(**self.platform_form(name="Otra como plataforma", start=start))
+        with mock.patch.object(self.des_ops, "_ask_confirmation"):
+            self.assertEqual(bpy.ops.geoblender.des_remove_stockpile("EXEC_DEFAULT", confirm=True, in_steps=True), {"RUNNING_MODAL"})
+            modal = self.running()
+            modal.STEP_BUDGET_S = step_modals.ONE_STEP_S
+            state, _count = step_modals.drive(modal, bpy.context, stop_after=0)
+            self.assertEqual(state, {"RUNNING_MODAL"}, "lo que sigue no debía haber acabado")
+            self.assertEqual(modal.modal(bpy.context, platform_ops.ESCAPE), {"CANCELLED"})
+        self.assertIn(CHAIN_CANCELLED_TEXT, list(modal.report_log))
+        self.assertIn(self.states()["PLT-003"], ("current", "stale"), "la plataforma está creada")
+        self.assertNotIn("PLT-003", self.layer_rows(), "y la capa aún no tiene su fila")
+        self.assertIsNone(self.des_ops.calculation())
+        last = None
+        for last in platform_ops._module("design.entity_store").after_entity_change(self.project, self.v01.uid):
+            pass
+        self.assertIsNone(last.result.failure, None if last.result.failure is None else last.result.failure.reason)
+        self.assertIsNone(last.result.layer_failure, None if last.result.layer_failure is None else last.result.layer_failure.reason)
+        self.assertIn("PLT-003", self.layer_rows(), "ahora sí")
+
     def test_z_a_stale_detection_is_offered_but_refused_and_disabling_geoblender_removes_the_command(self) -> None:
         """RF-016-12 (M1), principio 8, D-14 de la 013: con la detección **obsoleta** (se cambió un umbral suyo), el diálogo sigue ofreciendo
         sus acopios —marcados— y su lista de lo apoyado dice por qué no se puede, y «Calcular» se rechaza nombrando el acopio y lo que
         cambió, sin registrar nada; con un cálculo abierto, desactivar Geoblender lo descarta (no queda ningún temporal) y quita la orden."""
         self.refresh()
-        held = self.calculate(name="Al apagar", start="entity:RMV-003")
+        tail = self.panels.platform_default_start()  # la última de la cadena (las de «como plataforma» la alargan)
+        held = self.calculate(name="Al apagar", start=tail)
         self.assertTrue(any(".tmp" in name for name in self.names()))
         self.des_ops.discard_calculation()
         self.assertFalse(any(".tmp" in name for name in self.names()))
@@ -612,7 +864,7 @@ class RemoveStockpileTest(platform_ops.CreatePlatformTest):
         self.assertTrue(alert)
         self.assertIn("está obsoleta", text)
         with self.assertRaises(RuntimeError) as caught:
-            bpy.ops.geoblender.des_remove_stockpile("EXEC_DEFAULT", **self.form(name="De la obsoleta", start="entity:RMV-003"))
+            bpy.ops.geoblender.des_remove_stockpile("EXEC_DEFAULT", **self.form(name="De la obsoleta", start=tail))
         self.assertIn("«Acopios» está obsoleta", str(caught.exception))
         self.assertIsNone(self.des_ops.calculation())
         self.assertEqual(self.state(), before)

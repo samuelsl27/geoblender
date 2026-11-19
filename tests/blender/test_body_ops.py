@@ -17,6 +17,7 @@ Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
 import json
+import math
 import time
 import unittest
 from types import SimpleNamespace
@@ -67,6 +68,8 @@ PROPERTIES = {
 """Las propiedades del diálogo con el ``msgid`` de su nombre y de su descripción (las ocultas, que pone quien lanza la orden, no los
 llevan)."""
 HIDDEN = ("confirm", "in_steps")
+CHAIN_CANCELLED_TEXT = ("Cancelado: el cuerpo apoyado está creado; las restricciones declaradas y las máscaras se ponen al día antes de la "
+                        "siguiente operación que las use, y la capa de entidades con la siguiente orden de entidades o «Recalcular lo obsoleto»")
 
 
 class CreateBodyTest(platform_ops.CreatePlatformTest):
@@ -161,6 +164,21 @@ class CreateBodyTest(platform_ops.CreatePlatformTest):
 
     def states(self) -> dict[str, str]:
         return {entry.record.code: str(entry.record.state) for entry in self.entities.registry(self.project, self.v01.uid)}
+
+    def layer_rows(self) -> dict[str, Any]:
+        """Las filas de la capa de entidades de V01 (``des_enl_v01``), por código; ninguna si aún no se escribió (T34, T41)."""
+        layer = platform_ops._module("design.entity_layer")
+        table = layer.entity_layer_table(self.v01.code)
+        with self.project.read() as conn:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
+                return {}
+            return {item.code: item for item in layer.read_entity_layer(conn, table)}
+
+    def declared(self) -> tuple[Any, ...]:
+        """Las restricciones que declaran las entidades de V01."""
+        declared = platform_ops._module("core.constraints.declared")
+        with self.project.read() as conn:
+            return tuple(declared.read_in_version(conn, self.v01.uid))
 
     # --- Pruebas ------------------------------------------------------------------------------
 
@@ -321,15 +339,18 @@ class CreateBodyTest(platform_ops.CreatePlatformTest):
                 self.assertIsNone(self.des_ops.calculation())
                 self.assertEqual(self.state(), before)
 
-    def test_d_create_registers_the_body_under_a_roof_in_one_transaction_and_chains_nothing(self) -> None:
-        """RF-016-20, RF-016-01, RF-015-02, RF-015-01, RNF-016-07, M2: «Crear» el cuerpo «bajo la ladera» registra ``des.body`` hecho en V01
-        con su espesor y su base **dispersos** (ninguna superficie: no cambia la de nadie), su huella y su informe, las cifras CALCULADO
-        y los parámetros de la entidad como filas de la versión (de quien tiene abierto el proyecto; la distancia con el origen del
-        diálogo), y la entidad al día **sin cadena**; no declara restricciones ni toca las capas ni la ladera."""
+    def test_d_create_registers_the_body_under_a_roof_in_one_transaction_and_chains_what_follows(self) -> None:
+        """RF-016-20, RF-016-01, RF-015-02, RF-015-01, RF-015-27, RF-016-24, RNF-016-07, M2: «Crear» el cuerpo «bajo la ladera» registra
+        ``des.body`` hecho en V01 con su espesor y su base **dispersos** (ninguna superficie: no cambia la de nadie), su huella y su informe,
+        las cifras CALCULADO y los parámetros de la entidad como filas de la versión (de quien tiene abierto el proyecto; la distancia con el
+        origen del diálogo), y la entidad al día **sin cadena**; **encadena lo que sigue** (T41: ``entity_store.after_entity_change``): la
+        capa de entidades (``des_enl_v01``) tiene ya su fila sin otra orden; **no declara restricciones** (el cuerpo no declara) ni toca las
+        capas ni la ladera."""
         self.refresh()
         ground_before = self.rows("SELECT content_sha256 FROM gb_dataset WHERE name = ?", self.ground)
         layers_before = self.rows("SELECT name, content_sha256 FROM gb_dataset WHERE name IN (?, ?)", FOOTPRINTS, THICKNESS)
-        declared = self.rows("SELECT count(*) FROM gb_operation WHERE op_type = ?", platform_ops.DECLARE_TYPE)
+        declared = self.declared()
+        self.assertEqual(self.layer_rows(), {}, "aún no hay capa de entidades")
         held = self.calculate()
         volume = held.outcome.volume_m3
         self.assertEqual(self.create(), {"FINISHED"})
@@ -354,8 +375,12 @@ class CreateBodyTest(platform_ops.CreatePlatformTest):
         self.assertEqual(self.states(), {"BDY-001": "current"})
         entry = self.entities.registry(self.project, self.v01.uid).get("BDY-001")
         self.assertEqual((str(entry.record.kind), entry.record.start), ("body", None))
-        self.assertEqual(self.rows("SELECT count(*) FROM gb_operation WHERE op_type = ?", platform_ops.DECLARE_TYPE), declared,
-                         "un cuerpo no encadena la declaración de restricciones")
+        self.assertEqual(self.declared(), declared, "un cuerpo no declara restricciones: lo que sigue no declara nada")
+        rows = self.layer_rows()
+        self.assertEqual(sorted(rows), ["BDY-001"], "la capa de entidades tiene ya la fila del cuerpo, sin otra orden")
+        row = rows["BDY-001"]
+        self.assertEqual((row.name, str(row.kind), str(row.state), row.start), (ROOF, "body", "current", None))
+        self.assertTrue(math.isclose(row.volume_m3, volume, rel_tol=1e-9), "con su volumen")
         self.assertEqual(self.rows("SELECT content_sha256 FROM gb_dataset WHERE name = ?", self.ground), ground_before)
         self.assertEqual(self.rows("SELECT name, content_sha256 FROM gb_dataset WHERE name IN (?, ?)", FOOTPRINTS, THICKNESS),
                          layers_before, "las capas de entrada no se tocan")
@@ -380,6 +405,7 @@ class CreateBodyTest(platform_ops.CreatePlatformTest):
         self.assertEqual((held.entity.code, held.entity.start_surface), ("BDY-002", self.ground))
         self.assertEqual(self.create(), {"FINISHED"})
         self.assertEqual(self.states(), {"BDY-001": "current", "BDY-002": "current"})
+        self.assertEqual(sorted(self.layer_rows()), ["BDY-001", "BDY-002"], "la capa de entidades, al día sin otra orden (T41)")
         for family in ("bdt", "psf", "epr", "prp"):
             self.assertEqual(self.rows("SELECT count(*) FROM gb_dataset WHERE status = 'current' AND name = ?",
                                        self.dprov.dataset_name(family, BASE)), [(1,)], family)
@@ -431,6 +457,30 @@ class CreateBodyTest(platform_ops.CreatePlatformTest):
         self.assertIn(not_editable, cls.description(bpy.context, SimpleNamespace()))
         self.assertEqual(bpy.ops.geoblender.core_set_active_version(version_uid=self.v01.uid), {"FINISHED"})
         self.assertTrue(poll())
+
+    def test_g_esc_in_what_follows_creating_the_body_says_it_is_created_and_the_next_order_updates_the_layer(self) -> None:
+        """RF-015-10, RF-015-29, RNF-016-05, RF-015-27, M2 (T41): Esc **en lo que sigue a «Crear»** (la declaración, las máscaras y la capa de
+        entidades, por pasos con su avance) deja el cuerpo **creado** —la orden lo dice— y la capa de entidades sin su fila, hasta que lo que
+        sigue se hace de nuevo (aquí, ``after_entity_change``, que encadena también la orden siguiente): lo creado no se pierde."""
+        self.refresh()
+        self.calculate(name="Bajo otro techo")
+        with mock.patch.object(self.des_ops, "_ask_confirmation"):
+            self.assertEqual(bpy.ops.geoblender.des_create_body("EXEC_DEFAULT", confirm=True, in_steps=True), {"RUNNING_MODAL"})
+            modal = self.running()
+            modal.STEP_BUDGET_S = step_modals.ONE_STEP_S
+            state, _count = step_modals.drive(modal, bpy.context, stop_after=0)
+            self.assertEqual(state, {"RUNNING_MODAL"}, "lo que sigue no debía haber acabado")
+            self.assertEqual(modal.modal(bpy.context, platform_ops.ESCAPE), {"CANCELLED"})
+        self.assertIn(CHAIN_CANCELLED_TEXT, list(modal.report_log))
+        self.assertEqual(self.states()["BDY-003"], "current", "el cuerpo está creado")
+        self.assertNotIn("BDY-003", self.layer_rows(), "y la capa aún no tiene su fila")
+        self.assertIsNone(self.des_ops.calculation())
+        last = None
+        for last in platform_ops._module("design.entity_store").after_entity_change(self.project, self.v01.uid):
+            pass
+        self.assertIsNone(last.result.failure, None if last.result.failure is None else last.result.failure.reason)
+        self.assertIsNone(last.result.layer_failure, None if last.result.layer_failure is None else last.result.layer_failure.reason)
+        self.assertIn("BDY-003", self.layer_rows(), "ahora sí")
 
     def test_z_disabling_geoblender_removes_the_body_command_and_leaves_no_temporary(self) -> None:
         """Principio 8, D-14 de la 013: con un cálculo abierto, desactivar Geoblender lo descarta (no queda ningún temporal) y quita la

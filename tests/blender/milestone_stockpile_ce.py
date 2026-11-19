@@ -17,6 +17,11 @@ de coronación, la marca del Acopio 2; el perfil ``EXPL_10_60_6`` escrito en el 
 relleno de la 015: se apoya en el acopio, **una sola lista** antes de retirarlo, «apoyo retirado» tras crear la retirada y «Recalcular lo
 obsoleto» sin recalcularlo; con el contrafuerte **después** de la retirada, solo obsoleto.
 
+**E3 con la orden real** (T41; :class:`StockpileCETest` ``test_f`` y :class:`StockpileAsPlatformCETest`): el Acopio 1 retirado «como plataforma»
+con ``des_remove_stockpile`` (``as_platform``: el borde y el alcance del diálogo) deja la huella entera en el plano de su base y el eje de borde a
+borde, y el Acopio 2, desde la superficie del relleno, pide confirmar lo apoyado y deja a «Sobre acopio» con el apoyo retirado; lo que sigue a la
+orden (la capa de entidades) ya está hecho sin otra orden.
+
 Se ejecuta con ``tools/run_blender_tests.py``.
 """
 
@@ -290,24 +295,16 @@ class StockpileCETest(rem_ops.RemoveStockpileTest):
 
     # --- CE-016-03 / E3: retirado «como plataforma» ----------------------------------------------
 
-    def test_f_removed_as_a_platform_the_whole_footprint_is_in_the_plane_and_the_axis_runs_from_edge_to_edge(self) -> None:
-        """CE-016-03, RF-016-16, A9, E3 (las funciones del dominio que llamará la orden; el diálogo «como plataforma» es de la T35): el Acopio 1
-        retirado «como plataforma» deja **la huella entera en el plano de su base** (``100 + 0,03·y + 0,01·x``) a ≤ 10⁻⁹ m, con su pendiente
-        (``100·√(0,01² + 0,03²)`` %) y **el eje de borde a borde** por el centro de la huella, en la dirección de máxima pendiente, a ≤ 10⁻⁹
-        relativo del cálculo a mano; «Crear» registra una operación ``des.platform`` sin ninguna capa y lo que sigue a la orden no falla."""
-        steps, model = _module("design.steps"), _module("design.model")
-        access = _module("gis.masks.access")
-        request = model.PlatformRequest.of_stockpile("Acopio 1 como plataforma", "STK-001#Acopio 1", "entity:PLT-003",
-                                                     edge_angle_deg=35.0, reach_m=10.0)
-        found = None
-        for step in steps.platform_run(self.project, request, version=self.v01.uid, masks=access.load_masks(self.project, self.v01.uid)):
-            found = step.result or found
-        self.assertIsNotNone(found)
-        outcome = found.outcome
+    def check_in_the_plane_and_edge_to_edge(self, held: Any, key: str) -> tuple[np.ndarray, np.ndarray]:
+        """A mano, **de los ficheros** (E3, A9): la plataforma calculada ``held`` que retira el acopio ``key`` tiene **la huella entera —las celdas de
+        la detección— en el plano de su base** (``100 + 0,03·y + 0,01·x``) a ≤ 10⁻⁹ m, con su pendiente (``100·√(0,01² + 0,03²)`` %) y **el eje de borde a
+        borde** por el centro de la huella, en la dirección de máxima pendiente, a ≤ 10⁻⁹ relativo (y 10⁻⁶ m). Devuelve las filas y las columnas de la
+        huella."""
+        outcome = held.outcome
         window = outcome.footprint.window
         rows, cols = np.nonzero(outcome.footprint.cells)
         rows, cols = rows + window[0].start, cols + window[1].start
-        wanted_rows, wanted_cols = self.footprint("Acopio 1")
+        wanted_rows, wanted_cols = self.footprint(key)
         self.assertEqual(sorted(zip(rows.tolist(), cols.tolist(), strict=True)), sorted(zip(wanted_rows.tolist(), wanted_cols.tolist(), strict=True)))
         x, y = platform_ops.centers()
         plane = 100.0 + 0.03 * y + 0.01 * x
@@ -325,23 +322,37 @@ class StockpileCETest(rem_ops.RemoveStockpileTest):
         for (vx, vy), t in ((start, min(projections)), (end, max(projections))):
             self.assertLessEqual(abs((vx - platform_ops.WEST) - (xc + t * ux)), 1e-6)
             self.assertLessEqual(abs((vy - platform_ops.SOUTH) - (yc + t * uy)), 1e-6)
-        self.assertEqual(found.entity.resting, (), "nada se apoya en el Acopio 1")
-        calculation = found
-        if calculation.needs_confirmation:
-            calculation.confirm_counterslope()
-        stored = calculation.create(decided_by=platform_ops.PERSON)
-        uid = str(stored.handle.uid)
-        self.assertEqual(self.rows("SELECT op_type, status FROM gb_operation WHERE uid = ?", uid), [("des.platform", "done")])
+        return rows, cols
+
+    def test_f_removed_as_a_platform_the_whole_footprint_is_in_the_plane_and_the_axis_runs_from_edge_to_edge(self) -> None:
+        """CE-016-03, RF-016-16, RF-015-27, A9, E3 (T41: **la orden real**, ``des_remove_stockpile`` con «como plataforma»): el Acopio 1 retirado
+        «como plataforma» deja **la huella entera en el plano de su base** (``100 + 0,03·y + 0,01·x``) a ≤ 10⁻⁹ m, con su pendiente
+        (``100·√(0,01² + 0,03²)`` %) y **el eje de borde a borde** por el centro de la huella, en la dirección de máxima pendiente, a ≤ 10⁻⁹
+        relativo del cálculo a mano; «Crear» registra una operación ``des.platform`` sin ninguna capa con las cifras de la plataforma y de la
+        retirada (la huella entera: transición 0) y **lo que sigue a la orden ya está hecho** —sin fallos: la capa de entidades tiene su fila—."""
+        self.refresh()
+        held = self.calculate(name="Acopio 1 como plataforma", stockpile="STK-001#Acopio 1", start="entity:PLT-003", as_platform=True,
+                              edge_angle="35", reach="10")
+        self.assertEqual((held.op_type, held.entity.code), ("des.platform", "PLT-004"))
+        rows, cols = self.check_in_the_plane_and_edge_to_edge(held, "Acopio 1")
+        self.assertEqual(held.entity.resting, (), "nada se apoya en el Acopio 1")
+        self.assertFalse(held.needs_resting_confirmation)
+        self.assertEqual(self.create(), {"FINISHED"})
+        self.assertIsNone(self.des_ops.calculation())
+        ((uid,),) = self.rows("SELECT uid FROM gb_operation WHERE op_type = 'des.platform' AND status = 'done' AND settings LIKE ?",
+                              "%Acopio 1 como plataforma%")
         self.assertFalse([role for (role,) in self.rows(
             "SELECT role FROM gb_operation_io WHERE operation_uid = ? AND direction = 'in'", uid) if role in ("entity_layer", "entity_axis_layer")])
         figures = dict(self.rows("SELECT key, value FROM gb_figure WHERE operation_uid = ?", uid))
         self.assertEqual((figures["des.rmv_transition_m3"], figures["des.rmv_kept_m3"]), (0.0, 0.0))
         self.assertTrue(_close(figures["des.plat_area_m2"], len(rows) * CELL_M2))
+        self.assertIn(self.states()["PLT-004"], ("current", "stale"), "la plataforma creada, calculada (obsoleta solo porque lo está la superficie de la que parte)")
+        self.assertIn("PLT-004", self.layer_rows(), "lo que sigue a la orden ya está hecho: la capa de entidades tiene su fila")
         last = None
         for last in _module("design.entity_store").after_entity_change(self.project, self.v01.uid):
             pass
         self.assertIsNone(last.result.failure, None if last.result.failure is None else last.result.failure.reason)
-        self.assertIn(self.states()["PLT-004"], ("current", "stale"), "la plataforma creada, calculada (obsoleta solo porque lo está la superficie de la que parte)")
+        self.assertIsNone(last.result.layer_failure)
 
     def test_z_disabling_geoblender_leaves_no_temporary(self) -> None:
         """Principio 8: tras todo lo anterior, desactivar Geoblender no deja ningún temporal."""
@@ -561,6 +572,79 @@ class StockpileButtressCETest(StockpileCETest):
 for _name in dir(StockpileCETest):  # sus pruebas son suyas: aquí solo los ayudantes
     if _name.startswith("test") and _name not in StockpileButtressCETest.__dict__:
         setattr(StockpileButtressCETest, _name, None)
+del _name
+
+
+class StockpileAsPlatformCETest(StockpileCETest):
+    """E3 con **lo apoyado** y **la orden real** (T41; ``des_remove_stockpile`` con «como plataforma»; RF-016-16, RF-016-14, RF-015-17, P-9): el
+    proyecto de :class:`StockpileCETest` (la detección **de la versión** y el relleno ``PLT-002`` sobre el Acopio 2) con el Acopio 2 retirado
+    «como plataforma» desde la superficie de ese relleno: lo apoyado se confirma, la plataforma deja la huella en el plano de su base y a «Sobre
+    acopio» le queda el apoyo retirado."""
+
+    PLATFORM_NAME = "Acopio 2 como plataforma"
+
+    def platform_form(self, **values: Any) -> dict[str, Any]:
+        """Lo pedido en el diálogo: el Acopio 2 como plataforma desde la superficie de «Sobre acopio», con el borde a 35° y 10 m."""
+        return {"name": self.PLATFORM_NAME, "stockpile": "STK-001#Acopio 2", "start": "entity:PLT-002", "as_platform": True, "edge_angle": "35",
+                "reach": "10", "in_steps": False, **values}
+
+    def test_a_removing_a_stockpile_as_a_platform_asks_for_what_rests_on_it_and_leaves_its_support_removed(self) -> None:
+        """CE-016-04, RF-016-14, RF-016-16, RF-015-17, P-9 (error 59; E3 con lo apoyado; la orden real): retirar el Acopio 2 **como plataforma** desde
+        la superficie del relleno da **una sola lista** de lo apoyado (el relleno, con su volumen **a mano**, de los ficheros, a ≤ 10⁻⁹ relativo);
+        calcular **no escribe nada**; «Crear» sin la confirmación expresa se rechaza y deja el cálculo abierto; con ella se crea, queda anotada en
+        los ajustes de la operación (los m³, quién y cuándo) y **«Sobre acopio» queda en «apoyo retirado»** —con su causa— sin que se haya
+        descartado nada; la huella entera queda **en el plano de su base**, con el eje **de borde a borde**, y la capa de entidades tiene su fila."""
+        self.refresh()
+        before = self.state()
+        held = self.calculate(**self.platform_form())
+        self.assertEqual((held.op_type, held.name, held.entity.code), ("des.platform", self.PLATFORM_NAME, "PLT-003"))
+        self.assertTrue(held.needs_resting_confirmation)
+        (row,) = held.entity.resting
+        self.assertEqual((row.name, row.op_type, row.entity), (OVER_NAME, "des.platform", "PLT-002"))
+        self.assertTrue(_close(row.volume_m3, self.hand_resting()), (row.volume_m3, self.hand_resting()))
+        self.assertEqual(self.state()[:4], before[:4], "calcular no escribe")
+        self.assertEqual(row, _module("design.supported_store").resting_preview(
+            self.project, self.v01.uid, "STK-001#Acopio 2", "entity:PLT-002")[0], "la del diálogo es la que calcula la orden")
+        rows, cols = self.check_in_the_plane_and_edge_to_edge(held, "Acopio 2")
+        with self.assertRaises(RuntimeError) as caught:  # sin la confirmación expresa
+            self.create()
+        self.assertIn("confirmación expresa", str(caught.exception))
+        self.assertIs(self.des_ops.calculation(), held)
+        self.assertTrue(held.open)
+        self.assertEqual(self.state()[:4], before[:4])
+
+        self.assertEqual(self.create(confirm_resting=True), {"FINISHED"})
+        self.assertIsNone(self.des_ops.calculation())
+        self.assertEqual(self.states()["PLT-002"], "support_removed", "«Sobre acopio» pierde su apoyo")
+        self.assertEqual({code: state for code, state in self.states().items() if code != "PLT-003"},
+                         {"STK-001": "current", "PLT-001": "current", "PLT-002": "support_removed"})
+        why = self.entities.stale_reason(self.project, self.v01.uid, "PLT-002")
+        self.assertTrue(why.startswith("Apoyo retirado: "), why)
+        for wanted in ("Acopio 2", self.PLATFORM_NAME):
+            self.assertIn(wanted, why)
+        self.assertEqual(self.rows("SELECT count(*) FROM gb_dataset WHERE status = 'discarded'"), [(0,)], "nada se descartó")
+        ((uid, settings),) = self.rows("SELECT uid, settings FROM gb_operation WHERE op_type = 'des.platform' AND status = 'done' "
+                                       "AND settings LIKE ?", f"%{self.PLATFORM_NAME}%")
+        confirmed = json.loads(settings)["removal_confirmed"]["resting"]
+        self.assertTrue(_close(confirmed["volume_m3"], self.hand_resting()))
+        self.assertEqual(confirmed["decided_by"], self.project.session.user_host)
+        self.assertRegex(confirmed["decided_on"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+        figures = dict(self.rows("SELECT key, value FROM gb_figure WHERE operation_uid = ?", uid))
+        self.assertTrue(_close(figures["des.rmv_resting_m3"], self.hand_resting()))
+        self.assertEqual((figures["des.rmv_transition_m3"], figures["des.rmv_transition_m2"]), (0.0, 0.0), "la huella entera queda en el plano")
+        self.assertTrue(_close(figures["des.plat_area_m2"], len(rows) * CELL_M2))
+        self.assertIn("PLT-003", self.layer_rows(), "lo que sigue a la orden ya está hecho: la capa de entidades tiene su fila")
+        self.assertEqual(str(self.layer_rows()["PLT-002"].state), "support_removed", "y enseña el apoyo retirado")
+
+    def test_z_disabling_geoblender_leaves_no_temporary(self) -> None:
+        """Principio 8: tras todo lo anterior, desactivar Geoblender no deja ningún temporal."""
+        blender_ext.release()
+        self.assertFalse(any(".tmp" in name for name in self.names()))
+
+
+for _name in dir(StockpileCETest):  # sus pruebas son suyas: aquí solo los ayudantes
+    if _name.startswith("test") and _name not in StockpileAsPlatformCETest.__dict__:
+        setattr(StockpileAsPlatformCETest, _name, None)
 del _name
 
 

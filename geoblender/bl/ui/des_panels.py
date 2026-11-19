@@ -156,7 +156,10 @@ estado, :func:`removal_stockpile_items` y :func:`removal_stockpile`; la partida 
 ofrece también la superficie de cada retirada de la cadena), **lo que se apoya en el acopio elegido, antes de calcular**
 (:func:`show_resting`, :func:`resting_lines` y :func:`draw_resting`: una sola lista, en ámbar, o por qué no se pudo leer) y el resumen de
 su cálculo (:func:`_removal_lines`: lo retirado, lo apoyado, la transición, lo no retirado, la pared y su motivo, la lista de lo que se
-apoyaba y sus avisos; el resumen de ``design.preview.RemovalSummary``).
+apoyaba y sus avisos; el resumen de ``design.preview.RemovalSummary``). Retirado **«como plataforma»** (T41; RF-016-16) el cálculo es el de
+una plataforma de la 015 con la huella del acopio y su resumen es el de :func:`_platform_lines` con **una línea más con las cifras de la
+retirada** (lo retirado, lo apoyado y lo no retirado: la transición es el borde de la plataforma) y la lista de lo que se apoyaba como primer
+aviso; su título dice «como plataforma».
 
 **«Contrafuerte…»** (spec 016, T27; HU-016-3; RF-016-17, RF-016-18; plan 016 §5.3.3, §5.5; comprobación manual M3): las listas de su
 diálogo (:func:`refresh_buttress_choices`: las capas de polígonos de las zonas de coronación, :func:`buttress_zone_items`, y las
@@ -1539,6 +1542,12 @@ def _platform_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     wall = _figure(calculation, "des.edge_wall_max_m")
     if wall is not None:
         lines.append((tr("Largest cut or fill of the edge: {wall} m", wall=_number(wall, 2)), False))
+    removed = getattr(calculation.entity, "removed", None)
+    if removed is not None:  # retirado «como plataforma» (spec 016, T41; RF-016-13, RF-016-16): las cifras de la retirada (la transición es el borde)
+        lines.append((tr("Removal of the stockpile «{stockpile}»: {removed} m³ removed · resting on it: {resting} m³ · not removed: {kept} m³",
+                         stockpile=removed.name, removed=_number(_figure(calculation, "des.rmv_removed_m3")),
+                         resting=_number(_figure(calculation, "des.rmv_resting_m3")),
+                         kept=_number(_figure(calculation, "des.rmv_kept_m3"))), False))
     if not outcome.counter_slope:  # type: ignore[union-attr]
         lines.append((tr("No counter-slopes (tolerance {tolerance} m)",
                          tolerance=_number(outcome.profile.tolerance_m, 2)), False))  # type: ignore[union-attr]
@@ -1790,6 +1799,9 @@ def show_summary(calculation: Calculation | None) -> None:
                    version=calculation.version)
     elif calculation.op_type == design_provenance.REFIT:
         title = tr("Refit «{name}» in {version}", name=calculation.name,
+                   version=calculation.version)
+    elif calculation.op_type == design_provenance.PLATFORM and getattr(calculation.entity, "removed", None) is not None:
+        title = tr("Removal of a stockpile «{name}» as a platform in {version}", name=calculation.name,  # T41: «como plataforma»
                    version=calculation.version)
     elif calculation.op_type == design_provenance.PLATFORM:
         title = tr("Platform «{name}» in {version}", name=calculation.name,

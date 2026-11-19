@@ -346,10 +346,15 @@ Esc son los de :class:`_CalculateAndCreate`: nada se registra hasta Crear (RF-01
 crea sin la confirmación expresa** de lo que se le apoyaba ni de la pared (RF-016-14, RF-016-15): el botón de su ventana lo dice y pulsarlo
 es la confirmación (``confirm_resting`` y ``confirm_wall``; desde un guion, quien la lanza); una pared de más de 45° y 3 m pide además el
 motivo del diálogo, que **va en la petición** (se escribe al calcular). Quedan en los ajustes de la operación con su decisor y su fecha
-(``design.supported_store.CONFIRMED``). **No encadena** ``after_entity_change``: la retirada no declara restricciones (D-1) y lo que lee la
-declaración y la capa de entidades de cada entidad viva (``des_epr_``) aún no lo sabe de la detección (la capa por acopio es la T34 y la
-declaración con la zona propia de cada tipo, la T27). Disponible con el proyecto en escritura y la versión activa editable y, si no,
-desactivada con su motivo (RF-015-28: :class:`DesignCommandAware`). «Como plataforma» (RF-016-16) es de la T21.
+(``design.supported_store.CONFIRMED``). **Tras crear, encadena** ``entity_store.after_entity_change`` (T41; :class:`_ChainsEntityLayer`): la
+retirada no declara restricciones (D-1), pero la capa de entidades (``des_enl_<vNN>``, como operación aparte: T34) se pone al día con su fila,
+por pasos con el avance y Esc. **«Como plataforma»** (T41; RF-016-16, A9; escenario E3): con ``as_platform`` el diálogo pide, en lugar de la
+transición y la pared, **el borde de una plataforma** (el ángulo y el alcance, sin valor por defecto: D-7 y D-20 de la 015; el factor de malla y
+la métrica valen para el borde) y la orden **calcula y crea una plataforma de la 015 con la huella del acopio** —una sola operación
+``des.platform``: ``design.model.PlatformRequest.of_stockpile`` + ``design.steps.platform_run``; la huella entera queda en el plano de su base
+y el resumen enseña las cifras de la plataforma y las de la retirada—; lo apoyado se confirma igual (``confirm_resting``) y su pared es la de su
+borde, un aviso de la plataforma. La vista previa de «Plataforma…» no se enciende para la retirada (RF-016-23 no la pide). Disponible con el
+proyecto en escritura y la versión activa editable y, si no, desactivada con su motivo (RF-015-28: :class:`DesignCommandAware`).
 
 **Cuerpo apoyado…** (spec 016, T25; HU-016-4; RF-016-20 a RF-016-22, RF-015-03, RF-015-28, RF-015-29; RNF-016-02 y 05; comprobación manual
 M2): :class:`GEOBLENDER_OT_des_create_body` (``geoblender.des_create_body``, interna, de la entrada «016») calcula ``des.body`` de la
@@ -358,7 +363,9 @@ de espesor (un campo de puntos o de polígonos, o la Z de los vértices de una c
 superficie conocida y su sentido —«sobre una base» (apoyo: la superficie de la cadena sube hasta el techo) o «bajo un techo» (el escombro
 existente: deja su base y su espesor dispersos y no cambia la superficie)—, la distancia máxima a los datos (sin valor por defecto: D-9) y
 «cero en el borde». Sigue el patrón de la retirada (:class:`_CalculateAndCreate`; las listas de su diálogo y su resumen, en
-``bl.ui.des_panels``): no retira nada ni deja una pared, así que no pide más confirmación que Crear.
+``bl.ui.des_panels``): no retira nada ni deja una pared, así que no pide más confirmación que Crear. **Tras crear, encadena**
+``entity_store.after_entity_change`` (T41; :class:`_ChainsEntityLayer`): el cuerpo no declara restricciones, pero la capa de entidades se pone
+al día con su fila, como operación aparte (T34).
 
 **Contrafuerte…** (spec 016, T27 (b); HU-016-3; RF-016-17, RF-016-18, RF-015-02, RF-015-03, RF-015-10, RF-015-12, RF-015-28, RF-015-29;
 RNF-016-05; comprobación manual M3): :class:`GEOBLENDER_OT_des_add_buttress` (``geoblender.des_add_buttress``, la clave del catálogo, que
@@ -5796,8 +5803,53 @@ def _refresh_resting(self: Any, _context: Any) -> None:
         des_panels.show_resting([(tr("Nothing rests on the stockpile"), False)])
 
 
-class GEOBLENDER_OT_des_remove_stockpile(_CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal,
-                                         bpy.types.Operator):
+class _ChainsEntityLayer:
+    """Lo que sigue a crear una entidad de la 016 que no es una plataforma ni un contrafuerte (la retirada y el cuerpo apoyado, T41; RF-015-10,
+    RF-015-27, RF-016-24; plan 016 §5.3.2 y §5.4 A9): tras el commit de «Crear», **encadena** ``design.entity_store.after_entity_change`` por
+    pasos con el avance y Esc, como «Plataforma…» y «Contrafuerte…»: repite la declaración de las restricciones de las entidades de la
+    versión (la retirada no protege y el cuerpo no declara: no cambia), recompila las máscaras si ya no están al día y pone al día **la capa de
+    entidades** (``des_enl_<vNN>``, como operación aparte: T34), que así tiene la fila de la entidad sin otra orden. La entidad **ya está
+    creada** (cada etapa es una operación y una transacción propias): cerrar o fallar a mitad deja las máscaras obsoletas con su causa y la
+    capa se pone al día con la orden de entidades siguiente o «Recalcular lo obsoleto». Se pone **antes** de :class:`_CalculateAndCreate`;
+    cada orden da su ``_create`` (que llama a :meth:`_update_declared` si crea) y los textos de su ``_status_text``, ``_cancelled_text`` y
+    ``_error_text`` para :attr:`_chain`."""
+
+    _chain = False
+    """Si los pasos que corren son los de lo que sigue a crear la entidad (y no los de calcularla)."""
+
+    def _update_declared(self, context: Any, opened: Calculation) -> set[str]:
+        """Tras crear la entidad, **pone al día** lo que sigue a toda orden de entidades (``design.entity_store.after_entity_change``), por
+        pasos con el avance y Esc: la entidad **ya está creada**, así que cerrar o fallar a mitad no la deshace (``{"FINISHED"}``: el fallo ya
+        está dicho)."""
+        from ...design import entity_store  # al usarlo: habilitar no carga el cálculo
+
+        project = SESSION.project
+        self._chain = True
+        steps = entity_store.after_entity_change(project, opened.version, budget_s=self.STEP_BUDGET_S)  # type: ignore[attr-defined]
+        started = self._run_steps(context, project, opened.name, steps)  # type: ignore[attr-defined]
+        return {"FINISHED"} if started == {"CANCELLED"} else started  # ya creada: el fallo está dicho
+
+    def _finished(self, context: Any, opened: Any) -> set[str]:
+        """Con los pasos de lo que sigue a crearla, dice lo que hizo (:meth:`_report_chain`); si no, como las demás órdenes."""
+        if self._chain:
+            self._chain = False
+            self._report_chain(opened)
+            return {"FINISHED"}
+        return _CalculateAndCreate._finished(self, context, opened)  # type: ignore[arg-type]
+
+    def _report_chain(self, chain: Any) -> None:
+        """Lo que hizo ``chain`` (``design.entity_store.EntityChain``), en el informe y en el registro: la declaración, las máscaras
+        recompiladas, por restricción el polígono y la zona ganados y perdidos (m²), lo que quedó obsoleto y, en alerta, lo que no se pudo
+        hacer (RF-012-06)."""
+        shown = i18n.language()
+        for notice in chain.notices():
+            self._report({"WARNING" if notice.severity == "warning" else "INFO"}, notice.text(shown))  # type: ignore[attr-defined]
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
+
+
+class GEOBLENDER_OT_des_remove_stockpile(_ChainsEntityLayer, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator,
+                                         _StepsModal, bpy.types.Operator):
     """Remove a stockpile detected in the active version: its footprint goes down to its base, joined with the ground by a transition, and what rests on it is listed before calculating"""
 
     bl_idname = REMOVE_STOCKPILE
@@ -5824,16 +5876,32 @@ class GEOBLENDER_OT_des_remove_stockpile(_CalculateAndCreate, DesignCommandAware
         description="Angle of the slope that joins the removed footprint with the rest of the surface, in degrees; it has no default "
                     "value: you choose it", options=_FIELD)
     mesh_factor: StringProperty(  # type: ignore[valid-type]
-        name="Mesh factor", description="Factor of the mesh of the transition (empty: the default value)", options=_FIELD)
+        name="Mesh factor", description="Factor of the mesh of the transition, or of the edge of the platform (empty: the default value)",
+        options=_FIELD)
     metric: EnumProperty(  # type: ignore[valid-type]
         name="Metric",
-        description="How the distance to the footprint is measured in the transition: the 5×5 chamfer (fast, with the scale of the "
-                    "grid) or the exact Euclidean distance", items=METRIC_ITEMS, default="EXACT", options=_FIELD)
+        description="How the distance to the footprint is measured in the transition or in the edge of the platform: the 5×5 chamfer "
+                    "(fast, with the scale of the grid) or the exact Euclidean distance", items=METRIC_ITEMS, default="EXACT",
+        options=_FIELD)
     wall_reason: StringProperty(  # type: ignore[valid-type]
         name="Reason for the wall",
         description="Why you accept the wall that removing the stockpile may leave at the edge of what is removed: it is needed "
                     "only if the wall passes the height and the angle that ask for a reason, and it is recorded with the removal",
         options=_FIELD)
+    # «Como plataforma» (T41; RF-016-16, A9): en lugar de la transición, la huella entera queda en el plano de su base y con ella se crea una
+    # plataforma de la 015 (``PlatformRequest.of_stockpile``), con su borde: el ángulo y el alcance (los de la plataforma; sin valor por
+    # defecto: D-7 y D-20 de la 015). El factor de malla y la métrica valen para la transición o para el borde.
+    as_platform: BoolProperty(  # type: ignore[valid-type]
+        name="As a platform",
+        description="Remove the stockpile as a platform: its whole footprint is left in the plane of its base and a platform of the "
+                    "chain is made with it, with its edge, its checks and its constraints; the transition angle and the wall do not "
+                    "apply", default=False, options=_FIELD)
+    edge_angle: StringProperty(  # type: ignore[valid-type]
+        name="Edge angle (°)",
+        description="Angle of the slope that joins the platform with the ground, in degrees", options=_FIELD)
+    reach: StringProperty(  # type: ignore[valid-type]
+        name="Reach of the edge (m)",
+        description="Farthest distance from the footprint the edge can reach, in metres", options=_FIELD)
     # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con el avance y Esc: los pone invoke;
     # desde un guion, sin ellos, de una vez. Las confirmaciones expresas de lo que se apoya y de la pared (RF-016-14, RF-016-15): las pone
     # el botón de su ventana, que las dice; desde un guion, quien la lanza.
@@ -5923,7 +5991,15 @@ class GEOBLENDER_OT_des_remove_stockpile(_CalculateAndCreate, DesignCommandAware
         layout.prop(self, "stockpile", text=tr("Stockpile"), translate=False)
         layout.prop(self, "start", text=tr("Start surface"), translate=False)
         des_panels.draw_resting(layout, DIALOG_WIDTH)
+        layout.prop(self, "as_platform", text=tr("As a platform"), translate=False)
         box = layout.box()
+        if self.as_platform:  # en lugar de la transición y la pared: el borde de la plataforma (T41)
+            box.label(text=tr("Edge of the platform"), translate=False)
+            box.prop(self, "edge_angle", text=tr("Edge angle (°)"), translate=False)
+            box.prop(self, "reach", text=tr("Reach of the edge (m)"), translate=False)
+            box.prop(self, "mesh_factor", text=tr("Mesh factor"), translate=False)
+            box.prop(self, "metric", text=tr("Metric"), translate=False)
+            return
         box.label(text=tr("Transition at the edge of the stockpile"), translate=False)
         box.prop(self, "transition_angle", text=tr("Transition angle (°)"), translate=False)
         box.prop(self, "mesh_factor", text=tr("Mesh factor"), translate=False)
@@ -5948,6 +6024,25 @@ class GEOBLENDER_OT_des_remove_stockpile(_CalculateAndCreate, DesignCommandAware
             mesh_factor=typed_number(self.mesh_factor, tr("Mesh factor")), metric=self.metric.lower(),
             wall_reason=self.wall_reason.strip() or None)
 
+    def _platform_request(self) -> design_model.PlatformRequest:
+        """Lo pedido «como plataforma» como la ``design.model.PlatformRequest`` de la plataforma de la 015 con la huella del acopio
+        (:meth:`~geoblender.design.model.PlatformRequest.of_stockpile`; RF-016-16, A9), comprobado sin escribir ni calcular nada: el ángulo
+        y el alcance del borde (sin valor por defecto: los rechaza el dominio si faltan, RF-015-08), el factor de malla (vacío: el valor por
+        defecto) y la métrica. La cota inicial, la pendiente y el eje salen del plano de la base del acopio y no se piden; el modo, la
+        tolerancia de contrapendiente y lo que declara, los valores por defecto de la plataforma (no protege). :class:`ComputeFormError` si
+        falta algo del diálogo."""
+        name = self.name.strip()
+        if not name:
+            raise ComputeFormError(tr("Write the name of the removal"))
+        if self.stockpile in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the stockpile to remove"))
+        if self.start in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the start surface of the removal"))
+        return design_model.PlatformRequest.of_stockpile(
+            name, self.stockpile, self.start, edge_angle_deg=typed_number(self.edge_angle, tr("Edge angle (°)")),
+            reach_m=typed_number(self.reach, tr("Reach of the edge (m)")),
+            mesh_factor=typed_number(self.mesh_factor, tr("Mesh factor")), metric=self.metric.lower())
+
     # --- Calcular y crear ---------------------------------------------------------------------
 
     def execute(self, context: Any) -> set[str]:
@@ -5970,26 +6065,32 @@ class GEOBLENDER_OT_des_remove_stockpile(_CalculateAndCreate, DesignCommandAware
         project = SESSION.project
         version = scene_versions.active_version() or ""
         try:
-            request = self._request()
+            request: design_model.PlatformRequest | design_model.RemovalRequest = (
+                self._platform_request() if self.as_platform else self._request())
         except ProfileFormError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
-        ready = ensure_ready(self.provenance_op_type, [], report=self.report, dialog=self.provenance_dialog, version=version)
+        as_platform = isinstance(request, design_model.PlatformRequest)
+        ready = ensure_ready(provenance.PLATFORM if as_platform else self.provenance_op_type, [], report=self.report,
+                             dialog=self.provenance_dialog, version=version)
         if ready is None:
             return {"CANCELLED"}
         from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
 
         discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
-        steps = design_steps.removal_run(project, request, version=version, budget_s=self.STEP_BUDGET_S)
+        if isinstance(request, design_model.PlatformRequest):  # una sola operación: la de una plataforma de la 015 con la huella del acopio (T21)
+            steps = design_steps.platform_run(project, request, version=version, budget_s=self.STEP_BUDGET_S)
+        else:
+            steps = design_steps.removal_run(project, request, version=version, budget_s=self.STEP_BUDGET_S)
         return self._run_steps(context, project, request.name, steps)
 
     def _confirmation(self, context: Any) -> set[str]:
         """El diálogo de crear el cálculo abierto. Con algo apoyado en el acopio (RF-016-14) o una pared (RF-016-15) que piden
         confirmación expresa, su botón lo dice («Confirmar lo que se le apoya y crear»…): pulsarlo es la confirmación; «Cancelar» y
-        cerrarlo no crean nada."""
+        cerrarlo no crean nada. Retirado «como plataforma» solo hay lo apoyado que confirmar: su pared es la de su borde, un aviso."""
         held = calculation()
         self.confirm_resting = held is not None and held.needs_resting_confirmation
         self.confirm_wall = held is not None and held.needs_wall_confirmation
@@ -6011,7 +6112,7 @@ class GEOBLENDER_OT_des_remove_stockpile(_CalculateAndCreate, DesignCommandAware
         más de 45° y 3 m, sin su motivo (RF-016-14, RF-016-15): lo dice y el cálculo sigue abierto (se confirma, o se calcula otra vez con
         el motivo). Con ellas, las deja dichas en el cálculo antes de crearlo (``Calculation.confirm_removal``: quedan en los ajustes de
         la operación con su decisor y su fecha)."""
-        from ...design import supported_store  # al usarlo: habilitar no carga el cálculo
+        from ...design import entity_store, removal, supported_store  # al usarlo: habilitar no carga el cálculo
 
         opened = calculation()
         if opened is not None and isinstance(opened.entity, supported_store.PreparedRemoval):
@@ -6022,15 +6123,46 @@ class GEOBLENDER_OT_des_remove_stockpile(_CalculateAndCreate, DesignCommandAware
                 self.report({"ERROR"}, design_error_text(exc))
                 return {"CANCELLED"}
             opened.confirm_removal(resting=self.confirm_resting, wall=self.confirm_wall)
-        return _CalculateAndCreate._create(self, context)
+        elif (opened is not None and isinstance(opened.entity, entity_store.PreparedPlatform) and opened.entity.origin is not None
+              and opened.entity.removed is not None):
+            # «como plataforma» (T41; RF-016-16, RF-016-14): solo hay lo apoyado que confirmar (su pared es la de su borde, un aviso de la
+            # plataforma); sin la confirmación expresa no se crea, y el cálculo sigue abierto
+            try:
+                removal.check_resting_confirmed(opened.entity.origin.item.name, opened.entity.resting, confirmed=self.confirm_resting)
+            except design_messages.DesignError as exc:
+                self.report({"ERROR"}, design_error_text(exc))
+                return {"CANCELLED"}
+            opened.confirm_removal(resting=self.confirm_resting)
+        created = _CalculateAndCreate._create(self, context)
+        if opened is None or "FINISHED" not in created:
+            return created
+        return self._update_declared(context, opened)  # T41: lo que sigue (la capa de entidades, como operación aparte, T34)
 
     def _created_text(self, opened: Calculation) -> str:
+        if opened.op_type == provenance.PLATFORM:  # retirado «como plataforma» (T41)
+            return tr("Removal of the stockpile «{stockpile}» as the platform «{name}» created in {version}",
+                      stockpile=opened.entity.removed.name, name=opened.name, version=opened.version)  # type: ignore[union-attr]
         return tr("Removal of the stockpile «{name}» created in {version}", name=opened.name, version=opened.version)
 
     def _status_text(self, step: Progress) -> str:
-        """El avance en la barra de estado: «Calculando la retirada del acopio… 40 % · Esc: cancelar»."""
+        """El avance en la barra de estado: «Calculando la retirada del acopio… 40 % · Esc: cancelar» o, tras crearla, «Poniendo al día las
+        restricciones declaradas… 40 % · Esc: cancelar»."""
         percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        if self._chain:
+            return tr("Updating the declared constraints and the masks… {percent} % · Esc: cancel", percent=percent)
         return tr("Computing the removal of the stockpile… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        if self._chain:
+            return tr("Cancelled: the removal is created; the declared constraints and the masks are brought up to date before the next "
+                      "operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»")
+        return _CalculateAndCreate._cancelled_text(self)
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        found = _CalculateAndCreate._error_text(self, exc)
+        if self._chain:
+            return f"{found} " + tr("The removal is created: only the declared constraints and the masks have not been brought up to date")
+        return found
 
 
 # --- Cuerpo apoyado… (spec 016, T25; HU-016-4; RF-016-20 a RF-016-22, RF-015-02, RF-015-03, RF-015-28, RF-015-29; RNF-016-02 y 05;
@@ -6051,7 +6183,7 @@ def _body_data_layer_changed(self: Any, _context: Any) -> None:
     self.data_from = "Z" if des_panels.body_data_kind(self.data_layer) == "line3d" else "FIELD"
 
 
-class GEOBLENDER_OT_des_create_body(_CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal,
+class GEOBLENDER_OT_des_create_body(_ChainsEntityLayer, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal,
                                    bpy.types.Operator):
     """Create a body from its footprint and its thickness data, resting on a known surface or under a known roof: the thickness is interpolated and the other surface is derived from it"""
 
@@ -6268,13 +6400,39 @@ class GEOBLENDER_OT_des_create_body(_CalculateAndCreate, DesignCommandAware, Pro
         steps = design_steps.body_run(project, request, version=version, budget_s=self.STEP_BUDGET_S)
         return self._run_steps(context, project, request.name, steps)
 
+    def _create(self, context: Any) -> set[str]:
+        """«Crear» (RF-016-20, RF-015-02): como las demás (:meth:`_CalculateAndCreate._create`: una transacción) y, **ya creado**, encadena lo
+        que sigue (:meth:`_ChainsEntityLayer._update_declared`, T41: el cuerpo no declara restricciones, pero la capa de entidades se pone al
+        día con su fila, como operación aparte: T34)."""
+        opened = calculation()
+        created = _CalculateAndCreate._create(self, context)
+        if opened is None or "FINISHED" not in created:
+            return created
+        return self._update_declared(context, opened)
+
     def _created_text(self, opened: Calculation) -> str:
         return tr("Supported body «{name}» created in {version}", name=opened.name, version=opened.version)
 
     def _status_text(self, step: Progress) -> str:
-        """El avance en la barra de estado: «Calculando el cuerpo apoyado… 40 % · Esc: cancelar»."""
+        """El avance en la barra de estado: «Calculando el cuerpo apoyado… 40 % · Esc: cancelar» o, tras crearlo, «Poniendo al día las
+        restricciones declaradas… 40 % · Esc: cancelar»."""
         percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        if self._chain:
+            return tr("Updating the declared constraints and the masks… {percent} % · Esc: cancel", percent=percent)
         return tr("Computing the supported body… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        if self._chain:
+            return tr("Cancelled: the supported body is created; the declared constraints and the masks are brought up to date before the "
+                      "next operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»")
+        return _CalculateAndCreate._cancelled_text(self)
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        found = _CalculateAndCreate._error_text(self, exc)
+        if self._chain:
+            return f"{found} " + tr("The supported body is created: only the declared constraints and the masks have not been brought up "
+                                    "to date")
+        return found
 
 
 # --- Contrafuerte… (spec 016, T27 (b); HU-016-3; RF-016-17, RF-016-18, RF-015-02, RF-015-03, RF-015-10, RF-015-12, RF-015-28, RF-015-29;

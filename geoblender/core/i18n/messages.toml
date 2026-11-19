@@ -9735,11 +9735,11 @@ es = "Ángulo de transición (°)"
 ["Angle of the slope that joins the removed footprint with the rest of the surface, in degrees; it has no default value: you choose it"]
 es = "Ángulo del talud que une la huella retirada con el resto de la superficie, en grados; no tiene valor por defecto: lo elige usted"
 
-["Factor of the mesh of the transition (empty: the default value)"]
-es = "Factor de malla de la transición (vacío: el valor por defecto)"
+["Factor of the mesh of the transition, or of the edge of the platform (empty: the default value)"]
+es = "Factor de malla de la transición, o del borde de la plataforma (vacío: el valor por defecto)"
 
-["How the distance to the footprint is measured in the transition: the 5×5 chamfer (fast, with the scale of the grid) or the exact Euclidean distance"]
-es = "Cómo se mide la distancia a la huella en la transición: el chaflán 5×5 (rápido, con la escala de la rejilla) o la distancia euclídea exacta"
+["How the distance to the footprint is measured in the transition or in the edge of the platform: the 5×5 chamfer (fast, with the scale of the grid) or the exact Euclidean distance"]
+es = "Cómo se mide la distancia a la huella en la transición o en el borde de la plataforma: el chaflán 5×5 (rápido, con la escala de la rejilla) o la distancia euclídea exacta"
 
 ["Reason for the wall"]
 es = "Motivo de la pared"
@@ -10412,3 +10412,33 @@ es = "Detección de acopios «{name}» en {version}"
 
 ["Detection of stockpiles «{name}» in the project"]
 es = "Detección de acopios «{name}» en el proyecto"
+
+# Retirar un acopio «como plataforma» y lo que sigue a retirar y a crear un cuerpo apoyado (spec 016, T41; RF-016-16, RF-015-27, RF-016-24;
+# bl/ops/des.py y el resumen de bl/ui/des_panels.py) ---------------------------------------------------------------------------------
+
+["As a platform"]
+es = "Como plataforma"
+
+["Remove the stockpile as a platform: its whole footprint is left in the plane of its base and a platform of the chain is made with it, with its edge, its checks and its constraints; the transition angle and the wall do not apply"]
+es = "Retira el acopio como una plataforma: toda su huella queda en el plano de su base y con ella se crea una plataforma de la cadena, con su borde, sus comprobaciones y sus restricciones; el ángulo de transición y la pared no valen"
+
+["Removal of the stockpile «{stockpile}» as the platform «{name}» created in {version}"]
+es = "Retirada del acopio «{stockpile}» como la plataforma «{name}» creada en {version}"
+
+["Removal of the stockpile «{stockpile}»: {removed} m³ removed · resting on it: {resting} m³ · not removed: {kept} m³"]
+es = "Retirada del acopio «{stockpile}»: {removed} m³ retirados · apoyado en él: {resting} m³ · no retirado: {kept} m³"
+
+["Removal of a stockpile «{name}» as a platform in {version}"]
+es = "Retirada de un acopio «{name}» como plataforma en {version}"
+
+["Cancelled: the removal is created; the declared constraints and the masks are brought up to date before the next operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»"]
+es = "Cancelado: la retirada está creada; las restricciones declaradas y las máscaras se ponen al día antes de la siguiente operación que las use, y la capa de entidades con la siguiente orden de entidades o «Recalcular lo obsoleto»"
+
+["The removal is created: only the declared constraints and the masks have not been brought up to date"]
+es = "La retirada está creada: solo las restricciones declaradas y las máscaras no se han puesto al día"
+
+["Cancelled: the supported body is created; the declared constraints and the masks are brought up to date before the next operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»"]
+es = "Cancelado: el cuerpo apoyado está creado; las restricciones declaradas y las máscaras se ponen al día antes de la siguiente operación que las use, y la capa de entidades con la siguiente orden de entidades o «Recalcular lo obsoleto»"
+
+["The supported body is created: only the declared constraints and the masks have not been brought up to date"]
+es = "El cuerpo apoyado está creado: solo las restricciones declaradas y las máscaras no se han puesto al día"
