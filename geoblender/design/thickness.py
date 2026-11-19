@@ -77,7 +77,15 @@ RNF-016-02 es 10 s) y ``des.body_sections_large`` (lo lento del TIN, abajo).
 (``des.body_footprint_clipped``: las celdas de la geometría de la huella, ``BodyJob.parts``, que caen fuera de la rejilla, con el lugar de la
 primera) y, «sobre una base», de **lo que sube y llega al borde de la rejilla o a celdas sin dato** de la partida que no son de la huella
 (``des.entity_edge_outside``): las medidas son las de ``design.supported_edge``, copiadas de la plataforma, y solo son avisos (ninguna cifra
-cambia). El salto creado del borde del cuerpo (RF-014-20 y 21) queda para la decisión pendiente de la T46.
+cambia).
+
+**El escalón del borde** (T46; decisión de la sesión principal, 19/11/2026): un cuerpo «sobre una base» cuyo espesor en el borde de su huella
+no es 0 termina en un escalón (la sonda de C: 5 m con el borde recto, 80 de 80 parejas con 5,0 m, sin aviso). El aviso genérico del salto
+creado de RF-014-21 no se añade (con él, el 72 % de los contrafuertes avisaría: ruido); aquí el resumen da **un renglón informativo**,
+``des.body_edge_step`` (una nota, no un aviso: no va en ámbar), con el mayor escalón y su lugar, calculado **de lo que ya sale del cálculo**
+(:func:`_edge_step`: lo que la superficie sube sobre la partida en las celdas del borde de la huella con relleno admitido) y **sin parámetros
+nuevos del borde** ni cambiar lo que anota la operación. «Bajo un techo» no cambia la superficie y no lo da; con ``zero_at_edge`` verdadero
+tampoco; se enseña al centímetro, así que lo que redondea a 0,00 m no es un escalón. Va en el informe (``des_prp_``) y lo repite la reproducción.
 
 **Lo lento, por el coste del TIN y no por el área** (T44; RNF-016-02): la T37 midió que el cálculo con secciones depende de lo
 **separadas** que están (las mismas 100 ha: 5,66 s con 10 secciones a 100 m, 9,09 s con 5 a 200 m y 11,27 s con 8 a 200 m), porque los
@@ -152,6 +160,7 @@ _NO_DATA = "des.body_no_data"
 _ALL_FAR = "des.body_all_far"
 _UNSUPPORTED = "des.body_unsupported"
 _CLIPPED = "des.body_footprint_clipped"
+_EDGE_STEP = "des.body_edge_step"
 _MANY_DATA = "des.body_many_data"
 _SECTIONS_LARGE = "des.body_sections_large"
 _OBJ = "Cuerpo apoyado «{}»"
@@ -461,7 +470,8 @@ class BodyOutcome:
     (:func:`_row_costs`; 0 sin TIN) y ``estimated_s``, lo que se estima que cuesta calcular el cuerpo con él
     (:func:`estimate_seconds`). ``max_distance_m``, ``zero_at_edge`` y ``sense`` son los del cuerpo y ``notices`` los avisos
     (``des.body_data_outside``, ``des.body_far``, ``des.body_unsupported``, ``des.body_footprint_clipped``, ``des.entity_edge_outside``,
-    ``des.body_many_data`` y ``des.body_sections_large``).
+    ``des.body_many_data`` y ``des.body_sections_large``) y, al final, el renglón informativo del escalón del borde (``des.body_edge_step``,
+    una nota: T46).
 
     RF-015-13 con el cuerpo (T46): ``clipped`` (lo que la rejilla recorta de la huella: ``(celdas, x, y)``; ``None`` si no recorta nada o
     no se dio la geometría de la huella al trabajo) y, «sobre una base», ``outside`` (booleana, de la forma de la ventana: las celdas que
@@ -740,6 +750,22 @@ def _first_cell(found: np.ndarray, values: np.ndarray) -> tuple[int, int]:
     return row, col
 
 
+def _edge_step(job: BodyJob, surface: np.ndarray, body: np.ndarray) -> tuple[float, int, int] | None:
+    """**El escalón del borde** de un cuerpo «sobre una base» (T46; RF-015-13, hallazgo C-1): de las celdas del borde de su huella con cuerpo
+    (:func:`edge_cells`: con una vecina de fuera por uno de sus cuatro lados) en las que la superficie que deja ``surface`` **sube** sobre
+    la partida de ``job`` —donde se admite el relleno y el espesor no queda bajo lo que ya hay: ahí no se crea ninguna pared—, lo que sube
+    el mayor y su celda ``(fila, columna)`` de la ventana de trabajo, la primera de arriba abajo y de oeste a este con ese valor; ``None`` si
+    ninguna sube. Con la partida igual al apoyo es el espesor de la celda. Solo mira arrays que ya salen del cálculo."""
+    assert job.start is not None
+    with np.errstate(invalid="ignore"):
+        rise = surface - job.start
+        found = edge_cells(job.footprint) & body & (rise > 0.0)
+    if not found.any():
+        return None
+    row, col = _first_cell(found, rise)
+    return float(rise[row, col]), row, col
+
+
 def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, BodyOutcome]:
     """Las unidades de :func:`body_steps`: los datos a sus celdas, el TIN, el dato más próximo, la regla del espesor, la
     superficie y las cifras (por bandas de filas)."""
@@ -841,6 +867,14 @@ def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, Body
     estimated = estimate_seconds(tin_cost)
     if estimated > SLOW_BODY_S:  # T44: por lo que cuestan las cajas del TIN (la separación de los datos), no por el área
         notices.append(Notice(_SECTIONS_LARGE, {"entity": request.name, "seconds": round(estimated, 1), "limit": SLOW_BODY_S}))
+    if surface is not None and not settings.zero_at_edge:  # T46: el renglón informativo del escalón en que termina el cuerpo en su borde
+        wall = _edge_step(job, surface, body)
+        if wall is not None and round(wall[0], 2) > 0.0:
+            step, wall_row, wall_col = wall
+            notices.append(Notice(_EDGE_STEP, {
+                "entity": request.name, "step": round(step, 2),
+                "x": round(grid.west + (cols.start + wall_col + 0.5) * grid.dx, 2),
+                "y": round(grid.north - (rows.start + wall_row + 0.5) * grid.dy, 2)}))
     return BodyOutcome(
         name=request.name, code=job.code, sense=settings.sense, window=job.window, footprint=footprint.copy(), body=body,
         thickness=thickness, base=base, top=top, surface=surface, far=far,

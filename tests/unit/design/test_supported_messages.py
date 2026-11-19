@@ -103,6 +103,8 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.body_unsupported": ("warning", "RF-016-20", {"entity", "area", "surface"}),
     # T46: RF-015-13 con el cuerpo: lo que la rejilla recorta de su huella.
     "des.body_footprint_clipped": ("warning", "RF-015-13", {"entity", "cells", "area", *POSITION}),
+    # T46: RF-015-13 con el cuerpo «sobre una base»: el escalón en que termina en su borde (un renglón informativo, una nota).
+    "des.body_edge_step": ("note", "RF-015-13", {"entity", "step", *POSITION}),
     "des.body_many_data": ("warning", "RF-016-20", {"entity", "data", "limit"}),
     "des.body_sections_large": ("warning", "RF-016-20", {"entity", "seconds", "limit"}),  # T44: el coste estimado, no el área
     "des.body_data_kind": ("error", "RF-016-20", {"entity", "layer", "kind", "value"}),

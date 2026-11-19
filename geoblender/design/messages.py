@@ -2640,6 +2640,16 @@ CATALOG: tuple[Message, ...] = (
         "quedan fuera de la rejilla, en x = {x} m, y = {y} m; solo se calcula la parte de dentro; amplíe la ventana de "
         "trabajo del proyecto o mueva la huella.",
     ),
+    # RF-015-13 con el cuerpo «sobre una base» (T46; decisión de la sesión principal, 19/11/2026): el escalón en que termina en el borde de su
+    # huella cuando su espesor ahí no es 0. Un renglón informativo (una nota: no un aviso, no va en ámbar) con el mayor escalón y su lugar.
+    Message(
+        "des.body_edge_step",
+        "Supported body «{entity}»: the body ends in a step of up to {step} m at the edge of its footprint, the largest "
+        "at x = {x} m, y = {y} m (its thickness at the edge is not 0).",
+        "Cuerpo apoyado «{entity}»: el cuerpo termina en un escalón de hasta {step} m en el borde de su huella, el "
+        "mayor en x = {x} m, y = {y} m (su espesor en el borde no es 0).",
+        "note",
+    ),
     # T25 (decisiones de la sesión principal, 19/11/2026): las celdas de la huella sin superficie conocida, lo que se
     # triangula y lo lento de un TIN de secciones muy separadas (T44: por su coste estimado, no por el área de la huella), y lo
     # que no se puede leer de la capa de los datos.

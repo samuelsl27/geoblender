@@ -24,6 +24,8 @@ un diccionario): **ninguna** se calcula llamando al código bajo prueba.
   y la capa; sin distancia máxima (D-9) o fuera de rango, nombrando la clave.
 - **La superficie y las cifras** (:class:`SurfaceTest`, :class:`FiguresTest`) y **los pasos** (:class:`StepsTest`): la
   ventana de trabajo da lo mismo que la rejilla entera, bit a bit; ninguna entrada se modifica.
+- **El escalón del borde** (:class:`EdgeStepTest`, T46; RF-015-13, hallazgo C-1): un cuerpo «sobre una base» cuyo espesor en el borde de la
+  huella no es 0 termina en un escalón; el renglón informativo (``des.body_edge_step``) da el mayor y su lugar, contra un bucle de Python.
 """
 
 from __future__ import annotations
@@ -861,6 +863,138 @@ class StepsTest(unittest.TestCase):
         slim = gis.Grid(GRID.west, GRID.north, 2.0, 3.0, N, N)
         with self.assertRaises(ValueError):
             job_of(foot, points=points_of(self.DATA), grid=slim)
+
+
+# --- El escalón del borde (RF-015-13, RF-016-20; T46, hallazgo C-1) -----------------------------------------------------
+
+
+EDGE_STEP = "des.body_edge_step"
+
+
+def hand_step(footprint: np.ndarray, support: np.ndarray, start: np.ndarray, fill: np.ndarray, thick: np.ndarray
+              ) -> tuple[float, tuple[int, int]] | None:
+    """El mayor escalón del borde a mano: de las celdas del borde de la huella (:func:`hand_edges`: sus cuatro vecinas) con cuerpo y con
+    relleno admitido, lo que sube la superficie sobre la partida (``máx(partida, apoyo + espesor) − partida``, en un bucle), el mayor
+    y la **primera** celda (de arriba abajo y de oeste a este) que lo tiene; ``None`` si ninguna sube."""
+    best: tuple[float, tuple[int, int]] | None = None
+    for row, col in hand_edges(footprint):
+        if not fill[row, col] or math.isnan(float(thick[row, col])):
+            continue
+        rise = max(float(start[row, col]), float(support[row, col] + thick[row, col])) - float(start[row, col])
+        if rise > 0.0 and (best is None or rise > best[0]):
+            best = (rise, (row, col))
+    return best
+
+
+class EdgeStepTest(unittest.TestCase):
+    """RF-015-13, RF-016-20 (T46, hallazgo C-1; decisión de la sesión principal, 19/11/2026): un cuerpo «sobre una base» cuyo espesor en el
+    borde de la huella no es 0 termina en un escalón (la sonda de C: 5 m con el borde recto, 80 de 80 parejas con 5,0 m, sin aviso); el
+    resumen lo dice con **un renglón informativo** (``des.body_edge_step``, una nota: no un aviso), con el mayor escalón y su lugar, sin
+    parámetros nuevos del borde y sin cambiar nada de lo que anota la operación. Con «cero en el borde» no sale."""
+
+    FOOT = box(5, 11, 5, 13)
+    CORNERS = ((5, 5), (5, 12), (10, 5), (10, 12))
+
+    def corners(self, value: float) -> np.ndarray:
+        """Cuatro datos del mismo espesor, uno por esquina de la huella: el espesor es ``value`` en toda ella."""
+        return points_of({cell: value for cell in self.CORNERS})
+
+    def told(self, outcome: Any) -> list[Any]:
+        return [notice for notice in outcome.notices if notice.code == EDGE_STEP]
+
+    def test_a_straight_edge_of_5_m_is_told_with_its_step_and_its_place(self) -> None:
+        """RF-015-13, RF-016-20: un cuerpo de 5,0 m con el borde recto (la sonda p9b de C) deja **un** renglón: el cuerpo de la
+        entidad, el escalón (5,0 m) y el lugar de la primera celda del borde con él (la esquina noroeste), que es una nota, no un aviso."""
+        outcome = run(job_of(self.FOOT, points=self.corners(5.0), sense="on_base"))
+        (found,) = self.told(outcome)
+        self.assertEqual(found.severity, "note")
+        x, y = center(5, 5)
+        self.assertEqual(dict(found.values), {"entity": "Cuerpo A", "step": 5.0, "x": round(x, 2), "y": round(y, 2)})
+        self.assertEqual(hand_step(self.FOOT, np.full(GRID.shape, 100.0), np.full(GRID.shape, 100.0),
+                                   np.ones(GRID.shape, dtype=bool), outcome.thickness), (5.0, (5, 5)))
+        self.assertEqual([item.code for item in outcome.notices if item.severity == "warning"], [], "no es un aviso")
+
+    def test_the_text_is_in_both_languages_and_names_the_step_and_the_place(self) -> None:
+        """Principio 10, RF-016-20: el renglón dice en español y en inglés el cuerpo, el escalón de su borde y su lugar, sin marcadores
+        por llenar."""
+        (found,) = self.told(run(job_of(self.FOOT, points=self.corners(5.0), sense="on_base")))
+        x, y = center(5, 5)
+        es, en = found.text("es"), found.text("en")
+        for text in (es, en):
+            self.assertNotIn("{", text)
+            self.assertIn("«Cuerpo A»", text)
+        self.assertIn("escalón de hasta 5,00 m", es)
+        self.assertIn("step of up to 5.00 m", en)
+        self.assertIn("x = ", es)
+        self.assertIn(f"x = {round(x, 2):,.1f} m", en)
+        self.assertIn(f"y = {round(y, 2):,.1f} m", en)
+
+    def test_the_step_is_what_the_surface_rises_at_the_edge_where_the_fill_is_admitted(self) -> None:
+        """RF-015-13, RF-016-20: con un apoyo en pendiente, una partida con un montón de 4 m (que se come parte del espesor) y el relleno
+        admitido solo en las filas 3 a 10, el escalón es lo que **sube la superficie** en las celdas del borde (el mayor y la primera
+        celda que lo tiene, contra un bucle de Python): ni donde el montón ya cubre el espesor (no se crea pared) ni donde no se admite
+        relleno, aunque ahí el espesor sea el mayor de todos."""
+        rows, cols = np.indices(GRID.shape)
+        support = 100.0 + 0.25 * cols - 0.125 * rows
+        start = support.copy()
+        start[:, 10:13] += 4.0
+        fill = np.zeros(GRID.shape, dtype=bool)
+        fill[3:11, :] = True
+        foot = box(3, 17, 3, 17)
+        data = {(5, 5): 2.0, (5, 14): 3.0, (16, 8): 9.0, (13, 13): 2.5, (3, 11): 3.5}
+        outcome = run(job_of(foot, points=points_of(data), support=support, sense="on_base", start=start, fill=fill))
+        wanted = hand_step(foot, support, start, fill, outcome.thickness)
+        self.assertIsNotNone(wanted)
+        assert wanted is not None
+        step, (row, col) = wanted
+        self.assertLessEqual(row, 10, "el mayor escalón está donde se admite el relleno")
+        self.assertLess(step, outcome.thickness_max_m, "hay más espesor donde no se admite relleno (el sur): no cuenta")
+        self.assertEqual(float(outcome.surface[3, 11] - start[3, 11]), 0.0, "el montón de 4 m cubre el dato de 3,5 m: no hay pared")
+        (found,) = self.told(outcome)
+        x, y = center(row, col)
+        self.assertAlmostEqual(float(found.values["step"]), round(step, 2), places=9)
+        self.assertEqual((found.values["x"], found.values["y"]), (round(x, 2), round(y, 2)))
+
+    def test_without_a_step_at_the_edge_nothing_is_said(self) -> None:
+        """RF-016-20: con un espesor de 0 m en todas las celdas del borde (datos de 0 m en ellas y un montículo dentro) el cuerpo
+        termina a ras: ningún renglón, aunque el espesor máximo sea de 4 m."""
+        edge = {cell: 0.0 for cell in hand_edges(self.FOOT)}
+        outcome = run(job_of(self.FOOT, points=points_of({**edge, (8, 9): 4.0}), sense="on_base"))
+        self.assertEqual(outcome.thickness_max_m, 4.0)
+        self.assertEqual(self.told(outcome), [])
+
+    def test_with_zero_at_the_edge_it_is_not_given(self) -> None:
+        """RF-016-20, decisión de la sesión principal: con «cero en el borde» el renglón no sale, sea cual sea el espesor del borde; con
+        él falso, el mismo cuerpo lo da."""
+        with_zero = run(job_of(self.FOOT, points=self.corners(5.0), sense="on_base", zero=True))
+        self.assertEqual(self.told(with_zero), [])
+        self.assertEqual(len(self.told(run(job_of(self.FOOT, points=self.corners(5.0), sense="on_base", zero=False)))), 1)
+
+    def test_under_a_roof_the_body_does_not_change_the_surface_and_does_not_say_it(self) -> None:
+        """RF-016-20: «bajo un techo» no cambia la superficie: no deja ninguna pared y no hay renglón."""
+        self.assertEqual(self.told(run(job_of(self.FOOT, points=self.corners(5.0), sense="under_roof"))), [])
+
+    def test_what_rounds_to_zero_at_the_centimetre_is_not_a_step(self) -> None:
+        """RF-016-20: el escalón se enseña al centímetro: un espesor de 4 mm en el borde no es un escalón («hasta 0,00 m») y uno de 6 mm
+        sí («0,01 m»)."""
+        self.assertEqual(self.told(run(job_of(self.FOOT, points=self.corners(0.004), sense="on_base"))), [])
+        (found,) = self.told(run(job_of(self.FOOT, points=self.corners(0.006), sense="on_base")))
+        self.assertEqual(found.values["step"], 0.01)
+
+    def test_the_work_window_gives_the_same_notice_as_the_whole_grid(self) -> None:
+        """A0, RF-016-20: con la ventana de trabajo (la huella y una celda más) el renglón es el mismo que con la rejilla entera, con
+        y sin «cero en el borde»; el borde del array no es borde de la huella."""
+        window = thickness.body_window(self.FOOT, GRID)
+        assert window is not None
+        cut: Any = (window[0], window[1])
+        support = 100.0 + 0.5 * np.indices(GRID.shape)[1]
+        for zero in (False, True):
+            with self.subTest(ceros=zero):
+                whole = run(job_of(self.FOOT, points=self.corners(3.0), support=support, sense="on_base", zero=zero))
+                part = run(job_of(self.FOOT[cut], points=self.corners(3.0), support=support[cut], sense="on_base", zero=zero,
+                                  region=window, start=support[cut].copy(), fill=np.ones(self.FOOT[cut].shape, dtype=bool)))
+                self.assertEqual(self.told(part), self.told(whole))
+                self.assertEqual(len(self.told(whole)), 0 if zero else 1)
 
 
 if __name__ == "__main__":

@@ -18,10 +18,15 @@ cantera, en la orden de verdad y con la cantera de 2 m de los acopios.
   cantera (la de la 014, que aquí se pone en el lugar de ``entity_store.quarry_order``: lo que lee de la cantera es de la 015 y ya está
   probado con la plataforma) el contrafuerte, el cuerpo y la retirada dan ``des.entity_quarry_order`` con el área, lo que más pasa y el
   lugar a mano, **solo en el resumen** (el informe no lo lleva: se reproduce sin la cantera) y sin impedir crearlos.
+- **El escalón del borde del cuerpo** (``BodyEdgeStepProjectTest``, ``test_a`` a ``test_c``; decisión de la sesión principal, 19/11/2026): un
+  cuerpo «sobre una base» con espesor en el borde de su huella termina en un escalón; el resumen lo dice con **un renglón informativo**
+  (``des.body_edge_step``: una nota, no un aviso, no va en ámbar) con el mayor escalón y su lugar, contra un bucle de Python; va al informe y
+  **la reproducción desde lo congelado lo repite**. (El salto creado del borde del contrafuerte lo da el pie cortado de la T28.)
 """
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any, ClassVar
 from unittest import mock
@@ -36,7 +41,9 @@ from tests.unit.design import milestone_buttress_operation as btr
 from tests.unit.design import milestone_stockpile_detection as ops
 from tests.unit.design import test_removal_operation as rop
 from tests.unit.design.test_supported_edge import hand_clipped, place
+from tests.unit.design.test_thickness import hand_step
 
+compose = import_geoblender("design.compose")
 design_reproduce = import_geoblender("design.reproduce")
 entity_store = import_geoblender("design.entity_store")
 freeze = import_geoblender("core.versions.freeze")
@@ -54,6 +61,8 @@ OUTSIDE = "des.entity_edge_outside"
 BUTTRESS_CLIPPED = "des.buttress_footprint_clipped"
 BODY_CLIPPED = "des.body_footprint_clipped"
 ORDER = "des.entity_quarry_order"
+EDGE_STEP = "des.body_edge_step"
+FILL = model.BenchSense.FILL
 ZONES_LAYER = "gis_fea_coronacion_al_borde"
 BODIES_LAYER = "gis_fea_cuerpos_al_borde"
 POINTS_LAYER = "gis_fea_espesor_al_borde"
@@ -320,6 +329,82 @@ class QuarryOrderProjectTest(EdgeCase):
         rows = self.query(f'SELECT note FROM "{self.locator(PRP, BUTTRESS)}" WHERE quantity = ?', "warning")
         self.assertFalse([row for row in rows if ORDER in row[0]])
         self.assertTrue([row for row in rows if BUTTRESS_CLIPPED in row[0]], "el informe sí lleva lo que no depende de la cantera")
+
+
+class BodyEdgeStepProjectTest(EdgeCase):
+    """RF-015-13, RF-016-20, RF-009-11, **en orden**: el cuerpo «sobre una base» del interior de la cantera (la huella de 30 × 30 m dentro del
+    límite legal, donde las máscaras admiten el relleno, con tres datos de espesor de 2 a 3 m y sin «cero en el borde») sobre el levantamiento:
+    termina en un escalón en su borde."""
+
+    calculation: ClassVar[Any]
+    revision: ClassVar[str]
+
+    def by_hand(self, calculation: Any) -> tuple[float, tuple[int, int]]:
+        """El mayor escalón del borde a mano (un bucle de Python sobre lo que sale del cálculo): ``(escalón, (fila, columna) de la rejilla
+        entera)`` de la primera celda del borde de la huella que más sube la superficie donde se admite el relleno."""
+        outcome = calculation.outcome
+        rows, cols = outcome.window
+        start = self.grid_of(SURVEY)[outcome.window]
+        fill = compose.admitted(self.masks_v1, FILL)[outcome.window]
+        found = hand_step(outcome.footprint, start, start, fill, outcome.thickness)
+        self.assertIsNotNone(found)
+        assert found is not None
+        step, (row, col) = found
+        return step, (rows.start + row, cols.start + col)
+
+    def test_a_the_summary_tells_the_step_as_an_informative_line(self) -> None:
+        """RF-015-13, RF-016-20: el resumen de «Calcular» lleva **un** renglón del escalón (el cuerpo, el mayor escalón al centímetro y el
+        lugar de la primera celda del borde con él, a mano), que es **una nota**: sale en las líneas del resumen y **no** en sus avisos (no
+        va en ámbar), en los dos idiomas; «Calcular» no escribe nada y no impide calcular."""
+        before = self.state()
+        calculation = self.calculate_body(self.body(inner=True))
+        step, cell = self.by_hand(calculation)
+        self.assertGreater(step, 1.0, "el cuerpo termina en un escalón de varios metros")
+        self.assertEqual(codes(calculation.summary.notices).count(EDGE_STEP), 1)
+        found = of(calculation.summary.notices, EDGE_STEP)
+        x, y = place(GRID, cell)
+        self.assertEqual(found.severity, "note")
+        self.assertEqual(dict(found.values), {"entity": BODY, "step": round(step, 2), "x": round(x, 2), "y": round(y, 2)})
+        for language in ("es", "en"):
+            text = found.text(language)
+            self.assertNotIn("{", text)
+            self.assertIn(text, calculation.summary.lines(language))
+            self.assertNotIn(text, calculation.summary.warnings(language), "un renglón informativo no es un aviso (no va en ámbar)")
+        self.assertIn("escalón de hasta", found.text("es"))
+        self.assertIn("step of up to", found.text("en"))
+        self.assertGreater(calculation.outcome.volume_m3, 0.0, "no impide calcular")
+        calculation.discard()
+        self.assertEqual(self.temporaries(), [])
+        self.assertEqual(self.state(), before)
+
+    def test_b_creating_it_keeps_the_line_in_the_report_of_the_entity(self) -> None:
+        """RF-015-02, RF-016-20: «Crear» (no se impide) guarda el renglón en el informe de la entidad (``des_prp_``) como **una nota** (no
+        como un aviso), con el mismo escalón y el mismo lugar que el resumen."""
+        calculation, _stored = self.make_body(self.body(inner=True))
+        type(self).calculation = calculation
+        found = of(calculation.summary.notices, EDGE_STEP)
+        notes = [json.loads(row[1]) for row in self.query(f'SELECT quantity, note FROM "{self.locator(PRP, BODY)}" WHERE quantity = ?', "note")]
+        self.assertEqual([item for item in notes if item["code"] == EDGE_STEP], [{"code": EDGE_STEP, "values": dict(found.values)}])
+        warnings = [row[1] for row in self.query(f'SELECT quantity, note FROM "{self.locator(PRP, BODY)}" WHERE quantity = ?', "warning")]
+        self.assertFalse([text for text in warnings if EDGE_STEP in text])
+        self.assertEqual(self.temporaries(), [])
+
+    def test_c_reproducing_the_frozen_revision_repeats_it(self) -> None:
+        """RF-009-11, RF-015-02: congelada ``V01.r1``, reproducirla —sin el proyecto— da el mismo informe (**con el renglón**), la misma
+        superficie y las mismas cifras del cuerpo; reproducir no escribe nada."""
+        self.clock.advance(minutes=1)
+        frozen = ops.finish(freeze.freeze_steps(self.project, self.v1.uid, reason="Entrega de la prueba"))
+        type(self).revision = str(frozen.frozen.uid)
+        self.clock.advance(minutes=1)
+        before = (files(self.root, skip=(), skip_dirs=("cache",)), change_counter(self.root))
+        report = ops.finish(reproduce_mod.reproduce_steps(self.project, self.revision))
+        self.assertEqual((files(self.root, skip=(), skip_dirs=("cache",)), change_counter(self.root)), before, "reproducir no escribe")
+        mine = [check for check in report.outputs if check.operation_uid == self.operation_of("BDY-001")]
+        self.assertGreaterEqual(len(mine), 3, f"{report.not_reproducible} {report.outputs}")
+        self.assertTrue(all(check.same for check in mine), [check for check in mine if not check.same])
+        self.assertTrue(all(check.same for check in report.figures), [check for check in report.figures if not check.same])
+        self.assertFalse(report.not_reproducible)
+        self.assertTrue(report.matches)
 
 
 if __name__ == "__main__":

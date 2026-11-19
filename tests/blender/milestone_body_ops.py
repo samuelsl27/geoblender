@@ -389,6 +389,31 @@ class CreateBodyTest(platform_ops.CreatePlatformTest):
         self.assertNotIn("entity:BDY-001", [identifier for identifier, _label, _about in self.panels.platform_start_items(None, None)],
                          "nadie parte de la superficie de un cuerpo bajo un techo: no se ofrece")
 
+    def test_e0_the_summary_tells_the_step_at_the_edge_as_an_informative_line(self) -> None:
+        """RF-015-13, RF-016-20, M2 (T46, hallazgo C-1; decisión de la sesión principal, 19/11/2026): un cuerpo «sobre una base» cuyo espesor en
+        el borde de la huella no es 0 termina en un escalón: el resumen de «Calcular» lo dice con **un renglón informativo** (en los dos idiomas,
+        **sin ámbar**: es una nota, no un aviso); con «cero en el borde» no sale; calcular y descartar lo deja todo como estaba."""
+        self.refresh()
+        before = self.state()
+        held = self.calculate(name="Con escalón", sense="ON_BASE", start=self.ground)
+        (notice,) = [item for item in held.summary.notices if item.code == "des.body_edge_step"]
+        self.assertEqual(notice.severity, "note")
+        self.assertGreaterEqual(float(notice.values["step"]), 1.0, "el espesor del borde es de 1 a 3 m")
+        for language, words in (("es", "escalón de hasta"), ("en", "step of up to")):
+            self.i18n.set_language(language)
+            self.panels.show_summary(held)
+            found = [line for line in self.view.summary if words in line.name]
+            self.assertEqual(len(found), 1, (language, [line.name for line in self.view.summary]))
+            self.assertFalse(found[0].alert, "un renglón informativo no va en ámbar")
+        self.i18n.set_language("es")
+        self.panels.show_summary(held)
+        self.des_ops.discard_calculation()
+        self.assertEqual(self.state(), before, "descartar borra los temporales")
+        calm = self.calculate(name="Sin escalón", sense="ON_BASE", start=self.ground, zero_at_edge=True)
+        self.assertEqual([item for item in calm.summary.notices if item.code == "des.body_edge_step"], [])
+        self.des_ops.discard_calculation()
+        self.assertEqual(self.state(), before)
+
     def test_e_a_body_on_a_base_leaves_the_surface_and_nobody_starts_from_the_one_under_a_roof(self) -> None:
         """RF-016-20, H-9, RF-015-04, M2: «Sobre una base» (la ladera es el apoyo y la partida) deja la superficie con el techo
         (``des_psf_``), su espesor, su huella y su informe, y **encadena**: la entidad parte de su partida y su superficie se ofrece como

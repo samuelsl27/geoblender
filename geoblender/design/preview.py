@@ -819,8 +819,10 @@ class BodySummary:
     registrarán (el volumen, el espesor máximo, lo lejano y lo ignorado), el volumen (``volume_m3``), el espesor máximo
     (``thickness_max_m``) y su lugar (``thickness_max_x``, ``thickness_max_y``), el área (``far_m2``) y el volumen (``far_m3``) de lo
     lejano de los datos con su lugar (``far_x``, ``far_y``; ``None`` sin lo lejano), los ``notices`` en el orden en que se enseñan (los
-    avisos del cálculo —lo ignorado, lo lejano, lo que no tiene superficie conocida, lo triangulado— y, al final, lo que quedará
-    obsoleto) y ``obsolete``, lo que quedará obsoleto al crearlo (si sustituye a otro)."""
+    avisos del cálculo —lo ignorado, lo lejano, lo que no tiene superficie conocida, lo que la rejilla recorta de su huella y lo que
+    llega a su borde, lo triangulado— y, tras ellos, **el renglón informativo del escalón del borde** (``des.body_edge_step``: una nota,
+    no un aviso: no va en ámbar; T46) y, al final, lo que quedará obsoleto) y ``obsolete``, lo que quedará obsoleto al crearlo (si
+    sustituye a otro)."""
 
     name: str
     code: str

@@ -22,11 +22,13 @@ helpers de aquí no los usa la plataforma) con las mismas medidas y los mismos n
 - :func:`order_notice`: el aviso de RF-015-14 (``des.entity_quarry_order``, el de la plataforma) con el incumplimiento que da
   :func:`~.platform.order_check` y la otra superficie de la cantera (:class:`~.platform.QuarryOrder`).
 
-**Lo que no está aquí** (decisión pendiente, T46): el salto creado del borde de lo que mueve el contrafuerte con el aviso de RF-014-21.
-La medida (T46, 290 contrafuertes de prueba con los valores por defecto del proyecto: salto de 1 m en el 99 % de las parejas) dice que sale
-en casi todo contrafuerte con su pie natural (en el 72 % de los 290 y en el 96 % de los de perfil con la cara a 60° y celdas de 2 m: el salto
-de una pareja del pie llega a la altura de una celda por la tangente de la cara, 3,46 m), así que un aviso que salta siempre no sirve y el
-criterio es de Samuel; hasta entonces el contrafuerte solo mide el salto de su borde si el pie queda cortado (RF-016-19).
+**Lo que no está aquí** (decisión de la sesión principal, 19/11/2026, tras la parada de la T46): el aviso genérico del salto creado del borde
+de lo que mueve el contrafuerte (RF-014-21). La medida (290 contrafuertes de prueba con los valores por defecto del proyecto: salto de 1 m en
+el 99 % de las parejas) dice que saltaría en casi todo contrafuerte con su pie natural (en el 72 % de los 290 y en el 96 % de los de perfil con
+la cara a 60° y celdas de 2 m: el salto de una pareja del pie llega a la altura de una celda por la tangente de la cara, 3,46 m): es ruido y
+**no se añade**. El salto creado del borde que sí es una pared, la que deja el borde del relleno admitido, ya lo da el aviso del pie cortado
+(``des.buttress_foot_cut``, T28: el área, el volumen, el salto y su lugar; RF-016-19), sin impedir crearlo. El cuerpo «sobre una base» da el
+escalón de su borde con un renglón informativo propio (``des.body_edge_step``, en ``design.thickness``).
 """
 
 from __future__ import annotations

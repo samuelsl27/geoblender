@@ -258,6 +258,49 @@ class NoFootCutTest(Close):
         self.assertEqual(caught.exception.code, "des.buttress_nothing_rises")
 
 
+# --- El salto creado del borde: lo da el pie cortado (RF-015-13, RF-014-21; T46, hallazgo C-1) ---------------------------------
+
+
+class CreatedStepOfTheEdgeTest(Close):
+    """RF-015-13, RF-014-21, RF-016-19 (T46, hallazgo C-1; decisión de la sesión principal, 19/11/2026): el aviso genérico del salto creado del
+    borde de lo que mueve (RF-014-21) saltaría en casi todo contrafuerte con su pie natural (el 72 % de 290 contrafuertes de prueba, el 96 % con la
+    cara a 60° y celdas de 2 m): es ruido y **no se añade**. El salto creado del borde que sí es una pared —la que deja el borde del relleno
+    admitido— lo da el aviso del pie cortado (``des.buttress_foot_cut``: el salto y su lugar, como aviso, sin impedir crearlo)."""
+
+    def test_a_cut_foot_says_the_created_step_of_its_edge_with_its_place_as_a_warning(self) -> None:
+        """RF-015-13, RF-014-21: con el pie cortado (la franja sin relleno desde la fila 40: una pared bien por encima del salto
+        admitido) el único aviso del salto creado es el del pie cortado, con el salto del cálculo a mano y su lugar al cm, con las dos
+        métricas, y es un aviso (en ámbar, no una nota); no hay ningún ``des.edge_*``."""
+        for metric in ("exact", "chamfer5"):
+            with self.subTest(metric=metric):
+                scene = bdata.strip_scene()
+                scene.allowed[40:, :] = False
+                _job, _outcome, found = measured(scene, 120.0, metric=metric)
+                hand = bdata.hand_foot(scene, 120.0, metric=metric, thickness=THICKNESS)
+                self.assertGreater(hand.step_m, JUMP, "la pared del borde pasa el salto admitido: RF-014-21 habría avisado")
+                notice = self.foot_notice(found)
+                self.assertEqual(notice.severity, "warning")
+                self.close(float(notice.values["step"]), round(hand.step_m, 2), what="el salto creado", rel=1e-12)
+                self.close(float(notice.values["x"]), round(hand.x, 2), what="x", rel=1e-12)
+                self.close(float(notice.values["y"]), round(hand.y, 2), what="y", rel=1e-12)
+                self.assertEqual([item.code for item in found.notices if item.code.startswith("des.edge_")], [])
+
+    def test_a_natural_foot_gives_no_created_step_notice_even_when_its_pairs_pass_the_jump(self) -> None:
+        """RF-015-13, RF-014-21: un llano con todo el relleno admitido (el pie no se corta: sin ``des.buttress_foot_cut``) donde las
+        parejas del borde de lo que mueve **sí pasan** el salto admitido (la cara a 45° con celdas de 2 m: un salto de una celda de
+        altura por la tangente de la cara; es el pie natural) no lleva ningún aviso del salto creado: ni el genérico de RF-014-21
+        (``des.edge_*``) ni el del pie cortado; el resultado es el de siempre."""
+        scene = bdata.plane_scene()
+        _job, outcome, found = measured(scene, 110.0)
+        hand = bdata.hand_foot(scene, 110.0, thickness=THICKNESS)
+        self.assertEqual(hand.cells, 0, "el pie no se corta")
+        self.assertGreater(hand.step_m, JUMP, "las parejas del borde pasan el salto admitido: el aviso genérico habría saltado")
+        codes = [item.code for item in found.notices]
+        self.assertNotIn(FOOT_CUT, codes)
+        self.assertEqual([code for code in codes if code.startswith("des.edge_")], [])
+        self.assertEqual(found.notices, outcome.notices)
+
+
 # --- Las máscaras de verdad -----------------------------------------------------------------------------------------------------
 
 

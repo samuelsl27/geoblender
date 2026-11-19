@@ -41,6 +41,7 @@ zones = import_geoblender("design.zones")
 OUTSIDE = "des.entity_edge_outside"
 BUTTRESS_CLIPPED = "des.buttress_footprint_clipped"
 BODY_CLIPPED = "des.body_footprint_clipped"
+EDGE_STEP = "des.body_edge_step"
 ORDER = "des.entity_quarry_order"
 FOOT_CUT = "des.buttress_foot_cut"
 PROJECT = {"des.tolerance.face_deg": 1.0, "des.warning.magnitude_ratio": 2.0, "res.verify.min_thickness_m": 0.02,
@@ -371,13 +372,13 @@ class BodyEdgeTest(unittest.TestCase):
         inside[11, 12] = np.nan
         found = thickness.compute_body(tt.job_of(footprint, points=points, sense="on_base", support=support, start=inside))
         self.assertEqual(of(found.notices, OUTSIDE), [])
-        self.assertEqual([item.code for item in found.notices], [])
+        self.assertEqual([item.code for item in found.notices if item.severity == "warning"], [])  # T46: el renglón del escalón es una nota
 
     def test_in_the_middle_of_the_grid_it_says_nothing(self) -> None:
         """Un cuerpo lejos del borde y de lo que no tiene dato: ni aviso ni geometría medida (sin ``parts``)."""
         _job, outcome = self.body(tt.box(8, 16, 8, 16))
         self.assertFalse(outcome.outside.any())
-        self.assertEqual(outcome.notices, ())
+        self.assertEqual([item.code for item in outcome.notices if item.severity == "warning"], [])  # T46: el renglón del escalón es una nota
         self.assertIsNone(outcome.clipped)
 
     def test_under_a_roof_does_not_change_the_surface_and_has_no_edge(self) -> None:
@@ -417,7 +418,7 @@ class BodyEdgeTest(unittest.TestCase):
 
     def test_the_new_notices_keep_the_order_of_the_old_ones(self) -> None:
         """Los avisos de siempre (lo ignorado, lo lejano, lo que no tiene superficie conocida) siguen en su orden y los nuevos van
-        detrás de ellos y delante de lo lento."""
+        detrás de ellos y delante de lo lento; el renglón informativo del escalón del borde (T46, una nota) cierra los del cálculo."""
         parts = ((tt.ring(8, 16, -4, 6),),)
         footprint = zones.polygons_cells(parts, tt.GRID)
         support = np.full(tt.GRID.shape, 100.0)
@@ -425,7 +426,7 @@ class BodyEdgeTest(unittest.TestCase):
         points = tt.points_of({(10, 4): 3.0, (12, 4): 3.0, (14, 4): 3.0})
         job = tt.job_of(footprint, points=points, sense="on_base", support=support)
         found = thickness.compute_body(with_parts(job, parts))
-        self.assertEqual([item.code for item in found.notices], ["des.body_unsupported", BODY_CLIPPED, OUTSIDE])
+        self.assertEqual([item.code for item in found.notices], ["des.body_unsupported", BODY_CLIPPED, OUTSIDE, EDGE_STEP])
 
 
 # --- El orden con la otra superficie de la cantera --------------------------------------------------------------------------------

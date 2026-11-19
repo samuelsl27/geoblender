@@ -45,8 +45,9 @@ y **no corta nada**. Lo que entrega:
 coronación** (``des.buttress_footprint_clipped``: las celdas de la geometría de la zona, ``ButtressJob.parts``, que caen fuera de la rejilla,
 con el lugar de la primera) y de **lo que sube fuera de la zona y llega al borde de la rejilla o a celdas sin dato** de la partida
 (``des.entity_edge_outside``: ``ButtressOutcome.outside``). Las medidas son las de ``design.supported_edge`` (copiadas de la plataforma) y solo
-son avisos: ninguna cifra cambia. **El salto creado del borde de lo que mueve, con el aviso de RF-014-21, no está** (decisión pendiente, T46):
-saldría en casi todo contrafuerte con su pie natural.
+son avisos: ninguna cifra cambia. **El aviso genérico del salto creado del borde de lo que mueve (RF-014-21) no se añade** (decisión de la sesión
+principal, 19/11/2026): saldría en casi todo contrafuerte con su pie natural; el salto de la pared que deja el borde del relleno admitido lo
+da el pie cortado (abajo).
 
 **El pie cortado** (T28; RF-016-19; D-24; error 19). Donde el relleno no está admitido el contrafuerte no sube (A10 no recorta nada
 más), y si eso le quita parte del pie hay que decirlo: :func:`cutoff_steps` (:func:`measure_cutoff`, de una vez) toma el escalonado

@@ -1518,8 +1518,9 @@ def body_summary(project: StoreProject, prepared: PreparedBody, outcome: BodyOut
     """El resumen de «Calcular» el cuerpo ``prepared`` (RF-015-03, RF-016-20 a 22): las cifras que se registrarán, lo lejano de los datos
     con su área, su volumen y su lugar, y los avisos en el orden en que se enseñan (los del cálculo: lo ignorado, lo lejano, lo que no
     tiene superficie conocida, lo que la rejilla recorta de su huella y lo que llega a su borde o a celdas sin dato —RF-015-13, T46—, lo
-    triangulado; **el orden con la otra superficie de la cantera** si «sobre una base» parte de una de sus dos superficies —``quarry``,
-    RF-015-14: :func:`order_notices`; T46—; y lo que quedará obsoleto). Solo lee."""
+    triangulado y, «sobre una base», el renglón informativo del escalón en que termina en su borde —``des.body_edge_step``, una nota—;
+    **el orden con la otra superficie de la cantera** si «sobre una base» parte de una de sus dos superficies —``quarry``, RF-015-14:
+    :func:`order_notices`; T46—; y lo que quedará obsoleto). Solo lee."""
     kept = body_obsolete(project, prepared, supersedes=supersedes)
     request = prepared.job.request
     order = order_notices(request.name, outcome.surface, outcome.window, prepared.job.grid, quarry)
