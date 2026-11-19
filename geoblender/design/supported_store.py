@@ -61,7 +61,8 @@ from ..core.provenance.recompute import RecomputeRequest
 from ..core.provenance.stale import OPERATION as STALE_OPERATION
 from ..core.provenance.stale import item_text
 from ..core.timeutil import format_utc
-from ..core.versions.model import Version
+from ..core.versions import read as versions_read
+from ..core.versions.model import Version, VersionError
 from ..gis.grid import Grid
 from ..gis.masks import access
 from ..gis.masks.combine import ClassBit
@@ -97,6 +98,7 @@ __all__ = [
     "CONFIRMED",
     "Confirmed",
     "PreparedRemoval",
+    "StockpileChoice",
     "check_removal_confirmed",
     "compute_removal_steps",
     "confirmed_of",
@@ -111,6 +113,8 @@ __all__ = [
     "removal_report_rows",
     "removal_summary",
     "removal_values",
+    "removable_stockpiles",
+    "resting_preview",
     "run_removal",
 ]
 
@@ -394,6 +398,21 @@ def read_removed(row: Mapping[str, Any], grid: Grid, base: Callable[[tuple[slice
         str(row["key"]), str(row["name"]), rows.astype(np.int64) * grid.ncols + cols, base(window)[inside], detected(window)[inside])
 
 
+def _removed_of(project: StoreProject, found: _Located, frame: Any) -> removal.RemovedStockpile:
+    """El acopio de ``found`` (:func:`_locate`) como lo retira la retirada (:func:`read_removed`): su base y la superficie con que se
+    detectó se leen **por la ventana** que se les pide, del proyecto o de la versión de su detección. Solo lee. Lo comparten preparar la
+    retirada y la lista de lo que se le apoya (:func:`resting_preview`)."""
+    detection = found.detection
+    assert detection.detected is not None
+
+    def of_detection(name: str, what: str) -> Callable[[tuple[slice, slice]], np.ndarray]:
+        return lambda window: read_surface_window(project, name, window, version_uid=detection.version_uid, expect=frame,
+                                                  role=what).values
+
+    return read_removed(found.row, frame.grid, of_detection(found.material.base.name, f"base del acopio «{found.row['key']}»"),
+                        of_detection(detection.detected.name, f"superficie con que se detectó «{found.row['key']}»"))
+
+
 def default_domain(masks: access.MaskSet | access.MaskSource, window: tuple[slice, slice]) -> np.ndarray:
     """El dominio por defecto de las máscaras (``MaskSet.default_domain``: perímetro ∩ límite legal − intocables, donde se puede
     retirar un acopio aunque su corte no esté admitido: D-5) **en la ventana** ``window``, de las clases de esa ventana."""
@@ -403,6 +422,95 @@ def default_domain(masks: access.MaskSet | access.MaskSource, window: tuple[slic
         return (classes & np.uint16(int(found))) != 0
 
     return bit(ClassBit.PERIMETER) & bit(ClassBit.LEGAL) & ~bit(ClassBit.UNTOUCHABLE)
+
+
+# --- Lo que ofrece el diálogo (spec 016, T20 (b); plan 016 §5.3.3; RF-016-11, RF-016-12, RF-016-14) ----------------
+
+
+@dataclass(frozen=True, slots=True)
+class StockpileChoice:
+    """Un acopio que el diálogo de la retirada ofrece (:func:`removable_stockpiles`): su ``ref`` (``STK-001#Acopio 1``, lo que lleva
+    :class:`~.model.RemovalRequest`), la clave de su marca (``key``), su ``name``, la detección de la que sale (``detection``: su código;
+    ``detection_name``), su ``scope`` (:data:`~.stockpile_store.VERSION` o :data:`~.stockpile_store.PROJECT`), su ``material`` (``None``:
+    sin él), su área y su volumen (``area_m2``, ``volume_m3``: los de la tabla de su detección) y el ``state`` de su detección
+    (``CURRENT`` o ``STALE``: una obsoleta se ofrece y su cálculo se rechaza nombrando lo que cambió, RF-016-12)."""
+
+    ref: str
+    key: str
+    name: str
+    detection: str
+    detection_name: str
+    scope: str
+    material: str | None
+    area_m2: float
+    volume_m3: float
+    state: entities.EntityState
+
+
+def removable_stockpiles(project: StoreProject, version: Version | str, *, conn: sqlite3.Connection | None = None
+                         ) -> tuple[StockpileChoice, ...]:
+    """Los acopios que se pueden retirar en la versión ``version`` (uid, código o ``Version``; spec 016, T20 (b); plan 016 §5.3.3 «el acopio»
+    del diálogo), **sin escribir nada**: los de las tablas ``des_stk_`` de las detecciones **de la versión** y, después, **del proyecto**
+    (D-15: una versión consume un dato del proyecto, RF-009-05) cuya operación vigente existe y no está descartada, cada uno con la
+    referencia de su detección y su clave (``STK-001#Acopio 1``) y en el orden de su tabla. Una detección **obsoleta** se ofrece, con su
+    estado: calcular la retirada se rechaza nombrando lo que cambió (RF-016-12); la sin calcular o descartada, no. Si el código de una
+    detección del proyecto lo tiene también una de la versión, manda la de la versión (:func:`_locate`) y la del proyecto no se ofrece.
+    ``VersionError`` (``core.version_unknown``) si la versión no existe; ``conn`` es una conexión de lectura de quien llama."""
+
+    def read(reading: sqlite3.Connection) -> tuple[StockpileChoice, ...]:
+        found = version if isinstance(version, Version) else versions_read.version(reading, str(version))
+        if found is None:
+            raise VersionError("core.version_unknown", field="versión", value=version, version=version)
+        offered: list[StockpileChoice] = []
+        taken: set[str] = set()
+        for scope in (found, None):
+            registry = (entities.registry(project, found.uid, conn=reading) if scope is not None
+                        else entities.project_registry(project, conn=reading))
+            for entry in registry:
+                record = entry.record
+                if record.kind != EntityKind.STOCKPILE or record.code in taken:
+                    continue
+                taken.add(record.code)  # la de la versión tapa a la del proyecto de su mismo código, sea cual sea su estado (_locate)
+                if entry.operation_uid is None or record.state in (entities.EntityState.UNCALCULATED, entities.EntityState.DISCARDED):
+                    continue
+                table = stockpile_store.read_detection_table(
+                    project, provenance.STOCKPILES_TABLE, record.name, version_uid="" if scope is None else found.uid,
+                    conn=reading)
+                offered.extend(StockpileChoice(
+                    provenance.support_ref(record.code, str(row["key"])), str(row["key"]), str(row["name"]), record.code,
+                    record.name, stockpile_store.PROJECT if scope is None else stockpile_store.VERSION,
+                    None if row["material"] is None else str(row["material"]), float(row["area_m2"]), float(row["volume_m3"]),
+                    entities.EntityState(record.state)) for row in table)
+        return tuple(offered)
+
+    if conn is not None:
+        return read(conn)
+    with project.read() as reading:
+        return read(reading)
+
+
+_PREVIEW_NAME = "Lista de lo que se apoya"
+"""El nombre de la petición con que :func:`resting_preview` localiza el acopio (no se registra: nada se escribe)."""
+
+
+def resting_preview(project: StoreProject, version: Version | str, stockpile: str, start: str) -> tuple[Resting, ...]:
+    """**La lista de lo que se apoya** en el acopio ``stockpile`` (``STK-001#Acopio 1``) de la superficie de partida ``start`` (un dato o
+    ``entity:<código>``) de la versión ``version`` **antes de calcular** (spec 016, T20 (b); RF-016-14, A7; la lista única de RF-015-17), lo
+    que enseña el diálogo de la retirada: la de :func:`~.removal.resting_on` con el acopio y su partida tal como los leerá
+    :func:`prepare_removal_units`, **sin escribir nada** y leyendo solo la ventana de su huella. Los rechazos son los de preparar: el
+    acopio sin detección o con la detección obsoleta (``des.removal_stockpile_unknown``, ``des.removal_detection_stale``) y la partida
+    que no existe (``des.entity_start_unknown``, ``des.surface_*``)."""
+    with project.read() as conn:
+        found = version if isinstance(version, Version) else versions_read.version(conn, str(version))
+    if found is None:
+        raise VersionError("core.version_unknown", field="versión", value=version, version=version)
+    registry = entities.registry(project, found.uid)
+    code = entities.next_code(EntityKind.REMOVAL, (entry.record.code for entry in registry))
+    asked = RemovalRequest(name=_PREVIEW_NAME, stockpile=stockpile, start=start)
+    located = _locate(project, found, asked, code)
+    start_name = entity_store._surface_dataset(registry, found, asked, code, RemovalParam.START, start)  # type: ignore[arg-type]
+    item = _removed_of(project, located, project_frame(project))
+    return removal.resting_on(project, found, item, start_name, detected_on=located.detected_on)
 
 
 # --- Preparar -----------------------------------------------------------------------------------
@@ -445,14 +553,8 @@ def prepare_removal_units(project: StoreProject, request: RemovalRequest, versio
     support_name = (None if request.support is None else entity_store._surface_dataset(
         registry, version, request, chosen, RemovalParam.SUPPORT, request.support))  # type: ignore[arg-type]
     detection = found.detection
-
-    def of_detection(name: str, what: str) -> Callable[[tuple[slice, slice]], np.ndarray]:
-        return lambda window: read_surface_window(project, name, window, version_uid=detection.version_uid, expect=frame,
-                                                  role=what).values
-
     assert detection.detected is not None
-    item = read_removed(found.row, grid, of_detection(found.material.base.name, f"base del acopio «{found.row['key']}»"),
-                        of_detection(detection.detected.name, f"superficie con que se detectó «{found.row['key']}»"))
+    item = _removed_of(project, found, frame)
     window = removal.removal_window(item, grid)
     yield
     start = read_surface_window(project, start_name, window, version_uid=version.uid, expect=frame,

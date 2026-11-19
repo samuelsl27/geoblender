@@ -320,6 +320,25 @@ propiedad oculta): sin diálogo, calcula con los parámetros que la entidad ya t
 (``design.entity_store.entity_request``) y con su código, enseña el resumen y pide confirmar; «Crear» la registra **sin
 escribir ningún parámetro** (conserva su código y su historial) y la dependencia «se apoya en» se detecta de nuevo. Se calculan
 por el orden de la cadena (la partida de una es la superficie de la anterior).
+
+**Retirar un acopio…** (spec 016, T20 (b); HU-016-2; RF-016-11 a RF-016-15, RF-015-03, RF-015-28, RF-015-29; RNF-016-05; plan 016 §5.3.3 y
+§5.5; comprobación manual M1): :class:`GEOBLENDER_OT_des_remove_stockpile` (``geoblender.des_remove_stockpile``, interna, de la entrada
+«016») calcula ``des.stockpile_removal`` de la versión activa con ``design.steps.removal_run``: la huella de un acopio de una detección
+(``STK-001#Acopio 1``) en su base, unida al terreno por una transición, desde la superficie de partida. **Es el patrón de la orden que
+calcula y crea de la 016** (el cuerpo apoyado, T25, y el contrafuerte, T27, lo siguen): :class:`_CalculateAndCreate` +
+:class:`DesignCommandAware` + :class:`~.core._StepsModal`, con las listas de su diálogo en ``bl.ui.des_panels`` y el resumen en
+``des_panels._removal_lines``. Su diálogo pide el nombre, el acopio (:func:`des_panels.removal_stockpile_items`: los de las detecciones
+de la versión y del proyecto), la partida (la última de la cadena), **la lista de lo que se apoya en el acopio** —una sola lista, leída
+**antes de calcular** por el ``update`` del acopio y de la partida con ``design.supported_store.resting_preview``: :func:`_refresh_resting`—,
+el ángulo de transición (sin valor por defecto: D-2), el factor de malla, la métrica y el motivo de la pared. Calcular, Crear, Cancelar y
+Esc son los de :class:`_CalculateAndCreate`: nada se registra hasta Crear (RF-015-03) y cerrarlo a mitad no deja nada (RF-015-29). **No se
+crea sin la confirmación expresa** de lo que se le apoyaba ni de la pared (RF-016-14, RF-016-15): el botón de su ventana lo dice y pulsarlo
+es la confirmación (``confirm_resting`` y ``confirm_wall``; desde un guion, quien la lanza); una pared de más de 45° y 3 m pide además el
+motivo del diálogo, que **va en la petición** (se escribe al calcular). Quedan en los ajustes de la operación con su decisor y su fecha
+(``design.supported_store.CONFIRMED``). **No encadena** ``after_entity_change``: la retirada no declara restricciones (D-1) y lo que lee la
+declaración y la capa de entidades de cada entidad viva (``des_epr_``) aún no lo sabe de la detección (la capa por acopio es la T34 y la
+declaración con la zona propia de cada tipo, la T27). Disponible con el proyecto en escritura y la versión activa editable y, si no,
+desactivada con su motivo (RF-015-28: :class:`DesignCommandAware`). «Como plataforma» (RF-016-16) es de la T21.
 """
 
 from __future__ import annotations
@@ -5620,6 +5639,282 @@ class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOper
         return {"FINISHED"}
 
 
+# --- Retirar un acopio… (spec 016, T20 (b); HU-016-2; RF-016-11 a RF-016-15, RF-015-02, RF-015-03, RF-015-28, RF-015-29;
+#     RNF-016-05; plan 016 §5.3.3 y §5.5; comprobación manual M1) -------------------------------------------------
+
+REMOVE_STOCKPILE = provenance.REMOVAL_COMMAND
+_QUIET: list[bool] = []
+"""Si el diálogo de «Retirar un acopio…» se está rellenando por la propuesta (la lista de lo que se apoya se lee una sola vez al final)."""
+
+
+def _refresh_resting(self: Any, _context: Any) -> None:
+    """El ``update`` del acopio y de la partida de «Retirar un acopio…» (T20 (b); RF-016-14, A7): lee **antes de calcular y sin escribir
+    nada** lo que se apoya en el acopio elegido sobre la partida elegida (``design.supported_store.resting_preview``: **una sola lista**,
+    con quién lo puso y sus m³) y lo deja en el diálogo (``des_panels.show_resting``); lo que no se puede leer (la detección obsoleta, una
+    partida que no existe) sale en ámbar, con el texto del rechazo que daría «Calcular». Sin acopio o sin partida, nada."""
+    if _QUIET:
+        return
+    project = SESSION.project
+    version = scene_versions.active_version() or ""
+    stockpile, start = self.stockpile, self.start
+    if (project is None or not version or not des_panels.has_removal_stockpiles()
+            or stockpile in ("", des_panels.NO_ZONE) or start in ("", des_panels.NO_ZONE)):
+        des_panels.show_resting(())
+        return
+    from ...design import supported_store  # al usarlo: habilitar no carga el cálculo
+
+    try:
+        rows = supported_store.resting_preview(project, version, stockpile, start)
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+        LOGGER.info("No se pudo leer lo que se apoya en «%s» sobre «%s»", stockpile, start, exc_info=True)
+        des_panels.show_resting([(design_error_text(exc), True)])
+        return
+    if rows:
+        shown = i18n.language()
+        des_panels.show_resting([*((row.text(shown), True) for row in rows),
+                                 (tr("The stockpile is not removed without your express confirmation: the button that creates the "
+                                     "removal confirms it"), False)])
+    else:
+        des_panels.show_resting([(tr("Nothing rests on the stockpile"), False)])
+
+
+class GEOBLENDER_OT_des_remove_stockpile(_CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal,
+                                         bpy.types.Operator):
+    """Remove a stockpile detected in the active version: its footprint goes down to its base, joined with the ground by a transition, and what rests on it is listed before calculating"""
+
+    bl_idname = REMOVE_STOCKPILE
+    bl_label = "Remove a stockpile…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.STOCKPILE_REMOVAL
+    COMMAND = REMOVE_STOCKPILE
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the removal, unique in the active version", options=_FIELD)
+    stockpile: EnumProperty(  # type: ignore[valid-type]
+        name="Stockpile",
+        description="Stockpile to remove: one of the detections of the active version or of the project; one whose detection is "
+                    "out of date is refused, saying what changed",
+        items=des_panels.removal_stockpile_items, options=_FIELD, update=_refresh_resting)
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Surface the stockpile is removed from: the ground, a design surface or the surface of another entity (by "
+                    "default, the last of the chain)",
+        items=des_panels.platform_start_items, options=_FIELD, update=_refresh_resting)
+    transition_angle: StringProperty(  # type: ignore[valid-type]
+        name="Transition angle (°)",
+        description="Angle of the slope that joins the removed footprint with the rest of the surface, in degrees; it has no default "
+                    "value: you choose it", options=_FIELD)
+    mesh_factor: StringProperty(  # type: ignore[valid-type]
+        name="Mesh factor", description="Factor of the mesh of the transition (empty: the default value)", options=_FIELD)
+    metric: EnumProperty(  # type: ignore[valid-type]
+        name="Metric",
+        description="How the distance to the footprint is measured in the transition: the 5×5 chamfer (fast, with the scale of the "
+                    "grid) or the exact Euclidean distance", items=METRIC_ITEMS, default="EXACT", options=_FIELD)
+    wall_reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason for the wall",
+        description="Why you accept the wall that removing the stockpile may leave at the edge of what is removed: it is needed "
+                    "only if the wall passes the height and the angle that ask for a reason, and it is recorded with the removal",
+        options=_FIELD)
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con el avance y Esc: los pone invoke;
+    # desde un guion, sin ellos, de una vez. Las confirmaciones expresas de lo que se apoya y de la pared (RF-016-14, RF-016-15): las pone
+    # el botón de su ventana, que las dice; desde un guion, quien la lanza.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    confirm_resting: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    confirm_wall: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué. Con ``confirm``, el diálogo de crear
+        el cálculo abierto. Si no, las listas leídas de nuevo (los acopios de las detecciones, las superficies y las entidades de la
+        cadena), la propuesta (un nombre, el primer acopio al día y la partida: la última de la cadena o el terreno), **lo que se apoya
+        en el acopio elegido** (:func:`_refresh_resting`) y el diálogo del cálculo: Intro calcula. Sin ninguna detección de acopios,
+        lo dice."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.refresh_choices(project)
+            des_panels.refresh_platform_choices(project)
+            des_panels.refresh_removal_choices(project)
+            if not des_panels.has_removal_stockpiles():
+                self.report({"ERROR"}, tr("There is no detection of stockpiles in the project or in the active version: detect the "
+                                          "stockpiles first"))
+                return {"CANCELLED"}
+            _QUIET.append(True)
+            try:
+                self._propose(context, project)
+            finally:
+                _QUIET.pop()
+            _refresh_resting(self, context)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.COMMAND)].label), confirm_text=tr("Calculate"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """Lo que propone el diálogo si quien lo lanza no lo dio (plan 016 §5.3.3): **el primer acopio cuya detección está al día**
+        (o el primero), un nombre que no repite el de ninguna entidad de la versión («Retirada de «Acopio 1»») y la **partida: la última
+        de la cadena** (``des_panels.platform_default_start``) o, sin entidades calculadas, el terreno (``surface_proposal.ground_item``,
+        con lo seleccionado en la vista). El ángulo de transición no se propone: no tiene valor por defecto (D-2)."""
+        given = self.properties.is_property_set
+        offered = [identifier for identifier, _label, _about in des_panels.removal_stockpile_items(None, None)
+                   if identifier != des_panels.NO_ZONE]
+        if offered and not given("stockpile"):
+            current = [ref for ref in offered if getattr(des_panels.removal_stockpile(ref), "state", None) == "current"]
+            self.stockpile = (current or offered)[0]
+        if not self.name.strip():
+            found = des_panels.removal_stockpile(self.stockpile)
+            base = tr("Removal of «{stockpile}»", stockpile=found.name if found is not None else tr("stockpile"))
+            names, number = des_panels.platform_names(), 1
+            proposal = base
+            while proposal in names:
+                number += 1
+                proposal = f"{base} {number}"
+            self.name = proposal
+        if not given("start"):
+            start = des_panels.platform_default_start()
+            if start is None and des_panels.has_surfaces():
+                items = [identifier for identifier, _name, _about in des_panels.platform_start_items(None, None)
+                         if identifier != des_panels.NO_ZONE and not identifier.startswith("entity:")]
+                start = surface_proposal.ground_item(context, project, items, des_panels.surface_choice)
+            if start is not None:
+                self.start = start
+
+    def draw(self, context: Any) -> None:
+        """Arriba el nombre; el acopio y la partida; **la lista de lo que se apoya en el acopio**, leída antes de calcular; la transición
+        (el ángulo, el factor de malla y la métrica) y el motivo de la pared. En la confirmación de crear, el resumen y, si pide un
+        motivo que falta, qué hacer."""
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "stockpile", text=tr("Stockpile"), translate=False)
+        layout.prop(self, "start", text=tr("Start surface"), translate=False)
+        des_panels.draw_resting(layout, DIALOG_WIDTH)
+        box = layout.box()
+        box.label(text=tr("Transition at the edge of the stockpile"), translate=False)
+        box.prop(self, "transition_angle", text=tr("Transition angle (°)"), translate=False)
+        box.prop(self, "mesh_factor", text=tr("Mesh factor"), translate=False)
+        box.prop(self, "metric", text=tr("Metric"), translate=False)
+        layout.prop(self, "wall_reason", text=tr("Reason for the wall"), translate=False)
+
+    # --- Lo pedido ----------------------------------------------------------------------------
+
+    def _request(self) -> design_model.RemovalRequest:
+        """Lo pedido en el diálogo como la ``design.model.RemovalRequest`` (RF-016-11), comprobado sin escribir ni calcular nada. Lo que
+        se deja vacío (el factor de malla) lo resuelve el dominio con el valor por defecto de su parámetro; el ángulo de transición no
+        tiene ninguno y lo rechaza el dominio si falta (D-2). :class:`ComputeFormError` si falta algo del diálogo."""
+        name = self.name.strip()
+        if not name:
+            raise ComputeFormError(tr("Write the name of the removal"))
+        if self.stockpile in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the stockpile to remove"))
+        if self.start in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the start surface of the removal"))
+        return design_model.RemovalRequest(
+            name, self.stockpile, self.start, transition_deg=typed_number(self.transition_angle, tr("Transition angle (°)")),
+            mesh_factor=typed_number(self.mesh_factor, tr("Mesh factor")), metric=self.metric.lower(),
+            wall_reason=self.wall_reason.strip() or None)
+
+    # --- Calcular y crear ---------------------------------------------------------------------
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Si no, comprueba lo pedido (sin escribir nada si falta algo), pasa por
+        la puerta de la 008 y calcula la retirada por pasos con ``design.steps.removal_run`` —compila las máscaras antes si no están al
+        día—, sin registrar nada (RF-015-03): desde la interfaz, en el modal con el avance y Esc (RF-015-29, RNF-016-05); desde un guion,
+        de una vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar. Los rechazos (el acopio y su detección
+        —obsoleta: RF-016-12—, el ángulo de transición sin valor, la partida, un sector con la búsqueda pendiente, el nombre repetido) y
+        todas las cuentas son de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        try:
+            request = self._request()
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report, dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        steps = design_steps.removal_run(project, request, version=version, budget_s=self.STEP_BUDGET_S)
+        return self._run_steps(context, project, request.name, steps)
+
+    def _confirmation(self, context: Any) -> set[str]:
+        """El diálogo de crear el cálculo abierto. Con algo apoyado en el acopio (RF-016-14) o una pared (RF-016-15) que piden
+        confirmación expresa, su botón lo dice («Confirmar lo que se le apoya y crear»…): pulsarlo es la confirmación; «Cancelar» y
+        cerrarlo no crean nada."""
+        held = calculation()
+        self.confirm_resting = held is not None and held.needs_resting_confirmation
+        self.confirm_wall = held is not None and held.needs_wall_confirmation
+        return _CalculateAndCreate._confirmation(self, context)
+
+    def _confirm_text(self, held: Calculation) -> str:
+        resting, wall = held.needs_resting_confirmation, held.needs_wall_confirmation
+        if resting and wall:
+            return tr("Confirm what rests on it and the wall, and create")
+        if resting:
+            return tr("Confirm what rests on it and create")
+        if wall:
+            return tr("Confirm the wall and create")
+        return _CalculateAndCreate._confirm_text(self, held)
+
+    def _create(self, context: Any) -> set[str]:
+        """«Crear» (RF-016-11, RF-015-02): como las demás, y con algo apoyado en el acopio o una pared **no se crea sin la confirmación
+        expresa** (``confirm_resting`` y ``confirm_wall``: el botón de la ventana, o quien la lanza desde un guion) ni, con una pared de
+        más de 45° y 3 m, sin su motivo (RF-016-14, RF-016-15): lo dice y el cálculo sigue abierto (se confirma, o se calcula otra vez con
+        el motivo). Con ellas, las deja dichas en el cálculo antes de crearlo (``Calculation.confirm_removal``: quedan en los ajustes de
+        la operación con su decisor y su fecha)."""
+        from ...design import supported_store  # al usarlo: habilitar no carga el cálculo
+
+        opened = calculation()
+        if opened is not None and isinstance(opened.entity, supported_store.PreparedRemoval):
+            try:
+                supported_store.check_removal_confirmed(opened.entity, opened.outcome,  # type: ignore[arg-type]
+                                                        resting=self.confirm_resting, wall=self.confirm_wall)
+            except design_messages.DesignError as exc:
+                self.report({"ERROR"}, design_error_text(exc))
+                return {"CANCELLED"}
+            opened.confirm_removal(resting=self.confirm_resting, wall=self.confirm_wall)
+        return _CalculateAndCreate._create(self, context)
+
+    def _created_text(self, opened: Calculation) -> str:
+        return tr("Removal of the stockpile «{name}» created in {version}", name=opened.name, version=opened.version)
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Calculando la retirada del acopio… 40 % · Esc: cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Computing the removal of the stockpile… {percent} % · Esc: cancel", percent=percent)
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
@@ -5641,7 +5936,8 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_entity_preview,
                              GEOBLENDER_OT_des_entity_dependents,
                              GEOBLENDER_OT_des_entity_insert,
-                             GEOBLENDER_OT_des_entity_calculate)
+                             GEOBLENDER_OT_des_entity_calculate,
+                             GEOBLENDER_OT_des_remove_stockpile)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
@@ -5651,4 +5947,5 @@ afectado», la T30 «Solo relleno…» y la T33 «Ajustar el diseño a un límit
 «014», que la T58 entrega; de la 015, la T15 pone «Plataforma…», la T25 «Descartar…» y «Soltar el apoyo…», la T26 «Traer las
 entidades de…» y la T29 la vista previa de una entidad, todas de la entrada «015», que entrega la T31 con el menú «Entidad ▾»
 (las dos internas nuevas de la T31, «Lo que se apoya en ella» e «Insertar antes o después de…», también; y la T41, «Calcular…»;
-y la T43, la interna que lanza «Cambiar parámetro…», sin menú))."""
+y la T43, la interna que lanza «Cambiar parámetro…», sin menú); de la 016, la T20 pone «Retirar un acopio…», interna, de la entrada
+«016», que la entrega (la T35 la pondrá detrás de «Acopio (detectar, retirar)…»))."""

@@ -53,7 +53,12 @@ class RestingOnRemovalTest(ops.RemovalCase):
         lista** antes de calcular —«Sobre el acopio 4», con su tipo y su volumen **a mano** a ≤ 10⁻⁹ relativo— y su aviso, sin escribir
         nada; «Crear» sin confirmarlo se rechaza (``des.removal_resting_unconfirmed``) **sin escribir nada y sin cerrar el cálculo**."""
         before = self.state()
+        listed = supported_store.resting_preview(self.project, self.v1.uid, "STK-001#Acopio 4", "entity:PLT-002")
+        self.assertEqual(self.state(), before, "la lista del diálogo solo lee")
         calculation = self.calculate(ops.asked(REMOVAL, "Acopio 4", start="entity:PLT-002"))
+        self.assertEqual(listed, calculation.entity.resting, "la lista del diálogo es la que luego calcula la orden")
+        self.assertEqual(supported_store.resting_preview(self.project, self.v1.uid, "STK-001#Acopio 1", "entity:PLT-002"), (),
+                         "nada se apoya en el Acopio 1")
         self.assertEqual(len(self.temporaries()), 1)
         self.assertEqual({key: value for key, value in self.state().items() if key != "files"},
                          {key: value for key, value in before.items() if key != "files"}, "calcular no escribe")

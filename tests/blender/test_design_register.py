@@ -78,8 +78,10 @@ COMMANDS_016: dict[str, str] = {"des.stockpile_detect": "geoblender.des_detect_s
                                 "des.body": "geoblender.des_create_body"}
 """La orden de cada uno (las definitivas de la T35: se conservan los nombres del catálogo, ``des_add_buttress``, y la
 «Unidad por espesor sobre su apoyo…» pasa a ser ``des_create_body``). **Aún no están en el catálogo** salvo la del
-contrafuerte (las crea la T35): ``OperationDef.commands`` solo comprueba su forma."""
-PENDING_COMMANDS_016: frozenset[str] = frozenset(COMMANDS_016.values()) - {"geoblender.des_add_buttress"}
+contrafuerte (la T35 las crea) y la de retirar un acopio (la T20: es interna, de la entrada 016, con su clase real):
+``OperationDef.commands`` solo comprueba su forma."""
+PENDING_COMMANDS_016: frozenset[str] = frozenset(COMMANDS_016.values()) - {"geoblender.des_add_buttress",
+                                                                          "geoblender.des_remove_stockpile"}
 """Las órdenes de la 016 que la T35 todavía no ha dado de alta en el catálogo."""
 PLATFORM_COMMAND = "geoblender.des_create_platform"
 """La orden de los tres: la «Plataforma…» de la entrada 015 (T15: la clave definitiva, que sustituyó a

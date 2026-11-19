@@ -50,6 +50,7 @@ removal = import_geoblender("design.removal")
 reproduce_mod = import_geoblender("core.versions.reproduce")
 steps = import_geoblender("design.steps")
 store = import_geoblender("design.store")
+stockpile_store = import_geoblender("design.stockpile_store")
 supported_store = import_geoblender("design.supported_store")
 versions_model = import_geoblender("core.versions.model")
 
@@ -219,6 +220,25 @@ class RemovalOperationTest(RemovalCase):
         calculation.discard()
         self.assertEqual(self.temporaries(), [], "descartar borra el temporal")
         self.assertEqual(self.state(), before)
+
+    def test_a_the_dialog_offers_the_stockpiles_of_the_detections_of_the_version_with_their_numbers(self) -> None:
+        """RF-016-11, RF-016-12 (plan §5.3.3: «el acopio» del diálogo): ``removable_stockpiles`` lista, **sin escribir nada**, los acopios
+        de las detecciones de la versión (``des_stk_``) con la referencia que lleva la retirada (``STK-001#Acopio 1``), su nombre, su
+        detección, su material y sus cifras —las de la tabla, bit a bit—, en el orden de la tabla y al día."""
+        before = self.state()
+        found = supported_store.removable_stockpiles(self.project, self.v1.uid)
+        self.assertEqual(self.state(), before, "solo lee")
+        table = stockpile_store.read_detection_table(self.project, provenance.STOCKPILES_TABLE, sup.DETECTION,
+                                                     version_uid=self.v1.uid)
+        self.assertEqual([item.ref for item in found], [f"STK-001#{row['key']}" for row in table])
+        self.assertEqual([item.ref for item in found], [f"STK-001#Acopio {number}" for number in range(1, 6)])
+        for item, row in zip(found, table, strict=True):
+            with self.subTest(ref=item.ref):
+                self.assertEqual((item.key, item.name, item.detection, item.detection_name, item.scope, item.material),
+                                 (row["key"], row["name"], "STK-001", sup.DETECTION, "version", row["material"]))
+                self.assertEqual((item.area_m2, item.volume_m3), (row["area_m2"], row["volume_m3"]))
+                self.assertEqual(item.state, entities.EntityState.CURRENT)
+        self.assertEqual(supported_store.removable_stockpiles(self.project, self.v2.uid), (), "V02 no tiene detección")
 
     def test_a_closing_the_steps_halfway_leaves_nothing(self) -> None:
         """RF-015-29, RNF-016-05: con un presupuesto de 0 s son varios pasos y cerrar el generador a mitad (Esc) o justo antes del último
@@ -485,6 +505,9 @@ class RemovalOperationTest(RemovalCase):
         (recalculada), no."""
         self.change(design_params.entity_key("STK-001", "margin_m"), 8.0)
         self.assertEqual(entities.registry(self.project, self.v1.uid).get("STK-001").record.state, entities.EntityState.STALE)
+        offered = supported_store.removable_stockpiles(self.project, self.v1.uid)
+        self.assertEqual([item.state for item in offered], [entities.EntityState.STALE] * 5,
+                         "el diálogo los sigue ofreciendo, con su estado: calcular dice qué cambió")
         error = self.refused(asked("Otra retirada", "Acopio 4", start="entity:RMV-003"), "des.removal_detection_stale")
         self.assertEqual((error.values["stockpile"], error.values["detection"]), ("Acopio 4", "Acopios"))
         self.assertTrue(error.values["cause"])

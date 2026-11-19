@@ -150,6 +150,14 @@ las de apoyo, :func:`platform_support_items`) y el resumen de su cálculo (:func
 relleno de la huella y del borde, el mayor desmonte o relleno del borde y «sin contrapendientes», y sus avisos y lo que
 quedará obsoleto: el resumen de ``design.preview.PlatformSummary``).
 
+**«Retirar un acopio…»** (spec 016, T20 (b); HU-016-2; RF-016-11 a RF-016-15; plan 016 §5.3.3, §5.5; comprobación manual M1): las listas de
+su diálogo (:func:`refresh_removal_choices`: los acopios de las detecciones de la versión activa y del proyecto con su detección y su
+estado, :func:`removal_stockpile_items` y :func:`removal_stockpile`; la partida es la de «Plataforma…», :func:`platform_start_items`, que
+ofrece también la superficie de cada retirada de la cadena), **lo que se apoya en el acopio elegido, antes de calcular**
+(:func:`show_resting`, :func:`resting_lines` y :func:`draw_resting`: una sola lista, en ámbar, o por qué no se pudo leer) y el resumen de
+su cálculo (:func:`_removal_lines`: lo retirado, lo apoyado, la transición, lo no retirado, la pared y su motivo, la lista de lo que se
+apoyaba y sus avisos; el resumen de ``design.preview.RemovalSummary``).
+
 **La barra N «Entidad»** (spec 015, T28; HU-015-1; RF-015-25, RF-010-06; D-12): el panel
 ``GEOBLENDER_PT_des_entity`` (de la Vista 3D) enseña, del objeto ``DESIGN_ENTITY`` activo (la huella y el eje de una
 entidad cargados en la vista por ``bl.scene.entity_views``), lo que dice de ella el proyecto
@@ -214,6 +222,7 @@ if TYPE_CHECKING:  # solo para los tipos: habilitar no importa el cálculo (RNF-
     from ...design.model import EnvelopeRequest, QuarryRequest, SeedSource, WorkDomain, Zone
     from ...design.sectors import DesignSector, OrphanSlope
     from ...design.steps import Calculation
+    from ...design.supported_store import StockpileChoice
 
 LOGGER = logging.getLogger("geoblender.bl.ui")
 TRANSLATION_CONTEXT = "Geoblender"
@@ -627,11 +636,24 @@ class _Choices:
     platform_supports: list[tuple[str, str, str]] = field(default_factory=list)
     platform_names: list[str] = field(default_factory=list)
     platform_start: str | None = None
+    removal_stockpiles: list[tuple[str, str, str]] = field(default_factory=list)
+    removal_by_ref: dict[str, StockpileChoice] = field(default_factory=dict)
     by_id: dict[str, res_surfaces.SurfaceChoice] = field(default_factory=dict)
     key: tuple[str, str, str] | None = None
 
 
 _CHOICES = _Choices()
+
+
+@dataclass
+class _Resting:
+    """Lo que dice el diálogo de «Retirar un acopio…» de **lo que se le apoya** al acopio elegido, leído **antes de calcular** (spec 016,
+    T20 (b); RF-016-14): sus líneas ya traducidas, cada una con si va en alerta; vacío, nada que enseñar (sin acopio o sin partida)."""
+
+    lines: list[tuple[str, bool]] = field(default_factory=list)
+
+
+_RESTING = _Resting()
 
 
 def _fixed_choices() -> None:
@@ -880,11 +902,20 @@ def _platform_entities(project: Any, version: str) -> tuple[list[tuple[str, str,
         record = entry.record
         if record.state in (entities.EntityState.UNCALCULATED, entities.EntityState.DISCARDED):
             continue  # sin superficie que leer
+        spec = entities.entity_type(record.kind)
+        if spec.surface_role is None:
+            continue  # un tipo que no deja una superficie (la detección de acopios, spec 016): no es una partida
         last = record.code in tails
-        items.append((entities.surface_ref(record.code),
-                      tr("Platform «{name}» ({code})", name=record.name, code=record.code),
-                      tr("Surface of the platform, the last of its chain") if last
-                      else tr("Surface of a platform that another one starts from")))
+        if record.kind == entities.EntityKind.PLATFORM:
+            label = tr("Platform «{name}» ({code})", name=record.name, code=record.code)
+            about = (tr("Surface of the platform, the last of its chain") if last
+                     else tr("Surface of a platform that another one starts from"))
+        else:  # el tipo de la 016 (una retirada…): su nombre visible, el de su operación
+            label = tr("{kind} «{name}» ({code})", kind=entities.kind_label(spec.op_type, language()), name=record.name,
+                       code=record.code)
+            about = (tr("Surface of the entity, the last of its chain") if last
+                     else tr("Surface of an entity that another one starts from"))
+        items.append((entities.surface_ref(record.code), label, about))
     usable = {item[0] for item in items}
     start = next((entities.surface_ref(code) for code in reversed(tails)
                   if entities.surface_ref(code) in usable), None)
@@ -997,6 +1028,86 @@ def platform_names() -> list[str]:
     return list(_CHOICES.platform_names)
 
 
+def _fixed_choices_removal() -> None:
+    """La lista de «Retirar un acopio…» sin nada del proyecto: «—» (sin ninguna detección de acopios)."""
+    _CHOICES.removal_stockpiles = [(NO_ZONE, NOT_SHOWN, tr("There is no detection of stockpiles in the project or in the active "
+                                                           "version"))]
+    _CHOICES.removal_by_ref = {}
+
+
+def _stockpile_label(item: StockpileChoice) -> str:
+    """Lo que dice la lista del acopio ``item``: su nombre y su detección, y «obsoleta» si lo está."""
+    if item.state == "stale":
+        return tr("{name} ({detection}) · detection out of date", name=item.name, detection=item.detection)
+    return tr("{name} ({detection})", name=item.name, detection=item.detection)
+
+
+def _stockpile_about(item: StockpileChoice) -> str:
+    """La descripción del acopio ``item`` en la lista: su detección y de dónde es, su volumen y su área; la obsoleta, lo que hay que hacer."""
+    where = tr("of the project") if item.scope == "project" else tr("of the active version")
+    about = tr("Stockpile of the detection «{detection}» ({code}) {where}: {volume} m³ in {area} m²",
+               detection=item.detection_name, code=item.detection, where=where, volume=_number(item.volume_m3),
+               area=_number(item.area_m2))
+    if item.state == "stale":
+        return f"{about}. " + tr("The detection is out of date: recompute it before removing the stockpile")
+    return about
+
+
+def refresh_removal_choices(project: Any) -> None:
+    """Vuelve a leer de ``project`` los acopios que ofrece «Retirar un acopio…» (spec 016, T20 (b); plan 016 §5.3.3:
+    ``design.supported_store.removable_stockpiles``: los de las detecciones de la versión activa y del proyecto, con la obsoleta marcada) y
+    los guarda para :func:`removal_stockpile_items` y :func:`removal_stockpile`. Sin versión activa, ninguno. Si no se puede leer, el error
+    sigue y la lista queda vacía."""
+    from ...design import supported_store  # al usarlo: habilitar no carga el cálculo
+
+    _fixed_choices_removal()
+    version = scene_versions.active_version() or ""
+    found = supported_store.removable_stockpiles(project, version) if version else ()
+    if found:
+        _CHOICES.removal_stockpiles = [(item.ref, _stockpile_label(item), _stockpile_about(item)) for item in found]
+        _CHOICES.removal_by_ref = {item.ref: item for item in found}
+
+
+def removal_stockpile_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Los acopios que ofrece «Retirar un acopio…» (spec 016, T20 (b); una lista viva del módulo); sin ninguno, «—»."""
+    if not _CHOICES.removal_stockpiles:
+        _fixed_choices_removal()
+    return _CHOICES.removal_stockpiles
+
+
+def removal_stockpile(ref: str) -> StockpileChoice | None:
+    """El acopio ofrecido de referencia ``ref`` (``STK-001#Acopio 1``) o ``None`` si la lista no lo tiene."""
+    return _CHOICES.removal_by_ref.get(ref)
+
+
+def has_removal_stockpiles() -> bool:
+    """Si la lista de «Retirar un acopio…» ofrece algún acopio."""
+    return bool(_CHOICES.removal_by_ref)
+
+
+def show_resting(lines: Sequence[tuple[str, bool]]) -> None:
+    """Deja ``lines`` (texto ya traducido y si va en alerta) como lo que dice el diálogo de «Retirar un acopio…» de lo que se apoya en el
+    acopio elegido (RF-016-14); sin líneas, lo vacía."""
+    _RESTING.lines = list(lines)
+
+
+def resting_lines() -> list[tuple[str, bool]]:
+    """Lo que dice ahora el diálogo de lo que se apoya en el acopio elegido (:func:`show_resting`)."""
+    return list(_RESTING.lines)
+
+
+def draw_resting(layout: Any, width_px: int) -> None:
+    """La lista de lo que se apoya en el acopio elegido (spec 016, T20 (b); RF-016-14, A7: **una sola lista, antes de calcular**) en un diálogo
+    de ``width_px``: su título y cada línea partida al ancho, en ámbar lo que se apoya y lo que no se pudo leer."""
+    if not _RESTING.lines:
+        return
+    width = labels.dialog_width(width_px)
+    box = layout.box()
+    box.label(text=tr("What rests on the stockpile"), translate=False)
+    for text, alert in _RESTING.lines:
+        _draw_text(box, text, width, alert=alert)
+
+
 def forget_choices() -> None:
     """Olvida las listas leídas (al desregistrar)."""
     _CHOICES.key = None
@@ -1006,6 +1117,8 @@ def forget_choices() -> None:
     _CHOICES.platform_layers, _CHOICES.platform_kinds = [], {}
     _CHOICES.platform_starts, _CHOICES.platform_supports = [], []
     _CHOICES.platform_names, _CHOICES.platform_start = [], None
+    _CHOICES.removal_stockpiles, _CHOICES.removal_by_ref = [], {}
+    _RESTING.lines = []
     _CHOICES.by_id = {}
 
 
@@ -1314,6 +1427,43 @@ def _platform_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     return lines
 
 
+def _removal_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+    """El resumen de una retirada de un acopio calculada (``design.removal.RemovalOutcome`` y ``design.preview.RemovalSummary``; spec
+    016, T20 (b); RF-016-13 a RF-016-15; M1): lo retirado, lo apoyado, la transición con su área y lo no retirado donde las máscaras no lo
+    admiten, el ángulo y el factor de malla de la transición, la pared que deja (en ámbar, o que no deja ninguna), **la lista única de lo
+    que se le apoyaba** (en ámbar: no se crea sin confirmarlo) y el motivo de la pared (o que lo pide). Los avisos y lo que quedará obsoleto
+    los añade :func:`summary_lines`."""
+    outcome, summary = calculation.outcome, calculation.summary
+    lines = [(tr("Removal «{name}» ({code}) of the stockpile «{stockpile}»: {removed} m³ removed", name=calculation.name,
+                 code=outcome.code,  # type: ignore[union-attr]
+                 stockpile=summary.stockpile_name,  # type: ignore[union-attr]
+                 removed=_number(outcome.removed_m3)), False),  # type: ignore[union-attr]
+             (tr("Resting on it: {resting} m³ · transition: {transition} m³ over {area} m² · not removed: {kept} m³",
+                 resting=_number(outcome.resting_m3),  # type: ignore[union-attr]
+                 transition=_number(outcome.transition_m3),  # type: ignore[union-attr]
+                 area=_number(outcome.transition_m2),  # type: ignore[union-attr]
+                 kept=_number(outcome.kept_m3)), False),  # type: ignore[union-attr]
+             (tr("Transition at {angle}° with mesh factor {factor}", angle=_number(outcome.transition_deg, 1),  # type: ignore[union-attr]
+                 factor=_number(outcome.mesh_factor, 2)), False)]  # type: ignore[union-attr]
+    height, angle = summary.wall_height_m, summary.wall_angle_deg  # type: ignore[union-attr]
+    if height is None or angle is None:
+        lines.append((tr("No wall left at the edge of what is removed"), False))
+    else:
+        lines.append((tr("Wall left at the edge: {height} m at {angle}°", height=_number(height, 1), angle=_number(angle, 1)),
+                      True))
+    prepared = calculation.entity
+    lines.extend((row.text(language()), True) for row in prepared.resting)  # type: ignore[union-attr]
+    wall = outcome.wall  # type: ignore[union-attr]
+    given = (prepared.job.request.wall_reason or "").strip()  # type: ignore[union-attr]
+    if calculation.needs_wall_reason and wall is not None:
+        lines.append((tr("The wall passes {angle}° and {height} m: it needs a reason that stays recorded. Write it in the dialog and "
+                         "calculate again", angle=_number(wall.reason_min_angle_deg, 0), height=_number(wall.reason_min_height_m, 0))
+                      if not given else tr("Reason for the wall: {reason}", reason=given), not given))
+    elif given and wall is not None and wall.stretches:
+        lines.append((tr("Reason for the wall: {reason}", reason=given), False))
+    return lines
+
+
 def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de un cálculo hecho y sin registrar (RF-013-31), línea a línea y en el idioma de
     Geoblender, con los avisos al final y en alerta: de una envolvente, sus celdas, su área, sus
@@ -1327,6 +1477,8 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     lines: list[tuple[str, bool]] = []
     if calculation.op_type == design_provenance.PLATFORM:
         lines.extend(_platform_lines(calculation))
+    elif calculation.op_type == design_provenance.STOCKPILE_REMOVAL:
+        lines.extend(_removal_lines(calculation))
     elif calculation.op_type == design_provenance.QUARRY:
         lines.extend(_quarry_lines(calculation.outcome))
     elif calculation.op_type == design_provenance.REFIT:
@@ -1458,6 +1610,9 @@ def show_summary(calculation: Calculation | None) -> None:
                    version=calculation.version)
     elif calculation.op_type == design_provenance.PLATFORM:
         title = tr("Platform «{name}» in {version}", name=calculation.name,
+                   version=calculation.version)
+    elif calculation.op_type == design_provenance.STOCKPILE_REMOVAL:
+        title = tr("Removal of a stockpile «{name}» in {version}", name=calculation.name,
                    version=calculation.version)
     else:
         title = tr("Benching «{name}» in {version}", name=calculation.name,

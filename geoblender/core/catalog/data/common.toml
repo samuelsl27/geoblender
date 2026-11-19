@@ -673,3 +673,16 @@ description.es = "Inserta una plataforma nueva antes o después de otra entidad 
 entry = "015"
 action = "D"
 frequency = 1
+
+# La retirada de un acopio (spec 016, T20; HU-016-2; RF-016-11 a RF-016-15): interna. La lanza «Acopio (detectar, retirar)…» cuando la
+# entregue la T35 (entre tanto, por su nombre desde la consola de Python: M1); es de la entrada 016, que la entrega.
+[[command]]
+key = "geoblender.des_remove_stockpile"
+kind = "internal"
+label.en = "Remove a stockpile…"
+label.es = "Retirar un acopio…"
+description.en = "Remove a stockpile detected in the active version: its footprint goes down to its base, joined with the ground by a transition, and what rests on it is listed before calculating"
+description.es = "Retira un acopio detectado en la versión activa: deja su huella en su base, unida al terreno por una transición, y enseña antes de calcular lo que se le apoya"
+entry = "016"
+action = "D"
+frequency = 1

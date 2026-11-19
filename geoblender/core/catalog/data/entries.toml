@@ -107,6 +107,14 @@ title.en = "Parametric design entities"
 title.es = "Entidades de diseño paramétricas"
 delivered = true
 
+# La spec 016 (acopios, contrafuerte y cuerpos apoyados) es la segunda de R-36 (plan 016 §5.5, T20): su orden de retirar un acopio
+# pasa de R-36 a la 016 y la entrega con su clase real. El resto de lo suyo (Acopio…, Contrafuerte…, Cuerpo apoyado…, detectar y los
+# candidatos) sigue en R-36, sin entregar, hasta que la T35 los pase a la 016 con su menú.
+["016"]
+title.en = "Stockpiles, buttress and supported bodies"
+title.es = "Acopios, contrafuerte y cuerpos apoyados"
+delivered = true
+
 ["R-07"]
 title.en = "Versions and provenance"
 title.es = "Versiones y procedencia"

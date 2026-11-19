@@ -9561,3 +9561,133 @@ es = "Distancia máxima a los datos de espesor"
 
 ["Thickness zero at the edge of the footprint"]
 es = "Espesor cero en el borde de la huella"
+
+# Retirar un acopio… (spec 016, T20 (b); las órdenes de bl/ops/des.py y los resúmenes de bl/ui/des_panels.py).
+["There is no detection of stockpiles in the project or in the active version"]
+es = "No hay ninguna detección de acopios en el proyecto ni en la versión activa"
+
+["{name} ({detection}) · detection out of date"]
+es = "{name} ({detection}) · detección obsoleta"
+
+["{name} ({detection})"]
+es = "{name} ({detection})"
+
+["of the project"]
+es = "del proyecto"
+
+["of the active version"]
+es = "de la versión activa"
+
+["Stockpile of the detection «{detection}» ({code}) {where}: {volume} m³ in {area} m²"]
+es = "Acopio de la detección «{detection}» ({code}) {where}: {volume} m³ en {area} m²"
+
+["The detection is out of date: recompute it before removing the stockpile"]
+es = "La detección está obsoleta: recalcúlela antes de retirar el acopio"
+
+["What rests on the stockpile"]
+es = "Lo que se apoya en el acopio"
+
+["Removal «{name}» ({code}) of the stockpile «{stockpile}»: {removed} m³ removed"]
+es = "Retirada «{name}» ({code}) del acopio «{stockpile}»: {removed} m³ retirados"
+
+["Resting on it: {resting} m³ · transition: {transition} m³ over {area} m² · not removed: {kept} m³"]
+es = "Apoyado en él: {resting} m³ · transición: {transition} m³ en {area} m² · sin retirar: {kept} m³"
+
+["Transition at {angle}° with mesh factor {factor}"]
+es = "Transición a {angle}° con factor de malla {factor}"
+
+["No wall left at the edge of what is removed"]
+es = "Sin pared en el borde de lo retirado"
+
+["Wall left at the edge: {height} m at {angle}°"]
+es = "Pared en el borde: {height} m a {angle}°"
+
+["The wall passes {angle}° and {height} m: it needs a reason that stays recorded. Write it in the dialog and calculate again"]
+es = "La pared pasa de {angle}° y {height} m: pide un motivo que queda registrado. Escríbalo en el diálogo y calcule de nuevo"
+
+["Reason for the wall: {reason}"]
+es = "Motivo de la pared: {reason}"
+
+["Removal of a stockpile «{name}» in {version}"]
+es = "Retirada de un acopio «{name}» en {version}"
+
+["{kind} «{name}» ({code})"]
+es = "{kind} «{name}» ({code})"
+
+["Surface of the entity, the last of its chain"]
+es = "Superficie de la entidad, la última de su cadena"
+
+["Surface of an entity that another one starts from"]
+es = "Superficie de una entidad de la que parte otra"
+
+["The stockpile is not removed without your express confirmation: the button that creates the removal confirms it"]
+es = "El acopio no se retira sin su confirmación expresa: el botón que crea la retirada la confirma"
+
+["Nothing rests on the stockpile"]
+es = "Nada se apoya en el acopio"
+
+["There is no detection of stockpiles in the project or in the active version: detect the stockpiles first"]
+es = "No hay ninguna detección de acopios en el proyecto ni en la versión activa: detecte antes los acopios"
+
+["Transition at the edge of the stockpile"]
+es = "Transición en el borde del acopio"
+
+["Write the name of the removal"]
+es = "Escriba el nombre de la retirada"
+
+["Choose the stockpile to remove"]
+es = "Elija el acopio que se retira"
+
+["Choose the start surface of the removal"]
+es = "Elija la superficie de partida de la retirada"
+
+["Confirm what rests on it and the wall, and create"]
+es = "Confirmar lo que se le apoya y la pared, y crear"
+
+["Confirm what rests on it and create"]
+es = "Confirmar lo que se le apoya y crear"
+
+["Confirm the wall and create"]
+es = "Confirmar la pared y crear"
+
+["Removal of the stockpile «{name}» created in {version}"]
+es = "Retirada del acopio «{name}» creada en {version}"
+
+["Computing the removal of the stockpile… {percent} % · Esc: cancel"]
+es = "Calculando la retirada del acopio… {percent} % · Esc: cancelar"
+
+["Removal of «{stockpile}»"]
+es = "Retirada de «{stockpile}»"
+
+["stockpile"]
+es = "acopio"
+
+["Name of the removal, unique in the active version"]
+es = "Nombre de la retirada, único en la versión activa"
+
+["Stockpile"]
+es = "Acopio"
+
+["Stockpile to remove: one of the detections of the active version or of the project; one whose detection is out of date is refused, saying what changed"]
+es = "Acopio que se retira: uno de las detecciones de la versión activa o del proyecto; el de una detección obsoleta se rechaza, diciendo qué cambió"
+
+["Surface the stockpile is removed from: the ground, a design surface or the surface of another entity (by default, the last of the chain)"]
+es = "Superficie de la que se retira el acopio: el terreno, una superficie de diseño o la superficie de otra entidad (por defecto, la última de la cadena)"
+
+["Transition angle (°)"]
+es = "Ángulo de transición (°)"
+
+["Angle of the slope that joins the removed footprint with the rest of the surface, in degrees; it has no default value: you choose it"]
+es = "Ángulo del talud que une la huella retirada con el resto de la superficie, en grados; no tiene valor por defecto: lo elige usted"
+
+["Factor of the mesh of the transition (empty: the default value)"]
+es = "Factor de malla de la transición (vacío: el valor por defecto)"
+
+["How the distance to the footprint is measured in the transition: the 5×5 chamfer (fast, with the scale of the grid) or the exact Euclidean distance"]
+es = "Cómo se mide la distancia a la huella en la transición: el chaflán 5×5 (rápido, con la escala de la rejilla) o la distancia euclídea exacta"
+
+["Reason for the wall"]
+es = "Motivo de la pared"
+
+["Why you accept the wall that removing the stockpile may leave at the edge of what is removed: it is needed only if the wall passes the height and the angle that ask for a reason, and it is recorded with the removal"]
+es = "Por qué acepta la pared que puede dejar retirar el acopio en el borde de lo retirado: solo hace falta si la pared pasa de la altura y del ángulo que piden un motivo, y queda registrado con la retirada"
