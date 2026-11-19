@@ -42,6 +42,12 @@ después), para rejillas pequeñas (≤ 90 × 90 celdas):
   uno, la altura (mayor cota menos menor cota de sus parejas), la inclinación de su peor pareja, su mayor salto creado y
   el punto medio de esa pareja, un bucle de Python por pareja sin numpy, para comparar con ``design.removal``
   (RF-016-15).
+- :func:`hand_buttress` (spec 016, T26; plan 016 A10): el contrafuerte **a mano**: las semillas (la zona de coronación con la
+  superficie por debajo de la cota de coronación), la envolvente descendente (la euclídea por fuerza bruta o el *chamfer* de
+  :func:`dijkstra`, con el alcance), el escalonado en relleno de :func:`hand_stairs` (en racionales), su recorte final (la
+  envolvente ascendente de :func:`dijkstra` con la cara por el factor de malla y ``mín(recorte, S)``), la composición
+  ``máx(partida, recorte)`` donde se admite el relleno y las cifras (volumen, área y altura máxima) como un bucle de Python
+  por celda con ``fsum``, para comparar con ``design.buttress`` (RF-016-17).
 
 Convenciones: ``seed`` es la rejilla de semillas (fila 0 al norte): una celda es semilla si su cota
 es finita; ``+inf``, ``−inf`` y NaN no lo son. ``direction="up"`` es ``E_up = mín_q [s + t·d]`` y
@@ -65,6 +71,7 @@ __all__ = [
     "CHAMFER5",
     "CHAMFER_SCALE",
     "Displacement",
+    "HandButtress",
     "HandFootprint",
     "HandLayers",
     "HandPlane",
@@ -74,6 +81,7 @@ __all__ = [
     "brute_force_euclidean",
     "dijkstra",
     "euclidean_displacements",
+    "hand_buttress",
     "hand_cell_slope_deg",
     "hand_crown",
     "hand_dilate",
@@ -779,3 +787,77 @@ def hand_wall(z: Sequence[Sequence[float]], surface: Sequence[Sequence[float]], 
             len(mine), max(levels) - min(levels), worst[4], max(item[5] for item in mine),
             west + (worst[1] + 1) * dx / 2.0, north - (worst[0] + 1) * dy / 2.0))
     return HandWall(edge, over, tuple(stretches))
+
+
+# --- El contrafuerte, a mano (spec 016, T26; plan 016 A10) ---------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class HandButtress:
+    """Lo que da :func:`hand_buttress`, todo ``(filas, columnas)``: las ``seeds`` (booleana), la ``envelope`` descendente (m;
+    NaN más allá del alcance), el escalonado en relleno ``stairs``, su recorte ``stepped``, la ``surface`` de diseño y las
+    cifras: el ``volume_m3`` (lo que la superficie sube sobre la de partida), el ``area_m2`` (las celdas que suben), las
+    ``cells`` que suben y la ``height_max_m`` (lo más que sube una celda; 0 si ninguna)."""
+
+    seeds: np.ndarray
+    envelope: np.ndarray
+    stairs: np.ndarray
+    stepped: np.ndarray
+    surface: np.ndarray
+    volume_m3: float
+    area_m2: float
+    cells: int
+    height_max_m: float
+
+
+def hand_buttress(start: object, zone: object, allowed: object, *, crown: float, height: float, tan_face: float,
+                  berm: float, anchor: float, mesh: float = 1.0, step: float, metric: str = "exact",
+                  reach: float | None = None) -> HandButtress:
+    """A10 a mano (RF-016-17): el contrafuerte de la zona de coronación ``zone`` (booleana) sobre la superficie ``start`` (NaN,
+    sin dato) en el relleno admitido ``allowed`` (booleana), con celdas de ``step`` m de lado, la cota de coronación ``crown``
+    y el perfil ``height``, ``tan_face``, ``berm`` y ``anchor`` con su factor de malla ``mesh``. Las semillas son las celdas
+    de la zona con dato y ``start < crown``, a la cota ``crown``; la envolvente descendente de las semillas tiene la
+    tangente del talud general por el factor de malla, ``mesh · h / (h/tan α + B)``, con la distancia euclídea entre centros
+    (``metric="exact"``: :func:`brute_force_euclidean`) o el *chamfer* 5×5 (``"chamfer5"``: :func:`dijkstra`), y NaN más
+    allá de ``reach`` (m) si se da; el escalonado es el de :func:`hand_stairs` en relleno (racionales); su recorte, la
+    envolvente ascendente de :func:`dijkstra` con ``tan α · mesh`` (siempre el *chamfer*, como el recorte de la 013)
+    acotada por la envolvente; y la superficie, ``máx(start, recorte)`` en las celdas admitidas con dato en las dos y
+    ``start`` en las demás. Las cifras: un bucle de Python por celda, la suma con ``fsum``."""
+    level = np.asarray(start, dtype=np.float64)
+    inside = np.asarray(zone, dtype=bool)
+    admitted = np.asarray(allowed, dtype=bool)
+    nrows, ncols = level.shape
+    tangent = mesh * height / (height / tan_face + berm)
+    seeds = np.zeros(level.shape, dtype=bool)
+    seed_levels = np.full(level.shape, np.nan)
+    for r in range(nrows):
+        for c in range(ncols):
+            if inside[r, c] and math.isfinite(level[r, c]) and level[r, c] < crown:
+                seeds[r, c] = True
+                seed_levels[r, c] = crown
+    if metric == "exact":
+        envelope = brute_force_euclidean(seed_levels, tangent, step, direction="down")
+    elif metric == "chamfer5":
+        envelope = dijkstra(seed_levels, tangent, step, direction="down")
+    else:
+        raise ValueError(f"la métrica es «exact» o «chamfer5», no {metric!r}")
+    if reach is not None:
+        origin = np.where(seeds, 0.0, np.nan)
+        far = (brute_force_euclidean(origin, 1.0, step, direction="up") if metric == "exact"
+               else dijkstra(origin, 1.0, step, direction="up"))
+        envelope = np.where(far > reach, np.nan, envelope)
+    stairs = hand_stairs(envelope, height, tan_face, berm, anchor, fill=True)
+    finite = np.isfinite(stairs)
+    trimmed = dijkstra(np.where(finite, stairs, np.nan), tan_face * mesh, step, direction="up")
+    stepped = np.where(finite, np.minimum(trimmed, envelope), np.nan)
+    surface = level.copy()
+    rise: list[float] = []
+    for r in range(nrows):
+        for c in range(ncols):
+            if admitted[r, c] and math.isfinite(level[r, c]) and math.isfinite(stepped[r, c]):
+                surface[r, c] = max(level[r, c], stepped[r, c])
+            if surface[r, c] > level[r, c]:
+                rise.append(float(surface[r, c] - level[r, c]))
+    area = step * step
+    return HandButtress(seeds, envelope, stairs, stepped, surface, math.fsum(rise) * area, len(rise) * area, len(rise),
+                        max(rise, default=0.0))

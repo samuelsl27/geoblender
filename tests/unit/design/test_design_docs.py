@@ -199,6 +199,8 @@ PENDING_015_MODULES: frozenset[str] = frozenset({
     "design.supported_store",
     # La 016, T23: la regla del espesor y el cuerpo apoyado (A11); T24 le parte el TIN en pasos.
     "design.thickness",
+    # La 016, T26: el contrafuerte (A10): la semilla en la coronación, el escalonado en relleno y la composición sin corte.
+    "design.buttress",
 })
 
 
