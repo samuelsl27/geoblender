@@ -35,9 +35,10 @@ patrón que siguen el cuerpo apoyado (T25) y el contrafuerte (T27)**. Dominio pu
   bit a bit.
 
 **La detección del acopio** se busca en la versión y, si no está, en el proyecto (una versión puede consumir un dato del proyecto,
-RF-009-05): el código ``STK-001`` es correlativo por ámbito y, si lo tienen los dos, manda el de la versión. La retirada de una
-detección **del proyecto** no deja «apoyo retirado» a nadie en la versión (nada se apoya en ella por el registro de la versión;
-la lista de :func:`~.removal.resting_on` es lo único que la nombra).
+RF-009-05): el código ``STK-001`` es correlativo por ámbito y, si lo tienen los dos, manda el de la versión. **Lo que se le apoyaba al acopio**
+(la lista de :func:`~.removal.resting_on`, la que se listó y se confirmó) **queda anotado en los ajustes de la operación**
+(:data:`~.provenance.REMOVAL_RESTING`: :func:`~.removal.resting_record`, que rehace cada recálculo): es lo que lee «apoyo retirado» (P-9,
+``design.entities``) con una detección **del proyecto** o con el relleno hecho **antes** que la detección (T45; hallazgos S-1 y B-1).
 
 **El cuerpo apoyado** (spec 016, T25; HU-016-4; RF-016-20 a RF-016-22, RF-015-02, RF-015-03, RF-015-29; RNF-016-07; plan 016 §5.2.3,
 §5.3.2, §5.4 A11): el mismo patrón —:func:`prepare_body_units` → :func:`body_compute_steps` (puro, compartido con la reproducción) →
@@ -717,9 +718,12 @@ def prepare_removal_units(project: StoreProject, request: RemovalRequest, versio
     removed = (detection.stockpiles.name, found.material.base.name, detection.detected.name)
     inputs = provenance.removal_inputs(request, start_name, removed, masks.uses(), supported)
     inputs = (*inputs, *(use for use in footprints if use not in inputs))
+    settings = provenance.removal_settings(request, chosen)
+    listed = removal.resting_record(resting)
+    if listed:  # lo que se le apoyaba, anotado: «apoyo retirado» lo lee sin las cifras del relleno (T45; S-1, B-1)
+        settings = {**settings, provenance.REMOVAL_RESTING: listed}
     begun = _start(project, provenance.STOCKPILE_REMOVAL, request.name, version, masks,  # type: ignore[arg-type]
-                   provenance.removal_settings(request, chosen), inputs,
-                   provenance.removal_params(chosen, request, supports=reads), supersedes)
+                   settings, inputs, provenance.removal_params(chosen, request, supports=reads), supersedes)
     yield
     row = found.row
     runs = tuple(tuple(int(value) for value in run) for run in json.loads(str(row["footprint"])))

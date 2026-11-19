@@ -67,7 +67,8 @@ superficie de apoyo de la petición ya son entradas al preparar (:func:`prepare_
 su huella, y se registran **aunque no apoyen nada**. :func:`detected_supports` lo enseña antes de crear. **En un acopio** (spec 016,
 T15; RF-016-14, P-1): :func:`survey_supports` mide además sobre **cada acopio** de las detecciones de acopios de la versión
 (:func:`read_stockpile_footprints`: la huella de cada fila de su ``des_stk_``), todos sobre la superficie con que se detectó
-(``des_stp_``), y cada uno que recibe relleno es un :class:`~.entities.Support` con su clave. **Insertar
+(``des_stp_``), y cada uno que recibe relleno es un :class:`~.entities.Support` con su clave; también los de las detecciones **del proyecto** (T45, S-1:
+:func:`_with_project_detections`). **Insertar
 antes o después de otra** (T31; RF-015-05): con ``insert_before`` (la entidad que hoy parte de la misma superficie) la
 preparación no rechaza esa partida ocupada y lleva en ``PreparedPlatform.insertion`` el cambio de la partida de esa
 entidad (``entities.insert_before``, con su motivo); :func:`apply_insertion` lo escribe con el gancho de «Crear», en la
@@ -1285,6 +1286,9 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
 
         rows = _stockpile_rows(rows, origin, request.name)
         resting = removal.resting_on(project, version, origin.item, start_name, detected_on=origin.detected_on)
+        listed = removal.resting_record(resting)
+        if listed:  # lo que se le apoyaba, anotado: «apoyo retirado» lo lee sin las cifras del relleno (T45; S-1, B-1)
+            begun = replace(begun, settings={**begun.settings, provenance.REMOVAL_RESTING: listed})
         yield
     return PreparedPlatform(job, footprint, begun, chosen, fid, rows, MappingProxyType(common),
                             start_name, support_name, code is not None, insertion,
@@ -1964,7 +1968,8 @@ def survey_supports(project: StoreProject, version: Version, results: Sequence[n
     fila de su ``des_stk_`` cada uno, :func:`_footprints_of`), todos sobre la superficie con que se detectó (``des_stp_``, que se lee
     una sola vez), y cada acopio que recibe relleno es un :class:`~.entities.Support` con su clave. Lo que la operación ya tenía como
     entrada de una detección no se «declara» acopio por acopio (la entrada no dice cuáles se apoyaban): un acopio sobre el que ya no se
-    rellena no sale. Las detecciones **del proyecto** no están en el registro de la versión y no se miden.
+    rellena no sale. **Las detecciones del proyecto** (spec 016, T45; hallazgo S-1; D-15) se miden igual (:func:`_with_project_detections`: sus acopios,
+    con la superficie y la tabla **del proyecto** como entradas), salvo las que tapa una de la versión del mismo código o con un dato del mismo nombre.
 
     **Coste:** con la versión sin entidades, ni se llama (``design.store`` lo comprueba con una consulta).
     Si no hay celdas que suban más del espesor mínimo y nada declarado, solo se lee el registro; las huellas
@@ -1973,7 +1978,9 @@ def survey_supports(project: StoreProject, version: Version, results: Sequence[n
     held = {name for name, role in inputs if role == provenance.SUPPORTED_ON_ROLE}
     with _consistent(project) as conn:
         found = entities.registry(project, version.uid, conn=conn)
-        wanted = entity_surfaces(conn, found, skip={*_unsupportable(found, own_code, set(written)), *released})
+        skipped = {*_unsupportable(found, own_code, set(written)), *released}
+        wanted = entity_surfaces(conn, found, skip=skipped)
+        wanted = _with_project_detections(project, conn, version, found, wanted, skipped)
         thickness = _min_thickness(conn, project, version)
     if not wanted:
         return SupportSurvey()
@@ -2019,6 +2026,29 @@ def survey_supports(project: StoreProject, version: Version, results: Sequence[n
         item for array in arrays for item in entities.detect_supports(
             array, ground, surfaces, cells, thickness, area, declared=sorted(registered & set(cells))))
     return SupportSurvey(best, MappingProxyType({item.code: wanted[item.code] for item in best}))
+
+
+def _with_project_detections(project: StoreProject, conn: sqlite3.Connection, version: Version, listed: EntityRegistry,
+                             wanted: dict[str, EntitySurface], skip: Collection[str]) -> dict[str, EntitySurface]:
+    """``wanted`` (lo vivo en lo que puede apoyarse algo en ``version``: :func:`entity_surfaces`) **más las detecciones de acopios del proyecto**
+    (spec 016, T45; RF-015-15, RF-016-14; D-15, hallazgo S-1): detectar sobre una superficie del proyecto —el terreno— es lo normal, y lo que se
+    rellena en una versión sobre un acopio suyo se apoya en él como si la detección fuera de la versión (``stockpile_store.detections_on`` da las
+    dos). Sin detecciones del proyecto, ``wanted`` igual y una consulta de más. **La de la versión tapa a la del proyecto de su mismo código**
+    (``supported_store._locate``: ``STK-001`` es correlativo por ámbito) y la que tiene un dato (su superficie o su tabla) **del mismo nombre que uno
+    de la versión** tampoco se mide: la operación consume por nombre, el de la versión antes que el del proyecto (``docs/trampas.md`` §6), y
+    anotaría el que no es. Ninguna de las dos se mide a medias: no se apoya en ella. Las ``skip`` (lo que soltó la persona) tampoco."""
+    registry = entities.project_registry(project, conn=conn)
+    if not len(registry):
+        return wanted
+    shadowed = {entry.record.code for entry in listed}
+    extra: dict[str, EntitySurface] = {}
+    for code, where in entity_surfaces(conn, registry, skip={*skip, *shadowed}, kinds=(entities.EntityKind.STOCKPILE,)).items():
+        names = (where.surface, where.table)
+        if not any((own := dataset_registry.get(conn, name, version_uid=version.uid)) is not None and own.live for name in names):
+            extra[code] = where
+    if not extra:
+        return wanted
+    return dict(sorted({**wanted, **extra}.items(), key=lambda item: entities.code_order(item[0])))
 
 
 def _footprints_of(conn: sqlite3.Connection, where: EntitySurface) -> dict[str, tuple[tuple[int, int, int], ...]]:

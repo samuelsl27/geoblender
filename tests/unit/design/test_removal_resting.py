@@ -18,10 +18,15 @@ la confirmación expresa (``des.removal_resting_unconfirmed``), en los dos idiom
 **«Apoyo retirado» por una retirada viva** (:func:`design.entities._retired_by`, P-9): lo que se apoyaba en **un acopio** que
 retira una retirada viva, y solo lo que está en la cadena de su partida (aguas arriba), pierde su apoyo; el texto de su causa nombra
 el acopio y la retirada, y la operación que se apoya en otro acopio no.
+
+**Lo que la retirada anota** (T45; hallazgos S-1 y B-1; :func:`design.removal.resting_record`, :func:`design.entities._retired_by_rows`): además de las
+cifras del relleno, «apoyo retirado» lee de los ajustes de la retirada la lista de lo que se le apoyaba al crearla (la que se listó y se confirmó): vale con
+la detección del proyecto y con el relleno hecho antes que la detección, que no tienen cifra.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import random
 import unittest
@@ -32,6 +37,7 @@ from tests.support.package import import_geoblender
 
 entities = import_geoblender("design.entities")
 messages = import_geoblender("design.messages")
+provenance = import_geoblender("design.provenance")
 removal = import_geoblender("design.removal")
 
 DesignError = messages.DesignError
@@ -261,9 +267,10 @@ class StockpileRemovedTextTest(unittest.TestCase):
         self.assertEqual(text, "Apoyo retirado: se descartó «P1»")
 
 
-def removal_ref(code: str = "STK-001", key: str = FOUR, name: str = "Retirada 1", uid: str = "rm-1") -> object:
-    """Una retirada viva de la que solo importa lo que decide quién pierde el apoyo: su operación, su nombre y el acopio."""
-    return entities.StockpileRemoval(uid, name, "RMV-001", f"{code}#{key}", code, key)
+def removal_ref(code: str = "STK-001", key: str = FOUR, name: str = "Retirada 1", uid: str = "rm-1", resting: tuple[str, ...] = ()) -> object:
+    """Una retirada viva de la que solo importa lo que decide quién pierde el apoyo: su operación, su nombre y el acopio y, si la anotó
+    (T45), lo que se le apoyaba al crearla (``resting``: los uid de las operaciones)."""
+    return entities.StockpileRemoval(uid, name, "RMV-001", f"{code}#{key}", code, key, resting=resting)
 
 
 class RetiredByTest(unittest.TestCase):
@@ -302,6 +309,79 @@ class RetiredByTest(unittest.TestCase):
         self.assertEqual(entities._retired_by([removal_ref()], {"op-plt": {"PLT-001"}}, {"rm-1": {"op-plt"}}), {})
         self.assertEqual(entities._retired_by([removal_ref(code="STK-002")], supported, {"rm-1": {"op-four"}}), {},
                          "otra detección")
+
+
+class RestingRecordTest(unittest.TestCase):
+    """T45 (RF-016-14, RF-015-17; hallazgos S-1 y B-1): lo que la retirada **anota** de la lista de lo que se le apoyaba, que es lo que lee P-9."""
+
+    def rows(self) -> list[object]:
+        return [removal.Resting("Sobre el acopio 4", "des.platform", 2590.25, 40, "des_psf_sobre_el_acopio_4", "uid-plt", "PLT-001"),
+                removal.Resting("Tercera", "des.fill_only", 12.5, 3, "des_psf_tercera", "uid-fill", None),
+                removal.Resting("des_psf_de_otra_version", None, 99.0, 7, "des_psf_de_otra_version")]
+
+    def test_the_record_keeps_what_an_operation_put_and_leaves_out_the_surface_of_another_version(self) -> None:
+        """RF-016-14, P-9: se anota una fila por **operación** de la versión (entidad o diseño de la 013 y la 014) con su uid, su nombre, su
+        código si es una entidad, su volumen y sus celdas; la superficie de otra versión (sin operación) no: no hay nadie a quien quitarle el
+        apoyo. Es un JSON de los ajustes de la operación (finito, sin objetos del programa)."""
+        found = removal.resting_record(self.rows())
+        self.assertEqual(found, [
+            {"operation": "uid-plt", "name": "Sobre el acopio 4", "entity": "PLT-001", "volume_m3": 2590.25, "cells": 40},
+            {"operation": "uid-fill", "name": "Tercera", "entity": None, "volume_m3": 12.5, "cells": 3}])
+        self.assertEqual(json.loads(json.dumps(found, allow_nan=False)), found)
+        self.assertEqual(removal.resting_record([]), [])
+
+    def test_the_operations_come_back_from_the_settings_and_a_broken_record_is_nothing(self) -> None:
+        """RF-016-14, P-9: ``entities._resting_ops`` lee del ajuste los uid de las operaciones, en su orden; sin el ajuste (una retirada de
+        antes de la T45, o hecha a mano), o con algo que no es una lista de filas con su operación, ninguna: **nunca lanza** (el registro
+        de las entidades lo lee toda vez)."""
+        record = removal.resting_record(self.rows())
+        settings = {"name": "R", "code": "RMV-001", provenance.REMOVAL_RESTING: record}
+        self.assertEqual(entities._resting_ops(settings), ("uid-plt", "uid-fill"))
+        self.assertEqual(entities._resting_ops({"name": "R"}), ())
+        for broken in (None, "uid-plt", 3, {"operation": "x"}, [None, 4, "x", {"name": "sin operación"}, {"operation": 5}, {"operation": ""}]):
+            with self.subTest(broken=broken):
+                self.assertEqual(entities._resting_ops({provenance.REMOVAL_RESTING: broken}), ())
+        self.assertEqual(entities._resting_ops({provenance.REMOVAL_RESTING: [{"operation": "a"}, {"operation": "a"}, {"operation": "b"}]}),
+                         ("a", "b"), "sin repetir")
+
+
+class RetiredByRowsTest(unittest.TestCase):
+    """T45, P-9 (la decisión pura de lo que la retirada anotó): quién pierde el apoyo **por lo que se le listó y se confirmó**, sin cifras del
+    relleno (la detección del proyecto, o el relleno hecho antes que la detección)."""
+
+    def test_what_the_removal_listed_and_is_still_current_loses_its_support(self) -> None:
+        """RF-016-14, RF-015-17, P-9 (CE-016-04; S-1): la operación que la retirada anotó como apoyada en el acopio y sigue vigente pierde su
+        apoyo, con la retirada; la que no anotó, no (lo que va después de la retirada en la cadena no está en su lista)."""
+        removals = [removal_ref(resting=("op-four", "op-gone"))]
+        found = entities._retired_by_rows(removals, {"op-four": frozenset(), "op-after": frozenset()})
+        self.assertEqual(sorted(found), ["op-four"])
+        self.assertEqual([(item.removal, item.key, item.operation) for item in found["op-four"]], [("Retirada 1", FOUR, "rm-1")])
+
+    def test_what_was_listed_but_is_no_longer_the_current_operation_is_not_retired(self) -> None:
+        """RF-015-17, P-9: la operación anotada que ya no es la vigente (la sustituyó otra, o no se hizo) no pierde nada: la lista de la
+        retirada se rehace al recalcularla; solo cuenta la que hoy hay."""
+        self.assertEqual(entities._retired_by_rows([removal_ref(resting=("op-old",))], {}), {})
+
+    def test_what_gave_that_detection_as_good_is_not_retired_again(self) -> None:
+        """RF-015-17, P-9 (T25 de la 015; «dar por buena»): la operación vigente que **dio por bueno sin su apoyo** el de esa detección no vuelve
+        a perderlo al recalcular la retirada (que la volverá a listar): su decisión manda; la que dio por bueno otra detección, sí lo pierde."""
+        removals = [removal_ref(resting=("op-a", "op-b"))]
+        found = entities._retired_by_rows(removals, {"op-a": frozenset({"STK-001"}), "op-b": frozenset({"STK-002"})})
+        self.assertEqual(sorted(found), ["op-b"])
+
+    def test_two_removals_retire_what_each_listed_without_repeating_a_removal(self) -> None:
+        """RF-016-14, P-9: dos retiradas vivas anotan cada una lo suyo; una operación en las dos las tiene a las dos, en el orden de las
+        retiradas, y una retirada que repite la operación en su lista la cuenta una vez."""
+        removals = [removal_ref(uid="rm-1", resting=("op-a", "op-a")),
+                    removal_ref(key=THREE, name="Retirada 2", uid="rm-2", resting=("op-a", "op-b"))]
+        found = entities._retired_by_rows(removals, {"op-a": frozenset(), "op-b": frozenset()})
+        self.assertEqual({uid: [item.removal for item in items] for uid, items in found.items()},
+                         {"op-a": ["Retirada 1", "Retirada 2"], "op-b": ["Retirada 2"]})
+
+    def test_a_removal_that_listed_nothing_retires_nothing(self) -> None:
+        """RF-015-17: sin lista (la retirada no tenía nada apoyado, o es anterior a la T45) no hay nada que quitar por este camino."""
+        self.assertEqual(entities._retired_by_rows([removal_ref()], {"op-a": frozenset()}), {})
+        self.assertEqual(entities._retired_by_rows([], {"op-a": frozenset()}), {})
 
 
 if __name__ == "__main__":  # pragma: no cover

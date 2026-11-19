@@ -6,16 +6,19 @@ RF-016-13 a RF-016-16, RF-015-15, RF-015-17; plan 016 §5.4 A6 a A9, §5.7 P-9, 
 modal con su plan) en ``blender -b`` y sin pantalla.
 
 El proyecto de ``milestone_removal_ops`` (ventana de 60 × 60 m con celdas de 2 m, V01 y V02; un levantamiento con dos montones de 4 m de altura, a 16 y 44
-m, y una capa de marcas) con **una detección de la versión**: con la del proyecto (``milestone_removal_ops``) la retirada no deja «apoyo retirado» a lo
-que se apoyaba (hallazgo de la T20 (b)), así que la detección se hace sobre la superficie de V01 que deja ``PLT-001`` «Terreno de V01» (una
+m, y una capa de marcas) con **una detección de la versión**: la detección se hace sobre la superficie de V01 que deja ``PLT-001`` «Terreno de V01» (una
 plataforma «en corte» en una esquina, por encima del terreno: no corta nada) y de ella parte ``PLT-002`` «Sobre acopio», el relleno de la 015 «en
-corte y relleno» a 108 m, que cubre el Acopio 2. Las pruebas, **en el orden de sus letras** sobre el mismo estado; las cuentas, a mano (los ficheros
+corte y relleno» a 108 m, que cubre el Acopio 2. (Con la detección **del proyecto**, la normal, ver :class:`StockpileProjectButtressCETest`: desde la T45 la
+retirada también deja «apoyo retirado» a lo que se apoyaba, hallazgo de la T20 (b) cerrado por S-1.) Las pruebas, **en el orden de sus letras** sobre el mismo estado; las cuentas, a mano (los ficheros
 leídos con bucles de numpy, no el código que se prueba).
 
 **CE-016-04 con el contrafuerte real** (T27 (b); :class:`StockpileButtressCETest`): la misma cadena con ``geoblender.des_add_buttress`` (la zona
 de coronación, la marca del Acopio 2; el perfil ``EXPL_10_60_6`` escrito en el proyecto; coronación a 115 m; **protege por defecto**) en lugar del
 relleno de la 015: se apoya en el acopio, **una sola lista** antes de retirarlo, «apoyo retirado» tras crear la retirada y «Recalcular lo
-obsoleto» sin recalcularlo; con el contrafuerte **después** de la retirada, solo obsoleto.
+obsoleto» sin recalcularlo; con el contrafuerte **después** de la retirada, solo obsoleto. **Con la detección del proyecto** (T45; hallazgos S-1 y B-1;
+:class:`StockpileProjectButtressCETest`): la misma cadena con la detección ``Acopios`` **del proyecto** sobre el levantamiento: el contrafuerte protege y
+queda obsoleto, **«Recalcular lo obsoleto» antes de retirar el acopio** lo pone al día y vuelve a medir lo que apoya en el acopio del proyecto, y creada la
+retirada **queda en «apoyo retirado»**.
 
 **E3 con la orden real** (T41; :class:`StockpileCETest` ``test_f`` y :class:`StockpileAsPlatformCETest`): el Acopio 1 retirado «como plataforma»
 con ``des_remove_stockpile`` (``as_platform``: el borde y el alcance del diálogo) deja la huella entera en el plano de su base y el eje de borde a
@@ -572,6 +575,137 @@ class StockpileButtressCETest(StockpileCETest):
 for _name in dir(StockpileCETest):  # sus pruebas son suyas: aquí solo los ayudantes
     if _name.startswith("test") and _name not in StockpileButtressCETest.__dict__:
         setattr(StockpileButtressCETest, _name, None)
+del _name
+
+
+class StockpileProjectButtressCETest(StockpileButtressCETest):
+    """CE-016-04 con **la detección del proyecto** —la normal: detectar sobre el terreno, D-15— y **el contrafuerte real**, E2 con las órdenes reales
+    (T45; hallazgos S-1 y B-1; ``geoblender.des_add_buttress``, ``geoblender.des_remove_stockpile``, **«Recalcular lo obsoleto»**): el proyecto de
+    :class:`StockpileButtressCETest` con la detección ``Acopios`` (``STK-001``) **del proyecto** sobre el levantamiento (no de la versión sobre la superficie de
+    «Terreno de V01»). **El guion del H3**: el contrafuerte que **protege** deja obsoletos lo que usó las máscaras de antes (él mismo) y hay que **«Recalcular
+    lo obsoleto» antes de retirar el acopio** (RF-016-12); el contrafuerte, recalculado, **vuelve a medir** lo que apoya en el acopio del proyecto; y creada la
+    retirada **queda en «apoyo retirado»** (con la detección del proyecto no tiene la cifra de la versión: lo dice lo que la retirada anotó)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        with mock.patch.object(platform_ops, "FEATURES", (*platform_ops.FEATURES, TERRAIN)):
+            super(rem_ops.RemoveStockpileTest, cls).setUpClass()
+        cls.survey_name = cls.write_grid("Levantamiento", rem_ops.survey())
+        cls.write_marks()
+        cls.platform(name=TERRAIN_NAME, feature=TERRAIN[0], start=cls.survey_name, mode="CUT", reach="4")
+        rem_ops.RemoveStockpileTest.detect.__func__(cls)  # la del proyecto: la superficie (el levantamiento) es del proyecto
+        assert bpy.ops.geoblender.des_save_bench_profile(
+            name=PROFILE, kind="ADOPTADO", source="Plan de la prueba del contrafuerte", decided_by=platform_ops.PERSON,
+            reason=platform_ops.REASON, scope="PROJECT", height="10", face="60", berm="6", anchor="125") == {"FINISHED"}
+        cls.refresh()
+
+    def footprint(self, key: str) -> tuple[np.ndarray, np.ndarray]:
+        """Las celdas de la huella del acopio ``key`` de la detección **del proyecto** (de los tramos de su fila de ``des_stk_``)."""
+        found = _module("design.stockpile_store").read_detection_table(self.project, "stk", "Acopios", version_uid="")
+        (row,) = [item for item in found if item["key"] == key]
+        return self.entities.runs_cells(tuple(tuple(run) for run in json.loads(row["footprint"])))
+
+    def test_a_the_buttress_made_with_the_order_rests_on_the_stockpile_of_the_project_and_recompute_settles_what_protecting_leaves_stale(self) -> None:
+        """RF-016-17, RF-016-14, RF-015-10, RF-015-15, CE-016-04, D-15 (E2, la orden real; S-1): ``des_add_buttress`` (la zona de coronación del Acopio 2,
+        a 115 m, protegiendo) crea ``BTR-001``, que queda **obsoleto** (protege: su restricción cambia las máscaras que usó); «Recalcular lo obsoleto» lo
+        rehace y **vuelve a medir** lo que apoya **en el acopio de la detección del proyecto**: una sola cifra de ese acopio —y la del terreno de la
+        plataforma que lo parte— cuyo valor es el cálculo a mano de los ficheros a ≤ 10⁻⁹ relativo."""
+        self.refresh()
+        self.assertEqual(self.states(), {"PLT-001": "current"}, "la detección es del proyecto: no está en el registro de la versión")
+        self.buttress()
+        self.assertEqual(self.states()["BTR-001"], "stale", "protege: su restricción cambia las máscaras que usó")
+        operator = self.recompute()
+        self.assertEqual(self.states(), {"PLT-001": "current", "BTR-001": "current"}, list(operator.report_log))
+        found = self.supported("BTR-001")
+        self.assertEqual(sorted(found, key=str), [("PLT-001", None), ("STK-001", "Acopio 2")], "en el acopio del proyecto y en el terreno que lo parte")
+        self.assertTrue(_close(found[("STK-001", "Acopio 2")], self.hand_resting()), (found, self.hand_resting()))
+        self.assertGreater(found[("STK-001", "Acopio 2")], 0.0)
+        (row,) = self.entities.dependents(self.project, self.v01.uid, "STK-001", stockpile="Acopio 2")
+        self.assertEqual((row.entity, str(row.state)), ("BTR-001", "current"), "lo que se apoya en el acopio del proyecto")
+
+    def test_b_what_rests_on_the_stockpile_is_one_list_before_calculating_and_the_buttress_is_not_removed_without_confirming_it(self) -> None:
+        """CE-016-04, RF-016-14, RF-015-17 (error 59; E2, las órdenes reales): retirar el Acopio 2 **del proyecto** desde la superficie del contrafuerte da
+        **una sola lista** antes de calcular —el contrafuerte, con su volumen a mano— en el diálogo y en el resumen, en ámbar; «Crear» sin la confirmación
+        expresa se rechaza, no escribe nada y deja el cálculo abierto."""
+        self.refresh()
+        before = self.state()
+        held = self.calculate()
+        self.assertTrue(held.needs_resting_confirmation)
+        (row,) = held.entity.resting
+        self.assertEqual((row.name, row.op_type, row.entity), (BUTTRESS_NAME, "des.buttress", "BTR-001"))
+        self.assertTrue(_close(row.volume_m3, self.hand_resting()), (row.volume_m3, self.hand_resting()))
+        self.assertEqual(row, _module("design.supported_store").resting_preview(
+            self.project, self.v01.uid, "STK-001#Acopio 2", "entity:BTR-001")[0], "la del diálogo es la que calcula la orden")
+        self.assertEqual(self.state()[:4], before[:4], "calcular no escribe")
+        with self.assertRaises(RuntimeError) as caught:
+            self.create()
+        self.assertIn("confirmación expresa", str(caught.exception))
+        self.assertIs(self.des_ops.calculation(), held)
+        self.assertTrue(held.open)
+
+    def test_c_creating_the_removal_with_the_confirmation_leaves_the_buttress_with_its_support_removed(self) -> None:
+        """CE-016-04, RF-016-11, RF-016-14, RF-015-17, P-9 (error 59; E2; **S-1: lo que no daba**): con la confirmación se crea; **el contrafuerte queda en
+        «apoyo retirado»** con su causa (el acopio y la retirada) sin descartar nada, aunque la detección sea del proyecto; la retirada anota lo que se le
+        apoyaba y los m³ que se confirmaron, y «lo que se apoya en el acopio» lo da en «apoyo retirado»."""
+        self.refresh()
+        self.calculate()
+        self.assertEqual(self.create(confirm_resting=True), {"FINISHED"})
+        self.assertIsNone(self.des_ops.calculation())
+        self.assertEqual(self.states(), {"PLT-001": "current", "BTR-001": "support_removed", "RMV-001": "current"})
+        why = self.entities.stale_reason(self.project, self.v01.uid, "BTR-001")
+        self.assertTrue(why.startswith("Apoyo retirado: "), why)
+        for wanted in ("Acopio 2", REMOVAL_NAME):
+            self.assertIn(wanted, why)
+        self.assertEqual(self.rows("SELECT count(*) FROM gb_dataset WHERE status = 'discarded'"), [(0,)], "nada se descartó")
+        settings = self.settings_of(REMOVAL_NAME)
+        self.assertTrue(_close(settings["removal_confirmed"]["resting"]["volume_m3"], self.hand_resting()))
+        (recorded,) = settings["removal_resting"]
+        self.assertEqual((recorded["entity"], recorded["name"]), ("BTR-001", BUTTRESS_NAME))
+        self.assertTrue(_close(recorded["volume_m3"], self.hand_resting()), "lo anotado es lo que se listó y se confirmó")
+        self.assertEqual([item.entity for item in self.entities.retired_supports(self.project, self.v01.uid)], ["BTR-001"])
+        (row,) = self.entities.dependents(self.project, self.v01.uid, "STK-001", stockpile="Acopio 2")
+        self.assertEqual((row.entity, str(row.state)), ("BTR-001", "support_removed"))
+
+    def test_d_recompute_stale_does_not_remake_the_buttress_and_this_is_how_it_reads(self) -> None:
+        """CE-016-04, RF-015-17, RF-016-14, P-9 (error 59; la nota de la T39; la orden real; S-1): con el contrafuerte obsoleto además de sin apoyo,
+        «Recalcular lo obsoleto» **no lo recalcula** —no escribe operaciones ni datos de contrafuerte— y su unidad sale **``FAILED``** con el motivo «espera
+        una decisión»; lo que se lee en el resumen del modal es «Operaciones recalculadas: n» y una línea de aviso por unidad que no se recalculó."""
+        self.change("des.buttress.btr_001.crown_m", 125.0)
+        self.assertEqual(self.states()["BTR-001"], "support_removed")
+        before = {uid for (uid,) in self.rows("SELECT uid FROM gb_operation")}
+        buttresses = self.rows("SELECT count(*) FROM gb_operation WHERE op_type = 'des.buttress'")
+        operator = self.recompute()
+        written = [op_type for op_type, uid in self.rows("SELECT op_type, uid FROM gb_operation ORDER BY fid") if uid not in before]
+        self.assertNotIn("des.buttress", written, "ni el contrafuerte ni nada de lo que depende de él se recalcula")
+        self.assertEqual(self.rows("SELECT count(*) FROM gb_operation WHERE op_type = 'des.buttress'"), buttresses)
+        self.assertNotIn("des.stockpile_removal", written, "ni la retirada, que parte de su superficie")
+        results = operator.result.results
+        failed = [result for result in results if str(result.status) == "failed"]
+        self.assertEqual(len(failed), 1, [(str(item.status), item.text()) for item in results])
+        (result,) = failed
+        self.assertEqual(result.code, "core.recompute_failed")
+        for wanted in (BUTTRESS_NAME, "Acopio 2", REMOVAL_NAME, "espera una decisión"):
+            self.assertIn(wanted, result.text())
+        self.assertEqual(self.states()["BTR-001"], "support_removed")
+        log = list(operator.report_log)
+        self.assertEqual(log[0], f"Operaciones recalculadas: {len(results) - 1}")
+        self.assertEqual(len(log), 2, log)
+        self.assertIn("espera una decisión", log[1])
+
+    def test_y_nothing_is_left_half_done(self) -> None:
+        """Principio 8: tras todo lo anterior, ningún temporal."""
+        self.assertFalse(any(".tmp" in name for name in self.names()))
+
+    def test_z_disabling_geoblender_with_the_buttress_leaves_no_temporary(self) -> None:
+        """Principio 8: desactivar Geoblender no deja ningún temporal."""
+        blender_ext.release()
+        self.assertIsNone(getattr(bpy.types, "GEOBLENDER_OT_des_add_buttress", None))
+        self.assertFalse(any(".tmp" in name for name in self.names()))
+
+
+for _name in dir(StockpileButtressCETest):  # sus pruebas son suyas: aquí solo los ayudantes
+    if _name.startswith("test") and _name not in StockpileProjectButtressCETest.__dict__:
+        setattr(StockpileProjectButtressCETest, _name, None)
 del _name
 
 

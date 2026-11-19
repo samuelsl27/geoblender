@@ -76,18 +76,24 @@ que lo que una operación apoya se mide **por acopio**: :func:`detect_supports` 
 aquello en lo que se apoya (``PLT-001``, o ``STK-001#m07``: :func:`~.provenance.support_ref`), un :class:`Support` por acopio con su
 clave (``Support.stockpile``) sobre la superficie con que se detectó (``des_stp_``, la misma para todos) y la huella de su fila; la
 cifra ``des.supported_m3`` lleva la clave del acopio en su ámbito; y :func:`dependents` y :func:`dependencies_of` dan «lo que se apoya
-en un acopio» (``dependents(…, stockpile=clave)``) y «en qué acopio se apoya» como las mismas consultas de entradas y cifras. Solo las
-detecciones **de la versión** se apoyan (las del proyecto no están en su registro: ``STK-001`` de la versión y del proyecto son dos
-entidades).
+en un acopio» (``dependents(…, stockpile=clave)``) y «en qué acopio se apoya» como las mismas consultas de entradas y cifras. Se apoyan las
+detecciones **de la versión** y, desde la T45 (hallazgo S-1; D-15: detectar sobre el terreno es lo normal), **las del proyecto** (:func:`_locate`: la
+detección del proyecto de ese código, si la versión no tiene una; ``STK-001`` de la versión y del proyecto son dos entidades y la de la versión tapa a la
+otra, como al retirar un acopio).
 
 **«Apoyo retirado» por una retirada viva** (spec 016, T18; RF-015-17, RF-016-14; plan 016 §5.2.3 «Estados» y §5.7 P-9; ADR-0031 §4): sin descartar
 nada, el dato de una detección en el que se apoyaba una operación **cuenta como retirado, como uno descartado**, si una retirada **viva** retira ese acopio
 (su operación vigente, no descartada, con el acopio en su parámetro ``stockpile`` y los datos de su detección entre sus entradas ``removed_stockpile``) y la
 operación está **en la cadena de la superficie de partida de la retirada** (aguas arriba: la que está después de ella no pierde nada) y se apoyaba **en ese acopio**
 (su cifra ``des.supported_m3`` con la clave en su ámbito; la que se apoya en otro acopio de la misma detección, no). Lo deduce el grafo
-(:func:`_removed_supports`: entradas y cifras, sin leer ninguna superficie; **sin retiradas vivas, una consulta**) en :func:`registry`,
+(:func:`_removed_supports`: entradas, cifras y ajustes, sin leer ninguna superficie; **sin retiradas vivas, una consulta**) en :func:`registry`,
 :func:`dependents`, :func:`dependencies_of`, :func:`stale_reason`, :func:`operation_reason` y :func:`retired_supports` (:class:`StockpileRemoval`);
 descartar la retirada lo devuelve. «Recalcular lo obsoleto» no la recalcula (``design.store.recompute_run``).
+
+**Por dos caminos** (spec 016, T45; hallazgos S-1 y B-1): el de las **cifras** de lo que el relleno midió al crearse (que solo existe si la detección es de
+la versión y ya existía) y el de **lo que la retirada anotó al crearse** de lo que se le apoyaba (:data:`~.provenance.REMOVAL_RESTING`: la lista de A7, por
+la cadena de superficies, la misma que se listó y se confirmó; :func:`_retired_by_rows`), que vale con la detección **del proyecto** y con el relleno
+hecho **antes** que la detección. La operación anotada tiene que seguir siendo la vigente y no haber dado por bueno el apoyo de esa detección.
 
 **Descartada y «apoyo retirado»** (T25; RF-015-17, RF-009-12; D-12): una entidad está **descartada** si todos los datos
 que escribió lo están, o, si no está calculada (no tiene datos que descartar), si su parámetro de versión
@@ -148,6 +154,7 @@ from .provenance import (
     ENTITY_SURFACE_ROLE,
     OPERATION_TYPES_BY_NAME,
     PLATFORM,
+    REMOVAL_RESTING,
     REMOVED_STOCKPILE_ROLE,
     STOCKPILE_DETECT,
     STOCKPILE_DETECT_PROJECT,
@@ -159,6 +166,7 @@ from .provenance import (
     SUPPORTED_ON_ROLE,
     SUPPORT_REF_SEPARATOR,
     SURFACE_ROLE,
+    released_supports,
     split_support_ref,
     support_ref,
 )
@@ -1254,7 +1262,12 @@ class StockpileRemoval:
     operación de la retirada (``operation``) con su nombre (``removal``) y su código (``code``, ``RMV-001``), el acopio que retira
     (``stockpile``: su referencia, ``STK-001#m07``, la de su parámetro; ``detection`` es el código de su detección y ``key`` la clave de su
     marca) y, en lo que pierde el apoyo, el dato de la detección en el que se apoyaba (``dataset_uid`` y ``dataset``: la superficie con que se
-    detectó, ``des_stp_…``; vacíos mientras no se leen)."""
+    detectó, ``des_stp_…``; vacíos mientras no se leen).
+
+    **Lo que anotó al crearse** (spec 016, T45; hallazgos S-1 y B-1): ``resting`` (los uid de las operaciones de la versión que la lista de A7
+    —la que se listó y se confirmó— dio como apoyadas en el acopio, de los ajustes de la retirada: ``provenance.REMOVAL_RESTING``) y ``resting_m3``
+    (sus m³, en el mismo orden); ``consumed``: si consumió datos de **esa detección de la versión** (la regla de P-9 por cifras, que no vale con una
+    detección **del proyecto**: la lista anotada sí, de cualquier ámbito)."""
 
     operation: str
     removal: str
@@ -1264,6 +1277,16 @@ class StockpileRemoval:
     key: str
     dataset_uid: str = ""
     dataset: str = ""
+    resting: tuple[str, ...] = ()
+    resting_m3: tuple[float, ...] = ()
+    consumed: bool = True
+
+    def volume_of(self, operation: str) -> float | None:
+        """Los m³ que anotó la retirada de la operación ``operation`` (:attr:`resting`); ``None`` si no la anotó."""
+        for uid, volume in zip(self.resting, self.resting_m3, strict=False):
+            if uid == operation:
+                return volume
+        return None
 
 
 def _retired_by(removals: Sequence[StockpileRemoval], supported: Mapping[str, Collection[str]],
@@ -1283,24 +1306,49 @@ def _retired_by(removals: Sequence[StockpileRemoval], supported: Mapping[str, Co
     return {operation: tuple(items) for operation, items in found.items()}
 
 
-def _live_removals(store: ParameterStore, conn: sqlite3.Connection, version: Version, *, consumed: bool = True
+def _resting_rows(settings: object) -> tuple[tuple[str, float], ...]:
+    """Lo que anotó una retirada de lo que se le apoyaba (spec 016, T45; ``provenance.REMOVAL_RESTING``): de sus ajustes, el uid de cada operación y
+    sus m³, sin repetir, en su orden. **No lanza nunca**: sin el ajuste (una retirada de antes de la T45, o hecha a mano) o con algo que no es una lista
+    de filas con su operación, nada (el registro de las entidades lo lee toda vez)."""
+    data = settings if isinstance(settings, Mapping) else {}
+    found = data.get(REMOVAL_RESTING)
+    if not isinstance(found, list | tuple):
+        return ()
+    rows: dict[str, float] = {}
+    for item in found:
+        uid = item.get("operation") if isinstance(item, Mapping) else None
+        if not isinstance(uid, str) or not uid or uid in rows:
+            continue
+        volume = item.get("volume_m3")
+        rows[uid] = (float(volume) if isinstance(volume, numbers.Real) and not isinstance(volume, bool) and math.isfinite(volume)
+                     else 0.0)
+    return tuple(rows.items())
+
+
+def _resting_ops(settings: object) -> tuple[str, ...]:
+    """Los uid de las operaciones que anotó una retirada como apoyadas en su acopio (:func:`_resting_rows`)."""
+    return tuple(uid for uid, _volume in _resting_rows(settings))
+
+
+def _live_removals(store: ParameterStore, conn: sqlite3.Connection, version: Version, *, consumed: bool = True, rows: bool = False
                    ) -> list[StockpileRemoval]:
     """Las retiradas de acopio **vivas** de ``version``: la operación vigente de cada entidad ``RMV-nnn`` que no está descartada, con el acopio
     que retiró (su parámetro ``stockpile`` **tal como lo leyó**) y solo si **consumió datos de esa detección** de la versión (papel
     ``removed_stockpile``). Una descartada (todo lo que escribió, o su parámetro ``discarded``) no cuenta: descartar la retirada devuelve el dato.
     **También la plataforma que retira un acopio «como plataforma»** (spec 016, T21; RF-016-16): una ``PLT-nnn`` cuya operación leyó el parámetro
-    ``stockpile`` (la de una capa no lo lee), con los mismos datos consumidos: es una retirada y deja «apoyo retirado» igual."""
+    ``stockpile`` (la de una capa no lo lee), con los mismos datos consumidos: es una retirada y deja «apoyo retirado» igual. Con ``rows`` (T45) cuenta
+    también la que **anotó lo que se le apoyaba** (:data:`~.provenance.REMOVAL_RESTING`) aunque su detección sea **del proyecto**."""
     found: list[StockpileRemoval] = []
     for kind, read in ((EntityKind.REMOVAL, None), (EntityKind.PLATFORM, "stockpile")):
-        found.extend(_live_removals_of(store, conn, version, entity_type(kind), read, consumed=consumed))
+        found.extend(_live_removals_of(store, conn, version, entity_type(kind), read, consumed=consumed, rows=rows))
     return found
 
 
 def _live_removals_of(store: ParameterStore, conn: sqlite3.Connection, version: Version, spec: EntityType, read: str | None, *,
-                      consumed: bool = True) -> list[StockpileRemoval]:
+                      consumed: bool = True, rows: bool = False) -> list[StockpileRemoval]:
     """Las retiradas vivas de las entidades del tipo ``spec`` (:func:`_live_removals`); ``read``: el parámetro que ha leído su operación
     (la plataforma, ``stockpile``). Con ``consumed`` falso no se exige que haya consumido datos **de la versión** de la detección (spec 016,
-    T33: la detección del proyecto también tiene acopios que una retirada retira)."""
+    T33: la detección del proyecto también tiene acopios que una retirada retira); con ``rows``, la que anotó lo que se le apoyaba tampoco."""
     operations = _operations(conn, version, spec.key_prefix, spec.op_type, value=read)
     if not operations:
         return []
@@ -1327,10 +1375,17 @@ def _live_removals_of(store: ParameterStore, conn: sqlite3.Connection, version: 
                 settings = {}
             if isinstance(settings, dict) and isinstance(settings.get("code"), str):
                 taken.add(settings["code"])
-        if consumed and detection not in taken:
-            continue
         (raw,) = conn.execute(_OPERATION_SETTINGS, (uid,)).fetchone()
-        found.append(StockpileRemoval(uid, _settings_name(spec.op_type, raw), code, str(value), detection, key))
+        try:
+            recorded = json.loads(str(raw)) if raw else {}
+        except ValueError:
+            recorded = {}
+        listed = _resting_rows(recorded)
+        if consumed and detection not in taken and not (rows and listed):
+            continue
+        found.append(StockpileRemoval(uid, _settings_name(spec.op_type, raw), code, str(value), detection, key,
+                                      resting=tuple(item for item, _volume in listed), resting_m3=tuple(volume for _item, volume in listed),
+                                      consumed=detection in taken))
     return found
 
 
@@ -1400,20 +1455,99 @@ def _with_datasets(conn: sqlite3.Connection, version: Version, found: Mapping[st
     return result
 
 
+def _retired_by_rows(removals: Sequence[StockpileRemoval], current: Mapping[str, Collection[str]]
+                     ) -> dict[str, tuple[StockpileRemoval, ...]]:
+    """**La decisión de P-9 por lo que la retirada anotó** (T45; hallazgos S-1 y B-1; pura): qué operaciones pierden el apoyo por la lista de lo que
+    se le apoyaba al acopio **al crearla** (:attr:`StockpileRemoval.resting`: la que se listó y se confirmó, que recorre la cadena de superficies de su
+    partida, así que son operaciones **aguas arriba** de la retirada). ``current`` son las operaciones **vigentes** (``operación`` → los códigos de
+    detección cuyo apoyo dio por bueno, :func:`_current_released`): una anotada que ya no es la vigente no cuenta (la sustituyó otra: la lista se
+    rehace al recalcular la retirada) y la que **dio por bueno el apoyo de esa detección** no lo vuelve a perder. Una retirada cuenta una vez por
+    operación, en el orden de ``removals``; ninguna a sí misma."""
+    found: dict[str, list[StockpileRemoval]] = {}
+    for removal in removals:
+        for operation in dict.fromkeys(removal.resting):
+            released = current.get(operation)
+            if released is None or removal.detection in released or operation == removal.operation:
+                continue
+            found.setdefault(operation, []).append(removal)
+    return {operation: tuple(items) for operation, items in found.items()}
+
+
+_CURRENT_OPERATIONS = ("SELECT uid, settings FROM gb_operation WHERE uid IN ({marks}) AND status = 'done' AND superseded_by IS NULL")
+_DETECTED_DATA = (
+    "SELECT d.uid, d.name FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "JOIN gb_operation_io AS made ON made.operation_uid = d.operation_uid AND made.item_uid = d.uid AND made.direction = 'out' "
+    "AND made.role = ? WHERE io.operation_uid = ? AND io.direction = 'in' AND io.item_kind = ? AND io.role = ? ORDER BY io.fid LIMIT 1")
+
+
+def _current_released(conn: sqlite3.Connection, operations: Iterable[str]) -> dict[str, frozenset[str]]:
+    """De las operaciones de ``operations`` que son **la vigente** (hecha y sin sustituir), los códigos de las detecciones cuyo apoyo dio por bueno
+    la persona (``provenance.SUPPORTS_RELEASED`` de sus ajustes, T25 de la 015); una operación que no es la vigente no sale. Una consulta por cada
+    400 operaciones; un ajuste roto cuenta como ninguno."""
+    found: dict[str, frozenset[str]] = {}
+    uids = sorted(set(operations))
+    for first in range(0, len(uids), _CHUNK):
+        part = uids[first:first + _CHUNK]
+        sql = _CURRENT_OPERATIONS.format(marks=", ".join("?" for _ in part))
+        for uid, text in conn.execute(sql, part):
+            try:
+                released = frozenset(item.entity for item in released_supports(json.loads(str(text)) if text else {}))
+            except ValueError:
+                released = frozenset()
+            found[str(uid)] = released
+    return found
+
+
+def _with_detection_data(conn: sqlite3.Connection, found: Mapping[str, Sequence[StockpileRemoval]]
+                         ) -> dict[str, tuple[StockpileRemoval, ...]]:
+    """``found`` (:func:`_retired_by_rows`) con, en cada retirada, **el dato de la detección que retira** (``dataset_uid`` y ``dataset``): la superficie
+    con que se detectó (``des_stp_``) que la retirada consumió con el papel ``removed_stockpile``, del proyecto o de la versión. Sin él (una retirada
+    hecha sin los datos del acopio), la retirada no se cuenta: no hay dato que retirar."""
+    data: dict[str, tuple[str, str] | None] = {}
+    result: dict[str, tuple[StockpileRemoval, ...]] = {}
+    for operation, items in found.items():
+        kept: list[StockpileRemoval] = []
+        for item in items:
+            if item.operation not in data:
+                row = conn.execute(_DETECTED_DATA, (STOCKPILE_SURFACE_ROLE, item.operation, DATASET, REMOVED_STOCKPILE_ROLE)).fetchone()
+                data[item.operation] = None if row is None else (str(row[0]), str(row[1]))
+            where = data[item.operation]
+            if where is not None:
+                kept.append(replace(item, dataset_uid=where[0], dataset=where[1]))
+        if kept:
+            result[operation] = tuple(kept)
+    return result
+
+
 def _removed_supports(store: ParameterStore, conn: sqlite3.Connection, version: Version | None
                       ) -> dict[str, tuple[StockpileRemoval, ...]]:
     """**P-9**: de cada operación vigente de ``version`` que **pierde su apoyo** porque una retirada viva retira el acopio en el que se apoyaba, las
-    retiradas (:class:`StockpileRemoval`). Solo lee entradas y cifras (sin leer ninguna superficie); **sin retiradas vivas, una consulta**."""
+    retiradas (:class:`StockpileRemoval`). Solo lee entradas, cifras y ajustes (sin leer ninguna superficie); **sin retiradas vivas, una consulta**.
+
+    Por **dos caminos** que se suman (T45; hallazgos S-1 y B-1): (1) las **cifras** de lo apoyado que el relleno midió al crearse
+    (:func:`_retired_by`: una detección **de la versión** que ya existía, y lo que está aguas arriba de la retirada) y (2) **lo que la retirada anotó**
+    al crearse de lo que se le apoyaba (:func:`_retired_by_rows`: la lista de A7, por la cadena de superficies, que es lo que se listó y se
+    confirmó): vale con una detección **del proyecto** —la normal: detectar sobre el terreno— y con el relleno hecho **antes** que la detección,
+    que no tienen cifra."""
     if version is None:
         return {}
-    removals = _live_removals(store, conn, version)
+    removals = _live_removals(store, conn, version, rows=True)
     if not removals:
         return {}
-    supported = _supported_refs(conn, version, {item.stockpile for item in removals})
-    if not supported:
-        return {}
-    upstream = {item.operation: _surface_ancestors(conn, item.operation) for item in removals}
-    return _with_datasets(conn, version, _retired_by(removals, supported, upstream))
+    found: dict[str, tuple[StockpileRemoval, ...]] = {}
+    measured = [item for item in removals if item.consumed]
+    if measured:
+        supported = _supported_refs(conn, version, {item.stockpile for item in measured})
+        if supported:
+            upstream = {item.operation: _surface_ancestors(conn, item.operation) for item in measured}
+            found = dict(_with_datasets(conn, version, _retired_by(measured, supported, upstream)))
+    listed = [item for item in removals if item.resting]
+    if listed:
+        current = _current_released(conn, (uid for item in listed for uid in item.resting))
+        for operation, items in _with_detection_data(conn, _retired_by_rows(listed, current)).items():
+            known = {item.operation for item in found.get(operation, ())}
+            found[operation] = (*found.get(operation, ()), *(item for item in items if item.operation not in known))
+    return found
 
 
 def live_removals(project: Any, version: str, *, conn: sqlite3.Connection | None = None, consumed: bool = True
@@ -1661,6 +1795,20 @@ def _entry(listed: EntityRegistry, ref: str, version: Version | None) -> EntityE
     return found
 
 
+def _locate(project: Any, reading: sqlite3.Connection, version: Version, listed: EntityRegistry, ref: str) -> EntityEntry:
+    """La entidad ``ref`` (código o nombre) de ``version`` o, si no es suya, **la detección de acopios del proyecto** de ese código o nombre (spec 016,
+    T45; D-15: detectar sobre el terreno es la normal; ``stockpile_store.detections_on`` da las dos): lo que se le apoya y en qué se apoya
+    se lee de las entradas y las cifras de la versión, igual que con la detección de la versión, que tapa a la del proyecto de su mismo código
+    (como ``supported_store._locate``). :class:`ValueError` si no es de ninguna de las dos."""
+    found = listed.get(ref)
+    if found is not None:
+        return found
+    detection = _registry(project, reading, None).get(ref)
+    if detection is not None and detection.record.kind == EntityKind.STOCKPILE:
+        return detection
+    return _entry(listed, ref, version)
+
+
 def _settings_name(op_type: str, settings: object) -> str:
     """El nombre de una operación hecha: el ``name`` de sus ajustes (JSON) o, sin él, su tipo."""
     try:
@@ -1737,7 +1885,7 @@ def dependents(project: Any, version: str, code: str, *, conn: sqlite3.Connectio
     with _snapshot(project, conn) as reading:
         found = _version(reading, version)
         listed = _registry(project, reading, found)
-        entry = _entry(listed, code, found)
+        entry = _locate(project, reading, found, listed, code)
         wanted = entry.record.code
         is_stockpile = entry.record.kind == EntityKind.STOCKPILE
         if stockpile is not None and not is_stockpile:
@@ -1752,16 +1900,25 @@ def dependents(project: Any, version: str, code: str, *, conn: sqlite3.Connectio
                     _DEPENDENTS, (DATASET, surface, *_LIST_ROLES, found.uid)):
                 row = rows.setdefault(str(uid), (int(fid), str(op_type), str(settings), set()))
                 row[3].add(str(role_in))
+        removed = _removed_supports(ParameterStore(project), reading, found)  # P-9: los diseños que no son entidades también
+        if is_stockpile:  # lo que una retirada anotó como apoyado en este acopio y no tiene la cifra: el relleno de antes de la detección (T45; B-1)
+            for uid, items in removed.items():
+                if uid not in rows and any(item.detection == wanted and stockpile in (None, item.key) and item.volume_of(uid) is not None
+                                           for item in items):
+                    (fid, op_type, settings) = reading.execute(_OPERATION_ROW, (uid,)).fetchone()
+                    rows[uid] = (int(fid), str(op_type), str(settings), {SUPPORTED_ON_ROLE})
         volumes = _supported(reading, rows)
         shares = _stockpile_shares(volumes) if is_stockpile else {}
         by_operation = {item.operation_uid: item for item in listed if item.operation_uid is not None}
         links = _links(reading, [uid for uid in rows if uid not in by_operation])
-        removed = _removed_supports(ParameterStore(project), reading, found)  # P-9: los diseños que no son entidades también
         result: list[Dependent] = []
         for uid, (_fid, op_type, settings, roles) in sorted(rows.items(), key=lambda item: item[1][0]):
             if is_stockpile:  # una fila por acopio en el que se apoya
                 parts: list[tuple[str | None, float | None]] = [(key, volume) for key, volume in shares.get((uid, wanted), ())
                                                                 if stockpile in (None, key)]
+                if not parts:  # sin cifra: lo que la retirada anotó de lo que se le apoyaba al acopio, con sus m³ de entonces
+                    parts = [(item.key, item.volume_of(uid)) for item in removed.get(uid, ())
+                             if item.detection == wanted and item.volume_of(uid) is not None and stockpile in (None, item.key)]
                 if not parts and stockpile is None:
                     parts = [(None, 0.0)]
             else:
@@ -1808,10 +1965,16 @@ def dependencies_of(project: Any, version: str, code: str, *, conn: sqlite3.Conn
         by_operation = {item.operation_uid: item for item in listed if item.operation_uid is not None}
         links = _links(reading, {row[1] for row in rows.values() if row[1] not in by_operation})
         removed = _removed_supports(ParameterStore(project), reading, found)  # P-9
+        by_project: dict[str, EntityEntry] | None = None
         result: list[Dependent] = []
         for _dataset, (_position, producer, name, op_type, settings, roles) in sorted(
                 rows.items(), key=lambda item: (SUPPORTED_ON_ROLE not in item[1][5], item[1][0])):
             item = by_operation.get(producer)
+            if item is None and op_type == STOCKPILE_DETECT_PROJECT:  # se apoya en un acopio de la detección **del proyecto** (T45)
+                if by_project is None:
+                    by_project = {entry.operation_uid: entry for entry in _registry(project, reading, None)
+                                  if entry.operation_uid is not None}
+                item = by_project.get(producer)
             if item is not None and item.record.kind == EntityKind.STOCKPILE:
                 # se apoya **en un acopio** de la detección (spec 016, T15): una fila por acopio, con lo suyo apoyado en él
                 parts: list[tuple[str | None, float | None]] = list(shares.get((entry.operation_uid, item.record.code), ()))
@@ -2053,6 +2216,7 @@ def retired_supports(project: Any, version: str, *, conn: sqlite3.Connection | N
             if uid not in rows:
                 (fid, op_type, settings) = reading.execute(_OPERATION_ROW, (uid,)).fetchone()
                 rows[uid] = (int(fid), str(op_type), str(settings), {})
+        by_project: EntityRegistry | None = None
         result: list[RetiredSupport] = []
         for uid, (_fid, op_type, settings, datasets) in sorted(rows.items(), key=lambda item: item[1][0]):
             item = by_operation.get(uid)
@@ -2066,6 +2230,10 @@ def retired_supports(project: Any, version: str, *, conn: sqlite3.Connection | N
                     dataset, name, _ordered(roles)))
             for gone in removed.get(uid, ()):
                 detection = listed.get(gone.detection)
+                if detection is None:  # la detección **del proyecto** (T45): no está en el registro de la versión
+                    if by_project is None:
+                        by_project = _registry(project, reading, None)
+                    detection = by_project.get(gone.detection)
                 lost.append(RetiredEntity(gone.detection, gone.detection if detection is None else detection.record.name,
                                           gone.dataset_uid, gone.dataset, (SUPPORTED_ON_ROLE,), gone.removal, gone.key))
             result.append(RetiredSupport(

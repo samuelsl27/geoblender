@@ -48,7 +48,8 @@ operación sube **más** del espesor mínimo de la 012, ``T`` la superficie con 
 (viene de otra versión o del proyecto), lo que tiene por encima de ``T`` va a **esa superficie por su nombre**. La lista (:class:`Resting`,
 **una sola**) se da **antes de calcular**, sin escribir nada: :func:`resting_notices` es su aviso (``des.removal_resting``) y
 :func:`check_resting_confirmed`, la negativa a retirar sin la confirmación expresa (``des.removal_resting_unconfirmed``). Qué queda en
-«apoyo retirado» al crear la retirada lo decide el grafo (P-9: ``design.entities``), no este módulo.
+«apoyo retirado» al crear la retirada lo decide el grafo (P-9: ``design.entities``), no este módulo; **lo que la retirada anota** de la lista, para que
+lo lea (T45; hallazgos S-1 y B-1), lo da :func:`resting_record` (una fila por operación de la versión).
 
 **La pared** (T19; RF-016-15; A8; D-6; CA-9; errores 41 y 47): :func:`measure_wall` (y :func:`wall_steps`, por pasos) mide, sobre el
 :class:`RemovalOutcome` de A6, la pared que queda en el borde de lo retirado y la deja en :attr:`RemovalOutcome.wall` (:class:`Wall`) y
@@ -622,6 +623,17 @@ def check_resting_confirmed(stockpile: str, found: Iterable[Resting], *, confirm
     if rows and not confirmed:
         raise DesignError("des.removal_resting_unconfirmed", obj=f"Retirada del acopio «{stockpile}»", field="confirmación",
                           value=False, stockpile=stockpile, volume=math.fsum(row.volume_m3 for row in rows))
+
+
+def resting_record(found: Iterable[Resting]) -> list[dict[str, Any]]:
+    """**Lo que anota la retirada de lo que se le apoyaba** (spec 016, T45; RF-016-14, RF-015-17, P-9; hallazgos S-1 y B-1): de la lista de
+    :func:`resting_on` (la misma que se listó antes de calcular y se confirmó), una fila por **operación** de la versión —una entidad o un diseño de
+    la 013 y la 014— con su ``operation`` (uid), su ``name``, su código de entidad (``entity``; ``None`` en un diseño), sus ``volume_m3`` y sus
+    ``cells``, en el orden de la lista; la fila de una **superficie** (la de otra versión o del proyecto, por su nombre: sin operación) no se anota,
+    porque no hay a quién quitarle el apoyo. Es lo que se guarda en los ajustes de la operación (``provenance.REMOVAL_RESTING``: un JSON finito) y lo
+    que lee «apoyo retirado» (``entities``) **sin leer ninguna superficie**, de modo que no depende de las cifras que el relleno midió al crearse."""
+    return [{"operation": row.operation_uid, "name": row.name, "entity": row.entity, "volume_m3": float(row.volume_m3),
+             "cells": int(row.cells)} for row in found if row.operation_uid is not None]
 
 
 @dataclass(frozen=True, slots=True)

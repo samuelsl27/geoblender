@@ -358,6 +358,7 @@ __all__ = [
     "REFIT_PROFILE_PARAMS",
     "REMOVAL_COMMAND",
     "REMOVAL_FIGURES",
+    "REMOVAL_RESTING",
     "REMOVED_STOCKPILE_ROLE",
     "REPORT_TABLE",
     "REPRODUCIBLE",
@@ -632,6 +633,14 @@ REMOVED_STOCKPILE_ROLE = "removed_stockpile"
 """El papel del acopio que retira ``des.stockpile_removal``: su tabla (``des_stk_``) y su base (``des_stb_``). Si una
 retirada viva lo consume, el dato del acopio cuenta como retirado para lo que se apoyaba en él (P-9, «apoyo
 retirado»)."""
+REMOVAL_RESTING = "removal_resting"
+"""La clave de los ajustes de una retirada de acopio (``des.stockpile_removal`` y la plataforma que lo retira «como plataforma») donde queda **lo
+que se le apoyaba al acopio al crearla** (spec 016, T45; RF-016-14, RF-015-17, P-9; hallazgos S-1 y B-1): una fila por operación de la versión de la
+lista de A7 (``design.removal.resting_record``: su uid, su nombre, su código si es una entidad, los m³ y las celdas), la misma que se listó y
+se confirmó. «Apoyo retirado» (``design.entities``) la lee **sin leer ninguna superficie**: no depende de las cifras de lo apoyado que el
+relleno midió al crearse (que no tiene si se hizo antes que la detección o si la detección es **del proyecto**). No es de
+:func:`removal_settings`: la prepara quien calcula la lista (``supported_store.prepare_removal_units`` y
+``entity_store.prepare_platform_units``) y la rehace cada recálculo."""
 BODY_DATA_ROLE = "body_data"
 """El papel de la capa con los datos de espesor que consume ``des.body`` (puntos, líneas 3D o polígonos)."""
 

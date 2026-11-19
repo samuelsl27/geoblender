@@ -97,7 +97,7 @@ que la persona confirma; cerrar los pasos (Esc) o la ventana borra los temporale
   de su versión rellena más del espesor mínimo de la 012 por encima de ``máx(partida, entidad)``
   (``design.entities.detect_supports``, vía ``design.entity_store.survey_supports``) y añade a sus entradas la
   superficie de cada una (``supported_on``) y la tabla de su huella (``support_footprint``) y a sus cifras
-  ``des.supported_m3`` con su ámbito. **Un acopio de una detección** (spec 016, T15; RF-016-14, P-1) es apoyable como una
+  ``des.supported_m3`` con su ámbito (también la de una detección de acopios **del proyecto**, T45). **Un acopio de una detección** (spec 016, T15; RF-016-14, P-1) es apoyable como una
   entidad: se apoya en él por **cada acopio** de la tabla de la detección (la superficie, ``des_stp_``, y la tabla,
   ``des_stk_``, se anotan una sola vez y la cifra lleva la clave del acopio en su ámbito). Una versión **sin entidades** (de
   ningún tipo: también cuenta una que solo tiene una detección) no lo paga (una consulta, :func:`_has_entities`). Una operación hecha es inmutable: la de un recálculo empieza antes de calcular y
@@ -1352,13 +1352,21 @@ def _has_entities(conn: sqlite3.Connection, version_uid: str) -> bool:
     """Si la versión ``version_uid`` tiene alguna entidad de diseño (spec 015, T23): alguna fila propia de la
     familia ``des.<tipo>.{e}.*`` de un tipo de entidad registrado —la plataforma de la 015 y, de la 016 (T15), la detección de
     acopios, la retirada, el contrafuerte y el cuerpo: una versión con **solo** una detección ya tiene en qué apoyarse— (``design.
-    entities.registry``). Una consulta con ``LIMIT 1``: lo que paga toda operación de la 013 y la 014 que deja una superficie en una
+    entities.registry``) o **del proyecto** (T45; D-15, hallazgo S-1: la detección de acopios sobre una superficie del proyecto, en la que
+    también se apoya lo de una versión). Una consulta con ``LIMIT 1``: lo que paga toda operación de la 013 y la 014 que deja una superficie en una
     versión **sin** entidades."""
     prefixes = [f"{spec.key_prefix}.%" for spec in registered_entity_params()]
+    own = " OR ".join("key LIKE ?" for _ in prefixes)
+    project = [f"{spec.key_prefix}.%" for spec in registered_entity_params() if spec.kind == _PROJECT_ENTITY_KIND]
     return conn.execute(
-        "SELECT 1 FROM gb_parameter WHERE scope = ? AND scope_uid = ? AND ("
-        + " OR ".join("key LIKE ?" for _ in prefixes) + ") LIMIT 1",
-        (VERSION_SCOPE, version_uid, *prefixes)).fetchone() is not None
+        f"SELECT 1 FROM gb_parameter WHERE (scope = ? AND scope_uid = ? AND ({own}))"
+        + "".join(" OR (scope = ? AND key LIKE ?)" for _ in project) + " LIMIT 1",
+        (VERSION_SCOPE, version_uid, *prefixes, *(item for key in project for item in (PROJECT_SCOPE, key)))).fetchone() is not None
+
+
+_PROJECT_ENTITY_KIND = "stockpile"
+"""El tipo de entidad que tiene operación **de proyecto** (la detección de acopios sobre una superficie del proyecto, D-15): sus parámetros del
+proyecto cuentan como entidades en las que se apoya lo de una versión (:func:`_has_entities`; T45)."""
 
 
 @dataclass(frozen=True, slots=True)
