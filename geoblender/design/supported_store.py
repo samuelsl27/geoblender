@@ -49,7 +49,7 @@ capa, entidad, campo y valor, y la distancia máxima sin valor (D-9). «Sobre un
 el espesor (``des_bdt_``), parte de una superficie y encadena; «bajo un techo» deja la base y el espesor dispersos (``des_bds_`` y
 ``des_bdt_``), **no cambia la superficie, no tiene partida y nadie parte de él** (``des.chainless_start``). Una sola transacción.
 
-**El contrafuerte** (spec 016, T27; HU-016-3; RF-016-17, RF-016-18, RF-015-10, RF-015-12; plan 016 §5.2.3, §5.4 A10, §5.7 P-8, §5.8 H-6): el
+**El contrafuerte** (spec 016, T27 y T28; HU-016-3; RF-016-17 a RF-016-19, RF-015-10, RF-015-12, RF-015-13; plan 016 §5.2.3, §5.4 A10, §5.7 P-8, §5.8 H-6): el
 mismo patrón —:func:`prepare_buttress_units` → :func:`buttress_compute_steps` (puro, compartido con la reproducción) →
 :func:`compute_buttress_steps` → :func:`create_buttress` → :func:`run_buttress` / :func:`recompute_buttress`— con ``design.buttress`` como
 cálculo. Lee la zona de coronación (un polígono de una capa de entidades), **rechaza la cota fuera del ancla de su perfil antes de leer
@@ -58,7 +58,11 @@ su resguardo (D-19) y lee la partida **entera** una vez para saber hasta dónde 
 alcance fijado, solo su ventana). Deja la superficie entera (``des_psf_``), la huella con **dos geometrías** (``des_epr_``: ``footprint``,
 toda la huella, y ``zone``, la zona de coronación, que es la que declara «sin corte», P-8 y H-6: :data:`~.store.BUTTRESS_ENTITY_COLUMNS`)
 y el informe, y **no declara** la restricción: la declara ``des.declare_constraints`` (``entity_store.after_entity_change``), que lee la
-zona propia del tipo (:func:`~.entities.declaration_runs`). Una sola transacción.
+zona propia del tipo (:func:`~.entities.declaration_runs`). Una sola transacción. **El pie cortado** (T28; RF-016-19, RF-015-13):
+:func:`buttress_compute_steps` mide también lo que el borde del relleno admitido le quita al pie (``buttress.cutoff_steps``: el área, el
+volumen y el salto creado de ese borde, con las cifras ``des.btr_cutoff_*`` y el aviso ``des.buttress_foot_cut`` en el informe y el
+resumen) y :func:`buttress_summary` añade **lo que no rellena por la restricción de otra entidad o de los límites**, con esa entidad
+(:func:`foot_held_notices`); nada de ello impide crearlo.
 """
 
 from __future__ import annotations
@@ -111,7 +115,17 @@ from .model import (
     ThicknessSource,
 )
 from .params import BodyParam, ButtressParam, RemovalParam, StockpileParam, check_entity_param, entity_key, entity_params
-from .preview import BodySummary, ButtressSummary, Obsolete, ObsoleteKind, RemovalSummary, RestingLine, obsolete_notices
+from .preview import (
+    BodySummary,
+    ButtressSummary,
+    Notice,
+    Obsolete,
+    ObsoleteKind,
+    RemovalSummary,
+    RestingLine,
+    held_notices,
+    obsolete_notices,
+)
 from .removal import RemovalJob, RemovalOutcome, Resting
 from .sectors import design_sectors, refuse_pending
 from .seeds import pace_progress, sector_layout
@@ -159,6 +173,7 @@ __all__ = [
     "create_buttress",
     "create_removal",
     "default_domain",
+    "foot_held_notices",
     "frozen_thickness_data",
     "prepare_body",
     "prepare_body_units",
@@ -1569,7 +1584,7 @@ def recompute_body(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
 
 
 # =================================================================================================================
-# El contrafuerte (spec 016, T27; HU-016-3; RF-016-17, RF-016-18, RF-015-02, RF-015-03, RF-015-10, RF-015-12, RF-015-29; plan 016
+# El contrafuerte (spec 016, T27 y T28; HU-016-3; RF-016-17 a RF-016-19, RF-015-02, RF-015-03, RF-015-10, RF-015-12, RF-015-13, RF-015-29; plan 016
 # §5.2.3, §5.3.2, §5.4 A10, §5.7 P-8, §5.8 H-6 y H-10): el patrón de la retirada y del cuerpo, con ``design.buttress`` como cálculo
 # =================================================================================================================
 
@@ -1815,19 +1830,24 @@ def prepare_buttress(project: StoreProject, request: ButtressRequest, *, version
 # --- Calcular (RF-015-03, RF-015-29, RNF-016-02 y 03) -------------------------------------------------------------
 
 
-def buttress_compute_steps(job: ButtressJob, *, budget_s: float = STEP_BUDGET_S) -> Generator[Progress, None, ButtressOutcome]:
-    """Los pasos que calculan el contrafuerte de ``job`` (RF-016-17, RF-016-18, RF-015-29; plan 016 §5.3.2: el ``buttress_compute_steps`` que
-    **comparten «Calcular», el recálculo y la reproducción**), sin proyecto y sin escribir nada (``yield from``; cerrar el generador no deja
-    nada): A10 (``buttress.buttress_steps``) por pasos de ``budget_s`` como mucho. Los rechazos de RF-016-18 salen al llamar y al avanzar
-    (``des.buttress_crown_off_anchor``, ``des.buttress_crown_below_support``) y, **si ninguna celda sube** (el relleno no está admitido
-    donde llegarían sus taludes: no hay huella que declarar ni que enseñar), ``des.buttress_nothing_rises``. Devuelve el
-    :class:`~.buttress.ButtressOutcome`."""
+def buttress_compute_steps(job: ButtressJob, common: Mapping[str, object], *, budget_s: float = STEP_BUDGET_S
+                           ) -> Generator[Progress, None, ButtressOutcome]:
+    """Los pasos que calculan el contrafuerte de ``job`` (RF-016-17, RF-016-18, RF-016-19, RF-015-29; plan 016 §5.3.2: el
+    ``buttress_compute_steps`` que **comparten «Calcular», el recálculo y la reproducción**), sin proyecto y sin escribir nada
+    (``yield from``; cerrar el generador no deja nada): A10 (``buttress.buttress_steps``) y **el pie cortado** por el borde del relleno
+    admitido (``buttress.cutoff_steps``, T28), por pasos de ``budget_s`` como mucho. ``common`` son los parámetros del proyecto que lee
+    el pie cortado (``provenance.PLATFORM_COMMON_PARAMS``: el espesor mínimo y el salto admitido con su porcentaje). Los rechazos de
+    RF-016-18 salen al llamar y al avanzar (``des.buttress_crown_off_anchor``, ``des.buttress_crown_below_support``) y, **si ninguna celda
+    sube** (el relleno no está admitido donde llegarían sus taludes: no hay huella que declarar ni que enseñar),
+    ``des.buttress_nothing_rises``; **un pie cortado nunca rechaza**: es un aviso (RF-016-19). Devuelve el
+    :class:`~.buttress.ButtressOutcome` con el pie medido."""
     name = job.request.name
     yield Progress(_BUTTRESS_PHASE, 0, 1, f"Calculando el contrafuerte «{name}»…")
     outcome: ButtressOutcome = yield from pipeline.forward(buttress.buttress_steps(job, budget_s=budget_s))
     if not np.any(outcome.footprint):
         raise DesignError("des.buttress_nothing_rises", obj=f"Contrafuerte «{name}»", field=entity_key(job.code, ButtressParam.CROWN),
                           value=outcome.crown_m, layer=job.request.layer, entity=name)
+    outcome = yield from pipeline.forward(buttress.cutoff_steps(job, outcome, common, budget_s=budget_s))
     yield Progress(_BUTTRESS_PHASE, 1, 1, f"Contrafuerte «{name}» calculado")
     return outcome
 
@@ -1857,8 +1877,9 @@ def buttress_entity_rows(job: ButtressJob, outcome: ButtressOutcome, *, layer: s
 def buttress_report_rows(outcome: ButtressOutcome) -> list[Row]:
     """Las filas de ``des_prp_`` (formato largo: ``quantity, value, unit_code, note``; RF-016-17) del contrafuerte ``outcome``, en este
     orden: las celdas (la zona de coronación, las semillas y la huella), las cifras (volumen, área y altura máxima con su lugar), los
-    valores que lo gobiernan (la cota de coronación y, si se fijó, el alcance) y, al final, los avisos y notas (``warning`` y ``note`` con
-    su código y sus valores en JSON). Un valor que no es finito es un error del programa (``ValueError``). Solo depende del resultado: lo
+    valores que lo gobiernan (la cota de coronación y, si se fijó, el alcance), **el pie cortado**, si se midió (T28; RF-016-19:
+    ``cutoff_m2`` y ``cutoff_m3`` —0 si no se corta— y, si se corta, ``cutoff_step_m``: el mayor salto creado del borde, con su lugar) y, al
+    final, los avisos y notas (``warning`` y ``note`` con su código y sus valores en JSON, entre ellos ``des.buttress_foot_cut``). Un valor que no es finito es un error del programa (``ValueError``). Solo depende del resultado: lo
     repite la reproducción."""
     rows: list[Row] = []
 
@@ -1876,6 +1897,12 @@ def buttress_report_rows(outcome: ButtressOutcome) -> list[Row]:
     scalar("crown_m", outcome.crown_m, "m")
     if outcome.reach_m is not None:
         scalar("reach_m", outcome.reach_m, "m")
+    if outcome.cutoff_m2 is not None and outcome.cutoff_m3 is not None:  # el pie cortado (RF-016-19), medido
+        scalar("cutoff_m2", outcome.cutoff_m2, "m2")
+        scalar("cutoff_m3", outcome.cutoff_m3, "m3")
+        created = outcome.created
+        if created is not None and created.x is not None and created.y is not None:
+            scalar("cutoff_step_m", created.maximum_m, "m", f"{_real('cutoff_step.x', created.x)!r};{_real('cutoff_step.y', created.y)!r}")
     for notice in outcome.notices:
         rows.append((notice.severity, None, None, _notice_text(notice)))
     return rows
@@ -1889,7 +1916,7 @@ def compute_buttress_steps(writer: DesignWriter, prepared: PreparedButtress, *, 
     coronación (``des_epr_``) y el informe (``des_prp_``), **sin confirmar**: lo que falta para crearlo (:func:`create_buttress`) es una
     sola transacción. Devuelve el :class:`~.buttress.ButtressOutcome`."""
     job = prepared.job
-    outcome = yield from buttress_compute_steps(job, budget_s=budget_s)
+    outcome = yield from buttress_compute_steps(job, prepared.common, budget_s=budget_s)
     whole = yield from _whole_start_steps(writer.project, prepared, budget_s)  # type: ignore[arg-type]
     yield from pipeline.forward(_store_steps(
         writer.grid_steps(provenance.ENTITY_SURFACE_GRID, Raster(job.grid, outcome.compose(whole), writer.crs, writer.vertical)),
@@ -1918,16 +1945,38 @@ def buttress_obsolete(project: StoreProject, prepared: PreparedButtress, *, supe
     return tuple(entity_store._consumer(ObsoleteKind.DEPENDENT, uid, op_type, name) for uid, op_type, name in found)
 
 
-def buttress_summary(project: StoreProject, prepared: PreparedButtress, outcome: ButtressOutcome, *,
+def foot_held_notices(outcome: ButtressOutcome, masks: access.MaskSet, *, names: Mapping[str, str], declared: Mapping[str, str]
+                      ) -> tuple[Notice, ...]:
+    """**Lo que el contrafuerte no rellena por una restricción** (RF-016-19, RF-015-13): las celdas de su pie cortado
+    (``outcome.cutoff``: donde el escalonado sin máscara subiría y las máscaras no admiten el relleno) con **la restricción que lo
+    impide**, como las de lo que una plataforma no mueve (:func:`~.preview.held_notices`): la de una entidad que la declara (``declared``:
+    código de la restricción → nombre de la entidad; p. ej. «sin relleno» de una plataforma «en corte» protegida) da
+    ``des.entity_held`` con **su nombre** y el área (m²) que no rellena por ella; una restricción normal, ``des.entity_held_constraint``
+    (``names``: código → nombre); lo que ninguna zona explica (fuera del límite, su banda…), ``des.entity_held_masks``. Cada celda del pie
+    cortado se explica una vez por zona; sin pie cortado (o sin medir), ninguno. Solo depende de lo que se le da."""
+    cut = outcome.cutoff
+    if cut is None or not cut.any():
+        return ()
+    none = np.zeros(cut.shape, dtype=np.bool_)
+    return held_notices(outcome.name, masks, outcome.window, cut=none, fill=cut, edge=none, names=names, declared=declared)
+
+
+def buttress_summary(project: StoreProject, prepared: PreparedButtress, outcome: ButtressOutcome, masks: access.MaskSet, *,
                      supersedes: str | None = None) -> ButtressSummary:
-    """El resumen de «Calcular» el contrafuerte ``prepared`` (RF-015-03, RF-016-17): las cifras que se registrarán (volumen, área y altura
-    máxima con su lugar), si declara «sin corte» sobre su zona de coronación (``protect``, con su resguardo) y los avisos en el orden en
-    que se enseñan (los del cálculo y lo que quedará obsoleto). Solo lee."""
+    """El resumen de «Calcular» el contrafuerte ``prepared`` (RF-015-03, RF-016-17, RF-016-19): las cifras que se registrarán (volumen,
+    área y altura máxima con su lugar y el pie cortado), si declara «sin corte» sobre su zona de coronación (``protect``, con su
+    resguardo) y los avisos en el orden en que se enseñan: los del cálculo (entre ellos **el pie cortado**, con su área, su volumen y el
+    salto creado de su borde, que no impide crearlo), **lo que no rellena por la restricción de otra entidad o de los límites**, con esa
+    entidad (:func:`foot_held_notices`, ``masks`` son las máscaras de la versión) y lo que quedará obsoleto. Solo lee."""
     kept = buttress_obsolete(project, prepared, supersedes=supersedes)
     request = prepared.job.request
     values = prepared.values
     guard = values.get(ButtressParam.GUARD.value)
-    notices = (*outcome.notices, *obsolete_notices(request.name, prepared.version.code, kept))
+    held: tuple[Notice, ...] = ()
+    if outcome.cutoff is not None and outcome.cutoff.any():
+        names, declared = entity_store._restrictions(project, prepared.version)
+        held = foot_held_notices(outcome, masks, names=names, declared=declared)
+    notices = (*outcome.notices, *held, *obsolete_notices(request.name, prepared.version.code, kept))
     return ButtressSummary(
         request.name, prepared.code, prepared.version.code, request.layer, outcome.profile, outcome.crown_m, outcome.figures,
         outcome.volume_m3, outcome.area_m2, outcome.height_max_m, outcome.height_max_x, outcome.height_max_y,

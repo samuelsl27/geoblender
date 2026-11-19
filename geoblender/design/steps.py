@@ -55,9 +55,11 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
   deja el espesor disperso (``des_bdt_``) y la superficie con el techo (``des_psf_``, «sobre una base») o la base dispersa (``des_bds_``,
   «bajo un techo») en temporales, el **resumen** (:class:`~.preview.BodySummary`: las cifras, lo lejano de los datos con su lugar y los
   avisos) y **nada en el proyecto**; crearlo es :meth:`Calculation.create` (:func:`~.supported_store.create_body`: una transacción).
-- :func:`buttress_run` (spec 016, T27; RF-016-17, RF-016-18, RF-015-03, RF-015-29): «Calcular» un contrafuerte (``des.buttress``) del mismo modo:
-  deja la superficie (``des_psf_``) en un temporal, el **resumen** (:class:`~.preview.ButtressSummary`: el volumen, el área y la altura máxima
-  y si declara «sin corte» sobre su zona de coronación) y **nada en el proyecto**; crearlo es :meth:`Calculation.create`
+- :func:`buttress_run` (spec 016, T27 y T28; RF-016-17 a RF-016-19, RF-015-03, RF-015-29): «Calcular» un contrafuerte (``des.buttress``) del mismo modo:
+  deja la superficie (``des_psf_``) en un temporal, el **resumen** (:class:`~.preview.ButtressSummary`: el volumen, el área y la altura máxima,
+  si declara «sin corte» sobre su zona de coronación y, desde la T28 —RF-016-19, RF-015-13—, **el pie cortado** por el borde del relleno
+  admitido con su área, su volumen y el salto creado de ese borde, y lo que no rellena por la restricción de otra entidad, con ella: avisos
+  que no impiden crearlo) y **nada en el proyecto**; crearlo es :meth:`Calculation.create`
   (:func:`~.supported_store.create_buttress`: una transacción; la restricción que declara la encadena la orden, ``after_entity_change``).
 - :class:`Calculation`: lo calculado y todavía sin registrar. :meth:`~Calculation.create`
   (**«Crear»**) abre la operación, mueve los temporales, escribe las tablas y las cifras y completa,
@@ -970,7 +972,7 @@ def _buttress_steps(project: StoreProject, request: ButtressRequest, version: st
     try:
         outcome: buttress.ButtressOutcome = yield from supported_store.compute_buttress_steps(writer, prepared, budget_s=budget_s)
         yield Progress(_BUTTRESS_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
-        summary = supported_store.buttress_summary(project, prepared, outcome, supersedes=supersedes)
+        summary = supported_store.buttress_summary(project, prepared, outcome, loaded, supersedes=supersedes)
         calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices,
                                   seeds=None, values=prepared.common, entity=prepared, summary=summary)
     except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal

@@ -219,3 +219,70 @@ def strip_closed_form(rows: int, first: int, last: int, *, level: float, crown: 
     rises = [value - level for value in surface if value > level]
     return Strip(distance, envelope, tuple(stairs), stepped, surface, math.fsum(rises) * step * step,
                  len(rises) * step * step, max(rises, default=0.0))
+
+
+# --- El pie cortado, a mano (spec 016, T28; RF-016-19) -----------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class HandFoot:
+    """El pie cortado de un contrafuerte, calculado en bucles de Python: las ``cells`` que el borde del relleno admitido
+    corta (donde el escalonado sin máscara sube más que la superficie compuesta), su ``area_m2`` y su ``volume_m3`` (lo que
+    falta, con ``fsum``), y el **salto creado** del borde de la superficie compuesta (RF-014-20, a mano: las ``pairs`` de
+    celdas vecinas con una movida y la otra no, ``step_m`` el mayor ``|S_a − S_b| − |z_a − z_b|`` y su lugar ``x``, ``y``;
+    ``None`` sin parejas), con su ``mask`` (booleana, de la forma de la escena)."""
+
+    cells: int
+    area_m2: float
+    volume_m3: float
+    mask: np.ndarray
+    pairs: int
+    step_m: float | None
+    x: float | None
+    y: float | None
+
+
+def hand_foot(scene: Scene, crown: float, *, metric: str = "exact", reach: float | None = None,
+              thickness: float = 0.02) -> HandFoot:
+    """El pie cortado del contrafuerte de ``scene`` **a mano**: se calcula el contrafuerte sin ninguna máscara y con las de
+    la escena (:func:`hand_of`, el oráculo independiente) y, celda a celda, falta lo que la primera sube más que la segunda;
+    el salto creado del borde de la superficie con máscaras recorre las parejas de celdas vecinas (4 vecinos) de la ventana:
+    una celda está **movida** si es del relleno admitido, tiene dato en las dos superficies y ``|S − z|`` pasa del espesor
+    mínimo ``thickness`` (m); una pareja es del borde si una está movida y la otra no, con dato en las dos superficies; su
+    salto creado es ``|S_a − S_b| − |z_a − z_b|``; el mayor, y a igual salto el primero de norte a sur y de oeste a este."""
+    free = hand_of(dataclasses.replace(scene, allowed=np.ones(scene.start.shape, dtype=bool)), crown, metric=metric, reach=reach)
+    held = hand_of(scene, crown, metric=metric, reach=reach)
+    rows, cols = scene.start.shape
+    start, surface, allowed = scene.start, held.surface, scene.allowed
+    area = scene.grid.dx * scene.grid.dy
+    mask = np.zeros((rows, cols), dtype=bool)
+    lost: list[float] = []
+    for r in range(rows):
+        for c in range(cols):
+            if free.surface[r, c] > surface[r, c]:
+                mask[r, c] = True
+                lost.append(float(free.surface[r, c] - surface[r, c]))
+    moved = np.zeros((rows, cols), dtype=bool)
+    data = np.isfinite(start) & np.isfinite(surface)
+    for r in range(rows):
+        for c in range(cols):
+            moved[r, c] = bool(allowed[r, c] and data[r, c] and abs(surface[r, c] - start[r, c]) > thickness)
+    pairs = 0
+    best: tuple[float, int, int] | None = None  # (salto, fila y columna del punto medio, en medias celdas)
+    for r in range(rows):
+        for c in range(cols):
+            for d_row, d_col in ((0, 1), (1, 0)):
+                r2, c2 = r + d_row, c + d_col
+                if r2 >= rows or c2 >= cols or moved[r, c] == moved[r2, c2] or not (data[r, c] and data[r2, c2]):
+                    continue
+                pairs += 1
+                created = abs(surface[r, c] - surface[r2, c2]) - abs(start[r, c] - start[r2, c2])
+                key = (2 * r + d_row, 2 * c + d_col)
+                if best is None or created > best[0] or (created == best[0] and key < (best[1], best[2])):
+                    best = (float(created), key[0], key[1])
+    x = y = step = None
+    if best is not None:
+        step = best[0]
+        x = scene.grid.west + (best[2] + 1) * scene.grid.dx / 2.0
+        y = scene.grid.north - (best[1] + 1) * scene.grid.dy / 2.0
+    return HandFoot(len(lost), len(lost) * area, math.fsum(lost) * area, mask, pairs, step, x, y)

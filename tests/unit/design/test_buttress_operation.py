@@ -389,7 +389,8 @@ class ButtressOperationTest(ButtressCase):
         mine = [check for check in report.outputs if check.operation_uid == uid]
         self.assertEqual(len(mine), 3, f"la superficie, la huella con su zona y el informe: {report.not_reproducible} {report.outputs}")
         self.assertTrue(all(check.same for check in mine), [check for check in mine if not check.same])
-        self.assertEqual(len([check for check in report.figures if check.operation_uid == uid]), 3, "las tres cifras")
+        self.assertEqual(len([check for check in report.figures if check.operation_uid == uid]), 5,
+                         "las cinco cifras: el volumen, el área, la altura máxima y el pie cortado (T28: su área y su volumen)")
         self.assertTrue(all(check.same for check in report.outputs), [check for check in report.outputs if not check.same])
         self.assertTrue(all(check.same for check in report.figures), [check for check in report.figures if not check.same])
         self.assertFalse(report.not_reproducible)

@@ -17,6 +17,8 @@ y **no corta nada**. Lo que entrega:
   huella entera, lo escalonado sin máscara y las cifras ``des.btr_volume_m3``, ``des.btr_area_m2`` y ``des.btr_height_max_m``.
 - :func:`check_crown_anchor`, :func:`nearest_anchor` y :func:`below_support_error` (RF-016-18, D-21): los dos rechazos de la cota de
   coronación, que no registran nada ni eligen una cota por la persona.
+- :func:`cutoff_steps` y :func:`measure_cutoff` (T28; RF-016-19): **el pie cortado**, lo que el borde del relleno admitido le quita al
+  contrafuerte, con su aviso y sus cifras (``des.btr_cutoff_m2`` y ``des.btr_cutoff_m3``); **no impide crearlo**.
 - :func:`buttress_window` y :func:`buttress_reach_m` (A0): la ventana de trabajo de la zona ampliada por lo que alcanza su
   envolvente, que es lo que basta leer de la partida y de las máscaras.
 
@@ -33,11 +35,20 @@ y **no corta nada**. Lo que entrega:
 4. **La composición** ``máx(partida, recorte)`` en el relleno admitido de la 012 (:func:`~.compose.compose` con
    :attr:`~.model.BenchSense.FILL`): **también en las zonas de solo restauración**, que la 012 admite como relleno (D-24, H-10,
    RF-012-13), sin recortar el pie a la zona dibujada (error 19) y **sin cortar ninguna celda**; donde no sube, la partida bit a
-   bit. Lo que el escalonado sin máscara tiene de más que lo compuesto es el pie cortado de RF-016-19 (T28, que lee
-   :attr:`ButtressOutcome.stepped`).
+   bit. Lo que el escalonado sin máscara tiene de más que lo compuesto es el pie cortado de RF-016-19 (:func:`cutoff_steps`, que
+   lee :attr:`ButtressOutcome.stepped`).
 5. **El espesor** (RF-016-01) es la superficie menos la partida (la base del contrafuerte es su apoyo: la superficie de partida):
    ``derive`` comprueba en todas las celdas que no es negativo y que la base no queda por encima del techo. No se guarda: el plan
    no tiene un dato de espesor del contrafuerte (solo ``des_psf_``, ``des_epr_`` y ``des_prp_``).
+
+**El pie cortado** (T28; RF-016-19; D-24; error 19). Donde el relleno no está admitido el contrafuerte no sube (A10 no recorta nada
+más), y si eso le quita parte del pie hay que decirlo: :func:`cutoff_steps` (:func:`measure_cutoff`, de una vez) toma el escalonado
+sin máscara (``stepped``), le aplica la misma composición con **todo** admitido y lo compara con la superficie compuesta: **faltan**
+las celdas donde el primero sube más que la segunda (el **área**, m², y el **volumen**, m³, de lo que falta) y, de la superficie
+compuesta, **el salto creado de su borde** (:func:`~.edges.created_steps`, RF-014-20: el mayor salto de las parejas de celdas vecinas
+del borde de lo que mueve, con su lugar), que es la pared que deja el borde de lo admitido. Es un **aviso** (``des.buttress_foot_cut``)
+y dos cifras, ``des.btr_cutoff_m2`` y ``des.btr_cutoff_m3`` (0 si el pie no se corta): nunca un rechazo. Lee del proyecto el espesor
+mínimo de la 012 y el salto admitido de la 014 con su porcentaje (:data:`~.provenance.PLATFORM_COMMON_PARAMS`).
 
 **La cota de coronación** (D-21, RF-016-18). Es la **cota de ancla** del perfil, ``z₀ + n·h``: un escalonado en relleno queda por
 debajo de su envolvente y a menos de ``h`` de ella (RF-013-23), así que fuera del ancla no llega a la coronación. Una cota que no
@@ -61,7 +72,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Generator, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 
 import numpy as np
@@ -72,15 +83,26 @@ from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
 from .benching import bench_fill, final_trim_steps
 from .compose import compose
-from .edges import seed_envelope_steps
+from .edges import EdgeReport, created_steps, seed_envelope_steps
 from .envelopes import CELLS_PER_UNIT, CHAMFER_SCALE, TOLERANCE_M, SlopeField, reach_steps
 from .messages import DesignError
 from .model import BenchProfile, BenchSense, BodySense, ButtressRequest, Direction, Metric
-from .params import ButtressParam, check_entity_param, entity_key, entity_params, entity_params_of
+from .params import (
+    EDGE_MAX_STEP,
+    EDGE_MIN_SHARE,
+    VERIFY_MIN_THICKNESS,
+    ButtressParam,
+    check_entity_param,
+    check_quarry_param,
+    entity_key,
+    entity_params,
+    entity_params_of,
+)
 from .pipeline import forward
-from .platform import Window, _shaped_array, _whole, _window_of, work_window
+from .platform import Window, _project_number, _shaped_array, _whole, _window_of, work_window
 from .preview import Notice
 from .provenance import buttress_figures
+from .report import _thickness
 from .seeds import pace_progress
 from .stockpiles import window_grid
 from .thickness import derive
@@ -94,11 +116,15 @@ __all__ = [
     "buttress_window",
     "check_crown_anchor",
     "compute_buttress",
+    "cutoff_steps",
+    "measure_cutoff",
     "nearest_anchor",
     "trim_margin_m",
 ]
 
 _PHASE = "buttress"
+_CUTOFF_PHASE = "buttress_cutoff"
+_FOOT_CUT = "des.buttress_foot_cut"
 _OFF_ANCHOR = "des.buttress_crown_off_anchor"
 _BELOW_SUPPORT = "des.buttress_crown_below_support"
 _OBJ = "Contrafuerte «{}»"
@@ -324,8 +350,13 @@ class ButtressOutcome:
     Las cifras: ``volume_m3`` (la suma del espesor por el área de la celda), ``area_m2`` (la de la huella) y ``height_max_m`` (lo más
     que sube una celda) con su lugar (``height_max_x``, ``height_max_y``: el centro de la primera celda de arriba abajo y de oeste a
     este que la tiene; ``None`` sin huella); ``cutoff_m2`` y ``cutoff_m3`` (el pie cortado por el borde de lo admitido: ``None``
-    mientras no se mida, T28). ``crown_m``, ``reach_m``, ``metric`` y ``profile`` (el código del perfil) son los del contrafuerte,
-    ``seed_cells`` las celdas de semilla, ``cell_area_m2`` el área de una celda y ``notices`` los avisos."""
+    mientras no se mida, :func:`cutoff_steps`, T28). ``crown_m``, ``reach_m``, ``metric`` y ``profile`` (el código del perfil) son los
+    del contrafuerte, ``seed_cells`` las celdas de semilla, ``cell_area_m2`` el área de una celda y ``notices`` los avisos.
+
+    Medido el pie cortado (T28; RF-016-19): ``cutoff`` (booleana, de la forma de la ventana: las celdas donde el escalonado sin
+    máscara sube más que la superficie compuesta) y ``created`` (el :class:`~.edges.EdgeReport` del salto creado del borde de la
+    superficie compuesta, con su mayor salto y su lugar; ``None`` si el pie no se corta: no hay borde que medir), y el aviso
+    ``des.buttress_foot_cut`` en ``notices``."""
 
     name: str
     code: str
@@ -350,6 +381,8 @@ class ButtressOutcome:
     cutoff_m2: float | None = None
     cutoff_m3: float | None = None
     notices: tuple[Notice, ...] = ()
+    cutoff: np.ndarray | None = None
+    created: EdgeReport | None = None
 
     @property
     def figures(self) -> tuple[FigureSpec, ...]:
@@ -487,6 +520,146 @@ def compute_buttress(job: ButtressJob) -> ButtressOutcome:
     Los mismos rechazos."""
     last: Progress | None = None
     for last in buttress_steps(job, budget_s=math.inf):
+        pass
+    found = None if last is None else last.result
+    assert isinstance(found, ButtressOutcome)
+    return found
+
+
+# --- El pie cortado (T28; RF-016-19) ----------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _CutoffSettings:
+    """Lo que lee el pie cortado de los parámetros del proyecto, ya comprobado: el espesor mínimo de la 012 (m: una celda está movida si
+    sube más), el salto admitido de la 014 (m) y su porcentaje."""
+
+    thickness_m: float
+    jump_m: float
+    share_pct: float
+
+
+def _cutoff_settings(project: Mapping[str, object]) -> _CutoffSettings:
+    """El espesor mínimo (``res.verify.min_thickness_m``), el salto admitido (``des.edge.max_created_step_m``) y su porcentaje
+    (``des.edge.min_share``) de ``project``, comprobados como en el borde de la plataforma: ``ValueError`` (errores del programa: quien
+    llama los lee del proyecto, ``provenance.PLATFORM_COMMON_PARAMS``, y ninguno lleva valor por defecto aquí) si falta alguno, no es
+    un número finito o el espesor es negativo; el salto y el porcentaje, fuera de su rango, ``des.quarry_param_range``."""
+    thickness = _thickness(_project_number(project, VERIFY_MIN_THICKNESS))
+    jump = float(check_quarry_param(EDGE_MAX_STEP, _project_number(project, EDGE_MAX_STEP)))
+    share = float(check_quarry_param(EDGE_MIN_SHARE, _project_number(project, EDGE_MIN_SHARE)))
+    return _CutoffSettings(thickness, jump, share)
+
+
+def _check_cutoff_inputs(job: ButtressJob, outcome: ButtressOutcome) -> None:
+    """``ValueError`` (errores del programa) si ``outcome`` no es de ``job`` (otro código o otra ventana) o alguna de sus rejillas no es
+    de la forma de la ventana del trabajo."""
+    if not isinstance(outcome, ButtressOutcome):
+        raise ValueError(f"el pie cortado se mide sobre un ButtressOutcome, no sobre {type(outcome).__name__}")
+    if outcome.code != job.code or outcome.window != job.window:
+        raise ValueError(f"el resultado de {outcome.code} ({outcome.window!r}) no es del contrafuerte {job.code} ({job.window!r})")
+    shape = job.start.shape
+    for name in ("stepped", "surface", "footprint"):
+        found = getattr(outcome, name).shape
+        if found != shape:
+            raise ValueError(f"«{name}» del resultado es de la forma {found}, no de la de su ventana {shape}")
+
+
+def _cutoff_units(job: ButtressJob, outcome: ButtressOutcome) -> Generator[None, None, tuple[np.ndarray, float]]:
+    """Las unidades de medir lo que falta, por bandas de filas: en cada una, el escalonado sin máscara compuesto con **todo** el relleno
+    admitido (:func:`~.compose.compose`: ``máx(partida, recorte)``) menos la superficie compuesta con las máscaras, que donde es mayor
+    que 0 es lo que falta (el borde del relleno admitido le quita al pie ese espesor). Da las celdas cortadas y la suma de lo que falta
+    (m, sin multiplicar por el área de la celda), con ``fsum``."""
+    start, stepped, surface = job.start, outcome.stepped, outcome.surface
+    height, width = start.shape
+    step = max(1, CELLS_PER_UNIT // max(width, 1))
+    cut = np.zeros(start.shape, dtype=np.bool_)
+    parts: list[float] = []
+    yield None
+    for first in range(0, height, step):
+        band = slice(first, first + step)
+        free = compose(start[band], stepped[band], np.ones(start[band].shape, dtype=np.bool_), BenchSense.FILL)
+        with np.errstate(invalid="ignore"):
+            lost = free - surface[band]
+            held = lost > 0.0  # NaN no es mayor que nada: una celda sin dato no se corta
+        cut[band] = held
+        parts.append(float(lost[held].sum()))
+        yield None
+    return cut, math.fsum(parts)
+
+
+def _foot_notices(job: ButtressJob, outcome: ButtressOutcome, cut: np.ndarray, area_m2: float, volume_m3: float,
+                  created: EdgeReport | None) -> tuple[Notice, ...]:
+    """El aviso ``des.buttress_foot_cut`` (RF-016-19): el área y el volumen que faltan y el salto creado del borde con su lugar (el de la
+    pareja de celdas de mayor salto, al cm; sin parejas, el centro de la primera celda cortada y un salto de 0 m); ninguno si el pie no
+    se corta."""
+    if not np.any(cut):
+        return ()
+    step = 0.0
+    x = y = None
+    if created is not None and created.x is not None and created.y is not None:
+        step, x, y = max(created.maximum_m, 0.0), created.x, created.y
+    if x is None or y is None:
+        row, col = (int(index[0]) for index in np.nonzero(cut))
+        rows, cols = job.window
+        x = job.grid.west + (cols.start + col + 0.5) * job.grid.dx
+        y = job.grid.north - (rows.start + row + 0.5) * job.grid.dy
+    return (Notice(_FOOT_CUT, {"entity": outcome.name, "area": area_m2, "volume": volume_m3, "step": round(step, 2),
+                               "x": round(x, 2), "y": round(y, 2)}),)
+
+
+def _cutoff_progress(job: ButtressJob, outcome: ButtressOutcome, settings: _CutoffSettings, budget_s: float
+                     ) -> Generator[Progress, None, None]:
+    """Los pasos de :func:`cutoff_steps`: lo que falta por bandas de filas y, si el pie se corta, el salto creado del borde de la
+    superficie compuesta (:func:`~.edges.created_steps`: el dominio es el relleno admitido, que es lo que el contrafuerte mueve)."""
+    cut, lost = yield from forward(pace_progress(
+        _cutoff_units(job, outcome), budget_s, phase="cutoff", running="Midiendo el pie cortado del contrafuerte…",
+        finished="Pie cortado medido"))
+    cell = job.grid.cell_area
+    count = int(np.count_nonzero(cut))
+    created: EdgeReport | None = None
+    if count:
+        created = yield from forward(created_steps(
+            outcome.surface, job.start, job.fill_allowed, window_grid(job.grid, job.window), settings.thickness_m, settings.jump_m,
+            settings.share_pct, budget_s=budget_s))
+    area_m2, volume_m3 = count * cell, lost * cell
+    found = replace(outcome, cutoff_m2=area_m2, cutoff_m3=volume_m3, cutoff=cut, created=created,
+                    notices=(*outcome.notices, *_foot_notices(job, outcome, cut, area_m2, volume_m3, created)))
+    message = (f"Pie cortado del contrafuerte «{outcome.name}»: faltan {round(area_m2)} m² y {round(volume_m3)} m³" if count
+               else f"El pie del contrafuerte «{outcome.name}» no queda cortado")
+    yield Progress(_CUTOFF_PHASE, 1, 1, message, result=found)
+
+
+def cutoff_steps(job: ButtressJob, outcome: ButtressOutcome, project: Mapping[str, object], *, budget_s: float = STEP_BUDGET_S
+                 ) -> Iterator[Progress]:
+    """**El pie cortado** (RF-016-19; plan 016 §5.4 A10; D-24; error 19): lo que el borde del relleno admitido le quita al contrafuerte
+    ``outcome`` (el de :func:`buttress_steps` de ``job``), por pasos de ``budget_s`` como mucho (RNF-016-03: ≤ 0,2 s cada llamada): el
+    último ``Progress`` (fase ``buttress_cutoff``) lleva en ``result`` un :class:`ButtressOutcome` **nuevo**, el mismo con ``cutoff_m2``
+    y ``cutoff_m3``, ``cutoff`` (las celdas), ``created`` y el aviso ``des.buttress_foot_cut`` detrás de los que ya llevaba;
+    ``outcome`` no se modifica.
+
+    **Faltan** las celdas donde el escalonado sin máscara (``outcome.stepped``) compuesto con todo el relleno admitido sube más que la
+    superficie con las máscaras: su número por el área de la celda es el **área** que falta (m²) y la suma de lo que le faltaría a cada
+    una, el **volumen** (m³). El **salto creado** es el de la 014 (:func:`~.edges.created_steps`) de la superficie compuesta sobre la de
+    partida, con el relleno admitido como dominio de trabajo: ``|S_a − S_b| − |z_a − z_b|`` de las parejas de celdas vecinas con una movida
+    (admitida y que sube más del espesor mínimo) y la otra no; el mayor y su lugar son los del aviso. Con el pie sin cortar, 0 m² y 0 m³,
+    sin salto medido y sin aviso. Nunca impide crear el contrafuerte.
+
+    ``project`` son los parámetros del proyecto que lee, por su clave (``provenance.PLATFORM_COMMON_PARAMS``): el espesor mínimo de la 012
+    (``res.verify.min_thickness_m``) y el salto admitido de la 014 con su porcentaje (``des.edge.max_created_step_m``,
+    ``des.edge.min_share``); ninguno lleva valor por defecto aquí. Rechazos **al llamar**: ``ValueError`` (error del programa) si un valor
+    del proyecto falta o no es un número finito, el espesor es negativo, ``outcome`` no es de ``job`` o alguna rejilla no es de la forma
+    de su ventana; el salto y el porcentaje, fuera de su rango, ``des.quarry_param_range``. No escribe nada; cerrar el generador a mitad no
+    deja nada."""
+    settings = _cutoff_settings(project)
+    _check_cutoff_inputs(job, outcome)
+    return _cutoff_progress(job, outcome, settings, budget_s)
+
+
+def measure_cutoff(job: ButtressJob, outcome: ButtressOutcome, project: Mapping[str, object]) -> ButtressOutcome:
+    """:func:`cutoff_steps` hasta el final, sin repartir el trabajo en pasos: el :class:`ButtressOutcome` de ``outcome`` con su pie cortado
+    medido. Los mismos rechazos."""
+    last: Progress | None = None
+    for last in cutoff_steps(job, outcome, project, budget_s=math.inf):
         pass
     found = None if last is None else last.result
     assert isinstance(found, ButtressOutcome)

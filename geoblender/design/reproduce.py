@@ -979,7 +979,8 @@ def reproduce_buttress(request: ReproduceRequest, *, budget_s: float = STEP_BUDG
     partida y sus máscaras congeladas y los parámetros congelados de su entidad (``des.buttress.{e}.*``: la capa y su geometría, la
     partida, el perfil, el alcance, la cota de coronación y la métrica), los del perfil (``des.bench.{p}.*``) y los del proyecto, con los
     ajustes de su operación (el nombre, el código y el campo de la cota), **sin el proyecto**: el mismo cálculo
-    (``supported_store.buttress_compute_steps``, con la misma ventana de trabajo: ``supported_store.buttress_work_window``). Sus pasos y, el
+    (``supported_store.buttress_compute_steps``, con la misma ventana de trabajo: ``supported_store.buttress_work_window``, y con el espesor
+    mínimo y el salto admitido congelados para el pie cortado de RF-016-19: sus cifras y su aviso del informe salen iguales). Sus pasos y, el
     último, el ``ReproducedResult`` con la superficie (``des_psf_``), la huella con su zona de coronación (``des_epr_``), el informe
     (``des_prp_``) y las cifras. Lo que no es una ``ReproduceRequest`` es ``TypeError``; una de otro tipo, ``ValueError``."""
     return _reproduce_buttress(_check(request, provenance.BUTTRESS), budget_s)
@@ -1004,7 +1005,8 @@ def _reproduce_buttress(request: ReproduceRequest, budget_s: float) -> Iterator[
     window = supported_store.buttress_work_window(asked, code, whole, frozen.grid, profile, values, lowest)
     job = ButtressJob(asked, code, frozen.grid, profile, np.array(whole_start[window], dtype=np.float64, copy=True), whole[window],
                       admitted_in(masks, BenchSense.FILL, window), MappingProxyType(dict(values)), region=window, lowest_m=lowest)
-    outcome = yield from supported_store.buttress_compute_steps(job, budget_s=budget_s)
+    common = {name: store.number(frozen.values, name) for name in provenance.PLATFORM_COMMON_PARAMS}
+    outcome = yield from supported_store.buttress_compute_steps(job, common, budget_s=budget_s)
     surface = outcome.compose(whole_start)
     made = yield from _grid_output(request, provenance.ENTITY_SURFACE_GRID, Raster(job.grid, surface, frozen.crs, frozen.vertical),
                                    budget_s)
