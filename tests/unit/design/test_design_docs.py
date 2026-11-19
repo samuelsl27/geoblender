@@ -195,6 +195,8 @@ PENDING_015_MODULES: frozenset[str] = frozenset({
     "design.removal",
     # La 016, T20: preparar, calcular, crear, recalcular y reproducir la retirada (el patrón de T25 y T27).
     "design.supported_store",
+    # La 016, T23: la regla del espesor y el cuerpo apoyado (A11); T24 le parte el TIN en pasos.
+    "design.thickness",
 })
 
 
