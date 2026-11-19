@@ -186,6 +186,9 @@ PENDING_015_API: frozenset[str] = frozenset({
     # La 016, T27: «Calcular» el contrafuerte y su resumen (``design.steps`` y ``design.preview``) y lo que declara con su zona propia
     # (``design.entities``).
     "buttress_run", "ButtressSummary", "declaration_runs",
+    # La 016, T32: la vista previa de las marcas de los acopios y de la zona de coronación del contrafuerte (``design.preview``).
+    "stockpile_preview_steps", "buttress_preview_steps", "StockpilePreview", "MarkPreview", "ButtressPreview", "guard_zone_units",
+    "zone_rings",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 016, T05: la morfología con un disco exacto (A1). Su fila de la ficha (``des.md`` §4.4) la lleva la T38,

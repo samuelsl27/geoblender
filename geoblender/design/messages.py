@@ -2065,6 +2065,89 @@ CATALOG: tuple[Message, ...] = (
         "previa; calcúlela antes (menú Entidad ▾ ▸ Calcular…).",
         "warning",
     ),
+    # La vista previa de las marcas de los acopios y de la zona de coronación del contrafuerte (spec 016, T32; RF-016-23): lo que dice
+    # antes de calcular. Una detección sobre una superficie de una versión dice la versión; sobre una del proyecto, el proyecto.
+    Message(
+        "des.preview_stockpile",
+        "Preview of «{entity}» ({code}) in {version}: {marks} marks with a total area of {area} m², to be detected on the surface "
+        "«{surface}»; each one is enlarged by its margin ({margin} m unless its layer gives another).",
+        "Vista previa de «{entity}» ({code}) en {version}: {marks} marcas con un área total de {area} m², que se detectarán sobre la "
+        "superficie «{surface}»; cada una se amplía por su margen ({margin} m salvo que su capa dé otro).",
+        "note",
+        count="marks",
+        one_msgid="Preview of «{entity}» ({code}) in {version}: {marks} mark with a total area of {area} m², to be detected on the "
+                  "surface «{surface}»; it is enlarged by its margin ({margin} m unless its layer gives another).",
+        one_es="Vista previa de «{entity}» ({code}) en {version}: {marks} marca con un área total de {area} m², que se detectará sobre "
+               "la superficie «{surface}»; se amplía por su margen ({margin} m salvo que su capa dé otro).",
+    ),
+    Message(
+        "des.preview_stockpile_project",
+        "Preview of «{entity}» ({code}) in the project: {marks} marks with a total area of {area} m², to be detected on the surface "
+        "«{surface}»; each one is enlarged by its margin ({margin} m unless its layer gives another).",
+        "Vista previa de «{entity}» ({code}) en el proyecto: {marks} marcas con un área total de {area} m², que se detectarán sobre la "
+        "superficie «{surface}»; cada una se amplía por su margen ({margin} m salvo que su capa dé otro).",
+        "note",
+        count="marks",
+        one_msgid="Preview of «{entity}» ({code}) in the project: {marks} mark with a total area of {area} m², to be detected on the "
+                  "surface «{surface}»; it is enlarged by its margin ({margin} m unless its layer gives another).",
+        one_es="Vista previa de «{entity}» ({code}) en el proyecto: {marks} marca con un área total de {area} m², que se detectará "
+               "sobre la superficie «{surface}»; se amplía por su margen ({margin} m salvo que su capa dé otro).",
+    ),
+    Message(
+        "des.preview_stockpile_candidates",
+        "The candidates without a mark will also be searched for in the perimeter of action; they are not drawn, because they have "
+        "no mark.",
+        "También se buscarán los candidatos sin marca en el perímetro de actuación; no se dibujan, porque no tienen marca.",
+        "note",
+    ),
+    Message(
+        "des.preview_buttress",
+        "Preview of «{entity}» ({code}) in {version}: crown zone of {cells} cells ({area} m²), the polygon «{feature}» of the layer "
+        "«{layer}».",
+        "Vista previa de «{entity}» ({code}) en {version}: zona de coronación de {cells} celdas ({area} m²), el polígono «{feature}» "
+        "de la capa «{layer}».",
+        "note",
+    ),
+    Message(
+        "des.preview_buttress_crown",
+        "Crown at {crown} m with the bench profile {profile}.",
+        "Coronación a {crown} m con el perfil de banco {profile}.",
+        "note",
+    ),
+    Message(
+        "des.preview_buttress_crown_none",
+        "The crown elevation is not chosen yet: it has no default value and «Calculate» asks for it (bench profile {profile}).",
+        "Aún no se ha elegido la cota de coronación: no tiene valor por defecto y «Calcular» la pide (perfil de banco {profile}).",
+        "note",
+    ),
+    Message(
+        "des.preview_buttress_declares",
+        "It will declare its crown zone «without cut» with a guard of {guard} m: {area} m² with the guard.",
+        "Declarará su zona de coronación «sin corte» con un resguardo de {guard} m: {area} m² con el resguardo.",
+        "note",
+    ),
+    Message(
+        "des.preview_buttress_declares_none",
+        "It does not protect its crown zone: it declares no constraint.",
+        "No protege su zona de coronación: no declara ninguna restricción.",
+        "note",
+    ),
+    Message(
+        "des.preview_buttress_guard_missing",
+        "It protects its crown zone (the default) but the guard is not chosen yet: it has no default value and «Calculate» asks for "
+        "it; only the crown zone is drawn.",
+        "Protege su zona de coronación (lo habitual) pero aún no se ha elegido el resguardo: no tiene valor por defecto y «Calcular» "
+        "lo pide; solo se dibuja la zona de coronación.",
+        "warning",
+    ),
+    Message(
+        "des.preview_buttress_zone_empty",
+        "No cell of the grid has its centre inside the polygon «{feature}» of the layer «{layer}»: the buttress would have no crown "
+        "zone, so nothing is drawn.",
+        "Ninguna celda de la rejilla tiene su centro dentro del polígono «{feature}» de la capa «{layer}»: el contrafuerte no tendría "
+        "zona de coronación, así que no se dibuja nada.",
+        "warning",
+    ),
     # Los cuatro tipos de entidad de la 016 (T03; plan 016 §5.1 y §5.5; RF-016-04 a 07, 12 a 15, 18 a 22). La detección de
     # acopios: el acopio que se rechaza (se informa en el resumen y no se registra) nombra su marca, el caso y su lugar.
     Message(

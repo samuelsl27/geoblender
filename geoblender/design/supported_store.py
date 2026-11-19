@@ -78,6 +78,8 @@ from typing import Any
 
 import numpy as np
 
+from ..core.constraints.model import ConstraintType
+from ..core.errors import GeoblenderError
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
 from ..core.params.store import default_reason
 from ..core.project.model import Progress
@@ -117,14 +119,17 @@ from .model import (
 from .params import BodyParam, ButtressParam, RemovalParam, StockpileParam, check_entity_param, entity_key, entity_params
 from .preview import (
     BodySummary,
+    ButtressPreview,
     ButtressSummary,
     Notice,
     Obsolete,
     ObsoleteKind,
     RemovalSummary,
     RestingLine,
+    guard_zone_units,
     held_notices,
     obsolete_notices,
+    zone_rings,
 )
 from .removal import RemovalJob, RemovalOutcome, Resting
 from .sectors import design_sectors, refuse_pending
@@ -1825,6 +1830,85 @@ def prepare_buttress(project: StoreProject, request: ButtressRequest, *, version
     found = require_version(project, version, provenance.BUTTRESS)
     loaded = entity_store._masks_to_read(project, found, masks)
     return _result_of(prepare_buttress_units(project, request, found, loaded, code=code, supersedes=supersedes))
+
+
+# --- La vista previa de la zona de coronación (spec 016, T32; RF-016-23, RF-015-26) -----------------------------------
+
+
+def preview_buttress_units(project: StoreProject, request: ButtressRequest, version_uid: str
+                           ) -> Generator[None, None, ButtressPreview]:
+    """Las unidades (cada ``yield``, una; para componerlas con ``pace_units``) que preparan la **vista previa de la zona de coronación**
+    del contrafuerte ``request`` en la versión ``version_uid`` (uid o código; RF-016-23; ``design.preview.buttress_preview_steps``):
+    la geometría de la capa de las zonas que elige la petición con **las mismas celdas que calculará** (``zones.polygons_cells``: las de
+    centro dentro del polígono), su contorno, el resguardo (si protege —por defecto sí, D-1— y lo ha elegido: sin valor por defecto,
+    D-19) y el contorno de la zona que declarará «sin corte» con él (:func:`~.preview.guard_zone_units`: a ≤ resguardo entre centros de
+    celda, a una celda como mucho de lo que compilará la 012). Es el principio de :func:`prepare_buttress_units` —el código y la capa
+    de las zonas, su geometría, el resguardo, la partida— **sin leer la partida, el perfil ni las máscaras**: la partida solo da el
+    nombre de la superficie sobre la que se dibuja. Lo que de eso rechazaría «Calcular» (``GeoblenderError``: la capa que no es de
+    polígonos, la geometría que no está o es ambigua, el resguardo fuera de rango, la partida que es una entidad sin calcular) no se
+    lanza: sale en ``ButtressPreview.refusal``. Una zona sin ninguna celda (más pequeña que una) no es un rechazo: se dice y no hay
+    dibujo. La cota de coronación y el resguardo sin elegir se dicen. ``ValueError`` si la versión no existe. **Nada se escribe.**"""
+    with project.read() as conn:
+        version = versions_read.version(conn, version_uid)
+    if version is None:
+        raise ValueError(f"la versión «{version_uid}» no existe")
+    registry = entities.registry(project, version.uid)
+    code = entities.next_code(EntityKind.BUTTRESS, (entry.record.code for entry in registry))
+    base = {"name": request.name, "code": code, "version": version.code, "layer": request.layer, "profile": request.profile,
+            "crown_m": request.crown_m}
+    yield
+    spec = entity_params("buttress")
+    protects = bool(spec.template(ButtressParam.PROTECT.value).default) if request.protect is None else bool(request.protect)
+    try:
+        layer = entity_store._layer(project, request.layer)
+        if layer.kind != "polygon":
+            raise DesignError("des.layer_not_polygons", obj=f"Capa «{request.layer}»", field="geometría",
+                              value=entity_store._KINDS_ES.get(layer.kind, layer.kind), layer=request.layer)
+        index = entity_store.feature_index(layer, request, code)  # type: ignore[arg-type]
+        guard = None
+        if protects and request.guard_m is not None:
+            guard = float(check_entity_param(request.name, code, ButtressParam.GUARD.value, request.guard_m, layer=request.layer,
+                                             required=False))  # type: ignore[arg-type]
+        start_name = entity_store._surface_dataset(registry, version, request, code, ButtressParam.START,  # type: ignore[arg-type]
+                                                   request.start)
+    except GeoblenderError as refused:  # lo que rechazaría «Calcular» de la capa, la zona, el resguardo y la partida
+        return ButtressPreview(**base, protects=protects, refusal=refused)
+    fid = int(layer.fids[index])
+    yield
+    grid = project_frame(project).grid
+    whole = zones.polygons_cells(tuple(tuple(part) for part in layer.parts[index]), grid)
+    yield
+    rows, cols = np.flatnonzero(whole.any(axis=1)), np.flatnonzero(whole.any(axis=0))
+    feature = str(request.feature)
+    shown = {**base, "start_surface": start_name, "feature": feature, "fid": fid, "cell_m": float(max(grid.dx, grid.dy)),
+             "protects": protects}
+    if rows.size == 0:  # ninguna celda con el centro dentro: no hay zona de coronación que dibujar
+        return ButtressPreview(**shown, notices=(Notice("des.preview_buttress_zone_empty", {"feature": feature, "layer": request.layer}),))
+    window = (slice(int(rows[0]), int(rows[-1]) + 1), slice(int(cols[0]), int(cols[-1]) + 1))
+    inside = whole[window]
+    cells = int(np.count_nonzero(inside))
+    crown = zone_rings(entities.declared_zone(inside, grid, 0.0, offset=(window[0].start, window[1].start)))
+    yield
+    notices = [Notice("des.preview_buttress", {"entity": request.name, "code": code, "version": version.code, "cells": cells,
+                                                "area": cells * grid.cell_area, "feature": feature, "layer": request.layer})]
+    notices.append(Notice("des.preview_buttress_crown", {"crown": float(request.crown_m), "profile": request.profile})
+                   if request.crown_m is not None else Notice("des.preview_buttress_crown_none", {"profile": request.profile}))
+    zone: tuple[np.ndarray, ...] = ()
+    zone_cells = 0
+    declares: ConstraintType | None = None
+    if protects and guard is not None:
+        zone, zone_cells = yield from guard_zone_units(inside, window, grid, guard)
+        declares = ConstraintType.NO_CUT  # lo que declara un contrafuerte que protege (D-1, P-8)
+        notices.append(Notice("des.preview_buttress_declares", {"guard": guard, "area": zone_cells * grid.cell_area}))
+    elif protects:
+        notices.append(Notice("des.preview_buttress_guard_missing"))
+    else:
+        notices.append(Notice("des.preview_buttress_declares_none"))
+    return ButtressPreview(
+        **shown, crown_rings=crown, crown_cells=cells, crown_area_m2=cells * grid.cell_area,
+        x=float(grid.west + (int(cols[0]) + int(cols[-1]) + 1) / 2.0 * grid.dx),
+        y=float(grid.north - (int(rows[0]) + int(rows[-1]) + 1) / 2.0 * grid.dy), guard_m=guard, zone=zone, zone_cells=zone_cells,
+        zone_area_m2=zone_cells * grid.cell_area, declares=declares, notices=tuple(notices))
 
 
 # --- Calcular (RF-015-03, RF-015-29, RNF-016-02 y 03) -------------------------------------------------------------

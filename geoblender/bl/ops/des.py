@@ -294,6 +294,13 @@ redibuja (:func:`_refresh_preview`: el ``update`` de cada uno); se quita al **ca
 ventana de confirmar o Esc a mitad), al crear la plataforma, con su mismo control y al conmutar a la interfaz de
 Blender. Lo que rechazaría «Calcular» sale como aviso de la vista previa, no como un error.
 
+**La vista previa de las marcas y de la zona de coronación** (spec 016, T32; HU-016-1, HU-016-3; RF-016-23; comprobación manual M4):
+el mismo ``bl.draw.entity`` dibuja, antes de calcular y sin escribir nada, las **marcas de una detección de acopios con su margen**
+(``bl.draw.entity.EntityPlan(stockpile=<StockpileRequest>)``: la orden de detectar de la T35 la activa con su botón «Vista previa», como
+«Plataforma…», con :func:`_draw_entity_preview_button`, y la quita con :class:`_ClearsEntityPreview`) y **la zona de coronación de un
+contrafuerte** (``EntityPlan(buttress=<ButtressRequest>)``: el botón «Vista previa» de :class:`GEOBLENDER_OT_des_add_buttress`, que se
+redibuja al cambiar sus campos, :func:`_refresh_buttress_preview`). Se quitan al cancelar, al Esc a mitad, al crear y al conmutar.
+
 **El menú «Entidad ▾» e insertar antes o después** (spec 015, T31; HU-015-2, HU-015-3; RF-015-28, RF-015-05, RF-015-15; D-11,
 D-14; plan 015 §5.3.3 y §5.5; comprobación manual M5): el menú contextual de las entidades
 (``GEOBLENDER_MT_des_context_entity``, ``contexts.toml``, entrada «015») lleva las órdenes reales:
@@ -369,7 +376,7 @@ import logging
 import math
 import sqlite3
 import sys
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -3811,20 +3818,51 @@ def _platform_fields() -> tuple[str, ...]:
                  if name not in _PLATFORM_HIDDEN)
 
 
+def _draw_entity_preview_button(layout: Any, operator: Any, command: str, fields: Iterable[str],
+                                **extra: Any) -> None:
+    """El botón «Vista previa» del diálogo de una orden de entidades (T29 y, con la 016, T32; RF-015-26, RF-016-23): la misma orden
+    (``command``) con la propiedad oculta ``preview`` y todo lo pedido en el diálogo (cada campo de ``fields``, tal como está; ``extra``,
+    lo que más se le pone), que se ejecuta sin abrir otro diálogo. Un valor que su lista ya no ofrece se queda en el de por defecto (y lo
+    rechaza la orden si falta)."""
+    row = layout.row()
+    row.operator_context = "EXEC_DEFAULT"
+    shown = row.operator(command, text=tr("Preview"), icon="HIDE_OFF")
+    for name in fields:
+        try:
+            setattr(shown, name, getattr(operator, name))
+        except (TypeError, ValueError):
+            LOGGER.debug("El campo %s no pasa a la vista previa de %s", name, command, exc_info=True)
+    for name, value in extra.items():
+        setattr(shown, name, value)
+    shown.preview = True
+
+
 def _draw_platform_preview_button(layout: Any, operator: Any) -> None:
     """El botón «Vista previa» del diálogo de «Plataforma…» (T29; RF-015-26): la misma orden con ``preview`` y todo lo
     pedido en el diálogo (cada campo, tal como está), que se ejecuta sin abrir otro diálogo. Un valor que su lista ya
     no ofrece se queda en el de por defecto (y lo rechaza la orden si falta)."""
-    row = layout.row()
-    row.operator_context = "EXEC_DEFAULT"
-    shown = row.operator(CREATE_PLATFORM, text=tr("Preview"), icon="HIDE_OFF")
-    for name in _platform_fields():
-        try:
-            setattr(shown, name, getattr(operator, name))
-        except (TypeError, ValueError):
-            LOGGER.debug("El campo %s no pasa a la vista previa de la plataforma", name, exc_info=True)
-    shown.insert_before = operator.insert_before  # una inserción se previsualiza como tal (RF-015-05)
-    shown.preview = True
+    _draw_entity_preview_button(layout, operator, CREATE_PLATFORM, _platform_fields(),
+                                insert_before=operator.insert_before)  # una inserción se previsualiza como tal (RF-015-05)
+
+
+class _ClearsEntityPreview:
+    """Lo que toda orden de entidades que tiene «Vista previa» hace con ella (T29 y T32; RF-015-26, RF-016-23): **quitarla al
+    cancelar** la orden (``cancel``: su diálogo y su ventana de confirmar) y al **Esc a mitad del cálculo** y al desactivar Geoblender
+    (``_StepsModal._stop``: Esc en un modal de pasos no llama a ``cancel``, ``docs/trampas.md`` §4). Es de las órdenes de
+    :class:`_CalculateAndCreate` y va **antes** de ella en sus bases (``cancel`` llama a la suya por su nombre, como
+    ``GEOBLENDER_OT_des_create_platform``: las pruebas lo llaman con un ``self`` simulado, que ``super()`` no admite)."""
+
+    def cancel(self, context: Any) -> None:
+        """Lo que Blender llama al cancelar: quita la vista previa de la entidad y hace lo de siempre
+        (:meth:`_CalculateAndCreate.cancel`)."""
+        _entity_preview_off()
+        _CalculateAndCreate.cancel(self, context)  # type: ignore[arg-type]
+
+    def _stop(self, context: Any, *, after: bool = True) -> set[str]:
+        """Esc a mitad del cálculo: los pasos se cierran como siempre y la vista previa de la entidad se quita."""
+        stopped = super()._stop(context, after=after)  # type: ignore[misc]
+        _entity_preview_off()
+        return stopped  # type: ignore[no-any-return]
 
 
 def _refresh_preview(self: Any, _context: Any) -> None:
@@ -6183,10 +6221,34 @@ class GEOBLENDER_OT_des_create_body(_CalculateAndCreate, DesignCommandAware, Pro
 #     RNF-016-05; plan 016 §5.3.3 y §5.5; comprobación manual M3) --------------------------------------------------------
 
 ADD_BUTTRESS = provenance.BUTTRESS_COMMAND
+_BUTTRESS_HIDDEN = frozenset({"confirm", "in_steps", "preview"})
+"""Las propiedades ocultas de «Contrafuerte…»: las pone quien la lanza (o su ventana de confirmar)."""
 
 
-class GEOBLENDER_OT_des_add_buttress(_CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal,
-                                     bpy.types.Operator):
+def _buttress_fields() -> tuple[str, ...]:
+    """Los campos del diálogo de «Contrafuerte…»: sus propiedades no ocultas."""
+    return tuple(name for name in GEOBLENDER_OT_des_add_buttress.__annotations__ if name not in _BUTTRESS_HIDDEN)
+
+
+def _refresh_buttress_preview(self: Any, _context: Any) -> None:
+    """El ``update`` de cada campo de «Contrafuerte…» que cambia lo que dibuja su vista previa (T32; RF-016-23): con la vista previa **de
+    la zona de coronación** activa, la redibuja con lo que dice ahora el diálogo. Un diálogo a medias (un campo sin escribir, un número
+    que no lo es, sin perfil) no la cambia: sigue la última completa. Solo lee."""
+    loaded = _entity_preview_loaded()
+    if loaded is None or not loaded.enabled() or loaded.plan() is None or loaded.plan().buttress is None:
+        return
+    project = SESSION.project
+    if project is None:
+        return
+    try:
+        request = GEOBLENDER_OT_des_add_buttress._request(self, project)
+    except (ProfileFormError, GeoblenderError, sqlite3.Error, OSError, ValueError):
+        return
+    loaded.replace(loaded.EntityPlan(buttress=request))
+
+
+class GEOBLENDER_OT_des_add_buttress(_ClearsEntityPreview, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator,
+                                     _StepsModal, bpy.types.Operator):
     """Buttress at the toe of a slope"""
 
     bl_idname = ADD_BUTTRESS
@@ -6197,18 +6259,20 @@ class GEOBLENDER_OT_des_add_buttress(_CalculateAndCreate, DesignCommandAware, Pr
     COMMAND = ADD_BUTTRESS
 
     name: StringProperty(  # type: ignore[valid-type]
-        name="Name", description="Name of the buttress, unique in the active version", options=_FIELD)
+        name="Name", description="Name of the buttress, unique in the active version", options=_FIELD,
+        update=_refresh_buttress_preview)
     layer: EnumProperty(  # type: ignore[valid-type]
         name="Layer of the crown zones",
         description="Layer of polygons of the project the crown zone of the buttress is taken from",
-        items=des_panels.buttress_zone_items, options=_FIELD)
+        items=des_panels.buttress_zone_items, options=_FIELD, update=_refresh_buttress_preview)
     feature: StringProperty(  # type: ignore[valid-type]
         name="Crown zone of the layer",
-        description="Name or number (fid) of the polygon of the layer that is the crown zone of the buttress", options=_FIELD)
+        description="Name or number (fid) of the polygon of the layer that is the crown zone of the buttress", options=_FIELD,
+        update=_refresh_buttress_preview)
     start: EnumProperty(  # type: ignore[valid-type]
         name="Start surface",
         description="Surface the buttress starts from: the ground, a design surface or the surface of another entity (by default, the "
-                    "last of the chain)", items=des_panels.platform_start_items, options=_FIELD)
+                    "last of the chain)", items=des_panels.platform_start_items, options=_FIELD, update=_refresh_buttress_preview)
     support: EnumProperty(  # type: ignore[valid-type]
         name="Support surface",
         description="Surface the buttress rests on, if it is not the start surface: a design surface, the exploitation surface of a "
@@ -6217,11 +6281,12 @@ class GEOBLENDER_OT_des_add_buttress(_CalculateAndCreate, DesignCommandAware, Pr
     profile: StringProperty(  # type: ignore[valid-type]
         name="Bench profile",
         description="Bench profile of the buttress: its height, its face, its berm and its anchor give its slopes and the levels the "
-                    "crown can be at", options=_FIELD)
+                    "crown can be at", options=_FIELD, update=_refresh_buttress_preview)
     crown: StringProperty(  # type: ignore[valid-type]
         name="Crown elevation (m)",
         description="Elevation of the crown of the buttress in metres: it has to be one of the anchor levels of its profile (the anchor "
-                    "plus a whole number of bench heights); it has no default value: you choose it", options=_FIELD)
+                    "plus a whole number of bench heights); it has no default value: you choose it", options=_FIELD,
+        update=_refresh_buttress_preview)
     reach: StringProperty(  # type: ignore[valid-type]
         name="Reach (m)",
         description="Farthest distance from the crown zone the slopes can reach, in metres (empty: down to the lowest elevation of the "
@@ -6233,11 +6298,11 @@ class GEOBLENDER_OT_des_add_buttress(_CalculateAndCreate, DesignCommandAware, Pr
     protect: BoolProperty(  # type: ignore[valid-type]
         name="Protect",
         description="Declare the crown zone a zone without cut: the other designs do not cut in it (the buttress protects by default)",
-        default=True, options=_FIELD)
+        default=True, options=_FIELD, update=_refresh_buttress_preview)
     guard: StringProperty(  # type: ignore[valid-type]
         name="Guard (m)",
         description="Distance around the crown zone that is also protected, in metres; it is required to protect and has no default "
-                    "value: you choose it", options=_FIELD)
+                    "value: you choose it", options=_FIELD, update=_refresh_buttress_preview)
     reason: StringProperty(  # type: ignore[valid-type]
         name="Reason",
         description="Why the crown zone is protected, recorded with the declared constraint (empty: a reason is generated that you can "
@@ -6246,6 +6311,7 @@ class GEOBLENDER_OT_des_add_buttress(_CalculateAndCreate, DesignCommandAware, Pr
     # un guion, sin ellos, de una vez. Un contrafuerte no retira nada ni deja una pared: no pide más confirmación.
     confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
     in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    preview: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]  # «Vista previa» de la zona de coronación (T32)
 
     # --- El diálogo ---------------------------------------------------------------------------
 
@@ -6333,6 +6399,7 @@ class GEOBLENDER_OT_des_add_buttress(_CalculateAndCreate, DesignCommandAware, Pr
         if self.protect:
             layout.prop(self, "guard", text=tr("Guard (m)"), translate=False)
             layout.prop(self, "reason", text=tr("Reason"), translate=False)
+        _draw_entity_preview_button(layout, self, ADD_BUTTRESS, _buttress_fields())  # «Vista previa» de la zona de coronación (T32)
 
     # --- Lo pedido ----------------------------------------------------------------------------
 
@@ -6374,6 +6441,8 @@ class GEOBLENDER_OT_des_add_buttress(_CalculateAndCreate, DesignCommandAware, Pr
         del apoyo, la partida, un sector con la búsqueda pendiente, el nombre repetido) y todas las cuentas son de ``design``."""
         if self.confirm:
             return self._create(context)
+        if self.preview:
+            return self._show_preview()
         blocked = write_unavailable()
         if blocked is not None:
             self.report({"ERROR"}, blocked)
@@ -6401,13 +6470,48 @@ class GEOBLENDER_OT_des_add_buttress(_CalculateAndCreate, DesignCommandAware, Pr
         steps = design_steps.buttress_run(project, request, version=version, budget_s=self.STEP_BUDGET_S)
         return self._run_steps(context, project, request.name, steps)
 
+    def _show_preview(self) -> set[str]:
+        """«Vista previa» (T32; RF-016-23): comprueba lo pedido hasta el perfil como al calcular (:meth:`_request`, sin escribir ni
+        calcular nada) y activa con ello la vista previa de la zona de coronación (``bl.draw.entity``: la zona, la zona con su
+        resguardo que declarará «sin corte» y la cota de coronación, con su leyenda); la que hubiera activa se cambia por la nueva
+        (pulsarlo otra vez, o cambiar un campo del diálogo: :func:`_refresh_buttress_preview`). Lo que falta del diálogo se rechaza sin
+        tocar la vista previa; lo que rechazaría «Calcular» de la capa, de la geometría y del resguardo sale en la propia vista previa,
+        como aviso; la cota y el resguardo sin elegir se dicen. Se quita al cancelar la orden, al Esc a mitad del cálculo, al crear el
+        contrafuerte, con su control y al conmutar a la interfaz de Blender."""
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        try:
+            request = self._request(SESSION.project)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        preview = _entity_preview()
+        try:
+            preview.enable(preview.EntityPlan(buttress=request))
+        except (RuntimeError, GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, tr("The preview of the entity could not be shown: {detail}", detail=design_error_text(exc)))
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Showing the preview of the buttress «{name}»", name=request.name))
+        return {"FINISHED"}
+
     def _create(self, context: Any) -> set[str]:
         """«Crear» (RF-016-17, RF-015-02): como las demás (:meth:`_CalculateAndCreate._create`: una transacción) y, **ya creado**,
-        encadena lo que sigue (:meth:`_update_declared`)."""
+        quita la vista previa de la zona de coronación (RF-016-23: el contrafuerte ya existe, ya no se prepara) y encadena lo que sigue
+        (:meth:`_update_declared`)."""
         opened = calculation()
         created = _CalculateAndCreate._create(self, context)
         if opened is None or "FINISHED" not in created:
             return created
+        _entity_preview_off()
         return self._update_declared(context, opened)
 
     # --- Lo que sigue a crearlo (RF-015-10, RF-012-06; plan 016 §5.3.2, P-8) -------------------

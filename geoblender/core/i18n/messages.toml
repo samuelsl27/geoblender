@@ -9254,6 +9254,35 @@ es = "«{name}» parte de su superficie"
 ["{name} · guard {guard} m"]
 es = "{name} · resguardo {guard} m"
 
+# La vista previa de las marcas de los acopios y de la zona de coronación de un contrafuerte (spec 016, T32; RF-016-23) ------
+
+["Marks ({count}, {area} m²): the cells the detection will read"]
+es = "Marcas ({count}, {area} m²): las celdas que leerá la detección"
+
+["Marks enlarged by their margin ({margins})"]
+es = "Marcas ampliadas por su margen ({margins})"
+
+["«{name}» · margin {margin} m"]
+es = "«{name}» · margen {margin} m"
+
+["{text} · material {material}"]
+es = "{text} · material {material}"
+
+["{text} · base «{base}»"]
+es = "{text} · base «{base}»"
+
+["Crown zone ({cells} cells, {area} m²)"]
+es = "Zona de coronación ({cells} celdas, {area} m²)"
+
+["Crown zone of «{name}» ({code})"]
+es = "Zona de coronación de «{name}» ({code})"
+
+["{text} · crown at {crown} m"]
+es = "{text} · coronación a {crown} m"
+
+["Showing the preview of the buttress «{name}»"]
+es = "Mostrando la vista previa del contrafuerte «{name}»"
+
 ["The preview of the entity could not be prepared: {detail}"]
 es = "No se pudo preparar la vista previa de la entidad: {detail}"
 

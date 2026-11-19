@@ -73,7 +73,7 @@ PROPERTIES = {
                          "can edit later)"),
 }
 """Las propiedades del diálogo con el ``msgid`` de su nombre y de su descripción (las ocultas, que pone quien lanza la orden, no los llevan)."""
-HIDDEN = ("confirm", "in_steps")
+HIDDEN = ("confirm", "in_steps", "preview")
 CANCELLED_TEXT = ("Cancelado: el contrafuerte está creado; las restricciones declaradas y las máscaras se ponen al día antes de la siguiente "
                   "operación que las use, y la capa de entidades con la siguiente orden de entidades o «Recalcular lo obsoleto»")
 

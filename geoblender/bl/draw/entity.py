@@ -20,6 +20,13 @@ resumen y la leyenda), lo que va a ser una plataforma **antes de calcularla** (`
   ``bl.ui.des_panels.show_preview``); sin dato, o con el rechazo de la preparación (RF-015-08, RF-015-09), **el
   aviso en lugar del dibujo**, con los mismos mensajes que «Calcular».
 
+Con la **016** (spec 016, T32; HU-016-1 y HU-016-3; RF-016-23; plan 016 §5.5; comprobación manual M4) dibuja además, **antes de
+calcular** y con el mismo patrón, lo que va a leer una **detección de acopios** (:class:`EntityPlan` con ``stockpile``: **las marcas**
+de su capa, con las celdas que leerá la detección, :data:`MARKS`, y **la marca ampliada por su margen**, :data:`MARGIN`; con su nombre
+y su margen junto a cada una) y la **zona de coronación de un contrafuerte** (``buttress``: la zona de coronación, :data:`CROWN`, y, si
+protege y ha elegido el resguardo, **la zona que declarará «sin corte»** con él, :data:`ZONE`), cada una con su leyenda y su
+resumen; lo que rechazaría «Calcular» de la capa, de los campos o de la geometría es el aviso en lugar del dibujo.
+
 Aquí **no se calcula nada de minería**: lo dice ``design.preview.entity_preview_steps`` (que solo lee: ni compila
 las máscaras) y este módulo lo dibuja. Lo que se dibuja se construye sin ``gpu`` y se prueba en sus lotes
 (``docs/trampas.md`` §3: sin GPU en ``blender -b``), **por pasos** de :data:`STEP_BUDGET_S` s con el temporizador
@@ -58,10 +65,10 @@ from .constraints import Batch, Label
 from .dh_overlay import LegendRow
 
 __all__ = [
-    "ARROW", "ARROW_COLOR", "AXIS", "AXIS_COLOR", "EntityPlan", "FOOTPRINT", "FOOTPRINT_COLOR", "RESTING",
-    "RESTING_COLOR", "Request", "ZONE", "arrow_segments", "build_steps", "building", "built", "disable", "drawing",
-    "enable", "enabled", "on_project_changed", "on_project_read", "on_version_changed", "plan", "preview",
-    "rebuild", "register", "replace", "stamp", "tick", "unregister",
+    "ARROW", "ARROW_COLOR", "AXIS", "AXIS_COLOR", "CROWN", "CROWN_COLOR", "EntityPlan", "FOOTPRINT", "FOOTPRINT_COLOR",
+    "MARGIN", "MARGIN_COLOR", "MARKS", "MARK_COLOR", "RESTING", "RESTING_COLOR", "Request", "ZONE", "arrow_segments",
+    "build_steps", "building", "built", "disable", "drawing", "enable", "enabled", "on_project_changed", "on_project_read",
+    "on_version_changed", "plan", "preview", "rebuild", "register", "replace", "stamp", "tick", "unregister",
 ]
 
 LOGGER = logging.getLogger("geoblender.bl.draw")
@@ -73,6 +80,12 @@ RESTING = "entity_resting"
 ZONE = "entity_zone"
 """Las claves (y los papeles: todos con ``constraints.OUTLINE``) de los lotes de la vista previa: la huella, el eje, la
 flecha de su sentido, lo que se le apoya y la zona que declarará."""
+
+MARKS = "stockpile_marks"
+MARGIN = "stockpile_margin"
+CROWN = "buttress_crown"
+"""Las claves (con el papel ``constraints.OUTLINE``) de los lotes de la vista previa de la 016: las marcas de una detección de acopios,
+las marcas ampliadas por su margen y la zona de coronación de un contrafuerte (la zona con su resguardo es :data:`ZONE`)."""
 
 STEP_BUDGET_S = constraints.STEP_BUDGET_S
 """Lo que dura como mucho cada paso de la construcción (ninguna llamada de más de 0,2 s)."""
@@ -86,10 +99,18 @@ ARROW_COLOR: constraints.Color = (1.0, 1.0, 1.0, 1.0)
 RESTING_COLOR: constraints.Color = (1.0, 0.65, 0.10, 1.0)
 """El color de la huella (verde azulado, el del objeto de la entidad), del eje y de su flecha (blanco) y de lo que se
 le apoya (naranja). La zona que declarará, el de su tipo de restricción (``constraints.color_of``)."""
+MARK_COLOR: constraints.Color = (1.0, 0.85, 0.15, 1.0)
+MARGIN_COLOR: constraints.Color = (1.0, 0.45, 0.05, 1.0)
+CROWN_COLOR: constraints.Color = FOOTPRINT_COLOR
+"""El color de las marcas (amarillo), de la marca ampliada por su margen (naranja oscuro, distinto del de lo que se apoya) y de la zona de
+coronación de un contrafuerte (verde azulado, el de la huella: es la huella que se le da). Son de dibujo, no un dato minero."""
 FOOTPRINT_PX = 3.0
 AXIS_PX = 2.5
 RESTING_PX = 2.5
 ZONE_PX = constraints.OUTLINE_PX
+MARK_PX = 3.0
+MARGIN_PX = 2.0
+CROWN_PX = 3.0
 """El trazo (px) de cada pieza."""
 ARROW_HALF_ANGLE_DEG = 25.0
 """El ángulo entre cada lado de la punta de la flecha y el eje (° ; es de dibujo, no un dato minero)."""
@@ -105,22 +126,37 @@ ARROW_HEAD_MAX_M = 20.0
 @dataclass(frozen=True, eq=False)
 class EntityPlan:
     """Lo que se previsualiza: la plataforma **que se prepara** (``request``, la ``design.model.PlatformRequest`` del
-    diálogo de «Plataforma…»: una entidad nueva) o **una que ya está en la versión** (``code``: su código o su
-    nombre, con sus parámetros vigentes). Uno de los dos, no los dos. ``insert_before`` (T31; RF-015-05): si la que se
-    prepara se **inserta** antes de otra entidad de la versión, el código de esa entidad (la que pasaría a partir de la
-    nueva); solo con ``request``."""
+    diálogo de «Plataforma…»: una entidad nueva), **una que ya está en la versión** (``code``: su código o su
+    nombre, con sus parámetros vigentes), las **marcas de una detección de acopios** que se prepara (``stockpile``, la
+    ``design.model.StockpileRequest``; spec 016, T32) o **la zona de coronación de un contrafuerte** que se prepara
+    (``buttress``, la ``design.model.ButtressRequest``). Uno de los cuatro, no más. ``insert_before`` (T31; RF-015-05): si la
+    plataforma que se prepara se **inserta** antes de otra entidad de la versión, el código de esa entidad (la que pasaría a partir
+    de la nueva); solo con ``request``."""
 
     request: Any = None
     code: str | None = None
     insert_before: str | None = None
+    stockpile: Any = None
+    buttress: Any = None
 
     def __post_init__(self) -> None:
-        if (self.request is None) == (self.code is None):
-            raise ValueError("la vista previa de una entidad es de la plataforma que se prepara (su petición) o "
-                             "de una entidad de la versión (su código), no de las dos ni de ninguna")
+        asked = [name for name in ("request", "code", "stockpile", "buttress") if getattr(self, name) is not None]
+        if len(asked) != 1:
+            raise ValueError("la vista previa de una entidad es de una sola cosa: la plataforma que se prepara (su petición), una "
+                             "entidad de la versión (su código), las marcas de una detección de acopios o la zona de coronación "
+                             "de un contrafuerte, no de dos ni de ninguna")
         if self.insert_before is not None and self.request is None:
             raise ValueError("una inserción se previsualiza con la plataforma que se prepara (su petición), no con una "
                              "entidad que ya está en la versión")
+
+    @property
+    def kind(self) -> str:
+        """Qué se previsualiza: ``"platform"`` (la que se prepara), ``"entity"`` (una de la versión), ``"stockpile"`` o ``"buttress"``."""
+        if self.stockpile is not None:
+            return "stockpile"
+        if self.buttress is not None:
+            return "buttress"
+        return "platform" if self.request is not None else "entity"
 
 
 @dataclass(frozen=True, eq=False)
@@ -238,10 +274,48 @@ def build_steps(request: Request, *, budget_s: float = STEP_BUDGET_S) -> Generat
     return built_view
 
 
-def _build(request: Request, budget_s: float
-           ) -> Generator[None, None, tuple[design_draw.Built, EntityPreview | None]]:
-    """Los pasos que construyen lo que dibuja la vista previa para ``request`` (véase el módulo): la preparación de la
-    entidad (``design.preview.entity_preview_steps``: solo lee y no compila las máscaras), la superficie sobre la que
+def _run_preview(steps: Any) -> Generator[None, None, Any]:
+    """Los pasos de una preparación de ``design.preview`` (``Progress`` con el resumen en el último) dados de uno en uno: lo que
+    lleva el último. Cerrarlo a mitad cierra la preparación."""
+    found = None
+    try:
+        for step in steps:
+            if step.result is not None:
+                found = step.result
+            yield
+    finally:
+        close = getattr(steps, "close", None)
+        if close is not None:
+            close()
+    return found
+
+
+def _without_version(request: Request) -> tuple[design_draw.Built, None]:
+    """Lo que dibuja la vista previa de una entidad sin versión activa: nada, y lo dice."""
+    lines = constraints.Built(request.version_uid, request.version_code, "", "", (), (),
+                              (LegendRow(tr("Preview of an entity")),
+                               LegendRow(tr("No active version: nothing to preview"))), request.stamp)
+    notice = tr("There is no active version: the preview of an entity needs one")
+    return design_draw.Built(lines, None, (), ((notice, True),)), None
+
+
+def _build(request: Request, budget_s: float) -> Generator[None, None, tuple[design_draw.Built, Any]]:
+    """Los pasos que construyen lo que dibuja la vista previa para ``request`` según lo que se previsualiza
+    (:attr:`EntityPlan.kind`): la plataforma (:func:`_build_platform`), las marcas de una detección de acopios
+    (:func:`_build_stockpile`) o la zona de coronación de un contrafuerte (:func:`_build_buttress`). El resultado es el
+    ``StopIteration.value``: lo que se dibuja (un :class:`bl.draw.design.Built`) y la preparación (``None`` sin versión activa)."""
+    kind = request.plan.kind
+    if kind == "stockpile":
+        return (yield from _build_stockpile(request, budget_s))
+    if kind == "buttress":
+        return (yield from _build_buttress(request, budget_s))
+    return (yield from _build_platform(request, budget_s))
+
+
+def _build_platform(request: Request, budget_s: float
+                    ) -> Generator[None, None, tuple[design_draw.Built, EntityPreview | None]]:
+    """Los pasos que construyen lo que dibuja la vista previa de una plataforma para ``request`` (véase el módulo): la preparación de
+    la entidad (``design.preview.entity_preview_steps``: solo lee y no compila las máscaras), la superficie sobre la que
     se dibuja (la de partida) y los lotes, los nombres, la leyenda y el resumen. Cada paso dura como mucho
     ``budget_s`` s (salvo una lectura, nunca de más de 0,2 s); el resultado es el ``StopIteration.value``: lo que se
     dibuja (un :class:`bl.draw.design.Built`, sin semillas ni sectores) y la preparación de la entidad
@@ -255,21 +329,9 @@ def _build(request: Request, budget_s: float
         asked = request.plan
         steps = design_preview.entity_preview_steps(project, asked.request, version_uid, code=asked.code,
                                                     insert_before=asked.insert_before, budget_s=budget_s)
-        try:
-            for step in steps:
-                if step.result is not None:
-                    found = step.result
-                yield
-        finally:
-            close = getattr(steps, "close", None)
-            if close is not None:
-                close()
+        found = yield from _run_preview(steps)
     if found is None:  # sin versión: lo dice, no hay nada que dibujar
-        lines = constraints.Built(version_uid, request.version_code, "", "", (), (),
-                                  (LegendRow(tr("Preview of an entity")),
-                                   LegendRow(tr("No active version: nothing to preview"))), request.stamp)
-        notice = tr("There is no active version: the preview of an entity needs one")
-        return design_draw.Built(lines, None, (), ((notice, True),)), None
+        return _without_version(request)
     ground = None
     batches: list[Batch] = []
     labels: list[Label] = []
@@ -321,6 +383,149 @@ def _build(request: Request, budget_s: float
     return design_draw.Built(lines, None, (), found.lines(shown)), found
 
 
+def _span(values: Sequence[float]) -> str:
+    """Un margen o un rango de márgenes (m) para la leyenda: ``10,0 m`` o ``6,0 – 10,0 m``."""
+    low, high = min(values), max(values)
+    return f"{format_number(low, 1)} m" if low == high else f"{format_number(low, 1)} – {format_number(high, 1)} m"
+
+
+def _mark_label(found: Any) -> str:
+    """El nombre de una marca (:class:`design.preview.MarkPreview`) junto a ella: su nombre y su margen, su material y su base."""
+    text = tr("«{name}» · margin {margin} m", name=found.name, margin=format_number(found.margin_m, 1))
+    if found.material:
+        text = tr("{text} · material {material}", text=text, material=found.material)
+    if found.base:
+        text = tr("{text} · base «{base}»", text=text, base=found.base)
+    return text
+
+
+def _stockpile_legend(request: Request, found: Any, ground: Any, drawn: set[str]) -> tuple[LegendRow, ...]:
+    """La leyenda de las marcas: el título con la detección y su ámbito, una fila por pieza dibujada (con su color) y la superficie."""
+    where = found.version or tr("Project")
+    rows = [LegendRow(tr("Preview of «{name}» ({code}) · {version}", name=found.name, code=found.code, version=where)
+                      if found.code else tr("Preview of «{name}» · {version}", name=found.name, version=where))]
+    if MARKS in drawn:
+        rows.append(LegendRow(tr("Marks ({count}, {area} m²): the cells the detection will read", count=len(found.marks),
+                                 area=format_number(sum(item.area_m2 for item in found.marks), 0)), _hex(MARK_COLOR)))
+    if MARGIN in drawn:
+        margins = [item.margin_m for item in found.marks if item.enlarged]
+        rows.append(LegendRow(tr("Marks enlarged by their margin ({margins})", margins=_span(margins)), _hex(MARGIN_COLOR)))
+    if found.drawable:
+        rows.append(LegendRow(tr("At the elevation of the GeoOrigin") if ground is None
+                              else tr("On the surface «{name}»", name=ground.name)))
+    return tuple(rows)
+
+
+def _build_stockpile(request: Request, budget_s: float) -> Generator[None, None, tuple[design_draw.Built, Any]]:
+    """Los pasos que construyen lo que dibuja la vista previa de las marcas de una detección de acopios (spec 016, T32; RF-016-23):
+    la preparación (``design.preview.stockpile_preview_steps``: solo lee la capa de marcas y la rejilla del proyecto; la detección de una
+    superficie del proyecto no necesita versión, D-15), la superficie sobre la que se detecta, los lotes de las marcas y de sus
+    ampliadas por el margen, el nombre de cada marca junto a ella, la leyenda y el resumen. Como :func:`_build_platform`: lo que
+    rechazaría «Calcular» sale en el resumen, en lugar del dibujo."""
+    project, version_uid, shown = request.project, request.version_uid, request.language
+    origin = project.origin
+    steps = design_preview.stockpile_preview_steps(project, request.plan.stockpile, version_uid or None, budget_s=budget_s)
+    found = yield from _run_preview(steps)
+    ground = None
+    batches: list[Batch] = []
+    labels: list[Label] = []
+    drawn: set[str] = set()
+    if found.drawable:
+        ground = yield from constraints.ground_steps(project, found.surface, version_uid, budget_s=budget_s)
+        pieces = [(MARKS, MARK_COLOR, MARK_PX, [design_draw.ring_segments(item.rings) for item in found.marks]),
+                  (MARGIN, MARGIN_COLOR, MARGIN_PX, [design_draw.ring_segments(item.enlarged) for item in found.marks
+                                                     if item.enlarged])]
+        for key, color, width, parts in pieces:
+            batch = yield from _drape(parts, key, color, width, ground, origin, budget_s)
+            if batch is not None:
+                batches.append(batch)
+                drawn.add(key)
+        places = np.array([(item.x, item.y) for item in found.marks], dtype=np.float64).reshape(-1, 2)
+        spots = yield from constraints.drape_points_steps(places, ground, origin, budget_s=budget_s)
+        labels.extend(Label(_mark_label(item), (float(x), float(y), float(z)), MARK_COLOR)
+                      for item, (x, y, z) in zip(found.marks, spots.tolist(), strict=True))
+    lines = constraints.Built(version_uid, request.version_code, "", "" if ground is None else ground.name, tuple(batches),
+                              tuple(labels), _stockpile_legend(request, found, ground, drawn), request.stamp)
+    return design_draw.Built(lines, None, (), found.lines(shown)), found
+
+
+def _buttress_legend(request: Request, found: Any, ground: Any, drawn: set[str]) -> tuple[LegendRow, ...]:
+    """La leyenda de la zona de coronación: el título con el contrafuerte y su versión, una fila por pieza dibujada y la superficie."""
+    shown = request.language
+    version = request.version_code or tr("No version")
+    rows = [LegendRow(tr("Preview of «{name}» ({code}) · {version}", name=found.name, code=found.code, version=version)
+                      if found.code else tr("Preview of «{name}» · {version}", name=found.name, version=version))]
+    if CROWN in drawn:
+        rows.append(LegendRow(tr("Crown zone ({cells} cells, {area} m²)", cells=found.crown_cells,
+                                 area=format_number(found.crown_area_m2, 0)), _hex(CROWN_COLOR)))
+    if ZONE in drawn and found.declares is not None and found.guard_m is not None:
+        rows.append(LegendRow(
+            tr("Declares «{type}» with a guard of {guard} m ({area} m²)", type=found.declares.label(shown),
+               guard=format_number(found.guard_m, 1), area=format_number(found.zone_area_m2, 0)),
+            _hex(constraints.color_of(found.declares.value))))
+    if found.drawable:
+        rows.append(LegendRow(tr("At the elevation of the GeoOrigin") if ground is None
+                              else tr("On the surface «{name}»", name=ground.name)))
+    return tuple(rows)
+
+
+def _top_of(rings: Sequence[np.ndarray]) -> tuple[float, float] | None:
+    """El punto medio del borde norte de la caja de unos anillos (donde se escribe el nombre de una zona que rodea a otra)."""
+    points = [np.asarray(ring, dtype=np.float64).reshape(-1, 2) for ring in rings if len(ring)]
+    if not points:
+        return None
+    every = np.concatenate(points)
+    low, high = every.min(axis=0), every.max(axis=0)
+    return (float((low[0] + high[0]) / 2.0), float(high[1]))
+
+
+def _build_buttress(request: Request, budget_s: float) -> Generator[None, None, tuple[design_draw.Built, Any]]:
+    """Los pasos que construyen lo que dibuja la vista previa de la zona de coronación de un contrafuerte (spec 016, T32; RF-016-23):
+    la preparación (``design.preview.buttress_preview_steps``: solo lee la capa de las zonas y la rejilla del proyecto), la superficie
+    de partida, los lotes de la zona de coronación y, si protege y ha elegido el resguardo, de la zona que declarará «sin corte», sus
+    nombres, la leyenda y el resumen. Como :func:`_build_platform`: lo que rechazaría «Calcular» sale en el resumen, en lugar del
+    dibujo; sin versión activa, solo lo dice."""
+    project, version_uid, shown = request.project, request.version_uid, request.language
+    origin = project.origin
+    found = None
+    if version_uid:
+        steps = design_preview.buttress_preview_steps(project, request.plan.buttress, version_uid, budget_s=budget_s)
+        found = yield from _run_preview(steps)
+    if found is None:
+        return _without_version(request)
+    ground = None
+    batches: list[Batch] = []
+    labels: list[Label] = []
+    drawn: set[str] = set()
+    if found.drawable:
+        ground = yield from constraints.ground_steps(project, found.start_surface, version_uid, budget_s=budget_s)
+        pieces: list[tuple[str, constraints.Color, float, list[np.ndarray]]] = [
+            (CROWN, CROWN_COLOR, CROWN_PX, [design_draw.ring_segments(found.crown_rings)])]
+        if found.zone and found.declares is not None:
+            pieces.append((ZONE, constraints.color_of(found.declares.value), ZONE_PX, [design_draw.ring_segments(found.zone)]))
+        for key, color, width, parts in pieces:
+            batch = yield from _drape(parts, key, color, width, ground, origin, budget_s)
+            if batch is not None:
+                batches.append(batch)
+                drawn.add(key)
+        crown_text = tr("Crown zone of «{name}» ({code})", name=found.name, code=found.code or "BTR-000")
+        if found.crown_m is not None:
+            crown_text = tr("{text} · crown at {crown} m", text=crown_text, crown=format_number(found.crown_m, 2))
+        named: list[tuple[str, tuple[float, float], constraints.Color]] = [(crown_text, (found.x, found.y), CROWN_COLOR)]
+        if found.zone and found.declares is not None and found.guard_m is not None:
+            place = _top_of(found.zone)
+            if place is not None:
+                named.append((tr("{name} · guard {guard} m", name=declared_text(found.code or "BTR-000", found.name),
+                                 guard=format_number(found.guard_m, 1)), place, constraints.color_of(found.declares.value)))
+        places = np.array([place for _text, place, _color in named], dtype=np.float64).reshape(-1, 2)
+        spots = yield from constraints.drape_points_steps(places, ground, origin, budget_s=budget_s)
+        labels.extend(Label(text, (float(x), float(y), float(z)), color)
+                      for (text, _place, color), (x, y, z) in zip(named, spots.tolist(), strict=True))
+    lines = constraints.Built(version_uid, request.version_code, "", "" if ground is None else ground.name, tuple(batches),
+                              tuple(labels), _buttress_legend(request, found, ground, drawn), request.stamp)
+    return design_draw.Built(lines, None, (), found.lines(shown)), found
+
+
 # --- Qué cambió -----------------------------------------------------------------------------------
 
 
@@ -341,10 +546,10 @@ class _State:
         self.enabled = False
         self.handles: list[Any] = []
         self.built: design_draw.Built | None = None
-        self.steps: Generator[None, None, tuple[design_draw.Built, EntityPreview | None]] | None = None
+        self.steps: Generator[None, None, tuple[design_draw.Built, Any]] | None = None
         self.request: Request | None = None
         self.plan: EntityPlan | None = None
-        self.preview: EntityPreview | None = None
+        self.preview: Any = None
         self.undo: list[Callable[[], object]] = []
         self.failed = False
 
@@ -377,8 +582,9 @@ def plan() -> EntityPlan | None:
     return _STATE.plan
 
 
-def preview() -> EntityPreview | None:
-    """La última preparación de la entidad (``design.preview.EntityPreview``: lo que se dibuja, en números); ``None``
+def preview() -> Any:
+    """La última preparación de lo que se previsualiza, en números: ``design.preview.EntityPreview`` (una plataforma),
+    ``StockpilePreview`` (las marcas de una detección) o ``ButtressPreview`` (la zona de coronación de un contrafuerte); ``None``
     si no hay."""
     return _STATE.preview
 

@@ -41,6 +41,15 @@ volumen) y la zona que declarará si protege, con su resguardo. Un rechazo de la
 RF-015-09: los mismos mensajes que «Calcular») no es un error: es el aviso de la vista previa en lugar
 del dibujo.
 
+Y para la **016** (spec 016, T32; RF-016-23, RF-015-26; plan 016 §5.5), antes de calcular y solo leyendo,
+:func:`stockpile_preview_steps` prepara el :class:`StockpilePreview` de una detección de acopios que se prepara —cada marca de su
+capa con las celdas que leerá la detección, su margen y la marca ampliada por él (:class:`MarkPreview`)— y
+:func:`buttress_preview_steps` el :class:`ButtressPreview` de un contrafuerte —su zona de coronación, las celdas de la geometría
+de su capa, y la zona que declarará «sin corte» con su resguardo—. Son más ligeras que la preparación de «Calcular»: no leen la
+superficie ni las máscaras (la detección de una versión las compilaría, y la vista previa no escribe), solo la capa y la rejilla del
+proyecto; lo que de la capa rechazaría «Calcular» (campos, márgenes, marcas solapadas, la geometría que no está…) es el aviso en
+lugar del dibujo, con el mismo texto.
+
 Lo que dice son avisos y notas con código (:class:`Notice`, de ``design.messages``): el texto en
 cada idioma sale de :meth:`Notice.text` y de :meth:`PreviewSummary.lines`, con la coma decimal y el
 espacio fino de miles del español o el punto y la coma del inglés.
@@ -80,11 +89,13 @@ if TYPE_CHECKING:  # design.quarry importa design.report, que importa Notice de 
 
 __all__ = [
     "BodySummary",
+    "ButtressPreview",
     "ButtressSummary",
     "CandidateCounts",
     "CandidateLine",
     "EntityEnd",
     "EntityPreview",
+    "MarkPreview",
     "Named",
     "Notice",
     "Obsolete",
@@ -98,15 +109,20 @@ __all__ = [
     "RestingLine",
     "SectorStatus",
     "StockpileLine",
+    "StockpilePreview",
     "StockpileSummary",
+    "buttress_preview_steps",
     "entity_preview_steps",
+    "guard_zone_units",
     "held_notices",
     "obsolete_names",
     "obsolete_notices",
     "quarry_summarize_steps",
     "seed_notices",
     "stockpile_obsolete_notices",
+    "stockpile_preview_steps",
     "summarize_steps",
+    "zone_rings",
 ]
 
 _HECTARE_M2 = 10_000.0
@@ -125,6 +141,7 @@ _CODE_DECIMALS: Mapping[str, Mapping[str, int]] = MappingProxyType({
     "des.stockpile_item": MappingProxyType({"level": 2, "slope": 2}),
     "des.stockpile_candidate_item": MappingProxyType({"level": 2, "slope": 2}),
     "des.body_sections_large": MappingProxyType({"limit": 0}),
+    "des.preview_buttress_crown": MappingProxyType({"crown": 2}),
 })
 """Los decimales de los números de **un mensaje concreto** (spec 016, T12), que mandan sobre :data:`_DECIMALS`: los avisos de
 los acopios dicen una inclinación de 4,04° frente a un límite de 4° (``fitted``, ``limit``) y un umbral de huella de 0,25 m
@@ -1064,9 +1081,12 @@ class EntityPreview:
         return tuple(found)
 
 
-def _rings(zone: Any) -> tuple[np.ndarray, ...]:
+def zone_rings(zone: Any) -> tuple[np.ndarray, ...]:
     """Los anillos de una ``design.entities.DeclaredZone`` (el exterior y sus huecos, de cada parte)."""
     return tuple(ring for part in zone.parts for ring in part)
+
+
+_rings = zone_rings
 
 
 def _listed_names(items: Iterable[RestingItem]) -> tuple[str, ...]:
@@ -1081,12 +1101,20 @@ def _guard_units(footprint: Any, grid: Grid, guard_m: float
     ``footprint`` (``design.platform.Footprint``) y las que quedan a ≤ resguardo de ella con la distancia
     euclídea entre centros de celda (``design.envelopes.reach_steps``): lo que la compilación de la 012
     admitirá, a una celda como mucho. Con resguardo 0, la propia huella."""
+    return (yield from guard_zone_units(footprint.cells, footprint.window, grid, guard_m))
+
+
+def guard_zone_units(cells: Any, window: tuple[slice, slice], grid: Grid, guard_m: float
+                     ) -> Generator[None, None, tuple[tuple[np.ndarray, ...], int]]:
+    """:func:`_guard_units` de unas celdas cualesquiera (spec 016, T32: la zona de coronación de un contrafuerte): ``cells`` es la
+    máscara de la ventana ``window`` (filas y columnas de ``grid``) que es la zona; el contorno de lo que queda a ≤ ``guard_m`` m de
+    ella, entre centros de celda, y sus celdas. Con resguardo 0, la propia zona. Solo lee."""
     from . import entities, platform  # al usarlo: platform importa Notice de aquí
     from .envelopes import reach_steps
     from .model import Metric
 
-    cells = np.asarray(footprint.cells, dtype=bool)
-    top, left = footprint.window[0].start, footprint.window[1].start
+    cells = np.asarray(cells, dtype=bool)
+    top, left = window[0].start, window[1].start
     if guard_m <= 0.0:
         zone = entities.declared_zone(cells, grid, 0.0, offset=(top, left))
         yield
@@ -1263,3 +1291,158 @@ def entity_preview_steps(project: StoreProject, request: Any, version_uid: str, 
     return pace_progress(_entity_units(project, request, code, version_uid, insert_before), budget_s,
                          phase=_ENTITY_PHASE, running="Preparando la vista previa de la entidad…",
                          finished="Vista previa de la entidad lista", total=10)
+
+
+# --- La vista previa de las marcas de los acopios y de la zona de coronación (spec 016, T32; RF-016-23) ----------
+
+_STOCKPILE_PHASE = "preview_stockpile"
+_BUTTRESS_PHASE = "preview_buttress"
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class MarkPreview:
+    """Una marca de la capa de marcas de una detección tal como la leerá ella (RF-016-23): su ``key`` (la clave del acopio) y su
+    ``name``, su ``material`` y su ``base`` (``None``: sin ellos), el margen con que se amplía (``margin_m``, m: el de su campo o el de
+    la detección; ``own_margin`` si es el de su campo), las celdas de la marca (``cells``: las de **centro dentro de su polígono**) y
+    su área (``area_m2``), los anillos de su contorno (``rings``: ``(k, 2)`` absolutos, float64, de celda en celda), los de la marca
+    ampliada por su margen (``enlarged``: la dilatación de esas celdas con un disco de ``margin_m``; vacío si el margen es 0: la
+    ampliada es la marca) y sus celdas (``enlarged_cells``) y el centro de su caja (``x``, ``y``: absolutas, m)."""
+
+    key: str
+    name: str
+    material: str | None
+    base: str | None
+    margin_m: float
+    own_margin: bool
+    cells: int
+    area_m2: float
+    rings: tuple[np.ndarray, ...]
+    enlarged: tuple[np.ndarray, ...]
+    enlarged_cells: int
+    x: float
+    y: float
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class StockpilePreview:
+    """Lo que enseña la vista previa de una detección de acopios **antes de calcularla** (RF-016-23): su ``name`` y el ``code`` que
+    tendría (``STK-001``), el ámbito (``scope``: ``project`` o ``version``) y la ``version`` (su código; vacío si es del proyecto), la
+    superficie sobre la que se detectaría (``surface``, el nombre de su dato: sobre la que se dibuja), la capa de marcas (``layer``),
+    sus ``marks`` con su margen, el margen de la detección (``margin_m``: el de las marcas que no traen el suyo), si se piden también
+    los candidatos (``candidates``: no se dibujan), el lado de las celdas de la rejilla (``cell_m``, m) y los ``notices`` en el orden
+    en que se enseñan. Con lo que rechazaría la preparación de la detección (``refusal``: la capa, sus campos, los márgenes, las
+    marcas solapadas, los parámetros…) no hay dibujo: solo el aviso, con el mismo texto que «Calcular». :meth:`lines` es todo lo que
+    dice, línea a línea."""
+
+    name: str
+    code: str
+    scope: str = ""
+    version: str = ""
+    surface: str = ""
+    layer: str = ""
+    marks: tuple[MarkPreview, ...] = ()
+    margin_m: float = 0.0
+    candidates: bool = False
+    cell_m: float = 0.0
+    notices: tuple[Notice, ...] = ()
+    refusal: GeoblenderError | None = None
+
+    @property
+    def drawable(self) -> bool:
+        """Si hay algo que dibujar (alguna marca): rechazada, no."""
+        return bool(self.marks)
+
+    def lines(self, language: str = "es") -> tuple[tuple[str, bool], ...]:
+        """Todo lo que dice la vista previa en ``language``, línea a línea con si va en alerta: el rechazo de «Calcular», con los mismos
+        mensajes (en alerta), y los avisos y notas en su orden."""
+        return _preview_lines(self.refusal, self.notices, language)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ButtressPreview:
+    """Lo que enseña la vista previa de un contrafuerte **antes de calcularlo** (RF-016-23): su ``name`` y el ``code`` que tendría
+    (``BTR-001``), la ``version`` (su código), la superficie de partida (``start_surface``, el nombre de su dato: sobre la que se
+    dibuja), la capa de las zonas (``layer``) y la geometría que se elige (``feature``: su nombre o su ``fid``, como se pidió) con su
+    ``fid``, la **zona de coronación** (``crown_rings``: los anillos de su contorno, ``(k, 2)`` absolutos float64, de celda en celda;
+    ``crown_cells``, ``crown_area_m2`` y el centro de su caja, ``x`` e ``y``), el lado de las celdas (``cell_m``, m), la cota de
+    coronación (``crown_m``; ``None``: aún sin elegir) y el perfil de banco (``profile``), si protege (``protects``: por defecto sí, D-1)
+    y, entonces, el resguardo (``guard_m``; ``None``: aún sin elegir, D-19), el contorno de la zona que declarará «sin corte» con su
+    resguardo (``zone``, sus celdas y su área, ``zone_cells`` y ``zone_area_m2``) y el tipo de restricción que declara
+    (``declares``). Con lo que rechazaría «Calcular» de la capa, la geometría, el resguardo o la partida (``refusal``), o sin ninguna
+    celda en la zona, no hay dibujo: solo el aviso. :meth:`lines` es todo lo que dice."""
+
+    name: str
+    code: str
+    version: str
+    start_surface: str = ""
+    layer: str = ""
+    feature: str = ""
+    fid: int | None = None
+    crown_rings: tuple[np.ndarray, ...] = ()
+    crown_cells: int = 0
+    crown_area_m2: float = 0.0
+    x: float = 0.0
+    y: float = 0.0
+    cell_m: float = 0.0
+    crown_m: float | None = None
+    profile: str = ""
+    protects: bool = True
+    guard_m: float | None = None
+    zone: tuple[np.ndarray, ...] = ()
+    zone_cells: int = 0
+    zone_area_m2: float = 0.0
+    declares: ConstraintType | None = None
+    notices: tuple[Notice, ...] = ()
+    refusal: GeoblenderError | None = None
+
+    @property
+    def drawable(self) -> bool:
+        """Si hay algo que dibujar (la zona de coronación): rechazada o sin celdas, no."""
+        return bool(self.crown_rings)
+
+    def lines(self, language: str = "es") -> tuple[tuple[str, bool], ...]:
+        """Todo lo que dice la vista previa en ``language``, línea a línea con si va en alerta (como la de una detección)."""
+        return _preview_lines(self.refusal, self.notices, language)
+
+
+def _preview_lines(refusal: GeoblenderError | None, notices: Iterable[Notice], language: str
+                   ) -> tuple[tuple[str, bool], ...]:
+    """Las líneas de una vista previa: el rechazo (en alerta) y los avisos y notas en su orden."""
+    found: list[tuple[str, bool]] = []
+    if refusal is not None:
+        text = refusal.text_in(language) if isinstance(refusal, DesignError) else refusal.message
+        found.append((text, True))
+    found.extend((notice.text(language), notice.severity == "warning") for notice in notices)
+    return tuple(found)
+
+
+def stockpile_preview_steps(project: StoreProject, request: Any, version_uid: str | None, *,
+                            budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """El :class:`StockpilePreview` de la detección ``request`` (``design.model.StockpileRequest``) **antes de calcularla** (RF-016-23)
+    para la versión activa ``version_uid`` (uid o código; ``None``: sin versión, la detección de una superficie del proyecto, D-15), por
+    pasos de ``budget_s`` como mucho: el último ``Progress`` lleva el resumen. Solo lee: la capa de marcas con sus campos, la rejilla del
+    proyecto y el registro de las entidades (el código y el nombre únicos); **no** lee la superficie ni las máscaras, ni compila nada,
+    ni escribe. Lo que de eso rechazaría la preparación de «Calcular» (``design.stockpile_store.prepare_detection``: la versión, el
+    nombre repetido, la capa y sus campos, los márgenes, los polígonos, los materiales, los parámetros y las marcas solapadas) no es un
+    error: es ``StockpilePreview.refusal``, con el mismo mensaje. Otros errores (una capa que no es de entidades: ``ValueError``) sí se
+    lanzan al avanzar. Cerrar los pasos a mitad no deja nada."""
+    from . import stockpile_store  # al usarlo: stockpile_store importa Notice de aquí
+
+    return pace_progress(stockpile_store.preview_marks_units(project, request, version=version_uid), budget_s,
+                         phase=_STOCKPILE_PHASE, running="Preparando la vista previa de las marcas…",
+                         finished="Vista previa de las marcas lista", total=10)
+
+
+def buttress_preview_steps(project: StoreProject, request: Any, version_uid: str, *,
+                           budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """El :class:`ButtressPreview` del contrafuerte ``request`` (``design.model.ButtressRequest``) **antes de calcularlo** (RF-016-23)
+    para la versión ``version_uid`` (uid o código), por pasos de ``budget_s`` como mucho: el último ``Progress`` lleva el resumen. Solo
+    lee la capa de las zonas, la rejilla del proyecto y el registro de las entidades: no lee la partida, las máscaras ni el perfil, ni
+    calcula ni escribe nada. Lo que rechazaría «Calcular» de la capa, la geometría, el resguardo y la partida es ``refusal`` (el mismo
+    mensaje); la cota de coronación y el resguardo que aún no se han elegido (no tienen valor por defecto) se dicen, no se rechazan.
+    Una versión que no existe es un ``ValueError`` al avanzar."""
+    from . import supported_store  # al usarlo: supported_store importa Notice de aquí
+
+    return pace_progress(supported_store.preview_buttress_units(project, request, version_uid), budget_s,
+                         phase=_BUTTRESS_PHASE, running="Preparando la vista previa de la zona de coronación…",
+                         finished="Vista previa de la zona de coronación lista", total=10)

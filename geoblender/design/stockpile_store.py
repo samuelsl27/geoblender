@@ -110,6 +110,7 @@ from ..core.constraints.params import param_key
 from ..core.constraints.store import CONSTRAINT_LAYERS
 from ..core.datasets import registry as dataset_registry
 from ..core.datasets.model import LIVE_STATUSES
+from ..core.errors import GeoblenderError
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterRecord, ParameterStore, definition
 from ..core.params.store import default_reason
 from ..core.project.model import Progress
@@ -139,17 +140,21 @@ from .entity_store import EntityParamRow, _consumer, _dependents, entity_paramet
 from .messages import DesignError
 from .model import StockpileRequest
 from .params import ANTHROPIC_PRESENCE, StockpileParam, check_entity_param, entity_key, entity_params
+from .morphology import dilate
 from .preview import (
     SUMMARY_ITEMS,
     CandidateCounts,
     CandidateLine,
+    MarkPreview,
     Notice,
     Obsolete,
     ObsoleteKind,
     RejectedLine,
     StockpileLine,
+    StockpilePreview,
     StockpileSummary,
     stockpile_obsolete_notices,
+    zone_rings,
 )
 from .stockpiles import (
     CANDIDATE_CONVERTED,
@@ -217,6 +222,7 @@ __all__ = [
     "parse_decisions",
     "prepare_detection",
     "prepare_detection_units",
+    "preview_marks_units",
     "read_detection_table",
     "recompute_detection",
     "run_detection",
@@ -793,6 +799,76 @@ def prepare_detection(project: StoreProject, request: StockpileRequest, *, versi
         except StopIteration as stop:
             result: PreparedDetection = stop.value
             return result
+
+
+# --- La vista previa de las marcas (spec 016, T32; RF-016-23, RF-015-26) ---------------------------------------
+
+
+def _mark_preview(mark: StockpileMark, grid: Grid, default_margin_m: float) -> MarkPreview:
+    """La :class:`~.preview.MarkPreview` de ``mark`` (rasterizada en ``grid``): el contorno de sus celdas y el de la marca ampliada por su
+    margen (el de su campo o ``default_margin_m``: la dilatación de sus celdas con un disco de ese radio, :func:`~.morphology.dilate`,
+    en una ventana con el margen de sobra y recortada a la rejilla). Sin margen, la ampliada es la marca y no se dibuja dos veces."""
+    margin = default_margin_m if mark.margin_m is None else float(mark.margin_m)
+    rows, cols = np.divmod(mark.cells, grid.ncols)
+    top, bottom = int(rows.min()), int(rows.max()) + 1
+    left, right = int(cols.min()), int(cols.max()) + 1
+    reach = math.ceil(margin / grid.dx) + 1
+    first, last = max(0, top - reach), min(grid.nrows, bottom + reach)
+    west, east = max(0, left - reach), min(grid.ncols, right + reach)
+    window = np.zeros((last - first, east - west), dtype=bool)
+    window[rows - first, cols - west] = True
+    own = zone_rings(entities.declared_zone(window, grid, 0.0, offset=(first, west)))
+    enlarged: tuple[np.ndarray, ...] = ()
+    enlarged_cells = int(mark.cells.size)
+    if margin > 0.0:
+        grown = dilate(window, margin, grid.dx)
+        enlarged = zone_rings(entities.declared_zone(grown, grid, 0.0, offset=(first, west)))
+        enlarged_cells = int(np.count_nonzero(grown))
+    return MarkPreview(
+        mark.key, str(mark.name), mark.material, mark.base, margin, mark.margin_m is not None, int(mark.cells.size),
+        float(mark.cells.size) * grid.cell_area, own, enlarged, enlarged_cells,
+        float(grid.west + (left + right) / 2.0 * grid.dx), float(grid.north - (top + bottom) / 2.0 * grid.dy))
+
+
+def preview_marks_units(project: StoreProject, request: StockpileRequest, *, version: str | None
+                        ) -> Generator[None, None, StockpilePreview]:
+    """Las unidades (cada ``yield``, una; para componerlas con ``pace_units``) que preparan la **vista previa de las marcas** de la
+    detección ``request`` (RF-016-23; ``design.preview.stockpile_preview_steps``): lo que leerá la detección de su capa de marcas, sin
+    calcular nada. Es el principio de :func:`prepare_detection_units` —el ámbito por la superficie, el código y el nombre únicos, la
+    capa, sus campos, sus polígonos rasterizados, los materiales, los parámetros y las marcas solapadas, en el mismo orden y con los
+    mismos mensajes— **sin leer la superficie ni las bases ni el perímetro ni cargar las máscaras** (la detección de una versión las
+    compilaría, y esto no escribe) y con el contorno de cada marca y de su ampliada por el margen (:func:`_mark_preview`). Lo que de
+    eso rechazaría la preparación (``GeoblenderError``) no se lanza: sale en ``StockpilePreview.refusal``, sin marcas. **Nada se
+    escribe.**"""
+    scope, code, found = "", "", None
+    try:
+        scope, found = detection_scope(project, request, version)
+        code = _identify(project, request, found, None)
+        yield
+        grid = project_frame(project).grid
+        candidates = bool(request.candidates)
+        marks, _fids = yield from _read_marks(project, request, grid, candidates=candidates)
+        _check_materials(marks, request.fields.layer)
+        values, _defaulted = detection_values(request, code)
+        _check_overlaps(marks, grid)
+    except GeoblenderError as refused:  # lo que rechazaría «Calcular»: es el aviso de la vista previa
+        return StockpilePreview(request.name, code, scope, "" if found is None else found.code,
+                                request.surface, request.fields.layer, refusal=refused)
+    yield
+    margin = float(values[StockpileParam.MARGIN.value])
+    drawn: list[MarkPreview] = []
+    for mark in marks:
+        drawn.append(_mark_preview(mark, grid, margin))
+        yield
+    where = "" if found is None else found.code
+    header = {"entity": request.name, "code": code, "marks": len(drawn), "area": sum(item.area_m2 for item in drawn),
+              "surface": request.surface, "margin": margin}
+    notices = [Notice("des.preview_stockpile_project" if found is None else "des.preview_stockpile",
+                      header if found is None else {**header, "version": where})]
+    if candidates:
+        notices.append(Notice("des.preview_stockpile_candidates"))
+    return StockpilePreview(request.name, code, scope, where, request.surface, request.fields.layer, tuple(drawn), margin, candidates,
+                            float(max(grid.dx, grid.dy)), tuple(notices))
 
 
 # --- Calcular por pasos (spec 016, T12; RF-016-04, 05, 08, RF-015-29, RNF-016-03, 05) ------------
