@@ -16,9 +16,10 @@ de espesor** sueltos y las secciones (líneas 3D con el espesor en su Z). Todo c
 
 - **RNF-016-03** (:class:`CallsTest`, en el orden de sus letras sobre el mismo estado): las órdenes de la 016, las reales, como desde
   la interfaz: Intro (``execute`` por ``bpy.ops``, en pasos), cada evento del temporizador de su modal hasta que termina (con el tic
-  de los indicadores de la procedencia cuando le toca) y «Crear» (la misma orden con ``confirm``), que en la retirada, el
-  contrafuerte y el cuerpo encadena lo que sigue (``after_entity_change``: la declaración, las máscaras y la capa de entidades,
-  ``_ChainsEntityLayer``), con sus pasos y sus eventos. Cada llamada del hilo de Blender se mide: lo que hace Geoblender en ella,
+  de los indicadores de la procedencia cuando le toca) y «Crear» (la misma orden con ``confirm``): **la detección** escribe sus tablas y
+  sus cuatro rejillas dispersas **por pasos** (T44: ``Calculation.create_steps``; antes, una sola llamada de ≈ 1 s), con la transacción
+  final como último paso, y en la retirada, el contrafuerte y el cuerpo encadena lo que sigue (``after_entity_change``: la
+  declaración, las máscaras y la capa de entidades, ``_ChainsEntityLayer``), con sus pasos y sus eventos. Cada llamada del hilo de Blender se mide: lo que hace Geoblender en ella,
   **sin la transacción final** (``DesignWriter.commit`` y ``MaskWriter.commit``: una transacción que no se trocea; el R4 de la 012),
   ≤ 0,2 s; la transacción, medida aparte, se anota con la llamada en que ocurre (si pasa de 0,2 s, con un aviso: la cifra, para
   Samuel). (a) «Detectar acopios…» con las 20 marcas y los candidatos; (b) «Retirar un acopio…» el mayor y «como plataforma»;
@@ -27,7 +28,7 @@ de espesor** sueltos y las secciones (líneas 3D con el espesor en su Z). Todo c
   ``docs/trampas.md`` §4) **y en pared**; el presupuesto se exige a la CPU y la pared se anota con un aviso si lo pasa (se repite
   con el equipo en reposo). La resolución del reloj de CPU de Windows es de unos 16 ms.
 - **RNF-016-05** (:meth:`CallsTest.test_g_esc`): Esc a mitad de cada cálculo —«Calcular» de las cuatro órdenes (a mitad de sus eventos
-  y, las que escriben un temporal, en cuanto tienen su superficie en él)—: la llamada más larga del cálculo más lo que tarda Esc ≤ 2
+  y, las que escriben un temporal, en cuanto tienen su superficie en él) y, de la detección, a mitad de «Crear» (T44)—: la llamada más larga del cálculo más lo que tarda Esc ≤ 2
   s y nada a medias en el proyecto (ni operación «en curso», ni temporal; «Calcular» no deja ni operación, ni dato, ni cifra, ni
   fichero). **A esta escala sí hay un «a mitad»**: la T35 no pudo probarlo en la cantera de 2 m, donde el cálculo cabe en un evento.
 - **En la red**: lo de RNF-016-03 con el proyecto en ``Z:`` se mide a mano con ``GEOBLENDER_NET_TEST_DIR`` en las pruebas del
@@ -297,25 +298,23 @@ def open_dialog(idname: str) -> Callable[[Any], None]:
     return opened
 
 
-def create(recorder: Recorder, idname: str, what: str, *, chained: bool) -> None:
-    """«Crear» (la misma orden con ``confirm``: la transacción final) y, si ``chained``, lo que encadena (``after_entity_change``: la
-    declaración, las máscaras y la capa de entidades) con cada evento de su modal hasta que termina."""
+def create(recorder: Recorder, idname: str, what: str) -> None:
+    """«Crear» (la misma orden con ``confirm``): empieza el modal de pasos —**la detección** (T44) escribe sus tablas y sus cuatro rejillas
+    dispersas por pasos, con la transacción final como último; la retirada, el contrafuerte y el cuerpo, que ya escribían su superficie de
+    una vez, solo encadenan lo que sigue (``after_entity_change``: la declaración, las máscaras y la capa de entidades)— y cada evento de
+    su modal, hasta que termina, es una llamada del hilo de Blender medida."""
     commands = _module("bl.ui.commands")
     cls = commands.registered_class(idname)
     order = getattr(bpy.ops.geoblender, idname.removeprefix("geoblender."))
     result = recorder.call(f"Crear ({what})", order, "EXEC_DEFAULT", confirm=True, in_steps=True)
-    if not chained:
-        if result != {"FINISHED"}:
-            raise AssertionError(f"«{what}» no se crea: {result}")
-        return
     if result != {"RUNNING_MODAL"}:
-        raise AssertionError(f"«{what}» no se crea o no encadena lo que sigue: {result}")
-    state = pd.pump(recorder, pc.running(cls), f"{what}: lo que sigue a crearla")
+        raise AssertionError(f"«{what}» no se crea por pasos o no encadena lo que sigue: {result}")
+    state = pd.pump(recorder, pc.running(cls), f"{what}: «Crear» y lo que sigue a crearla")
     if state != {"FINISHED"}:
-        raise AssertionError(f"«{what}»: lo que sigue a crearla acaba mal: {state}")
+        raise AssertionError(f"«{what}»: «Crear» y lo que sigue a crearla acaban mal: {state}")
 
 
-def run_order(idname: str, form: dict[str, Any], what: str, *, chained: bool) -> pd.Run:
+def run_order(idname: str, form: dict[str, Any], what: str) -> pd.Run:
     """La orden ``idname`` como desde la interfaz: abrir el diálogo, «Calcular» (Intro y cada evento de su modal) y «Crear» con lo que
     encadena, cada llamada del hilo de Blender medida."""
     project = _module("bl.scene.project_session").current()
@@ -324,7 +323,7 @@ def run_order(idname: str, form: dict[str, Any], what: str, *, chained: bool) ->
     def steps(recorder: Recorder) -> None:
         recorder.call(f"abrir el diálogo ({what})", opened, project)
         pq.calculate(recorder, idname, form, what)
-        create(recorder, idname, what, chained=chained)
+        create(recorder, idname, what)
 
     return measure(what, steps)
 
@@ -358,9 +357,8 @@ class CallsTest(pe._Case):  # noqa: SLF001
     de la a la usan la c (retirar) y la g (Esc); las entidades de las demás se descartan al medirlas (de cada superficie parte una
     sola). Cada orden se mide :data:`RUNS` veces y el presupuesto se exige a la **mediana** de la peor llamada de cada ejecución (como
     las demás pruebas de rendimiento: una llamada de ≈ 0,15 s de CPU varía unas decenas de ms con el equipo cargado por otros
-    programas). Lo que **no cumple** (la b) se fija con ``assertRaises``: la prueba pasa mientras el hueco esté y se pone roja cuando
-    se cierre (``expectedFailure`` no es verde, TST-07); el presupuesto es el de la spec, que decide Samuel (``tasks.md``, «Para
-    Samuel»)."""
+    programas). Todo cumple: «Crear» la detección, que era el hueco de la T37 (una sola llamada de ≈ 1 s, fijada con ``assertRaises``),
+    corre por pasos desde la T44 y su prueba (la b) es una afirmación normal."""
 
     built: pd.Built
     runs: dict[str, list[pd.Run]] = {}
@@ -417,13 +415,12 @@ class CallsTest(pe._Case):  # noqa: SLF001
                 self.assertLessEqual(found, CALL_BUDGET_S, f"{runs[0].label}: {'Calcular' if index == 0 else 'Crear'}: "
                                      f"{worst(parts(runs[0])[index]).text()}")
 
-    def repeat(self, idname: str, form: Callable[[str], dict[str, Any]], what: str, name: str, *, chained: bool,
-               prefix: str | None) -> list[pd.Run]:
+    def repeat(self, idname: str, form: Callable[[str], dict[str, Any]], what: str, name: str, *, prefix: str | None) -> list[pd.Run]:
         """La orden ``idname`` :data:`RUNS` veces con un nombre nuevo cada una (``form``: lo pedido con ese nombre) y, si ``prefix`` (el
         de los códigos de lo que crea: ``RMV``, ``BTR``…), descartando cada entidad al terminar (de cada superficie parte una sola)."""
         runs = []
         for _turn in range(RUNS):
-            runs.append(run_order(idname, form(self.fresh(name)), what, chained=chained))
+            runs.append(run_order(idname, form(self.fresh(name)), what))
             if prefix is not None:
                 self.drop(self.last_code(prefix))
         return runs
@@ -442,8 +439,8 @@ class CallsTest(pe._Case):  # noqa: SLF001
     def test_a_detect(self) -> None:
         """RNF-016-03 (RF-016-25, RF-015-29): «Detectar acopios…» con 20 marcas y los candidatos sobre 2,81 M celdas, como desde la
         interfaz: en ninguna llamada de «Calcular» (abrir el diálogo, Intro, cada evento de su modal y el tic de los indicadores) lo
-        que hace Geoblender pasa de 0,2 s de CPU; «Crear», en la prueba siguiente."""
-        runs = self.repeat(DETECT, lambda name: detect_form(name), "Detectar acopios", "Acopios de escala", chained=False, prefix=None)
+        que hace Geoblender pasa de 0,2 s de CPU; «Crear» (que ahora corre por pasos), en la prueba siguiente."""
+        runs = self.repeat(DETECT, lambda name: detect_form(name), "Detectar acopios", "Acopios de escala", prefix=None)
         CallsTest.runs[DETECT] = runs
         found = self.rows("SELECT count(*) FROM gb_operation WHERE op_type LIKE 'des.stockpile_detect%' AND status = 'done'")[0][0]
         self.assertEqual(found, RUNS, "las detecciones no están hechas")
@@ -455,20 +452,24 @@ class CallsTest(pe._Case):  # noqa: SLF001
                          f"formados)", runs)
         self.check_runs(runs, create=False)
 
-    def test_b_detect_creating_is_one_call_of_a_second(self) -> None:
-        """RNF-016-03: «Crear» la detección (la orden con ``confirm``) tampoco debería pasar de 0,2 s de CPU sin la transacción final.
-        **No se cumple, y esta prueba fija el hueco** (``assertRaises``: se pone roja cuando se cierre): la orden escribe de una vez los
-        datos dispersos de la detección (la base, el espesor, el terreno sin acopios y la superficie, cuatro rejillas de 2,81 M
-        celdas, ≈ 1 s de CPU) y solo después la transacción final (≈ 25 ms); ``create_detection_steps`` los escribiría por pasos,
-        pero la orden no lo usa. Lo decide Samuel (``tasks.md``, «Para Samuel»)."""
+    def test_b_detect_creating_runs_by_steps(self) -> None:
+        """RNF-016-03 (T44): «Crear» la detección (la orden con ``confirm``) corre **por pasos** (``Calculation.create_steps``): cada
+        evento de su modal escribe un trozo de las tablas y de las cuatro rejillas dispersas de 2,81 M celdas (la base, el espesor, el
+        terreno sin acopios y la superficie), y la transacción final es el último paso: ninguna llamada pasa de 0,2 s de CPU sin la
+        transacción final (antes de la T44 era **una sola llamada de ≈ 1 s**: la orden no usaba ``create_detection_steps``). La transacción,
+        aparte (R4 de la 012)."""
         runs = CallsTest.runs[DETECT]
         found = [worst(parts(run)[1]) for run in runs]
-        report(f"RNF-016-03: «Crear» la detección con {MARKS} marcas ({count(CELLS)} celdas de 1 m; {MACHINE}): una sola llamada de "
+        events = [sum(call.what.startswith("evento") for call in parts(run)[1]) for run in runs]
+        commits = [seconds - waited for run in runs for call in run.with_commits for _op, seconds, _cpu, waited in call.commits]
+        report(f"RNF-016-03: «Crear» la detección con {MARKS} marcas ({count(CELLS)} celdas de 1 m; {MACHINE}) por pasos: {events[0]} "
+               f"eventos de su modal; la peor llamada de cada ejecución, "
                + ", ".join(f"{ms(call.budgeted_cpu)} ms" for call in found) + f" de CPU sin la transacción final ({len(runs)} ejecuciones; "
                f"mediana {ms(statistics.median(call.budgeted_cpu for call in found))} ms; presupuesto "
-               f"{number(CALL_BUDGET_S * 1000, 0)} ms): {found[0].text()}")
-        with self.assertRaises(AssertionError, msg="«Crear» la detección ya cumple las 0,2 s: quite el hueco de esta prueba"):
-            self.check_runs(runs, calculate=False)
+               f"{number(CALL_BUDGET_S * 1000, 0)} ms; la más larga, {found[0].text()}); la transacción final, aparte: "
+               + ", ".join(f"{ms(seconds)} ms" for seconds in commits) + " de pared")
+        self.assertGreater(min(events), 10, "«Crear» no corre por pasos")
+        self.check_runs(runs, calculate=False)
 
     def test_c_removal(self) -> None:
         """RNF-016-03 (RF-016-11 a 16, RF-016-24): «Retirar un acopio…» el mayor de la detección —con la transición a 30°, lo que se
@@ -480,7 +481,7 @@ class CallsTest(pe._Case):  # noqa: SLF001
         made = []
         for what, name, changes, prefix in cases:
             runs = self.repeat(REMOVE, lambda label, changes=changes: removal_form(label, self.stockpile, **changes), what, name,
-                               chained=True, prefix=prefix)
+                               prefix=prefix)
             CallsTest.runs[f"{REMOVE}:{what}"] = runs
             made.append(runs)
             self.report_runs(f"«{what}…» el mayor de los acopios ({self.stockpile})", runs)
@@ -493,7 +494,7 @@ class CallsTest(pe._Case):  # noqa: SLF001
         que encadena (la declaración y las máscaras, porque protege): en ninguna llamada sin la transacción final pasa de 0,2 s de
         CPU."""
         runs = self.repeat(BUTTRESS, lambda name: buttress_form(name, "Zona de 10 ha", self.built.start), "Contrafuerte de 10 ha",
-                           "Contrafuerte de escala", chained=True, prefix="BTR")
+                           "Contrafuerte de escala", prefix="BTR")
         CallsTest.runs[BUTTRESS] = runs
         self.report_runs("«Contrafuerte…» de 10 ha a +20 m, con su declaración", runs)
         self.check_runs(runs)
@@ -504,8 +505,7 @@ class CallsTest(pe._Case):  # noqa: SLF001
         de 0,2 s de CPU."""
         what = "Cuerpo de 100 ha con secciones"
         runs = self.repeat(BODY, lambda name: body_form(name, "Cuerpo de 100 ha", self.built.start, data_layer=SECTIONS_LAYER,
-                                                        data_from="Z", data_field="Z"), what, "Cuerpo con secciones", chained=True,
-                           prefix="BDY")
+                                                        data_from="Z", data_field="Z"), what, "Cuerpo con secciones", prefix="BDY")
         CallsTest.runs[f"{BODY}:{what}"] = runs
         self.report_runs(f"«Cuerpo apoyado…» «sobre una base» de {what}", runs)
         self.check_runs(runs)
@@ -517,7 +517,7 @@ class CallsTest(pe._Case):  # noqa: SLF001
         comprueba (``prepare``) es una sola llamada."""
         what = "Cuerpo de 100 ha con 10.000 datos sueltos"
         runs = self.repeat(BODY, lambda name: body_form(name, "Cuerpo de 100 ha", self.built.start), what, "Cuerpo de escala",
-                           chained=True, prefix="BDY")
+                           prefix="BDY")
         CallsTest.runs[f"{BODY}:{what}"] = runs
         CallsTest.runs[BODY] = runs
         self.report_runs(f"«Cuerpo apoyado…» «sobre una base» de {what}", runs)
@@ -556,11 +556,39 @@ class CallsTest(pe._Case):  # noqa: SLF001
         self.assertEqual(self.state(), before, f"{where}: Esc dejó algo en el proyecto")
         return Stopped(where, events, longest, (wall, cpu), waiting)
 
+    def esc_in_creation(self, idname: str, form: dict[str, Any], where: str) -> Stopped:
+        """«Calcular» ``form`` hasta el final y «Crear» hasta la mitad de sus eventos (los de la primera ejecución de la ``test_a``, sin la
+        transacción final), con ya ficheros temporales en el disco, y Esc (T44): lo que tardó la llamada más larga hasta entonces y lo
+        que tardó Esc; el proyecto queda como estaba (sin operación, dato, cifra, fichero ni temporal) y el cálculo, descartado."""
+        refresh(self.project())
+        total = sum(call.what.startswith("evento") for call in parts(self.runs[idname][0])[1])
+        before = self.state()
+        cls = _module("bl.ui.commands").registered_class(idname)
+        order = getattr(bpy.ops.geoblender, idname.removeprefix("geoblender."))
+        measure(where, lambda recorder: pq.calculate(recorder, idname, form, where))  # deja el cálculo abierto
+        self.assertEqual(self.state(), before, f"{where}: «Calcular» escribió algo")
+        with mock.patch.object(self.des_ops, "_ask_confirmation"):
+            result, wall, cpu = pe._timed_call(order, "EXEC_DEFAULT", confirm=True, in_steps=True)  # noqa: SLF001
+            self.assertEqual(result, {"RUNNING_MODAL"}, f"{where}: «Crear» no empieza por pasos")
+            longest = (wall, cpu)
+            operator = pc.running(cls)
+            events = 0
+            for events in range(1, max(2, total // 2) + 1):
+                state, wall, cpu = pe._timed_call(operator.modal, bpy.context, pc.TIMER)  # noqa: SLF001
+                self.assertEqual(state, {"RUNNING_MODAL"}, f"{where}: acabó antes de Esc (evento {events})")
+                longest = max(longest, (wall, cpu), key=lambda call: call[1])
+            waiting = len(self.tmp_files())
+            state, wall, cpu = pe._timed_call(operator.modal, bpy.context, ESCAPE)  # noqa: SLF001
+        self.assertEqual(state, {"CANCELLED"}, where)
+        self.assertIsNone(self.des_ops.calculation())
+        self.assertEqual(self.state(), before, f"{where}: Esc dejó algo en el proyecto")
+        return Stopped(f"{where}, a mitad de sus eventos ({events} de {total})", events, longest, (wall, cpu), waiting)
+
     def test_g_esc(self) -> None:
         """RNF-016-05 (RF-015-29): Esc a mitad de cada «Calcular» de las cuatro órdenes sobre 2,81 M celdas —a la mitad de sus
-        eventos y, las que escriben un temporal (la retirada, el contrafuerte y el cuerpo), en cuanto su superficie ya está en él—: la
-        llamada más larga del cálculo más lo que tarda Esc ≤ 2 s y nada a medias en el proyecto: ni operación, ni dato, ni cifra, ni
-        fichero ni temporal."""
+        eventos y, las que escriben un temporal (la retirada, el contrafuerte y el cuerpo), en cuanto su superficie ya está en él— y, de
+        la detección, a mitad de «Crear» (T44: por pasos, con sus temporales ya escritos): la llamada más larga más lo que tarda Esc ≤ 2 s
+        y nada a medias en el proyecto: ni operación, ni dato, ni cifra, ni fichero ni temporal."""
         cases: list[tuple[str, dict[str, Any], str, bool]] = [
             (DETECT, detect_form("Acopios de Esc"), "Detectar acopios", False),
             (REMOVE, removal_form("Retirada de Esc", self.stockpile), "Retirar un acopio", True),
@@ -576,6 +604,8 @@ class CallsTest(pe._Case):  # noqa: SLF001
                 stops.append(self.esc_in_calculation(idname, form, after_events=None, until_tmp=True,
                                                      where=f"«{what}», con su superficie ya en el temporal"))
                 self.assertGreater(stops[-1].temporaries, 0, f"«{what}» no llegó a escribir su temporal")
+        stops.append(self.esc_in_creation(DETECT, detect_form("Acopios de Esc en Crear"), "Detectar acopios: «Crear»"))
+        self.assertGreater(stops[-1].temporaries, 0, "«Crear» no llegó a escribir un temporal")
         worst_stop = max(stops, key=lambda stop: stop.wall)
         report(f"RNF-016-05: Esc a mitad de cada cálculo de la 016 sobre {count(CELLS)} celdas (la llamada más larga más lo que tarda "
                f"Esc; nada queda a medias en el proyecto; {MACHINE}): " + "; ".join(stop.text() for stop in stops)

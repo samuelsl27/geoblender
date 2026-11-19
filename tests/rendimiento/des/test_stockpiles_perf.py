@@ -59,6 +59,9 @@ from tests.support.resources import requires
 design_model = import_geoblender("design.model")
 entity_store = import_geoblender("design.entity_store")
 steps = import_geoblender("design.steps")
+thickness = import_geoblender("design.thickness")
+
+SLOW_NOTICE = "des.body_sections_large"  # T44: el aviso del coste del TIN
 
 DETECT_BUDGET_S = 15.0  # RNF-016-01, en disco local
 DETECT_NETWORK_BUDGET_S = 30.0  # RNF-016-01 en Z:
@@ -301,19 +304,27 @@ class CalculateTest(ScaleCase):
         lines = scale.SECTION_SPECS["100"][2]
         self.check(f"un cuerpo «sobre una base» de 100 ha con {count(found[-1].calculation.outcome.tin_points)} datos en {lines} "
                    f"secciones", found)
+        outcome = found[-1].calculation.outcome  # T44: el coste estimado del TIN, por debajo del límite del aviso
+        self.assertNotIn(SLOW_NOTICE, [notice.code for notice in outcome.notices])
+        gis_perf.report(f"RNF-016-02: ese cuerpo cuesta, estimado por las cajas del TIN, {number(outcome.estimated_s, 1)} s "
+                        f"(aviso a partir de {number(thickness.SLOW_BODY_S, 0)} s)")
 
     def test_h_body_with_wide_sections_100_ha(self) -> None:
-        """RNF-016-02 (aviso para Samuel): las mismas 100 ha con las secciones al doble de separación (200 m de desplazamiento, 141
-        m entre ellas, 5 líneas): el TIN tiene más astillas largas y el cálculo sube con la **separación**, no solo con el área
-        ni con el número de datos; el aviso del resumen (más de 100 ha con secciones) no lo ve. **Sin presupuesto**: una sola
-        medida."""
+        """RNF-016-02 (T44): las mismas 100 ha con las secciones al doble de separación (200 m de desplazamiento, 141 m entre ellas, 5
+        líneas): el TIN tiene más astillas largas y el cálculo sube con la **separación**, no solo con el área ni con el número de datos; el
+        aviso del resumen, que antes solo miraba el área, ahora sale por el **coste estimado de las cajas del TIN** (más de 8 s) y la
+        causa es la separación de las secciones. **Sin presupuesto**: una sola medida (el RNF-016-02 se cumple si se hace caso del aviso)."""
         made = self.sections("100 anchas", "Cuerpo de 100 ha")
         lines = scale.SECTION_SPECS["100 anchas"][2]
         gis_perf.report(
             f"RNF-016-02: un cuerpo «sobre una base» de 100 ha con {count(made.calculation.outcome.tin_points)} datos en {lines} "
             f"secciones diagonales a 141 m una de otra (una sola medida, sin presupuesto; aviso para Samuel; {self.WHERE}; {MACHINE}): "
             f"«Calcular» {number(made.calculate_s, 2)} s y «Crear» {number(made.create_s, 2)} s; llamada más larga "
-            f"{number(made.calls.longest_s * 1000, 0)} ms de pared y {number(made.calls.longest_cpu_s * 1000, 0)} ms de CPU")
+            f"{number(made.calls.longest_s * 1000, 0)} ms de pared y {number(made.calls.longest_cpu_s * 1000, 0)} ms de CPU; coste "
+            f"estimado por las cajas del TIN {number(made.calculation.outcome.estimated_s, 1)} s")
+        warned = [notice for notice in made.calculation.outcome.notices if notice.code == SLOW_NOTICE]
+        self.assertEqual(len(warned), 1, "el resumen avisa: el coste estimado pasa del límite")
+        self.assertGreater(made.calculation.outcome.estimated_s, thickness.SLOW_BODY_S)
 
     def test_z_memory(self) -> None:
         """RNF-016-04: el pico de memoria adicional (``tracemalloc``, con la de numpy) de cada orden —la retirada, «como

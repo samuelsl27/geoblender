@@ -10357,6 +10357,15 @@ es = "Elija la superficie sobre la que se detectan los acopios"
 ["The detection is created: only the declared constraints and the masks have not been brought up to date"]
 es = "La detección está creada: solo las restricciones declaradas y las máscaras no se han puesto al día"
 
+["Saving the detection… {percent} % · Esc: cancel"]
+es = "Guardando la detección… {percent} % · Esc: cancelar"
+
+["Creation cancelled: the detection has not been created and the calculation has been discarded; nothing has been left half-done"]
+es = "Creación cancelada: la detección no se ha creado y el cálculo se ha descartado; no queda nada a medias"
+
+["The project was closed while the detection «{name}» was being saved: nothing has been left half-done"]
+es = "Se cerró el proyecto mientras se guardaba la detección «{name}»: no queda nada a medias"
+
 ["«{entity}» is not a detection of stockpiles of the project or of the active version"]
 es = "«{entity}» no es una detección de acopios del proyecto ni de la versión activa"
 

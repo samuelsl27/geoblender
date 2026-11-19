@@ -71,8 +71,16 @@ polígonos** se sigue interpolando (los triángulos que los unen se rasterizan).
 
 **Avisos nuevos del cálculo** (T25): ``des.body_unsupported`` (las celdas de la huella sin superficie conocida, que no tienen
 cuerpo: lo anotó la T23), ``des.body_many_data`` (más de :data:`MANY_DATA` datos triangulados: ≈ 2 s en retícula y el límite de
-RNF-016-02 es 10 s) y ``des.body_sections_large`` (una huella de más de :data:`SECTIONS_LARGE_M2` con datos de líneas, que son
-secciones: 100 ha cuestan 6,9 s de TIN).
+RNF-016-02 es 10 s) y ``des.body_sections_large`` (lo lento del TIN, abajo).
+
+**Lo lento, por el coste del TIN y no por el área** (T44; RNF-016-02): la T37 midió que el cálculo con secciones depende de lo
+**separadas** que están (las mismas 100 ha: 5,66 s con 10 secciones a 100 m, 9,09 s con 5 a 200 m y 11,27 s con 8 a 200 m), porque los
+triángulos entre dos secciones lejanas son astillas largas y rasterizar el TIN cuesta lo que suman las cajas de sus triángulos
+(:func:`_row_costs`). El aviso de la T25 solo miraba el área (más de 100 ha con secciones). Ahora ``des.body_sections_large`` sale
+cuando el coste **estimado** del cálculo (:func:`estimate_seconds`: :data:`BODY_BASE_S` de leer y escribir la superficie más
+:data:`TIN_UNIT_S` por cada unidad de coste de ese TIN) pasa de :data:`SLOW_BODY_S` (unos 8 s: el límite de RNF-016-02 es 10 s), con
+la estimación y la causa, la separación de los datos. ``BodyOutcome.tin_cost`` es el coste y ``estimated_s``, la estimación. El TIN y
+la rasterización no cambian.
 
 **Lo que no hace** (la T25, en ``supported_store``): leer la capa de datos (puntos, líneas con su Z o su M, polígonos), preparar,
 crear, recalcular y reproducir la operación y rechazar un espesor negativo de la capa con capa, entidad, campo y valor.
@@ -111,8 +119,10 @@ from .seeds import pace_progress
 from .zones import _paint, _polygon_spans
 
 __all__ = [
+    "BODY_BASE_S",
     "MANY_DATA",
-    "SECTIONS_LARGE_M2",
+    "SLOW_BODY_S",
+    "TIN_UNIT_S",
     "BodyJob",
     "BodyOutcome",
     "BodySense",
@@ -123,6 +133,7 @@ __all__ = [
     "compute_body",
     "derive",
     "edge_cells",
+    "estimate_seconds",
     "interior_cells",
     "no_data_error",
 ]
@@ -140,9 +151,23 @@ _OBJ = "Cuerpo apoyado «{}»"
 MANY_DATA = 40_000
 """Los datos triangulados por encima de los cuales el resumen avisa (T25; decisión de la sesión principal, 19/11/2026): triangular
 una retícula cuesta ≈ 52 µs por dato (40.000, ≈ 2 s) y el límite de RNF-016-02 es 10 s. No es una cifra minera: es de rendimiento."""
-SECTIONS_LARGE_M2 = 1_000_000.0
-"""La huella (m²: 100 ha) por encima de la cual, con datos de líneas (secciones), el resumen avisa (T25, plan 016 §7.3): 100 ha con
-secciones cuestan 6,9 s de TIN. No es una cifra minera: es de rendimiento."""
+SLOW_BODY_S = 8.0
+"""El coste estimado (s) del cálculo de un cuerpo por encima del cual el resumen avisa de lo lento (T44; RNF-016-02): unos 8 s, para que
+avise antes de llegar a los 10 s de la spec. No es una cifra minera: es de rendimiento."""
+TIN_UNIT_S = 0.12e-6
+"""Lo que cuesta rasterizar una unidad de coste de las cajas del TIN (:func:`_row_costs`), en segundos (T44): **0,12 µs**, medido en el
+Python de Blender con las secciones de la T37 (0,115 a 0,127 µs en las 100 ha de 10 secciones a 100 m y de 5 y 8 a 200 m: 4,76, 8,15 y
+10,09 s de ``body_steps``). No es una cifra minera: es de rendimiento."""
+BODY_BASE_S = 1.0
+"""Lo que cuesta, además del TIN, un cuerpo de 100 ha sobre 2,81 M celdas «de Calcular a Crear» (T44): leer y escribir la superficie, el
+dato más próximo y la composición, **1,0 s** (la T37 midió 5,66, 9,09 y 11,27 s frente a los 4,76, 8,15 y 10,09 s del cálculo solo). No es
+una cifra minera: es de rendimiento."""
+
+
+def estimate_seconds(tin_cost: float) -> float:
+    """El coste estimado (s) de calcular un cuerpo cuyo TIN suma ``tin_cost`` unidades de coste (:func:`_row_costs`; 0 si no hay TIN):
+    :data:`BODY_BASE_S` más :data:`TIN_UNIT_S` por unidad (T44; RNF-016-02). Con él, el resumen avisa si pasa de :data:`SLOW_BODY_S`."""
+    return BODY_BASE_S + TIN_UNIT_S * float(tin_cost)
 
 
 # --- La regla del espesor (RF-016-01) ------------------------------------------------------------------------------------
@@ -196,7 +221,8 @@ class ThicknessData:
     y el espesor, m ≥ 0; un punto, un vértice de una línea con su Z o su M, **declarado**: lo lee la orden) y ``polygons`` (por
     polígono, ``(anillos, espesor)``: los anillos ABSOLUTOS, el exterior primero y luego los huecos, y el espesor constante en
     él, m ≥ 0). ``sections`` (T25): los ``points`` son vértices de **líneas** (secciones: la orden los lee de la Z o la M de una capa
-    de líneas 3D), que es lo que hace caro el TIN de una huella grande (:data:`SECTIONS_LARGE_M2`). Copia lo que recibe.
+    de líneas 3D), que es lo que hace caro el TIN cuando están muy separadas (el aviso lo da el coste del TIN, :data:`SLOW_BODY_S`, no el
+    área). Copia lo que recibe.
     ``ValueError`` (errores del programa: la orden rechaza antes un dato así con capa, entidad, campo y valor) si una forma no es la
     de arriba o un valor no es finito o es negativo."""
 
@@ -419,9 +445,10 @@ class BodyOutcome:
     ``tin_cells`` y ``nearest_cells`` (las de ``body`` con el espesor del TIN o del dato más próximo), ``direct_cells`` (T25: las
     del interior de un polígono, con su espesor directo: ``tin_cells + nearest_cells + direct_cells`` son las de ``body``),
     ``tin_points`` (los datos triangulados: las celdas con dato menos las del interior de un polígono) y ``unsupported_cells``
-    (las de la huella sin superficie conocida: sin cuerpo). ``max_distance_m``, ``zero_at_edge`` y ``sense`` son los del cuerpo
-    y ``notices`` los avisos (``des.body_data_outside``, ``des.body_far``, ``des.body_unsupported``, ``des.body_many_data`` y
-    ``des.body_sections_large``)."""
+    (las de la huella sin superficie conocida: sin cuerpo). ``tin_cost`` (T44) es lo que suman las cajas de los triángulos del TIN
+    (:func:`_row_costs`; 0 sin TIN) y ``estimated_s``, lo que se estima que cuesta calcular el cuerpo con él
+    (:func:`estimate_seconds`). ``max_distance_m``, ``zero_at_edge`` y ``sense`` son los del cuerpo y ``notices`` los avisos
+    (``des.body_data_outside``, ``des.body_far``, ``des.body_unsupported``, ``des.body_many_data`` y ``des.body_sections_large``)."""
 
     name: str
     code: str
@@ -455,6 +482,12 @@ class BodyOutcome:
     notices: tuple[Notice, ...] = ()
     direct_cells: int = 0
     tin_points: int = 0
+    tin_cost: float = 0.0
+
+    @property
+    def estimated_s(self) -> float:
+        """El coste estimado (s) de calcular este cuerpo: :func:`estimate_seconds` de su ``tin_cost``."""
+        return estimate_seconds(self.tin_cost)
 
     @property
     def figures(self) -> tuple[FigureSpec, ...]:
@@ -617,16 +650,20 @@ def _raster_bands(cost: np.ndarray) -> list[tuple[int, int]]:
     return bands
 
 
-def _rasterize_units(tin: Tin, shape: tuple[int, int], job: BodyJob) -> Generator[None, None, np.ndarray]:
+def _rasterize_units(tin: Tin, shape: tuple[int, int], job: BodyJob,
+                     spent: list[float] | None = None) -> Generator[None, None, np.ndarray]:
     """El TIN (en unidades de celda) en la rejilla ``(0, 0, 1, 1)`` de la ventana de ``shape``: el espesor interpolado
     linealmente en el centro de cada celda y ``NaN`` donde no llega (``gis.tin.tin_to_raster``), **por bandas de filas** (T24): cada
     una, :func:`_raster_bands`, rasteriza con ``tin_to_raster`` solo los triángulos de su caja, en el orden del TIN, y una unidad
     es una banda. El resultado es el de una pieza **bit a bit**: los centros de celda son enteros y medios exactos con cualquier
     esquina de banda (por eso el TIN va en unidades de celda) y cada celda toma el primer triángulo, en el orden del TIN, que la
-    contiene, esté o no el resto en su banda."""
+    contiene, esté o no el resto en su banda. ``spent`` (T44): si se da, se le añade el coste total del TIN (la suma de
+    :func:`_row_costs`: lo que el resumen estima del cálculo)."""
     nrows, ncols = shape
     out = np.full(shape, np.nan)
     cost, first, last = _row_costs(tin, shape)
+    if spent is not None:
+        spent.append(float(np.sum(cost)))
     yield
     for top, bottom in _raster_bands(cost):
         chosen = np.flatnonzero((first < bottom) & (last >= top))
@@ -640,7 +677,7 @@ def _rasterize_units(tin: Tin, shape: tuple[int, int], job: BodyJob) -> Generato
 
 
 def _tin_units(job: BodyJob, mask: np.ndarray, data: np.ndarray, settings: _Settings, cell: float,
-               painted: np.ndarray | None = None) -> Generator[None, None, np.ndarray]:
+               painted: np.ndarray | None = None, spent: list[float] | None = None) -> Generator[None, None, np.ndarray]:
     """El espesor del TIN lineal de las celdas con dato (``mask``, con su valor en ``data``) en la ventana, ``NaN`` donde no
     llega: sin triángulos (menos de tres datos, alineados o todos con un lado mayor que ``2·max_distance_m``), todo ``NaN``.
 
@@ -648,7 +685,8 @@ def _tin_units(job: BodyJob, mask: np.ndarray, data: np.ndarray, settings: _Sett
     vértices** de polígono y su centroide en una celda de polígono está dentro de él, donde el espesor ya es el directo del polígono:
     **se descarta** (rasterizarlo costaba lo que su caja: el contorno de un polígono de 20 ha triangula su interior en triángulos de
     cajas enormes, 3,4 s); lo que quedaría fuera de los polígonos de uno de ellos (una muesca de un polígono cóncavo) toma el dato más
-    próximo. Los triángulos que unen un polígono con otro dato o con otro polígono, y los de fuera, se rasterizan como siempre."""
+    próximo. Los triángulos que unen un polígono con otro dato o con otro polígono, y los de fuera, se rasterizan como siempre.
+    ``spent`` (T44): el coste del TIN que se rasteriza se le añade (:func:`_rasterize_units`); sin TIN, nada."""
     shape = mask.shape
     nothing = np.full(shape, np.nan)
     rows, cols = np.nonzero(mask)
@@ -671,7 +709,7 @@ def _tin_units(job: BodyJob, mask: np.ndarray, data: np.ndarray, settings: _Sett
     vertices = np.column_stack([xy, data[rows, cols]])
     tin = Tin(vertices, faces, np.empty((0, 2), dtype=np.int32), np.full(len(vertices), 5, dtype=np.uint8),
               triangulator=PureTriangulator.name)
-    values = yield from _rasterize_units(tin, shape, job)
+    values = yield from _rasterize_units(tin, shape, job, spent)
     return values
 
 
@@ -713,7 +751,9 @@ def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, Body
     far = body & (d2 > settings.max_distance_m * settings.max_distance_m)
     if not np.any(body & ~far):
         raise all_far_error(request, settings.max_distance_m)
-    tin_values = yield from _tin_units(job, sources, data, settings, cell, painted)
+    spent: list[float] = []
+    tin_values = yield from _tin_units(job, sources, data, settings, cell, painted, spent)
+    tin_cost = math.fsum(spent)
     del painted
     covered = np.isfinite(tin_values)
     spread = np.where(covered, tin_values, nearest.value)
@@ -749,7 +789,6 @@ def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, Body
     far_m2, far_m3 = far_cells * area, math.fsum(far_parts) * area
     unsupported = int(np.count_nonzero(footprint & ~body))
     tin_points = int(np.count_nonzero(sources))
-    footprint_m2 = int(np.count_nonzero(footprint)) * area
     notices: list[Notice] = []
     if ignored:
         notices.append(Notice(_OUTSIDE, {"entity": request.name, "ignored": ignored}))
@@ -762,9 +801,9 @@ def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, Body
                                              "surface": request.surface}))
     if tin_points > MANY_DATA:
         notices.append(Notice(_MANY_DATA, {"entity": request.name, "data": tin_points, "limit": MANY_DATA}))
-    if job.data.sections and footprint_m2 > SECTIONS_LARGE_M2:
-        notices.append(Notice(_SECTIONS_LARGE, {"entity": request.name, "area": footprint_m2 / 10_000.0,
-                                                "limit": SECTIONS_LARGE_M2 / 10_000.0}))
+    estimated = estimate_seconds(tin_cost)
+    if estimated > SLOW_BODY_S:  # T44: por lo que cuestan las cajas del TIN (la separación de los datos), no por el área
+        notices.append(Notice(_SECTIONS_LARGE, {"entity": request.name, "seconds": round(estimated, 1), "limit": SLOW_BODY_S}))
     return BodyOutcome(
         name=request.name, code=job.code, sense=settings.sense, window=job.window, footprint=footprint.copy(), body=body,
         thickness=thickness, base=base, top=top, surface=surface, far=far,
@@ -775,7 +814,7 @@ def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, Body
         ignored=ignored, data_cells=int(np.count_nonzero(real)), zero_cells=zero_cells, tin_cells=tin_cells,
         nearest_cells=body_cells - tin_cells - direct_cells, unsupported_cells=unsupported, cell_area_m2=area,
         max_distance_m=settings.max_distance_m, zero_at_edge=settings.zero_at_edge, notices=tuple(notices),
-        direct_cells=direct_cells, tin_points=tin_points)
+        direct_cells=direct_cells, tin_points=tin_points, tin_cost=tin_cost)
 
 
 def body_steps(job: BodyJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:

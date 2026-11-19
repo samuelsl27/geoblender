@@ -354,6 +354,26 @@ class BodyOperationTest(BodyCase):
         self.assertGreater(float(notice.values["volume"]), 0.0)
         calculation.discard()
 
+    def test_a_a_slow_estimate_is_warned_in_the_summary_with_the_estimated_cost_and_the_cause_and_can_still_be_created(self) -> None:
+        """RNF-016-02, RF-016-20 (T44): el aviso de lo lento sale por el **coste estimado de las cajas del TIN**, no por el área: con el
+        límite bajado a 0,5 s, el resumen de «Calcular» (que es el del cálculo) lleva el aviso con la estimación (``BODY_BASE_S`` más lo
+        que suman las cajas del TIN) y la separación de los datos como causa, en los dos idiomas, y es un aviso (se puede crear); con el
+        límite de siempre (8 s) la cantera no avisa."""
+        with mock.patch.object(thickness, "SLOW_BODY_S", 0.5):
+            calculation = self.calculate(asked(data_layer=sdata.THICKNESS_POINTS_LAYER))
+        outcome = calculation.outcome
+        self.assertGreater(outcome.tin_cost, 0.0)
+        (notice,) = [item for item in calculation.notices if item.code == "des.body_sections_large"]
+        self.assertEqual((notice.values["seconds"], notice.values["limit"]), (round(outcome.estimated_s, 1), 0.5))
+        self.assertEqual(calculation.summary.notices, outcome.notices)
+        self.assertIn(notice.text("es"), calculation.warnings("es"))
+        self.assertIn("separación de los datos de espesor", notice.text("es"))
+        self.assertIn("separation of its thickness data", notice.text("en"))
+        calculation.discard()
+        quiet = self.calculate(asked(data_layer=sdata.THICKNESS_POINTS_LAYER))
+        self.assertNotIn("des.body_sections_large", [item.code for item in quiet.notices])
+        quiet.discard()
+
     # --- Los rechazos ----------------------------------------------------------------------------------------------------
 
     def test_b_the_refusals_write_nothing_and_name_what_is_wrong(self) -> None:

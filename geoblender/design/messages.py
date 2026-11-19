@@ -2603,7 +2603,8 @@ CATALOG: tuple[Message, ...] = (
         "datos de espesor; no se crea nada.",
     ),
     # T25 (decisiones de la sesión principal, 19/11/2026): las celdas de la huella sin superficie conocida, lo que se
-    # triangula y las secciones de una huella grande, y lo que no se puede leer de la capa de los datos.
+    # triangula y lo lento de un TIN de secciones muy separadas (T44: por su coste estimado, no por el área de la huella), y lo
+    # que no se puede leer de la capa de los datos.
     Message(
         "des.body_unsupported",
         "Supported body «{entity}»: {area} m² of its footprint have no data in the known surface «{surface}», so "
@@ -2622,10 +2623,12 @@ CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "des.body_sections_large",
-        "Supported body «{entity}»: its footprint is {area} ha with thickness sections (more than {limit} ha); "
-        "triangulating the sections takes several seconds; it can still be created.",
-        "Cuerpo apoyado «{entity}»: su huella es de {area} ha con secciones de espesor (más de {limit} ha); "
-        "triangular las secciones tarda varios segundos; se puede crear igualmente.",
+        "Supported body «{entity}»: calculating its thickness takes about {seconds} s (estimated; more than {limit} s) "
+        "because of the separation of its thickness data: the sections are far apart and the triangles between them are "
+        "long and costly to calculate; bring the sections closer or split the footprint; it can still be created.",
+        "Cuerpo apoyado «{entity}»: calcular su espesor tarda unos {seconds} s estimados (más de {limit} s) por la "
+        "separación de los datos de espesor: las secciones están muy separadas y los triángulos entre ellas son largos y "
+        "caros de calcular; acerque las secciones o divida la huella; se puede crear igualmente.",
         "warning",
     ),
     Message(

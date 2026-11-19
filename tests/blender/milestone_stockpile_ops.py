@@ -22,6 +22,10 @@ plataforma «en corte» (``Terreno de V01``) cuya superficie es de la versión. 
   seleccionada no se toma, no se inserta junto a ella, se trae a otra versión «sin calcular» y se descarta.
 - RF-015-10, RF-015-29, D-1 (f): el contrafuerte que protege, en una versión **sin plataforma**, creado sin que corra lo que sigue (un Esc entre
   crear y declarar): el gancho de la declaración lo ve pendiente, las máscaras no están al día y lo que sigue lo recupera; su vista previa por entidad.
+- RNF-016-03, RNF-016-05, RF-016-02 (g, h, i; T44): **«Crear» la detección corre por pasos** (``create_steps``: cada llamada del hilo de Blender, un paso
+  del modal; la transacción final, la última) con **el mismo resultado, bit a bit**, que de una vez; **nada se escribe en el proyecto antes del último
+  paso**; **Esc entre pasos no deja nada a medias** (ni operación, ni dato, ni temporal) y descarta el cálculo; y, en una versión, lo que sigue a crearla
+  corre en el mismo modal, y un Esc ahí deja la detección creada y lo dice.
 
 Se ejecuta con ``tools/run_blender_tests.py`` (es un hito: ``check.py --completo``).
 """
@@ -51,6 +55,10 @@ PROJECT_NAME, VERSION_NAME = "Acopios del proyecto", "Acopios de V01"
 REASON = "Es un acopio de mineral que no estaba marcado"
 MAX_TICKS = 600
 TIMER = ce.TIMER
+CREATED_PROJECT_TEXT = "Detección de acopios «{name}» creada en el proyecto"
+CREATION_CANCELLED_TEXT = "Creación cancelada: la detección no se ha creado y el cálculo se ha descartado; no queda nada a medias"
+CHAIN_CANCELLED_TEXT = ("Cancelado: la detección está creada; las restricciones declaradas y las máscaras se ponen al día antes de la siguiente "
+                        "operación que las use, y la capa de entidades con la siguiente orden de entidades o «Recalcular lo obsoleto»")
 
 
 class Rows:
@@ -478,6 +486,161 @@ class StockpileOpsTest(platform_ops.CreatePlatformTest):
         self.assertEqual(self.rows("SELECT count(*) FROM gb_operation WHERE op_type = 'des.declare_constraints' AND status = 'done' "
                                    "AND superseded_by IS NULL AND uid IN (SELECT o.uid FROM gb_operation AS o JOIN gb_revision AS r "
                                    "ON r.uid = o.revision_uid WHERE r.version_uid = ?)", self.v02.uid), [(1,)])
+
+    # --- (g, h, i) «Crear» por pasos (T44) ---------------------------------------------------
+
+    def calculate_detection(self, name: str, **values: Any) -> Any:
+        """«Calcular» una detección sin candidatos (desde un guion: de una vez) y su cálculo abierto."""
+        form = self.form(name=name, candidates=False, **values)
+        self.assertEqual(bpy.ops.geoblender.des_detect_stockpiles("EXEC_DEFAULT", **form), {"FINISHED"})
+        held = self.des_ops.calculation()
+        self.assertIsNotNone(held)
+        return held
+
+    def start_creating(self) -> Any:
+        """«Crear» el cálculo abierto desde la interfaz (``confirm`` con la ventana): empieza el modal de pasos, con un paso por evento."""
+        with mock.patch.object(self.des_ops, "_ask_confirmation"):
+            self.assertEqual(bpy.ops.geoblender.des_detect_stockpiles("EXEC_DEFAULT", confirm=True, in_steps=True), {"RUNNING_MODAL"})
+        modal = self.running()
+        modal.STEP_BUDGET_S = step_modals.ONE_STEP_S
+        self.addCleanup(lambda: modal._steps is None or modal.cancel(bpy.context))
+        return modal
+
+    def code_of(self, name: str, version: Any) -> str:
+        """El código de la detección ``name`` de la versión ``version`` (``None``: del proyecto)."""
+        registry = (self.entities.project_registry(self.project) if version is None else self.entities.registry(self.project, version.uid))
+        (found,) = [entry.record.code for entry in registry if entry.record.name == name]
+        return found
+
+    def outputs(self, name: str, version: Any) -> list[tuple[str, str]]:
+        """Lo que escribió la operación vigente de la detección ``name``: ``(papel, hash del contenido)`` de cada salida, en su orden."""
+        uid = self.detection_row(self.code_of(name, version), version).operation_uid
+        return [(role, sha) for role, sha in self.rows(
+            "SELECT io.role, d.content_sha256 FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+            "WHERE io.operation_uid = ? AND io.direction = 'out' AND io.item_kind = 'dataset' ORDER BY io.fid", uid)]
+
+    def figures_of(self, name: str, version: Any) -> list[float]:
+        """Las cifras de la operación vigente de la detección ``name``, ordenadas."""
+        uid = self.detection_row(self.code_of(name, version), version).operation_uid
+        return sorted(value for (value,) in self.rows("SELECT value FROM gb_figure WHERE operation_uid = ?", uid))
+
+    def test_g_creating_runs_by_steps_with_the_result_of_creating_at_once_and_writes_nothing_before_the_last_step(self) -> None:
+        """RNF-016-03, RF-016-02, RF-015-02, RF-015-29 (T44): «Crear» la detección **del proyecto** desde la interfaz (``confirm`` con
+        ventana) ya no es una sola llamada: la orden empieza el modal de pasos de ``Calculation.create_steps`` (**más de 10 eventos** con un
+        paso por evento, cada uno **≤ 0,2 s** de CPU) y **no escribe nada en el proyecto antes del último** (solo ficheros temporales); el último
+        registra la detección (una transacción), el informe lo dice y el cálculo deja de estar abierto. **El resultado es el de crear de una vez
+        desde un guion** (``in_steps=False``): los mismos papeles y hashes de contenido de cada salida, las mismas cifras y las mismas filas de
+        la tabla de acopios (salvo el código de la entidad)."""
+        self.addCleanup(bpy.ops.geoblender.core_set_active_version, version_uid=self.v01.uid)
+        self.set_version("")
+        self.calculate_detection("Acopios de una vez")
+        self.assertEqual(bpy.ops.geoblender.des_detect_stockpiles("EXEC_DEFAULT", confirm=True, in_steps=False), {"FINISHED"})
+        self.assertIsNone(self.des_ops.calculation())
+
+        self.calculate_detection("Acopios por pasos")
+        before = self.state()
+        modal = self.start_creating()
+        self.assertTrue(self.des_ops.calculation().open, "mientras crea, el cálculo sigue abierto")
+        events, longest = 0, 0.0
+        for events in range(1, step_modals.MAX_EVENTS):
+            started = time.process_time()
+            state = modal.modal(bpy.context, TIMER)
+            longest = max(longest, time.process_time() - started)
+            if state != {"RUNNING_MODAL"}:
+                break
+            self.assertEqual(self.state()[:4], before[:4], f"el evento {events} escribió en el proyecto antes del último paso")
+        self.assertEqual(state, {"FINISHED"})
+        self.assertGreater(events, 10, "por pasos: más de 10 eventos")
+        self.assertLessEqual(longest, 0.2, f"la llamada más larga, {longest:.3f} s de CPU, de {events}")
+        self.assertIn(CREATED_PROJECT_TEXT.format(name="Acopios por pasos"), list(modal.report_log))
+        self.assertIsNone(self.des_ops.calculation())
+        self.assertIsNone(modal._steps)
+        self.assertEqual(self.panels.view().summary_title, "", "el resumen se vacía al crearla")
+        self.assertEqual(self.detection_row(self.code_of("Acopios por pasos", None), None).record.state.value, "current")
+        self.assertEqual([name for name in self.names() if ".tmp" in name], [], "ningún temporal")
+
+        once, steps = self.outputs("Acopios de una vez", None), self.outputs("Acopios por pasos", None)
+        self.assertEqual([role for role, _sha in steps], [role for role, _sha in once])
+        self.assertGreaterEqual(len(steps), 6, "la tabla de acopios, la de candidatos, las cuatro rejillas dispersas y el informe")
+        rasters = {"stockpile_base", "stockpile_thickness", "stockpile_ground", "stockpile_surface"}
+        self.assertEqual({role for role, _sha in steps} & rasters, rasters)
+        self.assertEqual([item for item in steps if item[0] in rasters], [item for item in once if item[0] in rasters],
+                         "las rejillas dispersas, con los mismos hashes de contenido: bit a bit")
+        self.assertEqual(self.figures_of("Acopios por pasos", None), self.figures_of("Acopios de una vez", None))
+        for family in ("stk", "stc", "prp"):  # las tablas llevan el código de su entidad: lo demás, igual
+            got = [{key: value for key, value in row.items() if key != "code"} for row in self.stored(family, "Acopios por pasos", None)]
+            wanted = [{key: value for key, value in row.items() if key != "code"} for row in self.stored(family, "Acopios de una vez", None)]
+            self.assertEqual(got, wanted, family)
+        self.assertEqual([row["key"] for row in self.stored("stk", "Acopios por pasos", None)], ["Acopio 1", "Acopio 2"])
+
+    def test_h_esc_between_the_steps_of_creating_leaves_nothing_half_done_and_discards_the_calculation(self) -> None:
+        """RNF-016-05, RF-015-29, RF-016-02 (T44): Esc **entre los pasos de «Crear»** —cuando ya hay ficheros temporales— responde en ≤ 2 s, deja
+        el proyecto **como estaba** (ni operación, ni dato, ni parámetro, ni cifra, ni temporal), descarta el cálculo (el resumen se vacía y se
+        dice: hay que volver a calcular) y se puede calcular y crear de nuevo."""
+        self.addCleanup(bpy.ops.geoblender.core_set_active_version, version_uid=self.v01.uid)
+        self.set_version("")
+        self.calculate_detection("Acopios cancelados")
+        before = self.state()
+        modal = self.start_creating()
+        for _ in range(step_modals.MAX_EVENTS):
+            self.assertEqual(modal.modal(bpy.context, TIMER), {"RUNNING_MODAL"}, "acabó antes de Esc")
+            if any(".tmp" in name for name in self.names()):
+                break
+        else:
+            self.fail("«Crear» no llegó a escribir un temporal")
+        self.assertEqual(self.state()[:4], before[:4])
+        stopped = time.perf_counter()
+        self.assertEqual(modal.modal(bpy.context, platform_ops.ESCAPE), {"CANCELLED"})
+        self.assertLessEqual(time.perf_counter() - stopped, 2.0, "Esc responde en ≤ 2 s (RNF-016-05)")
+        self.assertIn(CREATION_CANCELLED_TEXT, list(modal.report_log))
+        self.assertIsNone(modal._steps)
+        self.assertIsNone(self.des_ops.calculation(), "el cálculo está descartado")
+        self.assertEqual(self.panels.view().summary_title, "", "y su resumen, vaciado")
+        self.assertEqual(self.state(), before, "Esc no deja nada: ni operación, ni dato, ni temporal")
+        self.assertFalse(self.entity.enabled())
+        self.calculate_detection("Acopios cancelados")
+        self.assertEqual(bpy.ops.geoblender.des_detect_stockpiles("EXEC_DEFAULT", confirm=True, in_steps=False), {"FINISHED"})
+        self.assertEqual(self.detection_row(self.code_of("Acopios cancelados", None), None).record.state.value, "current")
+
+    def test_i_in_a_version_what_follows_creating_runs_in_the_same_modal_and_an_esc_there_keeps_the_detection(self) -> None:
+        """RNF-016-03, RNF-016-05, RF-015-10, RF-015-29 (T44): la detección **de una versión** creada por pasos encadena lo que sigue (la
+        declaración, las máscaras y la capa de entidades) **en el mismo modal**: sus fases son primero las de guardar y después las de
+        ponerla al día, y al acabar la capa tiene una fila por acopio. Un Esc **ya creada** —en lo que sigue— deja la detección creada, dice
+        que lo está y la capa sin sus filas hasta que lo que sigue se hace de nuevo."""
+        self.addCleanup(bpy.ops.geoblender.core_set_active_version, version_uid=self.v01.uid)
+        self.set_version(self.v01.uid)
+        self.calculate_detection("Acopios por pasos en V01", surface=self.surface_v01)
+        self.assertEqual(self.des_ops.calculation().op_type, "des.stockpile_detect")
+        modal = self.start_creating()
+        state, events = step_modals.drive(modal, bpy.context)
+        self.assertEqual(state, {"FINISHED"})
+        self.assertGreater(events, 10)
+        phases = [phase for _clock, phase, _done, _total, _message in modal.progress_log]
+        saved = [index for index, phase in enumerate(phases) if phase == "stockpile_store"]
+        self.assertTrue(saved and saved[-1] < len(phases) - 1, "primero guardar y después lo que sigue")
+        self.assertEqual([row[0] for row in self.rows("SELECT op_type FROM gb_operation ORDER BY fid")][-1], "des.entity_layer")
+        code = self.code_of("Acopios por pasos en V01", self.v01)
+        layer = [row[0] for row in self.rows("SELECT code FROM des_enl_v01 ORDER BY code") if row[0].startswith(f"{code}#")]
+        self.assertEqual(layer, [f"{code}#Acopio 1", f"{code}#Acopio 2"], "la capa de entidades, una fila por acopio")
+
+        self.calculate_detection("Acopios cortados en V01", surface=self.surface_v01)
+        done = self.rows("SELECT count(*) FROM gb_operation WHERE op_type = 'des.stockpile_detect' AND status = 'done'")[0][0]
+        modal = self.start_creating()
+        for _ in range(step_modals.MAX_EVENTS):
+            self.assertEqual(modal.modal(bpy.context, TIMER), {"RUNNING_MODAL"}, "acabó antes de Esc")
+            if self.rows("SELECT count(*) FROM gb_operation WHERE op_type = 'des.stockpile_detect' AND status = 'done'")[0][0] > done:
+                break
+        else:
+            self.fail("«Crear» no llegó a registrar la detección")
+        code = self.code_of("Acopios cortados en V01", self.v01)
+        self.assertEqual(modal.modal(bpy.context, platform_ops.ESCAPE), {"CANCELLED"})
+        self.assertIn(CHAIN_CANCELLED_TEXT, list(modal.report_log))
+        self.assertEqual(self.detection_row(code, self.v01).record.state.value, "current", "la detección está creada")
+        self.assertNotIn(f"{code}#Acopio 1", [row[0] for row in self.rows("SELECT code FROM des_enl_v01")], "y la capa aún no tiene sus filas")
+        self.assertIsNone(self.des_ops.calculation())
+        for _step in self.entity_store.after_entity_change(self.project, self.v01.uid):
+            pass
+        self.assertIn(f"{code}#Acopio 1", [row[0] for row in self.rows("SELECT code FROM des_enl_v01")], "lo que sigue la recupera")
 
 
 for _name in dir(platform_ops.CreatePlatformTest):  # sus pruebas son suyas: aquí solo los ayudantes

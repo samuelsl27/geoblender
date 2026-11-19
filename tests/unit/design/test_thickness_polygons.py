@@ -11,12 +11,11 @@ directamente** y **solo las de su contorno entran en el TIN** y en el dato más 
   dado como un punto por celda, que se triangula entero) a ≤ 10⁻⁹ m; el dato más próximo de fuera, el mismo; lo lejano ignora el
   interior (son celdas con dato) y se triangulan menos datos.
 - :class:`NoticesTest`: los avisos nuevos del cálculo: las celdas de la huella sin superficie conocida, más de ``MANY_DATA`` datos
-  triangulados y una huella de más de ``SECTIONS_LARGE_M2`` con secciones.
+  triangulados (el aviso de lo lento por el coste del TIN, de la T44, está en ``test_thickness_estimate.py``).
 """
 
 from __future__ import annotations
 
-import dataclasses
 import itertools
 import unittest
 from typing import Any
@@ -32,7 +31,6 @@ thickness = import_geoblender("design.thickness")
 EXACT = tt.EXACT
 UNSUPPORTED = "des.body_unsupported"
 MANY_DATA = "des.body_many_data"
-SECTIONS_LARGE = "des.body_sections_large"
 
 
 def hand_interior(data: np.ndarray, painted: np.ndarray) -> set[tuple[int, int]]:
@@ -204,27 +202,6 @@ class NoticesTest(unittest.TestCase):
         self.assertEqual(many.tin_points, 25)
         self.assertNotIn(MANY_DATA, [item.code for item in few.notices])
         self.assertEqual(thickness.MANY_DATA, 40_000)
-
-    def test_a_large_footprint_with_sections_is_warned_and_one_with_points_is_not(self) -> None:
-        """RNF-016-02, plan 016 §7.3 (100 ha con secciones: 6,9 s): una huella de más de ``SECTIONS_LARGE_M2`` con datos de
-        **líneas** (``ThicknessData.sections``) avisa con su área en hectáreas; la misma con puntos sueltos, o una menor con
-        secciones, no. Con el límite bajado a 1.000 m²: la huella de 18 × 18 celdas de 4 m² son 1.296 m²."""
-        cells = {(5, 5): 1.0, (8, 15): 2.0, (14, 7): 3.0, (17, 17): 2.0}
-        plain = tt.job_of(self.FOOT, points=tt.points_of(cells))
-        lines = dataclasses.replace(plain, data=thickness.ThicknessData(plain.data.points, (), sections=True))
-        with mock.patch.object(thickness, "SECTIONS_LARGE_M2", 1_000.0):
-            with_sections = tt.run(lines)
-            with_points = tt.run(plain)
-        (notice,) = [item for item in with_sections.notices if item.code == SECTIONS_LARGE]
-        self.assertEqual(notice.values["area"], 1296.0 / 10_000.0)
-        self.assertEqual(notice.values["limit"], 1_000.0 / 10_000.0)
-        self.assertNotIn(SECTIONS_LARGE, [item.code for item in with_points.notices])
-        with mock.patch.object(thickness, "SECTIONS_LARGE_M2", 2_000.0):
-            self.assertNotIn(SECTIONS_LARGE, [item.code for item in tt.run(lines).notices])
-        self.assertEqual(thickness.SECTIONS_LARGE_M2, 1_000_000.0)
-        for notice in (item for item in with_sections.notices if item.code == SECTIONS_LARGE):
-            self.assertNotIn("{", notice.text())
-            self.assertNotIn("{", notice.text("en"))
 
 
 if __name__ == "__main__":

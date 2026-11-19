@@ -11,6 +11,8 @@ llamada** del hilo de Blender, con el presupuesto de 0,05 s de la interfaz, dura
 - :class:`LargeWindowTest`: 100 ha con 7.500 datos en 10 secciones diagonales, con 10.000 datos sueltos y 20 ha con secciones:
   ninguna llamada de ``body_steps`` pasa de 0,2 s y el cálculo entero cabe en los 10 s de RNF-016-02.
 - :class:`LargeRasterTest`: el espesor por bandas de 49 ha de secciones es el de una pieza, bit a bit.
+- :class:`SlowNoticeTest` (T44; RNF-016-02): el aviso del resumen sale por el **coste estimado de las cajas del TIN**, no por el área: las
+  mismas 100 ha con 10 secciones a 100 m no avisan y con 5 o con 8 a 200 m, sí (con la causa y el coste estimado).
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ from tests.support.package import import_geoblender
 from tests.unit.design import test_thickness_steps as steps
 
 thickness = import_geoblender("design.thickness")
+
+SLOW = "des.body_sections_large"
 
 LIMIT_S = steps.LIMIT_S
 """RNF-016-03: ninguna llamada del hilo de Blender dura más."""
@@ -75,11 +79,44 @@ class LargeWindowTest(unittest.TestCase):
         """100 ha con 10 secciones diagonales de 7.500 datos (plan §7.3: 0,45 + 6,9 s con 7.985 datos)."""
         data = steps.sections(1000, 10, 100)
         self.assertEqual(len(data), 7500)
-        self.check("100 ha de secciones", 1000, data)
+        outcome = self.check("100 ha de secciones", 1000, data)
+        self.assertNotIn(SLOW, [item.code for item in outcome.notices], "10 secciones a 100 m: 5,7 s estimados, por debajo del límite")
 
     def test_100_ha_of_loose_data(self) -> None:
         """100 ha con 10.000 datos sueltos (plan §7.3: 0,15 + 0,39 s)."""
         self.check("100 ha de datos sueltos", 1000, steps.loose((1000, 1000), 10_000, 3))
+
+
+class SlowNoticeTest(unittest.TestCase):
+    """RNF-016-02 (T44): el aviso de lo lento sale por el coste estimado del TIN y no por el área (las 100 ha son las mismas)."""
+
+    def check(self, name: str, count: int, spacing: int, data: int) -> Any:
+        xy = steps.sections(1000, count, spacing)
+        self.assertEqual(len(xy), data)
+        outcome, laps, total = timed(1000, xy)
+        message = f"{name}: {len(xy)} datos, total {total:.2f} s, la mayor llamada {max(laps) * 1000:.0f} ms"
+        self.assertLessEqual(max(laps), LIMIT_S, message)
+        self.assertGreater(outcome.tin_cost, 0.0, message)
+        self.assertAlmostEqual(outcome.estimated_s, thickness.estimate_seconds(outcome.tin_cost), places=12)
+        return outcome
+
+    def test_100_ha_of_5_sections_at_200_m_is_warned_with_the_cause_and_the_estimated_cost(self) -> None:
+        """5 secciones a 200 m (3.700 datos; T37: 9,09 s de «Calcular» a «Crear», más de lo que el aviso deja pasar) avisan con el coste
+        estimado (entre 8 y 10 s) y la separación de las secciones como causa, en los dos idiomas."""
+        outcome = self.check("5 secciones a 200 m", 5, 200, 3700)
+        (notice,) = [item for item in outcome.notices if item.code == SLOW]
+        self.assertGreater(outcome.estimated_s, thickness.SLOW_BODY_S)
+        self.assertLess(outcome.estimated_s, 10.0)
+        self.assertEqual((notice.values["seconds"], notice.values["limit"]), (round(outcome.estimated_s, 1), thickness.SLOW_BODY_S))
+        self.assertIn("separación", notice.text("es"))
+        self.assertIn(f"{round(outcome.estimated_s, 1):.1f}".replace(".", ","), notice.text("es"))
+        self.assertIn("separation", notice.text("en"))
+
+    def test_100_ha_of_8_sections_at_200_m_is_warned_over_the_ten_seconds(self) -> None:
+        """8 secciones a 200 m (4.600 datos; T37: 11,27 s, más de los 10 s de RNF-016-02) avisan con un coste estimado de más de 10 s."""
+        outcome = self.check("8 secciones a 200 m", 8, 200, 4600)
+        self.assertIn(SLOW, [item.code for item in outcome.notices])
+        self.assertGreater(outcome.estimated_s, 10.0)
 
 
 class LargeRasterTest(unittest.TestCase):

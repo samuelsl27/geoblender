@@ -328,6 +328,117 @@ class StockpileMenuTest(unittest.TestCase):
                          + ["EXEC_DEFAULT"] + ["INVOKE_DEFAULT"], "«Ir a» no abre nada y no deja su contexto a los botones que siguen")
         self.assertEqual(operators[-1].properties.source, "uid-base")
 
+    # --- (h) «Crear» por pasos --------------------------------------------------------------
+
+    def test_h_creating_the_detection_runs_by_steps_from_the_interface_and_stopping_it_leaves_nothing(self) -> None:
+        """RNF-016-03, RNF-016-05, RF-016-02, RF-015-29 (T44; con el proyecto y los pasos de verdad: ``milestone_stockpile_ops.py`` y
+        ``perf_stockpiles.py``): «Crear» la detección desde la interfaz (``in_steps`` con ventana) **empieza el modal de pasos** de
+        ``Calculation.create_steps`` con el presupuesto de la interfaz y devuelve ``RUNNING_MODAL``; desde un guion (sin ventana), de una vez,
+        como las demás. Sus pasos son los de crear y, al llegar lo guardado, lo registran (informe y vista previa quitada): **la del proyecto
+        acaba ahí** y la de una versión sigue en el mismo modal con lo que encadena. Esc o un fallo al crearla descartan el cálculo y vacían su
+        resumen; con el proyecto cerrado, se para con sus palabras; y los textos de crear, en los dos idiomas."""
+        cls = self.registered(DETECT)
+        progress = _module("core.project.model").Progress
+        store, entity_store = _module("design.stockpile_store"), _module("design.entity_store")
+        provenance = _module("design.provenance")
+
+        class Prepared:  # lo que ``create_steps`` exige de la entidad del cálculo
+            pass
+
+        stored = SimpleNamespace(name="guardado")
+
+        def made(op_type: str) -> Any:
+            def create_steps(budget_s: float) -> Any:
+                yield progress("stockpile_store", 0, 2, "tablas")
+                yield progress("stockpile_store", 1, 2, "registrando")
+                yield progress("created", 2, 2, "guardada", result=stored)
+
+            return SimpleNamespace(entity=Prepared(), name="Mis acopios", version="V01", op_type=op_type, create=mock.Mock(),
+                                   create_steps=mock.Mock(side_effect=create_steps))
+
+        started: list[Any] = []
+        log: list[str] = []
+        project = object()
+
+        def operator(**values: Any) -> Any:
+            return operator_self(cls, **{"in_steps": True, "report": lambda kind, text: log.append(text), "report_log": [],
+                                         "_start": lambda context, steps: started.append(steps), **values})
+
+        window = SimpleNamespace(window=object())
+        with mock.patch.object(store, "PreparedDetection", Prepared), mock.patch.object(self.des_ops, "SESSION", SimpleNamespace(project=project)), \
+                mock.patch.object(self.des_ops, "_entity_preview_off") as preview_off, \
+                mock.patch.object(cls, "_registered") as registered:
+            for scope, op_type in (("proyecto", provenance.STOCKPILE_DETECT_PROJECT), ("versión", provenance.STOCKPILE_DETECT)):
+                started.clear()
+                registered.reset_mock()
+                preview_off.reset_mock()
+                calc = made(op_type)
+                chain = [progress("chain", 0, 1, "declarar"), progress("chain", 1, 1, "capa", result="encadenado")]
+                fake = operator()
+                with mock.patch.object(self.des_ops, "calculation", return_value=calc), \
+                        mock.patch.object(entity_store, "after_entity_change", return_value=iter(chain)) as follows:
+                    self.assertEqual(cls._create(fake, window), {"RUNNING_MODAL"}, scope)
+                    self.assertEqual((fake._creating, fake._project, fake._name), (True, project, "Mis acopios"))
+                    calc.create.assert_not_called()
+                    registered.assert_not_called()  # nada se registra hasta que los pasos lo hacen
+                    (steps,) = started
+                    shown = list(steps)
+                calc.create_steps.assert_called_once_with(budget_s=cls.STEP_BUDGET_S)
+                registered.assert_called_once_with(calc)
+                preview_off.assert_called_once_with()
+                if op_type == provenance.STOCKPILE_DETECT_PROJECT:
+                    self.assertEqual([step.phase for step in shown], ["stockpile_store", "stockpile_store", "created"], scope)
+                    self.assertIs(shown[-1].result, stored, "la del proyecto acaba con el paso que lleva lo guardado")
+                    follows.assert_not_called()
+                    self.assertTrue(fake._creating)
+                    self.assertEqual(cls._finished(fake, window, stored), {"FINISHED"})
+                    self.assertFalse(fake._creating)
+                else:
+                    self.assertEqual([step.phase for step in shown], ["stockpile_store", "stockpile_store", "chain", "chain"], scope)
+                    self.assertEqual(shown[-1].result, "encadenado")
+                    follows.assert_called_once_with(project, "V01", budget_s=cls.STEP_BUDGET_S)
+                    self.assertEqual((fake._creating, fake._chain), (False, True), "lo que sigue, en el mismo modal")
+
+            calc = made(provenance.STOCKPILE_DETECT_PROJECT)  # desde un guion o sin ventana: de una vez, como las demás
+            started.clear()
+            with mock.patch.object(self.des_ops, "calculation", return_value=calc):
+                for context, in_steps in ((SimpleNamespace(window=None), True), (window, False)):
+                    self.assertEqual(cls._create(operator(in_steps=in_steps), context), {"FINISHED"})
+            self.assertEqual((started, calc.create.call_count, calc.create_steps.call_count), ([], 2, 0))
+
+            fake = operator(_creating=True, _project=project, _name="Mis acopios")  # Esc o un fallo al crearla
+            with mock.patch.object(self.des_ops, "discard_calculation") as discard, \
+                    mock.patch.object(self.panels, "show_summary") as show:
+                cls._after_stop(fake, window)
+                discard.assert_called_once_with()
+                show.assert_called_once_with(None)
+                self.assertFalse(fake._creating)
+                cls._after_stop(fake, window)  # tras cancelar lo que sigue a crearla, nada: la detección está creada
+                discard.assert_called_once_with()
+            closed = operator(_creating=True, _project=project, _name="Mis acopios", _fail=mock.Mock(return_value={"CANCELLED"}))
+            with mock.patch.object(self.des_ops.project_session, "current", return_value=None):
+                self.assertEqual(cls._result(closed, window, progress("stockpile_store", 1, 2, "x")), {"CANCELLED"})
+            self.assertEqual(closed._fail.call_args.args[1], "Se cerró el proyecto mientras se guardaba la detección «Mis acopios»: no queda nada a medias")
+
+        step = progress("stockpile_store", 1, 2, "x")
+        texts = {"es": ("Guardando la detección… 50 % · Esc: cancelar", "Poniendo al día las restricciones declaradas y las máscaras… 50 % · Esc: cancelar",
+                        "Detectando los acopios… 50 % · Esc: cancelar",
+                        "Creación cancelada: la detección no se ha creado y el cálculo se ha descartado; no queda nada a medias"),
+                 "en": ("Saving the detection… 50 % · Esc: cancel", "Updating the declared constraints and the masks… 50 % · Esc: cancel",
+                        "Detecting the stockpiles… 50 % · Esc: cancel",
+                        "Creation cancelled: the detection has not been created and the calculation has been discarded; nothing has been left "
+                        "half-done")}
+        try:
+            for language, (saving, chained, detecting, cancelled) in texts.items():
+                self.i18n.set_language(language)
+                with self.subTest(idioma=language):
+                    self.assertEqual(cls._status_text(operator(_creating=True, _chain=False), step), saving)
+                    self.assertEqual(cls._status_text(operator(_creating=False, _chain=True), step), chained)
+                    self.assertEqual(cls._status_text(operator(_creating=False, _chain=False), step), detecting)
+                    self.assertEqual(cls._cancelled_text(operator(_creating=True, _chain=False)), cancelled)
+        finally:
+            self.i18n.set_language("es")
+
     def test_z_disabling_geoblender_removes_the_orders(self) -> None:
         """Principio 8: desactivar Geoblender quita las tres órdenes nuevas (y deja el registro de la 013 como estaba)."""
         for idname in NEW:

@@ -2401,12 +2401,18 @@ class _CalculateAndCreate:
             discard_calculation()
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
+        self._registered(opened)
+        return {"FINISHED"}
+
+    def _registered(self, opened: Calculation) -> None:
+        """Lo que hace la orden en cuanto el cálculo ``opened`` está **registrado** (T44: lo comparten crear de una vez y crear por
+        pasos): lo anota para Ctrl+Z (que no lo deshace), pone al día los indicadores de la procedencia, vacía el resumen y lo dice en
+        el informe."""
         undo_watch.record(UndoKind.OPERATION, opened.op_type)  # Ctrl+Z no lo deshace
         if ui_provenance.refresh(force=True):
             ui_provenance.redraw()
         des_panels.show_summary(None)
-        self.report({"INFO"}, self._created_text(opened))
-        return {"FINISHED"}
+        self._report({"INFO"}, self._created_text(opened))
 
     # --- En pasos (_StepsModal) ---------------------------------------------------------------
 
@@ -7193,11 +7199,23 @@ class GEOBLENDER_OT_des_detect_stockpiles(_ClearsEntityPreview, _CalculateAndCre
         return {"FINISHED"}
 
     def _create(self, context: Any) -> set[str]:
-        """«Crear» (RF-016-02, RF-015-02): como las demás (:meth:`_CalculateAndCreate._create`: una transacción) y, **ya creada**, quita la
-        vista previa de las marcas (RF-016-23: la detección ya existe, ya no se prepara) y, si es **de una versión**, encadena lo que sigue
-        (:meth:`_update_declared`: la capa de entidades de la versión, y la declaración y las máscaras como en toda orden de entidades). La
-        del proyecto no sale en ninguna capa de versión ni declara nada (D-15, D-1): no encadena nada."""
+        """«Crear» (RF-016-02, RF-015-02): **desde la interfaz, por pasos** (T44; RNF-016-03: escribir las cuatro rejillas dispersas de 2,81
+        M celdas de una vez era una sola llamada de ≈ 1 s del hilo de Blender): el modal de pasos de ``Calculation.create_steps`` —cada
+        evento, una llamada de ≤ 0,2 s— con la transacción final como último paso (:meth:`_creation_steps`); Esc entre pasos no deja nada a
+        medias (RNF-016-05). Desde un guion (sin ventana), de una vez, como las demás (:meth:`_CalculateAndCreate._create`: una transacción);
+        el resultado es el mismo, bit a bit. **Ya creada**, quita la vista previa de las marcas (RF-016-23: la detección ya existe, ya no se
+        prepara) y, si es **de una versión**, encadena lo que sigue (:meth:`_update_declared`: la capa de entidades de la versión, y la
+        declaración y las máscaras como en toda orden de entidades). La del proyecto no sale en ninguna capa de versión ni declara nada (D-15,
+        D-1): no encadena nada."""
+        from ...design import stockpile_store  # al usarlo: habilitar no carga el cálculo
+
         opened = calculation()
+        if (opened is not None and self.in_steps and getattr(context, "window", None) is not None
+                and isinstance(opened.entity, stockpile_store.PreparedDetection)):
+            project = SESSION.project
+            self._project, self._name, self._creating = project, opened.name, True
+            self._start(context, self._creation_steps(project, opened))
+            return {"RUNNING_MODAL"}
         created = _CalculateAndCreate._create(self, context)
         if opened is None or "FINISHED" not in created:
             return created
@@ -7205,6 +7223,37 @@ class GEOBLENDER_OT_des_detect_stockpiles(_ClearsEntityPreview, _CalculateAndCre
         if opened.op_type != provenance.STOCKPILE_DETECT:
             return created
         return self._update_declared(context, opened)
+
+    _creating = False
+    """Si los pasos que corren son los de crear la detección (y no los de calcularla ni los de lo que sigue a crearla)."""
+
+    def _creation_steps(self, project: Any, opened: Calculation) -> Iterator[Progress]:
+        """Los pasos de «Crear» la detección ``opened`` en el modal (T44; RNF-016-03, RNF-016-05): los de ``Calculation.create_steps``
+        (cada tabla y cada rejilla dispersa, montada y escrita en su temporal por pasos; la transacción final, el último) y, en cuanto lo
+        guardado llega, **lo que sigue a crearla en el mismo modal**: lo registrado (:meth:`_CalculateAndCreate._registered`), la vista
+        previa quitada y, si la detección es **de una versión**, los pasos de ``entity_store.after_entity_change`` (:meth:`_update_declared`,
+        pero sin otro modal). La del proyecto acaba con el paso que lleva lo guardado. Cerrar los pasos antes (Esc) o un fallo no dejan nada:
+        ``create_steps`` descarta el cálculo y borra sus temporales."""
+        from ...design import entity_store  # al usarlo: habilitar no carga el cálculo
+
+        created = None
+        creating = opened.create_steps(budget_s=self.STEP_BUDGET_S)
+        try:
+            for step in creating:
+                if step.result is not None:
+                    created = step
+                    break
+                yield step
+        finally:
+            creating.close()
+        assert created is not None  # los pasos acaban siempre con lo guardado
+        self._registered(opened)
+        _entity_preview_off()
+        if opened.op_type != provenance.STOCKPILE_DETECT:
+            yield created  # la del proyecto no encadena nada (D-15, D-1): lleva lo guardado
+            return
+        self._creating, self._chain = False, True
+        yield from entity_store.after_entity_change(project, opened.version, budget_s=self.STEP_BUDGET_S)
 
     # --- Lo que sigue a crearla (RF-015-10, RF-015-27; plan 016 §5.3.2) -------------------------
 
@@ -7226,12 +7275,32 @@ class GEOBLENDER_OT_des_detect_stockpiles(_ClearsEntityPreview, _CalculateAndCre
         return {"FINISHED"} if started == {"CANCELLED"} else started  # ya creada: el fallo está dicho
 
     def _finished(self, context: Any, opened: Any) -> set[str]:
-        """Con los pasos de lo que sigue a crearla, dice lo que hizo (:meth:`_report_chain`); si no, como las demás órdenes."""
+        """Con los pasos de lo que sigue a crearla, dice lo que hizo (:meth:`_report_chain`); con los de crearla (la del proyecto, que no
+        encadena nada), ya lo dijo al registrarla (:meth:`_creation_steps`); si no, como las demás órdenes."""
         if self._chain:
             self._chain = False
             self._report_chain(opened)
             return {"FINISHED"}
+        if self._creating:
+            self._creating = False
+            return {"FINISHED"}
         return _CalculateAndCreate._finished(self, context, opened)
+
+    def _result(self, context: Any, step: Progress) -> set[str] | None:
+        """Como las demás órdenes; al **crearla**, con el proyecto cerrado se para sin dejar nada y lo dice con sus palabras (no se calculaba:
+        se guardaba)."""
+        if self._creating and project_session.current() is not getattr(self, "_project", None):
+            return self._fail(context, tr("The project was closed while the detection «{name}» was being saved: nothing has been left "
+                                           "half-done", name=getattr(self, "_name", "")))
+        return _CalculateAndCreate._result(self, context, step)
+
+    def _after_stop(self, context: Any) -> None:
+        """Tras cancelar (Esc) o fallar **al crearla**: ``create_steps`` ya descartó el cálculo y borró sus temporales; aquí se suelta (ya no está
+        abierto) y se vacía su resumen. Tras cancelar lo que sigue a crearla, nada: la detección está creada."""
+        if self._creating:
+            self._creating = False
+            discard_calculation()
+            des_panels.show_summary(None)
 
     def _report_chain(self, chain: Any) -> None:
         """Lo que hizo ``chain`` (``design.entity_store.EntityChain``), en el informe y en el registro: la declaración, las máscaras
@@ -7253,12 +7322,17 @@ class GEOBLENDER_OT_des_detect_stockpiles(_ClearsEntityPreview, _CalculateAndCre
         percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
         if self._chain:
             return tr("Updating the declared constraints and the masks… {percent} % · Esc: cancel", percent=percent)
+        if self._creating:
+            return tr("Saving the detection… {percent} % · Esc: cancel", percent=percent)
         return tr("Detecting the stockpiles… {percent} % · Esc: cancel", percent=percent)
 
     def _cancelled_text(self) -> str:
         if self._chain:
             return tr("Cancelled: the detection is created; the declared constraints and the masks are brought up to date before the next "
                       "operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»")
+        if self._creating:
+            return tr("Creation cancelled: the detection has not been created and the calculation has been discarded; nothing has been "
+                      "left half-done")
         return _CalculateAndCreate._cancelled_text(self)
 
     def _error_text(self, exc: GeoblenderError) -> str:

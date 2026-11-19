@@ -100,7 +100,7 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # T25: lo que avisa o rechaza la orden del cuerpo (la superficie conocida sin dato, lo triangulado, lo que no se lee).
     "des.body_unsupported": ("warning", "RF-016-20", {"entity", "area", "surface"}),
     "des.body_many_data": ("warning", "RF-016-20", {"entity", "data", "limit"}),
-    "des.body_sections_large": ("warning", "RF-016-20", {"entity", "area", "limit"}),
+    "des.body_sections_large": ("warning", "RF-016-20", {"entity", "seconds", "limit"}),  # T44: el coste estimado, no el área
     "des.body_data_kind": ("error", "RF-016-20", {"entity", "layer", "kind", "value"}),
     "des.body_data_m": ("error", "RF-016-20", {"entity", "layer"}),
     "des.body_declared_reason": ("note", "RF-015-10", {"name"}),
