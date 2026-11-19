@@ -2405,6 +2405,28 @@ CATALOG: tuple[Message, ...] = (
         "se descartó la retirada «{name}»",
         "note",
     ),
+    # Lo que se apoyaba en el acopio que se retira y «apoyo retirado» por una retirada viva (RF-016-14, RF-015-17; P-9).
+    Message(
+        "des.removal_resting_surface",
+        "{name} (start surface): {volume} m³ supported",
+        "{name} (superficie de partida): {volume} m³ apoyados",
+        "note",
+    ),
+    Message(
+        "des.removal_stockpile_removed",
+        "the stockpile «{stockpile}» was removed by «{name}»",
+        "se retiró el acopio «{stockpile}» (retirada «{name}»)",
+        "note",
+    ),
+    Message(
+        "des.removal_recompute_waits",
+        "«{operation}» is not recomputed: it rests on stockpile «{stockpile}», which «{removal}» removes; it waits "
+        "for a decision (redo it on another surface, discard it or give it as good with a reason); nothing is "
+        "recomputed.",
+        "«{operation}» no se recalcula: se apoya en el acopio «{stockpile}», que retira «{removal}»; espera una "
+        "decisión (rehacerla sobre otra superficie, descartarla o darla por buena con un motivo); no se recalcula "
+        "nada.",
+    ),
     # El contrafuerte (RF-016-18 y 19).
     Message(
         "des.buttress_crown_off_anchor",

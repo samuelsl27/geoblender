@@ -64,6 +64,8 @@ HEAVY: frozenset[str] = frozenset({
     "design.entities", "design.platform", "design.entity_store",
     # La detección de acopios de la 016 (spec 016, T11 y T12): preparar, calcular por pasos y el resumen.
     "design.stockpiles", "design.stockpile_store",
+    # La retirada de un acopio de la 016 (spec 016, T17 y T18): la transición y lo que se apoyaba (lee el almacén y las superficies).
+    "design.removal",
 })
 """Los módulos de la 012, la 013 y la 015 (y la cadena que arrastran) que se importan al primer uso."""
 

@@ -177,6 +177,8 @@ PENDING_015_API: frozenset[str] = frozenset({
     "stockpile_obsolete_notices",
     # La 016, T15: la referencia de un acopio apoyable (``STK-001#m07``) y la huella de cada acopio de una detección.
     "support_ref", "split_support_ref", "read_stockpile_footprints",
+    # La 016, T18: «apoyo retirado» por una retirada viva (``design.entities``).
+    "StockpileRemoval", "removed_supports_of",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 016, T05: la morfología con un disco exacto (A1). Su fila de la ficha (``des.md`` §4.4) la lleva la T38,

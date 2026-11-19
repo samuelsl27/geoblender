@@ -3861,6 +3861,32 @@ def run_refit(project: StoreProject, request: RefitRequest, *, version: str | No
     return handle, _refit_run(project, handle, request, loaded, prepared, budget_s)
 
 
+_NO_REST_TYPES = frozenset({provenance.ENVELOPE, provenance.EXCAVATION_AREA, provenance.DECLARE_CONSTRAINTS,
+                            provenance.ENTITY_LAYER, *provenance.STOCKPILE_DETECT_TYPES})
+"""Los tipos que no dejan una superficie en la que apoyar nada (no se apoyan en un acopio): ``recompute_run`` no les pregunta si perdieron su apoyo."""
+
+
+def _refuse_retired_support(project: StoreProject, request: RecomputeRequest,
+                            released: Sequence[provenance.ReleasedSupport]) -> None:
+    """**«Recalcular lo obsoleto» no recalcula lo que perdió su apoyo por una retirada viva** (spec 016, T18; RF-015-17, RF-016-14; P-9; error 59): la
+    operación que se repite se apoyaba en un acopio que retira una retirada de acopio viva y está aguas arriba de ella
+    (:func:`~.entities.removed_supports_of`: ninguna superficie leída): ``des.removal_recompute_waits``, nombrando el acopio y la retirada
+    (espera una decisión: rehacerla sobre otra superficie, descartarla o darla por buena con un motivo,
+    :func:`~.entity_store.release_support`), **sin empezar nada**. Lo que da por bueno sin ese apoyo (``released``: la detección que suelta) pasa.
+    Sin retiradas vivas, una consulta. Lo descartado lo rehúsa ``core`` (``core.recompute_no_successor_release``): esto es solo la regla nueva."""
+    if request.op_type in _NO_REST_TYPES or request.version is None:
+        return
+    from . import entities  # al usarlo: entities importa el almacén
+
+    lost = [item for item in entities.removed_supports_of(project, request.version, request.operation_uid)
+            if item.detection not in {given.entity for given in released}]
+    if lost:
+        name = request.settings.get("name") if isinstance(request.settings, Mapping) else None
+        shown = name if isinstance(name, str) and name else request.op_type
+        raise DesignError("des.removal_recompute_waits", obj=f"Operación «{shown}»", field="superficie de apoyo",
+                          value=lost[0].stockpile, operation=shown, stockpile=lost[0].key, removal=lost[0].removal)
+
+
 def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
                   released: Sequence[provenance.ReleasedSupport] = ()
                   ) -> tuple[OperationHandle, Iterator[Progress]]:
@@ -3900,6 +3926,7 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
                                         *provenance.STOCKPILE_DETECT_TYPES):
         raise ValueError(f"«{request.op_type}» no deja una superficie que se apoye en una entidad: no da por "
                          "bueno ningún apoyo")
+    _refuse_retired_support(project, request, released)
     if request.op_type == provenance.ENVELOPE:
         return run_envelope(project, provenance.envelope_request(request.settings),
                             version=request.version, supersedes=request.operation_uid,

@@ -40,10 +40,18 @@ la base donde el dominio no admite la retirada es ``kept_m3`` (``máx(z − B, 0
 retirados del acopio, el aviso ``des.removal_nothing`` (RF-016-13: el acopio ya no está en la superficie de partida). Las
 celdas de la huella sin dato no cuentan, y una celda del anillo sin dato no es semilla.
 
-**Lo que no hace** (T18 a T20, T21): atribuir lo apoyado a las operaciones que lo pusieron (A7), medir la pared que queda
-donde el dominio no admite la retirada (A8; ``wall_max_m`` y la confirmación), preparar, crear y reproducir la
-operación, ni «como plataforma» (A9). :attr:`RemovalOutcome.held` son las celdas de la huella con dato que el dominio no
-admite, que es donde la T19 busca la pared.
+**Lo que se apoyaba** (T18; RF-016-14, RF-015-15 y 17; A7; error 59): :func:`resting_on` va **hacia atrás por la cadena de superficies**
+(``surface``, el grafo de la 008) desde la de partida hasta la superficie con que se detectó el acopio y atribuye lo que hay sobre él a
+**cada operación que lo puso** (:func:`attribute_resting`: ``Σ máx(S_i, T) − máx(S_{i−1}, T)`` en las celdas de la huella donde esa
+operación sube **más** del espesor mínimo de la 012, ``T`` la superficie con que se detectó); si la partida **no** llega a esa superficie
+(viene de otra versión o del proyecto), lo que tiene por encima de ``T`` va a **esa superficie por su nombre**. La lista (:class:`Resting`,
+**una sola**) se da **antes de calcular**, sin escribir nada: :func:`resting_notices` es su aviso (``des.removal_resting``) y
+:func:`check_resting_confirmed`, la negativa a retirar sin la confirmación expresa (``des.removal_resting_unconfirmed``). Qué queda en
+«apoyo retirado» al crear la retirada lo decide el grafo (P-9: ``design.entities``), no este módulo.
+
+**Lo que no hace** (T19 a T21): medir la pared que queda donde el dominio no admite la retirada (A8; ``wall_max_m`` y la confirmación),
+preparar, crear y reproducir la operación, ni «como plataforma» (A9). :attr:`RemovalOutcome.held` son las celdas de la huella con dato
+que el dominio no admite, que es donde la T19 busca la pared.
 
 **Leer solo la ventana** (A0; plan 016 §5.4): como ``PlatformJob``, el trabajo puede llevar la superficie y el dominio de
 una ventana de la rejilla (``region``): la que da :func:`removal_window`. Las semillas están a una celda de la huella, así
@@ -53,35 +61,57 @@ dentro del cálculo (principio 6, ADR-0005) y ninguna entrada se modifica.
 
 from __future__ import annotations
 
+import json
 import math
-from collections.abc import Generator, Iterator, Mapping
+import sqlite3
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from ..core.datasets import registry as dataset_registry
+from ..core.datasets.model import LIVE_STATUSES
 from ..core.project.model import Progress
 from ..core.provenance.figures import FigureSpec
+from ..core.provenance.graph import DATASET
+from ..core.versions import read as versions_read
+from ..core.versions.model import Version, VersionError
 from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
+from ..gis.messages import GisError
+from . import entities
 from .edges import seed_envelope_steps
 from .envelopes import CELLS_PER_UNIT, SlopeField
 from .grids import dilate_square
+from .messages import DesignError, render
 from .model import Direction, Metric, RemovalRequest
 from .params import RemovalParam, check_entity_param, entity_params, entity_params_of
 from .platform import Window, _shaped_array, _whole, _window_of, window_part, work_window
-from .preview import Notice
-from .provenance import removal_figures
+from .preview import SUMMARY_ITEMS, Notice
+from .provenance import SURFACE_ROLE, removal_figures
 from .seeds import pace_progress
 from .stockpiles import Stockpile, window_grid
+from .store import _min_thickness
+from .surfaces import project_frame, read_surface_window
+
+if TYPE_CHECKING:
+    from ..gis.store import StoreProject
 
 __all__ = [
     "RemovalJob",
     "RemovalOutcome",
     "RemovedStockpile",
+    "Resting",
+    "RestingShare",
+    "attribute_resting",
+    "check_resting_confirmed",
     "remove_stockpile",
     "removal_steps",
     "removal_window",
+    "resting_notices",
+    "resting_on",
 ]
 
 _PHASE = "removal"
@@ -395,3 +425,240 @@ def remove_stockpile(job: RemovalJob) -> RemovalOutcome:
             next(work)
         except StopIteration as done:
             return done.value  # type: ignore[no-any-return]
+
+
+# --- A7: lo que se apoyaba ----------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RestingShare:
+    """Lo que atribuye :func:`attribute_resting` a un nivel de la cadena: las ``cells`` de la huella donde sube más del espesor mínimo y
+    el volumen (``volume_m3``) que pone en ellas (m³)."""
+
+    cells: int
+    volume_m3: float
+
+
+def attribute_resting(floor: np.ndarray, levels: Sequence[np.ndarray], min_thickness_m: float, cell_area: float
+                      ) -> tuple[RestingShare, ...]:
+    """**A7** (RF-016-14, RF-015-15; plan 016 §5.4; puro y vectorizado): lo que cada nivel de una cadena de superficies pone **sobre un acopio**.
+
+    ``floor`` es ``T``, la superficie con que se detectó el acopio, y ``levels`` las superficies de la cadena, **de la más antigua a la
+    de partida** (cada una, en las celdas de la huella, del mismo tamaño que ``floor``; ``NaN``, sin dato). Con ``S_0`` el primer nivel
+    comparado con ``T`` (``S_{−1} = T``), el nivel ``k`` recibe
+
+        ``Σ [máx(S_k, T) − máx(S_{k−1}, T)] · cell_area``  en las celdas donde esa diferencia es **mayor** que ``min_thickness_m``,
+
+    el mismo criterio que ``entities.detect_supports`` (la diferencia es ``S_k − máx(S_{k−1}, T)`` donde sube): una operación que
+    **baja** la superficie no recibe nada, una que rellena después de un corte recibe lo que pone por encima de ``T``, y la suma de lo
+    atribuido **telescopa** (con cada subida por encima del espesor mínimo, es lo que la partida tiene por encima de ``T``). Una celda
+    sin dato en alguna de las superficies no cuenta. Devuelve un :class:`RestingShare` por nivel, en su orden; las sumas, con
+    ``math.fsum`` (a ≤ 10⁻⁹ relativo del cálculo a mano). Ninguna entrada se modifica. ``ValueError`` (errores del programa) si un nivel no
+    es de la forma de ``floor``, el espesor no es un número finito no negativo o el área no es positiva."""
+    thickness = float(min_thickness_m)
+    area = float(cell_area)
+    if not math.isfinite(thickness) or thickness < 0.0:
+        raise ValueError(f"el espesor mínimo es un número finito no negativo, no {min_thickness_m!r}")
+    if not math.isfinite(area) or area <= 0.0:
+        raise ValueError(f"el área de una celda es un número finito mayor que cero, no {cell_area!r}")
+    ground = np.asarray(floor, dtype=np.float64)
+    before = ground
+    found: list[RestingShare] = []
+    for level in levels:
+        values = np.asarray(level, dtype=np.float64)
+        if values.shape != ground.shape:
+            raise ValueError(f"el nivel de la cadena {values.shape} no es de la forma de la superficie del acopio {ground.shape}")
+        with np.errstate(invalid="ignore"):
+            above = np.maximum(values, ground)
+            rise = above - before
+            counted = rise > thickness  # NaN no es mayor que nada: la celda sin dato no cuenta
+        cells = int(np.count_nonzero(counted))
+        found.append(RestingShare(cells, math.fsum(rise[counted].tolist()) * area if cells else 0.0))
+        before = above
+    return tuple(found)
+
+
+@dataclass(frozen=True, slots=True)
+class Resting:
+    """Una fila de la lista de lo que se apoya en el acopio que se retira (RF-016-14, RF-015-17; **una sola lista**): el ``name`` de quien
+    lo puso —la entidad o el diseño de la versión— o, si la cadena de la partida no llega a la superficie con que se detectó el acopio, el
+    de **la superficie** (``op_type`` ``None``: la de otra versión o del proyecto, por su nombre), el ``volume_m3`` que puso sobre el acopio,
+    las ``cells`` de su huella donde lo puso, el nombre del dato de la ``surface`` que dejó y, si es de una operación, su ``operation_uid`` y,
+    si es una entidad, su código (``entity``)."""
+
+    name: str
+    op_type: str | None
+    volume_m3: float
+    cells: int
+    surface: str
+    operation_uid: str | None = None
+    entity: str | None = None
+
+    def kind(self, language: str = "es") -> str | None:
+        """El tipo de lo que lo puso («Plataforma», «Solo relleno») en ``language``; ``None`` si es una superficie."""
+        return None if self.op_type is None else entities.kind_label(self.op_type, language)
+
+    def text(self, language: str = "es") -> str:
+        """La fila como una línea de la lista, en ``language``: «Sobre el acopio 4 (Plataforma): 2 590 m³ apoyados» o, de una superficie,
+        «des_psf_… (superficie de partida): 2 590 m³ apoyados»."""
+        volume = round(self.volume_m3)
+        if self.op_type is None:
+            return render("des.removal_resting_surface", language=language, name=self.name, volume=volume)
+        return render("des.entity_dependent_volume", language=language, name=self.name, kind=self.kind(language), volume=volume)
+
+
+def resting_notices(stockpile: str, found: Iterable[Resting]) -> tuple[Notice, ...]:
+    """El aviso de lo que se apoya en el acopio ``stockpile`` (RF-016-14, RF-015-17), antes de calcular: **una** nota
+    ``des.removal_resting`` con el total de m³ y los nombres de lo que lo puso (las :data:`~.preview.SUMMARY_ITEMS` primeras y un «…» si hay
+    más); ninguna si no hay nada."""
+    rows = tuple(found)
+    if not rows:
+        return ()
+    names = [f"«{row.name}»" for row in rows]
+    shown = (*names[:SUMMARY_ITEMS], *(("…",) if len(names) > SUMMARY_ITEMS else ()))
+    return (Notice("des.removal_resting", {"stockpile": stockpile, "volume": math.fsum(row.volume_m3 for row in rows),
+                                            "items": shown}),)
+
+
+def check_resting_confirmed(stockpile: str, found: Iterable[Resting], *, confirmed: bool) -> None:
+    """**No se retira sin la confirmación expresa** (RF-016-14, RF-015-17; error 59): con algo apoyado en el acopio ``stockpile`` y sin
+    ``confirmed``, ``des.removal_resting_unconfirmed`` con el acopio y el total de m³ (``DesignError``); con confirmación, o sin nada
+    apoyado, no hace nada. No escribe."""
+    rows = tuple(found)
+    if rows and not confirmed:
+        raise DesignError("des.removal_resting_unconfirmed", obj=f"Retirada del acopio «{stockpile}»", field="confirmación",
+                          value=False, stockpile=stockpile, volume=math.fsum(row.volume_m3 for row in rows))
+
+
+@dataclass(frozen=True, slots=True)
+class _Node:
+    """Una superficie de la cadena de la partida (de la más reciente a la más antigua): el nombre de su dato (``name``), la versión en la que
+    está (``owner``: el uid de la versión o ``''``, del proyecto) y, si la escribió una operación **hecha de esta versión**, su ``operation``,
+    su ``op_type``, su ``label`` (el nombre de sus ajustes) y su código de entidad."""
+
+    name: str
+    owner: str
+    operation: str | None = None
+    op_type: str | None = None
+    label: str | None = None
+    entity: str | None = None
+
+
+_CHAIN_LIMIT = 256
+"""Las superficies que se siguen hacia atrás como mucho (contra un ciclo de datos rotos)."""
+_PRODUCER = (
+    "SELECT o.op_type, o.settings, o.status, r.version_uid FROM gb_operation AS o "
+    "LEFT JOIN gb_revision AS r ON r.uid = o.revision_uid WHERE o.uid = ?")
+_START_OF = (
+    "SELECT item_uid FROM gb_operation_io WHERE operation_uid = ? AND direction = 'in' AND item_kind = ? AND role = ? "
+    "ORDER BY fid LIMIT 1")
+_ANY_VERSION = "SELECT uid FROM gb_dataset WHERE name = ? AND status IN ({marks}) ORDER BY version_uid, rowid LIMIT 1"
+_OWNER_OF = "SELECT version_uid FROM gb_dataset WHERE uid = ?"
+
+
+def _live(conn: sqlite3.Connection, name: str, version: Version) -> tuple[Any, str] | None:
+    """El dato vivo de la superficie ``name`` y la versión en la que está (``''``: del proyecto): el de ``version`` o, si no lo tiene, el del
+    proyecto y, si no, el de **cualquier otra versión** (una superficie de otra versión, por su nombre); ``None`` si no hay ninguno."""
+    record = dataset_registry.get(conn, name, version_uid=version.uid)
+    if record is None or not record.live:
+        record = dataset_registry.get(conn, name)
+    if record is None or not record.live:
+        marks = ", ".join("?" for _ in LIVE_STATUSES)
+        row = conn.execute(_ANY_VERSION.format(marks=marks), (name, *(str(status) for status in LIVE_STATUSES))).fetchone()
+        record = None if row is None else dataset_registry.get(conn, str(row[0]))
+    if record is None or not record.live:
+        return None
+    (owner,) = conn.execute(_OWNER_OF, (record.uid,)).fetchone()
+    return record, str(owner)
+
+
+def _node(conn: sqlite3.Connection, record: Any, owner: str, version: Version) -> _Node:
+    """La superficie ``record`` de la cadena con lo que la escribió, si fue una operación hecha de ``version``."""
+    row = conn.execute(_PRODUCER, (record.operation_uid,)).fetchone()
+    if row is None or str(row[2]) != "done" or row[3] is None or str(row[3]) != version.uid:
+        return _Node(record.name, owner)
+    settings = json.loads(str(row[1])) if row[1] else {}
+    name = settings.get("name") if isinstance(settings, dict) else None
+    code = settings.get("code") if isinstance(settings, dict) else None
+    entity: str | None = None
+    if isinstance(code, str):
+        try:
+            entities.kind_of_code(code)
+            entity = code
+        except ValueError:  # un código que no es de una entidad (los diseños de la 013 y la 014 no lo llevan)
+            entity = None
+    label = name if isinstance(name, str) and name else str(row[0])
+    return _Node(record.name, owner, str(record.operation_uid), str(row[0]), label, entity)
+
+
+def _surface_chain(conn: sqlite3.Connection, version: Version, start: str, detected_on: str) -> tuple[_Node, ...]:
+    """La cadena de superficies de ``start`` **hacia atrás** (del grafo de la 008, la entrada ``surface`` de la operación que escribió cada
+    una), de la más reciente (la de partida) a la más antigua: se detiene en la superficie con que se detectó el acopio (``detected_on``), en
+    la que no escribió una operación hecha de ``version`` (la de otra versión o del proyecto, por su nombre) y en la que no tiene superficie de
+    partida. ``gis.dataset_unknown`` si ``start`` no existe."""
+    chain: list[_Node] = []
+    seen: set[str] = set()
+    name = start
+    while len(chain) < _CHAIN_LIMIT and name not in seen:
+        seen.add(name)
+        found = _live(conn, name, version)
+        if found is None:
+            if not chain:
+                raise GisError("gis.dataset_unknown", obj="Superficie de partida", field="superficie", value=name)
+            break
+        record, owner = found
+        node = _node(conn, record, owner, version)
+        chain.append(node)
+        if node.name == detected_on or node.operation is None:
+            break
+        row = conn.execute(_START_OF, (node.operation, DATASET, SURFACE_ROLE)).fetchone()
+        previous = None if row is None else dataset_registry.successor(conn, str(row[0]))
+        if previous is None:
+            break
+        name = previous.name
+    return tuple(chain)
+
+
+def resting_on(project: StoreProject, version: Version | str, stockpile: RemovedStockpile, start: str, *, detected_on: str
+               ) -> tuple[Resting, ...]:
+    """**A7, lo que se apoyaba** en el acopio ``stockpile`` (RF-016-14, RF-015-15 y 17; plan 016 §5.4; error 59): la lista **antes de calcular**,
+    sin escribir nada, de lo que hay sobre él en la superficie de partida ``start`` (el nombre de su dato; la que se retira) de la versión
+    ``version`` (uid o código), atribuido a **quien lo puso**.
+
+    Va hacia atrás por la cadena de superficies de ``start`` (:func:`_surface_chain`) hasta la superficie con que se detectó el acopio
+    (``detected_on``: la ``surface`` de su detección) y, con las celdas de su huella, ``T`` (``stockpile.surface``) y el espesor mínimo de la
+    012 de la versión, cada operación de la versión que dejó una superficie recibe lo que sube sobre el acopio (:func:`attribute_resting`);
+    las superficies que no escribió una operación de la versión, al final de la cadena (**una partida de otra versión o del proyecto**: lo que
+    tiene por encima de ``T``), reciben lo suyo **por su nombre** (``op_type`` ``None``). Una fila por operación o superficie con algo
+    apoyado, de la más antigua a la de partida: lo que puso cada una, no lo que queda (una que baja lo de otra no le resta). Lee solo la
+    ventana de la huella de cada superficie de la cadena. Los rechazos de leer una superficie (``gis.dataset_unknown``,
+    ``des.surface_mismatch``, ``des.surface_is_tin``…) y ``VersionError`` si la versión no existe; ``ValueError`` si alguna celda del acopio no
+    es de la rejilla del proyecto."""
+    with project.read() as conn:
+        found = versions_read.version(conn, version) if isinstance(version, str) else version
+        if found is None:
+            raise VersionError("core.version_unknown", field="versión", value=version, version=version)
+        thickness = _min_thickness(conn, project, found)
+        chain = _surface_chain(conn, found, start, detected_on)
+    frame = project_frame(project)
+    grid = frame.grid
+    cells = stockpile.cells
+    if int(cells[-1]) >= grid.nrows * grid.ncols:
+        raise ValueError(f"el acopio «{stockpile.name}» tiene celdas fuera de la rejilla de {grid.nrows} × {grid.ncols}")
+    rows, cols = np.divmod(cells, grid.ncols)
+    window = (slice(int(rows.min()), int(rows.max()) + 1), slice(int(cols.min()), int(cols.max()) + 1))
+    inside = (rows - window[0].start, cols - window[1].start)
+    oldest_first = tuple(reversed(chain))
+    levels = [read_surface_window(project, node.name, window, version_uid=node.owner, expect=frame,
+                                  role="superficie de la cadena de la partida").values[inside] for node in oldest_first]
+    shares = attribute_resting(stockpile.surface, levels, thickness, grid.cell_area)
+    result: list[Resting] = []
+    for node, share in zip(oldest_first, shares, strict=True):
+        if share.cells == 0 or node.name == detected_on:  # la superficie con que se detectó es el suelo, no lo apoyado
+            continue
+        if node.operation is None or node.op_type is None:
+            result.append(Resting(node.name, None, share.volume_m3, share.cells, node.name))
+        else:
+            result.append(Resting(node.label or node.op_type, node.op_type, share.volume_m3, share.cells, node.name, node.operation,
+                                  node.entity))
+    return tuple(result)

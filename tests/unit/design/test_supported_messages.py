@@ -77,6 +77,10 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
                                 {"stockpile", "height", "angle", "min_angle", "min_height"}),
     "des.removal_declared_reason": ("note", "RF-015-10", {"name"}),
     "des.removal_support_removed": ("note", "RF-015-17", {"name"}),
+    # T18: lo que se apoyaba en el acopio que se retira y «apoyo retirado» por una retirada viva (P-9).
+    "des.removal_resting_surface": ("note", "RF-016-14", {"name", "volume"}),
+    "des.removal_stockpile_removed": ("note", "RF-015-17", {"stockpile", "name"}),
+    "des.removal_recompute_waits": ("error", "RF-015-17", {"operation", "stockpile", "removal"}),
     # RF-016-18 y 19: el contrafuerte.
     "des.buttress_crown_off_anchor": ("error", "RF-016-18", {"layer", "entity", "profile", "anchor"}),
     "des.buttress_crown_below_support": ("error", "RF-016-18", {"layer", "entity"}),
@@ -136,7 +140,7 @@ class SupportedMessagesTest(unittest.TestCase):
                   "min_angle": 45.0, "min_height": 3.0, "layer": "gis_fea_zonas", "entity": "BTR-001",
                   "profile": "EXPL_10_60_6", "anchor": 250.0, "footprint": "Cuerpo 1", "distance": 30.0,
                   "fids": "3, 7", "fields": "nombre, margen", "detail": "no es JSON", "name": "Acopios",
-                  "surface": "gis_dtm_levantamiento"}
+                  "surface": "gis_dtm_levantamiento", "operation": "Sobre el acopio 4", "removal": "Retirada 1"}
         for code, (severity, _rf, _marks) in CODES.items():
             with self.subTest(code=code):
                 if severity == "error":
