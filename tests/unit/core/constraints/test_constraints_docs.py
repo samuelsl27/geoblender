@@ -79,7 +79,11 @@ CITING_RELPATHS = ("docs/usuario/topografia.md", "docs/usuario/versiones.md",
 # ``core.md`` y ``gis.md``) y otra vez desde su T47 (``gis.masks.declaring`` y ``declare_pending_steps``, de la T38,
 # están en ``gis.md``); la 016 los usará con lo suyo.
 PENDING_015_MODULES: frozenset[str] = frozenset()
-PENDING_015_API: frozenset[str] = frozenset()
+PENDING_015_API: frozenset[str] = frozenset({
+    # La 016, T29 (la tarea de documentación, T38, lo lleva a la ficha, ``res.md``, y vacía este conjunto): la menor de
+    # varias bases de acopios para la verificación con la base (``reserves.compliance``, A12).
+    "reserves.compliance.lowest_base",
+})
 # Los módulos de gis y de reserves de la 012 cuya API pública tiene que nombrar su ficha.
 GIS_MODULES = ("gis.search", "gis.polygons", "gis.coverage",
                *(f"gis.masks.{info.name}" for info in pkgutil.iter_modules(masks.__path__)

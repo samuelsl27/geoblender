@@ -19,6 +19,22 @@ Una superficie final frente a la de partida, celda a celda, en la rejilla de las
   área con movimiento (m²) y el área sin dato (m²), con los tramos de fila de cada recinto (sumas
   acumuladas por fila: ningún par celda-recinto). Una celda en dos recintos cuenta en los dos: la
   tabla es por recinto, no una partición.
+- **La base de los acopios (A12; RF-012-21, RF-012-22, RF-012-30; DIFF-012 de la 016)**: una
+  retirada de acopio baja material por encima de la base del acopio, que no es terreno. Con la
+  base (``Checker.add(..., base=)``: su cota en cada celda de las huellas de los acopios
+  detectados, NaN fuera) los recintos de :attr:`Counts.CUT_TERRAIN` (sin corte, solo relleno,
+  solo restauración, banda de resguardo y banda hacia dentro de un límite legal; se piden con
+  ``with_base=True`` en :func:`counts_of` y :func:`check_zones`) cuentan como **corte de
+  terreno** solo el de ``R = mín(partida, base)`` frente a la final (``R = partida`` donde no hay
+  base), con todo su espesor cuando ``R − final`` pasa del umbral; el resto del corte de
+  RF-012-21 es el **corte de acopios** (:attr:`ZoneTotals.stockpile_cut_m3`) y el corte de
+  terreno más el de acopios es ese corte (``cut_m3``). El veredicto, los grupos y la rejilla de
+  incumplimientos usan el de terreno. Fuera del límite legal, los intocables, las exclusiones,
+  fuera del perímetro, el relleno en «sin relleno» y la afección cuentan **todo** el movimiento
+  (donde un acopio no se retira: RF-016-11). Sin base, o sin recintos de terreno, el resultado
+  es el de siempre, bit a bit (:attr:`Counts.CUT`). :func:`lowest_base` toma la menor de varias
+  bases (P-10) y este módulo no importa ``design``: quien lee la base de las detecciones es
+  ``reserves.compliance_store``.
 - :class:`ZoneIndex` (:func:`zone_index`, :func:`zone_index_steps`): lo que las finales de una
   verificación comparten, hecho una vez (T36): los tramos de todos los recintos ordenados por
   fila, los de cada modo de contar y la unión de las celdas de cada modo como máscara.
@@ -38,8 +54,9 @@ Una superficie final frente a la de partida, celda a celda, en la rejilla de las
   incumplen y su ``final − partida``, D-42); la misma superficie como partida y final da ceros y
   el aviso ``res.same_surface``.
 - :class:`ComplianceRequest`: lo que pide una verificación (la partida, de 1 a
-  :data:`MAX_FINALS` finales, las máscaras de la versión y el espesor mínimo); la lee la
-  operación ``res.verify_constraints`` (``reserves.compliance_store``, T17).
+  :data:`MAX_FINALS` finales, las máscaras de la versión, el espesor mínimo y, opcional, las bases
+  de los acopios detectados sobre la partida); la lee la operación ``res.verify_constraints``
+  (``reserves.compliance_store``, T17).
 
 Volúmenes y áreas con el área exacta de la celda de la rejilla (``Grid.cell_area``), en float64.
 Python puro (nivel 9).
@@ -82,6 +99,7 @@ __all__ = [
     "check_zones_steps",
     "counts_of",
     "label_groups",
+    "lowest_base",
     "verdict",
     "zone_index",
     "zone_index_steps",
@@ -113,6 +131,7 @@ class Counts(StrEnum):
     """Lo que cuenta en un recinto (A8; RF-012-22)."""
 
     CUT = "cut"  # el corte: fuera del límite legal, banda hacia dentro, sin corte, solo relleno…
+    CUT_TERRAIN = "cut_terrain"  # el corte de terreno (A12): como CUT, menos lo de los acopios
     FILL = "fill"  # el relleno: sin relleno
     ANY = "any"  # cualquier movimiento: fuera del perímetro, intocable, exclusión
     NOTHING = "nothing"  # nada: un límite por dentro
@@ -132,13 +151,17 @@ class Verdict(StrEnum):
 _CUT_TYPES = (ConstraintType.NO_CUT, ConstraintType.FILL_ONLY, ConstraintType.RESTORATION_ONLY,
               ConstraintType.SETBACK)
 _ANY_TYPES = (ConstraintType.UNTOUCHABLE, ConstraintType.EXCLUSION)
-_COUNTED = (Counts.CUT, Counts.FILL, Counts.ANY)
+_COUNTED = (Counts.CUT, Counts.CUT_TERRAIN, Counts.FILL, Counts.ANY)
 """Los modos de contar que dan grupos que incumplen."""
 
 
-def counts_of(code: str, ctype: ConstraintType | None) -> Counts:
+def counts_of(code: str, ctype: ConstraintType | None, *, with_base: bool = False) -> Counts:
     """Lo que cuenta en el recinto ``code`` de tipo ``ctype`` (A8; ``None`` en los dos recintos
-    de los límites, :data:`OUTSIDE_PERIMETER` y :data:`OUTSIDE_LEGAL`)."""
+    de los límites, :data:`OUTSIDE_PERIMETER` y :data:`OUTSIDE_LEGAL`). Con ``with_base`` (hay
+    base de acopios, A12), en las cinco zonas del dominio por defecto (sin corte, solo relleno,
+    solo restauración, banda de resguardo y banda hacia dentro de un límite legal) cuenta el corte
+    de terreno (:attr:`Counts.CUT_TERRAIN`); «fuera del límite legal» sigue en
+    :attr:`Counts.CUT`."""
     if code == OUTSIDE_PERIMETER:
         return Counts.ANY
     if code == OUTSIDE_LEGAL:
@@ -146,14 +169,15 @@ def counts_of(code: str, ctype: ConstraintType | None) -> Counts:
     if ctype is None:
         raise ValueError(f"el recinto «{code}» no tiene tipo de restricción")
     ctype = ConstraintType(ctype)
+    cut = Counts.CUT_TERRAIN if with_base else Counts.CUT
     if code.endswith(INNER_SUFFIX):
         if ctype is not ConstraintType.LEGAL_LIMIT:
             raise ValueError(f"«{code}»: solo un límite legal tiene banda hacia dentro")
-        return Counts.CUT
+        return cut
     if ctype in _ANY_TYPES:
         return Counts.ANY
     if ctype in _CUT_TYPES:
-        return Counts.CUT
+        return cut
     if ctype is ConstraintType.NO_FILL:
         return Counts.FILL
     if ctype is ConstraintType.AVOID:
@@ -194,7 +218,7 @@ def _mask_runs(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 def check_zones_steps(classes: np.ndarray, zones: Mapping[str, Runs],
                       ctypes: Mapping[str, ConstraintType],
-                      weights: Mapping[str, float] | None = None
+                      weights: Mapping[str, float] | None = None, *, with_base: bool = False
                       ) -> Generator[None, None, tuple[CheckZone, ...]]:
     """:func:`check_zones` por pasos (T36): una unidad por cada :data:`_INDEX_ROWS` filas de las
     celdas de los dos recintos de fuera. Devuelve los recintos."""
@@ -222,7 +246,7 @@ def check_zones_steps(classes: np.ndarray, zones: Mapping[str, Runs],
         if base not in ctypes:
             raise ValueError(f"la zona «{code}» no tiene tipo de restricción")
         ctype = ConstraintType(ctypes[base])
-        counts = counts_of(code, ctype)
+        counts = counts_of(code, ctype, with_base=with_base)
         weight = None
         if counts is Counts.AVOID:
             if code not in weights:
@@ -243,12 +267,16 @@ def _drain[T](steps: Generator[None, None, T]) -> T:
 
 def check_zones(classes: np.ndarray, zones: Mapping[str, Runs],
                 ctypes: Mapping[str, ConstraintType],
-                weights: Mapping[str, float] | None = None) -> tuple[CheckZone, ...]:
+                weights: Mapping[str, float] | None = None, *, with_base: bool = False
+                ) -> tuple[CheckZone, ...]:
     """Los recintos de una verificación (A7, A8): «fuera del perímetro» y «fuera del límite
     legal» por los bits de la rejilla de clases ``classes`` (D-25) y cada zona de ``zones``
     (código → tramos, en su orden; ``<código>:inner`` con el tipo de su límite legal), con su
-    tipo de ``ctypes`` y, la «preferible no afectar», su peso de ``weights``."""
-    return _drain(check_zones_steps(classes, zones, ctypes, weights))
+    tipo de ``ctypes`` y, la «preferible no afectar», su peso de ``weights``. Con ``with_base``
+    (la verificación tiene base de acopios, A12), las cinco zonas del dominio por defecto cuentan
+    el corte de terreno (:attr:`Counts.CUT_TERRAIN`); sin ella, el corte (:attr:`Counts.CUT`),
+    como siempre."""
+    return _drain(check_zones_steps(classes, zones, ctypes, weights, with_base=with_base))
 
 
 def verdict(zone: CheckZone, counted_cells: int) -> Verdict:
@@ -268,7 +296,12 @@ class ZoneTotals:
     """Lo verificado en un recinto (RF-012-21, RF-012-22): su código y su tipo, lo que cuenta,
     el corte y el relleno (m³) y el área con movimiento (m²) de las celdas que pasan el espesor
     mínimo, el área sin dato (m²), lo que cuenta (m³; el corte, el relleno o los dos), su peso y
-    el volumen por el peso («preferible no afectar»; si no, ``None``), y el veredicto."""
+    el volumen por el peso («preferible no afectar»; si no, ``None``), y el veredicto.
+
+    En un recinto de :attr:`Counts.CUT_TERRAIN` (A12; RF-012-30), ``cut_m3`` sigue siendo el corte
+    de RF-012-21 (el de toda la partida), ``counted_m3`` es el **corte de terreno** (el que
+    juzga el veredicto) y ``stockpile_cut_m3``, el **corte de acopios** (el resto): terreno +
+    acopios = ``cut_m3``. En los demás recintos, ``stockpile_cut_m3`` es 0."""
 
     code: str
     ctype: ConstraintType | None
@@ -281,6 +314,7 @@ class ZoneTotals:
     weight: float | None
     weighted_m3: float | None
     verdict: Verdict
+    stockpile_cut_m3: float = 0.0
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -315,7 +349,9 @@ class FinalCheck:
     violations: np.ndarray | None = field(default=None, repr=False)
     """La rejilla de incumplimientos (D-42), de la forma de la rejilla de las máscaras: ``final −
     partida`` (m) en las celdas que incumplen en algún recinto (una celda en dos recintos, una
-    vez) y NaN en las demás. ``None`` si ninguna incumple. De solo lectura."""
+    vez) y NaN en las demás. ``None`` si ninguna incumple. De solo lectura. En una celda que solo
+    incumple en un recinto de terreno (:attr:`Counts.CUT_TERRAIN`, A12), el valor es ``final −
+    R``, con ``R = mín(partida, base)``: el espesor del corte de terreno."""
 
     @property
     def fails(self) -> bool:
@@ -466,12 +502,21 @@ class Checker:
         self._fill_cells = np.zeros(count, np.int64)
         self._moved = np.zeros(count, np.int64)
         self._nodata = np.zeros(count, np.int64)
+        # A12: el corte de terreno y el de acopios de los recintos de ``Counts.CUT_TERRAIN``.
+        self._terrain = np.zeros(count, np.float64)
+        self._terrain_cells = np.zeros(count, np.int64)
+        self._stock = np.zeros(count, np.float64)
+        self._has_terrain = any(zone.counts is Counts.CUT_TERRAIN for zone in zones)
         self._violations: np.ndarray | None = None
+        self._terrain_field: np.ndarray | None = None
         self._same = True
 
-    def add(self, top: int, start: np.ndarray | float, final: np.ndarray | float) -> None:
+    def add(self, top: int, start: np.ndarray | float, final: np.ndarray | float,
+            base: np.ndarray | None = None) -> None:
         """Acumula la banda de filas desde ``top`` de la partida y de la final (float64, NaN sin
-        dato; o una cota constante)."""
+        dato; o una cota constante) y, si se da, la de la base de los acopios (A12: su cota en las
+        celdas de sus huellas, NaN sin dato; de la forma de las otras). Sin base, o sin recintos
+        de :attr:`Counts.CUT_TERRAIN`, es lo de siempre."""
         grid = self.grid
         shapes = [np.shape(v) for v in (start, final) if np.ndim(v) == 2]
         if not shapes:
@@ -481,6 +526,7 @@ class Checker:
             raise ValueError(f"la banda de las filas {top}–{top + rows} no está en la rejilla")
         start_band = _band(start, rows, grid.ncols)
         final_band = _band(final, rows, grid.ncols)
+        base_band = None if base is None else _band(base, rows, grid.ncols)
         if self._same and not np.array_equal(start_band, final_band, equal_nan=True):
             self._same = False
         valid = np.isfinite(start_band) & np.isfinite(final_band)
@@ -506,7 +552,9 @@ class Checker:
         def add_to(target: np.ndarray, values: np.ndarray) -> None:
             target += np.bincount(index, weights=values, minlength=count).astype(target.dtype)
 
-        add_to(self._cut, run_sums(np.where(cut, difference, 0.0)))
+        cut_values = np.where(cut, difference, 0.0)
+        cut_sums = run_sums(cut_values)
+        add_to(self._cut, cut_sums)
         add_to(self._fill, run_sums(np.where(fill, -difference, 0.0)))
         cut_cells = run_sums(cut.astype(np.int64))
         fill_cells = run_sums(fill.astype(np.int64))
@@ -514,14 +562,39 @@ class Checker:
         add_to(self._fill_cells, fill_cells)
         add_to(self._moved, cut_cells + fill_cells)  # el corte y el relleno no comparten celda
         add_to(self._nodata, run_sums((~valid).astype(np.int64)))
-        self._mark(top, rows, cut, fill, difference)
+        # A12: R = mín(partida, base) donde hay base y R = partida donde no. Sin base en la banda
+        # (o sin recintos de terreno), el corte de terreno es el corte: las mismas sumas.
+        terrain_difference, terrain_cut = difference, cut
+        if self._has_terrain:
+            present = None if base_band is None else np.isfinite(base_band)
+            if present is not None and present.any():
+                with np.errstate(invalid="ignore"):
+                    reference = np.fmin(start_band, np.where(present, base_band, np.nan))
+                    terrain_difference = np.where(valid, reference - final_band, 0.0)
+                terrain_cut = valid & (terrain_difference > self.threshold)
+                terrain_values = np.where(terrain_cut, terrain_difference, 0.0)
+                add_to(self._terrain, run_sums(terrain_values))
+                add_to(self._terrain_cells, run_sums(terrain_cut.astype(np.int64)))
+                add_to(self._stock, run_sums(cut_values - terrain_values))
+            else:
+                add_to(self._terrain, cut_sums)
+                add_to(self._terrain_cells, cut_cells)
+        self._mark(top, rows, cut, fill, difference, terrain_cut, terrain_difference)
 
     def _mark(self, top: int, rows: int, cut: np.ndarray, fill: np.ndarray,
-              difference: np.ndarray) -> None:
+              difference: np.ndarray, terrain_cut: np.ndarray,
+              terrain_difference: np.ndarray) -> None:
         """Marca en la rejilla de incumplimientos las celdas de la banda que incumplen en algún
-        recinto: ``final − partida`` (``−d``); las demás, NaN."""
-        found: np.ndarray | None = None
+        recinto: ``final − partida`` (``−d``) donde incumple un recinto que cuenta todo el
+        movimiento (el corte, el relleno o cualquiera) y ``final − R`` donde solo incumple uno de
+        terreno (A12); las demás, NaN. Los recintos de terreno, además, llevan su propia rejilla
+        (``final − R``) para sus grupos, que no se mezcla con la de contar todo."""
+        full: np.ndarray | None = None
+        terrain: np.ndarray | None = None
         for counts, mask in self.index.masks.items():
+            if counts is Counts.CUT_TERRAIN:
+                terrain = mask[top:top + rows] & terrain_cut
+                continue
             if counts is Counts.CUT:
                 wanted = cut
             elif counts is Counts.FILL:
@@ -529,12 +602,22 @@ class Checker:
             else:
                 wanted = cut | fill
             part = mask[top:top + rows] & wanted
-            found = part if found is None else found | part
-        if found is None or not found.any():
+            full = part if full is None else full | part
+        has_full = full is not None and bool(full.any())
+        has_terrain = terrain is not None and bool(terrain.any())
+        if not (has_full or has_terrain):
             return
         if self._violations is None:
             self._violations = np.full(self.grid.shape, np.nan, dtype=np.float64)
-        self._violations[top:top + rows] = np.where(found, -difference, np.nan)
+        if not has_terrain:
+            self._violations[top:top + rows] = np.where(full, -difference, np.nan)
+            return
+        if self._terrain_field is None:
+            self._terrain_field = np.full(self.grid.shape, np.nan, dtype=np.float64)
+        only = np.where(terrain, -terrain_difference, np.nan)
+        self._terrain_field[top:top + rows] = only
+        self._violations[top:top + rows] = (
+            np.where(full, -difference, only) if has_full else only)
 
     def result(self, *, start_name: str = "") -> FinalCheck:
         """Lo de cada recinto y los grupos que incumplen (:class:`FinalCheck`)."""
@@ -551,18 +634,21 @@ class Checker:
             cut = float(self._cut[position]) * area
             fill = float(self._fill[position]) * area
             counted_cells = {Counts.CUT: int(self._cut_cells[position]),
+                             Counts.CUT_TERRAIN: int(self._terrain_cells[position]),
                              Counts.FILL: int(self._fill_cells[position]),
                              Counts.ANY: int(self._moved[position])}.get(zone.counts, 0)
-            counted = {Counts.CUT: cut, Counts.FILL: fill,
-                       Counts.ANY: cut + fill}.get(zone.counts, 0.0)
+            counted = {Counts.CUT: cut, Counts.CUT_TERRAIN: float(self._terrain[position]) * area,
+                       Counts.FILL: fill, Counts.ANY: cut + fill}.get(zone.counts, 0.0)
             weighted = None
             if zone.counts is Counts.AVOID:
                 counted = cut + fill
                 weighted = counted * float(zone.weight if zone.weight is not None else 0.0)
+            stockpile = (float(self._stock[position]) * area
+                         if zone.counts is Counts.CUT_TERRAIN else 0.0)
             totals.append(ZoneTotals(
                 zone.code, zone.ctype, zone.counts, cut, fill,
                 int(self._moved[position]) * area, int(self._nodata[position]) * area,
-                counted, zone.weight, weighted, verdict(zone, counted_cells)))
+                counted, zone.weight, weighted, verdict(zone, counted_cells), stockpile))
         yield None
         groups = yield from self._group_steps()
         notices = (Notice("res.same_surface", {"surface": start_name}),) if self._same else ()
@@ -578,7 +664,11 @@ class Checker:
         positions: list[np.ndarray] = []
         groups: list[Group] = []
         for counts in _COUNTED:
-            mine, found = yield from _type_groups(self.index, field_, counts, self.threshold)
+            # Los de terreno se agrupan por su rejilla (``final − R``), no por la de contar todo.
+            source = self._terrain_field if counts is Counts.CUT_TERRAIN else field_
+            if source is None:
+                continue
+            mine, found = yield from _type_groups(self.index, source, counts, self.threshold)
             positions.append(mine)
             groups += found
         if not groups:
@@ -676,7 +766,8 @@ def _type_groups(shared: ZoneIndex, field_: np.ndarray, counts: Counts, threshol
     De ``field_`` (la rejilla de incumplimientos: ``final − partida`` donde algún recinto
     incumple, NaN en las demás) salen los tramos de las celdas que cuentan en este modo (el corte,
     ``field < −e``; el relleno, ``field > e``; cualquier movimiento, las que no son NaN: una
-    celda de la rejilla en un recinto del modo cuenta si y solo si incumple en él). Cada tramo
+    celda de la rejilla en un recinto del modo cuenta si y solo si incumple en él; el corte de
+    terreno, como el corte pero de su propia rejilla, ``final − R``, A12). Cada tramo
     de un recinto se cruza con ellos (búsqueda binaria) y da los tramos de las celdas que
     incumplen; los de filas seguidas que se solapan, en el mismo recinto, son del mismo grupo
     (:func:`_components_steps`). Un grupo son sus tramos; sus celdas, sus filas y sus columnas, se
@@ -693,7 +784,7 @@ def _type_groups(shared: ZoneIndex, field_: np.ndarray, counts: Counts, threshol
     pieces = []
     for top in range(0, grid.nrows, _CHUNK_ROWS):
         part = field_[top:top + _CHUNK_ROWS]
-        if counts is Counts.CUT:
+        if counts is Counts.CUT or counts is Counts.CUT_TERRAIN:
             wanted = part < -threshold
         elif counts is Counts.FILL:
             wanted = part > threshold
@@ -832,15 +923,17 @@ def _readonly(values: np.ndarray) -> np.ndarray:
 
 def check(grid: Grid, zones: Sequence[CheckZone], start: np.ndarray | float,
           final: np.ndarray | float, min_thickness_m: float, *, band_rows: int = BAND_ROWS,
-          start_name: str = "") -> FinalCheck:
+          start_name: str = "", base: np.ndarray | None = None) -> FinalCheck:
     """Una final frente a la partida de una vez (:class:`Checker` por bandas de ``band_rows``
-    filas); ``start`` y ``final``, rejillas de forma ``grid.shape`` o cotas constantes."""
+    filas); ``start`` y ``final``, rejillas de forma ``grid.shape`` o cotas constantes; ``base``,
+    la rejilla de la base de los acopios (A12), opcional."""
     if band_rows < 1:
         raise ValueError(f"una banda tiene al menos una fila, no {band_rows}")
     checker = Checker(grid, zones, min_thickness_m)
     for top in range(0, grid.nrows, band_rows):
         stop = min(top + band_rows, grid.nrows)
-        checker.add(top, _rows_of(start, top, stop), _rows_of(final, top, stop))
+        checker.add(top, _rows_of(start, top, stop), _rows_of(final, top, stop),
+                    None if base is None else np.asarray(base, dtype=np.float64)[top:stop])
     return checker.result(start_name=start_name)
 
 
@@ -850,6 +943,24 @@ def _rows_of(value: np.ndarray | float, top: int, stop: int) -> np.ndarray | flo
     return np.asarray(value, dtype=np.float64)[top:stop]
 
 
+def lowest_base(bands: Sequence[np.ndarray]) -> np.ndarray | None:
+    """La base de varias detecciones sobre la misma partida (P-10): en cada celda, la **menor** de
+    las que tienen dato (el lado seguro: cuenta más corte de terreno) y NaN donde ninguna lo tiene.
+    ``None`` sin ninguna; con una sola, esa misma banda; las bandas de la misma forma, o
+    :class:`ValueError`. No modifica ninguna."""
+    found: np.ndarray | None = None
+    for band in bands:
+        band = np.asarray(band, dtype=np.float64)
+        if found is None:
+            found = band
+        elif band.shape != found.shape:
+            raise ValueError(f"las bases de los acopios son de la misma forma, no {found.shape} "
+                             f"y {band.shape}")
+        else:
+            found = np.fmin(found, band)
+    return found
+
+
 # --- La petición -------------------------------------------------------------------------------
 
 
@@ -857,14 +968,17 @@ def _rows_of(value: np.ndarray | float, top: int, stop: int) -> np.ndarray | flo
 class ComplianceRequest:
     """Lo que pide una verificación (RF-012-21; D-28, D-40): su nombre, la superficie de
     partida, las finales (de 1 a :data:`MAX_FINALS`, distintas), las máscaras de la versión (al
-    día, ``gis.masks.access``) y el espesor mínimo de verificación (m, D-6). Una petición
-    incoherente es un error del programa (:class:`ValueError`)."""
+    día, ``gis.masks.access``) y el espesor mínimo de verificación (m, D-6) y, opcional, las
+    bases de los acopios detectados al día sobre la partida (``bases``, A12: una rejilla por
+    detección, que se combinan con :func:`lowest_base`; vacío, sin base: la verificación de
+    siempre). Una petición incoherente es un error del programa (:class:`ValueError`)."""
 
     name: str
     start: SurfaceRef
     finals: tuple[SurfaceRef, ...]
     masks: MaskSet
     min_thickness_m: float
+    bases: tuple[SurfaceRef, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -878,6 +992,14 @@ class ComplianceRequest:
             raise ValueError("las superficies son SurfaceRef")
         if not isinstance(self.masks, MaskSet):
             raise ValueError(f"las máscaras son un MaskSet, no {type(self.masks).__name__}")
+        bases = tuple(self.bases)
+        if not all(isinstance(item, SurfaceRef) for item in bases):
+            raise ValueError("las bases de los acopios son SurfaceRef")
+        if any(item.elevation is not None for item in bases):
+            raise ValueError("la base de unos acopios es una rejilla, no una cota constante")
+        if len(set(bases)) != len(bases):
+            raise ValueError("una base de acopios repetida")
+        object.__setattr__(self, "bases", bases)
         object.__setattr__(self, "finals", finals)
         object.__setattr__(self, "min_thickness_m", _thickness(self.min_thickness_m))
 

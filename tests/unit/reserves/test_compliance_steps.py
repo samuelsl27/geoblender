@@ -385,7 +385,9 @@ class SameAsBeforeTest(unittest.TestCase):
             kinds.update(item.counts for item in new.totals)
             groups += len(new.groups)
             failing += int(new.fails)
-        self.assertEqual(kinds, set(C))  # los seis modos de contar se vieron
+        # Los seis modos de contar de siempre se vieron (CUT_TERRAIN solo existe con la base de los
+        # acopios, T29: sin ella, ``check_zones`` da CUT, como aquí).
+        self.assertEqual(kinds, set(C) - {C.CUT_TERRAIN})
         self.assertGreater(groups, 5000)  # y había grupos que comparar
         self.assertGreater(failing, 25)
 
