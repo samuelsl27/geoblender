@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Repetir la detección de acopios con la identidad por marca y decidir sobre los candidatos (spec 016, T13; HU-016-1;
 RF-016-02, RF-016-08, RF-016-09, RF-016-10, RF-015-01, RF-015-02, RF-015-04, RF-015-16; D-15, D-23; plan 016 §5.4 A4, P-2 y
-P-14): el hito de ``test_stockpile_operation`` (casos (b) y (c)). Va al paso «hito» (P-13): varias detecciones creadas y
+P-14): el hito de ``milestone_stockpile_detection`` (casos (b) y (c)). Va al paso «hito» (P-13): varias detecciones creadas y
 repetidas en proyectos de 2 m y, para la regla de la mitad, la cantera de 1 m.
 
 Repetir una detección es lo que hará el recálculo (T14): cambiar un parámetro de la entidad (o sus decisiones) y volver a
@@ -34,9 +34,9 @@ from tests.support import res_fixtures
 from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
+from tests.unit.design import milestone_stockpile_detection as ops
 from tests.unit.design import milestone_stockpile_operation as mso
-from tests.unit.design import test_stockpile_operation as ops
-from tests.unit.design import test_stockpile_prepare as tp
+from tests.unit.design import milestone_stockpile_prepare as tp
 from tests.unit.design.test_stockpile_candidates import cparams
 from tests.unit.design.test_stockpile_footprint import params_of
 

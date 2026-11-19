@@ -25,9 +25,9 @@ import numpy as np
 from tests.support import quarry_fixtures as qfx
 from tests.support.package import import_geoblender
 from tests.support.versions_fixtures import change_counter, files
+from tests.unit.design import milestone_stockpile_detection as ops
 from tests.unit.design import milestone_stockpile_supports as sup
 from tests.unit.design import test_platform_prepare as prep
-from tests.unit.design import test_stockpile_operation as ops
 
 core_params = import_geoblender("core.params")
 design_params = import_geoblender("design.params")

@@ -17,6 +17,7 @@ sus huellas** (P-4, P-5), y, **por material**, la base y el espesor (D-19). Se p
 - **la cantera de la 016** (``tests.support.stockpile_data``): el cono de CE-016-02 con sus celdas atípicas, los dos
   acopios que se tocan de E1 (celdas de 1 m: con 2 m el par es pequeño para la celda, ``docs/trampas.md`` §2) y el
   levantamiento de CE-016-01 con sus cinco marcas, dos materiales, una base propia y los candidatos.
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_stockpile_bases.py``.
 """
 
 from __future__ import annotations

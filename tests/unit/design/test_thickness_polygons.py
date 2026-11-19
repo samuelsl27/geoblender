@@ -11,7 +11,7 @@ directamente** y **solo las de su contorno entran en el TIN** y en el dato más 
   dado como un punto por celda, que se triangula entero) a ≤ 10⁻⁹ m; el dato más próximo de fuera, el mismo; lo lejano ignora el
   interior (son celdas con dato) y se triangulan menos datos.
 - :class:`NoticesTest`: los avisos nuevos del cálculo: las celdas de la huella sin superficie conocida, más de ``MANY_DATA`` datos
-  triangulados (el aviso de lo lento por el coste del TIN, de la T44, está en ``test_thickness_estimate.py``).
+  triangulados (el aviso de lo lento por el coste del TIN, de la T44, está en ``milestone_thickness_estimate.py``).
 """
 
 from __future__ import annotations

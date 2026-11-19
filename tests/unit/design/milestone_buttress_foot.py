@@ -25,9 +25,9 @@ import numpy as np
 from tests.support import buttress_data as bdata
 from tests.support import design_fixtures as dfx
 from tests.support.package import import_geoblender
-from tests.unit.design import test_buttress_operation as bop
+from tests.unit.design import milestone_buttress_operation as bop
+from tests.unit.design import milestone_stockpile_detection as ops
 from tests.unit.design import test_platform_prepare as prep
-from tests.unit.design import test_stockpile_operation as ops
 
 access = import_geoblender("gis.masks.access")
 compose = import_geoblender("design.compose")

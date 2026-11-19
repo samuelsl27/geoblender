@@ -24,6 +24,7 @@ cada uno), el levantamiento y el de antes como superficies del proyecto y una co
   dos**; las que solo se tocan por el borde no se rechazan (Acopio 1 y 2).
 - **Los nombres** (:class:`NamesTest`): el código ``STK-nnn`` es correlativo **por ámbito** y el nombre es único en él.
 - **La detección no llama a** ``refuse_pending`` (spec §8: no mueve celdas).
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_stockpile_prepare.py``.
 """
 
 from __future__ import annotations

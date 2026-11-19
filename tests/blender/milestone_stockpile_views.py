@@ -10,7 +10,7 @@ primeros) y las capas de la huella y los datos de espesor de un cuerpo. Con las 
 restricción), y la cadena ``PLT-001`` «Terreno de V01» (una plataforma «en corte» en un rincón) → detección ``STK-001`` «Acopios» **de la versión** (los
 dos acopios marcados y **un candidato**, el tercer montón) → ``PLT-002`` «Sobre acopio» (rellena por encima del Acopio 2) → ``RMV-001`` «Retirada del
 acopio 2» (con la confirmación de lo apoyado: ``PLT-002`` queda en «apoyo retirado») → ``BDY-001`` (un cuerpo «sobre una base») y ``BDY-002`` (otro «bajo
-un techo») → ``RMV-002`` «Retirada con pared» (del Acopio 1, con **una pared forjada** de 4 m a 71° y su motivo, como en ``test_removal_ops``:
+un techo») → ``RMV-002`` «Retirada con pared» (del Acopio 1, con **una pared forjada** de 4 m a 71° y su motivo, como en ``milestone_removal_ops``:
 ``BDY-001`` queda en «apoyo retirado»). Las pruebas, **en el orden de sus letras** sobre el mismo estado; las cuentas, a mano (los ficheros leídos con bucles de numpy, no el código
 que se prueba):
 
@@ -41,10 +41,10 @@ from unittest import mock
 import bpy
 import numpy as np
 
+from tests.blender import milestone_body_ops as body_ops
+from tests.blender import milestone_removal_ops as rem_ops
 from tests.blender import milestone_stockpile_ce as ce
-from tests.blender import test_body_ops as body_ops
 from tests.blender import test_platform_ops as platform_ops
-from tests.blender import test_removal_ops as rem_ops
 from tests.support import blender_ext
 from tests.support.fake_layout import draw
 
@@ -69,7 +69,7 @@ def _module(name: str) -> Any:
 
 
 def survey() -> np.ndarray:
-    """El levantamiento de ``test_removal_ops`` con un tercer montón de la misma forma (12 m de pie y 4 m de altura) en :data:`THIRD`."""
+    """El levantamiento de ``milestone_removal_ops`` con un tercer montón de la misma forma (12 m de pie y 4 m de altura) en :data:`THIRD`."""
     x, y = platform_ops.centers()
     found = rem_ops.survey()
     cx, cy = THIRD
@@ -535,7 +535,7 @@ class StockpileViewsTest(platform_ops.CreatePlatformTest):
         self.assertIn(ce.REMOVAL_NAME, state[1])
 
     def test_g_b_the_wall_of_a_removal_is_told_with_its_height_its_place_and_who_confirmed_it(self) -> None:
-        """RF-016-15, RF-015-25 (M5): la retirada con una pared de 4 m a 71° (la forjada de ``test_removal_ops``) enseña **la pared** con su altura y
+        """RF-016-15, RF-015-25 (M5): la retirada con una pared de 4 m a 71° (la forjada de ``milestone_removal_ops``) enseña **la pared** con su altura y
         su lugar, **quién la confirmó, cuándo y con qué motivo**, **lo apoyado** (los m³ y quién lo confirmó) y **lo que perdió el apoyo** (el cuerpo)."""
         self.load(WALL_NAME)
         self.choose(WALL_NAME)

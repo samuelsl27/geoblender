@@ -2,7 +2,7 @@
 """«Calcular» la detección de acopios y su resumen (spec 016, T12; HU-016-1; RF-016-04, RF-016-05, RF-016-06, RF-016-07,
 RF-016-08; RF-015-03, RF-015-13, RF-015-29; RNF-016-03, RNF-016-05; plan 016 §5.3.2 y §5.4 A0) y crearla (spec 016, T13;
 RF-016-02, RF-016-08, RF-016-09, RF-016-10, RF-015-01, RF-015-02, RF-015-04, RF-015-16, RNF-016-07): casos (a), (b) y (c) de
-``test_stockpile_operation`` (repetir con candidatos, el hito ``milestone_stockpile_repeat``); y recalcularla y consultar lo
+este módulo (repetir con candidatos, el hito ``milestone_stockpile_repeat``); y recalcularla y consultar lo
 que dejó (spec 016, T14; RF-016-10, RF-015-02, RF-015-04, RF-015-16, CE-016-01: casos (d) y (e); reproducirla desde lo
 congelado, el hito ``milestone_stockpile_recompute``).
 
@@ -32,6 +32,7 @@ Sobre la cantera sintética de los acopios (``tests.support.stockpile_data``, T0
   detección de V01 y la del proyecto, recalculadas como operación nueva que sustituye a la anterior **con la misma
   identidad**, lo que dejó, consultable por superficie (solo las al día), y el umbral de la 011 cambiado: las dos obsoletas con
   su causa y «Recalcular lo obsoleto» las repite.
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_stockpile_operation.py``.
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ from tests.support import quarry_fixtures as qfx
 from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
-from tests.unit.design import test_stockpile_prepare as tp
+from tests.unit.design import milestone_stockpile_prepare as tp
 from tests.unit.design.test_stockpile_candidates import cparams
 from tests.unit.design.test_stockpile_footprint import params_of
 

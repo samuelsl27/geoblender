@@ -39,11 +39,11 @@ from unittest import mock
 
 import bpy
 
+from tests.blender import milestone_removal_ops as rem_ops
 from tests.blender import milestone_stockpile_ce as ce
+from tests.blender import milestone_stockpile_preview as sp_tests
 from tests.blender import milestone_stockpile_views as views_tests
 from tests.blender import test_platform_ops as platform_ops
-from tests.blender import test_removal_ops as rem_ops
-from tests.blender import test_stockpile_preview as sp_tests
 from tests.support import step_modals
 from tests.support.fake_layout import draw, operator_self
 

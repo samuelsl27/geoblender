@@ -5,8 +5,8 @@ RF-016-13 a RF-016-16, RF-015-15, RF-015-17; plan 016 §5.4 A6 a A9, §5.7 P-9, 
 (``geoblender.des_remove_stockpile``, ``geoblender.des_create_platform``, **«Recalcular lo obsoleto»**, ``geoblender.core_recompute_stale``, el
 modal con su plan) en ``blender -b`` y sin pantalla.
 
-El proyecto de ``test_removal_ops`` (ventana de 60 × 60 m con celdas de 2 m, V01 y V02; un levantamiento con dos montones de 4 m de altura, a 16 y 44
-m, y una capa de marcas) con **una detección de la versión**: con la del proyecto (``test_removal_ops``) la retirada no deja «apoyo retirado» a lo
+El proyecto de ``milestone_removal_ops`` (ventana de 60 × 60 m con celdas de 2 m, V01 y V02; un levantamiento con dos montones de 4 m de altura, a 16 y 44
+m, y una capa de marcas) con **una detección de la versión**: con la del proyecto (``milestone_removal_ops``) la retirada no deja «apoyo retirado» a lo
 que se apoyaba (hallazgo de la T20 (b)), así que la detección se hace sobre la superficie de V01 que deja ``PLT-001`` «Terreno de V01» (una
 plataforma «en corte» en una esquina, por encima del terreno: no corta nada) y de ella parte ``PLT-002`` «Sobre acopio», el relleno de la 015 «en
 corte y relleno» a 108 m, que cubre el Acopio 2. Las pruebas, **en el orden de sus letras** sobre el mismo estado; las cuentas, a mano (los ficheros
@@ -35,8 +35,8 @@ from unittest import mock
 import bpy
 import numpy as np
 
+from tests.blender import milestone_removal_ops as rem_ops
 from tests.blender import test_platform_ops as platform_ops
-from tests.blender import test_removal_ops as rem_ops
 from tests.support import blender_ext
 
 TERRAIN = ("Terreno", ((52.0, 52.0), (58.0, 52.0)), 4.0, 130.0, 0.0)

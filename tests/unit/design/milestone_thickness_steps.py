@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """El cuerpo apoyado por pasos con 20 y 100 ha, los tiempos del plan §7.3 (spec 016, T24; HU-016-4; RF-016-20; RNF-016-02,
 RNF-016-03; plan 016 §5.4 A11, §5.7 P-7, §7.3). Va al paso «hito» de ``check.py --completo`` (P-13: pasan de 1 s); lo rápido
-—la igualdad bit a bit, las bandas, los 8.000 puntos colineales, 12 ha por pasos— está en ``test_thickness_steps.py`` y en
-``tests/unit/gis/test_cdt_steps.py``, en el «verde».
+—la igualdad bit a bit, las bandas, los 8.000 puntos colineales, 12 ha por pasos— está en ``milestone_thickness_bands.py`` y en
+``tests/unit/gis/milestone_cdt_steps.py``, que desde la T43 (RNF-016-06) también son hitos.
 
 Con datos en líneas (secciones) los triángulos entre dos secciones diagonales son astillas de caja grande y ``tin_to_raster`` cuesta
 lo que suman esas cajas (plan §2.1): 100 ha de secciones, 6,9 s de una pieza. Por bandas el total baja (más cabe en la caché) y **cada
@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 
 from tests.support.package import import_geoblender
-from tests.unit.design import test_thickness_steps as steps
+from tests.unit.design import milestone_thickness_bands as steps
 
 thickness = import_geoblender("design.thickness")
 

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Recalcular la detección de acopios y reproducirla desde lo congelado (spec 016, T14; HU-016-1; RF-016-10, RF-015-02,
-RF-015-04, RF-015-16, RF-009-11; CE-016-01; plan 016 §5.1, §5.3.1 y §8): el hito de ``test_stockpile_operation`` (casos (d) y
+RF-015-04, RF-015-16, RF-009-11; CE-016-01; plan 016 §5.1, §5.3.1 y §8): el hito de ``milestone_stockpile_detection`` (casos (d) y
 (e): lo ligero está en ``RecomputeTest``). Va al paso «hito» (P-13): proyectos de 2 m con congelar y reproducir, y varias
 detecciones recalculadas.
 
@@ -32,9 +32,9 @@ from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
 from tests.support.versions_fixtures import change_counter, files
+from tests.unit.design import milestone_stockpile_detection as ops
 from tests.unit.design import milestone_stockpile_operation as mso
-from tests.unit.design import test_stockpile_operation as ops
-from tests.unit.design import test_stockpile_prepare as tp
+from tests.unit.design import milestone_stockpile_prepare as tp
 
 builtin = import_geoblender("core.content.builtin")
 contract = import_geoblender("core.provenance.contract")

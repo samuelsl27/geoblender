@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Lo que quedará obsoleto al crear una detección de acopios (spec 016, T12; HU-016-1; RF-015-03, RF-015-13, RF-015-16,
-RF-016-10; plan 016 §5.3.2 y §5.7 P-2): el hito de ``test_stockpile_operation`` (casos (a)).
+RF-016-10; plan 016 §5.3.2 y §5.7 P-2): el hito de ``milestone_stockpile_detection`` (casos (a)).
 
 Sobre la cantera de los acopios (rejilla gruesa de 2 m, V01), con operaciones **sintéticas** que hacen de lo que una detección
 deja y de lo que depende de ella (cada una registra su operación con lo que lee y escribe una tabla de juguete, como
@@ -21,8 +21,8 @@ from typing import Any, ClassVar
 
 from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
-from tests.unit.design import test_stockpile_operation as ops
-from tests.unit.design import test_stockpile_prepare as tp
+from tests.unit.design import milestone_stockpile_detection as ops
+from tests.unit.design import milestone_stockpile_prepare as tp
 
 builtin = import_geoblender("core.content.builtin")
 contract = import_geoblender("core.provenance.contract")

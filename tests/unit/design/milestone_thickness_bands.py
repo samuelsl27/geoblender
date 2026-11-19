@@ -18,6 +18,7 @@ La T23 dejó la triangulación y la rasterización del TIN como **una unidad cad
 - **Cada llamada ≤ 0,2 s** (:class:`CallsTest`, RNF-016-03): con 12 ha de datos en secciones diagonales (de una pieza, el TIN solo
   costaba 0,44 s) ninguna llamada de ``body_steps`` pasa de 0,2 s. Las ventanas de 20 y 100 ha (los 1,0 y los 6,9 s del plan §7.3)
   están en ``milestone_thickness_steps.py`` (P-13).
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_thickness_steps.py``.
 """
 
 from __future__ import annotations

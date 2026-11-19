@@ -3,7 +3,7 @@
 RF-012-31, RF-016-09; DIFF-012 §2, D-a; plan 016 §5.5; comprobación manual M7), en ``blender -b`` y sin pantalla. Es un hito (P-13: proyecto en la
 rejilla de 2 m); el «verde» tiene ``test_verify_stockpile_ui.py`` (las líneas, la lectura una vez por partida y la ventana de lo guardado).
 
-El proyecto de ``test_removal_ops`` (ventana de 60 × 60 m con celdas de 2 m, V01 y V02, el levantamiento con **dos** montones, las marcas
+El proyecto de ``milestone_removal_ops`` (ventana de 60 × 60 m con celdas de 2 m, V01 y V02, el levantamiento con **dos** montones, las marcas
 y la detección ``STK-001`` «Acopios», **del proyecto**, hecha sobre el levantamiento) con una rejilla más, la **retirada** (el plano sin los
 montones). Con «Verificar un diseño por recinto…» (``geoblender.res_verify_constraints``) real, las pruebas, en el orden de sus letras sobre el
 mismo estado:
@@ -34,8 +34,8 @@ from unittest import mock
 import bpy
 import numpy as np
 
+from tests.blender import milestone_removal_ops as rem_ops
 from tests.blender import test_platform_ops as platform_ops
-from tests.blender import test_removal_ops as rem_ops
 from tests.support.fake_layout import FakeLayout, operator_self
 
 VERIFY = "geoblender.res_verify_constraints"

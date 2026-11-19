@@ -11,7 +11,7 @@ Se prueba con:
 
 - **cuentas a mano**: bloques de altura y área conocidas (los umbrales justo en su valor y un poco más allá), las celdas
   de 2 m (el área es en m², no en celdas) y la regla de la mitad con enteros;
-- **implementaciones independientes**: la apertura por fuerza bruta con enteros (``test_morphology.brute``) y las
+- **implementaciones independientes**: la apertura por fuerza bruta con enteros (``milestone_morphology.brute``) y las
   zonas, la huella y el volumen de A3 por bucles de Python (``design_oracles``, ``hand_grow``), que dan **todo A4 a mano**
   sobre una rejilla de 40 × 40 celdas y, sobre la rejilla entera, el mismo resultado que la ventana de cada candidato;
 - **la cantera de la 016** (``tests.support.stockpile_data``): el levantamiento de CE-016-01 con sus 5 acopios marcados y
@@ -34,7 +34,7 @@ from tests.support import design_oracles as oracles
 from tests.support import quarry_fixtures as qfx
 from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
-from tests.unit.design.test_morphology import brute
+from tests.unit.design.milestone_morphology import brute
 from tests.unit.design.test_stockpile_footprint import MARGIN_M, THRESHOLD_M, hand_grow, params_of
 
 gis = import_geoblender("gis")
@@ -152,7 +152,7 @@ class SurveyTest(unittest.TestCase):
         self.assertIs(found.grid, self.grid)
 
     def test_the_zones_and_the_filters_are_the_brute_force_ones(self) -> None:
-        """RF-016-08: con la apertura de 31 m por **fuerza bruta con enteros** (``test_morphology.brute``, sin
+        """RF-016-08: con la apertura de 31 m por **fuerza bruta con enteros** (``milestone_morphology.brute``, sin
         ``design.morphology``) y las zonas por una búsqueda en anchura (``hand_zones``), salen las mismas 18 zonas, con
         los mismos contadores (con marca, pequeñas, grandes) y, las que pasan, con las mismas celdas que las zonas de los
         candidatos, en el mismo orden."""
@@ -343,7 +343,7 @@ HAND_MOUNDS = (
 
 def hand_candidates(z: np.ndarray, grid: object, perimeter: np.ndarray, marked: np.ndarray, *, open_diameter_m: float,
                     min_height_m: float, min_area_m2: float, max_area_m2: float, margin_m: float) -> list[tuple]:
-    """A4 entero **a mano** (RF-016-08): la apertura por fuerza bruta con enteros (``test_morphology.brute``), las zonas
+    """A4 entero **a mano** (RF-016-08): la apertura por fuerza bruta con enteros (``milestone_morphology.brute``), las zonas
     por una búsqueda en anchura, el filtro del área y de las marcas, y A2 y A3 de cada zona con ``hand_grow`` sobre la
     rejilla entera. Da ``(zona, huella, plano, volumen)`` por candidato, en el orden de lectura."""
     twice = round(open_diameter_m / grid.dx)

@@ -7,11 +7,11 @@ objetos**, las **marcas de una detección de acopios con su margen** (``EntityPl
 T35 con su botón «Vista previa») y la **zona de coronación de un contrafuerte** (``EntityPlan(buttress=…)``: el botón «Vista previa» del
 diálogo de «Contrafuerte…», que ya existe), con su leyenda y su resumen; se quita al cancelar, al Esc a mitad del cálculo, al crear y al
 conmutar a la interfaz de Blender. Lo que dibuja se prueba en sus lotes, sus nombres y sus textos en píxeles, no en píxeles de pantalla
-(``docs/trampas.md`` §3: sin GPU en ``blender -b``); lo que prepara, en ``tests/unit/design/test_stockpile_preview.py``.
+(``docs/trampas.md`` §3: sin GPU en ``blender -b``); lo que prepara, en ``tests/unit/design/milestone_stockpile_preview.py``.
 
 El proyecto de ``test_platform_ops`` (ventana de 60 × 60 m con celdas de 2 m, V01 y V02, la ladera ``100 + 0,25·y + 0,0625·x``) con una capa de
 marcas (dos de 20 × 20 m: 10 × 10 celdas, la primera con un margen de 4 m y su material y la segunda sin ellos), otra de cien marcas de
-4 × 4 m (2 × 2 celdas) y otra de dos marcas que se solapan, la capa de las zonas de coronación de ``test_buttress_ops`` y el perfil de banco
+4 × 4 m (2 × 2 celdas) y otra de dos marcas que se solapan, la capa de las zonas de coronación de ``milestone_buttress_ops`` y el perfil de banco
 ``EXPL_10_60_6``. Las pruebas, en el orden de sus letras sobre el mismo estado:
 
 - RF-016-23 (a): las piezas de la orden: el plan con una sola cosa, el botón «Vista previa» y la propiedad oculta de «Contrafuerte…», sus
@@ -28,6 +28,7 @@ marcas (dos de 20 × 20 m: 10 × 10 celdas, la primera con un margen de 4 m y su
 - Principio 8 (z): desactivar Geoblender con la vista previa activa lo quita todo.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_stockpile_preview.py``.
 """
 
 import statistics
@@ -41,7 +42,7 @@ import bpy
 import numpy as np
 from mathutils import Matrix
 
-from tests.blender import test_buttress_ops as buttress_ops
+from tests.blender import milestone_buttress_ops as buttress_ops
 from tests.blender import test_design_preview as preview_tests
 from tests.blender import test_platform_ops as platform_ops
 from tests.support import blender_ext, step_modals

@@ -48,9 +48,9 @@ from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
 from tests.support.res_fixtures import write_grids
 from tests.unit.design import milestone_stockpile_ce as ce
+from tests.unit.design import milestone_stockpile_prepare as tp
 from tests.unit.design import milestone_stockpile_supports as sup
 from tests.unit.design import test_removal_operation as rem
-from tests.unit.design import test_stockpile_prepare as tp
 
 access = import_geoblender("gis.masks.access")
 cmodel = import_geoblender("core.constraints.model")

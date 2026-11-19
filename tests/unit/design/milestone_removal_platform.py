@@ -28,10 +28,10 @@ from tests.support import quarry_fixtures as qfx
 from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
 from tests.support.versions_fixtures import change_counter, files
+from tests.unit.design import milestone_stockpile_detection as ops
 from tests.unit.design import milestone_stockpile_supports as sup
 from tests.unit.design import test_platform_operation as platform_ops
 from tests.unit.design import test_removal_operation as rem
-from tests.unit.design import test_stockpile_operation as ops
 
 design_params = import_geoblender("design.params")
 entities = import_geoblender("design.entities")

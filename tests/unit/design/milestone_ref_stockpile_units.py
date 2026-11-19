@@ -32,8 +32,8 @@ import numpy as np
 from tests.support import res_fixtures as fx
 from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
-from tests.unit.design import test_stockpile_operation as ops
-from tests.unit.design import test_stockpile_prepare as tp
+from tests.unit.design import milestone_stockpile_detection as ops
+from tests.unit.design import milestone_stockpile_prepare as tp
 
 core_params = import_geoblender("core.params")
 geotiff_reader = import_geoblender("gis.geotiff.reader")

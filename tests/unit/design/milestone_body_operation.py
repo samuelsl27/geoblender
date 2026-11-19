@@ -13,6 +13,7 @@ el cuerpo, lo que hizo para la retirada (T20).
   los rechazos, sin escribir; «Crear» es **una** transacción (un fallo no deja nada y ninguna entrada se modifica); «bajo un techo» deja
   la base y el espesor dispersos y no cambia la superficie; «sobre una base» deja la superficie con el techo; nadie parte de un cuerpo
   «bajo un techo»; recalcular y reproducir.
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_body_operation.py``.
 """
 
 from __future__ import annotations
@@ -28,9 +29,9 @@ import numpy as np
 from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
 from tests.support.versions_fixtures import change_counter, files
+from tests.unit.design import milestone_stockpile_detection as ops
+from tests.unit.design import milestone_stockpile_prepare as tp
 from tests.unit.design import test_removal_operation as rop
-from tests.unit.design import test_stockpile_operation as ops
-from tests.unit.design import test_stockpile_prepare as tp
 
 core_params = import_geoblender("core.params")
 design_params = import_geoblender("design.params")

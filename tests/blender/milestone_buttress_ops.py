@@ -17,6 +17,7 @@ coronación y una segunda) y el perfil de banco ``EXPL_10_60_6`` (10 m de banco,
 proyecto. Las pruebas, en el orden de sus letras sobre el mismo estado.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_buttress_ops.py``.
 """
 
 import json
@@ -29,7 +30,7 @@ from unittest import mock
 import bpy
 import numpy as np
 
-from tests.blender import test_body_ops as body_ops
+from tests.blender import milestone_body_ops as body_ops
 from tests.blender import test_platform_ops as platform_ops
 from tests.support import blender_ext, step_modals
 from tests.support.fake_layout import draw, operator_self

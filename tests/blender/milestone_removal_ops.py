@@ -17,6 +17,7 @@ detección de acopios ``Acopios`` (``STK-001``, **del proyecto**: la superficie 
 cada una de la anterior. Las pruebas, en el orden de sus letras sobre el mismo estado.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_removal_ops.py``.
 """
 
 import dataclasses

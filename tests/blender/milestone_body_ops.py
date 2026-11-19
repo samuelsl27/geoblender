@@ -14,6 +14,7 @@ de huellas (un polígono de 48 × 48 m), una capa de puntos con el espesor de se
 orden de sus letras sobre el mismo estado.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_body_ops.py``.
 """
 
 import json
@@ -392,7 +393,7 @@ class CreateBodyTest(platform_ops.CreatePlatformTest):
         """RF-016-20, H-9, RF-015-04, M2: «Sobre una base» (la ladera es el apoyo y la partida) deja la superficie con el techo
         (``des_psf_``), su espesor, su huella y su informe, y **encadena**: la entidad parte de su partida y su superficie se ofrece como
         partida; la superficie del cuerpo «bajo la ladera» **no se ofrece como partida** (el dominio la rechaza con ``des.chainless_start``, de
-        lo que se encarga ``test_body_operation``) y Blender no admite una opción que no está en la lista: no se escribe nada y no queda un
+        lo que se encarga ``milestone_body_operation``) y Blender no admite una opción que no está en la lista: no se escribe nada y no queda un
         cálculo abierto; la superficie del cuerpo sobre la base crece sobre la ladera donde hay espesor."""
         self.refresh()
         before = self.state()

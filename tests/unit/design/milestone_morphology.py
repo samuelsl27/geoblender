@@ -11,6 +11,7 @@ matrices pequeñas (el disco sale de la rejilla: los bordes) y en una de 100 × 
 dato»; los tipos; los rechazos; la variante por pasos (mismo resultado, un paso por banda con
 presupuesto 0 y pasos de ≤ 0,05 s con el de la interfaz, sobre filas de 1.699 columnas, como la
 rejilla de ``plan.md`` §7.3); y ``fill_holes`` frente a una inundación de referencia.
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_morphology.py``.
 """
 
 from __future__ import annotations

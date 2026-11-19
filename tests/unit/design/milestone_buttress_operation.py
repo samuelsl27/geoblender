@@ -10,6 +10,7 @@ La cantera de 2 m con la zona de coronación «Contrafuerte del acopio 3» (22 �
 parte de lo que dejó la anterior): «Calcular» no escribe nada; los rechazos (la cota fuera del ancla con la del ancla más próxima, sin
 cota, sin resguardo, por debajo del apoyo…) no escriben; «Crear» es **una** transacción; **la restricción «sin corte» es de la zona de
 coronación y no de toda la huella** (P-8, H-6; resguardo obligatorio: D-19); recalcular, reproducir y encadenar lo que sigue a crearlo.
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_buttress_operation.py``.
 """
 
 from __future__ import annotations
@@ -25,9 +26,9 @@ from tests.support import design_fixtures as dfx
 from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
 from tests.support.versions_fixtures import change_counter, files
+from tests.unit.design import milestone_stockpile_detection as ops
+from tests.unit.design import milestone_stockpile_prepare as tp
 from tests.unit.design import test_removal_operation as rop
-from tests.unit.design import test_stockpile_operation as ops
-from tests.unit.design import test_stockpile_prepare as tp
 
 core_params = import_geoblender("core.params")
 design_params = import_geoblender("design.params")

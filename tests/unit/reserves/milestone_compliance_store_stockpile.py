@@ -47,8 +47,8 @@ from tests.support.package import import_geoblender
 from tests.support.provenance_contract import registered
 from tests.support.res_fixtures import write_grids
 from tests.support.versions_fixtures import change_counter, files
-from tests.unit.design import test_stockpile_operation as top
-from tests.unit.design import test_stockpile_prepare as tp
+from tests.unit.design import milestone_stockpile_detection as top
+from tests.unit.design import milestone_stockpile_prepare as tp
 
 gis = import_geoblender("gis")
 core_params = import_geoblender("core.params")

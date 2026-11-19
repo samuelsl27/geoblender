@@ -58,7 +58,7 @@ from tests.support import design_oracles as oracles
 from tests.support import quarry_fixtures as qfx
 from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
-from tests.unit.design.test_morphology import brute
+from tests.unit.design.milestone_morphology import brute
 from tests.unit.design.test_stockpile_footprint import SPIKES, hand_grow, small_scene
 
 gis = import_geoblender("gis")
@@ -815,7 +815,7 @@ class SurveyRun:
 def hand_zone_index(grid: Any, z: np.ndarray, perimeter: np.ndarray) -> dict[tuple[int, int], tuple[tuple[int, int], ...]]:
     """A4 a mano: las zonas conexas (4-conexión, por una búsqueda en anchura: ``oracles.hand_zones``) de las celdas del
     perímetro con ``z − apertura(z) > altura mínima``, con la apertura de ⌀ 31 m **por fuerza bruta con enteros**
-    (``test_morphology.brute``: el mínimo y el máximo de cada celda contra cada desplazamiento del disco, sin
+    (``milestone_morphology.brute``: el mínimo y el máximo de cada celda contra cada desplazamiento del disco, sin
     ``design.morphology``). La apertura no es el plano: sobre una ladera de 3° el disco plano levanta la apertura bajo
     un montón hasta ≈ 0,8 m, así que la zona de un montículo es algo menor que sus celdas a más de la altura mínima.
     Da, por cada celda de una zona, la zona (sus celdas ``(fila, columna)``)."""

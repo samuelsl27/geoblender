@@ -16,6 +16,7 @@ separación de los datos) y el coste estimado.
   cuando se pasa del límite.
 
 El cálculo de las 100 ha de verdad (con el aviso del resultado) está en ``milestone_thickness_steps.py`` (P-13).
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_thickness_estimate.py``.
 """
 
 from __future__ import annotations
@@ -26,8 +27,8 @@ from typing import Any
 from unittest import mock
 
 from tests.support.package import import_geoblender
+from tests.unit.design import milestone_thickness_bands as steps
 from tests.unit.design import test_thickness as tt
-from tests.unit.design import test_thickness_steps as steps
 
 thickness = import_geoblender("design.thickness")
 

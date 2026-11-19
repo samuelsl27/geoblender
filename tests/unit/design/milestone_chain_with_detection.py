@@ -12,6 +12,7 @@ también en la capa de entidades, **una fila por acopio** (``STK-001#<clave>``):
 
 La cantera de los acopios de 2 m con la detección ``Acopios`` (``STK-001``, V01), la plataforma «Sobre el acopio 4» de la 015 y la
 retirada del Acopio 1, **en orden** (``test_a`` a ``test_d``).
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_chain_with_detection.py``.
 """
 
 from __future__ import annotations
@@ -20,9 +21,9 @@ from typing import Any, ClassVar
 
 from tests.support import quarry_fixtures as qfx
 from tests.support.package import import_geoblender
+from tests.unit.design import milestone_stockpile_detection as ops
 from tests.unit.design import milestone_stockpile_supports as sup
 from tests.unit.design import test_removal_operation as rem
-from tests.unit.design import test_stockpile_operation as ops
 
 entities = import_geoblender("design.entities")
 entity_store = import_geoblender("design.entity_store")

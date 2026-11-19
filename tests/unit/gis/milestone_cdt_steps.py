@@ -13,6 +13,7 @@ contrato ``gis.ports.Triangulator`` no cambia y ``triangulate`` es hoy ese mismo
 - los errores (menos de 3 puntos, alineados, repetidos, una arista obligatoria que pasa por un vértice o dos que se cruzan)
   salen **al avanzar** el generador, con el mismo código, campo y valor que ``triangulate``;
 - el avance y la cancelación del trabajo ``gis_triangulate`` (RF-006-28) siguen funcionando, y cerrar a mitad no deja nada.
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_cdt_steps.py``.
 """
 
 from __future__ import annotations

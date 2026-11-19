@@ -3,7 +3,7 @@
 sin escribir nada (spec 016, T32; HU-016-1, HU-016-3; RF-016-23, RF-015-26; plan 016 §5.5; comprobación manual M4).
 
 El dominio de la vista previa (``design.preview.stockpile_preview_steps`` y ``buttress_preview_steps``), sin Blender: lo que el dibujo
-de ``bl.draw.entity`` pinta y dice (sus lotes y su leyenda se prueban en ``tests/blender/test_stockpile_preview.py``). Sobre la cantera
+de ``bl.draw.entity`` pinta y dice (sus lotes y su leyenda se prueban en ``tests/blender/milestone_stockpile_preview.py``). Sobre la cantera
 de los acopios (2 m, 200 × 200 celdas), con sus cinco marcas (cuadrados de 20 × 20 m: **10 × 10 celdas**; el Acopio 3 con su margen de
 6 m y las demás con el de la detección, 10 m) y la zona de coronación «Contrafuerte del acopio 3» (22 × 22 m: 121 celdas). Las cuentas
 se hacen a mano o por fuerza bruta, no con el código:
@@ -15,6 +15,7 @@ se hacen a mano o por fuerza bruta, no con el código:
 - **La zona de coronación** (:class:`ButtressPreviewTest`): sus 121 celdas, su contorno, la zona con su resguardo (fuerza bruta,
   distancia euclídea entre centros) y lo que declarará; sin resguardo, solo la zona y el aviso de que falta; los rechazos de la
   capa y de la geometría, con el mismo texto que «Calcular».
+Spec 016, T43 (RNF-016-06): pasó del «verde» al paso «hito» (P-13), sin cambiar ninguna prueba; antes, ``test_stockpile_preview.py``.
 """
 
 from __future__ import annotations
@@ -28,8 +29,8 @@ import numpy as np
 
 from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
-from tests.unit.design import test_buttress_operation as bop
-from tests.unit.design import test_stockpile_prepare as tp
+from tests.unit.design import milestone_buttress_operation as bop
+from tests.unit.design import milestone_stockpile_prepare as tp
 
 core_model = import_geoblender("core.constraints.model")
 messages = import_geoblender("design.messages")
