@@ -62,7 +62,7 @@ import math
 import shutil
 import tempfile
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date
@@ -705,6 +705,41 @@ def write_layer(project: Any, clock: FakeClock, layer: FieldsLayer) -> None:
                 layer.name, "gis", "vector", datasets.Store.GPKG, layer.name,
                 reader=builtin.GPKG_LAYER.id, role="features", crs_epsg=srs, input_uid=None,
                 immutable=False),), message="Capa de prueba de los acopios")
+
+
+def write_breaklines(project: Any, clock: FakeClock, name: str, lines: Sequence[np.ndarray]) -> None:
+    """Escribe ``lines`` (de cada una, sus vértices ``(n, 3)`` ABSOLUTOS en float64: X, Y y Z) como la tabla de líneas de rotura ``name``
+    (``gis_brk_…``) del proyecto, **la única capa que guarda la Z de las líneas** (``docs/trampas.md`` §6): como la deja la importación de la
+    006 —un ``LINESTRING`` con Z por línea, con su ``line_id``, ``hard`` y ``code``; las filas, las de
+    :func:`gis.store.breakline_rows`— un minuto después (spec 016, T49, C-12: hasta ahora ningún ayudante de las pruebas de los cuerpos
+    la escribía, y la Z de las líneas 3D como espesor no se probaba con un proyecto de verdad)."""
+    from tests.support import design_fixtures as dfx
+    from tests.support.provenance_contract import registered
+
+    contract = import_geoblender("core.provenance.contract")
+    operations = import_geoblender("core.provenance.operations")
+    datasets = import_geoblender("core.datasets")
+    builtin = import_geoblender("core.content.builtin")
+    gstore = import_geoblender("gis.store")
+    breaklines = import_geoblender("gis.breaklines")
+    srs = int(project.record.crs_epsg)
+    rows = gstore.breakline_rows([breaklines.Breakline(f"S{number}", np.ascontiguousarray(line, dtype=np.float64))
+                                  for number, line in enumerate(lines, start=1)], srs)
+    writer = contract.OperationDef(dfx.LAYERS_TYPE, "1.0", "gis", "Layers of the tests", False)
+    with registered(writer):
+        clock.advance(minutes=1)
+        handle = operations.begin_operation(project, dfx.LAYERS_TYPE, settings={"name": name}, executor="blender")
+        with project.write_transaction() as conn:
+            conn.execute(f'CREATE TABLE "{name}" (fid INTEGER PRIMARY KEY NOT NULL, geom LINESTRING, line_id TEXT NOT NULL DEFAULT \'\', '
+                         f"hard BOOLEAN NOT NULL, code TEXT NOT NULL DEFAULT '')")
+            conn.execute("INSERT INTO gpkg_contents (table_name, data_type, identifier, description, srs_id) "
+                         "VALUES (?, 'features', ?, '', ?)", (name, name, srs))
+            conn.execute("INSERT INTO gpkg_geometry_columns (table_name, column_name, geometry_type_name, "
+                         "srs_id, z, m) VALUES (?, 'geom', 'LINESTRING', ?, 1, 0)", (name, srs))
+            conn.executemany(f'INSERT INTO "{name}" (geom, line_id, hard, code) VALUES (?, ?, ?, ?)', rows)
+            handle.complete(conn, outputs=(datasets.DatasetSpec(
+                name, "gis", "vector", datasets.Store.GPKG, name, reader=builtin.GPKG_LAYER.id, role="features",
+                crs_epsg=srs, input_uid=None, immutable=False),), message="Líneas 3D de prueba de los acopios")
 
 
 # --- El proyecto ------------------------------------------------------------------------------------------

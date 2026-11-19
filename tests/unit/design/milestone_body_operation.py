@@ -254,6 +254,8 @@ class BodyOperationTest(BodyCase):
         section = sdata.thickness_sections().lines_z[0][:, :2]
         sdata.write_layer(cls.project, cls.clock, sdata.FieldsLayer(LINES_LAYER, "line", (((section,),),), ("S1",), {"espesor": (1.0,)}))
         cls.clock.advance(minutes=1)
+        sdata.write_breaklines(cls.project, cls.clock, BRK_LAYER, sdata.thickness_sections().lines_z)  # T49, C-12: las secciones con su Z
+        cls.clock.advance(minutes=1)
 
     # --- Calcular ------------------------------------------------------------------------------------------------------
 
@@ -337,6 +339,34 @@ class BodyOperationTest(BodyCase):
         self.assertEqual(outcome.tin_points, outcome.data_cells - outcome.direct_cells)
         self.assertEqual(calculation.summary.notices, outcome.notices)
         calculation.discard()
+
+    def test_a_the_z_of_the_3d_lines_of_the_project_is_the_thickness_of_the_body_from_the_layer_to_the_surface(self) -> None:
+        """RF-016-20, RF-016-01, RF-009-11 (T49, C-12 de la verificación única; decisión 18/11/2026): con una capa de líneas de rotura
+        ``gis_brk_`` **de verdad** en el proyecto (``sdata.write_breaklines``: un ``LINESTRING`` con Z por sección, como la deja la
+        importación de la 006; hasta ahora la Z solo se probaba con las líneas ya leídas y con una tabla congelada), ``data_from`` ``z``
+        lee del proyecto (``load_features`` conserva la Z, bit a bit) los mismos 15 datos que la capa de puntos, marcados como secciones,
+        y el cuerpo sale **igual** que con los puntos —el espesor, la base, el techo y el volumen, bit a bit—, reproduce cada dato a
+        ≤ 10⁻⁹ m en su celda y no modifica la capa de líneas ni deja nada escrito."""
+        data = sdata.thickness_sections()
+        layer_before = self.record(BRK_LAYER).content_sha256
+        request = asked(data_layer=BRK_LAYER, field="Z", data_from="z")
+        read = supported_store.read_thickness(self.project, request)
+        np.testing.assert_array_equal(read.points, data.points)
+        self.assertTrue(read.sections, "son secciones: el TIN de una huella grande es caro con ellas")
+        before = self.state()
+        by_z, by_points = self.calculate(request), self.calculate(asked())
+        for name in ("thickness", "base", "top"):
+            np.testing.assert_array_equal(getattr(by_z.outcome, name), getattr(by_points.outcome, name), name)
+        self.assertEqual((by_z.outcome.volume_m3, by_z.outcome.thickness_max_m), (by_points.outcome.volume_m3, by_points.outcome.thickness_max_m))
+        self.assertEqual((by_z.summary.data_layer, by_z.summary.sense), (BRK_LAYER, "under_roof"))
+        window = by_z.outcome.window
+        for x, y, wanted in data.points:
+            row, col = int((GRID.north - y) // GRID.dy), int((x - GRID.west) // GRID.dx)
+            self.assertLessEqual(abs(by_z.outcome.thickness[row - window[0].start, col - window[1].start] - wanted), EXACT, (row, col))
+        by_z.discard()
+        by_points.discard()
+        self.assertEqual((self.state(), self.temporaries()), (before, []))
+        self.assertEqual(self.record(BRK_LAYER).content_sha256, layer_before, "la capa de líneas no cambia")
 
     def test_a_what_is_far_from_the_data_is_warned_with_its_area_volume_and_place_and_can_still_be_created(self) -> None:
         """RF-016-21 (B9, D-9): con una distancia máxima de 20 m **las celdas a más de ella de los datos se avisan** con su área, su
@@ -545,6 +575,27 @@ class BodyOperationTest(BodyCase):
         self.assertEqual(caught.exception.code, "des.chainless_start")
         self.assertEqual((self.state(), self.temporaries()), (before, []))
 
+    def test_f_the_buttress_neither_starts_from_nor_rests_on_the_surface_of_a_body_under_a_roof(self) -> None:
+        """H-9, RF-016-17, RF-016-20 (T49, C-9 de la verificación única): lo mismo con **el contrafuerte** (que ``test_f`` de arriba
+        prueba con otro cuerpo, una retirada y una plataforma): ni su partida ni su superficie de apoyo pueden ser ``entity:BDY-001``,
+        el cuerpo «bajo un techo» (que no deja superficie): se rechaza con ``des.chainless_start`` **nombrando las dos entidades**, el
+        campo que se rechaza (``start`` o ``support``), **antes de calcular y sin escribir nada ni dejar un temporal**."""
+        fields = model.ButtressFields(layer=sdata.CROWN_LAYER, crown_field="cota")
+        before = self.state()
+        for field, changes in (("start", {"start": "entity:BDY-001"}), ("support", {"start": SURVEY, "support": "entity:BDY-001"})):
+            with self.subTest(field=field), self.assertRaises(messages.DesignError) as caught:
+                request = model.ButtressRequest(name="Contrafuerte sobre el cuerpo", fields=fields, feature="Contrafuerte del acopio 3",
+                                                profile="expl_10_60_6", crown_m=115.0, guard_m=10.0, **changes)
+                ops.last(steps.buttress_run(self.project, request, version=self.v1.uid, masks=self.masks_v1))
+            error = caught.exception
+            self.assertEqual(error.code, "des.chainless_start")
+            self.assertEqual((error.values["entity"], error.values["other"], error.values["value"]),
+                             ("Contrafuerte sobre el cuerpo", ROOF, "entity:BDY-001"))
+            self.assertTrue(str(error.values["field"]).endswith(f".{field}"), error.values["field"])
+            self.assertIn("Contrafuerte sobre el cuerpo", error.text)
+            self.assertIn(ROOF, error.text)
+            self.assertEqual((self.state(), self.temporaries()), (before, []))
+
     def test_g_a_body_on_a_base_leaves_the_surface_with_its_roof_and_chains(self) -> None:
         """RF-016-20, RF-016-01, RF-015-04, P-12: el cuerpo «sobre una base» (la ladera es su apoyo; parte del levantamiento de V01) deja
         la **superficie entera** con el techo, ``máx(partida, apoyo + espesor)`` donde se admite relleno y la partida, bit a bit, en
@@ -646,6 +697,23 @@ class BodyOperationTest(BodyCase):
         entera (la T37 lo mide con 2,81 M celdas: ≤ 2 MiB y ≤ 17 MiB)."""
         self.assertLess(self.under_roof_bytes, 200 * 1024, "disperso: unos KiB frente a la superficie entera")
         self.assertGreater(self.on_base_bytes, self.under_roof_bytes)
+
+    def test_k_a_sector_with_the_search_pending_refuses_a_body_on_a_base_naming_it_and_not_one_under_a_roof(self) -> None:
+        """RF-015-07, RF-016-20 (T49, C-8 de la verificación única): el cuerpo «sobre una base» **sí** llama a ``refuse_pending``
+        (mueve celdas) con los sectores que toca el relleno admitido de su ventana: con su búsqueda de intocables **pendiente** se
+        rechaza (``des.sector_pending``) nombrando el sector y la orden que lo busca, sin escribir nada ni dejar un temporal; el cuerpo
+        «bajo un techo» **no** (no mueve ninguna celda: no cambia la superficie de nadie) y se calcula. Como ``test_o`` de la retirada;
+        va el último porque borra las búsquedas del proyecto."""
+        with self.project.write_transaction() as conn:
+            conn.execute("DELETE FROM core_untouchable_search")
+        error = self.refused(asked("Otro sobre la ladera", sense="on_base", start="entity:BDY-002", surface=SURVEY), "des.sector_pending")
+        self.assertIn("Buscar elementos intocables por sector", error.text)
+        self.assertTrue(error.values["codes"], "con los códigos de los sectores pendientes")
+        self.assertIn(str(error.values["value"]), error.text, "nombra los sectores")
+        roof = self.calculate(asked("Otro bajo la ladera", feature=FOOT))
+        self.assertEqual(roof.summary.sense, "under_roof", "«bajo un techo» no mueve celdas: no mira los sectores")
+        roof.discard()
+        self.assertEqual(self.temporaries(), [])
 
 
 if __name__ == "__main__":

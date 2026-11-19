@@ -21,7 +21,8 @@ de espesor** sueltos y las secciones (líneas 3D con el espesor en su Z). Todo c
   final como último paso, y en la retirada, el contrafuerte y el cuerpo encadena lo que sigue (``after_entity_change``: la
   declaración, las máscaras y la capa de entidades, ``_ChainsEntityLayer``), con sus pasos y sus eventos. Cada llamada del hilo de Blender se mide: lo que hace Geoblender en ella,
   **sin la transacción final** (``DesignWriter.commit`` y ``MaskWriter.commit``: una transacción que no se trocea; el R4 de la 012),
-  ≤ 0,2 s; la transacción, medida aparte, se anota con la llamada en que ocurre (si pasa de 0,2 s, con un aviso: la cifra, para
+  ≤ 0,2 s **en la peor de las** :data:`RUNS` **ejecuciones**, con un tic del reloj de CPU descontado (:func:`check_budget`, T49, E-1: antes
+  se exigía la mediana y el RNF dice «cada llamada»); la transacción, medida aparte, se anota con la llamada en que ocurre (si pasa de 0,2 s, con un aviso: la cifra, para
   Samuel). (a) «Detectar acopios…» con las 20 marcas y los candidatos; (b) «Retirar un acopio…» el mayor y «como plataforma»;
   (c) «Contrafuerte…» de 10 ha; (d) «Cuerpo apoyado…» «sobre una base» de 100 ha con los 10.000 datos sueltos y con las secciones.
   **Cada llamada se mide en CPU del proceso** (``time.process_time()``, que no cuenta lo que gastan otros programas:
@@ -65,8 +66,12 @@ from tests.support import stockpile_scale as scale
 from tests.support.trees import remove_tree
 
 CALL_BUDGET_S = 0.2  # RNF-016-03: lo que hace Geoblender en cada llamada del hilo de Blender
+CLOCK_TICK_S = 0.015625
+"""La resolución del reloj de CPU de Windows (``time.process_time``: 15,625 ms; las cifras de abajo son múltiplos de ella: 78,1, 93,8,
+109,4…). Una llamada medida en ``k`` tics ha tardado de verdad entre ``k − 1`` y ``k + 1``: **solo está por encima del presupuesto**
+si, con **un tic descontado**, lo pasa (T49, E-1)."""
 ESC_BUDGET_S = 2.0  # RNF-016-05: Esc a mitad de cualquier cálculo
-RUNS = 3  # cada orden se mide 3 veces y el presupuesto se exige a la mediana de su peor llamada
+RUNS = 3  # cada orden se mide 3 veces y el presupuesto se exige al MÁXIMO de la peor llamada de cada ejecución (T49, E-1)
 DETECT = "geoblender.des_detect_stockpiles"
 REMOVE = "geoblender.des_remove_stockpile"
 BUTTRESS = "geoblender.des_add_buttress"
@@ -345,6 +350,20 @@ def worst(calls: tuple[pd.Call, ...]) -> pd.Call:
     return max(calls, key=lambda call: call.budgeted_cpu)
 
 
+def check_budget(case: unittest.TestCase, runs: list[pd.Run], *, calculate: bool = True, create: bool = True) -> None:
+    """**El máximo** de la peor llamada de cada ejecución, en «Calcular» y en «Crear» con lo que encadena, no pasa de 0,2 s de CPU sin la
+    transacción final, con **un tic del reloj descontado** (:data:`CLOCK_TICK_S`; T49, E-1 de la verificación única). El RNF-016-03 dice
+    «cada llamada»: la **mediana** de las ejecuciones (lo que se exigía antes) dejaba pasar una ejecución de 0,3 s con dos de 0,15 s, y el
+    cuerpo con 10.000 datos dio 203,1 ms una vez de tres sin que la prueba lo viera."""
+    for index, wanted in ((0, calculate), (1, create)):
+        if wanted:
+            found = max(worst(parts(run)[index]).budgeted_cpu for run in runs)
+            slowest = max((worst(parts(run)[index]) for run in runs), key=lambda call: call.budgeted_cpu)
+            case.assertLessEqual(found - CLOCK_TICK_S, CALL_BUDGET_S,
+                                 f"{runs[0].label}: {'Calcular' if index == 0 else 'Crear'}: la peor llamada de las {len(runs)} ejecuciones, "
+                                 f"{ms(found)} ms de CPU (un tic del reloj descontado): {slowest.text()}")
+
+
 # --- RNF-016-03 y RNF-016-05 ----------------------------------------------------------------------------
 
 
@@ -355,10 +374,11 @@ class Stopped(pe.Stopped):
 class CallsTest(pe._Case):  # noqa: SLF001
     """RNF-016-03 y RNF-016-05 con el proyecto de escala en disco local, en el orden de sus letras sobre el mismo estado: la detección
     de la a la usan la c (retirar) y la g (Esc); las entidades de las demás se descartan al medirlas (de cada superficie parte una
-    sola). Cada orden se mide :data:`RUNS` veces y el presupuesto se exige a la **mediana** de la peor llamada de cada ejecución (como
-    las demás pruebas de rendimiento: una llamada de ≈ 0,15 s de CPU varía unas decenas de ms con el equipo cargado por otros
-    programas). Todo cumple: «Crear» la detección, que era el hueco de la T37 (una sola llamada de ≈ 1 s, fijada con ``assertRaises``),
-    corre por pasos desde la T44 y su prueba (la b) es una afirmación normal."""
+    sola). Cada orden se mide :data:`RUNS` veces y el presupuesto se exige al **máximo** de la peor llamada de cada ejecución, con un
+    tic del reloj descontado (:func:`check_budget`, T49, E-1: el RNF dice «cada llamada» y la mediana de las ejecuciones dejaba pasar
+    una de 0,2 s con otras dos más cortas; una llamada de ≈ 0,15 s de CPU varía unas decenas de ms con el equipo cargado por otros
+    programas: se repite con el equipo en reposo). Todo cumple: «Crear» la detección, que era el hueco de la T37 (una sola llamada de
+    ≈ 1 s, fijada con ``assertRaises``), corre por pasos desde la T44 y su prueba (la b) es una afirmación normal."""
 
     built: pd.Built
     runs: dict[str, list[pd.Run]] = {}
@@ -386,9 +406,10 @@ class CallsTest(pe._Case):  # noqa: SLF001
         report(f"{rnf}: {text} con {count(CELLS)} celdas de 1 m ({len(runs)} ejecuciones; la peor, {count(len(found.calls))} llamadas "
                f"del hilo de Blender, {count(found.events)} eventos del modal, {number(found.seconds, 1)} s; {MACHINE}); la peor llamada "
                f"de «Calcular» de cada ejecución: " + ", ".join(f"{ms(item[0])} ms" for item in each)
-               + f" (mediana {ms(statistics.median(item[0] for item in each))} ms) y de «Crear» y lo que encadena: "
-               + ", ".join(f"{ms(item[1])} ms" for item in each)
-               + f" (mediana {ms(statistics.median(item[1] for item in each))} ms), de CPU; presupuesto "
+               + f" (mediana {ms(statistics.median(item[0] for item in each))} ms, máximo {ms(max(item[0] for item in each))} ms) y de "
+               f"«Crear» y lo que encadena: " + ", ".join(f"{ms(item[1])} ms" for item in each)
+               + f" (mediana {ms(statistics.median(item[1] for item in each))} ms, máximo {ms(max(item[1] for item in each))} ms), de CPU; "
+               f"se exige el máximo con un tic del reloj ({ms(CLOCK_TICK_S)} ms) descontado; presupuesto "
                f"{number(CALL_BUDGET_S * 1000, 0)} ms; la peor ejecución, "
                f"{pd.calls_line(found, f'«{found.label}», con el proyecto en disco local', network_waits=False)}; "
                f"{free_space(self.built.root)}")
@@ -407,13 +428,9 @@ class CallsTest(pe._Case):  # noqa: SLF001
                        f"{number(CALL_BUDGET_S, 1)} s: " + "; ".join(f"{op} {ms(seconds)} ms" for op, seconds in long))
 
     def check_runs(self, runs: list[pd.Run], *, calculate: bool = True, create: bool = True) -> None:
-        """La mediana de la peor llamada de cada ejecución, en «Calcular» y en «Crear» con lo que encadena, no pasa de 0,2 s de CPU
-        sin la transacción final."""
-        for index, wanted in ((0, calculate), (1, create)):
-            if wanted:
-                found = statistics.median(worst(parts(run)[index]).budgeted_cpu for run in runs)
-                self.assertLessEqual(found, CALL_BUDGET_S, f"{runs[0].label}: {'Calcular' if index == 0 else 'Crear'}: "
-                                     f"{worst(parts(runs[0])[index]).text()}")
+        """El **máximo** de la peor llamada de cada ejecución, en «Calcular» y en «Crear» con lo que encadena, no pasa de 0,2 s de CPU
+        sin la transacción final (:func:`check_budget`: antes se exigía la mediana, E-1)."""
+        check_budget(self, runs, calculate=calculate, create=create)
 
     def repeat(self, idname: str, form: Callable[[str], dict[str, Any]], what: str, name: str, *, prefix: str | None) -> list[pd.Run]:
         """La orden ``idname`` :data:`RUNS` veces con un nombre nuevo cada una (``form``: lo pedido con ese nombre) y, si ``prefix`` (el
@@ -465,7 +482,8 @@ class CallsTest(pe._Case):  # noqa: SLF001
         report(f"RNF-016-03: «Crear» la detección con {MARKS} marcas ({count(CELLS)} celdas de 1 m; {MACHINE}) por pasos: {events[0]} "
                f"eventos de su modal; la peor llamada de cada ejecución, "
                + ", ".join(f"{ms(call.budgeted_cpu)} ms" for call in found) + f" de CPU sin la transacción final ({len(runs)} ejecuciones; "
-               f"mediana {ms(statistics.median(call.budgeted_cpu for call in found))} ms; presupuesto "
+               f"mediana {ms(statistics.median(call.budgeted_cpu for call in found))} ms, máximo "
+               f"{ms(max(call.budgeted_cpu for call in found))} ms; presupuesto "
                f"{number(CALL_BUDGET_S * 1000, 0)} ms; la más larga, {found[0].text()}); la transacción final, aparte: "
                + ", ".join(f"{ms(seconds)} ms" for seconds in commits) + " de pared")
         self.assertGreater(min(events), 10, "«Crear» no corre por pasos")
@@ -512,9 +530,11 @@ class CallsTest(pe._Case):  # noqa: SLF001
 
     def test_f_body_with_loose_data(self) -> None:
         """RNF-016-03: «Cuerpo apoyado…» «sobre una base» de 100 ha con los 10.000 datos de espesor sueltos, «Calcular» y «Crear» con
-        lo que encadena: en ninguna llamada sin la transacción final pasa de 0,2 s de CPU. **Va justo** (≈ 0,16 s de CPU, y una
-        ejecución con el equipo cargado llegó a 0,25 s): la unidad de la preparación que lee los 10.000 puntos de la capa y los
-        comprueba (``prepare``) es una sola llamada."""
+        lo que encadena: en ninguna llamada sin la transacción final pasa de 0,2 s de CPU. **Va justo** (≈ 0,16 a 0,17 s de CPU, y una
+        ejecución con el equipo cargado llegó a 0,2 s: 203,1 ms en la verificación única): la unidad de la preparación que lee los
+        10.000 puntos de la capa y los comprueba (``prepare``, ``entity_store._layer``, de la 015) es una sola llamada. Desde la T49 se
+        exige **el máximo** de las ejecuciones (con un tic del reloj descontado: hasta 203,1 ms medidos) y no la mediana: si con el
+        equipo en reposo lo pasa de forma repetible, partir esa lectura es código de la 015 y lo decide la sesión principal."""
         what = "Cuerpo de 100 ha con 10.000 datos sueltos"
         runs = self.repeat(BODY, lambda name: body_form(name, "Cuerpo de 100 ha", self.built.start), what, "Cuerpo de escala",
                            prefix="BDY")
@@ -611,6 +631,50 @@ class CallsTest(pe._Case):  # noqa: SLF001
                f"Esc; nada queda a medias en el proyecto; {MACHINE}): " + "; ".join(stop.text() for stop in stops)
                + f"; presupuesto {number(ESC_BUDGET_S, 0)} s; {free_space(self.built.root)}")
         self.assertLessEqual(worst_stop.wall, ESC_BUDGET_S, worst_stop.text())
+
+
+class BudgetRuleTest(unittest.TestCase):
+    """RNF-016-03 (T49, E-1): lo que exige :func:`check_budget`, sin proyecto, con llamadas de mentira: el **máximo** de las ejecuciones
+    y no la mediana, con un tic del reloj descontado y sin contar la transacción final."""
+
+    @staticmethod
+    def run_of(calculate: float, create: float, *, commit: float = 0.0) -> pd.Run:
+        """Una ejecución de mentira: una llamada de «Calcular» de ``calculate`` s de CPU y una de «Crear» de ``create`` s, de las que
+        ``commit`` s son de la transacción final."""
+        commits = (("des.body", create, commit, 0.0),) if commit else ()
+        calls = (pd.Call("abrir el diálogo (x)", 0.01, 0.01), pd.Call("evento 1 del modal", calculate, calculate),
+                 pd.Call("Crear (x)", create, create, commits=commits))
+        return pd.Run("mentira", calls, calculate + create)
+
+    def test_one_slow_run_of_three_fails_even_if_the_median_passes(self) -> None:
+        """RNF-016-03: una ejecución de 0,3 s con dos de 0,15 s **falla** (la mediana, 0,15 s, lo dejaba pasar: el cuerpo con 10.000
+        datos dio 203,1 ms una vez de tres sin que la prueba lo viera), en «Calcular» y en «Crear»."""
+        for index in (0, 1):
+            with self.subTest(parte=("Calcular", "Crear")[index]):
+                slow = [0.15, 0.30, 0.15]
+                runs = [self.run_of(value if index == 0 else 0.01, value if index == 1 else 0.01) for value in slow]
+                self.assertLessEqual(statistics.median(worst(parts(run)[index]).budgeted_cpu for run in runs), CALL_BUDGET_S)
+                with self.assertRaises(AssertionError) as caught:
+                    check_budget(self, runs)
+                self.assertIn("300,0 ms", str(caught.exception))
+                check_budget(self, [self.run_of(0.15, 0.15)] * RUNS)
+
+    def test_one_tick_of_the_cpu_clock_is_discounted_and_two_are_not(self) -> None:
+        """RNF-016-03: el reloj de CPU de Windows mide de 15,625 ms en 15,625 ms: 203,1 ms (13 tics) pueden ser 187,5 ms, y pasan; 218,8 ms
+        (14 tics), no pueden ser menos de 203,1 ms y fallan."""
+        check_budget(self, [self.run_of(13 * CLOCK_TICK_S, 0.01), self.run_of(0.1, 13 * CLOCK_TICK_S)])
+        for worse in (14 * CLOCK_TICK_S, 0.25):
+            with self.subTest(medido=ms(worse)), self.assertRaises(AssertionError):
+                check_budget(self, [self.run_of(0.1, 0.1), self.run_of(worse, 0.1), self.run_of(0.1, 0.1)])
+
+    def test_the_final_transaction_does_not_count_and_each_part_can_be_left_out(self) -> None:
+        """RNF-016-03, R4 de la 012: una llamada de «Crear» de 0,3 s con 0,25 s de transacción final (que no se trocea) pasa; con
+        ``calculate=False`` o ``create=False``, la parte que no se pide no se mide."""
+        check_budget(self, [self.run_of(0.1, 0.3, commit=0.25)])
+        with self.assertRaises(AssertionError):
+            check_budget(self, [self.run_of(0.1, 0.3, commit=0.05)])
+        check_budget(self, [self.run_of(0.1, 0.3)], create=False)
+        check_budget(self, [self.run_of(0.3, 0.1)], calculate=False)
 
 
 if __name__ == "__main__":

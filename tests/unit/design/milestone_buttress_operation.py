@@ -416,6 +416,20 @@ class ButtressOperationTest(ButtressCase):
             (found,) = [item for item in entity_store.layer_sources(self.project, self.v1, conn=conn) if item.code == "BTR-001"]
         self.assertGreater(entities.runs_cells(found.runs)[0].size, len(self.zone_cells()), "la capa enseña la huella entera")
 
+    # --- Una búsqueda de intocables pendiente ----------------------------------------------------------------------------
+
+    def test_i_a_sector_with_the_search_pending_refuses_the_buttress_naming_it(self) -> None:
+        """RF-015-07, RF-016-17 (T49, C-8 de la verificación única): el contrafuerte **sí** llama a ``refuse_pending`` (mueve celdas) con
+        los sectores que toca el relleno admitido de su ventana: con su búsqueda de intocables **pendiente** se rechaza
+        (``des.sector_pending``) nombrando el sector y la orden que lo busca, **antes de calcular y sin escribir nada ni dejar un
+        temporal**. Como ``test_o`` de la retirada; va el último porque borra las búsquedas del proyecto."""
+        with self.project.write_transaction() as conn:
+            conn.execute("DELETE FROM core_untouchable_search")
+        error = self.refused(asked("Otro contrafuerte", start="entity:BTR-001"), "des.sector_pending")
+        self.assertIn("Buscar elementos intocables por sector", error.text)
+        self.assertTrue(error.values["codes"], "con los códigos de los sectores pendientes")
+        self.assertIn(str(error.values["value"]), error.text, "nombra los sectores")
+
 
 if __name__ == "__main__":
     unittest.main()

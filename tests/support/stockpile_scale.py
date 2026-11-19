@@ -237,13 +237,17 @@ SECTION_SPECS: dict[str, tuple[tuple[float, float, float, float], float, int]] =
     "20": (BODY_BOXES["Cuerpo de 20 ha"], 50.0, 14),
     "100": (BODY_BOXES["Cuerpo de 100 ha"], 100.0, 10),
     "100 anchas": (BODY_BOXES["Cuerpo de 100 ha"], 200.0, 5),
+    "100 anchas 8": (BODY_BOXES["Cuerpo de 100 ha"], 200.0, 8),
 }
 """Las secciones de cada tamaño: la caja, la separación entre líneas y cuántas: de 20 ha (14 líneas a 50 m: ≈ 3.700 datos; el plan
-midió 3.584), de 100 ha (**10 a 100 m: los 7.500 datos de la T24**; el plan midió 7.985) y de 100 ha con las líneas al doble de
+midió 3.584), de 100 ha (**10 a 100 m: los 7.500 datos de la T24**; el plan midió 7.985), de 100 ha con las líneas al doble de
 separación (5 a 200 m: 141 m entre ellas, ≈ 3.700 datos; más astillas largas, solo para medir cuánto sube el cálculo; sin
-presupuesto)."""
-SECTION_NAMES = {"20": "gis_brk_secciones_20", "100": "gis_brk_secciones_100", "100 anchas": "gis_brk_secciones_100_anchas"}
-"""Las tres tablas de líneas 3D del proyecto de escala."""
+presupuesto) y de 100 ha con **8 a 200 m (4.600 datos: 500, 700, 900, 900, 700, 500, 300 y 100 por línea)**, el caso de más de 10 s
+de «Calcular» a «Crear» de la T37 y la T44 (10,09 s calculados, 11,3 s medidos) que fija ``test_i`` de ``test_stockpiles_perf.py``
+(T49, E-4)."""
+SECTION_NAMES = {"20": "gis_brk_secciones_20", "100": "gis_brk_secciones_100", "100 anchas": "gis_brk_secciones_100_anchas",
+                 "100 anchas 8": "gis_brk_secciones_100_anchas_8"}
+"""Las cuatro tablas de líneas 3D del proyecto de escala."""
 
 
 def rectangle_ring(box: tuple[float, float, float, float]) -> np.ndarray:

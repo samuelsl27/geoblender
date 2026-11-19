@@ -31,7 +31,13 @@ coronación (2 y 10 ha), las huellas de los cuerpos (1, 18, 20 y 100 ha), los **
   100 ha «sobre una base» y «bajo un techo», y el de 18 ha «bajo un techo» por un 3 %) **fijan el hueco** con ``assertRaises``
   (la prueba pasa mientras el hueco esté y se pone roja cuando se cierre: ``expectedFailure`` no es verde, TST-07) y su cifra
   impresa dice «NO SE CUMPLE»: el presupuesto es el de la spec, que decide Samuel (``tasks.md``, «Para Samuel», 3), no esta
-  prueba.
+  prueba. **El hueco está acotado** (T49, E-2 de la verificación única): ``assertRaises`` solo dice «supera el presupuesto» y
+  pasaría con cualquier tamaño (de 21 a 200 MiB seguiría en verde), así que cada una de esas pruebas afirma, además, un **techo
+  medido** (:data:`BODY_GAP_CEILING_BYTES`, :data:`ROOF_GAP_CEILING_BYTES`: lo medido más ≈ 5 %): que el cuerpo empeore también
+  la pone roja. Si Samuel decide subir el presupuesto, la afirmación pasa a la normal con la cifra nueva y el techo se quita.
+- RNF-016-02 con secciones muy separadas (:meth:`CalculateTest.test_i_body_with_8_wide_sections_100_ha_is_over_the_budget_and_warns`, T49, E-4): **no se
+  cumple** (11,3 s de «Calcular» a «Crear», frente a 10 s) y la prueba lo fija **con su aviso** (``des.body_sections_large``, T44) y
+  un techo de tiempo (≤ 15 s), sin pretender cumplir el RNF: que el hueco quede escrito en una prueba y no solo en la prosa.
 
 RNF-012-02 con la base de los acopios (la verificación de la 012 con una banda más por final) lo mide ``tests/rendimiento/res/
 test_compliance_perf.py`` (T31): no se repite aquí. Esc a mitad de cada cálculo (RNF-016-05) y lo que hace Geoblender en cada
@@ -74,6 +80,15 @@ DETECTION_BUDGET_BYTES = 2 * MIB  # RNF-016-07: una detección de 9 acopios y 38
 ENTITY_BUDGET_BYTES = 17 * MIB  # RNF-016-07: una retirada, un contrafuerte o un cuerpo «sobre una base»
 REVISION_BUDGET_BYTES = int(0.35 * 1024**3)  # RNF-016-07: una revisión con 20 de ellos
 ROOF_BUDGET_BYTES = 2 * MIB  # RNF-016-07: un cuerpo «bajo un techo» (sus datos dispersos)
+BODY_GAP_CEILING_BYTES = 22 * MIB
+"""El techo **medido** del hueco del cuerpo «sobre una base» de 100 ha (T49, E-2): 21,09 a 21,11 MiB medidos (la superficie entera,
+≈ 16,4 MiB, más el espesor disperso, más las tablas) más un 4 %: más que esto es que el cuerpo ha empeorado, no el hueco de siempre."""
+ROOF_GAP_CEILING_BYTES = {"18": int(2.2 * MIB), "100": int(11.5 * MIB)}
+"""Los techos **medidos** del hueco del cuerpo «bajo un techo» (T49, E-2; sus datos dispersos): 18 ha, 2,06 MiB medidos (el
+presupuesto es de 2) y 100 ha, 10,60 MiB; con un 7 % y un 8 % más (≈ 0,11 MiB por hectárea)."""
+WIDE_SECTIONS_BUDGET_S = 15.0
+"""El techo de tiempo del cuerpo con 8 secciones a 200 m (T49, E-4): 11,3 s medidos (10,09 s calculados): el RNF-016-02 (10 s) **no
+se cumple** en ese caso y esta cifra no lo relaja: fija el hueco con un techo para que empeorar ponga la prueba roja."""
 RUNS = 5  # como la 013 a la 015 (su spec §5): mediana de 5
 NETWORK_RUNS = 3  # en Z: cada ejecución escribe superficies de 17 MiB: mediana de 3
 CHAIN = 20  # las entidades de la revisión de RNF-016-07
@@ -326,6 +341,30 @@ class CalculateTest(ScaleCase):
         self.assertEqual(len(warned), 1, "el resumen avisa: el coste estimado pasa del límite")
         self.assertGreater(made.calculation.outcome.estimated_s, thickness.SLOW_BODY_S)
 
+    def test_i_body_with_8_wide_sections_100_ha_is_over_the_budget_and_warns(self) -> None:
+        """RNF-016-02 (T49, E-4 de la verificación única): las mismas 100 ha con **8 secciones a 200 m** (4.600 datos: 500, 700, 900, 900,
+        700, 500, 300 y 100 por línea; 10,09 s calculados y 11,3 s medidos en la T37 y la T44), el único caso medido por encima de 10 s.
+        **No se cumple, y esta prueba fija el hueco sin pretender cumplir el RNF** (hasta ahora estaba solo en la prosa de la T37 y la
+        T44): el resumen **avisa** (``des.body_sections_large``, el coste estimado por las cajas del TIN pasa de
+        :data:`~design.thickness.SLOW_BODY_S`) y el tiempo de «Calcular» a «Crear» tiene un **techo medido**
+        (:data:`WIDE_SECTIONS_BUDGET_S`, ≤ 15 s: que empeore ponga la prueba roja). Una sola medida, sin presupuesto del RNF: se hace en
+        local (en ``Z:`` no, como la :meth:`test_h_body_with_wide_sections_100_ha`)."""
+        made = self.sections("100 anchas 8", "Cuerpo de 100 ha")
+        outcome = made.calculation.outcome
+        lines = scale.SECTION_SPECS["100 anchas 8"][2]
+        over = made.total_s > self.BUDGET_S
+        gis_perf.report(
+            f"RNF-016-02: un cuerpo «sobre una base» de 100 ha con {count(outcome.tin_points)} datos en {lines} secciones diagonales a "
+            f"200 m de desplazamiento (una sola medida; {self.WHERE}; {MACHINE}): «Calcular» {number(made.calculate_s, 2)} s y «Crear» "
+            f"{number(made.create_s, 2)} s, {number(made.total_s, 2)} s en total; presupuesto del RNF {number(self.BUDGET_S, 0)} s"
+            f"{': NO SE CUMPLE' if over else ''}; techo de esta prueba {number(WIDE_SECTIONS_BUDGET_S, 0)} s; coste estimado por las cajas "
+            f"del TIN {number(outcome.estimated_s, 1)} s (aviso a partir de {number(thickness.SLOW_BODY_S, 0)} s)")
+        self.assertEqual(outcome.tin_points, 4_600, "no son las 8 secciones a 200 m de la T37 (4.600 datos)")
+        warned = [notice for notice in outcome.notices if notice.code == SLOW_NOTICE]
+        self.assertEqual(len(warned), 1, "el resumen avisa de lo lento: el coste estimado pasa del límite")
+        self.assertGreater(outcome.estimated_s, thickness.SLOW_BODY_S)
+        self.assertLessEqual(made.total_s, WIDE_SECTIONS_BUDGET_S, "el cuerpo con 8 secciones a 200 m ha empeorado: pasó del techo medido")
+
     def test_z_memory(self) -> None:
         """RNF-016-04: el pico de memoria adicional (``tracemalloc``, con la de numpy) de cada orden —la retirada, «como
         plataforma», los contrafuertes de 2 y 10 ha y los cuerpos de 100 ha con 10.000 datos sueltos y con secciones— de «Calcular»
@@ -432,30 +471,39 @@ class DiskTest(ScaleCase):
         """RNF-016-07: un cuerpo «sobre una base» de 100 ha con 10.000 datos (la superficie entera comprimida, más el espesor
         disperso y las tablas) ≤ 17 MiB. **No se cumple, y esta prueba fija el hueco** (``assertRaises``: se pone roja cuando se
         cierre; ``expectedFailure`` no es verde, TST-07): la superficie entera sola ya mide ≈ 16,4 MiB y el espesor disperso de 100 ha,
-        ≈ 5 MiB; lo decide Samuel (``tasks.md``, «Para Samuel», 3)."""
+        ≈ 5 MiB; lo decide Samuel (``tasks.md``, «Para Samuel», 3). **Acotado** (T49, E-2): además, ≤ :data:`BODY_GAP_CEILING_BYTES` (el
+        hueco medido, 21,1 MiB, más un 4 %): ``assertRaises`` solo dice que pasa de 17 MiB y no vería que el cuerpo guarde 40 MiB."""
         made = self.once(steps.body_run, sp.body_request("Cuerpo sobre una base", "Cuerpo de 100 ha", sense="on_base"))
         self.drop(made)
         gis_perf.report(
             f"RNF-016-07: lo que guarda un cuerpo «sobre una base» de 100 ha con 10.000 datos sueltos (superficie entera y espesor "
             f"disperso {mib(made.raster_bytes)} MiB y tablas {mib(made.db_bytes)} MiB; {MACHINE}): {mib(made.disk_bytes)} MiB; "
-            f"presupuesto {mib(ENTITY_BUDGET_BYTES)} MiB: NO SE CUMPLE")
+            f"presupuesto {mib(ENTITY_BUDGET_BYTES)} MiB: NO SE CUMPLE; techo del hueco {mib(BODY_GAP_CEILING_BYTES)} MiB")
         with self.assertRaises(AssertionError, msg="el cuerpo de 100 ha «sobre una base» ya cabe en 17 MiB: quite el hueco"):
             self.assertLessEqual(made.disk_bytes, ENTITY_BUDGET_BYTES)
+        self.assertLessEqual(made.disk_bytes, BODY_GAP_CEILING_BYTES,
+                             f"el cuerpo de 100 ha «sobre una base» pasó de los {mib(BODY_GAP_CEILING_BYTES)} MiB medidos del hueco: ha empeorado")
 
     def roof(self, footprint: str) -> sp.Calculated:
         """Un cuerpo «bajo un techo» de ``footprint`` con los datos sueltos (la superficie conocida es el terreno)."""
         return self.once(steps.body_run, sp.body_request(ep.fresh_name("Cuerpo bajo un techo"), footprint, sense="under_roof"))
 
     def check_roof(self, footprint: str, hectares: str, *, gap: bool = False) -> None:
-        """Mide el cuerpo «bajo un techo» de ``footprint`` y lo compara con el presupuesto; con ``gap``, **fija** que no lo cumple."""
+        """Mide el cuerpo «bajo un techo» de ``footprint`` y lo compara con el presupuesto; con ``gap``, **fija** que no lo cumple **y
+        que no pasa del techo medido** (:data:`ROOF_GAP_CEILING_BYTES`: T49, E-2)."""
         made = self.roof(footprint)
+        ceiling = ROOF_GAP_CEILING_BYTES.get(hectares)
+        self.assertTrue(not gap or ceiling is not None, f"el hueco de {hectares} ha no tiene su techo medido")
         gis_perf.report(
             f"RNF-016-07: lo que guarda un cuerpo «bajo un techo» de {hectares} ha (sus datos dispersos: el espesor y la base, "
             f"{mib(made.raster_bytes)} MiB; las tablas, {mib(made.db_bytes)} MiB más; {MACHINE}): presupuesto "
-            f"{mib(ROOF_BUDGET_BYTES)} MiB de datos dispersos{': NO SE CUMPLE' if gap else ''}")
+            f"{mib(ROOF_BUDGET_BYTES)} MiB de datos dispersos"
+            + (f": NO SE CUMPLE; techo del hueco {mib(ceiling or 0)} MiB" if gap else ""))
         if gap:
             with self.assertRaises(AssertionError, msg=f"el cuerpo «bajo un techo» de {hectares} ha ya cabe en 2 MiB: quite el hueco"):
                 self.assertLessEqual(made.raster_bytes, ROOF_BUDGET_BYTES)
+            self.assertLessEqual(made.raster_bytes, ceiling or 0,
+                                 f"el cuerpo «bajo un techo» de {hectares} ha pasó de los {mib(ceiling or 0)} MiB medidos del hueco: ha empeorado")
         else:
             self.assertLessEqual(made.raster_bytes, ROOF_BUDGET_BYTES)
 
@@ -500,6 +548,7 @@ class NetworkCalculateTest(NetworkProject, CalculateTest):
     BUDGET_S = CALCULATE_NETWORK_BUDGET_S
     RUNS = NETWORK_RUNS
     test_h_body_with_wide_sections_100_ha = None  # type: ignore[assignment]  # una sola medida, sin presupuesto: se hace en local
+    test_i_body_with_8_wide_sections_100_ha_is_over_the_budget_and_warns = None  # type: ignore[assignment]  # ídem, con su techo local
     test_z_memory = None  # type: ignore[assignment]
 
 
