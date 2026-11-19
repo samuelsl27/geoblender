@@ -498,9 +498,8 @@ class ReportRowsTest(Close):
         step = by_key["cutoff_step_m"]
         self.assertEqual((step[1], step[2]), (self.found.created.maximum_m, "m"))
         self.assertEqual(step[3], f"{self.found.created.x!r};{self.found.created.y!r}")
-        warning = [row for row in rows if row[0] == "warning"]
+        warning = [row for row in rows if row[0] == "warning" and FOOT_CUT in row[3]]  # T46: la franja llega al borde de la rejilla: hay otro aviso
         self.assertEqual(len(warning), 1)
-        self.assertIn(FOOT_CUT, warning[0][3])
         self.assertEqual(rows[-1], warning[0], "los avisos van al final")
 
     def test_without_the_foot_measured_the_rows_are_the_old_ones(self) -> None:
@@ -508,7 +507,8 @@ class ReportRowsTest(Close):
         old = supported_store.buttress_report_rows(self.outcome)
         self.assertFalse({row[0] for row in old} & {"cutoff_m2", "cutoff_m3", "cutoff_step_m"})
         new = supported_store.buttress_report_rows(self.found)
-        self.assertEqual([row for row in new if row[0] not in ("cutoff_m2", "cutoff_m3", "cutoff_step_m", "warning")], old)
+        self.assertEqual([row for row in new if row[0] not in ("cutoff_m2", "cutoff_m3", "cutoff_step_m")
+                          and not (row[0] == "warning" and FOOT_CUT in row[3])], old)
 
     def test_a_foot_that_is_not_cut_reports_zeros_and_no_step(self) -> None:
         """Sin pie cortado: ``cutoff_m2`` y ``cutoff_m3`` valen 0, no hay fila del salto ni aviso."""

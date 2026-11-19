@@ -2464,14 +2464,19 @@ def platform_previous(conn: sqlite3.Connection, version: Version, code: str) -> 
     return None
 
 
-def quarry_order(project: StoreProject, version: Version, prepared: PreparedPlatform
-                 ) -> QuarryOrder | None:
-    """La otra superficie de la cantera de la 014 cuando la plataforma parte de una de sus dos
+def quarry_order(project: StoreProject, version: Version, prepared: Any) -> QuarryOrder | None:
+    """La otra superficie de la cantera de la 014 cuando la entidad parte de una de sus dos
     superficies (RF-015-14; ``des_fin_`` o ``des_exp_``), para comprobar ``final ≤ explotación ≤
     terreno`` con lo que ella cambia; ``None`` si parte de otra cosa (el terreno, un diseño de la 013, la
-    superficie de otra entidad). La lee del proyecto en la rejilla del proyecto (RF-011-02). Solo lee."""
+    superficie de otra entidad) o no cambia ninguna superficie. La lee del proyecto en la rejilla del proyecto
+    (RF-011-02). Solo lee. ``prepared`` es lo que se preparó para calcularla —la plataforma
+    (:class:`PreparedPlatform`) o, spec 016, T46, la retirada, el contrafuerte y el cuerpo «sobre una base»—: solo se
+    lee su ``start_surface`` (``None``, el cuerpo «bajo un techo»: no cambia la superficie)."""
+    start = prepared.start_surface
+    if start is None:
+        return None
     with project.read() as conn:
-        origin = design_surface_of(conn, prepared.start_surface, version.uid)
+        origin = design_surface_of(conn, start, version.uid)
     if origin is None or origin.op_type != provenance.QUARRY:
         return None
     name, side, _order = _quarry_link(origin)
@@ -2479,7 +2484,7 @@ def quarry_order(project: StoreProject, version: Version, prepared: PreparedPlat
     found = read_surface(project, other, version_uid=version.uid, expect=project_frame(project),
                          role="otra superficie de la cantera")
     assert side is not None  # lo es de una cantera
-    return QuarryOrder(name, side, prepared.start_surface, other, found.values)
+    return QuarryOrder(name, side, start, other, found.values)
 
 
 _CONSUMERS = (

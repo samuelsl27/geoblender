@@ -90,6 +90,8 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # T27: ninguna celda sube (el relleno no está admitido donde llegarían los taludes): no hay contrafuerte que crear.
     "des.buttress_nothing_rises": ("error", "RF-016-17", {"layer", "entity"}),
     "des.buttress_foot_cut": ("warning", "RF-016-19", {"entity", "area", "volume", "step", *POSITION}),
+    # T46: RF-015-13 con el contrafuerte: lo que la rejilla recorta de su zona de coronación.
+    "des.buttress_footprint_clipped": ("warning", "RF-015-13", {"entity", "cells", "area", *POSITION}),
     "des.buttress_declared_reason": ("note", "RF-015-10", {"name"}),
     "des.buttress_support_removed": ("note", "RF-015-17", {"name"}),
     # RF-016-20 a 22: el cuerpo apoyado.
@@ -99,6 +101,8 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.body_all_far": ("error", "RF-016-22", {"entity", "distance", "footprint"}),
     # T25: lo que avisa o rechaza la orden del cuerpo (la superficie conocida sin dato, lo triangulado, lo que no se lee).
     "des.body_unsupported": ("warning", "RF-016-20", {"entity", "area", "surface"}),
+    # T46: RF-015-13 con el cuerpo: lo que la rejilla recorta de su huella.
+    "des.body_footprint_clipped": ("warning", "RF-015-13", {"entity", "cells", "area", *POSITION}),
     "des.body_many_data": ("warning", "RF-016-20", {"entity", "data", "limit"}),
     "des.body_sections_large": ("warning", "RF-016-20", {"entity", "seconds", "limit"}),  # T44: el coste estimado, no el área
     "des.body_data_kind": ("error", "RF-016-20", {"entity", "layer", "kind", "value"}),

@@ -934,7 +934,8 @@ def _removal_steps(project: StoreProject, request: RemovalRequest, version: str 
     try:
         outcome: removal.RemovalOutcome = yield from supported_store.compute_removal_steps(writer, prepared, budget_s=budget_s)
         yield Progress(_REMOVAL_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
-        summary = supported_store.removal_summary(project, prepared, outcome, supersedes=supersedes)
+        summary = supported_store.removal_summary(project, prepared, outcome, supersedes=supersedes,
+                                                  quarry=entity_store.quarry_order(project, found, prepared))
         calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices,
                                   seeds=None, values=prepared.common, entity=prepared, summary=summary)
     except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
@@ -953,7 +954,8 @@ def _body_steps(project: StoreProject, request: BodyRequest, version: str | None
     try:
         outcome: thickness.BodyOutcome = yield from supported_store.compute_body_steps(writer, prepared, budget_s=budget_s)
         yield Progress(_BODY_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
-        summary = supported_store.body_summary(project, prepared, outcome, supersedes=supersedes)
+        summary = supported_store.body_summary(project, prepared, outcome, supersedes=supersedes,
+                                               quarry=entity_store.quarry_order(project, found, prepared))
         calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices,
                                   seeds=None, values={}, entity=prepared, summary=summary)
     except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
@@ -972,7 +974,8 @@ def _buttress_steps(project: StoreProject, request: ButtressRequest, version: st
     try:
         outcome: buttress.ButtressOutcome = yield from supported_store.compute_buttress_steps(writer, prepared, budget_s=budget_s)
         yield Progress(_BUTTRESS_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
-        summary = supported_store.buttress_summary(project, prepared, outcome, loaded, supersedes=supersedes)
+        summary = supported_store.buttress_summary(project, prepared, outcome, loaded, supersedes=supersedes,
+                                                   quarry=entity_store.quarry_order(project, found, prepared))
         calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices,
                                   seeds=None, values=prepared.common, entity=prepared, summary=summary)
     except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal

@@ -1004,7 +1004,8 @@ def _reproduce_buttress(request: ReproduceRequest, budget_s: float) -> Iterator[
     lowest = supported_store._lowest_of(whole_start) if values.get("reach_m") is None else None
     window = supported_store.buttress_work_window(asked, code, whole, frozen.grid, profile, values, lowest)
     job = ButtressJob(asked, code, frozen.grid, profile, np.array(whole_start[window], dtype=np.float64, copy=True), whole[window],
-                      admitted_in(masks, BenchSense.FILL, window), MappingProxyType(dict(values)), region=window, lowest_m=lowest)
+                      admitted_in(masks, BenchSense.FILL, window), MappingProxyType(dict(values)), region=window, lowest_m=lowest,
+                      parts=tuple(tuple(part) for part in layer.parts[index]))
     common = {name: store.number(frozen.values, name) for name in provenance.PLATFORM_COMMON_PARAMS}
     outcome = yield from supported_store.buttress_compute_steps(job, common, budget_s=budget_s)
     surface = outcome.compose(whole_start)
@@ -1072,7 +1073,8 @@ def _reproduce_body(request: ReproduceRequest, budget_s: float) -> Iterator[Prog
     with _open(Path(data_item.files["main"])) as conn:
         data = supported_store.frozen_thickness_data(conn, str(data_item.settings["layer"]), asked)
     job = BodyJob(asked, code, frozen.grid, frozen.crs, frozen.vertical, known[window], whole[window], data,
-                  MappingProxyType(dict(values)), start=start, fill_allowed=fill, region=window)
+                  MappingProxyType(dict(values)), start=start, fill_allowed=fill, region=window,
+                  parts=tuple(tuple(part) for part in layer.parts[index]))
     outcome = yield from supported_store.body_compute_steps(job, budget_s=budget_s)
     crs, vertical, grid = frozen.crs, frozen.vertical, job.grid
     made = [(yield from _grid_output(

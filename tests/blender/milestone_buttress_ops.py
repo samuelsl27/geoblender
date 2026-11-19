@@ -47,6 +47,10 @@ FIRST, SECOND = "Contrafuerte de la cima", "Contrafuerte de la segunda"
 PROFILE = "EXPL_10_60_6"
 CROWN_M = 115.0
 """La cota de coronación: el ancla (125 m) menos un banco (10 m)."""
+EDGE_LAYER = "gis_fea_coronacion_al_borde"
+EDGE_BOX = (-10.0, 20.0, 12.0, 40.0)
+"""Una zona de coronación (local) que sale 10 m por el oeste de la ventana de 60 × 60 m: 5 columnas de 2 m por 10 filas, 50 celdas de fuera
+(T46; RF-015-13)."""
 GUARD_M = 5.0
 SOURCE = "Plan de la prueba del contrafuerte"
 PROPERTIES = {
@@ -474,6 +478,30 @@ class CreateButtressTest(body_ops.CreateBodyTest):
         self.assertEqual(sorted(found), ["BTR-001", "BTR-003"], "ahora sí")
         self.assertEqual(found["BTR-003"].buffer_out_m, 3.0)
         self.assertIn("Porque el pie lo pide", found["BTR-003"].reason, "el motivo que dio la persona")
+
+    def test_h_the_summary_says_what_the_grid_cuts_of_the_crown_zone(self) -> None:
+        """RF-015-13, RF-016-17, M3 (T46, hallazgo C-1): una zona de coronación que sale 10 m por el oeste de la rejilla da, en el resumen de
+        «Calcular» (en los dos idiomas, en ámbar), que la rejilla recorta 50 celdas (200 m²) de ella, sin impedir calcular; solo el temporal
+        queda tras calcular y descartar lo deja como estaba."""
+        self.write_features(EDGE_LAYER, "polygon", (((platform_ops.ring(EDGE_BOX),),),), ("Al borde",), {})
+        self.refresh()
+        before = self.state()
+        held = self.calculate(name="Al borde", layer=EDGE_LAYER, feature="Al borde", start=self.panels.platform_default_start(),
+                              crown="115", guard="3")
+        self.assertEqual(held.outcome.clipped[0], 50, "5 columnas por 10 filas de fuera de la rejilla")
+        self.assertGreater(held.outcome.volume_m3, 0.0, "no impide calcular")
+        for language, words in (("es", ("200 m² de ella (50 celdas)", "la rejilla del proyecto recorta su zona de coronación")),
+                                ("en", ("200 m² of it (50 cells)", "the project grid cuts its crown zone"))):
+            self.i18n.set_language(language)
+            self.panels.show_summary(held)
+            found = [line for line in self.view.summary if words[1] in line.name]
+            self.assertEqual(len(found), 1, (language, [line.name for line in self.view.summary]))
+            self.assertTrue(found[0].alert, "un aviso va en ámbar")
+            self.assertIn(words[0], found[0].name)
+        self.i18n.set_language("es")
+        self.panels.show_summary(held)
+        self.des_ops.discard_calculation()
+        self.assertEqual(self.state(), before, "descartar borra los temporales")
 
     def test_z_disabling_geoblender_removes_the_buttress_command_and_leaves_no_temporary(self) -> None:
         """Principio 8, D-14 de la 013: con un cálculo abierto, desactivar Geoblender lo descarta (no queda ningún temporal) y quita la orden."""

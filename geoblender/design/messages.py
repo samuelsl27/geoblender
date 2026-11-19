@@ -2560,6 +2560,25 @@ CATALOG: tuple[Message, ...] = (
         "{volume} m³, con un salto creado de {step} m en x = {x} m, y = {y} m; se puede crear igualmente.",
         "warning",
     ),
+    # RF-015-13 con el contrafuerte (T46): lo que la rejilla recorta de su zona de coronación (lo que llega al borde de la rejilla o a celdas
+    # sin dato usa ``des.entity_edge_outside``, el de la plataforma).
+    Message(
+        "des.buttress_footprint_clipped",
+        "Buttress «{entity}»: the project grid cuts its crown zone: {area} m² of it ({cells} cells) fall outside the "
+        "grid, the first at x = {x} m, y = {y} m; only the part inside is used; enlarge the working window of the "
+        "project or move the zone.",
+        "Contrafuerte «{entity}»: la rejilla del proyecto recorta su zona de coronación: {area} m² de ella "
+        "({cells} celdas) quedan fuera de la rejilla, la primera en x = {x} m, y = {y} m; solo se usa la parte de "
+        "dentro; amplíe la ventana de trabajo del proyecto o mueva la zona.",
+        "warning",
+        count="cells",
+        one_msgid="Buttress «{entity}»: the project grid cuts its crown zone: {area} m² of it ({cells} cell) fall "
+        "outside the grid, at x = {x} m, y = {y} m; only the part inside is used; enlarge the working window of the "
+        "project or move the zone.",
+        one_es="Contrafuerte «{entity}»: la rejilla del proyecto recorta su zona de coronación: {area} m² de ella "
+        "({cells} celda) quedan fuera de la rejilla, en x = {x} m, y = {y} m; solo se usa la parte de dentro; amplíe "
+        "la ventana de trabajo del proyecto o mueva la zona.",
+    ),
     Message(
         "des.buttress_declared_reason",
         "declared by buttress {name}",
@@ -2601,6 +2620,25 @@ CATALOG: tuple[Message, ...] = (
         "data; nothing is created.",
         "Cuerpo apoyado «{entity}»: ninguna celda de su huella «{footprint}» queda a menos de {distance} m de los "
         "datos de espesor; no se crea nada.",
+    ),
+    # RF-015-13 con el cuerpo (T46): lo que la rejilla recorta de su huella (lo que llega al borde de la rejilla o a celdas sin dato usa
+    # ``des.entity_edge_outside``, el de la plataforma).
+    Message(
+        "des.body_footprint_clipped",
+        "Supported body «{entity}»: the project grid cuts its footprint: {area} m² of it ({cells} cells) fall outside "
+        "the grid, the first at x = {x} m, y = {y} m; only the part inside is calculated; enlarge the working window of "
+        "the project or move the footprint.",
+        "Cuerpo apoyado «{entity}»: la rejilla del proyecto recorta su huella: {area} m² de ella ({cells} celdas) "
+        "quedan fuera de la rejilla, la primera en x = {x} m, y = {y} m; solo se calcula la parte de dentro; amplíe la "
+        "ventana de trabajo del proyecto o mueva la huella.",
+        "warning",
+        count="cells",
+        one_msgid="Supported body «{entity}»: the project grid cuts its footprint: {area} m² of it ({cells} cell) fall "
+        "outside the grid, at x = {x} m, y = {y} m; only the part inside is calculated; enlarge the working window of "
+        "the project or move the footprint.",
+        one_es="Cuerpo apoyado «{entity}»: la rejilla del proyecto recorta su huella: {area} m² de ella ({cells} celda) "
+        "quedan fuera de la rejilla, en x = {x} m, y = {y} m; solo se calcula la parte de dentro; amplíe la ventana de "
+        "trabajo del proyecto o mueva la huella.",
     ),
     # T25 (decisiones de la sesión principal, 19/11/2026): las celdas de la huella sin superficie conocida, lo que se
     # triangula y lo lento de un TIN de secciones muy separadas (T44: por su coste estimado, no por el área de la huella), y lo

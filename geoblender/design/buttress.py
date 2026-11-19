@@ -41,6 +41,13 @@ y **no corta nada**. Lo que entrega:
    ``derive`` comprueba en todas las celdas que no es negativo y que la base no queda por encima del techo. No se guarda: el plan
    no tiene un dato de espesor del contrafuerte (solo ``des_psf_``, ``des_epr_`` y ``des_prp_``).
 
+**RF-015-13 con el contrafuerte** (T46; hallazgo C-1). Como la plataforma, ``_outcome_units`` avisa de **lo que la rejilla recorta de la zona de
+coronación** (``des.buttress_footprint_clipped``: las celdas de la geometría de la zona, ``ButtressJob.parts``, que caen fuera de la rejilla,
+con el lugar de la primera) y de **lo que sube fuera de la zona y llega al borde de la rejilla o a celdas sin dato** de la partida
+(``des.entity_edge_outside``: ``ButtressOutcome.outside``). Las medidas son las de ``design.supported_edge`` (copiadas de la plataforma) y solo
+son avisos: ninguna cifra cambia. **El salto creado del borde de lo que mueve, con el aviso de RF-014-21, no está** (decisión pendiente, T46):
+saldría en casi todo contrafuerte con su pie natural.
+
 **El pie cortado** (T28; RF-016-19; D-24; error 19). Donde el relleno no está admitido el contrafuerte no sube (A10 no recorta nada
 más), y si eso le quita parte del pie hay que decirlo: :func:`cutoff_steps` (:func:`measure_cutoff`, de una vez) toma el escalonado
 sin máscara (``stepped``), le aplica la misma composición con **todo** admitido y lo compara con la superficie compuesta: **faltan**
@@ -105,6 +112,7 @@ from .provenance import buttress_figures
 from .report import _thickness
 from .seeds import pace_progress
 from .stockpiles import window_grid
+from .supported_edge import Clipped, as_parts, clipped_notice, clipped_units, outside_notice, reaches_outside
 from .thickness import derive
 
 __all__ = [
@@ -125,6 +133,7 @@ __all__ = [
 _PHASE = "buttress"
 _CUTOFF_PHASE = "buttress_cutoff"
 _FOOT_CUT = "des.buttress_foot_cut"
+_CLIPPED = "des.buttress_footprint_clipped"
 _OFF_ANCHOR = "des.buttress_crown_off_anchor"
 _BELOW_SUPPORT = "des.buttress_crown_below_support"
 _OBJ = "Contrafuerte «{}»"
@@ -175,9 +184,12 @@ class ButtressJob:
 
     ``start``, ``zone`` y ``fill_allowed`` son de la **rejilla entera** o, con ``region``, de **esa ventana** de la rejilla (A0: la de
     :func:`buttress_window`). Con una ventana hace falta además ``lowest_m``, la cota más baja de la partida de la **rejilla entera**
-    (m), para saber hasta dónde llega la envolvente (sin ``reach_m``). ``ValueError`` (errores del programa) si el código no es el de
+    (m), para saber hasta dónde llega la envolvente (sin ``reach_m``). ``parts`` (T46; RF-015-13): la geometría de la zona de coronación en
+    absolutas (cada polígono, con sus anillos, el exterior primero: lo que lee ``design.supported_edge.as_parts``), para medir lo que la
+    rejilla recorta de ella; sin ella (``None``) no se mide. ``ValueError`` (errores del programa) si el código no es el de
     un contrafuerte, una clave de ``values`` no es de un contrafuerte, el perfil no es el de ``values``, un array no es de su forma,
-    las celdas no son cuadradas o ``lowest_m`` no es finito; ``TypeError`` si la petición o el perfil no son lo que son."""
+    las celdas no son cuadradas, ``lowest_m`` no es finito o un anillo de ``parts`` no son vértices finitos; ``TypeError`` si la petición
+    o el perfil no son lo que son."""
 
     request: ButtressRequest
     code: str
@@ -189,6 +201,7 @@ class ButtressJob:
     values: Mapping[str, object]
     region: Window | None = None
     lowest_m: float | None = None
+    parts: tuple[tuple[np.ndarray, ...], ...] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.request, ButtressRequest):
@@ -223,6 +236,7 @@ class ButtressJob:
             if not math.isfinite(lowest):
                 raise ValueError(f"la cota más baja de la partida es un número finito, no {self.lowest_m!r}")
             object.__setattr__(self, "lowest_m", lowest)
+        object.__setattr__(self, "parts", as_parts(self.parts))
 
     @property
     def window(self) -> Window:
@@ -356,7 +370,12 @@ class ButtressOutcome:
     Medido el pie cortado (T28; RF-016-19): ``cutoff`` (booleana, de la forma de la ventana: las celdas donde el escalonado sin
     máscara sube más que la superficie compuesta) y ``created`` (el :class:`~.edges.EdgeReport` del salto creado del borde de la
     superficie compuesta, con su mayor salto y su lugar; ``None`` si el pie no se corta: no hay borde que medir), y el aviso
-    ``des.buttress_foot_cut`` en ``notices``."""
+    ``des.buttress_foot_cut`` en ``notices``.
+
+    RF-015-13 con el contrafuerte (T46): ``clipped`` (lo que la rejilla recorta de la zona de coronación: ``(celdas, x, y)``, ``None`` si no
+    recorta nada ni se dio la geometría de la zona al trabajo) y ``outside`` (booleana, de la forma de la ventana: las celdas que el
+    contrafuerte sube **fuera de su zona de coronación** y llegan al borde de la rejilla o a celdas sin dato de la partida), con los avisos
+    ``des.buttress_footprint_clipped`` y ``des.entity_edge_outside`` al principio de ``notices``."""
 
     name: str
     code: str
@@ -383,6 +402,8 @@ class ButtressOutcome:
     notices: tuple[Notice, ...] = ()
     cutoff: np.ndarray | None = None
     created: EdgeReport | None = None
+    outside: np.ndarray | None = None
+    clipped: Clipped | None = None
 
     @property
     def figures(self) -> tuple[FigureSpec, ...]:
@@ -459,9 +480,23 @@ def _outcome_units(job: ButtressJob, settings: _Settings, seed: np.ndarray, step
         biggest = float(rise[row, col])
         x = grid.west + (cols.start + col + 0.5) * grid.dx
         y = grid.north - (rows.start + row + 0.5) * grid.dy
+    # RF-015-13 (T46): lo que la rejilla recorta de la zona de coronación, y lo que sube fuera de ella y llega al borde de la rejilla o a
+    # celdas sin dato de la partida (las de dentro de la zona no cuentan: son su huella)
+    notices: list[Notice] = []
+    clipped: Clipped | None = None
+    if job.parts is not None:
+        clipped = yield from clipped_units(job.parts, grid)
+        found = clipped_notice(_CLIPPED, job.request.name, clipped, grid)
+        if found is not None:
+            notices.append(found)
+    outside = reaches_outside(body & ~job.zone, ~np.isfinite(start) & ~job.zone, job.window, grid)
+    found = outside_notice(job.request.name, outside, grid, job.window)
+    if found is not None:
+        notices.append(found)
     return ButtressOutcome(job.request.name, job.code, job.profile.code, job.window, job.zone.copy(), np.isfinite(seed), stepped,
                            surface, rise, body, settings.crown_m, settings.reach_m, settings.metric, math.fsum(parts) * area,
-                           count * area, biggest, x, y, int(np.count_nonzero(np.isfinite(seed))), area)
+                           count * area, biggest, x, y, int(np.count_nonzero(np.isfinite(seed))), area, notices=tuple(notices),
+                           outside=outside, clipped=clipped)
 
 
 def _buttress_progress(job: ButtressJob, settings: _Settings, budget_s: float) -> Generator[Progress, None, None]:

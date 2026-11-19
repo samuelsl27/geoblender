@@ -100,7 +100,7 @@ from ..gis.provenance import BREAKLINES, CONTOUR_LINES, FAMILIES_BY_CODE, FEATUR
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, load_features, read_features
 from ..gis.vector import FeatureLayer
-from . import buttress, entities, entity_store, pipeline, provenance, removal, stockpile_store, thickness, zones
+from . import buttress, entities, entity_store, pipeline, platform, provenance, removal, stockpile_store, supported_edge, thickness, zones
 from .compose import admitted_in
 from .entities import EntityKind
 from .entity_store import EntityParamRow, entity_parameters, set_entity_params
@@ -181,6 +181,7 @@ __all__ = [
     "default_domain",
     "foot_held_notices",
     "frozen_thickness_data",
+    "order_notices",
     "prepare_body",
     "prepare_body_units",
     "prepare_buttress",
@@ -876,16 +877,31 @@ def removal_obsolete(project: StoreProject, prepared: PreparedRemoval, *, supers
     return tuple(entity_store._consumer(ObsoleteKind.DEPENDENT, uid, op_type, name) for uid, op_type, name in found)
 
 
+def order_notices(entity: str, surface: np.ndarray | None, window: tuple[slice, slice], grid: Grid,
+                  quarry: platform.QuarryOrder | None) -> tuple[Notice, ...]:
+    """**RF-015-14 con los tipos de la 016** (T46): el aviso ``des.entity_quarry_order`` de ``entity`` si su ``surface`` (la que deja,
+    de la ventana ``window`` de ``grid``; ``None``, la que no cambia: un cuerpo «bajo un techo») no cumple ``final ≤ explotación ≤
+    terreno`` frente a la otra superficie de la cantera de la 014 ``quarry`` (:func:`~.entity_store.quarry_order`; ``None``: parte de otra
+    cosa), con la tolerancia de 1 mm y como la plataforma (:func:`~.platform.order_check`): el área, lo que más pasa y el lugar. Es de
+    **solo el resumen** (no va al informe, que se reproduce sin el proyecto: ``entity_store._OUTSIDE_NOTICES``) y no impide crear."""
+    if quarry is None or surface is None:
+        return ()
+    breach = platform.order_check(surface, quarry.other, quarry.side, grid, window)
+    return () if breach is None else (supported_edge.order_notice(entity, quarry, breach),)
+
+
 def removal_summary(project: StoreProject, prepared: PreparedRemoval, outcome: RemovalOutcome, *,
-                    supersedes: str | None = None) -> RemovalSummary:
+                    supersedes: str | None = None, quarry: platform.QuarryOrder | None = None) -> RemovalSummary:
     """El resumen de «Calcular» la retirada ``prepared`` (RF-015-03, RF-016-13 a 15): las cifras que se registrarán, **la lista de lo
     que se le apoyaba** (antes de calcular, sin escribir nada), la pared y qué pide confirmar, y los avisos en el orden en que se
-    enseñan (lo apoyado, los de la retirada y lo que quedará obsoleto). Solo lee."""
+    enseñan (lo apoyado, los de la retirada, **el orden con la otra superficie de la cantera** si parte de una de sus dos superficies
+    —``quarry``, RF-015-14: :func:`order_notices`; T46— y lo que quedará obsoleto). Solo lee."""
     name = prepared.job.stockpile.name
     kept = removal_obsolete(project, prepared, supersedes=supersedes)
     wall = outcome.wall
     worst = None if wall is None else wall.worst
-    notices = (*removal.resting_notices(name, prepared.resting), *outcome.notices,
+    order = order_notices(prepared.job.request.name, outcome.surface, outcome.window, prepared.job.grid, quarry)
+    notices = (*removal.resting_notices(name, prepared.resting), *outcome.notices, *order,
                *obsolete_notices(prepared.job.request.name, prepared.version.code, kept))
     return RemovalSummary(
         prepared.job.request.name, prepared.code, prepared.version.code, prepared.ref, name, outcome.figures,
@@ -1323,7 +1339,8 @@ def prepare_body_units(project: StoreProject, request: BodyRequest, version: Ver
             touched = pipeline.touched_in(refs, labels[window], footprint)
             refuse_pending(sector for sector in sectors if sector.code in touched)
     job = BodyJob(request, chosen, grid, frame.crs, frame.vertical, known.values, footprint, data,
-                  MappingProxyType(dict(values)), start=start_values, fill_allowed=fill, region=window)
+                  MappingProxyType(dict(values)), start=start_values, fill_allowed=fill, region=window,
+                  parts=tuple(tuple(part) for part in layer.parts[index]))
     yield
     supported, footprints, reads = entity_store._support_inputs(
         project, version, request, chosen, registry, known_name if on_base else None,  # type: ignore[arg-type]
@@ -1497,13 +1514,16 @@ def body_obsolete(project: StoreProject, prepared: PreparedBody, *, supersedes: 
 
 
 def body_summary(project: StoreProject, prepared: PreparedBody, outcome: BodyOutcome, *,
-                 supersedes: str | None = None) -> BodySummary:
+                 supersedes: str | None = None, quarry: platform.QuarryOrder | None = None) -> BodySummary:
     """El resumen de «Calcular» el cuerpo ``prepared`` (RF-015-03, RF-016-20 a 22): las cifras que se registrarán, lo lejano de los datos
     con su área, su volumen y su lugar, y los avisos en el orden en que se enseñan (los del cálculo: lo ignorado, lo lejano, lo que no
-    tiene superficie conocida, lo triangulado; y lo que quedará obsoleto). Solo lee."""
+    tiene superficie conocida, lo que la rejilla recorta de su huella y lo que llega a su borde o a celdas sin dato —RF-015-13, T46—, lo
+    triangulado; **el orden con la otra superficie de la cantera** si «sobre una base» parte de una de sus dos superficies —``quarry``,
+    RF-015-14: :func:`order_notices`; T46—; y lo que quedará obsoleto). Solo lee."""
     kept = body_obsolete(project, prepared, supersedes=supersedes)
     request = prepared.job.request
-    notices = (*outcome.notices, *obsolete_notices(request.name, prepared.version.code, kept))
+    order = order_notices(request.name, outcome.surface, outcome.window, prepared.job.grid, quarry)
+    notices = (*outcome.notices, *order, *obsolete_notices(request.name, prepared.version.code, kept))
     return BodySummary(
         request.name, prepared.code, prepared.version.code, prepared.sense.value, request.data_layer, outcome.figures,
         outcome.volume_m3, outcome.thickness_max_m, outcome.thickness_max_x, outcome.thickness_max_y, outcome.far_m2,
@@ -1812,7 +1832,7 @@ def prepare_buttress_units(project: StoreProject, request: ButtressRequest, vers
     yield
     common = {**profile_values, **entity_store._common(project, version)}
     job = ButtressJob(request, chosen, grid, profile, start, whole[window], fill, MappingProxyType(dict(values)), region=window,
-                      lowest_m=lowest)
+                      lowest_m=lowest, parts=tuple(tuple(part) for part in layer.parts[index]))
     supported, footprints, reads = entity_store._support_inputs(
         project, version, request, chosen, registry, support_name,  # type: ignore[arg-type]
         entity_store._released_codes(project, supersedes, released))
@@ -2050,12 +2070,15 @@ def foot_held_notices(outcome: ButtressOutcome, masks: access.MaskSet, *, names:
 
 
 def buttress_summary(project: StoreProject, prepared: PreparedButtress, outcome: ButtressOutcome, masks: access.MaskSet, *,
-                     supersedes: str | None = None) -> ButtressSummary:
+                     supersedes: str | None = None, quarry: platform.QuarryOrder | None = None) -> ButtressSummary:
     """El resumen de «Calcular» el contrafuerte ``prepared`` (RF-015-03, RF-016-17, RF-016-19): las cifras que se registrarán (volumen,
     área y altura máxima con su lugar y el pie cortado), si declara «sin corte» sobre su zona de coronación (``protect``, con su
     resguardo) y los avisos en el orden en que se enseñan: los del cálculo (entre ellos **el pie cortado**, con su área, su volumen y el
     salto creado de su borde, que no impide crearlo), **lo que no rellena por la restricción de otra entidad o de los límites**, con esa
-    entidad (:func:`foot_held_notices`, ``masks`` son las máscaras de la versión) y lo que quedará obsoleto. Solo lee."""
+    entidad (:func:`foot_held_notices`, ``masks`` son las máscaras de la versión), **el orden con la otra superficie de la cantera** si
+    parte de una de sus dos superficies (``quarry``, RF-015-14: :func:`order_notices`; T46) y lo que quedará obsoleto. Los del cálculo
+    llevan, además, lo que la rejilla recorta de su zona de coronación y lo que llega a su borde o a celdas sin dato (RF-015-13, T46).
+    Solo lee."""
     kept = buttress_obsolete(project, prepared, supersedes=supersedes)
     request = prepared.job.request
     values = prepared.values
@@ -2064,7 +2087,8 @@ def buttress_summary(project: StoreProject, prepared: PreparedButtress, outcome:
     if outcome.cutoff is not None and outcome.cutoff.any():
         names, declared = entity_store._restrictions(project, prepared.version)
         held = foot_held_notices(outcome, masks, names=names, declared=declared)
-    notices = (*outcome.notices, *held, *obsolete_notices(request.name, prepared.version.code, kept))
+    order = order_notices(request.name, outcome.surface, outcome.window, prepared.job.grid, quarry)
+    notices = (*outcome.notices, *held, *order, *obsolete_notices(request.name, prepared.version.code, kept))
     return ButtressSummary(
         request.name, prepared.code, prepared.version.code, request.layer, outcome.profile, outcome.crown_m, outcome.figures,
         outcome.volume_m3, outcome.area_m2, outcome.height_max_m, outcome.height_max_x, outcome.height_max_y,

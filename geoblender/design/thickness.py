@@ -73,6 +73,12 @@ polígonos** se sigue interpolando (los triángulos que los unen se rasterizan).
 cuerpo: lo anotó la T23), ``des.body_many_data`` (más de :data:`MANY_DATA` datos triangulados: ≈ 2 s en retícula y el límite de
 RNF-016-02 es 10 s) y ``des.body_sections_large`` (lo lento del TIN, abajo).
 
+**RF-015-13 con el cuerpo** (T46; hallazgo C-1): como la plataforma, el cálculo avisa de **lo que la rejilla recorta de la huella**
+(``des.body_footprint_clipped``: las celdas de la geometría de la huella, ``BodyJob.parts``, que caen fuera de la rejilla, con el lugar de la
+primera) y, «sobre una base», de **lo que sube y llega al borde de la rejilla o a celdas sin dato** de la partida que no son de la huella
+(``des.entity_edge_outside``): las medidas son las de ``design.supported_edge``, copiadas de la plataforma, y solo son avisos (ninguna cifra
+cambia). El salto creado del borde del cuerpo (RF-014-20 y 21) queda para la decisión pendiente de la T46.
+
 **Lo lento, por el coste del TIN y no por el área** (T44; RNF-016-02): la T37 midió que el cálculo con secciones depende de lo
 **separadas** que están (las mismas 100 ha: 5,66 s con 10 secciones a 100 m, 9,09 s con 5 a 200 m y 11,27 s con 8 a 200 m), porque los
 triángulos entre dos secciones lejanas son astillas largas y rasterizar el TIN cuesta lo que suman las cajas de sus triángulos
@@ -116,6 +122,7 @@ from .platform import Window, _shaped_array, _whole, _window_of
 from .preview import Notice
 from .provenance import body_figures
 from .seeds import pace_progress
+from .supported_edge import Clipped, as_parts, clipped_notice, clipped_units, outside_notice, reaches_outside
 from .zones import _paint, _polygon_spans
 
 __all__ = [
@@ -144,6 +151,7 @@ _FAR = "des.body_far"
 _NO_DATA = "des.body_no_data"
 _ALL_FAR = "des.body_all_far"
 _UNSUPPORTED = "des.body_unsupported"
+_CLIPPED = "des.body_footprint_clipped"
 _MANY_DATA = "des.body_many_data"
 _SECTIONS_LARGE = "des.body_sections_large"
 _OBJ = "Cuerpo apoyado «{}»"
@@ -281,9 +289,11 @@ class BodyJob:
     ``support``, ``footprint``, ``start`` y ``fill_allowed`` son de la **rejilla entera** o, con ``region``, de **esa ventana** de
     la rejilla (A0: la de :func:`body_window` basta y da el mismo resultado, bit a bit). Una ventana ha de contener la huella
     con una celda de margen por cada lado que no sea el borde de la rejilla (el borde de la huella se mira dentro de ella).
+    ``parts`` (T46; RF-015-13): la geometría de la huella en absolutas (cada polígono, con sus anillos, el exterior primero: lo que lee
+    ``design.supported_edge.as_parts``), para medir lo que la rejilla recorta de ella; sin ella (``None``) no se mide.
     ``ValueError`` (errores del programa) si el código no es el de un cuerpo, una clave de ``values`` no es de un cuerpo, un array
-    no es de su forma, las celdas no son cuadradas, «sobre una base» no trae partida o relleno o «bajo un techo» sí, o la ventana
-    corta la huella."""
+    no es de su forma, las celdas no son cuadradas, «sobre una base» no trae partida o relleno o «bajo un techo» sí, la ventana
+    corta la huella o un anillo de ``parts`` no son vértices finitos."""
 
     request: BodyRequest
     code: str
@@ -297,6 +307,7 @@ class BodyJob:
     start: np.ndarray | None = None
     fill_allowed: np.ndarray | None = None
     region: Window | None = None
+    parts: tuple[tuple[np.ndarray, ...], ...] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.request, BodyRequest):
@@ -333,6 +344,7 @@ class BodyJob:
         if unknown:
             raise ValueError(f"los valores de un cuerpo son de {', '.join(sorted(known))}, no «{unknown[0]}»")
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
+        object.__setattr__(self, "parts", as_parts(self.parts))
         if self.region is not None:
             self._check_margin(window)
 
@@ -448,7 +460,13 @@ class BodyOutcome:
     (las de la huella sin superficie conocida: sin cuerpo). ``tin_cost`` (T44) es lo que suman las cajas de los triángulos del TIN
     (:func:`_row_costs`; 0 sin TIN) y ``estimated_s``, lo que se estima que cuesta calcular el cuerpo con él
     (:func:`estimate_seconds`). ``max_distance_m``, ``zero_at_edge`` y ``sense`` son los del cuerpo y ``notices`` los avisos
-    (``des.body_data_outside``, ``des.body_far``, ``des.body_unsupported``, ``des.body_many_data`` y ``des.body_sections_large``)."""
+    (``des.body_data_outside``, ``des.body_far``, ``des.body_unsupported``, ``des.body_footprint_clipped``, ``des.entity_edge_outside``,
+    ``des.body_many_data`` y ``des.body_sections_large``).
+
+    RF-015-13 con el cuerpo (T46): ``clipped`` (lo que la rejilla recorta de la huella: ``(celdas, x, y)``; ``None`` si no recorta nada o
+    no se dio la geometría de la huella al trabajo) y, «sobre una base», ``outside`` (booleana, de la forma de la ventana: las celdas que
+    el cuerpo sube y llegan al borde de la rejilla o a celdas sin dato de la partida que no son de su huella); «bajo un techo» no cambia
+    la superficie y no lo lleva (``None``)."""
 
     name: str
     code: str
@@ -483,6 +501,8 @@ class BodyOutcome:
     direct_cells: int = 0
     tin_points: int = 0
     tin_cost: float = 0.0
+    outside: np.ndarray | None = None
+    clipped: Clipped | None = None
 
     @property
     def estimated_s(self) -> float:
@@ -799,6 +819,23 @@ def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, Body
     if unsupported:
         notices.append(Notice(_UNSUPPORTED, {"entity": request.name, "area": unsupported * area,
                                              "surface": request.surface}))
+    # RF-015-13 (T46): lo que la rejilla recorta de la huella y, «sobre una base», lo que sube y llega al borde de la rejilla o a celdas sin
+    # dato de la partida fuera de la huella
+    clipped: Clipped | None = None
+    if job.parts is not None:
+        clipped = yield from clipped_units(job.parts, grid)
+        found = clipped_notice(_CLIPPED, request.name, clipped, grid)
+        if found is not None:
+            notices.append(found)
+    outside: np.ndarray | None = None
+    if surface is not None:
+        assert job.start is not None
+        with np.errstate(invalid="ignore"):
+            raised = surface > job.start
+        outside = reaches_outside(raised, ~np.isfinite(job.start) & ~footprint, job.window, grid)
+        found = outside_notice(request.name, outside, grid, job.window)
+        if found is not None:
+            notices.append(found)
     if tin_points > MANY_DATA:
         notices.append(Notice(_MANY_DATA, {"entity": request.name, "data": tin_points, "limit": MANY_DATA}))
     estimated = estimate_seconds(tin_cost)
@@ -814,7 +851,7 @@ def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, Body
         ignored=ignored, data_cells=int(np.count_nonzero(real)), zero_cells=zero_cells, tin_cells=tin_cells,
         nearest_cells=body_cells - tin_cells - direct_cells, unsupported_cells=unsupported, cell_area_m2=area,
         max_distance_m=settings.max_distance_m, zero_at_edge=settings.zero_at_edge, notices=tuple(notices),
-        direct_cells=direct_cells, tin_points=tin_points, tin_cost=tin_cost)
+        direct_cells=direct_cells, tin_points=tin_points, tin_cost=tin_cost, outside=outside, clipped=clipped)
 
 
 def body_steps(job: BodyJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
