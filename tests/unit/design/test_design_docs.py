@@ -179,6 +179,8 @@ PENDING_015_API: frozenset[str] = frozenset({
     "support_ref", "split_support_ref", "read_stockpile_footprints",
     # La 016, T18: «apoyo retirado» por una retirada viva (``design.entities``).
     "StockpileRemoval", "removed_supports_of",
+    # La 016, T20: «Calcular» la retirada de un acopio y su resumen (``design.steps`` y ``design.preview``).
+    "removal_run", "RemovalSummary", "RestingLine",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 016, T05: la morfología con un disco exacto (A1). Su fila de la ficha (``des.md`` §4.4) la lleva la T38,
@@ -191,6 +193,8 @@ PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 016, T17: la retirada de un acopio, su transición y su dominio (A6); T18 a T21 le añaden lo apoyado, la pared y
     # «como plataforma».
     "design.removal",
+    # La 016, T20: preparar, calcular, crear, recalcular y reproducir la retirada (el patrón de T25 y T27).
+    "design.supported_store",
 })
 
 

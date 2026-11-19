@@ -383,6 +383,13 @@ class RemovalOutcome:
             "des.rmv_transition_m3": self.transition_m3, "des.rmv_kept_m3": self.kept_m3,
             "des.rmv_transition_m2": self.transition_m2, "des.rmv_wall_max_m": self.wall_max_m})
 
+    @property
+    def message(self) -> str:
+        """El mensaje de la operación (spec 016, T20): lo que dice el resumen de lo calculado, con los m³ retirados del acopio, los
+        que se le apoyaban y los de la transición (al metro cúbico)."""
+        return (f"Retirada del acopio «{self.stockpile_name}»: {round(self.removed_m3)} m³ retirados, "
+                f"{round(self.resting_m3)} m³ apoyados y {round(self.transition_m3)} m³ de transición")
+
     def compose(self, start: np.ndarray) -> np.ndarray:
         """La superficie entera que deja la retirada: una rejilla **nueva** igual a ``start`` (la superficie de partida, de
         la rejilla entera) con la ventana de trabajo sustituida por :attr:`surface`. ``ValueError`` si ``start`` no es una

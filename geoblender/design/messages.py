@@ -2341,6 +2341,15 @@ CATALOG: tuple[Message, ...] = (
     ),
     # La retirada de un acopio (RF-016-12 a 15).
     Message(
+        "des.removal_stockpile_unknown",
+        "Removal «{entity}»: «{field}» = {value} is not a stockpile of a calculated detection of {where} (use the "
+        "reference of the detection and the key of its mark, for example STK-001#Acopio 1); choose a stockpile of a "
+        "detection that is calculated and not discarded; nothing is calculated.",
+        "Retirada «{entity}»: «{field}» = {value} no es un acopio de una detección calculada de {where} (use la "
+        "referencia de la detección y la clave de su marca, por ejemplo STK-001#Acopio 1); elija un acopio de una "
+        "detección calculada y no descartada; no se calcula nada.",
+    ),
+    Message(
         "des.removal_detection_stale",
         "Stockpile «{stockpile}» cannot be removed: its detection «{detection}» is stale ({cause}); recompute the "
         "detection first; nothing is created.",

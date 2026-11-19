@@ -52,8 +52,12 @@ acopios** (spec 016, T14; RF-016-10, RF-009-11): :func:`reproduce_stockpile_dete
 proyecto, ``stockpile_store.detection_compute_steps`` sobre el mismo ``StockpileJob``: la capa de marcas, la superficie, las
 bases propias y las máscaras congeladas por su nombre y su papel, y los parámetros de la entidad y el umbral de la huella
 congelados, con las decisiones sobre los candidatos; las siete salidas, la base y el espesor de cada material **en el orden en
-que las escribió** la operación, que es el que casa un papel repetido). **Los otros tres tipos de la 016**
-(:func:`reproduce_stockpile_removal`, :func:`reproduce_buttress` y :func:`reproduce_body`; spec 016, T03) existen pero **sin
+que las escribió** la operación, que es el que casa un papel repetido). **La retirada de un acopio** (spec 016, T20; RF-016-11, RF-009-11):
+:func:`reproduce_stockpile_removal` (con el cálculo que comparte con el proyecto, ``supported_store.removal_compute_steps``
+sobre el mismo ``RemovalJob``: la superficie de partida y las máscaras congeladas por su papel; la tabla de acopios, la base y la
+superficie con que se detectó, las tres entradas ``removed_stockpile``, por el prefijo de su dato; los parámetros de la entidad y los del
+proyecto congelados). **Los otros dos tipos de la 016**
+(:func:`reproduce_buttress` y :func:`reproduce_body`; spec 016, T03) existen pero **sin
 comportamiento todavía**: dicen qué tarea los hace (``NotImplementedError``); no hay ninguna operación de esos tipos que
 reproducir hasta que se crean.
 
@@ -65,6 +69,7 @@ que borra quien la creó. Python puro con numpy (nivel 8).
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import sys
@@ -102,7 +107,7 @@ from ..gis.masks.store import PERIMETER_SECTOR_NAME, read_report, zone_runs_step
 from ..gis.raster import Raster
 from ..gis.store import insert_rows, read_features
 from ..gis.vector import FeatureLayer
-from . import entities, entity_store, fronts, pipeline, provenance, quarry, stockpile_store, store
+from . import entities, entity_store, fronts, pipeline, provenance, quarry, stockpile_store, store, supported_store
 from .compose import admitted
 from .model import BenchSense, EnvelopeRequest, PlatformRequest, SeedKind, Surface
 from .params import (
@@ -116,6 +121,7 @@ from .params import (
     entity_key,
 )
 from .platform import PlatformJob
+from .removal import RemovalJob
 from .seeds import (
     SectorRef,
     SeedSet,
@@ -871,8 +877,71 @@ def _reproduce_stockpile_detect(request: ReproduceRequest, budget_s: float) -> I
 
 def reproduce_stockpile_removal(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
                                 ) -> Iterator[Progress]:
-    """Reproduce ``des.stockpile_removal`` (RF-016-11, RF-009-11): sin comportamiento todavía (T20)."""
-    return _not_yet(request, provenance.STOCKPILE_REMOVAL, "la T20")
+    """Reproduce ``des.stockpile_removal`` (spec 016, T20; RF-016-11, RF-016-13, RF-016-15, RF-009-11) con su superficie de partida y sus
+    máscaras congeladas, **el acopio que retira** (su tabla ``des_stk_``, su base ``des_stb_`` y la superficie con que se detectó
+    ``des_stp_``: las tres entradas ``removed_stockpile``, por el prefijo de su dato) y los parámetros congelados de su entidad
+    (``des.removal.{e}.*``: el acopio, la partida, el ángulo de transición, el factor de malla y la métrica) y del proyecto (la
+    tolerancia de cara, el espesor mínimo y el salto creado), con los ajustes de su operación (el nombre y el código), **sin el
+    proyecto**: el mismo cálculo (``supported_store.removal_compute_steps``). Sus pasos y, el último, el ``ReproducedResult`` con la
+    superficie (``des_psf_``), la huella (``des_epr_``), el informe (``des_prp_``) y las cifras. Lo apoyado que confirmó la persona
+    no se reproduce (es una decisión suya, de los ajustes). Lo que no es una ``ReproduceRequest`` es ``TypeError``; una de otro tipo,
+    ``ValueError``."""
+    return _reproduce_removal(_check(request, provenance.STOCKPILE_REMOVAL), budget_s)
+
+
+def _reproduce_removal(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    code = provenance.supported_code(request.settings)
+    asked = provenance.removal_request(request.settings, provenance.supported_values(code, frozen.values))
+    values, _defaulted = supported_store.removal_values(asked, code)
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = frozen.masks()
+    start_item = frozen.item(provenance.SURFACE_ROLE)
+    start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida")
+    prefixes = {family: provenance.FAMILIES_BY_CODE[family].prefix for family in (
+        provenance.STOCKPILES_TABLE, provenance.STOCKPILE_BASE_GRID, provenance.STOCKPILE_SURFACE_GRID)}
+    removed = [item for item in request.inputs if item.role == provenance.REMOVED_STOCKPILE_ROLE]
+
+    def of(family: str) -> FrozenInput:
+        found = [item for item in removed if item.name.startswith(prefixes[family])]
+        if len(found) != 1:
+            raise ValueError(f"la retirada «{asked.name}» consume {len(found)} datos «{family}» del acopio, no uno")
+        return found[0]
+
+    table = of(provenance.STOCKPILES_TABLE)
+    names = [column.name for column in store.columns_of(provenance.STOCKPILE_DETECT, provenance.STOCKPILES_TABLE)]
+    _detection, key = provenance.split_support_ref(asked.stockpile)
+    with _open(Path(table.files["main"])) as conn:
+        rows = [dict(zip(names, found, strict=True)) for found in conn.execute(
+            f'SELECT {", ".join(names)} FROM "{table.settings["layer"]}" ORDER BY fid')]
+    row = next((item for item in rows if item["key"] == key), None)
+    if row is None:
+        raise ValueError(f"la tabla congelada de acopios no tiene el acopio «{key}»")
+    base = frozen.named_raster(of(provenance.STOCKPILE_BASE_GRID).name, what="base del acopio").values
+    detected = frozen.named_raster(of(provenance.STOCKPILE_SURFACE_GRID).name, what="superficie con que se detectó").values
+    item = supported_store.read_removed(row, frozen.grid, lambda window: base[window], lambda window: detected[window])
+    window = (slice(0, frozen.grid.nrows), slice(0, frozen.grid.ncols))
+    job = RemovalJob(asked, code, frozen.grid, start.values, item, supported_store.default_domain(masks, window),
+                     MappingProxyType(dict(values)))
+    common = {name: store.number(frozen.values, name) for name in provenance.PLATFORM_COMMON_PARAMS}
+    outcome = yield from supported_store.removal_compute_steps(job, common, budget_s=budget_s)
+    surface = np.array(job.start, dtype=np.float64, copy=True)
+    surface[outcome.window] = outcome.surface
+    made = yield from _grid_output(request, provenance.ENTITY_SURFACE_GRID, Raster(job.grid, surface, frozen.crs, frozen.vertical),
+                                   budget_s)
+    runs = [tuple(int(value) for value in run) for run in json.loads(str(row["footprint"]))]
+    entity = supported_store.removal_entity_rows(
+        job, outcome, layer=str(row["layer"] or _detection), source_fid=int(row["source_fid"] or 0), runs=runs,
+        start_surface=start_item.name, support_surface=_removal_support(request, asked))
+    report = _table_output(request, provenance.ENTITY_REPORT_TABLE, supported_store.removal_report_rows(outcome), frozen.crs)
+    yield Progress(_PHASE, 1, 1, "Retirada del acopio reproducida",
+                   result=ReproducedResult((made, _table_output(request, provenance.ENTITY_TABLE, entity, frozen.crs), report), (
+                       *outcome.figures, *_support_figures(frozen, [surface], start.values))))
+
+
+def _removal_support(request: ReproduceRequest, asked: Any) -> str | None:
+    """El nombre del dato de la superficie de apoyo de la retirada que se reproduce (como :func:`_support_dataset`): ``None`` sin apoyo."""
+    return _support_dataset(request, asked)
 
 
 def reproduce_buttress(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:

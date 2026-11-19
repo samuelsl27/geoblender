@@ -66,6 +66,8 @@ HEAVY: frozenset[str] = frozenset({
     "design.stockpiles", "design.stockpile_store",
     # La retirada de un acopio de la 016 (spec 016, T17 y T18): la transición y lo que se apoyaba (lee el almacén y las superficies).
     "design.removal",
+    # El almacén de la retirada (spec 016, T20; el patrón de T25 y T27): preparar, calcular, crear, recalcular y reproducir.
+    "design.supported_store",
 })
 """Los módulos de la 012, la 013 y la 015 (y la cadena que arrastran) que se importan al primer uso."""
 

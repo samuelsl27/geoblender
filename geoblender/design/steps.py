@@ -45,6 +45,12 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
   (T13; RF-016-02, RF-015-02, RNF-016-03) es :meth:`Calculation.create` o, por pasos, :meth:`Calculation.create_steps`: las
   tablas y las rejillas dispersas se preparan en su temporal y **una** transacción registra los parámetros de la entidad, la
   operación, los datos y las cifras (:func:`~.stockpile_store.create_detection_steps`).
+- :func:`removal_run` (spec 016, T20; RF-016-11 a 15, RF-015-03, RF-015-29): «Calcular» la retirada de un acopio
+  (``des.stockpile_removal``) del mismo modo: deja la superficie (``des_psf_``) en un temporal, el **resumen**
+  (:class:`~.preview.RemovalSummary`: las cifras, **la lista de lo que se le apoyaba**, la pared y lo que pide confirmar) y
+  **nada en el proyecto**; crearla es :meth:`Calculation.create` (con :meth:`Calculation.confirm_removal` si pide confirmar):
+  los parámetros de su entidad, la operación, la superficie, su huella, su informe y las cifras, en **una** transacción
+  (:func:`~.supported_store.create_removal`).
 - :class:`Calculation`: lo calculado y todavía sin registrar. :meth:`~Calculation.create`
   (**«Crear»**) abre la operación, mueve los temporales, escribe las tablas y las cifras y completa,
   todo en **una** transacción (``DesignWriter.commit``); :meth:`~Calculation.discard`
@@ -87,9 +93,11 @@ from . import (
     provenance,
     quarry,
     refit,
+    removal,
     stockpile_store,
     stockpiles,
     store,
+    supported_store,
 )
 from .messages import DesignError
 from .model import (
@@ -99,6 +107,7 @@ from .model import (
     PlatformRequest,
     QuarryRequest,
     RefitRequest,
+    RemovalRequest,
     StockpileRequest,
 )
 from .params import ANTHROPIC_PRESENCE
@@ -116,6 +125,7 @@ __all__ = [
     "preview_steps",
     "quarry_run",
     "refit_run",
+    "removal_run",
     "resolve_values",
     "stockpile_run",
 ]
@@ -125,6 +135,7 @@ _DONE_PHASE = "calculated"
 _SUMMARY_PHASE = "platform_summary"  # el resumen de una plataforma (T12)
 _STOCKPILE_SUMMARY_PHASE = "stockpile_summary"  # el resumen de una detección de acopios (016, T12)
 _CREATED_PHASE = "created"  # la detección de acopios guardada (016, T13)
+_REMOVAL_SUMMARY_PHASE = "removal_summary"  # el resumen de la retirada de un acopio (016, T20)
 _OUTSIDE_PHASE = "seeds_outside"  # la cantera parada por sus semillas fuera (T43; RF-014-03)
 _READY, _CREATED, _DISCARDED = "ready", "created", "discarded"
 
@@ -179,12 +190,13 @@ class Calculation:
                  start: store.OperationStart, outcome: pipeline.EnvelopeOutcome
                  | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome
                  | edges.EdgeTransition | fronts.FillOnlyOutcome | refit.RefitOutcome
-                 | platform.PlatformOutcome | stockpiles.StockpileOutcome,
+                 | platform.PlatformOutcome | stockpiles.StockpileOutcome | removal.RemovalOutcome,
                  notices: Sequence[Notice],
                  seeds: SeedSet | None,
                  values: Mapping[str, object],
-                 entity: entity_store.PreparedPlatform | stockpile_store.PreparedDetection | None = None,
-                 summary: preview.PlatformSummary | preview.StockpileSummary | None = None) -> None:
+                 entity: entity_store.PreparedPlatform | stockpile_store.PreparedDetection
+                 | supported_store.PreparedRemoval | None = None,
+                 summary: preview.PlatformSummary | preview.StockpileSummary | preview.RemovalSummary | None = None) -> None:
         self._project = project
         self._writer = writer
         self._start = start
@@ -198,6 +210,7 @@ class Calculation:
         self.seeds = seeds
         self.entity = entity
         self.summary = summary
+        self._removal_confirmed = (False, False)
 
     def __repr__(self) -> str:
         return f"<Calculation {self.op_type} «{self.name}» {self.version} {self._state}>"
@@ -245,6 +258,36 @@ class Calculation:
                             f"«{self.op_type}»")
         self.outcome = found.confirm()
 
+    @property
+    def needs_resting_confirmation(self) -> bool:
+        """Si es una retirada de un acopio con algo apoyado (RF-016-14) y la persona aún no lo ha confirmado: no se podrá crear. Falso
+        en cualquier otra."""
+        found = self.entity
+        return isinstance(found, supported_store.PreparedRemoval) and bool(found.resting) and not self._removal_confirmed[0]
+
+    @property
+    def needs_wall_confirmation(self) -> bool:
+        """Si es una retirada que deja una pared (RF-016-15) y la persona aún no la ha confirmado: no se podrá crear. Falso en cualquier
+        otra."""
+        found = self.outcome
+        return (isinstance(self.entity, supported_store.PreparedRemoval) and isinstance(found, removal.RemovalOutcome)
+                and found.wall is not None and found.wall.needs_confirmation and not self._removal_confirmed[1])
+
+    @property
+    def needs_wall_reason(self) -> bool:
+        """Si la pared de la retirada pasa de 45° y 3 m (CA-9) y pide, además, un motivo que quede registrado."""
+        found = self.outcome
+        return (isinstance(self.entity, supported_store.PreparedRemoval) and isinstance(found, removal.RemovalOutcome)
+                and found.wall is not None and found.wall.needs_reason)
+
+    def confirm_removal(self, *, resting: bool = False, wall: bool = False) -> None:
+        """La confirmación expresa de lo que se apoya en el acopio que se retira (``resting``, RF-016-14) y de la pared que deja
+        (``wall``, RF-016-15): queda dicha para :meth:`create` (que la registra con su decisor y su fecha) sin recalcular. Sustituye a
+        la anterior. ``TypeError`` si no es una retirada."""
+        if not isinstance(self.entity, supported_store.PreparedRemoval):
+            raise TypeError(f"solo una retirada de un acopio tiene algo que confirmar, no «{self.op_type}»")
+        self._removal_confirmed = (bool(resting), bool(wall))
+
     def lines(self, language: str = "es") -> tuple[str, ...]:
         """Los avisos y notas del resumen, línea a línea, en ``language`` (``"es"`` o ``"en"``)."""
         return tuple(notice.text(language) for notice in self.notices)
@@ -285,6 +328,8 @@ class Calculation:
             return stored
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
+        if isinstance(self.entity, supported_store.PreparedRemoval):
+            return self._create_removal(self.entity, decided_by)
         if self.entity is not None:
             self._platform().ensure_creatable()  # sin cerrar el cálculo: se confirma y se crea
         try:
@@ -295,6 +340,26 @@ class Calculation:
             else:
                 stored = self._writer.commit(self._start, figures=self.outcome.figures,
                                              message=self.outcome.message)
+        except BaseException:
+            self.discard()
+            raise
+        self._state = _CREATED
+        return stored
+
+    def _create_removal(self, found: supported_store.PreparedRemoval, decided_by: str | None) -> store.Stored:
+        """**«Crear» una retirada de un acopio** (spec 016, T20; RF-016-11, RF-016-13 a 15, RF-015-02): lo registra
+        :func:`~.supported_store.create_removal` en una sola transacción. Sin la confirmación expresa de lo que se le apoyaba o de la
+        pared (:meth:`confirm_removal`), y de más de 45° y 3 m sin su motivo, se rechaza (``des.removal_resting_unconfirmed``,
+        ``des.removal_wall_unconfirmed``, ``des.removal_wall_reason``) **antes de escribir nada y sin cerrar el cálculo**: se confirma y se
+        vuelve a crear."""
+        outcome = self.outcome
+        assert isinstance(outcome, removal.RemovalOutcome)
+        resting, wall = self._removal_confirmed
+        supported_store.check_removal_confirmed(found, outcome, resting=resting, wall=wall)  # sin cerrar el cálculo
+        try:
+            self._check_parameters()
+            stored = supported_store.create_removal(self._project, self._writer, found, outcome, resting=resting, wall=wall,
+                                                    decided_by=decided_by)
         except BaseException:
             self.discard()
             raise
@@ -527,6 +592,25 @@ def stockpile_run(project: StoreProject, request: StockpileRequest, *, version: 
     return _stockpile_steps(project, request, version, masks, code, supersedes, budget_s)
 
 
+def removal_run(project: StoreProject, request: RemovalRequest, *, version: str | None,
+                masks: MaskSet | None = None, code: str | None = None, supersedes: str | None = None,
+                budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**«Calcular»** la retirada de un acopio ``request`` en la versión ``version`` (uid o código) por pasos de ``budget_s`` como mucho
+    (spec 016, T20; RF-016-11 a 15, RF-015-03, RF-015-29; RNF-016-05; «Retirar un acopio…»): el último ``Progress`` lleva la
+    :class:`Calculation` de ``des.stockpile_removal``, con su superficie (``des_psf_``) en un temporal, su resultado
+    (``Calculation.outcome``: ``design.removal.RemovalOutcome``), su resumen (``Calculation.summary``: las cifras, **la lista única de
+    lo que se le apoyaba**, la pared y lo que pide confirmar) y **nada registrado ni escrito en el proyecto**: ni la base de datos, ni
+    las operaciones, los datos o los parámetros. ``masks``, como en :func:`envelope_run`. ``code`` y ``supersedes``, los de
+    ``supported_store.prepare_removal_units`` (recalcular una retirada que ya está en la versión y sustituir su operación).
+
+    Los rechazos salen **al avanzar**, antes de calcular y sin escribir nada: los de ``prepare_removal_units`` (sin versión activa o no
+    editable, nombre y partida, el ángulo de transición, el acopio y su detección —**obsoleta: RF-016-12**—, la partida, un sector con la
+    búsqueda pendiente: RF-015-07). Cerrar el generador a mitad (Esc) o un fallo después de dejar el temporal lo borra y no deja nada
+    (RF-015-29). Crearla es :meth:`Calculation.create`, con :meth:`Calculation.confirm_removal` si pide confirmar lo apoyado o la
+    pared (RF-016-14, RF-016-15)."""
+    return _removal_steps(project, request, version, masks, code, supersedes, budget_s)
+
+
 def refit_run(project: StoreProject, request: RefitRequest, *, version: str | None,
               masks: MaskSet | None = None, budget_s: float = STEP_BUDGET_S
               ) -> Iterator[Progress]:
@@ -732,6 +816,25 @@ def _stockpile_steps(project: StoreProject, request: StockpileRequest, version: 
             seeds=None, values={ANTHROPIC_PRESENCE: prepared.job.params.threshold_m}, entity=prepared,
             summary=summary)
     except BaseException as error:  # un fallo o cerrar el generador: no queda nada
+        writer.close(error)
+        raise
+    yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
+
+
+def _removal_steps(project: StoreProject, request: RemovalRequest, version: str | None, masks: MaskSet | None,
+                   code: str | None, supersedes: str | None, budget_s: float) -> Generator[Progress, None, None]:
+    found = store.require_version(project, version, provenance.STOCKPILE_REMOVAL)
+    loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
+    prepared: supported_store.PreparedRemoval = yield from _prepare_steps(
+        supported_store.prepare_removal_units(project, request, found, loaded, code=code, supersedes=supersedes), budget_s)
+    writer = store.DesignWriter(project, provenance.STOCKPILE_REMOVAL, request.name, version=found.uid, supersedes=supersedes)
+    try:
+        outcome: removal.RemovalOutcome = yield from supported_store.compute_removal_steps(writer, prepared, budget_s=budget_s)
+        yield Progress(_REMOVAL_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
+        summary = supported_store.removal_summary(project, prepared, outcome, supersedes=supersedes)
+        calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices,
+                                  seeds=None, values=prepared.common, entity=prepared, summary=summary)
+    except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
         writer.close(error)
         raise
     yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)

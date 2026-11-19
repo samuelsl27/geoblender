@@ -91,7 +91,9 @@ __all__ = [
     "PreviewSummary",
     "QuarryPreview",
     "RejectedLine",
+    "RemovalSummary",
     "RestingItem",
+    "RestingLine",
     "SectorStatus",
     "StockpileLine",
     "StockpileSummary",
@@ -736,6 +738,55 @@ def stockpile_obsolete_notices(entity: str, version: str, items: Iterable[Obsole
         return ()
     return (Notice("des.stockpile_obsolete_dependents", {"entity": entity, "operations": len(found),
                                                          "items": obsolete_names(found, version)}),)
+
+
+# --- El resumen de la retirada de un acopio (spec 016, T20; RF-016-11 a 15, RF-015-03) ----------
+
+
+@dataclass(frozen=True, slots=True)
+class RestingLine:
+    """Una fila de la lista **única** de lo que se apoya en el acopio que se retira (RF-016-14, RF-015-17): el ``name`` de quien lo
+    puso (la entidad o el diseño de la versión o, de otra versión o del proyecto, el de la superficie), su ``kind`` (el tipo, en
+    español: ``None`` si es una superficie), los ``volume_m3`` que puso sobre el acopio y las ``cells`` de su huella donde lo puso."""
+
+    name: str
+    kind: str | None
+    volume_m3: float
+    cells: int
+
+
+@dataclass(frozen=True, slots=True)
+class RemovalSummary:
+    """El resumen de «Calcular» la retirada de un acopio (RF-015-03, RF-016-13 a 15): su ``name`` y su ``code`` (``RMV-001``), la
+    ``version`` (su código), el acopio (``stockpile``: su referencia, ``STK-001#Acopio 1``, y ``stockpile_name``), las ``figures``
+    que se registrarán, **la lista de lo que se le apoya** (``resting``, antes de calcular, sin escribir nada), la pared
+    (``wall_height_m`` y ``wall_angle_deg`` del tramo más alto; ``None`` sin pared), si pide confirmar lo apoyado
+    (``needs_resting_confirmation``), la pared (``needs_wall_confirmation``) y un motivo (``needs_wall_reason``: CA-9), los
+    ``notices`` en el orden en que se enseñan (lo apoyado, los avisos de la retirada y, al final, lo que quedará obsoleto) y
+    ``obsolete``, lo que quedará obsoleto al crearla (si sustituye a otra)."""
+
+    name: str
+    code: str
+    version: str
+    stockpile: str
+    stockpile_name: str
+    figures: tuple[FigureSpec, ...]
+    resting: tuple[RestingLine, ...]
+    wall_height_m: float | None
+    wall_angle_deg: float | None
+    needs_resting_confirmation: bool
+    needs_wall_confirmation: bool
+    needs_wall_reason: bool
+    notices: tuple[Notice, ...]
+    obsolete: tuple[Obsolete, ...] = ()
+
+    def lines(self, language: str = "es") -> tuple[str, ...]:
+        """Todo lo que dice el resumen, línea a línea, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices)
+
+    def warnings(self, language: str = "es") -> tuple[str, ...]:
+        """Solo los avisos, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices if notice.severity == "warning")
 
 
 _INNER = ":inner"
