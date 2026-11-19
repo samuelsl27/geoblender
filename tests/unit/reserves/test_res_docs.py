@@ -16,7 +16,10 @@ estas pruebas avisan de que se separan:
   bloque ``sql``, igual que lo crea el código salvo los comentarios, los espacios y las comillas
   (las de una cubicación, con un nombre de ejemplo: ``res_vol_<nombre>_<vNN>``); §4.2, el nombre
   de la rejilla de diferencias, y §3.3, cada familia de parámetros; y cada clave ``'res.…'`` de
-  sus ejemplos existe en la cubicación (T39).
+  sus ejemplos existe en la cubicación (T39);
+- y, de la 016 (su T38), la ficha ``res.md`` dice la base de los acopios como entrada de la verificación de la 012
+  (``reserves.compliance.lowest_base`` y la selección de ``reserves.compliance_store``, que ``test_constraints_docs``
+  comprueba nombre a nombre): automática, con lo que no usa y su causa, el corte de terreno y el de acopios, y lo que guarda.
 
 Sin la carpeta de la documentación, se omiten (recurso ``docs``).
 """
@@ -39,6 +42,8 @@ materials = import_geoblender("reserves.materials")
 params = import_geoblender("reserves.params")
 provenance = import_geoblender("reserves.provenance")
 store = import_geoblender("reserves.store")
+compliance_store = import_geoblender("reserves.compliance_store")
+compliance = import_geoblender("reserves.compliance")
 
 RES_RELPATH = "docs/arquitectura/modulos/res.md"
 FORMAT_RELPATH = "docs/arquitectura/datos/formato-proyecto.md"
@@ -142,6 +147,36 @@ class ResModuleDocTest(unittest.TestCase):
         for family in params.FAMILIES:
             with self.subTest(family=family.pattern):
                 self.assertIn(family.pattern, named)
+
+    def test_the_base_of_the_stockpiles_is_told(self) -> None:
+        """RF-012-21, RF-012-22, RF-012-24, RF-012-30, RF-012-31 (spec 012 0.5, diff de la 016; D-a a D-d; P-10; T38): la
+        ficha dice la base de los acopios como entrada opcional de la verificación —automática (las detecciones al día hechas
+        sobre la partida; con varias, la menor), con lo que no usa y su causa, el corte de terreno y el de acopios, la exención
+        por posición y que sin acopios todo es como antes— con los papeles, las filas y la cifra que guarda, y todo eso existe."""
+        api = section(self.text, "## API pública")
+        for fact in ("`reserves.compliance.lowest_base`", "`reserves.compliance_store.select_bases`",
+                     "`reserves.compliance_store.BaseSelection`", "`reserves.compliance_store.StockpileBase`",
+                     "`reserves.compliance_store.SkippedDetection`", "`reserves.compliance_store.base_role(k)`",
+                     "**Automática** (D-a)", "la **menor**", "**no usa** con su causa", "`Counts.CUT_TERRAIN`",
+                     "**corte de terreno**", "**corte de acopios**", "`ZoneTotals.stockpile_cut_m3`",
+                     "exención por **posición**, D-b", "la verificación es **la de siempre, bit a bit**",
+                     "`stockpile_base_<k>`", "`stockpile_skipped`", "`stockpile_cut_m3`", "`res.check_stockpile_cut_m3`",
+                     "`res.freeze_cut_terrain`", "**Limitación conocida**"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, api)
+        self.assertEqual(compliance_store.base_role(2), "stockpile_base_2")
+        self.assertEqual(compliance.Counts.CUT_TERRAIN.value, "cut_terrain")
+        self.assertIn("stockpile_cut_m3", {field for field in compliance.ZoneTotals.__dataclass_fields__})
+        self.assertIn("res.check_stockpile_cut_m3", {figure.key for figure in provenance.VERIFY_FIGURES})
+        for field in ("selection", "start_name", "bases", "skipped"):
+            with self.subTest(stored=field):
+                self.assertIn(field, compliance_store.StoredVerification.__dataclass_fields__)
+        owned = section(self.text, "## Datos que posee")
+        for fact in ("`stockpile_base`", "`stockpile_skipped`", "`stockpile_cut_m3`", "`res.check_stockpile_cut_m3`"):
+            with self.subTest(owned=fact):
+                self.assertIn(fact, owned)
+        self.assertIn("**el algoritmo, `reserves.compliance`, no importa `design`**", section(self.text,
+                      "## Dependencias permitidas"))
 
 
 @docs.requires_docs

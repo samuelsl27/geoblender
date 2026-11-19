@@ -25,6 +25,11 @@ describe; estas pruebas avisan de que se separan:
 - los colores que dicen la guía, el ``CHANGELOG.md`` y la comprobación M2 de ``tasks.md`` son los que
   se ven: «ámbar» solo de lo que dibuja la vista 3D por sí misma; una etiqueta de Blender en alerta
   (las ventanas y la barra N) sale en rojo con un triángulo (T42; hallazgo del H3 (4)).
+- la 016 (su T38): la ficha de ``des`` (§4.4: los siete módulos nuevos y lo que añade a los demás; «Datos que posee»: las
+  ocho familias de datos, las cuatro de parámetros, las cifras y los cinco tipos de operación), ``formato-proyecto.md``
+  (§3.3, §3.11 y §4.2), la guía ``docs/usuario/acopios-y-contrafuertes.md`` (todo texto entre «» sale del catálogo o es un
+  ejemplo que la prueba lista; los umbrales, los datos y las cifras son los del código), el ADR-0031 (su fe de erratas),
+  la barra superior, los paneles contextuales, el índice de specs, el roadmap y el ``CHANGELOG.md``.
 
 Sin la carpeta de la documentación, se omiten (recurso ``docs``). Las pruebas del emparejado de las
 citas (:class:`QuoteMatcherTest`) no la necesitan: comprueban que la regla no da falsos verdes.
@@ -146,76 +151,22 @@ ENTITY_EXAMPLES: tuple[str, ...] = (
     "Entidad ▾", "Completar…",
 )
 
-# Las secciones de la API de la ficha ``des.md``: lo de la 013, lo que añade la 014 (su T36) y lo de la 015
-# (su T34). Un módulo puede tener fila en varias (lo de la 014 en un módulo de la 013, como
+# Las secciones de la API de la ficha ``des.md``: lo de la 013, lo que añade la 014 (su T36), lo de la 015
+# (su T34) y lo de la 016 (su T38). Un módulo puede tener fila en varias (lo de la 014 en un módulo de la 013, como
 # ``design.store``): la prueba junta sus celdas.
 API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
                 "### 4.2 Lo que entrega la spec 014 (R-34)",
-                "### 4.3 Lo que entrega la spec 015 (R-36)")
+                "### 4.3 Lo que entrega la spec 015 (R-36)",
+                "### 4.4 Lo que entrega la spec 016 (R-36)")
 
-# El mecanismo de la 014 y la 015 para una spec que añade API pública mientras se construye: cada tarea
-# añade aquí sus nombres (y los módulos nuevos, que aún no tienen fila en la ficha) y la tarea de
-# documentación los lleva a la ficha y vacía estos dos conjuntos. Vacíos desde la T34 de la 015 (la ficha,
-# ``des.md`` §4.3, nombra todo lo público de ``design``) y otra vez desde su T47, que llevó a la ficha lo que
-# añadió la convergencia (T38 a T49); la 016 los usará con los suyos.
-PENDING_015_API: frozenset[str] = frozenset({
-    # La 016, T35 (la T38 lo lleva a la ficha): la consulta de los tipos que declaran restricciones (la plataforma y el contrafuerte).
-    "has_declaring_operation",
-    # La 016, T03 (la tarea de documentación, T38, los lleva a la ficha, ``des.md`` §4.4, y vacía este conjunto):
-    # las peticiones de sus cuatro tipos, los valores de sus parámetros y lo que arma su procedencia.
-    "BodyRequest", "BodySense", "ButtressFields", "ButtressRequest", "RemovalRequest", "StockpileFields",
-    "StockpileRequest", "ThicknessSource",
-    "BodyParam", "ButtressParam", "RemovalParam", "StockpileParam",
-    "StockpileFigures", "body_figures", "body_inputs", "body_params", "body_request", "body_settings",
-    "buttress_figures", "buttress_inputs", "buttress_params", "buttress_request", "buttress_settings",
-    "removal_figures", "removal_inputs", "removal_params", "removal_request", "removal_settings",
-    "stockpile_figure_scope", "stockpile_figures", "stockpile_inputs", "stockpile_params", "stockpile_request",
-    "stockpile_settings", "supported_code", "supported_operation_defs", "supported_values",
-    "reproduce_body", "reproduce_buttress", "reproduce_stockpile_detect", "reproduce_stockpile_removal",
-    # La 016, T04: el escritor de proyecto, el registro y los parámetros del ámbito del proyecto.
-    "ProjectDesignWriter", "design_writer", "project_registry", "entity_parameters",
-    # La 016, T12: «Calcular» la detección de acopios y su resumen (``design.steps`` y ``design.preview``).
-    "stockpile_run", "StockpileSummary", "StockpileLine", "RejectedLine", "CandidateLine", "CandidateCounts",
-    "stockpile_obsolete_notices",
-    # La 016, T15: la referencia de un acopio apoyable (``STK-001#m07``) y la huella de cada acopio de una detección.
-    "support_ref", "split_support_ref", "read_stockpile_footprints",
-    # La 016, T18: «apoyo retirado» por una retirada viva (``design.entities``).
-    "StockpileRemoval", "removed_supports_of",
-    # La 016, T20: «Calcular» la retirada de un acopio y su resumen (``design.steps`` y ``design.preview``).
-    "removal_run", "RemovalSummary", "RestingLine",
-    # La 016, T25: «Calcular» el cuerpo apoyado y su resumen (``design.steps`` y ``design.preview``).
-    "body_run", "BodySummary",
-    # La 016, T27: «Calcular» el contrafuerte y su resumen (``design.steps`` y ``design.preview``) y lo que declara con su zona propia
-    # (``design.entities``).
-    "buttress_run", "ButtressSummary", "declaration_runs",
-    # La 016, T32: la vista previa de las marcas de los acopios y de la zona de coronación del contrafuerte (``design.preview``).
-    "stockpile_preview_steps", "buttress_preview_steps", "StockpilePreview", "MarkPreview", "ButtressPreview", "guard_zone_units",
-    "zone_rings",
-    # La 016, T33: lo que el dominio da a la vista y a la barra N de los acopios y de los tipos nuevos (``design.stockpile_store``,
-    # ``design.entity_store`` y ``design.entities``).
-    "read_stored_rows", "stockpile_row_notice", "candidate_row_notice", "stored_notes", "read_entity_report", "live_removals", "operation_table",
-    # La 016, T34: la capa de entidades por acopio y el GeoTIFF de la base, el espesor y el terreno sin acopios (``design.provenance`` y
-    # ``design.export``).
-    "has_entity_operation", "compose_ground", "thickness_between",
-})
-PENDING_015_MODULES: frozenset[str] = frozenset({
-    # La 016, T05: la morfología con un disco exacto (A1). Su fila de la ficha (``des.md`` §4.4) la lleva la T38,
-    # que también vacía este conjunto.
-    "design.morphology",
-    # La 016, T06: el plano de base robusto y su límite de inclinación (A2); T07 a T09 le añaden el resto de la detección.
-    "design.stockpiles",
-    # La 016, T11: preparar y rechazar la detección de acopios (el homólogo de ``prepare_platform_units``).
-    "design.stockpile_store",
-    # La 016, T17: la retirada de un acopio, su transición y su dominio (A6); T18 a T21 le añaden lo apoyado, la pared y
-    # «como plataforma».
-    "design.removal",
-    # La 016, T20: preparar, calcular, crear, recalcular y reproducir la retirada (el patrón de T25 y T27).
-    "design.supported_store",
-    # La 016, T23: la regla del espesor y el cuerpo apoyado (A11); T24 le parte el TIN en pasos.
-    "design.thickness",
-    # La 016, T26: el contrafuerte (A10): la semilla en la coronación, el escalonado en relleno y la composición sin corte.
-    "design.buttress",
-})
+# El mecanismo de la 014, la 015 y la 016 para una spec que añade API pública mientras se construye: cada tarea
+# añade aquí sus nombres (y los módulos nuevos, que aún no tienen fila en la ficha) y la tarea de documentación los
+# lleva a la ficha y vacía estos dos conjuntos. Vacíos desde la T34 de la 015 (la ficha, ``des.md`` §4.3, nombra todo lo
+# público de ``design``), otra vez desde su T47 y **desde la T38 de la 016** (``des.md`` §4.4 nombra los siete módulos
+# nuevos y lo que la 016 añade a los demás); una spec posterior los usará con los suyos. El nombre ``PENDING_015_*`` se
+# conserva porque otras pruebas lo importan.
+PENDING_015_API: frozenset[str] = frozenset()
+PENDING_015_MODULES: frozenset[str] = frozenset()
 
 
 def one_line(text: str) -> str:
@@ -251,13 +202,17 @@ def documented_tables(document: str) -> dict[str, list[str]]:
 
 
 def code_tables() -> dict[str, str]:
-    """El SQL con que el código crea cada tabla de la 013 y de la 015 (normalizado), con el nombre de
-    ejemplo ``Hoyo`` (la 015, ``Carga``) y la versión ``V01`` para las de una versión."""
+    """El SQL con que el código crea cada tabla de la 013, la 015 y la 016 (normalizado), con el nombre de
+    ejemplo ``Hoyo`` (la 015, ``Carga``; la 016, ``Acopios`` y ``Refuerzo``, el de un contrafuerte) y la versión
+    ``V01`` para las de una versión."""
     berms = dprov.dataset_locator(dprov.BERM_TABLE, "Hoyo", "V01")
     report = dprov.dataset_locator(dprov.REPORT_TABLE, "Hoyo", "V01")
     entity = dprov.dataset_locator(dprov.ENTITY_TABLE, "Carga", "V01")
     entity_report = dprov.dataset_locator(dprov.ENTITY_REPORT_TABLE, "Carga", "V01")
     entity_map = enlayer.entity_layer_table("V01")
+    stockpiles = dprov.dataset_locator(dprov.STOCKPILES_TABLE, "Acopios", "V01")
+    candidates = dprov.dataset_locator(dprov.STOCKPILE_CANDIDATES_TABLE, "Acopios", "V01")
+    buttress = dprov.dataset_locator(dprov.ENTITY_TABLE, "Refuerzo", "V01")
     with closing(sqlite3.connect(":memory:")) as conn:
         gpkg_base.create_structure(conn)
         conn.execute("INSERT INTO gpkg_spatial_ref_sys (srs_name, srs_id, organization, "
@@ -269,8 +224,12 @@ def code_tables() -> dict[str, str]:
         gpkg_base.create_attribute_table(conn, entity_report, dstore.REPORT_COLUMNS,
                                          "informe de la entidad")
         enlayer.create_entity_layer_table(conn, entity_map, 25830)
+        gpkg_base.create_attribute_table(conn, stockpiles, dstore.STOCKPILE_COLUMNS, "acopios")
+        gpkg_base.create_attribute_table(conn, candidates, dstore.CANDIDATE_COLUMNS, "candidatos")
+        gpkg_base.create_attribute_table(conn, buttress, dstore.columns_of(dprov.BUTTRESS, dprov.ENTITY_TABLE),
+                                         "entidad de un contrafuerte")
         rows = conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'table'").fetchall()
-    wanted = (dprofiles.TABLE, berms, report, entity, entity_report, entity_map)
+    wanted = (dprofiles.TABLE, berms, report, entity, entity_report, entity_map, stockpiles, candidates, buttress)
     return {str(name): normalized(str(sql)) for name, sql in rows if name in wanted}
 
 
@@ -473,20 +432,24 @@ class ProjectFormatDocTest(unittest.TestCase):
 
     def test_tables_as_in_the_code(self) -> None:
         """RF-013-18, RF-013-28, RF-013-30 (plan 013 §5.2.1 y §5.2.3, D-17, D-24, D-26), RF-015-02 y
-        RF-015-27 (plan 015 §5.2.3; T34): §3.11 tiene una vez el SQL de ``des_bench_profile``, de
+        RF-015-27 (plan 015 §5.2.3; T34) y RF-016-02, RF-016-08, RF-016-17 (plan 016 §5.2.3; T38): §3.11 tiene una vez el SQL de ``des_bench_profile``, de
         ``des_bmt_`` (las cotas reales de las bermas) y de ``des_rpt_`` (el informe) y, de la 015, de
         ``des_epr_`` (la entidad), ``des_prp_`` (su informe) y ``des_enl_`` (la capa de entidades), el
-        que escribe el código; ``des_decl_`` (las restricciones declaradas) está en §3.9
-        (``test_constraints_docs``)."""
+        que escribe el código y, de la 016, el de ``des_stk_`` (los acopios), ``des_stc_`` (sus candidatos) y la
+        ``des_epr_`` de un contrafuerte (con su zona de coronación); ``des_decl_`` (las restricciones declaradas) está
+        en §3.9 (``test_constraints_docs``)."""
         documented = documented_tables(section(self.text, "### 3.11 Tablas de los módulos"))
         in_code = code_tables()
-        self.assertEqual(len(in_code), 6)
+        self.assertEqual(len(in_code), 9)
         for name in (dprofiles.TABLE, *(
                 dprov.dataset_locator(code, "Hoyo", "V01")
                 for code in (dprov.BERM_TABLE, dprov.REPORT_TABLE)),
                 *(dprov.dataset_locator(code, "Carga", "V01")
                   for code in (dprov.ENTITY_TABLE, dprov.ENTITY_REPORT_TABLE)),
-                enlayer.entity_layer_table("V01")):
+                enlayer.entity_layer_table("V01"),
+                dprov.dataset_locator(dprov.STOCKPILES_TABLE, "Acopios", "V01"),
+                dprov.dataset_locator(dprov.STOCKPILE_CANDIDATES_TABLE, "Acopios", "V01"),
+                dprov.dataset_locator(dprov.ENTITY_TABLE, "Refuerzo", "V01")):
             with self.subTest(table=name):
                 self.assertEqual(documented.get(name, []), [in_code[name]])
         self.assertEqual(sorted(documented), sorted(in_code), "una tabla des_ que el código no crea")
@@ -1163,6 +1126,492 @@ class EntitiesChangelogTest(unittest.TestCase):
         changed = text[text.index("- **Procedencia** (spec 008, hecho con la spec 015"):
                        text.index("- **Formato del proyecto, versión 3**")]
         self.assertIn("recorre el plan de una vez", changed)
+
+
+# --- La 016 (acopios, contrafuerte y cuerpos apoyados; su T38) --------------------------------------
+
+SUPPORTED_GUIDE_RELPATH = "docs/usuario/acopios-y-contrafuertes.md"
+SUPPORTED_TASKS_RELPATH = "specs/016-des-acopios-contrafuerte-y-cuerpos-apoyados/tasks.md"
+ADR_0031_RELPATH = "docs/adr/0031-acopios-deteccion-base-y-espesor.md"
+BS_RELPATH = "docs/arquitectura/interfaz/barra-superior.md"
+PC_RELPATH = "docs/arquitectura/interfaz/paneles-contextuales.md"
+# Las órdenes de la 016 y las de la 015 que la guía nombra con el texto de su catálogo.
+SUPPORTED_ORDERS = ("geoblender.des_edit_stockpile", "geoblender.des_detect_stockpiles",
+                    "geoblender.des_stockpile_candidates", "geoblender.des_remove_stockpile",
+                    "geoblender.des_add_buttress", "geoblender.des_create_body",
+                    "geoblender.des_entity_dependents", "geoblender.des_entity_discard",
+                    "geoblender.des_entity_release_support", "geoblender.des_entity_preview",
+                    "geoblender.des_export_design_grid")
+# De lo que la guía de la 016 pone entre «», lo que no está en el catálogo: nombres de ejemplo y términos que la guía
+# explica. La prueba exige que siga en la guía y que no haya ninguno más.
+SUPPORTED_EXAMPLES: tuple[str, ...] = (
+    # Lo que era la orden que pasó de Geología a «Cuerpo apoyado…» (ya no está en el catálogo).
+    "Unidad por espesor sobre su apoyo…",
+    # Un botón que la guía dice que **no** existe (sería código nuevo y alcance: se propondría a Samuel) y la redacción que se
+    # propone para RF-016-20 si la importación no conserva la M.
+    "Añadir las unidades de esta detección", "Z o campo",
+    # El motivo generado de un contrafuerte llamado B1 (su nombre y su código van en el mensaje del catálogo).
+    "declarada por el contrafuerte B1",
+)
+# Lo que dice la guía de cada umbral de la detección: el texto de su valor por defecto y su tipo, que la prueba compara
+# con el código (``design.params``).
+THRESHOLD_ROWS = (
+    (("margin_m",), "10 m", "ADOPTADO «sin confirmar»"),
+    (("crown_inner_m", "crown_outer_m"), "1 m y 3 m", "ADOPTADO «sin confirmar»"),
+    (("crown_slope_deg",), "12°", "ADOPTADO «sin confirmar»"),
+    (("crown_flat_min_m2",), "10 m²", "ADOPTADO «sin confirmar»"),
+    (("max_residual_m",), "1 m", "ADOPTADO «sin confirmar»"),
+    (("fit_rounds", "turns"), "4 y 6", "ADOPTADO «sin confirmar»"),
+    (("tilt_max_deg",), "4°", "**HIPÓTESIS**"),
+    (("support_quantile",), "0,6", "**HIPÓTESIS**"),
+    (("open_diameter_m",), "31 m", "ADOPTADO «sin confirmar», **no confirmado**"),
+    (("min_height_m",), "2 m", "ADOPTADO «sin confirmar»"),
+    (("min_area_m2", "max_area_m2"), "150 m² y 20.000 m²", "ADOPTADO «sin confirmar»"),
+)
+
+
+def spanish_number(value: float) -> str:
+    """``value`` como lo escribe la guía: sin decimales si es entero (con punto de millar desde 10.000) y con coma
+    decimal si no."""
+    if float(value).is_integer():
+        return f"{int(value):,}".replace(",", ".") if abs(value) >= 10000 else str(int(value))
+    return str(value).replace(".", ",")
+
+
+@docs.requires_docs
+class SupportedCardDocTest(unittest.TestCase):
+    """Las fichas de arquitectura dicen los datos, los parámetros, las cifras y las operaciones de la 016 (T38; plan 016
+    §5.2): ``des.md`` («Datos que posee»), ``formato-proyecto.md`` (§3.3, §3.11 y §4.2) y el ADR-0031 (su fe de erratas)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.des = docs.read(DES_RELPATH)
+        cls.format = docs.read(FORMAT_RELPATH)
+
+    def test_owned_data_parameters_figures_and_operations_of_the_016(self) -> None:
+        """RF-016-02, RF-016-09, RF-016-13, RF-016-17, RF-016-19, RF-016-20, RF-016-21 (plan 016 §5.2.2 y §5.2.3): «Datos que
+        posee» nombra cada familia de datos de la 016, cada familia de parámetros de sus cuatro tipos, cada cifra y cada
+        tipo de operación (los cinco, los dos de la detección entre ellos)."""
+        owned = inline_tokens(section(self.des, "## Datos que posee"))
+        for family in dprov.SUPPORTED_FAMILIES:
+            shown = (raster_pattern(family.code, folder=False).removesuffix(".tif").replace("_<vNN>", "")
+                     if family.extension else table_pattern(family.code).replace("_<vNN>", ""))
+            with self.subTest(dataset=family.code):
+                self.assertTrue(any(shown in token for token in owned), shown)
+        for entity in (dparams.STOCKPILE_ENTITY, dparams.REMOVAL_ENTITY, dparams.BUTTRESS_ENTITY, dparams.BODY_ENTITY):
+            prefix = entity.families[0].pattern.rsplit(".", 1)[0]
+            with self.subTest(parameters=entity.kind):
+                self.assertIn(f"{prefix}.*", owned)
+        for figure in dprov.SUPPORTED_FIGURES:
+            with self.subTest(figure=figure.key):
+                self.assertIn(figure.key, owned)
+        for op in dprov.SUPPORTED_OPERATION_TYPES:
+            with self.subTest(operation=op.op_type):
+                self.assertIn(op.op_type, owned)
+        self.assertEqual(sorted(dprov.STOCKPILE_DETECT_TYPES),
+                         ["des.stockpile_detect", "des.stockpile_detect_project"])
+
+    def test_every_parameter_family_is_in_section_3_3(self) -> None:
+        """RF-016-02, RF-016-08, RF-016-11, RF-016-17, RF-016-20 (plan 016 §5.2.2; D-1, D-2, D-3, D-9, D-21; T38):
+        ``formato-proyecto.md`` §3.3 nombra **exactamente** las familias de los cuatro tipos (25, 13, 14 y 17), cada una con su
+        prefijo (el último segmento solo, con su punto, vale tras la primera de su fila)."""
+        found: set[str] = set()
+        text = section(self.format, "### 3.3 `gb_parameter` y `gb_parameter_history` — parámetros tipados")
+        for table in tables(text):
+            for cells in table:
+                prefix = ""
+                for token in backticked(cells[0]):
+                    if token.startswith("des.") and "{e}." in token:
+                        prefix, last = token.rsplit(".", 1)
+                        found.add(f"{prefix}.{last}")
+                    elif token.startswith(".") and prefix:
+                        found.add(f"{prefix}{token}")
+        wanted = {family.pattern for family in dparams.SUPPORTED_FAMILIES}
+        self.assertEqual([len(e.families) for e in (dparams.STOCKPILE_ENTITY, dparams.REMOVAL_ENTITY,
+                                                    dparams.BUTTRESS_ENTITY, dparams.BODY_ENTITY)], [25, 13, 14, 17])
+        self.assertEqual(sorted(wanted - found), [], "familias de la 016 que §3.3 no nombra")
+        self.assertEqual(sorted(f for f in found - wanted if f.split(".")[1] in
+                                ("stockpile", "removal", "buttress", "body")), [],
+                         "una familia de la 016 que el código no tiene")
+
+    def test_the_documented_defaults_are_the_codes(self) -> None:
+        """RF-016-02, RF-016-07, RF-016-08, RF-016-17, RF-016-20 (D-1, D-2, D-3, D-9, D-21; T38): lo que §3.3 y «Datos que
+        posee» dicen de los valores por defecto de la 016 —los de la detección, el factor de malla y la métrica de la retirada,
+        «proteger» del contrafuerte— y de los que **no** tienen valor (el ángulo de transición, la cota de coronación y la
+        distancia máxima) es lo que declara el código; los dos HIPÓTESIS son los de la inclinación y el cuantil."""
+        defaults = {family.pattern.rsplit(".", 1)[1]: family.template for family in dparams.STOCKPILE_ENTITY.families}
+        self.assertEqual([defaults[k].default for k in ("margin_m", "crown_inner_m", "crown_outer_m", "crown_slope_deg",
+                                                        "crown_flat_min_m2", "max_residual_m", "fit_rounds", "turns",
+                                                        "tilt_max_deg", "support_quantile", "open_diameter_m",
+                                                        "min_height_m", "min_area_m2", "max_area_m2")],
+                         [10.0, 1.0, 3.0, 12.0, 10.0, 1.0, 4, 6, 4.0, 0.6, 31.0, 2.0, 150.0, 20000.0])
+        self.assertEqual({k for k, v in defaults.items() if v.kind.value == "HIPÓTESIS"},
+                         {"tilt_max_deg", "support_quantile"})
+        removal = {family.pattern.rsplit(".", 1)[1]: family.template for family in dparams.REMOVAL_ENTITY.families}
+        self.assertEqual((removal["transition_deg"].default, removal["mesh_factor"].default, removal["metric"].default),
+                         (None, 1.0, "exact"))
+        buttress = {family.pattern.rsplit(".", 1)[1]: family.template for family in dparams.BUTTRESS_ENTITY.families}
+        self.assertEqual((buttress["crown_m"].default, buttress["protect"].default, buttress["guard_m"].default),
+                         (None, True, None))
+        body = {family.pattern.rsplit(".", 1)[1]: family.template for family in dparams.BODY_ENTITY.families}
+        self.assertEqual((body["max_distance_m"].default, body["zero_at_edge"].default), (None, False))
+        for text in (section(self.format, "### 3.3 `gb_parameter` y `gb_parameter_history` — parámetros tipados"),
+                     section(self.des, "## Datos que posee")):
+            with self.subTest(place=text[:30]):
+                self.assertIn("HIPÓTESIS", text)
+        self.assertEqual(dparams.ANTHROPIC_PRESENCE, "res.anthropic_presence_m")
+
+    def test_tables_and_grids_of_the_016_are_in_the_format(self) -> None:
+        """RF-016-02, RF-016-08, RF-016-09, RF-016-17, RF-016-20 (plan 016 §5.2.3; ADR-0031 §3; T38): §3.11 nombra las dos
+        tablas de la detección (el SQL, frente al código, lo comprueba ``ProjectFormatDocTest``), la ``des_epr_`` de un
+        contrafuerte con su zona y los papeles de lo que lee cada consumidor, y §4.2, las seis rejillas dispersas, con sus
+        papeles."""
+        tables_text = section(self.format, "### 3.11 Tablas de los módulos")
+        named = inline_tokens(tables_text)
+        for family in dprov.SUPPORTED_FAMILIES:
+            shown = table_pattern(family.code) if not family.extension else None
+            if shown is not None:
+                with self.subTest(table=family.code):
+                    self.assertTrue(any(shown.replace("_<vNN>", "") in token for token in named), shown)
+        rasters = inline_tokens(section(self.format, "### 4.2 `rasters/` — GeoTIFF"))
+        for family in dprov.SUPPORTED_FAMILIES:
+            if family.extension:
+                shown = raster_pattern(family.code, folder=False).removesuffix(".tif").replace("_<vNN>", "")
+                with self.subTest(grid=family.code):
+                    self.assertTrue(any(shown in token for token in rasters), shown)
+        for role in (dprov.STOCKPILES_ROLE, dprov.STOCKPILE_CANDIDATES_ROLE, dprov.STOCKPILE_BASE_ROLE,
+                     dprov.STOCKPILE_THICKNESS_ROLE, dprov.STOCKPILE_GROUND_ROLE, dprov.STOCKPILE_SURFACE_ROLE,
+                     dprov.BODY_THICKNESS_ROLE, dprov.BODY_BASE_ROLE, dprov.MARKS_LAYER_ROLE,
+                     dprov.REMOVED_STOCKPILE_ROLE, dprov.BODY_DATA_ROLE):
+            with self.subTest(role=role):
+                self.assertIn(role, named | rasters)
+        self.assertIn("zone", {column.name for column in dstore.BUTTRESS_ENTITY_COLUMNS})
+        self.assertEqual(len(dstore.BUTTRESS_ENTITY_COLUMNS), len(dstore.ENTITY_COLUMNS) + 1)
+
+    def test_the_adr_0031_has_its_erratum(self) -> None:
+        """RF-016-02 (ADR-0031 §2; T04 y T38): el ADR-0031 lleva al final de su §2 una fe de erratas que dice que «la misma
+        operación» es el mismo algoritmo con **dos tipos de operación**, y su estado no cambia (Aceptada)."""
+        adr = one_line(re.sub(r"(?m)^\s*> ?", "", docs.read(ADR_0031_RELPATH)))
+        for fact in ("**Fe de erratas**", "dos tipos de operación", "des.stockpile_detect", "des.stockpile_detect_project",
+                     "el mismo algoritmo y las mismas familias de datos", "no cambia la decisión ni el estado"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, adr)
+        self.assertIn("- **Estado:** Aceptada", adr)
+        self.assertLess(adr.index("Fe de erratas"), adr.index("Los datos que deja"))
+
+    def test_the_card_says_where_the_016_is(self) -> None:
+        """Definición de hecho §3.7 (T38): la cabecera de ``des.md`` dice que la 016 está implementada, **sin publicar** y a
+        falta de la verificación única (T39) y del H3 (T40), con su guía; la API de la 016 está en §4.4 y la «API prevista»
+        pasó a §4.5; y el «apoyo retirado», la fe de erratas, el borde de la rejilla y lo que no está confirmado (la apertura
+        de 31 m) están en §1.7."""
+        head = one_line(self.des[:self.des.index("## Responsabilidad")])
+        for fact in ("Desde la spec 016", "implementada en `main`, sin publicar", "verificación única (T39)",
+                     "H3 en pantalla (T40)", "docs/usuario/acopios-y-contrafuertes.md"):
+            with self.subTest(head=fact):
+                self.assertIn(fact, head)
+        self.assertNotIn("el acopio, el contrafuerte y los cuerpos apoyados de §1.7 —la 016—, §1.8", head)
+        self.assertIn("### 4.4 Lo que entrega la spec 016 (R-36)", self.des)
+        self.assertIn("### 4.5 API prevista (otras entradas del roadmap)", self.des)
+        self.assertNotIn("### 4.4 API prevista", self.des)
+        text = one_line(section(self.des, "### 1.7 Entidades paramétricas y transiciones (DIS-09, DIS-10, DIS-13…DIS-16)"))
+        for fact in ("fe de erratas del ADR-0031 §2", "des.stockpile_detect_project", "**marca ha de rodear el pie**",
+                     "**Un montón que toca el borde de la rejilla no sale candidato**", "P-6 no queda confirmado",
+                     "74, 20 o 135 candidatos", "**«Apoyo retirado» tiene una regla más**", "no en un evento",
+                     "**La M de las líneas 3D no llega al proyecto**", "`des.body_data_m`", "`_creation_steps`",
+                     "`SLOW_BODY_S`", "21,10 MiB"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, text)
+        row = re.search(r"^\| 016-des-acopios-contrafuerte-y-cuerpos-apoyados .*$", self.des, re.MULTILINE)
+        self.assertIsNotNone(row)
+        assert row is not None
+        for fact in ("sin publicar", "T39", "T40", "acopios-y-contrafuertes.md"):
+            with self.subTest(row=fact):
+                self.assertIn(fact, row.group(0))
+
+
+@docs.requires_docs
+class SupportedGuideDocTest(unittest.TestCase):
+    """La guía de uso de los acopios, el contrafuerte y los cuerpos apoyados
+    (``docs/usuario/acopios-y-contrafuertes.md``; spec 016, T38) dice lo que el código hace: todo texto entre «» sale del
+    catálogo o es un ejemplo que esta prueba lista, las órdenes llevan el texto de su catálogo, los datos, los umbrales y las
+    cifras son los del código, y «Lo que no hace todavía» dice lo que hoy no hace y no promete lo que la spec deja abierto."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.guide = docs.read(SUPPORTED_GUIDE_RELPATH)
+        cls.index = QuoteIndex(catalog_texts())
+
+    def guide_section(self, heading: str) -> str:
+        """La sección ``heading`` de la guía en una línea y sin las marcas «> » de sus recuadros."""
+        return one_line(re.sub(r"(?m)^> ?", "", section(self.guide, heading)))
+
+    def test_every_quoted_text_is_in_the_catalog_or_is_a_listed_example(self) -> None:
+        """Principio 10, RF-016-23, RF-016-25 (T38): todo texto de la guía entre «» sale del catálogo (``messages.toml``,
+        ``design.messages``, las órdenes y las familias de datos), con otras cifras y otros nombres y con lo que omite con
+        «…», o está en :data:`SUPPORTED_EXAMPLES`; y todo lo de la lista sigue en la guía."""
+        found = quotes(self.guide)
+        self.assertGreater(len(found), 20)
+        unknown = sorted({quote for quote in found
+                          if quote not in SUPPORTED_EXAMPLES and not self.index.has(quote)})
+        self.assertEqual(unknown, [], "textos de la guía que el catálogo no dice (cámbielos en la guía, o en el código "
+                                      "si es él el que está mal)")
+        self.assertEqual(sorted(set(SUPPORTED_EXAMPLES) - set(found)), [],
+                         "ejemplos que la guía ya no cita: quítelos de SUPPORTED_EXAMPLES")
+
+    def test_every_listed_example_is_not_in_the_catalog(self) -> None:
+        """Un ejemplo de :data:`SUPPORTED_EXAMPLES` que sí está en el catálogo sobra: la lista solo tiene lo que no sale
+        de él."""
+        for example in SUPPORTED_EXAMPLES:
+            with self.subTest(example=example):
+                self.assertFalse(self.index.has(example))
+
+    def test_orders_are_named_with_their_catalog_text(self) -> None:
+        """RF-016-25 (plan 016 §5.3.3): la guía nombra cada orden de la 016 y las de la 015 que usa con el texto de su
+        catálogo y dice dónde está cada una; la «Unidad por espesor sobre su apoyo…» de Geología ya no existe."""
+        cat = catalog.load()
+        for key in SUPPORTED_ORDERS:
+            with self.subTest(order=key):
+                self.assertIn(cat.commands[key].label_es, self.guide)
+        self.assertIn("Diseño ▸ Pistas y entidades ▸ Entidades", self.guide)
+        self.assertNotIn("geoblender.geo_create_thickness_unit", cat.commands)
+        self.assertIn("Unidad por espesor sobre su apoyo…", self.guide)  # dicho como lo que era
+
+    def test_data_paths_parameters_and_figures_are_the_code_s(self) -> None:
+        """RF-016-02, RF-016-09, RF-016-13, RF-016-17, RF-016-20, RF-016-24 (plan 016 §5.2): §17 da la ruta de cada tabla y
+        de cada rejilla de la 016, las cuatro familias de parámetros y cada familia de cifras como las nombra el código."""
+        where = inline_tokens(self.guide_section("## 17. Dónde queda cada cosa en el proyecto"))
+        for family in dprov.SUPPORTED_FAMILIES:
+            shown = (raster_pattern(family.code, folder=True) if family.extension
+                     else table_pattern(family.code))
+            with self.subTest(dataset=family.code):
+                self.assertTrue(any(shown in token for token in where), shown)
+        for entity in (dparams.STOCKPILE_ENTITY, dparams.REMOVAL_ENTITY, dparams.BUTTRESS_ENTITY, dparams.BODY_ENTITY):
+            prefix = entity.families[0].pattern.rsplit(".", 1)[0]
+            with self.subTest(parameters=entity.kind):
+                self.assertIn(f"{prefix}.*", where)
+        for figure in dprov.SUPPORTED_FIGURES:
+            stem = figure.key.split("_")[0]
+            with self.subTest(figure=figure.key):
+                self.assertIn(f"{stem}_*", where)
+        for segment in ("stk_001", "rmv_001", "btr_001", "bdy_001"):
+            with self.subTest(segment=segment):
+                self.assertIn(segment, one_line(self.guide))
+        self.assertEqual(dparams.entity_segment("STK-001"), "stk_001")
+        self.assertEqual(dparams.entity_segment("BDY-001"), "bdy_001")
+        self.assertIn("res.check_stockpile_cut_m3", where)
+
+    def test_the_thresholds_and_their_types_are_the_code_s(self) -> None:
+        """RF-016-02, RF-016-07, RF-016-08 (D-3, D-17; T38): la tabla de umbrales de §5 da el valor por defecto y el tipo
+        (ADOPTADO «sin confirmar», y HIPÓTESIS la inclinación máxima y el cuantil) que declara el código, también el 31 m
+        «no confirmado» y el umbral de la huella (0,30 m, el de la 011)."""
+        text = section(self.guide, "## 5. Los avisos, los rechazos y los umbrales")
+        rows = {cells[0]: cells for table in tables(text) for cells in table}
+        by_name = {family.pattern.rsplit(".", 1)[1]: family.template for family in dparams.STOCKPILE_ENTITY.families}
+        self.assertEqual(len(THRESHOLD_ROWS), 11)
+        for names, shown, kind in THRESHOLD_ROWS:
+            values = [by_name[name].default for name in names]
+            self.assertEqual(" y ".join(f"{spanish_number(v)}{unit}" for v, unit in zip(
+                values, [{"m": " m", "deg": "°", "m2": " m²", "-": ""}[by_name[name].unit] for name in names])), shown)
+            with self.subTest(thresholds=names):
+                (cells,) = [c for c in rows.values() if c[1] == shown]
+                self.assertEqual(cells[2], kind)
+                for name in names:
+                    expected = by_name[name].kind.value
+                    self.assertIn(expected, kind)
+        self.assertIn("0,30 m", text)
+        self.assertEqual(dparams.ANTHROPIC_PRESENCE, "res.anthropic_presence_m")
+
+    def test_the_head_says_the_guide_is_pending_and_not_seen(self) -> None:
+        """Definición de hecho §3.7 (T38): el recuadro del principio dice que la guía está pendiente de la revisión de Samuel
+        y que **no se ha visto en pantalla**, que falta la verificación única y el H3, y que la apertura de 31 m no está
+        confirmada; y lleva su fecha, su spec y su estado."""
+        head = one_line(re.sub(r"(?m)^> ?", "", self.guide[:self.guide.index("En el proyecto de referencia de IMGA")]))
+        for fact in ("**Fecha:** 19/11/2026", "**Spec:** 016", "Pendiente de la revisión de Samuel; no se ha visto en pantalla",
+                     "Todavía no pasó su verificación única ni el H3 en pantalla", "CE-016-08",
+                     "la apertura de 31 m de los candidatos no está confirmada", "CE-016-09"):
+            with self.subTest(head=fact):
+                self.assertIn(fact, head)
+
+    def test_the_marks_surround_the_foot_and_the_edge_of_the_grid(self) -> None:
+        """RF-016-02, RF-016-05, RF-016-08 (H2, T22; T05 y T08; docs/trampas.md §2): §3 dice cómo dibujar la marca (que
+        **rodee el pie**: con una marca dentro del pie la detección no converge, 1,64 m de error en la base) y §5, que un
+        montón que toca el borde de la rejilla no sale candidato y que lo de fuera no cuenta."""
+        three = self.guide_section("## 3. Antes de empezar")
+        for fact in ("Cómo dibujar la marca: que rodee el pie", "dentro** del montón", "1,64 m", "no convergió en las 6 vueltas",
+                     "algo mayor que el pie del montón", "Dos marcas no se pueden solapar"):
+            with self.subTest(section="3", fact=fact):
+                self.assertIn(fact, three)
+        five = self.guide_section("## 5. Los avisos, los rechazos y los umbrales")
+        for fact in ("Los bordes de la rejilla", "toca el borde de la rejilla no sale como candidato", "unos decímetros",
+                     "74, 20 o 135 candidatos", "la V10 daba **60**", "decide Samuel"):
+            with self.subTest(section="5", fact=fact):
+                self.assertIn(fact, five)
+
+    def test_the_removal_chain_and_the_confirmations_are_told(self) -> None:
+        """RF-016-11 a RF-016-16 (CE-016-03, CE-016-04; T38): §8 a §10 dicen la transición, lo que se apoya antes de calcular
+        con su confirmación, «apoyo retirado» y cómo se lee en «Recalcular lo obsoleto», la pared con su motivo de más de
+        45° y 3 m (constantes, no parámetros) y «Como plataforma» (el eje de borde a borde)."""
+        removal = self.guide_section("## 8. Retirar un acopio…")
+        for fact in ("sin valor por defecto", "no sube ninguna celda ni baja de la base", "aunque su corte no esté admitido",
+                     "**obsoleta**", "sin registrar nada"):
+            with self.subTest(section="8", fact=fact):
+                self.assertIn(fact, removal)
+        resting = self.guide_section("## 9. Lo que se apoya en el acopio, y «apoyo retirado»")
+        for fact in ("una sola lista", "No se retira sin su confirmación expresa", "Confirmar lo que se le apoya y crear",
+                     "espera una decisión", "no deja «apoyo retirado»"):
+            with self.subTest(section="9", fact=fact):
+                self.assertIn(fact, resting)
+        wall = self.guide_section("## 10. La pared y «Como plataforma»")
+        for fact in ("más de 45° y 3 m o más", "no son parámetros", "casi nunca salta", "de borde a borde", "Como plataforma"):
+            with self.subTest(section="10", fact=fact):
+                self.assertIn(fact, wall)
+        self.assertEqual(dprov.DECLARING_OP_NAMES, (dprov.PLATFORM, dprov.BUTTRESS))
+
+    def test_the_buttress_and_the_body_say_what_they_reject(self) -> None:
+        """RF-016-17 a RF-016-22 (CE-016-05, CE-016-06, CE-016-10; T38): §11 dice la cota de coronación del ancla, el pie
+        libre también en solo restauración, el pie cortado y lo que declara; y §12, la regla del espesor, lo lejano, la M
+        que no llega y el aviso de lo lento."""
+        buttress = self.guide_section("## 11. Contrafuerte…")
+        for fact in ("la cota del ancla más próxima", "el pie no se recorta a la zona dibujada",
+                     "también en las zonas de solo restauración", "No corta ninguna celda", "El pie cortado", "sin corte"):
+            with self.subTest(section="11", fact=fact):
+                self.assertIn(fact, buttress)
+        body = self.guide_section("## 12. Cuerpo apoyado…")
+        for fact in ("Nunca se interpola la cota de la base", "La M de las líneas 3D no se ofrece", "más próximo",
+                     "se rechaza", "8 s"):
+            with self.subTest(section="12", fact=fact):
+                self.assertIn(fact, body)
+
+    def test_the_verification_with_the_base_is_told(self) -> None:
+        """RF-012-24, RF-012-30, RF-012-31 (spec 012 0.5; D-a a D-d; T36, T42 y T38): §13 dice que la base es automática (la
+        menor de varias), que la ventana la nombra o dice por qué no, la tabla con «Corte de terreno» y «Corte de acopios»
+        (el veredicto es el de terreno), que sin acopios todo es como antes y la limitación de la detección obsoleta."""
+        text = self.guide_section("## 13. La verificación de los límites con la base de los acopios")
+        for fact in ("La base es automática", "la **menor** de ellas", "o por qué no", "Corte de terreno (m³)",
+                     "Corte de acopios (m³)", "el veredicto es el de terreno", "Sin acopios detectados, la tabla y los "
+                     "resultados son los de siempre, bit a bit", "tampoco depende de ella",
+                     "verificar otra vez"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, text)
+
+    def test_the_known_limits_are_told(self) -> None:
+        """«Lo que no hace todavía» (T38; «Para Samuel» de ``tasks.md``) dice los límites de **hoy**: no se vio en pantalla,
+        el banco no está contrastado, la M de las líneas 3D, los tamaños de los cuerpos grandes, la pared que casi nunca salta,
+        «apoyo retirado» que no es ``REFUSED``, las unidades de la 011 a mano, la verificación con la detección obsoleta y la
+        detección del proyecto; y **no** dice que «como plataforma» esté pendiente (T41) ni que la tabla de la verificación dé
+        el corte entero (T42)."""
+        limits = self.guide_section("## 16. Lo que no hace todavía")
+        for fact in ("No se ha visto en pantalla", "El banco (CE-016-08) no está contrastado", "14,6 %", "7,9 %",
+                     "La M de las líneas 3D no llega al proyecto", "21,10 MiB", "10,60 MiB", "2,06 MiB", "17,7 ha",
+                     "La pared casi nunca salta", "no es `REFUSED`", "se añaden a mano", "no queda obsoleta sola",
+                     "no deja «apoyo retirado»", "no se puede probar", "del 78 al 94 %", "+2,9 s"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, limits)
+        for gone in ("como plataforma queda pendiente", "«Como plataforma» no está cableado", "sigue dando en «Corte (m³)»",
+                     "16 MB"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, self.guide)
+        # lo que dice sobre las cifras de cada tarea es lo que mide el código: la M se rechaza con su código
+        self.assertIn("des.body_data_m", dmessages.MESSAGES)
+
+
+@docs.requires_docs
+class SupportedStateDocTest(unittest.TestCase):
+    """El índice de specs, el roadmap, el ``CHANGELOG.md`` del código, la barra superior y los paneles contextuales dicen el
+    estado de la 016 tras su documentación (T38): implementada, sin publicar y a falta de la verificación única (T39) y del
+    H3 (T40); «Cerrada» solo tras ellos y CE-016-09 (lo marca la sesión principal)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.specs = docs.read(SPECS_INDEX_RELPATH)
+        cls.roadmap = docs.read(ROADMAP_RELPATH)
+        cls.changelog = one_line(CHANGELOG_PATH.read_text(encoding="utf-8"))
+        cls.index_row = re.search(r"^\| 016 \|.*$", cls.specs, re.MULTILINE)
+        cls.roadmap_row = re.search(r"^\| R-36 \|.*$", cls.roadmap, re.MULTILINE)
+        cls.ledger = re.findall(r"^\| 2026-11-19 \| R-36.*$", cls.roadmap, re.MULTILINE)
+
+    def test_the_index_says_where_the_016_is(self) -> None:
+        """Definición de hecho §3.7 (T38): la fila de la 016 dice que está implementada a falta de la verificación única
+        (T39) y del H3 (T40), sin publicar, con sus 44 tareas (la convergencia, de la T41 a la T44), su guía, lo de «Para
+        Samuel» que sigue y que «Cerrada» es solo tras el H3 y CE-016-09; y ya no dice que esté «sin empezar»."""
+        self.assertIsNotNone(self.index_row)
+        assert self.index_row is not None
+        row = one_line(self.index_row.group(0))
+        for fact in ("**Implementada, a falta de la verificación única (T39) y del H3 (T40)**", "**sin publicar**",
+                     "44 (T01–T44", "la convergencia, T41 a T44", "docs/usuario/acopios-y-contrafuertes.md",
+                     "la apertura de 31 m", "CE-016-08", "«Cerrada» solo tras el H3 y CE-016-09"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, row)
+        for stale in ("sin empezar", "40 (T01–T40)", "40 tareas"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, row)
+
+    def test_the_roadmap_says_where_the_016_is(self) -> None:
+        """Definición de hecho §3.7 (T38): la fila de R-36 y su registro del 19/11/2026 dicen que la 016 está implementada a
+        falta de su verificación única y su H3, que no se marca cerrada hasta entonces y CE-016-09, y lo medido y lo que
+        no confirma el banco; y ya no dice «sin empezar»."""
+        self.assertIsNotNone(self.roadmap_row)
+        assert self.roadmap_row is not None
+        row = one_line(self.roadmap_row.group(0))
+        for fact in ("**implementada** en `main`, sin publicar", "T01 a la T37 y de la T41 a la T44", "verificación única (T39)",
+                     "H3 en pantalla (T40)", "**«Cerrada» solo tras ellos y tras CE-016-09**",
+                     "docs/usuario/acopios-y-contrafuertes.md"):
+            with self.subTest(row=fact):
+                self.assertIn(fact, row)
+        self.assertNotIn("sin empezar", row)
+        self.assertEqual(len(self.ledger), 1, self.ledger)
+        entry = one_line(self.ledger[0])
+        for fact in ("implementada a falta de su verificación única (T39) y del H3 (T40)", "la fe de erratas del ADR-0031 §2",
+                     "RNF-016-07 no cumple a 100 ha", "+2,9 s", "CE-016-08", "no confirma P-6",
+                     "no marca R-36 como cerrada hasta entonces"):
+            with self.subTest(ledger=fact):
+                self.assertIn(fact, entry)
+
+    def test_the_changelog_says_what_the_016_does_and_what_it_changes(self) -> None:
+        """Definición de hecho §3.7 (T38): el ``CHANGELOG.md`` del código, para el ingeniero de minas y sin jerga, dice lo
+        nuevo de la 016 (detectar, candidatos, retirar con lo apoyado y «como plataforma», contrafuerte, cuerpo apoyado), las
+        cifras ADOPTADO y HIPÓTESIS con su aviso (la apertura de 31 m, la inclinación máxima y el cuantil) y lo que cambia la
+        verificación de la 012; y lo que **no** hace todavía."""
+        start = self.changelog.index("- **Acopios, contrafuerte y cuerpos apoyados** (spec 016")
+        entry = self.changelog[start:self.changelog.index("- **Entidades de diseño paramétricas** (spec 015")]
+        for fact in ("hecha a falta de su verificación única y de verla en pantalla", "Acopio (detectar, retirar)…, "
+                     "Contrafuerte… y Cuerpo apoyado…", "**Detectar acopios…**", "**La marca ha de rodear el pie del montón**",
+                     "**ninguno sin filtrar**", "**una sola lista de todo lo que se le apoya**", "**Como plataforma**",
+                     "**El pie no se recorta a la zona dibujada**", "**sin espesores negativos**",
+                     "**La M de las líneas 3D no se admite**", "ADOPTADO «sin confirmar»", "**La inclinación máxima del plano de "
+                     "base (4°) y el cuantil de apoyo (0,6) son HIPÓTESIS**", "**El diámetro de apertura de los candidatos (31 m) no "
+                     "está confirmado**", "74, 20 o 135 candidatos", "**Lo que no hace todavía**"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, entry)
+        for jargon in ("RF-016", "T3", "milestone", "`des_stk_"):
+            with self.subTest(jargon=jargon):
+                self.assertNotIn(jargon, entry, "la entrada de la 016 se escribe sin jerga de tareas ni de ficheros")
+        verification = self.changelog[self.changelog.index("- **Verificación por recinto** (spec 012, versión 0.5"):
+                                      self.changelog.index("- **La comprobación de cada tarea deja fuera las pruebas pesadas "
+                                                           "de la spec 016**")]
+        for fact in ("no cuenta como cortar terreno", "corte de terreno** y el **corte de acopios", "automática",
+                     "dice qué base usa o por qué no", "Sin acopios detectados, la verificación da exactamente lo de siempre"):
+            with self.subTest(verification=fact):
+                self.assertIn(fact, verification)
+
+    def test_the_bar_and_the_context_panels_tell_the_016(self) -> None:
+        """RF-016-25, RF-015-28 (BS §8.7 y PC §3.11; T35 y T38): la barra superior dice que las tres órdenes son de la 016, que
+        «Cuerpo apoyado…» pasa de R-18 a R-36 (D-8) y qué pide cada diálogo; el panel contextual, lo que enseña la barra N
+        de cada tipo y que «Retirar» abre «Acopio (detectar, retirar)…»."""
+        bar = one_line(docs.read(BS_RELPATH))
+        for fact in ("**Desde la spec 016**", "**«Cuerpo apoyado…» pasa de R-18 a R-36**", "`des_detect_stockpiles`",
+                     "`des_stockpile_candidates`", "`des_remove_stockpile`", "**«Como plataforma»**", "**la M no se ofrece**",
+                     "los **catorce umbrales con su valor por defecto y su tipo junto al campo**",
+                     "docs/usuario/acopios-y-contrafuertes.md"):
+            with self.subTest(bar=fact):
+                self.assertIn(fact, bar)
+        self.assertNotIn("«Acopio (detectar, retirar)…» y «Contrafuerte…» siguen en R-36", bar)
+        panels = one_line(docs.read(PC_RELPATH))
+        for fact in ("**Desde la 016, lo propio de cada tipo:**", "`ROW_CANDIDATES`", "`ROW_DECIDE`", "de una **retirada**",
+                     "**contrafuerte**", "**cuerpo apoyado**", "«Apoyo retirado: se retiró el acopio …»",
+                     "docs/usuario/acopios-y-contrafuertes.md"):
+            with self.subTest(panels=fact):
+                self.assertIn(fact, panels)
 
 
 if __name__ == "__main__":

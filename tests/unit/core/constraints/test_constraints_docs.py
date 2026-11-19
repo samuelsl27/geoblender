@@ -73,22 +73,14 @@ CITING_RELPATHS = ("docs/usuario/topografia.md", "docs/usuario/versiones.md",
                    "docs/usuario/cubicacion.md", "README.md")
 
 # El mecanismo de la spec 015 para lo que añade mientras se construye: los módulos (``gis.masks``, ``core.constraints``)
-# que aún no tienen ficha y lo público de módulos que ya la tienen (``gis.md``, ``core.md``). Cada tarea añade aquí
-# lo suyo y la de documentación lo lleva a la ficha y lo vacía: vacíos desde la T34 de la 015
+# que aún no tienen ficha y lo público de módulos que ya la tienen (``gis.md``, ``core.md``, ``res.md``). Cada tarea añade
+# aquí lo suyo y la de documentación lo lleva a la ficha y lo vacía: vacíos desde la T34 de la 015
 # (``core.constraints.declared`` y los nombres nuevos de ``gis.masks`` y de ``core.constraints.styles`` están en
-# ``core.md`` y ``gis.md``) y otra vez desde su T47 (``gis.masks.declaring`` y ``declare_pending_steps``, de la T38,
-# están en ``gis.md``); la 016 los usará con lo suyo.
+# ``core.md`` y ``gis.md``), otra vez desde su T47 (``gis.masks.declaring`` y ``declare_pending_steps``, de la T38, están en
+# ``gis.md``) y **desde la T38 de la 016** (``reserves.compliance.lowest_base`` y la base de los acopios de
+# ``reserves.compliance_store``, de la T29 y la T30, están en ``res.md``); una spec posterior los usará con lo suyo.
 PENDING_015_MODULES: frozenset[str] = frozenset()
-PENDING_015_API: frozenset[str] = frozenset({
-    # La 016, T29 (la tarea de documentación, T38, lo lleva a la ficha, ``res.md``, y vacía este conjunto): la menor de
-    # varias bases de acopios para la verificación con la base (``reserves.compliance``, A12).
-    "reserves.compliance.lowest_base",
-    # La 016, T30: la base de los acopios en la verificación del proyecto (``reserves.compliance_store``, A12): elegirla,
-    # sus papeles y lo que se anota de las detecciones que usa y las que no.
-    "reserves.compliance_store.BaseSelection", "reserves.compliance_store.SkippedDetection",
-    "reserves.compliance_store.StockpileBase", "reserves.compliance_store.base_role",
-    "reserves.compliance_store.select_bases",
-})
+PENDING_015_API: frozenset[str] = frozenset()
 # Los módulos de gis y de reserves de la 012 cuya API pública tiene que nombrar su ficha.
 GIS_MODULES = ("gis.search", "gis.polygons", "gis.coverage",
                *(f"gis.masks.{info.name}" for info in pkgutil.iter_modules(masks.__path__)
