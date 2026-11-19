@@ -38,12 +38,21 @@ coordenadas no finitas, una arista obligatoria que pasa por un vértice o dos qu
 da :class:`TriangulatorError` ``gis.triangulation_input``; una salida que no cumpla el
 contrato, ``gis.triangulation_contract``. Una forma o un tipo de array que el contrato no
 admite es un error del programa (``ValueError`` o ``TypeError``).
+
+**Por pasos** (spec 016, T24; RNF-016-03): :meth:`PureTriangulator.triangulate_steps` es un
+generador que **cede cada** :data:`STEP_POINTS` (256) **puntos** —los de la comprobación de la
+entrada (el casco convexo de puntos alineados, donde cada predicado cae en la aritmética
+exacta, cuesta 0,12 s con 8.000), los insertados, las aristas obligatorias y las del casco— y
+devuelve los triángulos, **bit a bit** los de :meth:`PureTriangulator.triangulate`, que es hoy
+ese mismo generador agotado (el hilo de Blender no puede estar más de 0,2 s en una llamada).
+El contrato ``gis.ports.Triangulator`` no cambia; los errores de los datos salen **al
+avanzar** el generador, no al llamarlo.
 """
 
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -58,6 +67,7 @@ __all__ = [
     "HULL_FILTER_MIN",
     "NAME",
     "PROGRESS_STEP",
+    "STEP_POINTS",
     "SUPER_SCALE",
     "CheckedInput",
     "PureTriangulator",
@@ -80,6 +90,11 @@ SUPER_SCALE = 1000.0
 
 PROGRESS_STEP = 4096
 """Puntos o aristas entre dos avisos de avance y consultas de cancelación."""
+
+STEP_POINTS = 256
+"""Puntos (o aristas) entre dos cesiones de :meth:`PureTriangulator.triangulate_steps` (RNF-016-03). Medido con 8.000 puntos
+colineales y uno fuera de su recta, el peor caso de la T24: ≈ 4 ms cada 256 puntos del casco convexo y ≤ 26 ms cada 256
+insertados."""
 
 SEED = 20061017
 """Semilla del orden BRIO: la misma entrada da siempre la misma salida."""
@@ -237,8 +252,19 @@ def _check_points(xy: np.ndarray, name: str = NAME) -> np.ndarray:
     return order
 
 
-def _all_collinear(xy: np.ndarray, first: int, last: int) -> bool:
-    """Todos los puntos en la recta de ``first`` a ``last`` (signo exacto)."""
+def _drive[T](work: Generator[None, None, T]) -> T:
+    """Agota ``work`` (sus cesiones no hacen nada aquí) y devuelve lo que devuelve: la versión de una vez de una función por
+    pasos (T24)."""
+    while True:
+        try:
+            next(work)
+        except StopIteration as done:
+            return done.value  # type: ignore[no-any-return]
+
+
+def _all_collinear_units(xy: np.ndarray, first: int, last: int) -> Generator[None, None, bool]:
+    """Todos los puntos en la recta de ``first`` a ``last`` (signo exacto). Cede cada :data:`STEP_POINTS` puntos de los que el
+    filtro de punto flotante no decide (los que sí están en la recta, que son todos si lo están todos)."""
     ax, ay = xy[first]
     bx, by = xy[last]
     detleft = (ax - xy[:, 0]) * (by - xy[:, 1])
@@ -248,17 +274,22 @@ def _all_collinear(xy: np.ndarray, first: int, last: int) -> bool:
         return False
     a, b = float(ax), float(ay)
     c, d = float(bx), float(by)
-    return all(orient2d(a, b, c, d, px, py) == 0 for px, py in xy.tolist())
+    for start in range(0, len(xy), STEP_POINTS):
+        for px, py in xy[start:start + STEP_POINTS].tolist():
+            if orient2d(a, b, c, d, px, py) != 0:
+                return False
+        yield
+    return True
 
 
-def _convex_hull(x: list[float], y: list[float], order: np.ndarray) -> list[int]:
+def _convex_hull_units(x: list[float], y: list[float], order: np.ndarray) -> Generator[None, None, list[int]]:
     """Índices de la envolvente convexa en sentido antihorario desde el menor (x, y), con
     los puntos alineados del borde (cadena monótona de Andrew con signos exactos). No se
-    llama con todos los puntos alineados."""
+    llama con todos los puntos alineados. Cede cada :data:`STEP_POINTS` puntos de cada cadena."""
 
-    def chain(indices: list[int]) -> list[int]:
+    def chain(indices: list[int]) -> Generator[None, None, list[int]]:
         out: list[int] = []
-        for p in indices:
+        for count, p in enumerate(indices, start=1):
             px, py = x[p], y[p]
             while len(out) >= 2:
                 a, b = out[-2], out[-1]
@@ -266,12 +297,19 @@ def _convex_hull(x: list[float], y: list[float], order: np.ndarray) -> list[int]
                     break
                 out.pop()
             out.append(p)
+            if count % STEP_POINTS == 0:
+                yield
         return out
 
     ordered = order.tolist()
-    lower = chain(ordered)
-    upper = chain(ordered[::-1])
+    lower = yield from chain(ordered)
+    upper = yield from chain(ordered[::-1])
     return lower[:-1] + upper[:-1]
+
+
+def _convex_hull(x: list[float], y: list[float], order: np.ndarray) -> list[int]:
+    """:func:`_convex_hull_units` de una vez."""
+    return _drive(_convex_hull_units(x, y, order))
 
 
 def _hull_candidates(xy: np.ndarray, order: np.ndarray) -> np.ndarray:
@@ -303,12 +341,12 @@ def _hull_candidates(xy: np.ndarray, order: np.ndarray) -> np.ndarray:
     return order[~inside[order]]
 
 
-def _hull(xy: np.ndarray, order: np.ndarray) -> list[int]:
+def _hull_units(xy: np.ndarray, order: np.ndarray) -> Generator[None, None, list[int]]:
     """La envolvente convexa de ``xy`` (como :func:`_convex_hull`, con los puntos alineados
-    del borde) calculada solo con los candidatos de :func:`_hull_candidates`."""
+    del borde) calculada solo con los candidatos de :func:`_hull_candidates`, por pasos."""
     candidates = _hull_candidates(xy, order)
-    local = _convex_hull(xy[candidates, 0].tolist(), xy[candidates, 1].tolist(),
-                         np.arange(len(candidates)))
+    local = yield from _convex_hull_units(xy[candidates, 0].tolist(), xy[candidates, 1].tolist(),
+                                          np.arange(len(candidates)))
     return candidates[local].tolist()
 
 
@@ -743,6 +781,20 @@ def _check(xy: np.ndarray, constraints: Sequence[tuple[int, int]], triangles: ob
                                   field="arista", value=f"{a}–{b}")
 
 
+def _check_input_units(xy_local: np.ndarray, edges: np.ndarray, *,
+                       name: str) -> Generator[None, None, CheckedInput]:
+    """:func:`check_input` por pasos: cede cada :data:`STEP_POINTS` puntos de la comprobación de las alineaciones y del
+    casco convexo; el resto (formas, finitos, repetidos) es numpy y no cede."""
+    xy = _points(xy_local)
+    constraints = tuple(_constraints(edges, len(xy)))
+    order = _check_points(xy, name)
+    if (yield from _all_collinear_units(xy, int(order[0]), int(order[-1]))):
+        raise _input_error(f"los {len(xy)} puntos están alineados", field="puntos",
+                           value=len(xy), name=name)
+    hull = yield from _hull_units(xy, order)
+    return CheckedInput(xy, constraints, tuple(hull), name)
+
+
 def check_input(xy_local: np.ndarray, edges: np.ndarray, *, name: str) -> CheckedInput:
     """La primera mitad del contrato de ``ports.Triangulator``: comprueba la entrada antes
     de triangular. ``xy_local`` float (n, 2) y ``edges`` enteros (k, 2) con índices válidos
@@ -751,13 +803,7 @@ def check_input(xy_local: np.ndarray, edges: np.ndarray, *, name: str) -> Checke
     Devuelve los puntos en float64, las aristas obligatorias y la envolvente convexa, para
     :func:`check_output`. Un triangulador que no puede recibir datos sin triangulación (la
     CDT de Blender) la llama antes."""
-    xy = _points(xy_local)
-    constraints = tuple(_constraints(edges, len(xy)))
-    order = _check_points(xy, name)
-    if _all_collinear(xy, int(order[0]), int(order[-1])):
-        raise _input_error(f"los {len(xy)} puntos están alineados", field="puntos",
-                           value=len(xy), name=name)
-    return CheckedInput(xy, constraints, tuple(_hull(xy, order)), name)
+    return _drive(_check_input_units(xy_local, edges, name=name))
 
 
 def check_output(checked: CheckedInput, triangles: np.ndarray) -> None:
@@ -802,10 +848,22 @@ class PureTriangulator:
     def triangulate(self, xy_local: np.ndarray, edges: np.ndarray) -> np.ndarray:
         """Triángulos (int32 (m, 3), antihorarios, índices de ``xy_local``) de la
         triangulación de Delaunay restringida de ``xy_local`` (float64 (n, 2), relativas al
-        GeoOrigin) con las aristas obligatorias ``edges`` (int (k, 2)). Ver el módulo."""
-        checked = check_input(xy_local, edges, name=self.name)
+        GeoOrigin) con las aristas obligatorias ``edges`` (int (k, 2)). Ver el módulo.
+        Es :meth:`triangulate_steps` agotado de una vez."""
+        return _drive(self.triangulate_steps(xy_local, edges))
+
+    def triangulate_steps(self, xy_local: np.ndarray, edges: np.ndarray
+                          ) -> Generator[None, None, np.ndarray]:
+        """:meth:`triangulate` por pasos (RNF-016-03, T24): un generador que cede cada
+        :data:`STEP_POINTS` puntos (los de la comprobación de la entrada, los insertados, las
+        aristas obligatorias y las del casco) y **devuelve** los triángulos, la misma salida
+        bit a bit. Los errores de los datos (``TriangulationError``) y los del programa
+        (``ValueError``, ``TypeError``) salen al avanzar el generador, antes de insertar nada
+        si son de la entrada. Cerrarlo a mitad no deja nada ni modifica la entrada."""
+        checked = yield from _check_input_units(xy_local, edges, name=self.name)
         xy, constraints, hull = checked.xy, checked.constraints, list(checked.hull)
         n = len(xy)
+        yield
         x, y = xy[:, 0].tolist(), xy[:, 1].tolist()
         low, high = xy.min(axis=0), xy.max(axis=0)
         cx, cy = (low + high) / 2.0
@@ -824,14 +882,21 @@ class PureTriangulator:
                                    field="vértice", value=p) from None
             if done % step == 0:
                 self._tick(done, total, f"punto {done} de {n}")
+            if done % STEP_POINTS == 0:
+                yield
         for done, (a, b) in enumerate(constraints, start=n + 1):
             self._insert(mesh, a, b)
             if done % step == 0:
                 self._tick(done, total, f"arista obligatoria {done - n} de {len(constraints)}")
-        for a, b in zip(hull, hull[1:] + hull[:1], strict=True):
+            if (done - n) % STEP_POINTS == 0:
+                yield
+        for count, (a, b) in enumerate(zip(hull, hull[1:] + hull[:1], strict=True), start=1):
             if mesh.find_edge(a, b) is None:
                 self._insert(mesh, a, b)
+            if count % STEP_POINTS == 0:
+                yield
         triangles = mesh.triangles(n)
+        yield
         check_output(checked, triangles)
         self._tick(total, total, "terminado")
         return triangles

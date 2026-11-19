@@ -50,9 +50,11 @@ Lo que entrega:
 
 **Cómo está partido para los pasos** (RNF-016-03, T24): cada ``yield`` de las unidades es una unidad de trabajo y
 :func:`~.seeds.pace_progress` las agrupa en pasos de ``budget_s``. Los datos a celdas ceden cada punto-bloque y cada polígono; el
-más próximo, por bandas; la triangulación y la rasterización del TIN son **hoy una unidad cada una** (:func:`_triangulate_units` y
-:func:`_rasterize_units`: sus contratos —puntos en unidades de celda → triángulos; TIN y ventana → espesor o NaN— no cambian
-cuando la T24 las parta en pasos de 256 puntos y bandas de filas).
+más próximo, por bandas; **la triangulación cede cada 256 puntos** (:func:`_triangulate_units` sobre
+``PureTriangulator.triangulate_steps``, la misma salida bit a bit que ``triangulate``) y **la rasterización del TIN, por bandas de
+filas** de coste acotado (:func:`_rasterize_units`: ``tin_to_raster`` solo con los triángulos de cada banda, el mismo resultado bit a
+bit que de una pieza; con datos en líneas ese TIN costaba lo que suman las cajas de sus triángulos, 6,9 s por 100 ha). Los contratos
+de las dos —puntos en unidades de celda → triángulos; TIN y ventana → espesor o NaN— son los de la T23.
 
 **Lo que no hace** (la T25): leer la capa de datos (puntos, líneas con su Z o su M, polígonos), preparar, crear, recalcular y
 reproducir la operación, rechazar un espesor negativo de la capa con capa, entidad, campo y valor, y avisar de más de 100 ha con
@@ -501,21 +503,81 @@ def _collinear(rows: np.ndarray, cols: np.ndarray) -> bool:
 
 def _triangulate_units(xy: np.ndarray) -> Generator[None, None, np.ndarray]:
     """La triangulación de Delaunay de ``xy`` (float64 ``(n ≥ 3, 2)``, no alineados: unidades de celda) por
-    ``gis.cdt.PureTriangulator.triangulate``, **tal como está**: int32 ``(m, 3)``. Hoy una sola unidad; la T24 la parte en pasos
-    de 256 puntos (``triangulate_steps``, la misma salida bit a bit) sin cambiar este contrato."""
-    triangles = PureTriangulator().triangulate(xy, np.empty((0, 2), dtype=np.int32))
-    yield
+    ``gis.cdt.PureTriangulator.triangulate_steps`` (T24): int32 ``(m, 3)``, bit a bit los de ``triangulate``. Cede cada 256 puntos
+    (RNF-016-03: los 8.000 puntos colineales de las secciones costaban 0,45 s de una vez)."""
+    triangles = yield from PureTriangulator().triangulate_steps(xy, np.empty((0, 2), dtype=np.int32))
     return triangles
+
+
+RASTER_UNIT_COST = 100_000
+"""El coste máximo de una banda de filas del TIN (:func:`_raster_bands`): las celdas de las cajas de los triángulos que tocan sus filas
+(más :data:`_FACE_ROW_COST` por cada triángulo y fila), medido en el Python de Blender a **0,08 a 0,12 µs por unidad**: ≈ 8 a
+12 ms por banda, que ``pace_progress`` agrupa en pasos de ``budget_s``. Una fila sola no se parte: puede costar más."""
+
+_FACE_ROW_COST = 4
+"""Lo que cuesta, en celdas, preparar un triángulo para una fila de su caja (el trabajo que no depende de su ancho)."""
+
+_BOX_SLACK = 1e-3
+"""La holgura (celdas) con que se calculan las filas de la caja de un triángulo: mayor que la de ``gis.tin`` (``1e-9`` por la extensión
+del TIN, ≤ 10⁻⁵ celdas en una ventana de miles de celdas). Una banda con un triángulo de más no cambia el resultado: solo cuenta el
+primero del TIN que contiene el centro de la celda."""
+
+
+def _row_costs(tin: Tin, shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(cost, first, last)`` del ``tin`` (en unidades de celda) sobre una ventana de ``shape = (filas, columnas)``: para cada fila,
+    el coste de rasterizarla (las celdas de las cajas de los triángulos que la tocan, y :data:`_FACE_ROW_COST` por triángulo), y para cada
+    triángulo, su primera y su última fila (``last < first``: no toca la ventana). Las filas de una caja son las que tienen su centro
+    ``−(fila + ½)`` entre la ``y`` menor y la mayor del triángulo; las cajas son algo mayores de lo justo (:data:`_BOX_SLACK`)."""
+    nrows, ncols = shape
+    x = tin.vertices[:, 0][tin.faces]
+    y = tin.vertices[:, 1][tin.faces]
+    first = np.clip(np.ceil(-y.max(axis=1) - 0.5 - _BOX_SLACK), 0, nrows).astype(np.int64)
+    last = np.clip(np.floor(-y.min(axis=1) - 0.5 + _BOX_SLACK), -1, nrows - 1).astype(np.int64)
+    left = np.clip(np.ceil(x.min(axis=1) - 0.5 - _BOX_SLACK), 0, ncols)
+    right = np.clip(np.floor(x.max(axis=1) - 0.5 + _BOX_SLACK), -1, ncols - 1)
+    live = last >= first
+    price = (np.maximum(right - left + 1.0, 0.0) + _FACE_ROW_COST)[live]
+    steps = np.bincount(first[live], weights=price, minlength=nrows + 1)
+    steps -= np.bincount(last[live] + 1, weights=price, minlength=nrows + 1)
+    return np.cumsum(steps)[:nrows], first, last
+
+
+def _raster_bands(cost: np.ndarray) -> list[tuple[int, int]]:
+    """Las bandas ``(primera fila, fila siguiente a la última)`` en que se rasteriza el TIN: filas contiguas de la 0 a la última, cada
+    una cerrada al sumar :data:`RASTER_UNIT_COST` (las filas de una banda, salvo la última de ella, suman menos). ``cost`` es el de
+    :func:`_row_costs`."""
+    bands: list[tuple[int, int]] = []
+    top, spent = 0, 0.0
+    for row, price in enumerate(cost.tolist()):
+        spent += price
+        if spent >= RASTER_UNIT_COST:
+            bands.append((top, row + 1))
+            top, spent = row + 1, 0.0
+    if top < len(cost):
+        bands.append((top, len(cost)))
+    return bands
 
 
 def _rasterize_units(tin: Tin, shape: tuple[int, int], job: BodyJob) -> Generator[None, None, np.ndarray]:
     """El TIN (en unidades de celda) en la rejilla ``(0, 0, 1, 1)`` de la ventana de ``shape``: el espesor interpolado
-    linealmente en el centro de cada celda y ``NaN`` donde no llega (``gis.tin.tin_to_raster``). Hoy una sola unidad; la T24 la
-    parte por bandas de filas sin cambiar este contrato."""
-    unit = Grid(0.0, 0.0, 1.0, 1.0, shape[1], shape[0])
-    raster = tin_to_raster(tin, unit, crs=job.crs, vertical=job.vertical)
+    linealmente en el centro de cada celda y ``NaN`` donde no llega (``gis.tin.tin_to_raster``), **por bandas de filas** (T24): cada
+    una, :func:`_raster_bands`, rasteriza con ``tin_to_raster`` solo los triángulos de su caja, en el orden del TIN, y una unidad
+    es una banda. El resultado es el de una pieza **bit a bit**: los centros de celda son enteros y medios exactos con cualquier
+    esquina de banda (por eso el TIN va en unidades de celda) y cada celda toma el primer triángulo, en el orden del TIN, que la
+    contiene, esté o no el resto en su banda."""
+    nrows, ncols = shape
+    out = np.full(shape, np.nan)
+    cost, first, last = _row_costs(tin, shape)
     yield
-    return np.asarray(raster.values, dtype=np.float64)
+    for top, bottom in _raster_bands(cost):
+        chosen = np.flatnonzero((first < bottom) & (last >= top))
+        if chosen.size:
+            part = Tin(tin.vertices, tin.faces[chosen], tin.constraint_edges, tin.vertex_source,
+                       triangulator=tin.triangulator)
+            band = Grid(0.0, -float(top), 1.0, 1.0, ncols, bottom - top)
+            out[top:bottom] = tin_to_raster(part, band, crs=job.crs, vertical=job.vertical).values
+        yield
+    return out
 
 
 def _tin_units(job: BodyJob, mask: np.ndarray, data: np.ndarray, settings: _Settings, cell: float
