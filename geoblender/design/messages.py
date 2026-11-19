@@ -2512,6 +2512,50 @@ CATALOG: tuple[Message, ...] = (
         "Cuerpo apoyado «{entity}»: ninguna celda de su huella «{footprint}» queda a menos de {distance} m de los "
         "datos de espesor; no se crea nada.",
     ),
+    # T25 (decisiones de la sesión principal, 19/11/2026): las celdas de la huella sin superficie conocida, lo que se
+    # triangula y las secciones de una huella grande, y lo que no se puede leer de la capa de los datos.
+    Message(
+        "des.body_unsupported",
+        "Supported body «{entity}»: {area} m² of its footprint have no data in the known surface «{surface}», so "
+        "they have no body there (the start surface stays as it is); it can still be created.",
+        "Cuerpo apoyado «{entity}»: {area} m² de su huella no tienen dato en la superficie conocida «{surface}», así "
+        "que allí no hay cuerpo (la superficie de partida queda como está); se puede crear igualmente.",
+        "warning",
+    ),
+    Message(
+        "des.body_many_data",
+        "Supported body «{entity}»: {data} thickness data are triangulated (more than {limit}); calculating takes "
+        "several seconds more; it can still be created.",
+        "Cuerpo apoyado «{entity}»: se triangulan {data} datos de espesor (más de {limit}); calcular tarda varios "
+        "segundos más; se puede crear igualmente.",
+        "warning",
+    ),
+    Message(
+        "des.body_sections_large",
+        "Supported body «{entity}»: its footprint is {area} ha with thickness sections (more than {limit} ha); "
+        "triangulating the sections takes several seconds; it can still be created.",
+        "Cuerpo apoyado «{entity}»: su huella es de {area} ha con secciones de espesor (más de {limit} ha); "
+        "triangular las secciones tarda varios segundos; se puede crear igualmente.",
+        "warning",
+    ),
+    Message(
+        "des.body_data_kind",
+        "Supported body «{entity}»: layer «{layer}» holds {kind}, and the thickness cannot be read as «{value}» "
+        "from it: «field» reads points or polygons of an entity layer (gis_fea_) and «z» reads the Z of the vertices "
+        "of a layer of 3D lines (gis_brk_); nothing is created.",
+        "Cuerpo apoyado «{entity}»: la capa «{layer}» tiene {kind} y de ella no se puede leer el espesor como "
+        "«{value}»: «field» lee los puntos o los polígonos de una capa de entidades (gis_fea_) y «z» lee la Z de los "
+        "vértices de una capa de líneas 3D (gis_brk_); no se crea nada.",
+    ),
+    Message(
+        "des.body_data_m",
+        "Supported body «{entity}»: the M of the vertices of layer «{layer}» does not reach the project (the import "
+        "of layers keeps X, Y and Z and drops M); give the thickness in the Z of 3D lines or in a field of points or "
+        "polygons; nothing is created.",
+        "Cuerpo apoyado «{entity}»: la M de los vértices de la capa «{layer}» no llega al proyecto (la importación de "
+        "capas guarda X, Y y Z y descarta la M); dé el espesor en la Z de líneas 3D o en un campo de puntos o "
+        "polígonos; no se crea nada.",
+    ),
     Message(
         "des.body_declared_reason",
         "declared by supported body {name}",

@@ -181,6 +181,8 @@ PENDING_015_API: frozenset[str] = frozenset({
     "StockpileRemoval", "removed_supports_of",
     # La 016, T20: «Calcular» la retirada de un acopio y su resumen (``design.steps`` y ``design.preview``).
     "removal_run", "RemovalSummary", "RestingLine",
+    # La 016, T25: «Calcular» el cuerpo apoyado y su resumen (``design.steps`` y ``design.preview``).
+    "body_run", "BodySummary",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 016, T05: la morfología con un disco exacto (A1). Su fila de la ficha (``des.md`` §4.4) la lleva la T38,

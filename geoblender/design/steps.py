@@ -51,6 +51,10 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
   **nada en el proyecto**; crearla es :meth:`Calculation.create` (con :meth:`Calculation.confirm_removal` si pide confirmar):
   los parámetros de su entidad, la operación, la superficie, su huella, su informe y las cifras, en **una** transacción
   (:func:`~.supported_store.create_removal`).
+- :func:`body_run` (spec 016, T25; RF-016-20 a 22, RF-015-03, RF-015-29): «Calcular» un cuerpo apoyado (``des.body``) del mismo modo:
+  deja el espesor disperso (``des_bdt_``) y la superficie con el techo (``des_psf_``, «sobre una base») o la base dispersa (``des_bds_``,
+  «bajo un techo») en temporales, el **resumen** (:class:`~.preview.BodySummary`: las cifras, lo lejano de los datos con su lugar y los
+  avisos) y **nada en el proyecto**; crearlo es :meth:`Calculation.create` (:func:`~.supported_store.create_body`: una transacción).
 - :class:`Calculation`: lo calculado y todavía sin registrar. :meth:`~Calculation.create`
   (**«Crear»**) abre la operación, mueve los temporales, escribe las tablas y las cifras y completa,
   todo en **una** transacción (``DesignWriter.commit``); :meth:`~Calculation.discard`
@@ -98,9 +102,11 @@ from . import (
     stockpiles,
     store,
     supported_store,
+    thickness,
 )
 from .messages import DesignError
 from .model import (
+    BodyRequest,
     DesignRequest,
     EnvelopeRequest,
     FillOnlyRequest,
@@ -116,6 +122,7 @@ from .seeds import SeedPlan, SeedSet, pace_progress
 
 __all__ = [
     "Calculation",
+    "body_run",
     "design_run",
     "edge_transition_run",
     "envelope_run",
@@ -136,6 +143,7 @@ _SUMMARY_PHASE = "platform_summary"  # el resumen de una plataforma (T12)
 _STOCKPILE_SUMMARY_PHASE = "stockpile_summary"  # el resumen de una detección de acopios (016, T12)
 _CREATED_PHASE = "created"  # la detección de acopios guardada (016, T13)
 _REMOVAL_SUMMARY_PHASE = "removal_summary"  # el resumen de la retirada de un acopio (016, T20)
+_BODY_SUMMARY_PHASE = "body_summary"  # el resumen de un cuerpo apoyado (016, T25)
 _OUTSIDE_PHASE = "seeds_outside"  # la cantera parada por sus semillas fuera (T43; RF-014-03)
 _READY, _CREATED, _DISCARDED = "ready", "created", "discarded"
 
@@ -190,13 +198,15 @@ class Calculation:
                  start: store.OperationStart, outcome: pipeline.EnvelopeOutcome
                  | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome
                  | edges.EdgeTransition | fronts.FillOnlyOutcome | refit.RefitOutcome
-                 | platform.PlatformOutcome | stockpiles.StockpileOutcome | removal.RemovalOutcome,
+                 | platform.PlatformOutcome | stockpiles.StockpileOutcome | removal.RemovalOutcome
+                 | thickness.BodyOutcome,
                  notices: Sequence[Notice],
                  seeds: SeedSet | None,
                  values: Mapping[str, object],
                  entity: entity_store.PreparedPlatform | stockpile_store.PreparedDetection
-                 | supported_store.PreparedRemoval | None = None,
-                 summary: preview.PlatformSummary | preview.StockpileSummary | preview.RemovalSummary | None = None) -> None:
+                 | supported_store.PreparedRemoval | supported_store.PreparedBody | None = None,
+                 summary: preview.PlatformSummary | preview.StockpileSummary | preview.RemovalSummary
+                 | preview.BodySummary | None = None) -> None:
         self._project = project
         self._writer = writer
         self._start = start
@@ -333,6 +343,8 @@ class Calculation:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
         if isinstance(self.entity, supported_store.PreparedRemoval):
             return self._create_removal(self.entity, decided_by)
+        if isinstance(self.entity, supported_store.PreparedBody):
+            return self._create_body(self.entity, decided_by)
         if self.entity is not None:
             self._platform().ensure_creatable()  # sin cerrar el cálculo: se confirma y se crea
             if isinstance(self.entity, entity_store.PreparedPlatform) and self.entity.origin is not None:
@@ -368,6 +380,22 @@ class Calculation:
             self._check_parameters()
             stored = supported_store.create_removal(self._project, self._writer, found, outcome, resting=resting, wall=wall,
                                                     decided_by=decided_by)
+        except BaseException:
+            self.discard()
+            raise
+        self._state = _CREATED
+        return stored
+
+    def _create_body(self, found: supported_store.PreparedBody, decided_by: str | None) -> store.Stored:
+        """**«Crear» un cuerpo apoyado** (spec 016, T25; RF-016-20, RF-015-02): lo registra :func:`~.supported_store.create_body` en una
+        sola transacción (el espesor, la superficie o la base, la huella, el informe, los parámetros de su entidad y las cifras). No pide
+        ninguna confirmación (no retira nada ni deja una pared); si algo falla, o lo que consume cambió, no queda nada y el cálculo
+        queda descartado."""
+        outcome = self.outcome
+        assert isinstance(outcome, thickness.BodyOutcome)
+        try:
+            self._check_parameters()
+            stored = supported_store.create_body(self._project, self._writer, found, outcome, decided_by=decided_by)
         except BaseException:
             self.discard()
             raise
@@ -619,6 +647,26 @@ def removal_run(project: StoreProject, request: RemovalRequest, *, version: str 
     return _removal_steps(project, request, version, masks, code, supersedes, budget_s)
 
 
+def body_run(project: StoreProject, request: BodyRequest, *, version: str | None,
+             masks: MaskSet | None = None, code: str | None = None, supersedes: str | None = None,
+             budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**«Calcular»** el cuerpo apoyado ``request`` en la versión ``version`` (uid o código) por pasos de ``budget_s`` como mucho (spec 016,
+    T25; RF-016-20 a 22, RF-015-03, RF-015-29; RNF-016-02, RNF-016-05; «Cuerpo apoyado…»): el último ``Progress`` lleva la
+    :class:`Calculation` de ``des.body``, con el espesor disperso (``des_bdt_``) y la superficie con el techo (``des_psf_``,
+    «sobre una base») o la base dispersa (``des_bds_``, «bajo un techo») en temporales, su resultado (``Calculation.outcome``:
+    ``design.thickness.BodyOutcome``), su resumen (``Calculation.summary``: las cifras, lo lejano de los datos con su lugar y los avisos)
+    y **nada registrado ni escrito en el proyecto**: ni la base de datos, ni las operaciones, los datos o los parámetros. ``masks``,
+    como en :func:`envelope_run`. ``code`` y ``supersedes``, los de ``supported_store.prepare_body_units`` (recalcular un cuerpo que ya
+    está en la versión y sustituir su operación).
+
+    Los rechazos salen **al avanzar**, antes de calcular y sin escribir nada: los de ``prepare_body_units`` (sin versión activa o no
+    editable, nombre y partida —nadie parte de un cuerpo «bajo un techo»: ``des.chainless_start``—, la huella, los datos de espesor
+    —uno negativo o que falta, con capa, cuerpo, campo y valor—, la distancia máxima sin valor, las superficies, un sector con la
+    búsqueda pendiente) y los del cálculo (sin datos en la huella o todo lejos de ellos: RF-016-22). Cerrar el generador a mitad (Esc)
+    o un fallo después de dejar el temporal lo borra y no deja nada (RF-015-29). Crearlo es :meth:`Calculation.create`."""
+    return _body_steps(project, request, version, masks, code, supersedes, budget_s)
+
+
 def refit_run(project: StoreProject, request: RefitRequest, *, version: str | None,
               masks: MaskSet | None = None, budget_s: float = STEP_BUDGET_S
               ) -> Iterator[Progress]:
@@ -842,6 +890,25 @@ def _removal_steps(project: StoreProject, request: RemovalRequest, version: str 
         summary = supported_store.removal_summary(project, prepared, outcome, supersedes=supersedes)
         calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices,
                                   seeds=None, values=prepared.common, entity=prepared, summary=summary)
+    except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
+        writer.close(error)
+        raise
+    yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
+
+
+def _body_steps(project: StoreProject, request: BodyRequest, version: str | None, masks: MaskSet | None,
+                code: str | None, supersedes: str | None, budget_s: float) -> Generator[Progress, None, None]:
+    found = store.require_version(project, version, provenance.BODY)
+    loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
+    prepared: supported_store.PreparedBody = yield from _prepare_steps(
+        supported_store.prepare_body_units(project, request, found, loaded, code=code, supersedes=supersedes), budget_s)
+    writer = store.DesignWriter(project, provenance.BODY, request.name, version=found.uid, supersedes=supersedes)
+    try:
+        outcome: thickness.BodyOutcome = yield from supported_store.compute_body_steps(writer, prepared, budget_s=budget_s)
+        yield Progress(_BODY_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
+        summary = supported_store.body_summary(project, prepared, outcome, supersedes=supersedes)
+        calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices,
+                                  seeds=None, values={}, entity=prepared, summary=summary)
     except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
         writer.close(error)
         raise

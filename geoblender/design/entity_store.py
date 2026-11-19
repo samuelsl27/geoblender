@@ -521,6 +521,22 @@ def _check_name(registry: EntityRegistry, name: str, code: str, version_code: st
                               other=other, version=version_code)
 
 
+def _check_surface_left(registry: EntityRegistry, name: str, code: str, ref: str | None, field: str, *, obj: str) -> None:
+    """**Nadie parte de la superficie de un cuerpo «bajo un techo»** (spec 016, T25; decisión de la sesión principal del 18/11/2026;
+    H-9, RF-016-20): ese cuerpo no cambia la superficie y no la escribe, así que una entidad que parte de ``entity:<su código>``
+    (``ref``, la partida o la superficie conocida de la entidad ``code`` de nombre ``name``) se rechaza con ``des.chainless_start``
+    nombrando las dos, **antes de calcular nada y sin escribir nada**. El de un tipo sin cadena (la detección) lo rechaza
+    :func:`~.entities.check_chain` por su tipo; este es el rechazo **por instancia**, de un tipo que encadena y cuya instancia no
+    tiene partida. Una referencia que no es de una entidad de ``registry``, o de una que deja su superficie, pasa (la rechaza, si
+    hace falta, :func:`_surface_dataset`). ``field`` es la clave de lo que se rechaza."""
+    target = entities.ref_code(ref)
+    if target is None:
+        return
+    entry = registry.get(target)
+    if entry is not None and entry.record.kind is EntityKind.BODY and entry.record.start is None:
+        raise DesignError("des.chainless_start", obj=obj, field=field, value=ref, entity=name, other=entry.record.name)
+
+
 def _check_chain(registry: EntityRegistry, request: PlatformRequest, code: str,
                  insert_before: str | None = None) -> None:
     """RF-015-04: de cada superficie parte como mucho una entidad (``des.entity_start_taken``, con la
@@ -537,6 +553,7 @@ def _check_chain_of(registry: EntityRegistry, name: str, start: str | None, supp
     """:func:`_check_chain` de la entidad ``code`` de nombre ``name`` con su partida ``start`` y su apoyo
     ``support``: lo que comparten crear, recalcular y cambiar el parámetro ``start`` (T39)."""
     obj = f"Plataforma «{name}»"
+    _check_surface_left(registry, name, code, start, entity_key(code, PlatformParam.START), obj=obj)
     records = [item for item in registry.records if item.code != code]
     if insert_before is None:
         other = entities.start_conflict(registry.records, start, ignoring=code)

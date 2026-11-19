@@ -56,10 +56,12 @@ que las escribió** la operación, que es el que casa un papel repetido). **La r
 :func:`reproduce_stockpile_removal` (con el cálculo que comparte con el proyecto, ``supported_store.removal_compute_steps``
 sobre el mismo ``RemovalJob``: la superficie de partida y las máscaras congeladas por su papel; la tabla de acopios, la base y la
 superficie con que se detectó, las tres entradas ``removed_stockpile``, por el prefijo de su dato; los parámetros de la entidad y los del
-proyecto congelados). **Los otros dos tipos de la 016**
-(:func:`reproduce_buttress` y :func:`reproduce_body`; spec 016, T03) existen pero **sin
-comportamiento todavía**: dicen qué tarea los hace (``NotImplementedError``); no hay ninguna operación de esos tipos que
-reproducir hasta que se crean.
+proyecto congelados). **El cuerpo apoyado** (spec 016, T25; RF-016-20, RF-009-11): :func:`reproduce_body` (con el cálculo que
+comparte con el proyecto, ``supported_store.body_compute_steps`` sobre el mismo ``BodyJob``: la huella, los datos de espesor, la
+superficie conocida —y, «sobre una base», la de partida— y las máscaras congeladas por su nombre y su papel, y los parámetros de su
+entidad congelados; el espesor disperso, la superficie o la base dispersa, la huella y el informe, y las cifras). **El otro tipo de la
+016** (:func:`reproduce_buttress`; spec 016, T03) existe pero **sin comportamiento todavía**: dice qué tarea lo hace
+(``NotImplementedError``); no hay ninguna operación de ese tipo que reproducir hasta que se crea.
 
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con otros,
 ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹ relativo, plan
@@ -109,8 +111,8 @@ from ..gis.raster import Raster
 from ..gis.store import insert_rows, read_features
 from ..gis.vector import FeatureLayer
 from . import entities, entity_store, fronts, pipeline, provenance, quarry, removal, stockpile_store, store, supported_store
-from .compose import admitted
-from .model import BenchSense, EnvelopeRequest, PlatformRequest, SeedKind, Surface
+from .compose import admitted, admitted_in
+from .model import BenchSense, BodySense, EnvelopeRequest, PlatformRequest, SeedKind, Surface
 from .params import (
     ANTHROPIC_PRESENCE,
     PLATFORM_PARAMS,
@@ -134,6 +136,7 @@ from .seeds import (
     pace_progress,
 )
 from .surfaces import ProjectFrame, check_grid
+from .thickness import BodyJob, body_window, no_data_error
 from .zones import frozen_polygons, polygons_cells, sector_labels
 
 __all__ = [
@@ -976,8 +979,81 @@ def reproduce_buttress(request: ReproduceRequest, *, budget_s: float = STEP_BUDG
 
 
 def reproduce_body(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
-    """Reproduce ``des.body`` (RF-016-20, RF-009-11): sin comportamiento todavía (T25)."""
-    return _not_yet(request, provenance.BODY, "la T25")
+    """Reproduce ``des.body`` (spec 016, T25; RF-016-20 a RF-016-22, RF-009-11) con su huella (la capa de la huella), sus datos de
+    espesor (la capa de los datos, con el papel ``body_data``), la superficie conocida, la de partida («sobre una base») y sus máscaras
+    congeladas y los parámetros congelados de su entidad (``des.body.{e}.*``: la huella, los datos y cómo se leen, la superficie, el
+    sentido, la partida, la distancia máxima y el «cero en el borde»), con los ajustes de su operación (el nombre y el código), **sin el
+    proyecto**: el mismo cálculo (``supported_store.body_compute_steps``). Sus pasos y, el último, el ``ReproducedResult`` con el
+    espesor disperso (``des_bdt_``), la superficie (``des_psf_``) o la base dispersa (``des_bds_``), la huella (``des_epr_``), el
+    informe (``des_prp_``) y las cifras. Lo que no es una ``ReproduceRequest`` es ``TypeError``; una de otro tipo, ``ValueError``."""
+    return _reproduce_body(_check(request, provenance.BODY), budget_s)
+
+
+def _frozen_known_surface(request: ReproduceRequest, frozen: _Frozen, asked: Any) -> tuple[str, np.ndarray]:
+    """La superficie conocida del cuerpo que se reproduce, **de lo congelado**: «bajo un techo», la entrada ``surface``; «sobre una
+    base», la del parámetro (el nombre de un dato) o, si es ``entity:<código>``, la primera de sus entradas ``supported_on`` (la
+    conocida se anota antes que las que añade el cálculo al crear). Devuelve el nombre de su dato y sus celdas."""
+    if asked.sense is not BodySense.ON_BASE:
+        item = frozen.item(provenance.SURFACE_ROLE)
+        return item.name, frozen.raster(provenance.SURFACE_ROLE, what="superficie conocida").values
+    name = asked.surface
+    if entities.ref_code(name) is not None:
+        found = [item.name for item in request.inputs if item.role == provenance.SUPPORTED_ON_ROLE]
+        if not found:
+            raise ValueError(f"el cuerpo «{asked.name}» se apoya en {asked.surface!r} y su operación no anotó ninguna superficie "
+                             "«supported_on»")
+        name = found[0]
+    return name, frozen.named_raster(name, what="superficie conocida").values
+
+
+def _reproduce_body(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    code = provenance.supported_code(request.settings)
+    asked = provenance.body_request(request.settings, provenance.supported_values(code, frozen.values))
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = frozen.masks()
+    layer = frozen.features(asked.layer)
+    index = entity_store.feature_index(layer, asked, code)  # type: ignore[arg-type]
+    fid = layer.fids[index]
+    values, _defaulted = supported_store.body_values(asked, code, fid)
+    whole = polygons_cells(tuple(tuple(part) for part in layer.parts[index]), frozen.grid)
+    window = body_window(whole, frozen.grid)
+    if window is None:
+        raise no_data_error(asked)
+    on_base = asked.sense is BodySense.ON_BASE
+    known_name, known = _frozen_known_surface(request, frozen, asked)
+    start_item = frozen.item(provenance.SURFACE_ROLE)
+    start = whole_start = fill = None
+    if on_base:
+        whole_start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida").values
+        start = whole_start[window]
+        fill = admitted_in(masks, BenchSense.FILL, window)
+    data_item = frozen.named(asked.data_layer)
+    with _open(Path(data_item.files["main"])) as conn:
+        data = supported_store.frozen_thickness_data(conn, str(data_item.settings["layer"]), asked)
+    job = BodyJob(asked, code, frozen.grid, frozen.crs, frozen.vertical, known[window], whole[window], data,
+                  MappingProxyType(dict(values)), start=start, fill_allowed=fill, region=window)
+    outcome = yield from supported_store.body_compute_steps(job, budget_s=budget_s)
+    crs, vertical, grid = frozen.crs, frozen.vertical, job.grid
+    made = [(yield from _grid_output(
+        request, provenance.BODY_THICKNESS_GRID, Raster(grid, supported_store._sparse(grid, outcome, outcome.thickness), crs, vertical),
+        budget_s))]
+    surface = None
+    if on_base:
+        surface = outcome.compose(whole_start)
+        made.append((yield from _grid_output(request, provenance.ENTITY_SURFACE_GRID, Raster(grid, surface, crs, vertical), budget_s)))
+    else:
+        made.append((yield from _grid_output(
+            request, provenance.BODY_BASE_GRID, Raster(grid, supported_store._sparse(grid, outcome, outcome.base), crs, vertical),
+            budget_s)))
+    entity = supported_store.body_entity_rows(
+        job, outcome, layer=asked.layer, source_fid=fid, runs=entity_store.footprint_runs(job.footprint, window),
+        start_surface=start_item.name, support_surface=known_name if on_base else None)
+    made.append(_table_output(request, provenance.ENTITY_TABLE, entity, crs))
+    made.append(_table_output(request, provenance.ENTITY_REPORT_TABLE, supported_store.body_report_rows(outcome), crs))
+    supports = () if surface is None else _support_figures(frozen, [surface], whole_start)  # type: ignore[arg-type]
+    yield Progress(_PHASE, 1, 1, "Cuerpo apoyado reproducido",
+                   result=ReproducedResult(tuple(made), (*outcome.figures, *supports)))
 
 
 REPRODUCE:Mapping[str, ReproduceFunction] = MappingProxyType({

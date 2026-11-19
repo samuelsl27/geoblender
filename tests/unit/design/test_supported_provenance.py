@@ -515,7 +515,7 @@ class ClosedListsTest(unittest.TestCase):
         una detección son un error del programa (``ValueError``), no el aviso de «aún no»."""
         for op_type in TYPES.values():
             request = recompute_mod.RecomputeRequest(object(), "uid", op_type, {}, (), ())
-            if op_type in (*provenance.STOCKPILE_DETECT_TYPES, provenance.STOCKPILE_REMOVAL):  # la retirada, desde la T20
+            if op_type in (*provenance.STOCKPILE_DETECT_TYPES, provenance.STOCKPILE_REMOVAL, provenance.BODY):  # la retirada (T20) y el cuerpo (T25)
                 with self.subTest(op_type=op_type), self.assertRaises(ValueError) as caught:
                     store.recompute_run(request)
                 self.assertNotIn("aún no", str(caught.exception))
@@ -533,6 +533,9 @@ class ClosedListsTest(unittest.TestCase):
         removal = recompute_mod.RecomputeRequest(object(), "uid", provenance.STOCKPILE_REMOVAL, {}, (), ())
         with self.assertRaises(ValueError):  # la retirada sí (T20): unos ajustes que no son los suyos, un error del programa
             store.recompute_run(removal, released=released)
+        body = recompute_mod.RecomputeRequest(object(), "uid", provenance.BODY, {}, (), ())
+        with self.assertRaises(ValueError):  # el cuerpo sí (T25): unos ajustes que no son los suyos, un error del programa
+            store.recompute_run(body, released=released)
         buttress = recompute_mod.RecomputeRequest(object(), "uid", provenance.BUTTRESS, {}, (), ())
         with self.assertRaises(NotImplementedError):  # el contrafuerte aún no: lo hará su tarea
             store.recompute_run(buttress, released=released)
@@ -549,7 +552,7 @@ class ClosedListsTest(unittest.TestCase):
             function = getattr(reproduce_mod, name)
             request = versions_reproduce.ReproduceRequest(op_type, {}, (), {}, ".", None)
             with self.subTest(op_type=op_type):
-                if op_type in (*provenance.STOCKPILE_DETECT_TYPES, provenance.STOCKPILE_REMOVAL):  # la retirada, desde la T20
+                if op_type in (*provenance.STOCKPILE_DETECT_TYPES, provenance.STOCKPILE_REMOVAL, provenance.BODY):  # la retirada (T20) y el cuerpo (T25)
                     self.assertTrue(hasattr(function(request), "__next__"), "los pasos, que no se avanzan aquí")
                 else:
                     with self.assertRaises(NotImplementedError) as caught:

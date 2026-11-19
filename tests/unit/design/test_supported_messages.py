@@ -95,6 +95,12 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.body_far": ("warning", "RF-016-21", {"entity", "area", "volume", "distance", *POSITION}),
     "des.body_no_data": ("error", "RF-016-22", {"layer", "footprint", "entity"}),
     "des.body_all_far": ("error", "RF-016-22", {"entity", "distance", "footprint"}),
+    # T25: lo que avisa o rechaza la orden del cuerpo (la superficie conocida sin dato, lo triangulado, lo que no se lee).
+    "des.body_unsupported": ("warning", "RF-016-20", {"entity", "area", "surface"}),
+    "des.body_many_data": ("warning", "RF-016-20", {"entity", "data", "limit"}),
+    "des.body_sections_large": ("warning", "RF-016-20", {"entity", "area", "limit"}),
+    "des.body_data_kind": ("error", "RF-016-20", {"entity", "layer", "kind", "value"}),
+    "des.body_data_m": ("error", "RF-016-20", {"entity", "layer"}),
     "des.body_declared_reason": ("note", "RF-015-10", {"name"}),
     "des.body_support_removed": ("note", "RF-015-17", {"name"}),
 }
@@ -144,7 +150,7 @@ class SupportedMessagesTest(unittest.TestCase):
                   "profile": "EXPL_10_60_6", "anchor": 250.0, "footprint": "Cuerpo 1", "distance": 30.0,
                   "fids": "3, 7", "fields": "nombre, margen", "detail": "no es JSON", "name": "Acopios",
                   "surface": "gis_dtm_levantamiento", "operation": "Sobre el acopio 4", "removal": "Retirada 1",
-                  "where": "V01", "residual": 0.25}
+                  "where": "V01", "residual": 0.25, "kind": "puntos"}
         for code, (severity, _rf, _marks) in CODES.items():
             with self.subTest(code=code):
                 if severity == "error":

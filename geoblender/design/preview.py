@@ -79,6 +79,7 @@ if TYPE_CHECKING:  # design.quarry importa design.report, que importa Notice de 
     from .quarry import ConserveZone, CorridorMap, FloorMap
 
 __all__ = [
+    "BodySummary",
     "CandidateCounts",
     "CandidateLine",
     "EntityEnd",
@@ -122,6 +123,7 @@ _CODE_DECIMALS: Mapping[str, Mapping[str, int]] = MappingProxyType({
     "des.stockpile_tilt_limited": MappingProxyType({"fitted": 2, "limit": 2, "quantile": 2}),
     "des.stockpile_item": MappingProxyType({"level": 2, "slope": 2}),
     "des.stockpile_candidate_item": MappingProxyType({"level": 2, "slope": 2}),
+    "des.body_sections_large": MappingProxyType({"limit": 0}),
 })
 """Los decimales de los números de **un mensaje concreto** (spec 016, T12), que mandan sobre :data:`_DECIMALS`: los avisos de
 los acopios dicen una inclinación de 4,04° frente a un límite de 4° (``fitted``, ``limit``) y un umbral de huella de 0,25 m
@@ -777,6 +779,45 @@ class RemovalSummary:
     needs_resting_confirmation: bool
     needs_wall_confirmation: bool
     needs_wall_reason: bool
+    notices: tuple[Notice, ...]
+    obsolete: tuple[Obsolete, ...] = ()
+
+    def lines(self, language: str = "es") -> tuple[str, ...]:
+        """Todo lo que dice el resumen, línea a línea, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices)
+
+    def warnings(self, language: str = "es") -> tuple[str, ...]:
+        """Solo los avisos, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices if notice.severity == "warning")
+
+
+# --- El resumen del cuerpo apoyado (spec 016, T25; RF-016-20 a 22, RF-015-03) ---------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BodySummary:
+    """El resumen de «Calcular» un cuerpo apoyado (RF-015-03, RF-016-20 a 22): su ``name`` y su ``code`` (``BDY-001``), la ``version``
+    (su código), su ``sense`` (``on_base`` o ``under_roof``), la capa de los datos (``data_layer``), las ``figures`` que se
+    registrarán (el volumen, el espesor máximo, lo lejano y lo ignorado), el volumen (``volume_m3``), el espesor máximo
+    (``thickness_max_m``) y su lugar (``thickness_max_x``, ``thickness_max_y``), el área (``far_m2``) y el volumen (``far_m3``) de lo
+    lejano de los datos con su lugar (``far_x``, ``far_y``; ``None`` sin lo lejano), los ``notices`` en el orden en que se enseñan (los
+    avisos del cálculo —lo ignorado, lo lejano, lo que no tiene superficie conocida, lo triangulado— y, al final, lo que quedará
+    obsoleto) y ``obsolete``, lo que quedará obsoleto al crearlo (si sustituye a otro)."""
+
+    name: str
+    code: str
+    version: str
+    sense: str
+    data_layer: str
+    figures: tuple[FigureSpec, ...]
+    volume_m3: float
+    thickness_max_m: float
+    thickness_max_x: float
+    thickness_max_y: float
+    far_m2: float
+    far_m3: float
+    far_x: float | None
+    far_y: float | None
     notices: tuple[Notice, ...]
     obsolete: tuple[Obsolete, ...] = ()
 

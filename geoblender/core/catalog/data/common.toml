@@ -686,3 +686,17 @@ description.es = "Retira un acopio detectado en la versión activa: deja su huel
 entry = "016"
 action = "D"
 frequency = 1
+
+# El cuerpo apoyado (spec 016, T25; HU-016-4; RF-016-20 a RF-016-22): interna, como la retirada. La lanza «Cuerpo apoyado…» cuando la
+# entregue la T35 (la que hoy es «Unidad por espesor sobre su apoyo…», `geo_create_thickness_unit`, de R-18: la T35 renombra); entre
+# tanto, por su nombre desde la consola de Python: M2. Es de la entrada 016, que la entrega.
+[[command]]
+key = "geoblender.des_create_body"
+kind = "internal"
+label.en = "Supported body…"
+label.es = "Cuerpo apoyado…"
+description.en = "Create a body from its footprint and its thickness data, resting on a known surface or under a known roof: the thickness is interpolated and the other surface is derived from it"
+description.es = "Crea un cuerpo desde su huella y sus datos de espesor, apoyado en una superficie conocida o bajo un techo conocido: se interpola el espesor y la otra superficie sale de él"
+entry = "016"
+action = "D"
+frequency = 1

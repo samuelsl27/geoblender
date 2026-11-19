@@ -1996,7 +1996,8 @@ entidades (T17; ``design.entity_store.recompute_declaration``) y la capa de enti
 (:data:`~.provenance.SUPPORTED_TYPES`: la detección de acopios, de versión y **de proyecto** —T04, D-15—, su retirada, el
 contrafuerte y el cuerpo apoyado). La detección de acopios se repite desde la T14
 (``design.stockpile_store.recompute_detection``, en el proyecto o en su versión) y su retirada desde la T20
-(``design.supported_store.recompute_removal``); los otros dos, **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace
+(``design.supported_store.recompute_removal``) y el cuerpo apoyado desde la T25 (``design.supported_store.recompute_body``); el otro,
+**sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace
 (``NotImplementedError``) en vez de repetir otra operación."""
 _STORE_PHASE = "store"
 
@@ -3979,9 +3980,13 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         from . import supported_store  # al usarlo: supported_store importa este módulo
 
         return supported_store.recompute_removal(request, budget_s=budget_s, released=released)
+    if request.op_type == provenance.BODY:
+        from . import supported_store  # al usarlo: supported_store importa este módulo
+
+        return supported_store.recompute_body(request, budget_s=budget_s, released=released)
     if request.op_type in provenance.SUPPORTED_TYPES:
-        # Los demás tipos de la 016 (T03): sin cálculo todavía; las tareas que crean cada operación lo ponen aquí
-        # (T27 el contrafuerte y T25 el cuerpo). Nunca cae en un escalonado.
+        # El otro tipo de la 016 (T03): sin cálculo todavía; la tarea que crea su operación lo pone aquí (T27, el contrafuerte).
+        # Nunca cae en un escalonado.
         raise NotImplementedError(f"«{request.op_type}» aún no se recalcula: lo hace la tarea de la 016 que crea "
                                   "su operación")
     return run_design(project, provenance.design_request(request.settings),

@@ -38,6 +38,16 @@ patrón que siguen el cuerpo apoyado (T25) y el contrafuerte (T27)**. Dominio pu
 RF-009-05): el código ``STK-001`` es correlativo por ámbito y, si lo tienen los dos, manda el de la versión. La retirada de una
 detección **del proyecto** no deja «apoyo retirado» a nadie en la versión (nada se apoya en ella por el registro de la versión;
 la lista de :func:`~.removal.resting_on` es lo único que la nombra).
+
+**El cuerpo apoyado** (spec 016, T25; HU-016-4; RF-016-20 a RF-016-22, RF-015-02, RF-015-03, RF-015-29; RNF-016-07; plan 016 §5.2.3,
+§5.3.2, §5.4 A11): el mismo patrón —:func:`prepare_body_units` → :func:`body_compute_steps` (puro, compartido con la reproducción) →
+:func:`compute_body_steps` → :func:`create_body` → :func:`run_body` / :func:`recompute_body`— con ``design.thickness`` como cálculo. Lee
+la huella (un polígono de una capa de entidades), los datos de espesor (:func:`read_thickness`: el campo de los puntos o de los
+polígonos de una capa de entidades, o la Z de los vértices de una capa de líneas 3D; **la M no llega al proyecto**: la importación de
+capas la descarta, ``des.body_data_m``) y la superficie conocida; rechaza **antes de calcular** un espesor negativo o que falta, con
+capa, entidad, campo y valor, y la distancia máxima sin valor (D-9). «Sobre una base» deja la superficie (``des_psf_``) con el techo y
+el espesor (``des_bdt_``), parte de una superficie y encadena; «bajo un techo» deja la base y el espesor dispersos (``des_bds_`` y
+``des_bdt_``), **no cambia la superficie, no tiene partida y nadie parte de él** (``des.chainless_start``). Una sola transacción.
 """
 
 from __future__ import annotations
@@ -62,24 +72,29 @@ from ..core.provenance.stale import OPERATION as STALE_OPERATION
 from ..core.provenance.stale import item_text
 from ..core.timeutil import format_utc
 from ..core.versions import read as versions_read
+from ..core.gpkg.wkb import decode_geometry
 from ..core.versions.model import Version, VersionError
 from ..gis.grid import Grid
 from ..gis.masks import access
 from ..gis.masks.combine import ClassBit
 from ..gis.masks.compile import STEP_BUDGET_S
+from ..gis.provenance import BREAKLINES, CONTOUR_LINES, FAMILIES_BY_CODE, FEATURES, POINTS
 from ..gis.raster import Raster
-from ..gis.store import StoreProject
-from . import entities, entity_store, pipeline, provenance, removal, stockpile_store
+from ..gis.store import StoreProject, load_features, read_features
+from ..gis.vector import FeatureLayer
+from . import entities, entity_store, pipeline, provenance, removal, stockpile_store, thickness, zones
+from .compose import admitted_in
 from .entities import EntityKind
 from .entity_store import EntityParamRow, entity_parameters, set_entity_params
 from .messages import DesignError
-from .model import PlatformRequest, RemovalRequest
-from .params import RemovalParam, StockpileParam, check_entity_param, entity_key, entity_params
-from .preview import Obsolete, ObsoleteKind, RemovalSummary, RestingLine, obsolete_notices
+from .model import BenchSense, BodyRequest, BodySense, LayerField, PlatformRequest, RemovalRequest, ThicknessSource
+from .params import BodyParam, RemovalParam, StockpileParam, check_entity_param, entity_key, entity_params
+from .preview import BodySummary, Obsolete, ObsoleteKind, RemovalSummary, RestingLine, obsolete_notices
 from .removal import RemovalJob, RemovalOutcome, Resting
 from .sectors import design_sectors, refuse_pending
 from .seeds import pace_progress, sector_layout
 from .stockpile_store import Detection, DetectionMaterial
+from .thickness import BodyJob, BodyOutcome, ThicknessData
 from .store import (
     DesignWriter,
     OperationStart,
@@ -98,17 +113,30 @@ __all__ = [
     "CONFIRMED",
     "Confirmed",
     "PlatformOrigin",
+    "PreparedBody",
     "PreparedRemoval",
     "StockpileChoice",
+    "body_compute_steps",
+    "body_entity_rows",
+    "body_report_rows",
+    "body_summary",
+    "body_values",
     "check_removal_confirmed",
+    "compute_body_steps",
     "compute_removal_steps",
     "confirmed_of",
+    "create_body",
     "create_removal",
     "default_domain",
+    "frozen_thickness_data",
+    "prepare_body",
+    "prepare_body_units",
     "prepare_removal",
     "prepare_removal_units",
     "read_platform_origin",
     "read_removed",
+    "read_thickness",
+    "recompute_body",
     "recompute_removal",
     "removal_compute_steps",
     "removal_entity_rows",
@@ -117,7 +145,10 @@ __all__ = [
     "removal_values",
     "removable_stockpiles",
     "resting_preview",
+    "run_body",
     "run_removal",
+    "thickness_from_features",
+    "thickness_from_lines",
 ]
 
 _COMPUTE_PHASE = "removal_compute"
@@ -566,7 +597,10 @@ def resting_preview(project: StoreProject, version: Version | str, stockpile: st
 
 def _check_chain(registry: entities.EntityRegistry, request: RemovalRequest, code: str) -> None:
     """RF-015-04: de cada superficie parte como mucho una entidad (``des.entity_start_taken``, con la que ya parte) y la cadena no da
-    la vuelta (``des.entity_chain_cycle``); la retirada ``code`` no cuenta consigo misma."""
+    la vuelta (``des.entity_chain_cycle``); la retirada ``code`` no cuenta consigo misma. Y nadie parte de la superficie de un cuerpo
+    «bajo un techo», que no la escribe (T25: ``des.chainless_start``)."""
+    entity_store._check_surface_left(registry, request.name, code, request.start, entity_key(code, RemovalParam.START),
+                                     obj=f"Retirada «{request.name}»")
     other = entities.start_conflict(registry.records, request.start, ignoring=code)
     if other is not None:
         raise DesignError("des.entity_start_taken", obj=f"Retirada «{request.name}»",
@@ -900,3 +934,600 @@ def recompute_removal(request: RecomputeRequest, *, budget_s: float = STEP_BUDGE
     asked = provenance.removal_request(request.settings, entity_parameters(project, code, version=found))
     return run_removal(project, asked, version=found.uid, code=code, supersedes=request.operation_uid,
                        confirmed=confirmed_of(request.settings), budget_s=budget_s, released=released)
+
+
+# =================================================================================================================
+# El cuerpo apoyado (spec 016, T25; HU-016-4; RF-016-20 a RF-016-22, RF-015-02, RF-015-03, RF-015-29; RNF-016-07;
+# plan 016 §5.2.3, §5.3.2, §5.4 A11): el patrón de la retirada, con ``design.thickness`` como cálculo
+# =================================================================================================================
+
+_BODY_PHASE = "body_compute"
+_BODY_DIALOG = "diálogo de «Cuerpo apoyado…»"
+_BODY_PROTECTS = ("un cuerpo apoyado no declara restricciones (D-1): «protect» no es una opción de su diálogo")
+_BODY_SUPPORT = ("un cuerpo apoyado no lleva una superficie de apoyo aparte: la superficie conocida (surface) es su apoyo "
+                 "(«sobre una base») o su techo («bajo un techo»)")
+_FEATURE_PREFIX = FAMILIES_BY_CODE[FEATURES].prefix
+_LINES_PREFIX = FAMILIES_BY_CODE[BREAKLINES].prefix
+_OTHER_KINDS = ((BREAKLINES, "líneas 3D"), (POINTS, "puntos 3D"), (CONTOUR_LINES, "curvas de nivel"))
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PreparedBody:
+    """Lo que se lee y se comprueba antes de calcular un cuerpo apoyado (:func:`prepare_body_units`): el ``job``
+    (``design.thickness.BodyJob``: todo lo leído de la ventana de la huella y nada del proyecto), lo que anotará la operación
+    (``start``), el ``code`` de la entidad (``BDY-001``) y su ``version``, las ``rows`` de los parámetros de la entidad —**todas**:
+    sin su fila, ``begin_operation`` crearía la del valor por defecto en el proyecto— y sus ``values`` resueltos, el nombre del dato
+    de la superficie conocida (``surface_name``: el apoyo «sobre una base» y el techo «bajo un techo»), el de la superficie de
+    partida (``start_surface``; ``None`` «bajo un techo»: no cambia la superficie), la capa de la huella y el ``fid`` de su geometría
+    (``fid``), la huella en tramos de fila (``runs``) y el tipo de los datos (``sections``: son de líneas). ``existing``: la entidad
+    ya estaba en la versión (se preparó con su ``code``: recalcularla), así que «Crear» no escribe otra vez sus parámetros."""
+
+    job: BodyJob
+    start: OperationStart
+    code: str
+    version: Version
+    rows: tuple[EntityParamRow, ...]
+    values: Mapping[str, Any]
+    surface_name: str
+    start_surface: str | None
+    fid: int
+    runs: tuple[tuple[int, int, int], ...]
+    existing: bool = False
+
+    @property
+    def op_type(self) -> str:
+        """El tipo de la operación (``des.body``)."""
+        return self.start.op_type
+
+    @property
+    def sense(self) -> BodySense:
+        """«Sobre una base» o «bajo un techo»."""
+        return self.job.request.sense  # type: ignore[return-value]
+
+
+# --- Los parámetros ------------------------------------------------------------------------------------------------
+
+
+def body_values(request: BodyRequest, code: str, fid: int | str) -> tuple[dict[str, Any], frozenset[str]]:
+    """Los parámetros resueltos y comprobados del cuerpo ``request`` de código ``code`` (RF-015-08; por último segmento de su clave) y
+    **los nombres de los que se dejaron por su valor por defecto**: la distancia máxima a los datos no tiene ninguno (D-9: la petición
+    no lleva ninguna cifra minera; ``des.entity_param_missing``, o ``_range`` si no es positiva), el «cero en el borde» es falso
+    sin valor y la partida es obligatoria «sobre una base» (y no la lleva «bajo un techo»). La «capa» de los mensajes es la de la huella
+    y la geometría es la de **su ``fid``** (``fid``: el de su capa; lo que recalcular y reproducir leen). **Sin proyecto**: lo comparten
+    preparar y reproducir. ``ValueError`` si pide declarar restricciones (``protect``) o una superficie de apoyo aparte."""
+    if request.protect:
+        raise ValueError(_BODY_PROTECTS)
+    if request.support is not None:
+        raise ValueError(_BODY_SUPPORT)
+    spec = entity_params("body")
+    on_base = request.sense is BodySense.ON_BASE
+    defaulted = {BodyParam.PROTECT.value}
+    zero = request.zero_at_edge
+    if zero is None:
+        zero = spec.template(BodyParam.ZERO_AT_EDGE.value).default  # type: ignore[assignment]
+        defaulted.add(BodyParam.ZERO_AT_EDGE.value)
+    asked: dict[BodyParam, object] = {
+        BodyParam.NAME: request.name, BodyParam.LAYER: request.layer, BodyParam.FEATURE: str(fid),
+        BodyParam.DATA_LAYER: request.data_layer, BodyParam.DATA_FIELD: request.data_field,
+        BodyParam.DATA_FROM: request.data_from.value, BodyParam.SURFACE: request.surface,  # type: ignore[union-attr]
+        BodyParam.SENSE: request.sense.value, BodyParam.START: request.start,  # type: ignore[union-attr]
+        BodyParam.MAX_DISTANCE: request.max_distance_m, BodyParam.ZERO_AT_EDGE: zero, BodyParam.SUPPORT: None,
+        BodyParam.GUARD: request.guard_m, BodyParam.REASON: request.reason, BodyParam.PROTECT: False}
+    values: dict[str, Any] = {}
+    for param in BodyParam:
+        if param in (BodyParam.SUPPORTS, BodyParam.DISCARDED):
+            continue
+        required = True if param is BodyParam.START and on_base else False if param is BodyParam.GUARD else None
+        checked = check_entity_param(request.name, code, param.value, asked[param], layer=request.layer, required=required)
+        if checked is not None:
+            values[param.value] = checked
+    return values, frozenset(defaulted)
+
+
+def _body_rows(request: BodyRequest, code: str, values: Mapping[str, Any], defaulted: frozenset[str]
+               ) -> tuple[EntityParamRow, ...]:
+    """Las filas de los parámetros de la entidad con su procedencia (RF-008-01): lo que no se pidió, con la de su valor por defecto;
+    el resto, lo que eligió la persona en el diálogo. **Todas** (también las de los valores por defecto)."""
+    spec = entity_params("body")
+    rows: list[EntityParamRow] = []
+    for param in BodyParam:
+        value = values.get(param.value)
+        if value is None:
+            continue
+        if param.value in defaulted:
+            declared = spec.template(param.value)
+            source, kind, reason = declared.source, str(declared.source_kind), default_reason(declared)
+        else:
+            source, kind = f"{_BODY_DIALOG}, entidad «{request.name}»", "person"
+            reason = f"Elegido al crear el cuerpo apoyado «{request.name}»"
+        rows.append(EntityParamRow(entity_key(code, param), param.value, value, source, kind, reason))
+    return tuple(rows)
+
+
+# --- Los datos de espesor (RF-016-20) -------------------------------------------------------------------------------
+
+
+def _body_object(request: BodyRequest) -> str:
+    return f"Cuerpo apoyado «{request.name}»"
+
+
+def _kind_text(name: str, layer: FeatureLayer | None = None) -> str:
+    """Lo que tiene la capa de datos ``name`` (para decir por qué no se lee de ella): puntos, líneas o polígonos de una capa de
+    entidades (``layer``), líneas 3D, puntos 3D, curvas de nivel u otro tipo de dato."""
+    if layer is not None:
+        return entity_store._KINDS_ES.get(layer.kind, layer.kind)
+    for code, text in _OTHER_KINDS:
+        if name.startswith(FAMILIES_BY_CODE[code].prefix):
+            return text
+    return "datos de otro tipo"
+
+
+def _kind_error(request: BodyRequest, kind: str) -> DesignError:
+    return DesignError("des.body_data_kind", obj=_body_object(request), field=entity_key("BDY-001", BodyParam.DATA_FROM),
+                       value=str(request.data_from), entity=request.name, layer=request.data_layer, kind=kind)
+
+
+def _m_error(request: BodyRequest) -> DesignError:
+    return DesignError("des.body_data_m", obj=_body_object(request), field=entity_key("BDY-001", BodyParam.DATA_FROM),
+                       value=str(request.data_from), entity=request.name, layer=request.data_layer)
+
+
+def _datum_problem(value: object, request: BodyRequest, field: str) -> DesignError | float:
+    """El espesor ``value`` de un dato del campo ``field`` como número (finito y **no negativo**: RF-016-01, RF-015-08) o, si falta, no
+    es un número, no es finito o es negativo, el ``des.entity_field_value`` que lo rechaza, con la capa de los datos, el cuerpo, el campo
+    y el valor: no se elige ninguno por la persona."""
+    number: float | None = None
+    if value is not None and not isinstance(value, bool):
+        try:
+            number = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            number = None
+    if number is None or not math.isfinite(number) or number < 0.0:
+        shown = "—" if value is None else value
+        return DesignError("des.entity_field_value", obj=_body_object(request), field=field, value=shown,
+                           layer=request.data_layer, entity=request.name)
+    return number
+
+
+def _datum(value: object, request: BodyRequest, field: str) -> float:
+    """:func:`_datum_problem` lanzando el rechazo: el espesor de un dato, antes de construir los datos del cálculo."""
+    found = _datum_problem(value, request, field)
+    if isinstance(found, DesignError):
+        raise found
+    return found
+
+
+def thickness_from_features(layer: FeatureLayer, request: BodyRequest) -> ThicknessData:
+    """Los datos de espesor de una capa de entidades ``layer`` (puntos o polígonos) leídos **del campo** ``request.data_field``
+    (RF-016-20): un dato por punto con el valor de su entidad y, de un polígono, **el espesor constante en cada uno** (cada parte,
+    con el valor de su entidad). Un espesor negativo, que falta o que no es un número se rechaza **antes** con la capa, el cuerpo, el
+    campo y el valor (``des.entity_field_value``, RF-015-08); un campo que la capa no tiene o no es numérico, ``des.quarry_layer_field``;
+    una capa de líneas, o leer la Z de una capa de entidades (que no la guarda), ``des.body_data_kind``, y la M, ``des.body_data_m``.
+    Solo depende de lo leído: lo comparten preparar y reproducir."""
+    if request.data_from is ThicknessSource.M:
+        raise _m_error(request)
+    if request.data_from is not ThicknessSource.FIELD or layer.kind == "line":
+        raise _kind_error(request, _kind_text(request.data_layer, layer))
+    column = entity_store._level_column(layer, LayerField(request.data_layer, request.data_field))
+    values = layer.values[column]
+    points: list[tuple[float, float, float]] = []
+    polygons: list[tuple[tuple[np.ndarray, ...], float]] = []
+    for index in range(len(layer)):
+        found = _datum(values[index], request, request.data_field)
+        for part in layer.parts[index]:
+            if layer.kind == "point":
+                x, y = part[0][0]
+                points.append((float(x), float(y), found))
+            else:
+                polygons.append((tuple(part), found))
+    return ThicknessData(np.array(points, dtype=np.float64).reshape(-1, 3), tuple(polygons))
+
+
+def thickness_from_lines(geometries: Sequence[np.ndarray], request: BodyRequest) -> ThicknessData:
+    """Los datos de espesor de unas **líneas 3D** (``geometries``: de cada una, sus vértices ``(n, d)`` ABSOLUTOS en float64: X, Y y Z
+    y, si la fuente la llevara, M) leídos **de la Z o de la M declaradas** (``request.data_from``; RF-016-20: no se supone ninguna): un
+    dato por vértice (``ThicknessData.sections``: son secciones). Un espesor negativo o que no es un número se rechaza antes con la
+    capa, el cuerpo, el campo (``Z`` o ``M``) y el valor (``des.entity_field_value``); líneas sin Z, ``des.body_data_kind``; **sin M
+    en los vértices, ``des.body_data_m``** (ni el GeoPackage del proyecto ni la importación de capas la guardan). Leer de un campo
+    una capa de líneas es ``des.body_data_kind``. Solo depende de lo leído: lo comparten preparar y reproducir."""
+    source = request.data_from
+    if source is ThicknessSource.FIELD:
+        raise _kind_error(request, _kind_text(request.data_layer))
+    column = 2 if source is ThicknessSource.Z else 3
+    label = "Z" if source is ThicknessSource.Z else "M"
+    found: list[np.ndarray] = []
+    for geometry in geometries:
+        array = np.asarray(geometry, dtype=np.float64)
+        array = array.reshape(-1, array.shape[-1]) if array.size else array.reshape(0, 3)
+        if array.shape[1] <= column:
+            if source is ThicknessSource.M:
+                raise _m_error(request)
+            raise _kind_error(request, "líneas sin Z")
+        values = array[:, column]
+        bad = np.flatnonzero(~np.isfinite(values) | (values < 0.0))
+        if bad.size:
+            problem = _datum_problem(float(values[bad[0]]), request, label)
+            assert isinstance(problem, DesignError)
+            raise problem
+        found.append(np.column_stack([array[:, 0], array[:, 1], values]))
+    points = np.concatenate(found) if found else np.empty((0, 3), dtype=np.float64)
+    return ThicknessData(points, (), sections=True)
+
+
+def read_thickness(project: StoreProject, request: BodyRequest) -> ThicknessData:
+    """Los datos de espesor de la capa ``request.data_layer`` del proyecto (RF-016-20): **el campo** de los puntos o de los polígonos de
+    una capa de entidades (``gis_fea_``; ``data_from`` ``field``) o **la Z de los vértices de una capa de líneas 3D** (``gis_brk_``;
+    ``data_from`` ``z``: la Z que guarda el proyecto), como :func:`thickness_from_features` y :func:`thickness_from_lines`. Otra
+    clase de dato, ``des.body_data_kind``; la M, ``des.body_data_m``. Solo lee y no modifica la capa (principio 7)."""
+    name = request.data_layer
+    if name.startswith(_FEATURE_PREFIX):
+        return thickness_from_features(entity_store._layer(project, name), request)
+    if name.startswith(_LINES_PREFIX):
+        if request.data_from is ThicknessSource.FIELD:
+            raise _kind_error(request, _kind_text(name))
+        stored = load_features(project, name)
+        return thickness_from_lines(stored.geometries, request)  # type: ignore[union-attr]
+    raise _kind_error(request, _kind_text(name))
+
+
+def frozen_thickness_data(conn: sqlite3.Connection, table: str, request: BodyRequest) -> ThicknessData:
+    """Lo mismo que :func:`read_thickness` de la tabla ``table`` de la conexión ``conn`` (la copia congelada de la capa de datos
+    ``request.data_layer``), **sin el proyecto**: al reproducir lo congelado. Solo lee."""
+    name = request.data_layer
+    if name.startswith(_FEATURE_PREFIX):
+        return thickness_from_features(read_features(conn, table), request)
+    if name.startswith(_LINES_PREFIX):
+        if request.data_from is ThicknessSource.FIELD:
+            raise _kind_error(request, _kind_text(name))
+        geometries = [np.asarray(decode_geometry(blob).coords, dtype=np.float64)
+                      for (blob,) in conn.execute(f'SELECT "geom" FROM "{table}" ORDER BY fid')]
+        return thickness_from_lines(geometries, request)
+    raise _kind_error(request, _kind_text(name))
+
+
+# --- Preparar ------------------------------------------------------------------------------------------------------
+
+
+def _check_body_chain(registry: entities.EntityRegistry, request: BodyRequest, code: str, version: Version) -> None:
+    """RF-015-04, RF-015-15, H-9: **nadie parte de la superficie de un cuerpo «bajo un techo»**, que no la escribe
+    (``des.chainless_start``: ni la partida ni la superficie conocida); «sobre una base», de su partida parte como mucho una entidad
+    (``des.entity_start_taken``) y la cadena no da la vuelta (``des.entity_chain_cycle``); y la superficie conocida no es la de la
+    propia entidad ni la de una que parte de la suya (``des.entity_supports_unknown``: sería un ciclo). El cuerpo ``code`` no
+    cuenta consigo mismo."""
+    obj = _body_object(request)
+    entity_store._check_surface_left(registry, request.name, code, request.surface, entity_key(code, BodyParam.SURFACE), obj=obj)
+    if request.sense is BodySense.ON_BASE:
+        entity_store._check_surface_left(registry, request.name, code, request.start, entity_key(code, BodyParam.START), obj=obj)
+        other = entities.start_conflict(registry.records, request.start, ignoring=code)
+        if other is not None:
+            raise DesignError("des.entity_start_taken", obj=obj, field=entity_key(code, BodyParam.START), value=request.start,
+                              entity=request.name, other=other.name)
+        records = [item for item in registry.records if item.code != code]
+        entities.check_chain([*records, entities.EntityRecord(code, request.name, EntityKind.BODY, request.start, None)])
+    entity_store._check_support_cycle(registry, request.name, code, request.surface, entity_key(code, BodyParam.SURFACE),
+                                      version.code)
+
+
+def prepare_body_units(project: StoreProject, request: BodyRequest, version: Version,
+                       masks: access.MaskSet | access.MaskSource, *, code: str | None = None,
+                       supersedes: str | None = None, released: Sequence[provenance.ReleasedSupport] = ()
+                       ) -> Generator[None, None, PreparedBody]:
+    """Las unidades (cada ``yield``, una; para componerlas con ``pace_units``) que preparan el cuerpo ``request`` de la versión
+    editable ``version`` con sus ``masks`` ya al día (:func:`~.store.masks_steps`): el código (``code``: el de una entidad que ya está
+    en la versión, que no choca consigo misma; si no, el siguiente, ``BDY-001``), el nombre único y la cadena, la huella (un polígono
+    de una capa de entidades) y los parámetros resueltos, los datos de espesor (**un espesor negativo o que falta se rechaza aquí**, con
+    capa, cuerpo, campo y valor), la ventana de la huella (A0) con la superficie conocida —y, «sobre una base», la partida y el relleno
+    admitido—, los sectores con la búsqueda pendiente (solo «sobre una base»: mueve celdas; RF-015-07) y lo que anotará la operación.
+    ``supersedes``: la operación hecha a la que sustituye (un recálculo); ``released``: lo que da por bueno sin su apoyo. Devuelve la
+    :class:`PreparedBody`. **Nada se escribe**; los rechazos salen al avanzar, en el orden de la documentación del módulo."""
+    require_version(project, version.uid, provenance.BODY)
+    registry = entities.registry(project, version.uid)
+    chosen = code if code is not None else entities.next_code(EntityKind.BODY, (entry.record.code for entry in registry))
+    entity_store._check_name(registry, request.name, chosen, version.code)
+    _check_body_chain(registry, request, chosen, version)
+    yield
+    layer = entity_store._layer(project, request.layer)
+    if layer.kind != "polygon":
+        raise DesignError("des.layer_not_polygons", obj=f"Capa «{request.layer}»", field="geometría",
+                          value=entity_store._KINDS_ES.get(layer.kind, layer.kind), layer=request.layer)
+    index = entity_store.feature_index(layer, request, chosen)  # type: ignore[arg-type]
+    fid = layer.fids[index]
+    values, defaulted = body_values(request, chosen, fid)
+    yield
+    data = read_thickness(project, request)
+    yield
+    frame = project_frame(project)
+    grid = frame.grid
+    whole = zones.polygons_cells(tuple(tuple(part) for part in layer.parts[index]), grid)
+    window = thickness.body_window(whole, grid)
+    if window is None:
+        raise thickness.no_data_error(request)
+    footprint = whole[window]
+    on_base = request.sense is BodySense.ON_BASE
+    known_name = entity_store._surface_dataset(registry, version, request, chosen, BodyParam.SURFACE, request.surface)  # type: ignore[arg-type]
+    known = read_surface_window(project, known_name, window, version_uid=version.uid, expect=frame, role="superficie conocida")
+    yield
+    start_name: str | None = None
+    start_values: np.ndarray | None = None
+    fill: np.ndarray | None = None
+    if on_base:
+        assert request.start is not None
+        start_name = entity_store._surface_dataset(registry, version, request, chosen, BodyParam.START, request.start)  # type: ignore[arg-type]
+        start_values = read_surface_window(project, start_name, window, version_uid=version.uid, expect=frame,
+                                           role="superficie de partida").values
+        fill = admitted_in(masks, BenchSense.FILL, window)
+    yield
+    if on_base:
+        sectors = design_sectors(project, version.uid)
+        if any(sector.pending for sector in sectors):  # RF-015-07: el cuerpo «sobre una base» mueve celdas
+            refs, labels = sector_layout(project, masks)  # type: ignore[arg-type]
+            touched = pipeline.touched_in(refs, labels[window], footprint)
+            refuse_pending(sector for sector in sectors if sector.code in touched)
+    job = BodyJob(request, chosen, grid, frame.crs, frame.vertical, known.values, footprint, data,
+                  MappingProxyType(dict(values)), start=start_values, fill_allowed=fill, region=window)
+    yield
+    supported, footprints, reads = entity_store._support_inputs(
+        project, version, request, chosen, registry, known_name if on_base else None,  # type: ignore[arg-type]
+        entity_store._released_codes(project, supersedes, released))
+    inputs = provenance.body_inputs(request, start_name if on_base else known_name, masks.uses(), supported)  # type: ignore[arg-type]
+    inputs = (*inputs, *(use for use in footprints if use not in inputs))
+    begun = _start(project, provenance.BODY, request.name, version, masks,  # type: ignore[arg-type]
+                   provenance.body_settings(request, chosen), inputs,
+                   provenance.body_params(chosen, request, supports=reads), supersedes)
+    yield
+    runs = tuple(tuple(int(value) for value in run) for run in entity_store.footprint_runs(footprint, window))
+    return PreparedBody(job, begun, chosen, version, _body_rows(request, chosen, values, defaulted), MappingProxyType(values),
+                        known_name, start_name, int(fid), runs, code is not None)
+
+
+def prepare_body(project: StoreProject, request: BodyRequest, *, version: str | None,
+                 masks: access.MaskSet | None = None, code: str | None = None,
+                 supersedes: str | None = None) -> PreparedBody:
+    """La preparación entera de :func:`prepare_body_units` de una vez (sin ceder el hilo; las máscaras que no se dan se abren sin
+    cargar sus celdas: ``entity_store._masks_to_read``): la :class:`PreparedBody`, con los mismos rechazos y sin escribir nada."""
+    found = require_version(project, version, provenance.BODY)
+    loaded = entity_store._masks_to_read(project, found, masks)
+    return _result_of(prepare_body_units(project, request, found, loaded, code=code, supersedes=supersedes))
+
+
+# --- Calcular (RF-015-03, RF-015-29, RNF-016-02) ---------------------------------------------------------------------
+
+
+def body_compute_steps(job: BodyJob, *, budget_s: float = STEP_BUDGET_S) -> Generator[Progress, None, BodyOutcome]:
+    """Los pasos que calculan el cuerpo de ``job`` (RF-016-01, RF-016-20 a RF-016-22, RF-015-29; plan 016 §5.3.2: el
+    ``body_compute_steps`` que **comparten «Calcular», el recálculo y la reproducción**), sin proyecto y sin escribir nada
+    (``yield from``; cerrar el generador no deja nada): A11 (``thickness.body_steps``) por pasos de ``budget_s`` como mucho. Los
+    rechazos de RF-016-22 (sin datos en la huella o todo lejos) y de la distancia máxima salen al avanzar. Devuelve el
+    :class:`~.thickness.BodyOutcome`."""
+    name = job.request.name
+    yield Progress(_BODY_PHASE, 0, 1, f"Calculando el cuerpo apoyado «{name}»…")
+    outcome: BodyOutcome = yield from pipeline.forward(thickness.body_steps(job, budget_s=budget_s))
+    yield Progress(_BODY_PHASE, 1, 1, f"Cuerpo apoyado «{name}» calculado")
+    return outcome
+
+
+def _whole_body_start_steps(project: StoreProject, prepared: PreparedBody, budget_s: float
+                            ) -> Generator[Progress, None, np.ndarray]:
+    """La superficie de partida **entera** (un array nuevo que el llamador puede modificar), leída por bandas de filas dentro del cálculo
+    —lo que hace falta para escribir la superficie de salida «sobre una base» (P-12)—. La ventana leída antes ha de ser **igual** a la
+    de ahora (bit a bit, el NaN incluido): si el dato cambió en medio, ``des.input_changed`` y no se escribe nada."""
+    job = prepared.job
+    name = job.request.name
+    assert prepared.start_surface is not None and job.start is not None
+    raster = yield from pipeline.forward(pace_progress(
+        read_surface_steps(project, prepared.start_surface, version_uid=prepared.start.version_uid,
+                           expect=project_frame(project), role="superficie de partida"),
+        budget_s, phase=_BODY_PHASE, running=f"Leyendo la superficie de partida de «{name}»…",
+        finished="Superficie de partida leída"))
+    whole = np.array(raster.values, dtype=np.float64, copy=True)
+    if not np.array_equal(whole[job.window], job.start, equal_nan=True):
+        raise DesignError("des.input_changed", obj=f"Superficie «{prepared.start_surface}»", field="entradas",
+                          value=prepared.start_surface)
+    return whole
+
+
+def _sparse(grid: Grid, outcome: BodyOutcome, values: np.ndarray) -> np.ndarray:
+    """La rejilla **dispersa** de ``values`` (de la ventana del cuerpo): con dato solo donde hay cuerpo, ``NaN`` en el resto de la rejilla
+    (P-4: unos KiB frente a 15 MiB enteros). Un array nuevo de la forma de la rejilla."""
+    whole = np.full(grid.shape, np.nan, dtype=np.float64)
+    whole[outcome.window] = values
+    return whole
+
+
+def body_entity_rows(job: BodyJob, outcome: BodyOutcome, *, layer: str, source_fid: int, runs: Sequence[Sequence[int]],
+                     start_surface: str, support_surface: str | None) -> list[Row]:
+    """La fila de ``des_epr_`` (columnas de :data:`~.store.ENTITY_COLUMNS`) del cuerpo de ``job`` con su ``outcome`` (RF-015-01):
+    **una**, con los atributos de la entidad —su código, su nombre, su tipo ``body``, los datos de su superficie (``start_surface``: la
+    de partida «sobre una base» y la conocida «bajo un techo», la que consume con el papel ``surface``) y de apoyo (la conocida «sobre
+    una base»), **la capa y el ``fid`` de la huella**, el hash de su huella, el modo ``body`` y las celdas de la huella—, su ventana de
+    trabajo, la huella en tramos de fila y ningún eje. Solo depende de lo que se lee para calcular, no del proyecto: lo repite la
+    reproducción desde lo congelado."""
+    text = json.dumps([list(run) for run in runs], separators=(",", ":"), allow_nan=False)
+    rows, cols = outcome.window
+    return [(job.code, job.request.name, EntityKind.BODY.value, start_surface, support_surface, layer, int(source_fid),
+             hashlib.sha256(text.encode()).hexdigest(), "body", int(np.count_nonzero(outcome.footprint)), 0,
+             json.dumps([int(rows.start), int(rows.stop), int(cols.start), int(cols.stop)], separators=(",", ":")), text, "[]")]
+
+
+def body_report_rows(outcome: BodyOutcome) -> list[Row]:
+    """Las filas de ``des_prp_`` (formato largo: ``quantity, value, unit_code, note``; RF-016-20 a RF-016-22) del cuerpo ``outcome``, en
+    este orden: las celdas (la huella, las del cuerpo, las que tienen dato, las de «cero en el borde», las del TIN, las del dato más
+    próximo, las directas del interior de los polígonos, los datos triangulados y las sin superficie conocida), las cifras (volumen,
+    espesor máximo con su lugar, lo lejano con su área, su volumen y su lugar, la mayor distancia a un dato y lo ignorado), los dos
+    valores que lo gobiernan (la distancia máxima y «cero en el borde») y, al final, los avisos y notas (``warning`` y ``note`` con su
+    código y sus valores en JSON). Un valor que no es finito es un error del programa (``ValueError``). Solo depende del resultado: lo
+    repite la reproducción."""
+    rows: list[Row] = []
+
+    def scalar(key: str, value: float, unit: str, note: str | None = None) -> None:
+        rows.append((key, _real(key, value), unit, note))
+
+    def place(x: float | None, y: float | None, what: str) -> str | None:
+        return None if x is None or y is None else f"{_real(f'{what}.x', x)!r};{_real(f'{what}.y', y)!r}"
+
+    for key, count in (("footprint_cells", int(np.count_nonzero(outcome.footprint))), ("body_cells", int(np.count_nonzero(outcome.body))),
+                       ("data_cells", outcome.data_cells), ("zero_cells", outcome.zero_cells), ("tin_cells", outcome.tin_cells),
+                       ("nearest_cells", outcome.nearest_cells), ("direct_cells", outcome.direct_cells),
+                       ("tin_points", outcome.tin_points), ("unsupported_cells", outcome.unsupported_cells),
+                       ("far_cells", int(np.count_nonzero(outcome.far)))):
+        scalar(key, count, "-")
+    scalar("volume_m3", outcome.volume_m3, "m3")
+    scalar("thickness_max_m", outcome.thickness_max_m, "m", place(outcome.thickness_max_x, outcome.thickness_max_y, "thickness_max"))
+    scalar("far_m2", outcome.far_m2, "m2")
+    scalar("far_m3", outcome.far_m3, "m3", place(outcome.far_x, outcome.far_y, "far"))
+    scalar("farthest_m", outcome.farthest_m, "m")
+    scalar("ignored", outcome.ignored, "-")
+    scalar("max_distance_m", outcome.max_distance_m, "m")
+    scalar("zero_at_edge", int(outcome.zero_at_edge), "-")
+    for notice in outcome.notices:
+        rows.append((notice.severity, None, None, _notice_text(notice)))
+    return rows
+
+
+def compute_body_steps(writer: DesignWriter, prepared: PreparedBody, *, budget_s: float = STEP_BUDGET_S
+                       ) -> Generator[Progress, None, BodyOutcome]:
+    """Lo que hace «Calcular» sobre el ``writer`` (RF-015-03, RF-015-29; patrón de :func:`compute_removal_steps`): calcula el cuerpo
+    preparado (:func:`body_compute_steps`) y deja en el temporal de ``writer`` **el espesor disperso** (``des_bdt_``) y, «sobre una
+    base», la superficie de partida **entera** con el techo en la ventana del cuerpo (``des_psf_``, P-12) o, «bajo un techo», **la base
+    dispersa** (``des_bds_``: no cambia la superficie), y prepara, con su hash en memoria, la huella (``des_epr_``) y el informe
+    (``des_prp_``), **sin confirmar**: lo que falta para crearlo (:func:`create_body`) es una sola transacción. Devuelve el
+    :class:`~.thickness.BodyOutcome`."""
+    job = prepared.job
+    grid = job.grid
+    outcome = yield from body_compute_steps(job, budget_s=budget_s)
+    crs, vertical = writer.crs, writer.vertical
+    on_base = prepared.sense is BodySense.ON_BASE
+    yield from pipeline.forward(_store_steps(
+        writer.grid_steps(provenance.BODY_THICKNESS_GRID, Raster(grid, _sparse(grid, outcome, outcome.thickness), crs, vertical)),
+        budget_s, "el espesor del cuerpo"))
+    if on_base:
+        writer.omit(provenance.BODY_BASE_GRID)
+        whole = yield from _whole_body_start_steps(writer.project, prepared, budget_s)
+        yield from pipeline.forward(_store_steps(
+            writer.grid_steps(provenance.ENTITY_SURFACE_GRID, Raster(grid, outcome.compose(whole), crs, vertical)), budget_s,
+            "la superficie del cuerpo"))
+    else:
+        writer.omit(provenance.ENTITY_SURFACE_GRID)
+        yield from pipeline.forward(_store_steps(
+            writer.grid_steps(provenance.BODY_BASE_GRID, Raster(grid, _sparse(grid, outcome, outcome.base), crs, vertical)),
+            budget_s, "la base del cuerpo"))
+    request = job.request
+    entity = body_entity_rows(job, outcome, layer=request.layer, source_fid=prepared.fid, runs=prepared.runs,
+                              start_surface=prepared.start_surface or prepared.surface_name,
+                              support_surface=prepared.surface_name if on_base else None)
+    yield from pipeline.forward(_store_steps(writer.table_steps(provenance.ENTITY_TABLE, entity), budget_s, "la huella del cuerpo"))
+    yield from pipeline.forward(_store_steps(writer.table_steps(provenance.ENTITY_REPORT_TABLE, body_report_rows(outcome)),
+                                             budget_s, "el informe del cuerpo"))
+    return outcome
+
+
+# --- El resumen (RF-015-03, RF-016-20 a 22) -----------------------------------------------------------------------
+
+
+def body_obsolete(project: StoreProject, prepared: PreparedBody, *, supersedes: str | None = None) -> tuple[Obsolete, ...]:
+    """**Lo que quedará obsoleto al crear** el cuerpo ``prepared`` (RF-015-03, RF-015-16): uno nuevo no deja obsoleto nada; el que
+    **sustituye** una operación (``supersedes``: un recálculo) deja obsoleto lo que dependía de lo que escribió, en cascada. Solo lee."""
+    if supersedes is None:
+        return ()
+    with project.read() as conn:
+        written = [str(row[0]) for row in conn.execute(
+            "SELECT item_uid FROM gb_operation_io WHERE operation_uid = ? AND direction = 'out' AND item_kind = 'dataset' "
+            "ORDER BY fid", (supersedes,))]
+        found = entity_store._dependents(conn, written, prepared.version.uid, exclude=(supersedes,))
+    return tuple(entity_store._consumer(ObsoleteKind.DEPENDENT, uid, op_type, name) for uid, op_type, name in found)
+
+
+def body_summary(project: StoreProject, prepared: PreparedBody, outcome: BodyOutcome, *,
+                 supersedes: str | None = None) -> BodySummary:
+    """El resumen de «Calcular» el cuerpo ``prepared`` (RF-015-03, RF-016-20 a 22): las cifras que se registrarán, lo lejano de los datos
+    con su área, su volumen y su lugar, y los avisos en el orden en que se enseñan (los del cálculo: lo ignorado, lo lejano, lo que no
+    tiene superficie conocida, lo triangulado; y lo que quedará obsoleto). Solo lee."""
+    kept = body_obsolete(project, prepared, supersedes=supersedes)
+    request = prepared.job.request
+    notices = (*outcome.notices, *obsolete_notices(request.name, prepared.version.code, kept))
+    return BodySummary(
+        request.name, prepared.code, prepared.version.code, prepared.sense.value, request.data_layer, outcome.figures,
+        outcome.volume_m3, outcome.thickness_max_m, outcome.thickness_max_x, outcome.thickness_max_y, outcome.far_m2,
+        outcome.far_m3, outcome.far_x, outcome.far_y, notices, kept)
+
+
+# --- Crear (RF-016-20, RF-015-01, RF-015-02; RNF-016-07) ------------------------------------------------------------
+
+
+def create_body(project: StoreProject, writer: DesignWriter, prepared: PreparedBody, outcome: BodyOutcome, *,
+                decided_by: str | None = None) -> Stored:
+    """**«Crear» un cuerpo apoyado** (RF-016-20, RF-015-01, RF-015-02): registra en **una** transacción
+    (:meth:`~.store.DesignWriter.commit` de ``writer``, el de «Calcular», con sus salidas preparadas) los parámetros de la entidad
+    —una fila de la versión por parámetro, con su origen y su decisor ``decided_by`` (por defecto, quien tiene abierto el proyecto)—,
+    la operación ``des.body`` con sus entradas (la huella, los datos de espesor con el papel ``body_data``, la superficie, las máscaras y
+    lo que apoya) y sus parámetros, el espesor disperso, la superficie «sobre una base» o la base dispersa «bajo un techo», la huella
+    (``des_epr_``), el informe y las cifras ``des.bdy_*`` con el ámbito de la entidad. Una entidad que ya estaba en la versión
+    (``prepared.existing``) no vuelve a escribir sus parámetros. Si algo falla, o lo que consume cambió desde que se calculó
+    (``des.input_changed``), no queda nada y el error sigue; **no modifica ninguna entrada**."""
+    start = prepared.start
+
+    def parameters(conn: sqlite3.Connection) -> None:
+        if prepared.existing:
+            if ParameterStore(project).get(entity_key(prepared.code, BodyParam.NAME), version=start.version_uid,
+                                           conn=conn) is None:
+                raise ValueError(f"la entidad {prepared.code} no tiene sus parámetros en la versión: no está en ella (se prepara "
+                                 "sin su código)")
+        else:
+            set_entity_params(project, prepared.rows, version=start.version_uid, decided_by=decided_by, conn=conn)
+
+    return writer.commit(start, figures=outcome.figures, message=outcome.message, before_begin=parameters)
+
+
+# --- Recalcular (RF-015-02, RF-015-16, RF-008-26) --------------------------------------------------------------------
+
+
+def _check_recorded_body(handle: OperationHandle, prepared: PreparedBody) -> None:
+    """Los parámetros que anotó la operación al empezar son los que leyó el cálculo al prepararse (RF-013-17, D-14): si uno cambió entre
+    las dos cosas, el resultado ya no le corresponde (``des.input_changed``, con el parámetro)."""
+    read: dict[str, object] = {entity_key(prepared.code, BodyParam(name)): value for name, value in prepared.values.items()}
+    for param in handle.params:
+        if param.key in read and param.value != read[param.key]:
+            raise DesignError("des.input_changed", obj=f"Parámetro «{param.key}»", field="parámetros", value=param.key)
+
+
+def run_body(project: StoreProject, request: BodyRequest, *, version: str | None, code: str,
+             masks: access.MaskSet | None = None, supersedes: str | None = None, budget_s: float = STEP_BUDGET_S,
+             released: Sequence[provenance.ReleasedSupport] = ()) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Calcula y registra ``request`` —un cuerpo que ya está en la versión ``version``: su ``code``— de **una vez** (RF-015-02,
+    RF-015-16; el recálculo de lo obsoleto, :func:`~.store.recompute_run`; el «Crear» tras «Calcular» es
+    :meth:`~.steps.Calculation.create`): empieza la operación ``des.body`` —si ``supersedes`` es la de una anterior, la sustituye,
+    quedándose con los nombres de sus datos— con lo que lee hoy y devuelve su ``OperationHandle`` «en curso» y sus pasos, que avanza
+    quien la llama: calculan (:func:`body_compute_steps`), escriben el espesor, la superficie o la base, la huella y el informe y
+    completan la operación en una transacción; el último lleva el :class:`~.store.Stored`. No escribe parámetros de la entidad (ya
+    están). Cerrarlos antes, o un fallo, no dejan nada y la operación queda cancelada o fallida. Al llamar, sin empezar nada: los
+    rechazos de :func:`prepare_body_units`."""
+    found = require_version(project, version, provenance.BODY)
+    loaded = entity_store._masks_to_read(project, found, masks)
+    prepared = _result_of(prepare_body_units(project, request, found, loaded, code=code, supersedes=supersedes, released=released))
+    handle = prepared.start.with_released(released).begin(project)
+    return handle, _body_run(project, handle, prepared, budget_s)
+
+
+def _body_run(project: StoreProject, handle: OperationHandle, prepared: PreparedBody, budget_s: float
+              ) -> Generator[Progress, None, None]:
+    with DesignWriter.resume(project, handle) as writer:
+        _check_recorded_body(handle, prepared)
+        outcome: BodyOutcome = yield from compute_body_steps(writer, prepared, budget_s=budget_s)
+        stored = writer.commit(figures=outcome.figures, message=outcome.message)
+        yield Progress(_BODY_PHASE, 1, 1, outcome.message, result=stored)
+
+
+def recompute_body(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
+                   released: Sequence[provenance.ReleasedSupport] = ()) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Repite la operación ``des.body`` de ``request`` (:func:`~.store.recompute_run`; «Recalcular lo obsoleto», RF-008-26;
+    RF-015-02, RF-015-16): el cuerpo de sus ajustes (el nombre y el código) con los **parámetros vigentes de su entidad en su
+    versión** (:func:`~.entity_store.entity_parameters`: la huella, los datos, la superficie, el sentido, la partida, la distancia
+    máxima y el «cero en el borde») y no los que leyó la operación que sustituye: una entidad se define por sus parámetros
+    (RF-015-01). Devuelve lo de :func:`run_body`. ``ValueError`` si los ajustes no son los de un cuerpo o la petición no es de una
+    versión."""
+    project: StoreProject = request.project  # type: ignore[assignment]
+    code = provenance.supported_code(request.settings)
+    found = require_version(project, request.version, provenance.BODY)
+    asked = provenance.body_request(request.settings, entity_parameters(project, code, version=found))
+    return run_body(project, asked, version=found.uid, code=code, supersedes=request.operation_uid, budget_s=budget_s,
+                    released=released)

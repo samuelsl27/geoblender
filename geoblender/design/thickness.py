@@ -56,9 +56,26 @@ filas** de coste acotado (:func:`_rasterize_units`: ``tin_to_raster`` solo con l
 bit que de una pieza; con datos en líneas ese TIN costaba lo que suman las cajas de sus triángulos, 6,9 s por 100 ha). Los contratos
 de las dos —puntos en unidades de celda → triángulos; TIN y ventana → espesor o NaN— son los de la T23.
 
-**Lo que no hace** (la T25): leer la capa de datos (puntos, líneas con su Z o su M, polígonos), preparar, crear, recalcular y
-reproducir la operación, rechazar un espesor negativo de la capa con capa, entidad, campo y valor, y avisar de más de 100 ha con
-secciones.
+**Los polígonos** (T25; decisión de la sesión principal, 19/11/2026): la retícula de datos de un polígono grande es de Delaunay
+degenerada y triangularla cuesta 52 µs por punto (un polígono de 20 ha a 1 m, ≈ 10 s). Por eso **las celdas del interior de un
+polígono toman su espesor directamente** (la media si coinciden varios datos en la celda: RF-016-20) y **solo las celdas de su
+contorno entran en el TIN** y en el dato más próximo (con el mismo valor): una celda de un polígono es del **interior** si sus cuatro
+vecinas son también celdas con dato (de cualquier origen). El resultado **en las celdas de los polígonos es el mismo que celda a
+celda**, y fuera de ellos el dato más próximo es el mismo (**la celda con dato más próxima a un punto sin dato es siempre del borde**:
+si tuviera sus cuatro vecinas con dato, la que está hacia el punto sería estrictamente más próxima); el TIN de fuera, con menos
+vértices, puede triangular algo distinto junto al contorno. ``direct_cells`` cuenta esas celdas y ``tin_points`` los datos
+triangulados. **Los triángulos de dentro de un polígono** (sus tres vértices de polígono y su centroide en una celda de polígono)
+**se descartan** antes de rasterizar (:func:`_tin_units`): el contorno de un polígono de 20 ha a 1 m triangula su interior en
+triángulos de cajas enormes y rasterizarlos costaba 3,4 s; con el descarte, el cálculo entero cuesta 0,2 s. El hueco **entre dos
+polígonos** se sigue interpolando (los triángulos que los unen se rasterizan).
+
+**Avisos nuevos del cálculo** (T25): ``des.body_unsupported`` (las celdas de la huella sin superficie conocida, que no tienen
+cuerpo: lo anotó la T23), ``des.body_many_data`` (más de :data:`MANY_DATA` datos triangulados: ≈ 2 s en retícula y el límite de
+RNF-016-02 es 10 s) y ``des.body_sections_large`` (una huella de más de :data:`SECTIONS_LARGE_M2` con datos de líneas, que son
+secciones: 100 ha cuestan 6,9 s de TIN).
+
+**Lo que no hace** (la T25, en ``supported_store``): leer la capa de datos (puntos, líneas con su Z o su M, polígonos), preparar,
+crear, recalcular y reproducir la operación y rechazar un espesor negativo de la capa con capa, entidad, campo y valor.
 
 Las coordenadas absolutas se pasan a celdas **con la esquina de la rejilla restada antes de dividir** (principio 6, ADR-0005) y
 ninguna entrada se modifica.
@@ -94,6 +111,8 @@ from .seeds import pace_progress
 from .zones import _paint, _polygon_spans
 
 __all__ = [
+    "MANY_DATA",
+    "SECTIONS_LARGE_M2",
     "BodyJob",
     "BodyOutcome",
     "BodySense",
@@ -104,6 +123,7 @@ __all__ = [
     "compute_body",
     "derive",
     "edge_cells",
+    "interior_cells",
     "no_data_error",
 ]
 
@@ -112,7 +132,17 @@ _OUTSIDE = "des.body_data_outside"
 _FAR = "des.body_far"
 _NO_DATA = "des.body_no_data"
 _ALL_FAR = "des.body_all_far"
+_UNSUPPORTED = "des.body_unsupported"
+_MANY_DATA = "des.body_many_data"
+_SECTIONS_LARGE = "des.body_sections_large"
 _OBJ = "Cuerpo apoyado «{}»"
+
+MANY_DATA = 40_000
+"""Los datos triangulados por encima de los cuales el resumen avisa (T25; decisión de la sesión principal, 19/11/2026): triangular
+una retícula cuesta ≈ 52 µs por dato (40.000, ≈ 2 s) y el límite de RNF-016-02 es 10 s. No es una cifra minera: es de rendimiento."""
+SECTIONS_LARGE_M2 = 1_000_000.0
+"""La huella (m²: 100 ha) por encima de la cual, con datos de líneas (secciones), el resumen avisa (T25, plan 016 §7.3): 100 ha con
+secciones cuestan 6,9 s de TIN. No es una cifra minera: es de rendimiento."""
 
 
 # --- La regla del espesor (RF-016-01) ------------------------------------------------------------------------------------
@@ -165,13 +195,18 @@ class ThicknessData:
     """Los datos de espesor de un cuerpo, ya leídos de su capa (RF-016-20): ``points`` (``(n, 3)``, float64: X e Y ABSOLUTAS
     y el espesor, m ≥ 0; un punto, un vértice de una línea con su Z o su M, **declarado**: lo lee la orden) y ``polygons`` (por
     polígono, ``(anillos, espesor)``: los anillos ABSOLUTOS, el exterior primero y luego los huecos, y el espesor constante en
-    él, m ≥ 0). Copia lo que recibe. ``ValueError`` (errores del programa: la orden rechaza antes un dato así con capa, entidad,
-    campo y valor) si una forma no es la de arriba o un valor no es finito o es negativo."""
+    él, m ≥ 0). ``sections`` (T25): los ``points`` son vértices de **líneas** (secciones: la orden los lee de la Z o la M de una capa
+    de líneas 3D), que es lo que hace caro el TIN de una huella grande (:data:`SECTIONS_LARGE_M2`). Copia lo que recibe.
+    ``ValueError`` (errores del programa: la orden rechaza antes un dato así con capa, entidad, campo y valor) si una forma no es la
+    de arriba o un valor no es finito o es negativo."""
 
     points: np.ndarray = field(default_factory=lambda: np.empty((0, 3), dtype=np.float64))
     polygons: tuple[tuple[Sequence[np.ndarray], float], ...] = ()
+    sections: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.sections, bool):
+            raise TypeError(f"«sections» es un sí/no, no {self.sections!r}")
         points = np.array(self.points, dtype=np.float64)
         if points.size == 0:
             points = points.reshape(0, 3)
@@ -381,9 +416,12 @@ class BodyOutcome:
     ``far_m2``, ``far_m3`` y su lugar (``far_x``, ``far_y``: el centro de la celda más lejana; ``None`` sin lo lejano),
     ``farthest_m`` (la mayor distancia de una celda de ``body`` a su dato más próximo), ``ignored`` (los datos fuera de la
     huella), ``data_cells`` (las celdas con algún dato real), ``zero_cells`` (las del borde que solo llevan el 0),
-    ``tin_cells`` y ``nearest_cells`` (las de ``body`` con el espesor del TIN o del dato más próximo) y ``unsupported_cells``
+    ``tin_cells`` y ``nearest_cells`` (las de ``body`` con el espesor del TIN o del dato más próximo), ``direct_cells`` (T25: las
+    del interior de un polígono, con su espesor directo: ``tin_cells + nearest_cells + direct_cells`` son las de ``body``),
+    ``tin_points`` (los datos triangulados: las celdas con dato menos las del interior de un polígono) y ``unsupported_cells``
     (las de la huella sin superficie conocida: sin cuerpo). ``max_distance_m``, ``zero_at_edge`` y ``sense`` son los del cuerpo
-    y ``notices`` los avisos (``des.body_data_outside`` y ``des.body_far``)."""
+    y ``notices`` los avisos (``des.body_data_outside``, ``des.body_far``, ``des.body_unsupported``, ``des.body_many_data`` y
+    ``des.body_sections_large``)."""
 
     name: str
     code: str
@@ -415,6 +453,8 @@ class BodyOutcome:
     max_distance_m: float
     zero_at_edge: bool
     notices: tuple[Notice, ...] = ()
+    direct_cells: int = 0
+    tin_points: int = 0
 
     @property
     def figures(self) -> tuple[FigureSpec, ...]:
@@ -448,17 +488,35 @@ class BodyOutcome:
 # --- A11 ---------------------------------------------------------------------------------------------------------------
 
 
-type _Carried = tuple[np.ndarray, np.ndarray, int]
+def interior_cells(data: np.ndarray, painted: np.ndarray) -> np.ndarray:
+    """**El interior de los polígonos** (T25; decisión de la sesión principal, 19/11/2026): las celdas de ``painted`` (las que algún
+    polígono cubre) con dato (``data``: las celdas con algún dato, de cualquier origen) cuyas **cuatro vecinas tienen también dato**.
+    Las celdas del borde del array no son interior (fuera de él no hay dato). Son las que toman su espesor directamente y no entran en
+    el TIN ni en el dato más próximo: **el dato más próximo a una celda sin dato nunca es del interior** (si tuviera sus cuatro
+    vecinas con dato, la que está hacia la celda sería estrictamente más próxima). Una máscara nueva de la forma de ``data``."""
+    found = np.asarray(data, dtype=np.bool_)
+    cover = np.asarray(painted, dtype=np.bool_)
+    if found.ndim != 2 or cover.shape != found.shape:
+        raise ValueError(f"las celdas con dato y las de los polígonos son máscaras 2D de la misma forma, no {found.shape} y "
+                         f"{cover.shape}")
+    padded = np.pad(found, 1, constant_values=False)
+    around = padded[:-2, 1:-1] & padded[2:, 1:-1] & padded[1:-1, :-2] & padded[1:-1, 2:]
+    return cover & found & around
+
+
+type _Carried = tuple[np.ndarray, np.ndarray, int, np.ndarray]
 
 
 def _carry_units(job: BodyJob) -> Generator[None, None, _Carried]:
     """Las unidades de llevar los datos a sus celdas: la suma y el número de datos de cada celda de la ventana (puntos y
-    polígonos juntos) y cuántos datos caen fuera de la huella. Los puntos van de una vez y cada polígono es una unidad."""
+    polígonos juntos), cuántos datos caen fuera de la huella y las celdas que cubre algún polígono (``painted``). Los puntos van
+    de una vez y cada polígono es una unidad."""
     grid, rows, cols = job.grid, *job.window
     height, width = rows.stop - rows.start, cols.stop - cols.start
     footprint = job.footprint
     sums = np.zeros((height, width), dtype=np.float64)
     counts = np.zeros((height, width), dtype=np.int64)
+    painted = np.zeros((height, width), dtype=np.bool_)
     ignored = 0
     points = job.data.points
     if len(points):
@@ -487,8 +545,9 @@ def _carry_units(job: BodyJob) -> Generator[None, None, _Carried]:
             continue
         sums[part][take] += value
         counts[part][take] += 1
+        painted[part][take] = True
         yield
-    return sums, counts, ignored
+    return sums, counts, ignored, painted
 
 
 def _collinear(rows: np.ndarray, cols: np.ndarray) -> bool:
@@ -580,10 +639,16 @@ def _rasterize_units(tin: Tin, shape: tuple[int, int], job: BodyJob) -> Generato
     return out
 
 
-def _tin_units(job: BodyJob, mask: np.ndarray, data: np.ndarray, settings: _Settings, cell: float
-               ) -> Generator[None, None, np.ndarray]:
+def _tin_units(job: BodyJob, mask: np.ndarray, data: np.ndarray, settings: _Settings, cell: float,
+               painted: np.ndarray | None = None) -> Generator[None, None, np.ndarray]:
     """El espesor del TIN lineal de las celdas con dato (``mask``, con su valor en ``data``) en la ventana, ``NaN`` donde no
-    llega: sin triángulos (menos de tres datos, alineados o todos con un lado mayor que ``2·max_distance_m``), todo ``NaN``."""
+    llega: sin triángulos (menos de tres datos, alineados o todos con un lado mayor que ``2·max_distance_m``), todo ``NaN``.
+
+    ``painted`` (T25; decisión de la sesión principal, 19/11/2026): las celdas que cubre algún polígono. Un triángulo con **sus tres
+    vértices** de polígono y su centroide en una celda de polígono está dentro de él, donde el espesor ya es el directo del polígono:
+    **se descarta** (rasterizarlo costaba lo que su caja: el contorno de un polígono de 20 ha triangula su interior en triángulos de
+    cajas enormes, 3,4 s); lo que quedaría fuera de los polígonos de uno de ellos (una muesca de un polígono cóncavo) toma el dato más
+    próximo. Los triángulos que unen un polígono con otro dato o con otro polígono, y los de fuera, se rasterizan como siempre."""
     shape = mask.shape
     nothing = np.full(shape, np.nan)
     rows, cols = np.nonzero(mask)
@@ -594,7 +659,13 @@ def _tin_units(job: BodyJob, mask: np.ndarray, data: np.ndarray, settings: _Sett
     corner = xy[faces]
     sides = corner - np.roll(corner, 1, axis=1)
     longest2 = (sides ** 2).sum(axis=2).max(axis=1)  # celdas²: cada vértice es un entero y medio, exacto
-    faces = faces[longest2 * (cell * cell) <= 4.0 * settings.max_distance_m * settings.max_distance_m]
+    keep = longest2 * (cell * cell) <= 4.0 * settings.max_distance_m * settings.max_distance_m
+    if painted is not None and painted.any():
+        centre = corner.mean(axis=1)
+        centre_row = np.clip(np.floor(-centre[:, 1]).astype(np.int64), 0, shape[0] - 1)
+        centre_col = np.clip(np.floor(centre[:, 0]).astype(np.int64), 0, shape[1] - 1)
+        keep &= ~(painted[rows, cols][faces].all(axis=1) & painted[centre_row, centre_col])
+    faces = faces[keep]
     if not len(faces):
         return nothing
     vertices = np.column_stack([xy, data[rows, cols]])
@@ -619,7 +690,7 @@ def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, Body
     height, width = rows.stop - rows.start, cols.stop - cols.start
     cell, area = grid.dx, grid.cell_area
     footprint = job.footprint
-    sums, counts, ignored = yield from _carry_units(job)
+    sums, counts, ignored, painted = yield from _carry_units(job)
     real = counts > 0
     if not real.any():
         raise no_data_error(request)
@@ -631,18 +702,23 @@ def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, Body
     mask = counts > 0
     data = np.where(mask, sums / np.maximum(counts, 1), 0.0)
     del sums, counts
+    interior = interior_cells(mask, painted)  # el interior de los polígonos: su espesor directo, fuera del TIN (T25)
+    sources = mask & ~interior
     yield
     support = job.support
     body = footprint & np.isfinite(support)
-    nearest = yield from _nearest_units(mask, data, cell)
+    nearest = yield from _nearest_units(sources, data, cell)
     d2 = nearest.cells2.astype(np.float64) * (cell * cell)
+    d2[interior] = 0.0  # son celdas con dato: a 0 m de él, aunque ya no sean fuente del más próximo
     far = body & (d2 > settings.max_distance_m * settings.max_distance_m)
     if not np.any(body & ~far):
         raise all_far_error(request, settings.max_distance_m)
-    tin_values = yield from _tin_units(job, mask, data, settings, cell)
+    tin_values = yield from _tin_units(job, sources, data, settings, cell, painted)
+    del painted
     covered = np.isfinite(tin_values)
     spread = np.where(covered, tin_values, nearest.value)
     np.clip(spread, float(data[mask].min()), float(data[mask].max()), out=spread)  # el redondeo no sale del intervalo
+    spread[interior] = data[interior]
     thickness = np.where(body, spread, np.nan)
     del spread, tin_values
     yield
@@ -668,8 +744,12 @@ def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, Body
         far_x = grid.west + (cols.start + far_col + 0.5) * grid.dx
         far_y = grid.north - (rows.start + far_row + 0.5) * grid.dy
     body_cells = int(np.count_nonzero(body))
-    tin_cells = int(np.count_nonzero(body & covered))
+    direct_cells = int(np.count_nonzero(body & interior))
+    tin_cells = int(np.count_nonzero(body & covered & ~interior))
     far_m2, far_m3 = far_cells * area, math.fsum(far_parts) * area
+    unsupported = int(np.count_nonzero(footprint & ~body))
+    tin_points = int(np.count_nonzero(sources))
+    footprint_m2 = int(np.count_nonzero(footprint)) * area
     notices: list[Notice] = []
     if ignored:
         notices.append(Notice(_OUTSIDE, {"entity": request.name, "ignored": ignored}))
@@ -677,6 +757,14 @@ def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, Body
         assert far_x is not None and far_y is not None
         notices.append(Notice(_FAR, {"entity": request.name, "area": round(far_m2, 2), "volume": round(far_m3, 2),
                                      "distance": settings.max_distance_m, "x": round(far_x, 2), "y": round(far_y, 2)}))
+    if unsupported:
+        notices.append(Notice(_UNSUPPORTED, {"entity": request.name, "area": unsupported * area,
+                                             "surface": request.surface}))
+    if tin_points > MANY_DATA:
+        notices.append(Notice(_MANY_DATA, {"entity": request.name, "data": tin_points, "limit": MANY_DATA}))
+    if job.data.sections and footprint_m2 > SECTIONS_LARGE_M2:
+        notices.append(Notice(_SECTIONS_LARGE, {"entity": request.name, "area": footprint_m2 / 10_000.0,
+                                                "limit": SECTIONS_LARGE_M2 / 10_000.0}))
     return BodyOutcome(
         name=request.name, code=job.code, sense=settings.sense, window=job.window, footprint=footprint.copy(), body=body,
         thickness=thickness, base=base, top=top, surface=surface, far=far,
@@ -685,8 +773,9 @@ def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, Body
         thickness_max_y=grid.north - (rows.start + top_row + 0.5) * grid.dy,
         far_m2=far_m2, far_m3=far_m3, far_x=far_x, far_y=far_y, farthest_m=math.sqrt(float(d2[body].max())),
         ignored=ignored, data_cells=int(np.count_nonzero(real)), zero_cells=zero_cells, tin_cells=tin_cells,
-        nearest_cells=body_cells - tin_cells, unsupported_cells=int(np.count_nonzero(footprint & ~body)), cell_area_m2=area,
-        max_distance_m=settings.max_distance_m, zero_at_edge=settings.zero_at_edge, notices=tuple(notices))
+        nearest_cells=body_cells - tin_cells - direct_cells, unsupported_cells=unsupported, cell_area_m2=area,
+        max_distance_m=settings.max_distance_m, zero_at_edge=settings.zero_at_edge, notices=tuple(notices),
+        direct_cells=direct_cells, tin_points=tin_points)
 
 
 def body_steps(job: BodyJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
