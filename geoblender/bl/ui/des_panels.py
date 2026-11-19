@@ -2119,6 +2119,17 @@ class ItemLines:
     title: str
     lines: tuple[CardLine, ...]
     figures: tuple[CardLine, ...]
+    exports: tuple[CardLine, ...] = ()
+
+
+ROW_EXPORT = "export"
+"""Una fila de ``ItemLines.exports`` que es **un botón de exportar** una rejilla a GeoTIFF (spec 016, T34; RF-016-24): su ``uid`` es el
+del dato de la rejilla (``source`` de la orden) y su texto, lo que dice el botón. No se dibuja como texto."""
+ROW_EXPORT_THICKNESS = "export_thickness"
+"""La fila que pide **el botón del espesor** de la entidad activa (``part`` ``thickness``, sin ``source``: la toma la orden de la entidad)."""
+_EXPORT_ROWS = (ROW_EXPORT, ROW_EXPORT_THICKNESS)
+EXPORT_PART_THICKNESS = "thickness"
+"""El valor de ``part`` de la orden de exportar para el espesor (``design.export.PART_THICKNESS``; ``bl.ui`` no importa el dominio al habilitar)."""
 
 
 def wanted(context: Any = None) -> str:
@@ -3157,6 +3168,48 @@ def _type_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any
     return []
 
 
+_DETECTION_GRIDS = {
+    design_provenance.STOCKPILE_BASE_ROLE: design_provenance.STOCKPILE_BASE_GRID,
+    design_provenance.STOCKPILE_THICKNESS_ROLE: design_provenance.STOCKPILE_THICKNESS_GRID,
+    design_provenance.STOCKPILE_GROUND_ROLE: design_provenance.STOCKPILE_GROUND_GRID}
+"""Las rejillas que deja una detección y se exportan a GeoTIFF (spec 016, T34): su papel y su familia."""
+_OUTPUTS_BY_ROLE = (
+    "SELECT d.uid, d.name, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "WHERE io.operation_uid = ? AND io.direction = 'out' AND io.item_kind = 'dataset' AND d.status IN ({live}) "
+    "AND io.role IN ({roles}) ORDER BY io.fid")
+
+
+def _entity_exports(conn: sqlite3.Connection, entry: Any) -> list[CardLine]:
+    """Los botones de exportar a GeoTIFF de la entidad ``entry`` además del de su superficie (spec 016, T34; RF-016-24), leídos del proyecto:
+    de una **detección**, uno por rejilla que dejó —la base y el espesor de los acopios de cada material y el terreno sin acopios—, con
+    el uid de su dato; de una **retirada**, un **contrafuerte** o un **cuerpo apoyado**, el de su espesor (la orden toma la entidad del
+    objeto activo). Una plataforma o una entidad sin calcular, ninguno."""
+    from ...core.datasets import LIVE_STATUSES
+    from ...design import entities
+
+    kind = entities.EntityKind(entry.record.kind)
+    if kind is entities.EntityKind.STOCKPILE:
+        if entry.operation_uid is None:
+            return []
+        live = [str(status) for status in LIVE_STATUSES]
+        sql = _OUTPUTS_BY_ROLE.format(live=", ".join("?" for _ in live), roles=", ".join("?" for _ in _DETECTION_GRIDS))
+        found = []
+        for uid, name, role in conn.execute(sql, (entry.operation_uid, *live, *_DETECTION_GRIDS)).fetchall():
+            stem = design_provenance.dataset_name(_DETECTION_GRIDS[str(role)], entry.record.name) + "_"  # el material, tras la detección
+            material = str(name).removeprefix(stem)
+            if role == design_provenance.STOCKPILE_BASE_ROLE:
+                text = tr("Export the base of the stockpiles of «{material}» to GeoTIFF…", material=material)
+            elif role == design_provenance.STOCKPILE_THICKNESS_ROLE:
+                text = tr("Export the thickness of the stockpiles of «{material}» to GeoTIFF…", material=material)
+            else:
+                text = tr("Export the ground without stockpiles to GeoTIFF…")
+            found.append(CardLine(ROW_EXPORT, text, uid=str(uid)))
+        return found
+    if entry.operation_uid is not None and kind in (entities.EntityKind.REMOVAL, entities.EntityKind.BUTTRESS, entities.EntityKind.BODY):
+        return [CardLine(ROW_EXPORT_THICKNESS, tr("Export the thickness to GeoTIFF…"))]
+    return []
+
+
 def entity_card(project: Any, version_uid: str, code: str, *, conn: sqlite3.Connection) -> ItemLines | None:
     """Lo que dice el proyecto de la entidad ``code`` (código o nombre) de la versión ``version_uid`` (véase el módulo),
     leído con ``conn`` (una instantánea de lectura de quien llama) y sin escribir nada: su título («Plataforma Carga
@@ -3200,7 +3253,7 @@ def entity_card(project: Any, version_uid: str, code: str, *, conn: sqlite3.Conn
                   CardLine(ROW_NONE, tr("It belongs to the project: what rests on its stockpiles is read in each version"))]
     figures = [CardLine(ROW_HEADING, tr("Figures")), *_entity_figures(conn, entry)]
     return ItemLines(f"{constraint_views.entity_text(record.code, record.name)} ({record.code})", tuple(lines),
-                     tuple(figures))
+                     tuple(figures), tuple(_entity_exports(conn, entry)))
 
 
 def entity_of(project: Any, conn: sqlite3.Connection, uid: str) -> tuple[str, str]:
@@ -3292,7 +3345,7 @@ def _put_item(shown: Any, uid: str, project_uid: str, found: ItemLines | None) -
     shown.item_found = found is not None
     shown.item_title = "" if found is None else found.title
     shown.item.clear()
-    for line in () if found is None else (*found.lines, *found.figures):
+    for line in () if found is None else (*found.lines, *found.figures, *found.exports):
         row = shown.item.add()
         row.kind, row.name, row.alert, row.uid = line.kind, line.text, line.alert, line.uid
 
@@ -3366,6 +3419,8 @@ def _draw_item(layout: Any, shown: Any, uid: str, width: float) -> bool:
     elif uid:
         _draw_text(layout, shown.item_title, width)
         for row in shown.item:
+            if row.kind in _EXPORT_ROWS:
+                continue  # un botón de exportar (T34): lo dibuja la barra de la entidad
             if row.kind == ROW_HEADING:
                 layout.separator()
             sub = layout.column(align=True)
@@ -3387,11 +3442,19 @@ def draw_entity(layout: Any, context: Any) -> None:
     """La barra N «Entidad» (véase el módulo), de lo ya leído: la entidad del objeto ``DESIGN_ENTITY`` activo."""
     shown = view()
     if shown is not None and _draw_item(layout, shown, entity_wanted(context), labels.sidebar_width(context)):
-        if _is_detection(active_object(context)):
-            return  # la detección no deja una superficie que exportar: su base, su espesor y el terreno sin acopios son de la T34
         layout.separator()
+        buttons = [(row.kind, str(row.name), str(row.uid)) for row in shown.item if row.kind in _EXPORT_ROWS]
+        if _is_detection(active_object(context)):  # la detección no deja una superficie: un botón por rejilla que dejó (T34, RF-016-24)
+            for _kind, text, uid in buttons:
+                button = layout.row().operator(EXPORT_GRID, text=text, icon="EXPORT", translate=False)
+                button.source, button.part = uid, ""
+            return
         export = layout.row()  # exportar no escribe en el proyecto: vale también en solo lectura (T30, RF-015-27)
         export.operator(EXPORT_GRID, text=_label(EXPORT_GRID), icon="EXPORT", translate=False)
+        for kind, text, _uid in buttons:
+            if kind == ROW_EXPORT_THICKNESS:  # el espesor de una retirada, un contrafuerte o un cuerpo apoyado (T34)
+                button = layout.row().operator(EXPORT_GRID, text=text, icon="EXPORT", translate=False)
+                button.part = EXPORT_PART_THICKNESS
 
 
 def draw_selected(layout: Any, context: Any) -> None:

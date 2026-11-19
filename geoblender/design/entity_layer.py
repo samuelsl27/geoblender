@@ -11,6 +11,13 @@ por estado de ``core.constraints.styles`` (T22). Es **una salida, no editable a 
 entidades cambian desde su capa de origen o sus parámetros, y esta capa se regenera tras cada orden de
 entidades; si se edita en QGIS, se bloquea.
 
+**De la 016** (spec 016, T34; RF-016-09, RF-015-27; plan 016 §5.1): la capa enseña también los tipos nuevos —la retirada, el contrafuerte y
+el cuerpo apoyado, con su huella— y **una fila por acopio** de cada detección (que no tiene huella de entidad: un acopio es una fila de su
+tabla ``des_stk_``): su código es la **referencia** ``STK-001#m07`` (:func:`~.provenance.support_ref`) y su estado, el de la detección. Las
+cifras principales son ocho (:data:`FIGURE_COLUMNS`): las cinco de la plataforma y el volumen, el espesor o altura máxima y el pie cortado, que
+llena cada tipo con las suyas. La capa de una versión que escribió la 015 se **completa** con las columnas nuevas en la primera escritura
+(:func:`write_entity_layer`) y se lee sin ellas (:func:`read_entity_layer`).
+
 Este módulo es el formato de la tabla, como ``core.constraints.declared`` lo es de las declaradas; el
 contenido de cada fila (el estado, las dependencias, la cadena) lo arma ``design.entity_store``, que es quien
 conoce el registro de las entidades.
@@ -44,8 +51,7 @@ from ..core.gpkg.base import ColumnDef, create_feature_table, set_column_titles
 from ..core.gpkg.wkb import decode_geometry, encode_geometry
 from ..core.versions.model import version_locator
 from .entities import EntityKind, EntityState
-from .params import entity_segment
-from .provenance import ENTITY_MAP_TABLE, dataset_name
+from .provenance import ENTITY_MAP_TABLE, dataset_name, split_support_ref
 
 __all__ = [
     "COLUMN_NAMES",
@@ -79,20 +85,28 @@ COLUMNS: tuple[ColumnDef, ...] = (
     ColumnDef("area_m2", "DOUBLE", False), ColumnDef("cut_m3", "DOUBLE", False),
     ColumnDef("fill_m3", "DOUBLE", False), ColumnDef("edge_cut_m3", "DOUBLE", False),
     ColumnDef("edge_fill_m3", "DOUBLE", False),
+    ColumnDef("volume_m3", "DOUBLE", False), ColumnDef("thickness_max_m", "DOUBLE", False),
+    ColumnDef("cutoff_m3", "DOUBLE", False),
 )
 COLUMN_NAMES: tuple[str, ...] = tuple(column.name for column in COLUMNS)
 """Las columnas de la tabla además de ``fid`` y ``geom``, en su orden. Incluyen las del contrato del estilo
 (``core.constraints.styles.ENTITY_FIELDS``: ``kind``, ``name``, ``state``, ``supports`` y ``chain``)."""
 if not set(styles.ENTITY_FIELDS) <= set(COLUMN_NAMES):  # pragma: no cover - un error del programa
     raise RuntimeError("la tabla de la capa de entidades no tiene los campos que el estilo espera")
-FIGURE_COLUMNS: tuple[str, ...] = ("area_m2", "cut_m3", "fill_m3", "edge_cut_m3", "edge_fill_m3")
+FIGURE_COLUMNS: tuple[str, ...] = ("area_m2", "cut_m3", "fill_m3", "edge_cut_m3", "edge_fill_m3",
+                                   "volume_m3", "thickness_max_m", "cutoff_m3")
 """Las columnas de las cifras principales de la entidad (todas pueden faltar: una entidad sin ellas las deja
-sin valor)."""
+sin valor). Las cinco primeras son de la plataforma (spec 015); de la 016 (T34), el volumen de la entidad
+(``volume_m3``: el del acopio sobre su base, lo retirado de él, el del contrafuerte o el del cuerpo), su espesor o
+altura máxima (``thickness_max_m``: el espesor máximo de un acopio o de un cuerpo, la mayor pared de una retirada
+o la mayor altura de un contrafuerte) y el volumen del pie que el borde cortó de un contrafuerte (``cutoff_m3``)."""
 COLUMN_TITLES: Mapping[str, str] = MappingProxyType({
     "code": "Código", "name": "Nombre", "kind": "Tipo", "state": "Estado", "start": "Parte de",
     "supports": "Se apoya en", "chain": "Cadena", "area_m2": "Área de la huella (m²)",
     "cut_m3": "Corte de la huella (m³)", "fill_m3": "Relleno de la huella (m³)",
     "edge_cut_m3": "Corte del borde (m³)", "edge_fill_m3": "Relleno del borde (m³)",
+    "volume_m3": "Volumen de la entidad (m³)", "thickness_max_m": "Espesor o altura máxima (m)",
+    "cutoff_m3": "Pie cortado (m³)",
 })
 """Los títulos en español de las columnas, que QGIS muestra como alias."""
 
@@ -173,11 +187,14 @@ class EntityLayerRow:
     fill_m3: float | None = None
     edge_cut_m3: float | None = None
     edge_fill_m3: float | None = None
+    volume_m3: float | None = None
+    thickness_max_m: float | None = None
+    cutoff_m3: float | None = None
     layer: str = ""
     fid: int = 0
 
     def __post_init__(self) -> None:
-        entity_segment(self.code)  # ValueError si no es el código de una entidad
+        split_support_ref(self.code)  # ValueError si no es el código de una entidad ni la referencia de un acopio
         object.__setattr__(self, "name", _text(self.name, "el nombre de una entidad"))
         object.__setattr__(self, "kind", EntityKind(self.kind))
         state = EntityState(self.state)
@@ -229,6 +246,21 @@ def create_entity_layer_table(conn: sqlite3.Connection, table: str, srs_id: int)
     return True
 
 
+def _complete_columns(conn: sqlite3.Connection, table: str) -> bool:
+    """Añade a la capa ``table`` las columnas de :data:`COLUMNS` que no tiene (spec 016, T34): la capa de una versión
+    que escribió la 015 no lleva las cifras de los tipos nuevos (``volume_m3``, ``thickness_max_m``, ``cutoff_m3``) y,
+    como se reescribe entera tras cada orden, la primera escritura de la 016 las añade (``ALTER TABLE … ADD COLUMN``,
+    que el GeoPackage admite) y les pone su título. ``True`` si añadió alguna. Todas son opcionales: no cambia lo que
+    ya tenía."""
+    present = {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')}
+    missing = [column for column in COLUMNS if column.name not in present]
+    for column in missing:
+        conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {column.sql()}')
+    if missing:
+        set_column_titles(conn, table, COLUMN_TITLES)
+    return bool(missing)
+
+
 def _srs_of(conn: sqlite3.Connection, table: str) -> int:
     found = conn.execute("SELECT srs_id FROM gpkg_geometry_columns WHERE table_name = ?",
                          (table,)).fetchone()
@@ -273,14 +305,15 @@ def write_entity_layer(conn: sqlite3.Connection, table: str, rows: Iterable[Enti
     else:
         srs = srs_id
     create_entity_layer_table(conn, table, srs)
+    _complete_columns(conn, table)
     conn.execute(f'DELETE FROM "{table}"')
     conn.execute("DELETE FROM sqlite_sequence WHERE name = ?", (table,))
     fids: list[int] = []
     for item in sorted(found, key=lambda row: row.code):
         blob = encode_geometry(GEOMETRY_TYPE, [list(part) for part in item.parts], srs, False)
         cursor = conn.execute(_insert(table), (
-            blob, item.code, item.name, str(item.kind), str(item.state), item.start, item.supports,
-            item.chain, item.area_m2, item.cut_m3, item.fill_m3, item.edge_cut_m3, item.edge_fill_m3))
+            blob, item.code, item.name, str(item.kind), str(item.state), item.start, item.supports, item.chain,
+            *(getattr(item, column) for column in FIGURE_COLUMNS)))
         fids.append(int(cursor.lastrowid or 0))
     return tuple(fids)
 
@@ -304,7 +337,9 @@ def read_entity_layer(conn: sqlite3.Connection, table: str) -> tuple[EntityLayer
     _check_table(table)
     if not _exists(conn, table):
         return ()
-    columns = ", ".join(COLUMN_NAMES)
+    present = {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')}
+    figure_columns = [column for column in FIGURE_COLUMNS if column in present]  # una capa de la 015 no tiene las nuevas
+    columns = ", ".join((*COLUMN_NAMES[:7], *figure_columns))
     found = []
     for row in conn.execute(f'SELECT fid, geom, {columns} FROM "{table}" ORDER BY fid'):
         fid, blob, code, name, kind, state, start, supports, chain, *figures = row
@@ -313,5 +348,5 @@ def read_entity_layer(conn: sqlite3.Connection, table: str) -> tuple[EntityLayer
         found.append(EntityLayerRow(
             code=code, name=name, kind=kind, state=state, start=start, supports=supports, chain=chain,
             parts=_polygons(blob), layer=table, fid=int(fid),
-            **dict(zip(FIGURE_COLUMNS, figures, strict=True))))
+            **dict(zip(figure_columns, figures, strict=True))))
     return tuple(found)

@@ -7993,6 +7993,26 @@ es = "Elija la rejilla del diseño: selecciónela en la vista"
 ["Design grid exported to «{file}»"]
 es = "Rejilla del diseño exportada a «{file}»"
 
+# Exportar a GeoTIFF la base, el espesor y el terreno sin acopios de una detección y el espesor de una entidad apoyada (spec 016, T34;
+# RF-016-24): la orden de exportar con su parte y los botones de la barra N «Entidad».
+["Part of the entity"]
+es = "Parte de la entidad"
+
+["What to export of an entity: empty, its surface; «thickness», its thickness (the one of a retirement or a buttress is the difference between its two surfaces)"]
+es = "Qué exportar de una entidad: vacío, su superficie; «thickness», su espesor (el de una retirada o un contrafuerte es la diferencia de sus dos superficies)"
+
+["Export the thickness to GeoTIFF…"]
+es = "Exportar el espesor a GeoTIFF…"
+
+["Export the base of the stockpiles of «{material}» to GeoTIFF…"]
+es = "Exportar la base de los acopios de «{material}» a GeoTIFF…"
+
+["Export the thickness of the stockpiles of «{material}» to GeoTIFF…"]
+es = "Exportar el espesor de los acopios de «{material}» a GeoTIFF…"
+
+["Export the ground without stockpiles to GeoTIFF…"]
+es = "Exportar el terreno sin acopios a GeoTIFF…"
+
 # Procedencia de la cantera con dos superficies (spec 014, T05; RF-014-16, RF-014-29; plan 014
 # §5.2.3): el nombre de cada operación, de cada ajuste y de sus elecciones, y de cada cifra de
 # design/provenance.py («Fill only», «No», «None», «Cells of a surface», «Fixed elevation», «Grid of

@@ -328,6 +328,7 @@ LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "LAYER_FIELDS",
+    "LAYER_FIGURES",
     "Brought",
     "BroughtEntity",
     "ChainFailure",
@@ -3165,6 +3166,21 @@ _LAYER_FIGURES: tuple[tuple[str, str], ...] = (
     ("edge_cut_m3", "des.edge_cut_m3"), ("edge_fill_m3", "des.edge_fill_m3"))
 """Las cifras principales de la capa: la columna de ``des_enl_<vNN>`` y la cifra de la operación de la entidad de
 la que sale (``gb_figure``)."""
+LAYER_FIGURES: Mapping[str, tuple[tuple[str, str], ...]] = MappingProxyType({
+    EntityKind.PLATFORM.value: _LAYER_FIGURES,
+    EntityKind.STOCKPILE.value: (("area_m2", "des.stk_area_m2"), ("volume_m3", "des.stk_volume_m3"),
+                                 ("thickness_max_m", "des.stk_thickness_max_m")),
+    EntityKind.REMOVAL.value: (("volume_m3", "des.rmv_removed_m3"), ("thickness_max_m", "des.rmv_wall_max_m")),
+    EntityKind.BUTTRESS.value: (("area_m2", "des.btr_area_m2"), ("volume_m3", "des.btr_volume_m3"),
+                                ("thickness_max_m", "des.btr_height_max_m"), ("cutoff_m3", "des.btr_cutoff_m3")),
+    EntityKind.BODY.value: (("volume_m3", "des.bdy_volume_m3"), ("thickness_max_m", "des.bdy_thickness_max_m")),
+})
+"""Las cifras principales de la capa **por tipo de entidad** (spec 016, T34): para cada tipo, la columna de
+``des_enl_<vNN>`` y la cifra que la llena. La plataforma, las cinco de la 015; el acopio, su área, su volumen sobre su
+base y su espesor máximo (las de su fila de ``des_stk_``, que usan las claves de ``des.stk_*``); la retirada, lo retirado
+y la mayor pared; el contrafuerte, su área, su volumen, su mayor altura y el pie que el borde cortó; el cuerpo, su volumen
+y su espesor máximo. Las demás columnas del tipo quedan sin valor. Un tipo registrado que no está aquí (el de una
+prueba) no lleva cifras."""
 _FIGURES_OF = ("SELECT operation_uid, key, value FROM gb_figure WHERE key IN ({keys}) "
                "AND operation_uid IN ({marks})")
 _CHAIN_ARROW = " → "
@@ -3237,9 +3253,9 @@ def _chain_text(listed: EntityRegistry, record: EntityRecord) -> str:
 
 
 def _layer_figures(conn: sqlite3.Connection, operations: Iterable[str]) -> dict[str, dict[str, float]]:
-    """Las cifras principales (:data:`_LAYER_FIGURES`) de cada operación de ``operations``, por su uid (una consulta
+    """Las cifras principales (:data:`LAYER_FIGURES`, las de todos los tipos) de cada operación de ``operations``, por su uid (una consulta
     por cada 400 operaciones); las que no tiene, no salen."""
-    keys = [key for _column, key in _LAYER_FIGURES]
+    keys = sorted({key for pairs in LAYER_FIGURES.values() for _column, key in pairs})
     found: dict[str, dict[str, float]] = {}
     uids = sorted(set(operations))
     for first in range(0, len(uids), _CHUNK):
@@ -3251,6 +3267,73 @@ def _layer_figures(conn: sqlite3.Connection, operations: Iterable[str]) -> dict[
     return found
 
 
+_ON_STOCKPILE = "sobre el acopio «{stockpile}»"
+"""Lo que dice la capa de la entidad que se apoya **en un acopio** de una detección (spec 016, T34; RF-016-14): en cuál de ellos."""
+
+
+def _support_text(item: entities.Dependent) -> str:
+    """Una fila de «en qué se apoya» de la capa: la de la entidad (:meth:`~.entities.Dependent.text`: el nombre, el tipo y los m³) y,
+    si se apoya en **un acopio** de una detección, en cuál (``· sobre el acopio «Acopio 4»``)."""
+    text = item.text(_LAYER_LANGUAGE)
+    return f"{text} · {_ON_STOCKPILE.format(stockpile=item.stockpile)}" if item.stockpile else text
+
+
+def _layer_entries(listed: EntityRegistry) -> list[entities.EntityEntry]:
+    """Las entidades **calculadas** del registro que salen en la capa (:data:`~.entity_layer.LAYER_STATES`): las de un tipo
+    con tabla de huella y, de la 016 (T34), las **detecciones de acopios**, de las que sale una fila por acopio."""
+    return [entry for entry in listed
+            if entry.operation_uid is not None and EntityState(entry.record.state) in LAYER_STATES
+            and (_has_footprint(entry) or entry.record.kind == EntityKind.STOCKPILE)]
+
+
+_STOCKPILE_ROWS = 'SELECT key, name, area_m2, volume_m3, thickness_max_m, footprint FROM "{table}" ORDER BY fid'
+
+
+def _stockpile_table(conn: sqlite3.Connection, entry: entities.EntityEntry, version: Version) -> tuple[str, str]:
+    """La tabla de acopios (``des_stk_``) de la detección ``entry`` y el nombre con que se calculó (el de su dato, sin el
+    prefijo), si se puede usar (como :func:`_usable_footprint`: lo editado fuera, lo que falta o lo dañado se rechazan con
+    ``des.entity_footprint_blocked`` o ``_unusable``). Solo lee."""
+    record = entry.record
+    rows = conn.execute(_ENTITY_DATA, (entry.operation_uid, DATASET, provenance.STOCKPILES_ROLE)).fetchall()
+    if len(rows) != 1:
+        raise ValueError(f"la operación {entry.operation_uid} de la detección {record.code} escribió "
+                         f"{len(rows)} tablas de acopios, no una")
+    ((table, dataset, status),) = rows
+    where = {"obj": f"Detección de acopios «{record.name}»", "field": "huella", "value": str(table),
+             "entity": record.name, "table": str(table), "version": version.code}
+    if str(status) == DatasetStatus.BLOCKED.value:
+        raise DesignError("des.entity_footprint_blocked", **where)
+    if str(status) in _UNUSABLE_STATUSES:
+        raise DesignError("des.entity_footprint_unusable", **where)
+    prefix = provenance.dataset_name(provenance.STOCKPILES_TABLE, "x")[:-1]
+    return str(table), str(dataset).removeprefix(prefix)
+
+
+def _stockpile_sources(conn: sqlite3.Connection, entry: entities.EntityEntry, version: Version) -> list[LayerSource]:
+    """Las filas de la capa de la detección de acopios ``entry`` (spec 016, T34; RF-016-09, RF-015-27; plan 016 §5.1 «la
+    capa con una fila por acopio»): **una por acopio** de su tabla ``des_stk_``, con su referencia (``STK-001#m07``: el código
+    de la detección y la clave de la marca) como código, el nombre del acopio, **el estado de la detección** (es una operación),
+    sin partida, sin cadena (un tipo sin cadena) ni apoyo (un acopio no se apoya en nada: lo apoyado **en él** es de lo
+    demás), su huella y sus cifras (área, volumen sobre su base y espesor máximo: las de su fila, con las claves de
+    ``des.stk_*``). Solo lee."""
+    record = entry.record
+    table, calc_name = _stockpile_table(conn, entry, version)
+    found: list[LayerSource] = []
+    try:
+        stored = conn.execute(_STOCKPILE_ROWS.format(table=table)).fetchall()
+        for key, name, area, volume, thickness, footprint in stored:
+            runs = tuple((int(row), int(first), int(last)) for row, first, last in json.loads(footprint))
+            figures = {"des.stk_area_m2": area, "des.stk_volume_m3": volume, "des.stk_thickness_max_m": thickness}
+            found.append(LayerSource(
+                code=provenance.support_ref(record.code, str(key)), name=str(name), calc_name=calc_name,
+                kind=EntityKind.STOCKPILE, state=EntityState(record.state), start=None, runs=runs, supports="", chain="",
+                figures={figure: float(value) for figure, value in figures.items() if value is not None}))
+    except (ValueError, TypeError, KeyError, sqlite3.Error) as error:  # una tabla que ya no es la de acopios
+        raise DesignError("des.entity_footprint_unusable", obj=f"Detección de acopios «{record.name}»", field="huella",
+                          value=table, entity=record.name, table=table, version=version.code) from error
+    return found
+
+
 def layer_sources(project: StoreProject, version: Version, *, conn: sqlite3.Connection | None = None
                   ) -> tuple[LayerSource, ...]:
     """Las entidades **calculadas** de la versión ``version`` como las ve la capa de entidades (RF-015-27; solo lee):
@@ -3259,27 +3342,35 @@ def layer_sources(project: StoreProject, version: Version, *, conn: sqlite3.Conn
     calcular», que no tienen geometría), cada una con su estado, de qué parte, **en qué se apoya** (lo que
     ``entities.dependencies_of`` dice que apoya con el papel ``supported_on``, con sus m³), su cadena
     (:func:`_chain_text`), sus cifras principales y su huella, leída de su tabla ``des_epr_`` vigente
-    (:func:`read_entity_footprint`; la de una descartada, de su dato descartado, que sigue en el proyecto). Por orden
-    de código. ``conn`` es una conexión de lectura de quien llama (una instantánea); sin ella, una propia."""
+    (:func:`read_entity_footprint`; la de una descartada, de su dato descartado, que sigue en el proyecto). De la 016
+    (T34), de cada **detección de acopios** una fila **por acopio** (:func:`_stockpile_sources`). Por orden de código.
+    ``conn`` es una conexión de lectura de quien llama (una instantánea); sin ella, una propia."""
     if conn is None:
         with _consistent(project) as reading:
             return layer_sources(project, version, conn=reading)
     listed = entities.registry(project, version.uid, conn=conn)
-    shown = [entry for entry in listed
-             if entry.operation_uid is not None and EntityState(entry.record.state) in LAYER_STATES and _has_footprint(entry)]
+    shown = _layer_entries(listed)
     figures = _layer_figures(conn, (str(entry.operation_uid) for entry in shown))
     found: list[LayerSource] = []
     for entry in shown:
         record = entry.record
+        if record.kind == EntityKind.STOCKPILE:
+            found += _stockpile_sources(conn, entry, version)
+            continue
         data = _usable_footprint(conn, entry, version)
         rests = entities.dependencies_of(project, version.uid, record.code, conn=conn, listed=listed)
         found.append(LayerSource(
             code=record.code, name=record.name, calc_name=data.name, kind=EntityKind(record.kind),
             state=EntityState(record.state), start=_start_text(listed, record), runs=data.runs,
-            supports="; ".join(item.text(_LAYER_LANGUAGE) for item in rests
-                               if provenance.SUPPORTED_ON_ROLE in item.roles),
+            supports="; ".join(_support_text(item) for item in rests if provenance.SUPPORTED_ON_ROLE in item.roles),
             chain=_chain_text(listed, record), figures=figures.get(str(entry.operation_uid), {})))
     return tuple(found)
+
+
+def _row_order(code: str) -> tuple[tuple[str, int], int, str]:
+    """La clave de orden de una fila de la capa: la de su entidad (``entities.code_order``) y, de un acopio, su clave."""
+    entity, key = provenance.split_support_ref(code)
+    return entities.code_order(entity), 0 if key is None else 1, key or ""
 
 
 def entity_layer_rows_steps(sources: Sequence[LayerSource], grid: Grid
@@ -3290,7 +3381,7 @@ def entity_layer_rows_steps(sources: Sequence[LayerSource], grid: Grid
     (``entities.declared_zone_of_runs`` con resguardo 0: las celdas, con sus huecos, con coordenadas exactas desde
     ``grid.west`` y ``grid.north``) y lo demás de su fuente, **por código** y una por paso. Lo mismo da la misma
     tabla (el mismo hash)."""
-    ordered = sorted(sources, key=lambda item: entities.code_order(item.code))
+    ordered = sorted(sources, key=lambda item: _row_order(item.code))
     rows: list[EntityLayerRow] = []
     for index, source in enumerate(ordered):
         yield Progress(_LAYER_PHASE, index, len(ordered), f"Capa de entidades: «{source.name}»…")
@@ -3298,7 +3389,7 @@ def entity_layer_rows_steps(sources: Sequence[LayerSource], grid: Grid
         rows.append(EntityLayerRow(
             code=source.code, name=source.name, kind=source.kind, state=source.state, start=source.start,
             supports=source.supports, chain=source.chain, parts=zone.parts,
-            **{column: source.figures.get(key) for column, key in _LAYER_FIGURES}))
+            **{column: source.figures.get(key) for column, key in LAYER_FIGURES.get(source.kind.value, ())}))
     return tuple(rows)
 
 
@@ -3341,8 +3432,11 @@ def prepare_entity_layer(project: StoreProject, version: Version | str | None, *
     with _consistent(project) as conn:
         sources = layer_sources(project, found, conn=conn)
         before = _live_layer(conn, found) if supersedes is None else supersedes
-    settings = provenance.entity_layer_settings([(source.code, source.calc_name) for source in sources])
-    inputs = provenance.entity_layer_inputs(source.calc_name for source in sources if source.live)
+    named = list(dict.fromkeys((provenance.split_support_ref(source.code)[0], source.calc_name) for source in sources))
+    settings = provenance.entity_layer_settings(named)
+    inputs = provenance.entity_layer_inputs(
+        (source.calc_name for source in sources if source.live and source.kind != EntityKind.STOCKPILE),
+        list(dict.fromkeys(source.calc_name for source in sources if source.live and source.kind == EntityKind.STOCKPILE)))
     begun = _start(project, provenance.ENTITY_LAYER, "", found, None, settings, inputs, (), before)
     return PreparedEntityLayer(found, sources, project_frame(project).grid, begun)
 
@@ -3418,14 +3512,21 @@ def layer_pending(project: StoreProject, conn: sqlite3.Connection, version_uid: 
     dañada) no se marca: no es de la capa decidirlo, y la 008 ofrece resolverla. Si no se puede saber (un registro
     roto, una tabla ilegible), **está marcada**: lo seguro es no darla por buena, y quien intente ponerla al día dirá
     el motivo."""
-    if not provenance.has_platform_operation(conn, version_uid):
+    if not provenance.has_entity_operation(conn, version_uid):
         return False
     try:
         listed = entities.registry(project, version_uid, conn=conn)
-        wanted = {entry.record.code: (entry.record.name, str(EntityState(entry.record.state)))
-                  for entry in listed
-                  if entry.operation_uid is not None and EntityState(entry.record.state) in LAYER_STATES
-                  and _has_footprint(entry)}
+        wanted: dict[str, tuple[str, str]] = {}
+        for entry in _layer_entries(listed):
+            state = str(EntityState(entry.record.state))
+            if entry.record.kind != EntityKind.STOCKPILE:
+                wanted[entry.record.code] = (entry.record.name, state)
+                continue
+            table = conn.execute(_ENTITY_DATA, (entry.operation_uid, DATASET, provenance.STOCKPILES_ROLE)).fetchone()
+            if table is None:
+                raise ValueError(f"la detección {entry.record.code} no tiene su tabla de acopios")
+            for key, name in conn.execute(f'SELECT key, name FROM "{table[0]}" ORDER BY fid').fetchall():
+                wanted[provenance.support_ref(entry.record.code, str(key))] = (str(name), state)
         record = dataset_registry.get(conn, provenance.dataset_name(provenance.ENTITY_MAP_TABLE),
                                       version_uid=version_uid)
         if record is None or not record.live:

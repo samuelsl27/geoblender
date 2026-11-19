@@ -143,7 +143,11 @@ las rejillas de la cantera, la transición, la superficie ajustada y el recinto;
 el recinto, con un código por celda y su leyenda en los metadatos (``design.export.LEGENDS``). Desde
 la 015 (T30; RF-015-27) exporta también **la superficie de una entidad** (``des_psf_``): con el objeto de una
 entidad activo (o su tabla ``des_epr_`` como ``source``) toma su superficie, y el botón está también en la barra
-N «Entidad». **La capa de entidades** (T30; RF-015-27): la regeneran, como operación aparte y tras la entidad,
+N «Entidad». Desde la 016 (T34; RF-016-24) exporta también **la base, el espesor y el terreno sin acopios de una detección**
+(``design.export.SUPPORTED_GRIDS``: por el uid o el nombre de su dato, que la barra N «Entidad» de la detección pone en un botón por
+rejilla; el terreno, **compuesto entero** con la superficie de la que parte la detección) y, con ``part`` ``thickness``, **el espesor** de
+una retirada, un contrafuerte o un cuerpo apoyado (el de los dos primeros, la resta de sus dos superficies). **La capa de entidades**
+(T30; RF-015-27): la regeneran, como operación aparte y tras la entidad,
 las órdenes que encadenan ``design.entity_store.after_entity_change`` (crear, descartar…) y «Recalcular lo
 obsoleto» (:func:`recompute_entity_layer`); no tiene orden propia.
 
@@ -4601,6 +4605,11 @@ class GEOBLENDER_OT_des_export_design_grid(_StepsModal, bpy.types.Operator):
         name="Design grid",
         description="Uid or name of the grid of the design (empty: the active one in the view)",
         options=_FIELD)
+    part: StringProperty(  # type: ignore[valid-type]
+        name="Part of the entity",
+        description="What to export of an entity: empty, its surface; «thickness», its thickness (the one of a retirement "
+                    "or a buttress is the difference between its two surfaces)",
+        options=_FIELD)
     filepath: StringProperty(  # type: ignore[valid-type]
         name="File", subtype="FILE_PATH", options={"SKIP_SAVE"})
     filter_glob: StringProperty(  # type: ignore[valid-type]
@@ -4633,7 +4642,7 @@ class GEOBLENDER_OT_des_export_design_grid(_StepsModal, bpy.types.Operator):
         if not ref:
             raise ValueError(tr("Choose the design grid: select it in the view"))
         return export.stored_grid(SESSION.project, ref,
-                                  version=scene_versions.active_version() or "")
+                                  version=scene_versions.active_version() or "", part=str(getattr(self, "part", "")).strip())
 
     def invoke(self, context: Any, event: Any) -> set[str]:
         """El diálogo de fichero, con el destino que propone (``exports/<dato>_<V01>.tif`` del
@@ -4653,7 +4662,7 @@ class GEOBLENDER_OT_des_export_design_grid(_StepsModal, bpy.types.Operator):
             return {"CANCELLED"}
         self.source = stored.record.uid
         if not self.filepath:
-            stem = f"{stored.record.name}_{stored.version_code}"
+            stem = "_".join(item for item in (stored.record.name, "thickness" if stored.part else "", stored.version_code) if item)
             self.filepath = str(Path(SESSION.project.root, gis_provenance.EXPORTS_FOLDER,
                                      f"{stem}{GEOTIFF_SUFFIX}"))
         context.window_manager.fileselect_add(self)
@@ -4677,12 +4686,12 @@ class GEOBLENDER_OT_des_export_design_grid(_StepsModal, bpy.types.Operator):
             target = Path(bpy.path.abspath(shown))
             steps = export.export_grid_steps(
                 SESSION.project, stored.family, stored.name, target, version=stored.version_uid,
-                read_only=read_only_dirs(), overwrite=bool(self.overwrite))
+                read_only=read_only_dirs(), overwrite=bool(self.overwrite), part=stored.part)
         except GisError as exc:
             interactive = self.in_steps and getattr(context, "window", None) is not None
             if exc.code == "gis.export_target_exists" and interactive:
                 self.report({"WARNING"}, error_text(exc))
-                _confirm_later({"source": stored.record.uid, "filepath": shown},
+                _confirm_later({"source": stored.record.uid, "filepath": shown, **({"part": stored.part} if stored.part else {})},
                                idname=EXPORT_DESIGN_GRID)
             else:
                 self.report({"ERROR"}, error_text(exc))

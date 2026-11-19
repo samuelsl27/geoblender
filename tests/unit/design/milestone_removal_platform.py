@@ -192,7 +192,9 @@ class AsPlatformTest(rem.RemovalCase):
         chain = ops.last(entity_store.after_entity_change(self.project, self.v1.uid))
         self.assertIsNone(chain.failure, None if chain.failure is None else chain.failure.reason)
         self.assertIsNone(chain.layer_failure, None if chain.layer_failure is None else chain.layer_failure.reason)
-        self.assertEqual([item.code for item in entity_store.layer_sources(self.project, self.v1)], ["PLT-001"])
+        shown = [item.code for item in entity_store.layer_sources(self.project, self.v1)]
+        self.assertEqual([code for code in shown if not code.startswith("STK-001#")], ["PLT-001"])  # la plataforma y, de la T34, los acopios de la detección
+        self.assertEqual(len(shown), 1 + len([code for code in shown if code.startswith("STK-001#")]))
         self.assertEqual(self.temporaries(), [])
 
     # --- Lo que se apoyaba ---------------------------------------------------------------------------------------------

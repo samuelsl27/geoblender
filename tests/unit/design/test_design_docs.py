@@ -192,6 +192,9 @@ PENDING_015_API: frozenset[str] = frozenset({
     # La 016, T33: lo que el dominio da a la vista y a la barra N de los acopios y de los tipos nuevos (``design.stockpile_store``,
     # ``design.entity_store`` y ``design.entities``).
     "read_stored_rows", "stockpile_row_notice", "candidate_row_notice", "stored_notes", "read_entity_report", "live_removals", "operation_table",
+    # La 016, T34: la capa de entidades por acopio y el GeoTIFF de la base, el espesor y el terreno sin acopios (``design.provenance`` y
+    # ``design.export``).
+    "has_entity_operation", "compose_ground", "thickness_between",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 016, T05: la morfología con un disco exacto (A1). Su fila de la ficha (``des.md`` §4.4) la lleva la T38,

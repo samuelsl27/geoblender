@@ -290,6 +290,7 @@ __all__ = [
     "COUNTERSLOPE_CONFIRMED",
     "ENTITY_MAP_TABLE",
     "ENTITY_OPERATION_TYPES",
+    "ENTITY_OP_NAMES",
     "ENTITY_REPORT_ROLE",
     "ENTITY_REPORT_TABLE",
     "ENTITY_REPRODUCIBLE",
@@ -454,6 +455,7 @@ __all__ = [
     "fill_only_settings",
     "counterslope_confirmation",
     "counterslope_confirmed",
+    "has_entity_operation",
     "has_platform_operation",
     "merge_released",
     "released_supports",
@@ -1569,6 +1571,22 @@ def has_platform_operation(conn: sqlite3.Connection, version_uid: str) -> bool:
     (``gis.masks.declaring``) cada vez que se pregunta por el estado de las máscaras, también al dibujar la
     interfaz. Solo lee."""
     return conn.execute(_LIVE_PLATFORM, (version_uid, PLATFORM)).fetchone() is not None
+
+
+ENTITY_OP_NAMES: tuple[str, ...] = (PLATFORM, STOCKPILE_DETECT, STOCKPILE_REMOVAL, BUTTRESS, BODY)
+"""Los tipos de operación de las entidades de una versión (la plataforma y, de la 016, la detección, la retirada, el
+contrafuerte y el cuerpo apoyado): lo que escribe una entidad que sale en la capa de entidades."""
+_LIVE_ENTITY = (
+    "SELECT 1 FROM gb_operation AS o JOIN gb_revision AS r ON r.uid = o.revision_uid "
+    f"WHERE r.version_uid = ? AND o.op_type IN ({', '.join('?' for _ in ENTITY_OP_NAMES)}) "
+    "AND o.status = 'done' AND o.superseded_by IS NULL LIMIT 1")
+
+
+def has_entity_operation(conn: sqlite3.Connection, version_uid: str) -> bool:
+    """Si la versión ``version_uid`` (su uid) tiene **alguna** operación de una entidad (:data:`ENTITY_OP_NAMES`)
+    hecha y sin sustituir, en cualquier revisión (spec 016, T34): como :func:`has_platform_operation` para los cinco
+    tipos. Sin ella la capa de entidades no tiene nada que enseñar. Una sola consulta. Solo lee."""
+    return conn.execute(_LIVE_ENTITY, (version_uid, *ENTITY_OP_NAMES)).fetchone() is not None
 
 
 def entity_figure_scope(name: str, code: str) -> dict[str, str]:
@@ -2795,16 +2813,21 @@ def declare_inputs(names: Iterable[str]) -> tuple[Use, ...]:
     return _entity_inputs(names, "las entidades de la declaración")
 
 
-def entity_layer_inputs(names: Iterable[str]) -> tuple[Use, ...]:
+def entity_layer_inputs(names: Iterable[str], detections: Iterable[str] = ()) -> tuple[Use, ...]:
     """Lo que consume ``des.entity_layer`` (spec 015, T04 y T30; RF-015-27; plan 015 §5.2.3): de **todas** las
     entidades vivas, por el nombre de cada una, su dato ``des_epr_`` (papel :data:`ENTITY_ROLE`: la huella) y su
     informe ``des_prp_`` (papel :data:`ENTITY_REPORT_ROLE`: de donde salen sus cifras principales; T30: sin él,
     cambiar la cota o la pendiente de una entidad cambia el corte y el relleno y no la huella, y la capa se
-    quedaría con las cifras de antes sin avisar). Como :func:`declare_inputs` en lo demás."""
+    quedaría con las cifras de antes sin avisar). **De cada detección de acopios viva** (``detections``: su nombre;
+    spec 016, T34), su tabla de acopios ``des_stk_`` (papel :data:`STOCKPILES_ROLE`: una fila de la capa por
+    acopio, con su huella y sus cifras): repetir la detección deja la capa obsoleta, con su causa. Como
+    :func:`declare_inputs` en lo demás."""
     found: list[Use] = []
     for name in _codes(names, "las entidades de la capa"):
         found.append(Use(dataset_name(ENTITY_TABLE, name), ENTITY_ROLE))
         found.append(Use(dataset_name(ENTITY_REPORT_TABLE, name), ENTITY_REPORT_ROLE))
+    for name in _codes(detections, "las detecciones de acopios de la capa"):
+        found.append(Use(dataset_name(STOCKPILES_TABLE, name), STOCKPILES_ROLE))
     return _unique(found)
 
 

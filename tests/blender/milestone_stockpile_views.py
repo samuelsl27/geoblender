@@ -31,7 +31,10 @@ Se ejecuta con ``tools/run_blender_tests.py`` (es un hito: ``check.py --completo
 
 import json
 import math
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from typing import Any
 from unittest import mock
 
@@ -441,7 +444,7 @@ class StockpileViewsTest(platform_ops.CreatePlatformTest):
         N enseña su título, su estado «al día», **sus acopios** (la referencia, el material, la huella, el volumen, el espesor máximo y el plano de
         cada uno, **tal como están guardados**), **«retirado en su superficie»** en el acopio que una retirada viva retira, **la lista de candidatos
         con su estado** (el tercer montón, pendiente), sus parámetros, que no declara ninguna restricción y que no tiene cadena; «Elemento activo»
-        da las mismas líneas, y la barra no ofrece exportar una superficie que la detección no deja."""
+        da las mismas líneas, y la barra no ofrece exportar una superficie que la detección no deja, sino un botón por rejilla que deja (T34)."""
         panel = getattr(bpy.types, PANEL)
         files, operations = self.files(), self.operations()
         self.load("Acopios")
@@ -485,8 +488,17 @@ class StockpileViewsTest(platform_ops.CreatePlatformTest):
                         "una fila por operación y acopio: el cuerpo se apoya en los dos")
         figures = self.section("Cifras")
         self.assertTrue(any("Acopios" in text or "acopios" in text for text, _alert in figures), figures)
-        export = [item for item in draw(panel, bpy.context).items if getattr(item, "operator", "") == "geoblender.des_export_design_grid"]
-        self.assertEqual(export, [], "sin superficie que exportar (su base y su terreno, de la T34)")
+        export = [item for item in draw(panel, bpy.context).items if getattr(item, "target", "") == "geoblender.des_export_design_grid"]
+        with self.project.read() as conn:  # sin superficie que exportar: un botón por rejilla que dejó (T34; RF-016-24)
+            wanted = {uid: name for uid, name in conn.execute(
+                "SELECT d.uid, d.name FROM gb_dataset AS d WHERE d.status = 'current' AND (d.name LIKE 'des!_stb!_acopios!_%' ESCAPE '!' "
+                "OR d.name LIKE 'des!_stt!_acopios!_%' ESCAPE '!' OR d.name = 'des_stg_acopios')").fetchall()}
+        self.assertEqual(sorted(item.properties.source for item in export), sorted(wanted), "una por rejilla de la detección, con el uid de su dato")
+        self.assertTrue(all(item.properties.part == "" for item in export))
+        self.assertEqual(sorted(item.text.split(" de los acopios")[0].split(" sin acopios")[0] for item in export),
+                         sorted("Exportar la base" if "stb" in name else "Exportar el espesor" if "stt" in name else "Exportar el terreno"
+                                for name in wanted.values()))
+        self.assertTrue(all(item.text.endswith("a GeoTIFF…") for item in export))
         # «Elemento activo» y «Cifras de la selección»: las mismas líneas, sin las cifras.
         extra = self.panels.entity_object_lines(self.project, self.loaded()[self.uids["Acopios"]])
         self.assertEqual([line.text for line in extra], [text for kind, text, _alert in self.lines() if kind != "figure"][:len(extra)])
@@ -559,6 +571,47 @@ class StockpileViewsTest(platform_ops.CreatePlatformTest):
         self.assertTrue(any(text.startswith("El pie no se corta") or text.startswith("Pie cortado: ") for text, _alert in buttress), buttress)
         declared = [text for text, _alert in self.section("Restricciones declaradas")]
         self.assertTrue(any("(declarada)" in text for text in declared), declared)
+
+    def test_h_b_the_thickness_of_a_buttress_and_the_grids_of_the_detection_are_exported_from_the_bar(self) -> None:
+        """RF-016-24, RF-016-01, P-5 (M5, T34): la barra N del contrafuerte ofrece, además de exportar su superficie, **exportar su espesor** (la
+        resta de sus dos superficies: sube, nunca es negativo), y la orden lo escribe; la de la detección ofrece un botón por rejilla (la base
+        y el espesor del material y el terreno sin acopios) y cada uno exporta **su** dato, el terreno compuesto entero; exportar no escribe en
+        el proyecto."""
+        panel = getattr(bpy.types, PANEL)
+        order = "geoblender.des_export_design_grid"
+        reader = _module("gis.geotiff.reader")
+        self.load(BUTTRESS_NAME)
+        self.choose(BUTTRESS_NAME)
+        buttons = [item for item in draw(panel, bpy.context).items if getattr(item, "target", "") == order]
+        self.assertEqual([(item.text, getattr(item.properties, "part", "")) for item in buttons],
+                         [("Exportar rejilla a GeoTIFF…", ""), ("Exportar el espesor a GeoTIFF…", "thickness")])
+        files, operations = self.files(), self.operations()
+        with tempfile.TemporaryDirectory(prefix="gb-t34-") as folder:
+            target = Path(folder) / "espesor.tif"
+            self.assertEqual(bpy.ops.geoblender.des_export_design_grid("EXEC_DEFAULT", part="thickness", filepath=str(target)), {"FINISHED"})
+            found = reader.read_geotiff(target, max_cells=sys.maxsize)
+            self.assertEqual(found.declared_crs.epsg, 25830)
+            self.assertGreaterEqual(float(np.nanmin(found.values)), 0.0, "nunca negativo")
+            self.assertGreater(float(np.nanmax(found.values)), 0.0, "el contrafuerte sube")
+            self.assertEqual(bpy.ops.geoblender.des_export_design_grid("EXEC_DEFAULT", filepath=str(Path(folder) / "superficie.tif")),
+                             {"FINISHED"})
+            surface = reader.read_geotiff(Path(folder) / "superficie.tif", max_cells=sys.maxsize)
+            self.assertFalse(np.array_equal(surface.values, found.values, equal_nan=True), "la superficie, no el espesor")
+            self.load("Acopios")
+            self.choose("Acopios")
+            grids = [item for item in draw(panel, bpy.context).items if getattr(item, "target", "") == order]
+            self.assertEqual(len(grids), 3, "la base y el espesor de «mineral» y el terreno sin acopios")
+            for number, item in enumerate(grids):
+                shown = Path(folder) / f"rejilla{number}.tif"
+                self.assertEqual(bpy.ops.geoblender.des_export_design_grid("EXEC_DEFAULT", source=item.properties.source, filepath=str(shown)),
+                                 {"FINISHED"}, item.text)
+                self.assertTrue(shown.is_file(), item.text)
+            ground = next(item for item in grids if "terreno" in item.text)
+            whole = reader.read_geotiff(Path(folder) / f"rejilla{grids.index(ground)}.tif", max_cells=sys.maxsize).values
+            base = next(item for item in grids if "base" in item.text)
+            sparse = reader.read_geotiff(Path(folder) / f"rejilla{grids.index(base)}.tif", max_cells=sys.maxsize).values
+            self.assertGreater(int(np.isfinite(whole).sum()), int(np.isfinite(sparse).sum()), "el terreno va entero y la base, solo en las huellas")
+        self.assertEqual((self.files(), self.operations()), (files, operations), "exportar no escribe en el proyecto")
 
     def test_i_the_body_says_its_thickness_and_what_is_far_from_the_data(self) -> None:
         """RF-016-20 a RF-016-22, RF-015-25 (M5): la barra N del cuerpo enseña **el espesor** (el mayor, con su lugar) y **lo lejano** (con los

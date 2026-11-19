@@ -32,6 +32,12 @@ externa es QGIS 4.2 (``GEOBLENDER_QGIS_DIR``): PyQGIS sin interfaz, con su GDAL 
   qué se apoya, la cadena y las cifras) **todos de solo lectura** y su nota, los **mismos valores** que la tabla (el
   estado, la cadena, las cifras) y la **geometría de la huella**: el área que mide QGIS es la de las celdas de la
   entidad.
+- **La capa de entidades con los tipos de la 016** (T34, RF-015-27, RF-016-09, D-13): una capa escrita por
+  ``design.entity_layer`` (``des_enl_v98``, en la misma copia) con **una fila por acopio** de una detección (su código es
+  la referencia ``STK-001#m07``) y las filas de una retirada, un contrafuerte, un cuerpo apoyado y una plataforma, con las
+  quince columnas del formato de la 016 y su estilo: QGIS la abre con **todos** sus campos de solo lectura y su nota, los
+  valores de la tabla (también las cifras nuevas: el volumen, el espesor máximo y el pie cortado), cada entidad en **una**
+  sola regla (los cuatro tipos nuevos, como «otra entidad», en sus estados) y la geometría de cada huella.
 - **Las capas del proyecto**, igual que antes: sus tres estilos, con sus doce reglas y sin campos de solo
   lectura (la 015 no los toca).
 
@@ -73,6 +79,18 @@ ENTITIES = "des_enl_v99"
 """La capa de entidades **de prueba**, en la copia (una versión que el proyecto no tiene: no choca con la real)."""
 REAL_ENTITIES = "des_enl_v01"
 """La capa de entidades de verdad de V01 (``des.entity_layer``, T30)."""
+SUPPORTED_ENTITIES = "des_enl_v98"
+"""La capa de entidades con los tipos de la 016, escrita por ``design.entity_layer`` en la copia (T34)."""
+SUPPORTED_ROWS = (
+    ("PLT-001", "Carga", "platform", "current", {"area_m2": 100.0, "cut_m3": 12.5, "fill_m3": 0.0}),
+    ("STK-001#m01", "Acopio 1", "stockpile", "current", {"area_m2": 100.0, "volume_m3": 193_008.0, "thickness_max_m": 12.0}),
+    ("STK-001#m02", "Acopio 2", "stockpile", "current", {"area_m2": 100.0, "volume_m3": 4_500.5, "thickness_max_m": 3.25}),
+    ("RMV-001", "Retirada del acopio 2", "removal", "current", {"volume_m3": 4_000.0, "thickness_max_m": 2.5}),
+    ("BTR-001", "Contrafuerte", "buttress", "support_removed", {"area_m2": 80.0, "volume_m3": 300.0, "thickness_max_m": 6.0,
+                                                               "cutoff_m3": 11.5}),
+    ("BDY-001", "Cuerpo apoyado", "body", "discarded", {"volume_m3": 50.0, "thickness_max_m": 1.2}),
+)
+"""Las filas de la capa de la 016: (código, nombre, tipo, estado, cifras); cada una, un cuadrado de 10 m de lado."""
 PROJECT_LAYERS = tuple(cstore.CONSTRAINT_LAYERS.values())
 FILL = 2
 """``Qgis.SymbolType.Fill``."""
@@ -200,12 +218,33 @@ class QgisDeclaredReferenceTest(decl.DeclareCase):
         target = copy / "project.gpkg"
         shutil.copyfile(cls.project.database_path, target)
         cls.write_entity_layer(target)
-        result = started.finish(str(target), json.dumps([DECLARED, ENTITIES, REAL_ENTITIES, *PROJECT_LAYERS]),
+        cls.write_supported_layer(target)
+        result = started.finish(str(target), json.dumps([DECLARED, ENTITIES, REAL_ENTITIES, SUPPORTED_ENTITIES, *PROJECT_LAYERS]),
                                 DECLARED)
         if result.returncode != 0:
             raise RuntimeError(f"PyQGIS no abrió las capas: {qgis.output_of(result)}")
         (line,) = [text for text in result.stdout.splitlines() if text.startswith("RESULT")]
         cls.seen = json.loads(line.removeprefix("RESULT"))
+
+    @classmethod
+    def write_supported_layer(cls, path: Path) -> None:
+        """La capa de entidades con los tipos de la 016 (:data:`SUPPORTED_ROWS`) en ``path`` (la copia), con el formato y la escritura de
+        ``design.entity_layer`` y su estilo por defecto."""
+        srs = cls.project.record.crs_epsg
+        rows = []
+        for number, (code, name, kind, state, figures) in enumerate(SUPPORTED_ROWS):
+            west = 725_000.0 + 100.0 * number
+            ring = np.array([[west, 4_400_000.0], [west + 10.0, 4_400_000.0], [west + 10.0, 4_400_010.0], [west, 4_400_010.0],
+                             [west, 4_400_000.0]])
+            rows.append(entity_layer.EntityLayerRow(code=code, name=name, kind=kind, state=state, start=None, supports="",
+                                                    chain="", parts=((ring,),), **figures))
+        db = gpkg.GpkgConnection.open_write(path)
+        try:
+            with db.transaction() as conn:
+                entity_layer.write_entity_layer(conn, SUPPORTED_ENTITIES, rows, srs_id=srs)
+                assert cstyles.insert_version_styles(conn, [SUPPORTED_ENTITIES]) == (SUPPORTED_ENTITIES,)
+        finally:
+            db.close()
 
     @classmethod
     def write_entity_layer(cls, path: Path) -> None:
@@ -375,6 +414,40 @@ class QgisDeclaredReferenceTest(decl.DeclareCase):
             with self.subTest(geometry=code):
                 self.assertTrue(valid and multi)
                 self.assertAlmostEqual(area, rows[code].area_m2, delta=1e-6 * rows[code].area_m2)
+
+    def test_i_the_entity_layer_with_the_types_of_the_016_opens_read_only_with_a_row_per_stockpile(self) -> None:
+        """RF-015-27, RF-016-09, RF-008-56, D-13 (T34): la capa que escribe ``design.entity_layer`` con **una fila por acopio** (la referencia
+        ``STK-001#m01`` es su código) y las de una retirada, un contrafuerte, un cuerpo apoyado y una plataforma se abre en QGIS con su
+        estilo y **todos sus campos de solo lectura** (``fid`` y las quince columnas) y su nota; los **valores de la tabla**, también las
+        cifras de los tipos nuevos (el volumen, el espesor máximo y el pie cortado, y sin valor (``NULL``) donde no son del tipo); cada entidad en
+        **una** sola regla (la plataforma con la suya; los tipos nuevos, «otra entidad», atenuada si está descartada y marcada si perdió
+        el apoyo) y una huella válida de 100 m² por fila."""
+        info = self.layer(SUPPORTED_ENTITIES)
+        self.assertEqual(info["renderer"], "RuleRenderer")
+        self.assertEqual(info["rules"], self.layer(ENTITIES)["rules"], "el mismo estilo que el de las demás capas de entidades")
+        self.assertEqual(info["fields"], ["fid", *entity_layer.COLUMN_NAMES])
+        self.assertEqual(len(info["fields"]), 16)
+        self.assertTrue(all(info["read_only"]), dict(zip(info["fields"], info["read_only"], strict=True)))
+        self.assertIn("no se edita a mano", info["notes"])
+        self.assertFalse(info["layer_read_only"], "la marca de capa no viaja en el estilo (RF-008-56 la protege)")
+        self.assertEqual(info["features"], len(SUPPORTED_ROWS))
+        by_code = {attributes[1]: (dict(zip(info["fields"], attributes, strict=True)), matched) for attributes, matched in info["matches"]}
+        self.assertEqual(sorted(by_code), sorted(code for code, *_rest in SUPPORTED_ROWS))
+        other = cstyles.ENTITY_OTHER_LABEL
+        self.assertEqual({code: matched for code, (_names, matched) in by_code.items()},
+                         {"PLT-001": ["Plataforma"], "STK-001#m01": [other], "STK-001#m02": [other], "RMV-001": [other],
+                          "BTR-001": [f"{other} con el apoyo retirado"], "BDY-001": [f"{other} descartada"]})
+        for code, name, kind, state, figures in SUPPORTED_ROWS:
+            with self.subTest(code=code):
+                names = by_code[code][0]
+                self.assertEqual((names["name"], names["kind"], names["state"], names["chain"], names["supports"]), (name, kind, state, "", ""))
+                for column in entity_layer.FIGURE_COLUMNS:
+                    if column in figures:
+                        self.assertEqual(float(names[column]), figures[column], column)
+                    else:
+                        self.assertEqual(names[column], "None", column)  # el NULL de la tabla, que el guion pasa a texto
+        self.assertEqual(list(info["areas"]), [100.0] * len(SUPPORTED_ROWS))
+        self.assertTrue(all(valid and multi for valid, multi in info["geometry"]))
 
     def layer_record(self) -> Any:
         with self.project.read() as conn:
