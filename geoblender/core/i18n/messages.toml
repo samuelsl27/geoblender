@@ -9840,3 +9840,103 @@ es = "Deja su base y su espesor: la superficie conocida es su techo y no cambia"
 
 ["Supported body «{name}» in {version}"]
 es = "Cuerpo apoyado «{name}» en {version}"
+
+# «Contrafuerte…» (spec 016, T27 (b); RF-016-17, RF-016-18; la orden de bl/ops/des.py y su resumen de bl/ui/des_panels.py).
+["The buttress rests on no other surface"]
+es = "El contrafuerte no se apoya en ninguna otra superficie"
+
+["Buttress «{name}» ({code}): {volume} m³ over {area} m² · largest height {height} m at ({x}, {y})"]
+es = "Contrafuerte «{name}» ({code}): {volume} m³ sobre {area} m² · mayor altura {height} m en ({x}, {y})"
+
+["Crown at {crown} m · profile «{profile}» · crown zone of «{layer}»: {cells} cells"]
+es = "Coronación a {crown} m · perfil «{profile}» · zona de coronación de «{layer}»: {cells} celdas"
+
+["It will declare «no cut» on its crown zone, with a guard of {guard} m"]
+es = "Declarará «sin corte» sobre su zona de coronación, con un resguardo de {guard} m"
+
+["It does not protect its crown zone: it declares no constraint"]
+es = "No protege su zona de coronación: no declara ninguna restricción"
+
+["Buttress «{name}» in {version}"]
+es = "Contrafuerte «{name}» en {version}"
+
+["Name of the buttress, unique in the active version"]
+es = "Nombre del contrafuerte, único en la versión activa"
+
+["Layer of polygons of the project the crown zone of the buttress is taken from"]
+es = "Capa de polígonos del proyecto de la que se toma la zona de coronación del contrafuerte"
+
+["Crown zone of the layer"]
+es = "Zona de coronación de la capa"
+
+["Name or number (fid) of the polygon of the layer that is the crown zone of the buttress"]
+es = "Nombre o número (fid) del polígono de la capa que es la zona de coronación del contrafuerte"
+
+["Surface the buttress starts from: the ground, a design surface or the surface of another entity (by default, the last of the chain)"]
+es = "Superficie de la que parte el contrafuerte: el terreno, una superficie de diseño o la superficie de otra entidad (por defecto, la última de la cadena)"
+
+["Surface the buttress rests on, if it is not the start surface: a design surface, the exploitation surface of a quarry or the surface of another entity (none: it rests on the start surface); it does not change the calculation"]
+es = "Superficie en la que se apoya el contrafuerte, si no es la de partida: una superficie de diseño, la de explotación de una cantera o la superficie de otra entidad (ninguna: se apoya en la de partida); no cambia el cálculo"
+
+["Bench profile of the buttress: its height, its face, its berm and its anchor give its slopes and the levels the crown can be at"]
+es = "Perfil de banco del contrafuerte: su altura, su cara, su berma y su ancla dan sus taludes y las cotas a las que puede estar la coronación"
+
+["Crown elevation (m)"]
+es = "Cota de coronación (m)"
+
+["Elevation of the crown of the buttress in metres: it has to be one of the anchor levels of its profile (the anchor plus a whole number of bench heights); it has no default value: you choose it"]
+es = "Cota de la coronación del contrafuerte en metros: tiene que ser una de las cotas del ancla de su perfil (el ancla más un número entero de alturas de banco); no tiene valor por defecto: la elige usted"
+
+["Reach (m)"]
+es = "Alcance (m)"
+
+["Farthest distance from the crown zone the slopes can reach, in metres (empty: down to the lowest elevation of the start surface)"]
+es = "Distancia más lejana a la zona de coronación a la que pueden llegar los taludes, en metros (vacío: hasta la cota más baja de la superficie de partida)"
+
+["How the distance to the crown zone is measured: the 5×5 chamfer (fast, with the scale of the grid) or the exact Euclidean distance"]
+es = "Cómo se mide la distancia a la zona de coronación: el chaflán de 5×5 (rápido, con la escala de la rejilla) o la distancia euclídea exacta"
+
+["Declare the crown zone a zone without cut: the other designs do not cut in it (the buttress protects by default)"]
+es = "Declarar la zona de coronación como zona sin corte: los demás diseños no cortan en ella (el contrafuerte protege por defecto)"
+
+["Distance around the crown zone that is also protected, in metres; it is required to protect and has no default value: you choose it"]
+es = "Distancia alrededor de la zona de coronación que también se protege, en metros; es obligatoria para proteger y no tiene valor por defecto: la elige usted"
+
+["Why the crown zone is protected, recorded with the declared constraint (empty: a reason is generated that you can edit later)"]
+es = "Por qué se protege la zona de coronación, anotado con la restricción declarada (vacío: se genera un motivo que puede editar después)"
+
+["Crown zone"]
+es = "Zona de coronación"
+
+["Slopes of the buttress"]
+es = "Taludes del contrafuerte"
+
+["There is no layer of polygons in the project: import the crown zones of the buttress first"]
+es = "No hay ninguna capa de polígonos en el proyecto: importe antes las zonas de coronación del contrafuerte"
+
+["Write the name of the buttress"]
+es = "Escriba el nombre del contrafuerte"
+
+["Choose the layer of the crown zones of the buttress"]
+es = "Elija la capa de las zonas de coronación del contrafuerte"
+
+["Write the name or the number of the crown zone in its layer"]
+es = "Escriba el nombre o el número de la zona de coronación en su capa"
+
+["Choose the start surface of the buttress"]
+es = "Elija la superficie de partida del contrafuerte"
+
+["Choose the bench profile of the buttress"]
+es = "Elija el perfil de banco del contrafuerte"
+
+["Buttress «{name}» created in {version}"]
+es = "Contrafuerte «{name}» creado en {version}"
+
+["Computing the buttress… {percent} % · Esc: cancel"]
+es = "Calculando el contrafuerte… {percent} % · Esc: cancelar"
+
+["Cancelled: the buttress is created; the declared constraints and the masks are brought up to date before the next operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»"]
+es = "Cancelado: el contrafuerte está creado; las restricciones declaradas y las máscaras se ponen al día antes de la siguiente operación que las use, y la capa de entidades con la siguiente orden de entidades o «Recalcular lo obsoleto»"
+
+["The buttress is created: only the declared constraints and the masks have not been brought up to date"]
+es = "El contrafuerte está creado: solo las restricciones declaradas y las máscaras no se han puesto al día"

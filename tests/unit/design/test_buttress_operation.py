@@ -66,28 +66,40 @@ def asked(name: str = BUTTRESS, *, feature: str = ZONE, crown: float | None = CR
                                  profile=profile, crown_m=crown, guard_m=guard, **changes)
 
 
+def buttress_definitions() -> tuple[Any, ...]:
+    """El tipo del contrafuerte con sus funciones **reales** (recalcular y reproducir) y sus cifras, como los registra ``bl``."""
+    found = provenance.OPERATION_TYPES_BY_NAME[provenance.BUTTRESS].definition(ops.recompute_function, design_reproduce.reproduce_buttress)
+    return found, *provenance.BUTTRESS_FIGURES
+
+
+def write_profile(case: Any) -> None:
+    """Escribe en el proyecto de ``case`` (una clase de pruebas con su ``project`` y su reloj) las familias de parámetros de la 013 y los
+    cinco valores del perfil ``EXPL_10_60_6`` (el de la 013: 10 m, 60°, 6 m y ancla de 125 m), con su origen, como lo deja el diálogo de los
+    perfiles; las familias se quitan al acabar la clase."""
+    core_params.register_families(design_params.FAMILIES)
+    case.addClassCleanup(core_params.unregister_families, "des")
+    case.clock.advance(minutes=1)
+    parameters = core_params.ParameterStore(case.project)
+    with case.project.write_transaction() as conn:
+        for param, value in (("height_m", dfx.EXPL_10_60_6.height_m), ("face_deg", dfx.EXPL_10_60_6.face_deg),
+                             ("berm_m", dfx.EXPL_10_60_6.berm_m), ("anchor_m", dfx.EXPL_10_60_6.anchor_m), ("mesh_factor", 1.0)):
+            parameters.create(conn, design_params.bench_key(PROFILE, param), value,
+                              kind="ADOPTADO" if param == "mesh_factor" else "HIPÓTESIS", reason="Perfil de la prueba", **BY_HAND)
+    case.clock.advance(minutes=1)
+
+
 class ButtressCase(rop.RemovalCase):
     """La cantera de los acopios (2 m, V01 con su levantamiento y sus capas) con los perfiles de banco de la 013 en el proyecto, el tipo del
     contrafuerte registrado con sus funciones reales (recalcular y reproducir) y las ayudas de lo registrado."""
 
     @classmethod
     def definitions(cls) -> tuple[Any, ...]:
-        found = provenance.OPERATION_TYPES_BY_NAME[provenance.BUTTRESS].definition(ops.recompute_function, design_reproduce.reproduce_buttress)
-        return (*super().definitions(), found, *provenance.BUTTRESS_FIGURES)
+        return (*super().definitions(), *buttress_definitions())
 
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
-        core_params.register_families(design_params.FAMILIES)
-        cls.addClassCleanup(core_params.unregister_families, "des")
-        cls.clock.advance(minutes=1)
-        parameters = core_params.ParameterStore(cls.project)
-        with cls.project.write_transaction() as conn:
-            for param, value in (("height_m", dfx.EXPL_10_60_6.height_m), ("face_deg", dfx.EXPL_10_60_6.face_deg),
-                                 ("berm_m", dfx.EXPL_10_60_6.berm_m), ("anchor_m", dfx.EXPL_10_60_6.anchor_m), ("mesh_factor", 1.0)):
-                parameters.create(conn, design_params.bench_key(PROFILE, param), value,
-                                  kind="ADOPTADO" if param == "mesh_factor" else "HIPÓTESIS", reason="Perfil de la prueba", **BY_HAND)
-        cls.clock.advance(minutes=1)
+        write_profile(cls)
 
     @classmethod
     def calculate(cls, request: Any, **options: Any) -> Any:

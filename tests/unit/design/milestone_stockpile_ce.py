@@ -20,6 +20,11 @@ retirada de A6 celda a celda, con la envolvente de fuerza bruta, y la pared de A
   obsoleto» (cómo se lee), el relleno **después** de la retirada solo obsoleto y la partida de otra versión.
 - :class:`TallAsPlatformTest` (CE-016-03, E3): retirado «como plataforma»: la huella entera en el plano de su base, el eje de borde a
   borde y las cifras iguales al cálculo a mano.
+- :class:`TallButtressTest` (CE-016-04 con **el contrafuerte real**, E2; T27): la cadena detección (**de la versión**) → contrafuerte →
+  retirada con **el contrafuerte de la T26** (coronación a 135 m sobre la cima del acopio de 12 m, el perfil ``EXPL_10_60_6`` escrito en el
+  proyecto) en lugar del relleno de la 015: se apoya en el acopio, **una sola lista** antes de retirarlo, «apoyo retirado» tras crear la
+  retirada, «Recalcular lo obsoleto» sin recalcularlo, el contrafuerte **después** de la retirada solo obsoleto y lo que sigue a la
+  orden sin fallar.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ from tests.support.versions_fixtures import change_counter, files
 from tests.unit.design import milestone_removal_platform as aspl
 from tests.unit.design import milestone_stockpile_supports as sup
 from tests.unit.design import test_platform_operation as platform_ops
+from tests.unit.design import test_buttress_operation as btr
 from tests.unit.design import test_platform_prepare as prep
 from tests.unit.design import test_removal_operation as rem
 from tests.unit.design import test_stockpile_operation as ops
@@ -92,6 +98,16 @@ BASE = provenance.dataset_name("stb", "Acopios mineral")
 DETECTED = provenance.dataset_name(provenance.STOCKPILE_SURFACE_GRID, "Acopios")
 AFTER_UP_M = 2.0
 """Lo que se sube el relleno que se hace **después** de la retirada, sobre el mismo sitio que ``PLT-001``."""
+CROWNS_LAYER = "gis_fea_coronacion_alta"
+CROWN_ZONE = "Cima del acopio alto"
+CROWN_BOX_M = (138.0, 148.0, 162.0, 172.0)
+"""La zona de coronación (local): 24 × 24 m sobre la cima del acopio de 12 m (el centro, (150, 160), y la cima de 12 m de lado)."""
+CROWN_M = 135.0
+"""La cota de coronación: el ancla de ``EXPL_10_60_6`` (125 m) más un banco (10 m), por encima de la cima del acopio (≈ 127 m)."""
+GUARD_M = 10.0
+BUTTRESS = "Contrafuerte del acopio alto"
+BUTTRESS_AFTER = "Contrafuerte después de la retirada"
+BUTTRESS_SURFACE = provenance.dataset_name(provenance.ENTITY_SURFACE_GRID, BUTTRESS)
 
 
 def tall_survey() -> np.ndarray:
@@ -502,6 +518,195 @@ class TallAsPlatformTest(TallWorld):
         self.assertEqual(states["PLT-002"], State.CURRENT)
         chain = ops.last(import_geoblender("design.entity_store").after_entity_change(self.project, self.v1.uid))
         self.assertIsNone(chain.failure, None if chain.failure is None else chain.failure.reason)
+        self.assertEqual(self.temporaries(), [])
+
+
+def crown(name: str = BUTTRESS, **changes: Any) -> Any:
+    """La petición de un contrafuerte con la zona de coronación de la capa :data:`CROWNS_LAYER` (sobre la cima del acopio alto), el perfil
+    ``EXPL_10_60_6``, la coronación a 135 m y, porque protege por defecto (D-1), su resguardo, desde el levantamiento de V01."""
+    base: dict[str, Any] = {"fields": model.ButtressFields(layer=CROWNS_LAYER, crown_field="cota"), "feature": CROWN_ZONE, "start": SURVEY,
+                            "profile": btr.PROFILE, "crown_m": CROWN_M, "guard_m": GUARD_M}
+    return model.ButtressRequest(name=name, **{**base, **changes})
+
+
+class TallButtressTest(TallWorld):
+    """CE-016-04 con **el contrafuerte real** y E2 (``test_a`` a ``test_g``, **en orden**; T27): la detección ``STK-001`` (V01), el
+    contrafuerte ``BTR-001`` de la zona de coronación sobre la cima del acopio de 12 m y la retirada ``RMV-001`` del acopio desde la
+    superficie del contrafuerte. Lo de la retirada en sí (la superficie celda a celda, la pared, la transición) es de
+    :class:`TallRemovalTest`; aquí, **la cadena** con el tipo nuevo."""
+
+    over_m3: ClassVar[float]
+    listed: ClassVar[tuple[Any, ...]]
+
+    @classmethod
+    def definitions(cls) -> tuple[Any, ...]:
+        return (*super().definitions(), *btr.buttress_definitions())
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        btr.write_profile(cls)
+        cls.build_world()
+        zone = sdata.FieldsLayer(CROWNS_LAYER, "polygon", (((cfx.rectangle(*CROWN_BOX_M),),),), (CROWN_ZONE,), {"cota": (CROWN_M,)})
+        sdata.write_layer(cls.project, cls.clock, zone)
+        cls.clock.advance(minutes=1)
+
+    @classmethod
+    def make_buttress(cls, asked: Any) -> tuple[Any, Any]:
+        """«Calcula» y «crea» el contrafuerte ``asked`` en V01 (un minuto después de lo anterior): la ``Calculation`` y lo guardado."""
+        cls.clock.advance(minutes=1)
+        calculation = ops.last(steps.buttress_run(cls.project, asked, masks=cls.masks_v1, version=cls.v1.uid))
+        stored = calculation.create(decided_by=USER)
+        cls.clock.advance(minutes=1)
+        return calculation, stored
+
+    def entity_state(self, code: str) -> Any:
+        return entities.registry(self.project, self.v1.uid).get(code).record.state
+
+    def test_a_a_buttress_over_the_stockpile_rests_on_it_with_its_volume_by_hand(self) -> None:
+        """RF-016-14, RF-016-17, RF-015-15 (A13), CE-016-04: el contrafuerte de la T26 —la zona de coronación de 24 × 24 m sobre la cima del
+        acopio de 12 m, coronación a 135 m— se apoya **en el acopio** por su clave, con **una sola cifra** (``("STK-001", clave)``) cuyo valor
+        es el cálculo a mano (``Σ (contrafuerte − máx(partida, acopio))·4 m²`` sobre las celdas de su huella que pasan del espesor mínimo,
+        **de los ficheros**) a ≤ 10⁻⁹ relativo; sube solo sobre parte de su huella (en las caras bajas del acopio, de 26,6°, el levantamiento
+        queda por encima del talud del perfil)."""
+        calculation, stored = self.make_buttress(crown())
+        self.assertEqual(calculation.entity.code, "BTR-001")
+        uid = self.uid_of("BTR-001")
+        self.assertEqual(uid, str(stored.handle.uid))
+        found = self.supported_of(uid)
+        self.assertEqual(list(found), [("STK-001", KEY)], "una sola cifra, la del acopio")
+        rows, cols = self.cells_of(KEY)
+        top = self.grid_of(BUTTRESS_SURFACE)[rows, cols]
+        start, ground = self.grid_of(SURVEY)[rows, cols], self.grid_of(DETECTED)[rows, cols]
+        thick = top - np.maximum(start, ground)
+        self.assertTrue(np.all(top >= start), "un contrafuerte no corta ninguna celda")
+        volume = math.fsum(float(value) for value in thick[thick > sup.THICKNESS_M]) * CELL_M2
+        type(self).over_m3 = found[("STK-001", KEY)]
+        self.assertRelative(self.over_m3, volume, "lo apoyado, de los ficheros")
+        self.assertGreater(int(np.count_nonzero(thick > sup.THICKNESS_M)), 0, "sube sobre parte de la huella del acopio")
+        self.assertEqual(self.entity_state("BTR-001"), State.CURRENT)
+
+    def test_b_what_rests_on_the_stockpile_is_one_list_before_calculating_and_is_not_removed_without_confirming_it(self) -> None:
+        """RF-016-14, RF-015-17 (error 59; CE-016-04): retirar el acopio desde la superficie del contrafuerte da **una sola lista** antes de
+        calcular (el contrafuerte, con su tipo ``des.buttress`` y su volumen a mano), la misma que la del diálogo y que la que luego calcula la
+        orden; el aviso de lo apoyado es el primero del resumen y sale **una vez**; calcular **no escribe nada**; «Crear» sin confirmarla se
+        rechaza (``des.removal_resting_unconfirmed``) **sin escribir nada y sin cerrar el cálculo**."""
+        asked = rem.asked(REMOVAL, KEY, start="entity:BTR-001", transition_deg=ANGLE_DEG)
+        before = self.state()
+        listed = supported_store.resting_preview(self.project, self.v1.uid, f"STK-001#{KEY}", "entity:BTR-001")
+        self.assertEqual(self.state(), before, "la lista del diálogo solo lee")
+        (row,) = listed
+        self.assertEqual((row.name, row.op_type, row.entity, row.surface), (BUTTRESS, "des.buttress", "BTR-001", BUTTRESS_SURFACE))
+        self.assertRelative(row.volume_m3, self.over_m3, "el volumen de la lista, el de su cifra")
+        type(self).listed = listed
+        calculation = self.calculate(asked)
+        self.assertEqual(listed, calculation.entity.resting, "la lista del diálogo es la que calcula la orden")
+        codes = [notice.code for notice in calculation.notices]
+        self.assertEqual(codes.count("des.removal_resting"), 1, "una sola vez")
+        self.assertEqual(codes[:1], ["des.removal_resting"], "el aviso, el primero")
+        self.assertTrue(calculation.needs_resting_confirmation)
+        self.assertEqual({key: value for key, value in self.state().items() if key != "files"},
+                         {key: value for key, value in before.items() if key != "files"}, "calcular no escribe")
+        self.assertEqual(len(self.temporaries()), 1, "solo el temporal de la superficie")
+        with self.assertRaises(messages.DesignError) as caught:
+            calculation.create(decided_by=USER)
+        self.assertEqual(caught.exception.code, "des.removal_resting_unconfirmed")
+        self.assertTrue(calculation.open, "sin cerrar el cálculo")
+        self.assertEqual({key: value for key, value in self.state().items() if key != "files"},
+                         {key: value for key, value in before.items() if key != "files"}, "el rechazo no escribe")
+        calculation.discard()
+        self.assertEqual(self.temporaries(), [])
+
+    def test_c_the_removal_is_created_once_what_rests_on_it_is_confirmed(self) -> None:
+        """RF-016-11, RF-016-14, RF-015-02 (CE-016-04): con lo apoyado confirmado la retirada del acopio desde la superficie del contrafuerte
+        se crea; la confirmación queda en los ajustes de la operación (los m³ de la lista, de quién y cuándo) y la retirada deja lo retirado
+        y lo apoyado (el contrafuerte que cubría el acopio: más de 0 m³)."""
+        calculation, stored = self.make(rem.asked(REMOVAL, KEY, start="entity:BTR-001", transition_deg=ANGLE_DEG), confirm={"resting": True})
+        uid = str(stored.handle.uid)
+        figures = self.figures_by_key(uid)
+        self.assertGreater(figures["des.rmv_resting_m3"], 0.0)
+        self.assertGreater(figures["des.rmv_removed_m3"], 0.0)
+        settings = json.loads(self.query("SELECT settings FROM gb_operation WHERE uid = ?", uid)[0][0])
+        self.assertEqual(set(settings["removal_confirmed"]), {"resting"})
+        self.assertRelative(settings["removal_confirmed"]["resting"]["volume_m3"], self.over_m3, "los m³ confirmados")
+        self.assertIn("RMV-001", [entry.record.code for entry in entities.registry(self.project, self.v1.uid)])
+        self.assertFalse(calculation.open)
+
+    def test_d_the_buttress_is_left_with_its_support_removed_and_nothing_is_discarded(self) -> None:
+        """RF-015-17, RF-016-14, P-9 (CE-016-04): tras crear la retirada, ``BTR-001`` queda en **«apoyo retirado»** —con su causa, que nombra el
+        acopio y la retirada— sin descartar nada; la detección y la retirada, al día."""
+        states = {entry.record.code: entry.record.state for entry in entities.registry(self.project, self.v1.uid)}
+        self.assertEqual(states, {"STK-001": State.CURRENT, "BTR-001": State.SUPPORT_REMOVED, "RMV-001": State.CURRENT})
+        why = entities.stale_reason(self.project, self.v1.uid, "BTR-001")
+        assert why is not None
+        self.assertTrue(why.startswith("Apoyo retirado: "), why)
+        for wanted in (KEY, REMOVAL):
+            self.assertIn(wanted, why)
+        self.assertEqual(self.query("SELECT COUNT(*) FROM gb_dataset WHERE status = 'discarded'"), [(0,)], "nada se descartó")
+        (lost,) = entities.retired_supports(self.project, self.v1.uid)
+        self.assertEqual((lost.entity, lost.name), ("BTR-001", BUTTRESS))
+        self.assertTrue(lost.releasable)
+
+    def test_e_a_buttress_made_after_the_removal_is_only_stale(self) -> None:
+        """RF-015-17, CE-016-04: un contrafuerte **después** de la retirada en la cadena (parte de su superficie), sobre el mismo sitio, aunque
+        se apoye en el mismo acopio, **no pierde su apoyo** —la retirada no le quita nada— y, si cambia (otra coronación del ancla), **solo
+        queda obsoleto** (con la causa de la 008, no «apoyo retirado»)."""
+        self.make_buttress(crown(BUTTRESS_AFTER, start="entity:RMV-001"))
+        self.assertEqual(self.entity_state("BTR-002"), State.CURRENT)
+        self.change(design_params.entity_key("BTR-002", "crown_m"), CROWN_M + 10.0)
+        self.assertEqual(self.entity_state("BTR-002"), State.STALE)
+        self.assertEqual(self.entity_state("BTR-001"), State.SUPPORT_REMOVED)
+        reason = entities.stale_reason(self.project, self.v1.uid, "BTR-002")
+        assert reason is not None
+        self.assertTrue(reason.startswith("Obsoleto"), reason)
+        self.assertEqual([row.entity for row in entities.retired_supports(self.project, self.v1.uid)], ["BTR-001"])
+
+    def test_f_recompute_stale_does_not_remake_it_and_this_is_how_it_reads(self) -> None:
+        """RF-016-14, RF-015-17 (error 59; CE-016-04; la nota de la T39): con ``BTR-001`` obsoleta además de sin apoyo, «Recalcular lo
+        obsoleto» **no la recalcula**: no escribe una operación ni un dato, y la unidad **sale ``FAILED``** (no ``REFUSED``: ``core`` solo
+        rehúsa lo descartado) con el código ``core.recompute_failed`` y el motivo «espera una decisión» que nombra el acopio y la retirada;
+        **lo que se lee**: una sola unidad fallida (la de ``BTR-001``), ninguna hecha, y **ni siquiera la del contrafuerte que la sigue** (la
+        retirada y el contrafuerte de después dependen de su superficie, así que esperan a que se resuelva)."""
+        self.change(design_params.entity_key("BTR-001", "crown_m"), CROWN_M + 10.0)
+        self.assertEqual(self.entity_state("BTR-001"), State.SUPPORT_REMOVED)
+        uid = self.uid_of("BTR-001")
+        operations = self.query("SELECT COUNT(*) FROM gb_operation")
+        datasets = self.query("SELECT COUNT(*) FROM gb_dataset")
+        self.clock.advance(minutes=1)
+        outcome = ops.finish(recompute_mod.recompute_steps(self.project))
+        self.assertEqual(self.uid_of("BTR-001"), uid)
+        self.assertEqual(self.query("SELECT COUNT(*) FROM gb_operation"), operations)
+        self.assertEqual(self.query("SELECT COUNT(*) FROM gb_dataset"), datasets)
+        (result,) = [result for result in outcome.results if uid in result.unit.operations]
+        self.assertIs(result.status, recompute_mod.UnitStatus.FAILED, "falla, no se rehúsa")
+        self.assertEqual(result.code, "core.recompute_failed")
+        text = result.text(language="es")
+        assert text is not None
+        for wanted in (KEY, REMOVAL, "decisión"):
+            self.assertIn(wanted, text)
+        self.assertEqual([item.status for item in outcome.results], [recompute_mod.UnitStatus.FAILED],
+                         [(item.status, item.text()) for item in outcome.results])
+        self.assertEqual(self.entity_state("BTR-001"), State.SUPPORT_REMOVED)
+
+    def test_g_the_buttress_declares_no_cut_on_its_crown_zone_and_what_follows_the_order_does_not_fail(self) -> None:
+        """RF-015-10, RF-015-12, P-8, H-6, CE-016-04 (E2): lo que sigue a las órdenes (``after_entity_change``: declarar y recompilar las
+        máscaras) no falla en una versión con la detección, el contrafuerte **sin apoyo** (que protegía y sigue declarando), la retirada y el
+        contrafuerte de después: declara «sin corte» **sobre la zona de coronación** de cada uno (el polígono de la capa, no el de su
+        huella) con su resguardo."""
+        chain = ops.last(import_geoblender("design.entity_store").after_entity_change(self.project, self.v1.uid))
+        self.assertIsNone(chain.failure, None if chain.failure is None else chain.failure.reason)
+        declared = import_geoblender("core.constraints.declared")
+        with self.project.read() as conn:
+            found = {item.entity_code: item for item in declared.read_in_version(conn, self.v1.uid)}
+        self.assertEqual(sorted(found), ["BTR-001", "BTR-002"])
+        zone = np.array(cfx.rectangle(*CROWN_BOX_M))
+        wanted = (float(zone[:, 0].min()), float(zone[:, 1].min()), float(zone[:, 0].max()), float(zone[:, 1].max()))
+        for code, item in found.items():
+            with self.subTest(entity=code):
+                (ring,) = item.parts[0]
+                self.assertEqual((float(ring[:, 0].min()), float(ring[:, 1].min()), float(ring[:, 0].max()), float(ring[:, 1].max())), wanted)
+                self.assertEqual(item.buffer_out_m, GUARD_M)
+        self.assertEqual(self.entity_state("BTR-001"), State.SUPPORT_REMOVED, "declarar no le devuelve el apoyo")
         self.assertEqual(self.temporaries(), [])
 
 

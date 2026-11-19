@@ -348,6 +348,17 @@ superficie conocida y su sentido —«sobre una base» (apoyo: la superficie de 
 existente: deja su base y su espesor dispersos y no cambia la superficie)—, la distancia máxima a los datos (sin valor por defecto: D-9) y
 «cero en el borde». Sigue el patrón de la retirada (:class:`_CalculateAndCreate`; las listas de su diálogo y su resumen, en
 ``bl.ui.des_panels``): no retira nada ni deja una pared, así que no pide más confirmación que Crear.
+
+**Contrafuerte…** (spec 016, T27 (b); HU-016-3; RF-016-17, RF-016-18, RF-015-02, RF-015-03, RF-015-10, RF-015-12, RF-015-28, RF-015-29;
+RNF-016-05; comprobación manual M3): :class:`GEOBLENDER_OT_des_add_buttress` (``geoblender.des_add_buttress``, la clave del catálogo, que
+sigue en la entrada «R-36» hasta que la T35 la entregue) calcula ``des.buttress`` de la versión activa con ``design.steps.buttress_run``:
+el escalonado en relleno de la 013 desde una semilla en la zona de coronación, con el perfil de banco elegido y **sin cortar ninguna
+celda**. Su diálogo pide el nombre, la capa de polígonos y la zona de coronación, la partida (la última de la cadena) y el apoyo, el perfil,
+**la cota de coronación (sin valor por defecto: D-21; fuera del ancla de su perfil se rechaza con la cota del ancla más próxima,
+RF-016-18)**, el alcance, la métrica y si protege (**por defecto sí**, D-1) con su resguardo (obligatorio si protege: D-19) y su motivo.
+Calcular, Crear, Cancelar y Esc son los de :class:`_CalculateAndCreate`. **Tras crear, encadena** ``entity_store.after_entity_change`` como
+«Plataforma…»: declara «sin corte» sobre la **zona de coronación** y no sobre toda la huella (P-8, H-6), recompila las máscaras y pone al
+día la capa de entidades, por pasos con el avance y Esc.
 """
 
 from __future__ import annotations
@@ -6168,6 +6179,298 @@ class GEOBLENDER_OT_des_create_body(_CalculateAndCreate, DesignCommandAware, Pro
         return tr("Computing the supported body… {percent} % · Esc: cancel", percent=percent)
 
 
+# --- Contrafuerte… (spec 016, T27 (b); HU-016-3; RF-016-17, RF-016-18, RF-015-02, RF-015-03, RF-015-10, RF-015-12, RF-015-28, RF-015-29;
+#     RNF-016-05; plan 016 §5.3.3 y §5.5; comprobación manual M3) --------------------------------------------------------
+
+ADD_BUTTRESS = provenance.BUTTRESS_COMMAND
+
+
+class GEOBLENDER_OT_des_add_buttress(_CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal,
+                                     bpy.types.Operator):
+    """Buttress at the toe of a slope"""
+
+    bl_idname = ADD_BUTTRESS
+    bl_label = "Buttress…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.BUTTRESS
+    COMMAND = ADD_BUTTRESS
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the buttress, unique in the active version", options=_FIELD)
+    layer: EnumProperty(  # type: ignore[valid-type]
+        name="Layer of the crown zones",
+        description="Layer of polygons of the project the crown zone of the buttress is taken from",
+        items=des_panels.buttress_zone_items, options=_FIELD)
+    feature: StringProperty(  # type: ignore[valid-type]
+        name="Crown zone of the layer",
+        description="Name or number (fid) of the polygon of the layer that is the crown zone of the buttress", options=_FIELD)
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Surface the buttress starts from: the ground, a design surface or the surface of another entity (by default, the "
+                    "last of the chain)", items=des_panels.platform_start_items, options=_FIELD)
+    support: EnumProperty(  # type: ignore[valid-type]
+        name="Support surface",
+        description="Surface the buttress rests on, if it is not the start surface: a design surface, the exploitation surface of a "
+                    "quarry or the surface of another entity (none: it rests on the start surface); it does not change the calculation",
+        items=des_panels.buttress_support_items, options=_FIELD)
+    profile: StringProperty(  # type: ignore[valid-type]
+        name="Bench profile",
+        description="Bench profile of the buttress: its height, its face, its berm and its anchor give its slopes and the levels the "
+                    "crown can be at", options=_FIELD)
+    crown: StringProperty(  # type: ignore[valid-type]
+        name="Crown elevation (m)",
+        description="Elevation of the crown of the buttress in metres: it has to be one of the anchor levels of its profile (the anchor "
+                    "plus a whole number of bench heights); it has no default value: you choose it", options=_FIELD)
+    reach: StringProperty(  # type: ignore[valid-type]
+        name="Reach (m)",
+        description="Farthest distance from the crown zone the slopes can reach, in metres (empty: down to the lowest elevation of the "
+                    "start surface)", options=_FIELD)
+    metric: EnumProperty(  # type: ignore[valid-type]
+        name="Metric",
+        description="How the distance to the crown zone is measured: the 5×5 chamfer (fast, with the scale of the grid) or the exact "
+                    "Euclidean distance", items=METRIC_ITEMS, default="EXACT", options=_FIELD)
+    protect: BoolProperty(  # type: ignore[valid-type]
+        name="Protect",
+        description="Declare the crown zone a zone without cut: the other designs do not cut in it (the buttress protects by default)",
+        default=True, options=_FIELD)
+    guard: StringProperty(  # type: ignore[valid-type]
+        name="Guard (m)",
+        description="Distance around the crown zone that is also protected, in metres; it is required to protect and has no default "
+                    "value: you choose it", options=_FIELD)
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason",
+        description="Why the crown zone is protected, recorded with the declared constraint (empty: a reason is generated that you can "
+                    "edit later)", options=_FIELD)
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con el avance y Esc: los pone invoke; desde
+    # un guion, sin ellos, de una vez. Un contrafuerte no retira nada ni deja una pared: no pide más confirmación.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué. Con ``confirm``, el diálogo de crear
+        el cálculo abierto. Si no, las listas leídas de nuevo (los perfiles de banco, las superficies, las entidades de la cadena y las
+        capas de polígonos de las zonas de coronación), la propuesta (un nombre, la primera capa y la partida) y el diálogo del cálculo:
+        Intro calcula. Sin ninguna capa de polígonos, lo dice."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.fill_profiles(project)
+            des_panels.refresh_choices(project)
+            des_panels.refresh_platform_choices(project)
+            des_panels.refresh_buttress_choices(project)
+            if not des_panels.has_buttress_zones():
+                self.report({"ERROR"}, tr("There is no layer of polygons in the project: import the crown zones of the buttress first"))
+                return {"CANCELLED"}
+            self._propose(context, project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.COMMAND)].label), confirm_text=tr("Calculate"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """Lo que propone el diálogo si quien lo lanza no lo dio (plan 016 §5.3.3): un nombre que no repite el de ninguna entidad de la
+        versión («Contrafuerte», «Contrafuerte 2»…), **la primera capa de polígonos** y la partida: **la última de la cadena**
+        (``des_panels.platform_default_start``) o, sin entidades calculadas, el terreno (``surface_proposal.ground_item``, con lo
+        seleccionado en la vista). **No propone** el perfil, la cota de coronación ni el resguardo: no tienen valor por defecto (D-21,
+        D-19) y los elige la persona."""
+        given = self.properties.is_property_set
+        if not given("layer"):
+            self.layer = des_panels.buttress_zone_items(None, None)[0][0]
+        if not self.name.strip():
+            names, number = des_panels.platform_names(), 1
+            proposal = base = tr("Buttress")
+            while proposal in names:
+                number += 1
+                proposal = f"{base} {number}"
+            self.name = proposal
+        if not given("start"):
+            start = des_panels.platform_default_start()
+            if start is None and des_panels.has_surfaces():
+                items = [identifier for identifier, _name, _about in des_panels.platform_start_items(None, None)
+                         if identifier != des_panels.NO_ZONE and not identifier.startswith("entity:")]
+                start = surface_proposal.ground_item(context, project, items, des_panels.surface_choice)
+            if start is not None:
+                self.start = start
+
+    def draw(self, context: Any) -> None:
+        """Arriba el nombre; la zona de coronación (su capa y su geometría); la partida y el apoyo; el perfil de banco (se busca entre los
+        del proyecto), la cota de coronación y el alcance; la métrica; si protege, con su resguardo y su motivo. En la confirmación de
+        crear, el resumen."""
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        box = layout.box()
+        box.label(text=tr("Crown zone"), translate=False)
+        box.prop(self, "layer", text=tr("Layer"), translate=False)
+        box.prop(self, "feature", text=tr("Crown zone of the layer"), translate=False)
+        layout.prop(self, "start", text=tr("Start surface"), translate=False)
+        layout.prop(self, "support", text=tr("Support surface"), translate=False)
+        shown = des_panels.view()
+        box = layout.box()
+        box.label(text=tr("Slopes of the buttress"), translate=False)
+        if shown is not None:
+            box.prop_search(self, "profile", shown, "profiles", text=tr("Bench profile"), translate=False)
+        box.prop(self, "crown", text=tr("Crown elevation (m)"), translate=False)
+        box.prop(self, "reach", text=tr("Reach (m)"), translate=False)
+        box.prop(self, "metric", text=tr("Metric"), translate=False)
+        layout.prop(self, "protect", text=tr("Protect"), translate=False)
+        if self.protect:
+            layout.prop(self, "guard", text=tr("Guard (m)"), translate=False)
+            layout.prop(self, "reason", text=tr("Reason"), translate=False)
+
+    # --- Lo pedido ----------------------------------------------------------------------------
+
+    def _request(self, project: Any) -> design_model.ButtressRequest:
+        """Lo pedido en el diálogo como la ``design.model.ButtressRequest`` (RF-016-17), comprobado sin escribir ni calcular nada: los
+        perfiles se leen de nuevo (un guion no abre el diálogo que los lee). **La cota de coronación y el resguardo de quien protege no
+        tienen valor por defecto** (D-21, D-19): si faltan, los rechaza el dominio; una cota fuera del ancla de su perfil, también
+        (RF-016-18, con la cota del ancla más próxima). :class:`ComputeFormError` si falta algo del diálogo."""
+        des_panels.fill_profiles(project)
+        name = self.name.strip()
+        if not name:
+            raise ComputeFormError(tr("Write the name of the buttress"))
+        if self.layer in ("", des_panels.NO_LAYER):
+            raise ComputeFormError(tr("Choose the layer of the crown zones of the buttress"))
+        feature = self.feature.strip()
+        if not feature:
+            raise ComputeFormError(tr("Write the name or the number of the crown zone in its layer"))
+        if self.start in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the start surface of the buttress"))
+        profile = GEOBLENDER_OT_des_compute_envelope._profile_code(self.profile, tr("Bench profile"), des_panels.profile_codes())
+        if profile is None:
+            raise ComputeFormError(tr("Choose the bench profile of the buttress"))
+        return design_model.ButtressRequest(
+            name, design_model.ButtressFields(self.layer), feature, self.start, profile,
+            support=None if self.support in ("", des_panels.NO_ZONE) else self.support,
+            crown_m=typed_number(self.crown, tr("Crown elevation (m)")), reach_m=typed_number(self.reach, tr("Reach (m)")),
+            metric=self.metric.lower(), protect=self.protect,
+            guard_m=typed_number(self.guard, tr("Guard (m)")) if self.protect else None,
+            reason=(self.reason.strip() or None) if self.protect else None)
+
+    # --- Calcular y crear ---------------------------------------------------------------------
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Si no, comprueba lo pedido (sin escribir nada si falta algo), pasa
+        por la puerta de la 008 y calcula el contrafuerte por pasos con ``design.steps.buttress_run`` —compila las máscaras antes si no
+        están al día—, sin registrar nada (RF-015-03): desde la interfaz, en el modal con el avance y Esc (RF-015-29, RNF-016-05); desde
+        un guion, de una vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar. Los rechazos (la capa y su geometría,
+        la cota de coronación sin valor o fuera del ancla de su perfil, el resguardo sin valor de quien protege, la coronación por debajo
+        del apoyo, la partida, un sector con la búsqueda pendiente, el nombre repetido) y todas las cuentas son de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        try:
+            request = self._request(project)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report, dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        steps = design_steps.buttress_run(project, request, version=version, budget_s=self.STEP_BUDGET_S)
+        return self._run_steps(context, project, request.name, steps)
+
+    def _create(self, context: Any) -> set[str]:
+        """«Crear» (RF-016-17, RF-015-02): como las demás (:meth:`_CalculateAndCreate._create`: una transacción) y, **ya creado**,
+        encadena lo que sigue (:meth:`_update_declared`)."""
+        opened = calculation()
+        created = _CalculateAndCreate._create(self, context)
+        if opened is None or "FINISHED" not in created:
+            return created
+        return self._update_declared(context, opened)
+
+    # --- Lo que sigue a crearlo (RF-015-10, RF-012-06; plan 016 §5.3.2, P-8) -------------------
+
+    _chain = False
+    """Si los pasos que corren son los de lo que sigue a crear el contrafuerte (y no los de calcularlo)."""
+
+    def _update_declared(self, context: Any, opened: Calculation) -> set[str]:
+        """Tras crear el contrafuerte, **pone al día** las restricciones que declaran las entidades de la versión y las máscaras
+        (``design.entity_store.after_entity_change``: declara «sin corte» sobre **su zona de coronación** —no sobre toda la huella: P-8,
+        H-6—, recompila las máscaras si ya no están al día, dice qué quedó obsoleto y pone al día la capa de entidades), por pasos con
+        el avance y Esc: el contrafuerte **ya está creado** (cada etapa es una operación y una transacción propias); cerrar o fallar a
+        mitad deja las máscaras obsoletas con su causa y se compilan de nuevo antes de que un operador las use."""
+        from ...design import entity_store  # al usarlo: habilitar no carga el cálculo
+
+        project = SESSION.project
+        self._chain = True
+        steps = entity_store.after_entity_change(project, opened.version, budget_s=self.STEP_BUDGET_S)
+        started = self._run_steps(context, project, opened.name, steps)
+        return {"FINISHED"} if started == {"CANCELLED"} else started  # ya creado: el fallo está dicho
+
+    def _finished(self, context: Any, opened: Any) -> set[str]:
+        """Con los pasos de lo que sigue a crearlo, dice lo que hizo (:meth:`_report_chain`); si no, como las demás órdenes."""
+        if self._chain:
+            self._chain = False
+            self._report_chain(opened)
+            return {"FINISHED"}
+        return _CalculateAndCreate._finished(self, context, opened)
+
+    def _report_chain(self, chain: Any) -> None:
+        """Lo que hizo ``chain`` (``design.entity_store.EntityChain``), en el informe y en el registro: la declaración, las máscaras
+        recompiladas, por restricción el polígono y la zona ganados y perdidos (m²), lo que quedó obsoleto y, en alerta, lo que no se
+        pudo hacer (RF-012-06)."""
+        shown = i18n.language()
+        for notice in chain.notices():
+            self._report({"WARNING" if notice.severity == "warning" else "INFO"}, notice.text(shown))
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
+
+    def _created_text(self, opened: Calculation) -> str:
+        return tr("Buttress «{name}» created in {version}", name=opened.name, version=opened.version)
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Calculando el contrafuerte… 40 % · Esc: cancelar» o, tras crearlo, «Poniendo al día las
+        restricciones declaradas… 40 % · Esc: cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        if self._chain:
+            return tr("Updating the declared constraints and the masks… {percent} % · Esc: cancel", percent=percent)
+        return tr("Computing the buttress… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        if self._chain:
+            return tr("Cancelled: the buttress is created; the declared constraints and the masks are brought up to date before the "
+                      "next operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»")
+        return _CalculateAndCreate._cancelled_text(self)
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        found = _CalculateAndCreate._error_text(self, exc)
+        if self._chain:
+            return f"{found} " + tr("The buttress is created: only the declared constraints and the masks have not been brought up to date")
+        return found
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
@@ -6191,7 +6494,8 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_entity_insert,
                              GEOBLENDER_OT_des_entity_calculate,
                              GEOBLENDER_OT_des_remove_stockpile,
-                             GEOBLENDER_OT_des_create_body)
+                             GEOBLENDER_OT_des_create_body,
+                             GEOBLENDER_OT_des_add_buttress)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
@@ -6203,4 +6507,5 @@ entidades de…» y la T29 la vista previa de una entidad, todas de la entrada �
 (las dos internas nuevas de la T31, «Lo que se apoya en ella» e «Insertar antes o después de…», también; y la T41, «Calcular…»;
 y la T43, la interna que lanza «Cambiar parámetro…», sin menú); de la 016, la T20 pone «Retirar un acopio…», interna, de la entrada
 «016», que la entrega (la T35 la pondrá detrás de «Acopio (detectar, retirar)…»); la T25 pone «Cuerpo apoyado…», interna, de la misma
-entrada (la T35 la pondrá en el menú))."""
+entrada (la T35 la pondrá en el menú); la T27 pone «Contrafuerte…», con la clave del catálogo ``des_add_buttress``, que sigue en la entrada
+R-36 (la T35 la entrega))."""

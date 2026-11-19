@@ -158,6 +158,12 @@ ofrece también la superficie de cada retirada de la cadena), **lo que se apoya 
 su cálculo (:func:`_removal_lines`: lo retirado, lo apoyado, la transición, lo no retirado, la pared y su motivo, la lista de lo que se
 apoyaba y sus avisos; el resumen de ``design.preview.RemovalSummary``).
 
+**«Contrafuerte…»** (spec 016, T27; HU-016-3; RF-016-17, RF-016-18; plan 016 §5.3.3, §5.5; comprobación manual M3): las listas de su
+diálogo (:func:`refresh_buttress_choices`: las capas de polígonos de las zonas de coronación, :func:`buttress_zone_items`, y las
+superficies de apoyo, :func:`buttress_support_items`; la partida es la de «Plataforma…», :func:`platform_start_items`, y el perfil se
+elige entre los de la vista de los perfiles de banco) y el resumen de su cálculo (:func:`_buttress_lines`: el volumen, el área y la mayor
+altura con su lugar, la coronación con su perfil y su zona, lo que declarará y sus avisos; el resumen de ``design.preview.ButtressSummary``).
+
 **La barra N «Entidad»** (spec 015, T28; HU-015-1; RF-015-25, RF-010-06; D-12): el panel
 ``GEOBLENDER_PT_des_entity`` (de la Vista 3D) enseña, del objeto ``DESIGN_ENTITY`` activo (la huella y el eje de una
 entidad cargados en la vista por ``bl.scene.entity_views``), lo que dice de ella el proyecto
@@ -641,6 +647,8 @@ class _Choices:
     body_footprints: list[tuple[str, str, str]] = field(default_factory=list)
     body_data: list[tuple[str, str, str]] = field(default_factory=list)
     body_kinds: dict[str, str] = field(default_factory=dict)
+    buttress_zones: list[tuple[str, str, str]] = field(default_factory=list)
+    buttress_supports: list[tuple[str, str, str]] = field(default_factory=list)
     by_id: dict[str, res_surfaces.SurfaceChoice] = field(default_factory=dict)
     key: tuple[str, str, str] | None = None
 
@@ -1164,6 +1172,46 @@ def has_body_footprints() -> bool:
     return any(item[0] != NO_LAYER for item in _CHOICES.body_footprints)
 
 
+def _fixed_choices_buttress() -> None:
+    """Las listas de «Contrafuerte…» sin nada del proyecto: «—» (sin capas de zonas de coronación) y «sin apoyo»."""
+    _CHOICES.buttress_zones = [(NO_LAYER, NOT_SHOWN, tr("There are no layers of polygons in the project"))]
+    _CHOICES.buttress_supports = [(NO_ZONE, tr("No support surface"), tr("The buttress rests on no other surface"))]
+
+
+def refresh_buttress_choices(project: Any) -> None:
+    """Vuelve a leer de ``project`` las listas de «Contrafuerte…» (spec 016, T27; plan 016 §5.2.1 y §5.3.3): las capas «entidades» de
+    **polígonos** (``gis_fea_``) para la zona de coronación y las superficies de apoyo (**«sin apoyo»** y las mismas de partida de
+    :func:`platform_start_items`: la superficie de la cantera de la 014, las de diseño y las de las entidades de la cadena). La partida y
+    sus entidades son las de :func:`refresh_platform_choices`, que se llama antes. Si no se puede leer, el error sigue."""
+    _fixed_choices_buttress()
+    polygons = [name for name, kind in constraint_panels.search_layers(project) if kind == "polygon"]
+    if polygons:
+        _CHOICES.buttress_zones = [(name, constraint_panels.layer_label(name), tr("Layer of polygons")) for name in polygons]
+    starts = [item for item in _CHOICES.platform_starts if item[0] != NO_ZONE]
+    _CHOICES.buttress_supports = [*_CHOICES.buttress_supports, *starts]
+
+
+def buttress_zone_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las capas de polígonos que ofrece «Contrafuerte…» para la zona de coronación (spec 016, T27; una lista viva del módulo); sin
+    ninguna, «—»."""
+    if not _CHOICES.buttress_zones:
+        _fixed_choices_buttress()
+    return _CHOICES.buttress_zones
+
+
+def buttress_support_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las superficies de apoyo de «Contrafuerte…» (spec 016, T27): «sin apoyo» —se apoya en la de partida— y las superficies de partida
+    (una lista viva del módulo)."""
+    if not _CHOICES.buttress_supports:
+        _fixed_choices_buttress()
+    return _CHOICES.buttress_supports
+
+
+def has_buttress_zones() -> bool:
+    """Si la lista de «Contrafuerte…» ofrece alguna capa de zonas de coronación."""
+    return any(item[0] != NO_LAYER for item in _CHOICES.buttress_zones)
+
+
 def forget_choices() -> None:
     """Olvida las listas leídas (al desregistrar)."""
     _CHOICES.key = None
@@ -1175,6 +1223,7 @@ def forget_choices() -> None:
     _CHOICES.platform_names, _CHOICES.platform_start = [], None
     _CHOICES.removal_stockpiles, _CHOICES.removal_by_ref = [], {}
     _CHOICES.body_footprints, _CHOICES.body_data, _CHOICES.body_kinds = [], [], {}
+    _CHOICES.buttress_zones, _CHOICES.buttress_supports = [], []
     _RESTING.lines = []
     _CHOICES.by_id = {}
 
@@ -1547,6 +1596,39 @@ def _body_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     return lines
 
 
+def _profile_label(code: str) -> str:
+    """El nombre con que enseña el diálogo el perfil de banco de código ``code`` (el de la vista de los perfiles; el código si no lo
+    conoce)."""
+    shown = view()
+    names = {} if shown is None else {item.code: item.name for item in shown.profiles}
+    return names.get(code, code)
+
+
+def _buttress_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+    """El resumen de un contrafuerte calculado (``design.buttress.ButtressOutcome`` y ``design.preview.ButtressSummary``; spec 016, T27;
+    RF-016-17, RF-016-18; M3): su volumen, su área y su mayor altura con su lugar, la cota de coronación con el perfil y la zona de
+    coronación (su capa y sus celdas) y **lo que declarará**: «sin corte» sobre la zona de coronación con su resguardo, o que no protege.
+    Los avisos y lo que quedará obsoleto los añade :func:`summary_lines`."""
+    outcome, summary = calculation.outcome, calculation.summary
+    lines = [(tr("Buttress «{name}» ({code}): {volume} m³ over {area} m² · largest height {height} m at ({x}, {y})",
+                 name=calculation.name, code=outcome.code,  # type: ignore[union-attr]
+                 volume=_number(outcome.volume_m3),  # type: ignore[union-attr]
+                 area=_number(outcome.area_m2),  # type: ignore[union-attr]
+                 height=_number(outcome.height_max_m, 2),  # type: ignore[union-attr]
+                 x=_number(outcome.height_max_x, 1), y=_number(outcome.height_max_y, 1)), False),  # type: ignore[union-attr]
+             (tr("Crown at {crown} m · profile «{profile}» · crown zone of «{layer}»: {cells} cells",
+                 crown=_number(outcome.crown_m, 2),  # type: ignore[union-attr]
+                 profile=_profile_label(outcome.profile),  # type: ignore[union-attr]
+                 layer=summary.layer,  # type: ignore[union-attr]
+                 cells=_number(int(outcome.zone.sum()))), False)]  # type: ignore[union-attr]
+    if summary.protect:  # type: ignore[union-attr]
+        lines.append((tr("It will declare «no cut» on its crown zone, with a guard of {guard} m",
+                         guard=_number(summary.guard_m, 1)), False))  # type: ignore[union-attr]
+    else:
+        lines.append((tr("It does not protect its crown zone: it declares no constraint"), False))
+    return lines
+
+
 def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de un cálculo hecho y sin registrar (RF-013-31), línea a línea y en el idioma de
     Geoblender, con los avisos al final y en alerta: de una envolvente, sus celdas, su área, sus
@@ -1564,6 +1646,8 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
         lines.extend(_removal_lines(calculation))
     elif calculation.op_type == design_provenance.BODY:
         lines.extend(_body_lines(calculation))
+    elif calculation.op_type == design_provenance.BUTTRESS:
+        lines.extend(_buttress_lines(calculation))
     elif calculation.op_type == design_provenance.QUARRY:
         lines.extend(_quarry_lines(calculation.outcome))
     elif calculation.op_type == design_provenance.REFIT:
@@ -1701,6 +1785,8 @@ def show_summary(calculation: Calculation | None) -> None:
                    version=calculation.version)
     elif calculation.op_type == design_provenance.BODY:
         title = tr("Supported body «{name}» in {version}", name=calculation.name, version=calculation.version)
+    elif calculation.op_type == design_provenance.BUTTRESS:
+        title = tr("Buttress «{name}» in {version}", name=calculation.name, version=calculation.version)
     else:
         title = tr("Benching «{name}» in {version}", name=calculation.name,
                    version=calculation.version)
