@@ -189,6 +189,9 @@ PENDING_015_API: frozenset[str] = frozenset({
     # La 016, T32: la vista previa de las marcas de los acopios y de la zona de coronación del contrafuerte (``design.preview``).
     "stockpile_preview_steps", "buttress_preview_steps", "StockpilePreview", "MarkPreview", "ButtressPreview", "guard_zone_units",
     "zone_rings",
+    # La 016, T33: lo que el dominio da a la vista y a la barra N de los acopios y de los tipos nuevos (``design.stockpile_store``,
+    # ``design.entity_store`` y ``design.entities``).
+    "read_stored_rows", "stockpile_row_notice", "candidate_row_notice", "stored_notes", "read_entity_report", "live_removals", "operation_table",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 016, T05: la morfología con un disco exacto (A1). Su fila de la ficha (``des.md`` §4.4) la lleva la T38,

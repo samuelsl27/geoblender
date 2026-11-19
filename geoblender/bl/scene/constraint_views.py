@@ -354,9 +354,11 @@ def load_compliance_grid(request: views.ViewRequest) -> Generator[float, None, v
         raise
 
 
-_ENTITY_KIND_MSGID = {"platform": "Platform"}
+_ENTITY_KIND_MSGID = {"platform": "Platform", "stockpile": "Stockpile detection", "removal": "Stockpile removal", "buttress": "Buttress",
+                      "body": "Supported body"}
 """El ``msgid`` del tipo de cada entidad de diseño (``design.entities.EntityKind``) para nombrarla
-(«Plataforma P1»); la 016 añade los suyos."""
+(«Plataforma P1»); los cuatro de la 016 (T33), el de su operación: «Detección de acopios», «Retirada de un acopio», «Contrafuerte» y
+«Cuerpo apoyado»."""
 
 
 def entity_text(entity_code: str, entity_name: str) -> str:
@@ -367,8 +369,13 @@ def entity_text(entity_code: str, entity_name: str) -> str:
 
     kind = next((item for item in EntityKind if entity_code.startswith(f"{item.prefix}-")), None)
     msgid = None if kind is None else _ENTITY_KIND_MSGID.get(kind.value)
-    return entity_name if msgid is None else tr("{kind} {name}", kind=translate(language(), msgid),
-                                                name=entity_name)
+    if msgid is None:
+        return entity_name
+    named = translate(language(), msgid)
+    words = entity_name.split()
+    if words and words[0].casefold() == named.split()[0].casefold():  # «Plataforma de carga» no se vuelve «Plataforma Plataforma de carga» (T33)
+        return entity_name
+    return tr("{kind} {name}", kind=named, name=entity_name)
 
 
 def declared_text(entity_code: str, entity_name: str) -> str:

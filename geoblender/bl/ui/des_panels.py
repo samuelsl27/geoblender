@@ -182,7 +182,19 @@ cambiado y tras cargar un ``.blend`` (``WindowManager.geoblender_design.item``),
 entidad leída, al final de la barra N está el botón «Exportar rejilla a GeoTIFF…» (T30; RF-015-27: la misma
 ``geoblender.des_export_design_grid``, que con el objeto de una entidad exporta **su superficie**, ``des_psf_``): como el
 de la barra N «Diseño», siempre activo, porque exportar no escribe en el proyecto. La ventana de «Lo que se apoya en ella» del
-menú «Entidad ▾» (T31; RF-015-28) dibuja esas mismas filas de dependencias (:func:`dependent_texts`)."""
+menú «Entidad ▾» (T31; RF-015-28) dibuja esas mismas filas de dependencias (:func:`dependent_texts`).
+
+**La barra N «Entidad» con los tipos de la 016** (spec 016, T33; HU-016-1 a HU-016-4; RF-015-25, RF-016-14; plan 016 §5.5; comprobación manual M5): la
+misma ficha (:func:`entity_card`) para una **detección de acopios** (el objeto de ``des_stk_``; también la **del proyecto**, D-15, sin lista de
+dependencias: se leen en cada versión), una **retirada**, un **contrafuerte** y un **cuerpo apoyado**, con lo propio de cada tipo tras su estado
+(:func:`_type_lines`; sus parámetros, los de su familia ``des.<tipo>.{e}.*``; el tipo sin cadena no la tiene): de la detección, **sus acopios**
+(:func:`_stockpile_lines`: la nota del resumen de «Calcular» con lo guardado —plano, huella, volumen, espesor máximo y material—, sus avisos y,
+en alerta, **«retirado en su superficie»** por una retirada viva) y **la lista de candidatos con su estado** (:func:`_candidate_lines`: pendiente, convertido
+o descartado, con su motivo, quién y cuándo; los botones de convertir y descartar los pone la orden de la lista de candidatos, T35); de la retirada,
+**lo retirado, lo apoyado y la pared** (:func:`_removal_card_lines`); del contrafuerte, **la coronación y el pie cortado** (:func:`_buttress_card_lines`);
+del cuerpo, **el espesor y lo lejano** (:func:`_body_card_lines`). Los estados son los de la 015 (al día, obsoleta, descartada, «apoyo retirado» y
+sin calcular) y, de un acopio, «retirado en su superficie» (D-12). Todo se **lee del proyecto** (las tablas de la operación vigente y su informe,
+``design.entity_store.read_entity_report``); los textos de los avisos salen de los códigos guardados, en el idioma de la interfaz."""
 
 from __future__ import annotations
 
@@ -2592,9 +2604,12 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
         transition = link.op_type == design_provenance.EDGE_TRANSITION
         # Un ajuste a un límite nuevo (T33): tampoco; la superficie que ajusta y su partida.
         refit = link.op_type == design_provenance.REFIT
+        # Lo que dejan los acopios y los cuerpos apoyados (T33; la base, el espesor, el terreno sin acopios): sin envolvente, sin semillas ni
+        # partida de un diseño; la entidad que lo hizo.
+        made = link.op_type in (*design_provenance.STOCKPILE_DETECT_TYPES, design_provenance.BODY)
         envelope_settings: Mapping[str, Any] | None = settings
         if (link.op_type != design_provenance.ENVELOPE and not area and not quarry
-                and not transition and not refit):
+                and not transition and not refit and not made):
             envelope_settings =_stored_settings(conn, owner, design_provenance.ENVELOPE_GRID,
                                                  settings.get("envelope"))  # la que escaló
     version_code = found.revision.code if found.revision is not None else ""
@@ -2622,7 +2637,7 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     elif assigned := profiles_text(settings, profile_names, names):
         lines.append(CardLine(ROW_FIELD, tr("Profiles: {profiles}", profiles=assigned)))
     if (link.op_type != design_provenance.ENVELOPE and not area and not quarry and not transition
-            and not refit):
+            and not refit and not made):
         lines.append(CardLine(ROW_FIELD, tr("Envelope: «{name}»",
                                             name=str(settings.get("envelope") or ""))))
     if transition:
@@ -2631,7 +2646,10 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     if refit:  # la superficie de diseño de la que sale este dato ajustado (T33)
         lines.append(CardLine(ROW_FIELD, tr("Refitted surface: «{surface}»", surface=str(
             design_provenance.refit_source(settings, found.record.name) or ""))))
-    if link.op_type != design_provenance.ENVELOPE:
+    if made:  # la entidad que dejó este dato (su nombre y su código; la barra «Entidad» dice el resto)
+        lines.append(CardLine(ROW_FIELD, tr("Made by the entity «{name}» ({code})", name=str(settings.get("name") or found.record.name),
+                                            code=str(settings.get("code") or ""))))
+    if link.op_type != design_provenance.ENVELOPE and not made:
         start = settings.get("start" if quarry or transition or refit else "surface")
         lines.append(CardLine(ROW_FIELD, tr("Start surface: «{surface}»",
                                             surface=str(start or ""))))
@@ -2642,8 +2660,8 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     lines.append(CardLine(ROW_HEADING, tr("Parameters")))
     lines += [parameter_line(used, version_code) for used in link.params] or [
         CardLine(ROW_NONE, tr("No parameters recorded"))]
-    # El recinto, la transición y el ajuste no tienen semillas ni acotado.
-    if not area and not transition and not refit:
+    # El recinto, la transición, el ajuste y lo que dejan los acopios y los cuerpos no tienen semillas ni acotado.
+    if not area and not transition and not refit and not made:
         lines.append(CardLine(ROW_HEADING, tr("Seeds and domains")))
         lines += (_quarry_seed_lines(request, constraints, names) if quarry else
                   _seed_card(settings, envelope_settings, constraints, names, found.record.name))
@@ -2676,6 +2694,17 @@ lista de lo que se apoya en otra: el ``msgid`` de su texto."""
 _SKIPPED_PARAMS = frozenset({"name", "discarded"})
 """Los parámetros de una entidad que su ficha no repite entre los demás: el nombre es su título y si está descartada lo
 dice su estado."""
+LIST_LIMIT = 30
+"""Cuántos acopios y cuántos candidatos enseña como mucho la barra N de una detección (spec 016, T33): el resto, en una línea («… y 70 acopios
+más»). Una lista de cientos de filas no cabe en una barra; todos están en la tabla del proyecto y en la capa de entidades (T34)."""
+_CHOICES_TEXT = {
+    "mode": {"cut": "In cut", "cut_fill": "In cut and fill"},
+    "metric": {"exact": "Exact Euclidean", "chamfer5": "Chamfer 5×5"},
+    "sense": {"on_base": "On a base", "under_roof": "Under a roof"},
+    "data_from": {"field": "A field", "z": "The Z of the vertices", "m": "The M of the vertices"},
+}
+"""El ``msgid`` del rótulo de cada opción de un parámetro de lista cerrada de una entidad (``valor`` → ``msgid``): el modo y la métrica del
+borde de la plataforma y de la retirada y el contrafuerte (T45, E-6) y, del cuerpo apoyado (T33), su sentido y de dónde se lee el espesor."""
 
 
 def entity_wanted(context: Any = None) -> str:
@@ -2708,7 +2737,8 @@ def _entity_state_line(project: Any, conn: sqlite3.Connection, version: Any, ent
     if state == "uncalculated":
         return CardLine(ROW_FIELD, tr("Not calculated: it has its parameters in this version and no result"))
     if state in ("stale", "support_removed"):
-        cause = entities.stale_reason(project, version.uid, entry.record.code, language=language(), conn=conn)
+        cause = entities.stale_reason(project, "" if version is None else version.uid, entry.record.code, language=language(),
+                                      conn=conn)
         return CardLine(ROW_FIELD, cause or tr("Out of date"), alert=True)
     return CardLine(ROW_FIELD, tr("Up to date"))
 
@@ -2720,15 +2750,11 @@ def _badged(text: str, stored: Any) -> str:
 
 
 def _choice_label(param: Any, value: object) -> str | None:
-    """El rótulo de la opción de un parámetro de lista cerrada (el modo y la métrica del borde de la plataforma), el que
-    lleva en el diálogo de «Plataforma…»: «En corte», no ``cut`` (T45, E-6); ``None`` si no es uno de ellos."""
-    from ...design.params import PlatformParam
-
-    if param is PlatformParam.MODE:
-        return {"cut": tr("In cut"), "cut_fill": tr("In cut and fill")}.get(str(value))
-    if param is PlatformParam.METRIC:
-        return {"exact": tr("Exact Euclidean"), "chamfer5": tr("Chamfer 5×5")}.get(str(value))
-    return None
+    """El rótulo de la opción de un parámetro de lista cerrada (el modo y la métrica del borde de la plataforma, la retirada y el
+    contrafuerte; el sentido y el origen del espesor de un cuerpo, T33), el que lleva en su diálogo: «En corte», no ``cut`` (T45, E-6);
+    ``None`` si no es uno de ellos."""
+    found = _CHOICES_TEXT.get(str(param), {}).get(str(value))
+    return None if found is None else translate(language(), found)
 
 
 def _entity_value_text(param: Any, stored: Any, listed: Any) -> str:
@@ -2736,9 +2762,8 @@ def _entity_value_text(param: Any, stored: Any, listed: Any) -> str:
     (:func:`~.res_panels.record_text`); de la superficie de partida o de apoyo que es la de otra entidad
     (``entity:PLT-001``), la entidad con su código; y del modo y la métrica, el rótulo de su opción (T45, E-6)."""
     from ...design import entities
-    from ...design.params import PlatformParam
 
-    if param in (PlatformParam.START, PlatformParam.SUPPORT) and isinstance(stored.value, str):
+    if param in ("start", "support") and isinstance(stored.value, str):
         code = entities.ref_code(stored.value)
         other = None if code is None else listed.get(code)
         if other is not None:
@@ -2750,27 +2775,28 @@ def _entity_value_text(param: Any, stored: Any, listed: Any) -> str:
 def _entity_parameter_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any, listed: Any
                             ) -> tuple[list[CardLine], dict[Any, Any]]:
     """Los parámetros de la entidad con su insignia de tipo y su origen (RF-015-25; ADR-0013): cada valor de su familia
-    ``des.platform.{e}.*`` que tiene el valor propio de la versión o, si no, el del proyecto, como una línea de una
+    ``des.<tipo>.{e}.*`` que tiene el valor propio de la versión o, si no, el del proyecto, como una línea de una
     operación (:func:`parameter_line`): «Pendiente de la rasante de la plataforma: 0 % [ADO] · V01 · capa «x», campo
     «pendiente», entidad «Carga» · decidido por …». Sin valor, solo la superficie de partida (sin elegir, «—»). También
     devuelve los valores almacenados por parámetro (``None``: sin fila), para lo que declara la entidad."""
-    from ...design.params import PlatformParam, entity_key
+    from ...design import entities
+    from ...design.params import entity_key
 
     shown = language()
     store = ParameterStore(project)
     found: dict[Any, Any] = {}
     lines: list[CardLine] = []
-    for param in PlatformParam:
+    for param in entities.entity_type(entry.record.kind).params.names:  # los valores de la familia de su tipo (T33)
         key = entity_key(entry.record.code, param)
-        stored = store.get(key, version=version.uid, conn=conn) or store.get(key, conn=conn)
+        stored = (store.get(key, version=version.uid, conn=conn) if version is not None else None) or store.get(key, conn=conn)
         found[param] = stored
-        if param.value in _SKIPPED_PARAMS or stored is None:
+        if param in _SKIPPED_PARAMS or stored is None:
             continue
-        if stored.value is None and param is not PlatformParam.START:
+        if stored.value is None and param != "start":
             continue
         defn = param_definition(key)
         label = translate(shown, defn.label_msgid) if defn is not None and defn.label_msgid else key
-        scope = version.code if stored.scope == "version" else tr("the project")
+        scope = version.code if stored.scope == "version" and version is not None else tr("the project")
         origin = [str(stored.source or ""), tr("decided by {person}", person=stored.decided_by)
                   if stored.decided_by else ""]
         parts = [f"{label}: {_entity_value_text(param, stored, listed)}", scope, *(part for part in origin if part)]
@@ -2785,12 +2811,14 @@ def _entity_declared_lines(project: Any, version: Any, entry: Any, stored: Mappi
     fuera de Geoblender, con qué hacer; «divergente» si lo vigente no es lo que declararían las entidades), su resguardo, su
     motivo y quién la decidió; si protege y su restricción aún no está declarada, lo dice; si no protege, que no declara
     ninguna. Una descartada o sin calcular no declara."""
+    from ...design import entities
     from ...design.params import PlatformParam
     from ...gis.masks import store as masks_store  # al usarlo: habilitar no lo carga
 
     shown = language()
     protect = stored.get(PlatformParam.PROTECT)
-    if str(entry.record.state) in ("discarded", "uncalculated") or protect is None or protect.value is not True:
+    if (version is None or not entities.entity_type(entry.record.kind).has_footprint  # la detección no tiene huella que declarar
+            or str(entry.record.state) in ("discarded", "uncalculated") or protect is None or protect.value is not True):
         return [CardLine(ROW_NONE, tr("It declares no constraint"))]
     code = entry.record.code
     guard = stored.get(PlatformParam.GUARD)
@@ -2856,6 +2884,8 @@ def _entity_dependent_line(item: Any) -> CardLine:
         text = item.text(shown)
     else:  # una superficie que no es de una entidad ni de un diseño: el terreno de partida
         text = tr("{name}: start surface", name=item.name)
+    if getattr(item, "stockpile", None):  # de un acopio de una detección (T33): en cuál de ellos
+        text = f"{text} · {tr('on the stockpile «{stockpile}»', stockpile=item.stockpile)}"
     msgid = _NOT_CURRENT_TEXT.get(str(item.state))
     if msgid is None:
         return CardLine(ROW_FIELD, text)
@@ -2887,61 +2917,326 @@ def _entity_figures(conn: sqlite3.Connection, entry: Any) -> list[CardLine]:
     return lines or [CardLine(ROW_NONE, tr("No figures recorded"))]
 
 
-def entity_card(project: Any, version_uid: str, code: str, *, conn: sqlite3.Connection) -> ItemLines | None:
-    """Lo que dice el proyecto de la entidad ``code`` (código o nombre) de la versión ``version_uid`` (véase el módulo),
-    leído con ``conn`` (una instantánea de lectura de quien llama) y sin escribir nada: su título («Plataforma Carga
-    (PLT-002)»), su **estado** (al día; obsoleta o con el apoyo retirado, con su causa; descartada; sin calcular), sus
-    **parámetros** con su insignia de tipo y su origen, sus **restricciones declaradas**, su **cadena**, **en qué se
-    apoya** y **lo que se le apoya** (una sola lista cada uno, con sus m³) y, aparte, sus **cifras**. ``None`` si la
-    versión o la entidad no existen. Funciona también con una entidad sin calcular (que no tiene objeto en la vista)."""
+def _removals_of(project: Any, conn: sqlite3.Connection, version: Any, code: str) -> dict[str, list[tuple[Any, str]]]:
+    """Las retiradas vivas de cada acopio de la detección ``code`` (clave del acopio → ``(retirada, código de la versión)``; spec 016, T33; D-12:
+    «retirado en su superficie»): las de la versión de la detección o, si es **del proyecto** (``version`` ``None``), las de la versión activa;
+    sin versión, ninguna. Cuenta también la que retira un acopio de una detección del proyecto (``consumed`` falso). Solo lee."""
     from ...core.versions import read as versions_read
     from ...design import entities
 
-    version = versions_read.version(conn, version_uid)
-    if version is None:
+    active = scene_versions.active_version()
+    scope = version if version is not None else (versions_read.version(conn, active) if active else None)
+    if scope is None:
+        return {}
+    found: dict[str, list[tuple[Any, str]]] = {}
+    for item in entities.live_removals(project, scope.uid, conn=conn, consumed=False):
+        if item.detection == code:
+            found.setdefault(item.key, []).append((item, scope.code))
+    return found
+
+
+def _stockpile_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any) -> list[CardLine]:
+    """Los acopios de la detección ``entry`` (spec 016, T33; RF-015-25, RF-016-14; plan 016 §5.5), **leídos de la tabla de su operación vigente**:
+    por acopio, su referencia (``STK-001#m07``), su plano, su huella, su volumen, su espesor máximo y su material (la nota del resumen de
+    «Calcular», ``stockpile_store.stockpile_row_notice``), sus avisos y notas y, si una retirada viva lo retira, «retirado en su superficie»
+    (D-12), en alerta; los :data:`LIST_LIMIT` primeros. Una detección sin calcular o sin acopios, lo dice."""
+    from ...design import entity_store, stockpile_store
+
+    shown = language()
+    table = None if entry.operation_uid is None else entity_store.operation_table(
+        conn, entry.operation_uid, design_provenance.STOCKPILES_ROLE)
+    if table is None:
+        return []
+    rows = stockpile_store.read_stored_rows(conn, design_provenance.STOCKPILES_TABLE, table)
+    removed = _removals_of(project, conn, version, entry.record.code)
+    lines = [CardLine(ROW_HEADING, tr("Stockpiles ({count})", count=len(rows)))]
+    if not rows:
+        return [*lines, CardLine(ROW_NONE, tr("The detection has no stockpiles"))]
+    for row in rows[:LIST_LIMIT]:
+        ref = design_provenance.support_ref(entry.record.code, str(row["key"]))
+        origin = f" · {tr('from a candidate')}" if row["origin"] == "candidate" else ""
+        lines.append(CardLine(ROW_FIELD, f"{ref}{origin}: {stockpile_store.stockpile_row_notice(row).text(shown)}"))
+        for note in stockpile_store.stored_notes(row):
+            lines.append(CardLine(ROW_FIELD, note.text(shown), alert=note.severity == "warning"))
+        for gone, version_code in removed.get(str(row["key"]), ()):
+            lines.append(CardLine(ROW_FIELD, tr("Removed on its surface by «{removal}» ({code}) in {version}", removal=gone.removal,
+                                                code=gone.code, version=version_code), alert=True))
+    if len(rows) > LIST_LIMIT:
+        lines.append(CardLine(ROW_NONE, tr("… and {count} more stockpiles", count=len(rows) - LIST_LIMIT)))
+    return lines
+
+
+def _candidate_lines(conn: sqlite3.Connection, entry: Any, stored: Mapping[Any, Any]) -> list[CardLine]:
+    """Los candidatos de la detección ``entry`` (spec 016, T33; RF-016-08, RF-016-10): por candidato, su clave, su huella, su volumen y su plano
+    y **su estado** —pendiente (en alerta: pide una decisión), convertido en acopio o descartado, con su motivo, quién y cuándo (D-23)—, leídos de la
+    tabla de su operación vigente; los :data:`LIST_LIMIT` primeros. Sin candidatos pedidos ni listados, nada. Los botones de convertir y descartar
+    son de la orden de la lista de candidatos (T35): aquí, la lista y el estado."""
+    from ...design import entity_store, stockpile_store
+
+    shown = language()
+    table = None if entry.operation_uid is None else entity_store.operation_table(
+        conn, entry.operation_uid, design_provenance.STOCKPILE_CANDIDATES_ROLE)
+    rows = () if table is None else stockpile_store.read_stored_rows(conn, design_provenance.STOCKPILE_CANDIDATES_TABLE, table)
+    asked = stored.get("candidates")
+    if not rows and not (asked is not None and asked.value is True):
+        return []
+    lines = [CardLine(ROW_HEADING, tr("Candidates ({count})", count=len(rows)))]
+    if not rows:
+        return [*lines, CardLine(ROW_NONE, tr("The detection has no candidates"))]
+    for row in rows[:LIST_LIMIT]:
+        text = stockpile_store.candidate_row_notice(row).text(shown)
+        reason, person, date = row["reason"] or NOT_SHOWN, row["decided_by"] or NOT_SHOWN, row["decided_on"] or NOT_SHOWN
+        if row["state"] == "converted":
+            lines.append(CardLine(ROW_FIELD, f"{text} · " + tr("Converted into a stockpile: {reason} ({person}, {date})",
+                                                               reason=reason, person=person, date=date)))
+        elif row["state"] == "discarded":
+            lines.append(CardLine(ROW_FIELD, f"{text} · " + tr("Discarded: {reason} ({person}, {date})",
+                                                               reason=reason, person=person, date=date)))
+        else:
+            lines.append(CardLine(ROW_FIELD, f"{text} · {tr('Pending: convert it into a stockpile or discard it with a reason')}",
+                                  alert=True))
+    if len(rows) > LIST_LIMIT:
+        lines.append(CardLine(ROW_NONE, tr("… and {count} more candidates", count=len(rows) - LIST_LIMIT)))
+    return lines
+
+
+def _report_notice_lines(report: Sequence[tuple[str, float | None, str | None, str | None]]) -> list[CardLine]:
+    """Los avisos y notas del informe de una operación (``des_prp_``: las filas ``warning`` y ``note``, con su código y sus valores en JSON, no el
+    texto) como líneas, en su orden y en el idioma de la interfaz; el aviso, en alerta. Sin ninguno, ninguna."""
+    from ...design.preview import Notice
+
+    shown = language()
+    lines: list[CardLine] = []
+    for quantity, _value, _unit, note in report:
+        if quantity not in ("warning", "note") or not note:
+            continue
+        found = json.loads(note)
+        lines.append(CardLine(ROW_FIELD, Notice(str(found["code"]), found.get("values", {})).text(shown), alert=quantity == "warning"))
+    return lines
+
+
+def _report_place(note: str | None) -> tuple[float, float] | None:
+    """El lugar (``x;y`` absolutos) que anota una fila del informe, o ``None`` si no lo lleva."""
+    if not note or ";" not in note:
         return None
-    listed = entities.registry(project, version.uid, conn=conn)
+    try:
+        x, _, y = note.partition(";")
+        return float(x), float(y)
+    except ValueError:
+        return None
+
+
+def _removal_card_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any, stored: Mapping[Any, Any],
+                        report: Sequence[tuple[str, float | None, str | None, str | None]]) -> list[CardLine]:
+    """Lo que dice la barra N de una **retirada** (spec 016, T33; RF-016-11 a RF-016-15, RF-015-25): **lo retirado** (el acopio), **lo apoyado**
+    (los m³ que se le apoyaban y quién lo confirmó, y lo que por eso perdió su apoyo, en alerta) y **la pared** del borde (su altura y su lugar y,
+    si se confirmó, quién y su motivo), más los avisos del cálculo. Leído de la operación vigente y de su informe; nada se calcula."""
+    from ...design import entities, supported_store
+
+    shown = language()
+    first = {quantity: (value, note) for quantity, value, _unit, note in reversed(report)}
+    row = stored.get("stockpile")
+    lines = [CardLine(ROW_HEADING, tr("Removal")),
+             CardLine(ROW_FIELD, tr("Removes the stockpile {stockpile}", stockpile=NOT_SHOWN if row is None or row.value is None
+                                    else str(row.value)))]
+    settings = conn.execute("SELECT settings FROM gb_operation WHERE uid = ?", (entry.operation_uid,)).fetchone()
+    try:
+        confirmed = supported_store.confirmed_of(json.loads(str(settings[0]) if settings and settings[0] else "{}"))
+    except ValueError:
+        confirmed = None
+    resting = first.get("resting_m3", (0.0, None))[0] or 0.0
+    if resting > 0:
+        text = tr("{volume} m³ rested on the stockpile", volume=format_number(resting, 0))
+        if confirmed is not None and confirmed.resting_m3 is not None:
+            text = f"{text} · {tr('confirmed by {person} on {date}', person=confirmed.decided_by, date=confirmed.decided_on[:10])}"
+        lines.append(CardLine(ROW_FIELD, text, alert=True))
+    else:
+        lines.append(CardLine(ROW_NONE, tr("Nothing rested on the stockpile")))
+    if version is not None:
+        for lost in entities.retired_supports(project, version.uid, conn=conn):
+            if any(item.removal == entry.record.name for item in lost.retired):
+                lines.append(CardLine(ROW_FIELD, tr("Lost its support: {name} ({kind})", name=lost.name,
+                                                    kind=entities.kind_label(lost.op_type, shown)), alert=True))
+    wall = first.get("wall_max_m")
+    place = None if wall is None else _report_place(wall[1])
+    if wall is None or not wall[0]:
+        lines.append(CardLine(ROW_NONE, tr("No wall at the edge")))
+    else:
+        where = "" if place is None else tr(", around x = {x} m, y = {y} m", x=format_number(place[0], 0), y=format_number(place[1], 0))
+        lines.append(CardLine(ROW_FIELD, tr("Wall of up to {height} m at the edge", height=format_number(wall[0], 1)) + where,
+                              alert=True))
+        if confirmed is not None and confirmed.wall_height_m is not None:
+            text = tr("Wall confirmed by {person} on {date}: {height} m at {angle}°", person=confirmed.decided_by,
+                      date=confirmed.decided_on[:10], height=format_number(confirmed.wall_height_m, 1),
+                      angle=format_number(confirmed.wall_angle_deg or 0.0, 0))
+            if confirmed.wall_reason:
+                text = f"{text} · {tr('Reason: {value}', value=confirmed.wall_reason)}"
+            lines.append(CardLine(ROW_FIELD, text))
+    return [*lines, *_report_notice_lines(report)]
+
+
+def _buttress_card_lines(project: Any, conn: sqlite3.Connection, entry: Any, stored: Mapping[Any, Any],
+                         report: Sequence[tuple[str, float | None, str | None, str | None]]) -> list[CardLine]:
+    """Lo que dice la barra N de un **contrafuerte** (spec 016, T33; RF-016-17 a RF-016-19, RF-015-25): **la coronación** (la cota y la zona de
+    coronación, sus celdas y su área: la que declara «sin corte») y **el pie cortado** (los m² y los m³ que se cortan y el mayor salto creado en
+    el borde, con su lugar, en alerta; o que no se corta), más los avisos del cálculo. Leído de su informe; nada se calcula."""
+    first = {quantity: (value, note) for quantity, value, _unit, note in reversed(report)}
+    crown = stored.get("crown_m")
+    cells = first.get("zone_cells", (None, None))[0]
+    step = float(project.record.grid_step_m)
+    lines = [CardLine(ROW_HEADING, tr("Buttress"))]
+    if cells is not None:
+        lines.append(CardLine(ROW_FIELD, tr("Crown zone: {cells} cells ({area} m²) at {crown} m", cells=format_number(cells, 0),
+                                            area=format_number(cells * step * step, 0),
+                                            crown=NOT_SHOWN if crown is None or crown.value is None else format_number(crown.value, 2))))
+    cut = first.get("cutoff_m2")
+    if cut is None:
+        pass  # el pie no se midió
+    elif not cut[0]:
+        lines.append(CardLine(ROW_NONE, tr("The foot is not cut")))
+    else:
+        volume = first.get("cutoff_m3", (0.0, None))[0] or 0.0
+        jump = first.get("cutoff_step_m")
+        place = None if jump is None else _report_place(jump[1])
+        text = tr("Cut foot: {area} m² and {volume} m³ are cut off", area=format_number(cut[0], 0), volume=format_number(volume, 0))
+        if jump is not None and jump[0] is not None:
+            text += tr("; the largest step created at the edge is {step} m", step=format_number(jump[0], 1))
+            if place is not None:
+                text += tr(", around x = {x} m, y = {y} m", x=format_number(place[0], 0), y=format_number(place[1], 0))
+        lines.append(CardLine(ROW_FIELD, text, alert=True))
+    return [*lines, *_report_notice_lines(report)]
+
+
+def _body_card_lines(entry: Any, stored: Mapping[Any, Any], report: Sequence[tuple[str, float | None, str | None, str | None]]
+                     ) -> list[CardLine]:
+    """Lo que dice la barra N de un **cuerpo apoyado** (spec 016, T33; RF-016-20 a RF-016-22, RF-015-25): **el espesor** (el mayor y su lugar) y
+    **lo lejano** (lo que está a más de la distancia máxima de un dato: su área, su volumen y la mayor distancia, en alerta; o que nada lo está) y
+    los datos ignorados, más los avisos del cálculo. Leído de su informe; nada se calcula."""
+    first = {quantity: (value, note) for quantity, value, _unit, note in reversed(report)}
+    lines = [CardLine(ROW_HEADING, tr("Supported body"))]
+    thickest = first.get("thickness_max_m")
+    if thickest is not None and thickest[0] is not None:
+        place = _report_place(thickest[1])
+        where = "" if place is None else tr(", around x = {x} m, y = {y} m", x=format_number(place[0], 0), y=format_number(place[1], 0))
+        lines.append(CardLine(ROW_FIELD, tr("Thickness: up to {thickness} m", thickness=format_number(thickest[0], 2)) + where))
+    distance = first.get("max_distance_m", (None, None))[0]
+    far_area = first.get("far_m2", (None, None))[0]
+    if distance is not None and far_area is not None:
+        if far_area > 0:
+            lines.append(CardLine(ROW_FIELD, tr("Far from the data: {area} m² ({volume} m³) are farther than {distance} m from a datum, "
+                                                "the farthest at {farthest} m", area=format_number(far_area, 0),
+                                                volume=format_number(first.get("far_m3", (0.0, None))[0] or 0.0, 0),
+                                                distance=format_number(distance, 0),
+                                                farthest=format_number(first.get("farthest_m", (0.0, None))[0] or 0.0, 0)), alert=True))
+        else:
+            lines.append(CardLine(ROW_NONE, tr("Nothing is farther than {distance} m from a datum", distance=format_number(distance, 0))))
+    ignored = first.get("ignored", (0.0, None))[0] or 0.0
+    if ignored > 0:
+        lines.append(CardLine(ROW_FIELD, tr("Data ignored: {count}", count=format_number(ignored, 0)), alert=True))
+    return [*lines, *_report_notice_lines(report)]
+
+
+def _type_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any, stored: Mapping[Any, Any]) -> list[CardLine]:
+    """Lo propio de cada tipo de entidad en la barra N (spec 016, T33; plan 016 §5.5): de una **detección**, sus acopios y su lista de candidatos;
+    de una **retirada**, lo retirado, lo apoyado y la pared; de un **contrafuerte**, la coronación y el pie cortado; de un **cuerpo**, el espesor y
+    lo lejano. Nada de la plataforma. Una entidad sin calcular no tiene nada de esto."""
+    from ...design import entities, entity_store
+
+    if entry.operation_uid is None:
+        return []
+    kind = str(entry.record.kind)
+    if kind == entities.EntityKind.STOCKPILE:
+        return [*_stockpile_lines(project, conn, version, entry), *_candidate_lines(conn, entry, stored)]
+    report = entity_store.read_entity_report(conn, entry.operation_uid)
+    if kind == entities.EntityKind.REMOVAL:
+        return _removal_card_lines(project, conn, version, entry, stored, report)
+    if kind == entities.EntityKind.BUTTRESS:
+        return _buttress_card_lines(project, conn, entry, stored, report)
+    if kind == entities.EntityKind.BODY:
+        return _body_card_lines(entry, stored, report)
+    return []
+
+
+def entity_card(project: Any, version_uid: str, code: str, *, conn: sqlite3.Connection) -> ItemLines | None:
+    """Lo que dice el proyecto de la entidad ``code`` (código o nombre) de la versión ``version_uid`` (véase el módulo),
+    leído con ``conn`` (una instantánea de lectura de quien llama) y sin escribir nada: su título («Plataforma Carga
+    (PLT-002)»), su **estado** (al día; obsoleta o con el apoyo retirado, con su causa; descartada; sin calcular), **lo propio de su
+    tipo** (:func:`_type_lines`: los acopios y los candidatos de una detección, lo retirado, lo apoyado y la pared de una retirada, la
+    coronación y el pie cortado de un contrafuerte, el espesor y lo lejano de un cuerpo; spec 016, T33), sus **parámetros** con su insignia de
+    tipo y su origen, sus **restricciones declaradas**, su **cadena** (un tipo sin cadena no la tiene), **en qué se apoya** y **lo que se le
+    apoya** (una sola lista cada uno, con sus m³; con el acopio, si es de una detección) y, aparte, sus **cifras**. ``None`` si la versión o la
+    entidad no existen. Funciona también con una entidad sin calcular (que no tiene objeto en la vista). Con ``version_uid`` vacío, la de una
+    detección **del proyecto** (D-15): no tiene lista de dependencias, que son de cada versión."""
+    from ...core.versions import read as versions_read
+    from ...design import entities
+
+    version = versions_read.version(conn, version_uid) if version_uid else None
+    if version_uid and version is None:
+        return None
+    listed = entities.registry(project, version.uid, conn=conn) if version is not None else entities.project_registry(project, conn=conn)
     entry = listed.get(code)
     if entry is None:
         return None
     record = entry.record
     params, stored = _entity_parameter_lines(project, conn, version, entry, listed)
-    rests_on = entities.dependencies_of(project, version.uid, record.code, conn=conn)
-    on_it = entities.dependents(project, version.uid, record.code, conn=conn)
     lines: list[CardLine] = [_entity_state_line(project, conn, version, entry),
+                             *_type_lines(project, conn, version, entry, stored),
                              CardLine(ROW_HEADING, tr("Parameters")),
                              *(params or [CardLine(ROW_NONE, tr("No parameters recorded"))]),
                              CardLine(ROW_HEADING, tr("Declared constraints")),
-                             *_entity_declared_lines(project, version, entry, stored),
-                             CardLine(ROW_HEADING, tr("Chain")), *_entity_chain_lines(listed, entry),
-                             CardLine(ROW_HEADING, tr("Rests on")),
-                             *([_entity_dependent_line(item) for item in rests_on]
-                               or [CardLine(ROW_NONE, tr("It rests on nothing"))]),
-                             CardLine(ROW_HEADING, tr("What rests on it")),
-                             *([_entity_dependent_line(item) for item in on_it]
-                               or [CardLine(ROW_NONE, tr("Nothing rests on it"))])]
+                             *_entity_declared_lines(project, version, entry, stored)]
+    # Un tipo sin cadena (la detección) no la tiene, ni el cuerpo «bajo un techo» (sin partida: no cambia la superficie).
+    if entities.entity_type(record.kind).chained and not (record.kind == entities.EntityKind.BODY and record.start is None):
+        lines += [CardLine(ROW_HEADING, tr("Chain")), *_entity_chain_lines(listed, entry)]
+    if version is not None:
+        rests_on = entities.dependencies_of(project, version.uid, record.code, conn=conn)
+        on_it = entities.dependents(project, version.uid, record.code, conn=conn)
+        lines += [CardLine(ROW_HEADING, tr("Rests on")),
+                  *([_entity_dependent_line(item) for item in rests_on] or [CardLine(ROW_NONE, tr("It rests on nothing"))]),
+                  CardLine(ROW_HEADING, tr("What rests on it")),
+                  *([_entity_dependent_line(item) for item in on_it] or [CardLine(ROW_NONE, tr("Nothing rests on it"))])]
+    else:  # la detección de una superficie del proyecto: lo que se apoya en sus acopios se lee en cada versión
+        lines += [CardLine(ROW_HEADING, tr("What rests on it")),
+                  CardLine(ROW_NONE, tr("It belongs to the project: what rests on its stockpiles is read in each version"))]
     figures = [CardLine(ROW_HEADING, tr("Figures")), *_entity_figures(conn, entry)]
     return ItemLines(f"{constraint_views.entity_text(record.code, record.name)} ({record.code})", tuple(lines),
                      tuple(figures))
 
 
-def entity_lines(project: Any, uid: str) -> ItemLines | None:
-    """Lo que dice el proyecto de la entidad del dato ``uid`` (la tabla ``des_epr_`` que muestra un objeto
-    ``DESIGN_ENTITY``): :func:`entity_card` de su entidad en su versión, en **una** instantánea; ``None`` si el proyecto ya
-    no tiene el dato o no es de una versión. Los errores del proyecto (``GeoblenderError``, ``sqlite3.Error``) siguen."""
+def entity_of(project: Any, conn: sqlite3.Connection, uid: str) -> tuple[str, str]:
+    """El código y la versión (uid; ``""``: el proyecto) de la entidad del dato ``uid`` de un objeto ``DESIGN_ENTITY``, leídos con ``conn``:
+    el de la tabla de su huella (``des_epr_``) o, de una **detección de acopios** (``des_stk_``, spec 016, T33), el de su tabla de acopios o,
+    si no tiene acopios, el de la entidad cuya operación escribió el dato; ``("", "")`` si el proyecto ya no tiene el dato, o si es de una
+    entidad de una versión y ya no se sabe de cuál. Solo lee. ``sqlite3.Error`` y ``ValueError`` siguen."""
     from ...core.versions import read as versions_read
     from ...core.views import card
-    from ...design import entity_store
+    from ...design import entities, entity_store
 
+    found = card.item_card(project, uid, conn=conn)
+    if found is None:
+        return "", ""
+    owner = versions_read.dataset_versions(conn, [uid]).get(uid, "")
+    if not found.record.name.startswith(entity_views.STOCKPILES_PREFIX):
+        if not owner:
+            return "", ""
+        return entity_store.read_entity_footprint(conn, found.record.locator).code, owner
+    code, _footprints = entity_store.read_stockpile_footprints(conn, found.record.locator)
+    if not code:  # una detección sin acopios: la entidad cuya operación escribió el dato
+        listed = entities.registry(project, owner, conn=conn) if owner else entities.project_registry(project, conn=conn)
+        code = next((entry.record.code for entry in listed if entry.operation_uid == found.record.operation_uid), "")
+    return code, owner
+
+
+def entity_lines(project: Any, uid: str) -> ItemLines | None:
+    """Lo que dice el proyecto de la entidad del dato ``uid`` (la tabla ``des_epr_`` de una entidad o la ``des_stk_`` de una detección que muestra
+    un objeto ``DESIGN_ENTITY``): :func:`entity_card` de su entidad en su versión (o en el proyecto), en **una** instantánea; ``None`` si el
+    proyecto ya no tiene el dato o no es de una versión (el de una entidad). Los errores del proyecto (``GeoblenderError``, ``sqlite3.Error``)
+    siguen."""
     with project.read() as conn:
         conn.execute("BEGIN")
         try:
-            found = card.item_card(project, uid, conn=conn)
-            owner = versions_read.dataset_versions(conn, [uid]).get(uid, "") if found is not None else ""
-            if found is None or not owner:
-                return None
-            shape = entity_store.read_entity_footprint(conn, found.record.locator)
-            return entity_card(project, owner, shape.code, conn=conn)
+            code, owner = entity_of(project, conn, uid)
+            return entity_card(project, owner, code, conn=conn) if code else None
         finally:
             conn.execute("ROLLBACK")
 
@@ -3080,10 +3375,20 @@ def _draw_item(layout: Any, shown: Any, uid: str, width: float) -> bool:
     return False
 
 
+def _is_detection(obj: Any) -> bool:
+    """Si el objeto ``DESIGN_ENTITY`` ``obj`` es el de una detección de acopios (spec 016, T33): lo dice su malla, que lleva el atributo de
+    arista de sus acopios (:data:`~..scene.entity_views.STOCKPILE_ATTRIBUTE`); no lee el proyecto."""
+    data = getattr(obj, "data", None)
+    attributes = getattr(data, "attributes", None)
+    return attributes is not None and attributes.get(entity_views.STOCKPILE_ATTRIBUTE) is not None
+
+
 def draw_entity(layout: Any, context: Any) -> None:
     """La barra N «Entidad» (véase el módulo), de lo ya leído: la entidad del objeto ``DESIGN_ENTITY`` activo."""
     shown = view()
     if shown is not None and _draw_item(layout, shown, entity_wanted(context), labels.sidebar_width(context)):
+        if _is_detection(active_object(context)):
+            return  # la detección no deja una superficie que exportar: su base, su espesor y el terreno sin acopios son de la T34
         layout.separator()
         export = layout.row()  # exportar no escribe en el proyecto: vale también en solo lectura (T30, RF-015-27)
         export.operator(EXPORT_GRID, text=_label(EXPORT_GRID), icon="EXPORT", translate=False)

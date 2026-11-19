@@ -5260,21 +5260,12 @@ class GEOBLENDER_OT_des_entity_bring(DesignCommandAware, ProvenanceAwareOperator
 def _selected_entity(context: Any) -> tuple[str, str]:
     """El código y la versión (uid) de la entidad del objeto ``DESIGN_ENTITY`` activo de la Vista 3D
     (``des_panels.entity_wanted``); ``("", "")`` si no hay ninguno. Solo lee el proyecto."""
-    from ...core.versions import read as versions_read  # al usarlo: habilitar no lo carga
-    from ...core.views import card
-    from ...design import entity_store
-
     uid = des_panels.entity_wanted(context)
     project = SESSION.project
     if not uid or project is None:
         return "", ""
     with project.read() as conn:
-        found = card.item_card(project, uid, conn=conn)
-        owner = versions_read.dataset_versions(conn, [uid]).get(uid, "") if found is not None else ""
-        if found is None or not owner:
-            return "", ""
-        shape = entity_store.read_entity_footprint(conn, found.record.locator)
-    return shape.code, owner
+        return des_panels.entity_of(project, conn, uid)
 
 
 def _entity_or_selected(given: str, context: Any) -> str:

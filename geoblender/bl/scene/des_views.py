@@ -63,6 +63,14 @@ y se carga como las cotas de la 013 (:func:`load_design_grid`).
 **La superficie ajustada a un límite nuevo** (spec 014, T33; RF-014-27): cada
 ``des_adj_<ajuste>_<superficie>`` («Superficie ajustada a un límite nuevo», del tipo :data:`KIND`)
 es también una superficie de diseño y se carga igual; con su cargador, no se propone como terreno.
+
+**Lo que dejan los acopios y los cuerpos apoyados** (spec 016, T33; RF-016-09, RF-016-24; plan 016 §5.5): la
+base (``des_stb_<detección>_<material>``), el espesor (``des_stt_…``) y el terreno sin acopios en las huellas
+(``des_stg_<detección>``) de una detección, y el espesor (``des_bdt_<cuerpo>``) y la base dispersa
+(``des_bds_<cuerpo>``) de un cuerpo apoyado se cargan **como cualquier superficie** (:func:`load_design_grid`):
+una malla con un vértice en cada celda con dato y ninguno en las demás (P-4: están dispersas). Del tipo
+:data:`KIND`, con un nombre cada una; el espesor se dibuja a su cota de «espesor» (no sobre una superficie), como
+la rejilla de cotas de berma.
 """
 
 from __future__ import annotations
@@ -106,11 +114,21 @@ LOADERS: tuple[tuple[str, str], ...] = (
     (design_provenance.CLASSIFICATION_GRID, "Classification"),
     (design_provenance.TRANSITION_GRID, "Transition with the untouched terrain"),
     (design_provenance.REFIT_GRID, "Surface refitted to a new limit"),
+    (design_provenance.STOCKPILE_BASE_GRID, "Stockpile base"),
+    (design_provenance.STOCKPILE_THICKNESS_GRID, "Stockpile thickness"),
+    (design_provenance.STOCKPILE_GROUND_GRID, "Ground without stockpiles"),
+    (design_provenance.BODY_THICKNESS_GRID, "Body thickness"),
+    (design_provenance.BODY_BASE_GRID, "Body base"),
 )
 """Las familias de datos que se cargan (``design.provenance``) con el ``msgid`` de su nombre en el
 nombre generado de sus objetos: las tres rejillas de un diseño de la 013, el recinto excavable de
 la 014 (T20), las cinco rejillas de una cantera con dos superficies (T22), la superficie con la
-transición con el terreno no afectado (T28) y la superficie ajustada a un límite nuevo (T33)."""
+transición con el terreno no afectado (T28), la superficie ajustada a un límite nuevo (T33) y, de la 016
+(T33; plan 016 §5.5: «como cualquier superficie»), las rejillas **dispersas** de los acopios y de los cuerpos
+apoyados: la base, el espesor y el terreno sin acopios de una detección (por material, el terreno una por
+detección) y el espesor y la base de un cuerpo; solo tienen dato donde hay acopio o cuerpo (sin vértice en las
+demás celdas). La superficie con que se detectó (``des_stp_``) y la de una entidad (``des_psf_``) no tienen
+cargador propio: las dibuja el objeto de la entidad (``bl.scene.entity_views``)."""
 CLASS_ATTRIBUTE = "gb_class"
 """El atributo de cara con el código de su clase (``CellClass.code``: 0, 1 o 2)."""
 COLOR_ATTRIBUTE = "gb_color"

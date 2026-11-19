@@ -390,6 +390,8 @@ __all__ = [
     "quarry_order",
     "read_entity_footprint",
     "read_geometry",
+    "operation_table",
+    "read_entity_report",
     "read_stockpile_footprints",
     "recompute_declaration",
     "recompute_entity_layer",
@@ -2679,6 +2681,32 @@ def read_entity_footprint(conn: sqlite3.Connection, table: str) -> EntityFootpri
         found = conn.execute(f'SELECT zone FROM "{table}"').fetchone()
         zone = tuple((int(row), int(first), int(last)) for row, first, last in json.loads(found[0]))
     return EntityFootprint(str(code), str(name), str(kind), str(layer), runs, vertices, zone)
+
+
+_TABLE_OF = (
+    "SELECT d.locator FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "WHERE io.operation_uid = ? AND io.direction = 'out' AND io.item_kind = ? AND io.role = ? ORDER BY io.fid")
+
+
+def operation_table(conn: sqlite3.Connection, operation_uid: str, role: str) -> str | None:
+    """El localizador (la tabla del GeoPackage) del dato que escribió la operación ``operation_uid`` con el papel ``role`` (``stockpiles``,
+    ``stockpile_candidates``, ``entity_report``…; spec 016, T33): la tabla **de su operación vigente**, no la de un dato anterior que una
+    vista tenga cargado; ``None`` si no escribió ninguno. Solo lee."""
+    found = conn.execute(_TABLE_OF, (operation_uid, DATASET, role)).fetchone()
+    return None if found is None else str(found[0])
+
+
+def read_entity_report(conn: sqlite3.Connection, operation_uid: str) -> tuple[tuple[str, float | None, str | None, str | None], ...]:
+    """El informe (``des_prp_``: formato largo, ``quantity, value, unit_code, note``) que escribió la operación ``operation_uid`` de una
+    entidad, en su orden (spec 016, T33; RF-015-25: lo que la barra N dice de la pared de una retirada, del pie cortado de un contrafuerte y
+    de lo lejano de un cuerpo); ``()`` si la operación no escribió ninguno. Una cantidad puede repetirse (``wall_stretch``, ``warning``, ``note``).
+    Solo lee."""
+    table = operation_table(conn, operation_uid, provenance.ENTITY_REPORT_ROLE)
+    if table is None:
+        return ()
+    rows = conn.execute(f'SELECT quantity, value, unit_code, note FROM "{table}" ORDER BY fid').fetchall()
+    return tuple((str(quantity), None if value is None else float(value), None if unit is None else str(unit),
+                  None if note is None else str(note)) for quantity, value, unit, note in rows)
 
 
 def read_stockpile_footprints(conn: sqlite3.Connection, table: str

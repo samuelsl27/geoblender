@@ -203,6 +203,7 @@ __all__ = [
     "insertion_start",
     "kind_label",
     "kind_of_code",
+    "live_removals",
     "next_code",
     "operation_reason",
     "predecessor_of",
@@ -1282,7 +1283,8 @@ def _retired_by(removals: Sequence[StockpileRemoval], supported: Mapping[str, Co
     return {operation: tuple(items) for operation, items in found.items()}
 
 
-def _live_removals(store: ParameterStore, conn: sqlite3.Connection, version: Version) -> list[StockpileRemoval]:
+def _live_removals(store: ParameterStore, conn: sqlite3.Connection, version: Version, *, consumed: bool = True
+                   ) -> list[StockpileRemoval]:
     """Las retiradas de acopio **vivas** de ``version``: la operación vigente de cada entidad ``RMV-nnn`` que no está descartada, con el acopio
     que retiró (su parámetro ``stockpile`` **tal como lo leyó**) y solo si **consumió datos de esa detección** de la versión (papel
     ``removed_stockpile``). Una descartada (todo lo que escribió, o su parámetro ``discarded``) no cuenta: descartar la retirada devuelve el dato.
@@ -1290,14 +1292,15 @@ def _live_removals(store: ParameterStore, conn: sqlite3.Connection, version: Ver
     ``stockpile`` (la de una capa no lo lee), con los mismos datos consumidos: es una retirada y deja «apoyo retirado» igual."""
     found: list[StockpileRemoval] = []
     for kind, read in ((EntityKind.REMOVAL, None), (EntityKind.PLATFORM, "stockpile")):
-        found.extend(_live_removals_of(store, conn, version, entity_type(kind), read))
+        found.extend(_live_removals_of(store, conn, version, entity_type(kind), read, consumed=consumed))
     return found
 
 
-def _live_removals_of(store: ParameterStore, conn: sqlite3.Connection, version: Version, spec: EntityType, read: str | None
-                      ) -> list[StockpileRemoval]:
+def _live_removals_of(store: ParameterStore, conn: sqlite3.Connection, version: Version, spec: EntityType, read: str | None, *,
+                      consumed: bool = True) -> list[StockpileRemoval]:
     """Las retiradas vivas de las entidades del tipo ``spec`` (:func:`_live_removals`); ``read``: el parámetro que ha leído su operación
-    (la plataforma, ``stockpile``)."""
+    (la plataforma, ``stockpile``). Con ``consumed`` falso no se exige que haya consumido datos **de la versión** de la detección (spec 016,
+    T33: la detección del proyecto también tiene acopios que una retirada retira)."""
     operations = _operations(conn, version, spec.key_prefix, spec.op_type, value=read)
     if not operations:
         return []
@@ -1316,15 +1319,15 @@ def _live_removals_of(store: ParameterStore, conn: sqlite3.Connection, version: 
             continue
         if key is None:
             continue
-        consumed = set()
+        taken = set()
         for (text,) in conn.execute(_REMOVED_DATA, (uid, DATASET, REMOVED_STOCKPILE_ROLE, version.uid)):
             try:
                 settings = json.loads(str(text)) if text else {}
             except ValueError:
                 settings = {}
             if isinstance(settings, dict) and isinstance(settings.get("code"), str):
-                consumed.add(settings["code"])
-        if detection not in consumed:
+                taken.add(settings["code"])
+        if consumed and detection not in taken:
             continue
         (raw,) = conn.execute(_OPERATION_SETTINGS, (uid,)).fetchone()
         found.append(StockpileRemoval(uid, _settings_name(spec.op_type, raw), code, str(value), detection, key))
@@ -1411,6 +1414,19 @@ def _removed_supports(store: ParameterStore, conn: sqlite3.Connection, version: 
         return {}
     upstream = {item.operation: _surface_ancestors(conn, item.operation) for item in removals}
     return _with_datasets(conn, version, _retired_by(removals, supported, upstream))
+
+
+def live_removals(project: Any, version: str, *, conn: sqlite3.Connection | None = None, consumed: bool = True
+                  ) -> tuple[StockpileRemoval, ...]:
+    """Las retiradas de acopio **vivas** de la versión ``version`` (uid o código; spec 016, T33; RF-015-25, RF-016-14; P-9): la operación vigente
+    de cada ``RMV-nnn`` y de cada plataforma que retira un acopio «como plataforma» que no está descartada, con el acopio que retira
+    (:class:`StockpileRemoval`: su referencia ``STK-001#m07``, la detección y la clave), por orden de código; lo que la barra N dice de un acopio:
+    «retirado en su superficie» (D-12). Con ``consumed`` (por defecto) solo cuenta la que consumió **datos de la detección de esa versión**
+    (la regla de «apoyo retirado», P-9: la de una detección **del proyecto** no ata lo que se le apoyaba al acopio); sin él cuenta también la que
+    retira un acopio de una detección del proyecto. Solo lee; ``conn`` es una conexión de lectura de quien llama.
+    :class:`~core.versions.model.VersionError` si la versión no existe."""
+    with _snapshot(project, conn) as reading:
+        return tuple(_live_removals(ParameterStore(project), reading, _version(reading, version), consumed=consumed))
 
 
 def removed_supports_of(project: Any, version: str, operation_uid: str, *, conn: sqlite3.Connection | None = None
@@ -1636,12 +1652,12 @@ class Dependent:
         return render("des.entity_dependent_volume", language=language, volume=round(self.volume_m3), **values)
 
 
-def _entry(listed: EntityRegistry, ref: str, version: Version) -> EntityEntry:
-    """La entrada de la entidad ``ref`` (código o nombre) en el registro de ``version``; :class:`ValueError` si no
-    es de la versión (un error del programa: quien llama sacó el código del registro)."""
+def _entry(listed: EntityRegistry, ref: str, version: Version | None) -> EntityEntry:
+    """La entrada de la entidad ``ref`` (código o nombre) en el registro de ``version`` (``None``: el del proyecto, T33);
+    :class:`ValueError` si no es de la versión (un error del programa: quien llama sacó el código del registro)."""
     found = listed.get(ref)
     if found is None:
-        raise ValueError(f"la entidad «{ref}» no es de la versión {version.code}")
+        raise ValueError(f"la entidad «{ref}» no es de {'la versión ' + version.code if version is not None else 'el proyecto'}")
     return found
 
 
@@ -1909,10 +1925,11 @@ def stale_reason(project: Any, version: str, code: str, *, language: str = "es",
     Pendiente de la rasante de la plataforma · P1»); si le han retirado el apoyo (T25: consumió la superficie de
     una entidad descartada), «Apoyo retirado: se descartó la plataforma P1». ``None`` si está al día o sin
     calcular. Lo que lee la barra N (RF-015-25). Solo lee. :class:`ValueError` si la entidad no es de la versión;
-    :class:`~core.versions.model.VersionError` si la versión no existe."""
+    :class:`~core.versions.model.VersionError` si la versión no existe. Con ``version`` vacía, de una entidad **del proyecto** (la detección
+    de acopios de una superficie del proyecto: spec 016, T33; D-15)."""
     _language(language)
     with _snapshot(project, conn) as reading:
-        found = _version(reading, version)
+        found = _version(reading, version) if version else None
         listed = _registry(project, reading, found)
         entry = _entry(listed, code, found)
         if entry.operation_uid is None:

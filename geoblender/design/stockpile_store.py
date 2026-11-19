@@ -201,6 +201,7 @@ __all__ = [
     "ExcludedDetection",
     "PreparedDetection",
     "candidate_decision",
+    "candidate_row_notice",
     "candidate_rows",
     "create_detection",
     "create_detection_steps",
@@ -224,11 +225,14 @@ __all__ = [
     "prepare_detection_units",
     "preview_marks_units",
     "read_detection_table",
+    "read_stored_rows",
     "recompute_detection",
     "run_detection",
     "stockpile_rows",
+    "stockpile_row_notice",
     "stockpile_rows_of",
     "stockpile_summary",
+    "stored_notes",
     "version_perimeter",
 ]
 
@@ -951,6 +955,42 @@ def _item_notice(item: Stockpile) -> Notice:
                                          "azimuth": item.plane_azimuth_deg})
 
 
+def stockpile_row_notice(row: Mapping[str, Any]) -> Notice:
+    """La línea de un acopio **guardado** (una fila de ``des_stk_``, :func:`read_stored_rows`; spec 016, T33; RF-015-25): la misma nota que da
+    el resumen de «Calcular» (:func:`_item_notice`: huella, volumen, espesor máximo y plano de base o la superficie de su base propia), con
+    lo que dice la tabla. Una nota (``des.stockpile_item`` o ``des.stockpile_item_own_base``): su texto, en el idioma de quien la lea."""
+    values: dict[str, object] = {
+        "mark": row["name"], "material": _NO_VALUE if row["material"] is None else row["material"], "area": row["area_m2"],
+        "volume": row["volume_m3"], "thickness": row["thickness_max_m"], "x": row["x"], "y": row["y"]}
+    if row["plane_level_m"] is None:  # con una base propia no hay plano ajustado
+        return Notice("des.stockpile_item_own_base", {**values, "base": str(row["base_surface"])})
+    return Notice("des.stockpile_item", {**values, "level": row["plane_level_m"], "slope": row["plane_slope_percent"],
+                                         "azimuth": row["plane_azimuth_deg"]})
+
+
+def candidate_row_notice(row: Mapping[str, Any]) -> Notice:
+    """La línea de un candidato **guardado** (una fila de ``des_stc_``; spec 016, T33; RF-016-08): su clave (``c03``), su huella, su volumen y su
+    plano en el centro, como la nota ``des.stockpile_candidate_item`` del resumen de «Calcular» (que lo numera; aquí, por su clave)."""
+    return Notice("des.stockpile_candidate_item", {
+        "candidate": row["key"], "area": row["area_m2"], "volume": row["volume_m3"], "level": row["plane_level_m"],
+        "slope": row["plane_slope_percent"], "azimuth": row["plane_azimuth_deg"], "x": row["x"], "y": row["y"]})
+
+
+def stored_notes(row: Mapping[str, Any]) -> tuple[Notice, ...]:
+    """Los avisos y notas **guardados** de un acopio (``notes`` de su fila de ``des_stk_``: JSON con el código, la gravedad y los valores, no el
+    texto; :func:`stockpile_rows_of`) como :class:`~.preview.Notice`, en su orden; ``()`` si no tiene. ``ValueError`` si no es una lista de
+    avisos. Su texto, en el idioma de quien lo lea (:meth:`~.preview.Notice.text`)."""
+    found = json.loads(str(row["notes"]))
+    if not isinstance(found, list):
+        raise ValueError(f"las notas de un acopio son una lista, no {found!r}")
+    notices: list[Notice] = []
+    for item in found:
+        if not isinstance(item, dict) or not isinstance(item.get("code"), str) or not isinstance(item.get("values", {}), dict):
+            raise ValueError(f"una nota de un acopio es un código con sus valores, no {item!r}")
+        notices.append(Notice(item["code"], item.get("values", {})))
+    return tuple(notices)
+
+
 def _candidate_notices(lines: tuple[CandidateLine, ...], counts: CandidateCounts) -> tuple[Notice, ...]:
     """Las notas de los candidatos: cuántos hay y qué se descartó sin listarlo, los :data:`SUMMARY_ITEMS` primeros y una nota
     con los que faltan."""
@@ -1501,6 +1541,23 @@ def _detection_run(project: StoreProject, handle: OperationHandle, prepared: Pre
 # --- Leer lo guardado y decidir (spec 016, T13; RF-016-10, P-14) ---------------------------------------------------
 
 
+def _check_detection_family(family: str) -> None:
+    """``ValueError`` si ``family`` no es una tabla de la detección de acopios (``stk``, ``stc`` o ``prp``)."""
+    if family not in (provenance.STOCKPILES_TABLE, provenance.STOCKPILE_CANDIDATES_TABLE, provenance.ENTITY_REPORT_TABLE):
+        raise ValueError(f"«{family}» no es una tabla de la detección de acopios")
+
+
+def read_stored_rows(conn: sqlite3.Connection, family: str, locator: str) -> tuple[dict[str, Any], ...]:
+    """Las filas de la tabla ``family`` (``stk``, ``stc`` o ``prp``) de una detección que está en ``locator`` (la tabla de su GeoPackage: lo
+    que dice su registro, :attr:`~core.datasets.DatasetRecord.locator`; spec 016, T33; RF-015-25), cada una por el nombre de su columna y en el
+    orden de la tabla (``fid``). Lo que lee el cargador de la vista, que conoce **el dato** y no el nombre de la detección (con ese nombre,
+    :func:`read_detection_table` busca el dato vigente). Solo lee; ``ValueError`` si ``family`` no es una tabla de la detección."""
+    _check_detection_family(family)
+    columns = [column.name for column in columns_of(provenance.STOCKPILE_DETECT, family)]
+    found = conn.execute(f'SELECT {", ".join(columns)} FROM "{locator}" ORDER BY fid').fetchall()
+    return tuple(dict(zip(columns, row, strict=True)) for row in found)
+
+
 def read_detection_table(project: StoreProject, family: str, name: str, *, version_uid: str = "",
                          conn: sqlite3.Connection | None = None) -> tuple[dict[str, Any], ...]:
     """Las filas de la tabla ``family`` (``stk``, ``stc`` o ``prp``) de la detección ``name`` **vigente** en el ámbito
@@ -1508,17 +1565,14 @@ def read_detection_table(project: StoreProject, family: str, name: str, *, versi
     o ``REPORT_COLUMNS``), en su orden. Las huellas (``footprint``) son JSON de tramos y las rejillas dispersas se leen
     por su papel con :func:`~.surfaces.read_surface`. Solo lee. ``ValueError`` si ``family`` no es una tabla de la detección
     y ``des.stockpile_decisions_invalid`` no: si el dato no está, ``gis.dataset_unknown``."""
-    if family not in (provenance.STOCKPILES_TABLE, provenance.STOCKPILE_CANDIDATES_TABLE, provenance.ENTITY_REPORT_TABLE):
-        raise ValueError(f"«{family}» no es una tabla de la detección de acopios")
-    columns = [column.name for column in columns_of(provenance.STOCKPILE_DETECT, family)]
+    _check_detection_family(family)
     dataset = provenance.dataset_name(family, name)
 
     def read(reading: sqlite3.Connection) -> tuple[dict[str, Any], ...]:
         record = dataset_registry.get(reading, dataset, version_uid=version_uid)
         if record is None or not record.live:
             raise GisError("gis.dataset_unknown", obj=dataset, field="nombre", value=dataset, name=dataset)
-        found = reading.execute(f'SELECT {", ".join(columns)} FROM "{record.locator}" ORDER BY fid').fetchall()
-        return tuple(dict(zip(columns, row, strict=True)) for row in found)
+        return read_stored_rows(reading, family, record.locator)
 
     if conn is not None:
         return read(conn)

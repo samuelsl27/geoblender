@@ -9135,8 +9135,8 @@ es = "Zona de una restricción declarada por una entidad"
 ["Design entity"]
 es = "Entidad de diseño"
 
-["A parametric design entity of a version (a platform), drawn by its footprint and its axis"]
-es = "Una entidad de diseño paramétrica de una versión (una plataforma), dibujada por su huella y su eje"
+["A design entity (a platform, the removal of a stockpile, a buttress or a supported body) or a stockpile detection, drawn by its footprint"]
+es = "Una entidad de diseño (una plataforma, la retirada de un acopio, un contrafuerte o un cuerpo apoyado) o una detección de acopios, dibujada por su huella"
 
 ["Discarded: it stays in the project as a record and is not used"]
 es = "Descartada: queda en el proyecto como registro y no se usa"
@@ -9972,3 +9972,123 @@ es = "Cancelado: el contrafuerte está creado; las restricciones declaradas y la
 
 ["The buttress is created: only the declared constraints and the masks have not been brought up to date"]
 es = "El contrafuerte está creado: solo las restricciones declaradas y las máscaras no se han puesto al día"
+
+# El objeto y la barra N con los tipos nuevos (spec 016, T33; RF-015-25, RF-016-14): bl/scene/entity_views.py, bl/scene/des_views.py y
+# bl/ui/des_panels.py.
+
+["The stockpile detection «{name}» has no stockpiles: there is nothing to draw"]
+es = "La detección de acopios «{name}» no tiene acopios: no hay nada que dibujar"
+
+["Stockpile base"]
+es = "Base de acopios"
+
+["Stockpile thickness"]
+es = "Espesor de acopios"
+
+["Ground without stockpiles"]
+es = "Terreno sin acopios"
+
+["Body thickness"]
+es = "Espesor de un cuerpo"
+
+["Body base"]
+es = "Base de un cuerpo"
+
+["The M of the vertices"]
+es = "La M de los vértices"
+
+["on the stockpile «{stockpile}»"]
+es = "sobre el acopio «{stockpile}»"
+
+["Stockpiles ({count})"]
+es = "Acopios ({count})"
+
+["The detection has no stockpiles"]
+es = "La detección no tiene acopios"
+
+["from a candidate"]
+es = "de un candidato"
+
+["Removed on its surface by «{removal}» ({code}) in {version}"]
+es = "Retirado en su superficie por «{removal}» ({code}) en {version}"
+
+["… and {count} more stockpiles"]
+es = "… y {count} acopios más"
+
+["Candidates ({count})"]
+es = "Candidatos ({count})"
+
+["The detection has no candidates"]
+es = "La detección no tiene candidatos"
+
+["Converted into a stockpile: {reason} ({person}, {date})"]
+es = "Convertido en acopio: {reason} ({person}, {date})"
+
+["Discarded: {reason} ({person}, {date})"]
+es = "Descartado: {reason} ({person}, {date})"
+
+["Pending: convert it into a stockpile or discard it with a reason"]
+es = "Pendiente: conviértalo en acopio o descártelo con un motivo"
+
+["… and {count} more candidates"]
+es = "… y {count} candidatos más"
+
+["Removal"]
+es = "Retirada"
+
+["Removes the stockpile {stockpile}"]
+es = "Retira el acopio {stockpile}"
+
+["{volume} m³ rested on the stockpile"]
+es = "{volume} m³ se apoyaban en el acopio"
+
+["confirmed by {person} on {date}"]
+es = "lo confirmó {person} el {date}"
+
+["Nothing rested on the stockpile"]
+es = "Nada se apoyaba en el acopio"
+
+["Lost its support: {name} ({kind})"]
+es = "Perdió su apoyo: {name} ({kind})"
+
+["No wall at the edge"]
+es = "Sin pared en el borde"
+
+[", around x = {x} m, y = {y} m"]
+es = ", en torno a x = {x} m, y = {y} m"
+
+["Wall of up to {height} m at the edge"]
+es = "Pared de hasta {height} m en el borde"
+
+["Wall confirmed by {person} on {date}: {height} m at {angle}°"]
+es = "Pared confirmada por {person} el {date}: {height} m a {angle}°"
+
+["Crown zone: {cells} cells ({area} m²) at {crown} m"]
+es = "Zona de coronación: {cells} celdas ({area} m²) a {crown} m"
+
+["The foot is not cut"]
+es = "El pie no se corta"
+
+["Cut foot: {area} m² and {volume} m³ are cut off"]
+es = "Pie cortado: se cortan {area} m² y {volume} m³"
+
+["; the largest step created at the edge is {step} m"]
+es = "; el mayor salto creado en el borde es de {step} m"
+
+["Thickness: up to {thickness} m"]
+es = "Espesor: hasta {thickness} m"
+
+["Far from the data: {area} m² ({volume} m³) are farther than {distance} m from a datum, the farthest at {farthest} m"]
+es = "Lejos de los datos: {area} m² ({volume} m³) están a más de {distance} m de un dato, el más lejano a {farthest} m"
+
+["Nothing is farther than {distance} m from a datum"]
+es = "Nada está a más de {distance} m de un dato"
+
+["Data ignored: {count}"]
+es = "Datos ignorados: {count}"
+
+["It belongs to the project: what rests on its stockpiles is read in each version"]
+es = "Es del proyecto: lo que se apoya en sus acopios se lee en cada versión"
+
+["Made by the entity «{name}» ({code})"]
+es = "Hecha por la entidad «{name}» ({code})"
