@@ -276,16 +276,6 @@ action = "D"
 frequency = 2
 
 [[menu.group.item]]
-key = "geoblender.geo_create_thickness_unit"
-label.en = "Unit by thickness over its base…"
-label.es = "Unidad por espesor sobre su apoyo…"
-description.en = "Waste, stockpile or overburden as a thickness over its supporting surface"
-description.es = "Escombro, acopio o cobertera como un espesor sobre su superficie de apoyo"
-entry = "R-18"
-action = "D"
-frequency = 2
-
-[[menu.group.item]]
 key = "GEOBLENDER_MT_geo_surfaces_more"
 label.en = "Other surfaces"
 label.es = "Otras superficies"

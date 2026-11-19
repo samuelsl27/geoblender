@@ -456,6 +456,7 @@ __all__ = [
     "counterslope_confirmation",
     "counterslope_confirmed",
     "has_entity_operation",
+    "has_declaring_operation",
     "has_platform_operation",
     "merge_released",
     "released_supports",
@@ -1193,8 +1194,8 @@ BUTTRESS_COMMAND = "geoblender.des_add_buttress"
 BODY_COMMAND = "geoblender.des_create_body"
 """Las órdenes que los lanzan (plan 016 §5.3.3; la decisión de la sesión principal sobre la T35, 18/11/2026: se conservan
 los nombres que ya tiene el catálogo, ``des_add_buttress`` y ``des_edit_stockpile``, y la «Unidad por espesor sobre su
-apoyo…» pasa a ser ``des_create_body``). Las de acopios, la retirada y el cuerpo **aún no están en el catálogo** (las
-crea la T35): una orden que lanza una operación se declara en ``OperationDef.commands``, que solo comprueba su forma."""
+apoyo…» pasa a ser ``des_create_body``). Las cuatro están en el catálogo desde la T35 (entrada 016, entregada): una orden que lanza una
+operación se declara en ``OperationDef.commands``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1571,6 +1572,24 @@ def has_platform_operation(conn: sqlite3.Connection, version_uid: str) -> bool:
     (``gis.masks.declaring``) cada vez que se pregunta por el estado de las máscaras, también al dibujar la
     interfaz. Solo lee."""
     return conn.execute(_LIVE_PLATFORM, (version_uid, PLATFORM)).fetchone() is not None
+
+
+DECLARING_OP_NAMES: tuple[str, ...] = (PLATFORM, BUTTRESS)
+"""Los tipos de operación de las entidades que **declaran restricciones** por defecto (``entity_store._DECLARES``; D-4 y D-1 de la 016): la
+plataforma («sin relleno») y el contrafuerte («sin corte» sobre su zona de coronación). Los demás tipos no declaran nada por defecto."""
+_LIVE_DECLARING = (
+    "SELECT 1 FROM gb_operation AS o JOIN gb_revision AS r ON r.uid = o.revision_uid "
+    f"WHERE r.version_uid = ? AND o.op_type IN ({', '.join('?' for _ in DECLARING_OP_NAMES)}) "
+    "AND o.status = 'done' AND o.superseded_by IS NULL LIMIT 1")
+
+
+def has_declaring_operation(conn: sqlite3.Connection, version_uid: str) -> bool:
+    """Si la versión ``version_uid`` (su uid) tiene **alguna** operación de un tipo que declara restricciones (:data:`DECLARING_OP_NAMES`:
+    ``des.platform`` o ``des.buttress``) hecha y sin sustituir, en cualquier revisión (spec 016, T35): como :func:`has_platform_operation`
+    para los dos tipos. Sin ella ninguna entidad viva puede tener una restricción por declarar: es lo primero que mira el gancho de la
+    declaración pendiente (``gis.masks.declaring``) y la recuperación de un Esc entre crear una entidad y declarar su restricción, también
+    de una versión con **solo un contrafuerte** que protege. Una sola consulta. Solo lee."""
+    return conn.execute(_LIVE_DECLARING, (version_uid, *DECLARING_OP_NAMES)).fetchone() is not None
 
 
 ENTITY_OP_NAMES: tuple[str, ...] = (PLATFORM, STOCKPILE_DETECT, STOCKPILE_REMOVAL, BUTTRESS, BODY)

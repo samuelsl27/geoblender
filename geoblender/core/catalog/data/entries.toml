@@ -100,16 +100,18 @@ delivered = true
 
 # La spec 015 (entidades de diseño paramétricas) es la primera de R-36 (plan 015 §5.6, T31): «Plataforma…», las internas de
 # las entidades (descartar, soltar el apoyo, traer, insertar, lo que se apoya en ella y la vista previa) y el menú
-# contextual «Entidad ▾» pasan de R-36 a la 015 y los entrega. Lo de la 016 (Acopio…, Contrafuerte…, Cuerpo apoyado…) sigue
-# en R-36, sin entregar, hasta ella. R-36 sigue como entrada del roadmap.
+# contextual «Entidad ▾» pasan de R-36 a la 015 y los entrega. Lo de la 016 (Acopio…, Contrafuerte…, Cuerpo apoyado…) lo entrega
+# la propia 016 (T35). R-36 sigue como entrada del roadmap.
 ["015"]
 title.en = "Parametric design entities"
 title.es = "Entidades de diseño paramétricas"
 delivered = true
 
-# La spec 016 (acopios, contrafuerte y cuerpos apoyados) es la segunda de R-36 (plan 016 §5.5, T20): su orden de retirar un acopio
-# pasa de R-36 a la 016 y la entrega con su clase real. El resto de lo suyo (Acopio…, Contrafuerte…, Cuerpo apoyado…, detectar y los
-# candidatos) sigue en R-36, sin entregar, hasta que la T35 los pase a la 016 con su menú.
+# La spec 016 (acopios, contrafuerte y cuerpos apoyados) es la segunda de R-36 (plan 016 §5.5, T20 y T35): sus órdenes
+# (Acopio (detectar, retirar)…, Contrafuerte… y Cuerpo apoyado…, de Diseño ▸ Pistas y entidades ▸ Entidades; y las internas de detectar,
+# los candidatos y retirar) pasan de R-36 a la 016 y las entrega la T35 con su menú; la «Unidad por espesor sobre su apoyo…» de R-18
+# (`geo_create_thickness_unit`) es hoy el «Cuerpo apoyado…» (`des_create_body`, D-8 y D-14). R-36 sigue como entrada del roadmap: lo que
+# aún no es una orden del menú «Entidad ▾» (editar el eje, las restricciones que declara) sigue marcado en R-36.
 ["016"]
 title.en = "Stockpiles, buttress and supported bodies"
 title.es = "Acopios, contrafuerte y cuerpos apoyados"

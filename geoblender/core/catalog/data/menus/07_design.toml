@@ -347,11 +347,11 @@ frequency = 2
 
 [[menu.group.item.item]]
 key = "geoblender.des_edit_stockpile"
-label.en = "Stockpile…"
-label.es = "Acopio…"
-description.en = "Detect a stockpile or remove it"
-description.es = "Detecta un acopio o lo retira"
-entry = "R-36"
+label.en = "Stockpile (detect, remove)…"
+label.es = "Acopio (detectar, retirar)…"
+description.en = "Detect the stockpiles of a layer of marks or remove one already detected: it opens the order you choose"
+description.es = "Detecta los acopios de una capa de marcas o retira uno ya detectado: abre la orden que se elija"
+entry = "016"
 action = "D"
 frequency = 2
 
@@ -361,7 +361,17 @@ label.en = "Buttress…"
 label.es = "Contrafuerte…"
 description.en = "Buttress at the toe of a slope"
 description.es = "Contrafuerte al pie de un talud"
-entry = "R-36"
+entry = "016"
+action = "D"
+frequency = 1
+
+[[menu.group.item.item]]
+key = "geoblender.des_create_body"
+label.en = "Supported body…"
+label.es = "Cuerpo apoyado…"
+description.en = "Create a body from its footprint and its thickness data, resting on a known surface or under a known roof: the thickness is interpolated and the other surface is derived from it"
+description.es = "Crea un cuerpo desde su huella y sus datos de espesor, apoyado en una superficie conocida o bajo un techo conocido: se interpola el espesor y la otra superficie sale de él"
+entry = "016"
 action = "D"
 frequency = 1
 

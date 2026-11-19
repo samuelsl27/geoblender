@@ -1660,6 +1660,8 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
         lines.extend(_body_lines(calculation))
     elif calculation.op_type == design_provenance.BUTTRESS:
         lines.extend(_buttress_lines(calculation))
+    elif calculation.op_type in design_provenance.STOCKPILE_DETECT_TYPES:
+        pass  # la detección lo dice todo en sus avisos (``StockpileSummary.notices``: la cabecera, los acopios, los candidatos): spec 016, T35
     elif calculation.op_type == design_provenance.QUARRY:
         lines.extend(_quarry_lines(calculation.outcome))
     elif calculation.op_type == design_provenance.REFIT:
@@ -1799,6 +1801,10 @@ def show_summary(calculation: Calculation | None) -> None:
         title = tr("Supported body «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.BUTTRESS:
         title = tr("Buttress «{name}» in {version}", name=calculation.name, version=calculation.version)
+    elif calculation.op_type == design_provenance.STOCKPILE_DETECT:
+        title = tr("Detection of stockpiles «{name}» in {version}", name=calculation.name, version=calculation.version)
+    elif calculation.op_type == design_provenance.STOCKPILE_DETECT_PROJECT:  # D-15: del proyecto, sin versión (spec 016, T35)
+        title = tr("Detection of stockpiles «{name}» in the project", name=calculation.name)
     else:
         title = tr("Benching «{name}» in {version}", name=calculation.name,
                    version=calculation.version)
@@ -1852,6 +1858,12 @@ def _draw_text(layout: Any, shown_text: str, width: float, *, alert: bool = Fals
     for index, part in enumerate(labels.wrapped(shown_text, width, icon=alert)):
         icon = ("ERROR" if index == 0 else "BLANK1") if alert else "NONE"
         column.label(text=part, icon=icon, translate=False)
+
+
+def draw_wrapped(layout: Any, shown_text: str, width_px: int, *, alert: bool = False) -> None:
+    """``shown_text`` partido al ancho de un diálogo de ``width_px`` (:func:`_draw_text`), en alerta si ``alert``: una línea de la lista de
+    candidatos de «Candidatos de los acopios…» (spec 016, T35)."""
+    _draw_text(layout, shown_text, labels.dialog_width(width_px), alert=alert)
 
 
 def _draw_blocked(layout: Any, blocked: str | None, width: float) -> None:
@@ -2128,6 +2140,15 @@ del dato de la rejilla (``source`` de la orden) y su texto, lo que dice el botó
 ROW_EXPORT_THICKNESS = "export_thickness"
 """La fila que pide **el botón del espesor** de la entidad activa (``part`` ``thickness``, sin ``source``: la toma la orden de la entidad)."""
 _EXPORT_ROWS = (ROW_EXPORT, ROW_EXPORT_THICKNESS)
+ROW_CANDIDATES = "candidates"
+"""La fila de ``ItemLines.exports`` que es **el botón «Candidatos…»** de una detección con la lista de candidatos (spec 016, T35): abre
+``geoblender.des_stockpile_candidates`` con la detección del objeto activo. No se dibuja como texto."""
+ROW_DECIDE = "decide"
+"""La fila que es **los botones de un candidato pendiente** (convertir, descartar, «Ir a»; T35): su ``uid`` es la clave del candidato (``c01``)
+y los botones llaman a ``geoblender.des_stockpile_candidates`` con ella. No se dibuja como texto."""
+_BUTTON_ROWS = (*_EXPORT_ROWS, ROW_CANDIDATES, ROW_DECIDE)
+STOCKPILE_CANDIDATES = "geoblender.des_stockpile_candidates"
+"""La orden de la lista de candidatos de una detección (T35)."""
 EXPORT_PART_THICKNESS = "thickness"
 """El valor de ``part`` de la orden de exportar para el espesor (``design.export.PART_THICKNESS``; ``bl.ui`` no importa el dominio al habilitar)."""
 
@@ -3179,6 +3200,20 @@ _OUTPUTS_BY_ROLE = (
     "AND io.role IN ({roles}) ORDER BY io.fid")
 
 
+def _candidate_buttons(conn: sqlite3.Connection, entry: Any) -> list[CardLine]:
+    """Los botones de los candidatos de la detección ``entry`` (spec 016, T35; RF-016-08, RF-016-10), leídos de la tabla de su operación vigente:
+    **«Candidatos…»** (la lista) y, de cada candidato **pendiente** (los :data:`LIST_LIMIT` primeros), una fila de botones (convertir, descartar
+    e «Ir a») con su clave. Sin candidatos, ninguno."""
+    from ...design import entity_store, stockpile_store
+
+    table = entity_store.operation_table(conn, entry.operation_uid, design_provenance.STOCKPILE_CANDIDATES_ROLE)
+    rows = () if table is None else stockpile_store.read_stored_rows(conn, design_provenance.STOCKPILE_CANDIDATES_TABLE, table)
+    if not rows:
+        return []
+    pending = [str(row["key"]) for row in rows if row["state"] not in ("converted", "discarded")]
+    return [CardLine(ROW_CANDIDATES, tr("Candidates…")), *(CardLine(ROW_DECIDE, key, uid=key) for key in pending[:LIST_LIMIT])]
+
+
 def _entity_exports(conn: sqlite3.Connection, entry: Any) -> list[CardLine]:
     """Los botones de exportar a GeoTIFF de la entidad ``entry`` además del de su superficie (spec 016, T34; RF-016-24), leídos del proyecto:
     de una **detección**, uno por rejilla que dejó —la base y el espesor de los acopios de cada material y el terreno sin acopios—, con
@@ -3204,7 +3239,7 @@ def _entity_exports(conn: sqlite3.Connection, entry: Any) -> list[CardLine]:
             else:
                 text = tr("Export the ground without stockpiles to GeoTIFF…")
             found.append(CardLine(ROW_EXPORT, text, uid=str(uid)))
-        return found
+        return [*found, *_candidate_buttons(conn, entry)]
     if entry.operation_uid is not None and kind in (entities.EntityKind.REMOVAL, entities.EntityKind.BUTTRESS, entities.EntityKind.BODY):
         return [CardLine(ROW_EXPORT_THICKNESS, tr("Export the thickness to GeoTIFF…"))]
     return []
@@ -3419,8 +3454,8 @@ def _draw_item(layout: Any, shown: Any, uid: str, width: float) -> bool:
     elif uid:
         _draw_text(layout, shown.item_title, width)
         for row in shown.item:
-            if row.kind in _EXPORT_ROWS:
-                continue  # un botón de exportar (T34): lo dibuja la barra de la entidad
+            if row.kind in _BUTTON_ROWS:
+                continue  # un botón de exportar (T34) o de los candidatos (T35): lo dibuja la barra de la entidad
             if row.kind == ROW_HEADING:
                 layout.separator()
             sub = layout.column(align=True)
@@ -3443,11 +3478,24 @@ def draw_entity(layout: Any, context: Any) -> None:
     shown = view()
     if shown is not None and _draw_item(layout, shown, entity_wanted(context), labels.sidebar_width(context)):
         layout.separator()
-        buttons = [(row.kind, str(row.name), str(row.uid)) for row in shown.item if row.kind in _EXPORT_ROWS]
+        buttons = [(row.kind, str(row.name), str(row.uid)) for row in shown.item if row.kind in _BUTTON_ROWS]
         if _is_detection(active_object(context)):  # la detección no deja una superficie: un botón por rejilla que dejó (T34, RF-016-24)
-            for _kind, text, uid in buttons:
-                button = layout.row().operator(EXPORT_GRID, text=text, icon="EXPORT", translate=False)
-                button.source, button.part = uid, ""
+            for kind, text, uid in buttons:
+                if kind == ROW_EXPORT:
+                    button = layout.row().operator(EXPORT_GRID, text=text, icon="EXPORT", translate=False)
+                    button.source, button.part = uid, ""
+                elif kind == ROW_CANDIDATES:  # la lista de candidatos (T35): la orden toma la detección del objeto activo
+                    layout.row().operator(STOCKPILE_CANDIDATES, text=text, icon="VIEWZOOM", translate=False)
+                elif kind == ROW_DECIDE:  # los botones de un candidato pendiente (T35): convertir y descartar abren la lista con su motivo
+                    row = layout.row(align=True)
+                    row.label(text=uid, translate=False)
+                    for action, label in (("CONVERT", tr("Convert")), ("DISCARD", tr("Discard"))):
+                        button = row.operator(STOCKPILE_CANDIDATES, text=label, translate=False)
+                        button.candidate, button.action = uid, action
+                    row.operator_context = "EXEC_DEFAULT"  # «Ir a» no abre nada: encuadra la vista
+                    button = row.operator(STOCKPILE_CANDIDATES, text=tr("Go to"), translate=False)
+                    button.candidate, button.action = uid, "GO_TO"
+                    row.operator_context = "INVOKE_DEFAULT"  # el contexto es del layout raíz: no se lo deja a los botones que siguen
             return
         export = layout.row()  # exportar no escribe en el proyecto: vale también en solo lectura (T30, RF-015-27)
         export.operator(EXPORT_GRID, text=_label(EXPORT_GRID), icon="EXPORT", translate=False)

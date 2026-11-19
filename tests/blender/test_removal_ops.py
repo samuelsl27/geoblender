@@ -244,7 +244,7 @@ class RemoveStockpileTest(platform_ops.CreatePlatformTest):
         self.assertEqual(cls.__doc__.strip(), DESCRIPTION)
         self.assertTrue(catalog.entries["016"].delivered, "la entrega la T20")
         self.assertEqual(catalog.entries["016"].title_es, "Acopios, contrafuerte y cuerpos apoyados")
-        self.assertFalse(catalog.entries["R-36"].delivered, "lo demás de la 016 sigue sin entregar hasta la T35")
+        self.assertFalse(catalog.entries["R-36"].delivered, "R-36 sigue como entrada del roadmap, sin entregar (la T35 pasó sus órdenes a la 016)")
         self.assertTrue(self.commands.is_available(REMOVE))
         self.assertEqual(cls.bl_label, "Retirar un acopio…", "registrada ya en español")
         annotated = {name for name in cls.__annotations__ if name not in HIDDEN}

@@ -362,7 +362,7 @@ existente: deja su base y su espesor dispersos y no cambia la superficie)—, la
 
 **Contrafuerte…** (spec 016, T27 (b); HU-016-3; RF-016-17, RF-016-18, RF-015-02, RF-015-03, RF-015-10, RF-015-12, RF-015-28, RF-015-29;
 RNF-016-05; comprobación manual M3): :class:`GEOBLENDER_OT_des_add_buttress` (``geoblender.des_add_buttress``, la clave del catálogo, que
-sigue en la entrada «R-36» hasta que la T35 la entregue) calcula ``des.buttress`` de la versión activa con ``design.steps.buttress_run``:
+es de la entrada «016», entregada por la T35) calcula ``des.buttress`` de la versión activa con ``design.steps.buttress_run``:
 el escalonado en relleno de la 013 desde una semilla en la zona de coronación, con el perfil de banco elegido y **sin cortar ninguna
 celda**. Su diálogo pide el nombre, la capa de polígonos y la zona de coronación, la partida (la última de la cadena) y el apoyo, el perfil,
 **la cota de coronación (sin valor por defecto: D-21; fuera del ancla de su perfil se rechaza con la cota del ancla más próxima,
@@ -370,6 +370,25 @@ RF-016-18)**, el alcance, la métrica y si protege (**por defecto sí**, D-1) co
 Calcular, Crear, Cancelar y Esc son los de :class:`_CalculateAndCreate`. **Tras crear, encadena** ``entity_store.after_entity_change`` como
 «Plataforma…»: declara «sin corte» sobre la **zona de coronación** y no sobre toda la huella (P-8, H-6), recompila las máscaras y pone al
 día la capa de entidades, por pasos con el avance y Esc.
+
+**Acopio (detectar, retirar)…, Detectar acopios… y Candidatos de los acopios…** (spec 016, T35; HU-016-1, HU-016-4; RF-016-02, RF-016-08,
+RF-016-10, RF-016-23, RF-016-25, RF-015-28, RF-015-29; RNF-016-05; D-3, D-15; plan 016 §5.3.3 y §5.5; comprobación manual M6):
+:class:`GEOBLENDER_OT_des_edit_stockpile` (``geoblender.des_edit_stockpile``, la del menú Entidades y del menú «Entidad ▾») pregunta si se
+detecta o se retira y abre la orden que toque cuando acaba ella. :class:`GEOBLENDER_OT_des_detect_stockpiles`
+(``geoblender.des_detect_stockpiles``) calcula la detección con ``design.steps.stockpile_run``: su diálogo pide el nombre, **la superficie**
+(las del proyecto y las de la versión activa: la detección es **del proyecto si la superficie lo es, también sin versión activa**, y de la
+versión si es de una: D-15), la capa de marcas con sus campos (que propone de entre ``nombre``, ``margen``, ``material`` y ``base`` los que la
+capa tiene), si busca candidatos y **los umbrales de D-3, cada uno con su valor por defecto y su tipo** (ADOPTADO o HIPÓTESIS): un umbral
+vacío es el valor por defecto con su procedencia y la petición no lleva ninguna cifra minera; con la **«Vista previa» de las marcas**
+(``bl.draw.entity.EntityPlan(stockpile=…)``, T32: se redibuja al cambiar un campo y se quita al cancelar, al Esc, al crear y al conmutar).
+Calcular, Crear, Cancelar y Esc son los de :class:`_CalculateAndCreate` (``_ClearsEntityPreview`` antes); tras crear una detección **de una
+versión** encadena ``entity_store.after_entity_change`` (la declaración, las máscaras y la capa de entidades con una fila por acopio, T34); la
+del proyecto no encadena nada. :class:`GEOBLENDER_OT_des_stockpile_candidates` (``geoblender.des_stockpile_candidates``; los botones de la barra
+N «Entidad» de la detección la llaman) lista los candidatos de la detección (la del objeto seleccionado, la que se dice o la única que tiene)
+con su huella, área y volumen, su estado y «Ir a», y **decide** sobre uno —convertirlo en acopio, descartarlo o volver a preguntar, siempre
+con su motivo: ``design.stockpile_store.decide_candidate``— y **recalcula la detección** con la decisión (``core_recompute_stale`` de esa
+operación, por pasos con el avance y Esc). El código ``STK-001`` se repite en cada ámbito: la detección del proyecto seleccionada no la toman
+las órdenes de las entidades de una versión.
 """
 
 from __future__ import annotations
@@ -773,9 +792,10 @@ entidades (015) y las de los cuatro tipos de la 016 (T03)."""
 def _declaration_pending(project: Any, conn: Any, version_uid: str) -> bool:
     """Si una entidad viva de la versión que protege aún no tiene su restricción declarada (el gancho
     ``pending`` de ``gis.masks.declaring``: ``design.entity_store.declaration_pending``). Se pregunta con cada
-    ``mask_state``, también al dibujar la interfaz: sin ninguna operación de plataforma vigente es **una consulta**
-    y no importa las entidades (habilitar ni mirar las máscaras de una versión sin ellas las cargan)."""
-    if not provenance.has_platform_operation(conn, version_uid):
+    ``mask_state``, también al dibujar la interfaz: sin ninguna operación vigente de un tipo que declara (la plataforma y, desde la
+    016, el contrafuerte: :func:`~...design.provenance.has_declaring_operation`) es **una consulta** y no importa las entidades
+    (habilitar ni mirar las máscaras de una versión sin ellas las cargan)."""
+    if not provenance.has_declaring_operation(conn, version_uid):
         return False
     from ...design import entity_store  # al usarlo: habilitar no carga las entidades
 
@@ -5285,13 +5305,16 @@ def _entity_or_selected(given: str, context: Any) -> str:
     if typed:
         return typed
     code, owner = _selected_entity(context)
-    if code and owner and owner != scene_versions.active_version():
+    if code and not owner:  # el objeto de una detección **del proyecto** (D-15): su código se repite en cada versión (spec 016, T35)
+        raise ValueError(tr("The selected detection belongs to the project, not to a version: this command is about the entities of the "
+                            "active version"))
+    if code and owner != scene_versions.active_version():
         raise ValueError(tr("The selected entity is not of the active version: make its version the active one first"))
     return code
 
 
 class GEOBLENDER_OT_des_entity_preview(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
-    """Show, before calculating, the footprint of a platform, its axis with its sense, the levels at its ends, what rests on it and the constraints it will declare"""
+    """Show, before calculating, the footprint of a platform, its axis with its sense, the levels at its ends, what rests on it and the constraints it will declare; the marks of a detection of stockpiles; the crown zone of a buttress"""
 
     bl_idname = ENTITY_PREVIEW
     bl_label = "Preview of the entity"
@@ -5309,6 +5332,33 @@ class GEOBLENDER_OT_des_entity_preview(DesignCommandAware, ProvenanceAwareOperat
         """Con la vista previa activa, se puede quitar siempre; si no, lo de las órdenes de Diseño (RF-015-28): con
         un proyecto en escritura y la versión activa editable o ninguna."""
         return True if _entity_preview_on() else _write_poll(cls)
+
+    @staticmethod
+    def _plan(project: Any, active: Any, entry: Any) -> Any:
+        """Lo que se previsualiza de la entidad ``entry`` de la versión ``active`` (spec 016, T35; RF-016-23): de una **plataforma**, la de
+        la versión con sus parámetros vigentes (``EntityPlan(code=…)``); de una **detección de acopios**, sus marcas, y de un **contrafuerte**,
+        su zona de coronación, **reconstruidas** de los ajustes de su operación vigente y de los parámetros vigentes de la entidad (como lo
+        que recalcularía: ``design.provenance.stockpile_request`` y ``buttress_request``). Una retirada y un cuerpo apoyado no tienen vista
+        previa (RF-016-23 solo pide las marcas y la zona de coronación). :class:`ValueError` si no la tiene o la entidad no está calculada."""
+        from ...design import entities, entity_store  # al usarlo: habilitar no carga el cálculo
+
+        preview = _entity_preview()
+        record = entry.record
+        if record.kind == entities.EntityKind.PLATFORM:
+            return preview.EntityPlan(code=record.code)
+        label = entities.entity_type(record.kind).params.label
+        if record.kind not in (entities.EntityKind.STOCKPILE, entities.EntityKind.BUTTRESS):
+            raise ValueError(tr("«{name}» ({kind}) has no preview: only a platform, a detection of stockpiles (its marks) and a buttress "
+                                "(its crown zone) have one", name=record.name, kind=label))
+        if entry.operation_uid is None:
+            raise ValueError(tr("«{name}» ({kind}) is not calculated: there is nothing to preview", name=record.name, kind=label))
+        with project.read() as conn:
+            row = conn.execute("SELECT settings FROM gb_operation WHERE uid = ?", (entry.operation_uid,)).fetchone()
+        settings = json.loads(row[0]) if row is not None and row[0] else {}
+        values = entity_store.entity_parameters(project, record.code, version=active)
+        if record.kind == entities.EntityKind.STOCKPILE:
+            return preview.EntityPlan(stockpile=provenance.stockpile_request(settings, values))
+        return preview.EntityPlan(buttress=provenance.buttress_request(settings, values))
 
     def execute(self, context: Any) -> set[str]:
         """Con la vista previa de una entidad activa, la quita. Si no, activa la de la entidad pedida (``entity``) o,
@@ -5332,6 +5382,9 @@ class GEOBLENDER_OT_des_entity_preview(DesignCommandAware, ProvenanceAwareOperat
             code, owner = self.entity.strip(), ""
             if not code:
                 code, owner = _selected_entity(context)
+                if code and not owner:  # la detección **del proyecto** (D-15): su código se repite en cada versión (spec 016, T35)
+                    raise ValueError(tr("The selected detection belongs to the project, not to a version: this command is about the "
+                                        "entities of the active version"))
             if not code:
                 self.report({"ERROR"}, tr("Choose the entity to preview: select its object in the 3D view or "
                                           "give its code"))
@@ -5347,12 +5400,13 @@ class GEOBLENDER_OT_des_entity_preview(DesignCommandAware, ProvenanceAwareOperat
                 self.report({"ERROR"}, tr("«{entity}» is not an entity of {version}", entity=code,
                                           version=active.code))
                 return {"CANCELLED"}
+            plan = self._plan(SESSION.project, active, found)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
         preview = _entity_preview()
         try:
-            preview.enable(preview.EntityPlan(code=found.record.code))
+            preview.enable(plan)
         except (RuntimeError, GeoblenderError, sqlite3.Error, OSError) as exc:
             self.report({"ERROR"}, tr("The preview of the entity could not be shown: {detail}",
                                       detail=design_error_text(exc)))
@@ -5522,7 +5576,8 @@ class GEOBLENDER_OT_des_entity_insert(DesignCommandAware, ProvenanceAwareOperato
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
-        live = [item for item in self._records if item.state is not entities.EntityState.DISCARDED]
+        live = [item for item in self._records
+                if item.state is not entities.EntityState.DISCARDED and entities.entity_type(item.kind).chained]  # una detección no tiene cadena
         if not live:
             self.report({"ERROR"}, tr("The active version has no entities to insert next to: create a platform first"))
             return {"CANCELLED"}
@@ -5639,7 +5694,8 @@ class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOper
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
-        waiting = [entry.record for entry in listed if entry.record.state is entities.EntityState.UNCALCULATED]
+        waiting = [entry.record for entry in listed if entry.record.state is entities.EntityState.UNCALCULATED
+                   and entry.record.kind == entities.EntityKind.PLATFORM]  # las de la 016 se calculan con su orden (T35)
         if not waiting:
             self.report({"ERROR"}, tr("The active version has no entity without a result: the ones brought from another "
                                       "version or inherited from the version it starts from are left without one"))
@@ -5689,6 +5745,10 @@ class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOper
             found = entities.registry(project, active.uid).get(wanted)
             if found is None:
                 raise ValueError(tr("«{entity}» is not an entity of {version}", entity=wanted, version=active.code))
+            if found.record.kind != entities.EntityKind.PLATFORM:
+                raise ValueError(tr("«{name}» ({kind}) is not calculated from here: it is made again with its own command; only a platform is "
+                                    "calculated with its saved parameters", name=found.record.name,
+                                    kind=entities.entity_type(found.record.kind).params.label))
             _entity_request(project, active.uid, found.record.code)  # lo que rechazaría el cálculo, antes de abrir nada
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
@@ -6575,6 +6635,746 @@ class GEOBLENDER_OT_des_add_buttress(_ClearsEntityPreview, _CalculateAndCreate, 
         return found
 
 
+# --- Acopio (detectar, retirar)… (spec 016, T35; HU-016-1, HU-016-4; RF-016-02, RF-016-08, RF-016-10, RF-016-23, RF-016-25, RF-015-03,
+#     RF-015-28, RF-015-29; RNF-016-05; plan 016 §5.3.3 y §5.5; comprobación manual M6) -------------------------------------------
+
+DETECT_STOCKPILES = provenance.STOCKPILE_COMMAND
+EDIT_STOCKPILE = "geoblender.des_edit_stockpile"
+STOCKPILE_CANDIDATES = des_panels.STOCKPILE_CANDIDATES
+_STOCKPILE_HIDDEN = frozenset({"confirm", "in_steps", "preview"})
+"""Las propiedades ocultas de «Detectar acopios…»: las pone quien la lanza (o su ventana de confirmar)."""
+MARK_FIELDS: tuple[tuple[str, str], ...] = (("name_field", "nombre"), ("margin_field", "margen"), ("material_field", "material"),
+                                            ("base_field", "base"))
+"""Los campos de una capa de marcas y el nombre que propone el diálogo para cada uno (plan 016 §5.2.1; la capa que los lleve): solo
+se proponen los que la capa tiene; ninguno es una cifra, y la persona los cambia o los vacía."""
+STOCKPILE_MODE_ITEMS = [
+    ("DETECT", "Detect stockpiles", "Detect the stockpiles of a layer of marks on a surface and, if you want, the candidates without a mark"),
+    ("REMOVE", "Remove a stockpile", "Remove a stockpile of a detection: its footprint goes down to its base, joined with the ground by a "
+                                     "transition")]
+"""Lo que hace «Acopio (detectar, retirar)…»: abre la orden de detectar o la de retirar."""
+STOCKPILE_ACTION_ITEMS = [
+    ("CONVERT", "Convert into a stockpile", "The candidate is a stockpile: the detection keeps it as one, with the reason you give"),
+    ("DISCARD", "Discard", "The candidate is not a stockpile: it is not asked about again, with the reason you give"),
+    ("ASK", "Ask again", "Remove the decision: the candidate is pending again, with the reason you give"),
+    ("GO_TO", "Go to", "Frame the 3D view on the candidate; nothing changes")]
+"""Lo que se hace con un candidato (``design.stockpile_store.decide_candidate``) o «Ir a» él."""
+_DECISION_STATES = {"CONVERT": "converted", "DISCARD": "discarded", "ASK": "pending"}
+"""El estado de cada decisión sobre un candidato (``design.stockpiles.CANDIDATE_*``)."""
+
+
+def _taken_entity_names(project: Any) -> set[str]:
+    """Los nombres de las entidades que ya hay en el proyecto y en la versión activa (una detección no repite ninguno en su ámbito)."""
+    from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+    taken = {entry.record.name for entry in entities.project_registry(project)}
+    version = scene_versions.active_version()
+    if version:
+        taken |= {entry.record.name for entry in entities.registry(project, version)}
+    return taken
+
+
+def _stockpile_fields() -> tuple[str, ...]:
+    """Los campos del diálogo de «Detectar acopios…»: sus propiedades no ocultas."""
+    return tuple(name for name in GEOBLENDER_OT_des_detect_stockpiles.__annotations__ if name not in _STOCKPILE_HIDDEN)
+
+
+def _propose_mark_fields(self: Any, _context: Any) -> None:
+    """El ``update`` de la capa de marcas de «Detectar acopios…» (T35; plan 016 §5.2.1): **propone** los campos que la capa tiene de entre los
+    que lee la detección (:data:`MARK_FIELDS`: el nombre, el margen, el material y la superficie de base); los que no tiene, vacíos (la
+    detección usa entonces el ``fid`` y los valores por defecto). Solo lee."""
+    project = SESSION.project
+    if project is None or self.layer in ("", des_panels.NO_LAYER):
+        return
+    from ...gis import store as gis_store  # al usarlo: habilitar no carga el almacén de ``gis``
+
+    try:
+        found = {column.field for column in gis_store.feature_source(project, self.layer).columns}
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.debug("No se pudieron leer los campos de la capa de marcas «%s»", self.layer, exc_info=True)
+        return
+    for prop, wanted in MARK_FIELDS:
+        setattr(self, prop, wanted if wanted in found else "")
+
+
+def _refresh_stockpile_preview(self: Any, _context: Any) -> None:
+    """El ``update`` de cada campo de «Detectar acopios…» que cambia lo que dibuja su vista previa (T35, que pone lo de la T32; RF-016-23): con la
+    vista previa **de las marcas** activa, la redibuja con lo que dice ahora el diálogo. Un diálogo a medias (un campo sin escribir, un número que no
+    lo es) no la cambia: sigue la última completa. Solo lee."""
+    loaded = _entity_preview_loaded()
+    if loaded is None or not loaded.enabled() or loaded.plan() is None or loaded.plan().stockpile is None:
+        return
+    try:
+        request = GEOBLENDER_OT_des_detect_stockpiles._request(self)
+    except (ProfileFormError, GeoblenderError, sqlite3.Error, OSError, ValueError):
+        return
+    loaded.replace(loaded.EntityPlan(stockpile=request))
+
+
+def _stockpile_layer_changed(self: Any, context: Any) -> None:
+    """El ``update`` de la capa de marcas: propone sus campos (:func:`_propose_mark_fields`) y redibuja la vista previa."""
+    _propose_mark_fields(self, context)
+    _refresh_stockpile_preview(self, context)
+
+
+def _threshold_text(param: str) -> str:
+    """Lo que dice el diálogo de un umbral de la detección (D-3) cuando se deja vacío: **su valor por defecto y su tipo**, el de su familia
+    (``design.params.STOCKPILE_ENTITY``): «Por defecto: 10 m · ADOPTADO». Un campo vacío es el valor por defecto con su procedencia (la de
+    la familia: la HIPÓTESIS lo sigue siendo); lo que se escribe es lo que eligió la persona."""
+    template = design_params.entity_params("stockpile").template(param)
+    value = float(template.default)  # type: ignore[arg-type]
+    units = {"m": " m", "m2": " m²", "deg": " °", "-": ""}.get(str(template.unit), f" {template.unit}")
+    kind = tr("ASSUMPTION") if template.kind == ParamKind.HIPOTESIS else tr("ADOPTED")
+    return tr("By default: {value}{unit} · {kind}", value=i18n.format_number(value, 0 if value.is_integer() else 2), unit=units, kind=kind)
+
+
+class GEOBLENDER_OT_des_detect_stockpiles(_ClearsEntityPreview, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator,
+                                          _StepsModal, bpy.types.Operator):
+    """Detect the stockpiles of a layer of marks on a surface of the project or of the active version: plane, footprint and volume of each one, and the candidates without a mark if you ask for them"""
+
+    bl_idname = DETECT_STOCKPILES
+    bl_label = "Detect stockpiles…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.STOCKPILE_DETECT_PROJECT  # el de la versión lo decide la superficie (D-15): ``execute``
+    COMMAND = DETECT_STOCKPILES
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the detection, unique in its scope (the project or the active version)", options=_FIELD)
+    surface: EnumProperty(  # type: ignore[valid-type]
+        name="Surface",
+        description="Surface the stockpiles are detected on: the ground or a survey of the project (the detection is then of the project, "
+                    "also without an active version) or a surface of the active version (the detection is then of the version)",
+        items=des_panels.surface_items, options=_FIELD, update=_refresh_stockpile_preview)
+    layer: EnumProperty(  # type: ignore[valid-type]
+        name="Layer of the marks",
+        description="Layer of polygons of the project with one mark per stockpile: a polygon that says roughly where it is",
+        items=des_panels.layer_items, options=_FIELD, update=_stockpile_layer_changed)
+    name_field: StringProperty(  # type: ignore[valid-type]
+        name="Name field",
+        description="Field of the layer with the name of each mark (its key; empty: the number of the polygon)", options=_FIELD,
+        update=_refresh_stockpile_preview)
+    margin_field: StringProperty(  # type: ignore[valid-type]
+        name="Margin field",
+        description="Numeric field of the layer with the margin of each mark in metres (empty: the margin of the detection)", options=_FIELD,
+        update=_refresh_stockpile_preview)
+    material_field: StringProperty(  # type: ignore[valid-type]
+        name="Material field",
+        description="Field of the layer with the material of each stockpile (empty: without material)", options=_FIELD,
+        update=_refresh_stockpile_preview)
+    base_field: StringProperty(  # type: ignore[valid-type]
+        name="Base surface field",
+        description="Field of the layer with the name of a surface of the project that is the base of the stockpile instead of a fitted "
+                    "plane (empty: the plane)", options=_FIELD, update=_refresh_stockpile_preview)
+    candidates: BoolProperty(  # type: ignore[valid-type]
+        name="Look for candidates",
+        description="Also look for the stockpiles that have no mark: the zones that stand out from the opening of the surface, listed so that "
+                    "you convert each one into a stockpile or discard it with a reason", default=False, options=_FIELD,
+        update=_refresh_stockpile_preview)
+    margin_m: StringProperty(  # type: ignore[valid-type]
+        name="Margin around the mark (m)",
+        description="How far from its mark a stockpile can reach, in metres (empty: the default value, shown; a mark can give its own)",
+        options=_FIELD, update=_refresh_stockpile_preview)
+    crown_inner_m: StringProperty(  # type: ignore[valid-type]
+        name="Inner distance of the crown (m)",
+        description="Distance from the footprint where the ring of the crown that fits the base plane begins, in metres (empty: the default "
+                    "value, shown)", options=_FIELD)
+    crown_outer_m: StringProperty(  # type: ignore[valid-type]
+        name="Outer distance of the crown (m)",
+        description="Distance from the footprint where that ring ends, in metres (empty: the default value, shown)", options=_FIELD)
+    crown_slope_deg: StringProperty(  # type: ignore[valid-type]
+        name="Slope of the flat terrain (°)",
+        description="Slope under which the terrain of the crown counts as flat, in degrees (empty: the default value, shown)", options=_FIELD)
+    crown_flat_min_m2: StringProperty(  # type: ignore[valid-type]
+        name="Minimum flat area of the crown (m²)",
+        description="Area of flat terrain the crown needs to fit the plane with it alone; with less, the whole crown is used and it is "
+                    "warned (empty: the default value, shown)", options=_FIELD)
+    max_residual_m: StringProperty(  # type: ignore[valid-type]
+        name="Maximum residual (m)",
+        description="Distance to the plane from which a cell of the crown is left out of the fit, in metres (empty: the default value, "
+                    "shown)", options=_FIELD)
+    fit_rounds: StringProperty(  # type: ignore[valid-type]
+        name="Rounds of the fit",
+        description="How many times the plane is fitted leaving out the cells that do not fit it: a whole number (empty: the default "
+                    "value, shown)", options=_FIELD)
+    turns: StringProperty(  # type: ignore[valid-type]
+        name="Rounds of plane and footprint",
+        description="How many times the plane and the footprint are repeated until the footprint does not change: a whole number (empty: "
+                    "the default value, shown)", options=_FIELD)
+    tilt_max_deg: StringProperty(  # type: ignore[valid-type]
+        name="Maximum tilt of the plane (°)",
+        description="Tilt of the base plane from which it is limited, in degrees: a hypothesis that is warned and recorded (empty: the "
+                    "default value, shown)", options=_FIELD)
+    support_quantile: StringProperty(  # type: ignore[valid-type]
+        name="Support quantile",
+        description="Quantile of the residuals of the crown the limited plane rests on, from 0 to 1: a hypothesis (empty: the default "
+                    "value, shown)", options=_FIELD)
+    open_diameter_m: StringProperty(  # type: ignore[valid-type]
+        name="Opening diameter (m)",
+        description="Diameter of the disc of the morphological opening that finds the candidates, in metres (empty: the default value, "
+                    "shown)", options=_FIELD)
+    min_height_m: StringProperty(  # type: ignore[valid-type]
+        name="Minimum height of a candidate (m)",
+        description="How much a zone has to stand out from the opening to be a candidate, in metres (empty: the default value, shown)",
+        options=_FIELD)
+    min_area_m2: StringProperty(  # type: ignore[valid-type]
+        name="Minimum area of a candidate (m²)",
+        description="Smallest area of a candidate, in square metres (empty: the default value, shown)", options=_FIELD)
+    max_area_m2: StringProperty(  # type: ignore[valid-type]
+        name="Maximum area of a candidate (m²)",
+        description="Largest area of a candidate, in square metres (empty: the default value, shown)", options=_FIELD)
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con el avance y Esc: los pone invoke; desde un
+    # guion, sin ellos, de una vez. «Vista previa» de las marcas (T32): la pone el botón del diálogo. Una detección no retira nada ni deja una
+    # pared: no pide más confirmación que Crear.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    preview: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Con ``confirm``, el diálogo de crear el cálculo abierto. Si no, las listas leídas de nuevo (las superficies del proyecto y de la
+        versión activa, **también sin versión activa**: D-15, y las capas de polígonos), la propuesta (un nombre, la primera capa con sus
+        campos y el terreno) y el diálogo del cálculo: Intro calcula. Sin ninguna superficie o ninguna capa de polígonos, lo dice."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        project = SESSION.project
+        try:
+            des_panels.refresh_choices(project)
+            if not des_panels.has_surfaces():
+                self.report({"ERROR"}, tr("There is no surface in the project: import the ground or a survey first"))
+                return {"CANCELLED"}
+            if not any(item[0] != des_panels.NO_LAYER for item in des_panels.layer_items(None, None)):
+                self.report({"ERROR"}, tr("There is no layer of polygons in the project: import the marks of the stockpiles first"))
+                return {"CANCELLED"}
+            self._propose(context, project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.COMMAND)].label), confirm_text=tr("Calculate"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """Lo que propone el diálogo si quien lo lanza no lo dio (plan 016 §5.3.3): un nombre que no repite el de ninguna entidad del
+        proyecto ni de la versión («Acopios», «Acopios 2»…), **la primera capa de polígonos con los campos que tiene** (:data:`MARK_FIELDS`)
+        y el terreno (``surface_proposal.ground_item``, con lo seleccionado en la vista). Los umbrales **no se proponen**: vacíos son su valor
+        por defecto, que el diálogo enseña con su tipo (D-3)."""
+        given = self.properties.is_property_set
+        if not given("layer"):
+            self.layer = [item[0] for item in des_panels.layer_items(None, None) if item[0] != des_panels.NO_LAYER][0]
+            _propose_mark_fields(self, context)
+        if not self.name.strip():
+            taken, number = _taken_entity_names(project), 1
+            proposal = base = tr("Stockpiles")
+            while proposal in taken:
+                number += 1
+                proposal = f"{base} {number}"
+            self.name = proposal
+        if not given("surface"):
+            items = [identifier for identifier, _name, _about in des_panels.surface_items(None, None) if identifier != des_panels.NO_ZONE]
+            ground = surface_proposal.ground_item(context, project, items, des_panels.surface_choice) if items else None
+            if ground is not None:
+                self.surface = ground
+
+    def draw(self, context: Any) -> None:
+        """Arriba el nombre y la superficie; la capa de marcas con sus campos; si busca candidatos; **los umbrales de D-3, cada uno con su valor
+        por defecto y su tipo** (ADOPTADO o HIPÓTESIS) y, abajo, «Vista previa» de las marcas (RF-016-23). En la confirmación de crear, el
+        resumen."""
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "surface", text=tr("Surface"), translate=False)
+        box = layout.box()
+        box.label(text=tr("Marks of the stockpiles"), translate=False)
+        box.prop(self, "layer", text=tr("Layer"), translate=False)
+        box.prop(self, "name_field", text=tr("Name field"), translate=False)
+        box.prop(self, "margin_field", text=tr("Margin field"), translate=False)
+        box.prop(self, "material_field", text=tr("Material field"), translate=False)
+        box.prop(self, "base_field", text=tr("Base surface field"), translate=False)
+        layout.prop(self, "candidates", text=tr("Look for candidates"), translate=False)
+        rows = [("margin_m", "margin_m", tr("Margin around the mark (m)")),
+                ("crown_inner_m", "crown_inner_m", tr("Inner distance of the crown (m)")),
+                ("crown_outer_m", "crown_outer_m", tr("Outer distance of the crown (m)")),
+                ("crown_slope_deg", "crown_slope_deg", tr("Slope of the flat terrain (°)")),
+                ("crown_flat_min_m2", "crown_flat_min_m2", tr("Minimum flat area of the crown (m²)")),
+                ("max_residual_m", "max_residual_m", tr("Maximum residual (m)")),
+                ("fit_rounds", "fit_rounds", tr("Rounds of the fit")),
+                ("turns", "turns", tr("Rounds of plane and footprint")),
+                ("tilt_max_deg", "tilt_max_deg", tr("Maximum tilt of the plane (°)")),
+                ("support_quantile", "support_quantile", tr("Support quantile"))]
+        if self.candidates:
+            rows += [("open_diameter_m", "open_diameter_m", tr("Opening diameter (m)")),
+                     ("min_height_m", "min_height_m", tr("Minimum height of a candidate (m)")),
+                     ("min_area_m2", "min_area_m2", tr("Minimum area of a candidate (m²)")),
+                     ("max_area_m2", "max_area_m2", tr("Maximum area of a candidate (m²)"))]
+        box = layout.box()
+        box.label(text=tr("Thresholds of the detection: empty is the value shown"), translate=False)
+        for prop, param, label in rows:
+            row = box.row()
+            row.prop(self, prop, text=label, translate=False)
+            row.label(text=_threshold_text(param), translate=False)
+        _draw_entity_preview_button(layout, self, DETECT_STOCKPILES, _stockpile_fields())  # «Vista previa» de las marcas (RF-016-23)
+
+    # --- Lo pedido ----------------------------------------------------------------------------
+
+    def _request(self) -> design_model.StockpileRequest:
+        """Lo pedido en el diálogo como la ``design.model.StockpileRequest`` (RF-016-02, RF-016-08), comprobado sin escribir ni calcular nada.
+        Un umbral vacío es **su valor por defecto**: lo resuelve el dominio con su procedencia (D-3: la petición no lleva ninguna cifra
+        minera). :class:`ComputeFormError` si falta algo del diálogo."""
+        name = self.name.strip()
+        if not name:
+            raise ComputeFormError(tr("Write the name of the detection"))
+        if self.layer in ("", des_panels.NO_LAYER):
+            raise ComputeFormError(tr("Choose the layer of the marks of the stockpiles"))
+        if self.surface in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the surface the stockpiles are detected on"))
+
+        def number(prop: str, label: str) -> float | None:
+            return typed_number(getattr(self, prop), label)
+
+        def whole(prop: str, label: str) -> int | None:
+            typed = number(prop, label)
+            if typed is None:
+                return None
+            if typed != int(typed):
+                raise ComputeFormError(tr("«{value}» is not a whole number (field «{field}»)", value=getattr(self, prop).strip(), field=label))
+            return int(typed)
+
+        fields = design_model.StockpileFields(
+            self.layer, name_field=self.name_field.strip() or None, margin_field=self.margin_field.strip() or None,
+            material_field=self.material_field.strip() or None, base_field=self.base_field.strip() or None)
+        return design_model.StockpileRequest(
+            name, fields, self.surface, candidates=self.candidates,
+            margin_m=number("margin_m", tr("Margin around the mark (m)")),
+            crown_inner_m=number("crown_inner_m", tr("Inner distance of the crown (m)")),
+            crown_outer_m=number("crown_outer_m", tr("Outer distance of the crown (m)")),
+            crown_slope_deg=number("crown_slope_deg", tr("Slope of the flat terrain (°)")),
+            crown_flat_min_m2=number("crown_flat_min_m2", tr("Minimum flat area of the crown (m²)")),
+            max_residual_m=number("max_residual_m", tr("Maximum residual (m)")),
+            fit_rounds=whole("fit_rounds", tr("Rounds of the fit")), turns=whole("turns", tr("Rounds of plane and footprint")),
+            tilt_max_deg=number("tilt_max_deg", tr("Maximum tilt of the plane (°)")),
+            support_quantile=number("support_quantile", tr("Support quantile")),
+            open_diameter_m=number("open_diameter_m", tr("Opening diameter (m)")),
+            min_height_m=number("min_height_m", tr("Minimum height of a candidate (m)")),
+            min_area_m2=number("min_area_m2", tr("Minimum area of a candidate (m²)")),
+            max_area_m2=number("max_area_m2", tr("Maximum area of a candidate (m²)")))
+
+    # --- Calcular y crear ---------------------------------------------------------------------
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Con ``preview``, activa la vista previa de las marcas
+        (:meth:`_show_preview`). Si no, comprueba lo pedido (sin escribir nada si falta algo), decide el **ámbito** (D-15: del proyecto si la
+        superficie lo es, **también sin versión activa**; de la versión si es de una), pasa por la puerta de la 008 con el tipo de operación
+        de ese ámbito y calcula la detección por pasos con ``design.steps.stockpile_run`` —compila las máscaras antes si la versión no las
+        tiene al día—, sin registrar nada (RF-015-03): desde la interfaz, en el modal con el avance y Esc (RF-015-29, RNF-016-05); desde un
+        guion, de una vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar. Los rechazos (la capa, sus campos y marcas
+        solapadas, la superficie, los umbrales, el nombre repetido) y todas las cuentas son de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        if self.preview:
+            return self._show_preview()
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        from ...design import stockpile_store  # al usarlo: habilitar no carga el cálculo
+
+        project = SESSION.project
+        active = scene_versions.active_version() or None
+        try:
+            request = self._request()
+            scope, _found = stockpile_store.detection_scope(project, request, active)
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        of_version = scope == stockpile_store.VERSION
+        ready = ensure_ready(provenance.STOCKPILE_DETECT if of_version else provenance.STOCKPILE_DETECT_PROJECT, [], report=self.report,
+                             dialog=self.provenance_dialog, version=active if of_version else None)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        steps = design_steps.stockpile_run(project, request, version=active, budget_s=self.STEP_BUDGET_S)
+        return self._run_steps(context, project, request.name, steps)
+
+    def _show_preview(self) -> set[str]:
+        """«Vista previa» (T35, con lo de la T32; RF-016-23): comprueba lo pedido como al calcular (:meth:`_request`, sin escribir ni calcular
+        nada) y activa con ello la vista previa de las marcas con su margen (``bl.draw.entity``: el contorno de cada marca y el de la marca
+        ampliada, con su nombre, margen, material y base y su leyenda); la que hubiera activa se cambia por la nueva (pulsarlo otra vez, o
+        cambiar un campo del diálogo: :func:`_refresh_stockpile_preview`). Vale **sin versión activa** (la detección de una superficie del
+        proyecto, D-15). Lo que rechazaría «Calcular» de la capa o de las marcas sale en la propia vista previa, como aviso. Se quita al cancelar
+        la orden, al Esc a mitad del cálculo, al crear la detección, con su control y al conmutar a la interfaz de Blender."""
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        try:
+            request = self._request()
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        preview = _entity_preview()
+        try:
+            preview.enable(preview.EntityPlan(stockpile=request))
+        except (RuntimeError, GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, tr("The preview of the entity could not be shown: {detail}", detail=design_error_text(exc)))
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Showing the preview of the marks of the detection «{name}»", name=request.name))
+        return {"FINISHED"}
+
+    def _create(self, context: Any) -> set[str]:
+        """«Crear» (RF-016-02, RF-015-02): como las demás (:meth:`_CalculateAndCreate._create`: una transacción) y, **ya creada**, quita la
+        vista previa de las marcas (RF-016-23: la detección ya existe, ya no se prepara) y, si es **de una versión**, encadena lo que sigue
+        (:meth:`_update_declared`: la capa de entidades de la versión, y la declaración y las máscaras como en toda orden de entidades). La
+        del proyecto no sale en ninguna capa de versión ni declara nada (D-15, D-1): no encadena nada."""
+        opened = calculation()
+        created = _CalculateAndCreate._create(self, context)
+        if opened is None or "FINISHED" not in created:
+            return created
+        _entity_preview_off()
+        if opened.op_type != provenance.STOCKPILE_DETECT:
+            return created
+        return self._update_declared(context, opened)
+
+    # --- Lo que sigue a crearla (RF-015-10, RF-015-27; plan 016 §5.3.2) -------------------------
+
+    _chain = False
+    """Si los pasos que corren son los de lo que sigue a crear la detección (y no los de calcularla)."""
+
+    def _update_declared(self, context: Any, opened: Calculation) -> set[str]:
+        """Tras crear la detección **de una versión**, **pone al día** lo que sigue a toda orden de entidades
+        (``design.entity_store.after_entity_change``: repite la declaración de las restricciones de las entidades de la versión, recompila las
+        máscaras si ya no están al día, dice qué quedó obsoleto y pone al día la **capa de entidades**, que ahora lleva **una fila por acopio**,
+        T34), por pasos con el avance y Esc: la detección **ya está creada** (cada etapa es una operación y una transacción propias); cerrar o
+        fallar a mitad deja las máscaras obsoletas con su causa y se compilan de nuevo antes de que un operador las use."""
+        from ...design import entity_store  # al usarlo: habilitar no carga el cálculo
+
+        project = SESSION.project
+        self._chain = True
+        steps = entity_store.after_entity_change(project, opened.version, budget_s=self.STEP_BUDGET_S)
+        started = self._run_steps(context, project, opened.name, steps)
+        return {"FINISHED"} if started == {"CANCELLED"} else started  # ya creada: el fallo está dicho
+
+    def _finished(self, context: Any, opened: Any) -> set[str]:
+        """Con los pasos de lo que sigue a crearla, dice lo que hizo (:meth:`_report_chain`); si no, como las demás órdenes."""
+        if self._chain:
+            self._chain = False
+            self._report_chain(opened)
+            return {"FINISHED"}
+        return _CalculateAndCreate._finished(self, context, opened)
+
+    def _report_chain(self, chain: Any) -> None:
+        """Lo que hizo ``chain`` (``design.entity_store.EntityChain``), en el informe y en el registro: la declaración, las máscaras
+        recompiladas, lo que quedó obsoleto y, en alerta, lo que no se pudo hacer (RF-012-06)."""
+        shown = i18n.language()
+        for notice in chain.notices():
+            self._report({"WARNING" if notice.severity == "warning" else "INFO"}, notice.text(shown))
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
+
+    def _created_text(self, opened: Calculation) -> str:
+        if opened.op_type == provenance.STOCKPILE_DETECT:
+            return tr("Detection of stockpiles «{name}» created in {version}", name=opened.name, version=opened.version)
+        return tr("Detection of stockpiles «{name}» created in the project", name=opened.name)
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Detectando los acopios… 40 % · Esc: cancelar» o, tras crearla, «Poniendo al día las
+        restricciones declaradas… 40 % · Esc: cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        if self._chain:
+            return tr("Updating the declared constraints and the masks… {percent} % · Esc: cancel", percent=percent)
+        return tr("Detecting the stockpiles… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        if self._chain:
+            return tr("Cancelled: the detection is created; the declared constraints and the masks are brought up to date before the next "
+                      "operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»")
+        return _CalculateAndCreate._cancelled_text(self)
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        found = _CalculateAndCreate._error_text(self, exc)
+        if self._chain:
+            return f"{found} " + tr("The detection is created: only the declared constraints and the masks have not been brought up to date")
+        return found
+
+
+@dataclass(frozen=True, slots=True)
+class _Candidates:
+    """Lo que enseña la ventana de «Candidatos de los acopios…»: la detección (``code``, ``name``), su ámbito (``version``: la versión de la
+    detección o ``None`` si es **del proyecto**), la operación que la hizo (``operation_uid``) y sus candidatos como los guardó la operación
+    (``rows``: una fila de ``des_stc_`` por candidato, :func:`design.stockpile_store.read_stored_rows`)."""
+
+    code: str
+    name: str
+    version: Any
+    operation_uid: str
+    rows: tuple[Mapping[str, Any], ...]
+
+    @property
+    def op_type(self) -> str:
+        """El tipo de operación de la detección: de la versión o del proyecto (D-15)."""
+        return provenance.STOCKPILE_DETECT_PROJECT if self.version is None else provenance.STOCKPILE_DETECT
+
+
+class GEOBLENDER_OT_des_stockpile_candidates(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """List the candidates of a detection of stockpiles with their footprint, area and volume, and convert each one into a stockpile or discard it with a reason; the detection is then recomputed"""
+
+    bl_idname = STOCKPILE_CANDIDATES
+    bl_label = "Candidates of the stockpiles…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.STOCKPILE_DETECT_PROJECT  # la detección puede ser del proyecto (sin versión activa): sin la puerta de versión
+
+    detection: StringProperty(  # type: ignore[valid-type]
+        name="Detection",
+        description="Code or name of the detection of stockpiles (empty: the one of the object selected in the 3D view or, without it, the "
+                    "only one that has candidates)", options=_FIELD)
+    in_project: BoolProperty(  # type: ignore[valid-type]
+        name="Of the project",
+        description="The detection is of the project and not of the active version (a detection of a surface of the project)", default=False,
+        options=_FIELD)
+    candidate: StringProperty(  # type: ignore[valid-type]
+        name="Candidate", description="Key of the candidate the decision is about (c01…): one of those of the list", options=_FIELD)
+    action: EnumProperty(  # type: ignore[valid-type]
+        name="Decision", description="What is done with the candidate", items=STOCKPILE_ACTION_ITEMS, default="CONVERT", options=_FIELD)
+    reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason",
+        description="Why: it is recorded with the decision, who made it and when; it is needed to convert, discard or ask again",
+        options=_FIELD)
+    recompute: BoolProperty(  # type: ignore[valid-type]
+        name="Recompute the detection",
+        description="Repeat the detection with the decision as soon as it is made (otherwise it stays out of date until «Recompute the stale "
+                    "results»)", default=True, options=_FIELD)
+    rows: CollectionProperty(type=GEOBLENDER_PG_des_bring_row, options=_FIELD)  # type: ignore[valid-type]
+
+    _listed = None  # lo que enseña la ventana (:class:`_Candidates`), leído al abrirla
+
+    def _read(self, context: Any) -> _Candidates:
+        """La detección pedida (``detection``; si no, la del objeto seleccionado en la vista; si no, la única con candidatos) con sus
+        candidatos, leídos de la tabla de **su operación vigente** en una instantánea y sin escribir nada. La busca en la versión activa y, si
+        no está o es ``in_project``, en el proyecto. :class:`ValueError` si no hay proyecto o detección, si hay varias sin decir cuál o si no
+        tiene lista de candidatos."""
+        from ...design import entities, entity_store, stockpile_store  # al usarlo: habilitar no carga el cálculo
+
+        project, active = SESSION.project, scene_versions.active()
+        if project is None:
+            raise ValueError(tr("Open a project"))
+        given, of_project = self.detection.strip(), self.in_project
+        if not given:
+            code, owner = _selected_entity(context)
+            if code:
+                given, of_project = code, not owner
+        with project.read() as conn:
+            conn.execute("BEGIN")
+            try:
+                found: list[tuple[Any, Any]] = []
+                scopes = [(None, entities.project_registry(project, conn=conn))] if of_project else [
+                    *([(active, entities.registry(project, active.uid, conn=conn))] if active is not None else []),
+                    (None, entities.project_registry(project, conn=conn))]
+                for scope, listed in scopes:
+                    for entry in listed:
+                        if entry.record.kind != entities.EntityKind.STOCKPILE or entry.operation_uid is None:
+                            continue
+                        if not given or given in (entry.record.code, entry.record.name):
+                            found.append((scope, entry))
+                    if given and found:
+                        break
+                with_rows = []
+                for scope, entry in found:
+                    table = entity_store.operation_table(conn, entry.operation_uid, provenance.STOCKPILE_CANDIDATES_ROLE)
+                    rows = () if table is None else stockpile_store.read_stored_rows(
+                        conn, provenance.STOCKPILE_CANDIDATES_TABLE, table)
+                    if rows or given:
+                        with_rows.append(_Candidates(entry.record.code, entry.record.name, scope, str(entry.operation_uid), tuple(rows)))
+            finally:
+                conn.execute("ROLLBACK")
+        if given and not with_rows:
+            raise ValueError(tr("«{entity}» is not a detection of stockpiles of the project or of the active version", entity=given))
+        if not with_rows:
+            raise ValueError(tr("There is no detection with candidates: detect the stockpiles asking for the candidates first"))
+        if len(with_rows) > 1 and not given:
+            raise ValueError(tr("There is more than one detection with candidates: select the object of one or give its code"))
+        found_one = with_rows[0]
+        if not found_one.rows:
+            raise ValueError(tr("The detection «{name}» has no candidates: it was detected without asking for them, or none passed the "
+                                "filters", name=found_one.name))
+        return found_one
+
+    def _lines(self) -> list[tuple[str, bool, tuple[str, str, str], str]]:
+        """Las filas de la ventana: por candidato, su texto (su clave, su huella, su volumen y su plano, y su estado: pendiente, convertido o
+        descartado con su motivo, quién y cuándo), si pide una decisión, el lugar de «Ir a» y su clave."""
+        from ...design import stockpile_store  # al usarlo: habilitar no carga el cálculo
+
+        found = self._listed
+        assert found is not None
+        shown, lines = i18n.language(), []
+        for row in found.rows:
+            text = stockpile_store.candidate_row_notice(row).text(shown)
+            state, reason = row["state"], row["reason"] or ""
+            if state == "converted":
+                text += " · " + tr("Converted into a stockpile: {reason} ({person}, {date})", reason=reason,
+                                   person=row["decided_by"] or "", date=row["decided_on"] or "")
+            elif state == "discarded":
+                text += " · " + tr("Discarded: {reason} ({person}, {date})", reason=reason, person=row["decided_by"] or "",
+                                   date=row["decided_on"] or "")
+            else:
+                text += " · " + tr("Pending")
+            lines.append((text, state not in ("converted", "discarded"),
+                          constraint_panels.place_of(float(row["x"]), float(row["y"]), float(row["area_m2"])), str(row["key"])))
+        return lines
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre la ventana con los candidatos de la detección (con su estado y «Ir a» cada uno), propone el primero **pendiente** (o el que dio
+        quien la lanzó: los botones de la barra N) y pide la decisión con su motivo; no escribe nada. Con ``action`` «Ir a» y un candidato,
+        encuadra la vista sin abrir nada. Sin detección o sin candidatos, lo dice."""
+        self.provenance_dialog = True
+        try:
+            self._listed = self._read(context)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        found = self._listed
+        self.detection, self.in_project = found.code, found.version is None
+        if self.action == "GO_TO" and self.candidate.strip():
+            return self.execute(context)
+        self.rows.clear()
+        for text, _alert, _place, key in self._lines():
+            row = self.rows.add()
+            row.name, row.label = key, text
+        pending = [str(row["key"]) for row in found.rows if row["state"] not in ("converted", "discarded")]
+        keys = [str(row["key"]) for row in found.rows]
+        if self.candidate.strip() not in keys:
+            self.candidate = (pending or keys)[0]
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False, title=tr("Candidates of «{name}»", name=found.name), confirm_text=tr("Apply"))
+
+    def draw(self, context: Any) -> None:
+        """La detección y su ámbito, **la lista de candidatos** con su huella, área y volumen, su estado y «Ir a», y, debajo, el candidato, la
+        decisión (convertir, descartar o volver a preguntar), su motivo y si se recalcula la detección."""
+        layout = self.layout
+        found = self._listed
+        if found is None:
+            return
+        layout.label(text=tr("Detection «{name}» ({code}) of the project", name=found.name, code=found.code) if found.version is None
+                     else tr("Detection «{name}» ({code}) of {version}", name=found.name, code=found.code,
+                             version=getattr(found.version, "code", "")), translate=False)
+        box = layout.box()
+        for text, alert, (x, y, radius), _key in self._lines():
+            row = box.row()
+            des_panels.draw_wrapped(row.column(), text, DIALOG_WIDTH - 90, alert=alert)
+            button = row.operator(constraint_panels.GO_TO_PLACE, text=tr("Go to"), translate=False)
+            button.x, button.y, button.radius = x, y, radius
+        layout.prop_search(self, "candidate", self, "rows", text=tr("Candidate"), translate=False)
+        layout.prop(self, "action", text=tr("Decision"), translate=False)
+        layout.prop(self, "reason", text=tr("Reason"), translate=False)
+        layout.prop(self, "recompute", text=tr("Recompute the detection"), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """«Ir a» (``action`` ``GO_TO``): encuadra la vista en el candidato y no cambia nada. Si no, **decide** sobre el candidato
+        (``design.stockpile_store.decide_candidate``: convertir, descartar o volver a preguntar, siempre con su motivo; es un cambio del
+        parámetro ``decisions`` de la detección, con su decisor y su fecha) y, con ``recompute``, **recalcula la detección** con la decisión
+        aplicada (:func:`bpy.ops.geoblender.core_recompute_stale` de esa operación: por pasos, con el avance y Esc; sin él, queda obsoleta
+        hasta «Recalcular lo obsoleto»). Los rechazos (sin candidato, sin motivo, un candidato que no está, el proyecto en solo lectura) no
+        escriben nada."""
+        blocked = None if self.action == "GO_TO" else write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        from ...design import stockpile_store  # al usarlo: habilitar no carga el cálculo
+
+        try:
+            found = self._listed = self._read(context)
+            key = self.candidate.strip()
+            if not key:
+                raise ValueError(tr("Choose the candidate"))
+            row = next((item for item in found.rows if str(item["key"]) == key), None)
+            if row is None:
+                raise ValueError(tr("«{candidate}» is not a candidate of «{name}»", candidate=key, name=found.name))
+            if self.action == "GO_TO":
+                x, y, radius = constraint_panels.place_of(float(row["x"]), float(row["y"]), float(row["area_m2"]))
+                return {"FINISHED"} if bpy.ops.geoblender.core_go_to_place("EXEC_DEFAULT", x=x, y=y, radius=radius) == {"FINISHED"} \
+                    else {"CANCELLED"}
+            if not self.reason.strip():
+                raise ValueError(tr("Write the reason of the decision: it is recorded with it"))
+            project = SESSION.project
+            stockpile_store.decide_candidate(project, found.code, key, _DECISION_STATES[self.action], self.reason, version=found.version,
+                                             decided_by=project.session.user_host)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        undo_watch.record(UndoKind.OPERATION, found.op_type)  # Ctrl+Z no lo deshace
+        self.report({"INFO"}, tr("Decision recorded on the candidate «{candidate}» of «{name}»: the detection is out of date until it is "
+                                 "recomputed", candidate=key, name=found.name))
+        if ui_provenance.refresh(force=True):
+            ui_provenance.redraw()
+        if self.recompute:
+            if getattr(context, "window", None) is None:
+                self.report({"WARNING"}, tr("It is not recomputed here: use «Recompute the stale results» from a Blender window"))
+            else:
+                bpy.ops.geoblender.core_recompute_stale("EXEC_DEFAULT", scope="ITEM", subject_uid=found.operation_uid)
+        return {"FINISHED"}
+
+
+class GEOBLENDER_OT_des_edit_stockpile(DesignCommandAware, ProvenanceAwareOperator, bpy.types.Operator):
+    """Detect the stockpiles of a layer of marks or remove one already detected: it opens the order you choose"""
+
+    bl_idname = EDIT_STOCKPILE
+    bl_label = "Stockpile (detect, remove)…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.STOCKPILE_DETECT_PROJECT  # detectar puede ser del proyecto (D-15): sin la puerta de versión
+
+    mode: EnumProperty(  # type: ignore[valid-type]
+        name="What to do",
+        description="Detect the stockpiles of a layer of marks, or remove one of those already detected in the active version or in the project",
+        items=STOCKPILE_MODE_ITEMS, default="DETECT", options=_FIELD)
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Abre el diálogo con lo que se puede hacer (detectar o retirar) y propone **retirar** si ya hay acopios detectados que se puedan retirar
+        (los de la versión activa y del proyecto) y **detectar** si no; no escribe nada."""
+        self.provenance_dialog = True
+        project = SESSION.project
+        if not self.properties.is_property_set("mode"):
+            try:
+                des_panels.refresh_removal_choices(project)
+            except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+                LOGGER.debug("No se pudieron leer los acopios que se pueden retirar", exc_info=True)
+            self.mode = "REMOVE" if des_panels.has_removal_stockpiles() else "DETECT"
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(EDIT_STOCKPILE)].label), confirm_text=tr("Continue"))
+
+    def draw(self, context: Any) -> None:
+        """Las dos opciones y lo que hace la elegida."""
+        layout = self.layout
+        layout.prop(self, "mode", expand=True)
+        layout.label(text=tr("It opens the detection of stockpiles: their marks, the surface and the thresholds.") if self.mode == "DETECT"
+                     else tr("It opens the removal of a stockpile: the stockpile, the start surface and the transition."), translate=False)
+
+    def execute(self, context: Any) -> set[str]:
+        """Abre la orden elegida (**«Detectar acopios…»**, :data:`DETECT_STOCKPILES`, o **«Retirar un acopio…»**, :data:`REMOVE_STOCKPILE`) en
+        cuanto acaba ésta (un diálogo no se abre desde dentro de otro); no escribe nada. Cada una dice por sí misma lo que le falta (la
+        retirada pide una versión activa y una detección)."""
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        _invoke_later(REMOVE_STOCKPILE if self.mode == "REMOVE" else DETECT_STOCKPILES, getattr(context, "window", None) or _first_window())
+        return {"FINISHED"}
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
@@ -6599,7 +7399,10 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_entity_calculate,
                              GEOBLENDER_OT_des_remove_stockpile,
                              GEOBLENDER_OT_des_create_body,
-                             GEOBLENDER_OT_des_add_buttress)
+                             GEOBLENDER_OT_des_add_buttress,
+                             GEOBLENDER_OT_des_edit_stockpile,
+                             GEOBLENDER_OT_des_detect_stockpiles,
+                             GEOBLENDER_OT_des_stockpile_candidates)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
@@ -6610,6 +7413,7 @@ afectado», la T30 «Solo relleno…» y la T33 «Ajustar el diseño a un límit
 entidades de…» y la T29 la vista previa de una entidad, todas de la entrada «015», que entrega la T31 con el menú «Entidad ▾»
 (las dos internas nuevas de la T31, «Lo que se apoya en ella» e «Insertar antes o después de…», también; y la T41, «Calcular…»;
 y la T43, la interna que lanza «Cambiar parámetro…», sin menú); de la 016, la T20 pone «Retirar un acopio…», interna, de la entrada
-«016», que la entrega (la T35 la pondrá detrás de «Acopio (detectar, retirar)…»); la T25 pone «Cuerpo apoyado…», interna, de la misma
-entrada (la T35 la pondrá en el menú); la T27 pone «Contrafuerte…», con la clave del catálogo ``des_add_buttress``, que sigue en la entrada
-R-36 (la T35 la entrega))."""
+«016», que la entrega (la T35 la pone detrás de «Acopio (detectar, retirar)…»); la T25 pone «Cuerpo apoyado…» (``des_create_body``, que la T35 pasa
+de la «Unidad por espesor sobre su apoyo…» de Geología al menú Entidades); la T27 pone «Contrafuerte…», con la clave del catálogo
+``des_add_buttress``; la T35 pone «Acopio (detectar, retirar)…», «Detectar acopios…» y «Candidatos de los acopios…» y entrega la entrada 016 con
+el menú Diseño ▸ Pistas y entidades ▸ Entidades)."""

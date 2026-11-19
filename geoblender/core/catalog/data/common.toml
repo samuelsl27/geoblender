@@ -633,8 +633,8 @@ key = "geoblender.des_entity_preview"
 kind = "internal"
 label.en = "Preview of the entity"
 label.es = "Vista previa de la entidad"
-description.en = "Show, before calculating, the footprint of a platform, its axis with its sense, the levels at its ends, what rests on it and the constraints it will declare"
-description.es = "Enseña, antes de calcular, la huella de una plataforma, su eje con su sentido, las cotas en sus extremos, lo que se le apoya y las restricciones que declarará"
+description.en = "Show, before calculating, the footprint of a platform, its axis with its sense, the levels at its ends, what rests on it and the constraints it will declare; the marks of a detection of stockpiles; the crown zone of a buttress"
+description.es = "Enseña, antes de calcular, la huella de una plataforma, su eje con su sentido, las cotas en sus extremos, lo que se le apoya y las restricciones que declarará; las marcas de una detección de acopios; la zona de coronación de un contrafuerte"
 entry = "015"
 action = "T"
 frequency = 2
@@ -674,8 +674,30 @@ entry = "015"
 action = "D"
 frequency = 1
 
-# La retirada de un acopio (spec 016, T20; HU-016-2; RF-016-11 a RF-016-15): interna. La lanza «Acopio (detectar, retirar)…» cuando la
-# entregue la T35 (entre tanto, por su nombre desde la consola de Python: M1); es de la entrada 016, que la entrega.
+# Las órdenes de acopios de la 016 (T20, T25 y T35; HU-016-1, HU-016-2): internas, las lanza «Acopio (detectar, retirar)…» (menú Diseño ▸
+# Pistas y entidades ▸ Entidades) y el menú «Entidad ▾»; son de la entrada 016, que las entrega con ese menú (T35).
+[[command]]
+key = "geoblender.des_detect_stockpiles"
+kind = "internal"
+label.en = "Detect stockpiles…"
+label.es = "Detectar acopios…"
+description.en = "Detect the stockpiles of a layer of marks on a surface of the project or of the active version: plane, footprint and volume of each one, and the candidates without a mark if you ask for them"
+description.es = "Detecta los acopios de una capa de marcas sobre una superficie del proyecto o de la versión activa: plano, huella y volumen de cada uno, y los candidatos sin marca si se piden"
+entry = "016"
+action = "D"
+frequency = 2
+
+[[command]]
+key = "geoblender.des_stockpile_candidates"
+kind = "internal"
+label.en = "Candidates of the stockpiles…"
+label.es = "Candidatos de los acopios…"
+description.en = "List the candidates of a detection of stockpiles with their footprint, area and volume, and convert each one into a stockpile or discard it with a reason; the detection is then recomputed"
+description.es = "Lista los candidatos de una detección de acopios con su huella, área y volumen, y convierte cada uno en acopio o lo descarta con un motivo; después se recalcula la detección"
+entry = "016"
+action = "D"
+frequency = 1
+
 [[command]]
 key = "geoblender.des_remove_stockpile"
 kind = "internal"
@@ -683,20 +705,6 @@ label.en = "Remove a stockpile…"
 label.es = "Retirar un acopio…"
 description.en = "Remove a stockpile detected in the active version: its footprint goes down to its base, joined with the ground by a transition, and what rests on it is listed before calculating"
 description.es = "Retira un acopio detectado en la versión activa: deja su huella en su base, unida al terreno por una transición, y enseña antes de calcular lo que se le apoya"
-entry = "016"
-action = "D"
-frequency = 1
-
-# El cuerpo apoyado (spec 016, T25; HU-016-4; RF-016-20 a RF-016-22): interna, como la retirada. La lanza «Cuerpo apoyado…» cuando la
-# entregue la T35 (la que hoy es «Unidad por espesor sobre su apoyo…», `geo_create_thickness_unit`, de R-18: la T35 renombra); entre
-# tanto, por su nombre desde la consola de Python: M2. Es de la entrada 016, que la entrega.
-[[command]]
-key = "geoblender.des_create_body"
-kind = "internal"
-label.en = "Supported body…"
-label.es = "Cuerpo apoyado…"
-description.en = "Create a body from its footprint and its thickness data, resting on a known surface or under a known roof: the thickness is interpolated and the other surface is derived from it"
-description.es = "Crea un cuerpo desde su huella y sus datos de espesor, apoyado en una superficie conocida o bajo un techo conocido: se interpola el espesor y la otra superficie sale de él"
 entry = "016"
 action = "D"
 frequency = 1

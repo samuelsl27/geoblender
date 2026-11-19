@@ -184,7 +184,7 @@ class CreateBodyTest(platform_ops.CreatePlatformTest):
         catalog = self.commands.catalog()
         command = catalog.commands[CREATE]
         self.assertEqual((command.kind, command.entry, command.module, command.label, command.label_es, command.home),
-                         ("internal", "016", "des", "Supported body…", "Cuerpo apoyado…", ""))
+                         ("operator", "016", "des", "Supported body…", "Cuerpo apoyado…", "GEOBLENDER_MT_des_entities"))  # T35: en el menú Entidades
         self.assertEqual(command.description, DESCRIPTION)
         self.assertEqual(cls.__doc__.strip(), DESCRIPTION)
         self.assertTrue(catalog.entries["016"].delivered)

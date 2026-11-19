@@ -197,10 +197,10 @@ class EntityMenuTest(platform_ops.CreatePlatformTest):
         props = platform_ops._module("bl.props.des")
         self.assertTrue(props.GEOBLENDER_PG_des_bring_row.is_registered)
 
-    def test_b_the_platform_and_the_internals_are_delivered_and_what_is_of_the_016_is_not(self) -> None:
-        """RF-015-28 (D-14): «Plataforma…» (con la elipsis de lo que abre un diálogo) y las internas de la 015 son de la
-        entrada 015, entregada, y están disponibles; las de la 016 (Acopio…, Contrafuerte…) siguen en R-36, sin entregar,
-        y no están disponibles."""
+    def test_b_the_platform_and_the_internals_are_delivered_and_so_is_what_is_of_the_016(self) -> None:
+        """RF-015-28, RF-016-25 (D-14): «Plataforma…» (con la elipsis de lo que abre un diálogo) y las internas de la 015 son de la
+        entrada 015, entregada, y están disponibles; las de la 016 (Acopio (detectar, retirar)…, Contrafuerte… y Cuerpo apoyado…) son
+        de la entrada 016, entregada por la T35, y están disponibles; ``R-36`` sigue sin entregar (lo que aún no es una orden)."""
         catalog = self.commands.catalog()
         entry = catalog.entries[ENTRY]
         self.assertEqual((entry.title, entry.title_es, entry.delivered),
@@ -213,16 +213,17 @@ class EntityMenuTest(platform_ops.CreatePlatformTest):
             with self.subTest(orden=idname):
                 self.assertEqual(catalog.commands[idname].entry, ENTRY)
                 self.assertTrue(self.commands.is_available(idname))
-        for idname in ("geoblender.des_edit_stockpile", "geoblender.des_add_buttress"):
+        self.assertTrue(catalog.entries["016"].delivered)
+        for idname in ("geoblender.des_edit_stockpile", "geoblender.des_add_buttress", "geoblender.des_create_body"):
             with self.subTest(orden=idname):
-                self.assertEqual(catalog.commands[idname].entry, "R-36")
-                self.assertFalse(self.commands.is_available(idname))
+                self.assertEqual(catalog.commands[idname].entry, "016")
+                self.assertTrue(self.commands.is_available(idname))
         self.assertTrue(self.commands.is_available(MENU), "el menú «Entidad ▾» es de la entrada 015")
 
     def test_c_the_entity_menu_has_the_real_commands_and_what_is_not_there_yet_is_marked(self) -> None:
         """RF-015-28 (D-14; plan §5.5): el menú «Entidad ▾» dibuja, en su orden, las órdenes reales —sus ítems activos— y,
-        marcado y desactivado, lo que aún no es una orden (editar el eje, las restricciones que declara) y lo de la
-        016 (Acopio…, con su «Disponible en R-36»); sin la nota de menú no disponible."""
+        marcado y desactivado, lo que aún no es una orden (editar el eje, las restricciones que declara); «Acopio (detectar,
+        retirar)…» (016, entregada) es un ítem activo más; sin la nota de menú no disponible."""
         menu = getattr(bpy.types, MENU)
         shown = draw(menu, bpy.context)
         operators = [(item.target, item.enabled) for item in shown.items if item.kind == "operator"]
@@ -231,9 +232,8 @@ class EntityMenuTest(platform_ops.CreatePlatformTest):
             "geoblender.core_show_lineage", INSERT, BRING, CALCULATE, DISCARD, RELEASE, PREVIEW, EXPORT,
             "geoblender.des_edit_stockpile"])
         enabled = dict(operators)
-        for idname in (DEPENDENTS, INSERT, BRING, CALCULATE, DISCARD, RELEASE, PREVIEW, EXPORT):
+        for idname in (DEPENDENTS, INSERT, BRING, CALCULATE, DISCARD, RELEASE, PREVIEW, EXPORT, "geoblender.des_edit_stockpile"):
             self.assertTrue(enabled[idname], idname)
-        self.assertFalse(enabled["geoblender.des_edit_stockpile"])
         labels = [item.text for item in shown.items if item.kind in ("operator", "label")]
         self.assertIn("Lo que se apoya en ella", labels)
         self.assertIn("Insertar antes o después de…", labels)

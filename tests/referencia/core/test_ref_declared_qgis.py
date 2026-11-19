@@ -338,14 +338,14 @@ class QgisDeclaredReferenceTest(decl.DeclareCase):
             ("platform", "P2", "discarded"): ["Plataforma descartada"],
             ("platform", "P3", "support_removed"): ["Plataforma con el apoyo retirado"],
             ("platform", "P4", "stale"): ["Plataforma"],
-            ("stockpile", "A1", "current"): [other],
-            ("stockpile", "A2", "discarded"): [f"{other} descartada"],
-            ("stockpile", "A3", "support_removed"): [f"{other} con el apoyo retirado"],
+            ("stockpile", "A1", "current"): ["Acopio"],
+            ("stockpile", "A2", "discarded"): ["Acopio descartada"],
+            ("stockpile", "A3", "support_removed"): ["Acopio con el apoyo retirado"],
         }
         found = {tuple(attributes[1:4]): matched for attributes, matched in info["matches"]}
         self.assertEqual(found, expected)
         by_label = {label: symbol for label, _condition, symbol in info["rules"]}
-        self.assertEqual(len(by_label), 6)
+        self.assertEqual(len(by_label), 18)
         red, green, blue = cstyles.ENTITY_KINDS["platform"][1]
         normal, faded, marked = (by_label[label] for label in (
             "Plataforma", "Plataforma descartada", "Plataforma con el apoyo retirado"))
@@ -373,13 +373,13 @@ class QgisDeclaredReferenceTest(decl.DeclareCase):
     def test_g_the_real_entity_layer_opens_with_its_style_and_every_field_read_only(self) -> None:
         """RF-015-27, RF-012-20, RF-008-56, D-13 (T30): ``des_enl_v01``, la que escribe ``des.entity_layer`` (no una de
         prueba), se abre en QGIS **con su estilo por defecto**, escrito por la operación en su transacción: un
-        renderizador por reglas con las seis del estilo de entidades; la «Plataforma de carga» (**descartada**) cae en
+        renderizador por reglas con las dieciocho del estilo de entidades; la «Plataforma de carga» (**descartada**) cae en
         la regla atenuada y la «Plataforma de taller» (que perdió el apoyo al descartar la otra) en la marcada, cada
         una en **una** sola regla; sus campos (``fid`` y las doce columnas de la capa) son de solo lectura todos y la
         capa lleva su nota."""
         info = self.layer(REAL_ENTITIES)
         self.assertEqual(info["renderer"], "RuleRenderer")
-        self.assertEqual(len(info["rules"]), 6)
+        self.assertEqual(len(info["rules"]), 18)
         self.assertEqual(info["rules"], self.layer(ENTITIES)["rules"], "el mismo estilo que el de la capa de prueba")
         found = {attributes[1]: matched for attributes, matched in info["matches"]}
         self.assertEqual(found, {"PLT-001": ["Plataforma descartada"],
@@ -433,10 +433,9 @@ class QgisDeclaredReferenceTest(decl.DeclareCase):
         self.assertEqual(info["features"], len(SUPPORTED_ROWS))
         by_code = {attributes[1]: (dict(zip(info["fields"], attributes, strict=True)), matched) for attributes, matched in info["matches"]}
         self.assertEqual(sorted(by_code), sorted(code for code, *_rest in SUPPORTED_ROWS))
-        other = cstyles.ENTITY_OTHER_LABEL
         self.assertEqual({code: matched for code, (_names, matched) in by_code.items()},
-                         {"PLT-001": ["Plataforma"], "STK-001#m01": [other], "STK-001#m02": [other], "RMV-001": [other],
-                          "BTR-001": [f"{other} con el apoyo retirado"], "BDY-001": [f"{other} descartada"]})
+                         {"PLT-001": ["Plataforma"], "STK-001#m01": ["Acopio"], "STK-001#m02": ["Acopio"], "RMV-001": ["Retirada"],
+                          "BTR-001": ["Contrafuerte con el apoyo retirado"], "BDY-001": ["Cuerpo apoyado descartada"]})
         for code, name, kind, state, figures in SUPPORTED_ROWS:
             with self.subTest(code=code):
                 names = by_code[code][0]

@@ -3069,7 +3069,9 @@ def declaration_pending(project: StoreProject, conn: sqlite3.Connection, version
     cortan lo que sigue antes de que se escriba la primera declaración. Es lo que ``gis.masks.access`` pregunta
     (por el gancho :data:`DECLARATION_HOOK`, que registra ``bl``) cada vez que mira el estado de las máscaras, también
     al dibujar la interfaz: **barata** y de solo lectura (con la instantánea de ``conn``). Sin ninguna operación
-    ``des.platform`` vigente en la versión, una sola consulta (:func:`~.provenance.has_platform_operation`); con
+    ``des.platform`` ni ``des.buttress`` vigente en la versión (los tipos que declaran, spec 016, T35: antes solo la plataforma, y en una
+    versión con **solo** un contrafuerte que protege un Esc entre crearlo y declararlo dejaba las máscaras al día sin su restricción),
+    una sola consulta (:func:`~.provenance.has_declaring_operation`); con
     ellas, el registro de las entidades (``entities.registry``), el parámetro ``protect`` de las vivas y los
     códigos de la tabla de declaradas, **sin leer su geometría ni la huella de nadie**. Compara con **lo que falta**,
     no con lo que difiere: que una fila declare un resguardo anterior lo dice el hash de la tabla (el grafo de la
@@ -3077,7 +3079,7 @@ def declaration_pending(project: StoreProject, conn: sqlite3.Connection, version
     como :func:`declared_sources`). Si no se puede saber (un registro roto: ``des.entity_name_missing``, una tabla
     ilegible), **está pendiente**: lo seguro es no dar las máscaras por buenas, y la operación que lo intente
     declarar dirá el motivo."""
-    if not provenance.has_platform_operation(conn, version_uid):
+    if not provenance.has_declaring_operation(conn, version_uid):
         return False
     try:
         registry = entities.registry(project, version_uid, conn=conn)
@@ -4344,9 +4346,11 @@ def _entity_rows(store: ParameterStore, conn: sqlite3.Connection, source: Versio
                  label: str, changed: Mapping[PlatformParam, object]) -> list[_BringRow]:
     """Los parámetros de la entidad ``record`` de la versión de origen que se escriben en el destino con el código
     ``fresh``: los que tienen valor (``changed`` da el de los que cambian: el nombre, la partida, el apoyo y lo
-    declarado; si es ``None``, no se escribe), con su motivo, «Traído de V09.r2» y lo que cambió. Solo lee."""
+    declarado; si es ``None``, no se escribe), con su motivo, «Traído de V09.r2» y lo que cambió. Los de **la familia de su
+    tipo** (spec 016, T35: la detección de acopios, la retirada, el contrafuerte y el cuerpo apoyado tienen la suya, sin los
+    valores que no son suyos: la detección no tiene ``start``). Solo lee."""
     rows: list[_BringRow] = []
-    for param in PlatformParam:
+    for param in entities.entity_type(record.kind).params.names:
         found = None if param in _NOT_BROUGHT else store.get(entity_key(record.code, param), version=source.uid,
                                                              conn=conn)
         if found is None or found.value is None:
@@ -4355,7 +4359,7 @@ def _entity_rows(store: ParameterStore, conn: sqlite3.Connection, source: Versio
         if value is None:
             continue
         why = _BROUGHT.format(label=label)
-        if param is PlatformParam.NAME and (fresh != record.code or value != record.name):
+        if param == PlatformParam.NAME and (fresh != record.code or value != record.name):
             why += f"; era la entidad {record.code} «{record.name}» de {source.code}"
         elif param in _REFERENCES and value != found.value:
             why += _FOLLOW_CODES

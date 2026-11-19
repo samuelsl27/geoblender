@@ -10112,3 +10112,303 @@ es = "Es del proyecto: lo que se apoya en sus acopios se lee en cada versión"
 
 ["Made by the entity «{name}» ({code})"]
 es = "Hecha por la entidad «{name}» ({code})"
+
+["Detect stockpiles"]
+es = "Detectar acopios"
+
+["Detect the stockpiles of a layer of marks on a surface and, if you want, the candidates without a mark"]
+es = "Detecta los acopios de una capa de marcas sobre una superficie y, si se quiere, los candidatos sin marca"
+
+["Remove a stockpile"]
+es = "Retirar un acopio"
+
+["Remove a stockpile of a detection: its footprint goes down to its base, joined with the ground by a transition"]
+es = "Retira un acopio de una detección: deja su huella en su base, unida al terreno por una transición"
+
+["Convert into a stockpile"]
+es = "Convertir en acopio"
+
+["The candidate is a stockpile: the detection keeps it as one, with the reason you give"]
+es = "El candidato es un acopio: la detección lo conserva como tal, con el motivo que se da"
+
+["The candidate is not a stockpile: it is not asked about again, with the reason you give"]
+es = "El candidato no es un acopio: no se vuelve a preguntar por él, con el motivo que se da"
+
+["Ask again"]
+es = "Volver a preguntar"
+
+["Remove the decision: the candidate is pending again, with the reason you give"]
+es = "Quita la decisión: el candidato vuelve a quedar pendiente, con el motivo que se da"
+
+["Go to"]
+es = "Ir a"
+
+["Frame the 3D view on the candidate; nothing changes"]
+es = "Encuadra la Vista 3D en el candidato; no cambia nada"
+
+["By default: {value}{unit} · {kind}"]
+es = "Por defecto: {value}{unit} · {kind}"
+
+["Name of the detection, unique in its scope (the project or the active version)"]
+es = "Nombre de la detección, único en su ámbito (el proyecto o la versión activa)"
+
+["Surface the stockpiles are detected on: the ground or a survey of the project (the detection is then of the project, also without an active version) or a surface of the active version (the detection is then of the version)"]
+es = "Superficie sobre la que se detectan los acopios: el terreno o un levantamiento del proyecto (la detección es entonces del proyecto, también sin versión activa) o una superficie de la versión activa (la detección es entonces de la versión)"
+
+["Layer of polygons of the project with one mark per stockpile: a polygon that says roughly where it is"]
+es = "Capa de polígonos del proyecto con una marca por acopio: un polígono que dice más o menos dónde está"
+
+["Field of the layer with the name of each mark (its key; empty: the number of the polygon)"]
+es = "Campo de la capa con el nombre de cada marca (su clave; vacío: el número del polígono)"
+
+["Margin field"]
+es = "Campo del margen"
+
+["Numeric field of the layer with the margin of each mark in metres (empty: the margin of the detection)"]
+es = "Campo numérico de la capa con el margen de cada marca en metros (vacío: el margen de la detección)"
+
+["Material field"]
+es = "Campo del material"
+
+["Field of the layer with the material of each stockpile (empty: without material)"]
+es = "Campo de la capa con el material de cada acopio (vacío: sin material)"
+
+["Base surface field"]
+es = "Campo de la superficie de base"
+
+["Field of the layer with the name of a surface of the project that is the base of the stockpile instead of a fitted plane (empty: the plane)"]
+es = "Campo de la capa con el nombre de una superficie del proyecto que es la base del acopio en lugar de un plano ajustado (vacío: el plano)"
+
+["Look for candidates"]
+es = "Buscar candidatos"
+
+["Also look for the stockpiles that have no mark: the zones that stand out from the opening of the surface, listed so that you convert each one into a stockpile or discard it with a reason"]
+es = "Busca también los acopios que no tienen marca: las zonas que sobresalen de la apertura de la superficie, listadas para que convierta cada una en acopio o la descarte con un motivo"
+
+["Margin around the mark (m)"]
+es = "Margen alrededor de la marca (m)"
+
+["How far from its mark a stockpile can reach, in metres (empty: the default value, shown; a mark can give its own)"]
+es = "Hasta dónde puede llegar un acopio desde su marca, en metros (vacío: el valor por defecto, que se enseña; una marca puede dar el suyo)"
+
+["Inner distance of the crown (m)"]
+es = "Distancia interior de la corona (m)"
+
+["Distance from the footprint where the ring of the crown that fits the base plane begins, in metres (empty: the default value, shown)"]
+es = "Distancia a la huella donde empieza el anillo de la corona con el que se ajusta el plano de base, en metros (vacío: el valor por defecto, que se enseña)"
+
+["Outer distance of the crown (m)"]
+es = "Distancia exterior de la corona (m)"
+
+["Distance from the footprint where that ring ends, in metres (empty: the default value, shown)"]
+es = "Distancia a la huella donde acaba ese anillo, en metros (vacío: el valor por defecto, que se enseña)"
+
+["Slope of the flat terrain (°)"]
+es = "Pendiente del terreno llano (°)"
+
+["Slope under which the terrain of the crown counts as flat, in degrees (empty: the default value, shown)"]
+es = "Pendiente por debajo de la cual el terreno de la corona cuenta como llano, en grados (vacío: el valor por defecto, que se enseña)"
+
+["Minimum flat area of the crown (m²)"]
+es = "Área llana mínima de la corona (m²)"
+
+["Area of flat terrain the crown needs to fit the plane with it alone; with less, the whole crown is used and it is warned (empty: the default value, shown)"]
+es = "Área de terreno llano que necesita la corona para ajustar el plano solo con ella; con menos, se usa toda la corona y se avisa (vacío: el valor por defecto, que se enseña)"
+
+["Maximum residual (m)"]
+es = "Residuo máximo (m)"
+
+["Distance to the plane from which a cell of the crown is left out of the fit, in metres (empty: the default value, shown)"]
+es = "Distancia al plano a partir de la cual una celda de la corona se deja fuera del ajuste, en metros (vacío: el valor por defecto, que se enseña)"
+
+["Rounds of the fit"]
+es = "Vueltas del ajuste"
+
+["How many times the plane is fitted leaving out the cells that do not fit it: a whole number (empty: the default value, shown)"]
+es = "Cuántas veces se ajusta el plano dejando fuera las celdas que no le encajan: un número entero (vacío: el valor por defecto, que se enseña)"
+
+["How many times the plane and the footprint are repeated until the footprint does not change: a whole number (empty: the default value, shown)"]
+es = "Cuántas veces se repiten el plano y la huella hasta que la huella no cambia: un número entero (vacío: el valor por defecto, que se enseña)"
+
+["Maximum tilt of the plane (°)"]
+es = "Inclinación máxima del plano (°)"
+
+["Tilt of the base plane from which it is limited, in degrees: a hypothesis that is warned and recorded (empty: the default value, shown)"]
+es = "Inclinación del plano de base a partir de la cual se limita, en grados: una hipótesis que se avisa y se anota (vacío: el valor por defecto, que se enseña)"
+
+["Support quantile"]
+es = "Cuantil de apoyo"
+
+["Quantile of the residuals of the crown the limited plane rests on, from 0 to 1: a hypothesis (empty: the default value, shown)"]
+es = "Cuantil de los residuos de la corona en el que se apoya el plano limitado, de 0 a 1: una hipótesis (vacío: el valor por defecto, que se enseña)"
+
+["Opening diameter (m)"]
+es = "Diámetro de la apertura (m)"
+
+["Diameter of the disc of the morphological opening that finds the candidates, in metres (empty: the default value, shown)"]
+es = "Diámetro del disco de la apertura morfológica que encuentra los candidatos, en metros (vacío: el valor por defecto, que se enseña)"
+
+["Minimum height of a candidate (m)"]
+es = "Altura mínima de un candidato (m)"
+
+["How much a zone has to stand out from the opening to be a candidate, in metres (empty: the default value, shown)"]
+es = "Cuánto tiene que sobresalir una zona de la apertura para ser candidata, en metros (vacío: el valor por defecto, que se enseña)"
+
+["Minimum area of a candidate (m²)"]
+es = "Área mínima de un candidato (m²)"
+
+["Smallest area of a candidate, in square metres (empty: the default value, shown)"]
+es = "El área más pequeña de un candidato, en metros cuadrados (vacío: el valor por defecto, que se enseña)"
+
+["Maximum area of a candidate (m²)"]
+es = "Área máxima de un candidato (m²)"
+
+["Largest area of a candidate, in square metres (empty: the default value, shown)"]
+es = "El área más grande de un candidato, en metros cuadrados (vacío: el valor por defecto, que se enseña)"
+
+["Detection"]
+es = "Detección"
+
+["Code or name of the detection of stockpiles (empty: the one of the object selected in the 3D view or, without it, the only one that has candidates)"]
+es = "Código o nombre de la detección de acopios (vacío: la del objeto seleccionado en la Vista 3D o, sin él, la única que tiene candidatos)"
+
+["Of the project"]
+es = "Del proyecto"
+
+["The detection is of the project and not of the active version (a detection of a surface of the project)"]
+es = "La detección es del proyecto y no de la versión activa (una detección de una superficie del proyecto)"
+
+["Candidate"]
+es = "Candidato"
+
+["Key of the candidate the decision is about (c01…): one of those of the list"]
+es = "Clave del candidato sobre el que se decide (c01…): uno de los de la lista"
+
+["What is done with the candidate"]
+es = "Lo que se hace con el candidato"
+
+["Why: it is recorded with the decision, who made it and when; it is needed to convert, discard or ask again"]
+es = "Por qué: se anota con la decisión, quién la tomó y cuándo; hace falta para convertir, descartar o volver a preguntar"
+
+["Recompute the detection"]
+es = "Recalcular la detección"
+
+["Repeat the detection with the decision as soon as it is made (otherwise it stays out of date until «Recompute the stale results»)"]
+es = "Repite la detección con la decisión en cuanto se toma (si no, queda obsoleta hasta «Recalcular lo obsoleto»)"
+
+["What to do"]
+es = "Qué hacer"
+
+["Detect the stockpiles of a layer of marks, or remove one of those already detected in the active version or in the project"]
+es = "Detectar los acopios de una capa de marcas, o retirar uno de los ya detectados en la versión activa o en el proyecto"
+
+["Detection of stockpiles «{name}» created in the project"]
+es = "Detección de acopios «{name}» creada en el proyecto"
+
+["Detection of stockpiles «{name}» created in {version}"]
+es = "Detección de acopios «{name}» creada en {version}"
+
+["Detecting the stockpiles… {percent} % · Esc: cancel"]
+es = "Detectando los acopios… {percent} % · Esc: cancelar"
+
+["The selected detection belongs to the project, not to a version: this command is about the entities of the active version"]
+es = "La detección seleccionada es del proyecto, no de una versión: esta orden es de las entidades de la versión activa"
+
+["Stockpiles"]
+es = "Acopios"
+
+["Showing the preview of the marks of the detection «{name}»"]
+es = "Mostrando la vista previa de las marcas de la detección «{name}»"
+
+["Cancelled: the detection is created; the declared constraints and the masks are brought up to date before the next operation that uses them, and the entity layer with the next entity order or «Recompute the stale results»"]
+es = "Cancelado: la detección está creada; las restricciones declaradas y las máscaras se ponen al día antes de la siguiente operación que las use, y la capa de entidades con la siguiente orden de entidades o «Recalcular lo obsoleto»"
+
+["Decision recorded on the candidate «{candidate}» of «{name}»: the detection is out of date until it is recomputed"]
+es = "Decisión anotada sobre el candidato «{candidate}» de «{name}»: la detección queda obsoleta hasta que se recalcule"
+
+["«{name}» ({kind}) has no preview: only a platform, a detection of stockpiles (its marks) and a buttress (its crown zone) have one"]
+es = "«{name}» ({kind}) no tiene vista previa: solo la tienen una plataforma, una detección de acopios (sus marcas) y un contrafuerte (su zona de coronación)"
+
+["«{name}» ({kind}) is not calculated: there is nothing to preview"]
+es = "«{name}» ({kind}) no está calculada: no hay nada que previsualizar"
+
+["Marks of the stockpiles"]
+es = "Marcas de los acopios"
+
+["Thresholds of the detection: empty is the value shown"]
+es = "Umbrales de la detección: vacío es el valor que se enseña"
+
+["Write the name of the detection"]
+es = "Escriba el nombre de la detección"
+
+["Choose the layer of the marks of the stockpiles"]
+es = "Elija la capa de las marcas de los acopios"
+
+["Choose the surface the stockpiles are detected on"]
+es = "Elija la superficie sobre la que se detectan los acopios"
+
+["The detection is created: only the declared constraints and the masks have not been brought up to date"]
+es = "La detección está creada: solo las restricciones declaradas y las máscaras no se han puesto al día"
+
+["«{entity}» is not a detection of stockpiles of the project or of the active version"]
+es = "«{entity}» no es una detección de acopios del proyecto ni de la versión activa"
+
+["There is no detection with candidates: detect the stockpiles asking for the candidates first"]
+es = "No hay ninguna detección con candidatos: detecte antes los acopios pidiendo los candidatos"
+
+["There is more than one detection with candidates: select the object of one or give its code"]
+es = "Hay más de una detección con candidatos: seleccione el objeto de una o dé su código"
+
+["The detection «{name}» has no candidates: it was detected without asking for them, or none passed the filters"]
+es = "La detección «{name}» no tiene candidatos: se detectó sin pedirlos o ninguno pasó los filtros"
+
+["Candidates of «{name}»"]
+es = "Candidatos de «{name}»"
+
+["«{name}» ({kind}) is not calculated from here: it is made again with its own command; only a platform is calculated with its saved parameters"]
+es = "«{name}» ({kind}) no se calcula desde aquí: se hace de nuevo con su propia orden; solo una plataforma se calcula con sus parámetros guardados"
+
+["There is no surface in the project: import the ground or a survey first"]
+es = "No hay ninguna superficie en el proyecto: importe antes el terreno o un levantamiento"
+
+["There is no layer of polygons in the project: import the marks of the stockpiles first"]
+es = "No hay ninguna capa de polígonos en el proyecto: importe antes las marcas de los acopios"
+
+["«{value}» is not a whole number (field «{field}»)"]
+es = "«{value}» no es un número entero (campo «{field}»)"
+
+["Detection «{name}» ({code}) of the project"]
+es = "Detección «{name}» ({code}) del proyecto"
+
+["Detection «{name}» ({code}) of {version}"]
+es = "Detección «{name}» ({code}) de {version}"
+
+["Choose the candidate"]
+es = "Elija el candidato"
+
+["«{candidate}» is not a candidate of «{name}»"]
+es = "«{candidate}» no es un candidato de «{name}»"
+
+["Write the reason of the decision: it is recorded with it"]
+es = "Escriba el motivo de la decisión: se anota con ella"
+
+["It is not recomputed here: use «Recompute the stale results» from a Blender window"]
+es = "No se recalcula aquí: use «Recalcular lo obsoleto» desde una ventana de Blender"
+
+["It opens the detection of stockpiles: their marks, the surface and the thresholds."]
+es = "Abre la detección de acopios: sus marcas, la superficie y los umbrales."
+
+["It opens the removal of a stockpile: the stockpile, the start surface and the transition."]
+es = "Abre la retirada de un acopio: el acopio, la superficie de partida y la transición."
+
+["Pending"]
+es = "Pendiente"
+
+["Candidates…"]
+es = "Candidatos…"
+
+["Detection of stockpiles «{name}» in {version}"]
+es = "Detección de acopios «{name}» en {version}"
+
+["Detection of stockpiles «{name}» in the project"]
+es = "Detección de acopios «{name}» en el proyecto"

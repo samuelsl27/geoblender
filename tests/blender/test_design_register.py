@@ -77,14 +77,8 @@ COMMANDS_016: dict[str, str] = {"des.stockpile_detect": "geoblender.des_detect_s
                                 "des.buttress": "geoblender.des_add_buttress",
                                 "des.body": "geoblender.des_create_body"}
 """La orden de cada uno (las definitivas de la T35: se conservan los nombres del catálogo, ``des_add_buttress``, y la
-«Unidad por espesor sobre su apoyo…» pasa a ser ``des_create_body``). **Aún no están en el catálogo** salvo la del
-contrafuerte (la T35 las crea), la de retirar un acopio (la T20) y la del cuerpo apoyado (la T25): internas, de la entrada 016, con su
-clase real:
-``OperationDef.commands`` solo comprueba su forma."""
-PENDING_COMMANDS_016: frozenset[str] = frozenset(COMMANDS_016.values()) - {"geoblender.des_add_buttress",
-                                                                          "geoblender.des_remove_stockpile",
-                                                                          "geoblender.des_create_body"}
-"""Las órdenes de la 016 que la T35 todavía no ha dado de alta en el catálogo."""
+«Unidad por espesor sobre su apoyo…» pasa a ser ``des_create_body``). **Todas están en el catálogo** desde la T35 (la entrada 016, entregada),
+cada una con su clase real."""
 PLATFORM_COMMAND = "geoblender.des_create_platform"
 """La orden de los tres: la «Plataforma…» de la entrada 015 (T15: la clave definitiva, que sustituyó a
 ``des_draw_platform``). Tiene su clase real; la entrada la entrega la T31."""
@@ -410,10 +404,7 @@ class DesignRegisteredTest(unittest.TestCase):
                 self.assertEqual(session.requires_version(op_type), is_version)
                 self.assertTrue(defn.commands)
                 for idname in defn.commands:
-                    if idname in PENDING_COMMANDS_016:  # la T35 la da de alta: entonces se quita de PENDING_…
-                        self.assertNotIn(idname, self.cat.commands)
-                    else:
-                        self.assertIn(idname, self.cat.commands)
+                    self.assertIn(idname, self.cat.commands)
                 self.assertIs(defn.recompute, recomputed.get(op_type))
                 self.assertIs(defn.reproduce, reproduced.get(op_type))
                 self.assertEqual(callable(defn.recompute), repeats)

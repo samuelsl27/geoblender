@@ -22,8 +22,12 @@ de comandos.
 - La spec 015 (entidades de diseño paramétricas; T31, plan 015 §5.6, RF-015-28, D-14): la entrada ``015`` tiene su título en los
   dos idiomas y **entrega** sus comandos: «Plataforma…» (con su casa en Diseño ▸ Pistas y entidades ▸ Entidades) y las
   internas de las entidades (descartar, soltar el apoyo, traer, vista previa, lo que se apoya en ella e insertar antes o
-  después de…), que están en el menú contextual «Entidad ▾» (``DESIGN_ENTITY``, también de la ``015``); lo de la 016 (Acopio…,
-  Contrafuerte…) y lo que aún no es una orden siguen en R-36, sin entregar.
+  después de…), que están en el menú contextual «Entidad ▾» (``DESIGN_ENTITY``, también de la ``015``).
+- La spec 016 (acopios, contrafuerte y cuerpos apoyados; T35, plan 016 §5.5, RF-016-25, D-8, D-14): la entrada ``016`` **entrega** sus
+  órdenes con el menú: «Acopio (detectar, retirar)…», «Contrafuerte…» y «Cuerpo apoyado…» (Diseño ▸ Pistas y entidades ▸ Entidades) y las
+  internas de detectar, los candidatos y retirar; «Cuerpo apoyado…» es la «Unidad por espesor sobre su apoyo…» de R-18
+  (``geo_create_thickness_unit``), que se va del menú de Geología. ``R-36`` sigue como entrada del roadmap, sin órdenes: lo que aún no
+  es una orden del menú «Entidad ▾» (editar el eje, las restricciones que declara) sigue marcado en ella.
 """
 
 import tomllib
@@ -171,8 +175,37 @@ class DesignCatalogTest(unittest.TestCase):
         self.assertEqual(sorted(command.key for command in self.cat.commands.values() if command.entry == "015"),
                          sorted((PLATFORM, *INTERNAL_015, "GEOBLENDER_MT_des_context_entity")))
         self.assertFalse(self.cat.entries["R-36"].delivered)
-        self.assertEqual(sorted(command.key for command in self.cat.commands.values() if command.entry == "R-36"),
-                         ["geoblender.des_add_buttress", "geoblender.des_edit_stockpile"])
+        self.assertEqual(sorted(command.key for command in self.cat.commands.values() if command.entry == "R-36"), [],
+                         "ninguna orden es ya de R-36: las de la 016 las entrega la entrada 016 (T35)")
+
+    def test_entry_016_delivers_the_stockpile_buttress_and_body_commands(self) -> None:
+        """RF-016-25 (plan 016 §5.5, T35; D-8, D-14): la entrada ``016`` está entregada y trae las seis órdenes de la spec —tres con su casa en
+        Diseño ▸ Pistas y entidades ▸ Entidades (con su rótulo definitivo) y tres internas—; **«Cuerpo apoyado…» es la «Unidad por espesor
+        sobre su apoyo…»**: ya no existe ``geo_create_thickness_unit`` y no está en el menú de Geología."""
+        entry = self.cat.entries["016"]
+        self.assertTrue(entry.delivered)
+        self.assertEqual(sorted(command.key for command in self.cat.commands.values() if command.entry == "016"),
+                         sorted(("geoblender.des_edit_stockpile", "geoblender.des_add_buttress", "geoblender.des_create_body",
+                                 "geoblender.des_detect_stockpiles", "geoblender.des_stockpile_candidates",
+                                 "geoblender.des_remove_stockpile")))
+        homes = {key: self.cat.commands[key] for key in ("geoblender.des_edit_stockpile", "geoblender.des_add_buttress",
+                                                         "geoblender.des_create_body")}
+        for key, command in homes.items():
+            with self.subTest(key=key):
+                self.assertEqual((command.module, command.kind, command.home, command.action), ("des", "operator", "GEOBLENDER_MT_des_entities", "D"))
+        self.assertEqual([(command.label, command.label_es) for command in homes.values()],
+                         [("Stockpile (detect, remove)…", "Acopio (detectar, retirar)…"), ("Buttress…", "Contrafuerte…"),
+                          ("Supported body…", "Cuerpo apoyado…")])
+        for key in ("geoblender.des_detect_stockpiles", "geoblender.des_stockpile_candidates", "geoblender.des_remove_stockpile"):
+            with self.subTest(key=key):
+                command = self.cat.commands[key]
+                self.assertEqual((command.module, command.kind, command.home), ("des", "internal", ""))
+        self.assertNotIn("geoblender.geo_create_thickness_unit", self.cat.commands)
+        order = [item.key for item in self.cat.menus["GEOBLENDER_MT_des_entities"].groups[0].items]
+        self.assertEqual(order[:4], ["geoblender.des_create_platform", "geoblender.des_edit_stockpile", "geoblender.des_add_buttress",
+                                     "geoblender.des_create_body"])
+        geology = [item.key for group in self.cat.menus["GEOBLENDER_MT_ui_geology"].groups for item in group.items]
+        self.assertNotIn("geoblender.geo_create_thickness_unit", geology)
 
     def test_the_platform_and_the_internals_of_015(self) -> None:
         """RF-015-28 (D-14): «Plataforma…» es de la ``015`` y de ``des``, con su casa en Diseño ▸ Pistas y entidades ▸
@@ -199,7 +232,7 @@ class DesignCatalogTest(unittest.TestCase):
         """RF-015-28 (D-14, PC §3.11): el menú «Entidad ▾» (``DESIGN_ENTITY``) es de la ``015`` (su entrada, en
         ``contexts.toml``) y lleva, en su orden, las órdenes reales de las entidades —con «Lo que se apoya en ella» e
         «Insertar antes o después de…»— y la de exportar su superficie (la de la 013); lo que aún no es una orden (editar el eje,
-        las restricciones que declara) sigue marcado en R-36 y lo de la 016 (Acopio…), también."""
+        las restricciones que declara) sigue marcado en R-36; «Acopio (detectar, retirar)…» es de la 016 (entregada, T35)."""
         raw = tomllib.loads((DATA / "contexts.toml").read_text(encoding="utf-8"))
         (context,) = [table for table in raw["context"] if table["kind"] == "DESIGN_ENTITY"]
         self.assertEqual(context["entry"], "015")

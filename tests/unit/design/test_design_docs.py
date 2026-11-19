@@ -159,6 +159,8 @@ API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
 # ``des.md`` §4.3, nombra todo lo público de ``design``) y otra vez desde su T47, que llevó a la ficha lo que
 # añadió la convergencia (T38 a T49); la 016 los usará con los suyos.
 PENDING_015_API: frozenset[str] = frozenset({
+    # La 016, T35 (la T38 lo lleva a la ficha): la consulta de los tipos que declaran restricciones (la plataforma y el contrafuerte).
+    "has_declaring_operation",
     # La 016, T03 (la tarea de documentación, T38, los lleva a la ficha, ``des.md`` §4.4, y vacía este conjunto):
     # las peticiones de sus cuatro tipos, los valores de sus parámetros y lo que arma su procedencia.
     "BodyRequest", "BodySense", "ButtressFields", "ButtressRequest", "RemovalRequest", "StockpileFields",

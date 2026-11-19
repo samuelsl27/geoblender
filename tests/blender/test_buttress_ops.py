@@ -179,11 +179,11 @@ class CreateButtressTest(body_ops.CreateBodyTest):
         self.assertEqual(self.dprov.OPERATION_TYPES_BY_NAME[BUTTRESS_TYPE].commands, (ADD,))
         catalog = self.commands.catalog()
         command = catalog.commands[ADD]
-        self.assertEqual((command.entry, command.module, command.label, command.label_es), ("R-36", "des", "Buttress…", "Contrafuerte…"))
+        self.assertEqual((command.entry, command.module, command.label, command.label_es), ("016", "des", "Buttress…", "Contrafuerte…"))
         self.assertEqual(command.description, DESCRIPTION)
         self.assertEqual(cls.__doc__.strip(), DESCRIPTION)
-        self.assertFalse(catalog.entries["R-36"].delivered, "la entrega la T35")
-        self.assertFalse(self.commands.is_available(ADD))
+        self.assertTrue(catalog.entries["016"].delivered, "la entregó la T35")
+        self.assertTrue(self.commands.is_available(ADD))
         self.assertEqual(cls.bl_label, "Contrafuerte…", "registrada ya en español")
         annotated = {name for name in cls.__annotations__ if name not in HIDDEN}
         self.assertEqual(annotated, set(PROPERTIES))
