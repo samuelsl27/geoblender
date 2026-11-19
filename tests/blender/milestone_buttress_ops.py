@@ -2,8 +2,8 @@
 """«Contrafuerte…» en Blender (spec 016, T27 (b); HU-016-3; RF-016-17, RF-016-18, RF-015-02, RF-015-03, RF-015-10, RF-015-12, RF-015-28,
 RF-015-29; RNF-016-05; plan 016 §5.3.3 y §5.5; comprobación manual M3).
 
-:class:`GEOBLENDER_OT_des_add_buttress` (``geoblender.des_add_buttress``, la clave del catálogo, que sigue en la entrada R-36 hasta que la T35
-la entregue) calcula con ``design.steps.buttress_run`` la operación ``des.buttress`` de la versión activa: el escalonado en relleno de la
+:class:`GEOBLENDER_OT_des_add_buttress` (``geoblender.des_add_buttress``, la clave del catálogo, que está en la entrada 016 (R-36, segunda spec) desde que la T35
+la entregó) calcula con ``design.steps.buttress_run`` la operación ``des.buttress`` de la versión activa: el escalonado en relleno de la
 013 desde una semilla en una zona de coronación, con un perfil de banco, **sin cortar ninguna celda**. Sigue el patrón de la retirada (T20) y
 del cuerpo (T25): su diálogo pide el nombre, la capa y la zona de coronación, la partida y el apoyo, el perfil, la cota de coronación (sin valor
 por defecto: D-21), el alcance, la métrica y si protege (por defecto sí: D-1) con su resguardo (obligatorio: D-19) y su motivo; Calcular, Crear,
@@ -167,7 +167,7 @@ class CreateButtressTest(body_ops.CreateBodyTest):
     def test_a_the_buttress_command_is_a_real_command_with_named_properties(self) -> None:
         """RF-016-17, RF-015-28 (plan §5.3.3): «Contrafuerte…» es una orden real de ``des.buttress`` con la clave del catálogo
         (``des_add_buttress``), con la puerta de la procedencia, los pasos con Esc (≤ 0,05 s por paso) y el ``poll`` común de Diseño; sigue en
-        la entrada R-36, sin entregar, que la entrega la T35; sus propiedades tienen nombre y descripción en español; las que pone quien la
+        la entrada 016 del menú (la entregó la T35); sus propiedades tienen nombre y descripción en español; las que pone quien la
         lanza, no."""
         cls = self.cls
         self.assertIsNotNone(cls)

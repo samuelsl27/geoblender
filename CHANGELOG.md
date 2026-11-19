@@ -38,8 +38,8 @@ las entidades de diseño: la plataforma, que se aplica en cadena sobre una super
 prohíbe a los demás operadores y dice en qué se apoya (spec 015, hecha a falta de verla en pantalla). Y
 detecta los acopios de un levantamiento con su plano de base, su huella y su volumen, los retira con lo que se les
 apoyaba a la vista, hace el contrafuerte con el pie libre en lo que se admite y los cuerpos apoyados por espesor, y
-la verificación de los límites distingue el corte de terreno del de acopios (spec 016, hecha a falta de su verificación única
-y de verla en pantalla). Lo de
+la verificación de los límites distingue el corte de terreno del de acopios (spec 016, hecha y verificada sin pantalla,
+a falta de verla en pantalla). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
@@ -125,7 +125,7 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Añadido
 
-- **Acopios, contrafuerte y cuerpos apoyados** (spec 016, R-36, segunda spec; hecha a falta de su verificación única y de verla en
+- **Acopios, contrafuerte y cuerpos apoyados** (spec 016, R-36, segunda spec; hecha y verificada sin pantalla, a falta de verla en
   pantalla). En el proyecto de referencia los acopios, el contrafuerte y el escombro de una ladera se hicieron con scripts sueltos, y cada
   uno costó un error: 77 montones sin filtrar en lugar de los 9 acopios de la propiedad; acopios cubicados con la litología de la roca y
   pesados con la densidad in situ (un 23 % de más); un acopio de 12 m retirado junto a un relleno, con una cara a más de 45°; un relleno
@@ -144,45 +144,64 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     estabilizan, y las celdas que dos acopios comparten, repartidas entre los dos. **La marca ha de rodear el pie del montón**: con una
     marca dentro del pie de un acopio alto el plano sale torcido (1,64 m de error en la base de un acopio de 12 m). Con **Buscar
     candidatos sin marca** lista los montones que pasan la altura y el área, y **ninguno sin filtrar**; cada uno se **convierte en acopio
-    o se descarta con un motivo**, y al repetir la detección conserva su decisión si su huella casi no cambió. La **vista previa** dibuja
-    las marcas con su margen antes de calcular. La detección es **del proyecto** si parte de una superficie del proyecto (el terreno o un
+    o se descarta con un motivo**, y al repetir la detección conserva su decisión si su huella casi no cambió. **Dos marcas solapadas se
+    rechazan, solo ellas dos**, y las demás se detectan. El **azimut** del plano es el de la máxima pendiente hacia donde sube. La **vista
+    previa** dibuja las marcas con su margen antes de calcular. La detección es **del proyecto** si parte de una superficie del proyecto (el terreno o un
     levantamiento), y de la versión si parte de una de la versión. Cambiar un umbral, o la capa de marcas en QGIS (también su margen o su
     material, no solo su geometría), deja obsoleta la detección. Un montón que toca el borde de la rejilla no sale como candidato.
   - **Lo que deja la detección**: la **base** y el **espesor** de los acopios de cada material, el **terreno sin acopios** y la superficie
     con que se detectó, solo en las huellas, que se ven en la vista y se exportan a GeoTIFF; y una **capa en QGIS con una fila por
     acopio**. La **cubicación (011)** toma cada material como una unidad antrópica con su base y su espesor y la pesa con la densidad
-    suelta: se añade en **Materiales y densidades…**, eligiendo la base y el espesor por su nombre (no hay un botón que las añada). Su
-    volumen es el de la detección y no da toneladas propias.
+    suelta: se añade en **Materiales y densidades…**, eligiendo la base y el espesor por su nombre (no hay un botón que las añada) y
+    **eligiendo el estado «Suelto»**: una unidad nueva nace «In situ» y, sin cambiarlo, el acopio se pesa un 23 % de más sin ningún aviso.
+    Su volumen es el de la detección y no da toneladas propias.
   - **Retirar un acopio…**: baja la huella hasta su base, unida al terreno por una **transición** con el ángulo que se declare (sin valor
     por defecto), dentro de los límites aunque su corte no esté admitido (bajar un acopio no es cortar terreno); da lo retirado, lo que se
     le apoyaba, la transición y lo que los límites no dejan retirar. **Antes de calcular** enseña **una sola lista de todo lo que se le
     apoya** (un relleno, un contrafuerte, la superficie de otra versión) y **no lo retira sin su confirmación**; lo que se apoyaba queda
-    en «apoyo retirado» y «Recalcular lo obsoleto» no lo rehace hasta que se decida. La **pared** que quede donde los límites no dejan
-    retirar se avisa con su altura, su inclinación y su lugar, y no se crea sin confirmar (con más de 45° y 3 m, además con un motivo que
-    queda registrado). Con **Como plataforma**, deja la huella entera en el plano de su base y crea con ella una **plataforma**, con su eje
-    de borde a borde, su borde y sus comprobaciones. No se retira un acopio cuya detección está obsoleta.
+    en «apoyo retirado» —también si la detección es del proyecto, que es lo normal, y si el relleno se hizo antes que la detección— y
+    «Recalcular lo obsoleto» no lo rehace hasta que se decida. **Lo que no se puede retirar avisa** (por ejemplo, un acopio cortado por el
+    perímetro de actuación) con su volumen y su lugar. La **pared** que quede donde los límites no dejan retirar se mide siempre y,
+    si la hubiera, se avisa con su altura, su inclinación y su lugar y no se crea sin confirmar (con más de 45° y 3 m, además con un
+    motivo que queda registrado); con la transición que usa, ninguna cara creada pasa del ángulo, así que no salta en el uso normal. Con
+    **Como plataforma**, deja la huella entera en el plano de su base y crea con ella una **plataforma**, con su eje
+    de borde a borde, su borde y sus comprobaciones (no mide la pared de la retirada: la cara del borde de la plataforma es un aviso de
+    la plataforma). No se retira un acopio cuya detección está obsoleta; si el contrafuerte que protege dejó obsoleta la detección,
+    primero hay que pulsar «Recalcular lo obsoleto».
   - **Contrafuerte…**: un relleno al pie de un talud desde una **zona de coronación** (una capa de polígonos), con un perfil de banco, una
     cota de coronación **que ha de ser la de un ancla del perfil** (si no, se rechaza con la cota del ancla más próxima) y, si se quiere, un
     alcance. **El pie no se recorta a la zona dibujada**: llega donde caiga dentro de lo admitido, **también en las zonas de solo
     restauración**, y **no corta nada**. Si el borde de lo admitido le quita parte del pie, el resumen avisa con el área, el volumen y el
-    salto creado. **Declara «sin corte» sobre su zona de coronación** (con su resguardo, obligatorio) para todos los operadores, y se ve en
+    salto creado (es el único aviso del salto del borde: uno genérico saltaría en casi todo contrafuerte). Avisa también de la zona que
+    la rejilla recorta y de lo que sube hasta el borde de la rejilla o a celdas sin dato, y del orden con la otra superficie de una
+    cantera. La superficie en que **se apoya** es solo una dependencia: no cambia el cálculo, que parte de su partida. **Declara «sin corte» sobre su zona de coronación** (con su resguardo, obligatorio) para todos los operadores, y se ve en
     «Ver restricciones y límites».
   - **Cuerpo apoyado…**: un volumen desde sus **espesores** (en puntos, en polígonos o en las líneas 3D con el espesor en su Z), «sobre una
     base» o «bajo un techo» (el escombro existente), **sin espesores negativos**: se interpola el espesor, nunca la cota de la base. Las
     celdas a más de la **distancia máxima** de un dato (obligatoria, sin valor por defecto) se avisan con su área, su volumen y su lugar; los
     datos fuera de la huella se ignoran con aviso. **La M de las líneas 3D no se admite** (la importación de capas no la guarda): se
-    rechaza. Un cuerpo con secciones muy separadas avisa de que tardará más de lo previsto.
+    rechaza. Las líneas 3D han de ser líneas de rotura del proyecto. Un cuerpo «sobre una base» que termina en un escalón en el borde
+    de su huella lo dice con un renglón informativo. Con «espesor cero en el borde» el cero se promedia con el dato de las celdas de
+    borde. Un cuerpo con secciones muy separadas avisa de que tardará más de lo previsto (8 secciones a 200 m en 100 ha tardan 12 s).
   - **Cifras y su tipo.** Los umbrales de la detección son los del proyecto de referencia, ADOPTADO «sin confirmar» (margen 10 m; corona de
     1 a 3 m; pendiente de corona 12°; área llana mínima 10 m²; residuo máximo 1 m; 4 y 6 vueltas; candidatos desde 2 m de altura, de 150 a
     20.000 m²): **ninguna la ha confirmado la propiedad**. **La inclinación máxima del plano de base (4°) y el cuantil de apoyo (0,6) son
     HIPÓTESIS**: el volumen de un acopio con el plano limitado lleva esa marca. **El diámetro de apertura de los candidatos (31 m) no está
-    confirmado**: con los filtros de la V10 salen 74, 20 o 135 candidatos según se lea «31 m» como diámetro, como 31 celdas o como radio, y la
-    V10 daba 60; es una cifra que decide Samuel con el expediente delante. El ángulo de transición de la retirada, la cota de coronación y la
+    confirmado** (es HIPÓTESIS): con los filtros de la V10 salen 74, 20 o 135 candidatos según se lea «31 m» como diámetro, como 31 celdas o
+    como radio, y la V10 daba 60; es una cifra que decide Samuel con el expediente delante. Los 45° y 3 m de la pared que pide un motivo
+    son ADOPTADO «sin confirmar». El ángulo de transición de la retirada, la cota de coronación y la
     distancia máxima de un cuerpo **no tienen valor por defecto**: los declara quien los usa.
+  - **Lo que cambia del marco de las entidades de la 015**: «Cambiar parámetro…» vale para los cinco tipos de entidad (rechaza un nombre
+    vacío o repetido y un resguardo que falta, sin escribir nada, y al instante pone al día lo que declara; no admite «proteger» en
+    una retirada, un cuerpo ni una detección); la capa de entidades de QGIS se pone al día tras «Recalcular lo obsoleto» con cualquier
+    entidad; traer las entidades de otra versión re-apunta la superficie conocida de un cuerpo (y avisa si la referida no se trae).
   - **Lo que no hace todavía**: no se ha visto en pantalla (sin la interfaz de Blender); no se contrastó con el banco del proyecto de
-    referencia (CE-016-08); un cuerpo «sobre una base» de 100 ha guarda 21 MiB (la spec pedía 17) y los de «bajo un techo» de más de 17 ha pasan de
-    2 MiB; la pared casi nunca salta porque la transición deja una rampa junto a lo que no se retira; y una verificación hecha con una detección
-    obsoleta no queda obsoleta sola al recalcularla (hay que verificar otra vez).
+    referencia (CE-016-08: ni la plataforma del acopio 7 ni la transición); un cuerpo «sobre una base» pasa de 17 MiB desde unas 12 ha
+    (21 MiB con 100 ha) y los de «bajo un techo» de más de 17 ha pasan de 2 MiB; un cuerpo con secciones muy separadas pasa de los 10 s que
+    pedía la spec (avisa antes); la pared no salta con la transición del plan y «como plataforma» no la mide; «Calcular…» solo ofrece
+    plataformas, así que lo traído de otra versión de los demás tipos queda sin calcular; la retirada y el contrafuerte toleran celdas
+    sin dato sin avisar; y una verificación hecha con una detección obsoleta no queda obsoleta sola al recalcularla (hay que verificar
+    otra vez).
 
 - **Entidades de diseño paramétricas** (spec 015, R-36, hecha a falta de verla en pantalla). Lo que se pone encima de una cantera
   (la plataforma de la planta, una balsa, un acopio) se hizo en el proyecto de referencia como

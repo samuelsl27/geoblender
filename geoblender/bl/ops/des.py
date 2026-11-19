@@ -5720,8 +5720,10 @@ class GEOBLENDER_OT_des_entity_calculate(DesignCommandAware, ProvenanceAwareOper
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, design_error_text(exc))
             return {"CANCELLED"}
+        # Solo las plataformas: ninguna orden de la 016 tiene `code`, así que lo traído de sus cuatro tipos (acopio, retirada,
+        # contrafuerte y cuerpo) queda sin calcular y ninguna orden lo calcula (S-5; «Para Samuel», 11 de `tasks.md` de la 016).
         waiting = [entry.record for entry in listed if entry.record.state is entities.EntityState.UNCALCULATED
-                   and entry.record.kind == entities.EntityKind.PLATFORM]  # las de la 016 se calculan con su orden (T35)
+                   and entry.record.kind == entities.EntityKind.PLATFORM]
         if not waiting:
             self.report({"ERROR"}, tr("The active version has no entity without a result: the ones brought from another "
                                       "version or inherited from the version it starts from are left without one"))

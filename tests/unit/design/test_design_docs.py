@@ -1152,6 +1152,9 @@ SUPPORTED_EXAMPLES: tuple[str, ...] = (
     "Añadir las unidades de esta detección", "Z o campo",
     # El motivo generado de un contrafuerte llamado B1 (su nombre y su código van en el mensaje del catálogo).
     "declarada por el contrafuerte B1",
+    # El material de los acopios sin el campo `material` y de los candidatos convertidos (T50, S-15): el nombre que le da la
+    # detección (``stockpile_store._NO_MATERIAL``).
+    "sin material",
 )
 # Lo que dice la guía de cada umbral de la detección: el texto de su valor por defecto y su tipo, que la prueba compara
 # con el código (``design.params``).
@@ -1300,13 +1303,16 @@ class SupportedCardDocTest(unittest.TestCase):
         self.assertLess(adr.index("Fe de erratas"), adr.index("Los datos que deja"))
 
     def test_the_card_says_where_the_016_is(self) -> None:
-        """Definición de hecho §3.7 (T38): la cabecera de ``des.md`` dice que la 016 está implementada, **sin publicar** y a
-        falta de la verificación única (T39) y del H3 (T40), con su guía; la API de la 016 está en §4.4 y la «API prevista»
-        pasó a §4.5; y el «apoyo retirado», la fe de erratas, el borde de la rejilla y lo que no está confirmado (la apertura
-        de 31 m) están en §1.7."""
+        """Definición de hecho §3.7 (T38 y T50): la cabecera de ``des.md`` dice que la 016 está implementada, **sin publicar** y
+        en verificación (la verificación única, T39, hecha sin pantalla, y la convergencia, T41 a T50), a falta del H3 (T40), de
+        las medidas a solas y de la decisión de Samuel, con su guía, y que la 015 está **cerrada y publicada**; la API de la
+        016 está en §4.4 y la «API prevista» pasó a §4.5; y el «apoyo retirado», la fe de erratas, el borde de la rejilla y lo
+        que no está confirmado (la apertura de 31 m) están en §1.7."""
         head = one_line(self.des[:self.des.index("## Responsabilidad")])
-        for fact in ("Desde la spec 016", "implementada en `main`, sin publicar", "verificación única (T39)",
-                     "H3 en pantalla (T40)", "docs/usuario/acopios-y-contrafuertes.md"):
+        for fact in ("Desde la spec 016", "implementada en `main`, sin publicar", "y en verificación", "la verificación única, T39, "
+                     "sin pantalla", "la convergencia de la T41 a la T50", "a falta del H3 en pantalla (T40)",
+                     "de la decisión de Samuel", "docs/usuario/acopios-y-contrafuertes.md",
+                     "**cerrada y publicada el 18/11/2026** (código `a57b8fa`)"):
             with self.subTest(head=fact):
                 self.assertIn(fact, head)
         self.assertNotIn("el acopio, el contrafuerte y los cuerpos apoyados de §1.7 —la 016—, §1.8", head)
@@ -1318,7 +1324,14 @@ class SupportedCardDocTest(unittest.TestCase):
                      "**Un montón que toca el borde de la rejilla no sale candidato**", "P-6 no queda confirmado",
                      "74, 20 o 135 candidatos", "**«Apoyo retirado» tiene una regla más**", "no en un evento",
                      "**La M de las líneas 3D no llega al proyecto**", "`des.body_data_m`", "`_creation_steps`",
-                     "`SLOW_BODY_S`", "21,10 MiB"):
+                     "`SLOW_BODY_S`", "21,10 MiB",
+                     # T50: lo que cambiaron la T45 a la T49 y lo que la verificación única encontró
+                     "**Por dos caminos** (T45", "`removal_resting`", "**la pared no salta con esa transición**",
+                     "**Lo no retirado avisa**", "`des.removal_kept`", "`WALL_REASON_KIND`", "**solo como dependencia**",
+                     "**es el único aviso del salto creado del borde del contrafuerte**", "`des.body_edge_step`",
+                     "**Las líneas 3D solo vienen de una capa de líneas de rotura `gis_brk_`**", "PARAMETER_PREFIXES",
+                     "`des.protect_unsupported`", "`des.body_bring_surface_lost`", "12,04 s", "los otros cuatro",
+                     "ninguna orden lo calcula", "`reserves.compliance_store`, la capa que toca el proyecto, sí importa `design`"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, text)
         row = re.search(r"^\| 016-des-acopios-contrafuerte-y-cuerpos-apoyados .*$", self.des, re.MULTILINE)
@@ -1422,12 +1435,13 @@ class SupportedGuideDocTest(unittest.TestCase):
         self.assertEqual(dparams.ANTHROPIC_PRESENCE, "res.anthropic_presence_m")
 
     def test_the_head_says_the_guide_is_pending_and_not_seen(self) -> None:
-        """Definición de hecho §3.7 (T38): el recuadro del principio dice que la guía está pendiente de la revisión de Samuel
-        y que **no se ha visto en pantalla**, que falta la verificación única y el H3, y que la apertura de 31 m no está
-        confirmada; y lleva su fecha, su spec y su estado."""
+        """Definición de hecho §3.7 (T38 y T50): el recuadro del principio dice que la guía está pendiente de la revisión de
+        Samuel y que **no se ha visto en pantalla**, que la verificación única (sin pantalla) ya se hizo y que falta el H3 y
+        las medidas a solas, y que la apertura de 31 m no está confirmada; y lleva su fecha, su spec y su estado."""
         head = one_line(re.sub(r"(?m)^> ?", "", self.guide[:self.guide.index("En el proyecto de referencia de IMGA")]))
         for fact in ("**Fecha:** 19/11/2026", "**Spec:** 016", "Pendiente de la revisión de Samuel; no se ha visto en pantalla",
-                     "Todavía no pasó su verificación única ni el H3 en pantalla", "CE-016-08",
+                     "Ya se hizo su verificación única, sin pantalla", "todavía no pasó el H3 en pantalla",
+                     "ni se han medido a solas los tiempos", "CE-016-08",
                      "la apertura de 31 m de los candidatos no está confirmada", "CE-016-09"):
             with self.subTest(head=fact):
                 self.assertIn(fact, head)
@@ -1458,14 +1472,58 @@ class SupportedGuideDocTest(unittest.TestCase):
                 self.assertIn(fact, removal)
         resting = self.guide_section("## 9. Lo que se apoya en el acopio, y «apoyo retirado»")
         for fact in ("una sola lista", "No se retira sin su confirmación expresa", "Confirmar lo que se le apoya y crear",
-                     "espera una decisión", "no deja «apoyo retirado»"):
+                     "espera una decisión", "también con la detección del proyecto", "con un **relleno hecho antes que la detección**",
+                     "El camino de E2, paso a paso", "una detección obsoleta no se retira", "Recalcular lo obsoleto"):
             with self.subTest(section="9", fact=fact):
                 self.assertIn(fact, resting)
+        self.assertNotIn("no deja «apoyo retirado»", resting)  # T45: con la detección del proyecto sí lo deja
         wall = self.guide_section("## 10. La pared y «Como plataforma»")
-        for fact in ("más de 45° y 3 m o más", "no son parámetros", "casi nunca salta", "de borde a borde", "Como plataforma"):
+        for fact in ("más de 45° y 3 m o más", "no son parámetros", "la pared no salta con esa transición", "es un teorema",
+                     "red de seguridad", "ADOPTADO", "de borde a borde", "Como plataforma",
+                     "no mide la pared de la retirada ni pide confirmación ni motivo"):
             with self.subTest(section="10", fact=fact):
                 self.assertIn(fact, wall)
+        self.assertNotIn("casi nunca salta", wall)  # S-18: no es «casi nunca»: no puede con la transición del plan
         self.assertEqual(dprov.DECLARING_OP_NAMES, (dprov.PLATFORM, dprov.BUTTRESS))
+
+    def test_the_marks_the_thresholds_the_azimuth_and_the_materials_are_told(self) -> None:
+        """RF-016-02, RF-016-07, RF-016-08, RF-016-09, RF-016-25 (S-13 a S-15, A-1, D-6; T50): §1 dice el sentido del azimut
+        (hacia donde sube el plano), §3, que una versión que no se edita desactiva «Detectar acopios…», §4, que los catorce
+        umbrales son diez y cuatro con candidatos, §4 y §6, que una marca sin material y un candidato convertido caen en «sin
+        material», y §7, **bien visible**, que una unidad de acopio de la 011 nace «In situ» y hay que elegir «Suelto» (o el
+        acopio pesa un 23 % de más sin avisar: el error 67 vuelve por omisión)."""
+        for heading, facts in (
+                ("## 1. Las palabras", ("hacia donde sube", "desde el norte de la cuadrícula en el sentido de las agujas del reloj")),
+                ("## 3. Antes de empezar", ("una versión activa que ya no se edita", "**Detectar acopios…** sale también en gris")),
+                ("## 4. Detectar acopios… (el diálogo, la vista previa y crear)",
+                 ("Son **catorce**", "el diálogo enseña **diez**", "los otros **cuatro**", "Buscar candidatos sin marca",
+                  "llamado «sin material»")),
+                ("## 6. Los candidatos", ("Un candidato convertido no tiene material", "sin material")),
+                ("## 7. Lo que deja una detección, y cómo se usa",
+                 ("Elija «Suelto» en cada unidad de acopio", "nace con el estado «In situ»", "sale un 23 % de más",
+                  "la columna **no avisa de nada**", "el error 67"))):
+            text = self.guide_section(heading)
+            for fact in facts:
+                with self.subTest(section=heading[:5], fact=fact):
+                    self.assertIn(fact, text)
+        seven = section(self.guide, "## 7. Lo que deja una detección, y cómo se usa")
+        self.assertRegex(seven, r"(?m)^> \*\*Elija «Suelto» en cada unidad de acopio\.\*\*",
+                         "la advertencia de «Suelto» va en un recuadro, visible")
+
+    def test_the_common_frame_says_what_the_four_types_do_and_do_not(self) -> None:
+        """RF-015-01, 08, 10, 12, 18 y 27 con los tipos nuevos (T47, T48 y T50; S-5): §14 dice que «Cambiar parámetro…» y lo
+        que sigue valen para los cinco tipos, que no admite proteger en una retirada, un cuerpo ni una detección
+        (``des.protect_unsupported``), que la capa se pone al día tras «Recalcular lo obsoleto» con cualquier entidad viva y que
+        traer deja las entidades sin calcular con **ninguna orden que las calcule** (y el cuerpo, con su superficie re-apuntada)."""
+        text = self.guide_section("## 14. Calcular y Crear, Esc, recalcular y lo común")
+        for fact in ("vale para los **cinco** tipos", "No admite proteger en una retirada, un cuerpo ni una detección",
+                     "con cualquier entidad viva", "re-apunta también su superficie conocida", "«Calcular…» solo ofrece "
+                     "plataformas", "**ninguna orden los calcula**"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, text)
+        self.assertNotIn("traer las entidades de otra versión, congelar y reproducir— vale para los cuatro tipos", text)
+        self.assertIn("des.protect_unsupported", dmessages.MESSAGES)
+        self.assertIn("des.body_bring_surface_lost", dmessages.MESSAGES)
 
     def test_the_buttress_and_the_body_say_what_they_reject(self) -> None:
         """RF-016-17 a RF-016-22 (CE-016-05, CE-016-06, CE-016-10; T38): §11 dice la cota de coronación del ancla, el pie
@@ -1473,12 +1531,21 @@ class SupportedGuideDocTest(unittest.TestCase):
         que no llega y el aviso de lo lento."""
         buttress = self.guide_section("## 11. Contrafuerte…")
         for fact in ("la cota del ancla más próxima", "el pie no se recorta a la zona dibujada",
-                     "también en las zonas de solo restauración", "No corta ninguna celda", "El pie cortado", "sin corte"):
+                     "también en las zonas de solo restauración", "No corta ninguna celda", "El pie cortado", "sin corte",
+                     # T50 (S-4, C-3, C-1, C-2, C-10, S-16): lo que el código hace y la guía no decía
+                     "El apoyo es solo una dependencia", "no cambia el cálculo", "Ese aviso es el único del salto creado del borde "
+                     "del contrafuerte", "la zona de coronación que la rejilla recorta", "del **orden** con la otra superficie",
+                     "**por debajo** de ella, **igual** a ella o una zona **sin dato**", "pulse **Recalcular lo obsoleto** antes de "
+                     "**Retirar un acopio…**"):
             with self.subTest(section="11", fact=fact):
                 self.assertIn(fact, buttress)
         body = self.guide_section("## 12. Cuerpo apoyado…")
         for fact in ("Nunca se interpola la cota de la base", "La M de las líneas 3D no se ofrece", "más próximo",
-                     "se rechaza", "8 s"):
+                     "se rechaza", "8 s",
+                     # T50 (S-13 a S-16, C-5, C-7, C-10, T46): lo que el código hace y la guía no decía
+                     "`gis_fea_`", "`gis_brk_`", "la única que guarda la Z", "el cero promedia el dato", "cuenta como un dato más",
+                     "La distancia es a los vértices", "la superficie conocida", "El escalón del borde", "renglón informativo",
+                     "12,04 s"):
             with self.subTest(section="12", fact=fact):
                 self.assertIn(fact, body)
 
@@ -1490,23 +1557,32 @@ class SupportedGuideDocTest(unittest.TestCase):
         for fact in ("La base es automática", "la **menor** de ellas", "o por qué no", "Corte de terreno (m³)",
                      "Corte de acopios (m³)", "el veredicto es el de terreno", "Sin acopios detectados, la tabla y los "
                      "resultados son los de siempre, bit a bit", "tampoco depende de ella",
-                     "verificar otra vez"):
+                     "verificar otra vez", "`res.check_cut_m3`", "restando"):  # T50 (D-10)
             with self.subTest(fact=fact):
                 self.assertIn(fact, text)
 
     def test_the_known_limits_are_told(self) -> None:
-        """«Lo que no hace todavía» (T38; «Para Samuel» de ``tasks.md``) dice los límites de **hoy**: no se vio en pantalla,
-        el banco no está contrastado, la M de las líneas 3D, los tamaños de los cuerpos grandes, la pared que casi nunca salta,
-        «apoyo retirado» que no es ``REFUSED``, las unidades de la 011 a mano, la verificación con la detección obsoleta y la
-        detección del proyecto; y **no** dice que «como plataforma» esté pendiente (T41) ni que la tabla de la verificación dé
-        el corte entero (T42)."""
+        """«Lo que no hace todavía» (T38 y T50; «Para Samuel» de ``tasks.md``) dice los límites de **hoy**: no se vio en
+        pantalla, el banco no está contrastado (ni la plataforma del acopio 7 ni la transición), la M de las líneas 3D, los
+        tamaños de los cuerpos grandes, la pared que no salta con la transición del plan y que «como plataforma» no mide,
+        «apoyo retirado» que no es ``REFUSED``, las unidades de la 011 a mano y que nacen «In situ», la verificación con la
+        detección obsoleta, «Calcular…» que solo ofrece plataformas, el apoyo del contrafuerte, el cero del borde, las celdas
+        sin dato y las secciones separadas; y **no** dice que «como plataforma» esté pendiente (T41), que la tabla de la
+        verificación dé el corte entero (T42) ni que una detección del proyecto no deje «apoyo retirado» (T45)."""
         limits = self.guide_section("## 16. Lo que no hace todavía")
         for fact in ("No se ha visto en pantalla", "El banco (CE-016-08) no está contrastado", "14,6 %", "7,9 %",
-                     "La M de las líneas 3D no llega al proyecto", "21,10 MiB", "10,60 MiB", "2,06 MiB", "17,7 ha",
-                     "La pared casi nunca salta", "no es `REFUSED`", "se añaden a mano", "no queda obsoleta sola",
-                     "no deja «apoyo retirado»", "no se puede probar", "del 78 al 94 %", "+2,9 s"):
+                     "La plataforma del acopio 7 no se reproduce", "16.816 m³",
+                     "La M de las líneas 3D no llega al proyecto", "21,10 MiB", "10,60 MiB", "2,06 MiB", "17,7 ha", "3,4 %",
+                     "La pared no salta con la transición que aprobó el plan", "no mide la pared ni pide confirmación ni motivo",
+                     "no es `REFUSED`", "se añaden a mano", "nacen «In situ»", "no queda obsoleta sola",
+                     "no se puede probar", "de 140 a 188 ms", "12,04 s", "+2,9 s",
+                     "«Calcular…» solo ofrece plataformas", "El apoyo de un contrafuerte no cambia el cálculo",
+                     "el cero del borde de un cuerpo se promedia con el dato", "toleran las celdas sin dato",
+                     "no enseña «Lo que se apoya en ella»", "no está marcada como no editable"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, limits)
+        self.assertNotIn("no deja «apoyo retirado»", limits)  # T45
+        self.assertNotIn("casi nunca salta", self.guide)  # T50 (S-18)
         for gone in ("como plataforma queda pendiente", "«Como plataforma» no está cableado", "sigue dando en «Corte (m³)»",
                      "16 MB"):
             with self.subTest(gone=gone):
@@ -1531,41 +1607,51 @@ class SupportedStateDocTest(unittest.TestCase):
         cls.ledger = re.findall(r"^\| 2026-11-19 \| R-36.*$", cls.roadmap, re.MULTILINE)
 
     def test_the_index_says_where_the_016_is(self) -> None:
-        """Definición de hecho §3.7 (T38): la fila de la 016 dice que está implementada a falta de la verificación única
-        (T39) y del H3 (T40), sin publicar, con sus 44 tareas (la convergencia, de la T41 a la T44), su guía, lo de «Para
-        Samuel» que sigue y que «Cerrada» es solo tras el H3 y CE-016-09; y ya no dice que esté «sin empezar»."""
+        """Definición de hecho §3.7 (T38 y T50): la fila de la 016 dice que está **implementada, en verificación**, sin publicar,
+        con sus 50 tareas (la convergencia, de la T41 a la T50), su guía, la verificación única hecha y lo que falta (las
+        medidas a solas, el H3 y la decisión de Samuel), RNF-016-02 «salvo con secciones muy separadas» y que «Cerrada» es
+        solo tras el H3 y CE-016-09; y ya no dice que esté «sin empezar» ni que falte la verificación única."""
         self.assertIsNotNone(self.index_row)
         assert self.index_row is not None
         row = one_line(self.index_row.group(0))
-        for fact in ("**Implementada, a falta de la verificación única (T39) y del H3 (T40)**", "**sin publicar**",
-                     "44 (T01–T44", "la convergencia, T41 a T44", "docs/usuario/acopios-y-contrafuertes.md",
-                     "la apertura de 31 m", "CE-016-08", "«Cerrada» solo tras el H3 y CE-016-09"):
+        for fact in ("**Implementada, en verificación** (19/11/2026)", "**sin publicar**",
+                     "50 (T01–T50", "la convergencia, T41 a T50", "la documentación (T38 y T50", "docs/usuario/acopios-y-contrafuertes.md",
+                     "La verificación única (T39: seis verificadores sin pantalla, 66 hallazgos", "**Faltan** las medidas a solas",
+                     "el H3 en pantalla (T40)", "la decisión de Samuel", "la apertura de 31 m", "CE-016-08",
+                     "**cumple salvo con secciones muy separadas** (8 secciones a 200 m: 12,04 s, con aviso)",
+                     "«Cerrada» solo tras el H3 y CE-016-09"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, row)
-        for stale in ("sin empezar", "40 (T01–T40)", "40 tareas"):
+        for stale in ("sin empezar", "40 (T01–T40)", "40 tareas", "44 (T01–T44", "a falta de la verificación única",
+                      "RNF-016-02 cumple"):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, row)
 
     def test_the_roadmap_says_where_the_016_is(self) -> None:
-        """Definición de hecho §3.7 (T38): la fila de R-36 y su registro del 19/11/2026 dicen que la 016 está implementada a
-        falta de su verificación única y su H3, que no se marca cerrada hasta entonces y CE-016-09, y lo medido y lo que
-        no confirma el banco; y ya no dice «sin empezar»."""
+        """Definición de hecho §3.7 (T38 y T50): la fila de R-36 y su registro del 19/11/2026 dicen que la 016 está implementada
+        y en verificación (la verificación única hecha sin pantalla y la convergencia de la T41 a la T50), a falta de las
+        medidas a solas y del H3, que no se marca cerrada hasta entonces y CE-016-09, y lo medido (RNF-016-02 «salvo con
+        secciones muy separadas, con aviso», no «cumple» a secas) y lo que no confirma el banco; y ya no dice «sin empezar»."""
         self.assertIsNotNone(self.roadmap_row)
         assert self.roadmap_row is not None
         row = one_line(self.roadmap_row.group(0))
-        for fact in ("**implementada** en `main`, sin publicar", "T01 a la T37 y de la T41 a la T44", "verificación única (T39)",
-                     "H3 en pantalla (T40)", "**«Cerrada» solo tras ellos y tras CE-016-09**",
-                     "docs/usuario/acopios-y-contrafuertes.md"):
+        for fact in ("**implementada** en `main`, sin publicar", "**en verificación**", "T01 a la T37 y de la T41 a la T50",
+                     "verificación única (T39) hecha sin pantalla", "H3 en pantalla (T40)", "las medidas a solas",
+                     "**«Cerrada» solo tras ellos y tras CE-016-09**", "docs/usuario/acopios-y-contrafuertes.md"):
             with self.subTest(row=fact):
                 self.assertIn(fact, row)
         self.assertNotIn("sin empezar", row)
         self.assertEqual(len(self.ledger), 1, self.ledger)
         entry = one_line(self.ledger[0])
-        for fact in ("implementada a falta de su verificación única (T39) y del H3 (T40)", "la fe de erratas del ADR-0031 §2",
-                     "RNF-016-07 no cumple a 100 ha", "+2,9 s", "CE-016-08", "no confirma P-6",
+        for fact in ("**implementada, en verificación: a falta de las medidas a solas y del H3 (T40)**",
+                     "la **convergencia (de la T41 a la T50)**", "la fe de erratas del ADR-0031 §2",
+                     "`reserves.compliance_store` importa `design`", "**RNF-016-02 cumple salvo con secciones muy separadas, con aviso**",
+                     "12,04 s", "RNF-016-07 no cumple en el cuerpo grande", "+2,9 s", "CE-016-08", "no confirma P-6",
                      "no marca R-36 como cerrada hasta entonces"):
             with self.subTest(ledger=fact):
                 self.assertIn(fact, entry)
+        self.assertNotIn("RNF-016-01, 02, 03, 04 y 05 cumplen medidos", entry)  # S-11
+        self.assertNotIn("RNF-016-01, 02, 03, 04 y 05 cumplen medidos", row)
 
     def test_the_changelog_says_what_the_016_does_and_what_it_changes(self) -> None:
         """Definición de hecho §3.7 (T38): el ``CHANGELOG.md`` del código, para el ingeniero de minas y sin jerga, dice lo
@@ -1574,18 +1660,26 @@ class SupportedStateDocTest(unittest.TestCase):
         verificación de la 012; y lo que **no** hace todavía."""
         start = self.changelog.index("- **Acopios, contrafuerte y cuerpos apoyados** (spec 016")
         entry = self.changelog[start:self.changelog.index("- **Entidades de diseño paramétricas** (spec 015")]
-        for fact in ("hecha a falta de su verificación única y de verla en pantalla", "Acopio (detectar, retirar)…, "
+        for fact in ("hecha y verificada sin pantalla, a falta de verla en pantalla", "Acopio (detectar, retirar)…, "
                      "Contrafuerte… y Cuerpo apoyado…", "**Detectar acopios…**", "**La marca ha de rodear el pie del montón**",
                      "**ninguno sin filtrar**", "**una sola lista de todo lo que se le apoya**", "**Como plataforma**",
                      "**El pie no se recorta a la zona dibujada**", "**sin espesores negativos**",
                      "**La M de las líneas 3D no se admite**", "ADOPTADO «sin confirmar»", "**La inclinación máxima del plano de "
                      "base (4°) y el cuantil de apoyo (0,6) son HIPÓTESIS**", "**El diámetro de apertura de los candidatos (31 m) no "
-                     "está confirmado**", "74, 20 o 135 candidatos", "**Lo que no hace todavía**"):
+                     "está confirmado**", "74, 20 o 135 candidatos", "**Lo que no hace todavía**",
+                     # T50: lo que cambiaron la T45 a la T49 y lo que la verificación única encontró
+                     "**Dos marcas solapadas se rechazan, solo ellas dos**", "**eligiendo el estado «Suelto»**",
+                     "también si la detección es del proyecto", "**Lo que no se puede retirar avisa**",
+                     "no salta en el uso normal", "es el único aviso del salto del borde", "es solo una dependencia",
+                     "Las líneas 3D han de ser líneas de rotura del proyecto", "el cero se promedia con el dato",
+                     "**Lo que cambia del marco de las entidades de la 015**", "«Cambiar parámetro…» vale para los cinco tipos",
+                     "«Calcular…» solo ofrece plataformas", "la pared no salta con la transición del plan"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, entry)
-        for jargon in ("RF-016", "T3", "milestone", "`des_stk_"):
+        for jargon in ("RF-016", "T3", "T4", "T5", "milestone", "`des_stk_"):
             with self.subTest(jargon=jargon):
                 self.assertNotIn(jargon, entry, "la entrada de la 016 se escribe sin jerga de tareas ni de ficheros")
+        self.assertNotIn("casi nunca salta", entry)  # T50 (S-18)
         verification = self.changelog[self.changelog.index("- **Verificación por recinto** (spec 012, versión 0.5"):
                                       self.changelog.index("- **La comprobación de cada tarea deja fuera las pruebas pesadas "
                                                            "de la spec 016**")]
