@@ -112,6 +112,15 @@ recinto, su volumen, su área, su espesor máximo y su centro) con «Ir a»
 (``geoblender.core_go_to_place``) y «Cargar la rejilla de incumplimientos»
 (``geoblender.core_load_into_view``, ``bl.scene.constraint_views``). Con más de una verificación
 en la versión, se elige por su nombre.
+
+**La base de los acopios** (spec 016, T36; HU-016-2; RF-012-30, RF-012-31; DIFF-012, D-a): si hay acopios detectados, la verificación toma
+sola la base de las detecciones al día hechas sobre la superficie de partida y la ventana lo dice. **En el diálogo**, bajo la partida
+(:func:`start_base_lines`: lee ``reserves.compliance_store.select_bases`` una vez por partida, no al redibujar, y
+:func:`draw_base_lines` las dibuja partidas al ancho del diálogo), la base que usará (la detección, su nombre y su material) o, en alerta,
+la detección que no usará y por qué (está obsoleta, con lo que cambió, u hecha sobre otra superficie, con ella y la de partida) y que todo
+el corte cuenta; **después**, la ventana de la verificación (:func:`fill_verification`: de lo que guardó su tabla,
+:func:`stored_base_lines`) las nombra entre sus avisos, antes de la tabla de las finales. Una base en otra rejilla no es un aviso: se
+rechaza la verificación (RF-011-03) y la orden da el error nombrándola. Sin acopios, la ventana no dice nada nuevo.
 """
 
 from __future__ import annotations
@@ -1860,6 +1869,66 @@ def fill_verify_choices(marked: Sequence[str] = ()) -> int:
     return len(shown.verify_choices)
 
 
+# --- La base de los acopios en la ventana (spec 016, T36; RF-012-30, RF-012-31; D-a) --------------
+
+_START_BASES: dict[str, Any] = {"key": None, "lines": []}
+"""La última lectura de :func:`start_base_lines`: su clave (el proyecto, la versión, la partida y el idioma) y sus líneas. El diálogo
+se redibuja con cada movimiento del ratón: la selección de la base se lee del proyecto **una vez por partida**, no al dibujar."""
+
+
+def base_lines(selection: Any, start_name: str, shown: str | None = None) -> list[Line]:
+    """Lo que dice la ventana de verificar de la base de los acopios de ``selection``
+    (``reserves.compliance_store.BaseSelection``): una línea por base que **usa** (la detección, su nombre y su material) y, en alerta,
+    una por detección que **no usa** con su causa (obsoleta, u hecha sobre otra superficie que la de partida ``start_name``) y que todo el
+    corte cuenta (RF-012-30, RF-012-31). Sin acopios detectados, ninguna: la ventana no dice nada nuevo. En el idioma ``shown`` (por
+    defecto, el de la interfaz)."""
+    found = language() if shown is None else shown
+    lines = [Line(base.text(found)) for base in selection.bases]
+    lines += [Line(item.text(start_name, found), alert=True) for item in selection.skipped]
+    return lines
+
+
+def stored_base_lines(found: Any) -> list[Line]:
+    """Las mismas líneas de una verificación ya hecha (``StoredVerification``): las bases que usó y lo que no usó, con el texto que
+    guardó su tabla (en español, como sus avisos); sin acopios, ninguna."""
+    return [*(Line(text) for text in found.bases), *(Line(text, alert=True) for text in found.skipped)]
+
+
+def forget_start_bases() -> None:
+    """Olvida la última lectura de :func:`start_base_lines` (al abrir el diálogo: lo que se lee es lo de ese momento)."""
+    _START_BASES["key"], _START_BASES["lines"] = None, []
+
+
+def start_base_lines(project: Any, version_uid: str, start: Any) -> list[Line]:
+    """Las líneas de :func:`base_lines` para el diálogo de verificar con ``start`` (``SurfaceRef``) como partida en la versión
+    ``version_uid`` de ``project``: ``reserves.compliance_store.select_bases``, que solo lee, **una vez por partida** (y por idioma)
+    hasta :func:`forget_start_bases`. Sin proyecto o sin versión, o si no se puede leer, ninguna: el diálogo no dice nada y verificar dirá
+    su error (un fallo no se guarda como lectura buena)."""
+    if project is None or not version_uid:
+        return []
+    shown = language()
+    key = (id(project), version_uid, start, start.shown, shown)
+    if _START_BASES["key"] == key:
+        return list(_START_BASES["lines"])
+    from ...reserves import compliance_store  # al usarlo: habilitar no lo carga (T38)
+
+    try:
+        lines = base_lines(compliance_store.select_bases(project, version_uid, start), start.shown, shown)
+    except (GeoblenderError, sqlite3.Error, OSError, ValueError):
+        LOGGER.warning("No se pudo leer la base de los acopios de la partida «%s»", start.shown, exc_info=True)
+        return []
+    _START_BASES["key"], _START_BASES["lines"] = key, lines
+    return list(lines)
+
+
+def draw_base_lines(layout: Any, lines: Sequence[Line], width_px: float) -> None:
+    """Las líneas de la base de los acopios (:func:`base_lines`) en un diálogo de ``width_px`` px, partidas a su ancho y las de alerta con
+    su icono; sin líneas, nada."""
+    width = labels.dialog_width(width_px)
+    for line in lines:
+        _draw_line(layout, line, width)
+
+
 def zone_name(code: str, names: Any) -> str:
     """Cómo se nombra un recinto de la tabla de una verificación (``names``: código → (nombre,
     tipo), ``core.constraints.store.constraint_names``): el de su restricción (o su código, si ya
@@ -1993,6 +2062,9 @@ def fill_verification(project: Any, version_uid: str | None, name: str | None = 
     shown.verify_stale = found.stale
     if found.stale:
         shown.verify_title = f"{shown.verify_title} · {tr('out of date')}"
+    for line in stored_base_lines(found):  # la base de los acopios que usó o por qué no (RF-012-30, RF-012-31; D-a)
+        note = shown.verify_notes.add()
+        note.text, note.alert = line.text, line.alert
     if found.pending:
         note = shown.verify_notes.add()
         note.text = tr("Search for untouchable elements pending in: {names}",

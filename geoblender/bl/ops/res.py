@@ -128,6 +128,12 @@ la entrada «011» de ``core/catalog/data/entries.toml``. Ya están las seis (:d
   modal. Al terminar dice por final si cumple y qué recintos no (los textos del informe son los de
   la ventana) y abre la ventana de la verificación (``GEOBLENDER_PT_res_verification``) con su
   tabla, sus grupos con «Ir a» y «Cargar la rejilla de incumplimientos». Desde un guion, de una vez.
+  **Con acopios detectados** (spec 016, T36; RF-012-30, RF-012-31; D-a) elige **una vez**
+  (``reserves.compliance_store.select_bases``) la base de las detecciones al día hechas sobre la
+  partida y la usa para las entradas de la puerta y para verificar; el diálogo dice, bajo la partida,
+  qué base usará o, en alerta, por qué no usa una detección (:func:`verify_dialog_start`,
+  ``constraint_panels.start_base_lines``), y al terminar la orden lo informa igual; una base en otra
+  rejilla se rechaza con el error de la superficie. Sin acopios, nada de esto sale.
 
 **La ventana de la cubicación y Exportar CSV…** (T25; RF-011-23, RF-011-24; plan §5.3.4, D-29,
 D-37): :class:`GEOBLENDER_OT_res_show_volumetrics` (interna) lee las cubicaciones de la versión
@@ -2911,6 +2917,16 @@ def verify_name(form: Any, finals: Sequence[str]) -> str:
     return name
 
 
+def verify_dialog_start(form: Any) -> SurfaceRef | None:
+    """La superficie de partida que elige el diálogo ``form`` (``start`` con ``start_elevation``), **sin exigir** que lo demás valga, para
+    decir qué base de acopios usa (RF-012-30, D-a): una cota constante aunque su valor falte o no valga (ninguna detección se hizo sobre ella:
+    da lo mismo cuál sea) y, si la superficie ya no está o no se eligió ninguna, ``None``."""
+    try:
+        return _surface_ref(form.start, form.start_elevation, field="start", label=tr("Start elevation"))[0]
+    except (GeoblenderError, ValueError):
+        return SurfaceRef(elevation=0.0, label=tr("Constant elevation")) if form.start == res_panels.ELEVATION else None
+
+
 def verify_request(form: Any, project: Any) -> VerifyRequest:
     """Lo pedido en ``form`` (el operador: ``name``, ``start`` con ``start_elevation``, ``finals``
     —identificadores separados por comas— o, si está vacío, las marcadas en el diálogo, y
@@ -3007,6 +3023,7 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
             if not self.name.strip():
                 self.name = self._proposed_name = verify_default_name(marked)
             self._thickness = verify_thickness_text(project)
+            constraint_panels.forget_start_bases()  # la base de los acopios se lee de nuevo con el diálogo (T36)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
@@ -3053,6 +3070,10 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
         layout.prop(self, "start", text=tr("Start surface"), translate=False)
         if self.start == res_panels.ELEVATION:
             layout.prop(self, "start_elevation", text=tr("Start elevation (m)"), translate=False)
+        start = verify_dialog_start(self)  # la base de los acopios que usará o por qué no (RF-012-30, RF-012-31; D-a)
+        if start is not None:
+            constraint_panels.draw_base_lines(layout, constraint_panels.start_base_lines(
+                SESSION.project, scene_versions.active_version() or "", start), VERIFY_DIALOG_WIDTH)
         shown = constraint_panels.view()
         box = layout.box()
         box.label(text=tr("Final surfaces to check"), translate=False)
@@ -3089,8 +3110,11 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
         try:
             res_panels.surface_items(None, None)  # las listas del proyecto, si no se leyeron
             request = verify_request(self, project)
+            # La base de los acopios (D-a: la de las detecciones al día hechas sobre la partida), elegida **una vez**: la misma
+            # para las entradas de la puerta de la 008 y para lo que se verifica (RF-012-30, RF-012-31).
+            selection = compliance_store.select_bases(project, version_uid, request.start)
             inputs = (*compliance_store.verify_inputs(project, version_uid, request.start,
-                                                      request.finals),
+                                                      request.finals, selection),
                       *masks_provenance.compile_inputs(
                           masks_store.available_tables(project, version_uid)))  # con las declaradas (RF-015-11)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
@@ -3103,7 +3127,7 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
         try:
             steps = compliance_store.verify_project_steps(
                 project, version=version_uid, name=request.name, start=request.start,
-                finals=request.finals, budget_s=self.STEP_BUDGET_S)
+                finals=request.finals, budget_s=self.STEP_BUDGET_S, bases=selection)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
@@ -3145,6 +3169,8 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
                 "Verification «{name}» ({revision}, in progress): all the finals comply",
                 name=self._name, revision=revision))
         for line in lines:
+            self._report({"WARNING" if line.alert else "INFO"}, line.text)
+        for line in constraint_panels.base_lines(result.selection, result.start_name):  # la base de los acopios (RF-012-30, RF-012-31)
             self._report({"WARNING" if line.alert else "INFO"}, line.text)
         if result.pending_names:
             self._report({"WARNING"}, tr("Search for untouchable elements pending in: {names}",
