@@ -106,7 +106,7 @@ class StockpilePreviewTest(bop.ButtressCase):
     def setUpClass(cls) -> None:
         super().setUpClass()
         defects = {layer.name: layer for layer in tp.defect_layers()}
-        for name in (tp.LAYER_OVERLAP, tp.LAYER_NEGATIVE, tp.LAYER_BLANK):
+        for name in (tp.LAYER_OVERLAP, tp.LAYER_OVERLAP_THIRD, tp.LAYER_OVERLAP_CHAIN, tp.LAYER_NEGATIVE, tp.LAYER_BLANK):
             sdata.write_layer(cls.project, cls.clock, defects[name])
         cls.clock.advance(minutes=1)
 
@@ -184,12 +184,10 @@ class StockpilePreviewTest(bop.ButtressCase):
                     self.assertEqual((mark.margin_m, mark.enlarged, mark.enlarged_cells), (0.0, (), MARK_CELLS))
 
     def test_d_what_the_preparation_would_refuse_is_the_warning_instead_of_the_drawing(self) -> None:
-        """RF-016-23, RF-015-08: lo que rechazaría la preparación de la detección —una marca sin su campo, un margen negativo, dos marcas
-        solapadas nombrando las dos, un campo de la capa que no está— es el aviso de la vista previa **en lugar del dibujo** y con
-        el mismo código y el mismo texto, en los dos idiomas; el rechazo no escribe nada."""
+        """RF-016-23, RF-015-08: lo que rechazaría la preparación de la detección —una marca sin su campo, un margen negativo, un campo de
+        la capa que no está— es el aviso de la vista previa **en lugar del dibujo** y con el mismo código y el mismo texto, en los dos
+        idiomas; el rechazo no escribe nada. (Las marcas solapadas ya no son un rechazo de la preparación, T48: ``test_d2``.)"""
         cases = {
-            "solape": (tp.request(layer=tp.LAYER_OVERLAP, marks={"margin_field": None, "material_field": None}),
-                       "des.stockpile_marks_overlap"),
             "margen negativo": (tp.request(layer=tp.LAYER_NEGATIVE, marks={"material_field": None}), "des.entity_param_range"),
             "nombre": (tp.request(layer=tp.LAYER_BLANK, marks={"name_field": "etiqueta", "margin_field": None, "material_field": None}),
                        "des.entity_field_value"),
@@ -209,8 +207,30 @@ class StockpilePreviewTest(bop.ButtressCase):
                 for language in ("es", "en"):
                     self.assertEqual(found.lines(language)[0], (expected.text_in(language), True))
                     self.assertNotIn("{", found.lines(language)[0][0])
-        overlap = self.preview_of(cases["solape"][0]).refusal
-        self.assertEqual({overlap.values["mark"], overlap.values["other"]}, {"A", "B"})
+
+    def test_d2_overlapping_marks_are_drawn_and_warned_not_refused(self) -> None:
+        """RF-016-23, RF-016-04 (T48; hallazgo A-2): dos marcas solapadas **no son un rechazo** de la preparación (solo esas dos se rechazan
+        al calcular): la vista previa las **dibuja** (todas las marcas de la capa) y avisa de la pareja con el mismo código y el mismo texto
+        que «Calcular» (``des.stockpile_marks_overlap``, nombrando las dos y el área común), en los dos idiomas, **una sola vez** por pareja y en
+        alerta; la cadena A–B–C avisa de las dos parejas; sin solape, ningún aviso de esos."""
+        found = self.preview_of(tp.request(layer=tp.LAYER_OVERLAP_THIRD, marks={"margin_field": None, "material_field": None}))
+        self.assertIsNone(found.refusal)
+        self.assertEqual((found.drawable, [mark.key for mark in found.marks]), (True, ["A", "B", "C"]))
+        warned = [notice for notice in found.notices if notice.code == "des.stockpile_marks_overlap"]
+        self.assertEqual(len(warned), 1)
+        self.assertEqual((warned[0].values["mark"], warned[0].values["other"], warned[0].values["area"]), ("A", "B", 200.0))
+        prepared = self.prepare(tp.request(layer=tp.LAYER_OVERLAP_THIRD, marks={"margin_field": None, "material_field": None}), version=None)
+        for language in ("es", "en"):
+            lines = [text for text, alert in found.lines(language) if "«A»" in text and "«B»" in text]
+            self.assertEqual(len(lines), 1, language)
+            self.assertEqual(lines[0], prepared.job.refused[0].notice.text(language), "el mismo texto que «Calcular»")
+            self.assertIn((lines[0], True), found.lines(language))
+        chain = self.preview_of(tp.request(layer=tp.LAYER_OVERLAP_CHAIN, marks={"margin_field": None, "material_field": None}))
+        self.assertIsNone(chain.refusal)
+        self.assertEqual([(n.values["mark"], n.values["other"]) for n in chain.notices if n.code == "des.stockpile_marks_overlap"],
+                         [("A", "B"), ("B", "C")])
+        plain = self.preview_of(tp.request())
+        self.assertEqual([n for n in plain.notices if n.code == "des.stockpile_marks_overlap"], [])
 
     def test_e_a_repeated_name_and_the_candidates_are_said(self) -> None:
         """RF-016-23: un nombre que ya tiene una detección del proyecto se rechaza como al calcular (``des.stockpile_name_repeated_project``);

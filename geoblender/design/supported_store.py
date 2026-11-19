@@ -454,8 +454,9 @@ def _locate(project: StoreProject, version: Version, request: RemovalRequest | P
                 raise unknown(where)
             if entry.record.state is not entities.EntityState.CURRENT:
                 cause = item_text(conn, STALE_OPERATION, entry.operation_uid, language="es") or "cambió algo de lo que lee"
+                cause_en = item_text(conn, STALE_OPERATION, entry.operation_uid, language="en") or "something it reads changed"
                 raise DesignError("des.removal_detection_stale", obj=obj, field=field, value=request.stockpile,
-                                  stockpile=key, detection=entry.record.name, cause=cause)
+                                  stockpile=key, detection=entry.record.name, cause=cause, cause_en=cause_en)  # «_en»: su texto inglés (D-5)
             surface = ParameterStore(project).get(entity_key(detection_code, StockpileParam.SURFACE),
                                                   version=None if scope is None else version.uid, conn=conn)
             detected_on = "" if surface is None or surface.value is None else str(surface.value)
@@ -823,10 +824,11 @@ def removal_report_rows(outcome: RemovalOutcome) -> list[Row]:
         scalar("wall_max_m", wall.height_m, "m", place)
         for key, value, unit in (("wall_limit_deg", wall.limit_deg, "deg"), ("wall_tolerance_deg", wall.tolerance_deg, "deg"),
                                  ("wall_min_thickness_m", wall.thickness_m, "m"), ("wall_jump_m", wall.jump_m, "m"),
-                                 ("wall_pairs", wall.pairs, "-"), ("wall_over_pairs", wall.over, "-"),
-                                 ("wall_reason_min_angle_deg", wall.reason_min_angle_deg, "deg"),
-                                 ("wall_reason_min_height_m", wall.reason_min_height_m, "m")):
+                                 ("wall_pairs", wall.pairs, "-"), ("wall_over_pairs", wall.over, "-")):
             scalar(key, value, unit)
+        for key, value, unit in (("wall_reason_min_angle_deg", wall.reason_min_angle_deg, "deg"),  # CA-9: con su tipo y su procedencia (T48)
+                                 ("wall_reason_min_height_m", wall.reason_min_height_m, "m")):
+            scalar(key, value, unit, removal.WALL_REASON_NOTE)
         for stretch in wall.stretches:
             scalar("wall_stretch", stretch.height_m, "m", json.dumps({
                 "stretch": stretch.stretch, "pairs": stretch.pairs, "angle_deg": _real("wall_stretch.angle", stretch.angle_deg),
@@ -1733,16 +1735,17 @@ def buttress_work_window(request: ButtressRequest, code: str, zone: np.ndarray, 
     """**A0**: la ventana de trabajo del contrafuerte (la de :func:`~.buttress.buttress_window` con el alcance de
     :func:`~.buttress.buttress_reach_m`) de la zona de coronación ``zone`` (máscara de la rejilla entera). ``lowest_m`` es la cota más baja
     de la partida de la rejilla entera (no hace falta con el alcance fijado). Lo comparten preparar y reproducir: la misma ventana, los
-    mismos bits. ``des.buttress_crown_below_support`` si la zona no tiene ninguna celda o la partida no tiene ningún dato."""
+    mismos bits. ``des.buttress_zone_no_data`` (T48; antes ``des.buttress_crown_below_support``) si la zona no tiene ninguna celda o la
+    partida no tiene ningún dato."""
     crown = float(values[ButtressParam.CROWN.value])
     reach = values.get(ButtressParam.REACH.value)
     metric = Metric(values[ButtressParam.METRIC.value])
     if lowest_m is None and reach is None:
-        raise buttress.below_support_error(request, code, crown)
+        raise buttress.below_support_error(request, code, crown, known=False)  # la partida no tiene ningún dato (T48, C-10 b)
     span = buttress.buttress_reach_m(profile, crown, lowest_m, None if reach is None else float(reach), metric)
     window = buttress.buttress_window(zone, grid, span, metric)
     if window is None:
-        raise buttress.below_support_error(request, code, crown)
+        raise buttress.below_support_error(request, code, crown, known=False)  # la zona no tiene ninguna celda
     return window
 
 

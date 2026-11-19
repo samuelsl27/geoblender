@@ -137,6 +137,8 @@ _FOOT_CUT = "des.buttress_foot_cut"
 _CLIPPED = "des.buttress_footprint_clipped"
 _OFF_ANCHOR = "des.buttress_crown_off_anchor"
 _BELOW_SUPPORT = "des.buttress_crown_below_support"
+_AT_SUPPORT = "des.buttress_crown_at_support"
+_ZONE_NO_DATA = "des.buttress_zone_no_data"
 _OBJ = "Contrafuerte «{}»"
 
 
@@ -161,11 +163,16 @@ def check_crown_anchor(request: ButtressRequest, code: str, profile: BenchProfil
                           value=crown_m, layer=request.layer, entity=request.name, profile=profile.name, anchor=anchor)
 
 
-def below_support_error(request: ButtressRequest, code: str, crown_m: float) -> DesignError:
-    """**RF-016-18**: ``des.buttress_crown_below_support``, el rechazo de un contrafuerte cuya cota de coronación queda a la de la
-    partida o por debajo en toda la zona de coronación (o la zona no tiene dato): no hay contrafuerte. Nombra la capa, el
-    contrafuerte y la cota. No se registra nada."""
-    return DesignError(_BELOW_SUPPORT, obj=_OBJ.format(request.name), field=entity_key(code, ButtressParam.CROWN),
+def below_support_error(request: ButtressRequest, code: str, crown_m: float, *, lowest_m: float | None = None,
+                        known: bool = True) -> DesignError:
+    """**RF-016-18**: el rechazo de un contrafuerte cuya cota de coronación no queda por encima de la partida en ninguna celda de la zona
+    de coronación: no hay contrafuerte. Nombra la capa, el contrafuerte y la cota; no se registra nada. Con **cada caso su texto** (spec 016,
+    T48, hallazgo C-10 b): ``des.buttress_crown_below_support`` si la coronación queda por **debajo** de la partida en toda la zona
+    (``lowest_m``, la cota más baja de la partida en la zona, mayor que ``crown_m``), ``des.buttress_crown_at_support`` si queda **igual** a
+    ella donde más baja (``lowest_m == crown_m``) y ``des.buttress_zone_no_data`` si la zona **no tiene dato** de la partida
+    (``known`` falso). Sin ``lowest_m`` y con ``known``, el de «por debajo»."""
+    code_found = _ZONE_NO_DATA if not known else (_AT_SUPPORT if lowest_m is not None and lowest_m == crown_m else _BELOW_SUPPORT)
+    return DesignError(code_found, obj=_OBJ.format(request.name), field=entity_key(code, ButtressParam.CROWN),
                        value=crown_m, layer=request.layer, entity=request.name)
 
 
@@ -439,13 +446,16 @@ class ButtressOutcome:
 
 def _seed_units(job: ButtressJob, settings: _Settings) -> Generator[None, None, np.ndarray]:
     """Las unidades de sembrar: la cota de coronación en las celdas de la zona con dato y con la partida por debajo de ella
-    (``NaN`` en las demás). ``des.buttress_crown_below_support`` si ninguna siembra."""
+    (``NaN`` en las demás). Si ninguna siembra, el rechazo de :func:`below_support_error` (``des.buttress_crown_below_support``,
+    ``_at_support`` o ``des.buttress_zone_no_data``, según el caso: T48)."""
     yield None
     with np.errstate(invalid="ignore"):
         below = np.isfinite(job.start) & (job.start < settings.crown_m)
     seeds = job.zone & below
     if not seeds.any():
-        raise below_support_error(job.request, job.code, settings.crown_m)
+        known = job.zone & np.isfinite(job.start)
+        raise below_support_error(job.request, job.code, settings.crown_m, known=bool(known.any()),
+                                  lowest_m=float(job.start[known].min()) if known.any() else None)
     yield None
     return np.where(seeds, settings.crown_m, np.nan)
 

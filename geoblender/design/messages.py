@@ -2186,10 +2186,13 @@ CATALOG: tuple[Message, ...] = (
     ),
     Message(
         "des.stockpile_marks_overlap",
-        "Marks «{mark}» and «{other}» overlap by {area} m² (around x = {x} m, y = {y} m): each stockpile has its "
-        "own mark; redraw them so that they do not overlap; nothing is detected.",
-        "Las marcas «{mark}» y «{other}» se solapan en {area} m² (en torno a x = {x} m, y = {y} m): cada acopio tiene "
-        "su propia marca; dibújelas de modo que no se solapen; no se detecta nada.",
+        "Marks «{mark}» and «{other}» overlap by {area} m² (around x = {x} m, y = {y} m): neither stockpile is "
+        "registered; each stockpile has its own mark, redraw them so that they do not overlap; the other marks are "
+        "detected as usual.",
+        "Las marcas «{mark}» y «{other}» se solapan en {area} m² (en torno a x = {x} m, y = {y} m): no se registra "
+        "ninguno de los dos acopios; cada acopio tiene su propia marca, dibújelas de modo que no se solapen; las demás "
+        "marcas se detectan como siempre.",
+        "warning",
     ),
     # Lo que rechaza **antes de calcular** la preparación de la detección (T11; RF-016-02, RF-016-04, RF-015-08): la capa
     # de marcas, sus campos, sus polígonos y el nombre de la detección. Un acopio que se rechaza al calcularlo no está aquí.
@@ -2446,6 +2449,16 @@ CATALOG: tuple[Message, ...] = (
         "warning",
     ),
     Message(
+        "des.removal_kept",
+        "{volume} m³ of stockpile «{stockpile}» are not removed: the masks do not admit removing there (the perimeter, the "
+        "legal limit or an untouchable); most of it is around x = {x} m, y = {y} m; the rest of the stockpile is removed as "
+        "usual and what stays is the ground the masks protect.",
+        "{volume} m³ del acopio «{stockpile}» no se retiran: las máscaras no admiten retirar ahí (el perímetro, el límite "
+        "legal o un intocable); lo no retirado está en torno a x = {x} m, y = {y} m; el resto del acopio se retira como "
+        "siempre y lo que queda es el terreno que las máscaras protegen.",
+        "warning",
+    ),
+    Message(
         "des.removal_resting",
         "{volume} m³ of material rest on stockpile «{stockpile}», placed by {items}; the stockpile is not removed "
         "without your express confirmation.",
@@ -2545,6 +2558,24 @@ CATALOG: tuple[Message, ...] = (
         "Capa «{layer}», contrafuerte «{entity}»: la cota de coronación {value} m queda por debajo de su apoyo en "
         "toda la zona de coronación, así que no hay contrafuerte; no se crea nada.",
     ),
+    # T48 (hallazgo C-10 b): la coronación igual al apoyo y la zona sin dato no están «por debajo de su apoyo».
+    Message(
+        "des.buttress_crown_at_support",
+        "Layer «{layer}», buttress «{entity}»: the crown level {value} m is not above its support anywhere in the "
+        "crown zone (it is level with it where the support is lowest), so there is no buttress; choose a higher "
+        "crown level; nothing is created.",
+        "Capa «{layer}», contrafuerte «{entity}»: la cota de coronación {value} m no queda por encima de su apoyo en "
+        "ningún punto de la zona de coronación (es igual a él donde el apoyo es más bajo), así que no hay "
+        "contrafuerte; elija una cota de coronación más alta; no se crea nada.",
+    ),
+    Message(
+        "des.buttress_zone_no_data",
+        "Layer «{layer}», buttress «{entity}»: the start surface has no data in the crown zone, so there is no "
+        "support to raise the buttress on; check the zone and the start surface; nothing is created.",
+        "Capa «{layer}», contrafuerte «{entity}»: la superficie de partida no tiene dato en la zona de coronación, "
+        "así que no hay apoyo sobre el que levantar el contrafuerte; revise la zona y la superficie de partida; no se "
+        "crea nada.",
+    ),
     Message(
         "des.buttress_nothing_rises",
         "Layer «{layer}», buttress «{entity}»: no cell rises: the fill is not admitted where its slopes would reach, so "
@@ -2621,6 +2652,16 @@ CATALOG: tuple[Message, ...] = (
         "Cuerpo apoyado «{entity}»: ninguna celda de su huella «{footprint}» queda a menos de {distance} m de los "
         "datos de espesor; no se crea nada.",
     ),
+    # T48 (hallazgo C-10 a): lo que falta es la superficie conocida entera, no la cercanía de los datos.
+    Message(
+        "des.body_all_unsupported",
+        "Supported body «{entity}»: the known surface «{surface}» has no data in any cell of its footprint "
+        "«{footprint}», so there is nothing to build the body on; check the footprint and the known surface; nothing "
+        "is created.",
+        "Cuerpo apoyado «{entity}»: la superficie conocida «{surface}» no tiene dato en ninguna celda de su huella "
+        "«{footprint}», así que no hay sobre qué apoyar el cuerpo; revise la huella y la superficie conocida; no se "
+        "crea nada.",
+    ),
     # RF-015-13 con el cuerpo (T46): lo que la rejilla recorta de su huella (lo que llega al borde de la rejilla o a celdas sin dato usa
     # ``des.entity_edge_outside``, el de la plataforma).
     Message(
@@ -2649,6 +2690,14 @@ CATALOG: tuple[Message, ...] = (
         "Cuerpo apoyado «{entity}»: el cuerpo termina en un escalón de hasta {step} m en el borde de su huella, el "
         "mayor en x = {x} m, y = {y} m (su espesor en el borde no es 0).",
         "note",
+    ),
+    # T48: «Cambiar parámetro…» no puede poner a proteger lo que no declara nada (la retirada, el cuerpo y la detección de acopios).
+    Message(
+        "des.protect_unsupported",
+        "«{entity}» is {kind}, which declares no constraint: it cannot protect an area; only platforms and buttresses "
+        "do; leave «protect» as it was; nothing is changed.",
+        "«{entity}» es {kind}, que no declara ninguna restricción: no puede proteger una zona; solo lo hacen las "
+        "plataformas y los contrafuertes; deje «proteger» como estaba; no se cambia nada.",
     ),
     # T25 (decisiones de la sesión principal, 19/11/2026): las celdas de la huella sin superficie conocida, lo que se
     # triangula y lo lento de un TIN de secciones muy separadas (T44: por su coste estimado, no por el área de la huella), y lo
@@ -2790,6 +2839,8 @@ def render(code: str, /, *, language: str = "es", number: object = None,
         number = values.get(message.count)
     msgid, es = message.templates(number)
     template = es if language == "es" else msgid
+    if language == "en":  # un valor puede traer su texto inglés bajo «<nombre>_en» (spec 016, T48, D-5: la causa de una obsolescencia)
+        values = {**values, **{name[:-3]: value for name, value in values.items() if name.endswith("_en") and name[:-3] in values}}
     shown = _Shown({name: format_value(value, language) for name, value in values.items()})
     return template.format_map(shown)
 

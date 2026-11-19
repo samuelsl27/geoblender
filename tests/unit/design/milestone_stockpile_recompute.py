@@ -22,6 +22,7 @@ detecciones recalculadas.
 from __future__ import annotations
 
 import dataclasses
+import json
 import unittest
 from typing import Any, ClassVar
 from unittest import mock
@@ -261,12 +262,13 @@ class StaleTest(StaleCase):
         super().setUpClass()
         cls.both()
 
-    def test_a_a_geometry_edited_in_the_marks_layer_makes_both_stale_and_an_overlap_is_not_recomputed(self) -> None:
-        """CE-016-01, RF-016-10, RF-015-16, RF-016-04: mover en QGIS el polígono del Acopio 1 dos metros al este cambia la capa
-        de marcas, **entrada** de la operación con su hash: la detección de V01 y la del proyecto quedan obsoletas
-        **enteras** con la capa como causa (``dataset_changed``) y ya no son «al día». Pero esa marca se solapa ahora con la
-        del Acopio 2 (40 m²): «Recalcular lo obsoleto» no la repite (se rechaza al preparar, nombrando las dos marcas), no
-        empieza ninguna operación y las anteriores siguen vigentes, obsoletas."""
+    def test_a_a_geometry_edited_in_the_marks_layer_makes_both_stale_and_an_overlap_rejects_only_the_two_marks(self) -> None:
+        """CE-016-01, RF-016-10, RF-015-16, RF-016-04 (T48; hallazgos A-2 y S-3 de la verificación única): mover en QGIS el polígono del
+        Acopio 1 dos metros al este cambia la capa de marcas, **entrada** de la operación con su hash: la detección de V01 y la del proyecto
+        quedan obsoletas **enteras** con la capa como causa (``dataset_changed``) y ya no son «al día». Esa marca se solapa ahora con la del
+        Acopio 2 (40 m²): «Recalcular lo obsoleto» **ya no falla** (``core.recompute_failed``, que dejaba las detecciones obsoletas sin
+        repetir): repite las dos detecciones con **solo esas dos marcas rechazadas** (nombradas, con el área común, en el informe) y los otros tres
+        acopios, detectados; quedan al día y la identidad es la misma."""
         old = self.now()
         operations_before = self.query("SELECT count(*) FROM gb_operation")
         rewrite_marks(self.project, self.clock, move_first=2.0)
@@ -277,20 +279,32 @@ class StaleTest(StaleCase):
         self.clock.advance(minutes=1)
         operations_after_edit = self.query("SELECT count(*) FROM gb_operation")
         outcome = ops.finish(recompute_mod.recompute_steps(self.project))
-        self.assertEqual([result.status for result in outcome.results], [recompute_mod.UnitStatus.FAILED] * 2)
-        for result in outcome.results:
-            self.assertEqual(result.code, "core.recompute_failed")
-            for part in ("«Acopio 1»", "«Acopio 2»", "se solapan"):
-                self.assertIn(part, str(result.reason))
-        self.assertEqual(self.query("SELECT count(*) FROM gb_operation"), operations_after_edit, "no empieza ninguna")
+        self.assertEqual([result.status for result in outcome.results], [recompute_mod.UnitStatus.DONE] * 2)
         self.assertGreater(operations_after_edit[0][0], operations_before[0][0], "la edición de la capa sí es una operación")
-        self.assertEqual(self.now(), old)
+        self.assertGreater(self.query("SELECT count(*) FROM gb_operation")[0][0], operations_after_edit[0][0], "empieza las dos repeticiones")
+        new = self.now()
+        for scope, uid in old.items():
+            with self.subTest(scope=scope):
+                self.assertNotEqual(new[scope], uid)
+                self.assertEqual(self.stale_causes(new[scope]), set())
+        for version in (True, False):
+            with self.subTest(version=version):
+                self.assertEqual([row["key"] for row in self.table("stk", version=version)], ["Acopio 3", "Acopio 4", "Acopio 5"])
+                report = {row["quantity"]: row for row in self.table("prp", version=version)}
+                self.assertEqual(report["stockpiles"]["value"], 3.0)
+                self.assertEqual(report["rejected_marks"]["value"], 2.0)
+                warnings = [json.loads(row["note"]) for row in self.table("prp", version=version) if row["quantity"] == "warning"]
+                overlap = [item for item in warnings if item["code"] == "des.stockpile_marks_overlap"]
+                self.assertEqual(len(overlap), 1, "la pareja, una vez")
+                self.assertEqual((overlap[0]["values"]["mark"], overlap[0]["values"]["other"], overlap[0]["values"]["area"]),
+                                 ("Acopio 1", "Acopio 2", 40.0))
+        self.assertEqual(self.recompute_plan(), [])
 
     def test_b_a_mark_moved_without_overlapping_is_recomputed_keeping_the_identity(self) -> None:
-        """CE-016-01, RF-016-10, RF-015-16: con la marca del Acopio 1 dos metros al **oeste** de donde estaba (cuatro metros
-        al oeste de la edición anterior, que sigue sin recalcular) no se solapa con ninguna: «Recalcular lo obsoleto» repite las
-        dos detecciones —la misma identidad, las mismas cinco claves— y cambian las huellas de las dos marcas que se tocan (se
-        reparten sus celdas de otro modo) y las de las otras tres, no; quedan al día."""
+        """CE-016-01, RF-016-10, RF-015-16: con la marca del Acopio 1 dos metros al **oeste** de donde estaba (cuatro metros al oeste de la
+        edición anterior, ya repetida con esas dos marcas rechazadas) no se solapa con ninguna: «Recalcular lo obsoleto» repite las dos
+        detecciones —la misma identidad— y **vuelven** los acopios 1 y 2 (se tocan: se reparten sus celdas) con las otras tres huellas sin
+        cambio; quedan al día."""
         old = self.now()
         before = {version: {row["key"]: row for row in self.table("stk", version=version)} for version in (True, False)}
         rewrite_marks(self.project, self.clock, move_first=-4.0)
@@ -304,11 +318,19 @@ class StaleTest(StaleCase):
                 self.assertEqual(self.stale_causes(new[scope]), set())
         for version in (True, False):
             after = {row["key"]: row for row in self.table("stk", version=version)}
-            self.assertEqual(list(after), list(before[version]), "la misma identidad: las mismas marcas")
-            changed = {key for key in after if after[key]["footprint"] != before[version][key]["footprint"]}
-            self.assertTrue(changed and changed <= {"Acopio 1", "Acopio 2"}, changed)  # se tocan: se reparten sus celdas
+            self.assertEqual(list(after), list(sdata_names()), "la misma identidad: las cinco marcas, otra vez")
+            self.assertEqual(list(before[version]), ["Acopio 3", "Acopio 4", "Acopio 5"])
+            for key in before[version]:  # las otras tres, sin cambio
+                self.assertEqual(after[key]["footprint"], before[version][key]["footprint"], key)
+            report = {row["quantity"]: row for row in self.table("prp", version=version)}
+            self.assertEqual(report["rejected_marks"]["value"], 0.0)
         self.assertEqual(self.recompute_plan(), [])
         self.assertEqual(len(stockpile_store.detections_on(self.project, self.v1.uid, tp.VERSION_SURFACE)), 1)
+
+
+def sdata_names() -> tuple[str, ...]:
+    """Las cinco marcas de la cantera, en su orden."""
+    return tuple(mark.name for mark in sdata.MARKS)
 
 
 class FieldEditTest(StaleCase):

@@ -47,6 +47,7 @@ project_model = import_geoblender("core.project.model")
 provenance = import_geoblender("design.provenance")
 recompute_mod = import_geoblender("core.provenance.recompute")
 removal = import_geoblender("design.removal")
+stale_module = import_geoblender("core.provenance.stale")
 reproduce_mod = import_geoblender("core.versions.reproduce")
 steps = import_geoblender("design.steps")
 store = import_geoblender("design.store")
@@ -387,6 +388,21 @@ class RemovalOperationTest(RemovalCase):
         states = {entry.record.code: entry.record.state for entry in entities.registry(self.project, self.v1.uid)}
         self.assertEqual(states, {"STK-001": entities.EntityState.CURRENT, CODE: entities.EntityState.CURRENT})
 
+    def test_e_the_thresholds_of_ca_9_are_copied_to_the_report_with_their_kind_and_provenance(self) -> None:
+        """RF-016-15 (T48; hallazgos B-4 y S-8 de la verificación única; principio 2, spec §4): el informe (``des_prp_``) copia los dos
+        umbrales de CA-9 (45° y 3 m) **con su tipo** (ADOPTADO) y su procedencia (CA-9 y D-6), además del valor y su unidad: una cifra
+        sin tipo no se escribe."""
+        rows = {quantity: (value, unit, note) for quantity, value, unit, note in self.query(
+            f'SELECT quantity, value, unit_code, note FROM "{provenance.dataset_locator(provenance.ENTITY_REPORT_TABLE, FIRST, "V01")}"')}
+        for quantity, value, unit in (("wall_reason_min_angle_deg", removal.WALL_REASON_MIN_ANGLE_DEG, "deg"),
+                                      ("wall_reason_min_height_m", removal.WALL_REASON_MIN_HEIGHT_M, "m")):
+            with self.subTest(quantity=quantity):
+                found = rows[quantity]
+                self.assertEqual(found[:2], (value, unit))
+                self.assertEqual(found[2], removal.WALL_REASON_NOTE)
+                for part in ("ADOPTADO", "CA-9", "D-6"):
+                    self.assertIn(part, found[2])
+
     def test_f_a_second_removal_from_the_same_surface_is_refused_and_one_from_its_surface_is_created(self) -> None:
         """RF-015-04, RF-015-01: de cada superficie parte **una** entidad (``des.entity_start_taken``) y el nombre es único en la versión
         (``des.entity_name_repeated``): ninguna escribe nada; la retirada del Acopio 2 desde la **superficie de la primera**
@@ -516,6 +532,25 @@ class RemovalOperationTest(RemovalCase):
         ops.finish(recompute_mod.recompute_steps(self.project))
         self.assertEqual(entities.registry(self.project, self.v1.uid).get("STK-001").record.state, entities.EntityState.CURRENT)
         self.calculate(asked("Otra retirada", "Acopio 4", start="entity:RMV-003")).discard()
+
+    def test_n_the_cause_of_a_stale_detection_is_said_in_the_language_of_the_interface(self) -> None:
+        """RF-016-12, RF-012-31 (T48; hallazgo D-5 de la verificación única): la causa de la detección obsoleta que da el rechazo es la de
+        la 008 **en cada idioma** (``cause`` en español y ``cause_en`` en inglés: el texto en inglés ya no lleva la causa en español dentro
+        de la frase inglesa); lo mismo que dice el texto de la 008 para esa operación."""
+        self.change(design_params.entity_key("STK-001", "margin_m"), 9.0)
+        error = self.refused(asked("Otra retirada", "Acopio 4", start="entity:RMV-003"), "des.removal_detection_stale")
+        entry = entities.registry(self.project, self.v1.uid).get("STK-001")
+        with self.project.read() as conn:
+            wanted = {language: stale_module.item_text(conn, stale_module.OPERATION, str(entry.operation_uid), language=language)
+                      for language in ("es", "en")}
+        self.assertTrue(wanted["es"] and wanted["en"] and wanted["es"] != wanted["en"])
+        self.assertEqual((error.values["cause"], error.values["cause_en"]), (wanted["es"], wanted["en"]))
+        self.assertIn(wanted["es"], error.text_in("es"))
+        self.assertNotIn(wanted["en"], error.text_in("es"))
+        self.assertIn(wanted["en"], error.text_in("en"))
+        self.assertNotIn(wanted["es"], error.text_in("en"))
+        self.clock.advance(minutes=1)
+        ops.finish(recompute_mod.recompute_steps(self.project))
 
     def test_o_a_sector_with_the_search_pending_refuses_the_removal_naming_it(self) -> None:
         """RF-015-07: la retirada **sí** llama a ``refuse_pending`` (la detección no: no mueve celdas), con los sectores que toca la huella

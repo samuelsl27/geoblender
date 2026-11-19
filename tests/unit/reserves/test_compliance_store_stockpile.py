@@ -335,6 +335,31 @@ class VerifyStepsWithBaseTest(unittest.TestCase):
         self.assertIn("sin material", bare.text())
         self.assertEqual(_selection("x").bases[0].text(), USED_TEXT)
 
+    def test_h_the_cause_of_a_stale_detection_is_kept_in_both_languages_and_shown_in_the_interface_one(self) -> None:
+        """RF-012-31 (T48; hallazgo D-5 de la verificación única): la causa de una detección obsoleta se guarda en los ajustes **en los dos
+        idiomas** (``cause`` en español, ``cause_en`` en inglés) y el aviso la escribe en el de la interfaz: en inglés, dentro de la
+        frase inglesa, ya no la causa en español; sin la inglesa (lo anotado antes), la de siempre."""
+        stale = cstore.SkippedDetection("STK-002", "Viejos", "project", "stale", "gis_dtm_levantamiento",
+                                        "Obsoleto: cambió el umbral de la huella", "Stale: the footprint threshold changed")
+        self.assertEqual((stale.cause, stale.cause_en), ("Obsoleto: cambió el umbral de la huella",
+                                                         "Stale: the footprint threshold changed"))
+        text_es, text_en = stale.text("Levantamiento", "es"), stale.text("Levantamiento", "en")
+        self.assertIn("Obsoleto: cambió el umbral de la huella", text_es)
+        self.assertNotIn("Stale: the footprint threshold changed", text_es)
+        self.assertIn("Stale: the footprint threshold changed", text_en)
+        self.assertNotIn("cambió", text_en)
+        self.assertIn("stale", text_en)
+        self.assertEqual(STALE.cause_en, "", "lo anotado antes no la trae")
+        self.assertIn(STALE.cause, STALE.text("Levantamiento", "en"), "sin la inglesa, la de siempre")
+        selection = cstore.BaseSelection((), (stale, OTHER))
+        noted = cstore.verify_settings(NAME, surfaces.SurfaceRef(dataset="gis_dtm_inicial"), (), [], [], selection)
+        self.assertEqual([(item["cause"], item["cause_en"]) for item in noted["skipped"]],
+                         [("Obsoleto: cambió el umbral de la huella", "Stale: the footprint threshold changed"), ("", "")])
+        self.assertEqual(cstore.BaseSelection.of_settings(noted), selection)
+        old = {"skipped": [{"detection": "STK-002", "name": "Viejos", "scope": "project", "reason": "stale", "surface": "s",
+                            "cause": "Obsoleto: x"}]}
+        self.assertEqual(cstore.BaseSelection.of_settings(old).skipped[0].cause_en, "")
+
     def test_i_the_stored_table_is_read_and_a_terrain_cut_has_its_freeze_note(self) -> None:
         """RF-012-24, RF-012-25, RF-012-30: de la tabla que se guarda, el recinto de terreno da su corte de acopios y ``cut_terrain``
         (``None`` en los demás y sin base) y congelar con lo que no cumple da los m³ de **corte de terreno**

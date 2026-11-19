@@ -1275,6 +1275,18 @@ class DecisionsComputeTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "des.stockpile_candidate_key_taken")
         self.assertIn("c03", caught.exception.text)
 
+    def test_a_converted_candidate_cannot_take_the_key_of_a_refused_mark_either(self) -> None:
+        """RF-016-04, RF-016-10 (T48): una marca **apartada por solaparse** que se llama como el candidato convertido (``c03``) tampoco puede
+        compartir su clave: se rechaza con ``des.stockpile_candidate_key_taken``, no con un error del programa (la clave de un acopio sería
+        ambigua aunque la marca no se registre)."""
+        notice = preview.Notice("des.stockpile_marks_overlap", {"mark": "c03", "other": "Acopio 1", "area": 4.0, "x": 1.0, "y": 2.0})
+        refused = stockpiles.RefusedMark(stockpiles.StockpileMark("c03", self.job.marks[0].cells), notice)
+        job = dataclasses.replace(self.job, refused=(refused,))
+        with self.assertRaises(messages.DesignError) as caught:
+            compute(job, decisions=(self.convert,))
+        self.assertEqual(caught.exception.code, "des.stockpile_candidate_key_taken")
+        self.assertIn("c03", caught.exception.text)
+
     def test_the_decisions_do_not_modify_the_job_or_the_first_outcome(self) -> None:
         """RF-015-29, principio 7: calcular con decisiones no toca el trabajo (su superficie y sus marcas) ni el resultado
         anterior."""

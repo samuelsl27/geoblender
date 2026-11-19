@@ -1445,7 +1445,9 @@ def check_parameter_change(project: StoreProject, key: str, value: object, *, ve
       un cuerpo «bajo un techo» (``des.chainless_start``), como al crearlos.
     - ``mode``, ``protect`` y ``guard_m``: con lo que quedaría la entidad, no protege en «en corte y relleno»
       (``des.platform_protect_cut_fill``; solo la plataforma tiene modo) ni sin resguardo (``des.entity_param_missing``;
-      :func:`_check_protection`: lo mismo que comprueba al declarar).
+      :func:`_check_protection`: lo mismo que comprueba al declarar). Y **``protect`` verdadero solo en un tipo que declara** algo
+      (:data:`_DECLARES`: la plataforma y el contrafuerte): en la retirada, el cuerpo y la detección de acopios se rechaza con
+      ``des.protect_unsupported`` (spec 016, T48; observación (6) de la T47: la declaración haría ``_DECLARES[tipo]`` con un ``KeyError``).
 
     Una entidad descartada es un registro: solo se le comprueba el nombre, la capa y la geometría. **Solo lee**:
     se llama **antes** de abrir la transacción que escribe (el rechazo no deja ninguna). No hace nada si ``version``
@@ -1497,6 +1499,10 @@ def check_parameter_change(project: StoreProject, key: str, value: object, *, ve
         _check_surface_left(registry, record.name, code, surface, key, obj=obj)
         _check_support_cycle(registry, record.name, code, surface, key, chosen.code)
     else:
+        if param == PlatformParam.PROTECT and value is True and kind not in _DECLARES:  # lo que no declara nada no protege (T48)
+            words = _NO_DECLARATION.get(kind, (kind, kind))
+            raise DesignError("des.protect_unsupported", obj=obj, field=key, value=value, entity=record.name, kind=words[0],
+                              kind_en=words[1])
         after = {**now, param: value}  # lo que quedaría la entidad con el valor nuevo
         guard = after[PlatformParam.GUARD]
         _check_protection(record.name, code, layer, bool(after[PlatformParam.PROTECT]),
@@ -2682,6 +2688,11 @@ _DECLARES: Mapping[EntityKind, ConstraintType] = MappingProxyType({
 """Lo que declara cada tipo de entidad cuando protege su zona (D-4; D-1 de la 016): la plataforma, «sin relleno» y, de la 016 (T27), el
 contrafuerte, «sin corte» (sobre su zona de coronación: :func:`~.entities.declaration_runs`). Los demás tipos no declaran nada por defecto
 (la retirada y el cuerpo escriben ``protect`` falso)."""
+_NO_DECLARATION: Mapping[str, tuple[str, str]] = MappingProxyType({
+    "stockpile": ("una detección de acopios", "a stockpile detection"), "removal": ("una retirada de acopio", "a stockpile removal"),
+    "body": ("un cuerpo apoyado", "a supported body")})
+"""Cómo se dice, en español y en inglés, cada tipo de entidad que **no declara** ninguna restricción (:data:`_DECLARES` no lo tiene): lo que nombra
+``des.protect_unsupported`` (spec 016, T48)."""
 _LIVE_STATES = frozenset({EntityState.CURRENT, EntityState.STALE, EntityState.SUPPORT_REMOVED})
 """Los estados de una entidad **viva y calculada** (RF-015-25): tiene operación vigente y datos que no están
 descartados. Una «sin calcular» no tiene huella y una «descartada» ya no es de la versión: ninguna declara."""

@@ -55,6 +55,7 @@ from tests.unit.design.test_removal_transition import (
 
 edges = import_geoblender("design.edges")
 messages = import_geoblender("design.messages")
+params = import_geoblender("design.params")
 preview = import_geoblender("design.preview")
 removal = import_geoblender("design.removal")
 stockpiles = import_geoblender("design.stockpiles")
@@ -505,6 +506,18 @@ class ConfirmationTest(Close):
             self.assertIn(text, doc)
         wall = self.wall(2.0, 4.0)
         self.assertEqual((wall.reason_min_angle_deg, wall.reason_min_height_m), (45.0, 3.0))
+
+    def test_the_two_thresholds_have_their_kind_and_their_provenance_as_named_constants(self) -> None:
+        """RF-016-15 (T48; hallazgos B-4 y S-8; principio 2): los dos umbrales de CA-9 son ADOPTADO (``WALL_REASON_KIND``, el tipo de
+        ``core.params``) con su procedencia en una constante nombrada (``WALL_REASON_SOURCE``: CA-9, D-6 y quién y cuándo lo decidió)
+        y la nota que copia el informe (``WALL_REASON_NOTE``); **siguen sin ser parámetros** de la persona."""
+        params_model = import_geoblender("core.params.model")
+        self.assertEqual(removal.WALL_REASON_KIND, params_model.ParamKind.ADOPTADO.value)
+        for part in ("CA-9", "D-6", "18/11/2026"):
+            self.assertIn(part, removal.WALL_REASON_SOURCE)
+        self.assertEqual(removal.WALL_REASON_NOTE, f"{removal.WALL_REASON_KIND} · {removal.WALL_REASON_SOURCE}")
+        self.assertIn("WALL_REASON_KIND", " ".join((removal.__doc__ or "").split()))
+        self.assertNotIn("wall_reason_min_angle_deg", {item.value for item in params.RemovalParam})
 
     def test_without_a_wall_nothing_is_asked(self) -> None:
         """RF-016-15: sin ninguna pared, ni confirmación ni motivo, y ningún aviso."""

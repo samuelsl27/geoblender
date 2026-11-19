@@ -60,6 +60,7 @@ DATA_OUTSIDE = "des.body_data_outside"
 FAR = "des.body_far"
 NO_DATA = "des.body_no_data"
 ALL_FAR = "des.body_all_far"
+ALL_UNSUPPORTED = "des.body_all_unsupported"
 
 
 # --- Lo que se construye -----------------------------------------------------------------------------------------------
@@ -618,6 +619,30 @@ class RejectionTest(unittest.TestCase):
         self.assertIn("8", str(caught.exception))
         support[3:5, 6:8] = 100.0
         run(job_of(foot, points=points_of(data), support=support, distance=8.0))
+
+    def test_a_known_surface_missing_in_the_whole_footprint_is_said_as_such_and_not_as_far_from_the_data(self) -> None:
+        """RF-016-22 (T48; hallazgo C-10 a de la verificación única): si lo que falta es **la superficie conocida entera** en la huella
+        (los datos de espesor están dentro), el rechazo no dice «ninguna celda queda a menos de X m de los datos» (``des.body_all_far``:
+        engaña, los datos están ahí): es el suyo, ``des.body_all_unsupported``, que nombra la huella y la superficie conocida; con
+        una sola celda de la huella con superficie sigue siendo lo de antes (lejos de los datos)."""
+        foot = box(2, 22, 2, 22)
+        data = points_of({(3, 3): 1.0, (3, 5): 2.0, (5, 4): 3.0})
+        with self.assertRaises(DesignError) as caught:
+            run(job_of(foot, points=data, support=np.full(GRID.shape, np.nan), distance=8.0))
+        error = caught.exception
+        self.assertEqual(error.code, ALL_UNSUPPORTED)
+        for text in (error.text_in("es"), error.text_in("en")):
+            self.assertIn(FEATURE, text)
+            self.assertIn("«Terreno»", text)
+            self.assertNotIn("8 m", text, "no habla de la distancia a los datos")
+            self.assertNotIn("{", text)
+        self.assertIn("no tiene dato", error.text_in("es"))
+        self.assertIn("has no data", error.text_in("en"))
+        support = np.full(GRID.shape, np.nan)
+        support[14:22, 14:22] = 100.0  # con superficie, pero lejos de los datos: lo de siempre
+        with self.assertRaises(DesignError) as far:
+            run(job_of(foot, points=data, support=support, distance=8.0))
+        self.assertEqual(far.exception.code, ALL_FAR)
 
     def test_without_a_maximum_distance_nothing_is_computed(self) -> None:
         """D-9, RF-015-08: la distancia máxima no tiene valor por defecto: sin ella, ``des.entity_param_missing`` con la clave de

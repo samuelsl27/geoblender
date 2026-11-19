@@ -402,6 +402,14 @@ class EdgeAndFiguresTest(unittest.TestCase):
         self.assertLessEqual(relative(math.fsum((removed.removed_m3, removed.resting_m3, removed.kept_m3)), removed.above_base_m3), 1e-9)
         self.assertEqual(outcome.applied.blocked_cells, 9)
         self.assertIn("des.platform_above", [item.code for item in outcome.notices])
+        warned = [item for item in outcome.notices if item.code == "des.removal_kept"]  # T48, B-2: también «como plataforma»
+        self.assertEqual(len(warned), 1)
+        self.assertLessEqual(relative(warned[0].values["volume"], kept), 1e-9)
+        self.assertEqual(warned[0].values["stockpile"], outcome.removal.name)
+        x, y = warned[0].values["x"], warned[0].values["y"]
+        centres_x, centres_y = GRID.centers()
+        self.assertAlmostEqual(x, float(centres_x[16:19, 20:23].mean()), places=9)
+        self.assertAlmostEqual(y, float(centres_y[16:19, 20:23].mean()), places=9)
 
 
 # --- Los rechazos y el modelo -------------------------------------------------------------------------------------------

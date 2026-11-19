@@ -29,7 +29,7 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.stockpile_no_terrain": ("warning", "RF-016-04", {"mark", "cells", *POSITION}),
     "des.stockpile_no_terrain_crown": ("warning", "RF-016-04", {"mark", "cells", *POSITION}),
     "des.stockpile_no_crown_cells": ("warning", "RF-016-04", {"mark", "inner", "outer", *POSITION}),
-    "des.stockpile_marks_overlap": ("error", "RF-016-04", {"mark", "other", "area", *POSITION}),
+    "des.stockpile_marks_overlap": ("warning", "RF-016-04", {"mark", "other", "area", *POSITION}),  # T48: un aviso, no un error
     # T11: lo que rechaza la preparación antes de calcular (la capa de marcas, sus campos y polígonos, los nombres).
     "des.stockpile_layer_field": ("error", "RF-015-08", {"layer", "field", "value", "fields"}),
     "des.stockpile_mark_repeated": ("error", "RF-016-02", {"layer", "value", "fids"}),
@@ -68,6 +68,7 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # RF-016-12 a 15: la retirada.
     "des.removal_detection_stale": ("error", "RF-016-12", {"stockpile", "detection", "cause"}),
     "des.removal_nothing": ("warning", "RF-016-13", {"stockpile"}),
+    "des.removal_kept": ("warning", "RF-016-13", {"stockpile", "volume", *POSITION}),  # T48: lo que las máscaras no dejan retirar
     "des.removal_resting": ("warning", "RF-016-14", {"stockpile", "volume", "items"}),
     "des.removal_resting_unconfirmed": ("error", "RF-016-14", {"stockpile", "volume"}),
     "des.removal_wall": ("warning", "RF-016-15",
@@ -87,6 +88,9 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # RF-016-18 y 19: el contrafuerte.
     "des.buttress_crown_off_anchor": ("error", "RF-016-18", {"layer", "entity", "profile", "anchor"}),
     "des.buttress_crown_below_support": ("error", "RF-016-18", {"layer", "entity"}),
+    # T48 (C-10 b): la coronación igual al apoyo y la zona sin dato ya no dicen «por debajo de su apoyo».
+    "des.buttress_crown_at_support": ("error", "RF-016-18", {"layer", "entity"}),
+    "des.buttress_zone_no_data": ("error", "RF-016-18", {"layer", "entity"}),
     # T27: ninguna celda sube (el relleno no está admitido donde llegarían los taludes): no hay contrafuerte que crear.
     "des.buttress_nothing_rises": ("error", "RF-016-17", {"layer", "entity"}),
     "des.buttress_foot_cut": ("warning", "RF-016-19", {"entity", "area", "volume", "step", *POSITION}),
@@ -99,6 +103,7 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.body_far": ("warning", "RF-016-21", {"entity", "area", "volume", "distance", *POSITION}),
     "des.body_no_data": ("error", "RF-016-22", {"layer", "footprint", "entity"}),
     "des.body_all_far": ("error", "RF-016-22", {"entity", "distance", "footprint"}),
+    "des.body_all_unsupported": ("error", "RF-016-22", {"entity", "surface", "footprint"}),  # T48 (C-10 a): falta la superficie conocida entera
     # T25: lo que avisa o rechaza la orden del cuerpo (la superficie conocida sin dato, lo triangulado, lo que no se lee).
     "des.body_unsupported": ("warning", "RF-016-20", {"entity", "area", "surface"}),
     # T46: RF-015-13 con el cuerpo: lo que la rejilla recorta de su huella.

@@ -303,6 +303,43 @@ class NoticeCountTest(unittest.TestCase):
                     self.assertNotIn("{", text)
 
 
+class AzimuthTextTest(unittest.TestCase):
+    """RF-016-02, RF-016-04 (T48; hallazgo A-4 de la verificación única): un azimut que el redondeo a una cifra deja en 360° se escribe
+    «0,0°»: el azimut es una dirección y vuelve a empezar en 360° (un 359,99999999999847° es el norte, no «360,0°»)."""
+
+    VALUES: ClassVar[dict[str, object]] = {"mark": "Acopio 1", "material": "mineral", "area": 400.0, "volume": 3_000.0,
+                                           "thickness": 4.0, "x": 725_010.5, "y": 4_400_020.5, "level": 110.0, "slope": 5.0,
+                                           "candidate": "c01"}
+    CODES: ClassVar[tuple[str, ...]] = ("des.stockpile_item", "des.stockpile_candidate_item")
+
+    def text(self, code: str, azimuth: float, language: str) -> str:
+        return preview.Notice(code, {**self.VALUES, "azimuth": azimuth}).text(language)
+
+    def test_a_north_that_rounds_to_360_is_written_zero(self) -> None:
+        """Un azimut de 359,99999999999847° (sale de ``atan2`` con el plano casi al norte) se escribe «0,0°» en español y «0.0°» en
+        inglés, en el renglón de un acopio y en el de un candidato; nunca «360»."""
+        for code in self.CODES:
+            with self.subTest(code=code):
+                es, en = self.text(code, 359.99999999999847, "es"), self.text(code, 359.99999999999847, "en")
+                self.assertIn("azimut 0,0°", es)
+                self.assertIn("towards 0.0°", en)
+                self.assertNotIn("360", es + en)
+
+    def test_the_other_azimuths_are_written_as_always(self) -> None:
+        """El redondeo a una cifra de lo demás no cambia: 0°, 30°, 180,04° y 359,94° (que redondea a 359,9°, sin llegar a 360°); 359,95°
+        sí vuelve al norte."""
+        for azimuth, shown_es, shown_en in ((0.0, "0,0", "0.0"), (30.0, "30,0", "30.0"), (180.04, "180,0", "180.0"),
+                                            (359.94, "359,9", "359.9"), (359.949, "359,9", "359.9"), (359.951, "0,0", "0.0")):
+            with self.subTest(azimuth=azimuth):
+                self.assertIn(f"azimut {shown_es}°", self.text("des.stockpile_item", azimuth, "es"))
+                self.assertIn(f"towards {shown_en}°", self.text("des.stockpile_item", azimuth, "en"))
+
+    def test_only_the_azimuth_turns(self) -> None:
+        """Solo el azimut vuelve a 0 tras 360°: una pendiente (que no es una dirección) que redondea a 360 se escribe como siempre."""
+        text = preview.Notice("des.stockpile_item", {**self.VALUES, "azimuth": 30.0, "slope": 359.999}).text("es")
+        self.assertIn("del 360,00 %", text)
+
+
 class QuarryPreviewMessagesTest(unittest.TestCase):
     def test_the_notes_have_both_languages_and_every_value_filled(self) -> None:
         """Principio 10: los códigos del resumen de la cantera son notas de la familia

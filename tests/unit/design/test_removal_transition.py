@@ -59,7 +59,8 @@ TAN = math.tan(math.radians(ANGLE))
 CHAMFER_SCALE = 0.98644
 """La escala del *chamfer* 5×5 (ADR-0014): un paso de eje cuesta ``h · 0,98644``."""
 NOTHING = "des.removal_nothing"
-BLOCK = (slice(7, 13), slice(7, 13))
+KEPT = "des.removal_kept"
+BLOCK =(slice(7, 13), slice(7, 13))
 """Las celdas del bloque de las cuentas a mano: 6 × 6 en la rejilla de 20 × 20."""
 BLOCK_M = 4.0
 """Lo que el bloque sobresale de su base (m): 36 celdas · 4 m · 4 m² = 576 m³."""
@@ -278,6 +279,35 @@ class HandCasesTest(Close):
         self.figures(outcome, removed=576.0 - 192.0 - transition, transition=transition, kept=192.0, cells=12)
         self.assertEqual(int(np.count_nonzero(outcome.held)), 12)
         self.assertFalse(np.any(outcome.admitted & outcome.held))
+
+    def test_what_the_domain_does_not_admit_is_warned_with_its_volume_and_its_place(self) -> None:
+        """RF-016-13, RF-016-15 (T48; hallazgo B-2 de la verificación única): lo que las máscaras no dejan retirar **se avisa**
+        (``des.removal_kept``: el volumen y el lugar), no solo es una línea del resumen. Con el dominio acabando en la columna 10
+        (el caso de arriba: 192 m³ sin retirar en las columnas 11 y 12 de las filas 7 a 12) el aviso nombra el acopio, los 192 m³ y el
+        centro de lo no retirado (a mano: columnas 11 y 12 → x = 23 y 25 m, media 24 m; filas 7 a 12 → y = 15 … 25 m bajo el norte,
+        media 20 m); en español y en inglés, en alerta; sin nada sin retirar no avisa (los demás casos de este módulo, ``notices == ()``);
+        y el aviso de los 0 m³ retirados va antes si también los hay."""
+        scene = block_scene()
+        scene.domain[:, 11:] = False
+        outcome = outcome_of(scene)
+        self.assertEqual([notice.code for notice in outcome.notices], [KEPT])
+        notice = outcome.notices[0]
+        self.assertEqual(notice.values["stockpile"], "Acopio de prueba")
+        self.close(notice.values["volume"], 192.0, what="lo no retirado")
+        self.assertAlmostEqual(notice.values["x"], scene.grid.west + 24.0, places=9)
+        self.assertAlmostEqual(notice.values["y"], scene.grid.north - 20.0, places=9)
+        self.assertEqual(notice.severity, "warning")
+        self.assertIn("«Acopio de prueba»", notice.text("es"))
+        self.assertIn("192", notice.text("es"))
+        self.assertIn("no se retira", notice.text("es"))
+        self.assertIn("192", notice.text("en"))
+        self.assertIn("not removed", notice.text("en"))
+        self.assertNotIn("{", notice.text("es") + notice.text("en"))
+        wholly = block_scene()
+        wholly.domain[:] = False  # el dominio no admite nada: 0 m³ retirados y todo sin retirar
+        found = outcome_of(wholly)
+        self.assertEqual([item.code for item in found.notices], [NOTHING, KEPT])
+        self.close(found.notices[1].values["volume"], 576.0, what="todo el acopio sin retirar")
 
     def test_what_rests_on_the_stockpile_is_counted_apart(self) -> None:
         """RF-016-13: con 3 m más sobre la superficie con que se detectó en las tres columnas este (algo que se le

@@ -87,9 +87,9 @@ como la plataforma) con sus valores en :class:`StockpileParam`, :class:`RemovalP
 :class:`BodyParam` y sus familias de versión (:data:`SUPPORTED_FAMILIES`; admiten también el valor del proyecto: la
 detección sobre una superficie del proyecto, D-15). **Valor por defecto solo donde lo dice el plan**: ADOPTADO «sin
 confirmar» los de D-3 (margen 10 m, corona de 1 a 3 m, pendiente de corona 12°, área llana mínima 10 m², residuo
-máximo 1 m, 4 vueltas del ajuste y 6 de plano y huella, apertura de 31 m —P-6: el diámetro en metros—, altura mínima 2 m
-y áreas de 150 a 20.000 m²), el factor de malla 1,0 y la métrica exacta; HIPÓTESIS la inclinación máxima (4°) y el
-cuantil de apoyo (0,6); «proteger» solo en el contrafuerte (D-1) y «cero en el borde» falso. **Sin valor** (lo declara
+máximo 1 m, 4 vueltas del ajuste y 6 de plano y huella, altura mínima 2 m y áreas de 150 a 20.000 m²), el factor de malla
+1,0 y la métrica exacta; HIPÓTESIS la inclinación máxima (4°), el cuantil de apoyo (0,6) y, desde la T48 (hallazgo D-4: el banco,
+CE-016-08, no lo confirmó), la apertura de 31 m —P-6: el diámetro en metros—; «proteger» solo en el contrafuerte (D-1) y «cero en el borde» falso. **Sin valor** (lo declara
 una persona): la transición (D-2), la cota de coronación (D-21), la distancia máxima (D-9) y el resguardo (D-19 de la
 015). Los rangos (:data:`STOCKPILE_RANGES`…) son los límites de validez que fija la T03 (no una cifra minera), y
 :func:`check_entity_param` rechaza un valor sin valor o fuera de ellos, para cualquier tipo.
@@ -1049,8 +1049,9 @@ _016_NAME = _015_NAME
 _016_D3 = ("Spec 016, D-3: el valor del proyecto de referencia (00 §3.10; s99 y s99b); ADOPTADO «sin confirmar» "
            "(Samuel, IMGA, 14/11/2026)")
 _016_D3_OPEN = ("Spec 016, D-3 y P-6: apertura de 31 m = diámetro en metros (radio 15,5 m sobre la rejilla del "
-                "proyecto), la lectura de s99b que cabe en las demás; ADOPTADO «sin confirmar» (Samuel, IMGA, "
-                "14/11/2026); lo confirma el banco (CE-016-08)")
+                "proyecto), la lectura de s99b que cabe en las demás; HIPÓTESIS: el banco (CE-016-08) no lo confirmó "
+                "(74, 20 o 135 candidatos según la lectura, frente a 60) y queda sin contrastar hasta tener el expediente "
+                "de la V10; el valor no cambia (Samuel, IMGA, 14/11/2026; T48)")
 _016_D3_HYPOTHESIS = ("Spec 016, D-3: HIPÓTESIS, como en el origen (TILT_MAX y el cuantil de apoyo de s99); la cifra "
                       "que sale con ella lleva su marca y su sensibilidad (R-41) (Samuel, IMGA, 14/11/2026)")
 _016_D3_NONE = ("Spec 016, RF-016-02 y RF-016-08: sin valor por defecto; lo elige una persona al crear la detección "
@@ -1163,7 +1164,7 @@ STOCKPILE_ENTITY = _supported_entity(
         _item("support_quantile", "float", 0.6, ("RF-016-07",), _016_D3_HYPOTHESIS,
               "Support quantile of the base plane", kind="HIPÓTESIS"),
         _item("open_diameter_m", "float", 31.0, ("RF-016-08",), _016_D3_OPEN,
-              "Diameter of the opening of the candidates"),
+              "Diameter of the opening of the candidates", kind="HIPÓTESIS"),
         _item("min_height_m", "float", 2.0, ("RF-016-08",), _016_D3, "Minimum height of a candidate"),
         _item("min_area_m2", "float", 150.0, ("RF-016-08",), _016_D3, "Minimum area of a candidate"),
         _item("max_area_m2", "float", 20000.0, ("RF-016-08",), _016_D3, "Maximum area of a candidate"),

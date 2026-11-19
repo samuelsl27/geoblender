@@ -200,14 +200,32 @@ class ProtectionTest(SupportedParameterCase):
         self.accepted(key("BTR-001", "guard_m"), 0.0)
         self.accepted(key("BTR-001", "protect"), False)
 
-    def test_b_protecting_needs_the_guard_in_the_version_in_every_type(self) -> None:
-        """RF-015-12 (D-2): con lo que quedaría la entidad: ``protect`` verdadero sin resguardo en la versión se rechaza en
-        **cada tipo** (la retirada y el cuerpo, que no lo tienen; lo mismo que comprueba al declarar), y con él, no."""
-        self.refused(key("RMV-001", "protect"), True, "des.entity_param_missing", entity="Retirada 1",
-                     field=key("RMV-001", "guard_m"))
-        self.refused(key("BDY-001", "protect"), True, "des.entity_param_missing", entity="Cuerpo 1",
-                     field=key("BDY-001", "guard_m"))
+    def test_b_protecting_needs_the_guard_in_the_types_that_declare(self) -> None:
+        """RF-015-12 (D-2): con lo que quedaría la entidad: dejar a una entidad que protege sin resguardo se rechaza en los tipos que
+        declaran (la plataforma y el contrafuerte: lo mismo que comprueba al declarar), y ``protect`` falso en uno que no declara, no."""
+        self.refused(key("PLT-001", "guard_m"), None, "des.entity_param_missing", entity="P1")
+        self.refused(key("BTR-001", "guard_m"), None, "des.entity_param_missing", entity="Contrafuerte 1")
+        self.accepted(key("BTR-001", "protect"), True)
         self.accepted(key("RMV-001", "protect"), False)
+
+    def test_b_a_type_that_declares_nothing_cannot_be_set_to_protect(self) -> None:
+        """RF-015-10, RF-015-12 (T48; la observación (6) de la T47: ``entity_store._DECLARES`` solo tiene la plataforma y el contrafuerte):
+        la retirada, el cuerpo apoyado y la detección de acopios **no declaran ninguna restricción**; ponerles ``protect`` verdadero con
+        «Cambiar parámetro…» dejaba un registro que lo admitía y una declaración que fallaba con un ``KeyError``. Ahora se rechaza al
+        cambiarlo, con ``des.protect_unsupported`` (un ``DesignError``: la entidad, el tipo y el campo, en español y en inglés), antes de
+        escribir nada y **también con resguardo**; los que sí declaran (la plataforma y el contrafuerte) y ``protect`` falso se admiten."""
+        for code, kind_es, kind_en in (("RMV-001", "una retirada", "stockpile removal"), ("BDY-001", "un cuerpo apoyado", "a supported body"),
+                                       ("BDY-002", "un cuerpo apoyado", "a supported body"),
+                                       ("STK-001", "una detección de acopios", "a stockpile detection")):
+            with self.subTest(code=code):
+                error = self.refused(key(code, "protect"), True, "des.protect_unsupported", entity=WORLD[code][0])
+                self.assertIn(kind_es, error.text_in("es"))
+                self.assertIn(kind_en, error.text_in("en"))
+                self.assertNotIn("{", error.text_in("en"))
+                self.accepted(key(code, "protect"), False)
+        self.accepted(key("BTR-001", "protect"), True)
+        self.accepted(key("PLT-001", "protect"), True)
+        self.accepted(key("PLT-001", "guard_m"), 6.0)
 
     def test_c_the_cut_and_fill_mode_still_cannot_protect_in_the_platform(self) -> None:
         """RF-015-12 (la plataforma de la 015, sin cambio): el modo «en corte y relleno» de la plataforma que protege se rechaza

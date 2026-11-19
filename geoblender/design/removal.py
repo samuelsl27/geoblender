@@ -38,7 +38,8 @@ le apoyó después (``máx(z − máx(z', T), 0)``, por encima de ella)— y lo 
 (``máx(z' − B, 0)``, que ocupa ``transition_m2``: las celdas con ``z' > B``); fuera de ``R``, lo que la huella tiene sobre
 la base donde el dominio no admite la retirada es ``kept_m3`` (``máx(z − B, 0)`` en las celdas con dato). Las cuatro suman
 :attr:`RemovalOutcome.above_base_m3` (``Σ máx(z − B, 0)`` en la huella, calculado aparte) a ≤ 10⁻⁹ relativo. Con 0 m³
-retirados del acopio, el aviso ``des.removal_nothing`` (RF-016-13: el acopio ya no está en la superficie de partida). Las
+retirados del acopio, el aviso ``des.removal_nothing`` (RF-016-13: el acopio ya no está en la superficie de partida) y, con ``kept_m3 > 0``,
+``des.removal_kept`` (T48, hallazgo B-2: lo que las máscaras no dejan retirar, con su volumen y el centro de las celdas donde queda). Las
 celdas de la huella sin dato no cuentan, y una celda del anillo sin dato no es semilla.
 
 **Lo que se apoyaba** (T18; RF-016-14, RF-015-15 y 17; A7; error 59): :func:`resting_on` va **hacia atrás por la cadena de superficies**
@@ -68,8 +69,9 @@ evento los escribe la orden, T20).
 
 **Los dos umbrales de CA-9 no son parámetros** (decisión de la sesión principal, 18/11/2026, revisable; D-6 y CA-9 de la spec 016, que no los
 da como editables): son las constantes :data:`WALL_REASON_MIN_ANGLE_DEG` (45°) y :data:`WALL_REASON_MIN_HEIGHT_M` (3 m), con su procedencia
-junto a cada una; :class:`Wall` las lleva (``reason_min_angle_deg``, ``reason_min_height_m``) para que el informe de la retirada las copie, y
-ningún otro sitio las escribe.
+junto a cada una y su **tipo** (T48; hallazgos B-4 y S-8; principio 2: una cifra sin tipo no se escribe): :data:`WALL_REASON_KIND` (ADOPTADO) y
+:data:`WALL_REASON_SOURCE`, que el informe copia junto a los dos valores (:data:`WALL_REASON_NOTE`); :class:`Wall` las lleva
+(``reason_min_angle_deg``, ``reason_min_height_m``) para que el informe de la retirada las copie, y ningún otro sitio las escribe.
 
 **La transición de A6 no crea paredes** (con la métrica exacta ninguna pareja creada pasa de ``tan · factor de malla``: una celda movida junto
 a una semilla queda a ``≥ z_s − tan · d``, y con el *chamfer*, a ``≥ z_s − tan · 0,98644 · h``): la pared se mide para que cada retirada lo
@@ -109,6 +111,7 @@ import numpy as np
 
 from ..core.datasets import registry as dataset_registry
 from ..core.datasets.model import LIVE_STATUSES
+from ..core.params import ParamKind
 from ..core.project.model import Progress
 from ..core.provenance.figures import FigureSpec
 from ..core.provenance.graph import DATASET
@@ -158,8 +161,11 @@ if TYPE_CHECKING:
 
 __all__ = [
     "PLANE_TOLERANCE_M",
+    "WALL_REASON_KIND",
     "WALL_REASON_MIN_ANGLE_DEG",
     "WALL_REASON_MIN_HEIGHT_M",
+    "WALL_REASON_NOTE",
+    "WALL_REASON_SOURCE",
     "PlatformRemoval",
     "RemovalJob",
     "RemovalOutcome",
@@ -187,6 +193,7 @@ __all__ = [
 
 _PHASE = "removal"
 _NOTHING = "des.removal_nothing"
+_KEPT = "des.removal_kept"
 _WALL_PHASE = "removal_wall"
 
 WALL_REASON_MIN_ANGLE_DEG = 45.0
@@ -198,6 +205,15 @@ exactamente 45° no lo pide."""
 WALL_REASON_MIN_HEIGHT_M = 3.0
 """La altura (m) **desde la cual** una pared de la retirada más empinada que :data:`WALL_REASON_MIN_ANGLE_DEG` pide un motivo: «3 m o más».
 Misma procedencia que :data:`WALL_REASON_MIN_ANGLE_DEG` (CA-9 y D-6 de la spec 016; decisión de la sesión principal del 18/11/2026)."""
+WALL_REASON_KIND = ParamKind.ADOPTADO.value
+"""El **tipo** de los dos umbrales de CA-9 (principio 2 y spec §4: toda cifra lleva su tipo y su procedencia; hallazgos B-4 y S-8 de la
+verificación única, T48): ADOPTADO, de la procedencia de :data:`WALL_REASON_SOURCE`. Siguen sin ser parámetros de la persona."""
+WALL_REASON_SOURCE = ("Spec 016, CA-9 y D-6 (la lección del error 47): la pared de más de 45° y de 3 m o más pide un motivo; decisión de la "
+                      "sesión principal del 18/11/2026, revisable")
+"""La procedencia de los dos umbrales de CA-9 tal como la copia el informe de la retirada (:data:`WALL_REASON_NOTE`); es la misma que el
+docstring de cada umbral, en una sola línea."""
+WALL_REASON_NOTE = f"{WALL_REASON_KIND} · {WALL_REASON_SOURCE}"
+"""La nota de las dos filas de los umbrales en el informe de la retirada (``des_prp_``): el tipo y la procedencia, junto al valor y su unidad."""
 _ROUNDOFF_DEG = 1e-9
 """Lo que se perdona al comparar una inclinación con el límite (°): el redondeo de ``atan(tan(θ))`` (≈ 10⁻¹⁴ °), para que la transición
 construida **exactamente** al ángulo, con la tolerancia a 0, no avise por una milmillonésima. No es una cifra minera."""
@@ -375,8 +391,8 @@ class RemovalOutcome:
     la huella tenía sobre la base) a ≤ 10⁻⁹ relativo. ``wall_max_m`` es la altura de la mayor pared que deja (``None`` mientras no
     se mida: :func:`measure_wall`, A8; 0 m si ninguna) y ``wall`` la pared medida (:class:`Wall`: sus tramos y lo que
     pide confirmar; ``None`` mientras no se mida). ``transition_deg``, ``mesh_factor`` y ``metric`` son los de la retirada,
-    ``cell_area_m2`` el área de una celda y ``notices`` los avisos (``des.removal_nothing`` con 0 m³ retirados y, medida la
-    pared, ``des.removal_wall``)."""
+    ``cell_area_m2`` el área de una celda y ``notices`` los avisos (``des.removal_nothing`` con 0 m³ retirados, ``des.removal_kept`` con lo
+    no retirado y, medida la pared, ``des.removal_wall``)."""
 
     name: str
     code: str
@@ -486,10 +502,17 @@ def _removal_units(job: RemovalJob, settings: _Settings) -> Generator[None, None
         yield None
     area = grid.cell_area
     removed, resting, transition, kept, above = (math.fsum(parts[name]) * area for name in parts)
-    notices = (Notice(_NOTHING, {"stockpile": item.name}),) if removed == 0.0 else ()
+    found: list[Notice] = [Notice(_NOTHING, {"stockpile": item.name})] if removed == 0.0 else []
+    if kept > 0.0:  # B-2 (T48): lo que las máscaras no dejan retirar se avisa, con su volumen y el centro de las celdas donde queda
+        with np.errstate(invalid="ignore"):
+            over = held & (z > base)
+        rows_over, cols_over = np.nonzero(over)
+        found.append(Notice(_KEPT, {"stockpile": item.name, "volume": kept,
+                                    "x": float(np.mean(sub.west + (cols_over + 0.5) * sub.dx)),
+                                    "y": float(np.mean(sub.north - (rows_over + 0.5) * sub.dy))}))
     return RemovalOutcome(job.request.name, job.code, item.key, item.name, window, surface, footprint, admitted, held,
                           seeds, removed, resting, transition, kept, above, transition_cells * area,
-                          settings.angle_deg, settings.mesh_factor, settings.metric, area, None, notices)
+                          settings.angle_deg, settings.mesh_factor, settings.metric, area, None, tuple(found))
 
 
 def removal_steps(job: RemovalJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
@@ -1111,7 +1134,8 @@ class PlatformRemoval:
     apoyó, por encima de ella) y ``kept_m3`` (lo que las máscaras no dejan cortar de la huella), que suman ``above_base_m3`` (lo que la huella
     tenía sobre la base) a ≤ 10⁻⁹ relativo; ``transition_m3`` y ``transition_m2`` son 0: toda la huella queda en su plano (la transición con
     el terreno es **el borde** de la plataforma, que mide su corte y su relleno). Las cifras de una retirada (``des.rmv_*``: sin pared, que es
-    la del borde de la plataforma, ``des.edge_wall_max_m``) y, con 0 m³ retirados, el aviso de RF-016-13."""
+    la del borde de la plataforma, ``des.edge_wall_max_m``) y los avisos de RF-016-13: con 0 m³ retirados, que el acopio ya no está y, con
+    lo no retirado, ``des.removal_kept`` (T48) en torno a ``kept_at`` (el centro absoluto de las celdas donde queda)."""
 
     stockpile: str
     name: str
@@ -1121,6 +1145,7 @@ class PlatformRemoval:
     kept_m3: float
     above_base_m3: float
     transition_m2: float
+    kept_at: tuple[float, float] | None = None
 
     def figures(self, entity: str, code: str) -> tuple[FigureSpec, ...]:
         """Las cifras CALCULADO de la retirada (``des.rmv_*``, :func:`~.provenance.removal_figures`) de la plataforma ``entity`` de código
@@ -1132,8 +1157,12 @@ class PlatformRemoval:
 
     @property
     def notices(self) -> tuple[Notice, ...]:
-        """El aviso de RF-016-13: con 0 m³ retirados, el acopio ya no está en la superficie de partida."""
-        return (Notice(_NOTHING, {"stockpile": self.name}),) if self.removed_m3 == 0.0 else ()
+        """Los avisos de RF-016-13: con 0 m³ retirados, el acopio ya no está en la superficie de partida y, con lo que las máscaras no dejan
+        retirar, ``des.removal_kept`` con su volumen y su lugar (T48, B-2)."""
+        found: list[Notice] = [Notice(_NOTHING, {"stockpile": self.name})] if self.removed_m3 == 0.0 else []
+        if self.kept_m3 > 0.0 and self.kept_at is not None:
+            found.append(Notice(_KEPT, {"stockpile": self.name, "volume": self.kept_m3, "x": self.kept_at[0], "y": self.kept_at[1]}))
+        return tuple(found)
 
 
 def platform_removal(item: RemovedStockpile, job: PlatformJob, outcome: PlatformOutcome) -> PlatformRemoval:
@@ -1158,9 +1187,15 @@ def platform_removal(item: RemovedStockpile, job: PlatformJob, outcome: Platform
         above = np.maximum(start - item.base, 0.0)
         removed = np.maximum(np.minimum(start, item.surface) - final, 0.0)
         resting = np.maximum(start - np.maximum(final, item.surface), 0.0)
+    with np.errstate(invalid="ignore"):
+        held = denied & (above > 0.0)
+    kept_at = None
+    if held.any():  # el centro de las celdas donde las máscaras no dejan cortar y queda algo (T48, B-2)
+        kept_at = (float(np.mean(grid.west + (cols[held] + window[1].start + 0.5) * grid.dx)),
+                   float(np.mean(grid.north - (rows[held] + window[0].start + 0.5) * grid.dy)))
     return PlatformRemoval(
         item.key, item.name, math.fsum(removed.tolist()) * area, math.fsum(resting.tolist()) * area, 0.0,
-        math.fsum(above[denied].tolist()) * area, math.fsum(above.tolist()) * area, 0.0)
+        math.fsum(above[denied].tolist()) * area, math.fsum(above.tolist()) * area, 0.0, kept_at)
 
 
 def with_removal(outcome: PlatformOutcome, job: PlatformJob, item: RemovedStockpile) -> PlatformOutcome:

@@ -3151,6 +3151,13 @@ def _buttress_card_lines(project: Any, conn: sqlite3.Connection, entry: Any, sto
     return [*lines, *_report_notice_lines(report)]
 
 
+def _metres(value: float) -> str:
+    """Una distancia (m) con **sus decimales** y sin ceros de más (spec 016, T48; hallazgo D-9): 12 → «12», 12,5 → «12,5» y 12,25 →
+    «12,25» (hasta dos decimales; con 0 decimales, 12,5 m se leía «13 m»)."""
+    decimals = next((places for places in (0, 1) if abs(round(value, places) - value) < 1e-9), 2)
+    return format_number(value, decimals)
+
+
 def _body_card_lines(entry: Any, stored: Mapping[Any, Any], report: Sequence[tuple[str, float | None, str | None, str | None]]
                      ) -> list[CardLine]:
     """Lo que dice la barra N de un **cuerpo apoyado** (spec 016, T33; RF-016-20 a RF-016-22, RF-015-25): **el espesor** (el mayor y su lugar) y
@@ -3170,10 +3177,10 @@ def _body_card_lines(entry: Any, stored: Mapping[Any, Any], report: Sequence[tup
             lines.append(CardLine(ROW_FIELD, tr("Far from the data: {area} m² ({volume} m³) are farther than {distance} m from a datum, "
                                                 "the farthest at {farthest} m", area=format_number(far_area, 0),
                                                 volume=format_number(first.get("far_m3", (0.0, None))[0] or 0.0, 0),
-                                                distance=format_number(distance, 0),
+                                                distance=_metres(distance),
                                                 farthest=format_number(first.get("farthest_m", (0.0, None))[0] or 0.0, 0)), alert=True))
         else:
-            lines.append(CardLine(ROW_NONE, tr("Nothing is farther than {distance} m from a datum", distance=format_number(distance, 0))))
+            lines.append(CardLine(ROW_NONE, tr("Nothing is farther than {distance} m from a datum", distance=_metres(distance))))
     ignored = first.get("ignored", (0.0, None))[0] or 0.0
     if ignored > 0:
         lines.append(CardLine(ROW_FIELD, tr("Data ignored: {count}", count=format_number(ignored, 0)), alert=True))

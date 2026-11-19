@@ -364,24 +364,31 @@ class StockpilePreviewTest(platform_ops.CreatePlatformTest):
         self.assertIsNone(entity.built())
         self.assertEqual(len(self.view.preview), 0)
 
-    def test_c_what_the_detection_would_refuse_is_the_warning_instead_of_the_drawing(self) -> None:
-        """RF-016-23, RF-015-08 (M4): dos marcas que se solapan —lo que rechazaría la preparación de la detección, nombrando las dos— no se
-        dibujan: ningún lote, ningún nombre, solo la leyenda con su título y el aviso de la vista previa, con **el mismo texto** que la
-        preparación en los dos idiomas (en alerta); nada escrito."""
+    def test_c_overlapping_marks_are_drawn_and_the_pair_is_warned(self) -> None:
+        """RF-016-23, RF-016-04, RF-015-08 (M4; T48, hallazgo A-2 de la verificación única): dos marcas que se solapan **ya no son un rechazo**
+        de la preparación (solo esas dos se rechazan al calcular): la vista previa **las dibuja** (el contorno de las dos y el de cada una
+        ampliada) y avisa de la pareja en el resumen, en alerta, con **el mismo texto** que la preparación en los dos idiomas y nombrando las
+        dos y el área común (a mano: 3 columnas × 10 filas de celdas de 2 m = 120 m²); nada escrito."""
         entity = self.entity
         before = self.untouched()
         built = self.show_marks(layer=OVERLAP_LAYER)
-        self.assertEqual((built.lines.batches, built.lines.labels, entity.preview().drawable), ((), (), False))
-        self.assertEqual(self.legend(built), [f"Vista previa de «{PREVIEW_NAME}» (STK-001) · Proyecto"])
-        with self.assertRaises(_module("design.messages").DesignError) as raised:
-            self.stockpile_store.prepare_detection(self.project, self.stockpile(OVERLAP_LAYER), version=None)
-        self.assertEqual(entity.preview().refusal.code, "des.stockpile_marks_overlap")
-        self.assertEqual(built.summary, ((raised.exception.text_in("es"), True),))
-        self.assertIn("«A»", built.summary[0][0])
-        self.assertIn("«B»", built.summary[0][0])
+        found = entity.preview()
+        self.assertIsNone(found.refusal)
+        self.assertEqual((found.drawable, [mark.key for mark in found.marks]), (True, ["A", "B"]))
+        self.assertEqual([batch.key for batch in built.lines.batches], [entity.MARKS, entity.MARGIN])
+        prepared = self.stockpile_store.prepare_detection(self.project, self.stockpile(OVERLAP_LAYER), version=None)
+        notice = prepared.job.refused[0].notice
+        common = np.count_nonzero(box_cells(OVERLAPPING[0][1]) & box_cells(OVERLAPPING[1][1])) * STEP_M * STEP_M
+        self.assertEqual((notice.code, notice.values["mark"], notice.values["other"], notice.values["area"]),
+                         ("des.stockpile_marks_overlap", "A", "B", common))
+        self.assertEqual(common, 120.0)
+        self.assertEqual(sum(1 for text, _alert in built.summary if "«A»" in text and "«B»" in text), 1)
+        self.assertIn((notice.text("es"), True), built.summary)
+        self.assertIn("«A»", notice.text("es"))
+        self.assertIn("«B»", notice.text("es"))
         self.i18n.set_language("en")
         entity.rebuild()
-        self.assertEqual(self.pump().summary, ((raised.exception.text_in("en"), True),))
+        self.assertIn((notice.text("en"), True), self.pump().summary)
         self.i18n.set_language("es")
         self.assertEqual(self.untouched(), before)
         entity.disable()

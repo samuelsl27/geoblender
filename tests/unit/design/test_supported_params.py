@@ -66,7 +66,7 @@ SPECS: dict[str, dict[str, Spec]] = {
         "fit_rounds": spec("int", "-", 4, 1, 100), "turns": spec("int", "-", 6, 1, 100),
         "tilt_max_deg": spec("float", "deg", 4.0, 0.0, 90.0, False, True, kind="HIPÓTESIS"),
         "support_quantile": spec("float", "-", 0.6, 0.0, 1.0, kind="HIPÓTESIS"),
-        "open_diameter_m": spec("float", "m", 31.0, 0.0, 1000.0, True),
+        "open_diameter_m": spec("float", "m", 31.0, 0.0, 1000.0, True, kind="HIPÓTESIS"),  # T48 (D-4): el banco no la confirmó
         "min_height_m": spec("float", "m", 2.0, 0.0, 1000.0),
         "min_area_m2": spec("float", "m2", 150.0, 0.0, 1.0e7, True),
         "max_area_m2": spec("float", "m2", 20000.0, 0.0, 1.0e9, True),
@@ -252,7 +252,21 @@ class FamiliesTest(unittest.TestCase):
         hypotheses = [f"{kind}.{last}" for kind, specs in SPECS.items()
                       for last, family in zip(specs, params.entity_params(kind).families, strict=True)
                       if family.template.kind == "HIPÓTESIS"]
-        self.assertEqual(hypotheses, ["stockpile.tilt_max_deg", "stockpile.support_quantile"])
+        self.assertEqual(hypotheses, ["stockpile.tilt_max_deg", "stockpile.support_quantile", "stockpile.open_diameter_m"])
+
+    def test_the_opening_of_31_m_is_a_hypothesis_and_its_note_says_why(self) -> None:
+        """RF-016-08, P-6, CE-016-08 (T48; hallazgo D-4 de la verificación única; principio 2): el diámetro de apertura (31 m) **no es
+        ADOPTADO**: el banco (CE-016-08) no lo confirmó (74, 20 o 135 candidatos según la lectura, frente a 60), así que su tipo es
+        HIPÓTESIS y su procedencia dice por qué; **el valor no cambia** (31 m); lo que el diálogo lee del valor por defecto
+        (``ParamDef.kind``) es HIPÓTESIS, y los demás umbrales de los candidatos siguen ADOPTADO."""
+        family = params.entity_params("stockpile").template("open_diameter_m")
+        self.assertEqual((family.default, family.kind), (31.0, "HIPÓTESIS"))
+        source = " ".join(family.source.split())
+        for text in ("P-6", "CE-016-08", "HIPÓTESIS", "no lo confirm"):
+            self.assertIn(text, source)
+        self.assertNotIn("lo confirma el banco", source)
+        for last in ("min_height_m", "min_area_m2", "max_area_m2"):
+            self.assertEqual(params.entity_params("stockpile").template(last).kind, "ADOPTADO", last)
 
     def test_the_options_are_the_ones_of_the_model(self) -> None:
         """RF-016-17, RF-016-20 (D-22 de la 015): las opciones de ``metric`` son las de ``Metric``; las de ``sense``

@@ -167,7 +167,8 @@ class StockpileMenuTest(unittest.TestCase):
 
     def test_a_b_the_thresholds_show_their_default_value_and_their_type(self) -> None:
         """RF-016-02, RF-016-07, D-3 (M6): el diálogo enseña, junto a cada umbral, **su valor por defecto y su tipo** (el de su familia:
-        ADOPTADO, y HIPÓTESIS la inclinación máxima y el cuantil de apoyo); en español y en inglés; con candidatos, los cuatro de la
+        ADOPTADO, y HIPÓTESIS la inclinación máxima, el cuantil de apoyo y, desde la T48, el diámetro de apertura de 31 m: el banco no lo
+        confirmó, D-4); en español y en inglés; con candidatos, los cuatro de la
         búsqueda más."""
         texts = {param: self.des_ops._threshold_text(param) for param in THRESHOLDS}
         self.assertEqual(texts["margin_m"], "Por defecto: 10 m · ADOPTADO")
@@ -176,12 +177,13 @@ class StockpileMenuTest(unittest.TestCase):
         self.assertEqual(texts["turns"], "Por defecto: 6 · ADOPTADO")
         self.assertEqual(texts["tilt_max_deg"], "Por defecto: 4 ° · HIPÓTESIS")
         self.assertEqual(texts["support_quantile"], "Por defecto: 0,60 · HIPÓTESIS")
-        self.assertEqual(texts["open_diameter_m"], "Por defecto: 31 m · ADOPTADO")
+        self.assertEqual(texts["open_diameter_m"], "Por defecto: 31 m · HIPÓTESIS")  # T48 (D-4): el banco no la confirmó
         self.assertEqual(texts["max_area_m2"], "Por defecto: 20 000 m² · ADOPTADO", texts["max_area_m2"])
         self.i18n.set_language("en")
         try:
             self.assertEqual(self.des_ops._threshold_text("tilt_max_deg"), "By default: 4 ° · ASSUMPTION")
             self.assertEqual(self.des_ops._threshold_text("margin_m"), "By default: 10 m · ADOPTED")
+            self.assertEqual(self.des_ops._threshold_text("open_diameter_m"), "By default: 31 m · ASSUMPTION")
         finally:
             self.i18n.set_language("es")
         detect = self.registered(DETECT)

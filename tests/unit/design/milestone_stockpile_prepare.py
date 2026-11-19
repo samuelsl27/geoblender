@@ -80,6 +80,8 @@ BOXES = {"Acopio 1": (90.0, 90.0, 110.0, 110.0), "Acopio 2": (110.0, 90.0, 130.0
 # Los marcadores de lo que rechaza cada capa de defectos.
 LAYER_OVERLAP, LAYER_DUPLICATED, LAYER_NEGATIVE, LAYER_HUGE = (
     "gis_fea_marcas_solapadas", "gis_fea_marcas_repetidas", "gis_fea_marca_margen_negativo", "gis_fea_marca_margen_enorme")
+LAYER_OVERLAP_THIRD, LAYER_OVERLAP_CHAIN = "gis_fea_marcas_solapadas_y_otra", "gis_fea_marcas_solapadas_en_cadena"
+"""T48 (A-2): A y B solapadas con una tercera válida (la del Acopio 4), y la cadena A–B–C con la del Acopio 4 aparte."""
 LAYER_BLANK, LAYER_BOW, LAYER_FLAT, LAYER_OUT, LAYER_EMPTY = (
     "gis_fea_marca_sin_nombre", "gis_fea_marca_corbata", "gis_fea_marca_plana", "gis_fea_marca_fuera",
     "gis_fea_marcas_vacia")
@@ -124,6 +126,10 @@ def defect_layers() -> tuple[Any, ...]:
     mark = (230.0, 210.0, 250.0, 230.0)
     return (
         layer_of(LAYER_OVERLAP, [box(*BOXES["Acopio 1"]), box(100.0, 90.0, 120.0, 110.0)], ["A", "B"]),
+        layer_of(LAYER_OVERLAP_THIRD, [box(*BOXES["Acopio 1"]), box(100.0, 90.0, 120.0, 110.0), box(*BOXES["Acopio 4"])],
+                 ["A", "B", "C"]),
+        layer_of(LAYER_OVERLAP_CHAIN, [box(20.0, 20.0, 40.0, 40.0), box(38.0, 20.0, 60.0, 40.0), box(58.0, 20.0, 80.0, 40.0),
+                                       box(*BOXES["Acopio 4"])], ["A", "B", "C", "D"]),
         layer_of(LAYER_DUPLICATED, [box(20.0, 20.0, 40.0, 40.0), box(60.0, 20.0, 80.0, 40.0)],
                  ["Repetida", "Repetida"]),
         layer_of(LAYER_NEGATIVE, [box(*mark)], ["Mala"], margen=(-3.0,)),
@@ -479,19 +485,37 @@ class MarkLayersTest(PrepareCase):
                                        equal_nan=True))
         self.assertIn(operations.Use(sdata.PREVIOUS_DATASET, "surface"), prepared.start.inputs)
 
-    def test_marks_that_overlap_name_the_two(self) -> None:
-        """RF-016-04 (decisión de la sesión principal, 18/11/2026): dos marcas se solapan si alguna celda tiene su centro
-        en las dos; se rechaza **nombrando las dos**, el área común (a mano: 5 columnas × 10 filas × 4 m² = 200 m²) y el
-        centro de las celdas comunes (x = 105 m, y = 100 m locales); las que solo se tocan por el borde (Acopio 1 y 2 de la
-        cantera, que comparten el lado x = 110 m) no se rechazan."""
-        error = self.refused(request(layer=LAYER_OVERLAP, marks={"margin_field": None, "material_field": None}),
-                             "des.stockpile_marks_overlap")
-        self.names(error, mark="A", other="B", area=200.0)
-        self.assertEqual((error.values["x"], error.values["y"]), (sdata.BASE[0] + 105.0, sdata.BASE[1] + 100.0))
-        self.assertIn("«A»", error.text)
-        self.assertIn("«B»", error.text)
+    def test_marks_that_overlap_are_refused_by_name_and_do_not_stop_the_others(self) -> None:
+        """RF-016-04 (T48; hallazgos A-2 y S-3 de la verificación única; antes, decisión de la sesión principal, 18/11/2026): dos marcas se
+        solapan si alguna celda tiene su centro en las dos; **solo esas dos se rechazan** (la preparación ya no rechaza la detección entera):
+        el trabajo lleva las apartadas (``job.refused``) con el aviso que **nombra las dos**, el área común (a mano: 5 columnas × 10 filas ×
+        4 m² = 200 m²) y el centro de las celdas comunes (x = 105 m, y = 100 m locales), y sus marcas no están entre las que calcula; con una
+        tercera marca válida, esa **sí** se calcula; las que solo se tocan por el borde (Acopio 1 y 2 de la cantera, que comparten el
+        lado x = 110 m) no se apartan. Sin escribir nada."""
+        before = self.state()
+        only = self.prepare(request(layer=LAYER_OVERLAP, marks={"margin_field": None, "material_field": None}), version=None)
+        self.assertEqual((only.job.marks, [item.mark.key for item in only.job.refused]), ((), ["A", "B"]))
+        notice = only.job.refused[0].notice
+        self.assertEqual((notice.code, notice.values["mark"], notice.values["other"], notice.values["area"]),
+                         ("des.stockpile_marks_overlap", "A", "B", 200.0))
+        self.assertEqual((notice.values["x"], notice.values["y"]), (sdata.BASE[0] + 105.0, sdata.BASE[1] + 100.0))
+        self.assertIs(only.job.refused[1].notice, notice, "la pareja es un solo aviso")
+        for language, quoted in (("es", ("«A»", "«B»")), ("en", ("«A»", "«B»"))):
+            for text in quoted:
+                self.assertIn(text, notice.text(language))
+        third = self.prepare(request(layer=LAYER_OVERLAP_THIRD, marks={"margin_field": None, "material_field": None}), version=None)
+        self.assertEqual([mark.key for mark in third.job.marks], ["C"])
+        self.assertEqual([item.mark.key for item in third.job.refused], ["A", "B"])
+        self.assertEqual(set(third.fids), {"A", "B", "C"}, "la capa se lee entera: el fid de cada marca")
+        chain = self.prepare(request(layer=LAYER_OVERLAP_CHAIN, marks={"margin_field": None, "material_field": None}), version=None)
+        self.assertEqual([mark.key for mark in chain.job.marks], ["D"])
+        self.assertEqual([item.mark.key for item in chain.job.refused], ["A", "B", "C"], "la cadena A–B–C: las tres")
+        self.assertEqual([(item.notice.values["mark"], item.notice.values["other"]) for item in chain.job.refused],
+                         [("A", "B"), ("A", "B"), ("B", "C")])
         touching = self.prepare(request(), version=None)
         self.assertEqual({mark.key for mark in touching.job.marks} >= {"Acopio 1", "Acopio 2"}, True)
+        self.assertEqual(touching.job.refused, ())
+        self.assertEqual(self.state(), before, "preparar no escribe nada")
 
     def test_a_missing_field_of_the_layer_is_refused(self) -> None:
         """RF-015-08: un campo de la capa que no está, o que no es del tipo que se lee (el nombre, el material y la base

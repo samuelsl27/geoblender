@@ -1164,7 +1164,7 @@ THRESHOLD_ROWS = (
     (("fit_rounds", "turns"), "4 y 6", "ADOPTADO «sin confirmar»"),
     (("tilt_max_deg",), "4°", "**HIPÓTESIS**"),
     (("support_quantile",), "0,6", "**HIPÓTESIS**"),
-    (("open_diameter_m",), "31 m", "ADOPTADO «sin confirmar», **no confirmado**"),
+    (("open_diameter_m",), "31 m", "**HIPÓTESIS**, **no confirmado**"),  # T48 (D-4): el banco no la confirmó
     (("min_height_m",), "2 m", "ADOPTADO «sin confirmar»"),
     (("min_area_m2", "max_area_m2"), "150 m² y 20.000 m²", "ADOPTADO «sin confirmar»"),
 )
@@ -1238,7 +1238,7 @@ class SupportedCardDocTest(unittest.TestCase):
         """RF-016-02, RF-016-07, RF-016-08, RF-016-17, RF-016-20 (D-1, D-2, D-3, D-9, D-21; T38): lo que §3.3 y «Datos que
         posee» dicen de los valores por defecto de la 016 —los de la detección, el factor de malla y la métrica de la retirada,
         «proteger» del contrafuerte— y de los que **no** tienen valor (el ángulo de transición, la cota de coronación y la
-        distancia máxima) es lo que declara el código; los dos HIPÓTESIS son los de la inclinación y el cuantil."""
+        distancia máxima) es lo que declara el código; los HIPÓTESIS son los de la inclinación, el cuantil y (T48) la apertura de 31 m."""
         defaults = {family.pattern.rsplit(".", 1)[1]: family.template for family in dparams.STOCKPILE_ENTITY.families}
         self.assertEqual([defaults[k].default for k in ("margin_m", "crown_inner_m", "crown_outer_m", "crown_slope_deg",
                                                         "crown_flat_min_m2", "max_residual_m", "fit_rounds", "turns",
@@ -1246,7 +1246,7 @@ class SupportedCardDocTest(unittest.TestCase):
                                                         "min_height_m", "min_area_m2", "max_area_m2")],
                          [10.0, 1.0, 3.0, 12.0, 10.0, 1.0, 4, 6, 4.0, 0.6, 31.0, 2.0, 150.0, 20000.0])
         self.assertEqual({k for k, v in defaults.items() if v.kind.value == "HIPÓTESIS"},
-                         {"tilt_max_deg", "support_quantile"})
+                         {"tilt_max_deg", "support_quantile", "open_diameter_m"})  # T48 (D-4): y la apertura de 31 m, que el banco no confirmó
         removal = {family.pattern.rsplit(".", 1)[1]: family.template for family in dparams.REMOVAL_ENTITY.families}
         self.assertEqual((removal["transition_deg"].default, removal["mesh_factor"].default, removal["metric"].default),
                          (None, 1.0, "exact"))
@@ -1402,8 +1402,8 @@ class SupportedGuideDocTest(unittest.TestCase):
 
     def test_the_thresholds_and_their_types_are_the_code_s(self) -> None:
         """RF-016-02, RF-016-07, RF-016-08 (D-3, D-17; T38): la tabla de umbrales de §5 da el valor por defecto y el tipo
-        (ADOPTADO «sin confirmar», y HIPÓTESIS la inclinación máxima y el cuantil) que declara el código, también el 31 m
-        «no confirmado» y el umbral de la huella (0,30 m, el de la 011)."""
+        (ADOPTADO «sin confirmar», y HIPÓTESIS la inclinación máxima, el cuantil y, desde la T48, el 31 m «no confirmado») que declara
+        el código, y el umbral de la huella (0,30 m, el de la 011)."""
         text = section(self.guide, "## 5. Los avisos, los rechazos y los umbrales")
         rows = {cells[0]: cells for table in tables(text) for cells in table}
         by_name = {family.pattern.rsplit(".", 1)[1]: family.template for family in dparams.STOCKPILE_ENTITY.families}

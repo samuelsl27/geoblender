@@ -348,20 +348,44 @@ class RefusalTest(Close):
         self.assertEqual(caught.exception.code, "des.buttress_crown_off_anchor")
 
     def test_a_crown_below_the_start_in_the_whole_zone_is_refused_as_there_is_no_buttress(self) -> None:
-        """RF-016-18: con la partida a la cota de coronación o por encima en toda la zona (o sin dato), no hay contrafuerte:
-        ``des.buttress_crown_below_support``, nombrando la capa, el contrafuerte y la cota; al avanzar, sin crear nada."""
-        for level in (120.0, 125.0, np.nan):
+        """RF-016-18 (T48, hallazgo C-10 b de la verificación única: cada caso con su texto): con la partida por **encima** de la cota
+        de coronación en toda la zona, ``des.buttress_crown_below_support``; con la partida **igual** a ella (donde más baja), la coronación no
+        queda por debajo: ``des.buttress_crown_at_support``; y con la zona **sin dato**, ``des.buttress_zone_no_data``; los tres nombran la
+        capa, el contrafuerte y la cota; al avanzar, sin crear nada."""
+        for level, code in ((125.0, "des.buttress_crown_below_support"), (120.0, "des.buttress_crown_at_support"),
+                            (np.nan, "des.buttress_zone_no_data")):
             with self.subTest(level=level):
                 scene = bdata.plane_scene()
                 scene.start[scene.zone] = level
                 steps = buttress.buttress_steps(bdata.job_of(scene, 120.0))
                 with self.assertRaises(DesignError) as caught:
                     next(steps)
-                self.assertEqual(caught.exception.code, "des.buttress_crown_below_support")
+                self.assertEqual(caught.exception.code, code)
                 self.assertEqual(caught.exception.field, CROWN)
                 self.assertEqual(caught.exception.value, 120.0)
-                for text in ("«Zonas de coronación»", "«Contrafuerte de prueba»", "120"):
-                    self.assertIn(text, caught.exception.text)
+                for text in ("«Zonas de coronación»", "«Contrafuerte de prueba»", *(() if code == "des.buttress_zone_no_data" else ("120",))):
+                    self.assertIn(text, caught.exception.text)  # la zona sin dato no habla de la cota: no hay apoyo con que compararla
+                self.assertNotIn("{", caught.exception.text_in("en"))
+
+    def test_the_three_refusals_of_a_crown_that_does_not_rise_say_different_things(self) -> None:
+        """RF-016-18 (T48, C-10 b): «por debajo de su apoyo» solo se dice si lo está (la partida, por encima, en toda la zona): igual o
+        sin dato dicen lo suyo, en español y en inglés; la zona con una celda por debajo de la coronación siembra, y no se rechaza."""
+        found = {}
+        for level, code in ((125.0, "des.buttress_crown_below_support"), (120.0, "des.buttress_crown_at_support"),
+                            (np.nan, "des.buttress_zone_no_data")):
+            scene = bdata.plane_scene()
+            scene.start[scene.zone] = level
+            with self.assertRaises(DesignError) as caught:
+                next(buttress.buttress_steps(bdata.job_of(scene, 120.0)))
+            found[code] = caught.exception
+        self.assertEqual(len({error.text_in("es") for error in found.values()}), 3)
+        self.assertEqual(len({error.text_in("en") for error in found.values()}), 3)
+        self.assertIn("por debajo de su apoyo", found["des.buttress_crown_below_support"].text_in("es"))
+        self.assertNotIn("por debajo de su apoyo", found["des.buttress_crown_at_support"].text_in("es"))
+        self.assertNotIn("por debajo de su apoyo", found["des.buttress_zone_no_data"].text_in("es"))
+        self.assertIn("is below its support", found["des.buttress_crown_below_support"].text_in("en"))
+        self.assertNotIn("below its support", found["des.buttress_crown_at_support"].text_in("en"))
+        self.assertIn("no data", found["des.buttress_zone_no_data"].text_in("en"))
 
     def test_one_cell_of_the_zone_below_the_crown_is_enough(self) -> None:
         """RF-016-17: basta una celda de la zona por debajo de la coronación: siembra, aunque las demás no."""

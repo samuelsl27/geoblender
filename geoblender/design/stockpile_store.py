@@ -45,10 +45,12 @@ activa en una superficie de versión, no editable), la superficie (``gis.dataset
 polígono (``des.stockpile_mark_geometry``, ``des.stockpile_mark_no_cells``), una capa sin marcas ni candidatos
 (``des.stockpile_no_marks``), los parámetros (``des.entity_param_missing``, ``_range`` y ``_choice``), la rejilla y la
 falta de dato de la superficie (``des.surface_mismatch``, ``gis.raster_empty``), las bases (``gis.dataset_unknown``,
-``des.surface_mismatch``, ``des.surface_other_version``), las marcas solapadas **nombrando las dos**
-(``des.stockpile_marks_overlap``) y el nombre de un dato (``des.operation_name_repeated`` y ``_project``). Lo que se
-rechaza de **un** acopio al calcularlo (la marca no da celdas sobre el umbral, falta terreno en su huella o su corona…) no
-es de la preparación: el cálculo lo informa en el resumen sin registrarlo (RF-016-04).
+``des.surface_mismatch``, ``des.surface_other_version``) y el nombre de un dato (``des.operation_name_repeated`` y ``_project``). Lo
+que se rechaza de **un** acopio (la marca no da celdas sobre el umbral, falta terreno en su huella o su corona…, o **se solapa con otra
+marca**) no es de la preparación: el cálculo lo informa en el resumen sin registrarlo (RF-016-04). Las marcas **solapadas** se apartan
+al armar el trabajo (:func:`detection_job`, ``StockpileJob.refused``; spec 016, T48: antes rechazaban toda la detección, y con 100
+marcas un solape bloqueaba 98): solo esas dos se rechazan, **nombrando las dos** (``des.stockpile_marks_overlap``, un aviso), y las demás
+siguen.
 
 **Calcular por pasos y el resumen** (T12; RF-016-04 a 08, RF-015-03, RF-015-13, RF-015-29, RNF-016-03 y 05): el homólogo de
 ``entity_store.platform_compute_steps`` y de ``platform_summary``.
@@ -174,6 +176,7 @@ from .stockpiles import (
     carry_decisions,
     detect_steps,
     footprint_runs,
+    refuse_overlaps,
     runs_cells,
 )
 from .store import (
@@ -586,31 +589,6 @@ def _check_mark(layer: FeatureLayer, layer_name: str, index: int, key: str, grid
     return cells
 
 
-def _check_overlaps(marks: Sequence[StockpileMark], grid: Grid) -> None:
-    """RF-016-04: ninguna celda tiene su centro en dos marcas (las que solo se tocan por el borde, no se rechazan):
-    ``des.stockpile_marks_overlap`` nombrando **las dos** (la primera pareja por el orden de la capa), el área común (m²) y
-    el centro absoluto de las celdas comunes. Es lo que ``StockpileJob`` exige (celdas sin repetir) y lo que la preparación
-    rechaza antes de calcular."""
-    if len(marks) < 2:
-        return
-    every = np.concatenate([mark.cells for mark in marks])
-    owners = np.repeat(np.arange(len(marks)), [mark.cells.size for mark in marks])
-    order = np.argsort(every, kind="stable")
-    sorted_cells, sorted_owners = every[order], owners[order]
-    twice = np.flatnonzero(sorted_cells[1:] == sorted_cells[:-1])
-    if twice.size == 0:
-        return
-    pairs = {(int(sorted_owners[i]), int(sorted_owners[i + 1])) for i in twice}
-    first, second = min(pairs)
-    shared = np.intersect1d(marks[first].cells, marks[second].cells, assume_unique=True)
-    rows, cols = np.divmod(shared, grid.ncols)
-    x = float((grid.west + (cols + 0.5) * grid.dx).mean())
-    y = float((grid.north - (rows + 0.5) * grid.dy).mean())
-    raise DesignError("des.stockpile_marks_overlap", obj=f"Marca «{marks[first].name}»", field="geometría",
-                      value=marks[second].name, mark=marks[first].name, other=marks[second].name,
-                      area=round(float(shared.size) * grid.cell_area, 2), x=x, y=y)
-
-
 def _read_marks(project: StoreProject, request: StockpileRequest, grid: Grid, *, candidates: bool
                 ) -> Generator[None, None, tuple[tuple[StockpileMark, ...], Mapping[str, int]]]:
     """Las marcas de la capa de la petición como ``StockpileMark`` (rasterizadas, con su margen, material y base) y el
@@ -712,7 +690,9 @@ def detection_job(request: StockpileRequest, code: str, values: Mapping[str, Any
     """El ``StockpileJob`` de la detección ``request`` de código ``code``: todo lo leído y nada del proyecto. ``values``
     son los parámetros resueltos (:func:`detection_values`), ``surface`` y ``bases`` las rejillas leídas, ``marks`` las marcas
     rasterizadas, ``perimeter`` el de actuación (solo si se piden candidatos) y ``threshold`` el umbral de la huella de la 011.
-    Lo comparten preparar (del proyecto) y reproducir (de lo congelado): el mismo trabajo, el mismo cálculo."""
+    Lo comparten preparar (del proyecto) y reproducir (de lo congelado): el mismo trabajo, el mismo cálculo. **Las marcas que se solapan se
+    apartan aquí** (RF-016-04, spec 016, T48: :func:`~.stockpiles.refuse_overlaps`; ``StockpileJob.refused``): solo esas dos se rechazan y las
+    demás siguen, y como lo hace este paso lo hacen igual preparar y reproducir."""
     plane = PlaneParams(
         values[StockpileParam.CROWN_INNER.value], values[StockpileParam.CROWN_OUTER.value],
         values[StockpileParam.CROWN_SLOPE.value], values[StockpileParam.CROWN_FLAT_MIN.value],
@@ -723,7 +703,8 @@ def detection_job(request: StockpileRequest, code: str, values: Mapping[str, Any
     wanted = None if not values[StockpileParam.CANDIDATES.value] else CandidateParams(
         values[StockpileParam.OPEN_DIAMETER.value], values[StockpileParam.MIN_HEIGHT.value],
         values[StockpileParam.MIN_AREA.value], values[StockpileParam.MAX_AREA.value], footprint)
-    return StockpileJob(request.name, code, grid, surface, tuple(marks), footprint, bases, wanted, perimeter)
+    kept, refused = refuse_overlaps(marks, grid)
+    return StockpileJob(request.name, code, grid, surface, kept, footprint, bases, wanted, perimeter, refused)
 
 
 def prepare_detection_units(project: StoreProject, request: StockpileRequest, *, version: str | None,
@@ -735,7 +716,7 @@ def prepare_detection_units(project: StoreProject, request: StockpileRequest, *,
     misma), la capa de marcas con sus campos y sus marcas rasterizadas (:func:`mark_cells`), los parámetros resueltos
     (:func:`detection_values`), la superficie de detección y las de base propia de las marcas leídas por pasos y
     comparadas con la rejilla del proyecto antes de leer una celda (``design.surfaces.read_surface_steps``), las marcas
-    solapadas, el perímetro (con candidatos) y lo que anotará la operación. En una detección **de versión** las máscaras
+    el perímetro (con candidatos) y lo que anotará la operación (las marcas solapadas se apartan en el trabajo, T48). En una detección **de versión** las máscaras
     de la versión son entradas (``masks``: las ya al día; sin ellas, se cargan —y se compilan, como operación propia, si no
     lo están—); en una **del proyecto** no hay máscaras: el perímetro sale de la restricción del proyecto y no se consume
     ningún dato de versión (RF-009-05). ``supersedes``: la operación hecha a la que sustituye (un recálculo).
@@ -763,7 +744,6 @@ def prepare_detection_units(project: StoreProject, request: StockpileRequest, *,
             raster = yield from read_surface_steps(project, mark.base, version_uid="", expect=frame,
                                                    role=f"superficie de base de la marca «{mark.key}»")
             bases[mark.base] = raster.values
-    _check_overlaps(marks, grid)
     perimeter: np.ndarray | None = None
     perimeter_uses: tuple[Use, ...] = ()
     perimeter_params: tuple[str, ...] = ()
@@ -839,11 +819,12 @@ def preview_marks_units(project: StoreProject, request: StockpileRequest, *, ver
     """Las unidades (cada ``yield``, una; para componerlas con ``pace_units``) que preparan la **vista previa de las marcas** de la
     detección ``request`` (RF-016-23; ``design.preview.stockpile_preview_steps``): lo que leerá la detección de su capa de marcas, sin
     calcular nada. Es el principio de :func:`prepare_detection_units` —el ámbito por la superficie, el código y el nombre únicos, la
-    capa, sus campos, sus polígonos rasterizados, los materiales, los parámetros y las marcas solapadas, en el mismo orden y con los
+    capa, sus campos, sus polígonos rasterizados, los materiales, los parámetros, en el mismo orden y con los
     mismos mensajes— **sin leer la superficie ni las bases ni el perímetro ni cargar las máscaras** (la detección de una versión las
     compilaría, y esto no escribe) y con el contorno de cada marca y de su ampliada por el margen (:func:`_mark_preview`). Lo que de
-    eso rechazaría la preparación (``GeoblenderError``) no se lanza: sale en ``StockpilePreview.refusal``, sin marcas. **Nada se
-    escribe.**"""
+    eso rechazaría la preparación (``GeoblenderError``) no se lanza: sale en ``StockpilePreview.refusal``, sin marcas. **Las marcas
+    solapadas no son un rechazo** (RF-016-04, T48: solo esas dos se rechazan al calcular): se dibujan todas y se **avisa de cada pareja**
+    (``des.stockpile_marks_overlap``, el mismo aviso y el mismo texto que «Calcular», una vez por pareja). **Nada se escribe.**"""
     scope, code, found = "", "", None
     try:
         scope, found = detection_scope(project, request, version)
@@ -854,7 +835,6 @@ def preview_marks_units(project: StoreProject, request: StockpileRequest, *, ver
         marks, _fids = yield from _read_marks(project, request, grid, candidates=candidates)
         _check_materials(marks, request.fields.layer)
         values, _defaulted = detection_values(request, code)
-        _check_overlaps(marks, grid)
     except GeoblenderError as refused:  # lo que rechazaría «Calcular»: es el aviso de la vista previa
         return StockpilePreview(request.name, code, scope, "" if found is None else found.code,
                                 request.surface, request.fields.layer, refusal=refused)
@@ -869,6 +849,11 @@ def preview_marks_units(project: StoreProject, request: StockpileRequest, *, ver
               "surface": request.surface, "margin": margin}
     notices = [Notice("des.preview_stockpile_project" if found is None else "des.preview_stockpile",
                       header if found is None else {**header, "version": where})]
+    told: set[int] = set()
+    for item in refuse_overlaps(marks, grid)[1]:  # las marcas solapadas se rechazarán al calcular: se dicen, una vez por pareja (T48)
+        if id(item.notice) not in told:
+            told.add(id(item.notice))
+            notices.append(item.notice)
     if candidates:
         notices.append(Notice("des.preview_stockpile_candidates"))
     return StockpilePreview(request.name, code, scope, where, request.surface, request.fields.layer, tuple(drawn), margin, candidates,
@@ -1029,8 +1014,12 @@ def stockpile_summary(outcome: StockpileOutcome, *, version: str | None, scope: 
         "volume": math.fsum(item.volume_m3 for item in outcome.stockpiles), "rejected": len(rejected)}
     if candidates is not None:
         head["candidates"] = len(candidates)
-    notices: list[Notice] = [Notice("des.stockpile_summary", head), *(line.notice for line in rejected)]
+    notices: list[Notice] = [Notice("des.stockpile_summary", head)]
     told: set[int] = set()
+    for line in rejected:  # dos marcas rechazadas por solaparse comparten el aviso de su pareja: una sola línea (T48)
+        if id(line.notice) not in told:
+            told.add(id(line.notice))
+            notices.append(line.notice)
     for item in outcome.stockpiles:
         notices.append(_item_notice(item))
         for note in item.notes:
@@ -1210,7 +1199,7 @@ def _decide_steps(job: StockpileJob, outcome: StockpileOutcome, decisions: Seque
     converted = [state for state in states if state.state == CANDIDATE_CONVERTED]
     if not converted:
         return replace(outcome, states=tuple(states))
-    taken = {mark.key for mark in job.marks}
+    taken = {mark.key for mark in job.marks} | {item.mark.key for item in job.refused}  # también las apartadas por solaparse (T48)
     marks = []
     for state in converted:
         if state.key in taken:
@@ -1741,7 +1730,8 @@ class ExcludedDetection:
     (``STK-001``), su ``name``, su ``scope`` (:data:`PROJECT` o :data:`VERSION`), la ``version`` (el código de la versión de la
     detección; ``None`` si es del proyecto), la ``surface`` sobre la que está hecha (el nombre de su dato; vacío si no tiene), el
     ``reason`` (:data:`EXCLUDED_OTHER_SURFACE`: se hizo sobre otra superficie; :data:`EXCLUDED_STALE`: está obsoleta) y, de una
-    obsoleta, su ``cause`` en español (lo que cambió, según la 008)."""
+    obsoleta, su ``cause`` en español y su ``cause_en`` en inglés (lo que cambió, según la 008: spec 016, T48, hallazgo D-5; quien la
+    muestra elige la del idioma de la interfaz)."""
 
     code: str
     name: str
@@ -1750,6 +1740,7 @@ class ExcludedDetection:
     surface: str
     reason: str
     cause: str = ""
+    cause_en: str = ""
 
 
 def detections_excluded(project: StoreProject, version: str | None, surface: str | None, *,
@@ -1776,8 +1767,10 @@ def detections_excluded(project: StoreProject, version: str | None, surface: str
                 found.append(ExcludedDetection(record.code, record.name, *where, "" if detected_on is None else str(detected_on),
                                                EXCLUDED_OTHER_SURFACE))
                 continue
-            cause = item_text(reading, STALE_OPERATION, str(entry.operation_uid), language="es") or "cambió algo de lo que lee"
-            found.append(ExcludedDetection(record.code, record.name, *where, str(surface), EXCLUDED_STALE, cause))
+            uid = str(entry.operation_uid)
+            cause = item_text(reading, STALE_OPERATION, uid, language="es") or "cambió algo de lo que lee"
+            cause_en = item_text(reading, STALE_OPERATION, uid, language="en") or "something it reads changed"
+            found.append(ExcludedDetection(record.code, record.name, *where, str(surface), EXCLUDED_STALE, cause, cause_en))
         return tuple(found)
 
     if conn is not None:

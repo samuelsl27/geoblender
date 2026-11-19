@@ -160,14 +160,15 @@ class FlatButtressTest(unittest.TestCase):
     def test_an_anchor_level_is_never_refused_and_below_the_plane_there_is_no_buttress(self) -> None:
         """RF-016-18: cualquier ``125 + n·10`` pasa la comprobación del ancla; una coronación por debajo del plano en toda la
         zona (105 m) es del ancla pero no hay contrafuerte (``des.buttress_crown_below_support``), y a la cota del plano
-        (115 m), tampoco."""
+        (115 m), tampoco (``des.buttress_crown_at_support`` desde la T48: la coronación no queda por debajo, queda igual)."""
         for crown in (115.0, 125.0, 135.0, 145.0, 105.0, 95.0, -5.0):
             with self.subTest(crown=crown):
                 steps = buttress.buttress_steps(bdata.job_of(self.scene, crown))
                 if crown <= PLANE_M:
                     with self.assertRaises(DesignError) as caught:
                         next(steps)
-                    self.assertEqual(caught.exception.code, "des.buttress_crown_below_support")
+                    self.assertEqual(caught.exception.code, "des.buttress_crown_below_support" if crown < PLANE_M
+                                     else "des.buttress_crown_at_support")
                     self.assertEqual(caught.exception.value, crown)
                 else:
                     steps.close()

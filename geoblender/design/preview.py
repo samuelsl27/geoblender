@@ -142,6 +142,7 @@ _CODE_DECIMALS: Mapping[str, Mapping[str, int]] = MappingProxyType({
     "des.stockpile_candidate_item": MappingProxyType({"level": 2, "slope": 2}),
     "des.body_sections_large": MappingProxyType({"limit": 0}),
     "des.preview_buttress_crown": MappingProxyType({"crown": 2}),
+    "des.removal_kept": MappingProxyType({"volume": 0}),
 })
 """Los decimales de los números de **un mensaje concreto** (spec 016, T12), que mandan sobre :data:`_DECIMALS`: los avisos de
 los acopios dicen una inclinación de 4,04° frente a un límite de 4° (``fitted``, ``limit``) y un umbral de huella de 0,25 m
@@ -189,6 +190,8 @@ def _shown(values: Mapping[str, object], language: str, places: Mapping[str, int
             else:
                 decimals = (0 if value.is_integer() else 1) if name == "area" else _DECIMALS.get(
                     name, 1)
+            if name == "azimuth":  # una dirección: un 359,99999999999847° redondeado a 360,0° es el norte, «0,0°» (spec 016, T48, A-4)
+                value = round(value, decimals) % 360.0
             found[name] = _number(value, decimals, language)
         elif isinstance(value, tuple | list):
             found[name] = ", ".join(item.text(language) if isinstance(item, Named) else str(item)

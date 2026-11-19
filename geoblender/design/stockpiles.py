@@ -113,7 +113,8 @@ de base propias, los umbrales ya resueltos y, si se piden los candidatos, el per
 - por **marca**, en su ventana de trabajo (A0: :func:`mark_window`), A2 y A3 (:func:`grow_footprint`) o, con una **base
   propia** (RF-016-03, D-20), la huella sobre esa superficie sin corona, ajuste ni límite de inclinación
   (:func:`footprint_above`) y su nota de qué superficie es (:attr:`Stockpile.base_surface`); las marcas que A2 o A3
-  rechazan (RF-016-04) salen en :attr:`StockpileOutcome.rejected` con su aviso y no se registran;
+  rechazan (RF-016-04) salen en :attr:`StockpileOutcome.rejected` con su aviso y no se registran, y las que la preparación apartó por
+  solaparse con otra (``StockpileJob.refused``, :func:`refuse_overlaps`: solo esas dos, T48) salen igual, antes que las demás;
 - el **reparto** de las celdas comunes (:func:`share_cells`, RF-016-06) entre las marcas cuyas huellas se tocan, en una
   ventana común, con las marcas ordenadas **por clave** (a igual distancia gana la menor: el resultado no depende del
   orden en que llegan) y el aviso de cada pareja en las notas de los dos acopios (el resumen lo cuenta una vez);
@@ -175,6 +176,7 @@ __all__ = [
     "FootprintCut",
     "FootprintParams",
     "PlaneParams",
+    "RefusedMark",
     "RejectedMark",
     "Shared",
     "SharedCells",
@@ -198,6 +200,7 @@ __all__ = [
     "footprint_volume",
     "grow_footprint",
     "mark_window",
+    "refuse_overlaps",
     "runs_cells",
     "share_cells",
     "share_cells_steps",
@@ -214,6 +217,7 @@ _AT_EDGE = "des.stockpile_footprint_at_edge"
 _SEVERAL_ZONES = "des.stockpile_several_zones"
 _NOT_CONVERGED = "des.stockpile_not_converged"
 _SHARED_CELLS = "des.stockpile_shared_cells"
+_MARKS_OVERLAP = "des.stockpile_marks_overlap"
 _MIN_CELLS = 3
 """Las celdas que hacen falta para determinar un plano."""
 
@@ -1155,6 +1159,48 @@ class StockpileMark:
                 object.__setattr__(self, attribute, _label(value, f"{what} de la marca «{key}»"))
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class RefusedMark:
+    """Una marca que **la preparación rechaza antes de calcular** (RF-016-04: se solapa con otra; spec 016, T48): la ``mark`` (sus celdas
+    cuentan como celdas con marca, para que su montículo no vuelva como candidato) y el ``notice`` de su pareja
+    (``des.stockpile_marks_overlap``: las dos marcas, el área común y su lugar; **el mismo objeto** en las dos marcas de la pareja).
+    :attr:`StockpileJob.refused` las lleva y :func:`detect_steps` las informa como las demás marcas rechazadas, sin registrarlas."""
+
+    mark: StockpileMark
+    notice: Notice
+
+
+def refuse_overlaps(marks: Sequence[StockpileMark], grid: Grid
+                    ) -> tuple[tuple[StockpileMark, ...], tuple[RefusedMark, ...]]:
+    """Aparta las marcas que se **solapan** (RF-016-04; spec 016, T48; hallazgos A-2 y S-3 de la verificación única): dos marcas se solapan si
+    alguna celda de ``grid`` tiene su centro en las dos (las que solo se tocan por el borde no: sus huellas se reparten, RF-016-06). Devuelve
+    ``(las que se calculan, las apartadas)``, cada grupo en el orden de ``marks``: **solo las marcas que se solapan se rechazan**, las demás
+    siguen (con A y B solapadas y C válida, C se detecta; con A–B y B–C, las tres se rechazan). Cada apartada lleva el aviso de **la primera
+    pareja** (por el orden de las marcas) en la que está, con las dos marcas, el área común (m²) y el centro absoluto de las celdas comunes; el
+    aviso de una pareja es un solo objeto, el mismo en las dos. Sin solape, las mismas marcas y ninguna apartada."""
+    found = tuple(marks)
+    if len(found) < 2:
+        return found, ()
+    every = np.concatenate([mark.cells for mark in found])
+    owners = np.repeat(np.arange(len(found)), [mark.cells.size for mark in found])
+    order = np.argsort(every, kind="stable")
+    sorted_cells, sorted_owners = every[order], owners[order]
+    twice = np.flatnonzero(sorted_cells[1:] == sorted_cells[:-1])
+    if twice.size == 0:
+        return found, ()
+    pairs = sorted({(int(sorted_owners[i]), int(sorted_owners[i + 1])) for i in twice})
+    chosen: dict[int, Notice] = {}
+    for first, second in pairs:
+        shared = np.intersect1d(found[first].cells, found[second].cells, assume_unique=True)
+        x, y = _centre_of(shared, grid)
+        notice = Notice(_MARKS_OVERLAP, {"mark": found[first].name, "other": found[second].name,
+                                         "area": round(float(shared.size) * grid.cell_area, 2), "x": x, "y": y})
+        chosen.setdefault(first, notice)
+        chosen.setdefault(second, notice)
+    kept = tuple(mark for index, mark in enumerate(found) if index not in chosen)
+    return kept, tuple(RefusedMark(found[index], chosen[index]) for index in sorted(chosen))
+
+
 def _finite_surface(value: object, shape: tuple[int, int], what: str) -> np.ndarray:
     """``value`` como array ``float64`` de la forma ``shape`` sin infinitos (NaN es «sin dato»); ``ValueError`` si no."""
     found = np.asarray(value, dtype=np.float64)
@@ -1174,6 +1220,9 @@ class StockpileJob:
     defecto), las superficies de base propias por nombre (``bases``: cada una de la rejilla entera; las usan las marcas
     con ``base``, RF-016-03) y, si se buscan también los candidatos sin marca (RF-016-08), sus umbrales (``candidates``: los
     de su huella son los de ``params``) y el perímetro de actuación (``perimeter``, máscara booleana de la rejilla entera).
+    ``refused`` (spec 016, T48): las marcas que la preparación apartó por **solaparse** con otra (:class:`RefusedMark`,
+    :func:`refuse_overlaps`: sus celdas pueden estar en dos marcas y no entran en ``marks``): salen como rechazadas y su montículo no
+    vuelve como candidato.
 
     ``ValueError`` o ``TypeError`` (errores del programa, no del usuario: eso lo rechaza antes la preparación; y
     ``GisError`` ``gis.dataset_name_invalid`` si el nombre no da ningún nombre de dato) si algo
@@ -1190,6 +1239,7 @@ class StockpileJob:
     bases: Mapping[str, np.ndarray] | None = None
     candidates: CandidateParams | None = None
     perimeter: np.ndarray | None = None
+    refused: tuple[RefusedMark, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _label(self.name, "el nombre de una detección"))
@@ -1212,6 +1262,17 @@ class StockpileJob:
                  for name, found in dict({} if self.bases is None else self.bases).items()}
         object.__setattr__(self, "bases", MappingProxyType(bases))
         self._check_marks(marks, bases)
+        refused = tuple(self.refused)
+        size = self.grid.nrows * self.grid.ncols
+        for item in refused:
+            if not isinstance(item, RefusedMark):
+                raise TypeError(f"las marcas apartadas de una detección son RefusedMark, no {item!r}")
+            if int(item.mark.cells[-1]) >= size:
+                raise ValueError(f"la marca apartada «{item.mark.key}» tiene celdas fuera de la rejilla ({size} celdas)")
+        keys = [mark.key for mark in marks] + [item.mark.key for item in refused]
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"las claves de las marcas se repiten: {keys}")
+        object.__setattr__(self, "refused", refused)
         if self.candidates is not None:
             if not isinstance(self.candidates, CandidateParams):
                 raise TypeError(f"los umbrales de los candidatos son CandidateParams, no {self.candidates!r}")
@@ -1221,7 +1282,7 @@ class StockpileJob:
             if self.perimeter is None:
                 raise ValueError("buscar candidatos necesita el perímetro de actuación")
             object.__setattr__(self, "perimeter", _mask(self.perimeter, shape, "el perímetro"))
-        elif not marks:
+        elif not marks and not refused:
             raise ValueError("una detección sin marcas ni candidatos no tiene nada que detectar")
 
     def _check_marks(self, marks: tuple[StockpileMark, ...], bases: Mapping[str, np.ndarray]) -> None:
@@ -1616,9 +1677,14 @@ def _figures(job: StockpileJob, items: Sequence[Stockpile], candidates: Candidat
 def _ordered_notices(rejected: Sequence[RejectedMark], items: Sequence[Stockpile], once: Sequence[Notice]
                      ) -> tuple[Notice, ...]:
     """Los avisos de la detección en orden estable: los rechazos, los de cada acopio y, la primera vez que se llega a él,
-    el de cada pareja (el mismo objeto en los dos acopios, que se cuenta una vez)."""
-    found = [mark.notice for mark in rejected]
+    el de cada pareja (el mismo objeto en los dos acopios, que se cuenta una vez). Dos marcas rechazadas por solaparse comparten el aviso de
+    su pareja (T48): también se cuenta una vez."""
+    found: list[Notice] = []
     told: set[int] = set()
+    for mark in rejected:
+        if id(mark.notice) not in told:
+            told.add(id(mark.notice))
+            found.append(mark.notice)
     pairs = {id(notice) for notice in once}
     for item in items:
         for notice in item.notes:
@@ -1656,7 +1722,8 @@ def _detect_run(job: StockpileJob, budget_s: float) -> Generator[Progress, None,
     grown = yield from forward(pace_progress(
         _mark_units(job), budget_s, phase="stockpiles", running="Formando los acopios…", finished="Acopios formados"))
     formed = [item for item in grown if isinstance(item, _Grown)]
-    rejected = tuple(item for item in grown if isinstance(item, RejectedMark))
+    rejected = (*(RejectedMark(item.mark.key, item.mark.name, item.notice) for item in job.refused),  # antes de calcular (T48)
+                *(item for item in grown if isinstance(item, RejectedMark)))
     formed, shared = yield from _share_groups(job, formed, budget_s)
     by_key, once = _pair_notices(job, shared)
     items = yield from forward(pace_progress(
@@ -1666,7 +1733,7 @@ def _detect_run(job: StockpileJob, budget_s: float) -> Generator[Progress, None,
     if job.candidates is not None and job.perimeter is not None:
         taken = np.zeros(job.grid.shape, dtype=bool)
         flat = taken.reshape(-1)
-        for mark in job.marks:  # también las marcas rechazadas: su zona no vuelve como candidata
+        for mark in (*job.marks, *(item.mark for item in job.refused)):  # también las rechazadas: su zona no vuelve como candidata
             flat[mark.cells] = True
         for item in items:
             flat[item.cells] = True

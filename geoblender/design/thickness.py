@@ -143,6 +143,7 @@ __all__ = [
     "BodySense",
     "ThicknessData",
     "all_far_error",
+    "all_unsupported_error",
     "body_steps",
     "body_window",
     "compute_body",
@@ -158,6 +159,7 @@ _OUTSIDE = "des.body_data_outside"
 _FAR = "des.body_far"
 _NO_DATA = "des.body_no_data"
 _ALL_FAR = "des.body_all_far"
+_ALL_UNSUPPORTED = "des.body_all_unsupported"
 _UNSUPPORTED = "des.body_unsupported"
 _CLIPPED = "des.body_footprint_clipped"
 _EDGE_STEP = "des.body_edge_step"
@@ -432,6 +434,14 @@ def no_data_error(request: BodyRequest) -> DesignError:
     huella (``request.feature``) y la capa de los datos (``request.data_layer``). No se registra nada."""
     return DesignError(_NO_DATA, obj=_OBJ.format(request.name), field="datos de espesor", value=request.data_layer,
                        entity=request.name, layer=request.data_layer, footprint=request.feature)
+
+
+def all_unsupported_error(request: BodyRequest) -> DesignError:
+    """**RF-016-22** (spec 016, T48; hallazgo C-10 a): ``des.body_all_unsupported``, el rechazo de un cuerpo cuya huella **no tiene dato de la
+    superficie conocida en ninguna celda** (los datos de espesor pueden estar dentro: lo que falta es el apoyo), nombrando la huella y la
+    superficie. No es ``des.body_all_far``, que habla de la distancia a los datos y aquí no es la causa. No se registra nada."""
+    return DesignError(_ALL_UNSUPPORTED, obj=_OBJ.format(request.name), field="superficie conocida", value=request.surface,
+                       entity=request.name, surface=request.surface, footprint=request.feature)
 
 
 def all_far_error(request: BodyRequest, distance_m: float) -> DesignError:
@@ -794,6 +804,8 @@ def _body_units(job: BodyJob, settings: _Settings) -> Generator[None, None, Body
     nearest = yield from _nearest_units(sources, data, cell)
     d2 = nearest.cells2.astype(np.float64) * (cell * cell)
     d2[interior] = 0.0  # son celdas con dato: a 0 m de él, aunque ya no sean fuente del más próximo
+    if not body.any():  # lo que falta es la superficie conocida entera, no la cercanía de los datos (C-10 a)
+        raise all_unsupported_error(request)
     far = body & (d2 > settings.max_distance_m * settings.max_distance_m)
     if not np.any(body & ~far):
         raise all_far_error(request, settings.max_distance_m)

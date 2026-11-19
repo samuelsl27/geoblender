@@ -464,7 +464,8 @@ class StockpileBase:
 class SkippedDetection:
     """Una detección de acopios que la verificación **no usa** (RF-012-31): su ``detection``, su ``name`` y su ``scope``, la
     ``reason`` (``other_surface``: se hizo sobre otra superficie que la de partida; ``stale``: está obsoleta), la ``surface``
-    sobre la que está hecha y, si está obsoleta, su ``cause`` (lo que cambió)."""
+    sobre la que está hecha y, si está obsoleta, su ``cause`` en español y su ``cause_en`` en inglés (lo que cambió; spec 016, T48,
+    hallazgo D-5: se guardan las dos y el aviso escribe la del idioma de la interfaz; sin la inglesa —lo anotado antes—, la de siempre)."""
 
     detection: str
     name: str
@@ -472,12 +473,14 @@ class SkippedDetection:
     reason: str
     surface: str
     cause: str = ""
+    cause_en: str = ""
 
     def text(self, start: str, language: str = "es") -> str:
-        """El aviso, con la partida ``start`` de la verificación: nombra la detección y la causa; todo el corte cuenta."""
+        """El aviso, con la partida ``start`` de la verificación: nombra la detección y la causa (en ``language``); todo el corte cuenta."""
         if self.reason == stockpile_store.EXCLUDED_STALE:
+            cause = self.cause_en if language == "en" and self.cause_en else self.cause
             return render("res.verify_base_stale", language=language, detection=self.detection, name=self.name,
-                          cause=self.cause)
+                          cause=cause)
         return render("res.verify_base_other_surface", language=language, detection=self.detection, name=self.name,
                       surface=self.surface or "—", start=start)
 
@@ -514,7 +517,8 @@ class BaseSelection:
                               for item in self.bases]
         if self.skipped:
             found["skipped"] = [{"detection": item.detection, "name": item.name, "scope": item.scope,
-                                 "reason": item.reason, "surface": item.surface, "cause": item.cause}
+                                 "reason": item.reason, "surface": item.surface, "cause": item.cause,
+                                 "cause_en": item.cause_en}
                                 for item in self.skipped]
         return found
 
@@ -532,7 +536,8 @@ class BaseSelection:
                                            SurfaceRef(dataset=item["dataset"], label=str(item.get("label") or ""))))
             for item in settings.get("skipped") or ():
                 skipped.append(SkippedDetection(str(item["detection"]), str(item["name"]), str(item["scope"]),
-                                                str(item["reason"]), str(item["surface"]), str(item.get("cause") or "")))
+                                                str(item["reason"]), str(item["surface"]), str(item.get("cause") or ""),
+                                                str(item.get("cause_en") or "")))
         except (KeyError, TypeError, AttributeError) as error:
             raise ValueError(f"los ajustes de la verificación anotan mal la base de los acopios: {error!r}") from None
         return cls(tuple(bases), tuple(skipped))
@@ -569,7 +574,7 @@ def select_bases(project: StoreProject, version: str | None, start: SurfaceRef, 
         if version is not None and found is None:
             raise VersionError("core.version_unknown", field="versión", value=version, version=version)
         surface, owner = _start_dataset(reading, start, "" if found is None else found.uid)
-        skipped = [SkippedDetection(item.code, item.name, item.scope, item.reason, item.surface, item.cause)
+        skipped = [SkippedDetection(item.code, item.name, item.scope, item.reason, item.surface, item.cause, item.cause_en)
                    for item in stockpile_store.detections_excluded(project, version, surface, conn=reading)]
         bases: list[StockpileBase] = []
         for detection in (() if surface is None else
