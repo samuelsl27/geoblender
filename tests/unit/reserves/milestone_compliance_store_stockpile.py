@@ -453,6 +453,15 @@ class VerifyWithBaseTest(_WithDetections):
         self.assertTrue(all(item.stockpile_cut_m3 is None for item in stored.zones if item.zone not in TERRAIN_ZONES))
         self.assertEqual(zone_row(stored, 2, ZONE_CODE).verdict, V.FAILS.value)
         self.assertFalse(self.stale(self.op_named(NAME)))
+        # T42 (RF-012-30, RF-012-31): lo que anotan los ajustes de la operación, para que la ventana escriba esas líneas en el idioma de la
+        # interfaz: la selección (la misma que dan los textos de la tabla, en el idioma pedido) y el nombre de la partida.
+        selection = stored.selection
+        self.assertEqual(len(selection.bases), 2)
+        self.assertEqual(stored.start_name, self.start.shown)
+        self.assertEqual(tuple(item.text("es") for item in selection.bases), stored.bases)
+        self.assertEqual(tuple(item.text(stored.start_name, "es") for item in selection.skipped), stored.skipped)
+        self.assertEqual(selection, cstore.BaseSelection.of_settings(self.settings_of(self.op_named(NAME))))
+        self.assertIn("Stockpile base: detection STK-001", selection.bases[0].text("en"))
 
     def test_d_without_the_base_all_the_cut_counts_as_terrain(self) -> None:
         """RF-012-30, RF-012-31: pedida sin base (la selección vacía), la misma verificación cuenta todo el corte: la retirada
@@ -468,6 +477,7 @@ class VerifyWithBaseTest(_WithDetections):
         self.assertNotIn("bases", self.settings_of(uid))
         read = self.read()
         self.assertEqual((read.bases, read.skipped), ((), ()))
+        self.assertEqual((read.selection, read.start_name), (cstore.BaseSelection(), self.start.shown))
         self.verify(("retirada", "pozo"))  # la de las dos finales, otra vez con la base automática
 
     def test_e_two_bases_in_a_cell_count_the_lower_one(self) -> None:

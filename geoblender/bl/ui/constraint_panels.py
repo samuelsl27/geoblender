@@ -118,9 +118,19 @@ sola la base de las detecciones al día hechas sobre la superficie de partida y 
 (:func:`start_base_lines`: lee ``reserves.compliance_store.select_bases`` una vez por partida, no al redibujar, y
 :func:`draw_base_lines` las dibuja partidas al ancho del diálogo), la base que usará (la detección, su nombre y su material) o, en alerta,
 la detección que no usará y por qué (está obsoleta, con lo que cambió, u hecha sobre otra superficie, con ella y la de partida) y que todo
-el corte cuenta; **después**, la ventana de la verificación (:func:`fill_verification`: de lo que guardó su tabla,
-:func:`stored_base_lines`) las nombra entre sus avisos, antes de la tabla de las finales. Una base en otra rejilla no es un aviso: se
-rechaza la verificación (RF-011-03) y la orden da el error nombrándola. Sin acopios, la ventana no dice nada nuevo.
+el corte cuenta; **después**, la ventana de la verificación (:func:`fill_verification`: :func:`stored_base_lines`) las nombra entre sus
+avisos, antes de la tabla de las finales, **en el idioma de la interfaz** (T42): las escribe de la selección y la partida que anotaron los
+ajustes de la operación (``StoredVerification.selection`` y ``.start_name``) y, si no las dicen, del texto que guardó la tabla (en
+español). Una base en otra rejilla no es un aviso: se rechaza la verificación (RF-011-03) y la orden da el error nombrándola. Sin acopios,
+la ventana no dice nada nuevo.
+
+**La tabla con la base** (spec 016, T42; RF-012-30, RF-012-24): con la base de los acopios, los recintos que cuentan solo el corte de
+terreno (sin corte, solo relleno, solo restauración, resguardo y banda hacia dentro) dan en la tabla de cada final **el corte de terreno**
+(«Corte de terreno (m³)», ``cut``) **y el de acopios** («Corte de acopios (m³)», ``stock``) y el veredicto es el de terreno: una retirada
+en una zona sin corte «cumple» con 0 m³ de terreno y los m³ de acopios aparte; los recintos a los que no se aplica (el límite legal, un
+intocable, una exclusión, fuera del perímetro) dan todo su corte y un guion (:data:`NOT_APPLICABLE`) en acopios. Una columna más, así que
+el reparto del ancho es otro (:func:`zone_columns`; cada texto cabe en su columna a 1920 px con las escalas efectivas de la 003). **Sin
+base, la tabla es la de la 012**: el corte entero en «Corte (m³)», tres cifras y el reparto de siempre.
 """
 
 from __future__ import annotations
@@ -272,6 +282,10 @@ VERIFY_PANEL_UNITS = 50
 VERIFY_WIDTH_PX = VERIFY_PANEL_UNITS * compat.UI_UNIT_PX
 ZONE_NAME_FACTOR = 0.34
 ZONE_VERDICT_FACTOR = 0.3
+STOCK_ZONE_NAME_FACTOR = 0.26
+STOCK_ZONE_VERDICT_FACTOR = 0.14
+NOT_APPLICABLE = "—"
+"""En la columna del corte de acopios, un recinto al que no se aplica (RF-012-30: cuenta todo el corte)."""
 MAX_ZONE_ROWS = 60
 MAX_GROUP_LINES = 30
 """Los valores de ``reserves.compliance`` que mira el texto de un final (el nivel de ``bl`` no
@@ -1888,9 +1902,12 @@ def base_lines(selection: Any, start_name: str, shown: str | None = None) -> lis
     return lines
 
 
-def stored_base_lines(found: Any) -> list[Line]:
-    """Las mismas líneas de una verificación ya hecha (``StoredVerification``): las bases que usó y lo que no usó, con el texto que
-    guardó su tabla (en español, como sus avisos); sin acopios, ninguna."""
+def stored_base_lines(found: Any, shown: str | None = None) -> list[Line]:
+    """Las mismas líneas de una verificación ya hecha (``StoredVerification``): las bases que usó y lo que no usó, **en el idioma de la
+    interfaz** (o ``shown``), escritas de la selección y la partida que anotaron los ajustes de su operación (``found.selection`` y
+    ``found.start_name``, T42); si los ajustes no las dicen, el texto que guardó su tabla (en español); sin acopios, ninguna."""
+    if found.selection.bases or found.selection.skipped:
+        return base_lines(found.selection, found.start_name, shown)
     return [*(Line(text) for text in found.bases), *(Line(text, alert=True) for text in found.skipped)]
 
 
@@ -1987,6 +2004,9 @@ def _put_final(shown: Any, found: Any, position: int, names: Any) -> Line:
     target = shown.verify_finals.add()
     target.name, target.text, target.alert = surface, summary, bool(failing)
     target.grid = found.grids.get(position, "")
+    # Con la base de los acopios (RF-012-30) la tabla da el corte de terreno y el de acopios, cada uno en su columna: ``cut_m3`` es el corte
+    # entero y no cabe en «Corte» de un recinto que cumple con él (T42). Sin base, la tabla de siempre.
+    target.stockpiles = with_stockpiles = any(item.stockpile_cut_m3 is not None for item in zones)
     counts = {item.zone: item.counts for item in zones}
     # Los que no cumplen primero, luego los que mueven algo y luego los demás (con cientos de
     # restricciones la ventana no los dibuja todos: los primeros MAX_ZONE_ROWS).
@@ -2000,6 +2020,11 @@ def _put_final(shown: Any, found: Any, position: int, names: Any) -> Line:
         row.verdict, row.alert = _verdict_text(item.verdict), item.verdict == VERDICT_FAILS
         row.cut, row.fill, row.moved = (_volume(item.cut_m3), _volume(item.fill_m3),
                                         _volume(item.moved_m2))
+        if with_stockpiles:
+            if item.stockpile_cut_m3 is None:  # cuenta todo el corte: no hay corte de acopios que dar
+                row.stock = NOT_APPLICABLE
+            else:
+                row.cut, row.stock = _volume(item.counted_m3), _volume(item.stockpile_cut_m3)
     mine = sorted((group for group in found.groups if group.final == position),
                   key=lambda group: (-group.volume_m3, group.zone, group.x, group.y))
     for group in mine[:MAX_GROUP_LINES]:
@@ -2093,16 +2118,28 @@ def on_verification_chosen() -> None:
         LOGGER.warning("No se pudo leer la verificación elegida", exc_info=True)
 
 
-def _draw_zone(row: Any, item: Any) -> None:
-    """Una fila de la tabla de una final: el recinto, el veredicto, el corte, el relleno y el
-    área con movimiento (en alerta si no cumple)."""
+def zone_columns(with_stockpiles: bool) -> tuple[float, float, int]:
+    """Cómo reparte su ancho una fila de la tabla de una final (T42): lo que le toca al recinto, lo que le toca al veredicto (partes
+    del total) y cuántas columnas de cifras se reparten el resto a partes iguales. La de siempre (el corte, el relleno y el movido) y,
+    con la base de los acopios, una más (el corte de terreno y el de acopios): a 1920 px, con las escalas efectivas de la 003, cada
+    cabecera, veredicto y cifra cabe en su columna (la prueba lo mide)."""
+    if with_stockpiles:
+        return STOCK_ZONE_NAME_FACTOR, STOCK_ZONE_VERDICT_FACTOR, 4
+    return ZONE_NAME_FACTOR, ZONE_VERDICT_FACTOR, 3
+
+
+def _draw_zone(row: Any, item: Any, with_stockpiles: bool = False) -> None:
+    """Una fila de la tabla de una final: el recinto, el veredicto, el corte (con la base de los acopios, el de terreno y el de
+    acopios), el relleno y el área con movimiento (en alerta si no cumple)."""
+    name, verdict, _count = zone_columns(with_stockpiles)
     row.alert = bool(item.alert)
-    first = row.split(factor=ZONE_NAME_FACTOR, align=True)
+    first = row.split(factor=name, align=True)
     first.label(text=item.name, translate=False)
-    rest = first.split(factor=ZONE_VERDICT_FACTOR / (1.0 - ZONE_NAME_FACTOR), align=True)
+    rest = first.split(factor=verdict / (1.0 - name), align=True)
     rest.label(text=item.verdict, translate=False)
     numbers = rest.row(align=True)
-    for value in (item.cut, item.fill, item.moved):
+    for value in ((item.cut, item.stock, item.fill, item.moved) if with_stockpiles
+                  else (item.cut, item.fill, item.moved)):
         numbers.label(text=value, translate=False)
 
 
@@ -2126,15 +2163,17 @@ def draw_verification(layout: Any, context: Any) -> None:
         for line in shown.verify_notes:
             _draw_line(layout, line, width)
         head = SimpleNamespace(name=tr("Zone"), verdict=tr("Verdict"), cut=tr("Cut (m³)"),
-                               fill=tr("Fill (m³)"), moved=tr("Moved (m²)"), alert=False)
+                               stock=tr("Stockpile cut (m³)"), fill=tr("Fill (m³)"),
+                               moved=tr("Moved (m²)"), alert=False)
         for final in shown.verify_finals:
             box = layout.box()
             _draw_line(box, Line(final.text, alert=final.alert), width)
             titles = box.row()
             titles.enabled = False
-            _draw_zone(titles, head)
+            head.cut = tr("Terrain cut (m³)") if final.stockpiles else tr("Cut (m³)")
+            _draw_zone(titles, head, final.stockpiles)
             for zone in final.zones:
-                _draw_zone(box.row(), zone)
+                _draw_zone(box.row(), zone, final.stockpiles)
             for group in final.groups:
                 _draw_line(box, group, width)
             if final.more:

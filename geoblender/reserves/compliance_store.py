@@ -1808,7 +1808,10 @@ class StoredVerification:
     ``uid`` del dato de su rejilla de incumplimientos si sigue vivo (``grids``; un dato de una
     versión solo se indica por su uid). Con acopios detectados (T30), las bases que usó
     (``bases``: «Base de acopios: detección STK-001 «Acopios» (mineral)») y los avisos de las
-    detecciones que no usó con su causa (``skipped``), tal como los escribió la tabla."""
+    detecciones que no usó con su causa (``skipped``), tal como los escribió la tabla (en español);
+    y, de los ajustes de la operación (T42), esa misma selección (``selection``) y el nombre de la
+    partida (``start_name``), para escribir esas líneas en el idioma de quien mira (vacías si los
+    ajustes no las dicen)."""
 
     operation_uid: str
     name: str
@@ -1821,11 +1824,35 @@ class StoredVerification:
     grids: Mapping[int, str]
     bases: tuple[str, ...] = ()
     skipped: tuple[str, ...] = ()
+    selection: BaseSelection = BaseSelection()
+    start_name: str = ""
 
 
 def _setting_name(text: object, uid: str) -> str:
     settings = json.loads(str(text))
     return str((settings if isinstance(settings, Mapping) else {}).get("name") or uid[:8])
+
+
+def _stored_selection(text: object) -> tuple[BaseSelection, str]:
+    """La selección de las bases de los acopios y el nombre de la partida que anotan los ajustes (JSON) ``text`` de una verificación
+    (:func:`verify_settings`): lo que la ventana necesita para escribir esas líneas en el idioma de la interfaz (T42). Sin acopios, la
+    selección vacía; unos ajustes que no se entienden dan lo que sí se entiende y, de lo demás, nada (la ventana enseña entonces lo que
+    guardó la tabla): leer una verificación no se rompe por ello."""
+    try:
+        settings = json.loads(str(text))
+    except ValueError:
+        return BaseSelection(), ""
+    if not isinstance(settings, Mapping):
+        return BaseSelection(), ""
+    try:
+        selection = BaseSelection.of_settings(settings)
+    except ValueError:
+        selection = BaseSelection()
+    try:
+        start = _surface_ref(settings.get("start")).shown
+    except (ValueError, TypeError):
+        start = ""
+    return selection, start
 
 
 def verification_names(conn: sqlite3.Connection, version_uid: str) -> tuple[str, ...]:
@@ -1874,11 +1901,11 @@ def read_verification(conn: sqlite3.Connection, version_uid: str, name: str | No
     for uid, text in conn.execute(_VERIFICATIONS_OF, (VERIFY, version_uid)).fetchall():
         shown = _setting_name(text, str(uid))
         if name is None or shown == name:
-            found = (str(uid), shown)
+            found = (str(uid), shown, text)
             break
     if found is None:
         return None
-    uid, shown = found
+    uid, shown, settings_text = found
     try:
         table = dataset_registry.get(conn, dataset_name(TABLE, shown), version_uid=version_uid)
         if table is None or table.operation_uid != uid:
@@ -1898,6 +1925,7 @@ def read_verification(conn: sqlite3.Connection, version_uid: str, name: str | No
                                     version_uid=version_uid)
         if grid is not None and grid.operation_uid == uid and grid.live:
             grids[position] = grid.uid
+    selection, start_name = _stored_selection(settings_text)
     return StoredVerification(
         uid, shown, conn.execute(_STALE, (uid,)).fetchone() is not None,
         tuple(surfaces[position] for position in sorted(surfaces)), _stored_zones(rows),
@@ -1911,7 +1939,8 @@ def read_verification(conn: sqlite3.Connection, version_uid: str, name: str | No
         tuple(str(note) for zone, final, quantity, _v, _u, note in rows
               if quantity == "stockpile_base" and not zone),
         tuple(str(note) for zone, final, quantity, _v, _u, note in rows
-              if quantity == "stockpile_skipped" and not zone))
+              if quantity == "stockpile_skipped" and not zone),
+        selection, start_name)
 
 
 def verify_inputs(project: StoreProject, version: str, start: SurfaceRef,

@@ -7171,6 +7171,13 @@ es = "Veredicto"
 ["Cut (m³)"]
 es = "Corte (m³)"
 
+# Con la base de los acopios (spec 016, T42; RF-012-30): el corte de terreno y el de acopios de cada recinto
+["Terrain cut (m³)"]
+es = "Corte de terreno (m³)"
+
+["Stockpile cut (m³)"]
+es = "Corte de acopios (m³)"
+
 ["Fill (m³)"]
 es = "Relleno (m³)"
 

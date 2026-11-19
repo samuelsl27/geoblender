@@ -18,6 +18,8 @@ mismo estado:
 - RF-012-31, D-a (d): la detección **obsoleta** (se cambió su margen) no se usa: el diálogo, lo que informa la orden y la ventana dicen que
   está obsoleta y qué cambió; la verificación se hace igual, sin base.
 - RF-012-31, RF-011-03 (e): una base en **otra rejilla** se rechaza como el de una superficie (el error nombra la base y no se registra nada).
+- RF-012-30, RF-012-31 (T42, en (b) y (c)): la ventana de la verificación escribe las líneas de la base en el idioma de la interfaz, de lo
+  que anotaron los ajustes de la operación (``StoredVerification.selection`` y ``.start_name``).
 
 Se ejecuta con ``tools/run_blender_tests.py`` (es un hito: ``check.py --completo``).
 """
@@ -190,6 +192,17 @@ class VerifyStockpileUiTest(rem_ops.RemoveStockpileTest):
         self.assertIn(USED, window)
         self.assertLess(window.index(USED), window.index("«" + self.final_name + "»"), "antes de la tabla de las finales")
         self.assertNotIn("no se usa como base", window)
+        # T42 (RF-012-30): la ventana escribe de lo que anotaron los ajustes de la operación (``StoredVerification.selection``), no del texto en
+        # español de la tabla: en inglés, las líneas de la base en inglés.
+        self.assertEqual([(item.detection, item.name) for item in stored.selection.bases], [("STK-001", "Acopios")])
+        self.i18n.set_language("en")
+        self.cpanels.fill_verification(self.project, self.v01.uid, "Con acopios")
+        self.assertEqual([(note.text, note.alert) for note in self.cview.verify_notes][:1], [(USED_EN, False)])
+        self.assertIn(USED_EN, self.window_texts())
+        self.assertNotIn(USED, self.window_texts())
+        self.i18n.set_language("es")
+        self.cpanels.fill_verification(self.project, self.v01.uid, "Con acopios")
+        self.assertEqual([(note.text, note.alert) for note in self.cview.verify_notes][:1], [(USED, False)])
 
     # --- (c) Otra partida ----------------------------------------------------------------------
 
@@ -208,6 +221,15 @@ class VerifyStockpileUiTest(rem_ops.RemoveStockpileTest):
         self.assertEqual(notes[:1], [(warnings[0], True)])
         self.assertIn("no se usa como base", self.window_texts())
         self.assertNotIn("Base de acopios", self.window_texts())
+        # T42 (RF-012-31): en inglés, el aviso de la ventana, en inglés, con la superficie de la detección y la de partida
+        self.assertEqual(stored.start_name, self.final_name)
+        self.i18n.set_language("en")
+        self.cpanels.fill_verification(self.project, self.v01.uid, "Otra partida")
+        (english,) = [note for note in self.cview.verify_notes if note.alert]
+        self.assertIn("is not used as a base: it was made on «" + self.survey_name, english.text)
+        self.assertIn("not on the start surface «" + self.final_name + "»", english.text)
+        self.assertNotIn("no se usa como base", self.window_texts())
+        self.i18n.set_language("es")
 
     # --- (d) Obsoleta --------------------------------------------------------------------------
 

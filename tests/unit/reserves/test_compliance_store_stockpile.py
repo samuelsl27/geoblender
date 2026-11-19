@@ -368,6 +368,34 @@ class VerifyStepsWithBaseTest(unittest.TestCase):
         self.assertEqual(with_base - plain, bands + quarter)
         self.assertEqual(cstore.planned_units(grid, 3, 1), plain + bands)
 
+    def test_k_the_stored_selection_and_the_start_name_are_read_from_the_settings_of_the_operation(self) -> None:
+        """RF-012-24, RF-012-30, RF-012-31 (T42): ``_stored_selection`` lee de los ajustes (JSON) de una verificación la selección de las
+        bases y el nombre de la partida (lo que necesita la ventana para escribir sus líneas en el idioma de la interfaz y no con el texto
+        en español de la tabla); sin acopios, la selección vacía y la partida; con unos ajustes que no se entienden, lo que sí se entiende
+        y, de lo demás, nada, sin lanzar; ``StoredVerification`` sin ellos, vacíos."""
+        import json
+
+        start = surfaces.SurfaceRef(dataset="gis_dtm_inicial", label="Levantamiento")
+        finals = (surfaces.SurfaceRef(dataset="gis_dtm_removed"),)
+        selection = _selection("uid-a", "uid-b", skipped=(OTHER, STALE))
+        noted = json.dumps(cstore.verify_settings(NAME, start, finals, ["s1"], ["Sector 1"], selection))
+        self.assertEqual(cstore._stored_selection(noted), (selection, "Levantamiento"))
+        plain = json.dumps(cstore.verify_settings(NAME, start, finals))
+        self.assertEqual(cstore._stored_selection(plain), (cstore.BaseSelection(), "Levantamiento"))
+        unlabelled = json.dumps(cstore.verify_settings(NAME, surfaces.SurfaceRef(dataset="gis_dtm_inicial"), finals))
+        self.assertEqual(cstore._stored_selection(unlabelled)[1], "gis_dtm_inicial", "sin etiqueta, el dato, como la nombra la tabla")
+        self.assertEqual(cstore._stored_selection(json.dumps(cstore.verify_settings(
+            NAME, surfaces.SurfaceRef(elevation=100.0), finals)))[1], "100.0 m")
+        half = '{"start": {"dataset": "d", "label": "L"}, "bases": [{"dataset": "x"}]}'
+        for text, wanted in ((half, (cstore.BaseSelection(), "L")), ('{"name": "x"}', (cstore.BaseSelection(), "")),
+                             ("", (cstore.BaseSelection(), "")), ("no es json", (cstore.BaseSelection(), "")),
+                             ("[]", (cstore.BaseSelection(), "")), ("null", (cstore.BaseSelection(), "")),
+                             (None, (cstore.BaseSelection(), ""))):
+            with self.subTest(text=text):
+                self.assertEqual(cstore._stored_selection(text), wanted)
+        bare = cstore.StoredVerification("op", "Prueba", False, (), (), (), (), (), {})
+        self.assertEqual((bare.selection, bare.start_name, bare.bases, bare.skipped), (cstore.BaseSelection(), "", (), ()))
+
 
 if __name__ == "__main__":
     unittest.main()

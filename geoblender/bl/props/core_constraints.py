@@ -280,12 +280,15 @@ class GEOBLENDER_PG_core_verify_zone(bpy.types.PropertyGroup):
     """Una fila de la tabla de una final de la ventana de la verificación (RF-012-21,
     RF-012-22): cómo se nombra el recinto (``name``) y su código (``code``), el veredicto ya
     escrito, si es «no cumple» (``alert``) y el corte, el relleno (m³) y el área con movimiento
-    (m²) como se leen."""
+    (m²) como se leen. Con la base de los acopios (spec 016, T42; RF-012-30), ``cut`` es el corte
+    de terreno de los recintos que cuentan solo ese y ``stock`` el de acopios («—» en los demás);
+    sin ella, ``stock`` queda vacío."""
 
     code: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     verdict: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     alert: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
     cut: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
+    stock: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     fill: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     moved: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
 
@@ -296,10 +299,13 @@ class GEOBLENDER_PG_core_verify_final(bpy.types.PropertyGroup):
     incumple (``alert``), el ``uid`` del dato de su rejilla de incumplimientos si lo hay (``grid``:
     un dato de una versión solo se indica por su uid), su tabla por recinto y sus grupos que
     incumplen, cada uno con su lugar para «Ir a», y lo que no cabe en la ventana (``more``: los
-    recintos y los grupos de más, que la ventana no dibuja)."""
+    recintos y los grupos de más, que la ventana no dibuja). ``stockpiles``: si la tabla lleva la
+    columna del corte de acopios (spec 016, T42), es decir, si la verificación usó la base de los
+    acopios en algún recinto."""
 
     text: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     alert: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
+    stockpiles: BoolProperty(default=False, options=_STATIC)  # type: ignore[valid-type]
     grid: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     more: StringProperty(default="", options=_STATIC)  # type: ignore[valid-type]
     zones: CollectionProperty(  # type: ignore[valid-type]
