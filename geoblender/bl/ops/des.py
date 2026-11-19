@@ -252,14 +252,16 @@ grafo (el recálculo de una plataforma no declara por su cuenta). Descartar (T25
 la misma función.
 
 **Lo que sigue a cambiar un parámetro de una entidad y a «Recalcular lo obsoleto»** (spec 015, T43; RF-015-10,
-RF-015-27, RF-015-29; hallazgos E-2, B-2 y E-4): «Cambiar parámetro…» de un parámetro ``des.platform.<e>.<p>`` de la
-versión activa lanza, con el cambio ya escrito (:func:`_after_entity_parameter`, registrado en
+RF-015-27, RF-015-29; hallazgos E-2, B-2 y E-4; spec 016, T47, hallazgos D-1 y D-2: de **cada tipo** de entidad, no solo de la
+plataforma): «Cambiar parámetro…» de un parámetro ``des.<tipo>.<e>.<p>`` de la versión activa (``PARAMETER_PREFIXES``: la plataforma,
+la detección de acopios, la retirada, el contrafuerte y el cuerpo apoyado) pasa antes por las reglas de crear la entidad
+(:func:`_check_entity_parameter`) y lanza, con el cambio ya escrito (:func:`_after_entity_parameter`, registrado en
 ``core_provenance.register_parameter_after``), :class:`GEOBLENDER_OT_des_entity_refresh` (interna, sin menú): lo que
 sigue a crear o descartar una entidad (``design.entity_store.after_entity_change``) por pasos con el avance y Esc;
 así una sola pasada de «Recalcular lo obsoleto» deja al día la entidad, las máscaras y la capa. Al terminar
 «Recalcular lo obsoleto» (:func:`_layers_after_recompute`, ``core_provenance.register_recompute_after``) se pone al día la
 capa de entidades de las versiones en que no dice lo que el registro (``design.entity_store.layers_sync_steps``: la
-008 no rehace lo que depende de una salida que no cambió).
+008 no rehace lo que depende de una salida que no cambió), con una entidad viva de cualquier tipo, también sin plataformas.
 
 **Descartar una entidad y soltar el apoyo** (spec 015, T25; HU-015-2; RF-015-17, RF-009-12, RF-015-28, RF-015-29; D-12;
 plan 015 §5.3.3 y §5.4 A7, P-6): :class:`GEOBLENDER_OT_des_entity_discard` (``geoblender.des_entity_discard``) **enseña
@@ -827,15 +829,22 @@ sus importaciones al usarlo, no al habilitar (:func:`register` lo registra)."""
 # --- Las reglas entre entidades al cambiar un parámetro (spec 015, T39; RF-015-01, RF-015-04, RF-015-12) ---
 
 PARAMETER_PREFIX = f"{design_params.PLATFORM_PREFIX}."
-"""El principio de las claves de los parámetros de una entidad (``des.platform.``): las que vigila
-:func:`_check_entity_parameter`."""
+"""El principio de las claves de los parámetros de una plataforma (``des.platform.``): el único que vigilaba
+:func:`_check_entity_parameter` hasta la T47 de la 016."""
+PARAMETER_PREFIXES: tuple[str, ...] = tuple(f"{spec.key_prefix}." for spec in (
+    design_params.PLATFORM_ENTITY, design_params.STOCKPILE_ENTITY, design_params.REMOVAL_ENTITY,
+    design_params.BUTTRESS_ENTITY, design_params.BODY_ENTITY))
+"""El principio de las claves de los parámetros de **cada tipo de entidad** del programa (``des.platform.``, ``des.stockpile.``,
+``des.removal.``, ``des.buttress.`` y ``des.body.``): los que vigilan :func:`_check_entity_parameter` y lo que sigue a cambiarlos
+(:func:`_after_entity_parameter`). Spec 016, T47 (hallazgo D-2): hasta entonces solo el de la plataforma, y un contrafuerte que protege
+aceptaba un nombre vacío, y su resguardo declarado seguía en el de antes hasta una pasada de «Recalcular lo obsoleto»."""
 
 
 def _check_entity_parameter(project: Any, key: str, value: Any, version_uid: str) -> None:
     """Lo que ``des`` registra en «Cambiar parámetro…» (:func:`~.core_provenance.register_parameter_check`):
-    ``design.entity_store.check_parameter_change``, que aplica al cambio de un parámetro de una entidad las reglas
-    entre entidades de crearla (nombre único, una entidad por superficie y sin ciclos, sin proteger en «en corte y
-    relleno» ni sin resguardo). Importa el almacén al usarlo, no al habilitar."""
+    ``design.entity_store.check_parameter_change``, que aplica al cambio de un parámetro de una entidad **de cualquier tipo**
+    (:data:`PARAMETER_PREFIXES`) las reglas entre entidades de crearla (nombre único, una entidad por superficie y sin ciclos, sin
+    proteger en «en corte y relleno» ni sin resguardo). Importa el almacén al usarlo, no al habilitar."""
     from ...design import entity_store  # al usarlo: habilitar no carga las entidades
 
     entity_store.check_parameter_change(project, key, value, version=version_uid)
@@ -848,9 +857,9 @@ REFRESH_ENTITIES = "geoblender.des_entity_refresh"
 
 def _after_entity_parameter(project: Any, key: str, version_uid: str) -> None:
     """Lo que ``des`` registra tras «Cambiar parámetro…» (:func:`~.core_provenance.register_parameter_after`): el cambio
-    de un parámetro de una entidad de la versión (``des.platform.<e>.<p>``) hace lo que hace crear o descartar una
-    —declarar sus restricciones, recompilar las máscaras si hace falta y poner al día la capa de entidades—, por pasos
-    con el avance y Esc en :class:`GEOBLENDER_OT_des_entity_refresh`: sin esto, «Recalcular lo obsoleto» tardaba tres
+    de un parámetro de una entidad de la versión (``des.<tipo>.<e>.<p>`` de cualquier tipo, :data:`PARAMETER_PREFIXES`) hace lo que
+    hace crear o descartar una —declarar sus restricciones, recompilar las máscaras si hace falta y poner al día la capa de
+    entidades—, por pasos con el avance y Esc en :class:`GEOBLENDER_OT_des_entity_refresh`: sin esto, «Recalcular lo obsoleto» tardaba tres
     pasadas en dejar al día una entidad cuyo resguardo cambió y la capa decía «al día» sobre una entidad obsoleta
     (hallazgos E-2 y E-4). «Cambiar parámetro…» cambia el de la versión **activa** (``scope = VERSION``): es la que pone
     al día la orden; si ya no lo es, no hace nada."""
@@ -864,11 +873,14 @@ def _layers_after_recompute(project: Any) -> Iterator[Progress] | None:
     la capa de entidades de cada versión que no diga lo que el registro de sus entidades (``design.entity_store.
     layers_sync_steps``). La 008 rehace las entidades por el grafo y, si la salida de una no cambia (RF-008-26), no toca
     lo que depende de ella: la capa seguía diciendo «obsoleta» sobre una entidad al día (hallazgo E-4). Sin ninguna
-    operación de entidades en el proyecto es una consulta y no importa el almacén (habilitar ni recalcular proyectos sin
-    ellas lo cargan)."""
+    operación de **una entidad de cualquier tipo** en el proyecto (:data:`~...design.provenance.ENTITY_OP_NAMES`: la plataforma, la
+    detección de acopios, la retirada, el contrafuerte y el cuerpo apoyado; spec 016, T47, hallazgo D-1: hasta entonces solo la
+    plataforma, y en una versión con un contrafuerte solo la capa seguía «obsoleta» sobre una entidad al día) es una consulta y no
+    importa el almacén (habilitar ni recalcular proyectos sin ellas lo cargan)."""
+    names = provenance.ENTITY_OP_NAMES
     with project.read() as conn:
-        found = conn.execute("SELECT 1 FROM gb_operation WHERE op_type = ? AND status = 'done' "
-                             "AND superseded_by IS NULL LIMIT 1", (provenance.PLATFORM,)).fetchone()
+        found = conn.execute(f"SELECT 1 FROM gb_operation WHERE op_type IN ({', '.join('?' for _ in names)}) "
+                             "AND status = 'done' AND superseded_by IS NULL LIMIT 1", names).fetchone()
     if found is None:
         return None
     from ...design import entity_store  # al usarlo: habilitar no carga las entidades
@@ -909,10 +921,11 @@ def register() -> None:
     if declaring.current() is not DECLARATION_HOOK:
         declaring.register(DECLARATION_HOOK)
         _UNDO.append(functools.partial(declaring.unregister, DECLARATION_HOOK))
-    register_parameter_check(PARAMETER_PREFIX, _check_entity_parameter)
-    _UNDO.append(functools.partial(unregister_parameter_check, PARAMETER_PREFIX, _check_entity_parameter))
-    register_parameter_after(PARAMETER_PREFIX, _after_entity_parameter)
-    _UNDO.append(functools.partial(unregister_parameter_after, PARAMETER_PREFIX, _after_entity_parameter))
+    for prefix in PARAMETER_PREFIXES:  # los de cada tipo de entidad (T47, D-2)
+        register_parameter_check(prefix, _check_entity_parameter)
+        _UNDO.append(functools.partial(unregister_parameter_check, prefix, _check_entity_parameter))
+        register_parameter_after(prefix, _after_entity_parameter)
+        _UNDO.append(functools.partial(unregister_parameter_after, prefix, _after_entity_parameter))
     register_recompute_after(_layers_after_recompute)
     _UNDO.append(functools.partial(unregister_recompute_after, _layers_after_recompute))
     if project_changed not in project_session.listeners():

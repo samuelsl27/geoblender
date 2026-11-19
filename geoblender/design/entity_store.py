@@ -258,6 +258,7 @@ from .model import (
 )
 from .params import (
     PLATFORM_PARAMS,
+    BodyParam,
     PlatformParam,
     check_entity_param,
     entity_key,
@@ -510,17 +511,24 @@ def _identify(project: StoreProject, version: Version, request: PlatformRequest,
     return chosen, registry
 
 
+def _entity_object(code: str, name: str) -> str:
+    """El objeto de un rechazo sobre la entidad de código ``code`` y nombre ``name``, con el nombre de su tipo para las personas:
+    ``Plataforma «P1»``, ``Retirada de acopio «R1»``, ``Contrafuerte «C1»`` (spec 016, T47: lo que comparten crear y cambiar el
+    parámetro de cualquier tipo; el de la plataforma, el de siempre)."""
+    return f"{entity_params_of(code).label or 'Entidad'} «{name}»"
+
+
 def _check_name(registry: EntityRegistry, name: str, code: str, version_code: str) -> None:
     """RF-015-01: ninguna otra entidad del ``registry`` (la de código ``code`` no cuenta consigo misma) tiene el
     nombre ``name`` —también el de una sin calcular o descartada— ni uno que dé el mismo nombre de dato
     (``des.entity_name_repeated``, con la que lo tiene). Lo comparten crear, recalcular y cambiar el parámetro
-    ``name`` (:func:`check_parameter_change`, T39)."""
+    ``name`` de **cualquier tipo** (:func:`check_parameter_change`, T39 y T47)."""
     wanted = provenance.dataset_name(provenance.ENTITY_SURFACE_GRID, name)
     for entry in registry:
         other = entry.record.name
         if entry.record.code != code and (
                 other == name or provenance.dataset_name(provenance.ENTITY_SURFACE_GRID, other) == wanted):
-            raise DesignError("des.entity_name_repeated", obj=f"Plataforma «{name}»",
+            raise DesignError("des.entity_name_repeated", obj=_entity_object(code, name),
                               field=entity_key(code, PlatformParam.NAME), value=name,
                               other=other, version=version_code)
 
@@ -555,8 +563,9 @@ def _check_chain(registry: EntityRegistry, request: PlatformRequest, code: str,
 def _check_chain_of(registry: EntityRegistry, name: str, start: str | None, support: str | None, code: str,
                     insert_before: str | None = None) -> None:
     """:func:`_check_chain` de la entidad ``code`` de nombre ``name`` con su partida ``start`` y su apoyo
-    ``support``: lo que comparten crear, recalcular y cambiar el parámetro ``start`` (T39)."""
-    obj = f"Plataforma «{name}»"
+    ``support``: lo que comparten crear, recalcular y cambiar el parámetro ``start`` de cualquier tipo que encadena (T39 y T47: el
+    tipo es el del código de la entidad)."""
+    obj = _entity_object(code, name)
     _check_surface_left(registry, name, code, start, entity_key(code, PlatformParam.START), obj=obj)
     records = [item for item in registry.records if item.code != code]
     if insert_before is None:
@@ -578,7 +587,7 @@ def _check_chain_of(registry: EntityRegistry, name: str, start: str | None, supp
                 "misma superficie (entities.insertion_start)")
         records = [replace(item, start=entities.surface_ref(code)) if item is successor else item
                    for item in records]
-    this = EntityRecord(code, name, EntityKind.PLATFORM, start, support)
+    this = EntityRecord(code, name, entities.kind_of_code(code), start, support)
     entities.check_chain([*records, this])
 
 
@@ -1013,7 +1022,7 @@ def _check_support_cycle(registry: EntityRegistry, name: str, code: str, support
         registry.records, code, insert_before=insert_before)
     if cyclic:
         target = min(cyclic, key=entities.code_order)
-        raise DesignError("des.entity_supports_unknown", obj=f"Plataforma «{name}»", field=field, value=support,
+        raise DesignError("des.entity_supports_unknown", obj=_entity_object(code, name), field=field, value=support,
                           entity=name, target=target,
                           reason=_SUPPORT_ITSELF if target == code else _SUPPORT_CYCLE, version=version_code)
 
@@ -1380,70 +1389,75 @@ def set_entity_params(project: StoreProject, rows: Iterable[EntityParamRow], *, 
         return write(writing)
 
 
-# --- Cambiar un parámetro de una entidad (spec 015, T39; RF-015-01, RF-015-04, RF-015-12) -------
+# --- Cambiar un parámetro de una entidad (spec 015, T39; spec 016, T47; RF-015-01, RF-015-04, RF-015-12) -------
 
-_RULED_PARAMS = frozenset({PlatformParam.NAME, PlatformParam.LAYER, PlatformParam.FEATURE, PlatformParam.START,
-                           PlatformParam.SUPPORT, PlatformParam.MODE, PlatformParam.PROTECT, PlatformParam.GUARD})
-"""Los parámetros de una entidad cuyo cambio pasa por las reglas **entre** entidades que se aplican al crearla
-(:func:`check_parameter_change`): los que dan su identidad y su sitio en la cadena (``name``, ``layer``, ``feature``,
-``start`` y ``support``) y los que dan lo que declara (``mode``, ``protect`` y ``guard_m``). El tipo, el rango y las
-opciones de cada valor, y los demás parámetros, los comprueba su definición (``core.params.ParamDef``)."""
-_TEXT_RULED = frozenset({PlatformParam.NAME, PlatformParam.LAYER, PlatformParam.FEATURE, PlatformParam.START,
-                         PlatformParam.SUPPORT, PlatformParam.MODE})
-
-
-def _entity_parameter(key: str) -> tuple[str, PlatformParam] | None:
-    """El código de la entidad y el parámetro de la clave ``des.platform.{e}.<valor>``; ``None`` si la clave no es
-    de esa forma (otro tipo de entidad, un segmento que no es el de un código de plataforma o un valor que no es
-    de una plataforma). Las reglas de cambiar un parámetro (:func:`check_parameter_change`) son, hasta que otro
-    tipo las pida, las de la plataforma (``parse_entity_key`` da el tipo de cualquier clave de entidad)."""
-    found = parse_entity_key(key)
-    if found is None or found[1] != "platform":
-        return None
-    return found[0], PlatformParam(found[2])
+_COMMON_RULED = frozenset({PlatformParam.NAME.value, PlatformParam.LAYER.value, PlatformParam.FEATURE.value,
+                           PlatformParam.START.value, PlatformParam.SUPPORT.value, PlatformParam.MODE.value,
+                           PlatformParam.PROTECT.value, PlatformParam.GUARD.value})
+"""Los parámetros de una entidad de **cualquier tipo** cuyo cambio pasa por las reglas **entre** entidades que se aplican al
+crearla (:func:`check_parameter_change`): los que dan su identidad y su sitio en la cadena (``name``, ``layer``, ``feature``,
+``start`` y ``support``) y los que dan lo que declara (``mode``, ``protect`` y ``guard_m``), de los tipos que los tienen. El tipo,
+el rango y las opciones de cada valor, y los demás parámetros, los comprueba su definición (``core.params.ParamDef``)."""
+_KNOWN_SURFACES: Mapping[str, BodyParam] = MappingProxyType({"body": BodyParam.SURFACE})
+"""El valor que es **una referencia más a una superficie** de los tipos que lo tienen, por tipo (spec 016, T47; hallazgos D-2 y C-4): la
+superficie conocida del cuerpo apoyado (``des.body.{e}.surface``: el terreno, una superficie de diseño o ``entity:<código>``). Cambiarla
+pasa por las reglas del apoyo (:func:`check_parameter_change`) y traer las entidades de otra versión la re-apunta como la partida y el
+apoyo (:func:`bring_entities`). La superficie de una detección de acopios no está aquí: es el dato sobre el que se detecta, no una
+referencia de la cadena."""
 
 
-def _has_type(param: PlatformParam, value: object) -> bool:
-    """Si ``value`` es del tipo del parámetro ``param`` (un texto, o ``None``; un sí/no; un número): lo demás es
-    cosa de la definición del parámetro, que lo rechaza con su propio texto."""
+def _ruled(kind: str, param: str) -> bool:
+    """Si el cambio del valor ``param`` de una entidad de tipo ``kind`` pasa por las reglas entre entidades (:data:`_COMMON_RULED` y
+    la superficie conocida de los tipos que la tienen, :data:`_KNOWN_SURFACES`)."""
+    return param in _COMMON_RULED or (kind in _KNOWN_SURFACES and param == _KNOWN_SURFACES[kind].value)
+
+
+def _has_type(kind: str, param: str, value: object) -> bool:
+    """Si ``value`` es del tipo del parámetro ``param`` de una entidad de tipo ``kind`` (un texto, o ``None``; un sí/no; un número): lo
+    demás es cosa de la definición del parámetro, que lo rechaza con su propio texto."""
     if value is None:
         return True
-    if param in _TEXT_RULED:
+    value_type = str(entity_params(kind).template(param).value_type)
+    if value_type == "text":
         return isinstance(value, str)
-    if param is PlatformParam.PROTECT:
+    if value_type == "bool":
         return isinstance(value, bool)
     return isinstance(value, int | float) and not isinstance(value, bool)
 
 
 def check_parameter_change(project: StoreProject, key: str, value: object, *, version: Version | str | None) -> None:
-    """**Las reglas de crear, al cambiar un parámetro de una entidad** (spec 015, T39; RF-015-01, RF-015-04,
-    RF-015-05, RF-015-08, RF-015-12; hallazgos A-2, A-1 y B-1): «Cambiar parámetro…» de la 008
-    (``geoblender.core_set_parameter``) solo comprobaba el tipo y el rango de la definición, y dejaba una versión
-    que ni preparaba, ni congelaba, ni declaraba. Si ``key`` es ``des.platform.{e}.<valor>`` de una entidad de la
-    versión ``version`` (uid o código) y el valor es uno de :data:`_RULED_PARAMS`, comprueba que el ``value`` nuevo (ya
-    leído, en la unidad del parámetro) **no rompe** lo que se exige al crearla y la nombra en el rechazo (con la
-    capa, el campo y el valor):
+    """**Las reglas de crear, al cambiar un parámetro de una entidad** (spec 015, T39; spec 016, T47; RF-015-01, RF-015-04,
+    RF-015-05, RF-015-08, RF-015-12, RF-015-15; hallazgos A-2, A-1 y B-1 de la 015 y D-2 de la 016): «Cambiar parámetro…» de la 008
+    (``geoblender.core_set_parameter``) solo comprobaba el tipo y el rango de la definición, y dejaba una versión que ni preparaba,
+    ni congelaba, ni declaraba; y desde la T39 solo lo hacía con las plataformas. Si ``key`` es ``des.<tipo>.{e}.<valor>`` de una
+    entidad **de cualquier tipo registrado** (la plataforma, la detección de acopios, la retirada, el contrafuerte o el cuerpo apoyado)
+    de la versión ``version`` (uid o código) y el valor es uno de los que tienen reglas (:data:`_COMMON_RULED`, y la superficie conocida
+    del cuerpo, :data:`_KNOWN_SURFACES`), comprueba que el ``value`` nuevo (ya leído, en la unidad del parámetro) **no rompe** lo que
+    se exige al crearla y la nombra en el rechazo (con la capa, el campo y el valor):
 
     - ``name``: no vacío (``des.entity_param_missing``) y único en la versión, también como nombre de dato
-      (``des.entity_name_repeated``; :func:`_check_name`). ``layer`` y ``feature``: no vacíos.
-    - ``start``: no vacía, de ella parte como mucho otra entidad (``des.entity_start_taken``) y la cadena no da la
-      vuelta (``des.entity_chain_cycle``; :func:`_check_chain_of`).
-    - ``support``: ni la superficie de la propia entidad ni la de una que parte de la suya
-      (``des.entity_supports_unknown``: un ciclo; :func:`_check_support_cycle`).
+      (``des.entity_name_repeated``; :func:`_check_name`). ``layer`` y ``feature``: no vacíos, en los tipos que los tienen.
+    - ``start``, en los tipos que encadenan: no vacía (salvo en el cuerpo «bajo un techo»), de ella parte como mucho otra entidad
+      (``des.entity_start_taken``), la cadena no da la vuelta (``des.entity_chain_cycle``; :func:`_check_chain_of`) y nadie parte de
+      la superficie de un cuerpo «bajo un techo» (``des.chainless_start``).
+    - ``support`` (y la superficie conocida del cuerpo): ni la superficie de la propia entidad ni la de una que parte de la suya
+      (``des.entity_supports_unknown``: un ciclo; :func:`_check_support_cycle`); y, en el contrafuerte y en el cuerpo, tampoco la de
+      un cuerpo «bajo un techo» (``des.chainless_start``), como al crearlos.
     - ``mode``, ``protect`` y ``guard_m``: con lo que quedaría la entidad, no protege en «en corte y relleno»
-      (``des.platform_protect_cut_fill``) ni sin resguardo (``des.entity_param_missing``;
+      (``des.platform_protect_cut_fill``; solo la plataforma tiene modo) ni sin resguardo (``des.entity_param_missing``;
       :func:`_check_protection`: lo mismo que comprueba al declarar).
 
     Una entidad descartada es un registro: solo se le comprueba el nombre, la capa y la geometría. **Solo lee**:
     se llama **antes** de abrir la transacción que escribe (el rechazo no deja ninguna). No hace nada si ``version``
     es ``None`` o no existe (lo dice el almacén de parámetros), si la clave no es de una entidad de la versión o si el
     valor no es del tipo del parámetro (lo dice su definición)."""
-    found = _entity_parameter(key)
-    if found is None or found[1] not in _RULED_PARAMS or version is None:
+    found = parse_entity_key(key)
+    if found is None or version is None:
         return
-    code, param = found
-    if not _has_type(param, value):
+    code, kind, param = found
+    if not _ruled(kind, param) or not _has_type(kind, param, value):
         return
+    spec = entity_params(kind)
     with _consistent(project) as conn:
         chosen = version if isinstance(version, Version) else versions_read.version(conn, version)
         if chosen is None:
@@ -1453,14 +1467,15 @@ def check_parameter_change(project: StoreProject, key: str, value: object, *, ve
         if entry is None or entry.record.code != code:
             return
         keys = {entity_key(code, item): item for item in (PlatformParam.LAYER, PlatformParam.PROTECT,
-                                                          PlatformParam.MODE, PlatformParam.GUARD)}
+                                                          PlatformParam.MODE, PlatformParam.GUARD)
+                if item.value in spec.names}
         resolved = ParameterStore(project).resolve_many(
             conn, tuple(keys), (VERSION_SCOPE, PROJECT_SCOPE), version=chosen.uid)
-    now = {item: (resolved[name].value if resolved.get(name) is not None else _default(item))
+    now = {item: (resolved[name].value if resolved.get(name) is not None else spec.template(item.value).default)
            for name, item in keys.items()}
     record = entry.record
-    layer = str(now[PlatformParam.LAYER]) if now[PlatformParam.LAYER] else _NO_VALUE
-    if param is PlatformParam.NAME:
+    layer = str(now[PlatformParam.LAYER]) if now.get(PlatformParam.LAYER) else _NO_VALUE
+    if param == PlatformParam.NAME:
         _check_name(registry, str(check_entity_param(record.name, code, param, value, layer=layer)), code, chosen.code)
         return
     if param in (PlatformParam.LAYER, PlatformParam.FEATURE):
@@ -1468,17 +1483,24 @@ def check_parameter_change(project: StoreProject, key: str, value: object, *, ve
         return
     if record.state is EntityState.DISCARDED:
         return
-    if param is PlatformParam.START:
+    obj = _entity_object(code, record.name)
+    if param == PlatformParam.START:
         start = check_entity_param(record.name, code, param, value, layer=layer)
         _check_chain_of(registry, record.name, None if start is None else str(start), record.support, code)
-    elif param is PlatformParam.SUPPORT:
+    elif param == PlatformParam.SUPPORT:
         support = check_entity_param(record.name, code, param, value, layer=layer)
+        if kind == EntityKind.BUTTRESS:  # como al crearlo: nadie se apoya en lo que un cuerpo «bajo un techo» no deja
+            _check_surface_left(registry, record.name, code, None if support is None else str(support), key, obj=obj)
         _check_support_cycle(registry, record.name, code, None if support is None else str(support), key, chosen.code)
+    elif kind in _KNOWN_SURFACES and param == _KNOWN_SURFACES[kind]:
+        surface = str(check_entity_param(record.name, code, param, value, layer=layer))
+        _check_surface_left(registry, record.name, code, surface, key, obj=obj)
+        _check_support_cycle(registry, record.name, code, surface, key, chosen.code)
     else:
         after = {**now, param: value}  # lo que quedaría la entidad con el valor nuevo
         guard = after[PlatformParam.GUARD]
         _check_protection(record.name, code, layer, bool(after[PlatformParam.PROTECT]),
-                          str(after[PlatformParam.MODE]),
+                          str(after.get(PlatformParam.MODE, PlatformMode.CUT.value)),
                           None if guard is None else float(guard))  # type: ignore[arg-type]
 
 
@@ -4223,7 +4245,7 @@ _NOT_BROUGHT = frozenset({PlatformParam.DISCARDED})
 """Los parámetros de la entidad que no se traen: ``discarded`` solo existe en las descartadas sin calcular, que no se
 traen (lo descartado es un estado de la versión de origen)."""
 _FOLLOW_CODES = "; sus referencias siguen los códigos de las entidades traídas"
-_REFERENCES = frozenset({PlatformParam.START, PlatformParam.SUPPORT, PlatformParam.SUPPORTS})
+_REFERENCES = frozenset({PlatformParam.START, PlatformParam.SUPPORT, PlatformParam.SUPPORTS, BodyParam.SURFACE})
 
 
 @dataclass(frozen=True, slots=True)
@@ -4378,12 +4400,12 @@ def _brought_supports(text: str | None, new: Mapping[str, str]) -> tuple[str | N
 
 
 def _entity_rows(store: ParameterStore, conn: sqlite3.Connection, source: Version, record: EntityRecord, fresh: str,
-                 label: str, changed: Mapping[PlatformParam, object]) -> list[_BringRow]:
+                 label: str, changed: Mapping[str, object]) -> list[_BringRow]:
     """Los parámetros de la entidad ``record`` de la versión de origen que se escriben en el destino con el código
-    ``fresh``: los que tienen valor (``changed`` da el de los que cambian: el nombre, la partida, el apoyo y lo
-    declarado; si es ``None``, no se escribe), con su motivo, «Traído de V09.r2» y lo que cambió. Los de **la familia de su
-    tipo** (spec 016, T35: la detección de acopios, la retirada, el contrafuerte y el cuerpo apoyado tienen la suya, sin los
-    valores que no son suyos: la detección no tiene ``start``). Solo lee."""
+    ``fresh``: los que tienen valor (``changed`` da el de los que cambian: el nombre, la partida, el apoyo, lo
+    declarado y, del cuerpo apoyado, su superficie conocida; si es ``None``, no se escribe), con su motivo, «Traído de V09.r2» y
+    lo que cambió. Los de **la familia de su tipo** (spec 016, T35: la detección de acopios, la retirada, el contrafuerte y el
+    cuerpo apoyado tienen la suya, sin los valores que no son suyos: la detección no tiene ``start``). Solo lee."""
     rows: list[_BringRow] = []
     for param in entities.entity_type(record.kind).params.names:
         found = None if param in _NOT_BROUGHT else store.get(entity_key(record.code, param), version=source.uid,
@@ -4461,6 +4483,12 @@ def bring_entities(project: StoreProject, source_version: Version | str, target_
             name = _free_name(record.name, source.code, names, data)
             start, lost_start = _brought_surface(conn, source, listed, record.start, new)
             support, lost_support = _brought_surface(conn, source, listed, record.support, new)
+            known = _KNOWN_SURFACES.get(str(record.kind))  # la superficie conocida del cuerpo: una referencia más (T47, C-4)
+            surface = lost_surface = None
+            if known is not None:
+                original = store.get(entity_key(record.code, known), version=source.uid, conn=conn)
+                surface, lost_surface = _brought_surface(
+                    conn, source, listed, None if original is None or original.value is None else str(original.value), new)
             taken = entities.start_conflict(records, start)
             if taken is not None:  # de cada superficie parte una entidad: la traída no puede ser la segunda
                 notices.append(Notice("des.entity_bring_start_taken", {
@@ -4472,7 +4500,7 @@ def bring_entities(project: StoreProject, source_version: Version | str, target_
                 None if declared is None or declared.value is None else str(declared.value), new)
             made = _entity_rows(store, conn, source, record, fresh, label, {
                 PlatformParam.NAME: name, PlatformParam.START: start, PlatformParam.SUPPORT: support,
-                PlatformParam.SUPPORTS: supports})
+                PlatformParam.SUPPORTS: supports, **({} if known is None else {known: surface})})
             rows.extend(made)
             brought.append(BroughtEntity(record.code, fresh, record.name, name, start, support, len(made)))
             if fresh != record.code:
@@ -4482,10 +4510,11 @@ def bring_entities(project: StoreProject, source_version: Version | str, target_
             if name != record.name:
                 notices.append(Notice("des.entity_bring_renamed", {
                     "old": record.name, "name": name, "version": target.code}))
-            for role, surface in (("start", lost_start), ("support", lost_support)):
-                if surface is not None:
-                    notices.append(Notice(f"des.entity_bring_{role}_lost", {
-                        "name": name, "surface": surface, "source": source.code, "version": target.code}))
+            for message, gone in (("des.entity_bring_start_lost", lost_start), ("des.entity_bring_support_lost", lost_support),
+                                  ("des.body_bring_surface_lost", lost_surface)):
+                if gone is not None:
+                    notices.append(Notice(message, {
+                        "name": name, "surface": gone, "source": source.code, "version": target.code}))
             if lost_supports:
                 notices.append(Notice("des.entity_bring_supports_lost", {
                     "name": name, "entities": ", ".join(f"«{part}»" for part in lost_supports)}))

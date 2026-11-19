@@ -2709,6 +2709,15 @@ CATALOG: tuple[Message, ...] = (
         "se descartó el cuerpo apoyado «{name}»",
         "note",
     ),
+    # T47 (hallazgo C-4): traer las entidades de otra versión con el cuerpo apoyado, cuya superficie conocida es una referencia más.
+    Message(
+        "des.body_bring_surface_lost",
+        "«{name}»: its known surface «{surface}» is a result of {source} and does not exist in {version}; the body is left "
+        "without a known surface and cannot be calculated until you choose one.",
+        "«{name}»: su superficie conocida «{surface}» es un resultado de {source} y no existe en {version}; el cuerpo queda "
+        "sin superficie conocida y no se puede calcular hasta que elija una.",
+        "warning",
+    ),
 )
 
 MESSAGES: Mapping[str, Message] = MappingProxyType({m.code: m for m in CATALOG})

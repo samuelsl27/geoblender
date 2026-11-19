@@ -111,6 +111,8 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.body_data_m": ("error", "RF-016-20", {"entity", "layer"}),
     "des.body_declared_reason": ("note", "RF-015-10", {"name"}),
     "des.body_support_removed": ("note", "RF-015-17", {"name"}),
+    # T47 (C-4): traer las entidades de otra versión: la superficie conocida de un cuerpo que no existe en el destino.
+    "des.body_bring_surface_lost": ("warning", "RF-015-18", {"name", "surface", "source", "version"}),
 }
 """Los códigos de la T03 con su gravedad, su RF y lo que su texto nombra."""
 PREFIXES = ("des.stockpile_", "des.removal_", "des.buttress_", "des.body_")
