@@ -187,10 +187,7 @@ from ..gis.provenance import dataset_slug
 from .model import (
     AnchorMode,
     BenchSense,
-    BodyRequest,
     BodySense,
-    ButtressFields,
-    ButtressRequest,
     CorridorFields,
     DesignRequest,
     Direction,
@@ -204,12 +201,9 @@ from .model import (
     QuarryRequest,
     QuarrySide,
     RefitRequest,
-    RemovalRequest,
     SeedKind,
     SeedSource,
     SlopeMode,
-    StockpileFields,
-    StockpileRequest,
     Surface,
     ToFinalMode,
     WorkDomain,
@@ -243,6 +237,14 @@ from .params import EDGE_TRANSITION as EDGE_TRANSITION_DEG
 
 if TYPE_CHECKING:  # solo para los tipos: importar el informe arrastraría los cálculos
     from .report import DesignReport
+    from .supported_requests import (  # las crea la primera llamada que las usa, no habilitar (T51)
+        BodyRequest,
+        ButtressFields,
+        ButtressRequest,
+        RemovalRequest,
+        StockpileFields,
+        StockpileRequest,
+    )
 
 __all__ = [
     "ANCHORS_ROLE",
@@ -3227,6 +3229,7 @@ def stockpile_settings(request: StockpileRequest, code: str) -> dict[str, Any]:
     capa, la superficie, los umbrales de D-3 y las decisiones son **parámetros de la entidad**
     (``des.stockpile.{e}.*``, :func:`supported_values`), como en la plataforma. Es un diccionario nuevo;
     ``ValueError`` si ``code`` no es el de una entidad."""
+    from .supported_requests import StockpileRequest  # al usarlo: habilitar no las crea (T51)
     if not isinstance(request, StockpileRequest):
         raise TypeError(f"los ajustes de una detección de acopios salen de una StockpileRequest, no {request!r}")
     _typed_code(code, "stockpile", "una detección de acopios")
@@ -3243,6 +3246,7 @@ def stockpile_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]
     y las decisiones salen de los parámetros (cambiar uno repite la operación con el nuevo) y los campos de la capa, de
     los ajustes; lo que no tiene valor queda ``None`` sin pedirlo. ``ValueError`` si no son los de una detección
     (nombrando el campo)."""
+    from .supported_requests import StockpileFields, StockpileRequest  # al usarlo: habilitar no las crea (T51)
     what = "los ajustes de una detección de acopios"
     values_what = "los valores de una detección de acopios"
     data = _mapping(settings, what)
@@ -3277,6 +3281,7 @@ def stockpile_inputs(request: StockpileRequest, surface: str, masks: Iterable[Us
     el perímetro de actuación ``perimeter`` (lo que consume la detección **del proyecto**, que no tiene máscaras de
     versión: RF-012-13), sin repetir. Si una cambia, la detección queda obsoleta. ``ValueError`` si faltan los nombres.
     (La superficie de base propia de una marca, RF-016-03, la añade la T13.)"""
+    from .supported_requests import StockpileRequest  # al usarlo: habilitar no las crea (T51)
     if not isinstance(request, StockpileRequest):
         raise TypeError(f"las entradas de una detección de acopios salen de una StockpileRequest, no {request!r}")
     return _unique([Use(_named(request.layer, "de la capa de las marcas"), MARKS_LAYER_ROLE),
@@ -3312,6 +3317,7 @@ def removal_settings(request: RemovalRequest, code: str) -> dict[str, Any]:
     """Los ajustes de ``des.stockpile_removal`` (spec 016, T03; RF-016-11): el nombre de la retirada y su ``code``
     (``RMV-001``); el acopio, la partida, la transición y lo demás son **parámetros** de la entidad
     (``des.removal.{e}.*``). ``ValueError`` si ``code`` no es el de una retirada."""
+    from .supported_requests import RemovalRequest  # al usarlo: habilitar no las crea (T51)
     if not isinstance(request, RemovalRequest):
         raise TypeError(f"los ajustes de una retirada salen de una RemovalRequest, no {request!r}")
     _typed_code(code, "removal", "una retirada")
@@ -3322,6 +3328,7 @@ def removal_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]) 
     """La retirada que repiten los ajustes ``settings`` de ``des.stockpile_removal`` con los valores de los parámetros
     de su entidad ``parameters`` (por último segmento: :func:`supported_values`). ``ValueError`` si no son los de una
     retirada (nombrando el campo)."""
+    from .supported_requests import RemovalRequest  # al usarlo: habilitar no las crea (T51)
     what = "los ajustes de una retirada"
     values_what = "los valores de una retirada"
     data = _mapping(settings, what)
@@ -3348,6 +3355,7 @@ def removal_inputs(request: RemovalRequest, start: str, removed: Iterable[str], 
     ``supports`` (:data:`SUPPORTED_ON_ROLE`: las superficies sobre las que se apoyaba lo que la retirada atribuye,
     RF-016-14), sin repetir. ``ValueError`` si faltan los nombres; ``TypeError`` si ``removed`` o ``supports`` es un
     texto."""
+    from .supported_requests import RemovalRequest  # al usarlo: habilitar no las crea (T51)
     if not isinstance(request, RemovalRequest):
         raise TypeError(f"las entradas de una retirada salen de una RemovalRequest, no {request!r}")
     found = [Use(_named(start, "de la superficie de partida"), SURFACE_ROLE)]
@@ -3390,6 +3398,7 @@ def buttress_settings(request: ButtressRequest, code: str) -> dict[str, Any]:
     y el campo de la cota de coronación de su capa de zonas (``fields``; ``None`` si no lo lleva). La capa, la
     geometría, la partida, el perfil, la cota y lo demás son **parámetros** (``des.buttress.{e}.*``). ``ValueError`` si
     ``code`` no es el de un contrafuerte."""
+    from .supported_requests import ButtressRequest  # al usarlo: habilitar no las crea (T51)
     if not isinstance(request, ButtressRequest):
         raise TypeError(f"los ajustes de un contrafuerte salen de una ButtressRequest, no {request!r}")
     _typed_code(code, "buttress", "un contrafuerte")
@@ -3400,6 +3409,7 @@ def buttress_request(settings: Mapping[str, Any], parameters: Mapping[str, Any])
     """El contrafuerte que repiten los ajustes ``settings`` de ``des.buttress`` con los valores de los parámetros de su
     entidad ``parameters`` (por último segmento: :func:`supported_values`). ``ValueError`` si no son los de un
     contrafuerte (nombrando el campo)."""
+    from .supported_requests import ButtressFields, ButtressRequest  # al usarlo: habilitar no las crea (T51)
     what = "los ajustes de un contrafuerte"
     values_what = "los valores de un contrafuerte"
     data = _mapping(settings, what)
@@ -3426,6 +3436,7 @@ def buttress_inputs(request: ButtressRequest, start: str, masks: Iterable[Use] =
     (:data:`SURFACE_ROLE`; ya resuelta), las máscaras de la versión ``masks`` y, **añadidas al crear**, las superficies
     en las que se apoya, ``supports`` (:data:`SUPPORTED_ON_ROLE`: las que detecta el cálculo, las que declara el usuario y
     la de apoyo de la petición, resuelta), sin repetir. ``ValueError`` si faltan los nombres."""
+    from .supported_requests import ButtressRequest  # al usarlo: habilitar no las crea (T51)
     if not isinstance(request, ButtressRequest):
         raise TypeError(f"las entradas de un contrafuerte salen de una ButtressRequest, no {request!r}")
     found = [Use(_named(request.layer, "de la capa de las zonas de coronación"), ENTITY_LAYER_ROLE),
@@ -3456,6 +3467,7 @@ def body_settings(request: BodyRequest, code: str) -> dict[str, Any]:
     """Los ajustes de ``des.body`` (spec 016, T03; RF-016-20): el nombre del cuerpo y su ``code`` (``BDY-001``); la
     huella, los datos de espesor, la superficie, el sentido y la distancia máxima son **parámetros**
     (``des.body.{e}.*``). ``ValueError`` si ``code`` no es el de un cuerpo."""
+    from .supported_requests import BodyRequest  # al usarlo: habilitar no las crea (T51)
     if not isinstance(request, BodyRequest):
         raise TypeError(f"los ajustes de un cuerpo apoyado salen de una BodyRequest, no {request!r}")
     _typed_code(code, "body", "un cuerpo apoyado")
@@ -3466,6 +3478,7 @@ def body_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]) -> 
     """El cuerpo apoyado que repiten los ajustes ``settings`` de ``des.body`` con los valores de los parámetros de su
     entidad ``parameters`` (por último segmento: :func:`supported_values`). ``ValueError`` si no son los de un cuerpo
     (nombrando el campo)."""
+    from .supported_requests import BodyRequest  # al usarlo: habilitar no las crea (T51)
     what = "los ajustes de un cuerpo apoyado"
     values_what = "los valores de un cuerpo apoyado"
     data = _mapping(settings, what)
@@ -3488,6 +3501,7 @@ def body_inputs(request: BodyRequest, surface: str, masks: Iterable[Use] = (),
     superficie conocida ``surface`` (:data:`SURFACE_ROLE`; ya resuelta), las máscaras de la versión ``masks`` y,
     **añadidas al crear**, lo que apoya, ``supports`` (:data:`SUPPORTED_ON_ROLE`), sin repetir. ``ValueError`` si
     faltan los nombres."""
+    from .supported_requests import BodyRequest  # al usarlo: habilitar no las crea (T51)
     if not isinstance(request, BodyRequest):
         raise TypeError(f"las entradas de un cuerpo apoyado salen de una BodyRequest, no {request!r}")
     found = [Use(_named(request.layer, "de la capa de la huella"), ENTITY_LAYER_ROLE),

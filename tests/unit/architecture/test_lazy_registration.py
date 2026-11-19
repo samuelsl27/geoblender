@@ -72,6 +72,9 @@ HEAVY: frozenset[str] = frozenset({
     # de lo apoyado y la morfología. Ya eran perezosos; lo fija la prueba para que no vuelvan a cargarse al habilitar (RNF-001-03:
     # la 016 subió el habilitado de 0,487 s a 0,512 s con sus declaraciones y sus familias, y no con estos).
     "design.thickness", "design.buttress", "design.supported_edge", "design.morphology",
+    # Las seis peticiones de la 016 (spec 016, T51): 4,2 ms de dataclasses que habilitar no necesita;
+    # ``design.model`` las ofrece con su nombre de siempre al pedirlas (``__getattr__``).
+    "design.supported_requests",
 })
 """Los módulos de la 012, la 013, la 015 y la 016 (y la cadena que arrastran) que se importan al primer uso."""
 

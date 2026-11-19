@@ -641,8 +641,14 @@ HEAVY: tuple[str, ...] = (
     "gis.masks.overlay", "gis.masks.sectors", "gis.masks.sources", "gis.masks.store",
     "gis.masks.zones", "gis.search", "reserves.compliance", "reserves.compliance_store",
     "core.versions.freeze", "core.versions.reproduce", "core.versions.copy",
-    "core.versions.check", "core.provenance.lineage", "core.provenance.recompute")
-"""Lo que habilitar no importa (los mismos que ``tests/unit/architecture/test_lazy_registration``)."""
+    "core.versions.check", "core.provenance.lineage", "core.provenance.recompute",
+    # El cálculo de la 016 (spec 016, T51; RNF-001-03): ninguno se importa al habilitar, tampoco por un
+    # nombre que ``design.model`` ofrece al pedirlo (``__getattr__``), que el árbol sintáctico no ve.
+    "design.stockpiles", "design.stockpile_store", "design.removal", "design.supported_store",
+    "design.thickness", "design.buttress", "design.supported_edge", "design.morphology",
+    "design.supported_requests")
+"""Lo que habilitar no importa (los de la 012 que fija ``tests/unit/architecture/test_lazy_registration``,
+y los de la 016, que esa prueba mira por sus importaciones de nivel de módulo)."""
 LIGHT: tuple[str, ...] = ("core.constraints.provenance", "gis.masks.provenance",
                           "reserves.provenance", "core.versions.freezing")
 """Lo que sí: las declaraciones que registra ``bl``."""
