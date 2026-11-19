@@ -123,6 +123,7 @@ from .params import (
     StockpileParam,
     entity_key,
 )
+from .buttress import ButtressJob
 from .platform import PlatformJob
 from .removal import RemovalJob
 from .seeds import (
@@ -787,7 +788,7 @@ def _frozen_source(frozen: _Frozen, code: str, calc_name: str, decisions: Mappin
         mode=str(PLATFORM_PARAMS[PlatformParam.MODE.value].default if mode is None else mode),
         guard_m=None if guard is None else float(guard),  # type: ignore[arg-type]
         reason=(reason.strip() or None) if isinstance(reason, str) else None, decided_by=who,
-        decided_on=when, runs=found.runs)
+        decided_on=when, runs=found.runs, zone=found.zone)
 
 
 def _declared_output(request: ReproduceRequest, rows: Sequence[object], crs: CrsRef
@@ -974,8 +975,45 @@ def _removal_support(request: ReproduceRequest, asked: Any) -> str | None:
 
 
 def reproduce_buttress(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
-    """Reproduce ``des.buttress`` (RF-016-17, RF-009-11): sin comportamiento todavía (T27)."""
-    return _not_yet(request, provenance.BUTTRESS, "la T27")
+    """Reproduce ``des.buttress`` (spec 016, T27; RF-016-17, RF-016-18, RF-009-11) con la capa de las zonas de coronación, la superficie de
+    partida y sus máscaras congeladas y los parámetros congelados de su entidad (``des.buttress.{e}.*``: la capa y su geometría, la
+    partida, el perfil, el alcance, la cota de coronación y la métrica), los del perfil (``des.bench.{p}.*``) y los del proyecto, con los
+    ajustes de su operación (el nombre, el código y el campo de la cota), **sin el proyecto**: el mismo cálculo
+    (``supported_store.buttress_compute_steps``, con la misma ventana de trabajo: ``supported_store.buttress_work_window``). Sus pasos y, el
+    último, el ``ReproducedResult`` con la superficie (``des_psf_``), la huella con su zona de coronación (``des_epr_``), el informe
+    (``des_prp_``) y las cifras. Lo que no es una ``ReproduceRequest`` es ``TypeError``; una de otro tipo, ``ValueError``."""
+    return _reproduce_buttress(_check(request, provenance.BUTTRESS), budget_s)
+
+
+def _reproduce_buttress(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    code = provenance.supported_code(request.settings)
+    # lo que declara (``protect``, ``guard_m``, ``reason``) no lo lee el cálculo (``provenance.buttress_params``): no está congelado y no hace falta
+    asked = replace(provenance.buttress_request(request.settings, provenance.supported_values(code, frozen.values)), protect=False)
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = frozen.masks()
+    layer = frozen.features(asked.layer)
+    index = entity_store.feature_index(layer, asked, code)  # type: ignore[arg-type]
+    fid = layer.fids[index]
+    values, _defaulted = supported_store.buttress_values(asked, code, fid)
+    profile = pipeline.bench_profiles(frozen.values, [asked.profile])[asked.profile]
+    whole = polygons_cells(tuple(tuple(part) for part in layer.parts[index]), frozen.grid)
+    start_item = frozen.item(provenance.SURFACE_ROLE)
+    whole_start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida").values
+    lowest = supported_store._lowest_of(whole_start) if values.get("reach_m") is None else None
+    window = supported_store.buttress_work_window(asked, code, whole, frozen.grid, profile, values, lowest)
+    job = ButtressJob(asked, code, frozen.grid, profile, np.array(whole_start[window], dtype=np.float64, copy=True), whole[window],
+                      admitted_in(masks, BenchSense.FILL, window), MappingProxyType(dict(values)), region=window, lowest_m=lowest)
+    outcome = yield from supported_store.buttress_compute_steps(job, budget_s=budget_s)
+    surface = outcome.compose(whole_start)
+    made = yield from _grid_output(request, provenance.ENTITY_SURFACE_GRID, Raster(job.grid, surface, frozen.crs, frozen.vertical),
+                                   budget_s)
+    entity = supported_store.buttress_entity_rows(job, outcome, layer=asked.layer, source_fid=fid, start_surface=start_item.name,
+                                                  support_surface=_support_dataset(request, asked))  # type: ignore[arg-type]
+    table = _table_output(request, provenance.ENTITY_TABLE, entity, frozen.crs)
+    report = _table_output(request, provenance.ENTITY_REPORT_TABLE, supported_store.buttress_report_rows(outcome), frozen.crs)
+    yield Progress(_PHASE, 1, 1, "Contrafuerte reproducido",
+                   result=ReproducedResult((made, table, report), (*outcome.figures, *_support_figures(frozen, [surface], whole_start))))
 
 
 def reproduce_body(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:

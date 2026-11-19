@@ -80,6 +80,7 @@ if TYPE_CHECKING:  # design.quarry importa design.report, que importa Notice de 
 
 __all__ = [
     "BodySummary",
+    "ButtressSummary",
     "CandidateCounts",
     "CandidateLine",
     "EntityEnd",
@@ -818,6 +819,44 @@ class BodySummary:
     far_m3: float
     far_x: float | None
     far_y: float | None
+    notices: tuple[Notice, ...]
+    obsolete: tuple[Obsolete, ...] = ()
+
+    def lines(self, language: str = "es") -> tuple[str, ...]:
+        """Todo lo que dice el resumen, línea a línea, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices)
+
+    def warnings(self, language: str = "es") -> tuple[str, ...]:
+        """Solo los avisos, en ``language``."""
+        return tuple(notice.text(language) for notice in self.notices if notice.severity == "warning")
+
+
+# --- El resumen del contrafuerte (spec 016, T27; RF-016-17, RF-016-18, RF-015-03) ---------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ButtressSummary:
+    """El resumen de «Calcular» un contrafuerte (RF-015-03, RF-016-17): su ``name`` y su ``code`` (``BTR-001``), la ``version`` (su
+    código), la capa de la zona de coronación (``layer``), el perfil (``profile``), la cota de coronación (``crown_m``), las ``figures``
+    que se registrarán (el volumen, el área y la altura máxima), el volumen (``volume_m3``), el área (``area_m2``) y la altura máxima
+    (``height_max_m``) con su lugar (``height_max_x``, ``height_max_y``; ``None`` sin huella), si ``protect`` (declara «sin corte» sobre su
+    zona de coronación) y su resguardo (``guard_m``), los ``notices`` en el orden en que se enseñan (los del cálculo y, al final, lo que
+    quedará obsoleto) y ``obsolete``, lo que quedará obsoleto al crearlo (si sustituye a otro)."""
+
+    name: str
+    code: str
+    version: str
+    layer: str
+    profile: str
+    crown_m: float
+    figures: tuple[FigureSpec, ...]
+    volume_m3: float
+    area_m2: float
+    height_max_m: float
+    height_max_x: float | None
+    height_max_y: float | None
+    protect: bool
+    guard_m: float | None
     notices: tuple[Notice, ...]
     obsolete: tuple[Obsolete, ...] = ()
 

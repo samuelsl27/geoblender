@@ -2463,6 +2463,13 @@ CATALOG: tuple[Message, ...] = (
         "toda la zona de coronación, así que no hay contrafuerte; no se crea nada.",
     ),
     Message(
+        "des.buttress_nothing_rises",
+        "Layer «{layer}», buttress «{entity}»: no cell rises: the fill is not admitted where its slopes would reach, so "
+        "there is no buttress; nothing is created.",
+        "Capa «{layer}», contrafuerte «{entity}»: no sube ninguna celda: el relleno no está admitido donde llegarían "
+        "sus taludes, así que no hay contrafuerte; no se crea nada.",
+    ),
+    Message(
         "des.buttress_foot_cut",
         "Buttress «{entity}»: its foot is cut by the edge of the admitted fill: {area} m² and {volume} m³ are "
         "missing, with a created step of {step} m at x = {x} m, y = {y} m; it can still be created.",

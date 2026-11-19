@@ -2957,8 +2957,8 @@ def declare_params(codes: Iterable[str], *, protecting: Iterable[str] = (),
     """Los parámetros que lee ``des.declare_constraints`` de las entidades de código ``codes`` (spec
     015, T04; RF-015-10, RF-015-12; plan 015 §5.2.3), por entidad y en su orden: su nombre (el
     motivo generado, «declarada por la plataforma P1», lo lleva) y si protege (``protect``); de las
-    que protegen (``protecting``), su modo (una «en corte y relleno» que protege se rechaza) y su
-    resguardo (``guard_m``, obligatorio si protege: D-19); y, de las que editaron su motivo
+    que protegen (``protecting``), su modo (una «en corte y relleno» que protege se rechaza; **solo el de un tipo que lo tiene**: la
+    plataforma) y su resguardo (``guard_m``, obligatorio si protege: D-19); y, de las que editaron su motivo
     (``reasoned``), el ``reason``. ``ValueError`` si un código de ``protecting`` o de ``reasoned``
     no está en ``codes`` o no es el de una entidad."""
     entities = _codes(codes, "las entidades de la declaración")
@@ -2971,7 +2971,9 @@ def declare_params(codes: Iterable[str], *, protecting: Iterable[str] = (),
     for code in entities:
         found += [entity_key(code, PlatformParam.NAME), entity_key(code, PlatformParam.PROTECT)]
         if code in protects:
-            found += [entity_key(code, PlatformParam.MODE), entity_key(code, PlatformParam.GUARD)]
+            if PlatformParam.MODE.value in entity_params_of(code).names:  # el modo es de la plataforma (spec 016, T27)
+                found.append(entity_key(code, PlatformParam.MODE))
+            found.append(entity_key(code, PlatformParam.GUARD))
         if code in edited:
             found.append(entity_key(code, PlatformParam.REASON))
     return _unique(found)

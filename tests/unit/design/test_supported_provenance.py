@@ -515,7 +515,8 @@ class ClosedListsTest(unittest.TestCase):
         una detección son un error del programa (``ValueError``), no el aviso de «aún no»."""
         for op_type in TYPES.values():
             request = recompute_mod.RecomputeRequest(object(), "uid", op_type, {}, (), ())
-            if op_type in (*provenance.STOCKPILE_DETECT_TYPES, provenance.STOCKPILE_REMOVAL, provenance.BODY):  # la retirada (T20) y el cuerpo (T25)
+            if op_type in (*provenance.STOCKPILE_DETECT_TYPES, provenance.STOCKPILE_REMOVAL, provenance.BODY,
+                           provenance.BUTTRESS):  # la retirada (T20), el cuerpo (T25) y el contrafuerte (T27)
                 with self.subTest(op_type=op_type), self.assertRaises(ValueError) as caught:
                     store.recompute_run(request)
                 self.assertNotIn("aún no", str(caught.exception))
@@ -537,7 +538,7 @@ class ClosedListsTest(unittest.TestCase):
         with self.assertRaises(ValueError):  # el cuerpo sí (T25): unos ajustes que no son los suyos, un error del programa
             store.recompute_run(body, released=released)
         buttress = recompute_mod.RecomputeRequest(object(), "uid", provenance.BUTTRESS, {}, (), ())
-        with self.assertRaises(NotImplementedError):  # el contrafuerte aún no: lo hará su tarea
+        with self.assertRaises(ValueError):  # el contrafuerte sí (T27): unos ajustes que no son los suyos, un error del programa
             store.recompute_run(buttress, released=released)
 
     def test_the_reproduce_functions_exist_for_each_type(self) -> None:
@@ -552,12 +553,8 @@ class ClosedListsTest(unittest.TestCase):
             function = getattr(reproduce_mod, name)
             request = versions_reproduce.ReproduceRequest(op_type, {}, (), {}, ".", None)
             with self.subTest(op_type=op_type):
-                if op_type in (*provenance.STOCKPILE_DETECT_TYPES, provenance.STOCKPILE_REMOVAL, provenance.BODY):  # la retirada (T20) y el cuerpo (T25)
-                    self.assertTrue(hasattr(function(request), "__next__"), "los pasos, que no se avanzan aquí")
-                else:
-                    with self.assertRaises(NotImplementedError) as caught:
-                        function(request)
-                    self.assertIn(op_type, str(caught.exception))
+                # la retirada (T20), el cuerpo (T25) y el contrafuerte (T27) reproducen: sus errores salen al avanzar los pasos
+                self.assertTrue(hasattr(function(request), "__next__"), "los pasos, que no se avanzan aquí")
                 with self.assertRaises(TypeError):
                     function("petición")
                 with self.assertRaises(ValueError):

@@ -187,6 +187,7 @@ __all__ = [
     "chain_tails",
     "check_chain",
     "code_order",
+    "declaration_runs",
     "declared_reason",
     "declared_zone",
     "declared_zone_of_runs",
@@ -285,6 +286,10 @@ class EntityType:
     surface_role: str | None = None
     table_role: str | None = None
     project_op_type: str | None = None
+    own_zone: bool = False
+    """Si las entidades de este tipo declaran **su zona propia** y no toda su huella (spec 016, T27; plan 016 §5.7 P-8, §5.8 H-6): el
+    contrafuerte declara «sin corte» sobre su zona de coronación, no sobre toda la huella (que sube también fuera de ella); su tabla
+    ``des_epr_`` lleva las dos (``footprint`` y ``zone``)."""
 
     @property
     def kind(self) -> str:
@@ -387,7 +392,7 @@ _TYPES["removal"] = EntityType(
     ENTITY_SURFACE_ROLE, ENTITY_ROLE)
 _TYPES["buttress"] = EntityType(
     entity_params("buttress"), BUTTRESS, "des.buttress_declared_reason", "des.buttress_support_removed",
-    ENTITY_SURFACE_ROLE, ENTITY_ROLE)
+    ENTITY_SURFACE_ROLE, ENTITY_ROLE, own_zone=True)
 _TYPES["body"] = EntityType(
     entity_params("body"), BODY, "des.body_declared_reason", "des.body_support_removed",
     ENTITY_SURFACE_ROLE, ENTITY_ROLE)
@@ -2293,6 +2298,22 @@ def declared_zone(footprint_cells: np.ndarray, grid: Grid, guard_m: float, *,
     cells = int(mask.sum())
     return DeclaredZone(tuple(parts), cells, cells * grid.cell_area, guard, labels.count, split,
                         _zone_hash(parts))
+
+
+def declaration_runs(kind: EntityKind | str, footprint: Sequence[Sequence[int]], zone: Sequence[Sequence[int]] | None
+                     ) -> tuple[tuple[int, int, int], ...]:
+    """Los tramos de fila que **declara** una entidad de tipo ``kind`` (spec 016, T27; P-8, H-6): **su zona propia** (``zone``) si su tipo la
+    tiene (:attr:`EntityType.own_zone`: el contrafuerte, que declara «sin corte» sobre su zona de coronación y no sobre toda su huella, que
+    sube también fuera de ella) y su huella (``footprint``) si no. ``ValueError`` si el tipo tiene zona propia y no se da (la tabla de la
+    entidad no la lleva: un error del programa) o la da sin tenerla. Lo que usa :func:`declared_zone_of_runs` para el contorno de lo que
+    declara; la capa de entidades y lo que se le apoya siguen usando la huella entera."""
+    spec = entity_type(kind)
+    if spec.own_zone and zone is None:
+        raise ValueError(f"la entidad de tipo {spec.kind} declara su zona propia y su tabla no la lleva")
+    if not spec.own_zone and zone is not None:
+        raise ValueError(f"la entidad de tipo {spec.kind} no tiene zona propia: declara su huella")
+    chosen = footprint if zone is None else zone
+    return tuple((int(row), int(first), int(last)) for row, first, last in chosen)
 
 
 def declared_zone_of_runs(runs: Iterable[Sequence[int]], grid: Grid, guard_m: float

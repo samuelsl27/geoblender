@@ -87,6 +87,8 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # RF-016-18 y 19: el contrafuerte.
     "des.buttress_crown_off_anchor": ("error", "RF-016-18", {"layer", "entity", "profile", "anchor"}),
     "des.buttress_crown_below_support": ("error", "RF-016-18", {"layer", "entity"}),
+    # T27: ninguna celda sube (el relleno no está admitido donde llegarían los taludes): no hay contrafuerte que crear.
+    "des.buttress_nothing_rises": ("error", "RF-016-17", {"layer", "entity"}),
     "des.buttress_foot_cut": ("warning", "RF-016-19", {"entity", "area", "volume", "step", *POSITION}),
     "des.buttress_declared_reason": ("note", "RF-015-10", {"name"}),
     "des.buttress_support_removed": ("note", "RF-015-17", {"name"}),

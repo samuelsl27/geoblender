@@ -256,6 +256,7 @@ if TYPE_CHECKING:  # solo para los tipos: importarlos arrastraría los cálculos
 
 __all__ = [
     "BERM_COLUMNS",
+    "BUTTRESS_ENTITY_COLUMNS",
     "CANDIDATE_COLUMNS",
     "ENTITY_COLUMNS",
     "NO_DATA_NOTE",
@@ -432,11 +433,21 @@ _COLUMNS: Mapping[str, tuple[ColumnDef, ...]] = MappingProxyType({
     provenance.STOCKPILES_TABLE: STOCKPILE_COLUMNS, provenance.STOCKPILE_CANDIDATES_TABLE: CANDIDATE_COLUMNS})
 
 
+BUTTRESS_ENTITY_COLUMNS: tuple[ColumnDef, ...] = (*ENTITY_COLUMNS, ColumnDef("zone", "TEXT", True))
+"""Las columnas de ``des_epr_`` **de un contrafuerte** (spec 016, T27; plan 016 §5.2.3, P-8, H-6: «``des_epr_`` lleva las dos geometrías»):
+las de :data:`ENTITY_COLUMNS` y, al final, ``zone``, **la zona de coronación** en tramos de fila (``[[fila, col0, col1], …]`` absolutos,
+``col1`` excluida, JSON), que es la que declara «sin corte»; ``footprint`` es **la huella entera** (donde la superficie sube, dentro y fuera
+de la zona dibujada). La tabla de la plataforma, la retirada y el cuerpo, **sin cambio** (14 columnas)."""
+
+
 def columns_of(op_type: str, family: str) -> tuple[ColumnDef, ...]:
     """Las columnas de la tabla ``family`` de una operación ``op_type``: las de su familia salvo
-    las bermas de una cantera (:data:`QUARRY_BERM_COLUMNS`). ``KeyError`` si no es una tabla."""
+    las bermas de una cantera (:data:`QUARRY_BERM_COLUMNS`) y la tabla de la entidad de un contrafuerte
+    (:data:`BUTTRESS_ENTITY_COLUMNS`: lleva además su zona de coronación). ``KeyError`` si no es una tabla."""
     if op_type == provenance.QUARRY and family == provenance.BERM_TABLE:
         return QUARRY_BERM_COLUMNS
+    if op_type == provenance.BUTTRESS and family == provenance.ENTITY_TABLE:
+        return BUTTRESS_ENTITY_COLUMNS
     return _COLUMNS[family]
 
 
@@ -3984,9 +3995,12 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         from . import supported_store  # al usarlo: supported_store importa este módulo
 
         return supported_store.recompute_body(request, budget_s=budget_s, released=released)
+    if request.op_type == provenance.BUTTRESS:
+        from . import supported_store  # al usarlo: supported_store importa este módulo
+
+        return supported_store.recompute_buttress(request, budget_s=budget_s, released=released)
     if request.op_type in provenance.SUPPORTED_TYPES:
-        # El otro tipo de la 016 (T03): sin cálculo todavía; la tarea que crea su operación lo pone aquí (T27, el contrafuerte).
-        # Nunca cae en un escalonado.
+        # Un tipo de la 016 sin cálculo (ya no queda ninguno: la T27 puso el último). Nunca cae en un escalonado.
         raise NotImplementedError(f"«{request.op_type}» aún no se recalcula: lo hace la tarea de la 016 que crea "
                                   "su operación")
     return run_design(project, provenance.design_request(request.settings),

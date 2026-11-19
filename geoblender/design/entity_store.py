@@ -2618,9 +2618,10 @@ def platform_summary(project: StoreProject, version: Version, prepared: Prepared
 
 _DECLARE_PHASE = "declare_constraints"
 _DECLARES: Mapping[EntityKind, ConstraintType] = MappingProxyType({
-    EntityKind.PLATFORM: ConstraintType.NO_FILL})
-"""Lo que declara cada tipo de entidad cuando protege su zona (D-4): la plataforma, «sin relleno». Un tipo
-que declara otra cosa (en la 016, el contrafuerte, «sin corte») añade aquí su fila."""
+    EntityKind.PLATFORM: ConstraintType.NO_FILL, EntityKind.BUTTRESS: ConstraintType.NO_CUT})
+"""Lo que declara cada tipo de entidad cuando protege su zona (D-4; D-1 de la 016): la plataforma, «sin relleno» y, de la 016 (T27), el
+contrafuerte, «sin corte» (sobre su zona de coronación: :func:`~.entities.declaration_runs`). Los demás tipos no declaran nada por defecto
+(la retirada y el cuerpo escriben ``protect`` falso)."""
 _LIVE_STATES = frozenset({EntityState.CURRENT, EntityState.STALE, EntityState.SUPPORT_REMOVED})
 """Los estados de una entidad **viva y calculada** (RF-015-25): tiene operación vigente y datos que no están
 descartados. Una «sin calcular» no tiene huella y una «descartada» ya no es de la versión: ninguna declara."""
@@ -2650,7 +2651,9 @@ class EntityFootprint:
     su ``code``, el ``name`` con que se calculó (el de su dato ``des_epr_<nombre>``), su ``kind``, la
     ``layer`` de su geometría de origen y su huella en ``runs`` (tramos de fila ``(fila, col0, col1)`` de la
     rejilla entera, ``col1`` excluida: :func:`footprint_runs`) y, aparte (T28: lo dibuja la vista,
-    ``bl.scene.entity_views``), los vértices de su eje en ``axis`` (``(x, y)`` absolutos, float64)."""
+    ``bl.scene.entity_views``), los vértices de su eje en ``axis`` (``(x, y)`` absolutos, float64) y, **de un contrafuerte** (spec 016, T27;
+    P-8, H-6), su zona de coronación en ``zone`` (tramos de fila, como ``runs``: lo que declara «sin corte»; ``None`` en los tipos sin zona
+    propia: declaran su huella)."""
 
     code: str
     name: str
@@ -2658,6 +2661,7 @@ class EntityFootprint:
     layer: str
     runs: tuple[tuple[int, int, int], ...]
     axis: tuple[tuple[float, float], ...] = ()
+    zone: tuple[tuple[int, int, int], ...] | None = None
 
 
 def read_entity_footprint(conn: sqlite3.Connection, table: str) -> EntityFootprint:
@@ -2670,7 +2674,11 @@ def read_entity_footprint(conn: sqlite3.Connection, table: str) -> EntityFootpri
     ((code, name, kind, layer, footprint, axis),) = rows
     runs = tuple((int(row), int(first), int(last)) for row, first, last in json.loads(footprint))
     vertices = tuple((float(x), float(y)) for x, y in json.loads(axis))
-    return EntityFootprint(str(code), str(name), str(kind), str(layer), runs, vertices)
+    zone: tuple[tuple[int, int, int], ...] | None = None
+    if entities.entity_type(str(kind)).own_zone:  # un contrafuerte: además, su zona de coronación (spec 016, T27)
+        found = conn.execute(f'SELECT zone FROM "{table}"').fetchone()
+        zone = tuple((int(row), int(first), int(last)) for row, first, last in json.loads(found[0]))
+    return EntityFootprint(str(code), str(name), str(kind), str(layer), runs, vertices, zone)
 
 
 def read_stockpile_footprints(conn: sqlite3.Connection, table: str
@@ -2738,7 +2746,8 @@ class DeclaredSource:
     ``layer`` de su geometría de origen, si protege (``protect``), su ``mode`` (``cut`` o ``cut_fill``), su
     resguardo (``guard_m``, sin valor por defecto: D-19), el motivo que editó la persona (``reason``; ``None``:
     el generado), quién la creó o cambió y cuándo se decidió (``decided_by`` y ``decided_on``: la decisión más
-    reciente de :data:`_DECISION_PARAMS`, no la fecha de ahora) y su huella en tramos (``runs``)."""
+    reciente de :data:`_DECISION_PARAMS`, no la fecha de ahora), su huella en tramos (``runs``) y, de un tipo con **zona propia** (el
+    contrafuerte, spec 016, T27; P-8, H-6), esa zona en ``zone`` (lo que declara: :func:`~.entities.declaration_runs`)."""
 
     code: str
     kind: EntityKind
@@ -2752,6 +2761,7 @@ class DeclaredSource:
     decided_by: str | None
     decided_on: date | None
     runs: tuple[tuple[int, int, int], ...]
+    zone: tuple[tuple[int, int, int], ...] | None = None
 
 
 def _check_declares(source: DeclaredSource) -> None:
@@ -2799,7 +2809,7 @@ def declared_rows_steps(sources: Sequence[DeclaredSource], grid: Grid, version_u
         if source.decided_by is None or source.decided_on is None or source.guard_m is None:
             raise ValueError(f"la entidad {source.code} protege y no lleva su decisor, la fecha de su "
                              "decisión o su resguardo: no se puede declarar su restricción")
-        zone = entities.declared_zone_of_runs(source.runs, grid, source.guard_m)
+        zone = entities.declared_zone_of_runs(entities.declaration_runs(source.kind, source.runs, source.zone), grid, source.guard_m)
         rows.append(DeclaredConstraint(
             uid=declared_uid(version_uid, source.code), code=declared_code(source.code),
             ctype=_DECLARES[source.kind], name=source.name,
@@ -2880,7 +2890,7 @@ def declared_sources(project: StoreProject, version: Version, *,
             layer=data.layer, protect=protect, mode=str(values[code, PlatformParam.MODE]),
             guard_m=None if guard is None else float(guard),
             reason=(reason.strip() or None) if isinstance(reason, str) else None, decided_by=who,
-            decided_on=when, runs=data.runs))
+            decided_on=when, runs=data.runs, zone=data.zone))
     return tuple(sources)
 
 
@@ -2969,7 +2979,8 @@ def _check_declared_recorded(handle: OperationHandle, sources: Sequence[Declared
     for source in sources:
         read[entity_key(source.code, PlatformParam.PROTECT)] = source.protect
         if source.protect:
-            read[entity_key(source.code, PlatformParam.MODE)] = source.mode
+            if PlatformParam.MODE.value in entities.entity_type(source.kind).params.names:  # el modo es de la plataforma (spec 016, T27)
+                read[entity_key(source.code, PlatformParam.MODE)] = source.mode
             read[entity_key(source.code, PlatformParam.GUARD)] = source.guard_m
             if source.reason is not None:
                 read[entity_key(source.code, PlatformParam.REASON)] = source.reason

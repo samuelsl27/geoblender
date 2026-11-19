@@ -183,6 +183,9 @@ PENDING_015_API: frozenset[str] = frozenset({
     "removal_run", "RemovalSummary", "RestingLine",
     # La 016, T25: «Calcular» el cuerpo apoyado y su resumen (``design.steps`` y ``design.preview``).
     "body_run", "BodySummary",
+    # La 016, T27: «Calcular» el contrafuerte y su resumen (``design.steps`` y ``design.preview``) y lo que declara con su zona propia
+    # (``design.entities``).
+    "buttress_run", "ButtressSummary", "declaration_runs",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 016, T05: la morfología con un disco exacto (A1). Su fila de la ficha (``des.md`` §4.4) la lleva la T38,

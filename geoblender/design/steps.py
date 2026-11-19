@@ -55,6 +55,10 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
   deja el espesor disperso (``des_bdt_``) y la superficie con el techo (``des_psf_``, «sobre una base») o la base dispersa (``des_bds_``,
   «bajo un techo») en temporales, el **resumen** (:class:`~.preview.BodySummary`: las cifras, lo lejano de los datos con su lugar y los
   avisos) y **nada en el proyecto**; crearlo es :meth:`Calculation.create` (:func:`~.supported_store.create_body`: una transacción).
+- :func:`buttress_run` (spec 016, T27; RF-016-17, RF-016-18, RF-015-03, RF-015-29): «Calcular» un contrafuerte (``des.buttress``) del mismo modo:
+  deja la superficie (``des_psf_``) en un temporal, el **resumen** (:class:`~.preview.ButtressSummary`: el volumen, el área y la altura máxima
+  y si declara «sin corte» sobre su zona de coronación) y **nada en el proyecto**; crearlo es :meth:`Calculation.create`
+  (:func:`~.supported_store.create_buttress`: una transacción; la restricción que declara la encadena la orden, ``after_entity_change``).
 - :class:`Calculation`: lo calculado y todavía sin registrar. :meth:`~Calculation.create`
   (**«Crear»**) abre la operación, mueve los temporales, escribe las tablas y las cifras y completa,
   todo en **una** transacción (``DesignWriter.commit``); :meth:`~Calculation.discard`
@@ -88,6 +92,7 @@ from ..gis.masks.access import MaskSet
 from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.store import StoreProject
 from . import (
+    buttress,
     edges,
     entity_store,
     fronts,
@@ -107,6 +112,7 @@ from . import (
 from .messages import DesignError
 from .model import (
     BodyRequest,
+    ButtressRequest,
     DesignRequest,
     EnvelopeRequest,
     FillOnlyRequest,
@@ -123,6 +129,7 @@ from .seeds import SeedPlan, SeedSet, pace_progress
 __all__ = [
     "Calculation",
     "body_run",
+    "buttress_run",
     "design_run",
     "edge_transition_run",
     "envelope_run",
@@ -144,6 +151,7 @@ _STOCKPILE_SUMMARY_PHASE = "stockpile_summary"  # el resumen de una detección d
 _CREATED_PHASE = "created"  # la detección de acopios guardada (016, T13)
 _REMOVAL_SUMMARY_PHASE = "removal_summary"  # el resumen de la retirada de un acopio (016, T20)
 _BODY_SUMMARY_PHASE = "body_summary"  # el resumen de un cuerpo apoyado (016, T25)
+_BUTTRESS_SUMMARY_PHASE = "buttress_summary"  # el resumen de un contrafuerte (016, T27)
 _OUTSIDE_PHASE = "seeds_outside"  # la cantera parada por sus semillas fuera (T43; RF-014-03)
 _READY, _CREATED, _DISCARDED = "ready", "created", "discarded"
 
@@ -199,14 +207,14 @@ class Calculation:
                  | pipeline.DesignOutcome | quarry.AreaOutcome | quarry.QuarryOutcome
                  | edges.EdgeTransition | fronts.FillOnlyOutcome | refit.RefitOutcome
                  | platform.PlatformOutcome | stockpiles.StockpileOutcome | removal.RemovalOutcome
-                 | thickness.BodyOutcome,
+                 | thickness.BodyOutcome | buttress.ButtressOutcome,
                  notices: Sequence[Notice],
                  seeds: SeedSet | None,
                  values: Mapping[str, object],
                  entity: entity_store.PreparedPlatform | stockpile_store.PreparedDetection
-                 | supported_store.PreparedRemoval | supported_store.PreparedBody | None = None,
+                 | supported_store.PreparedRemoval | supported_store.PreparedBody | supported_store.PreparedButtress | None = None,
                  summary: preview.PlatformSummary | preview.StockpileSummary | preview.RemovalSummary
-                 | preview.BodySummary | None = None) -> None:
+                 | preview.BodySummary | preview.ButtressSummary | None = None) -> None:
         self._project = project
         self._writer = writer
         self._start = start
@@ -345,6 +353,8 @@ class Calculation:
             return self._create_removal(self.entity, decided_by)
         if isinstance(self.entity, supported_store.PreparedBody):
             return self._create_body(self.entity, decided_by)
+        if isinstance(self.entity, supported_store.PreparedButtress):
+            return self._create_buttress(self.entity, decided_by)
         if self.entity is not None:
             self._platform().ensure_creatable()  # sin cerrar el cálculo: se confirma y se crea
             if isinstance(self.entity, entity_store.PreparedPlatform) and self.entity.origin is not None:
@@ -396,6 +406,22 @@ class Calculation:
         try:
             self._check_parameters()
             stored = supported_store.create_body(self._project, self._writer, found, outcome, decided_by=decided_by)
+        except BaseException:
+            self.discard()
+            raise
+        self._state = _CREATED
+        return stored
+
+    def _create_buttress(self, found: supported_store.PreparedButtress, decided_by: str | None) -> store.Stored:
+        """**«Crear» un contrafuerte** (spec 016, T27; RF-016-17, RF-015-02): lo registra :func:`~.supported_store.create_buttress` en una sola
+        transacción (la superficie, la huella con su zona de coronación, el informe, los parámetros de su entidad y las cifras). No pide
+        ninguna confirmación (no retira nada ni deja una pared: el pie cortado, T28, es un aviso que no impide crearlo); si algo falla, o lo
+        que consume cambió, no queda nada y el cálculo queda descartado. La restricción «sin corte» que declara la encadena la orden."""
+        outcome = self.outcome
+        assert isinstance(outcome, buttress.ButtressOutcome)
+        try:
+            self._check_parameters()
+            stored = supported_store.create_buttress(self._project, self._writer, found, outcome, decided_by=decided_by)
         except BaseException:
             self.discard()
             raise
@@ -667,6 +693,25 @@ def body_run(project: StoreProject, request: BodyRequest, *, version: str | None
     return _body_steps(project, request, version, masks, code, supersedes, budget_s)
 
 
+def buttress_run(project: StoreProject, request: ButtressRequest, *, version: str | None,
+                 masks: MaskSet | None = None, code: str | None = None, supersedes: str | None = None,
+                 budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """**«Calcular»** el contrafuerte ``request`` en la versión ``version`` (uid o código) por pasos de ``budget_s`` como mucho (spec 016,
+    T27; RF-016-17, RF-016-18, RF-015-03, RF-015-29; RNF-016-02, RNF-016-03; «Contrafuerte…»): el último ``Progress`` lleva la
+    :class:`Calculation` de ``des.buttress``, con su superficie (``des_psf_``) en un temporal, su resultado (``Calculation.outcome``:
+    ``design.buttress.ButtressOutcome``), su resumen (``Calculation.summary``: el volumen, el área y la altura máxima y si declara «sin
+    corte») y **nada registrado ni escrito en el proyecto**: ni la base de datos, ni las operaciones, los datos o los parámetros.
+    ``masks``, como en :func:`envelope_run`. ``code`` y ``supersedes``, los de ``supported_store.prepare_buttress_units`` (recalcular un
+    contrafuerte que ya está en la versión y sustituir su operación).
+
+    Los rechazos salen **al avanzar**, antes de calcular y sin escribir nada: los de ``prepare_buttress_units`` (sin versión activa o no
+    editable, nombre y partida, la capa y su geometría, la cota de coronación y el resguardo sin valor, la cota fuera del ancla de su perfil
+    —RF-016-18—, las superficies, un sector con la búsqueda pendiente) y los del cálculo (la coronación por debajo del apoyo en toda la
+    zona, o ninguna celda que suba). Cerrar el generador a mitad (Esc) o un fallo después de dejar el temporal lo borra y no deja nada
+    (RF-015-29). Crearlo es :meth:`Calculation.create`."""
+    return _buttress_steps(project, request, version, masks, code, supersedes, budget_s)
+
+
 def refit_run(project: StoreProject, request: RefitRequest, *, version: str | None,
               masks: MaskSet | None = None, budget_s: float = STEP_BUDGET_S
               ) -> Iterator[Progress]:
@@ -909,6 +954,25 @@ def _body_steps(project: StoreProject, request: BodyRequest, version: str | None
         summary = supported_store.body_summary(project, prepared, outcome, supersedes=supersedes)
         calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices,
                                   seeds=None, values={}, entity=prepared, summary=summary)
+    except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
+        writer.close(error)
+        raise
+    yield Progress(_DONE_PHASE, 1, 1, outcome.message, result=calculation)
+
+
+def _buttress_steps(project: StoreProject, request: ButtressRequest, version: str | None, masks: MaskSet | None,
+                    code: str | None, supersedes: str | None, budget_s: float) -> Generator[Progress, None, None]:
+    found = store.require_version(project, version, provenance.BUTTRESS)
+    loaded = yield from store.masks_steps(project, found, masks, budget_s=budget_s)
+    prepared: supported_store.PreparedButtress = yield from _prepare_steps(
+        supported_store.prepare_buttress_units(project, request, found, loaded, code=code, supersedes=supersedes), budget_s)
+    writer = store.DesignWriter(project, provenance.BUTTRESS, request.name, version=found.uid, supersedes=supersedes)
+    try:
+        outcome: buttress.ButtressOutcome = yield from supported_store.compute_buttress_steps(writer, prepared, budget_s=budget_s)
+        yield Progress(_BUTTRESS_SUMMARY_PHASE, 0, 1, f"Preparando el resumen de «{request.name}»…")
+        summary = supported_store.buttress_summary(project, prepared, outcome, supersedes=supersedes)
+        calculation = Calculation(project=project, writer=writer, start=prepared.start, outcome=outcome, notices=summary.notices,
+                                  seeds=None, values=prepared.common, entity=prepared, summary=summary)
     except BaseException as error:  # un fallo o cerrar el generador: no queda el temporal
         writer.close(error)
         raise

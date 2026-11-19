@@ -48,6 +48,17 @@ capas la descarta, ``des.body_data_m``) y la superficie conocida; rechaza **ante
 capa, entidad, campo y valor, y la distancia máxima sin valor (D-9). «Sobre una base» deja la superficie (``des_psf_``) con el techo y
 el espesor (``des_bdt_``), parte de una superficie y encadena; «bajo un techo» deja la base y el espesor dispersos (``des_bds_`` y
 ``des_bdt_``), **no cambia la superficie, no tiene partida y nadie parte de él** (``des.chainless_start``). Una sola transacción.
+
+**El contrafuerte** (spec 016, T27; HU-016-3; RF-016-17, RF-016-18, RF-015-10, RF-015-12; plan 016 §5.2.3, §5.4 A10, §5.7 P-8, §5.8 H-6): el
+mismo patrón —:func:`prepare_buttress_units` → :func:`buttress_compute_steps` (puro, compartido con la reproducción) →
+:func:`compute_buttress_steps` → :func:`create_buttress` → :func:`run_buttress` / :func:`recompute_buttress`— con ``design.buttress`` como
+cálculo. Lee la zona de coronación (un polígono de una capa de entidades), **rechaza la cota fuera del ancla de su perfil antes de leer
+ninguna superficie** (con la cota del ancla más próxima), pide la cota de coronación y, porque **protege por defecto** («sin corte»: D-1),
+su resguardo (D-19) y lee la partida **entera** una vez para saber hasta dónde llega la envolvente (A0: ``buttress_work_window``; con el
+alcance fijado, solo su ventana). Deja la superficie entera (``des_psf_``), la huella con **dos geometrías** (``des_epr_``: ``footprint``,
+toda la huella, y ``zone``, la zona de coronación, que es la que declara «sin corte», P-8 y H-6: :data:`~.store.BUTTRESS_ENTITY_COLUMNS`)
+y el informe, y **no declara** la restricción: la declara ``des.declare_constraints`` (``entity_store.after_entity_change``), que lee la
+zona propia del tipo (:func:`~.entities.declaration_runs`). Una sola transacción.
 """
 
 from __future__ import annotations
@@ -63,7 +74,7 @@ from typing import Any
 
 import numpy as np
 
-from ..core.params import ParameterStore
+from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
 from ..core.params.store import default_reason
 from ..core.project.model import Progress
 from ..core.provenance.operations import OperationHandle
@@ -82,14 +93,25 @@ from ..gis.provenance import BREAKLINES, CONTOUR_LINES, FAMILIES_BY_CODE, FEATUR
 from ..gis.raster import Raster
 from ..gis.store import StoreProject, load_features, read_features
 from ..gis.vector import FeatureLayer
-from . import entities, entity_store, pipeline, provenance, removal, stockpile_store, thickness, zones
+from . import buttress, entities, entity_store, pipeline, provenance, removal, stockpile_store, thickness, zones
 from .compose import admitted_in
 from .entities import EntityKind
 from .entity_store import EntityParamRow, entity_parameters, set_entity_params
 from .messages import DesignError
-from .model import BenchSense, BodyRequest, BodySense, LayerField, PlatformRequest, RemovalRequest, ThicknessSource
-from .params import BodyParam, RemovalParam, StockpileParam, check_entity_param, entity_key, entity_params
-from .preview import BodySummary, Obsolete, ObsoleteKind, RemovalSummary, RestingLine, obsolete_notices
+from .buttress import ButtressJob, ButtressOutcome
+from .model import (
+    BenchSense,
+    BodyRequest,
+    BodySense,
+    ButtressRequest,
+    LayerField,
+    Metric,
+    PlatformRequest,
+    RemovalRequest,
+    ThicknessSource,
+)
+from .params import BodyParam, ButtressParam, RemovalParam, StockpileParam, check_entity_param, entity_key, entity_params
+from .preview import BodySummary, ButtressSummary, Obsolete, ObsoleteKind, RemovalSummary, RestingLine, obsolete_notices
 from .removal import RemovalJob, RemovalOutcome, Resting
 from .sectors import design_sectors, refuse_pending
 from .seeds import pace_progress, sector_layout
@@ -114,6 +136,7 @@ __all__ = [
     "Confirmed",
     "PlatformOrigin",
     "PreparedBody",
+    "PreparedButtress",
     "PreparedRemoval",
     "StockpileChoice",
     "body_compute_steps",
@@ -121,22 +144,33 @@ __all__ = [
     "body_report_rows",
     "body_summary",
     "body_values",
+    "buttress_compute_steps",
+    "buttress_entity_rows",
+    "buttress_report_rows",
+    "buttress_summary",
+    "buttress_values",
+    "buttress_work_window",
     "check_removal_confirmed",
     "compute_body_steps",
+    "compute_buttress_steps",
     "compute_removal_steps",
     "confirmed_of",
     "create_body",
+    "create_buttress",
     "create_removal",
     "default_domain",
     "frozen_thickness_data",
     "prepare_body",
     "prepare_body_units",
+    "prepare_buttress",
+    "prepare_buttress_units",
     "prepare_removal",
     "prepare_removal_units",
     "read_platform_origin",
     "read_removed",
     "read_thickness",
     "recompute_body",
+    "recompute_buttress",
     "recompute_removal",
     "removal_compute_steps",
     "removal_entity_rows",
@@ -146,6 +180,7 @@ __all__ = [
     "removable_stockpiles",
     "resting_preview",
     "run_body",
+    "run_buttress",
     "run_removal",
     "thickness_from_features",
     "thickness_from_lines",
@@ -1531,3 +1566,452 @@ def recompute_body(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S
     asked = provenance.body_request(request.settings, entity_parameters(project, code, version=found))
     return run_body(project, asked, version=found.uid, code=code, supersedes=request.operation_uid, budget_s=budget_s,
                     released=released)
+
+
+# =================================================================================================================
+# El contrafuerte (spec 016, T27; HU-016-3; RF-016-17, RF-016-18, RF-015-02, RF-015-03, RF-015-10, RF-015-12, RF-015-29; plan 016
+# §5.2.3, §5.3.2, §5.4 A10, §5.7 P-8, §5.8 H-6 y H-10): el patrón de la retirada y del cuerpo, con ``design.buttress`` como cálculo
+# =================================================================================================================
+
+_BUTTRESS_PHASE = "buttress_compute"
+_BUTTRESS_DIALOG = "diálogo de «Contrafuerte…»"
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PreparedButtress:
+    """Lo que se lee y se comprueba antes de calcular un contrafuerte (:func:`prepare_buttress_units`): el ``job``
+    (``design.buttress.ButtressJob``: todo lo leído de la ventana del contrafuerte y nada del proyecto), lo que anotará la operación
+    (``start``), el ``code`` de la entidad (``BTR-001``) y su ``version``, las ``rows`` de los parámetros de la entidad —**todas**: sin su
+    fila, ``begin_operation`` crearía la del valor por defecto en el proyecto— y sus ``values`` resueltos, el nombre del dato de la
+    superficie de partida (``start_surface``) y de apoyo (``support_surface``; ``None`` sin ella), el ``fid`` de la geometría de la
+    capa de zonas (``fid``) y lo que lee el cálculo de los parámetros del proyecto y del perfil (``common``: ``des.bench.{p}.*`` y los de
+    ``provenance.PLATFORM_COMMON_PARAMS``). ``existing``: la entidad ya estaba en la versión (se preparó con su ``code``: recalcularla),
+    así que «Crear» no escribe otra vez sus parámetros."""
+
+    job: ButtressJob
+    start: OperationStart
+    code: str
+    version: Version
+    rows: tuple[EntityParamRow, ...]
+    values: Mapping[str, Any]
+    start_surface: str
+    support_surface: str | None
+    fid: int
+    common: Mapping[str, object]
+    existing: bool = False
+
+    @property
+    def op_type(self) -> str:
+        """El tipo de la operación (``des.buttress``)."""
+        return self.start.op_type
+
+
+# --- Los parámetros -----------------------------------------------------------------------------------------------
+
+
+def buttress_values(request: ButtressRequest, code: str, fid: int | str) -> tuple[dict[str, Any], frozenset[str]]:
+    """Los parámetros resueltos y comprobados del contrafuerte ``request`` de código ``code`` (RF-015-08; por último segmento de su clave) y
+    **los nombres de los que se dejaron por su valor por defecto**: la cota de coronación no tiene ninguno (D-21: la petición no lleva
+    ninguna cifra minera; ``des.entity_param_missing``), el perfil, tampoco, el alcance es opcional, la métrica es la euclídea exacta y
+    **protege por defecto** («sin corte» sobre su zona de coronación, D-1) con un **resguardo sin valor por defecto y obligatorio** si
+    protege (D-19: ``des.entity_param_missing`` o ``_range``). La «capa» de los mensajes es la de las zonas y la geometría, la de **su
+    ``fid``** (lo que recalcular y reproducir leen). **Sin proyecto**: lo comparten preparar y reproducir."""
+    spec = entity_params("buttress")
+    defaulted: set[str] = set()
+    protect = request.protect
+    if protect is None:
+        protect = spec.template(ButtressParam.PROTECT.value).default  # type: ignore[assignment]
+        defaulted.add(ButtressParam.PROTECT.value)
+    metric = None if request.metric is None else str(request.metric)
+    if metric is None:
+        metric = spec.template(ButtressParam.METRIC.value).default  # type: ignore[assignment]
+        defaulted.add(ButtressParam.METRIC.value)
+    asked: dict[ButtressParam, object] = {
+        ButtressParam.NAME: request.name, ButtressParam.LAYER: request.layer, ButtressParam.FEATURE: str(fid),
+        ButtressParam.START: request.start, ButtressParam.SUPPORT: request.support, ButtressParam.PROFILE: request.profile,
+        ButtressParam.REACH: request.reach_m, ButtressParam.CROWN: request.crown_m, ButtressParam.METRIC: metric,
+        ButtressParam.PROTECT: bool(protect), ButtressParam.GUARD: request.guard_m, ButtressParam.REASON: request.reason}
+    values: dict[str, Any] = {}
+    for param in ButtressParam:
+        if param in (ButtressParam.SUPPORTS, ButtressParam.DISCARDED):
+            continue
+        required = bool(protect) if param is ButtressParam.GUARD else None
+        checked = check_entity_param(request.name, code, param.value, asked[param], layer=request.layer, required=required)
+        if checked is not None:
+            values[param.value] = checked
+    return values, frozenset(defaulted)
+
+
+def _buttress_rows(request: ButtressRequest, code: str, values: Mapping[str, Any], defaulted: frozenset[str]
+                   ) -> tuple[EntityParamRow, ...]:
+    """Las filas de los parámetros de la entidad con su procedencia (RF-008-01): lo que no se pidió, con la de su valor por defecto;
+    el resto, lo que eligió la persona en el diálogo. **Todas** (también las de los valores por defecto)."""
+    spec = entity_params("buttress")
+    rows: list[EntityParamRow] = []
+    for param in ButtressParam:
+        value = values.get(param.value)
+        if value is None:
+            continue
+        if param.value in defaulted:
+            declared = spec.template(param.value)
+            source, kind, reason = declared.source, str(declared.source_kind), default_reason(declared)
+        else:
+            source, kind = f"{_BUTTRESS_DIALOG}, entidad «{request.name}»", "person"
+            reason = f"Elegido al crear el contrafuerte «{request.name}»"
+        rows.append(EntityParamRow(entity_key(code, param), param.value, value, source, kind, reason))
+    return tuple(rows)
+
+
+def _profile_values(project: StoreProject, version: Version, profile: str) -> dict[str, object]:
+    """Los cinco valores del perfil de banco ``profile`` como los leería una operación que empezara ahora (versión → proyecto, valor por
+    defecto de su definición), por su clave ``des.bench.{p}.<valor>``, **sin escribir nada**."""
+    keys = provenance.profile_params([profile])
+    with project.read() as conn:
+        found = ParameterStore(project).resolve_many(conn, keys, (VERSION_SCOPE, PROJECT_SCOPE), version=version.uid)
+    values: dict[str, object] = {}
+    for key in keys:
+        resolved = found.get(key)
+        declared = definition(key) if resolved is None else None
+        values[key] = resolved.value if resolved is not None else (None if declared is None else declared.default)
+    return values
+
+
+def _lowest_of(start: np.ndarray) -> float | None:
+    """La cota más baja de la partida (``None`` sin ninguna celda con dato): lo que hace falta para saber hasta dónde llega la envolvente
+    (A0)."""
+    found = np.isfinite(start)
+    return float(start[found].min()) if found.any() else None
+
+
+def buttress_work_window(request: ButtressRequest, code: str, zone: np.ndarray, grid: Grid, profile: Any, values: Mapping[str, Any],
+                         lowest_m: float | None) -> tuple[slice, slice]:
+    """**A0**: la ventana de trabajo del contrafuerte (la de :func:`~.buttress.buttress_window` con el alcance de
+    :func:`~.buttress.buttress_reach_m`) de la zona de coronación ``zone`` (máscara de la rejilla entera). ``lowest_m`` es la cota más baja
+    de la partida de la rejilla entera (no hace falta con el alcance fijado). Lo comparten preparar y reproducir: la misma ventana, los
+    mismos bits. ``des.buttress_crown_below_support`` si la zona no tiene ninguna celda o la partida no tiene ningún dato."""
+    crown = float(values[ButtressParam.CROWN.value])
+    reach = values.get(ButtressParam.REACH.value)
+    metric = Metric(values[ButtressParam.METRIC.value])
+    if lowest_m is None and reach is None:
+        raise buttress.below_support_error(request, code, crown)
+    span = buttress.buttress_reach_m(profile, crown, lowest_m, None if reach is None else float(reach), metric)
+    window = buttress.buttress_window(zone, grid, span, metric)
+    if window is None:
+        raise buttress.below_support_error(request, code, crown)
+    return window
+
+
+# --- Preparar -----------------------------------------------------------------------------------------------------
+
+
+def _check_buttress_chain(registry: entities.EntityRegistry, request: ButtressRequest, code: str, version: Version) -> None:
+    """RF-015-04, RF-015-15, H-9: **nadie parte de la superficie de un cuerpo «bajo un techo»** (``des.chainless_start``: ni la partida ni
+    el apoyo del contrafuerte), de la superficie de la que parte solo parte una entidad (``des.entity_start_taken``), la cadena no da la
+    vuelta (``des.entity_chain_cycle``) y la superficie de apoyo no es la de la propia entidad ni la de una que parte de la suya
+    (``des.entity_supports_unknown``). El contrafuerte ``code`` no cuenta consigo mismo."""
+    obj = f"Contrafuerte «{request.name}»"
+    entity_store._check_surface_left(registry, request.name, code, request.start, entity_key(code, ButtressParam.START), obj=obj)
+    if request.support is not None:
+        entity_store._check_surface_left(registry, request.name, code, request.support, entity_key(code, ButtressParam.SUPPORT), obj=obj)
+    other = entities.start_conflict(registry.records, request.start, ignoring=code)
+    if other is not None:
+        raise DesignError("des.entity_start_taken", obj=obj, field=entity_key(code, ButtressParam.START), value=request.start,
+                          entity=request.name, other=other.name)
+    records = [item for item in registry.records if item.code != code]
+    entities.check_chain([*records, entities.EntityRecord(code, request.name, EntityKind.BUTTRESS, request.start, request.support)])
+    entity_store._check_support_cycle(registry, request.name, code, request.support, entity_key(code, ButtressParam.SUPPORT),
+                                      version.code)
+
+
+def prepare_buttress_units(project: StoreProject, request: ButtressRequest, version: Version,
+                           masks: access.MaskSet | access.MaskSource, *, code: str | None = None,
+                           supersedes: str | None = None, released: Sequence[provenance.ReleasedSupport] = ()
+                           ) -> Generator[None, None, PreparedButtress]:
+    """Las unidades (cada ``yield``, una; para componerlas con ``pace_units``) que preparan el contrafuerte ``request`` de la versión
+    editable ``version`` con sus ``masks`` ya al día (:func:`~.store.masks_steps`): el código (``code``: el de una entidad que ya está en
+    la versión, que no choca consigo misma; si no, el siguiente, ``BTR-001``), el nombre único y la cadena, la capa de las zonas
+    (polígonos) y su geometría, los parámetros resueltos (**sin cota de coronación o sin resguardo, rechazado**: D-21 y D-19), **el perfil
+    y la cota del ancla antes de leer ninguna superficie** (RF-016-18: ``des.buttress_crown_off_anchor``), la partida y el apoyo, la
+    ventana de trabajo (A0: la zona ampliada por lo que alcanza la envolvente) con lo que se lee de ella —la partida, el relleno admitido
+    de las máscaras, **también en las zonas de solo restauración** (D-24)—, los sectores con la búsqueda pendiente y lo que anotará la
+    operación. ``supersedes``: la operación hecha a la que sustituye (un recálculo); ``released``: lo que da por bueno sin su apoyo.
+    Devuelve la :class:`PreparedButtress`. **Nada se escribe**; los rechazos salen al avanzar, en el orden de la documentación del
+    módulo."""
+    require_version(project, version.uid, provenance.BUTTRESS)
+    registry = entities.registry(project, version.uid)
+    chosen = code if code is not None else entities.next_code(EntityKind.BUTTRESS, (entry.record.code for entry in registry))
+    entity_store._check_name(registry, request.name, chosen, version.code)
+    _check_buttress_chain(registry, request, chosen, version)
+    yield
+    layer = entity_store._layer(project, request.layer)
+    if layer.kind != "polygon":
+        raise DesignError("des.layer_not_polygons", obj=f"Capa «{request.layer}»", field="geometría",
+                          value=entity_store._KINDS_ES.get(layer.kind, layer.kind), layer=request.layer)
+    index = entity_store.feature_index(layer, request, chosen)  # type: ignore[arg-type]
+    fid = layer.fids[index]
+    values, defaulted = buttress_values(request, chosen, fid)
+    yield
+    profile_values = _profile_values(project, version, request.profile)
+    profile = pipeline.bench_profiles(profile_values, [request.profile])[request.profile]
+    buttress.check_crown_anchor(request, chosen, profile, float(values[ButtressParam.CROWN.value]))  # RF-016-18: antes de leer nada
+    yield
+    frame = project_frame(project)
+    grid = frame.grid
+    start_name = entity_store._surface_dataset(registry, version, request, chosen, ButtressParam.START, request.start)  # type: ignore[arg-type]
+    support_name = (None if request.support is None else entity_store._surface_dataset(
+        registry, version, request, chosen, ButtressParam.SUPPORT, request.support))  # type: ignore[arg-type]
+    whole = zones.polygons_cells(tuple(tuple(part) for part in layer.parts[index]), grid)
+    full = (slice(0, grid.nrows), slice(0, grid.ncols))
+    lowest: float | None = None
+    whole_start: np.ndarray | None = None
+    if values.get(ButtressParam.REACH.value) is None:  # sin alcance, la envolvente llega hasta la cota más baja de la partida entera
+        whole_start = read_surface_window(project, start_name, full, version_uid=version.uid, expect=frame,
+                                          role="superficie de partida").values
+        lowest = _lowest_of(whole_start)
+    window = buttress_work_window(request, chosen, whole, grid, profile, values, lowest)
+    yield
+    if whole_start is not None:
+        start = np.array(whole_start[window], dtype=np.float64, copy=True)
+        del whole_start
+    else:
+        start = read_surface_window(project, start_name, window, version_uid=version.uid, expect=frame,
+                                    role="superficie de partida").values
+    if support_name is not None:  # la de apoyo existe y es de la rejilla del proyecto; no cambia el cálculo (T26, decisión 1)
+        read_surface_window(project, support_name, window, version_uid=version.uid, expect=frame, role="superficie de apoyo")
+    fill = admitted_in(masks, BenchSense.FILL, window)
+    yield
+    sectors = design_sectors(project, version.uid)
+    if any(sector.pending for sector in sectors):  # RF-015-07: el contrafuerte mueve celdas
+        refs, labels = sector_layout(project, masks)  # type: ignore[arg-type]
+        touched = pipeline.touched_in(refs, labels[window], fill)  # lo que puede mover: el relleno admitido de su ventana
+        refuse_pending(sector for sector in sectors if sector.code in touched)
+    yield
+    common = {**profile_values, **entity_store._common(project, version)}
+    job = ButtressJob(request, chosen, grid, profile, start, whole[window], fill, MappingProxyType(dict(values)), region=window,
+                      lowest_m=lowest)
+    supported, footprints, reads = entity_store._support_inputs(
+        project, version, request, chosen, registry, support_name,  # type: ignore[arg-type]
+        entity_store._released_codes(project, supersedes, released))
+    inputs = provenance.buttress_inputs(request, start_name, masks.uses(), supported)
+    inputs = (*inputs, *(use for use in footprints if use not in inputs))
+    begun = _start(project, provenance.BUTTRESS, request.name, version, masks,  # type: ignore[arg-type]
+                   provenance.buttress_settings(request, chosen), inputs,
+                   provenance.buttress_params(chosen, request, supports=reads), supersedes)
+    yield
+    return PreparedButtress(job, begun, chosen, version, _buttress_rows(request, chosen, values, defaulted), MappingProxyType(values),
+                            start_name, support_name, int(fid), MappingProxyType(common), code is not None)
+
+
+def prepare_buttress(project: StoreProject, request: ButtressRequest, *, version: str | None,
+                     masks: access.MaskSet | None = None, code: str | None = None,
+                     supersedes: str | None = None) -> PreparedButtress:
+    """La preparación entera de :func:`prepare_buttress_units` de una vez (sin ceder el hilo; las máscaras que no se dan se abren sin
+    cargar sus celdas: ``entity_store._masks_to_read``): la :class:`PreparedButtress`, con los mismos rechazos y sin escribir nada."""
+    found = require_version(project, version, provenance.BUTTRESS)
+    loaded = entity_store._masks_to_read(project, found, masks)
+    return _result_of(prepare_buttress_units(project, request, found, loaded, code=code, supersedes=supersedes))
+
+
+# --- Calcular (RF-015-03, RF-015-29, RNF-016-02 y 03) -------------------------------------------------------------
+
+
+def buttress_compute_steps(job: ButtressJob, *, budget_s: float = STEP_BUDGET_S) -> Generator[Progress, None, ButtressOutcome]:
+    """Los pasos que calculan el contrafuerte de ``job`` (RF-016-17, RF-016-18, RF-015-29; plan 016 §5.3.2: el ``buttress_compute_steps`` que
+    **comparten «Calcular», el recálculo y la reproducción**), sin proyecto y sin escribir nada (``yield from``; cerrar el generador no deja
+    nada): A10 (``buttress.buttress_steps``) por pasos de ``budget_s`` como mucho. Los rechazos de RF-016-18 salen al llamar y al avanzar
+    (``des.buttress_crown_off_anchor``, ``des.buttress_crown_below_support``) y, **si ninguna celda sube** (el relleno no está admitido
+    donde llegarían sus taludes: no hay huella que declarar ni que enseñar), ``des.buttress_nothing_rises``. Devuelve el
+    :class:`~.buttress.ButtressOutcome`."""
+    name = job.request.name
+    yield Progress(_BUTTRESS_PHASE, 0, 1, f"Calculando el contrafuerte «{name}»…")
+    outcome: ButtressOutcome = yield from pipeline.forward(buttress.buttress_steps(job, budget_s=budget_s))
+    if not np.any(outcome.footprint):
+        raise DesignError("des.buttress_nothing_rises", obj=f"Contrafuerte «{name}»", field=entity_key(job.code, ButtressParam.CROWN),
+                          value=outcome.crown_m, layer=job.request.layer, entity=name)
+    yield Progress(_BUTTRESS_PHASE, 1, 1, f"Contrafuerte «{name}» calculado")
+    return outcome
+
+
+def _runs_text(cells: np.ndarray, window: tuple[slice, slice]) -> str:
+    """Los tramos de fila de ``cells`` (de la forma de ``window``) como JSON compacto: ``[[fila, col0, col1], …]`` absolutos."""
+    runs = entity_store.footprint_runs(cells, window)
+    return json.dumps([list(run) for run in runs], separators=(",", ":"), allow_nan=False)
+
+
+def buttress_entity_rows(job: ButtressJob, outcome: ButtressOutcome, *, layer: str, source_fid: int, start_surface: str,
+                         support_surface: str | None) -> list[Row]:
+    """La fila de ``des_epr_`` (columnas de :data:`~.store.BUTTRESS_ENTITY_COLUMNS`: las de :data:`~.store.ENTITY_COLUMNS` y ``zone``) del
+    contrafuerte de ``job`` con su ``outcome`` (RF-015-01; P-8, H-6): **una**, con los atributos de la entidad —su código, su nombre, su
+    tipo ``buttress``, los datos de su superficie de partida y de apoyo, **la capa y el ``fid`` de su zona de coronación** y el hash de
+    esa zona, el modo ``buttress`` y las celdas de la huella—, su ventana de trabajo, **la huella entera** en tramos de fila (``footprint``:
+    donde la superficie sube, dentro y fuera de la zona dibujada), ningún eje y **la zona de coronación** (``zone``: lo que declara «sin
+    corte»). Solo depende de lo que se lee para calcular, no del proyecto: lo repite la reproducción desde lo congelado."""
+    zone_text = _runs_text(outcome.zone, outcome.window)
+    rows, cols = outcome.window
+    return [(job.code, job.request.name, EntityKind.BUTTRESS.value, start_surface, support_surface, layer, int(source_fid),
+             hashlib.sha256(zone_text.encode()).hexdigest(), "buttress", int(np.count_nonzero(outcome.footprint)), 0,
+             json.dumps([int(rows.start), int(rows.stop), int(cols.start), int(cols.stop)], separators=(",", ":")),
+             _runs_text(outcome.footprint, outcome.window), "[]", zone_text)]
+
+
+def buttress_report_rows(outcome: ButtressOutcome) -> list[Row]:
+    """Las filas de ``des_prp_`` (formato largo: ``quantity, value, unit_code, note``; RF-016-17) del contrafuerte ``outcome``, en este
+    orden: las celdas (la zona de coronación, las semillas y la huella), las cifras (volumen, área y altura máxima con su lugar), los
+    valores que lo gobiernan (la cota de coronación y, si se fijó, el alcance) y, al final, los avisos y notas (``warning`` y ``note`` con
+    su código y sus valores en JSON). Un valor que no es finito es un error del programa (``ValueError``). Solo depende del resultado: lo
+    repite la reproducción."""
+    rows: list[Row] = []
+
+    def scalar(key: str, value: float, unit: str, note: str | None = None) -> None:
+        rows.append((key, _real(key, value), unit, note))
+
+    for key, count in (("zone_cells", int(np.count_nonzero(outcome.zone))), ("seed_cells", outcome.seed_cells),
+                       ("footprint_cells", int(np.count_nonzero(outcome.footprint)))):
+        scalar(key, count, "-")
+    scalar("volume_m3", outcome.volume_m3, "m3")
+    scalar("area_m2", outcome.area_m2, "m2")
+    place = (None if outcome.height_max_x is None or outcome.height_max_y is None
+             else f"{_real('height_max.x', outcome.height_max_x)!r};{_real('height_max.y', outcome.height_max_y)!r}")
+    scalar("height_max_m", outcome.height_max_m, "m", place)
+    scalar("crown_m", outcome.crown_m, "m")
+    if outcome.reach_m is not None:
+        scalar("reach_m", outcome.reach_m, "m")
+    for notice in outcome.notices:
+        rows.append((notice.severity, None, None, _notice_text(notice)))
+    return rows
+
+
+def compute_buttress_steps(writer: DesignWriter, prepared: PreparedButtress, *, budget_s: float = STEP_BUDGET_S
+                           ) -> Generator[Progress, None, ButtressOutcome]:
+    """Lo que hace «Calcular» sobre el ``writer`` (RF-015-03, RF-015-29; patrón de :func:`compute_removal_steps`): calcula el contrafuerte
+    preparado (:func:`buttress_compute_steps`), deja su superficie —la de partida, **entera**, con el resultado en la ventana del
+    contrafuerte— en el temporal de ``writer`` (``des_psf_``, con su hash, P-12) y prepara, con su hash en memoria, la huella con su zona de
+    coronación (``des_epr_``) y el informe (``des_prp_``), **sin confirmar**: lo que falta para crearlo (:func:`create_buttress`) es una
+    sola transacción. Devuelve el :class:`~.buttress.ButtressOutcome`."""
+    job = prepared.job
+    outcome = yield from buttress_compute_steps(job, budget_s=budget_s)
+    whole = yield from _whole_start_steps(writer.project, prepared, budget_s)  # type: ignore[arg-type]
+    yield from pipeline.forward(_store_steps(
+        writer.grid_steps(provenance.ENTITY_SURFACE_GRID, Raster(job.grid, outcome.compose(whole), writer.crs, writer.vertical)),
+        budget_s, "la superficie del contrafuerte"))
+    entity = buttress_entity_rows(job, outcome, layer=job.request.layer, source_fid=prepared.fid, start_surface=prepared.start_surface,
+                                  support_surface=prepared.support_surface)
+    yield from pipeline.forward(_store_steps(writer.table_steps(provenance.ENTITY_TABLE, entity), budget_s, "la huella del contrafuerte"))
+    yield from pipeline.forward(_store_steps(writer.table_steps(provenance.ENTITY_REPORT_TABLE, buttress_report_rows(outcome)),
+                                             budget_s, "el informe del contrafuerte"))
+    return outcome
+
+
+# --- El resumen (RF-015-03, RF-016-17) ----------------------------------------------------------------------------
+
+
+def buttress_obsolete(project: StoreProject, prepared: PreparedButtress, *, supersedes: str | None = None) -> tuple[Obsolete, ...]:
+    """**Lo que quedará obsoleto al crear** el contrafuerte ``prepared`` (RF-015-03, RF-015-16): uno nuevo no deja obsoleto nada; el que
+    **sustituye** una operación (``supersedes``: un recálculo) deja obsoleto lo que dependía de lo que escribió, en cascada. Solo lee."""
+    if supersedes is None:
+        return ()
+    with project.read() as conn:
+        written = [str(row[0]) for row in conn.execute(
+            "SELECT item_uid FROM gb_operation_io WHERE operation_uid = ? AND direction = 'out' AND item_kind = 'dataset' "
+            "ORDER BY fid", (supersedes,))]
+        found = entity_store._dependents(conn, written, prepared.version.uid, exclude=(supersedes,))
+    return tuple(entity_store._consumer(ObsoleteKind.DEPENDENT, uid, op_type, name) for uid, op_type, name in found)
+
+
+def buttress_summary(project: StoreProject, prepared: PreparedButtress, outcome: ButtressOutcome, *,
+                     supersedes: str | None = None) -> ButtressSummary:
+    """El resumen de «Calcular» el contrafuerte ``prepared`` (RF-015-03, RF-016-17): las cifras que se registrarán (volumen, área y altura
+    máxima con su lugar), si declara «sin corte» sobre su zona de coronación (``protect``, con su resguardo) y los avisos en el orden en
+    que se enseñan (los del cálculo y lo que quedará obsoleto). Solo lee."""
+    kept = buttress_obsolete(project, prepared, supersedes=supersedes)
+    request = prepared.job.request
+    values = prepared.values
+    guard = values.get(ButtressParam.GUARD.value)
+    notices = (*outcome.notices, *obsolete_notices(request.name, prepared.version.code, kept))
+    return ButtressSummary(
+        request.name, prepared.code, prepared.version.code, request.layer, outcome.profile, outcome.crown_m, outcome.figures,
+        outcome.volume_m3, outcome.area_m2, outcome.height_max_m, outcome.height_max_x, outcome.height_max_y,
+        bool(values.get(ButtressParam.PROTECT.value)), None if guard is None else float(guard), notices, kept)
+
+
+# --- Crear (RF-016-17, RF-015-01, RF-015-02) ------------------------------------------------------------------------
+
+
+def create_buttress(project: StoreProject, writer: DesignWriter, prepared: PreparedButtress, outcome: ButtressOutcome, *,
+                    decided_by: str | None = None) -> Stored:
+    """**«Crear» un contrafuerte** (RF-016-17, RF-015-01, RF-015-02): registra en **una** transacción
+    (:meth:`~.store.DesignWriter.commit` de ``writer``, el de «Calcular», con sus tres salidas preparadas) los parámetros de la entidad
+    —una fila de la versión por parámetro, con su origen y su decisor ``decided_by`` (por defecto, quien tiene abierto el proyecto)—,
+    la operación ``des.buttress`` con sus entradas (la capa de las zonas, la superficie de partida, las máscaras y lo que apoya) y sus
+    parámetros, la superficie entera (``des_psf_``), la huella con su zona de coronación (``des_epr_``), el informe y las cifras
+    ``des.btr_*`` con el ámbito de la entidad. Una entidad que ya estaba en la versión (``prepared.existing``) no vuelve a escribir sus
+    parámetros. Si algo falla, o lo que consume cambió desde que se calculó (``des.input_changed``), no queda nada y el error sigue;
+    **no modifica ninguna entrada**. **No declara la restricción** («sin corte»: ``des.declare_constraints``): es lo que encadena la orden
+    tras el commit (``entity_store.after_entity_change``)."""
+    start = prepared.start
+
+    def parameters(conn: sqlite3.Connection) -> None:
+        if prepared.existing:
+            if ParameterStore(project).get(entity_key(prepared.code, ButtressParam.NAME), version=start.version_uid,
+                                           conn=conn) is None:
+                raise ValueError(f"la entidad {prepared.code} no tiene sus parámetros en la versión: no está en ella (se prepara "
+                                 "sin su código)")
+        else:
+            set_entity_params(project, prepared.rows, version=start.version_uid, decided_by=decided_by, conn=conn)
+
+    return writer.commit(start, figures=outcome.figures, message=outcome.message, before_begin=parameters)
+
+
+# --- Recalcular (RF-015-02, RF-015-16, RF-008-26) --------------------------------------------------------------------
+
+
+def _check_recorded_buttress(handle: OperationHandle, prepared: PreparedButtress) -> None:
+    """Los parámetros que anotó la operación al empezar son los que leyó el cálculo al prepararse (RF-013-17, D-14): si uno cambió entre
+    las dos cosas, el resultado ya no le corresponde (``des.input_changed``, con el parámetro)."""
+    read: dict[str, object] = {entity_key(prepared.code, ButtressParam(name)): value for name, value in prepared.values.items()}
+    read.update(prepared.common)
+    for param in handle.params:
+        if param.key in read and param.value != read[param.key]:
+            raise DesignError("des.input_changed", obj=f"Parámetro «{param.key}»", field="parámetros", value=param.key)
+
+
+def run_buttress(project: StoreProject, request: ButtressRequest, *, version: str | None, code: str,
+                 masks: access.MaskSet | None = None, supersedes: str | None = None, budget_s: float = STEP_BUDGET_S,
+                 released: Sequence[provenance.ReleasedSupport] = ()) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Calcula y registra ``request`` —un contrafuerte que ya está en la versión ``version``: su ``code``— de **una vez** (RF-015-02,
+    RF-015-16; el recálculo de lo obsoleto, :func:`~.store.recompute_run`; el «Crear» tras «Calcular» es
+    :meth:`~.steps.Calculation.create`): empieza la operación ``des.buttress`` —si ``supersedes`` es la de una anterior, la sustituye,
+    quedándose con los nombres de sus datos— con lo que lee hoy y devuelve su ``OperationHandle`` «en curso» y sus pasos, que avanza
+    quien la llama: calculan (:func:`buttress_compute_steps`), escriben la superficie, la huella con su zona y el informe y completan la
+    operación en una transacción; el último lleva el :class:`~.store.Stored`. No escribe parámetros de la entidad (ya están). Cerrarlos
+    antes, o un fallo, no dejan nada y la operación queda cancelada o fallida. Al llamar, sin empezar nada: los rechazos de
+    :func:`prepare_buttress_units`."""
+    found = require_version(project, version, provenance.BUTTRESS)
+    loaded = entity_store._masks_to_read(project, found, masks)
+    prepared = _result_of(prepare_buttress_units(project, request, found, loaded, code=code, supersedes=supersedes, released=released))
+    handle = prepared.start.with_released(released).begin(project)
+    return handle, _buttress_run(project, handle, prepared, budget_s)
+
+
+def _buttress_run(project: StoreProject, handle: OperationHandle, prepared: PreparedButtress, budget_s: float
+                  ) -> Generator[Progress, None, None]:
+    with DesignWriter.resume(project, handle) as writer:
+        _check_recorded_buttress(handle, prepared)
+        outcome: ButtressOutcome = yield from compute_buttress_steps(writer, prepared, budget_s=budget_s)
+        stored = writer.commit(figures=outcome.figures, message=outcome.message)
+        yield Progress(_BUTTRESS_PHASE, 1, 1, outcome.message, result=stored)
+
+
+def recompute_buttress(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
+                       released: Sequence[provenance.ReleasedSupport] = ()) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Repite la operación ``des.buttress`` de ``request`` (:func:`~.store.recompute_run`; «Recalcular lo obsoleto», RF-008-26; RF-015-02,
+    RF-015-16): el contrafuerte de sus ajustes (el nombre, el código y el campo de la cota) con los **parámetros vigentes de su entidad en
+    su versión** (:func:`~.entity_store.entity_parameters`: la capa y su geometría, la partida, el apoyo, el perfil, el alcance, la cota de
+    coronación y la métrica) y no los que leyó la operación que sustituye: una entidad se define por sus parámetros (RF-015-01). Devuelve
+    lo de :func:`run_buttress`. ``ValueError`` si los ajustes no son los de un contrafuerte o la petición no es de una versión."""
+    project: StoreProject = request.project  # type: ignore[assignment]
+    code = provenance.supported_code(request.settings)
+    found = require_version(project, request.version, provenance.BUTTRESS)
+    asked = provenance.buttress_request(request.settings, entity_parameters(project, code, version=found))
+    return run_buttress(project, asked, version=found.uid, code=code, supersedes=request.operation_uid, budget_s=budget_s,
+                        released=released)
