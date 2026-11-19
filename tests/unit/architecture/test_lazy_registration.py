@@ -68,8 +68,12 @@ HEAVY: frozenset[str] = frozenset({
     "design.removal",
     # El almacén de la retirada (spec 016, T20; el patrón de T25 y T27): preparar, calcular, crear, recalcular y reproducir.
     "design.supported_store",
+    # El cálculo del contrafuerte y del cuerpo apoyado de la 016 (spec 016, T23 a T27 y T51): el espesor, el contrafuerte, el borde
+    # de lo apoyado y la morfología. Ya eran perezosos; lo fija la prueba para que no vuelvan a cargarse al habilitar (RNF-001-03:
+    # la 016 subió el habilitado de 0,487 s a 0,512 s con sus declaraciones y sus familias, y no con estos).
+    "design.thickness", "design.buttress", "design.supported_edge", "design.morphology",
 })
-"""Los módulos de la 012, la 013 y la 015 (y la cadena que arrastran) que se importan al primer uso."""
+"""Los módulos de la 012, la 013, la 015 y la 016 (y la cadena que arrastran) que se importan al primer uso."""
 
 
 def registered_roots(modules: Collection[pyast.PyModule]) -> list[str]:

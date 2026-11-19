@@ -52,6 +52,7 @@ from dataclasses import KW_ONLY, dataclass, replace
 from enum import StrEnum
 from itertools import pairwise
 from types import MappingProxyType
+from typing import Any
 
 from ..catalog.schema import MODULE_CODES
 from ..errors import ValidationError
@@ -828,12 +829,34 @@ def _pattern_problem(pattern: str) -> str | None:
     return None
 
 
-@functools.lru_cache(maxsize=256)
-def _pattern_regex(pattern: str) -> re.Pattern[str]:
-    """La expresión de un patrón bien formado: cada variable, un grupo ``[a-z][a-z0-9_]*``."""
-    parts = [f"({_SEGMENT})" if _VARIABLE.fullmatch(part) else re.escape(part)
-             for part in pattern.split(".")]
-    return re.compile(r"\.".join(parts))
+@functools.lru_cache(maxsize=1024)
+def _shape(pattern: str) -> tuple[str | None, ...]:
+    """Los segmentos de un patrón bien formado: el nombre de cada uno fijo y ``None`` en cada
+    variable. Casar una clave se hace sobre esta forma, segmento a segmento, sin una expresión
+    regular por patrón (spec 016, T51: compilar las de 105 familias eran ≈ 5 ms de cada
+    habilitación)."""
+    return tuple(None if _VARIABLE.fullmatch(part) is not None else part
+                 for part in pattern.split("."))
+
+
+def _segments(pattern: str, key: str) -> tuple[str, ...] | None:
+    """Los segmentos variables de ``key``, en orden, si casa con un patrón bien formado, o
+    ``None``: el mismo número de segmentos, cada fijo igual y cada variable un código
+    ``[a-z][a-z0-9_]*`` (lo que casaba la expresión regular de un patrón, ``fijo`` o
+    ``([a-z][a-z0-9_]*)`` por segmento, unidos por puntos)."""
+    shape = _shape(pattern)
+    if key.count(".") + 1 != len(shape):
+        return None
+    parts = key.split(".")
+    found: list[str] = []
+    for fixed, part in zip(shape, parts, strict=True):
+        if fixed is None:
+            if _FIXED.fullmatch(part) is None:
+                return None
+            found.append(part)
+        elif part != fixed:
+            return None
+    return tuple(found)
 
 
 @dataclass(frozen=True, slots=True)
@@ -867,7 +890,7 @@ class ParamFamily:
         if problem is None and self.template.module != self.module:
             problem = (f"su plantilla «{self.template.key}» es de otro módulo "
                        f"({self.template.module}, no {self.module})")
-        if problem is None and self.match(self.template.key) is None:
+        if problem is None and _segments(self.pattern, self.template.key) is None:
             problem = f"la clave de su plantilla, «{self.template.key}», no casa con el patrón"
         if problem is not None:
             raise ValueError(f"familia de parámetros «{self.pattern}»: {problem}")
@@ -882,8 +905,7 @@ class ParamFamily:
         patrón; ``None`` si no (o si no es un texto)."""
         if not isinstance(key, str):
             return None
-        found = _pattern_regex(self.pattern).fullmatch(key)
-        return None if found is None else found.groups()
+        return _segments(self.pattern, key)
 
     def concrete(self, key: str) -> ParamDef:
         """La definición de la clave concreta ``key``: la plantilla con esa clave (la misma
@@ -898,10 +920,9 @@ class ParamFamily:
     def overlaps(self, other: ParamFamily) -> bool:
         """Si alguna clave casa a la vez con esta familia y con ``other``: el mismo número de
         segmentos y, en cada posición, una variable o el mismo nombre."""
-        mine, theirs = self.pattern.split("."), other.pattern.split(".")
+        mine, theirs = _shape(self.pattern), _shape(other.pattern)
         return len(mine) == len(theirs) and all(
-            a == b or _VARIABLE.fullmatch(a) is not None or _VARIABLE.fullmatch(b) is not None
-            for a, b in zip(mine, theirs, strict=True)
+            a is None or b is None or a == b for a, b in zip(mine, theirs, strict=True)
         )
 
 
@@ -960,6 +981,70 @@ def parameter_label(key: object, language: str = "es") -> str | None:
     return _LABEL_SEPARATOR.join((label, *segments))
 
 
+class _ShapeIndex:
+    """Los patrones ya vistos, en un árbol por segmentos (cada variable, la rama ``None``), para
+    hallar los que solapan con uno sin compararlos todos (spec 016, T51: con 105 familias, la
+    comparación pareja a pareja eran 5.460 llamadas a :meth:`ParamFamily.overlaps` y crecía con el
+    cuadrado). Cada patrón lleva el orden en que se vio, para dar los problemas en el mismo
+    orden que daba esa comparación."""
+
+    __slots__ = ("_root",)
+    _HERE = object()
+
+    def __init__(self) -> None:
+        self._root: dict[object, Any] = {}
+
+    def add(self, order: int, family: ParamFamily) -> None:
+        node = self._root
+        for segment in _shape(family.pattern):
+            node = node.setdefault(segment, {})
+        node.setdefault(self._HERE, []).append((order, family))
+
+    def overlapping(self, family: ParamFamily) -> list[tuple[int, ParamFamily]]:
+        """Los patrones vistos que solapan con ``family``, por orden de visto."""
+        nodes: list[dict[object, Any]] = [self._root]
+        for segment in _shape(family.pattern):
+            following: list[dict[object, Any]] = []
+            for node in nodes:
+                if segment is None:  # una variable casa con cualquier segmento
+                    following.extend(child for key, child in node.items() if key is not self._HERE)
+                else:
+                    for key in (segment, None):
+                        child = node.get(key)
+                        if child is not None:
+                            following.append(child)
+            nodes = following
+        found = [pair for node in nodes for pair in node.get(self._HERE, ())]
+        return sorted(found, key=lambda pair: pair[0])
+
+
+def _family_problems(families: tuple[ParamFamily, ...]) -> list[str]:
+    """Lo que impide registrar ``families`` (un patrón repetido o ya registrado, uno que solapa
+    con otra familia, registrada o del lote, o que casa con una clave registrada), en el orden
+    de siempre: por cada una, primero lo registrado y luego lo del lote. Con el patrón o la clave
+    de otro número de segmentos o de otro módulo no se compara."""
+    index = _ShapeIndex()
+    for order, registered in enumerate(_FAMILY_REGISTRY.values()):
+        index.add(order, registered)
+    keys: dict[tuple[int, str], list[str]] = {}
+    for key in _REGISTRY:
+        keys.setdefault((key.count(".") + 1, key.partition(".")[0]), []).append(key)
+    base = len(_FAMILY_REGISTRY)
+    problems: list[str] = []
+    for position, family in enumerate(families):
+        for _order, other in index.overlapping(family):
+            if other.pattern == family.pattern:
+                problems.append(f"«{family.pattern}» ya está registrada o repetida")
+            else:
+                problems.append(f"«{family.pattern}» solapa con «{other.pattern}»")
+        index.add(base + position, family)
+        shape = _shape(family.pattern)
+        problems.extend(f"«{family.pattern}» casa con la clave registrada «{key}»"
+                        for key in keys.get((len(shape), shape[0]), ())
+                        if family.match(key) is not None)
+    return problems
+
+
 def register_families(families: Iterable[ParamFamily]) -> None:
     """Registra las familias de un módulo (lo llama ``bl/`` en el ``register()`` de su
     módulo, como :func:`register_definitions`): todas o ninguna. :class:`ValueError` si un
@@ -973,15 +1058,7 @@ def register_families(families: Iterable[ParamFamily]) -> None:
                 f"solo se registra una ParamFamily, no {type(family).__name__} ({family!r})"
             )
     with _LOCK:
-        problems: list[str] = []
-        for position, family in enumerate(families):
-            for other in (*_FAMILY_REGISTRY.values(), *families[:position]):
-                if other.pattern == family.pattern:
-                    problems.append(f"«{family.pattern}» ya está registrada o repetida")
-                elif family.overlaps(other):
-                    problems.append(f"«{family.pattern}» solapa con «{other.pattern}»")
-            problems.extend(f"«{family.pattern}» casa con la clave registrada «{key}»"
-                            for key in _REGISTRY if family.match(key) is not None)
+        problems = _family_problems(families)
         if problems:
             raise ValueError(
                 f"familia de parámetros ya registrada, repetida o que solapa: "
