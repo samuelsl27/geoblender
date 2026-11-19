@@ -62,7 +62,7 @@ import math
 import shutil
 import tempfile
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date
@@ -74,11 +74,13 @@ import numpy as np
 from tests.support import constraints_data as cdata
 from tests.support import constraints_fixtures as cfx
 from tests.support import constraints_project as cp
-from tests.support import design_data as ddata
 from tests.support import entity_fixtures as efx
 from tests.support import quarry_fixtures as qfx
 from tests.support.core_fixtures import FakeClock, FakePids, project_tmp
 from tests.support.package import import_geoblender
+from tests.support.stockpile_scale import (  # noqa: F401  (datos puros, también para Blender: se reexportan)
+    SCALE_BUMPS, SCALE_MARKS, SCALE_SEED, SCALE_SOUTH, SCALE_THICKNESS, SCALE_WEST, SHAPES, Mound, mound_heights, scale_mounds,
+    scale_survey, scale_thickness)
 
 gis = import_geoblender("gis")
 
@@ -187,70 +189,8 @@ def plane(tilt_deg: float, *, pivot: tuple[float, float] = WINDOW_PIVOT,
 
 # --- Los montones -------------------------------------------------------------------------------
 
-SHAPES: tuple[str, ...] = ("pyramid", "cone")
-"""Las formas de un montón: tronco de pirámide (la distancia es la de Chebyshev) o de cono (la euclídea)."""
-
-
-@dataclass(frozen=True, slots=True)
-class Mound:
-    """Un tronco de pirámide o de cono: su ``name``, su ``shape``, el centro ``(cx, cy)`` (local, en un metro
-    entero: una esquina de celda), el semilado o radio del pie ``foot`` y de la cima ``top`` (m) y su altura
-    ``height`` (m) **sobre el plano**. La altura baja linealmente de ``height`` en la cima a 0 en el pie."""
-
-    name: str
-    shape: str
-    cx: float
-    cy: float
-    foot: float
-    top: float
-    height: float
-
-    def __post_init__(self) -> None:
-        if self.shape not in SHAPES:
-            raise ValueError(f"la forma de un montón es una de {', '.join(SHAPES)}, no {self.shape!r}")
-        if not (0.0 <= self.top < self.foot and self.height > 0.0):
-            raise ValueError(f"el montón «{self.name}» pide 0 ≤ cima < pie y una altura positiva")
-
-    @property
-    def slope(self) -> float:
-        """La pendiente de la ladera del montón (m/m)."""
-        return self.height / (self.foot - self.top)
-
-    @property
-    def foot_box(self) -> tuple[float, float, float, float]:
-        """La caja del pie (local: izquierda, abajo, derecha, arriba)."""
-        return (self.cx - self.foot, self.cy - self.foot, self.cx + self.foot, self.cy + self.foot)
-
-    def moved(self, dx: float, dy: float) -> Mound:
-        """El mismo montón con el centro trasladado ``(dx, dy)`` m."""
-        return replace(self, cx=self.cx + dx, cy=self.cy + dy)
-
-    def heights(self, x: Any, y: Any) -> np.ndarray:
-        """La altura (m, ≥ 0) sobre el plano en ``(x, y)`` locales: ``mín(height, pendiente·(pie − d))``, 0 fuera
-        del pie, con ``d`` la distancia de Chebyshev (pirámide) o euclídea (cono) al centro."""
-        dx, dy = np.abs(np.asarray(x) - self.cx), np.abs(np.asarray(y) - self.cy)
-        distance = np.maximum(dx, dy) if self.shape == "pyramid" else np.hypot(dx, dy)
-        return np.clip(self.slope * (self.foot - distance), 0.0, self.height)
-
-
-def mound_heights(shape: tuple[int, int], step_m: float, mounds: Sequence[Mound]) -> np.ndarray:
-    """La altura de ``mounds`` sobre el plano en una rejilla de ``shape`` celdas de ``step_m`` m con el origen
-    local en su esquina suroeste (m, float64, nueva): donde dos se solapan, la mayor (un montón no suma a otro).
-    Evalúa cada montón solo en la caja de su pie."""
-    nrows, ncols = shape
-    found = np.zeros(shape, dtype=np.float64)
-    for mound in mounds:
-        left, bottom, right, top = mound.foot_box
-        col0, col1 = max(math.floor(left / step_m), 0), min(math.ceil(right / step_m), ncols)
-        row0, row1 = max(nrows - math.ceil(top / step_m), 0), min(nrows - math.floor(bottom / step_m), nrows)
-        if col0 >= col1 or row0 >= row1:
-            continue
-        x = (np.arange(col0, col1) + 0.5) * step_m
-        y = (nrows - np.arange(row0, row1) - 0.5) * step_m
-        part = mound.heights(*np.meshgrid(x, y))
-        found[row0:row1, col0:col1] = np.maximum(found[row0:row1, col0:col1], part)
-    return found
-
+# ``Mound`` y ``mound_heights`` están en ``stockpile_scale`` (datos puros: los usa también ``perf_stockpiles.py``, que corre
+# dentro de Blender y no puede importar esta ayuda) y se reexportan aquí.
 
 CONE = Mound("Cono de referencia", "cone", 60.0, 60.0, 20.0, 10.0, 5.0)
 """El tronco de cono de CE-016-02: pie de 20 m de radio, cima de 10 m y 5 m de altura (pendiente 0,5); el
@@ -871,57 +811,7 @@ class StockpileProjectCase(qfx.QuarryProjectCase):
 
 # --- La escala (plan §7.1; T37): bajo demanda -----------------------------------------------------------
 
-SCALE_WEST, SCALE_SOUTH = cdata.WEST, cdata.SOUTH
-"""La esquina suroeste de la rejilla de escala (m, absoluta): la de la 012 y la 013."""
-SCALE_MARKS, SCALE_BUMPS, SCALE_THICKNESS = 100, 2_000, 10_000
-"""100 marcas, 2.000 zonas candidatas antes de filtrar y 10.000 datos de espesor."""
-SCALE_SEED = 20_261_118
-_SCALE_SITES = 46
-
-
 def scale_grid() -> Any:
     """La rejilla de escala: 1.654 × 1.699 celdas de 1 m (2,81 M), la de la 013."""
     return gis.Grid(cdata.WEST, cdata.SOUTH + cdata.ROWS * cdata.STEP_M, cdata.STEP_M, cdata.STEP_M,
                     cdata.COLS, cdata.ROWS)
-
-
-def scale_mounds() -> tuple[tuple[Mound, ...], tuple[Mound, ...]]:
-    """Las 100 marcas (troncos de pirámide de pie 13 m, cima 3 m y 5 m de altura) y las 2.000 zonas candidatas antes
-    de filtrar (pie de 6 a 12 m, cima 1 m, de 2,5 a 6 m de altura) de la rejilla de escala, en coordenadas locales
-    desde su esquina suroeste: sobre una malla de 46 × 46 sitios (a ≈ 36 m) con una sacudida de ±1 m, separados al
-    menos 5 m. Los mismos cada vez (semilla fija)."""
-    rng = np.random.default_rng(SCALE_SEED)
-    columns = (np.arange(_SCALE_SITES) + 0.5) * (cdata.COLS / _SCALE_SITES)
-    rows = (np.arange(_SCALE_SITES) + 0.5) * (cdata.ROWS / _SCALE_SITES)
-    sites = np.array([(x, y) for y in rows for x in columns])
-    centres = np.round(sites) + rng.integers(-1, 2, size=sites.shape)
-    order = rng.permutation(len(sites))
-    feet = rng.integers(6, 13, size=SCALE_BUMPS)
-    heights = rng.integers(5, 13, size=SCALE_BUMPS) * 0.5
-    marks = tuple(_pyramid(f"Marca {number + 1:03d}", *map(float, centres[site]), 13.0, 3.0, 5.0)
-                  for number, site in enumerate(order[:SCALE_MARKS]))
-    bumps = tuple(_pyramid(f"Montículo {number + 1:04d}", *map(float, centres[site]), float(feet[number]),
-                           1.0, float(heights[number]))
-                  for number, site in enumerate(order[SCALE_MARKS:SCALE_MARKS + SCALE_BUMPS]))
-    return marks, bumps
-
-
-def scale_thickness() -> np.ndarray:
-    """Los 10.000 datos de espesor sueltos (``(10000, 3)``: X e Y absolutas y el espesor, de 0,5 a 3 m) en 100 ha: un
-    cuadrado de 1.000 m (de (300, 350) a (1.300, 1.350) locales de la rejilla de escala), a lo sumo uno por celda
-    de 1 m. Los mismos cada vez (semilla fija)."""
-    rng = np.random.default_rng(SCALE_SEED + 1)
-    cells = rng.choice(1_000_000, size=SCALE_THICKNESS, replace=False)
-    column, row = cells % 1_000, cells // 1_000
-    x = 300.0 + column + 0.5 + rng.uniform(-0.4, 0.4, SCALE_THICKNESS)
-    y = 350.0 + row + 0.5 + rng.uniform(-0.4, 0.4, SCALE_THICKNESS)
-    return np.column_stack([SCALE_WEST + x, SCALE_SOUTH + y, rng.uniform(0.5, 3.0, SCALE_THICKNESS)])
-
-
-def scale_survey() -> np.ndarray:
-    """**Bajo demanda** (pesa 22 MB y casi un segundo): el levantamiento de escala (``(1699, 1654)``, m, nuevo): el
-    terreno de la 013 (``design_data.terrain``, de 145 a 215 m con colinas) más las 100 marcas y las 2.000 zonas
-    candidatas de :func:`scale_mounds`."""
-    marks, bumps = scale_mounds()
-    terrain = np.array(ddata.terrain(), dtype=np.float64)
-    return terrain + mound_heights(terrain.shape, cdata.STEP_M, (*marks, *bumps))
