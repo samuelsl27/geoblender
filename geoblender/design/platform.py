@@ -130,6 +130,7 @@ from contextlib import closing
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -179,6 +180,9 @@ from .quarry import (
 from .report import REPORT_CELLS_PER_UNIT, Previous, _max_tangents, _padded, _thickness
 from .seeds import pace_progress
 from .zones import _paint, _polygon_spans
+
+if TYPE_CHECKING:
+    from .removal import PlatformRemoval
 
 __all__ = [
     "Applied",
@@ -256,12 +260,19 @@ class PlatformGeometry:
     ``gis.vector.FeatureLayer``). Un polígono lleva, si tiene eje enlazado, las partes de esa línea
     (``axis_parts``) y su nombre (``axis_name``, para decirlo en un rechazo); sin ellas, el eje es el
     principal de sus celdas. Una línea no lleva eje enlazado (``ValueError``, como un tipo que no es
-    de una capa de entidades: errores del programa)."""
+    de una capa de entidades: errores del programa).
+
+    **Un eje dado** (``given_axis``; spec 016, T21; RF-016-16, A9): la plataforma que sale de retirar un acopio «como plataforma» tiene
+    como geometría **la huella del acopio** (un polígono, el contorno alineado a la rejilla de sus celdas) y su eje **ya calculado**
+    —por su centro, en la dirección de la máxima pendiente del plano de su base, de borde a borde de la huella—: se usa **tal cual**
+    (sin buscar el trozo de la línea que está dentro del polígono ni el eje principal) y la abscisa de cada celda es la de su proyección
+    sobre él, de modo que la rasante es el plano de la base en toda la huella. Un eje dado es de un polígono sin eje enlazado."""
 
     kind: str
     parts: _Parts
     axis_parts: _Parts | None = None
     axis_name: str = ""
+    given_axis: Axis | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in _KINDS_ES:
@@ -272,6 +283,11 @@ class PlatformGeometry:
         object.__setattr__(self, "parts", _parts(self.parts))
         if self.axis_parts is not None:
             object.__setattr__(self, "axis_parts", _parts(self.axis_parts))
+        if self.given_axis is not None:
+            if self.kind != "polygon" or self.axis_parts is not None:
+                raise ValueError("un eje dado es de un polígono sin eje enlazado (spec 016, T21)")
+            if not isinstance(self.given_axis, Axis):
+                raise TypeError(f"el eje dado de una plataforma es un Axis, no {self.given_axis!r}")
 
 
 Window = tuple[slice, slice]
@@ -502,6 +518,8 @@ def reading_window(geometry: PlatformGeometry, values: Mapping[str, object], gri
     if not (math.isfinite(reach) and reach >= 0.0 and math.isfinite(half) and half >= 0.0):
         return None
     paths = [path for part in (*geometry.parts, *(geometry.axis_parts or ())) for path in part if path.shape[0]]
+    if geometry.given_axis is not None:
+        paths.append(np.asarray(geometry.given_axis.vertices, dtype=np.float64))
     if not paths:
         return None
     box = corridor_window([np.concatenate(paths)], half, grid)
@@ -1179,7 +1197,9 @@ def platform_footprint_units(job: PlatformJob) -> Generator[None, None, Footprin
         if box is None:
             raise _reject("des.platform_no_cells", request, _GEOMETRY, 0)
         rows, cols, cells = box
-        if geometry.axis_parts is None:
+        if geometry.given_axis is not None:
+            axis = geometry.given_axis  # la huella de un acopio retirado «como plataforma» (T21): su eje, de borde a borde
+        elif geometry.axis_parts is None:
             axis = axis_of_polygon(cells, grid, offset=(rows.start, cols.start))
             (xa, ya), (xb, yb) = axis.vertices
             notices.append(Notice("des.platform_axis_principal", {
@@ -2283,7 +2303,11 @@ class PlatformOutcome:
     ``confirmed`` es la confirmación expresa de la contrapendiente (``confirm_counterslope`` de
     :func:`platform_outcome`): sin ella, una contrapendiente que pasa de la tolerancia impide crear
     (:attr:`needs_confirmation`, :meth:`ensure_creatable`). El incumplimiento del orden de la cantera
-    **no** lo impide (RF-015-14)."""
+    **no** lo impide (RF-015-14).
+
+    ``removal`` (spec 016, T21; RF-016-16): lo que la plataforma hace de **retirada de un acopio** (:class:`~.removal.PlatformRemoval`: el
+    volumen retirado, lo que se le apoyaba y lo que no se retira, con sus cifras ``des.rmv_*`` en ``figures``); ``None`` en la plataforma de
+    una capa, que no cambia."""
 
     name: str
     code: str
@@ -2297,6 +2321,7 @@ class PlatformOutcome:
     figures: tuple[FigureSpec, ...]
     notices: tuple[Notice, ...]
     confirmed: bool = False
+    removal: PlatformRemoval | None = None
 
     @property
     def result(self) -> np.ndarray:

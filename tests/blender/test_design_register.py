@@ -51,9 +51,9 @@ from tests.support.trees import temp_folder
 
 ENTRY = "013"
 ENTRY_TITLE = ("Envelopes and benching", "Envolventes y escalonado")
-COUNTS = {"parámetros": 9, "familias": 95, "operaciones": 16, "grupos": 0, "cifras": 66}
-"""Lo de ``des`` en ``core``: 2 + 7 definiciones (013 y 014), 6 + 20 + 69 familias (013, 015 y 016; la 20.ª de la 015,
-``discarded``, es de la T25; las 69 de la 016 son las de sus cuatro tipos: 25 + 13 + 14 + 17), 3 + 5 + 3 + 5 tipos de
+COUNTS = {"parámetros": 9, "familias": 96, "operaciones": 16, "grupos": 0, "cifras": 66}
+"""Lo de ``des`` en ``core``: 2 + 7 definiciones (013 y 014), 6 + 21 + 69 familias (013, 015 y 016; la 20.ª de la 015,
+``discarded``, es de la T25 y la 21.ª, ``stockpile``, de la T21 de la 016; las 69 de la 016 son las de sus cuatro tipos: 25 + 13 + 14 + 17), 3 + 5 + 3 + 5 tipos de
 operación (013, 014, 015 y 016; la 016, con el de la detección del proyecto, T04) y 15 + 15 + 14 + 22 cifras (T04 de la 015;
 T03 de la 016)."""
 OURS = ("des.", "des_")  # las claves de la 013 en los registros de core

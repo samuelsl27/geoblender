@@ -260,10 +260,11 @@ class Calculation:
 
     @property
     def needs_resting_confirmation(self) -> bool:
-        """Si es una retirada de un acopio con algo apoyado (RF-016-14) y la persona aún no lo ha confirmado: no se podrá crear. Falso
-        en cualquier otra."""
+        """Si es una retirada de un acopio —o una plataforma que retira un acopio «como plataforma», T21— con algo apoyado (RF-016-14) y la
+        persona aún no lo ha confirmado: no se podrá crear. Falso en cualquier otra."""
         found = self.entity
-        return isinstance(found, supported_store.PreparedRemoval) and bool(found.resting) and not self._removal_confirmed[0]
+        return (isinstance(found, supported_store.PreparedRemoval | entity_store.PreparedPlatform) and bool(found.resting)
+                and not self._removal_confirmed[0])
 
     @property
     def needs_wall_confirmation(self) -> bool:
@@ -283,8 +284,10 @@ class Calculation:
     def confirm_removal(self, *, resting: bool = False, wall: bool = False) -> None:
         """La confirmación expresa de lo que se apoya en el acopio que se retira (``resting``, RF-016-14) y de la pared que deja
         (``wall``, RF-016-15): queda dicha para :meth:`create` (que la registra con su decisor y su fecha) sin recalcular. Sustituye a
-        la anterior. ``TypeError`` si no es una retirada."""
-        if not isinstance(self.entity, supported_store.PreparedRemoval):
+        la anterior. ``TypeError`` si no es una retirada. **Una plataforma que retira un acopio «como plataforma»** (T21; RF-016-16) solo tiene
+        que confirmar lo apoyado: su pared es la de su borde, un aviso de la plataforma (``wall`` no cuenta)."""
+        platform_of_stockpile = isinstance(self.entity, entity_store.PreparedPlatform) and self.entity.removed is not None
+        if not isinstance(self.entity, supported_store.PreparedRemoval) and not platform_of_stockpile:
             raise TypeError(f"solo una retirada de un acopio tiene algo que confirmar, no «{self.op_type}»")
         self._removal_confirmed = (bool(resting), bool(wall))
 
@@ -332,11 +335,16 @@ class Calculation:
             return self._create_removal(self.entity, decided_by)
         if self.entity is not None:
             self._platform().ensure_creatable()  # sin cerrar el cálculo: se confirma y se crea
+            if isinstance(self.entity, entity_store.PreparedPlatform) and self.entity.origin is not None:
+                # retirar un acopio «como plataforma» (T21; RF-016-14): sin confirmar lo apoyado, no se crea (y el cálculo sigue abierto)
+                removal.check_resting_confirmed(self.entity.origin.item.name, self.entity.resting,
+                                                confirmed=self._removal_confirmed[0])
         try:
             self._check_parameters()
             if self.entity is not None:
                 stored = entity_store.create_platform(self._project, self._writer, self.entity,
-                                                      self._platform(), decided_by=decided_by)
+                                                      self._platform(), decided_by=decided_by,
+                                                      confirmed_resting=self._removal_confirmed[0])
             else:
                 stored = self._writer.commit(self._start, figures=self.outcome.figures,
                                              message=self.outcome.message)

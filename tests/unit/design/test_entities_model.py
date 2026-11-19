@@ -60,9 +60,12 @@ PLATFORM_PARAMS: dict[str, tuple[str, str, object, float | None, float | None, b
     "reason": ("text", "-", None, None, None, False, False, (), ("RF-015-10", "RF-015-12")),
     "supports": ("text", "-", None, None, None, False, False, (), ("RF-015-15",)),
     "discarded": ("bool", "-", False, None, None, False, False, (), ("RF-015-17",)),
+    # La 21.ª es de la 016 (T21; RF-016-16, A9): el acopio que la plataforma retira «como plataforma». Sin valor, ni siquiera por defecto: la
+    # plataforma de una capa no lo lleva (opcional).
+    "stockpile": ("text", "-", None, None, None, False, False, (), ("RF-016-16",)),
 }
 # Los opcionales: sin valor es válido (el resto sin valor se rechaza, RF-015-08).
-OPTIONAL = ("support", "max_slope_pct", "reason", "supports")
+OPTIONAL = ("support", "max_slope_pct", "reason", "supports", "stockpile")
 # Los que tienen valor por defecto (D-4, D-5, D-7, D-8, D-22): el resto, «sin valor».
 WITH_DEFAULT = {"mode": "cut", "mesh_factor": 1.0, "counter_tol_m": 0.1, "metric": "exact",
                 "protect": False, "discarded": False}
@@ -346,7 +349,7 @@ class PlatformParamsTest(unittest.TestCase):
         persona al crear la entidad)."""
         self.assertEqual([family.pattern for family in params.ENTITY_FAMILIES],
                          [f"des.platform.{{e}}.{last}" for last in PLATFORM_PARAMS])
-        self.assertEqual(len(params.ENTITY_FAMILIES), 20)
+        self.assertEqual(len(params.ENTITY_FAMILIES), 21)  # las 20 de la 015 y, la 21.ª, la de la 016 (T21)
         self.assertEqual([item.value for item in params.PlatformParam], list(PLATFORM_PARAMS))
         for family, (last, spec) in zip(params.ENTITY_FAMILIES, PLATFORM_PARAMS.items(),
                                         strict=True):

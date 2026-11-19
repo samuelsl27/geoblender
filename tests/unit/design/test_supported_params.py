@@ -159,7 +159,7 @@ class RegisteredTypesTest(unittest.TestCase):
         aparte de las 20 de la plataforma (``ENTITY_FAMILIES``, que no cambian) y de las de la 013."""
         expected = tuple(family for kind in SPECS for family in params.entity_params(kind).families)
         self.assertEqual(params.SUPPORTED_FAMILIES, expected)
-        self.assertEqual(len(params.ENTITY_FAMILIES), 20)
+        self.assertEqual(len(params.ENTITY_FAMILIES), 21)  # las 20 de la 015 y la 21.ª de la 016 (T21)
         for kind, attr in FAMILIES_OF.items():
             self.assertEqual(getattr(params, attr), params.entity_params(kind).families)
         self.assertEqual(sum(len(specs) for specs in SPECS.values()), len(params.SUPPORTED_FAMILIES))

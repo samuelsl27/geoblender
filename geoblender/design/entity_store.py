@@ -197,7 +197,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -247,6 +247,7 @@ from .entity_layer import LAYER_STATES, EntityLayerRow
 from .envelopes import reach_steps
 from .messages import DesignError, render
 from .model import (
+    PLANE_FIELD,
     BenchSense,
     LayerField,
     Metric,
@@ -318,6 +319,10 @@ from .store import (
     require_version,
 )
 from .surfaces import SurfaceWindow, project_frame, read_surface, read_surface_steps, read_surface_window
+
+if TYPE_CHECKING:
+    from .removal import RemovedStockpile, Resting
+    from .supported_store import PlatformOrigin
 
 LOGGER = logging.getLogger(__name__)
 
@@ -451,7 +456,12 @@ class PreparedPlatform:
     vez sus parámetros. ``insertion`` (T31; RF-015-05): si es una **inserción** (``insert_before``), el cambio
     de la partida de la entidad que pasa a partir de la nueva (``entities.ParamChange``, con su motivo); lo
     escribe «Crear» en la misma transacción que la entidad y deja obsoleta, por la cascada de la 008, a la
-    sucesora y a las que la siguen."""
+    sucesora y a las que la siguen.
+
+    **Retirar un acopio «como plataforma»** (spec 016, T21; RF-016-16): ``removed`` es el acopio cuya huella es la geometría del trabajo
+    (con lo que lee de su detección, ``origin``: :class:`~.supported_store.PlatformOrigin`) y ``resting`` la lista, única, de **lo que se le
+    apoyaba** (A7, RF-016-14: :func:`~.removal.resting_on`, antes de calcular), que no se retira sin la confirmación expresa
+    (:meth:`~.steps.Calculation.confirm_removal`); ``None`` y vacía en la plataforma de una capa, que no cambia."""
 
     job: PlatformJob
     footprint: Footprint
@@ -464,6 +474,9 @@ class PreparedPlatform:
     support_surface: str | None
     existing: bool = False
     insertion: tuple[entities.ParamChange, ...] = ()
+    removed: RemovedStockpile | None = None
+    origin: PlatformOrigin | None = None
+    resting: tuple[Resting, ...] = ()
 
     @property
     def values(self) -> Mapping[str, object]:
@@ -780,7 +793,7 @@ def entity_values(request: PlatformRequest, code: str, fid: int,
         PlatformParam.METRIC: (_default(PlatformParam.METRIC) if request.metric is None
                                else request.metric.value),
         PlatformParam.PROTECT: request.protect, PlatformParam.GUARD: request.guard_m,
-        PlatformParam.REASON: request.reason}
+        PlatformParam.REASON: request.reason, PlatformParam.STOCKPILE: request.stockpile}
     required = {PlatformParam.WIDTH: line, PlatformParam.GUARD: request.protect}
     values: dict[str, Any] = {}
     for param in PlatformParam:
@@ -835,6 +848,25 @@ def _rows(request: PlatformRequest, code: str, values: Mapping[str, Any],
             reason = f"Elegido al crear la plataforma «{name}»"
         rows.append(EntityParamRow(entity_key(code, param), param, value, source, kind, reason))
     return tuple(rows)
+
+
+def _stockpile_rows(rows: tuple[EntityParamRow, ...], origin: PlatformOrigin, name: str) -> tuple[EntityParamRow, ...]:
+    """Las filas de los parámetros de una plataforma que retira un acopio «como plataforma» (spec 016, T21; RF-016-16, RF-008-01) con **su
+    procedencia**: la cota inicial y la pendiente salen **del plano de la base del acopio** y la capa y la marca, **de la marca del acopio**
+    (ni una ni otra de una capa de plataformas: informativas, no las lee la operación); el acopio y lo demás, lo que eligió la persona. Los
+    mismos valores y las mismas claves."""
+    plane = f"plano de la base del acopio «{origin.item.name}» ({origin.ref}), ajustado a su huella"
+    mark = f"marca del acopio «{origin.item.name}» ({origin.ref})"
+    found: list[EntityParamRow] = []
+    for row in rows:
+        if str(row.param) in (PlatformParam.START_LEVEL.value, PlatformParam.GRADIENT.value):
+            row = replace(row, source=plane, source_kind="algorithm",
+                          reason=f"Del plano de la base del acopio «{origin.item.name}» al retirarlo como plataforma «{name}»")
+        elif str(row.param) in (PlatformParam.LAYER.value, PlatformParam.FEATURE.value):
+            row = replace(row, source=mark, source_kind="algorithm",
+                          reason=f"De la marca del acopio «{origin.item.name}» al retirarlo como plataforma «{name}»")
+        found.append(row)
+    return tuple(found)
 
 
 def _kept_numbers(project: StoreProject, version: Version, code: str
@@ -1047,9 +1079,24 @@ def _covers(read: Window, needed: Window) -> bool:
     return all(have.start <= want.start and want.stop <= have.stop for have, want in zip(read, needed, strict=True))
 
 
+def _stockpile_cut(item: RemovedStockpile, masks: access.MaskSet | access.MaskSource, read: Window) -> np.ndarray:
+    """**La excepción de D-5** (spec 016, T21; RF-016-16, RF-016-11): bajar un acopio a su base **no es cortar terreno**, así que la huella del
+    acopio se corta donde el **dominio por defecto** de la 012 (perímetro ∩ límite legal − intocables) lo admite, aunque su corte no esté admitido
+    (RF-015-06): una máscara de la ventana ``read`` (de la forma de lo leído) con las celdas de su huella dentro del dominio. Lo de fuera de la
+    huella, el borde de la plataforma, sí corta terreno y sigue las máscaras de siempre."""
+    from . import supported_store
+
+    rows, cols = np.divmod(item.cells, masks.grid.ncols)
+    inside = np.zeros((read[0].stop - read[0].start, read[1].stop - read[1].start), dtype=bool)
+    keep = (rows >= read[0].start) & (rows < read[0].stop) & (cols >= read[1].start) & (cols < read[1].stop)
+    inside[rows[keep] - read[0].start, cols[keep] - read[1].start] = True
+    return inside & supported_store.default_domain(masks, read)
+
+
 def _platform_job(project: StoreProject, version: Version, request: PlatformRequest, code: str,
                   registry: EntityRegistry, masks: access.MaskSet | access.MaskSource,
-                  geometry: PlatformGeometry, values: Mapping[str, Any], window: Window | None
+                  geometry: PlatformGeometry, values: Mapping[str, Any], window: Window | None,
+                  origin: PlatformOrigin | None = None
                   ) -> Generator[None, None, tuple[str, str | None, PlatformJob, Footprint]]:
     """Lo que depende de lo que se lee de las rejillas, **en** ``window`` (o enteras, sin ella): las superficies, la
     falta de dato de la partida, el trabajo con las máscaras de esa ventana, la huella (que comprueba la geometría y
@@ -1063,6 +1110,8 @@ def _platform_job(project: StoreProject, version: Version, request: PlatformRequ
     yield
     read = start.window
     cut, fill = admitted_pair(masks, read)
+    if origin is not None:  # RF-016-16, D-5: la huella del acopio se baja a su plano donde el dominio por defecto lo admite
+        cut = cut | _stockpile_cut(origin.item, masks, read)
     job = PlatformJob(request, code, masks.grid, start.values, geometry, values, cut, fill, region=read)
     footprint = yield from platform_footprint_units(job)
     if not all(_covers(found.window, footprint.window) for found in (start, support) if found is not None):
@@ -1138,45 +1187,59 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
     _check_chain(registry, request, chosen, insert_before)
     insertion = _insertion(registry, request, chosen, insert_before)
     yield
-    layer = _layer(project, request.layer)
-    index = feature_index(layer, request, chosen)
-    line = layer.kind == "line"
-    geometry = read_geometry(lambda name: _layer(project, name), layer, index, request)
-    fields = request.fields
-    kept = {} if code is None else _kept_numbers(project, version, chosen)
-    corrected = _corrected(request)
+    origin: PlatformOrigin | None = None
     from_layer: dict[PlatformParam, float] = {}
     layer_fields: dict[PlatformParam, str] = {}
-    for param, attribute in LAYER_FIELDS.items():
-        field = getattr(fields, attribute)
-        if field is not None:  # sin campo (un polígono no tiene ancho): el valor no sale de la capa
-            # Una entidad que ya está en la versión (recalcularla, o la que dejó «Traer…») tiene ya sus
-            # valores de la capa como parámetros, con su historial (P-3): manda su fila, no la capa.
-            if param in kept:
-                from_layer[param], layer_fields[param] = kept[param], field
-                continue
-            asked = corrected.get(param)
-            if asked is None:
-                from_layer[param], layer_fields[param] = _layer_number(
-                    layer, index, field, request), field
-                continue
-            # Lo que corrige el diálogo manda sobre la capa y se copia con su origen; si es igual al de la
-            # capa, conserva el origen de la capa.
-            from_layer[param] = asked
-            if _layer_number_or_none(layer, index, field, request) == asked:
-                layer_fields[param] = field
-    fid = layer.fids[index]
+    if request.stockpile is not None:
+        # RF-016-16 (T21, H-5): la geometría de la plataforma es la huella de un acopio —un dato producido de la versión: su detección—, no una
+        # capa del proyecto, y su cota inicial y su pendiente salen del plano de su base: ni la capa ni sus campos intervienen
+        from . import supported_store
+
+        origin = supported_store.read_platform_origin(project, version, request, chosen)
+        request = replace(request, fields=replace(request.fields, layer=origin.layer), feature=str(origin.source_fid))
+        line = False
+        geometry = origin.platform.geometry
+        from_layer = {PlatformParam.START_LEVEL: origin.platform.start_level_m,
+                      PlatformParam.GRADIENT: origin.platform.gradient_pct}
+        fid = origin.source_fid
+    else:
+        layer = _layer(project, request.layer)
+        index = feature_index(layer, request, chosen)
+        line = layer.kind == "line"
+        geometry = read_geometry(lambda name: _layer(project, name), layer, index, request)
+        fields = request.fields
+        kept = {} if code is None else _kept_numbers(project, version, chosen)
+        corrected = _corrected(request)
+        for param, attribute in LAYER_FIELDS.items():
+            field = getattr(fields, attribute)
+            if field is not None:  # sin campo (un polígono no tiene ancho): el valor no sale de la capa
+                # Una entidad que ya está en la versión (recalcularla, o la que dejó «Traer…») tiene ya sus
+                # valores de la capa como parámetros, con su historial (P-3): manda su fila, no la capa.
+                if param in kept:
+                    from_layer[param], layer_fields[param] = kept[param], field
+                    continue
+                asked = corrected.get(param)
+                if asked is None:
+                    from_layer[param], layer_fields[param] = _layer_number(
+                        layer, index, field, request), field
+                    continue
+                # Lo que corrige el diálogo manda sobre la capa y se copia con su origen; si es igual al de la
+                # capa, conserva el origen de la capa.
+                from_layer[param] = asked
+                if _layer_number_or_none(layer, index, field, request) == asked:
+                    layer_fields[param] = field
+        fid = layer.fids[index]
     values = entity_values(request, chosen, fid, from_layer, line=line)
     yield
     wanted = reading_window(geometry, values, masks.grid)
     try:
         start_name, support_name, job, footprint = yield from _platform_job(
-            project, version, request, chosen, registry, masks, geometry, values, wanted)
+            project, version, request, chosen, registry, masks, geometry, values, wanted, origin)
     except NeedsWholeSurface:
         if wanted is None:  # la rejilla entera no puede pedir más: un error del programa
             raise
         start_name, support_name, job, footprint = yield from _platform_job(
-            project, version, request, chosen, registry, masks, geometry, values, None)
+            project, version, request, chosen, registry, masks, geometry, values, None, origin)
     sectors = design_sectors(project, version.uid)
     if any(item.pending for item in sectors):
         zone = yield from _pending_zone(job, footprint, values)
@@ -1188,15 +1251,24 @@ def prepare_platform_units(project: StoreProject, request: PlatformRequest, vers
     supported, footprints, reads = _support_inputs(
         project, version, request, chosen, registry, support_name,
         _released_codes(project, supersedes, released), insert_before)
-    inputs = provenance.platform_inputs(request, start_name, masks.uses(), supported)
+    inputs = provenance.platform_inputs(request, start_name, masks.uses(), supported,
+                                        () if origin is None else origin.removed)
     inputs = (*inputs, *(use for use in footprints if use not in inputs))
     begun = _start(project, provenance.PLATFORM, request.name, version, masks,
                    provenance.platform_settings(request, chosen), inputs,
                    provenance.platform_params(chosen, request, supports=reads), supersedes)
     yield
     rows = _rows(request, chosen, values, layer_fields)
+    resting: tuple[Resting, ...] = ()
+    if origin is not None:  # RF-016-14, A7: lo que se apoyaba en el acopio, una sola lista, antes de calcular
+        from . import removal
+
+        rows = _stockpile_rows(rows, origin, request.name)
+        resting = removal.resting_on(project, version, origin.item, start_name, detected_on=origin.detected_on)
+        yield
     return PreparedPlatform(job, footprint, begun, chosen, fid, rows, MappingProxyType(common),
-                            start_name, support_name, code is not None, insertion)
+                            start_name, support_name, code is not None, insertion,
+                            None if origin is None else origin.item, origin, resting)
 
 
 def prepare_platform(project: StoreProject, request: PlatformRequest, *, version: str | None,
@@ -1395,6 +1467,7 @@ def platform_compute_steps(job: PlatformJob, common: Mapping[str, object], *,
                            footprint: Footprint | None = None,
                            confirm_counterslope: bool = False, previous: Previous | None = None,
                            operation: str = "", quarry: QuarryOrder | None = None,
+                           removed: RemovedStockpile | None = None,
                            budget_s: float = STEP_BUDGET_S
                            ) -> Generator[Progress, None, PlatformOutcome]:
     """Los pasos que calculan la plataforma de ``job`` (RF-015-03, RF-015-29; plan 015 §5.3.1: el
@@ -1411,6 +1484,11 @@ def platform_compute_steps(job: PlatformJob, common: Mapping[str, object], *,
     ``platform.platform_outcome``. Los rechazos son los de esas funciones y salen al avanzar. El perfil no
     se parte (37 ms con 1,2 M celdas): es una unidad; la huella sí (T44, hallazgos D-2 y A-3: un eje
     digitalizado de muchos vértices tardaba segundos de una sola llamada).
+
+    **Retirar un acopio «como plataforma»** (spec 016, T21; RF-016-16, A9): ``removed`` es el acopio cuya huella es la geometría de ``job``
+    (:func:`~.removal.platform_of_stockpile`); el resultado lleva además lo de una retirada (:class:`~.removal.PlatformRemoval`: lo retirado, lo
+    apoyado y lo que las máscaras no dejan cortar, con las cifras ``des.rmv_*``), que comparten «Calcular», el recálculo y la reproducción.
+    Sin él, **nada cambia** (la plataforma de una capa).
     Devuelve el :class:`~.platform.PlatformOutcome`."""
     name = job.request.name
     yield Progress(_COMPUTE_PHASE, 0, 1, f"Calculando la plataforma «{name}»…")
@@ -1424,9 +1502,14 @@ def platform_compute_steps(job: PlatformJob, common: Mapping[str, object], *,
     edge = yield from pipeline.forward(
         platform_edge_steps(job, footprint, applied, common, budget_s=budget_s))
     yield Progress(_COMPUTE_PHASE, 1, 1, f"Perfil de la plataforma «{name}»…")
-    return platform_outcome(job, footprint, applied, edge, common,
-                            confirm_counterslope=confirm_counterslope, previous=previous,
-                            operation=operation, quarry=quarry)
+    outcome = platform_outcome(job, footprint, applied, edge, common,
+                               confirm_counterslope=confirm_counterslope, previous=previous,
+                               operation=operation, quarry=quarry)
+    if removed is not None:  # RF-016-16: la misma operación es la retirada del acopio
+        from . import removal  # el dominio de la retirada solo se carga al retirar «como plataforma»
+
+        outcome = removal.with_removal(outcome, job, removed)
+    return outcome
 
 
 def _whole_start_steps(project: StoreProject, prepared: PreparedPlatform, budget_s: float
@@ -1469,7 +1552,7 @@ def compute_platform_steps(writer: DesignWriter, prepared: PreparedPlatform, *,
     outcome = yield from platform_compute_steps(
         prepared.job, prepared.common, footprint=prepared.footprint,
         confirm_counterslope=confirm_counterslope, previous=previous, operation=operation,
-        quarry=quarry, budget_s=budget_s)
+        quarry=quarry, removed=prepared.removed, budget_s=budget_s)
     surface = yield from _whole_start_steps(writer.project, prepared, budget_s)
     surface[outcome.footprint.window] = outcome.result
     raster = Raster(prepared.job.grid, surface, writer.crs, writer.vertical)
@@ -1560,6 +1643,8 @@ def geometry_sha256(geometry: PlatformGeometry) -> str:
     feed(geometry.kind, geometry.parts)
     if geometry.axis_parts is not None:
         feed("axis", geometry.axis_parts)
+    if geometry.given_axis is not None:  # el eje de la huella de un acopio «como plataforma» (T21): tal cual
+        feed("given", ((np.asarray(geometry.given_axis.vertices, dtype=np.float64),),))
     return digest.hexdigest()
 
 
@@ -1696,6 +1781,13 @@ def platform_report_rows(outcome: PlatformOutcome) -> list[Row]:
             "chainage_m": _real("counter_slope.chainage_m", profile.chainage_m[index]),
             "x": _real("counter_slope.x", profile.x[index]),
             "y": _real("counter_slope.y", profile.y[index])}))
+    if outcome.removal is not None:  # retirar un acopio «como plataforma» (T21; RF-016-16, RF-016-13)
+        removed = outcome.removal
+        for key, value, unit in (
+                ("rmv_removed_m3", removed.removed_m3, "m3"), ("rmv_resting_m3", removed.resting_m3, "m3"),
+                ("rmv_transition_m3", removed.transition_m3, "m3"), ("rmv_kept_m3", removed.kept_m3, "m3"),
+                ("rmv_above_base_m3", removed.above_base_m3, "m3"), ("rmv_transition_m2", removed.transition_m2, "m2")):
+            scalar(key, value, unit)
     for notice in outcome.notices:
         if notice.code not in _OUTSIDE_NOTICES:
             rows.append((notice.severity, None, None, _notice_text(notice)))
@@ -1975,6 +2067,37 @@ def _with_confirmation(start: OperationStart, confirmed: provenance.Counterslope
                                     provenance.COUNTERSLOPE_CONFIRMED: confirmed.settings()})
 
 
+def _with_resting_confirmation(project: StoreProject, start: OperationStart, prepared: PreparedPlatform, confirmed: bool,
+                               decided_by: str | None) -> OperationStart:
+    """``start`` con lo que se le apoyaba al acopio que se retira «como plataforma» **confirmado** en sus ajustes (T21; RF-016-14, error 59):
+    ``des.removal_resting_unconfirmed`` si la persona no lo confirmó (``confirmed``); si lo hizo, quién (``decided_by``; por defecto, quien
+    tiene abierto el proyecto), cuándo (ahora, UTC) y los m³ (``supported_store.Confirmed``)."""
+    from . import removal, supported_store
+
+    assert prepared.origin is not None
+    removal.check_resting_confirmed(prepared.origin.item.name, prepared.resting, confirmed=confirmed)
+    found = supported_store.Confirmed(decided_by or project.session.user_host, format_utc(project.clock.now()),
+                                      math.fsum(row.volume_m3 for row in prepared.resting))
+    return replace(start, settings={**start.settings, supported_store.CONFIRMED: found.settings()})
+
+
+def _reuse_resting_confirmation(prepared: PreparedPlatform, confirmed: Any) -> PreparedPlatform:
+    """``prepared`` de un **recálculo** de la plataforma que retira un acopio, con lo apoyado que la persona confirmó al crearla
+    (``confirmed``: ``supported_store.Confirmed`` de los ajustes de la operación que se sustituye) **si lo apoyado de ahora no pasa de ello**; si
+    lo pasa, o no había confirmada, ``des.removal_resting_unconfirmed`` y la operación anterior sigue vigente (un recálculo no confirma por la
+    persona: T20, RF-016-14). Sin nada apoyado, ``prepared``."""
+    if not prepared.resting:
+        return prepared
+    from . import removal, supported_store
+
+    assert prepared.origin is not None
+    total = math.fsum(row.volume_m3 for row in prepared.resting)
+    covered = confirmed is not None and confirmed.covers_resting(total)
+    removal.check_resting_confirmed(prepared.origin.item.name, prepared.resting, confirmed=covered)
+    return replace(prepared, start=replace(prepared.start, settings={
+        **prepared.start.settings, supported_store.CONFIRMED: confirmed.settings()}))
+
+
 def _reuse_confirmation(outcome: PlatformOutcome, confirmed: provenance.CounterslopeConfirmation | None
                         ) -> PlatformOutcome:
     """El ``outcome`` de un recálculo con la contrapendiente ya confirmada por la persona, **si la nueva no
@@ -2007,7 +2130,8 @@ def apply_insertion(project: StoreProject, prepared: PreparedPlatform, *, versio
 
 
 def create_platform(project: StoreProject, writer: DesignWriter, prepared: PreparedPlatform,
-                    outcome: PlatformOutcome, *, decided_by: str | None = None) -> Stored:
+                    outcome: PlatformOutcome, *, decided_by: str | None = None,
+                    confirmed_resting: bool = False) -> Stored:
     """**«Crear» una plataforma** (spec 015, T13; RF-015-01, RF-015-02, RF-015-04): registra en **una**
     transacción de escritura (:meth:`~.store.DesignWriter.commit` de ``writer``, el de «Calcular», con sus
     tres salidas preparadas) los parámetros de la entidad —una fila de la versión por parámetro, ADOPTADO,
@@ -2023,12 +2147,18 @@ def create_platform(project: StoreProject, writer: DesignWriter, prepared: Prepa
     (RF-015-23), antes de escribir nada. Si la tiene y la persona la confirmó, queda en los ajustes de la
     operación (:data:`~.provenance.COUNTERSLOPE_CONFIRMED`: cuánto, en qué abscisa, quién la confirmó y
     cuándo; ``decided_by``, por defecto quien tiene abierto el proyecto) y un recálculo la reutiliza
-    mientras la nueva no pase de la confirmada más la tolerancia (T15)."""
+    mientras la nueva no pase de la confirmada más la tolerancia (T15).
+
+    **Retirar un acopio «como plataforma»** (spec 016, T21; RF-016-16, RF-016-14): con algo apoyado en el acopio (``prepared.resting``), no se
+    crea sin ``confirmed_resting`` (``des.removal_resting_unconfirmed``, antes de escribir nada) y la confirmación —quién, cuándo y cuántos m³—
+    queda en los ajustes de la operación (``supported_store.CONFIRMED``), como la de una retirada."""
     outcome.ensure_creatable()
     start = prepared.start
     confirmed = _confirmation(project, outcome, decided_by)
     if confirmed is not None:  # RF-015-23: quién la confirmó, cuánto y cuándo, para el recálculo (T15)
         start = _with_confirmation(start, confirmed)
+    if prepared.resting:
+        start = _with_resting_confirmation(project, start, prepared, confirmed_resting, decided_by)
 
     def parameters(conn: sqlite3.Connection) -> None:
         key = entity_key(prepared.code, PlatformParam.NAME)
@@ -2114,11 +2244,18 @@ def entity_request(project: StoreProject, version: Version | str, code: str, *, 
         raise DesignError("des.entity_calculate_done", obj=obj, field="estado", value=str(record.state),
                           entity=record.name, code=record.code, version=found.code)
     values = platform_parameters(project, found, record.code)
-    for param in _CALCULATED_FROM:
+    stockpile = values.get(PlatformParam.STOCKPILE.value)
+    of_stockpile = isinstance(stockpile, str) and bool(stockpile.strip())  # retira un acopio «como plataforma» (T21): sin capa ni geometría
+    for param in ((PlatformParam.START,) if of_stockpile else _CALCULATED_FROM):
         text = values.get(param.value)
         if not isinstance(text, str) or not text.strip():
             raise DesignError("des.entity_calculate_missing", obj=obj, field=entity_key(record.code, param),
                               value=None, entity=record.name, code=record.code, version=found.code)
+    if of_stockpile:
+        settings = {"name": record.name, "code": record.code,
+                    "fields": {"start_level_field": PLANE_FIELD, "gradient_field": PLANE_FIELD, "width_field": None,
+                               "axis_field": None, "axis_layer": None}}
+        return provenance.platform_request(settings, values)
     line = _layer(project, str(values[PlatformParam.LAYER.value])).kind == "line"
     settings = {"name": record.name, "code": record.code,
                 "fields": {"start_level_field": start_level_field, "gradient_field": gradient_field,
@@ -2143,8 +2280,8 @@ def _masks_to_read(project: StoreProject, version: Version, masks: access.MaskSe
 def run_platform(project: StoreProject, request: PlatformRequest, *, version: str | None,
                  code: str, masks: access.MaskSet | None = None, supersedes: str | None = None,
                  confirmed: provenance.CounterslopeConfirmation | None = None,
-                 budget_s: float = STEP_BUDGET_S, released: Sequence[provenance.ReleasedSupport] = ()
-                 ) -> tuple[OperationHandle, Iterator[Progress]]:
+                 budget_s: float = STEP_BUDGET_S, released: Sequence[provenance.ReleasedSupport] = (),
+                 resting_confirmed: Any = None) -> tuple[OperationHandle, Iterator[Progress]]:
     """Calcula y registra ``request`` —una entidad que ya está en la versión ``version``: su ``code``— de
     **una vez**, sin pedir confirmación (spec 015, T14; RF-015-02, RF-015-16; el recálculo de lo obsoleto,
     :func:`~.store.recompute_run`; el «Crear» tras «Calcular» es :meth:`~.steps.Calculation.create`):
@@ -2169,13 +2306,19 @@ def run_platform(project: StoreProject, request: PlatformRequest, *, version: st
 
     ``released`` (T25; RF-015-17, A7, P-6): las entidades descartadas que la operación nueva **da por buenas sin su
     apoyo**: no lleva sus entradas, lo declarado en ``supports`` sobre ellas no se rechaza y el motivo y el decisor
-    van en sus ajustes (``provenance.SUPPORTS_RELEASED``, acumulados con los de la que sustituye)."""
+    van en sus ajustes (``provenance.SUPPORTS_RELEASED``, acumulados con los de la que sustituye).
+
+    **Retirar un acopio «como plataforma»** (T21; RF-016-16, RF-016-14): con algo apoyado en el acopio, el recálculo **reutiliza lo que la persona
+    confirmó al crear** (``resting_confirmed``: ``supported_store.Confirmed`` de los ajustes de la operación que se sustituye) mientras lo apoyado
+    de ahora no pase de ello; si lo pasa, o no había confirmación, ``des.removal_resting_unconfirmed`` y la anterior sigue vigente."""
     found = require_version(project, version, provenance.PLATFORM)
     loaded = _masks_to_read(project, found, masks)
     prepared: PreparedPlatform = _result_of(prepare_platform_units(
         project, request, found, loaded, code=code, supersedes=supersedes, released=released))
     if confirmed is not None:  # se arrastra a la operación nueva (la misma decisión, no una nueva)
         prepared = replace(prepared, start=_with_confirmation(prepared.start, confirmed))
+    if prepared.origin is not None:
+        prepared = _reuse_resting_confirmation(prepared, resting_confirmed)
     handle = prepared.start.with_released(released).begin(project)
     return handle, _platform_run(project, handle, prepared, budget_s, confirmed)
 
@@ -2195,10 +2338,15 @@ def recompute_platform(request: RecomputeRequest, *, budget_s: float = STEP_BUDG
     found = require_version(project, request.version, provenance.PLATFORM)
     asked = provenance.platform_request(request.settings,
                                         platform_parameters(project, found, code))
+    resting = None
+    if asked.stockpile is not None:  # lo apoyado que la persona confirmó al crear la retirada como plataforma (T21)
+        from . import supported_store
+
+        resting = supported_store.confirmed_of(request.settings)
     return run_platform(project, asked, version=found.uid, code=code,
                         supersedes=request.operation_uid,
                         confirmed=provenance.counterslope_confirmed(request.settings),
-                        budget_s=budget_s, released=released)
+                        budget_s=budget_s, released=released, resting_confirmed=resting)
 
 
 def _check_recorded(handle: OperationHandle, prepared: PreparedPlatform) -> None:
@@ -2430,14 +2578,20 @@ def platform_summary(project: StoreProject, version: Version, prepared: Prepared
     del salto creado y grupos de lo que no queda en la rasante, con una nota de los que faltan), lo que
     no mueve por una restricción —con su nombre, o con la entidad que la declara
     (``preview.held_notices``)— y lo que quedará obsoleto al crearla (:func:`platform_obsolete`), en
-    notas. Solo lee."""
+    notas. Solo lee. Si retira un acopio «como plataforma» (spec 016, T21), antes de todo, el aviso de lo que se le apoyaba (RF-016-14:
+    **una** nota con el total y los nombres de lo que lo puso, que no se retira sin la confirmación expresa)."""
     names, declared = _restrictions(project, version)
     held = held_notices(
         outcome.name, masks, outcome.footprint.window, cut=outcome.applied.cut_denied,
         fill=outcome.applied.fill_denied, edge=outcome.edge.held, names=names, declared=declared)
     obsolete = platform_obsolete(project, version, prepared, masks, insert_before=insert_before,
                                  supersedes=supersedes)
-    notices = (*summary_notices(outcome.notices), *held,
+    resting: tuple[Notice, ...] = ()
+    if prepared.origin is not None and prepared.resting:
+        from . import removal
+
+        resting = removal.resting_notices(prepared.origin.item.name, prepared.resting)
+    notices = (*resting, *summary_notices(outcome.notices), *held,
                *obsolete_notices(outcome.name, version.code, obsolete))
     return PlatformSummary(outcome.name, outcome.code, version.code, outcome.figures, notices,
                            obsolete)
@@ -2453,6 +2607,13 @@ que declara otra cosa (en la 016, el contrafuerte, «sin corte») añade aquí s
 _LIVE_STATES = frozenset({EntityState.CURRENT, EntityState.STALE, EntityState.SUPPORT_REMOVED})
 """Los estados de una entidad **viva y calculada** (RF-015-25): tiene operación vigente y datos que no están
 descartados. Una «sin calcular» no tiene huella y una «descartada» ya no es de la versión: ninguna declara."""
+
+
+def _has_footprint(entry: entities.EntityEntry) -> bool:
+    """Si la entidad de ``entry`` es de un tipo que deja la tabla de su huella (:attr:`~.entities.EntityType.has_footprint`): solo esas
+    declaran restricciones y salen en la capa de entidades. **La detección de acopios no** (spec 016, T21): lee ``des_epr_`` de
+    toda entidad viva y una detección no la tiene (un acopio es una fila de su tabla ``des_stk_``)."""
+    return entities.entity_type(entry.record.kind).has_footprint
 _DECISION_PARAMS = (PlatformParam.NAME, PlatformParam.PROTECT, PlatformParam.GUARD, PlatformParam.REASON)
 """Los parámetros de los que sale lo que declara una entidad (su nombre, si protege, su resguardo y su
 motivo): la decisión de la restricción es la más reciente de ellos (``decided_by`` y ``decided_at`` de su
@@ -2674,16 +2835,20 @@ def declared_sources(project: StoreProject, version: Version, *,
             return declared_sources(project, version, conn=reading)
     registry = entities.registry(project, version.uid, conn=conn)
     live = [entry for entry in registry
-            if entry.operation_uid is not None and entry.record.state in _LIVE_STATES]
+            if entry.operation_uid is not None and entry.record.state in _LIVE_STATES and _has_footprint(entry)]
     keys = {entity_key(entry.record.code, param): (entry.record.code, param)
             for entry in live for param in (PlatformParam.PROTECT, PlatformParam.MODE,
-                                            PlatformParam.GUARD, PlatformParam.REASON)}
+                                            PlatformParam.GUARD, PlatformParam.REASON)
+            if param.value in entities.entity_type(entry.record.kind).params.names}  # el modo es de la plataforma (spec 016, T21)
     found = ParameterStore(project).resolve_many(
         conn, tuple(keys), (VERSION_SCOPE, PROJECT_SCOPE), version=version.uid)
-    values: dict[tuple[str, PlatformParam], Any] = {}
+    values: dict[tuple[str, PlatformParam], Any] = {
+        (entry.record.code, param): _default(param) for entry in live
+        for param in (PlatformParam.PROTECT, PlatformParam.MODE, PlatformParam.GUARD, PlatformParam.REASON)}
     for key, (code, param) in keys.items():
         resolved = found.get(key)
-        values[code, param] = (resolved.value if resolved is not None else _default(param))
+        if resolved is not None:
+            values[code, param] = resolved.value
     store = ParameterStore(project)
     sources: list[DeclaredSource] = []
     for entry in live:
@@ -2860,7 +3025,7 @@ def declaration_pending(project: StoreProject, conn: sqlite3.Connection, version
     try:
         registry = entities.registry(project, version_uid, conn=conn)
         live = [entry.record.code for entry in registry
-                if entry.operation_uid is not None and entry.record.state in _LIVE_STATES]
+                if entry.operation_uid is not None and entry.record.state in _LIVE_STATES and _has_footprint(entry)]
         if not live:
             return False
         keys = {entity_key(code, PlatformParam.PROTECT): code for code in live}
@@ -3045,7 +3210,7 @@ def layer_sources(project: StoreProject, version: Version, *, conn: sqlite3.Conn
             return layer_sources(project, version, conn=reading)
     listed = entities.registry(project, version.uid, conn=conn)
     shown = [entry for entry in listed
-             if entry.operation_uid is not None and EntityState(entry.record.state) in LAYER_STATES]
+             if entry.operation_uid is not None and EntityState(entry.record.state) in LAYER_STATES and _has_footprint(entry)]
     figures = _layer_figures(conn, (str(entry.operation_uid) for entry in shown))
     found: list[LayerSource] = []
     for entry in shown:
@@ -3203,7 +3368,8 @@ def layer_pending(project: StoreProject, conn: sqlite3.Connection, version_uid: 
         listed = entities.registry(project, version_uid, conn=conn)
         wanted = {entry.record.code: (entry.record.name, str(EntityState(entry.record.state)))
                   for entry in listed
-                  if entry.operation_uid is not None and EntityState(entry.record.state) in LAYER_STATES}
+                  if entry.operation_uid is not None and EntityState(entry.record.state) in LAYER_STATES
+                  and _has_footprint(entry)}
         record = dataset_registry.get(conn, provenance.dataset_name(provenance.ENTITY_MAP_TABLE),
                                       version_uid=version_uid)
         if record is None or not record.live:

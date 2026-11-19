@@ -61,6 +61,7 @@ if TYPE_CHECKING:
 __all__ = [
     "DECLARED_PREFIX",
     "PERIMETER_SEGMENT",
+    "PLANE_FIELD",
     "AnchorMode",
     "Axis",
     "BenchProfile",
@@ -654,6 +655,12 @@ def _real_or_none(value: object, what: str) -> float | None:
     return float(value)
 
 
+PLANE_FIELD = "plano del acopio"
+"""El «campo» del que salen la cota inicial y la pendiente de la plataforma que retira un acopio **como plataforma** (spec 016, T21;
+RF-016-16): no es el de una capa, es el plano de la base del acopio (:meth:`PlatformRequest.of_stockpile`); va en los ajustes de la
+operación en el lugar de los campos de la capa."""
+
+
 @dataclass(frozen=True, slots=True)
 class PlatformFields:
     """La capa de una plataforma y los campos que se leen de ella (plan 015 §5.2.1; D-15: los de
@@ -782,6 +789,7 @@ class PlatformRequest:
     start_level_m: float | None = None
     gradient_pct: float | None = None
     width_m: float | None = None
+    stockpile: str | None = None
 
     def __post_init__(self) -> None:
         name = _text(self.name, "el nombre de una plataforma")
@@ -795,7 +803,7 @@ class PlatformRequest:
         for attr in ("feature", "start"):
             object.__setattr__(self, attr, _text(getattr(self, attr), f"«{attr}» de una "
                                                                      "plataforma"))
-        for attr in ("support", "reason"):
+        for attr in ("support", "reason", "stockpile"):
             object.__setattr__(self, attr, _name_or_none(getattr(self, attr), f"«{attr}» de una "
                                                                               "plataforma"))
         if self.mode is not None:
@@ -817,6 +825,19 @@ class PlatformRequest:
     def layer(self) -> str:
         """La capa de la geometría de la plataforma."""
         return self.fields.layer
+
+    @classmethod
+    def of_stockpile(cls, name: str, stockpile: str, start: str, **options: Any) -> PlatformRequest:
+        """**La petición de retirar un acopio «como plataforma»** (spec 016, T21; RF-016-16, A9): una plataforma de la 015 cuya geometría es
+        la **huella del acopio** ``stockpile`` (su detección y su clave: ``STK-001#m07``) en lugar de la de una capa, que parte de la
+        superficie ``start``. ``options``: lo demás de la petición (``edge_angle_deg`` y ``reach_m`` —sin valor por defecto: D-7 y D-20—,
+        el modo, el factor de malla, la métrica, la tolerancia de contrapendiente, lo que declara…); la cota inicial, la pendiente y el
+        eje salen del **plano de la base del acopio** y no se piden. La «capa» y la «geometría» son provisionales (la referencia del
+        acopio: la preparación pone la capa de marcas de la que sale y su ``fid``) y los campos de la cota y la pendiente, el plano
+        (:data:`PLANE_FIELD`)."""
+        return cls(name=name, fields=PlatformFields(layer=stockpile, start_level_field=PLANE_FIELD,
+                                                    gradient_field=PLANE_FIELD),
+                   feature=stockpile, start=start, stockpile=stockpile, **options)
 
 
 # --- Los cuatro tipos de entidad de la 016 (spec 016, T03; plan 016 §5.1, §5.2.1, §5.2.2 y §5.3.1) ---------------

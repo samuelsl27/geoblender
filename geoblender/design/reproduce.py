@@ -75,6 +75,7 @@ import sqlite3
 import sys
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, closing, contextmanager
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from types import MappingProxyType
@@ -107,7 +108,7 @@ from ..gis.masks.store import PERIMETER_SECTOR_NAME, read_report, zone_runs_step
 from ..gis.raster import Raster
 from ..gis.store import insert_rows, read_features
 from ..gis.vector import FeatureLayer
-from . import entities, entity_store, fronts, pipeline, provenance, quarry, stockpile_store, store, supported_store
+from . import entities, entity_store, fronts, pipeline, provenance, quarry, removal, stockpile_store, store, supported_store
 from .compose import admitted
 from .model import BenchSense, EnvelopeRequest, PlatformRequest, SeedKind, Surface
 from .params import (
@@ -705,19 +706,33 @@ def _reproduce_platform(request: ReproduceRequest, budget_s: float) -> Iterator[
     masks = frozen.masks()
     start_item = frozen.item(provenance.SURFACE_ROLE)
     start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida")
-    layer = frozen.features(asked.layer)
-    index = entity_store.feature_index(layer, asked, code)
-    geometry = entity_store.read_geometry(frozen.features, layer, index, asked)
-    copied = {param: store.number(kept, param.value)
-              for param, attribute in entity_store.LAYER_FIELDS.items()
-              if getattr(asked.fields, attribute) is not None}
-    fid = layer.fids[index]
-    values = entity_store.entity_values(asked, code, fid, copied, line=layer.kind == "line")
-    job = PlatformJob(asked, code, masks.grid, start.values, geometry, values,
-                      admitted(masks, BenchSense.CUT), admitted(masks, BenchSense.FILL))
+    cut, fill = admitted(masks, BenchSense.CUT), admitted(masks, BenchSense.FILL)
+    removed = None
+    if asked.stockpile is not None:
+        # RF-016-16 (T21): la plataforma que retira un acopio «como plataforma»: su geometría es la huella del acopio que consumió (su tabla, su
+        # base y la superficie con que se detectó, congeladas) y su cota y su pendiente, las de su plano; nada de una capa
+        row, removed, detection = _frozen_removed(request, frozen, asked.stockpile, asked.name)
+        flat = removal.platform_of_stockpile(removed, frozen.grid)
+        fid = int(row["source_fid"] or 0)
+        asked = replace(asked, fields=replace(asked.fields, layer=str(row["layer"] or detection)), feature=str(fid))
+        geometry = flat.geometry
+        copied = {PlatformParam.START_LEVEL: flat.start_level_m, PlatformParam.GRADIENT: flat.gradient_pct}
+        values = entity_store.entity_values(asked, code, fid, copied, line=False)
+        whole = (slice(0, frozen.grid.nrows), slice(0, frozen.grid.ncols))
+        cut = cut | entity_store._stockpile_cut(removed, masks, whole)
+    else:
+        layer = frozen.features(asked.layer)
+        index = entity_store.feature_index(layer, asked, code)
+        geometry = entity_store.read_geometry(frozen.features, layer, index, asked)
+        copied = {param: store.number(kept, param.value)
+                  for param, attribute in entity_store.LAYER_FIELDS.items()
+                  if getattr(asked.fields, attribute) is not None}
+        fid = layer.fids[index]
+        values = entity_store.entity_values(asked, code, fid, copied, line=layer.kind == "line")
+    job = PlatformJob(asked, code, masks.grid, start.values, geometry, values, cut, fill)
     common = {key: store.number(frozen.values, key) for key in provenance.PLATFORM_COMMON_PARAMS}
     outcome = yield from entity_store.platform_compute_steps(
-        job, common, operation=asked.name, budget_s=budget_s)
+        job, common, operation=asked.name, removed=removed, budget_s=budget_s)
     surface = np.array(job.start, dtype=np.float64, copy=True)
     surface[outcome.footprint.window] = outcome.result
     raster = Raster(job.grid, surface, frozen.crs, frozen.vertical)
@@ -889,15 +904,13 @@ def reproduce_stockpile_removal(request: ReproduceRequest, *, budget_s: float = 
     return _reproduce_removal(_check(request, provenance.STOCKPILE_REMOVAL), budget_s)
 
 
-def _reproduce_removal(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
-    frozen = _Frozen(request)
-    code = provenance.supported_code(request.settings)
-    asked = provenance.removal_request(request.settings, provenance.supported_values(code, frozen.values))
-    values, _defaulted = supported_store.removal_values(asked, code)
-    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
-    masks = frozen.masks()
-    start_item = frozen.item(provenance.SURFACE_ROLE)
-    start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida")
+def _frozen_removed(request: ReproduceRequest, frozen: _Frozen, stockpile: str, name: str
+                    ) -> tuple[Mapping[str, object], removal.RemovedStockpile, str]:
+    """El acopio ``stockpile`` (``STK-001#Acopio 7``) que consumió la operación ``name`` (una retirada o la plataforma que lo retira «como
+    plataforma», T21), **de lo congelado**: sus tres entradas ``removed_stockpile`` (su tabla ``des_stk_``, la base de su material ``des_stb_``
+    y la superficie con que se detectó ``des_stp_``, por el prefijo de su dato) dan la fila del acopio, su huella, su base y su superficie de
+    detección (:func:`~.supported_store.read_removed`), **sin el proyecto**. Devuelve la fila de su tabla, el acopio y el código de su detección.
+    ``ValueError`` si no consumió uno de los tres o la tabla congelada no tiene el acopio."""
     prefixes = {family: provenance.FAMILIES_BY_CODE[family].prefix for family in (
         provenance.STOCKPILES_TABLE, provenance.STOCKPILE_BASE_GRID, provenance.STOCKPILE_SURFACE_GRID)}
     removed = [item for item in request.inputs if item.role == provenance.REMOVED_STOCKPILE_ROLE]
@@ -905,12 +918,12 @@ def _reproduce_removal(request: ReproduceRequest, budget_s: float) -> Iterator[P
     def of(family: str) -> FrozenInput:
         found = [item for item in removed if item.name.startswith(prefixes[family])]
         if len(found) != 1:
-            raise ValueError(f"la retirada «{asked.name}» consume {len(found)} datos «{family}» del acopio, no uno")
+            raise ValueError(f"la retirada «{name}» consume {len(found)} datos «{family}» del acopio, no uno")
         return found[0]
 
     table = of(provenance.STOCKPILES_TABLE)
     names = [column.name for column in store.columns_of(provenance.STOCKPILE_DETECT, provenance.STOCKPILES_TABLE)]
-    _detection, key = provenance.split_support_ref(asked.stockpile)
+    detection, key = provenance.split_support_ref(stockpile)
     with _open(Path(table.files["main"])) as conn:
         rows = [dict(zip(names, found, strict=True)) for found in conn.execute(
             f'SELECT {", ".join(names)} FROM "{table.settings["layer"]}" ORDER BY fid')]
@@ -920,6 +933,19 @@ def _reproduce_removal(request: ReproduceRequest, budget_s: float) -> Iterator[P
     base = frozen.named_raster(of(provenance.STOCKPILE_BASE_GRID).name, what="base del acopio").values
     detected = frozen.named_raster(of(provenance.STOCKPILE_SURFACE_GRID).name, what="superficie con que se detectó").values
     item = supported_store.read_removed(row, frozen.grid, lambda window: base[window], lambda window: detected[window])
+    return row, item, detection
+
+
+def _reproduce_removal(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    code = provenance.supported_code(request.settings)
+    asked = provenance.removal_request(request.settings, provenance.supported_values(code, frozen.values))
+    values, _defaulted = supported_store.removal_values(asked, code)
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = frozen.masks()
+    start_item = frozen.item(provenance.SURFACE_ROLE)
+    start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida")
+    row, item, _detection = _frozen_removed(request, frozen, asked.stockpile, asked.name)
     window = (slice(0, frozen.grid.nrows), slice(0, frozen.grid.ncols))
     job = RemovalJob(asked, code, frozen.grid, start.values, item, supported_store.default_domain(masks, window),
                      MappingProxyType(dict(values)))

@@ -73,7 +73,7 @@ from . import entities, entity_store, pipeline, provenance, removal, stockpile_s
 from .entities import EntityKind
 from .entity_store import EntityParamRow, entity_parameters, set_entity_params
 from .messages import DesignError
-from .model import RemovalRequest
+from .model import PlatformRequest, RemovalRequest
 from .params import RemovalParam, StockpileParam, check_entity_param, entity_key, entity_params
 from .preview import Obsolete, ObsoleteKind, RemovalSummary, RestingLine, obsolete_notices
 from .removal import RemovalJob, RemovalOutcome, Resting
@@ -97,6 +97,7 @@ from .surfaces import project_frame, read_surface_steps, read_surface_window
 __all__ = [
     "CONFIRMED",
     "Confirmed",
+    "PlatformOrigin",
     "PreparedRemoval",
     "StockpileChoice",
     "check_removal_confirmed",
@@ -106,6 +107,7 @@ __all__ = [
     "default_domain",
     "prepare_removal",
     "prepare_removal_units",
+    "read_platform_origin",
     "read_removed",
     "recompute_removal",
     "removal_compute_steps",
@@ -333,12 +335,14 @@ class _Located:
     detected_on: str
 
 
-def _locate(project: StoreProject, version: Version, request: RemovalRequest, code: str) -> _Located:
+def _locate(project: StoreProject, version: Version, request: RemovalRequest | PlatformRequest, code: str) -> _Located:
     """La detección del acopio ``request.stockpile`` (``STK-001#Acopio 1``), **al día**, en la versión o, si no, en el proyecto, y la fila
     del acopio en su tabla. ``des.removal_stockpile_unknown`` si la referencia no la tiene, la detección no existe, está sin calcular
     o descartada o no tiene ese acopio; ``des.removal_detection_stale`` (RF-016-12) si **está obsoleta**, nombrando el acopio, la
-    detección y lo que cambió (la causa de la 008). Solo lee."""
-    obj, field = f"Retirada «{request.name}»", entity_key(code, RemovalParam.STOCKPILE)
+    detección y lo que cambió (la causa de la 008). Solo lee. Lo mismo para la retirada de un acopio que para la plataforma que lo retira
+    «como plataforma» (``PlatformRequest.stockpile``; T21: la clave del campo es la del parámetro ``stockpile`` de su tipo)."""
+    assert request.stockpile is not None
+    obj, field = f"Retirada «{request.name}»", entity_key(code, "stockpile")
 
     def unknown(where: str) -> DesignError:
         return DesignError("des.removal_stockpile_unknown", obj=obj, field=field, value=request.stockpile, entity=request.name,
@@ -422,6 +426,50 @@ def default_domain(masks: access.MaskSet | access.MaskSource, window: tuple[slic
         return (classes & np.uint16(int(found))) != 0
 
     return bit(ClassBit.PERIMETER) & bit(ClassBit.LEGAL) & ~bit(ClassBit.UNTOUCHABLE)
+
+
+# --- Retirar «como plataforma» (spec 016, T21; RF-016-16; plan 016 §5.4 A9, P-3, H-5) -----------------------------
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PlatformOrigin:
+    """Lo que lee de un acopio la plataforma que lo retira **«como plataforma»** (:func:`read_platform_origin`; RF-016-16, A9): el ``item``
+    (:class:`~.removal.RemovedStockpile`: su huella, su base y la superficie con que se detectó), su ``platform`` (el plano de su base, el
+    contorno de su huella y su eje: :func:`~.removal.platform_of_stockpile`), la referencia del acopio (``ref``, ``STK-001#Acopio 7``), el código de
+    su detección (``detection``) y su ámbito (``scope``: ``version`` o ``project``), la superficie sobre la que se detectó (``detected_on``),
+    los **nombres de los datos de la detección que lee** (``removed``: su tabla ``des_stk_``, la base de su material ``des_stb_`` y la
+    superficie con que se detectó ``des_stp_``: las tres entradas ``removed_stockpile`` de la operación) y de dónde sale su huella en
+    ``des_epr_`` (``layer`` y ``source_fid``: los de su marca; el código de su detección si salió de un candidato, que no tiene capa: es lo único que la
+    reproducción, sin el proyecto, sabe de ella)."""
+
+    item: removal.RemovedStockpile
+    platform: removal.StockpilePlatform
+    ref: str
+    detection: str
+    scope: str
+    detected_on: str
+    removed: tuple[str, str, str]
+    layer: str
+    source_fid: int
+
+
+def read_platform_origin(project: StoreProject, version: Version, request: PlatformRequest, code: str) -> PlatformOrigin:
+    """**Lee el acopio** que retira ``request`` «como plataforma» (``request.stockpile``: ``STK-001#Acopio 7``) de su detección **al día** (de la
+    versión o, si no, del proyecto) y da lo que la plataforma necesita de él (:class:`PlatformOrigin`): solo la ventana de su huella de su base y de
+    la superficie con que se detectó, y su plano. Solo lee. Los rechazos son los de preparar una retirada: ``des.removal_stockpile_unknown`` (el
+    acopio o su detección no existen o no están calculados) y ``des.removal_detection_stale`` (RF-016-12: la detección está obsoleta, nombrando
+    lo que cambió); y ``des.removal_platform_no_plane`` si su base no es un plano (una base propia, RF-016-03)."""
+    found = _locate(project, version, request, code)
+    frame = project_frame(project)
+    item = _removed_of(project, found, frame)
+    flat = removal.platform_of_stockpile(item, frame.grid)
+    detection = found.detection
+    assert detection.detected is not None
+    row = found.row
+    return PlatformOrigin(
+        item, flat, request.stockpile or "", detection.code, stockpile_store.PROJECT if detection.version_uid == "" else stockpile_store.VERSION,
+        found.detected_on, (detection.stockpiles.name, found.material.base.name, detection.detected.name),
+        str(row["layer"] or detection.code), int(row["source_fid"] or 0))
 
 
 # --- Lo que ofrece el diálogo (spec 016, T20 (b); plan 016 §5.3.3; RF-016-11, RF-016-12, RF-016-14) ----------------

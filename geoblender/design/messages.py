@@ -2388,6 +2388,15 @@ CATALOG: tuple[Message, ...] = (
         "warning",
     ),
     Message(
+        "des.removal_platform_no_plane",
+        "Stockpile «{stockpile}» cannot be removed as a platform: its base is not a plane (it has its own base "
+        "surface: it is up to {residual} m away from the best plane through its footprint); remove it with a "
+        "transition, or make the platform from a layer; nothing is calculated.",
+        "El acopio «{stockpile}» no se puede retirar como plataforma: su base no es un plano (tiene una superficie "
+        "de base propia: se separa hasta {residual} m del mejor plano de su huella); retírelo con una transición, "
+        "o haga la plataforma desde una capa; no se calcula nada.",
+    ),
+    Message(
         "des.removal_wall_unconfirmed",
         "The removal of stockpile «{stockpile}» is not created: it leaves a wall of {height} m at {angle}° and it is "
         "not created without your express confirmation; confirm the wall, or change the transition or the masks; "

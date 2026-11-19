@@ -2387,11 +2387,12 @@ def platform_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]
     protect = values.get(PlatformParam.PROTECT.value)
     if protect is not None and not isinstance(protect, bool):
         raise ValueError(f"{_VALUES} llevan «protect» como sí o no, no {protect!r}")
-    layer = _param_text(values, PlatformParam.LAYER, required=True)
-    assert layer is not None
-    feature = _param_text(values, PlatformParam.FEATURE, required=True)
+    stockpile = _param_text(values, PlatformParam.STOCKPILE)
+    # la plataforma que retira un acopio «como plataforma» (T21) no lee su capa ni su geometría (salen del acopio): sin ellos, el acopio
+    layer = _param_text(values, PlatformParam.LAYER, required=stockpile is None) or stockpile
+    feature = _param_text(values, PlatformParam.FEATURE, required=stockpile is None) or stockpile
     start = _param_text(values, PlatformParam.START, required=True)
-    assert feature is not None and start is not None
+    assert layer is not None and feature is not None and start is not None
     return PlatformRequest(
         name=_required_text(data, "name", what),
         fields=PlatformFields(
@@ -2412,7 +2413,8 @@ def platform_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]
         max_slope_pct=_number(values, PlatformParam.MAX_SLOPE.value, _VALUES),
         protect=bool(protect),
         guard_m=_number(values, PlatformParam.GUARD.value, _VALUES),
-        reason=_param_text(values, PlatformParam.REASON))
+        reason=_param_text(values, PlatformParam.REASON),
+        stockpile=stockpile)
 
 
 def _entity_pairs(entities: Iterable[tuple[str, str]], what: str) -> list[dict[str, str]]:
@@ -2741,7 +2743,7 @@ def refit_inputs(request: RefitRequest, masks: Iterable[Use] = (),
 
 
 def platform_inputs(request: PlatformRequest, start: str, masks: Iterable[Use] = (),
-                    supports: Iterable[str] = ()) -> tuple[Use, ...]:
+                    supports: Iterable[str] = (), removed: Iterable[str] = ()) -> tuple[Use, ...]:
     """Lo que consume ``des.platform`` (spec 015, T04; RF-015-02, RF-015-04, RF-015-06, RF-015-15;
     plan 015 §5.2.3), en su orden: la capa de las plataformas (:data:`ENTITY_LAYER_ROLE`: la
     geometría y su hash; un cambio de geometría en QGIS deja obsoleta la operación) y, si un polígono
@@ -2753,12 +2755,24 @@ def platform_inputs(request: PlatformRequest, start: str, masks: Iterable[Use] =
     declara el usuario, y la superficie de apoyo de la petición, resuelta), sin repetir. Si una
     cambia, la plataforma queda obsoleta. No lee sectores ni búsquedas: las máscaras ya las llevan y
     ``refuse_pending`` rechaza el cálculo con uno pendiente. ``ValueError`` si faltan los nombres;
-    ``TypeError`` si ``supports`` es un texto."""
-    found = [Use(_named(request.layer, "de la capa de las plataformas"), ENTITY_LAYER_ROLE)]
-    if request.fields.axis_layer is not None:
-        found.append(Use(_named(request.fields.axis_layer, "de la capa de los ejes"),
-                         ENTITY_AXIS_LAYER_ROLE))
+    ``TypeError`` si ``supports`` es un texto.
+
+    **Retirar un acopio «como plataforma»** (spec 016, T21; RF-016-16, plan 016 §5.2.3 «``des.platform`` gana la entrada
+    ``removed_stockpile``»): la geometría de la plataforma es la huella del acopio, **un dato producido de la versión**, no una capa
+    del proyecto: en lugar de la capa (y de la del eje) la operación consume, con el papel :data:`REMOVED_STOCKPILE_ROLE`, lo que lee del
+    acopio, ``removed`` (los nombres de su tabla ``des_stk_``, de su base ``des_stb_`` y de la superficie con que se detectó): si la
+    detección cambia, la plataforma queda obsoleta. Sin ``request.stockpile``, ``removed`` no se da (``ValueError``) y nada cambia."""
+    removed_names = _codes(removed, "los datos del acopio que se retira")
+    if removed_names and request.stockpile is None:
+        raise ValueError("solo una plataforma de un acopio consume los datos del acopio que retira (RF-016-16)")
+    found: list[Use] = []
+    if request.stockpile is None:
+        found.append(Use(_named(request.layer, "de la capa de las plataformas"), ENTITY_LAYER_ROLE))
+        if request.fields.axis_layer is not None:
+            found.append(Use(_named(request.fields.axis_layer, "de la capa de los ejes"),
+                             ENTITY_AXIS_LAYER_ROLE))
     found.append(Use(_named(start, "de la superficie de partida"), SURFACE_ROLE))
+    found += [Use(_named(name, "del acopio que se retira"), REMOVED_STOCKPILE_ROLE) for name in removed_names]
     found += list(masks)
     found += [Use(_named(name, "de una superficie en la que se apoya"), SUPPORTED_ON_ROLE)
               for name in _codes(supports, "las superficies de apoyo")]
@@ -2921,6 +2935,11 @@ def platform_params(code: str, request: PlatformRequest, *, supports: bool = Fal
     partida, un parámetro o la geometría deja la plataforma (y, en cascada, lo que parte de ella)
     obsoleta con su causa. ``ValueError`` si ``code`` no es el de una entidad."""
     read = set(_PLATFORM_READ)
+    if request.stockpile is not None:
+        # retirar un acopio «como plataforma» (T21): la geometría y la rasante salen del acopio y de su plano (no de una capa ni de
+        # unos valores copiados): lee el acopio, y no la capa, la geometría ni la cota inicial y la pendiente
+        read -= {PlatformParam.LAYER, PlatformParam.FEATURE, PlatformParam.START_LEVEL, PlatformParam.GRADIENT}
+        read.add(PlatformParam.STOCKPILE)
     if request.fields.width_field is not None:
         read.add(PlatformParam.WIDTH)
     if request.support is not None:

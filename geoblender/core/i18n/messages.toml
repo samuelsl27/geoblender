@@ -9511,6 +9511,9 @@ es = "Decisiones sobre los candidatos"
 ["Stockpile that is removed"]
 es = "Acopio que se retira"
 
+["Stockpile the platform removes"]
+es = "Acopio que retira la plataforma"
+
 ["Transition angle of the removal"]
 es = "Ángulo de transición de la retirada"
 

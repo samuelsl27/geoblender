@@ -74,8 +74,19 @@ ningún otro sitio las escribe.
 a una semilla queda a ``≥ z_s − tan · d``, y con el *chamfer*, a ``≥ z_s − tan · 0,98644 · h``): la pared se mide para que cada retirada lo
 demuestre (CE-016-03) y para lo que sí la crea (una superficie sin transición, un factor de malla fuera de rango, una métrica nueva).
 
-**Lo que no hace** (T20, T21): preparar, crear y reproducir la operación (la confirmación, su decisor y su fecha, el motivo y su evento), ni
-«como plataforma» (A9). :attr:`RemovalOutcome.held` son las celdas de la huella con dato que el dominio no admite.
+**Lo que no hace**: preparar, crear y reproducir la operación (la confirmación, su decisor y su fecha, el motivo y su evento: T20, en
+``supported_store``). :attr:`RemovalOutcome.held` son las celdas de la huella con dato que el dominio no admite.
+
+**Retirar «como plataforma»** (T21; RF-016-16; A9; P-3): es **una plataforma de la 015 con la huella del acopio como geometría**, no un tipo
+más y no otro cálculo del borde. :func:`platform_of_stockpile` da, del acopio (:class:`RemovedStockpile`), lo que la plataforma necesita:
+el **plano de su base** (ajustado a la base de cada celda de su huella y comprobado a :data:`PLANE_TOLERANCE_M`: con una base propia que no es
+un plano se rechaza, ``des.removal_platform_no_plane``), el contorno de su huella alineado a la rejilla como polígono
+(``entities.declared_zone_of_runs``, que la regla de la celda devuelve a las **mismas celdas**), el **eje por su centro en la dirección de
+máxima pendiente del plano, de borde a borde de la huella** (de la menor a la mayor proyección de sus esquinas), y la cota inicial y la
+pendiente de la rasante, que son las del plano en el principio del eje y su pendiente en %: la rasante de cada celda, ``cota inicial + σ ·
+pendiente / 100``, **es el plano en toda la huella**. El resto es de la plataforma (``platform``, ``entity_store``): su borde, sus
+comprobaciones, sus restricciones y sus cifras. :func:`platform_removal` (con :func:`with_removal`) añade lo de una retirada: el volumen
+retirado del acopio, lo que se le apoyaba y lo que las máscaras no dejan retirar, que suman lo que había sobre la base (``des.rmv_*``).
 
 **Leer solo la ventana** (A0; plan 016 §5.4): como ``PlatformJob``, el trabajo puede llevar la superficie y el dominio de
 una ventana de la rejilla (``region``): la que da :func:`removal_window`. Las semillas están a una celda de la huella, así
@@ -110,7 +121,7 @@ from .edges import PAIR_CELLS_PER_UNIT, _band_units, _Found, _midpoint, seed_env
 from .envelopes import CELLS_PER_UNIT, SlopeField
 from .grids import _label_units, dilate_square
 from .messages import DesignError, render
-from .model import Direction, Metric, RemovalRequest
+from .model import Axis, Direction, Metric, RemovalRequest
 from .params import (
     EDGE_MAX_STEP,
     TOLERANCE_FACE,
@@ -121,12 +132,23 @@ from .params import (
     entity_params,
     entity_params_of,
 )
-from .platform import Window, _project_number, _shaped_array, _whole, _window_of, window_part, work_window
+from .platform import (
+    PlatformGeometry,
+    PlatformJob,
+    PlatformOutcome,
+    Window,
+    _project_number,
+    _shaped_array,
+    _whole,
+    _window_of,
+    window_part,
+    work_window,
+)
 from .preview import SUMMARY_ITEMS, Notice
 from .provenance import SURFACE_ROLE, removal_figures
 from .report import _thickness
 from .seeds import pace_progress
-from .stockpiles import Stockpile, window_grid
+from .stockpiles import Stockpile, footprint_runs, window_grid
 from .store import _min_thickness
 from .surfaces import project_frame, read_surface_window
 
@@ -134,19 +156,24 @@ if TYPE_CHECKING:
     from ..gis.store import StoreProject
 
 __all__ = [
+    "PLANE_TOLERANCE_M",
     "WALL_REASON_MIN_ANGLE_DEG",
     "WALL_REASON_MIN_HEIGHT_M",
+    "PlatformRemoval",
     "RemovalJob",
     "RemovalOutcome",
     "RemovedStockpile",
     "Resting",
     "RestingShare",
+    "StockpilePlatform",
     "Wall",
     "WallStretch",
     "attribute_resting",
     "check_resting_confirmed",
     "check_wall_confirmed",
     "measure_wall",
+    "platform_of_stockpile",
+    "platform_removal",
     "remove_stockpile",
     "removal_steps",
     "removal_window",
@@ -154,6 +181,7 @@ __all__ = [
     "resting_on",
     "wall_notices",
     "wall_steps",
+    "with_removal",
 ]
 
 _PHASE = "removal"
@@ -988,3 +1016,144 @@ def measure_wall(job: RemovalJob, outcome: RemovalOutcome, project: Mapping[str,
             next(work)
         except StopIteration as done:
             return done.value  # type: ignore[no-any-return]
+
+
+# --- A9: retirar como plataforma ----------------------------------------------------------------------------------------------
+
+PLANE_TOLERANCE_M = 1e-6
+"""Lo que se aparta de un plano (m) la base de un acopio retirado «como plataforma» para seguir siendo «el plano de su base»: el límite del
+plano de base de D-11 de la spec 016 (≤ 10⁻⁶ m). Un acopio con **base propia** (RF-016-03: la de una superficie) no lo cumple y se rechaza
+(``des.removal_platform_no_plane``). No es una cifra minera: el plano ajustado de la detección lo cumple de sobra (≈ 10⁻¹² m)."""
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class StockpilePlatform:
+    """Lo que sale de un acopio para retirarlo **como plataforma** (:func:`platform_of_stockpile`; A9, RF-016-16): la ``geometry`` de la plataforma
+    (el contorno de la huella como polígono, con su eje dado), el ``axis`` (por el centro de la huella, en la dirección de máxima pendiente del
+    plano y de borde a borde), la cota inicial de la rasante (``start_level_m``: la del plano en el principio del eje) y su pendiente
+    (``gradient_pct``: la del plano, en %, positiva: el eje sube), el centro de la huella (``centre_x``, ``centre_y``, absolutos float64) con la
+    cota del plano en él (``centre_level_m``), el azimut de la máxima pendiente (``azimuth_deg``, desde el norte en sentido horario), las
+    celdas y el área de la huella y lo que se separa la base del plano ajustado (``residual_m``, m)."""
+
+    key: str
+    name: str
+    geometry: PlatformGeometry
+    axis: Axis
+    start_level_m: float
+    gradient_pct: float
+    centre_x: float
+    centre_y: float
+    centre_level_m: float
+    azimuth_deg: float
+    cells: int
+    area_m2: float
+    residual_m: float
+
+
+def platform_of_stockpile(item: RemovedStockpile, grid: Grid) -> StockpilePlatform:
+    """**A9** (RF-016-16; plan 016 §5.4; puro): la plataforma de la huella del acopio ``item`` en la rejilla ``grid``.
+
+    El plano ``z = z_c + g_x·(x − x_c) + g_y·(y − y_c)`` por mínimos cuadrados de la base de cada celda de la huella (``item.base``) en el centro
+    de sus celdas (coordenadas locales desde la esquina noroeste de la rejilla, en float64: el principio 6 de ADR-0005), con ``(x_c, y_c)`` el
+    centro de sus celdas; ``g = √(g_x² + g_y²)`` es su pendiente y ``(g_x, g_y)/g`` la dirección de máxima pendiente (sin pendiente, el este:
+    como el eje principal de la 015). La base se aparta del plano **como mucho** :data:`PLANE_TOLERANCE_M`; si no (una base propia), ``DesignError``
+    ``des.removal_platform_no_plane``. El eje pasa por el centro con esa dirección y va **de la menor a la mayor proyección de las esquinas de las
+    celdas de la huella** (de borde a borde: cada celda proyecta dentro de él, así que su abscisa es la de su proyección, sin recortar); su sentido
+    es el de **subida** del plano, de modo que la pendiente es positiva y ``cota inicial = z_c + g · t_min``. La geometría es el contorno de la
+    huella alineado a la rejilla (:func:`~.entities.declared_zone_of_runs` sin resguardo: la regla de la celda devuelve las mismas celdas) con ese
+    eje dado (:attr:`~.platform.PlatformGeometry.given_axis`). Ninguna entrada se modifica. ``ValueError`` (errores del programa) si el acopio no
+    cabe en la rejilla."""
+    cells = item.cells
+    if int(cells[-1]) >= grid.nrows * grid.ncols:
+        raise ValueError(f"el acopio «{item.name}» tiene celdas fuera de la rejilla de {grid.nrows} × {grid.ncols}")
+    rows, cols = np.divmod(cells, grid.ncols)
+    x = (cols + 0.5) * grid.dx
+    y = -(rows + 0.5) * grid.dy  # locales desde la esquina noroeste, Y hacia el norte (como axis_of_polygon)
+    xc, yc, zc = float(x.mean()), float(y.mean()), float(item.base.mean())
+    ex, ey = x - xc, y - yc
+    found, *_rest = np.linalg.lstsq(np.column_stack((ex, ey)), item.base - zc, rcond=None)
+    gx, gy = float(found[0]), float(found[1])
+    residual = float(np.max(np.abs(item.base - (zc + gx * ex + gy * ey))))
+    if not residual <= PLANE_TOLERANCE_M:
+        raise DesignError("des.removal_platform_no_plane", obj=f"Retirada del acopio «{item.name}»", field="base", value=residual,
+                          stockpile=item.name, residual=round(residual, 6))
+    slope = math.hypot(gx, gy)
+    ux, uy = (gx / slope, gy / slope) if slope > 0.0 else (1.0, 0.0)
+    along = ex * ux + ey * uy
+    half = 0.5 * (abs(ux) * grid.dx + abs(uy) * grid.dy)
+    low, high = float(along.min()) - half, float(along.max()) + half
+    start = (grid.west + xc + low * ux, grid.north + yc + low * uy)
+    end = (grid.west + xc + high * ux, grid.north + yc + high * uy)
+    axis = Axis((start, end))
+    zone = entities.declared_zone_of_runs(footprint_runs(cells, grid.ncols), grid, 0.0)
+    azimuth = math.degrees(math.atan2(ux, uy)) % 360.0  # desde el norte, en sentido horario
+    return StockpilePlatform(
+        item.key, item.name, PlatformGeometry("polygon", zone.parts, given_axis=axis), axis, zc + slope * low, 100.0 * slope,
+        grid.west + xc, grid.north + yc, zc, azimuth, int(cells.size), int(cells.size) * grid.cell_area, residual)
+
+
+@dataclass(frozen=True, slots=True)
+class PlatformRemoval:
+    """Lo que la plataforma que sale de retirar un acopio **como plataforma** hace de **retirada** (A9, RF-016-16, RF-016-13): del acopio
+    ``stockpile`` (``name``), ``removed_m3`` (lo del acopio: entre su base y la superficie con que se detectó), ``resting_m3`` (lo que se le
+    apoyó, por encima de ella) y ``kept_m3`` (lo que las máscaras no dejan cortar de la huella), que suman ``above_base_m3`` (lo que la huella
+    tenía sobre la base) a ≤ 10⁻⁹ relativo; ``transition_m3`` y ``transition_m2`` son 0: toda la huella queda en su plano (la transición con
+    el terreno es **el borde** de la plataforma, que mide su corte y su relleno). Las cifras de una retirada (``des.rmv_*``: sin pared, que es
+    la del borde de la plataforma, ``des.edge_wall_max_m``) y, con 0 m³ retirados, el aviso de RF-016-13."""
+
+    stockpile: str
+    name: str
+    removed_m3: float
+    resting_m3: float
+    transition_m3: float
+    kept_m3: float
+    above_base_m3: float
+    transition_m2: float
+
+    def figures(self, entity: str, code: str) -> tuple[FigureSpec, ...]:
+        """Las cifras CALCULADO de la retirada (``des.rmv_*``, :func:`~.provenance.removal_figures`) de la plataforma ``entity`` de código
+        ``code``, con el ámbito de la entidad y sin la pared."""
+        return removal_figures(entity, code, {
+            "des.rmv_removed_m3": self.removed_m3, "des.rmv_resting_m3": self.resting_m3,
+            "des.rmv_transition_m3": self.transition_m3, "des.rmv_kept_m3": self.kept_m3,
+            "des.rmv_transition_m2": self.transition_m2, "des.rmv_wall_max_m": None})
+
+    @property
+    def notices(self) -> tuple[Notice, ...]:
+        """El aviso de RF-016-13: con 0 m³ retirados, el acopio ya no está en la superficie de partida."""
+        return (Notice(_NOTHING, {"stockpile": self.name}),) if self.removed_m3 == 0.0 else ()
+
+
+def platform_removal(item: RemovedStockpile, job: PlatformJob, outcome: PlatformOutcome) -> PlatformRemoval:
+    """**A9, lo de una retirada** (RF-016-13, RF-016-16): las cifras de retirar el acopio ``item`` con la plataforma de ``job`` que dio
+    ``outcome`` (su huella, lo aplicado y su superficie resultante), con ``z`` la superficie de partida, ``z'`` la resultante, ``B`` la base del
+    acopio y ``T`` la superficie con que se detectó, en las celdas de su huella (m³ por el área de la celda, con ``math.fsum``):
+    ``removed = Σ máx(mín(z, T) − z', 0)``, ``resting = Σ máx(z − máx(z', T), 0)`` y ``kept = Σ máx(z − B, 0)`` en las celdas que las
+    máscaras no dejan cortar (``applied.cut_denied``). Suman ``Σ máx(z − B, 0)`` (``above_base_m3``). ``ValueError`` (error del programa) si la
+    huella de la plataforma no son las celdas del acopio."""
+    footprint = outcome.footprint
+    window, cells = footprint.window, footprint.cells
+    grid = job.grid
+    rows, cols = np.nonzero(cells)
+    flat = (rows + window[0].start).astype(np.int64) * grid.ncols + cols + window[1].start
+    if not np.array_equal(flat, item.cells):
+        raise ValueError(f"la huella de la plataforma de «{item.name}» no son las celdas del acopio: la plataforma se hizo con otra geometría")
+    start = job.start_in(window)[cells]
+    final = outcome.result[cells]
+    denied = outcome.applied.cut_denied[cells]
+    area = grid.cell_area
+    with np.errstate(invalid="ignore"):
+        above = np.maximum(start - item.base, 0.0)
+        removed = np.maximum(np.minimum(start, item.surface) - final, 0.0)
+        resting = np.maximum(start - np.maximum(final, item.surface), 0.0)
+    return PlatformRemoval(
+        item.key, item.name, math.fsum(removed.tolist()) * area, math.fsum(resting.tolist()) * area, 0.0,
+        math.fsum(above[denied].tolist()) * area, math.fsum(above.tolist()) * area, 0.0)
+
+
+def with_removal(outcome: PlatformOutcome, job: PlatformJob, item: RemovedStockpile) -> PlatformOutcome:
+    """El ``outcome`` de la plataforma de ``job`` **con lo de una retirada** (:func:`platform_removal`): su ``removal``, las cifras ``des.rmv_*``
+    detrás de las de la plataforma y el aviso de RF-016-13 con 0 m³ retirados detrás de los suyos. ``outcome`` no se modifica."""
+    found = platform_removal(item, job, outcome)
+    return replace(outcome, removal=found, figures=(*outcome.figures, *found.figures(outcome.name, outcome.code)),
+                   notices=(*outcome.notices, *found.notices))

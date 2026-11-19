@@ -78,6 +78,8 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.removal_declared_reason": ("note", "RF-015-10", {"name"}),
     "des.removal_support_removed": ("note", "RF-015-17", {"name"}),
     "des.removal_stockpile_unknown": ("error", "RF-016-11", {"entity", "field", "value", "where"}),
+    # T21: retirar «como plataforma» un acopio con una base propia (que no es un plano).
+    "des.removal_platform_no_plane": ("error", "RF-016-16", {"stockpile", "residual"}),
     # T18: lo que se apoyaba en el acopio que se retira y «apoyo retirado» por una retirada viva (P-9).
     "des.removal_resting_surface": ("note", "RF-016-14", {"name", "volume"}),
     "des.removal_stockpile_removed": ("note", "RF-015-17", {"stockpile", "name"}),
@@ -142,7 +144,7 @@ class SupportedMessagesTest(unittest.TestCase):
                   "profile": "EXPL_10_60_6", "anchor": 250.0, "footprint": "Cuerpo 1", "distance": 30.0,
                   "fids": "3, 7", "fields": "nombre, margen", "detail": "no es JSON", "name": "Acopios",
                   "surface": "gis_dtm_levantamiento", "operation": "Sobre el acopio 4", "removal": "Retirada 1",
-                  "where": "V01"}
+                  "where": "V01", "residual": 0.25}
         for code, (severity, _rf, _marks) in CODES.items():
             with self.subTest(code=code):
                 if severity == "error":

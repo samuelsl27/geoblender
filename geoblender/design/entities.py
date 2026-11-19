@@ -311,6 +311,15 @@ class EntityType:
         """Sus tipos de operación: el de versión y, si el tipo también se crea en el proyecto, el de proyecto."""
         return (self.op_type,) if self.project_op_type is None else (self.op_type, self.project_op_type)
 
+    @property
+    def has_footprint(self) -> bool:
+        """Si las entidades de este tipo dejan **la tabla de su huella** (``des_epr_``, el papel ``entity``: una fila con su huella y su
+        eje) y, con ella, **declaran restricciones** y **salen en la capa de entidades** (spec 016, T21; plan 016 §5.1). La plataforma, la
+        retirada, el contrafuerte y el cuerpo la dejan; **la detección de acopios no** (``table_role`` es la tabla de acopios,
+        ``des_stk_``, una fila por acopio: no tiene huella de entidad que declarar ni fila propia en la capa): la declaración y la capa
+        de entidades la saltan."""
+        return self.table_role == ENTITY_ROLE
+
 
 _TYPES: dict[str, EntityType] = {}
 _PERMANENT_TYPES: set[str] = set()
@@ -1117,12 +1126,14 @@ def _is_discarded(store: ParameterStore, conn: sqlite3.Connection, version: Vers
     return row is not None and row.value is True
 
 
-def _operations(conn: sqlite3.Connection, version: Version, prefix: str, op_type: str
+def _operations(conn: sqlite3.Connection, version: Version, prefix: str, op_type: str, *, value: str | None = None
                 ) -> dict[str, str]:
     """Código de entidad → uid de su operación vigente: la última hecha (por ``fid``) y sin
-    sustituir de tipo ``op_type`` en las revisiones de ``version`` que leyó un parámetro suyo."""
+    sustituir de tipo ``op_type`` en las revisiones de ``version`` que leyó un parámetro suyo (con ``value``, el valor
+    ``<prefix>.<e>.<value>``: las que leyeron **ese** parámetro; spec 016, T21)."""
     latest: dict[str, tuple[int, str]] = {}
-    for uid, fid, key in conn.execute(_OPERATION_ROWS, (version.uid, op_type, f"{prefix}.%")):
+    pattern = f"{prefix}.%" if value is None else f"{prefix}.%.{value}"
+    for uid, fid, key in conn.execute(_OPERATION_ROWS, (version.uid, op_type, pattern)):
         code = _segment_of(str(key), prefix)
         if code is not None and (code not in latest or int(fid) > latest[code][0]):
             latest[code] = (int(fid), str(uid))
@@ -1269,9 +1280,20 @@ def _retired_by(removals: Sequence[StockpileRemoval], supported: Mapping[str, Co
 def _live_removals(store: ParameterStore, conn: sqlite3.Connection, version: Version) -> list[StockpileRemoval]:
     """Las retiradas de acopio **vivas** de ``version``: la operación vigente de cada entidad ``RMV-nnn`` que no está descartada, con el acopio
     que retiró (su parámetro ``stockpile`` **tal como lo leyó**) y solo si **consumió datos de esa detección** de la versión (papel
-    ``removed_stockpile``). Una descartada (todo lo que escribió, o su parámetro ``discarded``) no cuenta: descartar la retirada devuelve el dato."""
-    spec = entity_type(EntityKind.REMOVAL)
-    operations = _operations(conn, version, spec.key_prefix, spec.op_type)
+    ``removed_stockpile``). Una descartada (todo lo que escribió, o su parámetro ``discarded``) no cuenta: descartar la retirada devuelve el dato.
+    **También la plataforma que retira un acopio «como plataforma»** (spec 016, T21; RF-016-16): una ``PLT-nnn`` cuya operación leyó el parámetro
+    ``stockpile`` (la de una capa no lo lee), con los mismos datos consumidos: es una retirada y deja «apoyo retirado» igual."""
+    found: list[StockpileRemoval] = []
+    for kind, read in ((EntityKind.REMOVAL, None), (EntityKind.PLATFORM, "stockpile")):
+        found.extend(_live_removals_of(store, conn, version, entity_type(kind), read))
+    return found
+
+
+def _live_removals_of(store: ParameterStore, conn: sqlite3.Connection, version: Version, spec: EntityType, read: str | None
+                      ) -> list[StockpileRemoval]:
+    """Las retiradas vivas de las entidades del tipo ``spec`` (:func:`_live_removals`); ``read``: el parámetro que ha leído su operación
+    (la plataforma, ``stockpile``)."""
+    operations = _operations(conn, version, spec.key_prefix, spec.op_type, value=read)
     if not operations:
         return []
     links = _links(conn, operations.values())
@@ -1300,7 +1322,7 @@ def _live_removals(store: ParameterStore, conn: sqlite3.Connection, version: Ver
         if detection not in consumed:
             continue
         (raw,) = conn.execute(_OPERATION_SETTINGS, (uid,)).fetchone()
-        found.append(StockpileRemoval(uid, _settings_name(STOCKPILE_REMOVAL, raw), code, str(value), detection, key))
+        found.append(StockpileRemoval(uid, _settings_name(spec.op_type, raw), code, str(value), detection, key))
     return found
 
 

@@ -309,7 +309,7 @@ class ParamFamilyTest(unittest.TestCase):
         self.assertEqual((platform.kind, platform.code_prefix, platform.key_prefix, platform.chained),
                          ("platform", "PLT", "des.platform", True))
         self.assertEqual(platform.families, params.ENTITY_FAMILIES)
-        self.assertEqual(len(platform.names), 20)
+        self.assertEqual(len(platform.names), 21)  # las 20 de la 015 y la 21.ª de la 016 (T21: «stockpile»)
         self.assertEqual(params.COMMON_ENTITY_PARAMS, COMMON)
         self.assertLessEqual(set(COMMON), set(platform.names))
         for name, template in params.PLATFORM_PARAMS.items():

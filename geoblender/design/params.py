@@ -502,8 +502,9 @@ _ENTITY_SEGMENT = re.compile(r"[a-z]{2,5}_[0-9]{3,}")
 
 
 class PlatformParam(StrEnum):
-    """Los 20 valores de una plataforma: el último segmento de su clave
-    ``des.platform.{e}.<valor>`` (plan 015 §5.2.2), en su orden."""
+    """Los 21 valores de una plataforma: el último segmento de su clave
+    ``des.platform.{e}.<valor>`` (plan 015 §5.2.2), en su orden. El último, ``stockpile``, es de la 016 (T21; RF-016-16, A9): el
+    acopio que la plataforma retira **«como plataforma»**; una plataforma de una capa no lo tiene (sin valor)."""
 
     NAME = "name"
     LAYER = "layer"
@@ -525,6 +526,7 @@ class PlatformParam(StrEnum):
     REASON = "reason"
     SUPPORTS = "supports"
     DISCARDED = "discarded"
+    STOCKPILE = "stockpile"
 
 
 COMMON_ENTITY_PARAMS: tuple[str, ...] = (
@@ -536,9 +538,10 @@ la plataforma (``name``, ``start``, ``support``, ``supports``, ``discarded``, ``
 bajo el prefijo de cada tipo (P-11). Un tipo sin cadena no tiene ``start``."""
 
 _PLATFORM_OPTIONAL = (PlatformParam.SUPPORT.value, PlatformParam.MAX_SLOPE.value, PlatformParam.REASON.value,
-                      PlatformParam.SUPPORTS.value)
+                      PlatformParam.SUPPORTS.value, PlatformParam.STOCKPILE.value)
 """Los valores de la plataforma que pueden quedarse sin valor: la superficie de apoyo («si la hay»), la pendiente
-máxima (opcional, D-6), el motivo (el generado, editable) y las dependencias declaradas (vacío)."""
+máxima (opcional, D-6), el motivo (el generado, editable), las dependencias declaradas (vacío) y el acopio que retira «como
+plataforma» (T21: solo lo tiene la plataforma que sale de retirar un acopio)."""
 
 _INF = math.inf
 ENTITY_RANGES: Mapping[str, ValueRange] = MappingProxyType({
@@ -598,6 +601,10 @@ _015_DISCARDED = ("Spec 015, RF-015-17 y D-12: falso por defecto; la persona lo 
                   "descartar una entidad sin calcular («registro, no usar»: nada se borra, RF-009-12); "
                   "decidido por la sesión principal (15/11/2026), revisable")
 
+_016_PLATFORM_STOCKPILE = ("Spec 016, RF-016-16 y A9: el acopio que la plataforma retira «como plataforma» (su detección y su clave, "
+                           "STK-001#m07); sin valor por defecto ni en la plataforma de una capa; lo elige una persona al retirar "
+                           "el acopio (Samuel, IMGA, 18/11/2026)")
+
 _MODE_CHOICES = ("cut", "cut_fill")
 _METRIC_CHOICES = ("exact", "chamfer5")
 
@@ -641,6 +648,8 @@ _ENTITY_SPECS: tuple[tuple[PlatformParam, str, ParamValue | None, tuple[str, ...
      "Entities the platform is declared to rest on"),
     (PlatformParam.DISCARDED, "bool", False, (), ("RF-015-17",), _015_DISCARDED,
      "The entity is discarded"),
+    (PlatformParam.STOCKPILE, "text", None, (), ("RF-016-16",), _016_PLATFORM_STOCKPILE,
+     "Stockpile the platform removes"),
 )
 
 
@@ -674,14 +683,14 @@ def _entity_family(param: PlatformParam, value_type: str, default: ParamValue | 
 
 
 ENTITY_FAMILIES: tuple[ParamFamily, ...] = tuple(_entity_family(*spec) for spec in _ENTITY_SPECS)
-"""Las 20 familias de una plataforma (plan 015 §5.2.2 y T25), de versión, en su orden. Van aparte de
+"""Las 21 familias de una plataforma (plan 015 §5.2.2 y T25; la 21.ª, ``stockpile``, de la 016: T21), de versión, en su orden. Van aparte de
 :data:`FAMILIES` (las de la 013): ``bl`` las registra junto a ellas cuando registre las operaciones
 de la 015 (T04)."""
 
 PLATFORM_PARAMS: Mapping[str, ParamDef] = MappingProxyType(
     {PlatformParam(family.pattern.rsplit(".", 1)[1]).value: family.template
      for family in ENTITY_FAMILIES})
-"""Las plantillas de las 20 familias por último segmento de la clave (solo lectura)."""
+"""Las plantillas de las 21 familias por último segmento de la clave (solo lectura)."""
 
 
 def entity_segment(code: str) -> str:
@@ -895,7 +904,7 @@ def parse_entity_key(key: object) -> tuple[str, str, str] | None:
 PLATFORM_ENTITY = EntityParams(
     "platform", "PLT", tuple(item.value for item in PlatformParam), ENTITY_FAMILIES,
     optional=_PLATFORM_OPTIONAL, label="Plataforma", ranges=tuple(ENTITY_RANGES.items()))
-"""Los parámetros del tipo plataforma: sus 20 valores y sus 20 familias (:data:`ENTITY_FAMILIES`), sus opcionales y
+"""Los parámetros del tipo plataforma: sus 21 valores y sus 21 familias (:data:`ENTITY_FAMILIES`), sus opcionales y
 sus rangos, registrados al importar y del programa."""
 register_entity_params(PLATFORM_ENTITY, permanent=True)
 
