@@ -9694,3 +9694,149 @@ es = "Motivo de la pared"
 
 ["Why you accept the wall that removing the stockpile may leave at the edge of what is removed: it is needed only if the wall passes the height and the angle that ask for a reason, and it is recorded with the removal"]
 es = "Por qué acepta la pared que puede dejar retirar el acopio en el borde de lo retirado: solo hace falta si la pared pasa de la altura y del ángulo que piden un motivo, y queda registrado con la retirada"
+
+# El cuerpo apoyado (spec 016, T25; HU-016-4; RF-016-20 a RF-016-22) ---------------------------------------------
+
+["Name of the body, unique in the active version"]
+es = "Nombre del cuerpo, único en la versión activa"
+
+["Layer of the footprints"]
+es = "Capa de las huellas"
+
+["Layer of polygons of the project the footprint of the body is taken from"]
+es = "Capa de polígonos del proyecto de la que se toma la huella del cuerpo"
+
+["Footprint of the layer"]
+es = "Huella de la capa"
+
+["Name or number (fid) of the polygon of the layer that is the footprint of the body"]
+es = "Nombre o número (fid) del polígono de la capa que es la huella del cuerpo"
+
+["Layer of the project with the thickness of the body: points or polygons with a field, or 3D lines with the thickness in the Z of their vertices"]
+es = "Capa del proyecto con el espesor del cuerpo: puntos o polígonos con un campo, o líneas 3D con el espesor en la Z de sus vértices"
+
+["Thickness from"]
+es = "Espesor desde"
+
+["Where the thickness is read from: a field of the points or of the polygons (constant in each polygon), or the Z of the vertices of the 3D lines; it is not assumed"]
+es = "De dónde se lee el espesor: un campo de los puntos o de los polígonos (constante en cada polígono) o la Z de los vértices de las líneas 3D; no se supone"
+
+["Thickness field"]
+es = "Campo del espesor"
+
+["Numeric field of the layer with the thickness in metres; it cannot be negative"]
+es = "Campo numérico de la capa con el espesor en metros; no puede ser negativo"
+
+["On a base: the known surface is its support and the surface of the chain rises to the roof; under a roof: the known surface is its roof, as the existing waste, and the surface does not change"]
+es = "Sobre una base: la superficie conocida es su apoyo y la superficie de la cadena sube hasta el techo; bajo un techo: la superficie conocida es su techo, como el escombro existente, y la superficie no cambia"
+
+["Known surface"]
+es = "Superficie conocida"
+
+["The surface the body rests on (on a base) or hangs under (under a roof): the ground, a design surface or the surface of an entity that changes the surface"]
+es = "La superficie en la que se apoya el cuerpo (sobre una base) o bajo la que está (bajo un techo): el terreno, una superficie de diseño o la superficie de una entidad que cambia la superficie"
+
+["Surface the body starts from (only on a base): the surface that rises to the roof of the body (by default, the last of the chain)"]
+es = "Superficie de la que parte el cuerpo (solo sobre una base): la que sube hasta su techo (por defecto, la última de la cadena)"
+
+["Maximum distance to the data (m)"]
+es = "Distancia máxima a los datos (m)"
+
+["Farthest distance from a thickness datum, in metres: what is farther is warned and triangles longer than twice this are not interpolated; it has no default value: you choose it"]
+es = "Distancia más lejana a un dato de espesor, en metros: lo que queda más lejos se avisa y los triángulos de más del doble no se interpolan; no tiene valor por defecto: la elige usted"
+
+["Zero at the edge"]
+es = "Cero en el borde"
+
+["The thickness is zero at the edge of the footprint"]
+es = "El espesor es cero en el borde de la huella"
+
+["On a base"]
+es = "Sobre una base"
+
+["The known surface is its support: the roof is the support plus the thickness"]
+es = "La superficie conocida es su apoyo: el techo es el apoyo más el espesor"
+
+["Under a roof"]
+es = "Bajo un techo"
+
+["The known surface is its roof: the base is the roof minus the thickness"]
+es = "La superficie conocida es su techo: la base es el techo menos el espesor"
+
+["A field"]
+es = "Un campo"
+
+["The thickness is a field of the points or of the polygons of the layer"]
+es = "El espesor es un campo de los puntos o de los polígonos de la capa"
+
+["The Z of the vertices"]
+es = "La Z de los vértices"
+
+["The thickness is the Z of each vertex of the 3D lines of the layer"]
+es = "El espesor es la Z de cada vértice de las líneas 3D de la capa"
+
+["There is no layer of polygons in the project: import the footprints of the bodies first"]
+es = "No hay ninguna capa de polígonos en el proyecto: importe antes las huellas de los cuerpos"
+
+["Footprint of the body"]
+es = "Huella del cuerpo"
+
+["Thickness data"]
+es = "Datos de espesor"
+
+["Write the name of the body"]
+es = "Escriba el nombre del cuerpo"
+
+["Choose the layer of the footprints of the body"]
+es = "Elija la capa de las huellas del cuerpo"
+
+["Write the name or the number of the footprint in its layer"]
+es = "Escriba el nombre o el número de la huella en su capa"
+
+["Choose the layer of the thickness data"]
+es = "Elija la capa de los datos de espesor"
+
+["Write the field of the layer with the thickness"]
+es = "Escriba el campo de la capa con el espesor"
+
+["Choose the known surface of the body"]
+es = "Elija la superficie conocida del cuerpo"
+
+["Choose the start surface of the body"]
+es = "Elija la superficie de partida del cuerpo"
+
+["Supported body «{name}» created in {version}"]
+es = "Cuerpo apoyado «{name}» creado en {version}"
+
+["Computing the supported body… {percent} % · Esc: cancel"]
+es = "Calculando el cuerpo apoyado… {percent} % · Esc: cancelar"
+
+["There are no layers of points, polygons or 3D lines in the project"]
+es = "No hay capas de puntos, de polígonos ni de líneas 3D en el proyecto"
+
+["Layer of points"]
+es = "Capa de puntos"
+
+["Layer of 3D lines"]
+es = "Capa de líneas 3D"
+
+["on a base"]
+es = "sobre una base"
+
+["under a roof"]
+es = "bajo un techo"
+
+["Supported body «{name}» ({code}) {sense}: {volume} m³ · largest thickness {thickness} m at ({x}, {y})"]
+es = "Cuerpo apoyado «{name}» ({code}) {sense}: {volume} m³ · mayor espesor {thickness} m en ({x}, {y})"
+
+["Thickness from «{layer}»: {data} cells with data · {tin} by the TIN · {nearest} by the nearest datum · {direct} inside polygons"]
+es = "Espesor de «{layer}»: {data} celdas con dato · {tin} por el TIN · {nearest} por el dato más próximo · {direct} dentro de polígonos"
+
+["Leaves the surface with its roof: the base is the known surface"]
+es = "Deja la superficie con su techo: la base es la superficie conocida"
+
+["Leaves its base and its thickness: the known surface is its roof and it does not change"]
+es = "Deja su base y su espesor: la superficie conocida es su techo y no cambia"
+
+["Supported body «{name}» in {version}"]
+es = "Cuerpo apoyado «{name}» en {version}"

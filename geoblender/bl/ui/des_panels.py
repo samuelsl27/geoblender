@@ -638,6 +638,9 @@ class _Choices:
     platform_start: str | None = None
     removal_stockpiles: list[tuple[str, str, str]] = field(default_factory=list)
     removal_by_ref: dict[str, StockpileChoice] = field(default_factory=dict)
+    body_footprints: list[tuple[str, str, str]] = field(default_factory=list)
+    body_data: list[tuple[str, str, str]] = field(default_factory=list)
+    body_kinds: dict[str, str] = field(default_factory=dict)
     by_id: dict[str, res_surfaces.SurfaceChoice] = field(default_factory=dict)
     key: tuple[str, str, str] | None = None
 
@@ -905,6 +908,8 @@ def _platform_entities(project: Any, version: str) -> tuple[list[tuple[str, str,
         spec = entities.entity_type(record.kind)
         if spec.surface_role is None:
             continue  # un tipo que no deja una superficie (la detección de acopios, spec 016): no es una partida
+        if record.kind == entities.EntityKind.BODY and record.start is None:
+            continue  # un cuerpo «bajo un techo» no cambia la superficie y no la escribe: nadie parte de ella (spec 016, T25)
         last = record.code in tails
         if record.kind == entities.EntityKind.PLATFORM:
             label = tr("Platform «{name}» ({code})", name=record.name, code=record.code)
@@ -1108,6 +1113,57 @@ def draw_resting(layout: Any, width_px: int) -> None:
         _draw_text(box, text, width, alert=alert)
 
 
+def _fixed_choices_body() -> None:
+    """Las listas de «Cuerpo apoyado…» sin nada del proyecto: «—» (sin capas de huellas ni de datos)."""
+    _CHOICES.body_footprints = [(NO_LAYER, NOT_SHOWN, tr("There are no layers of polygons in the project"))]
+    _CHOICES.body_data = [(NO_LAYER, NOT_SHOWN, tr("There are no layers of points, polygons or 3D lines in the project"))]
+    _CHOICES.body_kinds = {}
+
+
+def refresh_body_choices(project: Any) -> None:
+    """Vuelve a leer de ``project`` las capas que ofrece «Cuerpo apoyado…» (spec 016, T25; plan 016 §5.2.1 y §5.3.3): para la huella, las
+    capas «entidades» de **polígonos** (``gis_fea_``) y, para los datos de espesor, las de **puntos** o de **polígonos** (el espesor de
+    un campo) y las de **líneas 3D** (``gis_brk_``: el espesor en la Z de sus vértices), cada una con su geometría
+    (:func:`body_data_kind`). Si no se puede leer, el error sigue."""
+    _fixed_choices_body()
+    found = constraint_panels.search_layers(project)
+    polygons = [name for name, kind in found if kind == "polygon"]
+    data = [(name, kind) for name, kind in found if kind in ("point", "polygon")]
+    lines = [record.name for record in gis_store.list_gis_datasets(project, families=(gis_provenance.BREAKLINES,))]
+    if polygons:
+        _CHOICES.body_footprints = [(name, constraint_panels.layer_label(name), tr("Layer of polygons")) for name in polygons]
+    if data or lines:
+        kinds = {"point": tr("Layer of points"), "polygon": tr("Layer of polygons")}
+        _CHOICES.body_data = [*((name, constraint_panels.layer_label(name), kinds[kind]) for name, kind in data),
+                              *((name, constraint_panels.layer_label(name), tr("Layer of 3D lines")) for name in sorted(lines))]
+        _CHOICES.body_kinds = {**dict(data), **{name: "line3d" for name in lines}}
+
+
+def body_footprint_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las capas de polígonos que ofrece «Cuerpo apoyado…» para la huella (spec 016, T25; una lista viva del módulo); sin ninguna, «—»."""
+    if not _CHOICES.body_footprints:
+        _fixed_choices_body()
+    return _CHOICES.body_footprints
+
+
+def body_data_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las capas de datos de espesor que ofrece «Cuerpo apoyado…» (spec 016, T25; una lista viva del módulo); sin ninguna, «—»."""
+    if not _CHOICES.body_data:
+        _fixed_choices_body()
+    return _CHOICES.body_data
+
+
+def body_data_kind(layer: str) -> str | None:
+    """La geometría de la capa de datos ``layer`` de la lista de :func:`body_data_items`: ``"point"``, ``"polygon"`` o ``"line3d"``;
+    ``None`` si no es de la lista."""
+    return _CHOICES.body_kinds.get(layer)
+
+
+def has_body_footprints() -> bool:
+    """Si la lista de «Cuerpo apoyado…» ofrece alguna capa de huellas."""
+    return any(item[0] != NO_LAYER for item in _CHOICES.body_footprints)
+
+
 def forget_choices() -> None:
     """Olvida las listas leídas (al desregistrar)."""
     _CHOICES.key = None
@@ -1118,6 +1174,7 @@ def forget_choices() -> None:
     _CHOICES.platform_starts, _CHOICES.platform_supports = [], []
     _CHOICES.platform_names, _CHOICES.platform_start = [], None
     _CHOICES.removal_stockpiles, _CHOICES.removal_by_ref = [], {}
+    _CHOICES.body_footprints, _CHOICES.body_data, _CHOICES.body_kinds = [], [], {}
     _RESTING.lines = []
     _CHOICES.by_id = {}
 
@@ -1464,6 +1521,32 @@ def _removal_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     return lines
 
 
+def _body_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+    """El resumen de un cuerpo apoyado calculado (``design.thickness.BodyOutcome`` y ``design.preview.BodySummary``; spec 016, T25;
+    RF-016-20 a RF-016-22; M2): su volumen y su espesor máximo con su lugar, de dónde sale el espesor (las celdas con dato, las del TIN,
+    las del dato más próximo y las directas de los polígonos), y la superficie que deja: la del techo «sobre una base» o la base
+    «bajo un techo». Los avisos (lo ignorado, lo lejano, lo que no tiene superficie, lo triangulado) y lo que quedará obsoleto los añade
+    :func:`summary_lines`."""
+    outcome, summary = calculation.outcome, calculation.summary
+    on_base = summary.sense == "on_base"  # type: ignore[union-attr]
+    lines = [(tr("Supported body «{name}» ({code}) {sense}: {volume} m³ · largest thickness {thickness} m at ({x}, {y})",
+                 name=calculation.name, code=outcome.code,  # type: ignore[union-attr]
+                 sense=tr("on a base") if on_base else tr("under a roof"),
+                 volume=_number(outcome.volume_m3),  # type: ignore[union-attr]
+                 thickness=_number(outcome.thickness_max_m, 2),  # type: ignore[union-attr]
+                 x=_number(outcome.thickness_max_x, 1), y=_number(outcome.thickness_max_y, 1)), False),  # type: ignore[union-attr]
+             (tr("Thickness from «{layer}»: {data} cells with data · {tin} by the TIN · {nearest} by the nearest datum · {direct} "
+                 "inside polygons",
+                 layer=summary.data_layer,  # type: ignore[union-attr]
+                 data=_number(outcome.data_cells),  # type: ignore[union-attr]
+                 tin=_number(outcome.tin_cells),  # type: ignore[union-attr]
+                 nearest=_number(outcome.nearest_cells),  # type: ignore[union-attr]
+                 direct=_number(outcome.direct_cells)), False),  # type: ignore[union-attr]
+             (tr("Leaves the surface with its roof: the base is the known surface") if on_base else
+              tr("Leaves its base and its thickness: the known surface is its roof and it does not change"), False)]
+    return lines
+
+
 def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de un cálculo hecho y sin registrar (RF-013-31), línea a línea y en el idioma de
     Geoblender, con los avisos al final y en alerta: de una envolvente, sus celdas, su área, sus
@@ -1479,6 +1562,8 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
         lines.extend(_platform_lines(calculation))
     elif calculation.op_type == design_provenance.STOCKPILE_REMOVAL:
         lines.extend(_removal_lines(calculation))
+    elif calculation.op_type == design_provenance.BODY:
+        lines.extend(_body_lines(calculation))
     elif calculation.op_type == design_provenance.QUARRY:
         lines.extend(_quarry_lines(calculation.outcome))
     elif calculation.op_type == design_provenance.REFIT:
@@ -1614,6 +1699,8 @@ def show_summary(calculation: Calculation | None) -> None:
     elif calculation.op_type == design_provenance.STOCKPILE_REMOVAL:
         title = tr("Removal of a stockpile «{name}» in {version}", name=calculation.name,
                    version=calculation.version)
+    elif calculation.op_type == design_provenance.BODY:
+        title = tr("Supported body «{name}» in {version}", name=calculation.name, version=calculation.version)
     else:
         title = tr("Benching «{name}» in {version}", name=calculation.name,
                    version=calculation.version)

@@ -339,6 +339,15 @@ motivo del diálogo, que **va en la petición** (se escribe al calcular). Quedan
 declaración y la capa de entidades de cada entidad viva (``des_epr_``) aún no lo sabe de la detección (la capa por acopio es la T34 y la
 declaración con la zona propia de cada tipo, la T27). Disponible con el proyecto en escritura y la versión activa editable y, si no,
 desactivada con su motivo (RF-015-28: :class:`DesignCommandAware`). «Como plataforma» (RF-016-16) es de la T21.
+
+**Cuerpo apoyado…** (spec 016, T25; HU-016-4; RF-016-20 a RF-016-22, RF-015-03, RF-015-28, RF-015-29; RNF-016-02 y 05; comprobación manual
+M2): :class:`GEOBLENDER_OT_des_create_body` (``geoblender.des_create_body``, interna, de la entrada «016») calcula ``des.body`` de la
+versión activa con ``design.steps.body_run``: un cuerpo de espesor ≥ 0 con su huella (un polígono de una capa de entidades), sus datos
+de espesor (un campo de puntos o de polígonos, o la Z de los vértices de una capa de líneas 3D: **la M no llega al proyecto**), la
+superficie conocida y su sentido —«sobre una base» (apoyo: la superficie de la cadena sube hasta el techo) o «bajo un techo» (el escombro
+existente: deja su base y su espesor dispersos y no cambia la superficie)—, la distancia máxima a los datos (sin valor por defecto: D-9) y
+«cero en el borde». Sigue el patrón de la retirada (:class:`_CalculateAndCreate`; las listas de su diálogo y su resumen, en
+``bl.ui.des_panels``): no retira nada ni deja una pared, así que no pide más confirmación que Crear.
 """
 
 from __future__ import annotations
@@ -5915,6 +5924,250 @@ class GEOBLENDER_OT_des_remove_stockpile(_CalculateAndCreate, DesignCommandAware
         return tr("Computing the removal of the stockpile… {percent} % · Esc: cancel", percent=percent)
 
 
+# --- Cuerpo apoyado… (spec 016, T25; HU-016-4; RF-016-20 a RF-016-22, RF-015-02, RF-015-03, RF-015-28, RF-015-29; RNF-016-02 y 05;
+#     plan 016 §5.3.3 y §5.5; comprobación manual M2) -------------------------------------------------------------------
+
+CREATE_BODY = provenance.BODY_COMMAND
+BODY_SENSE_ITEMS = [
+    ("ON_BASE", "On a base", "The known surface is its support: the roof is the support plus the thickness"),
+    ("UNDER_ROOF", "Under a roof", "The known surface is its roof: the base is the roof minus the thickness")]
+BODY_FROM_ITEMS = [
+    ("FIELD", "A field", "The thickness is a field of the points or of the polygons of the layer"),
+    ("Z", "The Z of the vertices", "The thickness is the Z of each vertex of the 3D lines of the layer")]
+
+
+def _body_data_layer_changed(self: Any, _context: Any) -> None:
+    """El ``update`` de la capa de datos de «Cuerpo apoyado…»: de cómo se lee el espesor propone lo que la capa puede dar (la Z de sus
+    vértices si es de líneas 3D, un campo si es de puntos o de polígonos; la M no llega al proyecto)."""
+    self.data_from = "Z" if des_panels.body_data_kind(self.data_layer) == "line3d" else "FIELD"
+
+
+class GEOBLENDER_OT_des_create_body(_CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal,
+                                   bpy.types.Operator):
+    """Create a body from its footprint and its thickness data, resting on a known surface or under a known roof: the thickness is interpolated and the other surface is derived from it"""
+
+    bl_idname = CREATE_BODY
+    bl_label = "Supported body…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.BODY
+    COMMAND = CREATE_BODY
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the body, unique in the active version", options=_FIELD)
+    layer: EnumProperty(  # type: ignore[valid-type]
+        name="Layer of the footprints",
+        description="Layer of polygons of the project the footprint of the body is taken from",
+        items=des_panels.body_footprint_items, options=_FIELD)
+    feature: StringProperty(  # type: ignore[valid-type]
+        name="Footprint of the layer",
+        description="Name or number (fid) of the polygon of the layer that is the footprint of the body", options=_FIELD)
+    data_layer: EnumProperty(  # type: ignore[valid-type]
+        name="Layer of the thickness data",
+        description="Layer of the project with the thickness of the body: points or polygons with a field, or 3D lines with the "
+                    "thickness in the Z of their vertices", items=des_panels.body_data_items, options=_FIELD,
+        update=_body_data_layer_changed)
+    data_from: EnumProperty(  # type: ignore[valid-type]
+        name="Thickness from",
+        description="Where the thickness is read from: a field of the points or of the polygons (constant in each polygon), or the "
+                    "Z of the vertices of the 3D lines; it is not assumed", items=BODY_FROM_ITEMS, default="FIELD", options=_FIELD)
+    data_field: StringProperty(  # type: ignore[valid-type]
+        name="Thickness field",
+        description="Numeric field of the layer with the thickness in metres; it cannot be negative", options=_FIELD)
+    sense: EnumProperty(  # type: ignore[valid-type]
+        name="Sense",
+        description="On a base: the known surface is its support and the surface of the chain rises to the roof; under a roof: the "
+                    "known surface is its roof, as the existing waste, and the surface does not change", items=BODY_SENSE_ITEMS,
+        default="UNDER_ROOF", options=_FIELD)
+    surface: EnumProperty(  # type: ignore[valid-type]
+        name="Known surface",
+        description="The surface the body rests on (on a base) or hangs under (under a roof): the ground, a design surface or the "
+                    "surface of an entity that changes the surface", items=des_panels.platform_start_items, options=_FIELD)
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Surface the body starts from (only on a base): the surface that rises to the roof of the body (by default, the "
+                    "last of the chain)", items=des_panels.platform_start_items, options=_FIELD)
+    max_distance: StringProperty(  # type: ignore[valid-type]
+        name="Maximum distance to the data (m)",
+        description="Farthest distance from a thickness datum, in metres: what is farther is warned and triangles longer than twice "
+                    "this are not interpolated; it has no default value: you choose it", options=_FIELD)
+    zero_at_edge: BoolProperty(  # type: ignore[valid-type]
+        name="Zero at the edge",
+        description="The thickness is zero at the edge of the footprint", default=False, options=_FIELD)
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con el avance y Esc: los pone invoke; desde
+    # un guion, sin ellos, de una vez. Un cuerpo no retira nada ni deja una pared: no pide más confirmación.
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué. Con ``confirm``, el diálogo de crear
+        el cálculo abierto. Si no, las listas leídas de nuevo (las capas de huellas y de datos, las superficies y las entidades de la
+        cadena), la propuesta (un nombre, la primera capa de huellas y de datos, cómo se lee el espesor y las superficies) y el diálogo del
+        cálculo: Intro calcula. Sin ninguna capa de polígonos, lo dice."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.refresh_choices(project)
+            des_panels.refresh_platform_choices(project)
+            des_panels.refresh_body_choices(project)
+            if not des_panels.has_body_footprints():
+                self.report({"ERROR"}, tr("There is no layer of polygons in the project: import the footprints of the bodies first"))
+                return {"CANCELLED"}
+            self._propose(context, project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.COMMAND)].label), confirm_text=tr("Calculate"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """Lo que propone el diálogo si quien lo lanza no lo dio (plan 016 §5.3.3): un nombre que no repite el de ninguna entidad de la
+        versión («Cuerpo apoyado», «Cuerpo apoyado 2»…), **la primera capa de huellas y la primera de datos** con cómo se lee su espesor
+        (la Z de unas líneas 3D, un campo de puntos o de polígonos) y las superficies: la conocida y la de partida, **la última de la
+        cadena** (``des_panels.platform_default_start``) o, sin entidades calculadas, el terreno (``surface_proposal.ground_item``, con lo
+        seleccionado en la vista). La distancia máxima no se propone: no tiene valor por defecto (D-9)."""
+        given = self.properties.is_property_set
+        if not given("layer"):
+            self.layer = des_panels.body_footprint_items(None, None)[0][0]
+        data = [item[0] for item in des_panels.body_data_items(None, None) if item[0] != des_panels.NO_LAYER]
+        if data and not given("data_layer"):
+            self.data_layer = data[0]
+            if not given("data_from"):
+                _body_data_layer_changed(self, None)
+        if not self.name.strip():
+            names, number = des_panels.platform_names(), 1
+            proposal = base = tr("Supported body")
+            while proposal in names:
+                number += 1
+                proposal = f"{base} {number}"
+            self.name = proposal
+        items = [identifier for identifier, _name, _about in des_panels.platform_start_items(None, None)
+                 if identifier != des_panels.NO_ZONE and not identifier.startswith("entity:")]
+        ground = surface_proposal.ground_item(context, project, items, des_panels.surface_choice) if items else None
+        if not given("surface") and ground is not None:
+            self.surface = ground
+        if not given("start"):
+            start = des_panels.platform_default_start() or ground
+            if start is not None:
+                self.start = start
+
+    def draw(self, context: Any) -> None:
+        """Arriba el nombre; la huella (su capa y su geometría); los datos de espesor (su capa, cómo se lee y su campo); la superficie
+        conocida (su sentido, ella y, «sobre una base», la de partida); la distancia máxima y «cero en el borde». En la confirmación de
+        crear, el resumen."""
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            return
+        layout.use_property_split = True
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        box = layout.box()
+        box.label(text=tr("Footprint of the body"), translate=False)
+        box.prop(self, "layer", text=tr("Layer"), translate=False)
+        box.prop(self, "feature", text=tr("Footprint of the layer"), translate=False)
+        box = layout.box()
+        box.label(text=tr("Thickness data"), translate=False)
+        box.prop(self, "data_layer", text=tr("Layer"), translate=False)
+        box.prop(self, "data_from", text=tr("Thickness from"), translate=False)
+        if self.data_from == "FIELD":
+            box.prop(self, "data_field", text=tr("Thickness field"), translate=False)
+        box = layout.box()
+        box.label(text=tr("Known surface"), translate=False)
+        box.prop(self, "sense", text=tr("Sense"), translate=False)
+        box.prop(self, "surface", text=tr("Known surface"), translate=False)
+        if self.sense == "ON_BASE":
+            box.prop(self, "start", text=tr("Start surface"), translate=False)
+        layout.prop(self, "max_distance", text=tr("Maximum distance to the data (m)"), translate=False)
+        layout.prop(self, "zero_at_edge", text=tr("Zero at the edge"), translate=False)
+
+    # --- Lo pedido ----------------------------------------------------------------------------
+
+    def _request(self) -> design_model.BodyRequest:
+        """Lo pedido en el diálogo como la ``design.model.BodyRequest`` (RF-016-20), comprobado sin escribir ni calcular nada. La
+        distancia máxima no tiene valor por defecto: si falta, la rechaza el dominio (D-9); un espesor negativo o que falta, también.
+        :class:`ComputeFormError` si falta algo del diálogo."""
+        name = self.name.strip()
+        if not name:
+            raise ComputeFormError(tr("Write the name of the body"))
+        if self.layer in ("", des_panels.NO_LAYER):
+            raise ComputeFormError(tr("Choose the layer of the footprints of the body"))
+        feature = self.feature.strip()
+        if not feature:
+            raise ComputeFormError(tr("Write the name or the number of the footprint in its layer"))
+        if self.data_layer in ("", des_panels.NO_LAYER):
+            raise ComputeFormError(tr("Choose the layer of the thickness data"))
+        from_field = self.data_from == "FIELD"
+        field = self.data_field.strip() if from_field else "Z"
+        if not field:
+            raise ComputeFormError(tr("Write the field of the layer with the thickness"))
+        if self.surface in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the known surface of the body"))
+        on_base = self.sense == "ON_BASE"
+        if on_base and self.start in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the start surface of the body"))
+        return design_model.BodyRequest(
+            name, self.layer, feature, self.data_layer, field, self.data_from.lower(), self.surface, self.sense.lower(),
+            start=self.start if on_base else None,
+            max_distance_m=typed_number(self.max_distance, tr("Maximum distance to the data (m)")), zero_at_edge=self.zero_at_edge)
+
+    # --- Calcular y crear ---------------------------------------------------------------------
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_CalculateAndCreate._create`). Si no, comprueba lo pedido (sin escribir nada
+        si falta algo), pasa por la puerta de la 008 y calcula el cuerpo por pasos con ``design.steps.body_run`` —compila las máscaras
+        antes si no están al día—, sin registrar nada (RF-015-03): desde la interfaz, en el modal con el avance y Esc (RF-015-29,
+        RNF-016-05); desde un guion, de una vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar. Los rechazos (los
+        datos de espesor, la distancia máxima sin valor, una huella sin datos o con todo lejos, la partida y los nombres) y todas las
+        cuentas son de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        try:
+            request = self._request()
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report, dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        steps = design_steps.body_run(project, request, version=version, budget_s=self.STEP_BUDGET_S)
+        return self._run_steps(context, project, request.name, steps)
+
+    def _created_text(self, opened: Calculation) -> str:
+        return tr("Supported body «{name}» created in {version}", name=opened.name, version=opened.version)
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Calculando el cuerpo apoyado… 40 % · Esc: cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        return tr("Computing the supported body… {percent} % · Esc: cancel", percent=percent)
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
@@ -5937,7 +6190,8 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_entity_dependents,
                              GEOBLENDER_OT_des_entity_insert,
                              GEOBLENDER_OT_des_entity_calculate,
-                             GEOBLENDER_OT_des_remove_stockpile)
+                             GEOBLENDER_OT_des_remove_stockpile,
+                             GEOBLENDER_OT_des_create_body)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
@@ -5948,4 +6202,5 @@ afectado», la T30 «Solo relleno…» y la T33 «Ajustar el diseño a un límit
 entidades de…» y la T29 la vista previa de una entidad, todas de la entrada «015», que entrega la T31 con el menú «Entidad ▾»
 (las dos internas nuevas de la T31, «Lo que se apoya en ella» e «Insertar antes o después de…», también; y la T41, «Calcular…»;
 y la T43, la interna que lanza «Cambiar parámetro…», sin menú); de la 016, la T20 pone «Retirar un acopio…», interna, de la entrada
-«016», que la entrega (la T35 la pondrá detrás de «Acopio (detectar, retirar)…»))."""
+«016», que la entrega (la T35 la pondrá detrás de «Acopio (detectar, retirar)…»); la T25 pone «Cuerpo apoyado…», interna, de la misma
+entrada (la T35 la pondrá en el menú))."""
