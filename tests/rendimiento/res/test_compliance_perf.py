@@ -25,6 +25,14 @@ abultamientos de ±3 m (más de 3.600 grupos pequeños por final).
   (holgura sobre el 1 GB de la spec).
 - Esc a mitad no deja nada en el proyecto (RF-012-28).
 
+**Con la base de los acopios** (spec 016, T31; RF-012-30, RNF-012-02, RNF-012-03; DIFF-012 de la 016: una
+banda más por final): las mismas medidas con la base de 9 acopios de la V10 (38.025 celdas de huella, una
+por cada ≈ 189 filas: ninguna banda de 256 filas se queda sin base, el peor caso; ``constraints_scale.
+write_base``) dada a ``verify_project_steps(…, bases=…)``, con el mismo presupuesto (≤ 5 s la mediana de 5 en
+cada forma y ≤ 700 MiB): ``test_verify_with_the_stockpile_base_*`` y ``test_memory_with_the_stockpile_base``.
+Las medidas sin base de siempre (la llamada de la orden las hace con la selección automática, que sin
+detecciones no usa ninguna) siguen siendo las de antes: la diferencia es lo que cuesta la base.
+
 **En la red** (:class:`NetworkTest`; recurso «red»: la carpeta de pruebas de
 ``GEOBLENDER_NET_TEST_DIR``, nunca la de los expedientes ni la del espejo; sin ella, se omite): el
 mismo proyecto creado en una subcarpeta temporal propia que se borra al terminar, con los datos de
@@ -172,6 +180,8 @@ class VerifyTest(unittest.TestCase):
 
     data: ClassVar[scale.ScaleProject]
     forms: ClassVar[dict[str, scale.ScaleSurfaces]]
+    base: ClassVar[Any] = None
+    stockpiles: ClassVar[bool] = True
     remote: ClassVar[Path | None] = None
     budget_s: ClassVar[float] = TOTAL_BUDGET_S
     step_limit_s: ClassVar[float | None] = STEP_BUDGET_S
@@ -186,11 +196,14 @@ class VerifyTest(unittest.TestCase):
 
     @classmethod
     def prepare(cls) -> None:
-        """Las máscaras de V01 al día y las superficies de ``shapes`` escritas en el proyecto."""
+        """Las máscaras de V01 al día, las superficies de ``shapes`` escritas en el proyecto y, con
+        ``stockpiles``, la base de los acopios (T31)."""
         cls.enterClassContext(scale.verify_registered())
         for _ in access.ensure_masks_steps(cls.data.project, cls.data.v1.uid, budget_s=0.05):
             pass  # las máscaras de V01 al día (no cuentan)
         cls.forms = {shape: scale.write_surfaces(cls.data, shape) for shape in cls.shapes}
+        if cls.stockpiles:
+            cls.base = scale.write_base(cls.data)
 
     def waiting(self) -> AbstractContextManager[netwaits.NetworkWaits | None]:
         """Las esperas de la red de lo que se mide (``None`` en disco local)."""
@@ -205,40 +218,47 @@ class VerifyTest(unittest.TestCase):
             folders.append(Path(tempfile.gettempdir()))
         return "; ".join(vperf.free_space(folder) for folder in folders)
 
-    def verify_once(self, shape: str, *, name: str = "Diseño de escala") -> Run:
-        """``verify_project_steps`` y sus pasos de V01 con las finales de ``shape``."""
+    def verify_once(self, shape: str, *, name: str = "Diseño de escala",
+                    with_base: bool = False) -> Run:
+        """``verify_project_steps`` y sus pasos de V01 con las finales de ``shape``; con
+        ``with_base``, con la base de los acopios (:meth:`prepare`: una banda más por final);
+        si no, con la selección automática de siempre (sin detecciones, ninguna base)."""
         data, surfaces = self.data, self.forms[shape]
         data.clock.advance(minutes=1)
         with self.waiting() as waits:
             before = time.perf_counter()
             steps = cstore_v.verify_project_steps(
                 data.project, version=data.v1.uid, name=name, start=surfaces.start,
-                finals=surfaces.finals, budget_s=STEP_BUDGET_S)
+                finals=surfaces.finals, budget_s=STEP_BUDGET_S,
+                bases=self.base if with_base else None)
             begin_s = time.perf_counter() - before
             begin_waits = _waited(waits)
             calls, result = _calls(steps, waits)
         self.assertIsInstance(result, cstore_v.StoredCheck)
         return Run(begin_s, calls, result, begin_waits, waits)
 
-    def runs(self, shape: str) -> list[Run]:
+    def runs(self, shape: str, *, with_base: bool = False) -> list[Run]:
         """La primera verificación (que no cuenta: la tabla aún no existe) y :data:`RUNS`
         más (que sustituyen a la anterior, como al repetir)."""
-        self.verify_once(shape)
+        self.verify_once(shape, with_base=with_base)
         found = []
         for _ in range(RUNS):
             gc.collect()
-            found.append(self.verify_once(shape))
+            found.append(self.verify_once(shape, with_base=with_base))
         return found
 
-    def check_shape(self, shape: str) -> None:
-        found = self.runs(shape)
+    def check_shape(self, shape: str, *, with_base: bool = False) -> None:
+        found = self.runs(shape, with_base=with_base)
         totals = [run.total_s for run in found]
         longest = sorted(found, key=lambda run: run.longest.own_s)[len(found) // 2].longest
         worst = max((run.longest for run in found), key=lambda call: call.own_s)
         stored = found[-1].result.result
+        stockpiles = (f", con la base de {scale.STOCKPILES} acopios "
+                      f"({count(scale.STOCKPILES * scale.STOCKPILE_SIDE**2)} celdas de huella)"
+                      if with_base else "")
         gis_perf.report(
             f"RNF-012-02: verificar {len(self.forms[shape].finals)} finales frente a la partida "
-            f"({shape}) en {count(len(self.data.constraints.rows))} recintos y la rejilla de "
+            f"({shape}{stockpiles}) en {count(len(self.data.constraints.rows))} recintos y la rejilla de "
             f"{count(scale.COLS * scale.ROWS)} celdas de 1 m {self.where} (los dos recintos de "
             f"fuera, las cifras y los grupos: {count(sum(len(f.groups) for f in stored.finals))};"
             f" de la llamada de la orden a las cifras registradas, con los pasos seguidos; "
@@ -282,6 +302,17 @@ class VerifyTest(unittest.TestCase):
         transacción final."""
         self.check_shape(scale.LOCAL)
 
+    def test_verify_with_the_stockpile_base_in_the_whole_window(self) -> None:
+        """RNF-012-02 con la base de los acopios (T31; RF-012-30): las mismas tres finales que
+        cambian en toda la ventana, con la base de 9 acopios (una banda más por final; la
+        banda de la base en cada banda de 256 filas): ≤ 5 s (mediana de 5), como sin ella."""
+        self.check_shape(scale.WINDOW, with_base=True)
+
+    def test_verify_with_the_stockpile_base_local_changes(self) -> None:
+        """RNF-012-02 con la base de los acopios (T31; RF-012-30): las tres finales con cambios
+        localizados, con la base de 9 acopios: ≤ 5 s (mediana de 5)."""
+        self.check_shape(scale.LOCAL, with_base=True)
+
     def test_memory(self) -> None:
         """RNF-012-03: el pico de memoria adicional (``tracemalloc``, con la de numpy) de
         verificar las tres finales ≤ 700 MiB en las dos formas (la de toda la ventana, la
@@ -294,6 +325,25 @@ class VerifyTest(unittest.TestCase):
                 f"verificar {len(self.forms[shape].finals)} finales ({shape}) en "
                 f"{count(len(self.data.constraints.rows))} recintos y "
                 f"{count(scale.COLS * scale.ROWS)} celdas ({MACHINE}): "
+                f"{number(peak / 2**20, 0)} MiB; presupuesto "
+                f"{number(MEMORY_BUDGET_BYTES / 2**20, 0)} MiB (el de la spec, 1.024 MiB)")
+            with self.subTest(shape=shape):
+                self.assertLessEqual(peak, MEMORY_BUDGET_BYTES)
+
+    def test_memory_with_the_stockpile_base(self) -> None:
+        """RNF-012-03 con la base de los acopios (T31): el pico de memoria adicional
+        (``tracemalloc``, con la de numpy) de verificar las tres finales con la base de 9
+        acopios ≤ 700 MiB en las dos formas (la base lleva su banda por final y, donde hay
+        corte de terreno, la rejilla de los grupos de terreno)."""
+        for shape in (scale.WINDOW, scale.LOCAL):
+            self.verify_once(shape, with_base=True)  # sin caché
+            peak = gis_perf.peak_bytes(
+                lambda shape=shape: self.verify_once(shape, with_base=True))
+            gis_perf.report(
+                f"RNF-012-03: pico de memoria adicional (tracemalloc, con la de numpy) de "
+                f"verificar {len(self.forms[shape].finals)} finales ({shape}) con la base de "
+                f"{scale.STOCKPILES} acopios en {count(len(self.data.constraints.rows))} "
+                f"recintos y {count(scale.COLS * scale.ROWS)} celdas ({MACHINE}): "
                 f"{number(peak / 2**20, 0)} MiB; presupuesto "
                 f"{number(MEMORY_BUDGET_BYTES / 2**20, 0)} MiB (el de la spec, 1.024 MiB)")
             with self.subTest(shape=shape):
@@ -363,6 +413,10 @@ class NetworkTest(VerifyTest):
     shapes = (scale.WINDOW,)
     test_verify_local_changes = None  # type: ignore[assignment]
     test_memory = None  # type: ignore[assignment]
+    test_verify_with_the_stockpile_base_in_the_whole_window = None  # type: ignore[assignment]
+    test_verify_with_the_stockpile_base_local_changes = None  # type: ignore[assignment]
+    test_memory_with_the_stockpile_base = None  # type: ignore[assignment]
+    stockpiles = False
 
     @classmethod
     def setUpClass(cls) -> None:

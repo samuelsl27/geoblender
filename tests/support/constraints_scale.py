@@ -18,8 +18,10 @@ toda la ventana, y :data:`LOCAL`, que cambian en unos abultamientos) y :func:`ve
 registra lo que hará ``bl`` para verificar. Para buscar intocables (T37): :func:`write_search`
 escribe en él las :data:`SEARCH_LAYERS` capas «entidades» de :data:`SEARCH_ENTITIES` entidades y
 declara un sector de 400 vértices que ocupa un cuarto de la ventana, dentro de
-:func:`search_registered`. Con la carpeta de pruebas de la red (T30, ``remote``), el mismo
-proyecto se crea dentro de ella. Python de Blender (su numpy 2.3.4) y biblioteca estándar.
+:func:`search_registered`. Para verificar con una base de acopios (spec 016, T31): :func:`write_base`
+escribe en él la base de 9 acopios y da la selección para ``verify_project_steps(…, bases=…)``. Con la
+carpeta de pruebas de la red (T30, ``remote``), el mismo proyecto se crea dentro de ella. Python de
+Blender (su numpy 2.3.4) y biblioteca estándar.
 """
 
 from __future__ import annotations
@@ -222,6 +224,47 @@ def write_surfaces(data: ScaleProject, shape: str) -> ScaleSurfaces:
         shape, ref(dataset=f"gis_dtm_{names[0]}", label="Partida"),
         tuple(ref(dataset=f"gis_dtm_{name}", label=f"Final {k}")
               for k, name in enumerate(names[1:], start=1)))
+
+
+# --- La base de los acopios (spec 016, T31; RNF-012-02 y RNF-012-03 con una banda más por final) -----
+
+STOCKPILES = 9
+"""Los acopios de la base: los nueve de la V10 de Silvestre (plan 016 §7.3)."""
+STOCKPILE_SIDE = 65
+"""El lado de la huella de cada acopio (celdas): 9 · 65² = 38.025 celdas, los ≈ 37.800 m² de huella de los nueve acopios
+de la V10 (``plan.md`` de la 016, §7.3). Una por cada ≈ 189 filas, así que **toda banda de 256 filas lleva alguna**: el
+peor caso para el coste de la base en ``Checker.add`` (una banda sin celdas de base cuesta lo de antes)."""
+STOCKPILE_BELOW_M = 2.0
+"""Lo que baja la base respecto del plano de partida (m): las ondas de 3 m de ``window`` la cruzan y hay corte de terreno
+y corte de acopios en las dos formas."""
+STOCKPILE_LABEL = "gis_dtm_base_acopios"
+"""El dato del proyecto con la base (``write_base``)."""
+
+
+def stockpile_base() -> np.ndarray:
+    """La base de los nueve acopios en la rejilla de escala: el plano de partida
+    :data:`STOCKPILE_BELOW_M` m más bajo en las huellas de :data:`STOCKPILES` cuadrados de
+    :data:`STOCKPILE_SIDE` celdas (uno por cada ≈ 189 filas, en una columna al azar) y NaN fuera (sin dato)."""
+    _x, _y, plane = cdata.plane()
+    rng = np.random.default_rng(SEED + 200)
+    base = np.full((ROWS, COLS), np.nan)
+    for k in range(STOCKPILES):
+        top = int((k + 0.5) * ROWS / STOCKPILES) - STOCKPILE_SIDE // 2
+        left = int(rng.integers(100, COLS - 100 - STOCKPILE_SIDE))
+        block = (slice(top, top + STOCKPILE_SIDE), slice(left, left + STOCKPILE_SIDE))
+        base[block] = plane[block] - STOCKPILE_BELOW_M
+    return base
+
+
+def write_base(data: ScaleProject) -> Any:
+    """Escribe en ``data.project`` la base de los acopios (``gis_dtm_base_acopios``) y devuelve la selección que la usa
+    (``BaseSelection``: una detección ``STK-ESC`` sintética, de ámbito de proyecto), para
+    ``verify_project_steps(…, bases=…)``."""
+    data.clock.advance(minutes=1)
+    write_grids(data.project, [("base_acopios", gis.Raster(grid(), stockpile_base(), fx.CRS, fx.VERTICAL))],
+                message="La base de los acopios de escala")
+    ref = surfaces_mod.SurfaceRef(dataset=STOCKPILE_LABEL, label="Base de acopios de escala")
+    return cstore_v.BaseSelection((cstore_v.StockpileBase("STK-ESC", "Acopios de escala", "project", None, ref),))
 
 
 def _no_recompute(request: Any) -> Any:
