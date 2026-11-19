@@ -36,6 +36,12 @@ después), para rejillas pequeñas (≤ 90 × 90 celdas):
   superficie ``mín(z, máx(base, envolvente))`` y las cuatro cifras (retirado, apoyado, transición y no retirado) como
   longitud de la columna ``[z', z]`` a cada lado de la superficie de detección, un bucle de Python por celda con
   ``fsum``, para comparar con ``design.removal`` (RF-016-11, RF-016-13).
+- :func:`hand_wall` (spec 016, T19; plan 016 A8): la pared que deja una retirada **a mano**: las parejas de celdas
+  vecinas (4 vecinos) con una movida y la otra no, su salto creado ``|S_a − S_b| − |z_a − z_b|``, las que pasan del
+  salto admitido y de la inclinación, sus tramos (una búsqueda en anchura sobre las celdas de esas parejas) y, de cada
+  uno, la altura (mayor cota menos menor cota de sus parejas), la inclinación de su peor pareja, su mayor salto creado y
+  el punto medio de esa pareja, un bucle de Python por pareja sin numpy, para comparar con ``design.removal``
+  (RF-016-15).
 
 Convenciones: ``seed`` es la rejilla de semillas (fila 0 al norte): una celda es semilla si su cota
 es finita; ``+inf``, ``−inf`` y NaN no lo son. ``direction="up"`` es ``E_up = mín_q [s + t·d]`` y
@@ -63,6 +69,8 @@ __all__ = [
     "HandLayers",
     "HandPlane",
     "HandRemoval",
+    "HandWall",
+    "HandWallStretch",
     "brute_force_euclidean",
     "dijkstra",
     "euclidean_displacements",
@@ -76,6 +84,7 @@ __all__ = [
     "hand_share",
     "hand_stairs",
     "hand_volume",
+    "hand_wall",
     "hand_zones",
     "relaxation_violation",
     "seed_violation",
@@ -685,3 +694,88 @@ def hand_removal(z: Sequence[Sequence[float]], base: Sequence[Sequence[float]],
                        math.fsum(kept) * area, math.fsum(above) * area,
                        sum(1 for value in transition if value > 0.0), frozenset(admitted), frozenset(held),
                        frozenset(ring))
+
+
+@dataclass(frozen=True, slots=True)
+class HandWallStretch:
+    """Un tramo de la pared de :func:`hand_wall`: sus ``pairs``, su ``height`` (m: la mayor cota de sus parejas menos la
+    menor), el ángulo de su peor pareja (``angle``, °), su mayor salto creado (``step``, m) y el punto medio de esa pareja
+    (``x``, ``y``: absolutos). El primer tramo es el de la primera celda de norte a sur y de oeste a este."""
+
+    pairs: int
+    height: float
+    angle: float
+    step: float
+    x: float
+    y: float
+
+
+@dataclass(frozen=True, slots=True)
+class HandWall:
+    """Lo que da :func:`hand_wall`: las parejas del borde (``pairs``), las que pasan del salto admitido (``over``) y los
+    ``stretches`` (los tramos de las que además pasan de la inclinación)."""
+
+    pairs: int
+    over: int
+    stretches: tuple[HandWallStretch, ...]
+
+
+def hand_wall(z: Sequence[Sequence[float]], surface: Sequence[Sequence[float]], admitted: Sequence[Sequence[bool]], *,
+              dx: float, dy: float, west: float, north: float, thickness: float, threshold: float,
+              limit_deg: float) -> HandWall:
+    """A8 a mano (RF-016-15): la pared que deja la ``surface`` nueva frente a la de partida ``z`` (NaN, sin dato; celdas
+    de ``dx`` × ``dy`` m con la esquina noroeste en ``west``, ``north``). Una celda está **movida** si está en
+    ``admitted``, tiene dato en las dos y ``|surface − z|`` pasa de ``thickness``; una **pareja** es de dos celdas
+    vecinas (4 vecinos) con dato en las dos, una movida y la otra no; su **salto creado** es ``|S_a − S_b| − |z_a −
+    z_b|`` y su **inclinación**, ``atan(|S_a − S_b| / distancia)`` en grados. Cuentan las parejas con un salto creado
+    **mayor** que ``threshold`` y una inclinación **mayor** que ``limit_deg``; sus celdas forman los **tramos** (4
+    vecinos entre celdas) y de cada uno se da la altura (mayor cota de las dos celdas de sus parejas menos la menor), la
+    inclinación de su peor pareja (a igual inclinación, la primera de norte a sur y de oeste a este), su mayor salto
+    creado y el punto medio de esa pareja."""
+    nrows, ncols = len(z), len(z[0])
+
+    def valid(r: int, c: int) -> bool:
+        return math.isfinite(z[r][c]) and math.isfinite(surface[r][c])
+
+    def moved(r: int, c: int) -> bool:
+        return bool(admitted[r][c]) and valid(r, c) and abs(surface[r][c] - z[r][c]) > thickness
+
+    edge = over = 0
+    found: list[tuple[int, int, tuple[int, int], tuple[int, int], float, float]] = []
+    for r in range(nrows):
+        for c in range(ncols):
+            for d_row, d_col, distance in ((0, 1, dx), (1, 0, dy)):
+                r2, c2 = r + d_row, c + d_col
+                if r2 >= nrows or c2 >= ncols or not (valid(r, c) and valid(r2, c2)) or moved(r, c) == moved(r2, c2):
+                    continue
+                edge += 1
+                drop = abs(surface[r][c] - surface[r2][c2])
+                created = drop - abs(z[r][c] - z[r2][c2])
+                if created <= threshold:
+                    continue
+                over += 1
+                angle = math.degrees(math.atan(drop / distance))
+                if angle > limit_deg:
+                    found.append((2 * r + d_row, 2 * c + d_col, (r, c), (r2, c2), angle, created))
+    cells = {cell for item in found for cell in item[2:4]}
+    stretches: list[HandWallStretch] = []
+    seen: set[tuple[int, int]] = set()
+    for first in sorted(cells):
+        if first in seen:
+            continue
+        members = {first}
+        queue = [first]
+        while queue:
+            r, c = queue.pop()
+            for near in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                if near in cells and near not in members:
+                    members.add(near)
+                    queue.append(near)
+        seen |= members
+        mine = sorted((item for item in found if item[2] in members), key=lambda item: (item[0], item[1]))
+        worst = max(mine, key=lambda item: (item[4], -item[0], -item[1]))
+        levels = [surface[r][c] for item in mine for r, c in item[2:4]]
+        stretches.append(HandWallStretch(
+            len(mine), max(levels) - min(levels), worst[4], max(item[5] for item in mine),
+            west + (worst[1] + 1) * dx / 2.0, north - (worst[0] + 1) * dy / 2.0))
+    return HandWall(edge, over, tuple(stretches))

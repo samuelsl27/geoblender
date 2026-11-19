@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""La retirada de un acopio: la transición y el dominio (spec 016, T17; HU-016-2; RF-016-11, RF-016-13; RNF-016-02,
-RNF-016-03; plan 016 §5.4 A0 y A6; D-2, D-5; CA-10). Dominio puro: sin proyecto y sin ``bpy``.
+"""La retirada de un acopio: la transición, el dominio, lo que se apoyaba y la pared (spec 016, T17 a T19; HU-016-2; RF-016-11,
+RF-016-13 a RF-016-15; RNF-016-02, RNF-016-03; plan 016 §5.4 A0, A6, A7 y A8; D-2, D-5, D-6; CA-9, CA-10). Dominio puro: sin proyecto y
+sin ``bpy``.
 
 Lo que entrega:
 
@@ -49,9 +50,32 @@ operación sube **más** del espesor mínimo de la 012, ``T`` la superficie con 
 :func:`check_resting_confirmed`, la negativa a retirar sin la confirmación expresa (``des.removal_resting_unconfirmed``). Qué queda en
 «apoyo retirado» al crear la retirada lo decide el grafo (P-9: ``design.entities``), no este módulo.
 
-**Lo que no hace** (T19 a T21): medir la pared que queda donde el dominio no admite la retirada (A8; ``wall_max_m`` y la confirmación),
-preparar, crear y reproducir la operación, ni «como plataforma» (A9). :attr:`RemovalOutcome.held` son las celdas de la huella con dato
-que el dominio no admite, que es donde la T19 busca la pared.
+**La pared** (T19; RF-016-15; A8; D-6; CA-9; errores 41 y 47): :func:`measure_wall` (y :func:`wall_steps`, por pasos) mide, sobre el
+:class:`RemovalOutcome` de A6, la pared que queda en el borde de lo retirado y la deja en :attr:`RemovalOutcome.wall` (:class:`Wall`) y
+en ``wall_max_m`` (la altura de la mayor, 0 m si ninguna). Una **pareja** es de dos celdas vecinas (4 vecinos) con dato, una movida por la
+retirada (en lo que se retira, con ``|z' − z|`` mayor que el espesor mínimo de la 012) y la otra no; su **salto creado** es el de la 014
+(:mod:`~.edges`, A11: ``|S_a − S_b| − |z_a − z_b|``, de modo que lo que el terreno ya tenía no cuenta) y su **inclinación**,
+``atan(|S_a − S_b| / distancia)``. Cuentan las parejas con un salto creado mayor que el **salto admitido** de la 014
+(``des.edge.max_created_step_m``) y una inclinación mayor que el **ángulo de transición más la tolerancia de cara** de la 013
+(``des.tolerance.face_deg``); sus celdas forman los **tramos** (4-conexos, numerados de norte a sur y de oeste a este). De cada tramo se da la
+**altura recorriendo la cara** (la mayor cota de las celdas de sus parejas menos la menor, no el relieve local de una pareja: error 41), la
+inclinación de su **peor pareja**, su mayor salto creado y el lugar de esa pareja (:class:`WallStretch`). El aviso (``des.removal_wall``,
+:func:`wall_notices`) es del tramo más alto y la retirada **no se crea sin la confirmación expresa** de la persona
+(:func:`check_wall_confirmed`: ``des.removal_wall_unconfirmed``); con una pared de **más de** :data:`WALL_REASON_MIN_ANGLE_DEG` y de
+:data:`WALL_REASON_MIN_HEIGHT_M` **o más**, tampoco sin un **motivo** que queda registrado (``des.removal_wall_reason``; ``wall_reason`` y su
+evento los escribe la orden, T20).
+
+**Los dos umbrales de CA-9 no son parámetros** (decisión de la sesión principal, 18/11/2026, revisable; D-6 y CA-9 de la spec 016, que no los
+da como editables): son las constantes :data:`WALL_REASON_MIN_ANGLE_DEG` (45°) y :data:`WALL_REASON_MIN_HEIGHT_M` (3 m), con su procedencia
+junto a cada una; :class:`Wall` las lleva (``reason_min_angle_deg``, ``reason_min_height_m``) para que el informe de la retirada las copie, y
+ningún otro sitio las escribe.
+
+**La transición de A6 no crea paredes** (con la métrica exacta ninguna pareja creada pasa de ``tan · factor de malla``: una celda movida junto
+a una semilla queda a ``≥ z_s − tan · d``, y con el *chamfer*, a ``≥ z_s − tan · 0,98644 · h``): la pared se mide para que cada retirada lo
+demuestre (CE-016-03) y para lo que sí la crea (una superficie sin transición, un factor de malla fuera de rango, una métrica nueva).
+
+**Lo que no hace** (T20, T21): preparar, crear y reproducir la operación (la confirmación, su decisor y su fecha, el motivo y su evento), ni
+«como plataforma» (A9). :attr:`RemovalOutcome.held` son las celdas de la huella con dato que el dominio no admite.
 
 **Leer solo la ventana** (A0; plan 016 §5.4): como ``PlatformJob``, el trabajo puede llevar la superficie y el dominio de
 una ventana de la rejilla (``region``): la que da :func:`removal_window`. Las semillas están a una celda de la huella, así
@@ -65,7 +89,7 @@ import json
 import math
 import sqlite3
 from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
@@ -82,15 +106,25 @@ from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.messages import GisError
 from . import entities
-from .edges import seed_envelope_steps
+from .edges import PAIR_CELLS_PER_UNIT, _band_units, _Found, _midpoint, seed_envelope_steps
 from .envelopes import CELLS_PER_UNIT, SlopeField
-from .grids import dilate_square
+from .grids import _label_units, dilate_square
 from .messages import DesignError, render
 from .model import Direction, Metric, RemovalRequest
-from .params import RemovalParam, check_entity_param, entity_params, entity_params_of
-from .platform import Window, _shaped_array, _whole, _window_of, window_part, work_window
+from .params import (
+    EDGE_MAX_STEP,
+    TOLERANCE_FACE,
+    VERIFY_MIN_THICKNESS,
+    RemovalParam,
+    check_entity_param,
+    check_quarry_param,
+    entity_params,
+    entity_params_of,
+)
+from .platform import Window, _project_number, _shaped_array, _whole, _window_of, window_part, work_window
 from .preview import SUMMARY_ITEMS, Notice
 from .provenance import SURFACE_ROLE, removal_figures
+from .report import _thickness
 from .seeds import pace_progress
 from .stockpiles import Stockpile, window_grid
 from .store import _min_thickness
@@ -100,22 +134,44 @@ if TYPE_CHECKING:
     from ..gis.store import StoreProject
 
 __all__ = [
+    "WALL_REASON_MIN_ANGLE_DEG",
+    "WALL_REASON_MIN_HEIGHT_M",
     "RemovalJob",
     "RemovalOutcome",
     "RemovedStockpile",
     "Resting",
     "RestingShare",
+    "Wall",
+    "WallStretch",
     "attribute_resting",
     "check_resting_confirmed",
+    "check_wall_confirmed",
+    "measure_wall",
     "remove_stockpile",
     "removal_steps",
     "removal_window",
     "resting_notices",
     "resting_on",
+    "wall_notices",
+    "wall_steps",
 ]
 
 _PHASE = "removal"
 _NOTHING = "des.removal_nothing"
+_WALL_PHASE = "removal_wall"
+
+WALL_REASON_MIN_ANGLE_DEG = 45.0
+"""La inclinación (°) **por encima de la cual** una pared de la retirada, además de confirmarse, pide un **motivo** que queda registrado.
+Procedencia: CA-9 de la spec 016 (la lección del error 47, donde el acopio de 12 m dejó una cara a más de 45°) y su D-6 (la pared tras
+retirar: «aviso con confirmación expresa» y, con una pared de más de 45° y 3 m o más, un motivo registrado); **no es un parámetro** de la
+retirada (la spec no lo da como editable): decisión de la sesión principal del 18/11/2026, tras la T03, revisable. Estricta: una pared a
+exactamente 45° no lo pide."""
+WALL_REASON_MIN_HEIGHT_M = 3.0
+"""La altura (m) **desde la cual** una pared de la retirada más empinada que :data:`WALL_REASON_MIN_ANGLE_DEG` pide un motivo: «3 m o más».
+Misma procedencia que :data:`WALL_REASON_MIN_ANGLE_DEG` (CA-9 y D-6 de la spec 016; decisión de la sesión principal del 18/11/2026)."""
+_ROUNDOFF_DEG = 1e-9
+"""Lo que se perdona al comparar una inclinación con el límite (°): el redondeo de ``atan(tan(θ))`` (≈ 10⁻¹⁴ °), para que la transición
+construida **exactamente** al ángulo, con la tolerancia a 0, no avise por una milmillonésima. No es una cifra minera."""
 
 
 # --- Lo leído ----------------------------------------------------------------------------------------------------
@@ -287,9 +343,11 @@ class RemovalOutcome:
     Las cifras (m³ salvo ``transition_m2``, m²): ``removed_m3`` (lo del acopio, entre su base y la superficie con que se
     detectó), ``resting_m3`` (lo que se le apoyó, por encima de ella), ``transition_m3`` (lo que la envolvente deja sobre la
     base), ``kept_m3`` (lo no retirado donde el dominio no lo admite) y ``transition_m2``; suman ``above_base_m3`` (lo que
-    la huella tenía sobre la base) a ≤ 10⁻⁹ relativo. ``wall_max_m`` es la mayor pared que deja (``None`` mientras no se
-    mida: T19). ``transition_deg``, ``mesh_factor`` y ``metric`` son los de la retirada, ``cell_area_m2`` el área de una
-    celda y ``notices`` los avisos (``des.removal_nothing`` con 0 m³ retirados)."""
+    la huella tenía sobre la base) a ≤ 10⁻⁹ relativo. ``wall_max_m`` es la altura de la mayor pared que deja (``None`` mientras no
+    se mida: :func:`measure_wall`, A8; 0 m si ninguna) y ``wall`` la pared medida (:class:`Wall`: sus tramos y lo que
+    pide confirmar; ``None`` mientras no se mida). ``transition_deg``, ``mesh_factor`` y ``metric`` son los de la retirada,
+    ``cell_area_m2`` el área de una celda y ``notices`` los avisos (``des.removal_nothing`` con 0 m³ retirados y, medida la
+    pared, ``des.removal_wall``)."""
 
     name: str
     code: str
@@ -313,12 +371,13 @@ class RemovalOutcome:
     cell_area_m2: float
     wall_max_m: float | None = None
     notices: tuple[Notice, ...] = ()
+    wall: Wall | None = None
 
     @property
     def figures(self) -> tuple[FigureSpec, ...]:
         """Las cifras CALCULADO de la operación (:func:`~.provenance.removal_figures`, con el ámbito de la entidad y en el
         orden de ``REMOVAL_FIGURES``): ``des.rmv_removed_m3``, ``_resting_m3``, ``_transition_m3``, ``_kept_m3``,
-        ``_transition_m2`` y, si se midió, ``_wall_max_m``."""
+        ``_transition_m2`` y, si se midió la pared (:func:`measure_wall`), ``_wall_max_m``."""
         return removal_figures(self.name, self.code, {
             "des.rmv_removed_m3": self.removed_m3, "des.rmv_resting_m3": self.resting_m3,
             "des.rmv_transition_m3": self.transition_m3, "des.rmv_kept_m3": self.kept_m3,
@@ -662,3 +721,263 @@ def resting_on(project: StoreProject, version: Version | str, stockpile: Removed
             result.append(Resting(node.label or node.op_type, node.op_type, share.volume_m3, share.cells, node.name, node.operation,
                                   node.entity))
     return tuple(result)
+
+
+# --- A8: la pared -------------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class WallStretch:
+    """Un **tramo** de la pared que deja la retirada (A8; RF-016-15): una componente 4-conexa de las celdas de las parejas que pasan del salto
+    admitido y de la inclinación (:func:`measure_wall`), con su número (``stretch``, desde 1, en el orden de su primera celda de norte a sur y
+    de oeste a este), sus ``pairs``, su altura **recorriendo la cara** (``height_m``: la mayor cota de las celdas de sus parejas menos la menor,
+    m), la inclinación de su peor pareja (``angle_deg``, °), su mayor salto creado (``step_m``, m: el de la 014, RF-014-20) y el lugar de esa
+    pareja (``x``, ``y``: el punto medio, absolutos en float64; a igual inclinación, la primera de norte a sur y de oeste a este)."""
+
+    stretch: int
+    pairs: int
+    height_m: float
+    angle_deg: float
+    step_m: float
+    x: float
+    y: float
+
+
+def _tallest(items: Iterable[WallStretch]) -> WallStretch | None:
+    """El tramo más alto de ``items`` (a igual altura, el más empinado y, a igual inclinación, el primero), o ``None`` si no hay ninguno."""
+    return max(items, key=lambda item: (item.height_m, item.angle_deg, -item.stretch), default=None)
+
+
+@dataclass(frozen=True, slots=True)
+class Wall:
+    """La pared que deja la retirada (A8; RF-016-15): los ``stretches`` (los tramos con una inclinación mayor que el límite; ninguno si la
+    retirada no deja pared), el ángulo de transición (``transition_deg``) y la tolerancia de cara de la 013 (``tolerance_deg``) que dan su
+    límite (:attr:`limit_deg`), el espesor mínimo de la 012 con que se contaron las celdas movidas (``thickness_m``), el salto admitido de la
+    014 (``jump_m``), las parejas del borde de lo retirado (``pairs``) y las que pasan del salto admitido (``over``: más que las de los
+    tramos, que además son más empinadas que el límite) y los dos umbrales de CA-9 que decidieron si pide un motivo
+    (``reason_min_angle_deg`` y ``reason_min_height_m``: los de :data:`WALL_REASON_MIN_ANGLE_DEG` y :data:`WALL_REASON_MIN_HEIGHT_M`, copiados
+    para el informe de la retirada)."""
+
+    stretches: tuple[WallStretch, ...]
+    transition_deg: float
+    tolerance_deg: float
+    thickness_m: float
+    jump_m: float
+    pairs: int
+    over: int
+    reason_min_angle_deg: float = WALL_REASON_MIN_ANGLE_DEG
+    reason_min_height_m: float = WALL_REASON_MIN_HEIGHT_M
+
+    @property
+    def limit_deg(self) -> float:
+        """La inclinación que una pared puede tener sin avisar (°): el ángulo de transición más la tolerancia de cara."""
+        return self.transition_deg + self.tolerance_deg
+
+    @property
+    def height_m(self) -> float:
+        """La altura de la mayor pared (m; 0 si no hay ninguna): ``des.rmv_wall_max_m``."""
+        return max((item.height_m for item in self.stretches), default=0.0)
+
+    @property
+    def worst(self) -> WallStretch | None:
+        """El tramo del aviso: el más alto (a igual altura, el más empinado); ``None`` sin pared."""
+        return _tallest(self.stretches)
+
+    @property
+    def reason_stretch(self) -> WallStretch | None:
+        """El tramo más alto que pide un motivo (CA-9: más empinado que :attr:`reason_min_angle_deg` **y** de :attr:`reason_min_height_m` **o
+        más**); ``None`` si ninguno."""
+        return _tallest(item for item in self.stretches
+                        if item.angle_deg > self.reason_min_angle_deg and item.height_m >= self.reason_min_height_m)
+
+    @property
+    def needs_confirmation(self) -> bool:
+        """Si hay una pared y la retirada no se crea sin la confirmación expresa de la persona (RF-016-15)."""
+        return bool(self.stretches)
+
+    @property
+    def needs_reason(self) -> bool:
+        """Si alguna pared pasa de los umbrales de CA-9 y la retirada no se crea sin un motivo que quede registrado."""
+        return self.reason_stretch is not None
+
+
+@dataclass(frozen=True, slots=True)
+class _WallSettings:
+    """Lo que lee A8 de los parámetros del proyecto, ya comprobado: la tolerancia de cara de la 013 (°), el espesor mínimo de la 012 (m) y el
+    salto admitido de la 014 (m)."""
+
+    tolerance_deg: float
+    thickness_m: float
+    jump_m: float
+
+
+def _wall_settings(project: Mapping[str, object]) -> _WallSettings:
+    """La tolerancia de cara (``des.tolerance.face_deg``), el espesor mínimo (``res.verify.min_thickness_m``) y el salto admitido
+    (``des.edge.max_created_step_m``) de ``project``, comprobados como en el borde de la plataforma: ``ValueError`` (errores del programa:
+    quien llama los lee del proyecto, ``provenance.PLATFORM_COMMON_PARAMS``, y ninguno lleva valor por defecto) si falta alguno, no es un
+    número finito, la tolerancia o el espesor son negativos; el salto, fuera de su rango, ``des.quarry_param_range``."""
+    tolerance = _project_number(project, TOLERANCE_FACE)
+    if tolerance < 0.0:
+        raise ValueError(f"la tolerancia de cara es un número finito ≥ 0, no {tolerance!r}")
+    thickness = _thickness(_project_number(project, VERIFY_MIN_THICKNESS))
+    jump = float(check_quarry_param(EDGE_MAX_STEP, _project_number(project, EDGE_MAX_STEP)))
+    return _WallSettings(tolerance, thickness, jump)
+
+
+def _check_wall_inputs(job: RemovalJob, outcome: RemovalOutcome) -> None:
+    """``ValueError`` (errores del programa) si ``outcome`` no es de ``job`` (otro código o acopio), su ventana no está dentro de lo que leyó
+    el trabajo o alguna de sus rejillas no es de la forma de su ventana."""
+    if not isinstance(outcome, RemovalOutcome):
+        raise ValueError(f"la pared se mide sobre un RemovalOutcome, no sobre {type(outcome).__name__}")
+    if outcome.code != job.code or outcome.stockpile != job.stockpile.key:
+        raise ValueError(f"el resultado de {outcome.code} ({outcome.stockpile}) no es de la retirada {job.code} del acopio "
+                         f"{job.stockpile.key}")
+    rows, cols = outcome.window
+    shape = (rows.stop - rows.start, cols.stop - cols.start)
+    for name in ("surface", "footprint", "admitted", "held", "seeds"):
+        found = getattr(outcome, name).shape
+        if found != shape:
+            raise ValueError(f"«{name}» del resultado es de la forma {found}, no de la de su ventana {shape}")
+    if job.start_in(outcome.window).shape != shape:
+        raise ValueError(f"la ventana ({rows}, {cols}) del resultado no está en la rejilla del trabajo")
+
+
+def _wall_stretches(surface: np.ndarray, grid: Grid, found: _Found, limit_deg: float
+                    ) -> Generator[None, None, tuple[WallStretch, ...]]:
+    """Los tramos de las parejas de ``found`` (las que pasan del salto admitido, con su clave y su salto creado) que son más empinadas que
+    ``limit_deg``: cada pareja se saca de su clave (el punto medio en medias celdas), su inclinación es ``atan(|S_a − S_b| / distancia)``, las
+    celdas de las que pasan se etiquetan (4-conexas) y de cada etiqueta se agrupan sus parejas: mayor y menor cota, peor inclinación, mayor
+    salto y la clave de la primera pareja con la peor inclinación."""
+    keys = np.concatenate(found.keys)
+    created = np.concatenate(found.steps)
+    key_row, key_col = np.divmod(keys, 2 * grid.ncols + 1)
+    vertical = key_row % 2 == 1  # una pareja norte-sur tiene la fila impar; una este-oeste, la columna impar
+    row1 = np.where(vertical, (key_row - 1) // 2, key_row // 2)
+    col1 = np.where(vertical, key_col // 2, (key_col - 1) // 2)
+    row2 = np.where(vertical, row1 + 1, row1)
+    col2 = np.where(vertical, col1, col1 + 1)
+    first, second = surface[row1, col1], surface[row2, col2]
+    angle = np.degrees(np.arctan(np.abs(first - second) / np.where(vertical, grid.dy, grid.dx)))
+    steep = angle > limit_deg + _ROUNDOFF_DEG
+    yield None
+    if not steep.any():
+        return ()
+    keys, created, angle = keys[steep], created[steep], angle[steep]
+    row1, col1, row2, col2 = row1[steep], col1[steep], row2[steep], col2[steep]
+    crest, toe = np.maximum(first[steep], second[steep]), np.minimum(first[steep], second[steep])
+    cells = np.zeros(surface.shape, dtype=bool)
+    cells[row1, col1] = True
+    cells[row2, col2] = True
+    labels = yield from _label_units(cells)
+    tag = labels.grid[row1, col1]
+    count = labels.count
+    pairs = np.bincount(tag, minlength=count + 1)
+    top = np.full(count + 1, -np.inf)
+    np.maximum.at(top, tag, crest)
+    bottom = np.full(count + 1, np.inf)
+    np.minimum.at(bottom, tag, toe)
+    step = np.full(count + 1, -np.inf)
+    np.maximum.at(step, tag, created)
+    worst = np.full(count + 1, -np.inf)
+    np.maximum.at(worst, tag, angle)
+    place = np.full(count + 1, np.iinfo(np.int64).max, dtype=np.int64)
+    at_worst = angle == worst[tag]
+    np.minimum.at(place, tag[at_worst], keys[at_worst])
+    yield None
+    place_row, place_col = np.divmod(place, 2 * grid.ncols + 1)
+    stretches = []
+    for index in range(1, count + 1):
+        x, y = _midpoint(grid, float(place_row[index]), float(place_col[index]))
+        stretches.append(WallStretch(index, int(pairs[index]), float(top[index] - bottom[index]), float(worst[index]),
+                                     float(step[index]), x, y))
+    return tuple(stretches)
+
+
+def wall_notices(stockpile: str, wall: Wall) -> tuple[Notice, ...]:
+    """El aviso de la pared que deja la retirada del acopio ``stockpile`` (RF-016-15): **una** nota ``des.removal_wall`` con la altura, la
+    inclinación, el límite (ángulo de transición más tolerancia de cara), el salto creado y el lugar del tramo más alto (al cm y a la
+    centésima de grado); ninguna si no hay pared."""
+    worst = wall.worst
+    if worst is None:
+        return ()
+    return (Notice("des.removal_wall", {
+        "stockpile": stockpile, "height": round(worst.height_m, 2), "angle": round(worst.angle_deg, 2),
+        "limit": round(wall.limit_deg, 2), "step": round(worst.step_m, 2), "x": round(worst.x, 2), "y": round(worst.y, 2)}),)
+
+
+def check_wall_confirmed(stockpile: str, wall: Wall, *, confirmed: bool, reason: str | None = None) -> None:
+    """**No se crea la retirada sin la confirmación expresa de la pared** (RF-016-15, D-6; error 47): con una pared y sin ``confirmed``,
+    ``des.removal_wall_unconfirmed`` con el acopio ``stockpile``, la altura y la inclinación del tramo más alto (``DesignError``: un motivo no
+    hace las veces de la confirmación); y, con la pared confirmada, **sin un motivo** (``reason`` ausente o en blanco) si alguna pasa de
+    :data:`WALL_REASON_MIN_ANGLE_DEG` y de :data:`WALL_REASON_MIN_HEIGHT_M` **o más** (CA-9), ``des.removal_wall_reason`` con la altura y la
+    inclinación de ese tramo y los dos umbrales. Sin pared no pide nada. No escribe: la confirmación, su decisor y su fecha y el motivo
+    (``wall_reason`` y su evento) los registra la orden (T20)."""
+    worst = wall.worst
+    if worst is None:
+        return
+    obj = f"Retirada del acopio «{stockpile}»"
+    if not confirmed:
+        raise DesignError("des.removal_wall_unconfirmed", obj=obj, field="confirmación", value=False, stockpile=stockpile,
+                          height=round(worst.height_m, 2), angle=round(worst.angle_deg, 2))
+    needing = wall.reason_stretch
+    if needing is not None and (reason is None or not reason.strip()):
+        raise DesignError("des.removal_wall_reason", obj=obj, field="motivo", value=reason, stockpile=stockpile,
+                          height=round(needing.height_m, 2), angle=round(needing.angle_deg, 2),
+                          min_angle=wall.reason_min_angle_deg, min_height=wall.reason_min_height_m)
+
+
+def _wall_units(job: RemovalJob, outcome: RemovalOutcome, settings: _WallSettings) -> Generator[None, None, RemovalOutcome]:
+    """Las unidades de :func:`wall_steps`: las parejas del borde de lo retirado por bandas de filas (las de la 014, con el salto creado y el
+    salto admitido), su inclinación, los tramos de las más empinadas que el límite y el resultado con la pared."""
+    window = outcome.window
+    grid = window_grid(job.grid, window)
+    start, surface = job.start_in(window), outcome.surface
+    found = _Found()
+    per_unit = max(1, PAIR_CELLS_PER_UNIT // max(surface.shape[1], 1))
+    yield None
+    # El dominio de la 014 es lo que se retira: una celda está movida si está ahí y la superficie la mueve más del espesor mínimo.
+    yield from _band_units(surface, start, outcome.admitted, grid, settings.thickness_m, settings.jump_m, per_unit,
+                           np.zeros(surface.shape, dtype=bool), found)
+    over = sum(int(item.size) for item in found.keys)
+    stretches: tuple[WallStretch, ...] = ()
+    if over:
+        stretches = yield from _wall_stretches(surface, grid, found, outcome.transition_deg + settings.tolerance_deg)
+    wall = Wall(stretches, outcome.transition_deg, settings.tolerance_deg, settings.thickness_m, settings.jump_m, found.pairs, over)
+    return replace(outcome, wall=wall, wall_max_m=wall.height_m,
+                   notices=(*outcome.notices, *wall_notices(outcome.stockpile_name, wall)))
+
+
+def wall_steps(job: RemovalJob, outcome: RemovalOutcome, project: Mapping[str, object], *, budget_s: float = STEP_BUDGET_S
+               ) -> Iterator[Progress]:
+    """**A8** (RF-016-15; plan 016 §5.4; errores 41 y 47): la pared que deja la retirada ``outcome`` (la de :func:`removal_steps` de ``job``)
+    por pasos de ``budget_s`` como mucho (RNF-016-03: ≤ 0,2 s cada llamada): el último ``Progress`` (fase ``removal_wall``) lleva en ``result``
+    un :class:`RemovalOutcome` **nuevo**, el mismo con su ``wall`` (:class:`Wall`), ``wall_max_m`` (la altura de la mayor pared, 0 m si ninguna) y
+    el aviso ``des.removal_wall`` detrás de los que ya llevaba; ``outcome`` no se modifica.
+
+    Una **pareja** son dos celdas vecinas (4 vecinos) con dato, una movida (en lo que se retira, con ``|z' − z|`` mayor que el espesor
+    mínimo de la 012) y la otra no; su salto creado es el de la 014 (``edges``: ``|S_a − S_b| − |z_a − z_b|``: lo que el terreno ya tenía no
+    cuenta). Pasan las de salto creado mayor que el salto admitido y de inclinación ``atan(|S_a − S_b| / distancia)`` **mayor** que el ángulo
+    de transición más la tolerancia de cara; sus celdas forman los tramos, de cada uno la altura (mayor cota menos menor cota de sus parejas),
+    la inclinación de su peor pareja, su mayor salto creado y su lugar (:class:`WallStretch`).
+
+    ``project`` son los parámetros del proyecto que lee la pared, por su clave (``provenance.PLATFORM_COMMON_PARAMS``): la tolerancia de cara
+    (``des.tolerance.face_deg``), el espesor mínimo (``res.verify.min_thickness_m``) y el salto admitido (``des.edge.max_created_step_m``);
+    ninguno lleva valor por defecto aquí. Rechazos **al llamar** (errores del programa, ``ValueError``): un valor del proyecto que falta, no
+    es finito o es negativo (la tolerancia y el espesor), un ``outcome`` que no es de ``job`` o de otra forma que su ventana; un salto
+    admitido fuera de su rango, ``des.quarry_param_range``. No escribe nada; cerrar el generador a mitad no deja nada."""
+    settings = _wall_settings(project)
+    _check_wall_inputs(job, outcome)
+    return pace_progress(_wall_units(job, outcome, settings), budget_s, phase=_WALL_PHASE,
+                         running="Midiendo la pared que deja la retirada…", finished="Pared de la retirada medida")
+
+
+def measure_wall(job: RemovalJob, outcome: RemovalOutcome, project: Mapping[str, object]) -> RemovalOutcome:
+    """**A8**: :func:`wall_steps` hasta el final, sin pasos: el :class:`RemovalOutcome` de ``outcome`` con su pared. Los mismos rechazos."""
+    settings = _wall_settings(project)
+    _check_wall_inputs(job, outcome)
+    work = _wall_units(job, outcome, settings)
+    while True:
+        try:
+            next(work)
+        except StopIteration as done:
+            return done.value  # type: ignore[no-any-return]
