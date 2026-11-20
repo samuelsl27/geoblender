@@ -143,12 +143,16 @@ _CODE_DECIMALS: Mapping[str, Mapping[str, int]] = MappingProxyType({
     "des.body_sections_large": MappingProxyType({"limit": 0}),
     "des.preview_buttress_crown": MappingProxyType({"crown": 2}),
     "des.removal_kept": MappingProxyType({"volume": 0}),
+    "des.road_mean_gradient": MappingProxyType({"mean": 2, "limit": 2}),
+    "des.road_axis3d_gradient": MappingProxyType({"limit": 2}),
+    "des.road_axis3d_radius": MappingProxyType({"radius": 2, "minimum": 2}),
 })
 """Los decimales de los números de **un mensaje concreto** (spec 016, T12), que mandan sobre :data:`_DECIMALS`: los avisos de
 los acopios dicen una inclinación de 4,04° frente a un límite de 4° (``fitted``, ``limit``) y un umbral de huella de 0,25 m
 (``threshold``) a la centésima; con el decimal de siempre se leerían «4,0° … 4,0°» y «0,2 m». Van **por código** y no por el
 nombre del valor porque ``limit`` y ``threshold`` también son valores de los avisos de la 013, la 014 y la 015, que
-conservan su decimal."""
+conservan su decimal. Los de la pista (spec 017, T11): una pendiente media del 10,04 % frente a un límite del 10 % y un radio de
+15,96 m frente a un mínimo de 16 m, que con un decimal se leerían «10,0 % … 10,0 %» y «16,0 m … 16,0 m»."""
 
 
 def _number(value: float, decimals: int, language: str) -> str:

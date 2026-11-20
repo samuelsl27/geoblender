@@ -75,6 +75,8 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.road_drop_too_steep": ("error", "RF-017-16", {"layer", "entity", "length", "needed", "drop", "gradient"}),
     # RF-017-17: la pendiente media por encima de la del perfil.
     "des.road_mean_gradient": ("warning", "RF-017-17", {"entity", "mean", "limit", "stretches"}),
+    # RF-017-17 (T11): cada tramo de la lista del aviso de la media (``preview.Named``): abscisa, lugar y pendiente.
+    "des.road_stretch": ("note", "RF-017-17", {"station", "gradient", *POSITION}),
     # RF-017-18: el modo «eje 3D», por tramo.
     "des.road_axis3d_gradient": ("warning", "RF-017-18", {"entity", "station", "gradient", "limit", *POSITION}),
     "des.road_axis3d_radius": ("warning", "RF-017-18", {"entity", "station", "radius", "minimum", *POSITION}),

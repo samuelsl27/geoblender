@@ -580,6 +580,81 @@ class NoticesTest(unittest.TestCase):
         self.assertAlmostEqual(axis.min_radius_m, 7.5, delta=TOL)  # el menor de 20, 7,5 y 7,5 m: 20·15/40
 
 
+class NarrowRadiusTest(unittest.TestCase):
+    """El modo «eje 3D» (RF-017-18; decisión de la sesión principal tras la T10, 20/11/2026): un radio menor que Rmín es un **aviso**, no un rechazo,
+    y la línea se devuelve como viene. ``reject_below_minimum=False`` lo da; «trazar» y «sobre un eje» siguen rechazando (RF-017-14, CE-017-02)."""
+
+    def test_by_default_and_explicitly_the_rejection_of_trazar_and_sobre_un_eje_is_unchanged(self) -> None:
+        """RF-017-14, CE-017-02: sin el parámetro, o con ``reject_below_minimum=True``, un radio que solo cabría menor que Rmín se rechaza como
+        siempre (la T10)."""
+        for keywords in ({}, {"reject_below_minimum": True}):
+            with self.subTest(keywords=keywords), self.assertRaises(road_axis.RadiusBelowMinimum) as caught:
+                axis_of(LOCAL_SHORT, minimum=16.0, **keywords)
+            self.assertAlmostEqual(caught.exception.curve.radius_m, 15.0, delta=TOL)
+
+    def test_without_rejecting_the_axis_comes_back_as_it_is_with_the_list_of_the_curves_below_rmin(self) -> None:
+        """RF-017-18: con Rmín = 16 m y tramos de 15 m el eje se devuelve (el mismo que con un Rmín que no rechaza: la misma longitud, los mismos puntos
+        y la misma curva de 15 m) con la lista de las curvas por debajo de Rmín y el Rmín con que se hizo."""
+        loose = axis_of(LOCAL_SHORT, minimum=LOOSE_M)
+        axis = axis_of(LOCAL_SHORT, minimum=16.0, reject_below_minimum=False)
+        self.assertEqual(axis.length_m, loose.length_m)
+        np.testing.assert_array_equal(axis.points, loose.points)
+        self.assertEqual(axis.curves, loose.curves)
+        self.assertEqual(axis.minimum_m, 16.0)
+        (narrow,) = axis.below_minimum
+        self.assertEqual(narrow.vertex, 2)
+        self.assertAlmostEqual(narrow.radius_m, 15.0, delta=TOL)
+        self.assertAlmostEqual(narrow.station_m, 0.0, delta=TOL)
+        self.assertEqual((narrow.x, narrow.y), (75.0, 140.0))
+
+    def test_every_curve_below_rmin_is_listed_in_the_order_of_the_axis(self) -> None:
+        """RF-017-18: con varios vértices por debajo de Rmín (el caso del rechazo de la T10: radios de 10, 10, 5 y 5 m) la lista los lleva todos, en el
+        orden del eje, y las curvas que sí cumplen no están."""
+        points = np.asarray([[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [80.0, 20.0], [150.0, 20.0], [150.0, 30.0], [190.0, 30.0]])
+        axis = axis_of(points, reject_below_minimum=False)
+        self.assertEqual([curve.vertex for curve in axis.below_minimum], [2, 3, 5, 6])
+        self.assertEqual([round(curve.radius_m, 9) for curve in axis.below_minimum], [10.0, 10.0, 5.0, 5.0])
+        self.assertEqual([curve.station_m for curve in axis.below_minimum], sorted(curve.station_m for curve in axis.below_minimum))
+        ok = axis_of(points, minimum=LOOSE_M)
+        self.assertEqual(ok.below_minimum, ())
+
+    def test_a_radius_equal_to_rmin_is_not_below_it(self) -> None:
+        """RF-017-14, RF-017-18: el radio que cabe igual a Rmín no está por debajo (12 m con tramos de 12 m), con el mismo margen que el rechazo."""
+        axis = axis_of(((0.0, 0.0), (12.0, 0.0), (12.0, 12.0)), reject_below_minimum=False)
+        self.assertEqual(axis.below_minimum, ())
+        axis = axis_of(((0.0, 0.0), (11.9, 0.0), (11.9, 11.9)), reject_below_minimum=False)
+        self.assertEqual(len(axis.below_minimum), 1)
+
+    def test_an_axis_that_did_not_reject_has_nothing_below_rmin(self) -> None:
+        """RF-017-18: un eje formado con el rechazo (el de «trazar») nunca lleva curvas por debajo de Rmín: o cumple o no existe."""
+        axis = axis_of(LOCAL_SHORT)
+        self.assertEqual(axis.below_minimum, ())
+        self.assertEqual(axis.minimum_m, MIN_RADIUS_M)
+
+    def test_a_curve_below_rmin_is_not_also_a_reduced_radius_notice(self) -> None:
+        """RF-017-14, RF-017-18: la curva por debajo de Rmín la dice el aviso del «eje 3D» (``des.road_axis3d_radius``): no se repite como «el radio
+        baja» (``Axis.notices``), que es de las que siguen cumpliendo; las curvas reducidas por encima de Rmín siguen avisando."""
+        axis = axis_of(LOCAL_SHORT, minimum=16.0, reject_below_minimum=False)
+        self.assertEqual(axis.notices("RDW-001"), ())
+        self.assertEqual(len(axis_of(LOCAL_SHORT).notices("RDW-001")), 1)  # con Rmín = 12 m es una reducción que cumple
+        points = np.asarray([[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [80.0, 20.0], [150.0, 20.0], [150.0, 30.0], [190.0, 30.0]])
+        mixed = axis_of(points, minimum=7.0, reject_below_minimum=False)  # radios de 10, 10, 5 y 5 m en los vértices 2, 3, 5 y 6
+        self.assertEqual([curve.vertex for curve in mixed.below_minimum], [5, 6])
+        self.assertEqual([notice.values["vertex"] for notice in mixed.notices("RDW-007")], [2, 3])
+
+    def test_the_line_is_not_modified_and_the_flag_must_be_a_bool(self) -> None:
+        """RF-017-18: la línea (con Z) no cambia en este modo (su *hash*, también de solo lectura); ``reject_below_minimum`` es un booleano
+        (``TypeError`` si no)."""
+        line = np.column_stack([LOCAL_SHORT, np.asarray([100.0, 101.0, 102.0])])
+        line.flags.writeable = False
+        before = digest(line)
+        axis_of(line, minimum=16.0, reject_below_minimum=False)
+        self.assertEqual(digest(line), before)
+        for bad in (None, 0, 1, "no"):
+            with self.subTest(value=bad), self.assertRaises(TypeError):
+                axis_of(LOCAL_SHORT, reject_below_minimum=bad)
+
+
 class ValidationTest(unittest.TestCase):
     def test_wrong_inputs_are_errors_of_the_program(self) -> None:
         """Las entradas que no son de su forma son ``TypeError`` o ``ValueError`` (la preparación de la pista las rechazó antes con su capa,

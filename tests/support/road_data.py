@@ -428,6 +428,17 @@ def step_diff_by_hand(grade_pct: float) -> float:
     return 18.0 / (grade_pct / 100.0)
 
 
+def step_line_in_stations_by_hand(s: Any, grade_pct: float, step_m: float) -> np.ndarray:
+    """La rasante del escalón **en las mismas estaciones** (H-4; ``s`` desde el escalón, con una estación en 0, cada ``step_m`` m y
+    con el terreno de :func:`step_profile_m` en ellas): la mayor minorante discreta es ``mín(6, pd·(s + w))`` para ``s ≥ 0`` (la
+    estación de 0 m a su izquierda está a ``s + w``) y 0 antes; la menor mayorante, 6 para ``s ≥ 0`` y ``máx(0, 6 + pd·s)`` antes;
+    la rasante es su media. Con pd = 10 % y ``w`` = 0,5 m: 5,021 % de pendiente media de la rampa y 178,5 m·m de diferencia."""
+    pd, s = grade_pct / 100.0, np.asarray(s, dtype=np.float64)
+    before = 0.5 * np.maximum(STEP_LOW_M, STEP_HIGH_M + pd * s)
+    after = 0.5 * (np.minimum(STEP_HIGH_M, pd * (s + step_m)) + STEP_HIGH_M)
+    return np.where(s < 0.0, before, after)
+
+
 AXIS_3D_START_Z_M = 104.0
 """La cota del primer vértice de los ejes 3D (la del plano de la rampa en x = 100)."""
 AXIS_3D_INCREMENTS_M: tuple[float, ...] = (1.0, 1.0, 2.0, 3.0, -0.4, 1.6, 2.4, 0.0, 1.0, 2.0)
@@ -915,6 +926,36 @@ def opening(mask: np.ndarray, steps: int) -> np.ndarray:
     «apertura con un disco» de A10 hace con el ancho mínimo, en pequeño; quita lo más fino que ``2·steps + 1``
     celdas."""
     return dilate(erode(mask, steps), steps)
+
+
+def stations_by_hand(length_m: float, step_m: float) -> np.ndarray:
+    """Las estaciones de un eje de ``length_m`` m cada ``step_m`` m y una última en su extremo (RF-017-15), hechas aquí con
+    ``arange`` y no con ``design.road_axis.stations_for``."""
+    s = np.arange(0.0, length_m, step_m)
+    return np.append(s, length_m) if length_m - s[-1] > 1e-9 else np.append(s[:-1], length_m)
+
+
+def gradient_band(s: np.ndarray, pd: float, z_start: float, z_end: float) -> tuple[np.ndarray, np.ndarray]:
+    """La banda que dejan los extremos (D-9; plan §5.4 A5): ``[máx(z₀ − pd·s, z₁ − pd·(S − s)), mín(z₀ + pd·s, z₁ + pd·(S − s))]``
+    con ``s`` desde la primera estación y ``S`` la longitud; ``pd`` en tanto por uno."""
+    rel, length = s - s[0], float(s[-1] - s[0])
+    low = np.maximum(z_start - pd * rel, z_end - pd * (length - rel))
+    high = np.minimum(z_start + pd * rel, z_end + pd * (length - rel))
+    return low, high
+
+
+def oracle_gradient_line(s: np.ndarray, terrain: np.ndarray, pd: float, z_start: float, z_end: float) -> np.ndarray:
+    """La rasante acotada por **fuerza bruta** O(n²) (RF-017-15, D-9): la mayor minorante pd-Lipschitz del terreno
+    ``mín_j (t_j + pd·|s_i − s_j|)`` y la menor mayorante ``máx_j (t_j − pd·|s_i − s_j|)`` de cada estación, su media,
+    limitada a la banda de los extremos y con los extremos fijos. No usa ``minimum.accumulate`` (lo que hace el código):
+    compara cada estación con todas."""
+    distance = np.abs(s[:, None] - s[None, :])
+    lower = (terrain[None, :] + pd * distance).min(axis=1)
+    upper = (terrain[None, :] - pd * distance).max(axis=1)
+    low, high = gradient_band(s, pd, z_start, z_end)
+    line = np.minimum(np.maximum(0.5 * (lower + upper), low), high)
+    line[0], line[-1] = z_start, z_end
+    return line
 
 
 # --- El proyecto -----------------------------------------------------------------------------------------------

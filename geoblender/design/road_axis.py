@@ -17,7 +17,10 @@ Lo que da, todo en el dominio (Python y numpy, sin Blender), con las coordenadas
   vértice se reduce por el menor de los ``f`` de sus dos tramos, que es a lo sumo el de cada uno). Cada curva reducida es un aviso
   (:meth:`Axis.notices`: ``des.road_radius_reduced``, con el vértice, el radio y su lugar). Si el que cabe es **menor que Rmín**, **rechazo**
   (:class:`RadiusBelowMinimum`, que se convierte con :meth:`~RadiusBelowMinimum.error` en ``des.road_radius_below_min`` con el vértice, los tramos y
-  el radio que cabría): **no baja de Rmín por su cuenta**.
+  el radio que cabría): **no baja de Rmín por su cuenta**. En el modo **«eje 3D»** (RF-017-18; decisión de la sesión principal tras la T10) la línea es
+  una entrada que no se corrige y un radio menor que Rmín es un **aviso**, no un rechazo: con ``reject_below_minimum=False`` el eje se devuelve como
+  viene y :attr:`Axis.below_minimum` lista las curvas por debajo de Rmín (``road_gradient.check_axis_3d`` las avisa); «trazar» y «sobre un eje»
+  siguen rechazando.
 - **El muestreo** (:meth:`Axis.sample`, :func:`stations_for`): cada ``w`` m y con una última estación en el extremo (RF-017-15), con
   ``searchsorted`` sobre el comienzo de cada pieza (rectas y arcos) y fórmulas vectorizadas: **sin bucle por estación** (RNF-017-03). Da el punto y
   el azimut de cada abscisa; el primero y el último punto son **exactamente** el origen y el destino.
@@ -27,8 +30,8 @@ Lo que da, todo en el dominio (Python y numpy, sin Blender), con las coordenadas
   el nodo quitado más lejano, y lo que se movieron los nodos extremos al poner el origen y el destino exactos). Es una **cota** de la distancia
   entre el eje y la ruta, y **exacta** para una línea dibujada o con ``simplify_m = 0`` (la de los arcos, a ≤ 10⁻⁹ m del cálculo analítico).
 
-La rasante (T11), la sección (T12) y el grabado (T13) usan este eje: ``Axis.points`` y ``Axis.stations`` (cada ``w`` m) y, a otro paso (la huella,
-cada 1 m), :meth:`Axis.sample`.
+La rasante (``design.road_gradient``, T11), la sección (T12) y el grabado (T13) usan este eje: ``Axis.points`` y ``Axis.stations`` (cada ``w`` m) y, a
+otro paso (la huella, cada 1 m), :meth:`Axis.sample`.
 
 **Perezoso** (RNF-001-03): ni ``design.model`` ni nada del arranque lo importan; lo pide quien traza una pista.
 """
@@ -285,7 +288,8 @@ class Axis:
     su extremo; y las desviaciones (``curve_deviation_m`` y ``simplification_m``). Los arrays son de solo lectura.
 
     :attr:`curve_count`, :attr:`min_radius_m` y :attr:`deviation_m` son las cifras de RF-017-13; :meth:`sample` evalúa el eje en otras abscisas
-    (la huella de la sección, cada 1 m); :meth:`notices`, los avisos de RF-017-14."""
+    (la huella de la sección, cada 1 m); :meth:`notices`, los avisos de RF-017-14. ``minimum_m`` es el radio mínimo Rmín con que se formó y
+    :attr:`below_minimum`, las curvas por debajo de él (solo en el modo «eje 3D», que no rechaza: RF-017-18)."""
 
     vertices: np.ndarray
     kept: np.ndarray
@@ -297,6 +301,7 @@ class Axis:
     azimuth: np.ndarray
     curve_deviation_m: float
     simplification_m: float
+    minimum_m: float
     _pieces: _Pieces
 
     @property
@@ -314,6 +319,13 @@ class Axis:
         """La desviación máxima (m) frente a la ruta o la línea: la de los arcos más la de la simplificación (una cota; exacta sin simplificar)."""
         return self.curve_deviation_m + self.simplification_m
 
+    @property
+    def below_minimum(self) -> tuple[Curve, ...]:
+        """Las curvas por debajo del radio mínimo (``radius_m`` < ``minimum_m``, con el mismo margen que el rechazo), en el orden del eje: siempre
+        vacía en un eje formado con el rechazo (el de «trazar» y «sobre un eje»: o cumple o no existe) y, en el modo «eje 3D»
+        (``reject_below_minimum=False``), lo que ``road_gradient.check_axis_3d`` avisa (RF-017-18)."""
+        return tuple(curve for curve in self.curves if curve.radius_m < self.minimum_m - _MINIMUM_TOL_M)
+
     def sample(self, stations: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """El punto ``(n, 2)`` (absoluto, float64) y el azimut ``(n,)`` (rad) del eje en las abscisas ``stations`` (``(n,)``, m desde el origen; las que
         quedan fuera del eje, en el extremo más próximo): sin bucle por estación. ``ValueError`` si no es un vector de números finitos."""
@@ -325,11 +337,13 @@ class Axis:
 
     def notices(self, entity: str) -> tuple[Notice, ...]:
         """Los avisos de RF-017-14, en el orden del eje: uno (``des.road_radius_reduced``) por curva cuyo radio bajó del de diseño, con la pista
-        (``entity``), el vértice, el radio pedido y el que cabe y su lugar."""
+        (``entity``), el vértice, el radio pedido y el que cabe y su lugar. Las curvas por debajo de Rmín del modo «eje 3D» (:attr:`below_minimum`) no
+        están: las dice el aviso del radio de ese modo (``des.road_axis3d_radius``), que no se repite como «el radio baja»."""
+        narrow = {curve.vertex for curve in self.below_minimum}
         return tuple(
             Notice("des.road_radius_reduced", {"entity": entity, "vertex": curve.vertex, "radius": curve.design_radius_m, "fitted": curve.radius_m,
                                                "x": curve.x, "y": curve.y})
-            for curve in self.curves if curve.reduced)
+            for curve in self.curves if curve.reduced and curve.vertex not in narrow)
 
 
 # --- El eje ------------------------------------------------------------------------------------------------------------
@@ -353,7 +367,7 @@ def _distinct(points: np.ndarray) -> np.ndarray:
 
 
 def axis_of(points: Any, radius_m: float, rmin_m: float, step_m: float, *, simplify_m: float = 0.0,
-            origin: Any = None, destination: Any = None) -> Axis:
+            origin: Any = None, destination: Any = None, reject_below_minimum: bool = True) -> Axis:
     """El eje con curvas de una ruta o de una línea dibujada (A4; RF-017-13, RF-017-14): ``points`` (``(k, 2)`` o ``(k, 3)``; los nodos de la ruta,
     absolutos, o los vértices de la línea, que **no se modifica**), el radio de curva ``R`` (``radius_m``), el mínimo ``Rmín`` (``rmin_m``) y el paso
     de las estaciones ``w`` (``step_m``), todos en metros. ``simplify_m`` (0, sin simplificar: la línea dibujada) es la tolerancia de Douglas–Peucker
@@ -361,12 +375,16 @@ def axis_of(points: Any, radius_m: float, rmin_m: float, step_m: float, *, simpl
     **exactamente** en ellos.
 
     Si las tangentes de una curva no caben, su radio baja al que cabe (:meth:`Axis.notices`); si el que cabe es menor que Rmín,
-    :class:`RadiusBelowMinimum` (que no baja de Rmín por su cuenta). :class:`TypeError` o :class:`ValueError` si una entrada no es de su forma o
-    sale de su rango (errores del programa: la preparación de la pista rechazó antes, con su capa, su pista y su valor)."""
+    :class:`RadiusBelowMinimum` (que no baja de Rmín por su cuenta). Con ``reject_below_minimum=False`` (el modo «eje 3D», RF-017-18: la línea es
+    una entrada que no se corrige y el radio es un **aviso**) no se rechaza: el eje se devuelve como viene y :attr:`Axis.below_minimum` lista las
+    curvas por debajo de Rmín. :class:`TypeError` o :class:`ValueError` si una entrada no es de su forma o sale de su rango (errores del
+    programa: la preparación de la pista rechazó antes, con su capa, su pista y su valor)."""
     radius = _number(radius_m, "el radio de curva")
     minimum = _number(rmin_m, "el radio mínimo de curva")
     step = _number(step_m, "el paso de las estaciones")
     tolerance = _number(simplify_m, "la tolerancia de simplificación", zero=True)
+    if not isinstance(reject_below_minimum, bool):
+        raise TypeError(f"reject_below_minimum es un booleano, no {reject_below_minimum!r}")
     if minimum > radius:
         raise ValueError(f"el radio mínimo ({minimum} m) no puede ser mayor que el radio de curva ({radius} m)")
     given = _points(points)
@@ -387,14 +405,14 @@ def axis_of(points: Any, radius_m: float, rmin_m: float, step_m: float, *, simpl
     vertices, loc = work[kept], local[kept]
     curves, pieces, length, curve_deviation = _form(loc, vertices, source[kept], radius)
     offenders = tuple(curve for curve in curves if curve.radius_m < minimum - _MINIMUM_TOL_M)
-    if offenders:
+    if offenders and reject_below_minimum:
         raise RadiusBelowMinimum(offenders, minimum)
     stations = stations_for(length, step)
     points_at, azimuth = _evaluate(pieces, vertices[0], vertices[0], vertices[-1], length, stations)
     return Axis(
         vertices=_frozen(np.array(vertices)), kept=_frozen(np.array(source[kept])), curves=curves, length_m=length, step_m=step,
         stations=stations, points=_frozen(points_at), azimuth=_frozen(azimuth), curve_deviation_m=curve_deviation,
-        simplification_m=max(dropped, shift), _pieces=pieces)
+        simplification_m=max(dropped, shift), minimum_m=minimum, _pieces=pieces)
 
 
 def _form(loc: np.ndarray, vertices: np.ndarray, numbers_: np.ndarray, radius: float) -> tuple[tuple[Curve, ...], _Pieces, float, float]:

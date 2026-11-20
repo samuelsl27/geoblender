@@ -175,7 +175,7 @@ PENDING_015_API: frozenset[str] = frozenset({
 PENDING_015_MODULES: frozenset[str] = frozenset({
     # La 017, T04 (la tarea de documentación, T35, los lleva a la ficha, ``des.md`` §4.5, y vacía este conjunto):
     "design.road_profiles", "design.road_model", "design.road_net", "design.road_route",
-    "design.road_axis",
+    "design.road_axis", "design.road_gradient",
 })
 
 

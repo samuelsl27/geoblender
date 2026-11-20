@@ -90,6 +90,9 @@ HEAVY: frozenset[str] = frozenset({
     # El eje con curvas circulares de la 017 (spec 017, T10; Douglas–Peucker y arcos con numpy): lo pide quien forma el eje de una pista;
     # ``design.model`` y el arranque no lo importan.
     "design.road_axis",
+    # La rasante acotada de la 017 (spec 017, T11; ``minimum.accumulate`` con numpy): la pide quien da la rasante a un eje; ``design.model`` y el
+    # arranque no la importan.
+    "design.road_gradient",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 

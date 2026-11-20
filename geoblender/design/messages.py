@@ -3096,6 +3096,13 @@ CATALOG: tuple[Message, ...] = (
         "registrados.",
         "warning",
     ),
+    # Cada tramo de la lista de arriba (``preview.Named``): su abscisa, su lugar y su pendiente (spec 017, T11).
+    Message(
+        "des.road_stretch",
+        "s = {station} m (x = {x} m, y = {y} m): {gradient} %",
+        "abscisa {station} m (x = {x} m, y = {y} m): {gradient} %",
+        "note",
+    ),
     # RF-017-18: el modo «eje 3D» comprueba la línea y no la corrige; un aviso por tramo con su abscisa y su lugar.
     Message(
         "des.road_axis3d_gradient",
