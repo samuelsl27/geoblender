@@ -648,7 +648,9 @@ HEAVY: tuple[str, ...] = (
     "design.thickness", "design.buttress", "design.supported_edge", "design.morphology",
     "design.supported_requests",
     # El perfil de pista de la 017 (spec 017, T04): se importa al usarlo; ``provenance`` declara su operación.
-    "design.road_profiles")
+    "design.road_profiles",
+    # Los datos de la pista y de la accesibilidad de la 017 (spec 017, T05): se importan al usarlos.
+    "design.road_model")
 """Lo que habilitar no importa (los de la 012 que fija ``tests/unit/architecture/test_lazy_registration``,
 y los de la 016 y la 017, que esa prueba mira por sus importaciones de nivel de módulo)."""
 LIGHT: tuple[str, ...] = ("core.constraints.provenance", "gis.masks.provenance",

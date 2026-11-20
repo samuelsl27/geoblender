@@ -78,6 +78,9 @@ HEAVY: frozenset[str] = frozenset({
     # El perfil de pista de la 017 (spec 017, T04): la tabla, la edición de los perfiles y sus derivados; ``provenance`` declara
     # la operación (``des.edit_road_profiles``) y este módulo se importa al usarlo (RNF-001-03, RNF-017-10).
     "design.road_profiles",
+    # Los datos de la pista y de la accesibilidad de la 017 (spec 017, T05): las peticiones, los trabajos y los resultados
+    # (``@dataclass``, ≈ 0,5–1 ms cada uno al importar) los pide quien calcula; no los carga ``design.model`` ni el arranque.
+    "design.road_model",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 
