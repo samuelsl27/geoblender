@@ -25,16 +25,13 @@ coronación (2 y 10 ha), las huellas de los cuerpos (1, 18, 20 y 100 ha), los **
   (``perf_stockpiles.py``).
 - RNF-016-04 (:meth:`DetectTest.test_c_memory` y :meth:`CalculateTest.test_z_memory`): el pico de memoria adicional
   (``tracemalloc``, con la de numpy) ≤ 1,5 GB.
-- RNF-016-07 (:class:`DiskTest`): lo que guarda en el proyecto una detección de 9 acopios y 38.000 m² ≤ 2 MiB, una retirada, un
-  contrafuerte o un cuerpo «sobre una base» ≤ 17 MiB, una revisión con 20 ≤ 0,35 GiB y un cuerpo «bajo un techo» (sus datos
-  dispersos) ≤ 2 MiB, con 1, 18 y 100 ha. **MiB y GiB son de 2^20 y 2^30 bytes.** Las que la medida **no cumple** (el cuerpo de
-  100 ha «sobre una base» y «bajo un techo», y el de 18 ha «bajo un techo» por un 3 %) **fijan el hueco** con ``assertRaises``
-  (la prueba pasa mientras el hueco esté y se pone roja cuando se cierre: ``expectedFailure`` no es verde, TST-07) y su cifra
-  impresa dice «NO SE CUMPLE»: el presupuesto es el de la spec, que decide Samuel (``tasks.md``, «Para Samuel», 3), no esta
-  prueba. **El hueco está acotado** (T49, E-2 de la verificación única): ``assertRaises`` solo dice «supera el presupuesto» y
-  pasaría con cualquier tamaño (de 21 a 200 MiB seguiría en verde), así que cada una de esas pruebas afirma, además, un **techo
-  medido** (:data:`BODY_GAP_CEILING_BYTES`, :data:`ROOF_GAP_CEILING_BYTES`: lo medido más ≈ 5 %): que el cuerpo empeore también
-  la pone roja. Si Samuel decide subir el presupuesto, la afirmación pasa a la normal con la cifra nueva y el techo se quita.
+- RNF-016-07 (:class:`DiskTest`): lo que guarda en el proyecto una detección de 9 acopios y 38.000 m² ≤ 2 MiB; una retirada, un
+  contrafuerte o un cuerpo «sobre una base» (su superficie entera y sus tablas) ≤ 25 MiB cada uno con 2,81 M celdas; una revisión
+  con 20 de ellos ≤ 0,5 GiB; y un cuerpo «bajo un techo» (sus datos dispersos) ≤ 0,25 MiB fijos más 0,12 MiB por hectárea de huella
+  (0,37, 2,41 y 12,25 MiB con 1, 18 y 100 ha: :func:`roof_budget`). **MiB y GiB son de 2^20 y 2^30 bytes.** Son los presupuestos de
+  la spec 016 en su versión 0.4 (Samuel, 20/11/2026, «Para Samuel», 3; hasta la 0.3, 17 MiB, 0,35 GiB y 2 MiB, que el cuerpo
+  apoyado no cumplía y esta prueba fijaba como hueco): la afirmación es la normal y el mensaje dice la cifra medida frente al
+  presupuesto.
 - RNF-016-02 con secciones muy separadas (:meth:`CalculateTest.test_i_body_with_8_wide_sections_100_ha_is_over_the_budget_and_warns`, T49, E-4): **no se
   cumple** (11,3 s de «Calcular» a «Crear», frente a 10 s) y la prueba lo fija **con su aviso** (``des.body_sections_large``, T44) y
   un techo de tiempo (≤ 15 s), sin pretender cumplir el RNF: que el hueco quede escrito en una prueba y no solo en la prosa.
@@ -77,15 +74,21 @@ CALL_BUDGET_S = 0.2  # RNF-016-03: cada llamada del hilo de Blender, en CPU
 MEMORY_BUDGET_BYTES = int(1.5 * 1024**3)  # RNF-016-04: 1,5 GB
 MIB = 1024**2
 DETECTION_BUDGET_BYTES = 2 * MIB  # RNF-016-07: una detección de 9 acopios y 38.000 m²
-ENTITY_BUDGET_BYTES = 17 * MIB  # RNF-016-07: una retirada, un contrafuerte o un cuerpo «sobre una base»
-REVISION_BUDGET_BYTES = int(0.35 * 1024**3)  # RNF-016-07: una revisión con 20 de ellos
-ROOF_BUDGET_BYTES = 2 * MIB  # RNF-016-07: un cuerpo «bajo un techo» (sus datos dispersos)
-BODY_GAP_CEILING_BYTES = 22 * MIB
-"""El techo **medido** del hueco del cuerpo «sobre una base» de 100 ha (T49, E-2): 21,09 a 21,11 MiB medidos (la superficie entera,
-≈ 16,4 MiB, más el espesor disperso, más las tablas) más un 4 %: más que esto es que el cuerpo ha empeorado, no el hueco de siempre."""
-ROOF_GAP_CEILING_BYTES = {"18": int(2.2 * MIB), "100": int(11.5 * MIB)}
-"""Los techos **medidos** del hueco del cuerpo «bajo un techo» (T49, E-2; sus datos dispersos): 18 ha, 2,06 MiB medidos (el
-presupuesto es de 2) y 100 ha, 10,60 MiB; con un 7 % y un 8 % más (≈ 0,11 MiB por hectárea)."""
+ENTITY_BUDGET_BYTES = 25 * MIB  # RNF-016-07: una retirada, un contrafuerte o un cuerpo «sobre una base» (su superficie entera y sus tablas)
+REVISION_BUDGET_BYTES = int(0.5 * 1024**3)  # RNF-016-07: una revisión con 20 de ellos
+ROOF_FIXED_BUDGET_BYTES = int(0.25 * MIB)
+ROOF_PER_HECTARE_BUDGET_BYTES = 0.12 * MIB
+"""RNF-016-07, un cuerpo «bajo un techo» (sus datos dispersos): **0,25 MiB fijos más 0,12 MiB por hectárea de huella** (0,37, 2,41 y
+12,25 MiB con 1, 18 y 100 ha; decisión de Samuel, 20/11/2026, «Para Samuel», 3). El término fijo es lo que no depende de la huella:
+con solo 0,12 MiB por hectárea, 1 ha (0,26 MiB medidos) no cabría."""
+
+
+def roof_budget(hectares: int) -> int:
+    """El presupuesto de disco de los datos dispersos de un cuerpo «bajo un techo» de ``hectares`` ha de huella (RNF-016-07):
+    0,25 MiB + 0,12 MiB por hectárea."""
+    return ROOF_FIXED_BUDGET_BYTES + round(ROOF_PER_HECTARE_BUDGET_BYTES * hectares)
+
+
 WIDE_SECTIONS_BUDGET_S = 15.0
 """El techo de tiempo del cuerpo con 8 secciones a 200 m (T49, E-4): 11,3 s medidos (10,09 s calculados): el RNF-016-02 (10 s) **no
 se cumple** en ese caso y esta cifra no lo relaja: fija el hueco con un techo para que empeorar ponga la prueba roja."""
@@ -418,6 +421,10 @@ class DiskTest(ScaleCase):
             ep.finish(entity_store.discard_entity_steps(self.data.project, self.data.v1.uid, item.calculation.entity.code,
                                                         reason="Medición de rendimiento"))
 
+    def within(self, measured: float, budget: float, what: str) -> None:
+        """``measured`` ≤ ``budget`` (bytes); si no, el mensaje dice la cifra medida frente al presupuesto, en MiB."""
+        self.assertLessEqual(measured, budget, f"{what}: {mib(measured)} MiB frente a un presupuesto de {mib(budget)} MiB")
+
     def test_a_nine_stockpiles(self) -> None:
         """RNF-016-07: una detección de 9 acopios y 38.000 m² de huella (sus datos dispersos —la base, el espesor, el terreno sin
         acopios y la superficie con que se detectó— y sus tablas) ≤ 2 MiB."""
@@ -430,10 +437,10 @@ class DiskTest(ScaleCase):
             f"{MACHINE}): {mib(made.disk_bytes)} MiB; presupuesto {mib(DETECTION_BUDGET_BYTES)} MiB")
         self.assertEqual(len(outcome.stockpiles), 9)
         self.assertAlmostEqual(area, 38_000.0, delta=760.0, msg="no son los 38.000 m² de huella de la spec (± 2 %)")
-        self.assertLessEqual(made.disk_bytes, DETECTION_BUDGET_BYTES)
+        self.within(made.disk_bytes, DETECTION_BUDGET_BYTES, "una detección de 9 acopios")
 
-    def test_b_removal_buttress_and_body(self) -> None:
-        """RNF-016-07: una retirada, un contrafuerte de 10 ha ≤ 17 MiB (su superficie entera, comprimida, más sus tablas)."""
+    def test_b_removal_and_buttress(self) -> None:
+        """RNF-016-07: una retirada y un contrafuerte de 10 ha ≤ 25 MiB cada uno (su superficie entera, comprimida, más sus tablas)."""
         removal = self.once(steps.removal_run, sp.removal_request(
             "Retirada", max(self.detection.calculation.outcome.stockpiles, key=lambda item: item.volume_m3).key,
             detection=self.detection.calculation.entity.code))
@@ -444,12 +451,12 @@ class DiskTest(ScaleCase):
             f"{mib(removal.db_bytes)} MiB de tablas) y un contrafuerte de 10 ha ({mib(buttress.raster_bytes)} MiB y "
             f"{mib(buttress.db_bytes)} MiB; la superficie entera de {count(dperf.CELLS)} celdas de 1 m, comprimida; {MACHINE}): "
             f"{mib(removal.disk_bytes)} MiB y {mib(buttress.disk_bytes)} MiB; presupuesto {mib(ENTITY_BUDGET_BYTES)} MiB cada una")
-        self.assertLessEqual(removal.disk_bytes, ENTITY_BUDGET_BYTES, "una retirada")
-        self.assertLessEqual(buttress.disk_bytes, ENTITY_BUDGET_BYTES, "un contrafuerte de 10 ha")
+        self.within(removal.disk_bytes, ENTITY_BUDGET_BYTES, "una retirada")
+        self.within(buttress.disk_bytes, ENTITY_BUDGET_BYTES, "un contrafuerte de 10 ha")
 
     def test_c_twenty_entities(self) -> None:
         """RNF-016-07: una revisión con 20 retiradas en cadena (cada una de la superficie de la anterior, con lo que encadena la
-        orden: la capa de entidades) ≤ 0,35 GiB, cada una ≤ 17 MiB."""
+        orden: la capa de entidades) ≤ 0,5 GiB, cada una ≤ 25 MiB."""
         stockpiles = sorted(self.detection.calculation.outcome.stockpiles, key=lambda item: -item.volume_m3)[:CHAIN]
         start, sizes = sp.SURVEY, []
         for index, item in enumerate(stockpiles, start=1):
@@ -464,63 +471,48 @@ class DiskTest(ScaleCase):
             f"presupuesto {mib(ENTITY_BUDGET_BYTES)} MiB; la revisión con las {len(sizes)}: {number(total / 1024**3, 3)} GiB "
             f"({mib(total)} MiB), presupuesto {number(REVISION_BUDGET_BYTES / 1024**3, 2)} GiB")
         self.assertEqual(len(sizes), CHAIN)
-        self.assertLessEqual(total, REVISION_BUDGET_BYTES, "la revisión con 20")
-        self.assertLessEqual(max(sizes), ENTITY_BUDGET_BYTES, "una entidad")
+        self.within(total, REVISION_BUDGET_BYTES, "la revisión con 20")
+        self.within(max(sizes), ENTITY_BUDGET_BYTES, "la mayor de las 20 retiradas")
 
-    def test_d_body_on_a_base_100_ha_is_over_the_budget(self) -> None:
+    def test_d_body_on_a_base_100_ha(self) -> None:
         """RNF-016-07: un cuerpo «sobre una base» de 100 ha con 10.000 datos (la superficie entera comprimida, más el espesor
-        disperso y las tablas) ≤ 17 MiB. **No se cumple, y esta prueba fija el hueco** (``assertRaises``: se pone roja cuando se
-        cierre; ``expectedFailure`` no es verde, TST-07): la superficie entera sola ya mide ≈ 16,4 MiB y el espesor disperso de 100 ha,
-        ≈ 5 MiB; lo decide Samuel (``tasks.md``, «Para Samuel», 3). **Acotado** (T49, E-2): además, ≤ :data:`BODY_GAP_CEILING_BYTES` (el
-        hueco medido, 21,1 MiB, más un 4 %): ``assertRaises`` solo dice que pasa de 17 MiB y no vería que el cuerpo guarde 40 MiB."""
+        disperso y las tablas) ≤ 25 MiB, como una retirada o un contrafuerte."""
         made = self.once(steps.body_run, sp.body_request("Cuerpo sobre una base", "Cuerpo de 100 ha", sense="on_base"))
         self.drop(made)
         gis_perf.report(
             f"RNF-016-07: lo que guarda un cuerpo «sobre una base» de 100 ha con 10.000 datos sueltos (superficie entera y espesor "
             f"disperso {mib(made.raster_bytes)} MiB y tablas {mib(made.db_bytes)} MiB; {MACHINE}): {mib(made.disk_bytes)} MiB; "
-            f"presupuesto {mib(ENTITY_BUDGET_BYTES)} MiB: NO SE CUMPLE; techo del hueco {mib(BODY_GAP_CEILING_BYTES)} MiB")
-        with self.assertRaises(AssertionError, msg="el cuerpo de 100 ha «sobre una base» ya cabe en 17 MiB: quite el hueco"):
-            self.assertLessEqual(made.disk_bytes, ENTITY_BUDGET_BYTES)
-        self.assertLessEqual(made.disk_bytes, BODY_GAP_CEILING_BYTES,
-                             f"el cuerpo de 100 ha «sobre una base» pasó de los {mib(BODY_GAP_CEILING_BYTES)} MiB medidos del hueco: ha empeorado")
+            f"presupuesto {mib(ENTITY_BUDGET_BYTES)} MiB")
+        self.within(made.disk_bytes, ENTITY_BUDGET_BYTES, "un cuerpo «sobre una base» de 100 ha")
 
     def roof(self, footprint: str) -> sp.Calculated:
         """Un cuerpo «bajo un techo» de ``footprint`` con los datos sueltos (la superficie conocida es el terreno)."""
         return self.once(steps.body_run, sp.body_request(ep.fresh_name("Cuerpo bajo un techo"), footprint, sense="under_roof"))
 
-    def check_roof(self, footprint: str, hectares: str, *, gap: bool = False) -> None:
-        """Mide el cuerpo «bajo un techo» de ``footprint`` y lo compara con el presupuesto; con ``gap``, **fija** que no lo cumple **y
-        que no pasa del techo medido** (:data:`ROOF_GAP_CEILING_BYTES`: T49, E-2)."""
+    def check_roof(self, footprint: str, hectares: int) -> None:
+        """Mide el cuerpo «bajo un techo» de ``footprint`` (de ``hectares`` ha) y lo compara con su presupuesto
+        (:func:`roof_budget`: 0,25 MiB fijos más 0,12 MiB por hectárea) para los datos dispersos (el espesor y la base)."""
         made = self.roof(footprint)
-        ceiling = ROOF_GAP_CEILING_BYTES.get(hectares)
-        self.assertTrue(not gap or ceiling is not None, f"el hueco de {hectares} ha no tiene su techo medido")
+        budget = roof_budget(hectares)
         gis_perf.report(
             f"RNF-016-07: lo que guarda un cuerpo «bajo un techo» de {hectares} ha (sus datos dispersos: el espesor y la base, "
-            f"{mib(made.raster_bytes)} MiB; las tablas, {mib(made.db_bytes)} MiB más; {MACHINE}): presupuesto "
-            f"{mib(ROOF_BUDGET_BYTES)} MiB de datos dispersos"
-            + (f": NO SE CUMPLE; techo del hueco {mib(ceiling or 0)} MiB" if gap else ""))
-        if gap:
-            with self.assertRaises(AssertionError, msg=f"el cuerpo «bajo un techo» de {hectares} ha ya cabe en 2 MiB: quite el hueco"):
-                self.assertLessEqual(made.raster_bytes, ROOF_BUDGET_BYTES)
-            self.assertLessEqual(made.raster_bytes, ceiling or 0,
-                                 f"el cuerpo «bajo un techo» de {hectares} ha pasó de los {mib(ceiling or 0)} MiB medidos del hueco: ha empeorado")
-        else:
-            self.assertLessEqual(made.raster_bytes, ROOF_BUDGET_BYTES)
+            f"{mib(made.raster_bytes)} MiB; las tablas, {mib(made.db_bytes)} MiB más; {MACHINE}): presupuesto {mib(budget)} MiB de "
+            f"datos dispersos ({mib(ROOF_FIXED_BUDGET_BYTES)} MiB fijos más {mib(ROOF_PER_HECTARE_BUDGET_BYTES)} MiB por hectárea)")
+        self.within(made.raster_bytes, budget, f"un cuerpo «bajo un techo» de {hectares} ha (sus datos dispersos)")
 
     def test_e_body_under_a_roof_1_ha(self) -> None:
-        """RNF-016-07: un cuerpo «bajo un techo» de 1 ha (sus datos dispersos) ≤ 2 MiB."""
-        self.check_roof("Cuerpo de 1 ha", "1")
+        """RNF-016-07: un cuerpo «bajo un techo» de 1 ha (sus datos dispersos) ≤ 0,25 MiB + 0,12 MiB = 0,37 MiB."""
+        self.check_roof("Cuerpo de 1 ha", 1)
 
-    def test_f_body_under_a_roof_18_ha_is_over_the_budget_by_3_percent(self) -> None:
-        """RNF-016-07: un cuerpo «bajo un techo» de 18 ha (sus datos dispersos) ≤ 2 MiB. La T25 midió ≈ 0,11 MiB por hectárea (el
-        espesor y la base, float64 de un ruido que se comprime poco): 2 MiB son ≈ 18 ha. **No se cumple, por un 3 %, y esta prueba
-        fija el hueco** (``assertRaises``)."""
-        self.check_roof("Cuerpo de 18 ha", "18", gap=True)
+    def test_f_body_under_a_roof_18_ha(self) -> None:
+        """RNF-016-07: un cuerpo «bajo un techo» de 18 ha (sus datos dispersos) ≤ 0,25 MiB + 18 × 0,12 MiB = 2,41 MiB. La T25 midió
+        ≈ 0,11 MiB por hectárea (el espesor y la base, float64 de un ruido que se comprime poco)."""
+        self.check_roof("Cuerpo de 18 ha", 18)
 
-    def test_g_body_under_a_roof_100_ha_is_over_the_budget(self) -> None:
-        """RNF-016-07: un cuerpo «bajo un techo» de 100 ha con 10.000 datos (sus datos dispersos) ≤ 2 MiB. **No se cumple, y esta
-        prueba fija el hueco** (``assertRaises``): ≈ 10,6 MiB; lo decide Samuel (``tasks.md``, «Para Samuel», 3)."""
-        self.check_roof("Cuerpo de 100 ha", "100", gap=True)
+    def test_g_body_under_a_roof_100_ha(self) -> None:
+        """RNF-016-07: un cuerpo «bajo un techo» de 100 ha con 10.000 datos (sus datos dispersos) ≤ 0,25 MiB + 100 × 0,12 MiB =
+        12,25 MiB."""
+        self.check_roof("Cuerpo de 100 ha", 100)
 
 
 # --- En la red ------------------------------------------------------------------------------------------------------
