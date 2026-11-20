@@ -1344,9 +1344,15 @@ class SupportedCardDocTest(unittest.TestCase):
                      # el cierre del 20/11/2026: lo que decidió Samuel
                      "**Lo que decidió Samuel de la 016**", "«Sí, por defecto»", "una excepción escrita a RF-015-09",
                      "la spec 0.4 dice «su Z o un campo»", "0,25 MiB + 0,12 MiB por hectárea", "`specs/016-…/diff-011.md`",
-                     "**Cumplen la 0.4**"):
+                     "**Cumplen la 0.4**",
+                     # T53 (decisión 8 de «Para Samuel»): la excepción a RF-015-09 tolera las celdas sin dato y las avisa con su lugar
+                     "se avisan con su lugar", "`des.removal_no_data`", "`des.buttress_no_data`", "`supported_edge.no_data_notice`",
+                     "las dos avisan con su lugar", "y avisan con su lugar (8; el aviso lo añadió la T53)"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, text)
+        for stale in ("no se retiran y no avisan", "no se avisan** (se toleran", "sin aviso con su lugar (8)"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, text)  # T53: era un error de la spec 0.4: la excepción a RF-015-09 sí avisa con su lugar
         row = re.search(r"^\| 016-des-acopios-contrafuerte-y-cuerpos-apoyados .*$", self.des, re.MULTILINE)
         self.assertIsNotNone(row)
         assert row is not None
@@ -1487,9 +1493,15 @@ class SupportedGuideDocTest(unittest.TestCase):
         45° y 3 m (constantes, no parámetros) y «Como plataforma» (el eje de borde a borde)."""
         removal = self.guide_section("## 8. Retirar un acopio…")
         for fact in ("sin valor por defecto", "no sube ninguna celda ni baja de la base", "aunque su corte no esté admitido",
-                     "**obsoleta**", "sin registrar nada"):
+                     "**obsoleta**", "sin registrar nada",
+                     # T53 (decisión 8 de «Para Samuel»): las celdas de la huella sin dato se toleran y se avisan con su lugar
+                     "no se retiran, no cuentan en el volumen y se avisan", "**hay un aviso, en ámbar,**",
+                     "su área en m² y el lugar de la primera", "no impide crear la retirada"):
             with self.subTest(section="8", fact=fact):
                 self.assertIn(fact, removal)
+        for stale in ("no se retiran y no se avisan", "no se avisan"):
+            with self.subTest(section="8", stale=stale):
+                self.assertNotIn(stale, removal)  # T53: la excepción a RF-015-09 sí avisa con su lugar
         resting = self.guide_section("## 9. Lo que se apoya en el acopio, y «apoyo retirado»")
         for fact in ("una sola lista", "No se retira sin su confirmación expresa", "Confirmar lo que se le apoya y crear",
                      "espera una decisión", "también con la detección del proyecto", "con un **relleno hecho antes que la detección**",
@@ -1559,9 +1571,14 @@ class SupportedGuideDocTest(unittest.TestCase):
                      "El apoyo es solo una dependencia", "no cambia el cálculo", "Ese aviso es el único del salto creado del borde "
                      "del contrafuerte", "la zona de coronación que la rejilla recorta", "del **orden** con la otra superficie",
                      "**por debajo** de ella, **igual** a ella o una zona **sin dato**", "pulse **Recalcular lo obsoleto** antes de "
-                     "**Retirar un acopio…**"):
+                     "**Retirar un acopio…**",
+                     # T53 (decisión 8 de «Para Samuel»): las celdas de la zona sin dato se toleran y se avisan con su lugar
+                     "**Las celdas de la zona sin dato** de la partida no siembran ni suben y no cuentan en el volumen",
+                     "pero **las avisa**, en ámbar,", "su área en m² y el lugar de la primera", "una zona **entera** sin dato sigue "
+                     "rechazándose"):
             with self.subTest(section="11", fact=fact):
                 self.assertIn(fact, buttress)
+        self.assertNotIn("No avisa de las celdas sin dato", buttress)  # T53: la excepción a RF-015-09 sí avisa con su lugar
         body = self.guide_section("## 12. Cuerpo apoyado…")
         for fact in ("Nunca se interpola la cota de la base", "La M de las líneas 3D no se ofrece", "más próximo",
                      "se rechaza", "8 s",
@@ -1608,9 +1625,13 @@ class SupportedGuideDocTest(unittest.TestCase):
                      "no se puede probar", "de 140 a 188 ms", "12,04 s", "+2,9 s",
                      "«Calcular…» solo ofrece plataformas", "El apoyo de un contrafuerte no cambia el cálculo",
                      "el cero del borde de un cuerpo se promedia con el dato", "toleran las celdas sin dato",
+                     "las avisan con su lugar", "**las dos avisan con su lugar** (RF-015-13)",
                      "no enseña «Lo que se apoya en ella»", "no está marcada como no editable"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, limits)
+        for stale in ("sin avisar** (con 30 celdas", "el aviso con su lugar no se hace"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, limits)  # T53: era un error de la spec 0.4 y de la guía: la excepción a RF-015-09 sí avisa
         self.assertNotIn("no deja «apoyo retirado»", limits)  # T45
         for stale in ("nacen «In situ»", "(el H3 está pendiente)", "No se ha visto en pantalla", "17,7 ha", "Lo decide Samuel.",
                       "se proponen a Samuel", "Se propone dejarlo así"):
@@ -1623,6 +1644,33 @@ class SupportedGuideDocTest(unittest.TestCase):
                 self.assertNotIn(gone, self.guide)
         # lo que dice sobre las cifras de cada tarea es lo que mide el código: la M se rechaza con su código
         self.assertIn("des.body_data_m", dmessages.MESSAGES)
+
+    def test_the_cells_without_data_are_told_in_the_guide_and_the_code_warns_them(self) -> None:
+        """RF-015-13, RF-015-09 (excepción de la 016, spec 0.4; T53, decisión 8 de «Para Samuel», 20/11/2026): las celdas sin dato de la
+        huella de una retirada y de la zona de un contrafuerte se toleran **y se avisan con su lugar**: la guía lo dice en §8, §11 y §16
+        y el catálogo tiene los dos avisos (``des.removal_no_data`` y ``des.buttress_no_data``, en ámbar, con las celdas, el área y el
+        lugar de la primera)."""
+        for code in ("des.removal_no_data", "des.buttress_no_data"):
+            with self.subTest(code=code):
+                message = dmessages.MESSAGES[code]
+                self.assertEqual(message.severity, "warning")
+                self.assertEqual(message.count, "cells")
+                for marker in ("cells", "area", "x", "y"):
+                    self.assertIn("{" + marker + "}", message.es)
+        for heading, fact in (("## 8. Retirar un acopio…", "hay un aviso, en ámbar,"), ("## 11. Contrafuerte…", "las avisa"),
+                              ("## 16. Lo que no hace todavía", "las avisan con su lugar")):
+            with self.subTest(section=heading[:5]):
+                self.assertIn(fact, self.guide_section(heading))
+
+    def test_the_cubicacion_guide_says_a_new_anthropic_unit_is_born_loose(self) -> None:
+        """RF-011-11, RF-011-16 (spec 011 0.4: el diff de la 016, ``diff-011.md``; decisión 6 de «Para Samuel»; T53): la guía de la cubicación
+        (§8) dice que una unidad antrópica nueva de «Materiales y densidades…» nace «Suelto» (V·ρ/K) y que se cambia a «In situ» si lo
+        es, y que una natural nace «In situ» y lo ya guardado conserva su estado."""
+        text = one_line(docs.read("docs/usuario/cubicacion.md"))
+        for fact in ("una unidad antrópica nueva (un acopio, un escombro) nace «Suelto» (V·ρ/K); cámbiela a «In situ» si lo es",
+                     "Una unidad natural nace «In situ» y lo ya guardado conserva su estado"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, text)
 
 
 @docs.requires_docs
@@ -1728,9 +1776,12 @@ class SupportedStateDocTest(unittest.TestCase):
                      "no salta en el uso normal", "es el único aviso del salto del borde", "es solo una dependencia",
                      "Las líneas 3D han de ser líneas de rotura del proyecto", "el cero se promedia con el dato",
                      "**Lo que cambia del marco de las entidades de la 015**", "«Cambiar parámetro…» vale para los cinco tipos",
-                     "«Calcular…» solo ofrece plataformas", "la pared no salta con la transición del plan"):
+                     "«Calcular…» solo ofrece plataformas", "la pared no salta con la transición del plan",
+                     # la decisión 8 de «Para Samuel»: las celdas sin dato de la huella se toleran y se avisan con su lugar
+                     "**Las celdas de la huella sin dato también avisan**", "y las avisan con su lugar"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, entry)
+        self.assertNotIn("toleran celdas sin dato sin avisar", entry)
         self.assertNotIn("una unidad nueva nace «In situ»", entry)  # T52: la antrópica nace «Suelto»
         for jargon in ("RF-016", "T3", "T4", "T5", "milestone", "`des_stk_"):
             with self.subTest(jargon=jargon):

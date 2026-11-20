@@ -162,7 +162,9 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     apoya** (un relleno, un contrafuerte, la superficie de otra versión) y **no lo retira sin su confirmación**; lo que se apoyaba queda
     en «apoyo retirado» —también si la detección es del proyecto, que es lo normal, y si el relleno se hizo antes que la detección— y
     «Recalcular lo obsoleto» no lo rehace hasta que se decida. **Lo que no se puede retirar avisa** (por ejemplo, un acopio cortado por el
-    perímetro de actuación) con su volumen y su lugar. La **pared** que quede donde los límites no dejan retirar se mide siempre y,
+    perímetro de actuación) con su volumen y su lugar. **Las celdas de la huella sin dato también avisan**, en la retirada y en el
+    contrafuerte (no se retiran ni suben, no cuentan en el volumen y no impiden crear): el resumen dice cuántas son, su área y dónde
+    está la primera. La **pared** que quede donde los límites no dejan retirar se mide siempre y,
     si la hubiera, se avisa con su altura, su inclinación y su lugar y no se crea sin confirmar (con más de 45° y 3 m, además con un
     motivo que queda registrado); con la transición que usa, ninguna cara creada pasa del ángulo, así que no salta en el uso normal. Con
     **Como plataforma**, deja la huella entera en el plano de su base y crea con ella una **plataforma**, con su eje
@@ -202,7 +204,8 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     plataforma del acopio 7 ni la transición, que queda sin ejecutar con los datos originales de la V10); un cuerpo con secciones muy separadas
     pasa de los 10 s que pedía la spec (avisa antes; la spec lo admite con el aviso); la pared no salta con la transición del plan y
     «como plataforma» no la mide; «Calcular…» solo ofrece plataformas, así que lo traído de otra versión de los demás tipos queda sin
-    calcular; la retirada y el contrafuerte toleran celdas sin dato sin avisar (una excepción escrita de la spec); y una verificación
+    calcular; la retirada y el contrafuerte toleran las celdas sin dato de su huella (una excepción escrita de la spec: se dejan como
+    están y no cuentan en el volumen) y las avisan con su lugar; y una verificación
     hecha con una detección obsoleta no queda obsoleta sola al recalcularla (hay que verificar otra vez). Lo que vio la pantalla y no se
     arregló: «Recalcular lo obsoleto» no rehace nada mientras una unidad espera una decisión, y su contador de obsoletos sube en cada
     intento fallido junto a una plataforma protegida; dos textos repiten una palabra; el título del objeto de la detección dice «NO AL

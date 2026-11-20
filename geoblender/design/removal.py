@@ -40,7 +40,10 @@ la base donde el dominio no admite la retirada es ``kept_m3`` (``máx(z − B, 0
 :attr:`RemovalOutcome.above_base_m3` (``Σ máx(z − B, 0)`` en la huella, calculado aparte) a ≤ 10⁻⁹ relativo. Con 0 m³
 retirados del acopio, el aviso ``des.removal_nothing`` (RF-016-13: el acopio ya no está en la superficie de partida) y, con ``kept_m3 > 0``,
 ``des.removal_kept`` (T48, hallazgo B-2: lo que las máscaras no dejan retirar, con su volumen y el centro de las celdas donde queda). Las
-celdas de la huella sin dato no cuentan, y una celda del anillo sin dato no es semilla.
+celdas de la huella sin dato no se retiran ni cuentan, y una celda del anillo sin dato no es semilla. **La retirada tolera esas celdas** (la
+excepción de la 016 a RF-015-09, spec 0.4: ninguna cifra cambia y no impide crear) **pero las avisa con su lugar** (T53, decisión 8 de «Para
+Samuel», 20/11/2026; RF-015-13): ``des.removal_no_data`` con cuántas son, su área y la primera, después de los dos avisos anteriores
+(:func:`~.supported_edge.no_data_notice`; solo las de la huella, no las del anillo).
 
 **Lo que se apoyaba** (T18; RF-016-14, RF-015-15 y 17; A7; error 59): :func:`resting_on` va **hacia atrás por la cadena de superficies**
 (``surface``, el grafo de la 008) desde la de partida hasta la superficie con que se detectó el acopio y atribuye lo que hay sobre él a
@@ -154,6 +157,7 @@ from .report import _thickness
 from .seeds import pace_progress
 from .stockpiles import Stockpile, footprint_runs, window_grid
 from .store import _min_thickness
+from .supported_edge import no_data_notice
 from .surfaces import project_frame, read_surface_window
 
 if TYPE_CHECKING:
@@ -194,6 +198,7 @@ __all__ = [
 _PHASE = "removal"
 _NOTHING = "des.removal_nothing"
 _KEPT = "des.removal_kept"
+_NO_DATA = "des.removal_no_data"
 _WALL_PHASE = "removal_wall"
 
 WALL_REASON_MIN_ANGLE_DEG = 45.0
@@ -392,7 +397,7 @@ class RemovalOutcome:
     se mida: :func:`measure_wall`, A8; 0 m si ninguna) y ``wall`` la pared medida (:class:`Wall`: sus tramos y lo que
     pide confirmar; ``None`` mientras no se mida). ``transition_deg``, ``mesh_factor`` y ``metric`` son los de la retirada,
     ``cell_area_m2`` el área de una celda y ``notices`` los avisos (``des.removal_nothing`` con 0 m³ retirados, ``des.removal_kept`` con lo
-    no retirado y, medida la pared, ``des.removal_wall``)."""
+    no retirado, ``des.removal_no_data`` con las celdas de la huella sin dato —T53— y, medida la pared, ``des.removal_wall``)."""
 
     name: str
     code: str
@@ -510,6 +515,11 @@ def _removal_units(job: RemovalJob, settings: _Settings) -> Generator[None, None
         found.append(Notice(_KEPT, {"stockpile": item.name, "volume": kept,
                                     "x": float(np.mean(sub.west + (cols_over + 0.5) * sub.dx)),
                                     "y": float(np.mean(sub.north - (rows_over + 0.5) * sub.dy))}))
+    # T53 (decisión 8 de «Para Samuel»): las celdas de la huella sin dato se toleran (excepción de la 016 a RF-015-09: no se retiran y no
+    # cuentan) pero se avisan con su lugar (RF-015-13); las del anillo, fuera de la huella, no son de la huella
+    missing = no_data_notice(_NO_DATA, {"stockpile": item.name}, footprint & ~has_data, grid, window)
+    if missing is not None:
+        found.append(missing)
     return RemovalOutcome(job.request.name, job.code, item.key, item.name, window, surface, footprint, admitted, held,
                           seeds, removed, resting, transition, kept, above, transition_cells * area,
                           settings.angle_deg, settings.mesh_factor, settings.metric, area, None, tuple(found))

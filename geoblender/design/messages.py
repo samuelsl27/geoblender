@@ -2458,6 +2458,25 @@ CATALOG: tuple[Message, ...] = (
         "siempre y lo que queda es el terreno que las máscaras protegen.",
         "warning",
     ),
+    # T53 (decisión 8 de «Para Samuel», 20/11/2026): la retirada tolera las celdas de su huella sin dato (la excepción de la 016 a RF-015-09)
+    # pero las avisa con su lugar (RF-015-13).
+    Message(
+        "des.removal_no_data",
+        "Removal of stockpile «{stockpile}»: {cells} cells ({area} m²) of its footprint have no data in the start surface, "
+        "the first at x = {x} m, y = {y} m; the cells without data are left as they are and do not count in the volume; it "
+        "can still be created.",
+        "Retirada del acopio «{stockpile}»: {cells} celdas ({area} m²) de su huella no tienen dato en la superficie de "
+        "partida, la primera en x = {x} m, y = {y} m; las celdas sin dato se dejan como están y no cuentan en el "
+        "volumen; se puede crear igualmente.",
+        "warning",
+        count="cells",
+        one_msgid="Removal of stockpile «{stockpile}»: {cells} cell ({area} m²) of its footprint has no data in the start "
+        "surface, at x = {x} m, y = {y} m; the cell without data is left as it is and does not count in the volume; it "
+        "can still be created.",
+        one_es="Retirada del acopio «{stockpile}»: {cells} celda ({area} m²) de su huella no tiene dato en la superficie "
+        "de partida, en x = {x} m, y = {y} m; la celda sin dato se deja como está y no cuenta en el volumen; se puede "
+        "crear igualmente.",
+    ),
     Message(
         "des.removal_resting",
         "{volume} m³ of material rest on stockpile «{stockpile}», placed by {items}; the stockpile is not removed "
@@ -2609,6 +2628,25 @@ CATALOG: tuple[Message, ...] = (
         one_es="Contrafuerte «{entity}»: la rejilla del proyecto recorta su zona de coronación: {area} m² de ella "
         "({cells} celda) quedan fuera de la rejilla, en x = {x} m, y = {y} m; solo se usa la parte de dentro; amplíe "
         "la ventana de trabajo del proyecto o mueva la zona.",
+    ),
+    # T53 (decisión 8 de «Para Samuel», 20/11/2026): el contrafuerte tolera las celdas de su zona de coronación sin dato en la partida (la
+    # excepción de la 016 a RF-015-09: no siembran ni suben) pero las avisa con su lugar (RF-015-13).
+    Message(
+        "des.buttress_no_data",
+        "Buttress «{entity}»: {cells} cells ({area} m²) of its crown zone have no data in the start surface, the first at "
+        "x = {x} m, y = {y} m; the cells without data are left as they are and do not count in the volume; it can still "
+        "be created.",
+        "Contrafuerte «{entity}»: {cells} celdas ({area} m²) de su zona de coronación no tienen dato en la superficie de "
+        "partida, la primera en x = {x} m, y = {y} m; las celdas sin dato se dejan como están y no cuentan en el volumen; "
+        "se puede crear igualmente.",
+        "warning",
+        count="cells",
+        one_msgid="Buttress «{entity}»: {cells} cell ({area} m²) of its crown zone has no data in the start surface, at "
+        "x = {x} m, y = {y} m; the cell without data is left as it is and does not count in the volume; it can still be "
+        "created.",
+        one_es="Contrafuerte «{entity}»: {cells} celda ({area} m²) de su zona de coronación no tiene dato en la "
+        "superficie de partida, en x = {x} m, y = {y} m; la celda sin dato se deja como está y no cuenta en el volumen; "
+        "se puede crear igualmente.",
     ),
     Message(
         "des.buttress_declared_reason",

@@ -498,7 +498,8 @@ class StepsTest(Close):
         full = buttress.measure_cutoff(self.job, self.outcome, PROJECT)
         self.assertIsNot(full, self.outcome)
         self.assertIsNone(self.outcome.cutoff_m2)
-        self.assertEqual(self.outcome.notices, ())
+        # T53: lo único que lleva el original es el aviso de la celda de su zona sin dato (el relieve la tiene); nada del pie cortado
+        self.assertEqual([item.code for item in self.outcome.notices], ["des.buttress_no_data"])
         self.assertEqual([array.tobytes() for array in (self.job.start, self.job.zone, self.job.fill_allowed)], before_job)
         self.assertEqual([array.tobytes() for array in (self.outcome.surface, self.outcome.stepped, self.outcome.footprint)],
                          before_outcome)

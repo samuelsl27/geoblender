@@ -49,6 +49,13 @@ son avisos: ninguna cifra cambia. **El aviso genérico del salto creado del bord
 principal, 19/11/2026): saldría en casi todo contrafuerte con su pie natural; el salto de la pared que deja el borde del relleno admitido lo
 da el pie cortado (abajo).
 
+**Las celdas sin dato de la zona** (T53; decisión 8 de «Para Samuel», 20/11/2026). RF-015-09 manda rechazar el cálculo si a la huella de una
+entidad le falta dato; la 016 **exceptúa** al contrafuerte (spec 0.4, §4: las celdas de la zona de coronación sin dato en la partida no siembran,
+no suben y no cuentan en el volumen, y no impiden crear) **pero las avisa con su lugar** (RF-015-13): ``des.buttress_no_data`` con cuántas son,
+su área y la primera (:func:`~.supported_edge.no_data_notice`; entre el de la zona recortada y el de lo que llega al borde), sin cambiar ninguna
+cifra. Lo que sube junto a una celda sin dato **fuera** de la zona lo sigue dando ``des.entity_edge_outside``. Una zona **entera** sin dato sigue
+rechazándose (``des.buttress_zone_no_data``, RF-016-18: no hay contrafuerte).
+
 **El pie cortado** (T28; RF-016-19; D-24; error 19). Donde el relleno no está admitido el contrafuerte no sube (A10 no recorta nada
 más), y si eso le quita parte del pie hay que decirlo: :func:`cutoff_steps` (:func:`measure_cutoff`, de una vez) toma el escalonado
 sin máscara (``stepped``), le aplica la misma composición con **todo** admitido y lo compara con la superficie compuesta: **faltan**
@@ -113,7 +120,7 @@ from .provenance import buttress_figures
 from .report import _thickness
 from .seeds import pace_progress
 from .stockpiles import window_grid
-from .supported_edge import Clipped, as_parts, clipped_notice, clipped_units, outside_notice, reaches_outside
+from .supported_edge import Clipped, as_parts, clipped_notice, clipped_units, no_data_notice, outside_notice, reaches_outside
 from .thickness import derive
 
 __all__ = [
@@ -135,6 +142,7 @@ _PHASE = "buttress"
 _CUTOFF_PHASE = "buttress_cutoff"
 _FOOT_CUT = "des.buttress_foot_cut"
 _CLIPPED = "des.buttress_footprint_clipped"
+_NO_DATA = "des.buttress_no_data"
 _OFF_ANCHOR = "des.buttress_crown_off_anchor"
 _BELOW_SUPPORT = "des.buttress_crown_below_support"
 _AT_SUPPORT = "des.buttress_crown_at_support"
@@ -383,7 +391,8 @@ class ButtressOutcome:
     RF-015-13 con el contrafuerte (T46): ``clipped`` (lo que la rejilla recorta de la zona de coronación: ``(celdas, x, y)``, ``None`` si no
     recorta nada ni se dio la geometría de la zona al trabajo) y ``outside`` (booleana, de la forma de la ventana: las celdas que el
     contrafuerte sube **fuera de su zona de coronación** y llegan al borde de la rejilla o a celdas sin dato de la partida), con los avisos
-    ``des.buttress_footprint_clipped`` y ``des.entity_edge_outside`` al principio de ``notices``."""
+    ``des.buttress_footprint_clipped`` y ``des.entity_edge_outside`` al principio de ``notices``, y entre los dos, T53,
+    ``des.buttress_no_data`` (las celdas de la zona sin dato, que se toleran y se avisan)."""
 
     name: str
     code: str
@@ -500,6 +509,12 @@ def _outcome_units(job: ButtressJob, settings: _Settings, seed: np.ndarray, step
         found = clipped_notice(_CLIPPED, job.request.name, clipped, grid)
         if found is not None:
             notices.append(found)
+    # T53 (decisión 8 de «Para Samuel»): las celdas de la zona sin dato en la partida se toleran (excepción de la 016 a RF-015-09: no
+    # siembran ni suben y no cuentan en el volumen) pero se avisan con su lugar (RF-015-13); lo que sube junto a una celda sin dato de fuera
+    # de la zona lo da el aviso de abajo
+    found = no_data_notice(_NO_DATA, {"entity": job.request.name}, job.zone & ~np.isfinite(start), grid, job.window)
+    if found is not None:
+        notices.append(found)
     outside = reaches_outside(body & ~job.zone, ~np.isfinite(start) & ~job.zone, job.window, grid)
     found = outside_notice(job.request.name, outside, grid, job.window)
     if found is not None:

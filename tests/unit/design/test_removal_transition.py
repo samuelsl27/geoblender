@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import json
 import math
 import time
 import unittest
@@ -49,6 +50,7 @@ platform = import_geoblender("design.platform")
 provenance = import_geoblender("design.provenance")
 removal = import_geoblender("design.removal")
 stockpiles = import_geoblender("design.stockpiles")
+supported_store = import_geoblender("design.supported_store")
 
 DesignError = messages.DesignError
 STEP = 2.0
@@ -342,6 +344,124 @@ class HandCasesTest(Close):
         self.assertTrue(np.all(outcome.surface == 100.0))
         self.figures(outcome, removed=36 * 4.0 * AREA)
         self.assertFalse(outcome.seeds.any())
+
+
+# --- Las celdas sin dato de la huella: se toleran y se avisan (T53) ------------------------------------------------------
+
+
+NO_DATA = "des.removal_no_data"
+
+
+class NoDataNoticeTest(Close):
+    """RF-015-13, RF-015-09 (excepción de la 016, spec 0.4), RF-016-11, RF-016-13; T53, decisión 8 de «Para Samuel» (20/11/2026): la
+    retirada **tolera** las celdas sin dato de su huella (no se retiran y no cuentan: ninguna cifra cambia) y **avisa con su lugar**
+    (``des.removal_no_data``: cuántas, su área y la primera), sin impedir crear. Las del anillo de fuera de la huella no son de la huella."""
+
+    HOLES = ((9, 9), (9, 10), (8, 12))
+    """Tres celdas de la huella (filas 7 a 12, columnas 7 a 12) sin dato; la primera de norte a sur y de oeste a este es la (8, 12)."""
+
+    def holed(self) -> Scene:
+        scene = block_scene()
+        for cell in self.HOLES:
+            scene.z[cell] = np.nan
+        return scene
+
+    def test_the_cells_without_data_of_the_footprint_are_told_with_their_number_their_area_and_their_place(self) -> None:
+        """RF-015-13: tres celdas de la huella sin dato dan **un** aviso en ámbar con las celdas (3), su área (12 m²) y el centro de la
+        primera, la (8, 12) —filas de norte a sur, columnas de oeste a este—, a mano desde la rejilla; en español y en inglés, con el
+        acopio, lo que se hace con ellas (se dejan como están y no cuentan en el volumen) y sin ningún marcador sin llenar."""
+        scene = self.holed()
+        outcome = outcome_of(scene)
+        (notice,) = [item for item in outcome.notices if item.code == NO_DATA]
+        self.assertEqual(notice.severity, "warning")
+        values = dict(notice.values)
+        self.assertEqual(values, {"stockpile": "Acopio de prueba", "cells": 3, "area": 3 * AREA,
+                                  "x": scene.grid.west + 12.5 * STEP, "y": scene.grid.north - 8.5 * STEP})
+        spanish, english = notice.text("es"), notice.text("en")
+        for words in ("«Acopio de prueba»", "3 celdas (12 m²)", "se dejan como están", "no cuentan en el volumen",
+                      "la primera en x = ", ", y = "):
+            self.assertIn(words, spanish)
+        for words in ("«Acopio de prueba»", "3 cells (12 m²)", "left as they are", "do not count in the volume"):
+            self.assertIn(words, english)
+        self.assertNotIn("{", spanish + english)
+        self.assertNotIn("?", spanish + english)
+
+    def test_one_cell_is_told_in_the_singular(self) -> None:
+        """RF-015-13: con una sola celda sin dato el texto dice «1 celda» y su lugar (no «1 celdas»), en los dos idiomas."""
+        scene = block_scene()
+        scene.z[10, 8] = np.nan
+        (notice,) = [item for item in outcome_of(scene).notices if item.code == NO_DATA]
+        self.assertEqual((notice.values["cells"], notice.values["area"]), (1, AREA))
+        self.assertIn("1 celda (4 m²)", notice.text("es"))
+        self.assertIn("se deja como está y no cuenta en el volumen", notice.text("es"))
+        self.assertIn("1 cell (4 m²)", notice.text("en"))
+        self.assertNotIn("1 celdas", notice.text("es"))
+        self.assertNotIn("1 cells", notice.text("en"))
+
+    def test_nothing_else_changes_the_figures_the_surface_and_the_cells_are_what_they_were(self) -> None:
+        """RF-016-11, RF-016-13, RF-015-09 (excepción): lo que cambia es solo el aviso. Con las tres celdas sin dato se retiran 33 celdas ·
+        4 m · 4 m² = 528 m³ (lo de siempre: «queda sin dato y no cuenta»), las tres siguen sin dato en la superficie, no son semilla ni se
+        retiran, y el resto es el cálculo independiente (``hand_removal``) a ≤ 10⁻⁹."""
+        scene = self.holed()
+        outcome = outcome_of(scene)
+        surface = outcome.compose(scene.z)
+        for cell in self.HOLES:
+            self.assertTrue(np.isnan(surface[cell]), cell)
+        self.figures(outcome, removed=33 * BLOCK_M * AREA)
+        hand = hand_of(scene)
+        self.assertTrue(np.allclose(surface, hand.surface, rtol=0.0, atol=1e-9, equal_nan=True))
+        self.close(outcome.removed_m3, hand.removed, what="retirado")
+        self.assertEqual(cells_of(outcome, outcome.admitted), hand.admitted)
+        self.assertEqual(int(np.count_nonzero(outcome.admitted)), 33)
+        self.assertEqual(int(np.count_nonzero(outcome.footprint)), 36)
+
+    def test_no_cell_without_data_in_the_footprint_says_nothing_even_with_one_in_the_ring(self) -> None:
+        """RF-015-13: sin celdas sin dato en la huella no hay aviso; una celda sin dato **fuera de la huella** (la del anillo: no es
+        semilla, pero no es de la huella) tampoco lo da, ni el terreno sin dato lejos de ella."""
+        scene = block_scene()
+        self.assertEqual(outcome_of(scene).notices, ())
+        scene.z[6, 9] = np.nan  # el anillo de semillas
+        scene.z[0, 0] = np.nan  # lejos
+        self.assertEqual([item.code for item in outcome_of(scene).notices], [])
+
+    def test_the_notice_goes_after_the_nothing_and_the_kept_notices(self) -> None:
+        """RF-015-13, RF-016-13: el orden de los avisos del cálculo: primero los 0 m³ retirados (``des.removal_nothing``), luego lo que las
+        máscaras no dejan retirar (``des.removal_kept``) y, al final, lo que no tiene dato. Con el dominio acabando en la columna 10 y una
+        celda sin dato sale ``[kept, no_data]``; con **toda** la huella sin dato, ``[nothing, no_data]``: 0 m³ retirados y 36 celdas sin dato."""
+        scene = block_scene()
+        scene.domain[:, 11:] = False
+        scene.z[8, 8] = np.nan
+        self.assertEqual([item.code for item in outcome_of(scene).notices], [KEPT, NO_DATA])
+        wholly = block_scene()
+        wholly.z[BLOCK] = np.nan
+        outcome = outcome_of(wholly)
+        self.assertEqual([item.code for item in outcome.notices], [NOTHING, NO_DATA])
+        self.assertEqual((outcome.notices[1].values["cells"], outcome.notices[1].values["area"]), (36, 36 * AREA))
+        self.assertEqual(outcome.removed_m3, 0.0)
+
+    def test_a_window_gives_the_same_notice_as_the_whole_grid(self) -> None:
+        """RF-015-13, A0 (plan 016 §5.4): leer solo la ventana de trabajo (``removal_window``) da el mismo aviso —las mismas celdas y
+        el mismo lugar, con el desplazamiento de la ventana— que la rejilla entera."""
+        scene = self.holed()
+        job = job_of(scene)
+        window = removal.removal_window(job.stockpile, scene.grid)
+        self.assertGreater(window[0].start, 0, "la ventana no es la rejilla entera")
+        whole = removal.remove_stockpile(job)
+        part = removal.remove_stockpile(job_of(scene, region=window))
+        self.assertEqual([(item.code, dict(item.values)) for item in part.notices],
+                         [(item.code, dict(item.values)) for item in whole.notices])
+        self.assertEqual([item.code for item in whole.notices], [NO_DATA])
+
+    def test_the_notice_goes_to_the_report(self) -> None:
+        """RF-015-13, RF-015-02: el informe (``des_prp_``) lleva el aviso al final con su código y sus valores (lo que repite la
+        reproducción: es del resultado); sin celdas sin dato, el informe no lleva ninguna fila de aviso."""
+        outcome = outcome_of(self.holed())
+        rows = supported_store.removal_report_rows(outcome)
+        warned = [row for row in rows if row[0] == "warning"]
+        self.assertEqual(len(warned), 1)
+        self.assertEqual(rows[-1], warned[0])
+        self.assertEqual(json.loads(warned[0][3]), {"code": NO_DATA, "values": dict(outcome.notices[0].values)})
+        self.assertEqual([row for row in supported_store.removal_report_rows(outcome_of(block_scene())) if row[0] == "warning"], [])
 
 
 # --- Contra la implementación independiente --------------------------------------------------------------------------

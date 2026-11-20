@@ -69,6 +69,8 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.removal_detection_stale": ("error", "RF-016-12", {"stockpile", "detection", "cause"}),
     "des.removal_nothing": ("warning", "RF-016-13", {"stockpile"}),
     "des.removal_kept": ("warning", "RF-016-13", {"stockpile", "volume", *POSITION}),  # T48: lo que las máscaras no dejan retirar
+    # T53 (decisión 8 de «Para Samuel», 20/11/2026): la excepción a RF-015-09 tolera las celdas sin dato de la huella, pero las avisa con su lugar.
+    "des.removal_no_data": ("warning", "RF-015-13", {"stockpile", "cells", "area", *POSITION}),
     "des.removal_resting": ("warning", "RF-016-14", {"stockpile", "volume", "items"}),
     "des.removal_resting_unconfirmed": ("error", "RF-016-14", {"stockpile", "volume"}),
     "des.removal_wall": ("warning", "RF-016-15",
@@ -96,6 +98,8 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     "des.buttress_foot_cut": ("warning", "RF-016-19", {"entity", "area", "volume", "step", *POSITION}),
     # T46: RF-015-13 con el contrafuerte: lo que la rejilla recorta de su zona de coronación.
     "des.buttress_footprint_clipped": ("warning", "RF-015-13", {"entity", "cells", "area", *POSITION}),
+    # T53: la zona de coronación con celdas sin dato en la partida (excepción a RF-015-09): se toleran y se avisan con su lugar.
+    "des.buttress_no_data": ("warning", "RF-015-13", {"entity", "cells", "area", *POSITION}),
     "des.buttress_declared_reason": ("note", "RF-015-10", {"name"}),
     "des.buttress_support_removed": ("note", "RF-015-17", {"name"}),
     # RF-016-20 a 22: el cuerpo apoyado.

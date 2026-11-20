@@ -19,6 +19,11 @@ helpers de aquí no los usa la plataforma) con las mismas medidas y los mismos n
   celdas que la entidad mueve (``changed``) y están en el borde de la rejilla (si la ventana de trabajo llega a él) o junto a una celda
   sin dato que no es de su huella (``nodata``, a una celda, en los ocho vecinos). Ahí la superficie puede quedar cortada: aviso con el
   área y el lugar de la primera, ``des.entity_edge_outside`` (el de la plataforma).
+- :func:`no_data_notice` (T53): **las celdas sin dato de la huella** de la retirada (la huella del acopio) y del contrafuerte (su zona de
+  coronación). RF-015-09 manda rechazar el cálculo si a la huella de una entidad le falta dato; la 016 **exceptúa** a la retirada y al
+  contrafuerte (spec 0.4, §4: esas celdas se dejan como están, no se retiran ni siembran y no cuentan en el volumen) y, por la decisión 8
+  de «Para Samuel» (Samuel, 20/11/2026: «Sí, por defecto»), **las dos avisan con su lugar** (RF-015-13): las celdas, su área y la primera,
+  sin impedir crear; ninguna cifra cambia. Lo que sube junto a una celda sin dato **fuera** de la huella lo da :func:`outside_notice`.
 - :func:`order_notice`: el aviso de RF-015-14 (``des.entity_quarry_order``, el de la plataforma) con el incumplimiento que da
   :func:`~.platform.order_check` y la otra superficie de la cantera (:class:`~.platform.QuarryOrder`).
 
@@ -33,7 +38,7 @@ escalón de su borde con un renglón informativo propio (``des.body_edge_step``,
 
 from __future__ import annotations
 
-from collections.abc import Generator, Iterable, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -56,6 +61,7 @@ __all__ = [
     "as_parts",
     "clipped_notice",
     "clipped_units",
+    "no_data_notice",
     "order_notice",
     "outside_notice",
     "reaches_outside",
@@ -162,6 +168,25 @@ def outside_notice(entity: str, outside: np.ndarray, grid: Grid, window: tuple[s
     count = int(rows.size)
     return Notice("des.entity_edge_outside", {"entity": entity, "cells": count, "area": count * grid.cell_area,
                                               "x": float(x[0]), "y": float(y[0])})
+
+
+# --- Las celdas sin dato de la huella: se toleran y se avisan (RF-015-13; excepción de la 016 a RF-015-09) --------------------
+
+
+def no_data_notice(code: str, values: Mapping[str, object], missing: np.ndarray, grid: Grid, window: tuple[slice, slice]
+                   ) -> Notice | None:
+    """El aviso ``code`` (``des.removal_no_data`` o ``des.buttress_no_data``) de las celdas de la huella que **no tienen dato** en la
+    superficie de partida (spec 016, T53; decisión 8 de «Para Samuel», 20/11/2026): la retirada y el contrafuerte **toleran** esas celdas
+    (excepción de la 016 a RF-015-09: no se retiran ni siembran y no cuentan en el volumen) pero **las avisan con su lugar**, sin impedir
+    crear. ``missing`` es la máscara (de la forma de ``window``, las filas y columnas de ``grid`` que cubre) de las celdas de la huella sin
+    dato; ``values`` lo que nombra el mensaje (el acopio o el contrafuerte). Da las celdas, su área (m²) y el centro absoluto de la primera
+    (de norte a sur y de oeste a este), al cm, junto con ``values``; ``None`` si no falta ninguna."""
+    if not missing.any():
+        return None
+    rows, cols = np.nonzero(missing)
+    x, y = _places(grid, window, rows[:1], cols[:1])
+    count = int(rows.size)
+    return Notice(code, {**values, "cells": count, "area": count * grid.cell_area, "x": round(float(x[0]), 2), "y": round(float(y[0]), 2)})
 
 
 # --- El orden con la otra superficie de la cantera (RF-015-14) ---------------------------------------------------------------

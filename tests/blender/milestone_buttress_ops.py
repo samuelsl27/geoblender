@@ -503,6 +503,41 @@ class CreateButtressTest(body_ops.CreateBodyTest):
         self.des_ops.discard_calculation()
         self.assertEqual(self.state(), before, "descartar borra los temporales")
 
+    def test_i_the_summary_tells_the_cells_without_data_of_the_crown_zone_and_nothing_else_changes(self) -> None:
+        """RF-015-13, RF-015-09 (excepción de la 016, spec 0.4), RF-016-17, M3 (T53; decisión 8 de «Para Samuel», 20/11/2026): el contrafuerte de la
+        «Cima» sobre un terreno con **tres celdas sin dato** en su zona de coronación da, en el resumen de «Calcular» (en los dos idiomas, **en
+        ámbar**), **un** aviso con las celdas (3), su área (12 m²) y su lugar, y lo que se hace con ellas (se dejan como están y no cuentan en el
+        volumen); se calcula igual (sube, y las tres celdas siguen sin dato en la superficie) y no pide nada más; descartar deja el proyecto como
+        estaba. Con el terreno entero (``test_h`` y los demás casos de esta clase) no sale ese aviso."""
+        zone = zone_cells(CROWNS[0][1])
+        wanted = np.flatnonzero(zone)[[0, 7, 12]]
+        values = platform_ops.ground()
+        values.reshape(-1)[wanted] = np.nan
+        holed = self.write_grid("Terreno con huecos en la cima", values)
+        self.refresh()
+        before = self.state()
+        held = self.calculate(name="Con huecos", start=holed, crown="115", guard="3")
+        told = [item for item in held.notices if item.code == "des.buttress_no_data"]
+        self.assertEqual(len(told), 1, [item.code for item in held.notices])
+        self.assertEqual((told[0].values["cells"], told[0].values["area"], told[0].values["entity"]), (3, 12.0, "Con huecos"))
+        self.assertGreater(held.outcome.volume_m3, 0.0, "se calcula igual")
+        self.assertEqual(int(np.isnan(held.outcome.surface).sum()), 3, "las tres celdas siguen sin dato en la superficie")
+        for language, words in (("es", ("«Con huecos»", "3 celdas (12 m²)", "no tienen dato en la superficie de partida", "la primera en x = ",
+                                        "se dejan como están y no cuentan en el volumen")),
+                                ("en", ("«Con huecos»", "3 cells (12 m²)", "have no data in the start surface", "the first at x = ",
+                                        "left as they are and do not count in the volume"))):
+            self.i18n.set_language(language)
+            self.panels.show_summary(held)
+            found = [line for line in self.view.summary if words[2] in line.name]
+            self.assertEqual(len(found), 1, (language, [line.name for line in self.view.summary]))
+            self.assertTrue(found[0].alert, "un aviso va en ámbar")
+            for word in words:
+                self.assertIn(word, found[0].name)
+        self.i18n.set_language("es")
+        self.panels.show_summary(held)
+        self.des_ops.discard_calculation()
+        self.assertEqual(self.state(), before, "descartar borra los temporales")
+
     def test_z_disabling_geoblender_removes_the_buttress_command_and_leaves_no_temporary(self) -> None:
         """Principio 8, D-14 de la 013: con un cálculo abierto, desactivar Geoblender lo descarta (no queda ningún temporal) y quita la orden."""
         self.refresh()

@@ -8,8 +8,12 @@ su orden con la cantera, **como la plataforma** (``design.platform``), sin cambi
   rejilla mayor, sin recortar: ``ClippedByTheGridTest`` de ``test_platform_footprint``) y contra la medida de la propia plataforma.
 - **Lo que llega al borde de la rejilla o a celdas sin dato** (:class:`ButtressEdgeTest`, :class:`BodyEdgeTest`): las celdas que
   suben **fuera de la huella** y están en el borde de la rejilla o junto a una celda sin dato, con su área y el lugar de la primera,
-  contra un bucle de Python independiente (las ocho vecinas de cada celda); lo de dentro de la huella no cuenta (RF-015-09); sin geometría o
-  en medio de la rejilla, ningún aviso; con una ventana de trabajo, lo mismo que con la rejilla entera.
+  contra un bucle de Python independiente (las ocho vecinas de cada celda); lo de dentro de la huella no cuenta aquí (RF-015-09: lo
+  avisa **la zona sin dato**, T53); sin geometría o en medio de la rejilla, ningún aviso; con una ventana de trabajo, lo mismo que con la
+  rejilla entera.
+- **Las celdas sin dato de la huella** (:class:`ButtressNoDataTest`, :class:`NoDataNoticeTest`; T53, decisión 8 de «Para Samuel»): la
+  excepción de la 016 a RF-015-09 tolera las celdas de la zona de coronación sin dato (no siembran, no cuentan en el volumen) y **las
+  avisa con su lugar** (RF-015-13): cuántas, su área y la primera; ninguna cifra cambia.
 - **El orden con la otra superficie de la cantera** (:class:`QuarryOrderTest`): ``supported_store.order_notices`` con la otra superficie
   de la 014 como la plataforma (``order_check``: 1 mm; ``final`` no pasa de la explotación y la explotación no baja de la final); el
   aviso lleva lo mismo que el de la plataforma y no impide crear.
@@ -19,6 +23,7 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+import json
 import unittest
 from typing import Any
 
@@ -39,6 +44,7 @@ thickness = import_geoblender("design.thickness")
 zones = import_geoblender("design.zones")
 
 OUTSIDE = "des.entity_edge_outside"
+BUTTRESS_NO_DATA = "des.buttress_no_data"
 BUTTRESS_CLIPPED = "des.buttress_footprint_clipped"
 BODY_CLIPPED = "des.body_footprint_clipped"
 EDGE_STEP = "des.body_edge_step"
@@ -247,11 +253,14 @@ class ButtressEdgeTest(unittest.TestCase):
         self.assertIsNone(outcome.clipped)
 
     def test_a_no_data_cell_of_the_zone_is_not_a_reach(self) -> None:
-        """Una celda sin dato **dentro de la zona** (RF-015-09: lo de la huella no cuenta) no hace avisar a los que suben a su lado."""
+        """Una celda sin dato **dentro de la zona** (la huella: RF-015-09, excepción de la 016) no hace avisar a los que suben a su
+        lado como «llega a celdas sin dato fuera de su huella»: la avisa ella misma, con su aviso propio (T53, antes
+        ``outcome.notices == ()``: ningún aviso)."""
         scene = bdata.plane_scene()
         scene.start[21, 21] = np.nan
         _job, outcome = self.outcome(scene)
-        self.assertEqual(outcome.notices, ())
+        self.assertEqual([item.code for item in outcome.notices], [BUTTRESS_NO_DATA])
+        self.assertEqual(of(outcome.notices, OUTSIDE), [])
 
     def test_a_window_gives_the_same_as_the_whole_grid(self) -> None:
         """La ventana de trabajo (A0) da lo mismo que la rejilla entera: la misma máscara en su sitio y el mismo aviso, con el pie en el
@@ -322,6 +331,167 @@ class ButtressEdgeTest(unittest.TestCase):
         parted = buttress.compute_buttress(with_parts(bdata.job_of(scene, 110.0), ((ring,),)))
         self.assertEqual([(figure.key, figure.value) for figure in plain.figures], [(figure.key, figure.value) for figure in parted.figures])
         np.testing.assert_array_equal(plain.surface, parted.surface)
+
+
+# --- Las celdas sin dato de la huella: el contrafuerte las tolera y las avisa (T53) ----------------------------------------------
+
+
+class ButtressNoDataTest(unittest.TestCase):
+    """RF-015-13, RF-015-09 (excepción de la 016, spec 0.4), RF-016-17, RF-016-18; T53, decisión 8 de «Para Samuel» (20/11/2026): las celdas
+    de la **zona de coronación** sin dato en la partida no siembran ni suben (se dejan como están y no cuentan en el volumen: ninguna cifra
+    cambia) y el contrafuerte **avisa con su lugar** (``des.buttress_no_data``: cuántas, su área y la primera), sin impedir crear. Lo que
+    sube junto a una celda sin dato **fuera de la zona** lo avisa ``des.entity_edge_outside`` (T46), no este. Una zona **entera** sin dato
+    sigue rechazándose (``des.buttress_zone_no_data``: no hay contrafuerte). La zona de la escena llana: filas y columnas 18 a 25."""
+
+    HOLES = ((21, 21), (21, 22), (24, 19))
+    """Tres celdas de la zona sin dato; la primera de norte a sur y de oeste a este es la (21, 21)."""
+
+    def holed(self) -> Any:
+        scene = bdata.plane_scene()
+        for cell in self.HOLES:
+            scene.start[cell] = np.nan
+        return scene
+
+    def outcome(self, scene: Any, crown: float = 110.0, **options: Any) -> tuple[Any, Any]:
+        job = bdata.job_of(scene, crown, **options)
+        return job, buttress.compute_buttress(job)
+
+    def test_the_cells_without_data_of_the_zone_are_told_with_their_number_their_area_and_their_place(self) -> None:
+        """Tres celdas de la zona sin dato dan **un** aviso en ámbar con las celdas (3), su área (12 m²) y el centro de la primera, la
+        (21, 21), a mano desde la rejilla; en español y en inglés, con el contrafuerte, lo que se hace con ellas (se dejan como están y no
+        siembran ni cuentan en el volumen) y sin ningún marcador sin llenar."""
+        scene = self.holed()
+        job, outcome = self.outcome(scene)
+        (notice,) = of(outcome.notices, BUTTRESS_NO_DATA)
+        self.assertEqual(notice.severity, "warning")
+        x, y = place(job.grid, (21, 21))
+        self.assertEqual(dict(notice.values), {"entity": bdata.NAME, "cells": 3, "area": 12.0, "x": round(x, 2), "y": round(y, 2)})
+        spanish, english = notice.text("es"), notice.text("en")
+        for words in (f"«{bdata.NAME}»", "3 celdas (12 m²)", "zona de coronación", "se dejan como están", "no cuentan en el volumen"):
+            self.assertIn(words, spanish)
+        for words in (f"«{bdata.NAME}»", "3 cells (12 m²)", "crown zone", "left as they are", "do not count in the volume"):
+            self.assertIn(words, english)
+        self.assertNotIn("{", spanish + english)
+        self.assertNotIn("?", spanish + english)
+
+    def test_one_cell_is_told_in_the_singular(self) -> None:
+        """Con una sola celda sin dato el texto dice «1 celda» (no «1 celdas»), en los dos idiomas."""
+        scene = bdata.plane_scene()
+        scene.start[22, 22] = np.nan
+        _job, outcome = self.outcome(scene)
+        (notice,) = of(outcome.notices, BUTTRESS_NO_DATA)
+        self.assertEqual((notice.values["cells"], notice.values["area"]), (1, 4.0))
+        self.assertIn("1 celda (4 m²)", notice.text("es"))
+        self.assertIn("se deja como está", notice.text("es"))
+        self.assertIn("1 cell (4 m²)", notice.text("en"))
+        self.assertNotIn("1 celdas", notice.text("es"))
+        self.assertNotIn("1 cells", notice.text("en"))
+
+    def test_nothing_else_changes_the_cells_do_not_seed_and_the_figures_are_the_independent_calculation(self) -> None:
+        """RF-016-17: lo que cambia es solo el aviso. Las tres celdas sin dato no siembran (las semillas son las 64 de la zona menos 3),
+        siguen sin dato en la superficie y la superficie, las cifras y el pie son los del cálculo independiente (``hand_buttress``) a ≤ 10⁻⁹:
+        el volumen no cambia por avisarlo."""
+        scene = self.holed()
+        _job, outcome = self.outcome(scene)
+        hand = bdata.hand_of(scene, 110.0)
+        self.assertEqual(int(outcome.seeds.sum()), 64 - 3)
+        for cell in self.HOLES:
+            self.assertTrue(np.isnan(outcome.surface[cell]), cell)
+        np.testing.assert_allclose(outcome.surface, hand.surface, rtol=0.0, atol=1e-9)
+        self.assertAlmostEqual(outcome.volume_m3, hand.volume_m3, delta=1e-9 * max(hand.volume_m3, 1.0))
+        self.assertAlmostEqual(outcome.area_m2, hand.area_m2, delta=1e-9 * max(hand.area_m2, 1.0))
+        self.assertAlmostEqual(outcome.height_max_m, hand.height_max_m, delta=1e-9)
+        clean = buttress.compute_buttress(bdata.job_of(bdata.plane_scene(), 110.0))
+        self.assertEqual([item.code for item in clean.notices], [], "sin celdas sin dato, ningún aviso")
+
+    def test_a_no_data_cell_outside_the_zone_is_not_one_of_the_zone(self) -> None:
+        """Una celda sin dato **fuera de la zona**, dos celdas al este (en el pie) lo avisa ``des.entity_edge_outside`` y no este aviso:
+        el de la zona cuenta solo lo de la zona."""
+        scene = bdata.plane_scene()
+        scene.start[22, 28] = np.nan
+        _job, outcome = self.outcome(scene)
+        self.assertEqual(of(outcome.notices, BUTTRESS_NO_DATA), [])
+        self.assertEqual(len(of(outcome.notices, OUTSIDE)), 1)
+
+    def test_the_order_of_the_notices_is_the_clipped_zone_the_cells_without_data_and_the_edge(self) -> None:
+        """La zona que sale por el oeste y el norte (``des.buttress_footprint_clipped``), con una celda sin dato dentro y el pie en el
+        borde de la rejilla (``des.entity_edge_outside``), da los tres avisos en ese orden: lo recortado, lo que no tiene dato y lo que
+        llega al borde."""
+        grid = bdata.plane_scene().grid
+        ring = np.array([[grid.west - 6.0, grid.north + 4.0], [grid.west + 14.0, grid.north + 4.0], [grid.west + 14.0, grid.north - 14.0],
+                         [grid.west - 6.0, grid.north - 14.0]])
+        parts = ((ring,),)
+        scene = bdata.plane_scene()
+        scene = dataclasses.replace(scene, zone=zones.polygons_cells(parts, grid))
+        scene.start[3, 3] = np.nan
+        self.assertTrue(scene.zone[3, 3])
+        outcome = buttress.compute_buttress(with_parts(bdata.job_of(scene, 110.0), parts))
+        self.assertEqual([item.code for item in outcome.notices], [BUTTRESS_CLIPPED, BUTTRESS_NO_DATA, OUTSIDE])
+        self.assertEqual(dict(outcome.notices[1].values)["cells"], 1)
+
+    def test_a_window_gives_the_same_notice_as_the_whole_grid(self) -> None:
+        """La ventana de trabajo (A0) da el mismo aviso —las mismas celdas y el mismo lugar, con el desplazamiento de la ventana— que la
+        rejilla entera: la zona en el centro de la rejilla con un alcance de 10 m, que deja una ventana más pequeña que ella."""
+        scene = self.holed()
+        lowest = float(np.nanmin(scene.start))
+        _job, whole = self.outcome(scene, reach=10.0)
+        reach = buttress.buttress_reach_m(scene.profile, 110.0, lowest, 10.0, "exact")
+        region = buttress.buttress_window(scene.zone, scene.grid, reach)
+        self.assertGreater(region[0].start, 0, "la ventana no es la rejilla entera")
+        self.assertGreater(region[1].start, 0)
+        found = buttress.compute_buttress(bdata.job_of(scene, 110.0, reach=10.0, region=region, lowest_m=lowest))
+        self.assertEqual([(i.code, dict(i.values)) for i in found.notices], [(i.code, dict(i.values)) for i in whole.notices])
+        self.assertEqual(len(of(found.notices, BUTTRESS_NO_DATA)), 1)
+
+    def test_a_zone_wholly_without_data_is_still_refused(self) -> None:
+        """RF-016-18: una zona **entera** sin dato sigue rechazándose (``des.buttress_zone_no_data``): no hay contrafuerte que crear,
+        como antes de T53; con **una sola celda con dato** ya se calcula y avisa del resto (63 celdas)."""
+        scene = bdata.plane_scene()
+        scene.start[scene.zone] = np.nan
+        with self.assertRaises(messages.DesignError) as caught:
+            buttress.compute_buttress(bdata.job_of(scene, 110.0))
+        self.assertEqual(caught.exception.code, "des.buttress_zone_no_data")
+        scene.start[21, 21] = 101.5
+        _job, outcome = self.outcome(scene)
+        self.assertEqual(int(outcome.seeds.sum()), 1)
+        (notice,) = of(outcome.notices, BUTTRESS_NO_DATA)
+        self.assertEqual(notice.values["cells"], 63)
+
+    def test_the_notice_goes_to_the_report(self) -> None:
+        """RF-015-13, RF-015-02: el informe (``des_prp_``) lleva el aviso al final con su código y sus valores (lo que repite la
+        reproducción: es del resultado); sin celdas sin dato, el informe no lleva ningún aviso."""
+        outcome = self.outcome(self.holed())[1]
+        rows = supported_store.buttress_report_rows(outcome)
+        warned = [row for row in rows if row[0] == "warning"]
+        self.assertEqual(len(warned), 1)
+        self.assertEqual(rows[-1], warned[0])
+        self.assertEqual(json.loads(warned[0][3]), {"code": BUTTRESS_NO_DATA, "values": dict(outcome.notices[0].values)})
+        clean = buttress.compute_buttress(bdata.job_of(bdata.plane_scene(), 110.0))
+        self.assertEqual([row for row in supported_store.buttress_report_rows(clean) if row[0] == "warning"], [])
+
+
+class NoDataNoticeTest(unittest.TestCase):
+    """RF-015-13 (T53): ``supported_edge.no_data_notice``, el aviso común de las celdas sin dato de la huella: cuántas, su área y el centro
+    de la primera (de norte a sur y de oeste a este) en coordenadas absolutas, también con una ventana de trabajo."""
+
+    GRID = gis.Grid(725000.0, 4400100.0, 2.0, 2.0, 30, 40)
+
+    def test_it_counts_the_cells_the_area_and_the_first_with_the_window_offset(self) -> None:
+        """Con la ventana que empieza en la fila 5 y la columna 8 de la rejilla, dos celdas sin dato dan 2 celdas, 8 m² y el lugar de la
+        primera, a mano; los valores de quien lo pide se conservan."""
+        missing = np.zeros((10, 12), dtype=bool)
+        missing[4, 7] = missing[2, 9] = True
+        window = (slice(5, 15), slice(8, 20))
+        notice = supported_edge.no_data_notice("des.removal_no_data", {"stockpile": "Acopio 1"}, missing, self.GRID, window)
+        assert notice is not None
+        x, y = self.GRID.west + (9 + 8 + 0.5) * 2.0, self.GRID.north - (2 + 5 + 0.5) * 2.0
+        self.assertEqual((notice.code, dict(notice.values)),
+                         ("des.removal_no_data", {"stockpile": "Acopio 1", "cells": 2, "area": 8.0, "x": x, "y": y}))
+
+    def test_nothing_missing_is_no_notice(self) -> None:
+        """Sin ninguna celda sin dato no hay aviso."""
+        self.assertIsNone(supported_edge.no_data_notice("des.buttress_no_data", {"entity": "B1"}, np.zeros((6, 6), dtype=bool),
+                                                        self.GRID, (slice(0, 6), slice(0, 6))))
 
 
 # --- El cuerpo ---------------------------------------------------------------------------------------------------------------------

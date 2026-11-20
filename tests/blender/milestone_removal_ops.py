@@ -839,6 +839,47 @@ class RemoveStockpileTest(platform_ops.CreatePlatformTest):
         self.assertIsNone(last.result.layer_failure, None if last.result.layer_failure is None else last.result.layer_failure.reason)
         self.assertIn("PLT-003", self.layer_rows(), "ahora sí")
 
+    def test_k_the_summary_tells_the_cells_without_data_of_the_footprint_and_nothing_else_asks_for_a_confirmation(self) -> None:
+        """RF-015-13, RF-015-09 (excepción de la 016, spec 0.4), RF-016-13, M1 (T53; decisión 8 de «Para Samuel», 20/11/2026): retirar el Acopio 1
+        desde un levantamiento con **dos celdas sin dato** en su huella (en la cima del montón) da, en el resumen de «Calcular» (en los dos
+        idiomas, **en ámbar**), **un** aviso con las celdas (2), su área (8 m²) y su lugar, y lo que se hace con ellas (se dejan como están y no
+        cuentan en el volumen); la retirada se calcula igual (lo retirado es algo y las dos celdas siguen sin dato en la superficie) y **no pide
+        ninguna confirmación** (se puede crear igualmente); descartar deja el proyecto como estaba. Sin celdas sin dato (los demás casos de
+        esta clase) no sale ese aviso."""
+        x, y = platform_ops.centers()
+        holes = (np.abs(x - 15.0) < 0.5) & ((np.abs(y - 29.0) < 0.5) | (np.abs(y - 31.0) < 0.5))
+        self.assertEqual(int(holes.sum()), 2)
+        values = survey()
+        values[holes] = np.nan
+        holed = self.write_grid("Levantamiento con huecos", values)
+        self.refresh()
+        before = self.state()
+        held = self.calculate(name="Con huecos", start=holed)
+        told = [item for item in held.notices if item.code == "des.removal_no_data"]
+        self.assertEqual(len(told), 1, [item.code for item in held.notices])
+        self.assertEqual((told[0].values["cells"], told[0].values["area"], told[0].values["stockpile"]), (2, 8.0, "Acopio 1"))
+        self.assertGreater(held.outcome.removed_m3, 0.0, "la retirada se calcula igual")
+        self.assertEqual(int(np.isnan(held.outcome.surface).sum()), 2, "las dos celdas siguen sin dato en la superficie")
+        self.assertFalse(held.needs_resting_confirmation or held.needs_wall_confirmation, "no pide ninguna confirmación")
+        for language, words in (("es", ("«Acopio 1»", "2 celdas (8 m²)", "no tienen dato en la superficie de partida", "la primera en x = ",
+                                        "se dejan como están y no cuentan en el volumen")),
+                                ("en", ("«Acopio 1»", "2 cells (8 m²)", "have no data in the start surface", "the first at x = ",
+                                        "left as they are and do not count in the volume"))):
+            self.i18n.set_language(language)
+            self.panels.show_summary(held)
+            found = [line for line in self.view.summary if words[2] in line.name]
+            self.assertEqual(len(found), 1, (language, [line.name for line in self.view.summary]))
+            self.assertTrue(found[0].alert, "un aviso va en ámbar")
+            for word in words:
+                self.assertIn(word, found[0].name)
+        self.i18n.set_language("es")
+        self.panels.show_summary(held)
+        self.des_ops.discard_calculation()
+        self.assertEqual(self.state(), before, "descartar borra el temporal")
+        clean = self.calculate(name="Sin huecos", start=self.panels.platform_default_start())
+        self.assertEqual([item.code for item in clean.notices if item.code == "des.removal_no_data"], [])
+        self.des_ops.discard_calculation()
+
     def test_z_a_stale_detection_is_offered_but_refused_and_disabling_geoblender_removes_the_command(self) -> None:
         """RF-016-12 (M1), principio 8, D-14 de la 013: con la detección **obsoleta** (se cambió un umbral suyo), el diálogo sigue ofreciendo
         sus acopios —marcados— y su lista de lo apoyado dice por qué no se puede, y «Calcular» se rechaza nombrando el acopio y lo que
