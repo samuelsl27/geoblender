@@ -17,7 +17,9 @@ compuesta, sus componentes, :class:`GEOBLENDER_PG_res_component`), las rejillas 
 se pueden elegir como base o espesor (:attr:`~GEOBLENDER_PG_res_panels.surfaces`, por nombre de
 dato) y, ya presentados, la densidad, el K y el porcentaje de cada una con su tipo y su ámbito
 («V01: 1,25 [HIP] · proyecto: sin valor [HIP] sin confirmar») y el umbral de presencia de lo
-antrópico. Lo que se edita no se escribe hasta «Guardar la columna» (``bl.ops.res``).
+antrópico. Lo que se edita no se escribe hasta «Guardar la columna» (``bl.ops.res``). Una unidad
+nueva nace natural e «In situ»; al elegir la clase «Antrópica» su estado pasa a «Suelto» (spec
+016, T52: un acopio no está in situ y se pesaría con V·ρ en vez de V·ρ/K, error 67).
 :class:`GEOBLENDER_PG_res_percent` es una fila del diálogo «Porcentajes…».
 
 **Las cubicaciones de la versión activa** (T24; RF-011-18, RF-011-19, RF-011-23):
@@ -44,6 +46,8 @@ filas no tienen nombre ni descripción: las dibuja la ventana con sus textos.
 
 from __future__ import annotations
 
+from typing import Any
+
 import bpy
 from bpy.props import (
     BoolProperty,
@@ -58,9 +62,10 @@ WINDOW_MANAGER_PROPERTY = "geoblender_res_panels"
 """El nombre de la propiedad de ``WindowManager`` (la usan los paneles de la cubicación)."""
 _STATIC: set[str] = set()  # ni animable ni nada más
 
+KIND_ANTHROPIC = "ANTHROPIC"
 KIND_ITEMS = [
     ("NATURAL", "Natural", ""),
-    ("ANTHROPIC", "Anthropic", ""),
+    (KIND_ANTHROPIC, "Anthropic", ""),
     ("COMPOUND", "Compound", ""),
 ]
 """La clase de una unidad (``reserves.materials.Kind``, en mayúsculas)."""
@@ -72,9 +77,11 @@ ROLE_ITEMS = [
     ("WASTE", "Waste", ""),
 ]
 """El papel de una unidad o de un componente (``reserves.materials.Role``, en mayúsculas)."""
+STATE_IN_SITU = "IN_SITU"
+STATE_LOOSE = "LOOSE"
 STATE_ITEMS = [
-    ("IN_SITU", "In situ", ""),
-    ("LOOSE", "Loose", ""),
+    (STATE_IN_SITU, "In situ", ""),
+    (STATE_LOOSE, "Loose", ""),
 ]
 """El estado de una unidad (``reserves.materials.State``, en mayúsculas)."""
 BASE_SURFACE = "SURFACE"
@@ -111,16 +118,31 @@ class GEOBLENDER_PG_res_component(bpy.types.PropertyGroup):
     percent: StringProperty(options=_STATIC)  # type: ignore[valid-type]
 
 
+def _kind_chosen(unit: Any, _context: object) -> None:
+    """Se eligió la clase de una unidad de la columna en edición: la antrópica (un acopio) no
+    está in situ, y con el estado por defecto («In situ») se pesaría con V·ρ en vez de V·ρ/K
+    (RF-011-16, error 67), así que pasa a «Suelto» (spec 016, T52; «Para Samuel», 6).
+
+    Solo si estaba en el de por defecto: lo que la persona haya elegido se respeta, y una
+    unidad leída del proyecto conserva su estado (``bl.ui.res_panels._set_unit`` pone la clase
+    antes que el estado). Cambiar a otra clase no toca el estado."""
+    if unit.kind == KIND_ANTHROPIC and unit.state == STATE_IN_SITU:
+        unit.state = STATE_LOOSE
+
+
 class GEOBLENDER_PG_res_unit(bpy.types.PropertyGroup):
-    """Una unidad de la columna en edición (``name``: su nombre visible; véase el módulo)."""
+    """Una unidad de la columna en edición (``name``: su nombre visible; véase el módulo).
+
+    Una unidad nueva nace natural e «In situ»; al elegir la clase «Antrópica» (:func:`_kind_chosen`)
+    su estado pasa a «Suelto»."""
 
     code: StringProperty(options=_STATIC)  # type: ignore[valid-type]
     saved: BoolProperty(options=_STATIC)  # type: ignore[valid-type]
     kind: EnumProperty(items=KIND_ITEMS, default="NATURAL",  # type: ignore[valid-type]
-                       options=_STATIC)
+                       options=_STATIC, update=_kind_chosen)
     role: EnumProperty(items=ROLE_ITEMS, default=ROLE_NONE,  # type: ignore[valid-type]
                        options=_STATIC)
-    state: EnumProperty(items=STATE_ITEMS, default="IN_SITU",  # type: ignore[valid-type]
+    state: EnumProperty(items=STATE_ITEMS, default=STATE_IN_SITU,  # type: ignore[valid-type]
                         options=_STATIC)
     base_kind: EnumProperty(items=BASE_ITEMS, default=BASE_SURFACE,  # type: ignore[valid-type]
                             options=_STATIC)

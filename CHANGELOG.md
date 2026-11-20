@@ -1532,6 +1532,11 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Cambiado
 
+- **Una unidad antrópica nueva nace «Suelto»** (spec 011, ventana de Cubicación ▸ Materiales y densidades…; decidido con la spec 016): al
+  elegir la clase «Antrópica» (el acopio, el escombro) en una unidad de la columna, su estado pasa a «Suelto», porque un acopio no está in situ
+  y se pesa con V·ρ/K, no con V·ρ. Antes toda unidad nacía «In situ» y, si no se cambiaba a mano, el acopio salía un 23 % más pesado sin
+  ningún aviso (el error 67). Solo se cambia si la unidad estaba en «In situ» (se puede volver a elegir «In situ») y no cambia ninguna otra
+  clase, ni las columnas y unidades que ya están guardadas, ni ningún resultado de la cubicación.
 - **Verificación por recinto** (spec 012, versión 0.5; hecho con la spec 016): cuando hay una **detección de acopios hecha sobre la
   superficie de partida**, la verificación **no cuenta como cortar terreno** lo que baja de un acopio hasta su base, y da aparte el **corte de
   terreno** y el **corte de acopios** (en las zonas sin corte, de solo relleno, de solo restauración, la banda de resguardo y la banda hacia

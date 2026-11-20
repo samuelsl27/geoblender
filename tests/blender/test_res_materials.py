@@ -17,6 +17,9 @@ RF-011-21; plan 011 §5.3.4, §5.5, D-8, D-9, D-11, D-12, D-18; ADR-0027).
   unidad en todas las demás en una sola transacción (o en ninguna).
 - RF-011-15: los porcentajes de una compuesta se declaran juntos y se rechazan, sin cambiar
   ninguno, si no suman 100 % con dos decimales.
+- RF-011-16 (spec 016, T52): al elegir la clase «Antrópica», el estado de la unidad pasa a
+  «Suelto» (un acopio se pesa con V·ρ/K; error 67), solo si estaba en «In situ»; lo guardado
+  conserva su estado.
 - RF-011-26: en solo lectura, la orden y lo que escribe la ventana están desactivados con su
   motivo. La orden pasa de «R-38» a la entrada «011» del catálogo (D-36).
 
@@ -58,8 +61,8 @@ SCOPE_QUESTION = "¿Para el proyecto o solo para V01?"
 COLUMN_ROWS = [
     # position, parent, code, name, kind, role, state, base_dataset, base_elevation,
     # thickness_dataset
-    (1, "", "escombro", "Escombro", "anthropic", "waste", "in_situ", "gis_dtm_techo", None,
-     "gis_dtm_espesor"),
+    (1, "", "escombro", "Escombro", "anthropic", "waste", "loose", "gis_dtm_techo", None,
+     "gis_dtm_espesor"),  # «Antrópica» nace «Suelto» (T52 de la 016; RF-011-16, error 67)
     (2, "", "montera", "Montera", "natural", "waste", "in_situ", None, "612.5", None),
     (3, "", "capa_util", "Capa útil", "compound", None, "in_situ", "gis_dtm_muro", None, None),
     (4, "", "muro", "Muro", "natural", "waste", "in_situ", None, None, None),
@@ -352,6 +355,52 @@ class ResMaterialsTest(unittest.TestCase):
         self.assertEqual(bpy.ops.geoblender.res_save_materials(), {"FINISHED"})
         self.assertEqual(self.saved_rows()[1][2:4], ("montera", "Montera arcillosa"))
         self.assertEqual(len(self.operations()), len(before) + 2)
+
+    def test_an_anthropic_unit_is_born_loose(self) -> None:
+        """RF-011-11, RF-011-16 (spec 016, T52; «Para Samuel», 6, decisión de Samuel del
+        20/11/2026): una unidad antrópica (un acopio) no está in situ, y si la persona no
+        elige «Suelto» se pesa con V·ρ en vez de V·ρ/K (error 67, un 23 % de más sin avisar),
+        así que al elegir la clase «Antrópica» el estado pasa a «Suelto». Solo si estaba en
+        el de por defecto («In situ»): la persona puede volver a elegir «In situ» y se
+        queda. Una unidad nueva sigue naciendo natural e «In situ»; las demás clases no
+        tocan el estado; y lo ya guardado manda: una unidad antrópica «In situ» (como las
+        de antes) se lee «In situ» y se vuelve a guardar igual."""
+        self.ensure_column()
+        view = self.view()
+        self.edit("ADD_UNIT")
+        unit = view.units[view.unit_index]
+        self.assertEqual((unit.kind, unit.state), ("NATURAL", "IN_SITU"))
+        unit.kind = "ANTHROPIC"
+        self.assertEqual(unit.state, "LOOSE")
+        unit.state = "IN_SITU"  # la persona lo elige a mano: se respeta
+        self.assertEqual(unit.state, "IN_SITU")
+        unit.kind = "NATURAL"  # ninguna otra clase lo toca (ni la compuesta)
+        self.assertEqual(unit.state, "IN_SITU")
+        unit.kind = "COMPOUND"
+        self.assertEqual(unit.state, "IN_SITU")
+        unit.state = "LOOSE"
+        unit.kind = "NATURAL"  # y lo que ya estaba «Suelto» no vuelve
+        self.assertEqual(unit.state, "LOOSE")
+        unit.kind = "ANTHROPIC"
+        self.assertEqual(unit.state, "LOOSE")
+        self.edit("REMOVE_UNIT")
+        self.assertEqual(["Escombro", "Montera", "Capa útil", "Muro"],
+                         [item.name for item in view.units])
+
+        # Lo guardado manda: «In situ» en una antrópica ya guardada se lee y se guarda igual.
+        escombro = view.units[0]
+        self.assertEqual((escombro.kind, escombro.state), ("ANTHROPIC", "LOOSE"))
+        escombro.state = "IN_SITU"
+        self.assertEqual(bpy.ops.geoblender.res_save_materials(), {"FINISHED"})
+        self.assertEqual(self.saved_rows()[0][2:7],
+                         ("escombro", "Escombro", "anthropic", "waste", "in_situ"))
+        view = self.open_window()
+        self.assertEqual([(item.name, item.kind, item.state) for item in view.units],
+                         [("Escombro", "ANTHROPIC", "IN_SITU"), ("Montera", "NATURAL", "IN_SITU"),
+                          ("Capa útil", "COMPOUND", "IN_SITU"), ("Muro", "NATURAL", "IN_SITU")])
+        view.units[0].state = "LOOSE"  # deja la columna como la de las demás pruebas
+        self.assertEqual(bpy.ops.geoblender.res_save_materials(), {"FINISHED"})
+        self.assertEqual(self.saved_rows(), COLUMN_ROWS)
 
     def test_read_only_disables_the_window(self) -> None:
         """RF-011-26, RF-008-32 (plan §5.3.4): en solo lectura, «Materiales y densidades…» y
