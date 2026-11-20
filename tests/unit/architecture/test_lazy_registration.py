@@ -87,6 +87,9 @@ HEAVY: frozenset[str] = frozenset({
     # La ruta 3D de mínimo coste de la 017 (spec 017, T07; A* con ``heapq``, plan §9): la pide quien traza una pista; ``design.model`` y el
     # arranque no la importan.
     "design.road_route",
+    # El eje con curvas circulares de la 017 (spec 017, T10; Douglas–Peucker y arcos con numpy): lo pide quien forma el eje de una pista;
+    # ``design.model`` y el arranque no lo importan.
+    "design.road_axis",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 
