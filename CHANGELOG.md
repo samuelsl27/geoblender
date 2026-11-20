@@ -38,8 +38,8 @@ las entidades de diseño: la plataforma, que se aplica en cadena sobre una super
 prohíbe a los demás operadores y dice en qué se apoya (spec 015, hecha a falta de verla en pantalla). Y
 detecta los acopios de un levantamiento con su plano de base, su huella y su volumen, los retira con lo que se les
 apoyaba a la vista, hace el contrafuerte con el pie libre en lo que se admite y los cuerpos apoyados por espesor, y
-la verificación de los límites distingue el corte de terreno del de acopios (spec 016, hecha y verificada sin pantalla,
-a falta de verla en pantalla). Lo de
+la verificación de los límites distingue el corte de terreno del de acopios (spec 016, cerrada el 20/11/2026 y vista
+en pantalla con eventos simulados, sin ratón real). Lo de
 la spec 002 está comprobado también con QGIS 4.2 sin su interfaz (PyQGIS) y en la red con un
 solo equipo; falta con dos equipos a la vez, y que IMGA acepte esas pruebas de QGIS y, en lugar
 de la del panel del proyecto, las de la interfaz de la spec 003. Lo de la spec 003 está
@@ -125,8 +125,8 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
 
 ### Añadido
 
-- **Acopios, contrafuerte y cuerpos apoyados** (spec 016, R-36, segunda spec; hecha y verificada sin pantalla, a falta de verla en
-  pantalla). En el proyecto de referencia los acopios, el contrafuerte y el escombro de una ladera se hicieron con scripts sueltos, y cada
+- **Acopios, contrafuerte y cuerpos apoyados** (spec 016, R-36, segunda spec; cerrada el 20/11/2026: verificada sin pantalla y vista
+  en pantalla con eventos simulados, sin ratón real). En el proyecto de referencia los acopios, el contrafuerte y el escombro de una ladera se hicieron con scripts sueltos, y cada
   uno costó un error: 77 montones sin filtrar en lugar de los 9 acopios de la propiedad; acopios cubicados con la litología de la roca y
   pesados con la densidad in situ (un 23 % de más); un acopio de 12 m retirado junto a un relleno, con una cara a más de 45°; un relleno
   que seguía apoyado en un acopio que la versión siguiente retiraba; un contrafuerte recortado a su zona, con el pie en una zona de solo
@@ -153,8 +153,9 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     con que se detectó, solo en las huellas, que se ven en la vista y se exportan a GeoTIFF; y una **capa en QGIS con una fila por
     acopio**. La **cubicación (011)** toma cada material como una unidad antrópica con su base y su espesor y la pesa con la densidad
     suelta: se añade en **Materiales y densidades…**, eligiendo la base y el espesor por su nombre (no hay un botón que las añada) y
-    **eligiendo el estado «Suelto»**: una unidad nueva nace «In situ» y, sin cambiarlo, el acopio se pesa un 23 % de más sin ningún aviso.
-    Su volumen es el de la detección y no da toneladas propias.
+    **comprobando su estado**: una unidad antrópica nueva nace «Suelto» (un acopio no está in situ) y, si la deja en «In situ», el acopio se
+    pesa un 23 % de más sin ningún aviso, así que revise el estado de cada unidad de acopio. Su volumen es el de la detección y no da
+    toneladas propias.
   - **Retirar un acopio…**: baja la huella hasta su base, unida al terreno por una **transición** con el ángulo que se declare (sin valor
     por defecto), dentro de los límites aunque su corte no esté admitido (bajar un acopio no es cortar terreno); da lo retirado, lo que se
     le apoyaba, la transición y lo que los límites no dejan retirar. **Antes de calcular** enseña **una sola lista de todo lo que se le
@@ -195,13 +196,17 @@ clasificación y la cree en menos de 20 minutos (CE-014-10).
     vacío o repetido y un resguardo que falta, sin escribir nada, y al instante pone al día lo que declara; no admite «proteger» en
     una retirada, un cuerpo ni una detección); la capa de entidades de QGIS se pone al día tras «Recalcular lo obsoleto» con cualquier
     entidad; traer las entidades de otra versión re-apunta la superficie conocida de un cuerpo (y avisa si la referida no se trae).
-  - **Lo que no hace todavía**: no se ha visto en pantalla (sin la interfaz de Blender); no se contrastó con el banco del proyecto de
-    referencia (CE-016-08: ni la plataforma del acopio 7 ni la transición); un cuerpo «sobre una base» pasa de 17 MiB desde unas 12 ha
-    (21 MiB con 100 ha) y los de «bajo un techo» de más de 17 ha pasan de 2 MiB; un cuerpo con secciones muy separadas pasa de los 10 s que
-    pedía la spec (avisa antes); la pared no salta con la transición del plan y «como plataforma» no la mide; «Calcular…» solo ofrece
-    plataformas, así que lo traído de otra versión de los demás tipos queda sin calcular; la retirada y el contrafuerte toleran celdas
-    sin dato sin avisar; y una verificación hecha con una detección obsoleta no queda obsoleta sola al recalcularla (hay que verificar
-    otra vez).
+  - **Lo que no hace todavía**: se vio en pantalla (20/11/2026, con eventos simulados y sin ratón real), pero no la ventana
+    «Materiales y densidades…» con el ratón, los botones de candidatos de la barra N, la barra N de la retirada, del contrafuerte y del
+    cuerpo, ni la capa de entidades en QGIS con ventana; no se contrastó con el banco del proyecto de referencia (CE-016-08: ni la
+    plataforma del acopio 7 ni la transición, que queda sin ejecutar con los datos originales de la V10); un cuerpo con secciones muy separadas
+    pasa de los 10 s que pedía la spec (avisa antes; la spec lo admite con el aviso); la pared no salta con la transición del plan y
+    «como plataforma» no la mide; «Calcular…» solo ofrece plataformas, así que lo traído de otra versión de los demás tipos queda sin
+    calcular; la retirada y el contrafuerte toleran celdas sin dato sin avisar (una excepción escrita de la spec); y una verificación
+    hecha con una detección obsoleta no queda obsoleta sola al recalcularla (hay que verificar otra vez). Lo que vio la pantalla y no se
+    arregló: «Recalcular lo obsoleto» no rehace nada mientras una unidad espera una decisión, y su contador de obsoletos sube en cada
+    intento fallido junto a una plataforma protegida; dos textos repiten una palabra; el título del objeto de la detección dice «NO AL
+    DÍA» hasta recargarlo; y la leyenda de la vista previa queda debajo del diálogo.
 
 - **Entidades de diseño paramétricas** (spec 015, R-36, hecha a falta de verla en pantalla). Lo que se pone encima de una cantera
   (la plataforma de la planta, una balsa, un acopio) se hizo en el proyecto de referencia como

@@ -1147,9 +1147,13 @@ SUPPORTED_ORDERS = ("geoblender.des_edit_stockpile", "geoblender.des_detect_stoc
 SUPPORTED_EXAMPLES: tuple[str, ...] = (
     # Lo que era la orden que pasó de Geología a «Cuerpo apoyado…» (ya no está en el catálogo).
     "Unidad por espesor sobre su apoyo…",
-    # Un botón que la guía dice que **no** existe (sería código nuevo y alcance: se propondría a Samuel) y la redacción que se
-    # propone para RF-016-20 si la importación no conserva la M.
-    "Añadir las unidades de esta detección", "Z o campo",
+    # Un botón que la guía dice que **no** existe (queda como idea futura: Samuel no lo ha pedido) y la redacción que la
+    # spec 0.4 escribe en RF-016-20 (el espesor de una línea 3D, en su Z o en un campo).
+    "Añadir las unidades de esta detección", "su Z o un campo",
+    # El cierre del 20/11/2026: la sección de las tareas donde están las decisiones, lo que contestó Samuel y cómo queda CE-016-08.
+    "Decisiones de Samuel", "Sí, por defecto", "sin ejecutar con los datos originales",
+    # Lo que el H3 vio en pantalla y no se arregló: dos textos con una palabra repetida (el hallazgo H3-3).
+    "Detección de acopios acopios", "Plataforma Plataforma de carga (declarada)",
     # El motivo generado de un contrafuerte llamado B1 (su nombre y su código van en el mensaje del catálogo).
     "declarada por el contrafuerte B1",
     # El material de los acopios sin el campo `material` y de los candidatos convertidos (T50, S-15): el nombre que le da la
@@ -1303,18 +1307,23 @@ class SupportedCardDocTest(unittest.TestCase):
         self.assertLess(adr.index("Fe de erratas"), adr.index("Los datos que deja"))
 
     def test_the_card_says_where_the_016_is(self) -> None:
-        """Definición de hecho §3.7 (T38 y T50): la cabecera de ``des.md`` dice que la 016 está implementada, **sin publicar** y
-        en verificación (la verificación única, T39, hecha sin pantalla, y la convergencia, T41 a T50), a falta del H3 (T40), de
-        las medidas a solas y de la decisión de Samuel, con su guía, y que la 015 está **cerrada y publicada**; la API de la
-        016 está en §4.4 y la «API prevista» pasó a §4.5; y el «apoyo retirado», la fe de erratas, el borde de la rejilla y lo
-        que no está confirmado (la apertura de 31 m) están en §1.7."""
+        """Definición de hecho §3.7 (T38, T50 y el cierre del 20/11/2026): la cabecera de ``des.md`` dice que la 016 está
+        **cerrada** por Samuel el 20/11/2026 («Sí, por defecto»; spec 0.4) y en ``main`` **a falta de publicar**, con las 52 tareas
+        hechas (la verificación única, T39, sin pantalla; la convergencia, T41 a T52; el H3 en pantalla, T40), con su guía, y que la
+        015 está **cerrada y publicada**; la API de la 016 está en §4.4 y la «API prevista» pasó a §4.5; y el «apoyo retirado», la
+        fe de erratas, el borde de la rejilla, lo que no está confirmado (la apertura de 31 m) y lo que decidió Samuel están en
+        §1.7."""
         head = one_line(self.des[:self.des.index("## Responsabilidad")])
-        for fact in ("Desde la spec 016", "implementada en `main`, sin publicar", "y en verificación", "la verificación única, T39, "
-                     "sin pantalla", "la convergencia de la T41 a la T50", "a falta del H3 en pantalla (T40)",
-                     "de la decisión de Samuel", "docs/usuario/acopios-y-contrafuertes.md",
+        for fact in ("Desde la spec 016", "**cerrada por Samuel el 20/11/2026**", "**en `main`, a falta de publicar**",
+                     "con las 52 tareas hechas", "su verificación única, T39, sin pantalla", "la convergencia de la T41 a la T52",
+                     "el H3 en pantalla (T40, 20/11/2026", "docs/usuario/acopios-y-contrafuertes.md",
                      "**cerrada y publicada el 18/11/2026** (código `a57b8fa`)"):
             with self.subTest(head=fact):
                 self.assertIn(fact, head)
+        for stale in ("implementada en `main`, sin publicar", "y en verificación", "a falta del H3 en pantalla (T40)",
+                      "de la decisión de Samuel"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, head)
         self.assertNotIn("el acopio, el contrafuerte y los cuerpos apoyados de §1.7 —la 016—, §1.8", head)
         self.assertIn("### 4.4 Lo que entrega la spec 016 (R-36)", self.des)
         self.assertIn("### 4.5 API prevista (otras entradas del roadmap)", self.des)
@@ -1331,15 +1340,20 @@ class SupportedCardDocTest(unittest.TestCase):
                      "**es el único aviso del salto creado del borde del contrafuerte**", "`des.body_edge_step`",
                      "**Las líneas 3D solo vienen de una capa de líneas de rotura `gis_brk_`**", "PARAMETER_PREFIXES",
                      "`des.protect_unsupported`", "`des.body_bring_surface_lost`", "12,04 s", "los otros cuatro",
-                     "ninguna orden lo calcula", "`reserves.compliance_store`, la capa que toca el proyecto, sí importa `design`"):
+                     "ninguna orden lo calcula", "`reserves.compliance_store`, la capa que toca el proyecto, sí importa `design`",
+                     # el cierre del 20/11/2026: lo que decidió Samuel
+                     "**Lo que decidió Samuel de la 016**", "«Sí, por defecto»", "una excepción escrita a RF-015-09",
+                     "la spec 0.4 dice «su Z o un campo»", "0,25 MiB + 0,12 MiB por hectárea", "`specs/016-…/diff-011.md`",
+                     "**Cumplen la 0.4**"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, text)
         row = re.search(r"^\| 016-des-acopios-contrafuerte-y-cuerpos-apoyados .*$", self.des, re.MULTILINE)
         self.assertIsNotNone(row)
         assert row is not None
-        for fact in ("sin publicar", "T39", "T40", "acopios-y-contrafuertes.md"):
+        for fact in ("**cerrada** el 20/11/2026", "a falta de publicar", "T39", "T40", "acopios-y-contrafuertes.md"):
             with self.subTest(row=fact):
                 self.assertIn(fact, row.group(0))
+        self.assertNotIn("implementada y en verificación", row.group(0))
 
 
 @docs.requires_docs
@@ -1434,17 +1448,23 @@ class SupportedGuideDocTest(unittest.TestCase):
         self.assertIn("0,30 m", text)
         self.assertEqual(dparams.ANTHROPIC_PRESENCE, "res.anthropic_presence_m")
 
-    def test_the_head_says_the_guide_is_pending_and_not_seen(self) -> None:
-        """Definición de hecho §3.7 (T38 y T50): el recuadro del principio dice que la guía está pendiente de la revisión de
-        Samuel y que **no se ha visto en pantalla**, que la verificación única (sin pantalla) ya se hizo y que falta el H3 y
-        las medidas a solas, y que la apertura de 31 m no está confirmada; y lleva su fecha, su spec y su estado."""
+    def test_the_head_says_the_guide_was_seen_on_screen_and_is_pending_review(self) -> None:
+        """Definición de hecho §3.7 (T38, T50 y el cierre del 20/11/2026): el recuadro del principio dice que la guía se vio en
+        pantalla el 20/11/2026 (H3, T40, con eventos simulados y sin ratón real) y está pendiente de la revisión de Samuel, que la
+        verificación única (sin pantalla) ya se hizo, que Samuel aceptó las 15 decisiones y la spec quedó cerrada, lo que no se
+        vio, y que la apertura de 31 m no está confirmada ni CE-016-09 medido con una persona; y lleva su fecha, su spec y su estado."""
         head = one_line(re.sub(r"(?m)^> ?", "", self.guide[:self.guide.index("En el proyecto de referencia de IMGA")]))
-        for fact in ("**Fecha:** 19/11/2026", "**Spec:** 016", "Pendiente de la revisión de Samuel; no se ha visto en pantalla",
-                     "Ya se hizo su verificación única, sin pantalla", "todavía no pasó el H3 en pantalla",
-                     "ni se han medido a solas los tiempos", "CE-016-08",
+        for fact in ("**Fecha:** 20/11/2026", "**Spec:** 016",
+                     "Visto en pantalla el 20/11/2026 (H3, T40, con eventos simulados; sin ratón real); pendiente de la revisión de Samuel",
+                     "Pasó su **verificación única**, sin pantalla", "**Samuel aceptó el 20/11/2026**", "**cerrada** (0.4)",
+                     "**No se vio**", "la ventana «Materiales y densidades…» con el ratón", "CE-016-08",
                      "la apertura de 31 m de los candidatos no está confirmada", "CE-016-09"):
             with self.subTest(head=fact):
                 self.assertIn(fact, head)
+        for stale in ("Pendiente de la revisión de Samuel; no se ha visto en pantalla", "todavía no pasó el H3 en pantalla",
+                      "ni se han medido a solas los tiempos", "ni ha decidido Samuel"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, head)
 
     def test_the_marks_surround_the_foot_and_the_edge_of_the_grid(self) -> None:
         """RF-016-02, RF-016-05, RF-016-08 (H2, T22; T05 y T08; docs/trampas.md §2): §3 dice cómo dibujar la marca (que
@@ -1490,8 +1510,9 @@ class SupportedGuideDocTest(unittest.TestCase):
         """RF-016-02, RF-016-07, RF-016-08, RF-016-09, RF-016-25 (S-13 a S-15, A-1, D-6; T50): §1 dice el sentido del azimut
         (hacia donde sube el plano), §3, que una versión que no se edita desactiva «Detectar acopios…», §4, que los catorce
         umbrales son diez y cuatro con candidatos, §4 y §6, que una marca sin material y un candidato convertido caen en «sin
-        material», y §7, **bien visible**, que una unidad de acopio de la 011 nace «In situ» y hay que elegir «Suelto» (o el
-        acopio pesa un 23 % de más sin avisar: el error 67 vuelve por omisión)."""
+        material», y §7, **bien visible**, que una unidad antrópica nueva de la 011 nace «Suelto» (T52; decisión 6 de Samuel,
+        20/11/2026) y hay que revisar el estado de cada unidad de acopio (en «In situ», el acopio pesa un 23 % de más sin avisar:
+        el error 67)."""
         for heading, facts in (
                 ("## 1. Las palabras", ("hacia donde sube", "desde el norte de la cuadrícula en el sentido de las agujas del reloj")),
                 ("## 3. Antes de empezar", ("una versión activa que ya no se edita", "**Detectar acopios…** sale también en gris")),
@@ -1500,15 +1521,17 @@ class SupportedGuideDocTest(unittest.TestCase):
                   "llamado «sin material»")),
                 ("## 6. Los candidatos", ("Un candidato convertido no tiene material", "sin material")),
                 ("## 7. Lo que deja una detección, y cómo se usa",
-                 ("Elija «Suelto» en cada unidad de acopio", "nace con el estado «In situ»", "sale un 23 % de más",
-                  "la columna **no avisa de nada**", "el error 67"))):
+                 ("Una unidad antrópica nueva nace «Suelto»", "Revise el estado de cada unidad de acopio",
+                  "sale un 23 % de más", "la columna **no avisa de nada**", "el error 67", "sigue «In situ»",
+                  "queda como idea futura"))):
             text = self.guide_section(heading)
             for fact in facts:
                 with self.subTest(section=heading[:5], fact=fact):
                     self.assertIn(fact, text)
         seven = section(self.guide, "## 7. Lo que deja una detección, y cómo se usa")
-        self.assertRegex(seven, r"(?m)^> \*\*Elija «Suelto» en cada unidad de acopio\.\*\*",
+        self.assertRegex(seven, r"(?m)^> \*\*Una unidad antrópica nueva nace «Suelto»\.\*\*",
                          "la advertencia de «Suelto» va en un recuadro, visible")
+        self.assertNotIn("nace con el estado «In situ»", seven)  # T52: ya nace «Suelto»
 
     def test_the_common_frame_says_what_the_four_types_do_and_do_not(self) -> None:
         """RF-015-01, 08, 10, 12, 18 y 27 con los tipos nuevos (T47, T48 y T50; S-5): §14 dice que «Cambiar parámetro…» y lo
@@ -1562,19 +1585,26 @@ class SupportedGuideDocTest(unittest.TestCase):
                 self.assertIn(fact, text)
 
     def test_the_known_limits_are_told(self) -> None:
-        """«Lo que no hace todavía» (T38 y T50; «Para Samuel» de ``tasks.md``) dice los límites de **hoy**: no se vio en
-        pantalla, el banco no está contrastado (ni la plataforma del acopio 7 ni la transición), la M de las líneas 3D, los
-        tamaños de los cuerpos grandes, la pared que no salta con la transición del plan y que «como plataforma» no mide,
-        «apoyo retirado» que no es ``REFUSED``, las unidades de la 011 a mano y que nacen «In situ», la verificación con la
-        detección obsoleta, «Calcular…» que solo ofrece plataformas, el apoyo del contrafuerte, el cero del borde, las celdas
-        sin dato y las secciones separadas; y **no** dice que «como plataforma» esté pendiente (T41), que la tabla de la
-        verificación dé el corte entero (T42) ni que una detección del proyecto no deje «apoyo retirado» (T45)."""
+        """«Lo que no hace todavía» (T38, T50 y el cierre del 20/11/2026; «Decisiones de Samuel» de ``tasks.md``) dice los límites
+        de **hoy**: lo que el H3 vio en pantalla (con eventos simulados) y lo que no, lo que el H3 vio y no se arregló, el banco no
+        contrastado (ni la plataforma del acopio 7 ni la transición; CE-016-08 sin ejecutar), la M de las líneas 3D, que lo que
+        guarda un cuerpo grande cabe en las cifras de la 0.4, la pared que no salta con la transición del plan y que «como
+        plataforma» no mide, «apoyo retirado» que no es ``REFUSED``, las unidades de la 011 a mano (que nacen «Suelto» desde la T52),
+        la verificación con la detección obsoleta, «Calcular…» que solo ofrece plataformas, el apoyo del contrafuerte, el cero del
+        borde, las celdas sin dato y las secciones separadas; y **no** dice que «como plataforma» esté pendiente (T41), que la tabla
+        de la verificación dé el corte entero (T42), que una detección del proyecto no deje «apoyo retirado» (T45), que el H3
+        esté pendiente ni que las unidades de acopio nazcan «In situ»."""
         limits = self.guide_section("## 16. Lo que no hace todavía")
-        for fact in ("No se ha visto en pantalla", "El banco (CE-016-08) no está contrastado", "14,6 %", "7,9 %",
+        for fact in ("Se vio en pantalla el 20/11/2026", "con eventos simulados y sin ratón real", "**No se vio**",
+                     "Lo que el H3 vio y no se arregló", "**no rehace nada mientras una unidad espera una decisión**",
+                     "**el contador de obsoletos de la barra de estado sube**", "**la leyenda de la vista previa queda debajo del diálogo**",
+                     "El banco (CE-016-08) no está contrastado", "14,6 %", "7,9 %", "sin ejecutar con los datos originales",
                      "La plataforma del acopio 7 no se reproduce", "16.816 m³",
-                     "La M de las líneas 3D no llega al proyecto", "21,10 MiB", "10,60 MiB", "2,06 MiB", "17,7 ha", "3,4 %",
+                     "La M de las líneas 3D no llega al proyecto", "La spec 0.4 dice «su Z o un campo»",
+                     "Lo que guarda un cuerpo grande cabe en las cifras de la spec 0.4", "21,10 MiB", "10,60 MiB", "2,06 MiB",
+                     "0,25 MiB + 0,12 MiB por hectárea",
                      "La pared no salta con la transición que aprobó el plan", "no mide la pared ni pide confirmación ni motivo",
-                     "no es `REFUSED`", "se añaden a mano", "nacen «In situ»", "no queda obsoleta sola",
+                     "no es `REFUSED`", "se añaden a mano", "la unidad nace «Suelto»", "no existe", "no queda obsoleta sola",
                      "no se puede probar", "de 140 a 188 ms", "12,04 s", "+2,9 s",
                      "«Calcular…» solo ofrece plataformas", "El apoyo de un contrafuerte no cambia el cálculo",
                      "el cero del borde de un cuerpo se promedia con el dato", "toleran las celdas sin dato",
@@ -1582,6 +1612,10 @@ class SupportedGuideDocTest(unittest.TestCase):
             with self.subTest(fact=fact):
                 self.assertIn(fact, limits)
         self.assertNotIn("no deja «apoyo retirado»", limits)  # T45
+        for stale in ("nacen «In situ»", "(el H3 está pendiente)", "No se ha visto en pantalla", "17,7 ha", "Lo decide Samuel.",
+                      "se proponen a Samuel", "Se propone dejarlo así"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, limits)  # el cierre del 20/11/2026: las decisiones ya están tomadas
         self.assertNotIn("casi nunca salta", self.guide)  # T50 (S-18)
         for gone in ("como plataforma queda pendiente", "«Como plataforma» no está cableado", "sigue dando en «Corte (m³)»",
                      "16 MB"):
@@ -1594,8 +1628,8 @@ class SupportedGuideDocTest(unittest.TestCase):
 @docs.requires_docs
 class SupportedStateDocTest(unittest.TestCase):
     """El índice de specs, el roadmap, el ``CHANGELOG.md`` del código, la barra superior y los paneles contextuales dicen el
-    estado de la 016 tras su documentación (T38): implementada, sin publicar y a falta de la verificación única (T39) y del
-    H3 (T40); «Cerrada» solo tras ellos y CE-016-09 (lo marca la sesión principal)."""
+    estado de la 016 tras su cierre (20/11/2026): **Cerrada** por Samuel («Sí, por defecto»; spec 0.4), en ``main`` y a falta de
+    publicar (cuando la sesión principal la publique, se pone «publicada» con el código)."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -1605,42 +1639,61 @@ class SupportedStateDocTest(unittest.TestCase):
         cls.index_row = re.search(r"^\| 016 \|.*$", cls.specs, re.MULTILINE)
         cls.roadmap_row = re.search(r"^\| R-36 \|.*$", cls.roadmap, re.MULTILINE)
         cls.ledger = re.findall(r"^\| 2026-11-19 \| R-36.*$", cls.roadmap, re.MULTILINE)
+        cls.ledger_close = re.findall(r"^\| 2026-11-20 \| R-36.*$", cls.roadmap, re.MULTILINE)
 
     def test_the_index_says_where_the_016_is(self) -> None:
-        """Definición de hecho §3.7 (T38 y T50): la fila de la 016 dice que está **implementada, en verificación**, sin publicar,
-        con sus 50 tareas (la convergencia, de la T41 a la T50), su guía, la verificación única hecha y lo que falta (las
-        medidas a solas, el H3 y la decisión de Samuel), RNF-016-02 «salvo con secciones muy separadas» y que «Cerrada» es
-        solo tras el H3 y CE-016-09; y ya no dice que esté «sin empezar» ni que falte la verificación única."""
+        """Definición de hecho §3.7 (T38, T50 y el cierre del 20/11/2026): la fila de la 016 dice que está **Cerrada** (20/11/2026,
+        por Samuel: «Sí, por defecto»; spec 0.4), **cerrada, a falta de publicar**, con sus 52 tareas (la convergencia, de la T41 a
+        la T52), su guía, la verificación única y el H3 hechos, las decisiones de Samuel (con el diff de la 011 aplicado a la
+        011) y que RNF-016-02 «sigue sin cumplirse con secciones muy separadas»; y ya no dice que esté «sin empezar», «en
+        verificación» ni que «Cerrada» sea solo tras el H3. La fila de la 011 dice su 0.4."""
         self.assertIsNotNone(self.index_row)
         assert self.index_row is not None
         row = one_line(self.index_row.group(0))
-        for fact in ("**Implementada, en verificación** (19/11/2026)", "**sin publicar**",
-                     "50 (T01–T50", "la convergencia, T41 a T50", "la documentación (T38 y T50", "docs/usuario/acopios-y-contrafuertes.md",
-                     "La verificación única (T39: seis verificadores sin pantalla, 66 hallazgos", "**Faltan** las medidas a solas",
-                     "el H3 en pantalla (T40)", "la decisión de Samuel", "la apertura de 31 m", "CE-016-08",
-                     "**cumple salvo con secciones muy separadas** (8 secciones a 200 m: 12,04 s, con aviso)",
-                     "«Cerrada» solo tras el H3 y CE-016-09"):
+        for fact in ("**Cerrada** (20/11/2026, por Samuel: «Sí, por defecto»; spec 0.4)", "**cerrada, a falta de publicar**",
+                     "52 (T01–T52", "la convergencia, T41 a T52", "la documentación (T38 y T50", "docs/usuario/acopios-y-contrafuertes.md",
+                     "La verificación única (T39: seis verificadores sin pantalla, 66 hallazgos", "**El H3 en pantalla (T40) se hizo el 20/11/2026**",
+                     "las 15 decisiones de «Para Samuel»", "una unidad antrópica nueva de la 011 nace «Suelto»", "diff de la 011",
+                     "la apertura de 31 m", "CE-016-08", "el ensayo de CE-016-09 de la sesión principal",
+                     "**Sigue sin cumplirse** RNF-016-02 con secciones muy separadas (8 secciones a 200 m: 12,04 s, con aviso, que la 0.4 admite)"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, row)
-        for stale in ("sin empezar", "40 (T01–T40)", "40 tareas", "44 (T01–T44", "a falta de la verificación única",
-                      "RNF-016-02 cumple"):
+        for stale in ("sin empezar", "40 (T01–T40)", "40 tareas", "44 (T01–T44", "50 (T01–T50", "a falta de la verificación única",
+                      "RNF-016-02 cumple", "**Implementada, en verificación**", "«Cerrada» solo tras el H3 y CE-016-09",
+                      "**Faltan** las medidas a solas"):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, row)
+        row011 = re.search(r"^\| 011 \|.*$", self.specs, re.MULTILINE)
+        self.assertIsNotNone(row011)
+        assert row011 is not None
+        for fact in ("En implementación (0.4)", "nazca «Suelto»", "`016-…/diff-011.md`", "`51fcf3f`"):
+            with self.subTest(row011=fact):
+                self.assertIn(fact, one_line(row011.group(0)))
 
     def test_the_roadmap_says_where_the_016_is(self) -> None:
-        """Definición de hecho §3.7 (T38 y T50): la fila de R-36 y su registro del 19/11/2026 dicen que la 016 está implementada
-        y en verificación (la verificación única hecha sin pantalla y la convergencia de la T41 a la T50), a falta de las
-        medidas a solas y del H3, que no se marca cerrada hasta entonces y CE-016-09, y lo medido (RNF-016-02 «salvo con
-        secciones muy separadas, con aviso», no «cumple» a secas) y lo que no confirma el banco; y ya no dice «sin empezar»."""
+        """Definición de hecho §3.7 (T38, T50 y el cierre del 20/11/2026): la fila de R-36 dice que está hecha en sus dos specs,
+        las dos **cerradas**, y la 016 **cerrada** por Samuel el 20/11/2026 («Sí, por defecto») en ``main``, a falta de publicar,
+        con lo medido y lo que no confirma el banco; su registro del 19/11/2026 dice lo que se hizo entonces (implementada, en
+        verificación) y el del 20/11/2026, el cierre; y ya no dice «sin empezar» ni que «Cerrada» sea solo tras el H3."""
         self.assertIsNotNone(self.roadmap_row)
         assert self.roadmap_row is not None
         row = one_line(self.roadmap_row.group(0))
-        for fact in ("**implementada** en `main`, sin publicar", "**en verificación**", "T01 a la T37 y de la T41 a la T50",
-                     "verificación única (T39) hecha sin pantalla", "H3 en pantalla (T40)", "las medidas a solas",
-                     "**«Cerrada» solo tras ellos y tras CE-016-09**", "docs/usuario/acopios-y-contrafuertes.md"):
+        for fact in ("hecha en sus dos specs, las dos **cerradas**", "**cerrada** por Samuel el 20/11/2026 («Sí, por defecto»",
+                     "**a falta de publicar**", "T01 a la T37 y de la T41 a la T52", "verificación única (T39) hecha sin pantalla",
+                     "H3 en pantalla (T40)", "las medidas a solas", "CE-016-08", "la apertura de 31 m sigue HIPÓTESIS",
+                     "diff de la 011 aplicado", "docs/usuario/acopios-y-contrafuertes.md"):
             with self.subTest(row=fact):
                 self.assertIn(fact, row)
-        self.assertNotIn("sin empezar", row)
+        for stale in ("sin empezar", "**«Cerrada» solo tras ellos y tras CE-016-09**", "**implementada** en `main`, sin publicar",
+                      "**en verificación**", "en implementación;"):
+            with self.subTest(stale=stale):
+                self.assertNotIn(stale, row)
+        self.assertEqual(len(self.ledger_close), 1, self.ledger_close)
+        close = one_line(self.ledger_close[0])
+        for fact in ("Samuel cierra la spec 016", "«Sí, por defecto»", "las 15 decisiones de «Para Samuel»", "spec 0.4",
+                     "diff de la 011", "la 011 pasa a su 0.4", "**cerrada, a falta de publicar**", "R-36 queda hecha en sus dos specs"):
+            with self.subTest(ledger_close=fact):
+                self.assertIn(fact, close)
         self.assertEqual(len(self.ledger), 1, self.ledger)
         entry = one_line(self.ledger[0])
         for fact in ("**implementada, en verificación: a falta de las medidas a solas y del H3 (T40)**",
@@ -1660,7 +1713,8 @@ class SupportedStateDocTest(unittest.TestCase):
         verificación de la 012; y lo que **no** hace todavía."""
         start = self.changelog.index("- **Acopios, contrafuerte y cuerpos apoyados** (spec 016")
         entry = self.changelog[start:self.changelog.index("- **Entidades de diseño paramétricas** (spec 015")]
-        for fact in ("hecha y verificada sin pantalla, a falta de verla en pantalla", "Acopio (detectar, retirar)…, "
+        for fact in ("cerrada el 20/11/2026: verificada sin pantalla y vista en pantalla con eventos simulados, sin ratón real",
+                     "Acopio (detectar, retirar)…, "
                      "Contrafuerte… y Cuerpo apoyado…", "**Detectar acopios…**", "**La marca ha de rodear el pie del montón**",
                      "**ninguno sin filtrar**", "**una sola lista de todo lo que se le apoya**", "**Como plataforma**",
                      "**El pie no se recorta a la zona dibujada**", "**sin espesores negativos**",
@@ -1668,7 +1722,8 @@ class SupportedStateDocTest(unittest.TestCase):
                      "base (4°) y el cuantil de apoyo (0,6) son HIPÓTESIS**", "**El diámetro de apertura de los candidatos (31 m) no "
                      "está confirmado**", "74, 20 o 135 candidatos", "**Lo que no hace todavía**",
                      # T50: lo que cambiaron la T45 a la T49 y lo que la verificación única encontró
-                     "**Dos marcas solapadas se rechazan, solo ellas dos**", "**eligiendo el estado «Suelto»**",
+                     "**Dos marcas solapadas se rechazan, solo ellas dos**", "**comprobando su estado**",
+                     "una unidad antrópica nueva nace «Suelto»", "revise el estado de cada unidad de acopio",
                      "también si la detección es del proyecto", "**Lo que no se puede retirar avisa**",
                      "no salta en el uso normal", "es el único aviso del salto del borde", "es solo una dependencia",
                      "Las líneas 3D han de ser líneas de rotura del proyecto", "el cero se promedia con el dato",
@@ -1676,6 +1731,7 @@ class SupportedStateDocTest(unittest.TestCase):
                      "«Calcular…» solo ofrece plataformas", "la pared no salta con la transición del plan"):
             with self.subTest(fact=fact):
                 self.assertIn(fact, entry)
+        self.assertNotIn("una unidad nueva nace «In situ»", entry)  # T52: la antrópica nace «Suelto»
         for jargon in ("RF-016", "T3", "T4", "T5", "milestone", "`des_stk_"):
             with self.subTest(jargon=jargon):
                 self.assertNotIn(jargon, entry, "la entrada de la 016 se escribe sin jerga de tareas ni de ficheros")
