@@ -54,6 +54,10 @@ después), para rejillas pequeñas (≤ 90 × 90 celdas):
   **Bellman–Ford** (pasadas completas sobre todas las aristas hasta que ninguna mejora), para comparar con ``design.road_net``
   (RF-017-09, RF-017-11). Los rumbos son un parámetro (:data:`HAND_HEADINGS`, la lista de D-8 copiada aquí): con los 8 inmediatos
   muestra lo que no pasa con 8 (B2).
+- :func:`hand_route` y :func:`hand_corridor` (spec 017, T09; plan 017 §5.4 A2 y §7.1): la ruta 3D de mínimo coste **por fuerza bruta**: el
+  grafo explícito de estados ``(nodo, nivel, rumbo)`` construido entero (cada nivel de llegada de cada paso, sin tablas de saltos ni cota
+  admisible), un Dijkstra completo con etiquetas enteras ``(coste en nanómetros, giros)`` y la ruta elegida recorriendo todas las aristas
+  (el desempate de D-23), y el pasillo desde la red 2D de :func:`hand_net`, para comparar con ``design.road_route`` (RF-017-10, RF-017-09).
 
 Convenciones: ``seed`` es la rejilla de semillas (fila 0 al norte): una celda es semilla si su cota
 es finita; ``+inf``, ``−inf`` y NaN no lo son. ``direction="up"`` es ``E_up = mín_q [s + t·d]`` y
@@ -83,6 +87,7 @@ __all__ = [
     "HandLayers",
     "HandPlane",
     "HandRemoval",
+    "HandRoute",
     "HandWall",
     "HandWallStretch",
     "brute_force_euclidean",
@@ -90,6 +95,7 @@ __all__ = [
     "euclidean_displacements",
     "hand_buttress",
     "hand_cell_slope_deg",
+    "hand_corridor",
     "hand_crown",
     "hand_dilate",
     "hand_footprint",
@@ -97,6 +103,7 @@ __all__ = [
     "hand_net",
     "hand_plane",
     "hand_removal",
+    "hand_route",
     "hand_share",
     "hand_stairs",
     "hand_volume",
@@ -882,17 +889,11 @@ HAND_STEP_TOLERANCE_M = 1e-9
 """El margen (m) de ``|Δcota| ≤ pd·L + 2H``: el de A2 (``10⁻⁹``), que la red 2D comparte para ser una cota inferior de la ruta 3D."""
 
 
-def hand_net(surface: Sequence[Sequence[float]], forbidden: Sequence[Sequence[bool]] | None, factor: int, cell_m: float, pd: float,
-             hmax: float, targets: Sequence[tuple[int, int]], *,
-             headings: Sequence[tuple[int, int]] = HAND_HEADINGS) -> np.ndarray:
-    """La red 2D de A1 **a mano** (RF-017-09, RF-017-11): la longitud mínima (m) desde los nodos ``targets`` ``(i, j)`` a cada nodo de la
-    malla de bloques de ``factor × factor`` celdas de ``cell_m`` m sobre ``surface`` (fila 0 al norte; ``NaN``, sin dato) como un
-    array ``(ni, nj)`` con ``inf`` donde no llega. La cota de un nodo es la media de las celdas de su bloque (``fsum``); no se pisa
-    un nodo con alguna celda sin dato, fuera de la rejilla (los bloques incompletos) o en ``forbidden``. Una arista del grafo explícito
-    va del nodo ``(i, j)`` al ``(i − dy, j + dx)`` para cada rumbo ``(dx, dy)`` de ``headings`` si los dos se pisan, ni los dos nodos
-    que la recta atraviesa en un paso «de caballo» están prohibidos y ``|Δcota| ≤ pd·L + 2·hmax`` (``L = factor·cell_m·√(dx² + dy²)``,
-    con ``pd`` en tanto por uno); las distancias, por Bellman–Ford: pasadas completas sobre todas las aristas hasta que ninguna mejore.
-    Un destino que no se pisa no cuenta. Bucles de Python, sin ``design.road_net`` ni numpy en el cálculo."""
+def _hand_blocks(surface: Sequence[Sequence[float]], forbidden: Sequence[Sequence[bool]] | None, factor: int
+                 ) -> tuple[dict[tuple[int, int], float], int, int]:
+    """La malla de A1 **a mano**: la cota de cada nodo que se pisa (la media, con ``fsum``, de las celdas de su bloque de ``factor ×
+    factor``; no se pisa uno con alguna celda sin dato, fuera de la rejilla —los bloques incompletos— o en ``forbidden``) y el número de filas
+    y de columnas de nodos."""
     rows = len(surface)
     cols = len(surface[0])
     ni, nj = -(-rows // factor), -(-cols // factor)
@@ -908,18 +909,37 @@ def hand_net(surface: Sequence[Sequence[float]], forbidden: Sequence[Sequence[bo
             if forbidden is not None and any(bool(forbidden[r][c]) for r, c in cells):
                 continue
             height[(i, j)] = math.fsum(values) / (factor * factor)
+    return height, ni, nj
+
+
+def _hand_between(dx: int, dy: int) -> list[tuple[int, int]]:
+    """Los dos nodos que atraviesa la recta de un paso «de caballo» ``(dx, dy)`` como desplazamientos ``(mx, my)``; ninguno en los demás."""
+    if abs(dx) == 2:
+        return [(dx // 2, 0), (dx // 2, dy)]
+    if abs(dy) == 2:
+        return [(0, dy // 2), (dx, dy // 2)]
+    return []
+
+
+def hand_net(surface: Sequence[Sequence[float]], forbidden: Sequence[Sequence[bool]] | None, factor: int, cell_m: float, pd: float,
+             hmax: float, targets: Sequence[tuple[int, int]], *,
+             headings: Sequence[tuple[int, int]] = HAND_HEADINGS) -> np.ndarray:
+    """La red 2D de A1 **a mano** (RF-017-09, RF-017-11): la longitud mínima (m) desde los nodos ``targets`` ``(i, j)`` a cada nodo de la
+    malla de bloques de ``factor × factor`` celdas de ``cell_m`` m sobre ``surface`` (fila 0 al norte; ``NaN``, sin dato) como un
+    array ``(ni, nj)`` con ``inf`` donde no llega. La cota de un nodo es la media de las celdas de su bloque (``fsum``); no se pisa
+    un nodo con alguna celda sin dato, fuera de la rejilla (los bloques incompletos) o en ``forbidden``. Una arista del grafo explícito
+    va del nodo ``(i, j)`` al ``(i − dy, j + dx)`` para cada rumbo ``(dx, dy)`` de ``headings`` si los dos se pisan, ni los dos nodos
+    que la recta atraviesa en un paso «de caballo» están prohibidos y ``|Δcota| ≤ pd·L + 2·hmax`` (``L = factor·cell_m·√(dx² + dy²)``,
+    con ``pd`` en tanto por uno); las distancias, por Bellman–Ford: pasadas completas sobre todas las aristas hasta que ninguna mejore.
+    Un destino que no se pisa no cuenta. Bucles de Python, sin ``design.road_net`` ni numpy en el cálculo."""
+    height, ni, nj = _hand_blocks(surface, forbidden, factor)
     edges: dict[tuple[int, int], list[tuple[tuple[int, int], float]]] = {node: [] for node in height}
     for (i, j), z0 in height.items():
         for dx, dy in headings:
             other = (i - dy, j + dx)
             if other not in height:
                 continue
-            between: list[tuple[int, int]] = []
-            if abs(dx) == 2:
-                between = [(dx // 2, 0), (dx // 2, dy)]
-            elif abs(dy) == 2:
-                between = [(0, dy // 2), (dx, dy // 2)]
-            if any((i - my, j + mx) not in height for mx, my in between):
+            if any((i - my, j + mx) not in height for mx, my in _hand_between(dx, dy)):
                 continue
             length = factor * cell_m * math.hypot(dx, dy)
             if abs(height[other] - z0) <= pd * length + 2.0 * hmax + HAND_STEP_TOLERANCE_M:
@@ -944,3 +964,170 @@ def hand_net(surface: Sequence[Sequence[float]], forbidden: Sequence[Sequence[bo
     for (i, j), value in best.items():
         out[i, j] = value
     return out
+
+
+# --- La ruta 3D de la pista (spec 017, T09; plan 017 §5.4 A2 y §7.1) ---------------------------------------------------------------
+
+HAND_COST_SCALE = 1_000_000_000
+"""Las unidades de coste por metro: el coste del paso es un entero en nanómetros, redondeado una vez por paso (D-23: empates exactos)."""
+HAND_LEVEL_MARGIN_M = 1e-9
+"""El margen (m) de la pendiente de un paso, ``|Δcota| ≤ pd·L + 10⁻⁹``: el de A2."""
+
+
+@dataclass(frozen=True, slots=True)
+class HandRoute:
+    """La ruta de :func:`hand_route`: ``found``; con ruta, su ``cost_units`` (entero, en :data:`HAND_COST_SCALE` unidades por metro), los
+    ``turns``, los ``nodes`` ``(i, j)`` del origen al destino, el índice de rumbo con que se llega a cada uno (``headings``; el primero es
+    el de partida, libre) y el ``levels`` (múltiplos del paso de cota sobre el terreno del nodo) de cada nodo. Siempre, los ``states`` y las
+    ``edges`` del grafo explícito, y ``tied``: **cuántas veces el desempate decidió** (en la ruta, los estados cuyo origen se eligió entre
+    dos o más con la misma etiqueta, y el estado de llegada si dos rumbos la compartían)."""
+
+    found: bool
+    cost_units: int | None
+    turns: int | None
+    nodes: tuple[tuple[int, int], ...]
+    headings: tuple[int, ...]
+    levels: tuple[int, ...]
+    states: int
+    edges: int
+    tied: int
+
+
+def _hand_weights(weight: Sequence[Sequence[float]] | None, factor: int, ni: int, nj: int) -> dict[tuple[int, int], float]:
+    """El peso de cada nodo: el mayor de las celdas de su bloque (1 sin ``weight``)."""
+    if weight is None:
+        return {(i, j): 1.0 for i in range(ni) for j in range(nj)}
+    rows, cols = len(weight), len(weight[0])
+    found: dict[tuple[int, int], float] = {}
+    for i in range(ni):
+        for j in range(nj):
+            found[(i, j)] = max(float(weight[r][c]) for r in range(i * factor, min((i + 1) * factor, rows))
+                                for c in range(j * factor, min((j + 1) * factor, cols)))
+    return found
+
+
+def _hand_top(hmax: float, level_step_m: float) -> int:
+    """El número de niveles a cada lado, ``M = ⌊H/Δz⌋``, en aritmética racional sobre los decimales dados (``14/0,28`` es 50, no 49,99…)."""
+    return math.floor(Fraction(repr(float(hmax))) / Fraction(repr(float(level_step_m))))
+
+
+def hand_route(surface: Sequence[Sequence[float]], forbidden: Sequence[Sequence[bool]] | None, factor: int, cell_m: float, pd: float,
+               hmax: float, level_step_m: float, lambda_per_m: float, turn_m: float, origin: tuple[int, int],
+               destination: tuple[int, int], *, start_level_m: float | None = None, end_level_m: float | None = None,
+               weight: Sequence[Sequence[float]] | None = None, domain: Sequence[Sequence[bool]] | None = None,
+               headings: Sequence[tuple[int, int]] = HAND_HEADINGS) -> HandRoute:
+    """La ruta 3D de mínimo coste de A2 **por fuerza bruta** (RF-017-10, RF-017-11, D-23): un Dijkstra **completo** (sin parar en el destino) sobre
+    el grafo explícito de estados ``(i, j, m, h)`` —nodo de la malla de bloques de ``factor × factor`` celdas de ``cell_m`` m sobre
+    ``surface``, nivel ``m ∈ [−M, M]`` con ``M = ⌊hmax/level_step_m⌋`` (la cota es la del terreno del nodo más ``m·level_step_m``) y rumbo
+    ``h``—, que se **construye entero** (cada estado, cada rumbo ``h' ∈ {h − 1, h, h + 1}`` módulo el número de rumbos y **cada** nivel de
+    llegada, comprobando la pendiente ``|Δcota| ≤ pd·L + 10⁻⁹`` con las cotas: sin tablas de saltos) y se recorre con una cola.
+
+    - **El coste del paso**: ``int(10⁹ · L · (1 + λ·Δz·(|m| + |m'|)/2) · w + ½)`` (``w``, la media de los pesos de los dos nodos, el mayor de
+      las celdas de su bloque) más, si cambia el rumbo, ``int(10⁹ · giro + ½)``; la etiqueta de un estado es ``(coste, giros)``, comparada
+      por orden lexicográfico (el menor número de giros a igual coste). Los costes son **enteros**: los empates son exactos.
+    - **Desde** el nodo ``origin`` con el nivel más próximo a ``start_level_m`` (``None``: el del terreno) y los 16 rumbos a coste 0 (el rumbo
+      de partida es libre); **hasta** ``destination`` con el nivel más próximo a ``end_level_m``. Los nodos que se pisan son los de
+      :func:`hand_net` (la media de su bloque; ni una celda sin dato o prohibida) y, si hay ``domain`` (el pasillo, :func:`hand_corridor`),
+      solo los de él (los nodos intermedios de un paso «de caballo» solo han de pisarse).
+    - **La ruta** es la del estado de llegada de menor ``(coste, giros, rumbo)`` y, hacia atrás, de cada estado su origen de **menor
+      ``(rumbo anterior, salto de nivel)``** entre los que dan su misma etiqueta (D-23: gana el menor número de giros y, a igual número, el
+      primer rumbo en sentido horario desde el norte). Se elige recorriendo **todas** las aristas del grafo, no mientras se relajan.
+
+    Un nivel de partida o de llegada fuera de ``±M`` no deja estado: sin ruta."""
+    height, ni, nj = _hand_blocks(surface, forbidden, factor)
+    usable = {node for node in height if domain is None or bool(domain[node[0]][node[1]])}
+    weights = _hand_weights(weight, factor, ni, nj)
+    count = len(headings)
+    top = _hand_top(hmax, level_step_m)
+    turn_units = int(turn_m * HAND_COST_SCALE + 0.5)
+    length_of = [factor * cell_m * math.hypot(dx, dy) for dx, dy in headings]
+    nothing = HandRoute(False, None, None, (), (), (), 0, 0, 0)
+
+    def level_near(wanted: float | None, node: tuple[int, int]) -> int | None:
+        found = 0 if wanted is None else math.floor((wanted - height[node]) / level_step_m + 0.5)
+        return found if -top <= found <= top else None
+
+    if origin not in usable or destination not in usable:
+        return nothing
+    start_level, end_level = level_near(start_level_m, origin), level_near(end_level_m, destination)
+    if start_level is None or end_level is None:
+        return nothing
+    State = tuple[int, int, int, int]  # (i, j, m, h)
+    edges: list[tuple[State, State, int, int]] = []
+    out: dict[State, list[tuple[State, int, int]]] = {}
+    states = 0
+    for node in sorted(usable):
+        i, j = node
+        for m in range(-top, top + 1):
+            for h in range(count):
+                states += 1
+                source: State = (i, j, m, h)
+                for other in ((h - 1) % count, h, (h + 1) % count):
+                    dx, dy = headings[other]
+                    target = (i - dy, j + dx)
+                    if target not in usable or any((i - my, j + mx) not in height for mx, my in _hand_between(dx, dy)):
+                        continue
+                    for m2 in range(-top, top + 1):
+                        rise = (height[target] + m2 * level_step_m) - (height[node] + m * level_step_m)
+                        if abs(rise) > pd * length_of[other] + HAND_LEVEL_MARGIN_M:
+                            continue
+                        both = abs(m) + abs(m2)
+                        units = int(HAND_COST_SCALE * length_of[other] * (1.0 + lambda_per_m * level_step_m * both * 0.5)
+                                    * ((weights[node] + weights[target]) * 0.5) + 0.5)
+                        turned = other != h
+                        step: tuple[State, State, int, int] = (source, (target[0], target[1], m2, other),
+                                                              units + (turn_units if turned else 0), int(turned))
+                        edges.append(step)
+                        out.setdefault(source, []).append((step[1], step[2], step[3]))
+    starts = [(origin[0], origin[1], start_level, h) for h in range(count)]
+    label: dict[State, tuple[int, int]] = {state: (0, 0) for state in starts}
+    queue = [(0, 0, state) for state in starts]
+    heapq.heapify(queue)
+    while queue:
+        cost, turns, state = heapq.heappop(queue)
+        if label[state] != (cost, turns):
+            continue
+        for other_state, units, turned in out.get(state, ()):
+            candidate = (cost + units, turns + turned)
+            if other_state not in label or candidate < label[other_state]:
+                label[other_state] = candidate
+                heapq.heappush(queue, (candidate[0], candidate[1], other_state))
+    arrivals = sorted((label[(destination[0], destination[1], end_level, h)], h) for h in range(count)
+                      if (destination[0], destination[1], end_level, h) in label)
+    if not arrivals:
+        return HandRoute(False, None, None, (), (), (), states, len(edges), 0)
+    best_parent: dict[State, tuple[int, int, State]] = {}
+    candidates: dict[State, int] = {}
+    for source, target_state, units, turned in edges:
+        if source not in label or target_state not in label:
+            continue
+        if (label[source][0] + units, label[source][1] + turned) != label[target_state]:
+            continue
+        candidates[target_state] = candidates.get(target_state, 0) + 1
+        key = (source[3], target_state[2] - source[2], source)
+        if target_state not in best_parent or key < best_parent[target_state]:
+            best_parent[target_state] = key
+    (cost, turns), arrival_heading = arrivals[0]
+    tied = 1 if len(arrivals) > 1 and arrivals[1][0] == arrivals[0][0] else 0
+    state = (destination[0], destination[1], end_level, arrival_heading)
+    chain = [state]
+    while state not in starts:
+        tied += candidates[state] > 1
+        state = best_parent[state][2]
+        chain.append(state)
+    chain.reverse()
+    return HandRoute(True, cost, turns, tuple((s[0], s[1]) for s in chain), tuple(s[3] for s in chain), tuple(s[2] for s in chain),
+                     states, len(edges), tied)
+
+
+def hand_corridor(surface: Sequence[Sequence[float]], forbidden: Sequence[Sequence[bool]] | None, factor: int, cell_m: float, pd: float,
+                  hmax: float, origin: tuple[int, int], destination: tuple[int, int], margin_m: float) -> np.ndarray:
+    """El pasillo de la ruta **a mano** (RF-017-09): los nodos con ``d_origen + d_destino ≤ la más corta + margin_m`` (con 10⁻⁹ relativo para el
+    último bit de las sumas), con las dos distancias de :func:`hand_net` (Bellman–Ford); vacío si el origen no alcanza el destino. Un array
+    ``(ni, nj)`` booleano."""
+    from_origin = hand_net(surface, forbidden, factor, cell_m, pd, hmax, [origin])
+    from_destination = hand_net(surface, forbidden, factor, cell_m, pd, hmax, [destination])
+    shortest = float(from_destination[origin])
+    if not math.isfinite(shortest):
+        return np.zeros(from_origin.shape, dtype=bool)
+    return (from_origin + from_destination) <= shortest + margin_m + 1e-9 * shortest
