@@ -48,6 +48,9 @@ caben todos en el mismo proyecto como rejillas distintas y comparten las capas.
 - **Los oráculos propios** (:func:`oracle_slope_pct`, :func:`oracle_reachable`, :func:`erode`, :func:`opening`): la
   pendiente local, el alcance 4-conexo y la apertura de ancho, hechos aquí para comprobar los datos (y las tareas que los usan), no con el
   código de ``road_access``.
+- **La sección tipo** (:func:`straight_section_by_hand`, :func:`oracle_section`; T12, CE-017-06): la calzada, el arcén y el caballón de un
+  eje recto a mano (fórmulas cerradas) y de una poligonal cualquiera por fuerza bruta (el tramo más próximo uno a uno, sin teselas), en las
+  mismas celdas, con un terreno de fórmula cerrada para el lado del arcén; independientes de ``design.road_section``.
 - **El proyecto** (:func:`project_template`, :class:`RoadProjectCase`): el de la cantera de la 015 con los terrenos
   como rejillas (:data:`RASTERS`) y las capas. Se crea **una vez por proceso** y paso de rejilla (en ≤ 2 s de CPU:
   :data:`BUILD_BUDGET_S`, lo que añade a la cantera de la 015) y cada clase trabaja en su copia. Las zonas «requiere
@@ -956,6 +959,112 @@ def oracle_gradient_line(s: np.ndarray, terrain: np.ndarray, pd: float, z_start:
     line = np.minimum(np.maximum(0.5 * (lower + upper), low), high)
     line[0], line[-1] = z_start, z_end
     return line
+
+
+# --- La sección tipo, a mano y por fuerza bruta (T12; CE-017-06) --------------------------------------------------
+
+KIND_NONE, KIND_CARRIAGEWAY, KIND_SHOULDER, KIND_BERM = 0, 1, 2, 3
+"""Las clases de celda de la sección, copia **independiente** de ``road_section.SectionClass``: fuera, calzada, arcén y caballón."""
+RIGHT, LEFT = 1, -1
+"""Los lados de la sección en el sentido de la marcha (el signo de la distancia lateral)."""
+SECTION_EDGE_TOL_M = 1e-9
+"""La tolerancia con que una celda en el borde de su ancho cuenta como dentro (``|d| ≤ ancho``); la misma de ``road_section``."""
+SECTION_CHECK_TOL_M = 1e-9
+"""Lo que se pide a la sección frente al cálculo a mano en las mismas celdas (RF-017-20, CE-017-06)."""
+
+
+@dataclass(frozen=True, slots=True)
+class SectionByHand:
+    """La sección de una pista calculada a mano, en las celdas de una ventana: ``kind`` (``KIND_*``, ``int8``), ``side`` (``RIGHT`` o
+    ``LEFT``; 0 fuera), ``sigma`` (la abscisa a lo largo del eje, m; ``nan`` fuera) y ``lateral`` (la distancia con signo al eje, m, **positiva a
+    la derecha** en el sentido de la marcha; ``nan`` fuera)."""
+
+    kind: np.ndarray
+    side: np.ndarray
+    sigma: np.ndarray
+    lateral: np.ndarray
+
+    @property
+    def cells(self) -> np.ndarray:
+        """Las celdas de la sección."""
+        return self.kind != KIND_NONE
+
+
+def _kinds(lateral: np.ndarray, shoulder_right: np.ndarray, inside: np.ndarray, carriageway_m: float, shoulder_m: float,
+           berm_m: float) -> SectionByHand:
+    """La clase y el lado de cada celda con la distancia lateral ``lateral`` y el lado del arcén ``shoulder_right`` (por celda): calzada
+    ``|d| ≤ f·A/2``; el resto de su lado, arcén o caballón, hasta su ancho. Sin ``sigma`` (todo ``nan``): lo pone quien llama."""
+    half = carriageway_m / 2.0
+    right = lateral >= 0.0
+    on_shoulder_side = right == shoulder_right
+    width = half + np.where(on_shoulder_side, shoulder_m, berm_m)
+    inside = inside & (np.abs(lateral) <= width + SECTION_EDGE_TOL_M)
+    kind = np.where(np.abs(lateral) <= half + SECTION_EDGE_TOL_M, KIND_CARRIAGEWAY, np.where(on_shoulder_side, KIND_SHOULDER, KIND_BERM))
+    return SectionByHand(np.where(inside, kind, KIND_NONE).astype(np.int8), np.where(inside, np.where(right, RIGHT, LEFT), 0).astype(np.int8),
+                         np.full(lateral.shape, np.nan), np.where(inside, lateral, np.nan))
+
+
+def straight_section_by_hand(grid: Any, z_of: Callable[[np.ndarray, np.ndarray], np.ndarray], carriageway_m: float, shoulder_m: float, berm_m: float, *,
+                             start: tuple[float, float] = RAMP_ORIGIN, end: tuple[float, float] = RAMP_DESTINATION) -> SectionByHand:
+    """La sección de un eje **recto de oeste a este** (de ``start`` a ``end``, locales, con la misma y; la derecha es el sur) en **todas** las celdas
+    de ``grid``, con las fórmulas cerradas: ``σ = x − x₀`` (la huella, los extremos planos: ``0 ≤ σ ≤ L``), ``d = y₀ − y`` (positiva al sur),
+    el terreno ``z_of(x, y)`` (cerrada, en locales) a ±*f·A*/2 del eje en la abscisa de la celda y, con el lado de mayor cota (a la derecha solo si
+    es **estrictamente** mayor), el arcén en él y el caballón en el otro; calzada ``|d| ≤ f·A/2``. Con cotas iguales, el caballón a la derecha
+    (D-12, CE-017-06)."""
+    assert start[1] == end[1] and end[0] > start[0]
+    x, y = local_centers(grid)
+    sigma = x - start[0]
+    half = carriageway_m / 2.0
+    shoulder_right = z_of(x, start[1] - half) > z_of(x, start[1] + half)
+    found = _kinds(start[1] - y, shoulder_right, (sigma >= 0.0) & (sigma <= end[0] - start[0]), carriageway_m, shoulder_m, berm_m)
+    return SectionByHand(found.kind, found.side, np.where(found.kind != KIND_NONE, sigma, np.nan), found.lateral)
+
+
+def oracle_section(grid: Any, window: tuple[slice, slice], path: np.ndarray, stations: np.ndarray, z_of: Callable[[np.ndarray, np.ndarray], np.ndarray],
+                   carriageway_m: float, shoulder_m: float, berm_m: float) -> SectionByHand:
+    """La sección de la poligonal densa ``path`` (``(n, 2)`` absoluta; ``stations``, su abscisa sobre el eje, m) por **fuerza bruta**, en las celdas de
+    ``window``: para cada celda, el tramo más próximo **uno a uno** (sin teselas ni ``searchsorted``), la huella con los extremos planos (a ≤ la
+    semianchura máxima del punto más próximo y sin pasar de los planos perpendiculares del primer y último tramo), la abscisa del eje (la del punto más
+    próximo de la poligonal pasada a la del eje por interpolación lineal entre sus vértices), el tramo de la celda (el último que empieza en su abscisa o
+    antes), la distancia lateral con signo (positiva a la derecha), el terreno ``z_of(x, y)`` (cerrada, en locales de ``grid``) a ±*f·A*/2 de ese punto
+    y el lado del arcén (a la derecha solo si es estrictamente mayor)."""
+    path = np.asarray(path, dtype=np.float64)
+    stations = np.asarray(stations, dtype=np.float64)
+    step = np.diff(path, axis=0)
+    length = np.hypot(step[:, 0], step[:, 1])
+    ux, uy = step[:, 0] / length, step[:, 1] / length
+    chord = np.concatenate(([0.0], np.cumsum(length)))
+    rows = np.arange(window[0].start, window[0].stop)
+    columns = np.arange(window[1].start, window[1].stop)
+    px, py = np.meshgrid(grid.west + (columns + 0.5) * grid.dx, grid.north - (rows + 0.5) * grid.dy)
+    best = np.full(px.shape, np.inf)
+    nearest = np.full(px.shape, np.nan)
+    for j in range(len(length)):
+        ox, oy = px - path[j, 0], py - path[j, 1]
+        along = np.clip(ox * ux[j] + oy * uy[j], 0.0, length[j])
+        distance2 = (ox - along * ux[j]) ** 2 + (oy - along * uy[j]) ** 2
+        better = distance2 < best
+        best[better] = distance2[better]
+        nearest[better] = chord[j] + along[better]
+    half = carriageway_m / 2.0
+    reach = half + max(shoulder_m, berm_m)
+    before = (px - path[0, 0]) * ux[0] + (py - path[0, 1]) * uy[0]
+    after = (px - path[-2, 0]) * ux[-1] + (py - path[-2, 1]) * uy[-1]
+    inside = (best <= reach * reach) & (before >= 0.0) & (after <= length[-1])
+    nearest = np.where(inside, nearest, 0.0)
+    segment = np.zeros(px.shape, dtype=np.intp)
+    for j in range(1, len(length)):
+        segment[chord[j] <= nearest] = j
+    ox, oy = px - path[segment, 0], py - path[segment, 1]
+    lateral = ox * uy[segment] - oy * ux[segment]
+    along = np.clip(nearest - chord[segment], 0.0, length[segment])
+    qx, qy = path[segment, 0] + along * ux[segment], path[segment, 1] + along * uy[segment]
+    origin = origin_of(grid)
+    right_x, right_y = uy[segment] * half, -ux[segment] * half
+    shoulder_right = z_of(qx + right_x - origin[0], qy + right_y - origin[1]) > z_of(qx - right_x - origin[0], qy - right_y - origin[1])
+    found = _kinds(lateral, shoulder_right, inside, carriageway_m, shoulder_m, berm_m)
+    arc = stations[segment] + along / length[segment] * (stations[segment + 1] - stations[segment])
+    return SectionByHand(found.kind, found.side, np.where(found.kind != KIND_NONE, arc, np.nan), found.lateral)
 
 
 # --- El proyecto -----------------------------------------------------------------------------------------------
