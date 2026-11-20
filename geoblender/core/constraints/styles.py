@@ -174,11 +174,14 @@ ENTITY_KINDS: Mapping[str, tuple[str, tuple[int, int, int]]] = MappingProxyType(
     "removal": ("Retirada", (204, 77, 64)),
     "buttress": ("Contrafuerte", (128, 102, 204)),
     "body": ("Cuerpo apoyado", (77, 140, 217)),
+    "road": ("Pista", (118, 118, 118)),
+    "access": ("Accesibilidad", (51, 166, 153)),
 })
 """Los tipos de entidad con estilo propio: el valor de ``kind`` → (su nombre en español, su color ``r, g, b``). Los cuatro de
 la 016 (spec 016, T35; decisión del 19/11/2026) llevan **los colores de los objetos de la vista** (``bl.scene.entity_views.COLORS``, de 0 a 1,
 a 0 a 255): la fila de un acopio de una detección, la retirada, el contrafuerte y el cuerpo apoyado. Un tipo que no esté aquí se dibuja como
-«otra entidad»."""
+«otra entidad». De la 017 (T03), la pista (gris: sale en la capa con su huella) y la accesibilidad (sin huella: no tiene filas en la
+capa; el contrato con ``design.entities.EntityKind`` pide un estilo por tipo y esta es la del día en que tenga alguna)."""
 ENTITY_OTHER_LABEL = "Otra entidad"
 """El nombre de las entidades de un tipo que aún no tiene estilo propio."""
 ENTITY_OTHER_COLOR = (110, 110, 140)

@@ -8,6 +8,12 @@ RF-015-04, RF-009-11): con los dos tipos de prueba registrados (``types_register
 se crean, se recalculan, se congelan y se reproducen igual, y reproducir la revisión congelada da el **mismo
 hash** que registró cada operación y las mismas cifras, sin escribir nada en el proyecto. La comparación con los
 hash de **antes** de la T02 (los valores concretos) es de la *Verificación* de la tarea.
+
+**Spec 017, T03** (la pista y la accesibilidad pasan a ser dos tipos más del programa, junto a los cuatro de la 016, sin cambiar un
+resultado de la 015 ni de la 016): se amplía con la detección de acopios de la 016 (la de ``milestone_stockpile_recompute``, con sus
+candidatos y sus decisiones, recalculada y congelada), que con los tipos de prueba registrados **y los dos de la 017** se reproduce
+igual: los mismos hash y las mismas cifras, y lo vivo que cambia al recalcular no cambia lo congelado. Los valores concretos antes y
+después de la T03 (los de las tres plataformas y la detección) son de su *Verificación*.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from tests.support.versions_fixtures import change_counter, files
+from tests.unit.design import milestone_stockpile_recompute as stockpile_recompute
 from tests.unit.design import test_platform_prepare as prep
 from tests.unit.design.test_entities_registry import types_registered
 from tests.unit.design.test_platform_operation import (
@@ -89,3 +96,27 @@ class FrozenPlatformsWithMoreTypesRegisteredTest(RecomputeCase):
             self.assertTrue(all(check.same for check in found), [check for check in found if not check.same])
         self.assertFalse(report.not_reproducible)
         self.assertTrue(report.matches)
+
+
+class FrozenStockpileDetectionWithMoreTypesRegisteredTest(stockpile_recompute.ReproduceTest):
+    """RF-017-01, RF-016-10, RF-016-02, RF-015-02, RF-009-11 (spec 017, T03): la detección de acopios de la 016 con sus candidatos y sus
+    decisiones, recalculada con otro umbral y congelada en ``V01.r1``, **con los tipos de prueba registrados** (además de la pista y la
+    accesibilidad, que ya son del programa): el registro de las entidades la lee como de la 016, su revisión se reproduce con el **mismo
+    hash** que registró cada dato y las mismas cifras sin escribir, y lo vivo que cambia al recalcular no cambia lo congelado. Hereda las
+    dos pruebas de ``milestone_stockpile_recompute.ReproduceTest``."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.enterClassContext(types_registered())
+        super().setUpClass()
+
+    def test_the_registry_reads_the_detection_as_the_016_did(self) -> None:
+        """RF-017-01, RF-016-02, RF-015-25: con los tipos de prueba registrados, el registro de la versión da la detección como tipo
+        ``stockpile``, al día, con la operación vigente, **fuera de toda cadena** (sin partida) y sin ninguna pista ni accesibilidad."""
+        found = entities_module.registry(self.project, self.v1.uid)
+        self.assertEqual([item.code for item in found.records], ["STK-001"])
+        self.assertEqual({item.kind.value for item in found.records}, {"stockpile"})
+        (entry,) = list(found)  # la operación vigente: la de ``setUpClass`` o, si la otra prueba ya recalculó, la que la sustituyó
+        self.assertEqual(self.query("SELECT op_type FROM gb_operation WHERE uid = ?", str(entry.operation_uid)),
+                         [("des.stockpile_detect",)])
+        self.assertEqual(entities_module.chain_tails(found.records), ())

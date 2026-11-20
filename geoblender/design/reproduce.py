@@ -61,7 +61,9 @@ comparte con el proyecto, ``supported_store.body_compute_steps`` sobre el mismo 
 superficie conocida —y, «sobre una base», la de partida— y las máscaras congeladas por su nombre y su papel, y los parámetros de su
 entidad congelados; el espesor disperso, la superficie o la base dispersa, la huella y el informe, y las cifras). **El otro tipo de la
 016** (:func:`reproduce_buttress`; spec 016, T03) existe pero **sin comportamiento todavía**: dice qué tarea lo hace
-(``NotImplementedError``); no hay ninguna operación de ese tipo que reproducir hasta que se crea.
+(``NotImplementedError``); no hay ninguna operación de ese tipo que reproducir hasta que se crea. **Los tres tipos de la 017** (spec
+017, T03; :func:`reproduce_road`, :func:`reproduce_road_access` y :func:`reproduce_road_propose`) existen igual, **sin comportamiento
+todavía**: dicen qué tarea los hace (T22, T17 y T27) con ``NotImplementedError``.
 
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con otros,
 ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹ relativo, plan
@@ -152,6 +154,9 @@ __all__ = [
     "reproduce_fill_only",
     "reproduce_platform",
     "reproduce_quarry",
+    "reproduce_road",
+    "reproduce_road_access",
+    "reproduce_road_propose",
     "reproduce_stockpile_detect",
     "reproduce_stockpile_removal",
 ]
@@ -824,13 +829,13 @@ def _reproduce_declaration(request: ReproduceRequest, budget_s: float) -> Iterat
 # --- Los cuatro tipos de la 016 (spec 016, T03): sin comportamiento todavía ---------------------------------------
 
 
-def _not_yet(request: object, op_type: str, task: str) -> Iterator[Progress]:
-    """La reproducción de un tipo de la 016 que aún no tiene su cálculo: comprueba que es una
+def _not_yet(request: object, op_type: str, task: str, spec: str = "016") -> Iterator[Progress]:
+    """La reproducción de un tipo de la 016 o de la 017 (``spec``) que aún no tiene su cálculo: comprueba que es una
     ``ReproduceRequest`` de ``op_type`` (``TypeError`` y ``ValueError``, errores del programa) y dice qué tarea lo hace
     (``NotImplementedError``). No hay ninguna operación de estos tipos que reproducir hasta que las tareas siguientes
     las crean."""
     _check(request, op_type)
-    raise NotImplementedError(f"«{op_type}» aún no se reproduce: lo hace {task} de la 016")
+    raise NotImplementedError(f"«{op_type}» aún no se reproduce: lo hace {task} de la {spec}")
 
 
 def reproduce_stockpile_detect(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
@@ -1096,6 +1101,24 @@ def _reproduce_body(request: ReproduceRequest, budget_s: float) -> Iterator[Prog
     supports = () if surface is None else _support_figures(frozen, [surface], whole_start)  # type: ignore[arg-type]
     yield Progress(_PHASE, 1, 1, "Cuerpo apoyado reproducido",
                    result=ReproducedResult(tuple(made), (*outcome.figures, *supports)))
+
+
+# --- Los tres tipos de la 017 (spec 017, T03): sin comportamiento todavía ----------------------------------------
+
+
+def reproduce_road(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """Reproduce ``des.road`` (spec 017, T03; RF-017-01, RF-015-02, RF-009-11): sin comportamiento todavía (T22)."""
+    return _not_yet(request, provenance.ROAD, "la T22", "017")
+
+
+def reproduce_road_access(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """Reproduce ``des.road_access`` (spec 017, T03; RF-017-24, RF-009-11): sin comportamiento todavía (T17)."""
+    return _not_yet(request, provenance.ROAD_ACCESS, "la T17", "017")
+
+
+def reproduce_road_propose(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
+    """Reproduce ``des.road_propose`` (spec 017, T03; RF-017-28, RF-009-11): sin comportamiento todavía (T27)."""
+    return _not_yet(request, provenance.ROAD_PROPOSE, "la T27", "017")
 
 
 REPRODUCE:Mapping[str, ReproduceFunction] = MappingProxyType({

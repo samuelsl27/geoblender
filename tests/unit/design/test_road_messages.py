@@ -85,6 +85,9 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # «Apoyo retirado» de cada tipo (``EntityType.removed``; RF-015-17).
     "des.road_support_removed": ("note", "RF-015-17", {"name"}),
     "des.access_support_removed": ("note", "RF-015-17", {"name"}),
+    # El motivo declarado de cada tipo (``EntityType.reason``, obligatorio en la clase y no usado: la T03 los puso).
+    "des.road_declared_reason": ("note", "RF-015-10", {"name"}),
+    "des.access_declared_reason": ("note", "RF-015-10", {"name"}),
 }
 """Los códigos de la T02 con su gravedad, su RF y lo que su texto nombra."""
 PREFIXES = ("des.road_", "des.access_")

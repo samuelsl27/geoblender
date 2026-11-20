@@ -51,8 +51,8 @@ gpkg_base = import_geoblender("core.gpkg.base")
 versions_model = import_geoblender("core.versions.model")
 
 PLATFORM = entities.EntityKind.PLATFORM
-PROGRAM_KINDS = ["platform", "stockpile", "removal", "buttress", "body"]
-"""Los tipos del programa, en su orden: la plataforma (015) y los cuatro de la 016 (T03)."""
+PROGRAM_KINDS = ["platform", "stockpile", "removal", "buttress", "body", "road", "access"]
+"""Los tipos del programa, en su orden: la plataforma (015), los cuatro de la 016 (T03) y los dos de la 017 (T03)."""
 State = entities.EntityState
 PROBE, ISLAND = "probe", "island"
 GROUND = "gis_dtm_ladera"

@@ -166,9 +166,11 @@ API_SECTIONS = ("### 4.1 Lo que entrega la spec 013 (R-33)",
 # nuevos y lo que la 016 añade a los demás); una spec posterior los usará con los suyos. El nombre ``PENDING_015_*`` se
 # conserva porque otras pruebas lo importan.
 PENDING_015_API: frozenset[str] = frozenset({
-    # La 017, T02 (la tarea de documentación, T35, los lleva a la ficha, ``des.md`` §4.5, y vacía este conjunto):
+    # La 017, T02 y T03 (la tarea de documentación, T35, los lleva a la ficha, ``des.md`` §4.5, y vacía este conjunto):
     "AccessParam", "RoadParam", "RoadProfileParam", "check_road_profile", "check_road_profile_radii",
     "check_road_profile_value", "road_half_width_m", "road_profile_key",
+    "access_figures", "access_inputs", "access_params", "propose_figures", "road_figures", "road_inputs",
+    "road_operation_defs", "road_params", "reproduce_road", "reproduce_road_access", "reproduce_road_propose",
 })
 PENDING_015_MODULES: frozenset[str] = frozenset()
 

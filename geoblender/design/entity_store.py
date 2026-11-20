@@ -1448,6 +1448,8 @@ def check_parameter_change(project: StoreProject, key: str, value: object, *, ve
       :func:`_check_protection`: lo mismo que comprueba al declarar). Y **``protect`` verdadero solo en un tipo que declara** algo
       (:data:`_DECLARES`: la plataforma y el contrafuerte): en la retirada, el cuerpo y la detección de acopios se rechaza con
       ``des.protect_unsupported`` (spec 016, T48; observación (6) de la T47: la declaración haría ``_DECLARES[tipo]`` con un ``KeyError``).
+      **La pista y la accesibilidad** (spec 017, T03) no tienen ``protect`` ni resguardo: cambiar su ``mode`` (el de la pista no es el de la
+      plataforma) no comprueba nada de lo que declara (sin esa salida era un ``KeyError``).
 
     Una entidad descartada es un registro: solo se le comprueba el nombre, la capa y la geometría. **Solo lee**:
     se llama **antes** de abrir la transacción que escribe (el rechazo no deja ninguna). No hace nada si ``version``
@@ -1503,6 +1505,8 @@ def check_parameter_change(project: StoreProject, key: str, value: object, *, ve
             words = _NO_DECLARATION.get(kind, (kind, kind))
             raise DesignError("des.protect_unsupported", obj=obj, field=key, value=value, entity=record.name, kind=words[0],
                               kind_en=words[1])
+        if PlatformParam.PROTECT.value not in spec.names:
+            return  # la pista (``mode`` es el suyo, no el de la plataforma) no declara nada: sin ``protect`` ni resguardo (spec 017, T03)
         after = {**now, param: value}  # lo que quedaría la entidad con el valor nuevo
         guard = after[PlatformParam.GUARD]
         _check_protection(record.name, code, layer, bool(after[PlatformParam.PROTECT]),
@@ -3244,13 +3248,16 @@ LAYER_FIGURES: Mapping[str, tuple[tuple[str, str], ...]] = MappingProxyType({
     EntityKind.BUTTRESS.value: (("area_m2", "des.btr_area_m2"), ("volume_m3", "des.btr_volume_m3"),
                                 ("thickness_max_m", "des.btr_height_max_m"), ("cutoff_m3", "des.btr_cutoff_m3")),
     EntityKind.BODY.value: (("volume_m3", "des.bdy_volume_m3"), ("thickness_max_m", "des.bdy_thickness_max_m")),
+    EntityKind.ROAD.value: (("area_m2", "des.road_area_m2"), ("cut_m3", "des.road_cut_m3"), ("fill_m3", "des.road_fill_m3"),
+                            ("edge_cut_m3", "des.road_edge_cut_m3"), ("edge_fill_m3", "des.road_edge_fill_m3")),
 })
 """Las cifras principales de la capa **por tipo de entidad** (spec 016, T34): para cada tipo, la columna de
 ``des_enl_<vNN>`` y la cifra que la llena. La plataforma, las cinco de la 015; el acopio, su área, su volumen sobre su
 base y su espesor máximo (las de su fila de ``des_stk_``, que usan las claves de ``des.stk_*``); la retirada, lo retirado
 y la mayor pared; el contrafuerte, su área, su volumen, su mayor altura y el pie que el borde cortó; el cuerpo, su volumen
-y su espesor máximo. Las demás columnas del tipo quedan sin valor. Un tipo registrado que no está aquí (el de una
-prueba) no lleva cifras."""
+y su espesor máximo; la pista (017, T03), su área grabada y su corte y relleno de la sección y del borde, como la plataforma. Las
+demás columnas del tipo quedan sin valor. Un tipo registrado que no está aquí (el de una prueba) y la accesibilidad (que no tiene
+huella y no sale en la capa) no llevan cifras."""
 _FIGURES_OF = ("SELECT operation_uid, key, value FROM gb_figure WHERE key IN ({keys}) "
                "AND operation_uid IN ({marks})")
 _CHAIN_ARROW = " → "

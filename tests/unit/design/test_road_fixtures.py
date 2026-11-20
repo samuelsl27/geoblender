@@ -1136,7 +1136,7 @@ class PlanNamesTest(unittest.TestCase):
         self.assertEqual(provenance._BERMS_ROLE, "berms")
         self.assertEqual(provenance.ENTITY_OP_NAMES,
                          ("des.platform", "des.stockpile_detect", "des.stockpile_removal", "des.buttress",
-                          "des.body"))
+                          "des.body", "des.road", "des.road_access"))
         self.assertEqual(provenance.ENTITY_LAYER, "des.entity_layer")
 
     def test_blender_names(self) -> None:

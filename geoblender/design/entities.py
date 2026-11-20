@@ -156,6 +156,9 @@ from .provenance import (
     PLATFORM,
     REMOVAL_RESTING,
     REMOVED_STOCKPILE_ROLE,
+    ROAD,
+    ROAD_ACCESS,
+    ROAD_ACCESS_ZONES_ROLE,
     STOCKPILE_DETECT,
     STOCKPILE_DETECT_PROJECT,
     STOCKPILE_REMOVAL,
@@ -236,8 +239,10 @@ __all__ = [
 class EntityKind(StrEnum):
     """El tipo de una entidad (RF-015-01): la plataforma (015) y, de la 016 (T03), el acopio (``stockpile``: la
     detección, ``STK``, **sin cadena**), la retirada de un acopio (``removal``, ``RMV``), el contrafuerte
-    (``buttress``, ``BTR``) y el cuerpo apoyado (``body``, ``BDY``). El valor es el que va en la clave de sus
-    parámetros (``des.platform.{e}.*``); :attr:`prefix`, el principio de su código (``PLT``).
+    (``buttress``, ``BTR``) y el cuerpo apoyado (``body``, ``BDY``) y, de la 017 (T03), la pista (``road``, ``RDW``, **con
+    cadena**: una red de pistas es una cadena, D-16) y la accesibilidad (``access``, ``ACC``, **sin cadena y sin huella**). El
+    valor es el que va en la clave de sus parámetros (``des.platform.{e}.*``); :attr:`prefix`, el principio de su código
+    (``PLT``).
 
     Lo que se sabe de cada tipo lo dice su :class:`EntityType` (:func:`entity_type`). Un tipo **registrado**
     (:func:`register_entity_type`) que no es de la enumeración —el de una prueba (spec 016, T02)— también se lee
@@ -249,6 +254,8 @@ class EntityKind(StrEnum):
     REMOVAL = "removal"
     BUTTRESS = "buttress"
     BODY = "body"
+    ROAD = "road"
+    ACCESS = "access"
 
     @classmethod
     def _missing_(cls, value: object) -> EntityKind | None:
@@ -388,7 +395,7 @@ def kind_of_code(code: str) -> EntityKind:
     return EntityKind(entity_params_of(code).kind)
 
 
-# Los tipos del programa: la plataforma (015) y los cuatro de la 016 (T03); sus parámetros los registra
+# Los tipos del programa: la plataforma (015), los cuatro de la 016 (T03) y los dos de la 017 (T03); sus parámetros los registra
 # ``design.params`` al importarse.
 _TYPES["platform"] = EntityType(
     entity_params("platform"), PLATFORM, "des.platform_declared_reason", "des.support_removed_platform",
@@ -405,7 +412,19 @@ _TYPES["buttress"] = EntityType(
 _TYPES["body"] = EntityType(
     entity_params("body"), BODY, "des.body_declared_reason", "des.body_support_removed",
     ENTITY_SURFACE_ROLE, ENTITY_ROLE)
-_PERMANENT_TYPES.update(("platform", "stockpile", "removal", "buttress", "body"))
+# La pista (017, T03): encadena (tiene ``start``), deja su superficie entera y la tabla de su huella (sale en la capa de entidades y se
+# puede apoyar en ella) y **no declara** restricciones (D-15: no tiene ``protect``). Su motivo declarado es obligatorio en la clase y no
+# se usa.
+_TYPES["road"] = EntityType(
+    entity_params("road"), ROAD, "des.road_declared_reason", "des.road_support_removed",
+    ENTITY_SURFACE_ROLE, ENTITY_ROLE)
+# La accesibilidad (017, T03): **sin cadena** (sin ``start``: nadie parte de su dato) y **sin huella** (``has_footprint`` falso por el
+# papel de su tabla, que es el de las zonas «requiere acceso»), y no deja una superficie en la que apoyar nada (sin ``surface_role``:
+# ``entity_surfaces`` la salta). No declara: su motivo declarado no se usa.
+_TYPES["access"] = EntityType(
+    entity_params("access"), ROAD_ACCESS, "des.access_declared_reason", "des.access_support_removed",
+    None, ROAD_ACCESS_ZONES_ROLE)
+_PERMANENT_TYPES.update(("platform", "stockpile", "removal", "buttress", "body", "road", "access"))
 
 
 class EntityState(StrEnum):

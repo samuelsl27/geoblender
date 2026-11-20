@@ -9,7 +9,7 @@ ganchos de ``bl.ops.core_provenance`` que registra ``bl.ops.des``, sin proyecto 
   contrafuerte solo) la capa se quedaba diciendo «obsoleta» sobre una entidad al día hasta la siguiente orden de entidades.
 - **D-2** («Cambiar parámetro…»): la comprobación de las reglas entre entidades de crear
   (``design.entity_store.check_parameter_change``) y lo que sigue al cambio (declarar, recompilar las máscaras y poner al día la
-  capa, ``des_entity_refresh``) están registrados para los **cinco** principios de clave (``des.platform.``, ``des.stockpile.``,
+  capa, ``des_entity_refresh``) están registrados para los **siete** principios de clave (``des.platform.``, ``des.stockpile.``,
   ``des.removal.``, ``des.buttress.`` y ``des.body.``), no solo para el de la plataforma; desregistrar los quita todos.
 
 Se ejecuta con ``tools/run_blender_tests.py``.
@@ -26,8 +26,9 @@ from unittest import mock
 
 from tests.support import blender_ext
 
-PREFIXES = ("des.platform.", "des.stockpile.", "des.removal.", "des.buttress.", "des.body.")
-ENTITY_TYPES = ("des.platform", "des.stockpile_detect", "des.stockpile_removal", "des.buttress", "des.body")
+PREFIXES = ("des.platform.", "des.stockpile.", "des.removal.", "des.buttress.", "des.body.", "des.road.", "des.access.")
+ENTITY_TYPES = ("des.platform", "des.stockpile_detect", "des.stockpile_removal", "des.buttress", "des.body", "des.road",
+                "des.road_access")
 
 
 def _module(name: str) -> ModuleType:
@@ -77,7 +78,7 @@ class SupportedAftersTest(unittest.TestCase):
 
     def test_a_any_live_entity_of_any_type_puts_the_layer_up_to_date_after_recomputing(self) -> None:
         """RF-015-27, RF-016-24 (D-1): con **una sola** operación viva de cada tipo (la plataforma, la detección de acopios, la
-        retirada, el contrafuerte o el cuerpo), el gancho pide los pasos de poner al día la capa (hasta la T47, solo con una
+        retirada, el contrafuerte, el cuerpo, la pista o la accesibilidad), el gancho pide los pasos de poner al día la capa (hasta la T47, solo con una
         plataforma: un contrafuerte solo dejaba la capa «obsoleta» sobre una entidad al día)."""
         self.assertEqual(set(self.des_ops.provenance.ENTITY_OP_NAMES), set(ENTITY_TYPES))
         for op_type in ENTITY_TYPES:
@@ -100,9 +101,9 @@ class SupportedAftersTest(unittest.TestCase):
 
     # --- D-2: «Cambiar parámetro…» de cualquier tipo --------------------------------------------
 
-    def test_c_the_check_and_what_follows_are_registered_for_the_five_prefixes_and_unregistered_with_them(self) -> None:
+    def test_c_the_check_and_what_follows_are_registered_for_the_seven_prefixes_and_unregistered_with_them(self) -> None:
         """RF-015-08, RF-015-10, RF-015-12 (D-2): la comprobación y lo que sigue a «Cambiar parámetro…» están registrados para
-        los cinco principios de clave de los tipos del programa (los de ``design.entities``), con las mismas funciones y el de la
+        los siete principios de clave de los tipos del programa (los de ``design.entities``), con las mismas funciones y el de la
         plataforma, el de siempre; desregistrar ``des`` los quita **todos** y registrarlo otra vez los pone otra vez (idempotente)."""
         registered = tuple(f"{spec.key_prefix}." for spec in self.entities.registered_types())
         self.assertEqual(registered, PREFIXES)

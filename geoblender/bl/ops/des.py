@@ -31,6 +31,12 @@ constantes del módulo construidas una vez:
   de acopios (``des.stockpile_detect_project``: D-15, el mismo algoritmo con otro ámbito), repetibles
   (:data:`SUPPORTED_RECOMPUTE`) y reproducibles (:data:`SUPPORTED_REPRODUCE`) y sus cifras
   (``design.provenance.SUPPORTED_FIGURES``); **sin comportamiento ni órdenes todavía** (las tareas siguientes);
+- lo de la **017** (T03; plan 017 §5.2.2 y §5.2.3): las familias de parámetros de la pista, la accesibilidad y el perfil de pista
+  (``design.params.ROAD_FAMILIES``, ``ACCESS_FAMILIES`` y ``ROAD_PROFILE_FAMILIES``: ``des.road.{e}.*``, ``des.access.{e}.*`` y
+  ``des.roadprofile.{p}.*``), sus tres tipos de operación de la versión, repetibles (:data:`ROAD_RECOMPUTE`) y reproducibles
+  (:data:`ROAD_REPRODUCE`), la edición de los perfiles de pista, **de proyecto** y sin repetición
+  (``design.provenance.ROAD_PROFILE_OPERATIONS``: la declara el módulo ligero porque ``design.road_profiles`` es perezoso) y sus cifras
+  (``design.provenance.ROAD_FIGURES`` y ``ACCESS_FIGURES``); **sin comportamiento ni órdenes todavía** (las tareas siguientes);
 - sus textos (``design.messages``) en ``core.i18n``.
 
 :func:`register` pone lo que falta y apunta cómo quitarlo; :func:`unregister` quita solo eso, en
@@ -704,6 +710,48 @@ def reproduce_body(request: ReproduceRequest) -> Iterator[Progress]:
     return reproduce.reproduce_body(request)
 
 
+# Los tres tipos de la 017 (T03; plan 017 §5.2.3): el mismo camino que los de las specs anteriores. Su recálculo lo hace
+# ``design.store.recompute_run`` y su reproducción, ``design.reproduce``; **sin comportamiento todavía** (las tareas que crean cada
+# operación, T17 la accesibilidad, T21 y T22 la pista y T27 «Proponer el trazado», les dan su cálculo: hasta entonces no hay ninguna
+# operación de esos tipos que recalcular ni reproducir y ambas dicen qué tarea falta).
+
+
+def recompute_road(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.road`` (RF-017-01, RF-015-16; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def recompute_road_access(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.road_access`` (RF-017-24; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def recompute_road_propose(request: RecomputeRequest) -> OperationHandle:
+    """El recálculo de ``des.road_propose`` (RF-017-28; D-19 de la 013): véase el módulo."""
+    return _recompute(request)
+
+
+def reproduce_road(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.road``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_road(request)
+
+
+def reproduce_road_access(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.road_access``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_road_access(request)
+
+
+def reproduce_road_propose(request: ReproduceRequest) -> Iterator[Progress]:
+    """La reproducción de ``des.road_propose``: la de ``design.reproduce``."""
+    from ...design import reproduce  # al usarla: habilitar no carga la reproducción
+
+    return reproduce.reproduce_road_propose(request)
+
+
 # --- Declaraciones de la procedencia (ADR-0025 §2; plan §5.2.3) ----------------------------------
 
 RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = MappingProxyType({
@@ -767,32 +815,54 @@ SUPPORTED_REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress
     }))
 """La función de reproducción de cada tipo de la 016 (todos se reproducen; RF-009-11): la detección de versión y la de
 proyecto (T04, D-15) con la misma."""
+ROAD_RECOMPUTE: Mapping[str, Callable[[RecomputeRequest], OperationHandle]] = (
+    MappingProxyType({
+        provenance.ROAD: recompute_road,
+        provenance.ROAD_ACCESS: recompute_road_access,
+        provenance.ROAD_PROPOSE: recompute_road_propose,
+    }))
+"""La función de recálculo de cada tipo de la 017 (todos se repiten solos; RF-017-01, RF-017-24, RF-017-28)."""
+ROAD_REPRODUCE: Mapping[str, Callable[[ReproduceRequest], Iterator[Progress]]] = (
+    MappingProxyType({
+        provenance.ROAD: reproduce_road,
+        provenance.ROAD_ACCESS: reproduce_road_access,
+        provenance.ROAD_PROPOSE: reproduce_road_propose,
+    }))
+"""La función de reproducción de cada tipo de la 017 (los tres se reproducen; RF-009-11)."""
 OPERATION_DEFS: tuple[contract.OperationDef, ...] = (
     *provenance.operation_defs(RECOMPUTE, REPRODUCE), *design_profiles.OPERATIONS,
     *provenance.quarry_operation_defs(QUARRY_RECOMPUTE, QUARRY_REPRODUCE),
     *provenance.entity_operation_defs(ENTITY_RECOMPUTE, ENTITY_REPRODUCE),
-    *provenance.supported_operation_defs(SUPPORTED_RECOMPUTE, SUPPORTED_REPRODUCE))
-"""Los ``OperationDef`` de los quince tipos de ``des``: de la 013, la envolvente y el escalonado, de
+    *provenance.supported_operation_defs(SUPPORTED_RECOMPUTE, SUPPORTED_REPRODUCE),
+    *provenance.road_operation_defs(ROAD_RECOMPUTE, ROAD_REPRODUCE), *provenance.ROAD_PROFILE_OPERATIONS)
+"""Los ``OperationDef`` de los veinte tipos de ``des``: de la 013, la envolvente y el escalonado, de
 la versión y repetibles, y la edición de los perfiles de banco, del proyecto; de la 014, el recinto,
 la cantera con dos superficies, la transición, «solo relleno» y el ajuste, de la versión y
 repetibles (T05); de la 015, la plataforma, la declaración de restricciones y la capa de entidades,
 de la versión y repetibles (T04); la capa de entidades no se reproduce (T30); de la 016 (T03), la
 detección de acopios, su retirada, el contrafuerte y el cuerpo apoyado, de la versión, repetibles y
-reproducibles, sin comportamiento todavía."""
+reproducibles, sin comportamiento todavía; de la 017 (T03), la pista, la accesibilidad de las pistas y «Proponer el trazado», de la
+versión, repetibles y reproducibles, sin comportamiento todavía, y la edición de los perfiles de pista, del proyecto y sin
+repetición."""
 DEFINITIONS: tuple[core_params.ParamDef, ...] = (
     *design_params.DEFINITIONS, *design_params.QUARRY_DEFINITIONS)
 """Las definiciones de parámetros de ``des``: las dos del proyecto de la 013 y las siete de la 014
 (plan 014 §5.2.2)."""
 FAMILIES: tuple[core_params.ParamFamily, ...] = (*design_params.FAMILIES,
                                                 *design_params.ENTITY_FAMILIES,
-                                                *design_params.SUPPORTED_FAMILIES)
+                                                *design_params.SUPPORTED_FAMILIES,
+                                                *design_params.ROAD_FAMILIES, *design_params.ACCESS_FAMILIES,
+                                                *design_params.ROAD_PROFILE_FAMILIES)
 """Las familias de parámetros de ``des`` (ADR-0027): las seis de la 013, las 20 de una plataforma
 (``des.platform.{e}.*``, T04) y las de los cuatro tipos de la 016 (``des.stockpile.{e}.*``, ``des.removal.{e}.*``,
-``des.buttress.{e}.*`` y ``des.body.{e}.*``, T03)."""
+``des.buttress.{e}.*`` y ``des.body.{e}.*``, T03) y las de la 017 (``des.road.{e}.*``, ``des.access.{e}.*`` y, por perfil,
+``des.roadprofile.{p}.*``, T03)."""
 FIGURES: tuple[contract.FigureDef, ...] = (*provenance.FIGURES, *provenance.QUARRY_FIGURES,
-                                           *provenance.ENTITY_FIGURES, *provenance.SUPPORTED_FIGURES)
+                                           *provenance.ENTITY_FIGURES, *provenance.SUPPORTED_FIGURES,
+                                           *provenance.ROAD_FIGURES, *provenance.ACCESS_FIGURES)
 """Las cifras de ``des``: las de la envolvente y las del escalonado (013), las de la 014, las de las
-entidades (015) y las de los cuatro tipos de la 016 (T03)."""
+entidades (015), las de los cuatro tipos de la 016 (T03) y las de la pista y la accesibilidad (017, T03; las de la propuesta del
+trazado son dos de la pista)."""
 
 
 # --- El gancho de la declaración (spec 015, T38; RF-015-10, RF-015-29; CE-015-04) ---------------------
@@ -833,9 +903,9 @@ PARAMETER_PREFIX = f"{design_params.PLATFORM_PREFIX}."
 :func:`_check_entity_parameter` hasta la T47 de la 016."""
 PARAMETER_PREFIXES: tuple[str, ...] = tuple(f"{spec.key_prefix}." for spec in (
     design_params.PLATFORM_ENTITY, design_params.STOCKPILE_ENTITY, design_params.REMOVAL_ENTITY,
-    design_params.BUTTRESS_ENTITY, design_params.BODY_ENTITY))
+    design_params.BUTTRESS_ENTITY, design_params.BODY_ENTITY, design_params.ROAD_ENTITY, design_params.ACCESS_ENTITY))
 """El principio de las claves de los parámetros de **cada tipo de entidad** del programa (``des.platform.``, ``des.stockpile.``,
-``des.removal.``, ``des.buttress.`` y ``des.body.``): los que vigilan :func:`_check_entity_parameter` y lo que sigue a cambiarlos
+``des.removal.``, ``des.buttress.``, ``des.body.`` y, de la 017 (T03), ``des.road.`` y ``des.access.``): los que vigilan :func:`_check_entity_parameter` y lo que sigue a cambiarlos
 (:func:`_after_entity_parameter`). Spec 016, T47 (hallazgo D-2): hasta entonces solo el de la plataforma, y un contrafuerte que protege
 aceptaba un nombre vacío, y su resguardo declarado seguía en el de antes hasta una pasada de «Recalcular lo obsoleto»."""
 

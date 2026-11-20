@@ -152,6 +152,29 @@ operación):
   de un acopio, **su clave y su material** (:func:`stockpile_figure_scope`: sin la clave, las de dos acopios se
   pisarían); las arman :func:`stockpile_figures`, :func:`removal_figures`, :func:`buttress_figures` y
   :func:`body_figures`.
+
+**La pista y la accesibilidad de la 017** (spec 017, T03; RF-017-01, 02, 07, 23, 24, 27; plan 017 §5.2.3; ADR-0025, ADR-0030 y
+ADR-0031) declaran lo suyo **aparte**, con el prefijo ``ROAD_`` y **sin comportamiento todavía** (las tareas siguientes crean cada
+operación):
+
+- :data:`ROAD_DATA_FAMILIES`: seis familias de datos, el eje de una pista por estaciones (``des_rdx_``, papel ``road_axis``), la
+  capa propuesta (``des_rpl_``, papel ``route_layer``: **la única editable a mano en QGIS**, ``DatasetFamily.qgis_editable``; P-8) y,
+  de la accesibilidad, lo alcanzable (``des_acc_``, ``road_access``), sus bermas (``des_acb_``), sus plataformas (``des_acp_``) y
+  sus zonas «requiere acceso» (``des_acz_``, ``access_zones``: :data:`ROAD_ACCESS_ZONES_ROLE`, el papel por el que lo lee la 012 sin
+  importar ``design``). Más las ``des_psf_``, ``des_epr_`` y ``des_prp_`` de la 015 con sus papeles ``entity_surface`` y ``entity``.
+- :data:`ROAD_OPERATION_TYPES`: tres tipos de la versión, repetibles y reproducibles (:data:`ROAD_VERSION_TYPES`,
+  :data:`ROAD_REPRODUCIBLE`): ``des.road`` (:data:`ROAD`, con cadena), ``des.road_access`` (:data:`ROAD_ACCESS`) y ``des.road_propose``
+  (:data:`ROAD_PROPOSE`), con :func:`road_operation_defs`; y la edición de los perfiles de pista, ``des.edit_road_profiles``
+  (:data:`EDIT_ROAD_PROFILES`), **de proyecto** y sin repetición (:data:`ROAD_PROFILE_OPERATIONS`: como la de los perfiles de banco,
+  que ``bl`` registra; su mecánica es de ``design.road_profiles``, perezoso). La pista y la accesibilidad son entidades del registro
+  (:data:`ENTITY_OP_NAMES`); la propuesta, no.
+- Lo que consume y lo que lee cada una, con las funciones que no dependen de la petición (:func:`road_inputs`, :func:`road_params`,
+  :func:`access_inputs` y :func:`access_params`); los ajustes y la petición de cada tipo (``road_settings``, ``road_request``…) dependen
+  de ``RoadRequest`` y ``AccessRequest`` y los hacen las tareas que preparan cada operación.
+- :data:`ROAD_FIGURES` y :data:`ACCESS_FIGURES` (las de la propuesta, :data:`PROPOSE_FIGURES`, son dos de la pista), con el ámbito de las
+  entidades (:func:`entity_figure_scope`) y, la propuesta, el del nombre (:func:`figure_scope`); las arman :func:`road_figures`,
+  :func:`access_figures` y :func:`propose_figures`. Las pendientes de la pista se llaman ``gradient`` (el glosario §14 reserva la
+  palabra inglesa de la ley a la ley del mineral).
 """
 
 from __future__ import annotations
@@ -222,16 +245,21 @@ from .params import (
     UNSPLIT_THRESHOLD,
     VERIFY_MIN_THICKNESS,
     WARNING_RATIO,
+    AccessParam,
     BenchParam,
     BodyParam,
     ButtressParam,
     PlatformParam,
     RemovalParam,
+    RoadParam,
+    RoadProfileParam,
     StockpileParam,
     bench_key,
     entity_key,
+    entity_params,
     entity_params_of,
     entity_segment,
+    road_profile_key,
 )
 from .params import EDGE_TRANSITION as EDGE_TRANSITION_DEG
 
@@ -247,6 +275,14 @@ if TYPE_CHECKING:  # solo para los tipos: importar el informe arrastraría los c
     )
 
 __all__ = [
+    "ACCESS_BERMS_TABLE",
+    "ACCESS_COMMAND",
+    "ACCESS_ENTRIES_ROLE",
+    "ACCESS_FIGURES",
+    "ACCESS_FINAL_ROLE",
+    "ACCESS_GRID",
+    "ACCESS_PLATFORMS_TABLE",
+    "ACCESS_ZONES_TABLE",
     "ANCHORS_ROLE",
     "AREA_FIGURES",
     "BERMS_GRID",
@@ -283,6 +319,7 @@ __all__ = [
     "EDGE_REPORT_ROLE",
     "EDGE_REPORT_TABLE",
     "EDGE_TRANSITION",
+    "EDIT_ROAD_PROFILES",
     "ENTITY_AXIS_LAYER_ROLE",
     "ENTITY_FAMILIES",
     "ENTITY_FIGURES",
@@ -341,6 +378,8 @@ __all__ = [
     "PLATFORM_COMMON_PARAMS",
     "PLATFORM_FIGURES",
     "PLATFORM_SETTINGS",
+    "PROPOSE_COMMAND",
+    "PROPOSE_FIGURES",
     "CounterslopeConfirmation",
     "ReleasedSupport",
     "QUARRY",
@@ -364,6 +403,25 @@ __all__ = [
     "REMOVED_STOCKPILE_ROLE",
     "REPORT_TABLE",
     "REPRODUCIBLE",
+    "ROAD",
+    "ROAD_ACCESS",
+    "ROAD_ACCESS_BERMS_ROLE",
+    "ROAD_ACCESS_PLATFORMS_ROLE",
+    "ROAD_ACCESS_ROLE",
+    "ROAD_ACCESS_ZONES_ROLE",
+    "ROAD_AXIS_ROLE",
+    "ROAD_AXIS_TABLE",
+    "ROAD_COMMAND",
+    "ROAD_DATA_FAMILIES",
+    "ROAD_FIGURES",
+    "ROAD_OPERATION_TYPES",
+    "ROAD_PROFILE_COMMAND",
+    "ROAD_PROFILE_OPERATIONS",
+    "ROAD_PROPOSE",
+    "ROAD_REPRODUCIBLE",
+    "ROAD_VERSION_TYPES",
+    "ROUTE_LAYER_ROLE",
+    "ROUTE_LAYER_TABLE",
     "SEARCHES_ROLE",
     "SECTORS_ROLE",
     "SECTOR_SCOPE_KEY",
@@ -416,6 +474,9 @@ __all__ = [
     "DatasetFamily",
     "OperationType",
     "StockpileFigures",
+    "access_figures",
+    "access_inputs",
+    "access_params",
     "body_figures",
     "body_inputs",
     "body_params",
@@ -493,6 +554,11 @@ __all__ = [
     "removal_params",
     "removal_request",
     "removal_settings",
+    "road_figures",
+    "road_inputs",
+    "road_operation_defs",
+    "road_params",
+    "propose_figures",
     "sector_inputs",
     "settings_decisions",
     "settings_entities",
@@ -646,6 +712,34 @@ relleno midió al crearse (que no tiene si se hizo antes que la detección o si 
 BODY_DATA_ROLE = "body_data"
 """El papel de la capa con los datos de espesor que consume ``des.body`` (puntos, líneas 3D o polígonos)."""
 
+# Los papeles de la pista y la accesibilidad (spec 017, T03; plan 017 §5.2.3): los de lo que producen, por los que leen sus datos la
+# 012 y R-44 sin importar ``design`` (ADR-0028), y los de lo que consume la accesibilidad. La pista deja la superficie y la huella de
+# toda entidad (:data:`ENTITY_SURFACE_ROLE` y :data:`ENTITY_ROLE`) y consume la capa de origen con el papel de las entidades
+# (:data:`ENTITY_LAYER_ROLE`) y las superficies que pisa con :data:`SUPPORTED_ON_ROLE`.
+ROAD_AXIS_ROLE = "road_axis"
+"""El papel del eje de una pista por estaciones (``des_rdx_``: abscisa, x, y, cota del terreno, cota de la rasante, pendiente en %,
+radio y curva), de donde otra pista toma su lugar y su cota a una abscisa (RF-017-03)."""
+ROUTE_LAYER_ROLE = "route_layer"
+"""El papel de la capa propuesta de «Proponer el trazado…» (``des_rpl_``: líneas con Z). **Editable a mano** en QGIS (P-8): desde que
+se crea es del usuario, y una pista «eje 3D» la lee como cualquier capa con su hash."""
+ROAD_ACCESS_ROLE = "road_access"
+"""El papel de lo alcanzable de una accesibilidad (``des_acc_``: 1 alcanzable y 0 no)."""
+ROAD_ACCESS_BERMS_ROLE = "access_berms"
+"""El papel de las bermas de una accesibilidad (``des_acb_``: tramo, cota real, área y si queda comunicado)."""
+ROAD_ACCESS_PLATFORMS_ROLE = "access_platforms"
+"""El papel de las plataformas de una accesibilidad (``des_acp_``: código, cota a la que se llega y si queda comunicada)."""
+ROAD_ACCESS_ZONES_ROLE = "access_zones"
+"""El papel de las zonas «requiere acceso» de una accesibilidad (``des_acz_``: código, si queda comunicada, su lugar, la distancia y
+la diferencia de cota a lo alcanzable más próximo): **lo que lee la verificación de la 012** (``reserves``) por su papel, sin importar
+``design.entities`` ni ``design.road_*`` (DIFF-017; el nivel de ``reserves`` puede importar este módulo, como la 016 hace con
+:data:`STOCKPILE_BASE_ROLE`)."""
+ACCESS_ENTRIES_ROLE = "access_entries"
+"""El papel de la capa de los puntos de entrada que consume ``des.road_access`` (su geometría y su hash: un cambio de geometría en
+QGIS deja obsoleta la accesibilidad, uno de un campo no)."""
+ACCESS_FINAL_ROLE = "surface_final"
+"""El papel de la superficie final de una cantera de la 014 que consume ``des.road_access`` además de la superficie (la cota
+mínima alcanzable sobre la restaurada, RF-017-24)."""
+
 
 @dataclass(frozen=True, slots=True)
 class DatasetFamily:
@@ -664,6 +758,9 @@ class DatasetFamily:
     extension: str
     label: str
     named: bool = True
+    qgis_editable: bool = False
+    """Si su dato es **editable a mano** en QGIS (``DatasetSpec.qgis_editable``, RF-008-56; spec 017, T03): ninguna lo es salvo la capa
+    propuesta de «Proponer el trazado…» (``des_rpl_``, P-8). Las demás son salidas calculadas: se bloquean si se editan fuera."""
 
     @property
     def prefix(self) -> str:
@@ -835,12 +932,46 @@ tres specs anteriores. **Dispersas** (sin dato fuera de las huellas: 0,4 MiB fre
 con su papel, por el que las leen la 011, la 012 y R-18 (ADR-0031 §3); ninguna lleva el papel de una superficie de
 diseño. Su nombre y su ubicación valen en los dos ámbitos de la detección, del proyecto o de la versión (D-15; véase
 :func:`dataset_locator`)."""
+# Las de la pista y la accesibilidad (spec 017, T03; plan 017 §5.2.3; P-8).
+ROAD_AXIS_TABLE = "rdx"
+"""El eje de una pista por estaciones (``des_rdx_<nombre>_<vNN>``; papel :data:`ROAD_AXIS_ROLE`)."""
+ROUTE_LAYER_TABLE = "rpl"
+"""La capa propuesta de «Proponer el trazado…», líneas con Z, **editable** (``des_rpl_<nombre>_<vNN>``; papel
+:data:`ROUTE_LAYER_ROLE`)."""
+ACCESS_GRID = "acc"
+"""Lo alcanzable de una accesibilidad: 1 alcanzable y 0 no (``rasters/des_acc_<nombre>_<vNN>.tif``; papel :data:`ROAD_ACCESS_ROLE`)."""
+ACCESS_BERMS_TABLE = "acb"
+"""Las bermas de una accesibilidad (``des_acb_<nombre>_<vNN>``; papel :data:`ROAD_ACCESS_BERMS_ROLE`)."""
+ACCESS_PLATFORMS_TABLE = "acp"
+"""Las plataformas de una accesibilidad (``des_acp_<nombre>_<vNN>``; papel :data:`ROAD_ACCESS_PLATFORMS_ROLE`)."""
+ACCESS_ZONES_TABLE = "acz"
+"""Las zonas «requiere acceso» de una accesibilidad (``des_acz_<nombre>_<vNN>``; papel :data:`ROAD_ACCESS_ZONES_ROLE`)."""
+
+ROAD_DATA_FAMILIES: tuple[DatasetFamily, ...] = (
+    DatasetFamily(ROAD_AXIS_TABLE, "table", Store.GPKG, GPKG_LAYER.id, ROAD_AXIS_ROLE, "",
+                  "Eje de la pista por estaciones"),
+    DatasetFamily(ROUTE_LAYER_TABLE, "vector", Store.GPKG, GPKG_LAYER.id, ROUTE_LAYER_ROLE, "",
+                  "Capa propuesta del trazado de una pista", qgis_editable=True),
+    DatasetFamily(ACCESS_GRID, "raster", Store.RASTERS, GEOTIFF.id, ROAD_ACCESS_ROLE, ".tif",
+                  "Lo alcanzable por las pistas"),
+    DatasetFamily(ACCESS_BERMS_TABLE, "table", Store.GPKG, GPKG_LAYER.id, ROAD_ACCESS_BERMS_ROLE, "",
+                  "Bermas comunicadas"),
+    DatasetFamily(ACCESS_PLATFORMS_TABLE, "table", Store.GPKG, GPKG_LAYER.id, ROAD_ACCESS_PLATFORMS_ROLE, "",
+                  "Plataformas comunicadas"),
+    DatasetFamily(ACCESS_ZONES_TABLE, "table", Store.GPKG, GPKG_LAYER.id, ROAD_ACCESS_ZONES_ROLE, "",
+                  "Zonas «requiere acceso» comunicadas"),
+)
+"""Las familias de datos de la pista y la accesibilidad (plan 017 §5.2.3), aparte de las de las cuatro specs anteriores (la pista
+deja además las ``des_psf_``, ``des_epr_`` y ``des_prp_`` de la 015). Cada una con su papel, por el que las leen la 012 y R-44;
+ninguna lleva el papel de una superficie de diseño. **Solo la capa propuesta (``des_rpl_``) es editable a mano en QGIS** (P-8: desde
+que se crea es del usuario, y una pista la lee con su hash); las demás son salidas calculadas, que se bloquean si se editan fuera
+(RF-008-56). La capa de ejes de pistas ``des_rax_<vNN>`` es de la T26."""
 FAMILIES_BY_CODE: Mapping[str, DatasetFamily] = MappingProxyType(
     {family.code: family
-     for family in (*FAMILIES, *QUARRY_FAMILIES, *ENTITY_FAMILIES, *SUPPORTED_FAMILIES)})
-"""Las familias de las cuatro specs por código (solo lectura)."""
+     for family in (*FAMILIES, *QUARRY_FAMILIES, *ENTITY_FAMILIES, *SUPPORTED_FAMILIES, *ROAD_DATA_FAMILIES)})
+"""Las familias de las cinco specs por código (solo lectura)."""
 if len(FAMILIES_BY_CODE) != (len(FAMILIES) + len(QUARRY_FAMILIES) + len(ENTITY_FAMILIES)
-                              + len(SUPPORTED_FAMILIES)):
+                              + len(SUPPORTED_FAMILIES) + len(ROAD_DATA_FAMILIES)):
     raise RuntimeError("dos familias de datos del diseño con el mismo código")  # pragma: no cover
 
 
@@ -892,13 +1023,15 @@ def dataset_spec(family: str, name: str, version_code: str | None, *,
     """La ``DatasetSpec`` del dato de la familia ``family`` de la operación ``name`` en la
     versión ``version_code`` (RF-008-17, RF-013-31; ``None``: el del proyecto, sin código de versión,
     :func:`dataset_locator`): su nombre, su tipo, su almacén, su
-    ubicación, su lector y su papel; sin selector y no editable en QGIS. ``content``: su hash,
+    ubicación, su lector y su papel; sin selector y no editable en QGIS (salvo la capa propuesta de la 017,
+    :attr:`DatasetFamily.qgis_editable`). ``content``: su hash,
     calculado fuera de la transacción (R4); ``crs_epsg``, el de una rejilla o una capa. Con una
     familia sin nombre (:func:`dataset_name`), ``name`` es ``""``."""
     found = _family(family)
     return DatasetSpec(dataset_name(family, name), MODULE, found.kind, found.store,
                        dataset_locator(family, name, version_code), reader=found.reader,
-                       role=found.role, content=content, crs_epsg=crs_epsg)
+                       role=found.role, content=content, crs_epsg=crs_epsg,
+                       qgis_editable=found.qgis_editable)
 
 
 # --- Ajustes -----------------------------------------------------------------------------------
@@ -1162,6 +1295,60 @@ SUPPORTED_FIGURES: tuple[FigureDef, ...] = (*STOCKPILE_FIGURES, *REMOVAL_FIGURES
 """Las cifras que declara la 016 (plan 016 §5.2.3), aparte de las de las tres specs anteriores (``des.supported_m3``
 ya es de la 015)."""
 
+# Las cifras de la pista y la accesibilidad (spec 017, T03; plan 017 §5.2.3; RF-017-23, 24, 25, 28). Las pendientes se llaman
+# ``gradient`` (el glosario §14 reserva la palabra inglesa de la ley a la ley del mineral: ``GlossaryTest`` de la 014 lo vigila en todo
+# ``design``).
+ROAD_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("des.road_length_m", "m", "Length of the axis of the haul road"),
+    FigureDef("des.road_z_start_m", "m", "Level of the haul road at its start", allow_negative=True),
+    FigureDef("des.road_z_end_m", "m", "Level of the haul road at its end", allow_negative=True),
+    FigureDef("des.road_drop_m", "m", "Drop of the haul road between its start and its end", allow_negative=True),
+    FigureDef("des.road_gradient_mean_pct", "%", "Mean gradient of the haul road"),
+    FigureDef("des.road_gradient_max_pct", "%", "Maximum gradient of the haul road"),
+    FigureDef("des.road_gradient_max_station_m", "m", "Station of the maximum gradient of the haul road"),
+    FigureDef("des.road_radius_min_m", "m", "Minimum radius of the curves of the haul road"),
+    FigureDef("des.road_curves", "-", "Curves of the haul road"),
+    FigureDef("des.road_width_m", "m", "Width of the carriageway of the haul road"),
+    FigureDef("des.road_section_m", "m", "Width of the section of the haul road"),
+    FigureDef("des.road_area_m2", "m2", "Engraved area of the haul road"),
+    FigureDef("des.road_cut_m3", "m3", "Cut of the section of the haul road"),
+    FigureDef("des.road_fill_m3", "m3", "Fill of the section of the haul road"),
+    FigureDef("des.road_edge_cut_m3", "m3", "Cut of the edge of the haul road"),
+    FigureDef("des.road_edge_fill_m3", "m3", "Fill of the edge of the haul road"),
+    FigureDef("des.road_net_m3", "m3", "Net volume of the haul road, cut minus fill", allow_negative=True),
+    FigureDef("des.road_wall_max_m", "m", "Largest wall of the edge of the haul road"),
+    FigureDef("des.road_cut_height_max_m", "m", "Largest height of cut of the haul road"),
+    FigureDef("des.road_fill_height_max_m", "m", "Largest height of fill of the haul road"),
+    FigureDef("des.road_avoid_m2", "m2", "Area affected of the zones preferably not to be affected"),
+    FigureDef("des.road_avoid_m3", "m3", "Volume moved in the zones preferably not to be affected"),
+    FigureDef("des.road_avoid_weighted_m3", "m3", "Weighted volume moved in the zones preferably not to be affected"),
+)
+"""Las cifras de ``des.road`` (RF-017-23; plan 017 §5.2.3), con el ámbito de :func:`entity_figure_scope`: la longitud del eje, las
+cotas de inicio y de fin y el desnivel (pueden ser negativos), la pendiente media y la máxima con su abscisa, el radio mínimo (no
+existe sin curvas) y el número de curvas, la anchura de la calzada y de la sección, el área grabada, el corte y el relleno **de la
+sección** y **del borde** por separado (``des.road_edge_*``) y el neto (corte menos relleno: puede ser negativo), la mayor pared del
+borde (RF-017-21), las alturas máximas de desmonte y de terraplén y la afección de las zonas «preferible no afectar» (RF-017-06: m²,
+m³ y m³ ponderados por su peso). Los nombres que el plan no da (los del borde, el neto, la pared y la abscisa) los fija esta tarea; la
+cifra de lo que se apoya en la pista es ``des.supported_m3`` (:data:`SUPPORT_FIGURES`)."""
+ACCESS_FIGURES: tuple[FigureDef, ...] = (
+    FigureDef("des.acc_z_min_m", "m", "Lowest level reachable", allow_negative=True),
+    FigureDef("des.acc_z_max_m", "m", "Highest level reachable", allow_negative=True),
+    FigureDef("des.acc_area_m2", "m2", "Area reachable"),
+    FigureDef("des.acc_z_min_final_m", "m", "Lowest level reachable over the final surface", allow_negative=True),
+    FigureDef("des.acc_berms_reached", "-", "Berm stretches reached"),
+    FigureDef("des.acc_berms_total", "-", "Berm stretches of the surface"),
+    FigureDef("des.acc_platforms_reached", "-", "Platforms reached"),
+    FigureDef("des.acc_zones_reached", "-", "Zones that require access reached"),
+    FigureDef("des.acc_zones_missing", "-", "Zones that require access not reached"),
+)
+"""Las cifras de ``des.road_access`` (RF-017-24, RF-017-25; plan 017 §5.2.3), con el ámbito de :func:`entity_figure_scope`: las cotas
+mínima y máxima alcanzables y el área alcanzable, la cota mínima sobre la superficie final de una cantera (solo si la hay), cuántas
+bermas se alcanzan y cuántas hay, y cuántas plataformas y zonas «requiere acceso» quedan comunicadas o no."""
+PROPOSE_FIGURES: tuple[FigureDef, ...] = (ROAD_FIGURES[0], ROAD_FIGURES[5])
+"""Las cifras de ``des.road_propose`` (plan 017 §5.2.3): la longitud del trazado propuesto y su pendiente máxima: **las mismas dos
+claves de la pista** (:data:`ROAD_FIGURES`, los mismos objetos), con el ámbito del nombre de la operación (:func:`figure_scope`: la
+propuesta no es una entidad)."""
+
 
 # --- Tipos de operación ------------------------------------------------------------------------
 
@@ -1207,6 +1394,20 @@ BODY_COMMAND = "geoblender.des_create_body"
 los nombres que ya tiene el catálogo, ``des_add_buttress`` y ``des_edit_stockpile``, y la «Unidad por espesor sobre su
 apoyo…» pasa a ser ``des_create_body``). Las cuatro están en el catálogo desde la T35 (entrada 016, entregada): una orden que lanza una
 operación se declara en ``OperationDef.commands``."""
+
+ROAD = "des.road"
+ROAD_ACCESS = "des.road_access"
+ROAD_PROPOSE = "des.road_propose"
+EDIT_ROAD_PROFILES = "des.edit_road_profiles"
+"""Los tipos de la 017 (spec 017, T03; plan 017 §5.2.3): la pista (con cadena), la accesibilidad de las pistas (sin cadena), «Proponer el
+trazado» y la edición de los perfiles de pista (**de proyecto**, sin repetición)."""
+ROAD_COMMAND = "geoblender.des_create_road"
+ACCESS_COMMAND = "geoblender.des_road_access"
+PROPOSE_COMMAND = "geoblender.des_propose_road"
+ROAD_PROFILE_COMMAND = "geoblender.des_edit_road_profile"
+"""Las órdenes que los lanzan (plan 017 §5.3.3: «Pista…», «Accesibilidad de las pistas…», «Proponer el trazado…» y «Perfil de pista…»).
+**Aún no están en el catálogo** (las tres provisionales de «Pistas y entidades» las sustituyen las tareas de la fase G, D-20): una orden
+que lanza una operación se declara en ``OperationDef.commands``, que solo comprueba su forma."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1315,11 +1516,34 @@ base dispersa. La retirada y el contrafuerte dejan también ``des.supported_m3``
 uno por tipo: el segundo tipo de la detección, :data:`STOCKPILE_DETECT_PROJECT`, **de proyecto**, tiene las mismas salidas, los
 mismos ajustes y las mismas cifras que el de versión (spec 016, T04; decisión de la sesión principal, 18/11/2026). Los
 parámetros no tienen el problema: una familia de versión admite el valor del proyecto."""
+ROAD_OPERATION_TYPES: tuple[OperationType, ...] = (
+    OperationType(ROAD, "Haul road", (ENTITY_SURFACE_GRID, ENTITY_TABLE, ROAD_AXIS_TABLE, ENTITY_REPORT_TABLE),
+                  (), (*ROAD_FIGURES, *SUPPORT_FIGURES), (ROAD_COMMAND,)),
+    OperationType(ROAD_ACCESS, "Accessibility of the haul roads",
+                  (ACCESS_GRID, ACCESS_BERMS_TABLE, ACCESS_PLATFORMS_TABLE, ACCESS_ZONES_TABLE, ENTITY_REPORT_TABLE),
+                  (), ACCESS_FIGURES, (ACCESS_COMMAND,)),
+    OperationType(ROAD_PROPOSE, "Proposal of the route of a haul road", (ROUTE_LAYER_TABLE,), (), PROPOSE_FIGURES,
+                  (PROPOSE_COMMAND,)),
+)
+"""Los tipos de operación de la 017 (plan 017 §5.2.3), aparte de los de las cuatro specs anteriores: de la versión, repetibles y
+reproducibles, **sin comportamiento todavía** (cada tarea que crea una operación le da su cálculo). La definición de la pista y de la
+accesibilidad son sus **parámetros** (``des.road.{e}.*``, ``des.access.{e}.*``): los ajustes no declaran ninguno. Salidas: la pista, su
+superficie entera (``des_psf_``), su huella (``des_epr_``: es lo que sale en la capa de entidades), su eje por estaciones
+(``des_rdx_``) y su informe, y deja también ``des.supported_m3`` (lo que se le apoya: RF-015-15); la accesibilidad, lo alcanzable, sus
+bermas, plataformas y zonas «requiere acceso» y su informe; la propuesta, solo su capa de líneas con Z, editable (``des_rpl_``). La
+edición de los perfiles de pista no está aquí: es de proyecto y no se repite (:data:`ROAD_PROFILE_OPERATIONS`)."""
 OPERATION_TYPES_BY_NAME: Mapping[str, OperationType] = MappingProxyType(
     {declared.op_type: declared
      for declared in (*OPERATION_TYPES, *QUARRY_OPERATION_TYPES, *ENTITY_OPERATION_TYPES,
-                      *SUPPORTED_OPERATION_TYPES)})
-"""Los tipos de las cuatro specs por nombre (solo lectura)."""
+                      *SUPPORTED_OPERATION_TYPES, *ROAD_OPERATION_TYPES)})
+"""Los tipos de las cinco specs por nombre (solo lectura)."""
+ROAD_PROFILE_OPERATIONS: tuple[OperationDef, ...] = (
+    OperationDef(EDIT_ROAD_PROFILES, OP_VERSION, MODULE, "Edition of the road profiles", False,
+                 commands=(ROAD_PROFILE_COMMAND,)),
+)
+"""La edición de los perfiles de pista (spec 017, T03; plan 017 §5.2.3 y P-2): **de proyecto** y sin repetición (queda «revisar a mano»,
+como ``des.edit_bench_profiles``), sin ``recompute`` ni ``reproduce``. La declara este módulo, que es el ligero que importa ``bl`` al
+habilitar, porque la mecánica (``design.road_profiles``, T04) es perezosa; ``bl`` la registra junto a los demás tipos."""
 VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in OPERATION_TYPES)
 """Los tipos de versión de la 013 (RF-013-17, RF-013-31)."""
 REPRODUCIBLE: tuple[str, ...] = VERSION_TYPES
@@ -1345,6 +1569,10 @@ SUPPORTED_PROJECT_TYPES: tuple[str, ...] = tuple(t.op_type for t in SUPPORTED_OP
 SUPPORTED_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in SUPPORTED_OPERATION_TYPES if t.reproducible)
 """Los tipos de la 016 que se reproducen: todos (bit a bit desde una revisión congelada, con
 :data:`FIGURE_TOLERANCE` en las cifras)."""
+ROAD_VERSION_TYPES: tuple[str, ...] = tuple(t.op_type for t in ROAD_OPERATION_TYPES)
+"""Los tipos de versión de la 017, que se repiten solos: la pista, la accesibilidad y la propuesta del trazado."""
+ROAD_REPRODUCIBLE: tuple[str, ...] = tuple(t.op_type for t in ROAD_OPERATION_TYPES if t.reproducible)
+"""Los tipos de la 017 que se reproducen: todos (bit a bit desde una revisión congelada, con :data:`FIGURE_TOLERANCE` en las cifras)."""
 
 
 def operation_def(op_type: str, recompute: RecomputeFunction | None = None,
@@ -1410,6 +1638,18 @@ def supported_operation_defs(recompute: Mapping[str, RecomputeFunction],
     _check_functions("reproducción", reproduce, SUPPORTED_REPRODUCIBLE)
     return tuple(declared.definition(recompute[declared.op_type], reproduce[declared.op_type])
                  for declared in SUPPORTED_OPERATION_TYPES)
+
+
+def road_operation_defs(recompute: Mapping[str, RecomputeFunction],
+                        reproduce: Mapping[str, ReproduceFunction]) -> tuple[OperationDef, ...]:
+    """Los ``OperationDef`` de los tres tipos de la 017 (spec 017, T03), en su orden —la pista, la accesibilidad y la propuesta
+    del trazado—: cada uno con su función de ``recompute`` (todos se repiten solos) y de ``reproduce``
+    (:data:`ROAD_REPRODUCIBLE`: todos). ``ValueError`` si sobra o falta alguna. La edición de los perfiles de pista, de proyecto, es
+    :data:`ROAD_PROFILE_OPERATIONS`."""
+    _check_functions("recálculo", recompute, ROAD_VERSION_TYPES)
+    _check_functions("reproducción", reproduce, ROAD_REPRODUCIBLE)
+    return tuple(declared.definition(recompute[declared.op_type], reproduce[declared.op_type])
+                 for declared in ROAD_OPERATION_TYPES)
 
 
 # --- Las cifras: armarlas -----------------------------------------------------------------------
@@ -1603,9 +1843,11 @@ def has_declaring_operation(conn: sqlite3.Connection, version_uid: str) -> bool:
     return conn.execute(_LIVE_DECLARING, (version_uid, *DECLARING_OP_NAMES)).fetchone() is not None
 
 
-ENTITY_OP_NAMES: tuple[str, ...] = (PLATFORM, STOCKPILE_DETECT, STOCKPILE_REMOVAL, BUTTRESS, BODY)
+ENTITY_OP_NAMES: tuple[str, ...] = (PLATFORM, STOCKPILE_DETECT, STOCKPILE_REMOVAL, BUTTRESS, BODY, ROAD, ROAD_ACCESS)
 """Los tipos de operación de las entidades de una versión (la plataforma y, de la 016, la detección, la retirada, el
-contrafuerte y el cuerpo apoyado): lo que escribe una entidad que sale en la capa de entidades."""
+contrafuerte y el cuerpo apoyado y, de la 017, la pista y la accesibilidad; **no** «Proponer el trazado», que no es una entidad): lo que
+escribe una entidad que sale en la capa de entidades o que cuenta para lo que sigue a «Recalcular lo obsoleto» y a «Cambiar
+parámetro…» (hallazgo D-1 de la 016)."""
 _LIVE_ENTITY = (
     "SELECT 1 FROM gb_operation AS o JOIN gb_revision AS r ON r.uid = o.revision_uid "
     f"WHERE r.version_uid = ? AND o.op_type IN ({', '.join('?' for _ in ENTITY_OP_NAMES)}) "
@@ -3101,7 +3343,14 @@ def _entity_figures(declared: tuple[FigureDef, ...], what: str, name: str, code:
     """Las cifras de ``declared`` de la entidad ``name`` de código ``code`` con el ámbito de
     :func:`entity_figure_scope`, en el orden de ``declared`` y con su unidad: ``values`` da cada una por su clave (todas,
     ninguna de más ni de menos). Una que no existe (``None``) no se registra; un recuento (unidad ``-``) es un entero no
-    negativo y las demás, un real finito no negativo (``ValueError``)."""
+    negativo y las demás, un real finito no negativo salvo las que declaran ``allow_negative`` (una cota, un desnivel: spec 017,
+    T03), que son un real finito (``ValueError``)."""
+    return _scoped_figures(declared, what, name, entity_figure_scope(name, code), values)
+
+
+def _scoped_figures(declared: tuple[FigureDef, ...], what: str, name: str, scope: dict[str, str],
+                    values: Mapping[str, float | None]) -> tuple[FigureSpec, ...]:
+    """:func:`_entity_figures` con el ámbito ya armado (la propuesta del trazado no es una entidad: su ámbito es el del nombre)."""
     keys = {figure.key: figure for figure in declared}
     given = _mapping(values, f"las cifras de {what}")
     extra = sorted(str(key) for key in given if key not in keys)
@@ -3111,13 +3360,15 @@ def _entity_figures(declared: tuple[FigureDef, ...], what: str, name: str, code:
     if missing:
         raise ValueError(f"faltan las cifras de {what} «{name}»: {', '.join(missing)} "
                          "(las que no existen se dan como None)")
-    scope = entity_figure_scope(name, code)
     found = []
     for key, figure in keys.items():
         value = given[key]
         if value is None:
             continue
-        number = _count(key, value) if figure.unit == "-" else _non_negative(key, value)
+        if figure.unit == "-":
+            number = _count(key, value)
+        else:
+            number = _finite(key, value) if figure.allow_negative else _non_negative(key, value)
         found.append(FigureSpec(key, number, figure.unit, scope=scope))
     return tuple(found)
 
@@ -3527,3 +3778,131 @@ def body_params(code: str, request: BodyRequest, *, supports: bool = False) -> t
                   (request.support is not None, BodyParam.SUPPORT)),
         supports=supports)
     return _unique([*read, VERIFY_MIN_THICKNESS])
+
+
+# --- La pista y la accesibilidad de la 017 (spec 017, T03; plan 017 §5.2.2 y §5.2.3; ADR-0025, ADR-0030, ADR-0031) -------------
+# Sin comportamiento todavía: lo que consume, lo que lee y las cifras de cada tipo, como los de la 016; las tareas siguientes crean cada
+# operación con ellos. Los ajustes y la petición (``road_settings``, ``road_request``…) dependen de ``RoadRequest`` y ``AccessRequest``
+# (T05) y de los campos de la capa del diálogo: los hacen la T17 (la accesibilidad) y la T19 a T21 (la pista), con su preparación.
+
+_ROAD_ROUTE: tuple[RoadParam, ...] = (
+    RoadParam.MESH, RoadParam.LEVEL_STEP, RoadParam.MAX_CUT_FILL, RoadParam.LAMBDA, RoadParam.TURN, RoadParam.MARGIN,
+    RoadParam.SIMPLIFY, RoadParam.ARRIVAL_TOL, RoadParam.SEARCH_BUDGET)
+"""Los parámetros de la ruta (``des.road.{e}.*``: la malla, el paso de cota, la altura máxima de desmonte y terraplén, el peso del
+movimiento de tierras, la penalización de giro, la holgura del pasillo, la simplificación, la llegada y el presupuesto de estados): solo
+los lee el modo «trazar» (P-14: «sobre un eje» y «eje 3D» no buscan ninguna ruta)."""
+_ROAD_OPTIONAL: tuple[RoadParam, ...] = (
+    RoadParam.SUPPORT, RoadParam.DEST_LEVEL, RoadParam.DEST_TOL, RoadParam.DEST_ZONE, RoadParam.START_LEVEL, RoadParam.END_LEVEL)
+"""Los valores de la pista que **solo se leen si tienen valor** (un parámetro sin valor ni valor por defecto es un rechazo de la 008):
+el apoyo, el destino por cota (su cota, su tolerancia de llegada y su zona) y las cotas de inicio y de fin (D-13)."""
+_ROAD_PROFILE_READ: tuple[RoadProfileParam, ...] = tuple(item for item in RoadProfileParam if item is not RoadProfileParam.CLASS)
+"""Los valores de un perfil de pista que cambian el resultado: los 14 menos su clase normativa (un texto para la capa de ejes y R-44,
+que no cambia ninguna cifra)."""
+ROAD_MODES: tuple[str, ...] = tuple(entity_params("road").template(RoadParam.MODE.value).choices)
+"""Los tres modos de la pista (RF-017-02): ``trace``, ``on_axis`` y ``axis_3d``."""
+
+
+def road_inputs(layer: str, start: str, masks: Iterable[Use] = (), supports: Iterable[str] = ()) -> tuple[Use, ...]:
+    """Lo que consume ``des.road`` (spec 017, T03; RF-017-01, 03, 06; plan 017 §5.2.3; RF-015-06, RF-015-15), en su orden y sin repetir:
+    la capa de origen ``layer`` (:data:`ENTITY_LAYER_ROLE`: su geometría y su hash; un cambio de geometría en QGIS deja la pista
+    obsoleta, uno de un campo no, P-3 de la 015), la superficie de partida ``start`` (:data:`SURFACE_ROLE`; **ya resuelta**: el nombre
+    de su dato, no el ``entity:<código>`` del parámetro), las máscaras de la versión ``masks`` (``MaskSet.uses()``) y, **añadidas al
+    crear** (una operación hecha es inmutable), lo que la pista pisa, ``supports`` (:data:`SUPPORTED_ON_ROLE`: el origen en el eje de
+    otra pista, el destino en una entidad, lo que detecta el cálculo y lo que declara el usuario). El perfil no es una entrada: sus
+    valores son parámetros (:func:`road_params`). Si una cambia, la pista queda obsoleta. ``ValueError`` si faltan los nombres;
+    ``TypeError`` si ``supports`` es un texto."""
+    found = [Use(_named(layer, "de la capa de origen de la pista"), ENTITY_LAYER_ROLE),
+             Use(_named(start, "de la superficie de partida"), SURFACE_ROLE), *masks]
+    found += [Use(_named(name, "de una superficie en la que se apoya"), SUPPORTED_ON_ROLE)
+              for name in _codes(supports, "las superficies de apoyo")]
+    return _unique(found)
+
+
+def road_params(code: str, *, mode: str, profile: str, valued: Iterable[str] = (), supports: bool = False) -> tuple[str, ...]:
+    """Los parámetros que lee ``des.road`` de la pista de código ``code`` (``begin_operation(params=…)``; spec 017, T03; RF-017-01, 02,
+    07, 10; plan 017 §5.2.2; P-14), por orden de :class:`~.params.RoadParam`: el modo, la capa, el perfil y la partida siempre; en
+    «trazar» (``trace``), además, el origen, el destino y los de la ruta (:data:`_ROAD_ROUTE`, con el presupuesto de estados); en «sobre
+    un eje» (``on_axis``) y «eje 3D» (``axis_3d``), la geometría de su capa (``feature``); **solo los opcionales que tienen valor**
+    (``valued``: de entre el apoyo, el destino por cota con su tolerancia y su zona y las cotas de inicio y de fin); las dependencias
+    declaradas, si la pista las tiene (``supports``); después, los 14 valores del perfil ``profile`` que cambian su resultado
+    (``des.roadprofile.{p}.*``, sin su clase normativa) y los del proyecto que lee toda entidad que mide un borde
+    (:data:`PLATFORM_COMMON_PARAMS`). No lee su nombre ni su motivo (renombrarla no la deja obsoleta) ni lo que decide (descartarla); no
+    declara nada. Cambiar uno deja la pista (y, en cascada, lo que parte de ella) obsoleta con su causa. ``ValueError`` si ``code`` no es
+    el de una pista, el modo no es uno de :data:`ROAD_MODES`, ``profile`` no es un código de perfil o ``valued`` nombra algo que no es
+    opcional."""
+    _typed_code(code, "road", "una pista")
+    if mode not in ROAD_MODES:
+        raise ValueError(f"el modo de una pista es uno de {', '.join(ROAD_MODES)}, no {mode!r}")
+    given = set(_codes(valued, "los valores opcionales con valor"))
+    unknown = sorted(given - {item.value for item in _ROAD_OPTIONAL})
+    if unknown:
+        raise ValueError(f"{', '.join(unknown)} no son valores opcionales de una pista: son "
+                         f"{', '.join(item.value for item in _ROAD_OPTIONAL)}")
+    read = {RoadParam.MODE, RoadParam.LAYER, RoadParam.PROFILE, RoadParam.START}
+    if mode == "trace":
+        read |= {RoadParam.ORIGIN, RoadParam.DESTINATION, *_ROAD_ROUTE}
+    else:
+        read.add(RoadParam.FEATURE)
+    read |= {item for item in _ROAD_OPTIONAL if item.value in given}
+    if supports:
+        read.add(RoadParam.SUPPORTS)
+    return _unique([*(entity_key(code, item) for item in RoadParam if item in read),
+                    *(road_profile_key(profile, item) for item in _ROAD_PROFILE_READ), *PLATFORM_COMMON_PARAMS])
+
+
+def access_inputs(surface: str, entries_layer: str, masks: Iterable[Use] = (), *, final: str | None = None,
+                  berms: Iterable[str] = (), berm_tables: Iterable[str] = (), footprints: Iterable[str] = ()
+                  ) -> tuple[Use, ...]:
+    """Lo que consume ``des.road_access`` (spec 017, T03; RF-017-24, 25; plan 017 §5.2.3; D-18), en su orden y sin repetir: la
+    superficie ``surface`` (:data:`SURFACE_ROLE`; el nombre de su dato) y, en una cantera de la 014, la final, ``final``
+    (:data:`ACCESS_FINAL_ROLE`), la capa de los puntos de entrada ``entries_layer`` (:data:`ACCESS_ENTRIES_ROLE`: su geometría y su
+    hash), las máscaras de la versión ``masks`` (``MaskSet.uses()``: lo que prohíbe atravesar), las rejillas de cotas de berma de la 013
+    ``berms`` y sus tablas ``berm_tables`` (``des_brm_`` y ``des_bmt_``) y las huellas de las plataformas ``footprints``
+    (:data:`ENTITY_ROLE`: ``des_epr_``). Si una cambia (la superficie, una pista, una berma o una entrada), la accesibilidad queda
+    obsoleta (RF-008-24). ``ValueError`` si faltan los nombres; ``TypeError`` si una lista es un texto."""
+    found = [Use(_named(surface, "de la superficie de la accesibilidad"), SURFACE_ROLE)]
+    if final is not None:
+        found.append(Use(_named(final, "de la superficie final"), ACCESS_FINAL_ROLE))
+    found += [Use(_named(entries_layer, "de la capa de los puntos de entrada"), ACCESS_ENTRIES_ROLE), *masks]
+    found += [Use(_named(name, "de una rejilla de cotas de berma"), _BERMS_ROLE) for name in _codes(berms, "las rejillas de bermas")]
+    found += [Use(_named(name, "de una tabla de bermas"), _BERM_TABLE_ROLE) for name in _codes(berm_tables, "las tablas de bermas")]
+    found += [Use(_named(name, "de la huella de una plataforma"), ENTITY_ROLE)
+              for name in _codes(footprints, "las huellas de las plataformas")]
+    return _unique(found)
+
+
+def access_params(code: str, *, berms: bool = False) -> tuple[str, ...]:
+    """Los parámetros que lee ``des.road_access`` de la accesibilidad de código ``code`` (``begin_operation(params=…)``; spec 017, T03;
+    RF-017-24, 25; plan 017 §5.2.2; D-17), por orden de :class:`~.params.AccessParam`: la superficie, la capa de entradas, los datos de
+    bermas solo si tienen valor (``berms``) y los tres umbrales (la pendiente y el ancho transitables y el área mínima de berma). No
+    lee su nombre ni lo que decide (descartarla). Cambiar uno la deja obsoleta con su causa. ``ValueError`` si ``code`` no es el de una
+    accesibilidad."""
+    _typed_code(code, "access", "una accesibilidad")
+    read = {AccessParam.SURFACE, AccessParam.ENTRIES_LAYER, AccessParam.WALK_SLOPE, AccessParam.WALK_WIDTH, AccessParam.MIN_BERM_AREA}
+    if berms:
+        read.add(AccessParam.BERMS)
+    return _unique(entity_key(code, item) for item in AccessParam if item in read)
+
+
+def road_figures(name: str, code: str, values: Mapping[str, float | None]) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO de la pista ``name`` de código ``code`` (spec 017, T03; RF-017-23; plan 017 §5.2.3), con el ámbito de
+    :func:`entity_figure_scope`, en el orden de :data:`ROAD_FIGURES` y con su unidad: ``values`` da cada una por su clave (las
+    veintitrés; ``None`` la que no existe: sin curvas no hay radio mínimo). Las cotas, el desnivel y el neto admiten negativos; las demás,
+    no, ni NaN ni infinitas, y el número de curvas es un entero (``ValueError``; ``TypeError`` si no son números)."""
+    _typed_code(code, "road", "una pista")
+    return _entity_figures(ROAD_FIGURES, "una pista", name, code, values)
+
+
+def access_figures(name: str, code: str, values: Mapping[str, float | None]) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO de la accesibilidad ``name`` de código ``code`` (spec 017, T03; RF-017-24, 25; plan 017 §5.2.3): como
+    :func:`road_figures`, con :data:`ACCESS_FIGURES` (las nueve; ``None`` la cota mínima sobre la final si no hay cantera). Las cotas
+    admiten negativos y los recuentos son enteros."""
+    _typed_code(code, "access", "una accesibilidad")
+    return _entity_figures(ACCESS_FIGURES, "una accesibilidad", name, code, values)
+
+
+def propose_figures(name: str, values: Mapping[str, float | None]) -> tuple[FigureSpec, ...]:
+    """Las cifras CALCULADO de «Proponer el trazado» ``name`` (spec 017, T03; RF-017-28; plan 017 §5.2.3): la longitud y la pendiente
+    máxima del trazado (:data:`PROPOSE_FIGURES`, las mismas dos claves de la pista), con el ámbito del nombre de la operación
+    (:func:`figure_scope`: no es una entidad). Como :func:`road_figures` en lo demás."""
+    return _scoped_figures(PROPOSE_FIGURES, "una propuesta de trazado", name, figure_scope(name), values)

@@ -211,7 +211,7 @@ class LayerInputsTest(unittest.TestCase):
         """RF-015-27: la marca de la capa mira las operaciones de **los cinco tipos** (hasta la 016 solo la plataforma: una versión
         con solo un contrafuerte o una detección no tenía capa que poner al día)."""
         self.assertEqual(provenance.ENTITY_OP_NAMES, ("des.platform", "des.stockpile_detect", "des.stockpile_removal",
-                                                     "des.buttress", "des.body"))
+                                                     "des.buttress", "des.body", "des.road", "des.road_access"))  # y los dos de la 017 (T03)
         self.assertTrue(set(provenance.ENTITY_OP_NAMES) >= {type_.op_type for type_ in provenance.ENTITY_OPERATION_TYPES
                                                             if type_.op_type != provenance.DECLARE_CONSTRAINTS
                                                             and type_.op_type != provenance.ENTITY_LAYER})

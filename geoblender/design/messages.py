@@ -3153,6 +3153,20 @@ CATALOG: tuple[Message, ...] = (
         "una calzada con escalones o huecos no es una pista.",
         "warning",
     ),
+    # El motivo declarado de cada tipo (``EntityType.reason``, obligatorio en la clase): la pista y la accesibilidad no declaran restricción
+    # alguna (D-15), así que no se usa; existe, como el de la detección de acopios.
+    Message(
+        "des.road_declared_reason",
+        "declared by haul road {name}",
+        "declarada por la pista {name}",
+        "note",
+    ),
+    Message(
+        "des.access_declared_reason",
+        "declared by accessibility {name}",
+        "declarada por la accesibilidad {name}",
+        "note",
+    ),
     # «Apoyo retirado» de cada tipo (``EntityType.removed``; RF-015-17): lo que se apoyaba en una pista o en una accesibilidad descartada.
     Message(
         "des.road_support_removed",

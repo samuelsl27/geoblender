@@ -263,9 +263,9 @@ class VersionLayerStyleTest(unittest.TestCase):
 
     def test_entities_by_kind_with_the_state_rule(self) -> None:
         """RF-015-27, RF-012-20: la capa de entidades se abre con un estilo **por tipo de entidad**
-        (``kind``: la plataforma y los cuatro de la 016 —acopio, retirada, contrafuerte y cuerpo
-        apoyado, con los colores de los objetos de la vista—, y «otra entidad» para un tipo que no
-        tenga el suyo) y por estado (``state``): la descartada, atenuada (relleno casi transparente y contorno
+        (``kind``: la plataforma, los cuatro de la 016 —acopio, retirada, contrafuerte y cuerpo
+        apoyado, con los colores de los objetos de la vista— y los dos de la 017 —la pista y la accesibilidad—,
+        y «otra entidad» para un tipo que no tenga el suyo) y por estado (``state``): la descartada, atenuada (relleno casi transparente y contorno
         discontinuo); la de «apoyo retirado», marcada (contorno grueso y de otro color); las demás,
         normales. Los símbolos son de relleno, con colores ``r,g,b,a``."""
         root = _version_root(ENTITIES)
@@ -273,15 +273,17 @@ class VersionLayerStyleTest(unittest.TestCase):
         (renderer,) = root.iter("renderer-v2")
         self.assertEqual(renderer.get("type"), "RuleRenderer")
         rules = list(renderer.iter("rule"))
-        self.assertEqual(len(rules), 18)
-        self.assertEqual(len({rule.get("key") for rule in rules}), 18)
+        self.assertEqual(len(rules), 24)  # siete tipos y «otra entidad», cada uno en sus tres reglas
+        self.assertEqual(len({rule.get("key") for rule in rules}), 24)
         by_label = _by_label(root)
         self.assertEqual({kind: (label, rgb) for kind, (label, rgb) in styles.ENTITY_KINDS.items()}, {
             "platform": ("Plataforma", (176, 96, 64)), "stockpile": ("Acopio", (217, 140, 26)), "removal": ("Retirada", (204, 77, 64)),
-            "buttress": ("Contrafuerte", (128, 102, 204)), "body": ("Cuerpo apoyado", (77, 140, 217))},
+            "buttress": ("Contrafuerte", (128, 102, 204)), "body": ("Cuerpo apoyado", (77, 140, 217)),
+            "road": ("Pista", (118, 118, 118)), "access": ("Accesibilidad", (51, 166, 153))},
             "los colores de la 016 son los de bl.scene.entity_views.COLORS (0 a 1) a 0 a 255")
         self.assertEqual(list(by_label), [
-            f"{label}{suffix}" for label in ("Plataforma", "Acopio", "Retirada", "Contrafuerte", "Cuerpo apoyado", styles.ENTITY_OTHER_LABEL)
+            f"{label}{suffix}" for label in ("Plataforma", "Acopio", "Retirada", "Contrafuerte", "Cuerpo apoyado", "Pista", "Accesibilidad",
+                          styles.ENTITY_OTHER_LABEL)
             for suffix in ("", " descartada", " con el apoyo retirado")])
         for symbol in by_label.values():
             self.assertEqual(symbol.get("type"), "fill")
@@ -306,13 +308,15 @@ class VersionLayerStyleTest(unittest.TestCase):
         self.assertNotEqual(marked["outline_color"], normal["outline_color"])
         self.assertGreater(float(marked["outline_width"]), float(normal["outline_width"]))
         # la regla de los demás tipos no repite lo de los que tienen estilo propio
-        self.assertTrue(str(filters[15]).startswith("coalesce(\"kind\", '') NOT IN ('platform', 'stockpile', 'removal', 'buttress', 'body')"))
+        self.assertTrue(str(filters[21]).startswith(
+            "coalesce(\"kind\", '') NOT IN ('platform', 'stockpile', 'removal', 'buttress', 'body', 'road', 'access')"))
         for index, kind in enumerate(styles.ENTITY_KINDS):  # cada tipo, en sus tres reglas (normal, descartada y con el apoyo retirado)
             self.assertEqual([str(item)[:len(f"\"kind\" = '{kind}'")] for item in filters[3 * index:3 * index + 3]], [f"\"kind\" = '{kind}'"] * 3)
 
     def test_entity_style_names_the_kinds_and_states_of_design(self) -> None:
         """RF-015-27: el contrato del estilo con la capa de entidades de ``design`` (T30): los tipos
-        con estilo propio son los de ``EntityKind`` (los cinco: desde la T35 de la 016 los cuatro nuevos tienen el suyo) y los
+        con estilo propio son los de ``EntityKind`` (los siete: los cuatro de la 016 desde su T35 y la pista y la accesibilidad de la 017,
+        T03, tienen el suyo) y los
         estados que el estilo distingue son valores de ``EntityState``."""
         self.assertEqual(set(styles.ENTITY_KINDS), {kind.value for kind in entities_mod.EntityKind})
         self.assertIn("platform", styles.ENTITY_KINDS)

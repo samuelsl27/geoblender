@@ -50,8 +50,11 @@ WORLD: dict[str, tuple[str, dict[str, Any]]] = {
                              "data_field": "espesor", "data_from": "field", "surface": GROUND, "sense": "under_roof"}),
     "PLT-001": ("P1", {"layer": "gis_fea_plataformas_ejes", "feature": "Eje 1", "start": OTHER_GROUND, "mode": "cut",
                        "protect": True, "guard_m": 4.0}),
+    "RDW-001": ("Pista 1", {"mode": "on_axis", "layer": "gis_fea_pistas_ejes", "feature": "Eje 1", "profile": "pista_principal",
+                            "start": "des_srf_pistas"}),
+    "ACC-001": ("Accesibilidad 1", {"surface": GROUND, "entries_layer": "gis_fea_pistas_entradas"}),
 }
-PROGRAM_KINDS = {"platform", "stockpile", "removal", "buttress", "body"}
+PROGRAM_KINDS = {"platform", "stockpile", "removal", "buttress", "body", "road", "access"}
 
 
 def key(code: str, param: str) -> str:
@@ -66,7 +69,8 @@ class SupportedParameterCase(efx.EntityProjectCase):
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
-        core_params.register_families((*design_params.ENTITY_FAMILIES, *design_params.SUPPORTED_FAMILIES))
+        core_params.register_families((*design_params.ENTITY_FAMILIES, *design_params.SUPPORTED_FAMILIES,
+                                       *design_params.ROAD_FAMILIES, *design_params.ACCESS_FAMILIES))
         cls.addClassCleanup(core_params.unregister_families, "des")
         store = core_params.ParameterStore(cls.project)
         cls.clock.advance(minutes=1)

@@ -161,11 +161,12 @@ class EntityDatasetsTest(unittest.TestCase):
                                  (kind, store, reader, role, extension, named))
                 self.assertEqual(family.prefix, f"des_{family.code}_")
                 self.assertTrue(family.label.strip())
-        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 28)  # y las ocho de la 016 (T03)
+        self.assertEqual(len(provenance.FAMILIES_BY_CODE), 34)  # y las ocho de la 016 (T03) y las seis de la 017 (T03)
         self.assertEqual(dict(provenance.FAMILIES_BY_CODE),
                          {family.code: family for family in (
                              *provenance.FAMILIES, *provenance.QUARRY_FAMILIES,
-                             *provenance.ENTITY_FAMILIES, *provenance.SUPPORTED_FAMILIES)})
+                             *provenance.ENTITY_FAMILIES, *provenance.SUPPORTED_FAMILIES,
+                             *provenance.ROAD_DATA_FAMILIES)})
 
     def test_the_surface_of_an_entity_is_not_a_design_surface(self) -> None:
         """RF-015-04, P-2 (plan 015 §2.1): las superficies intermedias de una cadena no pueden
@@ -282,7 +283,8 @@ class EntityOperationTypesTest(unittest.TestCase):
                          {t.op_type: t for t in (*provenance.OPERATION_TYPES,
                                                  *provenance.QUARRY_OPERATION_TYPES,
                                                  *provenance.ENTITY_OPERATION_TYPES,
-                                                 *provenance.SUPPORTED_OPERATION_TYPES)})
+                                                 *provenance.SUPPORTED_OPERATION_TYPES,
+                                                 *provenance.ROAD_OPERATION_TYPES)})
         for declared in provenance.ENTITY_OPERATION_TYPES:
             op_type = declared.op_type
             with self.subTest(op_type=op_type):

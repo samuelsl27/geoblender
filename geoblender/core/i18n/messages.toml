@@ -10585,3 +10585,117 @@ es = "Factor de malla del perfil de pista"
 es = "Métrica de distancia del borde de la pista"
 
 # --- Fin de los parámetros de la pista, la accesibilidad y el perfil de pista (spec 017, T02)
+
+# --- Procedencia de la pista y la accesibilidad (spec 017, T03; RF-017-01, 07, 23, 24, 27, 28; plan 017 §5.2.3) ---
+# El nombre de cada tipo de operación y de cada cifra de design/provenance.py (ROAD_OPERATION_TYPES, ROAD_PROFILE_OPERATIONS, ROAD_FIGURES
+# y ACCESS_FIGURES). Los de los parámetros están arriba (T02). Lo que añada una tarea siguiente va detrás de la marca del final.
+
+["Haul road"]
+es = "Pista"
+
+["Accessibility of the haul roads"]
+es = "Accesibilidad de las pistas"
+
+["Proposal of the route of a haul road"]
+es = "Propuesta de trazado de una pista"
+
+["Edition of the road profiles"]
+es = "Edición de los perfiles de pista"
+
+["Length of the axis of the haul road"]
+es = "Longitud del eje de la pista"
+
+["Level of the haul road at its start"]
+es = "Cota de la pista al inicio"
+
+["Level of the haul road at its end"]
+es = "Cota de la pista al final"
+
+["Drop of the haul road between its start and its end"]
+es = "Desnivel de la pista entre su inicio y su final"
+
+["Mean gradient of the haul road"]
+es = "Pendiente media de la pista"
+
+["Maximum gradient of the haul road"]
+es = "Pendiente máxima de la pista"
+
+["Station of the maximum gradient of the haul road"]
+es = "Abscisa de la pendiente máxima de la pista"
+
+["Minimum radius of the curves of the haul road"]
+es = "Radio mínimo de las curvas de la pista"
+
+["Curves of the haul road"]
+es = "Curvas de la pista"
+
+["Width of the carriageway of the haul road"]
+es = "Anchura de la calzada de la pista"
+
+["Width of the section of the haul road"]
+es = "Anchura de la sección de la pista"
+
+["Engraved area of the haul road"]
+es = "Área grabada de la pista"
+
+["Cut of the section of the haul road"]
+es = "Corte de la sección de la pista"
+
+["Fill of the section of the haul road"]
+es = "Relleno de la sección de la pista"
+
+["Cut of the edge of the haul road"]
+es = "Corte del borde de la pista"
+
+["Fill of the edge of the haul road"]
+es = "Relleno del borde de la pista"
+
+["Net volume of the haul road, cut minus fill"]
+es = "Volumen neto de la pista, corte menos relleno"
+
+["Largest wall of the edge of the haul road"]
+es = "Mayor pared del borde de la pista"
+
+["Largest height of cut of the haul road"]
+es = "Mayor altura de desmonte de la pista"
+
+["Largest height of fill of the haul road"]
+es = "Mayor altura de terraplén de la pista"
+
+["Area affected of the zones preferably not to be affected"]
+es = "Área afectada de las zonas preferibles de no afectar"
+
+["Volume moved in the zones preferably not to be affected"]
+es = "Volumen movido en las zonas preferibles de no afectar"
+
+["Weighted volume moved in the zones preferably not to be affected"]
+es = "Volumen movido ponderado en las zonas preferibles de no afectar"
+
+["Lowest level reachable"]
+es = "Cota mínima alcanzable"
+
+["Highest level reachable"]
+es = "Cota máxima alcanzable"
+
+["Area reachable"]
+es = "Área alcanzable"
+
+["Lowest level reachable over the final surface"]
+es = "Cota mínima alcanzable sobre la superficie final"
+
+["Berm stretches reached"]
+es = "Tramos de berma alcanzados"
+
+["Berm stretches of the surface"]
+es = "Tramos de berma de la superficie"
+
+["Platforms reached"]
+es = "Plataformas alcanzadas"
+
+["Zones that require access reached"]
+es = "Zonas que requieren acceso alcanzadas"
+
+["Zones that require access not reached"]
+es = "Zonas que requieren acceso no alcanzadas"
+
+# --- Fin de la procedencia de la pista y la accesibilidad (spec 017, T03)
