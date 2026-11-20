@@ -646,9 +646,11 @@ HEAVY: tuple[str, ...] = (
     # nombre que ``design.model`` ofrece al pedirlo (``__getattr__``), que el árbol sintáctico no ve.
     "design.stockpiles", "design.stockpile_store", "design.removal", "design.supported_store",
     "design.thickness", "design.buttress", "design.supported_edge", "design.morphology",
-    "design.supported_requests")
+    "design.supported_requests",
+    # El perfil de pista de la 017 (spec 017, T04): se importa al usarlo; ``provenance`` declara su operación.
+    "design.road_profiles")
 """Lo que habilitar no importa (los de la 012 que fija ``tests/unit/architecture/test_lazy_registration``,
-y los de la 016, que esa prueba mira por sus importaciones de nivel de módulo)."""
+y los de la 016 y la 017, que esa prueba mira por sus importaciones de nivel de módulo)."""
 LIGHT: tuple[str, ...] = ("core.constraints.provenance", "gis.masks.provenance",
                           "reserves.provenance", "core.versions.freezing")
 """Lo que sí: las declaraciones que registra ``bl``."""

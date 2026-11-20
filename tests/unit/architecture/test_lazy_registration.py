@@ -75,8 +75,11 @@ HEAVY: frozenset[str] = frozenset({
     # Las seis peticiones de la 016 (spec 016, T51): 4,2 ms de dataclasses que habilitar no necesita;
     # ``design.model`` las ofrece con su nombre de siempre al pedirlas (``__getattr__``).
     "design.supported_requests",
+    # El perfil de pista de la 017 (spec 017, T04): la tabla, la edición de los perfiles y sus derivados; ``provenance`` declara
+    # la operación (``des.edit_road_profiles``) y este módulo se importa al usarlo (RNF-001-03, RNF-017-10).
+    "design.road_profiles",
 })
-"""Los módulos de la 012, la 013, la 015 y la 016 (y la cadena que arrastran) que se importan al primer uso."""
+"""Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 
 
 def registered_roots(modules: Collection[pyast.PyModule]) -> list[str]:

@@ -172,7 +172,10 @@ PENDING_015_API: frozenset[str] = frozenset({
     "access_figures", "access_inputs", "access_params", "propose_figures", "road_figures", "road_inputs",
     "road_operation_defs", "road_params", "reproduce_road", "reproduce_road_access", "reproduce_road_propose",
 })
-PENDING_015_MODULES: frozenset[str] = frozenset()
+PENDING_015_MODULES: frozenset[str] = frozenset({
+    # La 017, T04 (la tarea de documentación, T35, los lleva a la ficha, ``des.md`` §4.5, y vacía este conjunto):
+    "design.road_profiles",
+})
 
 
 def one_line(text: str) -> str:
