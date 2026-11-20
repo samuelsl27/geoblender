@@ -1308,20 +1308,20 @@ class SupportedCardDocTest(unittest.TestCase):
 
     def test_the_card_says_where_the_016_is(self) -> None:
         """Definición de hecho §3.7 (T38, T50 y el cierre del 20/11/2026): la cabecera de ``des.md`` dice que la 016 está
-        **cerrada** por Samuel el 20/11/2026 («Sí, por defecto»; spec 0.4) y en ``main`` **a falta de publicar**, con las 52 tareas
+        **cerrada** por Samuel el 20/11/2026 («Sí, por defecto»; spec 0.4) y en ``main`` y **publicada** el 20/11/2026 (código ``5e41ea8``), con las 52 tareas
         hechas (la verificación única, T39, sin pantalla; la convergencia, T41 a T52; el H3 en pantalla, T40), con su guía, y que la
         015 está **cerrada y publicada**; la API de la 016 está en §4.4 y la «API prevista» pasó a §4.5; y el «apoyo retirado», la
         fe de erratas, el borde de la rejilla, lo que no está confirmado (la apertura de 31 m) y lo que decidió Samuel están en
         §1.7."""
         head = one_line(self.des[:self.des.index("## Responsabilidad")])
-        for fact in ("Desde la spec 016", "**cerrada por Samuel el 20/11/2026**", "**en `main`, a falta de publicar**",
+        for fact in ("Desde la spec 016", "**cerrada por Samuel el 20/11/2026**", "**en `main` y publicada el 20/11/2026** (código `5e41ea8`)",
                      "con las 52 tareas hechas", "su verificación única, T39, sin pantalla", "la convergencia de la T41 a la T52",
                      "el H3 en pantalla (T40, 20/11/2026", "docs/usuario/acopios-y-contrafuertes.md",
                      "**cerrada y publicada el 18/11/2026** (código `a57b8fa`)"):
             with self.subTest(head=fact):
                 self.assertIn(fact, head)
         for stale in ("implementada en `main`, sin publicar", "y en verificación", "a falta del H3 en pantalla (T40)",
-                      "de la decisión de Samuel"):
+                      "de la decisión de Samuel", "a falta de publicar"):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, head)
         self.assertNotIn("el acopio, el contrafuerte y los cuerpos apoyados de §1.7 —la 016—, §1.8", head)
@@ -1356,10 +1356,12 @@ class SupportedCardDocTest(unittest.TestCase):
         row = re.search(r"^\| 016-des-acopios-contrafuerte-y-cuerpos-apoyados .*$", self.des, re.MULTILINE)
         self.assertIsNotNone(row)
         assert row is not None
-        for fact in ("**cerrada** el 20/11/2026", "a falta de publicar", "T39", "T40", "acopios-y-contrafuertes.md"):
+        for fact in ("**cerrada** el 20/11/2026", "**publicada** el 20/11/2026 (código `5e41ea8`)", "T39", "T40",
+                     "acopios-y-contrafuertes.md"):
             with self.subTest(row=fact):
                 self.assertIn(fact, row.group(0))
         self.assertNotIn("implementada y en verificación", row.group(0))
+        self.assertNotIn("a falta de publicar", row.group(0))
 
 
 @docs.requires_docs
@@ -1676,8 +1678,8 @@ class SupportedGuideDocTest(unittest.TestCase):
 @docs.requires_docs
 class SupportedStateDocTest(unittest.TestCase):
     """El índice de specs, el roadmap, el ``CHANGELOG.md`` del código, la barra superior y los paneles contextuales dicen el
-    estado de la 016 tras su cierre (20/11/2026): **Cerrada** por Samuel («Sí, por defecto»; spec 0.4), en ``main`` y a falta de
-    publicar (cuando la sesión principal la publique, se pone «publicada» con el código)."""
+    estado de la 016 tras su cierre (20/11/2026): **Cerrada** por Samuel («Sí, por defecto»; spec 0.4), en ``main`` y **publicada**
+    el mismo día con ``tools/publish.py`` (código ``5e41ea8``)."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -1691,14 +1693,15 @@ class SupportedStateDocTest(unittest.TestCase):
 
     def test_the_index_says_where_the_016_is(self) -> None:
         """Definición de hecho §3.7 (T38, T50 y el cierre del 20/11/2026): la fila de la 016 dice que está **Cerrada** (20/11/2026,
-        por Samuel: «Sí, por defecto»; spec 0.4), **cerrada, a falta de publicar**, con sus 52 tareas (la convergencia, de la T41 a
+        por Samuel: «Sí, por defecto»; spec 0.4), **cerrada y publicada**, con sus 52 tareas (la convergencia, de la T41 a
         la T52), su guía, la verificación única y el H3 hechos, las decisiones de Samuel (con el diff de la 011 aplicado a la
         011) y que RNF-016-02 «sigue sin cumplirse con secciones muy separadas»; y ya no dice que esté «sin empezar», «en
         verificación» ni que «Cerrada» sea solo tras el H3. La fila de la 011 dice su 0.4."""
         self.assertIsNotNone(self.index_row)
         assert self.index_row is not None
         row = one_line(self.index_row.group(0))
-        for fact in ("**Cerrada** (20/11/2026, por Samuel: «Sí, por defecto»; spec 0.4)", "**cerrada, a falta de publicar**",
+        for fact in ("**Cerrada** (20/11/2026, por Samuel: «Sí, por defecto»; spec 0.4)", "**cerrada y publicada** el mismo día",
+                     "`origin/main` = código `5e41ea8`",
                      "52 (T01–T52", "la convergencia, T41 a T52", "la documentación (T38 y T50", "docs/usuario/acopios-y-contrafuertes.md",
                      "La verificación única (T39: seis verificadores sin pantalla, 66 hallazgos", "**El H3 en pantalla (T40) se hizo el 20/11/2026**",
                      "las 15 decisiones de «Para Samuel»", "una unidad antrópica nueva de la 011 nace «Suelto»", "diff de la 011",
@@ -1707,6 +1710,7 @@ class SupportedStateDocTest(unittest.TestCase):
             with self.subTest(fact=fact):
                 self.assertIn(fact, row)
         for stale in ("sin empezar", "40 (T01–T40)", "40 tareas", "44 (T01–T44", "50 (T01–T50", "a falta de la verificación única",
+                      "a falta de publicar",
                       "RNF-016-02 cumple", "**Implementada, en verificación**", "«Cerrada» solo tras el H3 y CE-016-09",
                       "**Faltan** las medidas a solas"):
             with self.subTest(stale=stale):
@@ -1714,26 +1718,28 @@ class SupportedStateDocTest(unittest.TestCase):
         row011 = re.search(r"^\| 011 \|.*$", self.specs, re.MULTILINE)
         self.assertIsNotNone(row011)
         assert row011 is not None
-        for fact in ("En implementación (0.4)", "nazca «Suelto»", "`016-…/diff-011.md`", "`51fcf3f`"):
+        for fact in ("En implementación (0.4)", "nazca «Suelto»", "`016-…/diff-011.md`", "`51fcf3f`",
+                     "publicado el 20/11/2026 con la 016"):
             with self.subTest(row011=fact):
                 self.assertIn(fact, one_line(row011.group(0)))
 
     def test_the_roadmap_says_where_the_016_is(self) -> None:
         """Definición de hecho §3.7 (T38, T50 y el cierre del 20/11/2026): la fila de R-36 dice que está hecha en sus dos specs,
-        las dos **cerradas**, y la 016 **cerrada** por Samuel el 20/11/2026 («Sí, por defecto») en ``main``, a falta de publicar,
+        las dos **cerradas**, y la 016 **cerrada** por Samuel el 20/11/2026 («Sí, por defecto») en ``main`` y publicada el mismo día,
         con lo medido y lo que no confirma el banco; su registro del 19/11/2026 dice lo que se hizo entonces (implementada, en
         verificación) y el del 20/11/2026, el cierre; y ya no dice «sin empezar» ni que «Cerrada» sea solo tras el H3."""
         self.assertIsNotNone(self.roadmap_row)
         assert self.roadmap_row is not None
         row = one_line(self.roadmap_row.group(0))
         for fact in ("hecha en sus dos specs, las dos **cerradas**", "**cerrada** por Samuel el 20/11/2026 («Sí, por defecto»",
-                     "**a falta de publicar**", "T01 a la T37 y de la T41 a la T52", "verificación única (T39) hecha sin pantalla",
+                     "**publicada** el 20/11/2026 (código `5e41ea8`)", "T01 a la T37 y de la T41 a la T52",
+                     "verificación única (T39) hecha sin pantalla",
                      "H3 en pantalla (T40)", "las medidas a solas", "CE-016-08", "la apertura de 31 m sigue HIPÓTESIS",
                      "diff de la 011 aplicado", "docs/usuario/acopios-y-contrafuertes.md"):
             with self.subTest(row=fact):
                 self.assertIn(fact, row)
         for stale in ("sin empezar", "**«Cerrada» solo tras ellos y tras CE-016-09**", "**implementada** en `main`, sin publicar",
-                      "**en verificación**", "en implementación;"):
+                      "**en verificación**", "en implementación;", "**a falta de publicar**"):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, row)
         self.assertEqual(len(self.ledger_close), 1, self.ledger_close)
