@@ -166,9 +166,9 @@ class ProfileData:
     lane_factor: float
     shoulder_m: float
     berm_m: float
-    max_grade_pct: float
+    max_gradient_pct: float
     station_step_m: float
-    max_mean_grade_pct: float
+    max_mean_gradient_pct: float
     curve_radius_m: float
     min_radius_m: float
     cut_angle_deg: float

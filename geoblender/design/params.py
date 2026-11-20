@@ -94,6 +94,22 @@ una persona): la transición (D-2), la cota de coronación (D-21), la distancia 
 015). Los rangos (:data:`STOCKPILE_RANGES`…) son los límites de validez que fija la T03 (no una cifra minera), y
 :func:`check_entity_param` rechaza un valor sin valor o fuera de ellos, para cualquier tipo.
 
+**La pista, la accesibilidad y el perfil de pista** (spec 017, T02; plan 017 §5.2.2; RF-017-01, 04, 07, 24; D-2, D-10, D-11,
+D-13, D-15, D-17; P-1, P-2, P-3, P-10): la pista (``road``, ``RDW-001``: **con cadena**, tiene ``start``) y la
+accesibilidad (``access``, ``ACC-001``: **sin cadena**, no tiene ``start``) son dos tipos del programa
+(:data:`ROAD_ENTITY` y :data:`ACCESS_ENTITY`, registrados al importar como los de la 016) con sus valores en
+:class:`RoadParam` y :class:`AccessParam`, sus rangos en :data:`ROAD_RANGES` y :data:`ACCESS_RANGES` y sus familias de
+versión :data:`ROAD_FAMILIES` y :data:`ACCESS_FAMILIES`; **la pista no ofrece** ``protect`` **ni** ``guard_m`` (no declara
+restricción alguna: D-15). El perfil de pista es una familia ``des.roadprofile.{p}.<valor>`` **por perfil**
+(:class:`RoadProfileParam`, :data:`ROAD_PROFILE_FAMILIES`, :data:`ROAD_PROFILE_RANGES`; ``{p}`` es el código inmutable del perfil,
+como en ``des.bench.{p}``). **Valor por defecto solo donde lo dice el plan**: ``search_budget`` 5.000.000 (ADOPTADO «sin
+confirmar», P-3), el factor de malla 1,0 y la métrica exacta del perfil; HIPÓTESIS **sin valor** los de la ruta (D-10, D-11) y
+los de la accesibilidad (D-17); ADOPTADO **sin valor** el resto, con su fuente (D-2 en el perfil). Los rangos son los límites
+de validez que fija la T02 (no una cifra minera: el plan no los da, salvo los de la spec, y se pueden revisar en
+:data:`ROAD_RANGES`, :data:`ACCESS_RANGES` y :data:`ROAD_PROFILE_RANGES`). :func:`check_entity_param` rechaza un valor de la
+pista o de la accesibilidad sin valor o fuera de rango; :func:`check_road_profile_value` y :func:`check_road_profile`, los del
+perfil (con ``Rmín ≤ R`` y ``Rmín ≥`` la semianchura de su sección, :func:`road_half_width_m`: RF-017-04, RF-017-07).
+
 El espesor mínimo del informe es el de la 012, ``res.verify.min_thickness_m``
 (:data:`VERIFY_MIN_THICKNESS`), y el umbral de la huella de un acopio es el de la 011, ``res.anthropic_presence_m``
 (:data:`ANTHROPIC_PRESENCE`, D-17): ``design`` los lee **por su clave** con ``core.params`` sin
@@ -124,6 +140,9 @@ from ..core.params import ParamDef, ParamFamily, ParamValue, format_range
 from .messages import DesignError
 
 __all__ = [
+    "ACCESS_ENTITY",
+    "ACCESS_FAMILIES",
+    "ACCESS_RANGES",
     "ANTHROPIC_PRESENCE",
     "BODY_ENTITY",
     "BODY_FAMILIES",
@@ -150,6 +169,11 @@ __all__ = [
     "REMOVAL_ENTITY",
     "REMOVAL_FAMILIES",
     "REMOVAL_RANGES",
+    "ROAD_ENTITY",
+    "ROAD_FAMILIES",
+    "ROAD_PROFILE_FAMILIES",
+    "ROAD_PROFILE_RANGES",
+    "ROAD_RANGES",
     "SECTOR_SLOPE",
     "STOCKPILE_ENTITY",
     "STOCKPILE_FAMILIES",
@@ -160,6 +184,7 @@ __all__ = [
     "UNSPLIT_THRESHOLD",
     "VERIFY_MIN_THICKNESS",
     "WARNING_RATIO",
+    "AccessParam",
     "BenchParam",
     "BodyParam",
     "ButtressParam",
@@ -168,12 +193,17 @@ __all__ = [
     "ParamValue",
     "PlatformParam",
     "RemovalParam",
+    "RoadParam",
+    "RoadProfileParam",
     "StockpileParam",
     "ValueRange",
     "bench_key",
     "check_bench_value",
     "check_entity_param",
     "check_quarry_param",
+    "check_road_profile",
+    "check_road_profile_radii",
+    "check_road_profile_value",
     "check_sector_slope",
     "entity_family",
     "entity_key",
@@ -184,6 +214,8 @@ __all__ = [
     "parse_entity_key",
     "register_entity_params",
     "registered_entity_params",
+    "road_half_width_m",
+    "road_profile_key",
     "sector_slope_key",
     "segment_code",
     "unregister_entity_params",
@@ -1292,3 +1324,370 @@ def check_entity_param(entity: str, code: str, param: str, value: object, *,
                               entity=entity, layer=layer, range=span.text())
         return int(value) if value_type == "int" else float(value)  # type: ignore[arg-type]
     return value  # type: ignore[return-value]
+
+
+# --- La pista, la accesibilidad y el perfil de pista (spec 017, T02; plan 017 §5.2.2; D-2, D-10, D-11, D-13, D-17) ------------
+
+class RoadParam(StrEnum):
+    """Los valores de una pista (``des.road.{e}.<valor>``; plan 017 §5.2.2), en su orden: el nombre, el modo, la capa de
+    origen y su geometría, el perfil, la partida y el apoyo, el origen y el destino (un punto de una capa, el eje de otra
+    pista a una abscisa o una entidad; o una cota con su zona y su tolerancia), las cotas de inicio y de fin, los
+    parámetros de la ruta (HIPÓTESIS sin valor, D-10 y D-11, y el presupuesto de estados, P-3) y las decisiones. **No
+    tiene** ``protect`` **ni** ``guard_m``: la pista no declara restricción alguna (RF-017-01, D-15)."""
+
+    NAME = "name"
+    MODE = "mode"
+    LAYER = "layer"
+    FEATURE = "feature"
+    PROFILE = "profile"
+    START = "start"
+    SUPPORT = "support"
+    SUPPORTS = "supports"
+    ORIGIN = "origin"
+    DESTINATION = "destination"
+    DEST_LEVEL = "dest_level_m"
+    DEST_TOL = "dest_tol_m"
+    DEST_ZONE = "dest_zone"
+    START_LEVEL = "start_level_m"
+    END_LEVEL = "end_level_m"
+    MESH = "mesh_m"
+    LEVEL_STEP = "level_step_m"
+    MAX_CUT_FILL = "max_cut_fill_m"
+    LAMBDA = "lambda_per_m"
+    TURN = "turn_m"
+    MARGIN = "margin_m"
+    SIMPLIFY = "simplify_m"
+    ARRIVAL_TOL = "arrival_tol_m"
+    SEARCH_BUDGET = "search_budget"
+    DISCARDED = "discarded"
+    REASON = "reason"
+
+
+class AccessParam(StrEnum):
+    """Los valores de una accesibilidad (``des.access.{e}.<valor>``; plan 017 §5.2.2), en su orden: el nombre, la
+    superficie, la capa de los puntos de entrada, los datos de bermas, la decisión de descartarla y los tres umbrales
+    (HIPÓTESIS sin valor, D-17). **No tiene** ``start`` (es un tipo sin cadena: nadie parte de su dato) **ni**
+    ``support``, ``supports``, ``protect``, ``guard_m`` o ``reason`` (no se apoya ni declara)."""
+
+    NAME = "name"
+    SURFACE = "surface"
+    ENTRIES_LAYER = "entries_layer"
+    BERMS = "berms"
+    DISCARDED = "discarded"
+    WALK_SLOPE = "walk_slope_pct"
+    WALK_WIDTH = "walk_width_m"
+    MIN_BERM_AREA = "min_berm_area_m2"
+
+
+class RoadProfileParam(StrEnum):
+    """Los 15 valores de un perfil de pista: el último segmento de su clave ``des.roadprofile.{p}.<valor>`` (plan 017
+    §5.2.2; RF-017-07), en su orden: el vehículo A, el factor de calzada f, el arcén y el caballón, la pendiente máxima
+    de diseño pd, el paso de la rasante w, la pendiente media máxima pm, el radio R y el mínimo Rmín, los ángulos de
+    desmonte y de terraplén, el alcance del borde, la clase normativa (texto), el factor de malla y la métrica."""
+
+    VEHICLE_WIDTH = "vehicle_width_m"
+    LANE_FACTOR = "lane_factor"
+    SHOULDER = "shoulder_m"
+    BERM = "berm_m"
+    MAX_GRADIENT = "max_gradient_pct"
+    STATION_STEP = "station_step_m"
+    MAX_MEAN_GRADIENT = "max_mean_gradient_pct"
+    CURVE_RADIUS = "curve_radius_m"
+    MIN_RADIUS = "min_radius_m"
+    CUT_ANGLE = "cut_angle_deg"
+    FILL_ANGLE = "fill_angle_deg"
+    REACH = "reach_m"
+    CLASS = "class"
+    MESH_FACTOR = "mesh_factor"
+    METRIC = "metric"
+
+
+ROAD_RANGES: Mapping[str, ValueRange] = MappingProxyType({
+    RoadParam.DEST_LEVEL.value: ValueRange(-_INF, _INF, "m"),
+    RoadParam.DEST_TOL.value: ValueRange(0.0, 1000.0, "m", min_exclusive=True),
+    RoadParam.START_LEVEL.value: ValueRange(-_INF, _INF, "m"),
+    RoadParam.END_LEVEL.value: ValueRange(-_INF, _INF, "m"),
+    RoadParam.MESH.value: ValueRange(0.0, 1000.0, "m", min_exclusive=True),
+    RoadParam.LEVEL_STEP.value: ValueRange(0.0, 100.0, "m", min_exclusive=True),
+    RoadParam.MAX_CUT_FILL.value: ValueRange(0.0, 1000.0, "m"),
+    RoadParam.LAMBDA.value: ValueRange(0.0, 1000.0, "1/m"),
+    RoadParam.TURN.value: ValueRange(0.0, 1000.0, "m"),
+    RoadParam.MARGIN.value: ValueRange(0.0, 100000.0, "m"),
+    RoadParam.SIMPLIFY.value: ValueRange(0.0, 1000.0, "m"),
+    RoadParam.ARRIVAL_TOL.value: ValueRange(0.0, 1000.0, "m", min_exclusive=True),
+    RoadParam.SEARCH_BUDGET.value: ValueRange(1, 1_000_000_000, "-"),
+})
+ACCESS_RANGES: Mapping[str, ValueRange] = MappingProxyType({
+    AccessParam.WALK_SLOPE.value: ValueRange(0.0, 1000.0, "%", min_exclusive=True),
+    AccessParam.WALK_WIDTH.value: ValueRange(0.0, 1000.0, "m", min_exclusive=True),
+    AccessParam.MIN_BERM_AREA.value: ValueRange(0.0, 1.0e7, "m2"),
+})
+ROAD_PROFILE_RANGES: Mapping[str, ValueRange] = MappingProxyType({
+    RoadProfileParam.VEHICLE_WIDTH.value: ValueRange(0.0, 100.0, "m", min_exclusive=True),
+    RoadProfileParam.LANE_FACTOR.value: ValueRange(0.0, 100.0, "-", min_exclusive=True),
+    RoadProfileParam.SHOULDER.value: ValueRange(0.0, 100.0, "m"),
+    RoadProfileParam.BERM.value: ValueRange(0.0, 100.0, "m"),
+    RoadProfileParam.MAX_GRADIENT.value: ValueRange(0.0, 100.0, "%", min_exclusive=True),
+    RoadProfileParam.STATION_STEP.value: ValueRange(0.0, 1000.0, "m", min_exclusive=True),
+    RoadProfileParam.MAX_MEAN_GRADIENT.value: ValueRange(0.0, 100.0, "%", min_exclusive=True),
+    RoadProfileParam.CURVE_RADIUS.value: ValueRange(0.0, 10000.0, "m", min_exclusive=True),
+    RoadProfileParam.MIN_RADIUS.value: ValueRange(0.0, 10000.0, "m", min_exclusive=True),
+    RoadProfileParam.CUT_ANGLE.value: ValueRange(0.0, 90.0, "deg", min_exclusive=True, max_exclusive=True),
+    RoadProfileParam.FILL_ANGLE.value: ValueRange(0.0, 90.0, "deg", min_exclusive=True, max_exclusive=True),
+    RoadProfileParam.REACH.value: ENTITY_RANGES[PlatformParam.REACH.value],
+    RoadProfileParam.MESH_FACTOR.value: ENTITY_RANGES[PlatformParam.MESH_FACTOR.value],
+})
+"""Los rangos de los valores numéricos de la pista, la accesibilidad y el perfil de pista por último segmento de la
+clave (solo lectura): la única fuente de los de sus familias y de lo que :func:`check_entity_param` y
+:func:`check_road_profile_value` aceptan. **El plan 017 §5.2.2 solo da los de la spec** (RF-017-07: A, f, pd, w, pm, R y
+Rmín > 0; arcén y caballón ≥ 0; ángulos de (0; 90)°; alcance > 0; factor de malla de (0; 1]): los máximos y los demás son
+los límites de validez que fija esta tarea (revisables; ninguno una cifra minera ni excluye un valor de la tabla). Las
+cotas de inicio, de fin y del destino no tienen tope aquí: la spec las acota **por el terreno** (± 1.000 m de las suyas,
+RF-017-04), que solo conoce la preparación de la pista (``des.road_level_range``). El alcance y el factor de malla son los
+de la plataforma."""
+
+_017_ROAD = ("Spec 017, RF-017-01 y RF-017-02: sin valor por defecto; lo elige una persona al crear la pista (Samuel, IMGA, "
+             "20/11/2026)")
+_017_ROAD_MODE = ("Spec 017, RF-017-02: el modo de la pista (trazar, sobre un eje o eje 3D); sin valor por defecto; lo elige "
+                  "una persona al crear la pista (Samuel, IMGA, 20/11/2026)")
+_017_ROAD_PROFILE = ("Spec 017, RF-017-01 y RF-017-07: el código del perfil de pista de la versión; sin valor por defecto; lo "
+                     "elige una persona al crear la pista (Samuel, IMGA, 20/11/2026)")
+_017_ROAD_OPTIONAL = ("Spec 017, RF-017-02 y RF-017-03: opcional y sin valor por defecto; solo lo pide el modo o el destino que "
+                      "lo usa (Samuel, IMGA, 20/11/2026)")
+_017_D13 = ("Spec 017, D-13: sin valor por defecto; si faltan, las cotas de inicio y de fin son las de la superficie de "
+            "partida en esos puntos y se anotan con su origen; decidida por el redactor con la propuesta por defecto "
+            "(20/11/2026), revisable")
+_017_D10 = ("Spec 017, D-10 y D-11: HIPÓTESIS sin valor por defecto; la malla de la ruta es un múltiplo entero del paso del "
+            "proyecto y solo sirve para buscar; lo declara una persona al crear la pista, con su origen (el proyecto de "
+            "referencia es de las pruebas y del banco); cambiarla regenera la ruta; decidida por el redactor con la "
+            "propuesta por defecto (20/11/2026), revisable")
+_017_D11 = ("Spec 017, D-11: HIPÓTESIS sin valor por defecto; lo declara una persona al crear la pista, con su origen (el "
+            "proyecto de referencia es de las pruebas y del banco); cambiarlo regenera la ruta y avisa si se usa para cerrar "
+            "otro criterio (principio 2); decidida por el redactor con la propuesta por defecto (20/11/2026), revisable")
+_017_P3 = ("Spec 017, RF-017-10 y plan 017 P-3: 5.000.000 estados expandidos; ADOPTADO «sin confirmar»: acota el tiempo y la "
+           "memoria de la búsqueda, y al agotarlo el rechazo es «des.road_budget», no «no hay ruta» (Samuel, IMGA, "
+           "20/11/2026)")
+_017_ROAD_REASON = ("Spec 017, RF-015-17 y D-15: vacío por defecto; el motivo de la pista, que la persona puede editar; la pista "
+                    "no declara ninguna restricción, así que no es el de una restricción declarada (Samuel, IMGA, 20/11/2026)")
+_017_ACCESS = ("Spec 017, RF-017-24: sin valor por defecto; lo elige una persona al pedir la accesibilidad (Samuel, IMGA, "
+               "20/11/2026)")
+_017_ACCESS_BERMS = ("Spec 017, RF-017-24 y RF-017-25: opcional y sin valor por defecto; sin valor, todos los datos de bermas "
+                     "al día de la versión (Samuel, IMGA, 20/11/2026)")
+_017_D17 = ("Spec 017, D-17: HIPÓTESIS sin valor por defecto; lo declara una persona al pedir la accesibilidad, con su origen "
+            "(el proyecto de referencia es de las pruebas y del banco); cambiarlo regenera la accesibilidad (Samuel, IMGA, "
+            "20/11/2026)")
+_017_D2 = ("Spec 017, D-2: sin valor por defecto; lo declara una persona de IMGA al crear el perfil con su fuente (la ITC o la "
+           "propiedad) y su decisor: ADOPTADO con fuente; los del proyecto de referencia son de las pruebas y del banco "
+           "(Samuel, IMGA, 20/11/2026)")
+_017_D2_MESH = ("Spec 017, D-2: 1,0, como el factor de malla de la 013 (D-7 de la 013), sin margen; sin confirmar (Samuel, "
+                "IMGA, 20/11/2026)")
+_017_D2_METRIC = ("Spec 017, D-2: la euclídea exacta (RF-013-12, D-22 de la 015); sin confirmar (Samuel, IMGA, 20/11/2026)")
+
+ROAD_ENTITY = _supported_entity(
+    "road", "RDW", "Pista", RoadParam, (
+        _common("name"),
+        _item("mode", "text", None, ("RF-017-02",), _017_ROAD_MODE, "Mode of the haul road",
+              choices=("trace", "on_axis", "axis_3d")),
+        _item("layer", "text", None, ("RF-017-01", "RF-017-02"), _017_ROAD, "Layer the entity comes from"),
+        _item("feature", "text", None, ("RF-017-01", "RF-017-02"), _017_ROAD_OPTIONAL,
+              "Feature of the layer the entity comes from"),
+        _item("profile", "text", None, ("RF-017-01", "RF-017-07"), _017_ROAD_PROFILE, "Profile of the haul road"),
+        _common("start"), _common("support"), _common("supports"),
+        _item("origin", "text", None, ("RF-017-02", "RF-017-03"), _017_ROAD_OPTIONAL, "Origin of the haul road"),
+        _item("destination", "text", None, ("RF-017-02", "RF-017-03"), _017_ROAD_OPTIONAL,
+              "Destination of the haul road"),
+        _item("dest_level_m", "float", None, ("RF-017-02", "RF-017-10"), _017_ROAD_OPTIONAL,
+              "Level of the destination of the haul road"),
+        _item("dest_tol_m", "float", None, ("RF-017-02", "RF-017-10"), _017_ROAD_OPTIONAL,
+              "Arrival tolerance of the level of the destination"),
+        _item("dest_zone", "text", None, ("RF-017-02",), _017_ROAD_OPTIONAL, "Zone of the level of the destination"),
+        _item("start_level_m", "float", None, ("RF-017-02",), _017_D13, "Start level of the haul road"),
+        _item("end_level_m", "float", None, ("RF-017-02",), _017_D13, "End level of the haul road"),
+        _item("mesh_m", "float", None, ("RF-017-09",), _017_D10, "Mesh of the route search", kind="HIPÓTESIS"),
+        _item("level_step_m", "float", None, ("RF-017-10",), _017_D11, "Level step of the route search",
+              kind="HIPÓTESIS"),
+        _item("max_cut_fill_m", "float", None, ("RF-017-09", "RF-017-10"), _017_D11,
+              "Maximum height of cut and fill of the route", kind="HIPÓTESIS"),
+        _item("lambda_per_m", "float", None, ("RF-017-10",), _017_D11,
+              "Weight of the earthworks in the cost of the route", kind="HIPÓTESIS"),
+        _item("turn_m", "float", None, ("RF-017-10",), _017_D11, "Turn penalty of the route", kind="HIPÓTESIS"),
+        _item("margin_m", "float", None, ("RF-017-09",), _017_D11, "Slack of the corridor of the route",
+              kind="HIPÓTESIS"),
+        _item("simplify_m", "float", None, ("RF-017-13",), _017_D11, "Simplification tolerance of the route",
+              kind="HIPÓTESIS"),
+        _item("arrival_tol_m", "float", None, ("RF-017-10",), _017_D11, "Arrival tolerance of the route",
+              kind="HIPÓTESIS"),
+        _item("search_budget", "int", 5_000_000, ("RF-017-10", "RF-017-12"), _017_P3,
+              "Budget of states of the route search"),
+        _common("discarded"),
+        _item("reason", "text", None, ("RF-015-17",), _017_ROAD_REASON, "Reason of the haul road"),
+    ), ROAD_RANGES, ("feature", "support", "supports", "origin", "destination", "dest_level_m", "dest_tol_m",
+                     "dest_zone", "start_level_m", "end_level_m", "reason"))
+"""Los parámetros de una pista (``road``, ``RDW-001``): encadena (tiene ``start``) y no declara nada (sin ``protect``
+ni ``guard_m``). Los opcionales son lo que solo pide el modo o el destino que lo usa, las cotas de inicio y de fin (D-13),
+el apoyo y el motivo; los de la ruta (``mesh_m``…) son obligatorios por defecto: el modo «sobre un eje» y el «eje 3D»
+los relajan con ``required=False`` en :func:`check_entity_param`."""
+
+ACCESS_ENTITY = _supported_entity(
+    "access", "ACC", "Accesibilidad", AccessParam, (
+        _common("name"),
+        _item("surface", "text", None, ("RF-017-24",), _017_ACCESS, "Surface whose accessibility is calculated"),
+        _item("entries_layer", "text", None, ("RF-017-24",), _017_ACCESS, "Layer of the entry points"),
+        _item("berms", "text", None, ("RF-017-24", "RF-017-25"), _017_ACCESS_BERMS,
+              "Berm data of the accessibility"),
+        _common("discarded"),
+        _item("walk_slope_pct", "float", None, ("RF-017-24",), _017_D17, "Maximum walkable gradient",
+              kind="HIPÓTESIS"),
+        _item("walk_width_m", "float", None, ("RF-017-24",), _017_D17, "Minimum walkable width", kind="HIPÓTESIS"),
+        _item("min_berm_area_m2", "float", None, ("RF-017-25",), _017_D17, "Minimum area of a berm stretch",
+              kind="HIPÓTESIS"),
+    ), ACCESS_RANGES, ("berms",))
+"""Los parámetros de una accesibilidad (``access``, ``ACC-001``): **sin cadena** (sin ``start``): no parte de ninguna
+superficie y nadie parte de su dato; la superficie de la que se pregunta es un valor más (``surface``)."""
+
+ROAD_FAMILIES: tuple[ParamFamily, ...] = ROAD_ENTITY.families
+ACCESS_FAMILIES: tuple[ParamFamily, ...] = ACCESS_ENTITY.families
+"""Las familias de la pista (26) y de la accesibilidad (8), de versión, en su orden (plan 017 §5.2.2). Van aparte de
+:data:`FAMILIES` (las de la 013), de :data:`ENTITY_FAMILIES` (las de la plataforma) y de :data:`SUPPORTED_FAMILIES` (las de
+la 016): ``bl`` las registra junto a ellas (T03)."""
+
+_PROFILE_RFS = ("RF-017-07", "RF-009-24")
+
+_ROAD_PROFILE_SPECS: tuple[tuple[RoadProfileParam, str, ParamValue | None, tuple[str, ...], tuple[str, ...], str, str],
+                           ...] = (
+    (RoadProfileParam.VEHICLE_WIDTH, "float", None, (), ("RF-017-08", "RF-017-20"), _017_D2,
+     "Width of the design vehicle"),
+    (RoadProfileParam.LANE_FACTOR, "float", None, (), ("RF-017-08", "RF-017-20"), _017_D2, "Carriageway factor"),
+    (RoadProfileParam.SHOULDER, "float", None, (), ("RF-017-08", "RF-017-20"), _017_D2, "Width of the shoulder"),
+    (RoadProfileParam.BERM, "float", None, (), ("RF-017-08", "RF-017-20"), _017_D2, "Width of the windrow"),
+    (RoadProfileParam.MAX_GRADIENT, "float", None, (), ("RF-017-10", "RF-017-15"), _017_D2, "Maximum design gradient"),
+    (RoadProfileParam.STATION_STEP, "float", None, (), ("RF-017-15",), _017_D2,
+     "Spacing of the stations of the level profile of the haul road"),
+    (RoadProfileParam.MAX_MEAN_GRADIENT, "float", None, (), ("RF-017-17",), _017_D2, "Maximum mean gradient"),
+    (RoadProfileParam.CURVE_RADIUS, "float", None, (), ("RF-017-13",), _017_D2, "Design radius of the curves"),
+    (RoadProfileParam.MIN_RADIUS, "float", None, (), ("RF-017-04", "RF-017-14"), _017_D2,
+     "Minimum radius of the curves"),
+    (RoadProfileParam.CUT_ANGLE, "float", None, (), ("RF-017-21",), _017_D2, "Cut angle of the haul road edge"),
+    (RoadProfileParam.FILL_ANGLE, "float", None, (), ("RF-017-21",), _017_D2, "Fill angle of the haul road edge"),
+    (RoadProfileParam.REACH, "float", None, (), ("RF-017-21",), _017_D2, "Reach of the haul road edge"),
+    (RoadProfileParam.CLASS, "text", None, (), ("RF-017-07",), _017_D2, "Normative class of the haul road"),
+    (RoadProfileParam.MESH_FACTOR, "float", 1.0, (), ("RF-017-21",), _017_D2_MESH,
+     "Mesh factor of the haul road profile"),
+    (RoadProfileParam.METRIC, "text", "exact", _METRIC_CHOICES, ("RF-017-21",), _017_D2_METRIC,
+     "Distance metric of the haul road edge"),
+)
+
+
+def _road_profile_family(param: RoadProfileParam, value_type: str, default: ParamValue | None,
+                         choices: tuple[str, ...], rfs: tuple[str, ...], source: str, label: str) -> ParamFamily:
+    """La familia ``des.roadprofile.{p}.<param>`` (de versión), con la plantilla de clave ``des.roadprofile.p.<param>``, el
+    rango de :data:`ROAD_PROFILE_RANGES` y ADOPTADO (con su fuente, D-2) sin valor por defecto o «sin confirmar» con él."""
+    span = ROAD_PROFILE_RANGES.get(param.value)
+    minimum = None if span is None or span.minimum == -_INF else span.minimum
+    maximum = None if span is None or span.maximum == _INF else span.maximum
+    template = ParamDef(
+        f"des.roadprofile.p.{param.value}", value_type, "-" if span is None else span.unit, default, minimum, maximum,
+        (*rfs, *_PROFILE_RFS), source, min_exclusive=span is not None and span.min_exclusive,
+        allow_empty=default is None, choices=choices, kind="ADOPTADO",
+        source_kind="person" if default is None else "algorithm", scope="version", label_msgid=label)
+    return ParamFamily(f"des.roadprofile.{{p}}.{param.value}", template)
+
+
+ROAD_PROFILE_FAMILIES: tuple[ParamFamily, ...] = tuple(_road_profile_family(*item) for item in _ROAD_PROFILE_SPECS)
+"""Las 15 familias de un perfil de pista (plan 017 §5.2.2), de versión, en su orden. Van aparte de las de la pista y la
+accesibilidad: ``bl`` las registra junto a ellas (T03)."""
+_ROAD_PROFILE_TEMPLATES: Mapping[str, ParamDef] = MappingProxyType(
+    {family.pattern.rsplit(".", 1)[1]: family.template for family in ROAD_PROFILE_FAMILIES})
+
+
+def road_profile_key(code: str, param: RoadProfileParam | str) -> str:
+    """La clave del valor ``param`` del perfil de pista ``code`` (``des.roadprofile.pista_principal.vehicle_width_m``);
+    :class:`ValueError` si el código no es ``[a-z][a-z0-9_]*`` (D-17 de la 013, ADR-0027) o ``param`` no es un valor de un
+    perfil de pista (un error del programa)."""
+    if not is_code(code):
+        raise ValueError(f"el código {code!r} no es [a-z][a-z0-9_]* (ADR-0027)")
+    return f"des.roadprofile.{code}.{RoadProfileParam(param).value}"
+
+
+def check_road_profile_value(profile: str, code: str, param: RoadProfileParam | str, value: object) -> float | str:
+    """El valor ``param`` del perfil de pista ``profile`` (su nombre, o su código si no lo tiene) de código ``code``, ya
+    comprobado: ``float`` un número y ``str`` un texto (la clase y la métrica, sin los espacios de los extremos).
+    :class:`~design.messages.DesignError` ``des.road_profile_value_missing`` si no tiene valor (``None`` o un texto en
+    blanco: no hay valor por defecto, D-2) o ``des.road_profile_value_range`` si está fuera de su rango
+    (:data:`ROAD_PROFILE_RANGES`; ``nan`` y el infinito también) o la métrica no es una de sus opciones, nombrando el
+    perfil, la clave del campo y el valor (RF-017-04); :class:`TypeError` si no es del tipo del parámetro."""
+    param = RoadProfileParam(param)
+    key = road_profile_key(code, param)
+    definition = _ROAD_PROFILE_TEMPLATES[param.value]
+    obj = f"Perfil de pista «{profile}»"
+    is_text = str(definition.value_type) == "text"
+    if value is not None:
+        if is_text:
+            if not isinstance(value, str):
+                raise TypeError(f"el valor {key} es un texto, no {value!r}")
+            value = value.strip() or None
+        else:
+            value = _real(value, f"el valor {key}")
+    if value is None:
+        raise DesignError("des.road_profile_value_missing", obj=obj, field=key, value=None, profile=profile)
+    if is_text:
+        if definition.choices and value not in definition.choices:
+            listed = ", ".join(f"«{choice}»" for choice in definition.choices)
+            raise DesignError("des.road_profile_value_range", obj=obj, field=key, value=value, profile=profile,
+                              range=listed)
+        return str(value)
+    span = ROAD_PROFILE_RANGES[param.value]
+    if not span.contains(value):
+        raise DesignError("des.road_profile_value_range", obj=obj, field=key, value=value, profile=profile,
+                          range=span.text())
+    return float(value)  # type: ignore[arg-type]
+
+
+def road_half_width_m(vehicle_width_m: float, lane_factor: float, shoulder_m: float, berm_m: float) -> float:
+    """La semianchura de la sección de una pista (m): la mitad de la anchura de la sección, que es la calzada ``f·A`` más
+    el arcén y el caballón (RF-017-08: con A = 3,5 m, f = 3, arcén 0 m y caballón 1 m, calzada 10,5 m, sección 11,5 m y
+    semianchura 5,75 m). Es la cota de ``Rmín`` de RF-017-04 (el borde interior de una curva se plegaría sobre sí mismo)."""
+    return (lane_factor * vehicle_width_m + shoulder_m + berm_m) / 2.0
+
+
+def check_road_profile_radii(profile: str, code: str, values: Mapping[str, object]) -> None:
+    """La comprobación cruzada de los radios de un perfil de pista (RF-017-04, RF-017-07) sobre sus valores **ya
+    comprobados** (``values``: por último segmento de la clave): ``Rmín ≤ R``
+    (``des.road_profile_radius_order``) y ``Rmín ≥`` la semianchura de su sección (:func:`road_half_width_m`,
+    ``des.road_profile_radius_narrow``), nombrando el perfil, el campo del radio mínimo y su valor. No devuelve nada si
+    cumple."""
+    key = road_profile_key(code, RoadProfileParam.MIN_RADIUS)
+    obj = f"Perfil de pista «{profile}»"
+    radius = float(values[RoadProfileParam.CURVE_RADIUS.value])  # type: ignore[arg-type]
+    minimum = float(values[RoadProfileParam.MIN_RADIUS.value])  # type: ignore[arg-type]
+    if minimum > radius:
+        raise DesignError("des.road_profile_radius_order", obj=obj, field=key, value=minimum, profile=profile,
+                          radius=radius)
+    half = road_half_width_m(
+        float(values[RoadProfileParam.VEHICLE_WIDTH.value]),  # type: ignore[arg-type]
+        float(values[RoadProfileParam.LANE_FACTOR.value]),  # type: ignore[arg-type]
+        float(values[RoadProfileParam.SHOULDER.value]),  # type: ignore[arg-type]
+        float(values[RoadProfileParam.BERM.value]))  # type: ignore[arg-type]
+    if minimum < half:
+        raise DesignError("des.road_profile_radius_narrow", obj=obj, field=key, value=minimum, profile=profile,
+                          half_width=half)
+
+
+def check_road_profile(profile: str, code: str, values: Mapping[str, object]) -> dict[str, float | str]:
+    """Los valores de un perfil de pista ``profile`` de código ``code`` (``values``: por último segmento de la clave), ya
+    comprobados y completos, en el orden de :class:`RoadProfileParam`: cada uno con :func:`check_road_profile_value` (el
+    factor de malla y la métrica, sin valor, toman el de siempre, 1,0 y la métrica exacta, D-2) y después los radios
+    (:func:`check_road_profile_radii`). El primer rechazo es el de un perfil **incompleto**, con un valor **fuera de su
+    rango** o con un radio que no cabe, nombrando el perfil, el campo y el valor (RF-017-04, RF-017-07). :class:`ValueError`
+    si ``values`` trae un nombre que no es de un perfil de pista (un error del programa)."""
+    unknown = [name for name in values if name not in _ROAD_PROFILE_TEMPLATES]
+    if unknown:
+        raise ValueError(f"{', '.join(unknown)} no son valores de un perfil de pista ({', '.join(_ROAD_PROFILE_TEMPLATES)})")
+    checked: dict[str, float | str] = {}
+    for param in RoadProfileParam:
+        value = values.get(param.value)
+        if value is None:
+            value = _ROAD_PROFILE_TEMPLATES[param.value].default
+        checked[param.value] = check_road_profile_value(profile, code, param, value)
+    check_road_profile_radii(profile, code, checked)
+    return checked

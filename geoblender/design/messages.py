@@ -38,7 +38,11 @@ tipo sin cadena; va aparte de ``des.entity_*``, que es la familia cerrada de la 
 de los de la 015 (T03; RF-016-04 a 07, 12 a 15, 18 a 22), ``des.stockpile_*`` (la detección de acopios: el acopio que se
 rechaza o se avisa, con su marca y su lugar), ``des.removal_*`` (la retirada, su pared y lo que se le apoya),
 ``des.buttress_*`` y ``des.body_*``, con el motivo de la restricción que declara cada tipo y la causa de «apoyo
-retirado». Un campo
+retirado». Los de la 017
+(plan 017 §5.1, T02; RF-017-04 a 07, 12, 14, 16 a 18 y 22) van al final, por familias: ``des.road_*`` (la pista: su geometría, su
+perfil, sus cotas, lo que avisa de su partida y de su afección, «sin ruta» con sus tres causas y su tramo limitante, el radio
+reducido, el desnivel, la pendiente media, el modo «eje 3D» y la calzada que no queda en su rasante) y ``des.access_*`` (la
+accesibilidad: sus puntos de entrada); ninguno empieza por las familias cerradas de la 015 ni de la 016. Un campo
 que es un texto de una lista cerrada que la persona ve (el papel de una superficie, el tipo de
 geometría de una capa) llega ya en el idioma de quien lo llama: ``render`` no lo traduce; por
 eso, lo que cambia con el idioma va en otro código (las partes que vacían el recinto, notas detrás
@@ -2804,6 +2808,363 @@ CATALOG: tuple[Message, ...] = (
         "«{name}»: su superficie conocida «{surface}» es un resultado de {source} y no existe en {version}; el cuerpo queda "
         "sin superficie conocida y no se puede calcular hasta que elija una.",
         "warning",
+    ),
+    # --- La pista y la accesibilidad (spec 017, T02; plan 017 §5.1 y §5.5): ``des.road_*`` y ``des.access_*``. -------------------
+    # RF-017-04: lo que se rechaza de la geometría de una pista, con la capa, la pista, el campo y el valor.
+    Message(
+        "des.road_origin_is_destination",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = «{value}»: the origin and the destination are the same "
+        "point; choose two different points; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = «{value}»: el origen y el destino son el mismo punto; elija dos "
+        "puntos distintos; no se crea nada.",
+    ),
+    Message(
+        "des.road_point_outside_grid",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = «{value}» falls outside the project grid (x = {x} m, "
+        "y = {y} m); choose a point inside it or enlarge the working window of the project; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = «{value}» cae fuera de la rejilla del proyecto (x = {x} m, "
+        "y = {y} m); elija un punto dentro de ella o amplíe la ventana de trabajo del proyecto; no se crea nada.",
+    ),
+    Message(
+        "des.road_point_no_data",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = «{value}» has no data in the start surface «{surface}» "
+        "(x = {x} m, y = {y} m); choose a point with data or another start surface; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = «{value}» no tiene dato en la superficie de partida "
+        "«{surface}» (x = {x} m, y = {y} m); elija un punto con dato u otra superficie de partida; no se crea nada.",
+    ),
+    Message(
+        "des.road_line_self_intersects",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = «{value}»: the line crosses itself at x = {x} m, "
+        "y = {y} m; draw it without crossings; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = «{value}»: la línea se corta a sí misma en x = {x} m, "
+        "y = {y} m; dibújela sin cruces; no se crea nada.",
+    ),
+    Message(
+        "des.road_line_no_length",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = «{value}»: the line has no length (all its vertices are "
+        "the same point); draw a line with at least two different vertices; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = «{value}»: la línea no tiene longitud (todos sus vértices son "
+        "el mismo punto); dibuje una línea con al menos dos vértices distintos; no se crea nada.",
+    ),
+    Message(
+        "des.road_line_multipart",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = «{value}»: the line has {parts} parts and a haul road "
+        "follows a single line; split it into one feature per haul road; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = «{value}»: la línea tiene {parts} partes y una pista sigue una "
+        "sola línea; sepárela en una geometría por pista; no se crea nada.",
+    ),
+    Message(
+        "des.road_line_repeated_vertex",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = «{value}»: the line repeats the vertex {vertex} "
+        "(x = {x} m, y = {y} m); remove the repeated vertex; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = «{value}»: la línea repite el vértice {vertex} "
+        "(x = {x} m, y = {y} m); quite el vértice repetido; no se crea nada.",
+    ),
+    # T23-a (decisión de la sesión principal, 20/11/2026): una capa de entidades solo guarda X e Y; la Z llega por una capa de líneas
+    # 3D (``gis_brk_``) o por la capa propuesta de «Proponer el trazado…».
+    Message(
+        "des.road_line_no_z",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = «{value}»: the line has no Z, and the «3D axis» mode takes "
+        "the levels of the haul road (its level profile) from it; a layer of entities (gis_fea_) keeps only X "
+        "and Y: use a layer of 3D lines (gis_brk_) or the layer that «Propose the route…» leaves; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = «{value}»: la línea no tiene Z y el modo «eje 3D» toma de ella "
+        "la rasante (el perfil de cotas de la pista); una capa de entidades (gis_fea_) guarda solo X e Y: use una "
+        "capa de líneas 3D (gis_brk_) o la que deja «Proponer el trazado…»; no se crea nada.",
+    ),
+    # RF-017-04 y RF-017-07: el perfil de pista que la pista nombra y el perfil mismo.
+    Message(
+        "des.road_profile_unknown",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = «{value}» is not a haul road profile of the version; the "
+        "profiles are: {profiles}; create it in Design ▸ Haul roads and entities ▸ Haul road profile… if it does not "
+        "exist; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = «{value}» no es un perfil de pista de la versión; los perfiles "
+        "son: {profiles}; créelo en Diseño ▸ Pistas y entidades ▸ Perfil de pista… si no existe; no se crea nada.",
+    ),
+    Message(
+        "des.road_profile_name_missing",
+        "Haul road profile «{profile}» has no name; give it one, for example PISTA_PRINCIPAL.",
+        "El perfil de pista «{profile}» no tiene nombre; póngale uno, por ejemplo PISTA_PRINCIPAL.",
+    ),
+    Message(
+        "des.road_profile_name_repeated",
+        "Haul road profile «{profile}» has the name «{value}», which profile «{other}» already has; give each profile "
+        "its own name.",
+        "El perfil de pista «{profile}» se llama «{value}», como el perfil «{other}»; dé a cada perfil su propio "
+        "nombre.",
+    ),
+    Message(
+        "des.road_profile_value_missing",
+        "Haul road profile «{profile}»: «{field}» has no value and has no default; declare it in Design ▸ Haul roads "
+        "and entities ▸ Haul road profile… before calculating.",
+        "Perfil de pista «{profile}»: «{field}» no tiene valor ni lleva ninguno por defecto; declárelo en Diseño ▸ "
+        "Pistas y entidades ▸ Perfil de pista… antes de calcular.",
+    ),
+    Message(
+        "des.road_profile_value_range",
+        "Haul road profile «{profile}»: «{field}» = {value} is outside its range {range}; nothing is calculated with "
+        "this profile.",
+        "Perfil de pista «{profile}»: «{field}» = {value} está fuera de su rango {range}; no se calcula nada con este "
+        "perfil.",
+    ),
+    Message(
+        "des.road_profile_radius_order",
+        "Haul road profile «{profile}»: «{field}» = {value} m is greater than the radius of its curves ({radius} m); "
+        "the minimum radius cannot exceed it; nothing is calculated with this profile.",
+        "Perfil de pista «{profile}»: «{field}» = {value} m es mayor que el radio de sus curvas ({radius} m); el "
+        "radio mínimo no puede pasar de él; no se calcula nada con este perfil.",
+    ),
+    Message(
+        "des.road_profile_radius_narrow",
+        "Haul road profile «{profile}»: «{field}» = {value} m is smaller than the half width of its section "
+        "({half_width} m): the inner edge of a curve would fold over itself; raise the minimum radius or narrow the "
+        "section; nothing is calculated with this profile.",
+        "Perfil de pista «{profile}»: «{field}» = {value} m es menor que la semianchura de su sección "
+        "({half_width} m): el borde interior de una curva se plegaría sobre sí mismo; suba el radio mínimo o "
+        "estreche la sección; no se calcula nada con este perfil.",
+    ),
+    # RF-017-04: las cotas de inicio y de fin y el destino por cota.
+    Message(
+        "des.road_level_range",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = {value} m is outside the levels of the terrain "
+        "({low} to {high} m) by more than {limit} m; check the level; no level is chosen for you; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = {value} m queda fuera de las cotas del terreno "
+        "({low} a {high} m) en más de {limit} m; revise la cota; no se elige ninguna por usted; no se crea nada.",
+    ),
+    Message(
+        "des.road_dest_level_out_of_zone",
+        "Layer «{layer}», haul road «{entity}»: «{field}» = {value} m is outside the levels of the terrain inside the "
+        "zone «{zone}» ({low} to {high} m), so the destination cannot be reached there; choose a level inside that "
+        "range or another zone; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: «{field}» = {value} m queda fuera de las cotas del terreno dentro de la "
+        "zona «{zone}» ({low} a {high} m), así que no se puede llegar al destino allí; elija una cota dentro de ese "
+        "rango u otra zona; no se crea nada.",
+    ),
+    # RF-017-04 (con RF-017-24): la accesibilidad sin punto de entrada o con uno sin dato.
+    Message(
+        "des.access_no_entry",
+        "Layer «{layer}», accessibility «{entity}»: the layer of entry points has no point; give at least one; nothing "
+        "is created.",
+        "Capa «{layer}», accesibilidad «{entity}»: la capa de puntos de entrada no tiene ningún punto; dé al menos "
+        "uno; no se crea nada.",
+    ),
+    Message(
+        "des.access_entry_no_data",
+        "Layer «{layer}», accessibility «{entity}»: the entry point «{value}» has no data in the surface «{surface}» "
+        "(x = {x} m, y = {y} m); move it or choose another surface; nothing is created.",
+        "Capa «{layer}», accesibilidad «{entity}»: el punto de entrada «{value}» no tiene dato en la superficie "
+        "«{surface}» (x = {x} m, y = {y} m); muévalo o elija otra superficie; no se crea nada.",
+    ),
+    # RF-017-05: la partida es la superficie final restaurada (a) y un relleno que la pista no tiene en cuenta (b); se puede crear.
+    Message(
+        "des.road_start_is_final",
+        "Haul road «{entity}»: it starts from the restored final surface «{surface}» and the bottom of the quarry is "
+        "not reached on it: the lowest level that can be reached is {z_final} m (on the working surface, {z_pit} m); it "
+        "can still be created.",
+        "Pista «{entity}»: parte de la superficie final restaurada «{surface}» y sobre ella no se llega al fondo: la "
+        "cota mínima alcanzable es {z_final} m (sobre la superficie de explotación, {z_pit} m); se puede crear "
+        "igualmente.",
+        "warning",
+    ),
+    Message(
+        "des.road_other_design_differs",
+        "Haul road «{entity}»: its start surface differs by more than the minimum thickness from that of «{other}», a "
+        "design that does not start from it, over {area} m² (largest difference {difference} m, at x = {x} m, "
+        "y = {y} m): a fill that the haul road does not take into account; it can still be created.",
+        "Pista «{entity}»: su superficie de partida difiere en más del espesor mínimo de la de «{other}», un diseño "
+        "que no parte de ella, en {area} m² (diferencia máxima {difference} m, en x = {x} m, y = {y} m): un relleno "
+        "que la pista no tiene en cuenta; se puede crear igualmente.",
+        "warning",
+    ),
+    # RF-017-06: la afección de las zonas «preferible no afectar».
+    Message(
+        "des.road_avoid_affected",
+        "Haul road «{entity}»: it affects {area} m² of «preferably do not affect» zones: {volume} m³ moved, {weighted} "
+        "m³ weighted; it can still be created.",
+        "Pista «{entity}»: afecta a {area} m² de zonas «preferible no afectar»: {volume} m³ movidos, {weighted} m³ "
+        "ponderados; se puede crear igualmente.",
+        "warning",
+    ),
+    # RF-017-12: sin ruta, por sus tres causas (la red 2D no llega al origen, el pasillo no tiene ruta 3D y la búsqueda agota su
+    # presupuesto de estados), y el tramo limitante con su restricción y su lugar (la nota que va detrás del error).
+    Message(
+        "des.road_no_route_network",
+        "Layer «{layer}», haul road «{entity}»: there is no route: the 2D network does not join the origin with the "
+        "destination; from the origin the route reaches as far as level {z_origin} m and from the destination as far "
+        "as level {z_destination} m, and a minimum gradient of {gradient} % would be needed; no limit is relaxed; "
+        "nothing is created.",
+        "Capa «{layer}», pista «{entity}»: no hay ruta: la red 2D no une el origen con el destino; desde el origen la "
+        "ruta llega hasta la cota {z_origin} m y desde el destino hasta la cota {z_destination} m, y haría falta una "
+        "pendiente mínima del {gradient} %; no se relaja ningún límite; no se crea nada.",
+    ),
+    Message(
+        "des.road_no_route_corridor",
+        "Layer «{layer}», haul road «{entity}»: there is no route: the 2D network joins the origin with the "
+        "destination, but the 3D search finds no route inside the corridor; from the origin the route reaches as far "
+        "as level {z_origin} m and from the destination as far as level {z_destination} m, and a minimum gradient of "
+        "{gradient} % would be needed; no limit is relaxed; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: no hay ruta: la red 2D une el origen con el destino, pero la búsqueda 3D "
+        "no encuentra ninguna ruta dentro del pasillo; desde el origen la ruta llega hasta la cota {z_origin} m y "
+        "desde el destino hasta la cota {z_destination} m, y haría falta una pendiente mínima del {gradient} %; no se "
+        "relaja ningún límite; no se crea nada.",
+    ),
+    Message(
+        "des.road_budget",
+        "Layer «{layer}», haul road «{entity}»: the 3D search used up its budget of {budget} expanded states "
+        "({expanded} explored) without reaching the destination: that does not mean there is no route; reduce the slack "
+        "of the corridor ({margin} m) or raise the budget and calculate again; no limit is relaxed; nothing is "
+        "created.",
+        "Capa «{layer}», pista «{entity}»: la búsqueda 3D agotó su presupuesto de {budget} estados expandidos "
+        "({expanded} explorados) sin llegar al destino: no significa que no haya ruta; reduzca la holgura del pasillo "
+        "({margin} m) o suba el presupuesto y calcule de nuevo; no se relaja ningún límite; no se crea nada.",
+    ),
+    Message(
+        "des.road_limit_slope",
+        "The limiting stretch is at x = {x} m, y = {y} m and its restriction is the maximum design gradient "
+        "({gradient} %).",
+        "El tramo limitante está en x = {x} m, y = {y} m y su restricción es la pendiente máxima de diseño "
+        "({gradient} %).",
+        "note",
+    ),
+    Message(
+        "des.road_limit_mask",
+        "The limiting stretch is at x = {x} m, y = {y} m and its restriction is a zone that the masks forbid to "
+        "cross.",
+        "El tramo limitante está en x = {x} m, y = {y} m y su restricción es una zona que las máscaras prohíben "
+        "pisar.",
+        "note",
+    ),
+    Message(
+        "des.road_limit_height",
+        "The limiting stretch is at x = {x} m, y = {y} m and its restriction is the maximum height of cut and fill "
+        "({height} m).",
+        "El tramo limitante está en x = {x} m, y = {y} m y su restricción es la altura máxima de desmonte y "
+        "terraplén ({height} m).",
+        "note",
+    ),
+    Message(
+        "des.road_limit_grid_edge",
+        "The limiting stretch is at x = {x} m, y = {y} m and its restriction is the edge of the project grid.",
+        "El tramo limitante está en x = {x} m, y = {y} m y su restricción es el borde de la rejilla del proyecto.",
+        "note",
+    ),
+    Message(
+        "des.road_limit_no_data",
+        "The limiting stretch is at x = {x} m, y = {y} m and its restriction is cells without data in the start "
+        "surface.",
+        "El tramo limitante está en x = {x} m, y = {y} m y su restricción son celdas sin dato en la superficie de "
+        "partida.",
+        "note",
+    ),
+    # RF-017-14: el radio que baja al mayor que cabe (aviso) y el rechazo si el que cabe es menor que el radio mínimo.
+    Message(
+        "des.road_radius_reduced",
+        "Haul road «{entity}»: at vertex {vertex} the radius is reduced from {radius} m to {fitted} m because the "
+        "tangents do not fit in the stretches it joins (x = {x} m, y = {y} m); it can still be created.",
+        "Pista «{entity}»: en el vértice {vertex} el radio baja de {radius} m a {fitted} m porque las tangentes no "
+        "caben en los tramos que une (x = {x} m, y = {y} m); se puede crear igualmente.",
+        "warning",
+    ),
+    Message(
+        "des.road_radius_below_min",
+        "Layer «{layer}», haul road «{entity}»: at vertex {vertex} (x = {x} m, y = {y} m) the stretches it joins are "
+        "{length_before} m and {length_after} m long and only a radius of {fitted} m would fit, below the minimum "
+        "radius ({minimum} m) of profile «{profile}»; the radius is not lowered for you: move the vertex, simplify "
+        "more or less, or use another profile; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: en el vértice {vertex} (x = {x} m, y = {y} m) los tramos que une miden "
+        "{length_before} m y {length_after} m y solo cabría un radio de {fitted} m, por debajo del radio mínimo "
+        "({minimum} m) del perfil «{profile}»; no se baja el radio por usted: mueva el vértice, simplifique más o "
+        "menos, o use otro perfil; no se crea nada.",
+    ),
+    # RF-017-16: el desnivel entre la cota de inicio y la de fin que no cabe en el eje.
+    Message(
+        "des.road_drop_too_steep",
+        "Layer «{layer}», haul road «{entity}»: the drop between the start level and the end level ({drop} m) is more "
+        "than the maximum design gradient ({gradient} %) allows over the axis: the axis is {length} m long and {needed} m "
+        "are needed; the levels and the gradient are not changed for you; nothing is created.",
+        "Capa «{layer}», pista «{entity}»: el desnivel entre la cota de inicio y la de fin ({drop} m) pasa de lo que "
+        "permite la pendiente máxima de diseño ({gradient} %) en el eje: el eje mide {length} m y harían falta {needed} "
+        "m; no se cambian las cotas ni la pendiente por usted; no se crea nada.",
+    ),
+    # RF-017-17: la pendiente media por encima de la del perfil: se avisa antes de crear y no se crea sin confirmación expresa y motivo.
+    Message(
+        "des.road_mean_gradient",
+        "Haul road «{entity}»: its mean gradient ({mean} %) is more than the maximum mean gradient of its profile "
+        "({limit} %); the steepest stretches are: {stretches}; it is not created without your express confirmation "
+        "and a reason, which stay recorded.",
+        "Pista «{entity}»: su pendiente media ({mean} %) pasa de la pendiente media máxima de su perfil ({limit} %); "
+        "los tramos más empinados son: {stretches}; no se crea sin su confirmación expresa y un motivo, que quedan "
+        "registrados.",
+        "warning",
+    ),
+    # RF-017-18: el modo «eje 3D» comprueba la línea y no la corrige; un aviso por tramo con su abscisa y su lugar.
+    Message(
+        "des.road_axis3d_gradient",
+        "Haul road «{entity}»: in the «3D axis» mode the gradient of the stretch at s = {station} m is {gradient} %, more "
+        "than the maximum design gradient ({limit} %) (x = {x} m, y = {y} m); the line is not corrected.",
+        "Pista «{entity}»: en el modo «eje 3D» la pendiente del tramo en la abscisa {station} m es del {gradient} %, más "
+        "que la pendiente máxima de diseño ({limit} %) (x = {x} m, y = {y} m); la línea no se corrige.",
+        "warning",
+    ),
+    Message(
+        "des.road_axis3d_radius",
+        "Haul road «{entity}»: in the «3D axis» mode the radius of the plan of the line at s = {station} m is "
+        "{radius} m, below the minimum radius of its profile ({minimum} m) (x = {x} m, y = {y} m); the line is not "
+        "corrected.",
+        "Pista «{entity}»: en el modo «eje 3D» el radio de la planta de la línea en la abscisa {station} m es de "
+        "{radius} m, por debajo del radio mínimo de su perfil ({minimum} m) (x = {x} m, y = {y} m); la línea no se "
+        "corrige.",
+        "warning",
+    ),
+    # RF-017-22: la calzada que no queda en su rasante (el perfil de cotas de la pista), por cada una de sus tres causas; no se crea sin
+    # confirmación expresa (una calzada con escalones o huecos no es una pista).
+    Message(
+        "des.road_carriageway_masks",
+        "Haul road «{entity}»: {area} m² of the carriageway do not end up on the level profile of "
+        "the haul road, the largest difference being {difference} m, around x = {x} m, y = {y} m, because the masks "
+        "do not let the ground be moved there ({blocker}); it is not created without your express confirmation: a "
+        "carriageway with steps or gaps is not a haul road.",
+        "Pista «{entity}»: {area} m² de la calzada no quedan en su rasante (el perfil de cotas de la pista), con una "
+        "diferencia máxima de {difference} m, en torno a x = {x} m, y = {y} m, porque las máscaras no dejan mover el "
+        "terreno allí ({blocker}); no se crea sin su confirmación expresa: una calzada con escalones o huecos no es "
+        "una pista.",
+        "warning",
+    ),
+    Message(
+        "des.road_carriageway_entity",
+        "Haul road «{entity}»: {area} m² of the carriageway do not end up on the level profile of "
+        "the haul road, the largest difference being {difference} m, around x = {x} m, y = {y} m, because the entity "
+        "«{blocker}» does not let the ground be moved there; it is not created without your express confirmation: a "
+        "carriageway with steps or gaps is not a haul road.",
+        "Pista «{entity}»: {area} m² de la calzada no quedan en su rasante (el perfil de cotas de la pista), con una "
+        "diferencia máxima de {difference} m, en torno a x = {x} m, y = {y} m, porque la entidad «{blocker}» no deja "
+        "mover el terreno allí; no se crea sin su confirmación expresa: una calzada con escalones o huecos no es una "
+        "pista.",
+        "warning",
+    ),
+    Message(
+        "des.road_carriageway_height",
+        "Haul road «{entity}»: {area} m² of the carriageway do not end up on the level profile of "
+        "the haul road, the largest difference being {difference} m, around x = {x} m, y = {y} m, because the cut or "
+        "fill of the axis passes the maximum height of cut and fill ({height} m); it is not created without your "
+        "express confirmation: a carriageway with steps or gaps is not a haul road.",
+        "Pista «{entity}»: {area} m² de la calzada no quedan en su rasante (el perfil de cotas de la pista), con una "
+        "diferencia máxima de {difference} m, en torno a x = {x} m, y = {y} m, porque el desmonte o el terraplén del "
+        "eje pasa de la altura máxima de desmonte y terraplén ({height} m); no se crea sin su confirmación expresa: "
+        "una calzada con escalones o huecos no es una pista.",
+        "warning",
+    ),
+    # «Apoyo retirado» de cada tipo (``EntityType.removed``; RF-015-17): lo que se apoyaba en una pista o en una accesibilidad descartada.
+    Message(
+        "des.road_support_removed",
+        "the haul road «{name}» was discarded",
+        "se descartó la pista «{name}»",
+        "note",
+    ),
+    Message(
+        "des.access_support_removed",
+        "the accessibility «{name}» was discarded",
+        "se descartó la accesibilidad «{name}»",
+        "note",
     ),
 )
 

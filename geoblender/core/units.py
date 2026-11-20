@@ -21,6 +21,9 @@ esperado. MB = 10⁶ B (los tamaños de la spec son decimales).
   propias: ``m3/m3`` («m³/m³», una relación entre volúmenes in situ) y ``t/t`` («t/t», entre
   masas). Ninguna se convierte a la otra ni a ``%`` o ``-``: 2,5 m³/m³ no son 2,5 t/t ni un
   250 % (una ley o un porcentaje).
+- ``1/m`` («1/m», un inverso de longitud; spec 017, T02) es el peso λ del movimiento de tierras en el coste de un
+  paso de la ruta de una pista (RF-017-10: su longitud por 1 + λ·|cota − terreno|): una magnitud propia, que solo se
+  convierte a sí misma.
 - Entre magnitudes distintas no hay conversión, y NaN o infinito nunca son un valor.
 
 Los errores son :class:`UnitError` (un ``ValueError``) con un ``code`` estable en inglés
@@ -61,6 +64,7 @@ _DIMENSION_NAMES_ES: Mapping[str, str] = MappingProxyType({
     "data": "un tamaño de datos",
     "volume_ratio": "una relación entre volúmenes",
     "mass_ratio": "una relación entre masas",
+    "inverse_length": "un inverso de longitud",
 })
 """Lo que mide cada magnitud, para los mensajes («la t mide una masa»)."""
 
@@ -123,6 +127,7 @@ _CATALOG: tuple[Unit, ...] = (
     _unit("ppb", "ppb", "ratio", Fraction(1, 1_000_000_000)),
     _unit("deg", "°", "angle"),
     _unit("deg/30m", "°/30 m", "angle_per_length"),
+    _unit("1/m", "1/m", "inverse_length"),  # spec 017, T02: el peso λ del movimiento de tierras de la ruta (RF-017-10)
     _unit("s", "s", "time"),
     _unit("min", "min", "time", 60),
     _unit("h", "h", "time", 3600),

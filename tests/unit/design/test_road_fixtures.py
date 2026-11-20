@@ -127,7 +127,7 @@ class ProfileTest(unittest.TestCase):
         found = rd.PROFILE
         self.assertEqual((found.vehicle_width_m, found.lane_factor, found.shoulder_m, found.berm_m),
                          (3.5, 3.0, 0.0, 1.0))
-        self.assertEqual((found.max_grade_pct, found.curve_radius_m, found.min_radius_m), (10.0, 20.0, 12.0))
+        self.assertEqual((found.max_gradient_pct, found.curve_radius_m, found.min_radius_m), (10.0, 20.0, 12.0))
         self.assertEqual((found.cut_angle_deg, found.fill_angle_deg), (60.0, 35.0))
         self.assertEqual((found.mesh_factor, found.metric), (1.0, "exact"))
         self.assertEqual(found.station_step_m, 1.0)
@@ -140,16 +140,16 @@ class ProfileTest(unittest.TestCase):
         self.assertAlmostEqual(found.carriageway_m, 10.5, delta=1e-12)
         self.assertAlmostEqual(found.section_m, 11.5, delta=1e-12)
         self.assertAlmostEqual(found.half_section_m, 5.75, delta=1e-12)
-        self.assertAlmostEqual(rd.needed_length_m(30.0, found.max_grade_pct), 300.0, delta=1e-9)
+        self.assertAlmostEqual(rd.needed_length_m(30.0, found.max_gradient_pct), 300.0, delta=1e-9)
         self.assertGreaterEqual(found.min_radius_m, found.half_section_m)
         self.assertLessEqual(found.min_radius_m, found.curve_radius_m)
 
     def test_variants_change_only_what_they_say(self) -> None:
         """``profile_with`` cambia los campos pedidos y deja el resto; el original no se toca."""
-        other = rd.profile_with(max_grade_pct=8.0, min_radius_m=16.0)
-        self.assertEqual((other.max_grade_pct, other.min_radius_m), (8.0, 16.0))
+        other = rd.profile_with(max_gradient_pct=8.0, min_radius_m=16.0)
+        self.assertEqual((other.max_gradient_pct, other.min_radius_m), (8.0, 16.0))
         self.assertEqual(other.curve_radius_m, rd.PROFILE.curve_radius_m)
-        self.assertEqual(rd.PROFILE.max_grade_pct, 10.0)
+        self.assertEqual(rd.PROFILE.max_gradient_pct, 10.0)
         with self.assertRaises(TypeError):
             rd.profile_with(no_such_field=1.0)
 
@@ -218,8 +218,8 @@ class HeadingsTest(unittest.TestCase):
                                delta=1e-12)
         self.assertEqual(round(min(sixteen), 1), 2.7)
         self.assertEqual(round(min(eight), 1), 14.5)
-        self.assertLess(min(sixteen), rd.PROFILE.max_grade_pct)
-        self.assertGreater(min(eight), rd.PROFILE.max_grade_pct)
+        self.assertLess(min(sixteen), rd.PROFILE.max_gradient_pct)
+        self.assertGreater(min(eight), rd.PROFILE.max_gradient_pct)
         self.assertIn(sixteen.index(min(sixteen)), (3, 11))  # (2, 1) o su opuesto: el rumbo de la ruta de CE-017-04
 
 
@@ -248,7 +248,7 @@ class RampTest(unittest.TestCase):
         self.assertAlmostEqual(z1 - z0, rd.RAMP_DROP_M, delta=1e-12)
         self.assertAlmostEqual(rd.RAMP_DROP_M, 8.0, delta=1e-12)
         self.assertAlmostEqual(100.0 * (z1 - z0) / (x1 - x0), 4.0, delta=1e-12)
-        self.assertLess(rd.RAMP_SLOPE_PCT, rd.profile_with(max_grade_pct=8.0).max_grade_pct)
+        self.assertLess(rd.RAMP_SLOPE_PCT, rd.profile_with(max_gradient_pct=8.0).max_gradient_pct)
         self.assertEqual(rd.heading_azimuth_deg((1, 0)), 90.0)  # el este es uno de los 16 rumbos
 
     def test_the_cross_slope(self) -> None:
@@ -336,7 +336,7 @@ class StepProfileTest(unittest.TestCase):
         """La rampa del escalón sube 6 m en 200 m: el 3 % de media, que con pm = 2 % pide aviso."""
         self.assertAlmostEqual(100.0 * (rd.STEP_HIGH_M - rd.STEP_LOW_M) / 200.0, rd.STEP_MEAN_PCT, delta=1e-12)
         self.assertEqual(rd.STEP_MEAN_PCT, 3.0)
-        self.assertGreater(rd.STEP_MEAN_PCT, rd.profile_with(max_mean_grade_pct=2.0).max_mean_grade_pct)
+        self.assertGreater(rd.STEP_MEAN_PCT, rd.profile_with(max_mean_gradient_pct=2.0).max_mean_gradient_pct)
 
     def test_the_axis_that_is_too_short(self) -> None:
         """Con los extremos a 0 y a 20 m en un eje de 100 m con pd = 10 %: «necesaria 200 m, el eje mide 100 m»."""
@@ -454,7 +454,7 @@ class HillsideTest(unittest.TestCase):
         drop = z(x1, y1) - z(x0, y0)
         self.assertAlmostEqual(drop, 2.4094, delta=1e-4)
         self.assertAlmostEqual(100.0 * drop / distance, rd.hillside_heading_slope_pct(2, 1), delta=1e-9)
-        self.assertLess(100.0 * drop / distance, rd.PROFILE.max_grade_pct)
+        self.assertLess(100.0 * drop / distance, rd.PROFILE.max_gradient_pct)
         found = rd.hillside_terrain(rd.GRID)
         self.assertAlmostEqual(float(found[199, 199]), z(199.5, 200.5), delta=1e-12)  # fila 199: y = 200,5
 

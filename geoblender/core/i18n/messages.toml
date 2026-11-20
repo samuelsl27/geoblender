@@ -10458,3 +10458,130 @@ es = "Cancelado: el cuerpo apoyado está creado; las restricciones declaradas y 
 
 ["The supported body is created: only the declared constraints and the masks have not been brought up to date"]
 es = "El cuerpo apoyado está creado: solo las restricciones declaradas y las máscaras no se han puesto al día"
+
+# --- Parámetros de la pista, la accesibilidad y el perfil de pista (spec 017, T02; RF-017-01, 02, 04, 07, 24; plan 017 §5.2.2) ---
+# La etiqueta de cada familia de design/params.py (ROAD_FAMILIES, ACCESS_FAMILIES y ROAD_PROFILE_FAMILIES). Los comunes a todos los
+# tipos («Name of the entity»…) y la capa y la geometría de la que sale una entidad ya están arriba; el español de los mensajes con
+# código vive en design/messages.py. Lo que añada una tarea siguiente va detrás de la marca del final.
+
+["Mode of the haul road"]
+es = "Modo de la pista"
+
+["Profile of the haul road"]
+es = "Perfil de la pista"
+
+["Origin of the haul road"]
+es = "Origen de la pista"
+
+["Destination of the haul road"]
+es = "Destino de la pista"
+
+["Level of the destination of the haul road"]
+es = "Cota del destino de la pista"
+
+["Arrival tolerance of the level of the destination"]
+es = "Tolerancia de llegada a la cota del destino"
+
+["Zone of the level of the destination"]
+es = "Zona de la cota del destino"
+
+["Start level of the haul road"]
+es = "Cota de inicio de la pista"
+
+["End level of the haul road"]
+es = "Cota de fin de la pista"
+
+["Mesh of the route search"]
+es = "Malla de la búsqueda de la ruta"
+
+["Level step of the route search"]
+es = "Paso de cota de la búsqueda de la ruta"
+
+["Maximum height of cut and fill of the route"]
+es = "Altura máxima de desmonte y terraplén de la ruta"
+
+["Weight of the earthworks in the cost of the route"]
+es = "Peso del movimiento de tierras en el coste de la ruta"
+
+["Turn penalty of the route"]
+es = "Penalización de giro de la ruta"
+
+["Slack of the corridor of the route"]
+es = "Holgura del pasillo de la ruta"
+
+["Simplification tolerance of the route"]
+es = "Tolerancia de simplificación de la ruta"
+
+["Arrival tolerance of the route"]
+es = "Tolerancia de llegada de la ruta"
+
+["Budget of states of the route search"]
+es = "Presupuesto de estados de la búsqueda de la ruta"
+
+["Reason of the haul road"]
+es = "Motivo de la pista"
+
+["Surface whose accessibility is calculated"]
+es = "Superficie de la que se calcula la accesibilidad"
+
+["Layer of the entry points"]
+es = "Capa de los puntos de entrada"
+
+["Berm data of the accessibility"]
+es = "Datos de bermas de la accesibilidad"
+
+["Maximum walkable gradient"]
+es = "Pendiente máxima transitable"
+
+["Minimum walkable width"]
+es = "Ancho mínimo transitable"
+
+["Minimum area of a berm stretch"]
+es = "Área mínima de un tramo de berma"
+
+["Width of the design vehicle"]
+es = "Ancho del vehículo de diseño"
+
+["Carriageway factor"]
+es = "Factor de calzada"
+
+["Width of the shoulder"]
+es = "Ancho del arcén"
+
+["Width of the windrow"]
+es = "Ancho del caballón"
+
+["Maximum design gradient"]
+es = "Pendiente máxima de diseño"
+
+["Spacing of the stations of the level profile of the haul road"]
+es = "Separación de las estaciones de la rasante (el perfil de cotas de la pista)"
+
+["Maximum mean gradient"]
+es = "Pendiente media máxima"
+
+["Design radius of the curves"]
+es = "Radio de diseño de las curvas"
+
+["Minimum radius of the curves"]
+es = "Radio mínimo de las curvas"
+
+["Cut angle of the haul road edge"]
+es = "Ángulo de desmonte del borde de la pista"
+
+["Fill angle of the haul road edge"]
+es = "Ángulo de terraplén del borde de la pista"
+
+["Reach of the haul road edge"]
+es = "Alcance del borde de la pista"
+
+["Normative class of the haul road"]
+es = "Clase normativa de la pista"
+
+["Mesh factor of the haul road profile"]
+es = "Factor de malla del perfil de pista"
+
+["Distance metric of the haul road edge"]
+es = "Métrica de distancia del borde de la pista"
+
+# --- Fin de los parámetros de la pista, la accesibilidad y el perfil de pista (spec 017, T02)
