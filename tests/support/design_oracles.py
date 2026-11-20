@@ -48,6 +48,12 @@ después), para rejillas pequeñas (≤ 90 × 90 celdas):
   envolvente ascendente de :func:`dijkstra` con la cara por el factor de malla y ``mín(recorte, S)``), la composición
   ``máx(partida, recorte)`` donde se admite el relleno y las cifras (volumen, área y altura máxima) como un bucle de Python
   por celda con ``fsum``, para comparar con ``design.buttress`` (RF-016-17).
+- :func:`hand_net` (spec 017, T06; plan 017 §5.4 A1): la red 2D de la ruta **a mano**: la malla (la media de cada bloque de celdas con
+  ``fsum`` y los nodos prohibidos o sin dato, con bucles de Python por celda), el grafo explícito de pasos admisibles (una lista de
+  aristas por nodo, con los límites, los nodos intermedios de los pasos «de caballo» y ``|Δcota| ≤ pd·L + 2H``) y las distancias por
+  **Bellman–Ford** (pasadas completas sobre todas las aristas hasta que ninguna mejora), para comparar con ``design.road_net``
+  (RF-017-09, RF-017-11). Los rumbos son un parámetro (:data:`HAND_HEADINGS`, la lista de D-8 copiada aquí): con los 8 inmediatos
+  muestra lo que no pasa con 8 (B2).
 
 Convenciones: ``seed`` es la rejilla de semillas (fila 0 al norte): una celda es semilla si su cota
 es finita; ``+inf``, ``−inf`` y NaN no lo son. ``direction="up"`` es ``E_up = mín_q [s + t·d]`` y
@@ -70,6 +76,7 @@ import numpy as np
 __all__ = [
     "CHAMFER5",
     "CHAMFER_SCALE",
+    "HAND_HEADINGS",
     "Displacement",
     "HandButtress",
     "HandFootprint",
@@ -87,6 +94,7 @@ __all__ = [
     "hand_dilate",
     "hand_footprint",
     "hand_layers",
+    "hand_net",
     "hand_plane",
     "hand_removal",
     "hand_share",
@@ -861,3 +869,78 @@ def hand_buttress(start: object, zone: object, allowed: object, *, crown: float,
     area = step * step
     return HandButtress(seeds, envelope, stairs, stepped, surface, math.fsum(rise) * area, len(rise) * area, len(rise),
                         max(rise, default=0.0))
+
+
+# --- La red 2D de la ruta (spec 017, T06; plan 017 §5.4 A1) ------------------------------------------------------------------------
+
+HAND_HEADINGS: tuple[tuple[int, int], ...] = (
+    (0, 1), (1, 2), (1, 1), (2, 1), (1, 0), (2, -1), (1, -1), (1, -2),
+    (0, -1), (-1, -2), (-1, -1), (-2, -1), (-1, 0), (-2, 1), (-1, 1), (-1, 2))
+"""Los 16 pasos ``(dx, dy)`` a un nodo vecino (``dx`` al este y ``dy`` al norte), en sentido horario desde el norte (D-8): una copia
+**independiente** de la de ``design.road_net``; los 8 inmediatos (``|dx|, |dy| ≤ 1``) son los de índice par, ``HAND_HEADINGS[::2]``."""
+HAND_STEP_TOLERANCE_M = 1e-9
+"""El margen (m) de ``|Δcota| ≤ pd·L + 2H``: el de A2 (``10⁻⁹``), que la red 2D comparte para ser una cota inferior de la ruta 3D."""
+
+
+def hand_net(surface: Sequence[Sequence[float]], forbidden: Sequence[Sequence[bool]] | None, factor: int, cell_m: float, pd: float,
+             hmax: float, targets: Sequence[tuple[int, int]], *,
+             headings: Sequence[tuple[int, int]] = HAND_HEADINGS) -> np.ndarray:
+    """La red 2D de A1 **a mano** (RF-017-09, RF-017-11): la longitud mínima (m) desde los nodos ``targets`` ``(i, j)`` a cada nodo de la
+    malla de bloques de ``factor × factor`` celdas de ``cell_m`` m sobre ``surface`` (fila 0 al norte; ``NaN``, sin dato) como un
+    array ``(ni, nj)`` con ``inf`` donde no llega. La cota de un nodo es la media de las celdas de su bloque (``fsum``); no se pisa
+    un nodo con alguna celda sin dato, fuera de la rejilla (los bloques incompletos) o en ``forbidden``. Una arista del grafo explícito
+    va del nodo ``(i, j)`` al ``(i − dy, j + dx)`` para cada rumbo ``(dx, dy)`` de ``headings`` si los dos se pisan, ni los dos nodos
+    que la recta atraviesa en un paso «de caballo» están prohibidos y ``|Δcota| ≤ pd·L + 2·hmax`` (``L = factor·cell_m·√(dx² + dy²)``,
+    con ``pd`` en tanto por uno); las distancias, por Bellman–Ford: pasadas completas sobre todas las aristas hasta que ninguna mejore.
+    Un destino que no se pisa no cuenta. Bucles de Python, sin ``design.road_net`` ni numpy en el cálculo."""
+    rows = len(surface)
+    cols = len(surface[0])
+    ni, nj = -(-rows // factor), -(-cols // factor)
+    height: dict[tuple[int, int], float] = {}
+    for i in range(ni):
+        for j in range(nj):
+            cells = [(r, c) for r in range(i * factor, (i + 1) * factor) for c in range(j * factor, (j + 1) * factor)]
+            if any(r >= rows or c >= cols for r, c in cells):
+                continue
+            values = [float(surface[r][c]) for r, c in cells]
+            if not all(math.isfinite(v) for v in values):
+                continue
+            if forbidden is not None and any(bool(forbidden[r][c]) for r, c in cells):
+                continue
+            height[(i, j)] = math.fsum(values) / (factor * factor)
+    edges: dict[tuple[int, int], list[tuple[tuple[int, int], float]]] = {node: [] for node in height}
+    for (i, j), z0 in height.items():
+        for dx, dy in headings:
+            other = (i - dy, j + dx)
+            if other not in height:
+                continue
+            between: list[tuple[int, int]] = []
+            if abs(dx) == 2:
+                between = [(dx // 2, 0), (dx // 2, dy)]
+            elif abs(dy) == 2:
+                between = [(0, dy // 2), (dx, dy // 2)]
+            if any((i - my, j + mx) not in height for mx, my in between):
+                continue
+            length = factor * cell_m * math.hypot(dx, dy)
+            if abs(height[other] - z0) <= pd * length + 2.0 * hmax + HAND_STEP_TOLERANCE_M:
+                edges[(i, j)].append((other, length))
+    best = {node: math.inf for node in height}
+    for node in targets:
+        if node in best:
+            best[node] = 0.0
+    for _ in range(len(height)):
+        changed = False
+        for node, found in edges.items():
+            reached = best[node]
+            if reached == math.inf:
+                continue
+            for other, length in found:
+                if reached + length < best[other]:
+                    best[other] = reached + length
+                    changed = True
+        if not changed:
+            break
+    out = np.full((ni, nj), math.inf)
+    for (i, j), value in best.items():
+        out[i, j] = value
+    return out

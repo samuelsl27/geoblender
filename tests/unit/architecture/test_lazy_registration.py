@@ -81,6 +81,9 @@ HEAVY: frozenset[str] = frozenset({
     # Los datos de la pista y de la accesibilidad de la 017 (spec 017, T05): las peticiones, los trabajos y los resultados
     # (``@dataclass``, ≈ 0,5–1 ms cada uno al importar) los pide quien calcula; no los carga ``design.model`` ni el arranque.
     "design.road_model",
+    # La malla, los 16 rumbos y la red 2D de la ruta de la 017 (spec 017, T06; Dijkstra con ``heapq``, plan §9): los pide quien traza
+    # una pista; ``design.model`` y el arranque no los importan.
+    "design.road_net",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 
