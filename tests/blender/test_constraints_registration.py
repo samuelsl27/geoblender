@@ -652,7 +652,9 @@ HEAVY: tuple[str, ...] = (
     # Los datos de la pista y de la accesibilidad de la 017 (spec 017, T05): se importan al usarlos.
     "design.road_model",
     # La malla, los 16 rumbos y la red 2D de la ruta de la 017 (spec 017, T06): los pide quien traza una pista.
-    "design.road_net")
+    "design.road_net",
+    # La ruta 3D de mínimo coste de la ruta de la 017 (spec 017, T07): la pide quien traza una pista.
+    "design.road_route")
 """Lo que habilitar no importa (los de la 012 que fija ``tests/unit/architecture/test_lazy_registration``,
 y los de la 016 y la 017, que esa prueba mira por sus importaciones de nivel de módulo)."""
 LIGHT: tuple[str, ...] = ("core.constraints.provenance", "gis.masks.provenance",

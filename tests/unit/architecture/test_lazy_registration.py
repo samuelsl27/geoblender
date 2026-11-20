@@ -84,6 +84,9 @@ HEAVY: frozenset[str] = frozenset({
     # La malla, los 16 rumbos y la red 2D de la ruta de la 017 (spec 017, T06; Dijkstra con ``heapq``, plan §9): los pide quien traza
     # una pista; ``design.model`` y el arranque no los importan.
     "design.road_net",
+    # La ruta 3D de mínimo coste de la 017 (spec 017, T07; A* con ``heapq``, plan §9): la pide quien traza una pista; ``design.model`` y el
+    # arranque no la importan.
+    "design.road_route",
 })
 """Los módulos de la 012, la 013, la 015, la 016 y la 017 (y la cadena que arrastran) que se importan al primer uso."""
 

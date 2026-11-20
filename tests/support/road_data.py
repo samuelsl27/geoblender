@@ -19,6 +19,9 @@ caben todos en el mismo proyecto como rejillas distintas y comparten las capas.
   principal T01-a: ninguna es valor por defecto del producto).
 - **Los 16 rumbos** (:data:`ORACLE_HEADINGS`): una copia independiente de la lista de D-8 y D-23, para comparar con la
   de ``road_net``; y la ruta a ≤ 2,8 % de la recta (D-22).
+- **Un trabajo de pista y su pasillo** (:func:`road_profile`, :func:`route_job`, :func:`route_corridor`; T07): un ``RoadJob`` en el
+  modo «trazar» sobre cualquier rejilla y superficie, y la malla y el pasillo como los arma la preparación, para probar la ruta sin
+  proyecto.
 - **La rampa del 4 %** (:func:`ramp_terrain`; CE-017-01): un plano de pendiente 4 % hacia el este (un rumbo de la
   rejilla), con y sin una pendiente transversal del 20 %; de (100, 200) a (300, 200): 200 m y 8 m de desnivel; el
   corte y el relleno de su calzada a mano (:func:`ramp_calzada_by_hand`: 500 m³ con celdas de 1 m).
@@ -269,6 +272,64 @@ mayor hueco entre dos es de 26,565° y 1/cos(13,28°) − 1 = 2,75 %."""
 def heading_azimuth_deg(step: tuple[int, int]) -> float:
     """El azimut (°, desde el norte en sentido horario, de 0 a 360) del paso ``(dx, dy)``."""
     return math.degrees(math.atan2(step[0], step[1])) % 360.0
+
+
+# --- Un trabajo de pista y su pasillo (T07; para T08, T09 y las que calculan una pista) -----------------------
+
+
+def road_profile(profile: ProfileData = PROFILE) -> Any:
+    """El perfil de pista de ``profile`` como ``design.road_profiles.RoadProfile`` (código ``pista_principal``)."""
+    params = import_geoblender("design.params")
+    road_profiles = import_geoblender("design.road_profiles")
+    values = {param.value: getattr(profile, "class_name" if param is params.RoadProfileParam.CLASS else param.value)
+              for param in params.RoadProfileParam}
+    return road_profiles.RoadProfile.from_values("pista_principal", profile.name, values)
+
+
+def route_job(grid: Any, surface: np.ndarray, origin: tuple[float, float], destination: Any, *,
+              route: RouteData = ROUTE, profile: ProfileData = PROFILE, untouchable: np.ndarray | None = None,
+              avoid_weight: np.ndarray | None = None, start_level_m: float | None = None,
+              end_level_m: float | None = None) -> Any:
+    """Un ``RoadJob`` en el modo «trazar» sobre ``grid`` con la superficie de partida ``surface`` (m, float64; ``NaN``, sin dato): del
+    punto absoluto ``origin`` a ``destination`` (un punto absoluto o un ``LevelDestination``), con los parámetros de la ruta ``route``,
+    el perfil ``profile`` (``road_profile``), lo que no se pisa (``untouchable``, ``None``: nada), el peso de «preferible no afectar»
+    (``avoid_weight``, ``None``: todo pesa 1) y las cotas de inicio y de fin ya resueltas (``None``: las del terreno). El corte y el
+    relleno se admiten en todas partes."""
+    road_model = import_geoblender("design.road_model")
+    shape = grid.shape
+    request = road_model.RoadRequest("Pista de prueba", road_model.LayerFields("gis_fea_pistas_puntos", "nombre"), "trace",
+                                     "pista_principal", "gis_dtm_prueba")
+    return road_model.RoadJob(
+        request=request, code="RDW-001", profile=road_profile(profile), grid=grid, start=np.asarray(surface, dtype=np.float64),
+        cut_allowed=np.ones(shape, dtype=bool), fill_allowed=np.ones(shape, dtype=bool),
+        untouchable=np.zeros(shape, dtype=bool) if untouchable is None else untouchable,
+        geometry=road_model.RoadGeometry(origin=origin, destination=destination),
+        route=road_model.RouteParams(**{name: getattr(route, name) for name in RouteData.__slots__}),
+        start_level_m=start_level_m, end_level_m=end_level_m, avoid_weight=avoid_weight)
+
+
+def route_corridor(job: Any, *, target: Any = None, margin_m: float | None = None) -> tuple[Any, Any]:
+    """La malla y el pasillo de ``job`` como los arma la preparación: ``mesh = route_mesh(...)`` con lo que no se pisa y el peso, la
+    red 2D desde el destino (``target``: un nodo ``(i, j)`` o una máscara de nodos —el destino por cota—; por defecto, el nodo del
+    punto de destino) y desde el origen, con ``pd`` del perfil y la altura máxima de la ruta, y ``corridor(...)`` con la holgura
+    ``margin_m`` (por defecto, la de ``job.route``). Da ``(mesh, corridor)``."""
+    road_net = import_geoblender("design.road_net")
+    route = job.route
+    mesh = road_net.route_mesh(job.grid, job.start, route.mesh_m, job.untouchable, avoid_weight=job.avoid_weight)
+    pd = job.profile.max_gradient_pct / 100.0
+    height = route.max_cut_fill_m
+    if target is None:
+        target = mesh.node_of(*job.geometry.destination)
+
+    def network(where: Any) -> Any:
+        found = None
+        for step in road_net.network_steps(mesh, where, pd, height):
+            if step.result is not None:
+                found = step.result
+        return found
+
+    net_dest, net_origin = network(target), network(mesh.node_of(*job.geometry.origin))
+    return mesh, road_net.corridor(net_origin, net_dest, route.margin_m if margin_m is None else margin_m)
 
 
 # --- La rampa del 4 % (CE-017-01) -----------------------------------------------------------------------------
