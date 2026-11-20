@@ -310,16 +310,17 @@ def route_job(grid: Any, surface: np.ndarray, origin: tuple[float, float], desti
 
 def route_corridor(job: Any, *, target: Any = None, margin_m: float | None = None) -> tuple[Any, Any]:
     """La malla y el pasillo de ``job`` como los arma la preparación: ``mesh = route_mesh(...)`` con lo que no se pisa y el peso, la
-    red 2D desde el destino (``target``: un nodo ``(i, j)`` o una máscara de nodos —el destino por cota—; por defecto, el nodo del
-    punto de destino) y desde el origen, con ``pd`` del perfil y la altura máxima de la ruta, y ``corridor(...)`` con la holgura
-    ``margin_m`` (por defecto, la de ``job.route``). Da ``(mesh, corridor)``."""
+    red 2D desde el destino (``target``: un nodo ``(i, j)`` o una máscara de nodos —el destino por cota—; por defecto, el de
+    ``design.road_route.route_target``: el nodo del punto de destino o los nodos de la zona de la rampa) y desde el origen, con ``pd`` del
+    perfil y la altura máxima de la ruta, y ``corridor(...)`` con la holgura ``margin_m`` (por defecto, la de ``job.route``). Da
+    ``(mesh, corridor)``."""
     road_net = import_geoblender("design.road_net")
     route = job.route
     mesh = road_net.route_mesh(job.grid, job.start, route.mesh_m, job.untouchable, avoid_weight=job.avoid_weight)
     pd = job.profile.max_gradient_pct / 100.0
     height = route.max_cut_fill_m
     if target is None:
-        target = mesh.node_of(*job.geometry.destination)
+        target = import_geoblender("design.road_route").route_target(job, mesh)
 
     def network(where: Any) -> Any:
         found = None
