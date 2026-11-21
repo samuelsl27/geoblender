@@ -712,8 +712,9 @@ def reproduce_body(request: ReproduceRequest) -> Iterator[Progress]:
 
 # Los tres tipos de la 017 (T03; plan 017 §5.2.3): el mismo camino que los de las specs anteriores. Su recálculo lo hace
 # ``design.store.recompute_run`` y su reproducción, ``design.reproduce``; **sin comportamiento todavía** (las tareas que crean cada
-# operación, T17 la accesibilidad, T21 y T22 la pista y T27 «Proponer el trazado», les dan su cálculo: hasta entonces no hay ninguna
-# operación de esos tipos que recalcular ni reproducir y ambas dicen qué tarea falta).
+# operación, T21 y T22 la pista y T27 «Proponer el trazado», les dan su cálculo: hasta entonces no hay ninguna operación de esos tipos
+# que recalcular ni reproducir y ambas dicen qué tarea falta). **La accesibilidad ya los tiene** (T17b: ``access_store.recompute_access``
+# y ``reproduce.reproduce_road_access``).
 
 
 def recompute_road(request: RecomputeRequest) -> OperationHandle:
@@ -842,8 +843,8 @@ repetibles (T05); de la 015, la plataforma, la declaración de restricciones y l
 de la versión y repetibles (T04); la capa de entidades no se reproduce (T30); de la 016 (T03), la
 detección de acopios, su retirada, el contrafuerte y el cuerpo apoyado, de la versión, repetibles y
 reproducibles, sin comportamiento todavía; de la 017 (T03), la pista, la accesibilidad de las pistas y «Proponer el trazado», de la
-versión, repetibles y reproducibles, sin comportamiento todavía, y la edición de los perfiles de pista, del proyecto y sin
-repetición."""
+versión, repetibles y reproducibles (la accesibilidad, con su cálculo desde la T17b; la pista y la propuesta, sin comportamiento todavía), y la edición de los
+perfiles de pista, del proyecto y sin repetición."""
 DEFINITIONS: tuple[core_params.ParamDef, ...] = (
     *design_params.DEFINITIONS, *design_params.QUARRY_DEFINITIONS)
 """Las definiciones de parámetros de ``des``: las dos del proyecto de la 013 y las siete de la 014

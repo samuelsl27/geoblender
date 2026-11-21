@@ -61,9 +61,12 @@ comparte con el proyecto, ``supported_store.body_compute_steps`` sobre el mismo 
 superficie conocida —y, «sobre una base», la de partida— y las máscaras congeladas por su nombre y su papel, y los parámetros de su
 entidad congelados; el espesor disperso, la superficie o la base dispersa, la huella y el informe, y las cifras). **El otro tipo de la
 016** (:func:`reproduce_buttress`; spec 016, T03) existe pero **sin comportamiento todavía**: dice qué tarea lo hace
-(``NotImplementedError``); no hay ninguna operación de ese tipo que reproducir hasta que se crea. **Los tres tipos de la 017** (spec
-017, T03; :func:`reproduce_road`, :func:`reproduce_road_access` y :func:`reproduce_road_propose`) existen igual, **sin comportamiento
-todavía**: dicen qué tarea los hace (T22, T17 y T27) con ``NotImplementedError``.
+(``NotImplementedError``); no hay ninguna operación de ese tipo que reproducir hasta que se crea. **La accesibilidad de las pistas** (spec 017, T17b;
+RF-017-24, RF-017-25, RF-009-11): :func:`reproduce_road_access` (con el cálculo que comparte con el proyecto, ``access_store.access_compute_steps`` sobre el mismo ``AccessJob``
+—``access_store.access_job``—: la superficie, la final, la capa de puntos de entrada, las rejillas de cotas de berma y las huellas de las plataformas, por su papel, las máscaras
+congeladas —sus zonas «requiere acceso» y lo intocable— y los parámetros congelados de su entidad; la rejilla de lo alcanzable, las tres tablas y el informe, y las cifras). **Los otros
+dos tipos de la 017** (spec 017, T03; :func:`reproduce_road` y :func:`reproduce_road_propose`) existen igual, **sin comportamiento todavía**: dicen qué tarea los hace (T22 y T27) con
+``NotImplementedError``.
 
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con otros,
 ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹ relativo, plan
@@ -112,7 +115,7 @@ from ..gis.masks.store import PERIMETER_SECTOR_NAME, read_report, zone_runs_step
 from ..gis.raster import Raster
 from ..gis.store import insert_rows, read_features
 from ..gis.vector import FeatureLayer
-from . import entities, entity_store, fronts, pipeline, provenance, quarry, removal, stockpile_store, store, supported_store
+from . import access_store, entities, entity_store, fronts, pipeline, provenance, quarry, removal, stockpile_store, store, supported_store
 from .compose import admitted, admitted_in
 from .model import BenchSense, BodySense, EnvelopeRequest, PlatformRequest, SeedKind, Surface
 from .params import (
@@ -128,6 +131,7 @@ from .params import (
 from .buttress import ButtressJob
 from .platform import PlatformJob
 from .removal import RemovalJob
+from .road_model import AccessCells, BermGrid
 from .seeds import (
     SectorRef,
     SeedSet,
@@ -1112,8 +1116,44 @@ def reproduce_road(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S
 
 
 def reproduce_road_access(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
-    """Reproduce ``des.road_access`` (spec 017, T03; RF-017-24, RF-009-11): sin comportamiento todavía (T17)."""
-    return _not_yet(request, provenance.ROAD_ACCESS, "la T17", "017")
+    """Reproduce ``des.road_access`` (spec 017, T17b; RF-017-24, RF-017-25, RF-015-02, RF-009-11) con la superficie (y la final de una cantera de dos superficies), la capa de los puntos
+    de entrada, las rejillas de cotas de berma, las huellas de las plataformas y las máscaras congeladas y los parámetros congelados de su entidad (``des.access.{e}.*``: la superficie,
+    la capa de entradas, los datos de bermas y los tres umbrales), con los ajustes de su operación (el nombre, el código y el campo del nombre de los puntos), **sin el proyecto**: el
+    mismo cálculo (``access_store.access_compute_steps`` sobre el mismo ``AccessJob``). Sus pasos y, el último, el ``ReproducedResult`` con la rejilla de lo alcanzable
+    (``des_acc_``), las tablas de bermas, plataformas y zonas (``des_acb_``, ``des_acp_`` y ``des_acz_``), el informe (``des_prp_``) y las cifras. Lo que no es una ``ReproduceRequest`` es
+    ``TypeError``; una de otro tipo, ``ValueError``."""
+    return _reproduce_road_access(_check(request, provenance.ROAD_ACCESS), budget_s)
+
+
+def _reproduce_road_access(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    code = provenance.supported_code(request.settings)
+    asked = provenance.access_request(request.settings, provenance.supported_values(code, frozen.values))
+    values = access_store.access_values(asked, code)
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = frozen.masks()
+    surface = frozen.raster(provenance.SURFACE_ROLE, what="superficie de la accesibilidad").values
+    finals = [item for item in request.inputs if item.role == provenance.ACCESS_FINAL_ROLE]
+    final = frozen.raster(provenance.ACCESS_FINAL_ROLE, what="superficie final de la cantera").values if finals else None
+    entries = access_store.entry_points(frozen.features(asked.layer), asked, code)
+    berms = tuple(BermGrid(item.name, frozen.named_raster(item.name, what="rejilla de cotas de berma").values)
+                  for item in request.inputs if item.role == provenance.FAMILIES_BY_CODE[provenance.BERMS_GRID].role)
+    platforms: list[AccessCells] = []
+    for item in request.inputs:
+        if item.role != provenance.ENTITY_ROLE:
+            continue
+        with _open(Path(item.files["main"])) as conn:
+            footprint = entity_store.read_entity_footprint(conn, str(item.settings["layer"]))
+        platforms.append(AccessCells(footprint.code, footprint.name, access_store.platform_cells(footprint.runs, frozen.grid.ncols)))
+    job = access_store.access_job(asked, code, values, frozen.grid, surface, entries, access_store.untouchable_cells(masks), final=final, berms=berms, platforms=platforms,
+                                  zones=access_store.access_zones(masks))
+    outcome = yield from access_store.access_compute_steps(job, budget_s=budget_s)
+    crs, vertical = frozen.crs, frozen.vertical
+    made = [(yield from _grid_output(request, provenance.ACCESS_GRID, Raster(job.grid, access_store.reachable_grid(outcome), crs, vertical), budget_s))]
+    for family, rows in ((provenance.ACCESS_BERMS_TABLE, access_store.berm_rows(outcome)), (provenance.ACCESS_PLATFORMS_TABLE, access_store.platform_rows(outcome)),
+                         (provenance.ACCESS_ZONES_TABLE, access_store.zone_rows(outcome)), (provenance.ENTITY_REPORT_TABLE, access_store.access_report_rows(outcome))):
+        made.append(_table_output(request, family, rows, crs))
+    yield Progress(_PHASE, 1, 1, "Accesibilidad reproducida", result=ReproducedResult(tuple(made), tuple(outcome.figures)))
 
 
 def reproduce_road_propose(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:

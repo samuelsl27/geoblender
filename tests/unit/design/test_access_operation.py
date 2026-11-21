@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""La operación de accesibilidad, la parte de preparar y calcular (spec 017, T17; HU-017-3; RF-017-24, RF-017-25, RF-017-04 y RF-017-30; RF-015-02, RF-015-03 y RF-015-16;
+"""La operación de accesibilidad (spec 017, T17 y T17b; HU-017-3; RF-017-24, RF-017-25, RF-017-04 y RF-017-30; RF-015-02, RF-015-03 y RF-015-16;
 RNF-017-05 y RNF-017-10; plan 017 §5.2.2, §5.2.3, §5.3.2, §5.4 A10 y A11 y §5.7 P-1 y P-9; D-17 y D-18): ``design.access_store`` **prepara** (lee y rechaza antes de calcular, sin
-escribir nada) y **calcula por pasos** (las cifras CALCULADO, los avisos y el resumen con las cotas y las listas). Crear, recalcular, reproducir y la lectura para la 012 son de la T17b.
+escribir nada), **calcula por pasos** (las cifras CALCULADO, los avisos y el resumen con las cotas y las listas) y, desde la T17b, **prepara lo que guarda** (las filas de sus tablas, su
+rejilla de lo alcanzable y su informe) y **crea en una transacción: todo o nada** (Esc a mitad no deja nada; un fallo al registrar tampoco). Crear con éxito, recalcular, reproducir y la
+lectura para la 012 cambian el proyecto: son de ``milestone_access_operation``.
 
 Sobre el proyecto de las pistas (``tests.support.road_data``: la cantera de la 015 con los terrenos como rejillas, en la gruesa de 2 m, 200 × 200 celdas) y, para el cálculo, sobre la
 cantera con bancos (CE-017-07) **a mano**: tres bermas comunicadas (135, 125 y 115 m) y una no (105 m), cotas mínima y máxima alcanzables de 115 y 140 m y una zona «requiere
@@ -11,11 +13,13 @@ operaciones, los datos, los parámetros y los ficheros no se mueven) y nombrando
 
 from __future__ import annotations
 
+import json
 import time
 import unittest
 from collections.abc import Generator
 from types import SimpleNamespace
 from typing import Any, ClassVar
+from unittest import mock
 
 import numpy as np
 
@@ -24,10 +28,12 @@ from tests.support import res_fixtures
 from tests.support import road_data as rd
 from tests.support import stockpile_data as sdata
 from tests.support.package import import_geoblender
+from tests.support.provenance_contract import registered
 from tests.support.versions_fixtures import change_counter
 
 access = import_geoblender("gis.masks.access")
 access_store = import_geoblender("design.access_store")
+core_params = import_geoblender("core.params")
 design_params = import_geoblender("design.params")
 gis = import_geoblender("gis")
 messages = import_geoblender("design.messages")
@@ -35,6 +41,7 @@ preview = import_geoblender("design.preview")
 provenance = import_geoblender("design.provenance")
 road_model = import_geoblender("design.road_model")
 steps = import_geoblender("design.steps")
+store = import_geoblender("design.store")
 zones_module = import_geoblender("gis.masks.zones")
 
 DesignError = messages.DesignError
@@ -51,6 +58,10 @@ FINE_DATASET = "gis_dtm_fina"
 STEP_BUDGET_S = 0.2
 """RNF-017-06: cada llamada del hilo de Blender, a lo más 0,2 s."""
 ENTRY_WITH_DATA, ENTRY_STEEP = "Entrada de la cantera de bancos", "Entrada del tajo"
+
+
+def never(request: Any) -> Any:  # solo declara que se repite sola
+    raise AssertionError("las pruebas del «verde» no recalculan ni reproducen: lo hace el hito")
 
 
 def drive[T](work: Generator[None, None, T]) -> T:
@@ -157,6 +168,13 @@ class AccessProjectTest(PrepareCase):
     """RF-017-24, RF-017-25, RF-017-04, RF-015-03, RF-015-08 y RF-015-29: preparar, rechazar y calcular sobre el proyecto (una sola copia: ninguna prueba de la clase cambia el
     proyecto), siempre **sin escribir nada**. Lo que cambia el proyecto (cerrar una versión, escribir las bermas y las dos superficies de una cantera) es de
     ``milestone_access_operation``."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        core_params.register_families(design_params.ACCESS_FAMILIES)  # los parámetros de la entidad, que escribe «Crear»
+        cls.addClassCleanup(core_params.unregister_families, "des")
+        cls.enterClassContext(registered(provenance.operation_def(provenance.ROAD_ACCESS, never), *provenance.ACCESS_FIGURES))
 
     # --- Lo que se lee (RF-017-24, RF-017-25, RF-015-03, RF-015-08) ---
 
@@ -286,17 +304,42 @@ class AccessProjectTest(PrepareCase):
             calculation.discard()
         self.assertEqual(self.state(), before)
 
-    def test_creating_is_for_the_next_task(self) -> None:
-        """T17: crear la accesibilidad es de la T17b: la ``Calculation`` lo dice (``NotImplementedError``) sin escribir nada y sin cerrarse."""
+    def test_closing_the_creation_halfway_leaves_nothing(self) -> None:
+        """RF-015-29, RF-017-30, RF-015-02: «Crear» por pasos escribe la rejilla y las tablas en su temporal (cada paso, mínimo) y, cerrado a mitad (Esc), **no deja nada**: ni
+        operación, ni dato, ni parámetro, ni fichero (ni temporales), y el cálculo queda descartado."""
         calculation = run(steps.access_run(self.project, request(), version=self.v1.uid, masks=self.masks_v1))
         before = self.state()
-        try:
-            with self.assertRaises(NotImplementedError):
-                calculation.create()
-            self.assertEqual(self.state(), before)
-            self.assertTrue(calculation.open)
-        finally:
-            calculation.discard()
+        work = calculation.create_steps(budget_s=1e-9)
+        taken = [next(work) for _ in range(6)]
+        self.assertTrue(all(step.result is None for step in taken))
+        self.assertTrue([name for name in self.state()["files"] if ".tmp" in name], "a mitad ya hay un temporal: lo que se cierra es lo que se escribió")
+        work.close()
+        self.assertFalse(calculation.open)
+        self.assertEqual(self.state(), before)
+        with self.assertRaises(RuntimeError):
+            list(calculation.create_steps())
+
+    def test_a_failure_while_registering_leaves_nothing(self) -> None:
+        """RF-015-02, RF-015-29: «Crear» es **una** transacción, todo o nada: si falla la escritura de la segunda tabla —cuando ya están escritos los parámetros de la entidad, abierta la
+        operación y puesta la rejilla en su sitio— no queda ni la operación, ni los datos, ni los parámetros, ni una cifra, ni un fichero (ni temporales) y el cálculo queda descartado."""
+        calculation = run(steps.access_run(self.project, request("Fallida"), version=self.v1.uid, masks=self.masks_v1))
+        before = self.state()
+        calls: list[str] = []
+        real = store.DesignWriter._write_table
+
+        def breaks(writer: Any, conn: Any, table: Any) -> None:
+            calls.append(table.family)
+            if len(calls) == 2:
+                raise RuntimeError("falla la segunda tabla")
+            real(writer, conn, table)
+
+        with mock.patch.object(store.DesignWriter, "_write_table", breaks):
+            with self.assertRaises(RuntimeError):
+                calculation.create(decided_by="Samuel (IMGA)")
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(calculation.open)
+        self.assertEqual(self.state(), before, "ha quedado algo de una creación fallida")
+        self.assertEqual([name for name in self.state()["files"] if ".tmp" in name], [])
 
     def test_closing_halfway_leaves_nothing(self) -> None:
         """RF-015-29, RF-017-30: cerrar el generador a mitad del cálculo (Esc, desactivar Geoblender) no deja nada: el estado del proyecto es el de antes; ni operación, ni
@@ -360,6 +403,23 @@ class ReadingsTest(unittest.TestCase):
         np.testing.assert_array_equal(found[1].cells, np.flatnonzero(second.ravel()))
         self.assertEqual(found[0].cells.dtype, np.int64)
         self.assertEqual(access_store.access_zones(SimpleNamespace(grid=grid, zones={}, ctypes={})), ())
+
+    def test_the_request_is_rebuilt_from_its_settings_and_its_parameters(self) -> None:
+        """RF-017-24, RF-015-02 (recalcular y reproducir): ``provenance.access_request`` es la inversa de ``access_settings`` con los valores de la entidad (por último segmento de su
+        clave): da la misma petición, con y sin campo de nombre y con y sin datos de bermas; lo que no son sus ajustes o sus valores se rechaza nombrando el campo."""
+        for asked in (request(), request("Con bermas", berms=(BERMS_DATASET, "des_brm_otra"), name_field=None), request("Otros umbrales", walk_slope_pct=12.5, walk_width_m=3.0)):
+            with self.subTest(name=asked.name):
+                again = provenance.access_request(provenance.access_settings(asked, CODE), access_store.access_values(asked, CODE))
+                self.assertEqual(again, asked)
+        asked = request()
+        settings, values = provenance.access_settings(asked, CODE), access_store.access_values(asked, CODE)
+        for bad_settings, bad_values, field in (({**settings, "name": ""}, values, "name"), ({k: v for k, v in settings.items() if k != "entries"}, values, "entries"),
+                                                (settings, {k: v for k, v in values.items() if k != "surface"}, "surface"),
+                                                (settings, {**values, "walk_width_m": "ancho"}, "walk_width_m"), (settings, {**values, "otra": 1}, "otra"),
+                                                (settings, {**values, "berms": 4}, "berms")):
+            with self.subTest(field=field), self.assertRaises(ValueError) as caught:
+                provenance.access_request(bad_settings, bad_values)
+            self.assertIn(field, str(caught.exception))
 
     def test_a_footprint_in_runs_is_a_list_of_cells(self) -> None:
         """RF-017-25: la huella de una plataforma (tramos de fila ``(fila, primera, final excluida)``) son sus celdas por índice en filas; sin tramos, ninguna."""
@@ -485,6 +545,67 @@ class ComputeTest(unittest.TestCase):
         self.assertEqual((job.surface.tobytes(), job.untouchable.tobytes()), before)
         compute(access_store.access_compute_steps(job))
         self.assertEqual((job.surface.tobytes(), job.untouchable.tobytes()), before)
+
+
+    # --- Lo que se guarda (T17b): la rejilla de lo alcanzable y las filas de sus tablas, sin proyecto ---
+
+    def test_the_reachable_grid_is_one_and_zero(self) -> None:
+        """RF-017-24, plan 017 §5.2.3: la rejilla que se guarda (``des_acc_``) es la de lo alcanzable como 1 (alcanzable) y 0 (no), float64 de la rejilla entera, sin NaN."""
+        grid = access_store.reachable_grid(self.outcome)
+        self.assertEqual((grid.shape, grid.dtype), (self.outcome.reachable.shape, np.float64))
+        self.assertEqual(set(np.unique(grid).tolist()), {0.0, 1.0})
+        np.testing.assert_array_equal(grid == 1.0, self.outcome.reachable)
+        self.assertEqual(int(grid.sum()), int(self.outcome.reachable.sum()))
+
+    def test_the_rows_of_the_tables_are_what_was_computed(self) -> None:
+        """RF-017-25, plan 017 §5.2.3: una fila por tramo de berma (``des_acb_``: tramo, dato de que sale, cota real, área, si se comunica y su lugar), por plataforma (``des_acp_``:
+        código, si se comunica y la cota a que se llega) y por zona (``des_acz_``: código, si se comunica y, de la que no, su lugar, la distancia y la diferencia de cota), en el orden de
+        lo calculado y con la **forma** de las columnas de ``store.columns_of`` (la tabla de cada familia)."""
+        berms = access_store.berm_rows(self.outcome)
+        self.assertEqual(len(berms), 4)
+        self.assertEqual(berms, [(item.number, item.source, item.level_m, item.area_m2, int(item.connected), item.x, item.y) for item in self.outcome.berms])
+        self.assertEqual(sorted(row[4] for row in berms), [0, 1, 1, 1])
+        self.assertEqual(access_store.platform_rows(self.outcome),
+                         [(item.code, int(item.connected), item.level_m) for item in self.outcome.platforms])
+        self.assertEqual(len(access_store.platform_rows(self.outcome)), 1)
+        zones = access_store.zone_rows(self.outcome)
+        self.assertEqual(zones, [(item.code, int(item.connected), item.x, item.y, item.distance_m, item.level_difference_m) for item in self.outcome.zones])
+        by_code = {row[0]: row for row in zones}
+        self.assertEqual(by_code["zona_con_acceso"][1:], (1, None, None, None, None))
+        self.assertEqual((by_code["zona_sin_acceso"][1], by_code["zona_sin_acceso"][4], by_code["zona_sin_acceso"][5]), (0, 18.0, 10.0))
+        for family, found in ((provenance.ACCESS_BERMS_TABLE, berms), (provenance.ACCESS_PLATFORMS_TABLE, access_store.platform_rows(self.outcome)), (provenance.ACCESS_ZONES_TABLE, zones)):
+            columns = store.columns_of(provenance.ROAD_ACCESS, family)
+            self.assertTrue(all(len(row) == len(columns) for row in found), family)
+        self.assertEqual([column.name for column in store.columns_of(provenance.ROAD_ACCESS, provenance.ACCESS_ZONES_TABLE)],
+                         ["code", "connected", "x", "y", "distance_m", "level_difference_m"])
+        self.assertEqual(store.columns_of(provenance.ROAD_ACCESS, provenance.ENTITY_REPORT_TABLE), store.REPORT_COLUMNS)
+        with self.assertRaises(KeyError):
+            store.columns_of(provenance.ROAD_ACCESS, provenance.ACCESS_GRID)  # una rejilla no es una tabla
+
+    def test_the_report_has_the_counts_the_levels_and_every_notice_with_its_code(self) -> None:
+        """RF-017-24, RF-017-25: ``des_prp_`` (formato largo: ``quantity, value, unit_code, note``) lleva cuántas bermas, plataformas y zonas hay y cuántas se comunican, las cotas y el
+        área alcanzables y **cada aviso con su código y sus valores** (no su texto), en su orden; nada es NaN ni infinito."""
+        outcome = compute(access_store.access_compute_steps(bank_job(entries=(rd.BANK_ENTRY, rd.PIT_ENTRY))))
+        rows = access_store.access_report_rows(outcome)
+        counts = {row[0]: row[1] for row in rows if row[1] is not None}
+        self.assertEqual({key: counts[key] for key in ("berms", "berms_reached", "platforms", "platforms_reached", "zones", "zones_reached")},
+                         {"berms": 4.0, "berms_reached": 3.0, "platforms": 1.0, "platforms_reached": 1.0, "zones": 2.0, "zones_reached": 1.0})
+        self.assertEqual((counts["z_min_m"], counts["z_max_m"], counts["area_m2"]), (115.0, 140.0, outcome.area_m2))
+        self.assertEqual({row[0]: row[2] for row in rows if row[1] is not None}["z_min_m"], "m")
+        told = [json.loads(row[3])["code"] for row in rows if row[0] in ("warning", "note")]
+        self.assertEqual(told, [notice.code for notice in outcome.notices])
+        self.assertIn("des.access_entry_not_walkable", told)
+        for row in rows:
+            self.assertEqual(len(row), 4)
+            self.assertTrue(row[1] is None or np.isfinite(row[1]), row)
+        nothing = compute(access_store.access_compute_steps(bank_job(entries=(rd.PIT_ENTRY,))))
+        self.assertNotIn("z_min_m", [row[0] for row in access_store.access_report_rows(nothing)])  # sin celdas alcanzadas no hay cotas
+
+    def test_the_final_level_is_in_the_report_only_with_a_final_surface(self) -> None:
+        """RF-017-24 (error 23): la cota mínima sobre la final, ``z_min_final_m``, solo sale con una superficie final."""
+        with_final = compute(access_store.access_compute_steps(bank_job(final=rd.bank_surface(GRID) + 10.0)))
+        self.assertEqual({row[0]: row[1] for row in access_store.access_report_rows(with_final)}["z_min_final_m"], 125.0)
+        self.assertNotIn("z_min_final_m", [row[0] for row in access_store.access_report_rows(self.outcome)])
 
 
 class SummaryTest(unittest.TestCase):

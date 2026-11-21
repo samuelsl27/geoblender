@@ -48,7 +48,9 @@ banda de filas, una banda de escritura, una lectura) y cuyo último paso lleva e
 - :func:`access_run` (spec 017, T17; RF-017-24, RF-017-25, RF-015-03, RF-015-29): «Calcular» la accesibilidad de las pistas (``des.road_access``, de una versión, sin cadena y
   sin huella) del mismo modo: deja el **resultado** (``design.road_model.AccessOutcome``, con las cifras y los avisos) y el **resumen**
   (:class:`~.access_store.AccessSummary`: las cotas, las listas de bermas, plataformas y zonas «requiere acceso» comunicadas o no, los avisos y lo que quedará obsoleto al
-  repetirla) y **nada en el proyecto**. Crearla es de la T17b (:meth:`Calculation.create` dice que aún no está).
+  repetirla) y **nada en el proyecto**. Crearla (T17b; RF-015-02, RNF-017-10) es :meth:`Calculation.create` o, por pasos, :meth:`Calculation.create_steps`: la rejilla de lo
+  alcanzable y las tablas se preparan en su temporal y **una** transacción registra los parámetros de la entidad, la operación, los datos y las cifras
+  (:func:`~.access_store.create_access_steps`).
 - :func:`removal_run` (spec 016, T20; RF-016-11 a 15, RF-015-03, RF-015-29): «Calcular» la retirada de un acopio
   (``des.stockpile_removal``) del mismo modo: deja la superficie (``des_psf_``) en un temporal, el **resumen**
   (:class:`~.preview.RemovalSummary`: las cifras, **la lista de lo que se le apoyaba**, la pared y lo que pide confirmar) y
@@ -345,13 +347,16 @@ class Calculation:
         (``DesignError`` ``des.platform_counter_unconfirmed``) **antes de escribir nada y sin cerrar el
         cálculo**: se confirma (:meth:`confirm_counterslope`) y se vuelve a crear.
 
+        **Una accesibilidad** (spec 017, T17b; RF-017-24, RF-015-02) se registra del mismo modo con :func:`~.access_store.create_access_steps`: la rejilla de lo alcanzable y las
+        cuatro tablas se preparan y se escriben en su temporal, y una sola transacción registra los parámetros de la entidad, la operación con sus entradas, los datos y las cifras.
+
         **Una detección de acopios** (spec 016, T13; RF-016-02, RF-015-02) se registra con
         :func:`~.stockpile_store.create_detection_steps`, la misma en el proyecto (``des.stockpile_detect_project``) y en una
         versión (``des.stockpile_detect``): las tablas y las rejillas dispersas se preparan y se escriben en su temporal, y
         una sola transacción registra los parámetros de la entidad, la operación, los datos y las cifras. Es
         :meth:`create_steps` llevado hasta el final. ``decided_by``: el decisor de los parámetros de la entidad (por defecto,
         quien tiene abierto el proyecto)."""
-        if isinstance(self.entity, stockpile_store.PreparedDetection):
+        if isinstance(self.entity, stockpile_store.PreparedDetection | access_store.PreparedAccess):
             stored: store.Stored | None = None
             for step in self.create_steps(decided_by=decided_by):
                 if step.result is not None:
@@ -360,9 +365,6 @@ class Calculation:
             return stored
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
-        if isinstance(self.entity, access_store.PreparedAccess):
-            raise NotImplementedError("crear la accesibilidad (des.road_access) aún no está: lo hace la T17b de la 017 (crear en una transacción, recalcular, "
-                                      "reproducir y la lectura para la 012); «Calcular» solo prepara y calcula, y no escribe nada")
         if isinstance(self.entity, supported_store.PreparedRemoval):
             return self._create_removal(self.entity, decided_by)
         if isinstance(self.entity, supported_store.PreparedBody):
@@ -444,28 +446,35 @@ class Calculation:
 
     def create_steps(self, *, decided_by: str | None = None, budget_s: float = STEP_BUDGET_S
                      ) -> Generator[Progress, None, None]:
-        """**«Crear» una detección de acopios por pasos** (spec 016, T13; RF-016-02, RNF-016-03 y 05): lo que hace
-        :meth:`create`, con cada llamada del hilo de Blender de ``budget_s`` como mucho (montar y escribir cada rejilla dispersa
-        y cada tabla en su temporal, por pasos) y la transacción final como último paso; el último ``Progress`` lleva lo
+        """**«Crear» una detección de acopios o una accesibilidad por pasos** (spec 016, T13; RF-016-02, RNF-016-03 y 05; spec 017, T17b;
+        RF-017-24, RF-017-30): lo que hace :meth:`create`, con cada llamada del hilo de Blender de ``budget_s`` como mucho (montar y escribir
+        cada rejilla y cada tabla en su temporal, por pasos) y la transacción final como último paso; el último ``Progress`` lleva lo
         guardado (:class:`~.store.Stored`) en ``result``. Cerrar el generador antes (Esc), un fallo o lo que consume cambiado
         desde que se calculó (``des.input_changed``) **no dejan nada** y descartan el cálculo. ``RuntimeError`` si ya no está
-        abierto; ``TypeError`` si no es una detección de acopios."""
+        abierto; ``TypeError`` si no es una detección de acopios ni una accesibilidad."""
         found = self.entity
-        if not isinstance(found, stockpile_store.PreparedDetection):
-            raise TypeError(f"solo una detección de acopios se crea por pasos, no «{self.op_type}»")
+        if not isinstance(found, stockpile_store.PreparedDetection | access_store.PreparedAccess):
+            raise TypeError(f"solo una detección de acopios o una accesibilidad se crea por pasos, no «{self.op_type}»")
         if self._state != _READY:
             raise RuntimeError(f"el cálculo «{self.name}» ya no está abierto ({self._state})")
         outcome = self.outcome
-        assert isinstance(outcome, stockpiles.StockpileOutcome)
         try:
             self._check_parameters()
-            stored: store.Stored = yield from stockpile_store.create_detection_steps(
-                self._project, self._writer, found, outcome, decided_by=decided_by, budget_s=budget_s)
+            if isinstance(found, access_store.PreparedAccess):
+                assert isinstance(outcome, AccessOutcome)
+                stored: store.Stored = yield from access_store.create_access_steps(
+                    self._project, self._writer, found, outcome, decided_by=decided_by, budget_s=budget_s)
+                done = f"Accesibilidad «{self.name}» guardada"
+            else:
+                assert isinstance(outcome, stockpiles.StockpileOutcome)
+                stored = yield from stockpile_store.create_detection_steps(
+                    self._project, self._writer, found, outcome, decided_by=decided_by, budget_s=budget_s)
+                done = f"Detección «{self.name}» guardada"
         except BaseException:  # un fallo o cerrar el generador: no queda nada
             self.discard()
             raise
         self._state = _CREATED
-        yield Progress(_CREATED_PHASE, 1, 1, f"Detección «{self.name}» guardada", result=stored)
+        yield Progress(_CREATED_PHASE, 1, 1, done, result=stored)
 
     def _platform(self) -> platform.PlatformOutcome:
         """El resultado de una plataforma (``TypeError`` si el cálculo no lo es: un error del programa)."""
@@ -679,7 +688,7 @@ def access_run(project: StoreProject, request: AccessRequest, *, version: str | 
 
     Los rechazos salen **al avanzar**, antes de calcular y sin escribir nada: los de ``prepare_access_units`` (sin versión activa o no editable, la capa de entradas y su campo, los
     parámetros sin valor, la superficie y su rejilla, las bermas, ningún punto de entrada o uno sin dato: RF-017-04). Cerrar el generador a mitad (Esc) o un fallo después de calcular
-    no dejan nada (RF-015-29). **Crear** la accesibilidad es de la T17b: :meth:`Calculation.create` lo dice (``NotImplementedError``)."""
+    no dejan nada (RF-015-29). **Crear** la accesibilidad es :meth:`Calculation.create` o :meth:`Calculation.create_steps` (T17b)."""
     return _access_steps(project, request, version, masks, code, supersedes, budget_s)
 
 

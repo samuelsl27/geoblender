@@ -255,6 +255,9 @@ if TYPE_CHECKING:  # solo para los tipos: importarlos arrastraría los cálculos
     from .report import DesignReport
 
 __all__ = [
+    "ACCESS_BERM_COLUMNS",
+    "ACCESS_PLATFORM_COLUMNS",
+    "ACCESS_ZONE_COLUMNS",
     "BERM_COLUMNS",
     "BUTTRESS_ENTITY_COLUMNS",
     "CANDIDATE_COLUMNS",
@@ -426,11 +429,33 @@ marca** que pasó los filtros (también los ya convertidos o descartados; nunca 
 (``c03``, estable al repetir por la regla de D-23), su estado (``pending``, ``converted`` o ``discarded``), el motivo, el decisor
 y la fecha de su decisión, su huella en tramos (``footprint``, como en ``des_stk_``), su área, su volumen sobre su plano y el
 plano en el centro (cota, pendiente en % y azimut)."""
+ACCESS_BERM_COLUMNS: tuple[ColumnDef, ...] = (
+    ColumnDef("stretch", "INTEGER", True), ColumnDef("source", "TEXT", False), ColumnDef("level_m", "DOUBLE", True),
+    ColumnDef("area_m2", "DOUBLE", True), ColumnDef("connected", "INTEGER", True), ColumnDef("x", "DOUBLE", True),
+    ColumnDef("y", "DOUBLE", True))
+"""Las columnas de ``des_acb_`` (spec 017, T17b; plan 017 §5.2.3: «bermas: tramo, cota real, área, comunicado»): **una fila por tramo de
+berma** de las rejillas de cotas de berma de la 013 con al menos el área mínima de berma, con su número (``stretch``), el nombre del dato de
+bermas de que sale (``source``), su cota real (m), su área (m²), si queda comunicado (``connected``: 1 o 0) y su lugar (``x`` e ``y``
+absolutos, m)."""
+ACCESS_PLATFORM_COLUMNS: tuple[ColumnDef, ...] = (
+    ColumnDef("code", "TEXT", True), ColumnDef("connected", "INTEGER", True), ColumnDef("level_m", "DOUBLE", False))
+"""Las columnas de ``des_acp_`` (spec 017, T17b; plan 017 §5.2.3: «plataformas: código, cota a que se llega, comunicada»): **una fila por
+plataforma viva y calculada** de la versión, con su código (``PLT-001``), si queda comunicada (``connected``: 1 o 0) y la cota a que se llega
+(``level_m``, la menor de las celdas alcanzables de su huella; vacía si no se comunica)."""
+ACCESS_ZONE_COLUMNS: tuple[ColumnDef, ...] = (
+    ColumnDef("code", "TEXT", True), ColumnDef("connected", "INTEGER", True), ColumnDef("x", "DOUBLE", False),
+    ColumnDef("y", "DOUBLE", False), ColumnDef("distance_m", "DOUBLE", False), ColumnDef("level_difference_m", "DOUBLE", False))
+"""Las columnas de ``des_acz_`` (spec 017, T17b; plan 017 §5.2.3: «zonas «requiere acceso»: código, comunicada, lugar, distancia y diferencia
+de cota»): **una fila por zona «requiere acceso» de la 012** (una por restricción de ese tipo), con su código (el de la restricción), si queda
+comunicada (``connected``: 1 o 0) y, de la que no, su lugar (``x`` e ``y`` absolutos), la distancia (m) y la diferencia de cota (m, con signo) a
+lo alcanzable más próximo; vacíos los que no se dan. **Lo que lee la verificación de la 012 por su papel** (``access_zones``)."""
 _COLUMNS: Mapping[str, tuple[ColumnDef, ...]] = MappingProxyType({
     provenance.BERM_TABLE: BERM_COLUMNS, provenance.REPORT_TABLE: REPORT_COLUMNS,
     provenance.QUARRY_REPORT_TABLE: REPORT_COLUMNS, provenance.EDGE_REPORT_TABLE: REPORT_COLUMNS,
     provenance.ENTITY_TABLE: ENTITY_COLUMNS, provenance.ENTITY_REPORT_TABLE: REPORT_COLUMNS,
-    provenance.STOCKPILES_TABLE: STOCKPILE_COLUMNS, provenance.STOCKPILE_CANDIDATES_TABLE: CANDIDATE_COLUMNS})
+    provenance.STOCKPILES_TABLE: STOCKPILE_COLUMNS, provenance.STOCKPILE_CANDIDATES_TABLE: CANDIDATE_COLUMNS,
+    provenance.ACCESS_BERMS_TABLE: ACCESS_BERM_COLUMNS, provenance.ACCESS_PLATFORMS_TABLE: ACCESS_PLATFORM_COLUMNS,
+    provenance.ACCESS_ZONES_TABLE: ACCESS_ZONE_COLUMNS})
 
 
 BUTTRESS_ENTITY_COLUMNS: tuple[ColumnDef, ...] = (*ENTITY_COLUMNS, ColumnDef("zone", "TEXT", True))
@@ -2014,7 +2039,8 @@ entidades (T17; ``design.entity_store.recompute_declaration``) y la capa de enti
 ``design.entity_store.recompute_entity_layer``) y, de la 016 (T03), los cuatro tipos de entidad
 (:data:`~.provenance.SUPPORTED_TYPES`: la detección de acopios, de versión y **de proyecto** —T04, D-15—, su retirada, el
 contrafuerte y el cuerpo apoyado) y, de la 017 (T03), la pista, la accesibilidad de las pistas y «Proponer el trazado»
-(:data:`~.provenance.ROAD_VERSION_TYPES`; **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace). La detección de acopios se repite desde la T14
+(:data:`~.provenance.ROAD_VERSION_TYPES`; la accesibilidad se repite desde la T17b, ``design.access_store.recompute_access``; la pista y la
+propuesta, **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace). La detección de acopios se repite desde la T14
 (``design.stockpile_store.recompute_detection``, en el proyecto o en su versión) y su retirada desde la T20
 (``design.supported_store.recompute_removal``) y el cuerpo apoyado desde la T25 (``design.supported_store.recompute_body``); el otro,
 **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace
@@ -3890,9 +3916,8 @@ def run_refit(project: StoreProject, request: RefitRequest, *, version: str | No
 
 
 _ROAD_TASKS: Mapping[str, str] = MappingProxyType({
-    provenance.ROAD: "la pista, T21 y T22", provenance.ROAD_ACCESS: "la accesibilidad, T17",
-    provenance.ROAD_PROPOSE: "proponer el trazado, T27"})
-"""Qué tarea de la 017 da su cálculo a cada tipo (el aviso de ``recompute_run`` mientras no lo tenga)."""
+    provenance.ROAD: "la pista, T21 y T22", provenance.ROAD_PROPOSE: "proponer el trazado, T27"})
+"""Qué tarea de la 017 da su cálculo a cada tipo que aún no lo tiene (el aviso de ``recompute_run``; la accesibilidad lo tiene desde la T17b)."""
 _NO_REST_TYPES = frozenset({provenance.ENVELOPE, provenance.EXCAVATION_AREA, provenance.DECLARE_CONSTRAINTS,
                             provenance.ENTITY_LAYER, *provenance.STOCKPILE_DETECT_TYPES, provenance.ROAD_ACCESS,
                             provenance.ROAD_PROPOSE})
@@ -4018,9 +4043,13 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         # Un tipo de la 016 sin cálculo (ya no queda ninguno: la T27 puso el último). Nunca cae en un escalonado.
         raise NotImplementedError(f"«{request.op_type}» aún no se recalcula: lo hace la tarea de la 016 que crea "
                                   "su operación")
+    if request.op_type == provenance.ROAD_ACCESS:
+        from . import access_store  # al usarlo: access_store importa este módulo
+
+        return access_store.recompute_access(request, budget_s=budget_s)
     if request.op_type in provenance.ROAD_VERSION_TYPES:
-        # Los tres tipos de la 017 (T03): sin cálculo todavía; las tareas que crean cada operación lo ponen aquí (T17 la accesibilidad,
-        # T21 y T22 la pista y T27 «Proponer el trazado»). Nunca cae en un escalonado.
+        # Los otros dos tipos de la 017 (T03): sin cálculo todavía; las tareas que crean cada operación lo ponen aquí (T21 y T22 la pista y T27
+        # «Proponer el trazado»; la accesibilidad es de la T17b, arriba). Nunca cae en un escalonado.
         raise NotImplementedError(f"«{request.op_type}» aún no se recalcula: lo hace la tarea de la 017 que crea su operación "
                                   f"({_ROAD_TASKS[request.op_type]})")
     return run_design(project, provenance.design_request(request.settings),

@@ -478,6 +478,7 @@ __all__ = [
     "access_figures",
     "access_inputs",
     "access_params",
+    "access_request",
     "access_settings",
     "body_figures",
     "body_inputs",
@@ -3896,6 +3897,31 @@ def access_settings(request: AccessRequest, code: str) -> dict[str, Any]:
         raise TypeError(f"los ajustes de una accesibilidad salen de una AccessRequest, no {request!r}")
     _typed_code(code, "access", "una accesibilidad")
     return {"name": request.name, "code": code, "entries": {"name_field": request.entries.name_field}}
+
+
+def access_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]) -> AccessRequest:
+    """La accesibilidad que repiten los ajustes ``settings`` de una operación ``des.road_access`` (los de :func:`access_settings`) con los valores de los
+    parámetros de su entidad ``parameters`` (por último segmento: :func:`supported_values`): al recalcularla y al reproducirla (spec 017, T17b; RF-017-24,
+    RF-015-02). Es la inversa de :func:`access_settings` junto con los valores de la entidad (:func:`~.access_store.access_values`): la superficie, la capa de
+    entradas, los datos de bermas (sus nombres, separados por comas) y los tres umbrales salen de los parámetros (cambiar uno repite la operación con el nuevo) y
+    el nombre y el campo del nombre de los puntos, de los ajustes; lo que no tiene valor queda ``None`` sin pedirlo. ``ValueError`` si no son los de una
+    accesibilidad (nombrando el campo)."""
+    from .road_model import AccessRequest, LayerFields  # al usarlo: habilitar no la crea (RNF-001-03)
+    what = "los ajustes de una accesibilidad"
+    values_what = "los valores de una accesibilidad"
+    data = _mapping(settings, what)
+    entries = _mapping(data.get("entries"), f"{what}, «entries»,")
+    values = _values_of(AccessParam, parameters, values_what)
+    layer = _value_text(values, "entries_layer", values_what, required=True)
+    surface = _value_text(values, "surface", values_what, required=True)
+    assert layer is not None and surface is not None
+    listed = _value_text(values, "berms", values_what)
+    return AccessRequest(
+        name=_required_text(data, "name", what),
+        entries=LayerFields(layer, _optional_text(entries, "name_field", f"{what}, «entries»,")), surface=surface,
+        berms=None if listed is None else tuple(part.strip() for part in listed.split(",")),
+        walk_slope_pct=_number(values, "walk_slope_pct", values_what), walk_width_m=_number(values, "walk_width_m", values_what),
+        min_berm_area_m2=_number(values, "min_berm_area_m2", values_what))
 
 
 def road_figures(name: str, code: str, values: Mapping[str, float | None]) -> tuple[FigureSpec, ...]:

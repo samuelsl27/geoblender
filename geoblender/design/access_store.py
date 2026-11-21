@@ -6,7 +6,10 @@ El homólogo, para la accesibilidad (``des.road_access``: una entidad **sin cade
 acopios, sin cadena). **Solo lee**: nada se escribe en el proyecto (RF-015-03) salvo las máscaras de la versión si no estaban al día (una operación propia, RF-013-04, y solo si no se
 dan cargadas). La accesibilidad **no llama a** ``refuse_pending`` (``design.sectors``): no mueve ninguna celda ni cambia ninguna superficie ni restricción (RF-017-25).
 
-**Crear** en una transacción, **recalcular**, **reproducir** y la **lectura para la 012** (la accesibilidad al día hecha sobre una superficie dada, con su tabla de zonas) son de la T17b.
+**Crear** en una transacción, **recalcular**, **reproducir** y la **lectura para la 012** (la accesibilidad al día hecha sobre una superficie dada, con su tabla de zonas) son de la T17b
+(más abajo): :func:`create_access_steps` (la rejilla de lo alcanzable, las cuatro tablas y las cifras en **una** transacción, como la detección de acopios), :func:`run_access` y
+:func:`recompute_access` (el recálculo de «Recalcular lo obsoleto»), ``design.reproduce.reproduce_road_access`` (que comparte con el recálculo ``access_job`` y ``access_compute_steps``) y
+:func:`accessibilities_on` (lo que lee la verificación de la 012 por su papel ``access_zones``, sin importar ``design.entities`` ni ``design.road_*``).
 
 - :func:`access_values` y :func:`prepare_access_units` (y :func:`prepare_access`, de una vez): el código ``ACC-nnn`` (correlativo por versión) y el nombre único, la capa de **puntos de
   entrada** (de puntos, con el campo de su nombre; sus puntos en absolutas float64), los parámetros resueltos y comprobados (la pendiente máxima y el ancho mínimo transitables y el área
@@ -31,8 +34,10 @@ Python puro (nivel 8), con numpy. ``design.access_store`` es un módulo pesado d
 
 from __future__ import annotations
 
+import json
+import math
 import sqlite3
-from collections.abc import Generator, Iterable, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
@@ -42,13 +47,19 @@ import numpy as np
 from ..core.constraints.model import ConstraintType
 from ..core.datasets import registry as dataset_registry
 from ..core.datasets.model import DatasetRecord, DatasetStatus
+from ..core.params import ParameterStore
 from ..core.project.model import Progress
 from ..core.provenance import stale
-from ..core.versions.model import Version
+from ..core.provenance.operations import OperationHandle
+from ..core.provenance.recompute import RecomputeRequest
+from ..core.versions import read as versions_read
+from ..core.versions.model import Version, VersionError
+from ..gis.grid import Grid
 from ..gis.masks import access
 from ..gis.masks.combine import ClassBit
 from ..gis.masks.compile import STEP_BUDGET_S
 from ..gis.messages import GisError
+from ..gis.raster import Raster
 from ..gis.store import StoreProject, load_features
 from ..gis.vector import FeatureLayer
 from . import entities, entity_store, pipeline, provenance, road_access
@@ -59,22 +70,38 @@ from .params import AccessParam, check_entity_param, entity_key
 from .preview import SUMMARY_ITEMS, Notice, Obsolete, ObsoleteKind, obsolete_names
 from .road_model import AccessCells, AccessJob, AccessOutcome, AccessRequest, BermGrid, BermReach, EntryPoint, PlatformReach, ZoneReach
 from .stockpiles import runs_cells
-from .store import OperationStart, _loaded_masks, _start, require_version
+from .store import DesignWriter, OperationStart, Stored, _loaded_masks, _start, _store_steps, design_writer, require_version
 from .surfaces import project_frame, read_surface_steps
 
 __all__ = [
+    "AccessData",
     "AccessSummary",
+    "AccessZone",
+    "Accessibility",
     "PreparedAccess",
     "access_compute_steps",
+    "access_job",
     "access_obsolete",
+    "access_report_rows",
     "access_summary",
     "access_values",
     "access_zones",
+    "accessibilities_on",
+    "berm_rows",
+    "create_access",
+    "create_access_steps",
+    "entry_points",
     "platform_cells",
+    "platform_rows",
     "prepare_access",
     "prepare_access_units",
     "prepared_summary",
+    "reachable_grid",
+    "read_access_zones",
+    "recompute_access",
+    "run_access",
     "untouchable_cells",
+    "zone_rows",
 ]
 
 _KINDS_ES = MappingProxyType({"point": "puntos", "line": "líneas", "polygon": "polígonos"})
@@ -86,6 +113,7 @@ _SURFACE_ROLE = "superficie de la accesibilidad"
 _FINAL_ROLE = "superficie final de la cantera"
 _BERM_ROLE = "rejilla de cotas de berma"
 _PHASE = "access_compute"
+_STORE_PHASE = "access_store"
 _LIVE_STATES = (EntityState.CURRENT, EntityState.STALE, EntityState.SUPPORT_REMOVED)
 """Los estados de una plataforma **viva y calculada**, de la que se lee la huella (como la declaración de restricciones, RF-015-25)."""
 
@@ -213,6 +241,12 @@ def _name_column(layer: FeatureLayer, request: AccessRequest, code: str) -> str 
                       fields=", ".join(column.field for column in fit) or _NO_VALUE)
 
 
+def entry_points(layer: FeatureLayer, request: AccessRequest, code: str) -> tuple[EntryPoint, ...]:
+    """Los puntos de entrada de la capa ``layer`` (la de ``request``, de la accesibilidad ``code``) en absolutas float64: el campo de su nombre que eligió la persona (``des.access_layer_field``
+    si la capa no lo tiene o no es de texto) o, sin él, su ``fid``. Lo comparten preparar y reproducir (``design.reproduce``, de la capa congelada)."""
+    return _entry_points(layer, _name_column(layer, request, code))
+
+
 def _entry_points(layer: FeatureLayer, column: str | None) -> tuple[EntryPoint, ...]:
     """Los puntos de la capa en absolutas float64, en el orden de la capa: uno por punto de cada entidad, con el nombre de su campo o, sin él (o en blanco), su ``fid``; las
     entidades de varios puntos los numeran (``nombre #2``)."""
@@ -326,6 +360,14 @@ def _berm_names(project: StoreProject, version: Version, request: AccessRequest,
     return names, tuple(tables)
 
 
+def access_job(request: AccessRequest, code: str, values: Mapping[str, Any], grid: Grid, surface: np.ndarray, entries: Sequence[EntryPoint], untouchable: np.ndarray, *,
+               final: np.ndarray | None = None, berms: Sequence[BermGrid] = (), platforms: Sequence[AccessCells] = (), zones: Sequence[AccessCells] = ()) -> AccessJob:
+    """El ``AccessJob`` de la accesibilidad ``request`` (de código ``code``) con lo leído y los valores resueltos ``values`` (:func:`access_values`: los tres umbrales): lo que comparten
+    preparar (del proyecto) y reproducir (de lo congelado), para que calculen **el mismo trabajo**. Los rechazos de ``AccessJob`` son errores del programa."""
+    return AccessJob(request, code, grid, surface, tuple(entries), untouchable, values[AccessParam.WALK_SLOPE.value], values[AccessParam.WALK_WIDTH.value],
+                     values[AccessParam.MIN_BERM_AREA.value], final, tuple(berms), tuple(platforms), tuple(zones))
+
+
 # --- Preparar -----------------------------------------------------------------------------------
 
 
@@ -367,9 +409,7 @@ def prepare_access_units(project: StoreProject, request: AccessRequest, version:
         berms.append(BermGrid(name, levels))
     yield
     platforms, footprints = _platforms(project, version, grid.ncols)
-    job = AccessJob(
-        request, chosen, grid, surface.values, entries, untouchable_cells(masks), values[AccessParam.WALK_SLOPE.value], values[AccessParam.WALK_WIDTH.value],
-        values[AccessParam.MIN_BERM_AREA.value], final, tuple(berms), platforms, access_zones(masks))
+    job = access_job(request, chosen, values, grid, surface.values, entries, untouchable_cells(masks), final=final, berms=berms, platforms=platforms, zones=access_zones(masks))
     road_access.entry_cells(job)  # RF-017-04: ningún punto de entrada o uno sin dato se rechaza antes de calcular
     yield
     inputs = provenance.access_inputs(request.surface, request.layer, masks.uses(), final=final_name, berms=berm_names, berm_tables=berm_tables, footprints=footprints)
@@ -529,3 +569,305 @@ def prepared_summary(project: StoreProject, prepared: PreparedAccess, outcome: A
     crearla (:func:`access_obsolete`). Solo lee."""
     return access_summary(outcome, version=prepared.version.code, surface=prepared.surface, final=prepared.final,
                           obsolete=access_obsolete(project, prepared, supersedes=supersedes))
+
+
+# --- Lo que se guarda (spec 017, T17b; RF-017-24, RF-017-25, RNF-017-10) ----------------------------------------
+
+
+def _json(value: object) -> str:
+    """``value`` como JSON compacto y estable (``allow_nan`` falso: nada que no sea finito; un escalar de numpy, su valor)."""
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False, default=_plain)
+
+
+def _plain(value: object) -> object:
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"el valor {value!r} no se puede guardar como JSON")
+
+
+def _finite(value: float | None, what: str) -> float | None:
+    """``value`` como real finito (``None`` si no lo hay); ``ValueError`` si es NaN o infinito: lo guardado nunca lo es."""
+    if value is None:
+        return None
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{what} no es un número finito: {value!r}")
+    return number
+
+
+def _notice_json(notice: Notice) -> dict[str, object]:
+    return {"code": notice.code, "severity": notice.severity, "values": dict(notice.values)}
+
+
+def reachable_grid(outcome: AccessOutcome) -> np.ndarray:
+    """La rejilla que se guarda como ``des_acc_`` (plan 017 §5.2.3: «lo alcanzable, rejilla con 1 alcanzable y 0 no»): el resultado ``outcome`` como float64 de la rejilla entera, **1,0**
+    en las celdas alcanzables y **0,0** en las demás (sin NaN: una celda no alcanzable tiene dato). Un array nuevo."""
+    return np.where(outcome.reachable, 1.0, 0.0)
+
+
+def berm_rows(outcome: AccessOutcome) -> list[tuple[Any, ...]]:
+    """Las filas de ``des_acb_`` (:data:`~.store.ACCESS_BERM_COLUMNS`; RF-017-25) del resultado ``outcome``: **una por tramo de berma**, en su orden (el de la lectura de las rejillas de
+    bermas), con su número, el dato de bermas de que sale, su cota real, su área, si queda comunicado (1 o 0) y su lugar. Nada es NaN ni infinito (``ValueError``)."""
+    return [(item.number, item.source, _finite(item.level_m, "la cota de un tramo de berma"), _finite(item.area_m2, "el área de un tramo de berma"), int(item.connected),
+             _finite(item.x, "la x de un tramo de berma"), _finite(item.y, "la y de un tramo de berma")) for item in outcome.berms]
+
+
+def platform_rows(outcome: AccessOutcome) -> list[tuple[Any, ...]]:
+    """Las filas de ``des_acp_`` (:data:`~.store.ACCESS_PLATFORM_COLUMNS`; RF-017-25) del resultado ``outcome``: **una por plataforma** de la versión, con su código, si queda comunicada
+    (1 o 0) y la cota a que se llega (vacía si no queda comunicada)."""
+    return [(item.code, int(item.connected), _finite(item.level_m, "la cota de una plataforma")) for item in outcome.platforms]
+
+
+def zone_rows(outcome: AccessOutcome) -> list[tuple[Any, ...]]:
+    """Las filas de ``des_acz_`` (:data:`~.store.ACCESS_ZONE_COLUMNS`; RF-017-25) del resultado ``outcome``: **una por zona «requiere acceso»** de la 012, con su código, si queda comunicada
+    (1 o 0) y, de la que no, su lugar, la distancia y la diferencia de cota a lo alcanzable más próximo (vacíos los que no se dan). **Es lo que lee la verificación de la 012** (T18)."""
+    return [(item.code, int(item.connected), _finite(item.x, "la x de una zona"), _finite(item.y, "la y de una zona"), _finite(item.distance_m, "la distancia de una zona"),
+             _finite(item.level_difference_m, "la diferencia de cota de una zona")) for item in outcome.zones]
+
+
+def access_report_rows(outcome: AccessOutcome) -> list[tuple[Any, ...]]:
+    """Las filas de ``des_prp_`` (formato largo: ``quantity, value, unit_code, note``; :data:`~.store.REPORT_COLUMNS`) del resultado ``outcome``: cuántas bermas, plataformas y zonas hay y
+    cuántas quedan comunicadas, las cotas mínima y máxima alcanzables (solo si se alcanza alguna celda), el área alcanzable, la cota mínima sobre la final de una cantera (solo si la hay) y,
+    al final, **cada aviso con su código y sus valores** en JSON (no su texto), en su orden."""
+    rows: list[tuple[Any, ...]] = [
+        ("berms", float(len(outcome.berms)), "-", None), ("berms_reached", float(sum(1 for item in outcome.berms if item.connected)), "-", None),
+        ("platforms", float(len(outcome.platforms)), "-", None), ("platforms_reached", float(sum(1 for item in outcome.platforms if item.connected)), "-", None),
+        ("zones", float(len(outcome.zones)), "-", None), ("zones_reached", float(sum(1 for item in outcome.zones if item.connected)), "-", None)]
+    if outcome.z_min_m is not None and outcome.z_max_m is not None:
+        rows += [("z_min_m", _finite(outcome.z_min_m, "la cota mínima alcanzable"), "m", None), ("z_max_m", _finite(outcome.z_max_m, "la cota máxima alcanzable"), "m", None)]
+    rows.append(("area_m2", _finite(outcome.area_m2, "el área alcanzable"), "m2", None))
+    if outcome.z_min_final_m is not None:
+        rows.append(("z_min_final_m", _finite(outcome.z_min_final_m, "la cota mínima sobre la final"), "m", None))
+    for notice in outcome.notices:
+        rows.append((notice.severity, None, None, _json(_notice_json(notice))))
+    return rows
+
+
+# --- Crear: en una transacción (RF-015-02, RF-015-29, RNF-017-06) ------------------------------------------------
+
+
+def create_access_steps(project: StoreProject, writer: DesignWriter, prepared: PreparedAccess, outcome: AccessOutcome, *, decided_by: str | None = None, budget_s: float = STEP_BUDGET_S
+                        ) -> Generator[Progress, None, Stored]:
+    """**«Crear» una accesibilidad** por pasos (spec 017, T17b; RF-017-24, RF-017-25, RF-015-01, RF-015-02, RF-015-04; RNF-017-06 y RNF-017-10): prepara cada salida en su temporal —la rejilla
+    de lo alcanzable (``des_acc_``), las tablas de bermas, plataformas y zonas «requiere acceso» (``des_acb_``, ``des_acp_`` y ``des_acz_``) y el informe (``des_prp_``)—, cada una montada y
+    escrita por pasos de ``budget_s`` como mucho, y las registra en **una** transacción (:meth:`~.store.DesignWriter.commit` de ``writer``, el del ámbito de la accesibilidad:
+    ``design_writer``): **los parámetros de la entidad** —todas sus filas, con su origen y el decisor ``decided_by`` (por defecto quien tiene abierto el proyecto)—, la operación con sus
+    entradas (la superficie y la final, la capa de entradas, las máscaras, las bermas y las plataformas: cambiar una la deja obsoleta, RF-008-24), los datos, las cifras con su ámbito y el
+    mensaje. Una entidad que ya estaba en su versión (``prepared.existing``: recalcularla) no vuelve a escribir sus parámetros. Si algo falla, o lo que consume cambió desde que se calculó,
+    no queda nada y el error sigue; **no modifica ninguna capa de entrada**. Cerrar el generador antes de que termine borra los temporales. Devuelve lo guardado
+    (:class:`~.store.Stored`). Todas las salidas se escriben siempre (también vacías: una versión sin plataformas tiene su tabla sin filas)."""
+    if not isinstance(outcome, AccessOutcome):
+        raise TypeError(f"se crea la accesibilidad de un AccessOutcome, no {outcome!r}")
+    name = prepared.job.request.name
+    yield Progress(_STORE_PHASE, 0, 1, f"Guardando la accesibilidad «{name}»…")
+
+    def grid_units() -> Generator[None, None, Any]:
+        values = reachable_grid(outcome)
+        yield
+        return (yield from writer.grid_steps(provenance.ACCESS_GRID, Raster(prepared.job.grid, values, writer.crs, writer.vertical)))
+
+    yield from pipeline.forward(_store_steps(grid_units(), budget_s, "lo alcanzable"))
+    for family, rows, what in ((provenance.ACCESS_BERMS_TABLE, berm_rows(outcome), "la tabla de bermas"), (provenance.ACCESS_PLATFORMS_TABLE, platform_rows(outcome), "la tabla de plataformas"),
+                               (provenance.ACCESS_ZONES_TABLE, zone_rows(outcome), "la tabla de zonas"), (provenance.ENTITY_REPORT_TABLE, access_report_rows(outcome), "el informe")):
+        yield from pipeline.forward(_store_steps(writer.table_steps(family, rows), budget_s, what))
+    yield Progress(_STORE_PHASE, 1, 1, f"Registrando la accesibilidad «{name}»…")
+    resumed = writer.handle is not None  # un recálculo: la operación empezó antes de calcular (``run_access``)
+
+    def parameters(conn: sqlite3.Connection) -> None:
+        if prepared.existing:
+            if ParameterStore(project).get(entity_key(prepared.code, AccessParam.NAME), version=prepared.version_uid, conn=conn) is None:
+                raise ValueError(f"la entidad {prepared.code} no tiene sus parámetros en su versión: no está en ella (se prepara sin su código)")
+        else:
+            entity_store.set_entity_params(project, prepared.rows, version=prepared.version_uid, decided_by=decided_by, conn=conn)
+
+    return writer.commit(None if resumed else prepared.start, figures=outcome.figures, message=outcome.message, before_begin=parameters)
+
+
+def create_access(project: StoreProject, writer: DesignWriter, prepared: PreparedAccess, outcome: AccessOutcome, *, decided_by: str | None = None) -> Stored:
+    """:func:`create_access_steps` de una vez (sin ceder el hilo): lo guardado (:class:`~.store.Stored`), con los mismos rechazos y la misma transacción."""
+    work = create_access_steps(project, writer, prepared, outcome, decided_by=decided_by)
+    while True:
+        try:
+            next(work)
+        except StopIteration as stop:
+            result: Stored = stop.value
+            return result
+
+
+# --- Recalcular (spec 017, T17b; RF-017-24, RF-015-02, RF-015-16; RF-008-26) ---------------------------------------
+
+
+def run_access(project: StoreProject, request: AccessRequest, *, version: str | None, code: str, masks: access.MaskSet | None = None, supersedes: str | None = None,
+               budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Calcula y registra ``request`` —la accesibilidad de la entidad ``code``, que ya está en su versión— de **una vez**, sin pedir confirmación (el recálculo de lo obsoleto,
+    :func:`~.store.recompute_run`; el «Crear» tras «Calcular» es :meth:`~.steps.Calculation.create`): prepara (:func:`prepare_access`: la entidad se reconoce por su ``code``), empieza la
+    operación **antes de calcular** —sustituye a ``supersedes``— con lo que lee hoy (la capa de entradas, la superficie y la final, las bermas, las huellas de las plataformas y las
+    máscaras de la versión) y devuelve su ``OperationHandle`` «en curso» y sus pasos, que avanza quien la llama: calculan (:func:`access_compute_steps`), escriben cada salida en su temporal y
+    completan la operación en una transacción (:func:`create_access_steps` con el escritor reanudado: no escribe los parámetros, que ya están); el último paso lleva lo guardado
+    (:class:`~.store.Stored`). Cerrarlos antes, o un fallo, no dejan nada y la operación queda cancelada o fallida.
+
+    Al llamar, sin empezar nada: los rechazos de :func:`prepare_access`. Al avanzar, antes de escribir nada, ``des.input_changed`` si un parámetro cambió entre prepararla y empezar la
+    operación."""
+    prepared = prepare_access(project, request, version=version, masks=masks, code=code, supersedes=supersedes)
+    handle = prepared.start.begin(project)
+    return handle, _access_run(project, handle, prepared, budget_s)
+
+
+def recompute_access(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+    """Repite la operación ``des.road_access`` de ``request`` (:func:`~.store.recompute_run`; «Recalcular lo obsoleto», RF-008-26; spec 017, T17b; RF-017-24, RF-015-02, RF-015-16): la
+    accesibilidad de sus ajustes (el nombre, el código y el campo del nombre de los puntos de entrada) con los **parámetros vigentes de su entidad en su versión**
+    (:func:`~.entity_store.entity_parameters`: la superficie, la capa de entradas, los datos de bermas y los tres umbrales; los de la versión y, si no, los del proyecto) y no los que leyó
+    la operación que sustituye: una entidad se define por sus parámetros (RF-015-01). La superficie, la final, las bermas, la capa de entradas (su geometría) y las huellas de las
+    plataformas son entradas de la operación: cambiar una la deja obsoleta **entera** y recalcular la repite con lo nuevo. Devuelve lo de :func:`run_access`. ``ValueError`` si los ajustes
+    no son los de una accesibilidad o la petición no es de su tipo."""
+    if not isinstance(request, RecomputeRequest):
+        raise TypeError(f"se recalcula una RecomputeRequest, no {request!r}")
+    if request.op_type != provenance.ROAD_ACCESS:
+        raise ValueError(f"recompute_access repite {provenance.ROAD_ACCESS}, no «{request.op_type}»")
+    project: StoreProject = request.project  # type: ignore[assignment]
+    code = provenance.supported_code(request.settings)
+    found = require_version(project, request.version, request.op_type)
+    asked = provenance.access_request(request.settings, entity_store.entity_parameters(project, code, version=found))
+    return run_access(project, asked, version=found.uid, code=code, supersedes=request.operation_uid, budget_s=budget_s)
+
+
+def _check_recorded(handle: OperationHandle, prepared: PreparedAccess) -> None:
+    """Los parámetros que anotó la operación al empezar son los que leyó el cálculo al prepararse (RF-013-17, D-14): si uno cambió entre las dos cosas, el resultado ya no le corresponde
+    (``des.input_changed``, con el parámetro)."""
+    read = {entity_key(prepared.code, AccessParam(name)): value for name, value in prepared.values.items()}
+    for param in handle.params:
+        if param.key in read and param.value != read[param.key]:
+            raise DesignError("des.input_changed", obj=f"Parámetro «{param.key}»", field="parámetros", value=param.key)
+
+
+def _access_run(project: StoreProject, handle: OperationHandle, prepared: PreparedAccess, budget_s: float) -> Generator[Progress, None, None]:
+    with design_writer(project, handle.op_type, prepared.job.request.name, version=handle.version_uid, handle=handle) as writer:
+        _check_recorded(handle, prepared)
+        outcome: AccessOutcome = yield from access_compute_steps(prepared.job, budget_s=budget_s)
+        stored: Stored = yield from create_access_steps(project, writer, prepared, outcome, budget_s=budget_s)
+        yield Progress(_STORE_PHASE, 1, 1, outcome.message, result=stored)
+
+
+# --- Leer lo guardado: lo que lee la verificación de la 012 (spec 017, T17b; RF-017-25, DIFF-017, P-9) -------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AccessData:
+    """Un dato que escribió una accesibilidad: su ``uid``, su ``name`` (``des_acz_accesibilidad``), su ``locator`` —dónde está en el proyecto: la tabla de su GeoPackage o la ruta relativa de su
+    GeoTIFF— y el ``role`` con que lo anotó la operación (``access_zones``…), que es por lo que lo lee quien lo consume."""
+
+    uid: str
+    name: str
+    locator: str
+    role: str
+
+
+@dataclass(frozen=True, slots=True)
+class AccessZone:
+    """Una fila de la tabla de zonas «requiere acceso» de una accesibilidad (``des_acz_``): el ``code`` de la zona (el de su restricción de la 012), si queda comunicada (``connected``) y,
+    de la que no, su lugar (``x`` e ``y``), la distancia (``distance_m``) y la diferencia de cota (``level_difference_m``) a lo alcanzable más próximo; ``None`` lo que no se da."""
+
+    code: str
+    connected: bool
+    x: float | None = None
+    y: float | None = None
+    distance_m: float | None = None
+    level_difference_m: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Accessibility:
+    """Una accesibilidad de una versión **al día** (spec 017, T17b; :func:`accessibilities_on`; lo que lee la verificación de la 012, DIFF-017) con lo que necesitan sus consumidores: su
+    ``code`` (``ACC-001``), su ``name``, la ``version`` (su código) y su ``version_uid``, la ``operation`` (el uid de la vigente, la que escribió sus datos), la ``surface`` sobre la que se
+    hizo (el nombre de su dato) y la ``final`` de la cantera de dos superficies cuya cota mínima también calculó (``None`` si no la tiene). Y sus datos por su papel
+    (:class:`AccessData`): lo alcanzable (``reachable``), las bermas, las plataformas, las zonas «requiere acceso» (``zones``, el papel :data:`~.provenance.ROAD_ACCESS_ZONES_ROLE`) y el
+    informe; y ``zone_rows``, **la tabla de zonas leída** (:class:`AccessZone`, en el orden de la tabla)."""
+
+    code: str
+    name: str
+    version: str
+    version_uid: str
+    operation: str
+    surface: str
+    final: str | None
+    reachable: AccessData
+    berms: AccessData
+    platforms: AccessData
+    zones: AccessData
+    report: AccessData
+    zone_rows: tuple[AccessZone, ...] = ()
+
+    @property
+    def communicated(self) -> frozenset[str]:
+        """Los códigos de las zonas «requiere acceso» que esta accesibilidad **comunica**: con ellos la 012 da «cumple» a una zona y «no cumple» a la que no está (T18)."""
+        return frozenset(row.code for row in self.zone_rows if row.connected)
+
+
+_ACCESS_OUTPUTS = (
+    "SELECT d.uid, d.name, d.locator, io.role FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "WHERE io.operation_uid = ? AND io.direction = 'out' AND io.item_kind = 'dataset' ORDER BY io.fid")
+_ACCESS_INPUT = (
+    "SELECT d.name FROM gb_operation_io AS io JOIN gb_dataset AS d ON d.uid = io.item_uid "
+    "WHERE io.operation_uid = ? AND io.direction = 'in' AND io.item_kind = 'dataset' AND io.role = ? ORDER BY io.fid")
+
+
+def _zone_table(conn: sqlite3.Connection, locator: str) -> tuple[AccessZone, ...]:
+    """Las filas de la tabla de zonas ``locator`` (``des_acz_<nombre>_<vNN>``), en el orden de la tabla (``fid``)."""
+    found = conn.execute(f'SELECT code, connected, x, y, distance_m, level_difference_m FROM "{locator}" ORDER BY fid').fetchall()
+    return tuple(AccessZone(str(code), bool(connected), None if x is None else float(x), None if y is None else float(y), None if distance is None else float(distance),
+                            None if difference is None else float(difference)) for code, connected, x, y, distance, difference in found)
+
+
+def read_access_zones(project: StoreProject, locator: str, *, conn: sqlite3.Connection | None = None) -> tuple[AccessZone, ...]:
+    """La tabla de zonas «requiere acceso» de una accesibilidad que está en ``locator`` (la tabla de su GeoPackage: lo que dice su registro, :attr:`~core.datasets.DatasetRecord.locator`,
+    o :attr:`AccessData.locator`), en el orden de la tabla. Solo lee; ``conn`` es una conexión de lectura de quien llama (con su instantánea)."""
+    if conn is not None:
+        return _zone_table(conn, locator)
+    with project.read() as reading:
+        return _zone_table(reading, locator)
+
+
+def accessibilities_on(project: StoreProject, version: str, surface: str, *, conn: sqlite3.Connection | None = None) -> tuple[Accessibility, ...]:
+    """Las accesibilidades **al día** hechas sobre la superficie ``surface`` (el nombre de su dato) de la ``version`` (su uid o su código) (spec 017, T17b; RF-017-25, DIFF-017; plan 017
+    §5.4 A12 y §5.7 P-9; lo que lee la verificación de la 012, T18, por el papel de la tabla de zonas, sin importar ``design.entities`` ni ``design.road_*``), por orden de código. Solo
+    cuenta la operación vigente de cada entidad (``entities.registry``) y solo si está **al día**: una obsoleta (cambió la superficie, una pista, una berma, una entrada o un umbral: la 008
+    le da causas), descartada o sin calcular no se da, que es lo que protege a quien la lee de un veredicto de otra cosa. La superficie es la de **su parámetro** ``surface``, que coincide
+    con la que consumió la operación mientras está al día: una hecha sobre otra superficie no se da. Solo lee; ``conn`` es una conexión de lectura de quien llama (con su instantánea).
+    ``VersionError`` (``core.version_unknown``) si la versión no existe; ``ValueError`` si una accesibilidad al día no tiene alguno de sus datos (un proyecto dañado: no se lista a medias)."""
+
+    def read(reading: sqlite3.Connection) -> tuple[Accessibility, ...]:
+        found = versions_read.version(reading, str(version))
+        if found is None:
+            raise VersionError("core.version_unknown", field="versión", value=version, version=version)
+        parameters = ParameterStore(project)
+        listed: list[Accessibility] = []
+        for entry in entities.registry(project, found.uid, conn=reading).entries:
+            record = entry.record
+            if record.kind != EntityKind.ACCESS or entry.operation_uid is None or record.state != EntityState.CURRENT:
+                continue
+            parameter = parameters.get(entity_key(record.code, AccessParam.SURFACE), version=found.uid, conn=reading)
+            if parameter is None or parameter.value != surface:
+                continue
+            listed.append(_accessibility_of(reading, found, record.code, record.name, str(entry.operation_uid), surface))
+        return tuple(listed)
+
+    if conn is not None:
+        return read(conn)
+    with project.read() as reading:
+        return read(reading)
+
+
+def _accessibility_of(conn: sqlite3.Connection, version: Version, code: str, name: str, operation: str, surface: str) -> Accessibility:
+    """La :class:`Accessibility` de la entidad ``code`` cuya operación vigente es ``operation``: sus datos por su papel (uno de cada) y su tabla de zonas leída."""
+    written = [AccessData(str(uid), str(found), str(locator), str(role)) for uid, found, locator, role in conn.execute(_ACCESS_OUTPUTS, (operation,)).fetchall()]
+
+    def one(role: str) -> AccessData:
+        found = [item for item in written if item.role == role]
+        if len(found) != 1:
+            raise ValueError(f"la accesibilidad {code} («{name}») tiene {len(found)} datos con el papel «{role}» en su operación {operation}: tiene que tener uno")
+        return found[0]
+
+    zones = one(provenance.ROAD_ACCESS_ZONES_ROLE)
+    final = conn.execute(_ACCESS_INPUT, (operation, provenance.ACCESS_FINAL_ROLE)).fetchone()
+    return Accessibility(code, name, version.code, version.uid, operation, surface, None if final is None else str(final[0]), one(provenance.ROAD_ACCESS_ROLE),
+                         one(provenance.ROAD_ACCESS_BERMS_ROLE), one(provenance.ROAD_ACCESS_PLATFORMS_ROLE), zones, one(provenance.ENTITY_REPORT_ROLE), _zone_table(conn, zones.locator))
