@@ -48,6 +48,8 @@ caben todos en el mismo proyecto como rejillas distintas y comparten las capas.
 - **Los oráculos propios** (:func:`oracle_slope_pct`, :func:`oracle_reachable`, :func:`erode`, :func:`opening`): la
   pendiente local, el alcance 4-conexo y la apertura de ancho, hechos aquí para comprobar los datos (y las tareas que los usan), no con el
   código de ``road_access``.
+- **El más próximo a lo alcanzable** (:func:`oracle_nearest_reachable`; T16): la celda de una zona más próxima a lo alcanzable, a fuerza bruta (todas las parejas), para comprobar la
+  distancia, el lugar y la diferencia de cota de las zonas «requiere acceso» sin comunicar, independiente de ``design.grids``.
 - **Un trabajo de accesibilidad y la apertura con un disco exacto** (:func:`access_job`, :func:`oracle_disc_opening`; T15): un ``AccessJob`` sobre cualquier rejilla y superficie, con los
   puntos de entrada locales, y la apertura de A10 hecha a mano (la erosión y la dilatación como el ``y`` y el ``o`` de la máscara vista desde cada desplazamiento del disco),
   independiente de ``design.morphology``.
@@ -970,6 +972,29 @@ def oracle_disc_opening(mask: np.ndarray, radius_m: float, cell_m: float) -> np.
     for d_row, d_col in offsets:
         opened |= _shifted(eroded, d_row, d_col, False)
     return opened
+
+
+def oracle_nearest_reachable(cells: Sequence[int] | np.ndarray, reachable: np.ndarray, surface: np.ndarray) -> tuple[int, int, float] | None:
+    """La celda de ``cells`` (índices de la rejilla en filas) **más próxima a lo alcanzable**, a fuerza bruta (todas las parejas, por trozos, con numpy y sin ``design.grids``):
+    ``(distancia² en celdas², su índice, cota)`` con la menor distancia entre centros de celda (a igual distancia, el menor índice) y la menor cota de las celdas alcanzables más
+    próximas a ella (a igual distancia, la más baja); ``None`` si ``cells`` está vacía o no hay ninguna celda alcanzable."""
+    seeds = np.argwhere(np.asarray(reachable, dtype=bool))
+    found = np.sort(np.asarray(cells, dtype=np.int64))
+    if seeds.size == 0 or found.size == 0:
+        return None
+    z = np.asarray(surface, dtype=np.float64)[seeds[:, 0], seeds[:, 1]]
+    seed_rows, seed_cols = seeds[:, 0].astype(np.int32)[None, :], seeds[:, 1].astype(np.int32)[None, :]
+    rows, cols = np.divmod(found, reachable.shape[1])
+    closest = np.empty(found.size, dtype=np.int64)
+    lowest = np.empty(found.size)
+    for start in range(0, found.size, 16):
+        stop = min(found.size, start + 16)
+        d2 = (rows[start:stop, None].astype(np.int32) - seed_rows) ** 2 + (cols[start:stop, None].astype(np.int32) - seed_cols) ** 2
+        near = d2.min(axis=1)
+        closest[start:stop] = near
+        lowest[start:stop] = np.where(d2 == near[:, None], z[None, :], np.inf).min(axis=1)
+    best = int(np.argmin(closest))
+    return int(closest[best]), int(found[best]), float(lowest[best])
 
 
 def access_job(grid: Any, surface: np.ndarray, entries: Sequence[tuple[float, float]], *, untouchable: np.ndarray | None = None, access: AccessData = ACCESS,

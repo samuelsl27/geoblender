@@ -762,7 +762,8 @@ class AccessJob:
 @dataclass(frozen=True, slots=True)
 class BermReach:
     """Un tramo de berma comunicado o no (RF-017-25; ``des_acb_``): su ``number`` (del tramo), su cota real (``level_m``, m),
-    su área (``area_m2``, m²), si queda comunicado (``connected``) y su lugar (``x`` e ``y`` absolutos, m)."""
+    su área (``area_m2``, m²), si queda comunicado (``connected``) y su lugar (``x`` e ``y`` absolutos, m). ``source`` (T16:
+    opcional, compatible hacia atrás) es el nombre del dato de bermas de la 013 de que sale el tramo; ``None`` si no se dice."""
 
     number: int
     level_m: float
@@ -770,6 +771,7 @@ class BermReach:
     connected: bool
     x: float
     y: float
+    source: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.number, bool) or not isinstance(self.number, numbers.Integral):
@@ -783,6 +785,8 @@ class BermReach:
         _flag(self.connected, "«connected» de un tramo de berma")
         object.__setattr__(self, "x", _real(self.x, "la x de un tramo de berma"))
         object.__setattr__(self, "y", _real(self.y, "la y de un tramo de berma"))
+        if self.source is not None:
+            object.__setattr__(self, "source", _label(self.source, "el dato de bermas de un tramo"))
 
 
 @dataclass(frozen=True, slots=True)

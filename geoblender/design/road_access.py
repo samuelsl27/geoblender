@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Lo alcanzable y las cotas de la accesibilidad (spec 017, T15; HU-017-3; RF-017-24 y RF-017-04; RNF-017-05 y RNF-017-06; plan 017 §5.4 A10, D-17 y T15-a). Dominio puro: sin
-proyecto y sin ``bpy``. **La parte de A10**; las bermas, las plataformas y las zonas «requiere acceso» (A11, T16) se añaden a este módulo.
+"""Lo alcanzable, las cotas y lo comunicado de la accesibilidad (spec 017, T15 y T16; HU-017-3; RF-017-24, RF-017-25 y RF-017-04; RNF-017-05 y RNF-017-06; plan 017 §5.4 A10 y
+A11, D-17 y T15-a). Dominio puro: sin proyecto y sin ``bpy``. **A10** (T15: lo alcanzable y las cotas) y **A11** (T16: las bermas, las plataformas y las zonas «requiere acceso»
+comunicadas y la cota mínima sobre la superficie final de una cantera).
 
 Lo que entrega, con las coordenadas absolutas en float64 (regla 4 de AGENTS.md) y todo lo que vuelve de solo lectura:
 
 - :func:`access` (y :func:`access_steps`, por pasos; :func:`access_units`, las unidades para componerlas con otras): el :class:`~.road_model.AccessOutcome` de un
-  :class:`~.road_model.AccessJob` —lo **alcanzable** (una rejilla booleana), las cotas mínima y máxima alcanzables (m) y el área alcanzable (m²)—. No cambia ninguna superficie ni
+  :class:`~.road_model.AccessJob` —lo **alcanzable** (una rejilla booleana), las cotas mínima y máxima alcanzables (m) y el área alcanzable (m²)— y, de A11, la **comunicación** de
+  cada tramo de berma, plataforma y zona «requiere acceso» y la cota mínima alcanzable sobre la superficie final de una cantera con dos superficies. No cambia ninguna superficie ni
   restricción (RF-017-25): lo que lee son vistas de solo lectura.
 - :func:`local_slope_pct`: la **pendiente local** (%) de cada celda, la mayor tangente a sus ocho vecinas con dato (:func:`design.report.max_tangents`, que la plataforma y la pista
   ya usan, por bandas de filas con sus vecinas); sin dato, o sin ninguna vecina con dato, no tiene pendiente (``nan``).
@@ -18,11 +20,21 @@ decisión de la sesión principal T15-a, que arma la preparación en la máscara
 ``ancho / 2`` (:func:`design.morphology.opening_steps`: lo que un disco de ese diámetro puede tocar por dentro: un paso más estrecho desaparece). **Lo alcanzable** son las
 componentes 4-conexas (:func:`design.grids.label_components_steps`) de lo transitable abierto que contienen un punto de entrada.
 
-**Interpretaciones** (la spec y el plan no las dicen; revisables, anotadas en la verificación de T15): (1) una celda con dato y **sin ninguna vecina con dato** no tiene pendiente y no
+**A11** (RF-017-25, D-17; sobre lo alcanzable de la superficie del trabajo, la de explotación): un **tramo de berma** es una componente 4-conexa de las celdas con cota de la rejilla de
+bermas de la 013 (:class:`~.road_model.BermGrid`) con al menos ``min_berm_area_m2`` (los menores **no se listan**), con su cota real (la media de las de sus celdas), su área, su lugar
+(el centroide de sus celdas) y si está **comunicado** (alguna de sus celdas es alcanzable); una **plataforma** está comunicada si alguna celda alcanzable cae en su huella y a la **menor
+cota** de esas celdas; una zona **«requiere acceso»**, si alguna de sus celdas es alcanzable y, si no, con su lugar (su celda más próxima a lo alcanzable), la distancia (m) y la diferencia
+de cota (la de la celda alcanzable más próxima menos la de la celda de la zona). En una cantera con dos superficies (``job.final``), la cota mínima alcanzable sobre la final, con los mismos
+parámetros y la misma máscara de lo intocable.
+
+**Interpretaciones** (la spec y el plan no las dicen; revisables, anotadas en la verificación de T15 y de T16): (1) una celda con dato y **sin ninguna vecina con dato** no tiene pendiente y no
 es transitable; (2) la comparación con la pendiente máxima tiene la tolerancia relativa de :data:`SLOPE_TOLERANCE` (10⁻¹²: el ruido de la última cifra de dividir cotas; una rampa
 justa del 7 % de 0,07 m por metro sale 7,000000000000001 %), muy por debajo de 10⁻⁹ %; (3) un punto de entrada en una celda **no transitable** (en una pendiente, en lo intocable o en
 un paso más estrecho que el ancho mínimo) no alcanza nada y **no se rechaza**: RF-017-04 solo rechaza la capa sin puntos o con uno **sin dato** (una celda sin cota o fuera de la
-rejilla) y se hace **antes de calcular**; (4) las celdas son cuadradas (la rejilla del proyecto lo es) porque el disco de la apertura lo es.
+rejilla) y se hace **antes de calcular**; (4) las celdas son cuadradas (la rejilla del proyecto lo es) porque el disco de la apertura lo es; (5) (T16) el lugar de un tramo de berma es el
+centroide de sus celdas y el de una zona sin comunicar, su celda más próxima a lo alcanzable (a igual distancia, la de menor índice); la cota real de un tramo, la media de las de sus
+celdas; la diferencia de cota de una zona tiene signo (positiva si lo alcanzable más próximo está más alto que la zona); una entrada sin dato en la superficie final no se rechaza (no
+alcanza nada: la cota mínima sobre la final es ``None``).
 
 Los pasos (:func:`access_steps`) ceden el hilo cada ≈ 0,05 s (``pace_progress``; RNF-017-06): la pendiente y las cotas van por bandas de filas, y la apertura y las componentes son
 las de ``morphology`` y ``grids``, por unidades. Cerrar el generador a mitad no deja nada: no escribe nada y no modifica sus entradas (principio 7). **Perezoso** (RNF-001-03): ni
@@ -41,12 +53,12 @@ import numpy as np
 from ..core.project.model import Progress
 from ..gis.grid import Grid
 from ..gis.masks.compile import STEP_BUDGET_S
-from .grids import label_components_steps
+from .grids import label_components_steps, nearest_value_steps
 from .messages import DesignError
 from .morphology import opening_steps
 from .params import AccessParam, entity_key
 from .report import REPORT_CELLS_PER_UNIT, max_tangents, padded_rows
-from .road_model import AccessJob, AccessOutcome
+from .road_model import AccessJob, AccessOutcome, BermGrid, BermReach, PlatformReach, ZoneReach
 from .seeds import pace_progress
 
 __all__ = [
@@ -239,13 +251,122 @@ def access_units(job: AccessJob, *, budget_s: float = STEP_BUDGET_S) -> Generato
 
 def _units(job: AccessJob, entries: tuple[np.ndarray, np.ndarray], budget_s: float) -> Generator[None, None, AccessOutcome]:
     reach = yield from reach_units(job, job.surface, entries, budget_s=budget_s)
-    return AccessOutcome(name=job.request.name, code=job.code, reachable=reach.reachable, z_min_m=reach.z_min_m, z_max_m=reach.z_max_m, area_m2=reach.area_m2)
+    z_min_final: float | None = None
+    if job.final is not None:  # una cantera con dos superficies (error 23): la misma cuenta sobre la final, con los mismos umbrales y lo mismo intocable
+        final = yield from reach_units(job, job.final, entries, budget_s=budget_s)
+        z_min_final = final.z_min_m
+    berms = yield from _berm_units(job, reach.reachable, budget_s)
+    platforms = _platform_reach(job, reach.reachable)
+    yield None
+    zones = yield from _zone_units(job, reach.reachable, budget_s)
+    return AccessOutcome(name=job.request.name, code=job.code, reachable=reach.reachable, z_min_m=reach.z_min_m, z_max_m=reach.z_max_m, area_m2=reach.area_m2,
+                         z_min_final_m=z_min_final, berms=berms, platforms=platforms, zones=zones)
+
+
+# --- Bermas, plataformas y zonas comunicadas (A11) ---------------------------------------------------------------------------------
+
+_STRETCHES_PER_UNIT = 1_000
+"""Los tramos de berma que se construyen en cada unidad de trabajo (≈ 10 µs cada uno con su validación: con los 24.586 del plan, varios pasos de ≤ 0,05 s)."""
+
+
+def _berm_units(job: AccessJob, reachable: np.ndarray, budget_s: float) -> Generator[None, None, tuple[BermReach, ...]]:
+    """Los tramos de berma (A11, RF-017-25) de cada dato de bermas del trabajo, en su orden y numerados de seguido, con ``reachable`` (lo alcanzable sobre la superficie del trabajo)."""
+    found: list[BermReach] = []
+    for berm in job.berms:
+        stretches = yield from _stretch_units(job, berm, reachable, len(found) + 1, budget_s)
+        found.extend(stretches)
+    return tuple(found)
+
+
+def _stretch_units(job: AccessJob, berm: BermGrid, reachable: np.ndarray, first_number: int, budget_s: float) -> Generator[None, None, list[BermReach]]:
+    """Los tramos de ``berm`` (A11): cada **componente 4-conexa** de sus celdas con cota (``label_components_steps``) de al menos ``min_berm_area_m2`` m² (los menores **no se
+    listan**), numerados desde ``first_number`` en el orden de su primera celda recorriendo la rejilla desde el norte, con su **cota real** (la media de las de sus celdas: la de la
+    berma si es plana), su área (m²), su lugar (el centroide de sus celdas, absoluto) y si queda **comunicado** (alguna de sus celdas es alcanzable: ``np.bincount`` con pesos por
+    etiqueta, una pasada por bandas de filas)."""
+    grid = job.grid
+    with_level = np.isfinite(berm.levels)
+    yield None
+    if not with_level.any():
+        return []
+    labels = yield from _drain(label_components_steps(with_level, budget_s=budget_s))
+    total = labels.count + 1
+    level_sum, row_sum, col_sum, reached = (np.zeros(total) for _ in range(4))
+    per = _band_rows(grid, None)
+    for first in range(0, grid.nrows, per):
+        last = min(grid.nrows, first + per)
+        band = labels.grid[first:last]
+        rows, cols = np.nonzero(band)
+        if rows.size:
+            tags = band[rows, cols]
+            level_sum += np.bincount(tags, weights=berm.levels[first:last][rows, cols], minlength=total)
+            row_sum += np.bincount(tags, weights=rows + first, minlength=total)
+            col_sum += np.bincount(tags, weights=cols, minlength=total)
+            reached += np.bincount(tags, weights=reachable[first:last][rows, cols], minlength=total)
+        yield None
+    cells = labels.sizes
+    listed = np.flatnonzero(cells * grid.cell_area >= job.min_berm_area_m2)
+    count = cells[listed].astype(np.float64)
+    tags = listed + 1
+    levels = level_sum[tags] / count
+    x = grid.west + (col_sum[tags] / count + 0.5) * grid.dx
+    y = grid.north - (row_sum[tags] / count + 0.5) * grid.dy
+    connected = reached[tags] > 0.0
+    stretches: list[BermReach] = []
+    for start in range(0, listed.size, _STRETCHES_PER_UNIT):
+        for k in range(start, min(listed.size, start + _STRETCHES_PER_UNIT)):
+            stretches.append(BermReach(first_number + k, float(levels[k]), float(count[k]) * grid.cell_area, bool(connected[k]), float(x[k]), float(y[k]), berm.name))
+        yield None
+    return stretches
+
+
+def _platform_reach(job: AccessJob, reachable: np.ndarray) -> tuple[PlatformReach, ...]:
+    """Las plataformas (A11, RF-017-25): cada una queda **comunicada** si alguna celda alcanzable cae en su huella y, entonces, a la **menor cota** de la superficie del trabajo entre
+    las celdas alcanzables de su huella (no la menor de la huella); si no, ``None``."""
+    flat_reach, flat_surface = reachable.ravel(), job.surface.ravel()
+    found: list[PlatformReach] = []
+    for platform in job.platforms:
+        hit = flat_reach[platform.cells]
+        found.append(PlatformReach(platform.code, True, float(flat_surface[platform.cells][hit].min())) if hit.any() else PlatformReach(platform.code, False))
+    return tuple(found)
+
+
+def _zone_units(job: AccessJob, reachable: np.ndarray, budget_s: float) -> Generator[None, None, tuple[ZoneReach, ...]]:
+    """Las zonas «requiere acceso» (A11, RF-017-25): cada una queda **comunicada** si alguna de sus celdas es alcanzable; las que no (y tienen celdas), con su **lugar** (su celda más
+    próxima a lo alcanzable —a igual distancia, la de menor índice—, o su primera celda si no se alcanza nada), la **distancia** (m, entre centros, exacta:
+    :func:`design.grids.nearest_value_steps`, solo si hay alguna zona sin comunicar) y la **diferencia de cota** (m: la cota de la celda alcanzable más próxima —a igual distancia, la
+    menor— menos la de la celda de la zona, con signo). Una zona sin celdas no queda comunicada y no lleva lugar."""
+    grid = job.grid
+    flat_reach = reachable.ravel()
+    missing = [bool(zone.cells.size) and not bool(flat_reach[zone.cells].any()) for zone in job.zones]
+    nearest = None
+    if any(missing) and bool(flat_reach.any()):
+        nearest = yield from _drain(nearest_value_steps(reachable, job.surface, grid.dx, budget_s=budget_s))
+    found: list[ZoneReach] = []
+    for zone, lost in zip(job.zones, missing, strict=True):
+        if not zone.cells.size:
+            found.append(ZoneReach(zone.code, False))
+        elif not lost:
+            found.append(ZoneReach(zone.code, True))
+        elif nearest is None:  # no se alcanza nada: sin nada desde donde medir
+            row, col = divmod(int(zone.cells.min()), grid.ncols)
+            found.append(ZoneReach(zone.code, False, grid.west + (col + 0.5) * grid.dx, grid.north - (row + 0.5) * grid.dy))
+        else:
+            rows, cols = np.divmod(zone.cells, grid.ncols)
+            squared = nearest.cells2[rows, cols]
+            closest = int(squared.min())
+            row, col = divmod(int(zone.cells[squared == closest].min()), grid.ncols)
+            here, there = float(job.surface[row, col]), float(nearest.value[row, col])
+            difference = there - here if math.isfinite(here) and math.isfinite(there) else None
+            found.append(ZoneReach(zone.code, False, grid.west + (col + 0.5) * grid.dx, grid.north - (row + 0.5) * grid.dy, math.sqrt(closest) * grid.dx, difference))
+        yield None
+    return tuple(found)
 
 
 def access_steps(job: AccessJob, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
-    """**A10** (RF-017-24, RF-017-04; plan 017 §5.4; RNF-017-05 y RNF-017-06): lo alcanzable desde los puntos de entrada de ``job`` por celdas transitables, con sus cotas mínima y
-    máxima y su área, por pasos de ``budget_s`` como mucho (``STEP_BUDGET_S``, 0,05 s): el último ``Progress`` (fase ``road_access``) lleva el
-    :class:`~.road_model.AccessOutcome`. Ninguna cifra ni aviso todavía: los compone la operación (T17); la comunicación de las bermas, plataformas y zonas es de A11 (T16).
+    """**A10 y A11** (RF-017-24, RF-017-25, RF-017-04; plan 017 §5.4; RNF-017-05 y RNF-017-06): lo alcanzable desde los puntos de entrada de ``job`` por celdas transitables, con sus
+    cotas mínima y máxima y su área, la comunicación de sus bermas, plataformas y zonas «requiere acceso» y, con una cantera de dos superficies, la cota mínima sobre la final, por pasos
+    de ``budget_s`` como mucho (``STEP_BUDGET_S``, 0,05 s): el último ``Progress`` (fase ``road_access``) lleva el :class:`~.road_model.AccessOutcome`. Ninguna cifra ni aviso todavía:
+    los compone la operación (T17).
 
     Rechazos al llamar: la capa sin ningún punto de entrada y la entrada sin dato (``DesignError``: RF-017-04) y, como errores del programa (``ValueError``), una rejilla de celdas
     que no son cuadradas. Ninguna entrada se modifica y no se escribe nada; cerrar el generador a mitad no deja nada."""
