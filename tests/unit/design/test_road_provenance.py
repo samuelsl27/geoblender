@@ -662,7 +662,7 @@ class RoadRegistryProjectTest(efx.EntityProjectCase):
 class ClosedListsTest(unittest.TestCase):
     """Las listas cerradas por tipo de operación del lado del dominio (plan 017 §2.1): cada tipo nuevo está en todas, o la
     prueba lo nombra. Lo que repite, lo que reproduce y lo que calcula lo ponen las tareas que crean cada operación (**T17b la
-    accesibilidad: hecha**; T21 y T22 la pista y T27 la propuesta: sin comportamiento todavía)."""
+    accesibilidad: hecha**; **T21 y T22 la pista: hechas**; T27 la propuesta: sin comportamiento todavía)."""
 
     def test_recomputed_lists_the_three_types_after_the_016(self) -> None:
         """RF-008-26, RF-017-01: ``RECOMPUTED`` (lo que repite «Recalcular lo obsoleto») lleva los tres tipos de la 017
@@ -675,21 +675,21 @@ class ClosedListsTest(unittest.TestCase):
 
     def test_recompute_run_has_a_branch_for_each_type_and_none_falls_to_another_design(self) -> None:
         """RF-008-26: ``recompute_run`` repite cada tipo de ``RECOMPUTED`` por su rama y **ninguno cae en la última** (que
-        repite un escalonado): un tipo sin cálculo todavía (la pista y la propuesta) dice qué tarea lo hace
-        (``NotImplementedError``), no repite otra operación; **la accesibilidad (T17b) tiene su rama real**: con unos ajustes que no
-        son los suyos, un ``ValueError`` (nada de «aún no») y no la de ningún escalonado; la accesibilidad y la propuesta no dejan
-        una superficie que se apoye en una entidad: soltar un apoyo es un error del programa (``ValueError``); la pista sí (T22)."""
-        for op_type in (ROAD, PROPOSE):
-            request = recompute_mod.RecomputeRequest(object(), "uid", op_type, {}, (), ())
-            with self.subTest(op_type=op_type), self.assertRaises(NotImplementedError) as caught:
-                store.recompute_run(request)
-            self.assertIn(op_type, str(caught.exception))
-            self.assertIn("017", str(caught.exception))
-        request = recompute_mod.RecomputeRequest(object(), "uid", ACCESS, {}, (), ())
-        with self.assertRaises(ValueError) as caught:
+        repite un escalonado): un tipo sin cálculo todavía (la propuesta) dice qué tarea lo hace (``NotImplementedError``), no repite
+        otra operación; **la accesibilidad (T17b) y la pista (T22) tienen su rama real**: con unos ajustes que no son los suyos, un
+        ``ValueError`` (nada de «aún no») y no la de ningún escalonado; la accesibilidad y la propuesta no dejan una superficie que se
+        apoye en una entidad: soltar un apoyo es un error del programa (``ValueError``); la pista sí, y darlo por bueno es de la T24."""
+        request = recompute_mod.RecomputeRequest(object(), "uid", PROPOSE, {}, (), ())
+        with self.assertRaises(NotImplementedError) as caught:
             store.recompute_run(request)
-        self.assertNotIn("aún no", str(caught.exception))
-        self.assertIn("code", str(caught.exception))
+        self.assertIn(PROPOSE, str(caught.exception))
+        self.assertIn("017", str(caught.exception))
+        for op_type in (ACCESS, ROAD):
+            request = recompute_mod.RecomputeRequest(object(), "uid", op_type, {}, (), ())
+            with self.subTest(op_type=op_type), self.assertRaises(ValueError) as caught:
+                store.recompute_run(request)
+            self.assertNotIn("aún no", str(caught.exception))
+            self.assertIn("code", str(caught.exception))
         released = (provenance.ReleasedSupport("PLT-001", "motivo", "Samuel", "2026-11-20"),)
         for op_type in (ACCESS, PROPOSE):
             request = recompute_mod.RecomputeRequest(object(), "uid", op_type, {}, (), ())
@@ -697,8 +697,9 @@ class ClosedListsTest(unittest.TestCase):
                 store.recompute_run(request, released=released)
             self.assertNotIn("aún no", str(caught.exception))
         road = recompute_mod.RecomputeRequest(object(), "uid", ROAD, {}, (), ())
-        with self.assertRaises(NotImplementedError):  # una pista sí deja superficie: puede dar por bueno un apoyo (T22)
+        with self.assertRaises(NotImplementedError) as caught:  # una pista sí deja superficie: puede dar por bueno un apoyo (T24)
             store.recompute_run(road, released=released)
+        self.assertIn("T24", str(caught.exception))
         for op_type in (ACCESS, PROPOSE):
             self.assertIn(op_type, store._NO_REST_TYPES)  # noqa: SLF001 - no se apoyan en un acopio
         self.assertNotIn(ROAD, store._NO_REST_TYPES)  # noqa: SLF001
@@ -707,16 +708,16 @@ class ClosedListsTest(unittest.TestCase):
             store.recompute_run(other)
 
     def test_the_reproduce_functions_exist_for_each_type(self) -> None:
-        """RF-009-11: ``design.reproduce`` tiene la función de reproducir de cada tipo (la de ``bl`` la importa al usarla); la pista y la
+        """RF-009-11: ``design.reproduce`` tiene la función de reproducir de cada tipo (la de ``bl`` la importa al usarla); la
         propuesta, sin comportamiento todavía: ``NotImplementedError`` con el tipo y la tarea que la hace (la accesibilidad es real
-        desde la T17b: ``milestone_access_operation``); lo que no es una petición, ``TypeError``; una de otro tipo, ``ValueError``
-        (errores del programa)."""
+        desde la T17b, ``milestone_access_operation``, y la pista desde la T22, ``milestone_road_recompute``); lo que no es una
+        petición, ``TypeError``; una de otro tipo, ``ValueError`` (errores del programa)."""
         for op_type, name in ((ROAD, "reproduce_road"), (ACCESS, "reproduce_road_access"),
                               (PROPOSE, "reproduce_road_propose")):
             function = getattr(reproduce_mod, name)
             request = versions_reproduce.ReproduceRequest(op_type, {}, (), {}, ".", None)
             with self.subTest(op_type=op_type):
-                if op_type != ACCESS:
+                if op_type == PROPOSE:
                     with self.assertRaises(NotImplementedError) as caught:
                         function(request)
                     self.assertIn(op_type, str(caught.exception))

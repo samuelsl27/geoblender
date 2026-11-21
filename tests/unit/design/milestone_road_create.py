@@ -77,7 +77,12 @@ class CreateCase(CalculateCase):
     def setUpClass(cls) -> None:
         super().setUpClass()
         core_params.register_families(design_params.ENTITY_FAMILIES)
-        cls.enterClassContext(registered(*prep.entity_definitions()))
+        cls.enterClassContext(registered(*cls.entity_definitions()))
+
+    @classmethod
+    def entity_definitions(cls) -> tuple[Any, ...]:
+        """Los tipos de las entidades de la 015 tal como los registra la clase (sin recalcular ni reproducir); ``milestone_road_recompute`` (T22) los cambia por los de las funciones reales."""
+        return prep.entity_definitions()
 
     @classmethod
     def calculate_in(cls, asked: Any, **options: Any) -> Any:

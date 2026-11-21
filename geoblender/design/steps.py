@@ -97,8 +97,6 @@ from __future__ import annotations
 from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from types import MappingProxyType, TracebackType
 
-import numpy as np
-
 from ..core.datasets.model import DatasetSpec
 from ..core.params import PROJECT_SCOPE, VERSION_SCOPE, ParameterStore, definition
 from ..core.project.model import Progress
@@ -143,7 +141,6 @@ from .params import ANTHROPIC_PRESENCE
 from .preview import Notice
 from .road_model import AccessOutcome, AccessRequest, RoadOutcome, RoadRequest
 from .seeds import SeedPlan, SeedSet, pace_progress
-from .surfaces import project_frame, read_surface_window
 
 __all__ = [
     "Calculation",
@@ -1067,12 +1064,7 @@ def _road_steps(project: StoreProject, request: RoadRequest, version: str | None
     with project.read() as conn:  # con qué se compara la magnitud (RF-013-30)
         previous = road_store.road_previous(conn, found, prepared.code)
     order = entity_store.quarry_order(project, found, prepared)  # RF-015-14: el orden con la otra superficie de la cantera
-    frame = project_frame(project)
-
-    def read_other(name: str, window: tuple[slice, slice]) -> np.ndarray:
-        """La superficie de otro diseño de la versión en la ventana de trabajo de la pista (RF-017-05 (b)): solo las celdas de la ventana."""
-        return read_surface_window(project, name, window, version_uid=found.uid, expect=frame, role="superficie de otro diseño de la versión").values
-
+    read_other = road_store.other_reader(project, found)  # RF-017-05 (b): la superficie de otro diseño de la versión en la ventana de trabajo de la pista
     writer = store.DesignWriter(project, provenance.ROAD, request.name, version=found.uid, supersedes=supersedes)
     try:
         outcome: RoadOutcome = yield from road_store.road_compute_steps(

@@ -123,11 +123,12 @@ class QuarryStartCase(PrepareCase):
     ``Otra``, que se deja **obsoleta**)."""
 
     @classmethod
-    def write_quarry(cls, name: str, *, shift: float = 0.0) -> str:
-        """Escribe en V01 las dos superficies de una cantera de nombre ``name`` (la de explotación, la cantera con bancos, y la final, 20 m más arriba) con una operación de prueba."""
-        begun = store._start(cls.project, PROBE, name, cls.v1, None, {"name": name}, (), (), None)
+    def write_quarry(cls, name: str, *, shift: float = 0.0, supersedes: str | None = None) -> str:
+        """Escribe en V01 las dos superficies de una cantera de nombre ``name`` (la de explotación, la cantera con bancos, y la final, 20 m más arriba) con una operación de prueba;
+        ``supersedes`` es la operación de prueba anterior de la misma cantera, que la nueva sustituye (los mismos nombres, otro contenido: T22)."""
+        begun = store._start(cls.project, PROBE, name, cls.v1, None, {"name": name}, (), (), supersedes)
         cls.clock.advance(minutes=1)
-        with store.design_writer(cls.project, PROBE, name, version=cls.v1.uid) as writer:
+        with store.design_writer(cls.project, PROBE, name, version=cls.v1.uid, supersedes=supersedes) as writer:
             exploitation = rd.bank_surface(GRID) + shift
             drive(writer.grid_steps(provenance.EXPLOITATION_GRID, gis.Raster(GRID, exploitation, rd.CRS, rd.VERTICAL)))
             drive(writer.grid_steps(provenance.FINAL_GRID, gis.Raster(GRID, exploitation + 20.0, rd.CRS, rd.VERTICAL)))

@@ -177,8 +177,8 @@ PENDING_015_API: frozenset[str] = frozenset({
     "access_settings", "access_run",
     # La 017, T17b (la petición que repiten los ajustes y los parámetros de una accesibilidad, al recalcular y reproducir; lo demás de la T17b es de ``design.access_store``, un módulo pendiente):
     "access_request",
-    # La 017, T19 (los ajustes de la pista; lo demás de la T19 es de ``design.road_store``, un módulo pendiente):
-    "road_settings",
+    # La 017, T19 (los ajustes de la pista; lo demás de la T19 es de ``design.road_store``, un módulo pendiente) y T22 (la petición que repiten los ajustes y los parámetros de la pista, al recalcular y reproducir):
+    "road_settings", "road_request",
     # La 017, T20b («Calcular» una pista: ``steps.road_run`` y el resumen ``preview.RoadSummary``; lo demás de la T20b es de ``design.road_store``, un módulo pendiente):
     "road_run", "RoadSummary",
 })

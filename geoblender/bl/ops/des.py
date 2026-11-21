@@ -711,10 +711,10 @@ def reproduce_body(request: ReproduceRequest) -> Iterator[Progress]:
 
 
 # Los tres tipos de la 017 (T03; plan 017 §5.2.3): el mismo camino que los de las specs anteriores. Su recálculo lo hace
-# ``design.store.recompute_run`` y su reproducción, ``design.reproduce``; **sin comportamiento todavía** (las tareas que crean cada
-# operación, T21 y T22 la pista y T27 «Proponer el trazado», les dan su cálculo: hasta entonces no hay ninguna operación de esos tipos
-# que recalcular ni reproducir y ambas dicen qué tarea falta). **La accesibilidad ya los tiene** (T17b: ``access_store.recompute_access``
-# y ``reproduce.reproduce_road_access``).
+# ``design.store.recompute_run`` y su reproducción, ``design.reproduce``; **«Proponer el trazado» sin comportamiento todavía** (T27: hasta
+# entonces no hay ninguna operación de ese tipo que recalcular ni reproducir y ambas dicen qué tarea falta). **La accesibilidad ya los tiene**
+# (T17b: ``access_store.recompute_access`` y ``reproduce.reproduce_road_access``) y **la pista también** (T22: ``road_store.recompute_road``
+# y ``reproduce.reproduce_road``).
 
 
 def recompute_road(request: RecomputeRequest) -> OperationHandle:

@@ -64,9 +64,13 @@ entidad congelados; el espesor disperso, la superficie o la base dispersa, la hu
 (``NotImplementedError``); no hay ninguna operación de ese tipo que reproducir hasta que se crea. **La accesibilidad de las pistas** (spec 017, T17b;
 RF-017-24, RF-017-25, RF-009-11): :func:`reproduce_road_access` (con el cálculo que comparte con el proyecto, ``access_store.access_compute_steps`` sobre el mismo ``AccessJob``
 —``access_store.access_job``—: la superficie, la final, la capa de puntos de entrada, las rejillas de cotas de berma y las huellas de las plataformas, por su papel, las máscaras
-congeladas —sus zonas «requiere acceso» y lo intocable— y los parámetros congelados de su entidad; la rejilla de lo alcanzable, las tres tablas y el informe, y las cifras). **Los otros
-dos tipos de la 017** (spec 017, T03; :func:`reproduce_road` y :func:`reproduce_road_propose`) existen igual, **sin comportamiento todavía**: dicen qué tarea los hace (T22 y T27) con
-``NotImplementedError``.
+congeladas —sus zonas «requiere acceso» y lo intocable— y los parámetros congelados de su entidad; la rejilla de lo alcanzable, las tres tablas y el informe, y las cifras). **La pista** (spec 017,
+T22; RF-017-01 a RF-017-03, RF-015-02, RF-009-11): :func:`reproduce_road` (con el cálculo que comparte con el proyecto, ``road_store.road_compute_steps`` sobre el mismo ``RoadJob``: la capa de
+origen, la partida y las máscaras congeladas —con **los pesos de «preferible no afectar»** de su informe—, los parámetros congelados de su entidad y del perfil —``road_store.frozen_profile``—, la
+geometría de origen leída de lo congelado —``road_store.frozen_geometry``: **el eje por estaciones de la pista en cuyo eje está el origen** y la huella de la entidad de destino, que anotó la
+operación como entradas— y **los otros diseños de la versión que difieren en su huella**, con los que se repite el aviso del informe; la superficie entera, la huella, el eje por estaciones y el
+informe, y las cifras, con ``des.supported_m3`` de lo que rellena sobre otras entidades). **El otro tipo de la 017** (spec 017, T03; :func:`reproduce_road_propose`) existe igual, **sin
+comportamiento todavía**: dice qué tarea lo hace (T27) con ``NotImplementedError``.
 
 Con el mismo Geoblender y el mismo numpy, las salidas y las cifras salen **bit a bit**; con otros,
 ``core.versions.reproduce`` compara las cifras con ``figure_tolerance`` (10⁻⁹ relativo, plan
@@ -115,7 +119,7 @@ from ..gis.masks.store import PERIMETER_SECTOR_NAME, read_report, zone_runs_step
 from ..gis.raster import Raster
 from ..gis.store import insert_rows, read_features
 from ..gis.vector import FeatureLayer
-from . import access_store, entities, entity_store, fronts, pipeline, provenance, quarry, removal, stockpile_store, store, supported_store
+from . import access_store, entities, entity_store, fronts, pipeline, provenance, quarry, removal, road_store, stockpile_store, store, supported_store
 from .compose import admitted, admitted_in
 from .model import BenchSense, BodySense, EnvelopeRequest, PlatformRequest, SeedKind, Surface
 from .params import (
@@ -131,7 +135,7 @@ from .params import (
 from .buttress import ButtressJob
 from .platform import PlatformJob
 from .removal import RemovalJob
-from .road_model import AccessCells, BermGrid
+from .road_model import AccessCells, BermGrid, RoadJob, RoadMode, RouteParams
 from .seeds import (
     SectorRef,
     SeedSet,
@@ -254,6 +258,17 @@ class _Frozen:
             report = read_report(conn, str(found[0].settings["layer"]))
         return {code: str(note) for code, quantity, _value, _unit, note in report
                 if quantity == "zone_area" and note is not None}
+
+    def weights(self) -> dict[str, float]:
+        """El peso de cada zona «preferible no afectar» (código → peso), del informe congelado de las máscaras (como ``gis.masks.access.load_masks``): con él la pista cuenta la afección y la ruta
+        evita esas zonas (spec 017, T22; RF-017-06). Vacío si no hay informe congelado."""
+        role = _MASKS_PREFIX + masks_declared.FAMILIES_BY_CODE[masks_declared.REPORT].role
+        found = [item for item in self.request.inputs if item.role == role]
+        if not found:
+            return {}
+        with _open(Path(found[0].files["main"])) as conn:
+            report = read_report(conn, str(found[0].settings["layer"]))
+        return {code: float(value) for code, quantity, value, _unit, _note in report if quantity == "weight" and value is not None}
 
     def sector_layout(self, masks: MaskSet) -> tuple[tuple[SectorRef, ...], np.ndarray]:
         """Los sectores de búsqueda congelados y la etiqueta de cada celda; sin sectores
@@ -1111,8 +1126,75 @@ def _reproduce_body(request: ReproduceRequest, budget_s: float) -> Iterator[Prog
 
 
 def reproduce_road(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:
-    """Reproduce ``des.road`` (spec 017, T03; RF-017-01, RF-015-02, RF-009-11): sin comportamiento todavía (T22)."""
-    return _not_yet(request, provenance.ROAD, "la T22", "017")
+    """Reproduce ``des.road`` (spec 017, T22; RF-017-01 a RF-017-03, RF-015-02, RF-009-11) con la capa de origen, la superficie de partida y las máscaras congeladas —con los pesos de «preferible no
+    afectar» de su informe—, los parámetros congelados de su entidad (``des.road.{e}.*``: el modo, la capa, el perfil, la partida, el apoyo, el origen y el destino, las cotas de inicio y de fin y los
+    de la ruta) y de su perfil (``des.roadprofile.{p}.*``) y del proyecto (el espesor mínimo, la tolerancia de cara, el umbral de magnitud y el salto creado), con los ajustes de su operación (el nombre, el
+    código y el campo de los nombres de la capa), **sin el proyecto**: el mismo cálculo (``road_store.road_compute_steps`` sobre el mismo ``RoadJob``). La geometría de origen y el ``fid`` salen de lo
+    **congelado** (:func:`~.road_store.frozen_geometry`): la capa, **el eje por estaciones de la pista en cuyo eje está el origen** (la entrada de papel ``road_axis``), la huella de la entidad de destino
+    (``support_footprint``) y la capa de la zona de un destino por cota. Los otros diseños de la versión que difieren en la huella son las entradas ``other_design``: con ellos se repite el aviso del informe.
+    Sus pasos y, el último, el ``ReproducedResult`` con la superficie entera (``des_psf_``), la huella (``des_epr_``), el eje por estaciones (``des_rdx_``), el informe (``des_prp_``) y las cifras (con
+    ``des.supported_m3`` de lo que apoya). Lo confirmado por la persona no se reproduce (es una decisión suya, de los ajustes). Lo que no es una ``ReproduceRequest`` es ``TypeError``; una de otro tipo,
+    ``ValueError``; el modo «eje 3D», ``NotImplementedError`` (T23)."""
+    return _reproduce_road(_check(request, provenance.ROAD), budget_s)
+
+
+def _frozen_axis(request: ReproduceRequest) -> np.ndarray | None:
+    """El eje por estaciones (abscisa, x, y, cota del terreno y cota de la rasante) de la pista en cuyo eje está el origen, de su entrada congelada de papel ``road_axis``; ``None`` si la operación no la tiene."""
+    found = [item for item in request.inputs if item.role == provenance.ROAD_AXIS_ROLE]
+    if not found:
+        return None
+    with _open(Path(found[0].files["main"])) as conn:
+        rows = conn.execute(f'SELECT {road_store._SECTION_COLUMNS} FROM "{found[0].settings["layer"]}" ORDER BY station_m').fetchall()
+    return np.asarray(rows, dtype=np.float64).reshape(-1, 5)
+
+
+def _frozen_footprint(request: ReproduceRequest, ncols: int, code: str) -> np.ndarray | None:
+    """Las celdas (``fila · columnas + columna``) de la huella de la entidad ``code``, de su entrada congelada de papel ``support_footprint`` (su ``des_epr_``); ``None`` si la operación no la tiene."""
+    for item in request.inputs:
+        if item.role != provenance.SUPPORT_FOOTPRINT_ROLE:
+            continue
+        with _open(Path(item.files["main"])) as conn:
+            footprint = entity_store.read_entity_footprint(conn, str(item.settings["layer"]))
+        if footprint.code == code:
+            return road_store.runs_cells(np.asarray(footprint.runs, dtype=np.int64), ncols)
+    return None
+
+
+def _reproduce_road(request: ReproduceRequest, budget_s: float) -> Iterator[Progress]:
+    frozen = _Frozen(request)
+    code = provenance.supported_code(request.settings)
+    asked = provenance.road_request(request.settings, provenance.supported_values(code, frozen.values))
+    values = road_store.road_values(asked, code, start_ref=asked.start, start_level_m=asked.start_level_m, end_level_m=asked.end_level_m)
+    yield Progress(_PHASE, 0, 1, "Leyendo lo congelado…")
+    masks = replace(frozen.masks(), weights=MappingProxyType(frozen.weights()))
+    start_item = frozen.item(provenance.SURFACE_ROLE)
+    start = frozen.raster(provenance.SURFACE_ROLE, what="superficie de partida").values
+    layer = frozen.features(asked.layer)
+    zone = frozen.features(str(asked.dest_zone).partition(":")[0].strip()) if asked.destination is None and asked.dest_zone is not None else None
+    origin_ref = road_store.parse_reference(asked.origin) if asked.origin is not None else None
+    destination_ref = road_store.parse_reference(asked.destination) if asked.destination is not None else None
+    footprint = _frozen_footprint(request, frozen.grid.ncols, destination_ref.code) if isinstance(destination_ref, road_store.EntityReference) else None
+    axis = _frozen_axis(request) if isinstance(origin_ref, road_store.AxisReference) else None
+    geometry, fid = road_store.frozen_geometry(asked, code, frozen.grid, layer, zone_layer=zone, axis=axis, footprint=footprint)
+    whole = (slice(0, frozen.grid.nrows), slice(0, frozen.grid.ncols))
+    cut, fill = admitted(masks, BenchSense.CUT)[whole], admitted(masks, BenchSense.FILL)[whole]
+    job = RoadJob(asked, code, road_store.frozen_profile(frozen.values, asked.profile), frozen.grid, start, cut, fill, road_store.untouchable_cells(masks), geometry,
+                  RouteParams.from_values(values) if asked.mode is RoadMode.TRACE else None, asked.start_level_m, asked.end_level_m, road_store.avoid_weight(masks))
+    common = {name: store.number(frozen.values, name) for name in provenance.PLATFORM_COMMON_PARAMS}
+    others = tuple(item.name for item in request.inputs if item.role == provenance.ROAD_OTHER_DESIGN_ROLE)
+
+    def read_other(name: str, window: tuple[slice, slice]) -> np.ndarray:
+        """La superficie de otro diseño de la versión, **congelada**, en la ventana de trabajo de la pista."""
+        return np.asarray(frozen.named_raster(name, what="superficie de otro diseño").values[window], dtype=np.float64)
+
+    outcome = yield from road_store.road_compute_steps(job, common, surface=start_item.name, others=others, read_other=read_other if others else None, operation=asked.name, budget_s=budget_s)
+    surface = outcome.compose(job.start)
+    made = yield from _grid_output(request, provenance.ENTITY_SURFACE_GRID, Raster(job.grid, surface, frozen.crs, frozen.vertical), budget_s)
+    entity = road_store.road_entity_rows(job, outcome, fid=fid, start_surface=start_item.name, support_surface=_support_dataset(request, asked))
+    tables = (_table_output(request, provenance.ENTITY_TABLE, entity, frozen.crs),
+              _table_output(request, provenance.ROAD_AXIS_TABLE, road_store.road_axis_rows(outcome), frozen.crs),
+              _table_output(request, provenance.ENTITY_REPORT_TABLE, road_store.road_report_rows(outcome), frozen.crs))
+    yield Progress(_PHASE, 1, 1, "Pista reproducida", result=ReproducedResult((made, *tables), (*outcome.figures, *_support_figures(frozen, [surface], start))))
 
 
 def reproduce_road_access(request: ReproduceRequest, *, budget_s: float = STEP_BUDGET_S) -> Iterator[Progress]:

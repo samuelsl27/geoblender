@@ -2048,8 +2048,8 @@ entidades (T17; ``design.entity_store.recompute_declaration``) y la capa de enti
 ``design.entity_store.recompute_entity_layer``) y, de la 016 (T03), los cuatro tipos de entidad
 (:data:`~.provenance.SUPPORTED_TYPES`: la detección de acopios, de versión y **de proyecto** —T04, D-15—, su retirada, el
 contrafuerte y el cuerpo apoyado) y, de la 017 (T03), la pista, la accesibilidad de las pistas y «Proponer el trazado»
-(:data:`~.provenance.ROAD_VERSION_TYPES`; la accesibilidad se repite desde la T17b, ``design.access_store.recompute_access``; la pista y la
-propuesta, **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace). La detección de acopios se repite desde la T14
+(:data:`~.provenance.ROAD_VERSION_TYPES`; la accesibilidad se repite desde la T17b, ``design.access_store.recompute_access``, y la pista desde la T22,
+``design.road_store.recompute_road``; la propuesta, **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace). La detección de acopios se repite desde la T14
 (``design.stockpile_store.recompute_detection``, en el proyecto o en su versión) y su retirada desde la T20
 (``design.supported_store.recompute_removal``) y el cuerpo apoyado desde la T25 (``design.supported_store.recompute_body``); el otro,
 **sin cálculo todavía**: ``recompute_run`` dice qué tarea lo hace
@@ -3924,9 +3924,8 @@ def run_refit(project: StoreProject, request: RefitRequest, *, version: str | No
     return handle, _refit_run(project, handle, request, loaded, prepared, budget_s)
 
 
-_ROAD_TASKS: Mapping[str, str] = MappingProxyType({
-    provenance.ROAD: "la pista, T21 y T22", provenance.ROAD_PROPOSE: "proponer el trazado, T27"})
-"""Qué tarea de la 017 da su cálculo a cada tipo que aún no lo tiene (el aviso de ``recompute_run``; la accesibilidad lo tiene desde la T17b)."""
+_ROAD_TASKS: Mapping[str, str] = MappingProxyType({provenance.ROAD_PROPOSE: "proponer el trazado, T27"})
+"""Qué tarea de la 017 da su cálculo a cada tipo que aún no lo tiene (el aviso de ``recompute_run``; la accesibilidad lo tiene desde la T17b y la pista, desde la T22)."""
 _NO_REST_TYPES = frozenset({provenance.ENVELOPE, provenance.EXCAVATION_AREA, provenance.DECLARE_CONSTRAINTS,
                             provenance.ENTITY_LAYER, *provenance.STOCKPILE_DETECT_TYPES, provenance.ROAD_ACCESS,
                             provenance.ROAD_PROPOSE})
@@ -4056,9 +4055,13 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
         from . import access_store  # al usarlo: access_store importa este módulo
 
         return access_store.recompute_access(request, budget_s=budget_s)
+    if request.op_type == provenance.ROAD:
+        from . import road_store  # al usarlo: road_store importa este módulo
+
+        return road_store.recompute_road(request, budget_s=budget_s, released=released)
     if request.op_type in provenance.ROAD_VERSION_TYPES:
-        # Los otros dos tipos de la 017 (T03): sin cálculo todavía; las tareas que crean cada operación lo ponen aquí (T21 y T22 la pista y T27
-        # «Proponer el trazado»; la accesibilidad es de la T17b, arriba). Nunca cae en un escalonado.
+        # El otro tipo de la 017 que aún no tiene cálculo (T03): «Proponer el trazado», T27 (la accesibilidad es de la T17b y la pista, de la T22,
+        # arriba). Nunca cae en un escalonado.
         raise NotImplementedError(f"«{request.op_type}» aún no se recalcula: lo hace la tarea de la 017 que crea su operación "
                                   f"({_ROAD_TASKS[request.op_type]})")
     return run_design(project, provenance.design_request(request.settings),

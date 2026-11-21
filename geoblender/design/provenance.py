@@ -562,6 +562,7 @@ __all__ = [
     "road_inputs",
     "road_operation_defs",
     "road_params",
+    "road_request",
     "road_settings",
     "propose_figures",
     "sector_inputs",
@@ -3872,6 +3873,39 @@ def road_settings(request: RoadRequest, code: str) -> dict[str, Any]:
         raise TypeError(f"los ajustes de una pista salen de una RoadRequest, no {request!r}")
     _typed_code(code, "road", "una pista")
     return {"name": request.name, "code": code, "fields": {"name_field": request.fields.name_field}}
+
+
+_ROAD_NUMBERS = (
+    RoadParam.DEST_LEVEL, RoadParam.DEST_TOL, RoadParam.START_LEVEL, RoadParam.END_LEVEL, RoadParam.MESH, RoadParam.LEVEL_STEP, RoadParam.MAX_CUT_FILL, RoadParam.LAMBDA, RoadParam.TURN,
+    RoadParam.MARGIN, RoadParam.SIMPLIFY, RoadParam.ARRIVAL_TOL)
+"""Los valores decimales de la pista: el destino por cota, las cotas de inicio y de fin y los ocho de la ruta que no tienen valor por defecto."""
+
+
+def road_request(settings: Mapping[str, Any], parameters: Mapping[str, Any]) -> RoadRequest:
+    """La pista que repiten los ajustes ``settings`` de una operación ``des.road`` (los de :func:`road_settings`) con los valores de los parámetros de su entidad ``parameters`` (por último
+    segmento: :func:`supported_values`): al recalcularla y al reproducirla (spec 017, T22; RF-017-01, RF-017-02, RF-015-01, RF-015-02). Es la inversa de :func:`road_settings` junto con
+    los valores de la entidad (:func:`~.road_store.road_values`): la capa, la geometría, el modo, el perfil, la partida, el apoyo, el origen y el destino, el destino por cota, las cotas de
+    inicio y de fin y los parámetros de la ruta salen de los parámetros (cambiar uno repite la operación con el nuevo) y el nombre y el campo de los nombres de la capa, de los ajustes
+    (renombrar la entidad cambia su parámetro ``name``, no el de la operación); lo que no tiene valor queda ``None`` sin pedirlo. **No** lleva ``protect`` ni ``guard_m``: la pista no declara. ``ValueError``
+    si no son los de una pista (nombrando el campo)."""
+    from .road_model import LayerFields, RoadRequest  # al usarlo: habilitar no la crea (RNF-001-03)
+    what = "los ajustes de una pista"
+    values_what = "los valores de una pista"
+    data = _mapping(settings, what)
+    fields_what = f"{what}, «fields»,"
+    fields = _mapping(data.get("fields"), fields_what)
+    values = _values_of(RoadParam, parameters, values_what)
+    layer = _value_text(values, "layer", values_what, required=True)
+    mode = _value_text(values, "mode", values_what, required=True)
+    profile = _value_text(values, "profile", values_what, required=True)
+    start = _value_text(values, "start", values_what, required=True)
+    assert layer is not None and mode is not None and profile is not None and start is not None
+    numbers_found = {param.value: _number(values, param.value, values_what) for param in _ROAD_NUMBERS}
+    return RoadRequest(
+        name=_required_text(data, "name", what), fields=LayerFields(layer, _optional_text(fields, "name_field", fields_what)), mode=mode, profile=profile, start=start,
+        feature=_value_text(values, "feature", values_what), support=_value_text(values, "support", values_what), origin=_value_text(values, "origin", values_what),
+        destination=_value_text(values, "destination", values_what), dest_zone=_value_text(values, "dest_zone", values_what),
+        search_budget=_value_integer(values, "search_budget", values_what), **numbers_found)
 
 
 def access_inputs(surface: str, entries_layer: str, masks: Iterable[Use] = (), *, final: str | None = None,

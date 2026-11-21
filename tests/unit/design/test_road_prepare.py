@@ -105,7 +105,7 @@ class PrepareCase(rd.RoadProjectCase):
         core_params.register_families(design_params.ROAD_PROFILE_FAMILIES)
         core_params.register_families(design_params.ROAD_FAMILIES)
         cls.addClassCleanup(core_params.unregister_families, "des")
-        cls.enterClassContext(registered(*road_profiles.OPERATIONS, provenance.operation_def(provenance.ROAD, never), *provenance.ROAD_FIGURES))
+        cls.enterClassContext(registered(*road_profiles.OPERATIONS, cls.road_definition(), *provenance.ROAD_FIGURES))
         cls.masks_v1 = access.load_masks(cls.project, cls.v1.uid)
         declared = road_profiles.ProfileDeclaration("ITC 07.1.03 de la prueba", BY, "Perfil de la prueba de la T19", version=cls.v1.code)
         values = {param: getattr(rd.PROFILE, "class_name" if param.value == "class" else param.value) for param in design_params.RoadProfileParam}
@@ -119,6 +119,12 @@ class PrepareCase(rd.RoadProjectCase):
         res_fixtures.write_grids(cls.project, [("hueco", gis.Raster(GRID, hole, rd.CRS, rd.VERTICAL)),
                                                ("fina", gis.Raster(fine, np.full(fine.shape, 100.0), rd.CRS, rd.VERTICAL))],
                                  message="Terrenos de la prueba de preparar la pista")
+
+    @classmethod
+    def road_definition(cls) -> Any:
+        """El tipo ``des.road`` tal como lo registra la clase: sin recalcular ni reproducir (el «verde» no los usa); las clases que sí (``milestone_road_recompute``, T22) lo cambian por el que
+        trae las funciones **reales**, como el gancho ``definitions`` de la 015."""
+        return provenance.operation_def(provenance.ROAD, never)
 
     @classmethod
     def broken_profiles(cls, declared: Any, values: dict[Any, Any]) -> None:
