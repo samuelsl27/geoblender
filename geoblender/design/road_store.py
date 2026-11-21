@@ -997,10 +997,14 @@ def _pit_name(project: StoreProject, version: Version, start_name: str) -> str |
     return None if record is None or not record.live or owner is None or owner[0] != version.uid else record.name
 
 
-def other_designs(project: StoreProject, version: Version, start_name: str) -> tuple[str, ...]:
+def other_designs(project: StoreProject, version: Version, start_name: str, *, own: str | None = None) -> tuple[str, ...]:
     """Los nombres de los datos de **otros diseños** de la versión con los que se compara la partida de una pista (RF-017-05 (b), T19-b): **la última superficie de cada cadena de
     entidades** (``entities.chain_tail_surfaces``) y **las superficies de diseño** (papel ``design_surface``) de la versión, **que no tienen a la partida como ancestro** en el grafo (la
-    superficie que escribió la misma operación que la partida, o una cuya cadena de partidas pasa por la que la escribió, no es otro diseño), en el orden de su nombre. Solo lee."""
+    superficie que escribió la misma operación que la partida, o una cuya cadena de partidas pasa por la que la escribió, no es otro diseño), en el orden de su nombre. Solo lee.
+
+    ``own`` (T24): la operación de la pista que se recalcula (la que sustituye la nueva). **Lo que parte de lo que dejó ella** —su ramal, el relleno que se hizo luego sobre su calzada— **no es otro
+    diseño**: depende de la pista, y anotarlo como entrada la haría depender de lo que depende de ella (un bucle que no se asienta). Con otra partida (rehacer la pista sobre otra superficie) esos
+    diseños dejan de tener a la partida como ancestro, así que sin esto contarían."""
     from .entities import _surface_ancestors  # el grafo hacia atrás por la entrada «surface»: lo mismo que «apoyo retirado»
 
     with project.read() as conn:
@@ -1022,12 +1026,14 @@ def other_designs(project: StoreProject, version: Version, start_name: str) -> t
                 continue
             if writer is not None and (record.operation_uid == writer or writer in _surface_ancestors(conn, record.operation_uid)):
                 continue
+            if own is not None and (record.operation_uid == own or own in _surface_ancestors(conn, record.operation_uid)):  # lo que deja la propia pista y lo que parte de ello (T24)
+                continue
             found.append(name)
     return tuple(found)
 
 
 def prepare_road_units(project: StoreProject, request: RoadRequest, version: Version, masks: access.MaskSet, *, code: str | None = None,
-                       supersedes: str | None = None) -> Generator[None, None, PreparedRoad]:
+                       supersedes: str | None = None, released: Sequence[provenance.ReleasedSupport] = ()) -> Generator[None, None, PreparedRoad]:
     """Las unidades (cada ``yield``, una; para componerlas con ``pace_units``) que preparan la pista ``request`` en la versión editable ``version`` con las máscaras al día ``masks``
     (``store.masks_steps``; RF-015-06): el código y el nombre únicos (``code``: el de una entidad que ya está en su versión, que no choca consigo misma), la partida (``request.start``;
     en blanco, :func:`default_start`) y la cadena, la capa y la geometría de origen por modo (RF-017-02), el perfil, la superficie de partida y su rejilla comparada con la del proyecto
@@ -1038,7 +1044,12 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
     capa y la geometría, el perfil, la superficie, los puntos, las cotas, los parámetros, la malla de la ruta, el destino por cota y un sector pendiente.
 
     «Sobre un eje» lee la línea de su capa de entidades (RF-017-04) y «eje 3D», la línea con su Z de una línea de rotura (``gis_brk_``) o de la capa propuesta (``des_rpl_``; T23-a: una capa de
-    entidades, que guarda solo X e Y, se rechaza con ``des.road_line_no_z``): :func:`read_layer_3d` y :func:`line_3d`. En «eje 3D» la Z es la rasante: **no hay cota de inicio ni de fin**."""
+    entidades, que guarda solo X e Y, se rechaza con ``des.road_line_no_z``): :func:`read_layer_3d` y :func:`line_3d`. En «eje 3D» la Z es la rasante: **no hay cota de inicio ni de fin**.
+
+    ``released`` (T24; RF-015-17, A7, P-6): las entidades descartadas que la pista **da por buenas sin su apoyo** (:func:`~.entity_store.release_support`): lo que **declaró** la persona
+    (``supports``) en ellas no se pide ni se rechaza —se descartaron—, se suman a las que ya soltaba la operación que sustituye (``supersedes``) y no entran en las entradas ni en lo que la
+    operación lee. Lo que la pista toma de la entidad (su origen en el eje de otra pista, su destino en una entidad) **no se suelta**: sin ella no hay geometría (``entity_store.release_support``
+    lo rechaza antes de empezar)."""
     if masks.version_uid != version.uid:
         raise ValueError(f"las máscaras son de otra versión, no de {version.code}")
     chosen, registry = _identify(project, version, request, code)
@@ -1163,9 +1174,10 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
         notice = start_is_final_notice(name, start_name, grid, values_start, found.values, origin_point, profile.max_gradient_pct, derived.carriageway_m, untouchable)
         if notice is not None:
             notices.append(notice)
-    others = other_designs(project, version, start_name)
+    others = other_designs(project, version, start_name, own=supersedes)
     yield
-    declared = entity_store._declared(entity_store._declared_row(project, version, chosen))
+    given = entity_store._released_codes(project, supersedes, released)  # lo que da por bueno sin su apoyo: la nueva y la que sustituye (T24)
+    declared = tuple(target for target in entity_store._declared(entity_store._declared_row(project, version, chosen)) if target not in given)
     supported = tuple(dict.fromkeys((*supports, *declared)))
     surfaces: list[str] = [] if support_name is None else [support_name]
     tables: list[Use] = []
@@ -1191,12 +1203,12 @@ def prepare_road_units(project: StoreProject, request: RoadRequest, version: Ver
 
 
 def prepare_road(project: StoreProject, request: RoadRequest, *, version: str | None, masks: access.MaskSet | None = None, code: str | None = None,
-                 supersedes: str | None = None) -> PreparedRoad:
+                 supersedes: str | None = None, released: Sequence[provenance.ReleasedSupport] = ()) -> PreparedRoad:
     """La preparación entera de :func:`prepare_road_units` de una vez (plan 017 §5.3.1; sin ceder el hilo): la :class:`PreparedRoad`, con los mismos rechazos y sin escribir nada.
     ``version``: la versión activa (su uid o su código; ``VersionError`` ``core.version_required`` si no hay y ``core.version_not_editable`` si no se edita, RF-009-21); ``masks``: las
-    de esa versión (al día; sin ellas se cargan, compilándolas antes si faltan)."""
+    de esa versión (al día; sin ellas se cargan, compilándolas antes si faltan); ``released``: lo que da por bueno sin su apoyo (T24)."""
     found = require_version(project, version, provenance.ROAD)
-    work = prepare_road_units(project, request, found, _loaded_masks(project, found, masks), code=code, supersedes=supersedes)
+    work = prepare_road_units(project, request, found, _loaded_masks(project, found, masks), code=code, supersedes=supersedes, released=released)
     while True:
         try:
             next(work)
@@ -2009,7 +2021,7 @@ def _confirmed_covers(outcome: RoadOutcome, confirmed: RoadConfirmed | None) -> 
 
 
 def run_road(project: StoreProject, request: RoadRequest, *, version: str | None, code: str, masks: access.MaskSet | None = None, supersedes: str | None = None,
-             confirmed: RoadConfirmed | None = None, budget_s: float = road_net.STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
+             confirmed: RoadConfirmed | None = None, released: Sequence[provenance.ReleasedSupport] = (), budget_s: float = road_net.STEP_BUDGET_S) -> tuple[OperationHandle, Iterator[Progress]]:
     """Calcula y registra ``request`` —la pista de la entidad ``code``, que ya está en su versión— de **una vez**, sin pedir confirmación a la persona (spec 017, T22; RF-017-01, RF-015-02, RF-015-16; el
     recálculo de lo obsoleto, :func:`~.store.recompute_run`; el «Crear» tras «Calcular» es :meth:`~.steps.Calculation.create`): prepara (:func:`prepare_road`: la entidad se reconoce por su ``code``),
     empieza la operación ``des.road`` **antes de calcular** —sustituye a ``supersedes``, quedándose con los nombres de sus datos y arrastrando lo que se le apoyaba— con lo que lee hoy (la capa de
@@ -2023,12 +2035,16 @@ def run_road(project: StoreProject, request: RoadRequest, *, version: str | None
     ``des.road_carriageway_unconfirmed`` al avanzar, antes de escribir nada, y la que sustituye sigue vigente. No calcula la magnitud contra la revisión congelada ni el orden con la otra superficie de
     la cantera (solo los avisos del resumen, que no van al informe: ``entity_store._OUTSIDE_NOTICES``).
 
+    **Dar por buena la pista sin una entidad en que se apoyaba** (``released``, T24; RF-015-17, A7, P-6; :func:`~.entity_store.release_support`): la operación nueva **no lleva** las entradas de esa
+    entidad (ni su superficie ni la tabla de su huella), anota el motivo y el decisor en sus ajustes (``supports_released``, acumulados con los de la que sustituye) y el gancho de las dependencias
+    no vuelve a registrarla; su superficie, su huella y su eje no cambian. Se suma a lo que ya daba por bueno la operación que sustituye.
+
     Al llamar, sin empezar nada: los rechazos de :func:`prepare_road`. Al avanzar, antes de escribir nada, ``des.input_changed`` si un parámetro cambió entre prepararla y empezar la operación."""
-    prepared = prepare_road(project, request, version=version, masks=masks, code=code, supersedes=supersedes)
+    prepared = prepare_road(project, request, version=version, masks=masks, code=code, supersedes=supersedes, released=released)
     start = prepared.start
     if confirmed is not None:  # se arrastra a la operación nueva (la misma decisión, no una nueva)
         start = replace(start, settings={**start.settings, CONFIRMED: confirmed.settings()})
-    handle = start.begin(project)
+    handle = start.with_released(released).begin(project)
     return handle, _road_run(project, handle, prepared, budget_s, confirmed)
 
 
@@ -2051,19 +2067,18 @@ def recompute_road(request: RecomputeRequest, *, budget_s: float = road_net.STEP
     perfil, la partida, el apoyo, el origen y el destino, las cotas de inicio y de fin y los parámetros de la ruta; los de la versión y, si no, los del proyecto) y no los que leyó la operación que
     sustituye: una entidad se define por sus parámetros (RF-015-01). La capa de origen (su geometría), la partida, los valores del perfil, el espesor mínimo de la 012, **los otros diseños de la versión
     que difieren en su huella** y lo que la pista pisa son entradas o parámetros de la operación: cambiar uno la deja obsoleta **entera**, con su causa, y recalcular la repite con lo nuevo. Devuelve lo
-    de :func:`run_road`, con lo que la persona confirmó al crearla. **Dar por bueno un apoyo sin su entidad** (``released``, RF-015-17) es de la T24. ``TypeError`` si la petición no es una
-    ``RecomputeRequest``; ``ValueError`` si no es de ``des.road`` o sus ajustes no son los de una pista."""
+    de :func:`run_road`, con lo que la persona confirmó al crearla. **Dar por bueno un apoyo sin su entidad** (``released``, RF-015-17; T24): lo que la operación nueva da por bueno sin ese apoyo
+    (:func:`~.entity_store.release_support`, sin pasar por el plan de «Recalcular lo obsoleto», que lo rehúsa) pasa a :func:`run_road`. ``TypeError`` si la petición no es una ``RecomputeRequest``;
+    ``ValueError`` si no es de ``des.road`` o sus ajustes no son los de una pista."""
     if not isinstance(request, RecomputeRequest):
         raise TypeError(f"se recalcula una RecomputeRequest, no {request!r}")
     if request.op_type != provenance.ROAD:
         raise ValueError(f"recompute_road repite {provenance.ROAD}, no «{request.op_type}»")
-    if released:
-        raise NotImplementedError("dar por buena una pista sin la entidad en que se apoyaba (soltar el apoyo, RF-015-17) lo hace la T24 de la 017")
     project: StoreProject = request.project  # type: ignore[assignment]
     code = provenance.supported_code(request.settings)
     found = require_version(project, request.version, provenance.ROAD)
     asked = provenance.road_request(request.settings, entity_store.entity_parameters(project, code, version=found))
-    return run_road(project, asked, version=found.uid, code=code, supersedes=request.operation_uid, confirmed=confirmed_of(request.settings), budget_s=budget_s)
+    return run_road(project, asked, version=found.uid, code=code, supersedes=request.operation_uid, confirmed=confirmed_of(request.settings), released=released, budget_s=budget_s)
 
 
 # --- Reproducir: lo que se lee de lo congelado, sin proyecto (spec 017, T22; RF-017-01 a RF-017-03, RF-015-02, RF-009-11) --------------------------------------------------------------------------------

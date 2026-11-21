@@ -125,6 +125,8 @@ CODES: dict[str, tuple[str, str, set[str]]] = {
     # T22b: traer las entidades de otra versión con la pista: su origen (el eje de otra pista) o su destino (una entidad) que no se trae (RF-015-18, hallazgo C-4).
     "des.road_bring_origin_lost": ("warning", "RF-015-18", {"name", "target", "source", "version"}),
     "des.road_bring_destination_lost": ("warning", "RF-015-18", {"name", "target", "source", "version"}),
+    # T24: dar por buena una pista sin la entidad descartada de la que toma su origen o su destino (RF-015-17, RF-017-03).
+    "des.road_release_geometry": ("error", "RF-015-17", {"entity", "target", "field", "value"}),
     # El motivo declarado de cada tipo (``EntityType.reason``, obligatorio en la clase y no usado: la T03 los puso).
     "des.road_declared_reason": ("note", "RF-015-10", {"name"}),
     "des.access_declared_reason": ("note", "RF-015-10", {"name"}),

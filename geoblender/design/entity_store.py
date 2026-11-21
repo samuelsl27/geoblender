@@ -4106,6 +4106,23 @@ def _operation_to_release(conn: sqlite3.Connection, listed: EntityRegistry, foun
     return str(uid), str(op_type), dict(json.loads(str(settings))) if settings else {}
 
 
+_ROAD_POINTS = (RoadParam.ORIGIN, RoadParam.DESTINATION, RoadParam.SUPPORT)
+"""Los valores de una pista que **son** una entidad (spec 017, T24; RF-017-03): el origen (un punto de su eje, ``RDW-001@100``), el destino (``entity:PLT-001``) y la superficie de apoyo
+(``entity:RDW-001``), por este orden."""
+
+
+def _release_blocker(values: Mapping[str, Any], code: str) -> RoadParam | None:
+    """De los valores ``values`` de una pista (por último segmento de su clave: :func:`entity_parameters`), **el primero** de :data:`_ROAD_POINTS` que es la entidad ``code`` (spec 017, T24;
+    RF-015-17, RF-017-03): una pista cuyo origen está en el eje de otra pista, cuyo destino es una entidad o cuya superficie de apoyo es la de una entidad **toma de ella su lugar y su cota**, así
+    que no se puede repetir sin ella cuando se descartó (se rehace con otro origen o destino, o se descarta). ``None`` si ninguno lo es; lo que solo **declara** la persona (``supports``) y la partida
+    (``start``: :func:`release_support` la rechaza aparte, ``des.entity_release_start``) no cuentan."""
+    for param in _ROAD_POINTS:
+        text = values.get(param.value)
+        if isinstance(text, str) and entities.refers_to(text) == code:
+            return param
+    return None
+
+
 def release_support(project: StoreProject, version: Version | str, target: str, entity_code: str | None = None,
                     *, reason: str, decided_by: str | None = None, budget_s: float = STEP_BUDGET_S
                     ) -> tuple[OperationHandle, Iterator[Progress]]:
@@ -4126,7 +4143,12 @@ def release_support(project: StoreProject, version: Version | str, target: str, 
     ``des.entity_release_nothing`` (no tiene retirado ese apoyo), ``des.entity_release_start`` (parte de la superficie
     de la entidad descartada: no se puede dar por buena; se rehace sobre otra o se descarta),
     ``des.entity_release_support_param`` (la tiene como superficie de apoyo) y ``des.entity_release_others``;
-    :class:`ValueError` si ``target`` o ``entity_code`` no son de la versión."""
+    :class:`ValueError` si ``target`` o ``entity_code`` no son de la versión.
+
+    **Una pista** (spec 017, T24; RF-015-17, RF-017-03; P-5: sin regla nueva del grafo) se da por buena como las demás cosas que **se apoyan** sin partir de la entidad descartada (lo que
+    **declaró** la persona en ``supports``, lo que rellena sobre su huella): ``design.road_store.recompute_road(released=…)`` la repite sin esa entrada. La que toma **de la entidad su origen, su
+    destino o su superficie de apoyo** no: su geometría sale de ella (``des.road_release_geometry``, o ``des.entity_release_support_param`` para la superficie de apoyo); se rehace con otro
+    origen o destino, o se descarta. El ramal que parte de la superficie de la pista descartada se rechaza antes (``des.entity_release_start``)."""
     wanted = version.uid if isinstance(version, Version) else version
     found = require_version(project, wanted, provenance.PLATFORM)
     with _consistent(project) as conn:
@@ -4168,6 +4190,17 @@ def release_support(project: StoreProject, version: Version | str, target: str, 
             if item.code is not None and entities.ref_code(support if isinstance(support, str) else None) == item.code:
                 raise DesignError("des.entity_release_support_param", obj=obj, field="superficie de apoyo",
                                   value=support, entity=name, target=item.name)
+    elif op_type == provenance.ROAD:  # lo que la pista toma de la entidad (su lugar y su cota) no se suelta: sin ella no hay geometría (T24)
+        code = provenance.supported_code(settings)
+        values = entity_parameters(project, code, version=found)
+        for item in picked:
+            blocker = None if item.code is None else _release_blocker(values, item.code)
+            if blocker is RoadParam.SUPPORT:
+                raise DesignError("des.entity_release_support_param", obj=obj, field="superficie de apoyo",
+                                  value=values.get(blocker.value), entity=name, target=item.name)
+            if blocker is not None:
+                raise DesignError("des.road_release_geometry", obj=obj, field=entity_key(code, blocker),
+                                  value=values.get(blocker.value), entity=name, target=item.name)
     stamp = format_utc(project.clock.now())
     released = tuple(provenance.ReleasedSupport(str(item.code), why, who, stamp)
                      for item in picked if item.code is not None)

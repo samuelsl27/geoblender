@@ -288,8 +288,8 @@ class FunctionsTest(unittest.TestCase):
     """RF-008-26, RF-009-11: las dos funciones de la pista que registra ``bl``."""
 
     def test_a_recompute_refuses_what_is_not_a_road_recompute(self) -> None:
-        """RF-008-26: ``recompute_road`` solo repite una ``RecomputeRequest`` de ``des.road`` con sus ajustes (``TypeError``, ``ValueError``); dar por bueno un apoyo sin su entidad (soltarlo, RF-015-17)
-        es de la T24 y lo dice (``NotImplementedError``) sin empezar nada."""
+        """RF-008-26: ``recompute_road`` solo repite una ``RecomputeRequest`` de ``des.road`` con sus ajustes (``TypeError``, ``ValueError``); dar por bueno un apoyo sin su entidad (soltarlo, RF-015-17; T24)
+        ya no se rechaza como «no hecho»: se pasa a la operación, y unos ajustes sin código dan el mismo ``ValueError`` que sin soltar nada."""
         with self.assertRaises(TypeError):
             road_store.recompute_road("petición")  # type: ignore[arg-type]
         other = core_recompute.RecomputeRequest(object(), "uid", "des.platform", {}, (), ())
@@ -300,9 +300,9 @@ class FunctionsTest(unittest.TestCase):
             road_store.recompute_road(road)
         self.assertIn("code", str(caught.exception))
         released = (provenance.ReleasedSupport("PLT-001", "motivo", "Samuel", "2026-11-21"),)
-        with self.assertRaises(NotImplementedError) as caught:
+        with self.assertRaises(ValueError) as caught:
             road_store.recompute_road(road, released=released)
-        self.assertIn("T24", str(caught.exception))
+        self.assertIn("code", str(caught.exception))
 
     def test_b_the_store_runs_the_road_by_its_own_branch(self) -> None:
         """RF-008-26: ``recompute_run`` repite la pista por **su** rama (no la de un escalonado, ni un ``NotImplementedError``): con unos ajustes que no son los suyos, el ``ValueError`` de la

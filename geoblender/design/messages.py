@@ -3423,6 +3423,15 @@ CATALOG: tuple[Message, ...] = (
         "puede calcular hasta que elija uno.",
         "warning",
     ),
+    # T24 (RF-015-17, RF-017-03): dar por buena una pista sin la entidad que se descartó. Si su origen está en el eje de esa pista o su destino es esa entidad, toma de ella su lugar y su cota:
+    # sin ella no se puede repetir. Como ``des.entity_release_start`` y ``des.entity_release_support_param``, que son de la 015.
+    Message(
+        "des.road_release_geometry",
+        "«{entity}» takes its position and its level from «{target}», which was discarded ({field} = {value}): without it the haul road cannot be repeated, so it cannot be given as good; "
+        "remake it with another origin or destination (change that value) or discard it; nothing is done.",
+        "«{entity}» toma su lugar y su cota de «{target}», que se descartó ({field} = {value}): sin ella no se puede repetir la pista, así que no se puede dar por buena; rehágala con otro "
+        "origen o destino (cambie ese valor) o descártela; no se hace nada.",
+    ),
     # El motivo declarado de cada tipo (``EntityType.reason``, obligatorio en la clase): la pista y la accesibilidad no declaran restricción
     # alguna (D-15), así que no se usa; existe, como el de la detección de acopios.
     Message(

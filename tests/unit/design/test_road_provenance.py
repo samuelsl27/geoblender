@@ -686,7 +686,7 @@ class ClosedListsTest(unittest.TestCase):
         repite un escalonado): un tipo sin cálculo todavía (la propuesta) dice qué tarea lo hace (``NotImplementedError``), no repite
         otra operación; **la accesibilidad (T17b) y la pista (T22) tienen su rama real**: con unos ajustes que no son los suyos, un
         ``ValueError`` (nada de «aún no») y no la de ningún escalonado; la accesibilidad y la propuesta no dejan una superficie que se
-        apoye en una entidad: soltar un apoyo es un error del programa (``ValueError``); la pista sí, y darlo por bueno es de la T24."""
+        apoye en una entidad: soltar un apoyo es un error del programa (``ValueError``); la pista sí, y darlo por bueno lo hace la T24 (``recompute_run(released=)`` la pasa a ``recompute_road``)."""
         request = recompute_mod.RecomputeRequest(object(), "uid", PROPOSE, {}, (), ())
         with self.assertRaises(NotImplementedError) as caught:
             store.recompute_run(request)
@@ -705,9 +705,10 @@ class ClosedListsTest(unittest.TestCase):
                 store.recompute_run(request, released=released)
             self.assertNotIn("aún no", str(caught.exception))
         road = recompute_mod.RecomputeRequest(object(), "uid", ROAD, {}, (), ())
-        with self.assertRaises(NotImplementedError) as caught:  # una pista sí deja superficie: puede dar por bueno un apoyo (T24)
+        with self.assertRaises(ValueError) as caught:  # una pista sí deja superficie: puede dar por bueno un apoyo (T24): no se rechaza por soltar, sino por unos ajustes sin código
             store.recompute_run(road, released=released)
-        self.assertIn("T24", str(caught.exception))
+        self.assertNotIn("aún no", str(caught.exception))
+        self.assertIn("code", str(caught.exception))
         for op_type in (ACCESS, PROPOSE):
             self.assertIn(op_type, store._NO_REST_TYPES)  # noqa: SLF001 - no se apoyan en un acopio
         self.assertNotIn(ROAD, store._NO_REST_TYPES)  # noqa: SLF001

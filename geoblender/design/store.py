@@ -3975,8 +3975,9 @@ def recompute_run(request: RecomputeRequest, *, budget_s: float = STEP_BUDGET_S,
     ``released`` (spec 015, T25; RF-015-17, A7, P-6): lo que la operación nueva **da por bueno sin su apoyo** —una
     entidad descartada en la que se apoyaba—: no lleva sus entradas, el motivo y el decisor van en sus ajustes y el
     gancho no vuelve a registrarla; solo vale de lo que deja una superficie (la plataforma y los diseños de la 013 y
-    la 014), y es lo que repite :func:`~.entity_store.release_support` **sin pasar por el plan de «Recalcular lo
-    obsoleto»**, que lo rehúsa (``core.recompute_no_successor``).
+    la 014 y, de la 016 y la 017, la retirada de un acopio, el contrafuerte, el cuerpo y la pista: ``road_store.recompute_road``, T24), y es lo que repite
+    :func:`~.entity_store.release_support` **sin pasar por el plan de «Recalcular lo obsoleto»**, que lo rehúsa
+    (``core.recompute_no_successor``).
 
     Al llamar, sin empezar nada: ``TypeError``/``ValueError`` si no es una petición de un tipo de
     :data:`RECOMPUTED` o sus ajustes no son los de su tipo, o si se suelta algo de un tipo que no deja una
