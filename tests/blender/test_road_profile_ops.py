@@ -247,12 +247,14 @@ class RoadProfilesTest(unittest.TestCase):
                 mock.patch.object(self.des_ops, "write_unavailable", return_value="Abra un proyecto"):
             self.assertFalse(cls.poll(bpy.context))
         said.assert_called_once_with("Abra un proyecto")
-        # las dos están en el catálogo (el de BS §7.2 pide toda orden real), interinas y de R-40: la T33 las pasa a la entrada 017 y al menú
+        # las dos están en el catálogo, de la entrada 017 (entregada por la T33b): «Perfil de pista…» con su casa en Diseño ▸ Pistas y entidades y la interna de su ventana, sin ella
         catalog = self.commands.catalog()
-        for idname, label in ((OPEN, "Perfil de pista…"), (SAVE, "Guardar perfil de pista…")):
+        for idname, label, kind, home in ((OPEN, "Perfil de pista…", "operator", "GEOBLENDER_MT_ui_design"),
+                                          (SAVE, "Guardar perfil de pista…", "internal", "")):
             command = catalog.commands[idname]
             self.assertEqual((command.kind, command.module, command.entry, command.home, command.label_es),
-                             ("internal", "des", "R-40", "", label))
+                             (kind, "des", "017", home, label))
+            self.assertTrue(self.commands.is_available(idname), idname)
         # las propiedades (evaluadas, como las lee el registro): cada una con su nombre y su descripción, con traducción en messages.toml
         annotations = _module("bl.registry").annotations(self.cls)
         self.assertEqual({name for name in annotations if name not in HIDDEN}, set(PROPERTIES))

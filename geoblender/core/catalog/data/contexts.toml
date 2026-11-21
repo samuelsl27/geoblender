@@ -348,7 +348,8 @@ ref = "geoblender.core_recompute_stale"
 ref = "geoblender.des_check_rules"
 
 # El menú «Entidad ▾» (spec 015, T31; RF-015-28; D-14; PC §3.11): las órdenes reales de las entidades de diseño; lo que aún no es
-# una orden (editar el eje, las restricciones que declara) sigue marcado en R-36; «Acopio (detectar, retirar)…» es de la 016 (T35).
+# una orden (editar el eje, las restricciones que declara) sigue marcado en R-36; «Acopio (detectar, retirar)…» es de la 016 (T35). La pista (spec 017, T33b)
+# usa este mismo menú con sus mismas órdenes (cada una toma la entidad seleccionada o su código): ninguna entrada nueva.
 [[context]]
 kind = "DESIGN_ENTITY"
 id = "GEOBLENDER_MT_des_context_entity"

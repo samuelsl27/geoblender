@@ -709,20 +709,8 @@ entry = "016"
 action = "D"
 frequency = 1
 
-# «Perfil de pista…» (spec 017, T29; HU-017-1; RF-017-07, RF-017-08, RF-017-29): la orden y la interna de su ventana. **Interinas, de R-40**: la T33 las pasa a
-# la entrada 017 (que las entrega con el menú Diseño ▸ Pistas y entidades) y pone «Perfil de pista…» en ese menú; mientras, no tienen casa (el catálogo exige que
-# toda orden real esté en él: BS §7.2).
-[[command]]
-key = "geoblender.des_edit_road_profile"
-kind = "internal"
-label.en = "Road profile…"
-label.es = "Perfil de pista…"
-description.en = "Road profiles such as PISTA_PRINCIPAL, with their values, their source and the widths derived from them"
-description.es = "Perfiles de pista como PISTA_PRINCIPAL, con sus valores, su fuente y las anchuras que se derivan de ellos"
-entry = "R-40"
-action = "P"
-frequency = 2
-
+# Las órdenes de pistas y rampas de la 017 (T29 a T33; HU-017-1 a HU-017-4; RF-017-07, RF-017-29): «Pista…», «Proponer el trazado…», «Accesibilidad de las pistas…», «Perfil de pista…» y «Exportar pista…» tienen
+# su casa en Diseño ▸ Pistas y entidades (07_design.toml, entrada 017: sustituyen a las tres provisionales de R-40, D-20); lo único que queda aquí es la interna de la ventana del perfil de pista.
 [[command]]
 key = "geoblender.des_save_road_profile"
 kind = "internal"
@@ -730,56 +718,6 @@ label.en = "Save road profile…"
 label.es = "Guardar perfil de pista…"
 description.en = "Create a road profile, complete the values it lacks or rename it"
 description.es = "Crea un perfil de pista, completa los valores que le faltan o lo renombra"
-entry = "R-40"
+entry = "017"
 action = "P"
-frequency = 1
-
-# «Pista…» (spec 017, T29b; HU-017-1, HU-017-2, HU-017-4; RF-017-02, RF-017-17, RF-017-22, RF-017-29): la orden que calcula y crea una pista. **Interina, de R-40**: la T33 la
-# pasa a la entrada 017 y la pone, la primera, en Diseño ▸ Pistas y entidades (sustituye a las tres provisionales de R-40); mientras, no tiene casa (BS §7.2).
-[[command]]
-key = "geoblender.des_create_road"
-kind = "internal"
-label.en = "Road…"
-label.es = "Pista…"
-description.en = "Haul road of the active version: its axis, its level profile and its section engraved on its start surface, from an origin to a destination, over an axis or over a 3D axis"
-description.es = "Pista de la versión activa: su eje, su rasante y su sección grabada en su superficie de partida, de un origen a un destino, sobre un eje o sobre un eje 3D"
-entry = "R-40"
-action = "D"
-frequency = 2
-
-# «Accesibilidad de las pistas…» (spec 017, T30; HU-017-3; RF-017-24, RF-017-25, RF-017-29): la orden que calcula y crea la accesibilidad de una superficie. **Interina, de R-40**: la T33 la pasa
-# a la entrada 017 y la pone en Diseño ▸ Pistas y entidades; mientras, no tiene casa (BS §7.2).
-[[command]]
-key = "geoblender.des_road_access"
-kind = "internal"
-label.en = "Accessibility of the roads…"
-label.es = "Accesibilidad de las pistas…"
-description.en = "Accessibility of the haul roads on a surface of the project or of the active version: what can be reached on foot from the entry points, the reachable elevations and which berm stretches, platforms and zones that require access are communicated"
-description.es = "Accesibilidad de las pistas sobre una superficie del proyecto o de la versión activa: qué se alcanza a pie desde los puntos de entrada, las cotas alcanzables y qué tramos de berma, plataformas y zonas «requiere acceso» quedan comunicados"
-entry = "R-40"
-action = "D"
-frequency = 1
-
-# «Proponer el trazado…» y «Exportar pista…» (spec 017, T33 (a); HU-017-1, HU-017-4; RF-017-28, RF-017-27, RF-017-29): las dos órdenes que quedaban. **Interinas, de R-40**: la T33b las pasa a la entrada 017 y las pone
-# en Diseño ▸ Pistas y entidades (la de proponer, la segunda del grupo; la de exportar, detrás de «Perfil de pista…»); mientras, no tienen casa (BS §7.2).
-[[command]]
-key = "geoblender.des_propose_road"
-kind = "internal"
-label.en = "Propose the route…"
-label.es = "Proponer el trazado…"
-description.en = "Proposal of the route of a haul road of the active version, from an origin to a destination: its axis and its level profile as a layer of 3D lines that you can edit in QGIS; it changes no surface and is not an entity"
-description.es = "Propuesta del trazado de una pista de la versión activa, de un origen a un destino: su eje y su rasante como una capa de líneas 3D que puede editar en QGIS; no cambia ninguna superficie y no es una entidad"
-entry = "R-40"
-action = "D"
-frequency = 2
-
-[[command]]
-key = "geoblender.des_export_road"
-kind = "internal"
-label.en = "Export road…"
-label.es = "Exportar pista…"
-description.en = "Write the surface of a road or what an accessibility reaches as a deliverable GeoTIFF, or the level profile of a road as a CSV (it is not an operation: it writes nothing in the project, also from a superseded version and, outside the project, in read-only)"
-description.es = "Escribe la superficie de una pista o lo que alcanza una accesibilidad como GeoTIFF entregable, o la rasante de una pista como CSV (no es una operación: no escribe nada en el proyecto, también de una versión superada y, fuera del proyecto, en solo lectura)"
-entry = "R-40"
-action = "D"
 frequency = 1

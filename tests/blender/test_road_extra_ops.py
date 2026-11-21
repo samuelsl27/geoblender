@@ -8,7 +8,7 @@ en «trazar»; «Calcular» y «Crear» son **por pasos** con el avance y Esc (`
 en el proyecto** (exportar no es una operación: H-9). El proyecto es el de ``test_road_ops.py`` (60 × 60 m con celdas de 2 m, V01 y V02, el límite legal, el perímetro, un sector con la búsqueda cerrada, los terrenos
 ``Suave`` y ``A15``, las capas de la pista y los perfiles de referencia de IMGA, **solo de pruebas**): se paga **una vez** por clase (≈ 6 s). Las pruebas, en el orden de sus letras sobre el mismo estado.
 
-- RF-017-29, RF-015-28 (a): las dos órdenes son reales, del catálogo (interinas de R-40); sus propiedades tienen nombre y descripción en español; el diálogo propone el nombre, la capa y la partida y dibuja los
+- RF-017-29, RF-015-28 (a): las dos órdenes son reales, del catálogo (entrada 017, entregada); sus propiedades tienen nombre y descripción en español; el diálogo propone el nombre, la capa y la partida y dibuja los
   campos de «trazar» con el tipo de cada parámetro de la ruta; el de exportar, qué exportar y de qué pista o accesibilidad.
 - RF-017-28, RF-017-02 (b): la petición del diálogo es la ``RoadRequest`` de «trazar», con los decimales con coma y sin cifra en los parámetros vacíos; lo que no se puede armar se dice.
 - RF-017-28, RF-015-03, D-19 (c): Calcular deja el cálculo abierto con su resumen (con todos los avisos con su lugar) y **nada en el proyecto**; Crear registra ``des.road_propose`` con la capa de líneas con Z
@@ -182,7 +182,7 @@ class RoadExtraOpsTest(road_ops.RoadOpsTest):
 
     def test_a_the_commands_their_dialogs_and_the_proposal(self) -> None:
         """RF-017-29, RF-015-28, RF-017-28, RF-017-10, RF-017-27 (plan §5.3.3, §5.5; M6): «Proponer el trazado…» es una orden real de ``des.road_propose`` con la puerta de la procedencia y los pasos con Esc y
-        «Exportar pista…» una de exportar (no es una operación); las dos son de R-40 (interinas hasta la T33b) y del catálogo, ya no «pendientes»; sus propiedades tienen nombre y descripción en español y los
+        «Exportar pista…» una de exportar (no es una operación); las dos son de la entrada 017 (entregada por la T33b) y del catálogo, con su casa en Diseño ▸ Pistas y entidades; sus propiedades tienen nombre y descripción en español y los
         decimales son texto; el diálogo de proponer propone el nombre, la capa, el perfil y la partida y dibuja los campos de «trazar» —con **el tipo de cada parámetro de la ruta**, sin modo, línea ni apoyo— y
         «Vista previa»; el de exportar, qué exportar y de qué pista o accesibilidad."""
         cls, export = self.propose, self.export
@@ -205,8 +205,8 @@ class RoadExtraOpsTest(road_ops.RoadOpsTest):
         catalog = self.commands.catalog()
         for idname, label in ((PROPOSE, "Proponer el trazado…"), (EXPORT, "Exportar pista…")):
             command = catalog.commands[idname]
-            self.assertEqual((command.label_es, command.entry, command.module, command.kind), (label, "R-40", "des", "internal"))
-            self.assertFalse(self.commands.is_available(idname), "la entrada R-40 aún no está entregada: la T33b la entrega con el menú")
+            self.assertEqual((command.label_es, command.entry, command.module, command.kind), (label, "017", "des", "operator"))
+            self.assertTrue(self.commands.is_available(idname), "la entrada 017 está entregada (T33b): la orden se dibuja en su menú sin la nota «Disponible en …»")
         self.assertEqual({name for name in cls.__annotations__ if name not in HIDDEN}, set(PROPERTIES))
         for prop, (label, about) in PROPERTIES.items():  # registradas ya en español
             with self.subTest(propiedad=prop):

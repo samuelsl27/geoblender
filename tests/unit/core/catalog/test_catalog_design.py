@@ -28,6 +28,11 @@ de comandos.
   internas de detectar, los candidatos y retirar; «Cuerpo apoyado…» es la «Unidad por espesor sobre su apoyo…» de R-18
   (``geo_create_thickness_unit``), que se va del menú de Geología. ``R-36`` sigue como entrada del roadmap, sin órdenes: lo que aún no
   es una orden del menú «Entidad ▾» (editar el eje, las restricciones que declara) sigue marcado en ella.
+- La spec 017 (pistas y rampas; T33b, plan 017 §5.5 y §5.6, RF-017-29, D-20): la entrada ``017`` tiene su título en los dos idiomas y **entrega** sus
+  órdenes con el menú: «Pista…», «Proponer el trazado…», «Accesibilidad de las pistas…», «Perfil de pista…» y «Exportar pista…» son los cinco primeros
+  puestos de Diseño ▸ Pistas y entidades, **en ese orden y antes de «Entidades ▸»**, y la ventana del perfil, su interna. **Desaparecen** del catálogo
+  ``des_draw_haul_road``, ``des_route_haul_road`` y ``des_burn_roads`` (las tres provisionales de ``R-40``: no queda ninguna referencia a ellas en los
+  ficheros del catálogo). ``R-40`` sigue como entrada del roadmap, sin órdenes. El menú «Entidad ▾» no cambia: sirve a la pista con las órdenes de siempre.
 """
 
 import tomllib
@@ -67,6 +72,17 @@ ENTITY_MENU = ("geoblender.des_entity_dependents", "geoblender.des_entity_insert
                "geoblender.des_entity_calculate", "geoblender.des_entity_discard", "geoblender.des_entity_release_support",
                "geoblender.des_entity_preview", "geoblender.des_export_design_grid")
 """Las órdenes reales del menú «Entidad ▾» (T31), en su orden."""
+TITLE_017 = ("Haul roads and ramps", "Pistas y rampas")
+ROADS_MENU_017 = {  # orden → (rótulo en español, acción, frecuencia), en el orden del grupo «Pistas y entidades»
+    "geoblender.des_create_road": ("Pista…", "D", 2),
+    "geoblender.des_propose_road": ("Proponer el trazado…", "D", 2),
+    "geoblender.des_road_access": ("Accesibilidad de las pistas…", "D", 1),
+    "geoblender.des_edit_road_profile": ("Perfil de pista…", "P", 2),
+    "geoblender.des_export_road": ("Exportar pista…", "D", 1),
+}
+INTERNAL_017 = ("geoblender.des_save_road_profile",)
+GONE_017 = ("des_draw_haul_road", "des_route_haul_road", "des_burn_roads")
+"""Las tres provisionales de R-40 que sustituyen las órdenes de la 017 (D-20)."""
 
 
 class DesignCatalogTest(unittest.TestCase):
@@ -206,6 +222,55 @@ class DesignCatalogTest(unittest.TestCase):
                                      "geoblender.des_create_body"])
         geology = [item.key for group in self.cat.menus["GEOBLENDER_MT_ui_geology"].groups for item in group.items]
         self.assertNotIn("geoblender.geo_create_thickness_unit", geology)
+
+    def test_entry_017_delivers_its_commands(self) -> None:
+        """RF-017-29, D-20 (plan 017 §5.6, T33b): la entrada ``017`` tiene el título de la spec en los dos idiomas y **entrega** sus órdenes: las cinco del
+        menú y la interna de la ventana del perfil (y nada más); ``R-40`` sigue como entrada del roadmap, sin entregar y sin ninguna orden."""
+        entry = self.cat.entries["017"]
+        self.assertEqual((entry.title, entry.title_es), TITLE_017)
+        self.assertTrue(entry.delivered)
+        self.assertEqual(catalog.entry_text(self.cat, "017", "es"), f"017 · {TITLE_017[1]}")
+        self.assertEqual(catalog.entry_text(self.cat, "017", "en"), f"017 · {TITLE_017[0]}")
+        self.assertEqual(sorted(command.key for command in self.cat.commands.values() if command.entry == "017"),
+                         sorted((*ROADS_MENU_017, *INTERNAL_017)))
+        self.assertIn("R-40", self.cat.entries)
+        self.assertFalse(self.cat.entries["R-40"].delivered)
+        self.assertEqual(sorted(command.key for command in self.cat.commands.values() if command.entry == "R-40"), [],
+                         "ninguna orden es ya de R-40: las entrega la entrada 017 (T33b)")
+
+    def test_the_five_orders_are_the_first_of_haul_roads_and_entities(self) -> None:
+        """RF-017-29, D-20, M6: «Pista…», «Proponer el trazado…» y «Accesibilidad de las pistas…» son **los tres primeros puestos** de Diseño ▸ Pistas y
+        entidades, seguidos de «Perfil de pista…» y «Exportar pista…» y, después, el submenú «Entidades ▸»; cada una es de ``des``, una orden con su casa
+        en Diseño, su acción y su frecuencia, y su rótulo acaba en «…» (abre un diálogo) en los dos idiomas; la interna del perfil no tiene casa."""
+        design = self.cat.menus[HOME]
+        (group,) = [item for item in design.groups if item.label == "Haul roads and entities"]
+        self.assertEqual(group.label_es, "Pistas y entidades")
+        self.assertEqual([item.key for item in group.items], [*ROADS_MENU_017, "GEOBLENDER_MT_des_entities"])
+        for key, (label_es, action, frequency) in ROADS_MENU_017.items():
+            with self.subTest(key=key):
+                command = self.cat.commands[key]
+                self.assertEqual((command.entry, command.module, command.kind, command.home), ("017", "des", "operator", HOME))
+                self.assertEqual((command.label_es, command.action, command.frequency, command.background), (label_es, action, frequency, False))
+                self.assertTrue(command.label.endswith("…") and command.label_es.endswith("…"))
+        self.assertEqual([self.cat.commands[key].label for key in ROADS_MENU_017],
+                         ["Road…", "Propose the route…", "Accessibility of the roads…", "Road profile…", "Export road…"])
+        for key in INTERNAL_017:
+            command = self.cat.commands[key]
+            self.assertEqual((command.entry, command.module, command.kind, command.home), ("017", "des", "internal", ""))
+        self.assertEqual(self.cat.commands["geoblender.des_create_road"].jargon, (("RecMin", "Pista"),))
+
+    def test_the_three_provisional_orders_of_r40_are_gone(self) -> None:
+        """RF-017-29, D-20 (M6): ``des_draw_haul_road``, ``des_route_haul_road`` y ``des_burn_roads`` ya no están en el catálogo ni en ningún menú, atajo, acceso
+        rápido, menú circular, menú contextual, icono o disposición: **ningún fichero de datos del catálogo las nombra** (la pista graba al crearse y la
+        «Ruta 3D con pendiente máxima…» pasó a «Proponer el trazado…»). Los comentarios de los ficheros (que cuentan la sustitución) no cuentan: sí los datos."""
+        data = {path.name: "\n".join(line for line in path.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#"))
+                for path in DATA.rglob("*.toml")}
+        for name in GONE_017:
+            with self.subTest(orden=name):
+                self.assertNotIn(f"geoblender.{name}", self.cat.commands)
+                self.assertFalse([file for file, text in data.items() if name in text], "algún fichero del catálogo sigue nombrándola")
+        shown = [item.key for menu in self.cat.menus.values() for group in menu.groups for item in group.items]
+        self.assertFalse([key for key in shown if key and key.removeprefix("geoblender.") in GONE_017])
 
     def test_the_platform_and_the_internals_of_015(self) -> None:
         """RF-015-28 (D-14): «Plataforma…» es de la ``015`` y de ``des``, con su casa en Diseño ▸ Pistas y entidades ▸

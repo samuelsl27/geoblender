@@ -117,6 +117,16 @@ title.en = "Stockpiles, buttress and supported bodies"
 title.es = "Acopios, contrafuerte y cuerpos apoyados"
 delivered = true
 
+# La spec 017 (pistas y rampas) es R-40 (plan 017 §5.5 y §5.6, T29 a T33b, D-20): sus cinco órdenes (Pista…, Proponer el trazado…, Accesibilidad de las pistas…,
+# Perfil de pista… y Exportar pista…, de Diseño ▸ Pistas y entidades, los cinco primeros puestos del grupo) y la interna de la ventana del perfil de pista pasan de R-40
+# a la 017 y las entrega la T33b con su menú; **sustituyen** a las tres provisionales de R-40 (`des_draw_haul_road`, `des_route_haul_road` y `des_burn_roads`: la pista
+# ya graba al crearse), que desaparecen del catálogo. R-40 sigue como entrada del roadmap y ya no la usa ningún comando. El menú «Entidad ▾» (entrada 015) lleva
+# también la pista; la accesibilidad no es una entidad con cadena: no se trae a otra versión, se vuelve a calcular.
+["017"]
+title.en = "Haul roads and ramps"
+title.es = "Pistas y rampas"
+delivered = true
+
 ["R-07"]
 title.en = "Versions and provenance"
 title.es = "Versiones y procedencia"

@@ -331,7 +331,7 @@ por tramos según pd y pm y la anchura de la sección) y, con :class:`GEOBLENDER
 guardado y lo que se le apoya). Se quita al cancelar, al Esc a mitad, al crearla y al conmutar a la interfaz de Blender.
 
 **Pista…** (spec 017, T29b; HU-017-1, HU-017-2, HU-017-4; RF-017-02, RF-017-17, RF-017-22, RF-017-29, RF-015-28; plan 017 §5.3.3 y §5.5; comprobación manual M1):
-:class:`GEOBLENDER_OT_des_create_road` (``geoblender.des_create_road``, interna e interina de «R-40» hasta que la T33 la ponga en el menú) calcula ``des.road`` de la versión activa con
+:class:`GEOBLENDER_OT_des_create_road` (``geoblender.des_create_road``, «Pista…», de la entrada «017»: el primer puesto de Diseño ▸ Pistas y entidades, T33b) calcula ``des.road`` de la versión activa con
 ``design.steps.road_run``: el eje, la rasante y la sección grabada en la superficie de partida. **Es el patrón de la orden de pista**: :class:`_ChainsEntityLayer` +
 :class:`_CalculateAndCreate` + :class:`DesignCommandAware` + :class:`~.core._StepsModal`, con :class:`_ClearsEntityPreview` delante. Su diálogo pide el nombre y el **modo**
 («trazar», «sobre un eje» o «eje 3D»); la capa (de puntos, de líneas o de líneas con Z, según el modo: ``des_panels.road_layers``) y, en «trazar», **el origen** (un punto de la
@@ -353,7 +353,7 @@ declara restricciones (D-15), pero la capa de entidades y la de ejes se ponen al
 editable y, si no, desactivada con su motivo (RF-017-29, RF-015-28: :class:`DesignCommandAware`). «Proponer el trazado…» (``des_propose_road``) es de la T33 (abajo).
 
 **Accesibilidad de las pistas…** (spec 017, T30; HU-017-3; RF-017-29, RF-017-24, RF-017-25, RF-017-30, RF-015-28; plan 017 §5.3.3 y §5.5; comprobación manual M3):
-:class:`GEOBLENDER_OT_des_road_access` (``geoblender.des_road_access``, interna e interina de «R-40» hasta que la T33 la ponga en el menú) calcula ``des.road_access`` de la versión activa con
+:class:`GEOBLENDER_OT_des_road_access` (``geoblender.des_road_access``, «Accesibilidad de las pistas…», de la entrada «017»: el tercer puesto de Diseño ▸ Pistas y entidades, T33b) calcula ``des.road_access`` de la versión activa con
 ``design.steps.access_run``: qué celdas se alcanzan a pie desde los puntos de entrada (la pendiente y el ancho transitables), las cotas mínima y máxima alcanzables —también sobre la final de una
 cantera de dos superficies— y qué tramos de berma, plataformas y zonas «requiere acceso» quedan comunicados. Sigue el patrón de «Pista…» (:class:`_ChainsEntityLayer` + :class:`_CalculateAndCreate` +
 :class:`DesignCommandAware` + :class:`~.core._StepsModal`), sin vista previa ni confirmaciones: no mueve ninguna celda. **La operación es de la versión** (D-18, decisión T30-a): hace falta una versión
@@ -377,7 +377,7 @@ entidades siguiente o «Recalcular lo obsoleto»). Desde un guion (sin ventana),
 (:func:`bl.ops.core.cancel_running`) y ``register()`` y ``unregister()`` quitan todo lo de la 017, también lo de las ventanas, las listas y los ajustes de «Cambiar parámetro…».
 
 **Proponer el trazado… y Exportar pista…** (spec 017, T33 (a); HU-017-1, HU-017-4; RF-017-28, RF-017-27, RF-017-29, RF-017-30, RF-015-28; H-9; plan 017 §5.3.3 y §5.5; comprobación manual M6):
-:class:`GEOBLENDER_OT_des_propose_road` (``geoblender.des_propose_road``, interna e interina de «R-40» hasta que la T33b la ponga en el menú) calcula ``des.road_propose`` de la versión activa con
+:class:`GEOBLENDER_OT_des_propose_road` (``geoblender.des_propose_road``, «Proponer el trazado…», de la entrada «017»: el segundo puesto de Diseño ▸ Pistas y entidades, T33b) calcula ``des.road_propose`` de la versión activa con
 ``design.steps.road_propose_run``: **lo mismo que la pista «trazar» hasta la ruta y la rasante** (A1 a A5, sin A6 a A9) y deja **una capa de líneas con Z, editable en QGIS** (``des_rpl_<nombre>``), **sin tocar
 ninguna superficie** y sin ser una entidad (no hay código, ni cadena, ni capa de entidades o de ejes, ni declaración). Su diálogo es el de «Pista…» en el modo «trazar» (la capa de puntos, el origen y el
 destino, el perfil, la partida, las cotas y los nueve parámetros de la ruta con su tipo: :func:`_road_points`, :func:`_route_changes`, :func:`_draw_trace_points` y :func:`_draw_route_params`) y su
@@ -385,7 +385,7 @@ destino, el perfil, la partida, las cotas y los nueve parámetros de la ruta con
 abscisa y su lugar, el radio mínimo y todos los avisos con su lugar; **la pendiente media por encima de pm solo avisa, sin pedir confirmación** (no graba ninguna superficie). **«Crear» es por pasos** desde la
 interfaz, con el avance y Esc (:class:`_CreatesInSteps`, con su propio :meth:`~GEOBLENDER_OT_des_propose_road._creation_steps`: la capa en su temporal y la transacción final, y **nada de lo que sigue a crear una
 entidad**), y de una vez desde un guion. Con el proyecto en escritura y la versión activa editable, y si no, desactivada con su motivo (:class:`DesignCommandAware`).
-:class:`GEOBLENDER_OT_des_export_road` (``geoblender.des_export_road``, interna e interina de «R-40») escribe, desde lo registrado y **sin escribir nada en el proyecto** (exportar no es una operación, H-9),
+:class:`GEOBLENDER_OT_des_export_road` (``geoblender.des_export_road``, «Exportar pista…», de la entrada «017»: detrás de «Perfil de pista…», T33b) escribe, desde lo registrado y **sin escribir nada en el proyecto** (exportar no es una operación, H-9),
 **la superficie de una pista** o **lo que alcanza una accesibilidad** como GeoTIFF y **la rasante de una pista a CSV** (``design.export.stored_road_export``, ``export_grid_steps`` y ``export_road_csv``): el
 diálogo es el selector de ficheros de Blender (qué exportar y de qué pista o accesibilidad, en su panel; ``exports/<dato>_<V01>.tif`` o ``.csv`` propuesto), por pasos con el avance y Esc (la rasante, de
 una vez) y sobre un fichero que ya existe pregunta antes de sustituirlo; vale con el proyecto en solo lectura (fuera de él) y con la versión superada. Dice en el informe qué escribió y dónde.
@@ -406,6 +406,9 @@ y ella y las que la siguen quedan obsoletas con su causa (``design.entity_store.
 **activas con el proyecto en escritura y la versión activa editable y, si no, desactivadas con su motivo**
 (:class:`DesignCommandAware`, RF-015-28); exportar no es una operación (RF-013-34, D-29 de la 011) y vale también en solo
 lectura y con la versión superada.
+**Con los tipos nuevos de la 017** (T33b; RF-015-28, RF-015-05): el menú «Entidad ▾» es el mismo y sirve a **la pista** con las mismas órdenes (descartar, soltar el apoyo, lo que se apoya en ella, la vista previa de su
+eje, traer e insertar junto a ella; «Insertar antes o después de…» abre siempre «Plataforma…»: la pista no admite ``insert_before``). **La accesibilidad no es una entidad con cadena** (sin ``start`` ni ``supports``):
+«Traer las entidades de…» **no la ofrece ni la trae** (:func:`_is_bringable`: se vuelve a calcular en la versión), no se inserta junto a ella y no tiene vista previa; el menú contextual de su objeto (``DESIGN``) es «Diseño ▾».
 
 **Calcular una entidad traída o heredada** (spec 015, T41; HU-015-2; RF-015-18; CE-015-01; hallazgo C-12): «Traer las
 entidades de…» y la versión que parte de otra dejan la entidad con sus parámetros y **sin resultado**, y «Plataforma…» no podía
@@ -5660,10 +5663,19 @@ class GEOBLENDER_OT_des_entity_refresh(_EntitySteps, DesignCommand, _StepsModal,
 BRING_ENTITIES = "geoblender.des_entity_bring"
 
 
+def _is_bringable(entry: Any) -> bool:
+    """Si la entidad ``entry`` (``design.entities.EntityEntry``) se puede traer a otra versión (RF-015-18; spec 017, decisión de la sesión principal tras la
+    T31b): **la accesibilidad, no**: no es una entidad con cadena (sin ``start`` ni ``supports``, que «Traer» re-apunta), y en otra versión se vuelve a calcular.
+    Las demás (la plataforma, la pista y los cuatro tipos de la 016), sí."""
+    from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+    return bool(entry.record.kind is not entities.EntityKind.ACCESS)
+
+
 def _bring_entities_of(self: Any, _context: Any) -> None:
     """El ``update`` de la versión de origen de «Traer las entidades de…» (T26): pone en ``rows`` las entidades vivas de
-    esa versión (no se traen las descartadas), todas marcadas (``design.entities.registry``; solo lee). Lo que no se
-    puede leer (una versión que no existe, un proyecto cerrado) deja la lista vacía."""
+    esa versión (no se traen las descartadas **ni la accesibilidad**: T33b), todas marcadas (``design.entities.registry``;
+    solo lee). Lo que no se puede leer (una versión que no existe, un proyecto cerrado) deja la lista vacía."""
     self.rows.clear()
     project, wanted = SESSION.project, self.source.strip()
     if project is None or not wanted:
@@ -5676,7 +5688,7 @@ def _bring_entities_of(self: Any, _context: Any) -> None:
         LOGGER.debug("No se pudieron leer las entidades de la versión «%s»", wanted, exc_info=True)
         return
     for entry in listed:
-        if entry.record.state is entities.EntityState.DISCARDED:
+        if entry.record.state is entities.EntityState.DISCARDED or not _is_bringable(entry):
             continue
         row = self.rows.add()
         row.name, row.selected = entry.record.code, True
@@ -5744,18 +5756,33 @@ class GEOBLENDER_OT_des_entity_bring(DesignCommandAware, ProvenanceAwareOperator
         layout.label(text=tr("They are brought without their results, as «not calculated»."), translate=False)
         layout.label(text=tr("Their dependencies are detected again when you calculate them."), translate=False)
 
-    def _wanted(self) -> list[str] | None:
-        """Las entidades que se piden: las que se teclean en ``entities`` (por su código o su nombre), o las marcadas en la
-        ventana (todas: ``None``), o, sin ventana ni nada tecleado, todas las vivas (``None``)."""
+    def _wanted(self) -> list[str]:
+        """Las entidades que se piden, **siempre por su código o su nombre** (nunca «todas»: incluiría la accesibilidad, que no se trae):
+        las que se teclean en ``entities``; o las marcadas en la ventana; o, sin ventana ni nada tecleado, todas las vivas menos la
+        accesibilidad. :class:`ValueError` si no hay ninguna marcada o si se teclea una accesibilidad (no se trae: se vuelve a calcular
+        en la versión; T33b)."""
+        from ...design import entities  # al usarlo: habilitar no carga las entidades
+
         typed = [part.strip() for part in self.entities.split(",") if part.strip()]
-        if typed:
+        rows = len(self.rows) > 0
+        if rows and not typed:
+            chosen = [row.name for row in self.rows if row.selected]
+            if not chosen:
+                raise ValueError(tr("Choose at least one entity to bring"))
+            return chosen
+        try:
+            listed = entities.registry(SESSION.project, self.source.strip())
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError):  # una versión que no se puede leer: la rechaza el dominio con sus palabras
+            LOGGER.debug("No se pudieron leer las entidades de la versión «%s»", self.source, exc_info=True)
             return typed
-        if len(self.rows) == 0:
-            return None
-        chosen = [row.name for row in self.rows if row.selected]
-        if not chosen:
-            raise ValueError(tr("Choose at least one entity to bring"))
-        return None if len(chosen) == len(self.rows) else chosen
+        if typed:
+            for ref in typed:
+                found = listed.get(ref)
+                if found is not None and not _is_bringable(found):
+                    raise ValueError(tr("«{name}» is an accessibility, not an entity with a chain: it is not brought to another version; "
+                                        "calculate it again in the active version", name=found.record.name))
+            return typed
+        return [entry.record.code for entry in listed if entry.record.state is not entities.EntityState.DISCARDED and _is_bringable(entry)]
 
     def execute(self, context: Any) -> set[str]:
         """Trae a la versión activa las entidades pedidas de la de origen (``design.entity_store.bring_entities``):
@@ -9608,4 +9635,4 @@ de la «Unidad por espesor sobre su apoyo…» de Geología al menú Entidades);
 ``des_add_buttress``; la T35 pone «Acopio (detectar, retirar)…», «Detectar acopios…» y «Candidatos de los acopios…» y entrega la entrada 016 con
 el menú Diseño ▸ Pistas y entidades ▸ Entidades); de la 017, la T29 pone «Perfil de pista…» (``des_edit_road_profile``) y su interna
 (``des_save_road_profile``), la T29b, «Pista…» (``des_create_road``), la T30, «Accesibilidad de las pistas…» (``des_road_access``) y la T33 (a), «Proponer el trazado…» (``des_propose_road``) y
-«Exportar pista…» (``des_export_road``); **aún no están en el menú** (la T33b): las cinco son interinas de «R-40» en el catálogo)."""
+«Exportar pista…» (``des_export_road``); **la T33b las pone en el menú** —los cinco primeros puestos de Diseño ▸ Pistas y entidades— y entrega la entrada 017, que sustituye a las tres provisionales de «R-40»)."""

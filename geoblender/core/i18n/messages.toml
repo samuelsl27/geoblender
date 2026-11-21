@@ -11508,3 +11508,6 @@ es = "Lo que alcanza la accesibilidad, exportado a «{file}»"
 
 ["Surface of the road exported to «{file}»"]
 es = "Superficie de la pista exportada a «{file}»"
+
+["«{name}» is an accessibility, not an entity with a chain: it is not brought to another version; calculate it again in the active version"]
+es = "«{name}» es una accesibilidad, no una entidad con cadena: no se trae a otra versión, se vuelve a calcular en la versión activa"

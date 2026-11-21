@@ -11,7 +11,7 @@ proyecto de ``test_platform_ops.py`` (60 × 60 m con celdas de 2 m, V01 y V02, e
 rejilla, las rejillas de cotas de berma de V01 (una banda al sur y otra al norte, escritas por una operación de prueba), la plataforma «Carga» (al sur, creada con la orden real) y dos zonas «requiere acceso»
 (una al sur y otra al norte, de la 012). Las pruebas, en el orden de sus letras sobre el mismo estado.
 
-- RF-017-29, RF-015-28 (a): la orden es real, del catálogo (interina de R-40); sus propiedades tienen nombre y descripción; el diálogo propone el nombre, la capa y la superficie (la última de la cadena) y
+- RF-017-29, RF-015-28 (a): la orden es real, del catálogo (entrada 017, entregada); sus propiedades tienen nombre y descripción; el diálogo propone el nombre, la capa y la superficie (la última de la cadena) y
   dibuja sus campos, con el tipo de cada umbral.
 - RF-017-24, RF-017-04 (b): la petición del diálogo es la que arma ``AccessRequest``, con coma decimal y los umbrales vacíos sin cifra.
 - RF-017-24, RF-017-25, RF-015-03, RF-015-02 (c): Calcular sobre ``Suave`` (todo se alcanza) deja el cálculo abierto, con su resumen y las tres listas, y nada en el proyecto; Crear registra ``des.road_access``,
@@ -242,7 +242,7 @@ class RoadAccessOpsTest(platform_ops.CreatePlatformTest):
 
     def test_a_the_command_its_dialog_and_the_proposal(self) -> None:
         """RF-017-29, RF-015-28, RF-017-24, RF-017-25 (plan §5.3.3, §5.5; M3): «Accesibilidad de las pistas…» es una orden real de ``des.road_access`` con la puerta de la procedencia y los pasos con Esc;
-        es de R-40 (interina hasta la T33) y del catálogo, ya no «pendiente»; sus propiedades tienen nombre y descripción en español y los decimales son texto; su diálogo propone el nombre, la capa
+        es de la entrada 017 (entregada por la T33b) y del catálogo, con su casa en Diseño ▸ Pistas y entidades; sus propiedades tienen nombre y descripción en español y los decimales son texto; su diálogo propone el nombre, la capa
         de entradas y **la superficie: la última de la cadena** (``des_psf_carga``); dibuja sus campos y **el tipo de cada umbral** (HIPÓTESIS: sin valor por defecto)."""
         cls = self.access
         self.assertIsNotNone(cls)
@@ -257,8 +257,8 @@ class RoadAccessOpsTest(platform_ops.CreatePlatformTest):
         self.assertEqual(self.dprov.ACCESS_COMMAND, ACCESS)
         self.assertIn(ACCESS, self.dprov.OPERATION_TYPES_BY_NAME[ACCESS_TYPE].commands)
         command = self.commands.catalog().commands[ACCESS]
-        self.assertEqual((command.label_es, command.entry, command.module, command.kind), ("Accesibilidad de las pistas…", "R-40", "des", "internal"))
-        self.assertFalse(self.commands.is_available(ACCESS), "la entrada R-40 aún no está entregada: la T33 la entrega con el menú")
+        self.assertEqual((command.label_es, command.entry, command.module, command.kind), ("Accesibilidad de las pistas…", "017", "des", "operator"))
+        self.assertTrue(self.commands.is_available(ACCESS), "la entrada 017 está entregada (T33b): la orden se dibuja en su menú sin la nota «Disponible en …»")
         annotated = {name for name in cls.__annotations__ if name not in HIDDEN}
         self.assertEqual(annotated, set(PROPERTIES))
         for prop, (label, about) in PROPERTIES.items():  # registradas ya en español

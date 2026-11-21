@@ -1177,8 +1177,8 @@ class PlanNamesTest(unittest.TestCase):
         self.assertFalse(imports_design("compliance.py"))
 
     def test_the_catalog_entries(self) -> None:
-        """Las tres órdenes provisionales de «Pistas y entidades» son entradas sueltas de R-40; ``entries.toml`` tiene
-        ``R-40`` y no ``017``."""
+        """RF-017-29, D-20 (T33b): las tres órdenes provisionales de «Pistas y entidades» (entradas sueltas de R-40 hasta la T33b) **ya no están**: en su lugar,
+        las cinco órdenes de la 017 (entrada ``017``, sin submenú); ``entries.toml`` tiene ``R-40`` (el roadmap) y ``017`` (la entrega)."""
         menu = tomllib.loads((EXTENSION_DIR / "core" / "catalog" / "data" / "menus" / "07_design.toml")
                              .read_text(encoding="utf-8"))
         groups = {group["label"]["en"]: group for group in menu["menu"][0]["group"]}
@@ -1186,13 +1186,16 @@ class PlanNamesTest(unittest.TestCase):
         loose = {item["key"]: item for item in group["item"] if "key" in item}
         for key in ("geoblender.des_draw_haul_road", "geoblender.des_route_haul_road",
                     "geoblender.des_burn_roads"):
+            self.assertNotIn(key, loose, key)
+        for key in ("geoblender.des_create_road", "geoblender.des_propose_road", "geoblender.des_road_access",
+                    "geoblender.des_edit_road_profile", "geoblender.des_export_road"):
             self.assertIn(key, loose, key)
-            self.assertEqual(loose[key]["entry"], "R-40", key)
+            self.assertEqual(loose[key]["entry"], "017", key)
             self.assertNotIn("item", loose[key], key)
         entries = tomllib.loads((EXTENSION_DIR / "core" / "catalog" / "data" / "entries.toml")
                                 .read_text(encoding="utf-8"))
         self.assertIn("R-40", entries)
-        self.assertNotIn("017", entries)
+        self.assertIn("017", entries)
 
     def test_the_design_fixtures_it_builds_on(self) -> None:
         """Lo que la cantera usa: los perfiles de la 013 y el ancla de 125 m."""

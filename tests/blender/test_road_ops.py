@@ -11,7 +11,7 @@ media por encima de la del perfil o la calzada fuera de su rasante no se crea si
 ``tests.support.road_data.PROFILE``; los parámetros de la ruta de ``ROUTE``, con la penalización de giro, la holgura, la simplificación y la llegada como HIPÓTESIS de la prueba).
 Las pruebas, en el orden de sus letras sobre el mismo estado.
 
-- RF-017-29, RF-015-28 (a): la orden es real, del catálogo (interina de R-40); sus propiedades tienen nombre y descripción; el diálogo propone el nombre, la capa del modo, el perfil
+- RF-017-29, RF-015-28 (a): la orden es real, del catálogo (entrada 017, entregada); sus propiedades tienen nombre y descripción; el diálogo propone el nombre, la capa del modo, el perfil
   y la partida; dibuja los campos de cada modo, con el tipo de cada parámetro de la ruta.
 - RF-017-02 (b): la petición del diálogo —el origen, el destino y la cota con su zona— es la que arma ``RoadRequest``, en los tres modos.
 - RF-017-01, RF-017-23, RF-015-03 (c): Calcular deja el cálculo abierto, con su resumen (con todos los avisos) y nada en el proyecto; Crear registra ``des.road`` con su eje, su huella
@@ -247,7 +247,7 @@ class RoadOpsTest(platform_ops.CreatePlatformTest):
 
     def test_a_the_command_its_dialog_and_the_proposal(self) -> None:
         """RF-017-29, RF-015-28, RF-017-02, RF-017-10 (plan §5.3.3, §5.5; M1): «Pista…» es una orden real de ``des.road`` con la puerta de la procedencia y los pasos con Esc; es de
-        R-40 (interina hasta la T33) y del catálogo, ya no «pendiente»; sus propiedades tienen nombre y descripción en español y los decimales son texto; su diálogo propone el
+        la entrada 017 (entregada por la T33b) y del catálogo, con su casa en Diseño ▸ Pistas y entidades; sus propiedades tienen nombre y descripción en español y los decimales son texto; su diálogo propone el
         nombre, la capa del modo, el perfil y la partida; dibuja los campos de cada modo y, en «trazar», **el tipo de cada parámetro de la ruta**."""
         cls = self.road
         self.assertIsNotNone(cls)
@@ -263,8 +263,8 @@ class RoadOpsTest(platform_ops.CreatePlatformTest):
         self.assertEqual(self.dprov.ROAD_COMMAND, ROAD)
         self.assertIn(ROAD, self.dprov.OPERATION_TYPES_BY_NAME[ROAD_TYPE].commands)
         command = self.commands.catalog().commands[ROAD]
-        self.assertEqual((command.label_es, command.entry, command.module, command.kind), ("Pista…", "R-40", "des", "internal"))
-        self.assertFalse(self.commands.is_available(ROAD), "la entrada R-40 aún no está entregada: la T33 la entrega con el menú")
+        self.assertEqual((command.label_es, command.entry, command.module, command.kind), ("Pista…", "017", "des", "operator"))
+        self.assertTrue(self.commands.is_available(ROAD), "la entrada 017 está entregada (T33b): la orden se dibuja en su menú sin la nota «Disponible en …»")
         annotated = {name for name in cls.__annotations__ if name not in HIDDEN}
         self.assertEqual(annotated, set(PROPERTIES))
         for prop, (label, about) in PROPERTIES.items():  # registradas ya en español

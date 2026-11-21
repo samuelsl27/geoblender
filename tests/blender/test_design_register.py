@@ -88,13 +88,8 @@ ROAD_PROFILES_TYPE = "des.edit_road_profiles"
 COMMANDS_017: dict[str, str] = {"des.road": "geoblender.des_create_road", "des.road_access": "geoblender.des_road_access",
                                 "des.road_propose": "geoblender.des_propose_road", "des.road_layer": "geoblender.des_create_road",
                                 "des.edit_road_profiles": "geoblender.des_edit_road_profile"}
-"""La orden de cada uno (plan 017 §5.3.3). **Aún no están en el catálogo** (las tres provisionales de «Pistas y entidades» las sustituyen las
-tareas de la fase G: D-20): ``OperationDef.commands`` solo comprueba su forma, y la T29 a la T33 las dan de alta y las quitan de
-``PENDING_COMMANDS_017``."""
-PENDING_COMMANDS_017: frozenset[str] = frozenset(COMMANDS_017.values()) - {"geoblender.des_edit_road_profile", "geoblender.des_create_road", "geoblender.des_road_access", "geoblender.des_propose_road"}
-"""Las órdenes de la 017 que las tareas de la fase G todavía no han dado de alta en el catálogo. «Perfil de pista…» (T29), «Pista…» (T29b), «Accesibilidad de las pistas…» (T30) y «Proponer el trazado…» (T33 (a)) ya
-están, **interinas y de R-40** (el catálogo exige toda orden real: BS §7.2; la T33b las pasa a la entrada 017 y las pone en el menú). «Exportar pista…» (T33 (a)) no es de ningún tipo de operación (exportar no lo es: H-9),
-así que no está en ``COMMANDS_017``."""
+"""La orden de cada uno (plan 017 §5.3.3). **Todas están en el catálogo** desde la T33b (la entrada 017, entregada, con su casa en Diseño ▸ Pistas y entidades: sustituyen a las
+tres provisionales de R-40, D-20), cada una con su clase real. «Exportar pista…» (T33 (a)) no es de ningún tipo de operación (exportar no lo es: H-9), así que no está en ``COMMANDS_017``."""
 PLATFORM_COMMAND = "geoblender.des_create_platform"
 """La orden de los tres: la «Plataforma…» de la entrada 015 (T15: la clave definitiva, que sustituyó a
 ``des_draw_platform``). Tiene su clase real; la entrada la entrega la T31."""
@@ -441,10 +436,7 @@ class DesignRegisteredTest(unittest.TestCase):
                 self.assertEqual(session.requires_version(op_type), is_version)
                 self.assertTrue(defn.commands)
                 for idname in defn.commands:
-                    if idname in PENDING_COMMANDS_017:  # las tareas de la fase G las dan de alta: entonces se quitan de PENDING_…
-                        self.assertNotIn(idname, self.cat.commands)
-                    else:
-                        self.assertIn(idname, self.cat.commands)
+                    self.assertIn(idname, self.cat.commands)
                 self.assertIs(defn.recompute, recomputed.get(op_type))
                 self.assertIs(defn.reproduce, reproduced.get(op_type))
                 self.assertEqual(callable(defn.recompute), repeats)

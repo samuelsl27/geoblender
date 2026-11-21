@@ -294,36 +294,55 @@ label.en = "Haul roads and entities"
 label.es = "Pistas y entidades"
 
 [[menu.group.item]]
-key = "geoblender.des_draw_haul_road"
-label.en = "Haul road"
-label.es = "Pista"
-description.en = "Axis, grade line and section of the haul road (ITC)"
-description.es = "Eje, rasante y sección de la pista (ITC)"
-entry = "R-40"
-action = "H"
+key = "geoblender.des_create_road"
+label.en = "Road…"
+label.es = "Pista…"
+description.en = "Haul road of the active version: its axis, its level profile and its section engraved on its start surface, from an origin to a destination, over an axis or over a 3D axis"
+description.es = "Pista de la versión activa: su eje, su rasante y su sección grabada en su superficie de partida, de un origen a un destino, sobre un eje o sobre un eje 3D"
+entry = "017"
+action = "D"
 frequency = 2
 jargon = [["RecMin", "Pista"]]
 
 [[menu.group.item]]
-key = "geoblender.des_route_haul_road"
-label.en = "3D route with maximum grade…"
-label.es = "Ruta 3D con pendiente máxima…"
-description.en = "Haul road route that keeps a maximum grade"
-description.es = "Ruta de pista que mantiene una pendiente máxima"
-entry = "R-40"
+key = "geoblender.des_propose_road"
+label.en = "Propose the route…"
+label.es = "Proponer el trazado…"
+description.en = "Proposal of the route of a haul road of the active version, from an origin to a destination: its axis and its level profile as a layer of 3D lines that you can edit in QGIS; it changes no surface and is not an entity"
+description.es = "Propuesta del trazado de una pista de la versión activa, de un origen a un destino: su eje y su rasante como una capa de líneas 3D que puede editar en QGIS; no cambia ninguna superficie y no es una entidad"
+entry = "017"
 action = "D"
-background = true
+frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.des_road_access"
+label.en = "Accessibility of the roads…"
+label.es = "Accesibilidad de las pistas…"
+description.en = "Accessibility of the haul roads on a surface of the project or of the active version: what can be reached on foot from the entry points, the reachable elevations and which berm stretches, platforms and zones that require access are communicated"
+description.es = "Accesibilidad de las pistas sobre una superficie del proyecto o de la versión activa: qué se alcanza a pie desde los puntos de entrada, las cotas alcanzables y qué tramos de berma, plataformas y zonas «requiere acceso» quedan comunicados"
+entry = "017"
+action = "D"
 frequency = 1
 
 [[menu.group.item]]
-key = "geoblender.des_burn_roads"
-label.en = "Burn the haul roads into the surface"
-label.es = "Grabar las pistas en la superficie"
-description.en = "Cut and fill the haul roads into the design surface"
-description.es = "Desmonta y rellena las pistas en la superficie de diseño"
-entry = "R-40"
-action = "A"
+key = "geoblender.des_edit_road_profile"
+label.en = "Road profile…"
+label.es = "Perfil de pista…"
+description.en = "Road profiles such as PISTA_PRINCIPAL, with their values, their source and the widths derived from them"
+description.es = "Perfiles de pista como PISTA_PRINCIPAL, con sus valores, su fuente y las anchuras que se derivan de ellos"
+entry = "017"
+action = "P"
 frequency = 2
+
+[[menu.group.item]]
+key = "geoblender.des_export_road"
+label.en = "Export road…"
+label.es = "Exportar pista…"
+description.en = "Write the surface of a road or what an accessibility reaches as a deliverable GeoTIFF, or the level profile of a road as a CSV (it is not an operation: it writes nothing in the project, also from a superseded version and, outside the project, in read-only)"
+description.es = "Escribe la superficie de una pista o lo que alcanza una accesibilidad como GeoTIFF entregable, o la rasante de una pista como CSV (no es una operación: no escribe nada en el proyecto, también de una versión superada y, fuera del proyecto, en solo lectura)"
+entry = "017"
+action = "D"
+frequency = 1
 
 [[menu.group.item]]
 key = "GEOBLENDER_MT_des_entities"
