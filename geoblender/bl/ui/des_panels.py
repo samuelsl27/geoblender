@@ -213,7 +213,19 @@ o descartado, con su motivo, quién y cuándo; los botones de convertir y descar
 **lo retirado, lo apoyado y la pared** (:func:`_removal_card_lines`); del contrafuerte, **la coronación y el pie cortado** (:func:`_buttress_card_lines`);
 del cuerpo, **el espesor y lo lejano** (:func:`_body_card_lines`). Los estados son los de la 015 (al día, obsoleta, descartada, «apoyo retirado» y
 sin calcular) y, de un acopio, «retirado en su superficie» (D-12). Todo se **lee del proyecto** (las tablas de la operación vigente y su informe,
-``design.entity_store.read_entity_report``); los textos de los avisos salen de los códigos guardados, en el idioma de la interfaz."""
+``design.entity_store.read_entity_report``); los textos de los avisos salen de los códigos guardados, en el idioma de la interfaz.
+
+**La barra N con la pista y la accesibilidad** (spec 017, T31b; HU-017-1 a HU-017-3; RF-015-25, RF-017-23, RF-017-25; plan 017 §5.5; comprobación manual M4): de **una pista** (el objeto
+``DESIGN_ENTITY`` de su ``des_epr_``) la ficha de la barra N «Entidad» y «Elemento activo» (:func:`entity_card`) añade, tras su estado, :func:`_road_card_lines`: su **modo y su perfil**, la
+longitud y las cotas de la rasante, la pendiente media y la máxima con su abscisa y su lugar, el radio mínimo, la calzada y la sección, el corte y el relleno **de la sección y del borde**, la
+pared del borde, lo que la persona confirmó al crearla (RF-017-17, RF-017-22), los avisos del cálculo y, **en alerta**, (1) **la causa y la salida** de una pista obsoleta por **otro diseño que lee**
+(H2-2: ese diseño se apoya luego en ella y «Recalcular lo obsoleto» no la asienta; la salida es rehacerla sobre la superficie de ese diseño o descartarla) y (2) que **la capa de ejes de pistas para
+QGIS está marcada** (cambiar el valor de un perfil deja la pista obsoleta y no la regenera al instante; T26-b). Lo que se le apoya y en qué se apoya, sus parámetros y su cadena son los de
+cualquier entidad. **De una accesibilidad** (el objeto ``DESIGN`` de su ``des_acc_``: la barra N «Diseño», :func:`item_lines`, que no cambia :func:`entity_wanted`) la ficha lleva su estado como
+entidad (al día, obsoleta con su causa, descartada, «apoyo retirado»; :func:`_entity_state_line`) y :func:`_access_card_lines`: la superficie, las cotas mínima y máxima alcanzables y **las tres
+listas de tramos de berma, plataformas y zonas «requiere acceso» comunicados o no**, las que no, primero y en alerta, cada una con su **«Ir a»** (``ROW_PLACE``: :func:`_draw_item` lo dibuja). El
+lugar es el que guardan ``des_acb_`` y ``des_acz_`` (el tramo de berma y la zona que no se comunica) o el centro de la huella de la plataforma; una zona comunicada no tiene lugar guardado y no
+tiene «Ir a». Todo se **lee del proyecto** (``design.road_card``): nada se calcula aquí."""
 
 from __future__ import annotations
 
@@ -222,7 +234,7 @@ import logging
 import numbers
 import sqlite3
 import time
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -2012,6 +2024,12 @@ def _buttress_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     return lines
 
 
+def _road_mode_text(mode: object) -> str:
+    """El nombre, en el idioma de Geoblender, del modo de una pista (``trace``, ``on_axis`` o ``axis_3d``): el de su diálogo, «Pista…»; el valor tal cual si no es de ellos."""
+    names = {"trace": tr("Trace"), "on_axis": tr("Over an axis"), "axis_3d": tr("3D axis")}
+    return names.get(str(mode), str(mode))
+
+
 def _road_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de una pista calculada (``design.preview.RoadSummary``; spec 017, T29b; RF-017-23, RF-017-17, RF-017-22; M1): su modo, su perfil, su longitud y las
     cotas de inicio y de fin, la pendiente media y la máxima con su abscisa y su lugar, el radio mínimo y las curvas, el corte y el relleno de la sección y del
@@ -2021,8 +2039,7 @@ def _road_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     (son los ``notices`` del cálculo)."""
     summary = calculation.summary
     prepared = calculation.entity
-    modes = {"trace": tr("Trace"), "on_axis": tr("Over an axis"), "axis_3d": tr("3D axis")}  # los nombres de los modos del diálogo de «Pista…»
-    mode = modes.get(summary.mode, summary.mode)  # type: ignore[union-attr]
+    mode = _road_mode_text(summary.mode)  # type: ignore[union-attr]
     lines = [(tr("Road «{name}» ({code}) · mode «{mode}» · profile «{profile}»: length {length} m · elevation {start} m at the start and {end} m at the end",
                  name=calculation.name, code=summary.code, mode=mode,  # type: ignore[union-attr]
                  profile=prepared.profile.name,  # type: ignore[union-attr]
@@ -2065,10 +2082,52 @@ def _access_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     return [(notice.text(shown), notice.severity == "warning") for notice in calculation.notices if notice.code not in _ACCESS_ITEM_NOTICES]
 
 
-def _cut_rows(rows: list[AccessRow]) -> tuple[tuple[AccessRow, ...], int]:
-    """Las primeras :data:`ACCESS_ROWS` filas de ``rows`` —**las que no se comunican (en alerta) antes**, cada grupo en su orden— y cuántas faltan."""
+def _cut_rows(rows: list[AccessRow], limit: int = ACCESS_ROWS) -> tuple[tuple[AccessRow, ...], int]:
+    """Las primeras ``limit`` filas de ``rows`` —**las que no se comunican (en alerta) antes**, cada grupo en su orden— y cuántas faltan."""
     ordered = sorted(rows, key=lambda row: not row.alert)
-    return tuple(ordered[:ACCESS_ROWS]), max(0, len(ordered) - ACCESS_ROWS)
+    return tuple(ordered[:limit]), max(0, len(ordered) - limit)
+
+
+def _berm_rows(berms: Iterable[Any]) -> list[AccessRow]:
+    """Las filas de los tramos de berma ``berms`` (``BermReach`` del cálculo o ``BermRow`` de ``des_acb_``: su número, el dato de bermas de que sale, su cota real, su área y si queda comunicado), cada una
+    con su lugar (``place_of``: el centro de sus celdas, con su área para el radio)."""
+    rows: list[AccessRow] = []
+    for item in berms:
+        source, level, area = "—" if item.source is None else item.source, _number(item.level_m, 2), _number(item.area_m2)
+        text = (tr("Berm stretch {stretch} of «{source}»: elevation {level} m, {area} m² · communicated", stretch=item.number, source=source, level=level, area=area) if item.connected
+                else tr("Berm stretch {stretch} of «{source}»: elevation {level} m, {area} m² · not communicated", stretch=item.number, source=source, level=level, area=area))
+        rows.append(AccessRow(text, not item.connected, constraint_panels.place_of(item.x, item.y, item.area_m2)))
+    return rows
+
+
+def _platform_rows(platforms: Iterable[Any], names: Mapping[str, str], places: Mapping[str, Any]) -> list[AccessRow]:
+    """Las filas de las plataformas ``platforms`` (``PlatformReach`` o ``PlatformRow``: su código, si queda comunicada y a qué cota se llega), con su nombre (``names``, por código) y su lugar
+    (``places``, por código: el centro de su huella; la que no lo tiene, sin «Ir a»)."""
+    rows: list[AccessRow] = []
+    for item in platforms:
+        found = places.get(item.code)
+        name = names.get(item.code, item.code)
+        text = (tr("Platform «{name}» ({code}): communicated, reached at elevation {level} m", name=name, code=item.code, level=_number(item.level_m, 2)) if item.connected
+                else tr("Platform «{name}» ({code}): not communicated", name=name, code=item.code))
+        rows.append(AccessRow(text, not item.connected, None if found is None else constraint_panels.place_of(found.x, found.y, found.area_m2)))
+    return rows
+
+
+def _zone_rows(zones: Iterable[Any], places: Mapping[str, Any]) -> list[AccessRow]:
+    """Las filas de las zonas «requiere acceso» ``zones`` (``ZoneReach`` o ``AccessZone``: su código y si queda comunicada y, de la que no, la distancia y la diferencia de cota a lo alcanzable más
+    próximo), cada una con su lugar (``places``, por código; la que no lo tiene, sin «Ir a»)."""
+    rows: list[AccessRow] = []
+    for item in zones:
+        found = places.get(item.code)
+        if item.connected:
+            text = tr("Zone «{code}» that requires access: communicated", code=item.code)
+        elif item.distance_m is not None and item.level_difference_m is not None:
+            text = tr("Zone «{code}» that requires access: not communicated; the nearest reachable ground is {distance} m away (level difference {difference} m)", code=item.code,
+                      distance=_number(item.distance_m, 2), difference=_number(item.level_difference_m, 2))
+        else:
+            text = tr("Zone «{code}» that requires access: not communicated", code=item.code)
+        rows.append(AccessRow(text, not item.connected, None if found is None else constraint_panels.place_of(found.x, found.y, found.area_m2)))
+    return rows
 
 
 def _access_sections(calculation: Calculation) -> list[AccessSection]:
@@ -2081,31 +2140,10 @@ def _access_sections(calculation: Calculation) -> list[AccessSection]:
     outcome, job = calculation.outcome, calculation.entity.job  # type: ignore[union-attr]
     places = access_store.access_places(job, outcome)  # type: ignore[arg-type]
     names = {item.code: item.name for item in job.platforms}  # type: ignore[union-attr]
-    berms: list[AccessRow] = []
-    for item in outcome.berms:  # type: ignore[union-attr]
-        source, level, area = "—" if item.source is None else item.source, _number(item.level_m, 2), _number(item.area_m2)
-        text = (tr("Berm stretch {stretch} of «{source}»: elevation {level} m, {area} m² · communicated", stretch=item.number, source=source, level=level, area=area) if item.connected
-                else tr("Berm stretch {stretch} of «{source}»: elevation {level} m, {area} m² · not communicated", stretch=item.number, source=source, level=level, area=area))
-        berms.append(AccessRow(text, not item.connected, constraint_panels.place_of(item.x, item.y, item.area_m2)))
-    platforms: list[AccessRow] = []
-    for item in outcome.platforms:  # type: ignore[union-attr]
-        found = places.platforms.get(item.code)
-        name = names.get(item.code, item.code)
-        text = (tr("Platform «{name}» ({code}): communicated, reached at elevation {level} m", name=name, code=item.code, level=_number(item.level_m, 2)) if item.connected
-                else tr("Platform «{name}» ({code}): not communicated", name=name, code=item.code))
-        platforms.append(AccessRow(text, not item.connected, None if found is None else constraint_panels.place_of(found.x, found.y, found.area_m2)))
-    zones: list[AccessRow] = []
-    for item in outcome.zones:  # type: ignore[union-attr]
-        found = places.zones.get(item.code)
-        if item.connected:
-            text = tr("Zone «{code}» that requires access: communicated", code=item.code)
-        elif item.distance_m is not None and item.level_difference_m is not None:
-            text = tr("Zone «{code}» that requires access: not communicated; the nearest reachable ground is {distance} m away (level difference {difference} m)", code=item.code,
-                      distance=_number(item.distance_m, 2), difference=_number(item.level_difference_m, 2))
-        else:
-            text = tr("Zone «{code}» that requires access: not communicated", code=item.code)
-        zones.append(AccessRow(text, not item.connected, None if found is None else constraint_panels.place_of(found.x, found.y, found.area_m2)))
-    return [AccessSection(title, *_cut_rows(rows)) for title, rows in ((tr("Berm stretches"), berms), (tr("Platforms"), platforms), (tr("Zones that require access"), zones))]
+    return [AccessSection(title, *_cut_rows(rows)) for title, rows in (
+        (tr("Berm stretches"), _berm_rows(outcome.berms)),  # type: ignore[union-attr]
+        (tr("Platforms"), _platform_rows(outcome.platforms, names, places.platforms)),  # type: ignore[union-attr]
+        (tr("Zones that require access"), _zone_rows(outcome.zones, places.zones)))]  # type: ignore[union-attr]
 
 
 def show_access(calculation: Calculation | None) -> None:
@@ -2770,6 +2808,11 @@ ROW_DECIDE = "decide"
 """La fila que es **los botones de un candidato pendiente** (convertir, descartar, «Ir a»; T35): su ``uid`` es la clave del candidato (``c01``)
 y los botones llaman a ``geoblender.des_stockpile_candidates`` con ella. No se dibuja como texto."""
 _BUTTON_ROWS = (*_EXPORT_ROWS, ROW_CANDIDATES, ROW_DECIDE)
+ROW_PLACE = "place"
+"""Una fila de las listas de la accesibilidad en la barra N (spec 017, T31b; RF-017-25) **con su «Ir a»**: su texto se dibuja como el de cualquier línea y, tras él, un botón (``geoblender.core_go_to_place``) con el
+lugar que lleva en su ``uid`` (``x;y;radio``, texto que se lee sin pérdida: ADR-0005). Una fila sin lugar es una ``ROW_FIELD``. En «Elemento activo», donde solo hay texto, se lee como cualquier línea."""
+GO_TO_BUTTON_PX = 80
+"""Lo que se le quita al ancho de una fila con «Ir a» para el botón (px a escala 1,0)."""
 STOCKPILE_CANDIDATES = "geoblender.des_stockpile_candidates"
 """La orden de la lista de candidatos de una detección (T35)."""
 EXPORT_PART_THICKNESS = "thickness"
@@ -3261,7 +3304,9 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
         refit = link.op_type == design_provenance.REFIT
         # Lo que dejan los acopios y los cuerpos apoyados (T33; la base, el espesor, el terreno sin acopios): sin envolvente, sin semillas ni
         # partida de un diseño; la entidad que lo hizo.
-        made = link.op_type in (*design_provenance.STOCKPILE_DETECT_TYPES, design_provenance.BODY)
+        # Y la accesibilidad de las pistas (spec 017, T31b): lo alcanzable es lo que dejó una entidad, sin semillas ni partida de un diseño.
+        made = link.op_type in (*design_provenance.STOCKPILE_DETECT_TYPES, design_provenance.BODY, design_provenance.ROAD_ACCESS)
+        access_lines = (_access_object_lines(project, conn, owner, found) if link.op_type == design_provenance.ROAD_ACCESS else [])
         envelope_settings: Mapping[str, Any] | None = settings
         if (link.op_type != design_provenance.ENVELOPE and not area and not quarry
                 and not transition and not refit and not made):
@@ -3272,8 +3317,8 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     names = {sector.code: sector.name for sector in sectors}
     listed = drain(masks_store.shown_constraints_steps(project, version=owner or None))
 
-    lines: list[CardLine] = [
-        CardLine(ROW_FIELD, cause or tr("Up to date"), alert=bool(found.stale))]
+    # El estado de lo alcanzable es el de **su entidad** (al día, obsoleta con su causa, descartada, «apoyo retirado»: RF-015-25), no solo el del dato.
+    lines: list[CardLine] = [access_lines[0] if access_lines else CardLine(ROW_FIELD, cause or tr("Up to date"), alert=bool(found.stale))]
     if owner and link.op_type in _LIMIT_CHECKED:  # una superficie de la 014 fuera del límite (T31)
         lines += _outside_lines(project, owner, uid)
     try:
@@ -3304,6 +3349,7 @@ def item_lines(project: Any, uid: str) -> ItemLines | None:
     if made:  # la entidad que dejó este dato (su nombre y su código; la barra «Entidad» dice el resto)
         lines.append(CardLine(ROW_FIELD, tr("Made by the entity «{name}» ({code})", name=str(settings.get("name") or found.record.name),
                                             code=str(settings.get("code") or ""))))
+        lines += access_lines[1:]  # de una accesibilidad: su resultado leído del proyecto (cotas y listas con su «Ir a»)
     if link.op_type != design_provenance.ENVELOPE and not made:
         start = settings.get("start" if quarry or transition or refit else "surface")
         lines.append(CardLine(ROW_FIELD, tr("Start surface: «{surface}»",
@@ -3353,13 +3399,14 @@ LIST_LIMIT = 30
 """Cuántos acopios y cuántos candidatos enseña como mucho la barra N de una detección (spec 016, T33): el resto, en una línea («… y 70 acopios
 más»). Una lista de cientos de filas no cabe en una barra; todos están en la tabla del proyecto y en la capa de entidades (T34)."""
 _CHOICES_TEXT = {
-    "mode": {"cut": "In cut", "cut_fill": "In cut and fill"},
+    "mode": {"cut": "In cut", "cut_fill": "In cut and fill", "trace": "Trace", "on_axis": "Over an axis", "axis_3d": "3D axis"},
     "metric": {"exact": "Exact Euclidean", "chamfer5": "Chamfer 5×5"},
     "sense": {"on_base": "On a base", "under_roof": "Under a roof"},
     "data_from": {"field": "A field", "z": "The Z of the vertices", "m": "The M of the vertices"},
 }
 """El ``msgid`` del rótulo de cada opción de un parámetro de lista cerrada de una entidad (``valor`` → ``msgid``): el modo y la métrica del
-borde de la plataforma y de la retirada y el contrafuerte (T45, E-6) y, del cuerpo apoyado (T33), su sentido y de dónde se lee el espesor."""
+borde de la plataforma y de la retirada y el contrafuerte (T45, E-6), del cuerpo apoyado (T33) su sentido y de dónde se lee el espesor y, de la pista (spec 017, T31b), su modo
+(«trazar», «sobre un eje» y «eje 3D»: los del diálogo de «Pista…»)."""
 
 
 def entity_wanted(context: Any = None) -> str:
@@ -3801,7 +3848,8 @@ def _body_card_lines(entry: Any, stored: Mapping[Any, Any], report: Sequence[tup
 def _type_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any, stored: Mapping[Any, Any]) -> list[CardLine]:
     """Lo propio de cada tipo de entidad en la barra N (spec 016, T33; plan 016 §5.5): de una **detección**, sus acopios y su lista de candidatos;
     de una **retirada**, lo retirado, lo apoyado y la pared; de un **contrafuerte**, la coronación y el pie cortado; de un **cuerpo**, el espesor y
-    lo lejano. Nada de la plataforma. Una entidad sin calcular no tiene nada de esto."""
+    lo lejano; de una **pista**, lo de :func:`_road_card_lines` y de una **accesibilidad**, lo de :func:`_access_card_lines` (spec 017, T31b). Nada de la plataforma. Una
+    entidad sin calcular no tiene nada de esto."""
     from ...design import entities, entity_store
 
     if entry.operation_uid is None:
@@ -3809,6 +3857,10 @@ def _type_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any
     kind = str(entry.record.kind)
     if kind == entities.EntityKind.STOCKPILE:
         return [*_stockpile_lines(project, conn, version, entry), *_candidate_lines(conn, entry, stored)]
+    if kind == entities.EntityKind.ROAD:  # la pista y la accesibilidad (spec 017, T31b)
+        return _road_card_lines(project, conn, version, entry, stored)
+    if kind == entities.EntityKind.ACCESS:
+        return _access_card_lines(project, conn, version, entry)
     report = entity_store.read_entity_report(conn, entry.operation_uid)
     if kind == entities.EntityKind.REMOVAL:
         return _removal_card_lines(project, conn, version, entry, stored, report)
@@ -3817,6 +3869,139 @@ def _type_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any
     if kind == entities.EntityKind.BODY:
         return _body_card_lines(entry, stored, report)
     return []
+
+
+_ROAD_PROMPT_NOTICES = frozenset({"des.road_mean_gradient"})
+"""Los avisos de una pista que la barra N **no repite** junto a lo que se confirmó: el de la pendiente media por encima de pm pide la confirmación expresa y su motivo antes de crear («no se crea sin…»); ya
+confirmada, lo dice la línea de lo confirmado (RF-017-17)."""
+
+
+def _road_card_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any, stored: Mapping[Any, Any]) -> list[CardLine]:
+    """Lo que dice la barra N de una **pista** (spec 017, T31b; RF-015-25, RF-017-23, RF-017-17, RF-017-22; H2-2; M4), **leído de lo guardado** de su operación vigente (``design.road_card``; nada
+    se calcula): su **modo y su perfil**, la longitud y las cotas de inicio y de fin de la rasante, la pendiente media y la máxima con su abscisa y su lugar, el radio mínimo (o que no tiene curvas),
+    la calzada y la sección, el corte y el relleno **de la sección y del borde** y el neto, la pared del borde (en alerta), lo que la persona confirmó al crearla —la pendiente media con su
+    motivo y la calzada fuera de su rasante— y los avisos del cálculo; y, **en alerta**, (1) si está obsoleta por **otro diseño que lee** (H2-2), **la causa y la salida** (rehacerla sobre la
+    superficie de ese diseño o descartarla: «Recalcular lo obsoleto» no la asienta si ese diseño se apoya ya en ella) y (2) si **la capa de ejes de pistas para QGIS está marcada** para ella
+    (T26-b: cambiar el valor de un perfil la deja obsoleta por el grafo y no regenera la capa al instante), que lo está y por qué. Lo que se le apoya y en qué se apoya son los de cualquier entidad
+    (:func:`entity_card`)."""
+    from ...design import road_card
+
+    shown = language()
+    mode, profile = stored.get("mode"), stored.get("profile")
+    code = None if profile is None or profile.value is None else str(profile.value)
+    lines = [CardLine(ROW_HEADING, tr("Road")),
+             CardLine(ROW_FIELD, tr("Mode «{mode}» · profile «{profile}»", mode=NOT_SHOWN if mode is None or mode.value is None else _road_mode_text(mode.value),
+                                    profile=NOT_SHOWN if code is None else road_card.profile_name(conn, code) or code))]
+    facts = road_card.read_road_facts(conn, str(entry.operation_uid))
+    if facts is None:
+        return [*lines, CardLine(ROW_NONE, tr("The project has no report of this road"))]
+    where = facts.gradient_max_place
+    lines += [CardLine(ROW_FIELD, tr("Length {length} m · elevation {start} m at the start and {end} m at the end", length=_number(facts.length_m, 1), start=_number(facts.z_start_m, 2),
+                                     end=_number(facts.z_end_m, 2))),
+              CardLine(ROW_FIELD, tr("Gradient: mean {mean} % · maximum {max} % at the abscissa {station} m, at ({x}, {y})", mean=_number(facts.gradient_mean_pct, 2),
+                                     max=_number(facts.gradient_max_pct, 2), station=_number(facts.gradient_max_station_m, 1), x=_number(None if where is None else where[0], 1),
+                                     y=_number(None if where is None else where[1], 1)))]
+    if facts.radius_min_m is None:
+        lines.append(CardLine(ROW_FIELD, tr("No curves: the axis is a straight line")))
+    elif facts.curves == 1:
+        lines.append(CardLine(ROW_FIELD, tr("Minimum radius {radius} m in 1 curve", radius=_number(facts.radius_min_m, 1))))
+    else:
+        lines.append(CardLine(ROW_FIELD, tr("Minimum radius {radius} m in {curves} curves", radius=_number(facts.radius_min_m, 1), curves=_number(facts.curves))))
+    lines += [CardLine(ROW_FIELD, tr("Carriageway {width} m · section {section} m", width=_number(facts.width_m, 2), section=_number(facts.section_m, 2))),
+              CardLine(ROW_FIELD, tr("Section: cut {cut} m³ · fill {fill} m³; edge: cut {edge_cut} m³ · fill {edge_fill} m³; net {net} m³", cut=_number(facts.section_cut_m3),
+                                     fill=_number(facts.section_fill_m3), edge_cut=_number(facts.edge_cut_m3), edge_fill=_number(facts.edge_fill_m3), net=_number(facts.net_m3)))]
+    if facts.wall_max_m:
+        place = facts.wall_place
+        text = tr("Wall of up to {height} m at the edge", height=format_number(facts.wall_max_m, 1))
+        if place is not None:
+            text += tr(", around x = {x} m, y = {y} m", x=format_number(place[0], 0), y=format_number(place[1], 0))
+        lines.append(CardLine(ROW_FIELD, text, alert=True))
+    done = facts.confirmed
+    if done is not None and done.mean_pct is not None:  # la pendiente media por encima de la del perfil, que la persona confirmó con su motivo (RF-017-17)
+        text = tr("The mean gradient, {mean} %, passed the {limit} % of the profile: confirmed by {person} on {date}", mean=_number(done.mean_pct, 2),
+                  limit=_number(done.mean_limit_pct, 2), person=done.decided_by, date=done.decided_on[:10])
+        lines.append(CardLine(ROW_FIELD, f"{text} · {tr('Reason: {value}', value=done.reason)}" if done.reason else text, alert=True))
+    if done is not None and done.carriageway_m2 is not None:  # la calzada que no quedaba en su rasante (RF-017-22)
+        lines.append(CardLine(ROW_FIELD, tr("{area} m² of the carriageway did not end up on the level profile: confirmed by {person} on {date} (largest difference {difference} m)",
+                                            area=_number(done.carriageway_m2), person=done.decided_by, date=done.decided_on[:10], difference=_number(done.carriageway_difference_m, 3)),
+                              alert=True))
+    lines += [CardLine(ROW_FIELD, notice.text(shown), alert=notice.severity == "warning") for notice in facts.notices if notice.code not in _ROAD_PROMPT_NOTICES]
+    if str(entry.record.state) == "stale":  # H2-2: obsoleta por otro diseño que lee, con su causa y su salida
+        others = road_card.stale_other_designs(conn, str(entry.operation_uid))
+        if others:
+            lines.append(CardLine(ROW_FIELD, tr("It reads another design of the version that changed, {designs}: recalculating the road does not settle it if that design now rests on it. "
+                                                "Redo the road on the surface of that design, or discard it", designs=", ".join(f"«{name}»" for name in others)), alert=True))
+    if version is not None and road_card.marked_layer(project, conn, version.uid, entry.record.code):  # T26-b: la capa de ejes todavía dice otro estado
+        lines.append(CardLine(ROW_FIELD, tr("The layer of the axes of the roads for QGIS is marked: it still says what this road was before (its state, its profile or its class), because a change such as the value of a "
+                                            "profile does not bring it up to date at once; the next order on roads or «Recompute the stale results» does"), alert=True))
+    return lines
+
+
+def _access_list_lines(title: str, rows: list[AccessRow]) -> list[CardLine]:
+    """Una de las tres listas de la accesibilidad en la barra N (spec 017, T31b; RF-017-25): su título con cuántas filas tiene y, por fila, su texto —**las que no se comunican, antes y en
+    alerta**— con su «Ir a» (:data:`ROW_PLACE`) si tiene lugar; las :data:`LIST_LIMIT` primeras y una nota con cuántas faltan."""
+    lines = [CardLine(ROW_HEADING, f"{title} ({len(rows)})")]
+    if not rows:
+        return [*lines, CardLine(ROW_NONE, tr("Nothing to list"))]
+    shown, more = _cut_rows(rows, LIST_LIMIT)
+    lines += [CardLine(ROW_PLACE, row.text, alert=row.alert, uid=";".join(row.place)) if row.place is not None else CardLine(ROW_FIELD, row.text, alert=row.alert) for row in shown]
+    if more:
+        lines.append(CardLine(ROW_NONE, tr("… and {more} more (the whole list is in the tables of the accessibility)", more=more)))
+    return lines
+
+
+def _access_card_lines(project: Any, conn: sqlite3.Connection, version: Any, entry: Any) -> list[CardLine]:
+    """Lo que dice la barra N de una **accesibilidad** (spec 017, T31b; RF-015-25, RF-017-24, RF-017-25; M4), **leído de lo guardado** de su operación vigente (``design.road_card``; nada se
+    calcula): la superficie sobre la que se hizo (y la final de su cantera), las cotas mínima y máxima alcanzables y el área (o que no se alcanzó nada, en alerta) y la cota mínima sobre la final,
+    cuántos tramos de berma, plataformas y zonas «requiere acceso» quedan comunicados, los avisos del cálculo y **las tres listas, comunicados o no** (:func:`_access_list_lines`: las que no, antes
+    y en alerta, con su «Ir a»). El lugar es el que guardan ``des_acb_`` (tramo de berma) y ``des_acz_`` (la zona que no se comunica) o el centro de la huella de la plataforma; una zona comunicada
+    no guarda ninguno y no lleva «Ir a»."""
+    from ...design import road_card
+
+    if version is None:
+        return []
+    shown = language()
+    lines = [CardLine(ROW_HEADING, tr("Accessibility"))]
+    facts = road_card.read_access_facts(project, conn, version, entry)
+    if facts is None:
+        return [*lines, CardLine(ROW_NONE, tr("The project has no result of this accessibility"))]
+    lines.append(CardLine(ROW_FIELD, tr("Surface: «{surface}»", surface=NOT_SHOWN if facts.surface is None else facts.surface)))
+    if facts.z_min_m is None or facts.z_max_m is None:
+        lines.append(CardLine(ROW_FIELD, tr("Nothing is reachable from the entry points"), alert=True))
+    else:
+        lines.append(CardLine(ROW_FIELD, tr("Reachable elevations: from {low} to {high} m · {area} m²", low=_number(facts.z_min_m, 2), high=_number(facts.z_max_m, 2),
+                                            area=_number(facts.area_m2))))
+    if facts.z_min_final_m is not None:
+        lines.append(CardLine(ROW_FIELD, tr("Lowest elevation reachable over the final surface «{final}» of the quarry: {level} m", final=NOT_SHOWN if facts.final is None else facts.final,
+                                            level=_number(facts.z_min_final_m, 2))))
+    lines.append(CardLine(ROW_FIELD, tr("Communicated · berm stretches: {berms} of {berms_total} · platforms: {platforms} of {platforms_total} · zones that require access: {zones} of {zones_total}",
+                                        berms=sum(1 for item in facts.berms if item.connected), berms_total=len(facts.berms),
+                                        platforms=sum(1 for item in facts.platforms if item.connected), platforms_total=len(facts.platforms),
+                                        zones=sum(1 for item in facts.zones if item.connected), zones_total=len(facts.zones))))
+    lines += [CardLine(ROW_FIELD, notice.text(shown), alert=notice.severity == "warning") for notice in facts.notices]
+    platform_places = {item.code: item.place for item in facts.platforms if item.place is not None}
+    zone_places = {item.code: road_card.AccessSpot(item.x, item.y) for item in facts.zones if not item.connected and item.x is not None and item.y is not None}
+    names = {item.code: item.name for item in facts.platforms}
+    for title, rows in ((tr("Berm stretches"), _berm_rows(facts.berms)), (tr("Platforms"), _platform_rows(facts.platforms, names, platform_places)),
+                        (tr("Zones that require access"), _zone_rows(facts.zones, zone_places))):
+        lines += _access_list_lines(title, rows)
+    return lines
+
+
+def _access_object_lines(project: Any, conn: sqlite3.Connection, owner: str, found: Any) -> list[CardLine]:
+    """Las líneas que la barra N «Diseño» añade al objeto ``DESIGN`` de una accesibilidad (``des_acc_``; spec 017, T31b; decisión T31-b): **el estado de su entidad** (al día, obsoleta con su causa,
+    descartada o «apoyo retirado»: :func:`_entity_state_line`) y su resultado (:func:`_access_card_lines`). La entidad es la del registro de la versión cuya operación escribió el dato
+    ``found`` (la accesibilidad no está en la capa de entidades). Sin versión o sin entidad, ninguna (queda el estado del dato)."""
+    from ...core.versions import read as versions_read
+    from ...design import entities
+
+    version = versions_read.version(conn, owner) if owner else None
+    if version is None:
+        return []
+    entry = next((item for item in entities.registry(project, version.uid, conn=conn) if item.operation_uid == found.record.operation_uid), None)
+    if entry is None:
+        return []
+    return [_entity_state_line(project, conn, version, entry), *_access_card_lines(project, conn, version, entry)]
 
 
 _DETECTION_GRIDS = {
@@ -4086,6 +4271,9 @@ def _draw_item(layout: Any, shown: Any, uid: str, width: float) -> bool:
         for row in shown.item:
             if row.kind in _BUTTON_ROWS:
                 continue  # un botón de exportar (T34) o de los candidatos (T35): lo dibuja la barra de la entidad
+            if row.kind == ROW_PLACE:  # una fila de las listas de la accesibilidad con su «Ir a» (T31b)
+                _draw_place(layout, row, width)
+                continue
             if row.kind == ROW_HEADING:
                 layout.separator()
             sub = layout.column(align=True)
@@ -4093,6 +4281,17 @@ def _draw_item(layout: Any, shown: Any, uid: str, width: float) -> bool:
             _draw_text(sub, row.name, width, alert=bool(row.alert))
         return True
     return False
+
+
+def _draw_place(layout: Any, row: Any, width: float) -> None:
+    """Una fila de las listas de la accesibilidad con su **«Ir a»** (spec 017, T31b; RF-017-25): su texto, partido al ancho que deja el botón, y ``geoblender.core_go_to_place`` con el lugar de su
+    ``uid`` (``x;y;radio``); en alerta si no se comunica. Un lugar que no se lee no dibuja el botón."""
+    parts = str(row.uid).split(";")
+    line = layout.row()
+    _draw_text(line.column(), row.name, width - GO_TO_BUTTON_PX, alert=bool(row.alert))
+    if len(parts) == 3:
+        button = line.operator(constraint_panels.GO_TO_PLACE, text=tr("Go to"), translate=False)
+        button.x, button.y, button.radius = parts
 
 
 def _is_detection(obj: Any) -> bool:

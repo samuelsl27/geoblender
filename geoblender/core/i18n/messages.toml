@@ -11321,3 +11321,53 @@ es = "Lo alcanzable por las pistas"
 
 ["The road «{name}» has no usable axis by stations: its axis is drawn at the height of its surface"]
 es = "La pista «{name}» no tiene un eje por estaciones utilizable: su eje se dibuja a la cota de su superficie"
+
+# --- La barra N con la pista y la accesibilidad (spec 017, T31b; RF-015-25, RF-017-23, RF-017-25, H2-2; plan 017 §5.5): bl/ui/des_panels.py ---
+
+["The project has no report of this road"]
+es = "El proyecto no tiene el informe de esta pista"
+
+["Mode «{mode}» · profile «{profile}»"]
+es = "Modo «{mode}» · perfil «{profile}»"
+
+["Length {length} m · elevation {start} m at the start and {end} m at the end"]
+es = "Longitud {length} m · cota {start} m al principio y {end} m al final"
+
+["Carriageway {width} m · section {section} m"]
+es = "Calzada {width} m · sección {section} m"
+
+["Section: cut {cut} m³ · fill {fill} m³; edge: cut {edge_cut} m³ · fill {edge_fill} m³; net {net} m³"]
+es = "Sección: desmonte {cut} m³ · terraplén {fill} m³; borde: desmonte {edge_cut} m³ · terraplén {edge_fill} m³; neto {net} m³"
+
+["The mean gradient, {mean} %, passed the {limit} % of the profile: confirmed by {person} on {date}"]
+es = "La pendiente media, {mean} %, pasaba del {limit} % del perfil: confirmado por {person} el {date}"
+
+["{area} m² of the carriageway did not end up on the level profile: confirmed by {person} on {date} (largest difference {difference} m)"]
+es = "{area} m² de la calzada no quedaban en su rasante: confirmado por {person} el {date} (mayor diferencia {difference} m)"
+
+["It reads another design of the version that changed, {designs}: recalculating the road does not settle it if that design now rests on it. Redo the road on the surface of that design, or discard it"]
+es = "Lee otro diseño de la versión que cambió, {designs}: recalcular la pista no la asienta si ese diseño se apoya ya en ella. Rehaga la pista sobre la superficie de ese diseño o descártela"
+
+["The layer of the axes of the roads for QGIS is marked: it still says what this road was before (its state, its profile or its class), because a change such as the value of a profile does not bring it up to date at once; the next order on roads or «Recompute the stale results» does"]
+es = "La capa de ejes de pistas para QGIS está marcada: todavía dice lo que esta pista era antes (su estado, su perfil o su clase), porque un cambio como el valor de un perfil no la pone al día al instante; la próxima orden de pistas o «Recalcular lo obsoleto» sí"
+
+["… and {more} more (the whole list is in the tables of the accessibility)"]
+es = "… y {more} más (la lista entera está en las tablas de la accesibilidad)"
+
+["The project has no result of this accessibility"]
+es = "El proyecto no tiene el resultado de esta accesibilidad"
+
+["Surface: «{surface}»"]
+es = "Superficie: «{surface}»"
+
+["Nothing is reachable from the entry points"]
+es = "No se alcanza nada desde los puntos de entrada"
+
+["Reachable elevations: from {low} to {high} m · {area} m²"]
+es = "Cotas alcanzables: de {low} a {high} m · {area} m²"
+
+["Lowest elevation reachable over the final surface «{final}» of the quarry: {level} m"]
+es = "Cota mínima alcanzable sobre la superficie final «{final}» de la cantera: {level} m"
+
+["Communicated · berm stretches: {berms} of {berms_total} · platforms: {platforms} of {platforms_total} · zones that require access: {zones} of {zones_total}"]
+es = "Comunicado · tramos de berma: {berms} de {berms_total} · plataformas: {platforms} de {platforms_total} · zonas «requiere acceso»: {zones} de {zones_total}"

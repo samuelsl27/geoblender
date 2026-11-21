@@ -200,6 +200,8 @@ PENDING_015_MODULES: frozenset[str] = frozenset({
     "design.road_profiles", "design.road_model", "design.road_net", "design.road_route",
     "design.road_axis", "design.road_gradient", "design.road_section", "design.road_engrave",
     "design.road_access", "design.access_store", "design.road_store", "design.road_layer",
+    # La 017, T31b (lo que la barra N lee de una pista y de una accesibilidad):
+    "design.road_card",
 })
 
 

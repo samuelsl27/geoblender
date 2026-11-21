@@ -73,6 +73,7 @@ __all__ = [
     "create_road_layer_table",
     "create_route_layer_table",
     "layer_differences",
+    "marked_roads",
     "prepare_road_layer",
     "read_road_layer",
     "read_route_layer",
@@ -687,6 +688,29 @@ def road_layer_pending(project: StoreProject, conn: sqlite3.Connection, version_
         return bool(layer_differences(shown, wanted))
     except (DesignError, ValueError, sqlite3.Error):
         return True
+
+
+def marked_roads(project: StoreProject, conn: sqlite3.Connection, version_uid: str) -> tuple[str, ...]:
+    """Los códigos de las pistas de la versión ``version_uid`` (su uid) **para las que la capa de ejes está marcada** (spec 017, T31b; RF-017-27, RF-015-25; decisión de la sesión principal tras la T26,
+    observación (b)): las que tienen otro nombre, otro **estado**, otra clase u otro perfil en la fila de la capa que en el registro de hoy, y las que faltan o sobran en ella (:func:`layer_differences`).
+    Es lo que dice la barra N de una pista cuyo estado la capa aún no sabe: cambiar el valor de un perfil la deja obsoleta por el grafo y no regenera la capa al instante. Barata y de solo lectura
+    (con la instantánea de ``conn``), sin leer ninguna geometría. **Sin capa, o con una que no se puede usar** (editada fuera de Geoblender y bloqueada, o dañada), y si no se puede saber,
+    **ninguna** (:func:`road_layer_pending` es la que no la da por buena: aquí no se afirma lo que no se sabe)."""
+    if not provenance.has_road_operation(conn, version_uid):
+        return ()
+    try:
+        version = versions_read.version(conn, version_uid)
+        if version is None:
+            return ()
+        record = dataset_registry.get(conn, provenance.dataset_name(provenance.ROAD_LAYER_TABLE), version_uid=version_uid)
+        if record is None or not record.live or str(record.status) in entity_store._UNUSABLE_STATUSES:
+            return ()
+        wanted = _wanted(road_heads(project, conn, version))
+        shown = {str(code): (str(name), str(state), str(class_name), str(profile)) for code, name, state, class_name, profile in conn.execute(
+            f'SELECT code, name, state, class_name, profile FROM "{record.locator}"')}
+        return layer_differences(shown, wanted)
+    except (DesignError, ValueError, sqlite3.Error):
+        return ()
 
 
 def road_layer_sync_steps(project: StoreProject, version: Version | str | None, *, budget_s: float = STEP_BUDGET_S) -> Generator[Progress, None, bool]:

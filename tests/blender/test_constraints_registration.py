@@ -670,7 +670,9 @@ HEAVY: tuple[str, ...] = (
     # Preparar la pista de la 017 (spec 017, T19): la piden las órdenes al usarla.
     "design.road_store",
     # La capa de ejes de pistas de la 017 (spec 017, T26): se importa al usarla, solo si la versión tiene pistas.
-    "design.road_layer")
+    "design.road_layer",
+    # Lo que la barra N lee de una pista y de una accesibilidad (spec 017, T31b): se importa al usarla, al seleccionar una.
+    "design.road_card")
 """Lo que habilitar no importa (los de la 012 que fija ``tests/unit/architecture/test_lazy_registration``,
 y los de la 016 y la 017, que esa prueba mira por sus importaciones de nivel de módulo)."""
 LIGHT: tuple[str, ...] = ("core.constraints.provenance", "gis.masks.provenance",
