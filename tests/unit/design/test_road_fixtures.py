@@ -1087,8 +1087,9 @@ class RoadProjectTest(rd.RoadProjectCase):
 
 class PlanNamesTest(unittest.TestCase):
     """Los nombres de ``main`` en los que se apoya el plan 017 (§5; T01) existen con la forma que dice, salvo lo que
-    se anota: ``bl/ui/constraint_panels.py`` dice «Not checked (R-40)» en la línea 1611 y no en la 1602 (que es su
-    docstring)."""
+    se anota: ``bl/ui/constraint_panels.py`` decía «Not checked (R-40)» en la línea 1611 y no en la 1602 (que es su
+    docstring); la T18b (H-8) cambió el ``msgid`` y su traducción a «Not checked» («Sin comprobar») a la vez, y esta
+    prueba lo fija."""
 
     def test_domain_names(self) -> None:
         names = {
@@ -1159,7 +1160,8 @@ class PlanNamesTest(unittest.TestCase):
         for module in ("draw/entity.py", "scene/entity_views.py", "ui/des_panels.py", "ui/constraint_panels.py"):
             self.assertTrue((EXTENSION_DIR / "bl" / module).is_file(), module)
         text = (EXTENSION_DIR / "bl" / "ui" / "constraint_panels.py").read_text(encoding="utf-8")
-        self.assertIn('tr("Not checked (R-40)")', text)
+        self.assertIn('tr("Not checked")', text)  # T18b (H-8): ya sin «(R-40)»
+        self.assertNotIn('tr("Not checked (R-40)")', text)
 
     def test_reserves_already_import_design(self) -> None:
         """``reserves.compliance_store`` ya importa ``design`` (la base de los acopios: lo que la T18 necesita para

@@ -7034,8 +7034,8 @@ es = "No cumple"
 ["Affected, not judged"]
 es = "Afectación sin juicio"
 
-["Not checked (R-40)"]
-es = "Sin comprobar (R-40)"
+["Not checked"]
+es = "Sin comprobar"
 
 ["Not in the verification"]
 es = "No entra en la verificación"

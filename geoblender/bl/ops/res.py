@@ -134,6 +134,12 @@ la entrada «011» de ``core/catalog/data/entries.toml``. Ya están las seis (:d
   qué base usará o, en alerta, por qué no usa una detección (:func:`verify_dialog_start`,
   ``constraint_panels.start_base_lines``), y al terminar la orden lo informa igual; una base en otra
   rejilla se rechaza con el error de la superficie. Sin acopios, nada de esto sale.
+  **Con accesibilidades de las pistas** (spec 017, T18b; RF-012-22, RF-012-24; DIFF-012) elige
+  también **una vez** (``reserves.compliance_store.select_access``: la al día hecha sobre cada final)
+  la accesibilidad y la usa para las entradas de la puerta (``road_access_<k>``) y para verificar; las
+  zonas «requiere acceso» salen «Cumple», «No cumple» o «Sin comprobar» según la comunique la de su
+  final, y al terminar la orden dice cuáles usó y cuáles no y por qué (``constraint_panels.access_lines``).
+  El diálogo no lo dice antes (las finales se marcan en él). Sin accesibilidades, nada de esto sale.
 
 **La ventana de la cubicación y Exportar CSV…** (T25; RF-011-23, RF-011-24; plan §5.3.4, D-29,
 D-37): :class:`GEOBLENDER_OT_res_show_volumetrics` (interna) lee las cubicaciones de la versión
@@ -3113,8 +3119,10 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
             # La base de los acopios (D-a: la de las detecciones al día hechas sobre la partida), elegida **una vez**: la misma
             # para las entradas de la puerta de la 008 y para lo que se verifica (RF-012-30, RF-012-31).
             selection = compliance_store.select_bases(project, version_uid, request.start)
+            # La accesibilidad de las pistas (P-9: la al día hecha sobre cada final), elegida también **una vez** (spec 017, T18b; RF-012-22, RF-012-24).
+            access = compliance_store.select_access(project, version_uid, request.finals)
             inputs = (*compliance_store.verify_inputs(project, version_uid, request.start,
-                                                      request.finals, selection),
+                                                      request.finals, selection, access),
                       *masks_provenance.compile_inputs(
                           masks_store.available_tables(project, version_uid)))  # con las declaradas (RF-015-11)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
@@ -3127,7 +3135,7 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
         try:
             steps = compliance_store.verify_project_steps(
                 project, version=version_uid, name=request.name, start=request.start,
-                finals=request.finals, budget_s=self.STEP_BUDGET_S, bases=selection)
+                finals=request.finals, budget_s=self.STEP_BUDGET_S, bases=selection, access=access)
         except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
             self.report({"ERROR"}, error_text(exc))
             return {"CANCELLED"}
@@ -3170,7 +3178,8 @@ class GEOBLENDER_OT_res_verify_constraints(ProvenanceAwareOperator, _StepsModal,
                 name=self._name, revision=revision))
         for line in lines:
             self._report({"WARNING" if line.alert else "INFO"}, line.text)
-        for line in constraint_panels.base_lines(result.selection, result.start_name):  # la base de los acopios (RF-012-30, RF-012-31)
+        for line in (*constraint_panels.base_lines(result.selection, result.start_name),  # la base de los acopios (RF-012-30, RF-012-31)
+                     *constraint_panels.access_lines(result.access)):  # y la accesibilidad de las pistas (RF-012-22, RF-012-24; spec 017, T18b)
             self._report({"WARNING" if line.alert else "INFO"}, line.text)
         if result.pending_names:
             self._report({"WARNING"}, tr("Search for untouchable elements pending in: {names}",

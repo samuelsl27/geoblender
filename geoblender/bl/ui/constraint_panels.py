@@ -124,6 +124,17 @@ ajustes de la operación (``StoredVerification.selection`` y ``.start_name``) y,
 español). Una base en otra rejilla no es un aviso: se rechaza la verificación (RF-011-03) y la orden da el error nombrándola. Sin acopios,
 la ventana no dice nada nuevo.
 
+**La accesibilidad de las pistas** (spec 017, T18b; HU-017-3; RF-012-21, RF-012-22, RF-012-24; DIFF-012, plan 017 A12, H-8): una zona «requiere
+acceso» ya no es «Sin comprobar (R-40)» a secas: la tabla de cada final dice «Cumple» si la accesibilidad al día hecha sobre **esa final** la
+comunica, «No cumple» (en alerta) si no y «Sin comprobar» (sin el «(R-40)»: el ``msgid`` y su traducción cambiaron a la vez) si esa final no tiene
+accesibilidad al día. La ventana de la verificación (:func:`fill_verification`: :func:`stored_access_lines`) dice **de qué accesibilidad sale cada
+una** —la de cada final, con su código y su nombre— o **por qué no usa una** (en alerta: obsoleta, con lo que cambió, u hecha sobre otra superficie
+que la de cualquier final y que las zonas quedan sin comprobar), entre sus avisos y detrás de las bases de los acopios, antes de la tabla de las
+finales; la orden lo informa igual al terminar (:func:`access_lines`). Las escribe, **en el idioma de la interfaz**, de la selección que anotaron
+los ajustes de la operación (``StoredVerification.access_selection``) y, si no la dicen, del texto que guardó la tabla (en español). El diálogo no
+lo dice antes de verificar (la accesibilidad es de cada final y las finales se marcan en él: la orden la elige al verificar). Sin accesibilidades,
+la ventana no dice nada nuevo.
+
 **La tabla con la base** (spec 016, T42; RF-012-30, RF-012-24): con la base de los acopios, los recintos que cuentan solo el corte de
 terreno (sin corte, solo relleno, solo restauración, resguardo y banda hacia dentro) dan en la tabla de cada final **el corte de terreno**
 («Corte de terreno (m³)», ``cut``) **y el de acopios** («Corte de acopios (m³)», ``stock``) y el veredicto es el de terreno: una retirada
@@ -1599,8 +1610,9 @@ def wanted(context: Any = None) -> tuple[str, str]:
 
 def _verdict_text(verdict: str) -> str:
     """El veredicto de un recinto como se lee (RF-012-22): «Cumple», «No cumple», «Afectación sin
-    juicio» (preferible no afectar), «Sin comprobar (R-40)» (requiere acceso) o, sin veredicto, que
-    el recinto no entró en la verificación."""
+    juicio» (preferible no afectar), «Sin comprobar» (requiere acceso de una final sin accesibilidad
+    al día; con ella, «Cumple» o «No cumple» según la comunique: spec 017, T18b, DIFF-012) o, sin
+    veredicto, que el recinto no entró en la verificación."""
     if verdict == VERDICT_COMPLIES:
         return tr("Complies")
     if verdict == VERDICT_FAILS:
@@ -1608,7 +1620,7 @@ def _verdict_text(verdict: str) -> str:
     if verdict == "not_judged":
         return tr("Affected, not judged")
     if verdict == "unchecked":
-        return tr("Not checked (R-40)")
+        return tr("Not checked")
     return tr("Not in the verification")
 
 
@@ -1883,7 +1895,7 @@ def fill_verify_choices(marked: Sequence[str] = ()) -> int:
     return len(shown.verify_choices)
 
 
-# --- La base de los acopios en la ventana (spec 016, T36; RF-012-30, RF-012-31; D-a) --------------
+# --- La base de los acopios (spec 016, T36; RF-012-30, RF-012-31; D-a) y la accesibilidad de las pistas (spec 017, T18b; RF-012-22, RF-012-24) en la ventana
 
 _START_BASES: dict[str, Any] = {"key": None, "lines": []}
 """La última lectura de :func:`start_base_lines`: su clave (el proyecto, la versión, la partida y el idioma) y sus líneas. El diálogo
@@ -1909,6 +1921,26 @@ def stored_base_lines(found: Any, shown: str | None = None) -> list[Line]:
     if found.selection.bases or found.selection.skipped:
         return base_lines(found.selection, found.start_name, shown)
     return [*(Line(text) for text in found.bases), *(Line(text, alert=True) for text in found.skipped)]
+
+
+def access_lines(selection: Any, shown: str | None = None) -> list[Line]:
+    """Lo que dice la ventana de verificar de la accesibilidad de las pistas de ``selection`` (``reserves.compliance_store.AccessSelection``; spec 017, T18b; RF-012-22,
+    RF-012-24): una línea por accesibilidad que **usa** (la de cada final, con su código y su nombre) y, en alerta, una por accesibilidad que **no usa** con su causa
+    (obsoleta, con lo que cambió, u hecha sobre otra superficie que la de cualquier final) y que las zonas «requiere acceso» quedan sin comprobar. Sin accesibilidades,
+    ninguna: la ventana no dice nada nuevo. En el idioma ``shown`` (por defecto, el de la interfaz)."""
+    found = language() if shown is None else shown
+    lines = [Line(item.text(found)) for item in selection.uses]
+    lines += [Line(item.text(found), alert=True) for item in selection.skipped]
+    return lines
+
+
+def stored_access_lines(found: Any, shown: str | None = None) -> list[Line]:
+    """Las mismas líneas de una verificación ya hecha (``StoredVerification``): las accesibilidades que usó y las que no, **en el idioma de la interfaz** (o ``shown``),
+    escritas de la selección que anotaron los ajustes de su operación (``found.access_selection``); si los ajustes no la dicen, el texto que guardó su tabla (en
+    español); sin accesibilidades, ninguna."""
+    if found.access_selection.uses or found.access_selection.skipped:
+        return access_lines(found.access_selection, shown)
+    return [*(Line(text) for _final, text in found.access), *(Line(text, alert=True) for _final, text in found.access_skipped)]
 
 
 def forget_start_bases() -> None:
@@ -2087,7 +2119,8 @@ def fill_verification(project: Any, version_uid: str | None, name: str | None = 
     shown.verify_stale = found.stale
     if found.stale:
         shown.verify_title = f"{shown.verify_title} · {tr('out of date')}"
-    for line in stored_base_lines(found):  # la base de los acopios que usó o por qué no (RF-012-30, RF-012-31; D-a)
+    for line in (*stored_base_lines(found),  # la base de los acopios que usó o por qué no (RF-012-30, RF-012-31; D-a)
+                 *stored_access_lines(found)):  # y la accesibilidad de cada final o por qué no (RF-012-22, RF-012-24; spec 017, T18b)
         note = shown.verify_notes.add()
         note.text, note.alert = line.text, line.alert
     if found.pending:

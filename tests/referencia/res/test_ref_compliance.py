@@ -17,7 +17,8 @@ torre (punto, intocable con 8 m: 60 celdas), la balsa «sin relleno» (750 celda
   con 4.800 m³ y su grupo; el mismo relleno, «cumple» en todos.
 - **CE-012-06**: la balsa con 4.300 m³ de relleno «no cumple» con esos m³ y un grupo de 800 m²
   de centro (90, 100) locales; las encinas, m², m³ y m³ × peso sin juicio; el camino, «sin
-  comprobar (R-40)».
+  comprobar» (sin accesibilidad de las pistas al día; con ella, «cumple» o «no cumple»:
+  ``test_ref_compliance_access``; el «(R-40)» de antes ya no se escribe).
 - **CE-012-05**: en el caso a mano de los once tipos (``test_combine``), 100 superficies que
   cortan solo en el corte admitido y rellenan solo en el relleno admitido (con ruido por debajo
   del umbral y celdas sin dato) dan 0 m³ en todos los recintos; mover una celda a una zona
