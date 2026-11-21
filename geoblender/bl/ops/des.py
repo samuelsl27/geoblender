@@ -330,6 +330,28 @@ origen, el destino y el pasillo de la ruta de una pista que se prepara (``Entity
 por tramos según pd y pm y la anchura de la sección) y, con :class:`GEOBLENDER_OT_des_entity_preview`, **una pista de la versión** por su código o seleccionada (``RoadAsk(code=…)``: su eje
 guardado y lo que se le apoya). Se quita al cancelar, al Esc a mitad, al crearla y al conmutar a la interfaz de Blender.
 
+**Pista…** (spec 017, T29b; HU-017-1, HU-017-2, HU-017-4; RF-017-02, RF-017-17, RF-017-22, RF-017-29, RF-015-28; plan 017 §5.3.3 y §5.5; comprobación manual M1):
+:class:`GEOBLENDER_OT_des_create_road` (``geoblender.des_create_road``, interna e interina de «R-40» hasta que la T33 la ponga en el menú) calcula ``des.road`` de la versión activa con
+``design.steps.road_run``: el eje, la rasante y la sección grabada en la superficie de partida. **Es el patrón de la orden de pista**: :class:`_ChainsEntityLayer` +
+:class:`_CalculateAndCreate` + :class:`DesignCommandAware` + :class:`~.core._StepsModal`, con :class:`_ClearsEntityPreview` delante. Su diálogo pide el nombre y el **modo**
+(«trazar», «sobre un eje» o «eje 3D»); la capa (de puntos, de líneas o de líneas con Z, según el modo: ``des_panels.road_layers``) y, en «trazar», **el origen** (un punto de la
+capa o el eje de otra pista a una abscisa, ``RDW-001@100``) y **el destino** (un punto, una plataforma, ``entity:PLT-001``, o una cota con su zona y su tolerancia: la rampa) o,
+en los otros dos, la línea; **el perfil de pista** (``des_panels.road_profile_items``); **la partida** (la superficie de explotación de la cantera de la 014 y, si no hay o ya
+parte de ella otra entidad, la última de la cadena: ``des_panels.road_default_start``) y el apoyo; las **cotas de inicio y de fin** (vacías, son las de la superficie de partida en
+esos puntos con su origen; lo que se escribe queda con ``source_kind="person"``: lo hace ``design.road_store.resolve_level``) y, en «trazar», **los nueve parámetros de la
+ruta, cada uno con su tipo** (HIPÓTESIS sin valor por defecto, y el presupuesto de estados, ADOPTADO con el suyo: :func:`_route_text`). Lo pedido es una
+``design.road_model.RoadRequest`` (su :meth:`~GEOBLENDER_OT_des_create_road._request`). **Vista previa** (T28): el botón del diálogo y el ``update`` de cada campo
+(:func:`_refresh_road_preview`) activan y redibujan ``bl.draw.entity`` con ``EntityPlan(road=RoadAsk(request=…))`` —el origen, el destino y el pasillo— y, **tras calcular**, con lo
+calculado (``RoadAsk(request, prepared, outcome)``); se quita al cancelar, al Esc, al crear y al conmutar. Calcular, Crear, Cancelar y Esc son los de
+:class:`_CalculateAndCreate`: nada se registra hasta Crear (RF-015-03) y cerrarlo a mitad no deja nada (RF-015-29). **No se crea sin la confirmación expresa** de la
+**pendiente media por encima de la del perfil** (RF-017-17: con **un motivo**, que queda en los ajustes de la operación con quién y cuándo y no bloquea, D-6) ni de **la calzada
+que no queda en su rasante** (RF-017-22): el botón de la ventana dice «Confirmar y crear» y pulsarlo es la confirmación (``confirm_mean`` y ``confirm_carriageway``; desde un
+guion, quien la lanza, con ``mean_reason``). El resumen del cálculo (``des_panels._road_lines``) lleva la longitud, las pendientes, el radio mínimo, el corte y el relleno y **todos
+los avisos de la pista con su lugar** (los de la partida, la holgura del pasillo, el eje, la huella recortada, los otros diseños, el salto creado, la calzada con la restricción
+que impide moverla, lo que no se mueve y lo que quedará obsoleto). **Tras crear, encadena** ``entity_store.after_entity_change`` (:class:`_ChainsEntityLayer`): la pista no
+declara restricciones (D-15), pero la capa de entidades y la de ejes se ponen al día, por pasos con el avance y Esc. Disponible con el proyecto en escritura y la versión activa
+editable y, si no, desactivada con su motivo (RF-017-29, RF-015-28: :class:`DesignCommandAware`). «Proponer el trazado…» (``des_propose_road``) es de la T33.
+
 **El menú «Entidad ▾» e insertar antes o después** (spec 015, T31; HU-015-2, HU-015-3; RF-015-28, RF-015-05, RF-015-15; D-11,
 D-14; plan 015 §5.3.3 y §5.5; comprobación manual M5): el menú contextual de las entidades
 (``GEOBLENDER_MT_des_context_entity``, ``contexts.toml``, entrada «015») lleva las órdenes reales:
@@ -8024,6 +8046,565 @@ class GEOBLENDER_OT_des_edit_stockpile(DesignCommandAware, ProvenanceAwareOperat
         return {"FINISHED"}
 
 
+# --- Pista… (spec 017, T29b; HU-017-1, HU-017-2, HU-017-4; RF-017-29, RF-017-02, RF-017-17, RF-017-22, RF-015-28; plan 017 §5.3.3 y §5.5; comprobación manual M1) --------
+
+CREATE_ROAD = provenance.ROAD_COMMAND
+ROAD_MODE_ITEMS = [
+    ("TRACE", "Trace", "From an origin to a destination: the axis and the level profile come out of the search of the route"),
+    ("ON_AXIS", "Over an axis", "A line in plan of a layer of the project: the curves are fitted to it and the level profile is given"),
+    ("AXIS_3D", "3D axis", "A line with its Z of a layer of the project: its Z is the level profile, which is only checked and engraved")]
+"""El modo de la pista (``design.road_model.RoadMode``; RF-017-02): «trazar», «sobre un eje» y «eje 3D»."""
+ROAD_ORIGIN_ITEMS = [
+    ("POINT", "A point of the layer", "The origin is a point of the layer of points"),
+    ("ROAD", "The axis of another road", "The origin is a point of the axis of another road of the active version, at an abscissa")]
+"""De dónde sale el origen de «trazar» (RF-017-02, RF-017-03)."""
+ROAD_DESTINATION_ITEMS = [
+    ("POINT", "A point of the layer", "The destination is a point of the layer of points"),
+    ("ENTITY", "A platform", "The destination is the point of the layer that falls on the footprint of a platform of the active version"),
+    ("LEVEL", "An elevation with its zone", "The ramp: the road ends where it reaches an elevation inside a zone, with its arrival tolerance")]
+"""A dónde llega «trazar»: un punto de la capa, una plataforma o una cota con su zona y su tolerancia (RF-017-02, RF-017-03, D-4)."""
+_ROAD_HIDDEN = frozenset({"confirm", "in_steps", "preview", "confirm_mean", "confirm_carriageway"})
+"""Las propiedades ocultas de «Pista…»: las pone quien la lanza (o su ventana de confirmar)."""
+
+
+def _route_rows() -> tuple[tuple[str, str, str], ...]:
+    """Los nueve parámetros de la ruta de «trazar» (RF-017-10): la propiedad del diálogo, el valor de ``RoadRequest`` (y de ``des.road.{e}.*``) y su etiqueta en el
+    idioma de Geoblender. Ocho son HIPÓTESIS sin valor por defecto (D-10, D-11) y el presupuesto de estados lo tiene (P-3): el diálogo dice el tipo de cada uno."""
+    return (("mesh", "mesh_m", tr("Mesh of the route (m)")), ("level_step", "level_step_m", tr("Elevation step (m)")),
+            ("max_cut_fill", "max_cut_fill_m", tr("Maximum cut and fill height (m)")),
+            ("lambda_weight", "lambda_per_m", tr("Weight of the earthworks (1/m)")), ("turn", "turn_m", tr("Turn penalty (m)")),
+            ("margin", "margin_m", tr("Margin of the corridor (m)")), ("simplify", "simplify_m", tr("Simplification tolerance (m)")),
+            ("arrival_tol", "arrival_tol_m", tr("Arrival tolerance of the route (m)")), ("search_budget", "search_budget", tr("Budget of states")))
+
+
+def _route_text(param: str) -> str:
+    """Lo que dice el diálogo de «Pista…» de un parámetro de la ruta (RF-017-10, D-10, D-11): **su tipo** (el de su familia) y, si lo tiene, su valor por defecto:
+    «HIPÓTESIS: sin valor por defecto, lo elige usted» o «Por defecto: 5.000.000 · ADOPTADO». Ninguno se propone: vacío es el valor por defecto o, si no lo tiene,
+    el rechazo del cálculo con su nombre."""
+    template = design_params.entity_params("road").template(param)
+    kind = tr("ASSUMPTION") if template.kind == ParamKind.HIPOTESIS else tr("ADOPTED")
+    if template.default is None:
+        return tr("{kind}: no default value, you choose it", kind=kind)
+    value = float(template.default)  # type: ignore[arg-type]
+    return tr("By default: {value}{unit} · {kind}", value=i18n.format_number(value, 0 if value.is_integer() else 2), unit="", kind=kind)
+
+
+def _road_dialog_fields() -> tuple[str, ...]:
+    """Los campos del diálogo de «Pista…» que pasan a su vista previa: sus propiedades no ocultas (la del motivo de la pendiente media es de la confirmación)."""
+    return tuple(name for name in GEOBLENDER_OT_des_create_road.__annotations__ if name not in _ROAD_HIDDEN and name != "mean_reason")
+
+
+def _refresh_road_preview(self: Any, _context: Any) -> None:
+    """El ``update`` de cada campo de «Pista…» (T29b; RF-017-26, RF-015-26): con la vista previa **de esa pista** activa (la de una pista de la versión no), la
+    redibuja con lo que dice ahora el diálogo (``EntityPlan(road=RoadAsk(request=…))``: antes de calcular, el origen, el destino y el pasillo). Un diálogo a
+    medias (un campo sin escribir, un número que no lo es) no la cambia: sigue la última completa. Solo lee."""
+    loaded = _entity_preview_loaded()
+    if loaded is None or not loaded.enabled() or loaded.plan() is None or loaded.plan().road is None or loaded.plan().road.request is None:
+        return
+    from ...design.preview import RoadAsk  # al usarlo: habilitar no carga el cálculo
+
+    try:
+        request = GEOBLENDER_OT_des_create_road._request(self)
+    except (ProfileFormError, GeoblenderError, sqlite3.Error, OSError, ValueError):
+        return
+    if loaded.plan().road.request == request:
+        return  # lo mismo que ya se dibuja, con o sin lo calculado (lo repite cada dibujo del diálogo al copiar sus campos al botón): no se reconstruye
+    loaded.replace(loaded.EntityPlan(road=RoadAsk(request=request)))
+
+
+def _road_mode_changed(self: Any, context: Any) -> None:
+    """El ``update`` del modo de «Pista…»: la lista de capas es otra (puntos, líneas o líneas con Z), y si la elegida no está en ella, pasa a la primera; después
+    redibuja la vista previa (:func:`_refresh_road_preview`)."""
+    layers = [item[0] for item in des_panels.road_layers(self.mode)]
+    if layers and self.layer not in layers:
+        self.layer = layers[0]
+    _refresh_road_preview(self, context)
+
+
+def _road_points(self: Any) -> dict[str, Any]:
+    """El origen y el destino de «trazar» de lo que dice el diálogo ``self`` (sus propiedades: la llaman también los ``update``, que reciben solo las propiedades de la orden) como los pide ``RoadRequest`` (RF-017-02, RF-017-03): ``origin`` y ``destination`` (el texto de un punto de la capa, de un
+    punto del eje de otra pista —``RDW-001@100.5``— o de una plataforma —``entity:PLT-001``—) o, con una cota, ``dest_level_m``, ``dest_tol_m`` y ``dest_zone`` (la
+    capa de su zona y, tras ``:``, el polígono). :class:`ComputeFormError` si falta la pista, la abscisa o la plataforma elegidas."""
+    from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+    found: dict[str, Any] = {}
+    if self.origin_from == "ROAD":
+        if self.origin_road in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the road whose axis the origin is on"))
+        station = typed_number(self.origin_station, tr("Abscissa of the origin (m)"))
+        if station is None:
+            raise ComputeFormError(tr("Write the abscissa of the origin on the axis of the other road, in metres"))
+        found["origin"] = f"{self.origin_road}@{station!r}"
+    else:
+        found["origin"] = self.origin_point.strip() or None
+    if self.destination_to == "LEVEL":
+        level = typed_number(self.dest_level, tr("Elevation of the destination (m)"))
+        tolerance = typed_number(self.dest_tol, tr("Arrival tolerance of the elevation (m)"))
+        zone = None if self.dest_zone in ("", des_panels.NO_LAYER) else self.dest_zone
+        if level is None and tolerance is None and zone is None:
+            raise ComputeFormError(tr("Write the elevation of the destination, its arrival tolerance and choose its zone"))
+        feature = self.dest_zone_feature.strip()
+        found.update(dest_level_m=level, dest_tol_m=tolerance, dest_zone=None if zone is None else (f"{zone}:{feature}" if feature else zone))
+    elif self.destination_to == "ENTITY":
+        if self.destination_entity in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the platform the road ends at"))
+        found["destination"] = entities.surface_ref(self.destination_entity)
+    else:
+        found["destination"] = self.destination_point.strip() or None
+    return found
+
+
+class GEOBLENDER_OT_des_create_road(_ClearsEntityPreview, _ChainsEntityLayer, _CalculateAndCreate, DesignCommandAware, ProvenanceAwareOperator, _StepsModal,
+                                    bpy.types.Operator):
+    """Haul road of the active version: its axis, its level profile and its section engraved on its start surface, from an origin to a destination, over an axis or over a 3D axis"""
+
+    bl_idname = CREATE_ROAD
+    bl_label = "Road…"
+    bl_translation_context = TRANSLATION_CONTEXT
+    bl_options = {"REGISTER"}
+    provenance_op_type = provenance.ROAD
+    COMMAND = CREATE_ROAD
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name", description="Name of the road, unique in the active version", options=_FIELD)
+    mode: EnumProperty(  # type: ignore[valid-type]
+        name="Mode",
+        description="Trace it from an origin to a destination, give it an axis in plan to fit the curves to, or give it a line with its Z whose Z is the level profile",
+        items=ROAD_MODE_ITEMS, default="TRACE", options=_FIELD, update=_road_mode_changed)
+    layer: EnumProperty(  # type: ignore[valid-type]
+        name="Layer",
+        description="Layer of the project the road is taken from: of points (trace), of lines (over an axis) or of 3D lines (3D axis: the breaklines of the "
+                    "project and the proposed routes of the active version)", items=des_panels.road_layer_items, options=_FIELD, update=_refresh_road_preview)
+    name_field: StringProperty(  # type: ignore[valid-type]
+        name="Name field",
+        description="Field of the layer with the name of each geometry (empty: the field «nombre» or «name» or, without it, the number (fid))", options=_FIELD,
+        update=_refresh_road_preview)
+    feature: StringProperty(  # type: ignore[valid-type]
+        name="Line of the layer",
+        description="Name or number (fid) of the line of the layer that is the axis of the road (over an axis and 3D axis)", options=_FIELD,
+        update=_refresh_road_preview)
+    origin_from: EnumProperty(  # type: ignore[valid-type]
+        name="The origin is",
+        description="Whether the origin is a point of the layer or a point of the axis of another road, at an abscissa", items=ROAD_ORIGIN_ITEMS, default="POINT",
+        options=_FIELD, update=_refresh_road_preview)
+    origin_point: StringProperty(  # type: ignore[valid-type]
+        name="Origin point",
+        description="Name or number (fid) of the point of the layer that is the origin of the road", options=_FIELD, update=_refresh_road_preview)
+    origin_road: EnumProperty(  # type: ignore[valid-type]
+        name="Road of the origin",
+        description="Road of the active version whose axis the origin is on: the new road rests on it and becomes stale if it changes",
+        items=des_panels.road_road_items, options=_FIELD, update=_refresh_road_preview)
+    origin_station: StringProperty(  # type: ignore[valid-type]
+        name="Abscissa of the origin (m)",
+        description="Distance along the axis of the other road, from its start, of the point where the new road starts, in metres", options=_FIELD,
+        update=_refresh_road_preview)
+    destination_to: EnumProperty(  # type: ignore[valid-type]
+        name="It ends at",
+        description="Whether the road ends at a point of the layer, on a platform of the active version or where it reaches an elevation inside a zone",
+        items=ROAD_DESTINATION_ITEMS, default="POINT", options=_FIELD, update=_refresh_road_preview)
+    destination_point: StringProperty(  # type: ignore[valid-type]
+        name="Destination point",
+        description="Name or number (fid) of the point of the layer that is the destination of the road", options=_FIELD, update=_refresh_road_preview)
+    destination_entity: EnumProperty(  # type: ignore[valid-type]
+        name="Platform of the destination",
+        description="Platform of the active version the road ends at: its destination is the point of the layer that falls on its footprint, at the level of its "
+                    "surface; the road rests on it", items=des_panels.road_platform_items, options=_FIELD, update=_refresh_road_preview)
+    dest_level: StringProperty(  # type: ignore[valid-type]
+        name="Elevation of the destination (m)",
+        description="Elevation in metres the road has to reach: it ends at the first point of the zone whose start surface differs from it by less than the arrival "
+                    "tolerance", options=_FIELD, update=_refresh_road_preview)
+    dest_tol: StringProperty(  # type: ignore[valid-type]
+        name="Arrival tolerance of the elevation (m)",
+        description="How much the start surface may differ from the elevation of the destination where the road ends, in metres", options=_FIELD,
+        update=_refresh_road_preview)
+    dest_zone: EnumProperty(  # type: ignore[valid-type]
+        name="Zone of the destination",
+        description="Layer of polygons of the project with the zone where the elevation has to be reached", items=des_panels.road_zone_items, options=_FIELD,
+        update=_refresh_road_preview)
+    dest_zone_feature: StringProperty(  # type: ignore[valid-type]
+        name="Polygon of the zone",
+        description="Name or number (fid) of the polygon of the layer that is the zone (empty: all the polygons of the layer)", options=_FIELD,
+        update=_refresh_road_preview)
+    profile: EnumProperty(  # type: ignore[valid-type]
+        name="Road profile",
+        description="Profile of the road: its vehicle, its carriageway, its gradients, its radii and its slopes; create or complete them with «Road profile…»",
+        items=des_panels.road_profile_items, options=_FIELD, update=_refresh_road_preview)
+    start: EnumProperty(  # type: ignore[valid-type]
+        name="Start surface",
+        description="Surface the road starts from: by default, the exploitation surface of the quarry and, without it, the last of the chain",
+        items=des_panels.platform_start_items, options=_FIELD, update=_refresh_road_preview)
+    support: EnumProperty(  # type: ignore[valid-type]
+        name="Support surface",
+        description="Surface the road rests on, if it rests on one (none: it rests on no other surface)", items=des_panels.platform_support_items, options=_FIELD,
+        update=_refresh_road_preview)
+    start_level: StringProperty(  # type: ignore[valid-type]
+        name="Start level (m)",
+        description="Elevation of the level profile at the start of the road in metres (empty: the one of the start surface at that point, recorded with its "
+                    "origin; what you write is recorded as decided by you)", options=_FIELD, update=_refresh_road_preview)
+    end_level: StringProperty(  # type: ignore[valid-type]
+        name="End level (m)",
+        description="Elevation of the level profile at the end of the road in metres (empty: the one of the start surface at that point or of the platform of the "
+                    "destination, recorded with its origin; what you write is recorded as decided by you)", options=_FIELD, update=_refresh_road_preview)
+    mesh: StringProperty(  # type: ignore[valid-type]
+        name="Mesh of the route (m)",
+        description="Side of the blocks of the grid in which the route is searched, in metres: a whole multiple of the step of the project; a hypothesis without "
+                    "default value", options=_FIELD, update=_refresh_road_preview)
+    level_step: StringProperty(  # type: ignore[valid-type]
+        name="Elevation step (m)",
+        description="Step of the elevations the route can take above or below the ground, in metres; a hypothesis without default value", options=_FIELD,
+        update=_refresh_road_preview)
+    max_cut_fill: StringProperty(  # type: ignore[valid-type]
+        name="Maximum cut and fill height (m)",
+        description="Most the level profile of the route may be above or below the ground, in metres; a hypothesis without default value", options=_FIELD,
+        update=_refresh_road_preview)
+    lambda_weight: StringProperty(  # type: ignore[valid-type]
+        name="Weight of the earthworks (1/m)",
+        description="How much the cost of the route grows with the height of cut and fill, in 1/m; a hypothesis without default value", options=_FIELD,
+        update=_refresh_road_preview)
+    turn: StringProperty(  # type: ignore[valid-type]
+        name="Turn penalty (m)",
+        description="Length added to the cost of the route for each change of heading, in metres; a hypothesis without default value", options=_FIELD,
+        update=_refresh_road_preview)
+    margin: StringProperty(  # type: ignore[valid-type]
+        name="Margin of the corridor (m)",
+        description="How much longer than the shortest route the routes inside the corridor can be, in metres: the route changes with it; a hypothesis without "
+                    "default value", options=_FIELD, update=_refresh_road_preview)
+    simplify: StringProperty(  # type: ignore[valid-type]
+        name="Simplification tolerance (m)",
+        description="Most the simplified axis may separate from the route, in metres; a hypothesis without default value", options=_FIELD,
+        update=_refresh_road_preview)
+    arrival_tol: StringProperty(  # type: ignore[valid-type]
+        name="Arrival tolerance of the route (m)",
+        description="How far from the destination elevation the route may end, in metres; a hypothesis without default value", options=_FIELD,
+        update=_refresh_road_preview)
+    search_budget: StringProperty(  # type: ignore[valid-type]
+        name="Budget of states",
+        description="Most states the search of the route may expand before it stops saying so: a whole number (empty: the default value, shown)", options=_FIELD,
+        update=_refresh_road_preview)
+    mean_reason: StringProperty(  # type: ignore[valid-type]
+        name="Reason for the mean gradient",
+        description="Why you accept a mean gradient above the maximum of the profile: it stays recorded with who and when; it is needed only if the mean gradient "
+                    "passes it", options=_FIELD)
+    # La confirmación de crear (D-14 de la 013) y los pasos con el temporizador de la ventana, con el avance y Esc: los pone invoke; desde un guion, sin ellos, de una
+    # vez. «Vista previa» (T28): la pone el botón del diálogo. Las confirmaciones expresas de la pendiente media y de la calzada que no queda en su rasante (RF-017-17,
+    # RF-017-22): las pone el botón de su ventana, que las dice; desde un guion, quien la lanza (la media, además, con su motivo ``mean_reason``).
+    confirm: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    in_steps: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    preview: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    confirm_mean: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+    confirm_carriageway: BoolProperty(default=False, options=_HIDDEN)  # type: ignore[valid-type]
+
+    # --- El diálogo ---------------------------------------------------------------------------
+
+    def invoke(self, context: Any, event: Any) -> set[str]:
+        """Sin versión activa, la ventana que pide una (RF-009-05); con ella no editable, el porqué. Con ``confirm``, el diálogo de crear el cálculo abierto. Si no,
+        las listas leídas de nuevo (las superficies, las capas, los perfiles de pista, las pistas y las plataformas de la versión), la propuesta (un nombre, la
+        primera capa del modo, el primer perfil y la partida: la superficie de explotación de la cantera o la última de la cadena) y el diálogo del cálculo:
+        Intro calcula."""
+        self.provenance_dialog = True
+        self.in_steps = getattr(context, "window", None) is not None
+        if self.confirm:
+            return self._confirmation(context)
+        refusal = self._version_refusal()
+        if refusal is not None:
+            if scene_versions.active_version() is not None:
+                self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        try:
+            des_panels.refresh_choices(project)
+            des_panels.refresh_platform_choices(project)
+            des_panels.refresh_road_choices(project)
+            self._propose(context, project)
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        return context.window_manager.invoke_props_dialog(
+            self, width=DIALOG_WIDTH, translate=False,
+            title=command_text(catalog().commands[command_idname(self.COMMAND)].label), confirm_text=tr("Calculate"))
+
+    def _propose(self, context: Any, project: Any) -> None:
+        """Lo que propone el diálogo si quien lo lanza no lo dio (plan 017 §5.3.3): un nombre que no repite el de ninguna entidad de la versión («Pista 1»…), el modo
+        «trazar», la primera capa de ese modo, el primer perfil, la primera pista, plataforma y zona que ofrece y **la partida: la superficie de explotación de la
+        cantera de la 014 y, si no hay o ya parte de ella otra entidad, la última de la cadena** (RF-017-05, D-3) o, sin ninguna, el terreno
+        (``surface_proposal.ground_item``, con lo seleccionado en la vista). Ninguna cifra minera se propone: los parámetros de la ruta, las cotas y el destino por
+        cota quedan vacíos."""
+        given = self.properties.is_property_set
+
+        def first(items: Any, none: str) -> str | None:
+            offered = [item[0] for item in items(self, None) if item[0] != none]
+            return offered[0] if offered else None
+
+        if not self.name.strip():
+            taken, number = set(des_panels.platform_names()), 1
+            while f"{tr('Road')} {number}" in taken:
+                number += 1
+            self.name = f"{tr('Road')} {number}"
+        for prop, items, none in (("layer", des_panels.road_layer_items, des_panels.NO_LAYER), ("profile", des_panels.road_profile_items, des_panels.NO_ZONE),
+                                  ("origin_road", des_panels.road_road_items, des_panels.NO_ZONE),
+                                  ("destination_entity", des_panels.road_platform_items, des_panels.NO_ZONE),
+                                  ("dest_zone", des_panels.road_zone_items, des_panels.NO_LAYER)):
+            found = first(items, none)
+            if found is not None and not given(prop):
+                setattr(self, prop, found)
+        if not given("start"):
+            offered = {item[0] for item in des_panels.platform_start_items(None, None)}
+            start = des_panels.road_default_start()
+            if start is None or start not in offered:
+                items = [identifier for identifier in offered if identifier != des_panels.NO_ZONE and not identifier.startswith("entity:")]
+                start = surface_proposal.ground_item(context, project, sorted(items), des_panels.surface_choice) if items else None
+            if start is not None:
+                self.start = start
+
+    def draw(self, context: Any) -> None:
+        """Arriba el nombre y el modo; la capa y, en «trazar», **el origen** (un punto de la capa o el eje de otra pista a una abscisa) y **el destino** (un punto,
+        una plataforma o una cota con su zona y su tolerancia) o, en «sobre un eje» y «eje 3D», la línea; el perfil, la partida y el apoyo; las cotas de inicio y de
+        fin y, en «trazar», **los parámetros de la ruta, cada uno con su tipo**; y «Vista previa». En la confirmación de crear, el resumen y, si la pendiente media
+        pide un motivo, su campo."""
+        layout = self.layout
+        if self.confirm:  # el resumen del cálculo abierto
+            des_panels.draw_summary(layout, DIALOG_WIDTH)
+            if self.confirm_mean:
+                layout.prop(self, "mean_reason", text=tr("Reason for the mean gradient"), translate=False)
+            return
+        layout.use_property_split = True
+        trace = self.mode == "TRACE"
+        layout.prop(self, "name", text=tr("Name"), translate=False)
+        layout.prop(self, "mode", text=tr("Mode"), translate=False)
+        box = layout.box()
+        box.label(text=tr("Geometry of the road"), translate=False)
+        box.prop(self, "layer", text=tr("Layer"), translate=False)
+        box.prop(self, "name_field", text=tr("Name field"), translate=False)
+        if trace:
+            box.prop(self, "origin_from", text=tr("The origin is"), translate=False)
+            if self.origin_from == "ROAD":
+                box.prop(self, "origin_road", text=tr("Road of the origin"), translate=False)
+                box.prop(self, "origin_station", text=tr("Abscissa of the origin (m)"), translate=False)
+            else:
+                box.prop(self, "origin_point", text=tr("Origin point"), translate=False)
+            box.prop(self, "destination_to", text=tr("It ends at"), translate=False)
+            if self.destination_to == "ENTITY":  # el destino es el punto de la capa que cae en su huella: no se elige otro
+                box.prop(self, "destination_entity", text=tr("Platform of the destination"), translate=False)
+            elif self.destination_to == "LEVEL":
+                box.prop(self, "dest_level", text=tr("Elevation of the destination (m)"), translate=False)
+                box.prop(self, "dest_tol", text=tr("Arrival tolerance of the elevation (m)"), translate=False)
+                box.prop(self, "dest_zone", text=tr("Zone of the destination"), translate=False)
+                box.prop(self, "dest_zone_feature", text=tr("Polygon of the zone"), translate=False)
+            else:
+                box.prop(self, "destination_point", text=tr("Destination point"), translate=False)
+        else:
+            box.prop(self, "feature", text=tr("Line of the layer"), translate=False)
+        layout.prop(self, "profile", text=tr("Road profile"), translate=False)
+        layout.prop(self, "start", text=tr("Start surface"), translate=False)
+        layout.prop(self, "support", text=tr("Support surface"), translate=False)
+        if self.mode != "AXIS_3D":  # en «eje 3D» la Z de la línea es la rasante: no hay cota de inicio ni de fin que dar
+            levels = layout.box()
+            levels.label(text=tr("Elevations (empty: those of the start surface, recorded with their origin)"), translate=False)
+            levels.prop(self, "start_level", text=tr("Start level (m)"), translate=False)
+            levels.prop(self, "end_level", text=tr("End level (m)"), translate=False)
+        if trace:
+            route = layout.box()
+            route.label(text=tr("Search of the route: the type of each value is shown"), translate=False)
+            for prop, param, label in _route_rows():
+                row = route.row()
+                row.prop(self, prop, text=label, translate=False)
+                row.label(text=_route_text(param), translate=False)
+        _draw_entity_preview_button(layout, self, CREATE_ROAD, _road_dialog_fields())  # «Vista previa» (RF-017-26)
+
+    # --- Lo pedido ----------------------------------------------------------------------------
+
+    def _request(self) -> Any:
+        """Lo pedido en el diálogo como la ``design.road_model.RoadRequest`` (RF-017-01, RF-017-02, RF-017-10), comprobado sin escribir ni calcular nada. En «trazar»,
+        el origen es un punto de la capa (por su nombre o su ``fid``) o ``RDW-001@s`` (el eje de otra pista a la abscisa ``s``) y el destino, un punto, ``entity:PLT-001``
+        (una plataforma: el punto de la capa que cae en su huella) o una cota con su zona y su tolerancia; en «sobre un eje» y «eje 3D», la línea. Lo que se deja vacío
+        (las cotas de inicio y de fin, los parámetros de la ruta, el presupuesto de estados) lo resuelve el dominio: la cota de la superficie de partida con su
+        origen, el valor por defecto de su parámetro o, si no lo tiene, el rechazo de RF-015-08 con su nombre. :class:`ComputeFormError` si falta algo que el diálogo
+        necesita para armar la petición."""
+        from ...design import road_model  # al usarlo: habilitar no carga el cálculo
+
+        name = self.name.strip()
+        if not name:
+            raise ComputeFormError(tr("Write the name of the road"))
+        if self.layer in ("", des_panels.NO_LAYER):
+            raise ComputeFormError(tr("Choose the layer of the road: there is none for this mode in the project"))
+        if self.profile in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the profile of the road: create one with «Road profile…»"))
+        if self.start in ("", des_panels.NO_ZONE):
+            raise ComputeFormError(tr("Choose the start surface of the road"))
+        mode = self.mode
+        fields = road_model.LayerFields(self.layer, self.name_field.strip() or None)
+        changes: dict[str, Any] = {}
+        support = None if self.support in ("", des_panels.NO_ZONE) else self.support
+        if mode == "TRACE":
+            changes.update(_road_points(self))
+            for prop, param, label in _route_rows():
+                number = typed_number(getattr(self, prop), label)
+                if param == "search_budget" and number is not None:
+                    if number != int(number):
+                        raise ComputeFormError(tr("«{value}» is not a whole number (field «{field}»)", value=getattr(self, prop).strip(), field=label))
+                    number = int(number)
+                changes[param] = number
+        else:
+            changes["feature"] = self.feature.strip() or None
+        if mode != "AXIS_3D":
+            changes["start_level_m"] = typed_number(self.start_level, tr("Start level (m)"))
+            changes["end_level_m"] = typed_number(self.end_level, tr("End level (m)"))
+        return road_model.RoadRequest(name, fields, mode.lower(), self.profile, self.start, support=support, **changes)
+
+    # --- Calcular y crear ---------------------------------------------------------------------
+
+    def execute(self, context: Any) -> set[str]:
+        """Con ``confirm``, crea el cálculo abierto (:meth:`_create`). Con ``preview``, activa la vista previa de lo pedido (:meth:`_show_preview`). Si no, comprueba
+        lo pedido (sin escribir nada si falta algo), pasa por la puerta de la 008 y calcula la pista por pasos con ``design.steps.road_run`` —compila las máscaras
+        antes si no están al día—, sin registrar nada (RF-015-03): desde la interfaz, en el modal con el avance y Esc (RF-015-29, RF-017-30); desde un guion, de una
+        vez. Al terminar deja el cálculo abierto con su resumen y pide confirmar. Los rechazos (la capa, el origen y el destino, las cotas, el perfil y su valor, la
+        partida, los parámetros de la ruta que faltan, un sector con la búsqueda pendiente, el nombre repetido, una ruta que no existe y por qué) y todas las
+        cuentas son de ``design``."""
+        if self.confirm:
+            return self._create(context)
+        if self.preview:
+            return self._show_preview()
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        project = SESSION.project
+        version = scene_versions.active_version() or ""
+        try:
+            request = self._request()
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        ready = ensure_ready(self.provenance_op_type, [], report=self.report, dialog=self.provenance_dialog, version=version)
+        if ready is None:
+            return {"CANCELLED"}
+        from ...design import steps as design_steps  # al usarlo: habilitar no carga el cálculo
+
+        discard_calculation()  # el anterior, si seguía abierto: sus temporales no se quedan
+        steps = design_steps.road_run(project, request, version=version, budget_s=self.STEP_BUDGET_S)
+        return self._run_steps(context, project, request.name, steps)
+
+    def _show_preview(self) -> set[str]:
+        """«Vista previa» (T28 y T29b; RF-017-26, RF-015-26): comprueba lo pedido como al calcular (:meth:`_request`, sin escribir ni calcular nada) y activa con ello la
+        vista previa de la pista (``bl.draw.entity``: antes de calcular, el origen, el destino y el pasillo de la ruta); la que hubiera activa se cambia por la nueva
+        (pulsarlo otra vez, o cambiar un campo del diálogo: :func:`_refresh_road_preview`). Lo que rechazaría «Calcular» sale en la propia vista previa, como aviso.
+        Se quita al cancelar la orden, al Esc a mitad del cálculo, al crearla, con su control y al conmutar a la interfaz de Blender."""
+        blocked = write_unavailable()
+        if blocked is not None:
+            self.report({"ERROR"}, blocked)
+            return {"CANCELLED"}
+        refusal = self._version_refusal()
+        if refusal is not None:
+            self.report({"ERROR"}, refusal)
+            return {"CANCELLED"}
+        try:
+            request = self._request()
+        except ProfileFormError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        except (GeoblenderError, sqlite3.Error, OSError, ValueError) as exc:
+            self.report({"ERROR"}, design_error_text(exc))
+            return {"CANCELLED"}
+        from ...design.preview import RoadAsk  # al usarlo: habilitar no carga el cálculo
+
+        preview = _entity_preview()
+        try:
+            preview.enable(preview.EntityPlan(road=RoadAsk(request=request)))
+        except (RuntimeError, GeoblenderError, sqlite3.Error, OSError) as exc:
+            self.report({"ERROR"}, tr("The preview of the entity could not be shown: {detail}", detail=design_error_text(exc)))
+            return {"CANCELLED"}
+        self.report({"INFO"}, tr("Showing the preview of the road «{name}»", name=request.name))
+        return {"FINISHED"}
+
+    def _finished(self, context: Any, opened: Any) -> set[str]:
+        """Como las demás (:meth:`_ChainsEntityLayer._finished`) y, **tras calcular**, con la vista previa activa, **le da lo calculado** (``RoadAsk(request, prepared,
+        outcome)``: el eje con su flecha, las pendientes por tramos y la anchura de la sección, sin repetir la preparación: T28)."""
+        calculated = not self._chain
+        done = _ChainsEntityLayer._finished(self, context, opened)
+        if calculated:
+            self._show_calculated(opened)
+        return done
+
+    @staticmethod
+    def _show_calculated(opened: Any) -> None:
+        """Con la vista previa de **esta** pista activa, la cambia por la de lo que dejó «Calcular» (``opened``: el cálculo abierto). Solo lee."""
+        loaded = _entity_preview_loaded()
+        if loaded is None or not loaded.enabled() or loaded.plan() is None or loaded.plan().road is None or loaded.plan().road.request is None:
+            return
+        from ...design.preview import RoadAsk  # al usarlo: habilitar no carga el cálculo
+
+        loaded.replace(loaded.EntityPlan(road=RoadAsk(request=opened.entity.job.request, prepared=opened.entity, outcome=opened.outcome)))
+
+    def _confirmation(self, context: Any) -> set[str]:
+        """El diálogo de crear el cálculo abierto. Con la **pendiente media por encima de pm** (RF-017-17) o la **calzada que no queda en su rasante** (RF-017-22), que
+        piden confirmación expresa, su botón lo dice («Confirmar y crear»): pulsarlo es la confirmación y, de la media, el diálogo pide además su **motivo**, que
+        queda registrado con quién y cuándo y no bloquea; «Cancelar» y cerrarlo no crean nada."""
+        held = calculation()
+        self.confirm_mean = held is not None and held.needs_mean_confirmation
+        self.confirm_carriageway = held is not None and held.needs_carriageway_confirmation
+        return _CalculateAndCreate._confirmation(self, context)
+
+    def _confirm_text(self, held: Calculation) -> str:
+        if held.needs_mean_confirmation or held.needs_carriageway_confirmation:
+            return tr("Confirm and create")
+        return _CalculateAndCreate._confirm_text(self, held)
+
+    def _create(self, context: Any) -> set[str]:
+        """«Crear» (RF-017-01, RF-015-02): como las demás, y con la **pendiente media por encima de pm** o la **calzada que no queda en su rasante** **no se crea sin la
+        confirmación expresa** (``confirm_mean`` y ``confirm_carriageway``: el botón de la ventana, o quien la lanza desde un guion) ni, la media, **sin su motivo**
+        (``mean_reason``: RF-017-17, D-6, que queda en los ajustes de la operación con quién y cuándo y no bloquea): lo dice y el cálculo sigue abierto (se confirma, o se
+        calcula otra vez). Con ellas, las deja dichas en el cálculo antes de crearlo (``Calculation.confirm_road``). **Ya creada**, quita la vista previa (la pista ya
+        existe: ya no se prepara) y encadena lo que sigue (:meth:`_update_declared`: la capa de entidades y la de ejes, como operaciones aparte)."""
+        from ...design import road_store  # al usarlo: habilitar no carga el cálculo
+
+        opened = calculation()
+        if opened is not None and isinstance(opened.entity, road_store.PreparedRoad):
+            reason = self.mean_reason.strip() or None
+            try:
+                road_store.check_road_confirmed(opened.outcome, mean=self.confirm_mean, carriageway=self.confirm_carriageway, reason=reason)  # type: ignore[arg-type]
+            except design_messages.DesignError as exc:
+                self.report({"ERROR"}, design_error_text(exc))
+                if self.in_steps and getattr(context, "window", None) is not None:
+                    _ask_confirmation(context, idname=self.COMMAND)  # el cálculo sigue abierto: se vuelve a pedir, con su motivo
+                return {"CANCELLED"}
+            opened.confirm_road(mean=self.confirm_mean, carriageway=self.confirm_carriageway, reason=reason)
+        created = _CalculateAndCreate._create(self, context)
+        if opened is None or "FINISHED" not in created:
+            return created
+        _entity_preview_off()  # la pista ya existe: ya no se prepara (RF-017-26)
+        return self._update_declared(context, opened)
+
+    def _created_text(self, opened: Calculation) -> str:
+        return tr("Road «{name}» created in {version}", name=opened.name, version=opened.version)
+
+    def _status_text(self, step: Progress) -> str:
+        """El avance en la barra de estado: «Calculando la pista… 40 % · Esc: cancelar» o, tras crearla, «Poniendo al día las restricciones declaradas… 40 % · Esc:
+        cancelar»."""
+        percent = max(0, min(100, int(100 * step.done / step.total))) if step.total else 0
+        if self._chain:
+            return tr("Updating the declared constraints and the masks… {percent} % · Esc: cancel", percent=percent)
+        return tr("Computing the road… {percent} % · Esc: cancel", percent=percent)
+
+    def _cancelled_text(self) -> str:
+        if self._chain:
+            return tr("Cancelled: the road is created; the declared constraints and the masks are brought up to date before the next operation that uses them, "
+                      "and the entity layer and the layer of axes with the next entity order or «Recompute the stale results»")
+        return _CalculateAndCreate._cancelled_text(self)
+
+    def _error_text(self, exc: GeoblenderError) -> str:
+        found = _CalculateAndCreate._error_text(self, exc)
+        if self._chain:
+            return f"{found} " + tr("The road is created: only the declared constraints and the masks have not been brought up to date")
+        return found
+
+
 classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_save_bench_profile,
                              GEOBLENDER_OT_des_edit_design_sectors,
@@ -8053,7 +8634,8 @@ classes: tuple[type, ...] = (GEOBLENDER_OT_des_edit_bench_profiles,
                              GEOBLENDER_OT_des_detect_stockpiles,
                              GEOBLENDER_OT_des_stockpile_candidates,
                              GEOBLENDER_OT_des_edit_road_profile,
-                             GEOBLENDER_OT_des_save_road_profile)
+                             GEOBLENDER_OT_des_save_road_profile,
+                             GEOBLENDER_OT_des_create_road)
 """Las órdenes reales del diseño (la T22 pone «Perfiles de banco…» y su orden interna, la T23
 «Sectores de diseño…» y la suya, la T24 «Envolventes y escalonado…», la T25 «Vista previa de
 semillas, dominios y restricciones», la T28, la interna que exporta una rejilla a GeoTIFF, y la
@@ -8068,4 +8650,4 @@ y la T43, la interna que lanza «Cambiar parámetro…», sin menú); de la 016,
 de la «Unidad por espesor sobre su apoyo…» de Geología al menú Entidades); la T27 pone «Contrafuerte…», con la clave del catálogo
 ``des_add_buttress``; la T35 pone «Acopio (detectar, retirar)…», «Detectar acopios…» y «Candidatos de los acopios…» y entrega la entrada 016 con
 el menú Diseño ▸ Pistas y entidades ▸ Entidades); de la 017, la T29 pone «Perfil de pista…» (``des_edit_road_profile``) y su interna
-(``des_save_road_profile``); **aún no están en el catálogo ni en el menú** (la T33: ``PENDING_COMMANDS_017``))."""
+(``des_save_road_profile``) y la T29b, «Pista…» (``des_create_road``); **aún no están en el menú** (la T33; ``PENDING_COMMANDS_017``: las que no están en el catálogo))."""

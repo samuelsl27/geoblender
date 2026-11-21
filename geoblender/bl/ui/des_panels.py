@@ -789,6 +789,14 @@ class _Choices:
     body_kinds: dict[str, str] = field(default_factory=dict)
     buttress_zones: list[tuple[str, str, str]] = field(default_factory=list)
     buttress_supports: list[tuple[str, str, str]] = field(default_factory=list)
+    road_points: list[tuple[str, str, str]] = field(default_factory=list)
+    road_lines: list[tuple[str, str, str]] = field(default_factory=list)
+    road_lines_3d: list[tuple[str, str, str]] = field(default_factory=list)
+    road_profiles: list[tuple[str, str, str]] = field(default_factory=list)
+    road_roads: list[tuple[str, str, str]] = field(default_factory=list)
+    road_platforms: list[tuple[str, str, str]] = field(default_factory=list)
+    road_zones: list[tuple[str, str, str]] = field(default_factory=list)
+    road_start: str | None = None
     by_id: dict[str, res_surfaces.SurfaceChoice] = field(default_factory=dict)
     key: tuple[str, str, str] | None = None
 
@@ -1352,6 +1360,155 @@ def has_buttress_zones() -> bool:
     return any(item[0] != NO_LAYER for item in _CHOICES.buttress_zones)
 
 
+def _fixed_choices_road() -> None:
+    """Las listas de «Pista…» sin nada del proyecto: «—» (sin capas, sin perfiles, sin pistas ni plataformas calculadas)."""
+    _CHOICES.road_points = [(NO_LAYER, NOT_SHOWN, tr("There are no layers of points in the project"))]
+    _CHOICES.road_lines = [(NO_LAYER, NOT_SHOWN, tr("There are no layers of lines in the project"))]
+    _CHOICES.road_lines_3d = [(NO_LAYER, NOT_SHOWN, tr("There are no layers of 3D lines in the project, nor proposed routes in the active version"))]
+    _CHOICES.road_profiles = [(NO_ZONE, NOT_SHOWN, tr("There are no road profiles in the project: create one with «Road profile…»"))]
+    _CHOICES.road_roads = [(NO_ZONE, NOT_SHOWN, tr("There are no calculated roads in the active version"))]
+    _CHOICES.road_platforms = [(NO_ZONE, NOT_SHOWN, tr("There are no calculated platforms in the active version"))]
+    _CHOICES.road_zones = [(NO_LAYER, NOT_SHOWN, tr("There are no layers of polygons in the project"))]
+    _CHOICES.road_start = None
+
+
+def _road_entities(project: Any, version: Any) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """Las pistas y las plataformas **calculadas y vivas** de la versión ``version`` (RF-017-03): el eje de una pista es el origen posible de otra y la
+    plataforma, su destino posible. Cada una, por su código (``RDW-001``, ``PLT-001``) con su nombre. Solo lee."""
+    from ...design import entities  # al usarlo: habilitar no carga las entidades
+
+    roads: list[tuple[str, str, str]] = []
+    platforms: list[tuple[str, str, str]] = []
+    for entry in entities.registry(project, version.uid):
+        record = entry.record
+        if record.state in (entities.EntityState.UNCALCULATED, entities.EntityState.DISCARDED):
+            continue
+        if record.kind == entities.EntityKind.ROAD:
+            roads.append((record.code, tr("Road «{name}» ({code})", name=record.name, code=record.code),
+                          tr("Road of the active version whose axis another road can start from")))
+        elif record.kind == entities.EntityKind.PLATFORM:
+            platforms.append((record.code, tr("Platform «{name}» ({code})", name=record.name, code=record.code),
+                              tr("Platform of the active version a road can end at")))
+    return roads, platforms
+
+
+def _proposed_routes(project: Any, version_uid: str) -> list[str]:
+    """Los nombres de los datos de las **rutas propuestas** (``des_rpl_``: líneas con Z, spec 017 D-19) vigentes de la versión ``version_uid``: el modo «eje 3D»
+    las ofrece junto a las líneas de rotura. Solo lee."""
+    from ...core.datasets.model import DatasetStatus  # al usarlo: habilitar no lo carga
+
+    prefix = design_provenance.FAMILIES_BY_CODE[design_provenance.ROUTE_LAYER_TABLE].prefix
+    with project.read() as conn:
+        rows = conn.execute("SELECT name FROM gb_dataset WHERE version_uid = ? AND status = ? ORDER BY name",
+                            (version_uid, DatasetStatus.CURRENT.value)).fetchall()
+    return [str(name) for (name,) in rows if str(name).startswith(prefix)]
+
+
+def refresh_road_choices(project: Any) -> None:
+    """Vuelve a leer de ``project`` las listas de «Pista…» (spec 017, T29b; plan 017 §5.2.1 y §5.3.3): las capas «entidades» de **puntos** («trazar»: el origen
+    y el destino) y de **líneas** («sobre un eje»), las de **líneas con Z** («eje 3D»: las líneas de rotura del proyecto y las rutas propuestas de la versión
+    activa), las de **polígonos** (la zona de una cota de destino), los **perfiles de pista** (su código y su nombre), las **pistas** y las **plataformas**
+    calculadas de la versión activa (el eje de otra pista como origen y la plataforma como destino) y **la partida** que propone el diálogo: la superficie de
+    explotación de la cantera de la 014 y, si no hay o ya parte de ella otra entidad, la última de la cadena (RF-017-05, D-3). Se llama tras
+    :func:`refresh_choices` y :func:`refresh_platform_choices`. Si no se puede leer, el error sigue."""
+    from ...design import road_profiles, road_store  # al usarlo: habilitar no carga el cálculo
+
+    _fixed_choices_road()
+    found = constraint_panels.search_layers(project)
+    points = [name for name, kind in found if kind == "point"]
+    lines = [name for name, kind in found if kind == "line"]
+    polygons = [name for name, kind in found if kind == "polygon"]
+    if points:
+        _CHOICES.road_points = [(name, constraint_panels.layer_label(name), tr("Layer of points")) for name in points]
+    if lines:
+        _CHOICES.road_lines = [(name, constraint_panels.layer_label(name), tr("Layer of lines")) for name in lines]
+    if polygons:
+        _CHOICES.road_zones = [(name, constraint_panels.layer_label(name), tr("Layer of polygons")) for name in polygons]
+    version = scene_versions.active()
+    breaklines = sorted(record.name for record in gis_store.list_gis_datasets(project, families=(gis_provenance.BREAKLINES,)))
+    proposed = [] if version is None else _proposed_routes(project, version.uid)
+    if breaklines or proposed:
+        prefix = design_provenance.FAMILIES_BY_CODE[design_provenance.ROUTE_LAYER_TABLE].prefix
+        _CHOICES.road_lines_3d = [*((name, constraint_panels.layer_label(name), tr("Layer of 3D lines")) for name in breaklines),
+                                  *((name, name.removeprefix(prefix), tr("Proposed route of the active version (3D lines)")) for name in proposed)]
+    with project.read() as conn:
+        stored = road_profiles.read_profiles(conn)
+    if stored:
+        _CHOICES.road_profiles = [(item.code, item.name, tr("Road profile")) for item in stored]
+    if version is None:
+        return
+    roads, platforms = _road_entities(project, version)
+    if roads:
+        _CHOICES.road_roads = roads
+    if platforms:
+        _CHOICES.road_platforms = platforms
+    try:
+        default = road_store.default_start(project, version)
+    except (GeoblenderError, sqlite3.Error, ValueError):
+        LOGGER.warning("No se pudo leer la partida por defecto de la pista", exc_info=True)
+        default = None
+    if default is not None:
+        # La explotación de la cantera; si ya parte de ella otra entidad (de cada superficie parte una sola), la última de la cadena.
+        _CHOICES.road_start = _CHOICES.platform_start if default.conflict is not None and _CHOICES.platform_start else default.ref
+
+
+def road_layers(mode: str) -> list[tuple[str, str, str]]:
+    """Las capas que ofrece «Pista…» en el modo ``mode`` (``TRACE``, ``ON_AXIS`` o ``AXIS_3D``; una lista viva del módulo): de **puntos** en «trazar», de **líneas** en
+    «sobre un eje» y de **líneas con Z** en «eje 3D»; sin ninguna, «—»."""
+    if not _CHOICES.road_points:
+        _fixed_choices_road()
+    if mode == "ON_AXIS":
+        return _CHOICES.road_lines
+    if mode == "AXIS_3D":
+        return _CHOICES.road_lines_3d
+    return _CHOICES.road_points
+
+
+def road_layer_items(self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las capas que ofrece «Pista…» según su modo (``self.mode``): :func:`road_layers`."""
+    return road_layers(getattr(self, "mode", "TRACE"))
+
+
+def road_profile_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Los perfiles de pista del proyecto (spec 017, T29b; una lista viva del módulo): su código como identificador y su nombre; sin ninguno, «—»."""
+    if not _CHOICES.road_profiles:
+        _fixed_choices_road()
+    return _CHOICES.road_profiles
+
+
+def road_road_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las pistas calculadas de la versión activa de las que puede partir otra (spec 017, T29b; RF-017-03: su eje a una abscisa; una lista viva del módulo); sin
+    ninguna, «—»."""
+    if not _CHOICES.road_roads:
+        _fixed_choices_road()
+    return _CHOICES.road_roads
+
+
+def road_platform_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las plataformas calculadas de la versión activa a las que puede llegar una pista (spec 017, T29b; RF-017-03; una lista viva del módulo); sin ninguna, «—»."""
+    if not _CHOICES.road_platforms:
+        _fixed_choices_road()
+    return _CHOICES.road_platforms
+
+
+def road_zone_items(_self: Any, _context: Any) -> list[tuple[str, str, str]]:
+    """Las capas de polígonos con la zona de una cota de destino (spec 017, T29b; RF-017-02: la rampa; una lista viva del módulo); sin ninguna, «—»."""
+    if not _CHOICES.road_zones:
+        _fixed_choices_road()
+    return _CHOICES.road_zones
+
+
+def road_default_start() -> str | None:
+    """La superficie de partida que propone el diálogo de «Pista…»: la de explotación de la cantera de la 014 y, si no hay o ya parte de ella otra entidad, la
+    última de la cadena (RF-017-05, D-3); ``None`` si no hay ninguna candidata (la propone el diálogo con lo seleccionado en la vista)."""
+    return _CHOICES.road_start
+
+
+def has_road_profiles() -> bool:
+    """Si el proyecto tiene algún perfil de pista que ofrecer."""
+    return any(item[0] != NO_ZONE for item in _CHOICES.road_profiles)
+
+
 def forget_choices() -> None:
     """Olvida las listas leídas (al desregistrar)."""
     _CHOICES.key = None
@@ -1364,6 +1521,9 @@ def forget_choices() -> None:
     _CHOICES.removal_stockpiles, _CHOICES.removal_by_ref = [], {}
     _CHOICES.body_footprints, _CHOICES.body_data, _CHOICES.body_kinds = [], [], {}
     _CHOICES.buttress_zones, _CHOICES.buttress_supports = [], []
+    _CHOICES.road_points, _CHOICES.road_lines, _CHOICES.road_lines_3d = [], [], []
+    _CHOICES.road_profiles, _CHOICES.road_roads, _CHOICES.road_platforms = [], [], []
+    _CHOICES.road_zones, _CHOICES.road_start = [], None
     _RESTING.lines = []
     _CHOICES.by_id = {}
 
@@ -1775,6 +1935,45 @@ def _buttress_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     return lines
 
 
+def _road_lines(calculation: Calculation) -> list[tuple[str, bool]]:
+    """El resumen de una pista calculada (``design.preview.RoadSummary``; spec 017, T29b; RF-017-23, RF-017-17, RF-017-22; M1): su modo, su perfil, su longitud y las
+    cotas de inicio y de fin, la pendiente media y la máxima con su abscisa y su lugar, el radio mínimo y las curvas, el corte y el relleno de la sección y del
+    borde juntos y, **en ámbar, lo que pide su confirmación expresa**: la pendiente media por encima de la del perfil (con un motivo, que queda registrado: no
+    bloquea) y la calzada que no queda en su rasante. Los avisos con su lugar (la holgura del pasillo de la ruta, los del eje, la huella recortada, los otros
+    diseños, el salto creado, la calzada y la restricción que impide moverla, lo que no se mueve y lo que quedará obsoleto) los añade :func:`summary_lines`
+    (son los ``notices`` del cálculo)."""
+    summary = calculation.summary
+    prepared = calculation.entity
+    modes = {"trace": tr("Trace"), "on_axis": tr("Over an axis"), "axis_3d": tr("3D axis")}  # los nombres de los modos del diálogo de «Pista…»
+    mode = modes.get(summary.mode, summary.mode)  # type: ignore[union-attr]
+    lines = [(tr("Road «{name}» ({code}) · mode «{mode}» · profile «{profile}»: length {length} m · elevation {start} m at the start and {end} m at the end",
+                 name=calculation.name, code=summary.code, mode=mode,  # type: ignore[union-attr]
+                 profile=prepared.profile.name,  # type: ignore[union-attr]
+                 length=_number(summary.length_m, 1), start=_number(summary.start_level_m, 2),  # type: ignore[union-attr]
+                 end=_number(summary.end_level_m, 2)), False),  # type: ignore[union-attr]
+             (tr("Gradient: mean {mean} % · maximum {max} % at the abscissa {station} m, at ({x}, {y})",
+                 mean=_number(summary.gradient_mean_pct, 2), max=_number(summary.gradient_max_pct, 2),  # type: ignore[union-attr]
+                 station=_number(summary.gradient_max_station_m, 1), x=_number(summary.gradient_max_x, 1),  # type: ignore[union-attr]
+                 y=_number(summary.gradient_max_y, 1)), False)]  # type: ignore[union-attr]
+    if summary.radius_min_m is None:  # type: ignore[union-attr]
+        lines.append((tr("No curves: the axis is a straight line"), False))
+    elif summary.curves == 1:  # type: ignore[union-attr]
+        lines.append((tr("Minimum radius {radius} m in 1 curve", radius=_number(summary.radius_min_m, 1)), False))  # type: ignore[union-attr]
+    else:
+        lines.append((tr("Minimum radius {radius} m in {curves} curves", radius=_number(summary.radius_min_m, 1),  # type: ignore[union-attr]
+                         curves=_number(summary.curves)), False))  # type: ignore[union-attr]
+    lines.append((tr("Section and edge: cut {cut} m³ · fill {fill} m³ · net {net} m³", cut=_number(summary.cut_m3), fill=_number(summary.fill_m3),  # type: ignore[union-attr]
+                     net=_number(summary.net_m3)), False))  # type: ignore[union-attr]
+    if calculation.needs_mean_confirmation:
+        lines.append((tr("The mean gradient, {mean} %, passes the {limit} % of the profile: the road is not created without your express confirmation and a "
+                         "reason, which stays recorded with who and when; the button that creates it confirms it",
+                         mean=_number(summary.gradient_mean_pct, 2), limit=_number(summary.mean_limit_pct, 2)), True))  # type: ignore[union-attr]
+    if calculation.needs_carriageway_confirmation:
+        lines.append((tr("{area} m² of the carriageway do not end up on the level profile of the road (see the warnings): the road is not created without your "
+                         "express confirmation; the button that creates it confirms it", area=_number(summary.carriageway_area_m2)), True))  # type: ignore[union-attr]
+    return lines
+
+
 def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
     """El resumen de un cálculo hecho y sin registrar (RF-013-31), línea a línea y en el idioma de
     Geoblender, con los avisos al final y en alerta: de una envolvente, sus celdas, su área, sus
@@ -1794,6 +1993,8 @@ def summary_lines(calculation: Calculation) -> list[tuple[str, bool]]:
         lines.extend(_body_lines(calculation))
     elif calculation.op_type == design_provenance.BUTTRESS:
         lines.extend(_buttress_lines(calculation))
+    elif calculation.op_type == design_provenance.ROAD:
+        lines.extend(_road_lines(calculation))
     elif calculation.op_type in design_provenance.STOCKPILE_DETECT_TYPES:
         pass  # la detección lo dice todo en sus avisos (``StockpileSummary.notices``: la cabecera, los acopios, los candidatos): spec 016, T35
     elif calculation.op_type == design_provenance.QUARRY:
@@ -1938,6 +2139,8 @@ def show_summary(calculation: Calculation | None) -> None:
         title = tr("Supported body «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.BUTTRESS:
         title = tr("Buttress «{name}» in {version}", name=calculation.name, version=calculation.version)
+    elif calculation.op_type == design_provenance.ROAD:
+        title = tr("Road «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.STOCKPILE_DETECT:
         title = tr("Detection of stockpiles «{name}» in {version}", name=calculation.name, version=calculation.version)
     elif calculation.op_type == design_provenance.STOCKPILE_DETECT_PROJECT:  # D-15: del proyecto, sin versión (spec 016, T35)

@@ -733,3 +733,16 @@ description.es = "Crea un perfil de pista, completa los valores que le faltan o 
 entry = "R-40"
 action = "P"
 frequency = 1
+
+# «Pista…» (spec 017, T29b; HU-017-1, HU-017-2, HU-017-4; RF-017-02, RF-017-17, RF-017-22, RF-017-29): la orden que calcula y crea una pista. **Interina, de R-40**: la T33 la
+# pasa a la entrada 017 y la pone, la primera, en Diseño ▸ Pistas y entidades (sustituye a las tres provisionales de R-40); mientras, no tiene casa (BS §7.2).
+[[command]]
+key = "geoblender.des_create_road"
+kind = "internal"
+label.en = "Road…"
+label.es = "Pista…"
+description.en = "Haul road of the active version: its axis, its level profile and its section engraved on its start surface, from an origin to a destination, over an axis or over a 3D axis"
+description.es = "Pista de la versión activa: su eje, su rasante y su sección grabada en su superficie de partida, de un origen a un destino, sobre un eje o sobre un eje 3D"
+entry = "R-40"
+action = "D"
+frequency = 2

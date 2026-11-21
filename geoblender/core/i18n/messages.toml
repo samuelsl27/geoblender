@@ -10882,3 +10882,329 @@ es = "Zonas que requieren acceso alcanzadas"
 es = "Zonas que requieren acceso no alcanzadas"
 
 # --- Fin de la procedencia de la pista y la accesibilidad (spec 017, T03)
+
+# «Pista…» (spec 017, T29b; HU-017-1, HU-017-2, HU-017-4; RF-017-02, RF-017-17, RF-017-22, RF-017-29) ----------------------------------------------
+
+["{kind}: no default value, you choose it"]
+es = "{kind}: sin valor por defecto, lo elige usted"
+
+["Road «{name}» created in {version}"]
+es = "Pista «{name}» creada en {version}"
+
+["Computing the road… {percent} % · Esc: cancel"]
+es = "Calculando la pista… {percent} % · Esc: cancelar"
+
+["Mesh of the route (m)"]
+es = "Malla de la ruta (m)"
+
+["Elevation step (m)"]
+es = "Paso de cota (m)"
+
+["Maximum cut and fill height (m)"]
+es = "Altura máxima de desmonte y terraplén (m)"
+
+["Weight of the earthworks (1/m)"]
+es = "Peso del movimiento de tierras (1/m)"
+
+["Turn penalty (m)"]
+es = "Penalización de giro (m)"
+
+["Margin of the corridor (m)"]
+es = "Holgura del pasillo (m)"
+
+["Simplification tolerance (m)"]
+es = "Tolerancia de simplificación (m)"
+
+["Arrival tolerance of the route (m)"]
+es = "Tolerancia de llegada de la ruta (m)"
+
+["Arrival tolerance of the elevation (m)"]
+es = "Tolerancia de llegada a la cota (m)"
+
+["Budget of states"]
+es = "Presupuesto de estados"
+
+["Showing the preview of the road «{name}»"]
+es = "Mostrando la vista previa de la pista «{name}»"
+
+["Confirm and create"]
+es = "Confirmar y crear"
+
+["Cancelled: the road is created; the declared constraints and the masks are brought up to date before the next operation that uses them, and the entity layer and the layer of axes with the next entity order or «Recompute the stale results»"]
+es = "Cancelado: la pista está creada; las restricciones declaradas y las máscaras se ponen al día antes de la siguiente operación que las use, y la capa de entidades y la de ejes con la siguiente orden de entidades o «Recalcular lo obsoleto»"
+
+["Geometry of the road"]
+es = "Geometría de la pista"
+
+["Write the name of the road"]
+es = "Escriba el nombre de la pista"
+
+["Choose the layer of the road: there is none for this mode in the project"]
+es = "Elija la capa de la pista: el proyecto no tiene ninguna para este modo"
+
+["Choose the profile of the road: create one with «Road profile…»"]
+es = "Elija el perfil de la pista: cree uno con «Perfil de pista…»"
+
+["Choose the start surface of the road"]
+es = "Elija la superficie de partida de la pista"
+
+["Start level (m)"]
+es = "Cota de inicio (m)"
+
+["End level (m)"]
+es = "Cota de fin (m)"
+
+["Abscissa of the origin (m)"]
+es = "Abscisa del origen (m)"
+
+["Elevation of the destination (m)"]
+es = "Cota del destino (m)"
+
+["The road is created: only the declared constraints and the masks have not been brought up to date"]
+es = "La pista está creada: solo las restricciones declaradas y las máscaras no se han puesto al día"
+
+["Road"]
+es = "Pista"
+
+["The origin is"]
+es = "El origen es"
+
+["It ends at"]
+es = "Termina en"
+
+["Line of the layer"]
+es = "Línea de la capa"
+
+["Elevations (empty: those of the start surface, recorded with their origin)"]
+es = "Cotas (vacías: las de la superficie de partida, anotadas con su origen)"
+
+["Search of the route: the type of each value is shown"]
+es = "Búsqueda de la ruta: se enseña el tipo de cada valor"
+
+["Choose the road whose axis the origin is on"]
+es = "Elija la pista en cuyo eje está el origen"
+
+["Write the abscissa of the origin on the axis of the other road, in metres"]
+es = "Escriba la abscisa del origen en el eje de la otra pista, en metros"
+
+["Write the elevation of the destination, its arrival tolerance and choose its zone"]
+es = "Escriba la cota del destino y su tolerancia de llegada y elija su zona"
+
+["Reason for the mean gradient"]
+es = "Motivo de la pendiente media"
+
+["Road of the origin"]
+es = "Pista del origen"
+
+["Origin point"]
+es = "Punto de origen"
+
+["Destination point"]
+es = "Punto de destino"
+
+["Platform of the destination"]
+es = "Plataforma del destino"
+
+["Choose the platform the road ends at"]
+es = "Elija la plataforma en la que termina la pista"
+
+["Zone of the destination"]
+es = "Zona del destino"
+
+["Polygon of the zone"]
+es = "Polígono de la zona"
+
+["There are no layers of points in the project"]
+es = "El proyecto no tiene capas de puntos"
+
+["There are no layers of lines in the project"]
+es = "El proyecto no tiene capas de líneas"
+
+["There are no layers of 3D lines in the project, nor proposed routes in the active version"]
+es = "No hay capas de líneas 3D en el proyecto ni rutas propuestas en la versión activa"
+
+["There are no road profiles in the project: create one with «Road profile…»"]
+es = "El proyecto no tiene perfiles de pista: cree uno con «Perfil de pista…»"
+
+["There are no calculated roads in the active version"]
+es = "La versión activa no tiene pistas calculadas"
+
+["There are no calculated platforms in the active version"]
+es = "La versión activa no tiene plataformas calculadas"
+
+["Road «{name}» ({code}) · mode «{mode}» · profile «{profile}»: length {length} m · elevation {start} m at the start and {end} m at the end"]
+es = "Pista «{name}» ({code}) · modo «{mode}» · perfil «{profile}»: longitud de {length} m · cota de {start} m al inicio y de {end} m al final"
+
+["Gradient: mean {mean} % · maximum {max} % at the abscissa {station} m, at ({x}, {y})"]
+es = "Pendiente: media del {mean} % · máxima del {max} % en la abscisa {station} m, en ({x}, {y})"
+
+["Section and edge: cut {cut} m³ · fill {fill} m³ · net {net} m³"]
+es = "Sección y borde: desmonte {cut} m³ · relleno {fill} m³ · neto {net} m³"
+
+["No curves: the axis is a straight line"]
+es = "Sin curvas: el eje es una recta"
+
+["The mean gradient, {mean} %, passes the {limit} % of the profile: the road is not created without your express confirmation and a reason, which stays recorded with who and when; the button that creates it confirms it"]
+es = "La pendiente media, del {mean} %, pasa del {limit} % del perfil: la pista no se crea sin su confirmación expresa y un motivo, que queda registrado con quién y cuándo; el botón que la crea lo confirma"
+
+["{area} m² of the carriageway do not end up on the level profile of the road (see the warnings): the road is not created without your express confirmation; the button that creates it confirms it"]
+es = "{area} m² de la calzada no quedan en su rasante (véanse los avisos): la pista no se crea sin su confirmación expresa; el botón que la crea la confirma"
+
+["Road «{name}» ({code})"]
+es = "Pista «{name}» ({code})"
+
+["Road of the active version whose axis another road can start from"]
+es = "Pista de la versión activa en cuyo eje puede empezar otra"
+
+["Platform of the active version a road can end at"]
+es = "Plataforma de la versión activa en la que puede terminar una pista"
+
+["Proposed route of the active version (3D lines)"]
+es = "Ruta propuesta de la versión activa (líneas 3D)"
+
+["Minimum radius {radius} m in 1 curve"]
+es = "Radio mínimo de {radius} m en 1 curva"
+
+["Minimum radius {radius} m in {curves} curves"]
+es = "Radio mínimo de {radius} m en {curves} curvas"
+
+["Road «{name}» in {version}"]
+es = "Pista «{name}» en {version}"
+
+["Trace"]
+es = "Trazar"
+
+["From an origin to a destination: the axis and the level profile come out of the search of the route"]
+es = "De un origen a un destino: el eje y la rasante salen de la búsqueda de la ruta"
+
+["Over an axis"]
+es = "Sobre un eje"
+
+["A line in plan of a layer of the project: the curves are fitted to it and the level profile is given"]
+es = "Una línea en planta de una capa del proyecto: se le ajustan las curvas y se da la rasante"
+
+["3D axis"]
+es = "Eje 3D"
+
+["A line with its Z of a layer of the project: its Z is the level profile, which is only checked and engraved"]
+es = "Una línea con su Z de una capa del proyecto: su Z es la rasante, que solo se comprueba y se graba"
+
+["A point of the layer"]
+es = "Un punto de la capa"
+
+["The origin is a point of the layer of points"]
+es = "El origen es un punto de la capa de puntos"
+
+["The axis of another road"]
+es = "El eje de otra pista"
+
+["The origin is a point of the axis of another road of the active version, at an abscissa"]
+es = "El origen es un punto del eje de otra pista de la versión activa, a una abscisa"
+
+["The destination is a point of the layer of points"]
+es = "El destino es un punto de la capa de puntos"
+
+["A platform"]
+es = "Una plataforma"
+
+["The destination is the point of the layer that falls on the footprint of a platform of the active version"]
+es = "El destino es el punto de la capa que cae en la huella de una plataforma de la versión activa"
+
+["An elevation with its zone"]
+es = "Una cota con su zona"
+
+["The ramp: the road ends where it reaches an elevation inside a zone, with its arrival tolerance"]
+es = "La rampa: la pista termina donde alcanza una cota dentro de una zona, con su tolerancia de llegada"
+
+["Name of the road, unique in the active version"]
+es = "Nombre de la pista, único en la versión activa"
+
+["Trace it from an origin to a destination, give it an axis in plan to fit the curves to, or give it a line with its Z whose Z is the level profile"]
+es = "Trazarla de un origen a un destino, darle un eje en planta al que ajustar las curvas, o darle una línea con su Z cuya Z es la rasante"
+
+["Layer of the project the road is taken from: of points (trace), of lines (over an axis) or of 3D lines (3D axis: the breaklines of the project and the proposed routes of the active version)"]
+es = "Capa del proyecto de la que sale la pista: de puntos (trazar), de líneas (sobre un eje) o de líneas 3D (eje 3D: las líneas de rotura del proyecto y las rutas propuestas de la versión activa)"
+
+["Field of the layer with the name of each geometry (empty: the field «nombre» or «name» or, without it, the number (fid))"]
+es = "Campo de la capa con el nombre de cada geometría (vacío: el campo «nombre» o «name» o, sin él, el número (fid))"
+
+["Name or number (fid) of the line of the layer that is the axis of the road (over an axis and 3D axis)"]
+es = "Nombre o número (fid) de la línea de la capa que es el eje de la pista (sobre un eje y eje 3D)"
+
+["Whether the origin is a point of the layer or a point of the axis of another road, at an abscissa"]
+es = "Si el origen es un punto de la capa o un punto del eje de otra pista, a una abscisa"
+
+["Name or number (fid) of the point of the layer that is the origin of the road"]
+es = "Nombre o número (fid) del punto de la capa que es el origen de la pista"
+
+["Road of the active version whose axis the origin is on: the new road rests on it and becomes stale if it changes"]
+es = "Pista de la versión activa en cuyo eje está el origen: la nueva se apoya en ella y queda obsoleta si cambia"
+
+["Distance along the axis of the other road, from its start, of the point where the new road starts, in metres"]
+es = "Distancia a lo largo del eje de la otra pista, desde su comienzo, del punto donde empieza la nueva, en metros"
+
+["Whether the road ends at a point of the layer, on a platform of the active version or where it reaches an elevation inside a zone"]
+es = "Si la pista termina en un punto de la capa, en una plataforma de la versión activa o donde alcanza una cota dentro de una zona"
+
+["Name or number (fid) of the point of the layer that is the destination of the road"]
+es = "Nombre o número (fid) del punto de la capa que es el destino de la pista"
+
+["Platform of the active version the road ends at: its destination is the point of the layer that falls on its footprint, at the level of its surface; the road rests on it"]
+es = "Plataforma de la versión activa en la que termina la pista: su destino es el punto de la capa que cae en su huella, a la cota de su superficie; la pista se apoya en ella"
+
+["Elevation in metres the road has to reach: it ends at the first point of the zone whose start surface differs from it by less than the arrival tolerance"]
+es = "Cota en metros que ha de alcanzar la pista: termina en el primer punto de la zona cuya superficie de partida difiere de ella en menos de la tolerancia de llegada"
+
+["How much the start surface may differ from the elevation of the destination where the road ends, in metres"]
+es = "Cuánto puede diferir la superficie de partida de la cota del destino donde termina la pista, en metros"
+
+["Layer of polygons of the project with the zone where the elevation has to be reached"]
+es = "Capa de polígonos del proyecto con la zona donde ha de alcanzarse la cota"
+
+["Name or number (fid) of the polygon of the layer that is the zone (empty: all the polygons of the layer)"]
+es = "Nombre o número (fid) del polígono de la capa que es la zona (vacío: todos los polígonos de la capa)"
+
+["Profile of the road: its vehicle, its carriageway, its gradients, its radii and its slopes; create or complete them with «Road profile…»"]
+es = "Perfil de la pista: su vehículo, su calzada, sus pendientes, sus radios y sus taludes; se crean o se completan con «Perfil de pista…»"
+
+["Surface the road starts from: by default, the exploitation surface of the quarry and, without it, the last of the chain"]
+es = "Superficie de la que parte la pista: por defecto, la superficie de explotación de la cantera y, sin ella, la última de la cadena"
+
+["Surface the road rests on, if it rests on one (none: it rests on no other surface)"]
+es = "Superficie en la que se apoya la pista, si se apoya en una (ninguna: no se apoya en otra superficie)"
+
+["Elevation of the level profile at the start of the road in metres (empty: the one of the start surface at that point, recorded with its origin; what you write is recorded as decided by you)"]
+es = "Cota de la rasante al comienzo de la pista, en metros (vacía: la de la superficie de partida en ese punto, anotada con su origen; lo que escriba queda anotado como decidido por usted)"
+
+["Elevation of the level profile at the end of the road in metres (empty: the one of the start surface at that point or of the platform of the destination, recorded with its origin; what you write is recorded as decided by you)"]
+es = "Cota de la rasante al final de la pista, en metros (vacía: la de la superficie de partida en ese punto o la de la plataforma del destino, anotada con su origen; lo que escriba queda anotado como decidido por usted)"
+
+["Side of the blocks of the grid in which the route is searched, in metres: a whole multiple of the step of the project; a hypothesis without default value"]
+es = "Lado de los bloques de la rejilla en la que se busca la ruta, en metros: un múltiplo entero del paso del proyecto; una hipótesis sin valor por defecto"
+
+["Step of the elevations the route can take above or below the ground, in metres; a hypothesis without default value"]
+es = "Paso de las cotas que puede tomar la ruta por encima o por debajo del terreno, en metros; una hipótesis sin valor por defecto"
+
+["Most the level profile of the route may be above or below the ground, in metres; a hypothesis without default value"]
+es = "Lo máximo que la rasante de la ruta puede quedar por encima o por debajo del terreno, en metros; una hipótesis sin valor por defecto"
+
+["How much the cost of the route grows with the height of cut and fill, in 1/m; a hypothesis without default value"]
+es = "Cuánto crece el coste de la ruta con la altura de desmonte y terraplén, en 1/m; una hipótesis sin valor por defecto"
+
+["Length added to the cost of the route for each change of heading, in metres; a hypothesis without default value"]
+es = "Longitud que se suma al coste de la ruta por cada cambio de rumbo, en metros; una hipótesis sin valor por defecto"
+
+["How much longer than the shortest route the routes inside the corridor can be, in metres: the route changes with it; a hypothesis without default value"]
+es = "Cuánto más larga que la ruta más corta pueden ser las rutas dentro del pasillo, en metros: la ruta cambia con ella; una hipótesis sin valor por defecto"
+
+["Most the simplified axis may separate from the route, in metres; a hypothesis without default value"]
+es = "Lo máximo que el eje simplificado puede separarse de la ruta, en metros; una hipótesis sin valor por defecto"
+
+["How far from the destination elevation the route may end, in metres; a hypothesis without default value"]
+es = "Cuánto puede quedar la ruta de la cota del destino al terminar, en metros; una hipótesis sin valor por defecto"
+
+["Most states the search of the route may expand before it stops saying so: a whole number (empty: the default value, shown)"]
+es = "Cuántos estados puede expandir la búsqueda de la ruta antes de pararse diciéndolo: un número entero (vacío: el valor por defecto, que se enseña)"
+
+["Why you accept a mean gradient above the maximum of the profile: it stays recorded with who and when; it is needed only if the mean gradient passes it"]
+es = "Por qué acepta una pendiente media por encima del máximo del perfil: queda registrado con quién y cuándo; solo hace falta si la pendiente media lo pasa"

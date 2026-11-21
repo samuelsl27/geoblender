@@ -91,9 +91,9 @@ COMMANDS_017: dict[str, str] = {"des.road": "geoblender.des_create_road", "des.r
 """La orden de cada uno (plan 017 §5.3.3). **Aún no están en el catálogo** (las tres provisionales de «Pistas y entidades» las sustituyen las
 tareas de la fase G: D-20): ``OperationDef.commands`` solo comprueba su forma, y la T29 a la T33 las dan de alta y las quitan de
 ``PENDING_COMMANDS_017``."""
-PENDING_COMMANDS_017: frozenset[str] = frozenset(COMMANDS_017.values()) - {"geoblender.des_edit_road_profile"}
-"""Las órdenes de la 017 que las tareas de la fase G todavía no han dado de alta en el catálogo. «Perfil de pista…» (T29) ya está, **interina y de R-40**
-(el catálogo exige toda orden real: BS §7.2; la T33 la pasa a la entrada 017 y la pone en el menú)."""
+PENDING_COMMANDS_017: frozenset[str] = frozenset(COMMANDS_017.values()) - {"geoblender.des_edit_road_profile", "geoblender.des_create_road"}
+"""Las órdenes de la 017 que las tareas de la fase G todavía no han dado de alta en el catálogo. «Perfil de pista…» (T29) y «Pista…» (T29b) ya están,
+**interinas y de R-40** (el catálogo exige toda orden real: BS §7.2; la T33 las pasa a la entrada 017 y las pone en el menú)."""
 PLATFORM_COMMAND = "geoblender.des_create_platform"
 """La orden de los tres: la «Plataforma…» de la entrada 015 (T15: la clave definitiva, que sustituyó a
 ``des_draw_platform``). Tiene su clase real; la entrada la entrega la T31."""
