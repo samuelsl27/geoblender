@@ -80,7 +80,13 @@ CITING_RELPATHS = ("docs/usuario/topografia.md", "docs/usuario/versiones.md",
 # ``gis.md``) y **desde la T38 de la 016** (``reserves.compliance.lowest_base`` y la base de los acopios de
 # ``reserves.compliance_store``, de la T29 y la T30, están en ``res.md``); una spec posterior los usará con lo suyo.
 PENDING_015_MODULES: frozenset[str] = frozenset()
-PENDING_015_API: frozenset[str] = frozenset()
+PENDING_015_API: frozenset[str] = frozenset({
+    # La 017, T18 (la verificación de la 012 con la accesibilidad de las pistas, DIFF-017): la tarea de documentación de la 017
+    # (T35) los lleva a ``res.md`` y vacía este conjunto.
+    "reserves.compliance_store.AccessSelection", "reserves.compliance_store.AccessUse",
+    "reserves.compliance_store.SkippedAccess", "reserves.compliance_store.access_role",
+    "reserves.compliance_store.read_communicated", "reserves.compliance_store.select_access",
+})
 # Los módulos de gis y de reserves de la 012 cuya API pública tiene que nombrar su ficha.
 GIS_MODULES = ("gis.search", "gis.polygons", "gis.coverage",
                *(f"gis.masks.{info.name}" for info in pkgutil.iter_modules(masks.__path__)

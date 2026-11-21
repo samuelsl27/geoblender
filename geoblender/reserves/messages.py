@@ -428,6 +428,8 @@ CATALOG: tuple[Message, ...] = (
             "note"),
     Message("res.freeze_cut_terrain", "{zone}: {volume} m³ of terrain cut",
             "{zone}: {volume} m³ de corte de terreno", "note"),
+    Message("res.freeze_access", "{zone}: not communicated by the accessibility",
+            "{zone}: sin comunicar por la accesibilidad", "note"),
     Message("res.freeze_zone_outside_perimeter", "outside the action perimeter",
             "fuera del perímetro de actuación", "note"),
     Message("res.freeze_zone_outside_legal", "outside the legal limit",
@@ -455,6 +457,29 @@ CATALOG: tuple[Message, ...] = (
         "start surface «{start}». All the cut counts as terrain cut.",
         "La detección de acopios {detection} «{name}» no se usa como base: se hizo sobre «{surface}», no sobre la "
         "superficie de partida «{start}». Todo el corte cuenta como corte de terreno.",
+        "warning",
+    ),
+    # La accesibilidad de las pistas en la verificación (spec 017, T18; RF-012-22, RF-012-24; DIFF-017) -----------
+    Message(
+        "res.verify_access_used",
+        "Accessibility of «{final}»: {code} «{name}»",
+        "Accesibilidad de «{final}»: {code} «{name}»",
+        "note",
+    ),
+    Message(
+        "res.verify_access_stale",
+        "The accessibility {code} «{name}» is not used for «{final}»: it is stale ({cause}); recompute it and verify "
+        "again. The zones that require access are left unchecked.",
+        "La accesibilidad {code} «{name}» no se usa para «{final}»: está obsoleta ({cause}); recalcúlela y "
+        "verifique otra vez. Las zonas «requiere acceso» quedan sin comprobar.",
+        "warning",
+    ),
+    Message(
+        "res.verify_access_other_surface",
+        "The accessibility {code} «{name}» is not used: it was made on «{surface}», which is none of the final "
+        "surfaces of the check.",
+        "La accesibilidad {code} «{name}» no se usa: se hizo sobre «{surface}», que no es ninguna de las "
+        "superficies finales de la verificación.",
         "warning",
     ),
 )

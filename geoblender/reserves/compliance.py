@@ -10,8 +10,8 @@ Una superficie final frente a la de partida, celda a celda, en la rejilla de las
   no están enteras dentro, D-1) y la zona de cada restricción por su código (sus tramos de
   ``gis_mskz_``; ``<código>:inner``, la banda hacia dentro de un límite legal), cada uno con lo
   que cuenta en él (:class:`Counts`, A8): el corte, el relleno, cualquier movimiento, nada (un
-  límite por dentro), su afección («preferible no afectar») o nada que comprobar («requiere
-  acceso», R-40).
+  límite por dentro), su afección («preferible no afectar») o su accesibilidad («requiere
+  acceso», A12 de la 017).
 - :class:`Checker`: **A7**, por bandas de filas (las de ``reserves.surfaces.lockstep_bands``):
   ``d = partida − final`` donde las dos tienen dato; corte donde ``d > e`` y relleno donde
   ``−d > e`` (``e``, el espesor mínimo de verificación, D-6), **con todo su espesor** (lo que no
@@ -40,7 +40,14 @@ Una superficie final frente a la de partida, celda a celda, en la rejilla de las
   fila, los de cada modo de contar y la unión de las celdas de cada modo como máscara.
 - :func:`verdict`: **A9** (CA-2, CA-13; D-6): «no cumple» si lo que cuenta pasa de 0 m³
   (tolerancia 0 con el umbral ``e``: basta una celda), «cumple» si no; «preferible no afectar»,
-  sin juicio (su afección en m², m³ y m³ × peso); «requiere acceso», «sin comprobar (R-40)».
+  sin juicio (su afección en m², m³ y m³ × peso); «requiere acceso», **las tres respuestas de la
+  accesibilidad** (A12 de la 017; RF-012-22, DIFF-017): dado el conjunto de códigos de zona
+  **comunicados** por la accesibilidad al día hecha sobre la superficie verificada (``communicated``,
+  de la final; este módulo no importa ``design``: quien lo lee es ``reserves.compliance_store``),
+  «cumple» si la zona está en él, «no cumple» si no y «sin comprobar» si esa final no tiene
+  accesibilidad al día (``None``). Una zona «requiere acceso» que no cumple hace que la final no cumpla
+  (RF-012-25) pero no tiene celdas que incumplan: no da grupos ni marca la rejilla. Sin accesibilidad,
+  el resultado es el de siempre, bit a bit.
 - :func:`label_groups`: **A10** (D-41): las celdas que incumplen, agrupadas por contigüidad de
   lado (4-conexión) con tramos de fila, parejas de tramos de filas seguidas que se solapan
   (búsqueda binaria) y etiquetas por saltos de puntero (Shiloach–Vishkin, 1982). Cada grupo
@@ -55,8 +62,9 @@ Una superficie final frente a la de partida, celda a celda, en la rejilla de las
   el aviso ``res.same_surface``.
 - :class:`ComplianceRequest`: lo que pide una verificación (la partida, de 1 a
   :data:`MAX_FINALS` finales, las máscaras de la versión, el espesor mínimo y, opcional, las bases
-  de los acopios detectados sobre la partida); la lee la operación ``res.verify_constraints``
-  (``reserves.compliance_store``, T17).
+  de los acopios detectados sobre la partida y, de cada final, las zonas comunicadas por su
+  accesibilidad); la lee la operación ``res.verify_constraints`` (``reserves.compliance_store``,
+  T17).
 
 Volúmenes y áreas con el área exacta de la celda de la rejilla (``Grid.cell_area``), en float64.
 Python puro (nivel 9).
@@ -65,7 +73,7 @@ Python puro (nivel 9).
 from __future__ import annotations
 
 import math
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
@@ -136,16 +144,16 @@ class Counts(StrEnum):
     ANY = "any"  # cualquier movimiento: fuera del perímetro, intocable, exclusión
     NOTHING = "nothing"  # nada: un límite por dentro
     AVOID = "avoid"  # su afección, sin juicio: preferible no afectar
-    ACCESS = "access"  # sin comprobar (R-40): requiere acceso
+    ACCESS = "access"  # su accesibilidad (A12 de la 017): requiere acceso
 
 
 class Verdict(StrEnum):
     """El veredicto de un recinto (A9)."""
 
-    COMPLIES = "complies"  # cumple
-    FAILS = "fails"  # no cumple
+    COMPLIES = "complies"  # cumple (requiere acceso: la accesibilidad la comunica)
+    FAILS = "fails"  # no cumple (requiere acceso: la accesibilidad no la comunica)
     NOT_JUDGED = "not_judged"  # preferible no afectar: su afección, sin juicio
-    UNCHECKED = "unchecked"  # requiere acceso: sin comprobar (R-40)
+    UNCHECKED = "unchecked"  # requiere acceso y la final no tiene accesibilidad al día: sin comprobar
 
 
 _CUT_TYPES = (ConstraintType.NO_CUT, ConstraintType.FILL_ONLY, ConstraintType.RESTORATION_ONLY,
@@ -279,13 +287,20 @@ def check_zones(classes: np.ndarray, zones: Mapping[str, Runs],
     return _drain(check_zones_steps(classes, zones, ctypes, weights, with_base=with_base))
 
 
-def verdict(zone: CheckZone, counted_cells: int) -> Verdict:
+def verdict(zone: CheckZone, counted_cells: int, *,
+            communicated: frozenset[str] | None = None) -> Verdict:
     """**A9** (CA-2, CA-13; D-6): el veredicto de ``zone`` con ``counted_cells`` celdas cuyo
-    movimiento cuenta en ella (las que pasan el espesor mínimo; cada una, > 0 m³)."""
+    movimiento cuenta en ella (las que pasan el espesor mínimo; cada una, > 0 m³). **A12 de la 017**
+    (RF-012-22, DIFF-017): en una zona «requiere acceso» (:attr:`Counts.ACCESS`) el movimiento no
+    cuenta y juzga ``communicated``, los códigos de zona que comunica la accesibilidad al día hecha
+    sobre la superficie verificada: «cumple» si ``zone`` está en él, «no cumple» si no y «sin
+    comprobar» si no hay accesibilidad al día (``None``)."""
     if zone.counts is Counts.AVOID:
         return Verdict.NOT_JUDGED
     if zone.counts is Counts.ACCESS:
-        return Verdict.UNCHECKED
+        if communicated is None:
+            return Verdict.UNCHECKED
+        return Verdict.COMPLIES if zone.code in communicated else Verdict.FAILS
     if zone.counts is Counts.NOTHING:
         return Verdict.COMPLIES
     return Verdict.FAILS if counted_cells > 0 else Verdict.COMPLIES
@@ -476,14 +491,32 @@ def _band(value: np.ndarray | float, rows: int, ncols: int) -> np.ndarray:
     return band
 
 
+def _communicated(value: object) -> frozenset[str] | None:
+    """Las zonas comunicadas por la accesibilidad de una final (A12 de la 017): ``None`` (sin
+    accesibilidad al día) o los códigos de zona, de cualquier iterable de textos, como
+    ``frozenset``. Otra cosa (un texto suelto, un código que no es un texto) es un error del
+    programa."""
+    if value is None:
+        return None
+    if isinstance(value, str | bytes) or not isinstance(value, Iterable):
+        raise ValueError(f"las zonas comunicadas son un conjunto de códigos de zona, no {value!r}")
+    found = frozenset(value)
+    if not all(isinstance(code, str) for code in found):
+        raise ValueError(f"las zonas comunicadas son códigos de texto, no {sorted(map(repr, found))}")
+    return found
+
+
 class Checker:
     """**A7**: una final frente a la partida, por bandas de filas (:meth:`add`, de norte a sur o
     en cualquier orden, cada fila una vez) y el resultado (:meth:`result`, o :meth:`result_steps`
     por pasos). Con ``index`` (:func:`zone_index`), el de las demás finales de la misma
-    verificación: se hace una vez."""
+    verificación: se hace una vez. Con ``communicated`` (A12 de la 017), los códigos de las zonas
+    «requiere acceso» que comunica la accesibilidad al día hecha sobre esta final (:func:`verdict`;
+    ``None``: no la tiene)."""
 
     def __init__(self, grid: Grid, zones: Sequence[CheckZone], min_thickness_m: float, *,
-                 index: ZoneIndex | None = None) -> None:
+                 index: ZoneIndex | None = None,
+                 communicated: Iterable[str] | None = None) -> None:
         if not isinstance(grid, Grid):
             raise TypeError(f"se esperaba una Grid, no {type(grid).__name__}")
         zones = tuple(zones)
@@ -494,6 +527,7 @@ class Checker:
         self.grid = grid
         self.zones = zones
         self.index = index
+        self.communicated = _communicated(communicated)
         self.threshold = _thickness(min_thickness_m)
         count = len(zones)
         self._cut = np.zeros(count, np.float64)
@@ -648,7 +682,8 @@ class Checker:
             totals.append(ZoneTotals(
                 zone.code, zone.ctype, zone.counts, cut, fill,
                 int(self._moved[position]) * area, int(self._nodata[position]) * area,
-                counted, zone.weight, weighted, verdict(zone, counted_cells), stockpile))
+                counted, zone.weight, weighted,
+                verdict(zone, counted_cells, communicated=self.communicated), stockpile))
         yield None
         groups = yield from self._group_steps()
         notices = (Notice("res.same_surface", {"surface": start_name}),) if self._same else ()
@@ -923,13 +958,15 @@ def _readonly(values: np.ndarray) -> np.ndarray:
 
 def check(grid: Grid, zones: Sequence[CheckZone], start: np.ndarray | float,
           final: np.ndarray | float, min_thickness_m: float, *, band_rows: int = BAND_ROWS,
-          start_name: str = "", base: np.ndarray | None = None) -> FinalCheck:
+          start_name: str = "", base: np.ndarray | None = None,
+          communicated: Iterable[str] | None = None) -> FinalCheck:
     """Una final frente a la partida de una vez (:class:`Checker` por bandas de ``band_rows``
     filas); ``start`` y ``final``, rejillas de forma ``grid.shape`` o cotas constantes; ``base``,
-    la rejilla de la base de los acopios (A12), opcional."""
+    la rejilla de la base de los acopios (A12), opcional; ``communicated``, las zonas «requiere
+    acceso» que comunica la accesibilidad de la final (A12 de la 017), opcional."""
     if band_rows < 1:
         raise ValueError(f"una banda tiene al menos una fila, no {band_rows}")
-    checker = Checker(grid, zones, min_thickness_m)
+    checker = Checker(grid, zones, min_thickness_m, communicated=communicated)
     for top in range(0, grid.nrows, band_rows):
         stop = min(top + band_rows, grid.nrows)
         checker.add(top, _rows_of(start, top, stop), _rows_of(final, top, stop),
@@ -971,7 +1008,11 @@ class ComplianceRequest:
     día, ``gis.masks.access``) y el espesor mínimo de verificación (m, D-6) y, opcional, las
     bases de los acopios detectados al día sobre la partida (``bases``, A12: una rejilla por
     detección, que se combinan con :func:`lowest_base`; vacío, sin base: la verificación de
-    siempre). Una petición incoherente es un error del programa (:class:`ValueError`)."""
+    siempre) y, de cada final, las zonas «requiere acceso» que comunica la accesibilidad al día hecha
+    sobre ella (``communicated``, A12 de la 017, un conjunto de códigos de zona por final o ``None``
+    si esa final no tiene accesibilidad al día; vacío, ninguna final la tiene: la verificación de
+    siempre; :meth:`communicated_of`). Una petición incoherente es un error del programa
+    (:class:`ValueError`)."""
 
     name: str
     start: SurfaceRef
@@ -979,6 +1020,7 @@ class ComplianceRequest:
     masks: MaskSet
     min_thickness_m: float
     bases: tuple[SurfaceRef, ...] = ()
+    communicated: tuple[frozenset[str] | None, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -999,10 +1041,22 @@ class ComplianceRequest:
             raise ValueError("la base de unos acopios es una rejilla, no una cota constante")
         if len(set(bases)) != len(bases):
             raise ValueError("una base de acopios repetida")
+        communicated = tuple(_communicated(item) for item in self.communicated)
+        if communicated and len(communicated) != len(finals):
+            raise ValueError(f"un conjunto de zonas comunicadas por final ({len(finals)}), no "
+                             f"{len(communicated)}")
         object.__setattr__(self, "bases", bases)
         object.__setattr__(self, "finals", finals)
+        object.__setattr__(self, "communicated", communicated)
         object.__setattr__(self, "min_thickness_m", _thickness(self.min_thickness_m))
 
     def same_as_start(self, position: int) -> bool:
         """Si la final ``position`` es la misma superficie que la partida."""
         return self.finals[position] == self.start
+
+    def communicated_of(self, position: int) -> frozenset[str] | None:
+        """Las zonas «requiere acceso» que comunica la accesibilidad de la final ``position``
+        (desde 0), o ``None`` si esa final no tiene accesibilidad al día (o ninguna la tiene)."""
+        if not 0 <= position < len(self.finals):
+            raise IndexError(f"la final {position} no existe: hay {len(self.finals)}")
+        return self.communicated[position] if self.communicated else None

@@ -9,7 +9,8 @@ dan cargadas). La accesibilidad **no llama a** ``refuse_pending`` (``design.sect
 **Crear** en una transacción, **recalcular**, **reproducir** y la **lectura para la 012** (la accesibilidad al día hecha sobre una superficie dada, con su tabla de zonas) son de la T17b
 (más abajo): :func:`create_access_steps` (la rejilla de lo alcanzable, las cuatro tablas y las cifras en **una** transacción, como la detección de acopios), :func:`run_access` y
 :func:`recompute_access` (el recálculo de «Recalcular lo obsoleto»), ``design.reproduce.reproduce_road_access`` (que comparte con el recálculo ``access_job`` y ``access_compute_steps``) y
-:func:`accessibilities_on` (lo que lee la verificación de la 012 por su papel ``access_zones``, sin importar ``design.entities`` ni ``design.road_*``).
+:func:`accessibilities_on` (lo que lee la verificación de la 012 por su papel ``access_zones``, sin importar ``design.entities`` ni ``design.road_*``) con :func:`accessibilities_excluded` (las
+que no da, con su causa, para el aviso, T18) y :func:`read_zone_table` (la tabla de zonas de una conexión: la del proyecto o la congelada que lee la reproducción).
 
 - :func:`access_values` y :func:`prepare_access_units` (y :func:`prepare_access`, de una vez): el código ``ACC-nnn`` (correlativo por versión) y el nombre único, la capa de **puntos de
   entrada** (de puntos, con el campo de su nombre; sus puntos en absolutas float64), los parámetros resueltos y comprobados (la pendiente máxima y el ancho mínimo transitables y el área
@@ -74,10 +75,13 @@ from .store import DesignWriter, OperationStart, Stored, _loaded_masks, _start, 
 from .surfaces import project_frame, read_surface_steps
 
 __all__ = [
+    "EXCLUDED_OTHER_SURFACE",
+    "EXCLUDED_STALE",
     "AccessData",
     "AccessSummary",
     "AccessZone",
     "Accessibility",
+    "ExcludedAccessibility",
     "PreparedAccess",
     "access_compute_steps",
     "access_job",
@@ -86,6 +90,7 @@ __all__ = [
     "access_summary",
     "access_values",
     "access_zones",
+    "accessibilities_excluded",
     "accessibilities_on",
     "berm_rows",
     "create_access",
@@ -98,6 +103,7 @@ __all__ = [
     "prepared_summary",
     "reachable_grid",
     "read_access_zones",
+    "read_zone_table",
     "recompute_access",
     "run_access",
     "untouchable_cells",
@@ -811,9 +817,10 @@ _ACCESS_INPUT = (
     "WHERE io.operation_uid = ? AND io.direction = 'in' AND io.item_kind = 'dataset' AND io.role = ? ORDER BY io.fid")
 
 
-def _zone_table(conn: sqlite3.Connection, locator: str) -> tuple[AccessZone, ...]:
-    """Las filas de la tabla de zonas ``locator`` (``des_acz_<nombre>_<vNN>``), en el orden de la tabla (``fid``)."""
-    found = conn.execute(f'SELECT code, connected, x, y, distance_m, level_difference_m FROM "{locator}" ORDER BY fid').fetchall()
+def read_zone_table(conn: sqlite3.Connection, table: str) -> tuple[AccessZone, ...]:
+    """Las filas de la tabla de zonas ``table`` (``des_acz_<nombre>_<vNN>``, o su nombre en un GeoPackage congelado) de la conexión ``conn``, en el orden de la tabla (``fid``). Lo comparten la
+    lectura del proyecto (:func:`read_access_zones`) y la reproducción de la verificación de la 012, que lee la tabla congelada."""
+    found = conn.execute(f'SELECT code, connected, x, y, distance_m, level_difference_m FROM "{table}" ORDER BY fid').fetchall()
     return tuple(AccessZone(str(code), bool(connected), None if x is None else float(x), None if y is None else float(y), None if distance is None else float(distance),
                             None if difference is None else float(difference)) for code, connected, x, y, distance, difference in found)
 
@@ -822,9 +829,9 @@ def read_access_zones(project: StoreProject, locator: str, *, conn: sqlite3.Conn
     """La tabla de zonas «requiere acceso» de una accesibilidad que está en ``locator`` (la tabla de su GeoPackage: lo que dice su registro, :attr:`~core.datasets.DatasetRecord.locator`,
     o :attr:`AccessData.locator`), en el orden de la tabla. Solo lee; ``conn`` es una conexión de lectura de quien llama (con su instantánea)."""
     if conn is not None:
-        return _zone_table(conn, locator)
+        return read_zone_table(conn, locator)
     with project.read() as reading:
-        return _zone_table(reading, locator)
+        return read_zone_table(reading, locator)
 
 
 def accessibilities_on(project: StoreProject, version: str, surface: str, *, conn: sqlite3.Connection | None = None) -> tuple[Accessibility, ...]:
@@ -870,4 +877,61 @@ def _accessibility_of(conn: sqlite3.Connection, version: Version, code: str, nam
     zones = one(provenance.ROAD_ACCESS_ZONES_ROLE)
     final = conn.execute(_ACCESS_INPUT, (operation, provenance.ACCESS_FINAL_ROLE)).fetchone()
     return Accessibility(code, name, version.code, version.uid, operation, surface, None if final is None else str(final[0]), one(provenance.ROAD_ACCESS_ROLE),
-                         one(provenance.ROAD_ACCESS_BERMS_ROLE), one(provenance.ROAD_ACCESS_PLATFORMS_ROLE), zones, one(provenance.ENTITY_REPORT_ROLE), _zone_table(conn, zones.locator))
+                         one(provenance.ROAD_ACCESS_BERMS_ROLE), one(provenance.ROAD_ACCESS_PLATFORMS_ROLE), zones, one(provenance.ENTITY_REPORT_ROLE), read_zone_table(conn, zones.locator))
+
+
+EXCLUDED_OTHER_SURFACE = "other_surface"
+"""La causa de una accesibilidad que una verificación no usa: se hizo sobre otra superficie que la que verifica."""
+EXCLUDED_STALE = "stale"
+"""La causa de una accesibilidad que una verificación no usa: hecha sobre esa superficie, está obsoleta."""
+
+
+@dataclass(frozen=True, slots=True)
+class ExcludedAccessibility:
+    """Una accesibilidad que ve una versión y que **no se usa** sobre una superficie (spec 017, T18; RF-012-22, DIFF-017): su ``code`` (``ACC-001``), su ``name``, la ``surface`` sobre la que está
+    hecha (el nombre de su dato; vacío si no tiene), el ``reason`` (:data:`EXCLUDED_OTHER_SURFACE`: se hizo sobre otra superficie; :data:`EXCLUDED_STALE`: está obsoleta) y, de una obsoleta, su
+    ``cause`` en español y su ``cause_en`` en inglés (lo que cambió, según la 008; quien la muestra elige la del idioma de la interfaz)."""
+
+    code: str
+    name: str
+    surface: str
+    reason: str
+    cause: str = ""
+    cause_en: str = ""
+
+
+def accessibilities_excluded(project: StoreProject, version: str, surface: str | None, *, conn: sqlite3.Connection | None = None) -> tuple[ExcludedAccessibility, ...]:
+    """Las accesibilidades que ve la ``version`` (su uid o su código) y que **no** da :func:`accessibilities_on` para ``surface``, con su causa (spec 017, T18; RF-012-22, DIFF-017; plan 017
+    §5.4 A12 y §5.7 P-9; el aviso de la verificación de la 012, como ``stockpile_store.detections_excluded`` de la 016): las **hechas sobre otra superficie** (:data:`EXCLUDED_OTHER_SURFACE`,
+    estén al día o no) y las **obsoletas** sobre ``surface`` (:data:`EXCLUDED_STALE`, con lo que cambió: la causa de la 008). Con ``surface`` ``None`` (una superficie que no es el dato de ninguna
+    accesibilidad: una cota constante, un dato congelado), todas son de otra superficie. Una descartada, una sin calcular o una con su apoyo retirado no se avisa: no son un dato que se esperaba. Por
+    orden de código. Solo lee; ``conn`` y los errores, como en :func:`accessibilities_on`."""
+
+    def read(reading: sqlite3.Connection) -> tuple[ExcludedAccessibility, ...]:
+        found = versions_read.version(reading, str(version))
+        if found is None:
+            raise VersionError("core.version_unknown", field="versión", value=version, version=version)
+        parameters = ParameterStore(project)
+        listed: list[ExcludedAccessibility] = []
+        for entry in entities.registry(project, found.uid, conn=reading).entries:
+            record = entry.record
+            if record.kind != EntityKind.ACCESS or entry.operation_uid is None or record.state not in (EntityState.CURRENT, EntityState.STALE):
+                continue
+            parameter = parameters.get(entity_key(record.code, AccessParam.SURFACE), version=found.uid, conn=reading)
+            made_on = None if parameter is None else str(parameter.value)
+            on_it = surface is not None and made_on == surface
+            if on_it and record.state == EntityState.CURRENT:
+                continue  # la que se usa
+            if not on_it:
+                listed.append(ExcludedAccessibility(record.code, record.name, "" if made_on is None else made_on, EXCLUDED_OTHER_SURFACE))
+                continue
+            uid = str(entry.operation_uid)
+            cause = stale.item_text(reading, stale.OPERATION, uid, language="es") or "cambió algo de lo que lee"
+            cause_en = stale.item_text(reading, stale.OPERATION, uid, language="en") or "something it reads changed"
+            listed.append(ExcludedAccessibility(record.code, record.name, str(surface), EXCLUDED_STALE, cause, cause_en))
+        return tuple(listed)
+
+    if conn is not None:
+        return read(conn)
+    with project.read() as reading:
+        return read(reading)
